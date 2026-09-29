@@ -975,8 +975,39 @@ export function touchEntrant(id: string, at = Date.now()): void {
   updateEntrantSeen.run(at, id)
 }
 
-export function renameEntrant(id: string, name: string): boolean {
-  return updateEntrantName.run(clip(name, LIMITS.entrantName), id).changes > 0
+/**
+ * The teacher's rename — the name and every per-competition name key at once,
+ * or nothing.
+ *
+ * It used to write `entrants.name` alone. The key a namesake is refused by
+ * lives in `competition_entrants`, so after a rename the OLD name stayed
+ * reserved in each of the person's competitions and the new one stayed free:
+ * a newcomer could join under exactly the name the teacher had just given,
+ * and the leaderboard would show two identical rows. Now it is the same move
+ * as joining under a new name (`writeEnrollment`), checked by the same unique
+ * index in all the person's competitions at once; a clash in any of them
+ * rolls the whole rename back.
+ *
+ * The rule of what a name may be is at the door (admin-competitions ·
+ * entrantHandle), not here: the store also names the baseline notebook's
+ * service entrant, by a localized phrase that is no handle.
+ */
+const writeRename = db.transaction((id: string, clipped: string, key: string): boolean => {
+  if (updateEntrantName.run(clipped, id).changes === 0) return false
+  updateEnrollmentName.run(key, id)
+  return true
+})
+
+export function renameEntrant(id: string, name: string): 'ok' | 'taken' | 'missing' {
+  const clipped = clip(name, LIMITS.entrantName)
+  try {
+    return writeRename(id, clipped, entrantNameKey(clipped)) ? 'ok' : 'missing'
+  } catch (error) {
+    // Outside the transaction, as in `joinCompetition`: caught inside, the
+    // refusal would commit the half that had already been written.
+    if (isUniqueViolation(error)) return 'taken'
+    throw error
+  }
 }
 
 export function setEntrantDisabled(id: string, disabled: boolean): boolean {

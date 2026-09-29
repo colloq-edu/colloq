@@ -575,14 +575,18 @@ export function avatarTint(name: string): string {
   return AVATAR_TINTS[hash % AVATAR_TINTS.length]
 }
 
-/** One letter on the circle — the first letter of the name, as in the mockup ("T"). */
+/**
+ * One letter on the circle — the first letter of the name, as in the mockup
+ * ("T"). A Telegram name is stored as `@login` (shared/competitions.ts ·
+ * entrantHandle), and its `@` is punctuation, not a letter: without skipping
+ * it every such circle on the leaderboard would read "@".
+ */
 export function avatarLetter(name: string): string {
   const trimmed = name.trim()
-  if (!trimmed) return '?'
   // Names are Telegram usernames and emails now: the circle next to
   // "@max_zaitsev" should say "M", not "@" on every other row.
-  const first = [...trimmed].find((char) => /[\p{L}\p{N}]/u.test(char)) ?? [...trimmed][0]
-  return first.toUpperCase()
+  const first = [...trimmed].find((char) => /[\p{L}\p{N}]/u.test(char))
+  return first ? first.toUpperCase() : '?'
 }
 
 /** "Timur A." — how the person is labelled in the phone header. */

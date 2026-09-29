@@ -8,6 +8,7 @@
    * a finished one is only a reason to look at how it ended.
    */
   import { tr } from '@shared/i18n'
+  import { LIMITS, nameForJoin } from '@shared/competitions'
   import type { EntrantCompetitionRow } from '@shared/competitions-entrant'
   import {
     dateOf,
@@ -59,6 +60,29 @@
     if (joining && !typed && defaultName) name = defaultName
   })
 
+  /*
+   * The name is checked here by the same function the door uses
+   * (shared/competitions.ts · nameForJoin): a Telegram username or an email,
+   * or the name the person already carries sent back untouched — so someone
+   * who joined as "Anna Kim" before the rule is not stopped at the second
+   * competition by the name the form itself filled in. A name that will not
+   * pass never leaves the browser: the refusal is the same sentence the door
+   * would answer with, only without the round trip.
+   */
+  const invalid = $derived(name.trim() !== '' && nameForJoin(name, defaultName || null) === null)
+  /*
+   * While the person is still typing, the rule is a hint in grey; once they
+   * leave the field or press JOIN with a name that will not do, it is a
+   * refusal in red. Red from the first keystroke would scold "@i" for not yet
+   * being "@ivan". JOIN itself stays pressable: a dim button would swallow
+   * Enter without a word, and pressing it is exactly when the person wants
+   * to hear why.
+   */
+  let touched = $state(false)
+  $effect(() => {
+    void joining
+    touched = false
+  })
 </script>
 
 <div class="flex flex-col gap-9">
@@ -197,19 +221,36 @@
             class="flex flex-col gap-2 border-b border-line bg-surface p-4"
             onsubmit={(event) => {
               event.preventDefault()
-              if (name.trim()) onjoin(row.competition.slug, name.trim())
+              if (!name.trim()) return
+              if (invalid) {
+                touched = true
+                return
+              }
+              onjoin(row.competition.slug, name.trim())
             }}
           >
-            <h4 class="text-ui font-bold text-ink">{tr('competitions.p.joinTitle')}</h4>
-            <p class="text-micro text-muted">{tr('competitions.p.joinHint')}</p>
+            <label class="text-ui font-bold text-ink" for="competition-join-name">
+              {tr('competitions.handle.label')}
+            </label>
+            <p id="competition-join-hint" class="text-micro text-muted">{tr('competitions.p.joinHint')}</p>
             <div class="flex flex-wrap gap-2">
+              <!-- `inputmode="email"` puts "@" on a phone's first keyboard
+                   page, which both kinds of name start or hinge on; `type`
+                   stays text, since "@ivan_petrov" is no address to a browser. -->
               <input
+                id="competition-join-name"
                 class="h-9 min-w-0 grow border border-line bg-canvas px-3 text-2xs text-ink placeholder:text-faint focus:border-accent focus:outline-none"
-                placeholder={tr('competitions.p.namePlaceholder')}
-                aria-label={tr('competitions.p.namePlaceholder')}
+                placeholder={tr('competitions.handle.placeholder')}
+                aria-describedby={invalid ? 'competition-join-hint competition-join-rule' : 'competition-join-hint'}
+                aria-invalid={invalid && touched}
                 bind:value={name}
                 oninput={() => (typed = true)}
-                maxlength="80"
+                onblur={() => (touched = invalid)}
+                maxlength={LIMITS.entrantName}
+                inputmode="email"
+                autocapitalize="none"
+                autocorrect="off"
+                spellcheck="false"
               />
               <button
                 class="h-9 shrink-0 bg-brand px-4 text-micro font-black uppercase tracking-label text-white disabled:bg-faint"
@@ -226,7 +267,14 @@
                 {tr('competitions.p.cancel')}
               </button>
             </div>
-            {#if joinRefusal}
+            {#if invalid}
+              <p
+                id="competition-join-rule"
+                class="text-micro leading-[18px] {touched ? 'text-danger' : 'text-muted'}"
+              >
+                {tr('competitions.refusal.nameNotHandle')}
+              </p>
+            {:else if joinRefusal}
               <p class="text-micro leading-[18px] text-danger">{joinRefusal}</p>
             {/if}
           </form>

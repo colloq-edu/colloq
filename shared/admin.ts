@@ -793,6 +793,12 @@ export type AdminErrorReason =
   /** Creating under a name that is already taken: editing is a different request. */
   | 'exists'
   /**
+   * Renaming a competition entrant to a name another entrant already carries
+   * in one of the person's competitions: the leaderboard could not tell the
+   * two apart. The same word as the `/api/k` join refusal.
+   */
+  | 'name_taken'
+  /**
    * This install cannot do that here: no Docker, no build context, or — for the
    * default — no .env, which stays on the host. The message says which.
    */

@@ -130,7 +130,7 @@ test("the live stream requires the entrant's cookie", async () => {
 })
 
 test('the live stream of a nonexistent competition is a 404, not an empty stream', async () => {
-  const person = await join('Поток Первый')
+  const person = await join('@stream_first')
   const control = new AbortController()
   const res = await call('/api/k/competitions/net-takogo/stream', {
     cookie: person.cookie,
@@ -141,11 +141,11 @@ test('the live stream of a nonexistent competition is a 404, not an empty stream
 })
 
 test("the stream gives one's own submissions, the queue place and not a single foreign field", async () => {
-  const person = await join('Поток Второй')
+  const person = await join('@stream_second')
   const mine = queue(person.id, 'mine.ipynb')
   // Someone else's submission queued EARLIER: it is the one that takes first
   // place in the queue.
-  const other = await join('Поток Третий')
+  const other = await join('@stream_third')
   queue(other.id, 'other.ipynb')
 
   const frame = await firstFrame(person.cookie)
@@ -169,7 +169,7 @@ test("the stream gives one's own submissions, the queue place and not a single f
 })
 
 test('in the submission list the place and the wait estimate follow the same order as the executor', async () => {
-  const person = await join('Очередь Моя')
+  const person = await join('@my_queue')
   // A finished submission provides the average duration; without it there is
   // no estimate at all.
   const done = queue(person.id, 'done.ipynb')
@@ -188,7 +188,7 @@ test('in the submission list the place and the wait estimate follow the same ord
 })
 
 test('a Pod deferred for lack of resources does not get a false queue place and time', async () => {
-  const person = await join('Ожидание ресурсов')
+  const person = await join('@waits_for_slots')
   const deferred = queue(person.id, 'deferred.ipynb')
   db.prepare('UPDATE competition_queue SET resource_retries=1, not_before=? WHERE submission_id=?')
     .run(Date.now() + 60_000, deferred.id)
@@ -205,8 +205,8 @@ test('a Pod deferred for lack of resources does not get a false queue place and 
 /* -------------------------------------------------------- cancellation */
 
 test('only its author can cancel a submission, and only while it has not finished', async () => {
-  const person = await join('Отменяющий')
-  const stranger = await join('Посторонний')
+  const person = await join('@cancels_own')
+  const stranger = await join('@outsider')
   const submission = queue(person.id, 'cancel-me.ipynb')
 
   const anonymous = await call(`/api/k/competitions/live-k/submissions/${submission.id}/cancel`, {
@@ -243,7 +243,7 @@ test('only its author can cancel a submission, and only while it has not finishe
 /* ------------------------------------------------------- leaderboard */
 
 test("a leaderboard row carries the submission number and the author's choice, and not a single private score", async () => {
-  const person = await join('Лидер Списка')
+  const person = await join('@list_leader')
   const first = queue(person.id, 'a.ipynb')
   updateSubmission(first.id, {
     state: 'scored',
@@ -264,7 +264,7 @@ test("a leaderboard row carries the submission number and the author's choice, a
 
   // The baseline is a submission of a service entrant, marked by the
   // competition.
-  const baseline = await join('Базовый Прогон')
+  const baseline = await join('@baseline_run')
   const baseRun = queue(baseline.id, 'baseline.ipynb')
   updateSubmission(baseRun.id, {
     state: 'scored',
@@ -319,7 +319,7 @@ test("a leaderboard row carries the submission number and the author's choice, a
  * not on a pure function next to it.
  */
 test('the deadline has passed: submissions are closed although the competition is still `live`', async () => {
-  const person = await join('Дедлайн Дедлайнович')
+  const person = await join('@deadline_d')
   const before = (await (await call('/api/k/competitions/live-k', { cookie: person.cookie })).json()) as {
     competition: { state: string }
     accepting: string
@@ -361,7 +361,7 @@ test('the deadline has passed: submissions are closed although the competition i
  * not as "no right".
  */
 test('after the deadline the counted submission cannot be switched', async () => {
-  const person = await join('Поздний Выбор')
+  const person = await join('@late_choice')
   const first = queue(person.id, 'a.ipynb')
   const second = queue(person.id, 'b.ipynb')
   for (const one of [first, second]) {

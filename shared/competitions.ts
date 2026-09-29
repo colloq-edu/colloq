@@ -283,6 +283,85 @@ export function entrantNameKey(name: string): string {
 }
 
 /**
+ * A Telegram username as Telegram itself spells it: 5 to 32 Latin letters,
+ * digits and underscores, starting with a letter. The `@` is optional on
+ * input: a username copied from a profile comes with it, one typed from
+ * memory usually without.
+ */
+const TELEGRAM_USERNAME = /^@?([A-Za-z][A-Za-z0-9_]{4,31})$/
+
+/**
+ * A PLAUSIBLE email address, not an RFC 5322 parser: a dot-separated local
+ * part, one `@`, a domain of dot-separated labels and a letter TLD of two or
+ * more. Deliberately ASCII only. `аnna@mail.ru` with a Cyrillic «а» is a
+ * different name key from `anna@mail.ru` yet the same row to the eye, which is
+ * the one confusion the namesake rule exists to prevent (see entrantNameKey).
+ * The classes are spelled out instead of an `i` flag so that no Unicode case
+ * folding can let a look-alike letter in.
+ */
+const EMAIL = /^[A-Za-z0-9_%+-]+(?:\.[A-Za-z0-9_%+-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$/
+
+/**
+ * An entrant's name brought to its one stored form, or `null` if it is neither
+ * a Telegram username nor an email address.
+ *
+ * WHY A HANDLE AND NOT "first and last name" — the owner's rule. A row on the
+ * leaderboard has to point at one person the teacher can find and write to:
+ * "Анна Ким" may be two people in a stream and a nickname is nobody, while a
+ * username or an address is both. It is NOT verified: nothing checks that
+ * the person owns the account or the mailbox, so it names someone reachable,
+ * it does not prove who typed it.
+ *
+ * ONE STORED FORM, so that uniqueness holds: a username becomes `@` plus
+ * lower case, an address lower case. `@Anya_Smirnova` and `anya_smirnova`
+ * are then one string before `entrantNameKey` is even asked, and the
+ * database refuses the second as a namesake. The case of an address's local
+ * part is significant by the letter of the standard, and in practice ignored
+ * by the mail services students use.
+ *
+ * The length is checked here and not only cut on write: the store clips a
+ * name to `LIMITS.entrantName`, and a clipped address is no longer one — two
+ * long ones sharing their first sixty characters would even become
+ * namesakes. A username never gets near the limit.
+ *
+ * Only NEWLY TYPED names go through this. A person who joined before the rule
+ * keeps their stored name (see nameForJoin), and the store does not check at
+ * all: the service entrant of the baseline notebook is called by a localized
+ * phrase.
+ */
+export function entrantHandle(input: string): string | null {
+  const value = String(input ?? '').trim()
+  const username = TELEGRAM_USERNAME.exec(value)
+  if (username) return `@${username[1].toLowerCase()}`
+  if (value.length > LIMITS.entrantName || !EMAIL.test(value)) return null
+  return value.toLowerCase()
+}
+
+/**
+ * The name a JOIN goes under, or `null` when the typed one will not do.
+ *
+ * `stored` is the signed-in entrant's current name, `null` for a newcomer.
+ * One function for the server and the join form, so that the form never sends
+ * a name the door turns away, nor refuses one it would take.
+ *
+ * Nobody is locked out by the rule. A person who joined under "Анна Ким"
+ * before it and now presses JOIN in another competition keeps that name: an
+ * empty field means "as I am", and so does the stored name sent back as is —
+ * the form fills the field with it, and a tab opened before the rule sends it
+ * anyway. The echo is recognised by the namesake key, not by bytes, because
+ * "анна  ким" is the same name to the eye and to the database. Anything else
+ * is a new name, and a new name has to be a handle.
+ */
+export function nameForJoin(typed: string, stored: string | null): string | null {
+  const value = String(typed ?? '').trim()
+  if (!value) return stored || null
+  const handle = entrantHandle(value)
+  if (handle) return handle
+  if (stored && entrantNameKey(value) === entrantNameKey(stored)) return stored
+  return null
+}
+
+/**
  * The key alphabet: without `O`, `0`, `I`, `1` and `L`.
  *
  * The key is dictated aloud and copied from a phone screen to a laptop. The

@@ -20,7 +20,7 @@
  * polled queue is shown next to it.
  *
  * IT DELETES NOTHING. The entrants and their submissions stay in the instance
- * and appear on that competition's leaderboard as "load <run> #<i>". Point it
+ * and appear on that competition's leaderboard as "@load_<run>_<i>". Point it
  * at a competition made for the test, never at the one a class is solving:
  * every submission costs a slot, and the class waits behind them.
  *
@@ -159,7 +159,10 @@ async function main(): Promise<void> {
   const run = Math.random().toString(36).slice(2, 6)
   const entrants: { name: string; cookie: string }[] = []
   for (let i = 1; i <= ENTRANTS; i++) {
-    const name = `load ${run} #${i}`
+    // A Telegram-shaped name: the door takes nothing else (shared/competitions.ts
+    // · entrantHandle), and "load_" keeps it starting with a letter whatever
+    // the random run tag begins with.
+    const name = `@load_${run}_${i}`
     const res = await fetch(`${BASE}/api/k/competitions/${encodeURIComponent(SLUG)}/join`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

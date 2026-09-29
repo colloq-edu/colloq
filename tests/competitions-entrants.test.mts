@@ -39,6 +39,7 @@ import {
   listEntrantSubmissions,
   putFile,
   queueRow,
+  renameEntrant,
   rotateEntrantKey,
   setCompetitionState,
   setEntrantDisabled,
@@ -175,7 +176,7 @@ test('a seal survives only its own secret and does not give back a tampered stri
 })
 
 test('a new key disables the old one, and the old cookie along with it', async () => {
-  const person = await join('Потерявший ключ')
+  const person = await join('@lost_key')
   const before = await call('/api/k/me', { cookie: person.cookie })
   assert.equal(((await before.json()) as { entrant: { id: string } | null }).entrant?.id, person.id)
 
@@ -203,7 +204,7 @@ test('a new key disables the old one, and the old cookie along with it', async (
 })
 
 test('a disabled key and a nonexistent one are refused in DIFFERENT words', async () => {
-  const person = await join('Отключаемый')
+  const person = await join('@turned_off')
   setEntrantDisabled(person.id, true)
   const off = await call('/api/k/sign-in', { method: 'POST', body: JSON.stringify({ key: person.key }) })
   assert.equal(off.status, 403)
@@ -218,7 +219,7 @@ test('a disabled key and a nonexistent one are refused in DIFFERENT words', asyn
 })
 
 test('the sign-in link leads to /k/t/<key> and brings a person back from another device', async () => {
-  const person = await join('Приехавший с телефона')
+  const person = await join('@from_phone')
   const card = await call('/api/k/me', { cookie: person.cookie })
   const shown = (await card.json()) as { key: string; link: string }
   assert.equal(shown.key, person.key)
@@ -238,25 +239,128 @@ test('the sign-in link leads to /k/t/<key> and brings a person back from another
 /* ----------------------------------------------------------------- joining */
 
 test('namesakes do not appear on the leaderboard, and the refusal says so in words', async () => {
-  const first = await join('Анна Ким')
+  const first = await join('@anna_kim')
   assert.ok(joinedAt(competitionId, first.id))
 
   const clash = await call('/api/k/competitions/rohlik/join', {
     method: 'POST',
-    body: JSON.stringify({ name: 'анна   ким' }),
+    body: JSON.stringify({ name: 'Anna_Kim' }),
   })
   assert.equal(clash.status, 409)
   const body = (await clash.json()) as { reason: string; error: string }
   assert.equal(body.reason, 'name_taken')
-  assert.match(body.error, /именем/i)
+  // A handle is one person's, so the refusal points at the key, not at a
+  // surname the name cannot take.
+  assert.match(body.error, /логином или почтой/)
+  assert.match(body.error, /ключу/)
 
   // The same person joining again under their own name is not a clash.
   const again = await call('/api/k/competitions/rohlik/join', {
     method: 'POST',
-    body: JSON.stringify({ name: 'Анна Ким' }),
+    body: JSON.stringify({ name: '@anna_kim' }),
     cookie: first.cookie,
   })
   assert.equal(again.status, 200)
+})
+
+test('a join under a name that is neither a username nor an email is refused, and leaves nothing', async () => {
+  const count = () => (db.prepare('SELECT COUNT(*) AS n FROM entrants').get() as { n: number }).n
+  const before = count()
+  for (const name of ['Анна Ким', 'ivan', '1van_petrov', 'ivan petrov@mail.ru', 'anna@mail', '']) {
+    const res = await call('/api/k/competitions/rohlik/join', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    })
+    assert.equal(res.status, 400, name)
+    const body = (await res.json()) as { reason: string; error: string }
+    assert.equal(body.reason, 'invalid', name)
+    assert.match(body.error, /логин Telegram/, name)
+    assert.equal(cookieOf(res), null, `refusing "${name}" issued an entrant cookie`)
+  }
+  // Checked before an identity is minted: a refusal here must not leave an
+  // entrant with a key nobody saw.
+  assert.equal(count(), before)
+})
+
+test('a username or an address is stored in its one form, and the namesake key is taken from it', async () => {
+  const telegram = await join('Anya_Smirnova')
+  assert.equal(getEntrant(telegram.id)?.name, '@anya_smirnova')
+  const mail = await join('  Ivan.Petrov@Mail.RU ')
+  assert.equal(getEntrant(mail.id)?.name, 'ivan.petrov@mail.ru')
+  const keyOf = (id: string) =>
+    (db.prepare('SELECT name_key FROM competition_entrants WHERE competition_id = ? AND entrant_id = ?')
+      .get(competitionId, id) as { name_key: string }).name_key
+  assert.equal(keyOf(telegram.id), '@anya_smirnova')
+  assert.equal(keyOf(mail.id), 'ivan.petrov@mail.ru')
+})
+
+test('one handle is one person, with or without "@" and in any case', async () => {
+  await join('@Petr_Sidorov')
+  for (const name of ['petr_sidorov', 'PETR_SIDOROV', '@petr_sidorov']) {
+    const res = await call('/api/k/competitions/rohlik/join', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    })
+    assert.equal(res.status, 409, name)
+    assert.equal(((await res.json()) as { reason: string }).reason, 'name_taken', name)
+  }
+  await join('Masha@Example.com')
+  const mail = await call('/api/k/competitions/rohlik/join', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'masha@example.COM' }),
+  })
+  assert.equal(mail.status, 409)
+})
+
+test('a person signed in under a name from before the rule keeps it, but a new name must be a handle', async () => {
+  // Typed when names were free text: the store takes any name, the door no longer does.
+  const legacy = createEntrant('Людмила Старая')
+  const signed = await call('/api/k/sign-in', { method: 'POST', body: JSON.stringify({ key: legacy.key }) })
+  const cookie = cookieOf(signed)
+  assert.ok(cookie)
+  const nameOf = () => getEntrant(legacy.entrant.id)?.name
+
+  // JOIN without a name: nobody is locked out by the rule.
+  const plain = await call('/api/k/competitions/rohlik/join', { method: 'POST', body: JSON.stringify({}), cookie })
+  assert.equal(plain.status, 200)
+  assert.equal(((await plain.json()) as { entrant: { name: string } }).entrant.name, 'Людмила Старая')
+  assert.ok(joinedAt(competitionId, legacy.entrant.id))
+
+  // The join form fills the field with the stored name and sends it back: in
+  // another competition that is still "as I am", not a new name.
+  const other = createCompetition({ slug: 'legacy-names', title: 'Legacy names' })
+  assert.ok(other)
+  setCompetitionState(other.id, 'live')
+  const echoed = await call('/api/k/competitions/legacy-names/join', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Людмила Старая' }),
+    cookie,
+  })
+  assert.equal(echoed.status, 200)
+  assert.equal(nameOf(), 'Людмила Старая')
+
+  // A newly typed free-text name is refused, and the stored one stays.
+  const free = await call('/api/k/competitions/rohlik/join', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Людмила Новая' }),
+    cookie,
+  })
+  assert.equal(free.status, 400)
+  assert.equal(((await free.json()) as { reason: string }).reason, 'invalid')
+  assert.equal(nameOf(), 'Людмила Старая')
+
+  // A handle is taken, and it renames the person in both competitions.
+  const handle = await call('/api/k/competitions/rohlik/join', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Lyudmila_S' }),
+    cookie,
+  })
+  assert.equal(handle.status, 200)
+  assert.equal(nameOf(), '@lyudmila_s')
+  const keys = db
+    .prepare('SELECT name_key FROM competition_entrants WHERE entrant_id = ?')
+    .all(legacy.entrant.id) as { name_key: string }[]
+  assert.deepEqual(keys.map((row) => row.name_key), ['@lyudmila_s', '@lyudmila_s'])
 })
 
 test('a name is compared the way a person reads it', () => {
@@ -282,6 +386,37 @@ test("a rename is checked across ALL of the person's competitions at once", () =
   assert.equal(getEntrant(two.id)?.name, 'Платон Г.', 'the name changed even though it was refused')
 })
 
+test("the teacher's rename moves the person's name keys with it, or does not happen at all", () => {
+  const one = createCompetition({ slug: 'rename-one', title: 'Rename one' })
+  const two = createCompetition({ slug: 'rename-two', title: 'Rename two' })
+  assert.ok(one && two)
+  const anna = createEntrant('@anna_k').entrant
+  const boris = createEntrant('@boris_k').entrant
+  assert.equal(joinCompetition(one.id, anna.id, '@anna_k'), 'ok')
+  assert.equal(joinCompetition(two.id, anna.id, '@anna_k'), 'ok')
+  assert.equal(joinCompetition(two.id, boris.id, '@boris_k'), 'ok')
+  const keysOf = (id: string) =>
+    (db.prepare('SELECT name_key FROM competition_entrants WHERE entrant_id = ?').all(id) as { name_key: string }[])
+      .map((row) => row.name_key)
+
+  // Boris holds the name in the SECOND competition only, and that refuses the
+  // rename everywhere: neither the name nor the first competition's key moves.
+  assert.equal(renameEntrant(anna.id, '@boris_k'), 'taken')
+  assert.equal(getEntrant(anna.id)?.name, '@anna_k')
+  assert.deepEqual(keysOf(anna.id), ['@anna_k', '@anna_k'])
+
+  // A free name takes the keys along in every competition. It used to write
+  // only the name: the old key stayed reserved and the new name stayed free.
+  assert.equal(renameEntrant(anna.id, 'anna.k@mail.ru'), 'ok')
+  assert.equal(getEntrant(anna.id)?.name, 'anna.k@mail.ru')
+  assert.deepEqual(keysOf(anna.id), ['anna.k@mail.ru', 'anna.k@mail.ru'])
+  const newcomer = createEntrant('@newcomer_x').entrant
+  assert.equal(joinCompetition(one.id, newcomer.id, 'anna.k@mail.ru'), 'taken', 'a newcomer took the name the teacher had just given')
+  assert.equal(joinCompetition(one.id, newcomer.id, '@anna_k'), 'ok', 'the old name stayed held for nobody')
+
+  assert.equal(renameEntrant('no-such-entrant', '@whoever'), 'missing')
+})
+
 /* ------------------------------------------------------------- sending */
 
 test('before joining, in flight and over the daily quota are three different refusals', async () => {
@@ -295,7 +430,7 @@ test('before joining, in flight and over the daily quota are three different ref
   assert.equal(notJoined.status, 403)
   assert.equal(((await notJoined.json()) as { reason: string }).reason, 'not_joined')
 
-  const person = await join('Присылающий по одной')
+  const person = await join('@one_at_a_time')
   const first = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'v1.ipynb', notebook())
   assert.equal(first.status, 200)
   const accepted = (await first.json()) as { submission: { id: string; number: number }; leftToday: number }
@@ -333,7 +468,7 @@ test('before joining, in flight and over the daily quota are three different ref
 })
 
 test('a replacement whose notebook cannot be written leaves the waiting submission where it was', async () => {
-  const person = await join('Полный диск')
+  const person = await join('@full_disk')
   const first = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'v1.ipynb', notebook())
   assert.equal(first.status, 200)
   const { submission: waiting } = (await first.json()) as { submission: { id: string; number: number } }
@@ -373,7 +508,7 @@ test('a replacement whose notebook cannot be written leaves the waiting submissi
 })
 
 test('a non-notebook, a broken notebook and a non-.ipynb are turned away BEFORE the queue', async () => {
-  const person = await join('Присылающий что попало')
+  const person = await join('@sends_anything')
 
   const wrongName = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'model.py', notebook())
   assert.equal(wrongName.status, 400)
@@ -410,7 +545,7 @@ test('after the deadline submissions are closed, before the start they are not o
   assert.equal(submissionsOpen({ state: 'finished', startsAt: null, deadlineAt: null }, now), 'closed')
   assert.equal(submissionsOpen({ state: 'draft', startsAt: null, deadlineAt: null }, now), 'not_open')
 
-  const person = await join('Опоздавший')
+  const person = await join('@late_sender')
   updateCompetition(competitionId, { deadlineAt: Date.now() - 1000 })
   const late = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'late.ipynb', notebook())
   assert.equal(late.status, 403)
@@ -424,7 +559,7 @@ test('nobody joins a finished competition: the table is already computed', async
   setCompetitionState(closed.id, 'finished')
   const res = await call('/api/k/competitions/cmi/join', {
     method: 'POST',
-    body: JSON.stringify({ name: 'Поздний' }),
+    body: JSON.stringify({ name: '@too_late' }),
   })
   assert.equal(res.status, 403)
   assert.equal(((await res.json()) as { reason: string }).reason, 'closed')
@@ -437,8 +572,8 @@ test('nobody joins a finished competition: the table is already computed', async
 /* --------------------------------------------------------------- rights */
 
 test("someone else's submission can be neither chosen as counted nor downloaded", async () => {
-  const mine = await join('Свой')
-  const other = await join('Чужой')
+  const mine = await join('@mine_one')
+  const other = await join('@stranger')
   const sent = await send('/api/k/competitions/rohlik/submissions', mine.cookie, 'ok.ipynb', notebook())
   const { submission } = (await sent.json()) as { submission: { id: string } }
   updateSubmission(submission.id, { state: 'scored', publicScore: 0.41, privateScore: 0.44 })
@@ -499,7 +634,7 @@ test('a draft does not exist on /k through any door', async () => {
 /* ------------------------------------------------------ what leaks nowhere */
 
 test('no /k door gives out the metric code, the seed, the answers or the private score', async () => {
-  const person = await join('Любопытный')
+  const person = await join('@curious_one')
   const sent = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'peek.ipynb', notebook())
   const { submission } = (await sent.json()) as { submission: { id: string } }
   updateSubmission(submission.id, {
@@ -539,7 +674,7 @@ test('no /k door gives out the metric code, the seed, the answers or the private
 })
 
 test('the private leaderboard is silent before opening and speaks after', async () => {
-  const person = await join('Ждущий итогов')
+  const person = await join('@awaits_results')
   const sent = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'final.ipynb', notebook())
   const { submission } = (await sent.json()) as { submission: { id: string } }
   updateSubmission(submission.id, { state: 'scored', publicScore: 0.39, privateScore: 0.3901 })
@@ -599,7 +734,7 @@ test('too frequent sign-ins from one address are turned away', async () => {
 /* ------------------------------------------------------------ summary */
 
 test('the competition page knows what a person sees about themselves', async () => {
-  const person = await join('Считающий место')
+  const person = await join('@counts_place')
   const sent = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'place.ipynb', notebook())
   const { submission } = (await sent.json()) as { submission: { id: string } }
   updateSubmission(submission.id, { state: 'scored', publicScore: 0.2 })
@@ -639,7 +774,7 @@ test('a submission accepted without joining still makes the person an entrant', 
 for (const scoring of ['bestPublic', 'last'] as const) test(`API refuses manual choices under ${scoring}`, async () => {
   const c = createCompetition({ slug: `automatic-${scoring.toLowerCase()}`, title: 'Automatic', scoring })!
   setCompetitionState(c.id, 'live')
-  const joined = await call(`/api/k/competitions/${c.slug}/join`, { method: 'POST', body: JSON.stringify({ name: 'Automatic entrant' }) })
+  const joined = await call(`/api/k/competitions/${c.slug}/join`, { method: 'POST', body: JSON.stringify({ name: '@automatic_entrant' }) })
   const cookie = cookieOf(joined)
   const person = await joined.json()
   const submission = acceptSubmission({ competitionId: c.id, entrantId: person.entrant.id, fileName: 'model.ipynb', bytes: 2 })
@@ -652,7 +787,7 @@ for (const scoring of ['bestPublic', 'last'] as const) test(`API refuses manual 
 test('public page explains unavailable broker execution and upload refuses before parsing its body', async () => {
   const c = createCompetition({ slug: 'no-public-runtime', title: 'No runtime' })!
   setCompetitionState(c.id, 'live')
-  const joined = await call(`/api/k/competitions/${c.slug}/join`, { method: 'POST', body: JSON.stringify({ name: 'Waiting entrant' }) })
+  const joined = await call(`/api/k/competitions/${c.slug}/join`, { method: 'POST', body: JSON.stringify({ name: '@waiting_entrant' }) })
   const cookie = cookieOf(joined)
   const previous = { kernel: process.env.KERNEL_BACKEND, competition: process.env.COMPETITION_BACKEND }
   try {

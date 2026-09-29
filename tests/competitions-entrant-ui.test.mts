@@ -478,9 +478,11 @@ test("the entrant's circle: colour from the name, letter from the name, the name
   assert.notEqual(avatarTint('Тимур Ахметов'), avatarTint('Марфа Соколова'))
   assert.equal(avatarLetter('тимур'), 'Т')
   assert.equal(avatarLetter('  '), '?')
+  // A Telegram name is stored as "@login": the circle shows its letter, not the "@".
   assert.equal(avatarLetter('@max_zaitsev'), 'M')
+  assert.equal(avatarLetter('@timur_a'), 'T')
   assert.equal(avatarLetter('boris.kuznetsov@mail.ru'), 'B')
-  assert.equal(avatarLetter('@'), '@')
+  assert.equal(avatarLetter('@'), '?')
   assert.equal(shortName('Тимур Ахметов'), 'Тимур А.')
   assert.equal(shortName('Платон'), 'Платон')
 })

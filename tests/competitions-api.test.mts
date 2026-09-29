@@ -20,19 +20,23 @@ import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Response as ExpressResponse } from 'express'
 import { STAFF_COOKIE } from '../shared/admin.js'
-import { LIMITS } from '../shared/competitions.js'
+import { LIMITS, entrantNameKey } from '../shared/competitions.js'
 import { createTeacher, rotateLinkKey } from '../server/src/admin/store.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { app } from '../server/src/app.js'
+import { db } from '../server/src/db.js'
 import {
   acceptSubmission,
   createCompetition,
   createEntrant,
   finishRun,
   getCompetition,
+  getEntrant,
   getSubmission,
+  joinCompetition,
   listFiles,
   queueRow,
+  setCompetitionState,
   startRun,
   updateCompetition,
   updateSubmission,
@@ -439,7 +443,7 @@ test('finishing, removing answers, issuing a new key and dropping a submission a
   }
   const made = await call('POST', '/api/admin/competitions/entrants', {
     cookie: teacher,
-    body: { name: 'Анна Ким' },
+    body: { name: '@Anna_Kim' },
   })
   assert.equal(made.status, 201)
   const { entrant } = (await made.json()) as { entrant: { id: string; key: string | null } }
@@ -463,9 +467,84 @@ test('the sign-in key is visible in the list: there is no other place to read it
   const res = await call('GET', '/api/admin/competitions/entrants', { cookie: teacher })
   assert.equal(res.status, 200)
   const body = (await res.json()) as { entrants: { name: string; key: string | null }[] }
-  const anna = body.entrants.find((row) => row.name === 'Анна Ким')
+  const anna = body.entrants.find((row) => row.name === '@anna_kim')
   assert.ok(anna)
   assert.match(String(anna.key), /^[A-Z0-9]{3}-[A-Z0-9]{3}-[A-Z0-9]{3}$/)
+})
+
+test('the teacher adds an entrant only under a Telegram username or an email, in its one form', async () => {
+  for (const name of ['Анна Ким', 'ivan', '_ivan_petrov', 'ivan petrov@mail.ru', '']) {
+    const res = await call('POST', '/api/admin/competitions/entrants', { cookie: teacher, body: { name } })
+    assert.equal(res.status, 400, name)
+    const body = (await res.json()) as { reason: string; error: string }
+    assert.equal(body.reason, 'invalid', name)
+    assert.match(body.error, /логин Telegram/, name)
+  }
+  const telegram = await call('POST', '/api/admin/competitions/entrants', {
+    cookie: teacher,
+    body: { name: 'Ivan_Petrov' },
+  })
+  assert.equal(telegram.status, 201)
+  assert.equal(((await telegram.json()) as { entrant: { name: string } }).entrant.name, '@ivan_petrov')
+  const mail = await call('POST', '/api/admin/competitions/entrants', {
+    cookie: teacher,
+    body: { name: ' Ivan.Petrov@Mail.RU ' },
+  })
+  assert.equal(mail.status, 201)
+  assert.equal(((await mail.json()) as { entrant: { name: string } }).entrant.name, 'ivan.petrov@mail.ru')
+})
+
+test("a teacher's rename obeys the same rule and takes the name keys along, or is refused whole", async () => {
+  const c = createCompetition({ slug: 'renames', title: 'Переименования' })
+  assert.ok(c)
+  setCompetitionState(c.id, 'live')
+  // Joined when names were free text: the store takes any name.
+  const marina = createEntrant('Марина Старая').entrant
+  const boris = createEntrant('@boris_k').entrant
+  assert.equal(joinCompetition(c.id, marina.id, 'Марина Старая'), 'ok')
+  assert.equal(joinCompetition(c.id, boris.id, '@boris_k'), 'ok')
+  const rename = (id: string, body: unknown) =>
+    call('PATCH', `/api/admin/competitions/entrants/${id}`, { cookie: teacher, body })
+  const keyOf = (id: string) =>
+    (db.prepare('SELECT name_key FROM competition_entrants WHERE competition_id = ? AND entrant_id = ?')
+      .get(c.id, id) as { name_key: string }).name_key
+
+  // Not a handle: refused, whatever the name was before.
+  const free = await rename(marina.id, { name: 'Марина Новая' })
+  assert.equal(free.status, 400)
+  assert.equal(((await free.json()) as { reason: string }).reason, 'invalid')
+
+  // Boris's handle in any spelling is Boris's. The rename is refused whole:
+  // the flag sent alongside is not applied either.
+  for (const name of ['boris_k', '@BORIS_K']) {
+    const clash = await rename(marina.id, { name, disabled: true })
+    assert.equal(clash.status, 409, name)
+    const body = (await clash.json()) as { reason: string; error: string }
+    assert.equal(body.reason, 'name_taken', name)
+    assert.match(body.error, /логином или почтой/, name)
+  }
+  assert.equal(getEntrant(marina.id)?.name, 'Марина Старая')
+  assert.equal(getEntrant(marina.id)?.disabled, false)
+  assert.equal(keyOf(marina.id), entrantNameKey('Марина Старая'))
+
+  // A free handle is stored in its one form, and the competition's key moves with it.
+  const renamed = await rename(marina.id, { name: 'Marina_K' })
+  assert.equal(renamed.status, 200)
+  assert.equal(((await renamed.json()) as { entrant: { name: string } }).entrant.name, '@marina_k')
+  assert.equal(keyOf(marina.id), '@marina_k')
+
+  // So a newcomer at the door cannot take the name the teacher has just given…
+  const late = await call('POST', '/api/k/competitions/renames/join', { body: { name: 'MARINA_K' } })
+  assert.equal(late.status, 409)
+  assert.equal(((await late.json()) as { reason: string }).reason, 'name_taken')
+  // …and the name she carried before is no longer held for nobody.
+  const newcomer = createEntrant('@newcomer_m').entrant
+  assert.equal(joinCompetition(c.id, newcomer.id, 'Марина Старая'), 'ok')
+
+  // The flag alone asks for no name, so a name from before the rule does not block it.
+  const flag = await rename(boris.id, { disabled: true })
+  assert.equal(flag.status, 200)
+  assert.equal(getEntrant(boris.id)?.disabled, true)
 })
 
 test('a competition cannot be opened until the baseline has gone the whole way', async () => {

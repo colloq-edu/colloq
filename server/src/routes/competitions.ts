@@ -90,6 +90,7 @@ import {
   ENTRANT_SIGN_IN_PATH,
   isTerminal,
   LIMITS,
+  nameForJoin,
   normalizeEntrantKey,
   publicCompetition,
   submissionsOpen,
@@ -521,9 +522,16 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     if (accepting === 'not_open') return refuse(res, 403, 'not_open', tr('competitions.refusal.notOpen'))
     if (accepting === 'closed') return refuse(res, 403, 'closed', tr('competitions.refusal.closed'))
     const known = currentEntrant(req)
-    const wanted = String(req.body?.name ?? '').trim()
-    const name = wanted || known?.name || ''
-    if (!name) return refuse(res, 400, 'invalid', tr('competitions.refusal.nameEmpty'))
+    /*
+     * A newly typed name must be a Telegram username or an email address, and
+     * it is stored in its one form (`@anya_smirnova`, `anna@mail.ru`) BEFORE
+     * the namesake key is taken from it: that is what makes `@Anya_Smirnova`
+     * and `anya_smirnova` one person to the unique index. A signed-in person
+     * who sends no name, or sends back the one they carry, keeps it even if
+     * it predates the rule (shared/competitions.ts · nameForJoin).
+     */
+    const name = nameForJoin(String(req.body?.name ?? ''), known?.name ?? null)
+    if (!name) return refuse(res, 400, 'invalid', tr('competitions.refusal.nameNotHandle'))
 
     if (!known && tooOften(joins, addressOf(req), JOIN_WINDOW, MAX_JOINS)) {
       res.setHeader('Retry-After', '60')

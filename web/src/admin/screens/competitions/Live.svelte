@@ -27,6 +27,8 @@
   import { cn, formatBytes } from '@/lib/utils'
   import {
     competitionPath,
+    entrantHandle,
+    LIMITS,
     metricFailedNote,
     placeShift,
     privateBoardOpen,
@@ -81,6 +83,9 @@
     board = null
     entrants = null
     detail = null
+    adding = false
+    added = null
+    renaming = null
   })
   let entrants = $state<EntrantRow[] | null>(null)
   let detail = $state<SubmissionDetail | null>(null)
@@ -239,6 +244,8 @@
       if (event.key === 'Escape') {
         openMenu = null
         detail = null
+        renaming = null
+        adding = false
       }
     }
     window.addEventListener('click', close)
@@ -307,6 +314,115 @@
       entrants = entrants.map((row) =>
         row.id === entrantId ? { ...row, ...made.entrant, key: made.key } : row,
       )
+    }
+  }
+
+  /* ------------------------------------------- entrants: add and rename */
+
+  /*
+   * A name the teacher types obeys the rule of the join door: a Telegram
+   * username or an email (shared/competitions.ts · entrantHandle). It is
+   * checked here before the request and again by the server, which is the
+   * judge. Refusals land in the form they belong to, not in the banner above
+   * the tabs: that one offers "Try again" for the submission feed.
+   */
+  let adding = $state(false)
+  let draft = $state('')
+  /** Left the field or pressed the button with a name that will not do: the rule turns from a hint into a refusal. */
+  let draftTouched = $state(false)
+  let draftRefusal = $state<string | null>(null)
+  /**
+   * The key of the person just added, shown once, here: the list below is
+   * this competition's, and they are not in it until they sign in with the
+   * key and join (store · listCompetitionEntrants).
+   */
+  let added = $state<{ name: string; key: string } | null>(null)
+  let renaming = $state<{ id: string; name: string; touched: boolean; refusal: string | null } | null>(null)
+
+  const draftInvalid = $derived(draft.trim() !== '' && entrantHandle(draft) === null)
+
+  /** The name as it stands in the list, which an untouched rename field still shows. */
+  function currentName(id: string): string | undefined {
+    return entrants?.find((row) => row.id === id)?.name
+  }
+
+  /*
+   * Saving the name it already has is not a rename: nothing is sent, so a
+   * name from before the rule is not refused for merely being looked at.
+   */
+  const renameInvalid = $derived(
+    !!renaming &&
+      renaming.name.trim() !== '' &&
+      renaming.name.trim() !== currentName(renaming.id) &&
+      entrantHandle(renaming.name) === null,
+  )
+
+  /** Focus lands where the typing goes, as in the teachers' composer. */
+  function takeFocus(node: HTMLElement): void {
+    node.focus()
+  }
+
+  function openAdd(): void {
+    adding = true
+    draft = ''
+    draftTouched = false
+    draftRefusal = null
+  }
+
+  async function addEntrant(): Promise<void> {
+    if (busy || !draft.trim()) return
+    if (draftInvalid) {
+      draftTouched = true
+      return
+    }
+    busy = true
+    draftRefusal = null
+    try {
+      const made = await adminApi.createEntrant(draft.trim())
+      added = { name: made.entrant.name, key: made.key }
+      adding = false
+      draft = ''
+    } catch (cause) {
+      lost(cause)
+      draftRefusal = explain(cause)
+    } finally {
+      busy = false
+    }
+  }
+
+  function startRename(row: EntrantRow): void {
+    renaming = { id: row.id, name: row.name, touched: false, refusal: null }
+  }
+
+  async function saveRename(): Promise<void> {
+    const edit = renaming
+    if (!edit || busy || !edit.name.trim()) return
+    const was = currentName(edit.id)
+    const name = entrantHandle(edit.name)
+    if (edit.name.trim() === was || (name !== null && name === was)) {
+      renaming = null
+      return
+    }
+    if (name === null) {
+      edit.touched = true
+      return
+    }
+    busy = true
+    edit.refusal = null
+    try {
+      const made = await adminApi.updateEntrant(edit.id, { name: edit.name.trim() })
+      // Only the name is taken from the answer: the door returns the
+      // instance-wide row, which has no place or submission count for THIS
+      // competition, and spreading it would zero both.
+      if (entrants) {
+        entrants = entrants.map((row) => (row.id === edit.id ? { ...row, name: made.entrant.name } : row))
+      }
+      if (renaming === edit) renaming = null
+    } catch (cause) {
+      lost(cause)
+      if (renaming === edit) edit.refusal = explain(cause)
+    } finally {
+      busy = false
     }
   }
 
@@ -383,6 +499,12 @@
   <span class="feed-label mr-1.5 font-sans text-micro font-bold uppercase tracking-caps text-faint">
     {label}
   </span>
+{/snippet}
+
+<!-- A field's caption in the add and rename forms: a span, since it sits
+     inside the <label>, and the same one as the teachers' composer. -->
+{#snippet fieldCaption(text: string)}
+  <span class="block text-micro font-bold uppercase tracking-label text-muted">{text}</span>
 {/snippet}
 
 {#snippet stat(label: string, value: number, tone: string)}
@@ -481,6 +603,72 @@
     <Editor {view} {navigate} {onview} embedded />
   {:else if tab === 'entrants'}
     <div class="comp-feed py-5">
+      {#if adding}
+        <form
+          class="mb-5 flex flex-wrap items-end gap-3 border border-line bg-surface px-4 py-3.5"
+          onsubmit={(event) => {
+            event.preventDefault()
+            void addEntrant()
+          }}
+        >
+          <label class="min-w-[220px] flex-1">
+            {@render fieldCaption(tr('competitions.handle.label'))}
+            <input
+              use:takeFocus
+              bind:value={draft}
+              onblur={() => (draftTouched = draftInvalid)}
+              aria-invalid={draftInvalid && draftTouched}
+              placeholder={tr('competitions.handle.placeholder')}
+              maxlength={LIMITS.entrantName}
+              inputmode="email"
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck="false"
+              class="field mt-1.5 font-mono text-2xs"
+            />
+          </label>
+          <button type="submit" class="btn-primary" disabled={busy || !draft.trim()}>
+            {tr('admin.competitions.addEntrant')}
+          </button>
+          <button type="button" class="btn-ghost" onclick={() => (adding = false)}>{tr('admin.cancel')}</button>
+          {#if draftInvalid}
+            <p class="w-full text-ui {draftTouched ? 'text-danger' : 'text-muted'}">
+              {tr('competitions.refusal.nameNotHandle')}
+            </p>
+          {:else if draftRefusal}
+            <p class="w-full text-ui text-danger" role="alert">{draftRefusal}</p>
+          {/if}
+          <p class="w-full text-2xs text-muted">{tr('admin.competitions.addEntrantNote')}</p>
+        </form>
+      {:else}
+        <div class="mb-3 flex justify-end">
+          <button type="button" class="btn-outline max-[640px]:h-11" onclick={openAdd}>
+            <Icon name="plus" size={13} />
+            {tr('admin.competitions.addEntrant')}
+          </button>
+        </div>
+      {/if}
+      {#if added}
+        {@const fresh = added}
+        <div class="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2 border border-line px-4 py-3" role="status">
+          <p class="min-w-0 flex-1 text-ui text-ink">{tr('admin.competitions.addedKey', { name: fresh.name })}</p>
+          <button
+            type="button"
+            class="shrink-0 font-mono text-2xs text-accent-text hover:brightness-110"
+            onclick={() => void copy(fresh.key, 'added')}
+          >
+            {copied === 'added' ? tr('admin.copied') : fresh.key}
+          </button>
+          <button
+            type="button"
+            class="shrink-0 text-faint hover:text-ink"
+            aria-label={tr('admin.close')}
+            onclick={() => (added = null)}
+          >
+            <Icon name="x" size={13} />
+          </button>
+        </div>
+      {/if}
       {#if entrants === null}
         <RowsSkeleton label={tr('competitions.loading')} />
       {:else if entrants.length === 0}
@@ -498,11 +686,21 @@
         </div>
         {#each entrants as row (row.id)}
           <div class="feed-row flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line-soft py-3">
-            <div class="min-w-0 flex-1 basis-[200px]">
-              <p class="truncate text-ui text-ink">{row.name}</p>
-              {#if row.disabled}
-                <p class="mt-0.5 text-micro text-warning">{tr('admin.competitions.keyRevoked')}</p>
-              {/if}
+            <div class="flex min-w-0 flex-1 basis-[200px] items-start gap-3">
+              <div class="min-w-0 flex-1">
+                <p class="truncate text-ui text-ink">{row.name}</p>
+                {#if row.disabled}
+                  <p class="mt-0.5 text-micro text-warning">{tr('admin.competitions.keyRevoked')}</p>
+                {/if}
+              </div>
+              <button
+                type="button"
+                class="shrink-0 text-2xs text-muted hover:text-ink disabled:text-faint"
+                disabled={busy}
+                onclick={() => startRename(row)}
+              >
+                {tr('admin.rename')}
+              </button>
             </div>
             <span class="w-[80px] shrink-0 text-right font-mono text-2xs text-ink">
               {@render caption(tr('admin.competitions.col.place'))}{row.place === null
@@ -536,6 +734,46 @@
               </button>
             {/if}
           </div>
+          {#if renaming?.id === row.id}
+            <form
+              class="flex flex-wrap items-end gap-3 border-b border-line-soft bg-surface px-4 py-4"
+              onsubmit={(event) => {
+                event.preventDefault()
+                void saveRename()
+              }}
+            >
+              <label class="min-w-[220px] flex-1">
+                {@render fieldCaption(tr('competitions.handle.label'))}
+                <input
+                  use:takeFocus
+                  bind:value={renaming.name}
+                  onblur={() => {
+                    if (renaming) renaming.touched = renameInvalid
+                  }}
+                  aria-invalid={renameInvalid && renaming.touched}
+                  placeholder={tr('competitions.handle.placeholder')}
+                  maxlength={LIMITS.entrantName}
+                  inputmode="email"
+                  autocapitalize="none"
+                  autocorrect="off"
+                  spellcheck="false"
+                  class="field mt-1.5 font-mono text-2xs"
+                />
+              </label>
+              <button type="submit" class="btn-primary" disabled={busy || !renaming.name.trim()}>
+                {tr('admin.save')}
+              </button>
+              <button type="button" class="btn-ghost" onclick={() => (renaming = null)}>{tr('admin.cancel')}</button>
+              {#if renameInvalid}
+                <p class="w-full text-ui {renaming.touched ? 'text-danger' : 'text-muted'}">
+                  {tr('competitions.refusal.nameNotHandle')}
+                </p>
+              {:else if renaming.refusal}
+                <p class="w-full text-ui text-danger" role="alert">{renaming.refusal}</p>
+              {/if}
+              <p class="w-full text-2xs text-muted">{tr('admin.competitions.renameEntrantNote')}</p>
+            </form>
+          {/if}
         {/each}
         <p class="py-3.5 text-micro leading-snug text-faint">{tr('admin.competitions.keyNote')}</p>
       {/if}

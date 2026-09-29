@@ -125,13 +125,28 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'Войдите по ключу или вступите в соревнование.',
     en: 'Sign in with your key, or join the competition.',
   },
-  'competitions.refusal.nameEmpty': {
-    ru: 'Назовитесь: имя видно в лидерборде.',
-    en: 'Enter your name: it is shown on the leaderboard.',
+  /*
+   * A name is a Telegram username or an email address (shared/competitions.ts ·
+   * entrantHandle). The same words for an empty field: it is the same fix.
+   */
+  'competitions.refusal.nameNotHandle': {
+    ru: 'Укажите логин Telegram (например, @ivan_petrov) или почту.',
+    en: 'Enter your Telegram username (for example @ivan_petrov) or your email.',
   },
+  /*
+   * A handle belongs to one person, so the likeliest clash at the door is that
+   * person on a new device without their cookie: the way back is the key, not
+   * another name. "Add a surname or an initial" was the advice while names
+   * were free text, and a username cannot take one.
+   */
   'competitions.refusal.nameTaken': {
-    ru: 'В этом соревновании уже есть участник с таким именем. Добавьте фамилию или инициал — в лидерборде вас должны различать.',
-    en: 'This competition already has someone with that name. Add a surname or an initial — the leaderboard has to tell you apart.',
+    ru: 'В этом соревновании уже есть участник с таким логином или почтой. Если это вы — войдите по своему ключу.',
+    en: 'This competition already has a participant with this username or email. If that is you, sign in with your key.',
+  },
+  /* The teacher's rename (admin): the clash may be in any of the person's competitions. */
+  'competitions.refusal.renameTaken': {
+    ru: 'В одном из соревнований этого участника уже есть другой с таким логином или почтой.',
+    en: "Another participant in one of this person's competitions already has this username or email.",
   },
   'competitions.refusal.notFound': {
     ru: 'Такого соревнования нет.',
@@ -589,13 +604,23 @@ export const competitionsMessages: MessageCatalog = {
   },
 
   /* Вступление: в макете кнопка одна, а имя спросить всё равно надо. */
-  'competitions.p.joinTitle': { ru: 'Как вас зовут?', en: 'What is your name?' },
   'competitions.p.joinHint': {
     ru: 'Имя видно в лидерборде — по нему вас узнают одногруппники.',
     en: 'The name shows on the leaderboard — it is how classmates recognise you.',
   },
-  'competitions.p.namePlaceholder': { ru: 'Имя и фамилия', en: 'First and last name' },
   'competitions.p.cancel': { ru: 'Отмена', en: 'Cancel' },
+
+  /*
+   * The name field wherever an entrant's name is typed: the join form here and
+   * the teacher's add and rename on the Participants tab. Not `p.`: the words
+   * are one for both sides, and the rule behind them is one
+   * (shared/competitions.ts · entrantHandle).
+   */
+  'competitions.handle.label': { ru: 'Telegram или почта', en: 'Telegram or email' },
+  'competitions.handle.placeholder': {
+    ru: '@login или name@mail.ru',
+    en: '@login or name@mail.com',
+  },
 
   /* Шапка соревнования (P2, P3, P4) */
   'competitions.p.toDeadline': { ru: 'ДО ДЕДЛАЙНА', en: 'TO THE DEADLINE' },

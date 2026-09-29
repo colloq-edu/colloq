@@ -120,6 +120,7 @@ import { SETTINGS_LIMITS, type CompetitionSettings } from '@shared/competitions-
 import {
   LIMITS,
   dayStart,
+  entrantHandle,
   publicRowCount,
   type Competition,
   type CompetitionFile,
@@ -726,9 +727,16 @@ export function adminCompetitionRoutes(): Router {
     res.json(body)
   })
 
+  /*
+   * A name the teacher types obeys the same rule as one typed at the join
+   * door: a Telegram username or an email address, stored in its one form
+   * (shared/competitions.ts · entrantHandle). A panel that could still give
+   * "Анна Ким" would bring back, one rename at a time, the free-text names
+   * the rule exists to end.
+   */
   router.post('/api/admin/competitions/entrants', requireStaff, (req, res) => {
-    const name = String((req.body as { name?: unknown } | undefined)?.name ?? '').trim()
-    if (!name) return fail(res, 400, 'invalid', tr('competitions.refusal.nameEmpty'))
+    const name = entrantHandle(String((req.body as { name?: unknown } | undefined)?.name ?? ''))
+    if (!name) return fail(res, 400, 'invalid', tr('competitions.refusal.nameNotHandle'))
     const minted = createEntrant(name)
     res.status(201).json({ entrant: entrantRow(minted.entrant, null, null), key: minted.key })
   })
@@ -738,9 +746,17 @@ export function adminCompetitionRoutes(): Router {
     if (!getEntrant(id)) return fail(res, 404, 'not_found', tr('competitions.refusal.noEntrant'))
     const body = (req.body ?? {}) as { name?: unknown; disabled?: unknown }
     if (typeof body.name === 'string') {
-      const name = body.name.trim()
-      if (!name) return fail(res, 400, 'invalid', tr('competitions.refusal.nameEmpty'))
-      renameEntrant(id, name)
+      const name = entrantHandle(body.name)
+      if (!name) return fail(res, 400, 'invalid', tr('competitions.refusal.nameNotHandle'))
+      /*
+       * Refused as a whole: a namesake in any of the person's competitions
+       * rolls the rename back (store · renameEntrant), and the `disabled` flag
+       * sent alongside is not applied either — half a request done is a
+       * request whose outcome the panel cannot report.
+       */
+      const renamed = renameEntrant(id, name)
+      if (renamed === 'taken') return fail(res, 409, 'name_taken', tr('competitions.refusal.renameTaken'))
+      if (renamed === 'missing') return fail(res, 404, 'not_found', tr('competitions.refusal.noEntrant'))
     }
     if (typeof body.disabled === 'boolean') setEntrantDisabled(id, body.disabled)
     res.json({ entrant: entrantRow(getEntrant(id)!, null, null) })

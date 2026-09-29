@@ -186,8 +186,8 @@ function slowUpload(cookie: string, tag: string): { finish: () => void; response
 
 test('fifteen people behind one address send at the deadline: accepted, estimated, replaced, drained, then the final board', async () => {
   const people = [] as { cookie: string; id: string }[]
-  for (let i = 0; i < PEOPLE; i++) people.push(await join(`Студент ${i + 1}`))
-  const late = await join('Опоздавший по Wi-Fi')
+  for (let i = 0; i < PEOPLE; i++) people.push(await join(`@student_${i + 1}`))
+  const late = await join('@late_on_wifi')
 
   // All of them in the same second, from one address — the old per-address
   // limit refused the thirteenth.
@@ -298,7 +298,7 @@ test('an upload that passed the door before the deadline keeps the final board s
   putSecretFile(made.id, 'solution.csv', solution)
   putFile({ competitionId: made.id, name: 'solution.csv', bytes: solution.length, rows: 2, visibility: 'hidden' })
   setCompetitionState(made.id, 'live')
-  const person = await join('На пороге', 'door')
+  const person = await join('@at_the_door', 'door')
 
   // A runtime probe that answers when told: the docker one takes up to seconds.
   let asked = 0

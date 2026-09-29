@@ -24,9 +24,12 @@ import {
   dayStart,
   directionWord,
   entrantBadge,
+  entrantHandle,
   entrantKeyOk,
+  entrantNameKey,
   isTerminal,
   metricFailedNote,
+  nameForJoin,
   normalizeEntrantKey,
   parseSlug,
   placeOf,
@@ -87,6 +90,123 @@ test('a sign-in key is normalized to one form, and a foreign letter does not bec
   assert.equal(normalizeEntrantKey('K0Q-M2X-9FD'), null)
   assert.equal(normalizeEntrantKey('KIQ-M2X-9FD'), null)
   assert.equal(normalizeEntrantKey('K7Q-M2X-9F'), null)
+})
+
+/* ----------------------------------------------------------- entrant name */
+
+/*
+ * A name is a Telegram username or an email address, and the web form and
+ * both doors ask the same function. If the copies drifted apart the form
+ * would send names the door refuses, or dim a JOIN the door would take.
+ */
+
+test('a Telegram username is taken with or without "@" and stored as "@" plus lower case', () => {
+  assert.equal(entrantHandle('ivan_petrov'), '@ivan_petrov')
+  assert.equal(entrantHandle('@ivan_petrov'), '@ivan_petrov')
+  assert.equal(entrantHandle('@Ivan_Petrov'), '@ivan_petrov')
+  assert.equal(entrantHandle('IVAN2007'), '@ivan2007')
+  // Pasted from a profile with the spaces around it.
+  assert.equal(entrantHandle('  @anya_smirnova \n'), '@anya_smirnova')
+  // Five and thirty-two are the bounds, both inclusive.
+  assert.equal(entrantHandle('ivanp'), '@ivanp')
+  assert.equal(entrantHandle(`a${'b'.repeat(31)}`), `@a${'b'.repeat(31)}`)
+  assert.equal(entrantHandle(`@a${'b'.repeat(31)}`), `@a${'b'.repeat(31)}`)
+})
+
+test('a username that Telegram would not issue is refused', () => {
+  // Too short and too long.
+  assert.equal(entrantHandle('ivan'), null)
+  assert.equal(entrantHandle('@ivan'), null)
+  assert.equal(entrantHandle(`a${'b'.repeat(32)}`), null)
+  assert.equal(entrantHandle(`@a${'b'.repeat(32)}`), null)
+  // It starts with a letter: not a digit, not an underscore.
+  assert.equal(entrantHandle('1van_petrov'), null)
+  assert.equal(entrantHandle('@2pac_fan'), null)
+  assert.equal(entrantHandle('_ivan_petrov'), null)
+  assert.equal(entrantHandle('@_ivan'), null)
+  // Latin letters only, and nothing but letters, digits and "_".
+  assert.equal(entrantHandle('Иван_Петров'), null)
+  assert.equal(entrantHandle('@иван_петров'), null)
+  assert.equal(entrantHandle('ivаn_petrov'), null, 'a Cyrillic «а» in a Latin name passed')
+  assert.equal(entrantHandle('ivan-petrov'), null)
+  assert.equal(entrantHandle('ivan.petrov'), null)
+  assert.equal(entrantHandle('@@ivan_petrov'), null)
+  assert.equal(entrantHandle('ivan petrov'), null)
+  assert.equal(entrantHandle('@ivan petrov'), null)
+})
+
+test('an email address is taken in lower case, with "+" and subdomains', () => {
+  assert.equal(entrantHandle('Ivan.Petrov@Mail.RU'), 'ivan.petrov@mail.ru')
+  assert.equal(entrantHandle('ivan+kaggle@gmail.com'), 'ivan+kaggle@gmail.com')
+  assert.equal(entrantHandle('i.petrov@edu.hse.ru'), 'i.petrov@edu.hse.ru')
+  assert.equal(entrantHandle('anna_kim-2@students.cs.msu.ru'), 'anna_kim-2@students.cs.msu.ru')
+  assert.equal(entrantHandle('a@my-uni.edu'), 'a@my-uni.edu')
+  assert.equal(entrantHandle(' anna@mail.ru '), 'anna@mail.ru')
+})
+
+test('an address that is not a plausible one is refused', () => {
+  // Spaces, inside either part.
+  assert.equal(entrantHandle('ivan petrov@mail.ru'), null)
+  assert.equal(entrantHandle('ivan@mail .ru'), null)
+  // Exactly one "@", with something on both sides.
+  assert.equal(entrantHandle('ivan@@mail.ru'), null)
+  assert.equal(entrantHandle('ivan@mail@ru.ru'), null)
+  assert.equal(entrantHandle('@mail.ru'), null)
+  assert.equal(entrantHandle('ivan@'), null)
+  // A domain with a letter TLD of two or more.
+  assert.equal(entrantHandle('ivan@localhost'), null)
+  assert.equal(entrantHandle('ivan@mail.r'), null)
+  assert.equal(entrantHandle('ivan@10.0.0.1'), null)
+  assert.equal(entrantHandle('ivan@mail..ru'), null)
+  assert.equal(entrantHandle('ivan@-mail.ru'), null)
+  // Dots only between the letters of the local part.
+  assert.equal(entrantHandle('.ivan@mail.ru'), null)
+  assert.equal(entrantHandle('ivan.@mail.ru'), null)
+  assert.equal(entrantHandle('ivan..petrov@mail.ru'), null)
+  // ASCII only: a look-alike letter would be another name to the database
+  // and the same row to the eye.
+  assert.equal(entrantHandle('иван@почта.рф'), null)
+  assert.equal(entrantHandle('аnna@mail.ru'), null, 'a Cyrillic «а» in an address passed')
+  // Longer than the stored name would be clipped into a different address.
+  const long = `${'a'.repeat(LIMITS.entrantName - '@mail.ru'.length + 1)}@mail.ru`
+  assert.equal(long.length, LIMITS.entrantName + 1)
+  assert.equal(entrantHandle(long), null)
+  assert.equal(entrantHandle(long.slice(1)), long.slice(1), 'an address exactly at the limit was refused')
+})
+
+test('a name as a person would write it is neither, and neither is nothing', () => {
+  assert.equal(entrantHandle('Анна Ким'), null)
+  assert.equal(entrantHandle('Анна'), null)
+  assert.equal(entrantHandle('Anna Kim'), null)
+  assert.equal(entrantHandle(''), null)
+  assert.equal(entrantHandle('   '), null)
+  assert.equal(entrantHandle('@'), null)
+  assert.equal(entrantHandle(undefined as unknown as string), null)
+})
+
+test('one person is one namesake key however the handle was typed', () => {
+  const key = (typed: string) => entrantNameKey(entrantHandle(typed)!)
+  assert.equal(key('@Anya_Smirnova'), key('anya_smirnova'))
+  assert.equal(key('ANYA_SMIRNOVA'), key('@anya_smirnova'))
+  assert.equal(key('Anna.Kim@Mail.ru'), key('anna.kim@mail.ru'))
+  assert.notEqual(key('@anya_smirnova'), key('@anya_smirnov'))
+})
+
+test('a join keeps a name from before the rule, but a newly typed one must be a handle', () => {
+  // A newcomer has nothing to keep.
+  assert.equal(nameForJoin('', null), null)
+  assert.equal(nameForJoin('Анна Ким', null), null)
+  assert.equal(nameForJoin('Anya_Smirnova', null), '@anya_smirnova')
+  // Signed in as "Анна Ким" since before the rule: an empty field and the
+  // stored name sent back (the form fills it in) both keep it as it is.
+  assert.equal(nameForJoin('', 'Анна Ким'), 'Анна Ким')
+  assert.equal(nameForJoin('Анна Ким', 'Анна Ким'), 'Анна Ким')
+  assert.equal(nameForJoin('  анна   ким ', 'Анна Ким'), 'Анна Ким')
+  // Another free-text name is a new one, and a new one has to be a handle.
+  assert.equal(nameForJoin('Анна Кин', 'Анна Ким'), null)
+  assert.equal(nameForJoin('@Anna_Kim', 'Анна Ким'), '@anna_kim')
+  // A handle is always brought to its stored form, even when it is the same.
+  assert.equal(nameForJoin('@Anna_Kim', '@anna_kim'), '@anna_kim')
 })
 
 /* ----------------------------------------------------------- state words */

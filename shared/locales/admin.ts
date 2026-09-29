@@ -3870,6 +3870,22 @@ export const adminMessages: MessageCatalog = {
     "ru": "Ключ входа возвращает человека с другого устройства. Новый ключ отключает старый в ту же секунду.",
     "en": "The sign-in key brings a person back from another device. A new key turns the old one off the same second."
   },
+  "admin.competitions.addEntrant": {
+    "ru": "Добавить участника",
+    "en": "Add a participant"
+  },
+  "admin.competitions.addEntrantNote": {
+    "ru": "Участник получит ключ входа — передайте его человеку. В этом списке он появится, когда войдёт по ключу и вступит в соревнование.",
+    "en": "The participant gets a sign-in key — pass it on to them. They appear in this list once they sign in with it and join the competition."
+  },
+  "admin.competitions.addedKey": {
+    "ru": "Ключ входа для {name}:",
+    "en": "Sign-in key for {name}:"
+  },
+  "admin.competitions.renameEntrantNote": {
+    "ru": "Имя сменится во всех соревнованиях этого участника сразу; ключ входа останется прежним.",
+    "en": "The name changes in all of this person's competitions at once; the sign-in key stays the same."
+  },
   "admin.competitions.noBoard": {
     "ru": "Лидерборда пока нет",
     "en": "No leaderboard yet"

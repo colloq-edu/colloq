@@ -48,6 +48,7 @@ const REASONS: AdminErrorReason[] = [
   'in_use',
   'protected',
   'exists',
+  'name_taken',
   'no_docker',
   'building',
   'failed',
