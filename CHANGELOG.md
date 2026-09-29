@@ -13,6 +13,15 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.8.1](https://github.com/colloq-edu/colloq/compare/v0.8.0...v0.8.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* **competitions:** equal scores share a place, and the quota rule says where the line is ([a8a2750](https://github.com/colloq-edu/colloq/commit/a8a2750f4fa5fffbc8703f3a6ddc4889eb158ac1))
+* **competitions:** show the executed notebook, and give a package set room of its own ([7efb42f](https://github.com/colloq-edu/colloq/commit/7efb42fe70df09fb9669e79c4ac3d826d66457a2))
+* **competitions:** take BOM and nbformat 3 notebooks, name unsupported package lines, show the hourly budget ([c605e54](https://github.com/colloq-edu/colloq/commit/c605e54c10a38b12e728f45b4c40201f7913d49c))
+
 ## [0.8.0](https://github.com/colloq-edu/colloq/compare/v0.7.0...v0.8.0) (2026-09-29)
 
 
