@@ -52,8 +52,11 @@ Run as a plain Docker instance, the image refuses to start (exit code 78) and pr
 cp deploy/vast/onstart.sh backups/vast-onstart.sh   # once; fill in the settings block
 make vast-vm HOST=class1                            # rent the cheapest suitable VM for class1.<relay domain>
 make vast-vm HOST=class1 GPU="RTX 3070"             # only this card
+make vast-vm HOST=class1 CPU=48 RAM=96              # at least 48 cores and 96 GB, the cheapest card with them
 make vast-vm INSTANCE=<id> HOST=class2              # redeploy on a VM you already rent
 ```
+
+**A class without GPUs** (a competition, pandas, scikit-learn) wants many cores and a weak card. Vast has no VM offers without a GPU (checked 29 September 2026), and the price is mostly the card's, so `CPU=` and `RAM=` filter by what the renter gets and the cheapest match is usually a 3060/4060-class card on a big EPYC: that day 2 × RTX 4060 Ti with 48 cores and 252 GB cost $0.27/hr, a quarter of a 5090 machine with fewer cores. Inside the VM expect slightly less than the listing (30 of 32 cores, 49 of 63 GB on 29 September), and plan competition slots by what `nproc` and the Resources tab show.
 
 Do not rent from a template in the Vast console. Measured on 28 September 2026:
 

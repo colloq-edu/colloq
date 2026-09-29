@@ -3,6 +3,7 @@
 #
 #   make vast-vm                         the cheapest suitable VM offer
 #   make vast-vm GPU="RTX 3070"          only this card
+#   make vast-vm CPU=48 RAM=96           at least 48 cores and 96 GB, any card
 #   make vast-vm OFFER=51006376          exactly this offer
 #   make vast-vm HOST=vsos               class address vsos.<RELAY_DOMAIN> (default: the on-start's)
 #   make vast-vm INSTANCE=53175270 HOST=vsos   redeploy on a VM already rented
@@ -18,6 +19,14 @@
 # backups/vast-onstart.sh (git-ignored: it holds the relay token). It goes into
 # the rent request, but Vast does not execute it on a VM, so it is also copied
 # over ssh to /etc/colloq/onstart.sh and started from here.
+#
+# Every Vast VM carries at least one GPU (no CPU-only VM offers, seen 29 Sep
+# 2026), and the price is mostly the card's. A class without GPUs (a
+# competition, pandas) wants the opposite: many cores and a weak card. CPU= and
+# RAM= filter by what the renter gets (cpu_cores_effective, cpu_ram), and the
+# cheapest match is then usually a 3060/4060-class card on a big EPYC. Inside
+# the VM expect a little less than the listing: 30 of 32 cores and 49 of 63 GB
+# on 29 Sep 2026.
 #
 # Reads from .env: VAST_TOKEN, VAST_SSH_KEY, VAST_IMAGE, VAST_DISK,
 # VAST_MAX_PRICE, VAST_GPU; the key is never printed or passed on a command line.
@@ -37,6 +46,8 @@ IMAGE="$(read_env VAST_IMAGE)";         IMAGE="${IMAGE:-docker.io/vastai/kvm:ubu
 DISK="$(read_env VAST_DISK)";           DISK="${DISK:-60}"
 MAX_PRICE="$(read_env VAST_MAX_PRICE)"; MAX_PRICE="${MAX_PRICE:-1.0}"
 GPU_NAME="${GPU:-$(read_env VAST_GPU)}"
+MIN_CPUS="${CPU:-0}";                   MIN_RAM_GB="${RAM:-0}"
+case "$MIN_CPUS$MIN_RAM_GB" in *[!0-9]*) die "CPU= and RAM= are whole numbers (cores, GB).";; esac
 SSH_KEY="$(read_env VAST_SSH_KEY)";     SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 # shellcheck disable=SC2088
 case "$SSH_KEY" in "~/"*) SSH_KEY="$HOME/${SSH_KEY#\~/}" ;; esac
@@ -95,13 +106,15 @@ if [ -n "${INSTANCE:-}" ]; then
   say "${BOLD}instance $id${OFF}: deploying ${ADDRESS:+for $ADDRESS }without renting"
 else
 # ---------------------------------------------------------------- offer
-query="$(DISK="$DISK" MAX_PRICE="$MAX_PRICE" GPU_NAME="$GPU_NAME" py '
+query="$(DISK="$DISK" MAX_PRICE="$MAX_PRICE" GPU_NAME="$GPU_NAME" MIN_CPUS="$MIN_CPUS" MIN_RAM_GB="$MIN_RAM_GB" py '
 import json, os
 q = {"vms_enabled": {"eq": True}, "type": "ondemand", "rentable": {"eq": True}, "rented": {"eq": False},
      "verified": {"eq": True}, "reliability": {"gte": 0.98}, "num_gpus": {"gte": 1},
      "disk_space": {"gte": float(os.environ["DISK"]) + 10},
      "dph_total": {"lte": float(os.environ["MAX_PRICE"])}, "order": [["dph_total", "asc"]], "limit": 60}
 if os.environ["GPU_NAME"].strip(): q["gpu_name"] = {"in": [os.environ["GPU_NAME"].strip()]}
+if int(os.environ["MIN_CPUS"]): q["cpu_cores_effective"] = {"gte": int(os.environ["MIN_CPUS"])}
+if int(os.environ["MIN_RAM_GB"]): q["cpu_ram"] = {"gte": int(os.environ["MIN_RAM_GB"]) * 1024}
 print(json.dumps(q))
 ')"
 # cuda_max_good is checked on the answer, not in the query: the server-side
@@ -112,11 +125,12 @@ import json, os, sys
 offers = [o for o in json.load(sys.stdin).get("offers") or [] if float(o.get("cuda_max_good") or 0) >= 12.1]
 if os.environ["OFFER"].strip(): offers = [o for o in offers if str(o["id"]) == os.environ["OFFER"].strip()]
 for o in offers[:8]:
-    print("    %-10s %s x %-12s %3.0f GB  $%.3f/hr  %s" % (o["id"], o.get("num_gpus"), o.get("gpu_name"),
-          (o.get("gpu_ram") or 0) / 1024, o.get("dph_total") or 0, o.get("geolocation") or ""), file=sys.stderr)
+    print("    %-10s %s x %-12s %3.0f GB  %3.0f cores  %4.0f GB RAM  $%.3f/hr  %s" % (o["id"], o.get("num_gpus"),
+          o.get("gpu_name"), (o.get("gpu_ram") or 0) / 1024, o.get("cpu_cores_effective") or 0,
+          (o.get("cpu_ram") or 0) / 1024, o.get("dph_total") or 0, o.get("geolocation") or ""), file=sys.stderr)
 for o in offers: print("%s\t%.3f\t%s x %s" % (o["id"], o.get("dph_total") or 0, o.get("num_gpus"), o.get("gpu_name")))
 ')"
-[ -n "$suitable" ] || die "no VM offer matches: GPU \"${GPU_NAME:-any}\"${OFFER:+, offer $OFFER}, up to \$$MAX_PRICE/hr, disk from $DISK GB."
+[ -n "$suitable" ] || die "no VM offer matches: GPU \"${GPU_NAME:-any}\"${OFFER:+, offer $OFFER}${CPU:+, from $CPU cores}${RAM:+, from $RAM GB RAM}, up to \$$MAX_PRICE/hr, disk from $DISK GB."
 IFS=$'\t' read -r offer_id price what <<<"$(printf '%s\n' "$suitable" | head -n 1)"
 say ""
 say "${BOLD}VM offer $offer_id${OFF}: $what, \$$price/hr, image $(sed -n 's/^export COLLOQ_IMAGE="\(.*\)"/\1/p' "$SCRIPT")${ADDRESS:+, address $ADDRESS}"
@@ -149,6 +163,17 @@ say "waiting for the VM to boot and open ssh (a few minutes)…"
 ip=""; port=""
 for _ in $(seq 1 120); do
   case "$(field 'd.get("actual_status") or ""')" in exited|offline) die "the instance stopped: $(field 'd.get("status_msg")')";; esac
+  # A broken host does not stop the instance, it parks it: cur_state "stopped"
+  # and a status message starting with "Error" ("GPU error, unable to start
+  # instance", "Machine incompatible with VMs after host change"; both seen on
+  # 29 Sep 2026). Waiting the full 20 minutes for ssh would only bill the disk.
+  # A machine this run rented is destroyed; one passed as INSTANCE= is left.
+  msg="$(field '(d.get("status_msg") or "").strip() if d.get("cur_state") == "stopped" else ""')"
+  case "$msg" in
+    Error*|error*)
+      if [ -z "${INSTANCE:-}" ]; then api DELETE "instances/$id/" >/dev/null; msg="$msg (destroyed; run again for another offer)"; fi
+      die "vast: $msg" ;;
+  esac
   read -r ip port <<<"$(field '(d.get("public_ipaddr") or "").strip(), ((d.get("ports") or {}).get("22/tcp") or [{}])[0].get("HostPort", "")' | tr -d "(),'")"
   [ -n "$port" ] && break
   sleep 10
@@ -158,7 +183,13 @@ ssh_run() { ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=n
   -o LogLevel=ERROR -o IdentitiesOnly=yes -i "$SSH_KEY" -p "$port" "root@$ip" "$@"; }
 say "ssh:  ssh -i $SSH_KEY -p $port root@$ip"
 for _ in $(seq 1 60); do ssh_run true 2>/dev/null && break; sleep 10; done
-ssh_run true 2>/dev/null || die "ssh does not let us in; see https://cloud.vast.ai/instances/ (vastai logs $id)"
+if ! ssh_run true 2>/dev/null; then
+  # Seen on 29 Sep 2026: a host whose VM restarts in a loop (actual_status
+  # flips between exited and running) and never opens ssh. A machine this run
+  # rented is destroyed rather than left billing.
+  [ -n "${INSTANCE:-}" ] || { api DELETE "instances/$id/" >/dev/null; die "ssh never let us in (the VM keeps restarting?); instance $id destroyed, run again for another offer"; }
+  die "ssh does not let us in; see https://cloud.vast.ai/instances/ (vastai logs $id)"
+fi
 [ "$(ssh_run 'systemctl is-system-running 2>/dev/null || true')" != offline ] \
   || die "this is not a VM (no systemd): Vast started it as a Docker instance. Destroy it: vastai destroy instance $id"
 

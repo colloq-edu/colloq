@@ -670,11 +670,11 @@ TAG = colloq-vast:dev
 
 .PHONY: vast-vm vast-image vast-image-run vast-image-stop
 
-vast-vm: ## Rent a Vast VM that boots the colloq-vast image. HOST=name GPU="RTX 3070" OFFER=number INSTANCE=id
+vast-vm: ## Rent a Vast VM that boots the colloq-vast image. HOST=name GPU="RTX 3070" CPU=48 RAM=96 OFFER=number INSTANCE=id
 	@# Over the API, because only a rent request with "vm": true makes a VM;
 	@# the console's template starts even vastai/kvm as a Docker instance. The
 	@# on-start is backups/vast-onstart.sh (ONSTART=… for another one).
-	@NAME="$(NAME)" HOST="$(HOST)" GPU="$(GPU)" OFFER="$(OFFER)" INSTANCE="$(INSTANCE)" ./scripts/vast-vm.sh
+	@NAME="$(NAME)" HOST="$(HOST)" GPU="$(GPU)" CPU="$(CPU)" RAM="$(RAM)" OFFER="$(OFFER)" INSTANCE="$(INSTANCE)" ./scripts/vast-vm.sh
 
 vast-image: ## Build the colloq-vast image. TAG=name:tag PLATFORM=linux/amd64
 	@# The version comes from the root package.json (its only source, see
