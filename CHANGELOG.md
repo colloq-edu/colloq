@@ -13,6 +13,16 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.7.0](https://github.com/colloq-edu/colloq/compare/v0.6.0...v0.7.0) (2026-09-29)
+
+
+### Features
+
+* **competitions:** hold a class of fifteen sending at the deadline ([fea2d60](https://github.com/colloq-edu/colloq/commit/fea2d60d77ede13dbf2c635415f0ee41242755a0))
+* **council:** put the shown attempt into the cell, and run it ([3bc7c64](https://github.com/colloq-edu/colloq/commit/3bc7c646a2ee1cfd6ad56f56a4271425af8888d5))
+* **oracle:** a "Mine" filter, labelled switches and the hour's budget ([093d5d7](https://github.com/colloq-edu/colloq/commit/093d5d7a5cc1daf1c59847f938021b9128c58a88))
+* **resources:** set the machine's defaults in the panel, live, instead of .env ([67adcd0](https://github.com/colloq-edu/colloq/commit/67adcd01722fb589e1aa735ce504f7e5ccfd1558))
+
 ## [0.6.0](https://github.com/colloq-edu/colloq/compare/v0.5.2...v0.6.0) (2026-09-28)
 
 
