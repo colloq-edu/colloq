@@ -237,6 +237,9 @@
 
   const board = $derived(session.council.boards[cellId] ?? null)
   const shown = $derived(session.council.shown[cellId] ?? null)
+  /** "Put in the cell" from this window: the strip's success line, and why it was refused. */
+  const adopted = $derived(session.council.adopted[cellId] ?? null)
+  const adoptError = $derived(session.council.adoptErrors[cellId] ?? null)
   const settings = $derived<CouncilSettings>(board?.settings ?? DEFAULT_COUNCIL)
   const names = $derived(settings.namesOnProjector)
   const attempts = $derived(board?.attempts ?? [])
@@ -637,6 +640,22 @@
     session.council.clearShown(cellId)
   }
 
+  /**
+   * "Put in the cell" — always the attempt on screen, never the one under
+   * the cursor: the strip names what goes in, and the server takes nothing
+   * else. "4" after a plain "Put in cell" is how the pult runs it: the text
+   * is already there, so the server only queues the run (and never twice).
+   */
+  function adopt(run: boolean, participantId: string | null = shown?.participantId ?? null): void {
+    if (disabled || participantId === null) return
+    session.council.adopt(cellId, participantId, run)
+  }
+
+  function undoAdopt(): void {
+    if (disabled) return
+    session.council.undoAdopt(cellId)
+  }
+
   function run(participantId: string | null = cursor): void {
     if (disabled || participantId === null) return
     session.council.run(cellId, participantId)
@@ -878,6 +897,9 @@
       case 'clearShown':
         clearShown()
         return
+      case 'adoptRun':
+        adopt(true)
+        return
       case 'help':
         helpOpen = !helpOpen
         return
@@ -951,6 +973,7 @@
     </div>
     {#if offline}<p class="border-b border-warning px-4 py-2 text-ui text-warning" role="status">{tr(OFFLINE_REASON)}</p>{/if}
     {#if oracleError}<p class="border-b border-danger px-4 py-2 text-ui text-danger" role="alert">{oracleError}</p>{/if}
+    {#if adoptError}<p class="border-b border-danger px-4 py-2 text-ui text-danger" role="alert" data-pult-adopt-error>{adoptError}</p>{/if}
 
     <nav class="pult-nav" data-pult-nav aria-label={tr('room.pult.v2.navigation')}>
       <button type="button" class="pult-view-tab" aria-pressed={tab === 'work'} onclick={() => (tab = 'work')}>
@@ -970,7 +993,16 @@
     </nav>
 
     {#if shown}
-      <PultOnScreen {shown} {now} {disabled} onclear={clearShown} />
+      <PultOnScreen
+        {shown}
+        {now}
+        {disabled}
+        onclear={clearShown}
+        {adopted}
+        later={board.lock === 'council'}
+        onadopt={(participantId, run) => adopt(run, participantId)}
+        onundo={undoAdopt}
+      />
     {/if}
 
     <section class="pult-work-layout" hidden={tab !== 'work'} aria-label={tr('room.pult.v2.workTab')}>

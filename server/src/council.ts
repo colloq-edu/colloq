@@ -140,7 +140,7 @@ export function ensureCouncilSchema(): void {
     /*
      * The task — the cell's shared text at the second the lock was switched to
      * council. A separate row, because by then it may no longer be in the cell
-     * itself: "Show the class" puts someone's solution into the shared text,
+     * itself: "Put in the cell" puts someone's solution into the shared text,
      * and a latecomer would seed their sheet with it (shared/protocol.ts ·
      * CouncilMine.seed).
      */
@@ -1251,7 +1251,7 @@ export function setOracle(sessionId: string, cellId: string, oracle: CouncilOrac
  *
  * Called from control.ts (`cell:lock`) EXACTLY on the switch to council, not
  * on every press: a repeated `cell:lock` to the same position is a knob
- * toggle, and it must not rewrite the task. After "Show the class" the cell's
+ * toggle, and it must not rewrite the task. After "Put in the cell" the cell's
  * shared text is already someone's solution, and a "task" written over it
  * would become that very solution; a latecomer would get someone else's
  * answer in their sheet and submit it as their own with one click

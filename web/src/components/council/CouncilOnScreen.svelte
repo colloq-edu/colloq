@@ -12,9 +12,9 @@
    * the positive colour, while the cell itself stays a cell.
    *
    * One markup for two places: for a student it stands under their own
-   * sheet, for the teacher under the stack. The difference is exactly one
-   * link on the right ("take off screen"), and only the one entitled to
-   * press it has it.
+   * sheet, for the teacher under the stack. The difference is on the right —
+   * "take off screen" and the two "Put in the cell" buttons — and only the
+   * one entitled to press them has them.
    *
    * The author of what is shown NEVER sees this banner: their code is in
    * front of them anyway, and a second identical block under it would be two
@@ -22,11 +22,13 @@
    * a green "Your answer is on screen" (CellView · sheet footer); the caller
    * decides that, and nothing here knows about authorship.
    */
-  import type { CouncilShown } from '@shared/protocol'
+  import { ADOPT_UNDO_MS, type CouncilShown } from '@shared/protocol'
+  import type { CouncilAdopted } from '@/lib/council.svelte'
   import { clock } from '@/lib/history'
   import { cn, spell } from '@/lib/utils'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Code from '@/components/ui/Code.svelte'
+  import Icon from '@/components/ui/Icon.svelte'
   import CellOutputs from '@/components/notebook/CellOutputs.svelte'
 
   interface Props {
@@ -34,9 +36,35 @@
     /** The host: only they have "take off screen" on the right. */
     mayClear?: boolean
     onclear?: () => void
+    /**
+     * "Put in the cell" went through — the success line with its "undo"
+     * replaces the two buttons, for the attempt it was about and no other.
+     */
+    adopted?: CouncilAdopted | null
+    /** Why the last "put in the cell" or its undo was refused. */
+    adoptError?: string | null
+    /** The cell is in council: the class sees its output only once the council closes. */
+    later?: boolean
+    /** The host's "Put in cell" / "…and run"; without it there are no buttons. */
+    onadopt?: (participantId: string, run: boolean) => void
+    onundo?: () => void
   }
 
-  let { shown, mayClear = false, onclear }: Props = $props()
+  let {
+    shown,
+    mayClear = false,
+    onclear,
+    adopted = null,
+    adoptError = null,
+    later = false,
+    onadopt,
+    onundo,
+  }: Props = $props()
+
+  const done = $derived(adopted !== null && adopted.participantId === shown.participantId)
+  /** The two "Put in the cell" buttons: the host's, until the press went through. */
+  const buttons = $derived(mayClear && onadopt !== undefined && !done)
+  const minutes = Math.round(ADOPT_UNDO_MS / 60_000)
 
   const CAPS = 'text-2xs font-bold uppercase tracking-label'
 
@@ -81,12 +109,52 @@
       <span class="text-ui-lg font-bold text-ink">{tr('room.ui.1255', { p0: shown.variant })}</span>
     {/if}
     <span class="text-2xs text-muted">{line}</span>
+    {#if buttons}
+      <!--
+        "Put in the cell" — for the host, next to "take off screen", the same
+        pair as in the console strip. Showing leaves the cell alone; this is
+        the press that does write into it.
+      -->
+      <div class="ml-auto flex flex-wrap items-center gap-2" data-council-adopt>
+        <button
+          type="button"
+          class="btn-outline h-[26px] shrink-0 bg-canvas px-2.5 text-2xs"
+          title={tr('room.council.adoptHint', { p0: minutes })}
+          onclick={() => onadopt?.(shown.participantId, false)}
+        >{tr('room.council.adopt')}</button>
+        <button
+          type="button"
+          class="btn-primary h-[26px] shrink-0 px-2.5 text-2xs font-semibold"
+          title={tr('room.council.adoptRunHint')}
+          onclick={() => onadopt?.(shown.participantId, true)}
+        ><Icon name="play" size={10} />{tr('room.council.adoptRun')}</button>
+      </div>
+    {/if}
     {#if mayClear}
       <button
         type="button"
-        class="ml-auto shrink-0 text-2xs text-accent-text hover:underline"
+        class={cn('shrink-0 text-2xs text-accent-text hover:underline', !buttons && 'ml-auto')}
         onclick={() => onclear?.()}
       >{tr('room.ui.1254')}</button>
+    {/if}
+    <!--
+      After the press the buttons give way to what it did, on a row of its
+      own: the sentence is long, and wrapped between the name and "take off
+      screen" it would push the latter onto a line by itself.
+    -->
+    {#if mayClear && done && adopted}
+      <p class="flex basis-full flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs text-positive" role="status" data-council-adopted>
+        <Icon name="check" size={14} strokeWidth={2.4} class="shrink-0" />
+        <span>{adopted.run ? tr('room.council.adoptedRun') : tr('room.council.adopted')}{later ? ` · ${tr('room.council.adoptedLater')}` : ''}</span>
+        <button
+          type="button"
+          class="shrink-0 text-accent-text underline underline-offset-2"
+          onclick={() => onundo?.()}
+        >{tr('room.council.adoptUndo')}</button>
+      </p>
+    {/if}
+    {#if mayClear && adoptError}
+      <p class="basis-full text-2xs text-danger" role="alert">{adoptError}</p>
     {/if}
   </div>
 

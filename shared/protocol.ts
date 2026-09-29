@@ -157,7 +157,7 @@ export interface CreateSessionRequest {
   /**
    * How many cores to give the room. By the same rule: staff only, from one to
    * all of the machine's cores; omitted means the instance default
-   * (`KERNEL_CPUS`).
+   * (`roomCpus` in the panel, KERNEL_CPUS).
    */
   cpus?: number | null
 }
@@ -451,6 +451,24 @@ export type ControlClientMessage =
    */
   | { t: 'council:show'; cellId: string; participantId: string }
   | { t: 'council:show:clear'; cellId: string }
+  /**
+   * "Put in the cell": the SHOWN attempt replaces the cell's shared text — one
+   * edit signed by the teacher — and with `run` the cell is queued like any
+   * host run.
+   *
+   * That is the whole difference from `council:run`: an attempt runs
+   * sandboxed and its variables vanish with it, while the cell's own run
+   * leaves them to the cells below, as if the teacher had pasted the code by
+   * hand. There is no text in the frame: the server takes it from its store,
+   * and `participantId` only names the attempt, which must be the one on
+   * screen.
+   *
+   * `council:adopt:undo` puts back what the cell held before — within
+   * ADOPT_UNDO_MS and only while the cell still holds the adopted code. A run
+   * that has already started is not interrupted.
+   */
+  | { t: 'council:adopt'; cellId: string; participantId: string; run: boolean }
+  | { t: 'council:adopt:undo'; cellId: string }
   | { t: 'council:run'; cellId: string; participantId?: string }
   /** A request is separate from submission; its ID names a specific saved version. */
   | { t: 'council:run:request'; cellId: string }
@@ -1171,6 +1189,33 @@ export type ControlServerMessage =
    */
   | { t: 'council:shown'; cellId: string; shown: CouncilShown | null }
   /**
+   * Council: "Put in the cell" went through — to the socket that pressed it
+   * and nobody else.
+   *
+   * The room learns about the new text from the document itself; this frame
+   * only carries the success line and its "undo", which the server honours
+   * for ADOPT_UNDO_MS from `at`.
+   */
+  | {
+      t: 'council:adopted'
+      cellId: string
+      participantId: string
+      run: boolean
+      at: number
+      undoable: true
+    }
+  /** Council: the adopted code left the cell again — the text before it is back. */
+  | { t: 'council:adopt:undone'; cellId: string }
+  /**
+   * Council: "Put in the cell" or its undo was refused — in words, to the one
+   * who pressed.
+   *
+   * A frame of its own, not the general `error`, for the same reason as
+   * `council:hint:state`: the console window stands above the room's toasts,
+   * and a refusal that cannot be told from the others would go unseen there.
+   */
+  | { t: 'council:adopt:refused'; cellId: string; message: string }
+  /**
    * Council: "N of M submitted" — to the whole room, without texts.
    *
    * This is for the projector and for the chip above the cell for students.
@@ -1476,12 +1521,13 @@ export interface CouncilMine {
    * council.
    *
    * An empty sheet is seeded with it, not with what lies in the cell now. The
-   * difference appears after "Show the class": from that second the shared
-   * text is already someone's solution, and a latecomer (or someone who just
-   * reloaded the page) got it as the starting text of their sheet. There is
-   * no leak in this — the solution is on the screen anyway — but no task
-   * remained on their sheet, while an "attempt" appeared, and a single press
-   * of "Submit" sent them into the author's group.
+   * difference appears after "Put in the cell" (`council:adopt`): from that
+   * second the shared text is someone's solution, and a latecomer (or
+   * someone who just reloaded the page) would get it as the starting text
+   * of their sheet. There is no leak in this — the solution is on the screen
+   * anyway — but no task would remain on their sheet, an "attempt" would
+   * stand in its place, and a single press of "Submit" would send them into
+   * the author's group.
    *
    * Optional: an old server does not send the field, and then the client
    * seeds as before — with the shared text.
@@ -1584,6 +1630,16 @@ export interface CouncilShown {
    */
   correct: boolean | null
 }
+
+/**
+ * How long "Put in the cell" can be taken back — by the server and by the
+ * success line alike.
+ *
+ * Long enough to notice a wrong pick while the class is still discussing it;
+ * after that the way back is the version history, as for any other edit, and
+ * an undo cannot land on a cell the teacher has long moved on from.
+ */
+export const ADOPT_UNDO_MS = 10 * 60_000
 
 /**
  * The kernel of THE notebook the council cell lives in — as the teacher sees

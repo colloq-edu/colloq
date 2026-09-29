@@ -30,15 +30,16 @@ import {
   type CouncilSettings,
   type YCell,
 } from '@shared/notebook'
-import type {
-  ControlClientMessage,
-  ControlServerMessage,
-  CouncilAttempt,
-  CouncilBoard,
-  CouncilKernel,
-  CouncilMine,
-  CouncilOracle,
-  CouncilShown,
+import {
+  ADOPT_UNDO_MS,
+  type ControlClientMessage,
+  type ControlServerMessage,
+  type CouncilAttempt,
+  type CouncilBoard,
+  type CouncilKernel,
+  type CouncilMine,
+  type CouncilOracle,
+  type CouncilShown,
 } from '@shared/protocol'
 import { plural } from './plural'
 
@@ -56,8 +57,20 @@ export type CouncilMessage = Extract<
       | 'council:hint:state'
       | 'council:kernel'
       | 'council:ready'
+      | 'council:adopted'
+      | 'council:adopt:undone'
+      | 'council:adopt:refused'
   }
 >
+
+/** "Put in the cell" went through — what the success line under the badge says. */
+export interface CouncilAdopted {
+  /** Whose attempt went in: the line belongs to that badge and to no other. */
+  participantId: string
+  run: boolean
+  /** The server clock of the adoption. */
+  at: number
+}
 
 export type CouncilPatch = Extract<CouncilMessage, { t: 'council:patch' }>
 
@@ -425,8 +438,29 @@ export class CouncilState {
    * lost the network for a second.
    */
   welcomed = $state(false)
+  /**
+   * "Put in the cell" went through — per cell, for the success line and its
+   * "undo".
+   *
+   * Only this window's own presses: the ack goes back to the socket that
+   * sent them, and the rest of the room sees the new text in the document.
+   * The line leaves as soon as the undo stops being possible — another
+   * attempt on screen, or ADOPT_UNDO_MS — so it never offers what the server
+   * would refuse.
+   */
+  adopted = $state.raw<Record<string, CouncilAdopted>>({})
+  /**
+   * Why the last "put in the cell" or its undo was refused, per cell.
+   *
+   * Kept here rather than in the room's toast: the console window stands
+   * above the toasts, and a refusal it does not show is a button that did
+   * nothing. Cleared by the next press and by another attempt on screen.
+   */
+  adoptErrors = $state.raw<Record<string, string>>({})
 
   readonly #send: (message: ControlClientMessage) => void
+  /** When each success line goes out by itself — with the server's undo window. */
+  readonly #adoptTimers = new Map<string, ReturnType<typeof setTimeout>>()
   readonly #outbox: DraftOutbox
   /**
    * An oracle that arrived before its stack. The stack arrives whole and
@@ -495,7 +529,37 @@ export class CouncilState {
       return
     }
     if (message.t === 'council:shown') {
+      const before = this.shown[message.cellId]?.participantId ?? null
       this.shown = { ...this.shown, [message.cellId]: message.shown }
+      /*
+       * Another attempt on screen (or none): the success line and a refusal
+       * were about the previous one. The same attempt sent again — a fresh
+       * caption, a recount — changes nothing about either.
+       */
+      const after = message.shown?.participantId ?? null
+      const line = this.adopted[message.cellId]
+      if (after !== before || (line && line.participantId !== after)) {
+        this.#settleAdopt(message.cellId, null)
+      }
+      return
+    }
+    if (message.t === 'council:adopted') {
+      this.#settleAdopt(message.cellId, {
+        participantId: message.participantId,
+        run: message.run,
+        at: message.at,
+      })
+      return
+    }
+    if (message.t === 'council:adopt:undone') {
+      this.#settleAdopt(message.cellId, null)
+      return
+    }
+    if (message.t === 'council:adopt:refused') {
+      // Whatever was refused, the old line no longer promises a working undo:
+      // the cell changed, the window ran out, or the attempt left the screen.
+      this.#settleAdopt(message.cellId, null)
+      this.adoptErrors = { ...this.adoptErrors, [message.cellId]: message.message }
       return
     }
     if (message.t === 'council:kernel') {
@@ -664,6 +728,59 @@ export class CouncilState {
     this.#send({ t: 'council:show:clear', cellId })
   }
 
+  /**
+   * "Put in the cell": the shown attempt replaces the cell's text, and with
+   * `run` the cell is queued as an ordinary run.
+   *
+   * No text travels: the server takes it from its own store, and
+   * `participantId` only names the attempt the teacher saw on the badge —
+   * the server refuses if it is no longer the one on screen.
+   */
+  adopt(cellId: string, participantId: string, run: boolean): void {
+    this.#dropAdoptError(cellId)
+    this.#send({ t: 'council:adopt', cellId, participantId, run })
+  }
+
+  /** Take the adopted code back out of the cell — the server checks the window and the text. */
+  undoAdopt(cellId: string): void {
+    this.#dropAdoptError(cellId)
+    this.#send({ t: 'council:adopt:undo', cellId })
+  }
+
+  /**
+   * Put up or take down a cell's success line — and its refusal with it.
+   *
+   * The line lives exactly as long as the server's undo window, counted from
+   * its arrival here: a line that outlived the window would offer an undo
+   * the server has already forgotten.
+   */
+  #settleAdopt(cellId: string, next: CouncilAdopted | null): void {
+    const timer = this.#adoptTimers.get(cellId)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      this.#adoptTimers.delete(cellId)
+    }
+    this.#dropAdoptError(cellId)
+    if (next) {
+      this.adopted = { ...this.adopted, [cellId]: next }
+      this.#adoptTimers.set(
+        cellId,
+        setTimeout(() => this.#settleAdopt(cellId, null), ADOPT_UNDO_MS),
+      )
+    } else if (cellId in this.adopted) {
+      const rest = { ...this.adopted }
+      delete rest[cellId]
+      this.adopted = rest
+    }
+  }
+
+  #dropAdoptError(cellId: string): void {
+    if (!(cellId in this.adoptErrors)) return
+    const rest = { ...this.adoptErrors }
+    delete rest[cellId]
+    this.adoptErrors = rest
+  }
+
   reply(cellId: string, to: { participantId: string } | { groupKey: string }, text: string): void {
     this.#send({ t: 'council:reply', cellId, to, text })
   }
@@ -674,6 +791,8 @@ export class CouncilState {
 
   destroy(): void {
     this.#outbox.clear()
+    for (const timer of this.#adoptTimers.values()) clearTimeout(timer)
+    this.#adoptTimers.clear()
   }
 }
 

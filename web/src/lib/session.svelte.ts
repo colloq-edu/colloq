@@ -924,9 +924,12 @@ export class SessionState {
         message.t === 'council:shown' ||
         message.t === 'council:hint:state' ||
         message.t === 'council:kernel' ||
-        message.t === 'council:ready'
+        message.t === 'council:ready' ||
+        message.t === 'council:adopted' ||
+        message.t === 'council:adopt:undone' ||
+        message.t === 'council:adopt:refused'
       ) {
-        // Eight council frames — to one parser: it knows whom each is addressed
+        // The council frames — to one parser: it knows whom each is addressed
         // to, and keeps them per cell.
         this.council.receive(message)
         return

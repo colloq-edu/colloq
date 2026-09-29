@@ -58,12 +58,13 @@ import {
   openValueFor,
   readCouncilSettings,
   rejectPatch,
+  replaceText,
   rootOfCell,
   type CellLock,
   type CouncilSettings,
   type KernelStatus,
 } from '@shared/notebook'
-import { colorForId } from '@shared/protocol'
+import { ADOPT_UNDO_MS, colorForId } from '@shared/protocol'
 import { durationWords } from '@shared/text'
 import type {
   ControlClientMessage,
@@ -246,6 +247,7 @@ import {
   type BookAuthor,
 } from './collab/books.js'
 import { config } from './config.js'
+import { sessionLimitBytes, uploadLimitBytes } from './admin/resource-settings.js'
 import { stopAll, undoTurn } from './ai/agent.js'
 import { onCouncilOracle } from './ai/council.js'
 import { evicted } from './bans.js'
@@ -571,6 +573,7 @@ export function closeControlRoom(sessionId: string): void {
   // and tearing down the document will not touch them — and there is no
   // reason for them to lie under the key of a torn-down room.
   discardCouncil(sessionId)
+  forgetAdoption(sessionId)
   forgetBoards(sessionId)
   forgetQueue(sessionId)
   treeSent.delete(sessionId)
@@ -1626,6 +1629,69 @@ function shownWho(sessionId: string, cellId: string): string | null {
     if (attempt.shown) return attempt.participantId
   }
   return null
+}
+
+/**
+ * "Put in the cell" — what the cell held before, so one press can take the
+ * adopted code back out.
+ *
+ * In memory and per cell, on purpose: this is a convenience for the next
+ * ADOPT_UNDO_MS, not a record. The record is the version history, which
+ * already has the edit under the teacher's name; a restart forgets the undo
+ * and keeps the history.
+ */
+interface Adoption {
+  /** The text to put back. */
+  previous: string
+  /** What went in: the undo goes through only while the cell holds exactly this. */
+  adopted: string
+  at: number
+  /** The adoption queued a run: a run that has not started yet leaves with it. */
+  run: boolean
+  timer: ReturnType<typeof setTimeout>
+}
+
+const adoptions = new Map<string, Map<string, Adoption>>()
+
+/** The cell's adoption while it can still be taken back; an expired one is forgotten here. */
+function adoptionOf(sessionId: string, cellId: string, now: number): Adoption | null {
+  const kept = adoptions.get(sessionId)?.get(cellId) ?? null
+  if (kept && now - kept.at > ADOPT_UNDO_MS) {
+    forgetAdoption(sessionId, cellId)
+    return null
+  }
+  return kept
+}
+
+function rememberAdoption(
+  sessionId: string,
+  cellId: string,
+  entry: Omit<Adoption, 'timer'>,
+): void {
+  forgetAdoption(sessionId, cellId)
+  const timer = setTimeout(() => forgetAdoption(sessionId, cellId), ADOPT_UNDO_MS)
+  // Ten minutes of memory must not hold the process up on shutdown.
+  timer.unref?.()
+  let room = adoptions.get(sessionId)
+  if (!room) adoptions.set(sessionId, (room = new Map()))
+  room.set(cellId, { ...entry, timer })
+}
+
+/** Forget one cell's adoption — or, without a cell, the whole room's. */
+function forgetAdoption(sessionId: string, cellId?: string): void {
+  const room = adoptions.get(sessionId)
+  if (!room) return
+  for (const [id, entry] of room) {
+    if (cellId !== undefined && id !== cellId) continue
+    clearTimeout(entry.timer)
+    room.delete(id)
+  }
+  if (room.size === 0) adoptions.delete(sessionId)
+}
+
+/** A refusal of "Put in the cell" or of its undo — as its own frame (protocol · council:adopt:refused). */
+function adoptRefused(ws: WebSocket, cellId: string, message: string): void {
+  send(ws, { t: 'council:adopt:refused', cellId, message })
 }
 
 /**
@@ -4088,12 +4154,13 @@ export function dispatch(
       }
       // The per-file ceiling is the same as for upload: a copy takes up space
       // exactly like a file of the same size brought from disk.
-      if (info.size > config.maxUploadBytes) {
+      const fileLimit = uploadLimitBytes()
+      if (info.size > fileLimit) {
         send(ws, {
           t: 'error',
           message: tr('server.files.copyTooBig', {
             p0: baseOf(wanted),
-            p1: Math.round(config.maxUploadBytes / 1024 / 1024),
+            p1: Math.round(fileLimit / 1024 / 1024),
           }),
         })
         return
@@ -4106,11 +4173,12 @@ export function dispatch(
        * once a seminar. The price of the divergence is named out loud there:
        * the counter does not know about writes from a cell anyway.
        */
-      if (sessionBytes(sessionId) + info.size > config.maxSessionBytes) {
+      const roomLimit = sessionLimitBytes()
+      if (sessionBytes(sessionId) + info.size > roomLimit) {
         send(ws, {
           t: 'error',
           message: tr('server.files.copyNoRoom', {
-            p0: Math.round(config.maxSessionBytes / 1024 / 1024),
+            p0: Math.round(roomLimit / 1024 / 1024),
             p1: baseOf(wanted),
           }),
         })
@@ -4520,11 +4588,12 @@ export function dispatch(
        * THE TASK — taken here, on the very switch to council, and only there.
        *
        * The cell's shared text at this second is what the teacher gave the
-       * class; a minute later it will not be: "Show the class" puts someone's
-       * solution into the cell (see `council:show` below). A latecomer, or
-       * someone who just reloaded the page, seeded their sheet with what lies
-       * in the cell NOW — that is, with someone else's answer, and one press
-       * of "Submit" sent it into the author's group.
+       * class; a minute later it may not be: the teacher edits the stub, and
+       * "Put in the cell" puts someone's solution there (`council:adopt`
+       * below; showing itself no longer touches the text). A latecomer, or
+       * someone who just reloaded the page, would seed their sheet with what
+       * lies in the cell NOW — that is, with someone else's answer, and one
+       * press of "Submit" would send it into the author's group.
        *
        * Not on every press: `cell:lock` with the same position is a knob
        * toggle, and rewriting the task with it would bring back exactly the
@@ -4715,6 +4784,119 @@ export function dispatch(
         appendActivity(sessionId, payload.participantId, 'council.shown',
           { cellId: id, ...(target ? { subjectId: target } : {}) }, payload.role)
       }
+      return
+    }
+
+    /*
+     * "Put in the cell": the shown attempt becomes the cell's text — exactly
+     * what showing itself no longer does.
+     *
+     * Teachers did it by hand, copying from the badge, and for a reason: an
+     * attempt runs sandboxed (kernel/council-isolation.ts) and its variables
+     * vanish with it, while the class goes on from the cell. So it is one
+     * press here: the text comes from the council store, never from the
+     * frame; the edit is signed by the teacher, like their own typing; the
+     * run, if asked for, is the cell's ordinary run under the ordinary right.
+     * Every refusal speaks before anything is touched, and the showing stays.
+     */
+    case 'council:adopt': {
+      if (!mayLeadCouncil(payload.role)) {
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayLeadCouncil.745e70"))
+        return
+      }
+      const id = optionalId(message.cellId)
+      const target = optionalId(message.participantId)
+      if (!id || !target) return
+      const run = message.run === true
+      const found = findCell(getSessionDoc(sessionId).doc, id)
+      if (!found) {
+        adoptRefused(ws, id, tr("server.thisCellIsNoLongerInThe.3462ea"))
+        return
+      }
+      const attempt = attemptOf(sessionId, id, target)
+      if (!attempt) {
+        adoptRefused(ws, id, tr("server.thisAttemptNoLongerExists.b490bf"))
+        return
+      }
+      // Only what the class is looking at: anything else from the pile would
+      // land in the shared cell as a text nobody saw arrive.
+      if (!attempt.shown) {
+        adoptRefused(ws, id, tr('server.council.adoptNotShown'))
+        return
+      }
+      const root = rootOf(sessionId, id)
+      if (run && !mayRun(sessionId, payload, ws, RUN_IS_THE_TEACHERS(), cellIsOpen(sessionId, id), root)) {
+        return
+      }
+      const source = cellSource(found.cell)
+      const before = source.toString()
+      const now = Date.now()
+      /*
+       * A second press on the same code keeps the first one's "before":
+       * "Put in cell" followed by "…and run" would otherwise remember the
+       * adopted code itself, and the undo would put back what is already
+       * there. A different attempt starts afresh: its undo returns the
+       * previous one, as any undo returns the state just before it.
+       */
+      const kept = adoptionOf(sessionId, id, now)
+      const again = kept !== null && before === attempt.text && kept.adopted === before
+      rememberAdoption(sessionId, id, {
+        previous: again ? kept.previous : before,
+        adopted: attempt.text,
+        at: now,
+        run: run || (again && kept.run),
+      })
+      applyOnBehalf(sessionId, payload.participantId, () => replaceText(source, attempt.text))
+      if (run) queue(ws, sessionId, payload, [id], root ?? CELLS_KEY)
+      send(ws, { t: 'council:adopted', cellId: id, participantId: target, run, at: now, undoable: true })
+      // Into the class events, like a showing: the actor is the teacher,
+      // `subjectId` the author. A press that changed no text is not an event.
+      if (before !== attempt.text) {
+        appendActivity(sessionId, payload.participantId, 'council.adopted',
+          { cellId: id, subjectId: target }, payload.role)
+      }
+      return
+    }
+
+    /*
+     * The way back from "Put in the cell" — within ADOPT_UNDO_MS and only onto
+     * an untouched adoption.
+     *
+     * Once the cell was edited after it, putting the old text back would
+     * silently erase that edit too; that is the version history's job, where
+     * the person sees what they restore. A run that has started is not
+     * interrupted (its variables are in the kernel by now), but one still
+     * waiting leaves with the code it was queued for: the kernel reads the
+     * text only when it starts, and would run the restored one instead.
+     */
+    case 'council:adopt:undo': {
+      if (!mayLeadCouncil(payload.role)) {
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayLeadCouncil.745e70"))
+        return
+      }
+      const id = optionalId(message.cellId)
+      if (!id) return
+      const kept = adoptionOf(sessionId, id, Date.now())
+      if (!kept) {
+        adoptRefused(ws, id, tr('server.council.adoptTooLate', { p0: Math.round(ADOPT_UNDO_MS / 60_000) }))
+        return
+      }
+      const found = findCell(getSessionDoc(sessionId).doc, id)
+      if (!found) {
+        forgetAdoption(sessionId, id)
+        adoptRefused(ws, id, tr("server.thisCellIsNoLongerInThe.3462ea"))
+        return
+      }
+      const source = cellSource(found.cell)
+      if (source.toString() !== kept.adopted) {
+        forgetAdoption(sessionId, id)
+        adoptRefused(ws, id, tr('server.council.adoptChanged'))
+        return
+      }
+      if (kept.run) cancelRun(sessionId, [id], payload.participantId, true)
+      applyOnBehalf(sessionId, payload.participantId, () => replaceText(source, kept.previous))
+      forgetAdoption(sessionId, id)
+      send(ws, { t: 'council:adopt:undone', cellId: id })
       return
     }
 
@@ -5067,7 +5249,7 @@ export function dispatch(
 
       // The problem statement usually lies in the markdown cell above the
       // task; the template is in `council_seed`, because by this time it may
-      // no longer be in the cell itself ("Show the class" puts someone else's
+      // no longer be in the cell itself ("Put in the cell" puts someone else's
       // solution there).
       const before = (() => {
         const found = findCell(getSessionDoc(sessionId).doc, id)

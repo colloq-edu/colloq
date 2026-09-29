@@ -38,6 +38,7 @@
     { keys: ['Enter'], what: tr('room.ui.1378') },
     { keys: ['R', '1', '2'], what: tr('room.ui.1379') },
     { keys: ['3'], what: tr('room.pult.v3.keys.clear') },
+    { keys: ['4'], what: tr('room.pult.v3.keys.adoptRun') },
     { keys: ['G'], what: tr('room.pult.v2.rules.keys') },
     { keys: ['Esc', '?', '⌘W'], what: tr('room.ui.1381') },
   ]

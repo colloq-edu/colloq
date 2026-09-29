@@ -421,7 +421,7 @@
      * it, otherwise the task (sheetSeed: an empty string from the server is
      * not an attempt). The task is `mine.seed`, the cell's text at the moment
      * the lock was switched to council, not what is in the cell now: after
-     * "Show to class" someone else's solution is there. Until the server
+     * "Put in the cell" someone else's solution is there. Until the server
      * sends a seed, the old behaviour stays. Read without tracking: the sheet
      * is started once, not on every letter of the reference.
      */
@@ -644,7 +644,7 @@
    *
    * The same pair as in `sheetSeed`: `mine.seed` (the shared text at the
    * moment the lock was switched to council) outranks the current shared
-   * text, because after "Show to class" the shared one already holds
+   * text, because after "Put in the cell" the shared one already holds
    * somebody's solution. An old server does not send the field: then the
    * shared text remains, as when seeding the sheet.
    */
@@ -2329,10 +2329,11 @@
     <p class={cn(CAPS, 'pb-1 pt-0.5 text-accent-text')}>{tr('room.ui.333')}</p>
   {:else if inCouncil && leads}
     <!--
-      For the teacher in a council the shared text is the reference: what
-      they show will land here. The label says what this text is, because
-      under it stands the console with other people's attempts, and without
-      words they are easy to mix up.
+      For the teacher in a council the shared text is the reference: showing
+      leaves it alone, and only "Put in the cell" writes a shown attempt
+      here. The label says what this text is, because under it stands the
+      console with other people's attempts, and without words they are easy
+      to mix up.
     -->
     <p class={cn(CAPS, 'flex flex-wrap items-center gap-x-2 pb-1 pt-0.5 text-accent-text')}>
       <span>{tr('room.ui.34')}</span>
@@ -3631,8 +3632,9 @@
             They lead the discussion by it and must see exactly what the class
             sees: the same signature (a name, or "Variant N" with the names
             setting off), the same code, the same output of its own. The
-            difference is one link on the right, "take off the screen", and it
-            exists only here.
+            difference is on the right, and it exists only here: "take off the
+            screen" and "Put in the cell" (with or without a run), which is
+            the one press that writes the shown code into this cell.
           -->
           {#if leads && showsOnScreen && onScreen}
             <div transition:slide={{ duration: prefersReducedMotion() ? 0 : 200, easing: quintOut }}>
@@ -3640,6 +3642,11 @@
                 shown={onScreen}
                 mayClear
                 onclear={() => session.council.clearShown(id)}
+                adopted={session.council.adopted[id] ?? null}
+                adoptError={session.council.adoptErrors[id] ?? null}
+                later={inCouncil}
+                onadopt={(participantId, run) => session.council.adopt(id, participantId, run)}
+                onundo={() => session.council.undoAdopt(id)}
               />
             </div>
           {/if}

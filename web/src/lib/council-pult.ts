@@ -1085,6 +1085,7 @@ export type PultAction =
   | 'correct'
   | 'wrong'
   | 'clearShown'
+  | 'adoptRun'
   | 'send'
   | 'escape'
   | 'help'
@@ -1159,6 +1160,10 @@ export function pultKeyAction(event: PultKey, focus: PultFocus): PultAction {
       return 'wrong'
     case '3':
       return 'clearShown'
+    // The next digit in the same row: what is on screen goes into the cell
+    // and runs (PultOnScreen · "Put in cell and run").
+    case '4':
+      return 'adoptRun'
     // "п" is rules; the Latin g sits on the same key, like "о" and j for the cursor.
     case 'g':
     case 'G':

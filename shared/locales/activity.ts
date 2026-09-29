@@ -49,6 +49,7 @@ export const activityMessages: MessageCatalog = {
   'activity.council.withdrawn': { ru: 'Убрал ячейку из разбора', en: 'Withdrew a cell from class review' },
   'activity.council.shown': { ru: 'Вывел решение на экран', en: 'Put a solution on screen' },
   'activity.council.unshown': { ru: 'Убрал решение с экрана', en: 'Took the solution off screen' },
+  'activity.council.adopted': { ru: 'Перенёс решение в ячейку', en: 'Put a solution into the cell' },
   'activity.count': { ru: 'Количество', en: 'Count' },
   'activity.reason': { ru: 'Причина', en: 'Reason' },
   'activity.presence.joined': { ru: 'Вошёл на занятие', en: 'Joined the class' },
