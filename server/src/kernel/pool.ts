@@ -3,6 +3,7 @@ import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, runtimeEnvi
 import { sessionCpus, sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, sessionMemoryMb, sessionRowExists, storedRules } from '../db.js'
 import { blockKernelStarts, kernelRetirementInProgress } from './retirement.js'
 import { hasWorkAllocation, observedWorkMemory, releaseWorkAllocation, reserveWork, type WorkLease } from '../ops/work-budget.js'
+import { parseMemMb, perEnvironmentMemoryMb, resourceValue } from '../admin/resource-settings.js'
 /** Production starts fixed, isolated Pods through the private runtime broker.
  * The direct Docker adapter is retained only for explicit local development.
  * Neither backend falls back to a shared Jupyter server. */
@@ -136,29 +137,58 @@ const sessionOfSlot = (slot: string): string => {
 }
 
 /**
- * How much memory and CPU the personal-notebook container gets.
+ * The personal-notebook container's OWN numbers, or `null` for "the same as
+ * the room".
  *
- * The class's own number if the teacher named one (the `ownMemoryMb`/`ownCpus`
- * rule), otherwise exactly as much as the room has. One place for the whole
- * pool: both a container start and a limit change on a live class ask this
- * question, and if they diverged they would produce a container started with
- * one number and updated with another.
+ * The class's rule if the teacher named one (`ownMemoryMb`/`ownCpus`), then
+ * the instance's personal-notebook default (admin/resource-settings.ts), and
+ * otherwise nothing: the caller fills the gap with the room's effective
+ * number (`kernelLimits`, applyMemoryLimit, applyCpuLimit), so "the same as
+ * the room" follows the room's own field, its environment and the instance
+ * default alike.
  *
- * No class row in the database (a test, a deleted room) means the room's
- * numbers: that is the old behavior and the only answer that is sure not to
- * lie.
+ * No class row in the database (a test, a deleted room) reads as rules that
+ * say nothing.
  */
 export function ownLimits(sessionId: string): { memoryMb: number | null; cpus: number | null } {
-  const room = { memoryMb: sessionMemoryMb(sessionId), cpus: sessionCpus(sessionId) }
+  const instance = { memoryMb: resourceValue('ownMemoryMb'), cpus: resourceValue('ownCpus') }
   try {
     const rules = storedRules(sessionId)
     return {
-      memoryMb: rules.ownMemoryMb ?? room.memoryMb,
-      cpus: rules.ownCpus ?? room.cpus,
+      memoryMb: rules.ownMemoryMb ?? instance.memoryMb,
+      cpus: rules.ownCpus ?? instance.cpus,
     }
   } catch {
-    return room
+    return instance
   }
+}
+
+/**
+ * The numbers one of a room's two containers is created with, and the ones a
+ * live update gives it back.
+ *
+ * ONE function for `docker run` (startContainer) and `docker update`
+ * (applyOwnLimits). They used to resolve the defaults each in its own way:
+ * the start took the environment's default, sixteen gigabytes for a GPU
+ * environment, while the update fell back to KERNEL_MEM or four, so any rules
+ * change quietly shrank a GPU class's personal-notebook container to a
+ * quarter of what it was started with.
+ *
+ * The room: its own field, otherwise its environment's default. The personal
+ * notebooks: `ownLimits`, otherwise exactly the room's.
+ */
+export function kernelLimits(
+  sessionId: string,
+  env: string,
+  role: KernelRole,
+): { memoryMb: number; cpus: number } {
+  const room = {
+    memoryMb: sessionMemoryMb(sessionId) ?? memoryLimitMb(env),
+    cpus: sessionCpus(sessionId) ?? defaultCpus(),
+  }
+  if (role === 'room') return room
+  const own = ownLimits(sessionId)
+  return { memoryMb: own.memoryMb ?? room.memoryMb, cpus: own.cpus ?? room.cpus }
 }
 
 /**
@@ -171,13 +201,14 @@ export function ownLimits(sessionId: string): { memoryMb: number | null; cpus: n
  * silently and in the middle of the lesson. With the cap the extra run gets a
  * sentence, and the class goes on.
  *
- * Forty is "the whole group works on their own at once" with room to spare; a
- * cohort does not open that many personal notebooks at once, and if it does,
- * the teacher learns about it from a refusal, not from a dead container.
+ * The default is sixty (it was forty): the whole group working on their own at
+ * once, with room to spare. If a cohort opens more, the teacher learns about
+ * it from a refusal, not from a dead container, and the owner moves the
+ * number in the panel without a restart (admin/resource-settings.ts ·
+ * `ownMax`, then KERNEL_OWN_MAX). Read at every personal kernel start.
  */
 export function ownKernelMax(env: NodeJS.ProcessEnv = process.env): number {
-  const value = Number((env.KERNEL_OWN_MAX ?? '').trim())
-  return Number.isInteger(value) && value >= 1 ? value : 40
+  return resourceValue('ownMax', env)
 }
 
 /**
@@ -187,10 +218,10 @@ export function ownKernelMax(env: NodeJS.ProcessEnv = process.env): number {
  * For the class's kernels idleness is counted per room: empty for two hours,
  * and the whole container goes (kernel/index.ts · IDLE_KERNEL_MS). For
  * personal notebooks that is not enough, and they count differently. A class
- * left open all day keeps a kernel for every draft anyone ever ran: forty
+ * left open all day keeps a kernel for every draft anyone ever ran: dozens of
  * Pythons at a hundred megabytes each, idle, and none of them needed by anyone,
- * since people work in two or three. The `KERNEL_OWN_MAX` cap does not help
- * with that; it only refuses the FORTY-FIRST.
+ * since people work in two or three. The live-kernel cap (`ownKernelMax`) does
+ * not help with that; it only refuses the one over it.
  *
  * Half an hour means "went on a break and came back", not "closed the draft":
  * in a ninety-minute lesson a kernel that computed nothing for half an hour
@@ -198,13 +229,12 @@ export function ownKernelMax(env: NodeJS.ProcessEnv = process.env): number {
  * small and stated out loud: a note in the notebook and one Run to start the
  * kernel again.
  *
- * `0` is the off switch for anyone whose lessons work differently.
+ * `0` is the off switch for anyone whose lessons work differently. Set in the
+ * panel (`ownIdleMin`) or KERNEL_OWN_IDLE_MIN, and read at every sweep, so a
+ * change needs no restart.
  */
 export function ownIdleMinutes(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = (env.KERNEL_OWN_IDLE_MIN ?? '').trim()
-  if (raw === '0') return 0
-  const value = Number(raw)
-  return Number.isInteger(value) && value >= 1 ? value : 30
+  return resourceValue('ownIdleMin', env)
 }
 
 /**
@@ -787,8 +817,7 @@ async function sameGpu(container: string, gpu: string | null): Promise<boolean> 
  * down, not up: asking for more threads than there are cores is exactly the
  * trouble this is set to prevent.
  */
-function threadLimit(own?: number | null): string {
-  const cpus = own ?? Number(process.env.KERNEL_CPUS ?? '2')
+function threadLimit(cpus: number): string {
   if (!Number.isFinite(cpus) || cpus <= 0) return '2'
   return String(Math.max(1, Math.floor(cpus)))
 }
@@ -796,101 +825,58 @@ function threadLimit(own?: number | null): string {
 /**
  * How many CPUs a room gets when nothing was set for it, as a number.
  *
- * `KERNEL_CPUS` is a string from the environment, and it can be fractional
- * ("1.5"): docker can do that. The same number goes out, because the class
- * form labels the "CPU" field with it, and it must label it with what the
- * room will actually get.
+ * The instance default (admin/resource-settings.ts · `roomCpus`, then
+ * KERNEL_CPUS), which may be fractional ("1.5"): docker can do that. The same
+ * number goes out, because the class form labels the "CPU" field with it, and
+ * it must label it with what the room will actually get.
  */
 export function defaultCpus(): number {
-  const cpus = Number(process.env.KERNEL_CPUS ?? '2')
-  return Number.isFinite(cpus) && cpus > 0 ? cpus : 2
+  return resourceValue('roomCpus')
 }
 
 /**
- * How much memory to give the room's container, and why it is not one number
- * for the whole machine.
- *
- * Two gigabytes per room is an honest default for a laptop where someone
- * starts Colloq to have a look, and a death sentence for a computer vision
- * seminar: `resnet18` on a batch of 250 images at 224×224 takes nearly two
- * gigabytes in activations alone, and that is ON TOP of torch, the CUDA
- * context and an already loaded language model. Then the cgroup kills python,
- * Jupyter silently starts a new one, and the teacher sees "kernel restarted"
- * on the same cell fifteen times in a row.
- *
- * So the limit is asked of the environment rather than hard-coded:
- * `KERNEL_MEM` is the general one, and `KERNEL_MEM_<ENVIRONMENT>` overrides it
- * for one environment. The environment name is turned into the shape of an
- * environment variable: `base-gpu` → `KERNEL_MEM_BASE_GPU`. That way a heavy
- * environment gets its own, and light rooms next to it do not eat up the
- * machine for nothing.
+ * Megabytes in the language `--memory` is set in. The way back, a docker
+ * string in megabytes, is `parseMemMb`: it moved to admin/resource-settings.ts,
+ * which reads KERNEL_MEM with it, and is re-exported here where it always was.
  */
-export function memoryLimit(env: string): string {
-  const named = process.env[`KERNEL_MEM_${env.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`]
-  return named || process.env.KERNEL_MEM || (needsGpu(env) ? DEFAULT_MEM_GPU : DEFAULT_MEM)
-}
-
-/*
- * The defaults were raised on 13 Sep 2026 after a day when 2g killed the
- * kernel on every run of a single cell. Four gigabytes is still tolerable for
- * an ordinary notebook with pandas and pictures on a laptop; a GPU environment
- * makes no sense without sixteen: the rented machine is a 3090 with 24 GB of
- * video memory and 72 GB of RAM, and torch with a CUDA context and a model
- * puts no less into RAM than into video memory. This is about RAM: the cgroup
- * does not limit video memory, and rooms get the card whole.
- */
-const DEFAULT_MEM = '4g'
-const DEFAULT_MEM_GPU = '16g'
-
-/**
- * A docker string ("4g", "512m", "2048") in megabytes, and back.
- *
- * Needed precisely because the limit is no longer a matter of `.env` alone:
- * it is now visible in the panel and can be set for a room as a number. The
- * panel speaks gigabytes, the seminar row stores megabytes, docker
- * understands suffixes, and without one common measure in the middle these
- * three silently drift apart, and the price is paid by a kernel that got half
- * of what the screen shows.
- *
- * Rounding down is deliberate: docker will not give out a fractional
- * megabyte, and an extra one added while reading would come back into
- * `--memory` as a number larger than what the environment variable said.
- */
-export function parseMemMb(spec: string): number | null {
-  const match = /^\s*(\d+(?:\.\d+)?)\s*([bkmg])?b?\s*$/i.exec(spec)
-  if (!match) return null
-  const value = Number(match[1])
-  if (!Number.isFinite(value) || value <= 0) return null
-  const unit = (match[2] ?? 'b').toLowerCase()
-  const bytes = value * (unit === 'g' ? 1024 ** 3 : unit === 'm' ? 1024 ** 2 : unit === 'k' ? 1024 : 1)
-  const mb = Math.floor(bytes / 1024 ** 2)
-  return mb > 0 ? mb : null
-}
-
-/** And back, in the same language `--memory` is set in. */
 export function memSpec(mb: number): string {
   return `${Math.floor(mb)}m`
 }
+export { parseMemMb }
 
 /**
  * What environments fall back to: the general default and the default for a
  * GPU environment.
  *
  * Separate from `memoryLimitMb(env)` because the seminar form shows both
- * BEFORE an environment is chosen: "4 GB by default, 16 on a GPU".
+ * BEFORE an environment is chosen: "4 GB by default, 16 on a GPU". Both are
+ * instance settings now (`roomMemoryMb`, then KERNEL_MEM; `gpuRoomMemoryMb`),
+ * so a GPU room keeps its sixteen however KERNEL_MEM is set for the rest.
  */
 export function defaultMemoryMb(gpu = false): number {
-  const fallback = gpu ? DEFAULT_MEM_GPU : DEFAULT_MEM
-  return parseMemMb(process.env.KERNEL_MEM || fallback) ?? (parseMemMb(fallback) as number)
+  return resourceValue(gpu ? 'gpuRoomMemoryMb' : 'roomMemoryMb')
 }
 
-/** The environment's default as a number; the seminar form shows it. */
+/**
+ * How much memory to give a room's container on this environment, and why it
+ * is not one number for the whole machine.
+ *
+ * Two gigabytes per room is an honest default for a laptop where someone
+ * starts Colloq to have a look, and a death sentence for a computer vision
+ * class: `resnet18` on a batch of 250 images at 224×224 takes nearly two
+ * gigabytes in activations alone, and that is ON TOP of torch, the CUDA
+ * context and an already loaded language model. Then the cgroup kills python,
+ * Jupyter silently starts a new one, and the teacher sees "kernel restarted"
+ * on the same cell fifteen times in a row.
+ *
+ * So the environment decides: KERNEL_MEM_<ENVIRONMENT> first (an operator's
+ * number for one heavy image), then the instance default for a GPU or an
+ * ordinary environment. A heavy environment gets its own, and light rooms next
+ * to it do not eat up the machine for nothing. A number that did not parse
+ * ("4 gigs") is passed over, so the room starts instead of failing on it.
+ */
 export function memoryLimitMb(env: string): number {
-  const named = parseMemMb(memoryLimit(env))
-  if (named !== null) return named
-  // The environment variable was written any old way ("4 gigs"): our own
-  // default is sure to parse, and the room starts instead of failing on NaN.
-  return parseMemMb(needsGpu(env) ? DEFAULT_MEM_GPU : DEFAULT_MEM) as number
+  return perEnvironmentMemoryMb(env) ?? defaultMemoryMb(needsGpu(env))
 }
 
 /**
@@ -944,20 +930,20 @@ export function runArgs(opts: {
   publish: boolean
   gpu: string | null
   /**
-   * The memory limit of THIS particular room, if the teacher set one.
+   * The memory limit of THIS particular container (`kernelLimits`).
    *
    * It overrides the environment's default rather than adding to it: a vision
-   * seminar and a statistics seminar live on the same image, and the whole
+   * class and a statistics class live on the same image, and the whole
    * difference between them is how much memory they need. `null` (and a
-   * missing field) means the old behavior, that is, `KERNEL_MEM` and the
-   * environment's default.
+   * missing field) means the environment's default: KERNEL_MEM_<ENV>, then
+   * the instance default for its kind (admin/resource-settings.ts).
    */
   memoryMb?: number | null
   /**
-   * How many CPUs to give THIS particular room.
+   * How many CPUs to give THIS particular container.
    *
-   * By the same rule as memory: `null` means the old behavior, that is,
-   * `KERNEL_CPUS` for the whole instance. The number here decides not only
+   * By the same rule as memory: `null` means the instance default
+   * (`roomCpus`, then KERNEL_CPUS). The number here decides not only
    * `--cpus` but also the numeric libraries' threads below: `os.cpu_count()`
    * inside a container sees the HOST's cores, and a room with two allotted
    * cores would start thirty threads on them, exactly what these variables
@@ -971,7 +957,7 @@ export function runArgs(opts: {
   // allowed": a caller's mistake must not be able to give the card to personal
   // notebooks.
   const gpu = role === 'own' ? null : opts.gpu
-  const memory = opts.memoryMb ? memSpec(opts.memoryMb) : memoryLimit(env)
+  const memory = memSpec(opts.memoryMb && opts.memoryMb > 0 ? opts.memoryMb : memoryLimitMb(env))
   const cpus = opts.cpus && opts.cpus > 0 ? opts.cpus : defaultCpus()
   const threads = threadLimit(cpus)
   return [
@@ -1252,20 +1238,22 @@ export async function applyMemoryLimit(sessionId: string, mb: number | null): Pr
  * "Memory" field, and changing it from here would give the students the
  * teacher's memory with the very click the teacher used to limit them.
  *
- * `null` in the rule means "as for the class", and then the container gets
- * the room's number; that way it returns to the common limit without a second
- * on/off field.
+ * `null` in the rule means "as for the class" (after the instance's own
+ * default), and then the container gets the room's number; that way it
+ * returns to the common limit without a second on/off field. The numbers are
+ * `kernelLimits`, the very ones `docker run` used: a GPU class's room default
+ * is sixteen gigabytes, and this update must not answer it with four.
  */
 export async function applyOwnLimits(sessionId: string): Promise<LimitOutcome> {
   if (!limitsInjected && kernelBackend() !== 'docker') return 'pending'
   if (!limitsInjected && !(await canIsolate())) return 'pending'
-  const { memoryMb, cpus } = ownLimits(sessionId)
-  const spec = memSpec(memoryMb ?? defaultMemoryMb(false))
-  const cores = cpus ?? defaultCpus()
+  const env = sessionEnvironment(sessionId) ?? activeName()
+  const { memoryMb, cpus: cores } = kernelLimits(sessionId, env, 'own')
+  const spec = memSpec(memoryMb)
   return updateWithMemory(
     sessionId,
     `${spec} of memory and ${cores} CPUs for personal notebooks`,
-    [{ role: 'own', memoryMb: memoryMb ?? defaultMemoryMb(false) }],
+    [{ role: 'own', memoryMb }],
     (container) =>
       limitsDocker(
         ['update', `--memory=${spec}`, `--memory-swap=${spec}`, `--cpus=${cores}`, container],
@@ -1367,9 +1355,9 @@ async function resizeRoomPod(
  * gets the new thread count. The hint under the field says so, not only this
  * comment.
  *
- * `null` means "as for the instance": docker takes KERNEL_CPUS, the broker
- * its own default. There is no swap-like pair of flags here: `--cpus` is
- * self-sufficient.
+ * `null` means "as for the instance": docker takes the instance default
+ * (`roomCpus`, then KERNEL_CPUS), the broker its own. There is no swap-like
+ * pair of flags here: `--cpus` is self-sufficient.
  */
 export async function applyCpuLimit(sessionId: string, own: number | null): Promise<LimitOutcome> {
   if (!limitsInjected && kernelBackend() === 'broker') return resizeRoomPod(sessionId, { cpus: own })
@@ -1412,6 +1400,99 @@ export async function containerLimits(
     memoryMb: Number.isFinite(bytes) && bytes > 0 ? Math.floor(bytes / 1024 ** 2) : null,
     // NanoCpus are billionths of a CPU: 2.5 CPUs arrive as 2500000000.
     cpus: Number.isFinite(nano) && nano > 0 ? Math.round(nano / 1e8) / 10 : null,
+  }
+}
+
+/** A running kernel container and what it holds; `null` where the runtime could not tell. */
+export interface RunningKernel {
+  session: string
+  role: KernelRole
+  memoryMb: number | null
+  cpus: number | null
+}
+
+/**
+ * Every running kernel container with the limits it is held to: the census
+ * behind the owner's budget bar. Read-only.
+ *
+ * Asked of the runtime, not of the seminar rows, for the same reason as the
+ * room list in kernel/resources.ts: a container started this morning keeps
+ * this morning's limit however the row changed since. One that docker says
+ * nothing about is counted by the numbers it would be started with. Throws
+ * when the census itself is unavailable: an outage is not an empty machine,
+ * and the caller says so instead of drawing a free bar.
+ */
+export async function runningKernelLimits(): Promise<RunningKernel[]> {
+  const backend = kernelBackend()
+  if (backend === 'broker') {
+    return (await kernelRuntimeClient().rooms())
+      .filter((room) => room.phase === 'ready' || room.phase === 'pending')
+      .map((room) => ({
+        session: room.sessionId,
+        role: 'room' as const,
+        memoryMb: room.memoryMb ?? sessionMemoryMb(room.sessionId),
+        cpus: room.cpus ?? sessionCpus(room.sessionId),
+      }))
+  }
+  if (backend !== 'docker') return []
+  const running = (await roomContainers({ strict: true })).filter((c) => c.running && c.session.length > 0)
+  return Promise.all(
+    running.map(async ({ session, role }) => {
+      const real = await containerLimits(session, role).catch(() => ({ memoryMb: null, cpus: null }))
+      const planned = kernelLimits(session, sessionEnvironment(session) ?? activeName(), role)
+      return { session, role, memoryMb: real.memoryMb ?? planned.memoryMb, cpus: real.cpus ?? planned.cpus }
+    }),
+  )
+}
+
+/**
+ * An instance default changed: the running containers that follow it get the
+ * new number now, through the same live paths a room's own change takes.
+ *
+ * Only what those paths already do live: cores (`docker update --cpus` costs
+ * a running kernel nothing) and the personal-notebook numbers
+ * (applyOwnLimits). Room memory defaults wait for the next container, exactly
+ * like a room reset to its default (applyMemoryLimit with `null`): shrinking
+ * the cgroup under a working kernel is an OOM kill in the middle of the
+ * lesson. A container with a number of its own is left alone.
+ *
+ * Docker only: the broker sizes its Pods with its own defaults. A failure
+ * goes to the log; the next container start takes the number anyway.
+ */
+export async function reapplyInstanceDefaults(changed: ReadonlySet<string>): Promise<void> {
+  const roomCpus = changed.has('roomCpus')
+  const ownCpus = changed.has('ownCpus')
+  const ownMemory = changed.has('ownMemoryMb')
+  if ((!roomCpus && !ownCpus && !ownMemory) || kernelBackend() !== 'docker') return
+  let census: RoomContainer[]
+  try {
+    census = await roomContainers({ strict: true })
+  } catch {
+    console.warn('[kernel] instance defaults changed, but the container census is unavailable; '
+      + 'they apply at the next start')
+    return
+  }
+  const running = census.filter((c) => c.running && c.session.length > 0)
+  for (const sessionId of new Set(running.map((c) => c.session))) {
+    const hasOwn = running.some((c) => c.session === sessionId && c.role === 'own')
+    let rules: ReturnType<typeof storedRules> | null = null
+    try {
+      rules = storedRules(sessionId)
+    } catch {
+      /* no row: nothing of its own is set, it follows every default */
+    }
+    const own = hasOwn ? { memoryMb: rules?.ownMemoryMb ?? null, cpus: rules?.ownCpus ?? null } : null
+    try {
+      // One `docker update --cpus` for both containers: the room's own number
+      // or the new default, and the personal notebooks' by ownLimits.
+      if ((roomCpus && sessionCpus(sessionId) === null) || (ownCpus && own !== null && own.cpus === null)) {
+        await applyCpuLimit(sessionId, sessionCpus(sessionId))
+      }
+      if (ownMemory && own !== null && own.memoryMb === null) await applyOwnLimits(sessionId)
+    } catch (err) {
+      const why = err instanceof Error ? err.message : err
+      console.error(`[kernel] instance defaults did not reach ${sessionId}:`, why)
+    }
   }
 }
 
@@ -1518,7 +1599,7 @@ async function startContainer(
       await ensureRoomPerimeter(run, perimeterTarget(), image)
       assertLocalRoomRunning(sessionId)
       const stoppedLimits = await containerLimits(sessionId, role)
-      const started = await startWithMemory(sessionId, role, stoppedLimits.memoryMb ?? memoryLimitMb(env), () => run(['start', container], 60_000))
+      const started = await startWithMemory(sessionId, role, stoppedLimits.memoryMb ?? kernelLimits(sessionId, env, role).memoryMb, () => run(['start', container], 60_000))
       // The result is read: a container that did not come up would go on
       // answering "could not read the published port" to every Run, until a
       // manual docker rm.
@@ -1542,7 +1623,7 @@ async function startContainer(
     // not an open network.
     await ensureRoomPerimeter(run, perimeterTarget(), image)
     assertLocalRoomRunning(sessionId)
-    const limits = role === 'own' ? ownLimits(sessionId) : { memoryMb: sessionMemoryMb(sessionId), cpus: sessionCpus(sessionId) }
+    const limits = kernelLimits(sessionId, env, role)
     const args = runArgs({
         sessionId,
         env,
@@ -1558,7 +1639,7 @@ async function startContainer(
         // it took for itself.
         ...limits,
       })
-    const created = await startWithMemory(sessionId, role, limits.memoryMb ?? memoryLimitMb(env), () => run(args, 120_000))
+    const created = await startWithMemory(sessionId, role, limits.memoryMb, () => run(args, 120_000))
     if (created.code !== 0) {
       // The network may have been removed between the check and the start:
       // the next attempt asks again instead of trusting what it remembered a

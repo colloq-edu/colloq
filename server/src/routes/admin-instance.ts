@@ -613,8 +613,8 @@ export function adminInstanceRoutes(): Router {
        * kernel is not touched here.
        */
       // A reset to the default also changes the quota of an already running
-      // container; whose default it is (KERNEL_CPUS or the broker's) is up to
-      // the pool.
+      // container; whose default it is (the instance's `roomCpus` or the
+      // broker's) is up to the pool.
       void applyCpuLimit(row.id, cpu.cpus).catch((err: unknown) => {
         console.error(`[kernel] CPU count for ${row.id} did not get through:`, err)
       })

@@ -6,6 +6,7 @@
     | 'environments'
     | 'oracle'
     | 'teachers'
+    | 'resources'
 
   /**
    * The numbers on the nav rows.
@@ -122,9 +123,9 @@
   }
 
   /*
-   * Materials, Environments and Resources are designed and not built. A nav row
-   * that leads nowhere costs more than the missing feature does: it teaches the
-   * teacher that this panel lies, once, in the first minute.
+   * Materials are designed and not built. A nav row that leads nowhere costs
+   * more than the missing feature does: it teaches the teacher that this panel
+   * lies, once, in the first minute.
    */
   const TEACHING = $derived<NavItem[]>([
     { id: 'seminars', label: tr("admin.seminars"), icon: 'board', href: '/admin', count: navCounts.seminars },
@@ -171,6 +172,12 @@
       href: '/admin/teachers',
       count: navCounts.teachers,
     },
+    /*
+     * Under INSTANCE because every number here is the machine's: the default a
+     * room starts with, how many submissions run at once. A seminar still
+     * overrides its own in its settings.
+     */
+    { id: 'resources', label: tr('admin.resourcesTab.title'), icon: 'server', href: '/admin/resources' },
   ])
 
   const teacher = $derived(adminAuth.me?.teacher ?? null)

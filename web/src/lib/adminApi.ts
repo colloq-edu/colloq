@@ -22,6 +22,8 @@ import type {
   ImportPreview,
   ImportResult,
   InstanceResources,
+  ResourceSettingsResponse,
+  UpdateResourceSettingsRequest,
   InstanceState,
   InstanceSettings,
   SaveEnvironmentRequest,
@@ -50,6 +52,7 @@ import type {
   SubmissionDetail,
   SubmissionFeed,
 } from '@shared/competitions-api'
+import type { CompetitionSettings, CompetitionSettingsInput } from '@shared/competitions-settings'
 
 export type AdminErrorReason = AdminErrorBody['reason']
 
@@ -332,6 +335,13 @@ export const adminApi = {
       ...json({ submissionId }),
     }),
 
+  /** The instance's competition settings: slots, uploads per minute, defaults for new competitions. */
+  competitionSettings: () => request<CompetitionSettings>('/competitions/settings'),
+
+  /** Owner only. `null` in a field forgets the saved value and falls back to the default. */
+  saveCompetitionSettings: (body: CompetitionSettingsInput) =>
+    request<CompetitionSettings>('/competitions/settings', { method: 'PUT', ...json(body) }),
+
   competitionDependencies: (id: string) => request<AdminDependencyOverview>(`/competitions/${encodeURIComponent(id)}/dependencies`),
   updateDependencyPolicy: (id: string, policy: { enabled: boolean; maxDownloadBytes: number }) =>
     request<AdminDependencyOverview>(`/competitions/${encodeURIComponent(id)}/dependencies/policy`, { method: 'PATCH', ...json(policy) }),
@@ -552,6 +562,21 @@ export const adminApi = {
    * machine, not the panel.
    */
   resources: () => request<InstanceResources>('/resources', undefined, '/api/instance'),
+
+  /**
+   * The instance-wide resource defaults: each value with where it came from
+   * (saved, the environment, the built-in default), the bounds, the machine
+   * and how much of it is promised right now. Staff may read it.
+   */
+  resourceSettings: () => request<ResourceSettingsResponse>('/resources'),
+
+  /**
+   * Owner only. Send only what changes; `null` forgets the saved value, and
+   * the environment or the default answers again. The answer is the fresh
+   * GET payload, clamped numbers included.
+   */
+  updateResourceSettings: (body: UpdateResourceSettingsRequest) =>
+    request<ResourceSettingsResponse>('/resources', { method: 'PUT', ...json(body) }),
 
   listSeminars: () => request<AdminSeminar[]>('/seminars'),
 

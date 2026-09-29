@@ -5,7 +5,7 @@ import { downloadHeldFile } from '../secure-files.js'
 import { basename } from 'node:path'
 import busboy from 'busboy'
 import { Router } from 'express'
-import { config } from '../config.js'
+import { sessionLimitBytes, uploadLimitBytes } from '../admin/resource-settings.js'
 import { getSession } from '../db.js'
 import { baseOf, joinPath, normalizePath, safeSegment, whySegmentRefused } from '@shared/paths'
 import { forgetFile } from '../collab/files.js'
@@ -213,6 +213,10 @@ export function fileRoutes(): Router {
     // And the room's space, before this request creates its own temp files:
     // from then on increments keep the sum, not a walk (see usedBytes).
     usedBytes(sessionId)
+    // Both ceilings once per request, from the instance settings: the owner
+    // moves them live, and one upload must not meet two different numbers.
+    const fileLimit = uploadLimitBytes()
+    const roomLimit = sessionLimitBytes()
 
     let bb: ReturnType<typeof busboy>
     try {
@@ -226,7 +230,7 @@ export function fileRoutes(): Router {
          */
         defParamCharset: 'utf8',
         limits: {
-          fileSize: config.maxUploadBytes,
+          fileSize: fileLimit,
           files: MAX_FILES_PER_UPLOAD,
           fields: 4,
           fieldSize: 4096,
@@ -476,7 +480,7 @@ export function fileRoutes(): Router {
               removeTemp(sessionId, tmp)
               failure ??= {
                 code: 413,
-                message: tr("server.isLargerThanMb.28d7e5", { p0: name, p1: Math.round(config.maxUploadBytes / 1024 / 1024) }),
+                message: tr("server.isLargerThanMb.28d7e5", { p0: name, p1: Math.round(fileLimit / 1024 / 1024) }),
               }
               resolve()
               return
@@ -512,12 +516,12 @@ export function fileRoutes(): Router {
             } catch {
               // No file with this name yet: no space will be freed for it.
             }
-            if (usedBytes(sessionId) - already > config.maxSessionBytes) {
+            if (usedBytes(sessionId) - already > roomLimit) {
               removeTemp(sessionId, tmp)
               failure ??= {
                 code: 413,
                 message:
-                  tr("server.thisSeminarHasRoomForMbOf.66f8a7", { p0: Math.round(config.maxSessionBytes / 1024 / 1024) }) +
+                  tr("server.thisSeminarHasRoomForMbOf.66f8a7", { p0: Math.round(roomLimit / 1024 / 1024) }) +
                   tr("server.andExceedsThatLimitAskTheTeacher.1f472f", { p0: name }),
               }
               resolve()

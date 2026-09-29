@@ -79,6 +79,7 @@
  */
 import os from 'node:os'
 import { tr } from '@shared/i18n'
+import { resourceValue } from '../admin/resource-settings.js'
 
 /** The rooms network the server creates itself when it lives on the host. */
 export const ROOM_NETWORK = 'colloq-rooms'
@@ -158,7 +159,9 @@ export function roomNetworkMode(env: NodeJS.ProcessEnv = process.env): RoomNetwo
 }
 
 /**
- * The room's process ceiling: KERNEL_PIDS, 512 by default.
+ * The room's process ceiling, 512 by default: the instance setting `roomPids`
+ * (admin/resource-settings.ts), then KERNEL_PIDS. Read at `docker run`, so a
+ * change reaches the next container, not a running one.
  *
  * A fork bomb in a cell without a ceiling takes down not the room but the
  * machine, and every neighbouring class with it. 512 is plenty for Jupyter,
@@ -166,13 +169,12 @@ export function roomNetworkMode(env: NodeJS.ProcessEnv = process.env): RoomNetwo
  * 256 per Pod (deploy/k3s).
  */
 export function pidsLimit(env: NodeJS.ProcessEnv = process.env): number {
-  const value = Number((env.KERNEL_PIDS ?? '').trim())
-  return Number.isInteger(value) && value >= 64 ? value : 512
+  return resourceValue('roomPids', env)
 }
 
 /**
- * The process ceiling of the PERSONAL NOTEBOOKS CONTAINER: KERNEL_OWN_PIDS,
- * 2048 by default.
+ * The process ceiling of the PERSONAL NOTEBOOKS CONTAINER, 2048 by default:
+ * the instance setting `ownPids`, then KERNEL_OWN_PIDS.
  *
  * A separate number, because it counts something else. A room container holds
  * one kernel per class notebook plus the terminal; the personal notebooks
@@ -180,13 +182,12 @@ export function pidsLimit(env: NodeJS.ProcessEnv = process.env): number {
  * ipykernel keeps a dozen and a half threads on its own. The room's 512 runs
  * out already at thirty kernels, and that ends not in a refusal but in a
  * `BlockingIOError` in the middle of someone else's run. 2048 is the same 512
- * "per room" multiplied by the ceiling of live kernels (pool.ts ·
+ * "per room" multiplied by a ceiling of live kernels (pool.ts ·
  * ownKernelMax): a fork bomb still hits a wall, and that wall is not the
  * neighbour's.
  */
 export function ownPidsLimit(env: NodeJS.ProcessEnv = process.env): number {
-  const value = Number((env.KERNEL_OWN_PIDS ?? '').trim())
-  return Number.isInteger(value) && value >= 64 ? value : 2048
+  return resourceValue('ownPids', env)
 }
 
 /** KERNEL_ROOM_SUBNET if it is a real IPv4 CIDR; otherwise the default. */

@@ -249,11 +249,11 @@ export interface CreateSeminarRequest {
   /**
    * How much memory to give this room's kernel, in megabytes.
    *
-   * Omitted or null means the environment's default (`KERNEL_MEM` and the
-   * pool). It is set here, and not in a separate trip to the settings in the
-   * morning: a computer-vision class is set up the day before, and "six
-   * gigabytes" is as much a decision about the room as the choice of
-   * environment next to it.
+   * Omitted or null means the environment's default (the instance setting,
+   * see ResourceSettingValues). It is set here, and not in a separate trip to
+   * the settings in the morning: a computer-vision class is set up the day
+   * before, and "six gigabytes" is as much a decision about the room as the
+   * choice of environment next to it.
    */
   memoryMb?: number | null
   /** How many cores to give the room; omitted or null — the instance default. */
@@ -369,7 +369,7 @@ export interface InstanceResources {
   kernel: {
     defaultMemoryMb: number
     gpuDefaultMemoryMb: number
-    /** A room's default cores — `KERNEL_CPUS`, one number per instance. */
+    /** A room's default cores: the instance setting `roomCpus` (KERNEL_CPUS), one number per instance. */
     defaultCpus: number
     /** What a room on this environment gets if nothing was set for it. */
     perEnvironment: Record<string, { memoryMb: number; gpu: boolean }>
@@ -382,6 +382,147 @@ export interface InstanceResources {
    * its first change.
    */
   limits: { min: number; max: number; cpus: { min: number; max: number } }
+}
+
+/* ------------------------------------------- instance resource settings */
+
+/**
+ * The instance-wide defaults behind every room: what a kernel, a class's
+ * personal-notebook container and an upload get when nothing more specific
+ * was said. They used to live only in environment variables; the owner now
+ * sets them in the panel, live, and the environment stays the fallback.
+ *
+ * Megabytes and whole cores, like a room's own numbers (AdminSeminar.memoryMb
+ * and cpus). An environment variable may still say "1.5" cores or "0.5" MB of
+ * upload: such a value is reported as it is, it just cannot be saved.
+ */
+export interface ResourceSettingValues {
+  /** A room kernel's memory on an ordinary environment (KERNEL_MEM, 4096). */
+  roomMemoryMb: number
+  /** The same on a GPU environment (no variable, 16384). */
+  gpuRoomMemoryMb: number
+  /** A room kernel's cores (KERNEL_CPUS, 2). */
+  roomCpus: number
+  /**
+   * The personal-notebook container's memory for classes whose rules leave
+   * `ownMemoryMb` empty. `null`: the same as the room's.
+   */
+  ownMemoryMb: number | null
+  /** The same for cores; `null`: the same as the room's. */
+  ownCpus: number | null
+  /** Live personal kernels per class (KERNEL_OWN_MAX, 60). */
+  ownMax: number
+  /** Idle minutes before a personal kernel is stopped; 0 never stops it (KERNEL_OWN_IDLE_MIN, 30). */
+  ownIdleMin: number
+  /** The personal-notebook container's process ceiling (KERNEL_OWN_PIDS, 2048). */
+  ownPids: number
+  /** A room container's process ceiling (KERNEL_PIDS, 512). */
+  roomPids: number
+  /** One uploaded file (MAX_UPLOAD_MB, 50). */
+  uploadMb: number
+  /** All of a room's files together (MAX_SESSION_MB, 1024); never below `uploadMb`. */
+  sessionMb: number
+}
+
+export type ResourceSettingName = keyof ResourceSettingValues
+
+/**
+ * Where the effective value came from: saved in the panel, the environment
+ * variable, or the built-in default. That order is also the resolution order.
+ */
+export type ResourceSource = 'saved' | 'env' | 'default'
+
+export interface ResourceSetting<T> {
+  value: T
+  source: ResourceSource
+  /**
+   * The environment variable's value as the server reads it; `null` when it
+   * is unset or unreadable. Absent for a setting no variable stands behind.
+   */
+  env?: T | null
+  /** The variable's name, for a caption. Absent together with `env`. */
+  envName?: string
+  default: T
+  /**
+   * When a change reaches running kernels. `live`: at once (the next upload,
+   * the next kernel start, the next idle sweep, or `docker update` on the
+   * running containers that follow the default). `new-containers`: running
+   * containers keep their limits until they are created again.
+   */
+  appliesTo: 'live' | 'new-containers'
+  /**
+   * Honoured only by the docker backend. The broker (k3s) sizes a room's Pod
+   * with its own defaults and has no personal-notebook container.
+   */
+  dockerOnly: boolean
+}
+
+export type ResourceSettings = {
+  [K in ResourceSettingName]: ResourceSetting<ResourceSettingValues[K]>
+}
+
+export interface ResourceBounds {
+  min: number
+  max: number
+}
+
+/** How much of the machine is promised right now: one stacked bar. */
+export interface ResourceBudget {
+  totalMb: number
+  totalCpus: number
+  /** Held back for the machine itself and never handed to a room. */
+  reserveMb: number
+  /** Running room-kernel containers, by the limits docker holds them to. */
+  rooms: { count: number; memoryMb: number; cpus: number }
+  /** Running personal-notebook containers, the same way. */
+  own: { count: number; memoryMb: number; cpus: number }
+  /**
+   * Competition submissions: the slots in effect × the default memory and
+   * cores of one submission, a ceiling the queue may fill at any moment.
+   * `null` when the competitions settings cannot be read; the bar then leaves
+   * this segment out rather than inventing it.
+   */
+  competitions: { slots: number | null; memoryMb: number | null; cpus: number | null }
+  /** What is left after the reserve and every promise above; never negative. */
+  freeMb: number
+  /** More memory is promised than the machine has after its reserve. */
+  overcommitted: boolean
+  /**
+   * Whether every running container was counted. `false` when docker did not
+   * answer the census: the bar then shows less than is really promised.
+   */
+  complete: boolean
+}
+
+/** GET /api/admin/resources, and the answer to PUT. */
+export interface ResourceSettingsResponse {
+  settings: ResourceSettings
+  /**
+   * What a saved number is clamped into. Memory and cores are the machine's
+   * (the same as InstanceResources.limits); `sessionMb` must also stay at or
+   * above the effective `uploadMb`, and a change that breaks that is refused.
+   */
+  bounds: Record<ResourceSettingName, ResourceBounds>
+  /**
+   * KERNEL_MEM_<ENVIRONMENT> overrides, read-only: they beat both memory
+   * defaults for their environment and can be changed only in the
+   * environment.
+   */
+  perEnvironmentMemory: { environment: string; mb: number }[]
+  /** Which backend runs the kernels; see ResourceSetting.dockerOnly. */
+  backend: 'docker' | 'broker' | 'test'
+  machine: InstanceResources
+  budget: ResourceBudget
+}
+
+/**
+ * PUT /api/admin/resources: only the fields being changed. A number is saved
+ * (clamped into `bounds`), `null` forgets the saved value and hands the
+ * setting back to the environment or the default. Unknown fields and
+ * fractions are refused.
+ */
+export type UpdateResourceSettingsRequest = {
+  [K in ResourceSettingName]?: number | null
 }
 
 /* -------------------------------------------------------------- oracle */

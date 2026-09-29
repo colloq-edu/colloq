@@ -305,13 +305,14 @@ ensureColumn('sessions', 'kernel_revision', 'kernel_revision TEXT')
 /*
  * How much memory to give the kernel of THIS room, in megabytes.
  *
- * NULL means "as the environment has it", that is `KERNEL_MEM` and the pool
- * defaults (kernel/pool.ts · memoryLimit), and so are all seminars created
- * before this field appeared. The number is here for the sake of one day: on
- * 13 Sep 2026 the seminar kernel was killed for memory sixteen times in a row,
- * and the only knob was an environment variable for the whole machine —
- * raising it for one room was impossible, and raising it for everyone meant
- * handing memory to ten rooms that did not need it.
+ * NULL means "as the environment has it", that is the instance defaults
+ * (admin/resource-settings.ts, kernel/pool.ts · memoryLimitMb), and so are
+ * all seminars created before this field appeared. The number is here for
+ * the sake of one day: on 13 Sep 2026 the seminar kernel was killed for
+ * memory sixteen times in a row, and the only knob was an environment
+ * variable for the whole machine — raising it for one room was impossible,
+ * and raising it for everyone meant handing memory to ten rooms that did not
+ * need it.
  *
  * In megabytes, not as a docker string: the number is compared with what the
  * machine has and summed across rooms. The string "4g" would have to be
@@ -321,13 +322,13 @@ ensureColumn('sessions', 'memory_mb', 'memory_mb INTEGER')
 /*
  * How many cores to give this room.
  *
- * NULL means "as set for the instance" (`KERNEL_CPUS`, two by default), and
- * so are all seminars before the field appeared. A separate column next to
- * memory and for the same reason: a vision class and a statistics seminar
- * live on the same image, and the whole difference between them is how much
- * machine they need. The number here decides not only `--cpus` but also the
- * number of numpy and torch threads inside the container (kernel/pool.ts ·
- * threadLimit).
+ * NULL means "as set for the instance" (`roomCpus`, then KERNEL_CPUS, two by
+ * default), and so are all seminars before the field appeared. A separate
+ * column next to memory and for the same reason: a vision class and a
+ * statistics seminar live on the same image, and the whole difference between
+ * them is how much machine they need. The number here decides not only
+ * `--cpus` but also the number of numpy and torch threads inside the
+ * container (kernel/pool.ts · threadLimit).
  */
 ensureColumn('sessions', 'cpus', 'cpus INTEGER')
 /*

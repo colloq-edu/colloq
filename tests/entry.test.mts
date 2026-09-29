@@ -41,7 +41,7 @@ test('a trailing slash is the same link', () => {
 /* ----------------------------------------------------- what is NOT one */
 
 test('the panel and its own tabs carry no credential', () => {
-  for (const path of ['/admin', '/admin/', '/admin/seminars', '/admin/teachers', '/admin/oracle']) {
+  for (const path of ['/admin', '/admin/', '/admin/seminars', '/admin/teachers', '/admin/oracle', '/admin/resources']) {
     assert.equal(readEntryCredential(path), null, path)
   }
 })

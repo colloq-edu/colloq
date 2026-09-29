@@ -2819,6 +2819,42 @@ test('the personal kernel ceiling refuses in words, not with silence', async () 
   }
 })
 
+test('the personal kernel ceiling saved in the panel beats the environment, and without a restart', async () => {
+  const { ensureKernel } = await import('../server/src/kernel/index.js')
+  const { setRules, storedRules } = await import('../server/src/db.js')
+  const { updateResourceSettings } = await import('../server/src/admin/resource-settings.js')
+  const machine = { memory: { min: 512, max: 65_536 }, cpus: { min: 1, max: 16 } }
+  const room = await seminar()
+  const first = await secondBook(room, 'Вика.ipynb')
+  const second = await secondBook(room, 'Глеб.ipynb')
+  setRules(room.id, {
+    ...storedRules(room.id),
+    books: {
+      [first.root]: { access: 'owner', owner: 'p_vika', ownerName: 'Вика' },
+      [second.root]: { access: 'owner', owner: 'p_gleb', ownerName: 'Глеб' },
+    },
+  })
+  // The environment allows plenty; the owner's saved number is what counts.
+  const previous = process.env.KERNEL_OWN_MAX
+  process.env.KERNEL_OWN_MAX = '50'
+  try {
+    updateResourceSettings({ ownMax: 1 }, machine)
+    await ensureKernel(room.id, first.root)
+    await assert.rejects(
+      ensureKernel(room.id, second.root),
+      /1|закройте|close/,
+      'the saved ceiling was not read at the kernel start',
+    )
+    // Forgetting it hands the ceiling back to the environment, just as live.
+    updateResourceSettings({ ownMax: null }, machine)
+    await ensureKernel(room.id, second.root)
+  } finally {
+    updateResourceSettings({ ownMax: null }, machine)
+    if (previous === undefined) delete process.env.KERNEL_OWN_MAX
+    else process.env.KERNEL_OWN_MAX = previous
+  }
+})
+
 test('changing access to a notebook stops its kernel — and says so', async () => {
   const { requestRun, syncBookKernels } = await import('../server/src/kernel/index.js')
   const { setRules, storedRules } = await import('../server/src/db.js')

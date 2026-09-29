@@ -59,6 +59,12 @@
     refusal?: string | null
     /** Whose form this is; absent — a new class that has no kernel yet. */
     roomId?: string | null
+    /**
+     * The personal notebooks are set right below this component (the creation
+     * form's OwnNotebooks), so the hint that sends the teacher to the rules
+     * list for them would point at a row that is no longer there.
+     */
+    ownBelow?: boolean
   }
 
   let {
@@ -72,6 +78,7 @@
     busy = false,
     refusal = null,
     roomId = null,
+    ownBelow = false,
   }: Props = $props()
 
   const MB_IN_GB = 1024
@@ -402,7 +409,9 @@
         the machine twice as much is needed BEFORE it is raised: the number is
         chosen once, and it is chosen here.
       -->
-      <p class="text-2xs leading-snug text-muted">{tr('admin.resources.ownHint')}</p>
+      {#if !ownBelow}
+        <p class="text-2xs leading-snug text-muted">{tr('admin.resources.ownHint')}</p>
+      {/if}
 
       <!--
         The class's second container — as a line, not as an addition to the

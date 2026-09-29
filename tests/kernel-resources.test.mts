@@ -436,11 +436,11 @@ test('the scripting door does not let a guest hand out the machine memory', asyn
 
 test("a room's own number beats the environment default", () => {
   const room = { sessionId: 'res-args', mount: '/w/res-args', network: 'colloq-rooms', publish: true, gpu: null }
-  // The environment default is the same as before.
-  assert.ok(runArgs({ ...room, env: 'base' }).includes('--memory=4g'))
+  // The environment default is the same as before, in megabytes like every limit.
+  assert.ok(runArgs({ ...room, env: 'base' }).includes('--memory=4096m'))
   const own = runArgs({ ...room, env: 'base', memoryMb: 6144 })
   assert.ok(own.includes('--memory=6144m'), JSON.stringify(own))
-  assert.ok(!own.includes('--memory=4g'), "the environment default stayed next to the room's own number")
+  assert.ok(!own.includes('--memory=4096m'), "the environment default stayed next to the room's own number")
   // Swap exactly equal to memory: otherwise a kernel that hits the limit goes
   // to disk instead of dying honestly, and the room stalls for minutes.
   assert.ok(own.includes('--memory-swap=6144m'))

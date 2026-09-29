@@ -776,11 +776,11 @@ export function deleteFile(sessionId: string, name: string): boolean {
 /**
  * How many bytes a copy moves at a time.
  *
- * Not "read the whole file": the ceiling for one file is fifty megabytes
- * (config.maxUploadBytes), and a buffer of that size in the room's
- * synchronous handler is half a second of pause for the whole instance and a
- * memory peak the neighboring seminar will notice. A quarter of a megabyte is
- * the usual size at which the kernel works in pages anyway.
+ * Not "read the whole file": the ceiling for one file is fifty megabytes by
+ * default (admin/resource-settings.ts · uploadMb), and a buffer of that size
+ * in the room's synchronous handler is half a second of pause for the whole
+ * instance and a memory peak the neighboring seminar will notice. A quarter
+ * of a megabyte is the usual size at which the kernel works in pages anyway.
  */
 const COPY_CHUNK = 256 * 1024
 

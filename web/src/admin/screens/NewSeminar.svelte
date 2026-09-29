@@ -21,6 +21,8 @@
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Section from '@/admin/ui/Section.svelte'
   import Resources from '@/admin/ui/Resources.svelte'
+  import OwnNotebooks from '@/admin/ui/OwnNotebooks.svelte'
+  import Footprint from '@/admin/ui/Footprint.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import { oracleCeiling, oracleOverCeiling, splitBySize, uploadMb } from '@/admin/panel'
@@ -32,6 +34,7 @@
     type EnvironmentsState,
     type ImportPreview,
     type InstanceResources,
+    type ResourceSettingsResponse,
     type OracleSettings,
   } from '@shared/admin'
   import { LECTURE_ROOM, OPEN_ROOM, type RoomRules, COUNCIL_ROOM } from '@shared/rules'
@@ -319,6 +322,32 @@
   let memoryMb = $state<number | null>(null)
   /** How many cores were set for THIS room; null — same as the instance. */
   let cpus = $state<number | null>(null)
+  /**
+   * The instance's resource defaults and the machine's budget (Resources tab).
+   * Read for two numbers the room form cannot know by itself: what a class's
+   * personal-notebook container gets when it says nothing, and what the
+   * machine has already promised to others. Optional in every sense: without
+   * it the notebooks fall back to "same as the room" and the footprint bar is
+   * left out.
+   */
+  let resourceSettings = $state<ResourceSettingsResponse | null>(null)
+
+  /** What the room will really get, for the footprint under the section. */
+  const roomMemoryEffective = $derived(
+    memoryMb ??
+      resources?.kernel.perEnvironment[environment]?.memoryMb ??
+      resources?.kernel.defaultMemoryMb ??
+      null,
+  )
+  const roomCpusEffective = $derived(cpus ?? resources?.kernel.defaultCpus ?? null)
+  const ownMemoryEffective = $derived(
+    rules.ownBooks === 'on'
+      ? (rules.ownMemoryMb ?? resourceSettings?.settings.ownMemoryMb.value ?? roomMemoryEffective ?? 0)
+      : 0,
+  )
+  const ownCpusEffective = $derived(
+    rules.ownBooks === 'on' ? (rules.ownCpus ?? resourceSettings?.settings.ownCpus.value ?? roomCpusEffective ?? 0) : 0,
+  )
 
   let preview = $state<ImportPreview | null>(null)
   let previewing = $state(false)
@@ -400,6 +429,11 @@
       .then((r: InstanceResources) => (resources = r))
       .catch(() => (resources = null))
       .finally(() => (resourcesLoading = false))
+    // Not a gate for Create: the defaults and the budget only refine hints.
+    void adminApi
+      .resourceSettings()
+      .then((r: ResourceSettingsResponse) => (resourceSettings = r))
+      .catch(() => (resourceSettings = null))
   })
 
   /*
@@ -977,7 +1011,36 @@
       onmemory={(mb) => (memoryMb = mb)}
       {cpus}
       oncpus={(cores) => (cpus = cores)}
+      ownBelow
     />
+    <!--
+      Personal notebooks are asked here, next to the room's own memory, and
+      not in the rules list below: "may they" is a rule, but "how much of the
+      machine for thirty notebooks" is this section's question, and the
+      creation form is where it gets answered or never.
+    -->
+    <div class="mt-6 flex flex-col gap-6">
+      <OwnNotebooks
+        {rules}
+        onchange={(patch) => (rules = { ...rules, ...patch })}
+        roomMemoryMb={roomMemoryEffective}
+        roomCpus={roomCpusEffective}
+        instanceMemoryMb={resourceSettings?.settings.ownMemoryMb.value ?? null}
+        instanceCpus={resourceSettings?.settings.ownCpus.value ?? null}
+        maxMemoryMb={resources?.limits.max ?? null}
+        maxCpus={resources?.limits.cpus.max ?? null}
+        ownKernels={resourceSettings?.backend !== 'broker'}
+      />
+      {#if roomMemoryEffective !== null && roomCpusEffective !== null}
+        <Footprint
+          roomMemoryMb={roomMemoryEffective}
+          roomCpus={roomCpusEffective}
+          ownMemoryMb={ownMemoryEffective}
+          ownCpus={ownCpusEffective}
+          budget={resourceSettings?.budget ?? null}
+        />
+      {/if}
+    </div>
   </Section>
 
   <!--
@@ -1162,6 +1225,7 @@
            and the list offers nothing the machine will not give. -->
       <RoomRulesRows
         {rules}
+        exclude={['ownBooks']}
         instance={instanceOracle}
         own={{
           roomMemoryMb: memoryMb ?? resources?.kernel.defaultMemoryMb ?? null,

@@ -56,6 +56,7 @@ const COURSES = 'web/src/admin/screens/Courses.svelte'
 const PUBLISH = 'web/src/admin/screens/Publish.svelte'
 const SEMINARS = 'web/src/admin/screens/Seminars.svelte'
 const ENVIRONMENTS = 'web/src/admin/screens/Environments.svelte'
+const RESOURCES = 'web/src/admin/screens/ResourcesTab.svelte'
 
 /* ---------------------------------------------- former names in the address */
 
@@ -182,4 +183,11 @@ test('the environments screen follows the chosen language entirely', () => {
   assert.doesNotMatch(localized(source, 'en'), /[А-Яа-яЁё]/)
   assert.match(localized(source, 'ru'), /Окружения/)
   assert.match(localized(source, 'ru'), /срезы GPU/)
+})
+
+test('the resources screen follows the chosen language entirely', () => {
+  const source = code(read(RESOURCES))
+  assert.doesNotMatch(localized(source, 'en'), /[А-Яа-яЁё]/)
+  assert.match(localized(source, 'ru'), /Как поделена машина/)
+  assert.match(localized(source, 'en'), /How the machine is divided/)
 })

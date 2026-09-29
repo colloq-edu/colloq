@@ -39,6 +39,7 @@ import {
   updateTeacherIdentity,
   updateTeacherRole,
 } from '../admin/store.js'
+import { uploadLimitBytes } from '../admin/resource-settings.js'
 import { config } from '../config.js'
 import { normalizeLabel } from '@shared/text'
 import {
@@ -111,9 +112,10 @@ export function adminAuthRoutes(): Router {
        * MAX_UPLOAD_MB to 200 read someone else's number on the screen.
        *
        * There is no secret here: the server names the same number in its
-       * refusal to anyone uploading (routes/files.ts).
+       * refusal to anyone uploading (routes/files.ts). Read per request: the
+       * owner moves it in the panel (admin/resource-settings.ts).
        */
-      maxUploadBytes: config.maxUploadBytes,
+      maxUploadBytes: uploadLimitBytes(),
     }
     // Claiming is a race against whoever else can read the disk; a cached
     // "unclaimed" would be a lie the moment it mattered.

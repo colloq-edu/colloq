@@ -1610,8 +1610,8 @@ export const adminMessages: MessageCatalog = {
     "en": "{p0} MB"
   },
   "admin.in.the.server.environment.read.at.boot.change.it.in": {
-    "ru": "в окружении сервера, считывается при запуске. Измените её в",
-    "en": "in the server environment, read at boot. Change it in"
+    "ru": "в окружении сервера, если владелец не сохранил предел в ресурсах сервера: тот действует сразу. Переменную меняют в",
+    "en": "in the server environment, unless the owner saved a limit in the instance resources, which applies at once. Change the variable in"
   },
   "admin.and.restart": {
     "ru": "и перезапустите сервер.",
@@ -3913,5 +3913,529 @@ export const adminMessages: MessageCatalog = {
   "admin.competitions.metricUnnamed": {
     "ru": "метрика",
     "en": "metric"
+  },
+  "admin.resourcesTab.title": {
+    "ru": "Ресурсы",
+    "en": "Resources"
+  },
+  "admin.resourcesTab.subtitle": {
+    "ru": "Сколько машины получает каждая часть занятия. Это значения по умолчанию: у занятия и соревнования их можно поменять.",
+    "en": "How much of the machine each part of a class gets. These are defaults: a class or a competition can change its own."
+  },
+  "admin.resourcesTab.loading": {
+    "ru": "Загружаем ресурсы…",
+    "en": "Loading resources…"
+  },
+  "admin.resourcesTab.readOnly": {
+    "ru": "Менять эти числа может только владелец.",
+    "en": "Only an owner can change these numbers."
+  },
+  "admin.resourcesTab.unsaved": {
+    "ru": {
+      "one": "{count} изменение не сохранено",
+      "few": "{count} изменения не сохранены",
+      "many": "{count} изменений не сохранено",
+      "other": "{count} изменения не сохранены"
+    },
+    "en": {
+      "one": "{count} unsaved change",
+      "other": "{count} unsaved changes"
+    }
+  },
+  "admin.resourcesTab.was": {
+    "ru": "было {value}",
+    "en": "was {value}"
+  },
+  "admin.resourcesTab.wasSameAsRoom": {
+    "ru": "было как у комнаты",
+    "en": "was the same as the room"
+  },
+  "admin.resourcesTab.willForget": {
+    "ru": "после сохранения — как в .env или по умолчанию",
+    "en": "after saving: as in .env or the default"
+  },
+  "admin.resourcesTab.sourceSaved": {
+    "ru": "сохранено здесь",
+    "en": "saved here"
+  },
+  "admin.resourcesTab.backToEnv": {
+    "ru": "вернуть как в .env",
+    "en": "back to .env"
+  },
+  "admin.resourcesTab.backToDefault": {
+    "ru": "вернуть умолчание",
+    "en": "back to the default"
+  },
+  "admin.resourcesTab.sourceEnv": {
+    "ru": "из .env:",
+    "en": "from .env:"
+  },
+  "admin.resourcesTab.sourceDefault": {
+    "ru": "по умолчанию",
+    "en": "default"
+  },
+  "admin.resourcesTab.machineTitle": {
+    "ru": "Как поделена машина",
+    "en": "How the machine is divided"
+  },
+  "admin.resourcesTab.machineNote": {
+    "ru": "Что обещано прямо сейчас: запущенные комнаты, личные тетради и исполнители соревнований по их пределам. Память делить нельзя — ядра можно: посылки просто пойдут медленнее.",
+    "en": "What is promised right now: running rooms, personal notebooks and competition executors, by their limits. Memory cannot be shared — cores can: submissions just run slower."
+  },
+  "admin.resourcesTab.memory": {
+    "ru": "Память",
+    "en": "Memory"
+  },
+  "admin.resourcesTab.cores": {
+    "ru": "Ядра",
+    "en": "Cores"
+  },
+  "admin.resourcesTab.ofPromisedGb": {
+    "ru": "из {total} ГБ обещано",
+    "en": "of {total} GB promised"
+  },
+  "admin.resourcesTab.ofPromised": {
+    "ru": "из {total} обещано",
+    "en": "of {total} promised"
+  },
+  "admin.resourcesTab.freeGb": {
+    "ru": "свободно {value} ГБ",
+    "en": "{value} GB free"
+  },
+  "admin.resourcesTab.shortGb": {
+    "ru": "не хватает {value} ГБ",
+    "en": "{value} GB short"
+  },
+  "admin.resourcesTab.rooms": {
+    "ru": "Комнаты",
+    "en": "Rooms"
+  },
+  "admin.resourcesTab.roomsDetail": {
+    "ru": {
+      "one": "{count} запущена · {memory} ГБ",
+      "few": "{count} запущены · {memory} ГБ",
+      "many": "{count} запущено · {memory} ГБ",
+      "other": "{count} запущено · {memory} ГБ"
+    },
+    "en": {
+      "one": "{count} running · {memory} GB",
+      "other": "{count} running · {memory} GB"
+    }
+  },
+  "admin.resourcesTab.notebooks": {
+    "ru": "Личные тетради",
+    "en": "Personal notebooks"
+  },
+  "admin.resourcesTab.notebooksDetail": {
+    "ru": {
+      "one": "{count} класс · {memory} ГБ",
+      "few": "{count} класса · {memory} ГБ",
+      "many": "{count} классов · {memory} ГБ",
+      "other": "{count} класса · {memory} ГБ"
+    },
+    "en": {
+      "one": "{count} class · {memory} GB",
+      "other": "{count} classes · {memory} GB"
+    }
+  },
+  "admin.resourcesTab.competitions": {
+    "ru": "Соревнования",
+    "en": "Competitions"
+  },
+  "admin.resourcesTab.competitionsDetail": {
+    "ru": {
+      "one": "{count} исполнитель × {memory} ГБ",
+      "few": "{count} исполнителя × {memory} ГБ",
+      "many": "{count} исполнителей × {memory} ГБ",
+      "other": "{count} исполнителя × {memory} ГБ"
+    },
+    "en": {
+      "one": "{count} executor × {memory} GB",
+      "other": "{count} executors × {memory} GB"
+    }
+  },
+  "admin.resourcesTab.free": {
+    "ru": "Свободно",
+    "en": "Free"
+  },
+  "admin.resourcesTab.freeDetail": {
+    "ru": "{memory} ГБ · {reserve} ГБ системе",
+    "en": "{memory} GB · {reserve} GB kept for the system"
+  },
+  "admin.resourcesTab.overcommitNote": {
+    "ru": "Если все исполнители соревнований займут память разом, её не хватит: ядро, которому не достанется памяти, упадёт. Уменьшите память посылки или число исполнителей.",
+    "en": "If every competition executor takes its memory at once, there will not be enough: a kernel left without memory is killed. Lower the submission memory or the number of executors."
+  },
+  "admin.resourcesTab.incompleteNote": {
+    "ru": "Docker не ответил на перепись контейнеров — полоса показывает меньше, чем обещано на самом деле.",
+    "en": "Docker did not answer the container census — the bar shows less than is really promised."
+  },
+  "admin.resourcesTab.coresShared": {
+    "ru": "ядра делятся — это нормально",
+    "en": "cores are shared — that is fine"
+  },
+  "admin.resourcesTab.coresNote": {
+    "ru": "{rooms} — комнаты, {own} — личные тетради, {queue} — исполнители соревнований. Потоки numpy и torch в каждом контейнере ограничены его ядрами, поэтому соседи не отнимают друг у друга машину.",
+    "en": "{rooms} for rooms, {own} for personal notebooks, {queue} for competition executors. numpy and torch threads in each container are capped at its cores, so neighbours do not take the machine from each other."
+  },
+  "admin.resourcesTab.roomTitle": {
+    "ru": "Комната по умолчанию",
+    "en": "Default room"
+  },
+  "admin.resourcesTab.roomNote": {
+    "ru": "Общее ядро занятия — тетрадь, в которой работают все вместе. Новые занятия берут эти числа; у каждого их можно поменять и во время пары.",
+    "en": "A class's shared kernel — the notebook everyone works in together. New classes take these numbers; each can change its own, during class too."
+  },
+  "admin.resourcesTab.brokerNote": {
+    "ru": "Ядра на этом сервере запускает k3s: память и ядра комнат он берёт из своих настроек, и числа ниже на него не действуют.",
+    "en": "On this server k3s runs the kernels: it sizes rooms from its own settings, and the numbers below do not apply to it."
+  },
+  "admin.resourcesTab.gpuMemory": {
+    "ru": "На GPU-окружениях",
+    "en": "On GPU environments"
+  },
+  "admin.resourcesTab.unitGb": {
+    "ru": "ГБ",
+    "en": "GB"
+  },
+  "admin.resourcesTab.unitCores": {
+    "ru": "ядра",
+    "en": "cores"
+  },
+  "admin.resourcesTab.perEnvironment": {
+    "ru": "Для окружений в .env задано отдельно, и это главнее чисел выше:",
+    "en": "Set per environment in .env, and these win over the numbers above:"
+  },
+  "admin.resourcesTab.notebooksTitle": {
+    "ru": "Личные тетради студентов",
+    "en": "Students' personal notebooks"
+  },
+  "admin.resourcesTab.notebooksNote": {
+    "ru": "У каждого своя тетрадь и своё ядро, но все они живут в одном контейнере занятия и делят его память. Считайте на весь класс — около полутора гигабайт на человека.",
+    "en": "Everyone has their own notebook and kernel, but they all live in one container per class and share its memory. Count for the whole class — about one and a half gigabytes per person."
+  },
+  "admin.resourcesTab.memoryPerClass": {
+    "ru": "Память на класс",
+    "en": "Memory per class"
+  },
+  "admin.resourcesTab.sameAsRoom": {
+    "ru": "как у комнаты",
+    "en": "same as the room"
+  },
+  "admin.resourcesTab.classOf": {
+    "ru": "На класс из",
+    "en": "For a class of"
+  },
+  "admin.resourcesTab.perNotebook": {
+    "ru": {
+      "one": "человека — по {memory} ГБ и {cpus} ядра на тетрадь",
+      "few": "человек — по {memory} ГБ и {cpus} ядра на тетрадь",
+      "many": "человек — по {memory} ГБ и {cpus} ядра на тетрадь",
+      "other": "человека — по {memory} ГБ и {cpus} ядра на тетрадь"
+    },
+    "en": {
+      "one": "person — {memory} GB and {cpus} cores per notebook",
+      "other": "people — {memory} GB and {cpus} cores per notebook"
+    }
+  },
+  "admin.resourcesTab.ownMax": {
+    "ru": "Живых ядер не больше",
+    "en": "Live kernels at most"
+  },
+  "admin.resourcesTab.unitPerClass": {
+    "ru": "на занятие",
+    "en": "per class"
+  },
+  "admin.resourcesTab.ownIdle": {
+    "ru": "Гасить после",
+    "en": "Stop after"
+  },
+  "admin.resourcesTab.unitIdleMinutes": {
+    "ru": "мин простоя",
+    "en": "idle min"
+  },
+  "admin.resourcesTab.ownMaxNote": {
+    "ru": "Следующая тетрадь подождёт, пока освободится место. Погашенное ядро теряет переменные, текст тетради остаётся. 0 минут — не гасить.",
+    "en": "The next notebook waits until a place frees up. A stopped kernel loses its variables; the notebook's text stays. 0 minutes: never stop."
+  },
+  "admin.resourcesTab.competitionsTitle": {
+    "ru": "Соревнования",
+    "en": "Competitions"
+  },
+  "admin.resourcesTab.competitionsNote": {
+    "ru": "Каждая посылка исполняется с нуля в своём контейнере без сети. Здесь — сколько их идёт одновременно и что получает новое соревнование.",
+    "en": "Every submission runs from scratch in its own container without network. Here: how many run at once and what a new competition gets."
+  },
+  "admin.resourcesTab.slots": {
+    "ru": "Исполнителей одновременно",
+    "en": "Executors at once"
+  },
+  "admin.resourcesTab.slotsAuto": {
+    "ru": "Авто · {count}",
+    "en": "Auto · {count}"
+  },
+  "admin.resourcesTab.slotsAutoBare": {
+    "ru": "Авто",
+    "en": "Auto"
+  },
+  "admin.resourcesTab.slotsAutoHint": {
+    "ru": "по {cpus} ядра и {memory} ГБ из {machineCpus} ядер и {machineMemory} ГБ машины",
+    "en": "{cpus} cores and {memory} GB each, out of the machine's {machineCpus} cores and {machineMemory} GB"
+  },
+  "admin.resourcesTab.slotsFixed": {
+    "ru": "Своё число",
+    "en": "A fixed number"
+  },
+  "admin.resourcesTab.slotsFixedHint": {
+    "ru": "от {min} до {max}; остальные ждут в очереди",
+    "en": "from {min} to {max}; the rest wait in the queue"
+  },
+  "admin.resourcesTab.slotsNumber": {
+    "ru": "Исполнителей",
+    "en": "Executors"
+  },
+  "admin.resourcesTab.unitSlots": {
+    "ru": "одновременно",
+    "en": "at once"
+  },
+  "admin.resourcesTab.wall": {
+    "ru": "Время",
+    "en": "Time"
+  },
+  "admin.resourcesTab.unitSeconds": {
+    "ru": "с",
+    "en": "s"
+  },
+  "admin.resourcesTab.perDay": {
+    "ru": "Посылок в день",
+    "en": "Submissions a day"
+  },
+  "admin.resourcesTab.defaultsNote": {
+    "ru": "Столько получит новое соревнование; у идущего это меняется на его вкладке «Настройки».",
+    "en": "This is what a new competition gets; a running one changes it on its own Settings tab."
+  },
+  "admin.resourcesTab.uploads": {
+    "ru": "Загрузок в минуту на участника",
+    "en": "Uploads per minute per participant"
+  },
+  "admin.resourcesTab.unitPerMinute": {
+    "ru": "в минуту",
+    "en": "a minute"
+  },
+  "admin.resourcesTab.uploadsNote": {
+    "ru": "Считается по участнику, а не по адресу: класс за одним школьным NAT больше не делит общий лимит.",
+    "en": "Counted per participant, not per address: a class behind one school NAT no longer shares one limit."
+  },
+  "admin.resourcesTab.filesTitle": {
+    "ru": "Файлы",
+    "en": "Files"
+  },
+  "admin.resourcesTab.filesNote": {
+    "ru": "Сколько можно загрузить в папку занятия за раз и всего.",
+    "en": "How much can be uploaded into a class's folder at once and in total."
+  },
+  "admin.resourcesTab.uploadMb": {
+    "ru": "Один файл до",
+    "en": "One file up to"
+  },
+  "admin.resourcesTab.sessionMb": {
+    "ru": "Все файлы занятия до",
+    "en": "All of a class's files up to"
+  },
+  "admin.resourcesTab.unitMb": {
+    "ru": "МБ",
+    "en": "MB"
+  },
+  "admin.resourcesTab.appliesNote": {
+    "ru": "Всё применяется без перезапуска сервера. Ядра и память личных тетрадей подхватываются на лету; память комнаты по умолчанию получат новые контейнеры — у идущего занятия её меняют в его настройках.",
+    "en": "Everything applies without restarting the server. Cores and personal-notebook memory are picked up live; the default room memory goes to new containers — a running class changes its own in its settings."
+  },
+  "admin.resourcesTab.perNotebookTight": {
+    "ru": "Меньше гигабайта на человека: первый настоящий датасет уронит общий контейнер, а с ним — все личные тетради класса.",
+    "en": "Less than a gigabyte per person: the first real dataset will bring down the shared container, and every personal notebook in it."
+  },
+  "admin.ownNotebooks.title": {
+    "ru": "Личные тетради",
+    "en": "Personal notebooks"
+  },
+  "admin.ownNotebooks.lede": {
+    "ru": "свой листок и своё ядро у каждого — до трёх на человека",
+    "en": "a notebook and a kernel of their own for everyone — up to three each"
+  },
+  "admin.ownNotebooks.off": {
+    "ru": "Нельзя",
+    "en": "Not allowed"
+  },
+  "admin.ownNotebooks.on": {
+    "ru": "Можно",
+    "en": "Allowed"
+  },
+  "admin.ownNotebooks.asRoom": {
+    "ru": "как у комнаты",
+    "en": "same as the room"
+  },
+  "admin.ownNotebooks.asRoomValue": {
+    "ru": "как у комнаты · {value}",
+    "en": "same as the room · {value}"
+  },
+  "admin.ownNotebooks.asDefaultValue": {
+    "ru": "по умолчанию · {value}",
+    "en": "default · {value}"
+  },
+  "admin.ownNotebooks.memory": {
+    "ru": "Память личных тетрадей на класс",
+    "en": "Personal notebooks' memory per class"
+  },
+  "admin.ownNotebooks.cpus": {
+    "ru": "Ядра личных тетрадей на класс",
+    "en": "Personal notebooks' cores per class"
+  },
+  "admin.ownNotebooks.gbPerClass": {
+    "ru": "ГБ на класс",
+    "en": "GB per class"
+  },
+  "admin.ownNotebooks.cores": {
+    "ru": "ядер",
+    "en": "cores"
+  },
+  "admin.ownNotebooks.classOf": {
+    "ru": "В классе",
+    "en": "In a class of"
+  },
+  "admin.ownNotebooks.perNotebook": {
+    "ru": {
+      "one": "человек → по {memory} ГБ и {cpus} ядра на тетрадь",
+      "few": "человека → по {memory} ГБ и {cpus} ядра на тетрадь",
+      "many": "человек → по {memory} ГБ и {cpus} ядра на тетрадь",
+      "other": "человека → по {memory} ГБ и {cpus} ядра на тетрадь"
+    },
+    "en": {
+      "one": "person → {memory} GB and {cpus} cores per notebook",
+      "other": "people → {memory} GB and {cpus} cores per notebook"
+    }
+  },
+  "admin.ownNotebooks.note": {
+    "ru": "Все личные тетради занятия делят один контейнер: тяжёлая тетрадь одного студента не уронит общую, но может задеть соседние личные.",
+    "en": "All of a class's personal notebooks share one container: one student's heavy notebook will not bring down the shared one, but can hit the other personal ones."
+  },
+  "admin.footprint.title": {
+    "ru": "Занятие займёт",
+    "en": "This class will take"
+  },
+  "admin.footprint.takes": {
+    "ru": {
+      "one": "до {memory} ГБ и {count} ядра",
+      "few": "до {memory} ГБ и {count} ядер",
+      "many": "до {memory} ГБ и {count} ядер",
+      "other": "до {memory} ГБ и {count} ядра"
+    },
+    "en": {
+      "one": "up to {memory} GB and {count} core",
+      "other": "up to {memory} GB and {count} cores"
+    }
+  },
+  "admin.footprint.left": {
+    "ru": "останется {memory} ГБ",
+    "en": "{memory} GB will be left"
+  },
+  "admin.footprint.short": {
+    "ru": "не хватит {memory} ГБ",
+    "en": "{memory} GB short"
+  },
+  "admin.footprint.room": {
+    "ru": "общее ядро {memory} ГБ",
+    "en": "shared kernel {memory} GB"
+  },
+  "admin.footprint.own": {
+    "ru": "личные тетради {memory} ГБ",
+    "en": "personal notebooks {memory} GB"
+  },
+  "admin.footprint.others": {
+    "ru": "уже обещано другим {memory} ГБ",
+    "en": "already promised to others {memory} GB"
+  },
+  "admin.footprint.machine": {
+    "ru": {
+      "one": "машина {memory} ГБ · {count} ядро",
+      "few": "машина {memory} ГБ · {count} ядра",
+      "many": "машина {memory} ГБ · {count} ядер",
+      "other": "машина {memory} ГБ · {count} ядра"
+    },
+    "en": {
+      "one": "machine {memory} GB · {count} core",
+      "other": "machine {memory} GB · {count} cores"
+    }
+  },
+  "admin.footprint.shortNote": {
+    "ru": "С тем, что уже обещано комнатам и соревнованиям, памяти не хватит: при полной нагрузке ядро упадёт. Уменьшите память занятия или соревнований во вкладке «Ресурсы».",
+    "en": "With what is already promised to rooms and competitions there is not enough memory: under full load a kernel will be killed. Lower this class's memory, or the competitions' on the Resources tab."
+  },
+  "admin.competitions.slotsHead": {
+    "ru": {
+      "one": "ИСПОЛНИТЕЛИ · {busy} ИЗ {count} ЗАНЯТ",
+      "few": "ИСПОЛНИТЕЛИ · {busy} ИЗ {count} ЗАНЯТЫ",
+      "many": "ИСПОЛНИТЕЛИ · {busy} ИЗ {count} ЗАНЯТЫ",
+      "other": "ИСПОЛНИТЕЛИ · {busy} ИЗ {count} ЗАНЯТЫ"
+    },
+    "en": {
+      "one": "EXECUTORS · {busy} OF {count} BUSY",
+      "other": "EXECUTORS · {busy} OF {count} BUSY"
+    }
+  },
+  "admin.competitions.waitingCount": {
+    "ru": {
+      "one": "{count} ждёт",
+      "few": "{count} ждут",
+      "many": "{count} ждут",
+      "other": "{count} ждут"
+    },
+    "en": {
+      "one": "{count} waiting",
+      "other": "{count} waiting"
+    }
+  },
+  "admin.competitions.lastResult": {
+    "ru": "последняя досчитается ≈ через {eta}",
+    "en": "the last result in ≈ {eta}"
+  },
+  "admin.competitions.medianShort": {
+    "ru": "медиана {span}",
+    "en": "median {span}"
+  },
+  "admin.competitions.slotsSetting": {
+    "ru": "настроить в «Ресурсах»",
+    "en": "set in Resources"
+  },
+  "admin.competitions.slotFree": {
+    "ru": "свободен — возьмёт первую из очереди",
+    "en": "free — takes the next in the queue"
+  },
+  "admin.competitions.slotPaused": {
+    "ru": "свободен · очередь на паузе",
+    "en": "free · the queue is paused"
+  },
+  "admin.competitions.stageStarting": {
+    "ru": "запускается",
+    "en": "starting"
+  },
+  "admin.competitions.stageMetric": {
+    "ru": "считает метрику",
+    "en": "scoring"
+  },
+  "admin.competitions.resultIn": {
+    "ru": "результат через",
+    "en": "result in"
+  },
+  "admin.competitions.fairQueueSlots": {
+    "ru": {
+      "one": "Очередь честная: у кого уже что-то исполняется, тот пропускает остальных. Время — по {count} исполнителю и медиане этого соревнования; то же число видит участник.",
+      "few": "Очередь честная: у кого уже что-то исполняется, тот пропускает остальных. Время — по {count} исполнителям и медиане этого соревнования; то же число видит участник.",
+      "many": "Очередь честная: у кого уже что-то исполняется, тот пропускает остальных. Время — по {count} исполнителям и медиане этого соревнования; то же число видит участник.",
+      "other": "Очередь честная: у кого уже что-то исполняется, тот пропускает остальных. Время — по {count} исполнителям и медиане этого соревнования; то же число видит участник."
+    },
+    "en": {
+      "one": "The queue is fair: whoever already has something running lets the others go first. Times assume {count} executor and this competition's median; the participant sees the same number.",
+      "other": "The queue is fair: whoever already has something running lets the others go first. Times assume {count} executors and this competition's median; the participant sees the same number."
+    }
   },
 }

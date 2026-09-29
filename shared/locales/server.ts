@@ -1318,12 +1318,12 @@ export const serverMessages: MessageCatalog = {
     "en": "The kernel stopped during execution. Queued cells were removed. Restart the kernel to continue."
   },
   "server.theContainerWasKilledByMemoryLimit.6ab1f2": {
-    "ru": "Контейнер комнаты убит по памяти: лимит {p0}, занято {p1}. Поднимите KERNEL_MEM в .env этой машины или считайте меньшими порциями.",
-    "en": "The room's container was killed by memory: the limit is {p0} and {p1} was in use. Raise KERNEL_MEM in this machine's .env, or work in smaller batches."
+    "ru": "Контейнер комнаты убит по памяти: лимит {p0}, занято {p1}. Добавьте памяти в настройках занятия (раздел «Ресурсы») или считайте меньшими порциями.",
+    "en": "The room's container was killed by memory: the limit is {p0} and {p1} was in use. Give the class more memory in its settings (Resources), or work in smaller batches."
   },
   "server.theContainerWasKilledByMemoryOnCell.0d3c74": {
-    "ru": "Контейнер комнаты убит по памяти: лимит {p0}, занято {p1} на ячейке {p2}. Поднимите KERNEL_MEM в .env этой машины или считайте меньшими порциями.",
-    "en": "The room's container was killed by memory: the limit is {p0} and {p1} was in use on cell {p2}. Raise KERNEL_MEM in this machine's .env, or work in smaller batches."
+    "ru": "Контейнер комнаты убит по памяти: лимит {p0}, занято {p1} на ячейке {p2}. Добавьте памяти в настройках занятия (раздел «Ресурсы») или считайте меньшими порциями.",
+    "en": "The room's container was killed by memory: the limit is {p0} and {p1} was in use on cell {p2}. Give the class more memory in its settings (Resources), or work in smaller batches."
   },
   "server.theRoomContainerStoppedWithCode.b72e19": {
     "ru": "Контейнер комнаты остановился, код выхода {p0}. Последнее в его журнале: {p1}",
@@ -2288,6 +2288,18 @@ export const serverMessages: MessageCatalog = {
   "server.council.alreadyQueuedHere": {
     "ru": "Ваш запуск уже стоит в очереди этой тетради — {p0}-й. В очереди держится один запуск на человека: дождитесь своего.",
     "en": "You already have a run in this notebook's queue — number {p0}. One run per person waits at a time: wait for yours."
+  },
+  "server.council.adoptNotShown": {
+    "ru": "Перенести в ячейку можно только работу, которая сейчас на экране класса.",
+    "en": "Only the work on the class screen right now can be put into the cell."
+  },
+  "server.council.adoptChanged": {
+    "ru": "Ячейку правили после переноса — отмена стёрла бы эти правки. Прежний текст есть в истории версий.",
+    "en": "The cell has been edited since the code was put in — undoing would erase those edits. The earlier text is in the version history."
+  },
+  "server.council.adoptTooLate": {
+    "ru": "Отменить перенос уже нельзя: с него прошло больше {p0} мин или его уже отменили. Прежний текст есть в истории версий.",
+    "en": "Too late to undo: more than {p0} min have passed since the code was put in, or it was already undone. The earlier text is in the version history."
   },
   "server.kernel.ownUnavailable": {
     "ru": "На этом инстансе личные тетради пока без своего ядра — запуск в них недоступен",
@@ -3782,5 +3794,21 @@ export const serverMessages: MessageCatalog = {
   "server.connectionDidNotOpen": {
     "ru": "соединение не открылось",
     "en": "the connection did not open"
+  },
+  "server.ownerAction.resources": {
+    "ru": "менять ресурсы сервера",
+    "en": "change the instance resources"
+  },
+  "server.resources.unknownField": {
+    "ru": "Такой настройки ресурсов нет: {field}",
+    "en": "There is no resource setting called {field}"
+  },
+  "server.resources.wholeNumber": {
+    "ru": "{field}: нужно целое число или null",
+    "en": "{field} must be a whole number or null"
+  },
+  "server.resources.sessionBelowUpload": {
+    "ru": "Место под файлы занятия ({p0} МБ) меньше предела одной загрузки ({p1} МБ): такой файл не поместится ни в одно занятие. Поднимите первое или опустите второе.",
+    "en": "A class's file space ({p0} MB) is below the single-upload limit ({p1} MB): such a file would fit into no class. Raise the first or lower the second."
   }
 }

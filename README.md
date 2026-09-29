@@ -503,6 +503,10 @@ available for 30 days, so tabs opened before a deploy still load.
 
 Start with [.env.example](.env.example). `make up` selects the explicit Docker
 development backend; the production installer supplies broker configuration.
+Room memory and CPUs, the personal-notebook numbers, the process ceilings and
+the upload limits are also instance settings: a value the owner saves through
+`/api/admin/resources` wins over `.env` until it is cleared, and takes effect
+without a restart.
 
 | Setting | Purpose |
 | --- | --- |
@@ -513,7 +517,7 @@ development backend; the production installer supplies broker configuration.
 | `UI_LANGUAGE` | Interface language (`ru`, the default, or `en`) until the owner chooses one in `/admin`. |
 | `KERNEL_ENV` | Default Python environment for the Docker development backend. |
 | `KERNEL_PIDS` / `KERNEL_ROOM_SUBNET` | Process ceiling of a room container (512 by default) and the subnet of the `colloq-rooms` network (`10.213.0.0/22`). |
-| `KERNEL_OWN_MAX` / `KERNEL_OWN_PIDS` | Students' personal notebooks run in a second container per class, one that never receives the class's GPU: how many kernels may live in it at once (40 by default) and its process ceiling (2048, because each kernel is about fifteen threads). Over the first number, a run in a personal notebook is refused in words. |
+| `KERNEL_OWN_MAX` / `KERNEL_OWN_PIDS` | Students' personal notebooks run in a second container per class, one that never receives the class's GPU: how many kernels may live in it at once (60 by default) and its process ceiling (2048, because each kernel is about fifteen threads). Over the first number, a run in a personal notebook is refused in words. |
 | `KERNEL_OWN_IDLE_MIN` | Minutes of idling after which one personal notebook's kernel is stopped (30 by default; `0` never stops them). The class keeps running; the notebook is told in the kernel log, and the next Run brings its kernel back. The container goes with the last kernel in it. |
 | `COLLOQ_ROOM_NETWORK` | Unset: rooms cannot reach local addresses (LAN, router, the host, cloud metadata), and they refuse to start if that block cannot be installed. `open` lifts the block for a trusted setup; `colloq doctor` then says so. |
 | `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | Application upload limits; these do not limit arbitrary writes from Python. |

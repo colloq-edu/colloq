@@ -291,6 +291,25 @@ function set(key: string, value: string): void {
   else upsertSetting.run(key, value)
 }
 
+/* ---------------------------------------------------------- generic rows */
+
+/**
+ * The raw rows under one namespace, for modules that keep their own keys in
+ * this table (admin/resource-settings.ts). The schema has one owner, this
+ * module; the others are tenants. Read on every call, like everything here.
+ */
+export function settingRows(prefix: string): Map<string, string> {
+  const rows = new Map<string, string>()
+  for (const [key, value] of stored()) if (key.startsWith(prefix)) rows.set(key, value)
+  return rows
+}
+
+/** One row written, or removed with `null`. Callers batch several inside their own db.transaction. */
+export function putSettingRow(key: string, value: string | null): void {
+  if (value === null) deleteSetting.run(key)
+  else upsertSetting.run(key, value)
+}
+
 /* ------------------------------------------------------------ validation */
 
 export type PatchResult = { patch: UpdateOracleRequest } | { error: string }

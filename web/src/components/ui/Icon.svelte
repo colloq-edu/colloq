@@ -124,6 +124,11 @@
     // A shipping crate: an environment is a built container image, and the
     // Environments artboard draws it as one.
     box: '<path d="M21 8.5v7a1.6 1.6 0 0 1-.85 1.41l-7.4 3.9a1.6 1.6 0 0 1-1.5 0l-7.4-3.9A1.6 1.6 0 0 1 3 15.5v-7"/><path d="M3.4 7.6l8.6-4.5 8.6 4.5-8.6 4.5-8.6-4.5z"/><path d="M12 12.1V20"/>',
+    /*
+     * The Resources tab: two stacked machines. Not a gauge — a gauge promises a
+     * live reading, and the rail row is a place to go, not a meter.
+     */
+    server: '<rect x="3.5" y="4" width="17" height="7" rx="1.6"/><rect x="3.5" y="13" width="17" height="7" rx="1.6"/><path d="M7.5 7.5h2M7.5 16.5h2"/>',
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.6h.01"/>',
     // The room header: a small window with a filled top band. Not an up arrow —
     // an arrow promises scrolling or navigation, whereas what folds away here

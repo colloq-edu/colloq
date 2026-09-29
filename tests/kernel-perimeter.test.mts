@@ -104,8 +104,8 @@ test('a room on the host: its own network, a loopback port and the whole hardene
     // `pio.renderers.default` in a cell overrides it.
     '-e', 'PLOTLY_RENDERER=plotly_mimetype',
     '-v', '/srv/workspace/r1:/workspace/r1',
-    '--memory=4g',
-    '--memory-swap=4g',
+    '--memory=4096m',
+    '--memory-swap=4096m',
     '--cpus=2',
     '--restart=no',
     '--label', 'colloq.kind=room-kernel',
@@ -212,10 +212,11 @@ test('the process ceiling of the personal notebooks container is KERNEL_OWN_PIDS
   }
   // And the ceiling on LIVE kernels in it is a separate number, read by the
   // same rule.
-  withEnv({ KERNEL_OWN_MAX: undefined }, () => assert.equal(ownKernelMax(), 40))
+  // Sixty since the instance settings (it was forty); the panel moves it without a restart.
+  withEnv({ KERNEL_OWN_MAX: undefined }, () => assert.equal(ownKernelMax(), 60))
   withEnv({ KERNEL_OWN_MAX: '4' }, () => assert.equal(ownKernelMax(), 4))
   for (const bad of ['0', '-1', 'сорок', '1.5', '']) {
-    withEnv({ KERNEL_OWN_MAX: bad }, () => assert.equal(ownKernelMax(), 40, bad))
+    withEnv({ KERNEL_OWN_MAX: bad }, () => assert.equal(ownKernelMax(), 60, bad))
   }
 
   /*
@@ -543,6 +544,6 @@ test('the personal notebooks container takes ITS OWN numbers if the class named 
 
   // Not named — the old behaviour: the same as the room.
   const same = withEnv({ KERNEL_MEM: undefined, KERNEL_CPUS: undefined }, () => args(null, null))
-  assert.ok(same.includes('--memory=4g'), JSON.stringify(same))
+  assert.ok(same.includes('--memory=4096m'), JSON.stringify(same))
   assert.ok(same.includes('--cpus=2'), JSON.stringify(same))
 })

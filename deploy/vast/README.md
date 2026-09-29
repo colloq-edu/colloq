@@ -115,9 +115,9 @@ The server reads the container's environment and `/workspace/colloq/.env`. For m
 | `KERNEL_PRELOAD` | `KERNEL_ENV` | Environments to prepare at start, comma-separated, e.g. `base,gpu` |
 | `KERNEL_IMAGE_REPO` | — | Pull kernel images instead of building them: `<repo>:<tag>-<env>`, e.g. `ghcr.io/<owner>/colloq-kernel` |
 | `KERNEL_IMAGE_TAG` | `v<image version>` | Tag prefix, matching the names `scripts/release-build.py` publishes |
-| `KERNEL_MEM`, `KERNEL_MEM_<ENV>` | `4g`, `16g` for GPU environments | Memory per room; `<ENV>` is the environment name in capitals with `_` for `-` (`KERNEL_MEM_GPU`, `KERNEL_MEM_BASE_GPU`). The panel can override it per room |
+| `KERNEL_MEM`, `KERNEL_MEM_<ENV>` | `4g`, `16g` for GPU environments | Memory per room: `KERNEL_MEM` for ordinary environments, `KERNEL_MEM_<ENV>` for one environment, where `<ENV>` is its name in capitals with `_` for `-` (`KERNEL_MEM_GPU`, `KERNEL_MEM_BASE_GPU`). The panel can override it per room, and the owner for the instance (`/api/admin/resources`) |
 | `KERNEL_CPUS` | `2` | CPUs per room |
-| `KERNEL_OWN_MAX`, `KERNEL_OWN_PIDS` | `40`, `2048` | The second container a class gets for its students' personal notebooks, which never receives a GPU: how many kernels may live in it at once, and its process ceiling |
+| `KERNEL_OWN_MAX`, `KERNEL_OWN_PIDS` | `60`, `2048` | The second container a class gets for its students' personal notebooks, which never receives a GPU: how many kernels may live in it at once, and its process ceiling |
 | `KERNEL_OWN_IDLE_MIN` | `30` | Minutes of idling after which one personal notebook's kernel is stopped; the container goes with the last kernel in it. `0` never stops them |
 | `KERNEL_GPUS` | all GPUs (detected by `colloq-host`) | GPU slices handed out one per GPU room, e.g. `0,1` or MIG ids |
 | `KERNEL_SHM` | `1g` | `/dev/shm` for GPU rooms |

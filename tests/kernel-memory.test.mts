@@ -56,9 +56,11 @@ afterEach(() => {
 
 test('the room memory limit comes from the environment, and the default stays as it was', () => {
   // Defaults since 13 Sep 2026: 4g for a plain environment, 16g for a GPU one.
-  assert.ok(runArgs({ ...room, env: 'base' }).includes('--memory=4g'), 'the default changed')
+  // Docker gets megabytes whatever the variable's suffix: one measure for
+  // the panel, the seminar row and `--memory`.
+  assert.ok(runArgs({ ...room, env: 'base' }).includes('--memory=4096m'), 'the default changed')
   withEnv({ KERNEL_MEM: '12g' }, () => {
-    assert.ok(runArgs({ ...room, env: 'base' }).includes('--memory=12g'))
+    assert.ok(runArgs({ ...room, env: 'base' }).includes('--memory=12288m'))
   })
 })
 
@@ -69,8 +71,8 @@ test('a heavy environment can get its own limit without raising it for all rooms
    * would eat the machine without ever using that memory.
    */
   withEnv({ KERNEL_MEM: '2g', KERNEL_MEM_BASE_GPU: '16g' }, () => {
-    assert.ok(runArgs({ ...room, env: 'base-gpu' }).includes('--memory=16g'), 'the environment did not override the common limit')
-    assert.ok(runArgs({ ...room, env: 'base' }).includes('--memory=2g'), 'the limit was raised for everyone')
+    assert.ok(runArgs({ ...room, env: 'base-gpu' }).includes('--memory=16384m'), 'the environment did not override the common limit')
+    assert.ok(runArgs({ ...room, env: 'base' }).includes('--memory=2048m'), 'the limit was raised for everyone')
   })
 })
 
@@ -114,10 +116,13 @@ test('the sentence names the limit, the usage and the cell number — the same o
   assert.match(text, /по памяти/)
   assert.match(text, /2 ГБ/)
   assert.match(text, /ячейке 21/)
-  assert.match(text, /KERNEL_MEM/, 'it does not say which knob to turn')
+  // The knob is the class's own memory field now, not a line in someone's .env.
+  assert.match(text, /«Ресурсы»/, 'it does not say which knob to turn')
+  assert.doesNotMatch(text, /KERNEL_MEM|\.env/, 'it still sends the teacher to the server config')
   setLocaleResolver(() => 'en')
   assert.match(describe(reading(), true, 21), /killed by memory/)
   assert.match(describe(reading(), true, 21), /2 GB/)
+  assert.match(describe(reading(), true, 21), /\(Resources\)/)
 })
 
 /* ------------------------------------------------------ full postmortem */

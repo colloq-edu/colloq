@@ -150,8 +150,8 @@ test('an ordinary room starts exactly as before', () => {
   assert.equal(valueOf(args, '-v'), '/srv/workspace/seminar1:/workspace/seminar1')
   assert.equal(valueOf(args, '-p'), '127.0.0.1:0:8888')
   // The memory default since 13 Sep 2026 is 4g for a plain environment
-  // (kernel/pool.ts).
-  assert.ok(args.includes('--memory=4g') && args.includes('--cpus=2'))
+  // (admin/resource-settings.ts), written in megabytes like every limit.
+  assert.ok(args.includes('--memory=4096m') && args.includes('--cpus=2'))
   assert.ok(args.includes('colloq.session=seminar1'))
 })
 

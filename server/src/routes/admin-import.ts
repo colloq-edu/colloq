@@ -21,6 +21,7 @@ import { newSessionId } from '../auth.js'
 import { projectBooks } from '../collab/books.js'
 import { visitSessionDoc } from './doc-visit.js'
 import { config } from '../config.js'
+import { sessionLimitBytes, uploadLimitBytes } from '../admin/resource-settings.js'
 import { COUNCIL_ROOM, LECTURE_ROOM, readRules } from '@shared/rules'
 import { createSession, setRules } from '../db.js'
 import { activeName, exists as environmentExists } from '../environments.js'
@@ -195,7 +196,7 @@ export function adminImportRoutes(): Router {
           continue
         }
         try {
-          const buf = await fetchRaw(file.downloadUrl, config.maxUploadBytes)
+          const buf = await fetchRaw(file.downloadUrl, uploadLimitBytes())
           workspaceFs.writeFileSync(target, buf)
           written.push(file.name)
         } catch {
@@ -439,9 +440,10 @@ interface Plan {
 export function withinRoomBudget(files: RepoEntry[]): { files: RepoEntry[]; skipped: string[] } {
   const fits: RepoEntry[] = []
   const skipped: string[] = []
+  const ceiling = sessionLimitBytes()
   let total = 0
   for (const file of files) {
-    if (total + file.size > config.maxSessionBytes) {
+    if (total + file.size > ceiling) {
       skipped.push(file.name)
       continue
     }
@@ -497,7 +499,7 @@ async function planFor(target: GithubTarget): Promise<Plan> {
   const invalid = books.filter((book) => !safeSegment(book.name) || !book.downloadUrl || book.size > MAX_NOTEBOOK)
   const budget = withinRoomBudget([
     ...books.filter((book) => !invalid.includes(book)),
-    ...filesToTake(entries, config.maxUploadBytes),
+    ...filesToTake(entries, uploadLimitBytes()),
   ])
   const selected = books.filter((book) => budget.files.includes(book))
   if (selected.length === 0) {

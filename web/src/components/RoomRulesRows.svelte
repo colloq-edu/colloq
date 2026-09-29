@@ -73,9 +73,18 @@
      * a number out of bounds is refused by the server in words.
      */
     own?: { roomMemoryMb: number | null; roomCpus: number | null; maxMemoryMb: number | null; maxCpus: number | null } | null
+    /**
+     * Rules another part of the screen draws itself. The seminar creation form
+     * asks for personal notebooks in its Resources section, next to the room's
+     * memory, and a second switch for the same rule here would be two
+     * settings.
+     */
+    exclude?: readonly (keyof RoomRules)[]
   }
 
-  let { rules, onchange, busy = false, instance = null, ownKernels = true, own = null }: Props = $props()
+  let { rules, onchange, busy = false, instance = null, ownKernels = true, own = null, exclude = [] }: Props = $props()
+
+  const rows = $derived(RULE_ROWS.filter((row) => !exclude.includes(row.key as keyof RoomRules)))
 
   /* -------------------------------------- personal notebook resources */
 
@@ -89,8 +98,11 @@
    * server refusal in reply; a list — with two clicks and not one wrong
    * value.
    */
-  const MEMORY_LADDER = [1, 2, 4, 8, 16, 32]
-  const CPU_LADDER = [1, 2, 4, 8, 16]
+  // The upper rungs are a whole class's container on a big machine: a
+  // 15-person competition day asked for 24 GB and 12 cores, and the old top
+  // of 32 GB / 16 cores had no step in between.
+  const MEMORY_LADDER = [1, 2, 4, 8, 12, 16, 24, 32, 48, 64]
+  const CPU_LADDER = [1, 2, 4, 8, 12, 16, 24, 32]
 
   const gbOf = (mb: number): string => {
     const value = mb / MB_IN_GB
@@ -215,7 +227,7 @@
 </script>
 
 <div class="flex flex-col">
-  {#each RULE_ROWS as row (row.key)}
+  {#each rows as row (row.key)}
     <div
       class="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line-soft py-3 last:border-b-0"
     >
