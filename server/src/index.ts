@@ -68,6 +68,18 @@ const UPGRADE_PATH = /^\/(collab|control)\/([A-Za-z0-9_-]{1,64})\/?$/
 const FILE_PATH = /^\/file\/([A-Za-z0-9_-]{1,64})\/([A-Za-z0-9_-]{1,2048})\/?$/
 
 const server = http.createServer(app)
+/*
+ * Outlive the proxies' keep-alive. Node closes an idle keep-alive socket
+ * after 5 s by default, while the proxies in front of it keep theirs longer
+ * and reuse them: frps on the relay about a minute, Caddy two minutes. A
+ * request sent on a socket Node is closing at that moment dies with EOF; the
+ * proxy repeats a GET by itself but not a POST. On 29 Sep 2026 one notebook
+ * upload of a class rehearsal came back as the relay's 404 page for exactly
+ * this reason ("error: EOF" in the frps log). headersTimeout stays above
+ * keepAliveTimeout, or an idle socket can be cut by the headers timer first.
+ */
+server.keepAliveTimeout = 130_000
+server.headersTimeout = 135_000
 
 /* ------------------------------------------------------------ websockets */
 
