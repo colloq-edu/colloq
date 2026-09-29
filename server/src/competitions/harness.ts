@@ -600,6 +600,21 @@ def plain(value):
     return item() if callable(item) else value
 
 
+def blank(values: pd.Series) -> pd.Series:
+    """
+    NaN, None and text that is empty once stripped: a cell without a value.
+
+    Text is checked value by value rather than through the str accessor: the
+    same line then reads a text column the way pandas 2 gives it (object, with
+    whatever else lies in it) and the way pandas 3 does (str), and read_csv
+    leaves "   " as text in both.
+    """
+    empty = values.isna()
+    if not pd.api.types.is_numeric_dtype(values.dtype):
+        empty = empty | values.map(lambda value: isinstance(value, str) and not value.strip()).astype(bool)
+    return empty
+
+
 def align(solution: pd.DataFrame, submission: pd.DataFrame) -> pd.DataFrame:
     """
     The participant's answer put in the order of the answer key — or a clear
@@ -642,7 +657,35 @@ def align(solution: pd.DataFrame, submission: pd.DataFrame) -> pd.DataFrame:
                 }
             )
         )
-    return indexed.loc[want].reset_index()
+    aligned = indexed.loc[want].reset_index()
+    # Every row is there, but some carry no prediction. Left to the teacher's
+    # score(), that reads as "not every row has a prediction" at best, with no
+    # count and no row, and as a crash of the metric at worst. Only the columns
+    # the answer key also has are predictions, and only where the key has a
+    # value: a blank the key shares is a gap in the teacher's answers, not a
+    # forgotten prediction, and no participant can be refused for it.
+    for column in aligned.columns:
+        if column in (ID_COLUMN, USAGE_COLUMN) or column not in solution.columns:
+            continue
+        empty = blank(aligned[column]).to_numpy() & ~blank(solution[column]).to_numpy()
+        if empty.any():
+            raise ParticipantVisibleError(
+                json.dumps(
+                    {
+                        "code": "emptyPredictions",
+                        "params": {
+                            "count": int(empty.sum()),
+                            # Capped: participant_failure keeps the first 1000
+                            # characters, and a cut json would reach the
+                            # participant as raw braces.
+                            "column": str(column)[:100],
+                            "idColumn": ID_COLUMN,
+                            "example": str(plain(aligned[ID_COLUMN].to_numpy()[empty][0]))[:100],
+                        },
+                    }
+                )
+            )
+    return aligned
 
 
 def participant_failure(exc: ParticipantVisibleError) -> dict:

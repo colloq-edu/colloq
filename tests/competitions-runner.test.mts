@@ -21,7 +21,9 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { splitRows } from '../shared/competitions.js'
+import { LIMITS, splitRows } from '../shared/competitions.js'
+import { setLocaleResolver } from '../shared/i18n.js'
+import { getInstanceLanguage } from '../server/src/admin/settings.js'
 import {
   acceptSubmission,
   createCompetition,
@@ -33,12 +35,22 @@ import {
   putFile,
   queueRow,
   queueRows,
+  setCompetitionState,
   setQueuePaused,
   takeNext,
+  updateCompetition,
   updateSubmission,
   waitingCount,
   type QueueRow,
 } from '../server/src/competitions/store.js'
+import {
+  bindSubmission,
+  completeBundle,
+  createBundle,
+  putRevision,
+  selectRevision,
+  setPolicy,
+} from '../server/src/dependencies/store.js'
 import {
   openDir,
   putOpenFile,
@@ -72,6 +84,7 @@ import {
   limitsFor,
   useCompetitionRunner,
   METRIC_WALL_SECONDS,
+  type RunOutcome,
 } from '../server/src/competitions/runner-port.js'
 import { harnessDir, SPLIT_SOURCE } from '../server/src/competitions/harness.js'
 import {
@@ -79,6 +92,11 @@ import {
   containerName,
   drainCompetitionQueue,
   enoughMemory,
+  metricNote,
+  missingModule,
+  missingPackageHint,
+  notebookNote,
+  packageOfModule,
   pumpOnce,
   queueSlots,
   reclaimCompetitionQueue,
@@ -87,6 +105,7 @@ import {
   settleCompetitionWork,
   setQueueSlots,
   runnerStatus,
+  type PackageSources,
 } from '../server/src/competitions/runner.js'
 import type { Competition } from '../shared/competitions.js'
 
@@ -569,6 +588,191 @@ test("a submission that failed before the first cell does not use the day's quot
   assert.equal(done?.cellsDone, 0, 'not a single cell started, so the quota is intact')
 })
 
+/* ------------------------------------------------------ a missing module */
+
+/*
+ * What nbclient hands over for `import lightgbm` after a `!pip install` that
+ * failed quietly without network: the rehearsal's notebook, cell 4 of 4. The
+ * shape is copied from a real run of run_notebook.py under the image's
+ * nbclient 0.11 and IPython 9, after cell_error_detail.
+ */
+const IMPORT_TRACE = [
+  'An error occurred while executing the following cell:',
+  '------------------',
+  'import lightgbm as lgb',
+  '------------------',
+  '',
+  '',
+  '---------------------------------------------------------------------------',
+  'ModuleNotFoundError                       Traceback (most recent call last)',
+  'Cell In[4], line 1',
+  '----> 1 import lightgbm as lgb',
+  '',
+  "ModuleNotFoundError: No module named 'lightgbm'",
+].join('\n')
+
+const HEAD_RU = 'Тетрадь упала на ячейке 4 из 4.'
+const ATTACH_RU =
+  'Пакета lightgbm нет на сервере. Сети при проверке нет, поэтому `pip install` в тетради не сработает: добавьте lightgbm во вкладке «Пакеты» и прикрепите набор к посылке.'
+const NOT_IN_SET_RU =
+  'lightgbm нет в прикреплённом наборе пакетов: добавьте его во вкладке «Пакеты» и пришлите тетрадь с новым набором.'
+const ASK_TEACHER_RU =
+  'Пакета lightgbm нет в окружении соревнования, а сети при проверке нет, поэтому `pip install` в тетради не сработает. Напишите преподавателю.'
+
+function failedCell(detail: string): RunOutcome {
+  return {
+    status: 'cell_error', cell: 3, cells: 4, wall: 14_000, submission: null, detail, log: '',
+    diagnostics: { exit: 1, oomKilled: false, backend: 'test' },
+  }
+}
+
+const SOME_COMPETITION = { limits: { wallSeconds: 600, memoryMb: 4096, cpus: 2, perDay: 5 } } as Competition
+const sources = (over: Partial<PackageSources> = {}): PackageSources => ({ ownPackages: true, attached: null, base: ['numpy', 'pandas'], ...over })
+
+/** Words in English, then back to the instance's language whatever happens. */
+function inEnglish<T>(body: () => T): T {
+  setLocaleResolver(() => 'en')
+  try {
+    return body()
+  } finally {
+    setLocaleResolver(getInstanceLanguage)
+  }
+}
+
+test('the missing module is read off the last line of the traceback, and only a top-level one', () => {
+  assert.equal(missingModule(IMPORT_TRACE), 'lightgbm')
+  assert.equal(missingModule(`${IMPORT_TRACE}\n\n`), 'lightgbm', 'trailing blank lines are not the last line')
+  assert.equal(missingModule("Traceback\nImportError: No module named 'catboost'"), 'catboost')
+  // A dotted name means the package IS there and a submodule is not: a
+  // version mismatch, not something to install.
+  assert.equal(missingModule("ModuleNotFoundError: No module named 'sklearn.externals'"), null)
+  // The cell died of something else; the words above are the cell's printing.
+  assert.equal(missingModule("ModuleNotFoundError: No module named 'lightgbm'\nValueError: bad shape"), null)
+  assert.equal(missingModule("ImportError: cannot import name 'foo' from 'bar'"), null)
+  assert.equal(missingModule(''), null)
+
+  assert.equal(packageOfModule('sklearn'), 'scikit-learn')
+  assert.equal(packageOfModule('PIL'), 'pillow')
+  assert.equal(packageOfModule('cv2'), 'opencv-python-headless', 'the image has no libGL for the desktop build')
+  assert.equal(packageOfModule('lightgbm'), 'lightgbm')
+  // A name that is also an Object.prototype key stays a name, not a function.
+  assert.equal(packageOfModule('constructor'), 'constructor')
+})
+
+test('after a missing module the platform says there is no network and where packages come from', () => {
+  // Own packages allowed, no set attached.
+  assert.equal(
+    notebookNote(failedCell(IMPORT_TRACE), SOME_COMPETITION, sources()),
+    `${HEAD_RU}\n\n${IMPORT_TRACE}\n\n${ATTACH_RU}`,
+  )
+  // A set is attached, and the package is not in it.
+  assert.equal(
+    notebookNote(failedCell(IMPORT_TRACE), SOME_COMPETITION, sources({ attached: ['xgboost'] })),
+    `${HEAD_RU}\n\n${IMPORT_TRACE}\n\n${NOT_IN_SET_RU}`,
+  )
+  // Own packages are off.
+  assert.equal(
+    notebookNote(failedCell(IMPORT_TRACE), SOME_COMPETITION, sources({ ownPackages: false })),
+    `${HEAD_RU}\n\n${IMPORT_TRACE}\n\n${ASK_TEACHER_RU}`,
+  )
+  // Off wins over an attached set: an old set can be attached, a new one cannot be made.
+  assert.equal(missingPackageHint(IMPORT_TRACE, sources({ ownPackages: false, attached: ['xgboost'] })), ASK_TEACHER_RU)
+  // The name to install, not the name imported.
+  assert.match(
+    missingPackageHint("ModuleNotFoundError: No module named 'cv2'", sources()) ?? '',
+    /^Пакета opencv-python-headless нет на сервере\..*добавьте opencv-python-headless во вкладке «Пакеты»/,
+  )
+
+  inEnglish(() => {
+    assert.equal(
+      notebookNote(failedCell(IMPORT_TRACE), SOME_COMPETITION, sources()),
+      `The notebook failed at cell 4 of 4.\n\n${IMPORT_TRACE}\n\nPackage lightgbm is not on the server. The check runs without network, so \`pip install\` in the notebook will not work: add lightgbm on the Packages tab and attach the set to your submission.`,
+    )
+    assert.equal(
+      missingPackageHint(IMPORT_TRACE, sources({ attached: [] })),
+      'lightgbm is not in the attached package set: add it on the Packages tab and send the notebook with the new set.',
+    )
+    assert.equal(
+      missingPackageHint(IMPORT_TRACE, sources({ ownPackages: false })),
+      'Package lightgbm is not in the competition environment, and the check runs without network, so `pip install` in the notebook will not work. Contact your teacher.',
+    )
+  })
+})
+
+test('no hint when the package is in fact there, when the cell died of something else, or for the sample notebook', () => {
+  // Installed after all, under another spelling: the import failed for another reason.
+  assert.equal(missingPackageHint(IMPORT_TRACE, sources({ base: ['LightGBM'] })), null)
+  assert.equal(missingPackageHint(IMPORT_TRACE, sources({ attached: ['lightgbm'] })), null)
+  assert.equal(missingPackageHint("ModuleNotFoundError: No module named 'cv2'", sources({ attached: ['opencv_python_headless'] })), null)
+  // Another error: the traceback goes alone, as before.
+  const other = 'Traceback (most recent call last)\nZeroDivisionError: division by zero'
+  assert.equal(notebookNote(failedCell(other), SOME_COMPETITION, sources()), `${HEAD_RU}\n\n${other}`)
+  // No sources (the sample notebook, or they could not be read): no hint.
+  assert.equal(notebookNote(failedCell(IMPORT_TRACE), SOME_COMPETITION), `${HEAD_RU}\n\n${IMPORT_TRACE}`)
+})
+
+test('a long traceback gives way from its start: the exception and the hint fit the row', () => {
+  const frames = Array.from({ length: 60 }, (_, i) => `  File "frame${i}.py", line ${i} ${'x'.repeat(60)}`).join('\n')
+  const detail = `${frames}\nModuleNotFoundError: No module named 'lightgbm'`
+  assert.ok(detail.length > LIMITS.participantError, 'the case must be longer than the row keeps')
+
+  const note = notebookNote(failedCell(detail), SOME_COMPETITION, sources())!
+  assert.ok(note.length <= LIMITS.participantError, String(note.length))
+  assert.ok(note.startsWith(`${HEAD_RU}\n\n…\n  File "frame`), 'the cut is marked and falls on a line boundary')
+  assert.ok(note.endsWith(`\nModuleNotFoundError: No module named 'lightgbm'\n\n${ATTACH_RU}`))
+
+  // Without a hint the exception line survives too: the store would have cut it.
+  const plain = notebookNote(failedCell(`${frames}\nValueError: bad shape`), SOME_COMPETITION, sources())!
+  assert.ok(plain.length <= LIMITS.participantError)
+  assert.ok(plain.endsWith('\nValueError: bad shape'))
+})
+
+test('through the queue: the hint lands in the submission row and follows the competition', async () => {
+  reset()
+  const competition = makeCompetition()
+  setCompetitionState(competition.id, 'live')
+  const revision = putRevision({
+    environmentName: 'base', imageDigest: `sha256:${'d'.repeat(64)}`, pythonVersion: '3.11.16', pythonAbi: 'cp311',
+    platform: 'linux/arm64', packages: [{ name: 'numpy', version: '2.4.6' }], baseConstraintsHash: 'hash',
+  })
+  selectRevision(competition.id, revision.id)
+  const entrant = mint('Лёня')
+  const failing = [`# colloq-test: ${JSON.stringify({ status: 'cell_error', cell: 3, detail: IMPORT_TRACE })}`, 'x = 1', 'y = 2', 'import lightgbm']
+  const run = async (prepare?: (submissionId: string) => void) => {
+    const submission = send(competition, entrant.id, failing)
+    prepare?.(submission.id)
+    await drainCompetitionQueue()
+    const done = getSubmission(submission.id)
+    assert.equal(done?.state, 'notebookFailed')
+    assert.equal(listRuns(submission.id)[0].participantError, done?.participantError, 'the run row reads the same')
+    return done?.participantError ?? ''
+  }
+
+  // A competition starts with own packages off.
+  assert.ok((await run()).endsWith(`\n\n${ASK_TEACHER_RU}`))
+
+  setPolicy(competition.id, { enabled: true })
+  assert.ok((await run()).endsWith(`\n\n${ATTACH_RU}`))
+
+  const set = createBundle(competition.id, entrant.id, revision.id, 'xgboost')
+  completeBundle(set.id, {
+    normalizedRequirements: ['xgboost'], downloadBytes: 1, installedBytes: 1, contentHash: '1'.repeat(64),
+    packages: [{ name: 'xgboost', version: '3.0.5', fileName: 'xgboost-3.0.5-py3-none-any.whl', sha256: '2'.repeat(64), bytes: 1 }],
+    lock: `xgboost==3.0.5 --hash=sha256:${'2'.repeat(64)}\n`,
+  })
+  const withSet = await run((id) => bindSubmission(id, revision.id, set.id))
+  assert.ok(withSet.startsWith(`${HEAD_RU}\n\n`), withSet)
+  assert.ok(withSet.includes("ModuleNotFoundError: No module named 'lightgbm'"), 'the traceback stays verbatim')
+  assert.ok(withSet.endsWith(`\n\n${NOT_IN_SET_RU}`))
+
+  // The sample notebook is the teacher's: no sentence for a student.
+  const sample = makeCompetition()
+  const baseline = send(sample, mint('Базовое решение-2').id, failing)
+  updateCompetition(sample.id, { baselineSubmissionId: baseline.id })
+  await drainCompetitionQueue()
+  assert.equal(getSubmission(baseline.id)?.participantError, `${HEAD_RU}\n\n${IMPORT_TRACE}`)
+})
+
 /* --------------------------------------------------------------- queue */
 
 test('the queue is fair per person, not by arrival time', async () => {
@@ -827,6 +1031,79 @@ test('the container splits rows exactly the way the page shows it', (t) => {
   })
   assert.equal(fromPython[0].filter((part) => part === 'public').length, 119)
   fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/* ------------------------------------------------ blanks in the prediction */
+
+const pandasHere = spawnSync('python3', ['-c', 'import pandas'], { encoding: 'utf8' }).status === 0
+
+test('blank predictions are refused before score(), with the column, the count and a row',
+  { skip: pandasHere ? false : 'no python3 with pandas: the scoring program runs only where it can' }, () => {
+    const dir = fs.mkdtempSync(path.join(process.env.DATA_DIR as string, 'score-'))
+    // A metric that does not look for blanks itself: whatever refuses them
+    // below is the platform, before score().
+    fs.writeFileSync(path.join(dir, 'metric.py'),
+      'def score(solution, submission):\n    return float(submission["target"].fillna(0).astype(float).sum())\n')
+    const judge = (solution: string, submission: string) => {
+      fs.writeFileSync(path.join(dir, 'solution.csv'), solution)
+      fs.writeFileSync(path.join(dir, 'submission.csv'), submission)
+      fs.rmSync(path.join(dir, 'out'), { recursive: true, force: true })
+      const got = spawnSync('python3', [path.join(harnessDir(), 'score_metric.py')], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          COMP_SOLUTION: path.join(dir, 'solution.csv'),
+          COMP_SUBMISSION: path.join(dir, 'submission.csv'),
+          COMP_METRIC: path.join(dir, 'metric.py'),
+          COMP_OUT: path.join(dir, 'out'),
+          COMP_ATTEMPT_ID: 'attempt-1',
+          COMP_PUBLIC_PERCENT: '50',
+          COMP_SPLIT_SEED: 'seed',
+        },
+      })
+      assert.ok(fs.existsSync(path.join(dir, 'out', 'score.json')), got.stderr)
+      const { wall: _wall, attemptId: _attempt, ...report } =
+        JSON.parse(fs.readFileSync(path.join(dir, 'out', 'score.json'), 'utf8')) as Record<string, unknown>
+      return report
+    }
+    const solution = 'id,target\n100001,1\n100002,2\n100003,3\n100004,4\n100005,5\n100006,6\n'
+
+    // An empty field, a NaN and a blank string, shuffled, plus an extra row the
+    // key does not have. The example is the first blank in the KEY's order, and
+    // the extra row is not counted: it is never scored.
+    assert.deepEqual(
+      judge(solution, 'id,target\n100006,6\n100004,NaN\n100005," "\n100001,1\n100003,3\n100002,\n999999,\n'),
+      { status: 'participant_error', code: 'emptyPredictions', params: { count: 3, column: 'target', idColumn: 'id', example: '100002' } },
+    )
+    // Missing rows are named first: that is the bigger hole.
+    assert.equal(judge(solution, 'id,target\n100001,\n100002,2\n100003,3\n100004,4\n100005,5\n').code, 'missingRows')
+    // A blank the key shares is a gap in the teacher's answers, not a
+    // forgotten prediction.
+    assert.equal(
+      judge('id,target\n100001,1\n100002,\n100003,3\n', 'id,target\n100001,1\n100002,\n100003,3\n').status,
+      'ok',
+    )
+    // Only the key's columns are predictions; Usage is the split, not an answer.
+    assert.equal(
+      judge(`id,target,Usage\n100001,1,Public\n100002,2,Private\n`, 'id,target,note,Usage\n100001,1,,\n100002,2,,\n').status,
+      'ok',
+    )
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+test('blank predictions are named in the instance language, with a count', () => {
+  const refused = (count: number) => metricNote({
+    status: 'participant_error', public: null, private: null, teacherOnly: null, wall: 1,
+    message: JSON.stringify({ code: 'emptyPredictions', params: { count, column: 'target', idColumn: 'id', example: '100002' } }),
+    diagnostics: { exit: 1, oomKilled: false, backend: 'test' },
+  })
+  assert.equal(refused(20), 'В колонке target 20 пустых прогнозов, например id=100002.')
+  assert.equal(refused(1), 'В колонке target 1 пустой прогноз, например id=100002.')
+  assert.equal(refused(3), 'В колонке target 3 пустых прогноза, например id=100002.')
+  inEnglish(() => {
+    assert.equal(refused(20), 'Column target has 20 empty predictions, for example id=100002.')
+    assert.equal(refused(1), 'Column target has 1 empty prediction, for example id=100002.')
+  })
 })
 
 /* ----------------------------------------------------------------- summary */

@@ -97,6 +97,12 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'В файле нет ячеек. Нужна тетрадь .ipynb, а не другой файл с тем же расширением.',
     en: 'The file has no cells. A notebook .ipynb is needed, not another file with the same extension.',
   },
+  // A real notebook with an empty `cells` list — usually saved before the
+  // work was (@shared/competitions · whyNotebookRefused).
+  'competitions.refusal.noCells': {
+    ru: 'В тетради нет ни одной ячейки: сохраните её из Jupyter после работы и пришлите заново.',
+    en: 'The notebook has no cells at all: save it from Jupyter after your work and send it again.',
+  },
   'competitions.refusal.brokenCell': {
     ru: 'Тетрадь повреждена: у одной из ячеек нет типа. Откройте её в Jupyter, сохраните заново и пришлите.',
     en: 'The notebook is damaged: one of the cells has no type. Open it in Jupyter, save it again and send it.',
@@ -387,6 +393,26 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'Тетрадь упала на ячейке {cell} из {cells}.',
     en: 'The notebook failed at cell {cell} of {cells}.',
   },
+  /*
+   * After the traceback of a cell that died on `No module named 'X'`
+   * (server/src/competitions/runner.ts · missingPackageHint). The traceback
+   * names the module; only we know that the check has no network and where
+   * packages come from instead. {name} is the package to install, one per
+   * case: the competition takes participants' own package sets and none was
+   * attached; a set was attached without it; own sets are turned off.
+   */
+  'competitions.answer.missingPackage.attach': {
+    ru: 'Пакета {name} нет на сервере. Сети при проверке нет, поэтому `pip install` в тетради не сработает: добавьте {name} во вкладке «Пакеты» и прикрепите набор к посылке.',
+    en: 'Package {name} is not on the server. The check runs without network, so `pip install` in the notebook will not work: add {name} on the Packages tab and attach the set to your submission.',
+  },
+  'competitions.answer.missingPackage.notInSet': {
+    ru: '{name} нет в прикреплённом наборе пакетов: добавьте его во вкладке «Пакеты» и пришлите тетрадь с новым набором.',
+    en: '{name} is not in the attached package set: add it on the Packages tab and send the notebook with the new set.',
+  },
+  'competitions.answer.missingPackage.askTeacher': {
+    ru: 'Пакета {name} нет в окружении соревнования, а сети при проверке нет, поэтому `pip install` в тетради не сработает. Напишите преподавателю.',
+    en: 'Package {name} is not in the competition environment, and the check runs without network, so `pip install` in the notebook will not work. Contact your teacher.',
+  },
   'competitions.answer.timeout': {
     ru: {
       one: 'Тетрадь не уложилась в {count} минуту: прогон остановлен на ячейке {cell} из {cells}.',
@@ -454,6 +480,21 @@ export const competitionsMessages: MessageCatalog = {
     en: {
       one: 'The answer is missing {count} row, for example {column}={example}.',
       other: 'The answer is missing {count} rows, for example {column}={example}.',
+    },
+  },
+  // Every row is there, but a prediction column has blanks where the answer
+  // key has values (harness.ts · align). {column} is the prediction column,
+  // {idColumn}={example} the first such row.
+  'competitions.answer.emptyPredictions': {
+    ru: {
+      one: 'В колонке {column} {count} пустой прогноз, например {idColumn}={example}.',
+      few: 'В колонке {column} {count} пустых прогноза, например {idColumn}={example}.',
+      many: 'В колонке {column} {count} пустых прогнозов, например {idColumn}={example}.',
+      other: 'В колонке {column} {count} пустого прогноза, например {idColumn}={example}.',
+    },
+    en: {
+      one: 'Column {column} has {count} empty prediction, for example {idColumn}={example}.',
+      other: 'Column {column} has {count} empty predictions, for example {idColumn}={example}.',
     },
   },
   'competitions.answer.unparsable': {

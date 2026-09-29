@@ -39,7 +39,7 @@ import { tr } from '@shared/i18n'
  */
 import '../admin/settings.js'
 import { db } from '../db.js'
-import { getBinding, lockOf } from '../dependencies/store.js'
+import { getBinding, lockOf, policyOf, type SubmissionBinding } from '../dependencies/store.js'
 import { verifyBundleFiles } from '../dependencies/files.js'
 import {
   BOOT,
@@ -563,6 +563,11 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     if(error instanceof CompetitionResourcePending)discardUnstartedRun(run.id,row.attemptId!)
     throw error
   }
+  // One text for the run row and the submission row. Where packages come from
+  // is read only for a failed cell: that is the one outcome a missing module
+  // explains.
+  const participantError = notebookNote(outcome, competition,
+    outcome.status === 'cell_error' ? packageSources(competition, submission, binding) : null)
   finishRun(run.id, {
     finishedAt: Date.now(),
     verdict: outcome.status,
@@ -570,7 +575,7 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     oom: outcome.diagnostics.oomKilled,
     cellsDone: outcome.cell + 1,
     cellsTotal: outcome.cells,
-    participantError: notebookNote(outcome, competition),
+    participantError,
     teacherError: teacherNote(outcome),
   })
 
@@ -583,7 +588,7 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
       durationMs: outcome.wall,
       cellsDone: outcome.cell + 1,
       cellsTotal: outcome.cells,
-      participantError: notebookNote(outcome, competition),
+      participantError,
       teacherError: teacherNote(outcome),
     })
     return
@@ -840,24 +845,29 @@ const MB = 1024 * 1024
  * "error in the notebook" without a single line of cause is a refusal that
  * sends them to the teacher. Everything else is our words, and they name a
  * number: "did not fit into 10 minutes" is more useful than "time limit".
+ *
+ * One more sentence of ours may follow the traceback: when the cell died on
+ * a missing module, it says what only the platform knows (missingPackageHint).
+ * `sources` is where the submission's packages could come from; without it
+ * the traceback goes alone.
  */
-export function notebookNote(outcome: RunOutcome, competition: Competition): string | null {
+export function notebookNote(outcome: RunOutcome, competition: Competition, sources: PackageSources | null = null): string | null {
   const at = outcome.cell + 1
   switch (outcome.status) {
     case 'ok':
       return null
     case 'dependency_error':
       return tr('dependencies.error.install')
-    case 'cell_error':
+    case 'cell_error': {
       if (outcome.diagnostics.killedBy === 'output') {
         return tr('competitions.answer.tooMuchOutput', {
           count: Math.round((outcome.diagnostics.peakBytes ?? 0) / MB) || 64,
           cell: at,
         })
       }
-      return outcome.detail
-        ? `${tr('competitions.answer.cellFailed', { cell: at, cells: outcome.cells })}\n\n${outcome.detail}`
-        : tr('competitions.answer.cellFailed', { cell: at, cells: outcome.cells })
+      const head = tr('competitions.answer.cellFailed', { cell: at, cells: outcome.cells })
+      return outcome.detail ? withinLimit(head, outcome.detail, missingPackageHint(outcome.detail, sources)) : head
+    }
     case 'cell_timeout':
     case 'timeout':
       return tr('competitions.answer.timeout', {
@@ -891,6 +901,142 @@ export function notebookNote(outcome: RunOutcome, competition: Competition): str
       // code, and the teacher will do the investigating.
       return null
   }
+}
+
+/**
+ * Our sentence, the traceback and the hint, within what the row keeps.
+ *
+ * The store cuts `participantError` at LIMITS.participantError from the END,
+ * while the harness hands over up to twice that (harness.ts ·
+ * cell_error_detail). Left to the store, a long traceback lost its last line
+ * — the exception itself — and would lose the hint after it. So the
+ * traceback gives way from its start, where nbclient repeats the cell's
+ * source, by whole lines, and the sentences around it stay whole.
+ */
+function withinLimit(head: string, detail: string, hint: string | null): string {
+  const tail = hint ? `\n\n${hint}` : ''
+  const room = LIMITS.participantError - head.length - 2 - tail.length
+  if (detail.length <= room) return `${head}\n\n${detail}${tail}`
+  // Two characters go to the "…\n" that marks the cut.
+  const kept = detail.slice(detail.length - Math.max(0, room - 2))
+  const line = kept.indexOf('\n')
+  // Without a line break to cut at, a half of a surrogate pair must not lead.
+  return `${head}\n\n…\n${line >= 0 ? kept.slice(line + 1) : kept.replace(/^[\uDC00-\uDFFF]/, '')}${tail}`
+}
+
+/**
+ * Where a submission's packages could come from — what the sentence after a
+ * missing module is chosen by.
+ */
+export interface PackageSources {
+  /** The competition lets participants prepare their own package sets. */
+  ownPackages: boolean
+  /** Distributions of the set attached to this submission; null — none attached. */
+  attached: readonly string[] | null
+  /** Distributions the pinned base environment already has. */
+  base: readonly string[]
+}
+
+/**
+ * The sources of THIS submission.
+ *
+ * Null for the sample notebook: it is the teacher's, it never carries a set,
+ * and "attach a set" or "contact your teacher" are sentences for a student.
+ * Null, too, if anything here fails: the hint is a courtesy, and a throw from
+ * here would turn the participant's failed cell into our breakage (runJob
+ * writes `metricFailed` for whatever escapes a step).
+ */
+function packageSources(competition: Competition, submission: Submission, binding: SubmissionBinding | null): PackageSources | null {
+  if (submission.id === competition.baselineSubmissionId || submission.entrantId === competition.baselineEntrantId) return null
+  try {
+    return {
+      ownPackages: policyOf(competition.id).enabled,
+      attached: binding?.bundle ? binding.bundle.packages.map((one) => one.name) : null,
+      base: binding?.revision?.packages.map((one) => one.name) ?? [],
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The module a failed cell could not import, or null.
+ *
+ * Read off the traceback's LAST line: that is the exception the cell died of
+ * (nbclient's text ends with it, and cell_error_detail keeps the tail), while
+ * the same words higher up may be the cell's own printing. A dotted name is
+ * left alone: Python names the first piece it could not find, so
+ * `sklearn.externals` means scikit-learn IS there and a submodule is not — a
+ * version mismatch or a typo, and "install the package" would be untrue.
+ */
+export function missingModule(detail: string): string | null {
+  const last = detail.trimEnd().split('\n').pop()?.trim() ?? ''
+  const found = /^(?:ModuleNotFoundError|ImportError): No module named '([A-Za-z_][A-Za-z0-9_]{0,99})'/.exec(last)
+  return found ? found[1] : null
+}
+
+/**
+ * Import names whose distribution is called otherwise.
+ *
+ * Only those a data class meets and where there is one answer: `import
+ * sklearn` is scikit-learn and nothing else. Any other module is named as it
+ * is — pip reads `_` and `-` alike, so for most that name is already right,
+ * and a guessed one would send the student to install something else.
+ * `umap` is here because the PyPI project of that name is a different one.
+ *
+ * `cv2` is the HEADLESS build on purpose: the kernel image has no libGL, and
+ * the desktop opencv-python dies on `import cv2` with a missing shared
+ * library — a student who followed the hint would get a stranger error than
+ * the one they came with.
+ */
+const PACKAGE_OF_MODULE: Readonly<Record<string, string>> = {
+  sklearn: 'scikit-learn',
+  skimage: 'scikit-image',
+  cv2: 'opencv-python-headless',
+  PIL: 'pillow',
+  yaml: 'pyyaml',
+  bs4: 'beautifulsoup4',
+  dateutil: 'python-dateutil',
+  imblearn: 'imbalanced-learn',
+  skopt: 'scikit-optimize',
+  umap: 'umap-learn',
+}
+
+export function packageOfModule(imported: string): string {
+  return Object.hasOwn(PACKAGE_OF_MODULE, imported) ? PACKAGE_OF_MODULE[imported] : imported
+}
+
+/** One distribution under different spellings (PEP 503): `Scikit_Learn` is scikit-learn. */
+const distributionKey = (name: string): string => name.toLowerCase().replace(/[-_.]+/g, '-')
+
+/**
+ * What the platform adds to a traceback that ends in a missing module, or
+ * null.
+ *
+ * The traceback says `No module named 'lightgbm'` and nothing more, while the
+ * cause is outside the notebook: the check runs without network, so a
+ * `!pip install` at the top failed quietly and the notebook went on to die at
+ * the import. The way out depends on the competition, hence three sentences.
+ * Turned-off own packages go first: a set prepared before the teacher turned
+ * them off can still be attached, but no new one can be made, and "add it to
+ * your set" would be advice nobody can follow.
+ *
+ * Silent when the package is in fact there, in the base or in the attached
+ * set: the import then failed for another reason, and "it is not on the
+ * server" would send the student after the wrong problem.
+ */
+export function missingPackageHint(detail: string, sources: PackageSources | null): string | null {
+  if (!sources) return null
+  const imported = missingModule(detail)
+  if (!imported) return null
+  const name = packageOfModule(imported)
+  const key = distributionKey(name)
+  const holds = (names: readonly string[] | null) => !!names?.some((one) => distributionKey(one) === key)
+  if (holds(sources.base) || holds(sources.attached)) return null
+  if (!sources.ownPackages) return tr('competitions.answer.missingPackage.askTeacher', { name })
+  return sources.attached
+    ? tr('competitions.answer.missingPackage.notInSet', { name })
+    : tr('competitions.answer.missingPackage.attach', { name })
 }
 
 /** What the TEACHER reads: the exit code, OOM and the tail of the container log. */

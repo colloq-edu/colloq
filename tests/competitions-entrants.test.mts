@@ -23,6 +23,7 @@ import {
   whyNotebookRefused,
   LIMITS,
 } from '../shared/competitions.js'
+import { tr, translate } from '../shared/i18n.js'
 import { readCompetitionRoute } from '../web/src/lib/routes.js'
 import { entrantKeyDigest, newEntrantKey, sealEntrantKey, unsealEntrantKey } from '../server/src/competitions/key.js'
 import {
@@ -507,7 +508,7 @@ test('a replacement whose notebook cannot be written leaves the waiting submissi
   updateSubmission(fixed.id, { state: 'cancelled' })
 })
 
-test('a non-notebook, a broken notebook and a non-.ipynb are turned away BEFORE the queue', async () => {
+test('a non-notebook, a broken or empty notebook and a non-.ipynb are turned away BEFORE the queue', async () => {
   const person = await join('@sends_anything')
 
   const wrongName = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'model.py', notebook())
@@ -520,7 +521,14 @@ test('a non-notebook, a broken notebook and a non-.ipynb are turned away BEFORE 
   const notNotebook = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'v1.ipynb', '{"hello": 1}')
   assert.equal(notNotebook.status, 400)
 
-  // None of the three took a place in the queue or used the day's quota.
+  // A real notebook without a single cell: it could only come back "no
+  // submission.csv" after a queue slot, so it is refused at the door.
+  const empty = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'v1.ipynb',
+    JSON.stringify({ nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [] }))
+  assert.equal(empty.status, 400)
+  assert.match(((await empty.json()) as { error: string }).error, /ни одной ячейки|no cells at all/i)
+
+  // None of the four took a place in the queue or used the day's quota.
   const mine = await call('/api/k/competitions/rohlik/submissions', { cookie: person.cookie })
   const list = (await mine.json()) as { submissions: unknown[]; leftToday: number }
   assert.equal(list.submissions.length, 0)
@@ -532,6 +540,17 @@ test("parsing the sent file answers about the file, not about the entrant's code
   assert.match(whyNotebookRefused('{')!, /не читается|does not read/i)
   assert.match(whyNotebookRefused('[]')!, /ячеек|cells/i)
   assert.match(whyNotebookRefused('{"cells": [{}]}')!, /повреждена|damaged/i)
+  assert.equal(whyNotebookRefused('{"nbformat": 4, "cells": []}'), tr('competitions.refusal.noCells'))
+  assert.equal(
+    translate('ru', 'competitions.refusal.noCells'),
+    'В тетради нет ни одной ячейки: сохраните её из Jupyter после работы и пришлите заново.',
+  )
+  assert.equal(
+    translate('en', 'competitions.refusal.noCells'),
+    'The notebook has no cells at all: save it from Jupyter after your work and send it again.',
+  )
+  // The door counts cells, not code: judging what is code is the run's business.
+  assert.equal(whyNotebookRefused(JSON.stringify({ cells: [{ cell_type: 'markdown', source: '# Решение', metadata: {} }] })), null)
   // A sent notebook has its own ceiling, and it is lower than the room's file
   // ceiling.
   assert.equal(LIMITS.notebookBytes, 20 * 1024 * 1024)

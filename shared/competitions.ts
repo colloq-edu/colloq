@@ -528,6 +528,13 @@ export function entrantSubmission(s: Submission, privateOpen: boolean): EntrantS
  * Exactly as strict as a real notebook from someone else's Jupyter will
  * survive: an object, a `cells` array, each cell with its own `cell_type`.
  * The `nbformat` version is not checked — `nbformat.read` fixes it itself.
+ *
+ * A notebook without a single cell is refused here too, although it is a
+ * valid notebook. It cannot write `submission.csv`, so the queue could only
+ * give it a slot, a container and, seconds later, "the notebook left no
+ * file" — a sentence that sends the person looking for a bug in code they
+ * never sent. Such a file is almost always a notebook saved before the work
+ * was, and that is what the refusal says.
  */
 export function whyNotebookRefused(text: string): string | null {
   let parsed: unknown
@@ -541,6 +548,7 @@ export function whyNotebookRefused(text: string): string | null {
   }
   const cells = (parsed as { cells?: unknown }).cells
   if (!Array.isArray(cells)) return tr('competitions.refusal.notNotebook')
+  if (cells.length === 0) return tr('competitions.refusal.noCells')
   for (const cell of cells) {
     if (!cell || typeof cell !== 'object' || typeof (cell as { cell_type?: unknown }).cell_type !== 'string') {
       return tr('competitions.refusal.brokenCell')

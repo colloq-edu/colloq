@@ -42,7 +42,10 @@ function call(url: string, cookie?: string, init: RequestInit = {}) {
 }
 function upload(url: string, cookie: string, bundleId: string) {
   const form = new FormData()
-  form.append('file', new Blob([JSON.stringify({ nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [] })]), 'model.ipynb')
+  // One cell: a notebook without any is refused at the door, before the bundle
+  // checks this suite is about (@shared/competitions · whyNotebookRefused).
+  const cell = { cell_type: 'code', source: 'import example', metadata: {}, outputs: [], execution_count: null }
+  form.append('file', new Blob([JSON.stringify({ nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [cell] })]), 'model.ipynb')
   form.append('bundleId', bundleId)
   return call(url, cookie, { method: 'POST', body: form })
 }
