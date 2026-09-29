@@ -355,6 +355,17 @@ export const api = {
    * edit halfway. The server refuses in words (routes/ai.ts), the button dims
    * in advance (ChatTurn.svelte) — one rule, two places.
    */
+  /**
+   * This participant's hourly oracle budget. `host: true` means no ceiling
+   * (the teacher is never counted); `resetAt` is when the oldest counted
+   * question leaves the hour, or null when none was asked.
+   */
+  aiQuota: (id: string, token: string) =>
+    request<{ host: boolean; limit: number | null; used: number; resetAt: number | null }>(
+      `/api/sessions/${id}/ai/quota`,
+      { headers: { authorization: `Bearer ${token}` } },
+    ),
+
   aiCancel: (id: string, token: string, entryId: string) =>
     request<{ ok: true }>(`/api/sessions/${id}/ai/cancel`, {
       method: 'POST',

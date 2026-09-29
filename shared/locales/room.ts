@@ -228,6 +228,14 @@ export const roomMessages: MessageCatalog = {
   "room.pult.v2.projection.since": {"ru": "с {time} · {duration}", "en": "since {time} · {duration}"},
   "room.pult.v2.projection.neighbour": {"ru": "Показать похожую работу", "en": "Show similar work"},
   "room.pult.v2.projection.clear": {"ru": "Убрать с экрана", "en": "Clear class screen"},
+  "room.council.adopt": {"ru": "В ячейку", "en": "Put in cell"},
+  "room.council.adoptRun": {"ru": "В ячейку и запустить", "en": "Put in cell and run"},
+  "room.council.adoptHint": {"ru": "Заменить текст ячейки этим кодом — одной правкой от вашего имени. Отменить можно в течение {p0} мин.", "en": "Replace the cell’s text with this code — one edit under your name. You can undo it for {p0} min."},
+  "room.council.adoptRunHint": {"ru": "Заменить текст ячейки этим кодом и запустить её как обычную ячейку: переменные останутся для следующих ячеек.", "en": "Replace the cell’s text with this code and run it as an ordinary cell: its variables stay for the cells below."},
+  "room.council.adopted": {"ru": "Код в ячейке", "en": "The code is in the cell"},
+  "room.council.adoptedRun": {"ru": "Код в ячейке, запускается", "en": "The code is in the cell, running"},
+  "room.council.adoptedLater": {"ru": "вывод увидят все, когда закроете консилиум", "en": "everyone sees the output once you close the council"},
+  "room.council.adoptUndo": {"ru": "отменить", "en": "undo"},
 
   "room.pult.v2.title": {"ru": "Консилиум", "en": "Council"},
   "room.pult.v2.workTab": {"ru": "Работы", "en": "Work"},
@@ -390,6 +398,7 @@ export const roomMessages: MessageCatalog = {
   "room.pult.v3.cells.onScreen": {"ru": "на экране", "en": "on screen"},
   "room.pult.v3.cells.review": {"ru": "просмотр", "en": "review only"},
   "room.pult.v3.keys.clear": {"ru": "убрать с экрана", "en": "take off the screen"},
+  "room.pult.v3.keys.adoptRun": {"ru": "показанную работу — в ячейку и запустить", "en": "put the shown work in the cell and run it"},
   "room.pult.v3.letterToGroup": {"ru": "Вы · письмо группе", "en": "You · letter to a group"},
   "room.pult.v3.fullscreen": {"ru": "Браузер во весь экран — пульт откроется вкладкой в этом же окне. Выйдите из полноэкранного режима, и он станет отдельным окном.", "en": "The browser is full-screen, so the console opens as a tab in this same window. Leave full-screen mode and it becomes a window of its own."},
 
@@ -4824,6 +4833,86 @@ export const roomMessages: MessageCatalog = {
   "room.oracle.asker": {
     "ru": "спрашивает {name}",
     "en": "asked by {name}"
+  },
+  "room.oracle.filter": {
+    "ru": "Чьи вопросы показывать",
+    "en": "Whose questions to show"
+  },
+  "room.oracle.all": {
+    "ru": "Все вопросы",
+    "en": "All questions"
+  },
+  "room.oracle.mine": {
+    "ru": "Мои",
+    "en": "Mine"
+  },
+  "room.oracle.shared": {
+    "ru": "лента общая",
+    "en": "shared thread"
+  },
+  "room.oracle.foldedOthers": {
+    "ru": {
+      "one": "ещё {count} вопрос другого",
+      "few": "ещё {count} вопроса других",
+      "many": "ещё {count} вопросов других",
+      "other": "ещё {count} вопроса других"
+    },
+    "en": {
+      "one": "{count} more question from others",
+      "other": "{count} more questions from others"
+    }
+  },
+  "room.oracle.reveal": {
+    "ru": "показать",
+    "en": "show"
+  },
+  "room.oracle.mineEmpty": {
+    "ru": "Вы ещё ничего не спрашивали.",
+    "en": "You have not asked anything yet."
+  },
+  "room.oracle.mineEmptyNote": {
+    "ru": "Ваши вопросы появятся здесь; их, как и ответы, видит вся комната.",
+    "en": "Your questions will appear here; the whole room sees them, and the answers, too."
+  },
+  "room.oracle.showAllCount": {
+    "ru": {
+      "one": "Показать {count} вопрос комнаты",
+      "few": "Показать все {count} вопроса комнаты",
+      "many": "Показать все {count} вопросов комнаты",
+      "other": "Показать все {count} вопроса комнаты"
+    },
+    "en": {
+      "one": "Show the room's {count} question",
+      "other": "Show all {count} of the room's questions"
+    }
+  },
+  "room.oracle.modeLabel": {
+    "ru": "Режим",
+    "en": "Mode"
+  },
+  "room.oracle.modeAskHint": {
+    "ru": "отвечает словами",
+    "en": "answers in words"
+  },
+  "room.oracle.modeDoHint": {
+    "ru": "правит файлы и запускает",
+    "en": "edits files and runs them"
+  },
+  "room.oracle.effortLabel": {
+    "ru": "Думать",
+    "en": "Think"
+  },
+  "room.oracle.effortDefault": {
+    "ru": "по умолч.",
+    "en": "default"
+  },
+  "room.oracle.effortLocked": {
+    "ru": "Уровень выше выбирает только преподаватель",
+    "en": "Only the teacher can pick a higher level"
+  },
+  "room.oracle.quotaLeft": {
+    "ru": "{left} из {count} в час",
+    "en": "{left} of {count} an hour"
   },
   "room.files.loading": {
     "ru": "Загружается {name}",

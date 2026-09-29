@@ -347,6 +347,28 @@ export function aiRoutes(): Router {
     })
   })
 
+  /*
+   * A participant's own hourly budget: "17 of 20 left" under the question field.
+   *
+   * The same two numbers the ask route refuses with (the instance ceiling
+   * tightened by the room's rules, and the questions this person asked in the
+   * last hour), so the line and the refusal cannot disagree. Not in
+   * /api/ai/status: that one is the instance's and knows nobody. The teacher
+   * has no ceiling (see the ask route), so for them the answer says so and the
+   * panel draws no counter.
+   */
+  router.get('/api/sessions/:id/ai/quota', (req, res) => {
+    const sessionId = req.params.id
+    const auth = sessionAuth(req)
+    if (!auth) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
+    if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
+    if (auth.role === 'host') return res.json({ host: true, limit: null, used: 0, resetAt: null })
+    const limit = oracleLimitsIn(getRules(sessionId), getOracleSettings()).questionsPerHour
+    const used = countRecentQuestions(sessionId, auth.participantId, HOUR_MS)
+    const resetAt = used > 0 ? windowResetAt(sessionId, auth.participantId, HOUR_MS, Math.max(1, used)) : null
+    res.json({ host: false, limit, used, resetAt })
+  })
+
   router.post('/api/sessions/:id/ai/ask', (req, res) => {
     const sessionId = req.params.id
     const auth = sessionAuth(req)

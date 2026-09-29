@@ -445,7 +445,8 @@
     <Icon name="stop" size={10} /> {tr('room.ui.13')} </button>
 {/snippet}
 
-<article class={cn('flex items-stretch border-b border-line-soft', enter && 'animate-fade-up')}>
+<!-- data-oracle-entry: the panel scrolls to a turn by it ("show" under the Mine filter). -->
+<article class={cn('flex items-stretch border-b border-line-soft', enter && 'animate-fade-up')} data-oracle-entry={entry.id}>
   <!-- The asker's colour, running the whole height of the turn. -->
   <div class="w-0.5 shrink-0" style="background: {entry.color}" aria-hidden="true"></div>
 

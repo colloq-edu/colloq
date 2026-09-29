@@ -43,6 +43,36 @@
   const chat = getChat(session.doc)
   const isHost = $derived(session.me.role === 'host')
 
+  /*
+   * "Mine" narrows what THIS browser shows, never what the room or the model
+   * sees: the thread stays shared (the header of this file says why), and a
+   * student lost among thirty questions finds their own three. Others'
+   * questions are folded into a line rather than dropped, so the gap is
+   * visible and one click away. Remembered per room in this browser; blocked
+   * storage just means "all".
+   */
+  const FILTER_KEY = `colloq.oracle.filter.${session.session.id}`
+  let filter = $state<'all' | 'mine'>(readFilter())
+
+  function readFilter(): 'all' | 'mine' {
+    try {
+      return localStorage.getItem(FILTER_KEY) === 'mine' ? 'mine' : 'all'
+    } catch {
+      return 'all'
+    }
+  }
+
+  function rememberFilter(next: 'all' | 'mine'): void {
+    filter = next
+    try {
+      localStorage.setItem(FILTER_KEY, next)
+    } catch {
+      // A private window: the choice lasts until the panel closes.
+    }
+  }
+
+  const isMine = (entry: ChatSnapshot): boolean => entry.participantId === session.me.id
+
   // Raw: the whole array is rebuilt on every observer fire, so deep-proxying
   // each snapshot would be work spent on objects that are replaced next frame.
   let entries = $state.raw<ChatSnapshot[]>(chat.map(readChatEntry))
@@ -441,6 +471,105 @@
     return String(n).padStart(2, '0')
   }
 
+  /* ------------------------------------------------------------------ feed */
+
+  /** The thread as drawn: the document's entries, then questions still on their way. */
+  const rows = $derived([...entries, ...outbox.map((row) => row.row)])
+  const mineCount = $derived(rows.filter(isMine).length)
+
+  type FeedItem =
+    | { kind: 'turn'; entry: ChatSnapshot }
+    | { kind: 'folded'; key: string; first: string; count: number; people: ChatSnapshot[] }
+
+  /*
+   * Under "Mine" a run of others' turns becomes one folded line, with up to
+   * three of their askers' faces: "4 more questions from others". The line
+   * keeps the order honest — an answer of mine that came after a discussion
+   * still reads as coming after it.
+   */
+  const feed = $derived.by<FeedItem[]>(() => {
+    if (filter === 'all') return rows.map((entry) => ({ kind: 'turn' as const, entry }))
+    const items: FeedItem[] = []
+    let run: ChatSnapshot[] = []
+    const fold = () => {
+      if (run.length === 0) return
+      const people: ChatSnapshot[] = []
+      for (const entry of run) {
+        if (!people.some((known) => known.participantId === entry.participantId)) people.push(entry)
+      }
+      items.push({ kind: 'folded', key: `folded:${run[0].id}`, first: run[0].id, count: run.length, people: people.slice(0, 3) })
+      run = []
+    }
+    for (const entry of rows) {
+      if (isMine(entry)) {
+        fold()
+        items.push({ kind: 'turn', entry })
+      } else run.push(entry)
+    }
+    fold()
+    return items
+  })
+
+  /*
+   * The last turn the reader can see: what "follow the thread" and "a new
+   * answer below" are about. Under "Mine" somebody else's new question is not
+   * news to this reader, and it must not unpin their answer either.
+   */
+  const tailEntry = $derived.by<ChatSnapshot | undefined>(() => {
+    if (filter === 'all') return entries[entries.length - 1]
+    for (let i = entries.length - 1; i >= 0; i -= 1) if (isMine(entries[i])) return entries[i]
+    return undefined
+  })
+
+  function pickFilter(next: 'all' | 'mine'): void {
+    if (next === filter) return
+    rememberFilter(next)
+    pinned = true
+    mark = null
+    requestAnimationFrame(toBottom)
+  }
+
+  /** "Show": back to everything, with the first folded question at the top of the view. */
+  function reveal(firstId: string): void {
+    rememberFilter('all')
+    pinned = false
+    const tail = entries[entries.length - 1]
+    mark = tail ? { id: tail.id, length: tail.answer.length } : null
+    requestAnimationFrame(() => {
+      scroller
+        ?.querySelector(`[data-oracle-entry="${CSS.escape(firstId)}"]`)
+        ?.scrollIntoView({ block: 'start' })
+    })
+  }
+
+  /*
+   * This person's hourly budget: "17 of 20 left". The server counts it with
+   * the very numbers it refuses with (routes/ai.ts · quota), so the line and a
+   * refusal cannot disagree. Refreshed after every question and once a minute
+   * — questions leave the hour on their own.
+   */
+  let quota = $state<{ host: boolean; limit: number | null; used: number } | null>(null)
+
+  async function loadQuota(): Promise<void> {
+    try {
+      quota = await api.aiQuota(session.session.id, session.token)
+    } catch {
+      quota = null
+    }
+  }
+
+  $effect(() => {
+    void loadQuota()
+    const timer = window.setInterval(() => void loadQuota(), 60_000)
+    return () => window.clearInterval(timer)
+  })
+
+  const quotaLeft = $derived(
+    quota && !quota.host && quota.limit !== null && quota.limit > 0
+      ? { left: Math.max(0, quota.limit - quota.used), limit: quota.limit }
+      : null,
+  )
+
   /* ------------------------------------------------------------- scrolling */
 
   function toBottom(): void {
@@ -448,7 +577,7 @@
   }
 
   $effect(() => {
-    const tail = entries[entries.length - 1]
+    const tail = tailEntry
     // Depend on the tail's length too, or a streaming answer scrolls out of view.
     void entries.length
     void tail?.answer.length
@@ -518,7 +647,7 @@
     }
     if (!wentUp || !pinned) return
     pinned = false
-    const tail = entries[entries.length - 1]
+    const tail = tailEntry
     mark = tail ? { id: tail.id, length: tail.answer.length } : { id: '', length: 0 }
   }
 
@@ -532,7 +661,7 @@
    */
   const news = $derived.by(() => {
     if (pinned || !mark) return null
-    const tail = entries[entries.length - 1]
+    const tail = tailEntry
     if (!tail) return null
     if (tail.id === mark.id && tail.answer.length <= mark.length) return null
     return tail
@@ -653,6 +782,10 @@
         return
       }
       sendErrorRender = () => (err instanceof Error ? tr(err.message) : tr('room.ui.529'))
+    } finally {
+      // The count moved either way: one more question, or a refusal that may
+      // have been about this very budget.
+      void loadQuota()
     }
   }
 
@@ -690,11 +823,23 @@
   }
   const mayEffort = (one: ReasoningEffort): boolean =>
     isHost || effortRank(one) <= effortRank(instanceEffort)
+  /*
+   * What is in force, drawn as pressed — including the default. A null
+   * choice used to leave all three buttons unlit, and "which one am I on?"
+   * had no answer on screen.
+   */
+  const shownEffort = $derived<ReasoningEffort>(effort ?? instanceEffort)
+  /*
+   * The short word to the right of the switch. Only "default": a locked
+   * level already says so by being struck through (with the reason on hover),
+   * and a second word for it did not fit the 380px panel.
+   */
+  const effortNote = $derived(effort === null ? tr('room.oracle.effortDefault') : '')
   function pickEffort(next: ReasoningEffort): void {
     if (!mayEffort(next)) return
-    // The same level a second time clears the choice: back to the instance
-    // default.
-    effort = effort === next ? null : next
+    // The instance default is kept as "no choice": when the teacher changes
+    // the default, this browser follows it instead of pinning the old level.
+    effort = next === instanceEffort ? null : next
     rememberEffort(effort)
   }
 
@@ -814,15 +959,9 @@
 </script>
 
 <div class="panel h-full">
-  <div class="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4">
+  <div class="flex h-10 shrink-0 items-center gap-2 px-4">
     <Icon name="sparkles" size={14} class="shrink-0 text-accent-text" />
     <span class="shrink-0 text-2xs font-bold uppercase tracking-section text-ink">{tr('room.ui.488')}</span>
-    <span
-      class="inline-flex h-5 shrink-0 items-center bg-raised px-1.5 text-2xs font-bold uppercase
-             tracking-caps text-ink"
-      title={tr('room.ui.489')}
-    > {tr('room.ui.490')} {entries.length}
-    </span>
 
     <span class="ml-auto min-w-0 truncate font-mono text-2xs text-muted">
       <!--
@@ -849,6 +988,30 @@
         {#if armed}<span>{tr('room.ui.493')}</span>{/if}
       </button>
     {/if}
+  </div>
+
+  <!--
+    All / Mine. The counts replace the old "shared · 12" chip, and "shared
+    thread" stays on the right: the filter is this reader's, the thread is
+    still everyone's.
+  -->
+  <div class="flex shrink-0 items-end gap-5 border-b border-line px-4" role="tablist" aria-label={tr('room.oracle.filter')}>
+    {#each [{ value: 'all' as const, label: tr('room.oracle.all'), count: rows.length }, { value: 'mine' as const, label: tr('room.oracle.mine'), count: mineCount }] as tab (tab.value)}
+      {@const on = filter === tab.value}
+      <button
+        type="button"
+        role="tab"
+        aria-selected={on}
+        class="flex items-baseline gap-1.5 border-b-[2.5px] pb-[7px] pt-0.5 text-2xs transition-colors duration-100
+               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
+               {on ? 'border-accent font-bold text-ink' : 'border-transparent text-muted hover:text-ink'}"
+        onclick={() => pickFilter(tab.value)}
+      >
+        {tab.label}
+        <span class="font-mono text-micro {on ? 'text-ink' : 'text-faint'}">{tab.count}</span>
+      </button>
+    {/each}
+    <span class="ml-auto pb-[9px] text-micro text-faint" title={tr('room.ui.489')}>{tr('room.oracle.shared')}</span>
   </div>
 
   <div class="relative flex min-h-0 flex-1 flex-col">
@@ -889,23 +1052,56 @@
         </div>
       {/if}
 
-      {#each [...entries, ...outbox.map((row) => row.row)] as entry (entry.id)}
-        <ChatTurn
-          {entry}
-          pending={entry.id.startsWith('outgoing:')}
-          avatar={avatars.get(entry.participantId) ?? null}
-          authorRole={roles.get(entry.participantId) ?? 'participant'}
-          enter={!inherited.has(entry.id)}
-          cellNumber={cellNumber(entry.cellId)}
-          askedAbout={(entry.cellIds.length > 0 ? entry.cellIds : entry.cellId ? [entry.cellId] : [])
-            .map((id) => cellNumber(id))
-            .filter((n): n is number => n !== null)
-            .sort((a, b) => a - b)}
-          {canDo}
-          onretry={() => retry(entry)}
-          onstop={() => void stop(entry.id)}
-          onundo={() => undo(entry.id)}
-        />
+      {#if filter === 'mine' && mineCount === 0 && rows.length > 0}
+        <!-- Nothing of theirs yet: say so, and keep the way back one click away. -->
+        <div class="flex flex-col items-start gap-2 px-4 pb-4 pt-4">
+          <p class="text-answer text-ink">{tr('room.oracle.mineEmpty')}</p>
+          <p class="text-ui text-muted">{tr('room.oracle.mineEmptyNote')}</p>
+          <button type="button" class="text-ui text-accent-text hover:underline" onclick={() => pickFilter('all')}>
+            {tr('room.oracle.showAllCount', { count: rows.length })}
+          </button>
+        </div>
+      {/if}
+
+      {#each feed as item (item.kind === 'turn' ? item.entry.id : item.key)}
+        {#if item.kind === 'turn'}
+          {@const entry = item.entry}
+          <ChatTurn
+            {entry}
+            pending={entry.id.startsWith('outgoing:')}
+            avatar={avatars.get(entry.participantId) ?? null}
+            authorRole={roles.get(entry.participantId) ?? 'participant'}
+            enter={!inherited.has(entry.id)}
+            cellNumber={cellNumber(entry.cellId)}
+            askedAbout={(entry.cellIds.length > 0 ? entry.cellIds : entry.cellId ? [entry.cellId] : [])
+              .map((id) => cellNumber(id))
+              .filter((n): n is number => n !== null)
+              .sort((a, b) => a - b)}
+            {canDo}
+            onretry={() => retry(entry)}
+            onstop={() => void stop(entry.id)}
+            onundo={() => undo(entry.id)}
+          />
+        {:else}
+          <!-- Others' turns folded under "Mine": the gap is shown, not hidden. -->
+          <div class="flex items-center gap-2.5 px-4 py-1.5">
+            <span class="h-0 flex-1 border-t border-dashed border-line"></span>
+            <span class="flex shrink-0 -space-x-1.5">
+              {#each item.people as person (person.participantId)}
+                <Avatar size="xs" ring name={person.name} color={person.color} avatar={avatars.get(person.participantId) ?? null} />
+              {/each}
+            </span>
+            <span class="shrink-0 text-2xs text-muted">{tr('room.oracle.foldedOthers', { count: item.count })}</span>
+            <button
+              type="button"
+              class="shrink-0 text-2xs text-accent-text hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              onclick={() => reveal(item.first)}
+            >
+              {tr('room.oracle.reveal')}
+            </button>
+            <span class="h-0 flex-1 border-t border-dashed border-line"></span>
+          </div>
+        {/if}
       {/each}
 
       {#if typingLine}
@@ -1101,40 +1297,84 @@
           the room rule or by hints mode — there is no toggle at all, rather
           than one that is there and refuses.
         -->
-        <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 pb-0.5 pt-1.5">
-        {#if canDo}
-            <div class="flex items-stretch border border-line bg-canvas">
-              <button
-                type="button"
-                class="px-2 py-0.5 text-2xs font-semibold transition-colors duration-100
-                       {doing ? 'text-muted hover:text-ink' : 'bg-primary text-primary-ink'}"
-                onclick={() => (doing = false)}
-              > {tr('room.ui.513')} </button>
-              <button
-                type="button"
-                class="px-2 py-0.5 text-2xs font-semibold transition-colors duration-100
-                       {doing ? 'bg-primary text-primary-ink' : 'text-muted hover:text-ink'}"
-                onclick={() => (doing = true)}
-              > {tr('room.ui.514')} </button>
-            </div>
-        {/if}
-          <!--
-            The reasoning effort. Disabled buttons are not drawn where the level
-            cannot be raised: a student sees exactly what is available to them.
-          -->
-          <div class="flex items-stretch border border-line bg-canvas" data-oracle-effort>
-            {#each REASONING_EFFORTS as one (one)}
-              {#if mayEffort(one)}
+        <!--
+          Two labelled rows, one colour. They used to be two unlabelled
+          switches on one line, lit in two different colours (primary for
+          Ask/Act, accent for effort — white on cyan, 3:1 in the light theme),
+          with nothing pressed while the default was in force. Now each says
+          what it is, what is in force is always pressed, and the default
+          carries a dot.
+        -->
+        <div class="flex flex-col gap-1.5 px-2 pb-1 pt-2">
+          {#if canDo}
+            <div class="flex items-center gap-2.5">
+              <span class="w-[52px] shrink-0 text-micro font-black uppercase tracking-caps text-faint">
+                {tr('room.oracle.modeLabel')}
+              </span>
+              <div class="flex shrink-0 items-stretch border border-line bg-canvas" role="group" aria-label={tr('room.oracle.modeLabel')}>
                 <button
                   type="button"
-                  class="px-2 py-0.5 text-2xs font-semibold transition-colors duration-100
-                         {effort === one ? 'bg-accent text-canvas' : 'text-muted hover:text-ink'}"
-                  aria-pressed={effort === one}
-                  title={tr('common.reasoning')}
+                  class="whitespace-nowrap px-2.5 py-0.5 text-2xs transition-colors duration-100
+                         {doing ? 'text-ink hover:bg-surface' : 'bg-primary font-semibold text-primary-ink'}"
+                  aria-pressed={!doing}
+                  onclick={() => (doing = false)}
+                > {tr('room.ui.513')} </button>
+                <button
+                  type="button"
+                  class="whitespace-nowrap px-2.5 py-0.5 text-2xs transition-colors duration-100
+                         {doing ? 'bg-primary font-semibold text-primary-ink' : 'text-ink hover:bg-surface'}"
+                  aria-pressed={doing}
+                  onclick={() => (doing = true)}
+                > {tr('room.ui.514')} </button>
+              </div>
+              <span class="min-w-0 truncate text-micro text-faint">
+                {doing ? tr('room.oracle.modeDoHint') : tr('room.oracle.modeAskHint')}
+              </span>
+            </div>
+          {/if}
+          <!--
+            The reasoning effort. Levels above what a student may use are drawn
+            struck through rather than hidden: "why is there no Thorough?" is
+            answered on the button, not by its absence.
+          -->
+          <div class="flex items-center gap-2.5">
+            <span class="w-[52px] shrink-0 text-micro font-black uppercase tracking-caps text-faint">
+              {tr('room.oracle.effortLabel')}
+            </span>
+            <div class="flex shrink-0 items-stretch border border-line bg-canvas" data-oracle-effort role="group" aria-label={tr('common.reasoning')}>
+              {#each REASONING_EFFORTS as one (one)}
+                {@const on = shownEffort === one}
+                {@const allowed = mayEffort(one)}
+                <button
+                  type="button"
+                  class="flex items-center gap-1 whitespace-nowrap px-2.5 py-0.5 text-2xs transition-colors duration-100
+                         {on
+                           ? 'bg-primary font-semibold text-primary-ink'
+                           : allowed
+                             ? 'text-ink hover:bg-surface'
+                             : 'cursor-not-allowed text-faint line-through'}"
+                  aria-pressed={on}
+                  disabled={!allowed}
+                  title={allowed ? tr('common.reasoning') : tr('room.oracle.effortLocked')}
                   onclick={() => pickEffort(one)}
-                > {effortLabel[one]} </button>
-              {/if}
-            {/each}
+                >
+                  <!--
+                    The default's dot sits in the text run with align-middle,
+                    not as a flex item: flex centred it on the line box, which
+                    is above the middle of lowercase letters, so it floated
+                    over the "o". `middle` is exactly baseline + half the
+                    x-height.
+                  -->
+                  <span class="whitespace-nowrap">
+                    {#if one === instanceEffort}<span
+                        class="mr-1 inline-block size-1 rounded-full align-middle {on ? 'bg-primary-ink' : 'bg-faint'}"
+                        aria-hidden="true"
+                      ></span>{/if}{effortLabel[one]}
+                  </span>
+                </button>
+              {/each}
+            </div>
+            <span class="min-w-0 truncate text-micro text-faint">{effortNote}</span>
           </div>
         </div>
 
@@ -1198,11 +1438,17 @@
 
     <p class="flex items-center gap-1.5 text-2xs text-muted">
       <Icon name="users" size={13} class="shrink-0" />
-      <span class="min-w-0">
+      <span class="min-w-0 flex-1">
         {doing && canDo
           ? tr('room.ui.516')
           : tr('room.ui.517')}
       </span>
+      {#if quotaLeft && !offline && may.ask}
+        <!-- The hour's budget, in the server's own count; amber when it runs low. -->
+        <span class="shrink-0 font-mono text-micro {quotaLeft.left <= 3 ? 'text-warning' : 'text-muted'}">
+          {tr('room.oracle.quotaLeft', { left: quotaLeft.left, count: quotaLeft.limit })}
+        </span>
+      {/if}
     </p>
   </div>
 </div>

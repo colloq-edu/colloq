@@ -397,3 +397,50 @@ test('the tokens of one question add up over its steps', () => {
   }
   assert.equal(spent.n, 2_100)
 })
+
+/* ------------------------------------------------ the budget line itself */
+
+function quotaAs(room: string, participantId: string): Promise<Response> {
+  const token = signToken({ sessionId: room, participantId, role: 'participant', iat: Date.now() - 3 * 60_000 })
+  return fetch(`${base}/api/sessions/${room}/ai/quota`, { headers: { authorization: `Bearer ${token}` } })
+}
+
+test('the quota a student sees is the count the ask route refuses with', async () => {
+  const room = 'limits-quota'
+  createSession(room, 'Quota', null)
+  updateOracleSettings({ questionsPerHour: 20 })
+  for (let i = 0; i < 3; i++) recordQuestion({ sessionId: room, participantId: 'p_quota', action: 'ask' })
+
+  const res = await quotaAs(room, 'p_quota')
+  assert.equal(res.status, 200)
+  const body = (await res.json()) as { host: boolean; limit: number; used: number; resetAt: number | null }
+  assert.equal(body.host, false)
+  assert.equal(body.limit, 20)
+  assert.equal(body.used, 3)
+  // The next slot frees when the oldest counted question leaves the hour.
+  assert.ok(body.resetAt !== null && body.resetAt > Date.now())
+
+  // Someone else in the same room starts from zero: the line is personal.
+  const other = (await (await quotaAs(room, 'p_other')).json()) as { used: number; resetAt: number | null }
+  assert.equal(other.used, 0)
+  assert.equal(other.resetAt, null)
+})
+
+test('a room that tightens the ceiling shows the tighter number', async () => {
+  const room = 'limits-quota-room'
+  createSession(room, 'Quota tightened', null)
+  updateOracleSettings({ questionsPerHour: 20 })
+  setRules(room, { ...getRules(room), questionsPerHour: 5 })
+  const body = (await (await quotaAs(room, 'p_tight')).json()) as { limit: number }
+  assert.equal(body.limit, 5)
+})
+
+test('a stranger gets no numbers', async () => {
+  // The teacher's branch ("no ceiling") hangs on the staff cookie, which the
+  // role is read from on every request (routes/sessions.ts · sessionAuth), not
+  // on the token — so a stranger with no token is what is checked here.
+  const room = 'limits-quota-host'
+  createSession(room, 'Quota host', null)
+  const anonymous = await fetch(`${base}/api/sessions/${room}/ai/quota`)
+  assert.equal(anonymous.status, 401)
+})
