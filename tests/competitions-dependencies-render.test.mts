@@ -85,3 +85,21 @@ test('unavailable execution disables file selection and explains the capability'
   assert.match(html, /Execution unavailable in this deployment\./)
   assert.match(html, /<button[^>]*disabled/)
 })
+
+for (const phone of [false, true]) {
+  test(`the left-today line carries the rule of what spends a submission (${phone ? 'phone' : 'desktop'})`, () => {
+    const show = (mine: object) => render(SendBox, { props: {
+      view: { competition: { slug: 'sample', limits: { wallSeconds: 600 } } },
+      mine: { accepting: 'open', perDay: 5, inFlight: 0, ...mine },
+      phone, busy: false, refusal: null, onsend: async () => null, onrefuse: () => {},
+    } }).body
+    const rule = 'В счёт лимита идёт каждая посылка, чья тетрадь начала выполняться, даже если ответ не принят; упавшая до первой ячейки или отменённая — нет.'
+    assert.ok(show({ leftToday: 3 }).includes(
+      `${phone ? 'Сегодня осталось 3 посылки из 5.' : 'Сегодня можно отправить ещё 3 посылки из 5.'} ${rule}`,
+    ))
+    // The day spent is exactly when "why did it come back?" gets asked.
+    assert.ok(show({ leftToday: 0 }).includes(`На сегодня посылки кончились: 5 в день на участника. ${rule}`))
+    assert.ok(!show({ leftToday: null }).includes(rule), 'no limit, no rule to explain')
+    assert.ok(!show({ leftToday: 3, accepting: 'closed' }).includes(rule), 'closed submissions promise nothing')
+  })
+}

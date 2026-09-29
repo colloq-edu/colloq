@@ -28,6 +28,7 @@
     EntrantLeaderboard,
     EntrantMe,
     EntrantSubmissions,
+    SubmissionAccepted,
   } from '@shared/competitions-entrant'
   import Splash from '@/components/ui/Splash.svelte'
   import DependenciesView from '@/components/competitions/DependenciesView.svelte'
@@ -39,6 +40,7 @@
   import TaskView from '@/components/competitions/TaskView.svelte'
   import TopBar from '@/components/competitions/TopBar.svelte'
   import { firstScreenReady } from '@/lib/boot'
+  import { clockStep } from '@/lib/competition-words'
   import { entrantApi, EntrantApiError } from '@/lib/entrantApi'
   import { COMPETITIONS_LANDING, type CompetitionRoute, type CompetitionView } from '@/lib/routes'
 
@@ -124,12 +126,24 @@
    * recomputes quietly, and only its CHANGE wakes the effect.
    */
   const running = $derived((mine?.submissions ?? []).some((it) => !isTerminal(it.state)))
+  /*
+   * The deadline the header counts down to — the same condition PageHeader
+   * draws the countdown by: a deadline, and submissions not closed yet.
+   */
+  const countdownTo = $derived(
+    route.slug !== null && page !== null && page.accepting !== 'closed' ? page.competition.deadlineAt : null,
+  )
+  /*
+   * The step is a number derived from `now`, and the effect below reads only
+   * it: a `$derived` wakes its readers only when its value CHANGES, so the
+   * timer is recreated when the step flips, not on every tick.
+   */
+  const step = $derived(clockStep(running, countdownTo, now))
 
   $effect(() => {
-    // A second while something is running (the run timer shows seconds in its
-    // label), and half a minute otherwise: the countdown to the deadline
-    // changes once a minute.
-    const step = running ? 1000 : 30_000
+    // A second while the header counts down (the countdown shows seconds) or a
+    // run's stopwatch is on screen, half a minute otherwise (lib ·
+    // competition-words · clockStep).
     const timer = setInterval(() => (now = Date.now()), step)
     return () => clearInterval(timer)
   })
@@ -408,20 +422,21 @@
     mine = null
   }
 
-  async function send(file: File, bundleId?: string | null): Promise<boolean> {
+  /** The server's answer once the notebook is in, and only after "My submissions" has caught up with it. */
+  async function send(file: File, bundleId?: string | null): Promise<SubmissionAccepted | null> {
     const slug = actionSlug()
-    if (!slug || sending) return false
+    if (!slug || sending) return null
     const context = requestContext()
     sending = true
     sendRefusal = null
     try {
-      await entrantApi.send(slug, file, bundleId)
-      if (!currentContext(context)) return false
+      const answer = await entrantApi.send(slug, file, bundleId)
+      if (!currentContext(context)) return null
       await loadMine(slug)
-      return true
+      return answer
     } catch (error: unknown) {
       if (currentContext(context)) sendRefusal = say(error)
-      return false
+      return null
     } finally {
       if (currentContext(context)) sending = false
     }

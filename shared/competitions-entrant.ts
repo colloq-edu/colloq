@@ -111,7 +111,11 @@ export interface EntrantBoardLine {
   number: number
   /** The author picked it themselves — otherwise it is the best on the public part. */
   chosen: boolean
-  /** How many submissions the person has over the whole competition. */
+  /**
+   * How many submissions the person has spent over the whole competition: by
+   * the daily quota's rule (`countsTowardDailyQuota`), so a replaced, cancelled
+   * or never-started notebook is not in it.
+   */
   submissions: number
   /** The baseline's row: the mockup sets it off with a dashed line at the bottom. */
   baseline: boolean

@@ -727,6 +727,8 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.p.pickFile': { ru: 'ВЫБРАТЬ ФАЙЛ', en: 'CHOOSE A FILE' },
   'competitions.p.pickFilePhone': { ru: 'ВЫБРАТЬ ФАЙЛ .IPYNB', en: 'CHOOSE AN .IPYNB FILE' },
   'competitions.p.sending': { ru: 'Отправляем тетрадь…', en: 'Sending the notebook…' },
+  // After a send: the person's own count first, the competition-wide "#28" after it.
+  'competitions.p.sentOk': { ru: 'Принята ваша {ordinal} посылка', en: 'Accepted: your {ordinal} submission' },
   'competitions.p.phoneNeedsCsv': {
     ru: 'Тетрадь должна создать submission.csv.',
     en: 'The notebook has to create submission.csv.',
@@ -743,6 +745,14 @@ export const competitionsMessages: MessageCatalog = {
       other: '{count} submissions left today, out of {perDay}.',
     },
   },
+  /*
+   * Follows the "left today" line: the rule of `countsTowardDailyQuota`, so
+   * that the number going back up after a result is not a mystery.
+   */
+  'competitions.p.quotaRule': {
+    ru: 'В счёт лимита идёт каждая посылка, чья тетрадь начала выполняться, даже если ответ не принят; упавшая до первой ячейки или отменённая — нет.',
+    en: 'Every submission whose notebook starts running counts toward the limit, even if its answer is rejected; one that fails before its first cell or is cancelled does not.',
+  },
   'competitions.p.phoneLimits': {
     ru: {
       one: 'Проверка: до {count} минуты, без доступа к интернету.',
@@ -758,6 +768,8 @@ export const competitionsMessages: MessageCatalog = {
 
   /* Список «Мои посылки» */
   'competitions.p.mine': { ru: 'Мои посылки', en: 'My submissions' },
+  // A row's own ordinal ("3-я", "3rd" from submissionOrdinal) ahead of the competition-wide "#28".
+  'competitions.p.ownOrdinal': { ru: '{ordinal} посылка', en: '{ordinal} submission' },
   'competitions.p.chooseHint': {
     ru: 'Выберите посылку для итогового зачёта.\nБез выбора учтём лучшую по публичному результату.',
     en: 'Pick the submission that counts.\nWith no pick we take your best public result.',
@@ -827,6 +839,8 @@ export const competitionsMessages: MessageCatalog = {
     en: 'stopped at cell {cell} of {cells}',
   },
   'competitions.p.cancelledNote': { ru: 'снята вами', en: 'cancelled by you' },
+  // A finished submission that did not spend the day's limit (competition-words · outsideQuota).
+  'competitions.p.offQuota': { ru: 'не в счёт лимита', en: 'not counted toward the limit' },
   /*
    * A waiting submission is replaced by a newer upload instead of refusing it:
    * the row says by which one, and the send box says so before the click.
@@ -841,6 +855,15 @@ export const competitionsMessages: MessageCatalog = {
   },
   'competitions.p.replaceButton': { ru: 'ЗАМЕНИТЬ #{number}', en: 'REPLACE #{number}' },
   'competitions.p.sendReplacing': { ru: 'Отправить вместо #{number}', en: 'Send in place of #{number}' },
+  /*
+   * Scoring "last": a new notebook that reaches a number takes the counted
+   * one's place even when it is worse. Said before the click, not discovered
+   * on the leaderboard.
+   */
+  'competitions.p.lastReplaces': {
+    ru: 'Если эта посылка дойдёт до числа, в зачёт пойдёт она, а не #{number} ({score}).',
+    en: 'If this submission gets a score, it counts instead of #{number} ({score}).',
+  },
   'competitions.p.countingTitle': {
     ru: 'Приём закрыт. Досчитываем посылки, отправленные до дедлайна',
     en: 'Intake is closed. Counting the submissions sent before the deadline',
@@ -951,7 +974,6 @@ export const competitionsMessages: MessageCatalog = {
     en: 'The public leaderboard is scored on the open part of the test. The hidden part decides the final places and opens after the deadline.',
   },
   'competitions.p.colPlace': { ru: 'МЕСТО', en: 'PLACE' },
-  'competitions.p.colShift': { ru: 'СДВИГ', en: 'SHIFT' },
   'competitions.p.colEntrant': { ru: 'УЧАСТНИК', en: 'PARTICIPANT' },
   'competitions.p.colFinalMetric': { ru: 'ИТОГОВЫЙ {metric}', en: 'FINAL {metric}' },
   'competitions.p.colPublicMetric': { ru: 'ПУБЛИЧНЫЙ {metric}', en: 'PUBLIC {metric}' },

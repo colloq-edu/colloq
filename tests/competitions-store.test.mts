@@ -51,6 +51,7 @@ import {
   setCompetitionState,
   setQueuePaused,
   startRun,
+  submissionCounts,
   takeNext,
   updateCompetition,
   updateSubmission,
@@ -296,6 +297,31 @@ test("the daily quota is counted in the class's time zone and leaves yesterday's
   const open = updateCompetition(c.id, { limits: { perDay: 0 } })
   assert.ok(open && open !== 'taken')
   assert.equal(leftToday(open, person.id, now, MSK), null)
+})
+
+test('the leaderboard counts only the submissions the daily quota counts', () => {
+  const c = freshCompetition('board-count')
+  const person = createEntrant('Тимур').entrant
+  const other = createEntrant('Марфа').entrant
+  const now = Date.UTC(2026, 9, 1, 12)
+  const send = (entrantId: string, fileName: string) =>
+    acceptSubmission({ competitionId: c.id, entrantId, fileName, bytes: 1, at: now })
+
+  updateSubmission(send(person.id, 'scored.ipynb').id, { state: 'scored', publicScore: 0.8, cellsDone: 9 })
+  // The notebook ran and the answer was refused: that spends a submission.
+  updateSubmission(send(person.id, 'columns.ipynb').id, { state: 'rejected', cellsDone: 9 })
+  // Died before its first cell, and withdrawn by hand: neither does.
+  updateSubmission(send(person.id, 'dead.ipynb').id, { state: 'notebookFailed', cellsDone: 0 })
+  updateSubmission(send(person.id, 'withdrawn.ipynb').id, { state: 'cancelled', cellsDone: 3 })
+  // Still waiting counts, the same way it holds a place in "left today".
+  send(person.id, 'waiting.ipynb')
+  updateSubmission(send(other.id, 'dead.ipynb').id, { state: 'notebookFailed', cellsDone: 0 })
+
+  const counts = submissionCounts(c.id)
+  assert.equal(counts.get(person.id), 3)
+  assert.equal(counts.get(person.id), usedToday(c.id, person.id, now, MSK), 'the column and the quota disagree')
+  assert.equal(counts.get(other.id), undefined)
+  drainQueue()
 })
 
 test("exactly one of a person's submissions is counted, and only one that reached a score", () => {

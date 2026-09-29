@@ -1345,17 +1345,38 @@ export function intakePlan(competitionId: string, entrantId: string): { replaces
   return { replaces: toSubmission(only) }
 }
 
-const selectCounts = db.prepare(
-  'SELECT entrant_id, COUNT(*) AS n FROM submissions WHERE competition_id = ? GROUP BY entrant_id',
+const selectSpendable = db.prepare(
+  'SELECT entrant_id, accepted_at, state, cells_done FROM submissions WHERE competition_id = ?',
 )
 
 /**
- * How many submissions each person has — the "SUBMISSIONS" column in the final
+ * How many submissions each person has spent — the "SUBMISSIONS" column of the
  * leaderboard (P3).
+ *
+ * Counted by the daily quota's own rule (`countsTowardDailyQuota`), not by
+ * `COUNT(*)`. The column used to count every row: replaced ones, cancelled
+ * ones, notebooks that died before their first cell. At the rehearsal on
+ * 29 Sep 2026 it showed "6" next to a limit of 5, and three classmates took it
+ * for cheating. The number the class sees there and the "left today" its owner
+ * reads must be one count, so the rule is called here, not copied into SQL.
  */
 export function submissionCounts(competitionId: string): Map<string, number> {
-  const rows = selectCounts.all(competitionId) as { entrant_id: string; n: number }[]
-  return new Map(rows.map((row) => [row.entrant_id, row.n]))
+  const rows = selectSpendable.all(competitionId) as {
+    entrant_id: string
+    accepted_at: number
+    state: string
+    cells_done: number
+  }[]
+  const counts = new Map<string, number>()
+  for (const row of rows) {
+    const spent = countsTowardDailyQuota({
+      acceptedAt: row.accepted_at,
+      state: row.state as SubmissionState,
+      cellsDone: row.cells_done,
+    })
+    if (spent) counts.set(row.entrant_id, (counts.get(row.entrant_id) ?? 0) + 1)
+  }
+  return counts
 }
 
 /**

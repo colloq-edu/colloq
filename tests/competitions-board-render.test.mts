@@ -74,3 +74,39 @@ test('phone and desktop both offer remaining participant rows', () => {
     assert.match(html, /<button[^>]*>[\s\S]*ещё 3/i, phone ? 'phone pagination' : 'desktop pagination')
   }
 })
+
+/*
+ * The final table is Kaggle's private board: the place with its shift beside
+ * it, the name, the final number, the count. The shift lost its own column
+ * and the public score · place its seat next to the final one (29 Sep 2026).
+ */
+test('the final table carries the shift next to the place and no public score', () => {
+  const marfa: EntrantBoardLine = { ...baseline, entrantId: 'marfa', name: 'Марфа', baseline: false, submissions: 4 }
+  const platon: EntrantBoardLine = { ...baseline, entrantId: 'platon', name: 'Платон', baseline: false, submissions: 2 }
+  const both: EntrantLeaderboard = {
+    public: [{ ...marfa, score: 0.91 }, { ...platon, score: 0.88 }],
+    private: [{ ...platon, score: 0.87 }, { ...marfa, score: 0.86 }],
+    privateOpen: true,
+    baselinePublic: null,
+  }
+  const text = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')
+  const headers = (html: string) => (html.match(/<th[\s>]/g) ?? []).length
+
+  const final = show(both, false, true)
+  assert.equal(headers(final), 4)
+  assert.doesNotMatch(text(final), /СДВИГ|ПУБЛИЧНЫЙ Score/)
+  assert.match(text(final), /МЕСТО УЧАСТНИК ИТОГОВЫЙ Score ПОСЫЛОК/)
+  assert.match(text(final), /1 ▲ 1 П Платон 0\.8700 2 /)
+  assert.match(text(final), /2 ▼ 1 М Марфа 0\.8600 4 /)
+  assert.doesNotMatch(text(final), /0\.9100|0\.8800/, 'the public numbers stay on the public tab')
+
+  // The public table keeps its one score column, and has no shift to show.
+  const open = show(both, false, false)
+  assert.equal(headers(open), 4)
+  assert.match(text(open), /МЕСТО УЧАСТНИК ПУБЛИЧНЫЙ Score ПОСЫЛОК/)
+  assert.doesNotMatch(open, /▲|▼/)
+
+  // The phone shows the arrow next to the place as well.
+  assert.match(text(show(both, true, true)), /1 ▲ 1 П Платон 0\.8700/)
+  assert.doesNotMatch(show(both, true, false), /▲|▼/)
+})

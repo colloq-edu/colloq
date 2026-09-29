@@ -230,6 +230,10 @@ function summaryOf(competition: Competition): CompetitionCounts {
  * The submission number and whether its author chose it come here for the
  * "SCORED SUBMISSION" column (P3): "#12 · entrant's choice" and "#19 · best
  * public score" are different things, and one id cannot tell them apart.
+ *
+ * `counts` are spent submissions (store · submissionCounts), by the same rule
+ * the daily quota refuses by: the class reads the "SUBMISSIONS" column against
+ * the limit, and a row that is not in the quota has no business in it.
  */
 function withNames(
   rows: readonly RankedRow[],

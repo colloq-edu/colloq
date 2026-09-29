@@ -15,7 +15,7 @@
 import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readCompetitionRoute } from '../web/src/lib/routes.js'
-import { setLocaleResolver } from '../shared/i18n.js'
+import { setLocaleResolver, tr } from '../shared/i18n.js'
 import type { EntrantSubmission } from '../shared/competitions.js'
 import type { SubmissionLive } from '../shared/competitions-entrant.js'
 import {
@@ -24,14 +24,18 @@ import {
   AVATAR_TINTS,
   boardPlaces,
   clockOf,
+  clockStep,
   dateOf,
   deadlineNote,
   deadlineUrgent,
   elapsedClock,
   fileSize,
   formatScore,
+  lastScoringNote,
   metricArrow,
   ordinalPlace,
+  outsideQuota,
+  ownOrdinals,
   placeWithScore,
   queueNote,
   queueOrdinal,
@@ -45,6 +49,7 @@ import {
   spellDuration,
   splitError,
   stageStrip,
+  submissionOrdinal,
   URGENT_MS,
   whenWords,
 } from '../web/src/lib/competition-words.js'
@@ -163,10 +168,37 @@ test('time left until the deadline: two units in words and as a clock', () => {
   assert.equal(remainingWords(30_000), 'меньше минуты')
   assert.equal(remainingWords(0), 'приём закрыт')
 
-  assert.equal(remainingClock(6 * DAY + 4 * HOUR + 12 * MINUTE), '6 дн 04:12')
-  assert.equal(remainingClock(4 * HOUR + 12 * MINUTE), '04:12')
-  assert.equal(remainingClock(7 * MINUTE), '00:07')
+  assert.equal(remainingClock(6 * DAY + 4 * HOUR + 12 * MINUTE), '6 дн 04:12:00')
+  assert.equal(remainingClock(4 * HOUR + 12 * MINUTE), '4:12:00')
   assert.equal(remainingClock(-1), '00:00')
+})
+
+test('the countdown under an hour is minutes and seconds, from an hour up it gains hours', () => {
+  // Eleven minutes once read "00:11", and the class took it for eleven seconds.
+  assert.equal(remainingClock(11 * MINUTE), '11:00')
+  assert.equal(remainingClock(10 * MINUTE + 52_000), '10:52')
+  assert.equal(remainingClock(7 * MINUTE), '07:00')
+  assert.equal(remainingClock(7_000), '00:07')
+  assert.equal(remainingClock(HOUR + 5 * MINUTE), '1:05:00')
+  assert.equal(remainingClock(HOUR), '1:00:00')
+  assert.equal(remainingClock(HOUR - 1000), '59:59')
+  // Rounded up: "00:00" is the deadline itself, not its last second.
+  assert.equal(remainingClock(400), '00:01')
+  assert.equal(remainingClock(59 * MINUTE + 59_500), '1:00:00')
+  assert.equal(remainingClock(0), '00:00')
+  setLocaleResolver(() => 'en')
+  assert.equal(remainingClock(2 * DAY + 5 * MINUTE + 3000), '2 d 00:05:03')
+  assert.equal(remainingClock(10 * MINUTE + 52_000), '10:52')
+})
+
+test('the page clock ticks every second while the header counts down, and in the last hour above all', () => {
+  const deadline = NOW + 11 * MINUTE
+  assert.equal(clockStep(false, deadline, NOW), 1000)
+  assert.equal(clockStep(false, NOW + 3 * DAY, NOW), 1000, 'the countdown shows seconds at any distance')
+  assert.equal(clockStep(true, null, NOW), 1000, "a run's stopwatch shows seconds too")
+  // Nothing on screen moves by the second: no countdown, or it is over.
+  assert.equal(clockStep(false, null, NOW), 30_000)
+  assert.equal(clockStep(false, NOW - MINUTE, NOW), 30_000)
 })
 
 test("a run's stopwatch counts in minutes, and hours appear only when needed", () => {
@@ -424,6 +456,96 @@ test('a waiting submission takes its caption from the queue', () => {
     now: NOW,
   })
   assert.equal(words.lines[0], 'Третья в очереди · запуск после завершения посылки #12')
+})
+
+/* ------------------------------------------- own numbers and the quota */
+
+test("a submission's own ordinal counts the person's list, not the competition's numbers", () => {
+  const list = [
+    submission({ id: 'c', number: 28, acceptedAt: NOW }),
+    submission({ id: 'a', number: 8, acceptedAt: NOW - 20 * MINUTE }),
+    submission({ id: 'b', number: 27, acceptedAt: NOW - 2 * MINUTE }),
+  ]
+  const ordinals = ownOrdinals(list)
+  assert.deepEqual([ordinals.get('a'), ordinals.get('b'), ordinals.get('c')], [1, 2, 3])
+  // The same second: the competition's number keeps the order the list shows.
+  const tie = ownOrdinals([submission({ id: 'y', number: 31, acceptedAt: NOW }), submission({ id: 'x', number: 30, acceptedAt: NOW })])
+  assert.deepEqual([tie.get('x'), tie.get('y')], [1, 2])
+
+  assert.equal(submissionOrdinal(3), '3-я')
+  assert.equal(tr('competitions.p.ownOrdinal', { ordinal: submissionOrdinal(3) }), '3-я посылка')
+  assert.equal(tr('competitions.p.sentOk', { ordinal: submissionOrdinal(3) }), 'Принята ваша 3-я посылка')
+  setLocaleResolver(() => 'en')
+  assert.deepEqual([1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 101].map(submissionOrdinal),
+    ['1st', '2nd', '3rd', '4th', '11th', '12th', '13th', '21st', '22nd', '23rd', '101st'])
+  assert.equal(tr('competitions.p.ownOrdinal', { ordinal: submissionOrdinal(3) }), '3rd submission')
+  assert.equal(tr('competitions.p.sentOk', { ordinal: submissionOrdinal(3) }), 'Accepted: your 3rd submission')
+  // The place keeps its own masculine Russian form and the shared English one.
+  assert.equal(ordinalPlace(22), '22nd')
+})
+
+test('a finished submission that spent nothing of the day says so, by the quota rule itself', () => {
+  const at = (patch: Partial<EntrantSubmission>) => outsideQuota(submission(patch), 5)
+  assert.equal(at({ state: 'notebookFailed', cellsDone: 0 }), true)
+  assert.equal(at({ state: 'rejected', cellsDone: 0 }), true)
+  assert.equal(at({ state: 'cancelled', cellsDone: 4 }), true)
+  assert.equal(at({ state: 'cancelled', cellsDone: 0, replacedBy: 29 }), true)
+  // The notebook ran: a refused answer and a failed cell both spent one.
+  assert.equal(at({ state: 'rejected', cellsDone: 9 }), false)
+  assert.equal(at({ state: 'notebookFailed', cellsDone: 1 }), false)
+  assert.equal(at({ state: 'scored' }), false)
+  // In flight it does hold a place, so there is nothing to say yet.
+  assert.equal(at({ state: 'queued', cellsDone: 0 }), false)
+  assert.equal(at({ state: 'running', cellsDone: 0 }), false)
+  // No limit, nothing to count against.
+  assert.equal(outsideQuota(submission({ state: 'notebookFailed', cellsDone: 0 }), 0), false)
+})
+
+test('"not counted toward the limit" closes the caption, or stands alone when there is none', () => {
+  const dead = submission({ state: 'notebookFailed', cellsDone: 0, cellsTotal: 0, publicScore: null })
+  const desktop = rowWords({ submission: dead, live: null, best: false, paused: false, now: NOW, offQuota: true })
+  assert.equal(desktop.lines[0], `Сегодня в ${clockOf(dead.acceptedAt)} · не в счёт лимита`)
+  const replaced = rowWords({
+    submission: submission({ state: 'cancelled', cellsDone: 0, replacedBy: 29, publicScore: null }),
+    live: null, best: false, paused: false, now: NOW, offQuota: true,
+  })
+  assert.match(replaced.lines[0], /заменена посылкой #29 · не в счёт лимита$/)
+  // A phone's refused answer puts the reason in the title and has no caption.
+  const refused = submission({ state: 'rejected', cellsDone: 0, publicScore: null, participantError: 'Нет файла submission.csv.' })
+  const phone = rowWords({ submission: refused, live: null, best: false, paused: false, now: NOW, phone: true, offQuota: true })
+  assert.deepEqual(phone.lines, ['не в счёт лимита'])
+  assert.doesNotMatch(rowWords({ submission: dead, live: null, best: false, paused: false, now: NOW }).lines.join(' '), /лимит/)
+  setLocaleResolver(() => 'en')
+  assert.match(rowWords({ submission: dead, live: null, best: false, paused: false, now: NOW, offQuota: true }).lines[0], /· not counted toward the limit$/)
+})
+
+test('the day-limit rule is one sentence in both languages', () => {
+  assert.equal(
+    tr('competitions.p.quotaRule'),
+    'В счёт лимита идёт каждая посылка, чья тетрадь начала выполняться, даже если ответ не принят; упавшая до первой ячейки или отменённая — нет.',
+  )
+  setLocaleResolver(() => 'en')
+  assert.equal(
+    tr('competitions.p.quotaRule'),
+    'Every submission whose notebook starts running counts toward the limit, even if its answer is rejected; one that fails before its first cell or is cancelled does not.',
+  )
+})
+
+test('under scoring "last" the send box names the counted submission a new score would replace', () => {
+  const last = { scoring: 'last' as const, metric: { name: 'ROC AUC', direction: 'higher' as const } }
+  const list = [
+    submission({ id: 'old', number: 12, acceptedAt: NOW - 30 * MINUTE, publicScore: 0.91 }),
+    submission({ id: 'counted', number: 28, acceptedAt: NOW - 10 * MINUTE, publicScore: 0.8255 }),
+    // Newer, but it never reached a number: "last" means the last SCORED one.
+    submission({ id: 'failed', number: 29, acceptedAt: NOW - MINUTE, state: 'notebookFailed', publicScore: null }),
+  ]
+  assert.equal(lastScoringNote(last, list), 'Если эта посылка дойдёт до числа, в зачёт пойдёт она, а не #28 (0.8255).')
+  setLocaleResolver(() => 'en')
+  assert.equal(lastScoringNote(last, list), 'If this submission gets a score, it counts instead of #28 (0.8255).')
+  // Nothing counts yet, or the rule is not "last": nothing to warn about.
+  assert.equal(lastScoringNote(last, [list[2]]), null)
+  assert.equal(lastScoringNote({ ...last, scoring: 'bestPublic' }, list), null)
+  assert.equal(lastScoringNote({ ...last, scoring: 'chosen' }, list), null)
 })
 
 /* -------------------------------------------------------------- places */

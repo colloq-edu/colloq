@@ -23,6 +23,7 @@
     formatScore,
     rowWords,
     submissionBadge,
+    submissionOrdinal,
     runProgress,
     spellDuration,
   } from '@/lib/competition-words'
@@ -32,6 +33,10 @@
     live: SubmissionLive | null
     best: boolean
     counted?: boolean
+    /** Its place among the person's own submissions (`ownOrdinals`); null — unknown. */
+    ordinal?: number | null
+    /** Finished without spending the day's limit (`outsideQuota`). */
+    offQuota?: boolean
     canChoose?: boolean
     paused: boolean
     now: number
@@ -45,13 +50,13 @@
     onchoose: (id: string) => void
   }
 
-  const { submission, live, best, counted = submission.chosen, canChoose = true, paused, now, busy, limitMs, notebookUrl, dependenciesSlug, frozen, oncancel, onchoose }: Props =
+  const { submission, live, best, counted = submission.chosen, ordinal = null, offQuota = false, canChoose = true, paused, now, busy, limitMs, notebookUrl, dependenciesSlug, frozen, oncancel, onchoose }: Props =
     $props()
 
   let open = $state(false)
 
   const badge = $derived(submissionBadge(submission))
-  const words = $derived(rowWords({ submission, live, best, paused, now, phone: true }))
+  const words = $derived(rowWords({ submission, live, best, paused, now, phone: true, offQuota }))
   const running = $derived(submission.state === 'running')
   const queued = $derived(submission.state === 'queued')
   const failed = $derived(
@@ -82,7 +87,15 @@
     {#if badge}
       <Badge word={badge.word} tone={badge.tone} form={badge.form} phone />
     {/if}
-    <span class="font-mono text-micro leading-4 text-muted">#{submission.number}</span>
+    <!-- The person's own count first, the competition-wide "#28" small after
+         it. The ordinal is the one that gives way when a long timer needs the
+         room: the number next to it still names the row. -->
+    {#if ordinal !== null}
+      <span class="min-w-0 truncate text-micro font-bold leading-4 text-ink">
+        {tr('competitions.p.ownOrdinal', { ordinal: submissionOrdinal(ordinal) })}
+      </span>
+    {/if}
+    <span class="shrink-0 font-mono text-micro leading-4 text-muted">#{submission.number}</span>
     {#if counted}
       <span class="bg-positive px-1.5 py-0.5 text-micro font-bold leading-5 text-white dark:text-canvas">
         {tr('competitions.counted')}

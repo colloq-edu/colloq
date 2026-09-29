@@ -15,7 +15,9 @@
     EntrantBoardLine,
     EntrantCompetitionView,
     EntrantSubmissions,
+    SubmissionAccepted,
   } from '@shared/competitions-entrant'
+  import { outsideQuota, ownOrdinals } from '@/lib/competition-words'
   import Conditions from './Conditions.svelte'
   import MiniBoard from './MiniBoard.svelte'
   import SendBox from './SendBox.svelte'
@@ -32,7 +34,8 @@
     busy: boolean
     refusal: string | null
     notebookUrl: (id: string) => string
-    onsend: (file: File, bundleId?: string | null) => Promise<boolean>
+    /** Resolves to the server's answer once the notebook is in, or null when it was refused. */
+    onsend: (file: File, bundleId?: string | null) => Promise<SubmissionAccepted | null>
     onrefuse: (message: string) => void
     oncancel: (id: string) => void
     onchoose: (id: string) => void
@@ -65,6 +68,8 @@
   const rows = $derived(
     [...mine.submissions].sort((a, b) => b.acceptedAt - a.acceptedAt || b.number - a.number),
   )
+  /** "3rd" ahead of "#28": the person counts their own submissions, not the class's. */
+  const ordinals = $derived(ownOrdinals(mine.submissions))
   const liveFor = (id: string) => mine.live.find((row) => row.submissionId === id) ?? null
   /*
    * Choosing the counted submission freezes together with submissions.
@@ -177,6 +182,8 @@
             live={liveFor(submission.id)}
             best={submission.id === best}
             counted={submission.id === counted}
+            ordinal={ordinals.get(submission.id) ?? null}
+            offQuota={outsideQuota(submission, mine.perDay)}
             {canChoose}
             paused={mine.paused}
             {now}
@@ -194,6 +201,8 @@
             live={liveFor(submission.id)}
             best={submission.id === best}
             counted={submission.id === counted}
+            ordinal={ordinals.get(submission.id) ?? null}
+            offQuota={outsideQuota(submission, mine.perDay)}
             {canChoose}
             paused={mine.paused}
             {now}

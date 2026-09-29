@@ -16,8 +16,13 @@
   import { onMount } from 'svelte'
   import type { DependencyOverview } from '@shared/dependencies'
   import { entrantApi } from '@/lib/entrantApi'
+  import { lastScoringNote, ownOrdinals, submissionOrdinal } from '@/lib/competition-words'
   import { tr } from '@shared/i18n'
-  import type { EntrantCompetitionView, EntrantSubmissions } from '@shared/competitions-entrant'
+  import type {
+    EntrantCompetitionView,
+    EntrantSubmissions,
+    SubmissionAccepted,
+  } from '@shared/competitions-entrant'
 
   interface Props {
     view: EntrantCompetitionView
@@ -26,7 +31,8 @@
     busy: boolean
     /** A send refusal — in the server's words, or our own about the extension. */
     refusal: string | null
-    onsend: (file: File, bundleId?: string | null) => Promise<boolean>
+    /** The server's answer once the notebook is in — with "My submissions" already reloaded; null — refused. */
+    onsend: (file: File, bundleId?: string | null) => Promise<SubmissionAccepted | null>
     onrefuse: (message: string) => void
   }
 
@@ -52,8 +58,27 @@
   onMount(() => { void loadPackages() })
   async function confirmSend(): Promise<void> {
     if (!chosenFile || blocked || loadingPackages || packageError) return
-    if (await onsend(chosenFile, bundleId || null)) chosenFile = null
+    const answer = await onsend(chosenFile, bundleId || null)
+    if (!answer) return
+    chosenFile = null
+    sent = { id: answer.submission.id, number: answer.submission.number }
   }
+
+  /*
+   * What was just sent, said the way the person counts: "your 3rd
+   * submission", with the competition-wide "#28" small after it. The "#" is
+   * shared by the whole class, and read alone it made students ask where
+   * their other submissions had gone. The ordinal comes from the reloaded
+   * list, so it is the same one the new row shows below.
+   */
+  let sent = $state<{ id: string; number: number } | null>(null)
+  const sentOrdinal = $derived(sent ? (ownOrdinals(mine.submissions).get(sent.id) ?? null) : null)
+
+  /*
+   * Scoring "last": sending replaces the counted result as soon as the new
+   * one scores, worse or not. Said next to the button that does it.
+   */
+  const lastNote = $derived(lastScoringNote(view.competition, mine.submissions))
 
   let dragging = $state(false)
   let input = $state<HTMLInputElement | null>(null)
@@ -71,15 +96,23 @@
      */
     if (mine.accepting !== 'open') return ''
     if (mine.leftToday === null) return tr('competitions.p.dropNoLimit')
+    /*
+     * The rule rides with the number. A rejected answer spends a submission
+     * while a notebook that died before its first cell gives it back, and
+     * without a word about it "left today" going back up after a result
+     * looked like a glitch at the rehearsal (29 Sep 2026).
+     */
+    const rule = tr('competitions.p.quotaRule')
     if (mine.leftToday <= 0) {
       // A replacement costs no attempt: the hint below says so instead.
       if (mine.replaceable) return ''
-      return tr('competitions.refusal.dailyQuota', { count: mine.perDay })
+      return `${tr('competitions.refusal.dailyQuota', { count: mine.perDay })} ${rule}`
     }
-    return tr(phone ? 'competitions.p.phoneLeftToday' : 'competitions.p.dropLeftToday', {
+    const left = tr(phone ? 'competitions.p.phoneLeftToday' : 'competitions.p.dropLeftToday', {
       count: mine.leftToday,
       perDay: mine.perDay,
     })
+    return `${left} ${rule}`
   })
   const unavailable = $derived(view.capabilities?.execution.available === false)
   /*
@@ -103,6 +136,7 @@
       return
     }
     chosenFile = file
+    sent = null
     onrefuse('')
   }
 </script>
@@ -204,8 +238,16 @@
       {#if loadingPackages}<p class="text-[14px] text-muted" role="status">{tr('dependencies.loading')}</p>{/if}
       {#if packageError}<p class="text-[14px] text-danger" role="alert">{packageError}</p><button type="button" class="min-h-10 text-accent-text underline" onclick={loadPackages}>{tr('dependencies.reload')}</button>{/if}
       <p class="text-[14px] text-muted">{tr('dependencies.sendHint')}</p>
+      {#if lastNote}<p class="text-[14px] text-ink">{lastNote}</p>{/if}
       <div class="flex flex-wrap items-center gap-4"><button type="button" class="min-h-11 bg-brand px-5 font-bold text-white disabled:opacity-50" disabled={blocked || loadingPackages || !!packageError} onclick={confirmSend}>{busy ? tr('competitions.p.sending') : replacing ? tr('competitions.p.sendReplacing', { number: replaces!.number }) : tr('dependencies.send')}</button><a class="text-[14px] text-accent-text underline" href={`/k/${view.competition.slug}/dependencies`}>{tr('dependencies.manage')}</a></div>
     </div>
+  {/if}
+
+  {#if sent && sentOrdinal !== null && !chosenFile && !refusal}
+    <p class="text-2xs leading-[18px] text-positive" role="status">
+      {tr('competitions.p.sentOk', { ordinal: submissionOrdinal(sentOrdinal) })}
+      <span class="font-mono text-micro text-muted">#{sent.number}</span>
+    </p>
   {/if}
 
   {#if unavailable}

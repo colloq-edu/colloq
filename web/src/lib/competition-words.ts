@@ -20,12 +20,16 @@
  */
 import { formatNumber, getLocale, tr } from '@shared/i18n'
 import {
+  countedSubmission,
+  countsTowardDailyQuota,
   entrantBadge,
+  isTerminal,
   metricFailedNote,
   stagePosition,
   stageWord,
   SUBMISSION_STAGES,
   DIRECTION_ARROW,
+  type CompetitionPublic,
   type EntrantSubmission,
   type MetricDirection,
   type StagePosition,
@@ -92,10 +96,29 @@ export function placeWithScore(place: number | null, score: number | null): stri
  */
 export function ordinalPlace(place: number): string {
   if (getLocale() !== 'en') return `${place}-й`
-  const mod100 = place % 100
-  if (mod100 >= 11 && mod100 <= 13) return `${place}th`
-  const mod10 = place % 10
-  return `${place}${mod10 === 1 ? 'st' : mod10 === 2 ? 'nd' : mod10 === 3 ? 'rd' : 'th'}`
+  return englishOrdinal(place)
+}
+
+/**
+ * A submission's ordinal among the person's own: "3-я" in Russian, "3rd" in
+ * English.
+ *
+ * Feminine here, unlike the place: the word it stands for is "посылка", and
+ * that one has no gender to guess. The Russian form is the catalog's, the
+ * same one the queue says "11-я в очереди" with; English suffixes follow
+ * rules a plural form cannot pick, so they are computed.
+ */
+export function submissionOrdinal(n: number): string {
+  if (getLocale() !== 'en') return tr('competitions.p.ordinalN', { count: n })
+  return englishOrdinal(n)
+}
+
+/** "1st", "2nd", "3rd", "11th", "21st": English picks the suffix by its own rules. */
+function englishOrdinal(n: number): string {
+  const mod100 = n % 100
+  if (mod100 >= 11 && mod100 <= 13) return `${n}th`
+  const mod10 = n % 10
+  return `${n}${mod10 === 1 ? 'st' : mod10 === 2 ? 'nd' : mod10 === 3 ? 'rd' : 'th'}`
 }
 
 /** "MAPE ↓" — the metric with its direction arrow (P1, P4). */
@@ -151,18 +174,48 @@ export function remainingWords(ms: number): string {
 }
 
 /**
- * The same time, but as a clock: "6 d 04:12", "04:12", "00:07".
+ * The same time, but as a clock: "10:52", "1:05:00", "6 d 04:12:00".
  *
  * The large figure in the header (P2, P4) is a clock, not words, and that is
- * not taste: it updates every minute in plain sight, and "1 h 12 min" →
- * "1 h 11 min" changes the width of the line, while `01:12` → `01:11` does not.
+ * not taste: it changes in plain sight, and "1 h 12 min" → "1 h 11 min"
+ * changes the width of the line, while `1:12:00` → `1:11:59` does not.
+ *
+ * Seconds are always there, and that is the whole point. The clock used to be
+ * hours and minutes, so eleven minutes before the deadline it read "00:11",
+ * and at the rehearsal (29 Sep 2026) the class read that as eleven seconds.
+ * Now a clock with one colon is minutes and seconds, and hours bring a second
+ * colon — the same shape as a run's stopwatch (`elapsedClock`), which the
+ * person watches on the same page.
+ *
+ * Rounded up: "00:00" means the deadline has come, so the last second before
+ * it still reads "00:01".
  */
 export function remainingClock(ms: number): string {
   if (ms <= 0) return '00:00'
-  const days = Math.floor(ms / DAY)
-  const rest = ms - days * DAY
-  const clock = `${pad(Math.floor(rest / HOUR))}:${pad(Math.floor((rest % HOUR) / MINUTE))}`
-  return days > 0 ? tr('competitions.p.durClockDays', { days, clock }) : clock
+  const total = Math.ceil(ms / SECOND)
+  const days = Math.floor(total / (DAY / SECOND))
+  if (days === 0) return elapsedClock(total * SECOND)
+  const rest = total % (DAY / SECOND)
+  const clock = `${pad(Math.floor(rest / 3600))}:${pad(Math.floor((rest % 3600) / 60))}:${pad(rest % 60)}`
+  return tr('competitions.p.durClockDays', { days, clock })
+}
+
+/**
+ * How often the competition page's clock ticks, in milliseconds.
+ *
+ * Every second while the header counts down to a deadline — the countdown
+ * shows seconds, and at a slower tick they would jump by thirty and the timer
+ * would look broken exactly in the last hour, when people watch it — and
+ * while a run's stopwatch is on screen. Half a minute otherwise: then the
+ * only thing that moves is "Today at 18:40".
+ *
+ * `deadlineAt` is the deadline the header counts down to, or null when it
+ * shows no countdown (no deadline, or submissions already closed).
+ */
+export function clockStep(running: boolean, deadlineAt: number | null, now: number): number {
+  if (running) return SECOND
+  if (deadlineAt !== null && deadlineAt > now) return SECOND
+  return 30 * SECOND
 }
 
 /** "01:12" — the stopwatch of a run in progress; hours appear only when needed. */
@@ -306,6 +359,63 @@ export function queueNote(note: QueueNote): string {
   return parts.join(' · ')
 }
 
+/* ------------------------------------------- own numbers and the quota */
+
+/**
+ * Each submission's number among the person's OWN, oldest first: the "3rd"
+ * that "My submissions" leads with, next to the competition-wide "#28".
+ *
+ * The "#" is the competition's counter, shared by the whole class, so one
+ * person's list reads "#8, #27, #28" — and at the rehearsal (29 Sep 2026)
+ * five students asked where their other submissions went. The order is the
+ * list's own (accepted, then number), so the ordinal is the row's place from
+ * the bottom; replaced and cancelled rows keep theirs, being rows of the list.
+ */
+export function ownOrdinals(
+  submissions: readonly Pick<EntrantSubmission, 'id' | 'acceptedAt' | 'number'>[],
+): Map<string, number> {
+  const oldestFirst = [...submissions].sort((a, b) => a.acceptedAt - b.acceptedAt || a.number - b.number)
+  return new Map(oldestFirst.map((submission, index) => [submission.id, index + 1]))
+}
+
+/**
+ * Whether a finished submission left the day's limit untouched — the "not
+ * counted toward the limit" in its caption.
+ *
+ * The rule itself is `countsTowardDailyQuota`, the one the server refuses by
+ * and the leaderboard counts by; here it only decides when saying so is worth
+ * a word. Not while the submission is in flight: a waiting one does hold a
+ * place in the quota and gives it back only if it dies before its first cell.
+ * And not without a limit, where there is nothing to count against.
+ */
+export function outsideQuota(
+  submission: Pick<EntrantSubmission, 'acceptedAt' | 'state' | 'cellsDone'>,
+  perDay: number,
+): boolean {
+  return perDay > 0 && isTerminal(submission.state) && !countsTowardDailyQuota(submission)
+}
+
+/**
+ * What the send box says before the click under scoring "last": "If this
+ * submission gets a score, it counts instead of #28 (0.8255)". Null under any
+ * other rule, or while nothing of the person's counts yet.
+ *
+ * Under "last" a new notebook that reaches a number takes the counted one's
+ * place even with a worse number. The rule is on purpose — the class lives
+ * with its last word — but found out on the leaderboard it reads as a result
+ * that went missing. Which submission counts is `countedSubmission`, the same
+ * call the leaderboard is built with, not a guess of its own.
+ */
+export function lastScoringNote(
+  competition: Pick<CompetitionPublic, 'scoring' | 'metric'>,
+  submissions: readonly EntrantSubmission[],
+): string | null {
+  if (competition.scoring !== 'last') return null
+  const counted = countedSubmission('last', submissions, competition.metric.direction)
+  if (!counted) return null
+  return tr('competitions.p.lastReplaces', { number: counted.number, score: formatScore(counted.publicScore) })
+}
+
 /* ----------------------------------------------- submission row captions */
 
 /**
@@ -342,6 +452,8 @@ export interface RowInput {
   now: number
   /** The phone layout (P4): shorter captions, no duration. */
   phone?: boolean
+  /** It finished without spending the day's limit (`outsideQuota`): the caption says so. */
+  offQuota?: boolean
 }
 
 /**
@@ -351,8 +463,20 @@ export interface RowInput {
  * outcome to outcome not in styling but in CONTENT ("failed at cell 7 of 14
  * after 41 s" versus "stopped at cell 11 of 16"), and assembled on the spot it
  * would drift apart between desktop and phone on the very first edit.
+ *
+ * "Not counted toward the limit" closes the first caption line rather than
+ * taking a line of its own: it is a remark about the same submission, and on
+ * a phone every line is a finger's height of scrolling.
  */
 export function rowWords(input: RowInput): RowWords {
+  const words = outcomeWords(input)
+  if (!input.offQuota) return words
+  const note = tr('competitions.p.offQuota')
+  const [first, ...rest] = words.lines
+  return { title: words.title, lines: first ? [`${first} · ${note}`, ...rest] : [note] }
+}
+
+function outcomeWords(input: RowInput): RowWords {
   const { submission, live, now } = input
   const file = submission.fileName
   switch (submission.state) {

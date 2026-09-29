@@ -21,6 +21,7 @@
     formatScore,
     rowWords,
     submissionBadge,
+    submissionOrdinal,
     runProgress,
     spellDuration,
   } from '@/lib/competition-words'
@@ -30,6 +31,10 @@
     live: SubmissionLive | null
     best: boolean
     counted?: boolean
+    /** Its place among the person's own submissions (`ownOrdinals`); null — unknown. */
+    ordinal?: number | null
+    /** Finished without spending the day's limit (`outsideQuota`). */
+    offQuota?: boolean
     canChoose?: boolean
     paused: boolean
     now: number
@@ -44,13 +49,13 @@
     onchoose: (id: string) => void
   }
 
-  const { submission, live, best, counted = submission.chosen, canChoose = true, paused, now, busy, limitMs, notebookUrl, dependenciesSlug, frozen, oncancel, onchoose }: Props =
+  const { submission, live, best, counted = submission.chosen, ordinal = null, offQuota = false, canChoose = true, paused, now, busy, limitMs, notebookUrl, dependenciesSlug, frozen, oncancel, onchoose }: Props =
     $props()
 
   let open = $state(false)
 
   const badge = $derived(submissionBadge(submission))
-  const words = $derived(rowWords({ submission, live, best, paused, now }))
+  const words = $derived(rowWords({ submission, live, best, paused, now, offQuota }))
   const running = $derived(submission.state === 'running')
   const queued = $derived(submission.state === 'queued')
   const failed = $derived(
@@ -106,7 +111,21 @@
   data-state={submission.state}
 >
   <div class="flex items-start gap-0">
-    <span class="w-12 shrink-0 font-mono text-2xs leading-4 text-muted">#{submission.number}</span>
+    <!-- The person's own count leads, and the competition-wide "#28" stays
+         under it, small: the teacher speaks in "#28", but "#8, #27, #28"
+         alone made a list of three look like one with holes. Only the
+         ordinal fits the column; the word is in the tooltip. -->
+    {#if ordinal !== null}
+      <span
+        class="flex w-12 shrink-0 flex-col font-mono"
+        title="{tr('competitions.p.ownOrdinal', { ordinal: submissionOrdinal(ordinal) })} · #{submission.number}"
+      >
+        <span class="text-2xs font-bold leading-4 text-ink">{submissionOrdinal(ordinal)}</span>
+        <span class="text-micro leading-4 text-muted">#{submission.number}</span>
+      </span>
+    {:else}
+      <span class="w-12 shrink-0 font-mono text-2xs leading-4 text-muted">#{submission.number}</span>
+    {/if}
     <span class="flex w-[184px] shrink-0">
       {#if badge}
         <Badge word={badge.word} tone={badge.tone} form={badge.form} />

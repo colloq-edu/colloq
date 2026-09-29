@@ -43,3 +43,24 @@ for (const name of ['SubmissionRow', 'SubmissionCard']) test(`${name} marks the 
   const counted = render(components.get(name)!, { props: { ...props, submission: { ...submission, chosen: false }, counted: true } }).body
   assert.match(counted, /в зачёт/i)
 })
+
+const text = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')
+const rowProps = { live: null, best: false, paused: false, now: 10, busy: false, limitMs: 1000, notebookUrl: '', frozen: false, canChoose: false, counted: false, oncancel: () => {}, onchoose: () => {} }
+
+for (const name of ['SubmissionRow', 'SubmissionCard']) test(`${name} leads with the person's own ordinal and keeps the competition's number beside it`, () => {
+  const props = { ...rowProps, submission: { ...submission, number: 28, chosen: false } }
+  const shown = text(render(components.get(name)!, { props: { ...props, ordinal: 3 } }).body)
+  // The phone card has room for the word; the desktop column holds the ordinal alone.
+  assert.match(shown, name === 'SubmissionCard' ? /3-я посылка #28/ : /3-я #28/)
+  // Without an ordinal the row still names itself by the competition's number.
+  const bare = text(render(components.get(name)!, { props }).body)
+  assert.match(bare, /#28/)
+  assert.doesNotMatch(bare, /3-я/)
+})
+
+for (const name of ['SubmissionRow', 'SubmissionCard']) test(`${name} says when a finished submission did not count toward the limit`, () => {
+  const dead = { ...submission, state: 'notebookFailed', chosen: false, cellsDone: 0, cellsTotal: 0, publicScore: null, participantError: null }
+  const props = { ...rowProps, submission: dead }
+  assert.match(text(render(components.get(name)!, { props: { ...props, offQuota: true } }).body), /не в счёт лимита/)
+  assert.doesNotMatch(text(render(components.get(name)!, { props }).body), /в счёт лимита/)
+})

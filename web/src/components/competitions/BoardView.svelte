@@ -17,12 +17,19 @@
    * quarter of the table (removed on 29 Sep 2026 at the teacher's request).
    * Which submission counts is the rule in the task, and each person sees
    * their own in "My submissions".
+   *
+   * The final table is Kaggle's private board: the place with its shift
+   * beside it, small, and the final number — nothing else. The shift had a
+   * column of its own and the public score · place sat next to the final one;
+   * both were dropped the same day at the owner's request. How far a person
+   * slid is read off the arrow, and the public numbers are one click away on
+   * the other tab.
    */
   import { tr } from '@shared/i18n'
   import { placeShift } from '@shared/competitions'
   import type { CompetitionPublic } from '@shared/competitions'
   import type { EntrantBoardLine, EntrantLeaderboard } from '@shared/competitions-entrant'
-  import { avatarLetter, avatarTint, boardPlaces, formatScore, ordinalPlace } from '@/lib/competition-words'
+  import { avatarLetter, avatarTint, boardPlaces, formatScore } from '@/lib/competition-words'
 
   interface Props {
     competition: CompetitionPublic
@@ -78,7 +85,7 @@
   const lines = $derived(boardPlaces(final && board.private ? board.private : board.public))
   const people = $derived(lines.filter((line) => !line.baseline))
   const baseline = $derived(lines.find((line) => line.baseline) ?? null)
-  /** The place in the public table — the second column and the shift's base. */
+  /** The place in the public table — the shift's base. */
   const publicPlace = $derived(
     new Map(boardPlaces(board.public).map((line) => [line.entrantId, line] as const)),
   )
@@ -86,6 +93,17 @@
   function shiftOf(line: EntrantBoardLine): number | null {
     if (!final) return null
     return placeShift(publicPlace.get(line.entrantId)?.place ?? null, line.place)
+  }
+
+  /** "▲ 3", "▼ 2", "—": the shift as it sits next to the place. */
+  function shiftWords(shift: number): string {
+    if (shift > 0) return `▲ ${shift}`
+    if (shift < 0) return `▼ ${Math.abs(shift)}`
+    return '—'
+  }
+
+  function shiftTone(shift: number): string {
+    return shift > 0 ? 'text-positive' : shift < 0 ? 'text-danger' : 'text-muted'
   }
 </script>
 
@@ -126,15 +144,21 @@
   {#if people.length === 0 && baseline === null}
     <p class="border-t border-line py-6 text-ui text-muted">{tr('competitions.p.boardEmpty')}</p>
   {:else if phone}
-    <!-- Phone: the same rows without the "shift" column — at 390 px it pushes
-         out the name the table is opened for. -->
+    <!-- Phone: the same rows, with the final table's shift squeezed in next
+         to the place the way the desktop has it. The slot widens only in the
+         final table: at 390 px the public one has no arrow to make room for,
+         and the name is what the table is opened for. -->
     <div class="flex flex-col border-t-2 border-ink">
       {#each people.slice(0, shown) as line (line.entrantId)}
+        {@const shift = shiftOf(line)}
         <div
           class="flex items-center gap-3 border-b border-line py-3 {line.you ? 'bg-raised' : ''}"
         >
-          <span class="w-8 shrink-0 font-mono text-title font-bold leading-6 text-ink">
-            {line.place}
+          <span class="flex shrink-0 items-baseline gap-1 {final ? 'w-16' : 'w-8'}">
+            <span class="font-mono text-title font-bold leading-6 text-ink">{line.place}</span>
+            {#if shift !== null}
+              <span class="font-mono text-micro font-bold {shiftTone(shift)}">{shiftWords(shift)}</span>
+            {/if}
           </span>
           <span
             class="flex size-7 shrink-0 items-center justify-center rounded-full text-micro font-bold text-[#7A4A12]"
@@ -147,7 +171,7 @@
       {/each}
       {#if baseline}
         <div class="flex items-center gap-3 border-b border-line border-t border-dashed border-t-brand-2 py-3">
-          <span class="w-8 shrink-0 font-mono text-ui text-muted">{baseline.place ?? '—'}</span>
+          <span class="shrink-0 font-mono text-ui text-muted {final ? 'w-16' : 'w-8'}">{baseline.place ?? '—'}</span>
           <span class="size-7 shrink-0 border border-dashed border-brand-2" aria-hidden="true"></span>
           <span class="min-w-0 grow text-2xs text-muted">{tr('competitions.p.baselineRow')}</span>
           <span class="shrink-0 font-mono text-ui text-muted">{formatScore(baseline.score)}</span>
@@ -156,14 +180,13 @@
     </div>
   {:else}
     <div class="w-full overflow-x-auto">
-      <table class="w-full min-w-[650px] border-collapse text-left">
+      <!-- One width for the place column in both tables: switching between
+           them must not move the names sideways. It fits "128 ▼ 12". -->
+      <table class="w-full min-w-[560px] border-collapse text-left">
         <thead>
           <tr class="border-b-2 border-ink">
-            <th class="w-16 py-3 text-micro font-black uppercase leading-5 tracking-label text-muted">
+            <th class="w-24 py-3 text-micro font-black uppercase leading-5 tracking-label text-muted">
               {tr('competitions.p.colPlace')}
-            </th>
-            <th class="w-20 text-micro font-black uppercase leading-5 tracking-label text-muted">
-              {final ? tr('competitions.p.colShift') : ''}
             </th>
             <th class="text-micro font-black uppercase leading-5 tracking-label text-muted">
               {tr('competitions.p.colEntrant')}
@@ -175,13 +198,6 @@
                 metric: competition.metric.name,
               })}
             </th>
-            {#if final}
-              <th
-                class="w-[140px] text-right text-micro font-black uppercase leading-5 tracking-[0.06em] text-muted"
-              >
-                {tr('competitions.p.colPublicMetric', { metric: competition.metric.name })}
-              </th>
-            {/if}
             <th class="w-[110px] text-right text-micro font-black uppercase leading-5 tracking-label text-muted">
               {tr('competitions.p.colSubmissions')}
             </th>
@@ -191,17 +207,13 @@
           {#each people.slice(0, shown) as line (line.entrantId)}
             {@const shift = shiftOf(line)}
             <tr class="h-14 border-b border-line {line.you ? 'bg-raised' : ''}">
-              <td class="font-mono text-[22px] font-bold leading-7 text-ink">{line.place}</td>
-              <td class="font-mono text-2xs font-bold">
-                {#if shift === null}
-                  <span class="text-faint"></span>
-                {:else if shift > 0}
-                  <span class="text-positive">▲ {shift}</span>
-                {:else if shift < 0}
-                  <span class="text-danger">▼ {Math.abs(shift)}</span>
-                {:else}
-                  <span class="text-muted">—</span>
-                {/if}
+              <td>
+                <span class="flex items-baseline gap-2 whitespace-nowrap">
+                  <span class="font-mono text-[22px] font-bold leading-7 text-ink">{line.place}</span>
+                  {#if shift !== null}
+                    <span class="font-mono text-micro font-bold {shiftTone(shift)}">{shiftWords(shift)}</span>
+                  {/if}
+                </span>
               </td>
               <td>
                 <span class="flex min-w-0 items-center gap-3">
@@ -223,27 +235,13 @@
               <td class="text-right font-mono text-title font-bold text-ink">
                 {formatScore(line.score)}
               </td>
-              {#if final}
-                <td class="text-right font-mono text-2xs text-muted">
-                  {#if publicPlace.get(line.entrantId)}
-                    {formatScore(publicPlace.get(line.entrantId)!.score)} · {ordinalPlace(
-                      publicPlace.get(line.entrantId)!.place,
-                    )}
-                  {:else}
-                    —
-                  {/if}
-                </td>
-              {/if}
               <td class="text-right font-mono text-2xs text-muted">{line.submissions}</td>
             </tr>
           {/each}
 
-
-
           {#if baseline}
             <tr class="h-12 border-b border-line border-t border-dashed border-t-brand-2">
               <td class="font-mono text-ui-lg text-muted">{baseline.place ?? '—'}</td>
-              <td class="text-muted">—</td>
               <td>
                 <span class="flex items-center gap-3">
                   <span
@@ -254,11 +252,6 @@
                 </span>
               </td>
               <td class="text-right font-mono text-ui text-muted">{formatScore(baseline.score)}</td>
-              {#if final}
-                <td class="text-right font-mono text-2xs text-muted">
-                  {formatScore(publicPlace.get(baseline.entrantId)?.score ?? null)}
-                </td>
-              {/if}
               <td></td>
             </tr>
           {/if}

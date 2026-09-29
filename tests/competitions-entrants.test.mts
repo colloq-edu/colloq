@@ -719,6 +719,31 @@ test('the private leaderboard is silent before opening and speaks after', async 
   updateCompetition(competitionId, { deadlineAt: null, privateRelease: 'manual' })
 })
 
+test("the leaderboard's submission count is the daily quota's count, not the number of rows", async () => {
+  const person = await join('@counts_sends')
+  const path = '/api/k/competitions/rohlik/submissions'
+  const first = (await (await send(path, person.cookie, 'v1.ipynb', notebook())).json()) as { submission: { id: string } }
+  leaveQueue(first.submission.id)
+  updateSubmission(first.submission.id, { state: 'scored', publicScore: 0.41, cellsDone: 1 })
+  const second = (await (await send(path, person.cookie, 'v2.ipynb', notebook())).json()) as {
+    submission: { id: string }
+    leftToday: number
+  }
+  assert.equal(second.leftToday, 0)
+  // It died before its first cell: the day gives the submission back, and the
+  // column the whole class reads must not keep it either.
+  leaveQueue(second.submission.id)
+  updateSubmission(second.submission.id, { state: 'notebookFailed', cellsDone: 0 })
+
+  const board = (await (await call('/api/k/competitions/rohlik/leaderboard', { cookie: person.cookie })).json()) as {
+    public: { you: boolean; submissions: number }[]
+  }
+  assert.equal(board.public.find((line) => line.you)?.submissions, 1)
+  const mine = (await (await call(path, { cookie: person.cookie })).json()) as { leftToday: number; submissions: unknown[] }
+  assert.equal(mine.leftToday, 1)
+  assert.equal(mine.submissions.length, 2, 'the person still sees both rows in their own list')
+})
+
 /* ---------------------------------------------------------- addresses */
 
 test('competition addresses are parsed, and a key does not clash with a competition name', () => {
