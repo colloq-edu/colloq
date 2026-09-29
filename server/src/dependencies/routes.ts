@@ -6,7 +6,7 @@ import { submissionsOpen, type Competition } from '@shared/competitions'
 import { dependencyActive } from '@shared/dependencies'
 import * as service from './service.js'
 import * as store from './store.js'
-import { dependencyMessage } from './messages.js'
+import { dependencyRefusal } from './messages.js'
 import { assertCompetitionCapability, RuntimeUnavailableError } from '../competitions/capabilities.js'
 import { ensureCompetitionRevision } from './revisions.js'
 
@@ -14,8 +14,8 @@ type Handler=(req:Request,res:Response)=>unknown|Promise<unknown>
 const endpoint=(fn:Handler)=>(req:Request,res:Response):void=>{void Promise.resolve().then(()=>fn(req,res)).catch(error=>{
  if(res.headersSent)return
  if(error instanceof RuntimeUnavailableError){res.status(error.status).json({reason:error.code,error:error.message});return}
- const code=error instanceof store.DependencyStoreError?error.code:'dependency_image'
- res.status(error instanceof store.DependencyStoreError?error.status:503).json({reason:code,error:dependencyMessage(code)})
+ if(error instanceof store.DependencyStoreError){res.status(error.status).json({reason:error.code,error:dependencyRefusal(error.code,error.detail)});return}
+ res.status(503).json({reason:'dependency_image',error:dependencyRefusal('dependency_image')})
 })}
 function visible(req:Request):Competition{
  const c=findCompetition(String(req.params.slug))
@@ -45,7 +45,8 @@ export function dependencyRoutes():Router{
  r.post(base+'/prepare',endpoint(async(req,res)=>{
   const c=visible(req)
   if(submissionsOpen(c,Date.now())!=='open')throw new store.DependencyStoreError('dependency_closed',403)
-  const bundle=await service.prepareBundle(c,entrant(req),requirements(req));res.status(202).json({bundle})
+  // The hour as it stands after this one, so the line under the button does not lag a preparation behind.
+  const bundle=await service.prepareBundle(c,entrant(req),requirements(req));res.status(202).json({bundle,quota:store.preparationQuota(entrant(req))})
  }))
  r.get(base+'/:bundleId',endpoint((req,res)=>{const c=visible(req);res.json(service.ownBundle(c.id,entrant(req),String(req.params.bundleId)))}))
  r.post(base+'/:bundleId/cancel',endpoint(async(req,res)=>{

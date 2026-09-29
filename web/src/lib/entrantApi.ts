@@ -22,7 +22,7 @@ import type {
   SubmissionAccepted,
 } from '@shared/competitions-entrant'
 
-import type { DependencyOverview, DependencyBundle } from '@shared/dependencies'
+import type { DependencyOverview, DependencyBundle, DependencyQuota } from '@shared/dependencies'
 
 const BASE = '/api/k'
 
@@ -143,7 +143,7 @@ export const entrantApi = {
       method: 'PUT', body: JSON.stringify({ requirementsText, selectedBundleId }),
     }),
   prepareDependencies: (slug: string, requirementsText: string) =>
-    request<{ bundle: DependencyBundle }>(`/competitions/${encodeURIComponent(slug)}/dependencies/prepare`, json({ requirementsText })),
+    request<{ bundle: DependencyBundle; quota: DependencyQuota }>(`/competitions/${encodeURIComponent(slug)}/dependencies/prepare`, json({ requirementsText })),
   dependencyBundle: (slug: string, id: string) =>
     request<DependencyBundle>(`/competitions/${encodeURIComponent(slug)}/dependencies/${encodeURIComponent(id)}`),
   cancelDependencies: (slug: string, id: string) =>

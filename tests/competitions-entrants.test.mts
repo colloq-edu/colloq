@@ -47,7 +47,7 @@ import {
   updateCompetition,
   updateSubmission,
 } from '../server/src/competitions/store.js'
-import { competitionDir, competitionsFs, ensureCompetition, putOpenFile, putSecretFile } from '../server/src/competitions/storage.js'
+import { competitionDir, competitionsFs, ensureCompetition, inputDir, NOTEBOOK_FILE, putOpenFile, putSecretFile } from '../server/src/competitions/storage.js'
 import { db } from '../server/src/db.js'
 import { app } from '../server/src/app.js'
 
@@ -111,6 +111,16 @@ function call(path: string, init: RequestInit & { cookie?: string | null } = {})
 
 const notebook = (source = 'print(1)') =>
   JSON.stringify({ nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [{ cell_type: 'code', source, outputs: [], metadata: {}, execution_count: null }] })
+
+/** An IPython 2 notebook, nbformat 3: its cells live in worksheets. */
+const notebookV3 = () =>
+  JSON.stringify({
+    nbformat: 3, nbformat_minor: 0, metadata: { name: '' },
+    worksheets: [{ metadata: {}, cells: [
+      { cell_type: 'heading', level: 1, metadata: {}, source: 'Решение' },
+      { cell_type: 'code', collapsed: false, input: 'print(1)', language: 'python', metadata: {}, outputs: [], prompt_number: 1 },
+    ] }],
+  })
 
 async function send(path: string, cookie: string | null, name: string, body: string) {
   const form = new FormData()
@@ -535,6 +545,33 @@ test('a non-notebook, a broken or empty notebook and a non-.ipynb are turned awa
   assert.equal(list.leftToday, 2)
 })
 
+test('a notebook saved with a byte order mark, or in nbformat 3, is a notebook, and the harness gets what the door read', async () => {
+  const stored = (id: string) => competitionsFs.readFileSync(`${inputDir(competitionId, id)}/${NOTEBOOK_FILE}`) as Buffer
+  const done = (id: string) => {
+    leaveQueue(id)
+    updateSubmission(id, { state: 'cancelled' })
+  }
+
+  // Windows Notepad and some VS Code setups write the mark; Python's json.loads
+  // in nbformat.read refuses it, so it must not reach the disk.
+  const marked = await join('@notepad_user')
+  const withMark = await send('/api/k/competitions/rohlik/submissions', marked.cookie, 'bom.ipynb', '﻿' + notebook())
+  assert.equal(withMark.status, 200)
+  const accepted = (await withMark.json()) as { submission: { id: string; bytes: number } }
+  const bytes = stored(accepted.submission.id)
+  assert.deepEqual([...bytes.subarray(0, 3)], [...Buffer.from('{"n')], 'the mark reached the harness')
+  assert.equal(bytes.toString('utf8'), notebook())
+  assert.equal(accepted.submission.bytes, bytes.length)
+  done(accepted.submission.id)
+
+  const old = await join('@ipython_two')
+  const v3 = await send('/api/k/competitions/rohlik/submissions', old.cookie, 'old.ipynb', notebookV3())
+  assert.equal(v3.status, 200)
+  const kept = (await v3.json()) as { submission: { id: string } }
+  assert.equal(stored(kept.submission.id).toString('utf8'), notebookV3(), 'nbformat.read upgrades it itself; the door keeps the file as sent')
+  done(kept.submission.id)
+})
+
 test("parsing the sent file answers about the file, not about the entrant's code", () => {
   assert.equal(whyNotebookRefused(notebook()), null)
   assert.match(whyNotebookRefused('{')!, /не читается|does not read/i)
@@ -551,6 +588,19 @@ test("parsing the sent file answers about the file, not about the entrant's code
   )
   // The door counts cells, not code: judging what is code is the run's business.
   assert.equal(whyNotebookRefused(JSON.stringify({ cells: [{ cell_type: 'markdown', source: '# Решение', metadata: {} }] })), null)
+  // nbformat 3 keeps its cells in worksheets, and the harness's nbformat.read
+  // upgrades it: it is a notebook, counted across all of its worksheets.
+  assert.equal(whyNotebookRefused(notebookV3()), null)
+  assert.equal(whyNotebookRefused(JSON.stringify({ nbformat: 3, nbformat_minor: 0, metadata: {}, worksheets: [{ cells: [], metadata: {} }, { cells: [{ cell_type: 'code', input: '1', outputs: [], language: 'python' }], metadata: {} }] })), null)
+  assert.equal(whyNotebookRefused(JSON.stringify({ nbformat: 3, nbformat_minor: 0, metadata: {}, worksheets: [] })), tr('competitions.refusal.noCells'))
+  // nbformat 2 (IPython 0.12) has the same worksheets, and nbformat.read upgrades it through 3.
+  assert.equal(whyNotebookRefused(JSON.stringify({ nbformat: 2, metadata: { name: '' }, worksheets: [{ cells: [{ cell_type: 'code', input: '1', outputs: [], language: 'python' }] }] })), null)
+  assert.equal(whyNotebookRefused(JSON.stringify({ nbformat: 3, metadata: {}, worksheets: [{ cells: [{ input: '1' }] }] })), tr('competitions.refusal.brokenCell'))
+  // Where nbformat 3 has no worksheets to upgrade, the harness could not read it either.
+  assert.equal(whyNotebookRefused(JSON.stringify({ nbformat: 3, metadata: {}, cells: [{ cell_type: 'code', source: '1' }] })), tr('competitions.refusal.notNotebook'))
+  assert.equal(whyNotebookRefused(JSON.stringify({ nbformat: 3, metadata: {}, worksheets: [{ metadata: {} }] })), tr('competitions.refusal.notNotebook'))
+  // A byte order mark is cut off by the door before this check, not skipped by it.
+  assert.equal(whyNotebookRefused('﻿' + notebook()), tr('competitions.refusal.notJson'))
   // A sent notebook has its own ceiling, and it is lower than the room's file
   // ceiling.
   assert.equal(LIMITS.notebookBytes, 20 * 1024 * 1024)

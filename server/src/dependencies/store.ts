@@ -2,15 +2,17 @@
 import { randomUUID } from 'node:crypto'
 import { db } from '../db.js'
 import { invalidateCompetitionInputs } from '../competitions/store.js'
-import { DEPENDENCY_LIMITS, normalizeRequirements, requirementLineCount, dependencyActive, type DependencyBundle, type DependencyDraft, type DependencyErrorParams, type DependencyPolicy, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
+import { DEPENDENCY_LIMITS, normalizeRequirements, quotaWaitMinutes, requirementLineCount, unsupportedRequirementLine, dependencyActive, type DependencyBundle, type DependencyDraft, type DependencyErrorParams, type DependencyPolicy, type DependencyQuota, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
 import type { PreparationProgress, PreparationResult } from './preparation-contract.js'
-import { dependencyMessage } from './messages.js'
+import { dependencyMessage, type DependencyRefusalDetail } from './messages.js'
 import { submissionsOpen, type CompetitionState } from '@shared/competitions'
 
 const id = () => randomUUID().replaceAll('-', '')
+// `detail` carries what the refusal's text needs beyond the code (messages.ts · dependencyRefusal).
 export class DependencyStoreError extends Error {
-  constructor(public readonly code: string, public readonly status = 409) { super(code); this.name = 'DependencyStoreError' }
+  constructor(public readonly code: string, public readonly status = 409, public readonly detail: DependencyRefusalDetail = {}) { super(code); this.name = 'DependencyStoreError' }
 }
+const HOUR = 3600000
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS environment_revisions (
@@ -105,6 +107,31 @@ export function checkRequirements(text: string): string {
  if(requirementLineCount(normalized)>DEPENDENCY_LIMITS.lines)throw new DependencyStoreError('dependency_limits',400)
  return normalized
 }
+/**
+ * Refuse a list with a line pip would take but the isolated resolver cannot
+ * install (a URL, a path, a pip option), before it becomes a preparation.
+ *
+ * The preparation program refuses the same lines (preparation-python.ts ·
+ * unsupported_source), but only after a queue, a container and one of the
+ * hour's preparations. Not part of checkRequirements: a draft keeps such a
+ * line, being the entrant's scratch, and choosing a ready set saves the draft
+ * along with the choice.
+ */
+export function checkRequirementSources(text:string):void{
+ const line=unsupportedRequirementLine(text)
+ if(line!==null)throw new DependencyStoreError('unsupported_source',400,{line})
+}
+/**
+ * The hour's preparations as createBundle counts them: every set the entrant
+ * started in the last hour, in any competition, failed and cancelled ones too.
+ * Spent, the next one is possible when the oldest of the last `perHour` sets
+ * leaves the hour.
+ */
+export function preparationQuota(e:string,now=Date.now()):DependencyQuota{
+ const started=(db.prepare('SELECT created_at FROM dependency_bundles WHERE entrant_id=? AND created_at>? ORDER BY created_at').all(e,now-HOUR) as {created_at:number}[]).map(row=>Number(row.created_at))
+ const left=Math.max(0,DEPENDENCY_LIMITS.perHour-started.length)
+ return {left,nextAt:left?null:started[started.length-DEPENDENCY_LIMITS.perHour]+HOUR}
+}
 function ensureDraft(c: string,e: string): void {
  db.prepare('INSERT OR IGNORE INTO dependency_drafts(competition_id,entrant_id,updated_at) VALUES(?,?,?)').run(c,e,Date.now())
 }
@@ -150,11 +177,13 @@ export const createBundle=db.transaction((c:string,e:string,revisionId:string,te
  if(getRevision(revisionId)?.environmentName!==competition.environment)throw new DependencyStoreError('dependency_revision')
  const policy=policyOf(c);if(!policy.enabled)throw new DependencyStoreError('dependency_disabled',403)
  text=checkRequirements(text);if(!text||!text.split('\n').some(s=>s.trim()&&!s.trim().startsWith('#')))throw new DependencyStoreError('dependency_empty',400)
+ checkRequirementSources(text)
  if(competitionRevision(c)?.id!==revisionId)throw new DependencyStoreError('dependency_revision')
  const active=db.prepare("SELECT * FROM dependency_bundles WHERE entrant_id=? AND state IN ('queued','resolving','downloading','verifying') LIMIT 1").get(e) as Row|undefined
  if(active){const b=toBundle(active);if(b.competitionId===c&&b.revisionId===revisionId&&b.requirementsText===text)return b;throw new DependencyStoreError('dependency_active')}
- const count=db.prepare('SELECT COUNT(*) AS n FROM dependency_bundles WHERE entrant_id=? AND created_at>?').get(e,now-3600000) as {n:number}
- if(count.n>=DEPENDENCY_LIMITS.perHour)throw new DependencyStoreError('dependency_quota',429)
+ // The refusal says when, not just "later": the eleventh try is exactly when someone asks.
+ const quota=preparationQuota(e,now)
+ if(quota.nextAt!==null)throw new DependencyStoreError('dependency_quota',429,{params:{waitMinutes:quotaWaitMinutes(quota.nextAt,now)}})
  ensureDraft(c,e);const row=db.prepare('SELECT next_number FROM dependency_drafts WHERE competition_id=? AND entrant_id=?').get(c,e) as Row
  const key=id();db.prepare('INSERT INTO dependency_bundles(id,competition_id,entrant_id,number,revision_id,requirements_text,state,max_download_bytes,max_installed_bytes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(key,c,e,Number(row.next_number),revisionId,text,'queued',policy.maxDownloadBytes,policy.maxInstalledBytes,now)
  db.prepare('UPDATE dependency_drafts SET next_number=next_number+1,requirements_text=?,updated_at=? WHERE competition_id=? AND entrant_id=?').run(text,now,c,e)

@@ -104,7 +104,7 @@ import { privateBoardState } from '../competitions/results.js'
 import { machineShape, slotsResolution } from '../competitions/capacity.js'
 import { competitionDefaults, parseSettingsInput, saveCompetitionSettings, uploadsPerMinute, type SettingsRefusal } from '../competitions/settings.js'
 import { HOST_RESERVE_MB } from '../kernel/resources.js'
-import { baseName, csvShape, csvUsageSplit, notebookCells } from '../competitions/intake.js'
+import { baseName, csvShape, csvUsageSplit, intakeNotebook, notebookCells } from '../competitions/intake.js'
 import {
   cancelSubmission,
   pauseCompetitionQueue,
@@ -1040,10 +1040,15 @@ export function adminCompetitionRoutes(): Router {
     }
     const file = received.files[0]
     if (!file) return fail(res, 400, 'invalid', tr('competitions.refusal.noFile'))
-    if (notebookCells(file.body) === null) {
-      return fail(res, 400, 'invalid', tr('competitions.refusal.notNotebook'))
-    }
-    putBaseline(competition.id, file.body)
+    /*
+     * The entrant's door, word for word (intake · intakeNotebook). The sample
+     * notebook is checked by the same harness as every submission, so a file
+     * one door takes and the other refuses is a lie at one of them, and the
+     * stored bytes are the ones the check read, a byte order mark cut off.
+     */
+    const { body, refusal } = intakeNotebook(file.body)
+    if (refusal) return fail(res, 400, 'invalid', refusal)
+    putBaseline(competition.id, body)
     invalidateCompetitionInputs(competition.id)
     /*
      * The previous check is forgotten together with the file.

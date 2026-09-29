@@ -526,8 +526,14 @@ export function entrantSubmission(s: Submission, privateOpen: boolean): EntrantS
  * cheap and answers in words about the file.
  *
  * Exactly as strict as a real notebook from someone else's Jupyter will
- * survive: an object, a `cells` array, each cell with its own `cell_type`.
- * The `nbformat` version is not checked — `nbformat.read` fixes it itself.
+ * survive: an object, a list of cells, each cell with its own `cell_type`.
+ * Where the cells are depends on the format, and that is all the version is
+ * looked at for: `nbformat.read` upgrades an old notebook itself
+ * (notebookCellList).
+ *
+ * A byte order mark is not this function's business: the door cuts it off
+ * the bytes before they are checked AND stored (server/src/competitions/
+ * intake.ts · intakeNotebook), so what passes here is what nbformat reads.
  *
  * A notebook without a single cell is refused here too, although it is a
  * valid notebook. It cannot write `submission.csv`, so the queue could only
@@ -543,11 +549,8 @@ export function whyNotebookRefused(text: string): string | null {
   } catch {
     return tr('competitions.refusal.notJson')
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return tr('competitions.refusal.notNotebook')
-  }
-  const cells = (parsed as { cells?: unknown }).cells
-  if (!Array.isArray(cells)) return tr('competitions.refusal.notNotebook')
+  const cells = notebookCellList(parsed)
+  if (!cells) return tr('competitions.refusal.notNotebook')
   if (cells.length === 0) return tr('competitions.refusal.noCells')
   for (const cell of cells) {
     if (!cell || typeof cell !== 'object' || typeof (cell as { cell_type?: unknown }).cell_type !== 'string') {
@@ -555,6 +558,38 @@ export function whyNotebookRefused(text: string): string | null {
     }
   }
   return null
+}
+
+/**
+ * The cells `nbformat.read(…, as_version=4)` will hand to the kernel, or null
+ * when the JSON has no place for cells at all.
+ *
+ * nbformat 4 keeps them in `cells`. nbformat 3 (IPython 1 and 2, and the
+ * converters that still write it) keeps them in `worksheets[].cells`, and so
+ * does nbformat 2 before it. The harness's read upgrades both to 4 by
+ * flattening the worksheets in order (nbformat/v4/convert.py · upgrade), so
+ * they are counted that way here: refusing them said "the file has no cells"
+ * about a notebook the harness runs without complaint. A worksheet without a
+ * `cells` list of its own does not survive that upgrade, and is not a place
+ * for cells here either.
+ *
+ * Without an `nbformat` number the file goes the version 4 way, as it always
+ * did at this door.
+ */
+export function notebookCellList(parsed: unknown): unknown[] | null {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const notebook = parsed as { nbformat?: unknown; cells?: unknown; worksheets?: unknown }
+  if (notebook.nbformat === 2 || notebook.nbformat === 3) {
+    if (!Array.isArray(notebook.worksheets)) return null
+    const cells: unknown[] = []
+    for (const sheet of notebook.worksheets) {
+      const own = (sheet as { cells?: unknown } | null)?.cells
+      if (!Array.isArray(own)) return null
+      for (const cell of own) cells.push(cell)
+    }
+    return cells
+  }
+  return Array.isArray(notebook.cells) ? notebook.cells : null
 }
 
 /**

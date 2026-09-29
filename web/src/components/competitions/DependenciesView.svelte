@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { tr } from '@shared/i18n'
-  import { DEPENDENCY_LIMITS, requirementLineCount, dependencyActive, type DependencyOverview, type DependencyBundle } from '@shared/dependencies'
+  import { DEPENDENCY_LIMITS, requirementLineCount, dependencyActive, dependencyQuotaText, type DependencyOverview, type DependencyBundle } from '@shared/dependencies'
   import { entrantApi } from '@/lib/entrantApi'
   import DependencyBundleCard from './DependencyBundleCard.svelte'
   let { slug, signedIn, onjoin }: { slug: string; signedIn: boolean; onjoin: () => void } = $props()
@@ -19,7 +19,30 @@
   const invalid = $derived(lines > DEPENDENCY_LIMITS.lines || bytes > DEPENDENCY_LIMITS.requestBytes)
   const activeId = $derived(overview?.bundles.find((bundle) => dependencyActive(bundle.state))?.id ?? null)
   const unavailable = $derived(overview?.capabilities?.preparation.available === false)
-  const canPrepare = $derived(!unavailable && !!overview?.joined && !!overview.policy.enabled && !!overview.revision && !activeId && !invalid && !!text.trim() && !busy)
+  /*
+   * The hour's preparations (server · store.ts · preparationQuota). Spent, the
+   * line under the button counts down to the minute the oldest of them leaves
+   * the hour, then asks the server what the hour really left rather than
+   * guessing: another tab or competition may have used it meanwhile. The
+   * timer hangs on a number, not on the quota: `overview` is replaced on every
+   * streamed state of a set being prepared.
+   */
+  let now = $state(Date.now())
+  const waitUntil = $derived(overview?.quota?.left === 0 ? overview.quota.nextAt : null)
+  const spent = $derived(waitUntil !== null && now < waitUntil)
+  $effect(() => {
+    const until = waitUntil
+    if (until === null) return
+    now = Date.now()
+    const timer = setInterval(() => {
+      now = Date.now()
+      if (now < until) return
+      clearInterval(timer)
+      void refreshQuota()
+    }, 15_000)
+    return () => clearInterval(timer)
+  })
+  const canPrepare = $derived(!unavailable && !!overview?.joined && !!overview.policy.enabled && !!overview.revision && !activeId && !invalid && !!text.trim() && !busy && !spent)
   const changed = $derived(text !== savedText)
   const failure = (cause: unknown) => cause instanceof Error ? cause.message : tr('common.networkError')
 
@@ -33,6 +56,12 @@
     } catch (cause) { error = failure(cause) }
   }
   onMount(() => { if (signedIn) void load() })
+  async function refreshQuota(): Promise<void> {
+    try {
+      const next = await entrantApi.dependencies(slug)
+      if (overview) overview = { ...overview, quota: next.quota }
+    } catch { /* the next load or action brings it */ }
+  }
 
   function update(bundle: DependencyBundle): void {
     if (!overview) return
@@ -70,8 +99,16 @@
       const next = await entrantApi.dependencyDraft(slug, requirementsText)
       overview = next
       if (text === requirementsText) savedText = requirementsText
-      const result = await entrantApi.prepareDependencies(slug, requirementsText)
-      update(result.bundle)
+      try {
+        const result = await entrantApi.prepareDependencies(slug, requirementsText)
+        update(result.bundle)
+        if (overview) overview = { ...overview, quota: result.quota }
+      } catch (cause) {
+        // The refusal may be the hour spent elsewhere: the line under the button
+        // must not keep promising what the server has just refused.
+        void refreshQuota()
+        throw cause
+      }
     })
   }
   async function importFile(file?: File): Promise<void> {
@@ -111,6 +148,7 @@
         <button type="button" class="mt-2 min-h-10 text-[14px] text-accent-text underline" onclick={() => importing?.click()}>{tr('dependencies.import')}</button>
         <div class="mt-4 flex flex-wrap gap-3"><button type="button" class="min-h-11 bg-brand px-4 text-[15px] font-bold text-white disabled:opacity-50" disabled={!canPrepare} onclick={() => prepare()}>{tr('dependencies.prepare')}</button><button type="button" class="min-h-11 border border-line px-4 text-[14px] text-ink disabled:opacity-50" disabled={busy || invalid || !changed} onclick={() => save()}>{tr('dependencies.save')}</button></div>
         <p class="mt-3 text-[14px] text-muted" role="status">{busy ? tr('dependencies.busy') : changed ? tr('dependencies.unsaved') : notice}</p>
+        {#if overview.quota && overview.policy.enabled && !unavailable}<p class="mt-3 text-[14px]" class:text-warning={spent} class:text-muted={!spent}>{dependencyQuotaText(overview.quota, now)}</p>{/if}
         <p class="mt-3 text-[14px] text-muted">{tr('dependencies.quotaNote')}</p>
         {#if error}<p class="mt-3 text-[15px] text-danger" role="alert">{error}</p>{/if}
       </section>
@@ -118,7 +156,7 @@
         {#if streamLost && activeId}<p class="text-[14px] text-warning" role="status">{tr('dependencies.streamLost')}</p>{/if}
         {#if !overview.bundles.length}<p class="border border-line p-5 text-[15px] text-muted">{tr('dependencies.empty')}</p>{/if}
         {#each overview.bundles as bundle (bundle.id)}
-          <DependencyBundleCard {bundle} selected={overview.draft.selectedBundleId === bundle.id} compatible={overview.revision?.id === bundle.revisionId} busy={busy} lockUrl={entrantApi.dependencyLockUrl(slug, bundle.id)} onselect={() => save(bundle.id)} oncancel={() => act(async () => update(await entrantApi.cancelDependencies(slug, bundle.id)))} onretry={!unavailable && overview.policy.enabled && !activeId ? () => prepare(bundle.requirementsText) : undefined} onedit={() => { text = bundle.requirementsText; notice = ''; document.getElementById('requirements')?.focus() }} />
+          <DependencyBundleCard {bundle} selected={overview.draft.selectedBundleId === bundle.id} compatible={overview.revision?.id === bundle.revisionId} busy={busy} lockUrl={entrantApi.dependencyLockUrl(slug, bundle.id)} onselect={() => save(bundle.id)} oncancel={() => act(async () => update(await entrantApi.cancelDependencies(slug, bundle.id)))} onretry={!unavailable && overview.policy.enabled && !activeId && !spent ? () => prepare(bundle.requirementsText) : undefined} onedit={() => { text = bundle.requirementsText; notice = ''; document.getElementById('requirements')?.focus() }} />
         {/each}
       </section>
     </div>

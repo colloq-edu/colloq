@@ -8,7 +8,7 @@
  * the split into the public and private part rests on exactly this number.
  */
 
-import { splitByUsage } from '@shared/competitions'
+import { notebookCellList, splitByUsage, whyNotebookRefused } from '@shared/competitions'
 
 /** What is shown about a CSV on the file card. */
 export interface CsvShape {
@@ -162,6 +162,9 @@ function splitRecord(line: string): string[] {
  * would take a place in the queue, start a container and come back a minute
  * later with "the notebook crashed" — when the participant simply dragged in
  * the wrong file.
+ *
+ * Counted the way the harness will see them: an nbformat 3 notebook's cells
+ * are in its worksheets (@shared/competitions · notebookCellList).
  */
 export function notebookCells(bytes: Uint8Array): number | null {
   let parsed: unknown
@@ -170,9 +173,52 @@ export function notebookCells(bytes: Uint8Array): number | null {
   } catch {
     return null
   }
-  const cells = (parsed as { cells?: unknown } | null)?.cells
-  if (!Array.isArray(cells)) return null
-  return cells.length
+  return notebookCellList(parsed)?.length ?? null
+}
+
+/** The UTF-8 byte order mark. */
+const BOM = Buffer.from([0xef, 0xbb, 0xbf])
+
+/**
+ * A sent notebook as the harness will read it, and why it cannot be run, if
+ * it cannot.
+ *
+ * Both doors take their notebook through here, the entrant's submission and
+ * the teacher's sample notebook, so one file gets one answer at both.
+ *
+ * A UTF-8 byte order mark is cut off the bytes themselves, not just skipped
+ * by the check. Windows Notepad and some VS Code setups save notebooks with
+ * one, and `nbformat.read` in the container refuses such a file: it decodes
+ * it as plain utf-8, and Python's `json.loads` will not take a string that
+ * starts with the mark. Checking past it and storing the file as it came
+ * would pass the door and fail the run, so the caller stores `body`.
+ */
+export function intakeNotebook(sent: Buffer): { body: Buffer; refusal: string | null } {
+  const body = sent.subarray(0, BOM.length).equals(BOM) ? sent.subarray(BOM.length) : sent
+  const refusal = whyNotebookRefused(body.toString('utf8'))
+  if (refusal) return { body, refusal }
+  return { body: withFormatVersion(body), refusal: null }
+}
+
+/**
+ * A notebook with top-level `cells` but no `nbformat` key is stamped as
+ * version 4.
+ *
+ * nbformat reads a file without the key as version 1 and, upgrading it,
+ * drops the source of every code cell: the notebook then runs empty and the
+ * participant hears "no submission.csv" about code that was never executed.
+ * Top-level `cells` is the version 4 layout (3 keeps them in worksheets), so
+ * stamping it is what the author meant. Everything else is stored untouched.
+ */
+function withFormatVersion(body: Buffer): Buffer {
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(body.toString('utf8')) as Record<string, unknown>
+  } catch {
+    return body
+  }
+  if (!Array.isArray(parsed.cells) || parsed.nbformat !== undefined) return body
+  return Buffer.from(JSON.stringify({ ...parsed, nbformat: 4, nbformat_minor: 4 }))
 }
 
 /**

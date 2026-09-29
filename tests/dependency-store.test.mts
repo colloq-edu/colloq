@@ -2,7 +2,9 @@ import './_env.mts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createCompetition, createEntrant, acceptSubmission, setCompetitionState } from '../server/src/competitions/store.js'
-import { putRevision, selectRevision, setPolicy, draftOf, saveDraft, createBundle, getBundle, updateProgress, completeBundle, bindSubmission, submissionEnvironment, listBundles, cancelBundle, recoverPreparations, unusedBundles } from '../server/src/dependencies/store.js'
+import { putRevision, selectRevision, setPolicy, draftOf, saveDraft, createBundle, getBundle, updateProgress, completeBundle, bindSubmission, submissionEnvironment, listBundles, cancelBundle, recoverPreparations, unusedBundles, preparationQuota, DependencyStoreError } from '../server/src/dependencies/store.js'
+import { dependencyRefusal } from '../server/src/dependencies/messages.js'
+import { DEPENDENCY_LIMITS } from '../shared/dependencies.js'
 
 const revision = (name = 'base', digest = 'a') => putRevision({environmentName:name,imageDigest:`sha256:${digest.repeat(64)}`,pythonVersion:'3.11.16',pythonAbi:'cp311',platform:'linux/arm64',packages:[{name:'numpy',version:'2.4.6'}],baseConstraintsHash:'hash'})
 let seq = 0
@@ -54,4 +56,42 @@ test('disabled policy rejects new work but leaves old ready sets selectable; quo
  saveDraft(c.id,e.id,{requirementsText:'',selectedBundleId:ready.id})
  setPolicy(c.id,{enabled:true});for(let i=1;i<10;i++){const b=createBundle(c.id,e.id,r.id,`package${i}`);cancelBundle(b.id)}
  assert.throws(()=>createBundle(c.id,e.id,r.id,'eleventh'),/quota/)
+})
+
+test('the hour\'s preparations are counted ahead, and the refusal says when the next one is possible',()=>{
+ const {c,e,r}=setup(),start=Date.UTC(2026,8,29,10),minute=60000
+ assert.deepEqual(preparationQuota(e.id,start),{left:DEPENDENCY_LIMITS.perHour,nextAt:null})
+ // Ten preparations a minute apart; failed and cancelled ones count like the rest.
+ for(let i=0;i<DEPENDENCY_LIMITS.perHour;i++){const b=createBundle(c.id,e.id,r.id,`package${i}`,start+i*minute);cancelBundle(b.id)}
+ assert.deepEqual(preparationQuota(e.id,start+3*minute),{left:0,nextAt:start+60*minute})
+ let refusal:unknown
+ try{createBundle(c.id,e.id,r.id,'eleventh',start+48*minute+1)}catch(error){refusal=error}
+ assert.ok(refusal instanceof DependencyStoreError)
+ assert.equal(refusal.code,'dependency_quota')
+ assert.equal(refusal.status,429)
+ assert.deepEqual(refusal.detail,{params:{waitMinutes:12}})
+ assert.equal(dependencyRefusal(refusal.code,refusal.detail),'Достигнут лимит: 10 подготовок в час. Следующая подготовка — через 12 мин.')
+ // The last seconds read as a minute, never as "in 0 min".
+ try{createBundle(c.id,e.id,r.id,'eleventh',start+60*minute-5000)}catch(error){refusal=error}
+ assert.deepEqual((refusal as DependencyStoreError).detail,{params:{waitMinutes:1}})
+ // The oldest one leaves the hour and frees exactly one place.
+ assert.deepEqual(preparationQuota(e.id,start+60*minute),{left:1,nextAt:null})
+ assert.ok(createBundle(c.id,e.id,r.id,'eleventh',start+60*minute))
+ assert.deepEqual(preparationQuota(e.id,start+60*minute),{left:0,nextAt:start+61*minute})
+})
+
+test('a URL, a path or a pip option is refused before it becomes a preparation, and stays in a draft',()=>{
+ const {c,e,r}=setup()
+ const text='# models\nnumpy\ntorch --index-url https://download.pytorch.org/whl/cpu'
+ let refusal:unknown
+ try{createBundle(c.id,e.id,r.id,text)}catch(error){refusal=error}
+ assert.ok(refusal instanceof DependencyStoreError)
+ assert.equal(refusal.code,'unsupported_source')
+ assert.equal(refusal.status,400)
+ assert.deepEqual(refusal.detail,{line:3})
+ assert.equal(dependencyRefusal(refusal.code,refusal.detail),'Строка 3: Разрешены только имена пакетов PyPI и версии. URL, пути, хеши (--hash) и другие параметры pip не поддерживаются.')
+ assert.equal(listBundles(c.id,e.id).length,0,'the refusal took a preparation')
+ assert.equal(preparationQuota(e.id).left,DEPENDENCY_LIMITS.perHour)
+ // The draft is the entrant's scratch: it keeps the line to be fixed.
+ assert.equal(saveDraft(c.id,e.id,{requirementsText:text}).requirementsText,text)
 })

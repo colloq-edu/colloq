@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
-  import { dependencyActive, dependencyErrorLines, dependencyLogText, type DependencyBundle } from '@shared/dependencies'
+  import { dependencyActive, dependencyErrorLines, dependencyLogText, dependencyReadyHints, type DependencyBundle } from '@shared/dependencies'
   import { fileSize } from '@/lib/competition-words'
   let { bundle, selected = false, compatible = true, busy = false, lockUrl, onselect, oncancel, onretry, onedit }: {
     bundle: DependencyBundle; selected?: boolean; compatible?: boolean; busy?: boolean; lockUrl?: string
@@ -12,6 +12,9 @@
   // Drawn from the code and what the failure measured, so the explanation follows the
   // page's language and carries its numbers; hints for known heavy packages come after.
   const errorLines = $derived(bundle.error ? dependencyErrorLines(bundle.error, bundle.requirementsText) : [])
+  // A package that installs but cannot run at the check is said before the set is chosen,
+  // not a spent submission later; the set stays usable (DEPENDENCY_READY_HINTS).
+  const readyHints = $derived(bundle.state === 'ready' ? dependencyReadyHints(bundle) : [])
 </script>
 
 <article class="min-w-0 border border-line bg-surface p-4 sm:p-5" class:border-accent={selected}>
@@ -36,6 +39,7 @@
   {/if}
   {#if bundle.state === 'ready'}
     <p class="mt-2 text-[14px] text-muted">{tr('dependencies.sizes', { download: fileSize(bundle.downloadBytes), installed: fileSize(bundle.installedBytes) })}</p>
+    {#each readyHints as hint}<p class="mt-3 border-l-2 border-warning bg-warning/5 p-3 text-[15px] leading-6 text-ink">{hint}</p>{/each}
   {/if}
   <details class="mt-3 text-[14px] text-ink">
     <summary class="cursor-pointer py-1 text-accent-text">{tr('dependencies.details')}</summary>

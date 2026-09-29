@@ -21,6 +21,7 @@ import assert from 'node:assert/strict'
 import type { Response as ExpressResponse } from 'express'
 import { STAFF_COOKIE } from '../shared/admin.js'
 import { LIMITS, entrantNameKey } from '../shared/competitions.js'
+import { tr } from '../shared/i18n.js'
 import { createTeacher, rotateLinkKey } from '../server/src/admin/store.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { app } from '../server/src/app.js'
@@ -45,6 +46,7 @@ import path from 'node:path'
 import {
   competitionsFs,
   putSubmissionNotebook,
+  readBaseline,
   readOpenFile,
   readSecretFile,
   resultDir,
@@ -61,7 +63,7 @@ import {
   type Readiness,
 } from '../server/src/competitions/panel.js'
 import { queueSlots } from '../server/src/competitions/runner.js'
-import { baseName, columnsLine, csvShape, notebookCells } from '../server/src/competitions/intake.js'
+import { baseName, columnsLine, csvShape, intakeNotebook, notebookCells } from '../server/src/competitions/intake.js'
 import type { CompetitionView } from '../shared/competitions-api.js'
 
 /* ---------------------------------------------- the panel's pure decisions */
@@ -284,11 +286,40 @@ test('CSV rows are counted the way pandas will read them', () => {
   assert.equal(columnsLine(['id', 'orders']), 'id, orders')
 })
 
+/** An IPython 2 notebook, nbformat 3: three cells in two worksheets. */
+const NOTEBOOK_V3 = JSON.stringify({
+  nbformat: 3, nbformat_minor: 0, metadata: { name: '' },
+  worksheets: [
+    { metadata: {}, cells: [{ cell_type: 'heading', level: 1, metadata: {}, source: 'Baseline' }, { cell_type: 'code', input: 'import pandas as pd', language: 'python', metadata: {}, outputs: [] }] },
+    { metadata: {}, cells: [{ cell_type: 'code', input: "pd.DataFrame({'id': [1]}).to_csv('submission.csv')", language: 'python', metadata: {}, outputs: [] }] },
+  ],
+})
+
 test('a notebook is recognized by its cells, not by its extension', () => {
   assert.equal(notebookCells(Buffer.from(JSON.stringify({ cells: [{}, {}] }))), 2)
   assert.equal(notebookCells(Buffer.from(JSON.stringify({ cells: [] }))), 0)
   assert.equal(notebookCells(Buffer.from('{"nbformat": 4}')), null)
   assert.equal(notebookCells(Buffer.from('не json')), null)
+  // nbformat 3: the harness's nbformat.read flattens the worksheets, and so does the count.
+  assert.equal(notebookCells(Buffer.from(NOTEBOOK_V3)), 3)
+})
+
+test('both notebook doors cut a byte order mark off the bytes they store, and take nbformat 3', () => {
+  const plain = JSON.stringify({ nbformat: 4, cells: [{ cell_type: 'code', source: 'pass' }] })
+  const taken = intakeNotebook(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(plain)]))
+  assert.equal(taken.refusal, null)
+  assert.equal(taken.body.toString('utf8'), plain)
+  assert.equal(intakeNotebook(Buffer.from(plain)).body.toString('utf8'), plain)
+  assert.deepEqual(intakeNotebook(Buffer.from(NOTEBOOK_V3)), { body: Buffer.from(NOTEBOOK_V3), refusal: null })
+  // A mark in front of nothing is still nothing.
+  assert.equal(intakeNotebook(Buffer.from([0xef, 0xbb, 0xbf])).refusal, tr('competitions.refusal.notJson'))
+  // Top-level cells without an nbformat key would be read as version 1, which
+  // drops every code cell's source: the door stamps version 4 instead.
+  const unversioned = intakeNotebook(Buffer.from(JSON.stringify({ cells: [{ cell_type: 'code', source: 'print(1)' }] })))
+  assert.equal(unversioned.refusal, null)
+  const stamped = JSON.parse(unversioned.body.toString('utf8'))
+  assert.equal(stamped.nbformat, 4)
+  assert.equal(stamped.cells[0].source, 'print(1)')
 })
 
 test('a file name comes without a path, however the browser sends it', () => {
@@ -712,6 +743,27 @@ test('a non-notebook and an invalid file name are refused out loud', async () =>
     body: { file: 'train.csv' },
   })
   assert.equal(notForm.status, 400)
+})
+
+test("the sample notebook's door answers like the entrant's: a byte order mark cut off, nbformat 3 taken, no cells refused", async () => {
+  const c = createCompetition({ slug: 'door-twins', title: 'Двери' })
+  assert.ok(c)
+  const url = `/api/admin/competitions/${c.id}/baseline`
+
+  const marked = await upload(url, teacher, [{ name: 'baseline.ipynb', body: new Uint8Array([0xef, 0xbb, 0xbf, ...bytes(NOTEBOOK)]) }])
+  assert.equal(marked.status, 200)
+  assert.equal(((await marked.json()) as CompetitionView).baseline?.cells, 1)
+  // The check runs this file through nbformat.read, which refuses the mark.
+  assert.equal(readBaseline(c.id)?.toString('utf8'), NOTEBOOK)
+
+  const old = await upload(url, teacher, [{ name: 'baseline.ipynb', body: bytes(NOTEBOOK_V3) }])
+  assert.equal(old.status, 200)
+  assert.equal(((await old.json()) as CompetitionView).baseline?.cells, 3)
+
+  const empty = await upload(url, teacher, [{ name: 'baseline.ipynb', body: bytes(JSON.stringify({ nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [] })) }])
+  assert.equal(empty.status, 400)
+  assert.equal(((await empty.json()) as { error: string }).error, tr('competitions.refusal.noCells'))
+  assert.equal(readBaseline(c.id)?.toString('utf8'), NOTEBOOK_V3, 'a refused file replaced the stored one')
 })
 
 test("the instance's queue pauses and resumes", async () => {

@@ -25,6 +25,8 @@ export const dependencyMessages: MessageCatalog = {
   "dependencies.unsaved": { ru: "Есть несохранённые изменения", en: "Unsaved changes" },
   "dependencies.prepare": { ru: "Проверить и подготовить", en: "Check and prepare" },
   "dependencies.quotaNote": { ru: "Подготовка не расходует лимит посылок. Тетради исполняются без интернета.", en: "Preparation does not use your submission quota. Notebooks run without internet." },
+  // The hour's preparations next to the button (shared/dependencies.ts · dependencyQuotaText); 10 is DEPENDENCY_LIMITS.perHour.
+  'dependencies.quotaLeft': { ru: 'Осталось подготовок: {left} из 10 в час.', en: 'Preparations left: {left} of 10 per hour.' },
   "dependencies.disabled": { ru: "Новые наборы отключены преподавателем. Готовые наборы остаются доступны.", en: "The teacher has disabled new preparations. Ready sets remain available." },
   "dependencies.history": { ru: "Мои наборы", en: "My package sets" },
   "dependencies.empty": { ru: "Дополнительных наборов пока нет. Можно отправить тетрадь с базовым набором.", en: "No extra package sets yet. You can submit a notebook with the base packages." },
@@ -89,6 +91,7 @@ export const dependencyMessages: MessageCatalog = {
   "dependencies.error.notReady": { ru: "Набор ещё не готов. Дождитесь завершения подготовки.", en: "The set is not ready. Wait for preparation to finish." },
   "dependencies.error.active": { ru: "У вас уже готовится набор. Дождитесь его или отмените подготовку.", en: "You already have an active preparation. Wait or cancel it." },
   "dependencies.error.quota": { ru: "Достигнут лимит: 10 подготовок в час. Попробуйте позже.", en: "The limit is 10 preparations per hour. Try again later." },
+  'dependencies.error.quotaWait': { ru: 'Достигнут лимит: 10 подготовок в час. Следующая подготовка — через {minutes} мин.', en: 'The limit is 10 preparations per hour. The next one is possible in {minutes} min.' },
   "dependencies.error.join": { ru: "Сначала вступите в соревнование.", en: "Join the competition first." },
   "dependencies.error.closed": { ru: "Приём посылок закрыт; новые наборы не подготавливаются.", en: "Submissions are closed; new sets cannot be prepared." },
   "dependencies.error.conflict": { ru: "Версии пакетов конфликтуют с базой или друг с другом. Исправьте версии в списке.", en: "Package versions conflict with the base or each other. Fix the versions in your list." },
@@ -98,7 +101,7 @@ export const dependencyMessages: MessageCatalog = {
   'dependencies.error.conflictList': { ru: 'ваш список', en: 'your list' },
   "dependencies.error.wheel": { ru: "Для пакета нет готового wheel под эту версию Python и платформу. Выберите другую версию.", en: "No compatible wheel is available for this Python and platform. Choose another version." },
   "dependencies.error.syntax": { ru: "Не удалось разобрать запрос пакета. Проверьте указанную строку.", en: "The requirement could not be parsed. Check the indicated line." },
-  "dependencies.error.source": { ru: "Разрешены только имена пакетов PyPI и версии. URL, пути и команды pip не поддерживаются.", en: "Only PyPI package names and versions are allowed. URLs, paths and pip commands are unsupported." },
+  "dependencies.error.source": { ru: "Разрешены только имена пакетов PyPI и версии. URL, пути, хеши (--hash) и другие параметры pip не поддерживаются.", en: "Only PyPI package names and versions are allowed. URLs, paths, hashes (--hash) and other pip options are unsupported." },
   "dependencies.error.missingPackage": { ru: "Пакет или указанная версия не найдены в PyPI.", en: "The package or requested version was not found on PyPI." },
   "dependencies.error.integrity": { ru: "Проверка целостности пакета не прошла. Подготовьте набор заново.", en: "Package integrity verification failed. Prepare the set again." },
   "dependencies.error.size": { ru: "Набор превышает лимит размера. Уберите часть пакетов.", en: "The set exceeds the size limit. Remove some packages." },
@@ -113,6 +116,8 @@ export const dependencyMessages: MessageCatalog = {
   // Lighter builds of heavy packages (shared/dependencies.ts · DEPENDENCY_SIZE_HINTS).
   'dependencies.hint.xgboost': { ru: 'У xgboost есть сборка без CUDA: укажите xgboost-cpu вместо xgboost.', en: 'xgboost has a build without CUDA: use xgboost-cpu instead of xgboost.' },
   'dependencies.hint.torch': { ru: 'Сборка torch без CUDA публикуется не на PyPI, а на download.pytorch.org, поэтому через этот список её не поставить. Попросите преподавателя окружение, где torch уже установлен.', en: 'The CPU-only build of torch is published on download.pytorch.org, not on PyPI, so this list cannot install it. Ask your teacher for an environment with torch already installed.' },
+  // On a ready set's card: installs, but cannot run in the checking image (shared/dependencies.ts · DEPENDENCY_READY_HINTS).
+  'dependencies.hint.tinygrad': { ru: 'tinygrad установится, но при проверке упадёт с «RuntimeError: no usable devices»: его CPU-бэкенды собирают каждую операцию компилятором C или через LLVM, а в контейнере проверки нет ни того, ни другого. Бэкенд на чистом Python обходится без компилятора, но для проверки слишком медленный. Для нейросетей попросите у преподавателя окружение с torch.', en: 'tinygrad installs, but the check fails with “RuntimeError: no usable devices”: its CPU backends compile every operation with a C compiler or LLVM, and the checking container has neither. Its pure-Python backend needs no compiler but is far too slow for the check. For neural networks, ask your teacher for an environment with torch.' },
   "dependencies.error.disk": { ru: "На сервере недостаточно места для подготовки. Обратитесь к преподавателю.", en: "The server lacks space for preparation. Contact your teacher." },
   "dependencies.error.network": { ru: "Не удалось скачать пакеты из PyPI. Повторите подготовку позже.", en: "Could not download packages from PyPI. Try again later." },
   "dependencies.error.timeout": { ru: "Подготовка превысила 10 минут. Сократите список или попробуйте позже.", en: "Preparation exceeded 10 minutes. Shorten the list or try again later." },

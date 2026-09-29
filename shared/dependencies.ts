@@ -52,6 +52,8 @@ export interface DependencyErrorParams {
   requirement?: string
   /** A conflict inside the set: who requires which version of `package`. */
   causes?: DependencyConflictCause[]
+  /** The hour's preparations spent: whole minutes until the next one is possible. */
+  waitMinutes?: number
 }
 export interface DependencyError { code: string; message: string; line?: number; params?: DependencyErrorParams }
 /**
@@ -83,6 +85,18 @@ export interface DependencyBundle {
   readyAt: number | null
 }
 export interface DependencyDraft { requirementsText: string; selectedBundleId: string | null }
+/**
+ * The hour's preparations (DEPENDENCY_LIMITS.perHour) as the refusal counts
+ * them: every set the entrant started within the last hour, in any
+ * competition and whatever became of it (server/src/dependencies/store.ts ·
+ * preparationQuota). Shown next to the button: the eleventh preparation used
+ * to be the first place the limit was mentioned at all.
+ */
+export interface DependencyQuota {
+  left: number
+  /** When the next preparation becomes possible, while none is left; null otherwise. */
+  nextAt: number | null
+}
 export interface DependencyOverview {
   capabilities?: import('./capabilities.js').CompetitionCapabilities
   policy: DependencyPolicy
@@ -90,6 +104,7 @@ export interface DependencyOverview {
   draft: DependencyDraft
   bundles: DependencyBundle[]
   joined: boolean
+  quota: DependencyQuota
 }
 export interface AdminDependencyOverview {
   capabilities?: import('./capabilities.js').CompetitionCapabilities
@@ -125,6 +140,47 @@ export function normalizeRequirements(text: string): string {
 /** Same meaningful-line rule in the editor, intake and isolated resolver. */
 export function requirementLineCount(text: string): number {
   return normalizeRequirements(text).split('\n').filter(line => line.trim() && !line.trim().startsWith('#')).length
+}
+
+// Quoted marker values: a marker may compare against any string, slashes and dashes included.
+const QUOTED = /"[^"]*"|'[^']*'/g
+// pip's own archive extensions (pip/_internal/utils/filetypes.py): a line ending in one is a file to pip, never a name.
+const ARCHIVE = /\.(?:whl|zip|tar|tar\.gz|tgz|tar\.bz2|tbz|tar\.xz|txz|tlz|tar\.lz|tar\.lzma)$/i
+
+/**
+ * Whether a requirement line asks for something other than a package on PyPI.
+ *
+ * pip takes far more than PEP 508 from a requirements line: URLs
+ * (`git+https://…`, `file:///…`, `https://…/x.whl`), local paths and
+ * archives, and its own options, even after a name on the same line
+ * (`torch --index-url …`, `numpy --hash=sha256:…`). PEP 508 has no words for
+ * most of these, so the parser called them malformed and sent people to look
+ * for a typo in a line that is good pip, just nothing the isolated resolver
+ * can reach: its proxy admits PyPI only (preparation-python.ts · ALLOWED).
+ *
+ * The preparation program asks the same question (preparation-python.ts ·
+ * unsupported_source); the two must stay in step.
+ */
+export function requirementSourceUnsupported(line: string): boolean {
+  const value = line.trim()
+  if (/^[-./~]/.test(value) || value.includes('\\') || value.includes('\0')) return true
+  const bare = value.replace(QUOTED, '""')
+  if (/[/@]|\s-/.test(bare) || /^(?:file:|(?:git|hg|svn|bzr)\+)/i.test(bare)) return true
+  return ARCHIVE.test(bare.split(';', 1)[0].trim().replace(/\[[^\]]*\]$/, ''))
+}
+
+/**
+ * The number of the first line that is not a PyPI requirement, or null.
+ * Every line is counted, blank and comment ones too, the way the preparation
+ * program numbers them.
+ */
+export function unsupportedRequirementLine(text: string): number | null {
+  const lines = normalizeRequirements(text).split('\n')
+  for (let index = 0; index < lines.length; index++) {
+    const value = lines[index].trim()
+    if (value && !value.startsWith('#') && requirementSourceUnsupported(value)) return index + 1
+  }
+  return null
 }
 
 /* ---------------------------------------------------------- what is said */
@@ -170,6 +226,22 @@ export const DEPENDENCY_SIZE_HINTS: Readonly<Record<string, string>> = {
   torchaudio: 'dependencies.hint.torch',
 }
 
+/**
+ * Packages that install from PyPI but cannot run where notebooks are checked,
+ * by name.
+ *
+ * Unlike a size hint, these follow no failure: the set prepares fine, and the
+ * trouble shows only in the run, a spent submission later. So the hint is on
+ * the ready set's card, and the set is not refused: the fact is about the
+ * checking image, not about the package. tinygrad's CPU backends compile
+ * every operation with a C compiler or LLVM, the checking image has neither,
+ * and the first tensor dies with "RuntimeError: no usable devices"; its
+ * pure-Python backend needs no compiler but is far too slow for a run.
+ */
+export const DEPENDENCY_READY_HINTS: Readonly<Record<string, string>> = {
+  tinygrad: 'dependencies.hint.tinygrad',
+}
+
 const MiB = 1024 * 1024
 
 /**
@@ -193,12 +265,15 @@ function measured(bytes: number, limit: number): { size: string; limit: string }
   return { size: tr('competitions.p.sizeMb', { size: formatNumber(mb, { maximumFractionDigits: 2 }) }), limit: shown }
 }
 
-/** Canonical names of the packages a list asks for, the way PyPI compares them. */
+/** A package name the way PyPI compares them: case and runs of `-_.` do not count. */
+const canonicalName = (name: string): string => name.toLowerCase().replace(/[-_.]+/g, '-')
+
+/** Canonical names of the packages a list asks for. */
 function requestedNames(requirementsText: string): string[] {
   return normalizeRequirements(requirementsText).split('\n')
     .map(line => /^\s*([A-Za-z0-9][A-Za-z0-9._-]*)/.exec(line)?.[1])
     .filter((name): name is string => !!name)
-    .map(name => name.toLowerCase().replace(/[-_.]+/g, '-'))
+    .map(canonicalName)
 }
 
 /**
@@ -240,11 +315,39 @@ export function dependencyErrorLines(
       return [tr('dependencies.error.conflictCauses', { package: p.package, causes })]
     }
   }
+  if (error.code === 'dependency_quota' && p.waitMinutes !== undefined) {
+    return [tr('dependencies.error.quotaWait', { minutes: p.waitMinutes })]
+  }
   return [tr(key)]
 }
 
 export function dependencyErrorText(error: Parameters<typeof dependencyErrorLines>[0], requirementsText = ''): string {
   return dependencyErrorLines(error, requirementsText).join(' ')
+}
+
+/**
+ * Whole minutes until the next preparation, and never "0 min": at the moment
+ * this is said the preparation is not possible yet, so the last minute counts.
+ */
+export function quotaWaitMinutes(nextAt: number, now: number): number {
+  return Math.max(1, Math.ceil((nextAt - now) / 60_000))
+}
+
+/** The line next to the button: what the hour leaves, or when the next preparation is possible. */
+export function dependencyQuotaText(quota: DependencyQuota, now: number): string {
+  if (quota.left > 0 || quota.nextAt === null) return tr('dependencies.quotaLeft', { left: quota.left })
+  return tr('dependencies.error.quotaWait', { minutes: quotaWaitMinutes(quota.nextAt, now) })
+}
+
+/**
+ * What a ready set's card says about packages in it that the checking image
+ * cannot run (DEPENDENCY_READY_HINTS): asked for by name or pulled in by
+ * another package, the run fails the same.
+ */
+export function dependencyReadyHints(bundle: Pick<DependencyBundle, 'requirementsText' | 'packages'>): string[] {
+  const names = new Set([...requestedNames(bundle.requirementsText), ...bundle.packages.map(item => canonicalName(item.name))])
+  const keys = new Set(Object.keys(DEPENDENCY_READY_HINTS).filter(name => names.has(name)).map(name => DEPENDENCY_READY_HINTS[name]))
+  return [...keys].map(key => tr(key))
 }
 
 /** One line of the technical log, in the reader's language when it is one of our steps. */

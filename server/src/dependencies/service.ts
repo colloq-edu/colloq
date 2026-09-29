@@ -47,7 +47,7 @@ export async function dependencyOverview(c:Competition,eid:string):Promise<Depen
  const retained=retainedRevision(c)
  const capabilities=await competitionCapabilities(c.environment,competitionBackend()==='broker'?undefined:retained?.imageDigest)
  const revision=capabilities.execution.available?await executionRevision(c).catch(()=>retained):retained
- return {capabilities,policy:store.policyOf(c.id),revision,draft:store.draftOf(c.id,eid),bundles:store.listBundles(c.id,eid),joined:hasJoined(c.id,eid)}
+ return {capabilities,policy:store.policyOf(c.id),revision,draft:store.draftOf(c.id,eid),bundles:store.listBundles(c.id,eid),joined:hasJoined(c.id,eid),quota:store.preparationQuota(eid)}
 }
 export async function adminDependencyOverview(c:Competition):Promise<AdminDependencyOverview>{
  const retained=retainedRevision(c)
@@ -63,7 +63,8 @@ export function ownBundle(c:string,eid:string,bid:string):DependencyBundle{
 export async function prepareBundle(c:Competition,eid:string,text:string):Promise<DependencyBundle>{
  if(!hasJoined(c.id,eid))throw new store.DependencyStoreError('dependency_join',403)
  if(!store.policyOf(c.id).enabled)throw new store.DependencyStoreError('dependency_disabled',403)
- store.checkRequirements(text)
+ // A URL or a pip option is refused at once, before the runtime probes below can answer something else first.
+ store.checkRequirementSources(store.checkRequirements(text))
  await assertCompetitionCapability('preparation',c.environment,competitionBackend()==='broker'?undefined:store.competitionRevision(c.id)?.imageDigest)
  const revision=await executionRevision(c)
  if(!revision)throw new store.DependencyStoreError('dependency_image',503)

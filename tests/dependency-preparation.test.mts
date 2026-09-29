@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
 import { PREPARATION_PYTHON, PREPARATION_PROXY_PYTHON } from '../server/src/dependencies/preparation-python.ts'
 import { prepareDependencies } from '../server/src/dependencies/preparation.ts'
+import { requirementSourceUnsupported, unsupportedRequirementLine } from '../shared/dependencies.ts'
 
 function python(source: string, code: string) {
   const result = spawnSync('python3', ['-c', `__name__ = 'test_helper'\n${source}\n${code}`], { encoding: 'utf8' })
@@ -20,15 +21,51 @@ print(json.dumps(parse_requirements('Requests[security]>=2; python_version >= "3
   assert.match(value[0], /^requests\[security\]>=2;/)
 })
 
-test('requirements reject options, URLs, paths and invalid syntax with line numbers', () => {
+/*
+ * Good pip, but nothing the isolated resolver can reach: each must be named
+ * unsupported, not "could not be parsed". Students met the vague one with the
+ * first four today.
+ */
+const UNSUPPORTED = [
+  'git+https://github.com/tinygrad/tinygrad.git', 'file:///home/student/pkg-1.0-py3-none-any.whl',
+  `numpy==1.26.4 --hash=sha256:${'a'.repeat(64)}`, 'torch --index-url https://download.pytorch.org/whl/cpu',
+  'torch==2.3.0 --extra-index-url https://download.pytorch.org/whl/cpu', 'https://example.com/pkg-1.0.tar.gz',
+  'git+ssh://git@github.com/user/repo.git#egg=pkg', 'hg+https://hg.example.com/repo', 'FILE:pkg.zip',
+  'git@github.com:user/repo.git', 'foo @ https://pypi.org/a.whl', 'foo@git+https://evil.test/a',
+  '--index-url https://evil.test', '-r other.txt', '-e .', 'foo --no-deps', 'foo -C key=value',
+  './foo', '../lib', '/tmp/a', '~/pkg', 'packages/mylib', 'C:\\pkgs\\x.whl', 'numpy==1.26.4 \\',
+  'pkg-1.0-py3-none-any.whl', 'pkg-1.0.tar.gz', 'pkg-1.0-py3-none-any.whl[extra]',
+]
+// Plain PyPI requirements, a slash or a dash inside a quoted marker value included.
+const PLAIN = [
+  'numpy', 'numpy==1.26.4', 'scikit-learn>=1.5,<2', 'Requests[security]>=2; python_version >= "3.8"',
+  "pkg ; sys_platform == 'linux'", 'torch==2.3.0+cpu', 'pkg ; platform_machine == "arm64/v8"',
+  'pkg ; implementation_name == "-x"', 'xgboost-cpu', 'zope.interface', 'pkg (>=1.0)', 'numpy!=1.0.*', 'pkg===1.0',
+]
+// Genuinely malformed names and specifiers keep the parse error.
+const MALFORMED = ['foo===bad version', 'numpy=1.0', 'numpy==', 'num py', 'numpy>=1.0 <2', 'numpy:1.0', 'пакет', 'numpy[']
+
+test('requirements name URLs, paths and pip options as unsupported, keep parse errors for malformed lines, with line numbers', () => {
   python(PREPARATION_PYTHON, `
-for value in ['--index-url https://evil.test','foo @ https://pypi.org/a.whl','git+https://evil.test/a','./foo','/tmp/a','foo --no-deps','foo===bad version']:
+for value in ${JSON.stringify(UNSUPPORTED)}:
     try: parse_requirements('# comment\\n' + value, [])
-    except PreparationFailure as error:
-        assert error.line == 2, (value, error.line)
-        assert error.code in ('invalid_requirement','unsupported_source'), (value, error.code)
+    except PreparationFailure as error: assert (error.code, error.line) == ('unsupported_source', 2), (value, error.code, error.line)
     else: raise AssertionError(value)
+for value in ${JSON.stringify(MALFORMED)}:
+    try: parse_requirements('# comment\\n' + value, [])
+    except PreparationFailure as error: assert (error.code, error.line) == ('invalid_requirement', 2), (value, error.code, error.line)
+    else: raise AssertionError(value)
+assert len(parse_requirements('\\n'.join(${JSON.stringify(PLAIN)}), [])) == ${PLAIN.length}
 `)
+})
+
+test('the server asks the preparation program\'s question before a preparation is spent', () => {
+  for (const value of UNSUPPORTED) assert.equal(requirementSourceUnsupported(value), true, value)
+  for (const value of [...PLAIN, ...MALFORMED]) assert.equal(requirementSourceUnsupported(value), false, value)
+  // Numbered as the program numbers them: every line, blank and comment ones too.
+  assert.equal(unsupportedRequirementLine('# models\n\nnumpy\ntorch --index-url https://download.pytorch.org/whl/cpu\ngit+https://x/y'), 4)
+  assert.equal(unsupportedRequirementLine('numpy\r\n# git+https://x/y\r\nscikit-learn'), null, 'a comment is not a request')
+  assert.equal(unsupportedRequirementLine(PLAIN.join('\n')), null)
 })
 
 test('conflicting base version rejected but inactive marker is allowed', () => {

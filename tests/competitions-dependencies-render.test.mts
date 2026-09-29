@@ -8,7 +8,7 @@ import { compile } from 'svelte/compiler'
 import { render } from 'svelte/server'
 import type { Component } from 'svelte'
 import { setLocaleResolver, tr } from '../shared/i18n.js'
-import { dependencyErrorLines, dependencyErrorText, type DependencyBundle } from '../shared/dependencies.js'
+import { DEPENDENCY_LIMITS, dependencyErrorLines, dependencyErrorText, dependencyQuotaText, dependencyReadyHints, type DependencyBundle } from '../shared/dependencies.js'
 import { dependencyMessage } from '../server/src/dependencies/messages.ts'
 
 let dir: string
@@ -126,6 +126,58 @@ test('conflict texts name the base version and who requires another, and unknown
   assert.equal(dependencyErrorText(inside), 'Packages require incompatible versions of shared: your list — shared>=3; alpha 1.0 — shared<2. Change the versions in your list.')
   assert.equal(dependencyErrorText({ code: 'base_conflict', params: { package: 'numpy', baseVersion: '2.4.6' } }), 'The base has numpy 2.4.6. Remove the version or pin ==2.4.6.')
   setLocaleResolver(() => 'ru')
+})
+
+test('the hour\'s preparations read as what is left, or as when the next one is possible', () => {
+  const now = Date.UTC(2026, 8, 29, 10)
+  const spent = { left: 0, nextAt: now + 11 * 60000 + 1 }
+  setLocaleResolver(() => 'ru')
+  assert.equal(dependencyQuotaText({ left: 7, nextAt: null }, now), 'Осталось подготовок: 7 из 10 в час.')
+  assert.equal(dependencyQuotaText(spent, now), 'Достигнут лимит: 10 подготовок в час. Следующая подготовка — через 12 мин.')
+  assert.equal(dependencyQuotaText(spent, spent.nextAt - 1), 'Достигнут лимит: 10 подготовок в час. Следующая подготовка — через 1 мин.', 'never "in 0 min"')
+  // The refusal the server sends is the same sentence (store.ts · createBundle).
+  assert.equal(dependencyErrorText({ code: 'dependency_quota', params: { waitMinutes: 12 } }), dependencyQuotaText(spent, now))
+  assert.equal(dependencyErrorText({ code: 'dependency_quota' }), 'Достигнут лимит: 10 подготовок в час. Попробуйте позже.', 'without a time, as before')
+  setLocaleResolver(() => 'en')
+  assert.equal(dependencyQuotaText({ left: 1, nextAt: null }, now), 'Preparations left: 1 of 10 per hour.')
+  assert.equal(dependencyQuotaText(spent, now), 'The limit is 10 preparations per hour. The next one is possible in 12 min.')
+  setLocaleResolver(() => 'ru')
+  // The number is written into the texts: they must follow the limit if it ever moves.
+  for (const key of ['dependencies.quotaLeft', 'dependencies.error.quotaWait', 'dependencies.error.quota']) {
+    for (const language of ['ru', 'en'] as const) {
+      setLocaleResolver(() => language)
+      assert.ok(tr(key).includes(String(DEPENDENCY_LIMITS.perHour)), `${key} (${language})`)
+    }
+  }
+  setLocaleResolver(() => 'ru')
+})
+
+test('an unsupported line names hashes along with URLs, paths and pip options', () => {
+  setLocaleResolver(() => 'en')
+  assert.equal(dependencyErrorText({ code: 'unsupported_source' }), 'Only PyPI package names and versions are allowed. URLs, paths, hashes (--hash) and other pip options are unsupported.')
+  setLocaleResolver(() => 'ru')
+  assert.equal(dependencyErrorText({ code: 'unsupported_source' }), 'Разрешены только имена пакетов PyPI и версии. URL, пути, хеши (--hash) и другие параметры pip не поддерживаются.')
+})
+
+test('a ready set with tinygrad says up front that the check cannot run it, and stays usable', () => {
+  const ready: DependencyBundle = {
+    ...failed, state: 'ready', error: null, requirementsText: 'tinygrad==0.10.3', normalizedRequirements: ['tinygrad==0.10.3'],
+    packages: [{ name: 'tinygrad', version: '0.10.3', fileName: 'tinygrad-0.10.3-py3-none-any.whl', sha256: '0'.repeat(64), bytes: 2 * MiB }],
+    readyAt: 2,
+  }
+  setLocaleResolver(() => 'ru')
+  const ru = render(Card, { props: { bundle: ready, onselect: () => {} } }).body
+  assert.match(ru.replace(/<[^>]*>/g, ''), /tinygrad установится, но при проверке упадёт с «RuntimeError: no usable devices»/)
+  assert.match(ru, /Использовать набор/, 'the set is not refused')
+  setLocaleResolver(() => 'en')
+  assert.match(visible(ready), /tinygrad installs, but the check fails with “RuntimeError: no usable devices”: its CPU backends compile every operation with a C compiler or LLVM/)
+  setLocaleResolver(() => 'ru')
+  // Pulled in by another package, the run fails the same.
+  assert.deepEqual(dependencyReadyHints({ requirementsText: 'my-models', packages: [{ ...ready.packages[0], name: 'TinyGrad' }] }), [tr('dependencies.hint.tinygrad')])
+  assert.deepEqual(dependencyReadyHints({ ...ready, requirementsText: 'numpy', packages: [] }), [])
+  // Said on the ready card only: a set still preparing, or one that failed, has other news.
+  assert.doesNotMatch(visible({ ...ready, state: 'downloading' }), /tinygrad установится/)
+  assert.doesNotMatch(visible({ ...ready, state: 'failed', error: { code: 'network_error', message: 'x' } }), /tinygrad установится/)
 })
 
 test('inventory wording handles Russian and English package counts', () => {

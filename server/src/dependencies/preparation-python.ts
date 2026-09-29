@@ -157,6 +157,23 @@ def base_versions(base):
     # Versions as the base reports them, for texts: "numpy in the base is 2.4.6".
     return {canonicalize_name(item['name']): str(item['version']) for item in base}
 
+# Quoted marker values: a marker may compare against any string, slashes and dashes included.
+QUOTED = re.compile('"[^"]*"|' + "'[^']*'")
+# pip's own archive extensions (pip/_internal/utils/filetypes.py): a line ending in one is a file to pip.
+ARCHIVE = re.compile(r'\.(?:whl|zip|tar|tar\.gz|tgz|tar\.bz2|tbz|tar\.xz|txz|tlz|tar\.lz|tar\.lzma)$', re.I)
+
+def unsupported_source(value):
+    # pip takes far more than PEP 508 from a requirements line: URLs (git+https://, file:///,
+    # https://.../x.whl), local paths and archives, and its own options even after a name on
+    # the same line (torch --index-url ..., numpy --hash=...). None of them can reach PyPI
+    # through the proxy, and PEP 508 alone would call most of them malformed, sending people
+    # to hunt for a typo. The server asks the same before a preparation starts
+    # (shared/dependencies.ts · requirementSourceUnsupported); the two must stay in step.
+    if value.startswith(('-', '.', '/', '~')) or '\\' in value or '\x00' in value: return True
+    bare = QUOTED.sub('""', value)
+    if re.search(r'[/@]|\s-', bare) or re.match(r'(?:file:|(?:git|hg|svn|bzr)\+)', bare, re.I): return True
+    return ARCHIVE.search(re.sub(r'\[[^\]]*\]$', '', bare.split(';', 1)[0].strip())) is not None
+
 def parse_requirements(text, base):
     if len(text.encode('utf-8')) > 8192: fail('requirements_limit', 'Requirements exceed 8 KiB.')
     lines = text.splitlines()
@@ -167,7 +184,7 @@ def parse_requirements(text, base):
     for number, raw in enumerate(lines, 1):
         value = raw.strip()
         if not value or value.startswith('#'): continue
-        if value.startswith(('-', '.', '/', '~')) or '\\' in value or '\x00' in value:
+        if unsupported_source(value):
             fail('unsupported_source', 'Only PyPI package names, extras, versions and markers are supported.', number)
         try: requirement = Requirement(value)
         except InvalidRequirement: fail('invalid_requirement', 'Invalid PEP 508 requirement.', number)

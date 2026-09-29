@@ -6,7 +6,7 @@ import type { Response as ExpressResponse } from 'express'
 import { app } from '../server/src/app.js'
 import { issueEntrantCookie } from '../server/src/competitions/identity.js'
 import { createCompetition, createEntrant, getCompetition, setCompetitionState, joinCompetition, listEntrantSubmissions } from '../server/src/competitions/store.js'
-import { putRevision, selectRevision, setPolicy, createBundle, completeBundle, cancelBundle, failBundle, getBinding } from '../server/src/dependencies/store.js'
+import { putRevision, selectRevision, setPolicy, createBundle, completeBundle, cancelBundle, failBundle, getBinding, listBundles } from '../server/src/dependencies/store.js'
 import { cancelPreparation, prepareBundle } from '../server/src/dependencies/service.js'
 
 let server: http.Server, origin = '', sequence = 0
@@ -79,6 +79,47 @@ test('preparation requires joining and rejects a competition closed during its a
   const pending = prepareBundle(c, owner.id, 'example')
   setCompetitionState(c.id, 'finished')
   await assert.rejects(pending, { code: 'dependency_closed' })
+})
+
+test('the Packages tab hears the hour\'s preparations before the refusal, and the refusal says when', async () => {
+  const { c, r, owner, base } = fixture()
+  const overview = await (await call(base, owner.cookie)).json()
+  assert.deepEqual(overview.quota, { left: 10, nextAt: null })
+  const prepared = await call(base + '/prepare', owner.cookie, { method: 'POST', body: JSON.stringify({ requirementsText: 'example' }) })
+  assert.equal(prepared.status, 202)
+  const { bundle, quota } = await prepared.json()
+  assert.deepEqual(quota, { left: 9, nextAt: null }, 'the answer carries the hour after this preparation')
+  cancelBundle(bundle.id)
+  for (let i = 1; i < 10; i++) cancelBundle(createBundle(c.id, owner.id, r.id, `example${i}`).id)
+  const spent = (await (await call(base, owner.cookie)).json()).quota
+  assert.equal(spent.left, 0)
+  assert.ok(spent.nextAt > Date.now() + 59 * 60000 && spent.nextAt <= Date.now() + 60 * 60000, String(spent.nextAt))
+  const refused = await call(base + '/prepare', owner.cookie, { method: 'POST', body: JSON.stringify({ requirementsText: 'eleventh' }) })
+  assert.equal(refused.status, 429)
+  const body = await refused.json()
+  assert.equal(body.reason, 'dependency_quota')
+  assert.equal(body.error, 'Достигнут лимит: 10 подготовок в час. Следующая подготовка — через 60 мин.')
+})
+
+test('a pip option or a URL is refused at once with its line, and no preparation is spent on it', async () => {
+  const { c, owner, base } = fixture()
+  for (const [text, line] of [
+    ['numpy\ngit+https://github.com/tinygrad/tinygrad.git', 2],
+    ['# pinned by pip-compile\nnumpy==1.26.4 --hash=sha256:' + 'a'.repeat(64), 2],
+    ['torch --index-url https://download.pytorch.org/whl/cpu', 1],
+    ['file:///home/student/pkg-1.0-py3-none-any.whl', 1],
+  ] as const) {
+    const refused = await call(base + '/prepare', owner.cookie, { method: 'POST', body: JSON.stringify({ requirementsText: text }) })
+    assert.equal(refused.status, 400, text)
+    const body = await refused.json()
+    assert.equal(body.reason, 'unsupported_source', text)
+    assert.equal(body.error, `Строка ${line}: Разрешены только имена пакетов PyPI и версии. URL, пути, хеши (--hash) и другие параметры pip не поддерживаются.`)
+  }
+  assert.equal(listBundles(c.id, owner.id).length, 0)
+  assert.deepEqual((await (await call(base, owner.cookie)).json()).quota, { left: 10, nextAt: null })
+  // Saving the draft is not preparing it: the line stays there to be fixed.
+  const saved = await call(base + '/draft', owner.cookie, { method: 'PUT', body: JSON.stringify({ requirementsText: 'torch --index-url https://download.pytorch.org/whl/cpu' }) })
+  assert.equal(saved.status, 200)
 })
 
 test('multipart acceptance rejects foreign, unfinished and stale bundles without creating submissions', async () => {

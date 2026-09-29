@@ -85,6 +85,7 @@ import {
   removeSubmission,
   NOTEBOOK_FILE,
 } from '../competitions/storage.js'
+import { intakeNotebook } from '../competitions/intake.js'
 import {
   entrantSubmission,
   ENTRANT_SIGN_IN_PATH,
@@ -96,7 +97,6 @@ import {
   placesByScore,
   publicCompetition,
   submissionsOpen,
-  whyNotebookRefused,
   type Competition,
   type CompetitionRefusal,
   type Entrant,
@@ -997,14 +997,15 @@ function readNotebook(req: Request, res: Response, done: (fileName: string, body
     if (!fileName.toLowerCase().endsWith('.ipynb')) {
       return say(400, 'invalid', tr('competitions.refusal.notIpynb'))
     }
-    const body = Buffer.concat(chunks)
     /*
      * Parsing BEFORE the queue. Broken JSON in a one-off container becomes
      * "the notebook failed": a verdict on code the person never wrote, and a
      * spent submission out of the five per day on top of that
-     * (@shared/competitions · whyNotebookRefused).
+     * (@shared/competitions · whyNotebookRefused). What is stored is the body
+     * the check read, a byte order mark already cut off (intake ·
+     * intakeNotebook).
      */
-    const refusal = whyNotebookRefused(body.toString('utf8'))
+    const { body, refusal } = intakeNotebook(Buffer.concat(chunks))
     if (refusal) return say(400, 'invalid', refusal)
     answered = true
     void Promise.resolve().then(() => done(fileName, body, bundleId)).catch((error: unknown) => {
