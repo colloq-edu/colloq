@@ -300,7 +300,13 @@ test('env list --json --dry-run: exactly one JSON line and nothing besides it', 
 })
 
 test('env list --json on the real files counts packages by the same rule as the env-list target', async () => {
-  const result = await run(['env', 'list', '--json'], { files: realFiles() })
+  const real = realFiles()
+  // Only the repository's files: the synthetic ones from FILES that the
+  // repository does not ship would otherwise be counted as real.
+  const synthetic = Object.keys(FILES).filter(
+    (path) => path.startsWith('/repo/kernel/environments/') && !(path in real),
+  )
+  const result = await run(['env', 'list', '--json'], { files: real, without: synthetic })
   assert.equal(result.code, 0)
   const parsed = JSON.parse(result.out[0] as string) as {
     current: string

@@ -1,8 +1,8 @@
 /**
  * The build slot: who is busy while a chain runs.
  *
- * Environment inheritance means that pressing Build on `gpu` also builds
- * `base-gpu` under it. The `startBuild` header promises: "while the chain
+ * Environment inheritance means that pressing Build on `kaggle-base` also
+ * builds `base` under it. The `startBuild` header promises: "while the chain
  * runs, 'Building' shows on every link of it, and a second Build on the
  * parent will not start in the middle of this build". The promise held only
  * halfway: the slot was taken synchronously only for the name itself, while
@@ -31,10 +31,10 @@ import {
 test('the whole chain is taken at once — a second Build on the parent will not start', async () => {
   // The repository's model chain; if it drifts, the test must say so in
   // words rather than silently check something else.
-  assert.deepEqual(buildChain('gpu'), ['base-gpu', 'gpu'])
-  assert.equal(isBuilding('base-gpu'), false, 'someone is already building the base before the test starts')
+  assert.deepEqual(buildChain('kaggle-base'), ['base', 'kaggle-base'])
+  assert.equal(isBuilding('base'), false, 'someone is already building the base before the test starts')
 
-  const first = startBuild('gpu')
+  const first = startBuild('kaggle-base')
   /*
    * Not a single `await` between the start and these lines — that is the
    * window. It used to be `false` here, and the next Build started a second
@@ -45,12 +45,12 @@ test('the whole chain is taken at once — a second Build on the parent will not
    * assertion would leave a real `docker build` on the machine for ten
    * minutes.
    */
-  const busyChild = isBuilding('gpu')
-  const busyParent = isBuilding('base-gpu')
-  const second = startBuild('base-gpu')
-  const log = buildLog('base-gpu')
+  const busyChild = isBuilding('kaggle-base')
+  const busyParent = isBuilding('base')
+  const second = startBuild('base')
+  const log = buildLog('base')
   const seen = { done: log?.done, failed: log?.failed, lines: log?.lines.join(' / ') ?? '' }
-  cancelBuild('gpu')
+  cancelBuild('kaggle-base')
 
   assert.equal(busyChild, true)
   assert.equal(busyParent, true, 'the parent is free while the chain is already on its way to it')
@@ -62,15 +62,15 @@ test('the whole chain is taken at once — a second Build on the parent will not
 
   // And it let go: "Building" on a link nobody builds is a locked button and
   // a lie in the row.
-  assert.equal(isBuilding('base-gpu'), false, 'the parent stayed busy after the chain ended')
-  assert.equal(isBuilding('gpu'), false)
+  assert.equal(isBuilding('base'), false, 'the parent stayed busy after the chain ended')
+  assert.equal(isBuilding('kaggle-base'), false)
 })
 
 test('Build on a link of someone else\'s live chain refuses in words, not silently', async () => {
-  const first = startBuild('gpu')
-  const second = startBuild('base-gpu')
-  const said = buildLog('base-gpu')?.lines.join('\n') ?? ''
-  cancelBuild('gpu')
+  const first = startBuild('kaggle-base')
+  const second = startBuild('base')
+  const said = buildLog('base')?.lines.join('\n') ?? ''
+  cancelBuild('kaggle-base')
   // The parent's log is the log of the FIRST build, and the second one wrote
   // nothing into it: the refusal is addressed to whoever pressed, not to
   // whoever is already building.
@@ -79,17 +79,17 @@ test('Build on a link of someone else\'s live chain refuses in words, not silent
 
   // But the other way round — a chain on top of a busy parent — refuses out
   // loud.
-  const parent = startBuild('base-gpu')
-  const child = startBuild('gpu')
-  const childLog = buildLog('gpu')
+  const parent = startBuild('base')
+  const child = startBuild('kaggle-base')
+  const childLog = buildLog('kaggle-base')
   const childSaid = childLog?.lines.join('\n') ?? ''
   const childFailed = childLog?.failed
-  cancelBuild('base-gpu')
+  cancelBuild('base')
 
   assert.ok(childLog)
   assert.match(
     childSaid,
-    /«base-gpu».*уже собирается/,
+    /«base».*уже собирается/,
     'the child started building on top of a layer that is being rebuilt at this moment',
   )
   assert.equal(childFailed, true)

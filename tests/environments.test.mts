@@ -115,17 +115,25 @@ test('an ordinary environment does not ask for a slice', () => {
   assert.equal(declaresGpu('# colloq: gpu тут не нужен\n'), false)
 })
 
-test('the model gpu environment does declare the slice, and the base one does not', () => {
-  // The only two examples of this directive in the repository: base-gpu
-  // declares it itself, gpu gets it by inheritance. Should it fall out, the
-  // room will run on the CPU and fail on the first `.cuda()`.
+test('the shipped gpu environment does declare the slice, and the base ones do not', () => {
+  // base-gpu is the repository's only environment with this directive. Should
+  // it fall out, the room will run on the CPU and fail on the first `.cuda()`.
   assert.equal(needsGpu('base-gpu'), true)
-  assert.equal(needsGpu('gpu'), true)
   assert.equal(needsGpu('base'), false)
-  assert.equal(needsGpu('cv'), false)
+  assert.equal(needsGpu('kaggle-base'), false)
   // A non-existent name is an empty file, not an exception: this is asked at
   // kernel start-up, and there is no reason to fail there.
   assert.equal(needsGpu('нет-такого'), false)
+})
+
+test('a child of base-gpu gets the slice by inheritance', async () => {
+  await withHome(async () => {
+    // The repository no longer ships a child of base-gpu, so a course's own
+    // environment stands in: the slice must follow the chain, or a room built
+    // on top of base-gpu runs on the CPU.
+    writeSource('own-gpu', '# colloq: from base-gpu\ntransformers>=4.44\n')
+    assert.equal(needsGpu('own-gpu'), true)
+  })
 })
 
 /* ------------------------------------------- what it is built on top of */
@@ -157,15 +165,15 @@ test('spaces and case do not break the directive, and a phrase about it is not a
 test('no parent named — we build on top of the ordinary base, as before', () => {
   assert.equal(declaresParent(''), null)
   assert.equal(declaresParent('# зрение\ntorch>=2.4\n'), null)
-  assert.equal(declaresParent(readSource('cv')), null)
+  assert.equal(declaresParent(readSource('base')), null)
 })
 
-test('the repository\'s model environments are chained exactly like this', () => {
-  // Should the line fall out of gpu.txt, "editing the list" will become nine
-  // minutes again, silently.
-  assert.equal(declaresParent(readSource('gpu')), 'base-gpu')
-  assert.deepEqual(buildChain('gpu'), ['base-gpu', 'gpu'])
-  assert.deepEqual(buildChain('cv'), ['cv'])
+test('the repository\'s shipped environments are chained exactly like this', () => {
+  // Should the line fall out of kaggle-base.txt, "editing the list" will
+  // rebuild the whole base underneath it again, silently.
+  assert.equal(declaresParent(readSource('kaggle-base')), 'base')
+  assert.deepEqual(buildChain('kaggle-base'), ['base', 'kaggle-base'])
+  assert.deepEqual(buildChain('base-gpu'), ['base-gpu'])
 })
 
 /* ------------------------------------------------- order and refusals */
@@ -653,50 +661,50 @@ test('the list is a union of two directories, and an overridden name appears in 
     writeSource('own-nlp', 'transformers\n')
     // One's own environment with a shipped one's name is the same
     // environment, overridden: it gets one row in the panel list.
-    writeSource('cv', '# мой курс\ntimm\n')
+    writeSource('kaggle-base', '# мой курс\ntimm\n')
     const names = listNames()
     assert.ok(names.includes('own-nlp'), `the own environment is not in the list: ${names.join(', ')}`)
     assert.ok(names.includes('base'), 'a shipped environment disappeared from the list')
-    assert.equal(names.filter((name) => name === 'cv').length, 1)
+    assert.equal(names.filter((name) => name === 'kaggle-base').length, 1)
   })
 })
 
 test('writing goes into one\'s own directory, and the shipped file stays untouched', async () => {
-  const shipped = readFileSync(path.join(ENV_DIR, 'cv.txt'), 'utf8')
+  const shipped = readFileSync(path.join(ENV_DIR, 'kaggle-base.txt'), 'utf8')
   await withHome(async (home) => {
-    writeSource('cv', '# мой курс\ntimm\n')
+    writeSource('kaggle-base', '# мой курс\ntimm\n')
     // One's own overrides the shipped one on reading — a person is entitled
-    // to override cv for their course.
-    assert.equal(readSource('cv'), '# мой курс\ntimm\n')
+    // to override kaggle-base for their course.
+    assert.equal(readSource('kaggle-base'), '# мой курс\ntimm\n')
     assert.equal(
-      readFileSync(path.join(home, 'environments', 'cv.txt'), 'utf8'),
+      readFileSync(path.join(home, 'environments', 'kaggle-base.txt'), 'utf8'),
       '# мой курс\ntimm\n',
     )
   })
   // The main thing: the application directory is untouched. Writing used to
   // go exactly there.
-  assert.equal(readFileSync(path.join(ENV_DIR, 'cv.txt'), 'utf8'), shipped)
+  assert.equal(readFileSync(path.join(ENV_DIR, 'kaggle-base.txt'), 'utf8'), shipped)
 })
 
 test('a shipped environment is not deleted, and the refusal says what to do instead', async () => {
   await withHome(async () => {
-    assert.equal(isShipped('cv'), true)
-    assert.throws(() => removeEnvironment('cv'), /colloq/)
-    assert.equal(existsSync(path.join(ENV_DIR, 'cv.txt')), true)
+    assert.equal(isShipped('kaggle-base'), true)
+    assert.throws(() => removeEnvironment('kaggle-base'), /colloq/)
+    assert.equal(existsSync(path.join(ENV_DIR, 'kaggle-base.txt')), true)
     // One's own copy is no longer shipped: that is what gets deleted.
-    writeSource('cv', 'timm\n')
-    assert.equal(isShipped('cv'), false)
-    removeEnvironment('cv')
+    writeSource('kaggle-base', 'timm\n')
+    assert.equal(isShipped('kaggle-base'), false)
+    removeEnvironment('kaggle-base')
     // Under the same name there is the shipped one again: the copy was
     // deleted, not the environment.
-    assert.equal(readSource('cv'), readFileSync(path.join(ENV_DIR, 'cv.txt'), 'utf8'))
+    assert.equal(readSource('kaggle-base'), readFileSync(path.join(ENV_DIR, 'kaggle-base.txt'), 'utf8'))
   })
 })
 
 test('the docker build context sees both directories, and one\'s own is stronger in it', async () => {
   await withHome(async (home) => {
     writeSource('own-nlp', '# colloq: from base\ntransformers\n')
-    writeSource('cv', '# мой курс\ntimm\n')
+    writeSource('kaggle-base', '# мой курс\ntimm\n')
     const context = buildContext('own-nlp')
     // The merge lies in the state: there is no way to write into the
     // application directory.
@@ -711,13 +719,13 @@ test('the docker build context sees both directories, and one\'s own is stronger
       '# colloq: from base\ntransformers\n',
     )
     assert.equal(
-      readFileSync(path.join(context, 'environments', 'cv.txt'), 'utf8'),
+      readFileSync(path.join(context, 'environments', 'kaggle-base.txt'), 'utf8'),
       '# мой курс\ntimm\n',
     )
   })
   // Without the variable there is nothing to merge: the context is the
   // kernel directory itself, as before.
-  assert.equal(buildContext('cv'), path.dirname(ENV_DIR))
+  assert.equal(buildContext('kaggle-base'), path.dirname(ENV_DIR))
 })
 
 test('the default is read and written in the state directory\'s .env', async () => {
@@ -757,8 +765,8 @@ test('the panel refuses to delete a shipped environment and deletes one\'s own c
     // The active environment is protected by a separate branch; so that this
     // one is what gets checked, the default is set explicitly.
     writeFileSync(path.join(home, '.env'), 'KERNEL_ENV=base\n')
-    const shipped = readSource('cv')
-    const refused = await fetch(`${base}/api/admin/environments/cv`, {
+    const shipped = readSource('kaggle-base')
+    const refused = await fetch(`${base}/api/admin/environments/kaggle-base`, {
       method: 'DELETE',
       headers: { cookie: staffCookie() },
     })
@@ -768,15 +776,15 @@ test('the panel refuses to delete a shipped environment and deletes one\'s own c
     // A refusal, not a quiet "nothing happened" and not a bare "internal
     // error" from EACCES in site-packages.
     assert.match(body.error ?? '', /colloq/)
-    assert.equal(readSource('cv'), shipped)
+    assert.equal(readSource('kaggle-base'), shipped)
 
-    writeSource('cv', '# мой курс\ntimm\n')
-    const removed = await fetch(`${base}/api/admin/environments/cv`, {
+    writeSource('kaggle-base', '# мой курс\ntimm\n')
+    const removed = await fetch(`${base}/api/admin/environments/kaggle-base`, {
       method: 'DELETE',
       headers: { cookie: staffCookie() },
     })
     assert.equal(removed.status, 204)
-    assert.equal(readSource('cv'), shipped)
-    assert.equal(existsSync(path.join(home, 'environments', 'cv.txt')), false)
+    assert.equal(readSource('kaggle-base'), shipped)
+    assert.equal(existsSync(path.join(home, 'environments', 'kaggle-base.txt')), false)
   })
 })
