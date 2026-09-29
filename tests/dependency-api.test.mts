@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import type { Response as ExpressResponse } from 'express'
 import { app } from '../server/src/app.js'
 import { issueEntrantCookie } from '../server/src/competitions/identity.js'
-import { createCompetition, createEntrant, getCompetition, setCompetitionState, joinCompetition, listEntrantSubmissions } from '../server/src/competitions/store.js'
+import { createCompetition, createEntrant, getCompetition, setCompetitionState, joinCompetition, listEntrantSubmissions, updateCompetition } from '../server/src/competitions/store.js'
 import { putRevision, selectRevision, setPolicy, createBundle, completeBundle, cancelBundle, failBundle, getBinding, listBundles } from '../server/src/dependencies/store.js'
 import { cancelPreparation, prepareBundle } from '../server/src/dependencies/service.js'
 
@@ -140,6 +140,30 @@ test('multipart acceptance rejects foreign, unfinished and stale bundles without
   const body = await accepted.json()
   assert.equal(getBinding(body.submission.id)?.bundle?.id, b.id)
   assert.equal(getBinding(body.submission.id)?.revision?.id, r.id)
+})
+
+test('a set that cannot fit a submission memory is refused when it is chosen or sent, with its numbers', async () => {
+  const { c, r, owner, base } = fixture()
+  const MiB = 1024 * 1024
+  updateCompetition(c.id, { limits: { memoryMb: 512 } })
+  const b = createBundle(c.id, owner.id, r.id, 'xgboost-cpu\ncatboost\nlightgbm')
+  // The set a class could not install: 315 MB unpacked, a 379 MB room with its margin.
+  completeBundle(b.id, { ...result, installedBytes: 315 * MiB })
+  const url = `/api/k/competitions/${c.slug}/submissions`
+  const refused = await upload(url, owner.cookie, b.id)
+  assert.equal(refused.status, 409)
+  assert.equal((await refused.json()).error,
+    'Набор пакетов не поместится в посылку: в памяти он займёт до 379 МБ, а набору можно не больше половины из 512 МБ, отведённых посылке. Уберите из набора тяжёлые пакеты или попросите преподавателя увеличить память.')
+  assert.equal(listEntrantSubmissions(c.id, owner.id).length, 0, 'nothing is queued to fail inside the run')
+  const chosen = await call(base + '/draft', owner.cookie, { method: 'PUT', body: JSON.stringify({ requirementsText: 'catboost', selectedBundleId: b.id }) })
+  assert.equal(chosen.status, 409)
+  const answer = await chosen.json()
+  assert.equal(answer.reason, 'dependency_memory')
+  assert.match(answer.error, /379 МБ.*512 МБ/)
+  // The page is told what a submission gets, so it can say so before anyone tries.
+  assert.equal((await (await call(base, owner.cookie)).json()).memoryMb, 512)
+  updateCompetition(c.id, { limits: { memoryMb: 1024 } })
+  assert.equal((await upload(url, owner.cookie, b.id)).status, 200, 'under half of the memory, the same set rides')
 })
 
 for (const terminal of ['ready', 'failed', 'cancelled'] as const) {

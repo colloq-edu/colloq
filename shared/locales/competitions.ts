@@ -801,6 +801,11 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'Скачать тетрадь с выводом',
     en: 'Download the notebook with its output',
   },
+  // The run reached no cell, so there is no executed copy: the link hands out the file as it was sent.
+  'competitions.p.downloadSent': {
+    ru: 'Скачать отправленную тетрадь',
+    en: 'Download the notebook you sent',
+  },
   'competitions.p.noSubmissions': {
     ru: 'Посылок пока нет. Отправьте тетрадь — результат появится здесь.',
     en: 'No submissions yet. Send a notebook and the result shows up here.',
@@ -960,6 +965,11 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.p.conditionsNote': {
     ru: 'Проверка запускает все ячейки по порядку, без сохранённых переменных. Перед отправкой перезапустите ядро и выполните тетрадь целиком.',
     en: 'The check runs every cell in order, with no variables carried over. Before sending, restart the kernel and run the whole notebook.',
+  },
+  // Every writable folder of a submission is memory-backed, and so is a package set's room.
+  'competitions.p.conditionsMemoryNote': {
+    ru: 'Память посылки — на всё сразу: тетрадь, файлы её рабочей папки и пакеты выбранного набора.',
+    en: 'A submission’s memory covers everything at once: the notebook, the files in its working folder and the packages of the chosen set.',
   },
 
   /* Лидерборд (P2 · мини-таблица, P3 · таблица) */

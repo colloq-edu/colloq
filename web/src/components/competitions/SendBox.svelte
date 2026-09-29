@@ -14,7 +14,7 @@
    * a check, it is a punishment.
    */
   import { onMount } from 'svelte'
-  import type { DependencyOverview } from '@shared/dependencies'
+  import { dependencyErrorText, dependencySize, packagesFit, packagesMemoryParams, packagesRoomMb, type DependencyOverview } from '@shared/dependencies'
   import { entrantApi } from '@/lib/entrantApi'
   import { lastScoringNote, ownOrdinals, submissionOrdinal } from '@/lib/competition-words'
   import { tr } from '@shared/i18n'
@@ -45,6 +45,14 @@
   let loadingPackages = $state(true)
   const readyBundles = $derived(dependencies?.bundles.filter((bundle) => bundle.state === 'ready' && bundle.revisionId === dependencies?.revision?.id) ?? [])
   const selectionReset = $derived(!!dependencies?.draft.selectedBundleId && !readyBundles.some((bundle) => bundle.id === dependencies?.draft.selectedBundleId))
+  /*
+   * The chosen set is installed into the submission's own memory: the box says
+   * how much of it the set takes, and one that cannot fit is refused here, in
+   * the same words the server would answer the upload with.
+   */
+  const chosenBundle = $derived(readyBundles.find((bundle) => bundle.id === bundleId) ?? null)
+  const memoryMb = $derived(view.competition.limits.memoryMb)
+  const chosenFits = $derived(!chosenBundle || packagesFit(chosenBundle.installedBytes, memoryMb))
   async function loadPackages(): Promise<void> {
     loadingPackages = true
     try {
@@ -57,7 +65,7 @@
   }
   onMount(() => { void loadPackages() })
   async function confirmSend(): Promise<void> {
-    if (!chosenFile || blocked || loadingPackages || packageError) return
+    if (!chosenFile || blocked || loadingPackages || packageError || !chosenFits) return
     const answer = await onsend(chosenFile, bundleId || null)
     if (!answer) return
     chosenFile = null
@@ -234,12 +242,19 @@
         {#each readyBundles as bundle (bundle.id)}<option value={bundle.id}>{tr('dependencies.set', { number: bundle.number })}</option>{/each}
       </select>
       {#if dependencies?.revision}<p class="break-words text-[14px] text-muted">{dependencies.revision.environmentName} · Python {dependencies.revision.pythonVersion}</p>{/if}
+      {#if chosenBundle}
+        {#if chosenFits}
+          <p class="text-[14px] text-muted">{tr('dependencies.memoryNote', { size: dependencySize(packagesRoomMb(chosenBundle.installedBytes) * 1024 * 1024), memory: dependencySize(memoryMb * 1024 * 1024) })}</p>
+        {:else}
+          <p class="text-[14px] text-danger" role="alert">{dependencyErrorText({ code: 'dependency_memory', params: packagesMemoryParams(chosenBundle.installedBytes, memoryMb) })}</p>
+        {/if}
+      {/if}
       {#if selectionReset && !bundleId}<p class="text-[14px] text-warning" role="status">{tr('dependencies.selectionReset')}</p>{/if}
       {#if loadingPackages}<p class="text-[14px] text-muted" role="status">{tr('dependencies.loading')}</p>{/if}
       {#if packageError}<p class="text-[14px] text-danger" role="alert">{packageError}</p><button type="button" class="min-h-10 text-accent-text underline" onclick={loadPackages}>{tr('dependencies.reload')}</button>{/if}
       <p class="text-[14px] text-muted">{tr('dependencies.sendHint')}</p>
       {#if lastNote}<p class="text-[14px] text-ink">{lastNote}</p>{/if}
-      <div class="flex flex-wrap items-center gap-4"><button type="button" class="min-h-11 bg-brand px-5 font-bold text-white disabled:opacity-50" disabled={blocked || loadingPackages || !!packageError} onclick={confirmSend}>{busy ? tr('competitions.p.sending') : replacing ? tr('competitions.p.sendReplacing', { number: replaces!.number }) : tr('dependencies.send')}</button><a class="text-[14px] text-accent-text underline" href={`/k/${view.competition.slug}/dependencies`}>{tr('dependencies.manage')}</a></div>
+      <div class="flex flex-wrap items-center gap-4"><button type="button" class="min-h-11 bg-brand px-5 font-bold text-white disabled:opacity-50" disabled={blocked || loadingPackages || !!packageError || !chosenFits} onclick={confirmSend}>{busy ? tr('competitions.p.sending') : replacing ? tr('competitions.p.sendReplacing', { number: replaces!.number }) : tr('dependencies.send')}</button><a class="text-[14px] text-accent-text underline" href={`/k/${view.competition.slug}/dependencies`}>{tr('dependencies.manage')}</a></div>
     </div>
   {/if}
 

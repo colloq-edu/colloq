@@ -35,7 +35,7 @@ import { competitionRevision } from '../dependencies/store.js'
 import { readEnvironmentInventory } from '../environment-inventory.js'
 import { acceptPinnedSubmission, executionRevision, publicExecution } from '../dependencies/service.js'
 import { DependencyStoreError } from '../dependencies/store.js'
-import { dependencyMessage } from '../dependencies/messages.js'
+import { dependencyMessage, dependencyRefusal } from '../dependencies/messages.js'
 import { addressOf } from '../bans.js'
 import { config } from '../config.js'
 import { db } from '../db.js'
@@ -78,12 +78,12 @@ import { uploadsPerMinute } from '../competitions/settings.js'
 import { cancelSubmission, queueSlots, wakeCompetitionPump } from '../competitions/runner.js'
 import {
   ensureCompetition,
+  holdExecutedNotebook,
   holdOpenFile,
-  holdResultFile,
   holdSubmittedNotebook,
+  notebookOnDisk,
   putSubmissionNotebook,
   removeSubmission,
-  NOTEBOOK_FILE,
 } from '../competitions/storage.js'
 import { intakeNotebook } from '../competitions/intake.js'
 import {
@@ -100,7 +100,9 @@ import {
   type Competition,
   type CompetitionRefusal,
   type Entrant,
+  type EntrantSubmission,
   type RankedRow,
+  type Submission,
 } from '@shared/competitions'
 import type { CompetitionCounts } from '@shared/competitions-api'
 import type {
@@ -312,13 +314,38 @@ function liveOf(competition: Competition, me: Entrant, now = Date.now()): Submis
   })
 }
 
+/*
+ * Which notebook each submission's download hands out, remembered per version
+ * of its row. The live stream rebuilds "My submissions" every second for every
+ * person watching, while the answer changes only when a run ends — and the row
+ * changes in the same breath (runner.ts publishes the executed copy before it
+ * writes the outcome). Asking the disk once a second per submission per
+ * person is the whole class's event loop spent on a link.
+ */
+const notebookSeen = new Map<string, { version: string; notebook: EntrantSubmission['notebook'] }>()
+
+function notebookOf(competitionId: string, submission: Submission): EntrantSubmission['notebook'] {
+  // Only a finished submission offers the link, so a running one costs no look at the disk.
+  if (!isTerminal(submission.state)) return undefined
+  const version = `${submission.state}:${submission.durationMs}:${submission.cellsDone}:${submission.stage}`
+  const seen = notebookSeen.get(submission.id)
+  if (seen?.version === version) return seen.notebook
+  const notebook = notebookOnDisk(competitionId, submission.id)
+  if (notebookSeen.size >= 20_000) notebookSeen.clear()
+  notebookSeen.set(submission.id, { version, notebook })
+  return notebook
+}
+
 /** "My submissions" in one piece; the live stream serves the same piece. */
 function submissionsView(competition: Competition, me: Entrant): EntrantSubmissions {
   const now = Date.now()
   const { open } = privateBoardState(competition, now)
   const accepting = submissionsOpen(competition, now)
   return {
-    submissions: listEntrantSubmissions(competition.id, me.id).map((s) => entrantSubmission(publicExecution(s, competition.environment), open)),
+    submissions: listEntrantSubmissions(competition.id, me.id).map((s) => ({
+      ...entrantSubmission(publicExecution(s, competition.environment), open),
+      notebook: notebookOf(competition.id, s),
+    })),
     leftToday: leftToday(competition, me.id),
     perDay: competition.limits.perDay,
     inFlight: inFlightCount(competition.id, me.id),
@@ -878,6 +905,13 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
    * failed submission for in the first place: the trace in the list is short,
    * and the cause is sometimes visible only in the output of a neighboring
    * cell.
+   *
+   * The sent notebook goes out only when there is truly no executed one — the
+   * run has not ended, or never reached a cell. This door used to ask `out/`
+   * for the SENT notebook's name, found nothing there and fell back every
+   * time: each download was the person's own file, without a single output.
+   * An executed copy that is there but will not open is an error, not a
+   * reason to hand out the other file.
    */
   router.get('/api/k/competitions/:slug/submissions/:id/notebook', requireEntrant, (req, res) => {
     const competition = visible(req.params.slug)
@@ -890,17 +924,15 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     if (submission.entrantId !== me.id) {
       return refuse(res, 403, 'forbidden', tr('competitions.refusal.notYours'))
     }
-    sendHeld(
-      res,
-      () => {
-        try {
-          return holdResultFile(competition.id, submission.id, NOTEBOOK_FILE)
-        } catch {
-          return holdSubmittedNotebook(competition.id, submission.id)
-        }
-      },
-      submission.fileName,
-    )
+    let executed: HeldFile | null
+    try {
+      executed = holdExecutedNotebook(competition.id, submission.id)
+    } catch (error) {
+      console.error('[competitions] executed notebook could not be opened', submission.id, error)
+      return refuse(res, 503, 'unavailable', tr('common.requestFailed', { status: 503 }))
+    }
+    if (executed) return downloadHeldFile(res, executed, submission.fileName)
+    sendHeld(res, () => holdSubmittedNotebook(competition.id, submission.id), submission.fileName)
   })
 
   return router
@@ -1013,7 +1045,8 @@ function readNotebook(req: Request, res: Response, done: (fileName: string, body
       if (error instanceof DependencyStoreError) {
         const intake = INTAKE_REFUSALS[error.code]
         if (intake) refuse(res, error.status, intake.reason, intake.say())
-        else refuse(res, error.status, 'invalid', dependencyMessage(error.code))
+        // With its numbers: "the set needs 379 MB of the 1.0 GB a submission gets".
+        else refuse(res, error.status, 'invalid', dependencyRefusal(error.code, error.detail))
       } else {
         console.error('[competitions] accepting notebook failed', error)
         refuse(res, 503, 'unavailable', tr('common.requestFailed', { status: 503 }))

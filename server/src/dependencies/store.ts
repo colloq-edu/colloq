@@ -1,8 +1,8 @@
 /** Durable dependency jobs and immutable submission/environment bindings. */
 import { randomUUID } from 'node:crypto'
 import { db } from '../db.js'
-import { invalidateCompetitionInputs } from '../competitions/store.js'
-import { DEPENDENCY_LIMITS, normalizeRequirements, quotaWaitMinutes, requirementLineCount, unsupportedRequirementLine, dependencyActive, type DependencyBundle, type DependencyDraft, type DependencyErrorParams, type DependencyPolicy, type DependencyQuota, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
+import { getCompetition, invalidateCompetitionInputs } from '../competitions/store.js'
+import { DEPENDENCY_LIMITS, normalizeRequirements, quotaWaitMinutes, requirementLineCount, unsupportedRequirementLine, dependencyActive, packagesFit, packagesMemoryParams, type DependencyBundle, type DependencyDraft, type DependencyErrorParams, type DependencyPolicy, type DependencyQuota, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
 import type { PreparationProgress, PreparationResult } from './preparation-contract.js'
 import { dependencyMessage, type DependencyRefusalDetail } from './messages.js'
 import { submissionsOpen, type CompetitionState } from '@shared/competitions'
@@ -145,6 +145,16 @@ export function assertUsableBundle(c: string,e: string,revisionId: string,bundle
  if(!b||b.competitionId!==c||b.entrantId!==e)throw new DependencyStoreError('dependency_owner',404)
  if(b.state!=='ready')throw new DependencyStoreError('dependency_not_ready')
  if(b.revisionId!==revisionId)throw new DependencyStoreError('dependency_revision')
+ /*
+  * The set is installed into the submission's own memory, so one that cannot
+  * fit there is refused here — when it is chosen or sent with a notebook —
+  * with its numbers, rather than an hour later as a failed install. The
+  * preparation holds a set to its size limit, not to this memory, and the
+  * teacher may lower the memory after the set was prepared.
+  */
+ const memoryMb=getCompetition(c)?.limits.memoryMb
+ if(memoryMb!==undefined&&!packagesFit(b.installedBytes,memoryMb))
+  throw new DependencyStoreError('dependency_memory',409,{params:packagesMemoryParams(b.installedBytes,memoryMb)})
  return b
 }
 export const saveDraft=db.transaction((c:string,e:string,value:{requirementsText:string;selectedBundleId?:string|null}):DependencyDraft=>{

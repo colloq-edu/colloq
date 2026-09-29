@@ -57,6 +57,16 @@ while True:
         sys.exit(41)
     time.sleep(1)
 `
+/**
+ * The memory-backed room a notebook's package set is installed into, sized
+ * for that set by the app (limits.packagesMb): /work is the participant's
+ * folder at an eighth of the memory, and a ready set of 300 MB never fit into
+ * the 256 MiB it gives at 2 GB. Counted in the Pod's memory like every
+ * memory-backed volume; null — no set, or an app that did not size one.
+ */
+function packageRoom(intent: CompetitionJobIntent): number | null {
+  return intent.kind === 'notebook' && intent.bundleId && intent.limits.packagesMb ? intent.limits.packagesMb : null
+}
 function exportBudget(kind: CompetitionJobKind, target: number): number {
   if (kind === 'notebook') return Math.min(2 * target, 256 * MiB)
   if (kind === 'metric') return Math.min(2 * target, 16 * MiB)
@@ -149,11 +159,17 @@ export class CompetitionJobs {
         env('COMP_ATTEMPT_ID', intent.attemptId ?? intent.jobId), env('COMP_RESULT', '/out'), env('COMP_OUT', intent.kind === 'metric' ? '/out' : '/work'),
         env('COMP_TARGET', 'submission.csv'), env('COMP_MAX_TARGET_BYTES', String(intent.limits.targetBytes)),
         env('COMP_CELL_TIMEOUT_SEC', String(intent.limits.wallSeconds)),
+        // The whole run's limit: the harness stops a late notebook itself a few
+        // seconds before this Pod's deadline, with its outputs saved, instead
+        // of leaving nothing to collect after a kill (run_notebook.py · stop_at).
+        ...(intent.kind === 'notebook' ? [env('COMP_WALL_SECONDS', String(intent.limits.wallSeconds))] : []),
         ...(intent.bundleId ? [env('COMP_DEPENDENCIES', '/deps')] : []),
+        ...(packageRoom(intent) ? [env('COMP_PACKAGES', '/packages')] : []),
         ...(intent.kind === 'resolve' ? [env('HTTPS_PROXY', `http://${proxyName(intent.jobId)}:3128`), env('HTTP_PROXY', `http://${proxyName(intent.jobId)}:3128`),
           env('https_proxy', `http://${proxyName(intent.jobId)}:3128`), env('http_proxy', `http://${proxyName(intent.jobId)}:3128`),
           env('NO_PROXY', ''), env('no_proxy', ''), env('ALL_PROXY', ''), env('all_proxy', '')] : [])],
       volumeMounts: [mount('out', '/out'), mount('work', '/work'), mount('tmp', '/tmp'),
+        ...(packageRoom(intent) ? [mount('packages', '/packages')] : []),
         mount('data', '/harness', intent.kind === 'notebook' || intent.kind === 'metric' ? 'competitions/harness' : 'dependencies/harness', true), ...input],
     }
   }
@@ -171,7 +187,8 @@ export class CompetitionJobs {
         }] }),
         volumes: [pvc('data', this.options.config.dataClaim), pvc('destination', this.options.config.dataClaim),
           { name: 'out', emptyDir: memory(intent.limits.tmpfsMb) }, { name: 'work', emptyDir: memory(intent.limits.tmpfsMb) },
-          { name: 'tmp', emptyDir: memory(Math.min(intent.limits.tmpfsMb, 256)) }],
+          { name: 'tmp', emptyDir: memory(Math.min(intent.limits.tmpfsMb, 256)) },
+          ...(packageRoom(intent) ? [{ name: 'packages', emptyDir: memory(packageRoom(intent)!) }] : [])],
         containers: [this.main(intent, image), { name: 'exporter', image: this.options.config.exporterImage,
           imagePullPolicy: 'IfNotPresent', command: ['node', '/app/export-sidecar.js'], securityContext: security,
           resources: { requests: { cpu: '100m', memory: '64Mi' }, limits: { cpu: '500m', memory: '256Mi', 'ephemeral-storage': '64Mi' } },

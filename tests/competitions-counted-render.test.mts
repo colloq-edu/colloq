@@ -64,3 +64,14 @@ for (const name of ['SubmissionRow', 'SubmissionCard']) test(`${name} says when 
   assert.match(text(render(components.get(name)!, { props: { ...props, offQuota: true } }).body), /не в счёт лимита/)
   assert.doesNotMatch(text(render(components.get(name)!, { props }).body), /в счёт лимита/)
 })
+
+for (const name of ['SubmissionRow', 'SubmissionCard']) test(`${name} offers a scored run's executed notebook only when there is one`, () => {
+  const props = { ...rowProps, notebookUrl: '/api/k/competitions/sample/submissions/s1/notebook', submission: { ...submission, chosen: false } }
+  const executed = render(components.get(name)!, { props: { ...props, submission: { ...props.submission, notebook: 'executed' } } }).body
+  assert.match(text(executed), /Скачать тетрадь с выводом/)
+  assert.match(executed, /href="\/api\/k\/competitions\/sample\/submissions\/s1\/notebook"/)
+  // No executed copy (or no answer from the disk): no promise of outputs.
+  for (const notebook of ['sent', null, undefined]) {
+    assert.doesNotMatch(text(render(components.get(name)!, { props: { ...props, submission: { ...props.submission, notebook } } }).body), /с выводом/, String(notebook))
+  }
+})

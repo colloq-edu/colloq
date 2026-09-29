@@ -28,6 +28,7 @@
   import {
     competitionPath,
     entrantHandle,
+    EXECUTED_NOTEBOOK_FILE,
     LIMITS,
     metricFailedNote,
     placeShift,
@@ -1140,7 +1141,7 @@
                     <a
                       role="menuitem"
                       class={MENU_ITEM}
-                      href={adminApi.submissionFileUrl(c.id, s.id, 'notebook.ipynb')}
+                      href={adminApi.submissionFileUrl(c.id, s.id, EXECUTED_NOTEBOOK_FILE)}
                       target="_blank"
                       rel="noreferrer"
                       onclick={() => (openMenu = null)}

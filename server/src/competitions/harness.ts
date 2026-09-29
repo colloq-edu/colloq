@@ -54,12 +54,34 @@ import { competitionsDir, competitionsFs } from './storage.js'
  * container, and `docker cp` from a stopped container no longer sees it
  * (verified). Only the container itself can take the file out, from inside
  * and before its death.
+ *
+ * And three more, bought by a class that could never see what its notebooks
+ * printed.
+ *
+ * The executed copy is written whatever the ending, and only with this run's
+ * outputs: the notebook arrives with whatever the participant's own Jupyter
+ * left in it, and a cell the run never reached must not show a result it
+ * never produced here.
+ *
+ * The time limit is the host's, but the harness stops the notebook itself a
+ * few seconds before it (`stop_at`): every cell may wait only for what is left
+ * of the run, so nbclient's own timeout interrupts the overrunning one while
+ * this process is alive to save the notebook — the finished cells and what
+ * the stuck one printed so far. A kill from outside leaves nothing to save,
+ * and the timed-out run was exactly the one whose outputs said why.
+ *
+ * A copy as far as it got is kept on disk while the notebook runs
+ * (`Runner.snapshot`), for the day the harness itself dies without a word:
+ * the host salvages it before a kill (docker-runner.ts · watch), the broker's
+ * exporter collects it after a crash.
  */
 const RUN_NOTEBOOK = `"""Executing a submitted notebook inside a disposable container."""
 
 from __future__ import annotations
 
+import errno
 import json
+import math
 import os
 import re
 import shutil
@@ -71,9 +93,14 @@ import time
 import traceback
 from pathlib import Path
 
-import nbformat
-from nbclient import NotebookClient
-from nbclient.exceptions import CellExecutionError, CellTimeoutError, DeadKernelError
+# The earliest moment this program sees, taken before the heavy imports below:
+# without the supervisor's mark (hold_export.py) it stands in for the moment
+# the container started, from which the host counts the time limit.
+STARTED = time.monotonic()
+
+import nbformat  # noqa: E402
+from nbclient import NotebookClient  # noqa: E402
+from nbclient.exceptions import CellExecutionError, CellTimeoutError, DeadKernelError  # noqa: E402
 
 
 def env_int(name: str, default: int) -> int:
@@ -102,9 +129,65 @@ MAX_TARGET = env_int("COMP_MAX_TARGET_BYTES", 64 * 1024 * 1024)
 # The cap on ONE cell. The host holds the overall time limit: an internal timer
 # will not survive a cell that grabbed the GIL in a C loop.
 CELL_TIMEOUT = env_int("COMP_CELL_TIMEOUT_SEC", 0) or None
+# The whole run's limit, the one the host kills by; 0 means none was given. The
+# host keeps the hard kill, and this lets the harness stop the notebook a little
+# before it. A timer here holds where one inside the notebook would not: the
+# cell runs in the kernel, a separate process, and this one only waits for its
+# messages.
+WALL = env_int("COMP_WALL_SECONDS", 0)
+# How long before the host's deadline the notebook is stopped from inside: time
+# to kill the kernel, write the executed copy and be seen finished — including
+# the second a Pod's start time is rounded down by. A tenth of a short limit.
+STOP_EARLY = 5.0
 
 PROGRESS = RESULT / "progress.json"
 RUN_JSON = RESULT / "run.json"
+# What the participant opens on the submission page (storage.ts · EXECUTED_FILE).
+EXECUTED = RESULT / "executed.ipynb"
+
+
+def run_started() -> float:
+    """When the container started (the host counts the limit from then), on the monotonic clock both share."""
+    try:
+        mark = float(os.environ.get("COMP_STARTED_MONOTONIC") or "")
+    except ValueError:
+        return STARTED
+    return mark if 0 < mark <= STARTED else STARTED
+
+
+def stop_at() -> float | None:
+    """The moment the notebook is stopped from inside; None when no limit was given."""
+    if not WALL:
+        return None
+    return run_started() + WALL - min(STOP_EARLY, WALL / 10)
+
+
+def save_executed(nb) -> None:
+    """The executed notebook, whole or not at all: the host may copy it out at any moment."""
+    tmp = EXECUTED.with_suffix(".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            nbformat.write(nb, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, EXECUTED)
+    except BaseException:
+        # No half-written copy stays behind: the broker's exporter refuses a
+        # result folder holding a file it does not know, and the run with it.
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def forget_outputs(nb) -> None:
+    """Clear what the notebook arrived with: its executed copy holds this run's outputs only."""
+    for cell in nb.cells:
+        if cell.get("cell_type") != "code":
+            continue
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        metadata = cell.get("metadata")
+        if isinstance(metadata, dict):
+            metadata.pop("execution", None)
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -118,10 +201,14 @@ def write_json(path: Path, payload: dict) -> None:
     os.replace(tmp, path)
 
 
-class Runner(NotebookClient):
-    """NotebookClient with a beacon, an output cap and a watch over the answer."""
+class OutOfTime(Exception):
+    """The run's time came between two cells: the next one is not started."""
 
-    def __init__(self, nb, **kwargs):
+
+class Runner(NotebookClient):
+    """NotebookClient with a beacon, an output cap, a watch over the answer and over the time."""
+
+    def __init__(self, nb, stop_at=None, **kwargs):
         super().__init__(nb, **kwargs)
         self.cells_total = sum(1 for c in nb.cells if c.cell_type == "code")
         self.code_indices = {
@@ -138,6 +225,53 @@ class Runner(NotebookClient):
         self.cell_times: list[float] = []
         self._cell_started = 0.0
         self.oversize: str | None = None
+        self.stop_at = stop_at
+        # Every cell may wait only for what is left of the run: nbclient's own
+        # timeout then stops the overrunning cell while this process can still
+        # save what it printed.
+        self.timeout_func = self.cell_budget
+        self._saved_at = float("-inf")
+        self._save_cost = 0.0
+
+    def time_left(self) -> float | None:
+        return None if self.stop_at is None else self.stop_at - time.monotonic()
+
+    def cell_budget(self, cell=None):  # noqa: ARG002
+        """The seconds one cell may take: what is left of the run, and never past the per-cell cap."""
+        left = self.time_left()
+        if left is None:
+            return self.timeout
+        # nbclient reads 0 as "no timeout at all", so a spent budget is one second.
+        budget = max(1, math.ceil(left))
+        return min(budget, self.timeout) if self.timeout else budget
+
+    def snapshot(self, force: bool = False) -> None:
+        """
+        Put the notebook as far as it got on disk — at most once a second, and
+        never more than a twentieth of the run, however big the notebook.
+
+        The copy is for the day this process dies before its last line: the
+        final write in main() replaces it with the whole story.
+        """
+        now = time.monotonic()
+        if not force and now - self._saved_at < max(1.0, 20 * self._save_cost):
+            return
+        try:
+            save_executed(self.nb)
+        except Exception:  # noqa: BLE001
+            # A copy that could not be written costs the salvage, not the run.
+            return
+        self._saved_at = time.monotonic()
+        self._save_cost = self._saved_at - now
+
+    async def _async_handle_timeout(self, timeout, cell=None):
+        # The cell is stuck. The notebook goes on disk NOW, with what the cell
+        # printed so far, before nbclient spends seconds on the kernel; and the
+        # kernel is killed rather than asked to finish: a graceful shutdown of
+        # a busy kernel waits five seconds, the whole of STOP_EARLY.
+        self.snapshot(force=True)
+        self.shutdown_kernel = "immediate"
+        return await super()._async_handle_timeout(timeout, cell)
 
     def beat(self, phase: str) -> None:
         write_json(
@@ -155,6 +289,12 @@ class Runner(NotebookClient):
     def on_cell_start(self, cell=None, cell_index=None, **kwargs):  # noqa: ARG002
         if cell_index not in self.code_indices:
             return
+        left = self.time_left()
+        if left is not None and left <= 0:
+            raise OutOfTime("The run's time limit came between two cells")
+        # Every cell before this one has finished: that much survives even a
+        # death of this process.
+        self.snapshot()
         self.cell_index = self.code_indices[cell_index]
         self._cell_started = time.monotonic()
         self.beat("cell")
@@ -222,7 +362,24 @@ def cell_error_detail(exc: Exception) -> str:
     return "\\n".join(text.splitlines()[-25:])[-4000:]
 
 
-def dependency_command(args: list[str]) -> None:
+class PackagesDoNotFit(RuntimeError):
+    """The set's environment ran out of room during the install; room is how much it had."""
+
+    def __init__(self, detail: str, room: int | None):
+        super().__init__(detail)
+        self.room = room
+
+
+def room_of(directory: Path) -> int | None:
+    """The size of the filesystem a directory lives on: all the room the set was given."""
+    try:
+        stats = os.statvfs(directory)
+    except OSError:
+        return None
+    return stats.f_blocks * stats.f_frsize
+
+
+def dependency_command(args: list[str], room: Path | None = None) -> None:
     """Bound installation output on disk and retain only its useful tail."""
     with tempfile.TemporaryFile() as log:
         completed = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
@@ -230,7 +387,13 @@ def dependency_command(args: list[str]) -> None:
             log.seek(0, os.SEEK_END)
             log.seek(max(0, log.tell() - 6000))
             detail = log.read().decode("utf-8", "replace")
-            raise RuntimeError(cell_error_detail(RuntimeError(detail)) or f"Installer exited with {completed.returncode}")
+            message = cell_error_detail(RuntimeError(detail)) or f"Installer exited with {completed.returncode}"
+            # pip names a full disk in words ("[Errno 28] No space left on
+            # device"), and that is the one install failure the participant can
+            # act on: the set is too big for the room, not broken.
+            if "No space left on device" in detail or "[Errno 28]" in detail:
+                raise PackagesDoNotFit(message, room_of(room) if room is not None else None)
+            raise RuntimeError(message)
 
 
 def prepare_dependencies() -> str:
@@ -239,16 +402,26 @@ def prepare_dependencies() -> str:
     if not directory:
         return "python3"
     dependencies = Path(directory)
-    environment = OUT / ".colloq-venv"
+    # The set's own room, sized for it by the host and counted in the
+    # submission's memory (runner-port.ts · RunRequest.packagesMb). Without
+    # it the set shares the working folder's, as it used to — and a set of
+    # 300 MB never fit into the 256 MB a 2 GB submission gives that folder.
+    root = Path(os.environ.get("COMP_PACKAGES") or OUT)
+    environment = root / ".colloq-venv"
     # Reuse base pip to avoid copying its wheels into every temporary venv.
-    venv.EnvBuilder(system_site_packages=True, with_pip=False).create(environment)
+    try:
+        venv.EnvBuilder(system_site_packages=True, with_pip=False).create(environment)
+    except OSError as exc:
+        if exc.errno == errno.ENOSPC:
+            raise PackagesDoNotFit(f"{type(exc).__name__}: {exc}", room_of(root)) from exc
+        raise
     python = environment / "bin" / "python"
     dependency_command([
         sys.executable, "-I", "-m", "pip", "--isolated", "--disable-pip-version-check",
         "--python", str(python), "install", "--no-index", "--no-deps", "--no-cache-dir",
         "--no-compile", "--only-binary=:all:", "--require-hashes", "--find-links", str(dependencies / "wheels"),
         "-r", str(dependencies / "requirements.lock"),
-    ])
+    ], root)
     # An existing base python3 kernelspec may contain an absolute base Python.
     # Use a distinct spec with an absolute venv interpreter; PATH is insufficient.
     kernel_name = "colloq-dependencies"
@@ -301,18 +474,24 @@ def main() -> int:
     try:
         kernel_name = prepare_dependencies()
     except Exception as exc:  # noqa: BLE001
-        write_json(RUN_JSON, {
+        report = {
             "status": "dependency_error",
             "detail": cell_error_detail(exc),
             "cell": -1,
             "cells": 0,
             "wall": round(time.time() - started_wall, 3),
             "peakBytes": read_peak(),
-        })
+        }
+        if isinstance(exc, PackagesDoNotFit):
+            # Named apart: "try again" is no answer to a set that cannot fit.
+            report.update({"reason": "no_space", "roomBytes": exc.room})
+        write_json(RUN_JSON, report)
         return 1
 
+    forget_outputs(nb)
     runner = Runner(
         nb,
+        stop_at=stop_at(),
         timeout=CELL_TIMEOUT,
         kernel_name=kernel_name,
         allow_errors=False,
@@ -328,9 +507,9 @@ def main() -> int:
     except SystemExit as exc:
         status = "target_too_large" if exc.code == 90 else "exit"
         detail = runner.oversize or f"SystemExit({exc.code})"
-    except CellTimeoutError as exc:
+    except (CellTimeoutError, OutOfTime) as exc:
         status = "cell_timeout"
-        detail = str(exc).splitlines()[0][:400]
+        detail = (str(exc).splitlines() or [type(exc).__name__])[0][:400]
     except DeadKernelError as exc:
         status = "kernel_died"
         detail = str(exc).splitlines()[0][:400]
@@ -343,11 +522,12 @@ def main() -> int:
         detail = f"{type(exc).__name__}: {exc}\\n{traceback.format_exc()[-2000:]}"
 
     # The executed notebook is what the participant opens on the submission
-    # page: their code, their output, their traceback on the failed cell. The
-    # outputs in it are already trimmed by the cap, so it can be written
-    # without fear of gigabytes.
+    # page: their code, their output, their traceback on the failed cell — and
+    # on a timed-out or killed kernel, every cell that finished and what the
+    # last one printed. The outputs in it are already trimmed by the cap, so
+    # it can be written without fear of gigabytes.
     try:
-        nbformat.write(nb, RESULT / "executed.ipynb")
+        save_executed(nb)
     except Exception as exc:  # noqa: BLE001
         detail = f"{detail}\\n[executed.ipynb not written: {type(exc).__name__}]".strip()
 
@@ -774,6 +954,11 @@ if __name__ == "__main__":
 // host is gone — a server that died mid-run leaves a container nobody
 // watches, and it kept its memory and CPUs until the next start swept it, or
 // forever if that start did not come. The stopped remains are still swept.
+//
+// It also hands the notebook harness the moment the container started, on the
+// monotonic clock both share: the harness stops an overrunning notebook a few
+// seconds before the host's deadline (run_notebook.py · stop_at), and the
+// host counts that deadline from the container's start, not the harness's.
 const HOLD_EXPORT = `import json, os, subprocess, sys, time
 from pathlib import Path
 
@@ -786,7 +971,9 @@ def seconds(name, default):
 
 directory = Path(sys.argv[1])
 directory.mkdir(parents=True, exist_ok=True)
-deadline = time.monotonic() + seconds("COMP_WALL_SECONDS", 14400) + seconds("COMP_ORPHAN_GRACE_SECONDS", 120)
+started = time.monotonic()
+os.environ["COMP_STARTED_MONOTONIC"] = repr(started)
+deadline = started + seconds("COMP_WALL_SECONDS", 14400) + seconds("COMP_ORPHAN_GRACE_SECONDS", 120)
 child = subprocess.Popen([sys.executable, sys.argv[2]])
 try:
     code = child.wait(timeout=max(0.1, deadline - time.monotonic()))

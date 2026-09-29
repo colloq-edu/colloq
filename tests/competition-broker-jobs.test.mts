@@ -376,6 +376,30 @@ test('notebook bundle mount includes verified wheel directory and lock file', as
   const deps = pod.spec.containers[0].volumeMounts.find((m: any) => m.mountPath === '/deps')
   assert.equal(deps.subPath, `dependencies/bundles/${'d'.repeat(32)}`)
   assert.equal(deps.readOnly, true)
+  // An app that sized no room: the set shares /work, as before.
+  assert.ok(!pod.spec.volumes.some((v: any) => v.name === 'packages'))
+  assert.ok(!pod.spec.containers[0].env.some((e: any) => e.name === 'COMP_PACKAGES'))
+})
+
+test('a notebook package set gets its own memory-backed room, sized by the app, and only the main container sees it', async () => {
+  const { jobs, calls } = setup()
+  await jobs.start(jobId, { ...intent('notebook'), bundleId: 'd'.repeat(32), limits: { ...limits, packagesMb: 379 } })
+  const pod = calls.find(c => c.method === 'POST' && c.path.endsWith('/pods'))!.body
+  const [main, exporter] = pod.spec.containers
+  // Memory, not a PVC: the participant writes into it, and nothing of theirs reaches a disk.
+  assert.deepEqual(pod.spec.volumes.find((v: any) => v.name === 'packages'), { name: 'packages', emptyDir: { medium: 'Memory', sizeLimit: '379Mi' } })
+  assert.ok(main.volumeMounts.some((m: any) => m.name === 'packages' && m.mountPath === '/packages' && !m.readOnly))
+  assert.ok(main.env.some((e: any) => e.name === 'COMP_PACKAGES' && e.value === '/packages'))
+  assert.ok(!exporter.volumeMounts.some((m: any) => m.name === 'packages'), 'the exporter has no business with the set')
+  // /work keeps the participant's own eighth.
+  assert.deepEqual(pod.spec.volumes.find((v: any) => v.name === 'work').emptyDir, { medium: 'Memory', sizeLimit: '256Mi' })
+})
+
+test('a notebook knows the whole limit, so its harness stops a late notebook before the Pod deadline', async () => {
+  const { jobs, calls } = setup()
+  await jobs.start(jobId, intent('notebook'))
+  const main = calls.find(c => c.method === 'POST' && c.path.endsWith('/pods'))!.body.spec.containers[0]
+  assert.ok(main.env.some((e: any) => e.name === 'COMP_WALL_SECONDS' && e.value === String(limits.wallSeconds)))
 })
 
 test('rejects a catalog digest mismatch before creating anything', async () => {

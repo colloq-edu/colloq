@@ -4,7 +4,7 @@ import { imageRevision, kernelRuntimeClient, loadRuntimeCatalog, type RuntimeCli
 import { resolveRuntimeEnvironment } from '@shared/runtime'
 import { parseCompetitionJobIntent, type CompetitionJobIntent, type CompetitionJobStatus } from '@shared/competition-runtime'
 import { competitionsFs, attemptDir } from './storage.js'
-import { DEFAULT_ID_COLUMN, verdictOfRun } from './docker-runner.js'
+import { DEFAULT_ID_COLUMN, dependencyFailureOf, verdictOfRun } from './docker-runner.js'
 import { brokerHarnessDir } from './harness.js'
 import { registerCompetitionRunner, type Capacity, type CompetitionRunner, type RunOutcome, type RunRequest, type ScoreOutcome, type ScoreRequest } from './runner-port.js'
 
@@ -80,10 +80,13 @@ export class BrokerCompetitionRunner implements CompetitionRunner {
     competitionsFs.mkdirSync(request.resultDir,{recursive:true})
     competitionsFs.chmodSync(request.resultDir,0o700)
     const bundleId=request.dependenciesDir ? path.basename(request.dependenciesDir) : undefined
+    // The set's own memory-backed room, sized for it (runner-port.ts · RunRequest.packagesMb).
+    const packagesMb=bundleId&&request.packagesMb ? Math.max(1,Math.ceil(request.packagesMb)) : undefined
     const jobId=randomUUID().replaceAll('-','')
     const intent:CompetitionJobIntent={schemaVersion:1,jobId,kind:'notebook',environment:request.competition.environment,revision,
       competitionId:request.competition.id,submissionId:request.submissionId,attemptId:request.attemptId,...(bundleId?{bundleId}:{}),
-      limits:{wallSeconds:request.limits.wallSeconds,memoryMb:request.limits.memoryMb,cpus:request.limits.cpus,pids:request.limits.pids,tmpfsMb:request.limits.tmpfsMb,targetBytes:request.limits.targetBytes}}
+      limits:{wallSeconds:request.limits.wallSeconds,memoryMb:request.limits.memoryMb,cpus:request.limits.cpus,pids:request.limits.pids,tmpfsMb:request.limits.tmpfsMb,targetBytes:request.limits.targetBytes,
+        ...(packagesMb?{packagesMb}:{})}}
     let progress:CompetitionJobStatus['progress']=null
     const status=await this.execute(request.container,intent,request.signal,s=>{
       if (!s.progress || s.progress.phase==='score') return
@@ -103,6 +106,7 @@ export class BrokerCompetitionRunner implements CompetitionRunner {
     return {status:verdict,cell:number(run?.cell)??beat?.cell??-1,cells:number(run?.cells)??beat?.cells??0,
       wall:Date.now()-started,submission:verdict==='ok'&&produced?answer:null,
       detail:typeof run?.detail==='string'?run.detail:'',log:status.error??'',
+      ...dependencyFailureOf(verdict,run,packagesMb??request.limits.tmpfsMb),
       diagnostics:{exit:status.exitCode,oomKilled:status.oomKilled,backend:this.backend,peakBytes:number(run?.peakBytes)}}
   }
   async score(request:ScoreRequest):Promise<ScoreOutcome> {

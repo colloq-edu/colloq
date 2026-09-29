@@ -47,7 +47,7 @@ import {
   updateCompetition,
   updateSubmission,
 } from '../server/src/competitions/store.js'
-import { competitionDir, competitionsFs, ensureCompetition, inputDir, NOTEBOOK_FILE, putOpenFile, putSecretFile } from '../server/src/competitions/storage.js'
+import { competitionDir, competitionsFs, ensureCompetition, inputDir, NOTEBOOK_FILE, putOpenFile, putSecretFile, resultDir } from '../server/src/competitions/storage.js'
 import { db } from '../server/src/db.js'
 import { app } from '../server/src/app.js'
 
@@ -670,6 +670,50 @@ test("someone else's submission can be neither chosen as counted nor downloaded"
   })
   assert.equal(own.status, 200)
   assert.match(await own.text(), /cell_type/)
+})
+
+test('the notebook download is the executed copy with its outputs, and the sent file only when there is none', async () => {
+  const person = await join('@with_output')
+  const sent = await send('/api/k/competitions/rohlik/submissions', person.cookie, 'mine.ipynb', notebook('print(42)'))
+  const { submission } = (await sent.json()) as { submission: { id: string } }
+  const download = () => call(`/api/k/competitions/rohlik/submissions/${submission.id}/notebook`, { cookie: person.cookie })
+  const listed = async () => {
+    const res = await call('/api/k/competitions/rohlik/submissions', { cookie: person.cookie })
+    const body = (await res.json()) as { submissions: Array<{ id: string; notebook?: string | null }> }
+    return body.submissions.find((one) => one.id === submission.id)?.notebook
+  }
+  // Still running: the link hands out the notebook as it was sent, and says nothing yet.
+  assert.equal(await listed(), undefined)
+  const early = await (await download()).text()
+  assert.match(early, /print\(42\)/)
+  assert.doesNotMatch(early, /"text"/)
+
+  // The run left its executed copy under the harness's name.
+  const out = resultDir(competitionId, submission.id)
+  competitionsFs.writeFileSync(`${out}/executed.ipynb`, JSON.stringify({
+    nbformat: 4, nbformat_minor: 5, metadata: {},
+    cells: [{ cell_type: 'code', source: 'print(42)', metadata: {}, execution_count: 1, outputs: [{ output_type: 'stream', name: 'stdout', text: '42\n' }] }],
+  }))
+  updateSubmission(submission.id, { state: 'scored', publicScore: 0.4, durationMs: 1200 })
+  assert.equal(await listed(), 'executed', 'the page is told the link carries outputs')
+  const executed = await download()
+  assert.equal(executed.status, 200)
+  assert.match(await executed.text(), /"text":"42\\n"/)
+
+  // A run that reached no cell: the sent file, and the page says so.
+  competitionsFs.rmSync(`${out}/executed.ipynb`, { force: true })
+  updateSubmission(submission.id, { state: 'rejected', stage: 'dependencies', durationMs: 0 })
+  assert.equal(await listed(), 'sent')
+  const fallback = await download()
+  assert.equal(fallback.status, 200)
+  assert.match(await fallback.text(), /print\(42\)/)
+
+  // An executed copy that is there but will not open is an error, never the other file.
+  competitionsFs.mkdirSync(`${out}/executed.ipynb`, { recursive: true })
+  const broken = await download()
+  assert.equal(broken.status, 503)
+  assert.doesNotMatch(await broken.text(), /print\(42\)/)
+  competitionsFs.rmSync(`${out}/executed.ipynb`, { recursive: true, force: true })
 })
 
 test('without a cookie the submission doors answer "sign in", not "no such thing"', async () => {

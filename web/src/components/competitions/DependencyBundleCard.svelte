@@ -1,11 +1,16 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
-  import { dependencyActive, dependencyErrorLines, dependencyLogText, dependencyReadyHints, type DependencyBundle } from '@shared/dependencies'
+  import { dependencyActive, dependencyErrorLines, dependencyErrorText, dependencyLogText, dependencyReadyHints, dependencySize, packagesFit, packagesMemoryParams, packagesRoomMb, type DependencyBundle } from '@shared/dependencies'
   import { fileSize } from '@/lib/competition-words'
-  let { bundle, selected = false, compatible = true, busy = false, lockUrl, onselect, oncancel, onretry, onedit }: {
-    bundle: DependencyBundle; selected?: boolean; compatible?: boolean; busy?: boolean; lockUrl?: string
+  let { bundle, selected = false, compatible = true, memoryMb, busy = false, lockUrl, onselect, oncancel, onretry, onedit }: {
+    bundle: DependencyBundle; selected?: boolean; compatible?: boolean
+    /** The memory a submission gets; the set's room counts in it. Unknown — nothing is said. */
+    memoryMb?: number
+    busy?: boolean; lockUrl?: string
     onselect?: () => void; oncancel?: () => void; onretry?: () => void; onedit?: () => void
   } = $props()
+  // A set is installed into the submission's own memory: one that cannot fit is not offered.
+  const fits = $derived(memoryMb === undefined || packagesFit(bundle.installedBytes, memoryMb))
   const active = $derived(dependencyActive(bundle.state))
   const steps = ['queued', 'resolving', 'downloading', 'verifying', 'ready'] as const
   const progress = $derived(steps.indexOf(bundle.state as typeof steps[number]))
@@ -40,6 +45,13 @@
   {#if bundle.state === 'ready'}
     <p class="mt-2 text-[14px] text-muted">{tr('dependencies.sizes', { download: fileSize(bundle.downloadBytes), installed: fileSize(bundle.installedBytes) })}</p>
     {#each readyHints as hint}<p class="mt-3 border-l-2 border-warning bg-warning/5 p-3 text-[15px] leading-6 text-ink">{hint}</p>{/each}
+    {#if memoryMb !== undefined}
+      {#if fits}
+        <p class="mt-1 text-[14px] text-muted">{tr('dependencies.memoryNote', { size: dependencySize(packagesRoomMb(bundle.installedBytes) * 1024 * 1024), memory: dependencySize(memoryMb * 1024 * 1024) })}</p>
+      {:else}
+        <p class="mt-2 text-[14px] text-warning" role="status">{dependencyErrorText({ code: 'dependency_memory', params: packagesMemoryParams(bundle.installedBytes, memoryMb) })}</p>
+      {/if}
+    {/if}
   {/if}
   <details class="mt-3 text-[14px] text-ink">
     <summary class="cursor-pointer py-1 text-accent-text">{tr('dependencies.details')}</summary>
@@ -58,7 +70,7 @@
     </details>
   {/if}
   <div class="mt-3 flex flex-wrap items-center gap-3 text-[14px]">
-    {#if bundle.state === 'ready' && compatible && onselect && !selected}<button type="button" class="min-h-10 bg-brand px-4 font-bold text-white disabled:opacity-50" disabled={busy} onclick={onselect}>{tr('dependencies.use')}</button>{/if}
+    {#if bundle.state === 'ready' && compatible && fits && onselect && !selected}<button type="button" class="min-h-10 bg-brand px-4 font-bold text-white disabled:opacity-50" disabled={busy} onclick={onselect}>{tr('dependencies.use')}</button>{/if}
     {#if active && oncancel}<button type="button" class="min-h-10 text-danger underline disabled:opacity-50" disabled={busy} onclick={oncancel}>{tr('dependencies.cancel')}</button>{/if}
     {#if !active && bundle.state !== 'ready' && onretry}<button type="button" class="min-h-10 text-accent-text underline disabled:opacity-50" disabled={busy} onclick={onretry}>{tr('dependencies.retry')}</button>{/if}
     {#if onedit}<button type="button" class="min-h-10 text-accent-text underline disabled:opacity-50" disabled={busy} onclick={onedit}>{tr('dependencies.edit')}</button>{/if}

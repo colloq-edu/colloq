@@ -60,4 +60,7 @@
     {/each}
   </dl>
   <p class="text-ui leading-5 text-muted">{tr('competitions.p.conditionsNote')}</p>
+  <!-- Every writable folder of a submission is memory, and so is the room its
+       package set is installed into: the memory above is for all of it. -->
+  <p class="text-ui leading-5 text-muted">{tr('competitions.p.conditionsMemoryNote')}</p>
 </section>

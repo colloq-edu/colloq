@@ -41,6 +41,8 @@ import '../admin/settings.js'
 import { db } from '../db.js'
 import { getBinding, lockOf, policyOf, type SubmissionBinding } from '../dependencies/store.js'
 import { verifyBundleFiles } from '../dependencies/files.js'
+import { dependencyMessage } from '../dependencies/messages.js'
+import { dependencySize, packagesFit, packagesRoomMb } from '@shared/dependencies'
 import {
   BOOT,
   enqueue,
@@ -91,6 +93,7 @@ import {
   competitionRunner,
   limitsFor,
   type CompetitionBackend,
+  type DependencyFailure,
   type RunOutcome,
   type ScoreOutcome,
 } from './runner-port.js'
@@ -518,7 +521,17 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
 
   let dependenciesDir: string | undefined
   let preflightError: unknown = null
-  if (runner.backend !== 'test') {
+  /*
+   * A set that cannot fit this submission's memory is refused before any
+   * container, whichever runner it is: it was attached while it fit
+   * (dependencies/store.ts · assertUsableBundle), and the teacher has lowered
+   * the memory since. Installing it would only fail inside the run.
+   */
+  const bundle = binding?.bundle ?? null
+  const unfit: Extract<DependencyFailure, { reason: 'memory' }> | null = bundle && !packagesFit(bundle.installedBytes, competition.limits.memoryMb)
+    ? { reason: 'memory', bytes: packagesRoomMb(bundle.installedBytes) * MB, limitBytes: competition.limits.memoryMb * MB }
+    : null
+  if (runner.backend !== 'test' && !unfit) {
     try {
       if (!binding?.revision) throw new Error('This legacy submission has no available pinned environment. Submit the notebook again.')
       if (binding.bundle) {
@@ -535,13 +548,20 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     return
   }
   let outcome: RunOutcome
-  try { outcome = preflightError ? {
+  try { outcome = unfit ? {
+    status: 'dependency_error', cell: -1, cells: 0, wall: 0, submission: null,
+    detail: `Package set room of ${unfit.bytes / MB} MiB exceeds half of the submission's ${competition.limits.memoryMb} MiB memory`,
+    log: '', dependencyFailure: unfit,
+    diagnostics: { exit: null, oomKilled: false, backend: runner.backend },
+  } : preflightError ? {
     status: 'dependency_error', cell: -1, cells: 0, wall: 0, submission: null,
     detail: preflightError instanceof Error ? preflightError.message : String(preflightError), log: '',
     diagnostics: { exit: null, oomKilled: false, backend: runner.backend },
   } : await runner.run({
     imageDigest: binding?.revision?.imageDigest,
     dependenciesDir,
+    // The set's own room, sized for it; the runner mounts it only with a set.
+    packagesMb: dependenciesDir && bundle ? packagesRoomMb(bundle.installedBytes) : undefined,
     competition,
     submissionId: submission.id,
     attemptId: row.attemptId!,
@@ -856,8 +876,15 @@ export function notebookNote(outcome: RunOutcome, competition: Competition, sour
   switch (outcome.status) {
     case 'ok':
       return null
-    case 'dependency_error':
+    case 'dependency_error': {
+      // "Try again" is the answer to a hiccup, not to a set that cannot fit.
+      const failure = outcome.dependencyFailure
+      if (failure?.reason === 'memory') {
+        return dependencyMessage('dependency_memory', { bytes: failure.bytes, limitBytes: failure.limitBytes })
+      }
+      if (failure?.reason === 'no_space') return tr('dependencies.error.noSpace', { room: dependencySize(failure.roomBytes) })
       return tr('dependencies.error.install')
+    }
     case 'cell_error': {
       if (outcome.diagnostics.killedBy === 'output') {
         return tr('competitions.answer.tooMuchOutput', {

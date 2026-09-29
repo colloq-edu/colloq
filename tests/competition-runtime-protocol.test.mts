@@ -40,6 +40,20 @@ test('collection accepts bounded wheel exports but rejects every other nested pa
   assert.throws(()=>parseCompetitionJobCollection({files:[{name,bytes:1,sha256:'a'.repeat(64)}],totalBytes:1}),/Invalid/)
 })
 
+test('a package room belongs to a notebook with a set, bounded, and to nothing else',()=>{
+ const withSet={...job,bundleId:'d'.repeat(32),limits:{...job.limits,packagesMb:379}}
+ assert.deepEqual(parseCompetitionJobIntent(withSet),withSet)
+ // An older app sends no room: still a valid notebook with a set.
+ assert.doesNotThrow(()=>parseCompetitionJobIntent({...job,bundleId:'d'.repeat(32)}))
+ for(const bad of [
+  {...job,limits:{...job.limits,packagesMb:379}},
+  {...withSet,kind:'metric'},
+  {...withSet,limits:{...withSet.limits,packagesMb:4097}},
+  {...withSet,limits:{...withSet.limits,packagesMb:1.5}},
+  {...withSet,limits:{...withSet.limits,packagesMb:'379'}},
+ ])assert.throws(()=>parseCompetitionJobIntent(bad),/Invalid|Unexpected/)
+})
+
 test('broker accepts the full existing competition limit range',()=>{
  const high={...job,limits:{...job.limits,wallSeconds:14400,memoryMb:65536,cpus:32}}
  assert.deepEqual(parseCompetitionJobIntent(high),high)

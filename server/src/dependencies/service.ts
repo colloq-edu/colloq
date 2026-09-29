@@ -47,7 +47,7 @@ export async function dependencyOverview(c:Competition,eid:string):Promise<Depen
  const retained=retainedRevision(c)
  const capabilities=await competitionCapabilities(c.environment,competitionBackend()==='broker'?undefined:retained?.imageDigest)
  const revision=capabilities.execution.available?await executionRevision(c).catch(()=>retained):retained
- return {capabilities,policy:store.policyOf(c.id),revision,draft:store.draftOf(c.id,eid),bundles:store.listBundles(c.id,eid),joined:hasJoined(c.id,eid),quota:store.preparationQuota(eid)}
+ return {capabilities,policy:store.policyOf(c.id),revision,draft:store.draftOf(c.id,eid),bundles:store.listBundles(c.id,eid),joined:hasJoined(c.id,eid),quota:store.preparationQuota(eid),memoryMb:c.limits.memoryMb}
 }
 export async function adminDependencyOverview(c:Competition):Promise<AdminDependencyOverview>{
  const retained=retainedRevision(c)

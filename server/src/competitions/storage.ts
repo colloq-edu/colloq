@@ -15,7 +15,7 @@
  *                           server; mounted ONLY into the metric container
  *     baseline/             the teacher's sample notebook
  *     s/<submissionId>/in/  the submitted notebook, one, and nothing else
- *     s/<submissionId>/out/ beacon, run.json, submission.csv, executed notebook
+ *     s/<submissionId>/out/ run.json, submission.csv, executed.ipynb
  *     s/<submissionId>/score/  a copy of the answer for the metric container
  *
  * Directories rather than files, and each under its own NEW name. This was
@@ -38,6 +38,7 @@ import fs from 'node:fs'
 import { pipeline } from 'node:stream/promises'
 import { config } from '../config.js'
 import { createAnchoredFilesystem, type HeldFile } from '../secure-files.js'
+import { EXECUTED_NOTEBOOK_FILE } from '@shared/competitions'
 
 /** The root of all competition belongings. */
 export const competitionsDir = path.join(config.dataDir, 'competitions')
@@ -165,9 +166,9 @@ export function promoteAttempt(id: string, submissionId: string, from: string): 
  */
 export function publishAttemptArtifacts(id: string, submissionId: string, from: string): void {
   const out = ensureDir(resultDir(id, submissionId))
-  for (const name of ['executed.ipynb', 'run.json']) {
+  for (const name of [EXECUTED_FILE, 'run.json']) {
     const source = path.join(from, name)
-    if (regularFileWithin(source, 64 * 1024 * 1024)) competitionsFs.renameSync(source, path.join(out, name))
+    if (regularFileWithin(source, EXECUTED_BYTES)) competitionsFs.renameSync(source, path.join(out, name))
     else competitionsFs.rmSync(path.join(out, name), { force: true })
   }
 }
@@ -209,6 +210,17 @@ export function scoreOutDir(id: string, submissionId: string): string {
 
 /** The name of the submitted notebook on disk — always the same. */
 export const NOTEBOOK_FILE = 'notebook.ipynb'
+/**
+ * The name of the EXECUTED notebook in `out/` — the harness's name for it,
+ * not the sent one's: asking `out/` for `notebook.ipynb` finds nothing.
+ */
+export const EXECUTED_FILE = EXECUTED_NOTEBOOK_FILE
+/**
+ * The executed notebook's ceiling, the same in every export table (harness.ts
+ * · EXPORT_FILES, the broker's exporter). The harness keeps a notebook's
+ * outputs to two megabytes, so only its own source comes near it.
+ */
+export const EXECUTED_BYTES = 64 * 1024 * 1024
 /** The default answer name; a competition may name its own. */
 export const SUBMISSION_FILE = 'submission.csv'
 /** The teacher's answers. */
@@ -404,6 +416,30 @@ export function holdResultFile(id: string, submissionId: string, name: string): 
 /** And for the submitted notebook — it is the answer too until the run is over. */
 export function holdSubmittedNotebook(id: string, submissionId: string): HeldFile {
   return competitionsFs.openRead(path.join(inputDir(id, submissionId), NOTEBOOK_FILE))
+}
+
+/**
+ * The executed notebook, held — or `null` when the run left none.
+ *
+ * Only a file that is not there is `null`. Anything else that keeps it from
+ * opening is thrown: the caller falls back to the SENT notebook on `null`,
+ * and handing that out in place of an executed copy that exists is exactly
+ * the mistake that showed every participant their notebook without outputs.
+ */
+export function holdExecutedNotebook(id: string, submissionId: string): HeldFile | null {
+  try {
+    return holdResultFile(id, submissionId, EXECUTED_FILE)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+/** Which notebook the author's download would hand out right now, by what is on disk. */
+export function notebookOnDisk(id: string, submissionId: string): 'executed' | 'sent' | null {
+  if (regularFileWithin(path.join(resultDir(id, submissionId), EXECUTED_FILE), EXECUTED_BYTES)) return 'executed'
+  if (regularFileWithin(path.join(inputDir(id, submissionId), NOTEBOOK_FILE), Number.MAX_SAFE_INTEGER)) return 'sent'
+  return null
 }
 
 export function listOpenFiles(id: string): { name: string; bytes: number }[] {

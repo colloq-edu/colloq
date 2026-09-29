@@ -52,6 +52,8 @@ export const dependencyMessages: MessageCatalog = {
   'dependencies.log.verify': { ru: 'Проверяем хеши и устанавливаем набор без сети.', en: 'Checking hashes and installing the set without network access.' },
   'dependencies.log.verified': { ru: 'Установка без сети и проверка зависимостей прошли.', en: 'Offline installation and dependency checks passed.' },
   "dependencies.sizes": { ru: "Скачано {download} · после установки {installed}", en: "Downloaded {download} · installed {installed}" },
+  // The set's room counts in the submission's memory (shared/dependencies.ts · packagesRoomMb).
+  'dependencies.memoryNote': { ru: 'Набор устанавливается в память посылки и займёт в ней до {size} из {memory}.', en: 'The set is installed into the submission’s memory and takes up to {size} of its {memory}.' },
   "dependencies.noDownloads": { ru: "Запрос выполнен пакетами из базы. Скачивать ничего не нужно.", en: "Base packages satisfy the requirements. No downloads needed." },
   "dependencies.line": { ru: "Строка {line}", en: "Line {line}" },
   "dependencies.loading": { ru: "Загружаем пакеты…", en: "Loading packages…" },
@@ -89,6 +91,9 @@ export const dependencyMessages: MessageCatalog = {
   "dependencies.error.missing": { ru: "Набор не найден или принадлежит другому участнику.", en: "The set was not found or belongs to another participant." },
   "dependencies.error.revision": { ru: "Набор подготовлен для другой версии базы. Подготовьте новый набор.", en: "This set targets another base revision. Prepare a new set." },
   "dependencies.error.notReady": { ru: "Набор ещё не готов. Дождитесь завершения подготовки.", en: "The set is not ready. Wait for preparation to finish." },
+  // A ready set whose room (shared/dependencies.ts · packagesRoomMb) is more than half of a submission's memory.
+  'dependencies.error.memory': { ru: 'Набор пакетов не поместится в посылку: в её памяти ему нужно больше половины. Уберите из набора тяжёлые пакеты или попросите преподавателя увеличить память.', en: 'The package set will not fit into a submission: it needs more than half of the submission’s memory. Remove heavy packages from the set or ask your teacher for more memory.' },
+  'dependencies.error.memorySize': { ru: 'Набор пакетов не поместится в посылку: в памяти он займёт до {size}, а набору можно не больше половины из {memory}, отведённых посылке. Уберите из набора тяжёлые пакеты или попросите преподавателя увеличить память.', en: 'The package set will not fit into a submission: it takes up to {size} of memory, and a set may take at most half of the {memory} a submission gets. Remove heavy packages from the set or ask your teacher for more memory.' },
   "dependencies.error.active": { ru: "У вас уже готовится набор. Дождитесь его или отмените подготовку.", en: "You already have an active preparation. Wait or cancel it." },
   "dependencies.error.quota": { ru: "Достигнут лимит: 10 подготовок в час. Попробуйте позже.", en: "The limit is 10 preparations per hour. Try again later." },
   'dependencies.error.quotaWait': { ru: 'Достигнут лимит: 10 подготовок в час. Следующая подготовка — через {minutes} мин.', en: 'The limit is 10 preparations per hour. The next one is possible in {minutes} min.' },
@@ -126,4 +131,6 @@ export const dependencyMessages: MessageCatalog = {
   "dependencies.error.restarted": { ru: "Подготовка прервалась при перезапуске сервера. Запустите её ещё раз.", en: "Preparation was interrupted by a server restart. Start it again." },
   "dependencies.error.generic": { ru: "Не удалось подготовить набор. Повторите попытку или обратитесь к преподавателю.", en: "Could not prepare the set. Retry or contact your teacher." },
   "dependencies.error.install": { ru: "Не удалось установить подготовленный набор. Повторите посылку; если ошибка повторится, обратитесь к преподавателю.", en: "Could not install the prepared set. Retry the submission; if it fails again, contact your teacher." },
+  // The set's own room ran out inside the submission: no retry helps (runner.ts · notebookNote).
+  'dependencies.error.noSpace': { ru: 'Набор пакетов не поместился в посылку: при установке закончилось отведённое под него место — {room}. Уберите из набора тяжёлые пакеты или обратитесь к преподавателю.', en: 'The package set did not fit into the submission: the installation ran out of the {room} set aside for it. Remove heavy packages from the set or contact your teacher.' },
 }

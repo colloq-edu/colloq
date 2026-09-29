@@ -72,6 +72,7 @@ import {
   enqueue,
 } from '../competitions/store.js'
 import {
+  EXECUTED_FILE,
   NOTEBOOK_FILE,
   SOLUTION_FILE,
   baselineDir,
@@ -1493,7 +1494,8 @@ function entrantRow(
  */
 function resultFiles(competitionId: string, submissionId: string): { name: string; bytes: number }[] {
   const out: { name: string; bytes: number }[] = []
-  for (const name of [NOTEBOOK_FILE, 'run.json', 'progress.json', 'submission.csv']) {
+  // The executed copy under its own name: under the sent notebook's name `out/` has nothing.
+  for (const name of [EXECUTED_FILE, 'run.json', 'progress.json', 'submission.csv']) {
     try {
       const info = competitionsFs.statSync(path.join(resultDir(competitionId, submissionId), name))
       out.push({ name, bytes: info.size })

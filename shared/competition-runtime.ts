@@ -8,6 +8,12 @@ export interface CompetitionJobLimits {
   pids: number
   tmpfsMb: number
   targetBytes: number
+  /**
+   * A notebook's package set gets a memory-backed room of its own, sized for
+   * the set; only with a `bundleId`. Absent (an older app), the set shares the
+   * working folder's room, as before.
+   */
+  packagesMb?: number
 }
 export interface CompetitionJobIntent {
   schemaVersion: 1
@@ -53,7 +59,9 @@ export function parseCompetitionJobIntent(value:unknown):CompetitionJobIntent {
  const limits=v.limits
  if(!limits||typeof limits!=='object'||Array.isArray(limits))throw new Error('Invalid competition job limits')
  const n=limits as Record<string,unknown>
- if(Object.keys(n).some(key=>!['wallSeconds','memoryMb','cpus','pids','tmpfsMb','targetBytes'].includes(key))||!integer(n.wallSeconds,1,14400)||!integer(n.memoryMb,128,65536)||!integer(n.cpus,1,32)||!integer(n.pids,16,2048)||!integer(n.tmpfsMb,16,4096)||!integer(n.targetBytes,1,512*1024*1024))throw new Error('Invalid competition job limits')
+ if(Object.keys(n).some(key=>!['wallSeconds','memoryMb','cpus','pids','tmpfsMb','targetBytes','packagesMb'].includes(key))||!integer(n.wallSeconds,1,14400)||!integer(n.memoryMb,128,65536)||!integer(n.cpus,1,32)||!integer(n.pids,16,2048)||!integer(n.tmpfsMb,16,4096)||!integer(n.targetBytes,1,512*1024*1024)||n.packagesMb!==undefined&&!integer(n.packagesMb,16,4096))throw new Error('Invalid competition job limits')
+ // A package room belongs to a notebook with a set, and to nothing else.
+ if(n.packagesMb!==undefined&&(v.kind!=='notebook'||v.bundleId===undefined))throw new Error('Unexpected package room')
  if(v.kind==='notebook'||v.kind==='metric'){
   if(v.preparationId!==undefined||v.kind==='metric'&&v.bundleId!==undefined)throw new Error('Unexpected job reference')
  }else if(v.kind==='resolve'||v.kind==='verify'){

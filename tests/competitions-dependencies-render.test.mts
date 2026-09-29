@@ -8,7 +8,7 @@ import { compile } from 'svelte/compiler'
 import { render } from 'svelte/server'
 import type { Component } from 'svelte'
 import { setLocaleResolver, tr } from '../shared/i18n.js'
-import { DEPENDENCY_LIMITS, dependencyErrorLines, dependencyErrorText, dependencyQuotaText, dependencyReadyHints, type DependencyBundle } from '../shared/dependencies.js'
+import { DEPENDENCY_LIMITS, dependencyErrorLines, dependencyErrorText, dependencyQuotaText, dependencyReadyHints, packagesFit, packagesRoomMb, type DependencyBundle } from '../shared/dependencies.js'
 import { dependencyMessage } from '../server/src/dependencies/messages.ts'
 
 let dir: string
@@ -178,6 +178,41 @@ test('a ready set with tinygrad says up front that the check cannot run it, and 
   // Said on the ready card only: a set still preparing, or one that failed, has other news.
   assert.doesNotMatch(visible({ ...ready, state: 'downloading' }), /tinygrad установится/)
   assert.doesNotMatch(visible({ ...ready, state: 'failed', error: { code: 'network_error', message: 'x' } }), /tinygrad установится/)
+})
+
+test("a set's room is its unpacked size with a margin, and a set may take at most half of a submission's memory", () => {
+  assert.equal(packagesRoomMb(0), 32)
+  assert.equal(packagesRoomMb(315 * MiB), 379)
+  assert.equal(packagesRoomMb(DEPENDENCY_LIMITS.installedBytes), 596)
+  // The set a class could not install in 2 GB: its room was the working folder's 256 MB.
+  assert.equal(packagesFit(315 * MiB, 2048), true)
+  assert.equal(packagesFit(315 * MiB, 512), false)
+  assert.equal(packagesFit(DEPENDENCY_LIMITS.installedBytes, 4096), true, 'every set the preparation accepts fits the default memory')
+  assert.equal(packagesFit(DEPENDENCY_LIMITS.installedBytes, 1024), false)
+  setLocaleResolver(() => 'ru')
+  assert.equal(dependencyErrorText({ code: 'dependency_memory', params: { bytes: 379 * MiB, limitBytes: 1024 * MiB } }),
+    'Набор пакетов не поместится в посылку: в памяти он займёт до 379 МБ, а набору можно не больше половины из 1,0 ГБ, отведённых посылке. Уберите из набора тяжёлые пакеты или попросите преподавателя увеличить память.')
+  assert.equal(dependencyErrorText({ code: 'dependency_memory' }), tr('dependencies.error.memory'), 'stored without numbers, still its own words')
+  setLocaleResolver(() => 'en')
+  assert.equal(dependencyErrorText({ code: 'dependency_memory', params: { bytes: 379 * MiB, limitBytes: 1024 * MiB } }),
+    'The package set will not fit into a submission: it takes up to 379 MB of memory, and a set may take at most half of the 1.0 GB a submission gets. Remove heavy packages from the set or ask your teacher for more memory.')
+  setLocaleResolver(() => 'ru')
+})
+
+test('a ready set says what it takes of a submission memory, and one that cannot fit is not offered', () => {
+  const ready: DependencyBundle = { ...failed, state: 'ready', error: null, installedBytes: 315 * MiB, downloadBytes: 105 * MiB, readyAt: 2 }
+  const shown = (props: object) => render(Card, { props: { bundle: ready, onselect: () => {}, ...props } }).body.replace(/<[^>]*>/g, '')
+  setLocaleResolver(() => 'ru')
+  const fits = shown({ memoryMb: 2048 })
+  assert.match(fits, /Набор устанавливается в память посылки и займёт в ней до 379 МБ из 2,0 ГБ\./)
+  assert.match(fits, /Использовать набор/)
+  const unfit = shown({ memoryMb: 512 })
+  assert.match(unfit, /Набор пакетов не поместится в посылку: в памяти он займёт до 379 МБ, а набору можно не больше половины из 512 МБ/)
+  assert.doesNotMatch(unfit, /Использовать набор/)
+  assert.doesNotMatch(shown({}), /память посылки/, 'an unknown memory is not guessed at')
+  setLocaleResolver(() => 'en')
+  assert.match(shown({ memoryMb: 2048 }), /The set is installed into the submission’s memory and takes up to 379 MB of its 2\.0 GB\./)
+  setLocaleResolver(() => 'ru')
 })
 
 test('inventory wording handles Russian and English package counts', () => {

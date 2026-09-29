@@ -36,7 +36,16 @@
  *
  * 5. `--ulimit fsize` also bounds each individual file inside tmpfs.
  *
- * 6. No `--rm`. The container is needed dead for another ten milliseconds or
+ * 6. A participant's package set is installed at the start of the run into a
+ *    tmpfs of its own, `/packages`, sized for that set (runner-port.ts ·
+ *    RunRequest.packagesMb) — a room the read-only root cannot give and a
+ *    host folder must not. It counts toward `--memory` like every tmpfs, and
+ *    the participant is told so; a set that could not fit is refused when it
+ *    is chosen. The per-file cap grows to that room: one library of a ready
+ *    set weighs more than four answers (catboost's `_catboost.so` alone is
+ *    264 MB), and every file still sits in a capped tmpfs.
+ *
+ * 7. No `--rm`. The container is needed dead for another ten milliseconds or
  *    so — to read `State.OOMKilled`. On a DISPOSABLE container this flag is
  *    honest, unlike in a room, where it sticks forever and postmortem.ts has
  *    to count kills with a cgroup counter: the container lives once.
@@ -51,7 +60,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { Transform, type TransformCallback, type Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { config } from '../config.js'
-import { competitionsFs, hostPathOf } from './storage.js'
+import { competitionsFs, hostPathOf, EXECUTED_BYTES, EXECUTED_FILE } from './storage.js'
 import { harnessDir } from './harness.js'
 import { competitionMemory } from './capacity.js'
 import {
@@ -104,6 +113,12 @@ const RETRY_DELAYS_MS = [250, 750, 2000]
 
 /** The cushion a container costs above its `--memory` — the same one as runner.ts · RUN_RESERVE_MB. */
 const CONTAINER_CUSHION_MB = 256
+
+/**
+ * How long the salvage before a kill may take: one bounded `docker exec`
+ * for the executed notebook while the container still runs past its limit.
+ */
+const SALVAGE_MS = 10_000
 
 /** Names of the files the harness puts into `/result`. */
 const RUN_FILE = 'run.json'
@@ -337,11 +352,16 @@ export function runArgs(opts: {
   inputDir: string
   resultDir: string
   dependenciesDir?: string
+  /** The set's own room, MiB (RunRequest.packagesMb); only together with `dependenciesDir`. */
+  packagesMb?: number
   limits: StepLimits
   target: string
 }): string[] {
   const { container, limits } = opts
   const memory = `${limits.memoryMb}m`
+  const packagesMb = opts.dependenciesDir && opts.packagesMb ? Math.max(1, Math.ceil(opts.packagesMb)) : 0
+  // No file of the set is bigger than its room, and every file lives in a capped tmpfs.
+  const fsize = Math.max(limits.fsizeBytes, packagesMb * 1024 ** 2)
   return [
     'run',
     '-d',
@@ -406,13 +426,22 @@ export function runArgs(opts: {
     '-e', `COMP_ATTEMPT_ID=${opts.attemptId ?? opts.container}`,
     '-e', `COMP_MAX_OUTPUT_KILL_BYTES=${limits.outputKillBytes}`,
     ...(opts.dependenciesDir ? [...mount(opts.dependenciesDir, '/deps', true), '-e', 'COMP_DEPENDENCIES=/deps'] : []),
+    /*
+     * The set's environment: `exec`, because its libraries are mapped as code;
+     * sized for the set, because the working folder's eighth of the memory is
+     * the participant's, and a ready set of three hundred megabytes never fit
+     * into it (ENOSPC inside pip, four submissions in a row).
+     */
+    ...(packagesMb
+      ? [`--tmpfs=/packages:rw,exec,nosuid,nodev,size=${packagesMb}m,mode=1777`, '-e', 'COMP_PACKAGES=/packages']
+      : []),
     `--memory=${memory}`,
     // Swap exactly equal to memory — otherwise a container that hits the limit
     // does not die but goes to disk and stalls for minutes (the same reason as
     // in pool.ts).
     `--memory-swap=${memory}`,
     `--cpus=${limits.cpus}`,
-    `--ulimit=fsize=${limits.fsizeBytes}:${limits.fsizeBytes}`,
+    `--ulimit=fsize=${fsize}:${fsize}`,
     '--restart=no',
     '--label',
     RUN_LABEL,
@@ -543,6 +572,12 @@ function num(value: unknown): number | null {
  *
  * Disk growth is bounded by tmpfs itself, including nested directories. The
  * host watchdog handles time/output and reads only bounded progress JSON.
+ *
+ * `salvage` runs right before a kill for time or printing, while the tmpfs is
+ * still there to read: the harness normally stops a late notebook itself and
+ * exits in time, and this is for the day it could not — the copy of the
+ * notebook it keeps on disk is all that is left to show. A cancellation takes
+ * nothing: a withdrawn run publishes nothing.
  */
 async function watch(
   container: string,
@@ -551,6 +586,7 @@ async function watch(
   attemptId: string,
   onProgress?: (progress: RunProgress) => void,
   signal?: AbortSignal,
+  salvage?: () => Promise<void>,
 ): Promise<Watched> {
   const deadline = Date.now() + limits.wallSeconds * 1000
   let last: RunProgress | null = null
@@ -602,6 +638,7 @@ async function watch(
        * queue.
        */
       if (limits.outputKillBytes > 0 && (last?.outputBytes ?? 0) > limits.outputKillBytes) {
+        await salvage?.().catch(() => undefined)
         await docker(['kill', '--signal=KILL', container], 30_000)
         return { killedBy: 'output', progress: last }
       }
@@ -609,6 +646,7 @@ async function watch(
         return { killedBy: null, progress: last, exit: report.complete.exit }
     }
     if (due) {
+      if (state === 'running') await salvage?.().catch(() => undefined)
       await docker(['kill', '--signal=KILL', container], 30_000)
       return { killedBy: 'wall', progress: last }
     }
@@ -632,9 +670,9 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** Copy only a bounded allowlist while the supervisor keeps tmpfs mounted. */
-async function collectExports(container: string, from: string, to: string, files: Array<[string, number]>): Promise<void> {
+async function collectExports(container: string, from: string, to: string, files: Array<[string, number]>, timeoutMs = 20_000): Promise<void> {
   competitionsFs.mkdirSync(to, { recursive: true })
-  for (const [name, maximum] of files) await exportFile(container, from, to, name, maximum)
+  for (const [name, maximum] of files) await exportFile(container, from, to, name, maximum, timeoutMs)
 }
 
 /**
@@ -647,11 +685,11 @@ async function collectExports(container: string, from: string, to: string, files
  * eight slots finishing at once, eight times over. The file appears under its
  * name only whole: it is written next to it and renamed at the end.
  */
-async function exportFile(container: string, from: string, to: string, name: string, maximum: number): Promise<void> {
+async function exportFile(container: string, from: string, to: string, name: string, maximum: number, timeoutMs = 20_000): Promise<void> {
   const temporary = path.join(to, `.${name}.part`)
   const decoder = new Base64Decoder(maximum)
   const written = pipeline(decoder, competitionsFs.createWriteStream(temporary, { mode: 0o600 })).then(() => true, () => false)
-  const result = await docker(['exec', container, 'python', '-I', '/harness/export_files.py', 'file', from, name], 20_000, Math.ceil(maximum / 3) * 4 + 4, decoder)
+  const result = await docker(['exec', container, 'python', '-I', '/harness/export_files.py', 'file', from, name], timeoutMs, Math.ceil(maximum / 3) * 4 + 4, decoder)
   // A shell that does not stream (the tests' stand-in) hands the whole answer back in `out`.
   if (!decoder.writableEnded) decoder.end(!decoder.fed && result.code === 0 ? result.out : undefined)
   const whole = await written
@@ -792,6 +830,18 @@ function asVerdict(status: string): RunVerdict {
   return VERDICTS.has(status) ? (status as RunVerdict) : 'unknown'
 }
 
+/**
+ * Why the package set failed to install, when the harness could tell — read
+ * off its run.json by both runners, so that both give the participant the
+ * same words: a set that ran out of room is not a reason to "try again".
+ * `roomMb` is the room the run was given, for a report that could not
+ * measure it.
+ */
+export function dependencyFailureOf(verdict: RunVerdict, report: Record<string, unknown> | null, roomMb: number): Pick<RunOutcome, 'dependencyFailure'> {
+  if (verdict !== 'dependency_error' || report?.reason !== 'no_space') return {}
+  return { dependencyFailure: { reason: 'no_space', roomBytes: num(report.roomBytes) ?? roomMb * 1024 ** 2 } }
+}
+
 /* ------------------------------------------------------------------- runner */
 
 class DockerCompetitionRunner implements CompetitionRunner {
@@ -809,6 +859,7 @@ class DockerCompetitionRunner implements CompetitionRunner {
       inputDir: request.inputDir,
       resultDir: request.resultDir,
       dependenciesDir: request.dependenciesDir,
+      packagesMb: request.packagesMb,
       limits: request.limits,
       target: SUBMISSION_NAME,
     })
@@ -830,11 +881,12 @@ class DockerCompetitionRunner implements CompetitionRunner {
     let watched: Watched = { killedBy: null, progress: null }
     let dead = { exit: null as number | null, oom: false, tail: '' }
     try {
-      watched = await watch(request.container, '/result', request.limits, attemptId, request.onProgress, request.signal)
+      const salvage = () => collectExports(request.container, '/result', request.resultDir, [[EXECUTED_FILE, EXECUTED_BYTES]], SALVAGE_MS)
+      watched = await watch(request.container, '/result', request.limits, attemptId, request.onProgress, request.signal, salvage)
       dead = await postmortem(request.container)
       if (watched.exit !== undefined) {
         dead.exit = watched.exit
-        await collectExports(request.container, '/result', request.resultDir, [[RUN_FILE, 65536], [SUBMISSION_NAME, request.limits.targetBytes], ['executed.ipynb', 64 * 1024 ** 2]])
+        await collectExports(request.container, '/result', request.resultDir, [[RUN_FILE, 65536], [SUBMISSION_NAME, request.limits.targetBytes], [EXECUTED_FILE, EXECUTED_BYTES]])
       }
     } finally {
       // The container is ALWAYS removed, and only after the post-mortem: `--rm`
@@ -858,6 +910,7 @@ class DockerCompetitionRunner implements CompetitionRunner {
       submission: verdict === 'ok' && produced ? answer : null,
       detail: typeof report?.detail === 'string' ? report.detail : '',
       log: dead.tail,
+      ...dependencyFailureOf(verdict, report, request.packagesMb ?? request.limits.tmpfsMb),
       diagnostics: {
         exit: dead.exit,
         oomKilled: dead.oom,

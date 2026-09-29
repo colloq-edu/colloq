@@ -969,10 +969,22 @@ test("a submission's whole output: the runs and what is left on disk", async () 
 
   const missing = await call(
     'GET',
-    `/api/admin/competitions/${c.id}/submissions/${submission.id}/file/notebook.ipynb`,
+    `/api/admin/competitions/${c.id}/submissions/${submission.id}/file/executed.ipynb`,
     { cookie: teacher },
   )
   assert.equal(missing.status, 404)
+
+  // The run's executed copy is listed and opened under the harness's name, the
+  // one "Open the executed notebook" links to; `out/` never held the sent
+  // notebook's name, and asking for it found nothing.
+  putSubmissionNotebook(c.id, submission.id, new TextEncoder().encode('{"cells":[]}'))
+  const executed = JSON.stringify({ cells: [{ cell_type: 'code', source: 'print(7)', outputs: [{ output_type: 'stream', name: 'stdout', text: '7\n' }] }] })
+  competitionsFs.writeFileSync(path.join(resultDir(c.id, submission.id), 'executed.ipynb'), executed)
+  const listed = (await (await call('GET', `/api/admin/competitions/${c.id}/submissions/${submission.id}`, { cookie: teacher })).json()) as { artifacts: { name: string; bytes: number }[] }
+  assert.deepEqual(listed.artifacts, [{ name: 'executed.ipynb', bytes: Buffer.byteLength(executed) }])
+  const opened = await call('GET', `/api/admin/competitions/${c.id}/submissions/${submission.id}/file/executed.ipynb`, { cookie: teacher })
+  assert.equal(opened.status, 200)
+  assert.equal(await opened.text(), executed)
 })
 
 test('the live stream gives the state at once, not on a timer', async () => {

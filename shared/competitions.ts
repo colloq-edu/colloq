@@ -509,12 +509,30 @@ export interface Submission {
  */
 export type EntrantSubmission = Omit<Submission, 'teacherError' | 'privateScore'> & {
   privateScore: number | null
+  /**
+   * What the author's "download the notebook" link hands out, so that its
+   * words can say it: the executed copy with the run's outputs, the notebook
+   * as it was sent (the run reached no cell), or nothing (the files were
+   * swept). Absent where the answer did not look at the disk.
+   */
+  notebook?: 'executed' | 'sent' | null
 }
 
 export function entrantSubmission(s: Submission, privateOpen: boolean): EntrantSubmission {
   const { teacherError: _trace, ...rest } = s
   return { ...rest, privateScore: privateOpen ? s.privateScore : null }
 }
+
+/**
+ * The executed copy of a submitted notebook: the participant's own cells with
+ * the outputs of every cell the run reached — and nothing of the metric's.
+ *
+ * One name from the harness that writes it to the doors that hand it out
+ * (harness.ts, docker-runner.ts, the broker's exporter, storage.ts). The
+ * doors once asked for the name of the SENT notebook instead, found nothing
+ * and handed out the sent one: every download came without a single output.
+ */
+export const EXECUTED_NOTEBOOK_FILE = 'executed.ipynb'
 
 /**
  * Why the uploaded file is not a notebook.

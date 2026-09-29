@@ -105,6 +105,8 @@ export interface DependencyOverview {
   bundles: DependencyBundle[]
   joined: boolean
   quota: DependencyQuota
+  /** The memory one submission gets: a set's room counts in it (`packagesFit`). */
+  memoryMb?: number
 }
 export interface AdminDependencyOverview {
   capabilities?: import('./capabilities.js').CompetitionCapabilities
@@ -132,6 +134,39 @@ export const DEPENDENCY_LIMITS = {
 } as const
 export const dependencyActive = (state: DependencyState): boolean =>
   state === 'queued' || state === 'resolving' || state === 'downloading' || state === 'verifying'
+
+/**
+ * The room a ready set gets inside a submission, in MiB.
+ *
+ * The set is installed at the start of every run into memory-backed storage
+ * of its own (runner-port.ts · RunRequest.packagesMb): the container's root
+ * is read-only, and nothing a participant's container writes may reach the
+ * host disk. `installedBytes` is what the set's files weighed when it was
+ * prepared; the filesystem rounds every file up to a page and the environment
+ * itself takes a little, hence a tenth and a fixed margin on top. A ceiling,
+ * not a reservation: memory goes only to what is actually written.
+ */
+export function packagesRoomMb(installedBytes: number): number {
+  const bytes = Number.isFinite(installedBytes) && installedBytes > 0 ? installedBytes : 0
+  return Math.ceil((bytes * 1.1) / (1024 * 1024)) + 32
+}
+
+/**
+ * Whether a set may ride with a submission of `memoryMb`.
+ *
+ * Its room counts in the submission's memory — a tmpfs page cannot be swapped
+ * out — so a set may take at most half of it, and the rest is the kernel's,
+ * the data's and the working folder's. A set over that is refused when it is
+ * chosen, with the numbers, not inside the run as a failed install.
+ */
+export function packagesFit(installedBytes: number, memoryMb: number): boolean {
+  return packagesRoomMb(installedBytes) * 2 <= memoryMb
+}
+
+/** What a set that does not fit is explained with (`dependency_memory`): its room against the memory. */
+export function packagesMemoryParams(installedBytes: number, memoryMb: number): DependencyErrorParams {
+  return { bytes: packagesRoomMb(installedBytes) * 1024 * 1024, limitBytes: memoryMb * 1024 * 1024 }
+}
 
 /** Match Python str.splitlines(), including imported Unicode separators. */
 export function normalizeRequirements(text: string): string {
@@ -195,6 +230,7 @@ export const DEPENDENCY_ERROR_KEYS: Readonly<Record<string, string>> = {
   dependency_disabled: 'dependencies.disabled', dependency_limits: 'dependencies.limitError',
   dependency_empty: 'dependencies.error.empty', dependency_owner: 'dependencies.error.missing',
   dependency_revision: 'dependencies.error.revision', dependency_not_ready: 'dependencies.error.notReady',
+  dependency_memory: 'dependencies.error.memory',
   dependency_active: 'dependencies.error.active', dependency_quota: 'dependencies.error.quota',
   dependency_submission_active: 'competitions.refusal.inFlight', dependency_submission_quota: 'dependencies.error.submissionQuota',
   dependency_join: 'dependencies.error.join', dependency_closed: 'dependencies.error.closed',
@@ -290,6 +326,10 @@ export function dependencyErrorLines(
   const key = Object.hasOwn(DEPENDENCY_ERROR_KEYS, error.code) ? DEPENDENCY_ERROR_KEYS[error.code] : null
   if (!key) return [error.message || tr('dependencies.error.generic')]
   const p = error.params ?? {}
+  if (error.code === 'dependency_memory' && p.bytes !== undefined && p.limitBytes !== undefined) {
+    // bytes: the set's room; limitBytes: the memory a submission gets.
+    return [tr('dependencies.error.memorySize', { size: dependencySize(p.bytes), memory: dependencySize(p.limitBytes) })]
+  }
   if (error.code === 'download_limit' || error.code === 'installed_limit') {
     const heaviest = p.heaviest ?? []
     let text = tr(key)

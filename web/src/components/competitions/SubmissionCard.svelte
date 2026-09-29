@@ -57,6 +57,12 @@
 
   const badge = $derived(submissionBadge(submission))
   const words = $derived(rowWords({ submission, live, best, paused, now, phone: true, offQuota }))
+  // What the notebook link hands out, in its own words (SubmissionRow says why).
+  const notebookWord = $derived(
+    submission.notebook === null
+      ? null
+      : tr(submission.notebook === 'sent' ? 'competitions.p.downloadSent' : 'competitions.p.downloadRun'),
+  )
   const running = $derived(submission.state === 'running')
   const queued = $derived(submission.state === 'queued')
   const failed = $derived(
@@ -142,9 +148,9 @@
     </button>
   {/if}
 
-  {#if open && failed}
+  {#if (open && failed && notebookWord) || (submission.state === 'scored' && submission.notebook === 'executed')}
     <a class="self-start text-2xs text-accent-text underline" href={notebookUrl} download>
-      {tr('competitions.p.downloadRun')}
+      {notebookWord}
     </a>
   {/if}
 

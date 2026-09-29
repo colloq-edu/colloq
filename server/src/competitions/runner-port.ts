@@ -76,6 +76,14 @@ export interface RunRequest {
   imageDigest?: string
   /** Published bundle directory: requirements.lock and wheels/. */
   dependenciesDir?: string
+  /**
+   * The room the set is installed into, in MiB: memory-backed storage of its
+   * own, sized for the set (`packagesRoomMb` in @shared/dependencies) and
+   * counted in the submission's memory like every tmpfs of it. Absent, the
+   * set shares the working folder's room, as it did when a 300 MB set failed
+   * inside pip for the 256 MB that folder gets at 2 GB.
+   */
+  packagesMb?: number
   competition: Competition
   submissionId: string
   /**
@@ -118,8 +126,22 @@ export interface RunOutcome {
   detail: string
   /** Exit code, OOM, the tail of the container log — for the teacher only. */
   log: string
+  /** Why the package set did not install, when that is known (`dependency_error` only). */
+  dependencyFailure?: DependencyFailure
   diagnostics: RunDiagnostics
 }
+
+/**
+ * A package set's failure that has a cause other than "try again".
+ *
+ * `no_space` — its environment ran out of room during the install, and
+ * `roomBytes` is how much it had. `memory` — the set cannot ride with this
+ * submission at all: its room (`bytes`) is more than a set may take of the
+ * submission's memory (`limitBytes`), found before any container started.
+ */
+export type DependencyFailure =
+  | { reason: 'no_space'; roomBytes: number }
+  | { reason: 'memory'; bytes: number; limitBytes: number }
 
 export interface RunDiagnostics {
   exit: number | null

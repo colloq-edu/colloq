@@ -200,3 +200,37 @@ test('failed scorer export cannot reuse a matching stale score',async()=>{
   assert.equal(outcome.private,null)
   assert.equal(outcome.message,null)
 })
+
+test('broker gives a package set the room the app sized, and reads a full room as the set not fitting',async()=>{
+  const resultDir=path.join(TEST_ROOT,'data','competitions',competitionId,'s',submissionId,'attempts',attemptId,'result')
+  fs.mkdirSync(resultDir,{recursive:true})
+  const bundleId='e'.repeat(32)
+  let sent:CompetitionJobIntent|null=null,collected=false,jobId=''
+  const client={
+    async startCompetitionJob(intent:CompetitionJobIntent){sent=intent;jobId=intent.jobId;return {...status(intent,'running'),exitCode:null}},
+    async competitionJob(){return {jobId,kind:'notebook',phase:collected?'failed':'exporting',startedAt:1,finishedAt:2,exitCode:1,oomKilled:false,progress:null,error:null}},
+    async collectCompetitionJob(){
+      collected=true
+      fs.writeFileSync(path.join(resultDir,'run.json'),JSON.stringify({attemptId,status:'dependency_error',reason:'no_space',roomBytes:379*1024*1024,cell:-1,cells:0,detail:'[Errno 28] No space left on device'}))
+      return {files:[],totalBytes:0}
+    },
+    async cancelCompetitionJob(){},async competitionJobs(){return []},
+  }
+  const runner=new BrokerCompetitionRunner(client as any,{catalog:()=>({schemaVersion:1,release:'r',defaultEnvironment:'kaggle-base',environments:[{name:'kaggle-base',image,gpu:false,current:true}]}),pollMs:1})
+  const outcome=await runner.run({competition,submissionId,attemptId,container:'colloq-comp-packages',imageDigest:image,dataDir:'ignored',inputDir:'ignored',resultDir,limits,
+    dependenciesDir:path.join(TEST_ROOT,'data','dependencies','bundles',bundleId),packagesMb:379})
+  assert.equal(sent!.bundleId,bundleId)
+  assert.equal(sent!.limits.packagesMb,379)
+  assert.equal(outcome.status,'dependency_error')
+  assert.deepEqual(outcome.dependencyFailure,{reason:'no_space',roomBytes:379*1024*1024})
+})
+
+test('broker sends no package room without a set',async()=>{
+  const resultDir=path.join(TEST_ROOT,'data','competitions',competitionId,'s',submissionId,'attempts',attemptId,'result')
+  fs.mkdirSync(resultDir,{recursive:true})
+  let sent:CompetitionJobIntent|null=null
+  const client=fakeClient(intent=>{sent=intent;fs.writeFileSync(path.join(resultDir,'run.json'),JSON.stringify({attemptId,status:'ok',cell:0,cells:1}))})
+  const runner=new BrokerCompetitionRunner(client as any,{catalog:()=>({schemaVersion:1,release:'r',defaultEnvironment:'kaggle-base',environments:[{name:'kaggle-base',image,gpu:false,current:true}]}),pollMs:1})
+  await runner.run({competition,submissionId,attemptId,container:'colloq-comp-no-set',imageDigest:image,dataDir:'ignored',inputDir:'ignored',resultDir,limits,packagesMb:379})
+  assert.equal(sent!.limits.packagesMb,undefined)
+})

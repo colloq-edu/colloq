@@ -156,7 +156,7 @@
         {#if streamLost && activeId}<p class="text-[14px] text-warning" role="status">{tr('dependencies.streamLost')}</p>{/if}
         {#if !overview.bundles.length}<p class="border border-line p-5 text-[15px] text-muted">{tr('dependencies.empty')}</p>{/if}
         {#each overview.bundles as bundle (bundle.id)}
-          <DependencyBundleCard {bundle} selected={overview.draft.selectedBundleId === bundle.id} compatible={overview.revision?.id === bundle.revisionId} busy={busy} lockUrl={entrantApi.dependencyLockUrl(slug, bundle.id)} onselect={() => save(bundle.id)} oncancel={() => act(async () => update(await entrantApi.cancelDependencies(slug, bundle.id)))} onretry={!unavailable && overview.policy.enabled && !activeId && !spent ? () => prepare(bundle.requirementsText) : undefined} onedit={() => { text = bundle.requirementsText; notice = ''; document.getElementById('requirements')?.focus() }} />
+          <DependencyBundleCard {bundle} selected={overview.draft.selectedBundleId === bundle.id} compatible={overview.revision?.id === bundle.revisionId} memoryMb={overview.memoryMb} busy={busy} lockUrl={entrantApi.dependencyLockUrl(slug, bundle.id)} onselect={() => save(bundle.id)} oncancel={() => act(async () => update(await entrantApi.cancelDependencies(slug, bundle.id)))} onretry={!unavailable && overview.policy.enabled && !activeId && !spent ? () => prepare(bundle.requirementsText) : undefined} onedit={() => { text = bundle.requirementsText; notice = ''; document.getElementById('requirements')?.focus() }} />
         {/each}
       </section>
     </div>

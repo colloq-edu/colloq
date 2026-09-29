@@ -56,6 +56,17 @@
 
   const badge = $derived(submissionBadge(submission))
   const words = $derived(rowWords({ submission, live, best, paused, now, offQuota }))
+  /*
+   * The notebook link says what it hands out: the executed copy with the
+   * run's outputs, or the file as it was sent when the run reached no cell
+   * (the server looked at the disk). Once the files are swept there is no
+   * link; an answer that did not look keeps the usual words.
+   */
+  const notebookWord = $derived(
+    submission.notebook === null
+      ? null
+      : tr(submission.notebook === 'sent' ? 'competitions.p.downloadSent' : 'competitions.p.downloadRun'),
+  )
   const running = $derived(submission.state === 'running')
   const queued = $derived(submission.state === 'queued')
   const failed = $derived(
@@ -139,6 +150,13 @@
       {#each words.lines as line, index (index)}
         <span class="text-micro leading-[18px] text-muted">{line}</span>
       {/each}
+      <!-- A scored run has no error block to carry the link, and its outputs
+           (a validation score it printed, a warning) are worth a look too. -->
+      {#if submission.state === 'scored' && submission.notebook === 'executed'}
+        <a class="self-start text-micro leading-[18px] text-accent-text hover:underline" href={notebookUrl} download>
+          {tr('competitions.p.downloadRun')}
+        </a>
+      {/if}
     </div>
     <span class="flex w-[130px] shrink-0 flex-col items-end gap-0.5 text-right xl:w-[150px]">
       {#if rightSide.kind === 'score'}
@@ -212,13 +230,13 @@
         <pre class="overflow-x-auto whitespace-pre-wrap px-3.5 py-2.5 font-mono text-micro leading-[19px] text-ink">{submission.participantError}</pre>
       {/if}
       <div class="flex flex-wrap items-center gap-3 border-t border-[#F3C6CC] px-3.5 py-3 dark:border-danger/40">
-        {#if isTerminal(submission.state)}
+        {#if isTerminal(submission.state) && notebookWord}
           <a
             class="border-b border-dashed border-accent-text text-micro text-accent-text"
             href={notebookUrl}
             download
           >
-            {tr('competitions.p.downloadRun')}
+            {notebookWord}
           </a>
         {/if}
       </div>

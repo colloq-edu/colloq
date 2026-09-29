@@ -1196,7 +1196,8 @@ from types import SimpleNamespace
 source = Path(${JSON.stringify(path.join(harnessDir(), 'run_notebook.py'))}).read_text()
 tree = ast.parse(source)
 names = {'main', 'write_json', 'cell_error_detail'}
-nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names
+         or isinstance(node, ast.ClassDef) and node.name == 'PackagesDoNotFit']
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
     for key in ['HOME', 'JUPYTER_RUNTIME_DIR', 'JUPYTER_DATA_DIR', 'MPLCONFIGDIR']:
@@ -1218,10 +1219,302 @@ with tempfile.TemporaryDirectory() as directory:
     assert beat['phase'] == 'dependencies' and beat['cell'] == -1
     assert report['status'] == 'dependency_error' and report['cell'] == -1 and report['cells'] == 0
     assert len(report['detail']) <= 4000
+    # A broken set is no full disk: no reason is claimed for it.
+    assert 'reason' not in report
     assert not (root / 'executed.ipynb').exists()
 `
   const result = spawnSync('python3', ['-c', script], { encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
+})
+
+test('a set that runs out of room is named apart from a broken one, with the room it had', () => {
+  const script = `
+import ast, json, os, re, subprocess, sys, tempfile, time
+from pathlib import Path
+from types import SimpleNamespace
+source = Path(${JSON.stringify(path.join(harnessDir(), 'run_notebook.py'))}).read_text()
+tree = ast.parse(source)
+names = {'main', 'write_json', 'cell_error_detail', 'dependency_command', 'room_of'}
+nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names
+         or isinstance(node, ast.ClassDef) and node.name == 'PackagesDoNotFit']
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    scope = dict(Path=Path, os=os, json=json, re=re, time=time, subprocess=subprocess, tempfile=tempfile, sys=sys)
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), '<room>', 'exec'), scope)
+    DoNotFit = scope['PackagesDoNotFit']
+    # pip's own words for a full disk, as the class saw them four times in a row.
+    full = [sys.executable, '-c', 'import sys; print("ERROR: Could not install packages due to an OSError: [Errno 28] No space left on device"); sys.exit(1)']
+    try:
+        scope['dependency_command'](full, root)
+        raise AssertionError('a full disk passed for a broken set')
+    except DoNotFit as error:
+        assert error.room and error.room > 0, error.room
+        assert 'No space left on device' in str(error)
+    hashes = [sys.executable, '-c', 'import sys; print("ERROR: THESE PACKAGES DO NOT MATCH THE HASHES"); sys.exit(1)']
+    try:
+        scope['dependency_command'](hashes, root)
+        raise AssertionError('a failed install passed')
+    except DoNotFit:
+        raise AssertionError('a hash failure was read as a full disk')
+    except RuntimeError as error:
+        assert 'HASHES' in str(error)
+    # main() writes the reason and the room into run.json for the host.
+    for key in ['HOME', 'JUPYTER_RUNTIME_DIR', 'JUPYTER_DATA_DIR', 'MPLCONFIGDIR']:
+        os.environ[key] = str(root / key)
+    os.environ['COMP_DEPENDENCIES'] = str(root / 'deps')
+    def full_disk():
+        raise DoNotFit('ERROR: Could not install packages due to an OSError: [Errno 28] No space left on device', 397410304)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('notebook execution must not start')
+    scope.update(OUT=root, RESULT=root, PROGRESS=root / 'progress.json', RUN_JSON=root / 'run.json',
+                 NOTEBOOK=root / 'notebook.ipynb', prepare_workspace=lambda: None,
+                 nbformat=SimpleNamespace(read=lambda *args, **kwargs: object()),
+                 prepare_dependencies=full_disk, Runner=forbidden, read_peak=lambda: None)
+    assert scope['main']() == 1
+    report = json.loads((root / 'run.json').read_text())
+    assert report['status'] == 'dependency_error', report
+    assert report['reason'] == 'no_space' and report['roomBytes'] == 397410304, report
+`
+  const result = spawnSync('python3', ['-c', script], { encoding: 'utf8', timeout: 60_000 })
+  assert.equal(result.status, 0, result.stderr || result.error?.message)
+})
+
+test('a set is installed into the room the host sized for it, not into the working folder', () => {
+  const script = `
+import ast, errno, hashlib, json, os, re, subprocess, sys, tempfile, venv, zipfile
+from pathlib import Path
+source = Path(${JSON.stringify(path.join(harnessDir(), 'run_notebook.py'))}).read_text()
+tree = ast.parse(source)
+names = {'prepare_dependencies', 'dependency_command', 'cell_error_detail', 'room_of'}
+nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names
+         or isinstance(node, ast.ClassDef) and node.name == 'PackagesDoNotFit']
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    out = root / 'out'
+    packages = root / 'packages'
+    out.mkdir()
+    packages.mkdir()
+    wheels = root / 'deps' / 'wheels'
+    wheels.mkdir(parents=True)
+    wheel = wheels / 'colloq_room_probe-1.0-py3-none-any.whl'
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        archive.writestr('colloq_room_probe/__init__.py', 'VALUE = 11\\n')
+        archive.writestr('colloq_room_probe-1.0.dist-info/METADATA', 'Metadata-Version: 2.1\\nName: colloq-room-probe\\nVersion: 1.0\\n')
+        archive.writestr('colloq_room_probe-1.0.dist-info/WHEEL', 'Wheel-Version: 1.0\\nGenerator: colloq-test\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n')
+        archive.writestr('colloq_room_probe-1.0.dist-info/RECORD', '')
+    (root / 'deps' / 'requirements.lock').write_text('colloq-room-probe==1.0 --hash=sha256:' + hashlib.sha256(wheel.read_bytes()).hexdigest() + '\\n')
+    os.environ['COMP_DEPENDENCIES'] = str(root / 'deps')
+    os.environ['COMP_PACKAGES'] = str(packages)
+    os.environ['JUPYTER_DATA_DIR'] = str(root / 'jupyter')
+    scope = dict(Path=Path, os=os, sys=sys, json=json, subprocess=subprocess, tempfile=tempfile, venv=venv, re=re, errno=errno, OUT=out)
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), '<packages>', 'exec'), scope)
+    kernel = scope['prepare_dependencies']()
+    spec = json.loads((root / 'jupyter' / 'kernels' / kernel / 'kernel.json').read_text())
+    assert Path(spec['argv'][0]) == packages / '.colloq-venv' / 'bin' / 'python', spec
+    assert not (out / '.colloq-venv').exists(), 'the set took the working folder after all'
+    probe = subprocess.run([spec['argv'][0], '-c', 'import colloq_room_probe; print(colloq_room_probe.VALUE)'], capture_output=True, text=True, check=True)
+    assert probe.stdout.strip() == '11', probe.stdout
+`
+  const result = spawnSync('python3', ['-c', script], { encoding: 'utf8', timeout: 60_000 })
+  assert.equal(result.status, 0, result.stderr || result.error?.message)
+})
+
+/*
+ * The executed notebook through main() itself, with nbformat for real and a
+ * stand-in nbclient that plays the cells by a script in their source: the
+ * suite has no Jupyter kernel, and the kernel is not what is checked here.
+ */
+const nbformatHere = spawnSync('python3', ['-c', 'import nbformat'], { encoding: 'utf8' }).status === 0
+
+function playNotebook(cells: Array<{ source: string; stale?: string; markdown?: boolean }>, env: Record<string, string>): {
+  status: number | null
+  stderr: string
+  run: Record<string, any>
+  executed: { cells: Array<{ cell_type: string; execution_count?: number | null; outputs?: Array<{ text?: string | string[] }> }> } | null
+  record: Record<string, any>
+  /** What the harness left in its result folder. */
+  files: string[]
+} {
+  const root = fs.mkdtempSync(path.join(process.env.DATA_DIR as string, 'play-'))
+  const fake = path.join(root, 'fake', 'nbclient')
+  fs.mkdirSync(fake, { recursive: true })
+  fs.writeFileSync(path.join(fake, 'exceptions.py'), [
+    'class CellExecutionError(Exception): pass',
+    'class CellTimeoutError(TimeoutError): pass',
+    'class DeadKernelError(RuntimeError): pass',
+  ].join('\n') + '\n')
+  fs.writeFileSync(path.join(fake, '__init__.py'), `
+import asyncio, json, os
+from pathlib import Path
+import nbformat
+from nbclient.exceptions import CellTimeoutError
+
+class NotebookClient:
+    """Plays each code cell by its lines: "print X" prints, "stuck" is a cell that never ends."""
+
+    def __init__(self, nb, **kwargs):
+        self.nb = nb
+        self.timeout = kwargs.get('timeout')
+        self.timeout_func = None
+        self.shutdown_kernel = 'graceful'
+        self.record = {'budgets': []}
+
+    def output(self, outs, msg, display_id, cell_index):
+        # Outputs are notebook nodes, as nbclient makes them: nbformat writes nothing else.
+        outs.append(nbformat.v4.new_output('stream', name='stdout', text=msg['content']['text']))
+
+    async def _async_handle_timeout(self, timeout, cell=None):
+        executed = Path(os.environ['COMP_RESULT']) / 'executed.ipynb'
+        self.record['savedAtTimeout'] = executed.read_text() if executed.exists() else ''
+        raise CellTimeoutError('A cell timed out while it was being executed, after %s seconds.' % timeout)
+
+    def execute(self):
+        try:
+            for index, cell in enumerate(self.nb.cells):
+                self.on_cell_start(cell=cell, cell_index=index)
+                if cell.cell_type != 'code':
+                    continue
+                budget = self.timeout_func(cell) if self.timeout_func else self.timeout
+                self.record['budgets'].append(budget)
+                cell.outputs = []
+                for line in cell.source.splitlines():
+                    if line.startswith('print '):
+                        self.output(cell.outputs, {'content': {'text': line[6:] + '\\n'}}, None, index)
+                    elif line == 'stuck':
+                        asyncio.run(self._async_handle_timeout(budget, cell))
+                    elif line == 'unwritable':
+                        # An output nbformat cannot write: the copy fails to save.
+                        cell.outputs.append({'output_type': 'stream'})
+                cell.execution_count = len(self.record['budgets'])
+                self.on_cell_executed(cell=cell, cell_index=index)
+        finally:
+            self.record['shutdown'] = self.shutdown_kernel
+            Path(os.environ['FAKE_RECORD']).write_text(json.dumps(self.record))
+`)
+  const notebook = {
+    cells: cells.map((cell) => cell.markdown
+      ? { cell_type: 'markdown', source: cell.source, metadata: {} }
+      : {
+          cell_type: 'code', source: cell.source, metadata: { execution: { 'iopub.status.busy': 'yesterday' } },
+          execution_count: cell.stale ? 41 : null,
+          outputs: cell.stale ? [{ output_type: 'stream', name: 'stdout', text: cell.stale }] : [],
+        }),
+    metadata: {}, nbformat: 4, nbformat_minor: 5,
+  }
+  for (const part of ['in', 'out', 'result', 'data', 'home']) fs.mkdirSync(path.join(root, part))
+  fs.writeFileSync(path.join(root, 'in', 'notebook.ipynb'), JSON.stringify(notebook))
+  const result = spawnSync('python3', [path.join(harnessDir(), 'run_notebook.py')], {
+    encoding: 'utf8',
+    timeout: 60_000,
+    env: {
+      PATH: process.env.PATH, HOME: path.join(root, 'home'), PYTHONPATH: path.join(root, 'fake'),
+      COMP_NOTEBOOK: path.join(root, 'in', 'notebook.ipynb'), COMP_OUT: path.join(root, 'out'),
+      COMP_RESULT: path.join(root, 'result'), COMP_DATA: path.join(root, 'data'), COMP_ATTEMPT_ID: 'play',
+      FAKE_RECORD: path.join(root, 'record.json'), ...env,
+    },
+  })
+  const read = (file: string) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null)
+  return {
+    status: result.status,
+    stderr: result.stderr,
+    run: read(path.join(root, 'result', 'run.json')) ?? {},
+    executed: read(path.join(root, 'result', 'executed.ipynb')),
+    record: read(path.join(root, 'record.json')) ?? {},
+    files: fs.readdirSync(path.join(root, 'result')).sort(),
+  }
+}
+
+const textOf = (outputs: Array<{ text?: string | string[] }> = []) =>
+  outputs.map((output) => (Array.isArray(output.text) ? output.text.join('') : output.text ?? '')).join('')
+
+/** A monotonic reading from python3 itself: the clock the harness compares its mark with. */
+const monotonicNow = (): number => Number(spawnSync('python3', ['-c', 'import time; print(time.monotonic())'], { encoding: 'utf8' }).stdout)
+
+test(
+  'a late notebook is stopped from inside, before the host would kill it, with every output it made',
+  { skip: nbformatHere ? false : 'no python3 with nbformat: the harness cannot read a notebook here' },
+  () => {
+    // The container started 50 s ago under a 60 s limit: five seconds are left
+    // before the harness stops the notebook itself (STOP_EARLY).
+    const played = playNotebook([
+      { source: '# The task', markdown: true },
+      { source: 'print hello', stale: 'OUTPUT FROM THE LAPTOP\n' },
+      { source: 'print epoch 0\nprint epoch 1\nstuck' },
+      { source: 'print never', stale: 'ALSO FROM THE LAPTOP\n' },
+    ], { COMP_WALL_SECONDS: '60', COMP_STARTED_MONOTONIC: String(monotonicNow() - 50) })
+    assert.equal(played.status, 1, played.stderr)
+    assert.equal(played.run.status, 'cell_timeout', 'the host reads a timeout it did not have to kill for')
+    assert.equal(played.run.cell, 1, 'it stopped on the second code cell')
+    // Every cell may wait only for what is left of the run.
+    for (const budget of played.record.budgets) assert.ok(budget >= 1 && budget <= 5, `budget ${budget}`)
+    // The kernel is killed, not asked: a busy kernel takes five seconds to refuse.
+    assert.equal(played.record.shutdown, 'immediate')
+    // The notebook was on disk, with the stuck cell's lines, before nbclient touched the kernel.
+    assert.match(played.record.savedAtTimeout, /epoch 1/)
+    const cells = played.executed!.cells.filter((cell) => cell.cell_type === 'code')
+    assert.equal(textOf(cells[0].outputs), 'hello\n')
+    assert.equal(textOf(cells[1].outputs), 'epoch 0\nepoch 1\n', 'what the stuck cell printed so far is kept')
+    // The laptop's outputs are gone: a cell the run never reached shows none.
+    assert.equal(textOf(cells[2].outputs), '')
+    assert.equal(cells[2].execution_count ?? null, null)
+    assert.doesNotMatch(JSON.stringify(played.executed), /LAPTOP|yesterday/)
+  },
+)
+
+test(
+  'a time limit that comes between two cells starts no next cell, and the notebook is still written',
+  { skip: nbformatHere ? false : 'no python3 with nbformat: the harness cannot read a notebook here' },
+  () => {
+    const played = playNotebook([
+      { source: 'print first', stale: 'OLD\n' },
+      { source: 'print second' },
+    ], { COMP_WALL_SECONDS: '60', COMP_STARTED_MONOTONIC: String(monotonicNow() - 100) })
+    assert.equal(played.status, 1, played.stderr)
+    assert.equal(played.run.status, 'cell_timeout')
+    assert.deepEqual(played.record.budgets, [], 'no cell was started past the limit')
+    assert.ok(played.executed, 'the executed copy is written on every ending')
+    assert.equal(textOf(played.executed!.cells[0].outputs), '')
+  },
+)
+
+test(
+  'without a limit the notebook runs as it did, and its executed copy holds this run only',
+  { skip: nbformatHere ? false : 'no python3 with nbformat: the harness cannot read a notebook here' },
+  () => {
+    const played = playNotebook([{ source: 'print done', stale: 'OLD\n' }], {})
+    assert.equal(played.run.status, 'ok', played.stderr)
+    assert.deepEqual(played.record.budgets, [null], 'no limit, no per-cell timeout either')
+    assert.equal(played.record.shutdown, 'graceful', 'a finished kernel still exits on its own, flushing its files')
+    assert.equal(textOf(played.executed!.cells[0].outputs), 'done\n')
+    assert.deepEqual(played.files, ['executed.ipynb', 'progress.json', 'run.json'])
+  },
+)
+
+test(
+  'an executed copy that cannot be saved leaves no half-written file for the exporter to refuse',
+  { skip: nbformatHere ? false : 'no python3 with nbformat: the harness cannot read a notebook here' },
+  () => {
+    const played = playNotebook([{ source: 'print first\nunwritable' }], {})
+    assert.match(played.run.detail, /executed\.ipynb not written/)
+    // The broker's exporter fails the whole result folder on a file it does not know.
+    assert.ok(!played.files.some((name) => name.endsWith('.tmp')), played.files.join(', '))
+  },
+)
+
+test('the notebook command gives a package set its own room, and a file cap to match', () => {
+  const MiB = 1024 * 1024
+  const args = runArgs({ container: 'deps-room', image: 'sha256:pinned', dataDir: '/data/open', inputDir: '/data/input', resultDir: '/data/result', dependenciesDir: '/data/bundle', packagesMb: 379, limits: LIMITS_SAMPLE, target: SUBMISSION_FILE })
+  assert.ok(args.includes('--tmpfs=/packages:rw,exec,nosuid,nodev,size=379m,mode=1777'))
+  assert.ok(args.includes('COMP_PACKAGES=/packages'))
+  // catboost's _catboost.so alone is 264 MB: over four answers' worth of file cap.
+  assert.ok(args.includes(`--ulimit=fsize=${379 * MiB}:${379 * MiB}`))
+  // The working folder keeps its own eighth of the memory, untouched by the set.
+  assert.ok(args.includes('--tmpfs=/out:rw,exec,nosuid,nodev,size=512m,mode=1777'))
+  // Still no writable host mount: the room is memory, not a folder of the host.
+  assert.ok(args.filter((_, i) => args[i - 1] === '-v').every((mount) => mount.endsWith(':ro')))
+  const plain = runArgs({ container: 'no-deps', image: 'sha256:pinned', dataDir: '/data/open', inputDir: '/data/input', resultDir: '/data/result', packagesMb: 379, limits: LIMITS_SAMPLE, target: SUBMISSION_FILE })
+  assert.ok(!plain.some((arg) => arg.includes('/packages')), 'no set, no room')
+  assert.ok(plain.includes(`--ulimit=fsize=${64 * MiB * 4}:${64 * MiB * 4}`))
 })
 
 
@@ -1250,4 +1543,120 @@ test('Docker launches both steps with their immutable image binding and excludes
     if (before === undefined) delete process.env.COMPETITION_BACKEND
     else process.env.COMPETITION_BACKEND = before
   }
+})
+
+/* ------------------------------------------- the executed notebook, the set's room */
+
+/** The runner behind a stand-in docker for one check, restored after it. */
+async function withDocker<T>(fake: Parameters<typeof useDockerForCompetitions>[0], body: () => Promise<T>): Promise<T> {
+  const before = process.env.COMPETITION_BACKEND
+  process.env.COMPETITION_BACKEND = 'docker'
+  useCompetitionRunner(null)
+  forgetCompetitionRunner()
+  useDockerForCompetitions(fake)
+  try {
+    return await body()
+  } finally {
+    useDockerForCompetitions(null)
+    useCompetitionRunner(runner)
+    forgetCompetitionRunner()
+    if (before === undefined) delete process.env.COMPETITION_BACKEND
+    else process.env.COMPETITION_BACKEND = before
+  }
+}
+
+const base64 = (value: unknown) => Buffer.from(typeof value === 'string' ? value : JSON.stringify(value)).toString('base64')
+
+test('a run killed at its limit keeps the notebook the harness had on disk, read before the kill', async () => {
+  reset()
+  const competition = makeCompetition()
+  const submission = send(competition, mint('Долгий').id, ['train()'])
+  const out = resultDir(competition.id, submission.id)
+  const commands: string[][] = []
+  const saved = { cells: [{ cell_type: 'code', source: 'train()', metadata: {}, execution_count: 1, outputs: [{ output_type: 'stream', name: 'stdout', text: 'epoch 7\n' }] }], metadata: {}, nbformat: 4, nbformat_minor: 5 }
+  const outcome = await withDocker(async (args) => {
+    commands.push(args)
+    if (args[0] === 'inspect') return { code: 0, out: args.at(-1) === '{{.State.Running}}' ? 'true' : 'running 137 false' }
+    // A harness that never finished: no completion, however often it is looked at.
+    if (args[0] === 'exec' && args[5] === 'status') return { code: 0, out: '{}' }
+    if (args[0] === 'exec' && args.at(-1) === 'executed.ipynb') return { code: 0, out: base64(saved) }
+    if (args[0] === 'exec') return { code: 1, out: 'no such file' }
+    return { code: 0, out: '' }
+  }, () => competitionRunner().run({
+    competition, submissionId: submission.id, attemptId: 'late', container: 'late-run',
+    dataDir: openDir(competition.id), inputDir: '/data/in', resultDir: out, limits: { ...LIMITS_SAMPLE, wallSeconds: 1 },
+  }))
+  assert.equal(outcome.status, 'timeout')
+  const salvage = commands.findIndex((args) => args[0] === 'exec' && args.at(-1) === 'executed.ipynb')
+  const kill = commands.findIndex((args) => args[0] === 'kill')
+  assert.ok(salvage >= 0 && kill > salvage, 'the notebook is copied out while its tmpfs still exists')
+  assert.match(fs.readFileSync(path.join(out, 'executed.ipynb'), 'utf8'), /epoch 7/)
+})
+
+test('a set that ran out of room tells the participant so, with the room it had, in both languages', async () => {
+  reset()
+  const MiB = 1024 * 1024
+  const competition = makeCompetition()
+  const submission = send(competition, mint('Катя').id, ['import catboost'])
+  const report = { status: 'dependency_error', reason: 'no_space', roomBytes: 379 * MiB, cell: -1, cells: 0, attemptId: 'full',
+    detail: 'ERROR: Could not install packages due to an OSError: [Errno 28] No space left on device' }
+  const outcome = await withDocker(async (args) => {
+    if (args[0] === 'inspect') return { code: 0, out: args.at(-1) === '{{.State.Running}}' ? 'true' : 'running 1 false' }
+    if (args[0] === 'exec' && args[5] === 'status') return { code: 0, out: JSON.stringify({ complete: { attemptId: 'full', exit: 1 } }) }
+    if (args[0] === 'exec' && args.at(-1) === 'run.json') return { code: 0, out: base64(report) }
+    if (args[0] === 'exec') return { code: 1, out: 'no such file' }
+    return { code: 0, out: '' }
+  }, () => competitionRunner().run({
+    competition, submissionId: submission.id, attemptId: 'full', container: 'full-run', dependenciesDir: '/data/bundle', packagesMb: 379,
+    dataDir: openDir(competition.id), inputDir: '/data/in', resultDir: resultDir(competition.id, submission.id), limits: LIMITS_SAMPLE,
+  }))
+  assert.equal(outcome.status, 'dependency_error')
+  assert.deepEqual(outcome.dependencyFailure, { reason: 'no_space', roomBytes: 379 * MiB })
+  assert.equal(notebookNote(outcome, competition),
+    'Набор пакетов не поместился в посылку: при установке закончилось отведённое под него место — 379 МБ. Уберите из набора тяжёлые пакеты или обратитесь к преподавателю.')
+  assert.equal(inEnglish(() => notebookNote(outcome, competition)),
+    'The package set did not fit into the submission: the installation ran out of the 379 MB set aside for it. Remove heavy packages from the set or contact your teacher.')
+  // Any other install failure keeps the old words: a retry may well help it.
+  assert.match(notebookNote({ ...outcome, dependencyFailure: undefined }, competition) ?? '', /^Не удалось установить подготовленный набор/)
+})
+
+test('a set that no longer fits the submission memory is refused before any container, with its numbers', async () => {
+  reset()
+  const MiB = 1024 * 1024
+  const competition = makeCompetition({ limits: { wallSeconds: 600, memoryMb: 2048, cpus: 2, perDay: 0 } })
+  setCompetitionState(competition.id, 'live')
+  const revision = putRevision({
+    environmentName: 'base', imageDigest: `sha256:${'e'.repeat(64)}`, pythonVersion: '3.11.16', pythonAbi: 'cp311',
+    platform: 'linux/arm64', packages: [{ name: 'numpy', version: '2.4.6' }], baseConstraintsHash: 'hash',
+  })
+  selectRevision(competition.id, revision.id)
+  setPolicy(competition.id, { enabled: true })
+  const entrant = mint('Гоша')
+  // The set of the class that could not install: xgboost-cpu, catboost, lightgbm.
+  const set = createBundle(competition.id, entrant.id, revision.id, 'xgboost-cpu\ncatboost\nlightgbm')
+  completeBundle(set.id, {
+    normalizedRequirements: ['xgboost-cpu', 'catboost', 'lightgbm'], downloadBytes: 1, installedBytes: 315 * MiB, contentHash: '3'.repeat(64),
+    packages: [{ name: 'catboost', version: '1.2.10', fileName: 'catboost-1.2.10-py3-none-any.whl', sha256: '4'.repeat(64), bytes: 1 }],
+    lock: `catboost==1.2.10 --hash=sha256:${'4'.repeat(64)}\n`,
+  })
+  const submission = send(competition, entrant.id, ['import catboost'])
+  // Its room is 379 MB, under half of 2 GB: it is attached.
+  bindSubmission(submission.id, revision.id, set.id)
+  // Then the teacher lowers the memory to 512 MB, and the same room is more than half of it.
+  updateCompetition(competition.id, { limits: { ...competition.limits, memoryMb: 512 } })
+  let started = 0
+  const run = runner.run.bind(runner)
+  runner.run = async (request) => { started++; return run(request) }
+  try {
+    await drainCompetitionQueue()
+  } finally {
+    runner.run = run
+  }
+  assert.equal(started, 0, 'no container for a set that cannot fit')
+  const done = getSubmission(submission.id)
+  assert.equal(done?.state, 'rejected')
+  assert.equal(done?.stage, 'dependencies')
+  assert.equal(done?.participantError,
+    'Набор пакетов не поместится в посылку: в памяти он займёт до 379 МБ, а набору можно не больше половины из 512 МБ, отведённых посылке. Уберите из набора тяжёлые пакеты или попросите преподавателя увеличить память.')
+  assert.equal(listRuns(submission.id)[0].verdict, 'dependency_error')
 })
