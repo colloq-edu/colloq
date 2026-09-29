@@ -890,17 +890,6 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.p.colFinalMetric': { ru: 'ИТОГОВЫЙ {metric}', en: 'FINAL {metric}' },
   'competitions.p.colPublicMetric': { ru: 'ПУБЛИЧНЫЙ {metric}', en: 'PUBLIC {metric}' },
   'competitions.p.colSubmissions': { ru: 'ПОСЫЛОК', en: 'SUBMISSIONS' },
-  'competitions.p.colCounted': { ru: 'ПОСЫЛКА В ЗАЧЁТ', en: 'SUBMISSION THAT COUNTS' },
-  'competitions.p.countedChosen': { ru: '#{number} · выбор участника', en: '#{number} · participant’s pick' },
-  'competitions.p.countedYours': { ru: '#{number} · ваш выбор', en: '#{number} · your pick' },
-  'competitions.p.countedLast': {
-    ru: '#{number} · последняя посылка',
-    en: '#{number} · latest submission',
-  },
-  'competitions.p.countedBest': {
-    ru: '#{number} · лучший публичный результат',
-    en: '#{number} · best public result',
-  },
   'competitions.p.showMoreEntrants': {
     ru: {
       one: 'Показать ещё {count} участника',

@@ -11,6 +11,12 @@
    * The baseline solution stands at the bottom, set off by a dashed line: it
    * is not an entrant, but not a footnote either — it is what people measure
    * against to see whether submitting makes sense at all.
+   *
+   * There is no "submission that counts" column: "#12 · latest submission"
+   * next to every name told the class nothing it could act on and took a
+   * quarter of the table (removed on 29 Sep 2026 at the teacher's request).
+   * Which submission counts is the rule in the task, and each person sees
+   * their own in "My submissions".
    */
   import { tr } from '@shared/i18n'
   import { placeShift } from '@shared/competitions'
@@ -30,7 +36,43 @@
   const { competition, board, phone, final, onfinal }: Props = $props()
 
   const PAGE = 6
+  /** How many more rows appear each time the reader nears the end. */
+  const MORE = 20
   let shown = $state(PAGE)
+  const canWatch = typeof IntersectionObserver === 'function'
+
+  /**
+   * The box that actually scrolls. Both places that show the board scroll
+   * inside their own `overflow-auto` container, not the window, and an
+   * observer without that root measures its margin against the window: the
+   * list would grow only once the sentinel is already on screen. The
+   * notebook's jumping scroll (13 Sep 2026) had exactly this cause.
+   */
+  function scrollParent(node: HTMLElement): HTMLElement | null {
+    for (let el = node.parentElement; el; el = el.parentElement) {
+      const { overflowY } = getComputedStyle(el)
+      if (overflowY === 'auto' || overflowY === 'scroll') return el
+    }
+    return null
+  }
+
+  /**
+   * Kaggle-style: the list grows by itself as the reader scrolls towards its
+   * end, instead of a "show more" button after every six names. The sentinel
+   * is recreated on every growth ({#key} below), so a list still too short to
+   * fill the screen keeps growing until the sentinel is out of reach: an
+   * observer reports only changes, and "still visible" is not one.
+   */
+  function revealOnScroll(node: HTMLElement) {
+    const watcher = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) shown += MORE
+      },
+      { root: scrollParent(node), rootMargin: '0px 0px 480px 0px' },
+    )
+    watcher.observe(node)
+    return { destroy: () => watcher.disconnect() }
+  }
 
   const open = $derived(board.privateOpen && board.private !== null)
   const lines = $derived(boardPlaces(final && board.private ? board.private : board.public))
@@ -44,16 +86,6 @@
   function shiftOf(line: EntrantBoardLine): number | null {
     if (!final) return null
     return placeShift(publicPlace.get(line.entrantId)?.place ?? null, line.place)
-  }
-
-  function countedWords(line: EntrantBoardLine): string {
-    if (line.number === 0) return ''
-    if (competition.scoring === 'chosen' && line.chosen) {
-      return tr(line.you ? 'competitions.p.countedYours' : 'competitions.p.countedChosen', {
-        number: line.number,
-      })
-    }
-    return tr(competition.scoring === 'last' ? 'competitions.p.countedLast' : 'competitions.p.countedBest', { number: line.number })
   }
 </script>
 
@@ -94,8 +126,8 @@
   {#if people.length === 0 && baseline === null}
     <p class="border-t border-line py-6 text-ui text-muted">{tr('competitions.p.boardEmpty')}</p>
   {:else if phone}
-    <!-- Phone: the same rows without the "shift" and "counted" columns — at
-         390 px they push out the name the table is opened for. -->
+    <!-- Phone: the same rows without the "shift" column — at 390 px it pushes
+         out the name the table is opened for. -->
     <div class="flex flex-col border-t-2 border-ink">
       {#each people.slice(0, shown) as line (line.entrantId)}
         <div
@@ -124,7 +156,7 @@
     </div>
   {:else}
     <div class="w-full overflow-x-auto">
-      <table class="w-full min-w-[900px] border-collapse text-left">
+      <table class="w-full min-w-[650px] border-collapse text-left">
         <thead>
           <tr class="border-b-2 border-ink">
             <th class="w-16 py-3 text-micro font-black uppercase leading-5 tracking-label text-muted">
@@ -152,9 +184,6 @@
             {/if}
             <th class="w-[110px] text-right text-micro font-black uppercase leading-5 tracking-label text-muted">
               {tr('competitions.p.colSubmissions')}
-            </th>
-            <th class="w-[250px] pl-10 text-micro font-black uppercase leading-5 tracking-label text-muted">
-              {tr('competitions.p.colCounted')}
             </th>
           </tr>
         </thead>
@@ -206,7 +235,6 @@
                 </td>
               {/if}
               <td class="text-right font-mono text-2xs text-muted">{line.submissions}</td>
-              <td class="pl-10 text-2xs text-muted">{countedWords(line)}</td>
             </tr>
           {/each}
 
@@ -232,7 +260,6 @@
                 </td>
               {/if}
               <td></td>
-              <td></td>
             </tr>
           {/if}
         </tbody>
@@ -241,9 +268,15 @@
   {/if}
 
   {#if people.length > shown}
-    <button class="self-start text-2xs text-accent-text hover:underline" type="button" onclick={() => (shown += PAGE)}>
-      {tr('competitions.p.showMoreEntrants', { count: people.length - shown })}
-    </button>
+    {#if canWatch}
+      {#key shown}
+        <div class="h-px w-full" aria-hidden="true" use:revealOnScroll></div>
+      {/key}
+    {:else}
+      <button class="self-start text-2xs text-accent-text hover:underline" type="button" onclick={() => (shown += MORE)}>
+        {tr('competitions.p.showMoreEntrants', { count: people.length - shown })}
+      </button>
+    {/if}
   {/if}
 
   <p class="text-2xs leading-5 text-muted">{tr('competitions.p.tieNote')}</p>

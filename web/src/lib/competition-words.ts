@@ -578,7 +578,11 @@ export function avatarTint(name: string): string {
 /** One letter on the circle — the first letter of the name, as in the mockup ("T"). */
 export function avatarLetter(name: string): string {
   const trimmed = name.trim()
-  return trimmed ? [...trimmed][0].toUpperCase() : '?'
+  if (!trimmed) return '?'
+  // Names are Telegram usernames and emails now: the circle next to
+  // "@max_zaitsev" should say "M", not "@" on every other row.
+  const first = [...trimmed].find((char) => /[\p{L}\p{N}]/u.test(char)) ?? [...trimmed][0]
+  return first.toUpperCase()
 }
 
 /** "Timur A." — how the person is labelled in the phone header. */
