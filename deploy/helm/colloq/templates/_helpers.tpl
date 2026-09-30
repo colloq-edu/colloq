@@ -28,10 +28,13 @@ app.kubernetes.io/component: {{ .component }}
 {{/*
 What every Pod the broker creates carries next to its own labels
 (RUNTIME_POD_LABELS). No version: a label that changed on every upgrade would
-make the broker's live rooms differ from what it would create now.
+make the broker's live rooms differ from what it would create now. And no
+app.kubernetes.io/instance: ArgoCD's label tracking (the default before 3.0)
+takes every object carrying it for part of the application, and a room Pod
+that is not in Git would be pruned by an auto-sync, in the middle of a class.
 */}}
 {{- define "colloq.brokerPodLabels" -}}
-{{- $labels := dict "app.kubernetes.io/name" "colloq" "app.kubernetes.io/instance" .Release.Name "app.kubernetes.io/part-of" "colloq" -}}
+{{- $labels := dict "app.kubernetes.io/name" "colloq" "app.kubernetes.io/part-of" "colloq" -}}
 {{- $labels = merge $labels (deepCopy (.Values.rooms.podLabels | default dict)) (deepCopy (.Values.commonLabels | default dict)) -}}
 {{- toJson $labels -}}
 {{- end -}}
@@ -131,6 +134,45 @@ imagePullSecrets:
 {{- if hasKey $env "python" -}}{{- $_ := set $entry "python" $env.python -}}{{- end -}}
 {{- if hasKey $env "current" -}}{{- $_ := set $entry "current" $env.current -}}{{- end -}}
 {{- $environments = append $environments $entry -}}
+{{- end -}}
+{{- /*
+Revisions the previous release installed stay in the catalog, not current, so
+a room pinned to one keeps its Python across a helm upgrade (the app pins every
+room to the image it started with; the broker runs only catalog images). Read
+from the live ConfigMap, which a helm CLI upgrade can see; a render without a
+cluster (ArgoCD) sees nothing, and there a room whose image is gone moves to the
+environment's current revision on its next start (kernel/pool.ts). Only names
+this release still ships; at most maxRetainedPerEnvironment per name.
+*/ -}}
+{{- if .Values.catalog.retainPrevious -}}
+{{- $live := lookup "v1" "ConfigMap" .Release.Namespace "colloq-catalog" -}}
+{{- $text := "" -}}
+{{- if and $live $live.data -}}{{- $text = index $live.data "catalog.json" | default "" -}}{{- end -}}
+{{- if $text -}}
+{{- $previous := fromJson $text -}}
+{{- $names := dict -}}
+{{- $seen := dict -}}
+{{- range $environments -}}
+{{- $_ := set $names .name true -}}
+{{- $_ := set $seen (printf "%s@%s" .name (last (splitList "@" .image))) true -}}
+{{- end -}}
+{{- $kept := dict -}}
+{{- range ($previous.environments | default list) -}}
+{{- $key := printf "%s@%s" .name (last (splitList "@" (.image | default ""))) -}}
+{{- if and (hasKey $names .name) (not (hasKey $seen $key)) -}}
+{{- $count := int (get $kept .name | default 0) -}}
+{{- if lt $count (int $.Values.catalog.maxRetainedPerEnvironment) -}}
+{{- $_ := set $kept .name (add1 $count) -}}
+{{- $_ := set $seen $key true -}}
+{{- $environments = append $environments (dict "name" .name "image" .image "gpu" (.gpu | default false) "packages" (.packages | default list) "current" false) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /* With retained revisions beside it, this release's entry says it is the current one. */ -}}
+{{- range $environments -}}
+{{- if and (hasKey $kept .name) (not (hasKey . "current")) -}}{{- $_ := set . "current" true -}}{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- $release := .Values.catalog.release | default (printf "v%s" .Chart.AppVersion) -}}
 {{- toJson (dict "schemaVersion" 1 "release" $release "defaultEnvironment" .Values.catalog.defaultEnvironment "environments" $environments) -}}

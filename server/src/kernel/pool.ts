@@ -1,7 +1,7 @@
 import { tr } from '@shared/i18n'
 import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, runtimeEnvironment, imageRevision, RuntimeRequestError } from './runtime-client.js'
 import type { RuntimeResizeRequest, RuntimeRoom } from '@shared/runtime'
-import { sessionCpus, sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, sessionMemoryMb, sessionRowExists, storedRules } from '../db.js'
+import { sessionCpus, sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, repinSessionKernelRevision, sessionMemoryMb, sessionRowExists, storedRules } from '../db.js'
 import { blockKernelStarts, kernelRetirementInProgress } from './retirement.js'
 import { hasWorkAllocation, observedWorkMemory, releaseWorkAllocation, reserveWork, type WorkLease } from '../ops/work-budget.js'
 import { parseMemMb, perEnvironmentMemoryMb, resourceValue } from '../admin/resource-settings.js'
@@ -1912,8 +1912,25 @@ export async function endpointForSession(
     if (!sessionRowExists(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarDoesNotExist.4f72c5"))
     sessionDir(sessionId)
     const previous = sessionKernelRevision(sessionId)
-    const selected = runtimeEnvironment(sessionEnvironment(sessionId), previous)
-    const revision = pinSessionKernelRevision(sessionId, selected.name, imageRevision(selected.image))
+    let revision: string
+    try {
+      const selected = runtimeEnvironment(sessionEnvironment(sessionId), previous)
+      revision = pinSessionKernelRevision(sessionId, selected.name, imageRevision(selected.image))
+    } catch (err) {
+      /*
+       * The room's pinned image is no longer in the catalog: an upgrade took
+       * it out (a Helm upgrade to a release with new kernel images, rendered
+       * where the previous catalog cannot be read back). The pin exists so a
+       * room keeps the Python it started with while that image is available;
+       * it must not keep the room from ever starting a kernel again. The room
+       * moves to the environment's current revision, as a room on the Docker
+       * path always does, and the move is said once in the log.
+       */
+      if (!previous) throw err
+      const current = runtimeEnvironment(sessionEnvironment(sessionId))
+      revision = repinSessionKernelRevision(sessionId, current.name, imageRevision(current.image))
+      console.warn(`[kernel ${sessionId}] its image ${previous.slice(0, 19)}… is no longer in the catalog; the room moves to the current ${current.name} (${revision.slice(0, 19)}…)`)
+    }
     const pinned = runtimeEnvironment(sessionEnvironment(sessionId), revision)
     // The personal notebooks' Pod runs the room's pinned image too, on the CPU
     // for a GPU environment: the broker never gives it the card.

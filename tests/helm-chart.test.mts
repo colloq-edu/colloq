@@ -276,8 +276,10 @@ test('standard labels on every object and Pod template; broker-created Pods get 
   const podLabels: Record<string, string> = JSON.parse(envOf(container(objects, 'colloq-runtime')).RUNTIME_POD_LABELS)
   // No version there: a label that changes on every upgrade would make live rooms differ from new ones.
   assert.equal(podLabels['app.kubernetes.io/version'], undefined)
+  // No instance either: ArgoCD's label tracking would prune room Pods it cannot find in Git.
+  assert.equal(podLabels['app.kubernetes.io/instance'], undefined)
   assert.deepEqual(podLabels, {
-    'app.kubernetes.io/name': 'colloq', 'app.kubernetes.io/instance': 'classroom', 'app.kubernetes.io/part-of': 'colloq',
+    'app.kubernetes.io/name': 'colloq', 'app.kubernetes.io/part-of': 'colloq',
     'bank.example/cost-centre': 'edu', 'bank.example/tier': 'rooms',
   })
   // Selectors are the immutable part only.
@@ -359,7 +361,6 @@ test('the broker\'s Role holds exactly its verbs, in-place resize only when swit
   assert.deepEqual(rules(on), [
     '|pods,services|get,list,create,delete',
     '|pods/resize|patch',
-    '|pods/log|get',
     '|persistentvolumeclaims|get',
     'networking.k8s.io|networkpolicies|get',
   ])
@@ -540,6 +541,30 @@ test('generated secrets are read back from the live Secret, so an upgrade never 
   // An explicit value (e.g. from argocd-vault-plugin) is taken as is.
   const explicit = 'Explicit-Value_0123456789abcdefghijklmnopqrstuv'
   assert.equal(token(await render({ secrets: { roomSecret: { value: explicit } } }), 'colloq-room-secret', 'room-secret'), explicit)
+})
+
+test('a helm upgrade keeps the previous release\'s kernel revisions, not current, so pinned rooms keep their Python', { skip }, async () => {
+  const catalogOf = (objects: Json[]) => JSON.parse(find(objects, 'ConfigMap', 'colloq-catalog').data['catalog.json'])
+  const old = (digit: string) => `ghcr.io/colloq-edu/colloq-kernel@sha256:${digit.repeat(64)}`
+  const live = { schemaVersion: 1, release: 'v0.9.0', defaultEnvironment: 'base', environments: [
+    { name: 'base', image: old('1'), gpu: false, packages: [] },
+    { name: 'base', image: old('2'), gpu: false, packages: [], current: false },
+    { name: 'retired', image: old('3'), gpu: false, packages: [] },
+  ] }
+  await withFakeCluster({}, async (env) => {
+    const catalog = catalogOf(await render({}, { args: ['--dry-run=server'], env }))
+    const base = catalog.environments.filter((e: Json) => e.name === 'base')
+    assert.equal(base.filter((e: Json) => e.current === true).length, 1, 'exactly one current base: this release\'s')
+    assert.ok(base.some((e: Json) => e.image === old('1') && e.current === false), 'the previous release\'s base stays, not current')
+    assert.ok(base.some((e: Json) => e.image === old('2') && e.current === false))
+    assert.equal(catalog.environments.some((e: Json) => e.name === 'retired'), false, 'a name this release no longer ships is not kept')
+    const bounded = catalogOf(await render({ catalog: { maxRetainedPerEnvironment: 1 } }, { args: ['--dry-run=server'], env }))
+    assert.equal(bounded.environments.filter((e: Json) => e.name === 'base' && e.current === false).length, 1)
+    const off = catalogOf(await render({ catalog: { retainPrevious: false } }, { args: ['--dry-run=server'], env }))
+    assert.equal(off.environments.some((e: Json) => e.image === old('1')), false)
+  }, { 'colloq-catalog': { 'catalog.json': JSON.stringify(live) } })
+  // Without a cluster (ArgoCD) there is nothing to keep, and the render is the release's own.
+  assert.equal(catalogOf(await render({})).environments.some((e: Json) => e.image === old('1')), false)
 })
 
 test('app settings reach the app under the documented variable names', { skip }, async () => {
@@ -897,7 +922,7 @@ test('values the app or the broker would refuse stop the render, with the reason
 
 /* ------------------------------------------------------------------ NOTES */
 
-async function withFakeCluster(secrets: Record<string, Record<string, string>>, run: (env: NodeJS.ProcessEnv) => Promise<void>): Promise<void> {
+async function withFakeCluster(secrets: Record<string, Record<string, string>>, run: (env: NodeJS.ProcessEnv) => Promise<void>, configMaps: Record<string, Record<string, string>> = {}): Promise<void> {
   // Discovery for the kinds the chart renders, the Secrets `lookup` asks for,
   // 404 for everything else. Helm's dry runs only read.
   const resource = (name: string, kind: string) => ({ name, singularName: kind.toLowerCase(), namespaced: true, kind, verbs: ['get', 'list', 'create', 'delete', 'patch'] })
@@ -927,6 +952,8 @@ async function withFakeCluster(secrets: Record<string, Record<string, string>>, 
     const secret = /^\/api\/v1\/namespaces\/([^/]+)\/secrets\/([^/]+)$/.exec(route)
     if (secret && secrets[secret[2]]) return send(200, { apiVersion: 'v1', kind: 'Secret', metadata: { name: secret[2], namespace: secret[1] }, type: 'Opaque', data: secrets[secret[2]] })
     if (/^\/api\/v1\/namespaces\/[^/]+\/secrets$/.test(route)) return send(200, { kind: 'SecretList', apiVersion: 'v1', metadata: {}, items: [] })
+    const configMap = /^\/api\/v1\/namespaces\/([^/]+)\/configmaps\/([^/]+)$/.exec(route)
+    if (configMap && configMaps[configMap[2]]) return send(200, { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: configMap[2], namespace: configMap[1] }, data: configMaps[configMap[2]] })
     send(404, { kind: 'Status', apiVersion: 'v1', metadata: {}, status: 'Failure', reason: 'NotFound', code: 404 })
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))

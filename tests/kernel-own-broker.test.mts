@@ -16,7 +16,7 @@ import path from 'node:path'
 import { after, before, beforeEach, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { TEST_ROOT } from './_env.mts'
-import { createSession, setRules, setSessionCpus, setSessionMemoryMb, storedRules } from '../server/src/db.js'
+import { createSession, pinSessionKernelRevision, sessionKernelRevision, setRules, setSessionCpus, setSessionMemoryMb, storedRules } from '../server/src/db.js'
 import {
   applyCpuLimit,
   applyMemoryLimit,
@@ -126,6 +126,17 @@ test('a personal notebook starts its own Pod with the personal numbers: the clas
   } finally {
     updateResourceSettings({ ownMemoryMb: null }, machine)
   }
+})
+
+test('a room whose pinned image an upgrade took out of the catalog moves to the current revision instead of never starting again', async () => {
+  const id = 'gone-pin'
+  createSession(id, 'После обновления', 'base')
+  // The previous release's kernel: pinned by the room, gone from this catalog.
+  const gone = `sha256:${'b'.repeat(64)}`
+  pinSessionKernelRevision(id, 'base', gone)
+  await endpointForSession(id, 'base')
+  assert.deepEqual(posts(id).map((h) => h.body.revision), [revision], 'the broker is asked for the current revision')
+  assert.equal(sessionKernelRevision(id), revision, 'and the room is pinned to it from now on')
 })
 
 test("the class's memory and cores reach the personal Pod only while it follows the room's number", async () => {

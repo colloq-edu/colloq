@@ -44,6 +44,13 @@ image:
 catalog:
   # Release label of the catalog; empty means v<appVersion>.
   release: ""
+  # Keep the revisions the previous release installed (not current) on a helm
+  # upgrade, so rooms pinned to them keep their Python. Read from the live
+  # ConfigMap: works with the helm CLI; an ArgoCD render cannot read it back, and
+  # there a room whose image is gone moves to the current revision on its next
+  # start. To keep revisions under ArgoCD, list them below with current: false.
+  retainPrevious: true
+  maxRetainedPerEnvironment: 3
   defaultEnvironment: base
   environments:
     # name: [a-z0-9-], at most 32 characters. gpu: rooms of this environment get

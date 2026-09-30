@@ -39,9 +39,6 @@ rules:
     verbs: ["patch"]
   {{- end }}
   - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get"]
-  - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get"]
   - apiGroups: ["networking.k8s.io"]

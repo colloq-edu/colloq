@@ -533,6 +533,22 @@ export function sessionKernelRevision(id: string): string | null {
   const row = db.prepare('SELECT kernel_revision FROM sessions WHERE id = ?').get(id) as {kernel_revision:string|null}|undefined
   return row?.kernel_revision ?? null
 }
+/**
+ * Move a room to another revision of its environment, replacing the pin.
+ *
+ * Only for a pin that points at nothing any more: the room's image was taken
+ * out of the catalog by an upgrade (a Helm release carries the new release's
+ * kernels, and an ArgoCD render cannot read the previous catalog back). Without
+ * this the room could never start its kernel again: `runtimeEnvironment` refuses
+ * a revision the catalog does not list, and the broker would refuse it too.
+ */
+export function repinSessionKernelRevision(id: string, environment: string, revision: string): string {
+  if (!RUNTIME_REVISION.test(revision)) throw new Error('Invalid kernel image revision')
+  db.prepare('UPDATE sessions SET environment = ?, kernel_revision = ? WHERE id = ?').run(environment, revision, id)
+  const pinned = sessionKernelRevision(id)
+  if (!pinned) throw new Error('Cannot pin kernel image: seminar does not exist')
+  return pinned
+}
 export function pinSessionKernelRevision(id: string, environment: string, revision: string): string {
   if (!RUNTIME_REVISION.test(revision)) throw new Error('Invalid kernel image revision')
   db.prepare('UPDATE sessions SET environment = ?, kernel_revision = ? WHERE id = ? AND kernel_revision IS NULL').run(environment,revision,id)

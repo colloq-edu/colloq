@@ -187,11 +187,19 @@ preparation. Competition "own packages" go through the mirror
   database snapshot into `/data/snapshots`; a release refuses data of a newer
   schema, so going back across a schema change means restoring that snapshot
   (or a volume snapshot) together with the older release.
-- A change to what a room Pod looks like (a kernel image in the catalog, room
-  scratch space, placement, runtime class, pull secret, room secret) replaces
-  each room's Pod the next time that room starts a kernel, which loses the
-  room's variables: upgrade between classes. Room memory and cores change in
-  place on Kubernetes 1.33+ with `runtime.inPlaceResize`.
+- A change to what a room Pod runs (a kernel image in the catalog, room
+  scratch space, pull secret, room secret) replaces each room's Pod the next
+  time that room starts a kernel, which loses the room's variables: upgrade
+  between classes. Placement (node selectors, tolerations, priority, runtime
+  class, co-location) is different: a running room keeps its Pod, and only its
+  next Pod follows the new setting. Room memory and cores change in place on
+  Kubernetes 1.33+ with `runtime.inPlaceResize`.
+- A helm upgrade keeps the previous release's kernel revisions in the catalog,
+  not current (`catalog.retainPrevious`, at most
+  `catalog.maxRetainedPerEnvironment` per environment, read from the live
+  ConfigMap), so rooms pinned to them keep their Python. A render without the
+  cluster (ArgoCD) cannot read them back: there a room whose revision is gone
+  moves to its environment's current one on its next start.
 - Switching a generated secret to `existingSecret` removes the generated one:
   copy its value into the new Secret first to keep rooms and sign-ins.
 - `helm uninstall` keeps the claims and leaves the broker's room Pods and
@@ -279,10 +287,10 @@ out so the app's default applies. The app reads the ConfigMap, then the Secret
 | `rooms.maxMemory` | `""` (broker's node minus 1 GiB) | `RUNTIME_KERNEL_MEMORY_MAX` |
 | `rooms.ephemeralStorage` | `2Gi` | `RUNTIME_KERNEL_EPHEMERAL` |
 | `rooms.network` | `""` | `COLLOQ_ROOM_NETWORK`; `none` removes DNS from `room-isolation` |
-| `rooms.nodeSelector` | `{}` | `RUNTIME_ROOM_NODE_SELECTOR` (JSON) |
-| `rooms.tolerations` | `[]` | `RUNTIME_ROOM_TOLERATIONS` (JSON) |
+| `rooms.nodeSelector` | `{}` | `RUNTIME_ROOM_NODE_SELECTOR` (JSON); also competition job and resolver Pods, which run student code |
+| `rooms.tolerations` | `[]` | `RUNTIME_ROOM_TOLERATIONS` (JSON); also competition job and resolver Pods |
 | `rooms.priorityClassName` | `""` | `RUNTIME_PRIORITY_CLASS` (every broker-created Pod) |
-| `rooms.podLabels` | `{}` | `RUNTIME_POD_LABELS` (JSON, with `app.kubernetes.io/name`, `instance`, `part-of` and `commonLabels`) |
+| `rooms.podLabels` | `{}` | `RUNTIME_POD_LABELS` (JSON, with `app.kubernetes.io/name`, `part-of` and `commonLabels`; never `instance`, which ArgoCD's label tracking would take for its own and prune) |
 | `rooms.podAnnotations` | `{}` | `RUNTIME_POD_ANNOTATIONS` (JSON) |
 | `gpu.runtimeClassName` | `nvidia` | `RUNTIME_GPU_RUNTIME_CLASS` (`""`: none) |
 | `gpu.nodeSelector` | `{}` | `RUNTIME_GPU_NODE_SELECTOR` (JSON) |

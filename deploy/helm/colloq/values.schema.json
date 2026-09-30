@@ -132,6 +132,8 @@
       "properties": {
         "schemaVersion": { "const": 1, "description": "Accepted so a release catalog can be copied in as is." },
         "release": { "type": "string", "pattern": "^([A-Za-z0-9][A-Za-z0-9._-]{0,127})?$" },
+        "retainPrevious": { "type": "boolean", "description": "Keep the previous release's revisions (not current) on a helm upgrade; read from the live ConfigMap." },
+        "maxRetainedPerEnvironment": { "type": "integer", "minimum": 0, "maximum": 20 },
         "defaultEnvironment": { "type": "string", "pattern": "^([a-z0-9][a-z0-9-]{0,30}[a-z0-9]|[a-z0-9])$" },
         "environments": {
           "type": "array",

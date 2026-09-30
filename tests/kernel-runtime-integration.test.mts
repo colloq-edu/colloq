@@ -17,7 +17,7 @@ import {forgetResources,machineResources} from '../server/src/kernel/resources.j
 const image=(c:string)=>`registry.example/colloq/kernel@sha256:${c.repeat(64)}`
 const rev=(c:string)=>`sha256:${c.repeat(64)}`
 
-test('room image pins survive catalog/default updates and missing revisions fail closed',async()=>{
+test('room image pins survive catalog/default updates, and a revision the catalog dropped moves the room to its environment\'s current one',async()=>{
  const old={...process.env};const file=path.join(TEST_ROOT,'catalog.json'),tokenFile=path.join(TEST_ROOT,'broker-token')
  const requests:any[]=[]
  const runtime=http.createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;const input=body?JSON.parse(body):{};requests.push({path:req.url,...input});res.setHeader('content-type','application/json');res.end(JSON.stringify(req.url==='/v1/health'?{ok:true,reason:null,defaultCpus:1.5}:req.url==='/v1/rooms'?{rooms:[{sessionId:'pin-old',instanceId:'pod-1',phase:'ready',environment:'base',revision:rev('a'),cpus:4}]}:{url:'http://room.colloq.svc:8888',token:'r'.repeat(64),instanceId:'pod-1',environment:input.environment,revision:input.revision}))})
@@ -72,9 +72,18 @@ test('room image pins survive catalog/default updates and missing revisions fail
   assert.throws(()=>writeSource('base','evil'),/catalog|outside|published/i)
   assert.throws(()=>removeEnvironment('base'),/catalog|outside|published/i)
   await assert.rejects(()=>startBuild('base'),/catalog|outside|published/i)
-  entries=entries.filter(e=>e.image!==image('a'));write();const count=requests.length
-  await assert.rejects(()=>endpointForSession('pin-old','base'),/revision|catalog|published/i)
-  assert.equal(requests.length,count,'no substitute image is requested')
+  /*
+   * The pinned revision leaves the catalog (a Helm upgrade rendered where the
+   * previous catalog cannot be read back). Until 0.10 this refused for good,
+   * and on the chart every earlier room would never start a kernel again. The
+   * room now moves to its environment's CURRENT revision: never the removed
+   * image, never another environment, and the move is recorded as the new pin.
+   */
+  entries=entries.filter(e=>e.image!==image('a'));write()
+  await endpointForSession('pin-old','base')
+  assert.equal(requests.at(-1).environment,'base','the room keeps its environment')
+  assert.equal(requests.at(-1).revision,rev('b'),'the current revision, never the removed one')
+  assert.equal(sessionKernelRevision('pin-old'),rev('b'))
  }finally{
   for(const key of Object.keys(process.env))if(!(key in old))delete process.env[key]
   Object.assign(process.env,old)

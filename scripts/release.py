@@ -371,7 +371,6 @@ def render(value, node_name, state_dir, runtime_env=None, network=None):
     items.append(resource('Role', 'colloq-runtime', rules=[{'apiGroups': [''],
         'resources': ['pods', 'services'], 'verbs': ['get', 'list', 'create', 'delete']},
         {'apiGroups': [''], 'resources': ['pods/resize'], 'verbs': ['patch']},
-        {'apiGroups': [''], 'resources': ['pods/log'], 'verbs': ['get']},
         {'apiGroups': [''], 'resources': ['persistentvolumeclaims'], 'verbs': ['get']},
         {'apiGroups': ['networking.k8s.io'], 'resources': ['networkpolicies'], 'verbs': ['get']}]))
     items.append(resource('RoleBinding', 'colloq-runtime', roleRef={'apiGroup': 'rbac.authorization.k8s.io',
