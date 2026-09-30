@@ -67,6 +67,13 @@ test('the quick Cloudflare tunnel tells the server to believe CF-Connecting-IP; 
   assert.equal(launchConfig('/example', parseLaunchArgs([]), { TRUST_CF_CONNECTING_IP: '1' }).env.TRUST_CF_CONNECTING_IP, '1')
 })
 
+test('the server counts days in the laptop\'s own time zone unless TZ says otherwise', () => {
+  const own = Intl.DateTimeFormat().resolvedOptions().timeZone
+  assert.equal(launchConfig('/example', parseLaunchArgs([]), {}).env.TZ, own)
+  // An explicit TZ (the shell's or .env's) is the operator's and stays.
+  assert.equal(launchConfig('/example', parseLaunchArgs([]), { TZ: 'Asia/Tokyo' }).env.TZ, 'Asia/Tokyo')
+})
+
 test('source fingerprint catches content changes, ignores generated files, and verifies both output bundles', () => {
   const root = mkdtempSync(join(tmpdir(), 'colloq-launch-config-'))
   try {

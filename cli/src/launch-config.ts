@@ -187,6 +187,17 @@ export function launchConfig(
    * student as the last X-Forwarded-For hop, which Cloudflare appends as well.
    */
   if (options.share) env.TRUST_CF_CONNECTING_IP = '1'
+  /*
+   * The laptop's own time zone, named for the server. Without TZ the server
+   * counts days (the competition daily limit, dates on published pages) in
+   * Europe/Moscow (server/src/time-zone.ts): the right guess for a server
+   * image, whose container knows no zone but UTC, and the wrong one for a
+   * teacher in Berlin whose laptop knows exactly where it is.
+   */
+  if (!env.TZ) {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    if (zone) env.TZ = zone
+  }
   return {
     root,
     home,
