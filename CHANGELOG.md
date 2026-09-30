@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.8.2](https://github.com/colloq-edu/colloq/compare/v0.8.1...v0.8.2) (2026-09-30)
+
+
+### Bug Fixes
+
+* **competitions:** every row its own place again, earlier submission first ([fd82459](https://github.com/colloq-edu/colloq/commit/fd8245965fb7abe9bbba99fc985b5be60fd7eb1e))
+
 ## [0.8.1](https://github.com/colloq-edu/colloq/compare/v0.8.0...v0.8.1) (2026-09-29)
 
 
