@@ -13,6 +13,7 @@ import {
   type RuntimeEnsureRequest,
   type RuntimeEnvironment,
   type RuntimeHealth,
+  type RuntimeKernelRole,
   type RuntimeResizeRequest,
   type RuntimeResizeResult,
   type RuntimeRoom,
@@ -21,10 +22,22 @@ import {
 } from '../../shared/runtime.js'
 import { KubernetesError, type KubernetesClient, type KubeObject } from './kubernetes.js'
 import type { WorkloadConfig } from './config.js'
+import { placementSatisfies, policyMetadata, policyPlacement, withoutPlacement } from './pod-policy.js'
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const sessionHash = (id: string) => hash(id).slice(0, 40)
 export const roomName = (id: string) => `colloq-room-${sessionHash(id)}`
+/**
+ * The Pod and Service of a class's personal notebooks: the room's name with
+ * `-own`, the Docker container's naming (`colloq-room-<id>-own`), so that
+ * `kubectl get pods` lists the two side by side. 56 characters, inside the
+ * 63 a Service name may have.
+ */
+export const ownName = (id: string) => `${roomName(id)}-own`
+export const kernelName = (id: string, role: RuntimeKernelRole = 'room') =>
+  role === 'own' ? ownName(id) : roomName(id)
+/** The queue key of one of a room's two Pods; a room ID never contains `#`. */
+const slotOf = (id: string, role: RuntimeKernelRole) => (role === 'own' ? `${id}#own` : id)
 const MANAGER = 'colloq-runtime'
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 export class RuntimeError extends Error {
@@ -56,21 +69,45 @@ interface Options {
   /** How long a Pod may stand refused by the scheduler before the start gives up. */
   unschedulableGraceMs?: number
 }
-const labels = (id: string) => ({
-  'colloq.dev/role': 'kernel',
-  'app.kubernetes.io/managed-by': MANAGER,
-  'colloq.kind': 'room-kernel',
-  'colloq.dev/session': sessionHash(id),
-})
-function owned(object: KubeObject, id: string): boolean {
+/**
+ * The labels a Pod and its Service are owned and selected by.
+ *
+ * The room's set is exactly what it always was: it is the selector of every
+ * live room's Service, and the broker refuses a Service that differs from the
+ * one it would create, so changing it would refuse every live class.
+ *
+ * The personal notebooks' Pod keeps `colloq.dev/role=kernel`: the room
+ * isolation NetworkPolicy selects by it (Jupyter ingress from app and runtime
+ * only, egress to DNS at most), and a second policy the chart could forget
+ * would be a Pod with an open network. What tells the two apart is
+ * `colloq.kind` (`own-kernel`, not `room-kernel`), so the room's Service does
+ * not select the personal Pod and the other way round, plus an explicit
+ * `colloq.dev/kernel=own` for operators and policies.
+ */
+const labels = (id: string, role: RuntimeKernelRole = 'room'): Record<string, string> =>
+  role === 'own'
+    ? {
+        'colloq.dev/role': 'kernel',
+        'app.kubernetes.io/managed-by': MANAGER,
+        'colloq.kind': 'own-kernel',
+        'colloq.dev/session': sessionHash(id),
+        'colloq.dev/kernel': 'own',
+      }
+    : {
+        'colloq.dev/role': 'kernel',
+        'app.kubernetes.io/managed-by': MANAGER,
+        'colloq.kind': 'room-kernel',
+        'colloq.dev/session': sessionHash(id),
+      }
+function owned(object: KubeObject, id: string, role: RuntimeKernelRole = 'room'): boolean {
   return (
-    object.metadata?.name === roomName(id) &&
+    object.metadata?.name === kernelName(id, role) &&
     object.metadata.annotations?.['colloq.dev/session-id'] === id &&
-    Object.entries(labels(id)).every(([k, v]) => object.metadata.labels?.[k] === v)
+    Object.entries(labels(id, role)).every(([k, v]) => object.metadata.labels?.[k] === v)
   )
 }
-function assertOwned(object: KubeObject, id: string): void {
-  if (!owned(object, id) || !object.metadata.uid)
+function assertOwned(object: KubeObject, id: string, role: RuntimeKernelRole = 'room'): void {
+  if (!owned(object, id, role) || !object.metadata.uid)
     throw new RuntimeError('Refusing resource with mismatched runtime ownership', 409)
 }
 function retired(service: KubeObject | null): boolean {
@@ -100,6 +137,8 @@ function resourceQuantity(name: string, value: unknown): unknown {
 const MiB = 1024 ** 2
 const KERNEL = 'kernel'
 const RESIZE_PATCH = 'application/strategic-merge-patch+json'
+/** The 501 a resize gets when the operator turned in-place resize off, the same status a cluster older than 1.33 gets. */
+const RESIZE_DISABLED = 'In-place Pod resize is disabled on this runtime (RUNTIME_IN_PLACE_RESIZE=0)'
 /** What to change on a live Pod: memory in MiB, cores as a Kubernetes quantity ("2", "1500m"). */
 interface ResizeTarget {
   memoryMb?: number
@@ -138,16 +177,14 @@ function withoutResizable(input: Record<string, any>): Record<string, any> {
       if (kernel?.resources?.[group]) delete kernel.resources[group][name]
   return spec
 }
-/** Compare the ENTIRE spec after removing only known API defaults. A copied
- * template-hash annotation cannot authorize additional executable or secret
- * fields. nodeName is the single scheduler-populated placement field allowed. */
+/** Compare the ENTIRE workload after removing only known API defaults. A
+ * copied template-hash annotation cannot authorize additional executable or
+ * secret fields. Placement (where and how urgently the Pod runs, nodeName
+ * included) is compared apart: pod-policy.ts · PLACEMENT_FIELDS says why. */
 function canonicalPod(input: Record<string, any>): Record<string, any> {
-  const spec = structuredClone(input)
+  const spec = structuredClone(withoutPlacement(input))
   for (const [key, value] of Object.entries({
     dnsPolicy: 'ClusterFirst',
-    schedulerName: 'default-scheduler',
-    priority: 0,
-    preemptionPolicy: 'PreemptLowerPriority',
     hostNetwork: false,
     hostPID: false,
     hostIPC: false,
@@ -157,25 +194,7 @@ function canonicalPod(input: Record<string, any>): Record<string, any> {
     ephemeralContainers: [],
   }))
     omitDefault(spec, key, value)
-  if (typeof spec.nodeName === 'string' && /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(spec.nodeName))
-    delete spec.nodeName
   if (spec.serviceAccount === spec.serviceAccountName) delete spec.serviceAccount
-  if (
-    Array.isArray(spec.tolerations) &&
-    spec.tolerations.length <= 2 &&
-    new Set(spec.tolerations.map((t: any) => t.key)).size === spec.tolerations.length &&
-    spec.tolerations.every((t: any) =>
-      ['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable'].some((key) =>
-        isDeepStrictEqual(t, {
-          key,
-          operator: 'Exists',
-          effect: 'NoExecute',
-          tolerationSeconds: 300,
-        }),
-      ),
-    )
-  )
-    delete spec.tolerations
   for (const container of spec.containers ?? []) {
     for (const [key, value] of Object.entries({
       terminationMessagePath: '/dev/termination-log',
@@ -213,8 +232,8 @@ function canonicalPod(input: Record<string, any>): Record<string, any> {
       omitDefault(mount, 'mountPropagation', 'None')
       omitDefault(mount, 'recursiveReadOnly', 'Disabled')
     }
-    const probe = container.readinessProbe
-    if (probe) {
+    for (const probe of [container.readinessProbe, container.livenessProbe]) {
+      if (!probe) continue
       for (const [key, value] of Object.entries({
         initialDelaySeconds: 0,
         timeoutSeconds: 1,
@@ -243,6 +262,71 @@ function podMatches(actual: Record<string, any>, expected: Record<string, any>):
     return false
   }
 }
+/**
+ * Where a found Pod differs from the one the broker asked for: field paths
+ * only, never values (the kernel's environment carries the room's token).
+ *
+ * For the operator of a cluster whose admission webhooks rewrite Pods: a
+ * sidecar injector, a policy that sets `imagePullPolicy: Always`. The broker
+ * refuses such a Pod as not its own, and "does not match the requested
+ * workload policy" alone does not say which webhook to exempt it from.
+ */
+function workloadDifferences(actual: Record<string, any>, expected: Record<string, any>): string[] {
+  const found: string[] = []
+  const walk = (a: unknown, b: unknown, path: string) => {
+    if (found.length >= 8 || isDeepStrictEqual(a, b)) return
+    if (a && b && typeof a === 'object' && typeof b === 'object' && Array.isArray(a) === Array.isArray(b)) {
+      const keys = Array.isArray(a)
+        ? [...Array(Math.max(a.length, (b as unknown[]).length)).keys()].map(String)
+        : [...new Set([...Object.keys(a), ...Object.keys(b as object)])]
+      for (const key of keys)
+        walk((a as any)[key], (b as any)[key], Array.isArray(a) ? `${path}[${key}]` : `${path}.${key}`)
+      return
+    }
+    found.push(path)
+  }
+  try {
+    walk(canonicalPod(actual), canonicalPod(expected), 'spec')
+  } catch {
+    return ['spec']
+  }
+  return found
+}
+/**
+ * The template hash: the workload the broker creates, without the resources
+ * it changes on a live Pod and without placement.
+ *
+ * Placement left the hash in 0.10, together with the settings that decide it
+ * (colocation, node selectors, tolerations, the priority class, the GPU
+ * RuntimeClass): a changed setting must reach the NEXT Pod, not make every
+ * live class foreign at its next run.
+ */
+function templateHash(spec: Record<string, any>): string {
+  return hash(JSON.stringify(withoutResizable(withoutPlacement(spec))))
+}
+/**
+ * The room Pod 0.9 created from the same intent, for adopting it.
+ *
+ * Two things differ: 0.9 had no liveness probe, and it hashed a GPU room's
+ * `runtimeClassName` (in the place it wrote it, after the securityContext).
+ * Without this, the upgrade to 0.10 would make every live class's Pod
+ * foreign, and its next run would replace it with all the seminar's
+ * variables. The found Pod must still match this template exactly, field for
+ * field; only the template it is held to is the one it was created from.
+ */
+function legacyTemplate(spec: Record<string, any>, gpu: boolean): { hash: string; spec: Record<string, any> } {
+  const legacy = structuredClone(spec)
+  const kernel = kernelOf(legacy.containers)
+  if (kernel) delete kernel.livenessProbe
+  const hashed: Record<string, any> = {}
+  for (const [key, value] of Object.entries(withoutPlacement(legacy))) {
+    hashed[key] = value
+    if (gpu && key === 'securityContext') hashed.runtimeClassName = 'nvidia'
+  }
+  return { hash: hash(JSON.stringify(withoutResizable(hashed))), spec: legacy }
+}
+/** A Pod has not started a container yet: there is no Python in it to lose. */
+const notStarted = (pod: KubeObject) => !pod.status?.phase || pod.status.phase === 'Pending'
 /**
  * The same Pod, only with different memory or cores: it is changed in place,
  * not taken down.
@@ -354,21 +438,42 @@ export class RuntimeController {
   private readonly queues = new Map<string, RoomQueue>()
   private readonly root: string
   private readonly recovery = { rollbackRetries: 0, rollbackFailures: 0, rollbacksApplied: 0 }
+  /** What was already said about a Pod, so a warning comes once per Pod rather than once per run. */
+  private readonly noted = new Set<string>()
   recoveryDiagnostics() { return { ...this.recovery } }
   constructor(private readonly options: Options) {
     this.root = `/api/v1/namespaces/${options.config.namespace}`
   }
-  private queue(id: string): RoomQueue {
+  /** Whether a live Pod's memory and cores are changed at all (RUNTIME_IN_PLACE_RESIZE). */
+  private get inPlaceResize(): boolean {
+    return this.options.config.inPlaceResize !== false
+  }
+  private noteOnce(key: string, text: string): void {
+    if (this.noted.has(key)) return
+    if (this.noted.size >= 10000) this.noted.clear()
+    this.noted.add(key)
+    console.warn(text)
+  }
+  /**
+   * One queue per Pod, not per room.
+   *
+   * The personal notebooks' Pod has a queue of its own: a student's first run
+   * in a personal notebook waits for that Pod up to the startup timeout, and
+   * in a shared queue the lecture's own start would wait behind it. What the
+   * two share is the room's end, and `remove` holds both queues for it.
+   */
+  private queue(id: string, role: RuntimeKernelRole = 'room'): RoomQueue {
     if (!isRuntimeSessionId(id)) throw new RuntimeError('Invalid room ID', 400)
-    let queue = this.queues.get(id)
+    const slot = slotOf(id, role)
+    let queue = this.queues.get(slot)
     if (!queue) {
       if (this.queues.size >= 10000) throw new RuntimeError('Runtime queue capacity reached', 429)
       queue = { generation: 0, tail: Promise.resolve(), inflight: new Map() }
-      this.queues.set(id, queue)
+      this.queues.set(slot, queue)
     }
     return queue
   }
-  private enqueue<T>(id: string, queue: RoomQueue, fn: () => Promise<T>): Promise<T> {
+  private enqueue<T>(slot: string, queue: RoomQueue, fn: () => Promise<T>): Promise<T> {
     const task = queue.tail.then(fn)
     const tail = task.then(
       () => undefined,
@@ -376,11 +481,11 @@ export class RuntimeController {
     )
     queue.tail = tail
     void tail.then(() => {
-      if (queue.tail === tail && this.queues.get(id) === queue) this.queues.delete(id)
+      if (queue.tail === tail && this.queues.get(slot) === queue) this.queues.delete(slot)
     })
     return task
   }
-  ensure(id: string, intent: RuntimeEnsureRequest): Promise<RuntimeEndpoint> {
+  ensure(id: string, intent: RuntimeEnsureRequest, role: RuntimeKernelRole = 'room'): Promise<RuntimeEndpoint> {
     let environment: RuntimeEnvironment, queue: RoomQueue
     let cpus: number | undefined, memoryMb: number | undefined
     try {
@@ -404,7 +509,7 @@ export class RuntimeController {
         request.environment,
         request.revision,
       )
-      queue = this.queue(id)
+      queue = this.queue(id, role)
     } catch (err) {
       return Promise.reject(
         err instanceof RuntimeError
@@ -436,23 +541,50 @@ export class RuntimeController {
       if (queue.generation !== generation)
         throw new RuntimeError('Room startup cancelled by deletion', 409)
     }
-    const task = this.enqueue(id, queue, () =>
-      this.ensureWorkload(id, environment, check, cpus, memoryMb),
+    const task = this.enqueue(slotOf(id, role), queue, () =>
+      this.ensureWorkload(id, role, environment, check, cpus, memoryMb),
     ).finally(
       () => queue.inflight.delete(key),
     )
     queue.inflight.set(key, task)
     return task
   }
-  remove(id: string, permanent = false): Promise<void> {
-    let queue: RoomQueue
+  /**
+   * Stop a room: both of its Pods, or with `role` `own` only its personal
+   * notebooks' Pod (its last personal kernel went away, the class goes on).
+   *
+   * The whole room (idle sweep, deleted seminar, permanent retirement) holds
+   * BOTH queues for the work: it takes its place in the personal queue first,
+   * then in the room's, and deletes only once both are reached. Holding one
+   * would leave a window: a personal ensure queued behind this deletion but
+   * run before it would create a Pod for a room being removed, and after a
+   * permanent retirement one that nothing would ever delete. No other task
+   * waits across the two queues, so this cannot deadlock.
+   */
+  remove(id: string, permanent = false, role: RuntimeKernelRole = 'room'): Promise<void> {
+    let own: RoomQueue, room: RoomQueue | undefined
     try {
-      queue = this.queue(id)
+      if (role === 'own' && permanent)
+        throw new RuntimeError('Personal notebook kernels are retired together with their room', 400)
+      own = this.queue(id, 'own')
+      if (role === 'room') room = this.queue(id)
     } catch (err) {
       return Promise.reject(err)
     }
-    queue.generation++
-    return this.enqueue(id, queue, () => permanent ? this.retireWorkload(id) : this.deleteWorkload(id))
+    own.generation++
+    if (!room) return this.enqueue(slotOf(id, 'own'), own, () => this.deleteWorkload(id, 'own'))
+    room.generation++
+    let reached!: () => void
+    const roomReached = new Promise<void>((resolve) => (reached = resolve))
+    const work = this.enqueue(slotOf(id, 'own'), own, async () => {
+      await roomReached
+      await (permanent ? this.retireWorkload(id) : this.deleteRoom(id))
+    })
+    const held = this.enqueue(slotOf(id, 'room'), room, async () => {
+      reached()
+      await work.catch(() => undefined)
+    })
+    return Promise.all([work, held]).then(() => undefined)
   }
   /**
    * Raise or lower the memory and cores of a LIVE room without touching its
@@ -468,8 +600,12 @@ export class RuntimeController {
    * lies in the seminar row, and the next ensure creates the Pod with it right
    * away. It joins the same room queue as ensure and DELETE, so as not to
    * change a Pod that is being started or taken down right now.
+   *
+   * With RUNTIME_IN_PLACE_RESIZE=0 a change that would need the subresource
+   * answers 501, exactly as a cluster older than 1.33 does: the operator took
+   * `pods/resize` out of the Role, and a call would only be a 403.
    */
-  resize(id: string, intent: RuntimeResizeRequest): Promise<RuntimeResizeResult> {
+  resize(id: string, intent: RuntimeResizeRequest, role: RuntimeKernelRole = 'room'): Promise<RuntimeResizeResult> {
     let queue: RoomQueue
     const target: ResizeTarget = {}
     try {
@@ -490,7 +626,7 @@ export class RuntimeController {
       // would not create.
       if (request.cpus !== undefined)
         target.cpu = request.cpus === null ? this.options.config.cpu : String(request.cpus)
-      queue = this.queue(id)
+      queue = this.queue(id, role)
     } catch (err) {
       return Promise.reject(
         err instanceof RuntimeError
@@ -498,7 +634,7 @@ export class RuntimeController {
           : new RuntimeError(err instanceof Error ? err.message : 'Invalid resize intent', 400),
       )
     }
-    return this.enqueue(id, queue, () => this.resizeWorkload(id, target))
+    return this.enqueue(slotOf(id, role), queue, () => this.resizeWorkload(id, role, target))
   }
   private defaultMemoryMb(): number {
     return Math.floor(Number(resourceQuantity('memory', this.options.config.memory)) / MiB)
@@ -511,14 +647,17 @@ export class RuntimeController {
    * container, and only those of the two that were asked for: memory nobody
    * touched is not overwritten with a number read a second ago.
    */
-  private patchResources(id: string, pod: KubeObject, target: ResizeTarget): Promise<KubeObject> {
+  private patchResources(id: string, role: RuntimeKernelRole, pod: KubeObject, target: ResizeTarget): Promise<KubeObject> {
+    // Every caller checks this first; the guard is here so that no future one
+    // can reach a subresource the operator's Role may not grant.
+    if (!this.inPlaceResize) return Promise.reject(new RuntimeError(RESIZE_DISABLED, 501))
     const values: Record<string, string> = {
       ...(target.memoryMb !== undefined ? { memory: `${target.memoryMb}Mi` } : {}),
       ...(target.cpu !== undefined ? { cpu: target.cpu } : {}),
     }
     return this.options.kube.request<KubeObject>(
       'PATCH',
-      `${this.root}/pods/${roomName(id)}/resize`,
+      `${this.root}/pods/${kernelName(id, role)}/resize`,
       {
         // resourceVersion is a precondition: a Pod that was replaced or changed
         // between the read and the patch gets a 409, not someone else's limits.
@@ -535,21 +674,21 @@ export class RuntimeController {
   /** Restore only this Pod, rereading the resourceVersion after kubelet races.
    * The persisted Infeasible condition lets a later ensure (even after a broker
    * restart) retry restoration if all three writes fail. */
-  private async rollbackResources(id: string, pod: KubeObject, target: ResizeTarget): Promise<KubeObject> {
+  private async rollbackResources(id: string, role: RuntimeKernelRole, pod: KubeObject, target: ResizeTarget): Promise<KubeObject> {
     const uid = pod.metadata.uid
     try {
       for (let attempt = 0; attempt < 3; attempt++) {
-        assertOwned(pod, id)
+        assertOwned(pod, id, role)
         if (pod.metadata.uid !== uid || pod.metadata.deletionTimestamp)
           throw new Error('Pod was replaced or is terminating')
         try {
-          const restored = await this.patchResources(id, pod, target)
+          const restored = await this.patchResources(id, role, pod, target)
           this.recovery.rollbacksApplied = Math.min(Number.MAX_SAFE_INTEGER, this.recovery.rollbacksApplied + 1)
           return restored
         } catch (err) {
           if (!(err instanceof KubernetesError && err.status === 409) || attempt === 2) throw err
           this.recovery.rollbackRetries = Math.min(Number.MAX_SAFE_INTEGER, this.recovery.rollbackRetries + 1)
-          const current = await this.get('pods', id)
+          const current = await this.get('pods', id, role)
           if (!current) throw new Error('Pod disappeared')
           pod = current
         }
@@ -561,17 +700,17 @@ export class RuntimeController {
     }
     throw new RuntimeError('Room resize rollback failed; resources are unreconciled, retry required', 503)
   }
-  private async resizeWorkload(id: string, target: ResizeTarget): Promise<RuntimeResizeResult> {
+  private async resizeWorkload(id: string, role: RuntimeKernelRole, target: ResizeTarget): Promise<RuntimeResizeResult> {
     const wantCpu = target.cpu === undefined ? undefined : milliCpuOf({ limits: { cpu: target.cpu } })
     let uid: string | undefined
     // What the Pod actually has: the spec returns to this if the node cannot
     // give that much.
     let before: ResizeTarget = {}
     for (let attempt = 0; ; attempt++) {
-      const pod = await this.get('pods', id)
+      const pod = await this.get('pods', id, role)
       if (!pod || pod.metadata.deletionTimestamp || podPhase(pod) === 'failed')
         return { outcome: 'absent' }
-      assertOwned(pod, id)
+      assertOwned(pod, id, role)
       uid = pod.metadata.uid
       const kernel = kernelOf(pod.spec.containers)
       if (!kernel) throw new RuntimeError('Managed room Pod has no kernel container', 409)
@@ -591,8 +730,10 @@ export class RuntimeController {
         (milliCpuOf(kernel.resources) === wantCpu &&
           milliCpuOf({ limits: kernel.resources?.requests }) === wantCpu)
       if (memoryDone && cpuDone) break
+      // The same answer as a cluster without the subresource gives below.
+      if (!this.inPlaceResize) throw new RuntimeError(RESIZE_DISABLED, 501)
       try {
-        await this.patchResources(id, pod, target)
+        await this.patchResources(id, role, pod, target)
         break
       } catch (err) {
         // Kubelet updated status between the read and the patch: reread, retry.
@@ -611,10 +752,10 @@ export class RuntimeController {
     }
     const deadline = Date.now() + (this.options.resizeTimeoutMs ?? 10000)
     while (true) {
-      const pod = await this.get('pods', id)
+      const pod = await this.get('pods', id, role)
       if (!pod || pod.metadata.uid !== uid || pod.metadata.deletionTimestamp)
         return { outcome: 'absent' }
-      assertOwned(pod, id)
+      assertOwned(pod, id, role)
       const status = kernelOf(pod.status?.containerStatuses)?.resources
       const actualMemory = memoryOf(status)
       const actualCpu = milliCpuOf(status)
@@ -635,7 +776,7 @@ export class RuntimeController {
             : {}),
         }
         if (Object.keys(revert).length)
-          await this.rollbackResources(id, pod, revert)
+          await this.rollbackResources(id, role, pod, revert)
         throw new RuntimeError('Room resize is infeasible on this node', 409)
       }
       const reached =
@@ -656,11 +797,11 @@ export class RuntimeController {
       await delay(this.options.pollMs ?? 500)
     }
   }
-  private async get(kind: 'pods' | 'services', id: string): Promise<KubeObject | null> {
+  private async get(kind: 'pods' | 'services', id: string, role: RuntimeKernelRole = 'room'): Promise<KubeObject | null> {
     try {
       return await this.options.kube.request<KubeObject>(
         'GET',
-        `${this.root}/${kind}/${roomName(id)}`,
+        `${this.root}/${kind}/${kernelName(id, role)}`,
       )
     } catch (err) {
       if (err instanceof KubernetesError && err.status === 404) return null
@@ -671,21 +812,41 @@ export class RuntimeController {
     kind: 'pods' | 'services',
     id: string,
     body: KubeObject,
+    role: RuntimeKernelRole = 'room',
   ): Promise<KubeObject> {
     let created: KubeObject
     try {
       created = await this.options.kube.request<KubeObject>('POST', `${this.root}/${kind}`, body)
     } catch (err) {
       if (!(err instanceof KubernetesError && err.status === 409)) throw err
-      const found = await this.get(kind, id)
+      const found = await this.get(kind, id, role)
       if (!found) throw err
       created = found
     }
-    assertOwned(created, id)
+    assertOwned(created, id, role)
     return created
+  }
+  /**
+   * Where a room's or a personal notebook's Pod may run, from the operator's
+   * settings (pod-policy.ts). A setting that is not given adds nothing, so a
+   * room Pod on the installer's single-node k3s is exactly the Pod of 0.9.
+   */
+  private placement(gpu: boolean): Record<string, unknown> {
+    const { config } = this.options
+    const runtimeClass = config.gpuRuntimeClass ?? 'nvidia'
+    const nodeSelector = { ...config.roomNodeSelector, ...(gpu ? config.gpuNodeSelector : {}) }
+    const tolerations = [...(config.roomTolerations ?? []), ...(gpu ? config.gpuTolerations ?? [] : [])]
+    return {
+      ...(gpu && runtimeClass ? { runtimeClassName: runtimeClass } : {}),
+      ...(Object.keys(nodeSelector).length ? { nodeSelector } : {}),
+      ...(tolerations.length ? { tolerations: tolerations.map((toleration) => ({ ...toleration })) } : {}),
+      // Both of a room's Pods mount the workspace claim.
+      ...policyPlacement(config, true),
+    }
   }
   private pod(
     id: string,
+    role: RuntimeKernelRole,
     environment: RuntimeEnvironment,
     token: string,
     cpus?: number,
@@ -693,14 +854,21 @@ export class RuntimeController {
   ): KubeObject {
     const { config } = this.options
     const revision = imageRevision(environment.image)
+    /*
+     * The personal notebooks' Pod never gets the class's card: it runs a GPU
+     * environment's image on the CPU, exactly as the Docker backend's second
+     * container does. The card is the class's, and a GPU is given to a Pod as
+     * a whole; that is not a setting but the reason the second Pod exists.
+     */
+    const gpu = role === 'room' && environment.gpu
     const quota = cpus === undefined ? config.cpu : String(cpus)
     const limits: Record<string, string | number> = {
       cpu: quota,
       memory: memoryMb === undefined ? config.memory : `${memoryMb}Mi`,
       'ephemeral-storage': config.ephemeral,
-      ...(environment.gpu ? { 'nvidia.com/gpu': 1 } : {}),
+      ...(gpu ? { 'nvidia.com/gpu': 1 } : {}),
     }
-    const spec = {
+    const workload = {
       serviceAccountName: 'colloq-kernel',
       automountServiceAccountToken: false,
       enableServiceLinks: false,
@@ -712,7 +880,6 @@ export class RuntimeController {
         runAsGroup: 1000,
         seccompProfile: { type: 'RuntimeDefault' },
       },
-      ...(environment.gpu ? { runtimeClassName: 'nvidia' } : {}),
       ...(config.imagePullSecret ? { imagePullSecrets: [{ name: config.imagePullSecret }] } : {}),
       containers: [
         {
@@ -763,6 +930,12 @@ export class RuntimeController {
             { resourceName: 'memory', restartPolicy: 'NotRequired' },
             { resourceName: 'cpu', restartPolicy: 'NotRequired' },
           ],
+          /*
+           * The room's folder, and only it, at the same path in both Pods: the
+           * Docker backend mounts the same folder into both of its containers,
+           * and a personal notebook reads the class's data files exactly where
+           * the lecture's notebook reads them.
+           */
           volumeMounts: [
             { name: 'workspace', mountPath: `/workspace/${id}`, subPath: id },
             { name: 'tmp', mountPath: '/tmp' },
@@ -776,6 +949,25 @@ export class RuntimeController {
             timeoutSeconds: 1,
             failureThreshold: 3,
           },
+          /*
+           * Liveness, for a cluster whose policy engine requires it on every
+           * long-running container, and for a Jupyter server that stopped
+           * accepting connections, which is gone anyway.
+           *
+           * TCP on the Jupyter port, never an HTTP call into it: the kernels
+           * are other processes, and the node completes the handshake on the
+           * server's listening socket however long a cell computes and however
+           * throttled the Pod's cores are. With restartPolicy Never a failed
+           * liveness ends the Pod and the seminar's variables with it, so it
+           * acts only after five minutes of refused connections.
+           */
+          livenessProbe: {
+            tcpSocket: { port: 8888 },
+            initialDelaySeconds: 30,
+            periodSeconds: 30,
+            timeoutSeconds: 5,
+            failureThreshold: 10,
+          },
         },
       ],
       volumes: [
@@ -784,59 +976,79 @@ export class RuntimeController {
         { name: 'home', emptyDir: { sizeLimit: config.ephemeral } },
         {
           name: 'shm',
-          emptyDir: { medium: 'Memory', sizeLimit: environment.gpu ? '1Gi' : '64Mi' },
+          emptyDir: { medium: 'Memory', sizeLimit: gpu ? '1Gi' : '64Mi' },
         },
       ],
     }
+    // Placement comes last and stays out of the template hash (templateHash).
+    const spec = { ...workload, ...this.placement(gpu) }
     return {
       apiVersion: 'v1',
       kind: 'Pod',
       metadata: {
-        name: roomName(id),
-        labels: { ...labels(id), 'colloq.dev/environment': environment.name },
-        annotations: {
-          'colloq.dev/session-id': id,
-          'colloq.dev/revision': revision,
-          'colloq.dev/template-hash': hash(JSON.stringify(withoutResizable(spec))),
-        },
+        name: kernelName(id, role),
+        ...policyMetadata(
+          config,
+          { ...labels(id, role), 'colloq.dev/environment': environment.name },
+          {
+            'colloq.dev/session-id': id,
+            'colloq.dev/revision': revision,
+            'colloq.dev/template-hash': templateHash(spec),
+          },
+        ),
       },
       spec,
     }
   }
-  private service(id: string): KubeObject {
+  private service(id: string, role: RuntimeKernelRole = 'room'): KubeObject {
     return {
       apiVersion: 'v1',
       kind: 'Service',
       metadata: {
-        name: roomName(id),
-        labels: labels(id),
+        name: kernelName(id, role),
+        labels: labels(id, role),
         annotations: { 'colloq.dev/session-id': id },
       },
       spec: {
         type: 'ClusterIP',
-        selector: labels(id),
+        selector: labels(id, role),
         ports: [{ name: 'jupyter', protocol: 'TCP', port: 8888, targetPort: 8888 }],
       },
     }
   }
   private async ensureWorkload(
     id: string,
+    role: RuntimeKernelRole,
     environment: RuntimeEnvironment,
     check: () => void,
     cpus?: number,
     memoryMb?: number,
   ): Promise<RuntimeEndpoint> {
     check()
+    /*
+     * Each Pod its own Jupyter token. A line in a personal notebook reading its
+     * JUPYTER_TOKEN must not open the lecture's Jupyter, other people's kernels
+     * and variables (the NetworkPolicy already keeps kernel Pods apart; the
+     * token does not rely on it). The room keeps the string it always had, so
+     * live Pods answer to their own token after an upgrade.
+     */
     const token = createHmac('sha256', this.options.roomSecret())
-      .update(`jupyter:${id}`)
+      .update(role === 'own' ? `jupyter:own:${id}` : `jupyter:${id}`)
       .digest('hex')
-    const desired = this.pod(id, environment, token, cpus, memoryMb),
-      desiredService = this.service(id)
-    let [pod, service] = await Promise.all([this.get('pods', id), this.get('services', id)])
+    const desired = this.pod(id, role, environment, token, cpus, memoryMb),
+      desiredService = this.service(id, role)
+    let [pod, service] = await Promise.all([this.get('pods', id, role), this.get('services', id, role)])
     check()
-    if (pod) assertOwned(pod, id)
-    if (service) assertOwned(service, id)
-    if (retired(service)) throw new RuntimeError('Room has been permanently retired', 410)
+    if (pod) assertOwned(pod, id, role)
+    if (service) assertOwned(service, id, role)
+    // A permanent retirement is recorded on the ROOM's Service, and it closes
+    // the room's personal notebooks as well.
+    const reservation = role === 'own' ? await this.get('services', id) : service
+    if (role === 'own') {
+      check()
+      if (reservation) assertOwned(reservation, id)
+    }
+    if (retired(reservation)) throw new RuntimeError('Room has been permanently retired', 410)
     // Never silently route Jupyter through an altered externally exposed service.
     if (
       service &&
@@ -845,18 +1057,34 @@ export class RuntimeController {
         service.spec.externalName)
     )
       throw new RuntimeError('Managed room Service does not match the private service policy', 409)
+    /*
+     * The template the found Pod was created from, by the hash it carries:
+     * this version's, or for a room the one of 0.9 (legacyTemplate), so the
+     * upgrade does not replace a single live class. A hash that is neither
+     * is another template, and the Pod is replaced below.
+     */
+    const templates = [
+      { hash: desired.metadata.annotations?.['colloq.dev/template-hash'], spec: desired.spec },
+      ...(role === 'room' ? [legacyTemplate(desired.spec, environment.gpu)] : []),
+    ]
+    const template = pod
+      ? templates.find((candidate) => candidate.hash === pod!.metadata.annotations?.['colloq.dev/template-hash'])
+      : undefined
     // An infeasible spec can survive a failed rollback and a broker restart.
     // Recover from the actual kubelet allocation before adopting the Pod. Do
     // not immediately submit the same impossible resize again in this ensure.
+    // Without in-place resize there is nothing to write it back with: the Pod
+    // is adopted as it is below, and its next incarnation takes the desired
+    // numbers, not its spec.
     let reconciled = false
-    if (pod && !pod.metadata.deletionTimestamp && podPhase(pod) !== 'failed' &&
+    if (this.inPlaceResize && pod && !pod.metadata.deletionTimestamp && podPhase(pod) !== 'failed' &&
       resizeCondition(pod, 'PodResizePending')?.reason === 'Infeasible' &&
-      onlyResizableDiffers(pod.spec, desired.spec)) {
+      onlyResizableDiffers(pod.spec, (template ?? templates[0]).spec)) {
       const resources = kernelOf(pod.status?.containerStatuses)?.resources
       const actualMemory = memoryOf(resources), actualCpu = milliCpuOf(resources)
       if (actualMemory === undefined || actualCpu === undefined)
         throw new RuntimeError('Room resize rollback failed; actual resources are unknown and unreconciled', 503)
-      pod = await this.rollbackResources(id, pod, { memoryMb: actualMemory, cpu: String(resources.limits.cpu) })
+      pod = await this.rollbackResources(id, role, pod, { memoryMb: actualMemory, cpu: String(resources.limits.cpu) })
       reconciled = true
       check()
     }
@@ -867,30 +1095,33 @@ export class RuntimeController {
      * for the sake of a limit means taking all the variables away from the
      * seminar exactly when it was given more so as not to lose them.
      */
-    const resize =
-      pod &&
-      !pod.metadata.deletionTimestamp &&
-      podPhase(pod) !== 'failed' &&
-      pod.metadata.annotations?.['colloq.dev/template-hash'] ===
-        desired.metadata.annotations?.['colloq.dev/template-hash'] &&
-      !podMatches(pod.spec, desired.spec) &&
-      onlyResizableDiffers(pod.spec, desired.spec)
-    if (
-      pod &&
-      !resize &&
-      (pod.metadata.deletionTimestamp ||
-        podPhase(pod) === 'failed' ||
-        pod.metadata.annotations?.['colloq.dev/template-hash'] !==
-          desired.metadata.annotations?.['colloq.dev/template-hash'] ||
-        !podMatches(pod.spec, desired.spec))
-    ) {
-      await this.deleteWorkload(id)
+    const live = !!pod && !pod.metadata.deletionTimestamp && podPhase(pod) !== 'failed'
+    const matches = live && !!template && podMatches(pod!.spec, template.spec)
+    const resize = live && !!template && !matches && onlyResizableDiffers(pod!.spec, template.spec)
+    /*
+     * A Pod placed under another configuration (the operator changed the node
+     * selector, the tolerations, the priority class, turned colocation on) is
+     * replaced only while it has not started: there is no Python in it to
+     * lose, and the new placement may be exactly what lets it start, the
+     * Multi-Attach of a ReadWriteOnce volume on the wrong node. A running Pod
+     * stays where it is until the room stops; its next Pod follows the
+     * setting. Placement is immutable on a live Pod, so there is nothing to
+     * change in place.
+     */
+    const misplaced = live && !placementSatisfies(pod!.spec, desired.spec)
+    if (pod && (!(matches || resize) || (misplaced && notStarted(pod)))) {
+      await this.deleteWorkload(id, role)
       check()
       pod = null
       service = null
+    } else if (pod && misplaced) {
+      this.noteOnce(
+        `placement:${pod.metadata.uid}`,
+        `[runtime] ${kernelName(id, role)} keeps running where an earlier configuration placed it; the room's next Pod follows the current node selector, tolerations, affinity and priority class`,
+      )
     }
     if (!service) {
-      service = await this.create('services', id, desiredService)
+      service = await this.create('services', id, desiredService, role)
       check()
       if (
         !serviceMatches(service.spec, desiredService.spec) ||
@@ -903,29 +1134,46 @@ export class RuntimeController {
         )
     }
     if (!pod) {
-      pod = await this.create('pods', id, desired)
+      pod = await this.create('pods', id, desired, role)
       check()
-      if (!podMatches(pod.spec, desired.spec))
-        throw new RuntimeError('Managed Pod does not match the requested workload policy', 409)
-    } else if (resize && !reconciled) {
-      // Without waiting for kubelet: the room needs Python, not a report on the
-      // cgroup. If it fails (the node has nothing to give right now, the API is
-      // old), the Pod stays as it was and working, and the room census shows
-      // the memory and cores it actually has.
-      const resources = kernelOf(desired.spec.containers).resources
-      const target: ResizeTarget = {
-        memoryMb: memoryOf(resources)!,
-        cpu: String(resources.limits.cpu),
-      }
-      await this.patchResources(id, pod, target).catch((err) =>
+      if (!podMatches(pod.spec, desired.spec)) {
+        // The names of the differing fields, never their values: that is what
+        // the operator needs to find the webhook that rewrote the Pod.
         console.warn(
-          `[runtime] in-place resize to ${target.memoryMb}Mi/${target.cpu} CPU failed: ${err instanceof Error ? err.message.slice(0, 200) : 'error'}`,
-        ),
-      )
-      check()
+          `[runtime] ${kernelName(id, role)} was changed at admission and is refused; differing fields: ` +
+            `${workloadDifferences(pod.spec, desired.spec).join(', ')}. Exempt broker-created Pods ` +
+            '(colloq.dev/role=kernel) from mutating webhooks such as sidecar injection',
+        )
+        throw new RuntimeError('Managed Pod does not match the requested workload policy', 409)
+      }
+    } else if (resize && !reconciled) {
+      if (!this.inPlaceResize) {
+        // The cluster changes no live Pod: the room keeps its Python and its
+        // numbers, the census shows what it has, the next Pod gets the new ones.
+        this.noteOnce(
+          `resize:${pod.metadata.uid}`,
+          `[runtime] ${kernelName(id, role)} keeps its memory and CPU: in-place resize is disabled (RUNTIME_IN_PLACE_RESIZE=0); the room's next Pod gets the new numbers`,
+        )
+      } else {
+        // Without waiting for kubelet: the room needs Python, not a report on the
+        // cgroup. If it fails (the node has nothing to give right now, the API is
+        // old), the Pod stays as it was and working, and the room census shows
+        // the memory and cores it actually has.
+        const resources = kernelOf(desired.spec.containers).resources
+        const target: ResizeTarget = {
+          memoryMb: memoryOf(resources)!,
+          cpu: String(resources.limits.cpu),
+        }
+        await this.patchResources(id, role, pod, target).catch((err) =>
+          console.warn(
+            `[runtime] in-place resize to ${target.memoryMb}Mi/${target.cpu} CPU failed: ${err instanceof Error ? err.message.slice(0, 200) : 'error'}`,
+          ),
+        )
+        check()
+      }
     }
     const endpoint: RuntimeEndpoint = {
-      url: `http://${roomName(id)}.${this.options.config.namespace}.svc:8888`,
+      url: `http://${kernelName(id, role)}.${this.options.config.namespace}.svc:8888`,
       token,
       instanceId: pod.metadata.uid!,
       environment: environment.name,
@@ -937,11 +1185,11 @@ export class RuntimeController {
     let refused: { pod: KubeObject; lacking: RuntimeUnschedulable; since: number } | undefined
     while (Date.now() < deadline) {
       check()
-      const current = await this.get('pods', id)
+      const current = await this.get('pods', id, role)
       check()
       if (!current || current.metadata.uid !== endpoint.instanceId)
         throw new RuntimeError('Room Pod disappeared or was replaced during startup', 409)
-      assertOwned(current, id)
+      assertOwned(current, id, role)
       const phase = podPhase(current)
       reason = podReason(current) ?? phase
       if (phase === 'failed' || phase === 'terminating')
@@ -960,7 +1208,7 @@ export class RuntimeController {
       const lacking = phase === 'pending' ? unschedulable(current) : undefined
       refused = lacking ? { pod: current, lacking, since: refused?.since ?? Date.now() } : undefined
       if (refused && Date.now() - refused.since >= (this.options.unschedulableGraceMs ?? UNSCHEDULABLE_GRACE_MS))
-        return this.refuseUnschedulable(id, refused.pod, refused.lacking)
+        return this.refuseUnschedulable(id, role, refused.pod, refused.lacking)
       if (phase === 'ready') {
         const ready = await (this.options.probe ?? probeJupyter)(endpoint)
         check()
@@ -972,7 +1220,7 @@ export class RuntimeController {
     // The deadline passed before the pause did (the startup is shorter than
     // it): the reason is the same, and saying it as a word is more honest than
     // "timed out: Unschedulable".
-    if (refused) return this.refuseUnschedulable(id, refused.pod, refused.lacking)
+    if (refused) return this.refuseUnschedulable(id, role, refused.pod, refused.lacking)
     throw new RuntimeError(`Room startup timed out: ${reason}`)
   }
   /**
@@ -988,13 +1236,14 @@ export class RuntimeController {
    */
   private async refuseUnschedulable(
     id: string,
+    role: RuntimeKernelRole,
     pod: KubeObject,
     lacking: RuntimeUnschedulable,
   ): Promise<never> {
     const resources = kernelOf(pod.spec.containers)?.resources
     const memoryMb = memoryOf(resources)
     const milli = resourceQuantity('cpu', resources?.limits?.cpu)
-    await this.deleteResource('pods', id, pod).catch((err) =>
+    await this.deleteResource('pods', id, pod, role).catch((err) =>
       console.warn(
         `[runtime] unschedulable room Pod was not deleted: ${err instanceof Error ? err.message.slice(0, 200) : 'error'}`,
       ),
@@ -1031,23 +1280,34 @@ export class RuntimeController {
       if (!retired(created) || !serviceMatches(created.spec,tombstone.spec))
         throw new RuntimeError('Permanent room retirement could not be persisted',409)
     }
-    await this.deleteWorkload(id)
+    await this.deleteRoom(id)
   }
-  private async deleteWorkload(id: string): Promise<void> {
-    const [pod, service] = await Promise.all([this.get('pods', id), this.get('services', id)])
-    for (const object of [pod, service]) if (object) assertOwned(object, id)
+  /**
+   * Both of a room's Pods and their Services; a retirement reservation stays.
+   * Both deletions are attempted even when one fails, and the first failure
+   * is what the caller hears: a stuck personal Pod must not keep the class's
+   * own Pod alive, or the other way round.
+   */
+  private async deleteRoom(id: string): Promise<void> {
+    const results = await Promise.allSettled([this.deleteWorkload(id, 'room'), this.deleteWorkload(id, 'own')])
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    if (failed) throw failed.reason
+  }
+  private async deleteWorkload(id: string, role: RuntimeKernelRole = 'room'): Promise<void> {
+    const [pod, service] = await Promise.all([this.get('pods', id, role), this.get('services', id, role)])
+    for (const object of [pod, service]) if (object) assertOwned(object, id, role)
     for (const [kind, object] of [
       ['services', service],
       ['pods', pod],
     ] as const) {
       if (!object || (kind === 'services' && retired(object))) continue
-      await this.deleteResource(kind,id,object)
+      await this.deleteResource(kind,id,object,role)
     }
   }
-  private async deleteResource(kind: 'pods' | 'services', id: string, object: KubeObject): Promise<void> {
+  private async deleteResource(kind: 'pods' | 'services', id: string, object: KubeObject, role: RuntimeKernelRole = 'room'): Promise<void> {
       if (!object.metadata.deletionTimestamp) {
         try {
-          await this.options.kube.request('DELETE', `${this.root}/${kind}/${roomName(id)}`, {
+          await this.options.kube.request('DELETE', `${this.root}/${kind}/${kernelName(id, role)}`, {
             apiVersion: 'v1',
             kind: 'DeleteOptions',
             preconditions: { uid: object.metadata.uid },
@@ -1059,9 +1319,9 @@ export class RuntimeController {
       }
       const deadline = Date.now() + (this.options.deletionTimeoutMs ?? 60000)
       while (true) {
-        const current = await this.get(kind, id)
+        const current = await this.get(kind, id, role)
         if (!current) break
-        assertOwned(current, id)
+        assertOwned(current, id, role)
         if (current.metadata.uid !== object.metadata.uid)
           throw new RuntimeError('Room resource was replaced during deletion', 409)
         if (Date.now() >= deadline)
@@ -1072,6 +1332,12 @@ export class RuntimeController {
         await delay(this.options.pollMs ?? 500)
       }
   }
+  /**
+   * The census of kernel Pods: rooms, and since 0.10 their personal notebooks'
+   * Pods, marked `role: own`. The selector already matches both
+   * (`colloq.dev/role=kernel`); a Pod is counted only under the name and the
+   * labels its role gives it.
+   */
   async list(): Promise<RuntimeRoom[]> {
     const selector = encodeURIComponent(
       'colloq.dev/role=kernel,app.kubernetes.io/managed-by=colloq-runtime',
@@ -1100,7 +1366,9 @@ export class RuntimeController {
     } while (continuation)
     return pods.flatMap((pod) => {
       const id = pod.metadata.annotations?.['colloq.dev/session-id']
-      if (!id || !isRuntimeSessionId(id) || !owned(pod, id) || !pod.metadata.uid) return []
+      if (!id || !isRuntimeSessionId(id) || !pod.metadata.uid) return []
+      const role: RuntimeKernelRole = pod.metadata.name === ownName(id) ? 'own' : 'room'
+      if (!owned(pod, id, role)) return []
       // What the Pod has, not what is written for it: after an in-place change
       // spec is already new, while kubelet may not have caught up yet, or the
       // node had nothing to give (Deferred).
@@ -1120,6 +1388,7 @@ export class RuntimeController {
           ...(milliCpus !== undefined ? { cpus: milliCpus / 1000 } : {}),
           ...(memoryMb !== undefined ? { memoryMb } : {}),
           ...(podReason(pod) ? { reason: podReason(pod) } : {}),
+          ...(role === 'own' ? { role } : {}),
         },
       ]
     })
@@ -1139,6 +1408,7 @@ export class RuntimeController {
         defaultCpus: Number(resourceQuantity('cpu', this.options.config.cpu)) / 1000,
         defaultMemoryMb: this.defaultMemoryMb(),
         maxMemoryMb: this.maxMemoryMb(),
+        inPlaceResize: this.inPlaceResize,
         recovery: this.recoveryDiagnostics(),
       }
     } catch (err) {

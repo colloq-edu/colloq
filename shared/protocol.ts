@@ -919,12 +919,13 @@ export type ControlServerMessage =
    */
   /**
    * @param ownKernels whether THIS instance can give a personal notebook a
-   * kernel of its own. On docker — yes; on the broker (k3s) one Pod is created
-   * per class, and a second one, without a GPU, does not exist there yet. The
-   * field goes to the room so that the "Students' personal notebooks" rule
-   * line does not promise what the instance cannot do: learning it from a
-   * refusal on the first run in the middle of a class is the worst way. A
-   * missing field reads as "can": that is how an old build would answer.
+   * kernel of its own. Every backend can since 0.10 (the broker, like docker,
+   * starts a second Pod per class, without a GPU); the field stays for a
+   * runtime that cannot. It goes to the room so that the "Students' personal
+   * notebooks" rule line does not promise what the instance cannot do:
+   * learning it from a refusal on the first run in the middle of a class is
+   * the worst way. A missing field reads as "can": that is how an old build
+   * would answer.
    */
   | {
       t: 'ready'

@@ -88,7 +88,6 @@ import { moveInCells } from './collab/ops.js'
 import { defineIn } from './definitions.js'
 import { LINE_LENGTH } from './kernel/format.js'
 import { importHeader, nameChainAt } from './kernel/inspect-static.js'
-import { kernelBackend } from './kernel/runtime-client.js'
 import {
   actsAfterClass,
   allows,
@@ -5949,10 +5948,12 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
     t: 'ready',
     kernel: kernelStatus(sessionId),
     kernels: kernelStatuses(sessionId),
-    // Only the broker cannot do them: it creates one Pod per class. The test
-    // backend can — its kernels live in one Jupyter, and per-notebook
-    // sessions there are just as real as in a container.
-    ownKernels: kernelBackend() !== 'broker',
+    // Every backend can since 0.10: docker and the broker start a second
+    // container or Pod per class, and the test backend's kernels live in one
+    // Jupyter, where per-notebook sessions are just as real. The field stays
+    // for a runtime that cannot; such a one refuses the run in words
+    // (pool.ts · OwnKernelUnavailable).
+    ownKernels: true,
   })
   send(ws, { t: 'terminal', status: terminalPhase(sessionId) })
   /*

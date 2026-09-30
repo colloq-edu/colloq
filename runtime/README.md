@@ -4,15 +4,16 @@ The web app sends room intent to this service. Only this service receives a
 namespaced Kubernetes service-account token. It creates a fixed kernel Pod and
 private ClusterIP Service; it has no generic Kubernetes proxy or image-build API.
 
-**One Pod per class, several kernels inside it.** Every notebook of a class gets
-its own Python kernel, through the Jupyter *sessions* API inside that one Pod —
-different notebook, different session path, different kernel and different
-variables. What the broker does not have is a *second* Pod: students' personal
-notebooks (`access: owner`) run in a separate, GPU-less container on the Docker
-backend, and here there is nowhere to put them. Running in a personal notebook is
-therefore refused in words on this backend rather than quietly handed the class's
-kernel, which would give a student the class's GPU and put its OOM killer in
-reach of the teacher's kernel.
+**Two Pods per class, several kernels inside each.** Every notebook of a class
+gets its own Python kernel, through the Jupyter *sessions* API inside the class's
+Pod — different notebook, different session path, different kernel and different
+variables. Students' personal notebooks (`access: owner`) run in a *second* Pod
+(since 0.10; before that they were refused on this backend), the counterpart of
+the Docker backend's second container: never a GPU, the same room folder at the
+same path, the personal-notebook numbers from the app's Resources tab and class
+rules (capped at `RUNTIME_KERNEL_MEMORY_MAX`), its own Service, Jupyter token and
+cgroup. Handing a personal notebook the class's kernel instead would give a
+student the class's GPU and put its OOM killer in reach of the teacher's kernel.
 
 Build with `npm run build --prefix runtime`; start with
 `node runtime/dist/runtime.js`. Only Node built-ins are runtime dependencies.
@@ -43,15 +44,54 @@ Secret and catalog files are reread on requests, supporting atomic file updates.
 | `RUNTIME_KERNEL_MEMORY_MAX` | node MemTotal minus 1Gi (at least the default)         |
 | `RUNTIME_KERNEL_CPU`        | `2`                                                    |
 | `RUNTIME_KERNEL_EPHEMERAL`  | `2Gi`                                                  |
+| `RUNTIME_COLOCATE_WITH_APP` | `0`                                                    |
+| `RUNTIME_IN_PLACE_RESIZE`   | `1`                                                    |
+| `RUNTIME_GPU_RUNTIME_CLASS` | `nvidia` (empty: no RuntimeClass)                      |
+| `RUNTIME_GPU_NODE_SELECTOR` | `{}`                                                   |
+| `RUNTIME_GPU_TOLERATIONS`   | `[]`                                                   |
+| `RUNTIME_ROOM_NODE_SELECTOR`| `{}`                                                   |
+| `RUNTIME_ROOM_TOLERATIONS`  | `[]`                                                   |
+| `RUNTIME_PRIORITY_CLASS`    | unset                                                  |
+| `RUNTIME_POD_LABELS`        | `{}`                                                   |
+| `RUNTIME_POD_ANNOTATIONS`   | `{}`                                                   |
 
 Memory accepts integral Mi/Gi from 64Mi to 256Gi; ephemeral storage accepts 64Mi
 to 1Ti (expressed in Gi/Mi); CPU accepts cores or millicores above zero through 64.
 Requests equal limits. `RUNTIME_KERNEL_MEMORY` is the room default; a room's own
 `memoryMb` replaces it up to `RUNTIME_KERNEL_MEMORY_MAX` (ensure caps above it,
 a live resize refuses). The default must not exceed the ceiling. GPU environments additionally request exactly one
-`nvidia.com/gpu` with RuntimeClass `nvidia`. GPU shared memory is 1Gi; CPU shared
+`nvidia.com/gpu` with RuntimeClass `RUNTIME_GPU_RUNTIME_CLASS`. GPU shared memory is 1Gi; CPU shared
 memory is 64Mi; memory-backed volumes consume the Pod memory limit. The operator
 sets the node PID limit and namespace quota. PVC capacity is not a per-room quota.
+
+### The customer's cluster
+
+The single-node k3s the installer builds needs none of the settings below; in a
+multi-node corporate cluster they decide whether a room's Pod is admitted and
+scheduled. All are read once at start and a wrong value stops the broker with the
+variable's name in the message.
+
+- `RUNTIME_COLOCATE_WITH_APP=1` adds a required podAffinity to Pods labelled
+  `colloq.dev/role=app` on `kubernetes.io/hostname` to every broker Pod that mounts
+  the data or workspace claim: room and personal-notebook Pods, competition job
+  and resolver Pods (the exporter is a container of the job Pod). The package
+  proxy mounts no claim and stays free. Set it when the storage is ReadWriteOnce.
+- `RUNTIME_IN_PLACE_RESIZE=0` never calls `pods/resize` (the Role may then lack it):
+  a PATCH that would need it answers 501, exactly as on a cluster older than 1.33,
+  an ensure keeps a live Pod with its current memory and CPU, and the room's next
+  Pod gets the new numbers. `0`/`1` (`true`/`false` too).
+- `RUNTIME_ROOM_NODE_SELECTOR` (JSON object) and `RUNTIME_ROOM_TOLERATIONS` (JSON
+  array of Kubernetes tolerations) apply to room and personal-notebook Pods;
+  `RUNTIME_GPU_NODE_SELECTOR` / `RUNTIME_GPU_TOLERATIONS` are added for GPU rooms
+  only (a personal notebook never has a GPU). Competition Pods take neither.
+- `RUNTIME_PRIORITY_CLASS` is the priorityClassName of every broker Pod; a
+  `system-*` class is refused.
+- `RUNTIME_POD_LABELS` / `RUNTIME_POD_ANNOTATIONS` (JSON objects of strings) are
+  added to every broker Pod, never to Services. Keys starting with `colloq.` and
+  `app.kubernetes.io/managed-by` are reserved (they carry the broker's ownership
+  and selectors), and annotations choosing an AppArmor or seccomp profile are
+  refused. Use them for a policy engine's required labels, cost labels, or to opt
+  the Pods out of sidecar injection (`sidecar.istio.io/inject: "false"`).
 
 On k3s, set `RUNTIME_KERNEL_MEMORY` and `RUNTIME_KERNEL_MEMORY_MAX` in the
 operator env file (`--env-file` of `cluster.sh install|prepare|update`, kept as
@@ -76,17 +116,30 @@ private cluster network; use a secured transport boundary for remote access.
 
 | Method and path                    | Request                    | Response                                                         |
 | ---------------------------------- | -------------------------- | ---------------------------------------------------------------- |
-| GET `/v1/health`                   | —                          | `{ok, reason, defaultCpus?, defaultMemoryMb?, maxMemoryMb?}`; 503 when unavailable |
+| GET `/v1/health`                   | —                          | `{ok, reason, defaultCpus?, defaultMemoryMb?, maxMemoryMb?, inPlaceResize?}`; 503 when unavailable |
 | GET `/v1/catalog`                  | —                          | validated catalog                                                |
-| GET `/v1/rooms`                    | —                          | `{rooms: RuntimeRoom[]}`                                         |
+| GET `/v1/rooms`                    | —                          | `{rooms: RuntimeRoom[]}`, personal-notebook Pods with `role: "own"` |
 | POST `/v1/rooms/:id`               | `{environment, revision?, cpus?, memoryMb?}` | `RuntimeEndpoint`                              |
 | PATCH `/v1/rooms/:id`              | `{memoryMb?: number \| null, cpus?: number \| null}` (at least one) | `{outcome: applied\|pending\|absent, memoryMb?, cpus?}` |
-| DELETE `/v1/rooms/:id`             | no body                    | `{ok: true}` after deletion                                      |
+| DELETE `/v1/rooms/:id`             | no body                    | `{ok: true}` after deletion of both Pods                         |
 | DELETE `/v1/rooms/:id?retire=true` | no body                    | `{ok: true}` after durable permanent retirement and Pod deletion |
+| POST, PATCH `/v1/rooms/:id/own`    | as for the room            | as for the room, for the personal-notebook Pod                   |
+| DELETE `/v1/rooms/:id/own`         | no body                    | `{ok: true}` after deletion of the personal-notebook Pod only    |
+
+The role is the path, never a body field: `/own` is the personal-notebook Pod,
+`colloq-room-<hash>-own` with a Service of the same name, labelled
+`colloq.dev/role=kernel` (so the room-isolation NetworkPolicy covers it),
+`colloq.kind=own-kernel` and `colloq.dev/kernel=own`; the room's Service does not
+select it, nor its Service the room's Pod. Its Jupyter token is derived apart from
+the room's. A permanent retirement is the room's alone (`/own?retire=true` is
+400) and refuses the personal Pod too (410). Personal and room Pods have separate
+queues, so a personal start never holds up the class's; the room's DELETE holds
+both queues, so no personal start can slip in behind it.
 
 PATCH changes only the memory and/or whole-core CPU of a live room Pod through
 the `pods/resize` subresource (Kubernetes 1.33+; the broker Role grants `patch`
-on it and nothing else): the Pod UID, container and Python state stay. An absent
+on it and nothing else; `RUNTIME_IN_PLACE_RESIZE=0` makes such a PATCH a 501
+without calling it): the Pod UID, container and Python state stay. An absent
 field is left alone; `null` means the runtime default. No Pod answers `absent`
 and creates nothing; `pending` means the API accepted the change but the node
 cannot fit it yet (Deferred) — the kubelet applies it later. A node that can
@@ -134,6 +187,33 @@ app-to-Jupyter path and run a cell. A TCP probe proves only process availability
 Ensure calls for the same room/revision coalesce. Conflicting concurrent revisions
 return 409; a concurrent ensure that differs only in `memoryMb` or `cpus`
 queues behind the running one and then resizes that Pod in place. DELETE invalidates earlier ensures and waits for serialized cleanup.
+
+A found Pod is compared with the one the broker would create in two parts. The
+workload (containers, volumes, security, service account, host namespaces, DNS)
+must match exactly, or the Pod is replaced, and a freshly created one that does
+not match is refused with a log line naming the differing fields (a mutating
+webhook: exempt broker Pods from it). Placement (`nodeSelector`, `affinity`,
+`tolerations`, `priorityClassName`, `runtimeClassName` and what admission derives
+from them: `priority`, `preemptionPolicy`, `overhead`, `schedulerName`,
+`topologySpreadConstraints`, `schedulingGates`, `nodeName`) is outside the template
+hash and the workload comparison: it grants no execution, credentials or mounts,
+cannot change on a live Pod (tolerations can only be added), and admission fills
+it in. A Pod whose placement lacks what the current settings require is replaced
+only while it has not started; a running one keeps its Python until the room
+stops, and its next Pod follows the settings. With every setting at its default a
+room Pod is the 0.9 Pod plus a liveness probe; a live room Pod created by 0.9 is
+held to (and adopted by) the 0.9 template its hash names, so the upgrade replaces
+no live class.
+
+Room and personal-notebook Pods have a TCP readiness probe and a TCP liveness
+probe on 8888 (every 30 s, acting after 10 failures): never an HTTP call into
+Jupyter, which a busy server could delay, and a long cell cannot fail it, since the
+kernel is another process and the node completes the handshake. With
+`restartPolicy: Never` a failed liveness ends the Pod, hence five minutes of
+refused connections before it acts. In competition Pods only the exporter and the
+package proxy have liveness probes (TCP); the batch `main` container has no
+endpoint to probe and a probe could only end a legitimate long run, which
+`activeDeadlineSeconds` already bounds; the egress preflight is an init container.
 Deletion uses UID preconditions, never force-deletes, and waits for actual resource
 absence before allowing a new Pod. Persistent room files are not deleted. Runtime
 shutdown leaves room Pods alive; a replacement process adopts their existing UID.

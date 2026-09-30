@@ -1,5 +1,6 @@
 import { tr } from '@shared/i18n'
-import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, runtimeEnvironment, imageRevision } from './runtime-client.js'
+import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, runtimeEnvironment, imageRevision, RuntimeRequestError } from './runtime-client.js'
+import type { RuntimeResizeRequest, RuntimeRoom } from '@shared/runtime'
 import { sessionCpus, sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, sessionMemoryMb, sessionRowExists, storedRules } from '../db.js'
 import { blockKernelStarts, kernelRetirementInProgress } from './retirement.js'
 import { hasWorkAllocation, observedWorkMemory, releaseWorkAllocation, reserveWork, type WorkLease } from '../ops/work-budget.js'
@@ -73,12 +74,14 @@ export type KernelRole = 'room' | 'own'
  * This instance cannot give a personal notebook a kernel of its own, and that
  * is an honest refusal, not a failure.
  *
- * It happens exactly on the broker (k3s): it creates one Pod per class, and a
- * second one, without the GPU card, means changing its protocol, its
- * controller and its permissions in the cluster. Running a personal notebook
- * in the lecture's kernel instead of refusing is not an option: that is the
- * very trouble the second container exists to avoid, the class's GPU in a
- * student's hands and an OOM killer that picks the teacher's kernel.
+ * Until 0.10 it was every run in a personal notebook on the broker, which had
+ * one Pod per class. Since then the broker starts a second Pod, without the
+ * GPU card, and the refusal is left for a runtime that does not know the
+ * personal notebooks' route: a broker older than the app during a rollout, or
+ * one that refuses them outright (`brokerCannotOwn`). Running a personal
+ * notebook in the lecture's kernel instead of refusing is not an option: that
+ * is the very trouble the second container exists to avoid, the class's GPU in
+ * a student's hands and an OOM killer that picks the teacher's kernel.
  *
  * A class of its own rather than a string: `ensureKernel` catches it apart
  * from network failures; "that did not work, try again" would be untrue here,
@@ -190,6 +193,35 @@ export function kernelLimits(
   if (role === 'room') return room
   const own = ownLimits(sessionId)
   return { memoryMb: own.memoryMb ?? room.memoryMb, cpus: own.cpus ?? room.cpus }
+}
+
+/**
+ * The numbers the broker gets for one of a room's two Pods; `null` is the
+ * broker's own default.
+ *
+ * The same resolution as `kernelLimits`, with one difference: a room's
+ * default is the broker's (RUNTIME_KERNEL_MEMORY, RUNTIME_KERNEL_CPU), not the
+ * docker path's, and it is not sent, so the broker applies it. Personal
+ * notebooks take the class's rule, then the instance's personal-notebook
+ * default (Resources tab), then exactly the room's, as they do on docker; the
+ * broker caps memory at RUNTIME_KERNEL_MEMORY_MAX for both Pods.
+ *
+ * A number outside the protocol (whole cores 1–64, 64 MiB–256 GiB) reads as
+ * "the default" rather than refusing the start: the forms keep both inside
+ * already, and a room without Python over a stray row is the worse outcome.
+ */
+export function brokerLimits(sessionId: string, role: KernelRole): { memoryMb: number | null; cpus: number | null } {
+  let memoryMb = sessionMemoryMb(sessionId)
+  let cpus = sessionCpus(sessionId)
+  if (role === 'own') {
+    const own = ownLimits(sessionId)
+    memoryMb = own.memoryMb ?? memoryMb
+    cpus = own.cpus ?? cpus
+  }
+  return {
+    memoryMb: memoryMb !== null && Number.isInteger(memoryMb) && memoryMb >= 64 && memoryMb <= 262144 ? memoryMb : null,
+    cpus: cpus !== null && Number.isInteger(cpus) && cpus >= 1 && cpus <= 64 ? cpus : null,
+  }
 }
 
 /**
@@ -527,7 +559,6 @@ export async function warmRoomPerimeter(): Promise<void> {
  * label is set by `docker run` below, and it outlives us.
  */
 export async function listRoomKernels(): Promise<Array<{ session: string; running: boolean; own: boolean }>> {
-  if (kernelBackend() === 'broker') return (await kernelRuntimeClient().rooms()).map(room => ({session:room.sessionId,running:room.phase === 'ready' || room.phase === 'pending',own:false}))
   if (kernelBackend() === 'test') return []
   /*
    * By CLASSES, not by containers: a room has two of them.
@@ -536,9 +567,19 @@ export async function listRoomKernels(): Promise<Array<{ session: string; runnin
    * and the panel counts it as live twice. It is live if at least one of the
    * two is: the personal-notebook container is stopped while the lecture is
    * computing, that is a working class, and it is too early for its two-hour
-   * countdown.
+   * countdown. The broker's census has the same two Pods per class since 0.10
+   * (`role: own`), and they are folded the same way.
    */
   const rooms = new Map<string, { running: boolean; own: boolean }>()
+  if (kernelBackend() === 'broker') {
+    for (const pod of await kernelRuntimeClient().rooms()) {
+      const seen = rooms.get(pod.sessionId) ?? { running: false, own: false }
+      seen.running ||= pod.phase === 'ready' || pod.phase === 'pending'
+      seen.own ||= pod.role === 'own'
+      rooms.set(pod.sessionId, seen)
+    }
+    return [...rooms].map(([session, seen]) => ({ session, ...seen }))
+  }
   for (const room of await roomContainers()) {
     if (room.session.length === 0) continue
     const seen = rooms.get(room.session) ?? { running: false, own: false }
@@ -1211,9 +1252,14 @@ async function updateWithMemory(
  * `null` means "as the environment has it". Docker leaves it alone here (the
  * old behavior: the next `docker run` picks up the default), while the broker
  * returns the Pod to its default at once, just like a CPU reset.
+ *
+ * The personal notebooks' Pod follows on the broker by the docker rule below:
+ * while they have no number of their own, the room's number is theirs too.
  */
 export async function applyMemoryLimit(sessionId: string, mb: number | null): Promise<LimitOutcome> {
-  if (!limitsInjected && kernelBackend() === 'broker') return resizeRoomPod(sessionId, { memoryMb: mb })
+  if (!limitsInjected && kernelBackend() === 'broker') {
+    return brokerBoth(sessionId, { memoryMb: mb }, ownLimits(sessionId).memoryMb === null)
+  }
   // A docker reset waits for the next `docker run`, without a trip to the
   // daemon: before the broker change, the route never called here with `null`.
   if (mb === null) return 'pending'
@@ -1254,8 +1300,16 @@ export async function applyMemoryLimit(sessionId: string, mb: number | null): Pr
  * returns to the common limit without a second on/off field. The numbers are
  * `kernelLimits`, the very ones `docker run` used: a GPU class's room default
  * is sixteen gigabytes, and this update must not answer it with four.
+ *
+ * On the broker the personal notebooks' Pod gets `brokerLimits` through the
+ * same `pods/resize` as the room's; no Pod is `absent`, and the next start
+ * takes the numbers.
  */
 export async function applyOwnLimits(sessionId: string): Promise<LimitOutcome> {
+  if (!limitsInjected && kernelBackend() === 'broker') {
+    const own = brokerLimits(sessionId, 'own')
+    return resizeBrokerPod(sessionId, { memoryMb: own.memoryMb, cpus: own.cpus }, 'own')
+  }
   if (!limitsInjected && kernelBackend() !== 'docker') return 'pending'
   if (!limitsInjected && !(await canIsolate())) return 'pending'
   const env = sessionEnvironment(sessionId) ?? activeName()
@@ -1320,18 +1374,28 @@ async function bothContainers(
   return 'pending'
 }
 
-/** Memory or CPUs of the room's live Pod through the broker; the broker's answer in the pool's terms. */
-async function resizeRoomPod(
+/**
+ * Memory or CPUs of one of the room's live Pods through the broker; the
+ * broker's answer in the pool's terms.
+ *
+ * A 501 is not a failure but a cluster that changes no live Pod: older than
+ * 1.33, or with in-place resize turned off by its operator
+ * (RUNTIME_IN_PLACE_RESIZE=0, the Role without `pods/resize`). The number is
+ * already in the seminar's row, the room keeps its Python, and its next Pod
+ * gets the number: that is `pending`, the same word as "no Pod right now".
+ */
+async function resizeBrokerPod(
   sessionId: string,
-  change: { memoryMb: number | null } | { cpus: number | null },
+  change: RuntimeResizeRequest,
+  role: KernelRole = 'room',
 ): Promise<LimitOutcome> {
-  const [value] = Object.values(change)
-  const shown =
-    'memoryMb' in change
-      ? value === null ? 'the broker default memory' : `${value} MB of memory`
-      : value === null ? 'the broker default CPUs' : `${value} CPUs`
+  const parts = [
+    ...('memoryMb' in change ? [change.memoryMb === null ? 'the broker default memory' : `${change.memoryMb} MB of memory`] : []),
+    ...('cpus' in change ? [change.cpus === null ? 'the broker default CPUs' : `${change.cpus} CPUs`] : []),
+  ]
+  const shown = parts.join(' and ') + (role === 'own' ? ' for personal notebooks' : '')
   try {
-    const result = await kernelRuntimeClient().resize(sessionId, change)
+    const result = await kernelRuntimeClient().resize(sessionId, change, role)
     if (result.outcome === 'applied') {
       console.log(`[kernel] room ${sessionId} was given ${shown} on the live Pod`)
       return 'applied'
@@ -1342,9 +1406,28 @@ async function resizeRoomPod(
     console.log(`[kernel] room ${sessionId} has ${shown} recorded; Pod: ${result.outcome}`)
     return 'pending'
   } catch (err) {
+    if (err instanceof RuntimeRequestError && err.status === 501) {
+      console.log(`[kernel] room ${sessionId} has ${shown} recorded; this cluster does not resize a live Pod, the room's next Pod gets it`)
+      return 'pending'
+    }
     console.error(`[kernel] the broker did not give room ${sessionId} ${shown}: ${err instanceof Error ? err.message.slice(0, 300) : err}`)
     return 'failed'
   }
+}
+
+/**
+ * The room's Pod, and its personal notebooks' Pod when they follow the room's
+ * number, with one outcome counted as `bothContainers` counts it.
+ *
+ * One after the other, the room first: its Python is the one a teacher raising
+ * the limit mid-class is waiting for. The second request costs the broker a
+ * lookup when the class has no personal Pod, and answers `absent`.
+ */
+async function brokerBoth(sessionId: string, change: RuntimeResizeRequest, ownFollows: boolean): Promise<LimitOutcome> {
+  const outcomes = [await resizeBrokerPod(sessionId, change)]
+  if (ownFollows) outcomes.push(await resizeBrokerPod(sessionId, change, 'own'))
+  if (outcomes.includes('applied')) return 'applied'
+  return outcomes.includes('failed') ? 'failed' : 'pending'
 }
 
 /**
@@ -1371,7 +1454,8 @@ async function resizeRoomPod(
  * pair of flags here: `--cpus` is self-sufficient.
  */
 export async function applyCpuLimit(sessionId: string, own: number | null): Promise<LimitOutcome> {
-  if (!limitsInjected && kernelBackend() === 'broker') return resizeRoomPod(sessionId, { cpus: own })
+  // The personal notebooks' Pod follows while they have no cores of their own.
+  if (!limitsInjected && kernelBackend() === 'broker') return brokerBoth(sessionId, { cpus: own }, ownLimits(sessionId).cpus === null)
   const cpus = own ?? defaultCpus()
   if (!limitsInjected) {
     if (kernelBackend() !== 'docker') return 'pending'
@@ -1436,14 +1520,19 @@ export interface RunningKernel {
 export async function runningKernelLimits(): Promise<RunningKernel[]> {
   const backend = kernelBackend()
   if (backend === 'broker') {
+    // Both Pods of a class since 0.10: the personal notebooks' one is `own`.
     return (await kernelRuntimeClient().rooms())
       .filter((room) => room.phase === 'ready' || room.phase === 'pending')
-      .map((room) => ({
-        session: room.sessionId,
-        role: 'room' as const,
-        memoryMb: room.memoryMb ?? sessionMemoryMb(room.sessionId),
-        cpus: room.cpus ?? sessionCpus(room.sessionId),
-      }))
+      .map((room) => {
+        const role: KernelRole = room.role === 'own' ? 'own' : 'room'
+        const planned = brokerLimits(room.sessionId, role)
+        return {
+          session: room.sessionId,
+          role,
+          memoryMb: room.memoryMb ?? planned.memoryMb,
+          cpus: room.cpus ?? planned.cpus,
+        }
+      })
   }
   if (backend !== 'docker') return []
   const running = (await roomContainers({ strict: true })).filter((c) => c.running && c.session.length > 0)
@@ -1467,13 +1556,19 @@ export async function runningKernelLimits(): Promise<RunningKernel[]> {
  * the cgroup under a working kernel is an OOM kill in the middle of the
  * lesson. A container with a number of its own is left alone.
  *
- * Docker only: the broker sizes its Pods with its own defaults. A failure
- * goes to the log; the next container start takes the number anyway.
+ * On the broker a room's defaults are the broker's own and are left to it; the
+ * personal notebooks' numbers are the app's (brokerLimits) and reach their
+ * live Pods through applyOwnLimits, as on docker. A failure goes to the log;
+ * the next container start takes the number anyway.
  */
 export async function reapplyInstanceDefaults(changed: ReadonlySet<string>): Promise<void> {
   const roomCpus = changed.has('roomCpus')
   const ownCpus = changed.has('ownCpus')
   const ownMemory = changed.has('ownMemoryMb')
+  if (kernelBackend() === 'broker') {
+    if (ownCpus || ownMemory) await reapplyOwnOnBroker(ownCpus, ownMemory)
+    return
+  }
   if ((!roomCpus && !ownCpus && !ownMemory) || kernelBackend() !== 'docker') return
   let census: RoomContainer[]
   try {
@@ -1503,6 +1598,31 @@ export async function reapplyInstanceDefaults(changed: ReadonlySet<string>): Pro
     } catch (err) {
       const why = err instanceof Error ? err.message : err
       console.error(`[kernel] instance defaults did not reach ${sessionId}:`, why)
+    }
+  }
+}
+
+/** The personal notebooks' Pods that follow a changed instance default, from the broker's census. */
+async function reapplyOwnOnBroker(ownCpus: boolean, ownMemory: boolean): Promise<void> {
+  let census: RuntimeRoom[]
+  try {
+    census = await kernelRuntimeClient().rooms()
+  } catch {
+    console.warn('[kernel] instance defaults changed, but the broker census is unavailable; they apply at the next start')
+    return
+  }
+  const live = census.filter((pod) => pod.role === 'own' && (pod.phase === 'ready' || pod.phase === 'pending'))
+  for (const sessionId of new Set(live.map((pod) => pod.sessionId))) {
+    let rules: ReturnType<typeof storedRules> | null = null
+    try {
+      rules = storedRules(sessionId)
+    } catch {
+      /* no row: nothing of its own is set, it follows every default */
+    }
+    if ((ownCpus && rules?.ownCpus == null) || (ownMemory && rules?.ownMemoryMb == null)) {
+      await applyOwnLimits(sessionId).catch((err) =>
+        console.error(`[kernel] instance defaults did not reach ${sessionId}:`, err instanceof Error ? err.message : err),
+      )
     }
   }
 }
@@ -1744,7 +1864,23 @@ const starting = new Map<string, Promise<KernelEndpoint>>()
  * the start cleans up after itself.
  */
 const abandoned = new Set<string>()
+/** Broker ensures in flight, per slot: a DELETE waits for the ones it would otherwise race. */
 const brokerStarts = new Map<string, Set<Promise<KernelEndpoint>>>()
+
+/**
+ * The broker cannot give this class's personal notebooks a Pod: the refusal
+ * `OwnKernelUnavailable` stands for, told apart from a start that failed.
+ *
+ * A broker older than 0.10 reads `/v1/rooms/:id/own` as a malformed room ID
+ * (400 "Invalid room ID"; the app validates the ID before sending, so that
+ * answer can mean nothing else); a newer one that does not serve the route
+ * says 404, 405 or 501. Anything else, the scheduler's refusal included, is an
+ * ordinary failed start and is shown as one.
+ */
+function brokerCannotOwn(err: unknown): boolean {
+  if (!(err instanceof RuntimeRequestError)) return false
+  return [404, 405, 501].includes(err.status) || (err.status === 400 && err.message === 'Invalid room ID')
+}
 
 /**
  * The address of the Python this room should talk to.
@@ -1757,13 +1893,13 @@ export async function endpointForSession(
   /**
    * The class's container or the container of its personal notebooks.
    *
-   * Under the broker there is no second one: it creates one Pod per class,
-   * and creating a second next to it means changing its protocol, its
-   * controller and its permissions in the cluster. A refusal is more honest
-   * than a substitute: a personal notebook quietly run in the lecture's kernel
-   * would mean exactly what the second container exists to prevent, someone
-   * else's card and someone else's OOM. The refusal is read in
-   * kernel/index.ts.
+   * Under the broker the second one is a second Pod since 0.10: no GPU, the
+   * same room folder, its own Service and token, the personal notebooks'
+   * numbers (brokerLimits). A broker that cannot start it answers with a
+   * refusal (`OwnKernelUnavailable`), never with a substitute: a personal
+   * notebook quietly run in the lecture's kernel would mean exactly what the
+   * second container exists to prevent, someone else's card and someone
+   * else's OOM. The refusal is read in kernel/index.ts.
    */
   role: KernelRole = 'room',
 ): Promise<KernelEndpoint> {
@@ -1772,7 +1908,6 @@ export async function endpointForSession(
   if (kernelRetirementInProgress(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarIsStopping.9820e1"))
   const backend = kernelBackend()
   if (backend === 'test') return defaultEndpoint()
-  if (role === 'own' && backend !== 'docker') throw new OwnKernelUnavailable()
   if (backend === 'broker') {
     if (!sessionRowExists(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarDoesNotExist.4f72c5"))
     sessionDir(sessionId)
@@ -1780,10 +1915,14 @@ export async function endpointForSession(
     const selected = runtimeEnvironment(sessionEnvironment(sessionId), previous)
     const revision = pinSessionKernelRevision(sessionId, selected.name, imageRevision(selected.image))
     const pinned = runtimeEnvironment(sessionEnvironment(sessionId), revision)
-    const starts = brokerStarts.get(sessionId) ?? new Set<Promise<KernelEndpoint>>()
-    brokerStarts.set(sessionId, starts)
+    // The personal notebooks' Pod runs the room's pinned image too, on the CPU
+    // for a GPU environment: the broker never gives it the card.
+    const slot = slotFor(sessionId, role)
+    const starts = brokerStarts.get(slot) ?? new Set<Promise<KernelEndpoint>>()
+    brokerStarts.set(slot, starts)
+    const limits = brokerLimits(sessionId, role)
     const attempt = kernelRuntimeClient().ensure(
-      sessionId, pinned.name, revision, sessionCpus(sessionId), sessionMemoryMb(sessionId),
+      sessionId, pinned.name, revision, limits.cpus, limits.memoryMb, role,
     )
     starts.add(attempt)
     try {
@@ -1792,9 +1931,12 @@ export async function endpointForSession(
         throw new Error(tr("server.cannotStartKernelSeminarIsStopping.9820e1"))
       }
       return endpoint
+    } catch (err) {
+      if (role === 'own' && brokerCannotOwn(err)) throw new OwnKernelUnavailable()
+      throw err
     } finally {
       starts.delete(attempt)
-      if (starts.size === 0) brokerStarts.delete(sessionId)
+      if (starts.size === 0) brokerStarts.delete(slot)
     }
   }
   if (!(await canIsolate())) throw new Error('Room isolation is unavailable. Execution is disabled; shared Jupyter fallback is not permitted')
@@ -1868,8 +2010,9 @@ export async function dropRoomKernel(sessionId: string, permanent = false): Prom
     const release = blockKernelStarts(sessionId)
     try {
       // An already-issued ensure must settle before DELETE; otherwise its late
-      // request can recreate the Pod after a successful stop response.
-      await Promise.allSettled([...(brokerStarts.get(sessionId) ?? [])])
+      // request can recreate the Pod after a successful stop response. Both
+      // slots: the room's DELETE takes the personal notebooks' Pod as well.
+      await Promise.allSettled(slotsOf(sessionId).flatMap((slot) => [...(brokerStarts.get(slot) ?? [])]))
       await kernelRuntimeClient().stop(sessionId, permanent)
     } finally { release() }
     return
@@ -1896,6 +2039,17 @@ export async function dropRoomKernel(sessionId: string, permanent = false): Prom
  * NEVER touches the room container, neither its Python nor its terminal.
  */
 export async function dropOwnKernel(sessionId: string): Promise<void> {
+  if (kernelBackend() === 'broker') {
+    /*
+     * A personal kernel starting right now needs this Pod: the broker would
+     * cancel that start with the deletion, and a student would read an error
+     * for a run nobody refused. The Pod stays, and goes with the next empty
+     * moment or with the room.
+     */
+    if (brokerStarts.get(slotFor(sessionId, 'own'))?.size) return
+    await kernelRuntimeClient().stop(sessionId, false, 'own')
+    return
+  }
   if (kernelBackend() !== 'docker') return
   const slot = slotFor(sessionId, 'own')
   endpoints.delete(slot)

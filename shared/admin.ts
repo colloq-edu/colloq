@@ -574,8 +574,10 @@ export interface ResourceSetting<T> {
    */
   appliesTo: 'live' | 'new-containers'
   /**
-   * Honoured only by the docker backend. The broker (k3s) sizes a room's Pod
-   * with its own defaults and has no personal-notebook container.
+   * Honoured only by the docker backend. The broker (Kubernetes) sizes a
+   * room's Pod with its own defaults; its personal-notebook Pod follows the
+   * personal-notebook settings like the docker container, except the process
+   * ceiling, which is a `docker run` flag.
    */
   dockerOnly: boolean
 }

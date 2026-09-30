@@ -279,7 +279,15 @@ test('runtime process replacement adopts the same Pod UID without restarting Pyt
   assert.equal(kube.creates.filter((o) => o.kind === 'Pod').length, 1)
 })
 
-test('adoption rejects injected pod execution, credentials, mounts and scheduling despite unchanged template hash', async () => {
+/*
+ * Placement (nodeSelector, priorityClassName, tolerations, affinity) used to
+ * be in this list. It is compared apart since 0.10 (pod-policy.ts ·
+ * PLACEMENT_FIELDS): immutable on a live Pod, granting no execution,
+ * credentials or mounts, and filled in by the cluster's own admission. A Pod
+ * placed differently is adopted while it runs and replaced before it starts;
+ * runtime-placement.test.mts pins that down.
+ */
+test('adoption rejects injected pod execution, credentials, mounts and host access despite unchanged template hash', async () => {
   const attacks: Array<(pod: KubeObject) => void> = [
     (pod) => {
       pod.spec.initContainers = [{ name: 'injected', image: 'evil' }]
@@ -318,13 +326,16 @@ test('adoption rejects injected pod execution, credentials, mounts and schedulin
       pod.spec.hostNetwork = true
     },
     (pod) => {
-      pod.spec.nodeSelector = { untrusted: 'node' }
+      pod.spec.hostPID = true
     },
     (pod) => {
-      pod.spec.priorityClassName = 'system-node-critical'
+      pod.spec.containers[0].image = 'registry.example/evil@sha256:' + 'b'.repeat(64)
     },
     (pod) => {
-      pod.spec.tolerations = [{ operator: 'Exists' }]
+      pod.spec.volumes.push({ name: 'host', hostPath: { path: '/' } })
+    },
+    (pod) => {
+      pod.spec.dnsConfig = { nameservers: ['203.0.113.1'] }
     },
   ]
   for (const attack of attacks) {
@@ -372,6 +383,9 @@ test('server-populated Kubernetes defaults and equivalent resource quantities pr
     terminationMessagePolicy: 'File',
   })
   pod.spec.containers[0].readinessProbe.successThreshold = 1
+  // The API fills the liveness probe's defaults the same way.
+  pod.spec.containers[0].livenessProbe.successThreshold = 1
+  pod.spec.containers[0].livenessProbe.tcpSocket.host = ''
   pod.spec.volumes[1].emptyDir.sizeLimit = '2048Mi'
   for (const resources of [
     pod.spec.containers[0].resources.limits,
@@ -505,6 +519,8 @@ test('readiness checks API permissions and catalog without claiming that a room 
     // with the broker's numbers rather than those of the docker path, which a Pod does not get.
     defaultMemoryMb: 2048,
     maxMemoryMb: 262144,
+    // Whether a live room's memory and cores can change at all (RUNTIME_IN_PLACE_RESIZE).
+    inPlaceResize: true,
     recovery: { rollbackRetries: 0, rollbackFailures: 0, rollbacksApplied: 0 },
   })
   assert.equal(kube.creates.length, 0)

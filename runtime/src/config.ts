@@ -1,8 +1,25 @@
 import { readFileSync, statSync } from 'node:fs'
 import { totalmem } from 'node:os'
 import { parseRuntimeCatalog, type RuntimeCatalog } from '../../shared/runtime.js'
+import {
+  parsePriorityClass,
+  parseRuntimeClass,
+  parseStringMap,
+  parseSwitch,
+  parseTolerations,
+  type PodPolicy,
+  type Toleration,
+} from './pod-policy.js'
 
-export interface WorkloadConfig {
+/**
+ * What a room's and a personal notebook's Pod are built from.
+ *
+ * Every field after `maxMemoryMb` is optional and means "as before" when
+ * absent: the single-node k3s the installer builds sets none of them, and a
+ * room Pod created with all of them absent is byte for byte the Pod of 0.9, so
+ * an upgrade does not make a single live class look foreign.
+ */
+export interface WorkloadConfig extends PodPolicy {
   namespace: string
   workspaceClaim: string
   memory: string
@@ -18,6 +35,24 @@ export interface WorkloadConfig {
    * broker decides, not the web: it is its node and its policy.
    */
   maxMemoryMb?: number
+  /**
+   * RUNTIME_GPU_RUNTIME_CLASS: the RuntimeClass of a GPU room; absent is
+   * `nvidia` (what the installer's k3s creates), empty is none, for clusters
+   * where the NVIDIA runtime is the node's default.
+   */
+  gpuRuntimeClass?: string
+  /**
+   * RUNTIME_IN_PLACE_RESIZE: `false` never calls `pods/resize`, and the Role
+   * may then lack it. A live room keeps its memory and cores until its next
+   * Pod, as on a cluster older than 1.33. Absent is `true`.
+   */
+  inPlaceResize?: boolean
+  /** RUNTIME_ROOM_NODE_SELECTOR / _TOLERATIONS: room and personal-notebook Pods. */
+  roomNodeSelector?: Record<string, string>
+  roomTolerations?: Toleration[]
+  /** RUNTIME_GPU_NODE_SELECTOR / _TOLERATIONS: added for GPU rooms only; a personal notebook never has a GPU. */
+  gpuNodeSelector?: Record<string, string>
+  gpuTolerations?: Toleration[]
 }
 export interface RuntimeConfig extends WorkloadConfig {
   port: number
@@ -132,6 +167,21 @@ export function loadRuntimeConfig(
     url.hash
   )
     throw new Error('RUNTIME_KUBE_URL must be an HTTPS origin')
+  /*
+   * The customer's cluster rules (pod-policy.ts), checked here so that a typo
+   * stops the broker at start with the variable's name, instead of every room
+   * failing later with a Kubernetes validation error nobody connects to it.
+   */
+  const colocateWithApp = parseSwitch('RUNTIME_COLOCATE_WITH_APP', env.RUNTIME_COLOCATE_WITH_APP, false)
+  const inPlaceResize = parseSwitch('RUNTIME_IN_PLACE_RESIZE', env.RUNTIME_IN_PLACE_RESIZE, true)
+  const gpuRuntimeClass = parseRuntimeClass(env.RUNTIME_GPU_RUNTIME_CLASS)
+  const priorityClass = parsePriorityClass(env.RUNTIME_PRIORITY_CLASS)
+  const podLabels = parseStringMap('RUNTIME_POD_LABELS', env.RUNTIME_POD_LABELS, 'labels')
+  const podAnnotations = parseStringMap('RUNTIME_POD_ANNOTATIONS', env.RUNTIME_POD_ANNOTATIONS, 'annotations')
+  const roomNodeSelector = parseStringMap('RUNTIME_ROOM_NODE_SELECTOR', env.RUNTIME_ROOM_NODE_SELECTOR, 'nodeSelector')
+  const roomTolerations = parseTolerations('RUNTIME_ROOM_TOLERATIONS', env.RUNTIME_ROOM_TOLERATIONS)
+  const gpuNodeSelector = parseStringMap('RUNTIME_GPU_NODE_SELECTOR', env.RUNTIME_GPU_NODE_SELECTOR, 'nodeSelector')
+  const gpuTolerations = parseTolerations('RUNTIME_GPU_TOLERATIONS', env.RUNTIME_GPU_TOLERATIONS)
   return {
     port,
     tokenFile,
@@ -154,5 +204,15 @@ export function loadRuntimeConfig(
     // Passed through to the package proxy Pod unread (competition-jobs.ts).
     dependencyIndexUrl: (env.DEPENDENCY_INDEX_URL ?? '').trim(),
     dependencyFilesHosts: (env.DEPENDENCY_FILES_HOSTS ?? '').trim(),
+    colocateWithApp,
+    inPlaceResize,
+    gpuRuntimeClass,
+    priorityClass,
+    podLabels,
+    podAnnotations,
+    roomNodeSelector,
+    roomTolerations,
+    gpuNodeSelector,
+    gpuTolerations,
   }
 }

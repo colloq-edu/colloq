@@ -521,12 +521,12 @@ test("under the broker a live room's cores are changed by a broker PATCH, not an
    * fact the Pod was torn down on the next start — together with all the
    * seminar's variables.
    */
-  const seen: Array<{ method?: string; body: string }> = []
+  const seen: Array<{ method?: string; url?: string; body: string }> = []
   let reply: unknown = { outcome: 'applied', cpus: 6 }
   const broker = http.createServer(async (req, res) => {
     let body = ''
     for await (const chunk of req) body += chunk
-    seen.push({ method: req.method, body })
+    seen.push({ method: req.method, url: req.url, body })
     res.setHeader('content-type', 'application/json')
     res.end(JSON.stringify(reply))
   })
@@ -542,12 +542,20 @@ test("under the broker a live room's cores are changed by a broker PATCH, not an
   process.env.KERNEL_RUNTIME_TOKEN = 'a'.repeat(64)
   try {
     assert.equal(await applyCpuLimit('res-broker-cpu', 6), 'applied')
-    assert.deepEqual(seen.map((r) => [r.method, JSON.parse(r.body)]), [['PATCH', { cpus: 6 }]])
+    /*
+     * The room's Pod first, then its personal notebooks' Pod, which follows the
+     * room's number while the class names none of its own (the docker rule);
+     * without such a Pod the broker answers `absent` and nothing starts.
+     */
+    assert.deepEqual(seen.map((r) => [r.method, r.url, JSON.parse(r.body)]), [
+      ['PATCH', '/v1/rooms/res-broker-cpu', { cpus: 6 }],
+      ['PATCH', '/v1/rooms/res-broker-cpu/own', { cpus: 6 }],
+    ])
     // The reset reaches the broker as `null`: it has its own default, not the
     // web side's KERNEL_CPUS.
     reply = { outcome: 'absent' }
     assert.equal(await applyCpuLimit('res-broker-cpu', null), 'pending')
-    assert.deepEqual(JSON.parse(seen[1].body), { cpus: null })
+    assert.deepEqual(JSON.parse(seen[2].body), { cpus: null })
     reply = { outcome: 'pending', cpus: 2 }
     assert.equal(await applyCpuLimit('res-broker-cpu', 8), 'pending')
     reply = { error: 'Room resize is infeasible on this node' }

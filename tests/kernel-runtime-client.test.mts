@@ -208,3 +208,37 @@ test('an unschedulable room reaches the app as a word and numbers, and the room 
       JSON.stringify(err.failure)===JSON.stringify({unschedulable:'memory'}))
   }finally{await remote.close()}
 })
+
+test('the personal notebooks Pod is the same intent on the /own route, and the census marks it', async()=>{
+  // Since 0.10 a class has two broker Pods; the role is the path, never a body field.
+  const seen:Array<{method?:string;url?:string;body:string}>=[]
+  let reply:unknown=endpoint
+  const remote=await fixture(async(req,res)=>{
+    let body='';for await(const chunk of req)body+=chunk
+    seen.push({method:req.method,url:req.url,body})
+    res.setHeader('content-type','application/json');res.end(JSON.stringify(reply))
+  })
+  try{
+    const client=new RuntimeClient({url:remote.url,token:'a'.repeat(64)})
+    await client.ensure('seminar_1','base',revision,2,3072,'own')
+    assert.deepEqual([seen[0].method,seen[0].url,JSON.parse(seen[0].body)],['POST','/v1/rooms/seminar_1/own',{environment:'base',revision,cpus:2,memoryMb:3072}])
+    reply={outcome:'applied',memoryMb:4096}
+    await client.resize('seminar_1',{memoryMb:4096},'own')
+    assert.deepEqual([seen[1].method,seen[1].url],['PATCH','/v1/rooms/seminar_1/own'])
+    reply={ok:true}
+    await client.stop('seminar_1',false,'own')
+    assert.deepEqual([seen[2].method,seen[2].url],['DELETE','/v1/rooms/seminar_1/own'])
+    // A permanent retirement is the room's alone and never leaves the app.
+    await assert.rejects(()=>client.stop('seminar_1',true,'own'),/retired together/)
+    assert.equal(seen.length,3)
+    const row={sessionId:'r1',instanceId:'u',phase:'ready',environment:'base',revision}
+    reply={rooms:[row,{...row,instanceId:'v',role:'own'}]}
+    assert.deepEqual((await client.rooms()).map(room=>room.role),[undefined,'own'])
+    reply={rooms:[{...row,role:'lecture'}]}
+    await assert.rejects(()=>client.rooms(),/room list/i)
+    reply={ok:true,reason:null,inPlaceResize:false}
+    assert.equal((await client.health()).inPlaceResize,false)
+    reply={ok:true,reason:null,inPlaceResize:'no'}
+    assert.equal('inPlaceResize' in (await client.health()),false,'garbage there is not believed')
+  }finally{await remote.close()}
+})

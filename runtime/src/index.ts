@@ -25,6 +25,14 @@ const jobs = new CompetitionJobs({
     ...(config.imagePullSecret ? { imagePullSecret: config.imagePullSecret } : {}),
     ...(config.dependencyIndexUrl ? { dependencyIndexUrl: config.dependencyIndexUrl } : {}),
     ...(config.dependencyFilesHosts ? { dependencyFilesHosts: config.dependencyFilesHosts } : {}),
+    // The cluster's rules for every Pod the broker creates (pod-policy.ts),
+    // and the rooms' placement for the Pods that run student code.
+    colocateWithApp: config.colocateWithApp,
+    ...(config.roomNodeSelector ? { studentNodeSelector: config.roomNodeSelector } : {}),
+    ...(config.roomTolerations ? { studentTolerations: config.roomTolerations } : {}),
+    priorityClass: config.priorityClass,
+    podLabels: config.podLabels,
+    podAnnotations: config.podAnnotations,
   },
   kube: new HttpsKubernetesClient({
     url: config.kubeUrl,
@@ -45,7 +53,11 @@ const server = createRuntimeServer({
   token: () => readStrongSecret(config.tokenFile),
 })
 server.listen(config.port, '0.0.0.0', () =>
-  console.log(`Colloq runtime listening on ${config.port}; namespace ${config.namespace}`),
+  console.log(
+    `Colloq runtime listening on ${config.port}; namespace ${config.namespace}` +
+      `; colocation with the app ${config.colocateWithApp ? 'on' : 'off'}` +
+      `; in-place resize ${config.inPlaceResize ? 'on' : 'off'}`,
+  ),
 )
 for (const signal of ['SIGTERM', 'SIGINT'] as const)
   process.once(signal, () => {

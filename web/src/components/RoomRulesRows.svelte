@@ -56,11 +56,11 @@
     /**
      * Whether the instance can give a personal notebook its own kernel.
      *
-     * `true` by default, and that is not caution but the truth about an
-     * ordinary install: a personal notebook has its own kernel everywhere
-     * except the broker (k3s), where one Pod is created per class. There the
-     * rule row says so BEFORE the teacher switches on, for their students,
-     * notebooks that do not compute.
+     * `true` by default, and that is not caution but the truth: a personal
+     * notebook has its own kernel on every backend since 0.10 (the broker
+     * starts a second Pod per class). Where an instance cannot, the rule row
+     * says so BEFORE the teacher switches on, for their students, notebooks
+     * that do not compute.
      */
     ownKernels?: boolean
     /**
@@ -239,10 +239,10 @@
           </p>
         {/if}
         <!--
-          A caveat of the instance, not of the rule: on the broker a personal
-          notebook has no kernel of its own, and running it is refused. Saying
-          so here means telling the teacher before the class, not a student in
-          the middle of it.
+          A caveat of the instance, not of the rule: where a personal notebook
+          has no kernel of its own, running it is refused. Saying so here
+          means telling the teacher before the class, not a student in the
+          middle of it.
         -->
         {#if row.key === 'ownBooks' && !ownKernels}
           <p class="mt-0.5 text-2xs font-semibold leading-snug text-warning">{tr('room.rules.ownBooks.noKernel')}</p>

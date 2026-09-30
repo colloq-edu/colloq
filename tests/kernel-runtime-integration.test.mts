@@ -31,17 +31,16 @@ test('room image pins survive catalog/default updates and missing revisions fail
  try {
   await endpointForSession('legacy-default',null)
   /*
-   * On the broker a personal notebook has no kernel of its own — and a refusal
-   * is more honest than a substitute.
-   *
-   * The broker starts one pod per class; a second one, without a GPU, would
-   * mean changing its protocol, its controller and its permissions in the
-   * cluster. Running the personal notebook in the lecture kernel instead of
-   * refusing is not allowed: that is exactly the trouble the second container
-   * exists to prevent — the class's GPU in a student's hands and an OOM killer
-   * that picks the teacher's kernel.
+   * Since 0.10 a personal notebook on the broker has a Pod of its own: the
+   * same pinned image through the `/own` route, never the lecture's kernel.
+   * Until then this line asserted a refusal: one Pod per class, and a
+   * personal notebook quietly run in the lecture kernel would have handed a
+   * student the class's GPU and its OOM killer.
    */
-  await assert.rejects(endpointForSession('legacy-default',null,'own'),/personal notebooks|личные тетради/)
+  const personal=await endpointForSession('legacy-default',null,'own')
+  assert.equal(requests.at(-1).path,'/v1/rooms/legacy-default/own')
+  assert.equal(requests.at(-1).revision,rev('a'),'the personal Pod runs the room\'s pinned image')
+  assert.equal(personal.instanceId,'pod-1')
   assert.equal(sessionEnvironment('legacy-default'),'base')
   assert.equal(sessionKernelRevision('legacy-default'),rev('a'))
   createSession('pin-old','Old','base');assert.equal(sessionKernelRevision('pin-old'),rev('a'))
@@ -81,6 +80,35 @@ test('room image pins survive catalog/default updates and missing revisions fail
   Object.assign(process.env,old)
   await new Promise<void>(r=>runtime.close(()=>r()))
  }
+})
+
+test('a broker that does not serve personal notebooks is refused in words, not shown as a broken start',async()=>{
+ /*
+  * A 0.9 broker behind a 0.10 app (mid-rollout) reads `/v1/rooms/:id/own` as a
+  * malformed room ID. The student reads the honest refusal ("personal notebooks
+  * have no kernel of their own"), not "Invalid room ID", and nothing falls back
+  * to the class's kernel.
+  */
+ const old={...process.env};const file=path.join(TEST_ROOT,'own-catalog.json'),tokenFile=path.join(TEST_ROOT,'own-token')
+ const seen:string[]=[]
+ let answer:{status:number;error:string}={status:400,error:'Invalid room ID'}
+ const runtime=http.createServer(async(req,res)=>{for await(const _ of req){};seen.push(`${req.method} ${req.url}`);res.setHeader('content-type','application/json');res.statusCode=answer.status;res.end(JSON.stringify({error:answer.error}))})
+ await new Promise<void>(r=>runtime.listen(0,'127.0.0.1',r))
+ fs.writeFileSync(file,JSON.stringify({schemaVersion:1,release:'v0.2.0',defaultEnvironment:'base',environments:[{name:'base',image:image('a'),gpu:false}]}));fs.writeFileSync(tokenFile,'t'.repeat(64))
+ Object.assign(process.env,{KERNEL_BACKEND:'broker',KERNEL_ISOLATION:'required',KERNEL_CATALOG_FILE:file,KERNEL_RUNTIME_URL:`http://127.0.0.1:${(runtime.address() as {port:number}).port}`,KERNEL_RUNTIME_TOKEN_FILE:tokenFile})
+ try{
+  createSession('own-old-broker','Old broker','base')
+  await assert.rejects(endpointForSession('own-old-broker','base','own'),(err:Error)=>err.name==='OwnKernelUnavailable'&&/personal notebooks|личные тетради/.test(err.message))
+  assert.deepEqual(seen,['POST /v1/rooms/own-old-broker/own'],'the class Pod is never asked instead')
+  // A newer broker that does not serve the route at all says so with a status of its own.
+  for(const status of [404,501]){
+   answer={status,error:'Not found'}
+   await assert.rejects(endpointForSession('own-old-broker','base','own'),(err:Error)=>err.name==='OwnKernelUnavailable')
+  }
+  // Anything else is an ordinary failed start, shown as one.
+  answer={status:503,error:'Room startup timed out: Pending'}
+  await assert.rejects(endpointForSession('own-old-broker','base','own'),(err:Error)=>err.name!=='OwnKernelUnavailable'&&/timed out/.test(err.message))
+ }finally{for(const key of Object.keys(process.env))if(!(key in old))delete process.env[key];Object.assign(process.env,old);await new Promise<void>(r=>runtime.close(()=>r()))}
 })
 
 test('an endpoint incarnation distinguishes replacement pods behind stable Service DNS',()=>{

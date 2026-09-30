@@ -8,8 +8,8 @@ import { config } from '../config.js'
 import {
   imageRevision, isRuntimeSessionId, parseRuntimeCatalog, parseRuntimeEnsureRequest,
   parseRuntimeResizeRequest, resolveRuntimeEnvironment, RUNTIME_MEMORY_MAX_MB, RUNTIME_MEMORY_MIN_MB,
-  RUNTIME_REVISION, parseRuntimeStartFailure, type RuntimeStartFailure,
-  type RuntimeCatalog, type RuntimeEndpoint, type RuntimeHealth, type RuntimeResizeRequest, type RuntimeResizeResult, type RuntimeRoom,
+  RUNTIME_OWN_SUFFIX, RUNTIME_REVISION, parseRuntimeStartFailure, type RuntimeStartFailure,
+  type RuntimeCatalog, type RuntimeEndpoint, type RuntimeHealth, type RuntimeKernelRole, type RuntimeResizeRequest, type RuntimeResizeResult, type RuntimeRoom,
 } from '@shared/runtime'
 
 export type KernelBackend = 'broker' | 'docker' | 'test'
@@ -81,6 +81,13 @@ function competitionStatus(value: unknown, expected?: string): CompetitionJobSta
     if (expected && row.jobId!==expected) throw new Error('identity')
     return row
   } catch { throw new RuntimeRequestError('Invalid competition job status or identity') }
+}
+/**
+ * The broker route of one of a room's two Pods: the class's, or with `/own`
+ * its personal notebooks' (shared/runtime.ts · RuntimeKernelRole).
+ */
+function roomRoute(sessionId: string, role: RuntimeKernelRole): string {
+  return `/v1/rooms/${encodeURIComponent(sessionId)}${role === 'own' ? RUNTIME_OWN_SUFFIX : ''}`
 }
 function competitionCollection(value: unknown): CompetitionJobCollection {
   try { return parseCompetitionJobCollection(value) }
@@ -160,8 +167,13 @@ export class RuntimeClient {
     }
     return value
   }
+  /**
+   * The room's Pod, or with `role` `own` the Pod of its personal notebooks:
+   * the same intent, a second Pod without a GPU, its own Service and token.
+   */
   async ensure(
     sessionId: string, environment: string, revision?: string, cpus?: number | null, memoryMb?: number | null,
+    role: RuntimeKernelRole = 'room',
   ): Promise<RuntimeEndpoint> {
     if (!isRuntimeSessionId(sessionId)) throw new RuntimeRequestError(tr("server.invalidSessionIdentifier.0f97c4"))
     const body = parseRuntimeEnsureRequest({
@@ -171,7 +183,7 @@ export class RuntimeClient {
       // the number in the form.
       ...(memoryMb != null ? {memoryMb} : {}),
     })
-    const value = object(await this.request('POST',`/v1/rooms/${encodeURIComponent(sessionId)}`,body,180000))
+    const value = object(await this.request('POST',roomRoute(sessionId,role),body,180000))
     if (typeof value.url !== 'string' || typeof value.token !== 'string' || value.token.length < 16 ||
       /[\r\n]/.test(value.token) || typeof value.instanceId !== 'string' || !value.instanceId ||
       value.environment !== environment || typeof value.revision !== 'string' || !RUNTIME_REVISION.test(value.revision)) {
@@ -192,11 +204,11 @@ export class RuntimeClient {
    * default. No Pod means `absent`, and that is not an error: the number is
    * already in the seminar's row, and the next start takes it from there.
    */
-  async resize(sessionId: string, change: RuntimeResizeRequest): Promise<RuntimeResizeResult> {
+  async resize(sessionId: string, change: RuntimeResizeRequest, role: RuntimeKernelRole = 'room'): Promise<RuntimeResizeResult> {
     if (!isRuntimeSessionId(sessionId)) throw new RuntimeRequestError(tr("server.invalidSessionIdentifier.0f97c4"))
     const body = parseRuntimeResizeRequest(change)
     // Waits in the room's queue behind its start, hence the same timeout as ensure.
-    const value = object(await this.request('PATCH',`/v1/rooms/${encodeURIComponent(sessionId)}`,body,180000))
+    const value = object(await this.request('PATCH',roomRoute(sessionId,role),body,180000))
     if (!['applied','pending','absent'].includes(String(value.outcome)) || !memoryField(value.memoryMb) || !cpusField(value.cpus))
       throw new RuntimeRequestError(tr("server.invalidKernelRuntimeResponse.110f37"))
     return {
@@ -205,9 +217,15 @@ export class RuntimeClient {
       ...(typeof value.cpus === 'number' ? {cpus:value.cpus} : {}),
     }
   }
-  async stop(sessionId: string, permanent = false): Promise<void> {
+  /**
+   * The room's DELETE stops both of its Pods; with `role` `own` only the
+   * personal notebooks' Pod goes, and the class keeps running. A permanent
+   * retirement is the room's alone.
+   */
+  async stop(sessionId: string, permanent = false, role: RuntimeKernelRole = 'room'): Promise<void> {
     if (!isRuntimeSessionId(sessionId)) throw new RuntimeRequestError(tr("server.invalidSessionIdentifier.0f97c4"))
-    const value=object(await this.request('DELETE',`/v1/rooms/${encodeURIComponent(sessionId)}${permanent ? '?retire=true' : ''}`,undefined,180000))
+    if (permanent && role === 'own') throw new RuntimeRequestError('Personal notebook kernels are retired together with their room')
+    const value=object(await this.request('DELETE',`${roomRoute(sessionId,role)}${permanent ? '?retire=true' : ''}`,undefined,180000))
     if (value.ok !== true) throw new RuntimeRequestError(tr("server.kernelRuntimeDidNotConfirmRoomTermination.eed974"))
   }
   async health(): Promise<RuntimeHealth> {
@@ -236,6 +254,7 @@ export class RuntimeClient {
         ...(typeof cpus === 'number' ? {defaultCpus:cpus} : {}),
         ...(typeof value.defaultMemoryMb === 'number' ? {defaultMemoryMb:value.defaultMemoryMb} : {}),
         ...(typeof value.maxMemoryMb === 'number' ? {maxMemoryMb:value.maxMemoryMb} : {}),
+        ...(typeof value.inPlaceResize === 'boolean' ? {inPlaceResize:value.inPlaceResize} : {}),
         ...(validRecovery ? { recovery } : {}),
         ...(validCompetition ? {competition:competition as unknown as NonNullable<RuntimeHealth['competition']>} : {}),
       }
@@ -275,6 +294,9 @@ export class RuntimeClient {
       if (row.cpus !== undefined && (typeof row.cpus !== 'number' || !Number.isFinite(row.cpus) || row.cpus <= 0 || row.cpus > 64))
         throw new RuntimeRequestError(tr("server.invalidRuntimeRoomList.9cdcda"))
       if (!memoryField(row.memoryMb)) throw new RuntimeRequestError(tr("server.invalidRuntimeRoomList.9cdcda"))
+      // `own` marks the personal notebooks' Pod; absent is the class's own.
+      if (row.role !== undefined && row.role !== 'room' && row.role !== 'own')
+        throw new RuntimeRequestError(tr("server.invalidRuntimeRoomList.9cdcda"))
       return row as unknown as RuntimeRoom
     })
   }

@@ -186,15 +186,18 @@ const SPECS: Record<ResourceSettingName, Spec> = {
     appliesTo: 'live',
     dockerOnly: true,
   },
-  ownMemoryMb: { fallback: null, bounds: 'memory', appliesTo: 'live', dockerOnly: true },
-  ownCpus: { fallback: null, bounds: 'cpus', appliesTo: 'live', dockerOnly: true },
+  // The personal-notebook numbers, cap and idle time are the app's on the
+  // broker too since 0.10, where they size the class's second Pod
+  // (kernel/pool.ts · brokerLimits); only the process ceiling is a docker flag.
+  ownMemoryMb: { fallback: null, bounds: 'memory', appliesTo: 'live', dockerOnly: false },
+  ownCpus: { fallback: null, bounds: 'cpus', appliesTo: 'live', dockerOnly: false },
   ownMax: {
     envName: 'KERNEL_OWN_MAX',
     readEnv: wholeVar('KERNEL_OWN_MAX', 1),
     fallback: 60,
     bounds: { min: 1, max: 500 },
     appliesTo: 'live',
-    dockerOnly: true,
+    dockerOnly: false,
   },
   ownIdleMin: {
     envName: 'KERNEL_OWN_IDLE_MIN',
@@ -202,7 +205,7 @@ const SPECS: Record<ResourceSettingName, Spec> = {
     fallback: 30,
     bounds: { min: 0, max: 1440 },
     appliesTo: 'live',
-    dockerOnly: true,
+    dockerOnly: false,
   },
   ownPids: {
     envName: 'KERNEL_OWN_PIDS',

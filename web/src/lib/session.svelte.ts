@@ -425,10 +425,10 @@ export class SessionState {
    *
    * Arrives with the socket's first frame (`ready`). `true` by default — that
    * is what a server that does not know about this field yet would answer, and
-   * that is how docker works, that is, everything except the broker. The
-   * "Students' personal notebooks" rule row reads it: promising what the
-   * instance cannot do means handing a student a refusal in the middle of a
-   * class instead of warning the teacher before it.
+   * what every backend does since 0.10, the broker included. The "Students'
+   * personal notebooks" rule row reads it: promising what the instance cannot
+   * do means handing a student a refusal in the middle of a class instead of
+   * warning the teacher before it.
    */
   ownKernels = $state(true)
   /**
@@ -1225,11 +1225,11 @@ export class SessionState {
        * Whether this instance can give a personal notebook its own kernel.
        *
        * By this word the "Students' personal notebooks" rule row tells the
-       * truth: on the broker (k3s) a personal notebook has no kernel of its
-       * own yet at all, and promising otherwise means letting the teacher turn
-       * on something that does not work and learn about it from a student in
-       * the middle of a class. A missing field means an old server, and then
-       * the former silence.
+       * truth: where an instance cannot give a personal notebook a kernel of
+       * its own (the broker could not before 0.10), promising otherwise means
+       * letting the teacher turn on something that does not work and learn
+       * about it from a student in the middle of a class. A missing field
+       * means an old server, and then the former silence.
        */
       else if (message.t === 'ready' && message.ownKernels !== undefined) {
         this.ownKernels = message.ownKernels

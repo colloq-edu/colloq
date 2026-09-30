@@ -365,16 +365,22 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
    *
    * Asked by the same `docker ps` as the list of live ones: otherwise the panel
    * would call `inspect` blindly on every live room, only to learn "no such
-   * container" for half of them. Under the broker there is never a second
-   * container.
+   * container" for half of them. Under the broker the census has the second
+   * Pod since 0.10 (`role: own`), with the numbers kubelet gave it; it must
+   * never stand in for the room's own row, which a map by session would do.
    */
   let withOwn = new Set<string>()
   let runningRoom = new Set<string>()
   let runningOwn = new Set<string>()
-  const runtimeById = new Map(runtimeRooms?.map((room) => [room.sessionId, room]))
+  const livePod = (room: RuntimeRoom) => room.phase === 'ready' || room.phase === 'pending'
+  const runtimeById = new Map(runtimeRooms?.filter((room) => room.role !== 'own').map((room) => [room.sessionId, room]))
+  const ownById = new Map(runtimeRooms?.filter((room) => room.role === 'own').map((room) => [room.sessionId, room]))
   try {
     if (runtimeRooms) {
-      alive = new Set(runtimeRooms.filter((room) => room.phase === 'ready' || room.phase === 'pending').map((room) => room.sessionId))
+      alive = new Set(runtimeRooms.filter(livePod).map((room) => room.sessionId))
+      withOwn = new Set(ownById.keys())
+      runningRoom = new Set(runtimeRooms.filter((room) => livePod(room) && room.role !== 'own').map((room) => room.sessionId))
+      runningOwn = new Set(runtimeRooms.filter((room) => livePod(room) && room.role === 'own').map((room) => room.sessionId))
     } else {
       const census = kernelBackend() === 'docker' ? await roomContainers({ strict: true }) : []
       alive = new Set(census.filter((r) => r.running).map((r) => r.session))
@@ -393,7 +399,7 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
   // Census is authoritative. Neither the DB display window nor an absent DB
   // row can erase resources a running workload still holds.
   for (const id of alive) if (!rows.has(id)) {
-    const observed = runtimeById.get(id)
+    const observed = runtimeById.get(id) ?? ownById.get(id)
     rows.set(id, selectRoom.get(id) as RoomRow | undefined ?? {
       id, name: id, environment: observed?.environment ?? null, memory_mb: null, cpus: null,
     })
@@ -427,9 +433,12 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
        * matters, when the limit was raised between lessons while one of the
        * containers has been running on the old one since morning.
        */
-      const own = withOwn.has(row.id)
-        ? await containerLimits(row.id, 'own').catch(() => ({ memoryMb: null, cpus: null }))
-        : null
+      const ownPod = ownById.get(row.id)
+      const own = !withOwn.has(row.id)
+        ? null
+        : runtimeRooms
+          ? { memoryMb: ownPod?.memoryMb ?? null, cpus: ownPod?.cpus ?? null }
+          : await containerLimits(row.id, 'own').catch(() => ({ memoryMb: null, cpus: null }))
       if (kernelBackend() === 'docker' && ((runningRoom.has(row.id) && real.memoryMb === null)
         || (runningOwn.has(row.id) && own?.memoryMb == null))) complete = false
       const ownDefaults = own ? ownLimits(row.id) : null
@@ -446,7 +455,9 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
   )
   let takenMb = 0, takenCpus = 0
   for (const room of allocations) {
-    if (runtimeRooms ? room.alive : runningRoom.has(room.id)) {
+    // By Pod, not by class: a class whose only live Pod is its personal
+    // notebooks' holds that Pod's memory, not the room's as well.
+    if (runningRoom.has(room.id)) {
       takenMb += room.memoryMb
       takenCpus += room.cpus
       memoryBySlot.set(room.id, room.memoryMb)

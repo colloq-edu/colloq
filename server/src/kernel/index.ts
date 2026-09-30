@@ -2220,6 +2220,50 @@ async function sweepIdleOwnScopes(now: number): Promise<void> {
   }
 }
 
+/** Since when a class's personal-notebook Pod has had no kernel of this process in it. */
+const ownPodUntracked = new Map<string, number>()
+
+/**
+ * A personal-notebook Pod that no scope of this process lives in, after the
+ * personal kernels' idle time, goes the way `dropOwnIfEmpty` sends it.
+ *
+ * The case is an app restart: the scopes are gone with the process, the
+ * kernels in the Pod are ones nobody re-attached to, and `dropOwnIfEmpty`
+ * runs only when a scope retires, so with no scope it never runs. A student
+ * who comes back within the idle time re-attaches and the Pod stays; the rest
+ * waited as long as the per-kernel sweep would have given them.
+ *
+ * The broker only. There the Pod's memory is reserved on the node in full
+ * (requests = limits) and blocks other classes' Pods from being scheduled;
+ * the docker path keeps its behaviour, the container going with its room.
+ */
+async function sweepUntrackedOwnPods(now: number, census: Array<{ session: string; own: boolean }>): Promise<void> {
+  const minutes = ownIdleMinutes()
+  if (kernelBackend() !== 'broker' || minutes <= 0) {
+    ownPodUntracked.clear()
+    return
+  }
+  const present = new Set<string>()
+  for (const room of census) {
+    if (!room.own) continue
+    present.add(room.session)
+    if (scopesOf(room.session).some((scope) => scope.role === 'own')) {
+      ownPodUntracked.delete(room.session)
+      continue
+    }
+    const since = ownPodUntracked.get(room.session)
+    if (since === undefined) {
+      ownPodUntracked.set(room.session, now)
+      continue
+    }
+    if (now - since < minutes * 60_000) continue
+    ownPodUntracked.delete(room.session)
+    console.log(`[kernel ${room.session}] personal-notebook Pod without a tracked kernel for ${minutes}m — stopped`)
+    await dropOwnIfEmpty(room.session)
+  }
+  for (const session of [...ownPodUntracked.keys()]) if (!present.has(session)) ownPodUntracked.delete(session)
+}
+
 async function sweepIdleKernelsOnce(now: number): Promise<void> {
   // Personal kernels first, one by one: the class goes on meanwhile, and the
   // room below may turn out to be busy; that does not affect the decision on it.
@@ -2235,7 +2279,9 @@ async function sweepIdleKernelsOnce(now: number): Promise<void> {
    */
   const rooms = new Map<string, boolean>()
   for (const sessionId of runningRoomKernels()) rooms.set(sessionId, true)
-  for (const room of await listRoomKernels()) rooms.set(room.session, room.running)
+  const census = await listRoomKernels()
+  for (const room of census) rooms.set(room.session, room.running)
+  await sweepUntrackedOwnPods(now, census)
   for (const [sessionId, running] of rooms) {
     const scopes = scopesOf(sessionId)
     // A computing room is busy even if everyone closed their tabs: the cell has

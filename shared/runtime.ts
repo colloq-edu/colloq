@@ -71,6 +71,24 @@ export interface RuntimeResizeResult {
   /** Cores the Pod has right now; fractional if the operator set it so. */
   cpus?: number
 }
+/**
+ * Which of a class's two kernel Pods a request is about: the class's own
+ * (`room`) or the one its students' personal notebooks run in (`own`).
+ *
+ * The same split as the Docker backend's two containers (server/src/kernel/
+ * pool.ts · KernelRole), and for the same reasons: a GPU is given to a Pod as
+ * a whole, and the OOM killer under a shared limit picks the heaviest process,
+ * the lecture's kernel rather than the greedy student. Until 0.10 the broker
+ * had only the first, and a run in a personal notebook was refused on it.
+ *
+ * On the wire the role is the path, not a body field: `/v1/rooms/:id` is the
+ * class, `/v1/rooms/:id/own` its personal notebooks. The request bodies stay
+ * exactly as they were, and a room ID can never contain `/`
+ * (RUNTIME_SESSION_ID), so the two cannot be confused.
+ */
+export type RuntimeKernelRole = 'room' | 'own'
+/** The path suffix of the personal-notebook Pod's routes. */
+export const RUNTIME_OWN_SUFFIX = '/own'
 export interface RuntimeEndpoint {
   url: string
   token: string
@@ -88,6 +106,15 @@ export interface RuntimeHealth {
   defaultMemoryMb?: number
   /** The broker gives a room no more than this: the operator's or node's ceiling. */
   maxMemoryMb?: number
+  /**
+   * Whether the broker changes memory and cores of a live Pod at all.
+   *
+   * `false` when the operator turned it off (RUNTIME_IN_PLACE_RESIZE=0, a
+   * cluster whose Role has no `pods/resize`): a resize then answers 501, as on
+   * a cluster older than 1.33, and a new number reaches the room's next Pod.
+   * Absent from a broker older than the setting.
+   */
+  inPlaceResize?: boolean
   recovery?: { rollbackRetries: number; rollbackFailures: number; rollbacksApplied: number }
 }
 export interface RuntimeRoom {
@@ -100,6 +127,12 @@ export interface RuntimeRoom {
   cpus?: number
   /** Memory the Pod really has, from status rather than from spec. */
   memoryMb?: number
+  /**
+   * `own` for the Pod of the class's personal notebooks; absent for the
+   * class's own Pod. Absent rather than `room`, so a room's census row reads
+   * exactly as it did before there were two Pods.
+   */
+  role?: RuntimeKernelRole
 }
 /**
  * Why a room's Pod did not fit on a node: the resource the node was short of,

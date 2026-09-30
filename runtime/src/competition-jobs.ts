@@ -8,6 +8,7 @@ import {
 } from '../../shared/competition-runtime.js'
 import { RuntimeError } from './controller.js'
 import { KubernetesError, type KubernetesClient, type KubeObject } from './kubernetes.js'
+import { policyMetadata, policyPlacement, type PodPolicy, type Toleration } from './pod-policy.js'
 
 const MANAGER = 'colloq-runtime'
 const IMAGE = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$/
@@ -16,7 +17,27 @@ const jobName = (id: string) => `colloq-job-${id}`
 const proxyName = (id: string) => `colloq-proxy-${id}`
 const iso = (time: number) => new Date(time).toISOString()
 
-export interface CompetitionJobConfig {
+/** Where Pods that run student code go: the rooms' node selector and tolerations, when set. */
+function studentPlacement(config: CompetitionJobConfig): Record<string, unknown> {
+  return {
+    ...(config.studentNodeSelector && Object.keys(config.studentNodeSelector).length ? { nodeSelector: config.studentNodeSelector } : {}),
+    ...(config.studentTolerations?.length ? { tolerations: config.studentTolerations } : {}),
+  }
+}
+
+/**
+ * The cluster's Pod policy (pod-policy.ts) applies here as to rooms: the
+ * priority class, the operator's labels and annotations, and the colocation
+ * affinity for the Pods that mount the data claim (the job and the resolver;
+ * the exporter is a container of the job's Pod). The package proxy mounts
+ * nothing and is left free to run anywhere.
+ *
+ * The rooms' node selector and tolerations (RUNTIME_ROOM_*) go to the job and
+ * resolver Pods too: a submission is student code as much as a cell is, and a
+ * platform that keeps student code on its own tainted node pool means every
+ * Pod that runs it. The proxy runs none and keeps the cluster's defaults.
+ */
+export interface CompetitionJobConfig extends PodPolicy {
   namespace: string
   dataClaim: string
   exporterImage: string
@@ -30,6 +51,9 @@ export interface CompetitionJobConfig {
    */
   dependencyIndexUrl?: string
   dependencyFilesHosts?: string
+  /** RUNTIME_ROOM_NODE_SELECTOR / RUNTIME_ROOM_TOLERATIONS, for the Pods that run student code. */
+  studentNodeSelector?: Record<string, string>
+  studentTolerations?: Toleration[]
 }
 interface Options {
   kube: KubernetesClient
@@ -47,6 +71,20 @@ const pvc = (name: string, claimName: string) => ({ name, persistentVolumeClaim:
 const memory = (size: number) => ({ medium: 'Memory', sizeLimit: `${size}Mi` })
 const security = { runAsUser: 1000, runAsGroup: 1000, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] }, seccompProfile: { type: 'RuntimeDefault' } }
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+/**
+ * Liveness of the two servers a competition Pod runs, the exporter and the
+ * package proxy, for a policy engine that requires probes on long-running
+ * containers. TCP, generous: the node completes the handshake even while the
+ * exporter's event loop copies a large file, and two minutes of refusals
+ * outlast the proxy's own close at its deadline, 90 seconds before the Pod's.
+ *
+ * The notebook, scorer and resolver themselves (`main`) get none: a batch
+ * process has no endpoint, an exec probe would spend the submission's own
+ * process budget, and a probe there could only end a legitimate long run that
+ * activeDeadlineSeconds already bounds. The egress preflight is an init
+ * container, which Kubernetes does not probe.
+ */
+const SERVER_LIVENESS = (port: number) => ({ tcpSocket: { port }, initialDelaySeconds: 10, periodSeconds: 20, timeoutSeconds: 5, failureThreshold: 6 })
 const MiB = 1024 * 1024
 const OFFLINE_PROBE = `import socket,sys,time
 started=time.monotonic()
@@ -183,11 +221,15 @@ export class CompetitionJobs {
   }
   private pod(intent: CompetitionJobIntent, image: string): KubeObject {
     const role = intent.kind === 'resolve' ? 'competition-resolver' : 'competition-job'
-    return { apiVersion: 'v1', kind: 'Pod', metadata: { name: jobName(intent.jobId), labels: this.labels(intent.jobId, role), annotations: this.annotations(intent) },
+    return { apiVersion: 'v1', kind: 'Pod', metadata: { name: jobName(intent.jobId),
+        ...policyMetadata(this.options.config, this.labels(intent.jobId, role), this.annotations(intent)) },
       spec: { restartPolicy: 'Never', automountServiceAccountToken: false, enableServiceLinks: false,
         terminationGracePeriodSeconds: 5, activeDeadlineSeconds: intent.limits.wallSeconds + 90,
         securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000 },
         ...(this.options.config.imagePullSecret ? { imagePullSecrets: [{ name: this.options.config.imagePullSecret }] } : {}),
+        // Both of this Pod's containers mount the data claim.
+        ...policyPlacement(this.options.config, true),
+        ...studentPlacement(this.options.config),
         ...(intent.kind === 'resolve' ? {} : { initContainers: [{ name: 'egress-probe', image,
           imagePullPolicy: 'IfNotPresent', command: ['python', '-I', '-c', OFFLINE_PROBE],
           securityContext: security,
@@ -206,17 +248,22 @@ export class CompetitionJobs {
             env('COMP_EXPORT_MAX_BYTES', String(intent.limits.targetBytes))],
           ports: [{ name: 'export', containerPort: 8765, protocol: 'TCP' }],
           readinessProbe: { tcpSocket: { port: 8765 }, periodSeconds: 1, failureThreshold: 10 },
+          livenessProbe: SERVER_LIVENESS(8765),
           volumeMounts: [mount('out', '/out'), mount('destination', '/result', this.destination(intent)), mount('tmp', '/tmp')],
         }],
       } }
   }
   private proxyPod(intent: CompetitionJobIntent): KubeObject {
-    return { apiVersion: 'v1', kind: 'Pod', metadata: { name: proxyName(intent.jobId), labels: this.labels(intent.jobId, 'competition-proxy'), annotations: this.annotations(intent) },
+    return { apiVersion: 'v1', kind: 'Pod', metadata: { name: proxyName(intent.jobId),
+        ...policyMetadata(this.options.config, this.labels(intent.jobId, 'competition-proxy'), this.annotations(intent)) },
       spec: { restartPolicy: 'Never', automountServiceAccountToken: false, enableServiceLinks: false,
         activeDeadlineSeconds: intent.limits.wallSeconds + 90, securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000 },
+        // No claim mounted: the priority, but no colocation.
+        ...policyPlacement(this.options.config, false),
         containers: [{ name: 'proxy', image: this.options.config.exporterImage, command: ['node', '/app/competition-proxy.js'],
           securityContext: security, ports: [{ containerPort: 3128, name: 'proxy' }],
           readinessProbe: { tcpSocket: { port: 3128 }, periodSeconds: 1, failureThreshold: 10 },
+          livenessProbe: SERVER_LIVENESS(3128),
           resources: { requests: { cpu: '100m', memory: '64Mi' }, limits: { cpu: '500m', memory: '128Mi', 'ephemeral-storage': '32Mi' } },
           env: [env('COMP_PROXY_MAX_BYTES', String(Math.min(intent.limits.targetBytes * 3 + 32 * 1024 * 1024, 1536 * 1024 * 1024))),
             env('COMP_PROXY_WALL_SECONDS', String(intent.limits.wallSeconds)),

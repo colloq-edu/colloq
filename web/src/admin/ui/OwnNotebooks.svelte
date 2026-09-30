@@ -30,7 +30,7 @@
     /** What the machine allows; null — not known, the server refuses out of bounds in words. */
     maxMemoryMb: number | null
     maxCpus: number | null
-    /** False on the broker (k3s), where a personal notebook has no kernel of its own. */
+    /** False where the instance cannot give a personal notebook a kernel of its own; every backend can since 0.10. */
     ownKernels?: boolean
     busy?: boolean
   }

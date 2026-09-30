@@ -4,6 +4,7 @@ import {
   isRuntimeSessionId,
   parseRuntimeEnsureRequest,
   parseRuntimeResizeRequest,
+  RUNTIME_OWN_SUFFIX,
   RUNTIME_RETIRE_QUERY,
   type RuntimeCatalog,
 } from '../../shared/runtime.js'
@@ -114,7 +115,12 @@ export function createRuntimeServer(options: Options) {
           throw new RuntimeError('Method not allowed', 405)
         }
         if (path.startsWith('/v1/rooms/')) {
-          const id = path.slice('/v1/rooms/'.length)
+          // `/v1/rooms/:id` is the class's Pod, `/v1/rooms/:id/own` its
+          // personal notebooks' (shared/runtime.ts · RuntimeKernelRole). An ID
+          // never contains `/`, so the suffix cannot be part of one.
+          const rest = path.slice('/v1/rooms/'.length)
+          const role = rest.endsWith(RUNTIME_OWN_SUFFIX) ? 'own' : 'room'
+          const id = role === 'own' ? rest.slice(0, -RUNTIME_OWN_SUFFIX.length) : rest
           if (!isRuntimeSessionId(id)) throw new RuntimeError('Invalid room ID', 400)
           if (req.method === 'POST') {
             let intent
@@ -124,7 +130,7 @@ export function createRuntimeServer(options: Options) {
               if (err instanceof RuntimeError) throw err
               throw new RuntimeError(err instanceof Error ? err.message : 'Invalid intent', 400)
             }
-            reply(res, 200, await options.controller.ensure(id, intent))
+            reply(res, 200, await options.controller.ensure(id, intent, role))
             return
           }
           if (req.method === 'PATCH') {
@@ -137,13 +143,15 @@ export function createRuntimeServer(options: Options) {
               if (err instanceof RuntimeError) throw err
               throw new RuntimeError(err instanceof Error ? err.message : 'Invalid resize intent', 400)
             }
-            reply(res, 200, await options.controller.resize(id, intent))
+            reply(res, 200, await options.controller.resize(id, intent, role))
             return
           }
           if (req.method === 'DELETE') {
             if (req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0)
               throw new RuntimeError('DELETE does not accept a request body', 400)
-            await options.controller.remove(id, permanent)
+            // The class's DELETE takes both Pods; `/own` only the personal one,
+            // and a permanent retirement is the class's alone.
+            await options.controller.remove(id, permanent, role)
             reply(res, 200, { ok: true })
             return
           }

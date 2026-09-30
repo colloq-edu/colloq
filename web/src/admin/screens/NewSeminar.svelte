@@ -1029,7 +1029,6 @@
         instanceCpus={resourceSettings?.settings.ownCpus.value ?? null}
         maxMemoryMb={resources?.limits.max ?? null}
         maxCpus={resources?.limits.cpus.max ?? null}
-        ownKernels={resourceSettings?.backend !== 'broker'}
       />
       {#if roomMemoryEffective !== null && roomCpusEffective !== null}
         <Footprint
