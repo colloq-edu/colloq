@@ -24,6 +24,7 @@ import {
   proxyEnvironmentFor,
   proxySettings,
   redactedArgument,
+  withOneContentLength,
   redactedProxy,
 } from '../server/src/outbound.js'
 import { updateOracleSettings } from '../server/src/admin/settings.js'
@@ -165,6 +166,27 @@ test('with a proxy set, fetch goes through it for the outside and direct for loo
   await undo?.()
   undo = null
   assert.equal(outboundProxyActive(), false)
+})
+
+test('a Content-Length the caller set itself survives the trip through the proxy (Node 22: "2, 2")', async () => {
+  // Pure: identical repeats collapse, differing ones stay for undici to refuse.
+  const base = { origin: 'http://model.example.test', path: '/', method: 'POST' } as const
+  assert.deepEqual(withOneContentLength({ ...base, headers: { 'content-length': '2, 2', a: 'b' } }).headers, { 'content-length': '2', a: 'b' })
+  assert.deepEqual(withOneContentLength({ ...base, headers: { 'content-length': '2, 3' } }).headers, { 'content-length': '2, 3' })
+  assert.deepEqual(withOneContentLength({ ...base, headers: ['content-length', '2'] }).headers, ['content-length', '2'])
+  // And for real, through the dispatcher.
+  const proxy = await fakeProxy()
+  try {
+    undo = await installOutboundProxy({ HTTP_PROXY: proxy.url })
+    const res = await fetch('http://model.example.test/v1/echo', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': '2' },
+      body: '{}',
+    })
+    assert.equal(await res.text(), 'proxied http://model.example.test/v1/echo {}')
+  } finally {
+    proxy.close()
+  }
 })
 
 test('the OpenAI client, which has its own transport, streams through the proxy too', async () => {

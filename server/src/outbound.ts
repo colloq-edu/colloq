@@ -178,6 +178,29 @@ export function bypassesProxy(target: URL, rules: NoProxyRules): boolean {
 
 /* ------------------------------------------------------------ the dispatcher */
 
+/**
+ * One Content-Length where the caller's fetch wrote it twice.
+ *
+ * On Node 22 the fetch that hands requests to this dispatcher is Node's own
+ * undici 6, while the proxy agent comes from the undici 7 package. A caller
+ * that sets Content-Length itself (the openai client does, for every model
+ * request) gets undici 6's computed value appended to its own, and the
+ * dispatcher receives "2, 2". Node's own client takes the first number; undici
+ * 7 refuses the whole request as an invalid header, so the Oracle failed with
+ * "Connection error" behind a campus proxy while GitHub import worked (found
+ * by CI on Node 22, 30 Sep 2026; the server image runs Node 22). Identical
+ * repeats become one value; differing ones are left for undici to refuse.
+ */
+export function withOneContentLength(options: Dispatcher.DispatchOptions): Dispatcher.DispatchOptions {
+  const headers = options.headers
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers) || Symbol.iterator in headers) return options
+  const value = (headers as Record<string, unknown>)['content-length']
+  if (typeof value !== 'string' || !value.includes(',')) return options
+  const parts = value.split(',').map((part) => part.trim())
+  if (parts.some((part) => part !== parts[0])) return options
+  return { ...options, headers: { ...(headers as Record<string, string>), 'content-length': parts[0]! } }
+}
+
 let active = false
 
 /** Whether outbound HTTP goes through a proxy in this process (installOutboundProxy succeeded). */
@@ -223,7 +246,8 @@ export async function installOutboundProxy(env: NodeJS.ProcessEnv = process.env)
   class OutboundDispatcher extends undici.Dispatcher {
     override dispatch(options: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandler): boolean {
       const target = new URL(String(options.origin))
-      return (bypassesProxy(target, rules) ? direct : proxied).dispatch(options, handler)
+      if (bypassesProxy(target, rules)) return direct.dispatch(options, handler)
+      return proxied.dispatch(withOneContentLength(options), handler)
     }
     // Node's own Agent stays open: it is the process's, not ours.
     override close(): Promise<void>

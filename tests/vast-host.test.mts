@@ -193,6 +193,28 @@ const appImage = (id: string, version: string): Image => ({
   digests: ['ghcr.io/colloq-edu/colloq-vast@sha256:' + id.slice(7, 15).padEnd(64, '0')],
 })
 
+/**
+ * The system directories with one tool taken out, as symlinks: a machine
+ * without Docker has to be one on which `command -v docker` finds nothing.
+ * Leaving /usr/bin on the PATH is not that on a CI runner, where the real
+ * docker lives there (it passed on macOS, whose Docker is elsewhere, and
+ * failed on GitHub's Ubuntu, 30 Sep 2026).
+ */
+function systemPathWithout(dir: string, tool: string): string {
+  const sys = path.join(dir, `system-without-${tool}`)
+  fs.mkdirSync(sys, { recursive: true })
+  for (const from of ['/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']) {
+    let names: string[] = []
+    try { names = fs.readdirSync(from) } catch { continue }
+    for (const name of names) {
+      const link = path.join(sys, name)
+      if (name === tool || fs.existsSync(link)) continue
+      try { fs.symlinkSync(path.join(from, name), link) } catch { /* a name we cannot link is a tool we do not need */ }
+    }
+  }
+  return sys
+}
+
 /** A machine: a temporary directory with the stand-ins, a state file and the paths colloq-host writes. */
 function machine(state: Partial<State> = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-host-test-'))
@@ -501,7 +523,7 @@ test('offline, a missing Docker or image is named instead of downloaded', () => 
     const noDocker = `${m.bin}-nodocker`
     fs.cpSync(m.bin, noDocker, { recursive: true })
     fs.rmSync(path.join(noDocker, 'docker'))
-    let r = m.run(['up'], { COLLOQ_OFFLINE: '1', COLLOQ_IMAGE: APP }, { path: `${noDocker}:/usr/bin:/bin:/usr/sbin:/sbin` })
+    let r = m.run(['up'], { COLLOQ_OFFLINE: '1', COLLOQ_IMAGE: APP }, { path: `${noDocker}:${systemPathWithout(m.dir, 'docker')}` })
     assert.notEqual(r.status, 0)
     assert.match(r.out, /Docker is not installed, and COLLOQ_OFFLINE=1 downloads nothing/)
     assert.doesNotMatch(m.hostCalls(), /get\.docker\.com/)
@@ -580,7 +602,7 @@ test('doctor: FAIL lines exit non-zero, WARN lines name what to set', () => {
     const noDocker = `${m.bin}-nodocker`
     fs.cpSync(m.bin, noDocker, { recursive: true })
     fs.rmSync(path.join(noDocker, 'docker'))
-    r = m.run(['doctor'], { COLLOQ_OFFLINE: '1' }, { path: `${noDocker}:/usr/bin:/bin:/usr/sbin:/sbin` })
+    r = m.run(['doctor'], { COLLOQ_OFFLINE: '1' }, { path: `${noDocker}:${systemPathWithout(m.dir, 'docker')}` })
     assert.notEqual(r.status, 0)
     assert.match(r.out, /^FAIL {2}docker +not installed, and an offline install never downloads it/m)
     assert.match(r.out, /^INFO {2}registry +not asked: COLLOQ_OFFLINE=1$/m)
