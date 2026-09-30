@@ -1,0 +1,45 @@
+{{- if .Values.ingress.enabled }}
+{{- $tls := .Values.ingress.tls }}
+{{- $annotations := dict }}
+{{- range $key, $value := .Values.ingress.annotations }}
+{{- if not (kindIs "invalid" $value) }}{{ $_ := set $annotations $key (toString $value) }}{{ end }}
+{{- end }}
+{{- if $tls.enabled }}
+{{- with $tls.certManager.clusterIssuer }}{{ $_ := set $annotations "cert-manager.io/cluster-issuer" . }}{{ end }}
+{{- with $tls.certManager.issuer }}{{ $_ := set $annotations "cert-manager.io/issuer" . }}{{ end }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: colloq-app
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "app") | nindent 4 }}
+  {{- with $annotations }}
+  annotations:
+    {{- range $key, $value := . }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if $tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ $tls.secretName | default "colloq-tls" }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: colloq-app
+                port:
+                  name: http
+{{- end }}

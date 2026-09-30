@@ -1,0 +1,432 @@
+# Colloq in one namespace of your Kubernetes. Every setting is described here;
+# README.md has the same list as a table with the environment variable each one
+# becomes, and the assumptions about the platform.
+#
+# One release per namespace: the broker treats every room Pod in its namespace
+# as its own, and the objects have fixed names (colloq-app, colloq-runtime, ...)
+# that the broker and the docs rely on. A second release in the same namespace
+# fails on those names instead of quietly sharing rooms.
+
+global:
+  # Registry host (optionally with a path prefix) that replaces the registry of
+  # EVERY image: the app, the broker, and the kernel images of the catalog below.
+  # The repository path and the digest are kept, so a Harbor or Nexus proxy of
+  # ghcr.io works as is:
+  #   harbor.bank.local/ghcr  ->  harbor.bank.local/ghcr/colloq-edu/colloq-app@sha256:...
+  imageRegistry: ""
+  # Existing kubernetes.io/dockerconfigjson Secrets in this namespace, as names
+  # (or {name: ...}). The first one is also given to every Pod the broker creates
+  # (rooms, personal notebooks, competition jobs): the broker takes one name.
+  imagePullSecrets: []
+
+# Extra labels on every object and Pod of the chart, and on every Pod the broker
+# creates (policy engines, cost centres). app.kubernetes.io/* and colloq.dev/*
+# keys are the chart's own and are refused here.
+commonLabels: {}
+
+image:
+  registry: ghcr.io
+  pullPolicy: IfNotPresent
+  # Digests are filled by the release job in the published chart. A reference is
+  # always rendered as registry/repository@digest: never a tag, never latest.
+  app:
+    repository: colloq-edu/colloq-app
+    digest: ""
+  runtime:
+    # The same image runs the competition exporter and package proxy Pods.
+    repository: colloq-edu/colloq-runtime
+    digest: ""
+
+# Kernel environments rooms and competition jobs run in, rendered into the
+# ConfigMap colloq-catalog that the app and the broker read. Images are full
+# references pinned by digest; global.imageRegistry rewrites their registry too.
+# The release job fills this list from the release's own catalog.
+catalog:
+  # Release label of the catalog; empty means v<appVersion>.
+  release: ""
+  defaultEnvironment: base
+  environments:
+    # name: [a-z0-9-], at most 32 characters. gpu: rooms of this environment get
+    # one nvidia.com/gpu and the runtime class below. packages: informational
+    # list shown in the panel. Several revisions of one name are allowed, with
+    # exactly one of them `current: true`.
+    - name: base
+      image: ""
+      gpu: false
+      packages: []
+    - name: kaggle-base
+      image: ""
+      gpu: false
+      packages: []
+
+# The app's settings. Everything non-secret becomes the ConfigMap colloq-app-env;
+# the secret ones (the model key, the signing key) the Secret colloq-app-config.
+# Both reach the app as environment variables.
+config:
+  # An existing Secret (Vault, External Secrets) whose keys become the app's
+  # environment instead of colloq-app-config: OPENAI_API_KEY, SESSION_SECRET,
+  # a proxy URL with credentials (HTTPS_PROXY), or any other app setting, which
+  # then wins over the value here. With it, leave ai.apiKey and sessionSecret empty.
+  existingSecret: ""
+  # PUBLIC_URL: the address people open. Empty: https://<ingress.host> (http:// without TLS).
+  publicUrl: ""
+  # UI_LANGUAGE before the owner picks one in the panel: ru or en (empty: ru).
+  uiLanguage: ""
+  # TZ: the instance's zone, an IANA name such as Asia/Yekaterinburg. Days (the
+  # competition daily limit) begin and pages print times in it. Empty: Europe/Moscow.
+  timezone: ""
+  # INSTITUTION: the line next to the logo, at most 80 characters.
+  institution: ""
+  # ADMIN_EMAIL: prefills the owner's claim form.
+  adminEmail: ""
+  # OPEN_SEMINAR_CREATION: anyone may create a seminar through the API.
+  openSeminarCreation: false
+  # MAX_UPLOAD_MB (one file) and MAX_SESSION_MB (one room's files).
+  maxUploadMb: 50
+  maxSessionMb: 1024
+  # COUNCIL_COPY_MB and COUNCIL_MEMORY_GUARD: council attempts' private copies.
+  councilCopyMb: 512
+  councilMemoryGuard: true
+  # SESSION_SECRET: signs sign-in tokens. Empty: the app generates one and keeps
+  # it in its data volume, which is what a single replica wants.
+  sessionSecret: ""
+  # LOG_FORMAT: text, or json for one JSON object per line.
+  logFormat: text
+  # DB_SNAPSHOT_HOURS / DB_SNAPSHOT_KEEP: consistent SQLite snapshots into
+  # /data/snapshots every N hours, keeping the last K (0 hours: off). A volume
+  # snapshot of a live SQLite file can catch it mid-write; these cannot.
+  dbSnapshotHours: 24
+  dbSnapshotKeep: 7
+  ai:
+    # AI_PROVIDER, OPENAI_BASE_URL, OPENAI_MODEL, AI_REASONING: an
+    # OpenAI-compatible endpoint (an internal one works). Empty values keep the
+    # app's defaults (api.openai.com, gpt-4o-mini). No key: the Oracle is off.
+    # The app reaches the endpoint only if networkPolicy.app.egress allows it.
+    provider: openai
+    apiKey: ""
+    baseUrl: ""
+    model: ""
+    reasoning: false
+  inbound:
+    # TRUSTED_PROXIES: whose X-Forwarded-For is believed. Only the ingress
+    # controller reaches the app (networkPolicy.ingressController), so `private`
+    # names it; ingress-nginx overwrites the header with the client's address.
+    trustedProxies: private
+    # SHARED_ADDRESSES: addresses many people share (a NAT, or a load balancer in
+    # front of the ingress controller that hides clients): no per-address caps.
+    sharedAddresses: ""
+    # TRUST_CF_CONNECTING_IP: only behind Cloudflare. Off.
+    trustCfConnectingIp: false
+    # HSTS on https requests.
+    hsts: true
+  # Any other app setting as NAME: value, into colloq-app-env.
+  extraEnv: {}
+
+outbound:
+  # HTTPS_PROXY / HTTP_PROXY / NO_PROXY (both spellings) for the app's own
+  # outbound calls: the model endpoint and GitHub import. Cluster names (.svc,
+  # single-label names) and private addresses always go direct. A proxy URL
+  # with a password belongs in config.existingSecret, not here. The app reaches
+  # the proxy only if networkPolicy.app.egress allows its address and port.
+  httpsProxy: ""
+  httpProxy: ""
+  noProxy: ""
+  # The institution's CA for the app (NODE_EXTRA_CA_CERTS) and for package
+  # preparation: a PEM bundle inline (becomes the ConfigMap colloq-extra-ca), or
+  # an existing ConfigMap and the key that holds the bundle.
+  extraCa:
+    pem: ""
+    existingConfigMap: ""
+    key: extra-ca.pem
+
+# Competition "own packages": where the package proxy Pods may fetch wheels.
+dependencies:
+  # DEPENDENCY_INDEX_URL: an https simple index (Nexus, Artifactory, devpi),
+  # no credentials. Empty: public PyPI.
+  indexUrl: ""
+  # DEPENDENCY_FILES_HOSTS: extra hosts serving the wheel files (host or host:port, commas).
+  filesHosts: ""
+  # A NetworkPolicy knows addresses, not names, and Helm cannot resolve the
+  # mirror's name: list its addresses and ports for the package proxy's policy.
+  #   - cidrs: [10.20.30.40/32]
+  #     ports: [443]
+  mirrorEgress: []
+  # The proxy's general rule: public IPv4 on 443 (public PyPI). The proxy itself
+  # still admits only the configured names. false in a closed network.
+  publicEgress: true
+
+# The token between the app and the broker, and the key room tokens are derived
+# from. Each comes from an existing Secret, an explicit value, or is generated
+# once and kept (helm CLI only: generation reads the live Secret with `lookup`).
+# ArgoCD and other `helm template` renderers cannot look up: set existingSecret
+# there, or every sync makes new values and restarts rooms.
+# A value: 43-128 characters of [A-Za-z0-9_-], e.g. `openssl rand -hex 32`.
+secrets:
+  runtimeToken:
+    existingSecret: ""
+    existingSecretKey: runtime-token
+    value: ""
+  roomSecret:
+    # Only the broker mounts it. Changing it replaces every room's Pod (and its
+    # Python) the next time the room starts a kernel: room tokens derive from it.
+    existingSecret: ""
+    existingSecretKey: room-secret
+    value: ""
+
+# Room Pods (and personal-notebook Pods) the broker creates.
+rooms:
+  # RUNTIME_KERNEL_MEMORY: a room's default memory; the class form may change it
+  # per room up to maxMemory. Whole Mi or Gi, 64Mi..256Gi.
+  memory: 4Gi
+  # RUNTIME_KERNEL_CPU: a room's default cores ("2", "1500m"), at most 64.
+  cpu: "2"
+  # RUNTIME_KERNEL_MEMORY_MAX: the ceiling of one room. Empty: the memory of the
+  # broker's node minus 1 GiB, which on a cluster of unequal nodes is a guess;
+  # set it to what your room nodes can give.
+  maxMemory: ""
+  # RUNTIME_KERNEL_EPHEMERAL: a room's scratch space (/tmp and home).
+  ephemeralStorage: 2Gi
+  # COLLOQ_ROOM_NETWORK: rooms reach cluster DNS and nothing else; `none` takes
+  # DNS away too.
+  network: ""
+  # RUNTIME_ROOM_NODE_SELECTOR / RUNTIME_ROOM_TOLERATIONS: where room and
+  # personal-notebook Pods run.
+  nodeSelector: {}
+  tolerations: []
+  # RUNTIME_PRIORITY_CLASS: priorityClassName of every Pod the broker creates.
+  priorityClassName: ""
+  # RUNTIME_POD_LABELS / RUNTIME_POD_ANNOTATIONS: added to every Pod the broker
+  # creates, next to app.kubernetes.io/name, instance and part-of, which the
+  # chart always adds. colloq.dev/* and app.kubernetes.io/* keys are refused.
+  podLabels: {}
+  podAnnotations: {}
+
+# Rooms of a catalog environment with gpu: true.
+gpu:
+  # RUNTIME_GPU_RUNTIME_CLASS: the RuntimeClass of GPU rooms, created by your
+  # platform (the NVIDIA GPU operator makes `nvidia`). Empty: none.
+  runtimeClassName: nvidia
+  # RUNTIME_GPU_NODE_SELECTOR / RUNTIME_GPU_TOLERATIONS: added for GPU rooms.
+  nodeSelector: {}
+  tolerations: []
+
+persistence:
+  # ReadWriteOnce: everything that mounts the data or workspace volume (the app,
+  # rooms, personal notebooks, competition jobs) must share one node, so the
+  # broker pins its Pods next to the app (RUNTIME_COLOCATE_WITH_APP=1) and the
+  # app prefers the node where rooms already run. ReadWriteMany (CephFS, NFS):
+  # no co-location, rooms spread over the cluster. ReadWriteOncePod cannot work.
+  accessMode: ReadWriteOnce
+  # StorageClass for both claims: empty is the cluster default, "-" means none.
+  storageClass: ""
+  # Keep the claims when the release is uninstalled or the ArgoCD application
+  # deleted: they hold the database and every room's files.
+  retain: true
+  data:
+    # The database, the owner's keys, competition data. With existingClaim the
+    # chart creates nothing: set accessMode to that claim's mode.
+    size: 10Gi
+    accessMode: ""
+    storageClass: ""
+    existingClaim: ""
+  workspace:
+    # Every room's files.
+    size: 100Gi
+    accessMode: ""
+    storageClass: ""
+    existingClaim: ""
+
+ingress:
+  # false: Service-only; expose colloq-app:3000 your own way and set config.publicUrl.
+  enabled: true
+  className: nginx
+  # Required when enabled. Colloq must sit at the root of its host.
+  host: ""
+  # What ingress-nginx needs: uploads up to 256 MB (competition data reaches
+  # 200 MB), hour-long WebSocket and event streams, no buffering of the event
+  # streams. WebSocket itself needs nothing in ingress-nginx. Set a key to null
+  # to drop it; add your controller's own for another controller.
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 256m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  tls:
+    enabled: true
+    # An existing Secret with the corporate certificate, or the one cert-manager
+    # fills. Empty: colloq-tls.
+    secretName: ""
+    certManager:
+      # Adds cert-manager.io/cluster-issuer or cert-manager.io/issuer.
+      clusterIssuer: ""
+      issuer: ""
+
+service:
+  type: ClusterIP
+  annotations: {}
+
+metrics:
+  # METRICS_TOKEN: /metrics serves Prometheus text to `Authorization: Bearer
+  # <token>`, and 404 without the setting. The token comes from existingSecret,
+  # an explicit value, or is generated like the secrets above (Secret colloq-metrics).
+  enabled: false
+  token: ""
+  existingSecret: ""
+  existingSecretKey: metrics-token
+  serviceMonitor:
+    # Needs the Prometheus Operator's CRDs. Scrapes with the same token.
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+# Every flow Colloq needs is declared, ingress and egress, so it works in a
+# namespace whose default is deny. Kubernetes policies select by labels and
+# addresses, never by names.
+networkPolicy:
+  # Where cluster DNS answers. Every Colloq Pod but competition notebooks and
+  # scorers may reach it on 53 (rooms unless rooms.network is none). With
+  # NodeLocal DNSCache add its address, e.g. - ipBlock: {cidr: 169.254.20.10/32}.
+  # An empty list means port 53 at any address.
+  dns:
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+  # Who may reach the app on 3000: the ingress controller. A controller on the
+  # host network arrives from node addresses: use an ipBlock of your nodes.
+  ingressController:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: ingress-nginx
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: ingress-nginx
+  # Who may scrape /metrics on 3000 (only with metrics.enabled).
+  monitoring:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: prometheus
+  # The broker's way to the Kubernetes API. The Service kubernetes.default is
+  # rewritten to the API servers' own addresses (usually port 6443) before
+  # policy applies, and those belong to no namespace: hence addresses, and by
+  # default anywhere on 443 and 6443. Narrow the CIDRs to the output of
+  #   kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes
+  # Cilium gives the API servers an identity of their own that an ipBlock does
+  # not match (unless it runs with policy-cidr-match-mode=nodes): ciliumEntity
+  # adds a namespaced CiliumNetworkPolicy for the kube-apiserver entity.
+  kubeApiServer:
+    cidrs:
+      - 0.0.0.0/0
+      - ::/0
+    ports:
+      - 443
+      - 6443
+    ciliumEntity: false
+  app:
+    # External endpoints the app may reach: the model endpoint, the outbound
+    # proxy, GitHub (api.github.com, raw.githubusercontent.com). None by default.
+    #   - cidrs: [10.1.2.3/32]
+    #     ports: [3128]
+    egress: []
+    # Raw NetworkPolicy egress rules, added as they are.
+    extraEgress: []
+  runtime:
+    extraEgress: []
+
+# Security contexts of the app and the broker: restricted Pod Security. uid and
+# gid 1000 are load-bearing: rooms run as 1000 and share files with the app.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# The web app (Deployment colloq-app). One replica, Recreate: SQLite has one writer.
+app:
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  nodeSelector: {}
+  tolerations: []
+  # Replaces the chart's own affinity (with ReadWriteOnce: prefer the node where
+  # rooms already run, whose volume attachment a new app Pod needs).
+  affinity: {}
+  podAnnotations: {}
+  priorityClassName: ""
+  # The start runs database migrations (and a snapshot before one): generous.
+  startupProbe:
+    httpGet:
+      path: /api/livez
+      port: http
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 60
+  livenessProbe:
+    httpGet:
+      path: /api/livez
+      port: http
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  # Asks only what the app itself needs to serve (database and workspace): a
+  # broker hiccup must not take the only app Pod out of rotation.
+  readinessProbe:
+    httpGet:
+      path: /api/readyz
+      port: http
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# The runtime broker (Deployment colloq-runtime): the only component with
+# Kubernetes credentials, a Role on Pods and Services of this namespace.
+runtime:
+  # RUNTIME_IN_PLACE_RESIZE and the pods/resize permission: a room's memory and
+  # cores change on the live Pod (Kubernetes 1.33+), keeping its Python. false
+  # when your namespace-admin role lacks pods/resize (a Role may only grant what
+  # its author holds): resize then answers "unsupported", as below 1.33.
+  inPlaceResize: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  priorityClassName: ""
+  livenessProbe:
+    tcpSocket:
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  readinessProbe:
+    tcpSocket:
+      port: http
+    periodSeconds: 5

@@ -1,0 +1,146 @@
+{{- /*
+Renders nothing. A value the app or the broker would refuse at start stops the
+render here, with the reason, instead of leaving a Pod in CrashLoopBackOff
+behind a green sync.
+*/ -}}
+{{- $values := .Values -}}
+{{- $imagePattern := "^(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?/)?[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[a-f0-9]{64}$" -}}
+{{- $namePattern := "^(?:[a-z0-9][a-z0-9-]{0,30}[a-z0-9]|[a-z0-9])$" -}}
+
+{{- /* Images. The app and runtime references are checked where they are rendered. */ -}}
+{{- $_ := include "colloq.appImage" . -}}
+{{- $_ := include "colloq.runtimeImage" . -}}
+{{- $names := dict -}}
+{{- $current := dict -}}
+{{- range $index, $env := $values.catalog.environments -}}
+{{- if not (regexMatch $namePattern (toString $env.name)) -}}
+{{- fail (printf "catalog.environments[%d].name %q: lowercase letters, digits and dashes, at most 32 characters" $index (toString $env.name)) -}}
+{{- end -}}
+{{- if not $env.image -}}
+{{- fail (printf "catalog.environments[%d].image (%s) is empty. The chart in the source tree carries no image digests: install the published chart (oci://ghcr.io/colloq-edu/charts/colloq), or set every catalog image to a digest-pinned reference." $index $env.name) -}}
+{{- end -}}
+{{- $image := include "colloq.rewriteImage" (dict "ref" $env.image "registry" $values.global.imageRegistry) -}}
+{{- if or (gt (len $image) 512) (not (regexMatch $imagePattern $image)) -}}
+{{- fail (printf "catalog.environments[%d].image %q must be a lowercase registry reference pinned by digest (registry/path@sha256:...)" $index $image) -}}
+{{- end -}}
+{{- $_ := set $names $env.name (add1 (get $names $env.name | default 0)) -}}
+{{- if $env.current -}}{{- $_ := set $current $env.name (add1 (get $current $env.name | default 0)) -}}{{- end -}}
+{{- if and (hasKey $env "current") (not $env.current) -}}{{- $_ := set $current (printf "%s/false" $env.name) true -}}{{- end -}}
+{{- end -}}
+{{- range $name, $count := $names -}}
+{{- /* A lone revision is current unless it says otherwise (shared/runtime.ts · parseRuntimeCatalog). */ -}}
+{{- $isCurrent := int (get $current $name | default 0) -}}
+{{- if and (eq (int $count) 1) (hasKey $current (printf "%s/false" $name)) -}}
+{{- fail (printf "catalog environment %s has one revision marked current: false: nothing would be current" $name) -}}
+{{- end -}}
+{{- if and (gt (int $count) 1) (ne $isCurrent 1) -}}
+{{- fail (printf "catalog environment %s has %d revisions: exactly one of them needs current: true" $name (int $count)) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (hasKey $names $values.catalog.defaultEnvironment) -}}
+{{- fail (printf "catalog.defaultEnvironment %q is not one of catalog.environments" $values.catalog.defaultEnvironment) -}}
+{{- end -}}
+
+{{- /* Ingress. */ -}}
+{{- if $values.ingress.enabled -}}
+{{- if not $values.ingress.host -}}
+{{- fail "ingress.host is required with ingress.enabled (Colloq sits at the root of its own host); or set ingress.enabled=false for a Service-only install and config.publicUrl to the address people open" -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* Rooms: the same grammar and bounds as the broker's (runtime/src/config.ts). */ -}}
+{{- $memory := include "colloq.mebibytes" $values.rooms.memory | int -}}
+{{- if or (lt $memory 64) (gt $memory 262144) -}}
+{{- fail (printf "rooms.memory %q: whole Mi or Gi from 64Mi to 256Gi, e.g. 4Gi" (toString $values.rooms.memory)) -}}
+{{- end -}}
+{{- $ephemeral := include "colloq.mebibytes" $values.rooms.ephemeralStorage | int -}}
+{{- if or (lt $ephemeral 64) (gt $ephemeral 1048576) -}}
+{{- fail (printf "rooms.ephemeralStorage %q: whole Mi or Gi from 64Mi to 1024Gi" (toString $values.rooms.ephemeralStorage)) -}}
+{{- end -}}
+{{- if $values.rooms.maxMemory -}}
+{{- $max := include "colloq.mebibytes" $values.rooms.maxMemory | int -}}
+{{- if or (lt $max 64) (gt $max 262144) -}}
+{{- fail (printf "rooms.maxMemory %q: whole Mi or Gi from 64Mi to 256Gi" (toString $values.rooms.maxMemory)) -}}
+{{- end -}}
+{{- if gt $memory $max -}}
+{{- fail (printf "rooms.memory (%s) exceeds rooms.maxMemory (%s): the broker refuses to start" (toString $values.rooms.memory) (toString $values.rooms.maxMemory)) -}}
+{{- end -}}
+{{- end -}}
+{{- $cpu := toString $values.rooms.cpu -}}
+{{- if not (regexMatch "^(?:[1-9][0-9]*(?:\\.[0-9]{1,3})?|0\\.[0-9]{1,3}|[1-9][0-9]*m)$" $cpu) -}}
+{{- fail (printf "rooms.cpu %q: cores as a Kubernetes quantity, e.g. \"2\" or \"1500m\"" $cpu) -}}
+{{- end -}}
+{{- if hasSuffix "m" $cpu -}}
+{{- if gt (trimSuffix "m" $cpu | int) 64000 -}}{{- fail "rooms.cpu: at most 64 cores" -}}{{- end -}}
+{{- else if gt (float64 $cpu) 64.0 -}}
+{{- fail "rooms.cpu: at most 64 cores" -}}
+{{- end -}}
+
+{{- /* Keys that belong to the chart and the broker. */ -}}
+{{- range $key, $_ := $values.commonLabels -}}
+{{- if or (hasPrefix "app.kubernetes.io/" $key) (hasPrefix "colloq.dev/" $key) (hasPrefix "helm.sh/" $key) -}}
+{{- fail (printf "commonLabels.%s: app.kubernetes.io/*, colloq.dev/* and helm.sh/* labels are set by the chart" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- range $key, $_ := $values.rooms.podLabels -}}
+{{- if or (hasPrefix "app.kubernetes.io/" $key) (hasPrefix "colloq.dev/" $key) (hasPrefix "colloq." $key) -}}
+{{- fail (printf "rooms.podLabels.%s: app.kubernetes.io/* and colloq.* labels of broker Pods are the broker's and the chart's" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- range $key, $_ := $values.rooms.podAnnotations -}}
+{{- if hasPrefix "colloq.dev/" $key -}}
+{{- fail (printf "rooms.podAnnotations.%s: colloq.dev/* annotations are the broker's" $key) -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* Secrets. */ -}}
+{{- if $values.config.existingSecret -}}
+{{- if or $values.config.ai.apiKey $values.config.sessionSecret -}}
+{{- fail (printf "config.existingSecret (%s) replaces colloq-app-config: put OPENAI_API_KEY and SESSION_SECRET into that Secret and leave config.ai.apiKey and config.sessionSecret empty" $values.config.existingSecret) -}}
+{{- end -}}
+{{- end -}}
+{{- range $name, $secret := dict "secrets.runtimeToken" $values.secrets.runtimeToken "secrets.roomSecret" $values.secrets.roomSecret -}}
+{{- if $secret.value -}}
+{{- if $secret.existingSecret -}}
+{{- fail (printf "%s: set either existingSecret or value, not both" $name) -}}
+{{- end -}}
+{{- if or (not (regexMatch "^[A-Za-z0-9_-]{43,128}$" $secret.value)) (lt (len (uniq (splitList "" $secret.value))) 8) -}}
+{{- fail (printf "%s.value: 43 to 128 characters of [A-Za-z0-9_-] from at least 32 random bytes, e.g. openssl rand -hex 32" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and $values.metrics.token $values.metrics.existingSecret -}}
+{{- fail "metrics: set either existingSecret or token, not both" -}}
+{{- end -}}
+{{- if and $values.metrics.token (not (regexMatch "^[!-~]{16,512}$" $values.metrics.token)) -}}
+{{- fail "metrics.token: 16 to 512 printable characters without spaces" -}}
+{{- end -}}
+{{- if and $values.metrics.serviceMonitor.enabled (not $values.metrics.enabled) -}}
+{{- fail "metrics.serviceMonitor.enabled needs metrics.enabled: without METRICS_TOKEN the app answers /metrics with 404" -}}
+{{- end -}}
+
+{{- /* Outbound. */ -}}
+{{- if and $values.outbound.extraCa.pem $values.outbound.extraCa.existingConfigMap -}}
+{{- fail "outbound.extraCa: set either pem or existingConfigMap, not both" -}}
+{{- end -}}
+{{- with $values.outbound.extraCa.pem -}}
+{{- if or (not (contains "-----BEGIN CERTIFICATE-----" .)) (gt (len .) 1048576) -}}
+{{- fail "outbound.extraCa.pem must be a PEM bundle (-----BEGIN CERTIFICATE-----) of at most 1 MiB" -}}
+{{- end -}}
+{{- end -}}
+{{- with $values.dependencies.indexUrl -}}
+{{- /* The rules of shared/dependency-source.ts: https, a host or IPv4 address, no credentials, query or fragment. */ -}}
+{{- if not (regexMatch "^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?(/[^?#@\\s]*)?$" (lower .)) -}}
+{{- fail (printf "dependencies.indexUrl %q must be an https:// URL of a host or IPv4 address, without credentials, query or fragment" .) -}}
+{{- end -}}
+{{- end -}}
+{{- range $entry := splitList "," (regexReplaceAll "\\s+" (toString $values.dependencies.filesHosts) ",") -}}
+{{- if and $entry (not (regexMatch "^(https://)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?/*$" (lower $entry))) -}}
+{{- fail (printf "dependencies.filesHosts: %q is not a host or host:port" $entry) -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* The competition instance is named after the namespace, as the k3s installer did. */ -}}
+{{- if not (regexMatch "^[a-z0-9-]{1,63}$" .Release.Namespace) -}}
+{{- fail (printf "namespace %q is not a DNS label" .Release.Namespace) -}}
+{{- end -}}

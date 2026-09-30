@@ -1,0 +1,270 @@
+{{- /*
+Every flow Colloq needs, ingress and egress, so the chart works in a namespace
+whose default is deny:
+
+  ingress controller -> app :3000          app -> broker :8787
+  app, broker -> rooms and personal notebooks :8888
+  broker -> competition exporters :8765    broker -> Kubernetes API
+  resolver -> package proxy :3128          proxy -> PyPI or the mirror
+  every Colloq Pod -> cluster DNS :53 (rooms unless rooms.network is none)
+
+and nothing else: rooms reach no one, competition notebooks not even DNS. The
+names of the three competition policies are fixed: the broker looks them up
+before it accepts a submission, and refuses without them.
+*/}}
+{{- $np := .Values.networkPolicy }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: colloq-app
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "app") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      colloq.dev/role: app
+  policyTypes: ["Ingress", "Egress"]
+  {{- /* An empty list admits nobody here: in a NetworkPolicy an empty `from` would mean everyone. */}}
+  {{- $scrapers := ternary $np.monitoring.from list .Values.metrics.enabled }}
+  {{- if or $np.ingressController.from $scrapers }}
+  ingress:
+    {{- with $np.ingressController.from }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 3000
+    {{- end }}
+    {{- with $scrapers }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 3000
+    {{- end }}
+  {{- else }}
+  ingress: []
+  {{- end }}
+  egress:
+    - to:
+        - {{ include "colloq.peer" "runtime" | indent 10 | trim }}
+      ports:
+        - protocol: TCP
+          port: 8787
+    - to:
+        - {{ include "colloq.peerIn" (list "kernel" "own") | indent 10 | trim }}
+      ports:
+        - protocol: TCP
+          port: 8888
+    {{- include "colloq.dnsEgress" . | nindent 4 }}
+    {{- range $np.app.egress }}
+    - to:
+        {{- range .cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- include "colloq.tcpPorts" .ports | nindent 8 }}
+    {{- end }}
+    {{- with $np.app.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: colloq-runtime
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "runtime") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      colloq.dev/role: runtime
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - {{ include "colloq.peer" "app" | indent 10 | trim }}
+      ports:
+        - protocol: TCP
+          port: 8787
+  egress:
+    {{- /*
+    The API servers: kubernetes.default.svc is rewritten to their own addresses
+    (usually :6443) before policy applies, and they belong to no namespace.
+    */}}
+    - to:
+        {{- range $np.kubeApiServer.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- include "colloq.tcpPorts" $np.kubeApiServer.ports | nindent 8 }}
+    {{- include "colloq.dnsEgress" . | nindent 4 }}
+    {{- /* Jupyter's readiness, asked with the room's token before a room is handed to the app. */}}
+    - to:
+        - {{ include "colloq.peerIn" (list "kernel" "own") | indent 10 | trim }}
+      ports:
+        - protocol: TCP
+          port: 8888
+    - to:
+        - {{ include "colloq.peerIn" (list "competition-job" "competition-resolver") | indent 10 | trim }}
+      ports:
+        - protocol: TCP
+          port: 8765
+    {{- with $np.runtime.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+---
+{{- /* Rooms and personal notebooks reach cluster DNS and nothing else; rooms.network=none takes DNS away too. */}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: room-isolation
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "kernel") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: colloq.dev/role
+        operator: In
+        values: ["kernel", "own"]
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - {{ include "colloq.peer" "app" | indent 10 | trim }}
+        - {{ include "colloq.peer" "runtime" | indent 10 | trim }}
+      ports:
+        - protocol: TCP
+          port: 8888
+  {{- if eq (lower (trim (toString .Values.rooms.network))) "none" }}
+  egress: []
+  {{- else }}
+  egress:
+    {{- include "colloq.dnsEgress" . | nindent 4 }}
+  {{- end }}
+---
+{{- /* A submission's notebook and scorer: no network at all, only the broker reaching the exporter. */}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: competition-job-isolation
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "competition") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      colloq.dev/role: competition-job
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - {{ include "colloq.peer" "runtime" | indent 10 | trim }}
+      ports:
+        - protocol: TCP
+          port: 8765
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: competition-resolver-isolation
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "competition") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      colloq.dev/role: competition-resolver
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - {{ include "colloq.peer" "runtime" | indent 10 | trim }}
+      ports:
+        - protocol: TCP
+          port: 8765
+  egress:
+    - to:
+        - {{ include "colloq.peer" "competition-proxy" | indent 10 | trim }}
+      ports:
+        - protocol: TCP
+          port: 3128
+    {{- include "colloq.dnsEgress" . | nindent 4 }}
+---
+{{- /*
+The package proxy: port 443 of public IPv4 (public PyPI), and the mirror's own
+addresses and ports. The policy restricts addresses and ports; the proxy itself
+admits only the configured names and checks what they resolve to.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: competition-proxy-isolation
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "competition") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      colloq.dev/role: competition-proxy
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - {{ include "colloq.peer" "competition-resolver" | indent 10 | trim }}
+      ports:
+        - protocol: TCP
+          port: 3128
+  egress:
+    {{- include "colloq.dnsEgress" . | nindent 4 }}
+    {{- if .Values.dependencies.publicEgress }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range list "0.0.0.0/8" "10.0.0.0/8" "100.64.0.0/10" "127.0.0.0/8" "169.254.0.0/16" "172.16.0.0/12" "192.0.0.0/24" "192.0.2.0/24" "192.88.99.0/24" "192.168.0.0/16" "198.18.0.0/15" "198.51.100.0/24" "203.0.113.0/24" "224.0.0.0/4" "240.0.0.0/4" }}
+              - {{ . }}
+              {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+    {{- range .Values.dependencies.mirrorEgress }}
+    - to:
+        {{- range .cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- include "colloq.tcpPorts" .ports | nindent 8 }}
+    {{- end }}
+{{- if $np.kubeApiServer.ciliumEntity }}
+---
+{{- /*
+Cilium gives the API servers an identity of their own (kube-apiserver), which a
+plain NetworkPolicy's ipBlock does not match unless Cilium runs with
+policy-cidr-match-mode=nodes. This namespaced policy lets the broker reach them
+by that identity. Needs the cilium.io CRDs and the right to create them here.
+*/}}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: colloq-runtime-kube-api
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "runtime") | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      colloq.dev/role: runtime
+  egress:
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            {{- range $np.kubeApiServer.ports }}
+            - port: {{ . | quote }}
+              protocol: TCP
+            {{- end }}
+{{- end }}

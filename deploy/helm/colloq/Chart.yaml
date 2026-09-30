@@ -1,0 +1,23 @@
+apiVersion: v2
+name: colloq
+description: >-
+  Collaborative Jupyter classroom: the web app, its runtime broker and one kernel Pod per room,
+  in a single namespace under restricted Pod Security and default-deny network policies.
+type: application
+# The chart version is the app version. The release job packages the chart with
+# the release's image digests and catalog in values.yaml
+# (oci://ghcr.io/colloq-edu/charts/colloq); the copy in the source tree carries
+# empty digests and refuses to render until they are set.
+version: 0.9.0
+appVersion: "0.9.0"
+# In-place room resize needs 1.33+; below that the broker reports it unsupported.
+kubeVersion: ">=1.30.0-0"
+home: https://colloq.ru
+icon: https://colloq.ru/favicon.svg
+sources:
+  - https://github.com/colloq-edu/colloq
+keywords:
+  - jupyter
+  - notebook
+  - classroom
+  - education

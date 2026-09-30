@@ -1,0 +1,53 @@
+{{- $ns := .Release.Namespace -}}
+{{- $url := include "colloq.publicUrl" . -}}
+Colloq {{ .Chart.AppVersion }} is installed in the namespace {{ $ns }}.
+
+1. Open it
+{{- if .Values.ingress.enabled }}
+   {{ $url }}
+   (Ingress colloq-app, class {{ .Values.ingress.className | default "default" }}{{ if .Values.ingress.tls.enabled }}, certificate from the Secret {{ .Values.ingress.tls.secretName | default "colloq-tls" }}{{ end }})
+{{- else }}
+   No Ingress: expose the Service colloq-app:3000 your own way{{ if $url }} at {{ $url }}{{ end }}, or try it with
+     kubectl -n {{ $ns }} port-forward svc/colloq-app 3000:3000
+   and open http://localhost:3000.
+   {{- if not $url }}
+   Set config.publicUrl to the address people will open: the links Colloq hands out are built from it.
+   {{- end }}
+   The app admits only what networkPolicy.ingressController.from selects.
+{{- end }}
+
+2. Become the owner (once, on a fresh install)
+   The first visit needs the setup token from the app's data volume:
+     kubectl -n {{ $ns }} exec deploy/colloq-app -- cat /data/setup-token
+   then open {{ $url | default "<address>" }}/admin/t/<token> and type your name and email.
+   While nobody owns the instance the app also prints that link at every start:
+     kubectl -n {{ $ns }} logs deploy/colloq-app | grep /admin/t/
+   The link is the key to the instance: do not paste it into a chat.
+
+3. What to know
+   - colloq-app and colloq-runtime run one replica each, strategy Recreate: the
+     database is SQLite with a single writer. Do not scale them; an upgrade
+     restarts the app for a few seconds, and rooms keep running meanwhile.
+{{- if eq (include "colloq.colocate" .) "1" }}
+   - Storage is ReadWriteOnce: rooms, personal notebooks and competition jobs run
+     on the app's node (RUNTIME_COLOCATE_WITH_APP=1). That node's memory is the
+     classroom's memory; ReadWriteMany storage spreads rooms over the cluster.
+{{- end }}
+{{- if not .Values.rooms.maxMemory }}
+   - rooms.maxMemory is not set: the broker caps a room at its own node's memory
+     minus 1 GiB. Set it to what your room nodes can give.
+{{- end }}
+{{- if or (and (not .Values.secrets.runtimeToken.existingSecret) (not .Values.secrets.runtimeToken.value)) (and (not .Values.secrets.roomSecret.existingSecret) (not .Values.secrets.roomSecret.value)) }}
+   - The runtime token and the room secret were generated and are read back on
+     every helm upgrade. ArgoCD and other `helm template` renderers cannot read
+     them back: there, set secrets.*.existingSecret, or every sync makes new
+     ones and restarts every room.
+{{- end }}
+{{- if not .Values.runtime.inPlaceResize }}
+   - In-place room resize is off (runtime.inPlaceResize=false): a room's new
+     memory applies to its next start.
+{{- end }}
+{{- if not (or .Values.config.ai.apiKey .Values.config.existingSecret) }}
+   - No model key: the Oracle stays off until one is set (config.ai.apiKey, or
+     OPENAI_API_KEY in config.existingSecret, or the admin panel).
+{{- end }}

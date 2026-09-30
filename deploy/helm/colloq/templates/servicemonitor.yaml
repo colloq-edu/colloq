@@ -1,0 +1,30 @@
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: colloq-app
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "metrics") | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "colloq.selectorLabels" (dict "ctx" . "component" "app") | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+      {{- /* The same token the app checks (METRICS_TOKEN), read by Prometheus from the Secret. */}}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ include "colloq.metricsSecret" . }}
+          key: {{ include "colloq.metricsKey" . }}
+{{- end }}

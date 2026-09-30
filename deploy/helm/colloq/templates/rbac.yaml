@@ -1,0 +1,65 @@
+{{- /*
+Three identities, none of which gets a token by default: the app never talks to
+the Kubernetes API, room Pods run as colloq-kernel (a name the broker writes
+into every room Pod), and only the broker's own Pod mounts its token.
+*/}}
+{{- range $component, $name := dict "app" "colloq-app" "runtime" "colloq-runtime" "kernel" "colloq-kernel" }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  {{- include "colloq.namespace" $ | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" $ "component" $component) | nindent 4 }}
+automountServiceAccountToken: false
+{{- end }}
+---
+{{- /*
+Only what the broker does, in this namespace only. pods/resize is the one write
+beyond create/delete: it changes a live room's memory and cores in place
+(Kubernetes 1.33+), and cannot alter image, command, mounts or security. A Role
+may only grant what its author holds, so runtime.inPlaceResize=false drops it
+for a namespace-admin role without it.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: colloq-runtime
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "runtime") | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list", "create", "delete"]
+  {{- if .Values.runtime.inPlaceResize }}
+  - apiGroups: [""]
+    resources: ["pods/resize"]
+    verbs: ["patch"]
+  {{- end }}
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: colloq-runtime
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "runtime") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: colloq-runtime
+subjects:
+  - kind: ServiceAccount
+    name: colloq-runtime
+    namespace: {{ .Release.Namespace }}

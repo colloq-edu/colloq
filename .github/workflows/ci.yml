@@ -8,7 +8,8 @@
 #
 # Three jobs in parallel, because they are about different things and fail for
 # different reasons:
-#   test     — the versions agree, types, the whole `npm test` suite;
+#   test     — the versions agree, types, the whole `npm test` suite
+#              (with helm on PATH, so the Helm chart's tests run too);
 #   package  — the pip wheel builds, installs into a clean venv and names the
 #              same version, and the build does not dirty tracked files;
 #   docker   — the Dockerfiles of the app, the broker, the base kernel and the
@@ -57,6 +58,12 @@ jobs:
         with:
           node-version: '22'
           cache: npm
+      # tests/helm-chart.test.mts lints and renders deploy/helm/colloq and
+      # skips without helm. Pinned: what the chart renders must not change
+      # under the same commit because a newer helm came out.
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
       - run: npm ci --no-audit --no-fund
       # The cheapest first: the version copies, the release-please manifest,
       # the changelog and a trial release-please edit, so a new workspace

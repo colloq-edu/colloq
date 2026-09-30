@@ -1,0 +1,78 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: colloq-catalog
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "catalog") | nindent 4 }}
+data:
+  catalog.json: {{ include "colloq.catalog" . | quote }}
+---
+{{- /*
+The app's non-secret settings. They reach the app through envFrom, before the
+Secret (which may override any of them) and before the Pod's own env (the
+wiring and the settings other objects of the chart depend on, which win).
+Empty values are left out, so the app's own default applies; a value set here
+wins over the same name in config.extraEnv.
+*/}}
+{{- $c := .Values.config }}
+{{- $o := .Values.outbound }}
+{{- $settings := dict
+  "PUBLIC_URL" (include "colloq.publicUrl" .)
+  "UI_LANGUAGE" $c.uiLanguage
+  "TZ" $c.timezone
+  "INSTITUTION" $c.institution
+  "ADMIN_EMAIL" $c.adminEmail
+  "OPEN_SEMINAR_CREATION" (ternary "true" "false" $c.openSeminarCreation)
+  "MAX_UPLOAD_MB" (toString $c.maxUploadMb)
+  "MAX_SESSION_MB" (toString $c.maxSessionMb)
+  "COUNCIL_COPY_MB" (toString $c.councilCopyMb)
+  "COUNCIL_MEMORY_GUARD" (ternary "1" "0" $c.councilMemoryGuard)
+  "LOG_FORMAT" (ternary "" $c.logFormat (eq $c.logFormat "text"))
+  "DB_SNAPSHOT_HOURS" (toString $c.dbSnapshotHours)
+  "DB_SNAPSHOT_KEEP" (toString $c.dbSnapshotKeep)
+  "AI_PROVIDER" $c.ai.provider
+  "OPENAI_BASE_URL" $c.ai.baseUrl
+  "OPENAI_MODEL" $c.ai.model
+  "AI_REASONING" (ternary "true" "false" $c.ai.reasoning)
+  "TRUSTED_PROXIES" $c.inbound.trustedProxies
+  "SHARED_ADDRESSES" $c.inbound.sharedAddresses
+  "TRUST_CF_CONNECTING_IP" (ternary "1" "0" $c.inbound.trustCfConnectingIp)
+  "HSTS" (ternary "1" "0" $c.inbound.hsts)
+  "HTTPS_PROXY" $o.httpsProxy
+  "https_proxy" $o.httpsProxy
+  "HTTP_PROXY" $o.httpProxy
+  "http_proxy" $o.httpProxy
+  "NO_PROXY" $o.noProxy
+  "no_proxy" $o.noProxy
+}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: colloq-app-env
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "app") | nindent 4 }}
+{{- $data := dict }}
+{{- range $key, $value := $c.extraEnv }}
+{{- if ne (toString $value) "" }}{{ $_ := set $data $key (toString $value) }}{{ end }}
+{{- end }}
+{{- range $key, $value := $settings }}
+{{- if ne (toString $value) "" }}{{ $_ := set $data $key (toString $value) }}{{ end }}
+{{- end }}
+data:
+  {{- range $key, $value := $data }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+{{- if and .Values.outbound.extraCa.pem (not .Values.outbound.extraCa.existingConfigMap) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: colloq-extra-ca
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "app") | nindent 4 }}
+data:
+  extra-ca.pem: {{ .Values.outbound.extraCa.pem | quote }}
+{{- end }}

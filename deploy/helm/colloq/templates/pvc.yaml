@@ -1,0 +1,29 @@
+{{- range $suffix := list "data" "workspace" }}
+{{- $volume := index $.Values.persistence $suffix }}
+{{- if not $volume.existingClaim }}
+{{- $class := $volume.storageClass | default $.Values.persistence.storageClass }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: colloq-{{ $suffix }}
+  {{- include "colloq.namespace" $ | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" $ "component" "storage") | nindent 4 }}
+  {{- if $.Values.persistence.retain }}
+  {{- /* The database and every room's files: neither helm uninstall nor deleting the ArgoCD application takes them. */}}
+  annotations:
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  {{- end }}
+spec:
+  accessModes:
+    - {{ ternary (include "colloq.dataAccessMode" $) (include "colloq.workspaceAccessMode" $) (eq $suffix "data") }}
+  {{- if $class }}
+  storageClassName: {{ ternary "" $class (eq $class "-") | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $volume.size }}
+{{- end }}
+{{- end }}

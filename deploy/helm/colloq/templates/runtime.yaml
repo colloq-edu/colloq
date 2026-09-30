@@ -1,0 +1,215 @@
+{{- $pullSecrets := include "colloq.pullSecretNames" . | fromJsonArray }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: colloq-runtime
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "runtime") | nindent 4 }}
+spec:
+  {{- /* One broker: it serialises each room's start, resize and stop in memory. */}}
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "colloq.selectorLabels" (dict "ctx" . "component" "runtime") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "colloq.labels" (dict "ctx" . "component" "runtime") | nindent 8 }}
+        colloq.dev/role: runtime
+      annotations:
+        checksum/catalog: {{ include "colloq.catalog" . | sha256sum }}
+        {{- with .Values.runtime.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: colloq-runtime
+      {{- /* The only Pod of the chart with Kubernetes credentials: a Role on Pods and Services of this namespace. */}}
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: 30
+      {{- with include "colloq.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      {{- with .Values.runtime.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.runtime.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.runtime.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.runtime.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: runtime
+          image: {{ include "colloq.runtimeImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8787
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: RUNTIME_PORT
+              value: "8787"
+            - name: RUNTIME_TOKEN_FILE
+              value: /etc/colloq-runtime-auth/runtime-token
+            - name: RUNTIME_ROOM_SECRET_FILE
+              value: /run/room-secret/room-secret
+            - name: RUNTIME_CATALOG_FILE
+              value: /etc/colloq/catalog.json
+            - name: RUNTIME_NAMESPACE
+              value: {{ .Release.Namespace }}
+            - name: RUNTIME_WORKSPACE_CLAIM
+              value: {{ include "colloq.workspaceClaim" . }}
+            - name: RUNTIME_COMPETITION_DATA_CLAIM
+              value: {{ include "colloq.dataClaim" . }}
+            - name: RUNTIME_COMPETITION_EXPORTER_IMAGE
+              value: {{ include "colloq.runtimeImage" . }}
+            {{- /* The namespace, as the k3s installer named it: one Colloq per namespace, and a reinstall adopts the previous one's jobs. */}}
+            - name: RUNTIME_COMPETITION_INSTANCE_ID
+              value: {{ .Release.Namespace | trunc 40 | trimSuffix "-" }}
+            {{- if $pullSecrets }}
+            - name: RUNTIME_IMAGE_PULL_SECRET
+              value: {{ first $pullSecrets }}
+            {{- end }}
+            - name: RUNTIME_KUBE_URL
+              value: https://kubernetes.default.svc
+            - name: RUNTIME_KUBE_TOKEN_FILE
+              value: /var/run/secrets/kubernetes.io/serviceaccount/token
+            - name: RUNTIME_KUBE_CA_FILE
+              value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+            - name: RUNTIME_KERNEL_MEMORY
+              value: {{ .Values.rooms.memory | quote }}
+            - name: RUNTIME_KERNEL_CPU
+              value: {{ .Values.rooms.cpu | toString | quote }}
+            - name: RUNTIME_KERNEL_EPHEMERAL
+              value: {{ .Values.rooms.ephemeralStorage | quote }}
+            {{- /* Never empty: to the broker an empty variable is an unparseable number, not the default. */}}
+            {{- with .Values.rooms.maxMemory }}
+            - name: RUNTIME_KERNEL_MEMORY_MAX
+              value: {{ . | quote }}
+            {{- end }}
+            {{- /* A ReadWriteOnce volume is attached to one node: every Pod that mounts it must join the app there. */}}
+            - name: RUNTIME_COLOCATE_WITH_APP
+              value: {{ include "colloq.colocate" . | quote }}
+            - name: RUNTIME_IN_PLACE_RESIZE
+              value: {{ ternary "1" "0" .Values.runtime.inPlaceResize | quote }}
+            - name: RUNTIME_GPU_RUNTIME_CLASS
+              value: {{ .Values.gpu.runtimeClassName | default "" | quote }}
+            - name: RUNTIME_POD_LABELS
+              value: {{ include "colloq.brokerPodLabels" . | quote }}
+            {{- with .Values.rooms.podAnnotations }}
+            - name: RUNTIME_POD_ANNOTATIONS
+              value: {{ toJson . | quote }}
+            {{- end }}
+            {{- with .Values.rooms.nodeSelector }}
+            - name: RUNTIME_ROOM_NODE_SELECTOR
+              value: {{ toJson . | quote }}
+            {{- end }}
+            {{- with .Values.rooms.tolerations }}
+            - name: RUNTIME_ROOM_TOLERATIONS
+              value: {{ toJson . | quote }}
+            {{- end }}
+            {{- with .Values.gpu.nodeSelector }}
+            - name: RUNTIME_GPU_NODE_SELECTOR
+              value: {{ toJson . | quote }}
+            {{- end }}
+            {{- with .Values.gpu.tolerations }}
+            - name: RUNTIME_GPU_TOLERATIONS
+              value: {{ toJson . | quote }}
+            {{- end }}
+            {{- with .Values.rooms.priorityClassName }}
+            - name: RUNTIME_PRIORITY_CLASS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- /* Passed through to the package proxy Pods, which enforce them. */}}
+            {{- with .Values.dependencies.indexUrl }}
+            - name: DEPENDENCY_INDEX_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.dependencies.filesHosts }}
+            - name: DEPENDENCY_FILES_HOSTS
+              value: {{ . | quote }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.runtime.resources | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.runtime.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.runtime.readinessProbe | nindent 12 }}
+          volumeMounts:
+            - name: catalog
+              mountPath: /etc/colloq
+              readOnly: true
+            {{- /*
+            Not /run/secrets: /var/run is a symlink to /run in the image, and a
+            read-only mount there would block Kubernetes' own projection of the
+            ServiceAccount token at /var/run/secrets/kubernetes.io/serviceaccount.
+            */}}
+            - name: runtime-token
+              mountPath: /etc/colloq-runtime-auth
+              readOnly: true
+            - name: room-secret
+              mountPath: /run/room-secret
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      {{- /*
+      No data volume. The k3s installer mounted colloq-data here, but the broker
+      never reads it (competition Pods mount the claim themselves), and without
+      it a ReadWriteOnce claim does not pin the broker to the app's node, nor
+      does the one component holding Kubernetes credentials see the database.
+      */}}
+      volumes:
+        - name: catalog
+          configMap:
+            name: colloq-catalog
+        - name: runtime-token
+          secret:
+            secretName: {{ include "colloq.runtimeTokenSecret" . }}
+            defaultMode: 0440
+            items:
+              - key: {{ include "colloq.runtimeTokenKey" . }}
+                path: runtime-token
+        - name: room-secret
+          secret:
+            secretName: {{ include "colloq.roomSecretSecret" . }}
+            defaultMode: 0440
+            items:
+              - key: {{ include "colloq.roomSecretKey" . }}
+                path: room-secret
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: colloq-runtime
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "runtime") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "colloq.selectorLabels" (dict "ctx" . "component" "runtime") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8787
+      targetPort: http
+      protocol: TCP
