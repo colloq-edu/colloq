@@ -1001,10 +1001,10 @@ export const competitionsMessages: MessageCatalog = {
     },
     en: { one: 'Show {count} more participant', other: 'Show {count} more participants' },
   },
-  // Equal scores share a place (shared/competitions.ts · placesByScore); time only orders the rows.
+  // A place per row; between equal scores time decides it (shared/competitions.ts · placesByScore).
   'competitions.p.tieNote': {
-    ru: 'Равные результаты делят одно место; выше в списке — посылка, отправленная раньше.',
-    en: 'Equal results share one place; the submission sent earlier is listed first.',
+    ru: 'При одинаковом результате выше посылка, отправленная раньше.',
+    en: 'On equal results the submission sent earlier ranks higher.',
   },
   'competitions.p.boardEmpty': {
     ru: 'Пока никто не дошёл до числа.',

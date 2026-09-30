@@ -103,9 +103,8 @@ export interface EntrantCompetitionView {
  */
 export interface EntrantBoardLine {
   /**
-   * Among people, equal scores sharing it (`placesAmongPeople`); the
-   * baseline's row has the place it would take, and null while nobody has
-   * beaten it.
+   * Among people, one per row (`placesAmongPeople`); the baseline's row has
+   * the place it would take, and null while nobody stands above it.
    */
   place: number | null
   entrantId: string

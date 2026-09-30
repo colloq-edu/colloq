@@ -315,11 +315,13 @@ function threads(cpus: number): string {
  * BLIS, Apple's vecLib and numba each read their own variable, and each one
  * forgotten is a pool of host-core-count threads on two CPUs — with eight
  * slots side by side, the queue's throughput goes to context switches.
+ * LOKY_MAX_CPU_COUNT is joblib's: `n_jobs=-1` asks it for the CPU count,
+ * and a notebook in the rehearsal saw os.cpu_count() = 76 on a 2-CPU quota.
  */
 function threadEnv(cpus: number): string[] {
   const t = threads(cpus)
   return ['OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS',
-    'POLARS_MAX_THREADS', 'RAYON_NUM_THREADS', 'BLIS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMBA_NUM_THREADS']
+    'POLARS_MAX_THREADS', 'RAYON_NUM_THREADS', 'BLIS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMBA_NUM_THREADS', 'LOKY_MAX_CPU_COUNT']
     .flatMap((name) => ['-e', `${name}=${t}`])
 }
 

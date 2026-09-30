@@ -473,12 +473,14 @@ test('a submission chosen by its author beats the best public one', () => {
   )
 })
 
-test('a tie on the teacher\'s board shares its place, the same as on the class\'s', () => {
+test("a tie on the teacher's board takes a place per row, the earlier submission higher, the same as on the class's", () => {
   const tie = 0.6722222222222224
+  // The feed runs newest first: the tie arrives in the reverse of the order it
+  // ranks in, so the order below is time's, not the feed's.
   const rows = [
     feedRow({ id: 's1', entrantId: 'a', publicScore: 0.9, privateScore: 0.9, acceptedAt: 1 }),
-    ...['b', 'c', 'd'].map((entrantId, i) =>
-      feedRow({ id: `t${i}`, entrantId, publicScore: tie, privateScore: 0.5, acceptedAt: 10 + i }),
+    ...['d', 'c', 'b'].map((entrantId, i) =>
+      feedRow({ id: `t${i}`, entrantId, publicScore: tie, privateScore: 0.5, acceptedAt: 12 - i }),
     ),
     feedRow({ id: 's5', entrantId: 'e', publicScore: 0.1, privateScore: 0.1, acceptedAt: 2 }),
     feedRow({ id: 's9', entrantId: 'z', publicScore: tie, privateScore: tie }, { baseline: true }),
@@ -487,9 +489,14 @@ test('a tie on the teacher\'s board shares its place, the same as on the class\'
   // The baseline sits in the tie by score, and still takes nobody's place.
   assert.deepEqual(
     boardFromFeed(rows, c, 'public').map((r) => [r.entrantId, r.place]),
-    [['a', 1], ['b', 2], ['c', 2], ['d', 2], ['e', 5]],
+    [['a', 1], ['b', 2], ['c', 3], ['d', 4], ['e', 5]],
   )
-  assert.deepEqual(boardFromFeed(rows, c, 'private').map((r) => r.place), [1, 2, 2, 2, 5])
+  // The final scores tie the three again: the same order by time, the same
+  // places.
+  assert.deepEqual(
+    boardFromFeed(rows, c, 'private').map((r) => [r.entrantId, r.place]),
+    [['a', 1], ['b', 2], ['c', 3], ['d', 4], ['e', 5]],
+  )
 })
 
 test('only what reached a number goes into the leaderboard', () => {

@@ -94,6 +94,11 @@
    * than what they were promised.
    */
   const best = $derived.by(() => {
+    // Under "the last scored submission counts" the best one is not the one
+    // that counts: a "best result" mark on an older card, next to "counted" on
+    // the newest, told a student in the rehearsal (30 Sep 2026) the opposite
+    // of the rule. There the counted mark alone says which one it is.
+    if (view.competition.scoring === 'last') return null
     const scored = mine.submissions.filter(
       (submission): submission is EntrantSubmission =>
         submission.state === 'scored' && submission.publicScore !== null,

@@ -586,9 +586,11 @@ test('places in the table count people, and the baseline stands where it ranks',
   )
 })
 
-test('equal scores share the smallest place in the table, a baseline with the same score included', () => {
+test('equal scores take a place each in the table, in the order they were sent, and a baseline with the same score shows the one it would take', () => {
   // The class of 29 Sep 2026: seven people with 0.6722222222222224 read
-  // "4, 5, 6, 7, 8, 9, 10" beside one and the same number.
+  // "4, 5, 6, 7, 8, 9, 10" beside one and the same number, and that is the
+  // ranking (30 Sep): the server sends the tie earliest first, and every row
+  // is a place of its own.
   const tie = 0.6722222222222224
   const people = [
     { baseline: false, name: 'Анна', score: 0.9 },
@@ -598,14 +600,21 @@ test('equal scores share the smallest place in the table, a baseline with the sa
     { baseline: false, name: 'Зоя', score: 0.5 },
   ]
   const baseline = { baseline: true, name: 'Базовое решение', score: tie }
-  assert.deepEqual(boardPlaces(people).map((line) => line.place), [1, 2, 3, 4, 4, 4, 4, 4, 4, 4, 11])
+  const everyone = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  assert.deepEqual(boardPlaces(people).map((line) => line.place), everyone)
+  assert.deepEqual(boardPlaces(people).slice(3, 10).map((line) => [line.name, line.place]), [
+    ['Участник 0', 4], ['Участник 1', 5], ['Участник 2', 6], ['Участник 3', 7],
+    ['Участник 4', 8], ['Участник 5', 9], ['Участник 6', 10],
+  ])
   // Wherever the baseline landed inside the tie (it is ordered by when it was
-  // sent), it shows the tie's place and takes nobody's.
-  for (const at of [3, 6, 10]) {
+  // sent), it shows the place it would take there and takes nobody's: before
+  // all seven it would be fourth, after three of them seventh, after all
+  // seven eleventh.
+  for (const [at, place] of [[3, 4], [6, 7], [10, 11]] as const) {
     const rows = [...people.slice(0, at), baseline, ...people.slice(at)]
     const placed = boardPlaces(rows)
-    assert.equal(placed.find((line) => line.baseline)?.place, 4, `baseline at row ${at}`)
-    assert.deepEqual(placed.filter((line) => !line.baseline).map((line) => line.place), [1, 2, 3, 4, 4, 4, 4, 4, 4, 4, 11])
+    assert.equal(placed.find((line) => line.baseline)?.place, place, `baseline at row ${at}`)
+    assert.deepEqual(placed.filter((line) => !line.baseline).map((line) => line.place), everyone)
   }
 })
 

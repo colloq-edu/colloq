@@ -117,15 +117,17 @@ test('the final table carries the shift next to the place and no public score', 
 })
 
 /*
- * Ties share a place (29 Sep 2026): seven people with one public score read
- * "4, 5, 6, 7, 8, 9, 10" beside it, while the rules gave them one place.
+ * A tie is ranked, not shared (30 Sep 2026): for a day seven people with one
+ * public score all read "4", and the teacher asked for places the way Kaggle
+ * gives them — "4, 5, 6, 7, 8, 9, 10", the earlier submission higher. The
+ * rows arrive from the server in that order; the screens number them.
  */
 const text = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')
 const tie = 0.6722222222222224
 const person = (id: string, name: string, score: number, you = false): EntrantBoardLine =>
   ({ ...baseline, entrantId: id, name, score, baseline: false, you, submissions: 3 })
 
-test('equal scores show one place on the board, and the baseline with the same score shows it too', () => {
+test('equal scores show distinct places on the board in the order they were sent, and the baseline with the same score shows the one it would take', () => {
   const people = [
     person('a', 'Анна', 0.9),
     person('b', 'Борис', 0.8),
@@ -133,52 +135,67 @@ test('equal scores show one place on the board, and the baseline with the same s
     person('z', 'Зоя', 0.5),
   ]
   const tied = { ...baseline, score: tie }
+  // The baseline was sent after "Участник 0" and before the other three.
   const both: EntrantLeaderboard = { public: [...people.slice(0, 3), tied, ...people.slice(3)], private: null, privateOpen: false, baselinePublic: tie }
   for (const phone of [false, true]) {
+    const where = phone ? 'phone' : 'desktop'
     const shown = text(show(both, phone))
     assert.match(shown, /1 А Анна/)
     assert.match(shown, /2 Б Борис/)
-    for (let i = 0; i < 4; i++) assert.match(shown, new RegExp(`3 У Участник ${i} `), `${phone ? 'phone' : 'desktop'}: tied row ${i}`)
-    assert.doesNotMatch(shown, /[4-6] У Участник/)
-    // The baseline is set apart at the bottom, with the tie's place.
-    assert.match(shown, /3 Базовое решение 0\.6722/)
+    for (let i = 0; i < 4; i++) assert.match(shown, new RegExp(` ${3 + i} У Участник ${i} `), `${where}: tied row ${i}`)
+    assert.match(shown, /3 У Участник 0 .* 4 У Участник 1 .* 5 У Участник 2 .* 6 У Участник 3 /, `${where}: the tie in the order it was sent`)
+    // Nobody after the first of the tie reads its "3".
+    assert.doesNotMatch(shown, /3 У Участник [1-3]/)
+    // The baseline is set apart at the bottom, with the place it would take:
+    // after the three above it, two with better scores and "Участник 0", who
+    // sent the same score earlier.
+    assert.match(shown, /4 Базовое решение 0\.6722/)
+    // And the note under the table names the rule the numbers follow.
+    assert.match(shown, /При одинаковом результате выше посылка, отправленная раньше\./)
   }
 })
 
-test('the final table\'s arrows are read off the shared places', () => {
+test("the final table's arrows are the difference of the places the two tables print", () => {
   const pub = [
     person('a', 'Анна', 0.9),
     person('b', 'Борис', 0.8),
     person('v', 'Вера', 0.8),
     person('g', 'Глеб', 0.7),
+    { ...baseline, score: 0.65 },
     person('d', 'Дина', 0.6),
     person('e', 'Егор', 0.6),
   ]
-  // Anna drops below the pair and the pair rises together; the second tie
-  // breaks up, and only the one who fell behind gets an arrow.
+  // Anna drops below the pair, and each of the pair rises one step, still in
+  // the order they were sent; the second tie breaks up the way it already
+  // stood, and neither of the two moves. The baseline stands elsewhere in
+  // each table and moves nobody's arrow.
   const priv = [
     person('b', 'Борис', 0.95),
     person('v', 'Вера', 0.95),
     person('a', 'Анна', 0.9),
+    { ...baseline, score: 0.62 },
     person('g', 'Глеб', 0.5),
     person('d', 'Дина', 0.4),
     person('e', 'Егор', 0.3),
   ]
-  const board: EntrantLeaderboard = { public: pub, private: priv, privateOpen: true, baselinePublic: null }
+  const board: EntrantLeaderboard = { public: pub, private: priv, privateOpen: true, baselinePublic: 0.65 }
   for (const phone of [false, true]) {
     const shown = text(show(board, phone, true))
     assert.match(shown, /1 ▲ 1 Б Борис/)
-    assert.match(shown, /1 ▲ 1 В Вера/)
+    assert.match(shown, /2 ▲ 1 В Вера/)
     assert.match(shown, /3 ▼ 2 А Анна/)
     assert.match(shown, /4 — Г Глеб/)
-    // "5" in the public table for both; by row numbers Egor would have gone
-    // from 6 to 6 and got no arrow for sliding from 5 to 6.
+    // "5" and "6" in the public table already, by time: with one shared "5"
+    // there, Egor got an arrow down for keeping his row.
     assert.match(shown, /5 — Д Дина/)
-    assert.match(shown, /6 ▼ 1 Е Егор/)
+    assert.match(shown, /6 — Е Егор/)
+    // The baseline row shows the place it would take in the final table, and
+    // no arrow of its own.
+    assert.match(shown, /4 Базовое решение 0\.6200/)
   }
 })
 
-test('the mini board folds the rows between the top and you even when a tie keeps your place small', () => {
+test('the mini board folds the rows between the top and you, and in a tie you read your own place, not the first of the tie', () => {
   const lines = [
     person('a', 'Анна', 0.9),
     ...Array.from({ length: 4 }, (_, i) => person(`t${i}`, `Участник ${i}`, 0.8)),
@@ -186,9 +203,12 @@ test('the mini board folds the rows between the top and you even when a tie keep
   ]
   const shown = text(render(MiniBoard, { props: { lines, onopen: () => {} } }).body)
   // Top three, then "· · ·" for the two tied rows not shown, then you at the
-  // tie's place: "2", not the sixth row's "6".
-  assert.match(shown, /1 Анна .* 2 Участник 0 .* 2 Участник 1 .* · · · 2 Вы /)
+  // place the full table gives you: sent last of the five with 0.8, "6", not
+  // the "2" the tie starts at.
+  assert.match(shown, /1 Анна .* 2 Участник 0 .* 3 Участник 1 .* · · · 6 Вы /)
+  assert.doesNotMatch(shown, /Участник [23]/)
   const near = text(render(MiniBoard, { props: { lines: [...lines.slice(0, 3), { ...lines[5] }], onopen: () => {} } }).body)
+  // Right after the top three nothing is left out, so nothing is folded.
   assert.doesNotMatch(near, /· · ·/)
-  assert.match(near, /2 Вы /)
+  assert.match(near, /3 Участник 1 .* 4 Вы /)
 })

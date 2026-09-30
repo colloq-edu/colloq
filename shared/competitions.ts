@@ -977,11 +977,11 @@ export function hasScore(value: number | null): value is number {
 /**
  * Which is better: `-1` if `a` ranks above `b`.
  *
- * The ORDER within a tie is by time — the submission sent earlier stands
- * higher (footnote on P3), while the place itself is shared (see
- * `placesByScore`). The order is not cosmetic: without it the rows would
- * follow however the database returned them, and a tie would reshuffle
- * between two page refreshes.
+ * A tie is broken by time — "on equal results the submission sent earlier
+ * ranks higher" (footnote on P3), and the place follows the order (see
+ * `placesByScore`). The rule is not cosmetic: without it the order would
+ * depend on how the database returned the rows, and a participant's place
+ * would change between two page refreshes.
  */
 export function compareScores(
   a: { score: number; at: number },
@@ -1053,28 +1053,23 @@ export type RankedRow = BoardRow & { place: number }
 export type Placed<T, P = number> = Omit<T, 'place'> & { place: P }
 
 /**
- * Places by the standard competition rule, over rows already in board order:
- * equal scores share the smallest place, and the next score takes the place
- * after all of them — 1, 2, 2, 2, 5.
+ * Places over rows already in board order: every row its own place, 1, 2, 3,
+ * 4, 5, and between equal scores the earlier submission is higher — the way
+ * Kaggle ranks.
  *
- * Only the numbers are shared: the rows keep their order, earlier submission
- * first. Places used to be plain ordinals, and on 29 Sep 2026 seven students
- * with the same public score, 0.6722222222222224, read "4, 5, 6, 7, 8, 9, 10"
- * beside it, while the competition's own rules said equal scores get one
- * place, the smallest. Equal means exactly equal numbers: rounding is only
- * how a screen prints them, and scores that differ in the last digit are
- * results the metric did tell apart.
+ * For a day (29–30 Sep 2026) equal scores shared the smallest place, as the
+ * seminar's rules text describes the teacher's own prize script. On the board
+ * that read as six people in seventh place, which is not a ranking at all:
+ * the teacher asked for distinct places, and the prize script keeps its own
+ * rule. Equal means exactly equal numbers; the order between them is the
+ * board's, earlier submission first.
  *
  * Every place a person is shown comes from here (directly or through
  * `placesAmongPeople`): the header, the list, the teacher's screen and the
- * shift arrows must all read the same number off the same tie.
+ * shift arrows must all read the same number off the same row.
  */
 export function placesByScore<T extends { score: number }>(rows: readonly T[]): Placed<T>[] {
-  let place = 0
-  return rows.map((row, index) => {
-    if (index === 0 || row.score !== rows[index - 1].score) place = index + 1
-    return { ...row, place }
-  })
+  return rows.map((row, index) => ({ ...row, place: index + 1 }))
 }
 
 /**
@@ -1082,14 +1077,13 @@ export function placesByScore<T extends { score: number }>(rows: readonly T[]): 
  *
  * People get the places `placesByScore` gives them among themselves: the
  * baseline is not an entrant and takes no place from anyone. Its own row
- * gets the place it WOULD take among them — one after everyone who beat it,
- * so a baseline with exactly a person's score shows that person's place.
+ * gets the place it WOULD take among them — one after everyone above it in
+ * the board's order.
  *
- * A baseline nobody has beaten yet gets no place at all (null, a dash on
+ * A baseline with nobody above it gets no place at all (null, a dash on
  * screen): a "1" in its row next to the first person's "1" reads as a race
  * for first place, and the news in that spot is that no submission is
- * better than the baseline yet. Beating it takes a strictly better score, so
- * equalling it does not count, and who submitted first does not matter.
+ * better than the baseline yet.
  */
 export function placesAmongPeople<T extends { score: number }>(
   rows: readonly T[],
@@ -1099,20 +1093,14 @@ export function placesAmongPeople<T extends { score: number }>(
   let seen = 0
   return rows.map((row) => {
     if (!isBaseline(row)) return people[seen++]
-    // Everyone above it in the order either beat it or equals it: an equal
-    // score right above hands over its place, otherwise it comes after them.
-    const above = seen === 0 ? null : people[seen - 1]
-    const place = above === null ? 1 : above.score === row.score ? above.place : seen + 1
-    return { ...row, place: place === 1 ? null : place }
+    return { ...row, place: seen === 0 ? null : seen + 1 }
   })
 }
 
 /**
- * Assign places: the board's order, then places by score.
+ * Assign places: the board's order, then places by that order.
  *
- * "YOUR PLACE 2 of 28" still reads against the length of the table: a
- * shared place never exceeds the row's own number, and the one after a tie
- * lands exactly where the ordinals would have put it.
+ * "YOUR PLACE 2 of 28" reads against the length of the table.
  */
 export function rankBoard(rows: readonly BoardRow[], direction: MetricDirection): RankedRow[] {
   return placesByScore([...rows].sort((a, b) => compareScores(a, b, direction)))
@@ -1161,11 +1149,8 @@ export function placeOf(rows: readonly RankedRow[], entrantId: string): number |
  * (`—`). `null` if they are missing from one of the tables: "moved up 7
  * places" out of nowhere is not a fact but an invention.
  *
- * Both places are shared ones (`placesByScore`), never row numbers: the
- * arrow is the difference of the two numbers the person reads. A tie that
- * moves together moves by one step, and by row numbers two people at "5"
- * whose final scores split into "5" and "6" both got "—": the second one was
- * sixth by row in both tables.
+ * Both places are the numbers the two tables print (`placesByScore`, among
+ * people): the arrow is the difference of the two numbers the person reads.
  */
 export function placeShift(publicPlace: number | null, privatePlace: number | null): number | null {
   if (publicPlace === null || privatePlace === null) return null

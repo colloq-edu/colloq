@@ -308,12 +308,14 @@ test("a leaderboard row carries the submission number and the author's choice, a
 })
 
 /*
- * 29 Sep 2026: seven people with one public score, 0.6722222222222224, read
- * "4, 5, 6, 7, 8, 9, 10" beside it, while the rules gave them one place. The
- * place travels in three answers (the board's rows, the page's "YOUR PLACE",
- * the list's "your place"), and each is checked on a real response.
+ * 29 Sep 2026: seven people with one public score, 0.6722222222222224, stood
+ * "4, 5, 6, 7, 8, 9, 10" beside it. For a day all seven read "4" instead; on
+ * 30 Sep the teacher asked for distinct places back, Kaggle's rule: the
+ * earlier submission ranks higher. The place travels in three answers (the
+ * board's rows, the page's "YOUR PLACE", the list's "your place"), each is
+ * checked on a real response, and none may count the baseline as a row.
  */
-test('a tie shares its place in every answer: the board, the page and the list', async () => {
+test('a tie is numbered in submission order in every answer: the board, the page and the list', async () => {
   const made = createCompetition({
     slug: 'tie-k',
     title: 'Ничья',
@@ -338,7 +340,8 @@ test('a tie shares its place in every answer: the board, the page and the list',
   const baseline = createEntrant('@tie_baseline').entrant.id
   updateCompetition(made.id, { baselineSubmissionId: scored(baseline, tie).id })
   for (let i = 0; i < 6; i++) scored(createEntrant(`@tie_same_${i}`).entrant.id, tie)
-  // The person asking sent last of the seven: the tenth row by count.
+  // The person asking sent last of the seven: tenth among people, the
+  // eleventh row if the baseline were counted, "4" if the tie were shared.
   const res = await call('/api/k/competitions/tie-k/join', { method: 'POST', body: JSON.stringify({ name: '@tie_me' }) })
   assert.equal(res.status, 200)
   const me = { cookie: cookieOf(res)!, id: ((await res.json()) as { entrant: { id: string } }).entrant.id }
@@ -347,17 +350,22 @@ test('a tie shares its place in every answer: the board, the page and the list',
 
   const board = (await (await call('/api/k/competitions/tie-k/leaderboard', { cookie: me.cookie })).json()) as EntrantLeaderboard
   const people = board.public.filter((line) => !line.baseline)
-  assert.deepEqual(people.map((line) => line.place), [1, 2, 3, 4, 4, 4, 4, 4, 4, 4, 11])
-  assert.equal(people.find((line) => line.you)?.place, 4)
-  // The baseline takes nobody's place and shows the tie's.
+  assert.deepEqual(people.map((line) => line.place), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+  // The seven in the order they were sent.
+  assert.deepEqual(people.slice(3, 10).map((line) => line.name), [
+    '@tie_same_0', '@tie_same_1', '@tie_same_2', '@tie_same_3', '@tie_same_4', '@tie_same_5', '@tie_me',
+  ])
+  assert.equal(people.find((line) => line.you)?.place, 10)
+  // The baseline takes nobody's place and shows the one it would take: sent
+  // before all seven, it would be fourth.
   assert.equal(board.public.find((line) => line.baseline)?.place, 4)
 
   const page = (await (await call('/api/k/competitions/tie-k', { cookie: me.cookie })).json()) as { mine: { place: number | null } }
-  assert.equal(page.mine.place, 4, 'the page header counted rows')
+  assert.equal(page.mine.place, 10, 'the page header disagrees with the board')
   const list = (await (await call('/api/k/competitions', { cookie: me.cookie })).json()) as {
     competitions: { competition: { slug: string }; mine: { place: number | null } | null }[]
   }
-  assert.equal(list.competitions.find((row) => row.competition.slug === 'tie-k')?.mine?.place, 4, 'the list counted rows')
+  assert.equal(list.competitions.find((row) => row.competition.slug === 'tie-k')?.mine?.place, 10, 'the list disagrees with the board')
 })
 
 /**

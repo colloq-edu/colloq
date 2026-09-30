@@ -198,6 +198,8 @@ test('the notebook command: no network, read-only, with ceilings', () => {
   })
   const line = args.join(' ')
   assert.ok(line.includes('--network none'), 'the submission has no network at all')
+  // joblib's n_jobs=-1 asks loky for the CPU count; the host's 76 cores must not leak in.
+  assert.ok(/LOKY_MAX_CPU_COUNT=\d+/.test(line), 'loky is capped like the other thread pools')
   assert.ok(args.includes('--read-only'))
   assert.ok(args.includes('--user=1000:1000'))
   assert.ok(args.includes('--cap-drop=ALL'))

@@ -510,9 +510,9 @@
    * in a competition where nobody has yet sent a solution better than the
    * baseline, it comes first.
    *
-   * Read off `boardPlaces`, not counted by row: in a seven-way tie for fourth
-   * the table says "4" beside every one of them, and the header must not say
-   * "10" to the last (29 Sep 2026).
+   * Read off `boardPlaces`, the numbers the table itself prints, rather than
+   * counted here a second time: the header and the row beside the name must
+   * not disagree, whatever rule numbers the table.
    */
   function placeAmongPeople(lines: readonly EntrantBoardLine[]): number | null {
     return boardPlaces(lines).find((line) => line.you && !line.baseline)?.place ?? null

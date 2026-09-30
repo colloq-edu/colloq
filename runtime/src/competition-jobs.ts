@@ -154,7 +154,7 @@ export class CompetitionJobs {
         // Every thread pool a notebook is likely to meet, capped at the Pod's
         // CPUs: polars (rayon), BLIS, vecLib and numba each read their own variable.
         ...['OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS', 'POLARS_MAX_THREADS',
-          'RAYON_NUM_THREADS', 'BLIS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMBA_NUM_THREADS']
+          'RAYON_NUM_THREADS', 'BLIS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMBA_NUM_THREADS', 'LOKY_MAX_CPU_COUNT']
           .map((name) => env(name, String(Math.max(1, Math.floor(intent.limits.cpus))))),
         env('COMP_ATTEMPT_ID', intent.attemptId ?? intent.jobId), env('COMP_RESULT', '/out'), env('COMP_OUT', intent.kind === 'metric' ? '/out' : '/work'),
         env('COMP_TARGET', 'submission.csv'), env('COMP_MAX_TARGET_BYTES', String(intent.limits.targetBytes)),

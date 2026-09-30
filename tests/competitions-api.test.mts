@@ -1059,7 +1059,7 @@ test('admin leaderboard uses all submissions beyond the feed page', async () => 
   assert.equal(typeof board.revision, 'number')
 })
 
-test("the teacher reads the class's places: a tie shares one on the board and in the entrants tab alike", async () => {
+test("the teacher reads the class's places: a tie is numbered by time, the same on the board and in the entrants tab", async () => {
   const c = createCompetition({ slug: 'tie-board', title: 'Tie', metric: { direction: 'higher' } })!
   const tie = 0.6722222222222224
   let at = 1
@@ -1080,20 +1080,23 @@ test("the teacher reads the class's places: a tie shares one on the board and in
     private: { entrantName: string; place: number }[]
   }
   assert.deepEqual(board.public.map((row) => [row.entrantName, row.place]), [
-    ['@tb_anna', 1], ['@tb_same_0', 2], ['@tb_same_1', 2], ['@tb_same_2', 2], ['@tb_after', 5],
+    ['@tb_anna', 1], ['@tb_same_0', 2], ['@tb_same_1', 3], ['@tb_same_2', 4], ['@tb_after', 5],
   ])
-  // The final table ranks the tie first, then the two who fell: the arrows
-  // come from these numbers (2 → 1 for all three).
+  // The final table ranks the tie first, in the same order by time, then the
+  // two who fell: the arrows come from these numbers (2 → 1, 3 → 2, 4 → 3,
+  // one step up for each of the three).
   assert.deepEqual(board.private.map((row) => [row.entrantName, row.place]), [
-    ['@tb_same_0', 1], ['@tb_same_1', 1], ['@tb_same_2', 1], ['@tb_after', 4], ['@tb_anna', 5],
+    ['@tb_same_0', 1], ['@tb_same_1', 2], ['@tb_same_2', 3], ['@tb_after', 4], ['@tb_anna', 5],
   ])
 
   const listed = (await (await call('GET', `/api/admin/competitions/${c.id}/entrants`, { cookie: teacher })).json()) as {
     entrants: { name: string; place: number | null; baseline: boolean }[]
   }
   const placeOf = (name: string) => listed.entrants.find((row) => row.name === name)?.place
-  // The same numbers as the board next door: among people, shared on a tie.
-  assert.deepEqual(['@tb_anna', '@tb_same_0', '@tb_same_1', '@tb_same_2', '@tb_after'].map(placeOf), [1, 2, 2, 2, 5])
+  // The same numbers as the board next door: among people, a place per row,
+  // the baseline counted by neither.
+  assert.deepEqual(['@tb_anna', '@tb_same_0', '@tb_same_1', '@tb_same_2', '@tb_after'].map(placeOf), [1, 2, 3, 4, 5])
+  assert.deepEqual(board.public.map((row) => placeOf(row.entrantName)), board.public.map((row) => row.place))
 })
 
 test('metric changes invalidate readiness and baseline replacement retains service identity', async () => {

@@ -239,10 +239,10 @@ function summaryOf(competition: Competition): CompetitionCounts {
  * the daily quota refuses by: the class reads the "SUBMISSIONS" column against
  * the limit, and a row that is not in the quota has no business in it.
  *
- * The place is the one the page draws: among people, equal scores sharing
- * it, the baseline where it would rank (`placesAmongPeople`). The place the
- * store gives counts the baseline as a row, and an answer that says "5"
- * where the screen says "4" is a second truth waiting for its first reader.
+ * The place is the one the page draws: among people, the baseline where it
+ * would rank (`placesAmongPeople`). The place the store gives counts the
+ * baseline as a row, and an answer that says "5" where the screen says "4"
+ * is a second truth waiting for its first reader.
  */
 function withNames(
   rows: readonly RankedRow[],
@@ -379,9 +379,9 @@ function replaceableOf(competition: Competition, entrantId: string, now: number)
  * everywhere, and a place from the combined table would one day give "2 of
  * 1" in a competition where nobody has beaten the baseline yet.
  *
- * And it is a shared place, not a row number: seven people with one score
- * all stand fourth, and the list must not tell the last of them "10th"
- * while the table beside it says "4".
+ * And it is numbered by `placesByScore`, the rule the table itself is
+ * numbered by: the list must never tell a person a place that the row
+ * beside their name does not say.
  */
 function mineIn(competition: Competition, me: Entrant) {
   const baseline = baselineEntrantOf(competition)

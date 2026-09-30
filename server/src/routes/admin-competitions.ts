@@ -1232,8 +1232,9 @@ export function adminCompetitionRoutes(): Router {
 
   // The board is computed from complete server state; the feed is only a page.
   // Places are the class's own (`placesByScore`): the baseline row is drawn
-  // apart and takes nobody's, and a tie shares one — the number each person
-  // reads on their own screen, and the arrows are computed from it.
+  // apart and takes nobody's, and a tie is ranked by time, a place per row —
+  // the number each person reads on their own screen, and the arrows are
+  // computed from it.
   router.get('/api/admin/competitions/:id/leaderboard', requireStaff, (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
@@ -1427,10 +1428,10 @@ export function adminCompetitionRoutes(): Router {
   /**
    * The "Entrants" tab of one competition: place, submissions, sign-in key.
    *
-   * The place is the leaderboard tab's and the person's own: among people,
-   * shared on a tie. Taken straight from the store it counted the baseline
-   * as a row, and everyone below the baseline stood one lower here than on
-   * the tab next door.
+   * The place is the leaderboard tab's and the person's own: among people.
+   * Taken straight from the store it counted the baseline as a row, and
+   * everyone below the baseline stood one lower here than on the tab next
+   * door.
    */
   router.get('/api/admin/competitions/:id/entrants', requireStaff, (req, res) => {
     const competition = competitionOf(req, res)

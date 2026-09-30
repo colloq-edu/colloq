@@ -30,8 +30,8 @@
     const out: { line: EntrantBoardLine & { place: number | null }; gap: boolean }[] = top.map(
       (line) => ({ line, gap: false }),
     )
-    // The gap is counted in rows, not places: in a tie "2" can stand on the
-    // fifth row, and the fourth is still folded away above it.
+    // "· · ·" only where rows are left out: someone stands between the top
+    // three and you. Counted in rows among people, the baseline apart.
     if (me && !top.includes(me)) out.push({ line: me, gap: people.indexOf(me) > TOP })
     if (baseline) out.push({ line: baseline, gap: !me && people.length > TOP })
     return out

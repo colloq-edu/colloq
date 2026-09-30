@@ -395,32 +395,37 @@ test('"last" means the last one that REACHED a score, not the last one sent', ()
   assert.equal(countedSubmission('chosen', [entries[1]], 'lower'), null)
 })
 
-test("leaderboard: the metric's direction decides the order, time orders a tie that shares its place", () => {
+test("leaderboard: the metric's direction decides the order, and of equal scores the earlier submission takes the higher place", () => {
   const rows = [
     { entrantId: 'anna', submissionId: 's1', score: 0.0447, at: 300 },
     { entrantId: 'marfa', submissionId: 's2', score: 0.0441, at: 200 },
     { entrantId: 'daniil', submissionId: 's3', score: 0.0441, at: 100 },
   ]
   const lower = rankBoard(rows, 'lower')
-  // "Equal results share one place; the submission sent earlier is listed
-  // first" — footnote in P3.
+  // "On equal results the submission sent earlier ranks higher" — footnote in
+  // P3. Ranks higher, not merely stands higher: the tie is two places.
   assert.deepEqual(
     lower.map((r) => r.entrantId),
     ['daniil', 'marfa', 'anna'],
   )
   assert.deepEqual(
     lower.map((r) => r.place),
-    [1, 1, 3],
+    [1, 2, 3],
   )
   const higher = rankBoard(rows, 'higher')
-  assert.equal(higher[0].entrantId, 'anna')
-  // A tie further down is ordered by the same rule too, not by row order.
-  assert.equal(higher[1].entrantId, 'daniil')
-  assert.deepEqual(higher.map((r) => r.place), [1, 2, 2])
-  assert.equal(placeOf(lower, 'marfa'), 1)
+  // A tie further down is ordered by the same rule too, not by row order, and
+  // turning the metric around does not turn time around.
+  assert.deepEqual(
+    higher.map((r) => [r.entrantId, r.place]),
+    [['anna', 1], ['daniil', 2], ['marfa', 3]],
+  )
+  assert.equal(placeOf(lower, 'daniil'), 1)
+  assert.equal(placeOf(lower, 'marfa'), 2)
   assert.equal(placeOf(lower, 'никого'), null)
   assert.ok(compareScores({ score: 1, at: 1 }, { score: 2, at: 0 }, 'lower') < 0)
   assert.ok(compareScores({ score: 1, at: 1 }, { score: 2, at: 0 }, 'higher') > 0)
+  assert.ok(compareScores({ score: 1, at: 1 }, { score: 1, at: 2 }, 'lower') < 0)
+  assert.ok(compareScores({ score: 1, at: 1 }, { score: 1, at: 2 }, 'higher') < 0)
 })
 
 test('the final table takes the private score of THE submission the person chose', () => {
@@ -477,9 +482,11 @@ test('a person without a single submission that reached a score does not get int
   assert.equal(rows.length, 0)
 })
 
-test('equal scores share the smallest place, and the next score takes the place after all of them', () => {
-  // 29 Sep 2026: seven people with one public score read "4, 5, 6, 7, 8, 9,
-  // 10" beside it, while the competition's rules gave them one place.
+test('equal scores take a place each, the earlier submission higher, and the next score comes after all of them', () => {
+  // 29 Sep 2026: seven people with one public score stood "4, 5, 6, 7, 8, 9,
+  // 10" beside it. For a day all seven read "4" instead; on 30 Sep the teacher
+  // asked for distinct places back, the way Kaggle ranks: six people in
+  // seventh place is not a ranking.
   const tie = 0.6722222222222224
   const rows = [
     { entrantId: 'anna', submissionId: 'a', score: 0.9, at: 50 },
@@ -489,21 +496,38 @@ test('equal scores share the smallest place, and the next score takes the place 
     { entrantId: 'zoya', submissionId: 'z', score: 0.5, at: 1 },
   ]
   const board = rankBoard(rows, 'higher')
-  assert.deepEqual(board.map((r) => r.place), [1, 2, 3, 4, 4, 4, 4, 4, 4, 4, 11])
-  // Only the numbers are shared: inside the tie the earlier submission still
-  // stands higher.
-  assert.deepEqual(board.slice(3, 10).map((r) => r.entrantId), ['t6', 't5', 't4', 't3', 't2', 't1', 't0'])
+  assert.deepEqual(board.map((r) => r.place), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+  // Inside the tie the earlier submission stands higher and takes the higher
+  // place: t6 was sent first of the seven, t0 last.
+  assert.deepEqual(board.slice(3, 10).map((r) => [r.entrantId, r.place]), [
+    ['t6', 4], ['t5', 5], ['t4', 6], ['t3', 7], ['t2', 8], ['t1', 9], ['t0', 10],
+  ])
+  assert.deepEqual([board[10].entrantId, board[10].place], ['zoya', 11])
 
   const five = [0.1, 0.2, 0.2, 0.2, 0.3].map((score, i) => ({ entrantId: `p${i}`, submissionId: `s${i}`, score, at: i }))
-  assert.deepEqual(rankBoard(five, 'lower').map((r) => r.place), [1, 2, 2, 2, 5])
-  assert.deepEqual(rankBoard(five, 'higher').map((r) => r.place), [1, 2, 2, 2, 5])
-  // A tie at the very top, and a table that is one tie.
-  assert.deepEqual(placesByScore([{ score: 3 }, { score: 3 }, { score: 1 }]).map((r) => r.place), [1, 1, 3])
-  assert.deepEqual(placesByScore([{ score: 7 }, { score: 7 }, { score: 7 }]).map((r) => r.place), [1, 1, 1])
+  assert.deepEqual(rankBoard(five, 'lower').map((r) => [r.entrantId, r.place]), [
+    ['p0', 1], ['p1', 2], ['p2', 3], ['p3', 4], ['p4', 5],
+  ])
+  // The other direction moves the tie as a block, and inside it time runs the
+  // same way.
+  assert.deepEqual(rankBoard(five, 'higher').map((r) => [r.entrantId, r.place]), [
+    ['p4', 1], ['p1', 2], ['p2', 3], ['p3', 4], ['p0', 5],
+  ])
+  // A tie at the very top, and a table that is one tie: a place per row all
+  // the same.
+  assert.deepEqual(placesByScore([{ score: 3 }, { score: 3 }, { score: 1 }]).map((r) => r.place), [1, 2, 3])
+  assert.deepEqual(placesByScore([{ score: 7 }, { score: 7 }, { score: 7 }]).map((r) => r.place), [1, 2, 3])
   assert.deepEqual(placesByScore([]), [])
+  const oneTie = rankBoard([
+    { entrantId: 'late', submissionId: 'l', score: 7, at: 3 },
+    { entrantId: 'early', submissionId: 'e', score: 7, at: 1 },
+    { entrantId: 'middle', submissionId: 'm', score: 7, at: 2 },
+  ], 'higher')
+  assert.deepEqual(oneTie.map((r) => [r.entrantId, r.place]), [['early', 1], ['middle', 2], ['late', 3]])
 
   // Equal means the same number, not the same four digits on screen: the
-  // metric told these two apart.
+  // metric told these two apart, so the better one ranks higher although it
+  // was sent later. Time decides only between exactly equal numbers.
   const close = rankBoard([
     { entrantId: 'x', submissionId: 'x', score: 0.6722222222222224, at: 2 },
     { entrantId: 'y', submissionId: 'y', score: 0.6722222222222223, at: 1 },
@@ -511,43 +535,46 @@ test('equal scores share the smallest place, and the next score takes the place 
   assert.deepEqual(close.map((r) => [r.entrantId, r.place]), [['x', 1], ['y', 2]])
 })
 
-test('places among people: the baseline takes nobody\'s place and shows the one it would take', () => {
+test("places among people: the baseline takes nobody's place and shows the one it would take, after everyone above it by score and time", () => {
   const line = (name: string, score: number, baseline = false) => ({ name, score, baseline })
   const places = (rows: ReturnType<typeof line>[]) =>
     placesAmongPeople(rows, (row) => row.baseline).map((row) => [row.name, row.place])
 
-  // Tied with people, it shows their place; the people after the tie count
-  // only people.
+  // Tied with people, it stands where time put it (boris sent before it, vera
+  // after) and shows the place it would take there; the people count only
+  // people, so vera keeps the "3" the baseline shows.
   assert.deepEqual(
     places([line('anna', 0.9), line('boris', 0.8), line('baseline', 0.8, true), line('vera', 0.8), line('gleb', 0.7)]),
-    [['anna', 1], ['boris', 2], ['baseline', 2], ['vera', 2], ['gleb', 4]],
+    [['anna', 1], ['boris', 2], ['baseline', 3], ['vera', 3], ['gleb', 4]],
   )
-  // Between two scores it stands right after everyone who beat it.
+  // Between two scores it stands right after everyone above it.
   assert.deepEqual(
     places([line('anna', 0.9), line('baseline', 0.85, true), line('boris', 0.8), line('vera', 0.8)]),
-    [['anna', 1], ['baseline', 2], ['boris', 2], ['vera', 2]],
+    [['anna', 1], ['baseline', 2], ['boris', 2], ['vera', 3]],
   )
-  // Nobody has beaten it: no place, whether nobody stands above it or someone
-  // only equals it, and whoever of them submitted first.
+  // Nobody above it: no place, even with an equal score right behind it —
+  // sent later, that one ranks below the baseline.
   assert.deepEqual(places([line('baseline', 0.8, true), line('anna', 0.8), line('boris', 0.7)]), [
     ['baseline', null],
     ['anna', 1],
     ['boris', 2],
   ])
+  // An equal score sent EARLIER does stand above it, as it would above a
+  // person, and the baseline shows the place after it.
   assert.deepEqual(places([line('anna', 0.8), line('baseline', 0.8, true), line('boris', 0.7)]), [
     ['anna', 1],
-    ['baseline', null],
+    ['baseline', 2],
     ['boris', 2],
   ])
   assert.deepEqual(places([line('baseline', 0.8, true)]), [['baseline', null]])
-  // Without a baseline it is simply places by score.
+  // Without a baseline it is simply a place per row, a tie included.
   assert.deepEqual(
     places([line('anna', 0.9), line('boris', 0.8), line('vera', 0.8), line('gleb', 0.8), line('dina', 0.1)]).map(([, place]) => place),
-    [1, 2, 2, 2, 5],
+    [1, 2, 3, 4, 5],
   )
 })
 
-test('the shift is counted from shared places: a tie that moves together moves by one step', () => {
+test('the shift is the difference of the places a person reads: a tie keeps its order by time in both tables and moves as a block', () => {
   const person = (entrantId: string, at: number, publicScore: number, privateScore: number) => ({
     entrantId,
     entries: [entry({ id: entrantId, acceptedAt: at, publicScore, privateScore })],
@@ -564,19 +591,24 @@ test('the shift is counted from shared places: a tie that moves together moves b
   ]
   const pub = boardOf(people, 'bestPublic', 'higher', 'public')
   const priv = boardOf(people, 'bestPublic', 'higher', 'private')
-  assert.deepEqual(pub.map((r) => r.place), [1, 2, 2, 2, 5, 6, 6])
+  assert.deepEqual(pub.map((r) => [r.entrantId, r.place]), [
+    ['anna', 1], ['boris', 2], ['vera', 3], ['gleb', 4], ['dina', 5], ['egor', 6], ['zhenya', 7],
+  ])
   assert.deepEqual(priv.map((r) => [r.entrantId, r.place]), [
-    ['boris', 1], ['vera', 1], ['gleb', 1], ['anna', 4], ['dina', 5], ['egor', 6], ['zhenya', 7],
+    ['boris', 1], ['vera', 2], ['gleb', 3], ['anna', 4], ['dina', 5], ['egor', 6], ['zhenya', 7],
   ])
   const shift = (id: string) => placeShift(placeOf(pub, id), placeOf(priv, id))
-  // "2" in the public table, "1" in the final one: the same arrow for all three.
+  // "2, 3, 4" in the public table, "1, 2, 3" in the final one: the counted
+  // submission is the same one, so is its time, and each of the three rises
+  // by the one step anna fell past them.
   assert.deepEqual(['boris', 'vera', 'gleb'].map(shift), [1, 1, 1])
   assert.equal(shift('anna'), -3)
   assert.equal(shift('dina'), 0)
-  // "6" and "6" in the public table: one keeps it, the other slides to "7" —
-  // by row numbers (6 → 6, 7 → 7) neither would have had an arrow at all.
+  // "6" and "7" in the public table by time, "6" and "7" in the final one by
+  // score: neither moved, so neither gets an arrow. With one shared "6" in the
+  // public table, zhenya got an arrow down for keeping his row.
   assert.equal(shift('egor'), 0)
-  assert.equal(shift('zhenya'), -1)
+  assert.equal(shift('zhenya'), 0)
 })
 
 /* ---------------------------------------------- private leaderboard */

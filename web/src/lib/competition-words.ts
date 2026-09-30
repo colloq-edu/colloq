@@ -632,13 +632,13 @@ export function submissionBadge(submission: Pick<EntrantSubmission, 'state' | 'r
  * competition where nobody has beaten the baseline yet, it becomes first, and
  * the person reads "YOUR PLACE 2 of 3" in the header next to a row "3" in the
  * table. Here the baseline stops taking people's places and stands exactly
- * where it would if it were an entrant: after everyone who has beaten it, and
- * without a number while nobody has.
+ * where it would if it were an entrant: after everyone above it, and without
+ * a number while nobody is.
  *
- * Equal scores share a place (1, 2, 2, 2, 5). The rule is
- * `placesAmongPeople` from `@shared/competitions`, the one the server numbers
- * its answers with, so the header's "YOUR PLACE", the list of competitions
- * and the teacher's screen say the same number as this row.
+ * A place per row, the earlier submission higher between equal scores. The
+ * rule is `placesAmongPeople` from `@shared/competitions`, the one the server
+ * numbers its answers with, so the header's "YOUR PLACE", the list of
+ * competitions and the teacher's screen say the same number as this row.
  *
  * The order of the rows does not change — the server has already computed it
  * by the metric's rule.
