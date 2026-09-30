@@ -24,6 +24,8 @@ import { PLOTLY_MIME } from '@shared/plotly'
 import { plural } from '@shared/plural'
 import { safeStyle } from '@shared/note-css'
 import type { CellOutput } from '@shared/notebook'
+import { DEFAULT_TIME_ZONE } from '@shared/time-zone'
+import { instanceTimeZone } from '../time-zone.js'
 
 /**
  * Text without control sequences.
@@ -747,13 +749,13 @@ export interface RenderedStep {
  * on a static page: in the room the browser draws the time, here there is
  * nobody to draw it.
  *
- * The instance's zone is `TZ`, and it is read on every formatting call rather
- * than once at module load: it arrives from `.env` through dotenv in
- * config.ts, and this module loads before that. For the same reason the zone
- * is passed as an option: a variable read after startup may no longer become
- * the process's zone.
+ * The instance's zone is the one every "today" on the server is counted in
+ * (server/src/time-zone.ts: `TZ`, Moscow without it), asked on every
+ * formatting call rather than once at module load: it arrives from `.env`
+ * through dotenv in config.ts, and this module loads before that. For the
+ * same reason the zone is passed as an option: a variable read after startup
+ * may no longer become the process's zone.
  */
-const HOME_ZONE = 'Europe/Moscow'
 const DATE_FORM: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'long', year: 'numeric' }
 const TIME_FORM: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' }
 
@@ -761,16 +763,16 @@ function formatter(form: Intl.DateTimeFormatOptions, zone: string): Intl.DateTim
   try {
     return new Intl.DateTimeFormat(getLocale(), { ...form, timeZone: zone })
   } catch {
-    // `TZ=MSK` and other names missing from the time zone database: a typo in
-    // .env must not bring down the whole export.
-    return new Intl.DateTimeFormat(getLocale(), { ...form, timeZone: HOME_ZONE })
+    // The zone helper already refuses names missing from the time zone
+    // database; this stays for a runtime whose database lacks the default.
+    return new Intl.DateTimeFormat(getLocale(), { ...form, timeZone: DEFAULT_TIME_ZONE })
   }
 }
 
 let clocks: { locale: string; zone: string; date: Intl.DateTimeFormat; time: Intl.DateTimeFormat } | null = null
 
 function forms(): { date: Intl.DateTimeFormat; time: Intl.DateTimeFormat } {
-  const zone = process.env.TZ?.trim() || HOME_ZONE
+  const zone = instanceTimeZone()
   if (!clocks || clocks.zone !== zone || clocks.locale !== getLocale()) {
     clocks = { locale: getLocale(), zone, date: formatter(DATE_FORM, zone), time: formatter(TIME_FORM, zone) }
   }

@@ -29,6 +29,7 @@
     LIMITS,
     parseSlug,
     slugRefusal,
+    type BoardVisibility,
     type CompetitionLimits,
     type MetricDirection,
     type PrivateRelease,
@@ -102,6 +103,7 @@
   let startsAt = $state('')
   let privateRelease = $state<PrivateRelease>('auto')
   let scoring = $state<ScoringRule>('chosen')
+  let boardVisibility = $state<BoardVisibility>('public')
 
   $effect(() => {
     const open = view.competition
@@ -121,6 +123,7 @@
     startsAt = localInput(open.startsAt)
     privateRelease = open.privateRelease
     scoring = open.scoring
+    boardVisibility = open.boardVisibility ?? 'public'
   })
 
   /**
@@ -189,6 +192,7 @@
       deadlineAt: fromInput(deadline),
       privateRelease,
       scoring,
+      boardVisibility,
     }
   }
 
@@ -1006,6 +1010,23 @@
       </div>
 
       <p class="text-micro leading-snug text-muted">{tr('admin.competitions.scoringNote')}</p>
+
+      <!-- Who sees the board: anyone with the link (as before), or the
+           competition's own participants — a course that must keep its list
+           of students inside the class. Staff always see it. -->
+      <div>
+        <p class="mb-1.5 {HEAD}">{tr('competitions.visibility.head')}</p>
+        <Choice
+          size="lg"
+          options={[
+            { value: 'public', label: tr('competitions.visibility.public') },
+            { value: 'entrants', label: tr('competitions.visibility.entrants') },
+          ]}
+          value={boardVisibility}
+          onchange={(value) => (boardVisibility = value as BoardVisibility)}
+        />
+      </div>
+      <p class="text-micro leading-snug text-muted">{tr('competitions.visibility.note')}</p>
     </div>
     {@render marker('terms')}
   </Section>

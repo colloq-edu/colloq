@@ -105,6 +105,13 @@
   function shiftTone(shift: number): string {
     return shift > 0 ? 'text-positive' : shift < 0 ? 'text-danger' : 'text-muted'
   }
+
+  /*
+   * Other people's addresses arrive shortened (`iva…@hse.ru`,
+   * shared/competitions.ts · maskEntrantName). Said under the table only when
+   * the table has one: a board of Telegram usernames has nothing shortened.
+   */
+  const masked = $derived(people.some((line) => !line.you && line.name.includes('…@')))
 </script>
 
 <div class="flex flex-col gap-5">
@@ -272,5 +279,7 @@
     {/if}
   {/if}
 
-  <p class="text-2xs leading-5 text-muted">{tr('competitions.p.tieNote')}</p>
+  <p class="text-2xs leading-5 text-muted">
+    {tr('competitions.p.tieNote')}{#if masked}{' '}{tr('competitions.p.maskedNote')}{/if}
+  </p>
 </div>

@@ -72,7 +72,7 @@ import {
 } from '../server/src/competitions/storage.js'
 import { config } from '../server/src/config.js'
 
-const MSK = 180
+const MSK = 'Europe/Moscow'
 const bytes = (text: string) => new TextEncoder().encode(text)
 
 /**
@@ -276,8 +276,8 @@ test("the daily quota is counted in the class's time zone and leaves yesterday's
     bytes: 1,
     at: startOfDay - 1,
   })
-  assert.equal(usedToday(c.id, person.id, now, MSK), 1)
-  assert.equal(leftToday(c, person.id, now, MSK), 4)
+  assert.equal(usedToday(c.id, person.id, now, MSK, null), 1)
+  assert.equal(leftToday(c, person.id, now, null, MSK, null), 4)
 
   // One that failed BEFORE the first cell does not use the quota — the mockup
   // promises that.
@@ -289,14 +289,14 @@ test("the daily quota is counted in the class's time zone and leaves yesterday's
     at: now,
   })
   updateSubmission(dead.id, { state: 'notebookFailed', cellsDone: 0 })
-  assert.equal(leftToday(c, person.id, now, MSK), 4)
+  assert.equal(leftToday(c, person.id, now, null, MSK, null), 4)
   updateSubmission(dead.id, { state: 'notebookFailed', cellsDone: 7 })
-  assert.equal(leftToday(c, person.id, now, MSK), 3)
+  assert.equal(leftToday(c, person.id, now, null, MSK, null), 3)
 
   // Zero means "no limit", which is not the same as "none at all".
   const open = updateCompetition(c.id, { limits: { perDay: 0 } })
   assert.ok(open && open !== 'taken')
-  assert.equal(leftToday(open, person.id, now, MSK), null)
+  assert.equal(leftToday(open, person.id, now, null, MSK, null), null)
 })
 
 test('the leaderboard counts only the submissions the daily quota counts', () => {
@@ -319,7 +319,7 @@ test('the leaderboard counts only the submissions the daily quota counts', () =>
 
   const counts = submissionCounts(c.id)
   assert.equal(counts.get(person.id), 3)
-  assert.equal(counts.get(person.id), usedToday(c.id, person.id, now, MSK), 'the column and the quota disagree')
+  assert.equal(counts.get(person.id), usedToday(c.id, person.id, now, MSK, null), 'the column and the quota disagree')
   assert.equal(counts.get(other.id), undefined)
   drainQueue()
 })
@@ -675,7 +675,7 @@ test('the heavy parts of old submissions go away, while the scores stay in the d
   const c = freshCompetition('disk-prune')
   const person = createEntrant('Настойчивый').entrant
   const made = []
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 5; i++) {
     const s = acceptSubmission({
       competitionId: c.id,
       entrantId: person.id,
@@ -684,17 +684,27 @@ test('the heavy parts of old submissions go away, while the scores stay in the d
       at: Date.now() + i,
     })
     putSubmissionNotebook(c.id, s.id, bytes('{}'))
-    updateSubmission(s.id, { state: 'scored', stage: 'score', publicScore: i })
+    leaveQueue(s.id)
+    // MAPE, lower is better: the oldest has the best number and counts.
+    updateSubmission(s.id, { state: 'scored', stage: 'score', publicScore: 10 + i })
     made.push(s)
   }
-  const dropped = pruneCompetitionFiles(c.id, 2)
-  assert.equal(dropped, 2)
-  // Two fresh ones stayed on disk, two old ones went away…
-  assert.ok(fs.existsSync(path.join(competitionsDir, c.id, 's', made[3].id)))
-  assert.equal(fs.existsSync(path.join(competitionsDir, c.id, 's', made[0].id)), false)
-  // …and the leaderboard must add up even a year later, so the scores stay.
-  assert.equal(listEntrantSubmissions(c.id, person.id).length, 4)
-  assert.equal(getSubmission(made[0].id)?.publicScore, 0)
+  updateSubmission(made[0].id, { publicScore: 1 })
+  const dir = (id: string) => path.join(competitionsDir, c.id, 's', id)
+  const swept = pruneCompetitionFiles(c.id, 2)
+  assert.equal(swept.removed, 2)
+  assert.ok(swept.bytes > 0, 'the sweep says how much it freed')
+  // Two fresh ones stayed on disk, and so did the old one that counts on the
+  // board: "rescore everyone" after a metric fix needs exactly its answer…
+  assert.ok(fs.existsSync(dir(made[4].id)))
+  assert.ok(fs.existsSync(dir(made[3].id)))
+  assert.ok(fs.existsSync(dir(made[0].id)), 'the counted submission lost its files')
+  // …while the old ones nobody counts went away.
+  assert.equal(fs.existsSync(dir(made[1].id)), false)
+  assert.equal(fs.existsSync(dir(made[2].id)), false)
+  // And the leaderboard must add up even a year later, so the scores stay.
+  assert.equal(listEntrantSubmissions(c.id, person.id).length, 5)
+  assert.equal(getSubmission(made[1].id)?.publicScore, 11)
 })
 
 test('the path for docker is translated through DATA_HOST_DIR, and only when it is set', () => {

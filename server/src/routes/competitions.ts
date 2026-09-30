@@ -29,7 +29,10 @@
 import busboy from 'busboy'
 import path from 'node:path'
 import { Router, type Request, type Response } from 'express'
-import { tr } from '@shared/i18n'
+import { getLocale, tr } from '@shared/i18n'
+import { zonedClock } from '@shared/time-zone'
+import { currentStaff } from '../admin/auth.js'
+import { instanceNextDayStart, instanceTimeZone } from '../time-zone.js'
 import { assertCompetitionCapability, competitionCapabilities } from '../competitions/capabilities.js'
 import { competitionRevision } from '../dependencies/store.js'
 import { readEnvironmentInventory } from '../environment-inventory.js'
@@ -70,6 +73,7 @@ import {
   myCompetitionIds,
   queuePaused,
   submissionCounts,
+  takesPart,
 } from '../competitions/store.js'
 import { withoutBaseline } from '../competitions/panel.js'
 import { queueForecast } from '../competitions/forecast.js'
@@ -91,6 +95,7 @@ import {
   ENTRANT_SIGN_IN_PATH,
   isTerminal,
   LIMITS,
+  maskEntrantName,
   nameForJoin,
   normalizeEntrantKey,
   placesAmongPeople,
@@ -232,6 +237,40 @@ function summaryOf(competition: Competition): CompetitionCounts {
 }
 
 /**
+ * Whether this visitor may see the competition's leaderboard at all.
+ *
+ * A `public` board is anyone's who has the link, as every board was before
+ * the setting. An `entrants` board is its own entrants' — joined, or with a
+ * submission in it (store · takesPart) — and staff's: a teacher checking the
+ * page through a student's eyes must still see it, and so must the projector
+ * the panel opens.
+ */
+function boardOpenTo(req: Request, competition: Competition, me: Entrant | null): boolean {
+  if ((competition.boardVisibility ?? 'public') === 'public') return true
+  if (currentStaff(req)) return true
+  return me !== null && takesPart(competition.id, me.id)
+}
+
+/**
+ * Whose names this visitor reads whole.
+ *
+ * Staff read every name whole: they are the ones who find and write to the
+ * people on the board, the reason names are handles at all. Everyone else
+ * reads their own name whole and other people's email addresses shortened
+ * (@shared/competitions · maskEntrantName): a classmate's mailbox is a
+ * contact they were never given, and a public board hands it to the internet.
+ *
+ * `?audience=class` is the projector's (the panel's "Leaderboard on the
+ * projector"): opened from the teacher's own browser, with the staff cookie,
+ * and shown to the whole room. There even staff get the class's view, or the
+ * one screen everybody reads would print every address in full.
+ */
+function nameReveal(req: Request, me: Entrant | null): (entrantId: string) => boolean {
+  if (currentStaff(req) && req.query.audience !== 'class') return () => true
+  return (entrantId) => me !== null && entrantId === me.id
+}
+
+/**
  * A leaderboard row with a name: a place cannot be shown without a name.
  *
  * The submission number and whether its author chose it come here for the
@@ -252,13 +291,15 @@ function withNames(
   counts: Map<string, number>,
   me: Entrant | null,
   baseline: string | null,
+  reveal: (entrantId: string) => boolean,
 ): EntrantBoardLine[] {
   return placesAmongPeople(rows, (row) => row.entrantId === baseline).map((row) => {
     const submission = getSubmission(row.submissionId)
+    const name = getEntrant(row.entrantId)?.name ?? ''
     return {
       place: row.place,
       entrantId: row.entrantId,
-      name: getEntrant(row.entrantId)?.name ?? '',
+      name: reveal(row.entrantId) ? name : maskEntrantName(name),
       score: row.score,
       submissionId: row.submissionId,
       number: submission?.number ?? 0,
@@ -357,7 +398,19 @@ function submissionsView(competition: Competition, me: Entrant): EntrantSubmissi
     live: liveOf(competition, me, now),
     paused: queuePaused(),
     replaceable: accepting === 'open' ? replaceableOf(competition, me.id, now) : null,
+    resetsAt: competition.limits.perDay > 0 ? instanceNextDayStart(now) : null,
+    dayZone: instanceTimeZone(),
   }
+}
+
+/**
+ * "The limit resets at 00:00 GMT+3." — said after "no submissions left today",
+ * in the instance's language and with its zone named: the class reads it on
+ * phones set to any zone, and "tomorrow" is nobody's midnight in particular.
+ */
+function quotaResetWords(now = Date.now()): string {
+  const time = zonedClock(instanceNextDayStart(now), instanceTimeZone(), getLocale())
+  return time ? tr('competitions.p.quotaResets', { time }) : ''
 }
 
 /**
@@ -368,7 +421,7 @@ function submissionsView(competition: Competition, me: Entrant): EntrantSubmissi
 function replaceableOf(competition: Competition, entrantId: string, now: number): EntrantSubmissions['replaceable'] {
   const plan = intakePlan(competition.id, entrantId)
   if (plan === 'in_flight' || !plan.replaces) return null
-  const left = leftToday(competition, entrantId, now, 0, plan.replaces.id)
+  const left = leftToday(competition, entrantId, now, plan.replaces.id)
   if (left !== null && left <= 0) return null
   return { submissionId: plan.replaces.id, number: plan.replaces.number }
 }
@@ -493,7 +546,9 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
           competition: publicCompetition(competition),
           entrants: summary.entrants,
           submissions: summary.submissions,
-          bestPublic: summary.bestPublic,
+          // The leader's number is a line of the board: a closed board keeps
+          // it too. The counts are the class's size, not anyone's result.
+          bestPublic: boardOpenTo(req, competition, me) ? summary.bestPublic : null,
           baselinePublic: baselineScore(competition),
           privateOpen: board.open,
           privatePending: board.pending,
@@ -523,7 +578,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
       })),
       entrants: summary.entrants,
       submissions: summary.submissions,
-      bestPublic: summary.bestPublic,
+      bestPublic: boardOpenTo(req, competition, me) ? summary.bestPublic : null,
       baselinePublic: baselineScore(competition),
       privateOpen: board.open,
       privatePending: board.pending,
@@ -621,13 +676,23 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     const competition = visible(req.params.slug)
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     const me = currentEntrant(req)
+    /*
+     * A board open to entrants only answers a stranger with a refusal the
+     * page can name, not with an empty table: "nobody has a score yet" about
+     * a board of thirty would be a lie. 401 for someone not signed in (a key
+     * would open it), 403 for a signed-in person of another competition.
+     */
+    if (!boardOpenTo(req, competition, me)) {
+      return refuse(res, me ? 403 : 401, 'board_closed', tr('competitions.refusal.boardEntrantsOnly'))
+    }
+    const reveal = nameReveal(req, me)
     const counts = submissionCounts(competition.id)
     const { open, pending } = privateBoardState(competition)
     const baseline = baselineEntrantOf(competition)
     reply<EntrantLeaderboard>(res, {
-      public: withNames(leaderboard(competition.id, 'public'), counts, me, baseline),
+      public: withNames(leaderboard(competition.id, 'public'), counts, me, baseline, reveal),
       private: open
-        ? withNames(leaderboard(competition.id, 'private'), counts, me, baseline)
+        ? withNames(leaderboard(competition.id, 'private'), counts, me, baseline, reveal)
         : null,
       privateOpen: open,
       privatePending: pending,
@@ -674,6 +739,12 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
    * It is sent on change, not on a timer: a page where nothing happens must
    * not redraw every second, and exactly two things happen here: a stage
    * change and a change of place in the queue.
+   *
+   * Nothing of anyone else rides here — the person's own submissions, their
+   * place in the queue as a number, their own "starts after #12" — so the
+   * board's visibility and the shortening of names have nothing to do in it.
+   * Keep it that way: a board row added to this stream would have to go
+   * through `boardOpenTo` and `nameReveal` like the leaderboard door.
    */
   router.get('/api/k/competitions/:slug/stream', requireEntrant, (req, res) => {
     const competition = visible(req.params.slug)
@@ -752,9 +823,10 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     if (plan === 'in_flight') {
       return refuse(res, 409, 'in_flight', tr('competitions.refusal.inFlight'))
     }
-    const left = leftToday(competition, me.id, startedAt, 0, plan.replaces?.id ?? null)
+    const left = leftToday(competition, me.id, startedAt, plan.replaces?.id ?? null)
     if (left !== null && left <= 0) {
-      return refuse(res, 429, 'quota', tr('competitions.refusal.dailyQuota', { count: competition.limits.perDay }))
+      const words = [tr('competitions.refusal.dailyQuota', { count: competition.limits.perDay }), quotaResetWords(startedAt)]
+      return refuse(res, 429, 'quota', words.filter(Boolean).join(' '))
     }
     if (tooOften(uploadsByAddress, addressForLimits(req), UPLOAD_WINDOW, MAX_UPLOADS_PER_ADDRESS)
       || tooOften(uploadsByEntrant, me.id, UPLOAD_WINDOW, uploadsPerMinute().value)) {
@@ -792,6 +864,15 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
        * event loop already did.
        */
       const submission = db.transaction(() => {
+        /*
+         * The door checked the person before the body; a teacher may have
+         * removed them from the competition while twenty megabytes were
+         * arriving (competitions/erase.ts). Checked again here, in the same
+         * transaction as the acceptance, so a removed person cannot come
+         * back as a submission nobody takes part under.
+         */
+        const still = getEntrant(me.id)
+        if (!still || still.disabled || !takesPart(competition.id, me.id)) throw new EntrantGone()
         const accepted = acceptPinnedSubmission(competition, me.id, fileName, body.length, revision, bundleId, { startedAt })
         try {
           ensureCompetition(competition.id)
@@ -939,6 +1020,9 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
 
 /* ----------------------------------------------------- notebook parsing */
 
+/** The person was removed, or their key turned off, while their upload was arriving. */
+class EntrantGone extends Error {}
+
 /*
  * The intake transaction re-checks what the door checked before the body
  * (the deadline, one in flight, the day's quota), and the answer must be the
@@ -1041,7 +1125,9 @@ function readNotebook(req: Request, res: Response, done: (fileName: string, body
     answered = true
     void Promise.resolve().then(() => done(fileName, body, bundleId)).catch((error: unknown) => {
       if (res.headersSent) return
-      if (error instanceof DependencyStoreError) {
+      if (error instanceof EntrantGone) {
+        refuse(res, 401, 'unauthenticated', tr('competitions.refusal.signIn'))
+      } else if (error instanceof DependencyStoreError) {
         const intake = INTAKE_REFUSALS[error.code]
         if (intake) refuse(res, error.status, intake.reason, intake.say())
         // With its numbers: "the set needs 379 MB of the 1.0 GB a submission gets".

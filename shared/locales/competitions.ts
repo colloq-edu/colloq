@@ -1075,4 +1075,93 @@ export const competitionsMessages: MessageCatalog = {
     en: 'The live updates broke off — the numbers may be behind.',
   },
   'competitions.p.retry': { ru: 'Повторить', en: 'Try again' },
+
+  /*
+   * Who sees the leaderboard (shared/competitions.ts · BoardVisibility) and
+   * what a visitor the board is closed to reads instead of it.
+   */
+  'competitions.refusal.boardEntrantsOnly': {
+    ru: 'Лидерборд этого соревнования видят только его участники.',
+    en: "Only this competition's participants can see its leaderboard.",
+  },
+  'competitions.p.boardClosedTitle': {
+    ru: 'Лидерборд открыт только участникам',
+    en: 'The leaderboard is open to participants only',
+  },
+  'competitions.p.boardClosedJoin': {
+    ru: 'Вступите в соревнование, чтобы увидеть места.',
+    en: 'Join the competition to see the places.',
+  },
+  'competitions.p.boardClosedShort': {
+    ru: 'Лидерборд видят только участники.',
+    en: 'Only participants see the leaderboard.',
+  },
+  // Under the table: why other rows read "iva…@hse.ru" (maskEntrantName).
+  'competitions.p.maskedNote': {
+    ru: 'Почты других участников показаны сокращённо.',
+    en: "Other participants' email addresses are shortened.",
+  },
+  // After the day's limit, with the zone named: "The limit resets at 00:00 GMT+3."
+  'competitions.p.quotaResets': {
+    ru: 'Лимит обновится в {time}.',
+    en: 'The limit resets at {time}.',
+  },
+
+  /* The teacher's side of the same setting, in the competition editor. */
+  'competitions.visibility.head': { ru: 'КТО ВИДИТ ЛИДЕРБОРД', en: 'WHO SEES THE LEADERBOARD' },
+  'competitions.visibility.public': { ru: 'все, у кого есть ссылка', en: 'anyone with the link' },
+  'competitions.visibility.entrants': { ru: 'только участники', en: 'participants only' },
+  'competitions.visibility.note': {
+    ru: 'Почты участников в лидерборде сокращены (iva…@hse.ru) для всех, кроме самого участника и преподавателей; логины Telegram видны целиком.',
+    en: 'On the leaderboard, email addresses are shortened (iva…@hse.ru) for everyone except the person themselves and teachers; Telegram usernames are shown in full.',
+  },
+
+  /* Removing a participant: the teacher's list of people (A3 · Participants). */
+  'competitions.entrant.delete': { ru: 'Удалить', en: 'Delete' },
+  'competitions.entrant.deleteLabel': { ru: 'Удалить участника {name}', en: 'Delete participant {name}' },
+  'competitions.entrant.deleteHeading': { ru: 'Удалить участника {name}?', en: 'Delete participant {name}?' },
+  'competitions.entrant.deleteSubmissions': {
+    ru: {
+      one: 'Вместе с ним удалится {count} посылка в этом соревновании: тетрадь, результат и ответ — из лидерборда и с диска сервера.',
+      few: 'Вместе с ним удалятся {count} посылки в этом соревновании: тетради, результаты и ответы — из лидерборда и с диска сервера.',
+      many: 'Вместе с ним удалятся {count} посылок в этом соревновании: тетради, результаты и ответы — из лидерборда и с диска сервера.',
+      other: 'Вместе с ним удалятся {count} посылки в этом соревновании: тетради, результаты и ответы — из лидерборда и с диска сервера.',
+    },
+    en: {
+      one: 'Their {count} submission in this competition goes with them: the notebook, the result and the answer, from the leaderboard and from the server’s disk.',
+      other: 'Their {count} submissions in this competition go with them: notebooks, results and answers, from the leaderboard and from the server’s disk.',
+    },
+  },
+  'competitions.entrant.deleteNoSubmissions': {
+    ru: 'Посылок у него нет — удалится только участие.',
+    en: 'They have no submissions; only their participation is removed.',
+  },
+  'competitions.entrant.deleteKeyGone': {
+    ru: 'Его ключ входа перестанет работать.',
+    en: 'Their sign-in key stops working.',
+  },
+  'competitions.entrant.deleteKeyStays': {
+    ru: {
+      one: 'Ключ входа продолжит работать в {count} другом соревновании, где он участвует.',
+      few: 'Ключ входа продолжит работать в {count} других соревнованиях, где он участвует.',
+      many: 'Ключ входа продолжит работать в {count} других соревнованиях, где он участвует.',
+      other: 'Ключ входа продолжит работать в {count} других соревнованиях, где он участвует.',
+    },
+    en: {
+      one: 'Their sign-in key keeps working in the {count} other competition they take part in.',
+      other: 'Their sign-in key keeps working in the {count} other competitions they take part in.',
+    },
+  },
+  'competitions.entrant.deleteFinal': {
+    ru: 'Места остальных пересчитаются. Отменить удаление нельзя.',
+    en: 'Everyone else’s places are recounted. This cannot be undone.',
+  },
+  'competitions.refusal.entrantRunning': {
+    ru: 'Посылка этого участника ещё выполняется и не успела остановиться. Повторите через минуту.',
+    en: 'One of this participant’s submissions is still running and has not stopped yet. Try again in a minute.',
+  },
+  'competitions.refusal.entrantBaseline': {
+    ru: 'Это служебный участник сэмпл-тетради — его удалить нельзя.',
+    en: 'This is the sample notebook’s service participant; it cannot be deleted.',
+  },
 }

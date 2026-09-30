@@ -100,8 +100,14 @@ export const entrantApi = {
     request<EntrantCompetitionView>(`/competitions/${encodeURIComponent(slug)}`),
   join: (slug: string, name: string) =>
     request<EntrantMe>(`/competitions/${encodeURIComponent(slug)}/join`, json({ name })),
-  leaderboard: (slug: string) =>
-    request<EntrantLeaderboard>(`/competitions/${encodeURIComponent(slug)}/leaderboard`),
+  /**
+   * `class` is the projector's view: the board as the class may see it, even
+   * from a teacher's signed-in browser (the server shortens every address).
+   */
+  leaderboard: (slug: string, audience: 'me' | 'class' = 'me') =>
+    request<EntrantLeaderboard>(
+      `/competitions/${encodeURIComponent(slug)}/leaderboard${audience === 'class' ? '?audience=class' : ''}`,
+    ),
 
   /* ---------------------------------------------------------- submissions */
 

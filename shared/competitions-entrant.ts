@@ -95,11 +95,15 @@ export interface EntrantCompetitionView {
 /**
  * A leaderboard row.
  *
- * Name and place go to everyone; `you` marks one's own row (it is highlighted
- * whole), and `number` together with HOW the submission came to count draw
- * the "SUBMISSION THAT COUNTS" column (P3). Before the final results are
- * opened there is no private number here at all: that table arrives empty,
- * not zeroed.
+ * Name and place go to everyone who may see the board; `you` marks one's own
+ * row (it is highlighted whole), and `number` together with HOW the
+ * submission came to count draw the "SUBMISSION THAT COUNTS" column (P3).
+ * Before the final results are opened there is no private number here at
+ * all: that table arrives empty, not zeroed.
+ *
+ * `name` is whole in one's own row and for staff; in everyone else's an email
+ * address arrives shortened (`iva…@hse.ru`, shared/competitions.ts ·
+ * maskEntrantName), and a Telegram username as it is.
  */
 export interface EntrantBoardLine {
   /**
@@ -183,6 +187,14 @@ export interface EntrantSubmissions {
    * does not use another submission of the day. null — nothing to replace.
    */
   replaceable?: { submissionId: string; number: number } | null
+  /**
+   * When the day's limit starts over — the next midnight in `dayZone`; null
+   * when there is no limit. A moment, not a string: the page says it in the
+   * reader's language, with the zone named ("00:00 GMT+3").
+   */
+  resetsAt?: number | null
+  /** The zone the server counts days in (`Europe/Moscow`): whose midnight `resetsAt` is. */
+  dayZone?: string
 }
 
 /** The answer to sending a notebook. */

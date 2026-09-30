@@ -282,3 +282,30 @@ export function knownBundleIds():Set<string>{return new Set((db.prepare('SELECT 
 export function deferClaim(key:string):void {
  db.prepare("UPDATE dependency_bundles SET state='queued' WHERE id=? AND state='resolving'").run(key)
 }
+
+/**
+ * Remove what one entrant prepared in one competition: their draft, their
+ * package sets, and the environment bindings that point at those sets or
+ * belong to their submissions there. Returns the removed sets; their
+ * directories are the caller's to remove after the commit
+ * (competitions/erase.ts). The shared wheel files stay for the collection
+ * sweep here, which knows when no other set links them.
+ *
+ * Called BEFORE the submission and entrant rows go. The declared cascades
+ * would take most of this with them (better-sqlite3 turns foreign keys on),
+ * but then the set ids would be gone before anyone could remove their
+ * directories — and a binding's `bundle_id` has no cascade, so a set still
+ * bound to a submission cannot go first: the bindings go before the sets.
+ */
+export const removeEntrantDependencies = db.transaction((entrantId: string, competitionId: string): string[] => {
+ const scope = { e: entrantId, c: competitionId }
+ const bundles = (db.prepare('SELECT id FROM dependency_bundles WHERE entrant_id = @e AND competition_id = @c').all(scope) as { id: string }[]).map((row) => row.id)
+ db.prepare(`DELETE FROM submission_environments WHERE submission_id IN
+   (SELECT id FROM submissions WHERE entrant_id = @e AND competition_id = @c)
+   OR bundle_id IN (SELECT id FROM dependency_bundles WHERE entrant_id = @e AND competition_id = @c)`).run(scope)
+ db.prepare(`DELETE FROM dependency_bundle_artifacts WHERE bundle_id IN
+   (SELECT id FROM dependency_bundles WHERE entrant_id = @e AND competition_id = @c)`).run(scope)
+ db.prepare('DELETE FROM dependency_bundles WHERE entrant_id = @e AND competition_id = @c').run(scope)
+ db.prepare('DELETE FROM dependency_drafts WHERE entrant_id = @e AND competition_id = @c').run(scope)
+ return bundles
+})

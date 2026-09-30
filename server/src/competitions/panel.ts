@@ -13,10 +13,12 @@
  */
 import { ENVIRONMENT_NAME } from '@shared/admin'
 import {
+  BOARD_VISIBILITIES,
   isTerminal,
   LIMITS,
   parseSlug,
   slugRefusal,
+  type BoardVisibility,
   type CompetitionLimits,
   type MetricDirection,
   type PrivateRelease,
@@ -298,6 +300,7 @@ const CHOICES = {
   direction: ['lower', 'higher'],
   privateRelease: ['auto', 'manual'],
   scoring: ['chosen', 'bestPublic', 'last'],
+  boardVisibility: BOARD_VISIBILITIES,
 } as const
 
 /**
@@ -401,6 +404,14 @@ export function parseCompetitionInput(
       return { refusal: { field: name, why: 'value' } }
     }
     input[name] = value as PrivateRelease & ScoringRule
+  }
+
+  if (has('boardVisibility')) {
+    const value = String(raw.boardVisibility ?? '')
+    if (!(CHOICES.boardVisibility as readonly string[]).includes(value)) {
+      return { refusal: { field: 'boardVisibility', why: 'value' } }
+    }
+    input.boardVisibility = value as BoardVisibility
   }
 
   return { input }

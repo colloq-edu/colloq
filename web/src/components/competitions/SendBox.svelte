@@ -16,7 +16,7 @@
   import { onMount } from 'svelte'
   import { dependencyErrorText, dependencySize, packagesFit, packagesMemoryParams, packagesRoomMb, type DependencyOverview } from '@shared/dependencies'
   import { entrantApi } from '@/lib/entrantApi'
-  import { lastScoringNote, ownOrdinals, submissionOrdinal } from '@/lib/competition-words'
+  import { lastScoringNote, ownOrdinals, quotaResetWords, submissionOrdinal } from '@/lib/competition-words'
   import { tr } from '@shared/i18n'
   import type {
     EntrantCompetitionView,
@@ -111,16 +111,22 @@
      * glitch at the rehearsal (29 Sep 2026).
      */
     const rule = tr('competitions.p.quotaRule')
+    /*
+     * "Today" is the server's day, not the phone's: the midnight it ends at
+     * is named with its zone ("resets at 00:00 GMT+3"), right after the
+     * number it resets.
+     */
+    const resets = quotaResetWords(mine.resetsAt, mine.dayZone)
     if (mine.leftToday <= 0) {
       // A replacement costs no attempt: the hint below says so instead.
       if (mine.replaceable) return ''
-      return `${tr('competitions.refusal.dailyQuota', { count: mine.perDay })} ${rule}`
+      return [tr('competitions.refusal.dailyQuota', { count: mine.perDay }), resets, rule].filter(Boolean).join(' ')
     }
     const left = tr(phone ? 'competitions.p.phoneLeftToday' : 'competitions.p.dropLeftToday', {
       count: mine.leftToday,
       perDay: mine.perDay,
     })
-    return `${left} ${rule}`
+    return [left, resets, rule].filter(Boolean).join(' ')
   })
   const unavailable = $derived(view.capabilities?.execution.available === false)
   /*

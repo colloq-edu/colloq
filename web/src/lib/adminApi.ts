@@ -46,6 +46,7 @@ import type {
   CompetitionLeaderboard,
   CompetitionView,
   CompetitionsList,
+  EntrantRemoved,
   EntrantRow,
   EntrantsList,
   QueueSnapshot,
@@ -526,6 +527,13 @@ export const adminApi = {
   /** The competition's entrants: rank, submissions and sign-in key. */
   competitionEntrants: (id: string) =>
     request<EntrantsList>(`/competitions/${encodeURIComponent(id)}/entrants`),
+
+  /** Remove a person from this competition, their submissions and files with them. */
+  deleteCompetitionEntrant: (id: string, entrantId: string) =>
+    request<EntrantRemoved>(
+      `/competitions/${encodeURIComponent(id)}/entrants/${encodeURIComponent(entrantId)}`,
+      { method: 'DELETE' },
+    ),
 
   /** Every entrant on the instance — their identity is shared, not per room. */
   listEntrants: () => request<EntrantsList>('/competitions/entrants'),

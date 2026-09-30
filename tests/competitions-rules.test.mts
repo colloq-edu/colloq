@@ -301,7 +301,7 @@ test("the runner's verdict turns into a state in the same order as in the protot
 
 /* ---------------------------------------------------------- daily quota */
 
-const MSK = 180
+const MSK = 'Europe/Moscow'
 
 test("the day boundary is computed in the class's time zone, not in UTC", () => {
   // 20 Sep 2026 23:59 MSK is 20:59 UTC, and the MSK day began at 21:00 UTC the
@@ -310,8 +310,8 @@ test("the day boundary is computed in the class's time zone, not in UTC", () => 
   const earlyMsk = Date.UTC(2026, 8, 20, 21, 1)
   assert.notEqual(dayStart(lateMsk, MSK), dayStart(earlyMsk, MSK))
   // In UTC the same two marks fall on one day — exactly the mistake the time
-  // zone is passed as a number to prevent.
-  assert.equal(dayStart(lateMsk, 0), dayStart(earlyMsk, 0))
+  // zone is named to prevent.
+  assert.equal(dayStart(lateMsk, 'UTC'), dayStart(earlyMsk, 'UTC'))
   assert.equal(dayStart(earlyMsk, MSK), Date.UTC(2026, 8, 20, 21, 0))
 })
 

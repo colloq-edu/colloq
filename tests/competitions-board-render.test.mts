@@ -212,3 +212,23 @@ test('the mini board folds the rows between the top and you, and in a tie you re
   assert.doesNotMatch(near, /· · ·/)
   assert.match(near, /3 Участник 1 .* 4 Вы /)
 })
+
+test('the table says other addresses are shortened only when it shows one', () => {
+  const masked = [
+    { ...person('a', 'pet…@hse.ru', 0.9) },
+    { ...person('me', 'ivanov@hse.ru', 0.8, true) },
+  ]
+  const shown = text(show({ ...board, public: masked }, false))
+  assert.match(shown, /pet…@hse\.ru/)
+  assert.match(shown, /ivanov@hse\.ru/)
+  assert.match(shown, /Почты других участников показаны сокращённо/)
+  // Usernames, and one's own full address, have nothing shortened.
+  const plain = text(show({ ...board, public: [person('t', '@tele_gram', 0.9), person('me', 'ivanov@hse.ru', 0.8, true)] }, false))
+  assert.doesNotMatch(plain, /сокращённо/)
+})
+
+test('the mini board of a board closed to this visitor says so instead of "nobody has a score"', () => {
+  const shown = text(render(MiniBoard, { props: { lines: [], closed: true, onopen: () => {} } }).body)
+  assert.match(shown, /Лидерборд видят только участники/)
+  assert.doesNotMatch(shown, /Пока никто не дошёл до числа/)
+})

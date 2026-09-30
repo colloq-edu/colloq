@@ -31,14 +31,17 @@ import { db } from '../db.js'
 import { entrantKeyDigest, newEntrantKey, sealEntrantKey, unsealEntrantKey } from './key.js'
 import { removeCompetition as removeCompetitionFiles, pruneSubmissions } from './storage.js'
 import { competitionDefaults } from './settings.js'
+import { instanceTimeZone } from '../time-zone.js'
 import {
   boardOf,
   countsTowardDailyQuota,
   dayStart,
   entrantNameKey,
   LIMITS,
+  quotaDayStart,
   submissionsLeftToday,
   type BoardEntry,
+  type BoardVisibility,
   type Competition,
   type CompetitionFile,
   type CompetitionState,
@@ -361,6 +364,37 @@ ensureColumn('submission_runs', 'attempt_id', 'attempt_id TEXT')
  */
 ensureColumn('submissions', 'replaced_by', 'replaced_by INTEGER')
 ensureColumn('submission_runs', 'input_revision', 'input_revision INTEGER')
+/*
+ * Who may see the leaderboard (@shared/competitions · BoardVisibility). The
+ * default fills every existing row with `public`, exactly what those
+ * competitions did before the setting existed: nobody's board closes by
+ * itself on an update.
+ */
+ensureColumn('competitions', 'board_visibility', "board_visibility TEXT NOT NULL DEFAULT 'public'")
+
+/*
+ * The moment this instance began counting daily limits in its own time zone.
+ *
+ * Until then the limit reset at UTC midnight, and a submission accepted before
+ * this moment is also held to that day (@shared/competitions · quotaDayStart),
+ * so an update in the middle of a competition changes nobody's count. Written
+ * once, on the first start that knows about it, and never again: on a new
+ * instance it is simply earlier than any submission. One row, and CHECK says
+ * so, as for the queue pause.
+ */
+db.exec(`
+  CREATE TABLE IF NOT EXISTS competition_day_rule (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    zone_since INTEGER NOT NULL
+  );
+`)
+db.prepare('INSERT OR IGNORE INTO competition_day_rule (id, zone_since) VALUES (1, ?)').run(Date.now())
+const zoneSinceMoment = (db.prepare('SELECT zone_since FROM competition_day_rule WHERE id = 1').get() as { zone_since: number }).zone_since
+
+/** When days began to be counted in the instance's zone — see the table above. */
+export function zoneDaysSince(): number {
+  return zoneSinceMoment
+}
 db.exec(`
   UPDATE competitions SET baseline_entrant_id =
     (SELECT entrant_id FROM submissions WHERE id = baseline_submission_id)
@@ -459,6 +493,7 @@ interface CompetitionRow {
   deadline_at: number | null
   private_release: string
   scoring: string
+  board_visibility: string
   private_opened_at: number | null
   baseline_submission_id: string | null
   baseline_entrant_id: string | null
@@ -496,6 +531,7 @@ function toCompetition(row: CompetitionRow): Competition {
     deadlineAt: row.deadline_at,
     privateRelease: row.private_release as PrivateRelease,
     scoring: row.scoring as ScoringRule,
+    boardVisibility: row.board_visibility === 'entrants' ? 'entrants' : 'public',
     privateOpenedAt: row.private_opened_at,
     baselineSubmissionId: row.baseline_submission_id,
     baselineEntrantId: row.baseline_entrant_id,
@@ -512,11 +548,11 @@ const insertCompetition = db.prepare(`
   INSERT INTO competitions
     (id, slug, title, blurb, description, state, metric_name, metric_direction, metric_code,
      public_percent, split_seed, wall_seconds, memory_mb, cpus, per_day, environment,
-     starts_at, deadline_at, private_release, scoring, created_by, created_at, updated_at)
+     starts_at, deadline_at, private_release, scoring, board_visibility, created_by, created_at, updated_at)
   VALUES
     (@id, @slug, @title, @blurb, @description, 'draft', @metric_name, @metric_direction,
      @metric_code, @public_percent, @split_seed, @wall_seconds, @memory_mb, @cpus, @per_day,
-     @environment, @starts_at, @deadline_at, @private_release, @scoring, @created_by, @at, @at)
+     @environment, @starts_at, @deadline_at, @private_release, @scoring, @board_visibility, @created_by, @at, @at)
 `)
 const selectCompetition = db.prepare('SELECT * FROM competitions WHERE id = ?')
 const selectBySlug = db.prepare('SELECT * FROM competitions WHERE slug = ?')
@@ -537,6 +573,7 @@ export interface NewCompetition {
   deadlineAt?: number | null
   privateRelease?: PrivateRelease
   scoring?: ScoringRule
+  boardVisibility?: BoardVisibility
   createdBy?: string | null
 }
 
@@ -577,6 +614,7 @@ export function createCompetition(input: NewCompetition): Competition | null {
       deadline_at: input.deadlineAt ?? null,
       private_release: input.privateRelease ?? 'auto',
       scoring: input.scoring ?? 'chosen',
+      board_visibility: input.boardVisibility ?? 'public',
       created_by: input.createdBy ?? null,
       at,
     })
@@ -622,6 +660,7 @@ export type CompetitionPatch = Partial<
     | 'deadlineAt'
     | 'privateRelease'
     | 'scoring'
+    | 'boardVisibility'
     | 'baselineSubmissionId'
   >
 > & { metric?: Partial<CompetitionMetricPatch>; limits?: Partial<Competition['limits']> }
@@ -639,6 +678,7 @@ const COLUMN_OF: Record<string, string> = {
   deadlineAt: 'deadline_at',
   privateRelease: 'private_release',
   scoring: 'scoring',
+  boardVisibility: 'board_visibility',
   baselineSubmissionId: 'baseline_submission_id',
   'metric.name': 'metric_name',
   'metric.direction': 'metric_direction',
@@ -1144,6 +1184,39 @@ export function myCompetitionIds(entrantId: string): Set<string> {
   return new Set(rows.map((row) => row.competition_id))
 }
 
+const selectTakesPart = db.prepare(`
+  SELECT 1 FROM competition_entrants WHERE competition_id = @c AND entrant_id = @e
+  UNION ALL
+  SELECT 1 FROM submissions WHERE competition_id = @c AND entrant_id = @e
+  LIMIT 1
+`)
+
+/**
+ * Whether the person takes part in this competition: joined it, or has a
+ * submission in it (the same two conditions as `listCompetitionEntrants` —
+ * a competition older than joining has entrants who never pressed "JOIN").
+ */
+export function takesPart(competitionId: string, entrantId: string): boolean {
+  return selectTakesPart.get({ c: competitionId, e: entrantId }) !== undefined
+}
+
+const selectElsewhere = db.prepare(`
+  SELECT COUNT(*) AS n FROM (
+    SELECT competition_id FROM competition_entrants WHERE entrant_id = @e AND competition_id != @c
+    UNION
+    SELECT competition_id FROM submissions WHERE entrant_id = @e AND competition_id != @c
+  )
+`)
+
+/**
+ * In how many OTHER competitions the person takes part — what removing them
+ * from this one leaves: their key keeps working there, and their identity
+ * stays with it.
+ */
+export function competitionsElsewhere(entrantId: string, competitionId: string): number {
+  return (selectElsewhere.get({ e: entrantId, c: competitionId }) as { n: number }).n
+}
+
 /* ------------------------------------------------------------ submissions */
 
 interface SubmissionRow {
@@ -1271,6 +1344,12 @@ export const acceptSubmission = db.transaction(
     replaces?: string | null
   }): Submission => {
     const at = input.at ?? Date.now()
+    /*
+     * A person removed by the teacher while their upload was still arriving
+     * must not come back as a submission without a name: the removal took the
+     * row, and this transaction is the last place that can notice.
+     */
+    if (!selectEntrant.get(input.entrantId)) throw new Error('The entrant no longer exists')
     const id = newId()
     const number = (nextNumber.get(input.competitionId) as { n: number }).n
     const old = input.replaces ? queueRow(input.replaces) : null
@@ -1422,16 +1501,26 @@ export function submissionCounts(competitionId: string): Map<string, number> {
  * the same number for the participant ("You can send 3 more submissions
  * today, out of 5"), and this count must not have a second copy. The database
  * only returns the rows for the day.
+ *
+ * The day is the instance's (server/src/time-zone.ts), the one every other
+ * "today" on the server is counted in; it used to be UTC here while the panel
+ * counted the server's own zone, so the limit reset at three in the morning
+ * Moscow time. Submissions from before the switch are also held to the old
+ * day (`zoneSince`, see quotaDayStart), so the update took nothing from
+ * anyone mid-competition.
  */
 export function leftToday(
   competition: Pick<Competition, 'id' | 'limits'>,
   entrantId: string,
   now = Date.now(),
-  offsetMinutes = 0,
   /** A submission to leave out — the waiting one a replacement would cancel. */
   except: string | null = null,
+  timeZone = instanceTimeZone(),
+  zoneSince: number | null = zoneDaysSince(),
 ): number | null {
-  const since = dayStart(now, offsetMinutes)
+  // Today's start in the zone is the earliest either day can begin: the rule
+  // below narrows it for older rows, never widens it.
+  const since = dayStart(now, timeZone)
   const rows = (selectSince.all(competition.id, entrantId, since) as {
     id: string
     accepted_at: number
@@ -1446,18 +1535,20 @@ export function leftToday(
       cellsDone: row.cells_done,
     })),
     now,
-    offsetMinutes,
+    timeZone,
+    zoneSince,
   )
 }
 
-/** How many of the person's submissions counted toward today's quota. */
+/** How many of the person's submissions counted toward today's quota — by the same day as `leftToday`. */
 export function usedToday(
   competitionId: string,
   entrantId: string,
   now = Date.now(),
-  offsetMinutes = 0,
+  timeZone = instanceTimeZone(),
+  zoneSince: number | null = zoneDaysSince(),
 ): number {
-  const since = dayStart(now, offsetMinutes)
+  const since = dayStart(now, timeZone)
   const rows = selectSince.all(competitionId, entrantId, since) as {
     accepted_at: number
     state: string
@@ -1466,6 +1557,7 @@ export function usedToday(
   return rows.filter(
     (row) =>
       row.accepted_at <= now &&
+      row.accepted_at >= quotaDayStart(row.accepted_at, now, timeZone, zoneSince) &&
       countsTowardDailyQuota({
         acceptedAt: row.accepted_at,
         state: row.state as SubmissionState,
@@ -2202,6 +2294,76 @@ export function setQueuePaused(paused: boolean, by: string | null = null, at = D
   updatePause.run(paused ? 1 : 0, paused ? at : null, paused ? by : null)
 }
 
+/* ------------------------------------------------ removing a participant */
+
+export interface EntrantRemoval {
+  /** The removed submissions: their directories on disk are the caller's to remove. */
+  submissionIds: string[]
+  /**
+   * The person's identity went too, and with it their key: they took part in
+   * no other competition. Otherwise it stays, and the key keeps working there.
+   */
+  identityRemoved: boolean
+}
+
+const selectRunningOf = db.prepare(`
+  SELECT 1 FROM competition_queue
+  WHERE competition_id = ? AND entrant_id = ? AND state = 'running' LIMIT 1
+`)
+const selectSubmissionIdsOf = db.prepare(
+  'SELECT id FROM submissions WHERE competition_id = ? AND entrant_id = ?',
+)
+const deleteRunsOf = db.prepare(`
+  DELETE FROM submission_runs WHERE submission_id IN
+    (SELECT id FROM submissions WHERE competition_id = ? AND entrant_id = ?)
+`)
+const deleteQueueOf = db.prepare(`
+  DELETE FROM competition_queue WHERE submission_id IN
+    (SELECT id FROM submissions WHERE competition_id = ? AND entrant_id = ?)
+`)
+const deleteSubmissionsOf = db.prepare('DELETE FROM submissions WHERE competition_id = ? AND entrant_id = ?')
+const deleteEnrollment = db.prepare('DELETE FROM competition_entrants WHERE competition_id = ? AND entrant_id = ?')
+const selectAnywhere = db.prepare(`
+  SELECT 1 FROM competition_entrants WHERE entrant_id = @e
+  UNION ALL SELECT 1 FROM submissions WHERE entrant_id = @e
+  UNION ALL SELECT 1 FROM competitions WHERE baseline_entrant_id = @e
+  LIMIT 1
+`)
+const deleteEntrantRow = db.prepare('DELETE FROM entrants WHERE id = ?')
+
+/**
+ * Remove one person from one competition: every submission with its runs and
+ * queue rows, the enrollment, and — when they take part nowhere else — the
+ * person themselves with their key. `'running'` means one of their
+ * submissions is in a container right now, and nothing was touched: its run
+ * would go on writing into a directory this removal is about to take away.
+ *
+ * Rows only. The disk is the caller's (competitions/erase.ts), after the
+ * commit and out loud, the same order `deleteCompetition` keeps; so are the
+ * rows of prepared package sets, which live under another owner
+ * (dependencies/store.ts) and go in the caller's transaction around this one.
+ *
+ * The boards are not stored anywhere, so there is nothing to recompute: every
+ * door counts them from the submissions table (`leaderboard`), and the
+ * places of everyone below close up by themselves, one per row. The triggers
+ * bump the competition's revision, and the teacher's live screen re-reads.
+ */
+export const removeEntrantRows = db.transaction(
+  (competitionId: string, entrantId: string): EntrantRemoval | 'running' => {
+    if (selectRunningOf.get(competitionId, entrantId)) return 'running'
+    const submissionIds = (selectSubmissionIdsOf.all(competitionId, entrantId) as { id: string }[]).map((row) => row.id)
+    deleteRunsOf.run(competitionId, entrantId)
+    deleteQueueOf.run(competitionId, entrantId)
+    deleteSubmissionsOf.run(competitionId, entrantId)
+    deleteEnrollment.run(competitionId, entrantId)
+    // A person is instance-wide: they go only when nothing else holds them.
+    // The service entrant of a sample notebook is held by its competition.
+    const identityRemoved = selectAnywhere.get({ e: entrantId }) === undefined
+      && deleteEntrantRow.run(entrantId).changes > 0
+    return { submissionIds, identityRemoved }
+  },
+)
+
 /* -------------------------------------------------------------- cleanup */
 
 /**
@@ -2212,18 +2374,40 @@ export function setQueuePaused(paused: boolean, by: string | null = null, at = D
  * with output, the answer) is needed while the participant is dealing with a
  * failure, and may go for a competition closed long ago. The decision is made
  * here, because it is a question for the database; `storage.ts` removes the
- * files.
+ * files. WHEN it is asked is competitions/housekeeping.ts's business.
+ *
+ * Kept, whatever their age:
+ *
+ * - a submission still waiting or running: its run reads `in/` and writes
+ *   `out/` (a rescore queued for an old one reads its answer);
+ * - every submission that counts on a board, public or final: "rescore
+ *   everyone" after a metric fix at the review needs exactly their answers,
+ *   and one without an answer would keep a number computed by the old metric
+ *   next to numbers from the new one;
+ * - one its author chose to count, for the same reason, and the competition's
+ *   current sample-notebook run, which "check the metric" scores again;
+ * - each person's `keepPerEntrant` latest, whose notebooks they still open.
+ *
+ * Returns what went: how many submission directories and how many bytes.
  */
-export function pruneCompetitionFiles(competitionId: string, keepPerEntrant = 10): number {
+export function pruneCompetitionFiles(competitionId: string, keepPerEntrant = 10): { removed: number; bytes: number } {
+  const competition = getCompetition(competitionId)
+  if (!competition) return { removed: 0, bytes: 0 }
   const rows = db
     .prepare(
-      `SELECT id, entrant_id FROM submissions WHERE competition_id = ?
-       ORDER BY entrant_id, accepted_at DESC`,
+      `SELECT id, entrant_id, state, chosen FROM submissions WHERE competition_id = ?
+       ORDER BY entrant_id, accepted_at DESC, number DESC`,
     )
-    .all(competitionId) as { id: string; entrant_id: string }[]
-  const seen = new Map<string, number>()
+    .all(competitionId) as { id: string; entrant_id: string; state: string; chosen: number }[]
   const keep = new Set<string>()
+  for (const row of queueRows()) if (row.competitionId === competitionId) keep.add(row.submissionId)
+  for (const part of ['public', 'private'] as const) {
+    for (const row of leaderboard(competitionId, part)) keep.add(row.submissionId)
+  }
+  if (competition.baselineSubmissionId) keep.add(competition.baselineSubmissionId)
+  const seen = new Map<string, number>()
   for (const row of rows) {
+    if (row.state === 'queued' || row.state === 'running' || row.chosen === 1) keep.add(row.id)
     const used = seen.get(row.entrant_id) ?? 0
     if (used >= keepPerEntrant) continue
     seen.set(row.entrant_id, used + 1)

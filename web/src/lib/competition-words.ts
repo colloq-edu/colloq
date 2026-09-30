@@ -19,6 +19,7 @@
  * and a second copy would drift from the first on the very first edit.
  */
 import { formatNumber, getLocale, tr } from '@shared/i18n'
+import { zonedClock } from '@shared/time-zone'
 import {
   countedSubmission,
   countsTowardDailyQuota,
@@ -277,6 +278,19 @@ export function sameDay(a: number, b: number): boolean {
 export function clockOf(at: number): string {
   return new Intl.DateTimeFormat(getLocale(), { hour: '2-digit', minute: '2-digit', hour12: false })
     .format(new Date(at))
+}
+
+/**
+ * "The limit resets at 00:00 GMT+3." — after the day's limit, in the zone the
+ * server counts days in, named, because the reader's phone may be set to any
+ * other: "tomorrow" without a zone was three different moments in one class.
+ * An empty string when the server said nothing (no limit, an older server);
+ * the reader's own clock when this browser does not know the zone.
+ */
+export function quotaResetWords(resetsAt: number | null | undefined, zone: string | null | undefined): string {
+  if (resetsAt === null || resetsAt === undefined || !Number.isFinite(resetsAt)) return ''
+  const time = (zone ? zonedClock(resetsAt, zone, getLocale()) : null) ?? clockOf(resetsAt)
+  return tr('competitions.p.quotaResets', { time })
 }
 
 /** "27.09" — day and month, no year: a competition lives for weeks, not years. */
@@ -711,12 +725,18 @@ export function avatarTint(name: string): string {
  * ("T"). A Telegram name is stored as `@login` (shared/competitions.ts ·
  * entrantHandle), and its `@` is punctuation, not a letter: without skipping
  * it every such circle on the leaderboard would read "@".
+ *
+ * Other people's addresses arrive shortened (`iva…@hse.ru`, maskEntrantName),
+ * and the letter is looked for before the `@` first: the local part keeps its
+ * first characters, so the circle says "I" to everyone, the owner included,
+ * who sees `ivanov@hse.ru` whole. Only a local part with no letter in what is
+ * left of it (`_…@hse.ru`) falls back to the domain's.
  */
 export function avatarLetter(name: string): string {
   const trimmed = name.trim()
-  // Names are Telegram usernames and emails now: the circle next to
-  // "@max_zaitsev" should say "M", not "@" on every other row.
-  const first = [...trimmed].find((char) => /[\p{L}\p{N}]/u.test(char))
+  const letter = (text: string) => [...text].find((char) => /[\p{L}\p{N}]/u.test(char))
+  const at = trimmed.lastIndexOf('@')
+  const first = (at > 0 ? letter(trimmed.slice(0, at)) : undefined) ?? letter(trimmed)
   return first ? first.toUpperCase() : '?'
 }
 

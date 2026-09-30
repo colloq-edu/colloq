@@ -80,6 +80,12 @@
   let page = $state<EntrantCompetitionView | null>(null)
   let mine = $state<EntrantSubmissions | null>(null)
   let board = $state<EntrantLeaderboard | null>(null)
+  /**
+   * The board is open to this competition's entrants only, and the server
+   * said this visitor is not one (`board_closed`): the page says why and how
+   * to get in, instead of an empty table or an error.
+   */
+  let boardClosed = $state(false)
   let failure = $state<string | null>(null)
   let ready = $state(false)
 
@@ -236,10 +242,18 @@
   async function loadBoard(slug: string): Promise<void> {
     const context = requestContext()
     try {
-      const fresh = await entrantApi.leaderboard(slug)
-      if (currentContext(context)) board = fresh
+      // The projector is shown to the whole room: it asks for the class's
+      // view even from the teacher's own signed-in browser.
+      const fresh = await entrantApi.leaderboard(slug, route.view === 'screen' ? 'class' : 'me')
+      if (!currentContext(context)) return
+      board = fresh
+      boardClosed = false
     } catch (error: unknown) {
-      if (currentContext(context)) failure = say(error)
+      if (!currentContext(context)) return
+      if (error instanceof EntrantApiError && error.reason === 'board_closed') {
+        board = null
+        boardClosed = true
+      } else failure = say(error)
     }
   }
 
@@ -267,6 +281,7 @@
       page = null
       mine = null
       board = null
+      boardClosed = false
       list = null
       final = false
       ready = false
@@ -523,19 +538,52 @@
   const shift = $derived(myFinalPlace === null ? null : placeShift(myPlace, myFinalPlace))
 </script>
 
-{#if route.view === 'screen' && page && board}
+{#snippet closedBoard()}
+  <!-- A board open to entrants only, seen by someone who is not one: why, and
+       the way in — the key for a stranger, JOIN for a signed-in person while
+       the competition still takes people. -->
+  <div class="flex max-w-[640px] flex-col items-start gap-3 border-t-2 border-ink pt-5">
+    <p class="text-title font-bold leading-6 text-ink">{tr('competitions.p.boardClosedTitle')}</p>
+    <p class="text-ui leading-5 text-muted">
+      {tr('competitions.refusal.boardEntrantsOnly')}
+      {#if !me?.entrant}
+        {tr('competitions.refusal.signIn')}
+      {:else if page?.accepting === 'open'}
+        {tr('competitions.p.boardClosedJoin')}
+      {/if}
+    </p>
+    {#if route.view !== 'screen' && (!me?.entrant || page?.accepting === 'open')}
+      <button
+        class="h-[38px] bg-brand px-4 text-micro font-black uppercase tracking-label text-white"
+        type="button"
+        onclick={() => {
+          onnavigate(COMPETITIONS_LANDING)
+          if (page?.accepting === 'open') joining = page.competition.slug
+        }}
+      >
+        {page?.accepting === 'open' ? tr('competitions.p.join') : tr('competitions.p.signIn')}
+      </button>
+    {/if}
+  </div>
+{/snippet}
+
+{#if route.view === 'screen' && page && (board || boardClosed)}
   <!-- The projector: the same leaderboard without the header and tabs. It is
        shown to the class and read from the back row, so everything that is
        not a table row is removed from here. -->
   <main class="competition-ui flex h-full flex-col gap-6 overflow-auto bg-canvas p-10">
     <h1 class="text-gauge-lg font-black text-ink">{page.competition.title}</h1>
-    <BoardView
-      competition={page.competition}
-      {board}
-      phone={false}
-      final={final && board.privateOpen}
-      onfinal={(value) => (final = value)}
-    />
+    {#if board}
+      <BoardView
+        competition={page.competition}
+        {board}
+        phone={false}
+        final={final && board.privateOpen}
+        onfinal={(value) => (final = value)}
+      />
+    {:else}
+      {@render closedBoard()}
+    {/if}
   </main>
 {:else}
   <div class="competition-ui flex h-full flex-col overflow-auto bg-canvas">
@@ -616,6 +664,7 @@
               view={page}
               {mine}
               board={board?.public ?? []}
+              {boardClosed}
               {phone}
               {now}
               {sending}
@@ -656,6 +705,8 @@
             final={final && board.privateOpen}
             onfinal={(value) => (final = value)}
           />
+        {:else if boardClosed}
+          {@render closedBoard()}
         {/if}
       </main>
     {:else}

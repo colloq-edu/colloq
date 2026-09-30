@@ -88,6 +88,7 @@
     adding = false
     added = null
     renaming = null
+    removing = null
   })
   let entrants = $state<EntrantRow[] | null>(null)
   let detail = $state<SubmissionDetail | null>(null)
@@ -248,6 +249,7 @@
         detail = null
         renaming = null
         adding = false
+        if (!busy) removing = null
       }
     }
     window.addEventListener('click', close)
@@ -423,6 +425,43 @@
     } catch (cause) {
       lost(cause)
       if (renaming === edit) edit.refusal = explain(cause)
+    } finally {
+      busy = false
+    }
+  }
+
+  /* ----------------------------------------------- entrants: remove */
+
+  /*
+   * Removing a person takes their submissions and every file of theirs with
+   * them, and cannot be undone, so it goes through a confirmation that names
+   * the person and the count (server/src/competitions/erase.ts). The refusal
+   * lands in the dialog, not in the banner above the tabs.
+   */
+  let removing = $state<EntrantRow | null>(null)
+  let removeRefusal = $state<string | null>(null)
+
+  function askRemove(row: EntrantRow): void {
+    removing = row
+    removeRefusal = null
+  }
+
+  async function confirmRemove(): Promise<void> {
+    const row = removing
+    const id = c.id
+    if (!row || busy) return
+    busy = true
+    removeRefusal = null
+    try {
+      await adminApi.deleteCompetitionEntrant(id, row.id)
+      if (id !== c.id) return
+      if (entrants) entrants = entrants.filter((one) => one.id !== row.id)
+      // Places below the person closed up: the board tab reads them anew.
+      board = null
+      if (removing === row) removing = null
+    } catch (cause) {
+      lost(cause)
+      if (removing === row) removeRefusal = explain(cause)
     } finally {
       busy = false
     }
@@ -685,6 +724,7 @@
           <span class="w-[88px] shrink-0 text-right {HEAD}">{tr('admin.competitions.col.submissions')}</span>
           <span class="w-[180px] shrink-0 {HEAD}">{tr('admin.competitions.col.key')}</span>
           <span class="w-[150px] shrink-0"></span>
+          <span class="w-[72px] shrink-0"></span>
         </div>
         {#each entrants as row (row.id)}
           <div class="feed-row flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line-soft py-3">
@@ -734,7 +774,18 @@
               >
                 {tr('admin.competitions.rotateKey')}
               </button>
+            {:else}
+              <span class="w-[150px] shrink-0"></span>
             {/if}
+            <button
+              type="button"
+              class="w-[72px] shrink-0 text-left text-2xs text-muted hover:text-danger disabled:text-faint"
+              disabled={busy}
+              aria-label={tr('competitions.entrant.deleteLabel', { name: row.name })}
+              onclick={() => askRemove(row)}
+            >
+              {tr('competitions.entrant.delete')}
+            </button>
           </div>
           {#if renaming?.id === row.id}
             <form
@@ -1296,6 +1347,47 @@
             <p class="text-micro text-muted">{tr('admin.competitions.noArtifacts')}</p>
           {/if}
         </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if removing}
+  {@const person = removing}
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="remove-entrant-title"
+    class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6"
+  >
+    <div class="dialog-card w-full max-w-[480px] border border-line bg-canvas p-5 shadow-pop">
+      <h2 id="remove-entrant-title" class="break-words text-title font-semibold text-ink">
+        {tr('competitions.entrant.deleteHeading', { name: person.name })}
+      </h2>
+      <p class="mt-2 text-ui leading-relaxed text-muted">
+        {person.submissions > 0
+          ? tr('competitions.entrant.deleteSubmissions', { count: person.submissions })
+          : tr('competitions.entrant.deleteNoSubmissions')}
+        {(person.otherCompetitions ?? 0) > 0
+          ? tr('competitions.entrant.deleteKeyStays', { count: person.otherCompetitions ?? 0 })
+          : tr('competitions.entrant.deleteKeyGone')}
+        {tr('competitions.entrant.deleteFinal')}
+      </p>
+      {#if removeRefusal}
+        <p class="mt-3 text-ui text-danger" role="alert">{removeRefusal}</p>
+      {/if}
+      <div class="mt-5 flex justify-end gap-2">
+        <button type="button" class="btn-outline" disabled={busy} onclick={() => (removing = null)}>
+          {tr('admin.cancel')}
+        </button>
+        <button
+          type="button"
+          class="btn bg-danger text-white dark:text-canvas hover:brightness-110 disabled:opacity-40"
+          disabled={busy}
+          onclick={() => void confirmRemove()}
+        >
+          {tr('competitions.entrant.delete')}
+        </button>
       </div>
     </div>
   </div>

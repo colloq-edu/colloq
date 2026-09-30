@@ -15,10 +15,15 @@
 
   interface Props {
     lines: EntrantBoardLine[]
+    /**
+     * The board is open to this competition's entrants only, and this
+     * visitor is not one yet: "nobody has a score yet" would be untrue.
+     */
+    closed?: boolean
     onopen: () => void
   }
 
-  const { lines, onopen }: Props = $props()
+  const { lines, closed = false, onopen }: Props = $props()
 
   const TOP = 3
   const ranked = $derived(boardPlaces(lines))
@@ -47,7 +52,9 @@
       {tr('competitions.p.openBoard')}
     </button>
   </div>
-  {#if shown.length === 0}
+  {#if closed}
+    <p class="text-2xs text-muted">{tr('competitions.p.boardClosedShort')}</p>
+  {:else if shown.length === 0}
     <p class="text-2xs text-muted">{tr('competitions.p.boardEmpty')}</p>
   {:else}
     <div class="flex flex-col border-t border-line">

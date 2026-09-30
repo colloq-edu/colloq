@@ -87,6 +87,7 @@ import {
   SUBMISSION_FILE,
 } from './storage.js'
 import { METRIC_NAME, competitionDockerDiagnostics } from './docker-runner.js'
+import { startSubmissionSweep, stopSubmissionSweep } from './housekeeping.js'
 import { CompetitionResourcePending } from './broker-runner.js'
 import {
   competitionBackend,
@@ -369,6 +370,10 @@ export function startCompetitionPump(): void {
   // The queue timer must not keep the process alive: it goes away with it.
   timer.unref?.()
   void pumpOnce()
+  // The sweep of old submission files lives as long as the queue whose
+  // files it sweeps, and starts after the reclaim that came before the pump
+  // (housekeeping.ts).
+  startSubmissionSweep()
 }
 
 /** Stop the pump and wait for what is running. No new work is taken after that. */
@@ -376,6 +381,7 @@ export async function stopCompetitionPump(): Promise<void> {
   stopped = true
   if (timer) clearInterval(timer)
   timer = null
+  await stopSubmissionSweep()
   await settleCompetitionWork()
 }
 
@@ -1144,6 +1150,44 @@ export async function cancelSubmission(
 }
 
 /**
+ * Whether the submission's run belongs to a job of THIS process — the only
+ * kind "Kill" can take down and anyone here can wait for. A running row of a
+ * previous life (not reclaimed yet) is not one.
+ */
+export function runningHere(submissionId: string): boolean {
+  const row = queueRow(submissionId)
+  return row?.state === 'running' && !!row.attemptId && inFlight.has(row.attemptId)
+}
+
+/**
+ * Wait until this process is done with a submission's run — the container
+ * answered its kill, the outcome is written, the attempt's directory is gone
+ * — for at most `timeoutMs`.
+ *
+ * For whoever is about to remove the submission itself (competitions/
+ * erase.ts): a run still finishing would write its outcome into a row that is
+ * no longer there, and its files into a directory that was just removed.
+ * `false` means it is still going, or it is a run no job of this process
+ * owns (a previous life's, not reclaimed yet), which nobody here can wait
+ * for.
+ */
+export async function settleSubmission(submissionId: string, timeoutMs: number): Promise<boolean> {
+  const row = queueRow(submissionId)
+  if (!row || row.state !== 'running') return true
+  const job = row.attemptId ? inFlight.get(row.attemptId) : undefined
+  if (!job) return false
+  let timeout: NodeJS.Timeout | undefined
+  const late = new Promise<'late'>((resolve) => {
+    timeout = setTimeout(() => resolve('late'), timeoutMs)
+    timeout.unref?.()
+  })
+  const outcome = await Promise.race([job.then(() => 'done' as const, () => 'done' as const), late])
+  clearTimeout(timeout)
+  if (outcome === 'late') return false
+  return queueRow(submissionId)?.state !== 'running'
+}
+
+/**
  * Execute the notebook again — the same as submitting it once more, but
  * without a number.
  */
@@ -1210,7 +1254,8 @@ export function rescoreCompetition(competitionId: string): number {
   return queued
 }
 
-function hasStoredAnswer(competitionId: string, submissionId: string): boolean {
+/** Whether the submission's answer is still on disk: what a metric-only rescore reads. */
+export function hasStoredAnswer(competitionId: string, submissionId: string): boolean {
   try {
     return competitionsFs.existsSync(
       path.join(resultDir(competitionId, submissionId), SUBMISSION_FILE),

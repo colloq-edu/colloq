@@ -33,8 +33,11 @@ import { competitionRevision } from '../dependencies/store.js'
 import { DependencyStoreError } from '../dependencies/store.js'
 import { dependencyMessage } from '../dependencies/messages.js'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
+import { instanceDayStart } from '../time-zone.js'
+import { deleteEntrantFromCompetition } from '../competitions/erase.js'
 import {
   acceptSubmission,
+  competitionsElsewhere,
   competitionSummary,
   invalidateCompetitionInputs,
   createCompetition,
@@ -108,6 +111,7 @@ import { HOST_RESERVE_MB } from '../kernel/resources.js'
 import { baseName, csvShape, csvUsageSplit, intakeNotebook, notebookCells } from '../competitions/intake.js'
 import {
   cancelSubmission,
+  hasStoredAnswer,
   pauseCompetitionQueue,
   queueSlots,
   rerunSubmission,
@@ -120,7 +124,6 @@ import type { AdminErrorBody, AdminErrorReason } from '@shared/admin'
 import { SETTINGS_LIMITS, type CompetitionSettings } from '@shared/competitions-settings'
 import {
   LIMITS,
-  dayStart,
   entrantHandle,
   placesAmongPeople,
   placesByScore,
@@ -137,6 +140,7 @@ import type {
   CompetitionRow,
   CompetitionView,
   CompetitionsList,
+  EntrantRemoved,
   EntrantRow,
   EntrantsList,
   FileView,
@@ -160,20 +164,6 @@ const FILES_PER_UPLOAD = 20
 const FEED_PAGE = 200
 
 /* --------------------------------------------------------------- helpers */
-
-/**
- * The zone is the local zone of the MACHINE the class runs on.
- *
- * "Run today: 37" and the daily submission quota have to end at the
- * teacher's midnight, not at UTC midnight: in Moscow that is three in the
- * morning, that is, the quota resets in the middle of night work, and "today"
- * at a morning lesson shows yesterday's numbers. The instance has no time
- * zone setting, and needs none: the server stands where the lesson takes
- * place.
- */
-function offsetMinutes(at: number): number {
-  return -new Date(at).getTimezoneOffset()
-}
 
 function competitionOf(req: Request, res: Response): Competition | null {
   const found = findCompetition(String(req.params.id ?? ''))
@@ -410,7 +400,13 @@ function todayStats(now: number): { done: number; averageMs: number | null } {
       })
     }
   }
-  const value = executedToday(entries, dayStart(now, offsetMinutes(now)), now)
+  /*
+   * "Run today" ends at the same midnight as the students' daily limit: the
+   * instance's (server/src/time-zone.ts). It used to be the server process's
+   * own zone — UTC in a container — while the limit counted UTC regardless,
+   * and at a morning lesson the two could name different days.
+   */
+  const value = executedToday(entries, instanceDayStart(now), now)
   todayCache = { at: now, value }
   return value
 }
@@ -1360,7 +1356,13 @@ export function adminCompetitionRoutes(): Router {
     if (!await executionAvailable(competition, res)) return
       const submission = submissionOf(competition, req, res)
       if (!submission) return
-      if (!rescorable(submission.state)) {
+      /*
+       * Without its answer on disk (the sweep of a long-finished competition
+       * took it, housekeeping.ts) the rescore could only end in "metric
+       * failed" and drop a scored row from the board: refused here instead,
+       * the way "run again" refuses without its notebook.
+       */
+      if (!rescorable(submission.state) || !hasStoredAnswer(competition.id, submission.id)) {
         return fail(res, 409, 'invalid', tr('competitions.refusal.notRescorable'))
       }
       updateSubmission(submission.id, {
@@ -1439,15 +1441,43 @@ export function adminCompetitionRoutes(): Router {
     const baselineEntrant = baselineEntrantOf(competition)
     const board = placesAmongPeople(leaderboard(competition.id, 'public'), (row) => row.entrantId === baselineEntrant)
     const body: EntrantsList = {
-      entrants: listCompetitionEntrants(competition.id).map((entrant) =>
-        entrantRow(
+      entrants: listCompetitionEntrants(competition.id).map((entrant) => ({
+        ...entrantRow(
           entrant,
           competition,
           entrant.id === baselineEntrant ? 'baseline' : null,
           board.find((row) => row.entrantId === entrant.id)?.place ?? null,
         ),
-      ),
+        // What the confirmation says about the key: it keeps working there.
+        otherCompetitions: competitionsElsewhere(entrant.id, competition.id),
+      })),
     }
+    res.json(body)
+  })
+
+  /**
+   * Remove a person from this competition: their submissions with every file
+   * the server keeps about them, their package sets, their place on the
+   * boards, and — when they take part nowhere else — the person with their
+   * key (competitions/erase.ts says what goes and why).
+   *
+   * Staff, not owner only, unlike the other doors that fall on people who are
+   * not in the request: a student asking their teacher to be erased should
+   * not have to wait for the one person who owns the instance, and the
+   * confirmation in the panel names the person and how many submissions go.
+   * A running submission is killed and waited for; one that does not stop in
+   * time refuses the whole removal, with nothing removed.
+   */
+  router.delete('/api/admin/competitions/:id/entrants/:eid', requireStaff, async (req, res) => {
+    const competition = competitionOf(req, res)
+    if (!competition) return
+    const outcome = await deleteEntrantFromCompetition(competition.id, String(req.params.eid))
+    if (!outcome.ok) {
+      if (outcome.why === 'not_found') return fail(res, 404, 'not_found', tr('competitions.refusal.noEntrant'))
+      if (outcome.why === 'baseline') return fail(res, 409, 'invalid', tr('competitions.refusal.entrantBaseline'))
+      return fail(res, 409, 'failed', tr('competitions.refusal.entrantRunning'))
+    }
+    const body: EntrantRemoved = { submissions: outcome.submissions, identityRemoved: outcome.identityRemoved }
     res.json(body)
   })
 

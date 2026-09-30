@@ -534,20 +534,50 @@ export function removeCompetition(id: string): boolean {
  * long closed. Everything except what is listed in `keep` is removed here;
  * the store (store.ts) decides whom to keep, because that is a question for
  * the database, not the disk.
+ *
+ * A directory whose name is not a submission identifier is not ours to judge
+ * and stays (the check would throw, and one stray `.DS_Store` stopped the
+ * whole sweep). The bytes are counted before each removal, for the log line
+ * that says what the sweep freed.
  */
-export function pruneSubmissions(id: string, keep: ReadonlySet<string>): number {
+export function pruneSubmissions(id: string, keep: ReadonlySet<string>): { removed: number; bytes: number } {
   let names: string[]
   try {
     names = competitionsFs.readdirSync(path.join(competitionDir(id), 's')) as string[]
   } catch {
+    return { removed: 0, bytes: 0 }
+  }
+  let removed = 0
+  let bytes = 0
+  for (const name of names) {
+    if (keep.has(name) || !ID_OK.test(name)) continue
+    const size = treeBytes(submissionDir(id, name))
+    if (!removeSubmission(id, name)) continue
+    removed++
+    bytes += size
+  }
+  return { removed, bytes }
+}
+
+/** What a directory holds, walked without following a link (the anchored file system refuses them anyway). */
+export function treeBytes(absolute: string): number {
+  let names: string[]
+  try {
+    names = competitionsFs.readdirSync(absolute) as string[]
+  } catch {
     return 0
   }
-  let dropped = 0
+  let total = 0
   for (const name of names) {
-    if (keep.has(name)) continue
-    if (removeSubmission(id, name)) dropped++
+    const child = path.join(absolute, name)
+    try {
+      const info = competitionsFs.lstatSync(child)
+      total += info.isDirectory() ? treeBytes(child) : info.size
+    } catch {
+      // Gone between the listing and the look: it weighs nothing now.
+    }
   }
-  return dropped
+  return total
 }
 
 /**

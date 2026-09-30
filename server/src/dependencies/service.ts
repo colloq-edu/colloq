@@ -104,7 +104,7 @@ export const acceptPinnedSubmission=db.transaction((c:Competition,eid:string,fil
   const plan=intakePlan(c.id,eid)
   if(plan==='in_flight')throw new store.DependencyStoreError('dependency_submission_active')
   replaced=plan.replaces
-  const left=leftToday(current,eid,now,0,replaced?.id??null);if(left!==null&&left<=0)throw new store.DependencyStoreError('dependency_submission_quota',429)
+  const left=leftToday(current,eid,now,replaced?.id??null);if(left!==null&&left<=0)throw new store.DependencyStoreError('dependency_submission_quota',429)
  }
  if(revision&&store.competitionRevision(c.id)?.id!==revision.id)throw new store.DependencyStoreError('dependency_revision')
  store.assertUsableBundle(c.id,eid,revision?.id??'',bundleId)

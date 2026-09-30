@@ -23,6 +23,7 @@
  */
 import { tr } from './i18n.js'
 import { slugOk } from './publish.js'
+import { dayStartIn } from './time-zone.js'
 
 /* ---------------------------------------------------------- competition */
 
@@ -54,6 +55,22 @@ export type PrivateRelease = 'auto' | 'manual'
  * chooses.
  */
 export type ScoringRule = 'chosen' | 'bestPublic' | 'last'
+
+/**
+ * Who may see the leaderboard: anyone with the competition's link, or only
+ * the people taking part in it (and staff).
+ *
+ * The rows are handles and email addresses, the rule the owner set so that a
+ * teacher can find each person (see entrantHandle), and a university may not
+ * be free to show a list of its students with their results to the internet.
+ * `public` is the default and what every competition did before the setting
+ * existed; `entrants` is for a course that has to keep the list inside the
+ * class. Other people's addresses are shortened on the board either way
+ * (maskEntrantName).
+ */
+export type BoardVisibility = 'public' | 'entrants'
+
+export const BOARD_VISIBILITIES: readonly BoardVisibility[] = ['public', 'entrants']
 
 /** The teacher's metric: the name in the column header, the direction and the `score` code itself. */
 export interface CompetitionMetric {
@@ -104,6 +121,8 @@ export interface Competition {
   deadlineAt: number | null
   privateRelease: PrivateRelease
   scoring: ScoringRule
+  /** Who may see the leaderboard; absent means `public`, as before the setting existed. */
+  boardVisibility?: BoardVisibility
   /** When the private leaderboard was opened (by itself or by hand); null — still closed. */
   privateOpenedAt: number | null
   /** The sample notebook's submission: it is also the "baseline" row on the leaderboard. */
@@ -237,6 +256,8 @@ export type CompetitionRefusal =
   | 'quota'
   | 'too_often'
   | 'too_big'
+  /** The leaderboard is shown only to this competition's entrants and staff. */
+  | 'board_closed'
 
 export interface CompetitionErrorBody {
   error: string
@@ -359,6 +380,43 @@ export function nameForJoin(typed: string, stored: string | null): string | null
   if (handle) return handle
   if (stored && entrantNameKey(value) === entrantNameKey(stored)) return stored
   return null
+}
+
+/**
+ * A name as OTHER people see it on a board: an email address keeps the first
+ * three characters of its local part and its domain (`iva…@hse.ru`), a
+ * Telegram username stays whole.
+ *
+ * Why the two differ. The owner's rule makes every name a handle a teacher
+ * can reach the person by (entrantHandle), and for the teacher that is the
+ * point. For the rest of the class, and for anyone with the link to a public
+ * board, an address is a contact they were never given: a student list with
+ * mailboxes is personal data at a university. A username is chosen to be
+ * shown and is public by design. The domain stays because it says "hse.ru"
+ * or "gmail.com" and nothing about the person; three letters stay so that a
+ * student still finds a classmate they know. A local part of three
+ * characters or fewer keeps one: three kept of `ann@…` would be all of it.
+ *
+ * Case is kept as it is written (a name from before the rule may carry
+ * capitals), and characters are counted as code points, so a Cyrillic or an
+ * emoji local part is never cut in half. Anything with a local part before
+ * its last `@` is treated as an address even where the strict pattern would
+ * not take it: a name from before the rule is not checked on the way to the
+ * board, and a leak through a malformed address is still a leak. A name with
+ * no `@` after its first character is not an address at all (a username, a
+ * name from before the rule, the baseline's service name) and goes as it is.
+ *
+ * Only the display changes. Whoever may see full names — the person
+ * themselves, staff — gets them from the same row (routes/competitions.ts ·
+ * withNames); the database keeps one form.
+ */
+export function maskEntrantName(name: string): string {
+  const value = String(name ?? '').trim()
+  const at = value.lastIndexOf('@')
+  if (at <= 0) return value
+  const local = [...value.slice(0, at)]
+  const kept = local.length <= 3 ? 1 : 3
+  return `${local.slice(0, kept).join('')}…@${value.slice(at + 1)}`
 }
 
 /**
@@ -920,18 +978,39 @@ export function countsTowardDailyQuota(entry: QuotaEntry): boolean {
 }
 
 /**
- * The start of the day for the moment `at` in a time zone shifted by
- * `offsetMinutes` from UTC.
+ * The start of the day for the moment `at`, in the zone named `timeZone`.
  *
- * The zone comes as a number, not a zone name: a competition's day is the day
- * of the classroom where it is held (the mockup writes "23:59 MSK"), and one
- * number here is more honest than trusting the browser's clock, which in half
- * the class is set any old way.
+ * A zone NAME (`Europe/Moscow`), not a number and not the browser's clock: a
+ * competition's day is the day of the classroom where it is held (the mockup
+ * writes "23:59 MSK"), half the class has its clock set any old way, and a
+ * fixed offset is an hour off for half the year wherever clocks move. The
+ * server decides which zone is the instance's (server/src/time-zone.ts) and
+ * says it to the page along with the numbers.
  */
-export function dayStart(at: number, offsetMinutes: number): number {
-  const DAY = 24 * 60 * 60 * 1000
-  const shift = offsetMinutes * 60 * 1000
-  return Math.floor((at + shift) / DAY) * DAY - shift
+export function dayStart(at: number, timeZone: string): number {
+  return dayStartIn(at, timeZone)
+}
+
+/**
+ * The first moment from which a submission accepted at `acceptedAt` counts
+ * toward TODAY, as of `now`.
+ *
+ * Normally the start of today in the instance's zone. `zoneSince` is the
+ * moment the instance began counting days in its zone at all: until then the
+ * limit reset at UTC midnight. A submission accepted before that moment is
+ * held to BOTH days, the later start winning, so that switching the rule in
+ * the middle of a competition takes nothing from anyone. In Moscow the new day
+ * begins three hours before the old one did, and without this a student who
+ * sent five notebooks between midnight and three at night (yesterday by the
+ * old rule) would find the day already spent the moment the server was
+ * updated. With it, the update itself changes nobody's count, and every later
+ * midnight in the zone is a full reset. After the first day nothing accepted
+ * before `zoneSince` is inside either window, and the rule is the plain one.
+ */
+export function quotaDayStart(acceptedAt: number, now: number, timeZone: string, zoneSince: number | null = null): number {
+  const today = dayStart(now, timeZone)
+  if (zoneSince === null || acceptedAt >= zoneSince) return today
+  return Math.max(today, dayStart(now, 'UTC'))
 }
 
 /**
@@ -939,18 +1018,20 @@ export function dayStart(at: number, offsetMinutes: number): number {
  *
  * Never negative: the teacher can lower the quota in the middle of the day,
  * and "−2 left" on a participant's screen is not a number but an accusation.
+ * The day is `timeZone`'s, with submissions from before `zoneSince` held to
+ * the old UTC day as well (quotaDayStart).
  */
 export function submissionsLeftToday(
   perDay: number,
   entries: readonly QuotaEntry[],
   now: number,
-  offsetMinutes: number,
+  timeZone: string,
+  zoneSince: number | null = null,
 ): number | null {
   if (!Number.isFinite(perDay) || perDay <= 0) return null
-  const since = dayStart(now, offsetMinutes)
   let used = 0
   for (const entry of entries) {
-    if (entry.acceptedAt < since || entry.acceptedAt > now) continue
+    if (entry.acceptedAt > now || entry.acceptedAt < quotaDayStart(entry.acceptedAt, now, timeZone, zoneSince)) continue
     if (countsTowardDailyQuota(entry)) used += 1
   }
   return Math.max(0, Math.floor(perDay) - used)

@@ -28,6 +28,8 @@
     view: EntrantCompetitionView
     mine: EntrantSubmissions
     board: EntrantBoardLine[]
+    /** The board is open to entrants only, and this visitor is not one. */
+    boardClosed?: boolean
     phone: boolean
     now: number
     sending: boolean
@@ -47,6 +49,7 @@
     view,
     mine,
     board,
+    boardClosed = false,
     phone,
     now,
     sending,
@@ -238,7 +241,7 @@
   <aside class="flex w-full shrink-0 flex-col gap-6 xl:w-[300px]">
     <Conditions competition={view.competition} />
     {#if !phone}
-      <MiniBoard lines={board} onopen={onboard} />
+      <MiniBoard lines={board} closed={boardClosed} onopen={onboard} />
     {/if}
   </aside>
 </div>

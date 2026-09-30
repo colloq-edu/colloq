@@ -16,6 +16,7 @@ import type { CompetitionCapabilities } from './capabilities.js'
  * their own types and through `publicCompetition`.
  */
 import type {
+  BoardVisibility,
   Competition,
   CompetitionFile,
   CompetitionLimits,
@@ -53,6 +54,7 @@ export interface CompetitionInput {
   deadlineAt?: number | null
   privateRelease?: PrivateRelease
   scoring?: ScoringRule
+  boardVisibility?: BoardVisibility
 }
 
 /* --------------------------------------------------------- list and queue */
@@ -291,6 +293,19 @@ export interface EntrantRow extends Entrant {
   place: number | null
   /** The sample notebook is recorded under a service participant — never shown to people. */
   baseline: boolean
+  /**
+   * In how many OTHER competitions the person takes part (only in one
+   * competition's list): removing them here leaves their key working there.
+   */
+  otherCompetitions?: number
+}
+
+/** The answer to removing a participant from a competition. */
+export interface EntrantRemoved {
+  /** How many of their submissions went, files and all. */
+  submissions: number
+  /** Their identity and sign-in key went too: they took part in no other competition. */
+  identityRemoved: boolean
 }
 
 export interface EntrantsList {
