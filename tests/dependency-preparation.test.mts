@@ -2,12 +2,15 @@ import './_env.mts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { PREPARATION_PYTHON, PREPARATION_PROXY_PYTHON } from '../server/src/dependencies/preparation-python.ts'
 import { prepareDependencies } from '../server/src/dependencies/preparation.ts'
 import { requirementSourceUnsupported, requirementWithoutComment, unsupportedRequirementLine } from '../shared/dependencies.ts'
 
-function python(source: string, code: string) {
-  const result = spawnSync('python3', ['-c', `__name__ = 'test_helper'\n${source}\n${code}`], { encoding: 'utf8' })
+function python(source: string, code: string, env: Record<string, string> = {}) {
+  const result = spawnSync('python3', ['-c', `__name__ = 'test_helper'\n${source}\n${code}`], { encoding: 'utf8', env: { ...process.env, ...env } })
   assert.equal(result.status, 0, result.stderr || result.stdout)
   return result.stdout.trim()
 }
@@ -278,6 +281,69 @@ for on_full in (lambda output: download_full(output, limit), None):
     except PreparationFailure as error: assert (error.code, error.params) == ('disk_full', None), (error.code, error.params)
     else: raise AssertionError('a full disk was not reported')
 `)
+})
+
+/*
+ * The broker's /tmp is 256 MiB at most, and a set of 300 MB installed
+ * (xgboost-cpu, catboost, lightgbm) could not even be verified there. Its job
+ * names /work, sized for the phase, in COMP_OUT; the docker backend names
+ * nothing and sizes /tmp. pip itself is a stand-in: what is checked is where
+ * everything goes.
+ */
+test('a phase works in its room: /tmp under docker, the job\'s /work under the broker', () => {
+  python(PREPARATION_PYTHON, `assert ROOM == pathlib.Path('/tmp'), ROOM`, { COMP_OUT: '' })
+  const room = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-room-'))
+  try {
+    python(PREPARATION_PYTHON + FIXTURES, `
+assert ROOM == pathlib.Path(${JSON.stringify(room)}), ROOM
+# pip's temporary directory, where every wheel of a --dry-run lands, is the room.
+started = []
+class Process:
+    def __init__(self, command, stdout=None, stderr=None, env=None): started.append(env)
+    def wait(self): return 0
+real_popen, subprocess.Popen = subprocess.Popen, Process
+run_pip(['--version'], 'resolution_failed')
+subprocess.Popen = real_popen
+assert started[0]['TMPDIR'] == str(ROOM), started
+
+commands = []
+def resolver(arguments, default_code, metadata_paths=None, base=None, on_full=None):
+    commands.append(arguments)
+    pathlib.Path(arguments[arguments.index('--report') + 1]).write_text('{"install": []}')
+    return ''
+run_pip, inventory_matches = resolver, lambda base: None
+resolve({'requirementsText': 'catboost', 'basePackages': [], 'maxDownloadBytes': 10 ** 6, 'maxInstalledBytes': 10 ** 6})
+dry = commands[-1]
+assert [dry[dry.index(flag) + 1] for flag in ('--report', '-c', '-r')] == [str(ROOM / name) for name in ('report.json', 'constraints.txt', 'requirements.txt')], dry
+assert (ROOM / 'requirements.txt').read_text() == 'catboost\\n'
+
+with tempfile.TemporaryDirectory() as source, tempfile.TemporaryDirectory() as target:
+    WHEELS = pathlib.Path(target)
+    (name, version, _, filename, sha256), body = build(source, 'catboost', 1000)
+    (WHEELS / filename).write_bytes(body)
+    def installer(arguments, default_code, metadata_paths=None, base=None, on_full=None):
+        commands.append(arguments)
+        if 'install' in arguments:
+            # Where pip would put the set: the site-packages of the --python it was given.
+            site = pathlib.Path(arguments[arguments.index('--python') + 1]).parent.parent / 'lib' / ('python%d.%d' % sys.version_info[:2]) / 'site-packages'
+            (site / (name + '-1.0.dist-info')).mkdir(parents=True)
+            (site / (name + '-1.0.dist-info') / 'METADATA').write_text('Metadata-Version: 2.1\\nName: ' + name + '\\nVersion: 1.0\\n')
+            (site / (name + '.so')).write_bytes(b'x' * 5000)
+        return ''
+    run_pip = installer
+    verify({'maxInstalledBytes': 10 ** 6, 'resolved': {'packages': [{'name': name, 'version': version, 'fileName': filename, 'sha256': sha256, 'bytes': len(body)}]}})
+    install = next(arguments for arguments in commands if 'install' in arguments and '--python' in arguments)
+    assert install[install.index('--python') + 1] == str(ROOM / 'verified' / 'bin' / 'python'), install
+    assert install[install.index('-r') + 1] == str(ROOM / 'locked.txt'), install
+    assert (ROOM / 'verified' / 'pyvenv.cfg').is_file(), 'the verifying environment is in the room'
+    # A full room is judged by what the set takes in it.
+    try: installed_full(4000, {name: 5000}, 0)
+    except PreparationFailure as error: assert error.code == 'installed_limit' and error.params['bytes'] >= 5000, (error.code, error.params)
+    else: raise AssertionError('a set over its limit in the room was not reported')
+`, { COMP_OUT: room })
+  } finally {
+    fs.rmSync(room, { recursive: true, force: true })
+  }
 })
 
 test('already cancelled request never starts preparation or touches staging files', async () => {

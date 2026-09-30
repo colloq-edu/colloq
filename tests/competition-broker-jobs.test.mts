@@ -481,6 +481,23 @@ test('resolve creates a mountless proxy and a resolver restricted to that servic
   assert.ok(!resolver.spec.containers[0].volumeMounts.some((m: any) => String(m.subPath).startsWith('competitions/')))
 })
 
+test('a package preparation works in /work, sized by the app for its phase, while /tmp stays small', async () => {
+  for (const kind of ['resolve', 'verify'] as const) {
+    const { jobs, calls } = setup()
+    // 608 MiB: the installed limit of 512 MiB and its headroom (preparation-contract.ts · preparationRoomBytes).
+    await jobs.start(jobId, { ...intent(kind), limits: { ...limits, tmpfsMb: 608 } })
+    const pod = calls.find(c => c.method === 'POST' && c.path.endsWith('/pods') && c.body.metadata.name === `colloq-job-${jobId}`)!.body
+    const main = pod.spec.containers[0]
+    const room = (name: string) => pod.spec.volumes.find((v: any) => v.name === name).emptyDir
+    // The program installs into COMP_OUT (preparation-python.ts · ROOM)...
+    assert.ok(main.env.some((e: any) => e.name === 'COMP_OUT' && e.value === '/work'), kind)
+    assert.ok(main.volumeMounts.some((m: any) => m.name === 'work' && m.mountPath === '/work' && !m.readOnly), kind)
+    assert.deepEqual(room('work'), { medium: 'Memory', sizeLimit: '608Mi' }, kind)
+    // ...not into /tmp, which a 300 MB set outgrows.
+    assert.deepEqual(room('tmp'), { medium: 'Memory', sizeLimit: '256Mi' }, kind)
+  }
+})
+
 test('verify reads staged wheels offline; inventory mounts no competition inputs', async () => {
   for (const kind of ['verify', 'inventory'] as const) {
     const { jobs, calls } = setup()

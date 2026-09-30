@@ -74,6 +74,10 @@ import { competitionsDir, competitionsFs } from './storage.js'
  * (`Runner.snapshot`), for the day the harness itself dies without a word:
  * the host salvages it before a kill (docker-runner.ts · watch), the broker's
  * exporter collects it after a crash.
+ *
+ * And the kernel starts with kernel_streams.py loaded (KERNEL_STREAMS below):
+ * without it the line a cell printed right before an out-of-memory kill never
+ * reached the executed notebook, while the same line before a timeout did.
  */
 const RUN_NOTEBOOK = `"""Executing a submitted notebook inside a disposable container."""
 
@@ -144,6 +148,10 @@ PROGRESS = RESULT / "progress.json"
 RUN_JSON = RESULT / "run.json"
 # What the participant opens on the submission page (storage.ts · EXECUTED_FILE).
 EXECUTED = RESULT / "executed.ipynb"
+# Run inside the kernel as it starts, not as a cell: a line a cell prints leaves
+# the kernel before the cell goes on, so a kill for memory right after a print
+# no longer takes the line with it (harness.ts · KERNEL_STREAMS).
+KERNEL_STREAMS = Path(__file__).with_name("kernel_streams.py")
 
 
 def run_started() -> float:
@@ -162,12 +170,39 @@ def stop_at() -> float | None:
     return run_started() + WALL - min(STOP_EARLY, WALL / 10)
 
 
+def merged_streams(nb):
+    """A copy of the notebook for the file, with consecutive stream outputs of one stream joined.
+
+    The kernel sends each of a cell's first lines on its own (kernel_streams.py),
+    so that a line printed right before an out-of-memory kill is not lost in
+    its buffer; that leaves one output entry per line. Jupyter shows them as
+    one block anyway, and the file should read the same. The live notebook is
+    left alone: nbclient keeps output indices for display updates.
+    """
+    flat = nbformat.from_dict(json.loads(json.dumps(nb)))
+    for cell in flat.cells:
+        outs = cell.get("outputs")
+        if not outs:
+            continue
+        merged = []
+        for out in outs:
+            last = merged[-1] if merged else None
+            if (out.get("output_type") == "stream" and last is not None
+                    and last.get("output_type") == "stream" and last.get("name") == out.get("name")):
+                parts = [last.get("text") or "", out.get("text") or ""]
+                last["text"] = "".join("".join(p) if isinstance(p, list) else str(p) for p in parts)
+                continue
+            merged.append(out)
+        cell["outputs"] = merged
+    return flat
+
+
 def save_executed(nb) -> None:
     """The executed notebook, whole or not at all: the host may copy it out at any moment."""
     tmp = EXECUTED.with_suffix(".tmp")
     try:
         with tmp.open("w", encoding="utf-8") as fh:
-            nbformat.write(nb, fh)
+            nbformat.write(merged_streams(nb), fh)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, EXECUTED)
@@ -499,6 +534,9 @@ def main() -> int:
         # The notebook's working folder is the writable /out: the participant
         # writes the answer with a relative path, as they are used to.
         resources={"metadata": {"path": str(OUT)}},
+        # exec_files, not exec_lines: IPython runs exec_lines as a cell, and a
+        # cell puts back the stream's own write when it ends.
+        extra_arguments=[f"--IPKernelApp.exec_files={KERNEL_STREAMS}"],
     )
     runner.beat("start")
 
@@ -568,6 +606,107 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+`
+
+/**
+ * What the submission's kernel runs as it starts: a line a cell prints leaves
+ * the kernel before the cell goes on.
+ *
+ * Bought by a class: a cell printed "about to allocate over 2 GB", then did
+ * `bytearray(2200 * 1024 * 1024)`, and the executed notebook showed that cell
+ * with no output at all. ipykernel's stdout only buffers a write; the IOPub
+ * thread sends it on a 0.2 s timer, and that thread needs the GIL. bytearray
+ * zero-fills its two gigabytes inside one C call that holds the GIL until the
+ * OOM killer ends the process, so the thread never ran again and the line died
+ * in the kernel's buffer. Before a timeout the same line survived: a sleeping
+ * cell lets the thread run.
+ *
+ * A shorter flush interval was measured and does not help: the timer cannot
+ * fire without the GIL either (0 of 5 runs kept the line; it does help an
+ * allocation that lets the GIL go, like numpy's). Nor does `flush()`: it
+ * returns once the IOPub thread has built the message, and the send itself is
+ * queued behind that. Flushing twice does it — the thread's queue is first in,
+ * first out, so the second flush returns only after the first one's message
+ * went out (5 of 5).
+ *
+ * A handover costs about 0.3 ms, which a loop of prints cannot pay on every
+ * line (100 000 prints went from 0.2 s to 32 s). So a line goes at once while
+ * the cell has sent fewer than twenty that way, and after that when 0.2 s — the
+ * kernel's own flush interval — has passed since the last one; the rest waits
+ * for the timer as before. With that budget the same 100 000 prints take
+ * 0.26 s instead of 0.23 s, most of it the wrapper's own call. Only the
+ * kernel's main thread in the kernel's own process hands over: threads and
+ * forked children keep ipykernel's batching. A line sent at once is a stream
+ * output of its own in the executed notebook; Jupyter and VS Code show
+ * neighbouring ones as one block.
+ *
+ * Loaded through `IPKernelApp.exec_files`, not `exec_lines`: IPython runs
+ * exec_lines as a cell, and every cell swaps the stream's `write` for a tee
+ * and puts back the one it found when it ends — a wrapper installed inside a
+ * cell is gone after it. A file is executed outside any cell, and it defines
+ * nothing it leaves behind: the participant's namespace, cells and execution
+ * numbers stay theirs. Anything unexpected in ipykernel leaves the kernel as
+ * it was.
+ */
+const KERNEL_STREAMS = String.raw`# A line printed in a cell leaves the kernel before the cell goes on
+# (harness.ts · KERNEL_STREAMS). A comment, not a docstring: this runs in the
+# participant's namespace, and a docstring would become their __doc__.
+
+
+def _colloq_lines_at_once():
+    import sys
+    # Bound once: a notebook that mocks time.monotonic or os.getpid for its own
+    # tests must not change what happens to its output.
+    from os import getpid
+    from threading import current_thread, main_thread
+    from time import monotonic
+
+    from IPython import get_ipython
+    from ipykernel.iostream import OutStream
+
+    per_cell = 20
+    every = 0.2
+    sent = {"lines": 0, "at": float("-inf")}
+    main = main_thread()
+    pid = getpid()
+
+    def new_cell(*_):
+        sent["lines"] = 0
+
+    def at_once(stream):
+        write = stream.write
+
+        def write_at_once(text, *args, **kwargs):
+            written = write(text, *args, **kwargs)
+            if "\n" not in text:
+                return written
+            # The cheap test first: in a loop of prints nearly every line
+            # stops here, and costs well under a microsecond.
+            now = monotonic()
+            if sent["lines"] >= per_cell and now - sent["at"] < every:
+                return written
+            if current_thread() is main and getpid() == pid:
+                sent["lines"] += 1
+                sent["at"] = now
+                # The first hands the text to the IOPub thread, the second
+                # returns once that thread has sent it.
+                stream.flush()
+                stream.flush()
+            return written
+
+        stream.write = write_at_once
+
+    get_ipython().events.register("pre_run_cell", new_cell)
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, OutStream):
+            at_once(stream)
+
+
+try:
+    _colloq_lines_at_once()
+except Exception:  # noqa: BLE001
+    pass
+del _colloq_lines_at_once
 `
 
 /**
@@ -1028,6 +1167,7 @@ else:
 /** What lies in the harness directory: the file name is what the container calls it. */
 const FILES: ReadonlyArray<readonly [string, string]> = [
   ['run_notebook.py', RUN_NOTEBOOK],
+  ['kernel_streams.py', KERNEL_STREAMS],
   ['score_metric.py', SCORE_METRIC],
   ['hold_export.py', HOLD_EXPORT],
   ['export_files.py', EXPORT_FILES],

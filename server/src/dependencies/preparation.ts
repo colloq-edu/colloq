@@ -5,7 +5,7 @@ import path from 'node:path'
 import { config } from '../config.js'
 import { hostPathOf } from '../competitions/storage.js'
 import { DEPENDENCY_LIMITS, requirementLineCount } from '@shared/dependencies'
-import { DependencyPreparationError, reportedPreparationError } from './preparation-contract.js'
+import { DependencyPreparationError, preparationRoomBytes, reportedPreparationError } from './preparation-contract.js'
 import type { PreparationRequest, PreparationResult, PreparationProgress } from './preparation-contract.js'
 import { PREPARATION_PROXY_PYTHON, PREPARATION_PYTHON } from './preparation-python.js'
 
@@ -176,8 +176,9 @@ export async function prepareDependencies(request: PreparationRequest): Promise<
       // meaning. pip 24 (the base's) downloads every wheel of a --dry-run there, and the
       // verifier installs the set there; a set that runs it out has outgrown its limit,
       // whatever the host has free, and the program reports it as a size error with
-      // numbers (preparation-python.ts · download_full, installed_full).
-      const args = ['run', '--rm', '--pull=never', ...profile(name, 1536 * MiB, (phase === 'resolve' ? request.maxDownloadBytes : request.maxInstalledBytes) + 96 * MiB), `--network=${phase === 'resolve' ? network : 'none'}`, ...bind(input, '/input', true), ...bind(wheels, '/wheels', phase === 'verify')]
+      // numbers (preparation-python.ts · download_full, installed_full). The broker
+      // gives its job's /work the same size (preparationRoomBytes).
+      const args = ['run', '--rm', '--pull=never', ...profile(name, 1536 * MiB, preparationRoomBytes(phase, request)), `--network=${phase === 'resolve' ? network : 'none'}`, ...bind(input, '/input', true), ...bind(wheels, '/wheels', phase === 'verify')]
       if (phase === 'resolve') args.push(...proxyEnv, '--env', 'NO_PROXY=', '--env', 'no_proxy=', '--env', 'ALL_PROXY=', '--env', 'all_proxy=')
       args.push(request.imageDigest, '-I', '-u', '-c', PREPARATION_PYTHON, phase)
       const result = await docker(args, { signal: controller.signal, timeoutMs: seconds * 1000 + 1000, onLine: line => {

@@ -96,6 +96,13 @@ except ImportError:
     from pip._vendor.packaging.tags import sys_tags
 
 WHEELS = pathlib.Path('/wheels')
+# Where a phase works: pip's temporary directory (every wheel of a --dry-run lands
+# there), the request files and the verifying environment. Both backends size it as
+# the phase's limit plus headroom (preparation-contract.ts · preparationRoomBytes):
+# the docker backend as this container's own /tmp, the broker as its job's /work,
+# which it names in COMP_OUT. The broker's /tmp is 256 MiB at most, where a set of
+# 300 MB installed could not even be verified.
+ROOM = pathlib.Path(os.environ.get('COMP_OUT') or '/tmp')
 
 class PreparationFailure(Exception):
     def __init__(self, code, message, line=None, params=None):
@@ -240,11 +247,10 @@ def wheel_sizes(log):
     return {urllib.parse.unquote(match.group(1)): round(float(match.group(2)) * PIP_UNITS[match.group(3)]) for match in PIP_DOWNLOAD.finditer(log)}
 
 def download_full(log, limit):
-    # Those wheels land in this container's own /tmp, which the local backend sizes as
-    # the download limit plus headroom (preparation.ts · profile): running it out is the
-    # set outgrowing its limit, not the server's disk, and pip's log says by how much.
-    # When the sizes do not reach the limit, the storage itself is short (the broker's
-    # /tmp is smaller), and the caller reports exactly that.
+    # Those wheels land in the phase's ROOM, sized as the download limit plus headroom:
+    # running it out is the set outgrowing its limit, not the server's disk, and pip's
+    # log says by how much. When the sizes do not reach the limit, the storage itself
+    # is short, and the caller reports exactly that.
     sizes = {}
     for filename, size in wheel_sizes(log).items():
         try: name = canonicalize_name(parse_wheel_filename(filename)[0])
@@ -253,7 +259,7 @@ def download_full(log, limit):
     if sum(sizes.values()) > limit: too_big('download_limit', limit, sizes, True)
 
 def footprint(root):
-    # Bytes a tree takes on its filesystem: what a full /tmp was full of.
+    # Bytes a tree takes on its filesystem: what a full ROOM was full of.
     used = 0
     for directory, _, files in os.walk(root, followlinks=False):
         for name in files:
@@ -262,9 +268,9 @@ def footprint(root):
     return used
 
 def installed_full(limit, unpacked, overhead):
-    # The verifying /tmp is the installed limit plus headroom (preparation.ts · profile):
-    # the set filled it when, on disk, it takes more than the limit.
-    used = footprint('/tmp/verified') - overhead
+    # The verifying ROOM is the installed limit plus headroom: the set filled it when,
+    # on disk, it takes more than the limit.
+    used = footprint(ROOM / 'verified') - overhead
     if used > limit: too_big('installed_limit', limit, unpacked, True, total=used)
 
 CONFLICT_CAUSE = re.compile(r'^\s+(?:(?P<parent>[A-Za-z0-9][A-Za-z0-9._\[\],-]*) (?P<version>\S+) depends on |The user requested (?P<constraint>\(constraint\) )?)(?P<requirement>\S.*?)\s*$', re.M)
@@ -305,8 +311,9 @@ def pip_failed(log, default_code, base=None, on_full=None):
     # Judged by the tail, as pip ends with its reason; the whole log is for sizes.
     tail = log[-16384:]
     if 'No space left on device' in tail:
-        # A private /tmp ran out. What filled it decides the reason: on_full reports the
-        # set outgrowing its limit when it did; otherwise the storage really is short.
+        # The phase's private ROOM ran out. What filled it decides the reason: on_full
+        # reports the set outgrowing its limit when it did; otherwise the storage really
+        # is short.
         if on_full: on_full(log)
         fail('disk_full', 'There is not enough temporary storage to prepare these packages.')
     if 'ResolutionImpossible' in tail or 'conflicting dependencies' in tail:
@@ -340,7 +347,8 @@ def run_pip(arguments, default_code, metadata_paths=None, base=None, on_full=Non
         bootstrap = 'import sys; sys.path[:] = ' + repr(metadata_paths) + '; from pip._internal.cli.main import main; raise SystemExit(main(' + repr(['--isolated', '--disable-pip-version-check'] + arguments) + '))'
         command = [sys.executable, '-I', '-S', '-c', bootstrap]
     with tempfile.TemporaryFile() as output:
-        process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT)
+        # pip's temporary files go to the phase's ROOM, not wherever /tmp happens to be.
+        process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT, env=dict(os.environ, TMPDIR=str(ROOM)))
         code = process.wait()
         output.seek(0, 2); size = output.tell(); output.seek(max(0, size - 1024 * 1024))
         log = output.read().decode('utf-8', 'replace')
@@ -478,13 +486,13 @@ def resolve(config):
     normalized = parse_requirements(config['requirementsText'], config['basePackages'])
     inventory_matches(config['basePackages'])
     emit({'state': 'resolving', 'normalizedRequirements': normalized, 'log': {'code': 'resolve'}})
-    pathlib.Path('/tmp/requirements.txt').write_text('\n'.join(normalized) + '\n')
-    pathlib.Path('/tmp/constraints.txt').write_text(constraints(config['basePackages']))
+    requirements, constraints_file, report_file = ROOM / 'requirements.txt', ROOM / 'constraints.txt', ROOM / 'report.json'
+    requirements.write_text('\n'.join(normalized) + '\n')
+    constraints_file.write_text(constraints(config['basePackages']))
     versions = base_versions(config['basePackages'])
     # --dry-run retains installed distributions, unlike pip download which downloads the base too.
-    log = run_pip(['install', '--dry-run', '--report', '/tmp/report.json', '--only-binary=:all:', '--no-build-isolation', '--index-url', 'https://pypi.org/simple', '--retries', '1', '--timeout', '20', '-c', '/tmp/constraints.txt', '-r', '/tmp/requirements.txt'], 'resolution_failed',
+    log = run_pip(['install', '--dry-run', '--report', str(report_file), '--only-binary=:all:', '--no-build-isolation', '--index-url', 'https://pypi.org/simple', '--retries', '1', '--timeout', '20', '-c', str(constraints_file), '-r', str(requirements)], 'resolution_failed',
                   base=versions, on_full=lambda output: download_full(output, config['maxDownloadBytes']))
-    report_file = pathlib.Path('/tmp/report.json')
     if report_file.stat().st_size > 8 * 1024 * 1024: fail('resolution_failed', 'The dependency resolution report is too large.')
     wheels = plan_wheels(json.loads(report_file.read_text()), versions)
     packages, downloaded = download_wheels(wheels, wheel_sizes(log), config, urllib.request.build_opener(SafeRedirect()))
@@ -506,26 +514,27 @@ def verify(config):
             too_big('installed_limit', limit, unpacked, error.partial or index < len(items) - 1)
         expanded += size
         unpacked[item['name']] = size
-    venv.EnvBuilder(system_site_packages=True, with_pip=False).create('/tmp/verified')
-    overhead = sum(file.stat().st_size for file in pathlib.Path('/tmp/verified').rglob('*') if file.is_file() and not file.is_symlink())
+    environment, locked = ROOM / 'verified', ROOM / 'locked.txt'
+    venv.EnvBuilder(system_site_packages=True, with_pip=False).create(environment)
+    overhead = sum(file.stat().st_size for file in environment.rglob('*') if file.is_file() and not file.is_symlink())
     lock = '\n'.join(item['name'] + '==' + item['version'] + ' --hash=sha256:' + item['sha256'] for item in items) + '\n'
-    pathlib.Path('/tmp/locked.txt').write_text(lock)
+    locked.write_text(lock)
     if items:
-        run_pip(['--python', '/tmp/verified/bin/python', 'install', '--no-index', '--find-links', str(WHEELS), '--no-deps', '--no-compile', '--only-binary=:all:', '--require-hashes', '-r', '/tmp/locked.txt'], 'verification_failed',
+        run_pip(['--python', str(environment / 'bin' / 'python'), 'install', '--no-index', '--find-links', str(WHEELS), '--no-deps', '--no-compile', '--only-binary=:all:', '--require-hashes', '-r', str(locked)], 'verification_failed',
                 on_full=lambda output: installed_full(limit, unpacked, overhead))
-    site_packages = '/tmp/verified/lib/python%d.%d/site-packages' % sys.version_info[:2]
+    site_packages = str(environment / 'lib' / ('python%d.%d' % sys.version_info[:2]) / 'site-packages')
     installed_inventory = {canonicalize_name(distribution.metadata['Name']): distribution.version for distribution in importlib.metadata.distributions(path=[site_packages]) if distribution.metadata['Name']}
     expected_inventory = {item['name']: item['version'] for item in items}
     if installed_inventory != expected_inventory: fail('verification_failed', 'The installed package inventory does not match the wheel bundle.')
     # Scan the combined base/venv metadata using pip check, without importing entrant code.
     run_pip(['check'], 'verification_failed', metadata_paths=list(sys.path) + [site_packages])
     installed = 0
-    for directory, directories, files in os.walk('/tmp/verified', followlinks=False):
+    for directory, directories, files in os.walk(environment, followlinks=False):
         for name in files:
             file = pathlib.Path(directory) / name
             if not file.is_symlink(): installed += file.stat().st_size
     # Counted to the end, so the text says what the set takes rather than where counting stopped;
-    # the private /tmp bounds the walk.
+    # the private ROOM bounds the walk.
     installed = max(0, installed - overhead)
     if installed > limit: too_big('installed_limit', limit, unpacked, False, total=installed)
     emit({'verified': {'installedBytes': installed, 'lock': lock if items else ''}})

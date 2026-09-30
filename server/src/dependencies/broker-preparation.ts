@@ -5,7 +5,7 @@ import { DEPENDENCY_LIMITS, requirementLineCount, type DependencyPackage } from 
 import { imageRevision, kernelRuntimeClient, loadRuntimeCatalog, type RuntimeClient } from '../kernel/runtime-client.js'
 import { resolveRuntimeEnvironment } from '@shared/runtime'
 import type { CompetitionJobCollection, CompetitionJobIntent, CompetitionJobKind } from '@shared/competition-runtime'
-import { DependencyPreparationError, reportedPreparationError } from './preparation-contract.js'
+import { DependencyPreparationError, preparationRoomBytes, reportedPreparationError } from './preparation-contract.js'
 import type { PreparationRequest, PreparationResult } from './preparation-contract.js'
 import { dependencyBrokerHarnessDir } from './broker-harness.js'
 
@@ -84,8 +84,13 @@ export async function prepareBrokerDependencies(request:PreparationRequest,clien
   const seconds=Math.min(DEPENDENCY_LIMITS.wallSeconds,Math.max(1,request.wallSeconds??DEPENDENCY_LIMITS.wallSeconds))
   const run=async(kind:Extract<CompetitionJobKind,'resolve'|'verify'>):Promise<CompetitionJobCollection>=>{
     const jobId=randomUUID().replaceAll('-','')
+    // tmpfsMb sizes the Pod's /work (and /out, where the resolver's wheels land):
+    // the program works in /work (preparation-python.ts · ROOM), not in the Pod's
+    // /tmp, which stays at most 256 MiB whatever this says. The room is the docker
+    // backend's /tmp, so a full one means the same there and here.
+    const room=Math.ceil(preparationRoomBytes(kind,request)/(1024*1024))
     const intent:CompetitionJobIntent={schemaVersion:1,jobId,kind,environment:entry.name,revision,preparationId:request.id,
-      limits:{wallSeconds:seconds,memoryMb:2048,cpus:1,pids:128,tmpfsMb:1024,targetBytes:kind==='resolve'?Math.min(512*1024*1024,request.maxDownloadBytes+2*1024*1024):1024*1024}}
+      limits:{wallSeconds:seconds,memoryMb:2048,cpus:1,pids:128,tmpfsMb:room,targetBytes:kind==='resolve'?Math.min(512*1024*1024,request.maxDownloadBytes+2*1024*1024):1024*1024}}
     const cancel=()=>{void client.cancelCompetitionJob(jobId).catch(()=>undefined)}
     request.signal.addEventListener('abort',cancel,{once:true})
     let finished=false

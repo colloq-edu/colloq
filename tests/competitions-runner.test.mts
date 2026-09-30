@@ -314,7 +314,7 @@ test('every -v is translated into a host path', () => {
 test('the harness is laid out by content hash and is not rewritten', () => {
   const dir = harnessDir()
   assert.ok(dir.includes('.harness'), 'the harness directory hides from the competition sweep')
-  for (const name of ['run_notebook.py', 'score_metric.py', 'colloq_metric.py', 'colloq_split.py']) {
+  for (const name of ['run_notebook.py', 'kernel_streams.py', 'score_metric.py', 'colloq_metric.py', 'colloq_split.py']) {
     assert.ok(fs.existsSync(path.join(dir, name)), name)
   }
   assert.equal(harnessDir(), dir, 'a second call does not create a new directory')
@@ -1359,7 +1359,7 @@ class NotebookClient:
         self.timeout = kwargs.get('timeout')
         self.timeout_func = None
         self.shutdown_kernel = 'graceful'
-        self.record = {'budgets': []}
+        self.record = {'budgets': [], 'extraArguments': kwargs.get('extra_arguments')}
 
     def output(self, outs, msg, display_id, cell_index):
         # Outputs are notebook nodes, as nbclient makes them: nbformat writes nothing else.
@@ -1464,6 +1464,19 @@ test(
 )
 
 test(
+  'the written notebook joins consecutive lines of one stream into one output',
+  { skip: nbformatHere ? false : 'no python3 with nbformat: the harness cannot read a notebook here' },
+  () => {
+    const played = playNotebook([{ source: 'print one\nprint two\nprint three' }], {})
+    assert.equal(played.status, 0, played.stderr)
+    const cell = played.executed!.cells.find((c) => c.cell_type === 'code')!
+    const streams = cell.outputs.filter((o) => o.output_type === 'stream')
+    assert.equal(streams.length, 1, 'one block, however many messages carried it')
+    assert.equal(textOf(streams), 'one\ntwo\nthree\n')
+  },
+)
+
+test(
   'a time limit that comes between two cells starts no next cell, and the notebook is still written',
   { skip: nbformatHere ? false : 'no python3 with nbformat: the harness cannot read a notebook here' },
   () => {
@@ -1500,6 +1513,169 @@ test(
     assert.match(played.run.detail, /executed\.ipynb not written/)
     // The broker's exporter fails the whole result folder on a file it does not know.
     assert.ok(!played.files.some((name) => name.endsWith('.tmp')), played.files.join(', '))
+  },
+)
+
+/* ------------------------------------------ a line printed right before a kill */
+
+test(
+  'the kernel starts with kernel_streams.py run as a file, outside any cell',
+  { skip: nbformatHere ? false : 'no python3 with nbformat: the harness cannot read a notebook here' },
+  () => {
+    const played = playNotebook([{ source: 'print done' }], {})
+    assert.equal(played.run.status, 'ok', played.stderr)
+    const file = path.join(harnessDir(), 'kernel_streams.py')
+    assert.ok(fs.existsSync(file), 'the file travels with the harness')
+    // Not exec_lines: IPython runs those as a cell, and a cell puts the
+    // stream's own write back when it ends.
+    assert.deepEqual(played.record.extraArguments, [`--IPKernelApp.exec_files=${file}`])
+  },
+)
+
+test('a printed line is handed to the IOPub thread before the cell goes on, within a budget', () => {
+  // ipykernel and IPython are stand-ins: what is checked is when the stream
+  // is flushed, and the suite has no Jupyter.
+  const script = `
+import os, sys, threading, time, types
+from pathlib import Path
+source = Path(${JSON.stringify(path.join(harnessDir(), 'kernel_streams.py'))}).read_text()
+calls = []
+class OutStream:
+    def __init__(self, name):
+        self.name = name
+    def write(self, text):
+        calls.append(('write', self.name, text))
+        return len(text)
+    def flush(self):
+        calls.append(('flush', self.name))
+registered = []
+class Events:
+    def register(self, event, callback):
+        registered.append((event, callback))
+shell = types.SimpleNamespace(events=Events())
+def module(name, **attrs):
+    sys.modules[name] = types.ModuleType(name)
+    sys.modules[name].__dict__.update(attrs)
+module('ipykernel')
+module('ipykernel.iostream', OutStream=OutStream)
+module('IPython', get_ipython=lambda: shell)
+def load(stdout, stderr):
+    namespace = {}
+    real = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = stdout, stderr
+    try:
+        exec(compile(source, 'kernel_streams.py', 'exec'), namespace)
+    finally:
+        sys.stdout, sys.stderr = real
+    return namespace
+def flushes(stream, text):
+    calls.clear()
+    assert stream.write(text) == len(text), 'what write returns is passed on'
+    return [call for call in calls if call[0] == 'flush']
+
+out, err = OutStream('stdout'), OutStream('stderr')
+namespace = load(out, err)
+# The participant's namespace is where it runs, and it leaves nothing there.
+assert set(namespace) == {'__builtins__'}, sorted(namespace)
+assert [event for event, _ in registered] == ['pre_run_cell'], registered
+new_cell = registered[0][1]
+
+# Text without a line end waits for ipykernel's timer, as before.
+assert flushes(out, 'progress 10%') == []
+# A line: flushed twice before write returns, the second waiting for the send.
+assert flushes(out, 'about to allocate over 2 GB\\n') == [('flush', 'stdout')] * 2
+assert flushes(err, 'UserWarning: careful\\n') == [('flush', 'stderr')] * 2
+# Twenty lines a cell go at once, both streams together; the next waits...
+for n in range(18):
+    assert flushes(out, f'line {n}\\n'), n
+assert flushes(out, 'line 21\\n') == []
+# ...until 0.2 s have passed since the last one sent at once.
+time.sleep(0.25)
+assert len(flushes(out, 'after a pause\\n')) == 2
+assert flushes(out, 'right after it\\n') == []
+# Every cell starts with its twenty.
+new_cell(object())
+for n in range(20):
+    assert flushes(out, f'next cell {n}\\n'), n
+assert flushes(out, 'next cell 21\\n') == []
+new_cell(object())
+# A thread of the notebook keeps ipykernel's batching...
+seen = []
+thread = threading.Thread(target=lambda: seen.append(flushes(out, 'from a thread\\n')))
+thread.start()
+thread.join()
+assert seen == [[]], seen
+# ...and so does a forked child, which inherits the very same stream.
+child = os.fork()
+if child == 0:
+    os._exit(0 if flushes(out, 'from a child\\n') == [] else 1)
+assert os.waitstatus_to_exitcode(os.waitpid(child, 0)[1]) == 0, 'a forked child handed a line over'
+assert len(flushes(out, 'back in the kernel\\n')) == 2
+# A notebook that mocks the clock for its own tests changes nothing here.
+for n in range(19):
+    assert flushes(out, f'filler {n}\\n'), n
+monotonic, time.monotonic = time.monotonic, lambda: 10.0 ** 12
+try:
+    assert flushes(out, 'with a mocked clock\\n') == []
+finally:
+    time.monotonic = monotonic
+
+# A stream that is not ipykernel's is left as it was.
+class Plain:
+    def write(self, text):
+        return len(text)
+plain = Plain()
+load(plain, plain)
+assert 'write' not in vars(plain)
+# So is a kernel without ipykernel: nothing raised, nothing changed.
+sys.modules['ipykernel.iostream'] = None
+bare = OutStream('stdout')
+assert set(load(bare, bare)) == {'__builtins__'}
+assert 'write' not in vars(bare)
+`
+  const result = spawnSync('python3', ['-c', script], { encoding: 'utf8', timeout: 60_000 })
+  assert.equal(result.status, 0, result.stderr)
+})
+
+/** A python3 with Jupyter: only there does a real kernel run under the harness. */
+const jupyterHere = spawnSync('python3', ['-c', 'import nbclient, ipykernel, nbformat'], { encoding: 'utf8' }).status === 0
+
+test(
+  'a line printed right before the kernel is killed reaches the executed notebook',
+  { skip: jupyterHere ? false : 'no python3 with nbclient and ipykernel: no real kernel to kill here' },
+  () => {
+    // The kill comes the instant print returns — sooner than the OOM killer
+    // ends a cell allocating past its memory. Without kernel_streams.py the
+    // line was still in the kernel's buffer: 0 runs of 10 kept it.
+    const root = fs.mkdtempSync(path.join(process.env.DATA_DIR as string, 'killed-'))
+    for (const part of ['in', 'out', 'result', 'data', 'home']) fs.mkdirSync(path.join(root, part))
+    const cell = (source: string) => ({ cell_type: 'code', source, metadata: {}, execution_count: null, outputs: [] })
+    fs.writeFileSync(path.join(root, 'in', 'notebook.ipynb'), JSON.stringify({
+      cells: [
+        cell("print('warming up')"),
+        cell('import os, signal\nprint("about to allocate over 2 GB")\nos.kill(os.getpid(), signal.SIGKILL)'),
+        cell("print('never')"),
+      ],
+      metadata: {}, nbformat: 4, nbformat_minor: 5,
+    }))
+    const result = spawnSync('python3', [path.join(harnessDir(), 'run_notebook.py')], {
+      encoding: 'utf8',
+      timeout: 120_000,
+      env: {
+        PATH: process.env.PATH, HOME: path.join(root, 'home'), COMP_ATTEMPT_ID: 'killed',
+        COMP_NOTEBOOK: path.join(root, 'in', 'notebook.ipynb'), COMP_OUT: path.join(root, 'out'),
+        COMP_RESULT: path.join(root, 'result'), COMP_DATA: path.join(root, 'data'),
+      },
+    })
+    const run = JSON.parse(fs.readFileSync(path.join(root, 'result', 'run.json'), 'utf8'))
+    assert.equal(run.status, 'kernel_died', result.stderr)
+    assert.equal(run.cell, 1)
+    const cells = JSON.parse(fs.readFileSync(path.join(root, 'result', 'executed.ipynb'), 'utf8')).cells
+    assert.equal(textOf(cells[0].outputs), 'warming up\n')
+    assert.equal(textOf(cells[1].outputs), 'about to allocate over 2 GB\n')
+    // The cell's number came out with the line: it did start, as a timed-out one does.
+    assert.equal(cells[1].execution_count, 2)
+    assert.equal(textOf(cells[2].outputs), '')
   },
 )
 

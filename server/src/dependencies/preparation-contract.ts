@@ -31,6 +31,25 @@ export interface PreparationResult {
   /** pip --require-hashes compatible, only additional packages. */
   lock: string
 }
+/**
+ * The room a preparation phase works in, in bytes: the phase's own limit — the
+ * downloads while resolving, the installed set while verifying — plus headroom
+ * for pip's own files and the request.
+ *
+ * One rule for both backends, and the size is the point: pip 24 (the base's)
+ * downloads every wheel of a --dry-run into its temporary directory, and the
+ * verifier installs the set into this room, so a room that runs out means a
+ * set that outgrew its limit, whatever the host has free
+ * (preparation-python.ts · download_full, installed_full). The docker backend
+ * makes it the container's /tmp (preparation.ts · profile). The broker makes it
+ * the job's /work: its Pod's /tmp is at most 256 MiB for every kind of job
+ * (runtime competition-jobs.ts), and a set of 300 MB installed could not even
+ * be verified there.
+ */
+export function preparationRoomBytes(phase: 'resolve' | 'verify', request: Pick<PreparationRequest, 'maxDownloadBytes' | 'maxInstalledBytes'>): number {
+  return (phase === 'resolve' ? request.maxDownloadBytes : request.maxInstalledBytes) + 96 * 1024 * 1024
+}
+
 export class DependencyPreparationError extends Error {
   /** What the failure measured, for its text (shared/dependencies.ts · DependencyErrorParams). */
   public readonly params?: DependencyErrorParams

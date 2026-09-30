@@ -187,6 +187,8 @@ export class CompetitionJobs {
         }] }),
         volumes: [pvc('data', this.options.config.dataClaim), pvc('destination', this.options.config.dataClaim),
           { name: 'out', emptyDir: memory(intent.limits.tmpfsMb) }, { name: 'work', emptyDir: memory(intent.limits.tmpfsMb) },
+          // Never more than 256 MiB, whatever the job: a package preparation works
+          // in /work (COMP_OUT), which the app sizes for the phase through tmpfsMb.
           { name: 'tmp', emptyDir: memory(Math.min(intent.limits.tmpfsMb, 256)) },
           ...(packageRoom(intent) ? [{ name: 'packages', emptyDir: memory(packageRoom(intent)!) }] : [])],
         containers: [this.main(intent, image), { name: 'exporter', image: this.options.config.exporterImage,
