@@ -235,7 +235,11 @@ export class CompetitionJobs {
           securityContext: security,
           resources: { requests: { cpu: '50m', memory: '64Mi' }, limits: { cpu: '250m', memory: '128Mi', 'ephemeral-storage': '16Mi' } },
         }] }),
-        volumes: [pvc('data', this.options.config.dataClaim), pvc('destination', this.options.config.dataClaim),
+        // The data claim is ONE volume, mounted at every path: two volumes naming
+        // the same claim left the Pod in ContainerCreating for minutes on a
+        // Kubernetes 1.31 node (local PVs, found on a bank-like cluster on 1 Oct
+        // 2026), and every inventory and submission timed out behind it.
+        volumes: [pvc('data', this.options.config.dataClaim),
           { name: 'out', emptyDir: memory(intent.limits.tmpfsMb) }, { name: 'work', emptyDir: memory(intent.limits.tmpfsMb) },
           // Never more than 256 MiB, whatever the job: a package preparation works
           // in /work (COMP_OUT), which the app sizes for the phase through tmpfsMb.
@@ -249,7 +253,7 @@ export class CompetitionJobs {
           ports: [{ name: 'export', containerPort: 8765, protocol: 'TCP' }],
           readinessProbe: { tcpSocket: { port: 8765 }, periodSeconds: 1, failureThreshold: 10 },
           livenessProbe: SERVER_LIVENESS(8765),
-          volumeMounts: [mount('out', '/out'), mount('destination', '/result', this.destination(intent)), mount('tmp', '/tmp')],
+          volumeMounts: [mount('out', '/out'), mount('data', '/result', this.destination(intent)), mount('tmp', '/tmp')],
         }],
       } }
   }

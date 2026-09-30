@@ -102,7 +102,12 @@ test('notebook Pod isolates public inputs and writable exporter PVC', async () =
   assert.equal(main.securityContext.readOnlyRootFilesystem, true)
   assert.equal(main.securityContext.runAsUser, 1000)
   assert.deepEqual(main.securityContext.capabilities.drop, ['ALL'])
-  assert.ok(main.volumeMounts.every((m: any) => m.readOnly !== false && m.name !== 'destination'))
+  // Student code reads the data claim only; the exporter alone writes, into
+  // its own subPath.
+  assert.ok(main.volumeMounts.filter((m: any) => m.name === 'data').every((m: any) => m.readOnly === true))
+  // One volume for the claim, mounted at every path: two volumes naming the
+  // same claim hang a 1.31 node in ContainerCreating.
+  assert.equal(pod.spec.volumes.filter((v: any) => v.persistentVolumeClaim).length, 1)
   assert.ok(main.volumeMounts.some((m: any) => m.subPath === 'competitions/abcd2345/data'))
   assert.ok(main.volumeMounts.some((m: any) => m.subPath === 'competitions/abcd2345/s/efgh2345/in'))
   assert.ok(!main.volumeMounts.some((m: any) => String(m.subPath).includes('secret')))
