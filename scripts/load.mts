@@ -490,7 +490,12 @@ interface Health {
 async function probeHealth(into: Health): Promise<void> {
   const t0 = performance.now()
   try {
-    const res = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(5_000) })
+    // With the staff cookie: from anywhere but the server's own machine health
+    // answers only the verdict, and the loop lag is one of the details.
+    const res = await fetch(`${BASE}/api/health`, {
+      headers: staffCookie ? { cookie: staffCookie } : {},
+      signal: AbortSignal.timeout(5_000),
+    })
     const body = (await res.json()) as { loopLagMs?: number }
     into.ms.push(performance.now() - t0)
     if (typeof body?.loopLagMs === 'number') into.lag.push(body.loopLagMs)

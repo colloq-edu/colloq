@@ -626,9 +626,16 @@ Disallow: /
 		}
 	}
 
+	# X-Forwarded-For is caddy's own: it writes the address it sees and drops
+	# whatever the client put there, and the instance takes the client from it
+	# (server/src/net/inbound.ts). CF-Connecting-IP it would pass through
+	# untouched, and an instance started behind Colloq's own Cloudflare tunnel
+	# believes that header (TRUST_CF_CONNECTING_IP). No Cloudflare stands in
+	# front of the relay, so here the header can only be made up: it goes.
 	reverse_proxy 127.0.0.1:8080 {
 		header_up X-Forwarded-Host {host}
 		header_up X-Forwarded-Proto https
+		header_up -Cf-Connecting-Ip
 	}
 
 	# The same screen when what falls over is not the room but frps itself: a

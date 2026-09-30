@@ -24,12 +24,13 @@ import { linkPreview } from './link-preview.js'
 import { roomCardPng } from './og-card.js'
 import { getInstanceLanguage } from './admin/settings.js'
 import express, { type NextFunction, type Request, type Response } from 'express'
-import { sameOrigin, slideStaffCookie } from './admin/auth.js'
+import { currentStaff, sameOrigin, secureCookie, slideStaffCookie } from './admin/auth.js'
 import { markDevice } from './bans.js'
 import { aiEnabled, config } from './config.js'
 import { db, getSession } from './db.js'
 import { activeName, listEnvironments } from './environments.js'
-import { SECURITY_HEADERS } from './headers.js'
+import { SECURITY_HEADERS, sendsStrictTransport, STRICT_TRANSPORT_SECURITY } from './headers.js'
+import { clientAddress, inboundPolicy, isLoopbackAddress } from './net/inbound.js'
 import { jupyterReachable } from './kernel/jupyter.js'
 import { isolationAvailable } from './kernel/pool.js'
 import { tally } from './log.js'
@@ -259,8 +260,12 @@ function compression(req: Request, res: Response, next: NextFunction): void {
 export const app = express()
 app.disable('x-powered-by')
 
-app.use((_req, res, next) => {
+app.use((req, res, next) => {
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value)
+  // An HTTP/1.0 request may carry no Host at all, and express then has no hostname.
+  if (sendsStrictTransport({ enabled: inboundPolicy().hsts, https: secureCookie(res), hostname: req.hostname ?? '' })) {
+    res.setHeader('Strict-Transport-Security', STRICT_TRANSPORT_SECURITY)
+  }
   next()
 })
 
@@ -380,7 +385,70 @@ async function probeKernel(): Promise<{ ok: boolean; reason: string | null }> {
  */
 app.get('/api/livez', (_req,res)=>{res.setHeader('Cache-Control','no-store');res.json({ok:true})})
 
-app.get('/api/health', (_req, res) => {
+interface Check {
+  ok: boolean
+  reason: string | null
+}
+
+function databaseCheck(): Check {
+  try {
+    db.prepare('SELECT 1').get()
+    return { ok: true, reason: null }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: err instanceof Error ? `The database is unreadable: ${err.message}` : 'The database is unreadable',
+    }
+  }
+}
+
+function workspaceCheck(): Check {
+  try {
+    workspaceFs.mkdirSync(config.workspaceDir, { recursive: true })
+    return { ok: true, reason: null }
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : 'The workspace is unavailable' }
+  }
+}
+
+/*
+ * "Ready" is narrower than "healthy": can THIS process serve a page.
+ *
+ * The k3s readiness probe asked /api/health, which also asks the kernel
+ * broker. A broker or Kubernetes API hiccup then took the app out of rotation,
+ * and the whole site answered 502, including the panel and the status command
+ * that would have shown the reason. Rooms without a kernel are still rooms:
+ * notes, files, the thread and the teacher's panel keep working, and the
+ * kernel's own trouble is told where it happens (the Run button, /api/health).
+ * So readiness asks only what serving needs, the database and the workspace,
+ * and says nothing else: no reasons, no paths, nothing to hide from anyone.
+ */
+app.get('/api/readyz', (_req, res) => {
+  const database = databaseCheck()
+  const workspace = workspaceCheck()
+  const ok = database.ok && workspace.ok
+  res.setHeader('Cache-Control', 'no-store')
+  res.status(ok ? 200 : 503).json({ ok, database: database.ok, workspace: workspace.ok })
+})
+
+/**
+ * Who reads the reasons behind a red health answer.
+ *
+ * They are internal text: a database error with its path, Docker's words, the
+ * address the server writes into links, the local run id. The operator reads
+ * them from where the server runs (colloq-vast status, host.sh, the CLI: all
+ * ask 127.0.0.1 there) and staff from anywhere; a visitor from the internet
+ * gets the verdict, which check failed and the version, the same status code
+ * included. Loopback is judged AFTER the forwarded address is resolved: behind
+ * the relay or a tunnel every request comes from 127.0.0.1, and those are
+ * strangers. So is the k3s node's own curl, which the NodePort rewrites into
+ * a pod-network address; inside the pod it is loopback again.
+ */
+function readsHealthDetails(req: Request): boolean {
+  return isLoopbackAddress(clientAddress(req)) || currentStaff(req) !== null
+}
+
+app.get('/api/health', (req, res) => {
   const began = process.hrtime.bigint()
   // "The process answered" says nothing about whether it answered *quickly*. A
   // trip through the event loop costs nothing and reports what a probe wants to
@@ -388,42 +456,46 @@ app.get('/api/health', (_req, res) => {
   setImmediate(() => {
     void (async () => {
       const loopLagMs = Number(process.hrtime.bigint() - began) / 1e6
-      let dbOk = true
-      let reason: string | null = null
-      try {
-        db.prepare('SELECT 1').get()
-      } catch (err) {
-        dbOk = false
-        reason =
-          err instanceof Error
-            ? `The database is unreadable: ${err.message}`
-            : 'The database is unreadable'
-      }
+      const database = databaseCheck()
       const [kernel, capabilities] = await Promise.all([kernelHealth(), competitionCapabilities()])
-      if (dbOk && !kernel.ok) reason = kernel.reason
+      const workspace = workspaceCheck()
+      // The first failure in this order names the trouble: nothing else
+      // works without the database, and a kernel is the next thing a class
+      // notices.
+      const reason = database.reason ?? (kernel.ok ? null : kernel.reason) ?? workspace.reason
 
-      let workspaceOk = true
-      try {
-        workspaceFs.mkdirSync(config.workspaceDir, { recursive: true })
-      } catch (err) {
-        workspaceOk = false
-        if (reason === null) reason = err instanceof Error ? err.message : 'The workspace is unavailable'
-      }
-
-      const ok = dbOk && kernel.ok && workspaceOk
+      const ok = database.ok && kernel.ok && workspace.ok
       res.setHeader('Cache-Control', 'no-store')
-      res.setHeader('Server-Timing', `loop;dur=${loopLagMs.toFixed(3)}`)
       // 503, not 200 with a field: probes look at the code, and only the code
       // makes a script stop instead of printing the link.
-      res.status(ok ? 200 : 503).json({
+      res.status(ok ? 200 : 503)
+      if (!readsHealthDetails(req)) {
+        /*
+         * isolation stays in the short answer. host.sh's publishing lock reads
+         * it under `make up` and on k3s, through Docker's port publishing or
+         * the NodePort, where the server cannot tell the machine itself from a
+         * stranger; and it is a verdict of the kernel check, not text or a path.
+         */
+        res.json({
+          ok,
+          kernel: kernel.ok,
+          isolation: roomIsolation(kernel.ok),
+          database: database.ok,
+          workspace: workspace.ok,
+          version: COLLOQ_VERSION,
+        })
+        return
+      }
+      res.setHeader('Server-Timing', `loop;dur=${loopLagMs.toFixed(3)}`)
+      res.json({
         ok,
         reason,
         kernel: kernel.ok,
         capabilities,
         // docker | broker | null — whether every room has its own container (roomIsolation).
         isolation: roomIsolation(kernel.ok),
-        database: dbOk,
-        workspace: workspaceOk,
+        database: database.ok,
+        workspace: workspace.ok,
         uptimeMs: Date.now() - STARTED_AT,
         loopLagMs: Number(loopLagMs.toFixed(3)),
         /*

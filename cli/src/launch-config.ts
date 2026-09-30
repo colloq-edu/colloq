@@ -176,6 +176,17 @@ export function launchConfig(
     STATIC_DIR: path.join(root, 'web/dist'),
     VITE_API_TARGET: `http://127.0.0.1:${port}`,
   })
+  /*
+   * --share is always a Cloudflare quick tunnel: cloudflared on this machine
+   * brings every student in from 127.0.0.1, and Cloudflare names the student
+   * in CF-Connecting-IP, which the server believes only when told to
+   * (server/src/net/inbound.ts). Only here and not for --host: which transport
+   * a name gets, the relay or a named Cloudflare tunnel, is decided by host.sh
+   * (see commands/host.ts), and an older relay passes a client's own
+   * CF-Connecting-IP through. Without the switch the server still finds the
+   * student as the last X-Forwarded-For hop, which Cloudflare appends as well.
+   */
+  if (options.share) env.TRUST_CF_CONNECTING_IP = '1'
   return {
     root,
     home,

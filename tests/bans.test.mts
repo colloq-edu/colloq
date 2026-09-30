@@ -364,12 +364,16 @@ test('a malformed or foreign cookie means no mark, not a mark', () => {
 
 /* -------------------------------------------------------------- address */
 
-test('the address header is trusted only from a proxy on the same machine', () => {
-  const headers = { 'x-forwarded-for': '203.0.113.7, 10.0.0.1' }
+test('the address header is trusted only from a proxy on the same machine (by default)', () => {
+  const headers = { 'x-forwarded-for': '203.0.113.7' }
   // Behind the relay the socket peer is loopback, and the real address is
   // only in the header.
   assert.equal(addressOf({ headers, socket: { remoteAddress: '127.0.0.1' } }), '203.0.113.7')
   assert.equal(addressOf({ headers, socket: { remoteAddress: '::1' } }), '203.0.113.7')
+  // The client is the last hop the proxy appended, not the first one: that
+  // one the client could have written itself (net-inbound.test.mts).
+  const written = { 'x-forwarded-for': '6.6.6.6, 203.0.113.7' }
+  assert.equal(addressOf({ headers: written, socket: { remoteAddress: '127.0.0.1' } }), '203.0.113.7')
   // But one sent directly by anybody is made up: the "seems to have come
   // back" hint would point at a person who sat quietly.
   assert.equal(addressOf({ headers, socket: { remoteAddress: '198.51.100.4' } }), '198.51.100.4')

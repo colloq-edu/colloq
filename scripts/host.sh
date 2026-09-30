@@ -1068,7 +1068,11 @@ direct_caddy() {
   if [ -f /etc/caddy/Caddyfile ] && ! grep -q '^# colloq:' /etc/caddy/Caddyfile; then
     die "this machine already has a /etc/caddy/Caddyfile of its own — I will not overwrite it.
   Add the site to it by hand:
-    ${COLLOQ_HOSTNAME} { reverse_proxy 127.0.0.1:${PORT} }
+    ${COLLOQ_HOSTNAME} {
+      reverse_proxy 127.0.0.1:${PORT} {
+        header_up -Cf-Connecting-Ip
+      }
+    }
   and restart caddy."
   fi
 
@@ -1095,8 +1099,14 @@ ${COLLOQ_HOSTNAME} {
 		# auth.ts reads x-forwarded-proto), and a silent default is worse here
 		# than an explicit line. X-Forwarded-Host is not written: caddy passes it
 		# itself and complains about the extra line with a warning on every
-		# config check.
+		# config check. The same goes for X-Forwarded-For: caddy writes the
+		# address it sees and drops whatever the client put there.
 		header_up X-Forwarded-Proto https
+		# Unknown headers, on the other hand, pass through untouched, and this
+		# one names the client when a server runs behind Colloq's own Cloudflare
+		# tunnel (TRUST_CF_CONNECTING_IP, server/src/net/inbound.ts). Here there
+		# is no Cloudflare, so anyone who sent it would be making it up.
+		header_up -Cf-Connecting-Ip
 	}
 }
 CONF

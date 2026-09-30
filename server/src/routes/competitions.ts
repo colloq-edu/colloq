@@ -36,7 +36,7 @@ import { readEnvironmentInventory } from '../environment-inventory.js'
 import { acceptPinnedSubmission, executionRevision, publicExecution } from '../dependencies/service.js'
 import { DependencyStoreError } from '../dependencies/store.js'
 import { dependencyMessage, dependencyRefusal } from '../dependencies/messages.js'
-import { addressOf } from '../bans.js'
+import { addressForLimits } from '../net/inbound.js'
 import { config } from '../config.js'
 import { db } from '../db.js'
 import { downloadHeldFile, type HeldFile } from '../secure-files.js'
@@ -141,7 +141,10 @@ function refuse(res: Response, status: number, reason: CompetitionRefusal, error
  * Counted by address, not by person, and that is the whole point: a script
  * has no person, it creates one. A class behind one NAT comes in all at once,
  * so the windows are long and the numbers leave room for a cohort; a loop
- * hits this in the first seconds.
+ * hits this in the first seconds. An address the operator named in
+ * SHARED_ADDRESSES arrives here as null and is not counted: a campus NAT is
+ * hundreds of people, and the per-person ceiling on uploads still holds
+ * (net/inbound.ts · addressForLimits).
  */
 function tooOften(bucket: Map<string, number[]>, address: string | null, windowMs: number, max: number): boolean {
   if (!address) return false
@@ -449,7 +452,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
    * there right after the exchange.
    */
   router.post('/api/k/sign-in', (req, res) => {
-    if (tooOften(signIns, addressOf(req), SIGN_IN_WINDOW, MAX_SIGN_INS)) {
+    if (tooOften(signIns, addressForLimits(req), SIGN_IN_WINDOW, MAX_SIGN_INS)) {
       res.setHeader('Retry-After', '60')
       return refuse(res, 429, 'too_often', tr('competitions.refusal.tooOften'))
     }
@@ -575,7 +578,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     const name = nameForJoin(String(req.body?.name ?? ''), known?.name ?? null)
     if (!name) return refuse(res, 400, 'invalid', tr('competitions.refusal.nameNotHandle'))
 
-    if (!known && tooOften(joins, addressOf(req), JOIN_WINDOW, MAX_JOINS)) {
+    if (!known && tooOften(joins, addressForLimits(req), JOIN_WINDOW, MAX_JOINS)) {
       res.setHeader('Retry-After', '60')
       return refuse(res, 429, 'too_often', tr('competitions.refusal.tooOften'))
     }
@@ -753,7 +756,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     if (left !== null && left <= 0) {
       return refuse(res, 429, 'quota', tr('competitions.refusal.dailyQuota', { count: competition.limits.perDay }))
     }
-    if (tooOften(uploadsByAddress, addressOf(req), UPLOAD_WINDOW, MAX_UPLOADS_PER_ADDRESS)
+    if (tooOften(uploadsByAddress, addressForLimits(req), UPLOAD_WINDOW, MAX_UPLOADS_PER_ADDRESS)
       || tooOften(uploadsByEntrant, me.id, UPLOAD_WINDOW, uploadsPerMinute().value)) {
       res.setHeader('Retry-After', '60')
       return refuse(res, 429, 'too_often', tr('competitions.refusal.tooOften'))

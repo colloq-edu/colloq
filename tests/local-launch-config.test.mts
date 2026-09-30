@@ -54,6 +54,19 @@ test('local configuration preserves data paths, ignores old public URL, and dist
   assert.equal(launchConfig('/example', parseLaunchArgs(['--port', '4400']), {}).env.PORT, '4400')
 })
 
+test('the quick Cloudflare tunnel tells the server to believe CF-Connecting-IP; nothing else does', () => {
+  // --share is always cloudflared on this machine; --host may be the relay,
+  // whose older Caddy passes a client's own header through (host.sh decides).
+  assert.equal(launchConfig('/example', parseLaunchArgs(['--share']), {}).env.TRUST_CF_CONNECTING_IP, '1')
+  assert.equal(launchConfig('/example', parseLaunchArgs([]), {}).env.TRUST_CF_CONNECTING_IP, undefined)
+  assert.equal(
+    launchConfig('/example', parseLaunchArgs(['--host', 'class.example.ru']), {}).env.TRUST_CF_CONNECTING_IP,
+    undefined,
+  )
+  // A value the operator wrote for a plain start is theirs to keep.
+  assert.equal(launchConfig('/example', parseLaunchArgs([]), { TRUST_CF_CONNECTING_IP: '1' }).env.TRUST_CF_CONNECTING_IP, '1')
+})
+
 test('source fingerprint catches content changes, ignores generated files, and verifies both output bundles', () => {
   const root = mkdtempSync(join(tmpdir(), 'colloq-launch-config-'))
   try {

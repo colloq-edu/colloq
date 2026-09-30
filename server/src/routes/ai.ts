@@ -24,7 +24,7 @@ import {
 import { aiModel, aiReady, ask, cancel, clearThread } from '../ai/index.js'
 import { stopAll, stopWork, turnsInRoom, work } from '../ai/agent.js'
 import { seconds } from '../ai/text.js'
-import { addressOf } from '../bans.js'
+import { addressForLimits } from '../net/inbound.js'
 import {
   applyOnBehalf,
   getSessionDoc,
@@ -286,6 +286,9 @@ const NEWCOMER_MS = 2 * 60_000
  * More than the dozen concurrent ones in a room (see below, IN_FLIGHT): the
  * room's queue has to refuse first, otherwise a class behind one NAT that hit
  * the queue would read "from your address" instead of "wait five seconds".
+ * An address in SHARED_ADDRESSES is not counted at all (a campus NAT is a
+ * lecture hall, not a script); the room ceiling, the queue and the personal
+ * limits still hold for everyone behind it (net/inbound.ts · addressForLimits).
  */
 const ADDRESS_ASKS = 20
 const ADDRESS_WINDOW_MS = 60_000
@@ -713,7 +716,7 @@ export function aiRoutes(): Router {
           retryAfter: left,
         })
       }
-      const address = addressOf(req)
+      const address = addressForLimits(req)
       if (address && !addressMayAsk(sessionId, address)) {
         res.setHeader('Retry-After', '60')
         return res.status(429).json({

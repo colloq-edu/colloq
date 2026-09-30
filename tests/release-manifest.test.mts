@@ -256,6 +256,21 @@ test('render puts the operator memory default and ceiling into the broker and no
     assert.equal('RUNTIME_KERNEL_MEMORY' in env || 'RUNTIME_KERNEL_MEMORY_MAX' in env, false)
   })
 })
+test('the app stays in rotation while the broker is down, and the proxy settings reach it', () => {
+  // Readiness on the database and workspace only: a broker hiccup must not turn the site into 502s.
+  const items = JSON.parse(run('render', release(), ['--node-name', 'test-node', '--state-dir', '/var/lib/colloq']).stdout).items as any[]
+  const app = items.find(x => x.kind === 'Deployment' && x.metadata.name === 'colloq-app').spec.template.spec.containers[0]
+  assert.equal(app.readinessProbe.httpGet.path, '/api/readyz')
+  assert.equal(app.livenessProbe.httpGet.path, '/api/livez')
+  // Behind the NodePort every student arrives from one address unless the proxy is named.
+  withEnv('TRUSTED_PROXIES=loopback, 10.42.0.0/16\nSHARED_ADDRESSES=198.51.100.7\nTRUST_CF_CONNECTING_IP=0\nHSTS=0\n', file => {
+    const config = run('config', release(), ['--env-file', file])
+    assert.equal(config.status, 0, config.stderr)
+    assert.deepEqual(JSON.parse(config.stdout).stringData, {
+      TRUSTED_PROXIES: 'loopback, 10.42.0.0/16', SHARED_ADDRESSES: '198.51.100.7', TRUST_CF_CONNECTING_IP: '0', HSTS: '0',
+    })
+  })
+})
 test('render refuses memory the broker would refuse at start: bad quantity, out of bounds, default above ceiling', () => {
   for (const [text, pattern] of [
     ['RUNTIME_KERNEL_MEMORY=4G', /RUNTIME_KERNEL_MEMORY must be/],

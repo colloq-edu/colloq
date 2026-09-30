@@ -18,10 +18,10 @@ import { tr } from '@shared/i18n'
  * queries against it, the device cookie and the rule about expired rows.
  */
 import crypto from 'node:crypto'
-import type { IncomingHttpHeaders } from 'node:http'
 import type { Request, Response } from 'express'
 import { staffFromCookieHeader } from './admin/auth.js'
 import { db, deviceOfParticipant, getParticipant } from './db.js'
+import { clientAddress, type RequestLike } from './net/inbound.js'
 import type { Ban } from '@shared/protocol'
 
 /**
@@ -115,11 +115,8 @@ export function markDevice(req: Request, res: Response): string {
 
 /* ------------------------------------------------------------------ address */
 
-/** Loopback is a proxy on this same machine, not a student. */
-const LOOPBACK = /^(?:::1|(?:::ffff:)?127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/
-
 /**
- * The address a request came from — solely for the hint in the ban list.
+ * The address a request came from — here solely for the hint in the ban list.
  *
  * Behind the relay the server sees loopback: caddy on the VPS hands the request
  * to frps, which hands it to the client on this machine, and it reaches Colloq
@@ -129,30 +126,12 @@ const LOOPBACK = /^(?:::1|(?:::ffff:)?127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/
  * The header cannot always be trusted: anyone can write it. On an instance with
  * no proxy in front, one line in a request would swap the hint for someone
  * else's address — and the teacher would read "seems to have come back" about
- * a person who sat quietly. So the header is accepted exactly when the socket
- * peer is loopback, that is, a proxy on this same machine; in all other cases
- * the address is taken from the connection itself.
+ * a person who sat quietly. Whose header is believed, and which of its hops is
+ * the client, is decided in one place for the hint and for every per-address
+ * limit alike (net/inbound.ts · clientAddress, set by TRUSTED_PROXIES).
  */
-export function addressOf(req: {
-  headers: IncomingHttpHeaders
-  socket?: { remoteAddress?: string | undefined }
-}): string | null {
-  const peer = req.socket?.remoteAddress ?? null
-  if (peer && LOOPBACK.test(peer)) {
-    /*
-     * Cloudflare, if it is in front of us, puts the real address into its own
-     * header and appends ITSELF to the end of x-forwarded-for. Without this
-     * line, behind the proxy all visitors look like one address — Cloudflare's
-     * — and the "seems to have come back" hint starts pointing at everyone at
-     * once, that is, lying.
-     */
-    const single = (value: string | string[] | undefined): string | undefined =>
-      (Array.isArray(value) ? value[0] : value)?.split(',')[0].trim()
-    const real = single(req.headers['cf-connecting-ip']) ?? single(req.headers['x-forwarded-for'])
-    // 64 chars: room for IPv6 with a zone; a hint is no reason to keep a paragraph.
-    if (real) return real.slice(0, 64)
-  }
-  return peer
+export function addressOf(req: RequestLike): string | null {
+  return clientAddress(req)
 }
 
 /* ----------------------------------------------------------------- queries */

@@ -447,7 +447,11 @@ PY
       || die 'restore-services refuses while room Pods exist'
     k delete services -l app.kubernetes.io/managed-by=colloq-runtime --ignore-not-found --wait=true --timeout=90s
     ;;
-  status) need_cluster; k get deployments,pods,pvc; curl -fsS --max-time 5 "http://127.0.0.1:$PORT/api/health" ;;
+  # Health is asked from inside the Pod: through the NodePort this machine is a
+  # pod-network address, and the reasons go only to loopback or staff. The
+  # body is printed on 503 too, since that is when the reason is needed.
+  status) need_cluster; k get deployments,pods,pvc
+    k exec deployment/colloq-app -- node -e 'fetch("http://127.0.0.1:3000/api/health", { signal: AbortSignal.timeout(5000) }).then(async (r) => { console.log(await r.text()); process.exitCode = r.ok ? 0 : 1 }, (e) => { console.error("health: " + e.message); process.exitCode = 1 })' ;;
   logs) need_cluster; k logs -f deployment/colloq-app --tail=80 ;;
   gpu-preflight) need_cluster; gpu_preflight ;;
   smoke) need_cluster; k exec deployment/colloq-app -- node /app/dist/runtime-smoke.js ;;

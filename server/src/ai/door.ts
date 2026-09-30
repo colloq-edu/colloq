@@ -12,11 +12,11 @@ import { tr } from '@shared/i18n'
  * the door where someone forgot to update the rule.
  *
  * Exactly two things from `/ai/ask` are missing here, and neither is a loss.
- * The per-address limit lives on HTTP (bans.ts · addressOf reads the request
- * headers); a socket has an address too, but letting it in here would mean
- * dragging `Request` into a module that knows nothing about the network. And
- * the hints mode: it is about WHAT the model answers, not about whether to let
- * someone ask — the callers handle it.
+ * The per-address limit lives on HTTP (net/inbound.ts · addressForLimits reads
+ * the request headers); a socket has an address too, but letting it in here
+ * would mean dragging `Request` into a module that knows nothing about the
+ * network. And the hints mode: it is about WHAT the model answers, not about
+ * whether to let someone ask — the callers handle it.
  *
  * The room ceiling lived in routes/ai.ts and moved here with the rest: three
  * callers use it already (a question, the council summary, a hint), and its

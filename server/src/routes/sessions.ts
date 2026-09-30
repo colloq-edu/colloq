@@ -15,7 +15,8 @@ import {
   verifyHostToken,
   verifyToken,
 } from '../auth.js'
-import { addressOf, banFor, banRefusal, deviceOf } from '../bans.js'
+import { banFor, banRefusal, deviceOf } from '../bans.js'
+import { addressForLimits } from '../net/inbound.js'
 import { config } from '../config.js'
 import {
   createSession,
@@ -123,7 +124,10 @@ const arrivals = new Map<string, number[]>()
  * the whole cohort comes in; but five hundred "participants" from one address
  * over two hours (13 Sep 2026, a script against the oracle) did not fall
  * under that ceiling. A class behind one NAT joins all at once, so the window
- * is longer, and the number leaves headroom for a lecture hall.
+ * is longer, and the number leaves headroom for a lecture hall. A hall bigger
+ * than that sits behind an address the operator names in SHARED_ADDRESSES:
+ * it is not counted here at all, and the room ceiling above still holds
+ * (net/inbound.ts · addressForLimits).
  */
 const ADDRESS_WINDOW_MS = 10 * 60_000
 const MAX_NEW_PER_ADDRESS = 60
@@ -686,7 +690,7 @@ export function sessionRoutes(): Router {
     // A stranger creates a row — and this is the only place where the room
     // grows from someone else's request. Staff and those returning with their
     // own token pass by.
-    if (!known && !staff && (tooManyArrivals(sessionId) || tooManyArrivalsFrom(sessionId, addressOf(req)))) {
+    if (!known && !staff && (tooManyArrivals(sessionId) || tooManyArrivalsFrom(sessionId, addressForLimits(req)))) {
       tally('joins')
       // The first refusal in a minute goes in words, the rest as a number in
       // the summary: the load test on five hundred students produced 378 of

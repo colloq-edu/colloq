@@ -299,7 +299,7 @@ def render(value, node_name, state_dir, runtime_env=None):
             'resources': {'requests': {'cpu': '250m' if app else '100m', 'memory': '256Mi' if app else '128Mi'},
                           'limits': {'cpu': '2' if app else '1', 'memory': '2Gi' if app else '512Mi'}},
             'livenessProbe': {**({'httpGet': {'path': '/api/livez', 'port': port}} if app else {'tcpSocket': {'port': port}}), 'initialDelaySeconds': 10, 'periodSeconds': 10},
-            'readinessProbe': {'httpGet': {'path': '/api/health', 'port': port}, 'periodSeconds': 5} if app else
+            'readinessProbe': {'httpGet': {'path': '/api/readyz', 'port': port}, 'periodSeconds': 5} if app else
                               {'tcpSocket': {'port': port}, 'periodSeconds': 5}}
         if app:
             container['envFrom'] = [{'secretRef': {'name': 'colloq-app-config'}}]
@@ -460,6 +460,9 @@ def main():
         allowed = {'UI_LANGUAGE', 'PUBLIC_URL', 'ADMIN_EMAIL', 'INSTITUTION', 'OPEN_SEMINAR_CREATION',
             'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'AI_PROVIDER', 'AI_REASONING',
             'SESSION_SECRET', 'TZ', 'MAX_UPLOAD_MB', 'MAX_SESSION_MB', 'COUNCIL_COPY_MB', 'COUNCIL_MEMORY_GUARD'}
+        # The host proxy reaches the app through the NodePort, which rewrites the
+        # source address: without TRUSTED_PROXIES every student is that address.
+        allowed |= {'TRUSTED_PROXIES', 'TRUST_CF_CONNECTING_IP', 'SHARED_ADDRESSES', 'HSTS'}
         settings = {k: v for k, v in read_env(args.env_file).items() if k in allowed} if args.env_file else {}
         print(json.dumps(resource('Secret', 'colloq-app-config', type='Opaque', stringData=settings)))
     else:

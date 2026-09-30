@@ -25,9 +25,10 @@ import { kernelRetirementInProgress } from './kernel/retirement.js'
 import http from 'node:http'
 import { WebSocketServer } from 'ws'
 import type { Duplex } from 'node:stream'
-import { isClaimed, readSetupToken, setupTokenPath } from './admin/auth.js'
+import { isClaimed, originAllowed, readSetupToken, setupTokenPath } from './admin/auth.js'
 import { verifyToken, type TokenPayload } from './auth.js'
 import { banFor, banRefusal, type BanInForce } from './bans.js'
+import { describeInboundPolicy, inboundPolicy } from './net/inbound.js'
 import { aiEnabled, config, DEV_JUPYTER_TOKEN } from './config.js'
 import { handleCollabSocket, roomCensus, shutdownCollab } from './collab/index.js'
 import { handleFileSocket } from './collab/files.js'
@@ -174,7 +175,11 @@ function reject(socket: Duplex): void {
  * and "403 and why" there is worth exactly as much as an evening of guessing.
  */
 function refuseBanned(socket: Duplex, ban: BanInForce): void {
-  const body = Buffer.from(JSON.stringify(banRefusal(ban)), 'utf8')
+  refuse403(socket, banRefusal(ban))
+}
+
+function refuse403(socket: Duplex, reply: object): void {
+  const body = Buffer.from(JSON.stringify(reply), 'utf8')
   socket.write(
     'HTTP/1.1 403 Forbidden\r\nConnection: close\r\n' +
       'Content-Type: application/json; charset=utf-8\r\n' +
@@ -214,6 +219,27 @@ server.on('upgrade', (req, socket, head) => {
   // Until handleUpgrade adopts it this socket has no error handler, and a client
   // that vanishes mid-handshake would otherwise throw out of the event loop.
   socket.on('error', () => socket.destroy())
+
+  /*
+   * A page from another origin opens no socket here, on any of the three
+   * paths.
+   *
+   * The role on the socket comes from the teacher's cookie (effectiveRole),
+   * and a browser attaches that cookie to a WebSocket opened by any page of
+   * the same site: SameSite looks at the registrable domain, not the host. A
+   * page on a neighbouring subdomain of the university, holding any student's
+   * room token, could open the control socket with the teacher's rights. The
+   * rule is the one every write under /api already obeys (admin/auth.ts ·
+   * originAllowed): a sent Origin must name this server, the dev server on
+   * this machine or the share tunnel; a missing one is not a browser (curl,
+   * tests, the load scripts) and passes, as it does there.
+   */
+  if (!originAllowed(req.headers.origin, req.headers.host)) {
+    return refuse403(socket, {
+      error: tr("server.requestBlockedThisPageUsesADifferent.dd9b4b"),
+      reason: 'forbidden',
+    })
+  }
 
   let url: URL
   try {
@@ -341,6 +367,7 @@ server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const))
   console.log(`colloq ${COLLOQ_VERSION} ready — open ${config.publicUrl} · ai ${ai} · jupyter ${config.jupyter.url}`)
   announceSetupToken()
   announceBind()
+  announceProxies()
   announceJupyterToken()
   /*
    * Leftovers from a crash are removed at startup, not "some day at the next
@@ -406,6 +433,21 @@ function announceBind(): void {
       '(Colloq reaches the outside through a tunnel, see make host); under make up this is as it should be — ' +
       'otherwise the server in the container cannot be reached, and compose decides the port publishing.',
   )
+}
+
+/**
+ * Whose word about the client address is taken, said once per start.
+ *
+ * Unlike the lines around it this one is printed always: behind a campus
+ * proxy the only symptom of a wrong TRUSTED_PROXIES is the whole class
+ * sharing one address, which nobody sees until the sixty-first student is
+ * turned away at the door. One line at start is the cheapest place to see
+ * that the setting arrived, and a dropped entry is named right above it.
+ */
+function announceProxies(): void {
+  const policy = inboundPolicy()
+  for (const problem of policy.problems) console.warn(`[net] ${problem}`)
+  console.log(`[net] ${describeInboundPolicy(policy)}`)
 }
 
 /**
