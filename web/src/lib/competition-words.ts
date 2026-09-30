@@ -430,13 +430,24 @@ export function lastScoringNote(
  * file. The reason arrives as one line from the metric, and it is cut at the
  * first full stop: that is how all catalog messages are written ("… has a
  * prediction. submission.csv has 391 rows instead of 397…").
+ *
+ * A stop inside quotes is not one: the quotes hold the participant's own
+ * data. The column to_csv() adds for the index is “Unnamed: 0”, and cut at
+ * its colon, the title ended in the middle of the name.
  */
 export function splitError(text: string | null): { head: string; rest: string } {
   const value = (text ?? '').trim()
   if (!value) return { head: '', rest: '' }
-  const at = value.search(/[.!?:](\s|$)/)
-  if (at < 0 || at >= value.length - 1) return { head: value, rest: '' }
-  return { head: value.slice(0, at + 1).trim(), rest: value.slice(at + 1).trim() }
+  let quoted = 0
+  for (let at = 0; at < value.length - 1; at++) {
+    const char = value[at]
+    if (char === '«' || char === '“') quoted += 1
+    else if ((char === '»' || char === '”') && quoted > 0) quoted -= 1
+    else if (quoted === 0 && '.!?:'.includes(char) && /\s/.test(value[at + 1])) {
+      return { head: value.slice(0, at + 1).trim(), rest: value.slice(at + 1).trim() }
+    }
+  }
+  return { head: value, rest: '' }
 }
 
 export interface RowWords {

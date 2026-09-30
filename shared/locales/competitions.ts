@@ -425,6 +425,23 @@ export const competitionsMessages: MessageCatalog = {
       other: 'The notebook did not finish within {count} minutes: it was stopped at cell {cell} of {cells}.',
     },
   },
+  // The harness stops a late notebook a few seconds before the host's deadline
+  // to save what it printed (harness.ts · STOP_EARLY), and that comes back as
+  // cell_timeout. Unsaid, a run stopped at 118 s of 120 read as a limit shorter
+  // than the one stated. A kill by the host at the deadline itself keeps the
+  // words above: nothing was stopped early there.
+  'competitions.answer.timeoutEarly': {
+    ru: {
+      one: 'Тетрадь не уложилась в {count} минуту: прогон остановлен на ячейке {cell} из {cells} за несколько секунд до лимита, чтобы успеть сохранить её вывод.',
+      few: 'Тетрадь не уложилась в {count} минуты: прогон остановлен на ячейке {cell} из {cells} за несколько секунд до лимита, чтобы успеть сохранить её вывод.',
+      many: 'Тетрадь не уложилась в {count} минут: прогон остановлен на ячейке {cell} из {cells} за несколько секунд до лимита, чтобы успеть сохранить её вывод.',
+      other: 'Тетрадь не уложилась в {count} минуты: прогон остановлен на ячейке {cell} из {cells} за несколько секунд до лимита, чтобы успеть сохранить её вывод.',
+    },
+    en: {
+      one: 'The notebook did not finish within {count} minute: it was stopped at cell {cell} of {cells} a few seconds before the limit, so that its output could still be saved.',
+      other: 'The notebook did not finish within {count} minutes: it was stopped at cell {cell} of {cells} a few seconds before the limit, so that its output could still be saved.',
+    },
+  },
   'competitions.answer.outOfMemory': {
     ru: 'Тетрадь заняла больше {count} ГБ и была остановлена на ячейке {cell}.',
     en: 'The notebook used more than {count} GB and was stopped at cell {cell}.',
@@ -466,6 +483,13 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'В ответе нет колонки «{column}». Есть: {columns}.',
     en: 'The answer has no column “{column}”. It has: {columns}.',
   },
+  // A column with an empty header, which pandas reads back as "Unnamed: 0",
+  // that the answer key does not have: the index to_csv() writes without
+  // index=False (harness.ts · align). {file} is the answer's file name.
+  'competitions.answer.indexColumn': {
+    ru: "В ответе лишняя колонка «{column}» — это индекс таблицы. Запишите ответ так: sub.to_csv('{file}', index=False).",
+    en: "The answer has an extra column “{column}” — the DataFrame index. Write the answer like this: sub.to_csv('{file}', index=False).",
+  },
   'competitions.answer.duplicateId': {
     ru: 'Колонка «{column}» повторяется, например {example}. На каждую строку теста нужен ровно один прогноз.',
     en: 'Column “{column}” repeats, for example {example}. Each test row needs exactly one prediction.',
@@ -482,6 +506,14 @@ export const competitionsMessages: MessageCatalog = {
       other: 'The answer is missing {count} rows, for example {column}={example}.',
     },
   },
+  // The rows are missing only because their ids are written in another form:
+  // case, hyphens, spaces around, a number's leading zeros or ".0" (harness.ts
+  // · align). {example} is an id as the answer writes it, {expected} the same
+  // id as the test has it.
+  'competitions.answer.idForm': {
+    ru: '{column} в ответе записаны в другом виде, чем в тесте: например «{example}» вместо «{expected}» — сохраните {column} как в файле, строкой.',
+    en: 'The answer writes {column} differently from the test: for example “{example}” instead of “{expected}”. Keep the {column} values exactly as in the file, as strings.',
+  },
   // Every row is there, but a prediction column has blanks where the answer
   // key has values (harness.ts · align). {column} is the prediction column,
   // {idColumn}={example} the first such row.
@@ -495,6 +527,32 @@ export const competitionsMessages: MessageCatalog = {
     en: {
       one: 'Column {column} has {count} empty prediction, for example {idColumn}={example}.',
       other: 'Column {column} has {count} empty predictions, for example {idColumn}={example}.',
+    },
+  },
+  // Text in a prediction column where the answer key holds numbers (harness.ts
+  // · align). {value} is one such value and {idColumn}={example} its row. The
+  // separator is named only when a value is a number with a decimal comma,
+  // and then {value} is that one.
+  'competitions.answer.nonNumeric': {
+    ru: 'В колонке {column} нечисловые значения, например «{value}» ({idColumn}={example}).',
+    en: 'Column {column} has non-numeric values, for example “{value}” ({idColumn}={example}).',
+  },
+  'competitions.answer.decimalComma': {
+    ru: 'В колонке {column} нечисловые значения, например «{value}» ({idColumn}={example}). Десятичный разделитель — точка.',
+    en: 'Column {column} has non-numeric values, for example “{value}” ({idColumn}={example}). Use a dot as the decimal separator.',
+  },
+  // Infinity in a prediction column where the answer key holds numbers
+  // (harness.ts · align): it reads as a number, and the metric crashes on it.
+  'competitions.answer.infinitePredictions': {
+    ru: {
+      one: 'В колонке {column} {count} бесконечное значение (inf), например {idColumn}={example}.',
+      few: 'В колонке {column} {count} бесконечных значения (inf), например {idColumn}={example}.',
+      many: 'В колонке {column} {count} бесконечных значений (inf), например {idColumn}={example}.',
+      other: 'В колонке {column} {count} бесконечного значения (inf), например {idColumn}={example}.',
+    },
+    en: {
+      one: 'Column {column} has {count} infinite value (inf), for example {idColumn}={example}.',
+      other: 'Column {column} has {count} infinite values (inf), for example {idColumn}={example}.',
     },
   },
   'competitions.answer.unparsable': {

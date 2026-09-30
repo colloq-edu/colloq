@@ -897,7 +897,13 @@ export function notebookNote(outcome: RunOutcome, competition: Competition, sour
     }
     case 'cell_timeout':
     case 'timeout':
-      return tr('competitions.answer.timeout', {
+      // cell_timeout is the harness stopping the notebook itself, a few
+      // seconds before the host's deadline so that its output is saved
+      // (harness.ts · STOP_EARLY), and the words say so: unsaid, a run
+      // stopped at 118 s of 120 read as a limit shorter than the stated one.
+      // A timeout is the host's kill at the deadline itself, and nothing
+      // about it was early.
+      return tr(outcome.status === 'cell_timeout' ? 'competitions.answer.timeoutEarly' : 'competitions.answer.timeout', {
         count: Math.max(1, Math.round(competition.limits.wallSeconds / 60)),
         cell: at,
         cells: outcome.cells,

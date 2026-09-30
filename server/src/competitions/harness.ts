@@ -857,6 +857,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -876,6 +877,26 @@ ID_COLUMN = os.environ.get("COMP_ID_COLUMN", "id")
 USAGE_COLUMN = os.environ.get("COMP_USAGE_COLUMN", "Usage")
 PUBLIC_PERCENT = float(os.environ.get("COMP_PUBLIC_PERCENT", "30"))
 SPLIT_SEED = os.environ.get("COMP_SPLIT_SEED", "")
+# The name pandas gives a column whose header is empty: "Unnamed: 0" is the
+# index to_csv() writes unless told index=False, and ".1" follows when the
+# name is taken already — a file read with its index and written back with
+# another one.
+UNNAMED = re.compile(r"Unnamed: \\d+(?:\\.\\d+)?")
+# A number with a decimal comma: what to_csv(decimal=",") writes, and what a
+# spreadsheet saves in a locale that uses one.
+DECIMAL_COMMA = re.compile(r"[+-]?(?:\\d+,\\d*|,\\d+)(?:[eE][+-]?\\d+)?")
+# An id that is a whole number, perhaps written as a float: "007", "7", "7.0".
+WHOLE_NUMBER = re.compile(r"\\d+(?:\\.0*)?")
+# A whole number written the one plain way: what a key of numeric ids holds.
+PLAIN_WHOLE = re.compile(r"-?(?:0|[1-9]\\d*)")
+# A whole number in any spelling a notebook produces: "+7", "007", "7.0".
+SPELLED_WHOLE = re.compile(r"[+-]?\\d+(?:\\.0*)?")
+
+
+def whole_spelling(value):
+    """A whole number's other spellings brought to the plain one; any other id as it was."""
+    text = str(value).strip()
+    return str(int(text.split(".")[0])) if SPELLED_WHOLE.fullmatch(text) else value
 
 
 def load_metric():
@@ -919,6 +940,31 @@ def plain(value):
     return item() if callable(item) else value
 
 
+def shown(value, limit: int = 60) -> str:
+    """
+    A value quoted back to the participant: plain, and cut short visibly
+    rather than silently.
+
+    A refusal that quotes one is dumped with ensure_ascii off: participant_failure
+    keeps the first 1000 characters, and escaped, a Cyrillic value spends six of
+    them on every letter.
+    """
+    text = str(plain(value))
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def id_form(value) -> str:
+    """
+    An id without what notebooks tend to change in one: case, hyphens, the
+    spaces around it, and in a whole number the leading zeros and a float's
+    ".0".
+    """
+    text = str(value).strip().lower().replace("-", "")
+    if WHOLE_NUMBER.fullmatch(text):
+        text = text.split(".")[0].lstrip("0") or "0"
+    return text
+
+
 def blank(values: pd.Series) -> pd.Series:
     """
     NaN, None and text that is empty once stripped: a cell without a value.
@@ -955,6 +1001,32 @@ def align(solution: pd.DataFrame, submission: pd.DataFrame) -> pd.DataFrame:
                 }
             )
         )
+    # The DataFrame's own index, which to_csv() writes as a first column with
+    # an empty header unless told index=False. Left to the teacher's score(),
+    # it reads as "name the columns id, target in this order", and nothing in
+    # that points at the index. A column the answer key has itself is left
+    # alone: then it is part of the answer the key expects back.
+    unnamed = [
+        column
+        for column in submission.columns
+        if column not in solution.columns and (UNNAMED.fullmatch(str(column)) or not str(column).strip())
+    ]
+    if unnamed:
+        raise ParticipantVisibleError(
+            json.dumps(
+                {"code": "indexColumn", "params": {"column": shown(unnamed[0]), "file": SUBMISSION.name}},
+                ensure_ascii=False,
+            )
+        )
+    # A key of plain whole numbers keeps the leniency it always had: pandas
+    # used to read both files' ids as numbers, so 100002.0 or 0100002 in an
+    # answer matched 100002 in the key, and a notebook whose ids went through
+    # a float must not start failing now. Ids are read as text all the same
+    # (a UUID or "007" must never become a number), and every other key is
+    # compared exactly as written.
+    if len(solution) and solution[ID_COLUMN].map(lambda value: bool(PLAIN_WHOLE.fullmatch(str(value)))).all():
+        submission = submission.copy()
+        submission[ID_COLUMN] = submission[ID_COLUMN].map(whole_spelling)
     if submission[ID_COLUMN].duplicated().any():
         dup = submission.loc[submission[ID_COLUMN].duplicated(), ID_COLUMN].iloc[0]
         raise ParticipantVisibleError(
@@ -964,6 +1036,34 @@ def align(solution: pd.DataFrame, submission: pd.DataFrame) -> pd.DataFrame:
     want = solution[ID_COLUMN]
     missing = want[~want.isin(indexed.index)]
     if len(missing):
+        # The rows may be there with their ids in another form: upper-cased,
+        # stripped of hyphens, or read in as numbers and written back as 7 or
+        # 7.0 for "007". Named as missing, they send the participant looking
+        # for rows they have; one id next to the same id as the test writes it
+        # shows what to change. Only when that form explains at least half of
+        # what is missing: below that the rows are missing indeed, and the
+        # count says more than an example.
+        forms: dict[str, str] = {}
+        for sent in indexed.index[~indexed.index.isin(want)]:
+            forms.setdefault(id_form(sent), sent)
+        found, pair = 0, None
+        for expected in missing:
+            sent = forms.get(id_form(expected))
+            if sent is None:
+                continue
+            found += 1
+            if pair is None:
+                pair = (sent, expected)
+        if pair is not None and 2 * found >= len(missing):
+            raise ParticipantVisibleError(
+                json.dumps(
+                    {
+                        "code": "idForm",
+                        "params": {"column": ID_COLUMN, "example": shown(pair[0]), "expected": shown(pair[1])},
+                    },
+                    ensure_ascii=False,
+                )
+            )
         raise ParticipantVisibleError(
             json.dumps(
                 {
@@ -1004,6 +1104,64 @@ def align(solution: pd.DataFrame, submission: pd.DataFrame) -> pd.DataFrame:
                     }
                 )
             )
+        # Infinity where the answer key holds numbers: it parses as a number,
+        # so the text check below lets it through, and a metric such as
+        # roc_auc_score then crashes on it with nothing for the participant.
+        key = solution[column].dtype
+        if pd.api.types.is_numeric_dtype(key) and not pd.api.types.is_bool_dtype(key):
+            infinite = (pd.to_numeric(aligned[column], errors="coerce").abs() == float("inf")).to_numpy()
+            if infinite.any():
+                raise ParticipantVisibleError(
+                    json.dumps(
+                        {
+                            "code": "infinitePredictions",
+                            "params": {
+                                "count": int(infinite.sum()),
+                                "column": str(column)[:100],
+                                "idColumn": ID_COLUMN,
+                                "example": shown(aligned[ID_COLUMN].to_numpy()[infinite][0]),
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+        # Text where the answer key holds numbers. A notebook that wrote its
+        # answer with to_csv(decimal=",") sends "0,4478" for 0.4478, and the
+        # metric's float() crashes on it: the teacher gets a traceback, the
+        # participant not a word. Only a key of numbers asks for them (pandas
+        # counts true/false as numbers too, a key of them does not), and a
+        # blank is not text: it stays the refusal above's.
+        key = solution[column].dtype
+        if (
+            not pd.api.types.is_numeric_dtype(key)
+            or pd.api.types.is_bool_dtype(key)
+            or pd.api.types.is_numeric_dtype(aligned[column].dtype)
+        ):
+            continue
+        values = aligned[column]
+        wrong = (pd.to_numeric(values, errors="coerce").isna() & ~blank(values)).to_numpy()
+        if wrong.any():
+            rows = wrong.nonzero()[0]
+            texts = values.to_numpy()
+            # A decimal comma is looked for among all of them, not only in the
+            # first: it is the likelier fix, and naming the separator next to
+            # an example without a comma would read as nonsense.
+            comma = next((row for row in rows if DECIMAL_COMMA.fullmatch(str(texts[row]).strip())), None)
+            row = rows[0] if comma is None else comma
+            raise ParticipantVisibleError(
+                json.dumps(
+                    {
+                        "code": "nonNumeric" if comma is None else "decimalComma",
+                        "params": {
+                            "column": str(column)[:100],
+                            "value": shown(texts[row]),
+                            "idColumn": ID_COLUMN,
+                            "example": shown(aligned[ID_COLUMN].to_numpy()[row]),
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            )
     return aligned
 
 
@@ -1029,12 +1187,18 @@ def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     result: dict = {"status": "metric_error"}
     started = time.monotonic()
+    # The ids are read as the text they are, in both files. Left to pandas,
+    # "001" became 1, and one stray value turned the answer's column into text
+    # while the key's stayed numbers, so that not a single row matched. A
+    # converter rather than dtype=str: it also keeps an id such as "NA" from
+    # turning into a missing value.
+    ids_as_text = {ID_COLUMN: str}
     try:
-        solution = pd.read_csv(SOLUTION)
+        solution = pd.read_csv(SOLUTION, converters=ids_as_text)
         if ID_COLUMN not in solution.columns:
             raise RuntimeError(f"solution.csv has no column {ID_COLUMN!r}")
         try:
-            submission = pd.read_csv(SUBMISSION)
+            submission = pd.read_csv(SUBMISSION, converters=ids_as_text)
         except Exception as exc:  # noqa: BLE001
             raise ParticipantVisibleError(
                 json.dumps({"code": "unparsable", "params": {"reason": f"{type(exc).__name__}: {exc}"[:300]}})

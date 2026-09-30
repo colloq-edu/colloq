@@ -1035,76 +1035,253 @@ test('the container splits rows exactly the way the page shows it', (t) => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-/* ------------------------------------------------ blanks in the prediction */
+/* --------------------------------------- the answer against the answer key */
 
 const pandasHere = spawnSync('python3', ['-c', 'import pandas'], { encoding: 'utf8' }).status === 0
+const WITH_PANDAS = { skip: pandasHere ? false : 'no python3 with pandas: the scoring program runs only where it can' }
 
-test('blank predictions are refused before score(), with the column, the count and a row',
-  { skip: pandasHere ? false : 'no python3 with pandas: the scoring program runs only where it can' }, () => {
-    const dir = fs.mkdtempSync(path.join(process.env.DATA_DIR as string, 'score-'))
-    // A metric that does not look for blanks itself: whatever refuses them
-    // below is the platform, before score().
-    fs.writeFileSync(path.join(dir, 'metric.py'),
-      'def score(solution, submission):\n    return float(submission["target"].fillna(0).astype(float).sum())\n')
-    const judge = (solution: string, submission: string) => {
-      fs.writeFileSync(path.join(dir, 'solution.csv'), solution)
-      fs.writeFileSync(path.join(dir, 'submission.csv'), submission)
-      fs.rmSync(path.join(dir, 'out'), { recursive: true, force: true })
-      const got = spawnSync('python3', [path.join(harnessDir(), 'score_metric.py')], {
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          COMP_SOLUTION: path.join(dir, 'solution.csv'),
-          COMP_SUBMISSION: path.join(dir, 'submission.csv'),
-          COMP_METRIC: path.join(dir, 'metric.py'),
-          COMP_OUT: path.join(dir, 'out'),
-          COMP_ATTEMPT_ID: 'attempt-1',
-          COMP_PUBLIC_PERCENT: '50',
-          COMP_SPLIT_SEED: 'seed',
-        },
-      })
-      assert.ok(fs.existsSync(path.join(dir, 'out', 'score.json')), got.stderr)
-      const { wall: _wall, attemptId: _attempt, ...report } =
-        JSON.parse(fs.readFileSync(path.join(dir, 'out', 'score.json'), 'utf8')) as Record<string, unknown>
-      return report
-    }
-    const solution = 'id,target\n100001,1\n100002,2\n100003,3\n100004,4\n100005,5\n100006,6\n'
+/**
+ * A metric that looks for nothing itself: whatever refuses an answer below is
+ * the platform, before score(). Its float() crashes on text, the way the
+ * class's ROC AUC did on "0,4478…", so text that got past the platform would
+ * come back as metric_error.
+ */
+const SUM_METRIC = 'def score(solution, submission):\n    return float(submission["target"].fillna(0).astype(float).sum())\n'
 
-    // An empty field, a NaN and a blank string, shuffled, plus an extra row the
-    // key does not have. The example is the first blank in the KEY's order, and
-    // the extra row is not counted: it is never scored.
-    assert.deepEqual(
-      judge(solution, 'id,target\n100006,6\n100004,NaN\n100005," "\n100001,1\n100003,3\n100002,\n999999,\n'),
-      { status: 'participant_error', code: 'emptyPredictions', params: { count: 3, column: 'target', idColumn: 'id', example: '100002' } },
-    )
-    // Missing rows are named first: that is the bigger hole.
-    assert.equal(judge(solution, 'id,target\n100001,\n100002,2\n100003,3\n100004,4\n100005,5\n').code, 'missingRows')
-    // A blank the key shares is a gap in the teacher's answers, not a
-    // forgotten prediction.
-    assert.equal(
-      judge('id,target\n100001,1\n100002,\n100003,3\n', 'id,target\n100001,1\n100002,\n100003,3\n').status,
-      'ok',
-    )
-    // Only the key's columns are predictions; Usage is the split, not an answer.
-    assert.equal(
-      judge(`id,target,Usage\n100001,1,Public\n100002,2,Private\n`, 'id,target,note,Usage\n100001,1,,\n100002,2,,\n').status,
-      'ok',
-    )
+/**
+ * The scoring program as the metric container runs it, on one answer key and
+ * one answer: what score.json says, without its wall time and attempt.
+ */
+function judge(solution: string, submission: string, metric = SUM_METRIC): Record<string, unknown> {
+  const dir = fs.mkdtempSync(path.join(process.env.DATA_DIR as string, 'score-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'solution.csv'), solution)
+    fs.writeFileSync(path.join(dir, 'submission.csv'), submission)
+    fs.writeFileSync(path.join(dir, 'metric.py'), metric)
+    const got = spawnSync('python3', [path.join(harnessDir(), 'score_metric.py')], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        COMP_SOLUTION: path.join(dir, 'solution.csv'),
+        COMP_SUBMISSION: path.join(dir, 'submission.csv'),
+        COMP_METRIC: path.join(dir, 'metric.py'),
+        COMP_OUT: path.join(dir, 'out'),
+        COMP_ATTEMPT_ID: 'attempt-1',
+        COMP_PUBLIC_PERCENT: '50',
+        COMP_SPLIT_SEED: 'seed',
+      },
+    })
+    assert.ok(fs.existsSync(path.join(dir, 'out', 'score.json')), got.stderr)
+    const { wall: _wall, attemptId: _attempt, ...report } =
+      JSON.parse(fs.readFileSync(path.join(dir, 'out', 'score.json'), 'utf8')) as Record<string, unknown>
+    return report
+  } finally {
     fs.rmSync(dir, { recursive: true, force: true })
-  })
+  }
+}
+
+/** Our refusal as the participant reads it: the code turned into a sentence. */
+const refusal = (code: string, params: Record<string, string | number>) => metricNote({
+  status: 'participant_error', public: null, private: null, teacherOnly: null, wall: 1,
+  message: JSON.stringify({ code, params }),
+  diagnostics: { exit: 1, oomKilled: false, backend: 'test' },
+})
+
+/** Ids as the class rehearsal had them: UUIDv7, text through and through. */
+const UUIDS = [
+  '01976194-b521-7cd0-9c3b-19651fa1ff33',
+  '01976194-b522-7a10-8f00-0123456789ab',
+  '01976194-b523-7e55-a1b2-c3d4e5f60718',
+]
+
+/** An answer file: an id and a target per row, written as given. */
+const answer = (rows: Array<[string, string]>) => `id,target\n${rows.map(([id, target]) => `${id},${target}\n`).join('')}`
+
+test('blank predictions are refused before score(), with the column, the count and a row', WITH_PANDAS, () => {
+  const solution = 'id,target\n100001,1\n100002,2\n100003,3\n100004,4\n100005,5\n100006,6\n'
+
+  // An empty field, a NaN and a blank string, shuffled, plus an extra row the
+  // key does not have. The example is the first blank in the KEY's order, and
+  // the extra row is not counted: it is never scored.
+  assert.deepEqual(
+    judge(solution, 'id,target\n100006,6\n100004,NaN\n100005," "\n100001,1\n100003,3\n100002,\n999999,\n'),
+    { status: 'participant_error', code: 'emptyPredictions', params: { count: 3, column: 'target', idColumn: 'id', example: '100002' } },
+  )
+  // Missing rows are named first: that is the bigger hole.
+  assert.equal(judge(solution, 'id,target\n100001,\n100002,2\n100003,3\n100004,4\n100005,5\n').code, 'missingRows')
+  // A blank the key shares is a gap in the teacher's answers, not a
+  // forgotten prediction.
+  assert.equal(
+    judge('id,target\n100001,1\n100002,\n100003,3\n', 'id,target\n100001,1\n100002,\n100003,3\n').status,
+    'ok',
+  )
+  // Only the key's columns are predictions; Usage is the split, not an answer.
+  assert.equal(
+    judge(`id,target,Usage\n100001,1,Public\n100002,2,Private\n`, 'id,target,note,Usage\n100001,1,,\n100002,2,,\n').status,
+    'ok',
+  )
+})
 
 test('blank predictions are named in the instance language, with a count', () => {
-  const refused = (count: number) => metricNote({
-    status: 'participant_error', public: null, private: null, teacherOnly: null, wall: 1,
-    message: JSON.stringify({ code: 'emptyPredictions', params: { count, column: 'target', idColumn: 'id', example: '100002' } }),
-    diagnostics: { exit: 1, oomKilled: false, backend: 'test' },
-  })
+  const refused = (count: number) => refusal('emptyPredictions', { count, column: 'target', idColumn: 'id', example: '100002' })
   assert.equal(refused(20), 'В колонке target 20 пустых прогнозов, например id=100002.')
   assert.equal(refused(1), 'В колонке target 1 пустой прогноз, например id=100002.')
   assert.equal(refused(3), 'В колонке target 3 пустых прогноза, например id=100002.')
   inEnglish(() => {
     assert.equal(refused(20), 'Column target has 20 empty predictions, for example id=100002.')
     assert.equal(refused(1), 'Column target has 1 empty prediction, for example id=100002.')
+  })
+})
+
+test('text where the key holds numbers is refused before score(), and a decimal comma is named as such', WITH_PANDAS, () => {
+  const key = answer([[UUIDS[0], '0'], [UUIDS[1], '1'], [UUIDS[2], '1']])
+  const rows = (...targets: string[]) => answer(UUIDS.map((id, i) => [id, targets[i]]))
+  const refused = (code: string, value: string, row: string) =>
+    ({ status: 'participant_error', code, params: { column: 'target', value, idColumn: 'id', example: row } })
+
+  // What to_csv(decimal=",") writes: each value quoted, with a comma in it.
+  // The rehearsal's metric crashed on the first one, and the participant
+  // read nothing at all.
+  assert.deepEqual(judge(key, rows('"0,44781561866190617"', '"0,9"', '"0,7"')), refused('decimalComma', '0,44781561866190617', UUIDS[0]))
+  // Text that is no number with a comma says nothing about the separator.
+  assert.deepEqual(judge(key, rows('0.4', 'abc', '0.7')), refused('nonNumeric', 'abc', UUIDS[1]))
+  // A comma further down still names the separator, by that value.
+  assert.deepEqual(judge(key, rows('abc', '0.9', '"0,7"')), refused('decimalComma', '0,7', UUIDS[2]))
+
+  // A blank is an empty prediction, not text: it is named first, and counted
+  // alone.
+  assert.deepEqual(judge(key, rows('', 'abc', '0.7')),
+    { status: 'participant_error', code: 'emptyPredictions', params: { count: 1, column: 'target', idColumn: 'id', example: UUIDS[0] } })
+  // Where the key has no value, a blank stays no prediction, even one pandas
+  // reads as text (" "): the text further down is the refusal, by its own row.
+  const gap = answer([[UUIDS[0], '0'], [UUIDS[1], ''], [UUIDS[2], '1']])
+  assert.deepEqual(judge(gap, rows('0.4', '" "', 'x')), refused('nonNumeric', 'x', UUIDS[2]))
+  assert.deepEqual(judge(gap, rows('0.4', '', 'x')), refused('nonNumeric', 'x', UUIDS[2]))
+  // Numbers in a column pandas left as text for that blank are numbers.
+  const lenient = 'import pandas as pd\n\ndef score(solution, submission):\n    return float(pd.to_numeric(submission["target"], errors="coerce").fillna(0).sum())\n'
+  assert.equal(judge(gap, rows('1e-3', '" "', ' 0.7'), lenient).status, 'ok')
+  // A key of labels asks for no numbers.
+  const accuracy = 'def score(solution, submission):\n    return float((solution["target"] == submission["target"]).mean())\n'
+  assert.equal(judge('id,target\na,cat\nb,dog\n', 'id,target\na,cat\nb,mouse\n', accuracy).status, 'ok')
+})
+
+test('text in a number column is named in the instance language, the separator only after a comma', () => {
+  const params = { column: 'target', value: '0,44781561866190617', idColumn: 'id', example: UUIDS[0] }
+  assert.equal(refusal('decimalComma', params),
+    `В колонке target нечисловые значения, например «0,44781561866190617» (id=${UUIDS[0]}). Десятичный разделитель — точка.`)
+  assert.equal(refusal('nonNumeric', { ...params, value: 'abc' }),
+    `В колонке target нечисловые значения, например «abc» (id=${UUIDS[0]}).`)
+  inEnglish(() => {
+    assert.equal(refusal('decimalComma', params),
+      `Column target has non-numeric values, for example “0,44781561866190617” (id=${UUIDS[0]}). Use a dot as the decimal separator.`)
+    assert.equal(refusal('nonNumeric', { ...params, value: 'abc' }),
+      `Column target has non-numeric values, for example “abc” (id=${UUIDS[0]}).`)
+  })
+})
+
+test('infinity where the key holds numbers is refused with a count and a row', WITH_PANDAS, () => {
+  const key = answer(UUIDS.map((id, i) => [id, String(i % 2)]))
+  const result = judge(key, answer(UUIDS.map((id, i) => [id, i === 1 ? 'inf' : '0.5'])))
+  assert.deepEqual(result, { status: 'participant_error', code: 'infinitePredictions', params: { count: 1, column: 'target', idColumn: 'id', example: UUIDS[1] } })
+  assert.equal(refusal('infinitePredictions', { count: 1, column: 'target', idColumn: 'id', example: UUIDS[1] }),
+    `В колонке target 1 бесконечное значение (inf), например id=${UUIDS[1]}.`)
+  inEnglish(() => assert.equal(refusal('infinitePredictions', { count: 2, column: 'target', idColumn: 'id', example: UUIDS[1] }),
+    `Column target has 2 infinite values (inf), for example id=${UUIDS[1]}.`))
+})
+
+test('ids are compared as written, and ids in another form are named as such rather than as missing', WITH_PANDAS, () => {
+  const key = answer(UUIDS.map((id, i) => [id, String(i)]))
+  const written = (form: (id: string) => string) => answer(UUIDS.map((id, i) => [form(id), String(i)]))
+  const otherForm = (example: string, expected: string) =>
+    ({ status: 'participant_error', code: 'idForm', params: { column: 'id', example, expected } })
+
+  // Upper-cased, stripped of hyphens, both, or with a space in front: every
+  // row is there, and the refusal shows one id next to the same id in the test.
+  assert.deepEqual(judge(key, written((id) => id.toUpperCase())), otherForm(UUIDS[0].toUpperCase(), UUIDS[0]))
+  assert.deepEqual(judge(key, written((id) => id.replace(/-/g, ''))), otherForm('01976194b5217cd09c3b19651fa1ff33', UUIDS[0]))
+  assert.deepEqual(judge(key, written((id) => id.replace(/-/g, '').toUpperCase())), otherForm('01976194B5217CD09C3B19651FA1FF33', UUIDS[0]))
+  assert.deepEqual(judge(key, written((id) => `" ${id}"`)), otherForm(` ${UUIDS[0]}`, UUIDS[0]))
+
+  // Rows that are simply not there stay missing, with the count, as before.
+  assert.deepEqual(judge(key, answer([[UUIDS[0], '0']])),
+    { status: 'participant_error', code: 'missingRows', params: { count: 2, column: 'id', example: UUIDS[1] } })
+  // One id in another form among three missing ones does not explain them:
+  // the rows are missing, and the count says so.
+  assert.deepEqual(judge(key, answer([[UUIDS[1].toUpperCase(), '1']])),
+    { status: 'participant_error', code: 'missingRows', params: { count: 3, column: 'id', example: UUIDS[0] } })
+
+  // Read as text, "001" stays "001": pandas made it 1 in both files and let
+  // a notebook that lost the zeros through, and now that notebook is told.
+  const numbered = 'id,target\n001,1\n002,2\n010,3\n'
+  assert.equal(judge(numbered, numbered).status, 'ok')
+  assert.deepEqual(judge(numbered, 'id,target\n1,1\n2,2\n10,3\n'), otherForm('1', '001'))
+  // A whole number written back as a float is the same id in another form.
+  assert.deepEqual(judge(numbered, 'id,target\n1.0,1\n2.0,2\n10.0,3\n'), otherForm('1.0', '001'))
+  // A key of plain whole numbers keeps its old leniency: a float or a
+  // zero-padded spelling of the same number is the same row and is scored.
+  assert.equal(judge('id,target\n7,1\n8,2\n', 'id,target\n7.0,1\n8.0,2\n').status, 'ok')
+  assert.equal(judge('id,target\n7,1\n8,2\n', 'id,target\n007,1\n+8,2\n').status, 'ok')
+  // Two spellings of one number are one id twice.
+  assert.equal(judge('id,target\n7,1\n8,2\n', 'id,target\n7,1\n7.0,1\n8,2\n').code, 'duplicateId')
+  // What pandas would have read as a float or as a missing value is an id
+  // like any other, and is named the way the file writes it.
+  assert.deepEqual(judge('id,target\n1e5,1\nNA,2\n2e3,3\n', 'id,target\n1e5,1\nNA,2\n'),
+    { status: 'participant_error', code: 'missingRows', params: { count: 1, column: 'id', example: '2e3' } })
+})
+
+test('ids in another form are named in the instance language, next to the id as the test has it', () => {
+  const params = { column: 'id', example: '01976194B5217CD09C3B19651FA1FF33', expected: UUIDS[0] }
+  assert.equal(refusal('idForm', params),
+    `id в ответе записаны в другом виде, чем в тесте: например «01976194B5217CD09C3B19651FA1FF33» вместо «${UUIDS[0]}» — сохраните id как в файле, строкой.`)
+  inEnglish(() => assert.equal(refusal('idForm', params),
+    `The answer writes id differently from the test: for example “01976194B5217CD09C3B19651FA1FF33” instead of “${UUIDS[0]}”. Keep the id values exactly as in the file, as strings.`))
+})
+
+test('the index written as a column is refused by its name, unless the answer key has it too', WITH_PANDAS, () => {
+  const key = 'id,target\n1,1\n2,2\n'
+  const index = (column: string) => ({ status: 'participant_error', code: 'indexColumn', params: { column, file: 'submission.csv' } })
+  // sub.to_csv('submission.csv'): the index goes first, under an empty header.
+  assert.deepEqual(judge(key, ',id,target\n0,1,1\n1,2,2\n'), index('Unnamed: 0'))
+  // A file read with its index and written back with one more: pandas tells
+  // the two apart by a suffix.
+  assert.deepEqual(judge(key, ',Unnamed: 0,id,target\n0,0,1,1\n1,1,2,2\n'), index('Unnamed: 0.1'))
+  // A key written with its own index expects it back.
+  assert.equal(judge(',id,target\n0,1,1\n1,2,2\n', ',id,target\n0,1,1\n1,2,2\n').status, 'ok')
+  // With no id column that is the refusal: the ids may be the very index,
+  // and index=False would throw them away.
+  assert.deepEqual(judge(key, ',target\n1,1\n2,2\n'),
+    { status: 'participant_error', code: 'noIdColumn', params: { column: 'id', columns: 'Unnamed: 0, target' } })
+})
+
+test('the index column is named in the instance language, with the line that writes the answer without it', () => {
+  const params = { column: 'Unnamed: 0', file: 'submission.csv' }
+  assert.equal(refusal('indexColumn', params),
+    "В ответе лишняя колонка «Unnamed: 0» — это индекс таблицы. Запишите ответ так: sub.to_csv('submission.csv', index=False).")
+  inEnglish(() => assert.equal(refusal('indexColumn', params),
+    "The answer has an extra column “Unnamed: 0” — the DataFrame index. Write the answer like this: sub.to_csv('submission.csv', index=False)."))
+})
+
+test('a notebook the harness stopped at its limit says it was stopped a few seconds early, to save its output', async () => {
+  reset()
+  const competition = makeCompetition({ limits: { wallSeconds: 120, memoryMb: 4096, cpus: 2, perDay: 0 } })
+  const submission = send(competition, mint('Лёня').id, ['# colloq-test: {"status": "cell_timeout", "cell": 0}', 'train()'])
+  await drainCompetitionQueue()
+  const done = getSubmission(submission.id)
+  // The same timed-out state as ever: only the words say more.
+  assert.equal(done?.state, 'timedOut')
+  assert.equal(done?.participantError,
+    'Тетрадь не уложилась в 2 минуты: прогон остановлен на ячейке 1 из 2 за несколько секунд до лимита, чтобы успеть сохранить её вывод.')
+
+  const late = (status: 'cell_timeout' | 'timeout'): RunOutcome => ({
+    status, cell: 0, cells: 2, wall: 118_000, submission: null, detail: '', log: '',
+    diagnostics: { exit: 1, oomKilled: false, backend: 'test' },
+  })
+  // The host's own kill at the deadline was not early, and does not say so.
+  assert.equal(notebookNote(late('timeout'), competition), 'Тетрадь не уложилась в 2 минуты: прогон остановлен на ячейке 1 из 2.')
+  inEnglish(() => {
+    assert.equal(notebookNote(late('cell_timeout'), competition),
+      'The notebook did not finish within 2 minutes: it was stopped at cell 1 of 2 a few seconds before the limit, so that its output could still be saved.')
+    assert.equal(notebookNote(late('timeout'), competition), 'The notebook did not finish within 2 minutes: it was stopped at cell 1 of 2.')
   })
 })
 

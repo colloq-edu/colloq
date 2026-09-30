@@ -321,6 +321,21 @@ test("a refusal's first sentence goes into the title, the rest into the caption"
     rest: '',
   })
   assert.deepEqual(splitError(null), { head: '', rest: '' })
+  // A colon or a full stop inside quotes is the participant's data, not the
+  // end of the sentence: the title keeps the whole column name.
+  assert.deepEqual(
+    splitError("В ответе лишняя колонка «Unnamed: 0» — это индекс таблицы. Запишите ответ так: sub.to_csv('submission.csv', index=False)."),
+    {
+      head: 'В ответе лишняя колонка «Unnamed: 0» — это индекс таблицы.',
+      rest: "Запишите ответ так: sub.to_csv('submission.csv', index=False).",
+    },
+  )
+  assert.equal(
+    splitError('The answer has an extra column “Unnamed: 0” — the DataFrame index. Write the answer like this: …').head,
+    'The answer has an extra column “Unnamed: 0” — the DataFrame index.',
+  )
+  assert.equal(splitError('В колонке target нечисловые значения, например «n/a. 5» (id=7). Уберите текст.').head,
+    'В колонке target нечисловые значения, например «n/a. 5» (id=7).')
 })
 
 test('a running submission: the cell, the time sent and the wait in the queue', () => {
