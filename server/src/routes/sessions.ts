@@ -33,6 +33,7 @@ import {
 import { onlineParticipantIds } from '../collab/index.js'
 import { freeMark } from '@shared/marks'
 import { seldom, tally } from '../log.js'
+import { refusalReason } from '../ops/counters.js'
 import { ensureKernel, syncBookKernels, syncDangerGuard } from '../kernel/index.js'
 import { forgetResources, readCpuInput, readMemoryInput } from '../kernel/resources.js'
 import { applyOwnLimits } from '../kernel/pool.js'
@@ -689,9 +690,19 @@ export function sessionRoutes(): Router {
 
     // A stranger creates a row — and this is the only place where the room
     // grows from someone else's request. Staff and those returning with their
-    // own token pass by.
-    if (!known && !staff && (tooManyArrivals(sessionId) || tooManyArrivalsFrom(sessionId, addressForLimits(req)))) {
+    // own token pass by. Which of the two limits refused is kept for /metrics
+    // (ops/counters.ts): the same checks, in the same order, as before.
+    const crowded =
+      known || staff
+        ? null
+        : tooManyArrivals(sessionId)
+          ? 'join_room'
+          : tooManyArrivalsFrom(sessionId, addressForLimits(req))
+            ? 'join_address'
+            : null
+    if (crowded) {
       tally('joins')
+      refusalReason(res, crowded)
       // The first refusal in a minute goes in words, the rest as a number in
       // the summary: the load test on five hundred students produced 378 of
       // these in a row, and that is exactly the flood the log is being cured of.

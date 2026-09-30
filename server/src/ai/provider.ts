@@ -14,6 +14,7 @@ import { tr } from '@shared/i18n'
 import OpenAI, { type ClientOptions } from 'openai'
 import { config } from '../config.js'
 import { tally } from '../log.js'
+import { countOracleRequest } from '../ops/counters.js'
 import { resolveAiConfig } from '../admin/settings.js'
 import { outboundProxyActive } from '../outbound.js'
 import {
@@ -173,6 +174,7 @@ export async function streamChat(
   // environment variable they have no way to set.
   if (!providerReady()) throw new Error(tr("server.noModelIsSetUpOnThis.1152ef"))
   if (signal?.aborted) return ''
+  countOracleRequest()
 
   const payload = toPayload(messages)
   let stream: Awaited<ReturnType<typeof openStream>>
@@ -396,6 +398,7 @@ export async function completeWithTools(
 ): Promise<{ text: string; reasoning: string; calls: ToolCall[] }> {
   const nothing = { text: '', reasoning: '', calls: [] }
   if (!providerReady()) throw new Error(tr("server.noModelIsSetUpOnThis.1152ef"))
+  countOracleRequest()
   const model = resolveAiConfig().model
   const payload = {
     model,

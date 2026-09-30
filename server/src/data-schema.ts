@@ -14,7 +14,9 @@
  *  - db.ts writes it into the file (PRAGMA user_version) before any migration
  *    can run, and refuses a file that already carries a higher number: that
  *    file was written by newer code, and running older code over it is the
- *    downgrade nobody reviewed;
+ *    downgrade nobody reviewed. Before it raises a lower number it copies the
+ *    file to snapshots/pre-schema-<from>-to-<to>-<stamp>.db
+ *    (db-snapshots.ts), so a bump always leaves the way back on the volume;
  *  - scripts/release-build.py publishes it as a release's dataSchemaVersion
  *    (and every lower number as compatible), so that cluster.sh refuses to
  *    roll the code back over newer data;

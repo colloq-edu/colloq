@@ -221,6 +221,8 @@ APP_SETTINGS = {
     'TRUSTED_PROXIES', 'SHARED_ADDRESSES', 'TRUST_CF_CONNECTING_IP', 'HSTS',
     # Room network; on k3s `none` also shapes the room policy below.
     'COLLOQ_ROOM_NETWORK', 'KERNEL_BLOCKED_CIDRS',
+    # Operations: Prometheus metrics behind a token, JSON logs, database snapshots.
+    'METRICS_TOKEN', 'LOG_FORMAT', 'DB_SNAPSHOT_HOURS', 'DB_SNAPSHOT_KEEP',
 }
 # Where the institution's CA lands in the app Pod (NODE_EXTRA_CA_CERTS names a
 # file on this node; the Pod gets its content from a ConfigMap).

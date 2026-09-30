@@ -38,6 +38,11 @@ ARCHIVE_ORDER = ('manifest.json', 'release.json', 'catalog.json', 'config.env') 
 # would make them read something else.
 FILES_ONLY = frozenset(('release.json', 'catalog.json', 'manifest.json', 'config.env', 'data/colloq.db'))
 DATABASE_FILES = ('colloq.db', 'colloq.db-wal', 'colloq.db-shm')
+# What the data tree copy leaves out: the live database (copied consistently on
+# its own) and the snapshots the server keeps of it (server/src/db-snapshots.ts),
+# which are whole databases: N of them in every archive would multiply its size
+# and add nothing a restore of this archive could use.
+DATA_EXCLUDED = DATABASE_FILES + ('snapshots',)
 # The disk that receives a backup usually holds the live database as well. A
 # backup that fills it stops notebook saves in every running class, so the
 # backup stops itself before that, and says why.
@@ -372,7 +377,7 @@ def measure(root, report, open_files=False):
         nonlocal total
         total += info.st_size
 
-    for name, excluded in (('data', DATABASE_FILES), ('workspace', ()), ('secrets', ())):
+    for name, excluded in (('data', DATA_EXCLUDED), ('workspace', ()), ('secrets', ())):
         tree = root / name
         require(not tree.is_symlink(), 'symlink is not allowed: %s (point the state directory at real folders)' % tree)
         if tree.exists():
@@ -477,7 +482,7 @@ def backup(args):
         stage = Path(directory)
         guard = SpaceGuard(stage)
         digests = {}
-        copy_tree(root / 'data', stage / 'data', report, guard, digests, 'data', DATABASE_FILES)
+        copy_tree(root / 'data', stage / 'data', report, guard, digests, 'data', DATA_EXCLUDED)
         copy_tree(root / 'workspace', stage / 'workspace', report, guard, digests, 'workspace')
         copy_tree(root / 'secrets', stage / 'secrets', report, guard, digests, 'secrets')
         config = root / 'config.env'

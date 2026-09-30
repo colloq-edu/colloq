@@ -5,6 +5,7 @@ import path from 'node:path'
 import Database from 'better-sqlite3'
 import { config, ensureDataDir } from './config.js'
 import { ALLOW_SCHEMA_DOWNGRADE, DATA_SCHEMA_VERSION } from './data-schema.js'
+import { snapshotBeforeSchemaRaise } from './db-snapshots.js'
 import { colorForId, type Participant, type SessionInfo } from '@shared/protocol'
 import { OPEN_ROOM, readRules, rulesAfterClass, type RoomRules } from '@shared/rules'
 
@@ -39,6 +40,11 @@ stampDataSchema()
  * override is for an operator who knows the newer migration is harmless for
  * this release. A file from before stamps existed carries 0 and simply gets
  * this version.
+ *
+ * Raising it is also the moment to keep a copy of the file as it was
+ * (db-snapshots.ts · snapshotBeforeSchemaRaise): nothing has migrated yet, and
+ * right after the stamp everything may. A Kubernetes upgrade is a new image
+ * tag; nobody takes a backup by hand first, and this copy is its way back.
  */
 function stampDataSchema(): void {
   const found = Number(db.pragma('user_version', { simple: true }))
@@ -57,7 +63,10 @@ function stampDataSchema(): void {
     console.warn(`[db] WARNING: ${what} Starting anyway because ${ALLOW_SCHEMA_DOWNGRADE}=1; the stamp stays ${found}.`)
     return
   }
-  if (found < DATA_SCHEMA_VERSION) db.pragma(`user_version = ${DATA_SCHEMA_VERSION}`)
+  if (found < DATA_SCHEMA_VERSION) {
+    snapshotBeforeSchemaRaise(db, config.dataDir, found, DATA_SCHEMA_VERSION)
+    db.pragma(`user_version = ${DATA_SCHEMA_VERSION}`)
+  }
 }
 
 /*

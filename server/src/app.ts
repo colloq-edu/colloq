@@ -34,6 +34,7 @@ import { clientAddress, inboundPolicy, isLoopbackAddress } from './net/inbound.j
 import { jupyterReachable } from './kernel/jupyter.js'
 import { isolationAvailable } from './kernel/pool.js'
 import { tally } from './log.js'
+import { countResponses, metricsEndpoint } from './ops/metrics.js'
 import { adminAuthRoutes } from './routes/admin-auth.js'
 import { adminAuditRoutes } from './routes/admin-audit.js'
 import { adminCompetitionRoutes } from './routes/admin-competitions.js'
@@ -261,6 +262,9 @@ function compression(req: Request, res: Response, next: NextFunction): void {
 export const app = express()
 app.disable('x-powered-by')
 
+// First, so every answer is counted, whatever handles it (ops/metrics.ts).
+app.use(countResponses)
+
 app.use((req, res, next) => {
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value)
   // An HTTP/1.0 request may carry no Host at all, and express then has no hostname.
@@ -271,6 +275,16 @@ app.use((req, res, next) => {
 })
 
 app.use(compression)
+
+/*
+ * Prometheus, behind METRICS_TOKEN (ops/metrics.ts). At /metrics, where
+ * Prometheus looks by default, rather than under /api, whose cookie and
+ * origin rules are about browsers; and before the body parser, since a scrape
+ * has no body. Answered here even when the token is unset (404), so the
+ * page's catch-all below never serves index.html in its place.
+ */
+app.get('/metrics', metricsEndpoint)
+
 app.use(express.json({ limit: '1mb' }))
 
 /**

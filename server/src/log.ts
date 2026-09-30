@@ -12,7 +12,39 @@
  * half the lines would stay without a time. The format is ISO 8601: it sorts
  * as text and does not depend on the machine's time zone.
  */
+import { format } from 'node:util'
+import { logWith, takeLogFields, type LogFields } from './log-fields.js'
+
 const wrapped = ['log', 'info', 'warn', 'error', 'debug'] as const
+type Method = (typeof wrapped)[number]
+
+/** The level a JSON line names; console.log is the ordinary line, so it is info. */
+const LEVEL: Record<Method, 'info' | 'warn' | 'error' | 'debug'> = {
+  log: 'info',
+  info: 'info',
+  warn: 'warn',
+  error: 'error',
+  debug: 'debug',
+}
+
+/**
+ * LOG_FORMAT=json: one JSON object per line, for a platform that collects
+ * stdout into Loki or ELK.
+ *
+ * Such a collector cuts the stream at line breaks, and the text log does not
+ * survive that: a stack trace arrives as a dozen unrelated entries, and the
+ * level can only be guessed from which stream a line came out of. As JSON,
+ * every call is one line whatever it printed, and the level is a key.
+ *
+ * Asked on every line rather than once: this module loads before config.ts
+ * has read .env, so a LOG_FORMAT written there takes effect from the moment
+ * dotenv has run instead of never. In a container the variable comes from
+ * the environment and holds from the very first line. A line costs one
+ * environment lookup, and the log is a few lines a second at its busiest.
+ */
+export function jsonLogs(): boolean {
+  return process.env.LOG_FORMAT?.trim().toLowerCase() === 'json'
+}
 
 /*
  * A side effect at module load, not a call from index.ts.
@@ -21,11 +53,57 @@ const wrapped = ['log', 'info', 'warn', 'error', 'debug'] as const
  * have loaded, and everything the modules printed while loading stays without
  * a time. The first import in index.ts is the only place from which this can
  * be done before everything else.
+ *
+ * Text stays exactly what it was: the time, then the arguments as console
+ * prints them. JSON goes out through the same console method, so each line
+ * keeps its stream (log and info to stdout, warn and error to stderr) and
+ * nothing that watches those streams has to learn a second rule.
  */
-for (const level of wrapped) {
-  const original = console[level].bind(console)
-  console[level] = (...args: unknown[]) => {
-    original(new Date().toISOString(), ...args)
+for (const method of wrapped) {
+  const original = console[method].bind(console)
+  console[method] = (...args: unknown[]) => {
+    const fields = takeLogFields()
+    const time = new Date().toISOString()
+    if (!jsonLogs()) {
+      original(time, ...args)
+      return
+    }
+    original(jsonLine(time, LEVEL[method], args, fields))
+  }
+}
+
+/**
+ * One JSON log line: `{time, level, msg, component?, ...fields}`.
+ *
+ * `msg` is the text line without its time, character for character. It is
+ * formatted the way the text log formats it, with the time as the first
+ * argument, where `%s` and friends in a message are never interpreted: had
+ * JSON used the message as a format string, `50%d` in some line would read
+ * differently in the two logs, and a search copied from one would miss in the
+ * other.
+ *
+ * `component` is the word in the leading brackets (`[kernel ...]`, `[db]`,
+ * `[minute]`), the one every subsystem here already starts its lines with: a
+ * label with a dozen values, which is what a Loki stream wants and a room id
+ * is not. Nothing else is parsed out of the text. The first-run banner in
+ * particular stays one message: the link in it carries the setup token, and
+ * a token lifted into a key of its own is a token some pipeline indexes.
+ *
+ * Fields never override the three keys every line has.
+ */
+export function jsonLine(time: string, level: string, args: unknown[], fields?: LogFields | null): string {
+  const msg = format('', ...args).slice(1)
+  const entry: Record<string, unknown> = { time, level, msg }
+  const component = /^\[([a-z][a-z0-9-]*)[\] ]/.exec(msg)?.[1]
+  if (component) entry.component = component
+  if (fields) {
+    for (const [key, value] of Object.entries(fields)) if (!(key in entry)) entry[key] = value
+  }
+  try {
+    return JSON.stringify(entry)
+  } catch {
+    // A field JSON cannot say (a BigInt somebody passed) costs the fields, not the line.
+    return JSON.stringify({ time, level, msg })
   }
 }
 
@@ -65,8 +143,24 @@ export type Tally =
 
 const minute: Record<Tally, number> = { frames: 0, gate: 0, aborted: 0, joins: 0, oracle: 0 }
 
+/*
+ * The same counts since the process started, never reset.
+ *
+ * The minute summary needs "how many in this minute"; /metrics needs the
+ * running total, because Prometheus computes rates itself and a counter that
+ * went back to zero every minute reads there as sixty restarts an hour. One
+ * `tally` call feeds both, so the two can never disagree about what counts.
+ */
+const total: Record<Tally, number> = { frames: 0, gate: 0, aborted: 0, joins: 0, oracle: 0 }
+
 export function tally(what: Tally, n = 1): void {
   minute[what] += n
+  total[what] += n
+}
+
+/** Everything tallied since the process started (ops/metrics.ts). */
+export function tallyTotals(): Readonly<Record<Tally, number>> {
+  return { ...total }
 }
 
 /**
@@ -166,7 +260,24 @@ export function journalMinute(): void {
   if (was.joins > 0) parts.push(`joins refused ${was.joins}`)
   if (was.oracle > 0) parts.push(`oracle failed ${was.oracle}`)
   if (was.aborted > 0) parts.push(`aborted ${was.aborted}`)
-  console.log(`[minute] ${parts.join(' · ')}`)
+  // The JSON log gets the numbers as keys as well, zeros included: a query
+  // over them should not have to tell "none" from "missing".
+  logWith(
+    'log',
+    {
+      rooms: now.rooms,
+      people: now.people,
+      kernelsLive: live,
+      kernelsBusy: busy,
+      kernelsDead: dead,
+      frames: was.frames,
+      gateRefused: was.gate,
+      joinsRefused: was.joins,
+      oracleFailed: was.oracle,
+      aborted: was.aborted,
+    },
+    `[minute] ${parts.join(' · ')}`,
+  )
 }
 
 function reset(): void {

@@ -92,6 +92,7 @@ import { KERNEL_PROBLEM_KEY, type KernelProblem } from '@shared/kernel-problem'
 import { explain as explainDeath, forgetKills, sampleKills } from './postmortem.js'
 import { getSessionDoc, holdRoom, onlineCount, peekSessionDoc } from '../collab/index.js'
 import { seldom } from '../log.js'
+import { countKernelStart } from '../ops/counters.js'
 import { projectBooks } from '../collab/books.js'
 import { flushSessionFiles } from '../collab/files.js'
 import {
@@ -1596,6 +1597,7 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
       // start, and it is exactly between this line and the next that the room
       // stares into emptiness.
       console.log(`[kernel ${sessionId}/${runtime.root}] up (${envName ?? 'shared'}, ${runtime.role})`)
+      countKernelStart(runtime.role, true)
       // The idle count starts at start-up: a kernel brought up and untouched
       // for half an hour is exactly the draft that was opened and forgotten.
       runtime.lastWorkAt = Date.now()
@@ -1612,6 +1614,7 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
       void sampleKills(sessionId, runtime.role)
     } catch (err) {
       setStatus(runtime, 'dead')
+      countKernelStart(runtime.role, false)
       // A scheduler refusal is a word for advice to the teacher; anything else removes it.
       const problem = err instanceof RuntimeRequestError ? err.failure ?? null : null
       setKernelProblem(runtime, problem)
@@ -2372,6 +2375,43 @@ export function kernelCensus(): { live: number; busy: number; dead: number } {
     if (phase === 'busy' || runtime.currentCell !== null) busy += 1
   }
   return { live, busy, dead }
+}
+
+/**
+ * The same census for /metrics: split by container (the class's or the
+ * personal notebooks'), in states that do not overlap, with the run queue
+ * beside it. `starting` is a kernel being brought up, the up-to-a-minute-
+ * and-a-half of a cold start that the room spends staring at nothing.
+ *
+ * Counts only. Nothing here names a room, so a scrape grows no series per
+ * class; which room is struggling is what the log is for.
+ */
+export function kernelMetrics(): {
+  kernels: Record<KernelRole, Record<'idle' | 'busy' | 'starting' | 'dead', number>>
+  runs: { queued: number; running: number }
+} {
+  const kernels: Record<KernelRole, Record<'idle' | 'busy' | 'starting' | 'dead', number>> = {
+    room: { idle: 0, busy: 0, starting: 0, dead: 0 },
+    own: { idle: 0, busy: 0, starting: 0, dead: 0 },
+  }
+  let queued = 0
+  let running = 0
+  for (const runtime of allScopes()) {
+    // The running cell has left the queue (pump · shift): the two never count one run twice.
+    queued += runtime.queue.length
+    if (runtime.currentCell !== null) running += 1
+    const counts = kernels[runtime.role]
+    if (!counts) continue
+    const phase = runtime.kernel?.phase
+    if (!phase) {
+      if (runtime.starting) counts.starting += 1
+      continue
+    }
+    if (phase === 'dead') counts.dead += 1
+    else if (phase === 'busy' || runtime.currentCell !== null) counts.busy += 1
+    else counts.idle += 1
+  }
+  return { kernels, runs: { queued, running } }
 }
 
 /**

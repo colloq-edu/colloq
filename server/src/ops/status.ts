@@ -9,8 +9,11 @@ import {kernelRecoveryDiagnostics} from '../kernel/pool.js'
 import {freeDependencyBytes} from '../dependencies/files.js'
 import {dependencyPreparationDiagnostics} from '../dependencies/service.js'
 import {diskUsage} from './disk.js'
+import {config} from '../config.js'
+import {databaseSnapshotStatus} from '../db-snapshots.js'
 
-function queue(table:'competition_queue'|'dependency_bundles',timestamp:'enqueued_at'|'created_at',waiting:'waiting'|'queued',active:string[]){
+/** Rows of a work queue by state, with the waiting depth and age; /metrics reads the same census. */
+export function queueCensus(table:'competition_queue'|'dependency_bundles',timestamp:'enqueued_at'|'created_at',waiting:'waiting'|'queued',active:string[]){
  const rows=db.prepare(`SELECT state,COUNT(*) AS count,MIN(${timestamp}) AS oldest FROM ${table} GROUP BY state`).all() as {state:string;count:number;oldest:number}[]
  const oldest=rows.find(r=>r.state===waiting)?.oldest
  return {waiting:rows.find(r=>r.state===waiting)?.count??0,running:rows.filter(r=>active.includes(r.state)).reduce((sum,r)=>sum+r.count,0),oldestWaitingMs:oldest?Math.max(0,Date.now()-oldest):0,states:Object.fromEntries(rows.map(r=>[r.state,r.count]))}
@@ -28,7 +31,10 @@ export async function operationalStatus(){
   // Free and total per filesystem, with the panel's warning flag: the
   // same numbers the Resources tab shows, for monitoring without a browser.
   disk:diskUsage(),
-  queues:{competitions:{...queue('competition_queue','enqueued_at','waiting',['running']),retries:retries.retries,execution:competitionExecutionDiagnostics()},preparations:queue('dependency_bundles','created_at','queued',['resolving','downloading','verifying'])},
+  queues:{competitions:{...queueCensus('competition_queue','enqueued_at','waiting',['running']),retries:retries.retries,execution:competitionExecutionDiagnostics()},preparations:queueCensus('dependency_bundles','created_at','queued',['resolving','downloading','verifying'])},
   preparation:dependencyPreparationDiagnostics(),persistence:persistenceDiagnostics(),runtimeRecovery:kernelRecoveryDiagnostics(),
+  // The consistent copies of colloq.db in the data volume: how often, how
+  // many, and the newest by name, time and size (db-snapshots.ts).
+  snapshots:databaseSnapshotStatus(config.dataDir),
  }
 }

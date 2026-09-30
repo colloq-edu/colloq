@@ -11,7 +11,8 @@ import fs from 'node:fs'
 import { config } from '../config.js'
 import { diskLow, type DiskSpace, type DiskUsage } from '@shared/disk'
 
-function space(directory: string): DiskSpace {
+/** Free and total bytes of the filesystem under `directory`; throws when it cannot be measured. */
+export function filesystemSpace(directory: string): DiskSpace {
   const found = fs.statfsSync(directory)
   const freeBytes = Number(found.bavail) * Number(found.bsize)
   const totalBytes = Number(found.blocks) * Number(found.bsize)
@@ -22,7 +23,7 @@ function space(directory: string): DiskSpace {
 export function diskUsage(): DiskUsage | null {
   let data: DiskSpace
   try {
-    data = space(config.dataDir)
+    data = filesystemSpace(config.dataDir)
   } catch {
     return null
   }
@@ -31,7 +32,7 @@ export function diskUsage(): DiskUsage | null {
     // One device, one filesystem: bind mounts of the same disk (k3s volumes,
     // the server image's state folder) show one bar, not two copies of it.
     if (fs.statSync(config.workspaceDir).dev !== fs.statSync(config.dataDir).dev) {
-      workspace = space(config.workspaceDir)
+      workspace = filesystemSpace(config.workspaceDir)
     }
   } catch {
     // No workspace folder yet: nothing separate to show.

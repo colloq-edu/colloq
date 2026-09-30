@@ -36,6 +36,8 @@ import { normalizePath } from '@shared/paths'
 
 import { handleControlSocket } from './control.js'
 import { db, closeDatabase, getSession, touchLastSeenAll } from './db.js'
+import { startDatabaseSnapshots, stopDatabaseSnapshots } from './db-snapshots.js'
+import { startMetrics } from './ops/metrics.js'
 import { kernelCensus, shutdownKernels } from './kernel/index.js'
 import { sweepAllStaleUploads } from './workspace.js'
 import {
@@ -392,6 +394,16 @@ server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const))
    * would put the console patch after everything modules print while loading.
    */
   startJournal(() => ({ ...roomCensus(), kernels: kernelCensus() }))
+  // The sockets are counted where they live; /metrics answers only with
+  // METRICS_TOKEN set (ops/metrics.ts).
+  startMetrics({ sockets: () => wss.clients.size })
+  /*
+   * Consistent copies of the database into the data volume, when
+   * DB_SNAPSHOT_HOURS asks for them (db-snapshots.ts). Here rather than when
+   * db.ts loads: the CLI's cleanup helper and the tests open the database
+   * through it too, and neither is a server with a schedule.
+   */
+  startDatabaseSnapshots(db, config.dataDir)
   /*
    * The room network and the ban on local addresses come up right away, not
    * with the first Run: a refusal (no rights for the helper, someone else's
@@ -554,9 +566,11 @@ async function shutdown(signal: string): Promise<void> {
    * was left lying next to it: a stopped instance's `colloq.db` was
    * yesterday's, and the whole day sat in a file nobody copies. db.close()
    * folds the journal in and closes the file, which is exactly what one
-   * expects from "stopped".
+   * expects from "stopped". A database snapshot still copying gives up first
+   * and takes its partial file with it (db-snapshots.ts).
    */
   try {
+    await stopDatabaseSnapshots()
     closeDatabase()
   } catch (err) {
     console.error('colloq: could not close the database:', err instanceof Error ? err.message : err)
