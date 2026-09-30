@@ -1,7 +1,7 @@
 {
   "name": "@colloq/web",
   "private": true,
-  "version": "0.8.3",
+  "version": "0.8.4",
   "type": "module",
   "scripts": {
     "dev": "npm run assets && vite",
