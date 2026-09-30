@@ -26,6 +26,7 @@ import { signToken } from '../server/src/auth.js'
 import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { createSession, upsertParticipant } from '../server/src/db.js'
 import { recentTurns } from '../server/src/ai/index.js'
+import { modelNames } from '../server/src/ai/names.js'
 import { aiRoutes, roomQuestionCeiling } from '../server/src/routes/ai.js'
 
 after(() => shutdownCollab())
@@ -418,7 +419,7 @@ test('only completed turns go into the history, as pairs of lines, not two quest
   add('Гоша', 'ещё пишется', '', 'streaming')
   add('Дима', 'второй', 'второй ответ', 'done')
 
-  const turns = recentTurns(doc)
+  const turns = recentTurns(doc, modelNames(id, true))
   /*
    * The roles have to alternate: strict chat templates (vLLM with Mistral or
    * Llama-2) answer two user turns in a row with a 400 — "Conversation roles

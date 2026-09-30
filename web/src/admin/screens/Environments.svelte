@@ -63,6 +63,16 @@
     ),
   )
   const managed = $derived(envs?.managed ?? false)
+  /*
+   * Writing a package list is the owner's, like building one (the server says
+   * so too: routes/admin-environments.ts). Its lines, pip options included,
+   * are installed as root when the image is built, so the person who writes a
+   * list is the person who decides to build it. A teacher still reads every
+   * list and picks a ready environment for a class; the controls that write
+   * are greyed with the reason next to them, not hidden — the teacher needs to
+   * know whom to ask.
+   */
+  const mayWrite = $derived(isOwner && !managed)
   const gpuCapacityKnown = $derived(envs?.gpuCapacityKnown !== false)
   /*
    * GPU slices and those who ask for them.
@@ -562,8 +572,9 @@
   subtitle={tr("admin.build.container.images.with.the.python.packages.your.seminars.nee")}
 >
   {#snippet actions()}
-    <button disabled={managed}
+    <button disabled={!mayWrite}
       type="button"
+      title={!isOwner && !managed ? tr('admin.env.ownerEditsOnly') : undefined}
       class="inline-flex h-9 items-center gap-2 bg-primary px-4 text-2xs font-bold uppercase tracking-label text-primary-ink transition-opacity duration-100 hover:opacity-90 disabled:opacity-40"
       onclick={openCreate}
     >
@@ -609,6 +620,11 @@
       <p class="mb-4 border border-line bg-surface px-4 py-3 text-ui text-muted">
         {tr("admin.environments.come.from.the.release.catalog.each.seminar.keeps.its")}
       </p>
+    {:else if !isOwner}
+      <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
+        <Icon name="lock" size={14} class="mt-0.5 shrink-0 text-muted" />
+        <p class="text-2xs leading-relaxed text-muted">{tr('admin.env.ownerEditsOnly')}</p>
+      </div>
     {/if}
 
     <!--
@@ -836,10 +852,10 @@
                     tabindex="-1"
                     class="row-menu absolute right-0 top-full z-30 mt-1 w-44 border border-line bg-canvas p-1 shadow-pop"
                   >
-                    <button role="menuitem" class={ITEM} disabled={managed} onclick={() => openEditor(env.name)}>
+                    <button role="menuitem" class={ITEM} disabled={!mayWrite} onclick={() => openEditor(env.name)}>
                       {tr("admin.edit.packages")}
                     </button>
-                    <button role="menuitem" class={ITEM} disabled={managed} onclick={() => duplicate(env)}>
+                    <button role="menuitem" class={ITEM} disabled={!mayWrite} onclick={() => duplicate(env)}>
                       {tr("admin.duplicate")}
                     </button>
                     <button

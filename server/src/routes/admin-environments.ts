@@ -14,9 +14,24 @@ import {
  * where rooms share one kernel, takes their variables away as well. Both are
  * actions on people who are not in the request, which is the line the rest of
  * this surface already draws.
+ *
+ * Writing a package list is owner-only too, since 0.9. A list is not a
+ * preference: its lines — pip options included (`--extra-index-url`,
+ * `--trusted-host`, a URL to a wheel) — are installed as root when the image
+ * is built, and the image runs every room of the environment. Any teacher
+ * could write them, and a build (owner-only) then ran whatever they wrote; a
+ * poisoned package typed by one account compromised everyone's classes. So a
+ * list is written by the same person who decides to build it. Reading the
+ * lists, the build log and the inventory stays open to every teacher, and so
+ * does choosing a ready environment for a seminar (admin-instance.ts): that is
+ * using what an owner approved, not changing it.
+ *
+ * Every write here goes to the audit log (admin/audit-log.ts) with the lines a
+ * list gained and lost, so "who added that index URL" has an answer.
  */
 import { Router, type Request, type Response } from 'express'
-import { ownerOnly, requireStaff } from '../admin/auth.js'
+import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
+import { recordAdminEvent } from '../admin/audit-log.js'
 import {
   activate,
   activeName,
@@ -50,6 +65,30 @@ function fail(res: Response, status: number, reason: AdminErrorReason, message: 
 
 /** A requirements file is text somebody types; this is a sanity bound, not a rule. */
 const MAX_SOURCE = 16 * 1024
+
+/**
+ * The lines a package list gained and lost, for the audit log.
+ *
+ * By line, not by diff: a list is a set of requirements, and "added
+ * `--extra-index-url …`" is the answer an owner looks for. Compared as typed;
+ * a private index's password in a URL is masked by the log itself when it is
+ * recorded (admin/audit-log.ts), so a changed password still shows as a change.
+ */
+function listChanges(before: string | null, after: string): { added: string[]; removed: string[] } {
+  const lines = (text: string | null): Set<string> =>
+    new Set(
+      (text ?? '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean),
+    )
+  const was = lines(before)
+  const now = lines(after)
+  return {
+    added: [...now].filter((line) => !was.has(line)),
+    removed: [...was].filter((line) => !now.has(line)),
+  }
+}
 
 /**
  * How many GPU slices are named in KERNEL_GPUS and how many of them are free.
@@ -147,7 +186,7 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
     res.json({ name, source: readSource(name) })
   })
 
-  router.put('/api/admin/environments/:name', requireStaff, (req: Request, res: Response) => {
+  router.put('/api/admin/environments/:name', ownerOnly('server.ownerAction.editEnvironment'), (req: Request, res: Response) => {
     if (usingRuntimeBroker())
       return fail(
         res,
@@ -189,6 +228,7 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         tr('server.anEnvironmentCalledAlreadyExistsOpenIt.a64ba5', { p0: name }),
       )
     }
+    const before = exists(name) ? readSource(name) : null
     try {
       writeSource(name, source)
     } catch (err) {
@@ -208,7 +248,18 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         }),
       )
     }
-    res.json({ name, source: readSource(name) })
+    const saved = readSource(name)
+    const { added, removed } = listChanges(before, saved)
+    if (before === null || added.length > 0 || removed.length > 0) {
+      recordAdminEvent({
+        actor: currentStaff(req),
+        action: before === null ? 'environment.created' : 'environment.edited',
+        target: { type: 'environment', id: name, label: name },
+        detail: before === null ? { added } : { added, removed },
+        req,
+      })
+    }
+    res.json({ name, source: saved })
   })
 
   router.delete('/api/admin/environments/:name', ownerOnly('server.ownerAction.3'), (req, res) => {
@@ -291,6 +342,7 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
       )
     }
     removeEnvironment(name)
+    recordAdminEvent({ actor: currentStaff(req), action: 'environment.deleted', target: { type: 'environment', id: name, label: name }, req })
     res.status(204).end()
   })
 
@@ -334,6 +386,7 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
           err instanceof Error ? err.message : err,
         )
       })
+      recordAdminEvent({ actor: currentStaff(req), action: 'environment.built', target: { type: 'environment', id: name, label: name }, req })
       res.status(202).json({ name })
     },
   )
@@ -383,6 +436,7 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
           tr('server.theKernelDidNotComeBack.ffdde9', { p0: result.out.slice(-400) }),
         )
       }
+      recordAdminEvent({ actor: currentStaff(req), action: 'environment.made_default', target: { type: 'environment', id: name, label: name }, req })
       res.json({ active: name })
     },
   )

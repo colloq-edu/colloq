@@ -989,7 +989,7 @@ export function permits(
   role: 'host' | 'participant',
   finished = false,
   participantId: string | null = null,
-): { ok: true } | { ok: false; rule: GateRule; message: string } {
+): { ok: true } | { ok: false; rule: GateRule; message: string; logged?: string } {
   const acts = actsAfterClass(finished, role)
   const who: Asker = { role, participantId }
   const why = (own: string): string => (acts ? own : tr(CLASS_IS_OVER))
@@ -1006,9 +1006,21 @@ export function permits(
    * with CLASS_IS_OVER, because what matters to the person is not which rule
    * stopped them but that the class is over.
    */
-  const refusal = (verdict: Verdict, own: string): string => {
+  /*
+   * The notebook's words carry its author's name ("this notebook is personal:
+   * Akim"), and the refusal is also a line in the machine's journal
+   * (collab/index.ts · refuse). The person reads the name; the journal gets
+   * the author's participant id instead — log.ts promises that no participant
+   * name reaches the log.
+   */
+  const refusal = (verdict: Verdict, own: string): { message: string; logged?: string } => {
     const book = bookRefusal(rules, verdict.root, who)
-    return why(book ? tr(book.key, { p0: book.name }) : own)
+    if (!book) return { message: why(own) }
+    const owner = verdict.root ? (rules.books?.[verdict.root]?.owner ?? '…') : '…'
+    return {
+      message: why(tr(book.key, { p0: book.name })),
+      logged: why(tr(book.key, { p0: book.name ? owner : '' })),
+    }
   }
   for (const verdict of verdicts) {
     if (verdict.rule === 'title') {
@@ -1033,7 +1045,7 @@ export function permits(
       return {
         ok: false,
         rule: 'edit',
-        message: refusal(verdict, tr("server.onlyTheTeacherMayEditThisSeminar.dfef31")),
+        ...refusal(verdict, tr("server.onlyTheTeacherMayEditThisSeminar.dfef31")),
       }
     }
     const verb = verdict.verb ?? 'add'
@@ -1041,7 +1053,7 @@ export function permits(
     return {
       ok: false,
       rule: 'structure',
-      message: refusal(
+      ...refusal(
         verdict,
         verb === 'add'
           ? tr("server.onlyTheTeacherMayAddCellsIn.9fb3e4")

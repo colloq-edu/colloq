@@ -9,6 +9,7 @@ import {tr} from '@shared/i18n'
  */
 import type { RoomRules } from '@shared/rules'
 import type {
+  AdminAuditPage,
   AdminErrorBody,
   AdminMe,
   AdminRole,
@@ -765,6 +766,20 @@ export const adminApi = {
   /** `since` is a timestamp in ms; the server clamps it and picks a term by default. */
   oracleUsage: (since?: number) =>
     request<OracleUsage>(since ? `/oracle/usage?since=${since}` : '/oracle/usage'),
+
+  /* ----------------------------------------------------------- audit log */
+
+  /**
+   * One page of the staff audit log, newest first; owners only. `before` is
+   * the `next` of the previous page.
+   */
+  auditLog: (before?: number | null, limit?: number) => {
+    const query = new URLSearchParams()
+    if (before) query.set('before', String(before))
+    if (limit) query.set('limit', String(limit))
+    const tail = query.toString()
+    return request<AdminAuditPage>(tail ? `/audit-log?${tail}` : '/audit-log')
+  },
 
   /* ------------------------------------------------------------ teachers */
 

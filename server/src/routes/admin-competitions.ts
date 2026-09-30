@@ -35,6 +35,7 @@ import { dependencyMessage } from '../dependencies/messages.js'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
 import { instanceDayStart } from '../time-zone.js'
 import { deleteEntrantFromCompetition } from '../competitions/erase.js'
+import { recordAdminEvent } from '../admin/audit-log.js'
 import {
   acceptSubmission,
   competitionsElsewhere,
@@ -677,6 +678,8 @@ export function adminCompetitionRoutes(): Router {
     const parsed = parseSettingsInput(req.body, { ...machine, reserveMb: HOST_RESERVE_MB })
     if ('refusal' in parsed) return refuseSetting(res, parsed.refusal)
     saveCompetitionSettings(parsed.patch)
+    // The audit log (admin/audit-log.ts): which of the instance's competition settings, by whom.
+    recordAdminEvent({ actor: currentStaff(req), action: 'settings.competitions_changed', target: { type: 'settings', id: 'competitions' }, detail: { changed: Object.keys(parsed.patch) }, req })
     // More slots may mean work can start right now.
     wakeCompetitionPump()
     res.json(settingsView())
@@ -800,6 +803,7 @@ export function adminCompetitionRoutes(): Router {
     })
     if (!created) return fail(res, 409, 'exists', tr('competitions.refusal.slug.taken'))
     ensureCompetition(created.id)
+    recordAdminEvent({ actor: currentStaff(req), action: 'competition.created', target: { type: 'competition', id: created.id, label: created.title }, detail: { slug: created.slug }, req })
     res.status(201).json(await viewOf(created))
   })
 
@@ -834,6 +838,7 @@ export function adminCompetitionRoutes(): Router {
       const competition = competitionOf(req, res)
       if (!competition) return
       deleteCompetition(competition.id)
+      recordAdminEvent({ actor: currentStaff(req), action: 'competition.deleted', target: { type: 'competition', id: competition.id, label: competition.title }, req })
       res.status(204).end()
     },
   )
@@ -1144,6 +1149,7 @@ export function adminCompetitionRoutes(): Router {
       return fail(res, 409, 'not_ready', tr(`competitions.refusal.open.${refusal}`))
     }
     setCompetitionState(competition.id, 'live')
+    recordAdminEvent({ actor: currentStaff(req), action: 'competition.opened', target: { type: 'competition', id: competition.id, label: competition.title }, req })
     res.json(await viewOf(getCompetition(competition.id)!))
   })
 
@@ -1167,6 +1173,7 @@ export function adminCompetitionRoutes(): Router {
       // private board by itself once the submissions accepted before the
       // finish have their results (results.ts · privateBoardState).
       setCompetitionState(competition.id, 'finished')
+      recordAdminEvent({ actor: currentStaff(req), action: 'competition.closed', target: { type: 'competition', id: competition.id, label: competition.title }, req })
       res.json(await viewOf(getCompetition(competition.id)!))
     },
   )
@@ -1477,6 +1484,15 @@ export function adminCompetitionRoutes(): Router {
       if (outcome.why === 'baseline') return fail(res, 409, 'invalid', tr('competitions.refusal.entrantBaseline'))
       return fail(res, 409, 'failed', tr('competitions.refusal.entrantRunning'))
     }
+    // The id and the counts only: a log that kept the name would keep exactly
+    // what the removal was asked to take away.
+    recordAdminEvent({
+      actor: currentStaff(req),
+      action: 'competition.entrant_deleted',
+      target: { type: 'entrant', id: String(req.params.eid) },
+      detail: { competition: competition.id, submissions: outcome.submissions, identityRemoved: outcome.identityRemoved },
+      req,
+    })
     const body: EntrantRemoved = { submissions: outcome.submissions, identityRemoved: outcome.identityRemoved }
     res.json(body)
   })

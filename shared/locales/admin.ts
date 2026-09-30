@@ -2546,8 +2546,8 @@ export const adminMessages: MessageCatalog = {
     "en": ", which reads it from"
   },
   "admin.the.server.logs.it.only.before.the.first.owner.is.created": {
-    "ru": ". Сервер выводит его в журнал только до создания первого владельца.",
-    "en": ". The server logs it only before the first owner is created."
+    "ru": ". Сервер выводит токен в журнал только до появления первого владельца, а тот, что был выведен, при этом заменяется и больше не действует.",
+    "en": ". The server logs a token only until the first owner exists, and the one it logged is replaced at that moment and stops working."
   },
   "admin.rotating": {
     "ru": "Заменяем…",
@@ -4458,5 +4458,233 @@ export const adminMessages: MessageCatalog = {
       "one": "The queue is fair: whoever already has something running lets the others go first. Times assume {count} executor and this competition's median; the participant sees the same number.",
       "other": "The queue is fair: whoever already has something running lets the others go first. Times assume {count} executors and this competition's median; the participant sees the same number."
     }
+  },
+  "admin.audit.title": {
+    "ru": "Журнал действий",
+    "en": "Audit log"
+  },
+  "admin.audit.subtitleShort": {
+    "ru": "Что делали сотрудники в панели: входы, состав преподавателей, удаления, настройки.",
+    "en": "What staff did in the panel: sign-ins, the staff list, deletions, settings."
+  },
+  "admin.audit.subtitle": {
+    "ru": {
+      "one": "Что делали сотрудники в панели: входы, состав преподавателей, удаления, настройки. Записи хранятся {days} день, видят их только владельцы.",
+      "few": "Что делали сотрудники в панели: входы, состав преподавателей, удаления, настройки. Записи хранятся {days} дня, видят их только владельцы.",
+      "many": "Что делали сотрудники в панели: входы, состав преподавателей, удаления, настройки. Записи хранятся {days} дней, видят их только владельцы.",
+      "other": "Что делали сотрудники в панели: входы, состав преподавателей, удаления, настройки. Записи хранятся {days} дня, видят их только владельцы."
+    },
+    "en": {
+      "one": "What staff did in the panel: sign-ins, the staff list, deletions, settings. Events are kept for {days} day, and only owners see them.",
+      "other": "What staff did in the panel: sign-ins, the staff list, deletions, settings. Events are kept for {days} days, and only owners see them."
+    }
+  },
+  "admin.audit.when": {
+    "ru": "Когда",
+    "en": "When"
+  },
+  "admin.audit.who": {
+    "ru": "Кто",
+    "en": "Who"
+  },
+  "admin.audit.what": {
+    "ru": "Что сделано",
+    "en": "What happened"
+  },
+  "admin.audit.address": {
+    "ru": "Адрес",
+    "en": "Address"
+  },
+  "admin.audit.empty": {
+    "ru": "Пока ничего не записано.",
+    "en": "Nothing has been recorded yet."
+  },
+  "admin.audit.more": {
+    "ru": "Показать ещё",
+    "en": "Show more"
+  },
+  "admin.audit.loading": {
+    "ru": "Загружается…",
+    "en": "Loading…"
+  },
+  "admin.audit.loadFailed": {
+    "ru": "Не удалось прочитать журнал действий.",
+    "en": "Could not read the audit log."
+  },
+  "admin.audit.claimedDetail": {
+    "ru": "напечатанный токен установки заменён новым",
+    "en": "the printed setup token was replaced with a new one"
+  },
+  "admin.audit.viaLink": {
+    "ru": "по личной ссылке",
+    "en": "with a personal link"
+  },
+  "admin.audit.viaSetupToken": {
+    "ru": "по токену установки",
+    "en": "with the setup token"
+  },
+  "admin.audit.word.yes": {
+    "ru": "да",
+    "en": "yes"
+  },
+  "admin.audit.word.no": {
+    "ru": "нет",
+    "en": "no"
+  },
+  "admin.audit.word.set": {
+    "ru": "задан",
+    "en": "set"
+  },
+  "admin.audit.word.cleared": {
+    "ru": "удалён",
+    "en": "cleared"
+  },
+  "admin.audit.word.replaced": {
+    "ru": "заменён",
+    "en": "replaced"
+  },
+  "admin.audit.word.changed": {
+    "ru": "изменены",
+    "en": "changed"
+  },
+  "admin.audit.word.kept": {
+    "ru": "оставлена",
+    "en": "kept"
+  },
+  "admin.audit.word.deleted": {
+    "ru": "удалена",
+    "en": "deleted"
+  },
+  "admin.audit.word.ru": {
+    "ru": "русский",
+    "en": "Russian"
+  },
+  "admin.audit.word.en": {
+    "ru": "английский",
+    "en": "English"
+  },
+  "admin.audit.action.instance.claimed": {
+    "ru": "Инстанс получил владельца",
+    "en": "Instance claimed"
+  },
+  "admin.audit.action.staff.signed_in": {
+    "ru": "Вход в панель",
+    "en": "Signed in"
+  },
+  "admin.audit.action.staff.added": {
+    "ru": "Добавлен преподаватель",
+    "en": "Teacher added"
+  },
+  "admin.audit.action.staff.removed": {
+    "ru": "Удалён преподаватель",
+    "en": "Teacher removed"
+  },
+  "admin.audit.action.staff.role_changed": {
+    "ru": "Изменена роль",
+    "en": "Role changed"
+  },
+  "admin.audit.action.staff.identity_changed": {
+    "ru": "Изменены имя или почта",
+    "en": "Name or email changed"
+  },
+  "admin.audit.action.staff.link_rotated": {
+    "ru": "Заменена ссылка входа",
+    "en": "Sign-in link replaced"
+  },
+  "admin.audit.action.staff.link_copied": {
+    "ru": "Скопирована ссылка входа",
+    "en": "Sign-in link copied"
+  },
+  "admin.audit.action.setup_token.rotated": {
+    "ru": "Заменён токен установки",
+    "en": "Setup token replaced"
+  },
+  "admin.audit.action.room.deleted": {
+    "ru": "Удалено занятие",
+    "en": "Class deleted"
+  },
+  "admin.audit.action.course.created": {
+    "ru": "Создан курс",
+    "en": "Course created"
+  },
+  "admin.audit.action.course.deleted": {
+    "ru": "Удалён курс",
+    "en": "Course deleted"
+  },
+  "admin.audit.action.publication.published": {
+    "ru": "Опубликована страница",
+    "en": "Page published"
+  },
+  "admin.audit.action.publication.withdrawn": {
+    "ru": "Страница снята",
+    "en": "Page withdrawn"
+  },
+  "admin.audit.action.publication.restored": {
+    "ru": "Страница возвращена",
+    "en": "Page restored"
+  },
+  "admin.audit.action.publication.deleted": {
+    "ru": "Страница удалена навсегда",
+    "en": "Page deleted for good"
+  },
+  "admin.audit.action.competition.created": {
+    "ru": "Создано соревнование",
+    "en": "Competition created"
+  },
+  "admin.audit.action.competition.deleted": {
+    "ru": "Удалено соревнование",
+    "en": "Competition deleted"
+  },
+  "admin.audit.action.competition.opened": {
+    "ru": "Соревнование открыто",
+    "en": "Competition opened"
+  },
+  "admin.audit.action.competition.closed": {
+    "ru": "Соревнование завершено",
+    "en": "Competition closed"
+  },
+  "admin.audit.action.competition.entrant_deleted": {
+    "ru": "Удалён участник соревнования",
+    "en": "Competition entrant deleted"
+  },
+  "admin.audit.action.environment.created": {
+    "ru": "Создано окружение",
+    "en": "Environment created"
+  },
+  "admin.audit.action.environment.edited": {
+    "ru": "Изменён список пакетов",
+    "en": "Package list changed"
+  },
+  "admin.audit.action.environment.deleted": {
+    "ru": "Удалено окружение",
+    "en": "Environment deleted"
+  },
+  "admin.audit.action.environment.built": {
+    "ru": "Запущена сборка окружения",
+    "en": "Environment build started"
+  },
+  "admin.audit.action.environment.made_default": {
+    "ru": "Окружение сделано основным",
+    "en": "Environment made the default"
+  },
+  "admin.audit.action.settings.oracle_changed": {
+    "ru": "Изменены настройки оракула",
+    "en": "Oracle settings changed"
+  },
+  "admin.audit.action.settings.resources_changed": {
+    "ru": "Изменены ресурсы сервера",
+    "en": "Instance resources changed"
+  },
+  "admin.audit.action.settings.competitions_changed": {
+    "ru": "Изменены настройки соревнований",
+    "en": "Competition settings changed"
+  },
+  "admin.audit.action.settings.instance_changed": {
+    "ru": "Изменён язык сервера",
+    "en": "Instance language changed"
+  },
+  "admin.env.ownerEditsOnly": {
+    "ru": "Создавать, менять и собирать списки пакетов может только владелец: при сборке образа пакеты из списка ставятся с правами root. Готовые окружения выбирает для своих занятий любой преподаватель.",
+    "en": "Only an owner can create, change and build package lists: when an image is built, its packages are installed as root. Any teacher can choose a ready environment for their classes."
   },
 }

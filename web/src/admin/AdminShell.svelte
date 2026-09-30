@@ -7,6 +7,7 @@
     | 'oracle'
     | 'teachers'
     | 'resources'
+    | 'audit'
 
   /**
    * The numbers on the nav rows.
@@ -178,6 +179,15 @@
      * overrides its own in its settings.
      */
     { id: 'resources', label: tr('admin.resourcesTab.title'), icon: 'server', href: '/admin/resources' },
+    /*
+     * The audit log is the owner's: the server answers a teacher 403, and a row
+     * that leads to a refusal teaches the teacher that this panel lies. Not
+     * drawn at all rather than greyed — it is not a setting they could be
+     * given, it is a record of what they themselves did.
+     */
+    ...(adminAuth.isOwner
+      ? [{ id: 'audit' as const, label: tr('admin.audit.title'), icon: 'file' as const, href: '/admin/audit' }]
+      : []),
   ])
 
   const teacher = $derived(adminAuth.me?.teacher ?? null)

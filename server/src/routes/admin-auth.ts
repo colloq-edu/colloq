@@ -10,6 +10,10 @@ import { tr } from '@shared/i18n'
  * The instance is guaranteed to always have at least one owner. That invariant
  * is enforced twice below (demote, delete) because losing it means nobody can
  * add anyone, and the only way back is a shell on the server.
+ *
+ * Every sign-in and every change to the staff list is written to the audit log
+ * (admin/audit-log.ts) after it succeeds — who, what, to whom and from which
+ * address. A refused attempt is not: the log is of what happened.
  */
 import { Router, type Response } from 'express'
 import {
@@ -20,9 +24,11 @@ import {
   ownerOnly,
   requireOwner,
   requireStaff,
+  retireSetupToken,
   rotateSetupToken,
   verifySetupToken,
 } from '../admin/auth.js'
+import { recordAdminEvent } from '../admin/audit-log.js'
 import {
   countOwners,
   createTeacher,
@@ -149,15 +155,33 @@ export function adminAuthRoutes(): Router {
     const minted = rotateLinkKey(teacher.id)
     if (!minted) return fail(res, 409, 'invalid', tr("server.thatAccountDisappearedMidClaim.c3a494"))
 
+    /*
+     * The token that was typed here was printed to the log on every start, so
+     * it is spent now: a fresh one replaces it and is never printed
+     * (admin/auth.ts · retireSetupToken). Synchronously, before the answer: no
+     * request may sign in with the printed token after the claim has been
+     * made.
+     */
+    retireSetupToken()
     touchTeacherLastSeen(minted.teacher.id)
     issueStaffCookie(res, minted.teacher)
+    recordAdminEvent({
+      actor: minted.teacher,
+      action: 'instance.claimed',
+      target: { type: 'staff', id: minted.teacher.id, label: minted.teacher.name },
+      detail: { setupToken: 'replaced' },
+      req,
+    })
     res.status(201).json(meOf(getTeacher(minted.teacher.id) ?? minted.teacher))
   })
 
   /**
-   * Recovery: the setup token keeps working after the instance is claimed and
-   * signs in as the founding owner. It is the documented way back in when the
-   * owner has lost their personal link.
+   * Recovery: the setup token signs in as the founding owner after the claim
+   * too — but not the one that was printed. The claim replaced it
+   * (retireSetupToken), and the new one is only in <DATA_DIR>/setup-token,
+   * readable by whoever runs the server. It is the documented way back in
+   * when the owner has lost their personal link, and the `colloq start`
+   * banner and the operator scripts sign in with it the same way.
    */
   router.post('/api/admin/signin/token', (req, res) => {
     const body = req.body as Partial<SignInWithTokenRequest> | undefined
@@ -169,6 +193,7 @@ export function adminAuthRoutes(): Router {
 
     touchTeacherLastSeen(owner.id)
     issueStaffCookie(res, owner)
+    recordAdminEvent({ actor: owner, action: 'staff.signed_in', detail: { via: 'setup_token' }, req })
     res.json(meOf(getTeacher(owner.id) ?? owner))
   })
 
@@ -183,8 +208,10 @@ export function adminAuthRoutes(): Router {
    * Owner only, and the response contains the new token: it is shown once,
    * like teacher links.
    */
-  router.post('/api/admin/setup-token/rotate', ownerOnly('server.ownerAction.1'), (_req, res) => {
-    res.json({ token: rotateSetupToken() })
+  router.post('/api/admin/setup-token/rotate', ownerOnly('server.ownerAction.1'), (req, res) => {
+    const token = rotateSetupToken()
+    recordAdminEvent({ actor: currentStaff(req), action: 'setup_token.rotated', target: { type: 'setup_token' }, req })
+    res.json({ token })
   })
 
   router.post('/api/admin/signin/key', (req, res) => {
@@ -196,6 +223,7 @@ export function adminAuthRoutes(): Router {
 
     touchTeacherLastSeen(teacher.id)
     issueStaffCookie(res, teacher)
+    recordAdminEvent({ actor: teacher, action: 'staff.signed_in', detail: { via: 'link' }, req })
     res.json(meOf(getTeacher(teacher.id) ?? teacher))
   })
 
@@ -240,6 +268,13 @@ export function adminAuthRoutes(): Router {
     const minted = rotateLinkKey(teacher.id)
     if (!minted) return fail(res, 409, 'invalid', tr("server.thatAccountDisappearedMidCreate.591b74"))
 
+    recordAdminEvent({
+      actor: currentStaff(req),
+      action: 'staff.added',
+      target: { type: 'staff', id: teacher.id, label: teacher.name },
+      detail: { email: teacher.email, role: teacher.role },
+      req,
+    })
     res.status(201).json(withLink(minted))
   })
 
@@ -258,6 +293,13 @@ export function adminAuthRoutes(): Router {
     if (!teacher) return fail(res, 404, 'invalid', tr("server.noSuchTeacher.dc9e13"))
     const key = linkKeyOf(teacher.id)
     if (!key) return fail(res, 409, 'invalid', tr("server.thatPersonHasNoSignInLink.538ff7"))
+    // A live credential left the server for someone's clipboard: who took whose.
+    recordAdminEvent({
+      actor: currentStaff(req),
+      action: 'staff.link_copied',
+      target: { type: 'staff', id: teacher.id, label: teacher.name },
+      req,
+    })
     res.json(withLink({ teacher, key }))
   })
 
@@ -274,6 +316,12 @@ export function adminAuthRoutes(): Router {
     // standing in alive; every other copy of their cookie still dies.
     if (actor && actor.id === minted.teacher.id) issueStaffCookie(res, minted.teacher)
 
+    recordAdminEvent({
+      actor,
+      action: 'staff.link_rotated',
+      target: { type: 'staff', id: minted.teacher.id, label: minted.teacher.name },
+      req,
+    })
     res.status(200).json(withLink(minted))
   })
 
@@ -289,6 +337,9 @@ export function adminAuthRoutes(): Router {
   router.patch('/api/admin/teachers/:id', requireOwner, (req, res) => {
     const target = getTeacher(req.params.id)
     if (!target) return fail(res, 404, 'invalid', tr("server.noSuchTeacher.dc9e13"))
+    // Read before the change: an owner demoting themselves is still an owner
+    // at the moment they do it, and the log should say so.
+    const actor = currentStaff(req)
 
     const wantsIdentity = req.body?.name !== undefined || req.body?.email !== undefined
     if (wantsIdentity) {
@@ -323,6 +374,18 @@ export function adminAuthRoutes(): Router {
       if (!renamed) {
         return fail(res, 409, 'invalid', tr("server.someoneWithThatEmailIsAlreadyOn.c19140"))
       }
+      if (renamed.name !== target.name || renamed.email !== target.email) {
+        recordAdminEvent({
+          actor,
+          action: 'staff.identity_changed',
+          target: { type: 'staff', id: target.id, label: renamed.name },
+          detail: {
+            ...(renamed.name !== target.name ? { name: renamed.name, previousName: target.name } : {}),
+            ...(renamed.email !== target.email ? { email: renamed.email, previousEmail: target.email } : {}),
+          },
+          req,
+        })
+      }
       // Only the name and the address change; there is no reason to touch the role.
       if (req.body?.role === undefined) return res.json(renamed)
     }
@@ -338,6 +401,15 @@ export function adminAuthRoutes(): Router {
 
     const updated = updateTeacherRole(target.id, role)
     if (!updated) return fail(res, 404, 'invalid', tr("server.noSuchTeacher.dc9e13"))
+    if (updated.role !== target.role) {
+      recordAdminEvent({
+        actor,
+        action: 'staff.role_changed',
+        target: { type: 'staff', id: target.id, label: updated.name },
+        detail: { from: target.role, to: updated.role },
+        req,
+      })
+    }
     res.json(updated)
   })
 
@@ -353,6 +425,13 @@ export function adminAuthRoutes(): Router {
 
     const actor = currentStaff(req)
     if (!deleteTeacher(target.id)) return fail(res, 404, 'invalid', tr("server.noSuchTeacher.dc9e13"))
+    recordAdminEvent({
+      actor,
+      action: 'staff.removed',
+      target: { type: 'staff', id: target.id, label: target.name },
+      detail: { email: target.email, role: target.role },
+      req,
+    })
     // Their cookie stops verifying the moment the row is gone; clearing it only
     // saves the browser from sending a dead one on every request.
     if (actor && actor.id === target.id) clearStaffCookie(res)

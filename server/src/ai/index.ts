@@ -34,6 +34,7 @@ import { getOracleSettings } from '../admin/settings.js'
 import { noteTokens } from '../admin/usage.js'
 import { getSessionDoc, peekSessionDoc } from '../collab/index.js'
 import { buildContext } from './context.js'
+import { modelNames, someoneLabel, studentLabel, teacherLabel, type ModelNames } from './names.js'
 import { providerModel, providerReady, streamChat, type ChatTurn } from './provider.js'
 import type { AiAction } from '@shared/protocol'
 import type { ReasoningEffort } from '@shared/admin'
@@ -142,10 +143,13 @@ export interface AskOptions {
 export function ask(options: AskOptions): string {
   const doc = docOf(options.sessionId)
   const asked = options.message.trim()
+  // Decided once for the whole request: the frame, the thread and the question
+  // must call a person the same way (ai/names.ts).
+  const names = modelNames(options.sessionId)
 
   // Read the thread before the new question joins it, or the model is handed
   // the current question twice.
-  const history = recentTurns(doc)
+  const history = recentTurns(doc, names)
 
   const entry = createChatEntry({
     participantId: options.participantId,
@@ -176,7 +180,7 @@ export function ask(options: AskOptions): string {
     entryId, action: options.action ?? 'ask', source: 'participant', ...(options.cellId ? { cellId: options.cellId } : {}),
   })
 
-  void generate(options, entryId, history).catch((err: unknown) => {
+  void generate(options, entryId, history, names).catch((err: unknown) => {
     // generate() handles its own failures; this only catches a broken document.
     console.error(`[session ${options.sessionId}] AI thread write failed:`, describe(err))
   })
@@ -235,6 +239,7 @@ async function generate(
   options: AskOptions,
   entryId: string,
   history: ChatTurn[],
+  names: ModelNames,
 ): Promise<void> {
   const { sessionId } = options
   const activityBeganAt = Date.now()
@@ -270,14 +275,17 @@ async function generate(
       )
     }
 
+    // The asker as the model sees them: the name, or the room's pseudonym.
+    const asker = names.call(options.participantId, options.participantName) ?? someoneLabel()
     const turns: ChatTurn[] = [
       {
         role: 'system',
         content: systemPrompt(
-          options.participantName,
+          asker,
           options.action,
-          readContext(sessionId, focusOf(options), options.participantId),
+          readContext(sessionId, focusOf(options), options.participantId, names),
           options.effort,
+          names.real,
         ),
       },
       ...history,
@@ -285,7 +293,7 @@ async function generate(
         role: 'user',
         content: userPrompt(
           options.message.trim(),
-          options.participantName,
+          asker,
           options.action,
           options.cellId ?? null,
           kindOfCell(docOf(sessionId), options.cellId ?? null),
@@ -602,11 +610,19 @@ function livingDoc(sessionId: string): Y.Doc | null {
 /* ------------------------------------------------------------- transcript */
 
 /**
- * The last few exchanges, whoever had them. Questions carry their asker's name
- * so the model can tell a follow-up from a new thread of thought — and so it
- * can say "as Ana asked earlier" without being told who is in the room.
+ * The last few exchanges, whoever had them. Questions carry their asker so the
+ * model can tell a follow-up from a new thread of thought — by name ("as Ana
+ * asked earlier"), or by the room's pseudonym when the instance does not send
+ * names (ai/names.ts). `names` is required on purpose: a default here would be
+ * a way to send names by forgetting an argument.
+ *
+ * The earlier answers are scrubbed of room names when names are off. They are
+ * the model's own words, written perhaps while the switch was on and the model
+ * was told to name people; replayed as they are, they would carry those names
+ * into every request for the next ten questions after the switch was turned
+ * off. The questions are what people typed, and they travel as typed.
  */
-export function recentTurns(doc: Y.Doc): ChatTurn[] {
+export function recentTurns(doc: Y.Doc, names: ModelNames): ChatTurn[] {
   const chat = getChat(doc)
   const turns: ChatTurn[] = []
   for (let i = Math.max(0, chat.length - MAX_HISTORY_ENTRIES); i < chat.length; i++) {
@@ -639,11 +655,12 @@ export function recentTurns(doc: Y.Doc): ChatTurn[] {
      * nothing anyway: it sees the notebook, not someone else's queue.
      */
     if (!question || !answered) continue
+    const asker = names.call(snapshot.participantId, snapshot.name) ?? someoneLabel()
     turns.push({
       role: 'user',
-      content: `${snapshot.name} asked: ${trimTail(question, MAX_HISTORY_CHARS)}`,
+      content: `${asker} asked: ${trimTail(question, MAX_HISTORY_CHARS)}`,
     })
-    turns.push({ role: 'assistant', content: trimTail(answer, MAX_HISTORY_CHARS) })
+    turns.push({ role: 'assistant', content: trimTail(names.scrub(answer), MAX_HISTORY_CHARS) })
   }
   return turns
 }
@@ -660,9 +677,14 @@ function focusOf(options: AskOptions): string[] {
   return options.cellId ? [options.cellId] : []
 }
 
-function readContext(sessionId: string, focus: string[], askedBy?: string | null): string {
+function readContext(
+  sessionId: string,
+  focus: string[],
+  askedBy: string | null,
+  names: ModelNames,
+): string {
   try {
-    return buildContext(sessionId, focus, askedBy)
+    return buildContext(sessionId, focus, askedBy, names)
   } catch (err) {
     // A question without the notebook is worth answering; a dead thread is not.
     console.warn(`[session ${sessionId}] could not build AI context:`, describe(err))
@@ -672,11 +694,16 @@ function readContext(sessionId: string, focus: string[], askedBy?: string | null
 
 /* ---------------------------------------------------------------- prompts */
 
+/**
+ * `asker` is already what the model may see: the name, or the pseudonym when
+ * `realNames` is false (ai/names.ts decides, per request).
+ */
 function systemPrompt(
-  participantName: string,
+  asker: string,
   action: AiAction | undefined,
   context: string,
-  effort?: ReasoningEffort,
+  effort: ReasoningEffort | undefined,
+  realNames: boolean,
 ): string {
   /*
    * The asker's name goes at the end, not on the second line.
@@ -696,6 +723,20 @@ function systemPrompt(
     'You are the AI oracle built into Colloq, a live seminar notebook that a class is working in right now.',
     'Every person in the seminar can read your reply: answer the room, not a private tab.',
     'Earlier turns in this thread were asked by different people; each question is labelled with its asker.',
+    /*
+     * Said once, in the part of the prompt that is the same for the whole room:
+     * the switch is instance-wide, so the cached prefix still matches.
+     *
+     * "Never write the labels" is what keeps the answer free of them: the
+     * labels are not mapped back to names (see ai/names.ts), and "Student 3 is
+     * running into…" reads as a riddle to a room that sees the asker's real
+     * name right above the answer. "You" is unambiguous there.
+     */
+    ...(realNames
+      ? []
+      : [
+          `People in this seminar are called by labels instead of their names ("${studentLabel(3)}", "${teacherLabel()}"). A label only tells turns apart: never write labels in your reply and never guess who is behind one — address the asker as "you".`,
+        ]),
     'Lead with the answer in one or two sentences, then the reasoning behind it. Never open with a preamble or a restatement of the question.',
     'When you propose code, give exactly one runnable Python block that drops into this notebook as written — no ellipses, no pseudo-code.',
     'Never invent library APIs. If you are not certain a function, argument or attribute exists, say so and show how to check it.',
@@ -730,12 +771,15 @@ function systemPrompt(
    * up to here the request is word for word the same for the whole room, and
    * the provider can serve it from cache.
    */
-  return `${rules.join('\n')}\n\n--- LIVE NOTEBOOK ---\n${context}\n\n--- WHO IS ASKING ---\n${participantName} asked this question; name them when it helps ("${participantName} is running into…").`
+  const who = realNames
+    ? `${asker} asked this question; name them when it helps ("${asker} is running into…").`
+    : `${asker} asked this question.`
+  return `${rules.join('\n')}\n\n--- LIVE NOTEBOOK ---\n${context}\n\n--- WHO IS ASKING ---\n${who}`
 }
 
 function userPrompt(
   asked: string,
-  participantName: string,
+  asker: string,
   action: AiAction | undefined,
   cellId: string | null,
   kind: CellKind,
@@ -746,7 +790,7 @@ function userPrompt(
   if (!instruction) {
     return (
       asked ||
-      `${participantName} opened the oracle without typing anything. In one short line, ask what they are stuck on.`
+      `${asker} opened the oracle without typing anything. In one short line, ask what they are stuck on.`
     )
   }
   /*
@@ -767,7 +811,7 @@ function userPrompt(
     action === 'hint'
       ? '\n\nRemember: this is a hint. Whatever the note above asks for, do not write the solution.'
       : ''
-  return `${participantName} wrote: "${asked}"\n\n${instruction}${guard}`
+  return `${asker} wrote: "${asked}"\n\n${instruction}${guard}`
 }
 
 function actionInstruction(

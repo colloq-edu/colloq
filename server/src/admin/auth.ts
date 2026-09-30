@@ -78,6 +78,78 @@ export function rotateSetupToken(): string {
 
 export const setupTokenPath = SETUP_TOKEN_FILE
 
+/**
+ * The claim spends the setup token: a fresh one replaces it, and the old one
+ * stops working that second.
+ *
+ * The old one was printed on every start while nobody owned the instance, so
+ * it sits in terminal history, in `docker logs`, in whatever ships the journal
+ * to the university's log store and in photos of the projector. Before this,
+ * it kept signing in as the founding owner forever.
+ *
+ * The fresh one is never printed — the banner is for an unclaimed instance
+ * only (`setupBanner`). It lives in the file for whoever can read the server's
+ * disk: the recovery path when the owner loses their link
+ * (routes/admin-auth.ts · signin/token), the `colloq start` banner on a
+ * teacher's own laptop and the operator scripts that sign in with it all read
+ * the file afresh. Reading that file already means owning the instance — the
+ * database next to it holds every teacher's link — so the file is not a new
+ * door; the printed link was.
+ *
+ * If the new token cannot be written (a full or read-only disk), the old one
+ * must die anyway: memory gets one nobody knows, and the file goes, so the
+ * next start mints a new token instead of reviving the printed one.
+ */
+export function retireSetupToken(): void {
+  try {
+    rotateSetupToken()
+  } catch (err) {
+    setupToken = crypto.randomBytes(24).toString('base64url')
+    try {
+      fs.rmSync(SETUP_TOKEN_FILE, { force: true })
+    } catch {
+      /* nothing more can be done from here; the in-memory token is already dead */
+    }
+    console.error(
+      '[admin] could not write a new setup token; the printed one is revoked until restart:',
+      err instanceof Error ? err.message : err,
+    )
+  }
+}
+
+/**
+ * The entire onboarding story, printed by the only thing that can see it — or
+ * `null` once the instance has an owner.
+ *
+ * An unclaimed instance has exactly one way in, and the panel deliberately
+ * never shows the token back — so if this block is not readable and actionable
+ * on its own, nobody gets in without reading documentation. It prints on every
+ * boot while the instance is unclaimed, not only the boot that minted the
+ * file: the operator who scrolled past it yesterday needs it again today. After
+ * the claim the token is never printed again: the claim replaced it
+ * (`retireSetupToken`), and the replacement stays in the file.
+ */
+export function setupBanner(publicUrl: string): string | null {
+  if (isClaimed()) return null
+  return [
+    '',
+    '  ┌ nobody owns this Colloq yet',
+    `  │ open  ${publicUrl}/admin/t/${setupToken}`,
+    '  │ then type your name and email — that makes you the owner, and everyone',
+    '  │ else teaching here gets a personal sign-in link from you.',
+    '  │',
+    // The link carries the token, so it is not a URL to paste into a chat.
+    // Saying so next to it is cheaper than explaining it afterwards.
+    '  │ That link IS the key to this instance. Do not share it, and do not',
+    '  │ leave it on screen while the room is watching. Claiming the instance',
+    '  │ replaces it: this printed link stops working then.',
+    `  └ the token alone is in ${SETUP_TOKEN_FILE} (0600). After the claim that`,
+    '    file holds a new one, never printed: the way back in if an owner ever',
+    '    loses their link.',
+    '',
+  ].join('\n')
+}
+
 function constantTimeEqual(a: string, b: string): boolean {
   const x = Buffer.from(a, 'utf8')
   const y = Buffer.from(b, 'utf8')

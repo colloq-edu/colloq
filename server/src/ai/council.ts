@@ -26,7 +26,9 @@ import { tr } from '@shared/i18n'
  * this off ("Student names in model requests", OracleSettings.sendNames) —
  * then the labels come back, and the "label → person" mapping stays on the
  * server (`ClassFrame.people`). The key's owner decides: this is about what
- * goes to SOMEONE ELSE'S provider.
+ * goes to SOMEONE ELSE'S provider. The same switch governs every other request
+ * to the model (ai/names.ts); the council keeps its own S-labels because its
+ * console maps them back to names answer by answer.
  *
  * Refreshed only by hand. A question costs a row from the room's limit, and
  * the class submits one per second: auto-refresh would spend the key on every

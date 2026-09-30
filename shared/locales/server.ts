@@ -2737,6 +2737,18 @@ export const serverMessages: MessageCatalog = {
     "ru": "По умолчанию отвечайте по-русски; если пользователь явно просит другой язык, используйте его.",
     "en": "Answer in English by default; if the user explicitly requests another language, use it."
   },
+  "server.ai.studentLabel": {
+    "ru": "Студент {p0}",
+    "en": "Student {p0}"
+  },
+  "server.ai.teacherLabel": {
+    "ru": "Преподаватель",
+    "en": "Teacher"
+  },
+  "server.ai.someoneLabel": {
+    "ru": "Участник",
+    "en": "A participant"
+  },
   "server.formatter.missing": {
     "ru": "В этом окружении не установлен black",
     "en": "black is not installed in this environment"
@@ -3798,6 +3810,14 @@ export const serverMessages: MessageCatalog = {
   "server.ownerAction.resources": {
     "ru": "менять ресурсы сервера",
     "en": "change the instance resources"
+  },
+  "server.ownerAction.auditLog": {
+    "ru": "читать журнал действий",
+    "en": "read the audit log"
+  },
+  "server.ownerAction.editEnvironment": {
+    "ru": "создавать и менять списки пакетов окружений",
+    "en": "create or change environment package lists"
   },
   "server.resources.unknownField": {
     "ru": "Такой настройки ресурсов нет: {field}",

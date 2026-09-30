@@ -16,10 +16,14 @@
  * Two credentials, both links, both revocable:
  *
  *   1. THE SETUP TOKEN. Written to <DATA_DIR>/setup-token (0600) on first boot
- *      and printed once to the server log, exactly like Jupyter's. Whoever can
- *      read the server's disk owns the instance — that is already true of any
- *      self-hosted service, so it is stated rather than pretended away. It does
- *      not expire: it is also the recovery path when the owner loses their link.
+ *      and printed to the server log on every start while nobody owns the
+ *      instance, exactly like Jupyter's. Claiming the instance replaces it with
+ *      a fresh one that is never printed, so the link sitting in logs,
+ *      terminal history and screenshots dies at the claim. Whoever can read the
+ *      server's disk still owns the instance — that is already true of any
+ *      self-hosted service (the database next to the file holds every
+ *      teacher's link), so it is stated rather than pretended away: the fresh
+ *      token in the file is the recovery path when the owner loses their link.
  *
  *   2. A PERSONAL SIGN-IN LINK per teacher. Bookmarkable, rotatable, and it
  *      dies with the account. The owner copies one and sends it however they
@@ -110,6 +114,124 @@ export interface ClaimRequest {
 
 export interface SignInWithTokenRequest {
   token: string
+}
+
+/* ----------------------------------------------------------- audit log */
+
+/**
+ * What staff did, as the audit log names it (server/src/admin/audit-log.ts).
+ *
+ * Staff actions only — sign-ins and claims, the staff list, rooms deleted,
+ * courses, pages and competitions created, published, closed and deleted,
+ * environments, instance settings. What students do in a room is not here: it
+ * lives in the room's own activity (server/src/activity.ts).
+ */
+export type AdminAuditAction =
+  | 'instance.claimed'
+  | 'staff.signed_in'
+  | 'staff.added'
+  | 'staff.removed'
+  | 'staff.role_changed'
+  | 'staff.identity_changed'
+  | 'staff.link_rotated'
+  | 'staff.link_copied'
+  | 'setup_token.rotated'
+  | 'room.deleted'
+  | 'course.created'
+  | 'course.deleted'
+  | 'publication.published'
+  | 'publication.withdrawn'
+  | 'publication.restored'
+  | 'publication.deleted'
+  | 'competition.created'
+  | 'competition.deleted'
+  | 'competition.opened'
+  | 'competition.closed'
+  | 'competition.entrant_deleted'
+  | 'environment.created'
+  | 'environment.edited'
+  | 'environment.deleted'
+  | 'environment.built'
+  | 'environment.made_default'
+  | 'settings.oracle_changed'
+  | 'settings.resources_changed'
+  | 'settings.competitions_changed'
+  | 'settings.instance_changed'
+
+/** Every action: the panel has a label for each, and a test checks that each one is recorded somewhere. */
+export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
+  'instance.claimed',
+  'staff.signed_in',
+  'staff.added',
+  'staff.removed',
+  'staff.role_changed',
+  'staff.identity_changed',
+  'staff.link_rotated',
+  'staff.link_copied',
+  'setup_token.rotated',
+  'room.deleted',
+  'course.created',
+  'course.deleted',
+  'publication.published',
+  'publication.withdrawn',
+  'publication.restored',
+  'publication.deleted',
+  'competition.created',
+  'competition.deleted',
+  'competition.opened',
+  'competition.closed',
+  'competition.entrant_deleted',
+  'environment.created',
+  'environment.edited',
+  'environment.deleted',
+  'environment.built',
+  'environment.made_default',
+  'settings.oracle_changed',
+  'settings.resources_changed',
+  'settings.competitions_changed',
+  'settings.instance_changed',
+]
+
+/** What an action was done to. `id` is stable; `label` is how it read at that moment. */
+export type AdminAuditTargetType =
+  | 'staff'
+  | 'room'
+  | 'course'
+  | 'publication'
+  | 'competition'
+  | 'entrant'
+  | 'environment'
+  | 'settings'
+  | 'setup_token'
+
+/** A value in an event's detail: small and flat, never a secret. */
+export type AdminAuditValue = string | number | boolean | null | readonly string[]
+
+export interface AdminAuditEvent {
+  /** Grows with every event: the page cursor. */
+  id: number
+  at: number
+  /**
+   * Who did it, as they were at that moment: a removed or renamed teacher
+   * still reads the way they did. `null` only for an event no signed-in
+   * person caused.
+   */
+  actor: { id: string; name: string; email: string; role: AdminRole | null } | null
+  /** Typed as a string too: a row written by a newer version must still list. */
+  action: AdminAuditAction | (string & {})
+  target: { type: AdminAuditTargetType | (string & {}); id: string | null; label: string | null } | null
+  detail: Record<string, AdminAuditValue> | null
+  /** The address the request came from, as the server resolves client addresses. */
+  ip: string | null
+}
+
+/** One page of `GET /api/admin/audit-log`, newest first. */
+export interface AdminAuditPage {
+  events: AdminAuditEvent[]
+  /** Pass as `before` for the next (older) page; `null` on the last one. */
+  next: number | null
+  /** How long events are kept, so the panel can say so instead of guessing. */
+  retentionDays: number
 }
 
 /* --------------------------------------------------------------- seminars */
@@ -608,6 +730,13 @@ export interface OracleSettings {
    * setting, not a room rule: it is about what goes to SOMEONE ELSE'S
    * provider, and it is decided by whoever owns the key, not whoever owns the
    * class.
+   *
+   * It governs EVERY request to the model, not only the council: an oracle
+   * question (the asker, earlier askers, "run by" on cells), a turn of the
+   * "Act" mode (the same, plus a personal notebook's author in a refusal) and
+   * the council summary. Off, people are the room's pseudonyms ("Student 3",
+   * "Teacher"; the council keeps S1…SN) — server/src/ai/names.ts. What people
+   * typed themselves (questions, cells, file names) travels as typed.
    */
   sendNames: boolean
   /** The default reasoning level; a request may lower it, only the teacher may raise it. */

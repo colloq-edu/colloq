@@ -325,6 +325,29 @@ test('the gate rejects a frame into a personal notebook of another person and ac
   }
 })
 
+test('the refusal names the author to the person and only the author’s id to the journal', () => {
+  /*
+   * A gate refusal is also a line in the machine's journal (collab/index.ts ·
+   * refuse), and log.ts promises that no participant's name gets there. The
+   * person standing in someone else's notebook still reads whose it is.
+   */
+  const rules = withPersonal({ edit: 'host', structure: 'host', run: 'host' })
+  const { server, client, frame } = twoBooks()
+  const judged = classify(server, frame(() => typeInto(client, 'nb:one')))
+  assert.ok(judged.ok)
+  const verdict = permits(judged.verdicts, rules, 'participant', false, BORIS)
+  assert.equal(verdict.ok, false)
+  if (verdict.ok) return
+  assert.match(verdict.message, /Аким/)
+  assert.ok(verdict.logged, 'a personal notebook refusal has no journal form')
+  assert.doesNotMatch(verdict.logged, /Аким/)
+  assert.match(verdict.logged, new RegExp(AKIM))
+  // The room's own refusal names nobody and needs no second form.
+  const room = permits(judged.verdicts, { ...OPEN_ROOM, edit: 'host' }, 'participant', false, BORIS)
+  assert.equal(room.ok, false)
+  if (!room.ok) assert.equal(room.logged, undefined)
+})
+
 test('the author changes the structure of a personal notebook, and nobody else does', () => {
   const rules = withPersonal({ edit: 'host', structure: 'host' })
   const { server, client, frame } = twoBooks()

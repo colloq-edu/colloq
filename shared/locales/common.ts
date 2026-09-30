@@ -102,12 +102,12 @@ export const commonMessages: MessageCatalog = {
     en: 'The oracle sees real names and refers to people by name.',
   },
   'common.sendNamesOff': {
-    ru: 'Провайдеру уезжают метки S1…SN; имя подставляет сервер уже в ответе.',
-    en: 'The provider gets labels S1…SN; the server puts names back into the answer.',
+    ru: 'Во всех запросах вместо имён уезжают метки: «Студент 3» в вопросах к оракулу, S1…SN в сводке консилиума, где имена подставляет обратно сервер.',
+    en: 'Every request carries labels instead of names: "Student 3" in oracle questions, S1…SN in the council summary, where the server puts the names back.',
   },
   'common.sendNamesNote': {
-    ru: 'Имена внутри самих решений уезжают в любом случае — их пишут студенты.',
-    en: 'Names written inside the solutions themselves are sent either way — students put them there.',
+    ru: 'Имена, которые люди пишут сами — в вопросах, ячейках, решениях и названиях файлов, — уезжают в любом случае.',
+    en: 'Names people type themselves — in questions, cells, solutions and file names — are sent either way.',
   },
   'common.reasoning': { ru: 'Уровень размышлений', en: 'Reasoning level' },
   'common.reasoningInstant': { ru: 'сразу', en: 'instant' },

@@ -10,6 +10,7 @@ import { tr } from '@shared/i18n'
  */
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { ownerOnly, requireStaff, currentStaff } from '../admin/auth.js'
+import { recordAdminEvent } from '../admin/audit-log.js'
 import { getSession, renameSession } from '../db.js'
 import { visitSessionDoc } from './doc-visit.js'
 import {
@@ -64,6 +65,26 @@ const str = (value: unknown, max: number): string =>
 
 function bad(res: Response, message: string): void {
   res.status(400).json({ error: message })
+}
+
+/**
+ * A public page changed state: the audit log records who withdrew, restored or
+ * erased it (admin/audit-log.ts). Pages outlive their rooms and can carry a
+ * class's work to anyone with the link, so these are the staff decisions the
+ * log exists for.
+ */
+function recordPublication(
+  req: Request,
+  action: 'publication.withdrawn' | 'publication.restored' | 'publication.deleted',
+  pub: { id: string; title: string; sessionId: string | null },
+): void {
+  recordAdminEvent({
+    actor: currentStaff(req),
+    action,
+    target: { type: 'publication', id: pub.id, label: pub.title },
+    ...(pub.sessionId ? { detail: { room: pub.sessionId } } : {}),
+    req,
+  })
 }
 
 /**
@@ -139,13 +160,9 @@ export function courseRoutes(): Router {
     const name = str(req.body?.name, MAX_COURSE_NAME)
     if (!name) return bad(res, tr("server.aCourseNeedsAName.42dad0"))
     const teacher = currentStaff(req)
-    res.json({
-      course: createCourse(
-        name,
-        str(req.body?.blurb, MAX_COURSE_BLURB) || null,
-        teacher?.name ?? null,
-      ),
-    })
+    const course = createCourse(name, str(req.body?.blurb, MAX_COURSE_BLURB) || null, teacher?.name ?? null)
+    recordAdminEvent({ actor: teacher, action: 'course.created', target: { type: 'course', id: course.id, label: course.name }, req })
+    res.json({ course })
   })
 
   router.get('/api/admin/courses/:id', requireStaff, (req, res) => {
@@ -266,8 +283,10 @@ export function courseRoutes(): Router {
    * about something that did not exist is a lie in the response.
    */
   router.delete('/api/admin/courses/:id', ownerOnly('delete a course'), (req, res) => {
-    if (!getCourse(req.params.id)) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
-    deleteCourse(req.params.id)
+    const course = getCourse(req.params.id)
+    if (!course) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
+    deleteCourse(course.id)
+    recordAdminEvent({ actor: currentStaff(req), action: 'course.deleted', target: { type: 'course', id: course.id, label: course.name }, req })
     res.json({ ok: true })
   })
 
@@ -493,6 +512,14 @@ export function courseRoutes(): Router {
         steps,
         blobs: blobs.all(),
       })
+      // A class's notebook became a public page: whose decision, which room.
+      recordAdminEvent({
+        actor: teacher,
+        action: 'publication.published',
+        target: { type: 'publication', id: publication.id, label: publication.title },
+        detail: { room: session.id, steps: steps.length, revision: publication.revision },
+        req,
+      })
       res.json({
         publication: { ...publication, steps: stepHeadings(publication.id) },
         skipped,
@@ -505,6 +532,7 @@ export function courseRoutes(): Router {
     const pub = publicationOf(req.params.id)
     if (!pub) return res.status(404).json({ error: tr("server.notPublished.61a0a5") })
     setPublicationState(pub.id, 'withdrawn')
+    recordPublication(req, 'publication.withdrawn', pub)
     res.json({ ok: true })
   })
 
@@ -512,6 +540,7 @@ export function courseRoutes(): Router {
     const pub = publicationOf(req.params.id)
     if (!pub) return res.status(404).json({ error: tr("server.notPublished.61a0a5") })
     setPublicationState(pub.id, 'published')
+    recordPublication(req, 'publication.restored', pub)
     res.json({ ok: true })
   })
 
@@ -538,6 +567,7 @@ export function courseRoutes(): Router {
     const pub = getPublication(req.params.id)
     if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     setPublicationState(pub.id, 'withdrawn')
+    recordPublication(req, 'publication.withdrawn', pub)
     res.json({ ok: true })
   })
 
@@ -545,6 +575,7 @@ export function courseRoutes(): Router {
     const pub = getPublication(req.params.id)
     if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     setPublicationState(pub.id, 'published')
+    recordPublication(req, 'publication.restored', pub)
     res.json({ ok: true })
   })
 
@@ -559,6 +590,7 @@ export function courseRoutes(): Router {
     const pub = getPublication(req.params.id)
     if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     deletePublication(pub.id)
+    recordPublication(req, 'publication.deleted', pub)
     res.json({ ok: true })
   })
 

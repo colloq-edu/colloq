@@ -25,7 +25,7 @@ import { kernelRetirementInProgress } from './kernel/retirement.js'
 import http from 'node:http'
 import { WebSocketServer } from 'ws'
 import type { Duplex } from 'node:stream'
-import { isClaimed, originAllowed, readSetupToken, setupTokenPath } from './admin/auth.js'
+import { originAllowed, setupBanner } from './admin/auth.js'
 import { verifyToken, type TokenPayload } from './auth.js'
 import { banFor, banRefusal, type BanInForce } from './bans.js'
 import { describeInboundPolicy, inboundPolicy } from './net/inbound.js'
@@ -475,34 +475,12 @@ function announceJupyterToken(): void {
 }
 
 /**
- * The entire onboarding story, printed by the only thing that can see it.
- *
- * An unclaimed instance has exactly one way in, and the panel deliberately
- * never shows the token back — so if this line is not readable and actionable
- * on its own, nobody gets in without reading documentation. It prints on every
- * boot while the instance is unclaimed, not only the boot that minted the file:
- * the operator who scrolled past it yesterday needs it again today, and it
- * stops the moment someone claims the instance.
+ * The first-run banner (admin/auth.ts · setupBanner): printed while nobody owns
+ * the instance, never after the claim, which replaced the printed token.
  */
 function announceSetupToken(): void {
-  if (isClaimed()) return
-  console.log(
-    [
-      '',
-      '  ┌ nobody owns this Colloq yet',
-      `  │ open  ${config.publicUrl}/admin/t/${readSetupToken()}`,
-      '  │ then type your name and email — that makes you the owner, and everyone',
-      '  │ else teaching here gets a personal sign-in link from you.',
-      '  │',
-      // The link carries the token, so it is not a URL to paste into a chat.
-      // Saying so next to it is cheaper than explaining it afterwards.
-      '  │ That link IS the key to this instance. Do not share it, and do not',
-      '  │ leave it on screen while the room is watching.',
-      `  └ the token alone is in ${setupTokenPath} (0600). Keep it: it is also the`,
-      '    way back in if an owner ever loses their link.',
-      '',
-    ].join('\n'),
-  )
+  const banner = setupBanner(config.publicUrl)
+  if (banner) console.log(banner)
 }
 
 let stopping = false

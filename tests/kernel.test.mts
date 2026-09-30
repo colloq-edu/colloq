@@ -983,6 +983,75 @@ test('when a council attempt dies, the room learns WHOSE it was', async () => {
   }
 })
 
+/*
+ * The room reads names; the machine's journal must not. It is read by whoever
+ * runs the server, shipped to wherever the university keeps its logs and kept
+ * for months — log.ts promises that no participant's name gets there. The same
+ * death is said twice: with names in the note, with participant ids in the log.
+ */
+test('the journal line about a dead kernel names who ran the cell by id, never by name', async () => {
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { upsertParticipant } = await import('../server/src/db.js')
+  const { useDockerForPostmortem } = await import('../server/src/kernel/postmortem.js')
+  useDockerForPostmortem(notMemoryDocker())
+  try {
+    const room = await seminar()
+    // Its own id: participant ids are the table's key across rooms, and 'p_maria'
+    // already belongs to the room of the test above.
+    upsertParticipant({ sessionId: room.id, id: 'p_maria_journal', name: 'Мария Кюри', role: 'participant', avatar: null })
+    const warned = await withWarnings(async (lines) => {
+      room.type('OOM: x = 1')
+      requestRun(room.id, [room.cellId], 'Мария Кюри', 'p_maria_journal')
+      assert.ok(await until(() => room.state() === 'error'), `the cell ended as ${String(room.state())}`)
+      assert.ok(await until(() => lines.some((line) => line.includes(room.id) && /restarted itself|\] died/.test(line))))
+      return lines
+    })
+    const said = warned.filter((line) => line.includes(room.id))
+    for (const line of said) assert.doesNotMatch(line, /Мария|Кюри/, `a name reached the journal: ${line}`)
+    const death = said.find((line) => /restarted itself|\] died/.test(line)) ?? ''
+    assert.match(death, /cell 2, run by p_maria_journal/, `the journal lost who ran it: ${death}`)
+    // The room still reads the name: the note is for the people who know each other.
+    assert.ok(await until(() => room.notes().some((note) => /Мария Кюри/.test(note))))
+  } finally {
+    useDockerForPostmortem(null)
+  }
+})
+
+test('the journal line about a dead council attempt carries ids, not the student’s or teacher’s name', async () => {
+  const { requestCouncilRun } = await import('../server/src/kernel/index.js')
+  const { upsertParticipant } = await import('../server/src/db.js')
+  const { useDockerForPostmortem } = await import('../server/src/kernel/postmortem.js')
+  useDockerForPostmortem(notMemoryDocker())
+  try {
+    const room = await seminar()
+    upsertParticipant({ sessionId: room.id, id: 'p_chel2', name: 'Чел Челов', role: 'participant', avatar: null })
+    upsertParticipant({ sessionId: room.id, id: 'p_host2', name: 'Aleksandr K.', role: 'host', avatar: null })
+    const warned = await withWarnings(async (lines) => {
+      requestCouncilRun(
+        room.id,
+        {
+          cellId: room.cellId,
+          participantId: 'p_chel2',
+          source: 'OOM: import os; os._exit(0)',
+          by: 'host',
+          limitSec: null,
+          onChange() {},
+        },
+        'Aleksandr K.',
+        'p_host2',
+      )
+      assert.ok(await until(() => lines.some((line) => line.includes(room.id) && /restarted itself|\] died/.test(line))))
+      return lines
+    })
+    const said = warned.filter((line) => line.includes(room.id))
+    for (const line of said) assert.doesNotMatch(line, /Чел|Aleksandr/, `a name reached the journal: ${line}`)
+    const death = said.find((line) => /restarted itself|\] died/.test(line)) ?? ''
+    assert.match(death, /attempt of p_chel2, run by p_host2 on cell 2/, `the journal lost whose attempt it was: ${death}`)
+  } finally {
+    useDockerForPostmortem(null)
+  }
+})
+
 test('crashes in a row are counted instead of being repeated nine times the same way', async () => {
   const { requestRun } = await import('../server/src/kernel/index.js')
   const { useDockerForPostmortem } = await import('../server/src/kernel/postmortem.js')

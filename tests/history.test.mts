@@ -15,9 +15,13 @@ import * as Y from 'yjs'
 import { getChat } from '../shared/notebook.js'
 import { createSession } from '../server/src/db.js'
 import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
-import { recentTurns } from '../server/src/ai/index.js'
+import { recentTurns as replay } from '../server/src/ai/index.js'
+import { modelNames } from '../server/src/ai/names.js'
 
 after(() => shutdownCollab())
+
+/** The thread as the model gets it, with names on — these tests are about which turns go, not how people are called. */
+const recentTurns = (doc: Y.Doc) => replay(doc, modelNames('hist-names', true))
 
 let seq = 0
 function room() {

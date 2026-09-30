@@ -13,6 +13,7 @@ import { Router, type Request, type Response } from 'express'
 import * as Y from 'yjs'
 import { getCells, getMeta } from '@shared/notebook'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
+import { recordAdminEvent } from '../admin/audit-log.js'
 import { getOracleSettings, parseOraclePatch, updateOracleSettings } from '../admin/settings.js'
 import { summariseUsage } from '../admin/usage.js'
 import { discardBans } from '../bans.js'
@@ -69,10 +70,13 @@ import type { Course } from '@shared/publish'
 import {
   ENVIRONMENT_NAME,
   LIMITS,
+  type AdminAuditValue,
   type AdminErrorBody,
   type AdminSeminar,
+  type OracleSettings,
   type OracleTestResult,
   type SeminarStatus,
+  type UpdateOracleRequest,
 } from '@shared/admin'
 
 /**
@@ -325,6 +329,42 @@ const normalize = normalizeLabel
 function invalid(res: Response, error: string): Response {
   const body: AdminErrorBody = { error, reason: 'invalid' }
   return res.status(400).json(body)
+}
+
+/** The oracle settings a save can change, besides the key and the house rules. */
+const ORACLE_FIELDS = [
+  'provider',
+  'baseUrl',
+  'model',
+  'defaultMode',
+  'questionsPerHour',
+  'slowModeSeconds',
+  'contextChars',
+  'agentSteps',
+  'sendNames',
+  'reasoningEffort',
+] as const
+
+/**
+ * What a save of the oracle settings changed, for the audit log — or `null`
+ * when it changed nothing: the panel sends the whole form on every save.
+ *
+ * The key never goes in, only whether it was set or cleared. The house rules
+ * are the teacher's prose and may run long: the log says that they changed,
+ * not what they now say.
+ */
+function oracleChanges(
+  patch: UpdateOracleRequest,
+  before: OracleSettings,
+  after: OracleSettings,
+): Record<string, AdminAuditValue> | null {
+  const detail: Record<string, AdminAuditValue> = {}
+  if (patch.apiKey !== undefined) detail.apiKey = patch.apiKey.trim() ? 'set' : 'cleared'
+  for (const field of ORACLE_FIELDS) {
+    if (patch[field] !== undefined && before[field] !== after[field]) detail[field] = after[field]
+  }
+  if (patch.houseRules !== undefined && before.houseRules !== after.houseRules) detail.houseRules = 'changed'
+  return Object.keys(detail).length > 0 ? detail : null
 }
 
 /**
@@ -652,6 +692,8 @@ export function adminInstanceRoutes(): Router {
     const release = blockKernelStarts(row.id)
     // `?reading=drop` means "delete both". The default keeps the reading.
     const keepReading = req.query.reading !== 'drop'
+    // Read now: the answer is sent from the work below, after the room is gone.
+    const actor = currentStaff(req)
     void (async () => {
       try {
         // Keep the complete room until the broker confirms that its Pod is gone.
@@ -752,7 +794,13 @@ export function adminInstanceRoutes(): Router {
         deleteSnapshot.run(row.id)
         discardHistory(row.id)
 
-
+        recordAdminEvent({
+          actor,
+          action: 'room.deleted',
+          target: { type: 'room', id: row.id, label: row.name },
+          ...(pub ? { detail: { reading: keepReading ? 'kept' : 'deleted' } } : {}),
+          req,
+        })
         res.status(204).end()
       } catch (err) {
         console.error(
@@ -787,9 +835,13 @@ export function adminInstanceRoutes(): Router {
   router.put('/api/admin/oracle', ownerOnly('server.ownerAction.6'), (req, res) => {
     const parsed = parseOraclePatch(req.body)
     if ('error' in parsed) return invalid(res, parsed.error)
+    const before = getOracleSettings()
+    const after = updateOracleSettings(parsed.patch)
+    const detail = oracleChanges(parsed.patch, before, after)
+    if (detail) recordAdminEvent({ actor: currentStaff(req), action: 'settings.oracle_changed', target: { type: 'settings', id: 'oracle' }, detail, req })
     // The response is the masked settings, like the GET: the key goes in and is
     // never handed back, not even to the teacher who just typed it.
-    res.json(updateOracleSettings(parsed.patch))
+    res.json(after)
   })
 
   // Owner-only for the same reason: this is the button that makes the server

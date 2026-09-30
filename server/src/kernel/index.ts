@@ -1158,10 +1158,21 @@ function churnReason(): string | null {
   return churn.reason
 }
 
-/** What was computing at death: a phrase for the room, a cell for the post-mortem. */
+/** What was computing at death: a phrase for the room, a line for the journal, a cell for the post-mortem. */
 interface DeathScene {
   /** "Kirill's attempt on cell 21" / "cell 21, run by Timur"; `null`: the kernel was idle. */
   what: string | null
+  /**
+   * The same for the machine's journal, with participant ids where the room
+   * reads names: "attempt of p_x on cell 21" / "cell 21, run by p_y".
+   *
+   * Two phrases, not one, because the audiences differ. The room knows its
+   * people, and the note is written for them; the journal is read by whoever
+   * runs the machine, shipped to wherever the university keeps its logs, and
+   * kept long after the class — log.ts promises that no participant's name
+   * gets there. The id is enough to find the person in the room's own list.
+   */
+  logged: string | null
   /** The cell this relates to, for `explainDeath`; for an attempt, the council cell. */
   cellId: string | null
 }
@@ -1188,7 +1199,7 @@ interface DeathScene {
 function whatWasRunning(runtime: Runtime): DeathScene {
   const job = runtime.job
   const cellId = job ? job.job.cellId : runtime.currentCell
-  if (!cellId) return { what: null, cellId: null }
+  if (!cellId) return { what: null, logged: null, cellId: null }
   const doc = (() => {
     try {
       return peekSessionDoc(runtime.sessionId)?.doc ?? null
@@ -1209,8 +1220,10 @@ function whatWasRunning(runtime: Runtime): DeathScene {
   if (job) {
     const author = nameOf(job.job.participantId)
     const ran = nameOf(job.item.runById)
+    const pressedBy = job.item.runById && job.item.runById !== job.job.participantId ? `, run by ${job.item.runById}` : ''
     return {
       cellId,
+      logged: `attempt of ${job.job.participantId || '—'}${pressedBy} on cell ${cell ?? '?'}`,
       what:
         cell === null
           ? tr('server.kernel.diedOnAttemptNoCell', { author: author ?? '—' })
@@ -1224,6 +1237,7 @@ function whatWasRunning(runtime: Runtime): DeathScene {
   const ran = nameOf(runtime.currentRunById)
   return {
     cellId,
+    logged: cell === null ? null : `cell ${cell}${runtime.currentRunById ? `, run by ${runtime.currentRunById}` : ''}`,
     what:
       cell === null
         ? null
@@ -1373,7 +1387,7 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
     const again = known ? 0 : countDeath(runtime)
     console.warn(
       `[kernel ${runtime.sessionId}] restarted itself — ${known ? `churn: ${known}` : 'cause unknown'}` +
-        `${scene.what ? ` · ${scene.what}` : ''}${again > 1 ? ` · ${again} in 10 min` : ''}`,
+        `${scene.logged ? ` · ${scene.logged}` : ''}${again > 1 ? ` · ${again} in 10 min` : ''}`,
     )
     kernelNote(
       runtime.sessionId,
@@ -1423,7 +1437,7 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
     // not only a note in the notebook that goes away together with it.
     console.warn(
       `[kernel ${runtime.sessionId}] died${hadWork ? ' mid-run' : ''}${known ? ` — churn: ${known}` : ''}` +
-        `${scene.what ? ` · ${scene.what}` : ''}${again > 1 ? ` · ${again} in 10 min` : ''}`,
+        `${scene.logged ? ` · ${scene.logged}` : ''}${again > 1 ? ` · ${again} in 10 min` : ''}`,
     )
     kernelNote(
       runtime.sessionId,

@@ -12,7 +12,8 @@
  * clamped write turned into.
  */
 import { Router, type Response } from 'express'
-import { ownerOnly, requireStaff } from '../admin/auth.js'
+import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
+import { recordAdminEvent } from '../admin/audit-log.js'
 import {
   parseResourcePatch,
   perEnvironmentMemoryMb,
@@ -176,6 +177,15 @@ export function adminResourceRoutes(): Router {
     }
     if (changed.length > 0) {
       console.log(`[admin] instance resources changed: ${changed.join(', ')}`)
+      // What each changed setting is now: one number per name, the whole story.
+      const now = resourceSettings()
+      recordAdminEvent({
+        actor: currentStaff(req),
+        action: 'settings.resources_changed',
+        target: { type: 'settings', id: 'resources' },
+        detail: { changed, ...Object.fromEntries(changed.map((name) => [name, now[name].value])) },
+        req,
+      })
       // The class form and the room list label their fields with these defaults.
       forgetResources()
       // Not awaited: `docker update` on a busy machine takes hundreds of

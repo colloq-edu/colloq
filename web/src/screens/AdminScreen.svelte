@@ -13,6 +13,7 @@
   import Publish from '@/admin/screens/Publish.svelte'
   import Teachers from '@/admin/screens/Teachers.svelte'
   import ResourcesTab from '@/admin/screens/ResourcesTab.svelte'
+  import AuditLog from '@/admin/screens/AuditLog.svelte'
   import SignInScreen from '@/screens/SignInScreen.svelte'
   import { readEntryCredential, SPENT_PATH } from '@/admin/entry'
 
@@ -69,17 +70,19 @@
   const tab = $derived<AdminTab>(
     path.startsWith('/admin/oracle')
       ? 'oracle'
-      : path.startsWith('/admin/resources')
-        ? 'resources'
-        : path.startsWith('/admin/teachers')
-          ? 'teachers'
-          : path.startsWith('/admin/environments')
-            ? 'environments'
-            : path.startsWith('/admin/competitions')
-              ? 'competitions'
-              : path.startsWith('/admin/courses')
-                ? 'courses'
-                : 'seminars',
+      : path.startsWith('/admin/audit')
+        ? 'audit'
+        : path.startsWith('/admin/resources')
+          ? 'resources'
+          : path.startsWith('/admin/teachers')
+            ? 'teachers'
+            : path.startsWith('/admin/environments')
+              ? 'environments'
+              : path.startsWith('/admin/competitions')
+                ? 'competitions'
+                : path.startsWith('/admin/courses')
+                  ? 'courses'
+                  : 'seminars',
   )
 
   /*
@@ -285,6 +288,8 @@
       <Teachers />
     {:else if tab === 'resources'}
       <ResourcesTab />
+    {:else if tab === 'audit'}
+      <AuditLog />
     {:else if makingSeminar}
       <NewSeminar
           ondone={(createdId) => {

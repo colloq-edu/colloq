@@ -35,6 +35,7 @@ import { jupyterReachable } from './kernel/jupyter.js'
 import { isolationAvailable } from './kernel/pool.js'
 import { tally } from './log.js'
 import { adminAuthRoutes } from './routes/admin-auth.js'
+import { adminAuditRoutes } from './routes/admin-audit.js'
 import { adminCompetitionRoutes } from './routes/admin-competitions.js'
 import { adminEnvironmentRoutes } from './routes/admin-environments.js'
 import { adminImportRoutes } from './routes/admin-import.js'
@@ -566,6 +567,7 @@ app.use('/api', (req, res, next) => {
 // /api/sessions asks currentStaff() who is calling, and the admin routers are
 // what put the staff table and the cookie in front of it.
 app.use(adminAuthRoutes())
+app.use(adminAuditRoutes())
 app.use(instanceSettingsRoutes())
 app.use(instanceResourcesRoutes())
 app.use(adminInstanceRoutes())

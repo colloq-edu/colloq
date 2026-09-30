@@ -35,6 +35,7 @@ import { listFiles } from '../workspace.js'
 import { currentText } from '../collab/files.js'
 import { kindOf } from '@shared/paths'
 import { clip, clipLine, pad } from './text.js'
+import { modelNames, type ModelNames } from './names.js'
 
 /*
  * How much of a cell travels, per cell.
@@ -88,6 +89,8 @@ interface Entry {
   state: CellState
   execCount: number | null
   runBy: string | null
+  /** Who pressed Run, by id: with names off it is the id that becomes a pseudonym, not `runBy`. */
+  runById: string | null
   /** There is an error among the outputs — by the entry's kind, without parsing JSON. */
   failed: boolean
   book: string
@@ -132,6 +135,7 @@ function headOf(cell: YCell, book: string, no: number, first: boolean): Entry {
     state: (cell.get('state') as CellState) ?? 'idle',
     execCount: (cell.get('execCount') as number | null) ?? null,
     runBy: (cell.get('runBy') as string | null) ?? null,
+    runById: (cell.get('runById') as string | null) ?? null,
     failed,
     book,
     no,
@@ -160,6 +164,14 @@ export function buildContext(
    * by the server.
    */
   askedBy?: string | null,
+  /**
+   * How people are called in the frame (ai/names.ts): "run by" on a cell is a
+   * participant's name, and with the instance switch off it must not be. The
+   * default reads the switch, so a caller that forgets to pass it cannot leak
+   * a name by omission; the oracle passes the one it decided for the whole
+   * request, so the frame and the thread call a person the same way.
+   */
+  names: ModelNames = modelNames(sessionId),
 ): string {
   // Read per question, not per boot: a teacher who lowers the budget mid-class
   // to fit a smaller model must see the next question honour it.
@@ -260,7 +272,7 @@ export function buildContext(
     const made = full.get(i)
     if (made !== undefined) return made
     const one =
-      bookHead(entries[i]) + renderCell(entries[i], pinned.has(i), wanted.has(entries[i].id))
+      bookHead(entries[i]) + renderCell(entries[i], pinned.has(i), wanted.has(entries[i].id), names)
     full.set(i, one)
     return one
   }
@@ -395,7 +407,7 @@ function newestErrorIndex(entries: Entry[]): number {
   return best
 }
 
-function renderCell(entry: Entry, full: boolean, selected: boolean): string {
+function renderCell(entry: Entry, full: boolean, selected: boolean, names: ModelNames): string {
   const cell = entry
   /*
    * The number is the one the person sees: 1-based, with a leading zero.
@@ -406,7 +418,8 @@ function renderCell(entry: Entry, full: boolean, selected: boolean): string {
    */
   const head = [`[cell ${pad(entry.no)}]`, cell.type, cell.state]
   if (cell.execCount !== null) head.push(`In[${cell.execCount}]`)
-  if (cell.runBy) head.push(`run by ${cell.runBy}`)
+  const runner = names.call(cell.runById, cell.runBy)
+  if (runner) head.push(`run by ${runner}`)
 
   const lines = [head.join(' · ') + (selected ? '   <-- ASKED ABOUT' : '')]
 

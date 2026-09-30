@@ -1008,6 +1008,12 @@ function refuse(
      */
     detail?: string
     /**
+     * The reason as the journal gets it, when it differs from the person's:
+     * a personal notebook's refusal names its author, and the log line names
+     * the author's participant id instead (collab/gate.ts · permits).
+     */
+    logged?: string
+    /**
      * A refusal of a first sync, not of an edit. By this word in the close
      * frame the tab tells "your cache is older than the server" from "this edit
      * was not accepted": the control socket with the refusal text travels over
@@ -1030,11 +1036,11 @@ function refuse(
    * identical lines. The first one per minute per room and rule is said, the
    * rest are visible as a number in the summary. Neither the participant's name
    * nor the edit's text: only the rule and the reason the gate itself put into
-   * words.
+   * words — in its journal form, which names nobody (`logged`).
    */
   if (seldom(`gate:${entry.sessionId}:${refusal.rule}`)) {
     const detail = refusal.detail ? ` · ${refusal.detail}` : ''
-    console.warn(`[gate ${entry.sessionId}] ${refusal.rule} refused — ${refusal.message}${detail}`)
+    console.warn(`[gate ${entry.sessionId}] ${refusal.rule} refused — ${refusal.logged ?? refusal.message}${detail}`)
   }
   try {
     conn.close(4403, refusal.stale ? 'stale' : refusal.rule)

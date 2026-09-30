@@ -1,5 +1,6 @@
 import { Router } from 'express'
-import { ownerOnly, requireStaff } from '../admin/auth.js'
+import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
+import { recordAdminEvent } from '../admin/audit-log.js'
 import { getInstanceLanguage, setInstanceLanguage } from '../admin/settings.js'
 import { isLocale, tr } from '@shared/i18n'
 export function instanceSettingsRoutes(): Router {
@@ -30,8 +31,19 @@ export function instanceSettingsRoutes(): Router {
         res.status(400).json({ error: tr('common.invalidLanguage'), reason: 'invalid' })
         return
       }
+      const previous = getInstanceLanguage()
       setInstanceLanguage(body.language)
-      res.json({ language: getInstanceLanguage() })
+      const language = getInstanceLanguage()
+      if (language !== previous) {
+        recordAdminEvent({
+          actor: currentStaff(req),
+          action: 'settings.instance_changed',
+          target: { type: 'settings', id: 'instance' },
+          detail: { language, previousLanguage: previous },
+          req,
+        })
+      }
+      res.json({ language })
     },
   )
   return router

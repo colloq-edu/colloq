@@ -126,6 +126,7 @@ import { cellsWord, describe as reason, effortNote, pad } from './text.js'
 import type { ReasoningEffort } from '@shared/admin'
 import { buildContext, renderOutputs } from './context.js'
 import { recentTurns } from './index.js'
+import { modelNames, type ModelNames } from './names.js'
 
 const ORIGIN = 'server'
 
@@ -1779,8 +1780,16 @@ function refuseCells(hands: Hands, own: string, root: string | null = null): str
    * personal notebook sends the model to explain the wrong thing to the person
    * — and the person to a teacher who forbade nothing.
    */
-  const book = bookRefusal(getRules(hands.sessionId), root, askerOf(hands))
-  return book ? tr(book.key, { p0: book.name }) : own
+  const rules = getRules(hands.sessionId)
+  const book = bookRefusal(rules, root, askerOf(hands))
+  if (!book) return own
+  /*
+   * These words go to the model, and "this notebook is personal: Anna" carries
+   * its author's name: it obeys the names switch like every other name in a
+   * request (ai/names.ts) — the author by id, as a pseudonym, when it is off.
+   */
+  const owner = root ? (rules.books?.[root]?.owner ?? null) : null
+  return tr(book.key, { p0: modelNames(hands.sessionId).call(owner, book.name) ?? '' })
 }
 
 /** The room's notebook — the one on the `cells` root that has version history. */
@@ -2779,7 +2788,10 @@ export interface WorkOptions {
  */
 export function work(options: WorkOptions): string {
   const doc = getSessionDoc(options.sessionId).doc
-  const history = recentTurns(doc)
+  // One decision for the whole turn: the frame it rebuilds and the thread it
+  // started with call people the same way (ai/names.ts).
+  const names = modelNames(options.sessionId)
+  const history = recentTurns(doc, names)
   const entry = createChatEntry({
     participantId: options.participantId,
     name: options.participantName,
@@ -2792,7 +2804,7 @@ export function work(options: WorkOptions): string {
 
   appendActivity(options.sessionId, options.participantId, 'oracle.work_started', { entryId, action: 'work', source: 'participant' }, options.role)
 
-  void loop(options, entryId, history).catch((err: unknown) => {
+  void loop(options, entryId, history, names).catch((err: unknown) => {
     console.error(`[session ${options.sessionId}] agent crashed:`, reason(err, WENT_WRONG()))
     settle(options.sessionId, entryId, 'error', reason(err, WENT_WRONG()))
   })
@@ -2800,7 +2812,12 @@ export function work(options: WorkOptions): string {
   return entryId
 }
 
-async function loop(options: WorkOptions, entryId: string, history: ChatTurn[]): Promise<void> {
+async function loop(
+  options: WorkOptions,
+  entryId: string,
+  history: ChatTurn[],
+  names: ModelNames,
+): Promise<void> {
   const activityBeganAt = Date.now()
   const key = `${options.sessionId} ${entryId}`
   const controller = new AbortController()
@@ -2810,7 +2827,7 @@ async function loop(options: WorkOptions, entryId: string, history: ChatTurn[]):
   })
   let outcome: ActivityOutcome = 'error'
   try {
-    await steps(options, entryId, history, controller.signal)
+    await steps(options, entryId, history, controller.signal, names)
     outcome = controller.signal.aborted ? 'cancelled' : 'completed'
   } finally {
     if (controller.signal.aborted) outcome = 'cancelled'
@@ -2891,6 +2908,7 @@ async function steps(
   entryId: string,
   history: ChatTurn[],
   signal: AbortSignal,
+  names: ModelNames,
 ): Promise<void> {
   const hands: Hands = {
     sessionId: options.sessionId,
@@ -2906,7 +2924,7 @@ async function steps(
   const stepLimit = agentStepsIn(getRules(options.sessionId).agentSteps, getOracleSettings().agentSteps)
 
   const messages: ChatTurn[] = [
-    { role: 'system', content: systemPrompt(hands, tools, options.effort) },
+    { role: 'system', content: systemPrompt(hands, tools, options.effort, names) },
     ...threadForWork(history),
     { role: 'user', content: options.message.trim() },
   ]
@@ -2958,7 +2976,7 @@ async function steps(
        * impossible (deletion calls `stopAll`, and the abort is checked a line
        * above), but the rule above `peekSessionDoc` is not about probability.
        */
-      messages[0] = { role: 'system', content: systemPrompt(hands, tools, options.effort) }
+      messages[0] = { role: 'system', content: systemPrompt(hands, tools, options.effort, names) }
       framedAt = taken
       stale = false
     }
@@ -3226,7 +3244,12 @@ function settle(sessionId: string, entryId: string, state: ChatState, note: stri
   }, ORIGIN)
 }
 
-function systemPrompt(hands: Hands, tools: ToolSpec[], effort?: ReasoningEffort): string {
+function systemPrompt(
+  hands: Hands,
+  tools: ToolSpec[],
+  effort: ReasoningEffort | undefined,
+  names: ModelNames,
+): string {
   /*
    * The teacher's rules — here too.
    *
@@ -3329,6 +3352,6 @@ function systemPrompt(hands: Hands, tools: ToolSpec[], effort?: ReasoningEffort)
     '',
     // The agent is not "focused" on anything: it gets a task, not a question
     // about a cell.
-    buildContext(hands.sessionId, [], hands.by.participantId),
+    buildContext(hands.sessionId, [], hands.by.participantId, names),
   ].join('\n')
 }
