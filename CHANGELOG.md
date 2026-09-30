@@ -13,6 +13,32 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.9.0](https://github.com/colloq-edu/colloq/compare/v0.8.4...v0.9.0) (2026-09-30)
+
+
+### Features
+
+* **admin:** an audit log of staff actions, and names out of prompts when the switch says so ([20570de](https://github.com/colloq-edu/colloq/commit/20570de85ddac44c0ddeda184318bda3863b4894))
+* **competitions:** keep students' contacts off public boards, and let staff remove a person ([3a866ca](https://github.com/colloq-edu/colloq/commit/3a866cae46967fa5dbbeb8ee530258f7086b14a8))
+* **host:** run the server image on a university's own machine ([a5f1fbb](https://github.com/colloq-edu/colloq/commit/a5f1fbbd63fc89f9c99a040c8d833daf0be49a45))
+* **server:** go out through a campus proxy and mirror, and cut rooms off the network on request ([274981d](https://github.com/colloq-edu/colloq/commit/274981d564b5abcf9c795ffd705ca1b5ebd038dd))
+* **server:** trust a campus proxy by range, not only a local one ([fbd2e38](https://github.com/colloq-edu/colloq/commit/fbd2e38dd5c4087b51493550ff937ce93e4c9ae0))
+
+
+### Bug Fixes
+
+* **cli:** count days in the laptop's own time zone ([f570c8d](https://github.com/colloq-edu/colloq/commit/f570c8d3435f2a521335a9e1a722188a034be5d5))
+* **host:** a failing nvidia-smi is not a list of cards, and the image's backup names its own restore ([d7aaa21](https://github.com/colloq-edu/colloq/commit/d7aaa2156cc20f3b854d956c19273a0377e33f85))
+* **ops:** backups survive what student code leaves behind, and data knows its schema ([3a596e4](https://github.com/colloq-edu/colloq/commit/3a596e49300f505b85d138f77834ea221ab54e42))
+* **relay:** tell the server that a relayed student came over https ([14183e9](https://github.com/colloq-edu/colloq/commit/14183e9979f9b96eac2dd456a54971e1364ce1e3))
+* **server:** the Oracle goes through a campus proxy on Node 22 too ([ea5fce6](https://github.com/colloq-edu/colloq/commit/ea5fce6f1583394fad4040f21621db22a312ea4f))
+
+
+### Documentation
+
+* a guide for running Colloq on a university's own server ([55efee6](https://github.com/colloq-edu/colloq/commit/55efee6237b4f60c143f7a78de0c5388e7e9e15e))
+* the app measured with 300 and 500 students behind nginx ([54f11de](https://github.com/colloq-edu/colloq/commit/54f11deb59d46c177a5098f08acd700287d24a52))
+
 ## [0.8.4](https://github.com/colloq-edu/colloq/compare/v0.8.3...v0.8.4) (2026-09-30)
 
 
