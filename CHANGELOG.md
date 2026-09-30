@@ -13,6 +13,29 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.10.0](https://github.com/colloq-edu/colloq/compare/v0.9.0...v0.10.0) (2026-09-30)
+
+
+### Features
+
+* **helm:** a chart for a customer's own Kubernetes namespace ([92f532f](https://github.com/colloq-edu/colloq/commit/92f532f99514f2401caabcf74bf1f0b55b9dd268))
+* **ops:** Prometheus metrics, JSON logs and database snapshots for platform teams ([caac299](https://github.com/colloq-edu/colloq/commit/caac299df2b0c0dce38f4b81f0cc22635415a0c6))
+* **release:** publish the Kubernetes images and chart, and test the chart on k3d ([a138dec](https://github.com/colloq-edu/colloq/commit/a138decc7572c4cdebf76ce4541c193459658941))
+* **runtime:** run in a customer's multi-node cluster, with personal notebooks on Kubernetes ([e9bcc09](https://github.com/colloq-edu/colloq/commit/e9bcc0969248618557649e8cb50115caffe69637))
+
+
+### Bug Fixes
+
+* **k8s:** upgrades keep rooms on their kernels, and ArgoCD never prunes a room ([d5246a1](https://github.com/colloq-edu/colloq/commit/d5246a187878038070b8ab34530bda8cfcb31dfa))
+* **runtime:** competition pods mount the data claim through one volume ([0bad41e](https://github.com/colloq-edu/colloq/commit/0bad41ebb14ab3fd0a8e8cafd6dafebacba8bec9))
+* **server:** say why a competition's environment could not be pinned, and stop a false token warning on Kubernetes ([6d68f07](https://github.com/colloq-edu/colloq/commit/6d68f07bfd6ca256f36e8b9c9730a2d31b5039ab))
+
+
+### Documentation
+
+* Colloq in your Kubernetes, for a platform and security team ([0d9e8e7](https://github.com/colloq-edu/colloq/commit/0d9e8e7395c5efb3b7545029e3b5e1e4c1504fc7))
+* the Kubernetes guide after the bank-like cluster run ([ad6ce1e](https://github.com/colloq-edu/colloq/commit/ad6ce1e29133a130f0dba6f55b7c318a392da646))
+
 ## [0.9.0](https://github.com/colloq-edu/colloq/compare/v0.8.4...v0.9.0) (2026-09-30)
 
 
