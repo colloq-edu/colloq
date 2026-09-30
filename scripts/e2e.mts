@@ -170,10 +170,54 @@ try {
   await until('B received the cell A typed', () => cells(B.doc).toArray().some((c) => idOf(c) === newId))
   console.log('4. realtime edit propagated A -> B')
 
-  const control = new WS(`${WSB}/control/${sid}?token=${encodeURIComponent(maria.token)}`)
-  closers.push(() => control.close())
-  await new Promise((res, rej) => { control.on('open', res as any); control.on('error', rej) })
-  control.send(JSON.stringify({ t: 'run', cellId: newId }))
+  /*
+   * The control socket as a tab keeps it: reopened when it is gone. Through a
+   * `kubectl port-forward` (the Kubernetes e2e) one stream now and then drops
+   * without a word, and a Run sent into a closed socket vanishes: three runs in
+   * fifteen timed out on a Run that never reached the server, while the same
+   * check through ingress-nginx passed twenty-two times in twenty-two (1 Oct
+   * 2026). A browser reconnects; so does this. A refusal the server sends is
+   * printed, so a real one is never mistaken for a lost frame.
+   */
+  const openControl = async (): Promise<InstanceType<typeof WS>> => {
+    const socket = new WS(`${WSB}/control/${sid}?token=${encodeURIComponent(maria.token)}`)
+    closers.push(() => socket.close())
+    await new Promise((res, rej) => { socket.on('open', res as any); socket.on('error', rej) })
+    socket.on('message', (raw: Buffer) => {
+      try {
+        const frame = JSON.parse(raw.toString())
+        if (frame?.t === 'error') console.log(`     the server refused: ${String(frame.message ?? '').slice(0, 200)}`)
+      } catch { /* not a frame this check reads */ }
+    })
+    return socket
+  }
+  let control = await openControl()
+  /*
+   * A Run is taken when the cell leaves idle (queued, running, done). A stream
+   * the port-forward dropped without closing looks OPEN and swallows the
+   * frame, so a Run nobody took within fifteen seconds is sent once more over
+   * a fresh socket. The kernel's cold start happens before the first Run is
+   * taken, not after, so fifteen seconds never cut a slow start short.
+   */
+  const taken = (cellId: string) => {
+    const c = cells(B.doc).toArray().find((x) => idOf(x) === cellId)
+    return !!c && c.get('state') !== 'idle' && c.get('state') !== undefined
+  }
+  const run = async (cellId: string) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0 || control.readyState !== WS.OPEN) {
+        console.log(`     the control socket was lost (state ${control.readyState}); reopening it, as a tab would`)
+        control = await openControl()
+      }
+      control.send(JSON.stringify({ t: 'run', cellId }))
+      const t0 = Date.now()
+      while (Date.now() - t0 < 15_000) {
+        if (taken(cellId)) return
+        await wait(150)
+      }
+    }
+  }
+  await run(newId)
   console.log('5. Maria pressed Run on the cell Alexander wrote')
 
   const onB = () => cells(B.doc).toArray().find((c) => idOf(c) === newId)!
@@ -192,7 +236,7 @@ try {
   const { cell: fileCell, id: fileId } = newCell("open('made-in-class.txt','w').write('hi')")
   A.doc.transact(() => cells(A.doc).push([fileCell]))
   await until('B received the file-writing cell', () => cells(B.doc).toArray().some((c) => idOf(c) === fileId))
-  control.send(JSON.stringify({ t: 'run', cellId: fileId }))
+  await run(fileId)
   await until('file-writing cell finished', () => {
     const c = cells(B.doc).toArray().find((x) => idOf(x) === fileId)
     return !!c && ['ok', 'error'].includes(c.get('state'))
@@ -209,7 +253,7 @@ try {
     const { cell: probeCell, id: probeId } = newCell(ISOLATION_PROBE)
     A.doc.transact(() => cells(A.doc).push([probeCell]))
     await until('B received the probe cell', () => cells(B.doc).toArray().some((c) => idOf(c) === probeId))
-    control.send(JSON.stringify({ t: 'run', cellId: probeId }))
+    await run(probeId)
     const probe = () => cells(B.doc).toArray().find((c) => idOf(c) === probeId)
     await until('probe cell finished', () => ['ok', 'error'].includes(probe()?.get('state')))
     const said = outputsOf(probe()!).map((o) => (o.kind === 'stream' ? o.text : `${o.ename ?? o.kind}: ${o.evalue ?? ''}`)).join('').trim()
