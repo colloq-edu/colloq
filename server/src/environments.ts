@@ -15,6 +15,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AdminEnvironment, EnvironmentAbilities, EnvironmentState } from '@shared/admin'
+import { proxyBuildArgs, redactedArgument } from './outbound.js'
 import {
   DEFAULT_PYTHON,
   ENVIRONMENT_NAME,
@@ -904,7 +905,14 @@ function runStage(
   kernel: string,
 ): Promise<boolean> {
   return new Promise((resolve) => {
-    const { args, env: vars } = buildCommand(plan, step, parentImage, kernel)
+    const { args: command, env: vars } = buildCommand(plan, step, parentImage, kernel)
+    /*
+     * Behind an institution's proxy the RUN steps (pip, apt) need it too:
+     * Docker's predefined proxy arguments, given just before the context (or
+     * the compose service), and absent without a proxy (outbound.ts ·
+     * proxyBuildArgs). The log line below shows them without a password.
+     */
+    const args = [...command.slice(0, -1), ...proxyBuildArgs(), ...command.slice(-1)]
     /*
      * The list is read BEFORE the spawn: this is what goes into the stamp.
      *
@@ -933,7 +941,7 @@ function runStage(
       .filter(([name]) => name.startsWith('KERNEL_'))
       .map(([name, value]) => `${name}=${value} `)
       .join('')
-    push(build, `$ ${shown}docker ${args.join(' ')}`)
+    push(build, `$ ${shown}docker ${args.map(redactedArgument).join(' ')}`)
 
     child.stdout.on('data', (d: Buffer) => push(build, d.toString()))
     child.stderr.on('data', (d: Buffer) => push(build, d.toString()))

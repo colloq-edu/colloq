@@ -3,9 +3,27 @@ import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { dependencySource } from '../../shared/dependency-source.js'
 
-const ALLOWED = new Set(['pypi.org:443', 'files.pythonhosted.org:443'])
-type Options = { maxBytes: number, seconds: number }
+/**
+ * Which hosts the proxy opens: public PyPI's by default, or the institution's
+ * index and its file hosts (DEPENDENCY_INDEX_URL, DEPENDENCY_FILES_HOSTS,
+ * shared/dependency-source.ts), which the broker passes to this Pod. The
+ * configured ones may resolve to campus addresses; public PyPI's only ever to
+ * public ones. The network policy the installer renders allows the same
+ * addresses and ports (scripts/release.py).
+ */
+type Source = { authorities: string[], configured: string[] }
+const PUBLIC: Source = { authorities: ['pypi.org:443', 'files.pythonhosted.org:443'], configured: [] }
+type Options = { maxBytes: number, seconds: number, source?: Source }
+
+/** An address a configured mirror may have: private is fine, loopback, link-local (cloud metadata) and multicast are not. */
+export function campusIPv4(value: string): boolean {
+  if (isIP(value) !== 4) return false
+  const [a, b] = value.split('.').map(Number)
+  if (a === undefined || b === undefined) return false
+  return !(a === 0 || a === 127 || a >= 224 || a === 169 && b === 254)
+}
 
 export function publicIPv4(value: string): boolean {
   if (isIP(value) !== 4) return false
@@ -24,6 +42,8 @@ export function createCompetitionProxy(options: Options): Server {
   if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 1 || options.maxBytes > 2 * 1024 * 1024 * 1024 ||
       !Number.isSafeInteger(options.seconds) || options.seconds < 1 || options.seconds > 3600) throw new Error('invalid proxy limits')
   const deadline = Date.now() + options.seconds * 1000
+  const allowed = new Set((options.source ?? PUBLIC).authorities)
+  const configured = new Set((options.source ?? PUBLIC).configured)
   let remaining = options.maxBytes
   let active = 0
   const sockets = new Set<Socket>()
@@ -45,12 +65,16 @@ export function createCompetitionProxy(options: Options): Server {
       socket.pause()
       const first = header.subarray(0, header.indexOf('\r\n')).toString('ascii')
       const match = /^CONNECT ([^ ]+) HTTP\/1\.[01]$/.exec(first)
-      if (!match || !ALLOWED.has(match[1]!)) return socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+      if (!match || !allowed.has(match[1]!)) return socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
       try {
-        const host = match[1]!.split(':')[0]!
+        const authority = match[1]!
+        const separator = authority.lastIndexOf(':')
+        const host = authority.slice(0, separator)
+        const port = Number(authority.slice(separator + 1))
+        const acceptable = configured.has(authority) ? campusIPv4 : publicIPv4
         const addresses = await lookup(host, { all: true, family: 4 })
-        if (!addresses.length || addresses.some(item => !publicIPv4(item.address))) return socket.destroy()
-        const upstream = createConnection({ host: addresses[0]!.address, port: 443, timeout: 15_000 })
+        if (!addresses.length || addresses.some(item => !acceptable(item.address))) return socket.destroy()
+        const upstream = createConnection({ host: addresses[0]!.address, port, timeout: 15_000 })
         sockets.add(upstream)
         upstream.on('close', () => sockets.delete(upstream))
         upstream.on('timeout', () => upstream.destroy())
@@ -87,5 +111,7 @@ export function createCompetitionProxy(options: Options): Server {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const maxBytes = Number(process.argv[2] ?? process.env.COMP_PROXY_MAX_BYTES)
   const seconds = Number(process.argv[3] ?? process.env.COMP_PROXY_WALL_SECONDS)
-  createCompetitionProxy({ maxBytes, seconds }).listen(3128, '0.0.0.0')
+  // A setting that cannot be read stops the Pod, and with it this preparation:
+  // failing closed, never falling back to hosts nobody configured.
+  createCompetitionProxy({ maxBytes, seconds, source: dependencySource(process.env) }).listen(3128, '0.0.0.0')
 }

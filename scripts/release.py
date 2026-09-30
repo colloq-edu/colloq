@@ -8,11 +8,14 @@ import argparse
 import copy
 import hashlib
 import importlib.util
+import ipaddress
 import json
 import os
 import re
+import socket
 import sys
 import subprocess
+import urllib.parse
 from pathlib import Path
 
 # Same canonical reference grammar and bounds as shared/runtime.ts.
@@ -154,6 +157,9 @@ def read_env(file):
     settings = {}
     with open(file, encoding='utf-8') as stream:
         for line in stream:
+            # A commented-out line is no setting, and no "unknown setting" either.
+            if line.lstrip().startswith('#'):
+                continue
             key, separator, val = line.strip().partition('=')
             if separator:
                 settings[key] = val.strip().strip('\"\'')
@@ -198,6 +204,124 @@ def runtime_settings(file):
     return settings
 
 
+# The app's settings: what `config` puts into its Secret. Everything else in the
+# operator's file is reported, not silently dropped: a proxy or a mirror that
+# never reached the app looks exactly like one that does not work.
+APP_SETTINGS = {
+    'UI_LANGUAGE', 'PUBLIC_URL', 'ADMIN_EMAIL', 'INSTITUTION', 'OPEN_SEMINAR_CREATION',
+    'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'AI_PROVIDER', 'AI_REASONING',
+    'SESSION_SECRET', 'TZ', 'MAX_UPLOAD_MB', 'MAX_SESSION_MB', 'COUNCIL_COPY_MB', 'COUNCIL_MEMORY_GUARD',
+    # Outbound: the institution's proxy (both spellings, as tools read them),
+    # its CA, and the package mirror for competition "own packages".
+    'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy',
+    'NODE_EXTRA_CA_CERTS', 'DEPENDENCY_INDEX_URL', 'DEPENDENCY_FILES_HOSTS',
+    # Inbound: the campus reverse proxy and NAT. The host proxy reaches the app
+    # through the NodePort, which rewrites the source address: without
+    # TRUSTED_PROXIES every student is that one address.
+    'TRUSTED_PROXIES', 'SHARED_ADDRESSES', 'TRUST_CF_CONNECTING_IP', 'HSTS',
+    # Room network; on k3s `none` also shapes the room policy below.
+    'COLLOQ_ROOM_NETWORK', 'KERNEL_BLOCKED_CIDRS',
+}
+# Where the institution's CA lands in the app Pod (NODE_EXTRA_CA_CERTS names a
+# file on this node; the Pod gets its content from a ConfigMap).
+EXTRA_CA_DIR = '/etc/colloq-ca'
+# Destinations the package proxy reaches without a rule of its own: public IPv4 on 443.
+PUBLIC_EXCEPT = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
+                 '169.254.0.0/16', '172.16.0.0/12', '192.0.0.0/24', '192.0.2.0/24', '192.88.99.0/24',
+                 '192.168.0.0/16', '198.18.0.0/15', '198.51.100.0/24',
+                 '203.0.113.0/24', '224.0.0.0/4', '240.0.0.0/4']
+
+
+def unknown_settings(file):
+    """Keys of the operator's file that neither the app nor the broker reads."""
+    return sorted(key for key in read_env(file) if key not in APP_SETTINGS and key not in RUNTIME_SETTINGS)
+
+
+HOSTNAME = re.compile(r'^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$')
+
+
+def mirror_authorities(settings):
+    """(host, port) of DEPENDENCY_INDEX_URL and DEPENDENCY_FILES_HOSTS, by the rules of
+    shared/dependency-source.ts: https only, no credentials, a host name or an IPv4 address."""
+    def host_ok(host):
+        try:
+            return ipaddress.ip_address(host).version == 4
+        except ValueError:
+            return bool(HOSTNAME.match(host)) and not re.fullmatch(r'[\d.]+', host)
+
+    result = []
+    index = settings.get('DEPENDENCY_INDEX_URL', '')
+    if index:
+        url = urllib.parse.urlsplit(index)
+        try:
+            port = url.port or 443
+        except ValueError:
+            port = None
+        require(url.scheme == 'https' and url.hostname and port and not url.username and not url.password
+                and not url.query and not url.fragment and host_ok(url.hostname),
+                'DEPENDENCY_INDEX_URL must be an https:// URL of a host or IPv4 address, without credentials, query or fragment')
+        result.append((url.hostname, port))
+    for entry in re.split(r'[\s,]+', settings.get('DEPENDENCY_FILES_HOSTS', '')):
+        if not entry:
+            continue
+        bare = re.sub(r'/+$', '', re.sub(r'^https://', '', entry.lower()))
+        match = re.fullmatch(r'([^:/]+)(?::(\d{1,5}))?', bare)
+        port = int(match.group(2)) if match and match.group(2) else 443
+        require(match and host_ok(match.group(1)) and 1 <= port <= 65535,
+                f'DEPENDENCY_FILES_HOSTS: "{entry}" is not a host or host:port')
+        result.append((match.group(1), port))
+    return list(dict.fromkeys(result))
+
+
+def mirror_egress(settings, resolve=socket.getaddrinfo):
+    """Egress rules that open the package proxy's policy to the mirror.
+
+    A NetworkPolicy knows addresses, not names, so a mirror's name is resolved
+    here, on the node, when the release is rendered: if the mirror moves, run
+    the same update again. Public addresses on 443 already pass the proxy's
+    general rule and get nothing extra; the proxy itself still admits only the
+    configured names (runtime/src/competition-proxy.ts). Loopback, link-local
+    and multicast are never opened, whatever a name resolves to.
+    """
+    ports = {}
+    for host, port in mirror_authorities(settings):
+        try:
+            found = {item[4][0] for item in resolve(host, port, socket.AF_INET, socket.SOCK_STREAM)}
+        except OSError:
+            found = set()
+        require(found, f'the package mirror {host} does not resolve on this node; its network policy needs the address')
+        for text in sorted(found):
+            address = ipaddress.ip_address(text)
+            require(not (address.is_loopback or address.is_link_local or address.is_multicast or address.is_unspecified),
+                    f'the package mirror {host} resolves to {text}, which pods may not be opened to')
+            if port == 443 and not any(address in ipaddress.ip_network(net) for net in PUBLIC_EXCEPT):
+                continue
+            ports.setdefault(port, []).append(f'{text}/32')
+    return [{'to': [{'ipBlock': {'cidr': cidr}} for cidr in dict.fromkeys(cidrs)], 'ports': [{'protocol': 'TCP', 'port': port}]}
+            for port, cidrs in sorted(ports.items())]
+
+
+# From the operator's file into the broker (for the package proxy Pod) and into
+# the network policies; the app reads the same values from its Secret.
+NETWORK_SETTINGS = ('DEPENDENCY_INDEX_URL', 'DEPENDENCY_FILES_HOSTS', 'COLLOQ_ROOM_NETWORK', 'NODE_EXTRA_CA_CERTS')
+
+
+def network_settings(file):
+    settings = {key: val for key, val in read_env(file).items() if key in NETWORK_SETTINGS and val} if file else {}
+    mirror_authorities(settings)  # a bad value stops the install before anything is stopped
+    ca = settings.get('NODE_EXTRA_CA_CERTS')
+    if ca:
+        try:
+            with open(ca, encoding='utf-8') as stream:
+                text = stream.read(1024 * 1024 + 1)
+        except (OSError, UnicodeError) as error:
+            raise ValueError(f'NODE_EXTRA_CA_CERTS={ca} cannot be read on this node: {error}') from error
+        require(len(text) <= 1024 * 1024 and '-----BEGIN CERTIFICATE-----' in text,
+                f'NODE_EXTRA_CA_CERTS={ca} must be a PEM bundle of at most 1 MiB')
+        settings['extraCa'] = text
+    return settings
+
+
 def resource(kind, name, spec=None, **fields):
     api = {'Deployment': 'apps/v1', 'DaemonSet': 'apps/v1', 'RuntimeClass': 'node.k8s.io/v1', 'Role': 'rbac.authorization.k8s.io/v1',
            'RoleBinding': 'rbac.authorization.k8s.io/v1', 'NetworkPolicy': 'networking.k8s.io/v1'}.get(kind, 'v1')
@@ -209,9 +333,10 @@ def resource(kind, name, spec=None, **fields):
     return {**value, **fields}
 
 
-def render(value, node_name, state_dir, runtime_env=None):
+def render(value, node_name, state_dir, runtime_env=None, network=None):
     require(re.fullmatch(r'[a-z0-9][a-z0-9.-]*', node_name), 'node name is invalid')
     require(os.path.isabs(state_dir) and '..' not in state_dir.split('/'), 'state-dir must be an absolute normalized path')
+    network = network or {}
     items = [resource('Namespace', NAMESPACE)]
     policy_version = re.match(r'v\d+\.\d+', value['k3sVersion']).group()
     items[0]['metadata']['labels'] = {'pod-security.kubernetes.io/enforce': 'restricted',
@@ -232,6 +357,10 @@ def render(value, node_name, state_dir, runtime_env=None):
         items.append(resource('PersistentVolumeClaim', name, {'accessModes': ['ReadWriteOnce'],
             'storageClassName': '', 'volumeName': name, 'resources': {'requests': {'storage': size}}}))
     items.append(resource('ConfigMap', 'colloq-catalog', data={'catalog.json': json.dumps(value['catalog'])}))
+    if network.get('extraCa'):
+        # The institution's CA, for the app's own TLS (Node reads NODE_EXTRA_CA_CERTS
+        # at start) and for package preparation, which hands it to pip.
+        items.append(resource('ConfigMap', 'colloq-extra-ca', data={'extra-ca.pem': network['extraCa']}))
     for name in ['colloq-app', 'colloq-runtime', 'colloq-kernel']:
         items.append(resource('ServiceAccount', name, automountServiceAccountToken=False))
     # pods/resize is the only write beyond create/delete: it changes a live room's
@@ -272,6 +401,12 @@ def render(value, node_name, state_dir, runtime_env=None):
             for suffix in ('data', 'workspace'):
                 volumes.append({'name': suffix, 'persistentVolumeClaim': {'claimName': 'colloq-' + suffix}})
                 mounts.append({'name': suffix, 'mountPath': '/' + suffix})
+            if network.get('extraCa'):
+                # An explicit env entry wins over the Secret's value, which names
+                # the file on the node rather than in the Pod.
+                volumes.append({'name': 'extra-ca', 'configMap': {'name': 'colloq-extra-ca'}})
+                mounts.append({'name': 'extra-ca', 'mountPath': EXTRA_CA_DIR, 'readOnly': True})
+                env['NODE_EXTRA_CA_CERTS'] = EXTRA_CA_DIR + '/extra-ca.pem'
         else:
             # /var/run is a symlink to /run in the image. Mounting our read-only
             # secret at /run/secrets prevents creation of Kubernetes' nested SA
@@ -288,6 +423,8 @@ def render(value, node_name, state_dir, runtime_env=None):
                 'RUNTIME_KUBE_TOKEN_FILE': '/var/run/secrets/kubernetes.io/serviceaccount/token',
                 'RUNTIME_KUBE_CA_FILE': '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt'})
             env.update(runtime_env or {})
+            # Passed through to the package proxy Pod, which reads and enforces them.
+            env.update({key: network[key] for key in ('DEPENDENCY_INDEX_URL', 'DEPENDENCY_FILES_HOSTS') if network.get(key)})
             volumes.append({'name': 'room-secret', 'secret': {'secretName': 'colloq-room-secret', 'defaultMode': 0o440}})
             mounts.append({'name': 'room-secret', 'mountPath': '/run/room-secret', 'readOnly': True})
             volumes.append({'name': 'data', 'persistentVolumeClaim': {'claimName': 'colloq-data'}})
@@ -314,12 +451,15 @@ def render(value, node_name, state_dir, runtime_env=None):
             'selector': labels, 'ports': [{'name': 'http', 'port': port, 'targetPort': port,
                                          **({'nodePort': 30080} if app else {})}]}))
     select = lambda role: {'podSelector': {'matchLabels': {'colloq.dev/role': role}}}
+    # Rooms reach cluster DNS and nothing else; COLLOQ_ROOM_NETWORK=none takes DNS
+    # away too, as it does on Docker (server/src/kernel/perimeter.ts).
+    room_dns = [] if network.get('COLLOQ_ROOM_NETWORK', '').strip().lower() == 'none' else [{
+        'to': [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'kube-system'}},
+                'podSelector': {'matchLabels': {'k8s-app': 'kube-dns'}}}],
+        'ports': [{'protocol': 'UDP', 'port': 53}, {'protocol': 'TCP', 'port': 53}]}]
     items.append(resource('NetworkPolicy', 'room-isolation', {'podSelector': {'matchLabels': {'colloq.dev/role': 'kernel'}},
         'policyTypes': ['Ingress', 'Egress'], 'ingress': [{'from': [select('app'), select('runtime')],
-            'ports': [{'protocol': 'TCP', 'port': 8888}]}], 'egress': [{
-                'to': [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'kube-system'}},
-                        'podSelector': {'matchLabels': {'k8s-app': 'kube-dns'}}}],
-                'ports': [{'protocol': 'UDP', 'port': 53}, {'protocol': 'TCP', 'port': 53}]}]}))
+            'ports': [{'protocol': 'TCP', 'port': 8888}]}], 'egress': room_dns}))
     dns = {'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'kube-system'}},
            'podSelector': {'matchLabels': {'k8s-app': 'kube-dns'}}}
     dns_ports = [{'protocol': 'UDP', 'port': 53}, {'protocol': 'TCP', 'port': 53}]
@@ -334,17 +474,15 @@ def render(value, node_name, state_dir, runtime_env=None):
                    {'to': [dns], 'ports': dns_ports}]}))
     # NetworkPolicy restricts destination port and routable address ranges;
     # the trusted CONNECT proxy also checks host allowlist and resolved IPs.
-    public_ipv4 = {'ipBlock': {'cidr': '0.0.0.0/0', 'except': [
-        '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
-        '169.254.0.0/16', '172.16.0.0/12', '192.0.0.0/24', '192.0.2.0/24', '192.88.99.0/24',
-        '192.168.0.0/16', '198.18.0.0/15', '198.51.100.0/24',
-        '203.0.113.0/24', '224.0.0.0/4', '240.0.0.0/4']}}
+    # A campus mirror (DEPENDENCY_INDEX_URL) adds its own addresses and port.
+    public_ipv4 = {'ipBlock': {'cidr': '0.0.0.0/0', 'except': list(PUBLIC_EXCEPT)}}
     items.append(resource('NetworkPolicy', 'competition-proxy-isolation', {
         'podSelector': {'matchLabels': {'colloq.dev/role': 'competition-proxy'}},
         'policyTypes': ['Ingress', 'Egress'],
         'ingress': [{'from': [select('competition-resolver')], 'ports': [{'protocol': 'TCP', 'port': 3128}]}],
         'egress': [{'to': [dns], 'ports': dns_ports},
-                   {'to': [public_ipv4], 'ports': [{'protocol': 'TCP', 'port': 443}]}]}))
+                   {'to': [public_ipv4], 'ports': [{'protocol': 'TCP', 'port': 443}]},
+                   *mirror_egress(network)]}))
     items.append(resource('NetworkPolicy', 'runtime-ingress', {'podSelector': {'matchLabels': {'colloq.dev/role': 'runtime'}},
         'policyTypes': ['Ingress'], 'ingress': [{'from': [select('app')], 'ports': [{'protocol': 'TCP', 'port': 8787}]}]}))
     items.append(resource('NetworkPolicy', 'app-ingress', {'podSelector': {'matchLabels': {'colloq.dev/role': 'app'}},
@@ -395,7 +533,8 @@ def main():
         verify_tooling(value, args.tooling_root)
         print('verified deployment tooling for ' + value['sourceCommit'])
     elif args.command == 'render':
-        print(json.dumps(render(value, args.node_name, args.state_dir, runtime_settings(args.env_file)), indent=2))
+        print(json.dumps(render(value, args.node_name, args.state_dir, runtime_settings(args.env_file),
+                                network_settings(args.env_file)), indent=2))
     elif args.command == 'merge':
         print(json.dumps(value, indent=2))
     elif args.command == 'images':
@@ -457,13 +596,12 @@ def main():
             'initContainers': containers[:-1], 'containers': containers[-1:]})
         print(json.dumps(pod))
     elif args.command == 'config':
-        allowed = {'UI_LANGUAGE', 'PUBLIC_URL', 'ADMIN_EMAIL', 'INSTITUTION', 'OPEN_SEMINAR_CREATION',
-            'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'AI_PROVIDER', 'AI_REASONING',
-            'SESSION_SECRET', 'TZ', 'MAX_UPLOAD_MB', 'MAX_SESSION_MB', 'COUNCIL_COPY_MB', 'COUNCIL_MEMORY_GUARD'}
-        # The host proxy reaches the app through the NodePort, which rewrites the
-        # source address: without TRUSTED_PROXIES every student is that address.
-        allowed |= {'TRUSTED_PROXIES', 'TRUST_CF_CONNECTING_IP', 'SHARED_ADDRESSES', 'HSTS'}
-        settings = {k: v for k, v in read_env(args.env_file).items() if k in allowed} if args.env_file else {}
+        settings = {k: v for k, v in read_env(args.env_file).items() if k in APP_SETTINGS} if args.env_file else {}
+        ignored = unknown_settings(args.env_file) if args.env_file else []
+        if ignored:
+            # stderr: stdout is the Secret itself, piped into kubectl.
+            print(f'release: warning: {args.env_file} sets {", ".join(ignored)}, which the k3s installation does not use; '
+                  'they are ignored (KERNEL_* and the other Docker-only settings have no effect here)', file=sys.stderr)
         print(json.dumps(resource('Secret', 'colloq-app-config', type='Opaque', stringData=settings)))
     else:
         print('valid release ' + value['version'])

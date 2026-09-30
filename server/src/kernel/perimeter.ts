@@ -43,9 +43,16 @@
  * the wrong backend, as a separate iptables in our own image could, is
  * impossible here. The same works on all three forms: colima and Docker
  * Desktop (the daemon in its own Linux VM, which is where we land), and plain
- * Linux (the daemon on the host). The helper's image is the kernel image: it
- * is certainly present on a machine that is about to bring up a room, and it
- * has nsenter (util-linux is required in Debian).
+ * Linux (the daemon on the host). The helper needs nothing of its own but sh,
+ * readlink, cat and nsenter (util-linux is essential in Debian): iptables
+ * itself comes from the daemon's filesystem. Which image it runs from is its
+ * own story, see `helperImage`.
+ *
+ * Two operator settings on top (Sep 2026, for university installs).
+ * COLLOQ_ROOM_NETWORK=none cuts rooms off entirely: no internet, no campus, no
+ * DNS, only the replies to the Colloq server that reaches their Jupyter.
+ * KERNEL_BLOCKED_CIDRS adds ranges to the private ones: a campus's public
+ * addresses, services that trust campus IPs.
  *
  * If installing fails, the room does NOT come up (RoomPerimeterError with a
  * translated text: what happened and how to fix it). Silently opening the
@@ -66,10 +73,20 @@
  * machines. The price: a student can query the router's DNS, but still cannot
  * connect to what they learn.
  *
+ * In the `none` mode there is no such exception, and the resolver's other road
+ * is closed too: with an upstream on the host's own loopback (a local dnsmasq,
+ * colima) the daemon forwards a room's queries from ITS namespace, where no
+ * rule of ours sees them. So a room in that mode is started with
+ * `--dns=192.0.2.1` (`BLACKHOLE_DNS`): the resolver then forwards from the
+ * room's own namespace, to an address the `none` rules refuse at once.
+ *
  * Replies. The server goes to the room's Jupyter itself (a published port on
  * loopback, or a name on the shared network), and the container's reply is a
  * packet FROM the rooms subnet TO a private address. The first rule of every
  * chain is ESTABLISHED,RELATED: everything the container did not start passes.
+ * That is also all that keeps a `none` room reachable: the server's NEW
+ * connection comes from the host or from an exempt address, never from the
+ * rooms subnet, and nothing a room starts itself gets past the chains.
  *
  * IPv6. There are no rules for it because it is not there at all: the room
  * container comes up with `disable_ipv6=1`. The rooms network is created
@@ -77,6 +94,8 @@
  * daemon.json, the kernel will not get a single v6 address, neither global nor
  * fe80:: on the bridge, so there is nothing to get around the ban with via v6.
  */
+import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import { tr } from '@shared/i18n'
 import { resourceValue } from '../admin/resource-settings.js'
@@ -105,6 +124,18 @@ export const DEFAULT_ROOM_SUBNET = '10.213.0.0/22'
  * one by itself.
  */
 export const ROOM_PROFILE = '1'
+
+/**
+ * Where a `none` room's resolver forwards what it cannot answer itself.
+ *
+ * TEST-NET-1 (RFC 5737): an address that exists nowhere, so a query sent there
+ * is lost even on a machine where our rules are missing. Not a loopback
+ * address on purpose: the daemon forwards to a non-loopback upstream from the
+ * room's own namespace, where the `none` rules refuse it within a millisecond.
+ * Names of containers on the same network still resolve, and do no harm: the
+ * rules refuse every connection a room starts.
+ */
+export const BLACKHOLE_DNS = '192.0.2.1'
 
 /** The docker label that tells the helper apart from rooms. */
 export const PERIMETER_KIND = 'room-perimeter'
@@ -138,24 +169,86 @@ export const BLOCKED_V4 = [
 
 /* -------------------------------------------------------------- settings */
 
-export type RoomNetworkMode = 'blocked' | 'open'
+export type RoomNetworkMode = 'blocked' | 'open' | 'none'
 
 let unknownModeWarned = false
 
 /**
- * COLLOQ_ROOM_NETWORK: `open` is the way out for a trusted machine, anything
- * else means the ban. A typo ("opne") does not become an open network: there
- * must be no erring toward the hole, so an unknown word means the ban and a
- * line in the journal.
+ * COLLOQ_ROOM_NETWORK: `open` is the way out for a trusted machine, `none`
+ * the way in for an institution that lets student code reach nothing at all,
+ * anything else means the ban. A typo ("opne") does not become an open
+ * network: there must be no erring toward the hole, so an unknown word means
+ * the ban and a line in the journal.
  */
 export function roomNetworkMode(env: NodeJS.ProcessEnv = process.env): RoomNetworkMode {
   const raw = (env.COLLOQ_ROOM_NETWORK ?? '').trim().toLowerCase()
   if (raw === 'open') return 'open'
+  if (raw === 'none') return 'none'
   if (raw !== '' && raw !== 'blocked' && !unknownModeWarned) {
     unknownModeWarned = true
-    console.warn(`[kernel] COLLOQ_ROOM_NETWORK=${raw}: unknown value, local addresses stay blocked (use "open" to lift the block)`)
+    console.warn(
+      `[kernel] COLLOQ_ROOM_NETWORK=${raw}: unknown value, local addresses stay blocked (use "none" to cut rooms off entirely, "open" to lift the block)`,
+    )
   }
   return 'blocked'
+}
+
+/**
+ * The profile label a room container gets now: the profile version, and in
+ * the `none` mode a suffix, since that mode also changes the container itself
+ * (`--dns`, which only `docker run` can set). A stopped container with a
+ * different label is recreated at its next start; a live one keeps running
+ * until it stops (pool.ts), and the rules, which follow the subnet rather
+ * than the container, apply to it at once.
+ */
+export function roomProfile(env: NodeJS.ProcessEnv = process.env): string {
+  return roomNetworkMode(env) === 'none' ? `${ROOM_PROFILE}-none` : ROOM_PROFILE
+}
+
+/**
+ * KERNEL_BLOCKED_CIDRS: ranges a room may not reach on top of BLOCKED_V4 —
+ * a campus's own public addresses, a library proxy that trusts campus IPs.
+ * Commas or spaces between entries; a bare address means that one address.
+ *
+ * Only IPv4 counts: a room has no IPv6 at all (see the header), so a v6 range
+ * from a campus list is valid and has nothing to act on; it is reported, not
+ * refused. Anything else that is not an address or a range is a refusal, not
+ * a skipped line: a blocklist with a typo would leave exactly that range open
+ * while the operator believes it closed.
+ */
+export function blockedCidrsSetting(env: NodeJS.ProcessEnv = process.env): {
+  cidrs: string[]
+  ignored: string[]
+  invalid: string[]
+} {
+  const cidrs: string[] = []
+  const ignored: string[] = []
+  const invalid: string[] = []
+  for (const entry of (env.KERNEL_BLOCKED_CIDRS ?? '').split(/[\s,]+/).filter(Boolean)) {
+    const v4 = normalizedCidr(entry.includes('/') ? entry : `${entry}/32`)
+    if (v4) {
+      if (!cidrs.includes(v4) && !(BLOCKED_V4 as readonly string[]).includes(v4)) cidrs.push(v4)
+      continue
+    }
+    const [address, bits, extra] = entry.split('/')
+    const v6 =
+      extra === undefined &&
+      net.isIPv6(address ?? '') &&
+      (bits === undefined || (/^\d{1,3}$/.test(bits) && Number(bits) <= 128))
+    if (v6) ignored.push(entry)
+    else invalid.push(entry)
+  }
+  return { cidrs, ignored, invalid }
+}
+
+/** An IPv4 range with its host bits cleared (`10.1.2.3/8` → `10.0.0.0/8`), or null. */
+function normalizedCidr(value: string): string | null {
+  const parsed = parseCidr(value)
+  if (!parsed) return null
+  const size = 2 ** (32 - parsed.bits)
+  const base = Math.floor(parsed.base / size) * size
+  const octets = [24, 16, 8, 0].map((shift) => Math.floor(base / 2 ** shift) % 256)
+  return `${octets.join('.')}/${parsed.bits}`
 }
 
 /**
@@ -232,8 +325,11 @@ export function roomHardeningArgs(
     // No IPv6 at all: there are no v6 rules, so there must be no addresses.
     '--sysctl=net.ipv6.conf.all.disable_ipv6=1',
     '--sysctl=net.ipv6.conf.default.disable_ipv6=1',
+    // COLLOQ_ROOM_NETWORK=none: the resolver's upstream is an address the
+    // rules refuse, so not even a DNS query leaves (see the header).
+    ...(roomNetworkMode(env) === 'none' ? [`--dns=${BLACKHOLE_DNS}`] : []),
     '--label',
-    `colloq.profile=${ROOM_PROFILE}`,
+    `colloq.profile=${roomProfile(env)}`,
   ]
 }
 
@@ -336,6 +432,14 @@ export interface PerimeterPlan {
   subnets: string[]
   /** Addresses inside them that may go anywhere (the server on the compose network). */
   exempt: string[]
+  /**
+   * `blocked` (the default): private ranges, `extra` and the host itself are
+   * refused, the internet and DNS pass. `none`: everything a room starts is
+   * refused, DNS included; only replies pass.
+   */
+  mode?: 'blocked' | 'none'
+  /** KERNEL_BLOCKED_CIDRS, normalised: refused on top of BLOCKED_V4 in the blocked mode. */
+  extra?: string[]
 }
 
 /**
@@ -367,20 +471,36 @@ export function perimeterRules(plan: PerimeterPlan, deny: 'reject' | 'drop' = 'r
   } else {
     lines.push(`-A ${CHAIN_DENY} -j DROP`)
   }
+  const none = plan.mode === 'none'
   /*
    * Both chains begin the same way: replies pass, exempt addresses pass, DNS
-   * passes. All of that is RETURN, not ACCEPT: the decision stays with docker
-   * and the host firewall; we only strike out our part.
+   * passes (not in the `none` mode). All of that is RETURN, not ACCEPT: the
+   * decision stays with docker and the host firewall; we only strike out our
+   * part.
+   *
+   * DNS goes before the extra ranges as well: a campus's resolver lives in the
+   * campus's own range, and the daemon may forward a room's queries to it from
+   * the room's namespace, so refusing it would take every name away from the
+   * room, pip's included.
    */
   for (const chain of [CHAIN_FWD, CHAIN_IN]) {
     lines.push(`-A ${chain} -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN`)
     for (const address of plan.exempt) lines.push(`-A ${chain} -s ${address}/32 -j RETURN`)
+    if (none) continue
     lines.push(`-A ${chain} -p udp -m udp --dport 53 -j RETURN`)
     lines.push(`-A ${chain} -p tcp -m tcp --dport 53 -j RETURN`)
   }
   for (const subnet of plan.subnets) {
-    // Beyond the host: private and special addresses no, the internet yes.
-    for (const range of BLOCKED_V4) lines.push(`-A ${CHAIN_FWD} -s ${subnet} -d ${range} -j ${CHAIN_DENY}`)
+    if (none) {
+      // Beyond the host nothing a room starts: no internet, no campus, no DNS.
+      lines.push(`-A ${CHAIN_FWD} -s ${subnet} -j ${CHAIN_DENY}`)
+    } else {
+      // Beyond the host: private and special addresses no, the operator's
+      // extra ranges no, the rest of the internet yes.
+      for (const range of [...BLOCKED_V4, ...(plan.extra ?? [])]) {
+        lines.push(`-A ${CHAIN_FWD} -s ${subnet} -d ${range} -j ${CHAIN_DENY}`)
+      }
+    }
     // To the host itself nothing: not its LAN addresses, not the bridge
     // gateway, not the neighbours' published ports, not a service on 0.0.0.0.
     lines.push(`-A ${CHAIN_IN} -s ${subnet} -j ${CHAIN_DENY}`)
@@ -456,8 +576,10 @@ say removed
 /**
  * The helper's `docker run`. The privileges are its own, not the room's: it
  * lives for a second, runs only our script and removes itself (`--rm`).
- * `--pull=never`: the kernel image is not in any registry, and an attempt to
- * pull it would only waste time before the same refusal.
+ * `--pull=never`: every image it may run is already on the machine (the
+ * server's own, one the operator pulled, or a locally built kernel), and a
+ * pull would only waste time before the same refusal, or reach a registry
+ * from a campus that has none.
  */
 export function helperArgs(image: string, script: string): string[] {
   return [
@@ -486,10 +608,20 @@ interface RunResult {
 }
 export type DockerRun = (args: string[], timeoutMs?: number) => Promise<RunResult>
 
-/** Refusing a room without the ban: the text is translated and says what to do. */
+/**
+ * Refusing a room without the ban: the text is translated and says what to do.
+ * The key picks the text: the helper failed (the default), the operator's
+ * blocklist is broken, there is no image the helper may run from.
+ */
 export class RoomPerimeterError extends Error {
-  constructor(readonly reason: string) {
-    super(tr('server.roomPerimeter.refused', { p0: reason }))
+  constructor(
+    readonly reason: string,
+    key:
+      | 'server.roomPerimeter.refused'
+      | 'server.roomPerimeter.badBlockedCidrs'
+      | 'server.roomPerimeter.noHelperImage' = 'server.roomPerimeter.refused',
+  ) {
+    super(tr(key, { p0: reason }))
     this.name = 'RoomPerimeterError'
   }
 }
@@ -525,6 +657,10 @@ let inflight: Promise<void> | null = null
 /** The last refusal, so it can be told to those who ask about the state too. */
 let lastProblem: string | null = null
 let openAnnounced = false
+/** Said once per process: a setting that has nothing to act on. */
+let ignoredAnnounced = false
+/** The server's own image ID, once found: a running container never changes its image. */
+let ownImage: string | null = null
 
 export function perimeterProblem(): string | null {
   return lastProblem
@@ -541,6 +677,8 @@ export function forgetPerimeter(): void {
   inflight = null
   lastProblem = null
   openAnnounced = false
+  ignoredAnnounced = false
+  ownImage = null
 }
 
 /** The rooms network's subnets; creates it if it is our network and missing. */
@@ -575,13 +713,75 @@ async function roomSubnets(docker: DockerRun, target: RoomNetworkTarget): Promis
   return subnets
 }
 
+export interface HelperImageOptions {
+  env?: NodeJS.ProcessEnv
+  /** Whether the server itself runs in a container: `/.dockerenv`, the marker pool.ts uses too. */
+  inContainer?: () => boolean
+  /** This container's name as docker knows it, when COLLOQ_CONTAINER does not say. */
+  hostname?: () => string
+}
+
+const IMAGE_ID = /^(?:sha256:)?[a-f0-9]{64}$/
+
 /**
- * The image for the helper: the one asked for (the image of the room being
- * started), otherwise any colloq-kernel on the machine. None at all means
- * there is nothing to bring the room up from either; that refusal will say
- * "environment not built" before we do.
+ * The image the privileged helper runs from.
+ *
+ * It used to be the room's kernel image, and that made it the weakest link on
+ * the machine: the helper runs as root with the host's pid and network
+ * namespaces, while the kernel image is built from package lists any teacher
+ * edits in the panel, pip options included. One poisoned package in a list
+ * would run as root on the host at the next room start. So, in order:
+ *
+ *   1. COLLOQ_HELPER_IMAGE, when the operator names one (a digest-pinned
+ *      minimal image with sh and nsenter). It must already be on the machine:
+ *      the helper never pulls.
+ *   2. The server's own image, when the server runs in a container (the Vast
+ *      image, `make up`): built by CI, not editable from the panel, certainly
+ *      present, and it has nsenter. Found the way the image's entry point
+ *      finds itself (deploy/vast/entrypoint.sh · locate_self): COLLOQ_CONTAINER,
+ *      else the hostname, which docker sets to the container ID.
+ *   3. Today's choice on a teacher's own machine, where the server runs on
+ *      the host and has no image: the room's kernel image, else any
+ *      colloq-kernel. The teacher who edits the lists is the machine's owner
+ *      there.
+ *
+ * Images from the first two come back as their ID, exactly the bytes that
+ * were inspected: a tag moved between the inspect and the run cannot swap
+ * them. Null only in the third case with no kernel image at all: there is
+ * nothing to bring a room up from either, and that refusal says "environment
+ * not built" before this one does. When the first two cannot be satisfied,
+ * this refuses rather than falling back to the kernel image, which would
+ * reopen exactly the hole this closes.
  */
-async function helperImage(docker: DockerRun, preferred: string | null): Promise<string | null> {
+export async function helperImage(
+  docker: DockerRun,
+  preferred: string | null,
+  options: HelperImageOptions = {},
+): Promise<string | null> {
+  const env = options.env ?? process.env
+  const override = (env.COLLOQ_HELPER_IMAGE ?? '').trim()
+  if (override) {
+    const found = await docker(['image', 'inspect', '--format', '{{.Id}}', override], 10_000)
+    const id = found.out.trim()
+    if (found.code !== 0 || !IMAGE_ID.test(id)) {
+      throw new RoomPerimeterError(`COLLOQ_HELPER_IMAGE=${override} is not on this Docker; docker pull it first`, 'server.roomPerimeter.noHelperImage')
+    }
+    return id
+  }
+  if ((options.inContainer ?? (() => fs.existsSync('/.dockerenv')))()) {
+    if (ownImage) return ownImage
+    const self = (env.COLLOQ_CONTAINER ?? '').trim() || (options.hostname ?? os.hostname)()
+    const found = await docker(['inspect', '--type', 'container', '--format', '{{.Image}}', self], 10_000)
+    const id = found.out.trim()
+    if (found.code !== 0 || !IMAGE_ID.test(id)) {
+      throw new RoomPerimeterError(
+        `this server's container "${self}" is not visible to Docker; set COLLOQ_CONTAINER to its name, or COLLOQ_HELPER_IMAGE`,
+        'server.roomPerimeter.noHelperImage',
+      )
+    }
+    ownImage = id
+    return id
+  }
   if (preferred) {
     const own = await docker(['image', 'inspect', preferred, '--format', '{{.Id}}'], 10_000)
     if (own.code === 0) return preferred
@@ -603,9 +803,10 @@ export async function ensureRoomPerimeter(
   docker: DockerRun,
   target: RoomNetworkTarget,
   image: string | null,
+  options: HelperImageOptions = {},
 ): Promise<void> {
   const subnets = await roomSubnets(docker, target)
-  return applyPerimeter(docker, target, subnets, image)
+  return applyPerimeter(docker, target, subnets, image, options)
 }
 
 /**
@@ -614,19 +815,47 @@ export async function ensureRoomPerimeter(
  * not at the first Run.
  *
  * No kernel image yet (vast builds it in the background after start) is not a
- * refusal: there is nothing to bring a room up from anyway, and the room's
- * first start will install the ban.
+ * refusal on a machine where the helper would run from it: there is nothing
+ * to bring a room up from anyway, and the room's first start will install the
+ * ban. Where the helper runs from the server's own image, the ban goes up now.
  */
-export async function warmPerimeter(docker: DockerRun, target: RoomNetworkTarget, image: string): Promise<void> {
-  if (roomNetworkMode() === 'blocked' && (await helperImage(docker, image)) === null) {
-    console.log('[kernel] no kernel image yet; the room network block is installed with the first room')
-    return
-  }
+export async function warmPerimeter(
+  docker: DockerRun,
+  target: RoomNetworkTarget,
+  image: string,
+  options: HelperImageOptions = {},
+): Promise<void> {
   try {
-    await ensureRoomPerimeter(docker, target, image)
+    if (roomNetworkMode() !== 'open' && (await helperImage(docker, image, options)) === null) {
+      console.log('[kernel] no kernel image yet; the room network block is installed with the first room')
+      return
+    }
+    await ensureRoomPerimeter(docker, target, image, options)
   } catch (err) {
     console.error(`[kernel] ${err instanceof Error ? err.message : String(err)}`)
   }
+}
+
+/**
+ * What the rules are made of in the current mode, or the refusal of a broken
+ * blocklist. A setting that has nothing to act on (v6 ranges; any list in the
+ * `none` mode, which refuses everything anyway) is said once, not refused.
+ */
+function perimeterPlan(mode: 'blocked' | 'none', subnets: string[], exempt: string[]): PerimeterPlan {
+  const { cidrs, ignored, invalid } = blockedCidrsSetting()
+  if (mode === 'none') {
+    if ((cidrs.length || ignored.length || invalid.length) && !ignoredAnnounced) {
+      ignoredAnnounced = true
+      console.warn('[kernel] COLLOQ_ROOM_NETWORK=none refuses everything a room starts; KERNEL_BLOCKED_CIDRS has nothing to add')
+    }
+    return { subnets, exempt, mode }
+  }
+  if (invalid.length) throw new RoomPerimeterError(invalid.join(', ').slice(0, 300), 'server.roomPerimeter.badBlockedCidrs')
+  if (ignored.length && !ignoredAnnounced) {
+    ignoredAnnounced = true
+    console.warn(`[kernel] KERNEL_BLOCKED_CIDRS: rooms have no IPv6, so ${ignored.join(', ')} has nothing to block`)
+  }
+  return cidrs.length ? { subnets, exempt, mode, extra: cidrs } : { subnets, exempt, mode }
 }
 
 async function applyPerimeter(
@@ -634,18 +863,23 @@ async function applyPerimeter(
   target: RoomNetworkTarget,
   subnets: string[],
   image: string | null,
+  options: HelperImageOptions,
 ): Promise<void> {
-  if (roomNetworkMode() === 'open') {
+  const mode = roomNetworkMode()
+  if (mode === 'open') {
     lastProblem = null
     if (!openAnnounced) {
       openAnnounced = true
       console.warn(
         '[kernel] COLLOQ_ROOM_NETWORK=open: room kernels can reach this machine, its LAN and cloud metadata. Remove the line to block local addresses.',
       )
+      if ((process.env.KERNEL_BLOCKED_CIDRS ?? '').trim()) {
+        console.warn('[kernel] COLLOQ_ROOM_NETWORK=open lifts every block, KERNEL_BLOCKED_CIDRS included')
+      }
       // Open means open: a ban installed by a previous run is removed. If that
-      // fails (the helper is not allowed here anyway), there is nothing to
-      // remove.
-      const img = await helperImage(docker, image)
+      // fails (the helper is not allowed here anyway, or has no image to run
+      // from), there is nothing to remove.
+      const img = await helperImage(docker, image, options).catch(() => null)
       if (img) {
         const res = await docker(helperArgs(img, perimeterRemovalScript()), 30_000)
         if (res.code === 0 && /removed/.test(res.out)) applied = null
@@ -653,13 +887,20 @@ async function applyPerimeter(
     }
     return
   }
-  const plan: PerimeterPlan = { subnets, exempt: target.create ? [] : ownAddresses(subnets) }
+  let plan: PerimeterPlan
+  try {
+    plan = perimeterPlan(mode, subnets, target.create ? [] : ownAddresses(subnets))
+  } catch (err) {
+    applied = null
+    lastProblem = err instanceof Error ? err.message : String(err)
+    throw err
+  }
   const key = JSON.stringify(plan)
   if (applied && applied.key === key && Date.now() - applied.at < FRESH_MS) return
   if (inflight) return inflight
   inflight = (async () => {
     try {
-      const img = await helperImage(docker, image)
+      const img = await helperImage(docker, image, options)
       if (!img) throw new RoomPerimeterError('no colloq-kernel image to run the firewall helper from')
       const res = await docker(helperArgs(img, perimeterScript(plan)), 60_000)
       if (res.code !== 0 || !/colloq-perimeter: ok/.test(res.out)) {
@@ -667,7 +908,13 @@ async function applyPerimeter(
         throw new RoomPerimeterError((said || `exit ${res.code}`).slice(0, 300))
       }
       if (!applied || applied.key !== key) {
-        console.log(`[kernel] room network ${target.network}: local addresses blocked for ${subnets.join(', ')}`)
+        const what =
+          plan.mode === 'none'
+            ? 'no outbound traffic (COLLOQ_ROOM_NETWORK=none)'
+            : plan.extra?.length
+              ? `local addresses and ${plan.extra.length} extra range(s) blocked (KERNEL_BLOCKED_CIDRS)`
+              : 'local addresses blocked'
+        console.log(`[kernel] room network ${target.network}: ${what} for ${subnets.join(', ')}`)
       }
       applied = { key, at: Date.now() }
       lastProblem = null

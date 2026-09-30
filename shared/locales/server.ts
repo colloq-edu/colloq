@@ -1437,6 +1437,18 @@ export const serverMessages: MessageCatalog = {
     "ru": "Комнату не запустить: не удалось закрыть ей доступ к локальным адресам этой машины ({p0}). Без этого запрета код студента дотянулся бы до роутера, до самого компьютера и до его сервисов, поэтому ядро не поднимается. Нужно, чтобы Docker мог запустить привилегированный служебный контейнер в сети хоста: в Docker Desktop выключите Enhanced Container Isolation, а rootless Docker и podman этого не умеют. Если машина и класс доверенные, допишите в .env строку COLLOQ_ROOM_NETWORK=open и перезапустите Colloq — комнаты пойдут без запрета.",
     "en": "The room cannot start: blocking its access to this machine's local addresses failed ({p0}). Without that block, student code could reach the router, this computer and its services, so the kernel is not started. Docker has to be able to run a privileged helper container on the host network: turn off Enhanced Container Isolation in Docker Desktop; rootless Docker and podman cannot do this. If the machine and the class are trusted, add the line COLLOQ_ROOM_NETWORK=open to .env and restart Colloq — rooms then start without the block."
   },
+  "server.roomPerimeter.badBlockedCidrs": {
+    "ru": "Комнату не запустить: в KERNEL_BLOCKED_CIDRS есть записи, которые не похожи на IPv4-адрес или диапазон ({p0}). Список с опечаткой оставил бы открытым как раз тот диапазон, который хотели закрыть, поэтому комнаты не поднимаются, пока строку не исправят. Поправьте её в .env, например KERNEL_BLOCKED_CIDRS=203.0.113.0/24,198.51.100.7, и перезапустите Colloq.",
+    "en": "The room cannot start: KERNEL_BLOCKED_CIDRS has entries that are not IPv4 addresses or ranges ({p0}). A list with a typo would leave open exactly the range it was meant to close, so rooms do not start until the line is fixed. Correct it in .env, for example KERNEL_BLOCKED_CIDRS=203.0.113.0/24,198.51.100.7, and restart Colloq."
+  },
+  "server.roomPerimeter.noHelperImage": {
+    "ru": "Комнату не запустить: не из чего запустить служебный контейнер, который закрывает комнатам сеть ({p0}). Он работает с правами root на этой машине, поэтому запускается только из образа самого сервера или из образа, указанного в COLLOQ_HELPER_IMAGE, но не из окружения, которое преподаватели правят в панели. Скачайте образ из COLLOQ_HELPER_IMAGE (docker pull) или укажите в COLLOQ_CONTAINER имя контейнера сервера и перезапустите Colloq.",
+    "en": "The room cannot start: there is no image to run the helper that closes the rooms' network from ({p0}). The helper runs as root on this machine, so it runs only from the server's own image or the one named in COLLOQ_HELPER_IMAGE, never from an environment teachers edit in the panel. Pull the image named in COLLOQ_HELPER_IMAGE (docker pull), or set COLLOQ_CONTAINER to the server container's name, and restart Colloq."
+  },
+  "server.roomPerimeter.networkChanged": {
+    "ru": "настройка сети комнат (COLLOQ_ROOM_NETWORK) изменилась, и контейнер пересоздаётся уже с ней",
+    "en": "the room network setting (COLLOQ_ROOM_NETWORK) changed, and the container is recreated with it"
+  },
   "server.theContainerWasStartedWithADifferent.bc4d7d": {
     "ru": "контейнер поднят не с тем срезом GPU",
     "en": "the container was started with a different GPU device"

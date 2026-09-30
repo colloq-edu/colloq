@@ -513,6 +513,14 @@ test('doctor: room network is ✓ by default, ○ plus the way back with COLLOQ_
   assert.match(open.text, /○ room network\s+open \(COLLOQ_ROOM_NETWORK=open\): rooms reach your LAN, router and this computer/)
   assert.ok(hints(open).includes('remove COLLOQ_ROOM_NETWORK=open from .env, then colloq restart'))
   assertReachable(hints(open))
+
+  // The stricter setting is ✓ and named as such: no internet, no DNS.
+  const none = await run(['doctor'], {
+    files: { ...READY, '/repo/.env': READY['/repo/.env'] + '\nCOLLOQ_ROOM_NETWORK=none' },
+    capture: healthy,
+  })
+  assert.equal(none.code, 0, none.text)
+  assert.match(none.text, /✓ room network\s+none \(COLLOQ_ROOM_NETWORK=none\): rooms reach nothing, not even the internet or DNS/)
 })
 
 test('doctor: an uncompressed panel gives ○ and the same advice to reinstall', async () => {

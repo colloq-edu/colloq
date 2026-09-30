@@ -51,6 +51,14 @@ import { pinLegacySubmissions } from './dependencies/revisions.js'
 import { competitionBackend } from './competitions/runner-port.js'
 import { assertCompetitionCapability } from './competitions/capabilities.js'
 import { createWorkerStartup } from './competitions/worker-startup.js'
+import { installOutboundProxy } from './outbound.js'
+
+/*
+ * The institution's proxy (HTTPS_PROXY, HTTP_PROXY, NO_PROXY) is in place
+ * before anything can make a request, and .env has been read by config.ts by
+ * now. Without those variables this does nothing (outbound.ts).
+ */
+await installOutboundProxy()
 
 /** A whole notebook's state travels in one sync frame; images make it big. */
 const MAX_WS_PAYLOAD = 16 * 1024 * 1024

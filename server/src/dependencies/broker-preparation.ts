@@ -8,6 +8,7 @@ import type { CompetitionJobCollection, CompetitionJobIntent, CompetitionJobKind
 import { DependencyPreparationError, preparationRoomBytes, reportedPreparationError } from './preparation-contract.js'
 import type { PreparationRequest, PreparationResult } from './preparation-contract.js'
 import { dependencyBrokerHarnessDir } from './broker-harness.js'
+import { preparationJob, preparationSource, writeExtraCa } from './source.js'
 
 type JobClient=Pick<RuntimeClient,'startCompetitionJob'|'competitionJob'|'collectCompetitionJob'|'cancelCompetitionJob'>
 const pause=(ms:number)=>new Promise<void>(resolve=>setTimeout(resolve,ms))
@@ -72,15 +73,19 @@ export async function prepareBrokerDependencies(request:PreparationRequest,clien
     !Number.isSafeInteger(request.maxInstalledBytes)||request.maxInstalledBytes<1||request.maxInstalledBytes>DEPENDENCY_LIMITS.installedBytes)
     throw new DependencyPreparationError('invalid_limits','Invalid package preparation limits.')
   if(!/^[a-f0-9]{32}$/.test(request.id))throw new DependencyPreparationError('invalid_output','Invalid package preparation identity.')
+  // The index and the CA as on Docker (source.ts); the way out is the proxy Pod's
+  // network policy, which the installer opens to the same hosts (scripts/release.py).
+  const prepared=preparationSource(process.env,{chain:false})
   dependencyBrokerHarnessDir()
   fs.mkdirSync(request.workDir,{recursive:true,mode:0o755})
   if(!fs.lstatSync(request.workDir).isDirectory())throw new DependencyPreparationError('storage_unavailable','Invalid preparation staging directory.')
   fs.chmodSync(request.workDir,0o700)
   const input=path.join(request.workDir,'input'),wheels=path.join(request.workDir,'wheels')
   fs.mkdirSync(input,{mode:0o700});fs.mkdirSync(wheels,{mode:0o700});fs.chmodSync(wheels,0o700)
-  const job={requirementsText:request.requirementsText,basePackages:request.basePackages,maxDownloadBytes:request.maxDownloadBytes,maxInstalledBytes:request.maxInstalledBytes}
+  const job=preparationJob({requirementsText:request.requirementsText,basePackages:request.basePackages,maxDownloadBytes:request.maxDownloadBytes,maxInstalledBytes:request.maxInstalledBytes},prepared)
   const writeInput=(value:object)=>fs.writeFileSync(path.join(input,'request.json'),JSON.stringify(value),{mode:0o600})
   writeInput(job)
+  writeExtraCa(input,prepared,0o600)
   const seconds=Math.min(DEPENDENCY_LIMITS.wallSeconds,Math.max(1,request.wallSeconds??DEPENDENCY_LIMITS.wallSeconds))
   const run=async(kind:Extract<CompetitionJobKind,'resolve'|'verify'>):Promise<CompetitionJobCollection>=>{
     const jobId=randomUUID().replaceAll('-','')

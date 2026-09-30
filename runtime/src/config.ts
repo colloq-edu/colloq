@@ -30,6 +30,8 @@ export interface RuntimeConfig extends WorkloadConfig {
   competitionExporterImage: string
   competitionInstanceId: string
   competitionDataClaim: string
+  dependencyIndexUrl: string
+  dependencyFilesHosts: string
 }
 export function readBoundedFile(file: string, maxBytes: number): string {
   if (statSync(file).size > maxBytes)
@@ -149,5 +151,8 @@ export function loadRuntimeConfig(
     competitionExporterImage: env.RUNTIME_COMPETITION_EXPORTER_IMAGE ?? '',
     competitionInstanceId: env.RUNTIME_COMPETITION_INSTANCE_ID ?? '',
     competitionDataClaim: env.RUNTIME_COMPETITION_DATA_CLAIM ?? '',
+    // Passed through to the package proxy Pod unread (competition-jobs.ts).
+    dependencyIndexUrl: (env.DEPENDENCY_INDEX_URL ?? '').trim(),
+    dependencyFilesHosts: (env.DEPENDENCY_FILES_HOSTS ?? '').trim(),
   }
 }

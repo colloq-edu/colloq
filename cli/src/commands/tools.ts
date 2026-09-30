@@ -805,7 +805,10 @@ async function doctorChecks(ctx: Ctx): Promise<Check[]> {
    * visible in the log at server start, and without the block the rooms do not
    * come up at all, with a text about what to do.
    */
-  const roomNetworkOpen = env.read('COLLOQ_ROOM_NETWORK').trim().toLowerCase() === 'open'
+  // `none` is the stricter setting, and says so: no internet and no DNS either,
+  // so `pip install` in a cell fails (perimeter.ts · roomNetworkMode).
+  const roomNetwork = env.read('COLLOQ_ROOM_NETWORK').trim().toLowerCase()
+  const roomNetworkOpen = roomNetwork === 'open'
   add({
     id: 'room-network',
     label: 'room network',
@@ -813,7 +816,9 @@ async function doctorChecks(ctx: Ctx): Promise<Check[]> {
     optional: true,
     value: roomNetworkOpen
       ? 'open (COLLOQ_ROOM_NETWORK=open): rooms reach your LAN, router and this computer'
-      : 'local addresses blocked: LAN, router, this computer, cloud metadata',
+      : roomNetwork === 'none'
+        ? 'none (COLLOQ_ROOM_NETWORK=none): rooms reach nothing, not even the internet or DNS'
+        : 'local addresses blocked: LAN, router, this computer, cloud metadata',
     hint: 'remove COLLOQ_ROOM_NETWORK=open from .env, then colloq restart',
   })
 

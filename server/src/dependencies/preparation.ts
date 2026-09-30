@@ -8,6 +8,7 @@ import { DEPENDENCY_LIMITS, requirementLineCount } from '@shared/dependencies'
 import { DependencyPreparationError, preparationRoomBytes, reportedPreparationError } from './preparation-contract.js'
 import type { PreparationRequest, PreparationResult, PreparationProgress } from './preparation-contract.js'
 import { PREPARATION_PROXY_PYTHON, PREPARATION_PYTHON } from './preparation-python.js'
+import { preparationJob, preparationSource, writeExtraCa } from './source.js'
 
 const LABEL = 'ru.colloq.dependency-preparation'
 const scope = createHash('sha256').update(path.resolve(hostPathOf(config.dataDir))).digest('hex').slice(0, 16)
@@ -62,6 +63,14 @@ async function checkedDocker(args: string[], signal: AbortSignal): Promise<strin
   return result.out.trim()
 }
 
+/*
+ * PIP_CONFIG_FILE=/dev/null (and pip's --isolated, preparation-python.ts ·
+ * pip_command): no pip.conf baked into an image, no PIP_INDEX_URL or
+ * credential helper inherited from anywhere steers the resolver. What pip
+ * talks to is decided by the operator's DEPENDENCY_INDEX_URL alone, handed to
+ * the program in the request and to the CONNECT proxy as its allowlist
+ * (source.ts); an index the proxy does not admit cannot be reached anyway.
+ */
 function profile(name: string, memory: number, tmpBytes: number): string[] {
   return ['--name', name, '--label', label, '--log-driver=local', '--log-opt=max-size=8m', '--log-opt=max-file=2', '--read-only', '--user=1000:1000', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=128', '--cpus=1', `--memory=${memory}`, `--memory-swap=${memory}`, '--ulimit=nofile=1024:1024', '--sysctl=net.ipv6.conf.all.disable_ipv6=1', '--tmpfs', `/tmp:rw,nosuid,nodev,exec,size=${tmpBytes},mode=1777`, '--env', 'HOME=/tmp', '--env', 'PYTHONNOUSERSITE=1', '--env', 'PYTHONDONTWRITEBYTECODE=1', '--env', 'PIP_CONFIG_FILE=/dev/null', '--entrypoint', 'python']
 }
@@ -155,14 +164,24 @@ export async function prepareDependencies(request: PreparationRequest): Promise<
     await fs.chmod(wheels, 0o777)
     const disk = await fs.statfs(request.workDir)
     if (disk.bavail * disk.bsize < request.maxDownloadBytes + 64 * MiB) throw new DependencyPreparationError('disk_full', 'There is not enough free storage to prepare these packages.')
-    const job = { requirementsText: request.requirementsText, basePackages: request.basePackages, maxDownloadBytes: request.maxDownloadBytes, maxInstalledBytes: request.maxInstalledBytes }
+    const prepared = preparationSource(process.env, { chain: true })
+    const job = preparationJob({ requirementsText: request.requirementsText, basePackages: request.basePackages, maxDownloadBytes: request.maxDownloadBytes, maxInstalledBytes: request.maxInstalledBytes }, prepared)
     const writeJob = async (value: object) => { await fs.writeFile(path.join(input, 'request.json'), JSON.stringify(value), { mode: 0o644 }) }
     await writeJob(job)
+    writeExtraCa(input, prepared, 0o644)
     progress({ state: 'resolving', log: { code: 'start' } })
     started = true
     await checkedDocker(['network', 'create', '--internal', '--driver=bridge', '--opt=com.docker.network.bridge.gateway_mode_ipv4=isolated', '--label', label, network], controller.signal)
-    // Only the trusted CONNECT proxy has external connectivity. It has no mounts or secrets.
-    await checkedDocker(['create', '--pull=never', ...profile(proxy, 128 * MiB, 8 * MiB), '--network=bridge', request.imageDigest, '-I', '-u', '-c', PREPARATION_PROXY_PYTHON, String(3 * request.maxDownloadBytes + 32 * MiB), String(seconds)], controller.signal)
+    /*
+     * Only the trusted CONNECT proxy has external connectivity. It has no mounts
+     * or secrets; its allowlist is the index's hosts (source.ts), and on a
+     * network with no direct way out it tunnels through the institution's
+     * proxy (HTTPS_PROXY, NO_PROXY), which only it is given: the resolver keeps
+     * pointing at this proxy alone.
+     */
+    const upstream = Object.entries(prepared.proxyEnv).flatMap(([key, value]) => ['--env', `${key}=${value}`])
+    const allowlist = JSON.stringify({ allowed: prepared.source.authorities, configured: prepared.source.configured })
+    await checkedDocker(['create', '--pull=never', ...profile(proxy, 128 * MiB, 8 * MiB), '--network=bridge', ...upstream, request.imageDigest, '-I', '-u', '-c', PREPARATION_PROXY_PYTHON, String(3 * request.maxDownloadBytes + 32 * MiB), String(seconds), allowlist], controller.signal)
     await checkedDocker(['network', 'connect', '--alias', 'pypi-proxy', network, proxy], controller.signal)
     await checkedDocker(['start', proxy], controller.signal)
     // Docker's embedded DNS resolves this private alias; no published host port.

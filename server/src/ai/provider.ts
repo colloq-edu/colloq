@@ -11,10 +11,11 @@ import { tr } from '@shared/i18n'
  * and model can now be edited from the admin panel, and a value memoised at
  * import would mean a teacher's fix only landing on the next restart.
  */
-import OpenAI from 'openai'
+import OpenAI, { type ClientOptions } from 'openai'
 import { config } from '../config.js'
 import { tally } from '../log.js'
 import { resolveAiConfig } from '../admin/settings.js'
+import { outboundProxyActive } from '../outbound.js'
 import {
   isKeylessProvider,
   providerConfigured,
@@ -68,6 +69,25 @@ let client: OpenAI | null = null
 let clientFor = ''
 
 /**
+ * The SDK's transport behind an institution's proxy.
+ *
+ * openai 4 on Node sends through its own node-fetch with keep-alive agents,
+ * which neither the environment's proxy variables nor the process's global
+ * dispatcher reach. With a proxy configured (outbound.ts) the client gets
+ * Node's fetch instead, the one that dispatcher routes: api.openai.com goes
+ * through the proxy, a model on the campus network (NO_PROXY, a private
+ * address, a single-label name) goes direct. Resolved at call time, so the
+ * dispatcher decides per request. Without a proxy the SDK keeps its own
+ * transport, exactly as before.
+ */
+function proxiedFetch(): Pick<ClientOptions, 'fetch'> {
+  if (!outboundProxyActive()) return {}
+  const viaDispatcher = (url: unknown, init?: unknown) =>
+    globalThis.fetch(url as Parameters<typeof fetch>[0], init as Parameters<typeof fetch>[1])
+  return { fetch: viaDispatcher as unknown as ClientOptions['fetch'] }
+}
+
+/**
  * One client per (key, host) pair. The old code built the client once and kept
  * it forever, which was invisible while the only source of both was the
  * environment — with a settings panel it becomes "I pasted the new key and it
@@ -84,6 +104,7 @@ function getClient(): OpenAI {
       // A seminar would rather see the failure than wait through a retry storm.
       maxRetries: 1,
       timeout: 120_000,
+      ...proxiedFetch(),
     })
     clientFor = fingerprint
   }

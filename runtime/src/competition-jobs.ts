@@ -22,6 +22,14 @@ export interface CompetitionJobConfig {
   exporterImage: string
   instanceId: string
   imagePullSecret?: string
+  /**
+   * The institution's package index for "own packages" (DEPENDENCY_INDEX_URL,
+   * DEPENDENCY_FILES_HOSTS), passed to the CONNECT proxy Pod as they are: the
+   * proxy reads them (competition-proxy.ts) and refuses to start on a bad one,
+   * so a mistake costs a preparation, not the broker.
+   */
+  dependencyIndexUrl?: string
+  dependencyFilesHosts?: string
 }
 interface Options {
   kube: KubernetesClient
@@ -211,7 +219,9 @@ export class CompetitionJobs {
           readinessProbe: { tcpSocket: { port: 3128 }, periodSeconds: 1, failureThreshold: 10 },
           resources: { requests: { cpu: '100m', memory: '64Mi' }, limits: { cpu: '500m', memory: '128Mi', 'ephemeral-storage': '32Mi' } },
           env: [env('COMP_PROXY_MAX_BYTES', String(Math.min(intent.limits.targetBytes * 3 + 32 * 1024 * 1024, 1536 * 1024 * 1024))),
-            env('COMP_PROXY_WALL_SECONDS', String(intent.limits.wallSeconds))],
+            env('COMP_PROXY_WALL_SECONDS', String(intent.limits.wallSeconds)),
+            ...(this.options.config.dependencyIndexUrl ? [env('DEPENDENCY_INDEX_URL', this.options.config.dependencyIndexUrl)] : []),
+            ...(this.options.config.dependencyFilesHosts ? [env('DEPENDENCY_FILES_HOSTS', this.options.config.dependencyFilesHosts)] : [])],
           volumeMounts: [{ name: 'tmp', mountPath: '/tmp' }],
         }], volumes: [{ name: 'tmp', emptyDir: memory(16) }] } }
   }

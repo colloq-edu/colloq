@@ -15,12 +15,15 @@ import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { ownIdleMinutes, ownKernelMax, runArgs } from '../server/src/kernel/pool.js'
 import {
+  BLACKHOLE_DNS,
   BLOCKED_V4,
   DEFAULT_ROOM_SUBNET,
   RoomPerimeterError,
+  blockedCidrsSetting,
   ensureRoomPerimeter,
   forgetPerimeter,
   helperArgs,
+  helperImage,
   ipv4InCidr,
   ipv4Subnets,
   networkCreateArgs,
@@ -33,6 +36,8 @@ import {
   pidsLimit,
   roomHardeningArgs,
   roomNetworkMode,
+  roomProfile,
+  warmPerimeter,
   type DockerRun,
 } from '../server/src/kernel/perimeter.js'
 import { setLocaleResolver } from '../shared/i18n.js'
@@ -546,4 +551,257 @@ test('the personal notebooks container takes ITS OWN numbers if the class named 
   const same = withEnv({ KERNEL_MEM: undefined, KERNEL_CPUS: undefined }, () => args(null, null))
   assert.ok(same.includes('--memory=4096m'), JSON.stringify(same))
   assert.ok(same.includes('--cpus=2'), JSON.stringify(same))
+})
+
+/* --------------------------------------------- none, extra ranges, helper image */
+
+/*
+ * University installs (Sep 2026): IT decides whether student code reaches the
+ * internet and campus services at all. COLLOQ_ROOM_NETWORK=none cuts a room
+ * off entirely, KERNEL_BLOCKED_CIDRS adds ranges to the private ones, and the
+ * privileged helper no longer runs from the image teachers edit.
+ */
+
+test('COLLOQ_ROOM_NETWORK=none is its own mode, and it also marks and changes the container', () => {
+  assert.equal(roomNetworkMode({ COLLOQ_ROOM_NETWORK: 'none' }), 'none')
+  assert.equal(roomNetworkMode({ COLLOQ_ROOM_NETWORK: ' NONE ' }), 'none')
+  assert.equal(roomNetworkMode({ COLLOQ_ROOM_NETWORK: 'non' }), 'blocked', 'a typo never loosens')
+  assert.equal(roomProfile({}), '1')
+  assert.equal(roomProfile({ COLLOQ_ROOM_NETWORK: 'open' }), '1')
+  assert.equal(roomProfile({ COLLOQ_ROOM_NETWORK: 'none' }), '1-none')
+
+  // The resolver's upstream is an address the rules refuse, so not even DNS
+  // leaves through the daemon's own namespace; both containers of a room get it.
+  for (const role of ['room', 'own'] as const) {
+    const none = withEnv({ COLLOQ_ROOM_NETWORK: 'none' }, () =>
+      runArgs({ sessionId: 'n1', env: 'base', mount: '/m', network: 'colloq-rooms', publish: true, gpu: null, role }),
+    )
+    assert.ok(none.includes(`--dns=${BLACKHOLE_DNS}`), JSON.stringify(none))
+    assert.ok(none.includes('colloq.profile=1-none'), JSON.stringify(none))
+  }
+  assert.equal(BLACKHOLE_DNS, '192.0.2.1')
+  for (const mode of [undefined, 'open', 'blocked']) {
+    const args = withEnv({ COLLOQ_ROOM_NETWORK: mode }, () => roomHardeningArgs())
+    assert.ok(!args.some((arg) => arg.startsWith('--dns')), `${mode}: ${JSON.stringify(args)}`)
+    assert.ok(args.includes('colloq.profile=1'), `${mode}: ${JSON.stringify(args)}`)
+  }
+})
+
+test('none: replies and the server pass, everything a room starts is refused, DNS included; full lines', () => {
+  const rules = perimeterRules({ subnets: ['172.19.0.0/16'], exempt: ['172.19.0.2'], mode: 'none' })
+  assert.equal(
+    rules,
+    [
+      '*filter',
+      ':COLLOQ-ROOMS-FWD - [0:0]',
+      ':COLLOQ-ROOMS-IN - [0:0]',
+      ':COLLOQ-ROOMS-DENY - [0:0]',
+      '-A COLLOQ-ROOMS-DENY -p tcp -j REJECT --reject-with tcp-reset',
+      '-A COLLOQ-ROOMS-DENY -j REJECT --reject-with icmp-admin-prohibited',
+      // The server reaches Jupyter inside: its NEW connection comes from the
+      // host or from its own exempt address, and the room's answer is ESTABLISHED.
+      '-A COLLOQ-ROOMS-FWD -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN',
+      '-A COLLOQ-ROOMS-FWD -s 172.19.0.2/32 -j RETURN',
+      '-A COLLOQ-ROOMS-IN -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN',
+      '-A COLLOQ-ROOMS-IN -s 172.19.0.2/32 -j RETURN',
+      '-A COLLOQ-ROOMS-FWD -s 172.19.0.0/16 -j COLLOQ-ROOMS-DENY',
+      '-A COLLOQ-ROOMS-IN -s 172.19.0.0/16 -j COLLOQ-ROOMS-DENY',
+      'COMMIT',
+      '',
+    ].join('\n'),
+  )
+  assert.ok(!/--dport 53/.test(rules), 'none let DNS out')
+  // The fallback without REJECT is the same set with DROP.
+  const drop = perimeterRules({ subnets: ['10.213.0.0/22'], exempt: [], mode: 'none' }, 'drop')
+  assert.match(drop, /-A COLLOQ-ROOMS-DENY -j DROP\n/)
+  assert.match(drop, /-A COLLOQ-ROOMS-FWD -s 10\.213\.0\.0\/22 -j COLLOQ-ROOMS-DENY\n/)
+})
+
+test('extra ranges are refused after the private ones, and DNS still passes before them', () => {
+  const rules = perimeterRules({ subnets: ['10.213.0.0/22'], exempt: [], extra: ['203.0.113.0/24', '198.51.100.7/32'] }).split('\n')
+  const dns = rules.indexOf('-A COLLOQ-ROOMS-FWD -p udp -m udp --dport 53 -j RETURN')
+  const campus = rules.indexOf('-A COLLOQ-ROOMS-FWD -s 10.213.0.0/22 -d 203.0.113.0/24 -j COLLOQ-ROOMS-DENY')
+  const host = rules.indexOf('-A COLLOQ-ROOMS-FWD -s 10.213.0.0/22 -d 198.51.100.7/32 -j COLLOQ-ROOMS-DENY')
+  const lastPrivate = rules.indexOf('-A COLLOQ-ROOMS-FWD -s 10.213.0.0/22 -d 240.0.0.0/4 -j COLLOQ-ROOMS-DENY')
+  assert.ok(dns >= 0 && lastPrivate > dns && campus === lastPrivate + 1 && host === campus + 1, rules.join('\n'))
+  // No extra ranges: exactly the old set.
+  assert.equal(
+    perimeterRules({ subnets: ['10.213.0.0/22'], exempt: [], extra: [] }),
+    perimeterRules({ subnets: ['10.213.0.0/22'], exempt: [] }),
+  )
+})
+
+test('KERNEL_BLOCKED_CIDRS: addresses and ranges, normalised; v6 has nothing to act on; junk is named', () => {
+  assert.deepEqual(blockedCidrsSetting({}), { cidrs: [], ignored: [], invalid: [] })
+  assert.deepEqual(
+    blockedCidrsSetting({ KERNEL_BLOCKED_CIDRS: ' 203.0.113.0/24, 198.51.100.7\n10.1.2.3/8 203.0.113.9/24,,2001:db8::/32 ' }),
+    {
+      // A bare address is that address; host bits are cleared; a repeat and a
+      // built-in range (10/8) are not written twice.
+      cidrs: ['203.0.113.0/24', '198.51.100.7/32'],
+      ignored: ['2001:db8::/32'],
+      invalid: [],
+    },
+  )
+  const junk = blockedCidrsSetting({ KERNEL_BLOCKED_CIDRS: 'campus.example.edu,10.0.0.0/33,300.1.1.1,1.2.3,10.0.0.0/8/1,203.0.113.0/24' })
+  assert.deepEqual(junk.invalid, ['campus.example.edu', '10.0.0.0/33', '300.1.1.1', '1.2.3', '10.0.0.0/8/1'])
+  assert.deepEqual(junk.cidrs, ['203.0.113.0/24'])
+})
+
+test('a broken KERNEL_BLOCKED_CIDRS refuses the room with its own text; the helper is not even called', async () => {
+  await withEnv({ COLLOQ_ROOM_NETWORK: undefined, KERNEL_BLOCKED_CIDRS: '203.0.113.0/24, campus' }, async () => {
+    const { docker, calls } = fakeDocker(standardAnswers(() => ({ code: 0, out: 'colloq-perimeter: ok' })))
+    setLocaleResolver(() => 'en')
+    const err = await ensureRoomPerimeter(docker, { network: 'colloq-rooms', create: true }, 'colloq-kernel:base').then(
+      () => assert.fail('the room started with a broken blocklist'),
+      (e: unknown) => e,
+    )
+    assert.ok(err instanceof RoomPerimeterError)
+    assert.match(err.message, /KERNEL_BLOCKED_CIDRS/)
+    assert.match(err.message, /\(campus\)/)
+    assert.equal(perimeterProblem(), err.message)
+    assert.ok(!calls.some((call) => isHelper(call.args)))
+    setLocaleResolver(() => 'ru')
+    await assert.rejects(ensureRoomPerimeter(docker, { network: 'colloq-rooms', create: true }, 'colloq-kernel:base'), /KERNEL_BLOCKED_CIDRS/)
+  })
+})
+
+test('a good KERNEL_BLOCKED_CIDRS goes into the rules; in the none and open modes it has nothing to add and refuses nothing', async () => {
+  await withEnv({ COLLOQ_ROOM_NETWORK: undefined, KERNEL_BLOCKED_CIDRS: '203.0.113.0/24' }, async () => {
+    const { docker, calls } = fakeDocker(standardAnswers(() => ({ code: 0, out: 'colloq-perimeter: ok' })))
+    await ensureRoomPerimeter(docker, { network: 'colloq-rooms', create: true }, 'colloq-kernel:base')
+    const script = helperScript(calls.find((call) => isHelper(call.args))!.args)
+    assert.match(script, /-A COLLOQ-ROOMS-FWD -s 10\.213\.0\.0\/22 -d 203\.0\.113\.0\/24 -j COLLOQ-ROOMS-DENY/)
+  })
+  forgetPerimeter()
+  await withEnv({ COLLOQ_ROOM_NETWORK: 'none', KERNEL_BLOCKED_CIDRS: 'campus' }, async () => {
+    const { docker, calls } = fakeDocker(standardAnswers(() => ({ code: 0, out: 'colloq-perimeter: ok' })))
+    await ensureRoomPerimeter(docker, { network: 'colloq-rooms', create: true }, 'colloq-kernel:base')
+    const script = helperScript(calls.find((call) => isHelper(call.args))!.args)
+    assert.match(script, /-A COLLOQ-ROOMS-FWD -s 10\.213\.0\.0\/22 -j COLLOQ-ROOMS-DENY/)
+    assert.ok(!/--dport 53/.test(script), 'none let DNS out')
+    assert.ok(!/-d 10\.0\.0\.0\/8/.test(script), 'none wrote per-range rules')
+  })
+  forgetPerimeter()
+  await withEnv({ COLLOQ_ROOM_NETWORK: 'open', KERNEL_BLOCKED_CIDRS: 'campus' }, async () => {
+    const { docker } = fakeDocker(standardAnswers(() => ({ code: 0, out: 'colloq-perimeter: removed' })))
+    await ensureRoomPerimeter(docker, { network: 'colloq-rooms', create: true }, 'colloq-kernel:base')
+    assert.equal(perimeterProblem(), null)
+  })
+})
+
+test('switching between blocked and none rewrites the rules at once, without waiting out the minute', async () => {
+  const { docker, calls } = fakeDocker(standardAnswers(() => ({ code: 0, out: 'colloq-perimeter: ok' })))
+  const target = { network: 'colloq-rooms', create: true }
+  await withEnv({ COLLOQ_ROOM_NETWORK: undefined }, () => ensureRoomPerimeter(docker, target, 'colloq-kernel:base'))
+  await withEnv({ COLLOQ_ROOM_NETWORK: 'none' }, () => ensureRoomPerimeter(docker, target, 'colloq-kernel:base'))
+  const scripts = calls.filter((call) => isHelper(call.args)).map((call) => helperScript(call.args))
+  assert.equal(scripts.length, 2)
+  assert.match(scripts[0], /--dport 53/)
+  assert.ok(!/--dport 53/.test(scripts[1]))
+})
+
+/* ----------------------------------------------------------- helper image */
+
+const SELF = `sha256:${'5'.repeat(64)}`
+const PINNED = `sha256:${'7'.repeat(64)}`
+
+function imageAnswers(extra: (args: string[]) => { code: number; out: string } | null = () => null) {
+  return (args: string[]) => {
+    const special = extra(args)
+    if (special) return special
+    if (args[0] === 'network' && args[1] === 'inspect') return { code: 0, out: '172.19.0.0/16 ' }
+    if (args[0] === 'inspect' && args.includes('container')) return { code: 0, out: SELF }
+    if (args[0] === 'image' && args[1] === 'inspect') return { code: 0, out: 'sha256:abc' }
+    if (isHelper(args)) return { code: 0, out: 'colloq-perimeter: ok' }
+    return { code: 1, out: `unexpected: docker ${args.join(' ')}` }
+  }
+}
+const helperImageOf = (args: string[]) => args[args.indexOf('--entrypoint=sh') + 1]
+
+test('the server in a container runs the helper from its OWN image, found by COLLOQ_CONTAINER or the hostname', async () => {
+  const { docker, calls } = fakeDocker(imageAnswers())
+  const inContainer = () => true
+  assert.equal(await helperImage(docker, 'colloq-kernel:base', { env: { COLLOQ_CONTAINER: 'colloq' }, inContainer }), SELF)
+  assert.deepEqual(calls[0].args, ['inspect', '--type', 'container', '--format', '{{.Image}}', 'colloq'])
+  forgetPerimeter()
+  calls.length = 0
+  assert.equal(await helperImage(docker, 'colloq-kernel:base', { env: {}, inContainer, hostname: () => '3f2a9c1b7d4e' }), SELF)
+  assert.equal(calls[0].args.at(-1), '3f2a9c1b7d4e')
+  // Once found, remembered: a running container never changes its image.
+  await helperImage(docker, 'colloq-kernel:base', { env: {}, inContainer, hostname: () => '3f2a9c1b7d4e' })
+  assert.equal(calls.length, 1)
+  // Never a kernel image, which teachers edit from the panel.
+  assert.ok(!calls.some((call) => call.args.includes('colloq-kernel:base') || call.args[0] === 'images'))
+
+  // The whole install: the helper's image is the server's ID, not the room's tag.
+  forgetPerimeter()
+  await withEnv({ COLLOQ_ROOM_NETWORK: undefined }, () =>
+    ensureRoomPerimeter(docker, { network: 'colloq', create: false }, 'colloq-kernel:base', { env: {}, inContainer, hostname: () => 'self' }),
+  )
+  const helper = calls.find((call) => isHelper(call.args))!
+  assert.equal(helperImageOf(helper.args), SELF)
+})
+
+test('a server in a container that cannot find itself refuses, rather than falling back to the kernel image', async () => {
+  const { docker, calls } = fakeDocker(imageAnswers((args) =>
+    args[0] === 'inspect' && args.includes('container') ? { code: 1, out: 'Error: No such container: renamed-host' } : null,
+  ))
+  setLocaleResolver(() => 'en')
+  await withEnv({ COLLOQ_ROOM_NETWORK: undefined }, async () => {
+    const err = await ensureRoomPerimeter(docker, { network: 'colloq', create: false }, 'colloq-kernel:base', {
+      env: {}, inContainer: () => true, hostname: () => 'renamed-host',
+    }).then(() => assert.fail('the helper ran without a trusted image'), (e: unknown) => e)
+    assert.ok(err instanceof RoomPerimeterError)
+    assert.match(err.message, /COLLOQ_CONTAINER/)
+    assert.match(err.message, /renamed-host/)
+  })
+  assert.ok(!calls.some((call) => isHelper(call.args)))
+})
+
+test('COLLOQ_HELPER_IMAGE wins everywhere and runs by its ID; one that is not on the machine is a refusal, never a pull', async () => {
+  const { docker, calls } = fakeDocker(imageAnswers((args) =>
+    args[0] === 'image' && args.includes('registry.example.edu/tools/nsenter:1') ? { code: 0, out: PINNED } : null,
+  ))
+  for (const inContainer of [() => true, () => false]) {
+    calls.length = 0
+    forgetPerimeter()
+    const env = { COLLOQ_HELPER_IMAGE: 'registry.example.edu/tools/nsenter:1', COLLOQ_CONTAINER: 'colloq' }
+    assert.equal(await helperImage(docker, 'colloq-kernel:base', { env, inContainer }), PINNED)
+    assert.ok(!calls.some((call) => call.args.includes('container')), 'looked for itself despite the override')
+  }
+  const missing = fakeDocker(imageAnswers((args) =>
+    args[0] === 'image' && args.includes('ghcr.io/example/helper:2') ? { code: 1, out: 'Error: No such image' } : null,
+  ))
+  setLocaleResolver(() => 'en')
+  await assert.rejects(
+    helperImage(missing.docker, 'colloq-kernel:base', { env: { COLLOQ_HELPER_IMAGE: 'ghcr.io/example/helper:2' }, inContainer: () => true }),
+    (err: unknown) => err instanceof RoomPerimeterError && /docker pull/.test(err.message) && /ghcr\.io\/example\/helper:2/.test(err.message),
+  )
+  assert.ok(!missing.calls.some((call) => call.args[0] === 'pull'))
+})
+
+test('on a teacher laptop (server on the host) the helper keeps using the kernel image, as before', async () => {
+  const { docker, calls } = fakeDocker(imageAnswers())
+  assert.equal(await helperImage(docker, 'colloq-kernel:base', { env: {}, inContainer: () => false }), 'colloq-kernel:base')
+  assert.ok(!calls.some((call) => call.args.includes('container')))
+  const none = fakeDocker((args) => {
+    if (args[0] === 'image') return { code: 1, out: 'No such image' }
+    if (args[0] === 'images') return { code: 0, out: 'colloq-kernel:<none>\ncolloq-kernel:kaggle-base\n' }
+    return { code: 1, out: 'unexpected' }
+  })
+  assert.equal(await helperImage(none.docker, 'colloq-kernel:base', { env: {}, inContainer: () => false }), 'colloq-kernel:kaggle-base')
+})
+
+test('at server start in a container the block goes up even before any kernel image is built', async () => {
+  const { docker, calls } = fakeDocker(imageAnswers((args) =>
+    args[0] === 'image' || args[0] === 'images' ? { code: 1, out: 'No such image' } : null,
+  ))
+  await withEnv({ COLLOQ_ROOM_NETWORK: undefined }, () =>
+    warmPerimeter(docker, { network: 'colloq', create: false }, 'colloq-kernel:base', { env: {}, inContainer: () => true, hostname: () => 'self' }),
+  )
+  const helper = calls.find((call) => isHelper(call.args))
+  assert.ok(helper, 'no helper at start')
+  assert.equal(helperImageOf(helper.args), SELF)
+  assert.equal(perimeterProblem(), null)
 })

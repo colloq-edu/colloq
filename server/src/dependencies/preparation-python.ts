@@ -1,8 +1,42 @@
 /** Embedded trusted helpers: esbuild must carry these into the server bundle. */
 export const PREPARATION_PROXY_PYTHON = String.raw`
-import ipaddress, selectors, socket, socketserver, sys, threading, time
+import base64, ipaddress, json, os, re, selectors, socket, socketserver, sys, threading, time, urllib.parse
 
-ALLOWED = {'pypi.org:443', 'files.pythonhosted.org:443'}
+PUBLIC_HOSTS = ('pypi.org:443', 'files.pythonhosted.org:443')
+ALLOWED = set(PUBLIC_HOSTS)
+# The authorities an operator configured (DEPENDENCY_INDEX_URL, DEPENDENCY_FILES_HOSTS,
+# shared/dependency-source.ts): a campus mirror may sit on a private address. Public
+# PyPI's hosts keep the public-only rule, so no DNS answer turns them into a way inside.
+CONFIGURED = set()
+# The institution's proxy (HTTPS_PROXY), when the network has no direct way out:
+# (host, port, Proxy-Authorization value or None). NO_PROXY names what goes direct.
+UPSTREAM = None
+NO_PROXY = ''
+# Never through the institution's proxy: the same rule as the server's own fetch
+# (server/src/outbound.ts · localDestination).
+LOCAL_NETWORKS = [ipaddress.ip_network(value) for value in (
+    '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12',
+    '192.168.0.0/16', '::/128', '::1/128', 'fc00::/7', 'fe80::/10')]
+LOCAL_SUFFIXES = ('localhost', 'local', 'internal', 'svc')
+
+def upstream_proxy(value):
+    # Only a plain http:// proxy can be chained: the server refuses anything else
+    # before this container starts (dependencies/source.ts).
+    if not value: return None
+    parsed = urllib.parse.urlsplit(value if '://' in value else 'http://' + value)
+    if parsed.scheme != 'http' or not parsed.hostname: raise ValueError('unsupported upstream proxy')
+    auth = None
+    if parsed.username is not None:
+        pair = urllib.parse.unquote(parsed.username) + ':' + urllib.parse.unquote(parsed.password or '')
+        auth = 'Basic ' + base64.b64encode(pair.encode('utf-8')).decode('ascii')
+    return (parsed.hostname, parsed.port or 80, auth)
+
+def configure(settings, environ):
+    global ALLOWED, CONFIGURED, UPSTREAM, NO_PROXY
+    ALLOWED = set(settings.get('allowed') or PUBLIC_HOSTS)
+    CONFIGURED = set(settings.get('configured') or ())
+    UPSTREAM = upstream_proxy(environ.get('HTTPS_PROXY', ''))
+    NO_PROXY = environ.get('NO_PROXY', '')
 
 def allowed_authority(authority):
     return authority in ALLOWED
@@ -10,6 +44,64 @@ def allowed_authority(authority):
 def public_address(value):
     address = ipaddress.ip_address(value)
     return address.is_global and not address.is_multicast and not address.is_reserved and not address.is_unspecified
+
+def campus_address(value):
+    # A configured mirror may be private, but never loopback, link-local (cloud
+    # metadata), multicast or unspecified.
+    address = ipaddress.ip_address(value)
+    if getattr(address, 'ipv4_mapped', None) is not None: address = address.ipv4_mapped
+    return not (address.is_loopback or address.is_link_local or address.is_multicast or address.is_unspecified or address.is_reserved)
+
+def literal(host):
+    try: return ipaddress.ip_address(host)
+    except ValueError: return None
+
+def goes_direct(host, port):
+    # NO_PROXY read as curl and Python read it: '*', a domain with everything under
+    # it, host:port, ranges for literal addresses; plus Colloq's own destinations.
+    address = literal(host)
+    if address is not None and any(address in network for network in LOCAL_NETWORKS if network.version == address.version): return True
+    if address is None and ('.' not in host or any(host == suffix or host.endswith('.' + suffix) for suffix in LOCAL_SUFFIXES)): return True
+    for entry in re.split(r'[\s,]+', NO_PROXY.lower()):
+        if not entry: continue
+        if entry == '*': return True
+        if '/' in entry:
+            try: network = ipaddress.ip_network(entry, strict=False)
+            except ValueError: continue
+            if address is not None and address.version == network.version and address in network: return True
+            continue
+        name, entry_port = entry, None
+        bracketed = re.fullmatch(r'\[([^\]]+)\](?::(\d+))?', entry)
+        if bracketed: name, entry_port = bracketed.group(1), bracketed.group(2)
+        elif literal(entry) is None and re.fullmatch(r'.*:\d+', entry): name, entry_port = entry.rsplit(':', 1)
+        if entry_port is not None and int(entry_port) != port: continue
+        if address is not None:
+            if literal(name) == address: return True
+            continue
+        name = re.sub(r'^\*\.', '', name).lstrip('.').rstrip('.')
+        if name and (host == name or host.endswith('.' + name)): return True
+    return False
+
+def through_upstream(host, port):
+    # A tunnel inside the institution's tunnel: the campus proxy resolves the name,
+    # the allowlist above has already decided which names may be asked for.
+    proxy_host, proxy_port, auth = UPSTREAM
+    connection = socket.create_connection((proxy_host, proxy_port), 15)
+    try:
+        lines = ['CONNECT %s:%d HTTP/1.1' % (host, port), 'Host: %s:%d' % (host, port)]
+        if auth: lines.append('Proxy-Authorization: ' + auth)
+        connection.sendall(('\r\n'.join(lines) + '\r\n\r\n').encode('ascii'))
+        reply = b''
+        while b'\r\n\r\n' not in reply:
+            chunk = connection.recv(1)
+            if not chunk or len(reply) > 8192: raise OSError('the upstream proxy closed the tunnel')
+            reply += chunk
+        status = reply.split(b'\r\n', 1)[0].split(b' ')
+        if len(status) < 2 or status[1] != b'200': raise OSError('the upstream proxy refused the tunnel')
+        return connection
+    except BaseException:
+        connection.close()
+        raise
 
 class Proxy(socketserver.BaseRequestHandler):
     def handle(self):
@@ -26,18 +118,23 @@ class Proxy(socketserver.BaseRequestHandler):
             if method != 'CONNECT' or version not in ('HTTP/1.0', 'HTTP/1.1') or not allowed_authority(authority):
                 self.request.sendall(b'HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
                 return
-            host = authority.split(':')[0]
-            addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-            if not addresses or any(not public_address(item[4][0]) for item in addresses): return
-            # Connect to the validated numeric address; no second DNS resolution.
-            for family, kind, protocol, _, address in addresses:
-                try:
-                    upstream = socket.socket(family, kind, protocol)
-                    upstream.settimeout(15)
-                    upstream.connect(address)
-                    break
-                except OSError:
-                    upstream.close(); upstream = None
+            host, _, port = authority.rpartition(':')
+            port = int(port)
+            if UPSTREAM is not None and not goes_direct(host, port):
+                upstream = through_upstream(host, port)
+            else:
+                addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+                acceptable = campus_address if authority in CONFIGURED else public_address
+                if not addresses or any(not acceptable(item[4][0]) for item in addresses): return
+                # Connect to the validated numeric address; no second DNS resolution.
+                for family, kind, protocol, _, address in addresses:
+                    try:
+                        upstream = socket.socket(family, kind, protocol)
+                        upstream.settimeout(15)
+                        upstream.connect(address)
+                        break
+                    except OSError:
+                        upstream.close(); upstream = None
             if upstream is None: return
             self.request.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
             with selectors.DefaultSelector() as selector:
@@ -78,6 +175,8 @@ class Server(socketserver.ThreadingTCPServer):
         finally: self.slots.release()
 
 if __name__ == '__main__':
+    # argv[3]: the allowlist the server derived from DEPENDENCY_INDEX_URL; absent, public PyPI.
+    configure(json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}, os.environ)
     with Server(('0.0.0.0', 3128), int(sys.argv[1]), int(sys.argv[2])) as server:
         server.serve_forever(poll_interval=0.25)
 `
@@ -103,6 +202,32 @@ WHEELS = pathlib.Path('/wheels')
 # which it names in COMP_OUT. The broker's /tmp is 256 MiB at most, where a set of
 # 300 MB installed could not even be verified.
 ROOM = pathlib.Path(os.environ.get('COMP_OUT') or '/tmp')
+
+# Where packages come from: public PyPI unless the request names the institution's
+# index (shared/dependency-source.ts). FILES are the host:port pairs a wheel URL may
+# point at; the CONNECT proxy admits the same hosts and nothing else.
+PUBLIC_SOURCE = {'url': 'https://pypi.org/simple', 'publicPypi': True, 'files': ['files.pythonhosted.org:443']}
+INDEX_URL, PUBLIC_PYPI, FILES = PUBLIC_SOURCE['url'], True, set(PUBLIC_SOURCE['files'])
+
+def use_source(config):
+    global INDEX_URL, PUBLIC_PYPI, FILES
+    source = config.get('index') or PUBLIC_SOURCE
+    INDEX_URL, PUBLIC_PYPI, FILES = source['url'], bool(source['publicPypi']), set(source['files'])
+
+def trust_extra_ca(extra=pathlib.Path('/input/extra-ca.pem')):
+    # The institution's CA (NODE_EXTRA_CA_CERTS on the server, handed over as a file
+    # of the request) JOINS the public roots rather than replacing them: a mirror
+    # signed by the campus CA, and public PyPI behind a proxy that does not inspect
+    # TLS, must both verify. pip runs --isolated, which ignores PIP_CERT like every
+    # PIP_* variable, so the bundle goes on its command line (--cert, resolve); the
+    # variables cover urllib here and pip's truststore, which read SSL_CERT_FILE.
+    if not extra.is_file(): return None
+    try: from pip._vendor import certifi
+    except ImportError: import certifi
+    bundle = ROOM / 'ca-bundle.pem'
+    bundle.write_bytes(pathlib.Path(certifi.where()).read_bytes().rstrip(b'\n') + b'\n' + extra.read_bytes())
+    for name in ('SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE'): os.environ[name] = str(bundle)
+    return bundle
 
 class PreparationFailure(Exception):
     def __init__(self, code, message, line=None, params=None):
@@ -232,7 +357,10 @@ def constraints(base):
     return '\n'.join(sorted(result)) + '\n'
 
 def pip_command(arguments):
-    # No inherited pip config/index, credential helpers, user site, or pip cache.
+    # No inherited pip config/index, credential helpers, user site, or pip cache: an
+    # image's pip.conf or a PIP_INDEX_URL from anywhere must not steer the resolver.
+    # The index is the operator's DEPENDENCY_INDEX_URL, arriving in the request
+    # (use_source), and the CONNECT proxy admits only its hosts.
     return [sys.executable, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check', '--no-cache-dir'] + arguments
 
 # pip logs the size of every wheel it fetches ("Downloading x.whl (888.1 MB)"), in
@@ -324,13 +452,16 @@ def pip_failed(log, default_code, base=None, on_full=None):
             if match:
                 # Only inspect project existence; never echo pip logs, index URLs or credentials.
                 # Only an explicit 404 means "not found"; retry transient failures (timeouts, 429, 5xx)
-                # so a network blip is not misreported as a missing wheel.
+                # so a network blip is not misreported as a missing wheel. Public PyPI answers
+                # on its JSON API; a mirror on the simple API every index has (PEP 503).
+                name = canonicalize_name(match.group(1))
+                project = 'https://pypi.org/pypi/' + name + '/json' if PUBLIC_PYPI else INDEX_URL + '/' + name + '/'
                 for attempt in range(3):
                     try:
-                        with urllib.request.urlopen('https://pypi.org/pypi/' + canonicalize_name(match.group(1)) + '/json', timeout=10): pass
+                        with urllib.request.urlopen(project, timeout=10): pass
                         break
                     except urllib.error.HTTPError as error:
-                        if error.code == 404: fail('package_not_found', 'A requested package was not found on public PyPI: ' + canonicalize_name(match.group(1)) + '.')
+                        if error.code == 404: fail('package_not_found', 'A requested package was not found on ' + ('public PyPI' if PUBLIC_PYPI else 'the package index') + ': ' + name + '.')
                         if error.code < 500 and error.code != 429: break
                     except OSError: pass
                     if attempt < 2: time.sleep(1 + attempt)
@@ -357,8 +488,10 @@ def run_pip(arguments, default_code, metadata_paths=None, base=None, on_full=Non
 
 def safe_url(value):
     parsed = urllib.parse.urlsplit(value)
-    if parsed.scheme != 'https' or parsed.hostname != 'files.pythonhosted.org' or parsed.port not in (None, 443) or parsed.username or parsed.password or parsed.fragment:
-        fail('unsupported_source', 'Dependencies must be binary wheels from public PyPI.')
+    try: authority = '%s:%d' % (parsed.hostname, parsed.port or 443)
+    except ValueError: authority = ''
+    if parsed.scheme != 'https' or not parsed.hostname or authority not in FILES or parsed.username or parsed.password or parsed.fragment:
+        fail('unsupported_source', 'Dependencies must be binary wheels from the package index.')
     return parsed
 
 class SafeRedirect(urllib.request.HTTPRedirectHandler):
@@ -483,15 +616,18 @@ def download_wheels(wheels, known, config, opener):
     return packages, downloaded
 
 def resolve(config):
+    use_source(config)
     normalized = parse_requirements(config['requirementsText'], config['basePackages'])
     inventory_matches(config['basePackages'])
     emit({'state': 'resolving', 'normalizedRequirements': normalized, 'log': {'code': 'resolve'}})
+    bundle = trust_extra_ca()
     requirements, constraints_file, report_file = ROOM / 'requirements.txt', ROOM / 'constraints.txt', ROOM / 'report.json'
     requirements.write_text('\n'.join(normalized) + '\n')
     constraints_file.write_text(constraints(config['basePackages']))
     versions = base_versions(config['basePackages'])
+    cert = ['--cert', str(bundle)] if bundle else []
     # --dry-run retains installed distributions, unlike pip download which downloads the base too.
-    log = run_pip(['install', '--dry-run', '--report', str(report_file), '--only-binary=:all:', '--no-build-isolation', '--index-url', 'https://pypi.org/simple', '--retries', '1', '--timeout', '20', '-c', str(constraints_file), '-r', str(requirements)], 'resolution_failed',
+    log = run_pip(['install', '--dry-run', '--report', str(report_file), '--only-binary=:all:', '--no-build-isolation', '--index-url', INDEX_URL, *cert, '--retries', '1', '--timeout', '20', '-c', str(constraints_file), '-r', str(requirements)], 'resolution_failed',
                   base=versions, on_full=lambda output: download_full(output, config['maxDownloadBytes']))
     if report_file.stat().st_size > 8 * 1024 * 1024: fail('resolution_failed', 'The dependency resolution report is too large.')
     wheels = plan_wheels(json.loads(report_file.read_text()), versions)

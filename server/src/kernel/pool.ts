@@ -21,6 +21,7 @@ import {
   ensureRoomPerimeter,
   perimeterStale,
   roomHardeningArgs,
+  roomProfile,
   warmPerimeter,
   type RoomNetworkTarget,
 } from './perimeter.js'
@@ -387,11 +388,21 @@ async function legacyReachable(container: string, network: string): Promise<bool
 /** Said once per room: a live container without the profile is a hole until it stops. */
 const legacyWarned = new Set<string>()
 
-function warnLegacy(sessionId: string): void {
+/**
+ * Whether a label differs from the current profile only by the room network
+ * mode (`1` against `1-none`): the same hardening, another COLLOQ_ROOM_NETWORK.
+ */
+function sameHardening(profile: string): boolean {
+  return profile.split('-')[0] === ROOM_PROFILE
+}
+
+function warnLegacy(sessionId: string, profile: string): void {
   if (legacyWarned.has(sessionId)) return
   legacyWarned.add(sessionId)
   console.warn(
-    `[kernel] room ${sessionId} keeps its pre-hardening container (default privileges, open network) until it stops; the next start recreates it hardened`,
+    sameHardening(profile)
+      ? `[kernel] room ${sessionId} keeps its container from the previous COLLOQ_ROOM_NETWORK until it stops: the firewall rules already apply to it, its resolver setting changes at the next start`
+      : `[kernel] room ${sessionId} keeps its pre-hardening container (default privileges, open network) until it stops; the next start recreates it hardened`,
   )
 }
 
@@ -1576,15 +1587,23 @@ async function startContainer(
      * rights again. A live one lasts until it stops: removing it would take
      * all the variables away from the lesson in the middle of the class; the
      * owner's decision is "until the restart".
+     *
+     * The same rule covers a changed COLLOQ_ROOM_NETWORK (`none` also sets
+     * the container's resolver, see perimeter.ts · roomProfile): the rules
+     * follow the subnet and reach a live container at once, the resolver
+     * setting at its next start.
      */
-    const legacy = (await profileOf(container)) !== ROOM_PROFILE
-    if (legacy && state === 'stopped') return recreate(tr('server.roomPerimeter.migrated'))
+    const profile = await profileOf(container)
+    const legacy = profile !== roomProfile()
+    if (legacy && state === 'stopped') {
+      return recreate(tr(sameHardening(profile) ? 'server.roomPerimeter.networkChanged' : 'server.roomPerimeter.migrated'))
+    }
     if (legacy) {
       // The route to it is the old one: a published port on the host or a
       // name in the shared network. If even that is gone, it is no longer the
       // profile but a changed server mode.
       if (!(await legacyReachable(container, network))) return recreate(tr("server.theServerChangedNetworks.08933e"))
-      warnLegacy(sessionId)
+      warnLegacy(sessionId, profile)
     } else if (!(await sameNetwork(container, network))) {
       // A container from the previous mode: it lacks the address we now call
       // it by, neither a name in our network nor a published port.

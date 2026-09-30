@@ -23,6 +23,8 @@ const jobs = new CompetitionJobs({
     exporterImage: config.competitionExporterImage,
     instanceId: config.competitionInstanceId,
     ...(config.imagePullSecret ? { imagePullSecret: config.imagePullSecret } : {}),
+    ...(config.dependencyIndexUrl ? { dependencyIndexUrl: config.dependencyIndexUrl } : {}),
+    ...(config.dependencyFilesHosts ? { dependencyFilesHosts: config.dependencyFilesHosts } : {}),
   },
   kube: new HttpsKubernetesClient({
     url: config.kubeUrl,
