@@ -13,6 +13,14 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.8.3](https://github.com/colloq-edu/colloq/compare/v0.8.2...v0.8.3) (2026-09-30)
+
+
+### Bug Fixes
+
+* **competitions:** keep the line printed before an out-of-memory kill, and prepare big sets on k3s ([2025b28](https://github.com/colloq-edu/colloq/commit/2025b289d67802bb7c914202a904f836e77c6719))
+* **competitions:** tidy the leftovers of the class rehearsals ([e758999](https://github.com/colloq-edu/colloq/commit/e758999b683942c531f76cdf99d521a997275511))
+
 ## [0.8.2](https://github.com/colloq-edu/colloq/compare/v0.8.1...v0.8.2) (2026-09-30)
 
 
