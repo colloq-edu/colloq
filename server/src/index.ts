@@ -22,6 +22,7 @@ import { startJournal, stopJournal } from './log.js'
 import { retireDatabaseKernels, stopsLocalKernelsOnExit } from './local/kernel-cleanup.js'
 import { dropLocalRoomKernel, warmRoomPerimeter } from './kernel/pool.js'
 import { kernelRetirementInProgress } from './kernel/retirement.js'
+import { kernelBackend } from './kernel/runtime-client.js'
 import http from 'node:http'
 import { WebSocketServer } from 'ws'
 import type { Duplex } from 'node:stream'
@@ -488,6 +489,9 @@ function announceProxies(): void {
  */
 function announceJupyterToken(): void {
   if (config.jupyter.token !== DEV_JUPYTER_TOKEN) return
+  // The broker's rooms have tokens of their own, derived per room: on
+  // Kubernetes this line spoke about a value nothing uses (1 Oct 2026).
+  if (kernelBackend() === 'broker') return
   console.warn(
     `[kernel] JUPYTER_TOKEN is the well-known value from .env.example (${DEV_JUPYTER_TOKEN}); ` +
       'put your own in: the JUPYTER_TOKEN= line in .env, then restart',

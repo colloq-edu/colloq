@@ -1080,7 +1080,10 @@ export function adminCompetitionRoutes(): Router {
     }
     const entrantId = baselineEntrantOf(competition) ?? newBaselineEntrant()
     let revision
-    try { revision = await executionRevision(competition) } catch {
+    try { revision = await executionRevision(competition) } catch (error) {
+      // The teacher reads "check the base"; the operator needs the cause, which
+      // was swallowed here (found on a bank-like cluster, 1 Oct 2026).
+      console.warn(`[competitions] ${competition.id}: the environment image could not be pinned: ${error instanceof Error ? error.message.slice(0, 300) : String(error)}`)
       return fail(res, 503, 'failed', tr('dependencies.error.base'))
     }
     // The notebook bytes and configuration were observed before async image
