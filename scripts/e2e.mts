@@ -18,6 +18,35 @@ import WS from 'ws'
  */
 const BASE = (process.env.E2E_BASE_URL ?? 'http://localhost:3000').replace(/\/+$/, '')
 const WSB = BASE.replace(/^http/, 'ws')
+/*
+ * E2E_EXPECT_ISOLATED=1 adds one more cell, which must reach neither the
+ * internet nor the cluster's API server: what the room NetworkPolicy of the
+ * Helm chart promises (scripts/k8s-e2e.mts sets it). Off by default, because a
+ * room on a teacher's laptop is allowed out.
+ *
+ * A new Pod is not necessarily covered by its policy the instant it starts, so
+ * the probe waits the way the broker does before a competition job runs
+ * (runtime/src/competition-jobs.ts · OFFLINE_PROBE): three refusals in a row
+ * within 30 s count as closed. An open network answers every time and never
+ * gets there.
+ */
+const EXPECT_ISOLATED = process.env.E2E_EXPECT_ISOLATED === '1'
+const ISOLATION_PROBE = `import socket, time
+def closed(host, port):
+    started, refused = time.monotonic(), 0
+    while time.monotonic() - started < 30:
+        try:
+            socket.create_connection((host, port), 2).close()
+            refused = 0
+        except OSError:
+            refused += 1
+            if refused >= 3:
+                return True
+        time.sleep(1)
+    return False
+print("internet=" + ("closed" if closed("1.1.1.1", 443) else "OPEN"),
+      "kube-api=" + ("closed" if closed("kubernetes.default.svc", 443) else "OPEN"))
+`
 /** Where the server keeps its setup token; config.ts defaults it to <repo>/data. */
 const DATA_DIR = resolve(
   process.env.DATA_DIR ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', 'data'),
@@ -175,14 +204,28 @@ try {
   const files = await j(listed)
   console.log(`7. workspace files: ${files.files.map((f: any) => f.name).join(', ') || '(none)'}`)
 
+  let isolated = true
+  if (EXPECT_ISOLATED) {
+    const { cell: probeCell, id: probeId } = newCell(ISOLATION_PROBE)
+    A.doc.transact(() => cells(A.doc).push([probeCell]))
+    await until('B received the probe cell', () => cells(B.doc).toArray().some((c) => idOf(c) === probeId))
+    control.send(JSON.stringify({ t: 'run', cellId: probeId }))
+    const probe = () => cells(B.doc).toArray().find((c) => idOf(c) === probeId)
+    await until('probe cell finished', () => ['ok', 'error'].includes(probe()?.get('state')))
+    const said = outputsOf(probe()!).map((o) => (o.kind === 'stream' ? o.text : `${o.ename ?? o.kind}: ${o.evalue ?? ''}`)).join('').trim()
+    isolated = probe()!.get('state') === 'ok' && /internet=closed/.test(said) && /kube-api=closed/.test(said)
+    console.log(`7a. the room's network: ${said || '(no output)'}`)
+  }
+
   pass =
     state === 'ok' &&
     onB().get('runBy') === 'Maria' &&
     outs.some((o) => o.kind === 'stream' && o.text.includes('hello from')) &&
     outs.some((o) => o.kind === 'data' && JSON.stringify(o.data).includes('42')) &&
-    files.files.some((f: any) => f.name === 'made-in-class.txt')
+    files.files.some((f: any) => f.name === 'made-in-class.txt') &&
+    isolated
 
-  console.log(pass ? '\nPASS — shared notebook, shared kernel, shared outputs, shared files' : '\nFAIL')
+  console.log(pass ? `\nPASS — shared notebook, shared kernel, shared outputs, shared files${EXPECT_ISOLATED ? ', a closed room' : ''}` : '\nFAIL')
 } finally {
   for (const close of closers) {
     try { close() } catch { /* already gone: nothing to unwind */ }

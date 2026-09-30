@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { dayStart } from '../shared/competitions.js'
+import { COMPETITION_ATTEMPT_ID } from '../shared/competition-runtime.js'
 import {
   BOOT,
   acceptSubmission,
@@ -474,6 +475,9 @@ test("the queue is fair per person: one's own second submission waits behind som
   assert.equal(first?.submissionId, t1.id)
   assert.equal(first?.state, 'running')
   assert.equal(first?.boot, BOOT)
+  // Named the way the Kubernetes broker takes an attempt: a dashed UUID made
+  // every submission on the broker fail as "Invalid submission job identity".
+  assert.match(first?.attemptId ?? '', COMPETITION_ATTEMPT_ID)
   // One submission at a time: a second take returns nothing while the first
   // is running.
   assert.equal(takeNext(), null)

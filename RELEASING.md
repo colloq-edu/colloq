@@ -15,7 +15,9 @@ Nobody bumps the version by hand, the maintainer included:
 4. On that merge, release-please tags `vX.Y.Z` on the merge commit and creates
    the GitHub Release, with the notes from the pull request.
 5. In the same run, the **Publish** workflow builds the pip wheel, attaches it to
-   the release, and uploads to PyPI and GHCR if those are switched on.
+   the release, and uploads to PyPI and GHCR if those are switched on: on GHCR
+   the images and the Helm chart for Kubernetes, which it also attaches to the
+   release.
 
 Until you merge it, the release pull request just stays open and follows `main`.
 Nothing is released by merging ordinary pull requests.
@@ -41,6 +43,8 @@ understands too (`0.3.0-rc.1` becomes the wheel version `0.3.0rc1`).
 | Derived | Git tag `vX.Y.Z` and the GitHub Release | release-please creates them; `publish.yml` checks the tag |
 | Derived | Images `…:vX.Y.Z` and `release.json` for k3s | `scripts/release-build.py` defaults to `v` + `package.json` at the source commit and rejects any other `--version` |
 | Derived | vast.ai image `ghcr.io/<owner>/colloq-vast:X.Y.Z` | `publish.yml` |
+| Derived | Kubernetes images `ghcr.io/<owner>/colloq-app:vX.Y.Z`, `colloq-runtime:vX.Y.Z` and the kernels `colloq-kernel:vX.Y.Z-<env>` | `publish.yml` (jobs `app-images` and `kernels`) |
+| Derived | Helm chart `oci://ghcr.io/<owner>/charts/colloq:X.Y.Z`: `version` and `appVersion` in its `Chart.yaml`, the digests and the kernel catalog in its `values.yaml` | `publish.yml` (job `chart`, `scripts/chart-values.py`) writes them into the packaged chart from the tag, whatever the source tree carries |
 
 `make version` prints the version and fails if anything disagrees; CI runs the
 same check (`node --import tsx scripts/version.mts check`) on every pull request,
@@ -259,7 +263,8 @@ accident.
 1. **Repository variables** (Settings → Secrets and variables → Actions →
    Variables):
    - `PUBLISH_PYPI` = `true` turns on the PyPI job.
-   - `PUBLISH_IMAGES` = `true` turns on the vast.ai image job.
+   - `PUBLISH_IMAGES` = `true` turns on everything that goes to GHCR: the
+     vast.ai image, the kernels, the Kubernetes images and the Helm chart.
 
    If a variable is unset or has any other value, its job is skipped.
 2. **PyPI API token.** Create a token on pypi.org (*Account settings → API
@@ -283,15 +288,39 @@ accident.
    required reviewer, so every PyPI upload waits for your approval. Under
    *Deployment branches and tags*, allow the tag pattern `v*`. Every publish
    runs on the tag.
-4. **GHCR visibility.** The first image push creates the package
-   `ghcr.io/<owner>/colloq-vast`. If vast.ai should pull it without credentials,
-   make the package public in its package settings. Otherwise, add registry
-   credentials to the vast.ai template. How operators run the image is in
-   [deploy/vast/README.md](deploy/vast/README.md).
+4. **GHCR visibility.** The first push of each image creates its package, and a
+   new package is **private**: nobody pulls it without credentials, not a vast.ai
+   template, not a university's Harbor proxy, not `helm install`. The packages a
+   release creates:
+
+   | Package | Pushed by |
+   | --- | --- |
+   | `colloq-vast`, `colloq-server` | `image` |
+   | `colloq-kernel` | `kernels` |
+   | `colloq-app`, `colloq-runtime` | `app-images` |
+   | `charts/colloq` (the Helm chart) | `chart` |
+
+   After the first release with `PUBLISH_IMAGES`, make each of them public **in
+   the web interface**: the organization's page → *Packages* → the package →
+   *Package settings* → *Danger Zone* → *Change visibility* → *Public*. There is
+   no API for it: the REST API lists, deletes and restores package versions, but
+   cannot change a package's visibility, so no workflow can do this step. If
+   *Public* is greyed out, allow public packages first (organization *Settings*
+   → *Packages* → *Package creation*). Visibility is set once per package; later
+   versions keep it.
+
+   Each package is linked to this repository by its source (the images'
+   `org.opencontainers.image.source` label, the chart's `sources` in
+   `Chart.yaml`), and the workflow that created it keeps write access. A package
+   created some other way needs the repository added under *Package settings* →
+   *Manage Actions access* with the *Write* role, or the next push is refused.
+   How operators run the vast.ai image is in
+   [deploy/vast/README.md](deploy/vast/README.md); the chart, in
+   `docs/pages/en/kubernetes.html`.
 
 > Leave GitHub's *immutable releases* setting off. release-please publishes the
-> release first, and the wheel and the k3s files are attached to it afterwards,
-> which an immutable release does not allow.
+> release first, and the wheels, the chart and the k3s files are attached to it
+> afterwards, which an immutable release does not allow.
 
 ## Authorship
 
@@ -308,8 +337,8 @@ contributors by commit author. In this flow:
   has commits by other people; this one has only yours.
 - **The tag and the GitHub Release** are created by release-please as you.
 - **Nothing pushes commits with `GITHUB_TOKEN`.** `publish.yml` uses it only to
-  upload the wheel to the release, and an asset uploader does not count as a
-  contributor.
+  upload files to the release and images and the chart to GHCR, and neither an
+  asset uploader nor a package publisher counts as a contributor.
 
 ## The workflows
 
@@ -334,7 +363,13 @@ it runs only when called from *Release Please*, or by hand for an existing tag.
 | `smoke` | Installs each of the other three platform wheels into a clean venv on its own runner (`macos-15`, `macos-15-intel`, `ubuntu-24.04-arm`) and runs it. | always |
 | `github-release` | Attaches every wheel and `python-SHA256SUMS` to the release that release-please created, once `smoke` has passed. Refuses if there is no release: it never creates one, because the notes are release-please's. Marks `-rc.N` versions as pre-releases. Keeps files that are already attached. | always |
 | `pypi` | Downloads the wheels **attached to the release**, checks that each one is listed in `python-SHA256SUMS` and matches it, and uploads them with the `pypi` environment secret `PYPI_API_TOKEN`. | `vars.PUBLISH_PYPI == 'true'`, plus approval in the `pypi` environment |
-| `image` | Builds `deploy/vast/Dockerfile` for linux/amd64, with provenance, an SBOM and OCI labels. Pushes `ghcr.io/<owner>/colloq-vast:X.Y.Z`, and also `:latest` for non-pre-releases. Skips the build if that version already exists. The only job with `packages: write`. | `vars.PUBLISH_IMAGES == 'true'` |
+| `image` | Builds `deploy/vast/Dockerfile` for linux/amd64, with provenance, an SBOM and OCI labels. Pushes `ghcr.io/<owner>/colloq-vast:X.Y.Z` and `colloq-server:X.Y.Z` (one build, one digest), and also `:latest` for non-pre-releases. Skips the build if that version already exists. | `vars.PUBLISH_IMAGES == 'true'` |
+| `kernels` | Builds the room kernels of `base` and `kaggle-base` (`kernel/Dockerfile`, parents first), runs each once without network, and pushes `ghcr.io/<owner>/colloq-kernel:vX.Y.Z-<env>`. Skips a tag that exists and takes its digest. Hands the digests to `chart` as a job output. | `vars.PUBLISH_IMAGES == 'true'` |
+| `app-images` | Builds the root `Dockerfile`'s targets `production` and `broker` for linux/amd64 on one node base pinned by digest, with provenance, an SBOM and OCI labels, and pushes `ghcr.io/<owner>/colloq-app:vX.Y.Z` and `colloq-runtime:vX.Y.Z` (no `:latest`: the chart installs by digest). Skips a tag that exists and takes its digest. Hands the digests to `chart` as job outputs. | `vars.PUBLISH_IMAGES == 'true'` |
+| `chart` | After `app-images` and `kernels`: `scripts/chart-values.py` writes their digests and the kernel catalog (the same catalog code as `release.json`) into `deploy/helm/colloq/values.yaml`, and the version into `Chart.yaml`; then `helm lint`, `helm package`, and a check that the package renders every digest. Refuses if the tag has no release, before pushing anything. Pushes `oci://ghcr.io/<owner>/charts/colloq:X.Y.Z` unless that version exists (then it pulls the published package instead), and attaches `colloq-X.Y.Z.tgz` and `values-X.Y.Z.yaml` to the release, keeping files that are already there. | `vars.PUBLISH_IMAGES == 'true'` |
+
+Only `image`, `kernels`, `app-images` and `chart` hold `packages: write`, and
+only `github-release` and `chart` hold `contents: write`.
 
 `.github/workflows/pr-title.yml` (*PR title*) fails a pull request whose title
 is not a Conventional Commit with one of the types above. The release pull
@@ -380,6 +415,10 @@ gh release view v0.3.0                                  # notes and assets
 git log -1 --format='%an <%ae>%n%B' v0.3.0              # your name, no trailers
 pip install colloq==0.3.0 && colloq --version           # if PyPI is on
 docker buildx imagetools inspect ghcr.io/<owner>/colloq-vast:0.3.0   # if images are on
+docker buildx imagetools inspect ghcr.io/<owner>/colloq-app:v0.3.0
+helm show chart oci://ghcr.io/<owner>/charts/colloq --version 0.3.0  # version and appVersion 0.3.0
+helm template colloq oci://ghcr.io/<owner>/charts/colloq --version 0.3.0 \
+  --set ingress.enabled=false | grep -E 'image:|@sha256'           # every image by digest
 curl -s https://<your-host>/api/health | jq .version    # a running instance
 ```
 
@@ -418,7 +457,10 @@ file fails the build before anything is pushed.
 
 The workflow runs the same version check. It then builds and pushes
 `ghcr.io/<owner>/colloq-{app,runtime,kernel}` and attaches its files to the
-release.
+release. A tag that `publish.yml` has already pushed (the app, the broker and the
+CPU kernels of every release with `PUBLISH_IMAGES`) is taken as it is, digest and
+all, and only the rest is built (`base-gpu`, for example): rebuilding would move
+those tags away from the digests the Helm chart of the same version installs.
 
 The workflow never creates or replaces anything:
 
@@ -437,6 +479,47 @@ script rejects any other value.
 python3 scripts/release-build.py --registry ghcr.io/<owner>/colloq \
   --source-commit "$(git rev-parse v0.3.0^{commit})" --k3s-version <tested k3s>
 ```
+
+## The Kubernetes end-to-end check
+
+`.github/workflows/k8s-e2e.yml` (*Kubernetes end-to-end*) installs the Helm chart
+on a k3d cluster of one server and two agents inside the runner, and uses it. It
+runs on pull requests that touch `deploy/helm/`, `runtime/`,
+`server/src/kernel/`, the `Dockerfile` or its own scripts, every night, and by
+hand (Actions → *Kubernetes end-to-end* → *Run workflow*, from any branch). It is
+not a step of the release: its token is read-only, and its images go only to a
+registry that lives inside the run.
+
+It sets the cluster up the way a strict customer's would be:
+
+- the namespace has a default-deny NetworkPolicy and enforces Pod Security
+  `restricted` before the chart arrives, so a flow the chart forgot to declare,
+  or a Pod field the profile refuses, fails here;
+- storage is ReadWriteOnce (k3s local-path), so the broker must pin rooms and
+  competition jobs to the app's node (`RUNTIME_COLOCATE_WITH_APP`);
+- the chart gets this build the way a release writes one
+  (`scripts/chart-values.py`, the step `publish.yml` runs), and
+  `global.imageRegistry` sends every image, the kernel catalog included, to the
+  run's registry, as a Harbor mirror would be configured.
+
+`scripts/k8s-e2e.mts` then claims the instance with the setup token read from
+the app Pod, runs `scripts/e2e.mts` (a seminar, a cell run over the WebSocket and
+its output, a file, and a cell that must reach neither the internet nor the
+Kubernetes API), sends one competition submission through the queue, and checks
+that every Pod the broker made with a volume carries the required podAffinity to
+the app and runs on its node. On failure the log ends with the namespace's Pods,
+events and logs. A flaky run is re-run from its page (*Re-run jobs*).
+
+The same check against a cluster of your own: install the chart into a
+namespace you can throw away and label it `colloq.dev/e2e=disposable` (the
+script claims the instance, so it refuses a namespace without that label), then
+
+```sh
+KUBECONFIG=/path/to/that/cluster.kubeconfig K8S_E2E_NAMESPACE=colloq-e2e \
+  node --import tsx scripts/k8s-e2e.mts
+```
+
+`K8S_E2E_COMPETITION=0` skips the submission.
 
 ## When something goes wrong
 
@@ -467,10 +550,27 @@ python3 scripts/release-build.py --registry ghcr.io/<owner>/colloq \
   The workflow publishes only the missing parts:
   - an existing wheel on the release is kept;
   - PyPI uses `skip-existing`;
-  - an existing image version is not rebuilt.
+  - an existing image version is not rebuilt, and its digest is the one the
+    chart gets;
+  - an existing chart version is not pushed again: the package in the registry
+    is attached to the release if the release lacks it.
 
   This is also how to publish an earlier tag after turning on `PUBLISH_PYPI` or
-  `PUBLISH_IMAGES`.
+  `PUBLISH_IMAGES`. A tag from before the Helm chart (before 0.10.0) has no
+  `deploy/helm/colloq`: its `chart` job fails saying so, and everything else is
+  published.
+- **The `chart` job says the chart's `values.yaml` has no `<path>`.** The chart
+  moved a value the release writes. `scripts/chart-values.py` refuses rather
+  than guess where it went, and no chart was pushed. A rerun of the same tag
+  runs the same script and refuses again: make the two agree (its `REQUIRED`
+  list and `tests/k8s-release.test.mts`, or the chart) in a `fix:` and release
+  the patch version. The failed version keeps its images and has no chart; the
+  patch version publishes both. (`tests/k8s-release.test.mts` runs the script
+  on `deploy/helm/colloq` in every CI run, so this should not reach a tag.)
+- **A push to GHCR is refused with `permission_denied` or `denied`.** The
+  package exists but this repository cannot write to it: add the repository
+  under the package's *Package settings* → *Manage Actions access* with the
+  *Write* role, and re-run the job.
 - **Never move a tag.** A tag other people may have fetched should always mean
   the same commit. Fix the problem on `main` and release a new patch version.
 - **A bad release reached users.**
@@ -478,5 +578,9 @@ python3 scripts/release-build.py --registry ghcr.io/<owner>/colloq \
     with an exact pin, and its file can never be replaced.
   - vast.ai image: point `:latest` back to the previous version with
     `docker buildx imagetools create -t ghcr.io/<owner>/colloq-vast:latest ghcr.io/<owner>/colloq-vast:<previous>`.
+  - Helm chart: a pushed chart version cannot be replaced, and clusters that
+    installed it keep it. Tell operators the version to go back to
+    (`helm rollback`, or the previous version in their GitOps repository); the
+    previous chart still installs its own images by digest.
   - k3s: follow `make rollback RELEASE=…`, described in `deploy/k3s/README.md`.
   - Then merge a `fix:` and release the patch version.

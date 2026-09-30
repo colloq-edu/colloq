@@ -2149,7 +2149,11 @@ export const takeNext = db.transaction(
       at,
       boot: opts.boot ?? BOOT,
       container: null,
-      attempt_id: randomUUID(),
+      // 32 hex digits, the only attempt the Kubernetes broker takes
+      // (shared/competition-runtime.ts · COMPETITION_ATTEMPT_ID). A dashed UUID
+      // made every submission on the broker fail at once as "Invalid submission
+      // job identity"; the k3s smoke named its attempts itself and never saw it.
+      attempt_id: randomUUID().replaceAll('-', ''),
     })
     return toQueueRow(selectQueueRow.get(row.submission_id) as QueueRowRaw)
   },

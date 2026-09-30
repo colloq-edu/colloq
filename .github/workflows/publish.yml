@@ -23,7 +23,16 @@
 #   image           the server image to GHCR as colloq-vast and colloq-server
 #                   (one build, one digest), only when vars.PUBLISH_IMAGES == 'true';
 #   kernels         the room kernels for base and kaggle-base to GHCR as
-#                   colloq-kernel:vX.Y.Z-<env>, under the same switch.
+#                   colloq-kernel:vX.Y.Z-<env>, under the same switch;
+#   app-images      the app and the runtime broker for Kubernetes to GHCR as
+#                   colloq-app:vX.Y.Z and colloq-runtime:vX.Y.Z (the root
+#                   Dockerfile's targets production and broker), under the same
+#                   switch;
+#   chart           the Helm chart deploy/helm/colloq, its defaults set to this
+#                   release (the digests of app-images and kernels, the kernel
+#                   catalog, version = X.Y.Z), to oci://ghcr.io/<owner>/charts
+#                   and to the GitHub Release with values-X.Y.Z.yaml, under the
+#                   same switch.
 #
 # PyPI and GHCR are off until the owner turns them on with repository
 # variables: nothing can be re-uploaded there, and the first release must not
@@ -33,13 +42,15 @@
 # The immutable release for k3s (release.json with the image digests) is the
 # separate manual release.yml: it needs a verified k3s version and versions of
 # the GPU plumbing that cannot be derived from the tag. It adds its files to
-# the same GitHub Release.
+# the same GitHub Release, and takes the app, broker and kernel tags this
+# workflow has published as they are (scripts/release-build.py · published).
 #
 # workflow_dispatch with a tag is a rerun for missing parts: for example,
 # PUBLISH_PYPI was turned on after the release. What is already published is
-# not overwritten: the wheel taken is the one attached to the release, and an
-# existing image tag is skipped. Run it from the tag itself ("Use workflow
-# from: vX.Y.Z"): see the verification step in build.
+# not overwritten: the wheel taken is the one attached to the release, an
+# existing image tag is skipped (its digest is the one the chart gets), and an
+# existing chart version is attached as it was pushed. Run it from the tag
+# itself ("Use workflow from: vX.Y.Z"): see the verification step in build.
 #
 # Not workflow_call: called from release-please.yml, this file carried
 # workflow_ref = release-please.yml in its OIDC token, and PyPI Trusted
@@ -416,6 +427,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # {"base": "ghcr.io/<owner>/colloq-kernel@sha256:…", …}: what this job
+    # pushed or found under the version's tags, for the chart's catalog.
+    outputs:
+      images: ${{ steps.pinned.outputs.images }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -510,3 +525,265 @@ jobs:
             jq -r '."containerimage.digest"' "$RUNNER_TEMP/$name.json" > "$digests/$name"
             echo "::notice::published $ref ($(cat "$digests/$name"))"
           done
+      - name: Pinned references for the chart
+        id: pinned
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          # The files the step above wrote, one per environment it published
+          # or found, as one line of JSON: environment -> repository@digest.
+          images="$(cd "$RUNNER_TEMP/kernel-digests" && for name in *; do
+            jq -n --arg name "$name" --arg ref "ghcr.io/$owner/colloq-kernel@$(cat "$name")" '{($name): $ref}'
+          done | jq -cs add)"
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+
+  # The two images the Helm chart runs (deploy/helm/colloq): the app, and the
+  # broker that creates a Pod per room and per competition job through the
+  # namespaced Kubernetes API. Both are targets of the root Dockerfile and share
+  # its build stage, so one job builds both on one builder, and the second build
+  # is mostly the first one's cache. Both stand on one node base, resolved to a
+  # digest once, as scripts/release-build.py does: two builds minutes apart
+  # could otherwise stand on two different node:22 images. The digests leave
+  # the job as outputs, and the chart job writes exactly those. No :latest,
+  # unlike colloq-vast: the chart installs by digest, and a cluster policy that
+  # refuses :latest is the usual case in a bank, not the exception.
+  app-images:
+    name: App and broker images to GHCR
+    needs: build
+    if: vars.PUBLISH_IMAGES == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      app: ${{ steps.pinned.outputs.app }}
+      runtime: ${{ steps.pinned.outputs.runtime }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          persist-credentials: false
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Skip what is already published
+        id: published
+        env:
+          OWNER: ${{ github.repository_owner }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          # Plain bash: tests/k8s-release.test.mts runs this script with a stand-in docker.
+          set -euo pipefail
+          owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "app=ghcr.io/$owner/colloq-app"
+            echo "runtime=ghcr.io/$owner/colloq-runtime"
+            echo "tag=v$VERSION"
+          } >> "$GITHUB_OUTPUT"
+          for kind in app runtime; do
+            ref="ghcr.io/$owner/colloq-$kind:v$VERSION"
+            # A published tag is never rebuilt, so what it names is what the
+            # first run pushed, and that is the digest the chart gets.
+            if digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null)"; then
+              echo "::notice::$ref is already published; not rebuilding it."
+              echo "${kind}_digest=$digest" >> "$GITHUB_OUTPUT"
+            fi
+          done
+          # The Dockerfile's own default, not a second copy of its name.
+          base="$(sed -nE 's/^ARG NODE_IMAGE=([^[:space:]]+)$/\1/p' Dockerfile | head -1)"
+          if [ -z "$base" ]; then
+            echo "::error::the Dockerfile names no NODE_IMAGE default"; exit 1
+          fi
+          case "$base" in
+            *@sha256:*) node="$base" ;;
+            *) node="$base@$(docker buildx imagetools inspect "$base" --format '{{.Manifest.Digest}}')" ;;
+          esac
+          echo "node=$node" >> "$GITHUB_OUTPUT"
+      # The OCI labels are given here: the root Dockerfile, unlike
+      # deploy/vast/Dockerfile, writes none. The revision is the tag's commit.
+      - name: Build and push colloq-app
+        id: app
+        if: steps.published.outputs.app_digest == ''
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: production
+          platforms: linux/amd64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ${{ steps.published.outputs.app }}:${{ steps.published.outputs.tag }}
+          build-args: |
+            NODE_IMAGE=${{ steps.published.outputs.node }}
+          labels: |
+            org.opencontainers.image.title=colloq-app
+            org.opencontainers.image.description=Colloq app for Kubernetes: the server the Helm chart deploy/helm/colloq runs next to colloq-runtime
+            org.opencontainers.image.version=${{ needs.build.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.build.outputs.commit }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+      - name: Build and push colloq-runtime
+        id: runtime
+        if: steps.published.outputs.runtime_digest == ''
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: broker
+          platforms: linux/amd64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ${{ steps.published.outputs.runtime }}:${{ steps.published.outputs.tag }}
+          build-args: |
+            NODE_IMAGE=${{ steps.published.outputs.node }}
+          labels: |
+            org.opencontainers.image.title=colloq-runtime
+            org.opencontainers.image.description=Colloq runtime broker: creates a Pod and a Service per room and per competition job through the namespaced Kubernetes API
+            org.opencontainers.image.version=${{ needs.build.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.build.outputs.commit }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+      - name: Pinned references for the chart
+        id: pinned
+        env:
+          APP: ${{ steps.published.outputs.app }}
+          RUNTIME: ${{ steps.published.outputs.runtime }}
+          APP_DIGEST: ${{ steps.published.outputs.app_digest || steps.app.outputs.digest }}
+          RUNTIME_DIGEST: ${{ steps.published.outputs.runtime_digest || steps.runtime.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for digest in "$APP_DIGEST" "$RUNTIME_DIGEST"; do
+            if ! [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+              echo "::error::an image of this release came out without a digest ($digest)"; exit 1
+            fi
+          done
+          echo "app=$APP@$APP_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "runtime=$RUNTIME@$RUNTIME_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "::notice::$APP@$APP_DIGEST and $RUNTIME@$RUNTIME_DIGEST"
+
+  # The Helm chart a university's platform team installs into its own cluster
+  # (deploy/helm/colloq; docs/pages/en/kubernetes.html). Its defaults are this
+  # release: scripts/chart-values.py writes the digests app-images and kernels
+  # handed over and the kernel catalog into values.yaml (the catalog by the code
+  # that writes release.json's, scripts/release-build.py), and the version into
+  # Chart.yaml. The package goes to oci://ghcr.io/<owner>/charts/colloq and to
+  # the GitHub Release, next to values-X.Y.Z.yaml, the same values on their
+  # own. A chart version in the registry is never pushed twice: a rerun attaches
+  # the package it pulls from there, so the registry and the release carry one file.
+  chart:
+    name: Helm chart to GHCR and the release
+    needs: [build, app-images, kernels]
+    if: vars.PUBLISH_IMAGES == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      packages: write
+    env:
+      # Pinned by checksum here, not by the sums file next to the download:
+      # this job holds a token that writes packages and the release.
+      HELM_VERSION: v3.19.0
+      HELM_SHA256: a7f81ce08007091b86d8bd696eb4d86b8d0f2e1b9f6c714be62f82f96a594496
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          persist-credentials: false
+      - name: Install helm
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/helm.tar.gz"
+          curl --fail --silent --show-error --location "https://get.helm.sh/helm-$HELM_VERSION-linux-amd64.tar.gz" --output "$archive"
+          printf '%s  %s\n' "$HELM_SHA256" "$archive" | sha256sum --check --status
+          mkdir -p "$RUNNER_TEMP/helm"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/helm" --strip-components=1 linux-amd64/helm
+          echo "$RUNNER_TEMP/helm" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/helm/helm" version
+      - name: Write the release into the chart
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          APP_IMAGE: ${{ needs.app-images.outputs.app }}
+          RUNTIME_IMAGE: ${{ needs.app-images.outputs.runtime }}
+          KERNEL_IMAGES: ${{ needs.kernels.outputs.images }}
+        run: |
+          set -euo pipefail
+          if [ ! -f deploy/helm/colloq/Chart.yaml ]; then
+            echo "::error::deploy/helm/colloq is missing at this tag; there is no chart to publish"
+            exit 1
+          fi
+          mkdir -p out
+          python3 scripts/chart-values.py --version "$VERSION" --app-image "$APP_IMAGE" --runtime-image "$RUNTIME_IMAGE" \
+            --kernel-images "$KERNEL_IMAGES" --default-environment base \
+            --chart deploy/helm/colloq --output "out/values-$VERSION.yaml"
+          git diff --stat -- deploy/helm/colloq
+          helm lint deploy/helm/colloq
+          helm package deploy/helm/colloq --destination out
+          package="out/colloq-$VERSION.tgz"
+          # What goes out is checked in the package itself: its version, and
+          # every digest of this release in what its defaults render (with the
+          # ingress off: its host is the one value no default can give).
+          test "$(helm show chart "$package" | sed -n 's/^version: //p')" = "$VERSION"
+          rendered="$(helm template colloq "$package" --namespace colloq --set ingress.enabled=false)"
+          for ref in "$APP_IMAGE" "$RUNTIME_IMAGE" $(jq -r '.[]' <<<"$KERNEL_IMAGES"); do
+            if ! grep -qF "${ref#*@}" <<<"$rendered"; then
+              echo "::error::the packaged chart does not install $ref"; exit 1
+            fi
+          done
+      - name: Refuse a tag without a GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          # Checked before the push, not after: a chart version in the registry
+          # cannot be taken back, and without a release it has nowhere to be
+          # attached. Releases belong to release-please, as in github-release.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG has no GitHub Release. Releases are created by release-please when its release pull request is merged; see RELEASING.md."
+            exit 1
+          fi
+      - name: Push the chart unless this version is published
+        env:
+          OWNER: ${{ github.repository_owner }}
+          VERSION: ${{ needs.build.outputs.version }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          charts="oci://ghcr.io/$owner/charts"
+          # The login comes after the chart was written and checked: no step
+          # that runs code from the repository has the credentials on disk.
+          printf '%s' "$TOKEN" | helm registry login ghcr.io --username "$ACTOR" --password-stdin
+          if helm show chart "$charts/colloq" --version "$VERSION" >/dev/null 2>&1; then
+            echo "::notice::$charts/colloq:$VERSION is already published; attaching that package, not this build."
+            rm "out/colloq-$VERSION.tgz"
+            helm pull "$charts/colloq" --version "$VERSION" --destination out
+          else
+            helm push "out/colloq-$VERSION.tgz" "$charts"
+          fi
+      - name: Attach the chart to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          upload=()
+          for file in "out/colloq-$VERSION.tgz" "out/values-$VERSION.yaml"; do
+            grep -qxF "$(basename "$file")" <<<"$assets" || upload+=("$file")
+          done
+          if [ "${#upload[@]}" -eq 0 ]; then
+            echo "::notice::$TAG already carries the chart and its values; they stay the files of record."
+            exit 0
+          fi
+          # No --clobber, as with the wheels: a file of the same name stays.
+          gh release upload "$TAG" "${upload[@]}"

@@ -1,0 +1,238 @@
+# Colloq on a real Kubernetes, installed by its Helm chart the way a
+# university's platform team installs it (docs/pages/en/kubernetes.html): k3d
+# (k3s in Docker) with a server and two agents, NetworkPolicy enforced by k3s
+# itself, and a namespace that denies all traffic and enforces Pod Security
+# "restricted" before the chart arrives. A flow the chart forgot to declare, or
+# a Pod field the restricted profile refuses, fails here and not in a bank.
+#
+# Storage is k3s's local-path, ReadWriteOnce: everything that mounts the data or
+# the workspace has to share the app's node, so the chart asks the broker to pin
+# its Pods there (RUNTIME_COLOCATE_WITH_APP), and scripts/k8s-e2e.mts checks
+# every Pod the broker made.
+#
+# The chart gets this build the way a release writes one: scripts/chart-values.py
+# puts the digests into deploy/helm/colloq under the GHCR names (the very step
+# publish.yml runs), and global.imageRegistry sends every image, the kernel
+# catalog included, to a registry that lives only in this run, as a bank points
+# the chart at its Harbor mirror. A registry and not `k3d image import`: the
+# chart and the catalog take images by digest only, and a digest exists once an
+# image is in a registry. Nothing is pushed anywhere else; the token is read-only.
+#
+# The check itself is scripts/k8s-e2e.mts: the setup token read from the app Pod
+# claims the instance; scripts/e2e.mts runs a seminar, a cell over the WebSocket
+# and its output, a file, and a cell that must reach neither the internet nor
+# the Kubernetes API; one competition submission goes through the queue. On
+# failure the cluster is dumped into the log.
+name: Kubernetes end-to-end
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/helm/**'
+      - 'runtime/**'
+      - 'server/src/kernel/**'
+      - 'Dockerfile'
+      - 'scripts/k8s-e2e.mts'
+      - 'scripts/e2e.mts'
+      - 'scripts/chart-values.py'
+      - 'scripts/competition-k3s-fixtures.mts'
+      - '.github/workflows/k8s-e2e.yml'
+  schedule:
+    - cron: '41 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: k8s-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  helm-k3d:
+    name: Helm chart on k3d with two agents and default deny
+    runs-on: ubuntu-24.04
+    # About fifteen minutes with warm build caches (ci.yml keeps the app and
+    # kernel ones), under twenty-five cold; the limit only stops a hang.
+    timeout-minutes: 40
+    env:
+      CLUSTER: colloq-e2e
+      REGISTRY: colloq-e2e-registry
+      REGISTRY_PORT: '5000'
+      NAMESPACE: colloq-e2e
+      # The k3s and k3d the competition smoke pins (scripts/competition-k3s-smoke.mts).
+      K3S_IMAGE: rancher/k3s:v1.36.4-k3s1
+      K3D_VERSION: v5.9.0
+      KUBECTL_VERSION: v1.36.4
+      # The helm publish.yml packages the chart with.
+      HELM_VERSION: v3.19.0
+      HELM_SHA256: a7f81ce08007091b86d8bd696eb4d86b8d0f2e1b9f6c714be62f82f96a594496
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Install k3d, kubectl and helm
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          # k3d and kubectl against the sums their releases publish, helm
+          # against the pin it shares with publish.yml.
+          curl --fail --silent --show-error --location --output "$bin/k3d" \
+            "https://github.com/k3d-io/k3d/releases/download/$K3D_VERSION/k3d-linux-amd64"
+          expected="$(curl --fail --silent --show-error --location \
+            "https://github.com/k3d-io/k3d/releases/download/$K3D_VERSION/checksums.txt" | awk '$2 == "_dist/k3d-linux-amd64" { print $1 }')"
+          test "${#expected}" -eq 64
+          printf '%s  %s\n' "$expected" "$bin/k3d" | sha256sum --check --status
+          curl --fail --silent --show-error --location --output "$bin/kubectl" \
+            "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
+          expected="$(curl --fail --silent --show-error --location "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl.sha256")"
+          test "${#expected}" -eq 64
+          printf '%s  %s\n' "$expected" "$bin/kubectl" | sha256sum --check --status
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/helm.tar.gz" \
+            "https://get.helm.sh/helm-$HELM_VERSION-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$HELM_SHA256" "$RUNNER_TEMP/helm.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/helm.tar.gz" -C "$bin" --strip-components=1 linux-amd64/helm
+          chmod 0755 "$bin/k3d" "$bin/kubectl"
+          echo "$bin" >> "$GITHUB_PATH"
+          # Every later step talks to this cluster through this file only.
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+          "$bin/k3d" version
+          "$bin/kubectl" version --client
+          "$bin/helm" version
+      - name: Create the registry and a cluster of one server and two agents
+        run: |
+          set -euo pipefail
+          k3d registry create "$REGISTRY" --image registry:2 --port "127.0.0.1:$REGISTRY_PORT"
+          k3d cluster create "$CLUSTER" --image "$K3S_IMAGE" --servers 1 --agents 2 --no-lb \
+            --registry-use "k3d-$REGISTRY:5000" \
+            --k3s-arg '--disable=traefik@server:0' --k3s-arg '--disable=servicelb@server:0' \
+            --kubeconfig-update-default=false --kubeconfig-switch-context=false --wait --timeout 180s
+          k3d kubeconfig get "$CLUSTER" > "$KUBECONFIG"
+          kubectl wait --for=condition=Ready nodes --all --timeout=180s
+          kubectl get nodes -o wide
+      # The builder shares the runner's network, so it pushes to the registry's
+      # port on 127.0.0.1; ci.yml's docker job keeps the caches warm.
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+      - name: Build the app
+        id: app
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: production
+          push: true
+          provenance: false
+          tags: localhost:${{ env.REGISTRY_PORT }}/colloq-edu/colloq-app:e2e
+          cache-from: type=gha,scope=app
+      - name: Build the runtime broker
+        id: runtime
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: broker
+          push: true
+          provenance: false
+          tags: localhost:${{ env.REGISTRY_PORT }}/colloq-edu/colloq-runtime:e2e
+          cache-from: type=gha,scope=app
+      - name: Build the base kernel
+        id: kernel
+        uses: docker/build-push-action@v6
+        with:
+          context: kernel
+          build-args: KERNEL_ENV=base
+          push: true
+          provenance: false
+          tags: localhost:${{ env.REGISTRY_PORT }}/colloq-edu/colloq-kernel:e2e-base
+          cache-from: type=gha,scope=kernel
+      - name: A namespace that denies all traffic and enforces restricted Pod Security
+        run: |
+          set -euo pipefail
+          kubectl create namespace "$NAMESPACE"
+          # colloq.dev/e2e=disposable is what lets scripts/k8s-e2e.mts claim the instance here.
+          kubectl label namespace "$NAMESPACE" colloq.dev/e2e=disposable \
+            pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted
+          kubectl apply --namespace "$NAMESPACE" -f - <<'EOF'
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: default-deny
+          spec:
+            podSelector: {}
+            policyTypes: [Ingress, Egress]
+          EOF
+      - name: Write this build into the chart as a release would
+        env:
+          APP_DIGEST: ${{ steps.app.outputs.digest }}
+          RUNTIME_DIGEST: ${{ steps.runtime.outputs.digest }}
+          KERNEL_DIGEST: ${{ steps.kernel.outputs.digest }}
+        run: |
+          set -euo pipefail
+          python3 scripts/chart-values.py --version "$(node -p 'require("./package.json").version')" \
+            --app-image "ghcr.io/colloq-edu/colloq-app@$APP_DIGEST" \
+            --runtime-image "ghcr.io/colloq-edu/colloq-runtime@$RUNTIME_DIGEST" \
+            --kernel-images "{\"base\": \"ghcr.io/colloq-edu/colloq-kernel@$KERNEL_DIGEST\"}" \
+            --chart deploy/helm/colloq --output "$RUNNER_TEMP/release-values.yaml"
+          cat "$RUNNER_TEMP/release-values.yaml"
+      - name: Install the chart
+        run: |
+          set -euo pipefail
+          # The release's images through a mirror, ReadWriteOnce storage (also
+          # the chart's default, said here because the check depends on it),
+          # and no ingress: the check reaches the app by port-forward.
+          cat > "$RUNNER_TEMP/e2e-values.yaml" <<EOF
+          global:
+            imageRegistry: k3d-$REGISTRY:5000
+          persistence:
+            accessMode: ReadWriteOnce
+          ingress:
+            enabled: false
+          EOF
+          helm install colloq deploy/helm/colloq --namespace "$NAMESPACE" --values "$RUNNER_TEMP/e2e-values.yaml" \
+            --wait --timeout 8m
+          kubectl get pods,pvc,networkpolicy --namespace "$NAMESPACE" -o wide
+          colocate="$(kubectl get deployment colloq-runtime --namespace "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RUNTIME_COLOCATE_WITH_APP")].value}')"
+          if [ "$colocate" != 1 ]; then
+            echo "::error::the chart did not set RUNTIME_COLOCATE_WITH_APP=1 for ReadWriteOnce storage (got '$colocate')"; exit 1
+          fi
+      - name: Pull the kernel onto the app's node
+        env:
+          KERNEL_DIGEST: ${{ steps.kernel.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # Rooms go to the app's node (the check is that they do). A first
+          # pull of a gigabyte there would otherwise eat into the two minutes
+          # scripts/e2e.mts gives a room to come up. The k3d node's container
+          # has the node's name.
+          node="$(kubectl get pods --namespace "$NAMESPACE" -l colloq.dev/role=app -o jsonpath='{.items[0].spec.nodeName}')"
+          docker exec "$node" crictl pull "k3d-$REGISTRY:5000/colloq-edu/colloq-kernel@$KERNEL_DIGEST"
+      - name: End-to-end check
+        env:
+          K8S_E2E_NAMESPACE: ${{ env.NAMESPACE }}
+        run: node --import tsx scripts/k8s-e2e.mts
+      - name: Dump the cluster
+        if: failure()
+        run: |
+          # Enough to read a failed run from the log alone. The room tokens die
+          # with the cluster, but they are masked anyway.
+          set +e
+          kubectl get nodes -o wide
+          kubectl get pods --all-namespaces -o wide
+          kubectl get all,pvc,networkpolicy,configmap --namespace "$NAMESPACE" -o wide
+          kubectl get events --namespace "$NAMESPACE" --sort-by=.lastTimestamp
+          kubectl describe pods --namespace "$NAMESPACE" | sed -E 's/(TOKEN[A-Z_]*:[[:space:]]+).*/\1[masked]/'
+          for pod in $(kubectl get pods --namespace "$NAMESPACE" -o name); do
+            echo "::group::logs of $pod"
+            kubectl logs --namespace "$NAMESPACE" "$pod" --all-containers --prefix --tail=400
+            kubectl logs --namespace "$NAMESPACE" "$pod" --all-containers --prefix --previous --tail=200 2>/dev/null
+            echo "::endgroup::"
+          done
+          helm status colloq --namespace "$NAMESPACE"
+          kubectl get events --namespace kube-system --sort-by=.lastTimestamp | tail -n 50

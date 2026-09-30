@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { SMOKE_METRIC_CODE, SMOKE_SAMPLE_SUBMISSION, SMOKE_SOLUTION, smokeNotebook } from './competition-k3s-fixtures.mts'
 
 assert.equal(fs.readFileSync('/data/.colloq-k3s-smoke-fixture', 'utf8'), 'colloq-k3s-smoke-v1')
 assert.equal(process.env.KERNEL_BACKEND, 'broker')
@@ -18,35 +19,19 @@ const base = catalog.environments.find((item: { name: string }) => item.name ===
 assert.ok(base?.image?.includes('@sha256:'))
 const client = new RuntimeClient({ url: 'http://colloq-runtime:8787', tokenFile: '/run/secrets/runtime-token' })
 const runner = new BrokerCompetitionRunner(client, { catalog: () => catalog, pollMs: 250 })
-const metricCode = `def score(solution, submission):
-    from pathlib import Path
-    import time
-    assert Path('/secret/solution.csv').exists()
-    assert not Path('/data').exists()
-    assert not Path('/deps').exists()
-    time.sleep(5)
-    return float((solution['target'] - submission['target']).abs().mean())
-`
+const metricCode = SMOKE_METRIC_CODE
 try {
   const competition = competitions.createCompetition({ slug: `k3s-${randomUUID().slice(0, 8)}`, title: 'Disposable k3s smoke', blurb: '', description: '',
     environment: 'base', publicPercent: 50, metric: { name: 'MAE', direction: 'lower', code: metricCode },
     limits: { wallSeconds: 120, memoryMb: 1024, cpus: 1, perDay: 0 } })!
   competitions.setCompetitionState(competition.id, 'live')
   const entrant = competitions.createEntrant('Smoke fixture').entrant
-  const notebook = Buffer.from(JSON.stringify({ nbformat: 4, nbformat_minor: 5,
-    metadata: { kernelspec: { name: 'python3', display_name: 'Python 3', language: 'python' } },
-    cells: [{ cell_type: 'code', metadata: {}, execution_count: null, outputs: [], source: [
-      'from pathlib import Path\n', 'import socket, time\n',
-      'assert not Path("/secret").exists()\n', 'assert not Path("/result").exists()\n',
-      'try:\n', '    socket.create_connection(("1.1.1.1", 443), 1)\n',
-      'except OSError:\n', '    pass\n', 'else:\n', '    raise AssertionError("competition egress is open")\n',
-      'time.sleep(5)\n', 'Path("submission.csv").write_text("id,target\\n1,0\\n2,0\\n3,0\\n4,0\\n")\n',
-    ] }] }))
+  const notebook = smokeNotebook()
   const submission = competitions.acceptSubmission({ competitionId: competition.id, entrantId: entrant.id,
     fileName: 'smoke.ipynb', bytes: notebook.length })
   storage.putSubmissionNotebook(competition.id, submission.id, notebook)
-  storage.putOpenFile(competition.id, 'sample_submission.csv', Buffer.from('id,target\n1,0\n2,0\n3,0\n4,0\n'))
-  storage.putSecretFile(competition.id, 'solution.csv', Buffer.from('id,target,Usage\n1,0,Public\n2,0,Public\n3,0,Private\n4,0,Private\n'))
+  storage.putOpenFile(competition.id, 'sample_submission.csv', Buffer.from(SMOKE_SAMPLE_SUBMISSION))
+  storage.putSecretFile(competition.id, 'solution.csv', Buffer.from(SMOKE_SOLUTION))
   const attemptId = randomUUID().replaceAll('-', '')
   const resultDir = storage.attemptDir(competition.id, submission.id, attemptId)
   const run = await runner.run({ attemptId, competition, submissionId: submission.id, container: `smoke-${attemptId}`,
@@ -56,7 +41,7 @@ try {
   assert.ok(run.submission)
   const answer = fs.readFileSync(run.submission)
   const secret = storage.attemptDir(competition.id, submission.id, attemptId, 'secret')
-  storage.competitionsFs.writeFileSync(path.join(secret, 'solution.csv'), Buffer.from('id,target,Usage\n1,0,Public\n2,0,Public\n3,0,Private\n4,0,Private\n'), { mode: 0o600 })
+  storage.competitionsFs.writeFileSync(path.join(secret, 'solution.csv'), Buffer.from(SMOKE_SOLUTION), { mode: 0o600 })
   storage.competitionsFs.writeFileSync(path.join(secret, 'metric.py'), Buffer.from(metricCode), { mode: 0o600 })
   const scoreInput = storage.attemptDir(competition.id, submission.id, attemptId, 'score')
   storage.competitionsFs.writeFileSync(path.join(scoreInput, 'submission.csv'), answer, { mode: 0o600 })

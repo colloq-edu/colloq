@@ -28,12 +28,43 @@ with tempfile.TemporaryDirectory() as tmp:
  def pushed(cmd,**kwargs):
   assert cmd[cmd.index('-t')+1]=='127.0.0.1:5000/colloq-app:v1'
   metadata.write_text(json.dumps({'containerimage.digest':'sha256:'+'b'*64}))
+ m.published=lambda tag: None
  m.subprocess.run=pushed
  print(m.build('127.0.0.1:5000/colloq-app:v1','Dockerfile','.',{},metadata))
 `
   const result = spawnSync('python3', ['-c', code, path.join(root, 'scripts/release-build.py')], { encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   assert.equal(result.stdout.trim(), '127.0.0.1:5000/colloq-app@sha256:' + 'b'.repeat(64))
+})
+
+test('release builder takes a tag publish.yml already pushed as it is, and builds only what is missing', () => {
+  // publish.yml pushes colloq-app, colloq-runtime and the CPU kernels of every
+  // release under these tags, and its Helm chart pins those digests: a second
+  // build here would move the tags away from what the chart installs.
+  const code = `import importlib.util,sys,tempfile,pathlib,json,subprocess
+s=importlib.util.spec_from_file_location('builder',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+calls=[]
+def run(cmd,**kwargs):
+ calls.append(cmd)
+ if cmd[:4]==['docker','buildx','imagetools','inspect']:
+  if cmd[4]=='ghcr.io/example/colloq-app:v1':
+   return subprocess.CompletedProcess(cmd,0,'sha256:'+'a'*64+'\\n','')
+  return subprocess.CompletedProcess(cmd,1,'','ERROR: not found')
+ pathlib.Path(cmd[cmd.index('--metadata-file')+1]).write_text(json.dumps({'containerimage.digest':'sha256:'+'b'*64}))
+ return subprocess.CompletedProcess(cmd,0,'','')
+m.subprocess.run=run
+with tempfile.TemporaryDirectory() as tmp:
+ metadata=pathlib.Path(tmp)/'metadata.json'
+ app=m.build('ghcr.io/example/colloq-app:v1','Dockerfile','.',{},metadata,'production')
+ gpu=m.build('ghcr.io/example/colloq-kernel:v1-base-gpu','kernel/Dockerfile','kernel',{},metadata)
+print(json.dumps({'app':app,'gpu':gpu,'builds':sum(1 for c in calls if c[:3]==['docker','buildx','build'])}))
+`
+  const result = spawnSync('python3', ['-c', code, path.join(root, 'scripts/release-build.py')], { encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+  const said = JSON.parse(result.stdout.trim().split('\n').pop()!)
+  assert.equal(said.app, 'ghcr.io/example/colloq-app@sha256:' + 'a'.repeat(64))
+  assert.equal(said.gpu, 'ghcr.io/example/colloq-kernel@sha256:' + 'b'.repeat(64))
+  assert.equal(said.builds, 1)
 })
 
 test('default release catalog publishes the lightweight CPU Kaggle environment', () => {

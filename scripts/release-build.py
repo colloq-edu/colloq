@@ -2,7 +2,9 @@
 """Operator/CI image builder. Publish actual OCI digests; never build in the app.
 
 Requires a checkout, Docker buildx and an authenticated target registry. The
-release JSON is emitted only after every selected image has been pushed.
+release JSON is emitted only after every selected image has been pushed, or
+found already published under its tag (publish.yml publishes the app, the
+broker and the CPU kernels of every release; see published()).
 """
 import argparse
 import importlib.util
@@ -59,6 +61,26 @@ def chain(name, done, visiting):
     visiting.remove(name)
 
 
+GPU_DIRECTIVE = re.compile(r'^#\s*colloq:\s*gpu\s*$', re.MULTILINE)
+
+
+def catalog_environment(name, environment, image, gpu_flags):
+    """One kernel catalog entry, the way the app and the broker read it.
+
+    release.json (main below) and the Helm chart's default values
+    (scripts/chart-values.py) both come out of this function, so the two
+    catalogs of one release cannot disagree about a package list or a GPU flag.
+    `environment` is what chain() recorded; gpu_flags carries the decisions for
+    the parents, since a child of a GPU environment is one too, and gets this
+    one's decision added.
+    """
+    gpu = bool(GPU_DIRECTIVE.search(environment['source'])) or gpu_flags.get(environment['parent'], False)
+    gpu_flags[name] = gpu
+    packages = [line.strip() for line in environment['source'].splitlines()
+                if line.strip() and not line.lstrip().startswith(('#', '-'))]
+    return {'name': name, 'image': image, 'gpu': gpu, 'packages': packages, 'current': True}
+
+
 def data_schema(root):
     """The data schema version the server at this source writes.
 
@@ -75,7 +97,31 @@ def data_schema(root):
     return int(found[0])
 
 
+def published(tag):
+    """The digest a tag already names in the registry, or None.
+
+    publish.yml pushes colloq-app, colloq-runtime and the CPU kernels under
+    these very tags as soon as a release is made, and the Helm chart it
+    publishes pins their digests. Building them again here would move the tags
+    to a second build of the same commit: the chart would keep installing images
+    no tag names any more, and a registry mirror that copies by tag would copy
+    the other ones. So a tag that exists is taken as it is, the way publish.yml
+    itself treats one on a rerun.
+    """
+    try:
+        found = subprocess.run(['docker', 'buildx', 'imagetools', 'inspect', tag, '--format', '{{.Manifest.Digest}}'],
+                               cwd=ROOT, text=True, capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    digest = found.stdout.strip()
+    return digest if found.returncode == 0 and re.fullmatch(r'sha256:[a-f0-9]{64}', digest) else None
+
+
 def build(tag, dockerfile, context, args, metadata, target=None):
+    digest = published(tag)
+    if digest:
+        print('Already published, taken as it is: ' + tag + ' (' + digest + ')')
+        return tag.rsplit(':', 1)[0] + '@' + digest
     cmd = ['docker', 'buildx', 'build', '--platform', 'linux/amd64', '--push',
            '--provenance=mode=max', '--sbom=true', '--metadata-file', str(metadata),
            '-t', tag, '-f', dockerfile]
@@ -137,7 +183,7 @@ def main():
     for name in selected:
         chain(name, ordered, set())
     gpu_tooling = None
-    if any(re.search(r'^#\s*colloq:\s*gpu\s*$', env['source'], re.MULTILINE) for env in ordered.values()):
+    if any(GPU_DIRECTIVE.search(env['source']) for env in ordered.values()):
         if not args.gpu_toolkit_version or not re.fullmatch(r'\d+\.\d+\.\d+(?:[.+~-][A-Za-z0-9.]+)?-\d+', args.gpu_toolkit_version):
             parser.error('GPU environments require --gpu-toolkit-version with an exact apt version')
         if not release.image_reference(args.gpu_device_plugin_image):
@@ -164,14 +210,11 @@ def main():
         images, gpu_flags = {}, {}
         for name, environment in ordered.items():
             parent = environment['parent']
-            gpu = bool(re.search(r'^#\s*colloq:\s*gpu\s*$', environment['source'], re.MULTILINE)) or gpu_flags.get(parent, False)
             image = build(args.registry + '-kernel:' + args.version + '-' + name,
                 'kernel/Dockerfile', 'kernel', {'PARENT': images[parent] if parent else python,
                 'KERNEL_ENV': name}, metadata)
-            images[name], gpu_flags[name] = image, gpu
-            packages = [line.strip() for line in environment['source'].splitlines()
-                        if line.strip() and not line.lstrip().startswith(('#', '-'))]
-            value['catalog']['environments'].append({'name': name, 'image': image, 'gpu': gpu, 'packages': packages, 'current': True})
+            images[name] = image
+            value['catalog']['environments'].append(catalog_environment(name, environment, image, gpu_flags))
     release.validate(value)
     output.write_text(json.dumps(value, indent=2) + '\n')
     build_context.cleanup()
