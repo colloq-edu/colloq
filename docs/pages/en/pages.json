@@ -61,10 +61,16 @@
     "description": "Turn a live notebook into reading material and keep one link for the whole course."
   },
   {
+    "slug": "server",
+    "group": "server",
+    "title": "Your own server (university)",
+    "description": "One dedicated VM behind the university's reverse proxy and a ready-made image: resources, network, installation, backups and updates."
+  },
+  {
     "slug": "install",
     "group": "server",
-    "title": "Installing on Linux",
-    "description": "One Linux amd64 server, an exact release and a separate runtime for each room."
+    "title": "Installing on k3s",
+    "description": "A preview path: one Linux amd64 server with k3s, an exact release and a separate Pod for each room."
   },
   {
     "slug": "language",
@@ -100,7 +106,7 @@
     "slug": "vast",
     "group": "server",
     "title": "Deploying on a Vast VM",
-    "description": "Rent a full VM, install an exact release and check the GPU by running code."
+    "description": "Rent a full VM and start the ready-made image on it with one command; the k3s path is still a preview."
   },
   {
     "slug": "development",

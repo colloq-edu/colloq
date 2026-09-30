@@ -368,19 +368,30 @@ and the machine comes up with a class address and an owner sign-in link. Each ro
 still gets its own kernel container.
 [deploy/vast/README.md](deploy/vast/README.md) covers renting, settings,
 backups and building the image (`make vast-image`); read its *What has been
-verified* section before relying on it for a class. For stricter isolation on a
-Vast VM, use the k3s path in [docs/deployment-vast.md](docs/deployment-vast.md).
+verified* section before relying on it for a class. The k3s path in
+[docs/deployment-vast.md](docs/deployment-vast.md) isolates rooms more strictly
+but is a preview: no release up to and including 0.8.4 has published its bundle.
 
 ## Deploy for a real class
 
-Production runs on **one Linux amd64 VM with k3s/containerd**. A non-root web app
+For a university, run the server image `ghcr.io/colloq-edu/colloq-server` with
+`colloq-host` on one dedicated Linux amd64 VM behind your own HTTPS reverse
+proxy. Each room still gets its own kernel container; the app holds the Docker
+socket, so the VM belongs to Colloq alone. Sizing, inbound and outbound access,
+nginx and Caddy settings, backups and updates are in the guide
+[Your own server (university)](https://colloq.cc/docs/en/server.html).
+
+The k3s path below is a **preview**: no release up to and including 0.8.4
+carries its deployment bundle (`release.json`, `colloq-deploy.tar.gz`,
+`SHA256SUMS`), so it cannot be installed from published artifacts yet. It runs
+on **one Linux amd64 VM with k3s/containerd**. A non-root web app
 calls a private runtime broker, which creates a separate Jupyter Pod, token and
 workspace mount for each class. The app has no Docker socket or Kubernetes
 credentials. If a room's runtime cannot start, execution fails; there is no
 fallback to an instance-wide kernel.
 
-Use an explicitly published release and its matching deployment bundle. From the
-extracted bundle, with your configuration in `instance.env`:
+It needs an explicitly published release and its matching deployment bundle.
+From the extracted bundle, with your configuration in `instance.env`:
 
 ```bash
 python3 scripts/release.py validate --release release.json
@@ -401,7 +412,8 @@ and require a real CUDA preflight.
 
 | Operator guide | What it covers |
 | --- | --- |
-| [Single-node deployment](deploy/k3s/README.md) | Releases, installation, environments, storage, updates, rollback and GPU prerequisites. |
+| [Your own server (university)](https://colloq.cc/docs/en/server.html) | The server image with `colloq-host` on a dedicated VM: sizing, network access, reverse proxy, settings, backups, updates and personal data. |
+| [Single-node deployment](deploy/k3s/README.md) | The k3s preview: releases, installation, environments, storage, updates, rollback and GPU prerequisites. |
 | [Runtime boundary](runtime/README.md) | Broker API, credentials, room lifecycle and isolation limits. |
 | [Vast VM with k3s](docs/deployment-vast.md) | Renting a VM, registry credentials, named backups and recovery. Rental and disk destruction require confirmation. |
 | [Vast VM with one image](deploy/vast/README.md) | The `colloq-vast` image, its template and on-start script. |
@@ -523,7 +535,7 @@ without a restart.
 | `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | Application upload limits; these do not limit arbitrary writes from Python. |
 | `COUNCIL_COPY_MB` | How much memory one council attempt may spend on personal copies of the room's data (512 by default). Anything above the budget stays shared, and the attempt is told so in its own output. Copy-on-write pandas copies cost nothing and are not counted. |
 | `COUNCIL_MEMORY_GUARD` | Cap the address space of a council attempt at the container's memory limit minus what is already in use (`1` by default; `0` turns it off). A greedy attempt then fails with `MemoryError` on its own card instead of the OOM killer taking the notebook's kernel and everybody's variables. Skipped automatically where it cannot work: outside Linux, without a cgroup limit, or with CUDA nearby. |
-| `COMPETITION_BACKEND` | `broker` executes competition notebooks, metrics and package preparation in isolated k3s Pods with pinned catalog images; it is selected automatically by the production broker deployment. `docker` uses local throwaway containers for development. `test` is a non-executing stand-in and requires `NODE_ENV=test`. The app refuses submissions when the selected executor or preparation capability is unavailable; `/api/health` reports each capability separately. Production does not need a Docker socket in the app Pod. |
+| `COMPETITION_BACKEND` | `broker` executes competition notebooks, metrics and package preparation in isolated k3s Pods with pinned catalog images; it is selected automatically by the production broker deployment. `docker` uses throwaway containers on the local Docker (`colloq start`, `make up`, the server image). `test` is a non-executing stand-in and requires `NODE_ENV=test`. The app refuses submissions when the selected executor or preparation capability is unavailable; `/api/health` reports each capability separately. Production does not need a Docker socket in the app Pod. |
 | `DATA_HOST_DIR` | The competition directory as the Docker daemon sees it — what `WORKSPACE_HOST_DIR` is to rooms. Leave it unset on a host-native server. Under `make up` the server itself lives in a container, and without this a submission silently receives an empty directory instead of its data. |
 
 </details>
@@ -576,7 +588,8 @@ they agree. Versions are never bumped by hand. Commits on `main` follow
 pull request open that bumps every copy and adds the changelog section. Merging
 that pull request tags `vX.Y.Z`, creates the GitHub Release and attaches the pip
 wheel; a separate workflow publishes that wheel to PyPI and pushes the images to
-GHCR, and the k3s release bundle is started by hand. A running server reports
+GHCR; the k3s release bundle is a separate manual workflow, and no release up to
+and including 0.8.4 has published one. A running server reports
 its version at `/api/health`.
 
 What changed is in [CHANGELOG.md](CHANGELOG.md); how a release is cut is in
