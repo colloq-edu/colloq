@@ -58,6 +58,41 @@ the release pull request included. Besides comparing the copies, it:
 If a copy drifted, `node --import tsx scripts/version.mts sync` rewrites every
 copy to the root `package.json` version. It never touches the manifest.
 
+## Data schema
+
+The database has a version of its own, separate from the release version:
+`DATA_SCHEMA_VERSION` in `server/src/data-schema.ts`. It is what keeps a
+rollback from running older code over data that newer code has already
+changed.
+
+**Bump it by one in the same pull request as a migration that older code
+cannot live with**: one that drops or renames a table or a column, moves values
+into another column, or gives stored values a new meaning (the move of
+competition entrant keys into `key_hash` in `server/src/competitions/store.ts`
+is that kind). A new table, a new nullable column or a new index needs no bump:
+older code never reads them. When unsure, bump: a bump costs a refused rollback
+and a restore, a missing one can cost the data. Mention the bump in the pull
+request title with `!`, so that the changelog marks it as breaking.
+
+Where the number goes:
+
+- The server stamps it into `colloq.db` (`PRAGMA user_version`) before any
+  migration runs, and never lowers it. A server that finds a higher stamp
+  refuses to start and names both numbers; `COLLOQ_ALLOW_SCHEMA_DOWNGRADE=1`
+  starts it anyway, for an operator who has checked that the newer migration is
+  harmless for this release. A database from before the stamp existed carries
+  0, which counts as 1.
+- `scripts/release-build.py` publishes it as `dataSchemaVersion` in
+  `release.json`, with every number up to it as `compatibleDataSchemaVersions`.
+- `cluster.sh update` and `rollback` refuse, before stopping anything, a
+  release that does not list the schema of the installed data (from the
+  installed release and from the database's own stamp). The portable restore
+  refuses a backup whose database is newer than the selected release.
+
+The way back from a refused rollback is the backup the update took before it
+changed anything (`scripts/restore.sh --archive … --release …`, or
+`colloq-host restore` on the server image), not an override.
+
 ## How the next version is chosen
 
 release-please reads the commits on `main` since the last release. Because pull
@@ -353,8 +388,10 @@ the sidebar.
 
 ## The k3s immutable release (optional)
 
-`.github/workflows/release.yml` ("Publish immutable release") produces what
-`scripts/cluster.sh` installs on a k3s VM:
+The k3s path is a preview: no release has been published with these files yet,
+and production installs use the server image (`colloq-vast`) with
+`deploy/vast/colloq-host`. `.github/workflows/release.yml` ("Publish immutable
+release") produces what `scripts/cluster.sh` installs on a k3s VM:
 
 - digest-pinned app, broker and kernel images;
 - `release.json`;
@@ -373,8 +410,11 @@ After the release pull request is merged and the release exists, open Actions �
 | --- | --- |
 | `version` | the tag, `vX.Y.Z` (it must equal `v` + `package.json` at that tag) |
 | `k3s_version` | an exact tested release, for example `v1.36.4+k3s1` |
-| `environments` | `base,cv,gpu`, or a subset |
+| `environments` | `base,kaggle-base` (the default); add `base-gpu` only together with the two GPU pins |
 | `gpu_toolkit_version`, `gpu_device_plugin_image` | required when a GPU environment is selected |
+
+The names are the files in `kernel/environments/` at the tag; a name without a
+file fails the build before anything is pushed.
 
 The workflow runs the same version check. It then builds and pushes
 `ghcr.io/<owner>/colloq-{app,runtime,kernel}` and attaches its files to the

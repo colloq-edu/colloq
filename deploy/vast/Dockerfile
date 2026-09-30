@@ -143,8 +143,11 @@ FROM ${NODE_IMAGE} AS vast
 # iptables of its own: it enters the Docker daemon's mount namespace and runs
 # the daemon's iptables, so the rules always go through the backend the daemon
 # itself uses. An iptables here would be one that could pick the other backend.
+# age encrypts backups for BACKUP_AGE_RECIPIENT (scripts/backup-local.sh): the
+# archives hold the signing key and the staff links, and they are meant to
+# leave the machine.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini curl ca-certificates sqlite3 procps util-linux \
+ && apt-get install -y --no-install-recommends tini curl ca-certificates sqlite3 procps util-linux age \
  && rm -rf /var/lib/apt/lists/*
 
 # The docker CLI and buildx are clients of the host daemon: with them the

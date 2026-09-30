@@ -84,7 +84,12 @@ test('release version defaults to v<package.json version> at the source commit a
     git('init', '-q')
     fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'colloq', version: '0.3.0' }))
     fs.writeFileSync(path.join(repo, 'kernel/environments/base.txt'), '# base\n')
+    fs.mkdirSync(path.join(repo, 'server/src'), { recursive: true })
+    fs.writeFileSync(path.join(repo, 'server/src/data-schema.ts'), '/** doc */\nexport const DATA_SCHEMA_VERSION = 3\n')
     git('add', '.'); git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
+    // A working-tree edit after the commit must not reach the manifest: the
+    // number is read from the archived source, like everything else.
+    fs.writeFileSync(path.join(repo, 'server/src/data-schema.ts'), 'export const DATA_SCHEMA_VERSION = 9\n')
     const commit = git('rev-parse', 'HEAD')
     // Build and publish are stubbed out: all that is checked is which number the
     // images and the manifest are tagged with.
@@ -99,7 +104,8 @@ m.build=build
 m.release.tooling_hashes=lambda root: {f: '0'*64 for f in m.release.TOOLING_FILES}
 sys.argv=['release-build.py','--registry','ghcr.io/example/colloq','--k3s-version','v1.36.4+k3s1','--source-commit',commit,'--environments','base','--output',out]+sys.argv[5:]
 m.main()
-print(json.dumps({'tags':tags,'version':json.load(open(out))['version']}))
+value=json.load(open(out))
+print(json.dumps({'tags':tags,'version':value['version'],'schema':value['dataSchemaVersion'],'compatible':value['compatibleDataSchemaVersions']}))
 `
     const out = path.join(dir, 'release.json')
     const run = (...extra: string[]) => spawnSync('python3', ['-c', code, path.join(root, 'scripts/release-build.py'), repo, commit, out, ...extra], { encoding: 'utf8' })
@@ -107,6 +113,10 @@ print(json.dumps({'tags':tags,'version':json.load(open(out))['version']}))
     assert.equal(defaulted.status, 0, defaulted.stderr)
     const said = JSON.parse(defaulted.stdout.trim().split('\n').pop()!)
     assert.equal(said.version, 'v0.3.0')
+    // The data schema comes from the server's constant at that commit, and a
+    // release opens its own schema and every earlier one.
+    assert.equal(said.schema, 3)
+    assert.deepEqual(said.compatible, [1, 2, 3])
     assert.deepEqual(said.tags, ['ghcr.io/example/colloq-app:v0.3.0', 'ghcr.io/example/colloq-runtime:v0.3.0', 'ghcr.io/example/colloq-kernel:v0.3.0-base'])
     assert.equal(run('--version', 'v0.3.0').status, 0)
     const mismatch = run('--version', 'v0.2.0')
@@ -133,4 +143,25 @@ test('Git-less deployment tooling must match every hash in the selected release'
     fs.writeFileSync(file, JSON.stringify(release()))
     assert.notEqual(run().status, 0)
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('release builder takes the data schema from the server constant, never a literal', () => {
+  const code = `import importlib.util,sys,pathlib,tempfile
+s=importlib.util.spec_from_file_location('builder',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+print(m.data_schema(pathlib.Path(sys.argv[2])))
+with tempfile.TemporaryDirectory() as tmp:
+ root=pathlib.Path(tmp); (root/'server/src').mkdir(parents=True)
+ for text in ('export const DATA_SCHEMA_VERSION = 0\\n', 'export const DATA_SCHEMA_VERSION = 2\\nexport const DATA_SCHEMA_VERSION = 3\\n', 'export let DATA_SCHEMA_VERSION = 2\\n'):
+  (root/'server/src/data-schema.ts').write_text(text)
+  try: m.data_schema(root)
+  except ValueError: print('refused')
+  else: raise AssertionError(text)
+`
+  const result = spawnSync('python3', ['-c', code, path.join(root, 'scripts/release-build.py'), root], { encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+  const [schema, ...refusals] = result.stdout.trim().split('\n')
+  const constant = Number(fs.readFileSync(path.join(root, 'server/src/data-schema.ts'), 'utf8').match(/^export const DATA_SCHEMA_VERSION = (\d+)$/m)?.[1])
+  assert.ok(constant >= 1)
+  assert.equal(Number(schema), constant)
+  assert.deepEqual(refusals, ['refused', 'refused', 'refused'])
 })

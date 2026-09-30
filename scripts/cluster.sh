@@ -25,6 +25,8 @@ while [ "$#" -gt 0 ]; do
 done
 die() { printf 'cluster: %s\n' "$*" >&2; exit 1; }
 release() { python3 "$SCRIPT_DIR/release.py" "$@"; }
+# Run inside the app Pod by `status`: the image has node, not curl.
+HEALTH_PROBE='fetch("http://127.0.0.1:3000/api/health").then(async (r) => { const text = await r.text(); let shown = text; try { shown = JSON.stringify(JSON.parse(text), null, 2) } catch {} console.log(r.status + " " + shown); process.exitCode = r.ok ? 0 : 1 }).catch((e) => { console.error("the app process did not answer: " + e.message); process.exitCode = 1 })'
 kube() (
   # Use the matching multicall client directly. Some packaged k3s builds pass
   # the literal subcommand through to kubectl when invoked as `k3s kubectl`.
@@ -145,16 +147,22 @@ firewall() {
   fi
 }
 
+check_k3s_version() {
+  local wanted have
+  wanted="$(release field --release "$1" --field k3sVersion)"
+  have="$(k3s --version | head -1 | awk '{print $3}')"
+  [ "$have" = "$wanted" ] || die "installed k3s $have differs from release $wanted; upgrade k3s separately after backing up its datastore and token"
+}
+
 bootstrap() {
-  local wanted have tmp
+  local wanted tmp
   wanted="$(release field --release "$RELEASE" --field k3sVersion)"
   if systemctl cat colloq.service >/dev/null 2>&1; then
     die 'legacy colloq.service exists; stop/remove that root service and migrate its data explicitly before installing k3s workloads'
   fi
   gpu_toolkit
   if command -v k3s >/dev/null; then
-    have="$(k3s --version | head -1 | awk '{print $3}')"
-    [ "$have" = "$wanted" ] || die "installed k3s $have differs from release $wanted; upgrade k3s separately after backing up its datastore and token"
+    check_k3s_version "$RELEASE"
     [ -f /etc/rancher/k3s/colloq-managed ] || die 'existing k3s is not Colloq-managed; review deploy/k3s/README.md before migration'
     if [ "${GPU_RUNTIME_CHANGED:-0}" = 1 ]; then systemctl restart k3s; fi
     systemctl is-active --quiet k3s || systemctl start k3s
@@ -316,23 +324,51 @@ elif len(nodes)==1:
   die 'no single ready Kubernetes node registered within 180 seconds; check k3s and kubelet logs'
 }
 
+# The release as it will be installed: the selected catalog plus the older
+# environment revisions that rooms still reference, from the installed release
+# and from a restored backup.
+effective_release() {
+  local current="$STATE/releases/current.json" data extras=()
+  data="$(data_release)"
+  if [ -f "$current" ]; then extras=(--previous "$current"); fi
+  if [ -f "$data" ]; then extras+=(--data-release "$data"); fi
+  if [ "$CMD" = rollback ]; then extras+=(--rollback); fi
+  release merge --release "$RELEASE" ${extras[@]+"${extras[@]}"} > "$1"
+  if [ -f "$STATE/recovery/release.json" ]; then
+    release merge --release "$1" --previous "$STATE/recovery/release.json" --data-release "$data" > "$1.recovery"
+    mv "$1.recovery" "$1"
+  fi
+}
+
+registry_secret() {
+  if [ -n "$REGISTRY_CONFIG" ]; then
+    k create secret generic colloq-registry --type=kubernetes.io/dockerconfigjson --from-file=".dockerconfigjson=$REGISTRY_CONFIG" --dry-run=client -o json | k apply -f - >/dev/null
+  elif ! k get secret colloq-registry >/dev/null 2>&1; then
+    k create secret generic colloq-registry --type=kubernetes.io/dockerconfigjson --from-literal='.dockerconfigjson={"auths":{}}' >/dev/null
+  fi
+}
+
+# Kubernetes uses the same imagePullSecret as the actual workloads. ctr/crictl
+# pulls would bypass it and break otherwise valid private-registry releases.
+prepull_images() {
+  k delete pod colloq-image-check --ignore-not-found --wait=true >/dev/null
+  release prepull --release "$1" | k create -f - >/dev/null
+  if ! k wait --for=jsonpath='{.status.phase}'=Succeeded pod/colloq-image-check --timeout=900s; then
+    k describe pod colloq-image-check >&2
+    die 'release images could not be pulled/run as UID 1000; inspect the preflight Pod before retrying'
+  fi
+  k delete pod colloq-image-check --wait=true >/dev/null
+}
+
 prepare() {
-  local effective node current policy_version data extras=() runtime=()
+  local effective node current policy_version runtime=()
   guard_restore
   mkdir -p "$STATE/releases" "$STATE/secrets" "$STATE/data" "$STATE/workspace"
   chmod 0750 "$STATE/data" "$STATE/workspace"
   chown 1000:1000 "$STATE/data" "$STATE/workspace"
   current="$STATE/releases/current.json"
-  data="$(data_release)"
-  if [ -f "$current" ]; then extras=(--previous "$current"); fi
-  if [ -f "$data" ]; then extras+=(--data-release "$data"); fi
-  if [ "$CMD" = rollback ]; then extras+=(--rollback); fi
   effective="$(mktemp "$STATE/releases/.release.XXXXXX")"
-  release merge --release "$RELEASE" "${extras[@]}" > "$effective"
-  if [ -f "$STATE/recovery/release.json" ]; then
-    release merge --release "$effective" --previous "$STATE/recovery/release.json" --data-release "$data" > "$effective.recovery"
-    mv "$effective.recovery" "$effective"
-  fi
+  effective_release "$effective"
   check_operator_env "$effective"
   RELEASE="$effective" bootstrap
   need_cluster
@@ -343,21 +379,11 @@ prepare() {
     "pod-security.kubernetes.io/enforce-version=$policy_version" \
     pod-security.kubernetes.io/audit=restricted "pod-security.kubernetes.io/audit-version=$policy_version" \
     pod-security.kubernetes.io/warn=restricted "pod-security.kubernetes.io/warn-version=$policy_version" --overwrite >/dev/null
-  if [ -n "$REGISTRY_CONFIG" ]; then
-    k create secret generic colloq-registry --type=kubernetes.io/dockerconfigjson --from-file=".dockerconfigjson=$REGISTRY_CONFIG" --dry-run=client -o json | k apply -f - >/dev/null
-  elif ! k get secret colloq-registry >/dev/null 2>&1; then
-    k create secret generic colloq-registry --type=kubernetes.io/dockerconfigjson --from-literal='.dockerconfigjson={"auths":{}}' >/dev/null
-  fi
+  registry_secret
   gpu_plugin "$effective"
-  # Kubernetes uses the same imagePullSecret as the actual workloads. ctr/crictl
-  # pulls would bypass it and break otherwise valid private-registry releases.
-  k delete pod colloq-image-check --ignore-not-found --wait=true >/dev/null
-  release prepull --release "$effective" | k create -f - >/dev/null
-  if ! k wait --for=jsonpath='{.status.phase}'=Succeeded pod/colloq-image-check --timeout=900s; then
-    k describe pod colloq-image-check >&2
-    die 'release images could not be pulled/run as UID 1000; inspect the preflight Pod before retrying (updates leave writers stopped after backup)'
-  fi
-  k delete pod colloq-image-check --wait=true >/dev/null
+  # update and rollback pull the same set before their backup, while classes
+  # still run; pulling it again here would only lengthen the stop.
+  if [ -z "${PULLED:-}" ] || ! cmp -s "$PULLED" "$effective"; then prepull_images "$effective"; fi
   if k get deployment colloq-app >/dev/null 2>&1; then stop_writers; fi
   for secret in runtime-token room-secret; do
     if [ ! -s "$STATE/secrets/$secret" ]; then
@@ -419,12 +445,37 @@ case "$CMD" in
   install) prepare; start ;;
   update|rollback)
     [ -f "$STATE/releases/current.json" ] || die 'no installed release; use install'
-    # Validate schema compatibility before taking writers down for a backup.
+    # Everything that can refuse, refuses while classes still run: the data
+    # schema, the operator's settings, the k3s version, the images and the
+    # backup's own preflight. Writers stop only for the backup and the swap,
+    # so the downtime is the backup plus a restart, never a download.
     data="$(data_release)"
-    release merge --release "$RELEASE" --previous "$STATE/releases/current.json" --data-release "$data" >/dev/null
+    mkdir -p "$STATE/releases"
+    PULLED="$(mktemp "$STATE/releases/.pulled.XXXXXX")"
+    trap 'rm -f "$PULLED"' EXIT
+    # The merge refuses a release that does not list the data schema the
+    # installed release declares; the database is asked as well, since its
+    # stamp is the one that cannot be out of date.
+    effective_release "$PULLED"
+    python3 "$SCRIPT_DIR/runtime-backup.py" check-schema --root "$STATE" --release "$RELEASE" \
+      || die "$CMD refused before stopping anything: see RELEASING.md, \"Data schema\""
     check_operator_env "$RELEASE"
     [ -x "$SCRIPT_DIR/backup.sh" ] || die 'backup.sh is required before an update'
-    MODE=consistent RESUME=0 RELEASE="$data" COLLOQ_STATE_DIR="$STATE" "$SCRIPT_DIR/backup.sh"
+    need_cluster
+    check_k3s_version "$RELEASE"
+    registry_secret
+    prepull_images "$PULLED"
+    running="$(k get deployment colloq-app -o jsonpath='{.spec.replicas}' 2>/dev/null || true)"
+    if ! MODE=consistent RESUME=0 RELEASE="$data" COLLOQ_STATE_DIR="$STATE" "$SCRIPT_DIR/backup.sh"; then
+      # Nothing has been changed yet, so the classes come back on the release
+      # they were running rather than stay down until someone reads the log.
+      if [ -n "$running" ] && [ "$running" != 0 ] &&
+         [ "$(k get deployment colloq-app -o jsonpath='{.spec.replicas}' 2>/dev/null || true)" = 0 ]; then
+        printf 'cluster: the backup failed after writers were stopped; starting the installed release again\n' >&2
+        start
+      fi
+      die "$CMD aborted before any change: the backup did not complete (the reason is above)"
+    fi
     prepare; start ;;
   start) start ;;
   stop) need_cluster; stop_writers ;;
@@ -447,11 +498,19 @@ PY
       || die 'restore-services refuses while room Pods exist'
     k delete services -l app.kubernetes.io/managed-by=colloq-runtime --ignore-not-found --wait=true --timeout=90s
     ;;
-  # Health is asked from inside the Pod: through the NodePort this machine is a
-  # pod-network address, and the reasons go only to loopback or staff. The
-  # body is printed on 503 too, since that is when the reason is needed.
-  status) need_cluster; k get deployments,pods,pvc
-    k exec deployment/colloq-app -- node -e 'fetch("http://127.0.0.1:3000/api/health", { signal: AbortSignal.timeout(5000) }).then(async (r) => { console.log(await r.text()); process.exitCode = r.ok ? 0 : 1 }, (e) => { console.error("health: " + e.message); process.exitCode = 1 })' ;;
+  status)
+    need_cluster
+    k get deployments,pods,pvc
+    # Kubernetes sends traffic only to a ready Pod, so an app that is not
+    # ready cannot explain itself through the NodePort. The full health answer
+    # (every check with its reason, which the app gives a loopback client) is
+    # read inside the Pod: it answers as long as the process runs.
+    healthy=0
+    printf '\nhealth, asked inside the app Pod:\n'
+    k exec deployment/colloq-app -- node -e "$HEALTH_PROBE" || healthy=1
+    printf 'ready for traffic on 127.0.0.1:%s: ' "$PORT"
+    if curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:$PORT/api/readyz"; then echo yes; else echo no; healthy=1; fi
+    exit "$healthy" ;;
   logs) need_cluster; k logs -f deployment/colloq-app --tail=80 ;;
   gpu-preflight) need_cluster; gpu_preflight ;;
   smoke) need_cluster; k exec deployment/colloq-app -- node /app/dist/runtime-smoke.js ;;

@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import { config, ensureDataDir } from './config.js'
+import { ALLOW_SCHEMA_DOWNGRADE, DATA_SCHEMA_VERSION } from './data-schema.js'
 import { colorForId, type Participant, type SessionInfo } from '@shared/protocol'
 import { OPEN_ROOM, readRules, rulesAfterClass, type RoomRules } from '@shared/rules'
 
@@ -16,6 +17,48 @@ const dbPath = path.join(config.dataDir, 'colloq.db')
 export const db = new Database(dbPath)
 db.pragma('journal_mode = WAL')
 db.pragma('synchronous = NORMAL')
+stampDataSchema()
+
+/**
+ * The data schema this code writes, stamped into the file before the first
+ * migration below can run (the number and the bump rule: data-schema.ts).
+ *
+ * Stamped FIRST, not after the migrations, because the stamp is a promise
+ * about which code has touched the file. The migrations are spread over every
+ * store module and run on import; stamped at the end, a crash between a
+ * destructive migration and the stamp would leave a file that is already new
+ * but still claims to be old — exactly the file an older release would then
+ * open without a word. Stamped first, the worst case is the other way round:
+ * a file that claims to be newer than it is, and a rollback that is refused
+ * although it would have worked. That one costs a restore, not a semester.
+ *
+ * Never lowered. A higher stamp means newer code has already run here, and
+ * older code over its data is the downgrade nobody reviewed; so the server
+ * refuses to start rather than find out in the middle of a class which column
+ * went missing. The way back is the backup taken before the update; the
+ * override is for an operator who knows the newer migration is harmless for
+ * this release. A file from before stamps existed carries 0 and simply gets
+ * this version.
+ */
+function stampDataSchema(): void {
+  const found = Number(db.pragma('user_version', { simple: true }))
+  if (found > DATA_SCHEMA_VERSION) {
+    const what =
+      `colloq.db in ${config.dataDir} was written by a newer Colloq: data schema ${found}, ` +
+      `while this release knows ${DATA_SCHEMA_VERSION}.`
+    if (process.env[ALLOW_SCHEMA_DOWNGRADE] !== '1') {
+      db.close()
+      throw new Error(
+        `${what} Starting older code over newer data can break or lose it. ` +
+          'Restore the backup taken before the update, or go back to the newer release. ' +
+          `To start anyway, set ${ALLOW_SCHEMA_DOWNGRADE}=1.`,
+      )
+    }
+    console.warn(`[db] WARNING: ${what} Starting anyway because ${ALLOW_SCHEMA_DOWNGRADE}=1; the stamp stays ${found}.`)
+    return
+  }
+  if (found < DATA_SCHEMA_VERSION) db.pragma(`user_version = ${DATA_SCHEMA_VERSION}`)
+}
 
 /*
  * The file holds the sign-in keys of every teacher and the instance's model

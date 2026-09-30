@@ -1,6 +1,13 @@
-# Single-node deployment
+# Single-node deployment on k3s (preview)
 
-Production uses one Linux amd64 VM, k3s/containerd, one non-root app Pod, and one
+> **Preview.** This path has not been published as a release yet: no GitHub
+> Release carries its `release.json`, `colloq-deploy.tar.gz` and `SHA256SUMS`,
+> and nothing tests `cluster.sh` on a real VM automatically. Production installs
+> use the server image (`ghcr.io/colloq-edu/colloq-vast`) run by
+> `deploy/vast/colloq-host` on a dedicated Linux VM; see `deploy/vast/README.md`.
+> Try k3s on a disposable VM, following *Before teaching* below.
+
+This path uses one Linux amd64 VM, k3s/containerd, one non-root app Pod, and one
 private runtime broker. Docker Compose is an explicit workstation development
 path. `deploy/colloq.service` no longer installs a root web process.
 
@@ -26,10 +33,13 @@ it defaults to `v` + the `package.json` version at `--source-commit`.
 ```sh
 python3 scripts/release-build.py --version v0.2.0 \
   --registry ghcr.io/your-org/colloq --source-commit FULL_COMMIT_SHA \
-  --k3s-version EXACT_TESTED_K3S_VERSION --environments base,cv,gpu \
+  --k3s-version EXACT_TESTED_K3S_VERSION --environments base,kaggle-base,base-gpu \
   --gpu-toolkit-version EXACT_NVIDIA_APT_VERSION \
   --gpu-device-plugin-image NVIDIA_PLUGIN_IMAGE_AT_SHA256
 ```
+
+Without `base-gpu`, the two GPU options are not needed; `base,kaggle-base` is
+the default. Every name must be a file in `kernel/environments/`.
 
 Replace the uppercase placeholders deliberately. Login to the image registry on
 the build machine first. Environment requirements and `# colloq: from NAME`
@@ -109,13 +119,17 @@ Static local PVs use `Retain` and these host paths:
 
 | Resource | Host path | Mounted by |
 |---|---|---|
-| `colloq-data` PVC | `/var/lib/colloq/data` | App |
+| `colloq-data` PVC | `/var/lib/colloq/data` | App (read-write); broker at `/data` (read-write); competition job Pods, per-job subPaths |
 | `colloq-workspace` PVC | `/var/lib/colloq/workspace` | App and room-specific subPaths |
 
 The root provisioner creates directories owned by UID/GID 1000. Restricted Pods
-do not need a root init container. The broker mounts neither PVC. These PV size
-fields are scheduling metadata, **not enforced filesystem disk quotas**. Use a
-dedicated filesystem and monitor free disk. Node/disk loss requires an off-node
+do not need a root init container. The broker mounts `colloq-data` because it
+starts the competition job Pods that read and write subPaths of that claim
+(`competitions/<id>/…`, `dependencies/…`); it never mounts the workspace. These
+PV size fields are scheduling metadata, **not enforced filesystem disk quotas**.
+Use a dedicated filesystem and monitor free disk: the panel's *Resources* tab
+shows free space on the data filesystem (and on the workspace one when it is
+separate) and warns below 15 % or 10 GB. Node/disk loss requires an off-node
 backup; there is no HA promise.
 
 `prepare --release FILE` installs resources with all writers stopped. Restore
@@ -129,6 +143,25 @@ for all room Pods. In-memory Python variables are lost. Notebook and workspace
 files persist. A consistent backup must stop **all** these writers. A live
 SQLite snapshot plus a changing workspace archive is not an atomic snapshot.
 
+`scripts/backup.sh` writes to `backups/` next to the tools it runs from (`OUT=`
+names another file; put it on another disk when the data disk is tight), so run
+updates from one tools directory or collect the archives yourself. Archives are
+0600.
+Student code leaves more than files in a room: symlinks (a `python -m venv`
+makes a dozen) are stored as symlinks and never followed; FIFOs, sockets and
+device nodes are skipped with a warning naming their full path; only a real I/O
+error stops a backup. The backup checks free space before it copies, and stops
+itself before the disk that also holds the database drops below 1 GiB free.
+
+| Setting (environment or `config.env`) | Default | Effect |
+|---|---|---|
+| `BACKUP_KEEP` | `14` | archives kept after a successful backup; the oldest `colloq-*-live/consistent.tar.gz[.age]` go, never the new one; `0` keeps all |
+| `BACKUP_AGE_RECIPIENT` | unset | encrypt the archive with [age](https://age-encryption.org) (`.tar.gz.age`); the backup refuses to start if `age` is missing |
+| `BACKUP_AGE_IDENTITY` | unset | the age identity file `restore.sh --archive X.tar.gz.age` decrypts with |
+
+Copy archives off the machine: a backup on the same disk does not survive
+losing that disk.
+
 ## Update and rollback
 
 ```sh
@@ -138,20 +171,31 @@ sudo scripts/cluster.sh status
 sudo scripts/cluster.sh logs
 ```
 
-Update/rollback validate the data schema compatibility declaration and run a
-consistent portable backup first. Both use a controlled stop/replacement of the
-single app/broker and room workloads. There is a maintenance interruption;
-these commands do not promise preservation of Python memory or zero downtime.
-The preflight Pod checks actual image pulls with the same registry secret and
-non-root execution before `prepare` stops writers. Failed readiness leaves the
-desired release recorded and the previous release in `releases/previous.json`;
-an operator chooses rollback explicitly, never an unreviewed database downgrade.
+Update and rollback check everything that can refuse while classes still run:
+the data schema, the env file, the k3s version, the images (the preflight Pod
+pulls them with the same registry secret and runs them as UID 1000) and the
+backup's own preflight (database, free space, what the trees hold). Only then do
+they stop the writers, take a consistent portable backup, swap the release and
+start it, so the interruption is the backup plus a restart, never a download.
+If the backup fails after the stop, nothing has been changed yet and the
+installed release is started again. These commands do not promise preservation
+of Python memory or zero downtime. Failed readiness leaves the desired release
+recorded and the previous release in `releases/previous.json`; an operator
+chooses rollback explicitly, never an unreviewed database downgrade.
 
-Release metadata declares data compatibility; maintainers must test and update
-that declaration when migrations change. Incompatible rollback requires the
-matching backup. Existing room image revisions are retained during catalog
+`dataSchemaVersion` in a release comes from `server/src/data-schema.ts`, which
+migrations bump (RELEASING.md, *Data schema*). A release refuses data of a newer
+schema: the one the installed release declares, and the stamp in the database
+itself. Incompatible rollback requires the matching backup, which is the one the
+update took. Existing room image revisions are retained during catalog
 updates. If a release omits an entire environment name, its previous current
 revision remains available while historical room references are retained. Do not garbage-collect those images while seminars reference them.
+
+The app Pod is ready when its database and workspace are (`/api/readyz`), so a
+broker or Kubernetes API hiccup no longer takes the site out of rotation;
+liveness is `/api/livez`. `cluster.sh status` prints the full `/api/health`
+answer read inside the app Pod, which works even while the Pod is not ready,
+and whether the NodePort receives traffic.
 
 k3s upgrades are deliberately separate: back up its datastore **and server token**,
 follow its upgrade documentation, then deploy a release requiring that exact

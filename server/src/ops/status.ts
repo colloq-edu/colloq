@@ -8,6 +8,7 @@ import {persistenceDiagnostics} from '../collab/persistence.js'
 import {kernelRecoveryDiagnostics} from '../kernel/pool.js'
 import {freeDependencyBytes} from '../dependencies/files.js'
 import {dependencyPreparationDiagnostics} from '../dependencies/service.js'
+import {diskUsage} from './disk.js'
 
 function queue(table:'competition_queue'|'dependency_bundles',timestamp:'enqueued_at'|'created_at',waiting:'waiting'|'queued',active:string[]){
  const rows=db.prepare(`SELECT state,COUNT(*) AS count,MIN(${timestamp}) AS oldest FROM ${table} GROUP BY state`).all() as {state:string;count:number;oldest:number}[]
@@ -24,6 +25,9 @@ export async function operationalStatus(){
  return {
   checkedAt:Date.now(),capabilities:await competitionCapabilities(),reservations,
   storage:{available:freeBytes!==null&&freeBytes>reservations.diskBytes,freeBytes,reservedBytes:reservations.diskBytes,dependencyArtifactBytes:artifacts.bytes,dependencyArtifactCount:artifacts.count,unreferencedArtifactBytes:orphan.bytes},
+  // Free and total per filesystem, with the panel's warning flag: the
+  // same numbers the Resources tab shows, for monitoring without a browser.
+  disk:diskUsage(),
   queues:{competitions:{...queue('competition_queue','enqueued_at','waiting',['running']),retries:retries.retries,execution:competitionExecutionDiagnostics()},preparations:queue('dependency_bundles','created_at','queued',['resolving','downloading','verifying'])},
   preparation:dependencyPreparationDiagnostics(),persistence:persistenceDiagnostics(),runtimeRecovery:kernelRecoveryDiagnostics(),
  }

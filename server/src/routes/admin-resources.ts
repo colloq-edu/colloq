@@ -35,6 +35,7 @@ import {
   memoryBounds,
 } from '../kernel/resources.js'
 import { kernelBackend } from '../kernel/runtime-client.js'
+import { diskUsage } from '../ops/disk.js'
 import type {
   AdminErrorBody,
   InstanceResources,
@@ -153,6 +154,7 @@ async function payload(): Promise<ResourceSettingsResponse> {
     backend: kernelBackend(),
     machine,
     budget: await budget(machine),
+    disk: diskUsage(),
   }
 }
 

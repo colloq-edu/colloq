@@ -350,7 +350,8 @@ async function statusFacts(ctx: Ctx): Promise<Status> {
     envName !== '' && io.exists(joinPath(env.paths.backupsDir, envName))
       ? joinPath(env.paths.backupsDir, envName)
       : env.paths.backupsDir
-  const backup = newestFile(ctx, backupDir, (name) => /\.(db|tar\.gz|tgz|zip)$/.test(name))
+  // `.age`: the same backups, encrypted when BACKUP_AGE_RECIPIENT is set.
+  const backup = newestFile(ctx, backupDir, (name) => /\.(db|tar\.gz|tgz|zip)(\.age)?$/.test(name))
 
   return {
     envName,

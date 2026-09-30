@@ -43,6 +43,7 @@
  * setup token.
  */
 import type { RoomRules } from './rules.js'
+import type { DiskUsage } from './disk.js'
 
 export type AdminRole = 'owner' | 'teacher'
 
@@ -635,6 +636,11 @@ export interface ResourceSettingsResponse {
   backend: 'docker' | 'broker' | 'test'
   machine: InstanceResources
   budget: ResourceBudget
+  /**
+   * Free space on the data filesystem and, when separate, the workspace's;
+   * null when it cannot be measured. Live, refreshed with the budget.
+   */
+  disk: DiskUsage | null
 }
 
 /**

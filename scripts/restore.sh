@@ -37,17 +37,44 @@
 # with one command is cheaper than carrying tens of gigabytes: make env-build
 # NAME=…) and .env (it travels to the new machine on its own, together with
 # the repository — see scripts/vast.sh).
+#
+# Encrypted backups (<name>.age, written when BACKUP_AGE_RECIPIENT is set) are
+# decrypted with the age identity file in BACKUP_AGE_IDENTITY (the environment
+# or the settings file), into a private folder that is removed at the end.
 set -euo pipefail
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+CALLER="$PWD"
 
 cd "$(dirname "$0")/.."
+
+# A path the operator typed is relative to where they stood, not to the tools
+# directory this script has just moved into.
+absolute() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$CALLER" "$1" ;; esac; }
+
+# decrypt FILE INTO: an .age backup opened with BACKUP_AGE_IDENTITY. Called
+# before anything is stopped or moved, so a wrong key costs nothing.
+PLAIN=""
+trap '[ -z "$PLAIN" ] || rm -rf "$PLAIN"' EXIT
+decrypt() {
+  [ -n "${IDENTITY:-}" ] || { printf '%s is encrypted: set BACKUP_AGE_IDENTITY to the age identity file that opens it.\n' "$1" >&2; exit 1; }
+  command -v age >/dev/null 2>&1 || { printf '%s is encrypted, and age is not installed (https://age-encryption.org).\n' "$1" >&2; exit 1; }
+  age -d -i "$IDENTITY" -o "$2" "$1" || { printf 'could not decrypt %s with %s\n' "$1" "$IDENTITY" >&2; exit 1; }
+}
 
 # Portable cluster recovery is explicit; a legacy archive is never silently
 # overlaid onto a PVC. Validate before stopping writers or moving any data.
 if [ "${1:-}" = --archive ]; then
   STATE="${COLLOQ_STATE_DIR:-/var/lib/colloq}"
   if ! python3 scripts/state-lock.py held --state "$STATE"; then
-    exec python3 scripts/state-lock.py run --state "$STATE" -- bash "$SCRIPT_PATH" "$@"
+    args=()
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --archive|--release) args+=("$1" "$(absolute "${2:?$1 requires a path}")"); shift 2 ;;
+        *) args+=("$1"); shift ;;
+      esac
+    done
+    [ -z "${RELEASE:-}" ] || export RELEASE="$(absolute "$RELEASE")"
+    exec python3 scripts/state-lock.py run --state "$STATE" -- bash "$SCRIPT_PATH" "${args[@]}"
   fi
   shift
   ARCHIVE="${1:?archive path required}"; shift
@@ -63,10 +90,25 @@ if [ "${1:-}" = --archive ]; then
     esac
   done
   [ -f "$RELEASE" ] || { echo 'Select the matching RELEASE before restoring.' >&2; exit 1; }
+  case "$ARCHIVE" in
+    *.age)
+      IDENTITY="${BACKUP_AGE_IDENTITY:-}"
+      if [ -z "$IDENTITY" ] && [ -r "$STATE/config.env" ]; then
+        IDENTITY="$(grep -E '^BACKUP_AGE_IDENTITY=' "$STATE/config.env" | tail -1 | cut -d= -f2- || true)"
+      fi
+      mkdir -p "$STATE"
+      PLAIN="$(umask 077 && mktemp -d "$STATE/.restore-plain.XXXXXX")"
+      # The same plaintext every time: --recover and finalize compare the
+      # archive's digest with the one the interrupted restore recorded.
+      decrypt "$ARCHIVE" "$PLAIN/archive.tar.gz"
+      ARCHIVE="$PLAIN/archive.tar.gz" ;;
+  esac
   python3 scripts/runtime-backup.py validate --archive "$ARCHIVE" --name "${NAME:-}" --release "$RELEASE"
   mkdir -p "$STATE"
   bash scripts/cluster.sh stop
-  python3 scripts/runtime-backup.py restore --root "$STATE" --release "$RELEASE" --archive "$ARCHIVE" --name "${NAME:-}" --defer-finalize "${extra[@]}"
+  # The guarded expansion: bash 3.2 calls an empty array unbound under set -u,
+  # and with an EXIT trap it then exits 0, a failed restore reported as done.
+  python3 scripts/runtime-backup.py restore --root "$STATE" --release "$RELEASE" --archive "$ARCHIVE" --name "${NAME:-}" --defer-finalize ${extra[@]+"${extra[@]}"}
   # A restored older backup may deliberately contain previously retired IDs.
   # Keep the durable marker until those old reservations are removed, with
   # every writer still stopped and the same operation lock held throughout.
@@ -120,14 +162,14 @@ DB=""
 FILES=""
 for arg in "$@"; do
   case "$arg" in
-    *.db) DB="$arg" ;;
-    *.tar.gz) FILES="$arg" ;;
+    *.db|*.db.age) DB="$arg" ;;
+    *.tar.gz|*.tar.gz.age) FILES="$arg" ;;
     *) die "I do not understand \"${arg}\". Expected backups/colloq-<date>.db and/or backups/colloq-<date>-files.tar.gz" ;;
   esac
 done
 
 if [ -z "$DB" ] && [ -z "$FILES" ]; then
-  DB="$(ls -1t "$BACKUP_DIR"/colloq-*.db 2>/dev/null | head -1 || true)"
+  DB="$(ls -1t "$BACKUP_DIR"/colloq-*.db "$BACKUP_DIR"/colloq-*.db.age 2>/dev/null | head -1 || true)"
   if [ -z "$DB" ]; then
     # The list of deployments is printed right in the refusal: "no backups"
     # with a full backups/hse is not a missing backup but the wrong name, and
@@ -147,12 +189,51 @@ fi
 # The archive is found by the database's name, not as "the most recent": a
 # pair of one day's database and another day's files is a seminar whose
 # notebook links to a file that does not exist.
-if [ -z "$FILES" ] && [ -n "$DB" ] && [ -f "${DB%.db}-files.tar.gz" ]; then
-  FILES="${DB%.db}-files.tar.gz"
+if [ -z "$FILES" ] && [ -n "$DB" ]; then
+  case "$DB" in
+    *.db.age) pair="${DB%.db.age}-files.tar.gz.age" ;;
+    *) pair="${DB%.db}-files.tar.gz" ;;
+  esac
+  [ ! -f "$pair" ] || FILES="$pair"
 fi
 
 [ -z "$DB" ] || [ -f "$DB" ] || die "no file $DB"
 [ -z "$FILES" ] || [ -f "$FILES" ] || die "no file $FILES"
+
+# Encrypted halves are opened first, into a private folder next to the state
+# (removed on exit): every check below reads the plain copy.
+IDENTITY="${BACKUP_AGE_IDENTITY:-$(read_env BACKUP_AGE_IDENTITY)}"
+DB_NAME="$DB"; FILES_NAME="$FILES"
+case "$DB$FILES" in
+  *.age*)
+    PLAIN="$(umask 077 && mktemp -d "$STATE/.restore-plain.XXXXXX")"
+    case "$DB" in *.age) decrypt "$DB" "$PLAIN/colloq.db"; DB="$PLAIN/colloq.db" ;; esac
+    case "$FILES" in *.age) decrypt "$FILES" "$PLAIN/files.tar.gz"; FILES="$PLAIN/files.tar.gz" ;; esac ;;
+esac
+
+# The archive's names are read before anything is unpacked: only what
+# backup-local.sh packs, nothing absolute, no "..". tar itself never writes
+# through a link it has just created (GNU tar delays such links to the end,
+# bsdtar refuses them), so a refused name here is refused before a single file
+# lands, rather than half a restore later.
+if [ -n "$FILES" ]; then
+  problem="$(tar -tzf "$FILES" | awk '
+    { name = $0; sub(/\/+$/, "", name) }
+    found != "" { next }
+    name ~ /^\// { found = "an absolute name: " $0; next }
+    { n = split(name, part, "/"); for (i = 1; i <= n; i++) if (part[i] == "..") found = "a name with \"..\": " $0 }
+    found != "" { next }
+    name == "workspace" || name ~ /^workspace\// { next }
+    name == "data" || name == "kernel" || name == "environments" || name == "kernel/environments" { next }
+    name ~ /^data\/(competitions|dependencies|blobs)(\/|$)/ || name == "data/session-secret" || name == "data/setup-token" { next }
+    name ~ /^(kernel\/)?environments\/[^\/]+\.txt$/ { next }
+    { found = "an unexpected name: " $0 }
+    END { print found }
+  ')" || die "$FILES_NAME cannot be read as a tar.gz archive — the backup is broken or incomplete."
+  [ -z "$problem" ] || die "refusing $FILES_NAME: it holds $problem.
+  A class backup holds only workspace/, data/competitions, data/dependencies,
+  data/blobs, the two keys and environment lists."
+fi
 
 say "${BOLD}1/3${OFF} checking there is somewhere to restore into"
 
@@ -227,10 +308,10 @@ if [ -n "$DB" ]; then
   # of an sqlite file are "SQLite format 3". Restoring an empty file that was
   # downloaded halfway means losing what was there as well.
   head -c 16 "$DB" | LC_ALL=C grep -qa 'SQLite format 3' \
-    || die "$DB does not look like an sqlite database — the backup is broken or incomplete."
+    || die "$DB_NAME does not look like an sqlite database — the backup is broken or incomplete."
   if command -v sqlite3 >/dev/null 2>&1; then
     [ "$(sqlite3 "$DB" 'pragma quick_check')" = ok ] \
-      || die "$DB does not pass the sqlite check. Take another backup."
+      || die "$DB_NAME does not pass the sqlite check. Take another backup."
   fi
   if [ -f data/colloq.db ]; then
     # The previous database leaves whole, with its journal. It is not deleted —
@@ -247,7 +328,7 @@ if [ -n "$DB" ]; then
   fi
   cp "$DB" data/colloq.db
   chmod 600 data/colloq.db
-  say "    $DB → data/colloq.db"
+  say "    $DB_NAME → data/colloq.db"
 else
   say "${DIM}    not touching the database — it was not in the arguments${OFF}"
 fi
@@ -267,7 +348,7 @@ if [ -n "$FILES" ]; then
   # scripts/backup-local.sh packed them, and the same place has to be named,
   # or the person goes looking for the files in the wrong place.
   if [ "$STATE" = "$APP" ]; then lists=kernel/environments; else lists=environments; fi
-  say "    $FILES → workspace/, data/, $lists/"
+  say "    $FILES_NAME → workspace/, data/, $lists/"
   if [ -f data/session-secret ]; then
     chmod 600 data/session-secret
     say "${DIM}    the signing key is in place — issued links and cookies survive the move${OFF}"

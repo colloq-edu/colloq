@@ -23,6 +23,7 @@
     UpdateResourceSettingsRequest,
   } from '@shared/admin'
   import type { CompetitionSettings, CompetitionSettingsInput } from '@shared/competitions-settings'
+  import type { DiskSpace } from '@shared/disk'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Choice from '@/admin/ui/Choice.svelte'
   import Section from '@/admin/ui/Section.svelte'
@@ -168,7 +169,7 @@
     try {
       const fresh = await adminApi.resourceSettings()
       // Only what the machine is doing; the settings stay what the form shows.
-      loaded = { ...current, budget: fresh.budget, machine: fresh.machine }
+      loaded = { ...current, budget: fresh.budget, machine: fresh.machine, disk: fresh.disk }
     } catch {
       // A missed refresh is not worth a banner: the next one will try again.
     }
@@ -401,6 +402,32 @@
     return `${Math.max(0, (part / Math.max(scale, 1)) * 100)}%`
   }
 
+  /*
+   * Disk: one bar when data and workspace share a filesystem (the usual
+   * case), two when the workspace has its own. The low flag comes from the
+   * server, which applies the thresholds (@shared/disk).
+   */
+  interface DiskRow {
+    key: string
+    label: string
+    note: string | null
+    space: DiskSpace
+  }
+
+  const diskRows = $derived.by((): DiskRow[] => {
+    const disk = loaded?.disk
+    if (!disk) return []
+    if (!disk.workspace) return [{ key: 'data', label: tr('admin.resourcesTab.disk'), note: null, space: disk.data }]
+    return [
+      { key: 'data', label: tr('admin.resourcesTab.diskData'), note: tr('admin.resourcesTab.diskDataNote'), space: disk.data },
+      { key: 'workspace', label: tr('admin.resourcesTab.diskWorkspace'), note: tr('admin.resourcesTab.diskWorkspaceNote'), space: disk.workspace },
+    ]
+  })
+
+  function gbOfBytes(bytes: number): string {
+    return number.format(bytes / 1024 ** 3)
+  }
+
   /* ------------------------------------------------------------- helpers */
 
   const classSize = $derived(Math.min(Math.max(Math.round(Number(classSizeText) || 0), 1), 500))
@@ -620,6 +647,32 @@
               {tr('admin.resourcesTab.coresNote', { rooms: cores.rooms, own: cores.own, queue: cores.queue })}
             </p>
           </div>
+
+          {#each diskRows as row (row.key)}
+            {@const used = Math.max(0, row.space.totalBytes - row.space.freeBytes)}
+            <div>
+              <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                <div class="flex items-baseline gap-2.5">
+                  <span class="text-2xs font-black uppercase tracking-caps text-ink">{row.label}</span>
+                  <span class="text-gauge font-black tracking-tight text-ink">{gbOfBytes(used)}</span>
+                  <span class="text-ui-lg text-muted">{tr('admin.resourcesTab.ofUsedGb', { total: gbOfBytes(row.space.totalBytes) })}</span>
+                </div>
+                <span class={cn('text-ui font-semibold', row.space.low ? 'text-danger' : 'text-positive')}>
+                  {tr('admin.resourcesTab.freeGb', { value: gbOfBytes(row.space.freeBytes) })}
+                </span>
+              </div>
+              <div class="mt-2.5 flex h-3 gap-0.5" aria-hidden="true">
+                <span class={row.space.low ? 'bg-danger' : 'bg-primary'} style:width={share(used, row.space.totalBytes)}></span>
+                <span class="flex-1 border border-dashed border-line bg-surface"></span>
+              </div>
+              {#if row.note}
+                <p class="mt-2 text-2xs text-muted">{row.note}</p>
+              {/if}
+              {#if row.space.low}
+                <p class="mt-2 text-2xs text-danger">{tr('admin.resourcesTab.diskLowNote')}</p>
+              {/if}
+            </div>
+          {/each}
         </div>
       {/if}
     </Section>

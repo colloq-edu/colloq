@@ -55,7 +55,11 @@ interface Machine {
 /** This file's machines — and cleanup after them: each carries its own data/ and workspace/. */
 const built: string[] = []
 after(() => {
-  for (const dir of built.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+  for (const dir of built.splice(0)) {
+    // A failed assertion can leave a folder a test closed with chmod 000.
+    spawnSync('chmod', ['-R', 'u+rwx', dir])
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 function machine(): Machine {
@@ -279,4 +283,260 @@ test('SQLite quick_check output must be ok even when sqlite3 exits successfully'
   const r = m.restore(['backups/check.db'], { PATH: path.join(m.dir, 'bin') + ':' + process.env.PATH })
   assert.notEqual(r.status, 0, r.out)
   assert.ok(!fs.existsSync(path.join(m.dir, 'data/colloq.db')), 'non-ok database must not be installed')
+})
+
+/* ------------------------------------------ what student code leaves behind */
+
+/** backup-local.sh itself, with settings in the environment (the pip `colloq backup`, the image's `colloq-vast backup`). */
+function backupLocal(dir: string, env: Record<string, string> = {}) {
+  const r = spawnSync('bash', [path.join(dir, 'scripts/backup-local.sh')], {
+    cwd: dir,
+    encoding: 'utf8',
+    timeout: 60_000,
+    env: { ...process.env, COLLOQ_HOME: '', ENV_FILE: path.join(dir, '.env'), ...env },
+  })
+  return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` }
+}
+
+const LINKS: Record<string, string> = {
+  'to-file': 'notes.csv',
+  'to-dir': 'sub',
+  dangling: 'missing-target',
+  absolute: '/etc/hosts',
+  '.venv/bin/python': '/usr/bin/python3',
+}
+
+function studentMess(dir: string, outside: string): void {
+  const room = path.join(dir, 'workspace/s-one')
+  fs.mkdirSync(path.join(room, 'sub'), { recursive: true })
+  fs.mkdirSync(path.join(room, '.venv/bin'), { recursive: true })
+  for (const [name, target] of Object.entries(LINKS)) fs.symlinkSync(target, path.join(room, name))
+  fs.symlinkSync(path.relative(room, outside), path.join(room, 'escaping'))
+  execFileSync('mkfifo', [path.join(room, 'pipe')])
+  execFileSync('python3', ['-c', 'import os,socket,sys; os.chdir(sys.argv[1]); socket.socket(socket.AF_UNIX).bind("k.sock")', room])
+}
+
+test('symlinks of every kind survive the round trip as links, FIFOs and sockets are named and left out', () => {
+  const m = machine()
+  seedDb(m.dir, 'first class')
+  seedFiles(m.dir)
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-outside-'))
+  built.push(outside)
+  fs.writeFileSync(path.join(outside, 'secret.txt'), 'not the backup\'s')
+  studentMess(m.dir, outside)
+  fs.mkdirSync(path.join(m.dir, 'data/blobs/ab'), { recursive: true })
+  fs.writeFileSync(path.join(m.dir, 'data/blobs/ab/cdef'), 'an output image')
+
+  const b = backupLocal(m.dir)
+  assert.equal(b.status, 0, b.out)
+  const room = fs.realpathSync(path.join(m.dir, 'workspace/s-one'))
+  assert.match(b.out, new RegExp(`skipped a FIFO: .*${path.basename(m.dir)}/workspace/s-one/pipe`))
+  assert.match(b.out, new RegExp(`skipped a socket: .*${path.basename(m.dir)}/workspace/s-one/k\\.sock`))
+  const pair = backupPair(m.dir)
+  const listed = execFileSync('tar', ['-tzf', path.join(m.dir, pair.files)], { encoding: 'utf8' }).split('\n')
+  // Output images are in the pip backup now.
+  assert.ok(listed.includes('data/blobs/ab/cdef'), listed.join('\n'))
+  assert.ok(!listed.some((n) => n.includes('secret.txt') || n.startsWith('workspace/s-one/to-dir/') || /pipe$|k\.sock$/.test(n)))
+
+  // An empty machine, then the restore.
+  for (const p of ['data/colloq.db', 'workspace', 'data/blobs']) fs.rmSync(path.join(m.dir, p), { recursive: true, force: true })
+  const r = m.restore([pair.db, pair.files])
+  assert.equal(r.status, 0, r.out)
+  for (const [name, target] of Object.entries(LINKS)) {
+    assert.ok(fs.lstatSync(path.join(room, name)).isSymbolicLink(), name)
+    assert.equal(fs.readlinkSync(path.join(room, name)), target, name)
+  }
+  assert.equal(fs.readlinkSync(path.join(room, 'escaping')), path.relative(path.join(m.dir, 'workspace/s-one'), outside))
+  assert.equal(fs.readFileSync(path.join(m.dir, 'data/blobs/ab/cdef'), 'utf8'), 'an output image')
+  assert.deepEqual(fs.readdirSync(outside), ['secret.txt'])
+})
+
+test('an unreadable file or folder in a room is named and skipped; the backup still happens', { skip: process.getuid?.() === 0 && 'root reads mode 000' }, () => {
+  const m = machine()
+  seedDb(m.dir, 'first class')
+  seedFiles(m.dir)
+  const room = path.join(m.dir, 'workspace/s-one')
+  fs.writeFileSync(path.join(room, 'closed.txt'), 'x'); fs.chmodSync(path.join(room, 'closed.txt'), 0)
+  fs.mkdirSync(path.join(room, 'closed-dir')); fs.writeFileSync(path.join(room, 'closed-dir/f'), 'x'); fs.chmodSync(path.join(room, 'closed-dir'), 0)
+  try {
+    const b = backupLocal(m.dir)
+    assert.equal(b.status, 0, b.out)
+    assert.match(b.out, /skipped an unreadable file: .*workspace\/s-one\/closed\.txt/)
+    assert.match(b.out, /skipped an unreadable folder: .*workspace\/s-one\/closed-dir/)
+    const listed = execFileSync('tar', ['-tzf', path.join(m.dir, backupPair(m.dir).files)], { encoding: 'utf8' })
+    assert.match(listed, /workspace\/s-one\/notes\.csv/)
+    assert.doesNotMatch(listed, /closed\.txt|closed-dir\/f/)
+  } finally {
+    fs.chmodSync(path.join(room, 'closed.txt'), 0o600)
+    fs.chmodSync(path.join(room, 'closed-dir'), 0o700)
+  }
+})
+
+test('the backup is private while it is written: everything under it runs with umask 077', () => {
+  const m = machine()
+  seedDb(m.dir, 'first class')
+  seedFiles(m.dir)
+  // A tar that reports the umask it inherited, then does the real work.
+  const real = execFileSync('/bin/sh', ['-c', 'command -v tar'], { encoding: 'utf8' }).trim()
+  const bin = path.join(m.dir, 'bin'); fs.mkdirSync(bin)
+  const log = path.join(m.dir, 'tar-umask')
+  fs.writeFileSync(path.join(bin, 'tar'), `#!/bin/sh\numask > '${log}'\nexec '${real}' "$@"\n`, { mode: 0o755 })
+  const b = backupLocal(m.dir, { PATH: `${bin}:${process.env.PATH}` })
+  assert.equal(b.status, 0, b.out)
+  assert.equal(fs.readFileSync(log, 'utf8').trim(), '0077')
+  assert.equal(fs.statSync(path.join(m.dir, 'backups')).mode & 0o777, 0o700)
+})
+
+test('BACKUP_KEEP keeps the newest pairs of this instance, never the one just made, and nothing it did not write', async () => {
+  const m = machine()
+  seedDb(m.dir, 'first class')
+  seedFiles(m.dir)
+  const backups = path.join(m.dir, 'backups')
+  fs.mkdirSync(path.join(backups, 'demo'), { recursive: true })
+  const old = ['20250101-000000', '20250102-000000', '20250103-000000']
+  for (const stamp of old) {
+    fs.writeFileSync(path.join(backups, `colloq-${stamp}.db`), 'old')
+    fs.writeFileSync(path.join(backups, `colloq-${stamp}-files.tar.gz`), 'old')
+  }
+  fs.renameSync(path.join(backups, 'colloq-20250103-000000.db'), path.join(backups, 'colloq-20250103-000000.db.age'))
+  const strangers = ['notes.txt', 'colloq-manual.db', 'colloq-20250101-000000.db.replaced-1']
+  for (const name of strangers) fs.writeFileSync(path.join(backups, name), 'keep me')
+  fs.writeFileSync(path.join(backups, 'demo/colloq-20200101-000000.db'), 'another deployment')
+
+  const b = backupLocal(m.dir, { BACKUP_KEEP: '2' })
+  assert.equal(b.status, 0, b.out)
+  const left = fs.readdirSync(backups).sort()
+  const fresh = left.filter((n) => /^colloq-\d{8}-\d{6}\.db$/.test(n) && !n.startsWith('colloq-2025'))
+  assert.equal(fresh.length, 1, left.join(', '))
+  assert.deepEqual(left.filter((n) => n.startsWith('colloq-2025')).sort(),
+    ['colloq-20250101-000000.db.replaced-1', 'colloq-20250103-000000-files.tar.gz', 'colloq-20250103-000000.db.age'])
+  for (const name of strangers) assert.ok(left.includes(name), name)
+  assert.ok(fs.existsSync(path.join(backups, 'demo/colloq-20200101-000000.db')))
+
+  // A clock that went backwards: the fresh pair sorts older and still stays.
+  // (Names go by the second, so the next backup waits for a new one.)
+  fs.writeFileSync(path.join(backups, 'colloq-29991231-235959.db'), 'future')
+  await new Promise((resolve) => setTimeout(resolve, 1100))
+  const again = backupLocal(m.dir, { BACKUP_KEEP: '1' })
+  assert.equal(again.status, 0, again.out)
+  const now = fs.readdirSync(backups).filter((n) => /^colloq-\d{8}-\d{6}(\.db|-files\.tar\.gz)(\.age)?$/.test(n)).sort()
+  assert.equal(now.length, 3, now.join(', '))
+  assert.ok(now.includes('colloq-29991231-235959.db'))
+  // Nonsense is refused before anything is written.
+  const before = fs.readdirSync(backups).length
+  const bad = backupLocal(m.dir, { BACKUP_KEEP: 'fourteen' })
+  assert.notEqual(bad.status, 0)
+  assert.match(bad.out, /BACKUP_KEEP/)
+  assert.equal(fs.readdirSync(backups).length, before)
+})
+
+test('a disk without room for both files refuses before writing either', () => {
+  const m = machine()
+  seedDb(m.dir, 'first class')
+  seedFiles(m.dir)
+  const bin = path.join(m.dir, 'bin'); fs.mkdirSync(bin)
+  fs.writeFileSync(path.join(bin, 'df'), '#!/bin/sh\necho "Filesystem 1024-blocks Used Available Capacity Mounted on"\necho "/dev/disk 1000000 999000 1000 99% /"\n', { mode: 0o755 })
+  const b = backupLocal(m.dir, { PATH: `${bin}:${process.env.PATH}` })
+  assert.notEqual(b.status, 0)
+  assert.match(b.out, /not enough free space/)
+  assert.deepEqual(fs.readdirSync(path.join(m.dir, 'backups')), [])
+})
+
+/** A files archive built entry by entry. */
+function craftFiles(dir: string, entries: string): string {
+  const file = path.join(dir, 'backups', 'colloq-20260101-000000-files.tar.gz')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  execFileSync('python3', ['-c', `import tarfile,io,sys
+t=tarfile.open(sys.argv[1],'w:gz')
+def add(name, kind='file', link=''):
+    m=tarfile.TarInfo(name)
+    if kind=='dir': m.type=tarfile.DIRTYPE; m.mode=0o755; t.addfile(m)
+    elif kind=='sym': m.type=tarfile.SYMTYPE; m.linkname=link; t.addfile(m)
+    else: m.size=4; t.addfile(m, io.BytesIO(b'evil'))
+${entries}
+t.close()`, file])
+  return path.relative(dir, file)
+}
+
+test('restore reads the archive names first and never unpacks outside the state directory', () => {
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-outside-'))
+  built.push(outside)
+  for (const [label, entries, reason] of [
+    ['an absolute name', `add('${outside}/evil')`, /absolute name/],
+    ['a name with ..', "add('workspace/../../evil')", /"\.\."/],
+    ['a name outside what a backup holds', "add('.env')", /unexpected name/],
+    ['the database slipped into the files', "add('data/colloq.db')", /unexpected name/],
+  ] as const) {
+    const m = machine()
+    const archive = craftFiles(m.dir, entries)
+    const r = m.restore([archive])
+    assert.notEqual(r.status, 0, label)
+    assert.match(r.out, reason, label)
+    assert.deepEqual(fs.readdirSync(outside), [], label)
+    assert.deepEqual(fs.readdirSync(path.join(m.dir, 'workspace/s-one')), [], `${label}: nothing unpacked`)
+    assert.equal(fs.existsSync(path.join(m.dir, 'data/colloq.db')), false, label)
+  }
+  // A link, then a file beneath it: tar itself refuses to write through the
+  // link it has just made (GNU delays such links, bsdtar refuses), so the
+  // restore fails and nothing lands outside.
+  const m = machine()
+  const archive = craftFiles(m.dir, `add('workspace','dir'); add('workspace/l','sym','${outside}'); add('workspace/l/evil')`)
+  const r = m.restore([archive])
+  assert.notEqual(r.status, 0, r.out)
+  assert.deepEqual(fs.readdirSync(outside), [])
+})
+
+/** A stand-in for age: "encrypts" with a header line, "decrypts" by removing it, and insists on an identity. */
+const FAKE_AGE = `#!/bin/sh
+mode=enc; out=; in=; identity=
+while [ $# -gt 0 ]; do
+  case "$1" in -d) mode=dec; shift;; -i) identity="$2"; shift 2;; -r|-R) shift 2;; -o) out="$2"; shift 2;; *) in="$1"; shift;; esac
+done
+if [ "$mode" = enc ]; then { printf 'AGE-TEST\\n'; cat "$in"; } > "$out"; exit 0; fi
+[ -f "$identity" ] || { echo "no identity" >&2; exit 1; }
+tail -n +2 "$in" > "$out"
+`
+
+test('BACKUP_AGE_RECIPIENT encrypts both files, and restore decrypts them with BACKUP_AGE_IDENTITY', () => {
+  const m = machine()
+  seedDb(m.dir, 'secret class')
+  seedFiles(m.dir)
+  const bin = path.join(m.dir, 'bin'); fs.mkdirSync(bin)
+  fs.writeFileSync(path.join(bin, 'age'), FAKE_AGE, { mode: 0o755 })
+  const env = { PATH: `${bin}:${process.env.PATH}` }
+  const b = backupLocal(m.dir, { ...env, BACKUP_AGE_RECIPIENT: 'age1example' })
+  assert.equal(b.status, 0, b.out)
+  const names = fs.readdirSync(path.join(m.dir, 'backups')).sort()
+  assert.equal(names.length, 2, names.join(', '))
+  assert.match(names[0], /^colloq-\d{8}-\d{6}-files\.tar\.gz\.age$/)
+  assert.match(names[1], /^colloq-\d{8}-\d{6}\.db\.age$/)
+  for (const name of names) assert.equal(fs.statSync(path.join(m.dir, 'backups', name)).mode & 0o777, 0o600)
+  assert.match(b.out, /restore it back: colloq restore --legacy --db backups\/colloq-.*\.db\.age --files backups\/colloq-.*-files\.tar\.gz\.age/)
+
+  fs.rmSync(path.join(m.dir, 'data/colloq.db'))
+  fs.rmSync(path.join(m.dir, 'workspace/s-one'), { recursive: true })
+  const db = `backups/${names[1]}`
+  const refused = m.restore([db], env)
+  assert.notEqual(refused.status, 0)
+  assert.match(refused.out, /BACKUP_AGE_IDENTITY/)
+  assert.equal(fs.existsSync(path.join(m.dir, 'data/colloq.db')), false)
+  const identity = path.join(m.dir, 'identity.txt'); fs.writeFileSync(identity, 'AGE-SECRET-KEY-TEST')
+  const r = m.restore([db], { ...env, BACKUP_AGE_IDENTITY: identity })
+  assert.equal(r.status, 0, r.out)
+  assert.equal(markOf(path.join(m.dir, 'data/colloq.db')), 'secret class')
+  assert.equal(fs.readFileSync(path.join(m.dir, 'workspace/s-one/notes.csv'), 'utf8'), 'a,b\n1,2\n')
+  assert.equal(fs.readdirSync(m.dir).filter((n) => n.startsWith('.restore-plain')).length, 0, 'the plain copies are removed')
+})
+
+test('asked to encrypt without age, the backup refuses before writing anything', () => {
+  const m = machine()
+  seedDb(m.dir, 'first class')
+  const python = execFileSync('/bin/sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).trim()
+  const sqlite = execFileSync('/bin/sh', ['-c', 'command -v sqlite3'], { encoding: 'utf8' }).trim()
+  const bare = [...new Set([path.dirname(python), path.dirname(sqlite), '/usr/bin', '/bin'])].join(':')
+  if (spawnSync('/bin/sh', ['-c', 'command -v age'], { encoding: 'utf8', env: { PATH: bare } }).stdout.trim() !== '') return
+  const b = backupLocal(m.dir, { PATH: bare, BACKUP_AGE_RECIPIENT: 'age1example' })
+  assert.notEqual(b.status, 0)
+  assert.match(b.out, /age is not installed/)
+  assert.equal(fs.existsSync(path.join(m.dir, 'backups')) ? fs.readdirSync(path.join(m.dir, 'backups')).length : 0, 0)
 })

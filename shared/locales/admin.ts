@@ -4099,6 +4099,34 @@ export const adminMessages: MessageCatalog = {
     "ru": "{rooms} — комнаты, {own} — личные тетради, {queue} — исполнители соревнований. Потоки numpy и torch в каждом контейнере ограничены его ядрами, поэтому соседи не отнимают друг у друга машину.",
     "en": "{rooms} for rooms, {own} for personal notebooks, {queue} for competition executors. numpy and torch threads in each container are capped at its cores, so neighbours do not take the machine from each other."
   },
+  "admin.resourcesTab.disk": {
+    "ru": "Диск",
+    "en": "Disk"
+  },
+  "admin.resourcesTab.diskData": {
+    "ru": "Диск данных",
+    "en": "Data disk"
+  },
+  "admin.resourcesTab.diskDataNote": {
+    "ru": "База, загрузки и файлы соревнований.",
+    "en": "The database, uploads and competition files."
+  },
+  "admin.resourcesTab.diskWorkspace": {
+    "ru": "Диск комнат",
+    "en": "Rooms disk"
+  },
+  "admin.resourcesTab.diskWorkspaceNote": {
+    "ru": "Папки занятий: всё, что загружают и пишут ячейки.",
+    "en": "Class folders: everything uploaded and written by cells."
+  },
+  "admin.resourcesTab.ofUsedGb": {
+    "ru": "из {total} ГБ занято",
+    "en": "of {total} GB used"
+  },
+  "admin.resourcesTab.diskLowNote": {
+    "ru": "Свободно меньше 15 % или 10 ГБ. Когда место кончится, тетради перестанут сохраняться во всех комнатах. Удалите старые резервные копии и ненужные файлы комнат или добавьте диску места.",
+    "en": "Less than 15% or 10 GB is free. When the space runs out, notebooks stop saving in every room. Delete old backups and room files nobody needs, or give the disk more space."
+  },
   "admin.resourcesTab.roomTitle": {
     "ru": "Комната по умолчанию",
     "en": "Default room"

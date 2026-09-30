@@ -436,6 +436,10 @@ def render(value, node_name, state_dir, runtime_env=None, network=None):
             'resources': {'requests': {'cpu': '250m' if app else '100m', 'memory': '256Mi' if app else '128Mi'},
                           'limits': {'cpu': '2' if app else '1', 'memory': '2Gi' if app else '512Mi'}},
             'livenessProbe': {**({'httpGet': {'path': '/api/livez', 'port': port}} if app else {'tcpSocket': {'port': port}}), 'initialDelaySeconds': 10, 'periodSeconds': 10},
+            # Readiness asks only what the app itself needs to serve (database
+            # and workspace). A broker or API hiccup used to take the only app
+            # Pod out of rotation, and the whole site answered 502 while the
+            # panel could have said what was wrong.
             'readinessProbe': {'httpGet': {'path': '/api/readyz', 'port': port}, 'periodSeconds': 5} if app else
                               {'tcpSocket': {'port': port}, 'periodSeconds': 5}}
         if app:

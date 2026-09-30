@@ -59,6 +59,22 @@ def chain(name, done, visiting):
     visiting.remove(name)
 
 
+def data_schema(root):
+    """The data schema version the server at this source writes.
+
+    It used to be a literal 1 here while destructive migrations shipped, so the
+    rollback check in cluster.sh compared 1 with 1 and could never refuse. The
+    number lives in one place, next to the code that migrates the database
+    (server/src/data-schema.ts), and is read from the archived source, never
+    from the working tree.
+    """
+    source = (pathlib.Path(root) / 'server/src/data-schema.ts').read_text()
+    found = re.findall(r'^export const DATA_SCHEMA_VERSION = ([0-9]+)\s*$', source, re.MULTILINE)
+    if len(found) != 1 or int(found[0]) < 1:
+        raise ValueError('server/src/data-schema.ts must declare exactly one DATA_SCHEMA_VERSION = <positive integer>')
+    return int(found[0])
+
+
 def build(tag, dockerfile, context, args, metadata, target=None):
     cmd = ['docker', 'buildx', 'build', '--platform', 'linux/amd64', '--push',
            '--provenance=mode=max', '--sbom=true', '--metadata-file', str(metadata),
@@ -127,9 +143,13 @@ def main():
         if not release.image_reference(args.gpu_device_plugin_image):
             parser.error('GPU environments require --gpu-device-plugin-image pinned by sha256')
         gpu_tooling = {'toolkitVersion': args.gpu_toolkit_version, 'devicePluginImage': args.gpu_device_plugin_image}
+    # Every migration runs forward from any older file, so a release opens data
+    # of its own schema and of every earlier one, and nothing newer.
+    schema = data_schema(ROOT)
     node, python = pinned('node:22-bookworm-slim'), pinned('python:3.11-slim-bookworm')
     value = {'schemaVersion': 1, 'version': args.version, 'sourceCommit': args.source_commit,
-        'k3sVersion': args.k3s_version, 'dataSchemaVersion': 1, 'compatibleDataSchemaVersions': [1],
+        'k3sVersion': args.k3s_version, 'dataSchemaVersion': schema,
+        'compatibleDataSchemaVersions': list(range(1, schema + 1)),
         'buildInputs': {'nodeImage': node, 'pythonImage': python},
         'catalog': {'schemaVersion': 1, 'release': args.version,
             'defaultEnvironment': args.default_environment, 'environments': []}}

@@ -19,8 +19,10 @@ on:
         description: Exact tested k3s release (vX.Y.Z+k3sN)
         required: true
       environments:
-        description: Comma-separated environment names
-        default: base,cv,gpu
+        # Names of kernel/environments/<name>.txt at the tag. base-gpu also
+        # needs the two GPU pins below.
+        description: Comma-separated environment names (base, kaggle-base, base-gpu)
+        default: base,kaggle-base
         required: true
       gpu_toolkit_version:
         description: Exact NVIDIA apt package version (required for GPU catalogs)

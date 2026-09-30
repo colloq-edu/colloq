@@ -95,7 +95,7 @@ KERNEL_GPUS KERNEL_SHM KERNEL_OWN_MAX KERNEL_OWN_PIDS KERNEL_OWN_IDLE_MIN PUBLIC
 TRUSTED_PROXIES TRUST_CF_CONNECTING_IP SHARED_ADDRESSES HSTS
 HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy NODE_EXTRA_CA_CERTS
 DEPENDENCY_INDEX_URL DEPENDENCY_FILES_HOSTS COLLOQ_ROOM_NETWORK KERNEL_BLOCKED_CIDRS COLLOQ_HELPER_IMAGE
-BACKUP_KEEP COLLOQ_OFFLINE COLLOQ_ON_VAST"
+BACKUP_KEEP BACKUP_AGE_RECIPIENT COLLOQ_ALLOW_SCHEMA_DOWNGRADE COLLOQ_OFFLINE COLLOQ_ON_VAST"
 
 # Host-side settings `up` remembers in the same file, so that a later `update`,
 # `restore` or `backup` acts on the same layout (see setting above). They reach
@@ -596,7 +596,16 @@ restore() {
   [ -t 0 ] && tty=(-it)
   say "stopping $NAME: a database is never swapped under a running server"
   docker stop -t 30 "$NAME" >/dev/null 2>&1 || true
+  # An encrypted backup opens with the age identity, a file on this host that
+  # must not live next to the archives: mounted read-only at the same path for
+  # this one container, and never written into colloq.env.
+  local identity=()
+  if [ -n "${BACKUP_AGE_IDENTITY:-}" ]; then
+    [ -f "$BACKUP_AGE_IDENTITY" ] || die "BACKUP_AGE_IDENTITY=$BACKUP_AGE_IDENTITY is not a file on this machine"
+    identity=(-v "$BACKUP_AGE_IDENTITY:$BACKUP_AGE_IDENTITY:ro" -e "BACKUP_AGE_IDENTITY=$BACKUP_AGE_IDENTITY")
+  fi
   docker run --rm ${tty[@]+"${tty[@]}"} -v "$STATE:$STATE" -e "COLLOQ_HOME=$STATE" -e "REPLACE=${REPLACE:-}" \
+    ${identity[@]+"${identity[@]}"} \
     "$img" restore "$@" || { docker start "$NAME" >/dev/null 2>&1 || true; die "restore failed; $NAME is back as it was"; }
   # The image is recorded only now: a restore that failed leaves the instance on
   # the version it had. run_container then starts the same container, or,

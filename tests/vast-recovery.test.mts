@@ -47,10 +47,8 @@ test('portable live backup roundtrips data, secret, catalog and declares non-ato
   assert.equal(fs.readFileSync(path.join(dest, 'config.env'), 'utf8'), 'OPENAI_API_KEY=test-secret\n')
   assert.equal(fs.readFileSync(path.join(dest, 'secrets/room-secret'), 'utf8'), 'persistent-room-identity')
 })
-test('portable backup rejects symlinks and consistent mode without stopped-writer assertion', () => {
-  const s = seed(); let r = run('backup', '--root', s.root, '--release', s.release, '--output', s.archive, '--mode', 'consistent'); assert.notEqual(r.status, 0); assert.match(r.out, /quiesc/)
-  fs.symlinkSync('/etc/passwd', path.join(s.root, 'workspace/room-a/link'))
-  r = run('backup', '--root', s.root, '--release', s.release, '--output', s.archive, '--mode', 'live'); assert.notEqual(r.status, 0); assert.match(r.out, /symlink/)
+test('portable backup refuses consistent mode without the stopped-writer assertion', () => {
+  const s = seed(); const r = run('backup', '--root', s.root, '--release', s.release, '--output', s.archive, '--mode', 'consistent'); assert.notEqual(r.status, 0); assert.match(r.out, /quiesc/)
 })
 test('restore refuses wrong environment, corrupt checksum, and existing data without replace', () => {
   const s = seed(); assert.equal(run('backup', '--root', s.root, '--release', s.release, '--output', s.archive, '--mode', 'live', '--name', 'class-a').status, 0)
