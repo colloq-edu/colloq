@@ -335,4 +335,11 @@ fi
 # long been about the portable k3s backup and answers "ARCHIVE is required" to a
 # pair of files; besides, not everyone who took this backup has make. The paths
 # are from the state root, that is, from the directory where they actually lie.
-say "${DIM}restore it back: $back${OFF}"
+# The server image names its own way back (colloq-host restore): the pip
+# command does not exist there, and a hint that sends an operator to a missing
+# command is worse than none.
+if [ -n "${COLLOQ_RESTORE_HINT:-}" ]; then
+  say "${DIM}restore it back: ${COLLOQ_RESTORE_HINT} $SHOW$out${OFF}"
+else
+  say "${DIM}restore it back: $back${OFF}"
+fi

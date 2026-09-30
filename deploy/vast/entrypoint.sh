@@ -799,11 +799,10 @@ link() {
 
 backup() {
   cd "$APP"
-  bash scripts/backup-local.sh
-  # The script's hint names the command of the pip wheel
-  # (`colloq restore --legacy`), which does not exist on the VM; here the way
-  # back is colloq-host.
-  say "restore on a machine running this image: colloq-host restore backups/<the .db above>"
+  # The script's own hint names the command of the pip wheel
+  # (`colloq restore --legacy`), which does not exist here; on a machine
+  # running this image the way back is colloq-host.
+  COLLOQ_RESTORE_HINT="REPLACE=1 colloq-host restore" bash scripts/backup-local.sh
 }
 
 restore() {

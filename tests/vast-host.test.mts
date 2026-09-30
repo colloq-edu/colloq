@@ -289,6 +289,20 @@ test('off Vast, up leaves the host update policy alone and trusts the local prox
   } finally { m.done() }
 })
 
+test('an nvidia-smi that fails is not taken for a list of cards (30 Sep 2026, a driver update under the loaded module)', () => {
+  const m = machine({ registry: { [APP]: appImage('sha256:aaa1', '0.9.0') } })
+  try {
+    // nvidia-smi prints this on stdout and exits non-zero.
+    fs.writeFileSync(path.join(m.bin, 'nvidia-smi'), '#!/bin/sh\necho "Failed to initialize NVML: Driver/library version mismatch"\necho "NVML library version: 580.178"\nexit 18\n', { mode: 0o755 })
+    const r = m.run(['up'], { COLLOQ_IMAGE: APP, PUBLIC_URL: 'https://colloq.example.edu', COLLOQ_TUNNEL: 'none' })
+    assert.equal(r.status, 0, r.out)
+    assert.doesNotMatch(m.envFile(), /KERNEL_GPUS/, 'an error message is not a list of cards')
+    assert.match(r.out, /nvidia-smi does not answer \(Failed to initialize NVML/)
+    const d = m.run(['doctor'], {})
+    assert.match(d.out, /WARN\s+gpu\s+nvidia-smi fails/)
+  } finally { m.done() }
+})
+
 test('COLLOQ_FREEZE_UPDATES=1 (the Vast on-start) switches automatic updates off and holds the NVIDIA packages', () => {
   const m = machine({ registry: { [APP]: appImage('sha256:aaa1', '0.9.0') } })
   try {

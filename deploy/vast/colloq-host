@@ -295,10 +295,17 @@ ensure_gpu() {
   if [ -z "$(env_value KERNEL_GPUS)" ]; then
     local gpus
     gpus="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | paste -sd, - || true)"
-    if [ -n "$gpus" ]; then
-      printf 'KERNEL_GPUS=%s\n' "$gpus" >> "$ENV_FILE"
-      say "rooms on GPU environments get one of: $gpus"
-    fi
+    # nvidia-smi prints its failures on stdout: after a driver update under the
+    # loaded kernel module (30 Sep 2026, on a VM that kept unattended-upgrades)
+    # this line read "Failed to initialize NVML: Driver/library version
+    # mismatch", and it went into KERNEL_GPUS as a list of cards. Only numbers
+    # are a list; anything else is a machine that needs a reboot.
+    case "$gpus" in
+      '') : ;;
+      *[!0-9,]*) warn "nvidia-smi does not answer (${gpus%%,*}): GPU rooms get no card until this is fixed; after a driver update that is usually a reboot" ;;
+      *) printf 'KERNEL_GPUS=%s\n' "$gpus" >> "$ENV_FILE"
+         say "rooms on GPU environments get one of: $gpus" ;;
+    esac
   fi
 }
 
@@ -1186,8 +1193,9 @@ doctor() {
     done
     if command -v nvidia-smi >/dev/null 2>&1; then
       local cards
-      cards="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | paste -sd, - || true)"
-      if docker info 2>/dev/null | grep -qi nvidia; then report INFO gpu "${cards:-an NVIDIA GPU}; nvidia-container-toolkit present"
+      if ! cards="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>&1 | paste -sd, -)" || ! nvidia-smi -L >/dev/null 2>&1; then
+        report WARN gpu "nvidia-smi fails (${cards%%,*}): GPU rooms get no card; after a driver update that is usually a reboot"
+      elif docker info 2>/dev/null | grep -qi nvidia; then report INFO gpu "${cards:-an NVIDIA GPU}; nvidia-container-toolkit present"
       else report WARN gpu "an NVIDIA GPU without nvidia-container-toolkit: GPU rooms get no card (colloq-host up installs it when online)"
       fi
     fi
