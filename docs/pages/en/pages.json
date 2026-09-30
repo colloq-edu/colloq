@@ -61,16 +61,22 @@
     "description": "Turn a live notebook into reading material and keep one link for the whole course."
   },
   {
+    "slug": "kubernetes",
+    "group": "server",
+    "title": "Colloq in your Kubernetes",
+    "description": "A Helm chart in one namespace of a corporate cluster: permissions, security, network, storage, a registry mirror, installing with Helm or ArgoCD, and operations."
+  },
+  {
     "slug": "server",
     "group": "server",
     "title": "Your own server (university)",
-    "description": "One dedicated VM behind the university's reverse proxy and a ready-made image: resources, network, installation, backups and updates."
+    "description": "Two ways: a Helm chart in your Kubernetes, or one dedicated VM behind the university's reverse proxy. The rest of this page covers the VM: resources, network, installation, backups and updates."
   },
   {
     "slug": "install",
     "group": "server",
     "title": "Installing on k3s",
-    "description": "A preview path: one Linux amd64 server with k3s, an exact release and a separate Pod for each room."
+    "description": "A preview for those without a cluster: a script installs single-node k3s on Linux amd64, an exact release and a separate Pod for each room."
   },
   {
     "slug": "language",

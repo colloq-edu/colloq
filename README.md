@@ -59,8 +59,8 @@ for questions, or individual attempts the teacher brings back to the room.
   lecture console for an iPad and pen, and a council console for reviewing
   individual answers.
 - **For students:** a browser is all it takes, and the same link brings you back.
-- **For operators:** a laptop for one class, one Linux VM with k3s for a term, or
-  a rented GPU box for a deep-learning course.
+- **For operators:** a laptop for one class, your own Kubernetes or one Linux VM
+  for a term, or a rented GPU box for a deep-learning course.
 
 > **Status:** pre-1.0; the version badge above carries the current one. Colloq
 > runs the author's own courses. Before 1.0 a release can still change how
@@ -370,19 +370,33 @@ still gets its own kernel container.
 backups and building the image (`make vast-image`); read its *What has been
 verified* section before relying on it for a class. The k3s path in
 [docs/deployment-vast.md](docs/deployment-vast.md) isolates rooms more strictly
-but is a preview: no release up to and including 0.8.4 has published its bundle.
+but is a preview: no release up to and including 0.9.0 has published its bundle.
 
 ## Deploy for a real class
 
-For a university, run the server image `ghcr.io/colloq-edu/colloq-server` with
-`colloq-host` on one dedicated Linux amd64 VM behind your own HTTPS reverse
-proxy. Each room still gets its own kernel container; the app holds the Docker
-socket, so the VM belongs to Colloq alone. Sizing, inbound and outbound access,
-nginx and Caddy settings, backups and updates are in the guide
-[Your own server (university)](https://colloq.cc/docs/en/server.html).
+There are two ways to run Colloq for an institution:
 
-The k3s path below is a **preview**: no release up to and including 0.8.4
-carries its deployment bundle (`release.json`, `colloq-deploy.tar.gz`,
+- **In your own Kubernetes.** The Helm chart
+  `oci://ghcr.io/colloq-edu/charts/colloq` goes into one namespace: no
+  cluster-admin and no cluster-scoped objects, restricted Pod Security,
+  network policies for every flow, images pinned by digest and rewritten to
+  your registry mirror, and secrets taken from existing Secrets (Vault,
+  External Secrets), so ArgoCD sees no drift. A non-root app calls a private
+  runtime broker, the only component with Kubernetes credentials, which
+  creates a separate Jupyter Pod for each room. The guide
+  [Colloq in your Kubernetes](https://colloq.cc/docs/en/kubernetes.html) is
+  written for the platform team: assumptions, permissions, network flows,
+  storage, sizing, upgrades and backups.
+- **On one VM.** Run the server image `ghcr.io/colloq-edu/colloq-server` with
+  `colloq-host` on one dedicated Linux amd64 VM behind your own HTTPS reverse
+  proxy. Each room still gets its own kernel container; the app holds the
+  Docker socket, so the VM belongs to Colloq alone. Sizing, inbound and
+  outbound access, nginx and Caddy settings, backups and updates are in the
+  guide [Your own server (university)](https://colloq.cc/docs/en/server.html).
+
+The single-node k3s path below is a **preview** for those without a cluster:
+a script installs k3s on a bare VM by itself. No release up to and including
+0.9.0 carries its deployment bundle (`release.json`, `colloq-deploy.tar.gz`,
 `SHA256SUMS`), so it cannot be installed from published artifacts yet. It runs
 on **one Linux amd64 VM with k3s/containerd**. A non-root web app
 calls a private runtime broker, which creates a separate Jupyter Pod, token and
@@ -412,8 +426,10 @@ and require a real CUDA preflight.
 
 | Operator guide | What it covers |
 | --- | --- |
+| [Colloq in your Kubernetes](https://colloq.cc/docs/en/kubernetes.html) | The Helm chart in one namespace of your cluster: assumptions, permissions, network flows, storage, registry mirror, ArgoCD, sizing and operations. |
+| [Helm chart](deploy/helm/colloq/README.md) | Every value of the chart and the environment variable it sets. |
 | [Your own server (university)](https://colloq.cc/docs/en/server.html) | The server image with `colloq-host` on a dedicated VM: sizing, network access, reverse proxy, settings, backups, updates and personal data. |
-| [Single-node deployment](deploy/k3s/README.md) | The k3s preview: releases, installation, environments, storage, updates, rollback and GPU prerequisites. |
+| [Single-node deployment](deploy/k3s/README.md) | The single-node k3s preview for those without a cluster: releases, installation, environments, storage, updates, rollback and GPU prerequisites. |
 | [Runtime boundary](runtime/README.md) | Broker API, credentials, room lifecycle and isolation limits. |
 | [Vast VM with k3s](docs/deployment-vast.md) | Renting a VM, registry credentials, named backups and recovery. Rental and disk destruction require confirmation. |
 | [Vast VM with one image](deploy/vast/README.md) | The `colloq-vast` image, its template and on-start script. |
@@ -535,7 +551,7 @@ without a restart.
 | `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | Application upload limits; these do not limit arbitrary writes from Python. |
 | `COUNCIL_COPY_MB` | How much memory one council attempt may spend on personal copies of the room's data (512 by default). Anything above the budget stays shared, and the attempt is told so in its own output. Copy-on-write pandas copies cost nothing and are not counted. |
 | `COUNCIL_MEMORY_GUARD` | Cap the address space of a council attempt at the container's memory limit minus what is already in use (`1` by default; `0` turns it off). A greedy attempt then fails with `MemoryError` on its own card instead of the OOM killer taking the notebook's kernel and everybody's variables. Skipped automatically where it cannot work: outside Linux, without a cgroup limit, or with CUDA nearby. |
-| `COMPETITION_BACKEND` | `broker` executes competition notebooks, metrics and package preparation in isolated k3s Pods with pinned catalog images; it is selected automatically by the production broker deployment. `docker` uses throwaway containers on the local Docker (`colloq start`, `make up`, the server image). `test` is a non-executing stand-in and requires `NODE_ENV=test`. The app refuses submissions when the selected executor or preparation capability is unavailable; `/api/health` reports each capability separately. Production does not need a Docker socket in the app Pod. |
+| `COMPETITION_BACKEND` | `broker` executes competition notebooks, metrics and package preparation in isolated Kubernetes Pods with pinned catalog images (the Helm chart or the k3s preview); it is selected automatically by the production broker deployment. `docker` uses throwaway containers on the local Docker (`colloq start`, `make up`, the server image). `test` is a non-executing stand-in and requires `NODE_ENV=test`. The app refuses submissions when the selected executor or preparation capability is unavailable; `/api/health` reports each capability separately. Production does not need a Docker socket in the app Pod. |
 | `DATA_HOST_DIR` | The competition directory as the Docker daemon sees it — what `WORKSPACE_HOST_DIR` is to rooms. Leave it unset on a host-native server. Under `make up` the server itself lives in a container, and without this a submission silently receives an empty directory instead of its data. |
 
 </details>
@@ -572,7 +588,8 @@ The guides at **[colloq.cc/docs](https://colloq.cc/docs/en/)** cover installing,
 running a class, room rules, lectures, council, the Oracle, competitions,
 environments, publishing, networking, backups and updates, in
 [English](https://colloq.cc/docs/en/) and [Russian](https://colloq.cc/docs/).
-Operator and developer references live next to the code: [deploy/k3s](deploy/k3s/README.md),
+Operator and developer references live next to the code:
+[deploy/helm/colloq](deploy/helm/colloq/README.md), [deploy/k3s](deploy/k3s/README.md),
 [deploy/vast](deploy/vast/README.md), [runtime](runtime/README.md),
 [tests](tests/README.md), [cli](cli/README.md) and [python](python/README.md).
 This page in Russian: [README.ru.md](README.ru.md).
@@ -587,10 +604,11 @@ they agree. Versions are never bumped by hand. Commits on `main` follow
 [release-please](https://github.com/googleapis/release-please) keeps a release
 pull request open that bumps every copy and adds the changelog section. Merging
 that pull request tags `vX.Y.Z`, creates the GitHub Release and attaches the pip
-wheel; a separate workflow publishes that wheel to PyPI and pushes the images to
-GHCR; the k3s release bundle is a separate manual workflow, and no release up to
-and including 0.8.4 has published one. A running server reports
-its version at `/api/health`.
+wheel; a separate workflow publishes that wheel to PyPI, pushes the images to
+GHCR and the Helm chart, with the release's digests in its values, to
+`oci://ghcr.io/colloq-edu/charts/colloq`; the k3s release bundle is a separate
+manual workflow, and no release up to and including 0.9.0 has published one. A
+running server reports its version at `/api/health`.
 
 What changed is in [CHANGELOG.md](CHANGELOG.md); how a release is cut is in
 [RELEASING.md](RELEASING.md).
@@ -639,7 +657,7 @@ in Russian.
 | [`kernel/`](kernel/) | Python kernel image and environment definitions. |
 | [`cli/`](cli/) | The `colloq` command and the supervisor behind `make dev`. |
 | [`python/`](python/) | The pip package that carries the built app and the `colloq` command. |
-| [`deploy/`](deploy/) · [`scripts/`](scripts/) | Release tooling, the k3s and Vast deployments, hosting and operations. |
+| [`deploy/`](deploy/) · [`scripts/`](scripts/) | Release tooling, the Helm chart, the k3s and Vast deployments, hosting and operations. |
 | [`site/`](site/) · [`docs/`](docs/) | The colloq.ru landing page and guides (sources in `docs/pages`, built by `docs/build.py`), plus operator notes in `docs/`. |
 | [`tests/`](tests/) | The `node --test` unit suite; its README explains how the run is set up. |
 
