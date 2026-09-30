@@ -23,6 +23,12 @@
 # and its output, a file, and a cell that must reach neither the internet nor
 # the Kubernetes API; one competition submission goes through the queue. On
 # failure the cluster is dumped into the log.
+#
+# Twice, side by side: on the Kubernetes the competition smoke pins, and on the
+# oldest one the chart accepts (Chart.yaml kubeVersion, "1.30 or newer" in the
+# docs), since a bank's cluster is rarely the newest. The competition Pod that
+# mounted one claim through two volumes and hung (fixed in 0.10.0) was found by
+# hand on a 1.31 cluster, not here.
 name: Kubernetes end-to-end
 
 on:
@@ -50,20 +56,33 @@ concurrency:
 
 jobs:
   helm-k3d:
-    name: Helm chart on k3d with two agents and default deny
+    name: Helm chart on k3d ${{ matrix.kubernetes }} with two agents and default deny
     runs-on: ubuntu-24.04
     # About fifteen minutes with warm build caches (ci.yml keeps the app and
     # kernel ones), under twenty-five cold; the limit only stops a hang.
     timeout-minutes: 40
+    strategy:
+      # One version failing says nothing about the other; let both finish.
+      fail-fast: false
+      matrix:
+        include:
+          # The k3s the competition smoke pins (scripts/competition-k3s-smoke.mts).
+          - kubernetes: '1.36'
+            k3s-image: rancher/k3s:v1.36.4-k3s1
+            kubectl: v1.36.4
+          # The oldest the chart accepts; no in-place resize there, which the
+          # broker reports as unsupported. kubectl follows the server's minor.
+          - kubernetes: '1.30'
+            k3s-image: rancher/k3s:v1.30.14-k3s2
+            kubectl: v1.30.14
     env:
       CLUSTER: colloq-e2e
       REGISTRY: colloq-e2e-registry
       REGISTRY_PORT: '5000'
       NAMESPACE: colloq-e2e
-      # The k3s and k3d the competition smoke pins (scripts/competition-k3s-smoke.mts).
-      K3S_IMAGE: rancher/k3s:v1.36.4-k3s1
+      K3S_IMAGE: ${{ matrix.k3s-image }}
       K3D_VERSION: v5.9.0
-      KUBECTL_VERSION: v1.36.4
+      KUBECTL_VERSION: ${{ matrix.kubectl }}
       # The helm publish.yml packages the chart with.
       HELM_VERSION: v3.19.0
       HELM_SHA256: a7f81ce08007091b86d8bd696eb4d86b8d0f2e1b9f6c714be62f82f96a594496

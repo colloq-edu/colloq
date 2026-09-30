@@ -558,13 +558,27 @@ test('the end-to-end workflow runs on chart and runtime changes, nightly and by 
   assert.ok(minutes >= 25 && minutes <= 45, `timeout ${minutes}`)
 })
 
-test('the end-to-end cluster is the pinned k3s with two agents, and the namespace denies everything before the chart', () => {
+test('the end-to-end cluster is the pinned k3s and the oldest the chart accepts, with two agents, and the namespace denies everything before the chart', () => {
   const pin = (key: string) => new RegExp(`\\n {6}${key}: (\\S+)\\n`).exec(E2E)?.[1]
-  // The same k3s and k3d as the competition smoke.
+  const entries = [...E2E.matchAll(/\n {10}- kubernetes: '(\d+\.\d+)'\n {12}k3s-image: (\S+)\n {12}kubectl: (\S+)\n/g)]
+    .map(([, minor, image, kubectl]) => ({ minor: minor!, image: image!, kubectl: kubectl! }))
+  assert.equal(entries.length, 2, 'two Kubernetes versions')
+  for (const entry of entries) {
+    // Each entry is the Kubernetes it says, with the kubectl of the same version.
+    const version = /^rancher\/k3s:v(\d+\.\d+\.\d+)-k3s\d+$/.exec(entry.image)?.[1]
+    assert.ok(version?.startsWith(`${entry.minor}.`), `${entry.image} is not Kubernetes ${entry.minor}`)
+    assert.equal(entry.kubectl, `v${version}`)
+  }
+  // The same k3s as the competition smoke...
   const smokeImage = /k3sImage: '([^']+)'/.exec(read('scripts/competition-k3s-smoke.mts'))?.[1]
-  assert.equal(pin('K3S_IMAGE'), smokeImage)
+  assert.ok(entries.some((entry) => entry.image === smokeImage), `no entry runs ${smokeImage}`)
+  // ...and the oldest Kubernetes the chart installs on.
+  const oldest = /\nkubeVersion: ">=(\d+\.\d+)\.0-0"\n/.exec(read('deploy/helm/colloq/Chart.yaml'))?.[1]
+  assert.ok(oldest && entries.some((entry) => entry.minor === oldest), `no entry runs Kubernetes ${oldest}`)
+  assert.match(E2E, /\n {6}fail-fast: false\n/)
+  assert.match(E2E, /\n {6}K3S_IMAGE: \$\{\{ matrix\.k3s-image \}\}\n/)
+  assert.match(E2E, /\n {6}KUBECTL_VERSION: \$\{\{ matrix\.kubectl \}\}\n/)
   assert.equal(pin('K3D_VERSION'), /k3d\/releases\/download\/(v[\d.]+)\/k3d-linux-amd64/.exec(read('.github/workflows/competition-k3s-smoke.yml'))?.[1])
-  assert.equal(pin('KUBECTL_VERSION'), 'v' + /K3S_IMAGE: rancher\/k3s:v([\d.]+)-k3s\d+/.exec(E2E)?.[1])
   const create = runBlock(E2E, 'Create the registry and a cluster of one server and two agents')
   assert.match(create, /--servers 1 --agents 2 /)
   assert.match(create, /--registry-use "k3d-\$REGISTRY:5000"/)
