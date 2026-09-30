@@ -247,13 +247,15 @@ test('the chart catalog and release.json come out of one function', () => {
   const dir = tempDir('colloq-chart-values-same-')
   try {
     const out = path.join(dir, 'release.json')
-    const code = `import importlib.util,sys,json
+    // The kernel tag's environment is read without the version: the tree's
+    // version moves with every release, and a pinned one broke the release PR.
+    const code = `import importlib.util,sys,json,re
 s=importlib.util.spec_from_file_location('builder',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
 m.archive_source=lambda repo,commit,dest: repo
 m.pinned=lambda base: base+'@sha256:'+'0'*64
 m.release.tooling_hashes=lambda root: {f:'0'*64 for f in m.release.TOOLING_FILES}
 digests={'base':'b','kaggle-base':'c'}
-m.build=lambda tag,*args,**kw: tag.rsplit(':',1)[0]+'@sha256:'+digests.get(tag.rsplit('-kernel:v0.9.0-',1)[-1],'a')*64
+m.build=lambda tag,*args,**kw: tag.rsplit(':',1)[0]+'@sha256:'+digests.get(re.sub(r'^v[0-9]+[.][0-9]+[.][0-9]+-','',tag.rsplit(':',1)[-1]) if '-kernel:' in tag else '','a')*64
 sys.argv=['release-build.py','--registry','ghcr.io/colloq-edu/colloq','--k3s-version','v1.36.4+k3s1','--source-commit','a'*40,'--output',sys.argv[2]]
 m.main()
 `
