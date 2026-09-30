@@ -356,6 +356,12 @@ type = "http"
 localIP = "127.0.0.1"
 localPort = ${PORT}
 subdomain = "${sub}"
+# frps hands the request on as plain http and writes X-Forwarded-Proto itself,
+# so the "https" caddy sets never arrives: the server took every student behind
+# the relay for plain http, with no Secure on its cookies and no HSTS (seen
+# through a relay on 30 Sep 2026). The relay serves names only over https
+# (caddy redirects plain http), so this line states a fact.
+requestHeaders.set.x-forwarded-proto = "https"
 CONF
   )
   : > "$TUNNEL_LOG"

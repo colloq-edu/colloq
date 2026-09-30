@@ -100,6 +100,16 @@ test('static files go to the relay after the tunnel, and a failure is not fatal'
   assert.equal(/\bdie\b/.test(body), false, 'a failed mirror upload brings down make host')
 })
 
+test('behind the relay the server is told the student came over https', () => {
+  // frps writes X-Forwarded-Proto itself (plain http), so caddy's "https" never
+  // arrives; without this line cookies behind the relay lost Secure and HSTS
+  // was never sent (30 Sep 2026). Both frpc configs: make host and the image.
+  const image = read('deploy/vast/entrypoint.sh')
+  for (const [name, text] of [['scripts/host.sh', host], ['deploy/vast/entrypoint.sh', image]] as const) {
+    assert.match(text, /^requestHeaders\.set\.x-forwarded-proto = "https"$/m, `${name} lost the https mark`)
+  }
+})
+
 test('the tunnel keeps spare connections and does not compress what is already compressed', () => {
   assert.match(host, /transport\.poolCount = 5/)
   assert.match(relay, /transport\.maxPoolCount = 10/)
