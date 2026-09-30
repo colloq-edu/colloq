@@ -1,97 +1,162 @@
 #!/usr/bin/env bash
 #
-# colloq-host — Colloq на машине с docker: поднять, обновить, снять копию.
+# colloq-host: Colloq on a machine with Docker. Bring it up, update it, back it up.
 #
-#   colloq-host up                 поставить недостающее, вытянуть образ, запустить
-#   colloq-host update [ОБРАЗ]     перейти на другой образ; данные и ядра комнат остаются
-#   colloq-host status             готов ли инстанс вести пару
-#   colloq-host link               адрес для аудитории и ссылка входа владельца
-#   colloq-host logs               журнал Colloq (Ctrl+C — выйти)
-#   colloq-host backup             копия занятия в /workspace/colloq/backups/
-#   colloq-host restore [ФАЙЛЫ]    развернуть копию: остановить, развернуть, запустить
-#   colloq-host stop | start       остановить / запустить Colloq (ядра комнат живут дальше)
+#   colloq-host doctor               is this machine ready (before the first up, without the container)
+#   colloq-host up                   install what is missing, pull the image, start
+#   colloq-host update [IMAGE]       switch to another image, backup first; data and room kernels stay
+#   colloq-host status               is the instance ready for a class
+#   colloq-host link                 the class address and the owner's link
+#   colloq-host logs                 the Colloq log (Ctrl+C to leave)
+#   colloq-host backup               a backup into <state>/backups/
+#   colloq-host backup-timer on|off|status    the same every night, by a systemd timer
+#   colloq-host restore [--image IMAGE] [FILES]   stop, restore a backup, start again
+#   colloq-host stop | start         stop / start Colloq (room kernels keep running)
+#   colloq-host bundle FILE [IMAGE]  on a connected machine: everything an offline server needs, in one file
+#   colloq-host load FILE            on the offline server: load that file; up then needs no network
 #
-# Кладёт его на машину сам образ (`colloq-vast install-host`), и зовёт его
-# on-start шаблона vast (deploy/vast/onstart.sh). Работает от root.
+# The image puts it on the machine (`colloq-vast install-host`). On a Vast VM
+# the template's on-start (deploy/vast/onstart.sh) calls it; on a server of
+# your own a person does (docs/pages/en/server.html). Runs as root, apart from
+# doctor and bundle.
 #
-# ЗАЧЕМ ОН ВООБЩЕ, ЕСЛИ ВСЁ В ОБРАЗЕ. На Vast VM образом шаблона может быть
-# только docker.io/vastai/kvm:* — свой образ vast поднимает лишь как обычный
-# Docker-инстанс, а там нет docker внутри, то есть нет своего контейнера у
-# комнаты (разбор — deploy/vast/README.md, «Design»). Значит, на VM кто-то
-# должен один раз сказать `docker run` с сокетом и каталогом состояния. Этот
-# файл и есть этот `docker run` — плюс то, что прежде делал ssh-скрипт
-# scripts/vast-legacy.sh: nvidia-container-toolkit, список карт, копии. Сборки
-# на арендованной машине больше нет: образ приезжает готовым.
+# WHY IT EXISTS WHEN EVERYTHING IS IN THE IMAGE. Somebody has to say
+# `docker run` once, with the Docker socket and the state directory, and say it
+# again after every update. On a Vast VM the template's image can only be
+# docker.io/vastai/kvm:* (an image of your own runs only as an ordinary Docker
+# instance, with no Docker inside and so no container per room; see
+# deploy/vast/README.md, "Design"), and a university's own server has the same
+# need without the rental. This file is that `docker run`, plus what the ssh
+# script scripts/vast-legacy.sh used to do: nvidia-container-toolkit, the list
+# of cards, backups. Nothing is built on the machine: the image arrives ready.
 #
-# Настройки — /etc/colloq/colloq.env (0600): их пишет `up` из переменных
-# окружения, с которыми его позвали (on-start), и перечитывает `update`.
-# Переменные, которых при вызове нет (или они пусты), из файла не стираются.
+# Settings live in /etc/colloq/colloq.env (0600): `up` writes them from the
+# environment it is called with (the on-start, or a person), and `update` reads
+# them again. A variable that is missing or empty in the call does not erase its
+# line in the file.
 #
-# Образ — /etc/colloq/image, и тут правило обратное: COLLOQ_IMAGE из on-start
-# только ЗАВОДИТ файл, а дальше им владеет `update`. См. image() ниже.
+# The image lives in /etc/colloq/image, and there the rule is the reverse:
+# COLLOQ_IMAGE from the on-start only creates the file, and from then on
+# `update` and `load` own it. See image() below.
+#
+# NOTHING ON THE HOST CHANGES UNASKED. Automatic updates are switched off and
+# the NVIDIA packages held only under COLLOQ_FREEZE_UPDATES=1, which the Vast
+# on-start sets (freeze_host_updates says why). A university's server keeps its
+# own update policy: its administrators decide when the kernel and the driver
+# move, and a script that quietly turned security updates off on a long-lived
+# machine would be the worst kind of help.
 set -euo pipefail
 
-STATE="${COLLOQ_HOME:-/workspace/colloq}"
-CONF_DIR=/etc/colloq
+CONF_DIR="${COLLOQ_CONF_DIR:-/etc/colloq}"
 ENV_FILE="$CONF_DIR/colloq.env"
 IMAGE_FILE="$CONF_DIR/image"
-NAME="${COLLOQ_CONTAINER_NAME:-colloq}"
-NET="${KERNEL_NETWORK:-colloq}"
-PORT="${PORT:-3000}"
+# Where the on-start and the docs put colloq-host, and where `load` installs the
+# bundled one.
+HOST_BIN=/usr/local/sbin
+SYSTEMD_DIR="${COLLOQ_SYSTEMD_DIR:-/etc/systemd/system}"
 
 say()  { printf '[colloq-host] %s\n' "$*"; }
 warn() { printf '[colloq-host] WARNING: %s\n' "$*" >&2; }
 die()  { printf '[colloq-host] ERROR: %s\n' "$*" >&2; exit 1; }
 
-[ "$(id -u)" = 0 ] || die "run as root: it manages docker, /etc/colloq and $STATE"
-
-# Что из окружения едет в контейнер. Список, а не «всё подряд»: окружение
-# on-start — это ещё и переменные vast, PATH и прочее, чему в сервере не место.
-# Ключи реестра (COLLOQ_REGISTRY_*) сюда не входят нарочно: они нужны docker
-# хоста, а не процессу, в который попадает код студента через ядро.
-APP_KEYS="PUBLIC_URL COLLOQ_TUNNEL COLLOQ_HOSTNAME RELAY_DOMAIN RELAY_ADDR RELAY_PORT RELAY_TOKEN
-CLOUDFLARE_TUNNEL_TOKEN OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL AI_PROVIDER AI_REASONING
-ADMIN_EMAIL INSTITUTION UI_LANGUAGE TZ SESSION_SECRET OPEN_SEMINAR_CREATION MAX_UPLOAD_MB MAX_SESSION_MB COUNCIL_COPY_MB COUNCIL_MEMORY_GUARD
-KERNEL_ENV KERNEL_PRELOAD KERNEL_IMAGE_REPO KERNEL_IMAGE_TAG KERNEL_MEM KERNEL_CPUS
-KERNEL_GPUS KERNEL_SHM KERNEL_OWN_MAX KERNEL_OWN_PIDS KERNEL_OWN_IDLE_MIN PUBLIC_IPADDR VAST_TCP_PORT_3000"
-
-# ------------------------------------------------------------ настройки
-write_env() {
-  mkdir -p "$CONF_DIR"; chmod 0700 "$CONF_DIR"
-  touch "$ENV_FILE"; chmod 0600 "$ENV_FILE"
-  local key value tmp
-  tmp="$(mktemp "$CONF_DIR/.colloq.env.XXXXXX")"
-  cp "$ENV_FILE" "$tmp"
-  # KERNEL_MEM_<ОКРУЖЕНИЕ> — своя переменная на каждое окружение (pool.ts ·
-  # memoryLimit: gpu → KERNEL_MEM_GPU), и списком их не перечислить заранее:
-  # берём все такие, что есть в окружении вызова.
-  for key in $APP_KEYS $(compgen -e | grep -E '^KERNEL_MEM_[A-Z0-9_]+$' || true); do
-    # Пустое значение — «не задано», а не «стереть»: on-start шаблона
-    # объявляет все переменные, и пустые строки в нём не должны сносить то,
-    # что оператор дописал в файл руками после аренды. Убрать ключ — правкой
-    # файла.
-    value="${!key:-}"
-    [ -n "$value" ] || continue
-    # Формат --env-file у docker не знает кавычек и переносов: значение идёт
-    # как есть до конца строки. Перенос внутри значения сломал бы файл.
-    case "$value" in *$'\n'*) die "$key contains a newline; docker --env-file cannot carry it" ;; esac
-    grep -v "^${key}=" "$tmp" > "$tmp.next" || true
-    mv "$tmp.next" "$tmp"
-    printf '%s=%s\n' "$key" "$value" >> "$tmp"
-  done
-  chmod 0600 "$tmp"; mv -f "$tmp" "$ENV_FILE"
-}
-
 env_value() {
   grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
-# Образ, которым живёт инстанс. Названный явно (`update ОБРАЗ`) — пишется в
-# файл; COLLOQ_IMAGE из окружения — только если файла ещё нет, то есть на
-# первом `up`. Иначе перезагрузка VM после `colloq-host update` откатывала бы
-# инстанс: on-start идёт с тем образом, что стоял в шаблоне при аренде, `up`
-# записал бы его поверх, а старый сервер поднялся бы на базе, которую новый
-# уже перевёл вперёд.
+# The call's own value, else the one `up` remembered, else the default. A
+# setting given once to `up` must still hold for the `update` a month later:
+# losing COLLOQ_HOME there would start the new version on an empty directory,
+# and losing COLLOQ_BIND would cut off a university's proxy on another host.
+setting() {
+  local value="${!1:-}"
+  [ -n "$value" ] || value="$(env_value "$1")"
+  printf '%s' "${value:-${2:-}}"
+}
+
+STATE="$(setting COLLOQ_HOME /workspace/colloq)"
+NAME="$(setting COLLOQ_CONTAINER_NAME colloq)"
+NET="$(setting KERNEL_NETWORK colloq)"
+LISTEN_PORT="$(setting PORT 3000)"
+
+need_root() {
+  [ "$(id -u)" = 0 ] || die "run as root: it manages docker, $CONF_DIR and $STATE"
+}
+
+# What travels from the environment into the container. A list, not everything:
+# the on-start's environment also holds vast's variables, PATH and the like,
+# which have no place in the server. The registry keys (COLLOQ_REGISTRY_*) are
+# left out on purpose: the host's docker needs them, not the process that
+# student code reaches through the kernel.
+APP_KEYS="PUBLIC_URL COLLOQ_TUNNEL COLLOQ_HOSTNAME RELAY_DOMAIN RELAY_ADDR RELAY_PORT RELAY_TOKEN
+CLOUDFLARE_TUNNEL_TOKEN OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL AI_PROVIDER AI_REASONING
+ADMIN_EMAIL INSTITUTION UI_LANGUAGE TZ SESSION_SECRET OPEN_SEMINAR_CREATION MAX_UPLOAD_MB MAX_SESSION_MB COUNCIL_COPY_MB COUNCIL_MEMORY_GUARD
+KERNEL_ENV KERNEL_PRELOAD KERNEL_IMAGE_REPO KERNEL_IMAGE_TAG KERNEL_MEM KERNEL_CPUS
+KERNEL_GPUS KERNEL_SHM KERNEL_OWN_MAX KERNEL_OWN_PIDS KERNEL_OWN_IDLE_MIN PUBLIC_IPADDR VAST_TCP_PORT_3000
+TRUSTED_PROXIES TRUST_CF_CONNECTING_IP SHARED_ADDRESSES HSTS
+HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy NODE_EXTRA_CA_CERTS
+DEPENDENCY_INDEX_URL DEPENDENCY_FILES_HOSTS COLLOQ_ROOM_NETWORK KERNEL_BLOCKED_CIDRS COLLOQ_HELPER_IMAGE
+BACKUP_KEEP COLLOQ_OFFLINE COLLOQ_ON_VAST"
+
+# Host-side settings `up` remembers in the same file, so that a later `update`,
+# `restore` or `backup` acts on the same layout (see setting above). They reach
+# the container's environment too, where they are the values colloq-host passes
+# with -e anyway, or unused.
+HOST_KEYS="COLLOQ_HOME COLLOQ_CONTAINER_NAME KERNEL_NETWORK PORT COLLOQ_BIND COLLOQ_FREEZE_UPDATES"
+
+# ------------------------------------------------------------ settings
+ensure_conf() {
+  mkdir -p "$CONF_DIR"; chmod 0700 "$CONF_DIR"
+  touch "$ENV_FILE"; chmod 0600 "$ENV_FILE"
+}
+
+# docker's --env-file format knows neither quotes nor line breaks: a value runs
+# as is to the end of the line, and a line break inside it would break the file.
+put_line() {
+  local file="$1" key="$2" value="$3"
+  case "$value" in *$'\n'*) die "$key contains a newline; docker --env-file cannot carry it" ;; esac
+  grep -v "^${key}=" "$file" > "$file.next" || true
+  mv "$file.next" "$file"
+  printf '%s=%s\n' "$key" "$value" >> "$file"
+}
+
+write_env() {
+  ensure_conf
+  local key value tmp exported
+  tmp="$(mktemp "$CONF_DIR/.colloq.env.XXXXXX")"
+  cp "$ENV_FILE" "$tmp"
+  # Only what the caller exported: the script's own variables are not settings.
+  exported=" $(compgen -e | tr '\n' ' ') "
+  # KERNEL_MEM_<ENVIRONMENT> is one variable per environment (pool.ts ·
+  # memoryLimit: base-gpu → KERNEL_MEM_BASE_GPU), so they cannot be listed in
+  # advance: every such variable in the caller's environment is taken.
+  for key in $APP_KEYS $HOST_KEYS $(compgen -e | grep -E '^KERNEL_MEM_[A-Z0-9_]+$' || true); do
+    case "$exported" in *" $key "*) ;; *) continue ;; esac
+    # An empty value means "not given", not "erase": the template's on-start
+    # declares every variable, and its empty strings must not wipe what the
+    # operator added to the file by hand after renting. A key is removed by
+    # editing the file.
+    value="${!key:-}"
+    [ -n "$value" ] || continue
+    put_line "$tmp" "$key" "$value"
+  done
+  chmod 0600 "$tmp"; mv -f "$tmp" "$ENV_FILE"
+}
+
+set_env_value() {
+  ensure_conf
+  local tmp
+  tmp="$(mktemp "$CONF_DIR/.colloq.env.XXXXXX")"
+  cp "$ENV_FILE" "$tmp"
+  put_line "$tmp" "$1" "$2"
+  chmod 0600 "$tmp"; mv -f "$tmp" "$ENV_FILE"
+}
+
+# The image the instance lives on. One named explicitly (`update IMAGE`,
+# `load`) is written to the file; COLLOQ_IMAGE from the environment only when
+# there is no file yet, that is, on the first `up`. Otherwise a VM reboot after
+# `colloq-host update` would roll the instance back: the on-start carries the
+# image the template had at rental time, `up` would write it over, and the old
+# server would come up on a database the new one had already moved forward.
 image() {
   local named="${1:-}"
   if [ -n "$named" ]; then
@@ -103,44 +168,97 @@ image() {
   head -1 "$IMAGE_FILE"
 }
 
-# ------------------------------------------------------------- машина
-#
-# Обычная Vast VM (ubuntu_cli) приходит с docker и драйвером; остальное
-# ставится, только если его нет. Тот же набор и те же причины, что у
-# scripts/vast-legacy.sh, минус сборка: Node, npm и исходники машине больше не
-# нужны.
-apt_quiet() {
-  command -v apt-get >/dev/null 2>&1 || return 1
-  # Машина одноразовая: автообновления ей ни к чему, а их замок на dpkg ронял
-  # установку на следующем шаге (13.09.2026). Гасим и ждём, пока отпустят.
-  systemctl disable --now unattended-upgrades apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
-  local _
-  for _ in $(seq 1 200); do
-    fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1 || break
-    sleep 3
-  done
-  DEBIAN_FRONTEND=noninteractive apt-get "$@"
+# The same answer without writing anything: for doctor and bundle.
+configured_image() {
+  local img=""
+  [ ! -s "$IMAGE_FILE" ] || img="$(head -1 "$IMAGE_FILE" 2>/dev/null || true)"
+  printf '%s' "${img:-${COLLOQ_IMAGE:-}}"
 }
 
-# Called on every `up`, not only when apt is needed. On a VM that already had
-# docker and the toolkit, unattended-upgrades stayed on and, 20 minutes after
-# boot, upgraded the NVIDIA userspace to 580.178 while the loaded kernel module
-# stayed 580.95: "Driver/library version mismatch" and no GPU until a reboot
-# (28 Sep 2026). The driver must stay the one the VM booted with.
+offline() { [ "$(setting COLLOQ_OFFLINE)" = 1 ]; }
+
+# A Vast VM: the flag its on-start sets, or, for an on-start copied before the
+# flag existed, what scripts/vast-vm.sh leaves on every VM it rents (the
+# on-start itself, in $CONF_DIR). Those older copies must keep the behaviour
+# they were written for. COLLOQ_ON_VAST=0 says "not Vast" whatever else is here.
+on_vast() {
+  case "$(setting COLLOQ_ON_VAST)" in 1) return 0 ;; 0) return 1 ;; esac
+  [ -f "$CONF_DIR/onstart.sh" ] || [ -n "${VAST_CONTAINERLABEL:-}" ]
+}
+
+# The freeze is asked for (COLLOQ_FREEZE_UPDATES=1, from the Vast on-start) or
+# refused (=0). Unsaid, it follows on_vast: a Vast on-start from before the flag
+# still means a throwaway VM, and anything else means a machine somebody keeps.
+freeze_wanted() {
+  case "$(setting COLLOQ_FREEZE_UPDATES)" in 1) return 0 ;; 0) return 1 ;; esac
+  on_vast
+}
+
+# ------------------------------------------------------------- machine
+#
+# A plain Vast VM (ubuntu_cli) comes with docker and the driver; the rest is
+# installed only when missing. The same set, for the same reasons, as
+# scripts/vast-legacy.sh, minus the build: the machine no longer needs Node,
+# npm or the sources. Offline (COLLOQ_OFFLINE=1) nothing is downloaded at all:
+# what is missing is named, and installing it is the administrator's move.
+
+# Another package manager holds the dpkg lock (unattended-upgrades right after
+# boot, an administrator's apt): wait for it, and say so, instead of failing on
+# the lock or, worse, killing it.
+wait_dpkg_lock() {
+  command -v fuser >/dev/null 2>&1 || return 0
+  local waited=0
+  while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; do
+    if [ "$waited" = 0 ]; then say "another package manager holds the dpkg lock (unattended-upgrades?); waiting for it"; fi
+    waited=$((waited + 3))
+    [ "$waited" -lt 600 ] || { warn "the dpkg lock is still held after 10 minutes; trying anyway"; return 0; }
+    sleep 3
+  done
+}
+
+apt_quiet() {
+  command -v apt-get >/dev/null 2>&1 || return 1
+  if freeze_wanted; then
+    # A throwaway machine has no use for automatic updates, and their dpkg
+    # lock broke the installation at the next step (13 Sep 2026).
+    systemctl disable --now unattended-upgrades apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+  fi
+  wait_dpkg_lock
+  # DPkg::Lock::Timeout: apt waits for a lock taken between the check above and
+  # this call, rather than giving up at once.
+  DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 "$@"
+}
+
+# Only under COLLOQ_FREEZE_UPDATES=1, and then on every `up`, not only when apt
+# is needed. On a VM that already had docker and the toolkit,
+# unattended-upgrades stayed on and, 20 minutes after boot, upgraded the NVIDIA
+# userspace to 580.178 while the loaded kernel module stayed 580.95:
+# "Driver/library version mismatch" and no GPU until a reboot (28 Sep 2026). On
+# a rented VM the driver must stay the one it booted with; a server somebody
+# keeps reboots after its updates on its own schedule.
 freeze_host_updates() {
+  freeze_wanted || return 0
   command -v systemctl >/dev/null 2>&1 || return 0
+  say "switching off automatic updates and holding the NVIDIA packages (COLLOQ_FREEZE_UPDATES=1)"
   systemctl disable --now unattended-upgrades apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
   command -v apt-mark >/dev/null 2>&1 || return 0
   local held
   held="$(dpkg-query -W -f '${db:Status-Status} ${Package}\n' 2>/dev/null | awk '$1 == "installed" && $2 ~ /nvidia/ { print $2 }')"
+  # shellcheck disable=SC2086 # one word per package
   [ -z "$held" ] || apt-mark hold $held >/dev/null 2>&1 || true
 }
 
 ensure_docker() {
   if ! command -v docker >/dev/null 2>&1; then
-    say "installing docker"
+    if offline; then
+      die "Docker is not installed, and COLLOQ_OFFLINE=1 downloads nothing: install Docker Engine 28 or newer from your distribution's packages or an internal mirror first (colloq-host doctor lists what else is missing)"
+    fi
+    say "installing docker from get.docker.com (install Docker Engine yourself beforehand to choose its version and repository)"
+    wait_dpkg_lock
     curl -fsSL https://get.docker.com | sh >/dev/null
   fi
+  # Enabled, so that Docker, and with it Colloq (--restart unless-stopped),
+  # comes back after a reboot.
   systemctl enable --now docker >/dev/null 2>&1 || true
   local _
   for _ in $(seq 1 60); do docker info >/dev/null 2>&1 && return 0; sleep 2; done
@@ -150,26 +268,30 @@ ensure_docker() {
 ensure_gpu() {
   command -v nvidia-smi >/dev/null 2>&1 || { say "no NVIDIA GPU on this machine; GPU environments will refuse to start"; return 0; }
   nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null | sed 's/^/[colloq-host]   gpu /' || true
-  # Драйвер есть, но без nvidia-container-toolkit docker карту в контейнер не
-  # отдаёт: ядро поднимется без CUDA, и узнают об этом на паре по
-  # torch.cuda.is_available() == False.
+  # The driver is there, but without nvidia-container-toolkit docker does not
+  # hand the card to a container: the kernel comes up without CUDA, and people
+  # find out in class from torch.cuda.is_available() == False.
   if ! docker info 2>/dev/null | grep -qi nvidia; then
-    say "installing nvidia-container-toolkit"
-    apt_quiet update -qq || die "no apt-get: install nvidia-container-toolkit by hand"
-    apt_quiet install -y -qq curl gnupg ca-certificates >/dev/null
-    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-      | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-    curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
-      | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-      > /etc/apt/sources.list.d/nvidia-container-toolkit.list
-    apt_quiet update -qq
-    apt_quiet install -y -qq nvidia-container-toolkit >/dev/null
-    nvidia-ctk runtime configure --runtime=docker >/dev/null
-    systemctl restart docker
-    ensure_docker
+    if offline; then
+      warn "nvidia-container-toolkit is missing, and COLLOQ_OFFLINE=1 downloads nothing: install it by hand (then nvidia-ctk runtime configure --runtime=docker), or GPU rooms get no card"
+    else
+      say "installing nvidia-container-toolkit"
+      apt_quiet update -qq || die "no apt-get: install nvidia-container-toolkit by hand"
+      apt_quiet install -y -qq curl gnupg ca-certificates >/dev/null
+      curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+        | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+      curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+        | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+        > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+      apt_quiet update -qq
+      apt_quiet install -y -qq nvidia-container-toolkit >/dev/null
+      nvidia-ctk runtime configure --runtime=docker >/dev/null
+      systemctl restart docker
+      ensure_docker
+    fi
   fi
-  # Срезы для комнат — номера карт, в том виде, в каком их понимает docker.
-  # Заданный руками список (MIG, часть карт) не трогаем.
+  # The slices for rooms are card numbers in the form docker understands. A
+  # list given by hand (MIG, some of the cards) is left alone.
   if [ -z "$(env_value KERNEL_GPUS)" ]; then
     local gpus
     gpus="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | paste -sd, - || true)"
@@ -182,6 +304,7 @@ ensure_gpu() {
 
 registry_login() {
   [ -n "${COLLOQ_REGISTRY_TOKEN:-}" ] || return 0
+  offline && return 0
   local registry="${1%%/*}"
   printf '%s' "$COLLOQ_REGISTRY_TOKEN" \
     | docker login "$registry" -u "${COLLOQ_REGISTRY_USER:-colloq}" --password-stdin >/dev/null \
@@ -189,36 +312,87 @@ registry_login() {
   say "logged in to $registry"
 }
 
-# ------------------------------------------------------------- контейнер
+# Pull, unless pulls are off; a failed pull is fatal only when there is no copy
+# here to run. The copy is what an offline server has (colloq-host load), what a
+# registry outage leaves, and what a rollback to a local tag names.
+fetch_image() {
+  local img="$1"
+  if offline || [ "${COLLOQ_PULL:-1}" = 0 ]; then
+    docker image inspect "$img" >/dev/null 2>&1 && return 0
+    offline && die "$img is not on this machine, and COLLOQ_OFFLINE=1 allows no pulls: bring it with colloq-host bundle (on a connected machine) and colloq-host load (here)"
+    die "$img is not on this machine, and COLLOQ_PULL=0 skips the pull"
+  fi
+  say "pulling $img"
+  docker pull -q "$img" >/dev/null && return 0
+  docker image inspect "$img" >/dev/null 2>&1 || die "could not pull $img"
+  warn "could not pull $img; running the copy already on this machine"
+}
+
+# ----------------------------------------------------------- container
 #
-# Отпечаток настроек и образа — меткой на контейнере: повторный on-start
-# (перезагрузка VM) при тех же настройках не трогает живой инстанс, а
-# изменившиеся пересоздают его. Файлы и база — в $STATE и переживают это.
+# The fingerprint of the settings and the image is a label on the container: a
+# repeated on-start (a VM reboot) with the same settings leaves the live
+# instance alone, and changed ones recreate it. Files and the database live in
+# $STATE and survive that.
 #
-# Файл — отсортированным: write_env переносит каждый переписанный ключ в конец,
-# а ensure_gpu дописывает KERNEL_GPUS последним, так что порядок строк меняется
-# от загрузки к загрузке при тех же значениях. Без sort вторая загрузка
-# GPU-машины (и любой `up` руками с частью переменных) пересоздавала бы живой
-# контейнер — посреди пары это обрыв у всей группы.
+# The file is hashed sorted: write_env moves every rewritten key to the end, and
+# ensure_gpu appends KERNEL_GPUS last, so the line order changes from boot to
+# boot with the same values. Without sort the second boot of a GPU machine (and
+# any manual `up` with some of the variables) would recreate the live container,
+# which in the middle of a class cuts off the whole group.
 config_sum() {
-  { image; docker image inspect -f '{{.Id}}' "$(image)" 2>/dev/null; sort "$ENV_FILE"; printf '%s %s\n' "$(bind_addr)" "$PORT"; } \
+  { printf '%s\n' "$1"; docker image inspect -f '{{.Id}}' "$1" 2>/dev/null; sort "$ENV_FILE"; printf '%s %s\n' "$(bind_addr)" "$LISTEN_PORT"; config_extras "$2"; } \
     | sha256sum | cut -c1-16
 }
 
+# What else the container is made from: the trusted-proxy default, and the
+# content of an internal CA bundle, which Node reads only at start.
+config_extras() {
+  [ -z "$1" ] || printf 'trusted %s\n' "$1"
+  local ca; ca="$(env_value NODE_EXTRA_CA_CERTS)"
+  if [ -n "$ca" ] && [ -f "$ca" ]; then printf 'ca %s\n' "$(sha256sum < "$ca" | cut -c1-64)"; fi
+}
+
 bind_addr() {
-  # Наружу Colloq выходит туннелем, а порт на публичном адресе машины — вторая
-  # дверь в ту же комнату (см. deploy/colloq-legacy.service, BIND_ADDR). Петля
-  # по умолчанию; всем интерфейсам — только прямому режиму или по просьбе.
-  if [ -n "${COLLOQ_BIND:-}" ]; then printf '%s' "$COLLOQ_BIND"
+  # Colloq goes outside through a tunnel or the host's own proxy, and the port
+  # on the machine's public address would be a second door into the same room
+  # (see deploy/colloq-legacy.service, BIND_ADDR). Loopback by default; all
+  # interfaces in direct mode, or any address asked for with COLLOQ_BIND (a
+  # proxy on another host needs the address it reaches).
+  local asked; asked="$(setting COLLOQ_BIND)"
+  if [ -n "$asked" ]; then printf '%s' "$asked"
   elif [ "$(env_value COLLOQ_TUNNEL)" = direct ]; then printf '0.0.0.0'
   else printf '127.0.0.1'
   fi
 }
 
+is_loopback() {
+  case "$1" in 127.*|localhost|::1|'[::1]') return 0 ;; esac
+  return 1
+}
+
+# Whose X-Forwarded-For the server believes when the operator has not said
+# (TRUSTED_PROXIES). With the port on loopback only processes on this machine
+# can connect at all, and Docker's port proxy hands their connections to the
+# container from the network's gateway, not from 127.0.0.1: a reverse proxy on
+# this host would otherwise look like one client for the whole class, and the
+# per-address caps would turn the 61st student away. Trusting the gateway is
+# trusting this machine, as loopback already is. A published port on another
+# address is not assumed anything about: there the proxy's address is the
+# operator's to name, and doctor says so.
+trusted_default() {
+  [ -z "$(env_value TRUSTED_PROXIES)" ] || return 0
+  is_loopback "$(bind_addr)" || return 0
+  local gw
+  gw="$(docker network inspect -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}' "$NET" 2>/dev/null | xargs | tr ' ' ',' || true)"
+  printf 'loopback%s' "${gw:+,$gw}"
+}
+
 run_container() {
-  local img sum dockercfg=()
-  img="$(image)"
-  sum="$(config_sum)"
+  local img="$1" sum trusted ca extra=()
+  docker network inspect "$NET" >/dev/null 2>&1 || docker network create "$NET" >/dev/null
+  trusted="$(trusted_default)"
+  sum="$(config_sum "$img" "$trusted")"
   if docker container inspect "$NAME" >/dev/null 2>&1; then
     if [ "$(docker inspect -f '{{index .Config.Labels "colloq.config"}}' "$NAME")" = "$sum" ]; then
       docker start "$NAME" >/dev/null 2>&1 || true
@@ -229,25 +403,35 @@ run_container() {
     docker stop -t 30 "$NAME" >/dev/null 2>&1 || true
     docker rm "$NAME" >/dev/null
   fi
-  docker network inspect "$NET" >/dev/null 2>&1 || docker network create "$NET" >/dev/null
   mkdir -p "$STATE"
-  # Учётка реестра — копией внутрь: ядра окружений из закрытого реестра
-  # вытягивает CLI в контейнере, и ему нужен свой config.json (точка входа
-  # переложит его в ~/.docker пользователя node).
+  # The registry credentials go in as a copy: the CLI in the container pulls
+  # environment kernels from a private registry and needs its own config.json
+  # (the entry point moves it into the node user's ~/.docker).
   if [ -s /root/.docker/config.json ]; then
-    dockercfg=(-v /root/.docker/config.json:/run/colloq/docker-config.json:ro)
+    extra+=(-v /root/.docker/config.json:/run/colloq/docker-config.json:ro)
   fi
+  # An internal CA bundle is a file on the host: mounted at the same path, so
+  # that NODE_EXTRA_CA_CERTS means the same file to the server and to the
+  # daemon, which resolves the path when the server hands it to a container of
+  # its own.
+  ca="$(env_value NODE_EXTRA_CA_CERTS)"
+  if [ -n "$ca" ]; then
+    if [ -f "$ca" ]; then extra+=(-v "$ca:$ca:ro")
+    else warn "NODE_EXTRA_CA_CERTS=$ca is not a file on this machine; the container gets the path as it is"
+    fi
+  fi
+  [ -z "$trusted" ] || extra+=(-e "TRUSTED_PROXIES=$trusted")
   docker run -d --name "$NAME" \
     --restart unless-stopped \
     --network "$NET" \
     --stop-timeout 30 \
     --log-opt max-size=50m --log-opt max-file=5 \
-    -p "$(bind_addr):${PORT}:${PORT}" \
+    -p "$(bind_addr):${LISTEN_PORT}:${LISTEN_PORT}" \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "$STATE:$STATE" \
-    "${dockercfg[@]}" \
+    ${extra[@]+"${extra[@]}"} \
     --env-file "$ENV_FILE" \
-    -e "COLLOQ_HOME=$STATE" -e "PORT=$PORT" -e "KERNEL_NETWORK=$NET" \
+    -e "COLLOQ_HOME=$STATE" -e "PORT=$LISTEN_PORT" -e "KERNEL_NETWORK=$NET" \
     --label colloq.kind=app --label "colloq.config=$sum" \
     "$img" >/dev/null
   say "started $NAME from $img"
@@ -256,7 +440,9 @@ run_container() {
 wait_ready() {
   local _
   for _ in $(seq 1 120); do
-    if docker exec "$NAME" curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${PORT}/api/livez" 2>/dev/null; then
+    # --noproxy: an HTTP_PROXY meant for the internet must not catch a call to
+    # the container's own loopback.
+    if docker exec "$NAME" curl -fsS --noproxy '*' -o /dev/null --max-time 2 "http://127.0.0.1:${LISTEN_PORT}/api/livez" 2>/dev/null; then
       docker exec "$NAME" colloq-vast link || true
       say "the default environment is prepared in the background; watch: colloq-host logs"
       say "ready for a class when this is green: colloq-host status"
@@ -270,6 +456,10 @@ wait_ready() {
 }
 
 up() {
+  need_root
+  # Named in the settings, so that the container knows it too (the entry point
+  # keeps the quick tunnel for Vast) and a later `up` needs no detection.
+  if on_vast; then export COLLOQ_ON_VAST=1; fi
   freeze_host_updates
   ensure_docker
   write_env
@@ -279,58 +469,768 @@ up() {
     warn "keeping $img, the image colloq-host update chose; COLLOQ_IMAGE=$COLLOQ_IMAGE only names the first one. To switch: colloq-host update <image>"
   fi
   registry_login "$img"
-  if [ "${COLLOQ_PULL:-1}" != 0 ]; then
-    say "pulling $img"
-    docker pull -q "$img" >/dev/null || die "could not pull $img"
-  fi
-  run_container
+  fetch_image "$img"
+  run_container "$img"
   wait_ready
+}
+
+# ------------------------------------------------------------- backups
+newest_backup() {
+  # shellcheck disable=SC2012 # names are ours: colloq-<stamp>.db
+  ls -1t "$STATE"/backups/colloq-*.db 2>/dev/null | head -1 || true
+}
+
+# A backup by the running server's own command; with the container stopped, by
+# a one-off container of the same image (nothing writes then, and the copy is
+# as consistent). BACKUP_KEEP goes along explicitly: `docker exec` sees the
+# environment the container was created with, and a keep count changed in
+# colloq.env since then must apply to this backup already. Sets BACKUP_DB to
+# the new database copy, if one appeared.
+BACKUP_DB=""
+backup_now() {
+  local fallback="${1:-}" before keep_count keep=() envfile=() img
+  before="$(newest_backup)"
+  keep_count="$(setting BACKUP_KEEP)"
+  [ -z "$keep_count" ] || keep=(-e "BACKUP_KEEP=$keep_count")
+  if [ "$(docker container inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null || true)" = true ]; then
+    docker exec ${keep[@]+"${keep[@]}"} "$NAME" colloq-vast backup || return 1
+  else
+    img="${fallback:-$(image)}"
+    say "$NAME is not running; the backup comes from a one-off container of $img"
+    [ ! -f "$ENV_FILE" ] || envfile=(--env-file "$ENV_FILE")
+    docker run --rm -v "$STATE:$STATE" ${envfile[@]+"${envfile[@]}"} -e "COLLOQ_HOME=$STATE" \
+      ${keep[@]+"${keep[@]}"} "$img" backup || return 1
+  fi
+  BACKUP_DB="$(newest_backup)"
+  [ "$BACKUP_DB" != "$before" ] || BACKUP_DB=""
+}
+
+# A name that will still mean the image the container runs now, after the pull
+# of a new one: the name in the image file if its tag still points there; else
+# another tag of that image that is not `latest` (after `load` has already
+# named the new version in the file, the old one still has its own); else the
+# registry digest (pullable for as long as the registry keeps it); else a local
+# tag that keeps the image from being pruned (an image loaded offline has no
+# digest).
+rollback_ref() {
+  local id="$1" name digest local_tag
+  name="$(configured_image)"
+  if [ -n "$name" ] && [ "$(docker image inspect -f '{{.Id}}' "$name" 2>/dev/null || true)" = "$id" ]; then
+    printf '%s' "$name"; return 0
+  fi
+  name="$(docker image inspect -f '{{range .RepoTags}}{{println .}}{{end}}' "$id" 2>/dev/null | grep -v ':latest$' | head -1 || true)"
+  if [ -n "$name" ]; then printf '%s' "$name"; return 0; fi
+  digest="$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$id" 2>/dev/null | head -1 || true)"
+  if [ -n "$digest" ]; then printf '%s' "$digest"; return 0; fi
+  local_tag="colloq-previous:$(date +%Y%m%d-%H%M%S)"
+  if docker tag "$id" "$local_tag" >/dev/null 2>&1; then printf '%s' "$local_tag"; else printf '%s' "$id"; fi
+}
+
+# Before a new version meets the database, a copy of it: the new server may
+# move the schema forward, and the old one is not tested against a newer schema
+# (README, "Update"). The way back is printed before anything is replaced, so
+# that it is on the screen even if the new version never comes up.
+backup_before_update() {
+  local id="$1" prev="$2"
+  if [ "${COLLOQ_BACKUP_BEFORE_UPDATE:-1}" = 0 ]; then
+    warn "no backup before this update (COLLOQ_BACKUP_BEFORE_UPDATE=0)"
+    return 0
+  fi
+  if [ ! -f "$STATE/data/colloq.db" ]; then
+    say "no database yet; nothing to back up before the update"
+    return 0
+  fi
+  say "backing up before the update (COLLOQ_BACKUP_BEFORE_UPDATE=0 skips this)"
+  backup_now "$id" || die "the backup before the update failed, and nothing was changed: $NAME still runs $prev. Free some disk and retry, or skip the backup with COLLOQ_BACKUP_BEFORE_UPDATE=0"
+  if [ -n "$BACKUP_DB" ]; then
+    say "backup before the update: $BACKUP_DB"
+    say "to go back to $prev with the data as it is now:"
+    say "  REPLACE=1 colloq-host restore --image $prev $BACKUP_DB"
+  else
+    warn "the backup ran, but no new $STATE/backups/colloq-*.db appeared; look at its output above before trusting this update"
+  fi
 }
 
 update() {
-  local img; img="$(image "${1:-}")"
+  need_root
+  local img cur_id new_id prev=""
+  img="${1:-}"
+  [ -n "$img" ] || img="$(image)"
   registry_login "$img"
-  [ "${COLLOQ_PULL:-1}" = 0 ] || docker pull -q "$img" >/dev/null || die "could not pull $img"
-  run_container
+  fetch_image "$img"
+  new_id="$(docker image inspect -f '{{.Id}}' "$img")"
+  cur_id="$(docker container inspect -f '{{.Image}}' "$NAME" 2>/dev/null || true)"
+  if [ -n "$cur_id" ] && [ "$cur_id" != "$new_id" ]; then
+    prev="$(rollback_ref "$cur_id")"
+    backup_before_update "$cur_id" "$prev"
+  fi
+  image "$img" >/dev/null
+  run_container "$img"
   wait_ready
+  if [ -n "$prev" ]; then
+    # The manager moves with the image it manages: a newer image may count on
+    # settings or steps this older script does not know, and an operator who
+    # updated with one command should not have to remember a second. The
+    # image's `install` writes a new file rather than rewriting this one, so
+    # the copy bash is reading right now reads on undisturbed.
+    if [ -w "$HOST_BIN" ] && docker run --rm -v "$HOST_BIN:/host" "$img" install-host /host >/dev/null 2>&1; then
+      say "colloq-host itself updated from $img"
+    else
+      warn "colloq-host itself is still the one from before; the new one: docker run --rm -v $HOST_BIN:/host $img install-host /host"
+    fi
+  fi
 }
 
 restore() {
-  local img; img="$(image)"
-  local tty=(); [ -t 0 ] && tty=(-it)
+  need_root
+  local img tty=() named=""
+  if [ "${1:-}" = --image ]; then
+    named="${2:-}"
+    [ -n "$named" ] || die "usage: colloq-host restore [--image IMAGE] [FILES]"
+    shift 2
+    fetch_image "$named"
+    img="$named"
+  else
+    img="$(image)"
+  fi
+  [ -t 0 ] && tty=(-it)
   say "stopping $NAME: a database is never swapped under a running server"
   docker stop -t 30 "$NAME" >/dev/null 2>&1 || true
-  docker run --rm "${tty[@]}" -v "$STATE:$STATE" -e "COLLOQ_HOME=$STATE" -e "REPLACE=${REPLACE:-}" \
+  docker run --rm ${tty[@]+"${tty[@]}"} -v "$STATE:$STATE" -e "COLLOQ_HOME=$STATE" -e "REPLACE=${REPLACE:-}" \
     "$img" restore "$@" || { docker start "$NAME" >/dev/null 2>&1 || true; die "restore failed; $NAME is back as it was"; }
-  docker start "$NAME" >/dev/null
+  # The image is recorded only now: a restore that failed leaves the instance on
+  # the version it had. run_container then starts the same container, or,
+  # after --image, recreates it on that image: a rollback is the old server on
+  # the old data, never the new server migrating the old data forward again.
+  [ -z "$named" ] || image "$named" >/dev/null
+  run_container "$img"
   wait_ready
+}
+
+# ------------------------------------------------------ nightly backups
+#
+# A systemd timer, not cron: Persistent=true runs a backup the machine slept
+# through as soon as it is back, and `systemctl list-timers` shows the next run
+# and the last one. The service is colloq-host backup itself; how many archives
+# stay is the backup script's business (BACKUP_KEEP, default 14).
+backup_timer() {
+  need_root
+  local action="${1:-status}" at exec_path
+  command -v systemctl >/dev/null 2>&1 || die "no systemctl here: schedule \`colloq-host backup\` with cron instead"
+  case "$action" in
+    on)
+      at="${COLLOQ_BACKUP_AT:-03:30}"
+      case "$at" in
+        [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) at="$at:00" ;;
+        [01][0-9]:[0-5][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]:[0-5][0-9]) ;;
+        *) die "COLLOQ_BACKUP_AT=$at is not a time of day; give HH:MM, e.g. 03:30" ;;
+      esac
+      if [ -n "${BACKUP_KEEP:-}" ]; then
+        case "$BACKUP_KEEP" in *[!0-9]*) die "BACKUP_KEEP=$BACKUP_KEEP is not a number of archives" ;; esac
+        set_env_value BACKUP_KEEP "$BACKUP_KEEP"
+      fi
+      exec_path="$HOST_BIN/colloq-host"
+      [ -x "$exec_path" ] || exec_path="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+      mkdir -p "$SYSTEMD_DIR"
+      {
+        printf '[Unit]\n'
+        printf 'Description=Colloq backup (colloq-host backup)\n'
+        printf 'Wants=docker.service\nAfter=docker.service\n\n'
+        printf '[Service]\n'
+        printf 'Type=oneshot\n'
+        printf 'ExecStart=%s backup\n' "$exec_path"
+        [ "$CONF_DIR" = /etc/colloq ] || printf 'Environment=COLLOQ_CONF_DIR=%s\n' "$CONF_DIR"
+        # A bound, not a guess at the size: a backup that hangs must not keep
+        # every following night's from starting.
+        printf 'TimeoutStartSec=6h\n'
+      } > "$SYSTEMD_DIR/colloq-backup.service"
+      {
+        printf '[Unit]\n'
+        printf 'Description=Colloq backup every day at %s\n\n' "$at"
+        printf '[Timer]\n'
+        printf 'OnCalendar=*-*-* %s\n' "$at"
+        printf 'Persistent=true\n'
+        printf 'Unit=colloq-backup.service\n\n'
+        printf '[Install]\nWantedBy=timers.target\n'
+      } > "$SYSTEMD_DIR/colloq-backup.timer"
+      systemctl daemon-reload
+      systemctl enable --now colloq-backup.timer >/dev/null
+      say "a backup every day at $at (this machine's time zone) into $STATE/backups/; $(setting BACKUP_KEEP 14) archives are kept"
+      say "copy them off this machine too: a backup on the disk it protects is half a backup"
+      ;;
+    off)
+      systemctl disable --now colloq-backup.timer >/dev/null 2>&1 || true
+      rm -f "$SYSTEMD_DIR/colloq-backup.timer" "$SYSTEMD_DIR/colloq-backup.service"
+      systemctl daemon-reload
+      say "nightly backups are off; the archives already taken stay in $STATE/backups/"
+      ;;
+    status)
+      if [ ! -f "$SYSTEMD_DIR/colloq-backup.timer" ]; then
+        say "nightly backups are off (colloq-host backup-timer on)"
+      else
+        systemctl list-timers --all --no-pager colloq-backup.timer 2>/dev/null || true
+        systemctl status --no-pager --lines=5 colloq-backup.service 2>/dev/null || true
+      fi
+      local last; last="$(newest_backup)"
+      say "latest backup: ${last:-none in $STATE/backups/}"
+      ;;
+    *) die "usage: colloq-host backup-timer on|off|status" ;;
+  esac
+}
+
+# ------------------------------------------------------ offline install
+#
+# A campus server without internet gets everything in one file, made on a
+# machine that has it:
+#
+#   connected$ colloq-host bundle colloq-0.9.0.tar ghcr.io/colloq-edu/colloq-vast:0.9.0
+#   server$    tar -xf colloq-0.9.0.tar colloq-host && ./colloq-host load colloq-0.9.0.tar
+#   server$    colloq-host up
+#
+# The file is a plain tar of three members: manifest.txt (what is inside, one
+# line per image), colloq-host (the host script of that very version, so the
+# server needs nothing else to read the file) and images.tar (`docker save` of
+# the app image and the room kernels). Docker itself is not in it: installing
+# Docker Engine is the administrator's, from the distribution or a mirror.
+
+image_label() { docker image inspect -f "{{index .Config.Labels \"$2\"}}" "$1" 2>/dev/null || true; }
+image_id() { docker image inspect -f '{{.Id}}' "$1" 2>/dev/null || true; }
+
+# NAME and its parents (`# colloq: from`), parents first, into BUNDLE_ENVS. A
+# child's published image carries its parent's layers already; the parents go
+# along because rooms default to base, and because `docker save` stores the
+# shared layers once.
+BUNDLE_ENVS=""
+BUNDLE_DIR=""
+bundle_closure() {
+  local dir="$1" name="$2" depth="${3:-0}" parent
+  [ "$depth" -lt 8 ] || die "the environments around \"$name\" inherit from each other in a circle"
+  case " $BUNDLE_ENVS " in *" $name "*) return 0 ;; esac
+  [ -f "$dir/$name.txt" ] || die "the image has no environment called \"$name\" (KERNEL_PRELOAD, KERNEL_ENV)"
+  parent="$(sed -nE 's/^[[:space:]]*#[[:space:]]*colloq:[[:space:]]*from[[:space:]]+([^[:space:]]+)[[:space:]]*$/\1/p' "$dir/$name.txt" | head -1)"
+  [ -z "$parent" ] || bundle_closure "$dir" "$parent" $((depth + 1))
+  BUNDLE_ENVS="$BUNDLE_ENVS $name"
+}
+
+bundle() {
+  local out="${1:-}" app="${2:-}" platform version dir cid wanted repo tag name ref source
+  local refs=() lines=() save_flags=()
+  [ -n "$out" ] || die "usage: colloq-host bundle FILE [IMAGE]   (FILE: the archive to write, e.g. colloq-0.9.0.tar)"
+  [ ! -e "$out" ] || die "$out already exists; name a new file"
+  [ -n "$app" ] || app="$(configured_image)"
+  [ -n "$app" ] || die "which Colloq image? colloq-host bundle $out ghcr.io/colloq-edu/colloq-vast:<version>"
+  command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 || die "bundle needs a running Docker on this machine"
+  # The server's platform, not this machine's: a laptop on arm64 packs for an
+  # amd64 server, and nothing is run here, only pulled and copied.
+  platform="${COLLOQ_BUNDLE_PLATFORM:-linux/amd64}"
+  [ -d "$(dirname "$out")" ] || die "no directory $(dirname "$out") to write $out into"
+  # Next to the archive, not in /tmp: the images pass through here once, and
+  # /tmp is often a small tmpfs.
+  dir="$(mktemp -d "$(cd "$(dirname "$out")" && pwd -P)/.colloq-bundle.XXXXXX")"
+  BUNDLE_DIR="$dir"
+  trap 'rm -rf "$BUNDLE_DIR"' EXIT
+
+  say "pulling $app ($platform)"
+  if ! docker pull -q --platform "$platform" "$app" >/dev/null; then
+    docker image inspect "$app" >/dev/null 2>&1 || die "could not pull $app"
+    warn "could not pull $app; packing the copy already on this machine"
+  fi
+  version="$(image_label "$app" org.opencontainers.image.version)"
+  version="${version:-unknown}"
+
+  # The environment lists and the host script of exactly this version, copied
+  # out of the image without running it.
+  cid="$(docker create --platform "$platform" "$app")"
+  docker cp "$cid:/opt/colloq/kernel/environments" "$dir/environments" >/dev/null \
+    && docker cp "$cid:/opt/colloq/deploy/vast/colloq-host" "$dir/colloq-host" >/dev/null \
+    || { docker rm "$cid" >/dev/null 2>&1 || true; die "$app does not look like a colloq-vast image (no kernel/environments or colloq-host in it)"; }
+  docker rm "$cid" >/dev/null
+  chmod 0755 "$dir/colloq-host"
+
+  wanted="$(setting KERNEL_PRELOAD)"
+  [ -n "$wanted" ] || wanted="$(setting KERNEL_ENV base)"
+  for name in $(printf '%s' "$wanted" | tr ',' ' '); do
+    bundle_closure "$dir/environments" "$name"
+  done
+  # The kernels the server would pull itself: KERNEL_IMAGE_REPO, else the
+  # default this image was built with (publish.yml bakes the publisher's in).
+  repo="$(setting KERNEL_IMAGE_REPO)"
+  if [ -z "$repo" ]; then
+    repo="$(docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$app" 2>/dev/null | sed -n 's/^COLLOQ_KERNEL_REPO=//p' | head -1 || true)"
+  fi
+  repo="${repo:-ghcr.io/colloq-edu/colloq-kernel}"
+  tag="$(setting KERNEL_IMAGE_TAG "v$version")"
+  refs=("$app")
+  for name in $BUNDLE_ENVS; do
+    ref=""; source=""
+    case "$version" in unknown|0.0.0*|*-dev) ;; *)
+      if [ "$repo" != none ] && docker pull -q --platform "$platform" "$repo:$tag-$name" >/dev/null 2>&1; then
+        ref="$repo:$tag-$name"; source=published
+      fi ;;
+    esac
+    if [ -z "$ref" ] && docker image inspect "colloq-kernel:$name" >/dev/null 2>&1; then
+      ref="colloq-kernel:$name"; source=local
+      warn "packing this machine's colloq-kernel:$name: $repo:$tag-$name could not be pulled, and a local build is not the published image for $version"
+    fi
+    [ -n "$ref" ] || die "no image for the \"$name\" environment: $repo:$tag-$name could not be pulled, and this machine has no colloq-kernel:$name"
+    say "kernel $name: $ref"
+    refs+=("$ref")
+    lines+=("kernel $name $ref $(image_id "$ref") $source")
+  done
+
+  # Only the server's platform: with Docker's containerd store an image pulled
+  # for one platform cannot be saved as the whole multi-platform index.
+  if docker save --help 2>/dev/null | grep -q -- '--platform'; then save_flags=(--platform "$platform"); fi
+  say "saving ${#refs[@]} images (several gigabytes; this takes a few minutes)"
+  docker save ${save_flags[@]+"${save_flags[@]}"} -o "$dir/images.tar" "${refs[@]}"
+  {
+    printf '# colloq-host bundle: on the server, colloq-host load <this file>\n'
+    printf 'format 1\n'
+    printf 'created %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'version %s\n' "$version"
+    printf 'platform %s\n' "$platform"
+    printf 'app %s %s\n' "$app" "$(image_id "$app")"
+    printf '%s\n' ${lines[@]+"${lines[@]}"}
+  } > "$dir/manifest.txt"
+  case "$out" in
+    *.gz|*.tgz) tar -czf "$out" -C "$dir" manifest.txt colloq-host images.tar ;;
+    *) tar -cf "$out" -C "$dir" manifest.txt colloq-host images.tar ;;
+  esac
+  rm -rf "$dir"; trap - EXIT
+  say "wrote $out ($(du -h "$out" | cut -f1)): Colloq $version and the kernels$BUNDLE_ENVS"
+  say "on the server (Docker Engine installed, no network needed):"
+  say "  tar -xf $(basename "$out") colloq-host && ./colloq-host load $(basename "$out")"
+}
+
+load() {
+  need_root
+  local file="${1:-}" manifest app="" kinds="" kind a b pair env ref
+  [ -n "$file" ] && [ -f "$file" ] || die "usage: colloq-host load FILE   (an archive written by colloq-host bundle)"
+  command -v docker >/dev/null 2>&1 || die "Docker is not installed. An offline server gets no Docker from the network: install Docker Engine 28 or newer from your distribution's packages or an internal mirror, then run load again"
+  docker info >/dev/null 2>&1 || die "the docker daemon does not answer: systemctl start docker"
+  manifest="$(tar -xOf "$file" manifest.txt 2>/dev/null)" || die "$file is not a colloq-host bundle (no manifest.txt in it)"
+  printf '%s\n' "$manifest" | grep -qx 'format 1' || die "$file is a bundle of a format this colloq-host does not know; use the colloq-host inside it"
+  while read -r kind a b _; do
+    case "$kind" in
+      app) app="$a" ;;
+      kernel) kinds="$kinds $a=$b" ;;
+    esac
+  done <<EOF
+$manifest
+EOF
+  [ -n "$app" ] || die "$file names no app image"
+  say "loading the images from $file (several gigabytes; a few minutes)"
+  tar -xOf "$file" images.tar | docker load || die "docker load failed; the archive may be incomplete (compare its size with the one written)"
+  docker image inspect "$app" >/dev/null 2>&1 || die "$app is not among the loaded images"
+  for pair in $kinds; do
+    env="${pair%%=*}"; ref="${pair#*=}"
+    docker image inspect "$ref" >/dev/null 2>&1 || die "$ref is not among the loaded images"
+    if [ -f "$STATE/environments/$env.txt" ]; then
+      # This server has a list of its own under that name; its image is not
+      # the published one, and replacing it would put the wrong packages
+      # under a stamp that says otherwise.
+      warn "kept colloq-kernel:$env: this server has its own \"$env\" list ($STATE/environments/$env.txt); the bundle's image stays as $ref"
+      continue
+    fi
+    [ "$ref" = "colloq-kernel:$env" ] || docker tag "$ref" "colloq-kernel:$env"
+    say "colloq-kernel:$env ← $ref"
+  done
+  image "$app" >/dev/null
+  set_env_value COLLOQ_OFFLINE 1
+  say "$IMAGE_FILE → $app; COLLOQ_OFFLINE=1 in $ENV_FILE: up and update pull nothing and install nothing"
+  if docker run --rm -v "$HOST_BIN:/host" "$app" install-host /host >/dev/null 2>&1; then
+    say "installed $HOST_BIN/colloq-host from $app"
+  fi
+  say "next: colloq-host doctor, then colloq-host up (a first install) or colloq-host update (a running one)"
+}
+
+# -------------------------------------------------------------- doctor
+#
+# One line per question, PASS / WARN / FAIL (and INFO for what is only worth
+# knowing), and a non-zero exit on any FAIL. It reads and asks, and changes
+# nothing: no container, no settings written, no installs. That is why it can
+# run before the first `up`, and before a class on a live instance.
+DOCTOR_FAILS=0
+DOCTOR_WARNS=0
+report() {
+  local level="$1" label="$2"; shift 2
+  case "$level" in
+    FAIL) DOCTOR_FAILS=$((DOCTOR_FAILS + 1)) ;;
+    WARN) DOCTOR_WARNS=$((DOCTOR_WARNS + 1)) ;;
+  esac
+  printf '%-4s  %-11s %s\n' "$level" "$label" "$*"
+}
+
+with_timeout() {
+  local seconds="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$seconds" "$@"; else "$@"; fi
+}
+
+file_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || true; }
+file_owner() { stat -c '%U' "$1" 2>/dev/null || stat -f '%Su' "$1" 2>/dev/null || true; }
+
+# 0 resolves, 1 does not, 3 nothing here to ask with (getent's own 2 means
+# "no such name", so it is not reused for that).
+resolves() {
+  if command -v getent >/dev/null 2>&1; then
+    with_timeout 6 getent ahosts "$1" >/dev/null 2>&1 && return 0
+  elif command -v host >/dev/null 2>&1; then
+    with_timeout 6 host "$1" >/dev/null 2>&1 && return 0
+  else
+    return 3
+  fi
+  return 1
+}
+
+# Listening sockets on a port, as "address process".
+listeners() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp 2>/dev/null | awk -v p="$1" '$1 == "LISTEN" { n = split($4, a, ":"); if (a[n] == p) print $4, $6 }' || true
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -ltnp 2>/dev/null | awk -v p="$1" '$6 == "LISTEN" { n = split($4, a, ":"); if (a[n] == p) print $4, $7 }' || true
+  else
+    return 2
+  fi
+}
+
+doctor() {
+  local root=1 img img_present=0 docker_ok=0 sec="" v
+  [ "$(id -u)" = 0 ] || root=0
+  say "checking this machine for Colloq (nothing is changed)"
+  [ "$root" = 1 ] || report WARN user "not root: $CONF_DIR and the firewall cannot be read; run it as root for the whole picture"
+  offline && report INFO offline "COLLOQ_OFFLINE=1: no pulls, no apt, no get.docker.com; Docker must be installed already, images come from colloq-host load"
+  img="$(configured_image)"
+
+  # --- the machine
+  local arch img_arch
+  arch="$(uname -m 2>/dev/null || echo unknown)"
+  case "$arch" in
+    x86_64|amd64) report PASS arch "$arch" ;;
+    *)
+      img_arch=""
+      [ -z "$img" ] || img_arch="$(docker image inspect -f '{{.Architecture}}' "$img" 2>/dev/null || true)"
+      case "$arch:$img_arch" in
+        aarch64:arm64|arm64:arm64) report PASS arch "$arch, and $img here is built for it" ;;
+        *) report FAIL arch "$arch: the published images are linux/amd64 only; build one for this machine (make vast-image) and name it in $IMAGE_FILE" ;;
+      esac ;;
+  esac
+  local kernel kmaj kmin
+  kernel="$(uname -r 2>/dev/null || echo unknown)"
+  IFS=. read -r kmaj kmin _ <<<"$kernel"
+  if [[ "$kmaj" =~ ^[0-9]+$ ]] && [[ "${kmin%%[!0-9]*}" =~ ^[0-9]+$ ]] && { [ "$kmaj" -lt 5 ] || { [ "$kmaj" -eq 5 ] && [ "${kmin%%[!0-9]*}" -lt 4 ]; }; }; then
+    report WARN kernel "Linux $kernel is older than 5.4; current Docker and cgroup v2 want a 5.x kernel or newer"
+  else
+    report PASS kernel "Linux $kernel"
+  fi
+
+  # --- Docker
+  if ! command -v docker >/dev/null 2>&1; then
+    if offline; then report FAIL docker "not installed, and an offline install never downloads it: install Docker Engine 28 or newer (docker-ce) from your distribution or an internal mirror"
+    else report FAIL docker "not installed: colloq-host up installs it from get.docker.com, or install Docker Engine 28 or newer yourself first (better on a server you keep)"
+    fi
+  elif ! v="$(docker version --format '{{.Server.Version}}' 2>/dev/null)" || [ -z "$v" ]; then
+    report FAIL docker "the daemon does not answer: systemctl start docker (and check who may use its socket)"
+  else
+    docker_ok=1
+    local major="${v%%.*}"
+    if ! [[ "$major" =~ ^[0-9]+$ ]]; then report WARN docker "Docker $v: an unfamiliar version string"
+    elif [ "$major" -ge 28 ]; then report PASS docker "Docker $v"
+    elif [ "$major" -ge 20 ]; then report WARN docker "Docker $v: Colloq is tested with Docker 28 and newer; upgrade docker-ce before the first class"
+    else report FAIL docker "Docker $v is too old: install Docker Engine 28 or newer"
+    fi
+    sec="$(docker info --format '{{join .SecurityOptions " "}}' 2>/dev/null || true)"
+    case "$sec" in *rootless*) report FAIL docker "rootless Docker: the rooms' firewall helper needs a rootful daemon (a privileged container in the host's namespaces)" ;; esac
+  fi
+  local cg=""
+  [ "$docker_ok" = 0 ] || cg="$(docker info --format '{{.CgroupVersion}}' 2>/dev/null || true)"
+  if [ -z "$cg" ]; then
+    if [ -f /sys/fs/cgroup/cgroup.controllers ]; then cg=2; elif [ -d /sys/fs/cgroup ]; then cg=1; fi
+  fi
+  case "$cg" in
+    2) report PASS cgroup "v2" ;;
+    1) report WARN cgroup "v1: Docker still limits every room, but v1 is on its way out of Docker and the distributions; boot with systemd.unified_cgroup_hierarchy=1" ;;
+    *) report WARN cgroup "cannot tell the cgroup version (no /sys/fs/cgroup)" ;;
+  esac
+  if [ "$docker_ok" = 1 ]; then
+    # Rooms get their network block from iptables rules hooked into
+    # DOCKER-USER (server/src/kernel/perimeter.ts), and refuse to start
+    # without it; Docker's nftables backend has no such chain.
+    local fw room_net
+    fw="$(docker info --format '{{with .FirewallBackend}}{{.Driver}}{{end}}' 2>/dev/null || true)"
+    room_net="$(setting COLLOQ_ROOM_NETWORK)"
+    case "$fw" in
+      *nftables*)
+        if [ "$room_net" = open ]; then report WARN firewall "Docker uses its nftables backend: no DOCKER-USER chain, so rooms run unfenced (COLLOQ_ROOM_NETWORK=open)"
+        else report FAIL firewall "Docker uses its nftables backend, which has no DOCKER-USER chain; rooms refuse to start without their firewall. Run dockerd with the iptables backend (the default)"
+        fi ;;
+      *)
+        if [ "$root" = 1 ] && command -v iptables >/dev/null 2>&1; then
+          if iptables -w -n -L DOCKER-USER >/dev/null 2>&1; then report PASS firewall "${fw:-iptables} backend, DOCKER-USER present"
+          elif [ "$room_net" = open ]; then report WARN firewall "no DOCKER-USER chain (Docker does not manage iptables here): rooms run unfenced (COLLOQ_ROOM_NETWORK=open)"
+          else report FAIL firewall "no DOCKER-USER chain: Docker does not manage iptables here (\"iptables\": false in daemon.json?), and rooms refuse to start without their firewall"
+          fi
+        elif [ -n "$fw" ]; then report PASS firewall "$fw backend (as Docker reports it)"
+        else report WARN firewall "cannot check the firewall backend (needs root and iptables)"
+        fi ;;
+    esac
+    if command -v systemctl >/dev/null 2>&1; then
+      case "$(systemctl is-enabled docker 2>/dev/null || true)" in
+        enabled|static|alias|indirect|generated) ;;
+        *) report WARN boot "Docker does not start at boot, and Colloq comes back only with it: systemctl enable docker (colloq-host up does this)" ;;
+      esac
+    fi
+  fi
+
+  # --- size
+  local cpus mem_kb mem_gb
+  cpus="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 0)"
+  mem_kb="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo 2>/dev/null || true)"
+  if [ -z "$mem_kb" ]; then
+    report WARN resources "$cpus vCPU; cannot read /proc/meminfo for the memory size"
+  else
+    mem_gb="$(awk -v k="$mem_kb" 'BEGIN { printf "%.1f", k / 1048576 }')"
+    # 7.5 GiB, not 8: MemTotal leaves out what the kernel reserves, and a
+    # machine sold as 8 GB shows about 7.7 of them.
+    if [ "$cpus" -lt 4 ] || [ "$mem_kb" -lt 7864320 ]; then
+      report WARN resources "$cpus vCPU, $mem_gb GB RAM: under the floor of 4 vCPU and 8 GB (one class in one shared room)"
+    else
+      report PASS resources "$cpus vCPU, $mem_gb GB RAM"
+    fi
+  fi
+  report INFO sizing "a server to start with: 16 vCPU, 64 GB RAM, 250 GB NVMe, x86-64, no GPU (30 students with personal notebooks, or a class and a competition); docs/pages/en/server.html"
+  local probe line free_kb mount
+  probe="$STATE"
+  while [ ! -d "$probe" ] && [ "$probe" != / ]; do probe="$(dirname "$probe")"; done
+  line="$(df -Pk "$probe" 2>/dev/null | awk 'NR == 2 { print $4, $6 }' || true)"
+  free_kb="${line%% *}"; mount="${line#* }"
+  if ! [[ "$free_kb" =~ ^[0-9]+$ ]]; then
+    report WARN disk "df did not answer for $probe"
+  elif [ $((free_kb / 1048576)) -lt 60 ]; then
+    report WARN disk "$((free_kb / 1048576)) GB free on $mount, where the state lives ($STATE): keep at least 60 GB for backups, room files and competition data"
+  else
+    report PASS disk "$((free_kb / 1048576)) GB free on $mount ($STATE)"
+  fi
+  if [ "$docker_ok" = 1 ]; then
+    local droot dline dfree dmount
+    droot="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+    if [ -n "$droot" ] && [ -d "$droot" ]; then
+      dline="$(df -Pk "$droot" 2>/dev/null | awk 'NR == 2 { print $4, $6 }' || true)"
+      dfree="${dline%% *}"; dmount="${dline#* }"
+      if [[ "$dfree" =~ ^[0-9]+$ ]] && [ "$dmount" != "$mount" ]; then
+        if [ $((dfree / 1048576)) -lt 30 ]; then report WARN disk "$((dfree / 1048576)) GB free on $dmount, where Docker keeps the images ($droot): a kernel image is 1 to 9 GB"
+        else report PASS disk "$((dfree / 1048576)) GB free on $dmount for Docker's images ($droot)"
+        fi
+      fi
+    fi
+  fi
+
+  # --- where it listens
+  local bind port_l found
+  bind="$(bind_addr)"
+  if [ "$docker_ok" = 1 ] && [ "$(docker container inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null || true)" = true ]; then
+    report PASS port "$bind:$LISTEN_PORT is our running container $NAME"
+  elif found="$(listeners "$LISTEN_PORT")"; then
+    if [ -n "$found" ]; then
+      report FAIL port "$bind:$LISTEN_PORT is taken: $(printf '%s' "$found" | head -1); stop that, or choose another port (PORT=… colloq-host up)"
+    else
+      report PASS port "$bind:$LISTEN_PORT is free"
+    fi
+  else
+    report WARN port "cannot see who listens on $LISTEN_PORT (no ss or netstat)"
+  fi
+  # A bind address this machine does not have makes `docker run -p` fail at up.
+  if [[ "$bind" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$bind" != 0.0.0.0 ] && ! is_loopback "$bind" \
+      && command -v ip >/dev/null 2>&1 && ! ip -o addr show 2>/dev/null | grep -q " inet $bind/"; then
+    report FAIL port "COLLOQ_BIND=$bind is not an address of this machine (ip addr): Docker cannot publish the port there"
+  fi
+
+  # --- names, time, the registry
+  local url host code hp dp
+  url="$(setting PUBLIC_URL)"
+  host="${url#*://}"; host="${host%%/*}"; host="${host%:*}"
+  local rc
+  if [ -n "$url" ] && [ "$host" != localhost ] && ! [[ "$host" =~ ^[0-9.]+$ ]] && ! [[ "$host" =~ : ]]; then
+    rc=0; resolves "$host" || rc=$?
+    case "$rc" in
+      0) report PASS dns "$host resolves" ;;
+      3) report WARN dns "cannot check name resolution (no getent or host)" ;;
+      *) report WARN dns "$host does not resolve from this server (students' machines must resolve it; this one only if you test from here)" ;;
+    esac
+  fi
+  if ! offline; then
+    rc=0; resolves ghcr.io || rc=$?
+    case "$rc" in
+      0) report PASS dns "ghcr.io resolves" ;;
+      3) [ -n "$url" ] || report WARN dns "cannot check name resolution (no getent or host)" ;;
+      *) report WARN dns "ghcr.io does not resolve: pulls will fail; fix DNS, or install offline with colloq-host bundle and load" ;;
+    esac
+  fi
+  if command -v timedatectl >/dev/null 2>&1; then
+    v="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+    [ -n "$v" ] || v="$(timedatectl status 2>/dev/null | sed -n 's/.*synchronized: *//p' | head -1 || true)"
+    case "$v" in
+      yes) report PASS clock "synchronized" ;;
+      *) report WARN clock "not synchronized: sign-in links, cookies and certificates depend on the clock; enable systemd-timesyncd or chrony (an internal NTP server on an offline campus)" ;;
+    esac
+  else
+    report WARN clock "cannot check (no timedatectl); make sure NTP runs"
+  fi
+  hp="$(setting HTTPS_PROXY)"; [ -n "$hp" ] || hp="$(setting https_proxy)"
+  if offline; then
+    report INFO registry "not asked: COLLOQ_OFFLINE=1"
+  else
+    code="$(HTTPS_PROXY="$hp" https_proxy="$hp" NO_PROXY="$(setting NO_PROXY)" \
+      curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 https://ghcr.io/v2/ 2>/dev/null || true)"
+    [ "$docker_ok" = 0 ] || [ -z "$img" ] || ! docker image inspect "$img" >/dev/null 2>&1 || img_present=1
+    case "$code" in
+      200|401|403|404|405) report PASS registry "ghcr.io answers (HTTP $code)" ;;
+      *)
+        if [ "$img_present" = 1 ]; then report WARN registry "ghcr.io is out of reach (outbound HTTPS, a proxy?): updates will need it, or colloq-host bundle and load"
+        else report FAIL registry "ghcr.io is out of reach (outbound HTTPS, a proxy?), and the image is not here: fix the way out, or install offline with colloq-host bundle and load"
+        fi ;;
+    esac
+  fi
+  if [ -n "$hp" ] && [ "$docker_ok" = 1 ]; then
+    dp="$(docker info --format '{{.HTTPSProxy}}' 2>/dev/null || true)"
+    [ -n "$dp" ] || report WARN proxy "HTTPS_PROXY is set for Colloq, but the Docker daemon has no proxy, and pulls are the daemon's: give dockerd the proxy too (a systemd drop-in for docker.service)"
+    [ -n "$(setting NO_PROXY)$(setting no_proxy)" ] || report WARN proxy "HTTPS_PROXY without NO_PROXY: list localhost,127.0.0.1 and your internal hosts in NO_PROXY"
+  fi
+
+  # --- the address and the proxy in front
+  local mode relay named tp
+  mode="$(setting COLLOQ_TUNNEL auto)"
+  relay=0; named=0
+  [ -z "$(setting COLLOQ_HOSTNAME)" ] || [ -z "$(setting RELAY_ADDR)" ] || [ -z "$(setting RELAY_TOKEN)" ] || [ -z "$(setting RELAY_DOMAIN)" ] || relay=1
+  [ -z "$(setting COLLOQ_HOSTNAME)" ] || [ -z "$(setting CLOUDFLARE_TUNNEL_TOKEN)" ] || named=1
+  case "$url" in
+    '')
+      if [ "$relay" = 1 ] && { [ "$mode" = auto ] || [ "$mode" = relay ]; }; then report PASS public-url "given by the relay tunnel"
+      elif [ "$named" = 1 ] && { [ "$mode" = auto ] || [ "$mode" = cloudflare ]; }; then report PASS public-url "given by the named Cloudflare tunnel"
+      elif [ "$mode" = cloudflare ] || { [ "$mode" = auto ] && on_vast; }; then report INFO public-url "a quick *.trycloudflare.com address, printed in the log"
+      else report WARN public-url "not set: every link Colloq hands out will say http://localhost:$LISTEN_PORT; set PUBLIC_URL=https://<the address students open>"
+      fi ;;
+    https://*) report PASS public-url "$url" ;;
+    http://localhost*|http://127.*|'http://[::1]'*) report INFO public-url "$url: plain http on this machine only" ;;
+    http://*) report WARN public-url "$url is plain http: sign-in cookies are not Secure and HSTS is off; put an HTTPS proxy in front and give its https:// address" ;;
+    *) report FAIL public-url "$url: it must start with https:// (or http://)" ;;
+  esac
+  case "${url#*://}" in */?*) report WARN public-url "Colloq sits at the root of a hostname; a path in PUBLIC_URL ($url) is not supported" ;; esac
+  tp="$(setting TRUSTED_PROXIES)"
+  if [ -n "$tp" ]; then
+    report PASS proxies "TRUSTED_PROXIES=$tp"
+  elif is_loopback "$bind"; then
+    report PASS proxies "loopback bind: a proxy on this machine is trusted by itself (loopback and Docker's gateway)"
+  else
+    report WARN proxies "Colloq listens on $bind: set TRUSTED_PROXIES=<your proxy's address>, or every student looks like the proxy and shares its per-address limits (SHARED_ADDRESSES for a campus NAT)"
+  fi
+  if [ "$bind" = 0.0.0.0 ] || [ "$bind" = '::' ]; then
+    report INFO port "published on every interface: let only the proxy reach $LISTEN_PORT (a firewall), or bind to the address it uses (COLLOQ_BIND=<ip>)"
+  fi
+
+  # --- settings on disk
+  if [ ! -d "$CONF_DIR" ]; then
+    report INFO config "$CONF_DIR does not exist yet (colloq-host up writes it)"
+  elif [ "$root" = 1 ]; then
+    local dmode fmode owner problems=""
+    dmode="$(file_mode "$CONF_DIR")"; owner="$(file_owner "$CONF_DIR")"
+    case "$dmode" in *00) ;; *) problems="$problems $CONF_DIR is $dmode (chmod 700);" ;; esac
+    [ "$owner" = root ] || problems="$problems $CONF_DIR belongs to $owner;"
+    if [ -f "$ENV_FILE" ]; then
+      fmode="$(file_mode "$ENV_FILE")"
+      case "$fmode" in *00) ;; *) problems="$problems colloq.env is $fmode and holds secrets (chmod 600);" ;; esac
+      [ "$(file_owner "$ENV_FILE")" = root ] || problems="$problems colloq.env does not belong to root;"
+    fi
+    if [ -n "$problems" ]; then report WARN config "${problems# }"
+    else report PASS config "$CONF_DIR 0${dmode#0}, colloq.env private to root"
+    fi
+  fi
+
+  # --- mandatory access control
+  if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce 2>/dev/null || true)" = Enforcing ]; then
+    case "$sec" in
+      *selinux*) report WARN selinux "enforcing, and Docker labels containers: the state directory is mounted without :z, so label it once (chcon -Rt container_file_t $STATE) or rooms cannot read their own files" ;;
+      *) report INFO selinux "enforcing; Docker does not label containers here (selinux-enabled is off), so the mounts work as they are" ;;
+    esac
+  fi
+  case "$sec" in *apparmor*) report INFO apparmor "rooms run under Docker's default AppArmor profile; the short-lived firewall helper is privileged and so unconfined" ;; esac
+
+  # --- images
+  if [ -z "$img" ]; then
+    report WARN image "no image named yet: COLLOQ_IMAGE=ghcr.io/colloq-edu/colloq-vast:<version> colloq-host up, or colloq-host load <bundle>"
+  elif [ "$docker_ok" = 0 ]; then
+    report WARN image "$img: cannot look without Docker"
+  elif docker image inspect "$img" >/dev/null 2>&1; then
+    report PASS image "$img is here (version $(image_label "$img" org.opencontainers.image.version))"
+  elif offline; then
+    report FAIL image "$img is not on this machine, and COLLOQ_OFFLINE=1: colloq-host load <bundle>"
+  else
+    report INFO image "$img is not pulled yet (up pulls it)"
+  fi
+  if [ "$docker_ok" = 1 ]; then
+    local wanted envname
+    wanted="$(setting KERNEL_PRELOAD)"; [ -n "$wanted" ] || wanted="$(setting KERNEL_ENV base)"
+    for envname in $(printf '%s' "$wanted" | tr ',' ' '); do
+      if docker image inspect "colloq-kernel:$envname" >/dev/null 2>&1; then report PASS kernels "colloq-kernel:$envname is here"
+      elif offline; then report FAIL kernels "colloq-kernel:$envname is not here, and offline it can be neither pulled nor built: colloq-host load <bundle>"
+      else report INFO kernels "colloq-kernel:$envname is not here yet: the first start pulls the published one or builds it (minutes)"
+      fi
+    done
+    if command -v nvidia-smi >/dev/null 2>&1; then
+      local cards
+      cards="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | paste -sd, - || true)"
+      if docker info 2>/dev/null | grep -qi nvidia; then report INFO gpu "${cards:-an NVIDIA GPU}; nvidia-container-toolkit present"
+      else report WARN gpu "an NVIDIA GPU without nvidia-container-toolkit: GPU rooms get no card (colloq-host up installs it when online)"
+      fi
+    fi
+    if docker container inspect "$NAME" >/dev/null 2>&1; then
+      report INFO container "$NAME: $(docker container inspect -f '{{.State.Status}}, image {{.Config.Image}}' "$NAME" 2>/dev/null || true)"
+    fi
+  fi
+
+  if [ "$DOCTOR_FAILS" -gt 0 ]; then
+    say "$DOCTOR_FAILS FAIL, $DOCTOR_WARNS WARN: fix the FAIL lines before the first class"
+    return 1
+  fi
+  say "no FAIL, $DOCTOR_WARNS WARN"
+}
+
+usage() {
+  cat <<'USAGE'
+colloq-host: run Colloq (the colloq-vast / colloq-server image) on this machine's Docker
+
+  colloq-host doctor                 check this machine: PASS / WARN / FAIL, before the first up too
+  colloq-host up                     install what is missing, pull the image, start
+  colloq-host update [IMAGE]         switch to another image, backup first; data and room kernels stay
+  colloq-host status                 is the instance ready for a class
+  colloq-host link                   the class address and the owner link
+  colloq-host logs                   follow the log (Ctrl+C to leave)
+  colloq-host backup                 a backup into <state>/backups/
+  colloq-host backup-timer on|off|status   a backup every day at COLLOQ_BACKUP_AT (03:30)
+  colloq-host restore [--image IMAGE] [FILES]   stop, restore a backup, start again
+  colloq-host stop | start           stop / start Colloq (room kernels keep running)
+  colloq-host bundle FILE [IMAGE]    on a connected machine: images for an offline server, in one file
+  colloq-host load FILE              on the offline server: load that file; up then needs no network
+
+Settings: /etc/colloq/colloq.env (written by `up` from its environment); the image: /etc/colloq/image.
+A server of your own: docs/pages/en/server.html. A Vast VM: deploy/vast/README.md.
+USAGE
 }
 
 cmd="${1:-help}"; [ "$#" -eq 0 ] || shift
 case "$cmd" in
+  doctor) doctor ;;
   up) up ;;
   update) update "$@" ;;
-  status) docker exec "$NAME" colloq-vast status ;;
-  link) docker exec "$NAME" colloq-vast link ;;
-  logs) exec docker logs -f --tail 200 "$NAME" ;;
-  backup) docker exec "$NAME" colloq-vast backup ;;
+  status) need_root; docker exec "$NAME" colloq-vast status ;;
+  link) need_root; docker exec "$NAME" colloq-vast link ;;
+  logs) need_root; exec docker logs -f --tail 200 "$NAME" ;;
+  backup) need_root; backup_now ;;
+  backup-timer) backup_timer "$@" ;;
   restore) restore "$@" ;;
-  stop) docker stop -t 30 "$NAME" ;;
-  start) docker start "$NAME" >/dev/null && wait_ready ;;
-  help|-h|--help) cat <<'USAGE'
-colloq-host — run Colloq (image colloq-vast) on this machine's Docker
-
-  colloq-host up                 install what is missing, pull the image, start
-  colloq-host update [IMAGE]     switch to another image; data and room kernels stay
-  colloq-host status             is the instance ready for a class
-  colloq-host link               the class address and the owner link
-  colloq-host logs               follow the log (Ctrl+C to leave)
-  colloq-host backup             a backup into /workspace/colloq/backups/
-  colloq-host restore [FILES]    stop, restore a backup, start again
-  colloq-host stop | start       stop / start Colloq (room kernels keep running)
-
-Settings: /etc/colloq/colloq.env (written by `up` from its environment).
-USAGE
-  ;;
+  stop) need_root; docker stop -t 30 "$NAME" ;;
+  start) need_root; docker start "$NAME" >/dev/null && wait_ready ;;
+  bundle) bundle "$@" ;;
+  load) load "$@" ;;
+  help|-h|--help) usage ;;
   *) die "unknown command: $cmd (colloq-host help)" ;;
 esac

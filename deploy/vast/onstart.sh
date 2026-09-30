@@ -27,16 +27,28 @@ export ADMIN_EMAIL=""              # prefills the owner claim form
 export INSTITUTION=""              # shown next to the logo
 export OPENAI_API_KEY=""           # empty: the assistant is off (can be set later in the panel)
 
-# Python environments prepared before the first class. On a GPU offer: base,gpu
+# Python environments prepared before the first class. On a GPU offer: base,base-gpu
 export KERNEL_PRELOAD="base"
-# Pull prebuilt kernel images instead of building them here (optional):
-#   KERNEL_IMAGE_REPO=ghcr.io/OWNER/colloq-kernel  → pulls <repo>:v<version>-<env>
+# Where prebuilt kernel images come from, as <repo>:v<version>-<env>. Empty:
+# the published ghcr.io/colloq-edu/colloq-kernel ones (base, kaggle-base), and
+# a build here for the rest. "none": always build here.
 export KERNEL_IMAGE_REPO=""
 
 # Private registry only (a read-only token): used by docker on the VM.
 export COLLOQ_REGISTRY_USER=""
 export COLLOQ_REGISTRY_TOKEN=""
 # ---------------------------------------------------------------------------
+
+# Not settings: this file exists only for Vast VMs, and says so.
+#   COLLOQ_ON_VAST: the container may open a quick trycloudflare tunnel when no
+#     address is configured (anywhere else it opens none; entrypoint.sh).
+#   COLLOQ_FREEZE_UPDATES: switch off unattended-upgrades and hold the NVIDIA
+#     packages. On 28 Sep 2026 unattended-upgrades upgraded the NVIDIA userspace
+#     under the loaded kernel module 20 minutes after boot ("Driver/library
+#     version mismatch", no GPU until a reboot). A rented VM keeps the driver it
+#     booted with; off Vast colloq-host leaves the host's updates alone.
+export COLLOQ_ON_VAST=1
+export COLLOQ_FREEZE_UPDATES=1
 
 set -euo pipefail
 # The log carries the owner's setup link until someone claims the instance.

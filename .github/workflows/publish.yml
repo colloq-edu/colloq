@@ -20,7 +20,10 @@
 #                   here: release-please writes its notes from the release PR,
 #                   and a second writer would drift from it;
 #   pypi            the wheels to PyPI, only when vars.PUBLISH_PYPI == 'true';
-#   image           the vast.ai image to GHCR, only when vars.PUBLISH_IMAGES == 'true'.
+#   image           the server image to GHCR as colloq-vast and colloq-server
+#                   (one build, one digest), only when vars.PUBLISH_IMAGES == 'true';
+#   kernels         the room kernels for base and kaggle-base to GHCR as
+#                   colloq-kernel:vX.Y.Z-<env>, under the same switch.
 #
 # PyPI and GHCR are off until the owner turns them on with repository
 # variables: nothing can be re-uploaded there, and the first release must not
@@ -314,11 +317,23 @@ jobs:
             exit 1
           fi
           name="ghcr.io/${OWNER,,}/colloq-vast"
-          tags="$name:$VERSION"
+          # The same image under a name that says what it is off Vast: a
+          # university's own server runs exactly this (colloq-host,
+          # docs/pages/en/server.html). One build pushed under both names
+          # keeps one digest, so neither can drift from the other.
+          server="ghcr.io/${OWNER,,}/colloq-server"
+          tags="$name:$VERSION,$server:$VERSION"
           # latest only for a release: an rc must not reach whoever put
           # "latest" into their vast template.
-          if [ "$PRERELEASE" != true ]; then tags="$tags,$name:latest"; fi
-          { echo "name=$name"; echo "tags=$tags"; } >> "$GITHUB_OUTPUT"
+          if [ "$PRERELEASE" != true ]; then tags="$tags,$name:latest,$server:latest"; fi
+          {
+            echo "name=$name"
+            echo "server=$server"
+            echo "tags=$tags"
+            # Baked into the image: where its entry point and colloq-host
+            # bundle look for this version's kernels (the kernels job).
+            echo "kernels=ghcr.io/${OWNER,,}/colloq-kernel"
+          } >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -334,6 +349,27 @@ jobs:
           if docker buildx imagetools inspect "$NAME:$VERSION" >/dev/null 2>&1; then
             echo "::notice::$NAME:$VERSION is already published; not rebuilding it."
             echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      # A version published before the second name existed gets it without a
+      # rebuild: the index (image and attestations alike) is copied, so both
+      # names point at one digest. latest follows colloq-vast's latest and is
+      # never moved ahead of it, or back.
+      - name: Give an already published version its colloq-server name
+        if: steps.exists.outputs.skip == 'true'
+        env:
+          NAME: ${{ steps.image.outputs.name }}
+          SERVER: ${{ steps.image.outputs.server }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "$NAME:$VERSION" --format '{{.Manifest.Digest}}')"
+          if ! docker buildx imagetools inspect "$SERVER:$VERSION" >/dev/null 2>&1; then
+            docker buildx imagetools create -t "$SERVER:$VERSION" "$NAME@$digest"
+          fi
+          latest="$(docker buildx imagetools inspect "$NAME:latest" --format '{{.Manifest.Digest}}' 2>/dev/null || true)"
+          if [ "$PRERELEASE" != true ] && [ "$latest" = "$digest" ]; then
+            docker buildx imagetools create -t "$SERVER:latest" "$NAME@$digest"
           fi
       # The OCI labels (version, revision, source, licenses) are written by
       # deploy/vast/Dockerfile itself from these arguments; they are not
@@ -354,3 +390,123 @@ jobs:
             COLLOQ_VERSION=${{ needs.build.outputs.version }}
             GIT_SHA=${{ needs.build.outputs.commit }}
             SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
+            COLLOQ_KERNEL_REPO=${{ steps.image.outputs.kernels }}
+
+  # The room kernels of the shipped CPU environments, so that a new server
+  # pulls them instead of building them on first boot from the unpinned
+  # kernel/requirements.txt, and an offline one can carry them in
+  # (colloq-host bundle). The build is the one the entry point and the panel
+  # run (deploy/vast/entrypoint.sh · prepare_kernels, environments.ts ·
+  # buildCommand): kernel/Dockerfile with KERNEL_ENV, a child on its parent
+  # (`# colloq: from`, here the parent just published, pinned by digest), the
+  # root on the python its list names (`# colloq: python X.Y`; none leaves the
+  # Dockerfile's own default). kernel/locks is not a build input there and is
+  # not one here: it records a verified kaggle-base, and its check script is
+  # run against the image before it is pushed. base-gpu stays out: nine
+  # gigabytes of CUDA wheels on a runner's disk and in every pull, and a GPU
+  # machine builds it once anyway. Each image carries its version and
+  # environment as labels, by which the entry point knows a loaded image for
+  # the published one.
+  kernels:
+    name: Kernel images to GHCR
+    needs: build
+    if: vars.PUBLISH_IMAGES == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          persist-credentials: false
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Build, check and push the kernels
+        env:
+          OWNER: ${{ github.repository_owner }}
+          VERSION: ${{ needs.build.outputs.version }}
+          COMMIT: ${{ needs.build.outputs.commit }}
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+          ENVIRONMENTS: base kaggle-base
+        run: |
+          # Plain bash, no bash-5 idioms: tests/vast-image.test.mts runs this
+          # very script with a stand-in docker.
+          set -euo pipefail
+          owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          repo="ghcr.io/$owner/colloq-kernel"
+          # One `# colloq: <key> <value>` directive of a list, read the way
+          # the entry point and the panel read it.
+          directive() {
+            sed -nE "s/^[[:space:]]*#[[:space:]]*colloq:[[:space:]]*$1[[:space:]]+([^[:space:]]+)[[:space:]]*\$/\\1/p" \
+              "kernel/environments/$2.txt" | head -1
+          }
+          # Parents first: a child is built on the image published for its parent.
+          order=()
+          add() {
+            local parent
+            case " ${order[*]:-} " in *" $1 "*) return 0 ;; esac
+            if [ ! -f "kernel/environments/$1.txt" ]; then
+              echo "::error::no kernel/environments/$1.txt"; exit 1
+            fi
+            if grep -qE '^[[:space:]]*#[[:space:]]*colloq:[[:space:]]*gpu[[:space:]]*$' "kernel/environments/$1.txt"; then
+              echo "::error::$1 is a GPU environment; this job publishes CPU environments only"; exit 1
+            fi
+            parent="$(directive from "$1")"
+            if [ -n "$parent" ]; then add "$parent"; fi
+            order+=("$1")
+          }
+          for name in $ENVIRONMENTS; do add "$name"; done
+          # Run once in the runner's docker before anything is pushed:
+          # kaggle-base by the check kernel/locks records (three boosters and
+          # the rest, no network), the others by the imports every kernel needs.
+          check() {
+            if [ "$1" = kaggle-base ]; then
+              docker run --rm --network none --read-only --tmpfs /tmp:rw,size=512m --user 1000:1000 \
+                --cpus 2 --memory 4g -e HOME=/tmp -e MPLCONFIGDIR=/tmp/mpl -e NUMBA_CACHE_DIR=/tmp/numba \
+                -v "$PWD/scripts/check-kaggle-base.py:/check.py:ro" "colloq-kernel:$1" python /check.py
+            else
+              docker run --rm --network none "colloq-kernel:$1" \
+                python -c 'import jupyter_server, ipykernel, numpy, pandas, matplotlib, plotly, sklearn, black'
+            fi
+          }
+          # The digest of every image published or found, for its children.
+          digests="$RUNNER_TEMP/kernel-digests"
+          mkdir -p "$digests"
+          for name in "${order[@]}"; do
+            ref="$repo:v$VERSION-$name"
+            if docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
+              echo "::notice::$ref is already published; not rebuilding it."
+              docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' > "$digests/$name"
+              continue
+            fi
+            args=(--platform linux/amd64 -f kernel/Dockerfile --build-arg "KERNEL_ENV=$name"
+              --label "org.opencontainers.image.title=colloq-kernel"
+              --label "org.opencontainers.image.description=Colloq room kernel: the $name environment"
+              --label "org.opencontainers.image.version=$VERSION"
+              --label "org.opencontainers.image.revision=$COMMIT"
+              --label "org.opencontainers.image.source=$SOURCE_URL"
+              --label "org.opencontainers.image.licenses=MIT"
+              --label "colloq.environment=$name")
+            parent="$(directive from "$name")"
+            if [ -n "$parent" ]; then
+              args+=(--build-arg "PARENT=$repo@$(cat "$digests/$parent")")
+            else
+              python="$(directive python "$name")"
+              if [ -n "$python" ]; then args+=(--build-arg "PARENT=python:$python-slim-bookworm"); fi
+            fi
+            # Into the runner's docker for the check; attestations belong to the
+            # pushed image, and the local image store may not take them.
+            docker buildx build "${args[@]}" --provenance=false --load -t "colloq-kernel:$name" kernel
+            check "$name"
+            # The second build is the first one from the builder's cache, pushed.
+            docker buildx build "${args[@]}" --push --provenance=mode=max --sbom=true \
+              --metadata-file "$RUNNER_TEMP/$name.json" -t "$ref" kernel
+            jq -r '."containerimage.digest"' "$RUNNER_TEMP/$name.json" > "$digests/$name"
+            echo "::notice::published $ref ($(cat "$digests/$name"))"
+          done

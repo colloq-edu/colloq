@@ -4,6 +4,8 @@
 
 It covers the common case that `scripts/vast-legacy.sh` handles today, where the VM rsyncs the working tree, runs `npm ci`, builds the app and installs a systemd unit. The versioned k3s path in [docs/deployment-vast.md](../../docs/deployment-vast.md) is still there for installations that need its stricter isolation (restricted Pods, NetworkPolicy, digest-pinned release manifests).
 
+The same image, also published as `ghcr.io/colloq-edu/colloq-server`, is the production path for a university's own Linux server; see [Your own server (university)](#your-own-server-university).
+
 ## Design
 
 ### The constraint
@@ -66,7 +68,7 @@ Do not rent from a template in the Vast console. Measured on 28 September 2026:
 
 `make vast-vm` reads `VAST_TOKEN`, `VAST_SSH_KEY`, `VAST_IMAGE`, `VAST_DISK`, `VAST_MAX_PRICE` and `VAST_GPU` from `.env`. It picks a verified on-demand VM offer with reliability of at least 0.98 and asks before renting (`FORCE=1` skips the question). For GPU classes it checks the offer's *Max CUDA* (at least 12.1) after the search, not in it: in September 2026 the server-side filter hid RTX 5070 and RTX 5090 offers whose listed value was 13.0. `HOST` overrides `COLLOQ_HOSTNAME` for this machine only, without editing the file. The script then waits for `/api/health` and prints the class address and the owner link.
 
-`backups/vast-onstart.sh` is git-ignored because it holds the relay token and API keys. Set at least `COLLOQ_IMAGE=ghcr.io/<owner>/colloq-vast:<version>` and choose an address (below). `colloq-host` saves the settings to `/etc/colloq/colloq.env` (mode 0600) on the VM. When the on-start runs again, its non-empty values are written over the same keys in that file, and a key it leaves empty keeps the value already there.
+`backups/vast-onstart.sh` is git-ignored because it holds the relay token and API keys. Set at least `COLLOQ_IMAGE=ghcr.io/<owner>/colloq-vast:<version>` and choose an address (below). `colloq-host` saves the settings to `/etc/colloq/colloq.env` (mode 0600) on the VM. When the on-start runs again, its non-empty values are written over the same keys in that file, and a key it leaves empty keeps the value already there. A copy made before 0.9.0 lacks the two lines under the settings block (`COLLOQ_ON_VAST=1`, `COLLOQ_FREEZE_UPDATES=1`); `colloq-host` still recognises a VM that `make vast-vm` rented by the `/etc/colloq/onstart.sh` it leaves there, but copy the lines over.
 
 A GPU environment needs at least 100 GB of disk (`VAST_DISK=100`): `base-gpu` alone is about 9 GB of torch/CUDA wheels, and each environment adds its own image. 60 GB is enough for CPU classes.
 
@@ -92,9 +94,11 @@ After you rent:
 |---|---|---|---|
 | `relay` | `COLLOQ_HOSTNAME`, `RELAY_DOMAIN`, `RELAY_ADDR`, `RELAY_TOKEN` (`RELAY_PORT`, default 7000) | `https://<name>.<relay domain>` | Your own frps (`make relay-setup`). The only option that works from Russia, where Cloudflare's addresses do not open. A short name (`class1`) is completed with `RELAY_DOMAIN`. Static files are mirrored on the relay when it supports that. |
 | `cloudflare` (named) | `CLOUDFLARE_TUNNEL_TOKEN`, `COLLOQ_HOSTNAME` | `https://<COLLOQ_HOSTNAME>` | Route the hostname to the service `http://localhost:3000` in the Cloudflare dashboard for that tunnel; cloudflared runs inside the container, next to the server. |
-| `cloudflare` (quick) | nothing | a random `https://*.trycloudflare.com` | Printed in the log. It changes whenever the tunnel restarts; the server picks up the new one without a restart. |
-| `direct` | `-p 3000:3000` in Docker options, plus `PUBLIC_URL=http://<ip>:<mapped port>` | plain HTTP | No TLS and no middleman. Vast maps the port to a random external one, so read it in the console. |
 | `none` | `PUBLIC_URL` | whatever you say | For your own reverse proxy. |
+| `cloudflare` (quick) | nothing, on Vast (`COLLOQ_ON_VAST=1`, set by `onstart.sh`); elsewhere only `COLLOQ_TUNNEL=cloudflare` | a random `https://*.trycloudflare.com` | Printed in the log. It changes whenever the tunnel restarts; the server picks up the new one without a restart. Off Vast `auto` never opens it: without `PUBLIC_URL` the mode is `none`, and the log says so loudly. |
+| `direct` | `-p 3000:3000` in Docker options, plus `PUBLIC_URL=http://<ip>:<mapped port>` | plain HTTP | Only when asked for. No TLS and no middleman. Vast maps the port to a random external one, so read it in the console. |
+
+With a Cloudflare tunnel the server trusts the `CF-Connecting-IP` header (`TRUST_CF_CONNECTING_IP=1`), because every request reaches it from the cloudflared next to it.
 
 To point a relay name at a machine, set `COLLOQ_HOSTNAME=<name>` together with the `RELAY_*` settings. The relay only serves names under its own zone, and a name that is already taken means another machine is serving that class. The tunnel keeps retrying with a growing pause, so it takes over as soon as the other machine lets the name go.
 
@@ -115,10 +119,10 @@ The server reads the container's environment and `/workspace/colloq/.env`. For m
 | `INSTITUTION` | — | Shown next to the logo |
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`, `AI_PROVIDER`, `AI_REASONING` | off, OpenAI, `gpt-4o-mini`, `openai`, `false` | The assistant. It can also be configured later in the panel |
 | `KERNEL_ENV` | `base` | Default environment for new rooms (the panel's "Make default" writes it to `.env`) |
-| `KERNEL_PRELOAD` | `KERNEL_ENV` | Environments to prepare at start, comma-separated, e.g. `base,gpu` |
-| `KERNEL_IMAGE_REPO` | — | Pull kernel images instead of building them: `<repo>:<tag>-<env>`, e.g. `ghcr.io/<owner>/colloq-kernel` |
-| `KERNEL_IMAGE_TAG` | `v<image version>` | Tag prefix, matching the names `scripts/release-build.py` publishes |
-| `KERNEL_MEM`, `KERNEL_MEM_<ENV>` | `4g`, `16g` for GPU environments | Memory per room: `KERNEL_MEM` for ordinary environments, `KERNEL_MEM_<ENV>` for one environment, where `<ENV>` is its name in capitals with `_` for `-` (`KERNEL_MEM_GPU`, `KERNEL_MEM_BASE_GPU`). The panel can override it per room, and the owner for the instance (`/api/admin/resources`) |
+| `KERNEL_PRELOAD` | `KERNEL_ENV` | Environments to prepare at start, comma-separated, e.g. `base,base-gpu` or `base,kaggle-base` |
+| `KERNEL_IMAGE_REPO` | the published `ghcr.io/colloq-edu/colloq-kernel` | Where prebuilt kernel images come from, as `<repo>:<tag>-<env>`. By default the published ones are pulled for the shipped, unedited `base` and `kaggle-base` of this version, and everything else is built on the machine. An explicit repository is asked for every environment; `none` builds them all on the machine |
+| `KERNEL_IMAGE_TAG` | `v<image version>` | Tag prefix, matching the names `publish.yml` and `scripts/release-build.py` publish |
+| `KERNEL_MEM`, `KERNEL_MEM_<ENV>` | `4g`, `16g` for GPU environments | Memory per room: `KERNEL_MEM` for ordinary environments, `KERNEL_MEM_<ENV>` for one environment, where `<ENV>` is its name in capitals with `_` for `-` (`KERNEL_MEM_BASE_GPU`, `KERNEL_MEM_KAGGLE_BASE`). The panel can override it per room, and the owner for the instance (`/api/admin/resources`) |
 | `KERNEL_CPUS` | `2` | CPUs per room |
 | `KERNEL_OWN_MAX`, `KERNEL_OWN_PIDS` | `60`, `2048` | The second container a class gets for its students' personal notebooks, which never receives a GPU: how many kernels may live in it at once, and its process ceiling |
 | `KERNEL_OWN_IDLE_MIN` | `30` | Minutes of idling after which one personal notebook's kernel is stopped; the container goes with the last kernel in it. `0` never stops them |
@@ -128,9 +132,17 @@ The server reads the container's environment and `/workspace/colloq/.env`. For m
 | `MAX_UPLOAD_MB`, `MAX_SESSION_MB`, `COUNCIL_COPY_MB`, `COUNCIL_MEMORY_GUARD`, `OPEN_SEMINAR_CREATION`, `TZ` | `50`, `1024`, `512`, `1`, `false`, — | As in `.env.example` |
 | `SESSION_SECRET` | generated, kept in `data/session-secret` | Set it only to rotate the key or share it between instances |
 | `COLLOQ_REGISTRY_USER`, `COLLOQ_REGISTRY_TOKEN` | — | Host only: `docker login` for a private registry. Use a read-only token. The variables are not passed to the container, but the resulting `/root/.docker/config.json` is mounted into it read-only, so the server can pull private kernel images. The server already holds the Docker socket, which is root on the VM, so this adds no access |
-| `COLLOQ_HOME` | `/workspace/colloq` | State directory. Mount it from the host at the **same path** |
+| `COLLOQ_HOME` | `/workspace/colloq` | State directory. Mount it from the host at the **same path**. `colloq-host up` remembers it in `colloq.env`, as it does `COLLOQ_BIND`, `PORT`, `KERNEL_NETWORK` and `COLLOQ_CONTAINER_NAME`, so a later `update` acts on the same layout |
 | `COLLOQ_HOST_STATE` | detected | The state directory's path on the host, if the automatic detection is not enough |
-| `COLLOQ_BIND` | `127.0.0.1` (`0.0.0.0` in `direct` mode) | Host only: where the VM publishes port 3000 |
+| `COLLOQ_BIND` | `127.0.0.1` (`0.0.0.0` in `direct` mode) | Host only: where the machine publishes port 3000. A reverse proxy on another host needs the address it reaches, and then `TRUSTED_PROXIES` |
+| `TRUSTED_PROXIES`, `SHARED_ADDRESSES`, `TRUST_CF_CONNECTING_IP`, `HSTS` | `loopback`, —, off (on with a Cloudflare tunnel), on | Whose `X-Forwarded-For` the server believes, campus NAT addresses, the Cloudflare header, the HSTS header. With the port on loopback, `colloq-host` trusts loopback and the Docker network's gateway by itself, which is how a proxy on the same host reaches the container |
+| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`, `DEPENDENCY_INDEX_URL`, `DEPENDENCY_FILES_HOSTS`, `COLLOQ_ROOM_NETWORK`, `KERNEL_BLOCKED_CIDRS`, `COLLOQ_HELPER_IMAGE` | — | Outbound proxy, internal CA (a host file, mounted read-only at the same path), package mirror, room network. The Docker daemon's own pulls need its own proxy setting |
+| `COLLOQ_ON_VAST` | — | `1` on a Vast VM (`onstart.sh` sets it): `auto` may open a quick tunnel |
+| `COLLOQ_FREEZE_UPDATES` | — | Host only. `1` (set by `onstart.sh`): switch off unattended-upgrades and the apt timers and hold the NVIDIA packages on every `up`; `0`: never. Unset, only a Vast VM started from an older on-start gets it (see above). Off Vast `colloq-host` never touches the host's update policy |
+| `COLLOQ_OFFLINE` | — | `1`: no pulls, no apt, no get.docker.com; images come from `colloq-host load`, which sets it |
+| `BACKUP_KEEP` | `14` | Backup archives kept; older ones go after a successful backup |
+| `COLLOQ_BACKUP_AT` | `03:30` | Host only: the time of `colloq-host backup-timer on` |
+| `COLLOQ_BACKUP_BEFORE_UPDATE` | `1` | Host only: `0` skips the backup `update` takes before it replaces the image |
 
 State lives in `/workspace/colloq` on the VM disk:
 
@@ -148,16 +160,18 @@ State lives in `/workspace/colloq` on the VM disk:
 On the VM, as root:
 
 ```sh
+colloq-host doctor              # PASS / WARN / FAIL for this machine; works before the first up
 colloq-host status              # /api/health, kernel images, room containers
 colloq-host logs                # follow the log
 colloq-host link                # class address and, while unclaimed, the owner link
 colloq-host update ghcr.io/<owner>/colloq-vast:<new version>
 colloq-host backup              # → /workspace/colloq/backups/colloq-<stamp>.db + -files.tar.gz
+colloq-host backup-timer on     # the same every day at COLLOQ_BACKUP_AT (03:30); off | status
 colloq-host restore backups/colloq-<stamp>.db   # stops Colloq, restores, starts it again
 colloq-host stop | start
 ```
 
-**Update.** `update` pulls the new image and replaces the Colloq container. Data stays on disk. Room kernels keep running, and the new server reattaches to them because their Jupyter tokens derive from the persisted signing key. The chosen image is saved in `/etc/colloq/image`, and it stays in use after a reboot even though the on-start still names the old one. Running `up` again with unchanged settings (for example, when the VM reboots) leaves a running instance alone. To go back a version, `colloq-host update` to the older image works, but the newer server may already have added columns to the database, and older versions are not tested against a newer schema. The safe rollback is a backup taken before the update.
+**Update.** `update` pulls the new image and replaces the Colloq container. Before a different image meets the database it takes a backup (`COLLOQ_BACKUP_BEFORE_UPDATE=0` skips it) and prints the way back, `REPLACE=1 colloq-host restore --image <previous image> <that backup>`, before anything is replaced. Data stays on disk. Room kernels keep running, and the new server reattaches to them because their Jupyter tokens derive from the persisted signing key. The chosen image is saved in `/etc/colloq/image`, and it stays in use after a reboot even though the on-start still names the old one. Running `up` again with unchanged settings (for example, when the VM reboots) leaves a running instance alone. Rolling back with `update <older image>` alone would start the older server on a database the newer one may already have moved forward, and older versions are not tested against a newer schema: `restore --image` puts the old image and the old data back together. `update` also installs the new image's `colloq-host` in `/usr/local/sbin`, so the manager moves with the image it manages. Coming from 0.8.x, install the new `colloq-host` first (`docker run --rm -v /usr/local/sbin:/host <new image> install-host /host`) and update with it: the old one neither backs up nor passes the settings added in 0.9.0 (on Vast, `COLLOQ_ON_VAST`, without which a VM that relied on the quick tunnel comes up without an address).
 
 **Stop.** The container gets SIGTERM with 30 seconds of grace. The server closes sockets, flushes notebook snapshots and closes SQLite, so the WAL is checkpointed. Room kernels are left running on purpose, as they are with the legacy service, so that a restart does not wipe students' variables. Destroying the VM ends them.
 
@@ -169,7 +183,27 @@ rsync -e 'ssh -p <port>' -av root@<ip>:/workspace/colloq/backups/ backups/<name>
 # or: vastai copy <instance>:/workspace/colloq/backups/ ./backups/<name>/
 ```
 
-A backup is a pair: a consistent `VACUUM INTO` copy of the database, and an archive with `workspace/`, the signing key, the setup token and your environment lists. It is the same format `colloq backup` produces (`scripts/backup-local.sh`). To restore on a new VM, copy the pair into `/workspace/colloq/backups/` and run `colloq-host restore backups/colloq-<stamp>.db`. Restoring over an instance that already has a database needs `REPLACE=1`. Kernel images are not backed up, because they are cheaper to rebuild or pull.
+A backup is a pair: a consistent `VACUUM INTO` copy of the database, and an archive with `workspace/`, the signing key, the setup token and your environment lists. It is the same format `colloq backup` produces (`scripts/backup-local.sh`). To restore on a new VM, copy the pair into `/workspace/colloq/backups/` and run `colloq-host restore backups/colloq-<stamp>.db`. Restoring over an instance that already has a database needs `REPLACE=1`. Kernel images are not backed up, because they are cheaper to rebuild or pull. With the container stopped, `colloq-host backup` takes the copy from a one-off container of the same image.
+
+## Your own server (university)
+
+The same image runs on a server a university keeps, behind the university's own HTTPS reverse proxy, with or without internet. The full guide, with proxy configurations, sizing and day-to-day operation, is [docs/pages/en/server.html](../../docs/pages/en/server.html) ([по-русски](../../docs/pages/ru/server.html)). The short version, as root on a dedicated x86-64 Linux VM with Docker Engine 28 or newer:
+
+```sh
+docker run --rm -v /usr/local/sbin:/host ghcr.io/colloq-edu/colloq-server:<version> install-host /host
+colloq-host doctor                        # PASS / WARN / FAIL; fix every FAIL before going on
+COLLOQ_IMAGE=ghcr.io/colloq-edu/colloq-server:<version> \
+COLLOQ_TUNNEL=none PUBLIC_URL=https://colloq.example.edu \
+COLLOQ_BIND=10.0.0.20 TRUSTED_PROXIES=10.0.0.5 \
+  colloq-host up
+colloq-host backup-timer on               # a backup every day at 03:30; copy them off the machine too
+```
+
+- **The proxy.** It passes WebSocket upgrades, keeps `Host`, sets `X-Forwarded-For` and `X-Forwarded-Proto`, allows bodies of at least 200 MB and does not buffer server-sent events; the guide has nginx and Caddy configurations. A proxy on the same host talks to `127.0.0.1:3000` and needs neither `COLLOQ_BIND` nor `TRUSTED_PROXIES`, because `colloq-host` trusts loopback and the Docker network's gateway by itself. A proxy on another host needs `COLLOQ_BIND` (the server address it connects to) and `TRUSTED_PROXIES` (its own address). A campus NAT that all students share goes into `SHARED_ADDRESSES`.
+- **No quick tunnel, no quiet changes.** Off Vast, `COLLOQ_TUNNEL=auto` never opens a public trycloudflare address, and `colloq-host` never switches off unattended-upgrades or holds packages: that is `COLLOQ_FREEZE_UPDATES=1`, for rented VMs only. Reboot after kernel and driver updates on your own schedule; Docker brings Colloq back.
+- **Without internet.** On a connected machine with Docker, `colloq-host bundle colloq-<version>.tar ghcr.io/colloq-edu/colloq-server:<version>` packs the app image, the room kernels for `KERNEL_PRELOAD` (default `base`) and the matching `colloq-host` into one file. It needs about twice the file's size in free disk while it writes. On the server, with Docker Engine installed from the distribution or a mirror, run `tar -xf colloq-<version>.tar colloq-host && ./colloq-host load colloq-<version>.tar`, then `colloq-host up`. `load` sets `COLLOQ_OFFLINE=1`, and from then on nothing pulls, installs or builds from the network. Updates arrive the same way: a new bundle, `load`, then `colloq-host update`.
+- **Updates.** `colloq-host update ghcr.io/colloq-edu/colloq-server:<new version>` takes a backup first and prints how to roll back (see [Running it](#running-it)).
+- **One organisation per server.** The server holds the Docker socket, which is root on the machine, and one Colloq owns every room container on its daemon (see [Isolation](#isolation-what-users-get)).
 
 ## Isolation: what users get
 
@@ -198,13 +232,13 @@ Vast machines are amd64. `PLATFORM=linux/amd64` also works from an arm64 laptop.
 docker push ghcr.io/<owner>/colloq-vast:<version>
 ```
 
-A tag release can also publish it from CI: the `image` job of `.github/workflows/publish.yml` pushes `ghcr.io/<owner>/colloq-vast:X.Y.Z` (and `:latest` for a non-pre-release) when the repository variable `PUBLISH_IMAGES` is `true`; see [RELEASING.md](../../RELEASING.md).
+A tag release can also publish it from CI: the `image` job of `.github/workflows/publish.yml` pushes `ghcr.io/<owner>/colloq-vast:X.Y.Z` and the same digest as `ghcr.io/<owner>/colloq-server:X.Y.Z` (and `:latest` of both for a non-pre-release) when the repository variable `PUBLISH_IMAGES` is `true`; see [RELEASING.md](../../RELEASING.md). A version published before the second name existed gets it on a rerun, copied rather than rebuilt.
 
 Before you make the package public, read [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md). The image contains the web bundle and the link-preview card fonts, and both include HSE Sans, whose redistribution license is still unresolved.
 
 The image carries OCI labels (`org.opencontainers.image.version`, `.revision`, `.source`, `.licenses`), and `colloq-vast version` prints the version and revision it was built from. The frpc 0.71.0 and cloudflared 2026.9.1 downloads are pinned by sha256 in the Dockerfile. When you bump one of them, update the version and both checksums together, and keep frpc on the relay's version.
 
-Prebuilt kernel images make the first boot fast. Without them, the default `base` environment builds in a few minutes, and `base-gpu` downloads about 3 GB of wheels. `scripts/release-build.py --registry ghcr.io/<owner>/colloq` publishes them as `ghcr.io/<owner>/colloq-kernel:v<version>-<env>`, which is what `KERNEL_IMAGE_REPO=ghcr.io/<owner>/colloq-kernel` pulls by default. Only the manual k3s workflow (`.github/workflows/release.yml`) runs that script, and only for the environments you list there. A tag release through `publish.yml` publishes no kernel images, so for such a version the entrypoint fails to pull and builds the environment on the VM instead.
+Prebuilt kernel images make the first boot fast, and an offline install possible. Without them, the default `base` environment builds in a few minutes, and `base-gpu` downloads about 3 GB of wheels. The `kernels` job of `publish.yml`, under the same `PUBLISH_IMAGES` switch, publishes `ghcr.io/<owner>/colloq-kernel:vX.Y.Z-base` and `:vX.Y.Z-kaggle-base` for linux/amd64, with the build the entrypoint and the panel run, after a check inside each image (the `kernel/locks` check script for `kaggle-base`). The app image is built with that repository as its default (`COLLOQ_KERNEL_REPO`), so the entrypoint pulls them without any setting. `base-gpu` is not published: it is about 9 GB, and a GPU machine builds it once. `scripts/release-build.py --registry ghcr.io/<owner>/colloq` (the manual k3s workflow, `.github/workflows/release.yml`) uses the same names for the environments listed there. Make the new `colloq-kernel` and `colloq-server` packages public once, as `colloq-vast` was.
 
 ## Local smoke test
 
@@ -253,12 +287,13 @@ These checks ran on 18 September 2026 on an arm64 laptop, using `docker:dind` as
 - **amd64.** The image also builds for `linux/amd64` (under emulation).
 - **After the review fixes** (same day, arm64, `SEED_KERNEL=1`): the end-to-end check passed again, a repeated `colloq-host up` left the running instance alone, restore and a SIGTERM stop worked, and a non-default `COLLOQ_HOME` was wired to the server's `.env`. With a stub `docker`, repeated boots of a GPU machine no longer recreated the container, and a reboot after `colloq-host update` kept the updated image.
 
-On a real Vast VM (28 September 2026, RTX 3070, `make vast-vm`): the image pulled from GHCR, `colloq-host` found the GPU and started Colloq, the default environment built, and the class address answered through the relay. The same run found the console, on-start and status behaviour described under [Renting a machine](#renting-a-machine-make-vast-vm). It also found that unattended-upgrades upgraded the NVIDIA userspace under the loaded kernel module 20 minutes after boot ("Driver/library version mismatch"). `colloq-host up` now turns automatic updates off and holds the NVIDIA packages on every start.
+On a real Vast VM (28 September 2026, RTX 3070, `make vast-vm`): the image pulled from GHCR, `colloq-host` found the GPU and started Colloq, the default environment built, and the class address answered through the relay. The same run found the console, on-start and status behaviour described under [Renting a machine](#renting-a-machine-make-vast-vm). It also found that unattended-upgrades upgraded the NVIDIA userspace under the loaded kernel module 20 minutes after boot ("Driver/library version mismatch"). On a Vast VM `colloq-host up` therefore turns automatic updates off and holds the NVIDIA packages on every start (`COLLOQ_FREEZE_UPDATES=1`, which `onstart.sh` sets; a VM started from an older copy of the on-start is recognised by `/etc/colloq/onstart.sh`, which `make vast-vm` leaves there).
 
 Not verified yet:
 
 - GPU rooms with nvidia-container-toolkit on a rented card;
-- pulling kernel images from a registry, since none are published yet.
+- pulling the kernel images `publish.yml` publishes from 0.9.0;
+- on a real Linux VM rather than with stand-ins: `colloq-host doctor`, `bundle` and `load` on an offline machine, `backup-timer`, the backup and rollback around `update`, and the trusted-proxy default behind a proxy on the same host.
 
 Known gap: the panel's *Resources* section does not list the GPU cards. The server reads them with `nvidia-smi`, which exists on the VM but not inside the `colloq-vast` container. GPU rooms still get their slices, because those come from `KERNEL_GPUS`, which `colloq-host` fills in from the host's `nvidia-smi`.
 

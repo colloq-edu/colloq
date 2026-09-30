@@ -21,7 +21,11 @@
 # Variables: IMAGE (colloq-vast:dev), SMOKE_PORT (13000), SMOKE_NAME,
 # SEED_KERNEL=1 to hand the "machine" the colloq-kernel:base already built here
 # instead of a build (minutes versus seconds), SMOKE_WAIT for how long to wait
-# for the kernel (900 s).
+# for the kernel (900 s), SMOKE_KERNEL_REPO for where kernels come from ("none",
+# the default, builds them from this tree's kernel/: a development image
+# carries the released version number, and the published kernel of that
+# version would hide a change here; empty takes the published one, as a
+# server does).
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -62,8 +66,14 @@ up() {
   # bash and curl: dind lacks them, while the Ubuntu VM on vast has them.
   in_vm apk add --no-cache bash curl >/dev/null
   in_vm docker run --rm -v /usr/local/sbin:/host "$IMAGE" install-host /host
+  # The preflight on a real daemon, before anything runs. Only shown: the
+  # stand-in is an Alpine container, not the Ubuntu server doctor is about
+  # (no systemd, no timedatectl), so some WARN lines are expected here.
+  docker exec -e COLLOQ_IMAGE="$IMAGE" -e COLLOQ_OFFLINE=1 -e PUBLIC_URL="$BASE" \
+    "$NAME" colloq-host doctor || true
   docker exec -e COLLOQ_IMAGE="$IMAGE" -e COLLOQ_PULL=0 -e COLLOQ_BIND=0.0.0.0 \
     -e COLLOQ_TUNNEL=none -e PUBLIC_URL="$BASE" -e UI_LANGUAGE=en \
+    -e KERNEL_IMAGE_REPO="${SMOKE_KERNEL_REPO-none}" \
     "$NAME" colloq-host up
   say "waiting for /api/health (the default environment builds on first start)"
   local wait="${SMOKE_WAIT:-900}" body=""
@@ -86,6 +96,9 @@ e2e() {
     -d "{\"token\":\"$token\",\"name\":\"Smoke Owner\",\"email\":\"owner@example.com\"}" \
     "$BASE/api/admin/claim")"
   case "$code" in 201|409) : ;; *) die "claim answered HTTP $code" ;; esac
+  # The claim spends the printed token and leaves a fresh one in the file
+  # (admin/auth.ts · retireSetupToken): e2e signs in with that one.
+  token="$(in_vm cat /workspace/colloq/data/setup-token)"
   tmp="$(mktemp -d)"
   printf '%s\n' "$token" > "$tmp/setup-token"
   E2E_BASE_URL="$BASE" DATA_DIR="$tmp" node --import tsx scripts/e2e.mts || { rm -rf "$tmp"; die "scripts/e2e.mts"; }

@@ -219,7 +219,16 @@ read_state_env() {
 #   none        bring nothing up; the address is PUBLIC_URL or localhost.
 #
 # auto takes relay if it is configured; otherwise a named Cloudflare tunnel;
-# otherwise none, if the address is given explicitly; otherwise a quick tunnel.
+# otherwise none, if the address is given explicitly; otherwise, on Vast only,
+# a quick tunnel, and everywhere else none with a loud warning.
+#
+# Why the quick tunnel is Vast's alone. A rented VM has no proxy in front and
+# no address of its own, and a class address in one step is the point of it.
+# A server anywhere else sits behind somebody's network: a university's HTTPS
+# proxy, a firewall that is there on purpose. Opening a public
+# *.trycloudflare.com door into it because one variable was forgotten would
+# route the class, the owner's setup link included, around exactly that.
+# COLLOQ_TUNNEL=cloudflare still asks for it anywhere, in so many words.
 MODE=""
 PUBLIC=""
 TUNNEL_PID=""
@@ -236,6 +245,13 @@ relay_hostname() {
   esac
 }
 
+# On Vast: the flag deploy/vast/onstart.sh sets and colloq-host passes on, or
+# the variable Vast puts into the instances it runs itself. Nothing of Vast
+# reaches a VM's container by itself, so there the flag is what counts.
+on_vast() {
+  [ "${COLLOQ_ON_VAST:-}" = 1 ] || [ -n "${VAST_CONTAINERLABEL:-}" ]
+}
+
 pick_mode() {
   MODE="${COLLOQ_TUNNEL:-auto}"
   if [ "$MODE" = auto ]; then
@@ -245,8 +261,10 @@ pick_mode() {
       MODE=cloudflare
     elif [ -n "${PUBLIC_URL:-}" ]; then
       MODE=none
-    else
+    elif on_vast; then
       MODE=cloudflare
+    else
+      MODE=none
     fi
   fi
   case "$MODE" in
@@ -286,6 +304,23 @@ pick_mode() {
   # An explicit PUBLIC_URL beats the computed one: the operator knows more
   # about their proxy than we know about the vast variables.
   if [ -n "${PUBLIC_URL:-}" ] && [ "$MODE" != none ]; then PUBLIC="$PUBLIC_URL"; fi
+}
+
+# No tunnel and no address: the server works, but only through its port, and
+# every link it hands out (the owner's setup link first) says localhost. That
+# is a mistake in the settings far more often than a choice, and it is found
+# in class when the students' links do not open, so it is said loudly, once,
+# at the top of the log.
+warn_no_address() {
+  [ "$MODE" = none ] && [ -z "${PUBLIC_URL:-}" ] || return 0
+  warn "------------------------------------------------------------------------"
+  warn "no public address: PUBLIC_URL is not set, and no tunnel is configured."
+  warn "Colloq answers only on its port, and every link it hands out says"
+  warn "http://localhost:${PORT}. Behind your own HTTPS proxy, set"
+  warn "PUBLIC_URL=https://<the address students open> and start again."
+  warn "A quick public *.trycloudflare.com tunnel opens only on Vast, or with"
+  warn "COLLOQ_TUNNEL=cloudflare."
+  warn "------------------------------------------------------------------------"
 }
 
 # The tunnel lines go to the container log with a prefix, and to a file: we
@@ -421,16 +456,24 @@ upload_relay_assets() {
 # before the first class, not on the first Run. The order of sources:
 #
 #   1. already in the host docker: do nothing (re-creating the machine from the
-#      image does not touch the images, let alone a colloq-vast update);
-#   2. KERNEL_IMAGE_REPO: pull the published release image
-#      (<repo>:<tag>-<environment>, as scripts/release-build.py names them) and
-#      name it colloq-kernel:<environment>, as pool.ts expects;
+#      image does not touch the images, let alone a colloq-vast update; and an
+#      offline server gets its images from colloq-host load);
+#   2. the published image of this very version, <repo>:v<version>-<environment>
+#      (publish.yml pushes base and kaggle-base; scripts/release-build.py names
+#      the k3s ones the same way), named colloq-kernel:<environment>, as
+#      pool.ts expects. The repo is KERNEL_IMAGE_REPO, else the one this image
+#      was built with (COLLOQ_KERNEL_REPO, ghcr.io/colloq-edu/colloq-kernel);
 #   3. build from the context that lies in the image, with the same docker call
 #      as the panel (environments.ts · buildCommand) and the CLI
 #      (launch-prepare.ts).
 #
+# With COLLOQ_OFFLINE=1 only the first: a pull or a build would need the
+# network (the registry, the python base image, PyPI), and what is missing is
+# said by name instead of failing on a download.
+#
 # The `# colloq: from <parent>` chain is walked from the root to the leaf, as
-# in the panel: gpu stands on base-gpu, and torch with CUDA is installed once.
+# in the panel: an environment made from the panel on top of base-gpu reuses
+# its torch with CUDA instead of installing it again.
 env_file_for() {
   local name="$1"
   if [ -f "$STATE/environments/$name.txt" ]; then printf '%s' "$STATE/environments/$name.txt"
@@ -465,34 +508,79 @@ kernel_context() {
   fi
 }
 
+offline() { [ "${COLLOQ_OFFLINE:-}" = 1 ]; }
+
+# The list this image shipped, not one of the same name in the state
+# directory: an operator may redefine base for a course.
+shipped_list() {
+  [ ! -f "$STATE/environments/$1.txt" ] && [ -f "$APP/kernel/environments/$1.txt" ]
+}
+
+# The published image to pull for one link of a chain, or nothing when the link
+# is to be built here. `edited` is 1 once a list of the chain, this one or a
+# parent, is the state directory's own: the published image was built from the
+# shipped lists, and pulling it under the stamp of an edited list would show
+# "Ready" over packages the teacher never asked for. A development image
+# (0.0.0-dev) has no published tag to look for. An explicit KERNEL_IMAGE_REPO
+# is the operator's own registry and is asked as it always was; `none` builds
+# every environment here.
+kernel_pull_ref() {
+  local link="$1" edited="$2" repo="${KERNEL_IMAGE_REPO:-}"
+  if [ -z "$repo" ]; then
+    [ "$edited" = 0 ] || return 0
+    case "$VERSION" in 0.0.0*|*-dev) return 0 ;; esac
+    repo="${COLLOQ_KERNEL_REPO:-ghcr.io/colloq-edu/colloq-kernel}"
+  fi
+  [ "$repo" != none ] || return 0
+  printf '%s:%s-%s' "$repo" "${KERNEL_IMAGE_TAG:-v${VERSION}}" "$link"
+}
+
 prepare_kernels() {
-  local wanted active names=() chain=() name link parent ctx file py tag args
+  local wanted active names=() chain=() name link parent ctx file py ref args edited proxy missing=""
   active="$(read_state_env KERNEL_ENV)"; active="${active:-${KERNEL_ENV:-base}}"
   wanted="${KERNEL_PRELOAD:-$active}"
   IFS=',' read -r -a names <<< "$wanted"
   for name in "${names[@]}"; do
     name="$(printf '%s' "$name" | tr -d '[:space:]')"
     [ -n "$name" ] || continue
+    # The leaf is what rooms run; its parents matter only for building it.
+    if docker image inspect "colloq-kernel:$name" >/dev/null 2>&1; then
+      stamp_if_published "$name"
+      continue
+    fi
+    if offline; then
+      warn "[kernels] colloq-kernel:$name is not on this machine, and COLLOQ_OFFLINE=1 allows neither a pull nor a build: rooms on \"$name\" will not start. Bring it with colloq-host bundle (on a connected machine) and colloq-host load (here)."
+      missing="$missing $name"
+      continue
+    fi
     # The whole chain up front, not `while read … < <(…)`: docker inside the
     # loop must not share stdin with it.
     mapfile -t chain < <(chain_of "$name" || true)
-    parent=""
+    parent=""; edited=0
     for link in "${chain[@]}"; do
       [ -n "$link" ] || continue
+      shipped_list "$link" || edited=1
       if docker image inspect "colloq-kernel:$link" >/dev/null 2>&1; then
+        stamp_if_published "$link"
         parent="colloq-kernel:$link"; continue
       fi
-      if [ -n "${KERNEL_IMAGE_REPO:-}" ]; then
-        tag="${KERNEL_IMAGE_TAG:-v${VERSION}}-${link}"
-        say "[kernels] pulling ${KERNEL_IMAGE_REPO}:${tag}"
-        if docker pull -q "${KERNEL_IMAGE_REPO}:${tag}" </dev/null >/dev/null \
-            && docker tag "${KERNEL_IMAGE_REPO}:${tag}" "colloq-kernel:$link"; then
+      ref="$(kernel_pull_ref "$link" "$edited")"
+      if [ -n "$ref" ]; then
+        say "[kernels] pulling $ref"
+        if docker pull -q "$ref" </dev/null >/dev/null \
+            && docker tag "$ref" "colloq-kernel:$link"; then
           stamp_environment "$link"; parent="colloq-kernel:$link"; continue
         fi
-        warn "[kernels] could not pull ${KERNEL_IMAGE_REPO}:${tag}; building \"$link\" here instead"
+        warn "[kernels] could not pull $ref; building \"$link\" here instead"
       fi
       ctx="$(kernel_context)"
       args=(build -f "$ctx/Dockerfile" --build-arg "KERNEL_ENV=$link")
+      # Behind an outbound proxy pip needs it inside the build too. Docker
+      # knows these names without an ARG in the Dockerfile and keeps them out
+      # of the image's history; a name alone takes the value from here.
+      for proxy in HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy; do
+        [ -z "${!proxy:-}" ] || args+=(--build-arg "$proxy")
+      done
       if [ -n "$parent" ]; then
         args+=(--build-arg "PARENT=$parent")
       else
@@ -514,6 +602,9 @@ prepare_kernels() {
       fi
     done
   done
+  if [ -n "$missing" ]; then
+    warn "[kernels] missing on this offline server:$missing"
+  fi
   say "[kernels] done; readiness: curl -s http://127.0.0.1:${PORT}/api/health"
 }
 
@@ -527,6 +618,20 @@ stamp_environment() {
   cp "$file" "$STATE/environments/.$1.built" 2>/dev/null || true
 }
 
+# An image that is already here and says it is the published one for this
+# version and this environment (publish.yml labels them; colloq-host load
+# brings them) gets the stamp too, over an older one: otherwise the panel
+# would judge it by file times, show "Needs rebuild", and on an offline server
+# offer a build that cannot succeed. A child built here on a published parent
+# inherits the parent's labels, hence the environment's name in the check.
+stamp_if_published() {
+  shipped_list "$1" || return 0
+  local labels
+  labels="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}} {{index .Config.Labels "colloq.environment"}}' "colloq-kernel:$1" 2>/dev/null || true)"
+  [ "$labels" = "$VERSION $1" ] || return 0
+  stamp_environment "$1"
+}
+
 # ------------------------------------------------------------------ serve
 SERVER_PID=""
 PREP_PID=""
@@ -538,6 +643,13 @@ start_server() {
   # here only so that the server does not print the warning about the
   # well-known token from .env.example, which does not apply to this instance.
   local jt; jt="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  # Behind our own cloudflared every request reaches the server from loopback,
+  # and the client's address arrives only as CF-Connecting-IP, which
+  # Cloudflare's edge sets itself. Without it the whole class is 127.0.0.1 to
+  # the per-address caps. Only in this mode: in front of anything else the
+  # header is whatever the client chose to send. An explicit value still wins.
+  local trust_cf="${TRUST_CF_CONNECTING_IP:-}"
+  if [ "$MODE" = cloudflare ]; then trust_cf="${TRUST_CF_CONNECTING_IP:-1}"; fi
   # The tunnel secrets are needed by the entry point, not by the server: it
   # does not read them, and everything in its environment is inherited by its
   # child processes too (docker CLI, environment builds).
@@ -545,6 +657,7 @@ start_server() {
     cd "$APP"
     exec env \
       -u RELAY_TOKEN -u CLOUDFLARE_TUNNEL_TOKEN \
+      TRUST_CF_CONNECTING_IP="$trust_cf" \
       NODE_ENV=development \
       KERNEL_BACKEND=docker \
       KERNEL_ISOLATION=required \
@@ -564,7 +677,9 @@ start_server() {
 wait_live() {
   local i
   for i in $(seq 1 90); do
-    curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${PORT}/api/livez" 2>/dev/null && return 0
+    # --noproxy: an http_proxy meant for the internet must not catch a call to
+    # our own loopback (the same in status and link below).
+    curl -fsS --noproxy '*' -o /dev/null --max-time 2 "http://127.0.0.1:${PORT}/api/livez" 2>/dev/null && return 0
     kill -0 "$SERVER_PID" 2>/dev/null || return 1
     sleep 1
   done
@@ -597,6 +712,7 @@ serve() {
   trap on_term TERM INT
 
   pick_mode
+  warn_no_address
   start_tunnel
   set_public_url "${PUBLIC:-http://localhost:${PORT}}"
 
@@ -656,7 +772,7 @@ serve() {
 # -------------------------------------------------------- service commands
 status() {
   local body
-  body="$(curl -s --max-time 10 "http://127.0.0.1:${PORT}/api/health" || true)"
+  body="$(curl -s --noproxy '*' --max-time 10 "http://127.0.0.1:${PORT}/api/health" || true)"
   if [ -z "$body" ]; then say "the server does not answer on :${PORT}"; exit 1; fi
   printf '%s\n' "$body"
   say "kernel images on the host:"
@@ -670,7 +786,7 @@ link() {
   local url claimed token
   url="$(read_state_env PUBLIC_URL)"; url="${url:-http://localhost:${PORT}}"
   say "address for the class: $url"
-  claimed="$(curl -s --max-time 5 "http://127.0.0.1:${PORT}/api/admin/state" || true)"
+  claimed="$(curl -s --noproxy '*' --max-time 5 "http://127.0.0.1:${PORT}/api/admin/state" || true)"
   case "$claimed" in
     *'"claimed":false'*)
       token="$(cat "$STATE/data/setup-token" 2>/dev/null || true)"
@@ -708,7 +824,7 @@ install_host() {
 
 usage() {
   cat <<'USAGE'
-colloq-vast — Colloq for a rented machine (room kernels on the host's Docker)
+colloq-vast — Colloq on one machine with Docker: a rented VM or a server of your own
 
   colloq-vast serve            (default) server, tunnel, kernel images
   colloq-vast status           is this instance ready for a class
@@ -718,7 +834,8 @@ colloq-vast — Colloq for a rented machine (room kernels on the host's Docker)
   colloq-vast install-host DIR put the host-side manager (colloq-host) into DIR
   colloq-vast version
 
-Settings are environment variables; see deploy/vast/README.md.
+Settings are environment variables; see deploy/vast/README.md and, for a server
+of your own, docs/pages/en/server.html.
 USAGE
 }
 

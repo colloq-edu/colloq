@@ -135,8 +135,16 @@ FROM ${NODE_IMAGE} AS vast
 # build in the background). sqlite3 for the class backup
 # (scripts/backup-local.sh does VACUUM INTO). curl for the readiness probe and
 # the static mirror on the relay.
+#
+# util-linux is in Debian's essential set and so already here; it is named
+# because two things depend on it: setpriv in the entry point, and nsenter in
+# the rooms' firewall helper (server/src/kernel/perimeter.ts), which the server
+# may start from this very image (COLLOQ_HELPER_IMAGE). The helper needs no
+# iptables of its own: it enters the Docker daemon's mount namespace and runs
+# the daemon's iptables, so the rules always go through the backend the daemon
+# itself uses. An iptables here would be one that could pick the other backend.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini curl ca-certificates sqlite3 procps \
+ && apt-get install -y --no-install-recommends tini curl ca-certificates sqlite3 procps util-linux \
  && rm -rf /var/lib/apt/lists/*
 
 # The docker CLI and buildx are clients of the host daemon: with them the
@@ -192,8 +200,13 @@ RUN chmod 0755 /usr/local/bin/colloq-vast ./deploy/vast/colloq-host ./deploy/vas
 ARG COLLOQ_VERSION=0.0.0-dev
 ARG GIT_SHA=unknown
 ARG SOURCE_URL=https://github.com/colloq-edu/colloq
+# Where the published room kernels of this version live
+# (<repo>:v<version>-<environment>): the entry point pulls them before it
+# builds anything, and colloq-host bundle packs them. publish.yml passes the
+# publisher's own registry, so that a fork's image looks for the fork's kernels.
+ARG COLLOQ_KERNEL_REPO=ghcr.io/colloq-edu/colloq-kernel
 LABEL org.opencontainers.image.title="colloq-vast" \
-      org.opencontainers.image.description="Colloq for a rented GPU machine: server, tunnels and kernel build context; room kernels run as sibling containers on the host Docker daemon." \
+      org.opencontainers.image.description="Colloq on one machine with Docker (a rented Vast VM or a server of your own; also published as colloq-server): server, tunnels and kernel build context; room kernels run as sibling containers on the host Docker daemon." \
       org.opencontainers.image.source="${SOURCE_URL}" \
       org.opencontainers.image.version="${COLLOQ_VERSION}" \
       org.opencontainers.image.revision="${GIT_SHA}" \
@@ -201,6 +214,7 @@ LABEL org.opencontainers.image.title="colloq-vast" \
 
 ENV COLLOQ_VERSION=${COLLOQ_VERSION} \
     COLLOQ_REVISION=${GIT_SHA} \
+    COLLOQ_KERNEL_REPO=${COLLOQ_KERNEL_REPO} \
     COLLOQ_HOME=/workspace/colloq \
     PORT=3000 \
     NODE_OPTIONS=--enable-source-maps
@@ -215,9 +229,10 @@ EXPOSE 3000
 # livez, not health: health honestly answers 503 until the environment is
 # built, and the first build takes minutes. The container is alive meanwhile
 # and serves the panel; readiness for the class is shown by `colloq-vast status`
-# and /api/health.
+# and /api/health. --noproxy: an http_proxy given for the internet
+# (HTTPS_PROXY and friends in colloq.env) must not catch our own loopback.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=4 \
-  CMD curl -fsS "http://127.0.0.1:${PORT}/api/livez" >/dev/null || exit 1
+  CMD curl -fsS --noproxy '*' "http://127.0.0.1:${PORT}/api/livez" >/dev/null || exit 1
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/colloq-vast"]
 CMD ["serve"]
