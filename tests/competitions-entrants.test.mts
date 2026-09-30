@@ -249,10 +249,13 @@ test('the sign-in link leads to /k/t/<key> and brings a person back from another
 
 /* ----------------------------------------------------------------- joining */
 
+const entrantCount = () => (db.prepare('SELECT COUNT(*) AS n FROM entrants').get() as { n: number }).n
+
 test('namesakes do not appear on the leaderboard, and the refusal says so in words', async () => {
   const first = await join('@anna_kim')
   assert.ok(joinedAt(competitionId, first.id))
 
+  const before = entrantCount()
   const clash = await call('/api/k/competitions/rohlik/join', {
     method: 'POST',
     body: JSON.stringify({ name: 'Anna_Kim' }),
@@ -264,6 +267,10 @@ test('namesakes do not appear on the leaderboard, and the refusal says so in wor
   // surname the name cannot take.
   assert.match(body.error, /логином или почтой/)
   assert.match(body.error, /ключу/)
+  // Most likely Anna herself on a new device: she is sent to her key, and no
+  // second identity with a second key, nor a cookie for one, is left behind.
+  assert.equal(cookieOf(clash), null, 'the refusal issued an entrant cookie')
+  assert.equal(entrantCount(), before, 'the refusal minted an identity')
 
   // The same person joining again under their own name is not a clash.
   const again = await call('/api/k/competitions/rohlik/join', {
@@ -272,6 +279,27 @@ test('namesakes do not appear on the leaderboard, and the refusal says so in wor
     cookie: first.cookie,
   })
   assert.equal(again.status, 200)
+})
+
+test('a namesake who gets in between the check and the insert leaves the newcomer nothing either', async () => {
+  const before = entrantCount()
+  // Another process takes the name the moment the newcomer's identity is
+  // written: past the look-up, only the unique index can still say no.
+  db.exec(`CREATE TRIGGER namesake_race AFTER INSERT ON entrants WHEN NEW.name = '@racer' BEGIN
+    INSERT INTO competition_entrants (competition_id, entrant_id, name_key, joined_at)
+    VALUES ('${competitionId}', 'someone-else', '@racer', 0); END`)
+  try {
+    const res = await call('/api/k/competitions/rohlik/join', {
+      method: 'POST',
+      body: JSON.stringify({ name: '@racer' }),
+    })
+    assert.equal(res.status, 409)
+    assert.equal(((await res.json()) as { reason: string }).reason, 'name_taken')
+    assert.equal(cookieOf(res), null, 'the lost race issued an entrant cookie')
+  } finally {
+    db.exec('DROP TRIGGER namesake_race')
+  }
+  assert.equal(entrantCount(), before, 'the lost race left an identity behind')
 })
 
 test('a join under a name that is neither a username nor an email is refused, and leaves nothing', async () => {

@@ -50,12 +50,12 @@ import {
 } from '../competitions/identity.js'
 import {
   chooseSubmission,
-  createEntrant,
   entrantByKey,
   entrantKeyOf,
   findCompetition,
   getSubmission,
   inFlightCount,
+  joinAsNewcomer,
   joinCompetition,
   joinedAt,
   leaderboard,
@@ -580,24 +580,20 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
       return refuse(res, 429, 'too_often', tr('competitions.refusal.tooOften'))
     }
 
-    /*
-     * A namesake is checked BEFORE a new identity is created: otherwise a
-     * "this name is taken" refusal would leave behind an entrant with no
-     * competition and a key the person never saw, a row nobody can remove.
-     */
     if (known) {
       if (joinCompetition(competition.id, known.id, name) === 'taken') {
         return refuse(res, 409, 'name_taken', tr('competitions.refusal.nameTaken'))
       }
       return reply<EntrantMe>(res, { entrant: getEntrant(known.id), key: null, link: null })
     }
-    const minted = createEntrant(name)
-    if (joinCompetition(competition.id, minted.entrant.id, name) === 'taken') {
-      // The identity stays: it is instance-level, and the person will join
-      // under another name with the same key. So the cookie is issued here too.
-      issueEntrantCookie(res, minted.entrant)
-      return refuse(res, 409, 'name_taken', tr('competitions.refusal.nameTaken'))
-    }
+    /*
+     * A newcomer's namesake is checked BEFORE an identity is minted, so a
+     * refusal leaves neither an entrant nor a cookie (store · joinAsNewcomer):
+     * the clash is most likely the same person on a new device, and the
+     * refusal sends them to the key they already have.
+     */
+    const minted = joinAsNewcomer(competition.id, name)
+    if (minted === 'taken') return refuse(res, 409, 'name_taken', tr('competitions.refusal.nameTaken'))
     issueEntrantCookie(res, minted.entrant)
     reply<EntrantMe>(res, {
       entrant: getEntrant(minted.entrant.id),

@@ -1381,7 +1381,7 @@ export function adminCompetitionRoutes(): Router {
   )
 
   /**
-   * "Do not count": remove a submission from scoring.
+   * "Drop from the standings": remove a submission from scoring.
    *
    * By an owner: it is someone else's result and someone else's place on the
    * leaderboard. The "scored" mark is not removed separately: only one that

@@ -21,6 +21,7 @@ import {
   type BoardEntry,
   type Competition,
   type CompetitionState,
+  type Entrant,
   type MetricDirection,
   type RankedRow,
   type Submission,
@@ -28,6 +29,7 @@ import {
 } from '@shared/competitions'
 import type {
   CompetitionRow,
+  EntrantRow,
   OpenRefusal,
   QueueSnapshot,
   SubmissionRow,
@@ -598,4 +600,23 @@ export function stateTone(state: CompetitionState): 'accent' | 'warning' | 'neut
 /** Whether a submission is in flight now; queue rows are not drawn in the feed. */
 export function inFlight(state: SubmissionState): boolean {
   return state === 'queued' || state === 'running'
+}
+
+/* -------------------------------------------------------- participants */
+
+/**
+ * A Participants row after "Issue a new key": the new key, and `disabled`,
+ * which issuing one clears (server · store.ts · rotateEntrantKey), over the
+ * row as it was.
+ *
+ * The door answers with the instance-wide row, which has no place and no
+ * submission count for THIS competition (null and 0). Spread over the row, it
+ * blanked both until a reload; the rename takes only the name for the same
+ * reason.
+ */
+export function withNewKey(
+  row: EntrantRow,
+  made: { entrant: Pick<Entrant, 'disabled'>; key: string },
+): EntrantRow {
+  return { ...row, key: made.key, disabled: made.entrant.disabled }
 }

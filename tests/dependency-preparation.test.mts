@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
 import { PREPARATION_PYTHON, PREPARATION_PROXY_PYTHON } from '../server/src/dependencies/preparation-python.ts'
 import { prepareDependencies } from '../server/src/dependencies/preparation.ts'
-import { requirementSourceUnsupported, unsupportedRequirementLine } from '../shared/dependencies.ts'
+import { requirementSourceUnsupported, requirementWithoutComment, unsupportedRequirementLine } from '../shared/dependencies.ts'
 
 function python(source: string, code: string) {
   const result = spawnSync('python3', ['-c', `__name__ = 'test_helper'\n${source}\n${code}`], { encoding: 'utf8' })
@@ -35,6 +35,8 @@ const UNSUPPORTED = [
   '--index-url https://evil.test', '-r other.txt', '-e .', 'foo --no-deps', 'foo -C key=value',
   './foo', '../lib', '/tmp/a', '~/pkg', 'packages/mylib', 'C:\\pkgs\\x.whl', 'numpy==1.26.4 \\',
   'pkg-1.0-py3-none-any.whl', 'pkg-1.0.tar.gz', 'pkg-1.0-py3-none-any.whl[extra]',
+  // A note after the line does not hide what the line asks for.
+  'git+https://github.com/tinygrad/tinygrad.git  # the fork', 'torch --index-url https://download.pytorch.org/whl/cpu # cpu',
 ]
 // Plain PyPI requirements, a slash or a dash inside a quoted marker value included.
 const PLAIN = [
@@ -42,8 +44,22 @@ const PLAIN = [
   "pkg ; sys_platform == 'linux'", 'torch==2.3.0+cpu', 'pkg ; platform_machine == "arm64/v8"',
   'pkg ; implementation_name == "-x"', 'xgboost-cpu', 'zope.interface', 'pkg (>=1.0)', 'numpy!=1.0.*', 'pkg===1.0',
 ]
-// Genuinely malformed names and specifiers keep the parse error.
-const MALFORMED = ['foo===bad version', 'numpy=1.0', 'numpy==', 'num py', 'numpy>=1.0 <2', 'numpy:1.0', 'пакет', 'numpy[']
+// Genuinely malformed names and specifiers keep the parse error; a `#` inside a word is no comment.
+const MALFORMED = ['foo===bad version', 'numpy=1.0', 'numpy==', 'num py', 'numpy>=1.0 <2', 'numpy:1.0', 'пакет', 'numpy[', 'numpy#note', 'numpy==1.26#note']
+/*
+ * A note after a requirement is pip's comment, fine in a requirements.txt:
+ * each line reads as the requirement alone, a URL or an option inside the
+ * note included. The second of each pair is what the server stores
+ * (store.ts · checkRequirements) and what the line parses as.
+ */
+const COMMENTED: [string, string][] = [
+  ['numpy==1.26  # note', 'numpy==1.26'],
+  ['scikit-learn>=1.5,<2\t# for the metric', 'scikit-learn>=1.5,<2'],
+  ['numpy # see https://numpy.org/doc', 'numpy'],
+  ['torch==2.3.0+cpu  # no --index-url needed', 'torch==2.3.0+cpu'],
+  ['Requests[security]>=2; python_version >= "3.8"  # one # or two', 'Requests[security]>=2; python_version >= "3.8"'],
+  ["pkg ; sys_platform == 'linux' # linux only", "pkg ; sys_platform == 'linux'"],
+]
 
 test('requirements name URLs, paths and pip options as unsupported, keep parse errors for malformed lines, with line numbers', () => {
   python(PREPARATION_PYTHON, `
@@ -56,6 +72,8 @@ for value in ${JSON.stringify(MALFORMED)}:
     except PreparationFailure as error: assert (error.code, error.line) == ('invalid_requirement', 2), (value, error.code, error.line)
     else: raise AssertionError(value)
 assert len(parse_requirements('\\n'.join(${JSON.stringify(PLAIN)}), [])) == ${PLAIN.length}
+for value, stored in ${JSON.stringify(COMMENTED)}:
+    assert parse_requirements('# comment\\n' + value, []) == parse_requirements(stored, []), value
 `)
 })
 
@@ -66,6 +84,13 @@ test('the server asks the preparation program\'s question before a preparation i
   assert.equal(unsupportedRequirementLine('# models\n\nnumpy\ntorch --index-url https://download.pytorch.org/whl/cpu\ngit+https://x/y'), 4)
   assert.equal(unsupportedRequirementLine('numpy\r\n# git+https://x/y\r\nscikit-learn'), null, 'a comment is not a request')
   assert.equal(unsupportedRequirementLine(PLAIN.join('\n')), null)
+  for (const [value, stored] of COMMENTED) {
+    assert.equal(requirementWithoutComment(value), stored, value)
+    assert.equal(requirementSourceUnsupported(value), false, value)
+  }
+  assert.equal(unsupportedRequirementLine(COMMENTED.map(([value]) => value).join('\n')), null, 'a note is not a request')
+  assert.equal(requirementWithoutComment('git+ssh://git@github.com/user/repo.git#egg=pkg'), 'git+ssh://git@github.com/user/repo.git#egg=pkg', 'a fragment is no comment')
+  assert.equal(requirementWithoutComment('  # models'), '')
 })
 
 test('conflicting base version rejected but inactive marker is allowed', () => {

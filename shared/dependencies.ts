@@ -177,6 +177,27 @@ export function requirementLineCount(text: string): number {
   return normalizeRequirements(text).split('\n').filter(line => line.trim() && !line.trim().startsWith('#')).length
 }
 
+// pip's comment (pip/_internal/req/req_file.py · COMMENT_RE): a `#` at the start of a line or after whitespace.
+const COMMENT = /(?:^|\s)#/
+
+/**
+ * A requirement line without its trailing comment and the whitespace before it.
+ *
+ * `numpy==1.26  # for the metric` is good pip, which drops the note before it
+ * reads the line; the parser, reading PEP 508 alone, refused it as malformed
+ * (invalid_requirement) and sent people to look for a typo in a line pip
+ * takes. A `#` inside a word stays: it is a URL's fragment
+ * (`…/repo.git#egg=pkg`) or a typo, never a note. A comment line comes out
+ * empty.
+ *
+ * The preparation program cuts the same comment (preparation-python.ts ·
+ * without_comment); the two must stay in step.
+ */
+export function requirementWithoutComment(line: string): string {
+  const at = line.search(COMMENT)
+  return at < 0 ? line : line.slice(0, at).trimEnd()
+}
+
 // Quoted marker values: a marker may compare against any string, slashes and dashes included.
 const QUOTED = /"[^"]*"|'[^']*'/g
 // pip's own archive extensions (pip/_internal/utils/filetypes.py): a line ending in one is a file to pip, never a name.
@@ -193,11 +214,14 @@ const ARCHIVE = /\.(?:whl|zip|tar|tar\.gz|tgz|tar\.bz2|tbz|tar\.xz|txz|tlz|tar\.
  * for a typo in a line that is good pip, just nothing the isolated resolver
  * can reach: its proxy admits PyPI only (preparation-python.ts · ALLOWED).
  *
+ * A trailing comment is not asked about: a URL or an option in a note is
+ * only words (`requirementWithoutComment`).
+ *
  * The preparation program asks the same question (preparation-python.ts ·
  * unsupported_source); the two must stay in step.
  */
 export function requirementSourceUnsupported(line: string): boolean {
-  const value = line.trim()
+  const value = requirementWithoutComment(line).trim()
   if (/^[-./~]/.test(value) || value.includes('\\') || value.includes('\0')) return true
   const bare = value.replace(QUOTED, '""')
   if (/[/@]|\s-/.test(bare) || /^(?:file:|(?:git|hg|svn|bzr)\+)/i.test(bare)) return true
@@ -212,8 +236,8 @@ export function requirementSourceUnsupported(line: string): boolean {
 export function unsupportedRequirementLine(text: string): number | null {
   const lines = normalizeRequirements(text).split('\n')
   for (let index = 0; index < lines.length; index++) {
-    const value = lines[index].trim()
-    if (value && !value.startsWith('#') && requirementSourceUnsupported(value)) return index + 1
+    const value = requirementWithoutComment(lines[index]).trim()
+    if (value && requirementSourceUnsupported(value)) return index + 1
   }
   return null
 }

@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import { db } from '../db.js'
 import { getCompetition, invalidateCompetitionInputs } from '../competitions/store.js'
-import { DEPENDENCY_LIMITS, normalizeRequirements, quotaWaitMinutes, requirementLineCount, unsupportedRequirementLine, dependencyActive, packagesFit, packagesMemoryParams, type DependencyBundle, type DependencyDraft, type DependencyErrorParams, type DependencyPolicy, type DependencyQuota, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
+import { DEPENDENCY_LIMITS, normalizeRequirements, quotaWaitMinutes, requirementLineCount, requirementWithoutComment, unsupportedRequirementLine, dependencyActive, packagesFit, packagesMemoryParams, type DependencyBundle, type DependencyDraft, type DependencyErrorParams, type DependencyPolicy, type DependencyQuota, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
 import type { PreparationProgress, PreparationResult } from './preparation-contract.js'
 import { dependencyMessage, type DependencyRefusalDetail } from './messages.js'
 import { submissionsOpen, type CompetitionState } from '@shared/competitions'
@@ -101,9 +101,19 @@ export function setPolicy(competitionId: string, change: Partial<DependencyPolic
  db.prepare('UPDATE competition_dependency_policies SET enabled=?,max_download_bytes=? WHERE competition_id=?').run(value.enabled?1:0,value.maxDownloadBytes,competitionId)
  return value
 }
+/**
+ * The list as it is stored: within the limits, in Python's line breaks, and
+ * every requirement without its trailing comment.
+ *
+ * `numpy==1.26  # note` is stored as `numpy==1.26`, the line the checks here
+ * and the preparation program read (shared/dependencies.ts ·
+ * requirementWithoutComment), so the set's card and the identical-set check
+ * in createBundle compare requirements, not notes. A comment on a line of its
+ * own stays, a heading every reader already skips.
+ */
 export function checkRequirements(text: string): string {
  if(typeof text!=='string'||Buffer.byteLength(text,'utf8')>DEPENDENCY_LIMITS.requestBytes||text.includes('\0')) throw new DependencyStoreError('dependency_limits',400)
- const normalized=normalizeRequirements(text).trim()
+ const normalized=normalizeRequirements(text).split('\n').map(line=>line.trim().startsWith('#')?line:requirementWithoutComment(line)).join('\n').trim()
  if(requirementLineCount(normalized)>DEPENDENCY_LIMITS.lines)throw new DependencyStoreError('dependency_limits',400)
  return normalized
 }

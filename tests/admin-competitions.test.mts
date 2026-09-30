@@ -36,11 +36,13 @@ import {
   spanWords,
   stateTone,
   stateWord,
+  withNewKey,
   worstCell,
 } from '../web/src/admin/competitions.js'
 import type { Competition, Submission } from '../shared/competitions.js'
 import type {
   CompetitionRow,
+  EntrantRow,
   OpenRefusal,
   QueueSnapshot,
   SubmissionRow,
@@ -544,6 +546,19 @@ test('running and queued submissions live in the queue block, not in the feed', 
   assert.equal(inFlight('metricFailed'), false)
 })
 
+/* ----------------------------------------------------------- participants */
+
+test('a new key changes the key in the Participants row, and keeps its place and submissions', () => {
+  const person: EntrantRow = {
+    id: 'e1', name: '@lost_key', createdAt: 1, lastSeenAt: 5, disabled: true,
+    key: 'K7Q-M2X-9FD', submissions: 7, place: 3, baseline: false,
+  }
+  // What the rotate door answers: the instance-wide row, with no place and no
+  // count for this competition, and the key turned back on.
+  const answer = { entrant: { ...person, disabled: false, submissions: 0, place: null }, key: 'A2B-C3D-4EF' }
+  assert.deepEqual(withNewKey(person, answer), { ...person, key: 'A2B-C3D-4EF', disabled: false })
+})
+
 /* --------------------------------------------------------------- language */
 
 test('the note under the daily limit names the boundary the class reads', () => {
@@ -556,6 +571,22 @@ test('the note under the daily limit names the boundary the class reads', () => 
   assert.match(tr('admin.competitions.quotaNote'), /fails on its very first cell/)
   assert.match(tr('admin.competitions.quotaNote'), /never got to run/)
   assert.doesNotMatch(tr('admin.competitions.quotaNote'), /before (its|the) first cell/)
+})
+
+test("a row's menu is named by what each item does, and the note under the feed names all of it", () => {
+  const items = ['notebook', 'output', 'rerun', 'rescore', 'drop'].map((item) => `admin.competitions.menu.${item}`)
+  let locale: 'ru' | 'en' = 'ru'
+  setLocaleResolver(() => locale)
+  // The Russian is the mockup's, proofread by the owner: it stays.
+  assert.equal(tr('admin.competitions.menu.drop'), 'Не засчитывать')
+  const note = (): string => tr('admin.competitions.feedNote').toLowerCase()
+  for (const key of items) assert.ok(note().includes(tr(key).toLowerCase()), `ru: the note misses ${key}`)
+  locale = 'en'
+  // Dropping cancels the submission for good, and the entrant reads that it
+  // was dropped from the standings: the teacher's item says the same.
+  assert.equal(tr('admin.competitions.menu.drop'), 'Drop from the standings')
+  assert.match(tr('competitions.note.droppedByTeacher'), /dropped this submission from the standings/)
+  for (const key of items) assert.ok(note().includes(tr(key).toLowerCase()), `en: the note misses ${key}`)
 })
 
 test('the tab speaks the instance language, and in English it is a translation', () => {

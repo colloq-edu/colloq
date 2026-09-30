@@ -3826,9 +3826,12 @@ export const adminMessages: MessageCatalog = {
     "ru": "Пересчитать метрику",
     "en": "Rescore the metric"
   },
+  // The English names what the item does in the words the entrant then reads
+  // (competitions.note.droppedByTeacher): the submission is cancelled and
+  // leaves the standings, which "Do not count it" left to guesswork.
   "admin.competitions.menu.drop": {
     "ru": "Не засчитывать",
-    "en": "Do not count it"
+    "en": "Drop from the standings"
   },
   "admin.competitions.moreRows": {
     "ru": {
@@ -3846,9 +3849,11 @@ export const adminMessages: MessageCatalog = {
     "ru": "Показать все",
     "en": "Show all"
   },
+  // Names every item of a row's menu (competitions/Live.svelte), in the
+  // menu's own words; it had missed rescoring.
   "admin.competitions.feedNote": {
-    "ru": "В меню строки: открыть исполненную тетрадь · весь вывод · исполнить заново · не засчитывать. Приватный столбец видите только вы — участникам он откроется после дедлайна.",
-    "en": "In a row's menu: open the executed notebook · all output · run again · do not count it. The private column is yours alone — participants get it after the deadline."
+    "ru": "В меню строки: открыть исполненную тетрадь · весь вывод · исполнить заново · пересчитать метрику · не засчитывать. Приватный столбец видите только вы — участникам он откроется после дедлайна.",
+    "en": "In a row's menu: open the executed notebook · all output · run again · rescore the metric · drop from the standings. The private column is yours alone — participants get it after the deadline."
   },
   "admin.competitions.noEntrants": {
     "ru": "Участников ещё нет",

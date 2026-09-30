@@ -157,6 +157,17 @@ def base_versions(base):
     # Versions as the base reports them, for texts: "numpy in the base is 2.4.6".
     return {canonicalize_name(item['name']): str(item['version']) for item in base}
 
+# pip's comment (pip/_internal/req/req_file.py · COMMENT_RE): a '#' at the start of a line or after
+# whitespace ends it, so 'numpy==1.26  # note' is good pip, and PEP 508 alone would call it
+# malformed. A '#' inside a word stays: a URL's fragment (.../repo.git#egg=pkg) or a typo, never a
+# note. The server cuts the same comment before it checks and stores a list
+# (shared/dependencies.ts · requirementWithoutComment); the two must stay in step.
+COMMENT = re.compile(r'(?:^|\s)#')
+
+def without_comment(value):
+    match = COMMENT.search(value)
+    return value if match is None else value[:match.start()].rstrip()
+
 # Quoted marker values: a marker may compare against any string, slashes and dashes included.
 QUOTED = re.compile('"[^"]*"|' + "'[^']*'")
 # pip's own archive extensions (pip/_internal/utils/filetypes.py): a line ending in one is a file to pip.
@@ -182,8 +193,8 @@ def parse_requirements(text, base):
     versions = base_versions(base)
     normalized = []
     for number, raw in enumerate(lines, 1):
-        value = raw.strip()
-        if not value or value.startswith('#'): continue
+        value = without_comment(raw).strip()
+        if not value: continue
         if unsupported_source(value):
             fail('unsupported_source', 'Only PyPI package names, extras, versions and markers are supported.', number)
         try: requirement = Requirement(value)

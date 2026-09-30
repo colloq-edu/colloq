@@ -95,3 +95,15 @@ test('a URL, a path or a pip option is refused before it becomes a preparation, 
  // The draft is the entrant's scratch: it keeps the line to be fixed.
  assert.equal(saveDraft(c.id,e.id,{requirementsText:text}).requirementsText,text)
 })
+
+test('a note after a requirement is pip\'s comment: the set is taken, and stored without the note',()=>{
+ const {c,e,r}=setup()
+ // A URL or an option inside the note is only words; a comment line of its own stays.
+ const b=createBundle(c.id,e.id,r.id,'# models\ngeopy==2.4.1  # geocoding\ntorch\t# no --index-url https://download.pytorch.org/whl/cpu needed')
+ assert.equal(b.requirementsText,'# models\ngeopy==2.4.1\ntorch')
+ assert.equal(draftOf(c.id,e.id).requirementsText,b.requirementsText)
+ // The same set with another note is the same set, not a second preparation.
+ assert.equal(createBundle(c.id,e.id,r.id,'# models\ngeopy==2.4.1 # maps\ntorch').id,b.id)
+ // A `#` inside a word is no comment: the fragment leaves the URL a URL.
+ assert.throws(()=>createBundle(c.id,e.id,r.id,'git+https://github.com/geopy/geopy.git#egg=geopy'),{code:'unsupported_source'})
+})

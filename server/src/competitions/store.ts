@@ -1052,6 +1052,9 @@ const selectMyEnrollments = db.prepare(
 const updateEnrollmentName = db.prepare(
   'UPDATE competition_entrants SET name_key = ? WHERE entrant_id = ?',
 )
+const selectNameHolder = db.prepare(
+  'SELECT 1 FROM competition_entrants WHERE competition_id = ? AND name_key = ?',
+)
 
 /**
  * Join a competition under this name.
@@ -1092,6 +1095,38 @@ export function joinCompetition(
      * and a commit at the same time — that is, a person renamed by a refusal,
      * which is what happened in the first version of this code.
      */
+    if (isUniqueViolation(error)) return 'taken'
+    throw error
+  }
+}
+
+/**
+ * A newcomer joins under this name: a new identity with its key and the
+ * enrollment, or nothing at all.
+ *
+ * Names are Telegram usernames or email addresses, so a newcomer whose name
+ * the competition already has is most likely that same person on a new
+ * device. An identity minted for them anyway is a second key, which the rules
+ * forbid, and a row nobody can remove; the refusal sends them to their key
+ * instead. So the name is looked up BEFORE anything is minted, and the unique
+ * index stays the final word (see `joinCompetition`): a namesake who gets in
+ * between the look-up and the insert rolls the new identity back together
+ * with the enrollment.
+ */
+const writeNewcomer = db.transaction((competitionId: string, name: string, at: number): MintedEntrant => {
+  const minted = createEntrant(name)
+  const clipped = clip(name, LIMITS.entrantName)
+  writeEnrollment(competitionId, minted.entrant.id, clipped, entrantNameKey(clipped), at)
+  return minted
+})
+
+export function joinAsNewcomer(competitionId: string, name: string, at = Date.now()): MintedEntrant | 'taken' {
+  if (selectNameHolder.get(competitionId, entrantNameKey(clip(name, LIMITS.entrantName)))) return 'taken'
+  try {
+    return writeNewcomer(competitionId, name, at)
+  } catch (error) {
+    // Outside the transaction, as in `joinCompetition`: caught inside, the
+    // refusal would commit the identity it exists to undo.
     if (isUniqueViolation(error)) return 'taken'
     throw error
   }

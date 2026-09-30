@@ -508,7 +508,7 @@ export const adminApi = {
       { method: 'POST' },
     ),
 
-  /** "Do not count it". Owner only: it is someone else's result. */
+  /** "Drop from the standings". Owner only: it is someone else's result. */
   dropSubmission: (id: string, submissionId: string) =>
     request<{ submission: unknown }>(
       `/competitions/${encodeURIComponent(id)}/submissions/${encodeURIComponent(

@@ -54,6 +54,7 @@
     spanWords,
     stateTone,
     stateWord,
+    withNewKey,
     worstCell,
   } from '@/admin/competitions'
 
@@ -312,9 +313,9 @@
   async function rotate(entrantId: string): Promise<void> {
     const made = await act(() => adminApi.rotateEntrantKey(entrantId))
     if (made && entrants) {
-      entrants = entrants.map((row) =>
-        row.id === entrantId ? { ...row, ...made.entrant, key: made.key } : row,
-      )
+      // The place and the submission count stay: the answer has neither for
+      // this competition (admin/competitions.ts · withNewKey).
+      entrants = entrants.map((row) => (row.id === entrantId ? withNewKey(row, made) : row))
     }
   }
 
