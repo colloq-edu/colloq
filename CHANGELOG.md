@@ -13,6 +13,19 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.11.0](https://github.com/colloq-edu/colloq/compare/v0.10.1...v0.11.0) (2026-10-01)
+
+
+### Features
+
+* **helm:** config.sso for sign-in through Teleport or another JWT proxy ([5d935ff](https://github.com/colloq-edu/colloq/commit/5d935ff53b2ca4a1618653082238594b98f7d228))
+* **server:** sign in through a proxy that vouches with a signed JWT ([f136bb4](https://github.com/colloq-edu/colloq/commit/f136bb40d33fb437155b3b58c7ee365a99410894))
+
+
+### Documentation
+
+* sign-in through your SSO, with Teleport as the worked example ([a73bdb0](https://github.com/colloq-edu/colloq/commit/a73bdb05f8c1ca92ac786efbe0d4e9d818b17d21))
+
 ## [0.10.1](https://github.com/colloq-edu/colloq/compare/v0.10.0...v0.10.1) (2026-10-01)
 
 
