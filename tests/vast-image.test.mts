@@ -328,7 +328,11 @@ test('colloq-host carries the settings of the university contract into the conta
   const keys = /\nAPP_KEYS="([^"]*)"/.exec(host)?.[1]?.split(/\s+/) ?? []
   for (const key of ['TRUSTED_PROXIES', 'TRUST_CF_CONNECTING_IP', 'SHARED_ADDRESSES', 'HSTS', 'HTTPS_PROXY', 'HTTP_PROXY',
     'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy', 'NODE_EXTRA_CA_CERTS', 'DEPENDENCY_INDEX_URL', 'DEPENDENCY_FILES_HOSTS',
-    'COLLOQ_ROOM_NETWORK', 'KERNEL_BLOCKED_CIDRS', 'BACKUP_KEEP', 'COLLOQ_HELPER_IMAGE', 'COLLOQ_OFFLINE', 'COLLOQ_ON_VAST']) {
+    'COLLOQ_ROOM_NETWORK', 'KERNEL_BLOCKED_CIDRS', 'BACKUP_KEEP', 'COLLOQ_HELPER_IMAGE', 'COLLOQ_OFFLINE', 'COLLOQ_ON_VAST',
+    // Sign-in by proxy (server/src/sso/identity.ts): a VM behind Teleport needs every one of them.
+    'AUTH_JWT_JWKS_URL', 'AUTH_JWT_JWKS_FILE', 'AUTH_JWT_HEADER', 'AUTH_JWT_ISSUER', 'AUTH_JWT_AUDIENCE', 'AUTH_JWT_ALGORITHMS',
+    'AUTH_JWT_LEEWAY_SECONDS', 'AUTH_JWT_SUBJECT_CLAIM', 'AUTH_JWT_NAME_CLAIM', 'AUTH_JWT_EMAIL_CLAIM', 'AUTH_JWT_ROLES_CLAIM',
+    'AUTH_JWT_EMAIL_DOMAIN', 'AUTH_JWT_TEACHER_ROLES', 'AUTH_JWT_OWNER_ROLES']) {
     assert.ok(keys.includes(key), `APP_KEYS lacks ${key}`)
   }
   // The Vast on-start names the two Vast-only behaviours itself.

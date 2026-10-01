@@ -95,7 +95,9 @@ export function adminAuthRoutes(): Router {
       // just the operator's address, handed to every anonymous visitor who asks
       // this endpoint — and on an instance whose recovery story is "someone
       // sends you a link", that is a phishing target.
-      suggestedEmail: claimed ? '' : config.adminEmail,
+      // Only an address: a value with a stray quote or comment from a shell
+      // file (seen on a real install) would prefill the form with garbage.
+      suggestedEmail: claimed || !looksLikeEmail(normalizeEmail(config.adminEmail)) ? '' : normalizeEmail(config.adminEmail),
       openSeminarCreation: config.openSeminarCreation,
       /*
        * The upload limit as a number, not the panel's guess.
