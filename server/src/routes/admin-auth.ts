@@ -38,6 +38,7 @@ import {
   getTeacherByLinkKey,
   linkKeyOf,
   listTeachers,
+  looksLikeEmail,
   normalizeEmail,
   oldestOwner,
   rotateLinkKey,
@@ -47,6 +48,7 @@ import {
 } from '../admin/store.js'
 import { uploadLimitBytes } from '../admin/resource-settings.js'
 import { config } from '../config.js'
+import { ssoIdentityOf, ssoPolicy } from '../sso/identity.js'
 import { normalizeLabel } from '@shared/text'
 import {
   LIMITS,
@@ -72,20 +74,6 @@ function fail(res: Response, status: number, reason: AdminErrorBody['reason'], e
  */
 const normalizeName = normalizeLabel
 
-/**
- * Deliberately loose: it rejects what cannot be an address, not what is
- * unusual. A self-hosted instance may well have staff at a host with no dot in
- * it, and refusing them would be a bug of our own making.
- */
-function looksLikeEmail(value: string): boolean {
-  const at = value.indexOf('@')
-  if (at <= 0 || at !== value.lastIndexOf('@') || at === value.length - 1) return false
-  if (/[\s,;:<>"'\u0000-\u001f]/.test(value)) return false
-  const domain = value.slice(at + 1)
-  if (/^[.-]|[.-]$/.test(domain) || domain.includes('..')) return false
-  return true
-}
-
 function meOf(teacher: Teacher): AdminMe {
   return { teacher, ownerCount: countOwners() }
 }
@@ -99,7 +87,7 @@ export function adminAuthRoutes(): Router {
 
   /* --------------------------------------------------------------- public */
 
-  router.get('/api/admin/state', (_req, res) => {
+  router.get('/api/admin/state', (req, res) => {
     const claimed = isClaimed()
     const state: InstanceState = {
       claimed,
@@ -122,6 +110,10 @@ export function adminAuthRoutes(): Router {
        * owner moves it in the panel (admin/resource-settings.ts).
        */
       maxUploadBytes: uploadLimitBytes(),
+    }
+    if (ssoPolicy().enabled) {
+      const identity = ssoIdentityOf(req)
+      state.sso = { identity: identity ? { name: identity.name, email: identity.email } : null }
     }
     // Claiming is a race against whoever else can read the disk; a cached
     // "unclaimed" would be a lie the moment it mattered.

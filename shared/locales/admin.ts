@@ -4715,4 +4715,12 @@ export const adminMessages: MessageCatalog = {
     "ru": "Создавать, менять и собирать списки пакетов может только владелец: при сборке образа пакеты из списка ставятся с правами root. Готовые окружения выбирает для своих занятий любой преподаватель.",
     "en": "Only an owner can create, change and build package lists: when an image is built, its packages are installed as root. Any teacher can choose a ready environment for their classes."
   },
+  "admin.sso.notStaff": {
+    "ru": "Корпоративный вход узнал вас как {email}, но этого адреса нет среди преподавателей. Попросите владельца добавить его в разделе «Преподаватели» и обновите страницу.",
+    "en": "Your organisation's sign-in knows you as {email}, but that address is not on the staff list. Ask an owner to add it under Who can teach, then reload this page."
+  },
+  "admin.sso.noEmail": {
+    "ru": "Корпоративный вход не передал адрес почты, поэтому Colloq не может узнать в вас преподавателя. Войдите по личной ссылке или попросите администратора проверить AUTH_JWT_EMAIL_CLAIM.",
+    "en": "Your organisation's sign-in sent no email address, so Colloq cannot tell whether you are on the staff. Use your personal link, or ask the administrator to check AUTH_JWT_EMAIL_CLAIM."
+  },
 }

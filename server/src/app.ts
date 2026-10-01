@@ -25,6 +25,7 @@ import { roomCardPng } from './og-card.js'
 import { getInstanceLanguage } from './admin/settings.js'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { currentStaff, sameOrigin, secureCookie, slideStaffCookie } from './admin/auth.js'
+import { attachSsoIdentity } from './sso/identity.js'
 import { markDevice } from './bans.js'
 import { aiEnabled, config } from './config.js'
 import { db, getSession } from './db.js'
@@ -284,6 +285,17 @@ app.use(compression)
  * page's catch-all below never serves index.html in its place.
  */
 app.get('/metrics', metricsEndpoint)
+
+/*
+ * Sign-in by proxy (AUTH_JWT_*, sso/identity.ts): the token a proxy such as
+ * Teleport forwards is read before any route asks who is calling, the page
+ * request included. That is where a teacher the proxy vouches for gets the
+ * staff cookie the WebSocket handshakes will carry. After /metrics, whose
+ * Bearer token is Prometheus's and no person's. Off, it is one comparison.
+ */
+app.use((req, res, next) => {
+  void attachSsoIdentity(req, res, next)
+})
 
 app.use(express.json({ limit: '1mb' }))
 

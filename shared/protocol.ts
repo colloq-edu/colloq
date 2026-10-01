@@ -76,6 +76,16 @@ export interface SessionInfo {
   published: { id: string; slug?: string | null; steps: number } | null
   course: { id: string; name: string } | null
   /**
+   * The person a sign-in proxy vouched for on this request (AUTH_JWT_*,
+   * server/src/sso/identity.ts), by the name the proxy gives.
+   *
+   * The join screen walks in under it instead of asking; the server uses the
+   * same name at /join whatever the screen sends. Optional: an instance
+   * without the proxy, or an older server, leaves it out, and the screen asks
+   * as it always did.
+   */
+  viewer?: { name: string } | null
+  /**
    * The organization that deployed the instance — the line next to the logo.
    *
    * A property of the INSTANCE, not of the seminar: it is one for all rooms at

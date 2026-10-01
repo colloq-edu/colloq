@@ -102,6 +102,22 @@ export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase()
 }
 
+/**
+ * Deliberately loose: it rejects what cannot be an address, not what is
+ * unusual. A self-hosted instance may well have staff at a host with no dot in
+ * it, and refusing them would be a bug of our own making. Shared by the staff
+ * routes and sign-in by proxy (sso/identity.ts), so both accept the same
+ * addresses.
+ */
+export function looksLikeEmail(value: string): boolean {
+  const at = value.indexOf('@')
+  if (at <= 0 || at !== value.lastIndexOf('@') || at === value.length - 1) return false
+  if (/[\s,;:<>"'\u0000-\u001f]/.test(value)) return false
+  const domain = value.slice(at + 1)
+  if (/^[.-]|[.-]$/.test(domain) || domain.includes('..')) return false
+  return true
+}
+
 export function newStaffId(): string {
   return 't_' + crypto.randomBytes(9).toString('base64url')
 }

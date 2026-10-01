@@ -22,6 +22,13 @@
    */
   const instance = $derived(adminAuth.state)
   const claimed = $derived(instance?.claimed ?? false)
+  /*
+   * The organisation's sign-in proxy vouched for this person, and still they
+   * are here: the staff list does not know them (a teacher on it is signed in
+   * before this screen could paint). Saying so beats offering a link they
+   * were never sent.
+   */
+  const vouched = $derived(instance?.sso?.identity ?? null)
 
   let token = $state('')
   let name = $state('')
@@ -84,6 +91,14 @@
     class="flex min-w-0 flex-1 flex-col justify-center gap-[22px] overflow-y-auto px-6 py-12 sm:px-[72px]"
   >
     {#if instance}
+      {#if vouched}
+        <section class="animate-fade-up flex items-start gap-3 border border-line bg-surface p-[18px]">
+          <Icon name="lock" size={14} class="mt-1 shrink-0 text-accent-text" />
+          <p class="text-ui text-muted">
+            {vouched.email ? tr('admin.sso.notStaff', { email: vouched.email }) : tr('admin.sso.noEmail')}
+          </p>
+        </section>
+      {/if}
       {#if !claimed}
         <section class="animate-fade-up flex flex-col gap-5 border border-line p-[26px]">
           <div class="flex flex-col gap-1.5">

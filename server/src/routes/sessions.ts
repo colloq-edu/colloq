@@ -17,6 +17,8 @@ import {
 } from '../auth.js'
 import { banFor, banRefusal, deviceOf } from '../bans.js'
 import { addressForLimits } from '../net/inbound.js'
+import { ssoIdentityOf } from '../sso/identity.js'
+import { bindSubject, participantForSubject, subjectForParticipant } from '../sso/participants.js'
 import { config } from '../config.js'
 import {
   createSession,
@@ -599,8 +601,12 @@ export function sessionRoutes(): Router {
      */
     const pub = publicationOf(session.id)
     const course = pub ? courseOfSeminar(session.id) : null
+    // Whom the sign-in proxy vouched for (sso/identity.ts): the join screen
+    // walks in under that name instead of asking for one.
+    const identity = ssoIdentityOf(req)
     res.json({
       ...session,
+      viewer: identity?.name ? { name: identity.name.slice(0, MAX_PARTICIPANT_NAME) } : null,
       published:
         pub && pub.state === 'published'
           ? { id: pub.id, slug: pub.slug, steps: stepCount(pub.id) }
@@ -614,7 +620,13 @@ export function sessionRoutes(): Router {
     const session = getSession(sessionId)
     if (!session) return res.status(404).json({ error: SESSION_MISSING })
 
-    const name = normalize(req.body?.name).slice(0, MAX_PARTICIPANT_NAME)
+    /*
+     * A person the sign-in proxy vouched for is called what the proxy calls
+     * them: the point of signing in is that the list of the room shows who is
+     * actually there. Their own name stands when the token carries none.
+     */
+    const identity = ssoIdentityOf(req)
+    const name = normalize(identity?.name || req.body?.name).slice(0, MAX_PARTICIPANT_NAME)
     if (!name) return res.status(400).json({ error: tr("server.aNameIsRequired.d1287e") })
 
     const asked = readAvatar(req.body?.avatar)
@@ -665,7 +677,17 @@ export function sessionRoutes(): Router {
       proof !== null &&
       proof.sessionId === sessionId &&
       proof.participantId === claimed
-    const known = proved ? getParticipant(sessionId, claimed) : null
+    /*
+     * A verified identity is the stronger proof of the two: the participant
+     * this person already is in the room comes back on any device
+     * (sso/participants.ts). The browser's own token decides only for someone
+     * the room has not bound yet — and then binds them below.
+     */
+    const bound = identity ? participantForSubject(sessionId, identity.subject) : null
+    // A browser's token for a participant bound to another person (a shared
+    // computer, the previous student's storage) is not this person's to adopt.
+    const adoptable = proved && (!identity || (subjectForParticipant(sessionId, claimed) ?? identity.subject) === identity.subject)
+    const known = (bound ? getParticipant(sessionId, bound) : null) ?? (adoptable ? getParticipant(sessionId, claimed) : null)
 
     /*
      * A banned person learns about it here, before anything else.
@@ -724,7 +746,7 @@ export function sessionRoutes(): Router {
      * failed.
      */
     const how = joinedAs(sessionId, claimed, req.body?.token, proof, known !== null)
-    const why = staff ? 'staff' : byHostToken ? 'host-token' : 'link'
+    const why = (staff ? 'staff' : byHostToken ? 'host-token' : 'link') + (identity ? ' via sso' : '')
     console.log(
       `[join ${sessionId}] ${how === 'back' ? 'back' : 'new'} ${participantId} · ` +
         `${role} by ${why}${how === 'back' ? '' : ` · ${how}`}`,
@@ -753,6 +775,7 @@ export function sessionRoutes(): Router {
       // the same person would come back from as a "new person" a minute later.
       device: deviceOf(req.headers.cookie),
     })
+    if (identity) bindSubject(sessionId, identity.subject, participantId)
     const token = signToken({ sessionId, participantId, role })
 
     // Warm the kernel while the student is still reading the page; a failure

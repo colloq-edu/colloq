@@ -29,7 +29,8 @@ import type { Duplex } from 'node:stream'
 import { originAllowed, setupBanner } from './admin/auth.js'
 import { verifyToken, type TokenPayload } from './auth.js'
 import { banFor, banRefusal, type BanInForce } from './bans.js'
-import { describeInboundPolicy, inboundPolicy } from './net/inbound.js'
+import { describeInboundPolicy, forwardedHost, inboundPolicy } from './net/inbound.js'
+import { describeSsoPolicy, socketCookieHeader, ssoPolicy } from './sso/identity.js'
 import { aiEnabled, config, DEV_JUPYTER_TOKEN } from './config.js'
 import { handleCollabSocket, roomCensus, shutdownCollab } from './collab/index.js'
 import { handleFileSocket } from './collab/files.js'
@@ -208,13 +209,11 @@ function refuse403(socket: Duplex, reply: object): void {
  * opened. The socket is re-checked on every reconnect, so leaving the panel
  * takes the rights away within seconds. The decision is made by `roleFor`,
  * the same one as on the HTTP side, so the two entrances have nowhere to
- * diverge.
+ * diverge. The cookie header is the one the sign-in proxy has had its say on
+ * (sso/identity.ts · socketCookieHeader).
  */
-function effectiveRole(
-  req: { headers: { cookie?: string } },
-  payload: TokenPayload,
-): TokenPayload['role'] {
-  return roleFor(req.headers.cookie, payload)
+function effectiveRole(cookieHeader: string | undefined, payload: TokenPayload): TokenPayload['role'] {
+  return roleFor(cookieHeader, payload)
 }
 
 /** A file room's name back into a path. A malformed string is just not a path. */
@@ -245,7 +244,7 @@ server.on('upgrade', (req, socket, head) => {
    * this machine or the share tunnel; a missing one is not a browser (curl,
    * tests, the load scripts) and passes, as it does there.
    */
-  if (!originAllowed(req.headers.origin, req.headers.host)) {
+  if (!originAllowed(req.headers.origin, req.headers.host, forwardedHost(req))) {
     return refuse403(socket, {
       error: tr("server.requestBlockedThisPageUsesADifferent.dd9b4b"),
       reason: 'forbidden',
@@ -274,76 +273,101 @@ server.on('upgrade', (req, socket, head) => {
   // a snapshot row for a seminar the owner already destroyed.
   if (!getSession(sessionId) || kernelRetirementInProgress(sessionId)) return reject(socket)
   /*
-   * A ban closes all three doors at once: the notebook, the console and the
-   * file.
-   *
-   * Here, before the upgrade: a socket opened to a banned user "just to look"
-   * is their cursor in someone else's notebook and their lines in the shared
-   * terminal, which is exactly what they were banned for. The check is the
-   * same as at the entrance (bans.ts · banFor), so the two answers have
-   * nowhere to diverge.
+   * Sign-in by proxy decides a socket's staff authority the way it decides a
+   * request's (sso/identity.ts · socketCookieHeader): with a verified token
+   * the staff cookie is the proxy's, whatever a shared browser kept from the
+   * previous person. Without the proxy this is the browser's own header, a
+   * microtask later.
    */
-  const ban = banFor(sessionId, payload.participantId, req.headers.cookie)
-  if (ban) return refuseBanned(socket, ban)
-
-  wss.handleUpgrade(req, socket, head, (ws) => {
+  void socketCookieHeader(req.headers).catch(() => req.headers.cookie).then((cookieHeader) => {
+    if (socket.destroyed) return
     /*
-     * The whole body is under try, and this is not overcaution.
+     * A ban closes all three doors at once: the notebook, the console and the
+     * file.
      *
-     * ws calls this callback without catching anything itself, so a
-     * synchronous exception from here goes to `uncaughtException`, and that
-     * ends the process: one malformed cookie in one participant's header (it
-     * is parsed by effectiveRole) took down the whole instance, every room,
-     * every terminal, every kernel. The cost of an error here must be one
-     * socket: the browser reconnects in a second and comes here again.
+     * Here, before the upgrade: a socket opened to a banned user "just to look"
+     * is their cursor in someone else's notebook and their lines in the shared
+     * terminal, which is exactly what they were banned for. The check is the
+     * same as at the entrance (bans.ts · banFor), so the two answers have
+     * nowhere to diverge.
      */
-    try {
-      noteLastSeen(payload.participantId)
-      const role = effectiveRole(req, payload)
-      const credentials = { cookieHeader: req.headers.cookie, payload: { ...payload, role } }
-      if (channel === 'collab')
-        handleCollabSocket(ws, sessionId, role, payload.participantId, credentials)
-      else if (channel === 'file') {
-        /*
-         * The path arrives as the second segment of the address, in base64url.
-         * It is checked by the same `normalizePath` as everything else in the
-         * product, and nothing gets here except an already verified token of
-         * this very room.
-         */
-        const wanted = normalizePath(decodeRoom(asFile?.[2] ?? ''))
-        if (!wanted) {
-          try {
-            ws.close(4404, tr("server.fileNotFound.f1ab8a"))
-          } catch {
-            /* already closed */
-          }
-          return
-        }
-        handleFileSocket(ws, sessionId, wanted, role, payload.participantId, credentials)
-      } else {
-        /*
-         * A participant token carries the role it was minted with. A teacher who
-         * joined before signing in — or who created the seminar in the admin
-         * panel, which never handed out a host token at all — holds a
-         * 'participant' token for a room that is theirs, and interrupt and
-         * restart were dead for the whole seminar as a result. Staff on this
-         * instance are exactly who those controls are for; the cookie is a
-         * stronger credential than the token and it is re-checked here on every
-         * reconnect rather than baked into anything.
-         */
-        handleControlSocket(ws, sessionId, credentials.payload, credentials)
-      }
-    } catch (err) {
-      console.error(
-        `[ws] ${channel} ${sessionId}: connection did not open —`,
-        err instanceof Error ? (err.stack ?? err.message) : err,
-      )
+    /*
+     * A ban closes all three doors at once: the notebook, the console and the
+     * file.
+     *
+     * Here, before the upgrade: a socket opened to a banned user "just to look"
+     * is their cursor in someone else's notebook and their lines in the shared
+     * terminal, which is exactly what they were banned for. The check is the
+     * same as at the entrance (bans.ts · banFor), so the two answers have
+     * nowhere to diverge.
+     */
+    const ban = banFor(sessionId, payload.participantId, cookieHeader)
+    if (ban) return refuseBanned(socket, ban)
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      /*
+       * The whole body is under try, and this is not overcaution.
+       *
+       * ws calls this callback without catching anything itself, so a
+       * synchronous exception from here goes to `uncaughtException`, and that
+       * ends the process: one malformed cookie in one participant's header (it
+       * is parsed by effectiveRole) took down the whole instance, every room,
+       * every terminal, every kernel. The cost of an error here must be one
+       * socket: the browser reconnects in a second and comes here again.
+       */
       try {
-        ws.close(1011, tr('server.connectionDidNotOpen'))
-      } catch {
-        ws.terminate()
+        noteLastSeen(payload.participantId)
+        const role = effectiveRole(cookieHeader, payload)
+        const credentials = { cookieHeader, payload: { ...payload, role } }
+        if (channel === 'collab')
+          handleCollabSocket(ws, sessionId, role, payload.participantId, credentials)
+        else if (channel === 'file') {
+          /*
+           * The path arrives as the second segment of the address, in base64url.
+           * It is checked by the same `normalizePath` as everything else in the
+           * product, and nothing gets here except an already verified token of
+           * this very room.
+           */
+          const wanted = normalizePath(decodeRoom(asFile?.[2] ?? ''))
+          if (!wanted) {
+            try {
+              ws.close(4404, tr("server.fileNotFound.f1ab8a"))
+            } catch {
+              /* already closed */
+            }
+            return
+          }
+          handleFileSocket(ws, sessionId, wanted, role, payload.participantId, credentials)
+        } else {
+          /*
+           * A participant token carries the role it was minted with. A teacher who
+           * joined before signing in — or who created the seminar in the admin
+           * panel, which never handed out a host token at all — holds a
+           * 'participant' token for a room that is theirs, and interrupt and
+           * restart were dead for the whole seminar as a result. Staff on this
+           * instance are exactly who those controls are for; the cookie is a
+           * stronger credential than the token and it is re-checked here on every
+           * reconnect rather than baked into anything.
+           */
+          handleControlSocket(ws, sessionId, credentials.payload, credentials)
+        }
+      } catch (err) {
+        console.error(
+          `[ws] ${channel} ${sessionId}: connection did not open —`,
+          err instanceof Error ? (err.stack ?? err.message) : err,
+        )
+        try {
+          ws.close(1011, tr('server.connectionDidNotOpen'))
+        } catch {
+          ws.terminate()
+        }
       }
-    }
+    })
+  }).catch((err: unknown) => {
+    // A promise now stands between the handshake and the event loop: a throw
+    // in it must cost this one socket, not the process (unhandledRejection).
+    console.error('[ws] upgrade failed —', err instanceof Error ? (err.stack ?? err.message) : err)
+    socket.destroy()
   })
 })
 
@@ -464,11 +488,16 @@ function announceBind(): void {
  * sharing one address, which nobody sees until the sixty-first student is
  * turned away at the door. One line at start is the cheapest place to see
  * that the setting arrived, and a dropped entry is named right above it.
+ * Sign-in by proxy (AUTH_JWT_*) is said here too when it is configured: a
+ * setting it could not read turns it off, which is just as invisible.
  */
 function announceProxies(): void {
   const policy = inboundPolicy()
   for (const problem of policy.problems) console.warn(`[net] ${problem}`)
   console.log(`[net] ${describeInboundPolicy(policy)}`)
+  const sso = ssoPolicy()
+  for (const problem of sso.problems) console.warn(`[sso] ${problem}`)
+  if (sso.enabled || sso.problems.length > 0) console.log(`[sso] ${describeSsoPolicy(sso)}`)
 }
 
 /**

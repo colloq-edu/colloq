@@ -12,6 +12,7 @@ import path from 'node:path'
 import type { NextFunction, Request, Response } from 'express'
 import { config, ensureDataDir } from '../config.js'
 import { countStaff, getTeacher, linkKeyOf } from './store.js'
+import { forwardedHost } from '../net/inbound.js'
 import { STAFF_COOKIE, type AdminErrorBody, type Teacher } from '@shared/admin'
 
 const SETUP_TOKEN_FILE = path.join(config.dataDir, 'setup-token')
@@ -251,12 +252,16 @@ export function secureCookie(res: Response): boolean {
   return forwarded.split(',')[0].trim().toLowerCase() === 'https'
 }
 
-export function issueStaffCookie(res: Response, teacher: Teacher): void {
+/** The value of a fresh staff cookie for this teacher: the body and its signature. */
+export function staffCookieValue(teacher: Teacher): string {
   const body = Buffer.from(JSON.stringify({ tid: teacher.id, iat: Date.now() } satisfies StaffCookieBody)).toString(
     'base64url',
   )
-  const value = `${body}.${sign(body, linkKeyOf(teacher.id) ?? '')}`
-  res.cookie(STAFF_COOKIE, value, {
+  return `${body}.${sign(body, linkKeyOf(teacher.id) ?? '')}`
+}
+
+export function issueStaffCookie(res: Response, teacher: Teacher): void {
+  res.cookie(STAFF_COOKIE, staffCookieValue(teacher), {
     httpOnly: true,
     sameSite: 'lax',
     path: '/',
@@ -276,6 +281,14 @@ export function clearStaffCookie(res: Response): void {
 }
 
 export function currentStaff(req: Request): Teacher | null {
+  /*
+   * With a token the sign-in proxy verified (sso/identity.ts), the proxy
+   * decides, and it decides for this very request: the cookie issued for a
+   * teacher only arrives with the response, and a cookie a shared browser
+   * kept from the previous person must not outrank the person signed in now.
+   */
+  const vouched = req as Request & { ssoIdentity?: unknown; ssoStaff?: Teacher }
+  if (vouched.ssoIdentity) return vouched.ssoStaff ?? null
   return staffFromCookieHeader(req.headers.cookie)
 }
 
@@ -333,6 +346,9 @@ function readStaffCookie(header: string | undefined): { teacher: Teacher; iat: n
  * a teacher's work bypasses the panel — the room, files, the kernel.
  */
 export function slideStaffCookie(req: Request, res: Response): void {
+  // Behind the sign-in proxy the middleware owns the cookie (sso/identity.ts);
+  // extending the old one here would re-set it in the same response.
+  if ((req as Request & { ssoIdentity?: unknown }).ssoIdentity) return
   const seen = readStaffCookie(req.headers.cookie)
   if (!seen) return
   if (Date.now() - seen.iat < COOKIE_SLIDE_AFTER_MS) return
@@ -368,7 +384,7 @@ function deny(res: Response, status: number, reason: AdminErrorBody['reason'], e
  * SameSite protected them.
  */
 export function sameOrigin(req: Request, res: Response, next: NextFunction): void {
-  if (originAllowed(req.get('origin'), req.get('host'))) return next()
+  if (originAllowed(req.get('origin'), req.get('host'), forwardedHost(req))) return next()
   deny(res, 403, 'forbidden', tr("server.requestBlockedThisPageUsesADifferent.dd9b4b"))
 }
 
@@ -382,7 +398,7 @@ export function sameOrigin(req: Request, res: Response, next: NextFunction): voi
  * teacher's role also comes from the cookie and a browser attaches that cookie
  * to a socket opened by any page of the same site.
  */
-export function originAllowed(origin: string | undefined, host: string | undefined): boolean {
+export function originAllowed(origin: string | undefined, host: string | undefined, forwarded: string | null = null): boolean {
   if (!origin) return true
   let from: string
   try {
@@ -392,24 +408,30 @@ export function originAllowed(origin: string | undefined, host: string | undefin
   }
   // req.host drops the port, and here it matters: 5173 and 8080 are different sites.
   const reqHost = host ?? ''
-  return from === reqHost || (thisMachine(reqHost) && (thisMachine(from) || from === tunnelHost()))
+  // `forwarded` is the host a trusted proxy says the browser asked for
+  // (net/inbound.ts · forwardedHost): behind a front that rewrites Host, it
+  // is what the page's Origin is compared with.
+  return from === reqHost || (forwarded !== null && from === forwarded) || from === publicHost() ||
+    (thisMachine(reqHost) && thisMachine(from))
 }
 
 /**
- * The public address of a local class, if the tunnel holds one right now.
+ * The address the server hands out as its own (config.publicUrl): a page
+ * served from it is ours, whatever Host the request arrives with.
  *
- * The `colloq start --share` tunnel reaches the server with Host
- * 127.0.0.1:<port> (scripts/host.sh · --http-host-header), while the page sends
- * the Origin of its *.trycloudflare.com address. Without this line every POST
- * from the public address got "a different server address" — and the sign-in
- * link with a token did not sign in. A foreign site will not get through this
- * way: Origin must match the address the server itself hands out as its own
- * (config.publicUrl — the tunnel lease).
+ * Two fronts write a Host of their own. The `colloq start --share` tunnel
+ * reaches the server with Host 127.0.0.1:<port> (scripts/host.sh ·
+ * --http-host-header), while the page sends the Origin of its
+ * *.trycloudflare.com address — the tunnel lease is what publicUrl holds then.
+ * A sign-in proxy such as Teleport application access may forward to the
+ * Service under the Service's name. Without this line every POST from such a
+ * page got "a different server address", and a sign-in link with a token did
+ * not sign in. A foreign site still does not get through: Origin must match
+ * the one public address exactly.
  */
-function tunnelHost(): string | null {
+function publicHost(): string | null {
   try {
-    const url = new URL(config.publicUrl)
-    return thisMachine(url.host) ? null : url.host
+    return new URL(config.publicUrl).host
   } catch {
     return null
   }

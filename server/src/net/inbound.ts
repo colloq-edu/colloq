@@ -32,6 +32,8 @@ import type { IncomingHttpHeaders } from 'node:http'
 export interface RequestLike {
   headers: IncomingHttpHeaders
   socket?: { remoteAddress?: string | undefined }
+  /** Set by sign-in by proxy (sso/identity.ts) on a request whose token verified. */
+  ssoIdentity?: { subject: string }
 }
 
 /** A set of addresses and ranges, plus how the operator wrote it (for the start line). */
@@ -292,14 +294,38 @@ export function clientAddress(req: RequestLike, policy: InboundPolicy = inboundP
 }
 
 /**
+ * The host the browser asked for, as a trusted proxy reports it in
+ * X-Forwarded-Host, or null.
+ *
+ * A front such as a sign-in proxy may reach the app under its own upstream
+ * name, so Host names the Service while the page's Origin names the address
+ * the person typed. ingress-nginx and Teleport both say the original in
+ * X-Forwarded-Host. Only a proxy in TRUSTED_PROXIES is believed: from anyone
+ * else the header is the client's own word, and the origin check
+ * (admin/auth.ts · originAllowed) must not take it.
+ */
+export function forwardedHost(req: RequestLike, policy: InboundPolicy = inboundPolicy()): string | null {
+  const peer = normalizeAddress(req.socket?.remoteAddress)
+  if (!peer || !policy.trustedProxies.has(peer)) return null
+  const first = headerText(req.headers['x-forwarded-host']).split(',')[0]?.trim().toLowerCase() ?? ''
+  return /^[a-z0-9.-]+(:\d{1,5})?$|^\[[0-9a-f:.]+\](:\d{1,5})?$/.test(first) ? first : null
+}
+
+/**
  * The address a per-address limit counts, or null when it must not count one.
  *
  * Null for an address in SHARED_ADDRESSES: a campus NAT is hundreds of people
  * behind one address, and a ceiling sized against one script's loop would
  * turn them away at the bell. Only the per-address counters use this; the
  * per-room and per-person ones hold whatever the address.
+ *
+ * A person the sign-in proxy vouched for is counted as that person, not as an
+ * address: behind Teleport every request of the class comes from the proxy's
+ * one address, and the limit meant for one script would refuse the class. The
+ * `sso:` prefix keeps a subject from ever colliding with an address.
  */
 export function addressForLimits(req: RequestLike, policy: InboundPolicy = inboundPolicy()): string | null {
+  if (req.ssoIdentity?.subject) return `sso:${req.ssoIdentity.subject}`
   const address = clientAddress(req, policy)
   if (!address || policy.sharedAddresses.has(address)) return null
   return address

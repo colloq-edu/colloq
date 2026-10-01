@@ -104,6 +104,14 @@ export interface InstanceState {
    * nothing about the limit rather than making one up.
    */
   maxUploadBytes?: number
+  /**
+   * Sign-in by proxy (AUTH_JWT_*), present only when it is configured.
+   * `identity` is whom the proxy vouched for on THIS request — the caller's
+   * own name and address, read from their own token — or null. The sign-in
+   * screen reaches it only when that identity is not on the staff list, and
+   * says so instead of asking for a link the person was never sent.
+   */
+  sso?: { identity: { name: string | null; email: string | null } | null }
 }
 
 export interface ClaimRequest {

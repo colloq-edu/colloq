@@ -163,6 +163,21 @@
    */
   let signingIn = $state(mightBeStaff())
 
+  /*
+   * The organisation's sign-in proxy already said who this is
+   * (SessionInfo.viewer): asking again would be a form with one right answer.
+   * The server takes the same name at /join whatever is sent, and decides the
+   * role from the same sign-in, so the screen simply walks in — as staff or as
+   * a student — the way a teacher with the panel's cookie does below.
+   */
+  onMount(() => {
+    const vouched = session.viewer?.name
+    if (!vouched) return
+    signingIn = false
+    name = vouched
+    void join()
+  })
+
   onMount(() => {
     if (!signingIn) return
     void (async () => {
