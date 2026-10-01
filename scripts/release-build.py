@@ -192,7 +192,7 @@ def main():
     # Every migration runs forward from any older file, so a release opens data
     # of its own schema and of every earlier one, and nothing newer.
     schema = data_schema(ROOT)
-    node, python = pinned('node:22-bookworm-slim'), pinned('python:3.11-slim-bookworm')
+    node, python = pinned('node:22-trixie-slim'), pinned('python:3.11-slim-bookworm')
     value = {'schemaVersion': 1, 'version': args.version, 'sourceCommit': args.source_commit,
         'k3sVersion': args.k3s_version, 'dataSchemaVersion': schema,
         'compatibleDataSchemaVersions': list(range(1, schema + 1)),

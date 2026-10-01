@@ -356,14 +356,14 @@ exit 0
       assert.equal(r.status, 0, r.stdout + r.stderr)
       return outputs(out)
     }
-    const fresh = run('node:22-bookworm-slim')
+    const fresh = run('node:22-trixie-slim')
     assert.deepEqual(fresh, { app: 'ghcr.io/colloq-edu/colloq-app', runtime: 'ghcr.io/colloq-edu/colloq-runtime', tag: 'v0.10.0',
-      node: `node:22-bookworm-slim@sha256:${'0'.repeat(63)}7` })
-    const rerun = run('node:22-bookworm-slim ghcr.io/colloq-edu/colloq-app:v0.10.0')
+      node: `node:22-trixie-slim@sha256:${'0'.repeat(63)}7` })
+    const rerun = run('node:22-trixie-slim ghcr.io/colloq-edu/colloq-app:v0.10.0')
     assert.equal(rerun.app_digest, `sha256:${'0'.repeat(63)}7`)
     assert.equal(rerun.runtime_digest, undefined)
     // The node base is the Dockerfile's own default, not a second copy of its name.
-    assert.match(read('Dockerfile'), /^ARG NODE_IMAGE=node:22-bookworm-slim$/m)
+    assert.match(read('Dockerfile'), /^ARG NODE_IMAGE=node:22-trixie-slim$/m)
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
 

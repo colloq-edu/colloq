@@ -1,5 +1,9 @@
 # ---------- build ----------
-ARG NODE_IMAGE=node:22-bookworm-slim
+# Debian 13 under the app and the broker: its node base scans with no critical
+# CVE, where Debian 12's carries four that Debian has not fixed (perl, zlib),
+# and a bank's registry may refuse to serve an image with even one.
+# deploy/vast/Dockerfile names its own base.
+ARG NODE_IMAGE=node:22-trixie-slim
 FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 
@@ -35,6 +39,17 @@ RUN npm run build:optimized -w @colloq/web \
 FROM ${NODE_IMAGE} AS app-base
 WORKDIR /app
 ENV NODE_ENV=production
+
+# Security fixes Debian has published since the base image was built. And no
+# package managers: the server runs as `node dist/server.js`, nothing in the
+# image calls npm, yarn or corepack, and npm's own dependencies were every
+# fixable finding a scanner reported on this image.
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/* \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+      /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+      /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-v*
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/server/dist ./dist
@@ -77,10 +92,17 @@ COPY --from=docker:28-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /u
 USER node
 ENV NODE_ENV=development KERNEL_BACKEND=docker
 
-# Small private controller: no Docker client, host socket, or build context.
+# Small private controller: no Docker client, host socket, or build context,
+# and, as in app-base, current Debian fixes and no package managers.
 FROM ${NODE_IMAGE} AS broker
 WORKDIR /app
 ENV NODE_ENV=production
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/* \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+      /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+      /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-v*
 COPY runtime/package.json ./package.json
 COPY --from=build /app/runtime/dist/runtime.js ./runtime.js
 COPY --from=build /app/runtime/dist/export-sidecar.js ./export-sidecar.js

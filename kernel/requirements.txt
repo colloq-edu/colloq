@@ -16,3 +16,8 @@ requests>=2.32
 # Форматирование ноутбука кнопкой FORMAT. Живёт в базе, а не в окружении:
 # кнопка есть в каждой комнате, значит и инструмент должен быть везде.
 black>=24.4
+# The python base ships setuptools 79, which vendors wheel 0.45.1 and
+# jaraco.context 5.3.0: two HIGH findings a scanner reports as fixable on every
+# kernel image. 80.10.2 vendors the fixed versions; 82 drops pkg_resources,
+# which older packages students install still import.
+setuptools>=80.10.2,<81
