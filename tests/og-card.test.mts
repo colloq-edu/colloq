@@ -82,3 +82,26 @@ test('the card font ships in the image and the wheel together with its license t
   const license = fs.readFileSync(path.join(fonts, 'JetBrainsMono-OFL.txt'), 'utf8')
   assert.match(license, /SIL Open Font License, Version 1\.1/)
 })
+
+test('competition, course and competitions-list cards are 1200×630 PNGs, served under their addresses', async () => {
+  const og = await import('../server/src/og-card.js')
+  const where = { host: 'vsos.colloq.ru', language: 'ru' as const, timeZone: 'Europe/Moscow' }
+  const competition = await og.competitionCardPng({ ...where, title: 'Соревнования по очень длинному названию задачи', blurb: 'Описание. '.repeat(40), phase: 'live', startsAt: null, deadlineAt: Date.now() + 3_600_000, metricName: 'Operational Score With A Long Name', metricDirection: 'higher', entrants: 12, perDay: 5 })
+  assert.deepEqual(pngSize(competition), { width: og.CARD_WIDTH, height: og.CARD_HEIGHT })
+  const course = await og.courseCardPng({ host: 'vsos.colloq.ru', language: 'en', name: 'Data Analysis', blurb: null, lessons: ['One', 'Two'], total: 9 })
+  assert.deepEqual(pngSize(course), { width: og.CARD_WIDTH, height: og.CARD_HEIGHT })
+  const list = await og.competitionsCardPng({ host: 'vsos.colloq.ru', language: 'ru' })
+  assert.deepEqual(pngSize(list), { width: og.CARD_WIDTH, height: og.CARD_HEIGHT })
+
+  const { createCompetition, setCompetitionState } = await import('../server/src/competitions/store.js')
+  const made = createCompetition({ slug: 'card-route', title: 'Маршрут карточки' })
+  assert.ok(made)
+  assert.equal((await fetch(`${base}/og/competitions/card-route.png`)).status, 404, 'a draft has no card')
+  setCompetitionState(made.id, 'live')
+  const served = await fetch(`${base}/og/competitions/card-route.png`)
+  assert.equal(served.status, 200)
+  assert.equal(served.headers.get('content-type'), 'image/png')
+  assert.deepEqual(pngSize(Buffer.from(await served.arrayBuffer())), { width: 1200, height: 630 })
+  assert.equal((await fetch(`${base}/og/competitions.png`)).status, 200)
+  assert.equal((await fetch(`${base}/og/courses/nothing-here.png`)).status, 404)
+})

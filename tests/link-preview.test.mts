@@ -108,3 +108,43 @@ test('pages of different rooms have different ETags, one room has one', async ()
   const cached = await fetch(`${base}/s/previewroom`, { headers: { 'if-none-match': one.etag } })
   assert.equal(cached.status, 304)
 })
+
+/* ------------------------------------------- competitions and courses */
+
+test('a competition link carries its title, blurb, own image and address; a draft looks like any page', async () => {
+  const { createCompetition, setCompetitionState } = await import('../server/src/competitions/store.js')
+  const live = createCompetition({ slug: 'pvz-preview', title: 'Спрос нового ПВЗ', blurb: 'Предскажите спрос.', metric: { name: 'MAPE', direction: 'lower' }, deadlineAt: Date.now() + 86_400_000 })
+  assert.ok(live)
+  setCompetitionState(live.id, 'live')
+  const { html } = await page('/k/pvz-preview')
+  assert.equal(meta(html, 'og:title'), 'Спрос нового ПВЗ · Colloq')
+  assert.equal(meta(html, 'og:description'), 'Предскажите спрос.')
+  assert.match(meta(html, 'og:image') ?? '', new RegExp(`^${origin}/og/competitions/pvz-preview\\.png\\?v=[A-Za-z0-9_-]{10}$`))
+  assert.equal(meta(html, 'og:url'), `${origin}/k/pvz-preview`)
+  // Its tabs share the card.
+  assert.equal(meta((await page('/k/pvz-preview/leaderboard')).html, 'og:image'), meta(html, 'og:image'))
+
+  const draft = createCompetition({ slug: 'secret-draft', title: 'Секретный черновик' })
+  assert.ok(draft)
+  const hidden = (await page('/k/secret-draft')).html
+  assert.equal(hidden.includes('Секретный черновик'), false, 'a draft must not show through the card')
+  assert.equal(meta(hidden, 'og:url'), null)
+  // The key link is a credential: it never gets a card of its own.
+  assert.equal(meta((await page('/k/t/abcdefghij')).html, 'og:url'), null)
+})
+
+test('the competitions list and a course have cards of their own', async () => {
+  const list = (await page('/k')).html
+  assert.match(meta(list, 'og:image') ?? '', new RegExp(`^${origin}/og/competitions\\.png\\?v=`))
+  assert.equal(meta(list, 'og:url'), `${origin}/k`)
+
+  const { createCourse, setCourseSlug } = await import('../server/src/publish/store.js')
+  const course = createCourse('Машинное обучение', 'Восемь недель.', null)
+  assert.equal(setCourseSlug(course.id, 'ml-preview'), 'ok')
+  const { html } = await page('/c/ml-preview')
+  assert.equal(meta(html, 'og:title'), 'Машинное обучение · Colloq')
+  assert.equal(meta(html, 'og:description'), 'Восемь недель.')
+  assert.match(meta(html, 'og:image') ?? '', new RegExp(`^${origin}/og/courses/ml-preview\\.png\\?v=`))
+  // An unknown course is any page.
+  assert.equal(meta((await page('/c/no-such-course')).html, 'og:url'), null)
+})

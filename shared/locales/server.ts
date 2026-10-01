@@ -3767,6 +3767,138 @@ export const serverMessages: MessageCatalog = {
     "ru": "Занятие в Colloq: общий ноутбук, слайды и задания по одной ссылке.",
     "en": "A class in Colloq: shared notebook, slides and tasks behind one link."
   },
+  "server.linkPreview.competitionDescription": {
+    "ru": "Соревнование в Colloq: решение — тетрадь целиком, проверка в изолированном контейнере, рейтинг сразу.",
+    "en": "A competition in Colloq: the solution is a whole notebook, checked in an isolated container, ranked at once."
+  },
+  "server.linkPreview.competitionsTitle": {
+    "ru": "Соревнования · Colloq",
+    "en": "Competitions · Colloq"
+  },
+  "server.linkPreview.competitionsDescription": {
+    "ru": "Соревнования по анализу данных в Colloq: решение — тетрадь целиком, проверка в изолированном контейнере, рейтинг сразу.",
+    "en": "Data science competitions in Colloq: the solution is a whole notebook, checked in an isolated container, ranked at once."
+  },
+  "server.linkPreview.courseDescription": {
+    "ru": "Курс в Colloq: занятия с кодом, графиками и разбором — по одной ссылке.",
+    "en": "A course in Colloq: classes with code, plots and walkthroughs behind one link."
+  },
+  "server.ogCard.competition": {
+    "ru": "Соревнование",
+    "en": "Competition"
+  },
+  "server.ogCard.course": {
+    "ru": "Курс",
+    "en": "Course"
+  },
+  "server.ogCard.competitionsEyebrow": {
+    "ru": "Все соревнования",
+    "en": "All competitions"
+  },
+  "server.ogCard.competitionsTitle": {
+    "ru": "Соревнования",
+    "en": "Competitions"
+  },
+  "server.ogCard.competitionsSentence": {
+    "ru": "Решение — тетрадь целиком. Проверка — в изолированном контейнере. Рейтинг — сразу.",
+    "en": "The solution is a whole notebook. It is checked in an isolated container. The ranking is instant."
+  },
+  "server.ogCard.finished": {
+    "ru": "Завершено",
+    "en": "Finished"
+  },
+  "server.ogCard.startsAt": {
+    "ru": "Старт {p0}",
+    "en": "Starts {p0}"
+  },
+  "server.ogCard.until": {
+    "ru": "До {p0}",
+    "en": "Until {p0}"
+  },
+  "server.ogCard.open": {
+    "ru": "Идёт",
+    "en": "Open"
+  },
+  "server.ogCard.metric": {
+    "ru": "Метрика",
+    "en": "Metric"
+  },
+  "server.ogCard.metricUnnamed": {
+    "ru": "Своя",
+    "en": "Custom"
+  },
+  "server.ogCard.entrants": {
+    "ru": "Участников",
+    "en": "Entrants"
+  },
+  "server.ogCard.perDay": {
+    "ru": "Посылок в день",
+    "en": "Per day"
+  },
+  "server.ogCard.takePart": {
+    "ru": "Участвовать",
+    "en": "Take part"
+  },
+  "server.ogCard.seeResults": {
+    "ru": "Смотреть итоги",
+    "en": "See the results"
+  },
+  "server.ogCard.lessons": {
+    "ru": "Занятия",
+    "en": "Classes"
+  },
+  "server.ogCard.lessonsOne": {
+    "ru": "{p0} занятие",
+    "en": "{p0} class"
+  },
+  "server.ogCard.lessonsFew": {
+    "ru": "{p0} занятия",
+    "en": "{p0} classes"
+  },
+  "server.ogCard.lessonsMany": {
+    "ru": "{p0} занятий",
+    "en": "{p0} classes"
+  },
+  "server.ogCard.lessonsSoon": {
+    "ru": "Скоро здесь появятся занятия",
+    "en": "Classes will appear here soon"
+  },
+  "server.ogCard.lessonsMore": {
+    "ru": "и ещё {p0}",
+    "en": "and {p0} more"
+  },
+  "server.ogCard.openCourse": {
+    "ru": "Открыть курс",
+    "en": "Open the course"
+  },
+  "server.ogCard.solution": {
+    "ru": "Решение",
+    "en": "Solution"
+  },
+  "server.ogCard.solutionValue": {
+    "ru": "Тетрадь целиком",
+    "en": "A whole notebook"
+  },
+  "server.ogCard.check": {
+    "ru": "Проверка",
+    "en": "Check"
+  },
+  "server.ogCard.checkValue": {
+    "ru": "Изолированно, без сети",
+    "en": "Isolated, no network"
+  },
+  "server.ogCard.board": {
+    "ru": "Рейтинг",
+    "en": "Leaderboard"
+  },
+  "server.ogCard.boardValue": {
+    "ru": "Публичный сразу, приватный в конце",
+    "en": "Public at once, private at the end"
+  },
+  "server.ogCard.seeCompetitions": {
+    "ru": "Смотреть соревнования",
+    "en": "See the competitions"
+  },
   "server.memoryMustBeWholeMegabytes": {
     "ru": "Память комнаты задаётся целым числом мегабайт.",
     "en": "Room memory is set as a whole number of megabytes."
