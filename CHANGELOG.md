@@ -13,6 +13,18 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.10.1](https://github.com/colloq-edu/colloq/compare/v0.10.0...v0.10.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **images:** Debian 13 under the app and broker, no npm in them, and a fixed setuptools in kernels ([b3996ed](https://github.com/colloq-edu/colloq/commit/b3996ed344571c173159f563ce108bd0419ac6c1))
+
+
+### Documentation
+
+* what the images are built from, their SBOMs, and what a scanner finds in kernels ([845526b](https://github.com/colloq-edu/colloq/commit/845526bfcaf5f08a07fd4e17de318e0e5f4c0b1a))
+
 ## [0.10.0](https://github.com/colloq-edu/colloq/compare/v0.9.0...v0.10.0) (2026-09-30)
 
 
