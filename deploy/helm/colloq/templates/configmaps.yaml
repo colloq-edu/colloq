@@ -17,6 +17,8 @@ wins over the same name in config.extraEnv.
 */}}
 {{- $c := .Values.config }}
 {{- $o := .Values.outbound }}
+{{- /* The header is a default; it is said only when sign-in by proxy has a key source. */}}
+{{- $ssoOn := not (empty (or $c.sso.jwksUrl $c.sso.jwks)) }}
 {{- $settings := dict
   "PUBLIC_URL" (include "colloq.publicUrl" .)
   "UI_LANGUAGE" $c.uiLanguage
@@ -39,6 +41,17 @@ wins over the same name in config.extraEnv.
   "SHARED_ADDRESSES" $c.inbound.sharedAddresses
   "TRUST_CF_CONNECTING_IP" (ternary "1" "0" $c.inbound.trustCfConnectingIp)
   "HSTS" (ternary "1" "0" $c.inbound.hsts)
+  "AUTH_JWT_HEADER" (ternary $c.sso.header "" $ssoOn)
+  "AUTH_JWT_JWKS_URL" $c.sso.jwksUrl
+  "AUTH_JWT_ISSUER" $c.sso.issuer
+  "AUTH_JWT_AUDIENCE" $c.sso.audience
+  "AUTH_JWT_SUBJECT_CLAIM" $c.sso.claims.subject
+  "AUTH_JWT_NAME_CLAIM" $c.sso.claims.name
+  "AUTH_JWT_EMAIL_CLAIM" $c.sso.claims.email
+  "AUTH_JWT_ROLES_CLAIM" $c.sso.claims.roles
+  "AUTH_JWT_EMAIL_DOMAIN" $c.sso.emailDomain
+  "AUTH_JWT_TEACHER_ROLES" $c.sso.teacherRoles
+  "AUTH_JWT_OWNER_ROLES" $c.sso.ownerRoles
   "HTTPS_PROXY" $o.httpsProxy
   "https_proxy" $o.httpsProxy
   "HTTP_PROXY" $o.httpProxy
@@ -75,4 +88,16 @@ metadata:
     {{- include "colloq.labels" (dict "ctx" . "component" "app") | nindent 4 }}
 data:
   extra-ca.pem: {{ .Values.outbound.extraCa.pem | quote }}
+{{- end }}
+{{- if .Values.config.sso.jwks }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: colloq-sso-jwks
+  {{- include "colloq.namespace" . | nindent 2 }}
+  labels:
+    {{- include "colloq.labels" (dict "ctx" . "component" "app") | nindent 4 }}
+data:
+  jwks.json: {{ .Values.config.sso.jwks | quote }}
 {{- end }}

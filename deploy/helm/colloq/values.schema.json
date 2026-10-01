@@ -195,6 +195,30 @@
             "hsts": { "type": "boolean" }
           }
         },
+        "sso": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "header": { "type": "string", "pattern": "^[A-Za-z0-9-]+$" },
+            "jwksUrl": { "type": "string" },
+            "jwks": { "type": "string" },
+            "issuer": { "type": "string" },
+            "audience": { "type": "string" },
+            "claims": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "subject": { "type": "string" },
+                "name": { "type": "string" },
+                "email": { "type": "string" },
+                "roles": { "type": "string" }
+              }
+            },
+            "emailDomain": { "type": "string" },
+            "teacherRoles": { "type": "string" },
+            "ownerRoles": { "type": "string" }
+          }
+        },
         "extraEnv": {
           "type": "object",
           "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },

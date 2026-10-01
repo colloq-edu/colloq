@@ -126,7 +126,7 @@ const catalogOf = (objects: Json[]): Json => JSON.parse(find(objects, 'ConfigMap
 const EVERYTHING: Values = {
   global: { imagePullSecrets: ['harbor-pull'] },
   commonLabels: { 'bank.example/cost-centre': 'edu' },
-  config: { ai: { apiKey: 'sk-test', baseUrl: 'https://llm.bank.local/v1' }, sessionSecret: 'x'.repeat(40) },
+  config: { ai: { apiKey: 'sk-test', baseUrl: 'https://llm.bank.local/v1' }, sessionSecret: 'x'.repeat(40), sso: { jwks: '{"keys": []}', audience: 'http://colloq-app.colloq.svc:3000' } },
   outbound: { httpsProxy: 'http://proxy.bank.local:3128', extraCa: { pem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n' } },
   dependencies: { indexUrl: 'https://nexus.bank.local/repository/pypi/simple', mirrorEgress: [{ cidrs: ['10.20.30.40/32'], ports: [443] }] },
   metrics: { enabled: true, serviceMonitor: { enabled: true } },
@@ -1018,4 +1018,40 @@ test('every rendered object is valid against the Kubernetes 1.30 schemas (KUBECO
     assert.equal(check.status, 0, check.stdout + check.stderr)
     assert.match(check.stdout, /Invalid: 0, Errors: 0, Skipped: 0/)
   }
+})
+
+test('sign-in by proxy: the settings reach the app, inline keys are mounted read-only, and one key source is required', { skip }, async () => {
+  const off = await render()
+  assert.equal(configData(off).AUTH_JWT_JWKS_URL, undefined)
+  assert.equal(envOf(container(off, 'colloq-app')).AUTH_JWT_JWKS_FILE, undefined)
+  assert.equal(find(off, 'ConfigMap', 'colloq-sso-jwks'), undefined)
+
+  const byUrl = configData(await render({ config: { sso: {
+    jwksUrl: 'https://teleport.bank.local/.well-known/jwks.json', issuer: 'bank', audience: 'https://colloq.bank.local',
+    teacherRoles: 'colloq-teacher', emailDomain: 'bank.local', claims: { email: 'traits.mail' },
+  } } }))
+  assert.equal(byUrl.AUTH_JWT_JWKS_URL, 'https://teleport.bank.local/.well-known/jwks.json')
+  assert.equal(byUrl.AUTH_JWT_HEADER, 'teleport-jwt-assertion')
+  assert.equal(byUrl.AUTH_JWT_ISSUER, 'bank')
+  assert.equal(byUrl.AUTH_JWT_AUDIENCE, 'https://colloq.bank.local')
+  assert.equal(byUrl.AUTH_JWT_EMAIL_CLAIM, 'traits.mail')
+  assert.equal(byUrl.AUTH_JWT_EMAIL_DOMAIN, 'bank.local')
+  assert.equal(byUrl.AUTH_JWT_TEACHER_ROLES, 'colloq-teacher')
+  assert.equal(byUrl.AUTH_JWT_OWNER_ROLES, undefined, 'an empty value is left out, so the app default applies')
+
+  const jwks = JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-256', kid: 'k1', x: 'f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU', y: 'x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0' }] })
+  const inline = await render({ config: { sso: { jwks, audience: '*' } } })
+  assert.equal(find(inline, 'ConfigMap', 'colloq-sso-jwks').data['jwks.json'], jwks)
+  const app = container(inline, 'colloq-app')
+  assert.equal(envOf(app).AUTH_JWT_JWKS_FILE, '/etc/colloq-sso/jwks.json')
+  assert.ok(app.volumeMounts.some((m: Json) => m.name === 'sso-jwks' && m.mountPath === '/etc/colloq-sso' && m.readOnly === true))
+  assert.ok(deployment(inline, 'colloq-app').spec.template.spec.volumes.some((v: Json) => v.name === 'sso-jwks' && v.configMap?.name === 'colloq-sso-jwks'))
+
+  await refused({ config: { sso: { jwksUrl: 'https://teleport.bank.local/jwks', jwks, audience: '*' } } }, /jwksUrl or jwks, not both/)
+  await refused({ config: { sso: { jwks: '[1, 2]', audience: '*' } } }, /must be a JWKS document/)
+  await refused({ config: { sso: { jwksUrl: 'ldap://teleport.bank.local', audience: '*' } } }, /must be an https URL/)
+  await refused({ config: { sso: { jwksUrl: 'http://teleport.bank.local/.well-known/jwks.json', audience: '*' } } }, /must be an https URL/)
+  // One proxy signs every application's tokens: the chart will not render a sign-in that would take them all.
+  await refused({ config: { sso: { jwksUrl: 'https://teleport.bank.local/.well-known/jwks.json' } } }, /config\.sso\.audience is required/)
+  await refused({ config: { sso: { header: 'two words' } } }, /header|does not match pattern/)
 })

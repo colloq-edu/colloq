@@ -126,6 +126,49 @@ config:
     trustCfConnectingIp: false
     # HSTS on https requests.
     hsts: true
+  # Sign-in by a proxy that vouches for the person with a signed JWT on every
+  # request: Teleport application access, or oauth2-proxy and the like in front
+  # of an OIDC provider (docs/pages/en/kubernetes.html#sso). Off until a key
+  # source is set. A request without a token, or with one that does not verify,
+  # goes on as before: personal links keep working.
+  sso:
+    # AUTH_JWT_HEADER: the header with the token, one of its own:
+    # Authorization is the room API's, and a proxy writing there would break it.
+    header: teleport-jwt-assertion
+    # AUTH_JWT_JWKS_URL: the proxy's public keys, e.g.
+    # https://teleport.corp.example/.well-known/jwks.json. The app fetches them:
+    # networkPolicy.app.egress must allow that address, and behind an outbound
+    # proxy outbound.noProxy may need the name.
+    jwksUrl: ""
+    # Or the same keys as a JWKS document, mounted from the ConfigMap
+    # colloq-sso-jwks (AUTH_JWT_JWKS_FILE): no egress, but a key rotation on the
+    # proxy needs a new value here. Set one of jwksUrl and jwks.
+    jwks: ""
+    # AUTH_JWT_ISSUER: the `iss` the token must carry (Teleport: the cluster
+    # name). AUTH_JWT_AUDIENCE, required with a key source: the `aud` written
+    # for this application (Teleport: the app's `uri`, e.g.
+    # http://colloq-app.colloq.svc:3000) — one proxy signs every application's
+    # tokens, and without it another application's token would sign in here.
+    # `*` accepts any audience.
+    issuer: ""
+    audience: ""
+    # Claim paths tried in order, comma-separated; `traits.email` reaches into
+    # an object. Empty: the defaults, which read Teleport and OIDC tokens.
+    claims:
+      subject: ""
+      name: ""
+      email: ""
+      roles: ""
+    # AUTH_JWT_EMAIL_DOMAIN: turns a login without an address (ivan.petrov)
+    # into ivan.petrov@<domain>, the email staff are matched by.
+    emailDomain: ""
+    # AUTH_JWT_TEACHER_ROLES / AUTH_JWT_OWNER_ROLES: the proxy's roles,
+    # comma-separated, that add a person to the staff on their first visit.
+    # The roles then decide who is staff: someone removed in the panel comes
+    # back while the proxy still gives the role. Empty: nobody is added; the
+    # owner adds colleagues by email in the panel, and the proxy signs them in.
+    teacherRoles: ""
+    ownerRoles: ""
   # Any other app setting as NAME: value, into colloq-app-env.
   extraEnv: {}
 

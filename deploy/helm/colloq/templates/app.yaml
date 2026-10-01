@@ -125,6 +125,10 @@ spec:
             - name: NODE_EXTRA_CA_CERTS
               value: /etc/colloq-ca/extra-ca.pem
             {{- end }}
+            {{- if .Values.config.sso.jwks }}
+            - name: AUTH_JWT_JWKS_FILE
+              value: /etc/colloq-sso/jwks.json
+            {{- end }}
             {{- if .Values.metrics.enabled }}
             - name: METRICS_TOKEN
               valueFrom:
@@ -160,6 +164,11 @@ spec:
               mountPath: /etc/colloq-ca
               readOnly: true
             {{- end }}
+            {{- if .Values.config.sso.jwks }}
+            - name: sso-jwks
+              mountPath: /etc/colloq-sso
+              readOnly: true
+            {{- end }}
       volumes:
         - name: catalog
           configMap:
@@ -187,6 +196,11 @@ spec:
             items:
               - key: {{ include "colloq.extraCaKey" . }}
                 path: extra-ca.pem
+        {{- end }}
+        {{- if .Values.config.sso.jwks }}
+        - name: sso-jwks
+          configMap:
+            name: colloq-sso-jwks
         {{- end }}
 ---
 apiVersion: v1

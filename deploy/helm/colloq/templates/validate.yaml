@@ -144,3 +144,21 @@ behind a green sync.
 {{- if not (regexMatch "^[a-z0-9-]{1,63}$" .Release.Namespace) -}}
 {{- fail (printf "namespace %q is not a DNS label" .Release.Namespace) -}}
 {{- end -}}
+
+{{- /* Sign-in by proxy: one source of keys, and an inline JWKS that is a JWKS. */ -}}
+{{- $sso := $values.config.sso -}}
+{{- if and $sso.jwksUrl $sso.jwks -}}
+{{- fail "config.sso: set jwksUrl or jwks, not both (the app would refuse both and leave sign-in by proxy off)" -}}
+{{- end -}}
+{{- if $sso.jwks -}}
+{{- $doc := fromJson $sso.jwks -}}
+{{- if or (not (kindIs "map" $doc)) (not (hasKey $doc "keys")) -}}
+{{- fail "config.sso.jwks must be a JWKS document: {\"keys\": [...]}, as the proxy serves it" -}}
+{{- end -}}
+{{- end -}}
+{{- if and $sso.jwksUrl (not (regexMatch "^https://" $sso.jwksUrl)) -}}
+{{- fail (printf "config.sso.jwksUrl %q must be an https URL: whoever can change the keys in flight signs in as anybody" $sso.jwksUrl) -}}
+{{- end -}}
+{{- if and (or $sso.jwksUrl $sso.jwks) (not $sso.audience) -}}
+{{- fail "config.sso.audience is required: the aud the proxy writes for this application (Teleport: the app's uri, e.g. http://colloq-app.colloq.svc:3000), or * to accept tokens meant for any application" -}}
+{{- end -}}
