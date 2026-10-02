@@ -58,7 +58,7 @@ test('a list of tasks is still a list of tasks', () => {
 
 test('the one place that renders a note still hands the sanitizer both lists', () => {
   const source = read('web/src/lib/render.svelte.ts')
-  const markdown = source.slice(source.indexOf('markdown(source)'), source.indexOf('ansi(text)'))
+  const markdown = source.slice(source.indexOf('markdown(source'), source.indexOf('ansi(text)'))
   assert.ok(
     markdown.includes('FORBID_ATTR: MARKDOWN_FORBIDDEN_ATTRS'),
     'markdown() renders the note without the shared list of forbidden attributes',
@@ -79,6 +79,6 @@ test('styling is cleaned BEFORE formulas become markup', () => {
    * first, then our own.
    */
   const source = read('web/src/lib/render.svelte.ts')
-  const markdown = source.slice(source.indexOf('markdown(source)'), source.indexOf('ansi(text)'))
+  const markdown = source.slice(source.indexOf('markdown(source'), source.indexOf('ansi(text)'))
   assert.ok(markdown.indexOf('safeStyle(') < markdown.indexOf('katex.renderToString'))
 })

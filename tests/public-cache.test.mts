@@ -2,17 +2,12 @@
  * The public half under load: what it serves twice and what it does not
  * recompute.
  *
- * A walkthrough page is opened by five hundred people within one minute, from
- * phones, and every one of them flips through the steps. Before this, every
- * such visit went all the way to the database: the rail of steps was computed
- * by parsing the FULL text of every page (all the text outputs of a step — a
- * training log of megabytes) for the sake of forty small numbers, and the
- * responses carried neither a version tag nor a lifetime, so the second visit
- * cost exactly as much as the first.
- *
- * The danger of the fix is the opposite: a cache that survives a republish
- * shows the class last week. So both are checked here: that what has not
- * changed answers 304, and that what was republished answers with the new.
+ * A class page is opened by five hundred people within one minute, from
+ * phones. Every response carries a version tag, so the second visit costs a
+ * 304, and a rebuild changes the tag, so nobody is shown last week. The page
+ * and the course are tagged by their body and asked again each time (they
+ * depend on the course rows and the neighbours); a notebook tab is tagged by
+ * the page's materials revision and kept for five minutes.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -23,34 +18,28 @@ import * as Y from 'yjs'
 import { createSession } from '../server/src/db.js'
 import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { newBlobBag, pageOfDoc } from '../server/src/publish/build.js'
-import { stepHeadings, writePublication } from '../server/src/publish/store.js'
+import { notebookMaterial } from '../server/src/publish/materials.js'
+import { createCourse, setCourseItems, writePublication } from '../server/src/publish/store.js'
 import { courseRoutes } from '../server/src/routes/courses.js'
 import type { PublicCell } from '../shared/publish.js'
 
 const ROOM = 'public-cache-room'
 let pubId = ''
+let courseId = ''
 let base = ''
 let server: http.Server
-let page: PublicCell[] = []
 
 before(async () => {
   createSession(ROOM, 'Разбор', null)
   const { doc } = getSessionDoc(ROOM)
   const cells = doc.getArray<Y.Map<unknown>>('cells')
   doc.transact(() => (cells.get(0).get('source') as Y.Text).insert(0, 'import numpy as np'))
-  const bag = newBlobBag()
-  page = pageOfDoc(doc, bag)
-  const at = Date.now()
-  pubId = writePublication({
-    sessionId: ROOM,
-    title: 'Разбор',
-    by: 'Ада',
-    steps: [
-      { seq: 3, label: 'первая попытка', at, cells: page },
-      { seq: 0, label: 'тетрадь на момент публикации', at, cells: page },
-    ],
-    blobs: bag.all(),
-  }).id
+  pubId = publish(pageOfDoc(doc, newBlobBag())).id
+  const course = createCourse('Кэш', null, null)
+  courseId = course.id
+  setCourseItems(course.id, course.rev, [
+    { kind: 'seminar', id: 'rcache01', sessionId: ROOM, name: 'Разбор', publication: null },
+  ])
 
   const app = express()
   app.use(courseRoutes())
@@ -65,107 +54,113 @@ after(() => {
   shutdownCollab()
 })
 
+function publish(cells: PublicCell[]) {
+  const material = notebookMaterial({
+    key: 'razbor',
+    name: 'Разбор',
+    path: 'razbor.ipynb',
+    cells,
+    blob: () => null,
+  })
+  return writePublication({
+    sessionId: ROOM,
+    title: 'Разбор',
+    by: 'Ада',
+    materials: [material],
+    blobs: [],
+  })
+}
+
 /* ------------------------------------------------------------- version tag */
 
-test('the page is served with a version tag and a lifetime', async () => {
-  const res = await fetch(`${base}/api/p/${pubId}`)
-  assert.equal(res.status, 200)
-  const tag = res.headers.get('etag')
-  assert.ok(tag, 'a response without a version tag: the second visit costs as much as the first')
-  assert.match(res.headers.get('cache-control') ?? '', /max-age=\d+/)
+for (const [what, path] of [
+  ['the page', () => `/api/p/${pubId}`],
+  ['the course', () => `/api/c/${courseId}`],
+] as const) {
+  test(`${what} is tagged by its body and asked again every time`, async () => {
+    const res = await fetch(`${base}${path()}`)
+    assert.equal(res.status, 200)
+    const tag = res.headers.get('etag')
+    assert.ok(tag, 'a response without a version tag: the second visit costs as much as the first')
+    assert.match(tag, /^W\//)
+    assert.equal(res.headers.get('cache-control'), 'no-cache')
 
-  const again = await fetch(`${base}/api/p/${pubId}`, { headers: { 'if-none-match': tag } })
-  assert.equal(again.status, 304, 'the same page arrived in full a second time')
-  assert.equal(await again.text(), '', 'a 304 with a body is not a 304')
-})
+    const again = await fetch(`${base}${path()}`, { headers: { 'if-none-match': tag } })
+    assert.equal(again.status, 304, 'the same body arrived in full a second time')
+    assert.equal(await again.text(), '', 'a 304 with a body is not a 304')
+  })
+}
 
-test('a step is the heaviest part, and it has its own tag', async () => {
-  const first = await fetch(`${base}/api/p/${pubId}/step/3`)
+test('a notebook tab has a tag of its own and a lifetime', async () => {
+  const first = await fetch(`${base}/api/p/${pubId}/m/razbor`)
   assert.equal(first.status, 200)
   const tag = first.headers.get('etag') ?? ''
   assert.ok(tag)
-
-  const same = await fetch(`${base}/api/p/${pubId}/step/3`, { headers: { 'if-none-match': tag } })
+  assert.match(first.headers.get('cache-control') ?? '', /max-age=300/)
+  const same = await fetch(`${base}/api/p/${pubId}/m/razbor`, { headers: { 'if-none-match': tag } })
   assert.equal(same.status, 304)
-
-  // A step tag is about THIS step: the neighbouring one must not answer to it.
-  const other = await fetch(`${base}/api/p/${pubId}/step/0`, { headers: { 'if-none-match': tag } })
-  assert.equal(other.status, 200, 'the tag of one step matched another: the reader got the wrong step')
+  // The page's tag is not the tab's.
+  const pageTag = (await fetch(`${base}/api/p/${pubId}`)).headers.get('etag')
+  assert.notEqual(pageTag, tag)
 })
 
 /* ----------------------------------------------- a republish cancels it all */
 
-test('a republished page answers with the new: both the tag and the rail', async () => {
-  const before = await fetch(`${base}/api/p/${pubId}`)
-  const oldTag = before.headers.get('etag') ?? ''
-  const seen = (await before.json()) as { seminar: { steps: { label: string }[] } }
-  assert.deepEqual(
-    seen.seminar.steps.map((s) => s.label),
-    ['первая попытка', 'тетрадь на момент публикации'],
-  )
-
-  writePublication({
-    sessionId: ROOM,
-    title: 'Разбор',
-    by: 'Ада',
-    steps: [{ seq: 3, label: 'разобрали заново', at: Date.now(), cells: page }],
-    blobs: [],
-  })
-
-  // The rail of steps is cached in memory — and had to be forgotten on write.
-  assert.deepEqual(
-    stepHeadings(pubId).map((h) => h.label),
-    ['разобрали заново'],
-    'the rail cache survived the republish and shows last week',
-  )
-
-  const after = await fetch(`${base}/api/p/${pubId}`, { headers: { 'if-none-match': oldTag } })
-  assert.equal(after.status, 200, 'the old tag matched the republished page')
-  const now = (await after.json()) as { seminar: { steps: { label: string }[] } }
-  assert.deepEqual(
-    now.seminar.steps.map((s) => s.label),
-    ['разобрали заново'],
-  )
-})
-
-/* ------------------------------------------------------- notebook by step */
-
-test('the notebook downloads by step, and an unknown number means the last step', async () => {
-  const at = Date.now()
-  const other: PublicCell[] = [
-    // A page cell always carries output and a run number: a page is a snapshot of
-    // the notebook, not its source (shared/publish.ts · PublicCell).
+test('a rebuilt page answers with the new: the page, the tab and the course', async () => {
+  const oldPage = (await fetch(`${base}/api/p/${pubId}`)).headers.get('etag') ?? ''
+  const oldTab = (await fetch(`${base}/api/p/${pubId}/m/razbor`)).headers.get('etag') ?? ''
+  const oldCourse = (await fetch(`${base}/api/c/${courseId}`)).headers.get('etag') ?? ''
+  publish([
     {
       id: 'c-late',
       type: 'code',
-      source: 'print("поздний шаг")',
+      source: 'print("разобрали заново")',
       outputs: [],
       execCount: null,
       ranMs: null,
     },
-  ]
-  writePublication({
-    sessionId: ROOM,
-    title: 'Разбор',
-    by: 'Ада',
-    steps: [
-      { seq: 3, label: 'ранний', at, cells: page },
-      { seq: 0, label: 'последний', at, cells: other },
-    ],
-    blobs: [],
+  ])
+  const page = await fetch(`${base}/api/p/${pubId}`, { headers: { 'if-none-match': oldPage } })
+  assert.equal(page.status, 200, 'the old tag matched the rebuilt page')
+  const tab = await fetch(`${base}/api/p/${pubId}/m/razbor`, { headers: { 'if-none-match': oldTab } })
+  assert.equal(tab.status, 200, 'the old tag matched the rebuilt notebook')
+  const body = (await tab.json()) as { notebook: { key: string; cells: PublicCell[] } }
+  assert.equal(body.notebook.key, 'razbor')
+  assert.equal(body.notebook.cells[0].source, 'print("разобрали заново")')
+  const course = await fetch(`${base}/api/c/${courseId}`, { headers: { 'if-none-match': oldCourse } })
+  assert.equal(course.status, 200, 'the course kept the date of the page from before the rebuild')
+})
+
+/* ------------------------------------------------------- the notebook file */
+
+test('the old notebook link leads to the first notebook, with outputs, whatever step it names', async () => {
+  publish([
+    {
+      id: 'c-out',
+      type: 'code',
+      source: 'print("с выводом")',
+      outputs: [{ kind: 'stream', name: 'stdout', text: 'с выводом\n' }],
+      execCount: 4,
+      ranMs: 10,
+    },
+  ])
+  for (const query of ['', '?step=3', '?step=99']) {
+    const hop = await fetch(`${base}/api/p/${pubId}/notebook.ipynb${query}`, { redirect: 'manual' })
+    assert.equal(hop.status, 302)
+    assert.equal(hop.headers.get('location'), `/api/p/${pubId}/m/razbor/download`)
+    const res = await fetch(`${base}/api/p/${pubId}/notebook.ipynb${query}`)
+    assert.equal(res.status, 200)
+    const nb = (await res.json()) as { cells: { outputs: { text: string }[] }[] }
+    assert.equal(nb.cells[0].outputs[0].text, 'с выводом\n')
+  }
+})
+
+test('a download is tagged by its content hash', async () => {
+  const res = await fetch(`${base}/api/p/${pubId}/m/razbor/download`)
+  const tag = res.headers.get('etag') ?? ''
+  assert.match(tag, /^"[0-9a-f]{64}"$/)
+  const again = await fetch(`${base}/api/p/${pubId}/m/razbor/download`, {
+    headers: { 'if-none-match': tag },
   })
-
-  const asked = await fetch(`${base}/api/p/${pubId}/notebook.ipynb?step=3`)
-  assert.equal(asked.status, 200)
-  assert.match(await asked.text(), /import numpy as np/, 'the downloaded step is not the one being viewed')
-
-  // Without a number, as always: the notebook at the time of publication.
-  const last = await fetch(`${base}/api/p/${pubId}/notebook.ipynb`)
-  assert.match(await last.text(), /поздний шаг/)
-
-  // A missed number is no place for explanations about addresses: a file in hand
-  // beats an empty refusal.
-  const nonsense = await fetch(`${base}/api/p/${pubId}/notebook.ipynb?step=99`)
-  assert.equal(nonsense.status, 200)
-  assert.match(await nonsense.text(), /поздний шаг/)
+  assert.equal(again.status, 304)
 })

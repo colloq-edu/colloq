@@ -22,7 +22,6 @@ import {
   type OracleMode,
   type OracleSettings,
 } from '@shared/admin'
-import { SKIP_REASON_TEXT, type SkippedStep } from '@shared/publish'
 import { OPEN_ROOM, oracleModeIn, type RoomRules } from '@shared/rules'
 
 /* ------------------------------------------------------------- sign-in */
@@ -229,28 +228,6 @@ export function splitBySize<T extends { name: string; size: number }>(
     else taken.push(file)
   }
   return { taken, refused }
-}
-
-/* --------------------------------------------------- publication steps */
-
-/**
- * A moment that did not become a step — in one line.
- *
- * The fifth place of the same rule: do not pass silence off as consent. A
- * marked moment that failed to build vanished without a trace — the teacher
- * marked seven, got a page with six and counted them by eye, guessing which
- * one went missing.
- *
- * The reason comes from the single copy in shared (SKIP_REASON_TEXT) — the
- * same one the server names it with. Only one thing is decided here: what to
- * call the moment itself. By its name if it has one; by its time if it has
- * no name (an unnamed moment is one of the reasons, in fact); by the version
- * number if even the candidate is no longer visible. In Russian, because the
- * whole publishing screen is in Russian.
- */
-export function skippedStepLine(step: SkippedStep, moment?: string): string {
-  const named = step.label.trim() || moment?.trim() || tr("admin.version", { p0: step.seq })
-  return tr("admin.version.skipped", { p0: named, p1: SKIP_REASON_TEXT[step.reason] })
 }
 
 /* ------------------------------------------------------- "running now" */

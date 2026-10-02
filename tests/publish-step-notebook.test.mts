@@ -1,123 +1,135 @@
 /**
- * The notebook on a static page: whose step it is and what is in the file.
+ * A notebook's download: which notebook it is, and what is in the file.
  *
- * The "Download notebook" link was one for all steps, and the file behind it
- * was one per publication, built from the LAST step. A reader comparing
- * "before" and "after" at step 2 of 5 — exactly the reader for whom the step
- * lives in the address — took away the state of step 5 and learned of it only
- * on opening the file.
- *
- * In the room `?step=` fixes this (routes/courses.ts), but here there are no
- * routes at all — so there is a file for every step. And a caption next to it:
- * the same as in the reader, word for word, because these two pages must not
- * drift apart.
+ * The 0.12 «Скачать тетрадь» link was one for the whole page and served the
+ * code without outputs. A page now has a download per material, each notebook
+ * as an .ipynb WITH its outputs (the reason a student opens it at all), and
+ * the bytes are the ones built at publish time, not whatever the room holds
+ * by the time somebody clicks.
  */
 import './_env.mts'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import { test } from 'node:test'
+import http from 'node:http'
+import express from 'express'
+import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { renderStep } from '../server/src/publish/render.js'
-import { exportSite } from '../server/src/publish/export.js'
 import { createSession } from '../server/src/db.js'
+import { shutdownCollab } from '../server/src/collab/index.js'
+import { notebookMaterial } from '../server/src/publish/materials.js'
 import { setPublicationSlug, writePublication } from '../server/src/publish/store.js'
+import { courseRoutes } from '../server/src/routes/courses.js'
 import type { PublicCell } from '../shared/publish.js'
 
-const cell = (id: string, source: string): PublicCell => ({
+const cell = (id: string, source: string, outputs: PublicCell['outputs'] = []): PublicCell => ({
   id,
   type: 'code',
   source,
-  outputs: [],
+  outputs,
   execCount: 1,
   ranMs: null,
 })
 
-/* ------------------------------------------------------------- the page */
+let base = ''
+let server: http.Server
 
-const RAIL = [
-  { seq: 3, label: 'перед упражнением', at: 1, cellCount: 1 },
-  { seq: 5, label: 'после упражнения', at: 2, cellCount: 1 },
-  { seq: 0, label: 'сейчас', at: 3, cellCount: 1 },
-]
-
-/** The page of step number `i` in the rail. The first step is the publication root. */
-function page(i: number, rail = RAIL): string {
-  return renderStep({
-    title: 'Деревья и леса',
-    publishedAt: 1,
-    course: null,
-    steps: rail,
-    step: { seq: rail[i].seq, label: rail[i].label, at: rail[i].at, cells: [cell('c1', 'x = 1')] },
-    depth: i === 0 ? 1 : 2,
-    base: 'https://colloq.ru',
-  })
-}
-
-test('a step page links to its own notebook, not to the shared one', () => {
-  // The first step lives at the publication root, and the root notebook is taken
-  // by the last step — so the link goes down into the step's directory.
-  assert.match(page(0), /href="3\/notebook\.ipynb"/)
-  // The other steps sit next to their own page.
-  assert.match(page(1), /href="notebook\.ipynb"/)
-  assert.ok(
-    !/href="\.\.\/notebook\.ipynb"/.test(page(1)),
-    'a step page serves the notebook of the whole publication again',
-  )
-  assert.match(page(2), /href="notebook\.ipynb"/)
+before(async () => {
+  const app = express()
+  app.use(courseRoutes())
+  server = http.createServer(app)
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
 })
 
-test('the caption under the link names the step and the missing outputs', () => {
-  /*
-   * The same three wordings as in the reader (web/src/screens/ReaderScreen.svelte):
-   * a second notebook renderer is second precisely in that it drifts silently —
-   * and there is nothing to drift apart here, the promise is one.
-   */
-  assert.match(page(0), /Код этого шага, без выводов — чтобы запустить у себя\./)
-  assert.match(page(1), /Код этого шага, без выводов — чтобы запустить у себя\./)
-  assert.match(page(2), /Код последнего шага, без выводов — чтобы запустить у себя\./)
-
-  const alone = page(0, [{ seq: 0, label: 'сейчас', at: 1, cellCount: 1 }])
-  assert.match(alone, /Код без выводов — чтобы запустить у себя\./)
-  assert.ok(!/этого шага|последнего шага/.test(alone), 'a lone step has a caption about steps')
+after(() => {
+  server?.close()
+  shutdownCollab()
 })
 
-/* ----------------------------------------------------------- the export */
-
-test('in the export every step has its own notebook, and the root one stays as it was', (t) => {
+test('each notebook downloads as its own file, with its outputs', async () => {
   const id = 'pub-step-notebook'
-  createSession(id, 'Шаги и тетради', null)
+  createSession(id, 'Две тетради', null)
+  const lecture = notebookMaterial({
+    key: 'lecture',
+    name: 'Лекция',
+    path: 'lecture.ipynb',
+    cells: [cell('c1', 'print("лекция")', [{ kind: 'stream', name: 'stdout', text: 'лекция\n' }])],
+    blob: () => null,
+  })
+  const seminar = notebookMaterial({
+    key: 'seminar',
+    name: 'Семинар',
+    path: 'week 4/семинар.ipynb',
+    cells: [cell('c2', 'after = 2')],
+    blob: () => null,
+  })
   const pub = writePublication({
     sessionId: id,
-    title: 'Шаги и тетради',
+    title: 'Две тетради',
     by: 'Ада',
-    steps: [
-      { seq: 4, label: 'перед упражнением', at: 1, cells: [cell('c1', 'before = 1')] },
-      { seq: 0, label: 'сейчас', at: 2, cells: [cell('c2', 'after = 2')] },
+    materials: [lecture, seminar],
+    blobs: [],
+  })
+  assert.equal(setPublicationSlug(pub.id, 'dve-tetradi'), 'ok')
+
+  const first = await fetch(`${base}/api/p/dve-tetradi/m/lecture/download`)
+  assert.equal(first.status, 200)
+  assert.equal(first.headers.get('content-type'), 'application/x-ipynb+json')
+  assert.match(first.headers.get('content-disposition') ?? '', /^attachment; .*filename\*=UTF-8''lecture\.ipynb$/)
+  assert.equal(first.headers.get('x-content-type-options'), 'nosniff')
+  assert.match(first.headers.get('content-security-policy') ?? '', /sandbox/)
+  assert.equal(first.headers.get('x-robots-tag'), 'noindex')
+  const nb = (await first.json()) as {
+    nbformat: number
+    cells: { source: string[]; outputs: { text: string[] | string }[]; execution_count: number }[]
+  }
+  assert.equal(nb.nbformat, 4)
+  assert.equal(nb.cells[0].execution_count, 1)
+  assert.match([nb.cells[0].outputs[0].text].flat().join(''), /лекция/)
+
+  // The second one is the second one, named by the base of its room path.
+  const second = await fetch(`${base}/api/p/dve-tetradi/m/seminar/download`)
+  assert.equal(second.status, 200)
+  assert.match(
+    second.headers.get('content-disposition') ?? '',
+    new RegExp(`filename\\*=UTF-8''${encodeURIComponent('семинар.ipynb')}$`),
+  )
+  const code = ((await second.json()) as { cells: { source: string[] }[] }).cells
+    .map((c) => c.source.join(''))
+    .join('\n')
+  assert.equal(code, 'after = 2')
+  // The content length is the stored file's, exactly.
+  assert.equal(Number(second.headers.get('content-length')), seminar.bytes)
+})
+
+test('only a PDF opens in place; everything else is a download or a 404', async () => {
+  const id = 'pub-open-pdf'
+  createSession(id, 'Слайды', null)
+  const { putPageFile } = await import('../server/src/publish/page-files.js')
+  const pdf = putPageFile(Buffer.from('%PDF-1.4\n% slides\n'), 'application/pdf')
+  const csv = putPageFile(Buffer.from('a,b\n1,2\n'), 'text/csv')
+  const pub = writePublication({
+    sessionId: id,
+    title: 'Слайды',
+    by: 'Ада',
+    materials: [
+      { key: 'slides', kind: 'pdf', name: 'Слайды лекции', path: 'lecture.pdf', hash: pdf.hash, bytes: pdf.bytes },
+      { key: 'train', kind: 'data', name: 'data/train.csv', path: 'data/train.csv', hash: csv.hash, bytes: csv.bytes },
     ],
     blobs: [],
   })
-  assert.equal(setPublicationSlug(pub.id, 'shagi'), 'ok')
+  const open = await fetch(`${base}/api/p/${pub.id}/m/slides/open`)
+  assert.equal(open.status, 200)
+  assert.equal(open.headers.get('content-type'), 'application/pdf')
+  assert.match(open.headers.get('content-disposition') ?? '', /^inline;/)
+  // A sandboxed document is exactly what Chrome's PDF viewer refuses to draw.
+  assert.equal(open.headers.get('content-security-policy'), null)
+  assert.equal(open.headers.get('x-content-type-options'), 'nosniff')
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-site-'))
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
-  exportSite(root, 'https://colloq.ru')
-
-  const read = (...parts: string[]): string => fs.readFileSync(path.join(root, ...parts), 'utf8')
-  const code = (...parts: string[]): string =>
-    (JSON.parse(read(...parts)) as { cells: { source: string[] }[] }).cells
-      .map((c) => c.source.join(''))
-      .join('\n')
-
-  assert.equal(code('p', 'shagi', '4', 'notebook.ipynb'), 'before = 1')
-  assert.equal(code('p', 'shagi', '0', 'notebook.ipynb'), 'after = 2')
-  // The root address does not change its content: links handed out earlier point
-  // to it, and it also stays under the publication's former name.
-  assert.equal(code('p', 'shagi', 'notebook.ipynb'), 'after = 2')
-  assert.equal(code('p', pub.id, 'notebook.ipynb'), 'after = 2')
-
-  assert.match(read('p', 'shagi', 'index.html'), /href="4\/notebook\.ipynb"/)
-  assert.match(read('p', 'shagi', '0', 'index.html'), /href="notebook\.ipynb"/)
-  assert.match(read('p', 'shagi', 'index.html'), /Код этого шага, без выводов/)
-  assert.match(read('p', 'shagi', '0', 'index.html'), /Код последнего шага, без выводов/)
+  assert.equal((await fetch(`${base}/api/p/${pub.id}/m/train/open`)).status, 404)
+  const data = await fetch(`${base}/api/p/${pub.id}/m/train/download`)
+  assert.equal(data.headers.get('content-type'), 'text/csv')
+  assert.equal(await data.text(), 'a,b\n1,2\n')
+  // A file is not a notebook tab.
+  const tab = await fetch(`${base}/api/p/${pub.id}/m/train`)
+  assert.equal(tab.status, 404)
+  assert.equal(((await tab.json()) as { error: string }).error, 'material not found')
 })

@@ -107,13 +107,19 @@ test('a finished class shows the way to the published version', () => {
   // has: without this line, a week later they walk alone into the live notebook
   // (shared/protocol.ts · SessionInfo.published). The field was added for exactly this screen.
   assert.match(join, /session\.published/, 'the field is read')
+  // The server sends the address already built (slug, else id), so the screen
+  // never assembles it and never sees the room id.
   assert.match(
     join,
-    /href="\/p\/\{publicationAddress\(session\.published\)\}"/,
+    /href="\/p\/\{session\.published\.address\}"/,
     'the address comes from the page name, not assembled by hand',
   )
-  assert.match(join, /plural\(session\.published\.steps/, 'the step count follows the plural rule')
-  assert.match(join, /href="\/c\/\{session\.course\.id\}"/, 'and the course next to it, when there is one')
+  assert.match(join, /session\.published\.materials/, 'the page says how many materials it holds')
+  assert.match(
+    join,
+    /href="\/c\/\{session\.course\.slug \?\? session\.course\.id\}"/,
+    'and the course next to it, by its name when it has one',
+  )
 })
 
 test('the pointer to the publication sits inside "class is over", not on its own', () => {

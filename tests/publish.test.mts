@@ -2,34 +2,28 @@
  * Publishing: what goes out and what does not.
  *
  * Two promises, and both are kept by listing, not by subtracting. The document
- * has four roots, and the notebook is only one of them: `chat` holds the names
- * of everyone who asked the oracle, `terminal` everything anyone typed into the
- * shell. Inside a cell it is the same: `runBy` and `runById` sit on every cell
- * that was run. So what is checked here is not "are there no names in this
- * example" but the exact set of keys: a field added to the notebook tomorrow
- * must not end up on the public page by itself.
+ * has four roots, and the notebooks are only some of them: `chat` holds the
+ * names of everyone who asked the oracle, `terminal` everything anyone typed
+ * into the shell. Inside a cell it is the same: `runBy` and `runById` sit on
+ * every cell that was run. So what is checked here is not "are there no names
+ * in this example" but the exact set of keys: a field added to the notebook
+ * tomorrow must not end up on the public page by itself.
  *
- * And the second: only a version that unfolds into at least one cell can become
- * a step. An empty page for a student is impossible not because someone took
- * care of it but because such a step does not build.
+ * And the second: a page keeps its address. Republishing, withdrawing and
+ * deleting the room all leave the link a class was given pointing somewhere
+ * honest.
  */
 import './_env.mts'
-import fs from 'node:fs'
 import http from 'node:http'
-import os from 'node:os'
-import path from 'node:path'
 import express from 'express'
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'
-import { appendVersion, createSession } from '../server/src/db.js'
+import { createSession, db } from '../server/src/db.js'
 import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { mark } from '../server/src/collab/history.js'
-import { addBook, createCell, getCells, removeBook } from '../shared/notebook.js'
-import { candidatesFor } from '../server/src/publish/candidates.js'
-import { newBlobBag, pageAt, pageOfDoc } from '../server/src/publish/build.js'
-import { exportSite } from '../server/src/publish/export.js'
-import { notebookOf } from '../server/src/publish/notebook.js'
+import { newBlobBag, pageOfDoc, type BlobBag } from '../server/src/publish/build.js'
+import { notebookMaterial } from '../server/src/publish/materials.js'
 import { courseRoutes } from '../server/src/routes/courses.js'
 import { createTeacher } from '../server/src/admin/store.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
@@ -45,8 +39,10 @@ import {
   formerSlugs,
   getCourse,
   getPublication,
+  listMaterials,
   orphanPublication,
   publicationOf,
+  readBlob,
   readStep,
   setCourseItems,
   setCourseSlug,
@@ -55,9 +51,29 @@ import {
   stepHeadings,
   writePublication,
 } from '../server/src/publish/store.js'
-import { BLOB_PREFIX } from '../shared/publish.js'
+import { BLOB_PREFIX, type PublicCell } from '../shared/publish.js'
 
 after(() => shutdownCollab())
+
+/** One notebook page, the way a build writes it. */
+function publishCells(
+  sessionId: string,
+  title: string,
+  cells: PublicCell[],
+  bag: BlobBag = newBlobBag(),
+  by: string | null = 'Ада',
+) {
+  const blobs = bag.all()
+  const byHash = new Map(blobs.map((b) => [b.hash, b]))
+  const material = notebookMaterial({
+    key: 'seminar',
+    name: 'Семинар',
+    path: 'seminar.ipynb',
+    cells,
+    blob: (hash) => byHash.get(hash) ?? null,
+  })
+  return writePublication({ sessionId, title, by, materials: [material], blobs })
+}
 
 /** A room with two named moments and one output from the kernel. */
 function taught(id: string): Y.Doc {
@@ -98,37 +114,6 @@ test('a public page has exactly six cell fields, and no names among them', () =>
   // name arrived inside an output.
   assert.ok(!JSON.stringify(page).includes('Нина'))
   assert.ok(!JSON.stringify(page).includes('p_nina'))
-})
-
-test('only named moments become candidates, and only ones with a notebook', () => {
-  const id = 'pub-cands'
-  taught(id)
-  const candidates = candidatesFor(id)
-  assert.ok(candidates.length >= 3, 'no moments were found')
-  assert.ok(
-    candidates.every((c) => c.cellCount > 0),
-    'the candidates include a version that unfolds into an empty notebook',
-  )
-  // Edit bursts are never moments: there are dozens of them per class, and nobody named them.
-  assert.ok(!candidates.some((c) => c.kind === 'edit' || c.kind === 'quiet'))
-  const named = candidates.filter((c) => c.label)
-  assert.deepEqual(named.map((c) => c.label), ['перед упражнением', 'решение'])
-  // A service snapshot gets no invented name: "Snapshot #14" on a student's rail is
-  // not the name of a moment but an admission that someone forgot to name it.
-  assert.ok(candidates.some((c) => c.kind === 'opened' && c.label === ''))
-})
-
-test('a step carries the notebook as of its own moment, not as it is today', () => {
-  const id = 'pub-moments'
-  const doc = taught(id)
-  const [before, solution] = candidatesFor(id).filter((c) => c.label)
-  const bag = newBlobBag()
-  const early = pageAt(id, before.seq, bag)
-  const later = pageAt(id, solution.seq, bag)
-  assert.ok(early && later)
-  assert.equal(early.find((c) => c.outputs.length > 0), undefined, 'the early step already carries output')
-  assert.ok(later.some((c) => c.outputs.length > 0), 'the late step lost its output')
-  doc.destroy()
 })
 
 test('a large image is stored once, and the page holds a reference', () => {
@@ -175,33 +160,30 @@ test('a deleted seminar leaves a tombstone in the course, not a hole', () => {
   assert.equal(after.items[0].kind === 'gone' && after.items[0].name, 'Регуляризация')
 })
 
-test('republishing keeps the address and replaces the steps', () => {
+test('republishing keeps the address and replaces the materials', () => {
   // A link cannot be taken back from students: the address has to survive any republish.
   const id = 'pub-again'
   const doc = taught(id)
   const bag = newBlobBag()
-  const one = writePublication({
-    sessionId: id,
-    title: 'Деревья и леса',
-    by: 'Ада',
-    steps: [{ seq: 0, label: 'сейчас', at: Date.now(), cells: pageOfDoc(doc, bag) }],
-    blobs: bag.all(),
-  })
-  const two = writePublication({
-    sessionId: id,
-    title: 'Деревья и леса',
-    by: 'Ада',
-    steps: [
-      { seq: 0, label: 'сейчас', at: Date.now(), cells: pageOfDoc(doc, bag) },
-      { seq: 99, label: 'и ещё один', at: Date.now(), cells: pageOfDoc(doc, bag) },
-    ],
-    blobs: bag.all(),
-  })
+  const one = publishCells(id, 'Деревья и леса', pageOfDoc(doc, bag), bag)
+  const before = listMaterials(one.id)[0].hash
+  doc.transact(() => {
+    const cells = doc.getArray<Y.Map<unknown>>('cells')
+    ;(cells.get(0).get('source') as Y.Text).insert(0, '# Новое\n')
+  }, 'server')
+  const two = publishCells(id, 'Деревья и леса', pageOfDoc(doc, bag), bag)
   assert.equal(one.id, two.id, 'republishing issued a new address')
   assert.equal(two.revision, 2)
-  assert.equal(stepHeadings(two.id).length, 2)
+  assert.equal(two.materialsRev, 2)
+  assert.equal(two.firstAt, one.firstAt, 'the first publish moved')
+  assert.ok(two.publishedAt >= one.publishedAt)
   assert.equal(publicationOf(id)?.id, one.id)
-  assert.ok(readStep(two.id, null), 'the first step cannot be read')
+  const materials = listMaterials(two.id)
+  assert.equal(materials.length, 1)
+  assert.notEqual(materials[0].hash, before, 'the old notebook is still served')
+  // One step stays for a rollback to 0.12: the first notebook, at seq 0.
+  assert.deepEqual(stepHeadings(two.id).map((h) => h.seq), [0])
+  assert.ok(readStep(two.id, null)?.cells[0].source.startsWith('# Новое'))
 })
 
 test('two people reordering a course in the same minute do not silently lose the order', () => {
@@ -229,20 +211,13 @@ test('a withdrawn page stays an address instead of turning into a 404', () => {
   // A link cannot be taken back from students: the page has to answer that it was withdrawn.
   const id = 'pub-withdrawn'
   const doc = taught(id)
-  const bag = newBlobBag()
-  const pub = writePublication({
-    sessionId: id,
-    title: 'Снятая',
-    by: null,
-    steps: [{ seq: 0, label: 'сейчас', at: Date.now(), cells: pageOfDoc(doc, bag) }],
-    blobs: bag.all(),
-  })
+  const pub = publishCells(id, 'Снятая', pageOfDoc(doc, newBlobBag()), undefined, null)
   setPublicationState(pub.id, 'withdrawn')
   const back = publicationOf(id)
   assert.equal(back?.state, 'withdrawn')
   assert.equal(back?.id, pub.id, 'withdrawal changed the address')
-  // The steps stay in place: bringing the page back is one press, not a new publication.
-  assert.equal(stepHeadings(pub.id).length, 1)
+  // The materials stay in place: bringing the page back is one press, not a new publication.
+  assert.equal(listMaterials(pub.id).length, 1)
 })
 
 test('SVG stays in the page as text, and only raster images go into a separate entry', () => {
@@ -271,59 +246,7 @@ test('SVG stays in the page as text, and only raster images go into a separate e
   assert.equal(bag.all().length, 0, 'the entry holds something other than base64')
 })
 
-test('a checkpoint from the start of a class stays a candidate however much is typed after it', () => {
-  /*
-   * A burst closes every four kilobytes, on any change to the notebook's cells
-   * and after twelve seconds of silence: a room of thirty people produces
-   * hundreds of them per class. A window of the four hundred freshest rows of ANY
-   * kind threw out of the list exactly the moment it was opened for.
-   */
-  const id = 'pub-window'
-  taught(id)
-  const noop = Y.encodeStateAsUpdate(new Y.Doc())
-  for (let i = 0; i < 500; i++) {
-    appendVersion({
-      sessionId: id,
-      update: noop,
-      kind: 'edit',
-      authorId: null,
-      createdAt: Date.now(),
-      label: null,
-      summary: 'печатали',
-      added: 1,
-      removed: 0,
-      cells: [],
-    })
-  }
-  const labels = candidatesFor(id).map((c) => c.label)
-  assert.ok(labels.includes('перед упражнением'), 'edit bursts pushed out the checkpoint')
-  assert.ok(labels.includes('решение'))
-})
-
-test('checkpoints live on after the first notebook of the room is deleted', () => {
-  /*
-   * The host can delete any file, including "Тетрадь.ipynb": its root is then
-   * erased, and the class goes on in the second notebook. Counting cells by the
-   * `cells` root gave zero, and all subsequent checkpoints silently stopped being
-   * candidates — even though the step page would have built.
-   */
-  const id = 'pub-books'
-  createSession(id, 'Две тетради', null)
-  const { doc } = getSessionDoc(id, 'Две тетради')
-  const lecture = addBook(doc, 'Лекция.ipynb')
-  doc.transact(() => {
-    doc.getArray(lecture.root).push([createCell('code', 'plt.plot(xs)')])
-    removeBook(doc, 'Тетрадь.ipynb')
-  }, 'server')
-  assert.equal(getCells(doc).length, 1, 'the second notebook did not become the first')
-  mark(id, doc, 'checkpoint' as never, null, 'перед упражнением', 'moment marked')
-
-  const checkpoint = candidatesFor(id).find((c) => c.label === 'перед упражнением')
-  assert.ok(checkpoint, 'the checkpoint of the second notebook fell out of the candidates')
-  assert.equal(checkpoint.cellCount, 1)
-})
-
-test('a tombstone carries a link to the remaining reading', () => {
+test('a tombstone carries a link to the remaining reading, and the row keeps its day and title', () => {
   /*
    * "Delete the seminar, keep the reading" is the default, and without this link
    * the course row becomes a dead end: the page is alive and opens at its direct
@@ -331,17 +254,20 @@ test('a tombstone carries a link to the remaining reading', () => {
    */
   const id = 'pub-tomb'
   const doc = taught(id)
-  const bag = newBlobBag()
-  const pub = writePublication({
-    sessionId: id,
-    title: 'Деревья и леса',
-    by: 'Ада',
-    steps: [{ seq: 0, label: 'сейчас', at: Date.now(), cells: pageOfDoc(doc, bag) }],
-    blobs: bag.all(),
-  })
+  const pub = publishCells(id, 'Деревья и леса', pageOfDoc(doc, newBlobBag()))
   const course = createCourse('Курс с надгробием', null, 'Ада')
   setCourseItems(course.id, course.rev, [
-    { kind: 'seminar', sessionId: id, name: 'Деревья и леса', publication: null },
+    {
+      kind: 'seminar',
+      id: 'rtomb001',
+      sessionId: id,
+      name: 'Деревья и леса',
+      title: 'Деревья решений',
+      day: '2026-09-13',
+      about: 'Как растут деревья',
+      when: 'вс, 13 сен',
+      publication: null,
+    },
   ])
   // Exactly the order in which the seminar deletion does it.
   orphanPublication(id)
@@ -350,124 +276,58 @@ test('a tombstone carries a link to the remaining reading', () => {
   const row = getCourse(course.id)!.items[0]
   assert.equal(row.kind, 'gone')
   assert.equal(row.kind === 'gone' && row.publication?.id, pub.id)
+  assert.deepEqual(
+    [row.id, row.title, row.day, row.about, row.when],
+    ['rtomb001', 'Деревья решений', '2026-09-13', 'Как растут деревья', 'вс, 13 сен'],
+  )
   // The page is alive meanwhile: there is now a way to withdraw it, by its own address.
   assert.equal(getPublication(pub.id)?.sessionId, null)
+
+  // Erased for good, the tombstone loses the link and keeps the rest.
+  deletePublication(pub.id)
+  const after = getCourse(course.id)!.items[0]
+  assert.equal(after.kind === 'gone' && after.publication, null)
+  assert.equal(after.day, '2026-09-13')
 })
 
-/* ------------------------------------------------------------- the export */
-
-test('the export puts a page under both addresses and replaces a withdrawn one with a tombstone', (t) => {
+test('a tombstone is not lost to a course saved in the same moment', (t) => {
   /*
-   * The whole path by which pages reach a student: directories, images, the
-   * notebook as a file — and the address by id that was handed out before the
-   * course got a name. On a live server `WHERE id = ? OR slug = ?` keeps it
-   * working; Pages has no routing at all.
+   * entombSeminar used to try the compare-and-swap once and ignore a loss: a
+   * teacher saving the course in that second kept a row pointing at a deleted
+   * room. Here the first write of the course is made to lose, the way a
+   * concurrent save would make it lose, and the tombstone must still land.
    */
-  const id = 'pub-export'
-  createSession(id, 'Выгрузка', null)
-  const { doc } = getSessionDoc(id, 'Выгрузка')
-  const cells = doc.getArray<Y.Map<unknown>>('cells')
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg">${'<rect/>'.repeat(1000)}</svg>`
-  doc.transact(() => {
-    const png = new Y.Map<unknown>()
-    png.set('kind', 'data')
-    png.set('json', JSON.stringify({ data: { 'image/png': 'A'.repeat(40_000) }, execCount: 1 }))
-    ;(cells.get(0).get('outputs') as Y.Array<unknown>).push([png])
-    const graph = new Y.Map<unknown>()
-    graph.set('kind', 'data')
-    graph.set('json', JSON.stringify({ data: { 'image/svg+xml': svg }, execCount: 2 }))
-    ;(cells.get(1).get('outputs') as Y.Array<unknown>).push([graph])
-  }, 'server')
-
-  const bag = newBlobBag()
-  const pub = writePublication({
-    sessionId: id,
-    title: 'Выгрузка',
-    by: 'Ада',
-    steps: [
-      { seq: 7, label: 'перед упражнением', at: Date.now(), cells: pageOfDoc(doc, bag) },
-      { seq: 0, label: 'сейчас', at: Date.now(), cells: pageOfDoc(doc, bag) },
-    ],
-    blobs: bag.all(),
-  })
-  // SQLite counts a step's cells: parsing the whole page for it would be
-  // hundreds of kilobytes of JSON on every public course request.
-  assert.deepEqual(
-    stepHeadings(pub.id).map((h) => h.cellCount),
-    [2, 2],
-  )
-  assert.equal(setPublicationSlug(pub.id, 'vygruzka'), 'ok')
-  const course = createCourse('Курс выгрузки', null, 'Ада')
+  const id = 'pub-tomb-race'
+  createSession(id, 'Гонка', null)
+  const course = createCourse('Курс с гонкой', null, 'Ада')
   setCourseItems(course.id, course.rev, [
-    { kind: 'seminar', sessionId: id, name: 'Выгрузка', publication: null },
+    { kind: 'seminar', sessionId: id, name: 'Гонка', publication: null },
   ])
-  assert.equal(setCourseSlug(course.id, 'kurs-vygruzki'), 'ok')
-
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-site-'))
-  // Cleaned up here, not in the last line of the test: an assertion failing
-  // midway left a directory with a whole site lying in /tmp forever.
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
-  exportSite(root, 'https://colloq.ru')
-  const at = (...parts: string[]): string => path.join(root, ...parts)
-  const read = (...parts: string[]): string => fs.readFileSync(at(...parts), 'utf8')
-
-  assert.ok(fs.existsSync(at('c', 'kurs-vygruzki', 'index.html')))
-  assert.match(read('c', course.id, 'index.html'), /https:\/\/colloq\.ru\/c\/kurs-vygruzki\//)
-  assert.ok(fs.existsSync(at('p', 'vygruzka', 'index.html')))
-  // The first step is the publication root itself; the others lie one level deeper.
-  assert.ok(fs.existsSync(at('p', 'vygruzka', '0', 'index.html')))
-  assert.match(read('p', pub.id, 'index.html'), /https:\/\/colloq\.ru\/p\/vygruzka\//)
-  assert.match(read('p', pub.id, '0', 'index.html'), /https:\/\/colloq\.ru\/p\/vygruzka\/0\//)
-
-  // An image goes as a file alongside, while SVG stays in the page itself.
-  const blobs = fs.readdirSync(at('p', 'vygruzka', 'blob'))
-  assert.equal(blobs.length, 1)
-  assert.ok(blobs[0].endsWith('.png'), `the image was stored as ${blobs[0]}`)
-  assert.match(read('p', 'vygruzka', 'index.html'), /src="data:image\/svg\+xml;charset=utf-8,/)
-
-  // The notebook as a file is the only way to take the code away.
-  const notebook = JSON.parse(read('p', 'vygruzka', 'notebook.ipynb')) as {
-    cells: { outputs?: unknown[] }[]
-  }
-  assert.ok(notebook.cells.length > 0)
-  assert.ok(notebook.cells.every((c) => (c.outputs ?? []).length === 0), 'outputs went into the file')
-  assert.equal(notebookOf(pub.id).length > 0, true)
-
-  /*
-   * A withdrawn page is a tombstone, not a GitHub 404. The promise is written out
-   * in store.ts: "a link has to say 'it was withdrawn', not 'there is no such
-   * page here'". No content remains meanwhile: no steps, no images.
-   */
-  setPublicationState(pub.id, 'withdrawn')
-  exportSite(root, 'https://colloq.ru')
-  assert.match(read('p', 'vygruzka', 'index.html'), /снял эту страницу/)
-  assert.match(read('p', pub.id, 'index.html'), /снял эту страницу/, 'the former address of the withdrawn page died')
-  assert.equal(fs.existsSync(at('p', 'vygruzka', '0')), false, 'a step of the withdrawn page can still be read')
-  assert.equal(fs.existsSync(at('p', 'vygruzka', 'blob')), false, 'the images of the withdrawn page remained')
-  assert.equal(
-    fs.existsSync(at('p', 'vygruzka', 'notebook.ipynb')),
-    false,
-    'the notebook of the withdrawn page can still be downloaded',
-  )
+  db.exec(`
+    CREATE TEMP TABLE race_once (n INTEGER);
+    INSERT INTO race_once VALUES (1);
+    CREATE TEMP TRIGGER race_tomb BEFORE UPDATE OF items ON courses
+    WHEN (SELECT n FROM race_once) > 0
+    BEGIN
+      UPDATE race_once SET n = n - 1;
+      SELECT RAISE(IGNORE);
+    END;
+  `)
+  t.after(() => db.exec('DROP TRIGGER IF EXISTS race_tomb; DROP TABLE IF EXISTS race_once;'))
+  entombSeminar(id, 'Гонка')
+  const left = db.prepare('SELECT n FROM race_once').get() as { n: number }
+  assert.equal(left.n, 0, 'the first write was not made to lose; the test proves nothing')
+  assert.equal(getCourse(course.id)!.items[0].kind, 'gone', 'the tombstone was lost to the race')
 })
 
-test('a former name in the address leads where it used to', (t) => {
+test('a former name in the address leads where it used to', () => {
   /*
-   * A course name is said out loud and written on the board, and then changed —
-   * and the link the class has already saved has to keep working. On a live
-   * server this is a query; Pages has no routing at all: there the former
-   * address stays a pointer file.
+   * A course name is said out loud and written on the board, and then changed,
+   * and the link the class has already saved has to keep working.
    */
   const id = 'pub-renamed'
   const doc = taught(id)
-  const bag = newBlobBag()
-  const pub = writePublication({
-    sessionId: id,
-    title: 'Переименование',
-    by: 'Ада',
-    steps: [{ seq: 0, label: 'сейчас', at: Date.now(), cells: pageOfDoc(doc, bag) }],
-    blobs: bag.all(),
-  })
+  const pub = publishCells(id, 'Переименование', pageOfDoc(doc, newBlobBag()))
   assert.equal(setPublicationSlug(pub.id, 'nedelya-tri'), 'ok')
   assert.equal(setPublicationSlug(pub.id, 'nedelya-04'), 'ok')
 
@@ -487,20 +347,7 @@ test('a former name in the address leads where it used to', (t) => {
   const other = createCourse('Соседний курс', null, 'Ада')
   assert.equal(setCourseSlug(other.id, 'ml-osen'), 'taken')
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-site-'))
-  // Cleaned up here, not in the last line of the test: an assertion failing
-  // midway left a directory with a whole site lying in /tmp forever.
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
-  exportSite(root, 'https://colloq.ru')
-  const at = (...parts: string[]): string => path.join(root, ...parts)
-  const read = (...parts: string[]): string => fs.readFileSync(at(...parts), 'utf8')
-  assert.ok(fs.existsSync(at('c', 'ml-strong', 'index.html')))
-  assert.match(read('c', 'ml-osen', 'index.html'), /https:\/\/colloq\.ru\/c\/ml-strong\//)
-  assert.match(read('c', course.id, 'index.html'), /https:\/\/colloq\.ru\/c\/ml-strong\//)
-  assert.match(read('p', 'nedelya-tri', 'index.html'), /https:\/\/colloq\.ru\/p\/nedelya-04\//)
-  assert.match(read('p', pub.id, 'index.html'), /https:\/\/colloq\.ru\/p\/nedelya-04\//)
-
-  // A course can take back its own former name — then there is no pointer under it any more.
+  // A course can take back its own former name.
   assert.equal(setCourseSlug(course.id, 'ml-osen'), 'ok')
   assert.deepEqual(formerSlugs('course', course.id), ['ml-strong'])
   doc.destroy()
@@ -513,7 +360,9 @@ test('a blob is served as an image only with a known type', async () => {
    * The output mime comes from the room document, that is, from anyone, and
    * `content-type` decides what the response becomes when a direct link is
    * followed. `image/svg+xml` is a document, and a script inside it would run on
-   * the instance origin, with the cookies of whoever opened the link.
+   * the instance origin, with the cookies of whoever opened the link. So a
+   * note's SVG keeps its type (an `<img>` draws it) but goes out as a
+   * sandboxed attachment: followed directly, it downloads instead of opening.
    */
   const id = 'pub-blob-mime'
   createSession(id, 'Блобы', null)
@@ -521,12 +370,13 @@ test('a blob is served as an image only with a known type', async () => {
     sessionId: id,
     title: 'Блобы',
     by: null,
-    steps: [{ seq: 0, label: 'сейчас', at: Date.now(), cells: [] }],
+    materials: [],
     blobs: [
       { hash: 'a'.repeat(32), mime: 'image/png', body: Buffer.from([137, 80, 78, 71]) },
       { hash: 'b'.repeat(32), mime: 'image/svg+xml', body: Buffer.from('<svg><script/></svg>') },
     ],
   })
+  assert.ok(readBlob(pub.id, 'a'.repeat(32)))
 
   const app = express()
   app.use(courseRoutes())
@@ -540,28 +390,24 @@ test('a blob is served as an image only with a known type', async () => {
   assert.equal(png.headers.get('content-disposition'), 'inline')
 
   const svg = await fetch(at('b'.repeat(32)))
-  assert.equal(svg.headers.get('content-type'), 'application/octet-stream')
+  assert.equal(svg.headers.get('content-type'), 'image/svg+xml')
   assert.match(svg.headers.get('content-disposition') ?? '', /^attachment/)
+  assert.match(svg.headers.get('content-security-policy') ?? '', /sandbox/)
+  assert.equal(svg.headers.get('x-content-type-options'), 'nosniff')
   await new Promise<void>((resolve) => server.close(() => resolve()))
 })
 
 test('a page without a room can be withdrawn by its own address', async () => {
   /*
    * Deleting a seminar keeps the reading and clears `session_id` — and the routes
-   * keyed by the room id answer 404 forever. The page is still alive and gets
-   * deployed by every `make site`: there was no way to withdraw it, and someone
-   * else's personal output could remain on it.
+   * keyed by the room id answer 404 forever. The page is still alive and
+   * served: there was no way to withdraw it, and someone else's personal
+   * output could remain on it.
    */
   const id = 'pub-orphan-route'
   const doc = taught(id)
   const bag = newBlobBag()
-  const pub = writePublication({
-    sessionId: id,
-    title: 'Осиротевшая',
-    by: null,
-    steps: [{ seq: 0, label: 'сейчас', at: Date.now(), cells: pageOfDoc(doc, bag) }],
-    blobs: bag.all(),
-  })
+  const pub = publishCells(id, 'Осиротевшая', pageOfDoc(doc, bag), bag, null)
   orphanPublication(id)
 
   const teacher = createTeacher({
@@ -624,13 +470,7 @@ test('a former address lives on the server and is forgotten together with the pa
   const id = 'pub-former-route'
   const doc = taught(id)
   const bag = newBlobBag()
-  const pub = writePublication({
-    sessionId: id,
-    title: 'Прежний адрес',
-    by: null,
-    steps: [{ seq: 0, label: 'сейчас', at: Date.now(), cells: pageOfDoc(doc, bag) }],
-    blobs: bag.all(),
-  })
+  const pub = publishCells(id, 'Прежний адрес', pageOfDoc(doc, bag), bag, null)
   assert.equal(setPublicationSlug(pub.id, 'lekciya-01'), 'ok')
   assert.equal(setPublicationSlug(pub.id, 'lekciya-01-final'), 'ok')
 
@@ -656,18 +496,23 @@ test('a former address lives on the server and is forgotten together with the pa
 
   const page = await get('/api/p/lekciya-01')
   assert.equal(page.status, 200, 'the page did not open by its former name')
-  const seminar = (await page.json()) as { seminar: { id: string; slug: string; state: string } }
-  assert.equal(seminar.seminar.id, pub.id)
-  assert.equal(seminar.seminar.slug, 'lekciya-01-final')
-  // And deeper: a step and the notebook file, by the same former address.
-  assert.equal((await get('/api/p/lekciya-01/step/first')).status, 200)
-  assert.equal((await get('/api/p/lekciya-01/notebook.ipynb')).status, 200)
+  const seen2 = (await page.json()) as { page: { id: string; slug: string; address: string } }
+  assert.equal(seen2.page.id, pub.id)
+  assert.equal(seen2.page.slug, 'lekciya-01-final')
+  assert.equal(seen2.page.address, 'lekciya-01-final')
+  // And deeper: the old notebook link, by the same former address, leads to the
+  // download, with its outputs.
+  const notebook = await get('/api/p/lekciya-01/notebook.ipynb')
+  assert.equal(notebook.status, 200)
+  const file = (await notebook.json()) as { cells: { outputs?: unknown[] }[] }
+  assert.ok(file.cells.some((c) => (c.outputs ?? []).length > 0), 'the download lost its outputs')
 
   setPublicationState(pub.id, 'withdrawn')
   const withdrawn = await get('/api/p/lekciya-01')
   assert.equal(withdrawn.status, 200, 'a withdrawn page at a former address answers "no such page"')
-  const state = (await withdrawn.json()) as { seminar: { state: string } }
-  assert.equal(state.seminar.state, 'withdrawn')
+  const state = (await withdrawn.json()) as { page: { state: string; materials: unknown[] } }
+  assert.equal(state.page.state, 'withdrawn')
+  assert.deepEqual(state.page.materials, [])
 
   deletePublication(pub.id)
   assert.equal((await get('/api/p/lekciya-01')).status, 404, 'the address of an erased page is not forgotten')

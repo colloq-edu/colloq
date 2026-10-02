@@ -34,8 +34,14 @@ export interface RoomRoute {
 
 export interface PublicRoute {
   id: string
-  /** The publication step; `null` — the first. */
-  step: number | null
+  /** The material in the address (`/p/<page>/seminar`); `null` — the page's first notebook. */
+  key: string | null
+  /**
+   * A 0.12 step address, `/p/<page>/<digits>`. Steps are gone; App replaces
+   * the address with the page's own, so a link pasted into a chat last year
+   * still opens the class.
+   */
+  legacy: boolean
 }
 
 /*
@@ -83,14 +89,21 @@ const SESSION_PATH =
  */
 const COURSE_PATH = /^\/c\/([A-Za-z0-9_-]{1,64})\/?$/
 /*
- * A step is a non-negative number only. A minus here once read as "a step
- * from the end", but nobody can count from the end: `readStep`
- * (server/src/publish/store.ts) looks `seq` up literally, and neither the step
- * rail nor the export produce minuses. While the router let them through as a
- * step, `/p/<id>/-1` opened in the reader and printed "it was published again"
- * instead of an honest "there is no such page".
+ * A class page and, optionally, one of its materials: `/p/ml-strong-04/seminar`.
+ *
+ * The tail is a material key, the same alphabet as MATERIAL_KEY_RE in
+ * shared/materials.ts (lowercase Latin, digits, hyphens, at most forty) and
+ * always with a letter, which is what tells it from a 0.12 step number. The
+ * expression is spelled out here rather than imported: routes.ts sits in the
+ * entry chunk, and shared/materials.ts would drag its vocabulary (and its
+ * server words) into the first paint of every room. A test keeps the two
+ * spellings in step.
+ *
+ * An all-digit tail is a step address from 0.12 (`/p/<id>/3184`); a minus or
+ * any other shape is no address at all, as before.
  */
-const PUBLIC_PATH = /^\/p\/([A-Za-z0-9_-]{1,64})(?:\/(\d+))?\/?$/
+const PUBLIC_PATH = /^\/p\/([A-Za-z0-9_-]{1,64})(?:\/([a-z0-9-]{1,40}))?\/?$/
+export const MATERIAL_TAIL_RE = /^(?=[a-z0-9-]*[a-z])[a-z0-9-]{1,40}$/
 /*
  * Competitions: `/k` — the list, `/k/<slug>` — a page, `/k/t/<key>` — sign-in.
  *
@@ -167,11 +180,14 @@ export function readCourseId(path: string): string | null {
   return COURSE_PATH.exec(path)?.[1] ?? null
 }
 
-/** A published seminar, with or without a step. */
+/** A class page, with or without a material, or a 0.12 step address to replace. */
 export function readPublicRoute(path: string): PublicRoute | null {
   const match = PUBLIC_PATH.exec(path)
   if (!match) return null
-  return { id: match[1], step: match[2] === undefined ? null : Number(match[2]) }
+  const tail = match[2]
+  if (tail === undefined) return { id: match[1], key: null, legacy: false }
+  if (/^\d+$/.test(tail)) return { id: match[1], key: null, legacy: true }
+  return MATERIAL_TAIL_RE.test(tail) ? { id: match[1], key: tail, legacy: false } : null
 }
 
 /**

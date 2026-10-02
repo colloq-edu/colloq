@@ -373,7 +373,7 @@ test('the seminar card names the page address, not its id', async () => {
     sessionId: room,
     title: 'Неделя первая',
     by: null,
-    steps: [],
+    materials: [],
     blobs: [],
   })
   assert.equal(setPublicationSlug(pub.id, 'week-one'), 'ok')

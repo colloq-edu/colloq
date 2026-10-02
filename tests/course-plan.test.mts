@@ -18,7 +18,6 @@ import type { Response } from 'express'
 import { createSession } from '../server/src/db.js'
 import { shutdownCollab } from '../server/src/collab/index.js'
 import { courseRoutes } from '../server/src/routes/courses.js'
-import { renderCourse } from '../server/src/publish/render.js'
 import { createTeacher } from '../server/src/admin/store.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { createCourse, getCourse, setCourseItems } from '../server/src/publish/store.js'
@@ -31,11 +30,22 @@ import {
   type CourseItemPlanned,
 } from '../shared/publish.js'
 import {
+  applyDraft,
+  classOptions,
   courseTally,
+  defaultClass,
+  draftOf,
+  nextPlanDay,
+  pageState,
   plannedRow,
   putPlanned,
+  putRow,
+  roomChoices,
+  roomNameFor,
+  seatCreated,
   seatSeminar,
 } from '../web/src/admin/course-plan.js'
+import type { AdminSeminar } from '../shared/admin.js'
 
 after(() => shutdownCollab())
 
@@ -95,11 +105,14 @@ test('a class takes the place of a plan row, and the week numbering does not shi
     name: 'Деревья решений',
   })!
   assert.equal(next.length, 3)
+  // The topic stays the student title, and the week rides along until a day replaces it.
   assert.deepEqual(next[1], {
     kind: 'seminar',
     sessionId: 'room1',
     name: 'Деревья решений',
     publication: null,
+    title: 'Деревья',
+    when: '8–14 сен',
   })
   assert.deepEqual(next[0], items[0])
   assert.deepEqual(next[2], items[2])
@@ -111,20 +124,223 @@ test('a class takes the place of a plan row, and the week numbering does not shi
   )
 })
 
-test('the course tally sees plan rows', () => {
+test('the course tally counts pages and plan rows, and breaks are not classes', () => {
   const items: CourseItem[] = [
     {
       kind: 'seminar',
       sessionId: 'a',
       name: 'A',
-      publication: { id: 'p', slug: null, publishedAt: 1, steps: 2 },
+      publication: { id: 'p', slug: null, publishedAt: 1, materials: 2 },
     },
     { kind: 'seminar', sessionId: 'b', name: 'B', publication: null },
     { kind: 'gone', name: 'C', at: 1 },
+    { kind: 'gone', name: 'G', at: 1, publication: { id: 'q', slug: null } },
     week('D', ''),
     week('E', '1–7 окт'),
+    { ...week('Каникулы', ''), pause: true },
   ]
-  assert.deepEqual(courseTally(items), { published: 1, waiting: 1, planned: 2 })
+  // «2 со страницей · 1 без страницы · 2 по плану»
+  assert.deepEqual(courseTally(items), { pages: 2, rooms: 1, planned: 2 })
+})
+
+/* ------------------------------------------------- class days and titles */
+
+const dated = (name: string, day: string, extra: Partial<CourseItemPlanned> = {}): CourseItemPlanned => ({
+  kind: 'planned',
+  name,
+  when: '',
+  day,
+  ...extra,
+})
+
+test('seating keeps the row\'s id, title, day, about and week', () => {
+  const row: CourseItemPlanned = {
+    kind: 'planned',
+    id: 'r0000004',
+    name: 'Лики и хаки данных',
+    when: '28 сен – 4 окт',
+    day: '2026-10-04',
+    about: 'Как данные подсказывают ответ — и как найти это раньше модели.',
+  }
+  const next = seatSeminar([dated('EDA', '2026-09-20'), row], { at: 1, was: row }, {
+    id: 'room4',
+    name: '04 · Лики и хаки данных',
+  })!
+  assert.deepEqual(next[1], {
+    kind: 'seminar',
+    id: 'r0000004',
+    sessionId: 'room4',
+    name: '04 · Лики и хаки данных',
+    publication: null,
+    title: 'Лики и хаки данных',
+    day: '2026-10-04',
+    about: 'Как данные подсказывают ответ — и как найти это раньше модели.',
+    when: '28 сен – 4 окт',
+  })
+  // A row someone already gave a student title keeps that title, not the topic.
+  const titled = { ...row, title: 'Утечки данных' }
+  const again = seatSeminar([titled], { at: 0, was: titled }, { id: 'room5', name: 'x' })!
+  assert.equal(again[0].title, 'Утечки данных')
+})
+
+test('a new plan row starts a week after the last dated row', () => {
+  assert.equal(nextPlanDay([]), '', 'no days yet: no guess')
+  assert.equal(nextPlanDay([week('Регрессия', '1–7 сен')]), '')
+  const items: CourseItem[] = [
+    dated('Торч', '2026-09-06'),
+    dated('Дообучение', '2026-09-13'),
+    week('Без дня', ''),
+  ]
+  assert.equal(nextPlanDay(items), '2026-09-20', 'the undated row at the end is stepped over')
+  assert.equal(nextPlanDay([dated('Перед Новым годом', '2026-12-27')]), '2027-01-03', 'across the year')
+  // The typed day reaches the row; a day that is not a date does not.
+  assert.equal(plannedRow('EDA', '', { day: '2026-09-20' })?.day, '2026-09-20')
+  assert.equal(plannedRow('EDA', '', { day: '2026-02-30' })?.day, undefined)
+  assert.deepEqual(plannedRow('Каникулы', '', { pause: true, about: '  ' }), {
+    ...week('Каникулы', ''),
+    pause: true,
+  })
+})
+
+test('the row form edits a title, a day and «о чём», and clears with null', () => {
+  const room: CourseItem = {
+    kind: 'seminar',
+    id: 'r1',
+    sessionId: 's1',
+    name: '03 · EDA',
+    publication: null,
+    day: '2026-09-20',
+    about: 'старое',
+  }
+  assert.deepEqual(draftOf(room), { title: '03 · EDA', day: '2026-09-20', about: 'старое', pause: false })
+  const saved = applyDraft(room, { title: 'EDA', day: '', about: '', pause: false })!
+  assert.equal(saved.title, 'EDA')
+  // null, not absent: the server keeps a stored field the request does not mention.
+  assert.equal(saved.day, null)
+  assert.equal(saved.about, null)
+  // The room's own name is not frozen as a title: a later rename must still show.
+  assert.equal(applyDraft(room, { ...draftOf(room) })!.title, null)
+  // A plan row's title is its topic, and an empty topic is not saved.
+  const plan = dated('Деревья', '2026-09-27', { id: 'r2', title: 'Деревья решений' })
+  assert.equal(applyDraft(plan, { ...draftOf(plan), title: '   ' }), null)
+  const renamed = applyDraft(plan, { ...draftOf(plan), title: 'Бустинг', pause: true })!
+  assert.equal(renamed.kind === 'planned' && renamed.name, 'Бустинг')
+  assert.equal(renamed.title, null)
+  assert.equal(renamed.kind === 'planned' && renamed.pause, true)
+  // Unticking «Перерыв» is sent as false: an absent key keeps the stored pause on the server.
+  const unpaused = applyDraft(renamed, { ...draftOf(renamed), pause: false })!
+  assert.equal(unpaused.kind === 'planned' && unpaused.pause, false)
+  assert.ok('pause' in unpaused, 'an unticked break went out without the key')
+  // The edit lands in its own place and keeps its id.
+  const items: CourseItem[] = [room, plan]
+  const next = putRow(items, { at: 1, was: plan }, { ...renamed, id: undefined })!
+  assert.equal(next[1].id, 'r2')
+  assert.equal(putRow([plan, room], { at: 1, was: plan }, renamed), null, 'a moved row is not edited')
+})
+
+test('the page column: a page, before class, forgotten, withdrawn, a plan', () => {
+  const today = '2026-10-02'
+  const page = { id: 'p', slug: 'ml-strong-03', publishedAt: 1, materials: 5 }
+  const room = (day: string | null, publication: typeof page | null = null): CourseItem => ({
+    kind: 'seminar',
+    sessionId: 's',
+    name: 'EDA',
+    publication,
+    day,
+  })
+  assert.equal(pageState(room('2026-09-20', page), { today }), 'page')
+  assert.equal(pageState(room('2026-10-04', page), { today }), 'early')
+  assert.equal(pageState(room('2026-09-20'), { today }), 'missing', 'the day passed without a page')
+  assert.equal(pageState(room('2026-10-02'), { today }), 'room', 'today is not over yet')
+  assert.equal(pageState(room('2026-10-02'), { today, finished: true }), 'missing', 'unless it was finished')
+  assert.equal(pageState(room(null), { today }), 'room')
+  assert.equal(pageState(room('2026-09-20'), { today, withdrawn: true }), 'withdrawn')
+  assert.equal(pageState(week('x', ''), { today }), 'plan')
+  assert.equal(pageState({ ...week('x', ''), pause: true }, { today }), 'pause')
+  assert.equal(pageState({ kind: 'gone', name: 'x', at: 1 }, { today }), 'gone')
+})
+
+test('the room pickers put the room held on the row\'s day first and hide the archive', () => {
+  const at = (day: string) => Date.parse(`${day}T12:00:00`)
+  const room = (id: string, day: string, extra: Partial<AdminSeminar> = {}) =>
+    ({ id, name: id, createdAt: at(day), finishedAt: null, archivedAt: null, ...extra }) as AdminSeminar
+  const rooms = [
+    room('week1', '2026-09-06'),
+    room('week3', '2026-09-19', { finishedAt: at('2026-09-20') }),
+    room('week2', '2026-09-13'),
+    room('old', '2026-09-20', { archivedAt: 1 }),
+    room('seated', '2026-09-20'),
+  ]
+  const choices = roomChoices(rooms, '2026-09-20', new Set(['seated']))
+  assert.deepEqual(choices.map((c) => c.seminar.id), ['week3', 'week2', 'week1'])
+  assert.equal(choices[0].day, '2026-09-20', 'held when it was finished, not when it was made')
+  assert.deepEqual(choices.map((c) => c.fits), [true, false, false])
+  // Nothing within a week of the row: nothing «подходит по дате».
+  assert.ok(roomChoices(rooms, '2026-12-20', new Set()).every((c) => !c.fits))
+  // No day on the row: newest first.
+  assert.deepEqual(roomChoices(rooms, null, new Set()).map((c) => c.seminar.id), ['seated', 'week3', 'week2', 'week1'])
+})
+
+test('the new room form offers unseated rows nearest first and guesses the teacher\'s course', () => {
+  const course = (id: string, name: string, items: CourseItem[]): Course =>
+    ({ id, name, slug: null, blurb: null, createdAt: 0, createdBy: null, items, rev: 1 }) as Course
+  const ml = course('ml', 'МЛ | сильная группа', [
+    { kind: 'seminar', id: 'r1', sessionId: 's1', name: 'EDA', publication: null, day: '2026-09-20' },
+    { ...dated('Лики и хаки данных', '2026-10-04'), id: 'r2' },
+    { ...dated('Каникулы', '2026-10-11'), id: 'r3', pause: true },
+    { ...dated('Пайплайны', '2026-10-18'), id: 'r4' },
+    { ...dated('Забытое', '2026-09-27'), id: 'r5' },
+  ])
+  const py = course('py', 'Питон', [{ ...week('Списки', ''), id: 'p1' }])
+  const options = classOptions([ml, py], '2026-10-02')
+  assert.deepEqual(
+    options.map((o) => `${o.courseId}:${o.n}:${o.title}`),
+    ['ml:2:Лики и хаки данных', 'ml:3:Пайплайны', 'ml:4:Забытое', 'py:1:Списки'],
+    'ahead in order, then the past, then undated; breaks are not offered and not numbered',
+  )
+  assert.equal(roomNameFor(options[0]), '02 · Лики и хаки данных')
+  const rooms = [
+    { createdAt: 1, createdBy: 'Ада', courses: [{ id: 'py', name: 'Питон' }] },
+    { createdAt: 5, createdBy: 'Борис', courses: [{ id: 'py', name: 'Питон' }] },
+    { createdAt: 3, createdBy: 'Ада', courses: [{ id: 'ml', name: 'МЛ' }] },
+  ]
+  assert.equal(defaultClass(options, rooms, 'Ада', '2026-10-02')?.rowId, 'r2', 'my latest seated room is in МЛ')
+  assert.equal(defaultClass(options, rooms, 'Борис', '2026-10-02')?.rowId, 'p1', 'an undated course offers its first row')
+  assert.equal(defaultClass(options, [], 'Ада', '2026-10-02'), null, 'no seated room: «Без курса»')
+  assert.equal(defaultClass(options, rooms, 'Ада', '2026-12-01'), null, 'nothing left ahead in that course')
+})
+
+test('a created room takes its row once more after a race, and never a taken row', async () => {
+  const row = { ...dated('Лики', '2026-10-04'), id: 'r2' }
+  const base = { id: 'ml', name: 'МЛ', slug: null, blurb: null, createdAt: 0, createdBy: null } as const
+  let rev = 1
+  let items: CourseItem[] = [row]
+  let saves = 0
+  const conflict = new Error('409')
+  const io = {
+    load: async () => ({ ...base, items, rev }) as Course,
+    save: async (sent: number, next: CourseItem[]) => {
+      saves++
+      if (saves === 1) {
+        rev++ // someone else wrote meanwhile
+        throw conflict
+      }
+      assert.equal(sent, rev)
+      items = next
+    },
+    isConflict: (cause: unknown) => cause === conflict,
+  }
+  assert.equal(await seatCreated('r2', { id: 'room4', name: '04 · Лики' }, io), 'seated')
+  assert.equal(saves, 2, 'one retry on 409')
+  assert.equal(items[0].kind === 'seminar' && items[0].sessionId, 'room4')
+  // The row is a room now: a second room does not seat over it.
+  assert.equal(await seatCreated('r2', { id: 'room5', name: 'x' }, io), 'taken')
+  // Two races in a row are a refusal said out loud, not a silent loop.
+  items = [row]
+  saves = 0
+  const always = { ...io, save: async () => { saves++; throw conflict } }
+  await assert.rejects(seatCreated('r2', { id: 'room6', name: 'x' }, always))
+  assert.equal(saves, 2)
 })
 
 /* ------------------------------------------------------------------- server */
@@ -179,11 +395,12 @@ test('the plan from the panel: create, edit, reorder, replace with a class, remo
   })
   assert.equal(made.status, 200)
   const one = made.body.course as Course
-  assert.deepEqual(one.items, [
-    week('Регрессия', '1–7 сен'),
-    week('Деревья', '8–14 сен'),
-    week('Бустинг', ''),
-  ])
+  // Every row comes back with an id of the server's.
+  assert.ok(one.items.every((item) => typeof item.id === 'string' && item.id.length > 0))
+  assert.deepEqual(
+    one.items.map(({ id: _id, ...row }) => row),
+    [week('Регрессия', '1–7 сен'), week('Деревья', '8–14 сен'), week('Бустинг', '')],
+  )
 
   // Edit a topic and a week, reorder — in one set, the way the screen sends
   // it.
@@ -215,9 +432,18 @@ test('the plan from the panel: create, edit, reorder, replace with a class, remo
   // The course page: plan rows with the week, the room without its address.
   const view = await api.get(`/api/c/${course.id}`)
   assert.equal(view.status, 200)
-  const items = (view.body.course as { items: CourseItem[] }).items
-  assert.deepEqual(items[0], week('Бустинг', '15–21 сен'))
-  assert.equal(items[2].kind === 'seminar' && items[2].sessionId, '', 'the room address leaked outside')
+  const classes = (view.body.course as { classes: { title: string; when: string | null; state: string }[] })
+    .classes
+  assert.deepEqual(
+    classes.map((c) => [c.title, c.when, c.state]),
+    [
+      ['Бустинг', '15–21 сен', 'plan'],
+      ['Регрессия', '1–7 сен', 'plan'],
+      // Seated rows keep the plan topic as their title, and the week until a day is set.
+      ['Деревья', '8–14 сен', 'room'],
+    ],
+  )
+  assert.ok(!JSON.stringify(view.body).includes('plan-room'), 'the room address leaked outside')
 
   // Remove a plan row.
   const dropped = await api.put(course.id, { rev: three.rev, items: three.items.slice(1) })
@@ -284,33 +510,39 @@ test('a new topic: the form clears at once, not on the answer, and the answer do
    * answer arrived.
    */
   const screen = source('web/src/admin/screens/Courses.svelte')
-  const save = screen.slice(screen.indexOf('async function savePlan'), screen.indexOf('function openSeat'))
+  const save = screen.slice(screen.indexOf('async function savePlan'), screen.indexOf('async function saveRow'))
   const sent = save.indexOf('const writing = writeItems(next)')
-  const cleared = save.indexOf("plan = { target: null, name: '', when: '' }")
+  const cleared = save.indexOf('plan = blankPlan(next)')
   const answered = save.indexOf('await writing')
   assert.ok(sent > 0 && cleared > sent && answered > cleared, 'the form clears only after the answer')
   assert.match(save, /plan === fresh/, 'the answer after "Cancel" opens the form again')
-  assert.match(save, /\.\.\.typed/, 'an unsaved topic does not come back after a failure')
-  const keys = screen.slice(screen.indexOf('function planKeys'), screen.indexOf('const addable = $derived('))
+  assert.match(save, /draft: typed/, 'an unsaved topic does not come back after a failure')
+  // The next empty form starts a week after the row just added.
+  assert.match(screen, /day: nextPlanDay\(items\)/)
+  const keys = screen.slice(screen.indexOf('function formKeys'), screen.indexOf('const inCourse = $derived('))
   assert.match(keys, /isComposing\) return/, 'Enter from an IME saves a half-typed topic')
 })
 
-test('a long week on the course page wraps instead of lying over the topic', () => {
+test('creating a room: the row is the one on screen at the press, and a failed seating still uploads the files', () => {
   /*
-   * The week is typed by hand, up to MAX_PLANNED_WHEN characters. With
-   * `nowrap` on a 390 phone it took the whole row: the topic went one word
-   * per line, the week lay over it. Both in the room reader and in the site
-   * export.
+   * Two ways a room came out wrong. The default row arrives with the slow
+   * room list, and `seatRow` was read after the creation's await, so a press
+   * made on «Без курса» could still seat a scratch room into the default row.
+   * And a seating refused or failed returned before the upload: the room had
+   * none of its datasets, and the message spoke only of the row.
    */
-  const list = source('web/src/components/reader/CourseList.svelte')
-  const planned = list.slice(list.indexOf("item.kind === 'planned'"))
-  const when = /<span class="([^"]*)">\{item\.when\}<\/span>/.exec(planned)
-  assert.ok(when, 'the plan row\'s week was not found')
-  assert.doesNotMatch(when[1], /whitespace-nowrap/)
-  assert.match(when[1], /max-w-/)
-  const html = renderCourse(
-    { id: 'c', slug: null, name: 'Курс', blurb: null, items: [week('Тема', 'н'.repeat(MAX_PLANNED_WHEN))] } as never,
-    'https://colloq.ru',
-  )
-  assert.match(html, /\.row\.off \.s\{white-space:normal;max-width:45%/)
+  const screen = source('web/src/admin/screens/NewSeminar.svelte')
+  const create = screen.slice(screen.indexOf('async function create'), screen.indexOf('const ORACLE'))
+  const taken = create.indexOf('const row = seatRow')
+  assert.ok(taken > 0, 'the row is no longer read once at the press')
+  assert.ok(taken < create.indexOf('await '), 'the row is read after the creation, where a late default can move it')
+  assert.ok(create.indexOf('rowTouched = true') < create.indexOf('await '), 'a late default can still move the select')
+  const seat = create.indexOf('await seatCreated(')
+  const upload = create.indexOf('await uploadMaterials(')
+  assert.ok(seat > 0 && upload > seat)
+  assert.doesNotMatch(create.slice(seat, upload), /\breturn\b/, 'a seating problem skips the upload again')
+  // Both outcomes are said together, and the screen closes only when nothing went wrong.
+  assert.match(create, /problems\.push\(\(\) => tr\('admin\.new\.rowTaken'\)\)/)
+  assert.ok(create.indexOf('if (problems.length > 0)') > upload)
+  assert.ok(create.indexOf('ondone(seminar.id)') > create.indexOf('if (problems.length > 0)'))
 })

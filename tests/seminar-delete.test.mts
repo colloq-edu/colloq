@@ -38,10 +38,12 @@ import {
   createCourse,
   getCourse,
   getPublication,
+  listMaterials,
   publicationOf,
   setCourseItems,
   writePublication,
 } from '../server/src/publish/store.js'
+import { pageFilePath, putPageFile, readPageFile } from '../server/src/publish/page-files.js'
 import { adminInstanceRoutes } from '../server/src/routes/admin-instance.js'
 import { sessionDir, workspaceFs } from '../server/src/workspace.js'
 
@@ -85,7 +87,7 @@ function seminarWithEverything(id: string, name: string): void {
     sessionId: id,
     title: name,
     by: 'Ада',
-    steps: [{ seq: 0, label: 'Тетрадь', at: Date.now(), cells: [] }],
+    materials: [],
     blobs: [],
   })
 }
@@ -132,6 +134,58 @@ test('deletion takes the rows, the files and the history, but leaves the reading
   assert.equal(row?.kind, 'gone')
   assert.equal(row?.kind === 'gone' ? row.name : '', 'Четвёртая неделя')
   assert.equal(row?.kind === 'gone' ? row.publication?.id : null, pub.id)
+})
+
+test('a gone row keeps its id, title, day and «о чём», and the page files outlive the room', async () => {
+  const id = 'delete-row-fields'
+  seminarWithEverything(id, 'Восьмая неделя')
+  const handout = Buffer.from('a,b\n1,2\n')
+  const file = putPageFile(handout, 'text/csv')
+  writePublication({
+    sessionId: id,
+    title: 'Деревья решений',
+    by: 'Ада',
+    materials: [
+      {
+        key: 'handout',
+        kind: 'data',
+        name: 'handout.csv',
+        path: 'handout.csv',
+        hash: file.hash,
+        bytes: file.bytes,
+      },
+    ],
+    blobs: [],
+  })
+  const pub = publicationOf(id)!
+  const course = createCourse('Деревья', null, 'Ада')
+  assert.ok(
+    setCourseItems(course.id, course.rev, [
+      {
+        kind: 'seminar',
+        id: 'rdelete1',
+        sessionId: id,
+        name: 'Восьмая неделя',
+        title: 'Деревья решений',
+        day: '2026-10-25',
+        about: 'Как дерево делит выборку',
+        publication: null,
+      },
+    ]),
+  )
+  assert.equal((await remove(id)).status, 204)
+
+  const [row] = getCourse(course.id)!.items
+  assert.equal(row.kind, 'gone')
+  assert.deepEqual(
+    [row.id, row.title, row.day, row.about],
+    ['rdelete1', 'Деревья решений', '2026-10-25', 'Как дерево делит выборку'],
+  )
+  assert.equal(row.kind === 'gone' && row.publication?.id, pub.id)
+  // The room folder is gone; the copy on the page is not.
+  const [material] = listMaterials(pub.id)
+  assert.ok(fs.existsSync(pageFilePath(material.hash)))
+  assert.deepEqual(readPageFile(material.hash), handout)
 })
 
 test('the snapshot does not come back after the response', async () => {

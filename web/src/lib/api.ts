@@ -15,7 +15,7 @@ import type {
 } from '@shared/protocol'
 import type { ReasoningEffort } from '@shared/admin'
 import type { RoomRules } from '@shared/rules'
-import type { PublicCourseView, PublicSeminar, PublicStep } from '@shared/publish'
+import type { PublicCourseView, PublicNotebook, PublicPage, RoomDoor } from '@shared/publish'
 import type { PersonMark } from './bans'
 
 export class ApiError extends Error {
@@ -226,17 +226,42 @@ export const api = {
   /* -------------------------------------------------------- public read */
 
   /**
-   * A course and a published seminar — without a token and without signing in.
+   * A course and a class page — without a token and without signing in.
    *
    * Separate addresses, not `/api/sessions/...`: a publication has its own id
    * precisely so that a "for reading" link does not open the live room.
    */
   course: (id: string) => request<{ course: PublicCourseView }>(`/api/c/${id}`),
 
-  publication: (id: string) => request<{ seminar: PublicSeminar }>(`/api/p/${id}`),
+  /** The page without its notebooks' cells: header, neighbours, materials. */
+  page: (id: string) => request<{ page: PublicPage }>(`/api/p/${id}`),
 
-  step: (id: string, seq: number | null) =>
-    request<{ step: PublicStep }>(`/api/p/${id}/step/${seq === null ? 'first' : seq}`),
+  /**
+   * One notebook tab's cells, fetched when the tab is first opened: a class
+   * with a lecture and a seminar should not make a phone download both to
+   * read one.
+   */
+  notebook: (id: string, key: string) =>
+    request<{ notebook: PublicNotebook }>(`/api/p/${id}/m/${encodeURIComponent(key)}`),
+
+  /**
+   * The way into a class's room (shared/publish.ts · RoomDoor). A POST, not
+   * a field of the page: the page is public and forwardable and never names
+   * its room, so the address comes only in this answer, and only for a
+   * browser whose keys prove it was there (or for staff, or under «Все»).
+   */
+  roomDoor: (id: string, tokens: string[]) =>
+    request<RoomDoor>(`/api/p/${encodeURIComponent(id)}/room`, {
+      method: 'POST',
+      body: JSON.stringify({ tokens }),
+    }),
+
+  /** The same door for a course row, by the row's key: «Войти в комнату» while the class is on. */
+  courseRoomDoor: (id: string, key: string, tokens: string[]) =>
+    request<RoomDoor>(`/api/c/${encodeURIComponent(id)}/room`, {
+      method: 'POST',
+      body: JSON.stringify({ key, tokens }),
+    }),
 
   // `truncated` — the tree is not shown in full: the walk hit the ceiling. The
   // same flag rides in the `files` socket message, and the room keeps one flag.

@@ -11,9 +11,9 @@
  *    a seminar and "erase the page" belong to the owner, for exactly the
  *    reason that fits a course even better: `/c/slug` is handed out to the
  *    whole cohort.
- *  - a publication with a repeated step address silently lost a step, and
- *    `seq: 0` — the address reserved for the last page — went into the
- *    transaction.
+ *  - a publication with a repeated notebook brought down the transaction,
+ *    and a request with nothing in it, too much in it or a path out of the
+ *    room was not refused in words.
  *  - the teacher PATCH promised optional fields in its comment and required
  *    the name and the email together.
  */
@@ -34,7 +34,6 @@ import { withinRoomBudget } from '../server/src/routes/admin-import.js'
 import { courseRoutes } from '../server/src/routes/courses.js'
 import { createCourse, getCourse, setCourseItems } from '../server/src/publish/store.js'
 import { config } from '../server/src/config.js'
-import type { SkippedStep } from '../shared/publish.js'
 
 let base = ''
 let server: http.Server
@@ -139,40 +138,40 @@ test('no course: a 404, not "deleted"', async () => {
 
 /* -------------------------------------------------------------- publishing */
 
-const publish = (id: string, steps: unknown[]) =>
+const publish = (id: string, body: unknown) =>
   fetch(`${base}/api/admin/seminars/${id}/publish`, {
     method: 'POST',
     headers: { cookie: ownerCookie, 'content-type': 'application/json' },
-    body: JSON.stringify({ steps }),
+    body: JSON.stringify(body),
   })
 
-test('a step with a taken address is named out loud, not lost in silence', async () => {
+test('a notebook named twice goes on the page once, not into a 500', async () => {
   const id = 'publish-dupes'
-  createSession(id, 'Семинар с шагами', null)
-  const res = await publish(id, [
-    { seq: 5, label: 'первый' },
-    { seq: 5, label: 'второй' },
-  ])
-  assert.equal(res.status, 200, 'a repeated address brought down the transaction')
-  const body = (await res.json()) as { skipped: SkippedStep[] }
-  assert.ok(
-    body.skipped.some((s) => s.seq === 5 && s.reason === 'duplicate'),
-    'the second step with the same address vanished without a word',
-  )
+  createSession(id, 'Семинар с тетрадью', null)
+  const twice = { root: 'cells', name: 'Тетрадь' }
+  const res = await publish(id, { notebooks: [twice, twice], files: [], ack: [] })
+  assert.equal(res.status, 200, 'a repeated notebook brought down the transaction')
+  const body = (await res.json()) as { page: { materials: { key: string }[] } }
+  assert.equal(body.page.materials.length, 1)
 })
 
-test('a zero or fractional step address gets a refusal in words', async () => {
-  const id = 'publish-zero'
-  createSession(id, 'Семинар с нулём', null)
-  for (const seq of [0, -3, 1.5]) {
-    const res = await publish(id, [{ seq, label: 'шаг' }])
-    assert.equal(res.status, 400, `seq=${seq} was accepted`)
-    const body = (await res.json()) as { error?: string }
-    assert.match(body.error ?? '', /номер версии для шага: целое число больше нуля/)
-  }
+test('no materials, too many, or a path out of the room get a refusal in words', async () => {
+  const id = 'publish-refused'
+  createSession(id, 'Семинар с отказами', null)
+  const none = await publish(id, { notebooks: [], files: [], ack: [] })
+  assert.equal(none.status, 400)
+  assert.match(((await none.json()) as { error: string }).error, /хотя бы одну тетрадь или файл/)
+  const many = Array.from({ length: 25 }, (_, i) => ({ path: `f${i}.csv`, name: '' }))
+  const lots = await publish(id, { notebooks: [], files: many, ack: [] })
+  assert.equal(lots.status, 400)
+  assert.match(((await lots.json()) as { error: string }).error, /не больше 24 материалов/)
+  const outside = await publish(id, { notebooks: [], files: [{ path: '../secret', name: '' }], ack: [] })
+  assert.equal(outside.status, 400)
+  assert.match(((await outside.json()) as { error: string }).error, /вне папки комнаты/)
+  const day = await publish(id, { notebooks: [], files: [], ack: [], heldOn: '2026-02-30' })
+  assert.equal(day.status, 400)
+  assert.match(((await day.json()) as { error: string }).error, /ГГГГ-ММ-ДД/)
 })
-
-/* ------------------------------------------------------ the course view */
 
 test('the panel and the public page show the same course', async () => {
   /*
@@ -198,12 +197,14 @@ test('the panel and the public page show the same course', async () => {
   assert.equal(fromPanel.course.items[0]?.name, 'Неделя 1', 'the panel showed the name from the entry')
 
   const open = await fetch(`${base}/api/c/${course.id}`)
-  const fromPublic = (await open.json()) as {
-    course: { items: { name: string; sessionId?: string }[] }
+  const text = await open.text()
+  const fromPublic = JSON.parse(text) as {
+    course: { classes: { title: string; state: string }[] }
   }
-  assert.equal(fromPublic.course.items[0]?.name, 'Неделя 1')
+  assert.equal(fromPublic.course.classes[0]?.title, 'Неделя 1')
+  assert.equal(fromPublic.course.classes[0]?.state, 'room')
   // And the room id still does not leak out.
-  assert.equal(fromPublic.course.items[0]?.sessionId, '')
+  assert.ok(!text.includes(id), 'the room address went out with the course')
 })
 
 /* ----------------------------------------------------------- the staff list */

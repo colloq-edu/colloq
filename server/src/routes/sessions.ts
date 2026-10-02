@@ -40,10 +40,11 @@ import { ensureKernel, syncBookKernels, syncDangerGuard } from '../kernel/index.
 import { forgetResources, readCpuInput, readMemoryInput } from '../kernel/resources.js'
 import { applyOwnLimits } from '../kernel/pool.js'
 import { activeName, exists as environmentExists } from '../environments.js'
-import { publicationOf, stepCount } from '../publish/store.js'
+import { materialCount, publicationOf } from '../publish/store.js'
 import { broadcast } from '../control.js'
 import { readRules } from '@shared/rules'
 import { normalizeLabel } from '@shared/text'
+import { publicationAddress } from '@shared/publish'
 import { courseOfSeminar } from './course-view.js'
 import { isArchived, setSeminarCreator } from './admin-instance.js'
 import { ENVIRONMENT_NAME, type AdminErrorBody } from '@shared/admin'
@@ -609,9 +610,9 @@ export function sessionRoutes(): Router {
       viewer: identity?.name ? { name: identity.name.slice(0, MAX_PARTICIPANT_NAME) } : null,
       published:
         pub && pub.state === 'published'
-          ? { id: pub.id, slug: pub.slug, steps: stepCount(pub.id) }
+          ? { address: publicationAddress(pub), materials: materialCount(pub.id) }
           : null,
-      course: course ? { id: course.id, name: course.name } : null,
+      course: course ? { id: course.id, name: course.name, slug: course.slug } : null,
     })
   })
 

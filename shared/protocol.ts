@@ -66,15 +66,13 @@ export interface SessionInfo {
    * participant row, wakes the kernel and ends up alone in a live notebook
    * where nothing says that a published version exists.
    *
-   * `slug` — because the hint must lead to THE address that was given to the
-   * class: pages live at `/p/<slug>`, and `/p/<id>` is the fallback entrance
-   * for those without a name. There is no need to assemble the address by
-   * hand; `publicationAddress` in shared/publish.ts is there for that.
-   * Optional field: a server that does not send it yet leaves the address by
-   * `id` — and that is the truth, not a guess.
+   * `address` is the one the class was given: `/p/<slug>` when the page has
+   * a name, the id otherwise (shared/publish.ts · publicationAddress), so the
+   * screen never assembles it by hand. The course carries its slug for the
+   * same reason: the way up is `/c/<slug ?? id>`.
    */
-  published: { id: string; slug?: string | null; steps: number } | null
-  course: { id: string; name: string } | null
+  published: { address: string; materials: number } | null
+  course: { id: string; name: string; slug: string | null } | null
   /**
    * The person a sign-in proxy vouched for on this request (AUTH_JWT_*,
    * server/src/sso/identity.ts), by the name the proxy gives.
@@ -916,6 +914,13 @@ export type TerminalStatus = 'closed' | 'starting' | 'idle' | 'busy' | 'dead'
  */
 export type GateRule = 'structure' | 'edit' | 'title'
 
+/**
+ * The class page after the bell; see the `page` frame below. 'cancelled'
+ * closes a 'waiting': the class was resumed, the page withdrawn or its
+ * refresh switched off before the cells finished.
+ */
+export type PageAfterClass = 'offer' | 'waiting' | 'updated' | 'held' | 'failed' | 'cancelled'
+
 export type ControlServerMessage =
   | { t: 'instance:language'; language: Locale }
   /**
@@ -995,6 +1000,29 @@ export type ControlServerMessage =
    * them.
    */
   | { t: 'class'; finishedAt: number | null }
+  /**
+   * What happened to the class page after «Завершить занятие», for the
+   * teacher's consoles only (server/src/publish/class-end.ts).
+   *
+   * 'offer': the room sits in a course and has no page yet, so the host is
+   * asked to pick materials. 'waiting': the page refreshes itself, but cells
+   * queued before the bell are still running. 'updated', 'held' and 'failed'
+   * end that wait: `reason` says, in the instance's language, which check
+   * kept the old page or why the build failed.
+   *
+   * `course` comes with 'offer' only: the room's screen knows its course's
+   * name but not its row, and the dialog says «04 · Лики и хаки данных ·
+   * вс, 4 окт» (the row's number among non-break rows, its student title,
+   * its day).
+   */
+  | {
+      t: 'page'
+      state: PageAfterClass
+      address?: string
+      materials?: number
+      reason?: string
+      course?: { name: string; n: number | null; title: string; day: string | null }
+    }
   /**
    * You have been banned — right now, in the middle of the class.
    *

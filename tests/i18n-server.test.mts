@@ -9,7 +9,7 @@ import { CLASS_IS_OVER } from '../shared/rules.js'
 import { bookList, cellSource, getCells, getMeta, createCell, ensureInitialNotebook, COUNCIL_SHARED_KERNEL_NOTE } from '../shared/notebook.js'
 import { whySegmentRefused } from '../shared/paths.js'
 import { seconds, people, groupsWord, cellsWord } from '../server/src/ai/text.js'
-import { renderCourse, renderStep, renderRedirect, renderWithdrawn } from '../server/src/publish/render.js'
+import { readmeOf } from '../server/src/publish/zip.js'
 import { oraclePrompt } from '../server/src/ai/council.js'
 
 let locale: 'ru' | 'en' = 'ru'
@@ -74,27 +74,34 @@ test('new notebooks use the instance language without renaming existing notebook
   doc.destroy(); fresh.destroy(); legacy.destroy()
 })
 
-test('publication HTML translates chrome and dates while preserving user names, code and raw output', () => {
-  const course = { id: 'course', slug: null, name: 'Курс пользователя <b>', blurb: null, items: [{kind: 'seminar' as const, sessionId: 'room', name: 'Семинар пользователя', publication: {id:'pub',slug:null,publishedAt:Date.UTC(2026,8,9),steps:21}}] }
+test('the class archive README translates its own words and dates, never the teacher\'s', () => {
+  // The static course and class pages that used to carry this check are gone;
+  // the archive's README is what the server still writes in the instance
+  // language, next to names and notebooks typed by people.
+  const ctx = {
+    pub: { id: 'pub', slug: 'ml-04', title: 'Семинар пользователя', sessionId: 'roomroom' },
+    materials: [
+      { kind: 'notebook' as const, name: 'Лекция', path: 'lecture.ipynb', hash: 'h1', bytes: 10 },
+      { kind: 'pdf' as const, name: 'Слайды', path: 'slides.pdf', hash: 'h2', bytes: 10 },
+    ],
+    title: 'Лики и хаки данных',
+    n: 4,
+    day: '2026-10-04',
+    course: { id: 'course', slug: 'ml', name: 'Курс пользователя' },
+  }
   use('ru')
-  const ru = renderCourse(course, 'https://school.example')
-  assert.match(ru, /lang="ru"/)
-  assert.match(ru, /21 шаг/)
-  assert.match(ru, /сентябр/)
+  const ru = readmeOf(ctx).toString('utf8')
+  assert.match(ru, /^# 04 · Лики и хаки данных/)
+  assert.match(ru, /Занятие 04 · вс, 4 окт 2026/)
+  assert.match(ru, /Курс: Курс пользователя/)
   use('en')
-  const en = renderCourse(course, 'https://school.example')
-  assert.match(en, /lang="en"/)
-  assert.match(en, /21 steps/)
-  assert.match(en, /September/)
-  assert.match(en, /Курс пользователя &lt;b&gt;/)
-  assert.match(en, /Семинар пользователя/)
-  assert.doesNotMatch(en, /сентябр/)
-  assert.match(renderRedirect('https://school.example/new', 'Название'), /This page has moved/)
-  assert.match(renderWithdrawn('Название', null, ''), /teacher withdrew/)
-  const rendered = renderStep({title:'Название',publishedAt:Date.UTC(2026,8,9),course:null,steps:[{seq:1,label:'Мой шаг',at:0,cellCount:1}],step:{seq:1,label:'Мой шаг',at:0,cells:[{id:'c1',type:'code',source:'print("русский текст <tag>")',outputs:[{kind:'stream',name:'stdout',text:'Не переводить этот вывод'}],execCount:1,ranMs:1200}]},depth:1,base:''})
-  assert.match(rendered, /Download notebook/)
-  assert.match(rendered, /русский текст &lt;tag&gt;/)
-  assert.match(rendered, /Не переводить этот вывод/)
+  const en = readmeOf(ctx).toString('utf8')
+  assert.match(en, /Class 04 · Sun, Oct 4, 2026/)
+  assert.match(en, /Course: Курс пользователя/)
+  assert.match(en, /`lecture\.ipynb` — Лекция, a notebook with its outputs/)
+  assert.match(en, /`slides\.pdf` — Слайды/)
+  assert.doesNotMatch(en, /окт|Занятие|Курс:/)
+  assert.ok(!en.includes('roomroom'), 'the room id rode out in the README')
 })
 
 test('Council picks the default answer language at request time', () => {

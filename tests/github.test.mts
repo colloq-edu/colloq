@@ -163,19 +163,37 @@ test('a file over the upload limit is left where it is', () => {
   assert.deepEqual(filesToTake([entry('huge.csv', 5e8), entry('small.csv', 10)], 1e6).map((f) => f.name), ['small.csv'])
 })
 
-test('prose and the license stay behind, but a module next to the notebook comes along', () => {
+test('the license stays behind, but a module next to the notebook comes along', () => {
   /*
    * `utils.py` is not "code in general" but part of the notebook: the first
    * cell of a course notebook is usually `from utils import show`, and without
    * the file it does not run. And the refusal is silent — the file is simply
    * missing from the import preview, and in class the whole room gets
-   * ModuleNotFoundError at once. README and LICENSE still stay in the
-   * repository: they are not about running.
+   * ModuleNotFoundError at once. LICENSE still stays in the repository: it is
+   * neither about running nor about the class.
    */
   assert.deepEqual(
-    filesToTake([entry('README.md'), entry('LICENSE'), entry('utils.py')], 1e6).map((f) => f.name),
+    filesToTake([entry('LICENSE'), entry('utils.py')], 1e6).map((f) => f.name),
     ['utils.py'],
   )
+})
+
+test('the slides and the README come along: the class page takes its files from the room', () => {
+  /*
+   * A course repository keeps the lecture's PDF and a README next to the
+   * notebook. Both are what a teacher publishes on the class page, and the
+   * page picks files from the room's folder, so an import that dropped them
+   * left the page without its slides.
+   */
+  assert.deepEqual(
+    filesToTake(
+      [entry('lecture.PDF'), entry('README.md'), entry('LICENSE'), entry('notes.markdown')],
+      1e6,
+    ).map((f) => f.name),
+    ['lecture.PDF', 'README.md'],
+  )
+  // The upload limit still holds for them: a 300 MB scan stays in the repository.
+  assert.deepEqual(filesToTake([entry('scan.pdf', 5e8)], 1e6), [])
 })
 
 test('the folder is about its only notebook, or the first by name', () => {

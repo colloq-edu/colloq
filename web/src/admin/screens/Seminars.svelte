@@ -207,6 +207,12 @@
 
   /** At most one row is ever explaining itself; a second failure replaces the first. */
   let rowError = $state<{ id: string; message: () => string } | null>(null)
+  /**
+   * What happens to the class page after «Завершить занятие» pressed here:
+   * the room's own dialog is not on this screen, so the row says it — and
+   * offers the page screen when there is no page yet.
+   */
+  let rowNote = $state<{ id: string; message: () => string; publish: boolean } | null>(null)
   let openMenuId = $state<string | null>(null)
   /**
    * Where to put the open menu, in window coordinates.
@@ -823,8 +829,18 @@
     // under a repainted mark would show two opposite truths side by side.
     if (rowError?.id === seminar.id) rowError = null
     patch(seminar.id, { finishedAt: finished ? Date.now() : null })
+    if (rowNote?.id === seminar.id) rowNote = null
     try {
-      replace(await adminApi.updateSeminar(seminar.id, { finished }))
+      const updated = await adminApi.updateSeminar(seminar.id, { finished })
+      replace(updated)
+      const after = finished ? updated.afterClass : undefined
+      if (after === 'offer') {
+        rowNote = { id: seminar.id, message: () => tr('admin.seminar.finishedOffer'), publish: true }
+      } else if (after === 'waiting') {
+        rowNote = { id: seminar.id, message: () => tr('admin.seminar.finishedWaiting'), publish: false }
+      } else if (after === 'refreshing') {
+        rowNote = { id: seminar.id, message: () => tr('admin.seminar.finishedRefreshing'), publish: false }
+      }
     } catch (cause: unknown) {
       noteDeadCookie(cause)
       patch(seminar.id, { finishedAt: before })
@@ -1443,7 +1459,7 @@
                   target="_blank"
                   rel="noreferrer"
                 >
-                  {tr("admin.published.978")} {count(seminar.publication.steps, 'step')}
+                  · {tr('admin.course.page.page', { count: seminar.publication.materials })}
                 </a>
               {:else if seminar.publication}
                 <span class="whitespace-nowrap text-2xs text-muted">{tr("admin.page.taken.down")}</span>
@@ -1452,6 +1468,21 @@
 
             {#if rowError?.id === seminar.id}
               <p class="mt-1 text-2xs text-danger">{rowError.message()}</p>
+            {/if}
+            {#if rowNote?.id === seminar.id}
+              {@const note = rowNote}
+              <p class="mt-1 flex flex-wrap items-baseline gap-x-2 text-2xs text-muted" role="status">
+                <span>{note.message()}</span>
+                {#if note.publish}
+                  <button
+                    type="button"
+                    class="font-semibold text-accent-text hover:underline"
+                    onclick={() => onpublish?.(seminar.id)}
+                  >
+                    {tr('admin.seminar.choosePage')}
+                  </button>
+                {/if}
+              </p>
             {/if}
           </td>
 
@@ -1645,7 +1676,7 @@
                     class="{ITEM} text-ink hover:bg-raised"
                     onclick={() => onpublish?.(seminar.id)}
                   >
-                    {seminar.publication ? tr("admin.publish.again") : tr("admin.publish")}
+                    {tr('admin.course.menu.page')}
                   </button>
                   {#if seminar.publication?.state === 'published'}
                     <button
@@ -1901,7 +1932,7 @@
           />
           <span class="text-ui leading-relaxed text-muted">
             {tr("admin.delete.the.public.page.as.well")}
-            <span class="font-mono text-code text-ink">/p/{addressOf(doomed.publication)}</span>{tr("admin.a.second.copy.of.the.notebook.in")} {count(doomed.publication.steps, 'step')}{tr("admin.outputs.included")}
+            <span class="font-mono text-code text-ink">/p/{addressOf(doomed.publication)}</span>{tr('admin.seminar.pageCopy', { count: doomed.publication.materials })}
             {#if dropReading}
               {tr("admin.the.link.the.class.was.given.stops.opening")}
             {:else}

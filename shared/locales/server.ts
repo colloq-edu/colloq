@@ -917,6 +917,174 @@ export const serverMessages: MessageCatalog = {
     "ru": "Укажите номер версии для шага: целое число больше нуля.",
     "en": "Choose a version for the step: a whole number greater than zero."
   },
+  "server.page.notebook": {
+    "ru": "Тетрадь",
+    "en": "Notebook"
+  },
+  "server.material.lecture": {
+    "ru": "Лекция",
+    "en": "Lecture"
+  },
+  "server.material.seminar": {
+    "ru": "Семинар",
+    "en": "Seminar"
+  },
+  "server.material.homework": {
+    "ru": "Домашнее задание",
+    "en": "Homework"
+  },
+  "server.material.lectureSlides": {
+    "ru": "Слайды лекции",
+    "en": "Lecture slides"
+  },
+  "server.material.seminarSlides": {
+    "ru": "Слайды семинара",
+    "en": "Seminar slides"
+  },
+  "server.material.slides": {
+    "ru": "Слайды",
+    "en": "Slides"
+  },
+  "server.publish.unknownNotebook": {
+    "ru": "В комнате нет такой тетради: {root}",
+    "en": "The room has no such notebook: {root}"
+  },
+  "server.publish.badPath": {
+    "ru": "Путь вне папки комнаты: {path}",
+    "en": "The path is outside the room folder: {path}"
+  },
+  "server.publish.tooMany": {
+    "ru": "На странице может быть не больше {n} материалов",
+    "en": "A page can hold at most {n} materials"
+  },
+  "server.publish.nothing": {
+    "ru": "Отметьте хотя бы одну тетрадь или файл",
+    "en": "Pick at least one notebook or file"
+  },
+  "server.course.badDay": {
+    "ru": "День занятия — в формате ГГГГ-ММ-ДД",
+    "en": "The class day goes in the form YYYY-MM-DD"
+  },
+  "server.publish.checkInCell": {
+    "ru": "«{name}», ячейка {n}",
+    "en": "“{name}”, cell {n}"
+  },
+  "server.publish.checkInFile": {
+    "ru": "файл {path}",
+    "en": "file {path}"
+  },
+  "server.publish.withdrawnRefresh": {
+    "ru": "Страница снята — сначала верните её или опубликуйте заново",
+    "en": "The page is withdrawn — restore it or publish it again first"
+  },
+  "server.publish.changedMeanwhile": {
+    "ru": "Страница изменилась, пока собиралась, — попробуйте ещё раз",
+    "en": "The page changed while it was being built — try again"
+  },
+  "server.publish.lastMaterial": {
+    "ru": "На странице должен остаться хотя бы один материал",
+    "en": "A page needs one material"
+  },
+  "server.roomDoor.badAccess": {
+    "ru": "Вход в комнату — участники, все или никто",
+    "en": "Room access is participants, everyone or no one"
+  },
+  "server.roomDoor.publishFirst": {
+    "ru": "У страницы ещё нет сохранённого выбора — вход в комнату сохранится при её обновлении с этого экрана",
+    "en": "The page has no saved pick yet — the room access is saved when you update it from this screen"
+  },
+  "server.roomDoor.badTokens": {
+    "ru": "Слишком много ключей, или ключ слишком длинный",
+    "en": "Too many keys, or a key that is too long"
+  },
+  "server.roomDoor.tooOften": {
+    "ru": "Слишком много запросов с вашего адреса — попробуйте через минуту",
+    "en": "Too many requests from your address — try again in a minute"
+  },
+  "server.page.heldSecret": {
+    "ru": "похоже на ключ API — {where}",
+    "en": "looks like an API key — {where}"
+  },
+  "server.page.heldName": {
+    "ru": "похоже на имя ученика — {where}",
+    "en": "looks like a student's name — {where}"
+  },
+  "server.page.heldRoomId": {
+    "ru": "адрес комнаты в файле {where}",
+    "en": "the room address is in the file {where}"
+  },
+  "server.page.buildFailed": {
+    "ru": "страница не собралась",
+    "en": "the page could not be built"
+  },
+  "server.zip.busy": {
+    "ru": "Слишком много загрузок — попробуйте через минуту",
+    "en": "Too many downloads — try again in a minute"
+  },
+  "server.zip.classDay": {
+    "ru": "Занятие {n} · {day}",
+    "en": "Class {n} · {day}"
+  },
+  "server.zip.course": {
+    "ru": "Курс: {name} — {url}",
+    "en": "Course: {name} — {url}"
+  },
+  "server.zip.page": {
+    "ru": "Страница занятия: {url}",
+    "en": "Class page: {url}"
+  },
+  "server.zip.files": {
+    "ru": "Файлы",
+    "en": "Files"
+  },
+  "server.zip.notebook": {
+    "ru": "{name}, тетрадь с результатами запусков",
+    "en": "{name}, a notebook with its outputs"
+  },
+  "server.zip.footer": {
+    "ru": "Тетради — в том виде, в каком были при публикации, вместе с результатами запусков. Файлы лежат по тем же путям, что и в папке комнаты, так что код из тетрадей находит их без правок.",
+    "en": "The notebooks are as they were when the page was published, with their outputs. Files sit at the same paths as in the room's folder, so the notebooks' code finds them unchanged."
+  },
+  "server.material.tag.lecture": {
+    "ru": "лекция",
+    "en": "lecture"
+  },
+  "server.material.tag.seminar": {
+    "ru": "семинар",
+    "en": "seminar"
+  },
+  "server.material.tag.notebook": {
+    "ru": "тетрадь",
+    "en": "notebook"
+  },
+  "server.material.tag.homework": {
+    "ru": "домашнее задание",
+    "en": "homework"
+  },
+  "server.material.tag.slides": {
+    "ru": "слайды",
+    "en": "slides"
+  },
+  "server.material.tag.pdf": {
+    "ru": "PDF",
+    "en": "PDF"
+  },
+  "server.material.tag.data": {
+    "ru": "данные",
+    "en": "data"
+  },
+  "server.material.tag.code": {
+    "ru": "код",
+    "en": "code"
+  },
+  "server.material.tag.files": {
+    "ru": "файлы",
+    "en": "files"
+  },
+  "server.linkPreview.courseNext": {
+    "ru": "{count} · следующее: {day} — {title}",
+    "en": "{count} · next: {day} — {title}"
+  },
   "server.notebookAtPublication.33f04f": {
     "ru": "Тетрадь на момент публикации",
     "en": "Notebook at publication"
@@ -2481,18 +2649,6 @@ export const serverMessages: MessageCatalog = {
       "other": "{count} cells"
     }
   },
-  "server.steps": {
-    "ru": {
-      "one": "{count} шаг",
-      "few": "{count} шага",
-      "many": "{count} шагов",
-      "other": "{count} шага"
-    },
-    "en": {
-      "one": "{count} step",
-      "other": "{count} steps"
-    }
-  },
   "server.terminal.flood": {
     "ru": "[colloq] Превышена скорость обновления вывода. В общей расшифровке остаются только последние строки. Для полного вывода перенаправьте его в файл.",
     "en": "[colloq] Output is arriving too quickly. The shared transcript keeps only the latest lines. Redirect output to a file to keep it all."
@@ -2764,98 +2920,6 @@ export const serverMessages: MessageCatalog = {
   "server.formatter.missing": {
     "ru": "В этом окружении не установлен black",
     "en": "black is not installed in this environment"
-  },
-  "server.image.49cd3c": {
-    "ru": "картинка",
-    "en": "image"
-  },
-  "server.onePage.d5f549": {
-    "ru": "одна страница",
-    "en": "one page"
-  },
-  "server.codeWithoutOutputs.e86524": {
-    "ru": "Код без выводов",
-    "en": "Code without outputs"
-  },
-  "server.codeFromTheLastStepWithoutOutputs.84324c": {
-    "ru": "Код последнего шага, без выводов",
-    "en": "Code from the last step, without outputs"
-  },
-  "server.codeFromThisStepWithoutOutputs.e310ab": {
-    "ru": "Код этого шага, без выводов",
-    "en": "Code from this step, without outputs"
-  },
-  "server.published.e49f01": {
-    "ru": "опубликован {p0}",
-    "en": "published {p0}"
-  },
-  "server.ssr.cellOutput": {
-    "ru": "вывод ячейки",
-    "en": "cell output"
-  },
-  "server.ssr.unsupportedOutput": {
-    "ru": "вывод в формате {format} на странице не показывается",
-    "en": "output in {format} format cannot be displayed on this page"
-  },
-  "server.ssr.plotlyFigure": {
-    "ru": "интерактивный график plotly — он показывается на странице занятия",
-    "en": "an interactive plotly figure — it is shown on the class page"
-  },
-  "server.ssr.notRun": {
-    "ru": "не запускалась",
-    "en": "not run"
-  },
-  "server.ssr.seminarDeleted": {
-    "ru": "занятие удалено",
-    "en": "class deleted"
-  },
-  "server.ssr.deletedReadable": {
-    "ru": "занятие удалено, материалы доступны",
-    "en": "class deleted; materials remain available"
-  },
-  "server.ssr.unpublished": {
-    "ru": "ещё не опубликовано",
-    "en": "not published yet"
-  },
-  "server.ssr.courseAbout": {
-    "ru": "Здесь собраны занятия курса. Материалы доступны после публикации преподавателем.",
-    "en": "This page collects the course classes. Materials become available when the teacher publishes them."
-  },
-  "server.ssr.moved": {
-    "ru": "Страница переехала:",
-    "en": "This page has moved:"
-  },
-  "server.ssr.withdrawn": {
-    "ru": "Преподаватель снял эту страницу. Адрес остался прежним: если её вернут, ссылка снова заработает.",
-    "en": "The teacher withdrew this page. Its address is unchanged: if it is republished, this link will work again."
-  },
-  "server.ssr.otherClasses": {
-    "ru": "Остальные занятия курса:",
-    "en": "Other classes in this course:"
-  },
-  "server.ssr.stepsHeading": {
-    "ru": "Шаги занятия",
-    "en": "Class steps"
-  },
-  "server.ssr.publishedNotebook": {
-    "ru": "Опубликованные материалы тетради занятия.",
-    "en": "Published materials from the class notebook."
-  },
-  "server.ssr.stepOutputs": {
-    "ru": "Шаги выбрал преподаватель. Выводы сохранены на момент каждого шага и могут относиться к предыдущей версии кода.",
-    "en": "The teacher selected these steps. Outputs are preserved as they were at each step and may belong to an earlier version of the code."
-  },
-  "server.ssr.privacy": {
-    "ru": "Список участников не опубликован. Имена, указанные в ячейках и выводах, могут быть видны.",
-    "en": "The participant list is not published. Names included in cells and outputs may still be visible."
-  },
-  "server.ssr.download": {
-    "ru": "Скачать тетрадь (.ipynb)",
-    "en": "Download notebook (.ipynb)"
-  },
-  "server.ssr.runLocally": {
-    "ru": "{about} — чтобы запустить у себя.",
-    "en": "{about}, ready to run locally."
   },
   "server.ownerAction.instanceLanguage": {
     "ru": "менять язык сервера",

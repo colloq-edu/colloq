@@ -173,11 +173,12 @@ def render(p, pages, have):
 
 
 def sitemap(site_dir, by_lang):
-    """site/sitemap.xml: the landing, every guide in both languages, published courses.
+    """site/sitemap.xml: the landing and every guide in both languages.
 
     Without a sitemap a crawler reaches /docs/en/ only by following the language
-    switch, and the published courses under /c/ only if someone links to them.
-    hreflang pairs are repeated here because a sitemap is where Google reads them
+    switch. site/c/ is left out: it holds noindex redirect stubs to the instances
+    that serve those courses now, and a sitemap must not list what asks not to
+    be indexed. hreflang pairs are repeated here because a sitemap is where Google reads them
     for pages it has not rendered yet. No <lastmod>: the build must stay
     byte-for-byte reproducible, and an invented date is worse than none.
     """
@@ -185,15 +186,11 @@ def sitemap(site_dir, by_lang):
         links = ''.join(f'<xhtml:link rel="alternate" hreflang="{lang}" href="{href}"/>' for lang, href in alternates)
         return f'<url><loc>{loc}</loc>{links}</url>'
     home = [('ru', SITE.replace('docs/', '')), ('en', SITE.replace('docs/', '') + 'en/')]
-    root = home[0][1]
     rows = [entry(href, home + [('x-default', home[1][1])]) for _, href in home]
     translated = {p['slug'] for p in by_lang['en']}
     for p in by_lang['ru']:
         pair = [('ru', public('ru', p['slug']))] + ([('en', public('en', p['slug']))] if p['slug'] in translated else [])
         rows += [entry(href, pair if len(pair) > 1 else ()) for _, href in pair]
-    courses = site_dir / 'c'
-    if courses.is_dir():
-        rows += [entry(f'{root}c/{d.name}/') for d in sorted(courses.iterdir()) if (d / 'index.html').is_file()]
     body = '\n'.join(rows)
     (site_dir / 'sitemap.xml').write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'

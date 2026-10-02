@@ -255,6 +255,7 @@ import { appendActivity } from './activity.js'
 import { recordQuestion } from './admin/usage.js'
 import { holdOracleHint, oracleCapacity, oracleDoor } from './ai/door.js'
 import { askCouncilHint, runFailed } from './ai/hint.js'
+import { afterClassFinished, setPageTeller } from './publish/class-end.js'
 
 /** Same reason as the collab socket: stay under the usual 30s idle timeout. */
 const PING_INTERVAL_MS = 25_000
@@ -1306,6 +1307,9 @@ function toTeachers(sessionId: string, message: ControlServerMessage): void {
     sendFrame(ws, frame)
   }
 }
+
+// The class page after the bell (publish/class-end.ts) speaks to the same consoles.
+setPageTeller(toTeachers)
 
 /**
  * Whether the room has at least one teacher console — otherwise there is no
@@ -3630,6 +3634,8 @@ export function dispatch(
        * has started is carried through; starting is no longer allowed.
        */
       if (finish) stopAll(sessionId)
+      // Then the page: date the course row, offer a page, or refresh it once the queue drains.
+      if (finish) afterClassFinished(sessionId)
       return
     }
 

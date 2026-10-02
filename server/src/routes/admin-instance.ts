@@ -24,6 +24,7 @@ import { dropSessionDoc, getSessionDoc, liveSince, onlineCount } from '../collab
 import { visitSessionDoc } from './doc-visit.js'
 import { config } from '../config.js'
 import { broadcast, closeControlRoom, setClassFinished } from '../control.js'
+import { afterClassFinished } from '../publish/class-end.js'
 import { COUNCIL_ROOM, LECTURE_ROOM, OPEN_ROOM, readRules } from '@shared/rules'
 import { normalizeLabel } from '@shared/text'
 import {
@@ -50,8 +51,8 @@ import {
   entombSeminar,
   listCourses,
   orphanPublication,
+  materialCount,
   publicationOf,
-  stepCount,
 } from '../publish/store.js'
 import { environmentOf, shutdownSession, syncBookKernels, syncDangerGuard } from '../kernel/index.js'
 import { applyOwnLimits } from '../kernel/pool.js'
@@ -297,7 +298,7 @@ function toSeminar(row: SeminarRow, courses = listCourses()): AdminSeminar {
           id: publication.id,
           slug: publication.slug,
           state: publication.state,
-          steps: stepCount(publication.id),
+          materials: materialCount(publication.id),
         }
       : null,
     courses: coursesWith(row.id, courses),
@@ -560,6 +561,7 @@ export function adminInstanceRoutes(): Router {
       setArchived.run(body.archived ? Date.now() : null, row.id)
     }
 
+    let finishing = false
     if (body?.finished !== undefined) {
       if (typeof body.finished !== 'boolean') return invalid(res, tr("server.finishedMustBeTrueOrFalse.f9f3c0"))
       /*
@@ -574,6 +576,7 @@ export function adminInstanceRoutes(): Router {
        */
       const was = finishedAt(row.id)
       const at = body.finished ? (was ?? Date.now()) : null
+      if (at !== null && was === null) finishing = true
       if (at !== was) {
         setClassFinished(row.id, at)
         // The room learns now, not on reload: otherwise a student still has
@@ -587,6 +590,9 @@ export function adminInstanceRoutes(): Router {
         if (at !== null) stopAll(row.id)
       }
     }
+    // The same page step as the button in the room (publish/class-end.ts), and the
+    // panel hears what it did, for its toast.
+    const afterClass = finishing ? afterClassFinished(row.id) : null
 
     if (body?.rules !== undefined) {
       /*
@@ -660,7 +666,8 @@ export function adminInstanceRoutes(): Router {
       })
     }
 
-    res.json(toSeminar(selectSeminar.get(row.id) as SeminarRow))
+    const seminar = toSeminar(selectSeminar.get(row.id) as SeminarRow)
+    res.json(afterClass ? { ...seminar, afterClass } : seminar)
   })
 
   /**

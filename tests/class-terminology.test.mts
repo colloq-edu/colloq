@@ -6,6 +6,16 @@ import { messages, translate } from '../shared/i18n.js'
 test('generic teaching entities use classes in both catalogs, preserving the example seminar title', () => {
   for (const [key, pair] of Object.entries(messages)) {
     if (key === 'admin.computer.vision.seminar.25.08') continue
+    // The name a seminar NOTEBOOK gets on a class page («Лекция | Семинар» tabs):
+    // the half of a class it is, not the generic word for a class.
+    // Its tag on a course row and a link card («лекция · семинар · данные») too.
+    if (
+      key === 'server.material.seminar' ||
+      key === 'server.material.seminarSlides' ||
+      key === 'server.material.tag.seminar' ||
+      key === 'room.course.tag.seminar'
+    )
+      continue
     for (const [locale, value] of Object.entries(pair)) {
       const text = typeof value === 'string' ? value : Object.values(value).join(' ')
       assert.doesNotMatch(text, /семинар|\bseminars?\b/i, `${key} (${locale})`)
@@ -16,7 +26,7 @@ test('generic teaching entities use classes in both catalogs, preserving the exa
   assert.equal(translate('ru', 'admin.new.seminar'), 'Новое занятие')
   assert.equal(translate('ru', 'room.ui.145'), 'Это занятие удалено')
   assert.equal(translate('ru', 'session not found'), 'Занятие не найдено')
-  assert.equal(translate('ru', 'server.ssr.unpublished'), 'ещё не опубликовано')
+  assert.equal(translate('ru', 'server.thisSeminarWasDeleted.daaaad'), 'Это занятие удалено')
   assert.equal(translate('ru', 'admin.count.seminar', { count: 1 }), '1 занятие')
   assert.equal(translate('ru', 'admin.count.seminar', { count: 2 }), '2 занятия')
   assert.equal(translate('ru', 'admin.count.seminar', { count: 5 }), '5 занятий')
@@ -26,6 +36,7 @@ test('generic teaching entities use classes in both catalogs, preserving the exa
     translate('ru', 'admin.computer.vision.seminar.25.08'),
     'Семинар по компьютерному зрению — 25.08',
   )
+  assert.equal(translate('ru', 'server.material.seminar'), 'Семинар')
 })
 
 test('language menu states the shared scope and names the current language', () => {

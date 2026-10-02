@@ -87,10 +87,12 @@ direction.
 ## The visible domain
 
 A couple of places print the domain as text rather than linking it: the footer
-of the landing page (`<span class="host">colloq.ru</span>`) and the address on
-a published course page (`<p class="addr">colloq.ru/c/ml-strong</p>`, produced
-by `server/src/publish/render.ts`). People read those and retype them into the
-address bar, so on the mirror they have to say `colloq.cc`.
+of the landing page (`<span class="host">colloq.ru</span>`) and, while course
+pages were exported here, the address on them (`<p class="addr">`). People read
+those and retype them into the address bar, so on the mirror they have to say
+`colloq.cc`. The export is retired: `site/c/*` are now redirect stubs to the
+instance that serves the course, and they carry no `.addr` on purpose, since
+the address they print is not on this domain.
 
 `HTMLRewriter` handles it, on `text/html` responses only, for a closed
 allowlist of two selectors:
@@ -274,7 +276,6 @@ curl -sI https://colloq.cc/fonts/hse-sans-400.woff2 | grep -i 'HTTP\|cache-contr
 curl -s -o /dev/null -w '%{http_code}\n' -X POST https://colloq.cc/    # -> 405
 curl -s https://colloq.cc/ | grep canonical                # -> still colloq.ru
 curl -s https://colloq.cc/ | grep 'class="host"'           # -> colloq.cc
-curl -s https://colloq.cc/c/ml-strong/ | grep 'class="addr"'  # -> colloq.cc/c/...
 ```
 
 The previews, as a bot sees them — English on the mirror, Russian on the

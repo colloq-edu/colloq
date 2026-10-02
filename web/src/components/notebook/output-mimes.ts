@@ -174,9 +174,8 @@ export function isPicture(output: CellOutput, rich: boolean): boolean {
  * An empty space is the one answer that must not appear here; what exactly to
  * say instead is decided by CellOutputs.
  *
- * Computed by the same rule as on the published page
- * (`server/src/publish/render.ts · hasVisible`), plus tags that are visible
- * even without text inside.
+ * Computed by the rule the retired static page renderer used (`hasVisible`),
+ * plus tags that are visible even without text inside.
  */
 const VISIBLE_TAGS = /<(?:img|svg|canvas|video|audio|iframe|table|hr|input|object|embed)\b/i
 

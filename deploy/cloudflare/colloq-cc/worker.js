@@ -110,10 +110,10 @@ function toMirror(location) {
 //
 // There are places in the markup where the domain is PRINTED as text rather
 // than being a link: the caption in the landing page footer
-// (`<span class="host">colloq.ru</span>`) and the course address on its page
-// (`<p class="addr">colloq.ru/c/ml-strong</p>`, built by
-// server/src/publish/render.ts). People read them with their eyes and retype
-// them into the address bar, so on the mirror they must name the mirror.
+// (`<span class="host">colloq.ru</span>`) and the course address the retired
+// static course pages printed (`<p class="addr">`). People read them with their
+// eyes and retype them into the address bar, so on the mirror they must name
+// the mirror.
 //
 // The list of classes is closed and short, and that matters more than it
 // seems. The temptation to add <code> here breaks the documentation:

@@ -3848,7 +3848,7 @@
               the trouble lived so long: people looked in the dark theme.
 
               The direction was chosen not by taste but by what is already
-              printed: the published page (server/src/publish/render.ts) and the
+              printed: the published page (then a static export too) and the
               reader draw exactly this: code on a backing, output on the card
               background, a `line` rule between them. The room was the only
               place where the notebook looked different. Besides, the account

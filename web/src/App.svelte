@@ -168,6 +168,10 @@
     tr('room.ui.1219')
 
   function navigate(next: string): void {
+    // A tab of the same class page is the same page: it keeps its place.
+    const from = readPublicRoute(path)
+    const to = readPublicRoute(next)
+    const samePage = from !== null && to !== null && from.id === to.id
     if (next !== location.pathname) history.pushState({}, '', next)
     /*
      * Public pages are the only ones in the whole product where the document
@@ -182,9 +186,44 @@
      * own listener), and this is on purpose: the position on the page one
      * left is the browser's business, and the browser restores it.
      */
-    if (next.startsWith('/c/') || next.startsWith('/p/')) window.scrollTo({ top: 0 })
+    const opensPage = next.startsWith('/c/') || next.startsWith('/p/')
+    if (opensPage && !samePage) window.scrollTo({ top: 0 })
     path = next
   }
+
+  /**
+   * The handle a class page was opened under, by every spelling it has been
+   * respelled to since. The `{#key}` below holds the page by this, so making
+   * the address canonical (an id or a former name becomes the page's own) does
+   * not count as a different page: no splash, no second fetch, no jump to the
+   * top on the first tab switch.
+   */
+  let openedAs = $state<Record<string, string>>({})
+
+  /**
+   * The same page under another spelling, without a history entry: a legacy
+   * step link, a key that is not a tab, the canonical address once the page
+   * has said what it is. Never a different page, which is what lets the
+   * spelling move without rebuilding the reader. The cell in the hash stays.
+   */
+  function replace(next: string): void {
+    const from = readPublicRoute(path)
+    const to = readPublicRoute(next)
+    if (from && to && from.id !== to.id) {
+      openedAs = { ...openedAs, [to.id]: openedAs[from.id] ?? from.id }
+    }
+    if (next !== location.pathname) history.replaceState(history.state, '', next + location.hash)
+    path = next
+  }
+
+  /*
+   * A 0.12 step address (`/p/<id>/<digits>`) becomes the page's own. Steps
+   * are gone, and the link from a chat still opens the class; the `{#key}`
+   * below holds the page id only, so the reader is not rebuilt by this.
+   */
+  $effect(() => {
+    if (publicSeminar?.legacy) replace(`/p/${publicSeminar.id}`)
+  })
 
   /** What this browser already knows about a room, with no request at all. */
   function knownRoom(id: string, cached: SessionInfo | null): SessionInfo {
@@ -501,9 +540,9 @@
     nobody put out the loaded course, and a student who clicked a class saw
     the same list.
 
-    The key without the step: `/p/:id/3` → `/p/:id/4` is paging within one
-    publication, and rebuilding it for that would mean loading the seminar
-    again on every step.
+    The key without the material: `/p/:id/lecture` → `/p/:id/seminar` is a
+    tab within one class page, and rebuilding it for that would mean loading
+    the page again on every tab.
 
     AND WITH A KIND PREFIX. A slug is unique within its kind, not globally:
     course and publication addresses are checked against different tables (the
@@ -513,7 +552,7 @@
     seminar in the list changed the address, leaving the same list on the
     screen.
   -->
-  {#key courseId ? `c:${courseId}` : `p:${publicSeminar?.id ?? ''}`}
+  {#key courseId ? `c:${courseId}` : `p:${openedAs[publicSeminar?.id ?? ''] ?? publicSeminar?.id ?? ''}`}
     {#await reader()}
       <Splash />
     {:then Reader}
@@ -521,6 +560,7 @@
         course={courseId}
         publication={publicSeminar}
         onnavigate={(next) => navigate(next)}
+        onreplace={(next) => replace(next)}
       />
     {/await}
   {/key}

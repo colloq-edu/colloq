@@ -232,8 +232,7 @@ repository because they show how the project runs its own deployment, but they
 will not work for you as-is:
 
 - `scripts/dns.sh`: the colloq.ru DNS zone on Cloudflare.
-- `scripts/publish-site.mts` and `site/CNAME`: the colloq.ru site on GitHub
-  Pages.
+- `site/CNAME`: the colloq.ru site on GitHub Pages.
 
 Others are shaped by the maintainer's setup but can be configured:
 

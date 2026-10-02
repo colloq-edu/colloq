@@ -114,9 +114,13 @@ test('a page knows its former names even before it is republished', () => {
   // The list used to be filled only by renames IN THIS TAB: a screen opened a
   // year later showed emptiness, and there was nothing to release in it.
   assert.match(publish, /former = already\?\.former \?\? \[\]/)
-  assert.match(publish, /\{#snippet formerNames\(\)\}/, 'the list is needed in two places on the screen')
+  assert.match(publish, /\{#snippet formerNames\(\)\}/)
+  // The address block is there whenever a page exists — just published or
+  // published a year ago — so the list is drawn once, inside it.
   const renders = publish.match(/\{@render formerNames\(\)\}/g) ?? []
-  assert.equal(renders.length, 2, 'a page just published, and one published earlier')
+  assert.equal(renders.length, 1)
+  const block = publish.slice(publish.indexOf('{#if already}', publish.indexOf("tr('admin.page.address')")))
+  assert.ok(block.indexOf('{@render formerNames()}') < block.indexOf('{:else}'), 'under the page that has the names')
 })
 
 test('a publication releases the same thing in the same way', () => {
@@ -130,7 +134,7 @@ test('a publication releases the same thing in the same way', () => {
   assert.match(publish, /adminApi\.releaseFormerSlug\('publication', page, name\)/)
   // The id is the page's, not today's press of "Publish": the former names
   // belong to it even when it was published last year.
-  assert.match(publish, /const pageId = \$derived\(done \?\? already\?\.id \?\? null\)/)
+  assert.match(publish, /const pageId = \$derived\(already\?\.id \?\? null\)/)
   assert.ok(
     publish.indexOf('void dropFormer()') > publish.indexOf('id="drop-slug-title"'),
     'the irreversible action is called past the question',

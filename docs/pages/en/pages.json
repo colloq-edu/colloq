@@ -57,8 +57,8 @@
   {
     "slug": "publishing",
     "group": "teach",
-    "title": "Publications and courses",
-    "description": "Turn a live notebook into reading material and keep one link for the whole course."
+    "title": "Class pages and courses",
+    "description": "Put a class's materials on a permanent page and give the group one link for the whole course."
   },
   {
     "slug": "kubernetes",

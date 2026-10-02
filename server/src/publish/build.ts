@@ -1,32 +1,33 @@
 /**
  * Building the public page from what the room recorded.
  *
- * There are two promises here, and both are kept by enumeration, not by
- * subtraction.
+ * WHAT GOES OUT is a whitelist of fields, kept by enumeration, not by
+ * subtraction. The document has four roots, and the notebooks are only some
+ * of them: `chat` carries the names of everyone who asked the Oracle,
+ * `terminal` everything anyone typed into the shell. The same inside a cell:
+ * `runBy` and `runById` sit on every cell that ran. A field added to the
+ * notebook tomorrow must not end up on the public page by itself, which is
+ * why the list of fields here is spelled out.
  *
- * WHAT GOES OUT is a whitelist of fields. The document has four roots, and
- * the notebook is only one of them: `chat` carries the names of everyone who
- * asked the Oracle, `terminal` everything anyone typed into the shell. The
- * same inside a cell: `runBy` and `runById` sit on every cell that ran. A
- * field added to the notebook tomorrow must not end up on the public page by
- * itself, which is why the list of fields here is spelled out.
- *
- * WHAT CAN BE A STEP is only a version that unfolds into at least one cell.
- * That is not caution: for rooms recorded by an old build the history base
- * was taken from an empty document, and everything before the fix unfolds
- * into nothing. An empty page for a student is impossible not because someone
- * took care of it, but because such a step does not build.
+ * WHICH NOTEBOOKS go out is the teacher's pick (publish/materials.ts): any
+ * notebook of the room, by its root. This module projects one notebook at a
+ * time from the live document; the history is no longer replayed.
  */
 import { createHash } from 'node:crypto'
 import * as Y from 'yjs'
-import { readNotebook, type CellOutput, type CellSnapshot } from '@shared/notebook'
+import {
+  bookCells,
+  readCell,
+  readNotebook,
+  type CellOutput,
+  type CellSnapshot,
+} from '@shared/notebook'
 import {
   BLOB_MIN_BYTES,
   BLOB_PREFIX,
   SPILL_MIMES,
   spillEncoding,
   type PublicCell,
-  type SkipReason,
 } from '@shared/publish'
 import { readBlob, roomOfDoc } from '../blobs.js'
 import {
@@ -37,7 +38,7 @@ import {
   type TextEdit,
 } from '@shared/images'
 import { readBytes } from '../workspace.js'
-import { openReplay } from './replay.js'
+import { scrubText } from './checks.js'
 
 /** Large pieces of outputs, moved out by hash. Filled as the build goes. */
 export interface BlobBag {
@@ -98,11 +99,20 @@ function projectOutput(output: CellOutput, blobs: BlobBag, sessionId: string | n
       traceback: output.traceback,
     }
   }
+  /*
+   * A figure is text, and it is scrubbed HERE, before it becomes a blob ref:
+   * the room-id scrub that runs after the projection (checks.ts) skips blob
+   * refs, so a hover label built from `/workspace/<id>/…` would otherwise go
+   * out in the blob and in the downloaded .ipynb, which inlines it back.
+   * Images are base64 and stay as they are.
+   */
+  const clean = (mime: string, text: string): string =>
+    sessionId && spillEncoding(mime) === 'utf8' ? scrubText(text, sessionId) : text
   const data: Record<string, string> = {}
   for (const [mime, value] of Object.entries(output.data)) {
     data[mime] =
       typeof value === 'string' && value.length >= BLOB_MIN_BYTES && SPILL_MIMES.has(mime)
-        ? blobs.put(mime, value)
+        ? blobs.put(mime, clean(mime, value))
         : value
   }
   /*
@@ -122,7 +132,11 @@ function projectOutput(output: CellOutput, blobs: BlobBag, sessionId: string | n
   for (const blob of output.blobs ?? []) {
     if (data[blob.mime] !== undefined) continue
     const body = sessionId ? readBlob(sessionId, blob.sha) : null
-    if (body) data[blob.mime] = blobs.putBytes(blob.mime, body)
+    if (!body) continue
+    data[blob.mime] =
+      spillEncoding(blob.mime) === 'utf8'
+        ? blobs.put(blob.mime, clean(blob.mime, body.toString('utf8')))
+        : blobs.putBytes(blob.mime, body)
   }
   /*
    * By enumeration, not by spread: outputs gain fields over time too (who got
@@ -143,8 +157,8 @@ function projectOutput(output: CellOutput, blobs: BlobBag, sessionId: string | n
  * image is copied a line below, and the text keeps its address there.
  *
  * The extension in the address comes from the mime, not from the reference
- * name: the directory export names the file on disk by it
- * (`render.ts · blobHref`), and the two must not diverge.
+ * name: the downloaded .ipynb names the note's attachment by it
+ * (publish/notebook.ts), and the two must not diverge.
  */
 function projectNote(source: string, blobs: BlobBag, sessionId: string | null): string {
   const edits: TextEdit[] = []
@@ -220,7 +234,11 @@ const MAX_NOTE_IMAGE_BYTES = 8 * 1024 * 1024
 const extOfMime = (mime: string): string => mime.split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'bin'
 
 /** A cell on the public page. A whitelist; see the file header. */
-function projectCell(cell: CellSnapshot, blobs: BlobBag, sessionId: string | null): PublicCell {
+export function projectCell(
+  cell: CellSnapshot,
+  blobs: BlobBag,
+  sessionId: string | null,
+): PublicCell {
   return {
     id: cell.id,
     type: cell.type,
@@ -239,104 +257,24 @@ function projectCell(cell: CellSnapshot, blobs: BlobBag, sessionId: string | nul
 }
 
 /**
- * The notebook as of version `seq`, or the reason it is not there.
+ * One notebook of the room as it is right now, by its root.
  *
- * There are two reasons, and they differ. "Empty" is a fact about the class:
- * the notebook had no cells at that moment, and no step can come of it.
- * "Unreadable" is a breakage: the history row exists, but nothing can unfold
- * it. Both used to give `null`, the route silently skipped the step, and a
- * teacher who marked seven moments got a page with six, without a word about
- * which one went missing and why, and without a trace in the server log.
+ * `sessionId` is passed rather than read from the document: a document
+ * visited for a build (routes/doc-visit.ts) knows its room, but a test or a
+ * migration may hand over one that does not.
  */
-export type BuiltPage = { ok: true; cells: PublicCell[] } | { ok: false; reason: SkipReason }
-
-function* walkPages(
-  sessionId: string,
-  seqs: number[],
+export function bookPage(
+  doc: Y.Doc,
+  root: string,
   blobs: BlobBag,
-): Generator<[number, BuiltPage]> {
-  const replay = openReplay(sessionId)
-  try {
-    // In ascending order: only then does the pass go through one document. The
-    // rail's order is chosen by the teacher, and whoever asked puts it back
-    // together.
-    for (const seq of [...new Set(seqs)].sort((a, b) => a - b)) {
-      let page: BuiltPage
-      try {
-        const cells = readNotebook(replay.at(seq))
-        page =
-          cells.length === 0
-            ? { ok: false, reason: 'empty' }
-            : { ok: true, cells: cells.map((c) => projectCell(c, blobs, sessionId)) }
-      } catch (err) {
-        // Into the log, not into silence: a corrupted history row is
-        // indistinguishable from an empty notebook only until someone says so
-        // out loud.
-        console.error(`publish: step ${sessionId}#${seq} did not build`, err)
-        page = { ok: false, reason: 'broken' }
-      }
-      yield [seq, page]
-    }
-  } finally {
-    replay.close()
-  }
+  sessionId: string | null = roomOfDoc(doc),
+): PublicCell[] {
+  return bookCells(doc, root)
+    .toArray()
+    .map((cell) => projectCell(readCell(cell), blobs, sessionId))
 }
 
-/**
- * Pages of several versions at once, with one document for the whole
- * publication.
- *
- * A publication has up to forty steps (`MAX_STEPS`), and each used to unfold
- * in its own `Y.Doc` from the nearest keyframe: a notebook with images is
- * megabytes per step, that is, up to forty full replays of the history in a
- * row. Synchronously, and in the same process where a colleague is teaching a
- * lesson at that minute: their clicks waited.
- *
- * Here the history is replayed once (`replay.ts`), and only the rows between
- * the previous step and the next are applied on top of the previous step's
- * state. The answer is a page for every requested `seq`, including those that
- * will not become a step: `BuiltPage` names the reason for skipping, not
- * silence.
- */
-export function pagesAt(sessionId: string, seqs: number[], blobs: BlobBag): Map<number, BuiltPage> {
-  return new Map(walkPages(sessionId, seqs, blobs))
-}
-
-/**
- * The same, yielding the event loop between steps.
- *
- * After this change the history is replayed once, but page projection is
- * still done per step: a hash of every image, base64 to bytes, a walk over
- * every output. Over forty steps that alone holds the loop for seconds, and a
- * class is running next to it. The database is read exactly the same way: the
- * pass queries it itself, a row per step, and notices a history trimmed
- * mid-way by its keyframe (see `replay.ts`).
- */
-export async function pagesAtAsync(
-  sessionId: string,
-  seqs: number[],
-  blobs: BlobBag,
-): Promise<Map<number, BuiltPage>> {
-  const pages = new Map<number, BuiltPage>()
-  for (const [seq, page] of walkPages(sessionId, seqs, blobs)) {
-    pages.set(seq, page)
-    await new Promise<void>((resume) => setImmediate(resume))
-  }
-  return pages
-}
-
-/** One page. The same pass as the publication's, one step long. */
-export function buildPageAt(sessionId: string, seq: number, blobs: BlobBag): BuiltPage {
-  return pagesAt(sessionId, [seq], blobs).get(seq) ?? { ok: false, reason: 'broken' }
-}
-
-/** The same, in short: a page or nothing. */
-export function pageAt(sessionId: string, seq: number, blobs: BlobBag): PublicCell[] | null {
-  const built = buildPageAt(sessionId, seq, blobs)
-  return built.ok ? built.cells : null
-}
-
-/** The notebook as it is right now: the publication's last page. */
+/** The room's first notebook as it is right now. */
 export function pageOfDoc(doc: Y.Doc, blobs: BlobBag): PublicCell[] {
   /*
    * The room comes from the document, not from a parameter.

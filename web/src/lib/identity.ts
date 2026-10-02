@@ -74,6 +74,39 @@ export function forgetIdentity(sessionId: string): void {
   writeMap(map)
 }
 
+/** When a token was minted, read from its own payload; 0 when it does not say. */
+function mintedAt(token: string): number {
+  try {
+    const body = token.slice(0, token.indexOf('.')).replace(/-/g, '+').replace(/_/g, '/')
+    const iat = (JSON.parse(atob(body)) as { iat?: unknown }).iat
+    return typeof iat === 'number' && Number.isFinite(iat) ? iat : 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Every room key this browser holds, newest first, at most `cap`
+ * (shared/publish.ts · MAX_DOOR_TOKENS; spelled out here because this file
+ * sits in the entry chunk and must not pull the publishing vocabulary in).
+ *
+ * The class page asks the server whether this browser was in its room
+ * (POST /api/p/:id/room), and it cannot name the room: the page never knows
+ * its id. So it offers all the keys and the server keeps the one minted for
+ * that room. Newest first by the token's own mint time, because a year of
+ * classes can hold more keys than the cap, and the class someone opens is
+ * almost always a recent one; a token that does not say falls back to the
+ * order rooms were first joined, latest first.
+ */
+export function storedTokens(cap = 50): string[] {
+  return Object.values(readMap())
+    .filter((entry) => typeof entry?.token === 'string' && entry.token.length > 0)
+    .map((entry, order) => ({ token: entry.token, at: mintedAt(entry.token), order }))
+    .sort((a, b) => b.at - a.at || b.order - a.order)
+    .slice(0, Math.max(0, cap))
+    .map((entry) => entry.token)
+}
+
 /* ------------------------------------------ why we are not let into the room */
 
 /**

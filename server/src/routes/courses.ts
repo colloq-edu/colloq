@@ -4,35 +4,61 @@ import { tr } from '@shared/i18n'
  * reads.
  *
  * The public half asks for nothing, neither a name nor a login, and so serves
- * only what is already assembled in `publication_steps`. No unfolding of a
+ * only what is already assembled in `publication_materials`. No unfolding of a
  * Yjs document on a public request: that is multi-megabyte work in the same
  * process that is running a class at that minute, with no rate limit at all.
  */
+import { createHash } from 'node:crypto'
+import fs from 'node:fs'
+import { pipeline } from 'node:stream/promises'
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { ownerOnly, requireStaff, currentStaff } from '../admin/auth.js'
 import { recordAdminEvent } from '../admin/audit-log.js'
-import { getSession, renameSession } from '../db.js'
-import { visitSessionDoc } from './doc-visit.js'
+import { getSession } from '../db.js'
+import { isClassDay } from '@shared/class-day'
+import { MATERIAL_KEY_RE } from '@shared/materials'
 import {
+  isRoomAccess,
   spillContentType,
+  MATERIAL_NOT_FOUND,
+  MAX_CLASS_ABOUT,
   MAX_COURSE_BLURB,
   MAX_COURSE_NAME,
   MAX_PLANNED_WHEN,
-  MAX_STEPS,
-  MAX_STEP_LABEL,
   PUBLICATION_NOT_FOUND,
-  STEP_NOT_FOUND,
+  ROBOTS_TAG,
+  STEPS_GONE,
+  publicationAddress,
   slugOk,
   type CourseItem,
-  type PublicCell,
-  type PublicSeminar,
-  type SkippedStep,
+  type CourseRowFields,
 } from '@shared/publish'
-import { courseOfPublication, freshCourseItems, publicCourseView } from './course-view.js'
+import {
+  courseRows,
+  forgetCourseIndex,
+  freshCourseItems,
+  pageContext,
+  publicCourseView,
+  publicPageView,
+  zipContextOf,
+} from './course-view.js'
 import { SESSION_MISSING } from '@shared/protocol'
-import { candidatesForAsync } from '../publish/candidates.js'
-import { newBlobBag, pageOfDoc, pagesAtAsync } from '../publish/build.js'
-import { notebookOfStep } from '../publish/notebook.js'
+import {
+  buildAndWrite,
+  downloadTypeOf,
+  orphanPublishInfo,
+  publishInfo,
+  readPublishRequest,
+  refreshPage,
+  removeMaterial,
+  setRoomAccess,
+  type BuildResult,
+} from '../publish/materials.js'
+import { pageFileInfo, pageFilePath } from '../publish/page-files.js'
+import { readDoorTokens, roomDoor } from '../publish/room-door.js'
+import { addressForLimits } from '../net/inbound.js'
+import { tooOften } from '../net/too-often.js'
+import { leaveZip, waitForZip, ZIP_IDLE_MS, zipPlan, zipStream } from '../publish/zip.js'
 import {
   addressHolder,
   createCourse,
@@ -43,21 +69,22 @@ import {
   findPublication,
   formerSlugs,
   getPublication,
+  hasNotebook,
   listCourses,
+  listMaterials,
   listPublications,
+  materialCellsText,
+  materialCount,
+  newRowId,
   publicationOf,
   readBlob,
-  readStep,
   releaseFormerSlug,
   renameCourse,
   setCourseItems,
   setCourseSlug,
   setPublicationSlug,
   setPublicationState,
-  stepCount,
-  stepHeadings,
-  writePublication,
-  type BuiltStep,
+  type Publication,
 } from '../publish/store.js'
 
 const str = (value: unknown, max: number): string =>
@@ -88,36 +115,84 @@ function recordPublication(
 }
 
 /**
- * A public response that has not changed: a 304 and not a single database
- * read.
+ * Whether the request already holds this version: a 304 and no body.
  *
- * We set the version tag ourselves rather than leaving it to Express's ETag:
- * that one hashes the ASSEMBLED body, that is, after the page has already
- * been read and parsed, which saves traffic but not work. Here it is the
- * other way round: the publication's `revision` is known from one indexed
- * row, and everything heavy comes after this check.
+ * The header may carry a list of tags with `W/` before each, so the
+ * comparison goes word by word, not on the whole string.
+ */
+function holds(req: Request, etag: string): boolean {
+  const asked = req.headers['if-none-match']
+  if (typeof asked !== 'string') return false
+  const bare = etag.replace(/^W\//, '')
+  return asked.split(',').some((one) => {
+    const tag = one.trim()
+    return tag === '*' || tag === etag || tag.replace(/^W\//, '') === bare
+  })
+}
+
+/**
+ * A notebook tab that has not changed: a 304 before a single heavy read.
  *
- * `max-age` is small and without `immutable`: the page's address is
- * permanent, but the content is republished, and an eternal cache would mean
- * a week-old review for whoever opened the link before the republication.
+ * The tag is the page's `materials_rev` and the key, known from one indexed
+ * row, and the cells (megabytes of outputs) are read only after this check.
+ * `max-age` is small and without `immutable`: the address is permanent, but
+ * the page is rebuilt after every class, and an eternal cache would mean
+ * last week's notebook for whoever opened the tab before the rebuild.
  */
 const PUBLIC_MAX_AGE_S = 300
+
+/** A page's image: content-addressed, but a takedown has to reach caches (see the blob route). */
+const BLOB_MAX_AGE_S = 3600
 
 function fresh(req: Request, res: Response, tag: string): boolean {
   const etag = `W/"${tag}"`
   res.setHeader('etag', etag)
   res.setHeader('cache-control', `public, max-age=${PUBLIC_MAX_AGE_S}`)
-  // The header may carry a list of tags with `W/` before each: we compare word
-  // by word, not the whole string.
-  const asked = req.headers['if-none-match']
-  if (typeof asked !== 'string') return false
-  const matched = asked
-    .split(',')
-    .some((one) => one.trim() === '*' || one.trim() === etag || one.trim() === `"${tag}"`)
-  if (!matched) return false
+  if (!holds(req, etag)) return false
   res.status(304).end()
   return true
 }
+
+/**
+ * A course or class page: tagged by its body, and asked again every time.
+ *
+ * These bodies depend on more than one row (the course's live room names,
+ * the neighbours' pages, «сегодня»), so no single revision is their
+ * version. The hash of the body is, and `no-cache` makes the browser ask
+ * each time: the answer costs the server the same, the phone a 304.
+ */
+function sendTagged(req: Request, res: Response, body: unknown): void {
+  const text = JSON.stringify(body)
+  const etag = `W/"${createHash('sha1').update(text).digest('base64url')}"`
+  res.setHeader('etag', etag)
+  res.setHeader('cache-control', 'no-cache')
+  if (holds(req, etag)) {
+    res.status(304).end()
+    return
+  }
+  res.type('application/json').send(text)
+}
+
+/** A published page by any of its addresses, or `null` for one gone or withdrawn. */
+function livePage(handle: string): Publication | null {
+  const pub = findPublication(handle)
+  return pub && pub.state === 'published' ? pub : null
+}
+
+/**
+ * `filename*` per RFC 5987, plus a plain `filename` for clients that know
+ * only that one: «Слайды лекции.pdf» must not arrive as `download`.
+ */
+function disposition(kind: 'attachment' | 'inline', name: string): string {
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\;]/g, '_') || 'download'
+  const encoded = encodeURIComponent(name).replace(
+    /['()*]/g,
+    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`,
+  )
+  return `${kind}; filename="${ascii}"; filename*=UTF-8''${encoded}`
+}
+
+const baseName = (path: string) => path.slice(path.lastIndexOf('/') + 1) || path
 
 /**
  * A rejected promise goes to the error handler, not into the void.
@@ -133,10 +208,137 @@ const wrap =
   }
 
 /**
- * The course with live seminar names, the same one that goes into the site
- * export. One function for both places: routes/course-view.ts.
+ * The course rows with live seminar names and page links, for the panel; the
+ * public course page is built from the same rows (routes/course-view.ts).
  */
 const freshItems = freshCourseItems
+
+/*
+ * The room door is asked once per page view, so a lecture hall behind one
+ * NAT opening the course at the bell is a hundred knocks in a minute; a loop
+ * spends the ceiling within seconds. Each knock verifies up to fifty HMACs,
+ * which is cheap, but a public door has no reason to do it without end.
+ */
+const doorKnocks = new Map<string, number[]>()
+const DOOR_WINDOW_MS = 60_000
+const MAX_DOOR_KNOCKS = 120
+
+/**
+ * The common half of both door routes: the per-address ceiling, then the
+ * tokens. `null` means the refusal was already sent. The answer depends on
+ * the caller's cookie and tokens, so nothing on the way may keep it.
+ */
+function doorTokens(req: Request, res: Response): string[] | null {
+  res.setHeader('cache-control', 'no-store')
+  if (tooOften(doorKnocks, addressForLimits(req), DOOR_WINDOW_MS, MAX_DOOR_KNOCKS)) {
+    res.setHeader('retry-after', String(DOOR_WINDOW_MS / 1000))
+    res.status(429).json({ error: tr('server.roomDoor.tooOften') })
+    return null
+  }
+  const tokens = readDoorTokens(req.body)
+  if (!tokens) {
+    res.status(400).json({ error: tr('server.roomDoor.badTokens') })
+    return null
+  }
+  return tokens
+}
+
+/** A material's bytes from the page-file store: a download, or a PDF opened in place. */
+function sendMaterial(req: Request, res: Response, how: 'attachment' | 'inline'): void {
+  const pub = livePage(req.params.id)
+  if (!pub) {
+    res.status(404).json({ error: PUBLICATION_NOT_FOUND })
+    return
+  }
+  const material = listMaterials(pub.id).find((m) => m.key === req.params.key)
+  const info = material ? pageFileInfo(material.hash) : null
+  if (!material || !info || (how === 'inline' && material.kind !== 'pdf')) {
+    res.status(404).json({ error: MATERIAL_NOT_FOUND })
+    return
+  }
+  const file = pageFilePath(material.hash)
+  let size: number
+  try {
+    size = fs.statSync(file).size
+  } catch {
+    console.error(`[pages] ${material.hash} is missing from data/page-files`)
+    res.status(404).json({ error: MATERIAL_NOT_FOUND })
+    return
+  }
+  const etag = `"${material.hash}"`
+  res.setHeader('etag', etag)
+  res.setHeader('cache-control', `public, max-age=${PUBLIC_MAX_AGE_S}`)
+  res.setHeader('x-content-type-options', 'nosniff')
+  res.setHeader('x-robots-tag', ROBOTS_TAG)
+  if (how === 'inline') {
+    res.setHeader('content-type', 'application/pdf')
+  } else {
+    res.setHeader('content-type', downloadTypeOf(material.path))
+    res.setHeader('content-security-policy', "sandbox; default-src 'none'")
+  }
+  res.setHeader('content-disposition', disposition(how, baseName(material.path)))
+  if (holds(req, etag)) {
+    res.status(304).end()
+    return
+  }
+  res.setHeader('content-length', String(size))
+  pipeline(fs.createReadStream(file), res).catch(() => res.destroy())
+}
+
+/** Whether a stored row is the one an id-less request row means: by its own key. */
+function sameRow(item: CourseItem, raw: Record<string, unknown>): boolean {
+  if (item.kind !== raw.kind) return false
+  if (item.kind === 'seminar') return item.sessionId === raw.sessionId
+  if (item.kind === 'gone') return item.name === raw.name && item.at === Number(raw.at)
+  return item.name === str(raw.name, MAX_COURSE_NAME) && item.when === str(raw.when, MAX_PLANNED_WHEN)
+}
+
+/**
+ * A text field of a row: absent keeps the stored value, `null` (or an empty
+ * string) clears it, anything else is clipped.
+ */
+function textField(
+  value: unknown,
+  stored: string | null | undefined,
+  max: number,
+): string | null | undefined {
+  if (value === undefined) return stored
+  if (value === null) return null
+  if (typeof value !== 'string') return stored
+  return value.trim().slice(0, max) || null
+}
+
+/**
+ * The optional fields of one incoming row, merged with the stored row it
+ * matches; a refusal in words for a day that is not a calendar date.
+ *
+ * Seating a room into a plan row keeps that row's topic as the title
+ * students see: the room may be called «Неделя 4 (повтор)», the class is
+ * still «Лики и хаки данных».
+ */
+function rowFields(raw: Record<string, unknown>, known: CourseItem | undefined): CourseRowFields | string {
+  const seated = known?.kind === 'planned' && raw.kind !== 'planned'
+  const storedTitle = seated ? (known.title ?? known.name) : known?.title
+  let day: string | null | undefined
+  if (raw.day === undefined) day = known?.day
+  else if (raw.day === null || raw.day === '') day = null
+  else if (isClassDay(raw.day)) day = raw.day
+  else return tr('server.course.badDay')
+  const when =
+    raw.when === undefined
+      ? known?.when
+      : typeof raw.when === 'string'
+        ? raw.when.trim().slice(0, MAX_PLANNED_WHEN)
+        : ''
+  const fields: CourseRowFields = {}
+  const title = textField(raw.title, storedTitle, MAX_COURSE_NAME)
+  const about = textField(raw.about, known?.about, MAX_CLASS_ABOUT)
+  if (title !== undefined) fields.title = title
+  if (day !== undefined) fields.day = day
+  if (about !== undefined) fields.about = about
+  if (when) fields.when = when
+  return fields
+}
 
 export function courseRoutes(): Router {
   const router = Router()
@@ -193,6 +395,13 @@ export function courseRoutes(): Router {
    * A mismatch is not an error but a race: someone rearranged the course
    * while this screen held the old one. The 409 answer carries the list as it
    * is now, so the screen shows the truth instead of arguing with it.
+   *
+   * Rows are matched to what is stored by id (an older tab that sends none,
+   * by the row's own key: its room, its tombstone, its topic and week), and a
+   * field the request does not mention keeps its stored value, while `null`
+   * clears it. An admin tab opened before class days existed cannot wipe
+   * them by saving the order. Ids are the server's: a row without a known one
+   * gets a new one.
    */
   router.put('/api/admin/courses/:id/items', requireStaff, (req, res) => {
     const course = getCourse(req.params.id)
@@ -200,9 +409,32 @@ export function courseRoutes(): Router {
     const incoming: unknown = req.body?.items
     if (!Array.isArray(incoming)) return bad(res, tr("server.itemsMustBeAnArray.399a2e"))
 
+    const byId = new Map<string, CourseItem>()
+    for (const item of course.items) if (item.id) byId.set(item.id, item)
+    const claimed = new Set<CourseItem>()
+    const ids = new Set<string | undefined>(course.items.map((item) => item.id))
+    const knownFor = (raw: Record<string, unknown>): CourseItem | undefined => {
+      const asked = typeof raw.id === 'string' ? byId.get(raw.id) : undefined
+      const found =
+        asked ??
+        course.items.find(
+          (item) =>
+            !claimed.has(item) && (raw.id === undefined || !item.id) && sameRow(item, raw),
+        )
+      if (!found || claimed.has(found)) return undefined
+      claimed.add(found)
+      return found
+    }
+
     const items: CourseItem[] = []
     for (const raw of incoming as Record<string, unknown>[]) {
-      if (raw?.kind === 'planned') {
+      if (!raw || typeof raw !== 'object') continue
+      const known = knownFor(raw)
+      const fields = rowFields(raw, known)
+      if (typeof fields === 'string') return bad(res, fields)
+      const id = known?.id ?? newRowId(ids)
+      ids.add(id)
+      if (raw.kind === 'planned') {
         /*
          * A plan row without a topic is a refusal in words, not a
          * disappearance.
@@ -216,10 +448,17 @@ export function courseRoutes(): Router {
          */
         const name = str(raw.name, MAX_COURSE_NAME)
         if (!name) return bad(res, tr('server.course.plannedNeedsTopic'))
-        items.push({ kind: 'planned', name, when: str(raw.when, MAX_PLANNED_WHEN) })
+        const when =
+          raw.when === undefined && known?.kind === 'planned'
+            ? known.when
+            : str(raw.when, MAX_PLANNED_WHEN)
+        const pause =
+          raw.pause === undefined ? known?.kind === 'planned' && known.pause === true : raw.pause === true
+        const { when: _carried, ...rest } = fields
+        items.push({ kind: 'planned', id, ...rest, name, when, ...(pause ? { pause: true } : {}) })
         continue
       }
-      if (raw?.kind === 'gone') {
+      if (raw.kind === 'gone') {
         /*
          * The link to the remaining reading survives rearranging the rows.
          *
@@ -229,17 +468,18 @@ export function courseRoutes(): Router {
          * a dead end again.
          */
         const name = str(raw.name, MAX_COURSE_NAME)
-        const at = Number(raw.at) || Date.now()
+        const at = Number(raw.at) || (known?.kind === 'gone' ? known.at : Date.now())
         const sent = raw.publication as { id?: unknown } | null | undefined
-        const known = course.items.find((i) => i.kind === 'gone' && i.name === name && i.at === at)
-        const id =
+        const pubId =
           typeof sent?.id === 'string'
             ? sent.id
             : (known?.kind === 'gone' && known.publication?.id) || null
-        const pub = id ? getPublication(id) : null
+        const pub = pubId ? getPublication(pubId) : null
         items.push({
           kind: 'gone',
-          name,
+          id,
+          ...fields,
+          name: name || (known?.kind === 'gone' ? known.name : ''),
           at,
           publication: pub ? { id: pub.id, slug: pub.slug } : null,
         })
@@ -248,12 +488,7 @@ export function courseRoutes(): Router {
       const sessionId = str(raw?.sessionId, 64)
       const session = sessionId ? getSession(sessionId) : null
       if (!session) continue
-      items.push({
-        kind: 'seminar',
-        sessionId,
-        name: session.name,
-        publication: null,
-      })
+      items.push({ kind: 'seminar', id, ...fields, sessionId, name: session.name, publication: null })
     }
 
     const rev = Number(req.body?.rev)
@@ -265,6 +500,8 @@ export function courseRoutes(): Router {
         course: { ...now, items: freshItems(now.items) },
       })
     }
+    // The room's course hint and the class pages see the new rows on the next request.
+    forgetCourseIndex()
     res.json({ course: { ...updated, items: freshItems(updated.items) } })
   })
 
@@ -369,161 +606,69 @@ export function courseRoutes(): Router {
   /* ------------------------------------------------------- publication */
 
   /**
-   * What steps can be assembled from, and what is already published.
-   *
-   * Candidates are computed yielding the event loop (`candidatesForAsync`)
-   * rather than in one synchronous pass: on a room with a semester of history
-   * that is seconds in the very process that holds the class's sockets at
-   * that minute. The result is the same (yielding changes no field), and the
-   * lesson next door goes on.
+   * What the «Страница занятия» screen shows: every notebook and file of the
+   * room with its default tick and reason, the checks, and the page if there
+   * is one (publish/materials.ts · publishInfo).
    */
-  router.get(
-    '/api/admin/seminars/:id/publish',
-    requireStaff,
-    wrap(async (req: Request, res: Response) => {
-      const session = getSession(req.params.id)
-      if (!session) {
-        res.status(404).json({ error: SESSION_MISSING })
-        return
-      }
-      const pub = publicationOf(session.id)
-      res.json({
-        title: session.name,
-        candidates: await candidatesForAsync(session.id),
-        publication: pub
-          ? { ...pub, steps: stepHeadings(pub.id), former: formerSlugs('publication', pub.id) }
-          : null,
+  router.get('/api/admin/seminars/:id/publish', requireStaff, (req, res) => {
+    // A page whose room was deleted is asked for by its own id: it has no room any more.
+    const info = publishInfo(req.params.id) ?? orphanPublishInfo(req.params.id)
+    if (!info) return res.status(404).json({ error: SESSION_MISSING })
+    res.json(info)
+  })
+
+  /** A build's answer, and the audit line for a page that went out. */
+  const answer = (req: Request, res: Response, result: BuildResult, trigger: string): void => {
+    if (!result.ok) {
+      res.status(result.status).json({
+        error: result.error,
+        ...(result.checks ? { checks: result.checks } : {}),
       })
-    }),
-  )
+      return
+    }
+    const { publication, page, refused } = result
+    // A class's notebooks became a public page: whose decision, which room.
+    recordAdminEvent({
+      actor: currentStaff(req),
+      action: 'publication.published',
+      target: { type: 'publication', id: publication.id, label: publication.title },
+      detail: {
+        room: req.params.id,
+        materials: page.materials.length,
+        revision: publication.revision,
+        trigger,
+      },
+      req,
+    })
+    res.json({ page, refused })
+  }
 
   router.post(
     '/api/admin/seminars/:id/publish',
     requireStaff,
     wrap(async (req: Request, res: Response) => {
-      const session = getSession(req.params.id)
-      if (!session) {
+      const request = readPublishRequest(req.body)
+      if (typeof request === 'string') return bad(res, request)
+      const teacher = currentStaff(req)
+      const withdrawn = publicationOf(req.params.id)?.state === 'withdrawn'
+      const result = await buildAndWrite(req.params.id, request, { by: teacher?.name ?? null })
+      answer(req, res, result, 'teacher')
+      // «Опубликовать снова» on a withdrawn page puts it back: logged as «Вернуть» would be.
+      if (result.ok && withdrawn) recordPublication(req, 'publication.restored', result.publication)
+    }),
+  )
+
+  /** Rebuild from the saved pick, with no questions: «Обновить страницу». */
+  router.post(
+    '/api/admin/seminars/:id/publish/refresh',
+    requireStaff,
+    wrap(async (req: Request, res: Response) => {
+      if (!getSession(req.params.id)) {
         res.status(404).json({ error: SESSION_MISSING })
         return
       }
-
-      const asked: unknown = req.body?.steps
-      if (!Array.isArray(asked)) return bad(res, tr("server.stepsMustBeAnArray.62b083"))
-      if (asked.length > MAX_STEPS) return bad(res, tr("server.noMoreThanSteps.63addd", { p0: MAX_STEPS }))
-
-      /*
-       * What was asked for, and what of it will not become a step.
-       *
-       * A moment that dropped out used to vanish silently: the teacher marked
-       * seven, and the page had six. The reasons differ in nature: about the
-       * request ("no name", "already in the list") and about the class ("the
-       * notebook is empty", "the record cannot be read"), and all of them go
-       * into the response (shared/publish.ts · SkippedStep), so that the panel
-       * can name the missing moment.
-       */
-      const wanted: { seq: number; label: string; at: number }[] = []
-      const skipped: SkippedStep[] = []
-      const seen = new Set<number>()
-      for (const raw of asked as Record<string, unknown>[]) {
-        const label = str(raw?.label, MAX_STEP_LABEL)
-        const seq = Number(raw?.seq)
-        /*
-         * A step's address is a version number from the feed: an integer
-         * greater than zero. Zero is taken by the last page (below); fractions
-         * and negatives address nothing. That is not "a moment that dropped
-         * out" but a wrong request, and it has to be answered in words, not
-         * with silence and not with a 500 from the transaction.
-         */
-        if (!Number.isInteger(seq) || seq <= 0) {
-          return bad(res, tr("server.chooseAVersionForTheStepA.ec311c"))
-        }
-        // An unnamed step is not published: a rail of "Snapshot #14" entries
-        // is not named moments but an admission that somebody forgot to name
-        // them.
-        if (!label) {
-          skipped.push({ seq, label: '', reason: 'unnamed' })
-          continue
-        }
-        if (seen.has(seq)) {
-          skipped.push({ seq, label, reason: 'duplicate' })
-          continue
-        }
-        seen.add(seq)
-        wanted.push({ seq, label, at: Number(raw?.at) || Date.now() })
-      }
-
-      /*
-       * All steps in one pass over the history, not a pass per step.
-       *
-       * Each step used to unfold in its own Y.Doc from the nearest keyframe
-       * (`buildPageAt`): a notebook with images is megabytes per step, and
-       * there are up to forty steps, that is, up to forty full replays of the
-       * history in a row. Now the history is replayed ONCE for the whole
-       * publication, and only the rows between the previous step and the next
-       * are applied on top of the previous step's state (publish/replay.ts,
-       * `pagesAtAsync`).
-       *
-       * Yielding the event loop has not gone anywhere: it is inside the pass,
-       * between steps: page projection (a hash of every image, base64 to
-       * bytes) is still done per step, and a colleague is teaching a lesson in
-       * the same process. The pass itself goes in ascending `seq` and drops
-       * duplicates by itself; in the response the steps are laid out in the
-       * order they were named, because the rail's order is chosen by the
-       * teacher, not by arithmetic.
-       */
-      const blobs = newBlobBag()
-      const built = new Map<number, PublicCell[]>()
-      for (const [seq, page] of await pagesAtAsync(session.id, [...seen], blobs)) {
-        if (page.ok) built.set(seq, page.cells)
-        else {
-          const named = wanted.find((step) => step.seq === seq)
-          skipped.push({ seq, label: named?.label ?? '', reason: page.reason })
-        }
-      }
-
-      const steps: BuiltStep[] = []
-      for (const step of wanted) {
-        const cells = built.get(step.seq)
-        if (cells) steps.push({ ...step, cells })
-      }
-
-      /*
-       * The last page is the notebook as it is now, and it is always there. A
-       * publication without it would be a story of the class that breaks off
-       * in the middle; `seq: 0` is its permanent address, free by
-       * construction (AUTOINCREMENT starts at one).
-       *
-       * And the archived room's document does not stay in memory after this:
-       * people publish in the evening, when nobody has opened the room
-       * (routes/doc-visit.ts).
-       */
-      steps.push({
-        seq: 0,
-        label: str(req.body?.finalLabel, MAX_STEP_LABEL) || tr("server.notebookAtPublication.33f04f"),
-        at: Date.now(),
-        cells: visitSessionDoc(session.id, (doc) => pageOfDoc(doc, blobs)),
-      })
-
       const teacher = currentStaff(req)
-      const publication = writePublication({
-        sessionId: session.id,
-        title: session.name,
-        by: teacher?.name ?? null,
-        steps,
-        blobs: blobs.all(),
-      })
-      // A class's notebook became a public page: whose decision, which room.
-      recordAdminEvent({
-        actor: teacher,
-        action: 'publication.published',
-        target: { type: 'publication', id: publication.id, label: publication.title },
-        detail: { room: session.id, steps: steps.length, revision: publication.revision },
-        req,
-      })
-      res.json({
-        publication: { ...publication, steps: stepHeadings(publication.id) },
-        skipped,
-      })
+      answer(req, res, await refreshPage(req.params.id, { by: teacher?.name ?? null }), 'refresh')
     }),
   )
 
@@ -549,15 +694,14 @@ export function courseRoutes(): Router {
    *
    * Deleting a seminar by default keeps the reading and clears `session_id`,
    * and all the routes above, keyed by the room id, start answering 404. The
-   * page itself is alive: served by the server and deployed to the site by
-   * every `make site`. There was no way to withdraw it, and someone's
-   * personal output might have remained on it.
+   * page itself is alive and served by the server. There was no way to
+   * withdraw it, and someone's personal output might have remained on it.
    */
   router.get('/api/admin/publications', requireStaff, (_req, res) => {
     res.json({
       publications: listPublications().map((pub) => ({
         ...pub,
-        steps: stepCount(pub.id),
+        materials: materialCount(pub.id),
         orphaned: pub.sessionId === null,
       })),
     })
@@ -594,125 +738,312 @@ export function courseRoutes(): Router {
     res.json({ ok: true })
   })
 
+  /**
+   * Take one material off a page, keeping the rest as they are. The pick
+   * forgets it too, so the next «Обновить страницу» does not bring it back.
+   */
+  router.delete(
+    '/api/admin/publications/:id/materials/:key',
+    requireStaff,
+    wrap(async (req: Request, res: Response) => {
+      // Queued behind any build in flight, which would otherwise write the material back.
+      const result = await removeMaterial(req.params.id, req.params.key)
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error })
+        return
+      }
+      const { publication, page, removed } = result
+      recordAdminEvent({
+        actor: currentStaff(req),
+        action: 'publication.material_removed',
+        target: { type: 'publication', id: publication.id, label: publication.title },
+        detail: {
+          material: removed.name,
+          key: removed.key,
+          revision: publication.revision,
+          ...(publication.sessionId ? { room: publication.sessionId } : {}),
+        },
+        req,
+      })
+      res.json({ page })
+    }),
+  )
+
+  /**
+   * Who the page leads into the room («Вход в комнату со страницы»), saved on
+   * its own. It lives in the saved pick so a rebuild keeps it, but changing
+   * it is not a rebuild: the materials, the revision and every cached tab stay
+   * as they are (store.ts · savePublicationSelection).
+   *
+   * A page with no saved pick (one carried over from 0.12) has nothing to
+   * keep it in yet: the setting goes out with its next publish from the
+   * screen, which writes a pick, and until then it reads as 'members'.
+   */
+  router.patch(
+    '/api/admin/publications/:id',
+    requireStaff,
+    wrap(async (req: Request, res: Response) => {
+      const access = req.body?.roomAccess
+      if (!isRoomAccess(access)) return bad(res, tr('server.roomDoor.badAccess'))
+      // Queued behind any build in flight, which would otherwise save its own copy of the pick.
+      const result = await setRoomAccess(req.params.id, access)
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error })
+        return
+      }
+      const { was, publication: pub } = result
+      if (was !== access) {
+        // Opening a room with names and oracle questions to anyone with a link is staff's call.
+        recordAdminEvent({
+          actor: currentStaff(req),
+          action: 'publication.room_access',
+          target: { type: 'publication', id: pub.id, label: pub.title },
+          detail: { access, was, ...(pub.sessionId ? { room: pub.sessionId } : {}) },
+          req,
+        })
+      }
+      res.json({ roomAccess: access })
+    }),
+  )
+
   /* ------------------------------------------------------------ public */
 
+  /**
+   * The course page: every row with its number, title, day and page, and the
+   * instance's «сегодня». By name, by id or by a former name: a link handed
+   * out before the course was given a name keeps working afterwards.
+   */
   router.get('/api/c/:id', (req, res) => {
-    // By name or by id: a link handed out before the course was given a name
-    // must keep working afterwards.
     const course = findCourse(req.params.id)
     if (!course) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
-    res.json({ course: publicCourseView(course) })
+    sendTagged(req, res, { course: publicCourseView(course) })
   })
 
   /**
-   * The seminar page, with a version tag, because a whole cohort opens it.
-   *
-   * A publication is immutable between republications: `revision` grows with
-   * every write, and the state (withdrawn/live) changes by a separate click;
-   * together they are the version of the response. Five hundred people
-   * opening the link at a review in the same minute get a 304 on a matching
-   * tag and cost not a single database row; the five minutes of `max-age` are
-   * about these pages being read in a row, paging through the steps, while
-   * they change once a week.
-   *
-   * The header is set BEFORE the steps are read, and that is the whole
-   * point: `stepHeadings` reads the steps table, and answering 304 after it
-   * would save nothing.
+   * The class page: its header, its neighbours and its materials, without
+   * the notebooks' cells, which come per tab (below). A withdrawn page still
+   * answers, with no materials: the link must say it was withdrawn, not that
+   * it never existed.
    */
   router.get('/api/p/:id', (req, res) => {
     const pub = findPublication(req.params.id)
     if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
-    if (fresh(req, res, `${pub.id}.${pub.revision}.${pub.state}`)) return
-    // An orphaned page has no room, and the course will not be found by
-    // `sessionId`: the tombstone holds it back. It must keep a way up too.
-    const course = courseOfPublication(pub)
-    const seminar: PublicSeminar = {
-      id: pub.id,
-      slug: pub.slug,
-      title: pub.title,
-      state: pub.state,
-      publishedAt: pub.publishedAt,
-      course: course ? { id: course.id, name: course.name } : null,
-      steps: pub.state === 'published' ? stepHeadings(pub.id) : [],
-      orphaned: pub.sessionId === null,
+    sendTagged(req, res, { page: publicPageView(pub) })
+  })
+
+  /**
+   * The way into the class's room, for whoever may take it
+   * (publish/room-door.ts). The page above never names its room; this is
+   * the one answer that can, and only to staff, to everyone under 'anyone',
+   * or to a browser whose token proves it was in that room under 'members'.
+   * A withdrawn page leads nowhere.
+   */
+  router.post('/api/p/:id/room', (req, res) => {
+    const tokens = doorTokens(req, res)
+    if (!tokens) return
+    const pub = findPublication(req.params.id)
+    if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
+    const sessionId = pub.state === 'published' ? pub.sessionId : null
+    res.json(roomDoor(req, sessionId, pub.selection?.roomAccess ?? 'members', tokens))
+  })
+
+  /**
+   * The same door for a course row, by its key: the «Сегодня» block offers
+   * the room while the class is on, before any page exists. The row's page,
+   * when there is one, sets the access; a row without a page is 'members'.
+   * A withdrawn page closes the row's door too: the teacher took the class
+   * back, and the course must not reopen it.
+   */
+  router.post('/api/c/:id/room', (req, res) => {
+    const tokens = doorTokens(req, res)
+    if (!tokens) return
+    const course = findCourse(req.params.id)
+    if (!course) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
+    const key = typeof req.body?.key === 'string' ? req.body.key : ''
+    const row = key ? courseRows(course).find((r) => r.key === key) : undefined
+    if (!row) return res.status(404).json({ error: tr("server.notFound.094b76") })
+    const withdrawn = row.pub !== null && row.pub.state !== 'published'
+    const sessionId = row.item.kind === 'seminar' && !withdrawn ? row.item.sessionId : null
+    res.json(roomDoor(req, sessionId, row.pub?.selection?.roomAccess ?? 'members', tokens))
+  })
+
+  /**
+   * One notebook's cells, as stored: the heaviest thing the public half
+   * serves (every output of a lesson), and the most unchanging, since while
+   * `materials_rev` is the same, it is byte for byte the same text.
+   */
+  router.get('/api/p/:id/m/:key', (req, res) => {
+    const pub = livePage(req.params.id)
+    if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
+    const key = req.params.key
+    if (!MATERIAL_KEY_RE.test(key) || !hasNotebook(pub.id, key)) {
+      return res.status(404).json({ error: MATERIAL_NOT_FOUND })
     }
-    res.json({ seminar })
+    if (fresh(req, res, `${pub.id}.${pub.materialsRev ?? pub.revision}.${key}`)) return
+    const cells = materialCellsText(pub.id, key) ?? '[]'
+    // Put together as text: parsing megabytes of outputs only to print them again buys nothing.
+    res.type('application/json').send(`{"notebook":{"key":${JSON.stringify(key)},"cells":${cells}}}`)
+  })
+
+  /**
+   * A material's bytes, as a download.
+   *
+   * The type comes from a fixed map of extensions (materials.ts ·
+   * downloadTypeOf), never from the row: the bytes come from a room anyone in
+   * it could write to, and `content-type` decides what a followed link turns
+   * into. `sandbox` and `nosniff` are there in case it gets opened anyway.
+   */
+  router.get('/api/p/:id/m/:key/download', (req, res) => {
+    sendMaterial(req, res, 'attachment')
+  })
+
+  /**
+   * A PDF in the browser's own viewer: «Слайды лекции» opens, it does not
+   * download. Without the CSP sandbox the download has: a sandboxed document
+   * is exactly what Chrome's PDF viewer refuses to draw. A PDF is all this
+   * route serves, under its own fixed type.
+   */
+  router.get('/api/p/:id/m/:key/open', (req, res) => {
+    sendMaterial(req, res, 'inline')
+  })
+
+  /**
+   * Everything on the page in one archive, laid out like the room
+   * (publish/zip.ts). Three at a time per page and six per instance; the
+   * rest wait in line for a slot, and only one that waited too long hears
+   * «через минуту». A stream that stops moving is dropped, so a paused
+   * download cannot keep a slot from the class.
+   */
+  router.get('/api/p/:id/zip', (req, res, next) => {
+    const pub = livePage(req.params.id)
+    if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
+    if (listMaterials(pub.id).length === 0) {
+      return res.status(404).json({ error: MATERIAL_NOT_FOUND })
+    }
+    const gone = new AbortController()
+    let entered = false
+    let left = false
+    const leave = () => {
+      if (!entered || left) return
+      left = true
+      leaveZip(pub.id)
+    }
+    // Before the answer this means the client left the line; after it, the download ended.
+    res.on('close', () => {
+      gone.abort()
+      leave()
+    })
+    waitForZip(pub.id, { signal: gone.signal })
+      .then((admitted) => {
+        if (!admitted) {
+          if (gone.signal.aborted) return
+          res.setHeader('retry-after', '60')
+          res.status(429).json({ error: tr('server.zip.busy') })
+          return
+        }
+        entered = true
+        if (gone.signal.aborted) return leave()
+        // The page may have been rebuilt or withdrawn while this download waited.
+        const now = livePage(req.params.id)
+        const materials = now ? listMaterials(now.id) : []
+        if (!now || materials.length === 0) {
+          leave()
+          res.status(404).json({ error: now ? MATERIAL_NOT_FOUND : PUBLICATION_NOT_FOUND })
+          return
+        }
+        const context = pageContext(now)
+        const plan = zipPlan(zipContextOf(now, materials, context.course, context.row), {
+          verify: true,
+        })
+        res.setHeader('content-type', 'application/zip')
+        res.setHeader('content-length', String(plan.bytes))
+        res.setHeader('content-disposition', disposition('attachment', `${plan.top}.zip`))
+        res.setHeader('x-content-type-options', 'nosniff')
+        res.setHeader('x-robots-tag', ROBOTS_TAG)
+        res.setHeader('cache-control', 'no-cache')
+        /*
+         * The socket's idle timer: it fires when no bytes have moved for the
+         * whole span, which is exactly a reader that stopped reading
+         * (backpressure leaves the writes pending). Destroying the response
+         * fires 'close' above, which frees the slot.
+         */
+        res.setTimeout(ZIP_IDLE_MS, () => res.destroy())
+        pipeline(zipStream(plan), res).catch((err: unknown) => {
+          if (!res.writableEnded) {
+            const why = err instanceof Error ? err.message : err
+            console.error(`[pages] archive of ${now.id} broke off:`, why)
+          }
+          res.destroy()
+        })
+      })
+      .catch((err: unknown) => {
+        leave()
+        next(err)
+      })
+  })
+
+  /*
+   * The 0.12 addresses. `notebook.ipynb` was printed on every page and
+   * pasted into chats, so it still leads to the page's first notebook, now
+   * with outputs. A step address has nothing to lead to: the 410 names the
+   * page, and the reader goes there.
+   */
+  router.get('/api/p/:id/notebook.ipynb', (req, res) => {
+    const pub = livePage(req.params.id)
+    if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
+    const first = listMaterials(pub.id).find((m) => m.kind === 'notebook')
+    if (!first) return res.status(404).json({ error: MATERIAL_NOT_FOUND })
+    const address = encodeURIComponent(publicationAddress(pub))
+    res.redirect(302, `/api/p/${address}/m/${first.key}/download`)
   })
 
   router.get('/api/p/:id/step/:seq', (req, res) => {
     const pub = findPublication(req.params.id)
-    if (!pub || pub.state !== 'published') {
-      return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
-    }
-    const asked = req.params.seq === 'first' ? null : Number(req.params.seq)
-    if (asked !== null && !Number.isFinite(asked)) return bad(res, tr("server.badStep.8811c6"))
-    /*
-     * A step is the heaviest thing the public half serves: the whole page,
-     * with all its text outputs. And the most unchanging: while `revision` is
-     * the same, it is byte for byte the same step.
-     */
-    if (fresh(req, res, `${pub.id}.${pub.revision}.${req.params.seq}`)) return
-    const step = readStep(pub.id, asked)
-    if (!step) return res.status(404).json({ error: STEP_NOT_FOUND })
-    res.json({ step })
-  })
-
-  /**
-   * The notebook as an .ipynb file.
-   *
-   * The only way to take the code away whole: the room itself has no export
-   * at all, and selecting across several cells with the mouse is impossible,
-   * since each is a separate editor. The step named in `?step=` is served;
-   * without a number, the last one, that is, the notebook as of publication.
-   *
-   * Outputs are not put into the file. A notebook without them opens
-   * anywhere and weighs kilobytes; with them it is megabytes of base64 in a
-   * file the student takes home to run again, and the first thing they do is
-   * press "Run" anyway.
-   */
-  router.get('/api/p/:id/notebook.ipynb', (req, res) => {
-    const pub = findPublication(req.params.id)
-    if (!pub || pub.state !== 'published') return res.status(404).end()
-    /*
-     * The step the reader is on, if they said which.
-     *
-     * Without `?step=` the last one is served, that is, the notebook as of
-     * publication: that is how this link always worked, and how the page
-     * labels it. An unknown number also gets the last step, not a 404: a
-     * download is not the place to explain addresses to a person, and a file
-     * in hand beats an empty refusal.
-     */
-    const wanted = Number(req.query.step)
-    const body = notebookOfStep(pub.id, Number.isInteger(wanted) ? wanted : null)
-    if (body.length === 0) return res.status(404).end()
-    const name = pub.title.replace(/[^\p{L}\p{N} _-]/gu, '').trim() || 'notebook'
-    res.setHeader('content-type', 'application/x-ipynb+json; charset=utf-8')
-    res.setHeader(
-      'content-disposition',
-      `attachment; filename*=UTF-8''${encodeURIComponent(name)}.ipynb`,
-    )
-    res.send(body)
+    if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
+    res.status(410).json({ error: STEPS_GONE, address: publicationAddress(pub) })
   })
 
   /**
    * Large pieces of output, by content hash.
    *
-   * The hash is the version, so the cache is eternal: the page is opened from
-   * a phone, and a half-megabyte chart must not arrive twice.
+   * The hash is the version, so the bytes never change, but they can be
+   * taken down: «Убрать со страницы» and «Снять страницу» exist for the
+   * student's notebook or the screenshot with someone's data that went out by
+   * mistake. A year of `immutable` would keep such an image in every shared
+   * cache long after the takedown. So an hour, and then a revalidation by
+   * the hash that costs a phone a 304 while the image is still on the page
+   * and a 404 once it is not.
    *
    * The type is taken not from the record but from a whitelist: an output's
    * mime comes from the room's document, that is, from anyone, and
    * `content-type` decides what the response becomes when a direct link is
-   * followed. `image/svg+xml` is a document, and a script inside it would run
-   * on the instance's origin, with the cookie of whoever opened the link.
-   * That and everything unknown goes out as an attachment, which the browser
-   * does not display; `sandbox` is there in case it gets opened anyway.
+   * followed. Everything unknown goes out as an attachment, which the
+   * browser does not display; `sandbox` is there in case it gets opened
+   * anyway.
    */
   router.get('/api/p/:id/blob/:hash', (req, res) => {
     const pub = findPublication(req.params.id)
     if (!pub || pub.state !== 'published') return res.status(404).end()
     const blob = readBlob(pub.id, req.params.hash)
     if (!blob) return res.status(404).end()
+    res.setHeader('content-security-policy', "sandbox; default-src 'none'")
+    res.setHeader('x-content-type-options', 'nosniff')
+    const etag = `"${req.params.hash}"`
+    res.setHeader('etag', etag)
+    res.setHeader('cache-control', `public, max-age=${BLOB_MAX_AGE_S}`)
+    if (holds(req, etag)) return res.status(304).end()
+    /*
+     * A note's SVG keeps its type, so an `<img>` on the page draws it, and is
+     * an attachment, so following the link downloads it instead of opening a
+     * document (with whatever script it carries) on the instance's origin.
+     * It used to go out as an octet-stream, and the note showed a broken
+     * image.
+     */
+    if (blob.mime === 'image/svg+xml') {
+      res.setHeader('content-type', 'image/svg+xml')
+      res.setHeader('content-disposition', 'attachment; filename="image.svg"')
+      return res.send(blob.body)
+    }
     /*
      * The type comes from the whitelist, and is not necessarily the one
      * written in the row: a plotly figure is served as `application/json`.
@@ -722,8 +1053,6 @@ export function courseRoutes(): Router {
     const type = spillContentType(blob.mime)
     res.setHeader('content-type', type ?? 'application/octet-stream')
     res.setHeader('content-disposition', type ? 'inline' : 'attachment; filename="output.bin"')
-    res.setHeader('content-security-policy', "sandbox; default-src 'none'")
-    res.setHeader('cache-control', 'public, max-age=31536000, immutable')
     res.send(blob.body)
   })
 

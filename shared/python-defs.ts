@@ -1,9 +1,7 @@
 /**
  * "Where is this defined": parsing Python exactly as far as a jump needs.
  *
- * A deliberately tiny subset, for the same reason as the markup of the
- * published page (server/src/publish/render.ts): a full grammar already
- * exists here (@codemirror/lang-python with its lezer tree), but it lives in
+ * A deliberately tiny subset: a full grammar already exists here (@codemirror/lang-python with its lezer tree), but it lives in
  * the browser and in the editor. The definition has to be searched for not in
  * the cell that was clicked but in ALL cells of the notebook and in the .py
  * files of the seminar folder, and the server does that: it has both the

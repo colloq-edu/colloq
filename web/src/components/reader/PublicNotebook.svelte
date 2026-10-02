@@ -6,6 +6,11 @@
   highlighted text. This is not a "read-only editor" but a different object —
   behind the page there is neither a document nor a kernel, and there is nothing
   in it to change.
+
+  Every cell carries its id as an anchor (`#<cellId>`): the table of contents
+  links to it, and a student can send a classmate the exact cell. Long code
+  folds to its first lines, because on a phone a forty-line import block is a
+  screen of scrolling before the first sentence of the seminar.
 -->
 <script lang="ts">
   import { tr, formatNumber } from '@shared/i18n'
@@ -110,87 +115,133 @@
     setTimeout(() => (copied = copied === cell.id ? null : copied), 1600)
   }
 
+  /*
+   * Code longer than FOLD_OVER lines shows its first FOLD_TO until unfolded.
+   * The copy button still copies the whole cell: folding is for the eye, and
+   * half a cell pasted into a notebook is a broken cell.
+   */
+  const FOLD_OVER = 30
+  const FOLD_TO = 14
+  let unfolded = $state<Record<string, boolean>>({})
+
+  function shownCode(cell: PublicCell): { code: string; hidden: number } {
+    const lines = cell.source.split('\n')
+    if (lines.length <= FOLD_OVER || unfolded[cell.id]) return { code: cell.source, hidden: 0 }
+    return { code: lines.slice(0, FOLD_TO).join('\n'), hidden: lines.length - FOLD_TO }
+  }
+
+  const folds = (cell: PublicCell): boolean => cell.source.split('\n').length > FOLD_OVER
+
   const seconds = (ms: number): string => tr('room.duration.seconds', { count: formatNumber(ms / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })
 </script>
 
 <div class="flex flex-col gap-6">
   {#each cells as cell (cell.id)}
-    {#if cell.type === 'markdown'}
-      <!-- The seminar's prose — without a frame: it is the text of the page.
-           The rule set is the same as for a note in the room (`.prose-note`) —
-           the promise of "the same cells" is kept by those rules, not by a
-           second description of the same thing. -->
-      <div class="prose-note prose-cell leading-relaxed">
-        {#if render}
-          <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized in lib/render -->
-          {@html render.markdown(noted(cell.source))}
-        {:else}
-          <p class="whitespace-pre-wrap">{cell.source}</p>
-        {/if}
-      </div>
-    {:else}
-      {@const said =
-        refused === cell.id
-          ? tr('room.ui.731')
-          : copied === cell.id
-            ? tr('room.ui.138')
-            : tr('room.ui.732')}
-      <div class="border border-line bg-canvas">
-        <div class="flex items-start gap-3 bg-surface/60 px-4 py-3">
-          <Code code={cell.source} lang="python" class="min-w-0 flex-1 text-code-lg leading-relaxed" />
-          <!--
-            "Copy" on every cell — ten lines, and the whole difference between a
-            page that is read and a page that is used: in the room itself the
-            cells are separate CodeMirror editors, and code cannot be selected
-            with the mouse across several of them.
-          -->
-          <!--
-            A clipboard refusal is an answer too. A cross and the caption
-            "select the code" for the same 1.6 s: on a department's http
-            instance and in a strict browser the button does not work, and the
-            person should learn that from the button itself, not conclude that
-            the page is broken.
-          -->
-          <button
-            class="press mt-0.5 flex h-[24px] w-[24px] shrink-0 items-center justify-center border
-                   border-line transition-colors duration-100 hover:border-faint hover:text-ink
-                   {refused === cell.id ? 'border-warning text-warning' : 'text-muted'}"
-            title={said}
-            aria-label={said}
-            onclick={() => void copy(cell)}
-          >
-            <Icon
-              name={refused === cell.id ? 'x' : copied === cell.id ? 'check' : 'copy'}
-              size={11}
-            />
-          </button>
-        </div>
-
-        {#if cell.outputs.length > 0}
-          <div class="border-t border-line px-4 py-3">
-            <CellOutputs outputs={cell.outputs.map(blobbed)} />
-          </div>
-        {/if}
-
-        <div
-          class="flex items-center justify-end gap-2 border-t border-line bg-surface/60 px-4 py-1.5"
-        >
-          {#if cell.execCount === null && cell.outputs.length > 0}
-            <!--
-              There is an output, but no execution behind it any more: the
-              kernel was restarted or a version was restored. Staying silent
-              here is more honest than making up a number.
-            -->
-            <span class="font-mono text-2xs text-warning">Out [—]</span>
-          {:else if cell.execCount !== null}
-            <span class="font-mono text-2xs text-muted">
-              Out [{cell.execCount}]{cell.ranMs !== null ? ` · ${seconds(cell.ranMs)}` : ''}
-            </span>
+    <!-- The anchor clears the sticky tab strip when a heading is jumped to. -->
+    <div id={cell.id} class="scroll-mt-16 lg:scroll-mt-20">
+      {#if cell.type === 'markdown'}
+        <!-- The seminar's prose — without a frame: it is the text of the page.
+             The rule set is the same as for a note in the room (`.prose-note`) —
+             the promise of "the same cells" is kept by those rules, not by a
+             second description of the same thing. -->
+        <div class="prose-note prose-cell leading-relaxed">
+          {#if render}
+            <!-- Note images load as they come near, like output images. lib/render
+                 sets the attribute on the nodes: a string rewrite of sanitized
+                 HTML is how an attribute value turns back into markup. -->
+            <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized in lib/render -->
+            {@html render.markdown(noted(cell.source), { lazyImages: true })}
           {:else}
-            <span class="font-mono text-2xs text-muted">{tr('room.ui.736')}</span>
+            <p class="whitespace-pre-wrap">{cell.source}</p>
           {/if}
         </div>
-      </div>
-    {/if}
+      {:else}
+        {@const shown = shownCode(cell)}
+        {@const said =
+          refused === cell.id
+            ? tr('room.ui.731')
+            : copied === cell.id
+              ? tr('room.ui.138')
+              : tr('room.ui.732')}
+        <div class="border border-line bg-canvas">
+          <div class="flex items-start gap-3 bg-surface/60 px-4 py-3">
+            <Code code={shown.code} lang="python" class="min-w-0 flex-1 text-code-lg leading-relaxed" />
+            <!--
+              "Copy" on every cell — ten lines, and the whole difference between a
+              page that is read and a page that is used: in the room itself the
+              cells are separate CodeMirror editors, and code cannot be selected
+              with the mouse across several of them.
+            -->
+            <!--
+              A clipboard refusal is an answer too. A cross and the caption
+              "select the code" for the same 1.6 s: on a department's http
+              instance and in a strict browser the button does not work, and the
+              person should learn that from the button itself, not conclude that
+              the page is broken.
+            -->
+            <button
+              class="press mt-0.5 flex h-[24px] w-[24px] shrink-0 items-center justify-center border
+                     border-line transition-colors duration-100 hover:border-faint hover:text-ink
+                     {refused === cell.id ? 'border-warning text-warning' : 'text-muted'}"
+              title={said}
+              aria-label={said}
+              onclick={() => void copy(cell)}
+            >
+              <Icon
+                name={refused === cell.id ? 'x' : copied === cell.id ? 'check' : 'copy'}
+                size={11}
+              />
+            </button>
+          </div>
+
+          {#if folds(cell)}
+            <div class="bg-surface/60 px-4 pb-3">
+              <button
+                type="button"
+                class="press -my-1 flex min-h-8 items-center gap-1 text-[14px] leading-5 text-accent-text"
+                aria-expanded={shown.hidden === 0}
+                onclick={() => (unfolded = { ...unfolded, [cell.id]: !unfolded[cell.id] })}
+              >
+                <Icon name={shown.hidden > 0 ? 'chevron-down' : 'chevron-up'} size={12} strokeWidth={2.6} />
+                <span class="border-b border-dashed border-current">
+                  {shown.hidden > 0 ? tr('room.page.showMore', { count: shown.hidden }) : tr('room.page.showLess')}
+                </span>
+              </button>
+            </div>
+          {/if}
+
+          {#if cell.outputs.length > 0}
+            <div class="border-t border-line px-4 py-3">
+              <CellOutputs outputs={cell.outputs.map(blobbed)} lazy />
+            </div>
+          {/if}
+
+          <!--
+            A cell that never ran and printed nothing gets no footer at all:
+            on a page that is code to read, «не запускалась» under every
+            definition is noise, and the room's own cell keeps saying it.
+          -->
+          {#if cell.execCount !== null || cell.outputs.length > 0}
+            <div
+              class="flex items-center justify-end gap-2 border-t border-line bg-surface/60 px-4
+                     py-1.5"
+            >
+              {#if cell.execCount === null}
+                <!--
+                  There is an output, but no execution behind it any more: the
+                  kernel was restarted or a version was restored. Staying silent
+                  here is more honest than making up a number.
+                -->
+                <span class="font-mono text-2xs text-warning">Out [—]</span>
+              {:else}
+                <span class="font-mono text-2xs text-muted">
+                  Out [{cell.execCount}]{cell.ranMs !== null ? ` · ${seconds(cell.ranMs)}` : ''}
+                </span>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
   {/each}
 </div>

@@ -1,17 +1,11 @@
 /**
- * A step that never existed is not the same as a page that is gone.
+ * The 0.12 addresses after steps are gone.
  *
- * The reader knows two bad outcomes of a publication and mixes them up. It
- * prints "This seminar page no longer exists — it was published again" on ANY
- * 404 for a step request: a student who missed the number in the address (or
- * followed a link to `-1`, which the client router still treats as a step
- * "from the end", although nothing can serve such a step) is told that their
- * page was republished — while the publication is alive and untouched.
- *
- * The server tells these two cases apart and always has: it has different
- * response bodies for the same code. This pins it as a contract — because the
- * reader can tell them apart only by the body, and once the body is gone there
- * will be nothing left to fix it with.
+ * A page used to be a rail of steps at `/p/<h>/<n>`, with `/api/p/:id/step/:seq`
+ * behind each and one `notebook.ipynb` link printed under them. Those links
+ * are in group chats and bookmarks. A step address has nothing left to lead
+ * to, so it answers 410 with the page's address, and the reader goes there;
+ * the notebook link still downloads, now the first notebook with its outputs.
  */
 import './_env.mts'
 import http from 'node:http'
@@ -19,16 +13,17 @@ import express from 'express'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'
-import { createSession } from '../server/src/db.js'
+import { createSession, db } from '../server/src/db.js'
 import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { newBlobBag, pageOfDoc } from '../server/src/publish/build.js'
+import { notebookMaterial } from '../server/src/publish/materials.js'
 import {
-  readStep,
+  setPublicationSlug,
   setPublicationState,
-  stepHeadings,
   writePublication,
 } from '../server/src/publish/store.js'
 import { courseRoutes } from '../server/src/routes/courses.js'
+import { STEPS_GONE } from '../shared/publish.js'
 
 const ROOM = 'pub-steps-room'
 let pubId = ''
@@ -41,17 +36,21 @@ before(async () => {
   const cells = doc.getArray<Y.Map<unknown>>('cells')
   doc.transact(() => (cells.get(0).get('source') as Y.Text).insert(0, 'import pandas as pd'))
   const bag = newBlobBag()
-  const at = Date.now()
+  const material = notebookMaterial({
+    key: 'shagi',
+    name: 'Шаги',
+    path: 'shagi.ipynb',
+    cells: pageOfDoc(doc, bag),
+    blob: () => null,
+  })
   pubId = writePublication({
     sessionId: ROOM,
     title: 'Шаги',
     by: 'Ада',
-    steps: [
-      { seq: 0, label: 'начало', at, cells: pageOfDoc(doc, bag) },
-      { seq: 4, label: 'решение', at, cells: pageOfDoc(doc, bag) },
-    ],
+    materials: [material],
     blobs: bag.all(),
   }).id
+  assert.equal(setPublicationSlug(pubId, 'shagi-01'), 'ok')
 
   const app = express()
   app.use(courseRoutes())
@@ -66,68 +65,50 @@ after(() => {
   shutdownCollab()
 })
 
-async function step(seq: string): Promise<{ status: number; error: string }> {
-  const res = await fetch(`${base}/api/p/${pubId}/step/${encodeURIComponent(seq)}`)
-  const body = (await res.json()) as { error?: string }
-  return { status: res.status, error: body.error ?? '' }
+async function step(handle: string, seq: string): Promise<{ status: number; body: Record<string, unknown> }> {
+  const res = await fetch(`${base}/api/p/${handle}/step/${encodeURIComponent(seq)}`)
+  return { status: res.status, body: (await res.json()) as Record<string, unknown> }
 }
 
-test('publication steps are read by their numbers, and "first" by the word', () => {
-  assert.deepEqual(
-    stepHeadings(pubId).map((h) => h.seq),
-    [0, 4],
-  )
-  assert.equal(readStep(pubId, 0)?.label, 'начало')
-  assert.equal(readStep(pubId, 4)?.label, 'решение')
-  assert.equal(readStep(pubId, null)?.label, 'начало', 'the first step stopped being first')
+test('every step address answers 410 with the page to go to', async () => {
+  for (const seq of ['0', '3', '-1', 'first', 'первый']) {
+    const { status, body } = await step(pubId, seq)
+    assert.equal(status, 410, `step ${seq}`)
+    assert.equal(body.error, STEPS_GONE)
+    // The page's own address, not the id the old link happened to carry.
+    assert.equal(body.address, 'shagi-01')
+  }
 })
 
-test('a negative number is not a "step from the end" but a step that does not exist', () => {
-  /*
-   * `readStep` looks `seq` up literally, so −1 is just a number that is not
-   * there. The opposite is promised in two places: the client's address regex
-   * (`web/src/lib/routes.ts`, `PUBLIC_PATH` with `-?\\d+`) and a comment in
-   * `shell.test.mts` — "a negative step is 'from the end', and it is a step
-   * too". There is no implementation anywhere. As long as there is none, this
-   * assertion is the truth about the product; once one appears, the failure
-   * here will be exactly the place where it is decided what −1 becomes.
-   */
-  assert.equal(readStep(pubId, -1), null)
-  assert.equal(readStep(pubId, 99), null)
-})
-
-test('a live page with a broken step says "no step", not "no page"', async () => {
-  // Exactly the pair of answers by which the reader has to choose between "there
-  // is no such step" and "the page was published again". They share one code —
-  // 404 — and differ only in the body.
-  const missing = await step('99')
-  assert.equal(missing.status, 404)
-  assert.equal(missing.error, 'step not found')
-
-  const negative = await step('-1')
-  assert.equal(negative.status, 404)
-  assert.equal(negative.error, 'step not found', 'a negative step answers like a vanished page')
-
-  // And the publication itself is alive meanwhile and serves its steps.
-  const page = await fetch(`${base}/api/p/${pubId}`)
-  assert.equal(page.status, 200)
-  const seen = (await page.json()) as { seminar: { steps: { seq: number }[] } }
-  assert.deepEqual(seen.seminar.steps.map((s) => s.seq), [0, 4])
-})
-
-test('a non-number does not pass itself off as a step', async () => {
-  const nonsense = await step('первый')
-  assert.equal(nonsense.status, 400, 'garbage in the address passed as a step number')
-})
-
-test('a withdrawn page is "no page" by now, and answers exactly so', async () => {
+test('a withdrawn page still names itself; an unknown one is a 404', async () => {
   setPublicationState(pubId, 'withdrawn')
-  const withdrawn = await step('0')
-  assert.equal(withdrawn.status, 404)
-  assert.equal(
-    withdrawn.error,
-    'publication not found',
-    'a withdrawn page answers like a live one with a bad number',
-  )
-  setPublicationState(pubId, 'published')
+  try {
+    const { status, body } = await step('shagi-01', '0')
+    assert.equal(status, 410)
+    assert.equal(body.address, 'shagi-01')
+  } finally {
+    setPublicationState(pubId, 'published')
+  }
+  const missing = await step('no-such-page', '0')
+  assert.equal(missing.status, 404)
+  assert.equal(missing.body.error, 'publication not found')
+})
+
+test('the notebook link redirects to the first notebook’s download', async () => {
+  const hop = await fetch(`${base}/api/p/${pubId}/notebook.ipynb?step=4`, { redirect: 'manual' })
+  assert.equal(hop.status, 302)
+  assert.equal(hop.headers.get('location'), '/api/p/shagi-01/m/shagi/download')
+  const file = await fetch(`${base}${hop.headers.get('location')}`)
+  assert.equal(file.status, 200)
+  assert.match(file.headers.get('content-disposition') ?? '', /filename\*=UTF-8''shagi\.ipynb/)
+})
+
+test('the rollback copy is still written for 0.12', () => {
+  // A 0.12 brought back renders every page from step 0; the store keeps it.
+  const row = db
+    .prepare('SELECT label, page FROM publication_steps WHERE pub = ? AND seq = 0')
+    .get(pubId) as { label: string; page: string }
+  assert.equal(row.label, 'Тетрадь на момент публикации')
+  const cells = JSON.parse(row.page) as { source: string }[]
+  assert.ok(cells.some((c) => c.source.startsWith('import pandas as pd')))
 })

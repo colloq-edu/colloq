@@ -52,7 +52,7 @@ test('a text cell may not put a form in the notebook', () => {
  */
 test('the one place that renders a note still hands the sanitizer the list', () => {
   const source = read('web/src/lib/render.svelte.ts')
-  const from = source.indexOf('markdown(source)')
+  const from = source.indexOf('markdown(source')
   const to = source.indexOf('ansi(text)')
   // The slice between the two renderers is read: if they get renamed, the test
   // has to say so in words rather than silently check an empty string.

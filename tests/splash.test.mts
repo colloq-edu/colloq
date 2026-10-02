@@ -244,6 +244,8 @@ test('the splash stands where the skeleton was, and on a screen it is the screen
   // Inside an already drawn interface — the pane one.
   assert.match(code(read(NOTEBOOK)), /<Splash size="pane"/, 'the notebook area does not use the pane one')
   const reader = code(read(READER))
-  assert.match(reader, /<Splash size="pane"/, 'the page body does not use the pane one')
+  // A notebook tab on its way: the class page is drawn, only the cells are coming.
+  const classPage = code(read('web/src/components/reader/ClassPage.svelte'))
+  assert.match(classPage, /<Splash size="pane"/, 'the notebook tab does not use the pane one')
   assert.match(reader, /<Splash label=/, 'the empty page does not use the screen one')
 })

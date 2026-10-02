@@ -16,11 +16,17 @@
     eyebrow?: Snippet
     /** Beside the title: state badge, deadline — what is read along with the name. */
     beside?: Snippet
+    /**
+     * Under the title, in place of `subtitle`, when the line carries a link:
+     * a course's address with «открыть», a class's «04 · EDA · вс, 20 сен»
+     * with «Изменить в курсе». A plain string cannot hold either.
+     */
+    lede?: Snippet
     actions?: Snippet
     children: Snippet
   }
 
-  let { title, subtitle, eyebrow, beside, actions, children }: Props = $props()
+  let { title, subtitle, eyebrow, beside, lede, actions, children }: Props = $props()
 </script>
 
 <!-- The header is fixed and the body scrolls under it: a settings page can run
@@ -40,7 +46,7 @@
   -->
   <header
     class="flex shrink-0 flex-wrap gap-x-4 gap-y-2 border-b border-line px-7
-           {subtitle ? 'items-start py-5' : 'min-h-16 items-center py-3'}"
+           {lede ? 'items-end py-5' : subtitle ? 'items-start py-5' : 'min-h-16 items-center py-3'}"
   >
     <div class="min-w-0 flex-1 basis-48">
       {#if eyebrow}
@@ -54,7 +60,9 @@
         <h1 class="min-w-0 max-w-full truncate text-display font-black text-ink">{title}</h1>
         {#if beside}{@render beside()}{/if}
       </div>
-      {#if subtitle}
+      {#if lede}
+        <div class="mt-2 flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-1">{@render lede()}</div>
+      {:else if subtitle}
         <p class="mt-1 text-ui text-muted">{subtitle}</p>
       {/if}
     </div>

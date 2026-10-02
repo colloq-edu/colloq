@@ -33,8 +33,9 @@ import { AUDIT_RETENTION_DAYS, listAdminEvents, pruneAdminEvents, recordAdminEve
 import { createTeacher, getTeacherByEmail, rotateLinkKey } from '../server/src/admin/store.js'
 import { app } from '../server/src/app.js'
 import { createSession, db } from '../server/src/db.js'
-import { shutdownCollab } from '../server/src/collab/index.js'
+import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { writePublication } from '../server/src/publish/store.js'
+import { addBook } from '../shared/notebook.js'
 import { createCompetition, getCompetition, updateCompetition, updateSubmission } from '../server/src/competitions/store.js'
 import { adminEnvironmentRoutes } from '../server/src/routes/admin-environments.js'
 import { adminAuditRoutes } from '../server/src/routes/admin-audit.js'
@@ -247,12 +248,48 @@ test('deleting a room, making and deleting a course and every change of a public
   assert.equal(last('course.deleted').target?.id, course.id)
 
   createSession('auditpage', 'Разбор', null)
-  const published = await call('POST', '/api/admin/seminars/auditpage/publish', { cookie: ownerCookie, body: { steps: [] } })
+  const homework = addBook(getSessionDoc('auditpage').doc, 'homework.ipynb').root
+  const published = await call('POST', '/api/admin/seminars/auditpage/publish', {
+    cookie: ownerCookie,
+    body: {
+      notebooks: [
+        { root: 'cells', name: 'Тетрадь' },
+        { root: homework, name: 'Домашнее задание' },
+      ],
+      files: [],
+      ack: [],
+    },
+  })
   assert.equal(published.status, 200)
-  const { publication } = (await published.json()) as { publication: { id: string } }
+  const { page: publication } = (await published.json()) as {
+    page: { id: string; materials: { key: string }[] }
+  }
   const publish = last('publication.published')
   assert.equal(publish.target?.id, publication.id)
   assert.equal(publish.detail?.room, 'auditpage')
+  assert.equal(publish.detail?.materials, 2)
+  assert.equal(publish.detail?.trigger, 'teacher')
+
+  // One material taken off the page is a change of a public page too.
+  const key = publication.materials[1].key
+  const removed = await call('DELETE', `/api/admin/publications/${publication.id}/materials/${key}`, {
+    cookie: ownerCookie,
+  })
+  assert.equal(removed.status, 200)
+  const taken = last('publication.material_removed')
+  assert.equal(taken.target?.id, publication.id)
+  assert.equal(taken.detail?.material, 'Домашнее задание')
+
+  // Opening the room behind the page to everyone with the link is a staff decision too.
+  const opened = await call('PATCH', `/api/admin/publications/${publication.id}`, {
+    cookie: ownerCookie,
+    body: { roomAccess: 'anyone' },
+  })
+  assert.equal(opened.status, 200)
+  const door = last('publication.room_access')
+  assert.equal(door.target?.id, publication.id)
+  const { access, was, room: doorRoom } = door.detail ?? {}
+  assert.deepEqual([access, was, doorRoom], ['anyone', 'members', 'auditpage'])
 
   assert.equal((await call('DELETE', '/api/admin/seminars/auditpage/publish', { cookie: ownerCookie })).status, 200)
   assert.equal(last('publication.withdrawn').target?.id, publication.id)
@@ -260,7 +297,7 @@ test('deleting a room, making and deleting a course and every change of a public
   assert.equal(last('publication.restored').target?.id, publication.id)
 
   createSession('auditgone', 'Старый разбор', null)
-  const doomed = writePublication({ sessionId: 'auditgone', title: 'Старый разбор', by: null, steps: [], blobs: [] })
+  const doomed = writePublication({ sessionId: 'auditgone', title: 'Старый разбор', by: null, materials: [], blobs: [] })
   assert.equal((await call('DELETE', `/api/admin/publications/${doomed.id}/forever`, { cookie: ownerCookie })).status, 200)
   const erased = last('publication.deleted')
   assert.deepEqual(erased.target, { type: 'publication', id: doomed.id, label: 'Старый разбор' })

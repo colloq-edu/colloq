@@ -1,6 +1,6 @@
 import { tr } from './i18n.js'
 /**
- * A course, a published seminar and the steps a student follows.
+ * A course, its classes and the page each class leaves behind.
  *
  * Three new nouns, and none of them is a room. A room is the place where a
  * class happens: people enter it by a link, and it holds the shared document,
@@ -21,17 +21,55 @@ export type PublicationId = string
 
 /* ------------------------------------------------------------- course */
 
-export interface CourseItemSeminar {
+export { CLASS_DAY_RE } from './class-day.js'
+
+/** The «о чём» line of a class: one or two sentences, not a syllabus. */
+export const MAX_CLASS_ABOUT = 280
+
+/**
+ * What every course row may carry besides its kind, all optional.
+ *
+ * Optional on purpose: rows written by 0.12 have none of these, and an older
+ * panel that saves the course drops them (the release notes say so). The
+ * server keeps a stored field when an incoming row does not mention it
+ * (routes/courses.ts), so an old tab cannot wipe class days.
+ */
+export interface CourseRowFields {
+  /** 'r' + 7 characters, assigned by the server and never reused within a course. */
+  id?: string
+  /** The student-facing title; wins over the live room name. */
+  title?: string | null
+  /** 'YYYY-MM-DD', a calendar day in the instance zone; never a timestamp. */
+  day?: string | null
+  /** At most MAX_CLASS_ABOUT characters. */
+  about?: string | null
+  /**
+   * The legacy week text, carried from the plan row when a room is seated
+   * into it. Shown only while `day` is null.
+   */
+  when?: string
+}
+
+/**
+ * Whether a published page hangs off a course row, and what is on it.
+ *
+ * Computed live by course-view.ts · freshCourseItems; the stored row keeps
+ * `null` here.
+ */
+export interface CoursePageRef {
+  id: PublicationId
+  slug: string | null
+  publishedAt: number
+  /** How many materials the page has. */
+  materials: number
+}
+
+export interface CourseItemSeminar extends CourseRowFields {
   kind: 'seminar'
   sessionId: string
   name: string
   /** Whether it has a public page, and what is on it. */
-  publication: {
-    id: PublicationId
-    slug: string | null
-    publishedAt: number
-    steps: number
-  } | null
+  publication: CoursePageRef | null
 }
 
 /**
@@ -41,7 +79,7 @@ export interface CourseItemSeminar {
  * week silently vanished is broken for whoever sat in it, and the numbering
  * of the other weeks shifts by one and stops matching the timetable.
  */
-export interface CourseItemGone {
+export interface CourseItemGone extends CourseRowFields {
   kind: 'gone'
   name: string
   at: number
@@ -67,14 +105,15 @@ export interface CourseItemGone {
  * September, or thirty rooms would have to be created in advance, each with
  * its own link leading to an empty notebook three months before the class.
  *
- * `when` is the week in the timetable's words ("31 Aug – 6 Sep"), not a date:
- * that is how timetables are written, and turning it into numbers would mean
- * inventing a day that is not in it.
+ * `when` is the week in the timetable's words ("31 Aug – 6 Sep"); `day` is
+ * the calendar day once someone knows it. `pause` marks a break (holidays):
+ * it has no number, and 0.12 shows it as an ordinary plan row.
  */
-export interface CourseItemPlanned {
+export interface CourseItemPlanned extends CourseRowFields {
   kind: 'planned'
   name: string
   when: string
+  pause?: boolean
 }
 
 export type CourseItem = CourseItemSeminar | CourseItemGone | CourseItemPlanned
@@ -133,49 +172,59 @@ export interface AddressHolder {
   former: boolean
 }
 
+const TRANSLIT: Record<string, string> = {
+  а: 'a',
+  б: 'b',
+  в: 'v',
+  г: 'g',
+  д: 'd',
+  е: 'e',
+  ё: 'e',
+  ж: 'zh',
+  з: 'z',
+  и: 'i',
+  й: 'y',
+  к: 'k',
+  л: 'l',
+  м: 'm',
+  н: 'n',
+  о: 'o',
+  п: 'p',
+  р: 'r',
+  с: 's',
+  т: 't',
+  у: 'u',
+  ф: 'f',
+  х: 'h',
+  ц: 'c',
+  ч: 'ch',
+  ш: 'sh',
+  щ: 'sch',
+  ъ: '',
+  ы: 'y',
+  ь: '',
+  э: 'e',
+  ю: 'yu',
+  я: 'ya',
+}
+
+/**
+ * Russian letters as Latin ones, lowercased; everything else as it was.
+ *
+ * Shared by address suggestions and by the publish checks that compare a
+ * file name like `ZuevAkim_02.ipynb` with a participant called «Зуев Аким»
+ * (shared/materials.ts · rosterMatch).
+ */
+export function transliterate(text: string): string {
+  return [...text.toLowerCase()].map((ch) => TRANSLIT[ch] ?? ch).join('')
+}
+
 /**
  * A word from the title is a suggestion, not a verdict: the person erases it
  * and writes their own.
  */
 export function suggestSlug(name: string): string {
-  const TRANSLIT: Record<string, string> = {
-    а: 'a',
-    б: 'b',
-    в: 'v',
-    г: 'g',
-    д: 'd',
-    е: 'e',
-    ё: 'e',
-    ж: 'zh',
-    з: 'z',
-    и: 'i',
-    й: 'y',
-    к: 'k',
-    л: 'l',
-    м: 'm',
-    н: 'n',
-    о: 'o',
-    п: 'p',
-    р: 'r',
-    с: 's',
-    т: 't',
-    у: 'u',
-    ф: 'f',
-    х: 'h',
-    ц: 'c',
-    ч: 'ch',
-    ш: 'sh',
-    щ: 'sch',
-    ъ: '',
-    ы: 'y',
-    ь: '',
-    э: 'e',
-    ю: 'yu',
-    я: 'ya',
-  }
-  const out = [...name.toLowerCase()]
-    .map((ch) => TRANSLIT[ch] ?? ch)
-    .join('')
+  const out = transliterate(name)
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 64)
@@ -216,21 +265,48 @@ export interface Course {
   former?: string[]
 }
 
+/** What the course page needs to say about one row. */
+export type ClassState = 'plan' | 'room' | 'closed' | 'page' | 'pause'
+
+/** A material as a course row lists it: enough for a tag and a link. */
+export interface MaterialRef {
+  key: string
+  kind: MaterialKind
+  name: string
+  bytes: number
+}
+
+export interface PublicClass {
+  /** The row id. */
+  key: string
+  /** The ordinal among non-pause rows; `null` for a pause. */
+  n: number | null
+  /** studentTitle: the row's title, else the live room name. */
+  title: string
+  about: string | null
+  day: string | null
+  /** The legacy week text, only while `day` is null. */
+  when: string | null
+  state: ClassState
+  page: { address: string; materials: MaterialRef[]; zipBytes: number; updatedAt: number } | null
+}
+
 /**
  * A course as a student sees it.
  *
  * A separate type rather than the whole `Course`, and the difference is
  * exactly what it lacks: `sessionId` does not go out. The eight characters of
  * a room are the whole right to write into it, so a link given to the class
- * "for reading" must not open the live notebook for them. `rev`, the author
- * and the creation date mean nothing to a student either.
+ * "for reading" must not open the live notebook for them. `today` is the
+ * instance's day: the browser's zone never decides what «сегодня» is.
  */
 export interface PublicCourseView {
   id: CourseId
   slug: string | null
   name: string
   blurb: string | null
-  items: CourseItem[]
+  today: string
+  classes: PublicClass[]
 }
 
 /* ------------------------------------------------------- published seminar */
@@ -253,6 +329,12 @@ export interface PublicCell {
   ranMs: number | null
 }
 
+/*
+ * PublicStep, StepHeading, PublicSeminar and PublishCandidate are the 0.12
+ * page model. The store still dual-writes one step (seq 0) for rollback, and
+ * the old routes and screens read these until they move to PublicPage.
+ */
+
 /** One step: a moment the teacher named, and the notebook at that moment. */
 export interface PublicStep {
   /** The history row the step is built from. It is also its permanent address. */
@@ -271,6 +353,270 @@ export interface StepHeading {
 }
 
 export type PublicationState = 'published' | 'withdrawn'
+
+/* --------------------------------------------------------- class pages */
+
+/**
+ * What a material is, by its file name (shared/materials.ts · materialKind).
+ *
+ * The stored kind decides how the class page offers it: a notebook opens as
+ * a tab, a PDF in the browser's viewer, everything else downloads.
+ */
+export type MaterialKind = 'notebook' | 'pdf' | 'data' | 'code' | 'text' | 'image' | 'file'
+
+export const MATERIAL_KINDS: readonly MaterialKind[] = [
+  'notebook',
+  'pdf',
+  'data',
+  'code',
+  'text',
+  'image',
+  'file',
+]
+
+/** A heading of a notebook, for its table of contents. */
+export interface OutlineEntry {
+  /** The cell it is in: the reader scrolls to `#<cellId>`. */
+  id: string
+  level: 1 | 2 | 3
+  /** At most MAX_OUTLINE_TEXT characters. */
+  text: string
+}
+
+export interface PublicMaterial extends MaterialRef {
+  /** Room-relative: 'seminar.ipynb', 'data/train.csv'. The ZIP keeps the same paths. */
+  path: string
+  cells?: number
+  /** Cells with at least one output. */
+  outputs?: number
+  outline?: OutlineEntry[]
+}
+
+/** The class before or after this one in the course. */
+export interface PublicNeighbor {
+  n: number
+  title: string
+  day: string | null
+  /** `null`: that class has no page yet. */
+  address: string | null
+}
+
+export interface PublicPage {
+  id: PublicationId
+  slug: string | null
+  address: string
+  state: PublicationState
+  title: string
+  about: string | null
+  day: string | null
+  n: number | null
+  today: string
+  firstAt: number
+  updatedAt: number
+  /**
+   * The instance-zone day of `updatedAt` ('YYYY-MM-DD'), for «обновлено 14 сен».
+   * The server decides it, like `today`: the browser's zone never decides a day.
+   */
+  updatedOn: string
+  course: { id: CourseId; slug: string | null; name: string } | null
+  prev: PublicNeighbor | null
+  next: PublicNeighbor | null
+  /** Empty when withdrawn. */
+  materials: PublicMaterial[]
+  zip: { name: string; bytes: number } | null
+}
+
+/** A notebook tab: the PublicCell whitelist below, unchanged. */
+export interface PublicNotebook {
+  key: string
+  cells: PublicCell[]
+}
+
+/**
+ * What the teacher picked, kept with the page so that «Обновить страницу»
+ * and the end of class rebuild it without asking again.
+ *
+ * Notebooks are named by ROOT, not by path: a root is issued once and lives
+ * with the notebook (shared/notebook.ts · rootForNewBook), while a path gets
+ * renamed. Files are named by path, since they have nothing else.
+ */
+export interface PublishSelection {
+  v: 1
+  notebooks: { root: string; name: string }[]
+  files: { path: string; name: string }[]
+  autoRefresh: boolean
+  /** Check ids the teacher confirmed («Проверил(а) — публиковать как есть»). */
+  ack: string[]
+  /**
+   * Every notebook root and file path the room had when this was saved. The
+   * picker marks anything not in it «новая»: added since, so neither ticked
+   * nor knowingly left out.
+   */
+  seen?: string[]
+  /**
+   * Who the page leads into the room (RoomAccess). Absent on picks saved
+   * before the door existed, which read as 'members'.
+   */
+  roomAccess?: RoomAccess
+}
+
+/* ------------------------------------------------------- the room door */
+
+/**
+ * Who a class page (or its course row) offers a way into the room.
+ *
+ * Two objects since pages exist: the publication, frozen and forwardable, and
+ * the room, where the class worked and where its marks and its oracle thread
+ * stay. The room shows the participants' names and their questions, and its
+ * eight characters are the right to write in it, so the page never carries
+ * them: the way in is asked for separately (POST /api/p/:id/room), by a
+ * browser that proves it was there.
+ *
+ * - 'members': whoever presents a token of this room (they joined from this
+ *   browser) and is not banned. The default.
+ * - 'anyone': everyone who can open the page. The teacher's decision, named
+ *   with its cost in the panel.
+ * - 'none': nobody but staff.
+ */
+export type RoomAccess = 'members' | 'anyone' | 'none'
+
+export const ROOM_ACCESS: readonly RoomAccess[] = ['members', 'anyone', 'none']
+
+export function isRoomAccess(value: unknown): value is RoomAccess {
+  return typeof value === 'string' && (ROOM_ACCESS as readonly string[]).includes(value)
+}
+
+/**
+ * How many tokens one door request may carry, and how long each may be.
+ *
+ * A browser holds one token per room it ever joined, newest first
+ * (web/src/lib/identity.ts · storedTokens): fifty is more than a year of
+ * weekly classes. A real token is a few hundred bytes; two kilobytes is room
+ * to spare, and anything longer is not one.
+ */
+export const MAX_DOOR_TOKENS = 50
+export const MAX_DOOR_TOKEN_BYTES = 2048
+
+/**
+ * The answer about the way into a class's room.
+ *
+ * `access` is what holds right now: 'none' as well when there is no room to
+ * lead to (deleted, or the page withdrawn), so the reader draws nothing.
+ * `room` is non-null only for someone allowed in, and it is the only place a
+ * room address ever reaches a public reader.
+ */
+export interface RoomDoor {
+  access: RoomAccess
+  /** A token of this room, of a participant who is not banned, came with the request. */
+  member: boolean
+  /** The caller is staff: they always see the way in, whatever the setting. */
+  staff: boolean
+  /** `/s/<id>`, and whether the class is still on (not finished, not archived). */
+  room: { path: string; live: boolean } | null
+}
+
+/**
+ * Why a notebook or file is not ticked by default (shared/materials.ts).
+ *
+ * 'too-large' covers two cases told apart by size: above the instance upload
+ * limit the row cannot be ticked at all; between the default-pick threshold
+ * and that limit it is only unticked.
+ */
+export type PickReason =
+  | 'student'
+  | 'roster'
+  | 'private'
+  | 'answers'
+  | 'generated'
+  | 'unused'
+  | 'image'
+  | 'too-large'
+  | 'empty'
+
+export interface NotebookChoice {
+  root: string
+  path: string
+  cells: number
+  /** Cells with at least one output. */
+  outputs: number
+  name: string
+  picked: boolean
+  why: PickReason | null
+  /** The student's name for a student's own notebook. */
+  owner: string | null
+  /** Added since the last publish: it starts unticked. */
+  isNew: boolean
+}
+
+export interface FileChoice {
+  path: string
+  kind: MaterialKind
+  bytes: number
+  name: string
+  picked: boolean
+  why: PickReason | null
+  /** Paths of the notebooks that mention this file. */
+  usedBy: string[]
+  isNew: boolean
+}
+
+/**
+ * Something on the page the teacher should look at before it goes public.
+ *
+ * `id` is stable across rebuilds (a hash of what and where), so a
+ * confirmation survives «Обновить страницу» as long as the finding is the
+ * same one; a new key in a cell is a new id and stops the refresh.
+ */
+export interface PublishCheck {
+  id: string
+  kind: 'secret' | 'name' | 'roomId'
+  /** «Семинар», ячейка 14 | data/notes.txt */
+  where: string
+  root: string | null
+  cellId: string | null
+  path: string | null
+  /** Masked for secrets («sk-p…3f»), as found for names. */
+  sample: string
+}
+
+export interface AdminPage {
+  id: PublicationId
+  slug: string | null
+  address: string
+  state: PublicationState
+  firstAt: number
+  publishedAt: number
+  revision: number
+  materials: (MaterialRef & { path: string })[]
+  zipBytes: number
+  former: string[]
+}
+
+export interface PublishInfo {
+  room: { id: string; name: string; createdAt: number; finishedAt: number | null; exists: boolean }
+  course: {
+    id: CourseId
+    name: string
+    slug: string | null
+    row: { id: string; n: number | null; title: string; day: string | null }
+  } | null
+  heldOn: string | null
+  notebooks: NotebookChoice[]
+  files: FileChoice[]
+  checks: PublishCheck[]
+  /** Cells the room address was removed from. */
+  scrubbed: number
+  selection: PublishSelection | null
+  /** The saved RoomAccess, else the default 'members'. */
+  roomAccess: RoomAccess
+  page: AdminPage | null
+  limits: { materials: number; pageBytes: number; fileBytes: number }
+}
+
+/** studentTitle: what students see as the class's name. */
+export function studentTitle(row: { title?: string | null; name: string }): string {
+  return row.title?.trim() || row.name
+}
 
 export interface PublicSeminar {
   id: PublicationId
@@ -320,6 +666,14 @@ export interface PublishCandidate {
  */
 export const STEP_NOT_FOUND = 'step not found'
 export const PUBLICATION_NOT_FOUND = 'publication not found'
+/**
+ * The page is there, the material is not: a tab or download link from before
+ * a rebuild that renamed or dropped it. The class page offers the first
+ * material instead of saying the page is gone.
+ */
+export const MATERIAL_NOT_FOUND = 'material not found'
+/** What the 0.12 step addresses answer now (410), with the page's address to go to. */
+export const STEPS_GONE = 'steps are gone'
 
 /**
  * What exactly was not found, by the refusal's code and body.
@@ -331,6 +685,14 @@ export const PUBLICATION_NOT_FOUND = 'publication not found'
 export function refusedStep(status: number, message: string): 'step' | 'publication' | null {
   if (status !== 404) return null
   if (message === STEP_NOT_FOUND) return 'step'
+  if (message === PUBLICATION_NOT_FOUND) return 'publication'
+  return null
+}
+
+/** The same verdict for a notebook tab (`/api/p/:id/m/:key`): no such material, or no page. */
+export function refusedMaterial(status: number, message: string): 'material' | 'publication' | null {
+  if (status !== 404) return null
+  if (message === MATERIAL_NOT_FOUND) return 'material'
   if (message === PUBLICATION_NOT_FOUND) return 'publication'
   return null
 }
@@ -348,9 +710,30 @@ export const MAX_COURSE_BLURB = 140
  * constant for both sides.
  */
 export const MAX_PLANNED_WHEN = 40
+/**
+ * The label of the dual-written seq 0 step (publish/store.ts). Still read by
+ * the old publish screen; goes with it.
+ */
 export const MAX_STEP_LABEL = 80
 /** How many steps can be published at once. Forty is already a semester. */
 export const MAX_STEPS = 40
+
+/** Materials on one page: two notebooks, slides and a few data files fit with room to spare. */
+export const MAX_MATERIALS = 24
+/** One page, all materials together: far under the 4 GB a plain (non-ZIP64) archive holds. */
+export const MAX_PAGE_BYTES = 200 * 1024 * 1024
+/** A tab name or a file label. */
+export const MAX_MATERIAL_NAME = 60
+/** Headings in one notebook's table of contents, and characters in one heading. */
+export const MAX_OUTLINE = 60
+export const MAX_OUTLINE_TEXT = 120
+/**
+ * Default-pick thresholds: data is ticked up to 20 MB, code and text up to
+ * 200 KB. Above them a file is still allowed (up to the upload limit), only
+ * not ticked by itself.
+ */
+export const PICK_DATA_BYTES = 20 * 1024 * 1024
+export const PICK_TEXT_BYTES = 200 * 1024
 
 /**
  * The threshold beyond which output content moves to a separate record.
@@ -461,12 +844,11 @@ export const SKIP_REASON_TEXT: Record<SkipReason, string> = {
 /* ----------------------------------------------------------------- indexing */
 
 /**
- * Whether to let search engines onto published pages: one decision for both
- * carriers.
+ * Whether to let search engines onto published pages.
  *
- * There are two: the Pages export (`server/src/publish/render.ts`) and the
- * live instance (`/p/`, `/c/` in `server/src/index.ts`). While the rule lived
- * in comments on both sides, the comments managed to diverge: the static
+ * There used to be two carriers: a static Pages export (retired) and the live
+ * instance (`/p/`, `/c/` in `server/src/index.ts`). While the rule lived in
+ * comments on both sides, the comments managed to diverge: the static
  * export set `noindex` ("the page is given to the class, not to a search
  * engine"), while the instance's `robots.txt` closed only the rooms and the
  * panel, explaining that publications "are indexed: that is what they are

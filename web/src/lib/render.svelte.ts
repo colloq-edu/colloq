@@ -22,13 +22,22 @@ export { ansi256ToBasic, foldAnsiColours, stripAnsi } from './ansi'
 /** What the module exposes once the chunk has landed. */
 export interface Renderers {
   /** Untrusted markdown -> sanitized HTML, external links defused. */
-  markdown: (source: string) => string
+  markdown: (source: string, options?: MarkdownOptions) => string
   /** Terminal/stdout text -> sanitized HTML with the ANSI colours kept. */
   ansi: (text: string) => string
   /** Untrusted HTML (a DataFrame repr, a rich output) -> sanitized HTML. */
   html: (markup: string) => string
   /** Untrusted SVG (a matplotlib figure) -> sanitized SVG. */
   svg: (markup: string) => string
+}
+
+/** How markdown() shapes its output beyond the sanitizing policy, which never varies. */
+export interface MarkdownOptions {
+  /**
+   * Images get `loading="lazy"`: a public class page can carry dozens of note
+   * screenshots, and a phone on campus data should not pull them all at once.
+   */
+  lazyImages?: boolean
 }
 
 /*
@@ -134,7 +143,7 @@ async function importRenderers(): Promise<Renderers> {
   }
 
   return {
-    markdown(source) {
+    markdown(source, options = {}) {
       const raw = marked.parse(source, { async: false, gfm: true, breaks: true })
       const holder = document.createElement('div')
       holder.appendChild(
@@ -222,6 +231,18 @@ async function importRenderers(): Promise<Renderers> {
       for (const anchor of holder.querySelectorAll('a[href]')) {
         anchor.setAttribute('target', '_blank')
         anchor.setAttribute('rel', 'noopener noreferrer nofollow')
+      }
+      /*
+       * On the node, before serializing, and never as a regex over the result.
+       * Browsers before mid-2025 leave `<` unescaped inside attribute values
+       * when they serialize, so `alt="<img onerror=…"` in a sanitized note
+       * comes out of innerHTML looking like a tag, and a string rewrite that
+       * inserts a quote there breaks out of the attribute: stored XSS on a
+       * page anyone with the link opens. Nor can it wait for a post-mount
+       * action: eager loads start the moment {@html} inserts the markup.
+       */
+      if (options.lazyImages) {
+        for (const img of holder.querySelectorAll('img')) img.setAttribute('loading', 'lazy')
       }
       return holder.innerHTML
     },

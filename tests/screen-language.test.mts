@@ -87,11 +87,11 @@ test('the server catalog keeps exactly what a browser can look up', () => {
   ]) assert.ok(client.has(key), `the client looks up ${key}, but it was cut out`)
   const room = built('room', 'ru')
   for (const key of client) assert.ok(room[key], `${key} did not reach the room`)
-  // And the publication pages are rendered by the server itself; their words are
-  // not in the browser.
+  // And what the server writes by itself (the class archive's README, link
+  // cards) keeps its words out of the browser.
   const server = Object.keys(messages).filter((key) => key.startsWith('server.'))
   assert.ok(client.size * 5 < server.length, `${client.size} of ${server.length} is not a subset`)
-  assert.equal(room['server.ssr.download'], undefined)
+  assert.equal(room['server.zip.footer'], undefined)
 })
 
 /*

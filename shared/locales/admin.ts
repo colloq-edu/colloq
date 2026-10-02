@@ -217,14 +217,6 @@ export const adminMessages: MessageCatalog = {
     "ru": "на уровне инстанса разрешены только подсказки",
     "en": "the instance allows hints only"
   },
-  "admin.version": {
-    "ru": "версия {p0}",
-    "en": "version {p0}"
-  },
-  "admin.version.skipped": {
-    "ru": "Версия «{p0}» пропущена: {p1}",
-    "en": "Version “{p0}” skipped: {p1}"
-  },
   "admin.just.now": {
     "ru": "только что",
     "en": "just now"
@@ -293,14 +285,6 @@ export const adminMessages: MessageCatalog = {
     "ru": "Создайте курс и добавьте занятия. Студенты увидят список и ссылки на опубликованные материалы.",
     "en": "Create a course and add classes. Students will see the list and links to published materials."
   },
-  "admin.published": {
-    "ru": "опубликовано ·",
-    "en": "published ·"
-  },
-  "admin.not.yet": {
-    "ru": "ещё нет",
-    "en": "not yet"
-  },
   "admin.pages.without.a.room": {
     "ru": "Страницы без комнаты",
     "en": "Pages without a room"
@@ -308,18 +292,6 @@ export const adminMessages: MessageCatalog = {
   "admin.the.seminar.was.deleted.but.its.publication.was.kept.you.can.with": {
     "ru": "После удаления занятия его публикация сохранена. Здесь можно снять её с публикации или вернуть доступ по ссылке.",
     "en": "The class was deleted but its publication was kept. You can withdraw it here or restore access by link."
-  },
-  "admin.step": {
-    "ru": "шаг",
-    "en": "step"
-  },
-  "admin.steps": {
-    "ru": "шага",
-    "en": "steps"
-  },
-  "admin.steps.143": {
-    "ru": "шагов",
-    "en": "steps"
   },
   "admin.withdrawn": {
     "ru": "· снята",
@@ -352,14 +324,6 @@ export const adminMessages: MessageCatalog = {
   "admin.copy.link": {
     "ru": "Копировать ссылку",
     "en": "Copy link"
-  },
-  "admin.open.course.page": {
-    "ru": "Открыть страницу курса",
-    "en": "Open course page"
-  },
-  "admin.add.seminar": {
-    "ru": "+ Добавить занятие",
-    "en": "+ Add class"
   },
   "admin.all.courses": {
     "ru": "← Все курсы",
@@ -421,18 +385,6 @@ export const adminMessages: MessageCatalog = {
     "ru": "Освободить",
     "en": "Release"
   },
-  "admin.what.students.see": {
-    "ru": "Что видят студенты",
-    "en": "What students see"
-  },
-  "admin.the.page.is.accessible.by.link.without.signing.in": {
-    "ru": "Страница доступна по ссылке без входа.",
-    "en": "The page is accessible by link without signing in."
-  },
-  "admin.the.course.page.shows.seminar.names.in.the.chosen.order.and.links": {
-    "ru": "На странице курса показаны названия занятий в указанном порядке и ссылки на их публикации. У остальных занятий стоит «ещё не опубликовано», у тем по плану — неделя из расписания. Ссылки для входа в комнаты на странице курса не размещаются.",
-    "en": "The course page shows class names in the chosen order and links to their publications. Other classes are marked “not published yet”; planned topics show their week from the schedule. Links to join rooms are not shown on the course page."
-  },
   "admin.no.seminars.available.to.add": {
     "ru": "Нет доступных занятий для добавления.",
     "en": "No classes available to add."
@@ -440,46 +392,6 @@ export const adminMessages: MessageCatalog = {
   "admin.seminar": {
     "ru": "Занятие",
     "en": "Class"
-  },
-  "admin.publication": {
-    "ru": "Публикация",
-    "en": "Publication"
-  },
-  "admin.planned": {
-    "ru": "по плану",
-    "en": "planned"
-  },
-  "admin.remove.row": {
-    "ru": "Убрать строку",
-    "en": "Remove row"
-  },
-  "admin.seminar.deleted.position.in.list.kept": {
-    "ru": "занятие удалено · позиция в списке сохранена",
-    "en": "class deleted · position in list kept"
-  },
-  "admin.open.saved.publication": {
-    "ru": "открыть сохранённую публикацию",
-    "en": "open saved publication"
-  },
-  "admin.no.publication": {
-    "ru": "публикации нет",
-    "en": "no publication"
-  },
-  "admin.published.203": {
-    "ru": "опубликован ·",
-    "en": "published ·"
-  },
-  "admin.steps.206": {
-    "ru": "шагов",
-    "en": "steps"
-  },
-  "admin.not.published.yet": {
-    "ru": "ещё не опубликовано",
-    "en": "not published yet"
-  },
-  "admin.publish": {
-    "ru": "Опубликовать…",
-    "en": "Publish…"
   },
   "admin.move.up": {
     "ru": "Переместить выше",
@@ -492,10 +404,6 @@ export const adminMessages: MessageCatalog = {
   "admin.this.course.has.no.seminars.yet": {
     "ru": "В этом курсе пока нет занятий.",
     "en": "This course has no classes yet."
-  },
-  "admin.use.the.arrows.to.reorder.seminars.the.new.order.appears.when.the": {
-    "ru": "Стрелки меняют порядок занятий. Новый порядок виден после загрузки страницы курса.",
-    "en": "Use the arrows to reorder classes. The new order appears when the course page is loaded."
   },
   "admin.deleting.the.course.removes.the.seminar.list.its.order.and.the.ad": {
     "ru": "При удалении курса будут удалены список занятий, их порядок и адрес",
@@ -1721,38 +1629,6 @@ export const adminMessages: MessageCatalog = {
     "ru": "Эти ссылки открывают текущую публикацию. Если освободить адрес, он перестанет вести сюда и его сможет занять другая публикация.",
     "en": "These links open the current publication. Releasing an address stops it from leading here and makes it available to another publication."
   },
-  "admin.published.795": {
-    "ru": "Опубликовано",
-    "en": "Published"
-  },
-  "admin.publish.796": {
-    "ru": "Опубликовать — {p0}",
-    "en": "Publish — {p0}"
-  },
-  "admin.publishing.again.updates.the.page.at.the.same.link": {
-    "ru": "Повторная публикация обновляет страницу по той же ссылке.",
-    "en": "Publishing again updates the page at the same link."
-  },
-  "admin.previously.published.p.publishing.again.keeps.the.same.link": {
-    "ru": "Опубликован ранее — /p/{p0}. Публикуя снова, вы оставляете ту же ссылку.",
-    "en": "Previously published — /p/{p0}. Publishing again keeps the same link."
-  },
-  "admin.choose.notebook.versions.to.publish": {
-    "ru": "Выберите версии тетради для публикации.",
-    "en": "Choose notebook versions to publish."
-  },
-  "admin.back.to.list": {
-    "ru": "К списку",
-    "en": "Back to list"
-  },
-  "admin.publish.803": {
-    "ru": "Опубликовать",
-    "en": "Publish"
-  },
-  "admin.published.page": {
-    "ru": "Опубликованная страница:",
-    "en": "Published page:"
-  },
   "admin.change.address": {
     "ru": "Изменить адрес",
     "en": "Change address"
@@ -1797,138 +1673,6 @@ export const adminMessages: MessageCatalog = {
     "ru": "пропущены",
     "en": "skipped"
   },
-  "admin.the.remaining.steps.were.published.once.the.issue.is.resolved.you": {
-    "ru": "Остальные шаги опубликованы. После устранения причины можно повторить публикацию по той же ссылке.",
-    "en": "The remaining steps were published. Once the issue is resolved, you can publish again at the same link."
-  },
-  "admin.steps.825": {
-    "ru": "Шаги",
-    "en": "Steps"
-  },
-  "admin.saved.notebook.versions.with.code.notes.and.cell.outputs": {
-    "ru": "Сохранённые версии тетради с кодом, заметками и выводом ячеек.",
-    "en": "Saved notebook versions with code, notes and cell outputs."
-  },
-  "admin.no.saved.versions.to.choose.from.the.current.notebook.will.be.pub": {
-    "ru": "Нет сохранённых версий для выбора. Будет опубликована текущая тетрадь.",
-    "en": "No saved versions to choose from. The current notebook will be published."
-  },
-  "admin.steps.come.from.checkpoints.click": {
-    "ru": "Шаги берутся из чекпоинтов. Нажмите",
-    "en": "Steps come from checkpoints. Click"
-  },
-  "admin.checkpoint": {
-    "ru": "«Отметить момент»",
-    "en": "“Mark a moment”"
-  },
-  "admin.in.the.version.history.to.save.the.notebook.at.a.key.point.in.the": {
-    "ru": "в ленте версий, чтобы сохранить тетрадь на нужном этапе занятия. Например, перед упражнением или после разбора решения.",
-    "en": "in the version history to save the notebook at a key point in the session, such as before an exercise or after discussing a solution."
-  },
-  "admin.include.this.version.in.the.publication": {
-    "ru": "Включить версию в публикацию",
-    "en": "Include this version in the publication"
-  },
-  "admin.version.name": {
-    "ru": "Название версии",
-    "en": "Version name"
-  },
-  "admin.now": {
-    "ru": "сейчас",
-    "en": "now"
-  },
-  "admin.notebook.at.the.time.of.publishing": {
-    "ru": "Тетрадь на момент публикации",
-    "en": "Notebook at the time of publishing"
-  },
-  "admin.always.included.in.the.publication": {
-    "ru": "всегда включается в публикацию",
-    "en": "always included in the publication"
-  },
-  "admin.what.becomes.public": {
-    "ru": "Что станет публичным",
-    "en": "What becomes public"
-  },
-  "admin.names.and.personal.data.in.cell.text.or.outputs.will.be.kept.revi": {
-    "ru": "Имена и личные данные в тексте ячеек или их выводе сохранятся. Проверьте их перед публикацией.",
-    "en": "Names and personal data in cell text or outputs will be kept. Review them before publishing."
-  },
-  "admin.cells.code.and.notes": {
-    "ru": "Ячейки, их код и заметки",
-    "en": "Cells, code and notes"
-  },
-  "admin.as.they.were.at.each.step": {
-    "ru": "такими, какими были на каждом шаге",
-    "en": "as they were at each step"
-  },
-  "admin.everything.the.cells.printed": {
-    "ru": "Всё, что ячейки напечатали",
-    "en": "Everything the cells printed"
-  },
-  "admin.charts.tables.and.tracebacks": {
-    "ru": "графики, таблицы, трейсбеки",
-    "en": "charts, tables and tracebacks"
-  },
-  "admin.a.copy.button.for.each.cell.and.the.whole.notebook.as.an.ipynb.fi": {
-    "ru": "Кнопка «скопировать» у каждой ячейки и вся тетрадь файлом .ipynb",
-    "en": "A copy button for each cell and the whole notebook as an .ipynb file"
-  },
-  "admin.so.the.code.can.be.downloaded": {
-    "ru": "чтобы код можно было забрать",
-    "en": "so the code can be downloaded"
-  },
-  "admin.who.typed.or.ran.what": {
-    "ru": "Кто что печатал и кто что запускал",
-    "en": "Who typed or ran what"
-  },
-  "admin.action.authorship.is.not.published": {
-    "ru": "авторство действий не публикуется",
-    "en": "action authorship is not published"
-  },
-  "admin.oracle.question.history": {
-    "ru": "Лента вопросов к оракулу",
-    "en": "Oracle question history"
-  },
-  "admin.questions.and.answers.are.not.published": {
-    "ru": "вопросы и ответы не публикуются",
-    "en": "questions and answers are not published"
-  },
-  "admin.terminal": {
-    "ru": "Терминал",
-    "en": "Terminal"
-  },
-  "admin.command.history.is.not.published": {
-    "ru": "история команд не публикуется",
-    "en": "command history is not published"
-  },
-  "admin.room.files": {
-    "ru": "Файлы комнаты",
-    "en": "Room files"
-  },
-  "admin.files.are.not.included.in.the.publication": {
-    "ru": "файлы не включаются в публикацию",
-    "en": "files are not included in the publication"
-  },
-  "admin.share.the.link.with.your.students": {
-    "ru": "Поделитесь ссылкой со студентами.",
-    "en": "Share the link with your students."
-  },
-  "admin.publishing.again.keeps.the.link.after.withdrawal.the.link.display": {
-    "ru": "Повторная публикация сохраняет ссылку. После снятия публикации по ней отображается сообщение об этом. Страница содержит запрет индексации для поисковых систем.",
-    "en": "Publishing again keeps the link. After withdrawal, the link displays a notice. The page asks search engines not to index it."
-  },
-  "admin.room.access.stays.the.same": {
-    "ru": "Доступ к комнате не меняется.",
-    "en": "Room access stays the same."
-  },
-  "admin.publishing.and.archiving.do.not.change.access.through.the.link": {
-    "ru": "Публикация и архивация не меняют доступ по ссылке",
-    "en": "Publishing and archiving do not change access through the link"
-  },
-  "admin.entry.and.editing.depend.on.the.current.room.rules.and.class.stat": {
-    "ru": ". Вход и редактирование зависят от действующих правил комнаты и статуса занятия.",
-    "en": ". Entry and editing depend on the current room rules and class status."
-  },
   "admin.release.address.p": {
     "ru": "Освободить адрес /p/",
     "en": "Release address /p/"
@@ -1940,14 +1684,6 @@ export const adminMessages: MessageCatalog = {
   "admin.this.link.will.stop.opening.the.current.publication.another.publi": {
     "ru": "Эта ссылка перестанет открывать текущую публикацию. Адрес сможет занять другая публикация, и тогда ссылка будет вести на неё.",
     "en": "This link will stop opening the current publication. Another publication may take this address, and the link will then lead to that publication."
-  },
-  "admin.could.not.load.the.seminar.history.try.reloading.the.page": {
-    "ru": "Не удалось загрузить историю занятия. Попробуйте обновить страницу.",
-    "en": "Could not load the class history. Try reloading the page."
-  },
-  "admin.could.not.publish.the.seminar.try.again": {
-    "ru": "Не удалось опубликовать занятие. Попробуйте ещё раз.",
-    "en": "Could not publish the class. Try again."
   },
   "admin.could.not.save.the.address.try.again": {
     "ru": "Не удалось сохранить адрес. Попробуйте ещё раз.",
@@ -2061,10 +1797,6 @@ export const adminMessages: MessageCatalog = {
     "ru": "автор:",
     "en": "by"
   },
-  "admin.published.978": {
-    "ru": "· опубликован ·",
-    "en": "· published ·"
-  },
   "admin.page.taken.down": {
     "ru": "· страница снята с публикации",
     "en": "· page taken down"
@@ -2124,10 +1856,6 @@ export const adminMessages: MessageCatalog = {
   "admin.end.the.class": {
     "ru": "Завершить занятие",
     "en": "End the class"
-  },
-  "admin.publish.again": {
-    "ru": "Опубликовать снова…",
-    "en": "Publish again…"
   },
   "admin.copy.public.link": {
     "ru": "Копировать ссылку на публикацию",
@@ -2240,14 +1968,6 @@ export const adminMessages: MessageCatalog = {
   "admin.delete.the.public.page.as.well": {
     "ru": "Также удалить опубликованную страницу —",
     "en": "Delete the public page as well —"
-  },
-  "admin.a.second.copy.of.the.notebook.in": {
-    "ru": ", копию тетради с",
-    "en": ", a second copy of the notebook in"
-  },
-  "admin.outputs.included": {
-    "ru": ", включая результаты выполнения.",
-    "en": ", outputs included."
   },
   "admin.the.link.the.class.was.given.stops.opening": {
     "ru": "Ссылка, переданная студентам, перестанет открываться.",
@@ -2765,65 +2485,29 @@ export const adminMessages: MessageCatalog = {
       "other": "{count} files exceed the import limit and will be skipped:"
     }
   },
-  "admin.count.skippedMoments": {
-    "ru": {
-      "one": "{count} момент пропущен",
-      "few": "{count} момента пропущены",
-      "many": "{count} моментов пропущены",
-      "other": "{count} момента пропущены"
-    },
-    "en": {
-      "one": "{count} moment skipped",
-      "other": "{count} moments skipped"
-    }
-  },
   "admin.course.addPlanned": {
     "ru": "+ Тема по плану",
     "en": "+ Planned topic"
   },
-  "admin.course.plannedTopic": {
-    "ru": "Тема занятия",
-    "en": "Class topic"
-  },
-  "admin.course.plannedWhen": {
-    "ru": "Неделя, например 14–20 сен",
-    "en": "Week, e.g. Sep 14–20"
-  },
-  "admin.course.plannedWhenLabel": {
-    "ru": "Неделя по расписанию",
-    "en": "Week in the schedule"
-  },
   "admin.course.addToPlan": {
     "ru": "Добавить в план",
     "en": "Add to plan"
-  },
-  "admin.course.editPlanned": {
-    "ru": "Изменить",
-    "en": "Edit"
-  },
-  "admin.course.removePlanned": {
-    "ru": "Убрать",
-    "en": "Remove"
   },
   "admin.course.seat": {
     "ru": "Поставить занятие",
     "en": "Assign class"
   },
   "admin.course.seatQuestion": {
-    "ru": "Какое занятие поставить вместо «{name}»? Строка займёт то же место, а тема сменится названием занятия.",
-    "en": "Which class goes in place of “{name}”? It keeps this position, and the row shows the class name instead of the topic."
-  },
-  "admin.course.plannedCount": {
-    "ru": "· {count} по плану",
-    "en": "· {count} planned"
+    "ru": "Какое занятие поставить в строку «{name}»? Тема, день и «о чём» строки останутся.",
+    "en": "Which class goes into the row “{name}”? The row keeps its topic, day and summary."
   },
   "admin.course.planRowMoved": {
     "ru": "Эту строку плана уже изменили или переставили. Список обновлён — откройте её ещё раз.",
     "en": "This planned row was changed or moved. The list is up to date now — open it again."
   },
   "admin.course.planHint": {
-    "ru": "Темы по плану видны на странице курса с неделей из расписания. Когда занятие состоится, поставьте его на место темы.",
-    "en": "Planned topics appear on the course page with their week. Once a class has taken place, assign it in place of the topic."
+    "ru": "Строки по плану видны на странице курса с днём занятия. Комната встаёт в свою строку при создании или через «Поставить занятие»; после занятия строка покажет, есть ли у него страница.",
+    "en": "Planned rows appear on the course page with their class day. A room takes its row when it is created, or with «Assign class»; after the class the row shows whether it has a page."
   },
   "admin.course.deleteHeading": {
     "ru": "Удалить курс «{name}»?",
@@ -4655,6 +4339,14 @@ export const adminMessages: MessageCatalog = {
     "ru": "Страница удалена навсегда",
     "en": "Page deleted for good"
   },
+  "admin.audit.action.publication.material_removed": {
+    "ru": "Материал убран со страницы",
+    "en": "Material removed from a page"
+  },
+  "admin.audit.action.publication.room_access": {
+    "ru": "Изменён вход в комнату со страницы",
+    "en": "Room access from a page changed"
+  },
   "admin.audit.action.competition.created": {
     "ru": "Создано соревнование",
     "en": "Competition created"
@@ -4722,5 +4414,697 @@ export const adminMessages: MessageCatalog = {
   "admin.sso.noEmail": {
     "ru": "Корпоративный вход не передал адрес почты, поэтому Colloq не может узнать в вас преподавателя. Войдите по личной ссылке или попросите администратора проверить AUTH_JWT_EMAIL_CLAIM.",
     "en": "Your organisation's sign-in sent no email address, so Colloq cannot tell whether you are on the staff. Use your personal link, or ask the administrator to check AUTH_JWT_EMAIL_CLAIM."
+  },
+  "admin.page.title": {
+    "ru": "Страница занятия",
+    "en": "Class page"
+  },
+  "admin.page.backToCourse": {
+    "ru": "← К курсу «{name}»",
+    "en": "← Back to «{name}»"
+  },
+  "admin.page.backToCourseBare": {
+    "ru": "← К курсу",
+    "en": "← Back to the course"
+  },
+  "admin.page.backToCourses": {
+    "ru": "← К курсам",
+    "en": "← Back to courses"
+  },
+  "admin.page.backToClasses": {
+    "ru": "← К занятиям",
+    "en": "← Back to classes"
+  },
+  "admin.page.editInCourse": {
+    "ru": "Изменить в курсе",
+    "en": "Edit in the course"
+  },
+  "admin.page.heldOn": {
+    "ru": "День занятия",
+    "en": "Class day"
+  },
+  "admin.page.loading": {
+    "ru": "Смотрим, что есть в комнате…",
+    "en": "Reading the room…"
+  },
+  "admin.page.loadFailed": {
+    "ru": "Не удалось открыть страницу занятия. Обновите страницу.",
+    "en": "Could not open the class page. Reload the page."
+  },
+  "admin.page.publishFailed": {
+    "ru": "Не удалось собрать страницу. Попробуйте ещё раз.",
+    "en": "Could not build the page. Try again."
+  },
+  "admin.page.unconfirmed": {
+    "ru": "В проверке появилось новое — посмотрите и подтвердите.",
+    "en": "Something new turned up in the check: look at it and confirm."
+  },
+  "admin.page.notebooks": {
+    "ru": "Тетради",
+    "en": "Notebooks"
+  },
+  "admin.page.notebooksNote": {
+    "ru": "— публикуются с результатами запусков",
+    "en": "— published with their run results"
+  },
+  "admin.page.files": {
+    "ru": "Файлы",
+    "en": "Files"
+  },
+  "admin.page.pickedOf": {
+    "ru": "{picked} из {total}",
+    "en": "{picked} of {total}"
+  },
+  "admin.page.noNotebooks": {
+    "ru": "В комнате нет тетрадей.",
+    "en": "The room has no notebooks."
+  },
+  "admin.page.noFiles": {
+    "ru": "Других файлов в комнате нет.",
+    "en": "The room has no other files."
+  },
+  "admin.page.pickThis": {
+    "ru": "Публиковать {path}",
+    "en": "Publish {path}"
+  },
+  "admin.page.tabName": {
+    "ru": "Название вкладки",
+    "en": "Tab name"
+  },
+  "admin.page.fileName": {
+    "ru": "Название на странице",
+    "en": "Name on the page"
+  },
+  "admin.page.new": {
+    "ru": "новая",
+    "en": "new"
+  },
+  "admin.page.withOutputs": {
+    "ru": "{count} с результатами",
+    "en": "{count} with results"
+  },
+  "admin.page.bytes": {
+    "ru": "{p0} Б",
+    "en": "{p0} B"
+  },
+  "admin.page.kb": {
+    "ru": "{p0} КБ",
+    "en": "{p0} KB"
+  },
+  "admin.page.mb": {
+    "ru": "{p0} МБ",
+    "en": "{p0} MB"
+  },
+  "admin.page.kind.notebook": {
+    "ru": "Тетрадь",
+    "en": "Notebook"
+  },
+  "admin.page.kind.pdf": {
+    "ru": "PDF",
+    "en": "PDF"
+  },
+  "admin.page.kind.data": {
+    "ru": "Данные",
+    "en": "Data"
+  },
+  "admin.page.kind.code": {
+    "ru": "Код",
+    "en": "Code"
+  },
+  "admin.page.kind.text": {
+    "ru": "Текст",
+    "en": "Text"
+  },
+  "admin.page.kind.image": {
+    "ru": "Картинка",
+    "en": "Image"
+  },
+  "admin.page.kind.file": {
+    "ru": "Файл",
+    "en": "File"
+  },
+  "admin.page.why.student": {
+    "ru": "тетрадь ученика · {name}",
+    "en": "a student's notebook · {name}"
+  },
+  "admin.page.why.studentBare": {
+    "ru": "тетрадь ученика",
+    "en": "a student's notebook"
+  },
+  "admin.page.why.roster": {
+    "ru": "похоже на работу ученика",
+    "en": "looks like a student's work"
+  },
+  "admin.page.why.private": {
+    "ru": "имя начинается с «_»",
+    "en": "the name starts with «_»"
+  },
+  "admin.page.why.answers": {
+    "ru": "похоже на ответы",
+    "en": "looks like answers"
+  },
+  "admin.page.why.empty": {
+    "ru": "пустая",
+    "en": "empty"
+  },
+  "admin.page.why.generated": {
+    "ru": "похоже на результат запуска",
+    "en": "looks like a run's output"
+  },
+  "admin.page.why.unused": {
+    "ru": "не упоминается в тетрадях",
+    "en": "not mentioned in the notebooks"
+  },
+  "admin.page.why.image": {
+    "ru": "картинка уже в тексте тетради",
+    "en": "the picture is already in a notebook's text"
+  },
+  "admin.page.why.tooLarge": {
+    "ru": "больше {size}",
+    "en": "over {size}"
+  },
+  "admin.page.usedIn": {
+    "ru": "используется в {paths}",
+    "en": "used in {paths}"
+  },
+  "admin.page.check": {
+    "ru": "Проверка",
+    "en": "Check"
+  },
+  "admin.page.warnings": {
+    "ru": {
+      "one": "{count} предупреждение",
+      "few": "{count} предупреждения",
+      "many": "{count} предупреждений",
+      "other": "{count} предупреждения"
+    },
+    "en": {
+      "one": "{count} warning",
+      "other": "{count} warnings"
+    }
+  },
+  "admin.page.scrubbed": {
+    "ru": {
+      "one": "Адрес комнаты убран из {count} ячейки — на странице его не будет.",
+      "few": "Адрес комнаты убран из {count} ячеек — на странице его не будет.",
+      "many": "Адрес комнаты убран из {count} ячеек — на странице его не будет.",
+      "other": "Адрес комнаты убран из {count} ячеек — на странице его не будет."
+    },
+    "en": {
+      "one": "The room's address was removed from {count} cell; it will not be on the page.",
+      "other": "The room's address was removed from {count} cells; it will not be on the page."
+    }
+  },
+  "admin.page.check.secret": {
+    "ru": "Похоже на ключ API — {where}:",
+    "en": "Looks like an API key — {where}:"
+  },
+  "admin.page.check.name": {
+    "ru": "Похоже на имя ученика — {where}:",
+    "en": "Looks like a student's name — {where}:"
+  },
+  "admin.page.check.roomId": {
+    "ru": "Адрес комнаты в файле {path} — файл публикуется как есть",
+    "en": "The room's address is in {path}; the file is published as it is"
+  },
+  "admin.page.openInRoom": {
+    "ru": "Открыть в комнате",
+    "en": "Open in the room"
+  },
+  "admin.page.ack": {
+    "ru": "Проверил(а) — публиковать как есть",
+    "en": "Checked — publish as it is"
+  },
+  "admin.page.public": {
+    "ru": "Что станет публичным",
+    "en": "What becomes public"
+  },
+  "admin.page.public.notebooks": {
+    "ru": "Отмеченные тетради — код, текст и результаты запусков",
+    "en": "Ticked notebooks — code, text and run results"
+  },
+  "admin.page.public.files": {
+    "ru": "Отмеченные файлы — как лежат в папке комнаты",
+    "en": "Ticked files — as they are in the room's folder"
+  },
+  "admin.page.private.who": {
+    "ru": "Кто что писал и запускал",
+    "en": "Who wrote and ran what"
+  },
+  "admin.page.private.oracle": {
+    "ru": "Вопросы оракулу — остаются в комнате",
+    "en": "Questions to the oracle — they stay in the room"
+  },
+  "admin.page.private.terminal": {
+    "ru": "Терминал",
+    "en": "The terminal"
+  },
+  "admin.page.private.unticked": {
+    "ru": "Неотмеченные тетради и файлы",
+    "en": "Unticked notebooks and files"
+  },
+  "admin.page.autoRefresh": {
+    "ru": "Обновлять страницу при каждом «Завершить занятие»",
+    "en": "Update the page every time the class is ended"
+  },
+  "admin.page.autoRefreshHint": {
+    "ru": "Отмеченное запоминается; новые тетради и файлы сами не добавятся.",
+    "en": "The ticks are remembered; new notebooks and files are not added by themselves."
+  },
+  "admin.page.roomAccess": {
+    "ru": "Вход в комнату со страницы",
+    "en": "Entering the room from the page"
+  },
+  "admin.page.roomAccess.members": {
+    "ru": "Участники",
+    "en": "Participants"
+  },
+  "admin.page.roomAccess.anyone": {
+    "ru": "Все",
+    "en": "Everyone"
+  },
+  "admin.page.roomAccess.none": {
+    "ru": "Никто",
+    "en": "No one"
+  },
+  "admin.page.roomAccessHint": {
+    "ru": "Участники — те, кто входил в комнату с этого браузера; преподаватели видят вход всегда. «Все» открывает комнату всем, кто видит страницу: в ней имена учеников и их вопросы оракулу.",
+    "en": "Participants are those who joined the room from that browser; teachers always see the way in. “Everyone” opens the room to anyone who sees the page: it shows the students’ names and their questions to the oracle."
+  },
+  "admin.page.roomAccessFailed": {
+    "ru": "Не удалось сохранить вход в комнату — попробуйте ещё раз.",
+    "en": "Could not save the room access — try again."
+  },
+  "admin.page.address": {
+    "ru": "Адрес страницы",
+    "en": "Page address"
+  },
+  "admin.page.addressLater": {
+    "ru": "Адрес можно будет изменить после публикации.",
+    "en": "The address can be changed once the page is published."
+  },
+  "admin.page.withdrawn": {
+    "ru": "Страница снята: по ссылке студенты видят, что её убрали.",
+    "en": "The page is withdrawn: the link tells students it was taken down."
+  },
+  "admin.page.size": {
+    "ru": "Страница: {size} из {limit}",
+    "en": "Page: {size} of {limit}"
+  },
+  "admin.page.nothing": {
+    "ru": "Отметьте хотя бы одну тетрадь или файл.",
+    "en": "Tick at least one notebook or file."
+  },
+  "admin.page.tooMany": {
+    "ru": "На странице помещается не больше {count} материалов.",
+    "en": "A page holds at most {count} materials."
+  },
+  "admin.page.confirmFirst": {
+    "ru": "Посмотрите проверку и отметьте «Проверил(а)».",
+    "en": "Look through the check and tick «Checked»."
+  },
+  "admin.page.publish": {
+    "ru": "Опубликовать",
+    "en": "Publish"
+  },
+  "admin.page.update": {
+    "ru": "Обновить страницу",
+    "en": "Update the page"
+  },
+  "admin.page.publishAgain": {
+    "ru": "Опубликовать снова",
+    "en": "Publish again"
+  },
+  "admin.page.building": {
+    "ru": "Собираем страницу…",
+    "en": "Building the page…"
+  },
+  "admin.page.ready": {
+    "ru": "Страница готова:",
+    "en": "The page is ready:"
+  },
+  "admin.page.refused": {
+    "ru": "Не вошли на страницу:",
+    "en": "Left off the page:"
+  },
+  "admin.page.refused.missing": {
+    "ru": "{path} — файла больше нет в комнате",
+    "en": "{path} — the file is no longer in the room"
+  },
+  "admin.page.refused.tooLarge": {
+    "ru": "{path} — больше лимита загрузки",
+    "en": "{path} — over the upload limit"
+  },
+  "admin.page.refused.budget": {
+    "ru": "{path} — страница уже заполнена до предела",
+    "en": "{path} — the page is already full"
+  },
+  "admin.page.current": {
+    "ru": "На странице",
+    "en": "On the page"
+  },
+  "admin.page.roomGone": {
+    "ru": "Комнаты больше нет — новое на страницу не добавить. Лишнее можно убрать.",
+    "en": "The room is gone, so nothing new can be added. You can still take things off."
+  },
+  "admin.page.remove": {
+    "ru": "Убрать со страницы",
+    "en": "Take off the page"
+  },
+  "admin.page.removeConfirm": {
+    "ru": "Убрать «{name}» со страницы? Вернуть его можно будет только новой публикацией из комнаты.",
+    "en": "Take «{name}» off the page? Only a new publish from the room can bring it back."
+  },
+  "admin.course.col.n": {
+    "ru": "№",
+    "en": "No."
+  },
+  "admin.course.col.day": {
+    "ru": "День",
+    "en": "Day"
+  },
+  "admin.course.col.class": {
+    "ru": "Занятие",
+    "en": "Class"
+  },
+  "admin.course.col.page": {
+    "ru": "Страница",
+    "en": "Page"
+  },
+  "admin.course.openPage": {
+    "ru": "открыть",
+    "en": "open"
+  },
+  "admin.course.copyLink": {
+    "ru": "скопировать",
+    "en": "copy"
+  },
+  "admin.course.addRoom": {
+    "ru": "+ Добавить занятие",
+    "en": "+ Add a class"
+  },
+  "admin.course.addQuestion": {
+    "ru": "Какое занятие добавить в конец курса? Сначала самые новые.",
+    "en": "Which class goes at the end of the course? Newest first."
+  },
+  "admin.course.settings": {
+    "ru": "Настройки курса",
+    "en": "Course settings"
+  },
+  "admin.course.tally.pages": {
+    "ru": {
+      "one": "{count} со страницей",
+      "few": "{count} со страницей",
+      "many": "{count} со страницей",
+      "other": "{count} со страницей"
+    },
+    "en": {
+      "one": "{count} with a page",
+      "other": "{count} with a page"
+    }
+  },
+  "admin.course.tally.rooms": {
+    "ru": {
+      "one": "{count} без страницы",
+      "few": "{count} без страницы",
+      "many": "{count} без страницы",
+      "other": "{count} без страницы"
+    },
+    "en": {
+      "one": "{count} without a page",
+      "other": "{count} without a page"
+    }
+  },
+  "admin.course.tally.planned": {
+    "ru": {
+      "one": "{count} по плану",
+      "few": "{count} по плану",
+      "many": "{count} по плану",
+      "other": "{count} по плану"
+    },
+    "en": {
+      "one": "{count} planned",
+      "other": "{count} planned"
+    }
+  },
+  "admin.course.today": {
+    "ru": "Сегодня · {day}",
+    "en": "Today · {day}"
+  },
+  "admin.course.isToday": {
+    "ru": "Сегодня",
+    "en": "Today"
+  },
+  "admin.course.nextTomorrow": {
+    "ru": "Следующее · завтра",
+    "en": "Next · tomorrow"
+  },
+  "admin.course.nextIn": {
+    "ru": {
+      "one": "Следующее · через {count} день",
+      "few": "Следующее · через {count} дня",
+      "many": "Следующее · через {count} дней",
+      "other": "Следующее · через {count} дня"
+    },
+    "en": {
+      "one": "Next · in {count} day",
+      "other": "Next · in {count} days"
+    }
+  },
+  "admin.course.roomGone": {
+    "ru": "комната удалена",
+    "en": "room deleted"
+  },
+  "admin.course.page.page": {
+    "ru": {
+      "one": "страница · {count} материал",
+      "few": "страница · {count} материала",
+      "many": "страница · {count} материалов",
+      "other": "страница · {count} материала"
+    },
+    "en": {
+      "one": "page · {count} material",
+      "other": "page · {count} materials"
+    }
+  },
+  "admin.course.page.early": {
+    "ru": {
+      "one": "до занятия · {count} материал",
+      "few": "до занятия · {count} материала",
+      "many": "до занятия · {count} материалов",
+      "other": "до занятия · {count} материала"
+    },
+    "en": {
+      "one": "before class · {count} material",
+      "other": "before class · {count} materials"
+    }
+  },
+  "admin.course.page.bare": {
+    "ru": "страница",
+    "en": "page"
+  },
+  "admin.course.page.withdrawn": {
+    "ru": "снята",
+    "en": "withdrawn"
+  },
+  "admin.course.page.missing": {
+    "ru": "Занятие прошло, страницы нет — Опубликовать…",
+    "en": "The class is over and has no page — Publish…"
+  },
+  "admin.course.page.room": {
+    "ru": "страницы пока нет",
+    "en": "no page yet"
+  },
+  "admin.course.page.plan": {
+    "ru": "по плану",
+    "en": "planned"
+  },
+  "admin.course.page.pause": {
+    "ru": "перерыв",
+    "en": "break"
+  },
+  "admin.course.page.gone": {
+    "ru": "страницы нет",
+    "en": "no page"
+  },
+  "admin.course.createRoom": {
+    "ru": "Создать комнату",
+    "en": "Create a room"
+  },
+  "admin.course.fits": {
+    "ru": "подходит по дате",
+    "en": "matches the day"
+  },
+  "admin.course.status.draft": {
+    "ru": "не начиналось",
+    "en": "not started"
+  },
+  "admin.course.status.live": {
+    "ru": "идёт",
+    "en": "in progress"
+  },
+  "admin.course.status.idle": {
+    "ru": "было",
+    "en": "held"
+  },
+  "admin.course.status.finished": {
+    "ru": "завершено",
+    "en": "finished"
+  },
+  "admin.course.menu.label": {
+    "ru": "Действия со строкой «{name}»",
+    "en": "Actions for «{name}»"
+  },
+  "admin.course.menu.page": {
+    "ru": "Страница занятия…",
+    "en": "Class page…"
+  },
+  "admin.course.menu.refresh": {
+    "ru": "Обновить страницу",
+    "en": "Update the page"
+  },
+  "admin.course.menu.address": {
+    "ru": "Адрес страницы…",
+    "en": "Page address…"
+  },
+  "admin.course.menu.asStudent": {
+    "ru": "Открыть как студент",
+    "en": "Open as a student"
+  },
+  "admin.course.menu.withdraw": {
+    "ru": "Снять страницу",
+    "en": "Take the page down"
+  },
+  "admin.course.menu.restore": {
+    "ru": "Вернуть страницу",
+    "en": "Put the page back"
+  },
+  "admin.course.menu.edit": {
+    "ru": "Изменить строку…",
+    "en": "Edit the row…"
+  },
+  "admin.course.menu.up": {
+    "ru": "Выше",
+    "en": "Move up"
+  },
+  "admin.course.menu.down": {
+    "ru": "Ниже",
+    "en": "Move down"
+  },
+  "admin.course.menu.remove": {
+    "ru": "Убрать из курса",
+    "en": "Remove from the course"
+  },
+  "admin.course.refreshed": {
+    "ru": {
+      "one": "Страница занятия обновлена · {count} материал",
+      "few": "Страница занятия обновлена · {count} материала",
+      "many": "Страница занятия обновлена · {count} материалов",
+      "other": "Страница занятия обновлена · {count} материала"
+    },
+    "en": {
+      "one": "Class page updated · {count} material",
+      "other": "Class page updated · {count} materials"
+    }
+  },
+  "admin.course.refreshHeld": {
+    "ru": "Страница не обновилась: в проверке появилось новое.",
+    "en": "The page was not updated: something new turned up in the check."
+  },
+  "admin.course.refreshNoPick": {
+    "ru": "Страница не обновилась: сначала выберите материалы.",
+    "en": "The page was not updated: choose its materials first."
+  },
+  "admin.course.refreshFailed": {
+    "ru": "Страница не обновилась: {reason}",
+    "en": "The page was not updated: {reason}"
+  },
+  "admin.course.moreRows": {
+    "ru": {
+      "one": "Дальше ещё {count} строка по плану",
+      "few": "Дальше ещё {count} строки по плану",
+      "many": "Дальше ещё {count} строк по плану",
+      "other": "Дальше ещё {count} строки по плану"
+    },
+    "en": {
+      "one": "{count} more planned row",
+      "other": "{count} more planned rows"
+    }
+  },
+  "admin.course.showAll": {
+    "ru": "показать все {count}",
+    "en": "show all {count}"
+  },
+  "admin.course.field.topic": {
+    "ru": "Тема",
+    "en": "Topic"
+  },
+  "admin.course.field.title": {
+    "ru": "Название для студентов",
+    "en": "Title for students"
+  },
+  "admin.course.field.day": {
+    "ru": "День занятия",
+    "en": "Class day"
+  },
+  "admin.course.field.about": {
+    "ru": "О чём — одна-две фразы",
+    "en": "What it is about — a sentence or two"
+  },
+  "admin.course.field.pause": {
+    "ru": "Перерыв — без номера",
+    "en": "A break — no number"
+  },
+  "admin.course.field.whenLegacy": {
+    "ru": "в плане: {when}",
+    "en": "in the plan: {when}"
+  },
+  "admin.new.courseRow": {
+    "ru": "Занятие курса",
+    "en": "Course class"
+  },
+  "admin.new.noCourse": {
+    "ru": "Без курса",
+    "en": "No course"
+  },
+  "admin.new.courseHint": {
+    "ru": "Комната встанет в эту строку курса: тема и дата уже там.",
+    "en": "The room takes this course row: its topic and day are already there."
+  },
+  "admin.new.rowTaken": {
+    "ru": "Строка уже занята — комната создана без курса",
+    "en": "That row is already taken — the room was created outside the course"
+  },
+  "admin.new.seatFailed": {
+    "ru": "Комната создана, но в курс не встала: {reason}",
+    "en": "The room was created but did not join the course: {reason}"
+  },
+  "admin.seminar.pageCopy": {
+    "ru": {
+      "one": " — страницу занятия: {count} материал, тетради с результатами запусков.",
+      "few": " — страницу занятия: {count} материала, тетради с результатами запусков.",
+      "many": " — страницу занятия: {count} материалов, тетради с результатами запусков.",
+      "other": " — страницу занятия: {count} материала, тетради с результатами запусков."
+    },
+    "en": {
+      "one": ", the class page: {count} material, notebooks with their run results.",
+      "other": ", the class page: {count} materials, notebooks with their run results."
+    }
+  },
+  "admin.seminar.finishedOffer": {
+    "ru": "Занятие завершено.",
+    "en": "The class is over."
+  },
+  "admin.seminar.choosePage": {
+    "ru": "Опубликовать материалы…",
+    "en": "Publish the materials…"
+  },
+  "admin.seminar.finishedWaiting": {
+    "ru": "Занятие завершено · страница обновится, когда досчитаются ячейки.",
+    "en": "The class is over · the page updates once the queued cells finish."
+  },
+  "admin.seminar.finishedRefreshing": {
+    "ru": "Занятие завершено · страница занятия обновляется.",
+    "en": "The class is over · the class page is being updated."
   },
 }

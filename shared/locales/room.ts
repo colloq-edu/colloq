@@ -2,6 +2,119 @@ import type { MessageCatalog } from '../i18n-types.js'
 
 /** Explicit display-copy catalog for entry, room, lecture, and public readers. */
 export const roomMessages: MessageCatalog = {
+  // The course page (web/src/components/reader/CoursePage.svelte, lib/course-now.ts).
+  "room.course.top": {"ru": "Курс", "en": "Course"},
+  "room.course.labelYears": {"ru": "Курс · {years}", "en": "Course · {years}"},
+  "room.course.count": {"ru": {"one": "{count} занятие", "few": "{count} занятия", "many": "{count} занятий", "other": "{count} занятия"}, "en": {"one": "{count} class", "other": "{count} classes"}},
+  "room.course.weekly.0": {"ru": "по воскресеньям", "en": "on Sundays"},
+  "room.course.weekly.1": {"ru": "по понедельникам", "en": "on Mondays"},
+  "room.course.weekly.2": {"ru": "по вторникам", "en": "on Tuesdays"},
+  "room.course.weekly.3": {"ru": "по средам", "en": "on Wednesdays"},
+  "room.course.weekly.4": {"ru": "по четвергам", "en": "on Thursdays"},
+  "room.course.weekly.5": {"ru": "по пятницам", "en": "on Fridays"},
+  "room.course.weekly.6": {"ru": "по субботам", "en": "on Saturdays"},
+  "room.course.span": {"ru": "{from} — {to}", "en": "{from} – {to}"},
+  "room.course.over": {"ru": "курс завершён", "en": "course finished"},
+  "room.course.classes": {"ru": "Занятия", "en": "Classes"},
+  "room.course.withMaterials": {"ru": "{count} с материалами", "en": "{count} with materials"},
+  "room.course.ahead": {"ru": "{count} впереди", "en": "{count} ahead"},
+  "room.course.today": {"ru": "сегодня", "en": "today"},
+  "room.course.todayAt": {"ru": "Сегодня · {day}", "en": "Today · {day}"},
+  "room.course.next": {"ru": "Следующее · {day} · {when}", "en": "Next · {day} · {when}"},
+  "room.course.first": {"ru": "Первое занятие · {day} · {when}", "en": "First class · {day} · {when}"},
+  "room.course.nextRow": {"ru": "следующее · {when}", "en": "next · {when}"},
+  "room.course.inDays": {"ru": {"one": "через {count} день", "few": "через {count} дня", "many": "через {count} дней", "other": "через {count} дня"}, "en": {"one": "in {count} day", "other": "in {count} days"}},
+  "room.course.tomorrow": {"ru": "завтра", "en": "tomorrow"},
+  "room.course.past": {"ru": "Прошлое занятие · {day}", "en": "Previous class · {day}"},
+  "room.course.last": {"ru": "Последнее занятие · {day}", "en": "Last class · {day}"},
+  "room.course.afterClass": {"ru": "Материалы появятся здесь после занятия.", "en": "The materials will appear here after the class."},
+  "room.course.beforeClass": {"ru": "Материалы до занятия", "en": "Materials before the class"},
+  "room.course.noneYet": {"ru": "Материалов пока нет.", "en": "No materials yet."},
+  "room.course.none": {"ru": "Материалов нет.", "en": "No materials."},
+  "room.course.latest": {"ru": "Последние материалы — {title} →", "en": "Latest materials — {title} →"},
+  "room.course.allMaterials": {"ru": "Все материалы · {count} →", "en": "All materials · {count} →"},
+  "room.course.zip": {"ru": "Скачать всё · ZIP · {size}", "en": "Download all · ZIP · {size}"},
+  "room.course.link": {"ru": "Ссылка на курс", "en": "Course link"},
+  "room.course.copy": {"ru": "скопировать", "en": "copy"},
+  "room.course.copyFailed": {"ru": "не скопировалось — выделите адрес", "en": "not copied — select the address"},
+  "room.course.note": {"ru": "Ссылка не меняется весь год. Материалы появляются здесь в день занятия, после его окончания.", "en": "The link stays the same all year. Materials appear here on the day of the class, after it ends."},
+  "room.course.empty": {"ru": "В курсе пока нет занятий. Сохраните ссылку — план появится здесь.", "en": "The course has no classes yet. Save the link — the plan will appear here."},
+  "room.course.more": {"ru": {"one": "{range}: ещё {count} занятие", "few": "{range}: ещё {count} занятия", "many": "{range}: ещё {count} занятий", "other": "{range}: ещё {count} занятия"}, "en": {"one": "{range}: {count} more class", "other": "{range}: {count} more classes"}},
+  "room.course.showAll": {"ru": "показать весь план", "en": "show the whole plan"},
+  "room.course.pause": {"ru": "{title} — занятий нет", "en": "{title} — no classes"},
+  "room.course.beforeRow": {"ru": "материалы до занятия: {tags}", "en": "materials before the class: {tags}"},
+  "room.course.afterRow": {"ru": "материалы после занятия", "en": "materials after the class"},
+  "room.course.noneYetRow": {"ru": "материалов пока нет", "en": "no materials yet"},
+  "room.course.noneRow": {"ru": "материалов нет", "en": "no materials"},
+  "room.course.notebook": {"ru": "тетрадь", "en": "notebook"},
+  "room.course.tag.lecture": {"ru": "лекция", "en": "lecture"},
+  "room.course.tag.seminar": {"ru": "семинар", "en": "seminar"},
+  "room.course.tag.notebook": {"ru": "тетрадь", "en": "notebook"},
+  "room.course.tag.homework": {"ru": "домашнее задание", "en": "homework"},
+  "room.course.tag.slides": {"ru": "слайды", "en": "slides"},
+  "room.course.tag.pdf": {"ru": "PDF", "en": "PDF"},
+  "room.course.tag.data": {"ru": "данные", "en": "data"},
+  "room.course.tag.code": {"ru": "код", "en": "code"},
+  "room.course.tag.files": {"ru": "файлы", "en": "files"},
+  // The class page (web/src/components/reader/ClassPage.svelte and its parts).
+  "room.page.class": {"ru": "Занятие {n}", "en": "Class {n}"},
+  "room.page.label": {"ru": "Занятие {n} · {day}", "en": "Class {n} · {day}"},
+  "room.page.beforeClass": {"ru": "материалы до занятия", "en": "materials before the class"},
+  "room.page.updated": {"ru": "обновлено {day}", "en": "updated {day}"},
+  "room.page.back": {"ru": "К курсу", "en": "To the course"},
+  "room.page.materials": {"ru": "Материалы", "en": "Materials"},
+  "room.page.cells": {"ru": {"one": "{count} ячейка", "few": "{count} ячейки", "many": "{count} ячеек", "other": "{count} ячейки"}, "en": {"one": "{count} cell", "other": "{count} cells"}},
+  "room.page.withOutputs": {"ru": "с результатами", "en": "with outputs"},
+  "room.page.open": {"ru": "открыта", "en": "open"},
+  "room.page.inBrowser": {"ru": "откроется в браузере", "en": "opens in the browser"},
+  "room.page.kind.notebook": {"ru": "Тетрадь", "en": "Notebook"},
+  "room.page.kind.data": {"ru": "Данные", "en": "Data"},
+  "room.page.kind.code": {"ru": "Код", "en": "Code"},
+  "room.page.kind.text": {"ru": "Текст", "en": "Text"},
+  "room.page.kind.image": {"ru": "Картинка", "en": "Image"},
+  "room.page.kind.file": {"ru": "Файл", "en": "File"},
+  "room.page.download": {"ru": "Скачать «{name}»", "en": "Download “{name}”"},
+  "room.page.downloadNotebook": {"ru": "Скачать «{name}» (.ipynb с результатами)", "en": "Download “{name}” (.ipynb with outputs)"},
+  "room.page.zipNote": {"ru": "{what}. Пути как в комнате — код запускается после распаковки.", "en": "{what}. Paths as in the room — the code runs after unpacking."},
+  "room.page.zipWhat.notebooks": {"ru": "тетради с результатами", "en": "notebooks with outputs"},
+  "room.page.zipWhat.slides": {"ru": "слайды", "en": "slides"},
+  "room.page.zipWhat.data": {"ru": "данные", "en": "data"},
+  "room.page.zipWhat.code": {"ru": "код", "en": "code"},
+  "room.page.zipWhat.files": {"ru": "файлы", "en": "files"},
+  "room.page.contents": {"ru": "Содержание", "en": "Contents"},
+  "room.page.contentsOf": {"ru": "Содержание · {name}", "en": "Contents · {name}"},
+  "room.page.tabs": {"ru": "Тетради занятия", "en": "Class notebooks"},
+  "room.page.ipynb": {"ru": "{file} · с результатами", "en": "{file} · with outputs"},
+  "room.page.notebookFailed": {"ru": "Тетрадь не открылась.", "en": "The notebook did not open."},
+  "room.page.prev": {"ru": "предыдущее", "en": "previous"},
+  "room.page.next": {"ru": "следующее", "en": "next"},
+  "room.page.footer": {"ru": "Тетради — в том виде, в каком были при публикации, вместе с результатами запусков. Список участников не публикуется; имена, написанные в ячейках, сохраняются.", "en": "The notebooks are as they were when published, with the results of their runs. The participant list is not published; names written in cells are kept."},
+  "room.page.link": {"ru": "Ссылка на занятие", "en": "Class page link"},
+  "room.page.withdrawn": {"ru": "Преподаватель снял эту страницу.", "en": "The teacher took this page down."},
+  "room.page.toCourse": {"ru": "К курсу «{name}» →", "en": "To the course “{name}” →"},
+  "room.page.noMaterial": {"ru": "В этом занятии нет такого материала.", "en": "This class has no such material."},
+  "room.page.openFirst": {"ru": "Открыть первый", "en": "Open the first one"},
+  "room.page.showMore": {"ru": {"one": "Показать ещё {count} строку", "few": "Показать ещё {count} строки", "many": "Показать ещё {count} строк", "other": "Показать ещё {count} строки"}, "en": {"one": "Show {count} more line", "other": "Show {count} more lines"}},
+  "room.page.showLess": {"ru": "Свернуть", "en": "Collapse"},
+  // The way back into the room (web/src/components/reader/RoomDoor.svelte, CoursePage.svelte).
+  "room.door.title": {"ru": "Комната занятия", "en": "Class room"},
+  "room.door.member": {"ru": "Вы были на занятии", "en": "You were in this class"},
+  "room.door.staff": {"ru": "Вы преподаватель", "en": "You are the teacher"},
+  "room.door.readOnly": {"ru": "Только чтение", "en": "Read only"},
+  "room.door.live": {"ru": "Идёт занятие", "en": "Class in progress"},
+  "room.door.about": {"ru": "Живая тетрадь, в которой работали все: история правок, отметки и вопросы оракулу с ответами.", "en": "The live notebook everyone worked in: its edit history, marks and questions to the oracle with the answers."},
+  "room.door.go": {"ru": "Перейти в комнату", "en": "Go to the room"},
+  "room.door.finished": {"ru": "Занятие завершено — комната открыта для чтения. Страница занятия — это публикация: она не меняется от того, что происходит в комнате.", "en": "The class is over — the room is open for reading. The class page is a publication: it does not change with what happens in the room."},
+  "room.door.open": {"ru": "Комната ещё открыта — занятие идёт. Страница занятия — это публикация: она не меняется от того, что происходит в комнате.", "en": "The room is still open — the class is on. The class page is a publication: it does not change with what happens in the room."},
+  "room.door.names": {"ru": "В комнате видны имена участников и их вопросы оракулу.", "en": "The room shows the participants’ names and their questions to the oracle."},
+  "room.door.locked": {"ru": "Комната открыта только тем, кто был на занятии. Если вы были — откройте эту страницу в том браузере, из которого входили.", "en": "The room is open only to those who were in the class. If you were, open this page in the browser you joined from."},
+  "room.door.staffMembers": {"ru": "Ученики видят вход, если открывают страницу в браузере, из которого входили в комнату.", "en": "Students see the way in when they open the page in the browser they joined the room from."},
+  "room.door.staffAnyone": {"ru": "Вход видят все, у кого есть ссылка: в комнате имена учеников и их вопросы оракулу.", "en": "Everyone with the link sees the way in: the room shows the students’ names and their questions to the oracle."},
+  "room.door.staffNone": {"ru": "Ученикам вход со страницы закрыт — его видите только вы.", "en": "Students cannot enter from the page — only you see the way in."},
+  "room.door.rowNote": {"ru": "история правок, отметки, вопросы оракулу", "en": "edit history, marks, questions to the oracle"},
+  "room.door.rowLocked": {"ru": "только для тех, кто был на занятии", "en": "only for those who were in the class"},
+  "room.course.todayLive": {"ru": "Сегодня · {day} · идёт занятие", "en": "Today · {day} · class in progress"},
+  "room.course.enter": {"ru": "Войти в комнату", "en": "Enter the room"},
   "room.book.access.menu": {"ru": "Доступ", "en": "Access"},
   "room.book.access.title": {"ru": "Доступ к тетради", "en": "Notebook access"},
   "room.book.access.room": {"ru": "Как в комнате", "en": "As in the room"},
@@ -2766,34 +2879,6 @@ export const roomMessages: MessageCatalog = {
     "ru": "оболочка не запущена",
     "en": "shell not started"
   },
-  "room.ui.709": {
-    "ru": "комната закрыта, страница осталась",
-    "en": "room closed, page preserved"
-  },
-  "room.ui.710": {
-    "ru": "занятие удалено",
-    "en": "class deleted"
-  },
-  "room.ui.711": {
-    "ru": "ещё не опубликовано",
-    "en": "not published yet"
-  },
-  "room.ui.712": {
-    "ru": "Здесь собраны занятия курса. Сохраните ссылку, чтобы вернуться к материалам.",
-    "en": "This page collects the course classes. Save the link to return to the materials."
-  },
-  "room.ui.713": {
-    "ru": "шаг",
-    "en": "step"
-  },
-  "room.ui.714": {
-    "ru": "шага",
-    "en": "steps"
-  },
-  "room.ui.715": {
-    "ru": "шагов",
-    "en": "steps"
-  },
   "room.ui.716": {
     "ru": "Загружается",
     "en": "Loading"
@@ -2849,10 +2934,6 @@ export const roomMessages: MessageCatalog = {
   "room.ui.732": {
     "ru": "Скопировать ячейку",
     "en": "Copy cell"
-  },
-  "room.ui.736": {
-    "ru": "не запускалась",
-    "en": "not run"
   },
   "room.ui.737": {
     "ru": "на стр.",
@@ -2934,6 +3015,22 @@ export const roomMessages: MessageCatalog = {
     "ru": "Вы вошли как преподаватель. Открываем занятие…",
     "en": "You are signed in as a teacher. Opening the class…"
   },
+  "room.classEnd.title": {"ru": "Занятие завершено", "en": "Class finished"},
+  "room.classEnd.offer": {"ru": "Положите материалы на страницу занятия — студенты найдут её в курсе «{course}».", "en": "Put the materials on the class page — students will find it in the course “{course}”."},
+  "room.classEnd.pick": {"ru": "Выбрать материалы →", "en": "Choose materials →"},
+  "room.classEnd.later": {"ru": "Не сейчас", "en": "Not now"},
+  "room.classEnd.publish": {"ru": "Опубликовать материалы →", "en": "Publish materials →"},
+  "room.classEnd.page": {"ru": "Страница занятия →", "en": "Class page →"},
+  "room.classEnd.updated": {"ru": {"one": "Страница занятия обновлена · {count} материал", "few": "Страница занятия обновлена · {count} материала", "many": "Страница занятия обновлена · {count} материалов", "other": "Страница занятия обновлена · {count} материала"}, "en": {"one": "Class page updated · {count} material", "other": "Class page updated · {count} materials"}},
+  "room.classEnd.openPage": {"ru": "Открыть страницу", "en": "Open page"},
+  "room.classEnd.waiting": {"ru": "Страница обновится, когда досчитаются ячейки", "en": "The page will update once the cells finish running"},
+  "room.classEnd.held": {"ru": "Страница не обновилась: {reason}", "en": "The page was not updated: {reason}"},
+  "room.classEnd.check": {"ru": "Проверить", "en": "Review"},
+  "room.classEnd.failed": {"ru": "Страница не обновилась — откройте «Страница занятия» в панели", "en": "The page was not updated — open “Class page” in the panel"},
+  "room.classEnd.open": {"ru": "Открыть", "en": "Open"},
+  "room.join.pageLink": {"ru": "страница занятия", "en": "class page"},
+  "room.join.materials": {"ru": {"one": "{count} материал", "few": "{count} материала", "many": "{count} материалов", "other": "{count} материала"}, "en": {"one": "{count} material", "other": "{count} materials"}},
+  "room.join.allClasses": {"ru": "Все занятия курса —", "en": "Every class of the course:"},
   "room.ui.843": {
     "ru": "Занятие закончено",
     "en": "Class ended"
@@ -2945,10 +3042,6 @@ export const roomMessages: MessageCatalog = {
   "room.ui.845": {
     "ru": "Есть",
     "en": "There is a"
-  },
-  "room.ui.846": {
-    "ru": "опубликованная версия",
-    "en": "published version"
   },
   "room.ui.847": {
     "ru": ", в курсе",
@@ -3014,69 +3107,9 @@ export const roomMessages: MessageCatalog = {
     "ru": "Ссылка могла устареть или быть набрана с опечаткой.",
     "en": "The link may be outdated or contain a typo."
   },
-  "room.ui.867": {
-    "ru": "Публикация снята",
-    "en": "Publication removed"
-  },
-  "room.ui.868": {
-    "ru": "· опубликован",
-    "en": "· published"
-  },
-  "room.ui.869": {
-    "ru": "Шаги занятия",
-    "en": "Class steps"
-  },
-  "room.ui.871": {
-    "ru": "Опубликованная тетрадь занятия: код, текст и сохранённые результаты запусков.",
-    "en": "Published class notebook: code, text and saved execution results."
-  },
-  "room.ui.872": {
-    "ru": "Шаги соответствуют моментам, отмеченным преподавателем. Если код изменили после запуска, сохранённый результат может ему не соответствовать.",
-    "en": "Steps correspond to checkpoints marked by the teacher. If code changed after execution, the saved result may not match it."
-  },
-  "room.ui.873": {
-    "ru": "Список участников не публикуется. Имена в тексте ячеек и результатах сохраняются.",
-    "en": "The participant list is not published. Names in cell text and outputs are preserved."
-  },
   "room.ui.874": {
     "ru": "Загружается…",
     "en": "Loading…"
-  },
-  "room.ui.875": {
-    "ru": "На этом занятии пока нет ни одной страницы.",
-    "en": "This class has no pages yet."
-  },
-  "room.ui.876": {
-    "ru": "Такой страницы у этого занятия нет. Ссылка могла устареть или быть набрана с опечаткой.",
-    "en": "This class has no such page. The link may be outdated or contain a typo."
-  },
-  "room.ui.877": {
-    "ru": "Открыть первую",
-    "en": "Open first page"
-  },
-  "room.ui.878": {
-    "ru": "Публикация снята.",
-    "en": "Publication removed."
-  },
-  "room.ui.879": {
-    "ru": "Скачать тетрадь (.ipynb)",
-    "en": "Download notebook (.ipynb)"
-  },
-  "room.ui.880": {
-    "ru": "Код без выводов",
-    "en": "Code without output"
-  },
-  "room.ui.881": {
-    "ru": "Код последнего шага, без выводов",
-    "en": "Last step code, without output"
-  },
-  "room.ui.882": {
-    "ru": "Код этого шага, без выводов",
-    "en": "This step’s code, without output"
-  },
-  "room.ui.883": {
-    "ru": "— чтобы запустить у себя.",
-    "en": "— to run it yourself."
   },
   "room.ui.884": {
     "ru": "Страница не открылась",
@@ -3085,10 +3118,6 @@ export const roomMessages: MessageCatalog = {
   "room.ui.887": {
     "ru": "Страница не открылась.",
     "en": "Could not open the page."
-  },
-  "room.ui.888": {
-    "ru": "Шаг не открылся.",
-    "en": "Could not open the step."
   },
   "room.ui.890": {
     "ru": "Связь восстанавливается",
