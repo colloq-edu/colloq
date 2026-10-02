@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.13.0](https://github.com/colloq-edu/colloq/compare/v0.12.0...v0.13.0) (2026-10-02)
+
+
+### Features
+
+* **courses:** class pages with every notebook, files and the class day ([#21](https://github.com/colloq-edu/colloq/issues/21)) ([70bc5db](https://github.com/colloq-edu/colloq/commit/70bc5dbaf0dc75e3ad4b6431c33e23536d49eb9f))
+
 ## [0.12.0](https://github.com/colloq-edu/colloq/compare/v0.11.1...v0.12.0) (2026-10-01)
 
 
