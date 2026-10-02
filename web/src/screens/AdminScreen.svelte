@@ -23,6 +23,14 @@
    * with replaceState — which fires no popstate for anyone else to hear.
    */
   let path = $state(location.pathname)
+  /**
+   * The query beside it: where a screen was opened from (?from=course:<id>
+   * on «Страница занятия»), which course row to open or start a room from
+   * (?edit=, ?course=&row=). Kept apart from `path` so the route regexes
+   * below never see it.
+   */
+  let search = $state(location.search)
+  const query = $derived(new URLSearchParams(search))
 
   /*
    * Not a route. Creating is a step inside the seminars tab rather than a place
@@ -68,7 +76,11 @@
   let pendingToken = $state<string | null>(null)
   let retriedEntry = false
   const tab = $derived<AdminTab>(
-    path.startsWith('/admin/oracle')
+    // «Страница занятия» opened from a course row belongs to the Courses tab:
+    // that is where its back link leads.
+    path.startsWith('/admin/publish/') && (search.includes('from=course') || search.includes('from=courses'))
+      ? 'courses'
+      : path.startsWith('/admin/oracle')
       ? 'oracle'
       : path.startsWith('/admin/audit')
         ? 'audit'
@@ -107,6 +119,17 @@
   )
   /* Publishing is an address too: it is the screen where a decision is made. */
   const publishing = $derived(/^\/admin\/publish\/([A-Za-z0-9_-]{1,64})/.exec(path)?.[1] ?? null)
+  /*
+   * A new room started from a course row («Создать комнату») is an address:
+   * /admin/new?course=<id>&row=<rowId> carries the row it will take. The
+   * bare form from the classes list stays a step, not a place (`makingSeminar`).
+   */
+  const newRoom = $derived(path === '/admin/new')
+  const newRoomRow = $derived.by(() => {
+    const course = query.get('course')
+    const row = query.get('row')
+    return course && row ? { course, row } : null
+  })
 
   // replaceState, never push: a spent credential must not sit in the address
   // bar, and must not be one Back press away either.
@@ -229,6 +252,7 @@
   onMount(() => {
     const onPop = () => {
       path = location.pathname
+      search = location.search
       makingSeminar = false
     }
     window.addEventListener('popstate', onPop)
@@ -246,8 +270,13 @@
   })
 
   function navigate(next: string): void {
-    if (next !== location.pathname) history.pushState({}, '', next)
-    path = next
+    // A target may carry a query (?from=, ?course=&row=): the path and the
+    // query are kept apart, so `path` stays a bare path for the routes above.
+    const url = new URL(next, location.origin)
+    const target = url.pathname + url.search
+    if (target !== location.pathname + location.search) history.pushState({}, '', target)
+    path = url.pathname
+    search = url.search
     /*
      * Any navigation means leaving the "New class" form.
      *
@@ -275,9 +304,21 @@
 {:else}
   <AdminShell {tab} {navigate}>
     {#if publishing}
-      <Publish sessionId={publishing} {navigate} />
+      {#key publishing}
+        <Publish sessionId={publishing} from={query.get('from')} focus={query.get('focus')} {navigate} />
+      {/key}
+    {:else if newRoom}
+      {#key search}
+        <NewSeminar
+          prefill={newRoomRow}
+          ondone={(createdId) => {
+            arrived = createdId ?? null
+            navigate('/admin')
+          }}
+        />
+      {/key}
     {:else if tab === 'courses'}
-      <Courses open={openCourse} {navigate} />
+      <Courses open={openCourse} edit={query.get('edit')} {navigate} />
     {:else if tab === 'competitions'}
       <Competitions open={openCompetition} tab={competitionTab} {navigate} />
     {:else if tab === 'environments'}

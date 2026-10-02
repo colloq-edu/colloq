@@ -314,6 +314,48 @@ db.exec(`
     PRIMARY KEY (pub, hash)
   );
 
+  /*
+   * What a class page is made of: every picked notebook and file, in page
+   * order.
+   *
+   * The bytes are not here but in page_files, by hash: room folders are
+   * mostly PDFs and data, a dataset reused in three classes is stored once,
+   * and megabytes of BLOBs would make every VACUUM INTO snapshot hold the
+   * loop longer (db-snapshots.ts). A notebook also keeps its projected cells
+   * (the same PublicCell[] a step page used to hold) and its outline, so the
+   * public half serves a tab without unfolding anything.
+   */
+  CREATE TABLE IF NOT EXISTS publication_materials (
+    pub          TEXT NOT NULL,
+    key          TEXT NOT NULL,
+    ord          INTEGER NOT NULL,
+    kind         TEXT NOT NULL CHECK (kind IN ('notebook','pdf','data','code','text','image','file')),
+    name         TEXT NOT NULL,
+    path         TEXT NOT NULL,
+    hash         TEXT NOT NULL,
+    bytes        INTEGER NOT NULL,
+    cells        TEXT,
+    outline      TEXT,
+    cell_count   INTEGER,
+    output_count INTEGER,
+    PRIMARY KEY (pub, key)
+  );
+  CREATE INDEX IF NOT EXISTS publication_materials_hash ON publication_materials(hash);
+
+  /*
+   * The bytes of page materials, content-addressed: <DATA_DIR>/page-files/
+   * <hash[0..1]>/<hash>, one row per file (publish/page-files.ts). crc32 is
+   * kept for the store-only ZIP, which has to know every CRC before it sends
+   * the first byte.
+   */
+  CREATE TABLE IF NOT EXISTS page_files (
+    hash  TEXT PRIMARY KEY,
+    mime  TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    crc32 INTEGER NOT NULL,
+    at    INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS doc_history (
     seq         INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id  TEXT NOT NULL,
@@ -475,6 +517,24 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS courses_slug ON courses(slug) WHERE slug IS NOT NULL;
   CREATE UNIQUE INDEX IF NOT EXISTS publications_slug ON publications(slug) WHERE slug IS NOT NULL;
 `)
+
+/*
+ * Class pages (publish/store.ts · writePublication).
+ *
+ * `first_at` is the first publish: `published_at` keeps meaning "the last
+ * build", and a page republished every week would otherwise look a day old
+ * forever. `held_on` is the class day of a page outside any course (a course
+ * row carries its own). `selection` is what the teacher picked, JSON
+ * PublishSelection, so a refresh needs no questions. `materials_rev` equals
+ * `revision` when publication_materials is current: a 0.12 that a rollback
+ * brought back bumps `revision` alone, and the next start re-migrates the
+ * page from its steps (publish/migrate-pages.ts).
+ */
+ensureColumn('publications', 'first_at', 'first_at INTEGER')
+ensureColumn('publications', 'held_on', 'held_on TEXT')
+ensureColumn('publications', 'selection', 'selection TEXT')
+ensureColumn('publications', 'materials_rev', 'materials_rev INTEGER')
+ensureColumn('publications', 'zip_bytes', 'zip_bytes INTEGER NOT NULL DEFAULT 0')
 
 /* ------------------------------------------------------------- sessions */
 
@@ -1166,8 +1226,7 @@ const selectStory = db.prepare(`
  * of them per class period, and a "before the exercise" checkpoint set at the
  * fifteenth minute fell out of the four-hundred-row window along with them.
  * The row was still alive in the database: what was lost was exactly the
- * function the checkpoint was set for. The same trick is used for publication
- * steps (publish/candidates.ts).
+ * function the checkpoint was set for.
  */
 const selectNamed = db.prepare(`
   SELECT ${COLUMNS}

@@ -21,7 +21,12 @@ import type { EntrantSubmissions } from '../shared/competitions-entrant.js'
 import type { CompetitionsList } from '../shared/competitions-api.js'
 import { setLocaleResolver } from '../shared/i18n.js'
 import { quotaResetWords } from '../web/src/lib/competition-words.js'
-import { instanceDayStart, instanceNextDayStart, instanceTimeZone } from '../server/src/time-zone.js'
+import {
+  instanceDayStart,
+  instanceNextDayStart,
+  instanceTimeZone,
+  instanceToday,
+} from '../server/src/time-zone.js'
 import { createTeacher, rotateLinkKey } from '../server/src/admin/store.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
 import {
@@ -34,7 +39,6 @@ import {
   updateSubmission,
   usedToday,
 } from '../server/src/competitions/store.js'
-import { renderStep } from '../server/src/publish/render.js'
 import { app } from '../server/src/app.js'
 
 const HOUR = 60 * 60 * 1000
@@ -113,24 +117,14 @@ test('the instance zone is TZ, Moscow without it, and a name the database does n
   assert.match(warnings[0], /TZ=МСК/)
 })
 
-test('published pages print their clocks in the same zone', () => {
-  const noon = Date.UTC(2026, 8, 2, 12, 0)
-  const page = () => renderStep({
-    title: 'Деревья',
-    publishedAt: noon,
-    course: null,
-    // Two steps: the rail that lists them prints each one's time.
-    steps: [
-      { seq: 1, label: 'перед упражнением', at: noon, cellCount: 0 },
-      { seq: 2, label: 'решение', at: noon, cellCount: 0 },
-    ],
-    step: { seq: 1, label: 'шаг', at: noon, cells: [] },
-    depth: 1,
-    base: 'https://colloq.ru',
-  })
-  // Berlin is +2 in September; the leading colon used to fall back to Moscow.
-  assert.match(withTz(':Europe/Berlin', page), /14:00/)
-  assert.match(withTz(undefined, page), /15:00/)
+test('class pages date their classes in the same zone', () => {
+  // 21:30 UTC on 2 September is still the 2nd in Berlin (+2) and already the
+  // 3rd in Moscow (+3): the day a finished class is stamped with and the one
+  // a course page calls «сегодня».
+  const late = Date.UTC(2026, 8, 2, 21, 30)
+  // The leading colon used to fall back to Moscow.
+  assert.equal(withTz(':Europe/Berlin', () => instanceToday(late)), '2026-09-02')
+  assert.equal(withTz(undefined, () => instanceToday(late)), '2026-09-03')
 })
 
 /* ------------------------------------------------------------- the day */

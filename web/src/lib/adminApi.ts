@@ -36,10 +36,12 @@ import type {
 } from '@shared/admin'
 import type {
   AddressHolder,
+  AdminPage,
   Course,
   CourseItem,
-  PublishCandidate,
-  SkippedStep,
+  PublishCheck,
+  PublishInfo,
+  RoomAccess,
 } from '@shared/publish'
 import type {
   CompetitionInput,
@@ -138,8 +140,46 @@ export interface AdminPublication {
   publishedBy: string | null
   revision: number
   orphanedAt: number | null
-  steps: number
+  /** How many materials the page carries: «страница · 4 материала». */
+  materials: number
   orphaned: boolean
+}
+
+/** What «Опубликовать» sends: the ticked notebooks (by root) and files (by path), in page order. */
+export interface PublishBody {
+  notebooks: { root: string; name: string }[]
+  files: { path: string; name: string }[]
+  autoRefresh: boolean
+  /** Check ids the teacher confirmed with «Проверил(а) — публиковать как есть». */
+  ack: string[]
+  /** The class day of a page outside a course. */
+  heldOn?: string
+  /** Who the page leads into the room; absent keeps the saved setting. */
+  roomAccess?: RoomAccess
+}
+
+export type RefusedReason = 'missing' | 'too-large' | 'budget'
+
+export interface PublishResult {
+  page: AdminPage
+  refused: { path: string; reason: RefusedReason }[]
+}
+
+/**
+ * Why a build was refused, read from the 409 body: checks nobody confirmed
+ * yet, or no saved pick to refresh from. `null` — another refusal, said in
+ * its own words.
+ */
+export function publishRefusal(
+  error: unknown,
+): { kind: 'unconfirmed'; checks: PublishCheck[] } | { kind: 'no selection' } | null {
+  if (!(error instanceof AdminApiError) || error.status !== 409) return null
+  const body = error.body as { error?: unknown; checks?: unknown } | null
+  if (body?.error === 'unconfirmed') {
+    return { kind: 'unconfirmed', checks: Array.isArray(body.checks) ? (body.checks as PublishCheck[]) : [] }
+  }
+  if (body?.error === 'no selection') return { kind: 'no selection' }
+  return null
 }
 
 const BASE = '/api/admin'
@@ -665,47 +705,69 @@ export const adminApi = {
   /* ------------------------------------------------------ publication */
 
   /**
-   * `slug` is declared here on purpose: the server sent it from the start, but
-   * the type dropped it — and the publish screen, unaware of the current
-   * address, proposed a new one from the title and broke the one already
-   * dictated to the class.
+   * The instance's «сегодня», from a course's public view.
+   *
+   * The panel has no zone of its own, and the browser's day is not the
+   * class's: a teacher abroad would see Sunday's class as «tomorrow». The
+   * course view already carries the instance day (shared/publish.ts ·
+   * PublicCourseView.today), so the panel asks the same place the students'
+   * page does.
    */
-  publishInfo: (id: string) =>
-    request<{
-      title: string
-      candidates: PublishCandidate[]
-      publication: {
-        id: string
-        slug: string | null
-        steps: { seq: number; label: string; at: number }[]
-        /**
-         * This page's former names in the address (`Course.former` in shared).
-         *
-         * The server carries them along with the publication itself
-         * (routes/courses.ts · `formerSlugs`), but the type dropped them — and
-         * the publish screen kept its own declaration of the field so that it
-         * had something to release a former name with. Optional: an older
-         * server does not send it at all.
-         */
-        former?: string[]
-      } | null
-    }>(`/seminars/${encodeURIComponent(id)}/publish`),
+  courseToday: (courseId: string) =>
+    request<{ course: { today: string } }>(
+      `/c/${encodeURIComponent(courseId)}`,
+      undefined,
+      '/api',
+    ).then((r) => r.course.today),
 
   /**
-   * `skipped` — the moments that did not become steps, and why.
-   *
-   * Silence here cost a page: the teacher marked seven moments, got six steps
-   * and did not know which one went missing. The server names them one by one
-   * (shared/publish.ts · SkippedStep), and the screen must show them —
-   * otherwise the field will once again drift off into nowhere.
+   * Everything «Страница занятия» shows: the room's notebooks and files with
+   * their default ticks and reasons, the checks, and the page if there is one
+   * (shared/publish.ts · PublishInfo). A page whose room was deleted is asked
+   * for by the page's own id.
    */
-  publish: (id: string, steps: { seq: number; label: string; at: number }[], finalLabel?: string) =>
-    request<{
-      publication: { id: string; slug: string | null; steps: { seq: number; label: string }[] }
-      skipped: SkippedStep[]
-    }>(`/seminars/${encodeURIComponent(id)}/publish`, {
+  publishInfo: (id: string) => request<PublishInfo>(`/seminars/${encodeURIComponent(id)}/publish`),
+
+  /**
+   * Build the page from the teacher's pick.
+   *
+   * `refused` names what did not make it (a file gone from the room, over the
+   * upload limit, past the page budget): the page went out without it, and
+   * the screen has to say so. A 409 `unconfirmed` carries the checks that
+   * still need «Проверил(а)» (publishRefusal below).
+   */
+  publish: (id: string, body: PublishBody) =>
+    request<PublishResult>(`/seminars/${encodeURIComponent(id)}/publish`, {
       method: 'POST',
-      ...json({ steps, finalLabel }),
+      ...json(body),
+    }),
+
+  /** Rebuild from the saved pick, with no questions: «Обновить страницу» on a course row. */
+  refreshPage: (id: string) =>
+    request<PublishResult>(`/seminars/${encodeURIComponent(id)}/publish/refresh`, {
+      method: 'POST',
+    }),
+
+  /**
+   * Take one material off a page, and out of its saved pick. The last one
+   * stays (409): a page with nothing on it is a withdrawal, and that has its
+   * own button.
+   */
+  removeMaterial: (pubId: string, key: string) =>
+    request<{ page: AdminPage }>(
+      `/publications/${encodeURIComponent(pubId)}/materials/${encodeURIComponent(key)}`,
+      { method: 'DELETE' },
+    ),
+
+  /**
+   * «Вход в комнату со страницы», saved on its own: no rebuild, the page's
+   * materials and revision stay as they are. A page without a saved pick
+   * answers 409; the setting then rides with the next publish.
+   */
+  setRoomAccess: (pubId: string, roomAccess: RoomAccess) =>
+    request<{ roomAccess: RoomAccess }>(`/publications/${encodeURIComponent(pubId)}`, {
+      method: 'PATCH',
+      ...json({ roomAccess }),
     }),
 
   withdraw: (id: string) =>

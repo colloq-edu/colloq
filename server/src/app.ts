@@ -644,12 +644,11 @@ app.use('/api', (_req, res) => res.status(404).json({ error: tr('common.notFound
  * address.
  *
  * Published pages are not decided by this file: the decision is written down in
- * one copy in `shared/publish.ts` (`PUBLIC_PAGES_INDEXED`), and the same one
- * governs `<meta name="robots">` in the Pages export (publish/render.ts). While
- * the rule lived in comments on both sides, they managed to drift apart: the
- * static side set `noindex`, while here it was written that publications "are
- * indexed as before: that is what they are published for" — one and the same
- * page behaved differently depending on the address it was opened by. The
+ * one copy in `shared/publish.ts` (`PUBLIC_PAGES_INDEXED`). It once governed a
+ * static Pages export too, and while the rule lived in comments on both sides
+ * they drifted apart: the static side set `noindex`, while here it was written
+ * that publications "are indexed as before: that is what they are published
+ * for". That export is retired; the instance is the only carrier now. The
  * landing page is open and stays open.
  *
  * Outside the static block, although it used to live inside: indexing is an

@@ -16,6 +16,7 @@
  * in config.ts, and modules that ask here load before that.
  */
 import { DEFAULT_TIME_ZONE, dayStartIn, isTimeZone, nextDayStartIn } from '@shared/time-zone'
+import { dayOf } from '@shared/class-day'
 
 let warned = ''
 
@@ -45,4 +46,13 @@ export function instanceDayStart(at = Date.now()): number {
 /** The first moment of the instance's next day: when a daily limit starts over. */
 export function instanceNextDayStart(at = Date.now()): number {
   return nextDayStartIn(at, instanceTimeZone())
+}
+
+/**
+ * Today in the instance's zone, as 'YYYY-MM-DD': the day course pages call
+ * «сегодня» and a finished class is stamped with. Never the browser's day: a
+ * phone set to another zone must not move a class to yesterday.
+ */
+export function instanceToday(at = Date.now()): string {
+  return dayOf(at, instanceTimeZone())
 }

@@ -44,16 +44,15 @@ jobs:
           # the upload of site/.
           persist-credentials: false
       - name: Nothing extra in the artifact
-        # Seminar pages are built by `make site` and checked on that side;
-        # this is the last checkpoint: site/ must contain no database, no room
-        # working folders, no keys.
+        # The last checkpoint: site/ must contain no database, no room
+        # working folders, no keys. Class pages are no longer exported here
+        # (they live on the instance; site/c holds redirect stubs), but the
+        # guard stays: anything committed to a public repository stays in its
+        # history.
         #
-        # No -maxdepth, and that is not a detail: publishing writes deeper than
-        # the checkpoint used to look. `site/p/<handle>/index.html`,
-        # `site/p/<handle>/<seq>/` and the images are depth 3–4, while the check
-        # went down to 2, that is, it inspected exactly the level where
-        # publishing puts nothing. The directory is small, a full walk costs
-        # nothing.
+        # No -maxdepth, and that is not a detail: the old export wrote deeper
+        # than the checkpoint used to look (depth 3–4 against a check that went
+        # down to 2). The directory is small, a full walk costs nothing.
         run: |
           set -e
           bad=$(find site \( -name '*.db' -o -name '*.sqlite*' -o -name '.env*' \

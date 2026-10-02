@@ -43,6 +43,7 @@
   import Wordmark from '@/components/ui/Wordmark.svelte'
   import type { StoredIdentity } from '@/lib/identity'
   import { SessionState, setSessionState } from '@/lib/session.svelte'
+  import { offerOf, pageLineOf, pagePickerPath } from '@/lib/class-end'
   import { cn, modKey, prefersReducedMotion } from '@/lib/utils'
   import { onLanguageChange } from '@/lib/i18n.svelte'
   import type { PaletteItem } from '@/components/ui/palette'
@@ -468,8 +469,54 @@
    * the mark is not a link.
    */
   const homeHref = $derived(
-    isHost ? '/' : session.session.course ? `/c/${session.session.course.id}` : null,
+    isHost
+      ? '/'
+      : session.session.course
+        ? `/c/${session.session.course.slug ?? session.session.course.id}`
+        : null,
   )
+
+  /* ------------------------------------------- the class page after the bell */
+
+  /*
+   * Where a teacher manages this class's page, in a tab of its own: the room
+   * stays where it was, with its resume button (lib/class-end.ts).
+   */
+  const pagePickerHref = $derived(pagePickerPath(session.session.id))
+
+  // The one question the bell asks; who is asked and when is in lib/class-end.ts.
+  let offerDismissed = $state(0)
+  const offer = $derived(
+    offerOf(session.pageNews, {
+      host: isHost,
+      inRoom: mode === 'room',
+      finished: session.finished,
+      published: Boolean(session.session.published),
+      course: session.session.course?.name ?? null,
+      dismissed: offerDismissed,
+    }),
+  )
+  function dismissOffer(): void {
+    offerDismissed = session.pageNews?.at ?? 0
+  }
+
+  /*
+   * And how the automatic refresh went, as a line in the room's one stack.
+   *
+   * 'updated' leaves by itself, like the other calm lines, though it lingers
+   * longer: it carries a button. 'waiting' stays until the outcome replaces
+   * it. A page that did NOT update stays until the teacher closes it: the old
+   * page is still what the class reads, and that has to be read.
+   */
+  const PAGE_UPDATED_MS = 12_000
+  let pageNewsClosed = $state(0)
+  const pageLine = $derived(pageLineOf(session.pageNews, { host: isHost, closed: pageNewsClosed }))
+  $effect(() => {
+    const news = pageLine
+    if (!news || news.state !== 'updated') return
+    const timer = window.setTimeout(() => (pageNewsClosed = news.at), PAGE_UPDATED_MS)
+    return () => window.clearTimeout(timer)
+  })
 
   $effect(() => {
     document.title = `${title} · Colloq`
@@ -2667,6 +2714,20 @@
           : tr('room.ui.908')}
       </p>
       {#if isHost}
+        <!--
+          The class page, from the place the class was just ended. For every
+          room, in a course or not: the dialog asks only once and only in a
+          course, and this link is the way back to it for the rest of the
+          room's life. A new tab, so the room and its resume button stay here.
+        -->
+        <a
+          href={pagePickerHref}
+          target="_blank"
+          rel="noopener"
+          class="press shrink-0 text-2xs font-semibold text-accent-text hover:underline"
+        >
+          {session.session.published ? tr('room.classEnd.page') : tr('room.classEnd.publish')}
+        </a>
         <button
           type="button"
           class="btn-outline h-[26px] shrink-0 text-2xs font-semibold"
@@ -3319,6 +3380,70 @@
 {/if}
 
 <!--
+  «Занятие завершено» — the one question the bell asks (artboard P3, frame A).
+
+  The first week of a course is the only time the teacher has to do anything
+  for the class page; after that the pick is remembered and the bell refreshes
+  the page by itself. So the question comes right where the class was ended,
+  names the course the students will look in, and opens the picker in a new
+  tab: the room behind it stays as it was, with its resume button.
+
+  Below the plates that end the room (z-[97] and up): a deleted room or an
+  edit the server refused has to be read first.
+-->
+{#if offer}
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="class-end-title"
+    aria-describedby="class-end-text"
+    tabindex="-1"
+    class="fixed inset-0 z-[80] flex items-center justify-center bg-brand/40 p-4"
+    transition:fade={{ duration: prefersReducedMotion() ? 0 : 140 }}
+    onkeydown={(event) => {
+      if (event.key === 'Escape') dismissOffer()
+    }}
+  >
+    <div class="flex w-full max-w-[480px] flex-col border border-t-2 border-line border-t-primary bg-canvas p-6 shadow-pop">
+      <h2 id="class-end-title" class="text-head font-black tracking-[-0.01em] text-ink">
+        {tr('room.classEnd.title')}
+      </h2>
+      <p id="class-end-text" class="pt-2.5 text-ui-lg text-muted">
+        {tr('room.classEnd.offer', { course: offer.course })}
+      </p>
+      {#if offer.line}
+        <!-- The row it lands in, as the course page will show it: number, title, day. -->
+        <p class="border-b border-line py-4 font-mono text-micro uppercase tracking-label text-muted">
+          {offer.line}
+        </p>
+      {/if}
+      <div class="flex flex-wrap items-center gap-x-5 gap-y-2 pt-6">
+        <!-- svelte-ignore a11y_autofocus -->
+        <a
+          href={pagePickerHref}
+          target="_blank"
+          rel="noopener"
+          autofocus
+          class="press inline-flex h-11 items-center bg-primary px-5 text-ui-lg font-bold text-primary-ink
+                 hover:brightness-110 focus-visible:outline-none focus-visible:ring-2
+                 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+          onclick={dismissOffer}
+        >
+          {tr('room.classEnd.pick')}
+        </a>
+        <button
+          type="button"
+          class="press inline-flex h-11 items-center text-ui-lg font-semibold text-muted hover:text-ink"
+          onclick={dismissOffer}
+        >
+          {tr('room.classEnd.later')}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!--
   The tab has diverged from the server and no longer tries by itself — see
   SessionState.stuck.
   A strip, not a toast: a toast gets closed with the cross, and one is left
@@ -3442,6 +3567,77 @@
         <p class="min-w-0 flex-1 text-ui leading-snug text-muted">
           {#if session.finished} {tr('room.ui.938')} {:else} {tr('room.ui.939')} {/if}
         </p>
+      </div>
+    {/if}
+
+    <!--
+      The class page after the bell (artboard P3, frame B): a rule on top in
+      the outcome's tone, the outcome in words, and the one button that acts
+      on it. In this stack rather than in a corner of its own: two stacks at
+      the bottom of one screen is the overlap this column exists to prevent.
+      Wider than the calm lines, because «Страница не обновилась: …» carries
+      the check that stopped it, and a 360px card keeps that to two lines.
+    -->
+    {#if pageLine}
+      {@const news = pageLine}
+      <div
+        role="status"
+        class={cn(
+          'pointer-events-auto flex w-full max-w-[360px] items-start gap-3 border border-t-2',
+          'border-line bg-canvas py-3.5 pl-4 pr-2.5 shadow-pop',
+          news.state === 'updated' && 'border-t-positive',
+          news.state === 'waiting' && 'border-t-accent',
+          news.state === 'held' && 'border-t-warning',
+          news.state === 'failed' && 'border-t-danger',
+        )}
+        transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: quintOut }}
+      >
+        <span class="mt-0.5 flex shrink-0">
+          {#if news.state === 'updated'}
+            <Icon name="check" size={16} class="text-positive" />
+          {:else if news.state === 'waiting'}
+            <Icon name="spinner" size={16} class="animate-spin text-accent motion-reduce:animate-none" />
+          {:else}
+            <Icon name="alert" size={16} class={news.state === 'held' ? 'text-warning' : 'text-danger'} />
+          {/if}
+        </span>
+        <div class="flex min-w-0 flex-1 flex-col gap-2">
+          <p class="break-words text-ui font-semibold text-ink">
+            {#if news.state === 'updated'}
+              {tr('room.classEnd.updated', { count: news.materials ?? 0 })}
+            {:else if news.state === 'waiting'}
+              {tr('room.classEnd.waiting')}
+            {:else if news.state === 'held'}
+              {tr('room.classEnd.held', { reason: news.reason ?? '' })}
+            {:else}
+              {tr('room.classEnd.failed')}
+            {/if}
+          </p>
+          {#if news.state !== 'waiting' && (news.state !== 'updated' || news.address)}
+            <div class="flex">
+              <a
+                href={news.state === 'updated' ? `/p/${news.address}` : pagePickerHref}
+                target="_blank"
+                rel="noopener"
+                class="press inline-flex h-[30px] items-center border border-line px-3 text-2xs
+                       font-semibold text-ink hover:bg-raised"
+              >
+                {news.state === 'updated'
+                  ? tr('room.classEnd.openPage')
+                  : news.state === 'held'
+                    ? tr('room.classEnd.check')
+                    : tr('room.classEnd.open')}
+              </a>
+            </div>
+          {/if}
+        </div>
+        <button
+          class="btn-ghost h-6 w-6 shrink-0 px-0"
+          onclick={() => (pageNewsClosed = news.at)}
+          aria-label={tr('room.ui.941')}
+        >
+          <Icon name="x" size={14} />
+        </button>
       </div>
     {/if}
 

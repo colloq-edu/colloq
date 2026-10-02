@@ -4,21 +4,34 @@
   A course is an address the class is given in the first week, and nothing
   else is given after that. So it has neither an archive nor hiding, and
   deletion lives inside the course itself and names the link it breaks.
+
+  A single course is a table of its classes: the number, the class day, the
+  title students see and, in the «Страница» column, whether the class left a
+  page. That column is where a forgotten publish shows up by itself: a room
+  whose day has passed without a page says so in the warning colour.
 -->
 <script lang="ts">
   import { tr, getLocale } from '@shared/i18n'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
+  import Check from '@/admin/ui/Check.svelte'
   import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
-  import { AdminApiError, addressHolderOf, adminApi, type AdminPublication } from '@/lib/adminApi'
-  import { copyText } from '@/lib/clipboard'
-  import { plural } from '@/lib/plural'
   import {
+    AdminApiError,
+    addressHolderOf,
+    adminApi,
+    publishRefusal,
+    type AdminPublication,
+  } from '@/lib/adminApi'
+  import { copyText } from '@/lib/clipboard'
+  import { daysBetween, formatDay, isClassDay } from '@shared/class-day'
+  import {
+    MAX_CLASS_ABOUT,
     MAX_COURSE_BLURB,
     MAX_COURSE_NAME,
-    MAX_PLANNED_WHEN,
     slugOk,
+    studentTitle,
     suggestSlug,
     type AddressHolder,
     type Course,
@@ -26,21 +39,35 @@
   } from '@shared/publish'
   import type { AdminSeminar } from '@shared/admin'
   import {
+    applyDraft,
     courseTally,
+    draftOf,
+    localDay,
+    nextPlanDay,
+    pageState,
     plannedRow,
     putPlanned,
+    putRow,
+    roomChoices,
+    rowNumbers,
     seatSeminar,
+    twoDigits,
+    type PageState,
     type PlannedTarget,
+    type RowDraft,
+    type RowTarget,
   } from '@/admin/course-plan'
   import { tick } from 'svelte'
 
   interface Props {
     /** The open course, if the address names one. */
     open: string | null
+    /** A row id to open in the row editor (?edit=, from «Изменить в курсе»). */
+    edit?: string | null
     navigate: (path: string) => void
   }
 
-  let { open, navigate }: Props = $props()
+  let { open, edit = null, navigate }: Props = $props()
 
   let courses = $state<Course[]>([])
   let course = $state<Course | null>(null)
@@ -54,15 +81,20 @@
   let adding = $state(false)
   /** Course requested, no answer yet: an empty area is not an answer. */
   let loadingOne = $state(false)
+  /**
+   * The instance's «сегодня» (adminApi.courseToday): what «прошло», the
+   * today line and «через 2 дня» are counted from. The browser's own day
+   * stands in until it arrives, and if it never does.
+   */
+  let today = $state(localDay(Date.now()))
+  /** A word after an action on a row: «Страница обновлена · 4 материала». */
+  let notice = $state<{ text: () => string; tone: 'ok' | 'warn'; href?: string } | null>(null)
 
   const explain = (cause: unknown): string => {
     // This screen cannot deal with a dead cookie: the shell replaces the whole
     // panel with the sign-in screen. With a reason — the cookie arrived and
     // was rejected.
-    if (cause instanceof AdminApiError) {
-
-      return cause.message
-    }
+    if (cause instanceof AdminApiError) return cause.message
     return tr("admin.could.not.complete.the.request.try.again")
   }
 
@@ -95,10 +127,16 @@
     } finally {
       loadingOne = false
     }
+    void adminApi
+      .courseToday(course.id)
+      .then((day) => {
+        if (isClassDay(day)) today = day
+      })
+      .catch(() => {})
     try {
-      // The seminar list is needed only by the "Add seminar" button: without
-      // it the course screen stays whole, and declaring the course not found
-      // because of it would be wrong.
+      // The seminar list feeds the pickers and the withdrawn/finished marks:
+      // without it the course screen stays whole, and declaring the course
+      // not found because of it would be wrong.
       seminars = await adminApi.listSeminars()
     } catch (cause) {
       if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
@@ -217,24 +255,29 @@
     ])
   }
 
+  /* --------------------------------------------------------- row forms */
+
   /**
-   * Plan rows — right inside the course list.
+   * The forms on the rows — one at a time.
    *
-   * One form per screen: a new topic (at the bottom, `target: null`) or an
-   * edit of an existing one (in the row's place). Two open at once would
-   * hold two row indexes, and after the first save the second would point
-   * to the wrong place.
+   * `plan` is a new topic at the bottom of the list; `rowForm` edits an
+   * existing row in its place (title, day, «о чём», and the break mark of a
+   * plan row). Two open at once would hold two row indexes, and after the
+   * first save the second would point to the wrong place.
    *
-   * An edit knows what the row WAS (course-plan.ts · PlannedTarget): a row
-   * index after someone else's reordering is a different week, and renaming
-   * that one instead of yours would silently spoil the plan.
+   * An edit knows what the row WAS (course-plan.ts · RowTarget): a row index
+   * after someone else's reordering is a different week, and editing that
+   * one instead of yours would silently spoil the plan.
    */
-  let plan = $state<{ target: PlannedTarget | null; name: string; when: string } | null>(null)
+  let plan = $state<{ draft: RowDraft } | null>(null)
+  let rowForm = $state<{ target: RowTarget; draft: RowDraft } | null>(null)
   /** The plan row a class is being chosen to replace. */
   let seating = $state<PlannedTarget | null>(null)
-  let planTopic = $state<HTMLInputElement | null>(null)
+  let titleInput = $state<HTMLInputElement | null>(null)
 
-  const planReady = $derived(plan !== null && plannedRow(plan.name, plan.when) !== null)
+  const blankPlan = (items: readonly CourseItem[]): { draft: RowDraft } => ({
+    draft: { title: '', day: nextPlanDay(items), about: '', pause: false },
+  })
 
   /**
    * Reordering or removing a row shifts the indexes, and forms open on rows
@@ -242,74 +285,96 @@
    * topic at the bottom holds no index and keeps what was typed.
    */
   function closeRowForms(): void {
-    if (plan?.target) plan = null
+    rowForm = null
     seating = null
+    menu = null
   }
 
-  async function openPlan(at: number | null): Promise<void> {
-    const row = at === null ? null : course?.items[at]
+  async function openPlan(): Promise<void> {
+    if (!course) return
+    closeRowForms()
+    adding = false
+    expanded = true
+    plan = blankPlan(course.items)
+    await tick()
+    titleInput?.focus()
+  }
+
+  async function openRow(at: number): Promise<void> {
+    const row = course?.items[at]
+    if (!row) return
+    plan = null
     seating = null
     adding = false
-    plan =
-      row?.kind === 'planned' && at !== null
-        ? { target: { at, was: row }, name: row.name, when: row.when }
-        : { target: null, name: '', when: '' }
+    menu = null
+    rowForm = { target: { at, was: row }, draft: draftOf(row) }
     await tick()
-    planTopic?.focus()
+    titleInput?.focus()
   }
 
   async function savePlan(): Promise<void> {
-    const draft = plan
-    if (!course || !draft || busy) return
-    const row = plannedRow(draft.name, draft.when)
+    const form = plan
+    if (!course || !form || busy) return
+    const { title, day, about, pause } = form.draft
+    const row = plannedRow(title, '', { day, about, pause })
     if (!row) {
-      planTopic?.focus()
+      titleInput?.focus()
       return
     }
-    const next = putPlanned(course.items, row, draft.target)
-    if (!next) {
-      plan = null
-      errorText = () => tr('admin.course.planRowMoved')
-      return
-    }
-    // The edit closes after a race too: there is already a different list
-    // under it.
-    if (draft.target) {
-      if ((await writeItems(next)) !== 'failed') plan = null
-      return
-    }
+    const next = putPlanned(course.items, row, null)!
     /*
      * A semester plan is typed in one go — fifteen topics in a single
-     * sitting. The form stays open, the cursor goes back to the topic:
-     * otherwise every week would cost an extra press of "+ Planned topic".
+     * sitting. The form stays open, the cursor goes back to the topic, and
+     * the day moves on a week: otherwise every week would cost an extra
+     * press of "+ Тема по плану" and a date typed by hand.
      *
      * The form empties IMMEDIATELY, not on the response. On the response it
-     * went like this: Enter in the week field, the cursor stays there, the
-     * next topic gets typed onto the end of the week ("1–7 SepTrees"), and
-     * the response arriving wipes both lines — on a slow link that is
-     * seconds, and what was typed vanished silently. And "Cancel" in the
-     * middle of a write reopened the form when the response arrived.
+     * went like this: Enter, the cursor stays, the next topic gets typed
+     * onto the end of the previous one, and the response arriving wipes
+     * both — on a slow link that is seconds, and what was typed vanished
+     * silently. And "Cancel" in the middle of a write reopened the form when
+     * the response arrived.
      *
      * If it did not get written (a failure, a 409), what was typed comes
      * back, provided nothing has been typed into the empty form yet and it
      * has not been closed: there is no reason to retype a topic because of
      * the network, and what has been started must not be overwritten.
      */
-    const typed = { name: draft.name, when: draft.when }
+    const typed = { ...form.draft }
     const writing = writeItems(next)
-    plan = { target: null, name: '', when: '' }
+    plan = blankPlan(next)
     const fresh = plan
     await tick()
-    planTopic?.focus()
+    titleInput?.focus()
     if ((await writing) === 'ok') return
-    if (plan === fresh && !fresh.name && !fresh.when) plan = { target: null, ...typed }
+    if (plan === fresh && !fresh.draft.title && !fresh.draft.about) plan = { draft: typed }
+  }
+
+  async function saveRow(): Promise<void> {
+    const form = rowForm
+    if (!course || !form || busy) return
+    const row = applyDraft(form.target.was, form.draft)
+    if (!row) {
+      titleInput?.focus()
+      return
+    }
+    const next = putRow(course.items, form.target, row)
+    if (!next) {
+      rowForm = null
+      errorText = () => tr('admin.course.planRowMoved')
+      return
+    }
+    // The edit closes after a race too: there is already a different list under it.
+    if ((await writeItems(next)) !== 'failed') rowForm = null
   }
 
   function openSeat(at: number): void {
     const row = course?.items[at]
     if (row?.kind !== 'planned') return
     plan = null
+    rowForm = null
     adding = false
+    menu = null
     seating = seating?.at === at ? null : { at, was: row }
   }
 
@@ -326,20 +391,238 @@
     if ((await writeItems(next)) !== 'failed') seating = null
   }
 
-  function planKeys(event: KeyboardEvent): void {
-    // An Enter that confirms IME composition is not "Add": the topic would
+  function formKeys(event: KeyboardEvent, save: () => void, cancel: () => void): void {
+    // An Enter that confirms IME composition is not "Save": the topic would
     // go out half-typed.
     if (event.isComposing) return
-    if (event.key === 'Enter') void savePlan()
-    if (event.key === 'Escape') plan = null
+    if (event.key === 'Enter') save()
+    if (event.key === 'Escape') cancel()
   }
 
-  /** Seminars that are not in this course yet. */
-  const addable = $derived(
-    seminars.filter(
-      (s) => !course?.items.some((i) => i.kind === 'seminar' && i.sessionId === s.id),
-    ),
+  /** Rooms already in this course: a room is put into a course once. */
+  const inCourse = $derived(
+    new Set(course?.items.flatMap((i) => (i.kind === 'seminar' ? [i.sessionId] : [])) ?? []),
   )
+  /** Seminars that are not in this course yet, newest first. */
+  const addable = $derived(roomChoices(seminars, null, inCourse))
+  const seatChoices = $derived(
+    seating ? roomChoices(seminars, isClassDay(seating.was.day) ? seating.was.day : null, inCourse) : [],
+  )
+
+  /* -------------------------------------------------------- the table */
+
+  const seminarById = $derived(new Map(seminars.map((s) => [s.id, s])))
+  const numbers = $derived(course ? rowNumbers(course.items) : [])
+
+  function stateOf(item: CourseItem): PageState {
+    const room = item.kind === 'seminar' ? seminarById.get(item.sessionId) : undefined
+    return pageState(item, {
+      today,
+      finished: room?.status === 'finished' || Boolean(room?.finishedAt),
+      withdrawn: room?.publication?.state === 'withdrawn',
+    })
+  }
+
+  /** The next class: today's, or the first dated after it. */
+  const nextIndex = $derived(
+    course?.items.findIndex(
+      (item) => !(item.kind === 'planned' && item.pause) && isClassDay(item.day) && item.day >= today,
+    ) ?? -1,
+  )
+  /**
+   * Where the «СЕГОДНЯ» line goes: before the first row dated after today,
+   * when no class falls on today itself (then that row says «сегодня»).
+   */
+  const lineAt = $derived.by(() => {
+    if (!course || course.items.some((item) => item.day === today)) return -1
+    if (!course.items.some((item) => isClassDay(item.day))) return -1
+    const first = course.items.findIndex((item) => isClassDay(item.day) && item.day > today)
+    return first === -1 ? course.items.length : first
+  })
+
+  /**
+   * The plan's far end, folded.
+   *
+   * Thirty-three rows, of which the teacher this week needs the last held
+   * one and the next three: everything after them that is still only a plan
+   * folds into «Дальше ещё 26 строк по плану». Only plan rows fold — a room
+   * or a page never hides — and an open form unfolds the list.
+   */
+  let expanded = $state(false)
+  const cut = $derived.by(() => {
+    if (!course) return 0
+    const items = course.items
+    let last = -1
+    items.forEach((item, i) => {
+      if (item.kind !== 'planned') last = i
+    })
+    const end = Math.max(last, nextIndex) + 4
+    const tail = items.slice(end)
+    return tail.length >= 5 && tail.every((item) => item.kind === 'planned') ? end : items.length
+  })
+  const folded = $derived(!expanded && course !== null && cut < course.items.length)
+  const shownCount = $derived(course ? (folded ? cut : course.items.length) : 0)
+
+  /** The first plan row still ahead: the one a room is created for this week. */
+  const nextPlanIndex = $derived(
+    course?.items.findIndex(
+      (item) =>
+        item.kind === 'planned' && !item.pause && (!isClassDay(item.day) || item.day >= today),
+    ) ?? -1,
+  )
+
+  /**
+   * Whether a plan row shows «Создать комнату» · «Поставить занятие» inline:
+   * the next plan row and any whose day has already gone by (a class held
+   * without a room in its row). Rows further ahead keep them in the ⋯ menu,
+   * so thirty rows do not shout the same two actions.
+   */
+  function actionable(index: number): boolean {
+    const item = course?.items[index]
+    if (item?.kind !== 'planned') return false
+    if (isClassDay(item.day) && item.day < today) return true
+    return nextPlanIndex === -1 || index <= nextPlanIndex
+  }
+
+  function nextLabel(day: string): string {
+    const gap = daysBetween(today, day)
+    if (gap <= 0) return tr('admin.course.isToday')
+    if (gap === 1) return tr('admin.course.nextTomorrow')
+    return tr('admin.course.nextIn', { count: gap })
+  }
+
+  function tallyText(items: readonly CourseItem[]): string {
+    const tally = courseTally(items)
+    return [
+      tally.pages > 0 || (tally.rooms === 0 && tally.planned === 0)
+        ? tr('admin.course.tally.pages', { count: tally.pages })
+        : null,
+      tally.rooms > 0 ? tr('admin.course.tally.rooms', { count: tally.rooms }) : null,
+      tally.planned > 0 ? tr('admin.course.tally.planned', { count: tally.planned }) : null,
+    ]
+      .filter(Boolean)
+      .join(' · ')
+  }
+
+  /* --------------------------------------------------------- the row menu */
+
+  /**
+   * The ⋯ menu of a row, in window coordinates.
+   *
+   * The menu cannot stay absolute inside the row: the page body scrolls
+   * (overflow: auto) and clips it at the bottom edge. `position: fixed`
+   * from the button's rectangle knows nothing of clipping, and it attaches
+   * to the side with more room (Seminars.svelte · openMenu, measured there).
+   */
+  let menu = $state<{ index: number; style: string } | null>(null)
+
+  function openMenu(index: number, button: HTMLElement): void {
+    if (menu?.index === index) {
+      menu = null
+      return
+    }
+    const box = button.getBoundingClientRect()
+    const right = Math.round(window.innerWidth - box.right)
+    const below = window.innerHeight - box.bottom - 8
+    const above = box.top - 8
+    const style =
+      below >= above
+        ? `top: ${Math.round(box.bottom + 4)}px; right: ${right}px; max-height: ${Math.round(below)}px`
+        : `bottom: ${Math.round(window.innerHeight - box.top + 4)}px; right: ${right}px; max-height: ${Math.round(above)}px`
+    menu = { index, style }
+  }
+
+  function closeMenu(): void {
+    menu = null
+  }
+
+  /** The student's address of a row's page, if it has one. */
+  function pageAddress(item: CourseItem): string | null {
+    if (item.kind === 'planned' || !item.publication) {
+      const room = item.kind === 'seminar' ? seminarById.get(item.sessionId) : undefined
+      return room?.publication ? addressOf(room.publication) : null
+    }
+    return addressOf(item.publication)
+  }
+
+  function openAsStudent(item: CourseItem): void {
+    if (!course) return
+    const page = pageAddress(item)
+    window.open(page ? `/p/${page}` : `/c/${addressOf(course)}`, '_blank', 'noopener')
+  }
+
+  /** «Страница занятия…» of a row: by the room, or by the page itself when the room is gone. */
+  function pageScreen(item: CourseItem, extra = ''): string | null {
+    if (!course) return null
+    const back = `from=course:${course.id}${extra}`
+    if (item.kind === 'seminar') return `/admin/publish/${item.sessionId}?${back}`
+    if (item.kind === 'gone' && item.publication) return `/admin/publish/${item.publication.id}?${back}`
+    return null
+  }
+
+  async function refresh(item: CourseItem): Promise<void> {
+    if (item.kind !== 'seminar' || busy) return
+    menu = null
+    busy = true
+    notice = null
+    errorText = null
+    try {
+      const result = await adminApi.refreshPage(item.sessionId)
+      const count = result.page.materials.length
+      notice = { text: () => tr('admin.course.refreshed', { count }), tone: 'ok' }
+      if (course) await loadOne(course.id)
+    } catch (cause) {
+      const refusal = publishRefusal(cause)
+      const href = pageScreen(item) ?? undefined
+      notice =
+        refusal?.kind === 'unconfirmed'
+          ? { text: () => tr('admin.course.refreshHeld'), tone: 'warn', href }
+          : refusal?.kind === 'no selection'
+            ? { text: () => tr('admin.course.refreshNoPick'), tone: 'warn', href }
+            : { text: () => tr('admin.course.refreshFailed', { reason: explain(cause) }), tone: 'warn', href }
+    } finally {
+      busy = false
+    }
+  }
+
+  async function setShown(item: CourseItem, published: boolean): Promise<void> {
+    if (item.kind !== 'seminar' || busy || !course) return
+    menu = null
+    busy = true
+    errorText = null
+    try {
+      if (published) await adminApi.republish(item.sessionId)
+      else await adminApi.withdraw(item.sessionId)
+    } catch (cause) {
+      errorText = () => explain(cause)
+      busy = false
+      return
+    }
+    busy = false
+    await loadOne(course.id)
+  }
+
+  $effect(() => {
+    if (!menu) return
+    const close = () => (menu = null)
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close()
+    }
+    // Scrolling inside the menu itself is reaching its last item, not "I changed my mind".
+    const onScroll = (event: Event) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('[role=menu]')) return
+      close()
+    }
+    window.addEventListener('click', close)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', onScroll, true)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', onScroll, true)
+    }
+  })
 
   /**
    * Copy — or show the link in words.
@@ -385,13 +668,36 @@
     }
     if (drafted === open.id) return
     drafted = open.id
-    // The plan row form belongs to the course: a row index from a
-    // neighbouring course would point at someone else's week here.
+    // The row forms belong to the course: a row index from a neighbouring
+    // course would point at someone else's week here.
     plan = null
+    rowForm = null
     seating = null
+    menu = null
+    expanded = false
+    notice = null
     slugDraft = open.slug ?? suggestSlug(open.name)
     nameDraft = open.name
     blurbDraft = open.blurb ?? ''
+  })
+
+  /*
+   * «Изменить в курсе» from the class page arrives as ?edit=<row id>: the
+   * row's form opens once the course is here, once per arrival — reopening
+   * it after every save would trap the teacher in it.
+   */
+  let editedFor: string | null = null
+  $effect(() => {
+    const shown = course
+    const row = edit
+    if (!shown || !row) return
+    const key = `${shown.id}:${row}`
+    if (editedFor === key) return
+    editedFor = key
+    const at = shown.items.findIndex((item) => item.id === row)
+    if (at === -1) return
+    expanded = true
+    void openRow(at)
   })
 
   /**
@@ -601,54 +907,144 @@
     }
   }
 
-  const ROW = 'flex items-center gap-4 border-t border-line py-2.5'
-  const ARROW =
-    'flex h-8 w-8 items-center justify-center border border-line text-muted transition-colors ' +
-    'duration-100 hover:border-faint hover:text-ink disabled:border-line-soft disabled:text-faint'
+  const HEADCELL = 'font-mono text-micro uppercase tracking-label text-muted'
+  const FIELD = 'font-mono text-micro uppercase tracking-label text-muted'
+  const INPUT =
+    'h-[38px] w-full border border-line bg-canvas px-3 text-ui text-ink placeholder:text-faint ' +
+    'focus:border-brand focus:outline-none dark:focus:border-accent'
+  // No colour in here: an item adds its own (text-ink, or text-danger for the
+  // two that take something away), and two colour utilities on one element
+  // are decided by stylesheet order, not by the markup.
+  const ITEM =
+    'flex h-9 w-full shrink-0 items-center px-3.5 text-left text-ui hover:bg-surface ' +
+    'disabled:opacity-40'
+  const ACTION = 'text-2xs font-semibold text-accent-text hover:underline disabled:text-faint'
 </script>
 
 <!--
-  The plan row fields — the same ones for a new topic and for editing an
-  existing one. The topic is required (the server refuses without it), the
-  week is not: a "for later" topic may not have a week yet.
+  The fields of a row — the same for a new plan topic and for editing any
+  row. The topic of a plan row is required (the server refuses without
+  it); the day, the «о чём» line and the break mark are not.
 -->
-{#snippet planForm(label: string)}
-  {#if plan}
-    <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-      <input
-        bind:this={planTopic}
-        class="h-9 min-w-0 flex-[3_1_200px] border border-line bg-canvas px-3 text-ui text-ink
-               placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
-        placeholder={tr('admin.course.plannedTopic')}
-        aria-label={tr('admin.course.plannedTopic')}
-        maxlength={MAX_COURSE_NAME}
-        bind:value={plan.name}
-        onkeydown={planKeys}
-      />
-      <input
-        class="h-9 min-w-0 flex-[1_1_150px] border border-line bg-canvas px-3 text-ui text-ink
-               placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
-        placeholder={tr('admin.course.plannedWhen')}
-        aria-label={tr('admin.course.plannedWhenLabel')}
-        maxlength={MAX_PLANNED_WHEN}
-        bind:value={plan.when}
-        onkeydown={planKeys}
-      />
-      <div class="flex shrink-0 items-center gap-2">
+{#snippet rowFields(
+  draft: RowDraft,
+  planned: boolean,
+  when: string | null,
+  saveLabel: string,
+  save: () => void,
+  cancel: () => void,
+)}
+  <div class="row-form flex flex-col gap-[18px] border-b border-t border-dashed border-b-line border-t-line bg-surface [border-bottom-style:solid]">
+    <div class="flex flex-wrap items-start gap-4">
+      <label class="flex min-w-[200px] flex-1 flex-col gap-1.5">
+        <span class={FIELD}>{planned ? tr('admin.course.field.topic') : tr('admin.course.field.title')}</span>
+        <input
+          bind:this={titleInput}
+          class={INPUT}
+          maxlength={MAX_COURSE_NAME}
+          bind:value={draft.title}
+          onkeydown={(event) => formKeys(event, save, cancel)}
+        />
+      </label>
+      <label class="flex w-[220px] max-w-full flex-col gap-1.5">
+        <span class={FIELD}>{tr('admin.course.field.day')}</span>
+        <input
+          type="date"
+          class="{INPUT} font-mono"
+          bind:value={draft.day}
+          onkeydown={(event) => formKeys(event, save, cancel)}
+        />
+        <!-- The week the timetable gave this row, until a day replaces it. -->
+        {#if !draft.day && when}
+          <span class="text-2xs text-muted">{tr('admin.course.field.whenLegacy', { when })}</span>
+        {/if}
+      </label>
+    </div>
+    <label class="flex flex-col gap-1.5">
+      <span class={FIELD}>{tr('admin.course.field.about')}</span>
+      <span class="flex min-h-16 flex-col gap-1.5 border border-line bg-canvas px-3 pb-2 pt-2.5 focus-within:border-brand dark:focus-within:border-accent">
+        <textarea
+          class="min-h-[40px] resize-none bg-transparent text-ui leading-5 text-ink focus:outline-none"
+          rows="2"
+          maxlength={MAX_CLASS_ABOUT}
+          bind:value={draft.about}
+          onkeydown={(event) => {
+            if (event.key === 'Escape') cancel()
+          }}
+        ></textarea>
+        <span class="self-end font-mono text-micro text-faint">{draft.about.length} / {MAX_CLASS_ABOUT}</span>
+      </span>
+    </label>
+    <div class="flex flex-wrap items-center justify-between gap-4">
+      {#if planned}
+        <label class="flex cursor-pointer items-center gap-2.5">
+          <Check size={16} bind:checked={draft.pause} />
+          <span class="text-ui text-ink">{tr('admin.course.field.pause')}</span>
+        </label>
+      {:else}
+        <span></span>
+      {/if}
+      <div class="flex items-center gap-[18px]">
+        <button type="button" class="text-2xs text-muted hover:text-ink" onclick={cancel}>
+          {tr('admin.cancel')}
+        </button>
         <button
           type="button"
-          class="btn-primary h-9 px-3 text-2xs"
-          disabled={busy || !planReady}
-          onclick={() => void savePlan()}
+          class="press flex h-[34px] items-center bg-primary px-[18px] text-micro font-black uppercase tracking-label
+                 text-primary-ink hover:brightness-110 disabled:opacity-40"
+          disabled={busy || (planned && !draft.title.trim())}
+          onclick={save}
         >
-          {label}
-        </button>
-        <button type="button" class="btn-ghost h-9 px-3 text-2xs" onclick={() => (plan = null)}>
-          {tr('admin.cancel')}
+          {saveLabel}
         </button>
       </div>
     </div>
-  {/if}
+  </div>
+{/snippet}
+
+<!--
+  Rooms to put into a row, nearest to its day first, each with its day and
+  state: in week twelve the right room is the one held that Sunday, not the
+  twelfth button named «Семинар».
+-->
+{#snippet roomPicker(
+  question: string,
+  choices: ReturnType<typeof roomChoices>,
+  pick: (id: string) => void,
+  cancel: () => void,
+)}
+  <div class="picker border-b border-line bg-surface">
+    <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 pb-2.5">
+      <p class="min-w-0 flex-1 text-2xs leading-snug text-muted">{question}</p>
+      <button type="button" class="shrink-0 text-2xs font-semibold text-muted hover:text-ink" onclick={cancel}>
+        {tr('admin.cancel')}
+      </button>
+    </div>
+    {#if choices.length === 0}
+      <p class="text-ui text-muted">{tr("admin.no.seminars.available.to.add")}</p>
+    {:else}
+      <ul class="flex max-h-[320px] flex-col overflow-y-auto border border-line bg-canvas">
+        {#each choices as choice (choice.seminar.id)}
+          <li class="border-b border-line-soft last:border-b-0">
+            <button
+              type="button"
+              class="flex min-h-11 w-full flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-2 text-left hover:bg-surface disabled:text-faint"
+              disabled={busy}
+              onclick={() => pick(choice.seminar.id)}
+            >
+              <span class="min-w-0 flex-1 truncate text-ui text-ink">{choice.seminar.name}</span>
+              {#if choice.fits}
+                <span class="shrink-0 text-micro font-semibold text-positive">{tr('admin.course.fits')}</span>
+              {/if}
+              <span class="shrink-0 text-2xs text-muted">
+                {formatDay(choice.day, getLocale())} · {tr(`admin.course.status.${choice.seminar.status}`)}
+              </span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
 {/snippet}
 
 {#if !open}
@@ -701,7 +1097,6 @@
       {/if}
 
       {#each courses as item (item.id)}
-        {@const tally = courseTally(item.items)}
         <!-- flex-wrap and basis-48: with the "planned" count the tally line is
              longer than the room left on a phone, and without wrapping it
              stuck out past the edge while the course title shrank to zero. -->
@@ -717,17 +1112,14 @@
                  next to it. -->
             <p class="mt-0.5 font-mono text-2xs text-muted">/c/{addressOf(item)}</p>
           </button>
-          <p class="shrink-0 text-ui text-muted">
-            {tally.published} {tr("admin.published")} {tally.waiting} {tr("admin.not.yet")}
-            {#if tally.planned > 0}{tr('admin.course.plannedCount', { count: tally.planned })}{/if}
-          </p>
+          <p class="shrink-0 text-ui text-muted">{tallyText(item.items)}</p>
         </div>
       {/each}
 
       <!--
-        Pages without a room. The server serves them and `make site` publishes
-        them, but they were visible nowhere in the panel — a page left behind
-        by a deleted seminar could only be withdrawn by editing the database.
+        Pages without a room. The server serves them, but they were visible
+        nowhere in the panel — a page left behind by a deleted seminar could
+        only be withdrawn by editing the database.
       -->
       {#if orphans.length > 0}
         <div class="mt-8 border-t border-line pt-5">
@@ -740,14 +1132,22 @@
               <div class="min-w-0 flex-1">
                 <p class="truncate text-ui text-ink">{page.title}</p>
                 <p class="mt-0.5 font-mono text-2xs text-muted">
-                  /p/{addressOf(page)} · {page.steps}
-                  {plural(page.steps, tr("admin.step"), tr("admin.steps"), tr("admin.steps.143"))}
+                  /p/{addressOf(page)} · {tr('admin.course.page.page', { count: page.materials })}
                   {page.state === 'withdrawn' ? (" " + tr("admin.withdrawn")) : ''}
                 </p>
               </div>
               <a class="shrink-0 text-ui text-accent-text" href={`/p/${addressOf(page)}`} target="_blank" rel="noreferrer">
                 {tr("admin.open")}
               </a>
+              <!-- What is on it can still be taken off one material at a
+                   time: the class page screen, opened by the page's own id. -->
+              <button
+                type="button"
+                class="shrink-0 text-ui font-semibold text-muted hover:text-ink"
+                onclick={() => navigate(`/admin/publish/${page.id}?from=courses`)}
+              >
+                {tr('admin.course.menu.page')}
+              </button>
               {#if page.state === 'published'}
                 <button
                   type="button"
@@ -792,451 +1192,620 @@
 {:else if course}
   {@const shown = course}
   <AdminPage title={shown.name}>
-    {#snippet actions()}
+    {#snippet eyebrow()}
+      <a
+        class="hover:text-ink"
+        href="/admin/courses"
+        onclick={(event) => {
+          event.preventDefault()
+          navigate('/admin/courses')
+        }}
+      >
+        {tr('admin.courses')} /
+      </a>
+    {/snippet}
+    {#snippet lede()}
       <!-- The address copied is the same one read out loud: /c/<name> if a
            name was given. Otherwise the id went into the chat, and the class
            ended up with two different addresses for the same course. -->
+      <span class="font-mono text-2xs text-ink">{location.host}/c/{addressOf(shown)}</span>
+      <a
+        class="border-b border-dashed border-accent-text text-2xs text-accent-text"
+        href={`/c/${addressOf(shown)}`}
+        target="_blank"
+        rel="noreferrer"
+      >
+        {tr('admin.course.openPage')}
+      </a>
       <button
         type="button"
-        class="btn-ghost"
+        class="border-b border-dashed border-accent-text text-2xs text-accent-text"
         onclick={() => void copy(`${location.origin}/c/${addressOf(shown)}`, 'link')}
       >
-        {copied === 'link' ? tr("admin.copied") : tr("admin.copy.link")}
+        {copied === 'link' ? tr('admin.copied') : tr('admin.course.copyLink')}
       </button>
-      <a class="btn-ghost" href={`/c/${addressOf(shown)}`} target="_blank" rel="noreferrer">
-        {tr("admin.open.course.page")}
-      </a>
-      <button type="button" class="btn-primary" onclick={() => (adding = !adding)}>
-        {tr("admin.add.seminar")}
+      <span class="h-3.5 w-px self-center bg-line" aria-hidden="true"></span>
+      <span class="text-2xs text-muted">{tallyText(shown.items)}</span>
+    {/snippet}
+    {#snippet actions()}
+      <button
+        type="button"
+        class="press flex h-[34px] items-center border border-line px-3.5 text-2xs leading-4 text-ink hover:border-faint disabled:opacity-40"
+        disabled={busy}
+        onclick={() => void openPlan()}
+      >
+        {tr('admin.course.addPlanned')}
+      </button>
+      <button
+        type="button"
+        class="press flex h-[34px] items-center border border-primary px-3.5 text-2xs font-bold leading-4 text-primary hover:bg-surface"
+        aria-expanded={adding}
+        onclick={() => {
+          closeRowForms()
+          plan = null
+          adding = !adding
+        }}
+      >
+        {tr('admin.course.addRoom')}
       </button>
     {/snippet}
 
-    <div class="py-6 sm:px-8">
-      <button
-        type="button"
-        class="mb-5 text-ui text-muted transition-colors hover:text-ink"
-        onclick={() => navigate('/admin/courses')}
-      >
-        {tr("admin.all.courses")}
-      </button>
-
-      <!--
-        Title and caption — in the same place as the address: a course with a
-        typo in its title could not be fixed anywhere, and the whole class
-        sees it.
-      -->
-      <div class="flex flex-wrap items-center gap-2 pb-4">
-        <input
-          class="h-9 w-[280px] max-w-full border border-line bg-canvas px-3 text-ui text-ink
-                 focus:outline-none focus:ring-2 focus:ring-accent/40"
-          maxlength={MAX_COURSE_NAME}
-          aria-label={tr("admin.course.name")}
-          bind:value={nameDraft}
-          onkeydown={(event) => {
-            if (event.key === 'Enter') void saveDetails()
-          }}
-        />
-        <input
-          class="h-9 min-w-[220px] flex-1 border border-line bg-canvas px-3 text-ui text-ink
-                 placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
-          placeholder={tr("admin.short.course.description.optional")}
-          maxlength={MAX_COURSE_BLURB}
-          aria-label={tr("admin.course.description")}
-          bind:value={blurbDraft}
-          onkeydown={(event) => {
-            if (event.key === 'Enter') void saveDetails()
-          }}
-        />
-        {#if detailsChanged}
-          <button
-            type="button"
-            class="btn-primary h-9 shrink-0 px-3 text-2xs"
-            disabled={busy}
-            onclick={() => void saveDetails()}
-          >
-            {tr("admin.save.changes")}
-          </button>
-        {/if}
-      </div>
-
-      <!--
-        The course address is what gets dictated to the class and written on
-        the board. So it is edited right here rather than hidden in settings:
-        eight random characters are harder to remember than "ml-strong", and
-        people ask for them to be repeated more often.
-      -->
-      <div class="flex flex-wrap items-center gap-2 pb-5">
-        <span class="font-mono text-2xs text-muted">{location.host}/c/</span>
-        <input
-          class="h-9 w-[220px] border border-line bg-canvas px-2 font-mono text-2xs text-ink
-                 placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
-          placeholder={shown.id}
-          maxlength={64}
-          bind:value={slugDraft}
-          onkeydown={(event) => {
-            if (event.key === 'Enter') void saveSlug()
-          }}
-        />
-        {#if slugDraft.trim() !== (shown.slug ?? '')}
-          <button type="button" class="btn-primary h-9 px-3 text-2xs" disabled={busy} onclick={() => void saveSlug()}>
-            {tr("admin.save.address")}
-          </button>
-        {/if}
-        <!-- The name is held not by a live address but by the memory of a
-             link that was handed out — and that is the only kind of "taken"
-             the owner resolves themselves. The button sits right by the
-             field: looking for it elsewhere on the screen means not finding
-             it at all. -->
-        {#if held}
-          <button
-            type="button"
-            class="btn-outline h-9 px-3 text-2xs"
-            disabled={busy}
-            onclick={() => (askingSlug = true)}
-          >
-            {tr("admin.release.previous.address")}
-          </button>
-        {/if}
-        {#if shown.slug}
-          <span class="text-2xs text-muted">{tr("admin.the.old.address.c")}{shown.id} {tr("admin.also.works")}</span>
-        {/if}
-      </div>
-
-      {#if held}
-        <p class="max-w-[640px] pb-5 text-2xs leading-snug text-muted">
-          <span class="font-mono text-ink">/c/{held.slug}</span> {tr("admin.the.previous.address.of.the")}
-          {held.holder.kind === 'course' ? tr("admin.course") : tr("admin.page")}
-          {#if held.holder.name}«{held.holder.name}»{/if}{tr("admin.after.transfer.this.link.will.open.the.current.course.instead.of")}
-        </p>
-      {/if}
-
-      <!--
-        Former names — under the same field where they were changed.
-
-        Renaming does not cancel a link that has been handed out: the old name
-        stays this course's address forever — and holds it against everyone
-        else too. Next year's course got "The address "ml-2025" is the former
-        name of the course "ML 2025"", and there was nowhere to see that the
-        name is held HERE: there is no row with that address in the course
-        list. The cost of releasing is named next to the button, not only in
-        the question after it.
-      -->
-      {#if former.length > 0}
-        <div class="mb-5 max-w-[640px] border border-line bg-surface">
-          <div class="border-b border-line px-4 py-2.5">
-            <p class="text-ui font-semibold text-ink">{tr("admin.previous.addresses")}</p>
-            <p class="mt-0.5 text-2xs leading-snug text-muted">
-              {tr("admin.these.links.open.the.current.course.releasing.an.address.stops.it")}
-            </p>
-          </div>
-          {#each former as name (name)}
-            <div class="flex items-center gap-3 border-b border-line-soft px-4 py-2 last:border-b-0">
-              <span class="min-w-0 flex-1 truncate font-mono text-2xs text-ink">/c/{name}</span>
-              <button
-                type="button"
-                class="btn-outline h-9 shrink-0 px-3 text-2xs"
-                disabled={busy}
-                onclick={() => (dropping = name)}
-              >
-                {tr("admin.release")}
-              </button>
-            </div>
-          {/each}
-        </div>
-      {/if}
-
+    <div class="pt-2">
       {#if error}
-        <p class="pb-4 text-ui text-danger">{error}</p>
+        <p class="py-3 text-ui text-danger" role="alert">{error}</p>
       {/if}
-
-      <!--
-        A statement, not a switch: nothing controls the course's visibility,
-        and drawing a toggle for it would promise a choice that does not exist.
-      -->
-      <div class="mb-6 flex flex-wrap items-start gap-x-7 gap-y-2 border-y border-line py-4">
-        <div class="w-[220px] shrink-0">
-          <p class="text-ui font-semibold text-ink">{tr("admin.what.students.see")}</p>
-          <p class="mt-0.5 text-2xs leading-snug text-muted">
-            {tr("admin.the.page.is.accessible.by.link.without.signing.in")}
-          </p>
-        </div>
-        <!-- basis: without it flex-1 stayed in the row next to the caption at
-             a width of thirty pixels and stuck out past the edge, instead of
-             moving down. -->
-        <p class="min-w-0 max-w-[640px] flex-1 basis-[260px] text-ui leading-relaxed text-muted">
-          {tr("admin.the.course.page.shows.seminar.names.in.the.chosen.order.and.links")}
-        </p>
-      </div>
-
-      {#if adding}
-        <div class="mb-5 border border-line bg-surface p-3">
-          {#if addable.length === 0}
-            <p class="text-ui text-muted">{tr("admin.no.seminars.available.to.add")}</p>
-          {:else}
-            <div class="flex flex-wrap gap-2">
-              {#each addable as session (session.id)}
-                <button
-                  type="button"
-                  class="border border-line bg-canvas px-3 py-1.5 text-ui text-ink transition-colors
-                         hover:border-faint disabled:text-faint"
-                  disabled={busy}
-                  onclick={() => add(session.id)}
-                >
-                  {session.name}
-                </button>
-              {/each}
-            </div>
+      {#if notice}
+        <p
+          class="my-3 flex flex-wrap items-baseline gap-x-3 border-l-2 bg-surface px-3 py-2 text-ui
+                 {notice.tone === 'ok' ? 'border-positive text-ink' : 'border-warning text-ink'}"
+          role="status"
+        >
+          <span>{notice.text()}</span>
+          {#if notice.href}
+            {@const href = notice.href}
+            <button type="button" class={ACTION} onclick={() => navigate(href)}>{tr('admin.course.menu.page')}</button>
           {/if}
-        </div>
+        </p>
       {/if}
 
       <!--
-        The list sits in a container with its own width: the 290px
-        "Publication" column and the arrows did not fit next to the title even
-        on a tablet with the menu open, and on a phone the title squeezed into
-        a column with the publication text lying on top of it. The breakpoint
-        goes by the width of the list itself, not the window: the panel's menu
-        takes a different width on different screens.
+        The table sits in a container with its own width: the breakpoints go
+        by the width of the list itself, not the window, because the panel's
+        menu takes a different width on different screens.
       -->
       <div class="course-rows">
-      <div class="flex items-center gap-4 pb-2">
-        <span class="w-[26px] shrink-0"></span>
-        <span class="flex-1 text-micro font-bold uppercase tracking-caps text-muted">{tr("admin.seminar")}</span>
-        <span class="course-head-state w-[290px] shrink-0 text-micro font-bold uppercase tracking-caps text-muted">
-          {tr("admin.publication")}
-        </span>
-        <span class="w-[60px] shrink-0"></span>
-      </div>
+        <div class="course-grid course-head h-10 items-center border-b-2 border-ink">
+          <span class={HEADCELL}>{tr('admin.course.col.n')}</span>
+          <span class={HEADCELL}>{tr('admin.course.col.day')}</span>
+          <span class={HEADCELL}>{tr('admin.course.col.class')}</span>
+          <span class={HEADCELL}>{tr('admin.course.col.page')}</span>
+          <span></span>
+        </div>
 
-      {#each shown.items as item, index (index)}
-        {@const editing = plan?.target?.at === index}
-        <div class="course-row {ROW}">
-          <span class="w-[26px] shrink-0 font-mono text-2xs text-faint">
-            {String(index + 1).padStart(2, '0')}
-          </span>
-          {#if editing}
-            {@render planForm(tr('admin.save'))}
-          {:else if item.kind === 'planned'}
-            <!--
-              A plan row: topic and week, and three actions on it. "Assign
-              class" is the main one and is therefore in the accent colour,
-              like "Publish" on a class: that is the whole life of such a row
-              — a week has passed, the room takes its place, the week
-              numbering does not shift.
-            -->
-            <div class="course-name min-w-0 flex-1">
-              <p class="text-ui text-ink">{item.name}</p>
-              <p class="mt-0.5 text-2xs text-muted">
-                {tr("admin.planned")}{item.when ? ` · ${item.when}` : ''}
-              </p>
+        {#if adding}
+          {@render roomPicker(tr('admin.course.addQuestion'), addable, add, () => (adding = false))}
+        {/if}
+
+        {#each shown.items.slice(0, shownCount) as item, index (index)}
+          {@const state = stateOf(item)}
+          {@const n = numbers[index]}
+          {@const day = isClassDay(item.day) ? item.day : null}
+          {@const room = item.kind === 'seminar' ? seminarById.get(item.sessionId) : undefined}
+          {@const address = pageAddress(item)}
+          {@const isNext = index === nextIndex}
+          {@const editing = rowForm?.target.at === index}
+          {@const strong = state === 'page' || state === 'early' || state === 'missing' || state === 'room' || state === 'withdrawn'}
+          {#if index === lineAt}
+            <div class="flex items-center gap-3 pb-0.5 pt-3.5">
+              <span class="shrink-0 font-mono text-micro uppercase tracking-label text-accent-text">
+                {tr('admin.course.today', { day: formatDay(today, getLocale()) })}
+              </span>
+              <span class="h-0.5 flex-1 bg-accent"></span>
             </div>
-            <div class="course-state flex w-[290px] shrink-0 items-baseline gap-3">
-              <button
-                type="button"
-                class="whitespace-nowrap text-ui font-semibold text-accent-text disabled:text-faint"
-                disabled={busy}
-                aria-expanded={seating?.at === index}
-                onclick={() => openSeat(index)}
-              >
-                {tr('admin.course.seat')}
-              </button>
-              <button
-                type="button"
-                class="whitespace-nowrap text-ui font-semibold text-muted hover:text-ink disabled:text-faint"
-                disabled={busy}
-                onclick={() => void openPlan(index)}
-              >
-                {tr('admin.course.editPlanned')}
-              </button>
-              <button
-                type="button"
-                class="whitespace-nowrap text-ui font-semibold text-muted hover:text-ink disabled:text-faint"
-                disabled={busy}
-                onclick={() => drop(index)}
-              >
-                {tr('admin.course.removePlanned')}
-              </button>
-            </div>
-          {:else if item.kind === 'gone'}
-            <div class="course-name min-w-0 flex-1">
-              <p class="text-ui text-muted">{item.name}</p>
-              <p class="mt-0.5 text-2xs text-muted">
-                {tr("admin.seminar.deleted.position.in.list.kept")}
-              </p>
-            </div>
-            <div class="course-state flex w-[290px] shrink-0 items-baseline gap-3">
-              <!-- "Nothing to publish" is true only when there is no page. The
-                   room was deleted but the reading page remained: otherwise
-                   there is no way to reach it from the course, even though
-                   the course is the only address the class is given. -->
-              {#if item.publication}
-                <a
-                  class="text-ui text-accent-text"
-                  href={`/p/${addressOf(item.publication)}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {tr("admin.open.saved.publication")}
-                </a>
+          {/if}
+          <div
+            class="course-grid course-row py-4 {editing || (isNext && item.kind === 'planned') ? 'bg-surface' : ''}
+                   {editing ? '' : 'border-b border-line'}"
+          >
+            <span class="c-n font-mono text-ui leading-[22px] {state === 'page' || state === 'early' ? 'text-ink' : 'text-faint'}">
+              {n === null ? '' : twoDigits(n)}
+            </span>
+            <span class="c-day text-ui leading-[22px] text-muted">
+              {#if day}
+                {formatDay(day, getLocale())}
+              {:else if item.when}
+                <span class="text-2xs text-faint">{item.when}</span>
               {:else}
-                <span class="text-ui text-muted">{tr("admin.no.publication")}</span>
+                —
               {/if}
+            </span>
+            <div class="c-title flex min-w-0 flex-col items-start gap-1.5 pr-6">
               <button
                 type="button"
-                class="text-ui font-semibold text-muted hover:text-ink disabled:text-faint"
-                disabled={busy}
-                onclick={() => drop(index)}
+                class="text-left text-ui-lg leading-[22px] {strong ? 'font-semibold text-ink' : isNext ? 'text-ink' : 'text-muted'}"
+                onclick={() => void openRow(index)}
               >
-                {tr("admin.remove.row")}
+                {studentTitle(item)}
               </button>
+              {#if item.kind === 'seminar'}
+                <!-- The room under the title: the title is what students
+                     read, the chip is which room it is. -->
+                <span class="flex max-w-full items-center gap-1.5 bg-surface px-2 py-0.5">
+                  <svg class="shrink-0 text-faint" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                    <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" />
+                    <path d="M0.5 3.5h9" stroke="currentColor" />
+                  </svg>
+                  <span class="truncate text-micro text-muted">{room?.name ?? item.name}</span>
+                </span>
+              {:else if item.kind === 'gone'}
+                <span class="bg-surface px-2 py-0.5 text-micro text-muted">{tr('admin.course.roomGone')}</span>
+              {:else if isNext && day}
+                <span class="font-mono text-micro uppercase leading-[18px] tracking-label text-accent-text">{nextLabel(day)}</span>
+              {/if}
             </div>
-          {:else}
-            <div class="course-name min-w-0 flex-1">
-              <p class="text-ui font-semibold text-ink">{item.name}</p>
-              <p class="mt-0.5 font-mono text-2xs text-muted">/s/{item.sessionId}</p>
-            </div>
-            <div class="course-state flex w-[290px] shrink-0 items-baseline gap-3">
-              {#if item.publication}
-                <a
-                  class="text-ui text-accent-text"
-                  href={`/p/${addressOf(item.publication)}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {tr("admin.published.203")} {item.publication.steps}
-                  {plural(item.publication.steps, tr("admin.step"), tr("admin.steps"), tr("admin.steps.206"))}
-                </a>
-              {:else}
-                <span class="text-ui text-muted">{tr("admin.not.published.yet")}</span>
+            <div class="c-page flex min-w-0 flex-col items-start gap-1">
+              {#if state === 'page' || state === 'early'}
+                {#if address}
+                  <a
+                    class="border-b border-dashed border-accent-text text-ui font-semibold leading-[22px] text-accent-text"
+                    href={`/p/${address}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {#if item.kind === 'seminar' && item.publication}
+                      {tr(state === 'early' ? 'admin.course.page.early' : 'admin.course.page.page', { count: item.publication.materials })}
+                    {:else}
+                      {tr('admin.course.page.bare')}
+                    {/if}
+                  </a>
+                  <span class="break-all font-mono text-micro text-faint">/p/{address}</span>
+                {/if}
+              {:else if state === 'withdrawn'}
+                <span class="text-ui leading-[22px] text-muted">{tr('admin.course.page.withdrawn')}</span>
+                {#if address}<span class="break-all font-mono text-micro text-faint">/p/{address}</span>{/if}
+              {:else if state === 'missing'}
+                <!-- The one state that asks for something: the class is over
+                     and nothing was published. -->
                 <button
                   type="button"
-                  class="text-ui font-semibold text-accent-text"
-                  onclick={() => navigate(`/admin/publish/${item.sessionId}`)}
+                  class="press flex items-center gap-2 bg-warning/[0.12] px-2.5 py-1 text-left text-2xs font-semibold text-warning"
+                  onclick={() => {
+                    const href = pageScreen(item)
+                    if (href) navigate(href)
+                  }}
                 >
-                  {tr("admin.publish")}
+                  <svg class="shrink-0" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                    <path d="M6 1.2L11 10.5H1z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+                    <path d="M6 4.6v3M6 8.6v.9" stroke="currentColor" stroke-width="1.3" />
+                  </svg>
+                  {tr('admin.course.page.missing')}
                 </button>
+              {:else if state === 'room'}
+                <span class="text-ui leading-[22px] text-muted">{tr('admin.course.page.room')}</span>
+                <button
+                  type="button"
+                  class={ACTION}
+                  onclick={() => {
+                    const href = pageScreen(item)
+                    if (href) navigate(href)
+                  }}
+                >
+                  {tr('admin.course.menu.page')}
+                </button>
+              {:else if state === 'plan'}
+                <span class="text-ui leading-[22px] {isNext ? 'text-muted' : 'text-faint'}">{tr('admin.course.page.plan')}</span>
+                {#if actionable(index)}
+                  <span class="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      class={ACTION}
+                      onclick={() => navigate(`/admin/new?course=${shown.id}&row=${item.id ?? ''}`)}
+                      disabled={!item.id}
+                    >
+                      {tr('admin.course.createRoom')}
+                    </button>
+                    <span class="text-2xs text-faint" aria-hidden="true">·</span>
+                    <button
+                      type="button"
+                      class={ACTION}
+                      disabled={busy}
+                      aria-expanded={seating?.at === index}
+                      onclick={() => openSeat(index)}
+                    >
+                      {tr('admin.course.seat')}
+                    </button>
+                  </span>
+                {/if}
+              {:else if state === 'pause'}
+                <span class="text-ui leading-[22px] text-faint">{tr('admin.course.page.pause')}</span>
+              {:else}
+                <span class="text-ui leading-[22px] text-faint">{tr('admin.course.page.gone')}</span>
               {/if}
             </div>
-          {/if}
-          <!-- While a row is being edited it has no arrows: a moved edit would
-               be saved into someone else's position. -->
-          {#if !editing}
-            <div class="course-moves flex w-[60px] shrink-0 items-center justify-end gap-1">
+            <div class="c-menu flex justify-end">
               <button
                 type="button"
-                class={ARROW}
-                disabled={index === 0 || busy}
-                aria-label={tr("admin.move.up")}
-                onclick={() => move(index, -1)}
+                aria-haspopup="menu"
+                aria-expanded={menu?.index === index}
+                aria-label={tr('admin.course.menu.label', { name: studentTitle(item) })}
+                class="press flex h-7 w-7 items-center justify-center border text-faint hover:text-ink
+                       max-[640px]:h-11 max-[640px]:w-11
+                       {menu?.index === index ? 'border-ink bg-surface text-ink' : 'border-transparent'}"
+                onclick={(event) => {
+                  event.stopPropagation()
+                  openMenu(index, event.currentTarget as HTMLElement)
+                }}
               >
-                <Icon name="chevron-up" size={11} />
+                <Icon name="more" size={15} />
               </button>
-              <button
-                type="button"
-                class={ARROW}
-                disabled={index === shown.items.length - 1 || busy}
-                aria-label={tr("admin.move.down")}
-                onclick={() => move(index, 1)}
-              >
-                <Icon name="chevron-down" size={11} />
-              </button>
-            </div>
-          {/if}
-        </div>
-
-        <!-- The class picker sits right under the row, not above the list: in
-             a semester plan the week you need is far down, and a panel at the
-             top ended up off screen from the button that opened it. -->
-        {#if seating && seating.at === index}
-          {@const place = seating}
-          <div class="mb-2.5 ml-[42px] border border-line bg-surface p-3">
-            <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 pb-2.5">
-              <p class="min-w-0 flex-1 text-2xs leading-snug text-muted">
-                {tr('admin.course.seatQuestion', { name: place.was.name })}
-              </p>
-              <button
-                type="button"
-                class="shrink-0 text-2xs font-semibold text-muted hover:text-ink"
-                onclick={() => (seating = null)}
-              >
-                {tr('admin.cancel')}
-              </button>
-            </div>
-            {#if addable.length === 0}
-              <p class="text-ui text-muted">{tr("admin.no.seminars.available.to.add")}</p>
-            {:else}
-              <div class="flex flex-wrap gap-2">
-                {#each addable as session (session.id)}
+              {#if menu?.index === index}
+                {@const hasPage = Boolean(address) || room?.publication != null}
+                {@const withdrawn = state === 'withdrawn'}
+                <div
+                  role="menu"
+                  tabindex="-1"
+                  class="fixed z-50 flex w-[216px] flex-col overflow-y-auto border border-ink bg-canvas py-1.5"
+                  style={menu.style}
+                  onclick={(event) => event.stopPropagation()}
+                  onkeydown={(event) => {
+                    if (event.key === 'Escape') closeMenu()
+                  }}
+                >
+                  {#if item.kind === 'seminar' || (item.kind === 'gone' && item.publication)}
+                    <button
+                      role="menuitem"
+                      type="button"
+                      class="{ITEM} text-ink"
+                      onclick={() => {
+                        const href = pageScreen(item)
+                        closeMenu()
+                        if (href) navigate(href)
+                      }}
+                    >
+                      {tr('admin.course.menu.page')}
+                    </button>
+                  {/if}
+                  {#if item.kind === 'seminar' && hasPage}
+                    <!-- Not for a withdrawn page: a rebuild is not a restore, and «Вернуть
+                         страницу» below is the one way back (the server refuses too). -->
+                    {#if !withdrawn}
+                      <button role="menuitem" type="button" class="{ITEM} text-ink" disabled={busy} onclick={() => void refresh(item)}>
+                        {tr('admin.course.menu.refresh')}
+                      </button>
+                    {/if}
+                    <button
+                      role="menuitem"
+                      type="button"
+                      class="{ITEM} text-ink"
+                      onclick={() => {
+                        const href = pageScreen(item, '&focus=address')
+                        closeMenu()
+                        if (href) navigate(href)
+                      }}
+                    >
+                      {tr('admin.course.menu.address')}
+                    </button>
+                  {/if}
+                  {#if item.kind === 'planned' && !item.pause}
+                    <button
+                      role="menuitem"
+                      type="button"
+                      class="{ITEM} text-ink"
+                      disabled={!item.id}
+                      onclick={() => {
+                        closeMenu()
+                        navigate(`/admin/new?course=${shown.id}&row=${item.id ?? ''}`)
+                      }}
+                    >
+                      {tr('admin.course.createRoom')}
+                    </button>
+                    <button
+                      role="menuitem"
+                      type="button"
+                      class="{ITEM} text-ink"
+                      onclick={() => openSeat(index)}
+                    >
+                      {tr('admin.course.seat')}
+                    </button>
+                  {/if}
                   <button
+                    role="menuitem"
                     type="button"
-                    class="border border-line bg-canvas px-3 py-1.5 text-ui text-ink transition-colors
-                           hover:border-faint disabled:text-faint"
-                    disabled={busy}
-                    onclick={() => void seat(session.id)}
+                    class="{ITEM} text-ink"
+                    onclick={() => {
+                      closeMenu()
+                      openAsStudent(item)
+                    }}
                   >
-                    {session.name}
+                    {tr('admin.course.menu.asStudent')}
                   </button>
-                {/each}
-              </div>
-            {/if}
+                  {#if item.kind === 'seminar' && hasPage}
+                    <div class="my-1 h-px shrink-0 bg-line"></div>
+                    {#if withdrawn}
+                      <button role="menuitem" type="button" class="{ITEM} text-ink" disabled={busy} onclick={() => void setShown(item, true)}>
+                        {tr('admin.course.menu.restore')}
+                      </button>
+                    {:else}
+                      <button
+                        role="menuitem"
+                        type="button"
+                        class="{ITEM} text-danger"
+                        disabled={busy}
+                        onclick={() => void setShown(item, false)}
+                      >
+                        {tr('admin.course.menu.withdraw')}
+                      </button>
+                    {/if}
+                  {/if}
+                  <div class="my-1 h-px shrink-0 bg-line"></div>
+                  <button
+                    role="menuitem"
+                    type="button"
+                    class="{ITEM} text-ink"
+                    onclick={() => void openRow(index)}
+                  >
+                    {tr('admin.course.menu.edit')}
+                  </button>
+                  <!-- While a row is being edited it does not move: a moved
+                       edit would be saved into someone else's position. -->
+                  <button
+                    role="menuitem"
+                    type="button"
+                    class="{ITEM} text-ink"
+                    disabled={index === 0 || busy}
+                    onclick={() => move(index, -1)}
+                  >
+                    {tr('admin.course.menu.up')}
+                  </button>
+                  <button
+                    role="menuitem"
+                    type="button"
+                    class="{ITEM} text-ink"
+                    disabled={index === shown.items.length - 1 || busy}
+                    onclick={() => move(index, 1)}
+                  >
+                    {tr('admin.course.menu.down')}
+                  </button>
+                  <button
+                    role="menuitem"
+                    type="button"
+                    class="{ITEM} text-danger"
+                    disabled={busy}
+                    onclick={() => drop(index)}
+                  >
+                    {tr('admin.course.menu.remove')}
+                  </button>
+                </div>
+              {/if}
+            </div>
+          </div>
+
+          {#if editing && rowForm}
+            {@const form = rowForm}
+            {@render rowFields(
+              form.draft,
+              item.kind === 'planned',
+              item.when || null,
+              tr('admin.save'),
+              () => void saveRow(),
+              () => (rowForm = null),
+            )}
+          {/if}
+
+          <!-- The class picker sits right under the row, not above the list:
+               in a semester plan the week you need is far down, and a panel
+               at the top ended up off screen from the button that opened it. -->
+          {#if seating && seating.at === index}
+            {@render roomPicker(
+              tr('admin.course.seatQuestion', { name: seating.was.name }),
+              seatChoices,
+              (id) => void seat(id),
+              () => (seating = null),
+            )}
+          {/if}
+        {/each}
+
+        {#if lineAt === shown.items.length && !folded}
+          <div class="flex items-center gap-3 pb-0.5 pt-3.5">
+            <span class="shrink-0 font-mono text-micro uppercase tracking-label text-accent-text">
+              {tr('admin.course.today', { day: formatDay(today, getLocale()) })}
+            </span>
+            <span class="h-0.5 flex-1 bg-accent"></span>
           </div>
         {/if}
-      {/each}
 
-      {#if shown.items.length === 0 && !(plan && !plan.target)}
-        <p class="border-t border-line py-8 text-center text-ui text-muted">
-          {tr("admin.this.course.has.no.seminars.yet")}
-        </p>
-      {/if}
+        {#if folded}
+          <div class="flex flex-wrap items-center justify-between gap-3 py-3.5">
+            <span class="text-2xs text-muted">
+              {tr('admin.course.moreRows', { count: shown.items.length - shownCount })}
+            </span>
+            <button
+              type="button"
+              class="border-b border-dashed border-accent-text text-2xs text-accent-text"
+              onclick={() => (expanded = true)}
+            >
+              {tr('admin.course.showAll', { count: shown.items.length })}
+            </button>
+          </div>
+        {/if}
+
+        {#if shown.items.length === 0 && !plan}
+          <p class="border-b border-line py-8 text-center text-ui text-muted">
+            {tr("admin.this.course.has.no.seminars.yet")}
+          </p>
+        {/if}
+
+        <!--
+          A new topic goes at the bottom of the list, where it will end up,
+          with the day a week after the last one. The form stays open until
+          "Cancel": a plan is typed in one go.
+        -->
+        {#if plan}
+          {@const form = plan}
+          {@render rowFields(
+            form.draft,
+            true,
+            null,
+            tr('admin.course.addToPlan'),
+            () => void savePlan(),
+            () => (plan = null),
+          )}
+        {/if}
+      </div>
+
+      <p class="pt-4 text-2xs leading-relaxed text-muted">{tr('admin.course.planHint')}</p>
 
       <!--
-        A new topic goes at the bottom of the list, where it will end up, and
-        with the number it will get. The button stands in the row's place, not
-        in the header: a plan is typed in one go, and the form stays open
-        until "Cancel" is pressed.
+        The course's own settings — title, caption, address — under its
+        classes: they are set once, the table is opened every week.
       -->
-      {#if plan && !plan.target}
-        <div class="course-row {ROW}">
-          <span class="w-[26px] shrink-0 font-mono text-2xs text-faint">
-            {String(shown.items.length + 1).padStart(2, '0')}
-          </span>
-          {@render planForm(tr('admin.course.addToPlan'))}
+      <section class="mt-10 flex flex-col gap-4">
+        <h2 class="border-b-2 border-ink pb-3 font-mono text-micro uppercase tracking-label text-muted">
+          {tr('admin.course.settings')}
+        </h2>
+
+        <!--
+          Title and caption — in the same place as the address: a course with
+          a typo in its title could not be fixed anywhere, and the whole class
+          sees it.
+        -->
+        <div class="flex flex-wrap items-center gap-2">
+          <input
+            class="h-9 w-[280px] max-w-full border border-line bg-canvas px-3 text-ui text-ink
+                   focus:outline-none focus:ring-2 focus:ring-accent/40"
+            maxlength={MAX_COURSE_NAME}
+            aria-label={tr("admin.course.name")}
+            bind:value={nameDraft}
+            onkeydown={(event) => {
+              if (event.key === 'Enter') void saveDetails()
+            }}
+          />
+          <input
+            class="h-9 min-w-[220px] flex-1 border border-line bg-canvas px-3 text-ui text-ink
+                   placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
+            placeholder={tr("admin.short.course.description.optional")}
+            maxlength={MAX_COURSE_BLURB}
+            aria-label={tr("admin.course.description")}
+            bind:value={blurbDraft}
+            onkeydown={(event) => {
+              if (event.key === 'Enter') void saveDetails()
+            }}
+          />
+          {#if detailsChanged}
+            <button
+              type="button"
+              class="btn-primary h-9 shrink-0 px-3 text-2xs"
+              disabled={busy}
+              onclick={() => void saveDetails()}
+            >
+              {tr("admin.save.changes")}
+            </button>
+          {/if}
         </div>
-      {:else}
-        <div class="border-t border-line py-2.5 pl-[42px]">
+
+        <!--
+          The course address is what gets dictated to the class and written on
+          the board. So it is edited right here rather than hidden in settings:
+          eight random characters are harder to remember than "ml-strong", and
+          people ask for them to be repeated more often.
+        -->
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="font-mono text-2xs text-muted">{location.host}/c/</span>
+          <input
+            class="h-9 w-[220px] border border-line bg-canvas px-2 font-mono text-2xs text-ink
+                   placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
+            placeholder={shown.id}
+            maxlength={64}
+            bind:value={slugDraft}
+            onkeydown={(event) => {
+              if (event.key === 'Enter') void saveSlug()
+            }}
+          />
+          {#if slugDraft.trim() !== (shown.slug ?? '')}
+            <button type="button" class="btn-primary h-9 px-3 text-2xs" disabled={busy} onclick={() => void saveSlug()}>
+              {tr("admin.save.address")}
+            </button>
+          {/if}
+          <!-- The name is held not by a live address but by the memory of a
+               link that was handed out — and that is the only kind of "taken"
+               the owner resolves themselves. The button sits right by the
+               field: looking for it elsewhere on the screen means not finding
+               it at all. -->
+          {#if held}
+            <button
+              type="button"
+              class="btn-outline h-9 px-3 text-2xs"
+              disabled={busy}
+              onclick={() => (askingSlug = true)}
+            >
+              {tr("admin.release.previous.address")}
+            </button>
+          {/if}
+          {#if shown.slug}
+            <span class="text-2xs text-muted">{tr("admin.the.old.address.c")}{shown.id} {tr("admin.also.works")}</span>
+          {/if}
+        </div>
+
+        {#if held}
+          <p class="max-w-[640px] text-2xs leading-snug text-muted">
+            <span class="font-mono text-ink">/c/{held.slug}</span> {tr("admin.the.previous.address.of.the")}
+            {held.holder.kind === 'course' ? tr("admin.course") : tr("admin.page")}
+            {#if held.holder.name}«{held.holder.name}»{/if}{tr("admin.after.transfer.this.link.will.open.the.current.course.instead.of")}
+          </p>
+        {/if}
+
+        <!--
+          Former names — under the same field where they were changed.
+
+          Renaming does not cancel a link that has been handed out: the old name
+          stays this course's address forever — and holds it against everyone
+          else too. Next year's course got "The address "ml-2025" is the former
+          name of the course "ML 2025"", and there was nowhere to see that the
+          name is held HERE: there is no row with that address in the course
+          list. The cost of releasing is named next to the button, not only in
+          the question after it.
+        -->
+        {#if former.length > 0}
+          <div class="max-w-[640px] border border-line bg-surface">
+            <div class="border-b border-line px-4 py-2.5">
+              <p class="text-ui font-semibold text-ink">{tr("admin.previous.addresses")}</p>
+              <p class="mt-0.5 text-2xs leading-snug text-muted">
+                {tr("admin.these.links.open.the.current.course.releasing.an.address.stops.it")}
+              </p>
+            </div>
+            {#each former as name (name)}
+              <div class="flex items-center gap-3 border-b border-line-soft px-4 py-2 last:border-b-0">
+                <span class="min-w-0 flex-1 truncate font-mono text-2xs text-ink">/c/{name}</span>
+                <button
+                  type="button"
+                  class="btn-outline h-9 shrink-0 px-3 text-2xs"
+                  disabled={busy}
+                  onclick={() => (dropping = name)}
+                >
+                  {tr("admin.release")}
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        <!-- Deletion lives inside the course itself and names the link it
+             breaks: the seminars and their pages stay, what breaks is the
+             address the class was dictated in the first week. -->
+        <div class="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-4">
+          <p class="min-w-0 flex-1 text-2xs text-muted">
+            {tr("admin.deleting.the.course.removes.the.seminar.list.its.order.and.the.ad")}
+            <span class="font-mono">/c/{addressOf(shown)}</span>{tr("admin.seminars.and.published.pages.will.be.kept")}
+          </p>
           <button
             type="button"
-            class="text-ui font-semibold text-accent-text hover:brightness-110 disabled:text-faint"
-            disabled={busy}
-            onclick={() => void openPlan(null)}
+            class="shrink-0 text-ui font-semibold text-danger hover:brightness-110"
+            onclick={() => (doomed = true)}
           >
-            {tr('admin.course.addPlanned')}
+            {tr("admin.delete.course")}
           </button>
         </div>
-      {/if}
-      </div>
-
-      <p class="border-t border-line pt-4 text-2xs leading-relaxed text-muted">
-        {tr("admin.use.the.arrows.to.reorder.seminars.the.new.order.appears.when.the")}
-        {tr('admin.course.planHint')}
-      </p>
-
-      <!-- Deletion lives inside the course itself and names the link it
-           breaks: the seminars and their pages stay, what breaks is the
-           address the class was dictated in the first week. -->
-      <div class="mt-8 flex flex-wrap items-center gap-3 border-t border-line pt-4">
-        <p class="min-w-0 flex-1 text-2xs text-muted">
-          {tr("admin.deleting.the.course.removes.the.seminar.list.its.order.and.the.ad")}
-          <span class="font-mono">/c/{addressOf(shown)}</span>{tr("admin.seminars.and.published.pages.will.be.kept")}
-        </p>
-        <button
-          type="button"
-          class="shrink-0 text-ui font-semibold text-danger hover:brightness-110"
-          onclick={() => (doomed = true)}
-        >
-          {tr("admin.delete.course")}
-        </button>
-      </div>
+      </section>
     </div>
   </AdminPage>
 {:else}
@@ -1389,49 +1958,80 @@
 
 <style>
   /*
-   * The narrow list: the title on its own line, the publication and arrows
-   * below it.
+   * The course table: № | День | Занятие | Страница | ⋯.
    *
-   * The breakpoint is the width of the list itself (container), not the
+   * The breakpoints are the width of the list itself (a container), not the
    * window: at md the panel's menu takes 236px, and a 768 window leaves the
-   * list less room than a 640 window with the narrow menu. 559px is the
-   * number, the 290 "Publication" column, the arrows and at least some room
-   * for the title.
+   * list less room than a 640 window with the narrow menu. Below 640px of
+   * list the row stacks — number on the left, then the title, the day and
+   * the page state under each other, the menu on the right — and the
+   * header row goes, since nothing lines up under it any more.
    */
   .course-rows {
     container-type: inline-size;
   }
 
-  @container (max-width: 559px) {
-    /* The number sits by the title, not midway between the two lines:
-       centred, it read as the publication line's number. */
-    .course-row {
-      flex-wrap: wrap;
-      align-items: flex-start;
-      row-gap: 0.5rem;
+  .course-grid {
+    display: grid;
+    grid-template-columns: 56px 120px minmax(0, 1fr) 340px 44px;
+    align-items: start;
+  }
+
+  .row-form,
+  .picker {
+    padding: 20px 44px 24px 176px;
+  }
+
+  @container (max-width: 1000px) {
+    .course-grid {
+      grid-template-columns: 44px 104px minmax(0, 1fr) 232px 44px;
     }
 
-    /* A 26px number and a 16px gap — the title takes the rest of the first line. */
-    .course-name {
-      flex-basis: calc(100% - 42px);
+    .row-form,
+    .picker {
+      padding-left: 148px;
     }
+  }
 
-    .course-state {
-      order: 1;
-      flex: 1 1 0%;
-      width: auto;
-      min-width: 0;
-      margin-left: 42px;
-      flex-wrap: wrap;
-      row-gap: 0.25rem;
-    }
-
-    .course-moves {
-      order: 2;
-    }
-
-    .course-head-state {
+  @container (max-width: 640px) {
+    .course-head {
       display: none;
+    }
+
+    .course-grid {
+      grid-template-columns: 36px minmax(0, 1fr) 44px;
+      grid-template-areas:
+        'n title menu'
+        'n day menu'
+        'n page menu';
+      row-gap: 4px;
+    }
+
+    .c-n {
+      grid-area: n;
+    }
+
+    .c-title {
+      grid-area: title;
+      padding-right: 0;
+    }
+
+    .c-day {
+      grid-area: day;
+    }
+
+    .c-page {
+      grid-area: page;
+      margin-top: 4px;
+    }
+
+    .c-menu {
+      grid-area: menu;
+    }
+
+    .row-form,
+    .picker {
+      padding: 16px 12px 20px;
     }
   }
 </style>

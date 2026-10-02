@@ -30,7 +30,6 @@ import {
   type YCell,
 } from '../shared/notebook.js'
 import { renderOutputs } from '../server/src/ai/context.js'
-import { renderStep } from '../server/src/publish/render.js'
 import { OutputWriter } from '../server/src/kernel/outputs.js'
 import { CouncilOutputBuffer, MAX_ATTEMPT_DATA_CHARS } from '../server/src/kernel/council.js'
 import { MAX_FIGURE_CHARS, withoutDeadPlotlyHtml } from '../server/src/kernel/figures.js'
@@ -305,41 +304,4 @@ test('an offloaded figure in the context is a chart, not an image', () => {
   const [rendered] = renderOutputs(cell, 4000)
   // Not "KB image": the oracle would suggest `plt.savefig` where plotly is used.
   assert.match(rendered, /\[plotly figure, ~1563 KB\]/)
-})
-
-/* ------------------------------------------------------- the published page */
-
-test('in the exported directory a line stands where the chart is, not emptiness and not JSON', () => {
-  const html = renderStep({
-    title: 'Занятие',
-    publishedAt: 0,
-    course: null,
-    steps: [{ seq: 1, label: 'Шаг', at: 0, cellCount: 1 }],
-    step: {
-      seq: 1,
-      label: 'Шаг',
-      at: 0,
-      cells: [
-        {
-          id: 'c1',
-          type: 'code',
-          source: 'px.line(df, x="d", y="n")',
-          outputs: [{ kind: 'data', data: { [PLOTLY_MIME]: figure(10) }, execCount: 1 }],
-          execCount: 1,
-          ranMs: 12,
-        },
-      ],
-    },
-    depth: 1,
-    base: '',
-  })
-  /*
-   * The static directory lives without a server, and the frame is a response
-   * with a special header. Drawing the figure right in the page is even less
-   * acceptable: foreign data and foreign code on an origin that holds other
-   * classes too.
-   */
-  assert.match(html, /интерактивный график plotly/)
-  assert.ok(!html.includes('"scatter"'), 'the figure JSON went into the static page')
-  assert.ok(!html.includes('<iframe'), 'a frame does not work on a static page and is not placed there')
 })

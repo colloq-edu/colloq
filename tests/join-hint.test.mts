@@ -26,6 +26,7 @@ import { shutdownCollab } from '../server/src/collab/index.js'
 import {
   createCourse,
   setCourseItems,
+  setCourseSlug,
   setPublicationSlug,
   writePublication,
 } from '../server/src/publish/store.js'
@@ -44,12 +45,13 @@ before(async () => {
     sessionId: ROOM,
     title: 'Неделя 4',
     by: 'Ада',
-    steps: [{ seq: 0, label: 'разбор', at: Date.now(), cells: [] }],
+    materials: [],
     blobs: [],
   }).id
   assert.equal(setPublicationSlug(pubId, 'week-4'), 'ok')
 
   const course = createCourse('Машинное обучение', null, 'Ада')
+  assert.equal(setCourseSlug(course.id, 'ml'), 'ok')
   setCourseItems(course.id, course.rev, [
     { kind: 'planned', name: 'Неделя 5', when: 'через неделю' },
     { kind: 'seminar', sessionId: ROOM, name: 'Неделя 4', publication: null },
@@ -74,12 +76,14 @@ const info = async (id: string): Promise<SessionInfo> =>
 
 test('the hint names the page address, not the fallback entrance by id', async () => {
   const body = await info(ROOM)
-  assert.equal(body.published?.id, pubId)
-  assert.equal(body.published?.slug, 'week-4', 'the hint leads the class to /p/<id> again')
-  // One function builds the address for the whole product — and with this
-  // field it has something to build it from.
-  assert.equal(publicationAddress({ id: pubId, slug: body.published?.slug ?? null }), 'week-4')
+  // One function builds the address for the whole product, on the server.
+  assert.equal(body.published?.address, publicationAddress({ id: pubId, slug: 'week-4' }))
+  assert.equal(body.published?.address, 'week-4', 'the hint leads the class to /p/<id> again')
+  assert.equal(body.published?.materials, 0)
   assert.equal(body.course?.name, 'Машинное обучение', 'the way up from the join screen is gone')
+  // And the way up is by the course's name too: /c/<slug ?? id>.
+  assert.equal(body.course?.slug, 'ml')
+  assert.ok(!JSON.stringify(body.published).includes(ROOM))
 })
 
 test('a room without a publication promises nothing', async () => {

@@ -59,12 +59,12 @@ CYAN := \033[36m
 RED  := \033[31m
 OFF  := \033[0m
 
-# All targets are .PHONY, and that is not a formality: next to this file lies
-# the `site/` directory, because of which `make site` printed "site is up to
-# date" and did nothing (no pages, no commit, no push) while reporting success.
+# All targets are .PHONY, and that is not a formality: a target named like a
+# directory next to this file (`site/` once had a `make site`) prints "is up to
+# date" and does nothing while reporting success.
 .PHONY: help up dev run dirs docker-gid stop logs-run down restart logs status ps shell activity \
         service-install service-restart service-stop service-status service-logs \
-        host host-direct relay-setup relay-page tunnel-setup site mirror readme-art site-icons site-og ui sync load competition-load course \
+        host host-direct relay-setup relay-page tunnel-setup mirror readme-art site-icons site-og ui sync load competition-load course \
         vast-up vast-status vast-sync vast-logs vast-down vast-adopt \
         env-list env-show env-new env-use env-build env-freeze \
         backup restore test check pack wheel wheels version bump
@@ -521,13 +521,6 @@ competition-load: ## A competition at the deadline: N entrants send at once. SLU
 	@LOAD_BASE_URL="$(or $(URL),http://localhost:$(PORT))" LOAD_SLUG="$(SLUG)" LOAD_NOTEBOOK="$(NOTEBOOK)" \
 	 LOAD_ENTRANTS="$${N:-15}" LOAD_TIMEOUT_SEC="$${TIMEOUT:-1800}" \
 	 npx tsx scripts/competition-load.mts
-
-site: ## Publish the colloq.ru site: the landing page and the published seminars. DRY=1 — build only
-	@# The site lives in site/ of this same repository; the Pages workflow
-	@# publishes it on push to main. A separate repository was set up with the
-	@# caveat "Pages cannot do private ones": untrue, and a second clone
-	@# alongside is no longer needed.
-	@npx tsx scripts/publish-site.mts $(if $(SITE),--site "$(SITE)",) $(if $(BASE),--base "$(BASE)",) $(if $(DRY),--dry,)
 
 mirror: ## Update the colloq.cc mirror (the same site for those who can reach Cloudflare). DRY=1 — only tell
 	@# A second name, not a second site: the content is the same, from site/,

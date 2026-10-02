@@ -47,8 +47,9 @@
 #
 # The second file next to it is an archive with everything the database does
 # not hold: workspace (what was uploaded into the rooms), competition files,
-# wheel sets, the images of cell outputs (data/blobs), the signing key and the
-# installation token. The README used to
+# wheel sets, the images of cell outputs (data/blobs), the files of class pages
+# (data/page-files: the database only names them by hash), the signing key and
+# the installation token. The README used to
 # tell people to copy the folder by hand, and that was exactly the step that
 # gets skipped: a database without workspace is notebooks with links to files
 # that no longer exist, and a database without the signing key is an instance
@@ -191,7 +192,7 @@ if [ "$STATE" = "$APP" ]; then SHOW=""; else SHOW="$STATE/"; fi
 
 # What goes into the file archive; see the header for why each one.
 set --
-for p in workspace data/competitions data/dependencies data/blobs data/session-secret data/setup-token "$ENV_LISTS"/*.txt; do
+for p in workspace data/competitions data/dependencies data/blobs data/page-files data/session-secret data/setup-token "$ENV_LISTS"/*.txt; do
   if [ -e "$p" ] || [ -L "$p" ]; then set -- "$@" "$p"; fi
 done
 

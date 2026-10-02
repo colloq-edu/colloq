@@ -115,9 +115,16 @@
      * there is something to fill it with. See `outputSeat`.
      */
     pending?: number
+    /**
+     * Images load as they scroll near: a published notebook is read on a
+     * phone, top to bottom, and its forty plots should not all download
+     * before the first one is looked at. The room keeps eager loading, since
+     * its cells reserve their height by the images' sizes (`outputSeat`).
+     */
+    lazy?: boolean
   }
 
-  let { outputs, pending = $bindable(0) }: Props = $props()
+  let { outputs, pending = $bindable(0), lazy = false }: Props = $props()
 
   /**
    * The room, or nothing, and that is not a slip.
@@ -281,6 +288,7 @@
                    backing or its black axes vanish into the canvas. -->
               <img
                 use:decoding
+                loading={lazy ? 'lazy' : undefined}
                 src={imageSrc(mime, payload)}
                 alt={tr('room.ui.329')}
                 class="max-w-full bg-white/95 p-1"

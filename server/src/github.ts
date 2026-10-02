@@ -137,11 +137,15 @@ export interface RepoEntry {
 /**
  * Which files from a folder belong in the seminar's workspace.
  *
- * Not everything: a course folder holds READMEs, images for the README, and
- * sometimes a whole solutions subfolder. What a notebook needs at runtime is
- * data, and data is what gets copied. Subdirectories are skipped rather than
- * walked — a recursive import of somebody's course repository is a surprise,
- * not a feature.
+ * Not everything: a course folder sometimes holds a whole solutions
+ * subfolder. What a notebook needs at runtime is data, and data is what gets
+ * copied. Subdirectories are skipped rather than walked — a recursive import
+ * of somebody's course repository is a surprise, not a feature.
+ *
+ * `pdf` and `md` too: the slides and the README kept next to a notebook in a
+ * repository are what a teacher puts on the class page, and the page takes
+ * its files from the room. Without them a GitHub import reached the room
+ * without the lecture's slides, and the class page had nothing to offer.
  *
  * `py` is in this list on purpose: `utils.py`, `helpers.py`, `plotting.py`
  * next to a notebook are the same thing as data. The first cell of a course
@@ -153,7 +157,7 @@ export interface RepoEntry {
 const DATA_EXTENSIONS = new Set([
   'csv', 'tsv', 'json', 'jsonl', 'txt', 'npy', 'npz', 'parquet', 'pkl',
   'xlsx', 'xls', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'zip', 'yaml', 'yml',
-  'py',
+  'py', 'pdf', 'md',
 ])
 
 export function filesToTake(entries: RepoEntry[], maxBytes: number): RepoEntry[] {

@@ -56,6 +56,8 @@ import { competitionBackend } from './competitions/runner-port.js'
 import { assertCompetitionCapability } from './competitions/capabilities.js'
 import { createWorkerStartup } from './competitions/worker-startup.js'
 import { installOutboundProxy } from './outbound.js'
+import { migratePages } from './publish/migrate-pages.js'
+import { sweepPageFiles } from './publish/page-files.js'
 
 /*
  * The institution's proxy (HTTPS_PROXY, HTTP_PROXY, NO_PROXY) is in place
@@ -396,6 +398,23 @@ const workerStartup = createWorkerStartup({
   onError: (worker, error) => console.error(`[competitions] ${worker} startup deferred`, error),
 })
 
+
+/*
+ * Courses and pages written by an older release are brought up to class
+ * pages before the first request can read them (publish/migrate-pages.ts),
+ * then page files a crash left without a row are swept. Both are idempotent
+ * and both are logged, never fatal: a page that cannot be converted keeps
+ * its 0.12 step, and the server still starts.
+ */
+try {
+  migratePages()
+  const swept = sweepPageFiles()
+  if (swept.rows + swept.files > 0) {
+    console.log(`[pages] swept ${swept.rows} unreferenced and ${swept.files} stray page file(s)`)
+  }
+} catch (err) {
+  console.error('[pages] the class-page migration did not finish:', err)
+}
 
 server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const)), () => {
   const ai = aiEnabled() ? `on (${config.ai.model})` : 'off'

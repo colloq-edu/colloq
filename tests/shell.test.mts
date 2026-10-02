@@ -16,7 +16,15 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { signHandoffToken } from '../server/src/auth.js'
 import { OPEN_ROOM } from '../shared/rules.js'
-import { handoffLanding, isAdminPath, readCourseId, readPublicRoute, readRoomRoute } from '../web/src/lib/routes.js'
+import {
+  handoffLanding,
+  isAdminPath,
+  MATERIAL_TAIL_RE,
+  readCourseId,
+  readPublicRoute,
+  readRoomRoute,
+} from '../web/src/lib/routes.js'
+import { MATERIAL_KEY_RE } from '../shared/materials.js'
 import { forgetIdentity, loadIdentity, loadProfile, saveIdentity } from '../web/src/lib/identity.js'
 import {
   forgetSessionInfo,
@@ -172,14 +180,30 @@ test('a course and a publication have their own addresses, not derived from the 
   assert.equal(readCourseId('/c/ml-2026'), 'ml-2026')
   assert.equal(readCourseId('/c/ml-2026/'), 'ml-2026')
   assert.equal(readCourseId('/s/kf3n8q2p'), null)
-  assert.deepEqual(readPublicRoute('/p/x9tb4kwm'), { id: 'x9tb4kwm', step: null })
-  assert.deepEqual(readPublicRoute('/p/x9tb4kwm/3'), { id: 'x9tb4kwm', step: 3 })
-  // A "step from the end" is supported by neither `readStep`, nor the rail,
-  // nor the export, and nothing produces links with a minus: such an address
-  // is not a step but garbage, and the router no longer passes it off as a
-  // step.
+  assert.deepEqual(readPublicRoute('/p/x9tb4kwm'), { id: 'x9tb4kwm', key: null, legacy: false })
+  assert.deepEqual(readPublicRoute('/p/ml-strong-04/seminar'), {
+    id: 'ml-strong-04',
+    key: 'seminar',
+    legacy: false,
+  })
+  assert.deepEqual(readPublicRoute('/p/ml-strong-04/notebook-02/'), {
+    id: 'ml-strong-04',
+    key: 'notebook-02',
+    legacy: false,
+  })
+  // A 0.12 step address: App replaces it with the page's own.
+  assert.deepEqual(readPublicRoute('/p/x9tb4kwm/3'), { id: 'x9tb4kwm', key: null, legacy: true })
+  // A minus, capitals or a key with no letter are no address at all.
   assert.equal(readPublicRoute('/p/x9tb4kwm/-1'), null)
+  assert.equal(readPublicRoute('/p/x9tb4kwm/Seminar'), null)
+  assert.equal(readPublicRoute('/p/x9tb4kwm/--'), null)
+  assert.equal(readPublicRoute(`/p/x9tb4kwm/${'a'.repeat(41)}`), null)
   assert.equal(readPublicRoute('/c/ml-2026'), null)
+})
+
+test('the router reads material keys by the same rule the server issues them by', () => {
+  // routes.ts spells the rule out to keep shared/materials.ts out of the entry chunk.
+  assert.equal(MATERIAL_TAIL_RE.source, MATERIAL_KEY_RE.source)
 })
 
 test('the panel is recognized by its prefix, not by the start of a word', () => {

@@ -9,17 +9,17 @@
  * lose exactly what they had not agreed on. And they did drift: the half from
  * publishing gave cells an `id` and the half from the room did not, although
  * both declared the same schema 4.5, which requires it. Now only one writes,
- * `writeIpynb`; the publishing export calls it too
- * (publish/notebook.ts · `notebookFrom`).
+ * `writeIpynb`; the class page's download calls it too
+ * (publish/notebook.ts · `notebookWithOutputs`).
  *
  * The format is nbformat 4.5, the same one Jupyter itself writes. It differs
  * from Jupyter in two ways, both deliberate:
  *
- * **Outputs are not written.** A notebook without them opens anywhere and
- * weighs kilobytes; with them it is megabytes of base64 in a file people take
- * home to run again. The same argument as for the publishing export, and it
- * also means that the file on disk is the notebook's SOURCE, not a snapshot
- * of it.
+ * **Outputs are not written into the room's files.** A notebook without them
+ * opens anywhere and weighs kilobytes, and the file on disk is the
+ * notebook's SOURCE, not a snapshot of it. The class-page download is the
+ * one writer that passes them (`FlatCell.outputs`): a student downloading a
+ * seminar wants the results the class saw.
  *
  * **`source` is an array of strings with the line breaks kept.** That is how
  * Jupyter writes it, and that way a git diff of the file reads line by line
@@ -53,6 +53,15 @@ export interface FlatCell {
    * Optional: code never has attachments, and a note almost never does.
    */
   attachments?: Record<string, Record<string, string>>
+  /**
+   * Outputs already in nbformat's shape, and the execution count behind them.
+   *
+   * Only the class-page download writes them (publish/notebook.ts): a room's
+   * file on disk stays the notebook's source, see the header. Absent means
+   * "no outputs", which is what every other writer wants.
+   */
+  outputs?: unknown[]
+  executionCount?: number | null
 }
 
 interface RawCell {
@@ -171,7 +180,9 @@ export function writeIpynb(cells: readonly FlatCell[]): string {
         ? { attachments: cell.attachments }
         : {}),
       source: cell.source.split(/(?<=\n)/),
-      ...(cell.type === 'code' ? { execution_count: null, outputs: [] } : {}),
+      ...(cell.type === 'code'
+        ? { execution_count: cell.executionCount ?? null, outputs: cell.outputs ?? [] }
+        : {}),
     })),
     metadata: {
       kernelspec: { display_name: 'Python 3', language: 'python', name: 'python3' },

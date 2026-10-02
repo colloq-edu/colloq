@@ -3713,6 +3713,18 @@ export function councilQueued(sessionId: string): { cellId: string; participantI
   return out
 }
 
+/**
+ * Whether any notebook of the room is still computing: a cell or an attempt
+ * running, or anything waiting in a queue. The class page that refreshes
+ * itself at the bell waits for this to go quiet (publish/class-end.ts), since
+ * cells queued before the bell keep running after it.
+ */
+export function sessionComputing(sessionId: string): boolean {
+  return scopesOf(sessionId).some(
+    (runtime) => runtime.queue.length > 0 || runtime.currentCell !== null || runtime.job !== null,
+  )
+}
+
 /** One output frame per window, not per print: the stack travels to the host whole. */
 function touchJob(runtime: Runtime, active: ActiveJob): void {
   if (active.timer) return

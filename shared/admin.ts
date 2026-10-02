@@ -152,6 +152,8 @@ export type AdminAuditAction =
   | 'publication.withdrawn'
   | 'publication.restored'
   | 'publication.deleted'
+  | 'publication.material_removed'
+  | 'publication.room_access'
   | 'competition.created'
   | 'competition.deleted'
   | 'competition.opened'
@@ -185,6 +187,8 @@ export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
   'publication.withdrawn',
   'publication.restored',
   'publication.deleted',
+  'publication.material_removed',
+  'publication.room_access',
   'competition.created',
   'competition.deleted',
   'competition.opened',
@@ -312,7 +316,8 @@ export interface AdminSeminar {
     id: string
     slug: string | null
     state: 'published' | 'withdrawn'
-    steps: number
+    /** How many materials the page has: «страница · 4 материала». */
+    materials: number
   } | null
   /** The courses it belongs to. Usually one, but nothing forbids two. */
   courses: { id: string; name: string }[]
@@ -324,6 +329,13 @@ export interface AdminSeminar {
    * what someone who comes back to the room a day later needs.
    */
   finishedAt: number | null
+  /**
+   * Only in the answer to the PATCH that finished the class: what happens to
+   * its page next, so the panel can say it in a toast. 'offer': the room is
+   * in a course and has no page; 'waiting': the page refreshes once queued
+   * cells finish; 'refreshing': it is being rebuilt now.
+   */
+  afterClass?: 'offer' | 'waiting' | 'refreshing'
   /**
    * How much memory this room's kernel was given, in megabytes — or null if
    * nothing was set for it and it lives by its environment's default.

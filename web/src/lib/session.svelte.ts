@@ -36,6 +36,7 @@ import { withQueuePosition } from './council-queue'
 import { CouncilState } from './council.svelte'
 import { reopenRefusedFiles } from './filedoc.svelte'
 import { countsAsUnread } from './notes'
+import type { PageNews } from './class-end'
 import { forgetHelp } from './signature-help'
 import {
   forgetIdentity,
@@ -913,6 +914,34 @@ export class SessionState {
          * without this would stay dead until a page reload.
          */
         if (changed && !this.finished) reopenRefusedFiles(this.session.id)
+        /*
+         * A refresh that was waiting for the cells will not happen once the
+         * class is on again (server/src/publish/class-end.ts), so its spinner
+         * goes now rather than promising it for the rest of the class.
+         */
+        if (changed && !this.finished && this.pageNews?.state === 'waiting') this.pageNews = null
+        return
+      }
+      if (message.t === 'page') {
+        /*
+         * The class page after «Завершить занятие», for a teacher's console.
+         *
+         * A refreshed page also means the room has a page now: the finished
+         * strip's link turns from «Опубликовать материалы» into «Страница
+         * занятия» on that word, without asking the server again.
+         */
+        if (message.state === 'updated' && message.address) {
+          this.session = {
+            ...this.session,
+            published: { address: message.address, materials: message.materials ?? 0 },
+          }
+        }
+        // 'cancelled' only takes back a 'waiting'; it is not news of its own.
+        if (message.state === 'cancelled') {
+          if (this.pageNews?.state === 'waiting') this.pageNews = null
+          return
+        }
+        this.pageNews = { ...message, at: Date.now() }
         return
       }
       if (
@@ -1851,6 +1880,14 @@ export class SessionState {
    * `finished`.
    */
   classChangedAt = $state(0)
+
+  /**
+   * What the server last said about the class page after the bell: an offer
+   * to pick materials, or how the automatic refresh went. Only teacher
+   * consoles get these frames; the room draws the dialog or the line, and the
+   * stamp tells two identical frames apart (a second finish an hour later).
+   */
+  pageNews = $state.raw<PageNews | null>(null)
 
   /**
    * The server refused an edit and closed the connection.

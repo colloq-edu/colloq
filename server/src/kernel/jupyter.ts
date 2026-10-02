@@ -134,8 +134,9 @@ const SHELL_REQUEST_MS = 2500
  *
  * IPython colours the output of `?` even when nobody asked for it:
  * `inspect_reply` carries `\x1b[0;31mSignature:\x1b[0m`, and in a tooltip above
- * the caret this looks like garbage in front of every word. The same set as in
- * publish/render.ts: CSI, OSC and two-character sequences.
+ * the caret this looks like garbage in front of every word. CSI, OSC and
+ * two-character sequences: the set the retired static page renderer stripped
+ * from tracebacks.
  */
 const ANSI = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g
 

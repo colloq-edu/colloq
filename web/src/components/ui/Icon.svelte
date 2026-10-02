@@ -60,6 +60,8 @@
      * the shackle, not the silhouette.
      */
     unlock: '<rect x="5" y="11" width="14" height="9" rx="1.5"/><path d="M8.5 11V8a3.5 3.5 0 0 1 6.8-.9"/>',
+    // A class page's way back into its room: a door on its sill, with a knob.
+    door: '<path d="M5.5 21.5v-19h13v19M2.5 21.5h19"/><circle cx="15" cy="12.5" r="1.2" fill="currentColor" stroke="none"/>',
     // The Seminars nav mark: a board with a header rail, not a code glyph.
     board: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5"/>',
     // A course is a folder of seminars. The only place in the product where

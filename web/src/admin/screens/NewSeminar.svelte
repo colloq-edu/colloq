@@ -26,8 +26,19 @@
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import { oracleCeiling, oracleOverCeiling, splitBySize, uploadMb } from '@/admin/panel'
-  import { adminApi } from '@/lib/adminApi'
+  import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { builtAgo, cn, imageSize } from '@/lib/utils'
+  import { formatDay, isClassDay } from '@shared/class-day'
+  import type { Course } from '@shared/publish'
+  import {
+    classOptions,
+    defaultClass,
+    localDay,
+    roomNameFor,
+    seatCreated,
+    twoDigits,
+    type ClassOption,
+  } from '@/admin/course-plan'
   import {
     LIMITS,
     type AdminEnvironment,
@@ -43,11 +54,92 @@
   interface Props {
     /** Back to the list, with the new seminar's id when one was made. */
     ondone: (createdId?: string) => void
+    /**
+     * A course row to start from: the course row action «Создать комнату»
+     * opens /admin/new?course=<id>&row=<rowId>.
+     */
+    prefill?: { course: string; row: string } | null
   }
 
-  let { ondone }: Props = $props()
+  let { ondone, prefill = null }: Props = $props()
 
   let name = $state('')
+
+  /* ------------------------------------------------------- the course row */
+
+  /*
+   * «Занятие курса»: the room goes straight into its row of the course.
+   *
+   * Every week the same three steps were done by hand — create the room,
+   * open the course, put the room in place of the topic — and the third was
+   * the one forgotten, so the course page kept showing a plan row while the
+   * class had already happened. The row already knows the topic and the
+   * day; the room only has to take it.
+   */
+  let courses = $state<Course[]>([])
+  /** The instance's «сегодня», from a course's public view; the browser's day until it arrives. */
+  let today = $state(localDay(Date.now()))
+  /** `courseId:rowId`, or '' for «Без курса». */
+  let rowChoice = $state('')
+  /** The teacher picked a row (or «Без курса») themselves: no default overrides that. */
+  let rowTouched = false
+  /** The name last put into the field from a row: replaced on a new row only while untouched. */
+  let suggestedName = ''
+
+  const keyOf = (option: ClassOption): string => `${option.courseId}:${option.rowId}`
+  const options = $derived(classOptions(courses, today))
+  const seatRow = $derived(options.find((option) => keyOf(option) === rowChoice) ?? null)
+
+  /** «МЛ | сильная группа · 04 · Лики и хаки данных — вс, 4 окт». */
+  function optionLabel(option: ClassOption): string {
+    const head = `${option.courseName} · ${twoDigits(option.n)} · ${option.title}`
+    return option.day ? `${head} — ${formatDay(option.day, getLocale())}` : head
+  }
+
+  function choose(key: string): void {
+    rowChoice = key
+    const option = options.find((o) => keyOf(o) === key)
+    if (!option) return
+    if (!name.trim() || name === suggestedName) {
+      suggestedName = roomNameFor(option)
+      name = suggestedName
+    }
+  }
+
+  onMount(() => {
+    void adminApi
+      .listCourses()
+      .then(async (list) => {
+        courses = list
+        if (list.length === 0) return
+        try {
+          const day = await adminApi.courseToday(list[0].id)
+          if (isClassDay(day)) today = day
+        } catch {
+          /* the browser's day stays */
+        }
+        if (prefill) {
+          const key = `${prefill.course}:${prefill.row}`
+          if (options.some((o) => keyOf(o) === key)) {
+            rowTouched = true
+            choose(key)
+            return
+          }
+        }
+        /*
+         * The default needs the rooms (whose most recent room sits in which
+         * course), and that list parses every room's snapshot: it is read
+         * here, after the form is already usable, and only refines a choice
+         * nobody has made yet.
+         */
+        const rooms = await adminApi.listSeminars().catch(() => [])
+        if (rowTouched) return
+        const me = adminAuth.me?.teacher.name ?? null
+        const option = defaultClass(options, rooms, me, today)
+        if (option) choose(keyOf(option))
+      })
+      .catch(() => (courses = []))
+  })
   /*
    * Three doors, not a flag.
    *
@@ -192,6 +284,10 @@
           tr("admin.choose.smaller.files.or.ask.the.server.administrator.to.increase"))
     materials = [...materials, ...taken]
   }
+
+  /** Several messages as one paragraph, each closed with a full stop. */
+  const sentences = (parts: string[]): string =>
+    parts.map((part) => (/[.!?…]$/.test(part.trim()) ? part.trim() : `${part.trim()}.`)).join(' ')
 
   /** Returns the names of the files that did not arrive. */
   async function uploadMaterials(sessionId: string): Promise<string[]> {
@@ -507,8 +603,23 @@
 
   async function create(): Promise<void> {
     if (!canCreate) return
+    /*
+     * The row is taken NOW, before the first await. The default row arrives
+     * with the slow room list (onMount), and a press made while the select
+     * still said «Без курса» must not seat a scratch room into a row that
+     * landed during the creation. From here on a late default does not move
+     * the select either.
+     */
+    const row = seatRow
+    rowTouched = true
     busy = true
     errorText = null
+    /*
+     * What went wrong once the room exists. Each is said, and none stops the
+     * steps after it: a row someone else took must not also cost the room
+     * the datasets the teacher attached.
+     */
+    const problems: (() => string)[] = []
     try {
       const seminar =
         source === 'github'
@@ -565,17 +676,44 @@
           /* The room exists and runs on the environment's default; staying
              silent about that is as wrong as cancelling the creation because
              of it — hence a line below, not a refusal. */
-          errorText = () => tr('admin.resources.notApplied')
+          problems.push(() => tr('admin.resources.notApplied'))
+        }
+      }
+      /*
+       * Into the course row — against the course as it is now, not as it was
+       * when the form opened: a 409 is retried once, and a row someone else
+       * took in the meantime leaves the room outside the course, said out
+       * loud rather than seated over their room.
+       */
+      if (row) {
+        try {
+          const outcome = await seatCreated(row.rowId, seminar, {
+            load: () => adminApi.course(row.courseId),
+            save: (rev, items) => adminApi.setCourseItems(row.courseId, rev, items),
+            isConflict: (cause) => cause instanceof AdminApiError && cause.status === 409,
+          })
+          if (outcome === 'taken') problems.push(() => tr('admin.new.rowTaken'))
+        } catch (cause) {
+          const reason = cause instanceof Error ? cause.message : null
+          problems.push(() =>
+            tr('admin.new.seatFailed', {
+              reason: reason ?? tr('admin.could.not.complete.the.request.try.again'),
+            }),
+          )
         }
       }
       if (materials.length > 0) {
         const failed = await uploadMaterials(seminar.id)
         if (failed.length > 0) {
-          errorText = () => ((tr("admin.the.seminar.was.created.but", { p0: failed.length === 1 ? tr("admin.one.file") : tr("admin.files", { p0: failed.length }) }) + " ") +
-            tr("admin.did.not.upload.add.them.from.the.room", { p0: failed.join(', ') }))
-          busy = false
-          return
+          problems.push(() => ((tr("admin.the.seminar.was.created.but", { p0: failed.length === 1 ? tr("admin.one.file") : tr("admin.files", { p0: failed.length }) }) + " ") +
+            tr("admin.did.not.upload.add.them.from.the.room", { p0: failed.join(', ') })))
         }
+      }
+      if (problems.length > 0) {
+        // All of it at once: «Строка уже занята…» alone would hide that the files did not arrive.
+        errorText = () => sentences(problems.map((say) => say()))
+        busy = false
+        return
       }
       ondone(seminar.id)
     } catch (cause) {
@@ -656,6 +794,35 @@
     description={tr("admin.students.see.this.name.when.they.join.the.seminar")}
   >
     <div class="flex flex-col gap-3">
+      <!--
+        The course row first: it names the room, so the name field under it
+        is already filled when the eye gets there. Shown only when some
+        course has a row left to take.
+      -->
+      {#if options.length > 0}
+        <div class="flex flex-col gap-1.5">
+          <label class="flex flex-col gap-1.5">
+            <span class="text-2xs font-semibold text-ink">{tr('admin.new.courseRow')}</span>
+            <select
+              class="h-11 w-full min-w-0 border border-line bg-canvas px-3 text-ui text-ink focus:border-accent focus:outline-none"
+              value={rowChoice}
+              disabled={created !== null}
+              onchange={(event) => {
+                rowTouched = true
+                choose(event.currentTarget.value)
+              }}
+            >
+              {#each options as option (keyOf(option))}
+                <option value={keyOf(option)}>{optionLabel(option)}</option>
+              {/each}
+              <option value="">{tr('admin.new.noCourse')}</option>
+            </select>
+          </label>
+          {#if seatRow}
+            <p class="text-2xs text-muted">{tr('admin.new.courseHint')}</p>
+          {/if}
+        </div>
+      {/if}
       <input
         bind:value={name}
         class="field"

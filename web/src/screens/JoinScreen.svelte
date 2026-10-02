@@ -29,8 +29,6 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { api, ApiError } from '@/lib/api'
   import { CROWD_NOTICE, retryJoinIn } from '@/lib/crowd'
-  import { plural } from '@/lib/plural'
-  import { publicationAddress } from '@shared/publish'
   import { MARKS, freeMark, markName } from '@/lib/marks'
   import { markToClaim, takenMarks } from '@/components/join/pick'
   import { staffName } from '@/screens/staff'
@@ -536,23 +534,30 @@
               The link in the chat leads here, and it is the only address the
               student has: without this line, a week later they give a name,
               create yet another participant row, wake the kernel and end up
-              alone in a live notebook where nothing says that the review was
-              published long ago.
+              alone in a live notebook where nothing says that the class page
+              has been up for a week.
 
-              The address goes through `publicationAddress`: pages live under
-              the name given to the class, and `/p/<id>` is the fallback entry
-              for those without a name.
+              The server sends the address already built (shared/publish.ts ·
+              publicationAddress): the name given to the class, or the id for
+              a page without one. The course goes by its name too.
             -->
             <p> {tr('room.ui.845')} <a
                 class="font-semibold text-accent-text hover:underline"
-                href="/p/{publicationAddress(session.published)}"
-                >{tr('room.ui.846')}</a
-              >
-              — {session.published.steps}
-              {plural(session.published.steps, tr('room.ui.713'), tr('room.ui.714'), tr('room.ui.715'))}{#if session.course}{tr('room.ui.847')} <a
+                href="/p/{session.published.address}"
+                >{tr('room.join.pageLink')}</a
+              >{#if session.published.materials > 0}
+                — {tr('room.join.materials', { count: session.published.materials })}{/if}{#if session.course}{tr('room.ui.847')} <a
                   class="font-semibold text-accent-text hover:underline"
-                  href="/c/{session.course.id}">{session.course.name}</a
+                  href="/c/{session.course.slug ?? session.course.id}">{session.course.name}</a
                 >{/if}.
+            </p>
+          {:else if session.course}
+            <!-- No page for this class yet, but the course page lists every
+                 class and is where its materials will appear. -->
+            <p> {tr('room.join.allClasses')} <a
+                class="font-semibold text-accent-text hover:underline"
+                href="/c/{session.course.slug ?? session.course.id}">{session.course.name}</a
+              >
             </p>
           {/if}
         </div>

@@ -2,7 +2,8 @@
  * Courses and publications: the queries against them.
  *
  * The SCHEMA of these tables (`courses`, `publications`, `publication_steps`,
- * `publication_blobs`) is not here but in `db.ts`, together with the
+ * `publication_blobs`, `publication_materials`, `page_files`) is not here but
+ * in `db.ts`, together with the
  * migrations, and it has one owner: `sessions` is already edited by two files
  * (`db.ts` adds the environment and rules columns, `admin-instance.ts` the
  * author and archiving), and a third owner is exactly how a schema sprawls.
@@ -14,20 +15,28 @@
  * writes to them" about tables this module does not create; reading it that
  * way meant believing a column could be added from here.
  */
+import { tr } from '@shared/i18n'
 import { randomBytes } from 'node:crypto'
 import { db } from '../db.js'
 import {
+  isRoomAccess,
+  MATERIAL_KINDS,
   MAX_COURSE_BLURB,
   MAX_COURSE_NAME,
-  MAX_STEP_LABEL,
   type AddressHolder,
   type AddressKind,
   type Course,
   type CourseItem,
+  type CourseItemGone,
+  type CourseRowFields,
+  type MaterialKind,
+  type OutlineEntry,
   type PublicCell,
   type PublicationState,
+  type PublishSelection,
   type StepHeading,
 } from '@shared/publish'
+import { gcPageFiles } from './page-files.js'
 
 /* ------------------------------------------------------------------- names */
 
@@ -41,11 +50,25 @@ import {
  */
 const ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789'
 
-function newId(): string {
-  const bytes = randomBytes(8)
+function newId(length = 8): string {
+  const bytes = randomBytes(length)
   let out = ''
   for (const b of bytes) out += ALPHABET[b % ALPHABET.length]
   return out
+}
+
+/**
+ * An id for a course row: 'r' and seven characters, unique within the
+ * course. Rows used to be told apart by their position, and a position
+ * shifts with every insertion; a class page, a picker and a PUT from an older
+ * tab all need to name "this row" across that.
+ */
+export function newRowId(taken: Iterable<string | undefined>): string {
+  const used = new Set(taken)
+  for (;;) {
+    const id = `r${newId(7)}`
+    if (!used.has(id)) return id
+  }
 }
 
 const clip = (value: unknown, max: number): string =>
@@ -115,7 +138,7 @@ function addressOwner(kind: AddressKind, slug: string): string | null {
   return row ? row.owner : null
 }
 
-/** Former names: the export puts pointers to the current address under them. */
+/** Former names: the routes answer them with the current address. */
 export function formerSlugs(kind: AddressKind, id: string): string[] {
   return (selectAddresses.all(kind, id) as { slug: string }[]).map((row) => row.slug)
 }
@@ -153,8 +176,8 @@ export function addressHolder(kind: AddressKind, slug: string): AddressHolder | 
  * owner releases, and only a former name: a live one is dropped by changing
  * the name, someone else's is not touched at all.
  *
- * The price is stated out loud: the pointer at this address disappears from
- * the export, and the old link becomes a 404. That is the owner's decision,
+ * The price is stated out loud: the old link stops leading anywhere and
+ * becomes a 404. That is the owner's decision,
  * not a side effect.
  */
 export function releaseFormerSlug(kind: AddressKind, id: string, slug: string): boolean {
@@ -297,11 +320,53 @@ export function deleteCourse(id: string): void {
 }
 
 /**
+ * Rewrite matching rows in every course, retrying on a lost compare-and-swap.
+ *
+ * The tombstone helpers below used to call `setCourseItems` once and ignore
+ * its `null`: a teacher saving the same course in that second silently kept
+ * a seminar row pointing at a deleted room, or a tombstone promising a page
+ * that was gone. A loss now re-reads the course and applies the change
+ * again; `change` returns `null` for a row it leaves alone.
+ */
+export function rewriteCourseRows(change: (item: CourseItem) => CourseItem | null): void {
+  for (const listed of listCourses()) {
+    let course: Course | null = listed
+    for (let attempt = 0; course; attempt++) {
+      let touched = false
+      const items = course.items.map((item) => {
+        const next = change(item)
+        if (next === null) return item
+        touched = true
+        return next
+      })
+      if (!touched || setCourseItems(course.id, course.rev, items)) break
+      if (attempt >= 8) {
+        console.error(`[courses] course ${course.id} kept changing; a row update was not saved`)
+        break
+      }
+      course = getCourse(course.id)
+    }
+  }
+}
+
+/** The optional row fields a row carries, copied as they are (and only those it has). */
+export function rowFieldsOf(item: CourseRowFields): CourseRowFields {
+  const out: CourseRowFields = {}
+  if (item.id !== undefined) out.id = item.id
+  if (item.title !== undefined) out.title = item.title
+  if (item.day !== undefined) out.day = item.day
+  if (item.about !== undefined) out.about = item.about
+  if (item.when !== undefined) out.when = item.when
+  return out
+}
+
+/**
  * Remove a seminar from all courses, leaving a tombstone.
  *
- * The row stays with its name and date: a course from which the fourth week
- * silently disappeared is broken for whoever attended it, and the numbering
- * of the rest shifts and stops matching the schedule.
+ * The row stays with its name, its id, its title, its day and its «о чём»:
+ * a course from which the fourth week silently disappeared is broken for
+ * whoever attended it, and the numbering of the rest shifts and stops
+ * matching the schedule.
  *
  * And with the read link, if the reading was kept. Deleting a room keeps the
  * page by default (a link cannot be recalled from students), but its
@@ -313,21 +378,19 @@ export function deleteCourse(id: string): void {
  */
 export function entombSeminar(sessionId: string, name: string): void {
   const live = publicationOf(sessionId)
-  for (const course of listCourses()) {
-    let touched = false
-    const items = course.items.map((item) => {
-      if (item.kind !== 'seminar' || item.sessionId !== sessionId) return item
-      touched = true
-      const link = item.publication ?? live
-      return {
-        kind: 'gone' as const,
-        name,
-        at: Date.now(),
-        publication: link ? { id: link.id, slug: link.slug } : null,
-      }
-    })
-    if (touched) setCourseItems(course.id, course.rev, items)
-  }
+  const at = Date.now()
+  rewriteCourseRows((item) => {
+    if (item.kind !== 'seminar' || item.sessionId !== sessionId) return null
+    const link = item.publication ?? live
+    const gone: CourseItemGone = {
+      kind: 'gone',
+      ...rowFieldsOf(item),
+      name,
+      at,
+      publication: link ? { id: link.id, slug: link.slug } : null,
+    }
+    return gone
+  })
 }
 
 /**
@@ -337,15 +400,11 @@ export function entombSeminar(sessionId: string, name: string): void {
  * page remains" promises a 404.
  */
 export function forgetPublicationInCourses(pubId: string): void {
-  for (const course of listCourses()) {
-    let touched = false
-    const items = course.items.map((item) => {
-      if (item.kind !== 'gone' || item.publication?.id !== pubId) return item
-      touched = true
-      return { kind: 'gone' as const, name: item.name, at: item.at, publication: null }
-    })
-    if (touched) setCourseItems(course.id, course.rev, items)
-  }
+  rewriteCourseRows((item) =>
+    item.kind === 'gone' && item.publication?.id === pubId
+      ? { kind: 'gone', ...rowFieldsOf(item), name: item.name, at: item.at, publication: null }
+      : null,
+  )
 }
 
 /* ----------------------------------------------------------- publications */
@@ -360,6 +419,11 @@ interface PublicationRow {
   published_by: string | null
   revision: number
   orphaned_at: number | null
+  first_at: number | null
+  held_on: string | null
+  selection: string | null
+  materials_rev: number | null
+  zip_bytes: number | null
 }
 
 export interface Publication {
@@ -368,10 +432,47 @@ export interface Publication {
   sessionId: string | null
   title: string
   state: PublicationState
+  /** The last build. */
   publishedAt: number
   publishedBy: string | null
   revision: number
   orphanedAt: number | null
+  /** The first publish; `publishedAt` for a page from before this was kept. */
+  firstAt: number
+  /** The class day of a page outside a course. */
+  heldOn: string | null
+  selection: PublishSelection | null
+  /** Equals `revision` when the materials are current (see db.ts). */
+  materialsRev: number | null
+  zipBytes: number
+}
+
+/** A stored selection, or `null` for anything that does not look like one. */
+export function readSelection(text: string | null): PublishSelection | null {
+  if (!text) return null
+  try {
+    const raw = JSON.parse(text) as Partial<PublishSelection>
+    if (raw?.v !== 1 || !Array.isArray(raw.notebooks) || !Array.isArray(raw.files)) return null
+    return {
+      v: 1,
+      notebooks: raw.notebooks.filter(
+        (n): n is { root: string; name: string } =>
+          typeof n?.root === 'string' && typeof n?.name === 'string',
+      ),
+      files: raw.files.filter(
+        (f): f is { path: string; name: string } =>
+          typeof f?.path === 'string' && typeof f?.name === 'string',
+      ),
+      autoRefresh: raw.autoRefresh !== false,
+      ack: Array.isArray(raw.ack) ? raw.ack.filter((a): a is string => typeof a === 'string') : [],
+      ...(Array.isArray(raw.seen)
+        ? { seen: raw.seen.filter((a): a is string => typeof a === 'string') }
+        : {}),
+      ...(isRoomAccess(raw.roomAccess) ? { roomAccess: raw.roomAccess } : {}),
+    }
+  } catch {
+    return null
+  }
 }
 
 function toPublication(row: PublicationRow): Publication {
@@ -385,6 +486,11 @@ function toPublication(row: PublicationRow): Publication {
     publishedBy: row.published_by,
     revision: row.revision,
     orphanedAt: row.orphaned_at,
+    firstAt: row.first_at ?? row.published_at,
+    heldOn: row.held_on,
+    selection: readSelection(row.selection),
+    materialsRev: row.materials_rev,
+    zipBytes: row.zip_bytes ?? 0,
   }
 }
 
@@ -394,15 +500,31 @@ const updatePubSlug = db.prepare('UPDATE publications SET slug = ? WHERE id = ?'
 const selectPubForSession = db.prepare('SELECT * FROM publications WHERE session_id = ?')
 const selectPubs = db.prepare('SELECT * FROM publications ORDER BY published_at DESC')
 const insertPub = db.prepare(`
-  INSERT INTO publications (id, session_id, title, state, published_at, published_by, revision)
-  VALUES (@id, @session_id, @title, 'published', @published_at, @published_by, 1)
+  INSERT INTO publications
+    (id, session_id, title, state, published_at, published_by, revision,
+     first_at, held_on, selection, materials_rev, zip_bytes)
+  VALUES
+    (@id, @session_id, @title, 'published', @now, @by, 1,
+     @now, @held_on, @selection, 1, @zip_bytes)
 `)
+/*
+ * On the right-hand side every column still has its OLD value: `revision`
+ * and `materials_rev` both become old + 1, and `first_at` falls back to the
+ * old `published_at`, the best guess there is for a page from before
+ * `first_at` was kept.
+ */
 const bumpPub = db.prepare(`
   UPDATE publications
-  SET title = ?, state = 'published', published_at = ?, published_by = ?, revision = revision + 1
-  WHERE id = ?
+  SET title = @title, state = CASE WHEN @keep_state THEN state ELSE 'published' END,
+      published_at = @now, published_by = @by,
+      revision = revision + 1, materials_rev = revision + 1,
+      first_at = COALESCE(first_at, published_at),
+      held_on = CASE WHEN @keep_held THEN held_on ELSE @held_on END,
+      selection = @selection, zip_bytes = @zip_bytes
+  WHERE id = @id
 `)
 const setPubState = db.prepare('UPDATE publications SET state = ? WHERE id = ?')
+const setPubSelection = db.prepare('UPDATE publications SET selection = ? WHERE id = ?')
 const orphanPub = db.prepare(
   'UPDATE publications SET session_id = NULL, orphaned_at = ? WHERE session_id = ?',
 )
@@ -413,22 +535,11 @@ const insertStep = db.prepare(`
   INSERT INTO publication_steps (pub, seq, ord, label, at, page)
   VALUES (@pub, @seq, @ord, @label, @at, @page)
 `)
-/*
- * Headings without the page itself.
- *
- * `page` is all of a step's text outputs in full: the training log,
- * tracebacks, tables in text/html. Reading and parsing them for the sake of
- * one number used to happen on every public course request, in the very
- * process that is running a class at that minute. SQLite counts the array
- * length; `json_valid` is for a row not written by us: a corrupted page must
- * give zero, not a query error.
- */
 const selectHeadings = db.prepare(`
   SELECT seq, label, at,
          CASE WHEN json_valid(page) THEN json_array_length(page) ELSE 0 END AS cell_count
   FROM publication_steps WHERE pub = ? ORDER BY ord
 `)
-const countSteps = db.prepare('SELECT COUNT(*) AS n FROM publication_steps WHERE pub = ?')
 const selectStep = db.prepare(
   'SELECT seq, label, at, page FROM publication_steps WHERE pub = ? AND seq = ?',
 )
@@ -436,11 +547,61 @@ const selectFirstStep = db.prepare(
   'SELECT seq, label, at, page FROM publication_steps WHERE pub = ? ORDER BY ord LIMIT 1',
 )
 
+const selectLegacyStep = db.prepare(`
+  SELECT seq, label, at, page FROM publication_steps WHERE pub = ?
+  ORDER BY CASE WHEN seq = 0 THEN 0 ELSE 1 END, ord DESC LIMIT 1
+`)
+
 const clearBlobs = db.prepare('DELETE FROM publication_blobs WHERE pub = ?')
 const insertBlob = db.prepare(
   'INSERT OR IGNORE INTO publication_blobs (pub, hash, mime, body) VALUES (?, ?, ?, ?)',
 )
 const selectBlob = db.prepare('SELECT mime, body FROM publication_blobs WHERE pub = ? AND hash = ?')
+
+const clearMaterials = db.prepare('DELETE FROM publication_materials WHERE pub = ?')
+const insertMaterial = db.prepare(`
+  INSERT INTO publication_materials
+    (pub, key, ord, kind, name, path, hash, bytes, cells, outline, cell_count, output_count)
+  VALUES
+    (@pub, @key, @ord, @kind, @name, @path, @hash, @bytes,
+     @cells, @outline, @cell_count, @output_count)
+`)
+const selectMaterials = db.prepare(`
+  SELECT key, ord, kind, name, path, hash, bytes, outline, cell_count, output_count
+  FROM publication_materials WHERE pub = ? ORDER BY ord
+`)
+const selectMaterialCells = db.prepare(
+  "SELECT cells FROM publication_materials WHERE pub = ? AND key = ? AND kind = 'notebook'",
+)
+const countMaterials = db.prepare('SELECT COUNT(*) AS n FROM publication_materials WHERE pub = ?')
+const selectHasNotebook = db.prepare(
+  "SELECT 1 AS one FROM publication_materials WHERE pub = ? AND key = ? AND kind = 'notebook'",
+)
+const deleteMaterialRow = db.prepare('DELETE FROM publication_materials WHERE pub = ? AND key = ?')
+const selectNotebookCells = db.prepare(`
+  SELECT cells FROM publication_materials
+  WHERE pub = ? AND kind = 'notebook' AND cells IS NOT NULL
+`)
+const selectBlobHashes = db.prepare('SELECT hash FROM publication_blobs WHERE pub = ?')
+const deleteBlobRow = db.prepare('DELETE FROM publication_blobs WHERE pub = ? AND hash = ?')
+const bumpForRemoval = db.prepare(`
+  UPDATE publications
+  SET revision = revision + 1, materials_rev = revision + 1,
+      selection = @selection, zip_bytes = @zip_bytes
+  WHERE id = @id
+`)
+/*
+ * The rollback step follows the page's first notebook: a 0.12 brought back
+ * after a removal must not show the notebook the teacher just took down.
+ */
+const refreshLegacyStep = db.prepare(`
+  UPDATE publication_steps
+  SET page = COALESCE(
+    (SELECT cells FROM publication_materials
+     WHERE pub = @pub AND kind = 'notebook' AND cells IS NOT NULL ORDER BY ord LIMIT 1),
+    '[]')
+  WHERE pub = @pub AND seq = 0
+`)
 
 export function getPublication(id: string): Publication | null {
   const row = selectPub.get(id) as PublicationRow | undefined
@@ -483,83 +644,311 @@ export function listPublications(): Publication[] {
   return (selectPubs.all() as PublicationRow[]).map(toPublication)
 }
 
-export interface BuiltStep {
-  seq: number
-  label: string
-  at: number
-  cells: PublicCell[]
+/* --------------------------------------------------------------- materials */
+
+/** One material of a page, as the build hands it over and the store keeps it. */
+export interface StoredMaterial {
+  key: string
+  kind: MaterialKind
+  name: string
+  /** Room-relative path; the ZIP and the download name come from it. */
+  path: string
+  /** page_files.hash of the downloadable bytes, put there BEFORE the write. */
+  hash: string
+  bytes: number
+  /** Notebooks only: the projected cells, the outline and the counts. */
+  cells?: PublicCell[] | null
+  outline?: OutlineEntry[] | null
+  cellCount?: number | null
+  outputCount?: number | null
+}
+
+/** A material as read back, without its cells. */
+export interface MaterialRow {
+  key: string
+  ord: number
+  kind: MaterialKind
+  name: string
+  path: string
+  hash: string
+  bytes: number
+  outline: OutlineEntry[]
+  cellCount: number | null
+  outputCount: number | null
+}
+
+interface MaterialDbRow {
+  key: string
+  ord: number
+  kind: string
+  name: string
+  path: string
+  hash: string
+  bytes: number
+  outline: string | null
+  cell_count: number | null
+  output_count: number | null
+}
+
+function parseOutline(text: string | null): OutlineEntry[] {
+  if (!text) return []
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return Array.isArray(parsed) ? (parsed as OutlineEntry[]) : []
+  } catch {
+    return []
+  }
+}
+
+export function listMaterials(pub: string): MaterialRow[] {
+  return (selectMaterials.all(pub) as MaterialDbRow[]).map((row) => ({
+    key: row.key,
+    ord: row.ord,
+    kind: (MATERIAL_KINDS as readonly string[]).includes(row.kind)
+      ? (row.kind as MaterialKind)
+      : 'file',
+    name: row.name,
+    path: row.path,
+    hash: row.hash,
+    bytes: row.bytes,
+    outline: parseOutline(row.outline),
+    cellCount: row.cell_count,
+    outputCount: row.output_count,
+  }))
+}
+
+export function materialCount(pub: string): number {
+  return Number((countMaterials.get(pub) as { n: number }).n)
+}
+
+/** Whether the page has a notebook under this key: a cheap check before the heavy read. */
+export function hasNotebook(pub: string, key: string): boolean {
+  return selectHasNotebook.get(pub, key) !== undefined
 }
 
 /**
- * Write the whole publication: the steps and the large pieces of output.
+ * Take one material off a page: «Убрать со страницы».
  *
- * In one transaction, and the old steps are erased: a publication is a
- * snapshot, not an accumulation. The address is kept: a student with last
- * week's link lands in the same place.
+ * A change of the page like a build (revision and materials_rev grow, so
+ * every cached notebook tab is asked again), but not a rebuild: the other
+ * materials keep their bytes and `published_at` keeps meaning the last
+ * build. `false` when there was no such material.
+ */
+export function dropMaterial(
+  pub: string,
+  key: string,
+  change: { selection: PublishSelection | null; zipBytes: number },
+): boolean {
+  const dropped = db.transaction(() => {
+    if (deleteMaterialRow.run(pub, key).changes === 0) return false
+    bumpForRemoval.run({
+      id: pub,
+      selection: change.selection ? JSON.stringify(change.selection) : null,
+      zip_bytes: Math.max(0, Math.round(change.zipBytes)),
+    })
+    refreshLegacyStep.run({ pub })
+    pruneBlobs(pub)
+    return true
+  })()
+  if (dropped) gcPageFiles()
+  return dropped
+}
+
+/**
+ * Drop the page's images and figures no remaining notebook refers to.
+ *
+ * The blobs are shared by all of a page's notebooks, so they cannot go with
+ * the material row; but «Убрать со страницы» is exactly how a teacher takes
+ * down a student's notebook or a screenshot with someone's data on it, and
+ * an image left in publication_blobs stays served at /blob/<hash> to anyone
+ * who loaded the page before. A reference is `blob:<hash>` in an output's
+ * bundle or in a note's markdown (`blob:<hash>.png`), and the cells are the
+ * text that holds them; the rollback step mirrors the first notebook.
+ */
+function pruneBlobs(pub: string): void {
+  const kept = new Set<string>()
+  for (const row of selectNotebookCells.all(pub) as { cells: string }[]) {
+    for (const m of row.cells.matchAll(/blob:([0-9a-f]{32})/g)) kept.add(m[1])
+  }
+  for (const { hash } of selectBlobHashes.all(pub) as { hash: string }[]) {
+    if (!kept.has(hash)) deleteBlobRow.run(pub, hash)
+  }
+}
+
+/**
+ * A notebook's cells as the stored JSON text, unparsed: the public route
+ * puts it into the response body as it is, and parsing megabytes of outputs
+ * only to print them again would cost the class's process for nothing.
+ */
+export function materialCellsText(pub: string, key: string): string | null {
+  const row = selectMaterialCells.get(pub, key) as { cells: string | null } | undefined
+  return row?.cells ?? null
+}
+
+/**
+ * The label of the single step the store still writes, for 0.12.
+ *
+ * A rollback to 0.12 renders every page from `publication_steps`, so each
+ * write keeps one row there: seq 0, the first notebook. Clipped like 0.12's
+ * labels were (80 characters).
+ */
+const LEGACY_STEP_LABEL = 80
+
+/**
+ * Write the whole page: its materials, its images and the rollback step.
+ *
+ * One transaction, and everything of the previous build is replaced: a page
+ * is a snapshot, not an accumulation. The address is kept: a student with
+ * last week's link lands in the same place. `first_at` is kept too, while
+ * `published_at` becomes now and `revision` grows by one.
+ *
+ * The files behind `materials[].hash` must already be in page_files
+ * (page-files.ts · putPageFile); the GC after the commit removes whatever
+ * the previous build referenced and this one does not.
  */
 export function writePublication(input: {
   sessionId: string
   title: string
   by: string | null
-  steps: BuiltStep[]
+  materials: StoredMaterial[]
   blobs: { hash: string; mime: string; body: Buffer }[]
+  selection?: PublishSelection | null
+  zipBytes?: number
+  /** `undefined` keeps the stored day; `null` clears it. */
+  heldOn?: string | null
+  /**
+   * Keep a withdrawn page withdrawn: a refresh rebuilds what is on the page,
+   * it does not decide whether the page is public.
+   */
+  keepState?: boolean
 }): Publication {
   const existing = publicationOf(input.sessionId)
   const id = existing?.id ?? newId()
   const now = Date.now()
-  /*
-   * One moment, one row: `publication_steps` is keyed by the pair (pub, seq),
-   * and two steps with the same `seq` brought down the whole transaction with
-   * SQLITE_CONSTRAINT, that is, a 500 without a single word about the cause.
-   * The last one wins: `seq: 0` is the permanent address of the last page,
-   * and its route appends it at the end, over anything that might have come
-   * in under the same number from outside.
-   */
-  const lastAt = new Map(input.steps.map((step, index) => [step.seq, index]))
-  const steps = input.steps.filter((step, index) => lastAt.get(step.seq) === index)
+  const selection = input.selection ? JSON.stringify(input.selection) : null
+  const zipBytes = Math.max(0, Math.round(input.zipBytes ?? 0))
+  const firstNotebook = input.materials.find((m) => m.kind === 'notebook' && m.cells)
 
   db.transaction(() => {
-    if (existing) bumpPub.run(input.title, now, input.by, id)
-    else
+    if (existing) {
+      bumpPub.run({
+        id,
+        title: input.title,
+        now,
+        by: input.by,
+        keep_held: input.heldOn === undefined ? 1 : 0,
+        keep_state: input.keepState ? 1 : 0,
+        held_on: input.heldOn ?? null,
+        selection,
+        zip_bytes: zipBytes,
+      })
+    } else {
       insertPub.run({
         id,
         session_id: input.sessionId,
         title: input.title,
-        published_at: now,
-        published_by: input.by,
+        now,
+        by: input.by,
+        held_on: input.heldOn ?? null,
+        selection,
+        zip_bytes: zipBytes,
       })
-    clearSteps.run(id)
-    clearBlobs.run(id)
-    steps.forEach((step, index) => {
-      insertStep.run({
+    }
+    clearMaterials.run(id)
+    input.materials.forEach((m, ord) => {
+      insertMaterial.run({
         pub: id,
-        seq: step.seq,
-        ord: index,
-        label: clip(step.label, MAX_STEP_LABEL),
-        at: step.at,
-        page: JSON.stringify(step.cells),
+        key: m.key,
+        ord,
+        kind: m.kind,
+        name: m.name,
+        path: m.path,
+        hash: m.hash,
+        bytes: m.bytes,
+        cells: m.cells ? JSON.stringify(m.cells) : null,
+        outline: m.outline ? JSON.stringify(m.outline) : null,
+        cell_count: m.cellCount ?? null,
+        output_count: m.outputCount ?? null,
       })
     })
+    clearBlobs.run(id)
     for (const blob of input.blobs) insertBlob.run(id, blob.hash, blob.mime, blob.body)
+    clearSteps.run(id)
+    insertStep.run({
+      pub: id,
+      seq: 0,
+      ord: 0,
+      label: tr('server.notebookAtPublication.33f04f').slice(0, LEGACY_STEP_LABEL),
+      at: now,
+      page: JSON.stringify(firstNotebook?.cells ?? []),
+    })
   })()
-  // This page's rail is known right here: the steps were just assembled and
-  // their cells counted. The order is the same as `ORDER BY ord`, the write
-  // order.
-  keepRail(
-    id,
-    steps.map((step) => ({
-      seq: step.seq,
-      label: clip(step.label, MAX_STEP_LABEL),
-      at: step.at,
-      cellCount: step.cells.length,
-    })),
-  )
-
+  gcPageFiles()
   return getPublication(id)!
+}
+
+const adoptRow = db.prepare(`
+  UPDATE publications
+  SET materials_rev = revision, first_at = COALESCE(first_at, published_at), zip_bytes = ?,
+      title = COALESCE(?, title)
+  WHERE id = ?
+`)
+
+/**
+ * Replace a page's materials WITHOUT counting it as a new build: the boot
+ * migration of 0.12 pages (migrate-pages.ts). `revision`, `published_at` and
+ * the steps stay as they were; `materials_rev` catches up with `revision`.
+ * `title`, when given, replaces the stored one (the migration scrubs it).
+ */
+export function adoptMaterials(
+  pub: string,
+  materials: StoredMaterial[],
+  zipBytes: number,
+  title?: string,
+): void {
+  db.transaction(() => {
+    clearMaterials.run(pub)
+    materials.forEach((m, ord) => {
+      insertMaterial.run({
+        pub,
+        key: m.key,
+        ord,
+        kind: m.kind,
+        name: m.name,
+        path: m.path,
+        hash: m.hash,
+        bytes: m.bytes,
+        cells: m.cells ? JSON.stringify(m.cells) : null,
+        outline: m.outline ? JSON.stringify(m.outline) : null,
+        cell_count: m.cellCount ?? null,
+        output_count: m.outputCount ?? null,
+      })
+    })
+    adoptRow.run(Math.max(0, Math.round(zipBytes)), title ?? null, pub)
+  })()
+}
+
+/**
+ * The page a 0.12 build left: its last step (seq 0, else the one rail-last),
+ * or `null` when it has none.
+ */
+export function legacyPage(pub: string): PublicCell[] | null {
+  const row = selectLegacyStep.get(pub) as StepRow | undefined
+  return row ? parsePage(row) : null
 }
 
 export function setPublicationState(id: string, state: PublicationState): void {
   setPubState.run(state, id)
+}
+
+/**
+ * Rewrite a page's saved pick and nothing else: no revision, no
+ * `published_at`, no materials. A setting that lives in the pick (the room
+ * door) changes how the page behaves, not what is on it, so saving it must
+ * not cost a build or invalidate every cached notebook tab.
+ */
+export function savePublicationSelection(id: string, selection: PublishSelection): void {
+  setPubSelection.run(JSON.stringify(selection), id)
 }
 
 /**
@@ -574,23 +963,17 @@ export function setPublicationState(id: string, state: PublicationState): void {
 export function orphanPublication(sessionId: string): void {
   const pub = publicationOf(sessionId)
   if (pub) {
-    for (const course of listCourses()) {
-      let touched = false
-      const items = course.items.map((item) => {
-        if (item.kind !== 'seminar' || item.sessionId !== sessionId) return item
-        touched = true
-        return {
-          ...item,
-          publication: {
-            id: pub.id,
-            slug: pub.slug,
-            publishedAt: pub.publishedAt,
-            steps: stepCount(pub.id),
-          },
-        }
-      })
-      if (touched) setCourseItems(course.id, course.rev, items)
+    const link = {
+      id: pub.id,
+      slug: pub.slug,
+      publishedAt: pub.publishedAt,
+      materials: materialCount(pub.id),
     }
+    rewriteCourseRows((item) =>
+      item.kind === 'seminar' && item.sessionId === sessionId
+        ? { ...item, publication: link }
+        : null,
+    )
   }
   orphanPub.run(Date.now(), sessionId)
 }
@@ -600,12 +983,27 @@ export function deletePublication(id: string): void {
   db.transaction(() => {
     clearSteps.run(id)
     clearBlobs.run(id)
+    clearMaterials.run(id)
     deletePubRow.run(id)
     forgetAddressesOf.run('publication', id)
   })()
-  forgetRail(id)
+  gcPageFiles()
   // The tombstone in the course promised "the page remains"; now it does not.
   forgetPublicationInCourses(id)
+}
+
+/* ------------------------------------------------- the 0.12 step, read back */
+
+/*
+ * One step per page now: seq 0, dual-written for a rollback to 0.12. Only the
+ * tests of that dual-write read it back; these go with publication_steps.
+ */
+
+export interface BuiltStep {
+  seq: number
+  label: string
+  at: number
+  cells: PublicCell[]
 }
 
 interface StepRow {
@@ -631,67 +1029,13 @@ function parsePage(row: StepRow): PublicCell[] {
   }
 }
 
-/**
- * The step rail comes from memory, not from parsing pages on every public
- * request.
- *
- * SQLite counts the cells (`json_array_length` in `selectHeadings`), and that
- * costs a parse of the FULL text of every page: a page is all of a step's
- * text outputs, a training log of megabytes. The rail is asked for on every
- * open of the public page, that is, up to five hundred times in the first
- * minute of a review, and each time afresh, for the sake of forty small
- * numbers.
- *
- * A cache here is more reliable than any time to live: a publication's steps
- * change in exactly two ways, and both are in this file: republishing
- * (`writePublication`) and erasing (`deletePublication`). Withdrawing a page
- * does not touch the steps.
- *
- * Republishing does not reset the rail but PUTS it: the steps are assembled
- * and in memory at that moment, and there is no reason to count their cells
- * a second time, by parsing text at that. So exactly one parse remains: the
- * first read of a page published before the process started.
- *
- * A `cell_count` column would not cost even that and would survive a
- * restart, but the publication schema is held by db.ts ("one owner of the
- * schema"), and bringing in a second owner for one number is exactly the
- * price described there.
- */
-const RAILS_KEPT = 200
-const rails = new Map<string, StepHeading[]>()
-
-function forgetRail(pub: string): void {
-  rails.delete(pub)
-}
-
-function keepRail(pub: string, rail: StepHeading[]): void {
-  // A semester has dozens of pages; the cap is here for an instance living
-  // for years, and it evicts the oldest entry, not the whole memory at once.
-  if (!rails.has(pub) && rails.size >= RAILS_KEPT) {
-    const oldest = rails.keys().next()
-    if (!oldest.done) rails.delete(oldest.value)
-  }
-  rails.set(pub, rail)
-}
-
 export function stepHeadings(pub: string): StepHeading[] {
-  const known = rails.get(pub)
-  // As a copy: the array is shared, and it goes out into response bodies,
-  // where nobody is obliged to treat it as someone else's.
-  if (known) return [...known]
-  const built = (selectHeadings.all(pub) as HeadingRow[]).map((row) => ({
+  return (selectHeadings.all(pub) as HeadingRow[]).map((row) => ({
     seq: row.seq,
     label: row.label,
     at: row.at,
     cellCount: row.cell_count,
   }))
-  keepRail(pub, built)
-  return [...built]
-}
-
-/** How many steps, where only the number is needed. */
-export function stepCount(pub: string): number {
-  return Number((countSteps.get(pub) as { n: number }).n)
 }
 
 export function readStep(pub: string, seq: number | null): BuiltStep | null {
