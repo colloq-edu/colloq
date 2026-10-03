@@ -29,6 +29,7 @@ import { tr, formatNumber } from '@shared/i18n'
  * default (`run: 'room'`) it is still open to everyone.
  */
 import type * as Y from 'yjs'
+import crypto from 'node:crypto'
 import { WebSocket, type RawData } from 'ws'
 import {
   acceptPatch,
@@ -212,7 +213,17 @@ import {
   runnerFor,
   whySegmentRefused,
 } from '@shared/paths'
-import { inkFullSays, LASER_EVERY_MS, MAX_NOTE_CHARS, type InkStroke } from '@shared/lecture'
+import {
+  AWAY_GRACE_MS,
+  inkFullSays,
+  laserSamples,
+  LASER_HOLD_MS,
+  MAX_LASER_SAMPLES,
+  MAX_NOTE_CHARS,
+  readDevice,
+  type InkStroke,
+  type LectureDevice,
+} from '@shared/lecture'
 import { flushFile, forgetFile, onFileSaved } from './collab/files.js'
 import {
   addInk,
@@ -225,7 +236,9 @@ import {
   inkedPagesOf,
   isPresenter,
   lectureOf,
+  markAway,
   moveLecture,
+  noteAct,
   setBlank,
   startLecture,
   stopLecture,
@@ -246,6 +259,7 @@ import {
   type BookAuthor,
 } from './collab/books.js'
 import { config } from './config.js'
+import { staffFromCookieHeader } from './admin/auth.js'
 import { sessionLimitBytes, uploadLimitBytes } from './admin/resource-settings.js'
 import { stopAll, undoTurn } from './ai/agent.js'
 import { onCouncilOracle } from './ai/council.js'
@@ -883,6 +897,15 @@ function ticking(sessionId: string, what: string): boolean {
   return ticks.has(tickKey(sessionId, what))
 }
 
+/** Close one window early: what it would have carried has just gone out by other means. */
+function stopTick(sessionId: string, what: string): void {
+  const key = tickKey(sessionId, what)
+  const timer = ticks.get(key)
+  if (timer === undefined) return
+  clearTimeout(timer)
+  ticks.delete(key)
+}
+
 /** Remove all of the room's windows. The room has emptied or no longer exists. */
 function forgetTicks(sessionId: string): void {
   const tail = `\n${sessionId}`
@@ -934,9 +957,64 @@ export function boardOf(sessionId: string): string | null {
   return boards.get(sessionId) ?? null
 }
 
-/** Where the pointer got to within the coalescing window; its last position goes out. */
-type LaserAt = { page: number; x: number; y: number; shape: 'dot' | 'line' }
-const laserHeld = new Map<string, LaserAt>()
+/**
+ * One pointer frame as the room receives it: the samples since the previous
+ * frame, the press they belong to, and the latest position for a tab that
+ * does not read samples.
+ */
+type LaserAt = {
+  page: number
+  x: number
+  y: number
+  shape: 'dot' | 'line'
+  mark: number
+  pts: number[]
+}
+/** Frames that arrived while the window was open, in order. */
+const laserHeld = new Map<string, LaserAt[]>()
+
+/**
+ * How many samples a window may hold before the oldest are dropped.
+ *
+ * Only a runaway tab gets here: a console sends one frame per tick, and the
+ * window is shorter than the tick. Four frames' worth is a quarter of a second
+ * of a fast Pencil; the newest are kept, because where the hand is now matters
+ * more than where it was.
+ */
+const LASER_HELD_MAX = MAX_LASER_SAMPLES * 4
+
+/**
+ * Hold a frame until the window closes, glued to the previous one if it
+ * continues the same press on the same page.
+ *
+ * Glued, not replaced, and that is the whole point. The window used to keep
+ * the LAST position only, and a Wi-Fi burst (four frames arriving back to
+ * back after a quarter-second stall) reached the hall as one point: the head
+ * flew a straight chord across the circle the presenter had drawn.
+ */
+function holdLaser(sessionId: string, at: LaserAt): void {
+  const held = laserHeld.get(sessionId) ?? []
+  const last = held.at(-1)
+  if (last && last.mark === at.mark && last.page === at.page && last.shape === at.shape) {
+    const pts = [...last.pts, ...at.pts]
+    last.pts = pts.length > LASER_HELD_MAX * 3 ? pts.slice(pts.length - LASER_HELD_MAX * 3) : pts
+    last.x = at.x
+    last.y = at.y
+  } else {
+    held.push({ ...at, pts: [...at.pts] })
+  }
+  // Separate presses within one window are a broken tab, not a hand: keep the last few.
+  laserHeld.set(sessionId, held.slice(-4))
+}
+
+/** Held frames, into the wire now. Returns whether there was anything to send. */
+function flushLaser(sessionId: string): boolean {
+  const held = laserHeld.get(sessionId)
+  laserHeld.delete(sessionId)
+  if (!held || held.length === 0) return false
+  for (const at of held) broadcast(sessionId, { t: 'laser', at })
+  return true
+}
 
 /**
  * Turn off the pointer for the whole room.
@@ -949,45 +1027,52 @@ const laserHeld = new Map<string, LaserAt>()
  * hangs on the slide until the end of the lecture and points to where the
  * presenter was a minute ago. A timeout does not cure this: a still pointer
  * sends no frames at all, and a timeout would turn off a normal showing.
+ *
+ * THE HELD SAMPLES GO OUT FIRST, then "off". They used to be thrown away so
+ * that the window's tail would not light the spot again after the hand was
+ * removed; but they are the END of the shape, and the hall saw a circle that
+ * never closed. Sent first and the window closed, they cannot come after the
+ * "off", and the next press goes out at once instead of waiting for a window
+ * that has nothing left to carry.
+ *
+ * And "off" is an ESSENTIAL frame, not a stream one, although it has the same
+ * type as the samples: a socket that is far behind skips stream frames, and a
+ * skipped "off" left the head lit on that projector, and the next press drew
+ * a straight line from it.
  */
 function laserOff(sessionId: string): void {
-  // The held point goes ahead of the turning off: otherwise the window's tail
-  // would light the spot back up sixty milliseconds after the hand was
-  // removed.
-  laserHeld.delete(sessionId)
-  broadcast(sessionId, { t: 'laser', at: null })
+  flushLaser(sessionId)
+  stopTick(sessionId, 'pointer')
+  broadcast(sessionId, { t: 'laser', at: null }, 'essential')
 }
 
 /**
- * The pointer — to the room, but no more often than the tick: within a
- * window the last point wins.
+ * The pointer — to the room, but no more often than the window: what arrives
+ * within it is glued together and goes out when it closes.
  *
- * The pointer tick is shared, from `@shared/lecture`: the console cuts frames
- * with the same window.
- *
- * A pointer frame is not an event but the position of a hand, and nobody
- * needs the intermediate positions: the hall moves it with a spring between
- * sparse samples anyway. The server, however, paid a full round for each —
- * `JSON.stringify` and a `ws.send` loop over all of the room's sockets; with
- * five hundred listeners the presenter's hand cost tens of thousands of sends
- * a second. The console has already lowered its tick, but there is no reason
- * to take the word of a tab that may be old or someone else's.
+ * The window (`LASER_HOLD_MS`) is derived from the console's tick and is a
+ * little shorter: a console sending on time goes straight through, and only a
+ * tab sending faster than that (old, or someone else's) gets its frames
+ * glued. The server used to pay a full round for each sample: with five
+ * hundred listeners the presenter's hand cost tens of thousands of sends a
+ * second.
  *
  * The first frame goes out AT ONCE, before the window: the pointer must
  * appear where it was pointed, not one tick later.
  */
 function laserTo(sessionId: string, at: LaserAt): void {
   if (ticking(sessionId, 'pointer')) {
-    laserHeld.set(sessionId, at)
+    holdLaser(sessionId, at)
     return
   }
   broadcast(sessionId, { t: 'laser', at })
-  onTick(sessionId, 'pointer', LASER_EVERY_MS, () => {
-    const held = laserHeld.get(sessionId)
-    if (!held) return
-    laserHeld.delete(sessionId)
-    // The hand is still moving — send and open the next window.
-    laserTo(sessionId, held)
+  openLaserWindow(sessionId)
+}
+
+function openLaserWindow(sessionId: string): void {
+  onTick(sessionId, 'pointer', LASER_HOLD_MS, () => {
+    // The hand is still moving — send what was held and open the next window.
+    if (flushLaser(sessionId)) openLaserWindow(sessionId)
   })
 }
 
@@ -1013,13 +1098,17 @@ function laserTo(sessionId: string, at: LaserAt): void {
  */
 const INK_EVERY_MS = 45
 
-/** Stroke pieces held back for a tick — in order of arrival. */
-const inkHeld = new Map<string, InkStroke[]>()
+/**
+ * Stroke pieces held back for a tick — in order of arrival, each with where
+ * it starts in its stroke (`from`): a glued run starts where its first piece
+ * did.
+ */
+const inkHeld = new Map<string, { stroke: InkStroke; from: number }[]>()
 
-function inkTo(sessionId: string, stroke: InkStroke): void {
+function inkTo(sessionId: string, stroke: InkStroke, from: number): void {
   if (ticking(sessionId, 'ink')) {
     const held = inkHeld.get(sessionId) ?? []
-    const last = held.at(-1)
+    const last = held.at(-1)?.stroke
     /*
      * Only CONSECUTIVE pieces of one stroke: between two pen pieces there may
      * be a stroke of a second teacher from a tablet, and swapping them would
@@ -1032,12 +1121,12 @@ function inkTo(sessionId: string, stroke: InkStroke): void {
     if (last && last.id === stroke.id && last.page === stroke.page) {
       last.points = [...last.points, ...stroke.points]
     } else {
-      held.push({ ...stroke, points: [...stroke.points] })
+      held.push({ stroke: { ...stroke, points: [...stroke.points] }, from })
     }
     inkHeld.set(sessionId, held)
     return
   }
-  broadcast(sessionId, { t: 'ink:add', stroke })
+  broadcast(sessionId, { t: 'ink:add', stroke, from })
   openInkWindow(sessionId)
 }
 
@@ -1064,11 +1153,15 @@ function flushInk(sessionId: string): boolean {
   const held = inkHeld.get(sessionId)
   if (!held || held.length === 0) return false
   inkHeld.delete(sessionId)
-  for (const stroke of held) broadcast(sessionId, { t: 'ink:add', stroke })
+  for (const { stroke, from } of held) broadcast(sessionId, { t: 'ink:add', stroke, from })
   return true
 }
 
-function setBoard(sessionId: string, name: string | null): void {
+function setBoard(
+  sessionId: string,
+  name: string | null,
+  options: { replacingLecture?: boolean } = {},
+): void {
   if (name === null) boards.delete(sessionId)
   else boards.set(sessionId, name)
   broadcast(sessionId, { t: 'board', open: name })
@@ -1081,7 +1174,17 @@ function setBoard(sessionId: string, name: string | null): void {
   const lecture = lectureOf(sessionId)
   if (lecture && lecture.file !== name) {
     stopLecture(sessionId)
-    broadcast(sessionId, { t: 'lecture', state: null })
+    /*
+     * "The lecture is over" is NOT said when a new lecture is about to take
+     * its place (the presenter switched the document from the console). The
+     * room used to hear `null` first: the console toasted "Lecture ended",
+     * flashed its document picker and dropped and retook the wake lock, and
+     * the projection fell to its "waiting for a lecture" screen and mounted
+     * again, while the lecture simply went on with another deck. The caller
+     * broadcasts the new state right after, and that is the only word the
+     * room needs.
+     */
+    if (!options.replacingLecture) broadcast(sessionId, { t: 'lecture', state: null })
     laserOff(sessionId)
   }
 }
@@ -1202,6 +1305,112 @@ function tell(sessionId: string, participantId: string, message: ControlServerMe
   for (const ws of mine) sendFrame(ws, frame, kind)
 }
 
+/* ------------------------------------------------- who holds the console */
+
+/** What each connection said it is (`device`): the iPad console, the laptop room. */
+const devices = new WeakMap<WebSocket, LectureDevice>()
+/** Each connection's staff account as a per-room key (`personKey`), when it has one. */
+const persons = new WeakMap<WebSocket, string>()
+
+/**
+ * A staff account as the room may see it: an opaque key, one per room.
+ *
+ * The lecture state goes to every student, and a staff id in it would be an
+ * internal identifier handed to the whole class and the same in every room.
+ * A keyed hash says only "these two connections are one teacher" and says it
+ * only inside this room. It is never a credential: the role is still read
+ * from the cookie on every request, and the key only changes the WORDS
+ * ("you, on another device"), never what anyone may do.
+ */
+function personKey(sessionId: string, staffId: string): string {
+  return crypto
+    .createHmac('sha256', config.sessionSecret)
+    .update(`person:${sessionId}:${staffId}`)
+    .digest('base64url')
+    .slice(0, 22)
+}
+
+/**
+ * The staff account behind a connection: the panel's cookie, or the one the
+ * handoff key carried onto a tablet (which has no cookie). Without either the
+ * connection is nobody's in this sense, and never "you on another device".
+ */
+function personOf(ws: WebSocket, sessionId: string, payload: TokenPayload): string | null {
+  const known = persons.get(ws)
+  if (known) return known
+  return payload.staff ? personKey(sessionId, payload.staff) : null
+}
+
+/**
+ * Tell every connection of one staff account which participants it is here.
+ *
+ * The same teacher in two browsers is two participants, and the people list
+ * showed two strangers with one name. Presence cannot say "this is you":
+ * anyone can put anything into their own presence. The server has seen the
+ * cookies, so it says it, and only to that teacher's own connections.
+ */
+function tellPersonDevices(sessionId: string, person: string): void {
+  const room = rooms.get(sessionId)
+  if (!room) return
+  const mine = [...room.sockets].filter((ws) => persons.get(ws) === person)
+  const ids = [...new Set(mine.map((ws) => owner.get(ws)).filter((id): id is string => !!id))]
+  for (const ws of mine) send(ws, { t: 'person:devices', ids })
+}
+
+/** Pending "the presenter is gone" marks, one per room. */
+const awayTimers = new Map<string, NodeJS.Timeout>()
+
+/**
+ * The presenter's last connection closed: say so to the room, after a grace.
+ *
+ * The lecture stays theirs, nothing moves by itself; what changes is that
+ * the room stops pretending. A holder who closed the lid used to keep the
+ * lecture "presented" forever, while the hall looked at a frozen page and
+ * the second teacher saw a take-over question worded exactly as for a live
+ * colleague. The mark is dated from the moment they went, not from the end
+ * of the grace: "offline for 3 min" must count from the close.
+ */
+function presenterLeft(sessionId: string, who: string): void {
+  clearAway(sessionId)
+  const went = Date.now()
+  const timer = setTimeout(() => {
+    awayTimers.delete(sessionId)
+    const room = rooms.get(sessionId)
+    if (!isPresenter(sessionId, who) || room?.byParticipant.has(who)) return
+    const marked = markAway(sessionId, went)
+    if (marked) broadcast(sessionId, { t: 'lecture', state: marked })
+  }, AWAY_GRACE_MS)
+  timer.unref?.()
+  awayTimers.set(sessionId, timer)
+}
+
+/** The presenter is back on any of their devices: the room hears it at once. */
+function presenterBack(sessionId: string): void {
+  clearAway(sessionId)
+  const back = markAway(sessionId, null)
+  if (back) broadcast(sessionId, { t: 'lecture', state: back })
+}
+
+function clearAway(sessionId: string): void {
+  const timer = awayTimers.get(sessionId)
+  if (timer) clearTimeout(timer)
+  awayTimers.delete(sessionId)
+}
+
+/**
+ * What the console does: the messages that count as the presenter acting.
+ * Read before the message's own case, so the ink cases stay about ink.
+ */
+const CONSOLE_ACTS = new Set<ControlClientMessage['t']>([
+  'lecture:page',
+  'lecture:blank',
+  'ink',
+  'ink:erase',
+  'ink:undo',
+  'ink:clear',
+  'laser',
+])
+
 /*
  * Which role a socket connected with — the room's `hosts` set, next to
  * `byParticipant` and for the same reason: the recipient is known, yet it
@@ -1258,6 +1467,20 @@ function toHosts(sessionId: string, file: string, message: ControlServerMessage)
  * memory cannot be shown by accident.
  */
 const notesOpen = new WeakMap<WebSocket, string>()
+
+/**
+ * Many pages of a document's notes changed at once (a script import over
+ * HTTP): every teacher tab that has this document's notes open gets the whole
+ * fresh map.
+ *
+ * The whole map, not one `notes:one` per page: fifty echoes in a row would
+ * redraw the console fifty times, and the map is exactly what `notes:open`
+ * answers with, so the tabs already know how to take it. The same narrow
+ * audience as an edit: hosts who asked about THIS file, never the room.
+ */
+export function notesRewritten(sessionId: string, file: string): void {
+  toHosts(sessionId, file, { t: 'notes', file, notes: notesOf(sessionId, file) })
+}
 
 /* --------------------------------------------------------------- council */
 
@@ -3233,6 +3456,16 @@ export function dispatch(
   payload: TokenPayload,
   message: ControlClientMessage,
 ): void {
+  /*
+   * "Last action 12 s ago" and "from the iPad" are read here, ahead of the
+   * cases, for the console's own messages from whoever holds it. The case
+   * decides whether the action goes through; this only notes that the hands
+   * are alive and where they are.
+   */
+  if (CONSOLE_ACTS.has(message.t) && atTheRemote(sessionId, payload)) {
+    const moved = noteAct(sessionId, devices.get(ws) ?? null)
+    if (moved) broadcast(sessionId, { t: 'lecture', state: moved })
+  }
   switch (message.t) {
     case 'ping':
       // A pulse every 25 seconds — and also the most frequent occasion to
@@ -3645,10 +3878,9 @@ export function dispatch(
      * Start a lecture.
      *
      * The right is the same as for the shared screen: putting a document in
-     * front of the whole room. There is one presenter — whoever started; a
-     * second attempt takes over the console, and that is intentional: two
-     * teachers in a room is common, and arguing about whose tablet is the
-     * main one in the middle of a class period is impossible.
+     * front of the whole room. There is one presenter — whoever started.
+     * Taking the console of a running lecture is a separate message,
+     * `lecture:take` below.
      */
     case 'lecture:start': {
       if (
@@ -3671,23 +3903,6 @@ export function dispatch(
         send(ws, { t: 'error', message: tr("server.thisFileIsNoLongerInThe.b66e1e") })
         return
       }
-      /*
-       * The same lecture but in other hands is a HANDOVER of the console, not
-       * a start.
-       *
-       * A second teacher has no way to say "I'll take control": the "Take
-       * control" button sends the same `lecture:start` for the same file.
-       * Falling through, it would go into `startLecture` and erase everything
-       * the console is taken for: the page would go back to the first one, the
-       * ink — every last stroke, the lecture clock — to zero. Forty minutes of
-       * markup erased by pressing "take over", and erased on the projector in
-       * front of everyone.
-       *
-       * Only when SOMEONE ELSE is presenting: the same press on one's own
-       * console means "start over", and over means from scratch. The shared
-       * screen is not touched here — the document is already on it, it is the
-       * same lecture.
-       */
       const going = lectureOf(sessionId)
       if (going && going.file === wanted && going.by === payload.participantId) {
         /*
@@ -3705,34 +3920,25 @@ export function dispatch(
       }
       if (going && going.file === wanted) {
         /*
-         * Taking the console from someone else is the teacher's business, not
-         * the `board` rule's.
+         * The same lecture in someone else's hands is NOT taken by a start.
          *
-         * The rule decides who may put a document before the hall; taking
-         * control away from whoever is already presenting is a different act,
-         * and in an open room where anyone puts up the board it would mean a
-         * student silently taking the page, the ink and the pointer for
-         * themselves in the middle of class.
+         * This press used to double as the take-over, and that made it
+         * dangerous twice. Queued without a connection, it reached the server
+         * after the lecture had ended and started a new one for the whole
+         * hall, pulling students out of their notebooks; or it reached it
+         * after a third teacher had taken the console and silently took it
+         * from them. A take-over names what it expects (`lecture:take`); a
+         * start never takes anything, and says where the take-over is.
          */
-        if (payload.role !== 'host') {
-          refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayTakeOverThe.31823b"))
-          return
-        }
-        const taken = handOver(
+        refuse(
+          ws,
           sessionId,
-          wanted,
-          payload.participantId,
-          displayName(sessionId, payload.participantId),
-          colorForId(payload.participantId),
+          payload,
+          payload.role === 'host'
+            ? tr('server.lecture.takeInstead', { name: going.byName })
+            : tr("server.onlyTheTeacherMayTakeOverThe.31823b"),
         )
-        if (taken) {
-          broadcast(sessionId, { t: 'lecture', state: taken })
-          // The hand changed: the previous presenter's spot no longer shows
-          // the hall anything, and it will not go out by itself — they no
-          // longer send frames.
-          laserOff(sessionId)
-          return
-        }
+        return
       }
       /*
        * Next — start a NEW lecture on another document, and the running one
@@ -3750,14 +3956,18 @@ export function dispatch(
        * Not for looks: the rule "the board went away — the lecture ended"
        * above rests exactly on this being the same file. The order matters —
        * setBoard manages to close the previous lecture if it ran on another
-       * document, and only then does the room learn about the new one.
+       * document, and only then does the room learn about the new one. It
+       * closes it QUIETLY: the room hears the new lecture, not "the lecture
+       * is over" followed by a new one (see `replacingLecture`).
        */
-      setBoard(sessionId, wanted)
+      setBoard(sessionId, wanted, { replacingLecture: true })
       const started = startLecture(sessionId, {
         file: wanted,
         by: payload.participantId,
         byName: displayName(sessionId, payload.participantId),
         color: colorForId(payload.participantId),
+        device: readDevice(message.device) ?? devices.get(ws) ?? null,
+        byPerson: personOf(ws, sessionId, payload),
       })
       broadcast(sessionId, { t: 'lecture', state: started })
       /*
@@ -3771,6 +3981,84 @@ export function dispatch(
        */
       broadcast(sessionId, { t: 'ink', strokes: [] })
       broadcast(sessionId, { t: 'ink:pages', pages: [] })
+      return
+    }
+
+    /**
+     * Take the console of a running lecture.
+     *
+     * The teacher's act, not the `board` rule's: the rule decides who may
+     * put a document before the hall, and taking control from whoever is
+     * presenting is a different thing. In an open room where anyone puts up
+     * the board it would mean a student silently taking the page, the ink and
+     * the pointer in the middle of class.
+     *
+     * It changes hands and nothing else: page, ink, pause and clock are the
+     * lecture's (lecture.ts · handOver). And it never starts anything. The
+     * press names the lecture it saw (file, start time, holder), and when the
+     * room has moved on the answer is a sentence, not an act: a lecture that
+     * ended is not restarted for the hall by a press made before it ended,
+     * and a console a third person took in between is not taken from them by
+     * a press that meant someone else.
+     *
+     * No waiting for an absent holder: the lid closed, the iPad died, and the
+     * lecture must go on from the next device at once. The previous hands
+     * are told by the state itself (their tab sees `by` leave them and says
+     * "taken over", see LectureView and ConsoleView), and "give it back" is
+     * this same message the other way.
+     */
+    case 'lecture:take': {
+      if (payload.role !== 'host') {
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayTakeOverThe.31823b"))
+        return
+      }
+      const going = lectureOf(sessionId)
+      const file = normalizePath(typeof message.file === 'string' ? message.file : '')
+      if (!going || going.file !== file || going.startedAt !== Number(message.startedAt)) {
+        send(ws, { t: 'error', message: tr('server.lecture.takeEnded') })
+        return
+      }
+      // Already ours (the same person's other device): nothing to take.
+      if (going.by === payload.participantId) return
+      if (going.by !== message.from) {
+        send(ws, { t: 'error', message: tr('server.lecture.takeMoved', { name: going.byName }) })
+        return
+      }
+      /*
+       * What the previous hands sent before this moment reaches the hall
+       * first: the held pieces of a stroke in progress go out ahead of the
+       * new state, so the line they were drawing stays as far as it got, and
+       * nothing after the take lands on top of the new presenter's page.
+       */
+      flushInk(sessionId)
+      const taken = handOver(
+        sessionId,
+        going.file,
+        payload.participantId,
+        displayName(sessionId, payload.participantId),
+        colorForId(payload.participantId),
+        {
+          device: readDevice(message.device) ?? devices.get(ws) ?? null,
+          byPerson: personOf(ws, sessionId, payload),
+        },
+      )
+      if (!taken) return
+      clearAway(sessionId)
+      broadcast(sessionId, { t: 'lecture', state: taken })
+      // The previous presenter's spot no longer shows the hall anything, and
+      // it will not go out by itself: they no longer send frames.
+      laserOff(sessionId)
+      return
+    }
+
+    /**
+     * What this connection is. Kept per socket and read when its owner
+     * starts, takes or acts on the lecture; never broadcast on its own.
+     */
+    case 'device': {
+      const device = readDevice(message.device)
+      if (!device) return
+      devices.set(ws, device)
       return
     }
 
@@ -3855,9 +4143,9 @@ export function dispatch(
       if (text.length > MAX_NOTE_CHARS) {
         /*
          * Out loud, not truncated. A phrase cut off in the middle looks saved,
-         * and the person learns about the loss in class, reading the stump;
-         * the client holds the same ceiling with the `maxlength` field, so
-         * only what bypasses the client gets here.
+         * and the person learns about the loss in class, reading the stump.
+         * The editors hold the same ceiling by keeping an over-long text on
+         * screen and not sending it, so only what bypasses them gets here.
          */
         send(ws, {
           t: 'error',
@@ -3957,8 +4245,25 @@ export function dispatch(
           ? Math.min(0.05, Math.max(0.0005, message.width))
           : 0.004,
         points: Array.isArray(message.points) ? (message.points as number[]) : [],
+        from: typeof message.from === 'number' ? message.from : undefined,
+        group: optionalId(message.group),
       })
       if (!added) return
+      /*
+       * The piece starts beyond what the server has: the frame before it was
+       * lost with a dying socket. Gluing it on would be a chord across the
+       * slide; instead the sender is told where to resend from, and only the
+       * sender: the hall has nothing to do with it.
+       */
+      if (added.need !== undefined) {
+        send(ws, {
+          t: 'ink:need',
+          page: Math.trunc(Number(message.page)),
+          id: optionalId(message.id) ?? '',
+          have: added.need,
+        })
+        return
+      }
       /*
        * The ceiling — out loud, like an overflowing note.
        *
@@ -3974,15 +4279,26 @@ export function dispatch(
         send(ws, { t: 'error', message: inkFullSays(added.full) })
         return
       }
-      inkTo(sessionId, added.stroke)
+      inkTo(sessionId, added.stroke, added.from)
       return
     }
 
     case 'ink:undo': {
       if (!atTheRemote(sessionId, payload)) return
       const page = Number(message.page)
-      const dropped = undoInk(sessionId, page)
-      if (dropped) broadcast(sessionId, { t: 'ink:drop', page, id: dropped })
+      const undone = undoInk(sessionId, page)
+      if (!undone) return
+      if ('dropped' in undone) {
+        for (const id of undone.dropped) broadcast(sessionId, { t: 'ink:drop', page, id })
+        return
+      }
+      /*
+       * Something erased came back: the page goes out whole, so that the
+       * strokes return to their old places under the others rather than on
+       * top, and the inventory with it, since a wiped page is inked again.
+       */
+      broadcast(sessionId, { t: 'ink:page', page, strokes: undone.restored })
+      broadcast(sessionId, { t: 'ink:pages', pages: inkedPagesOf(sessionId) })
       return
     }
 
@@ -3997,7 +4313,8 @@ export function dispatch(
        * not there" would make twenty browsers redraw the page for nothing —
        * that is exactly why `eraseInk` answers whether it was there.
        */
-      if (eraseInk(sessionId, page, id)) broadcast(sessionId, { t: 'ink:drop', page, id })
+      const how = { gesture: optionalId(message.gesture), retract: message.retract === true }
+      if (eraseInk(sessionId, page, id, how)) broadcast(sessionId, { t: 'ink:drop', page, id })
       return
     }
 
@@ -4026,16 +4343,28 @@ export function dispatch(
      */
     case 'laser': {
       if (!atTheRemote(sessionId, payload)) return
-      const x = Number(message.x)
-      const y = Number(message.y)
-      // And the page — just like x and y: without a NaN check it goes into the
-      // frame as `null` (that is how JSON writes it), and the hall draws the
-      // pointer on its current page while the presenter is talking about
+      // The page gets a NaN check like the samples: without it it goes into
+      // the frame as `null` (that is how JSON writes it), and the hall draws
+      // the pointer on its current page while the presenter is talking about
       // another.
       const page = Number(message.page)
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(page)) return
+      if (!Number.isFinite(page)) return
+      let pts = laserSamples(message.pts)
+      if (pts.length === 0) {
+        /*
+         * A frame without samples is a tab from before them: its one position
+         * becomes one sample, timed by the server's own clock. The hall only
+         * needs the gaps between samples, and those the server measures as
+         * well as anyone.
+         */
+        const x = Number(message.x)
+        const y = Number(message.y)
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return
+        pts = laserSamples([x, y, performance.now()])
+      }
       const shape = message.shape === 'dot' ? 'dot' : 'line'
-      laserTo(sessionId, { page, x, y, shape })
+      const mark = Number.isSafeInteger(message.mark) ? Number(message.mark) : 0
+      laserTo(sessionId, { page, x: pts[pts.length - 3], y: pts[pts.length - 2], shape, mark, pts })
       return
     }
 
@@ -5787,10 +6116,27 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
   // the one dispatch checks on every message.
   if (payload.role === 'host') room.hosts.add(ws)
   owner.set(ws, payload.participantId)
+  /*
+   * Whose staff account this is, read once from what the upgrade verified:
+   * the cookie, or the staff id a handoff key put into a tablet's token. A
+   * second browser of the same teacher is a second participant (each browser
+   * proves only its own token), and this key is how both are told they are
+   * one person; it changes words, never rights.
+   */
+  const staffId = staffFromCookieHeader(credentials?.cookieHeader)?.id ?? payload.staff ?? null
+  const person = staffId ? personKey(sessionId, staffId) : null
+  if (person) persons.set(ws, person)
 
   // Before anything else: the browser gates its own interrupt/restart controls
   // on this, and the token it holds may say something staler than the truth.
-  send(ws, { t: 'role', role: payload.role })
+  send(ws, { t: 'role', role: payload.role, ...(person ? { person } : {}) })
+  /*
+   * The presenter came back on one of their devices: the room stops saying
+   * "offline" right away, before this socket's welcome batch carries the
+   * lecture to it.
+   */
+  if (isPresenter(sessionId, payload.participantId)) presenterBack(sessionId)
+  if (person) tellPersonDevices(sessionId, person)
   send(ws, { t: 'instance:language', language: getLocale() })
   /*
    * And the rules — right here, not only when they change.
@@ -5884,7 +6230,12 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
      * and the lectern laptop), and the second one leaving must not turn off a
      * spot the first is holding still.
      */
-    if (who && isPresenter(sessionId, who) && !current.byParticipant.has(who)) laserOff(sessionId)
+    if (who && isPresenter(sessionId, who) && !current.byParticipant.has(who)) {
+      laserOff(sessionId)
+      presenterLeft(sessionId, who)
+    }
+    const gone = persons.get(ws)
+    if (gone) tellPersonDevices(sessionId, gone)
     if (current.sockets.size === 0) {
       current.unwatch()
       if (current.pingTimer) clearInterval(current.pingTimer)

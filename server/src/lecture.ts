@@ -17,6 +17,7 @@ import {
   MAX_STROKES_PER_PAGE,
   type InkFull,
   type InkStroke,
+  type LectureDevice,
   type LectureState,
 } from '@shared/lecture'
 
@@ -39,6 +40,37 @@ interface Room {
    * number.
    */
   rev: number
+  /** What was done to each page, newest last: what Undo takes back (see `InkAction`). */
+  log: Map<number, InkAction[]>
+}
+
+/**
+ * One thing done to a page's ink, as Undo sees it.
+ *
+ * Undo used to pop the newest stroke and nothing else, while the gesture is
+ * documented as "undo, as in Procreate", that is, the last ACTION. After an
+ * eraser sweep that caught the wrong formula the reflex press took away one
+ * more stroke in front of the hall, and the erased one could never come back.
+ * So the page keeps a short history: a stroke drawn (with its continuation
+ * pieces), a sweep of the eraser, a page wiped.
+ */
+type InkAction =
+  | { kind: 'add'; ids: string[] }
+  | { kind: 'erase'; gesture: string | null; gone: { stroke: InkStroke; at: number }[] }
+  | { kind: 'clear'; gone: InkStroke[] }
+
+/**
+ * How many actions a page remembers. Fifty presses of Undo is far beyond
+ * what anyone does in a row, and the history is only process memory that a
+ * lecture keeps for hours.
+ */
+const LOG_MAX = 50
+
+function remember(room: Room, page: number, action: InkAction): void {
+  const list = room.log.get(page) ?? []
+  list.push(action)
+  if (list.length > LOG_MAX) list.splice(0, list.length - LOG_MAX)
+  room.log.set(page, list)
 }
 
 const rooms = new Map<string, Room>()
@@ -127,10 +159,20 @@ export function startLecture(
   sessionId: string,
   state: Omit<LectureState, 'page' | 'blank' | 'startedAt'>,
 ): LectureState {
+  const now = Date.now()
   const room: Room = {
-    state: { ...state, page: 1, blank: false, startedAt: Date.now() },
+    state: {
+      ...state,
+      page: 1,
+      blank: false,
+      startedAt: now,
+      since: now,
+      actedAt: now,
+      awaySince: null,
+    },
     ink: new Map(),
     rev: ++revisions,
+    log: new Map(),
   }
   rooms.set(sessionId, room)
   return room.state
@@ -155,18 +197,16 @@ export function isPresenter(sessionId: string, participantId: string): boolean {
 /**
  * Hand the console over to another teacher WITHOUT restarting the lecture.
  *
- * The second presenter takes control with the same `lecture:start` on the
- * same file; they have no other message. Without this branch such a press
- * would go to `startLecture`, which sets the room up from scratch: the page
- * goes back to the first, every last bit of ink is erased, the lecture clock
- * starts over. That is, pressing "take the console" in the fortieth minute
- * would erase forty minutes of markup, and do it on the projector, in front
- * of everyone.
+ * The press is `lecture:take` (control.ts), never a start: `startLecture`
+ * sets the room up from scratch, the page goes back to the first, every last
+ * bit of ink is erased, the lecture clock starts over. That is, a take-over
+ * in the fortieth minute would erase forty minutes of markup, and do it on
+ * the projector, in front of everyone.
  *
- * So exactly what "who presents" means is changed: the name, the caption and
- * the pointer color. The page, the ink, the pause and the start mark are not
- * ours to change: they are about the lecture, not about the hands that
- * present it.
+ * So exactly what "who presents" means is changed: the name, the caption,
+ * the pointer color, the device and the presence. The page, the ink, the
+ * pause and the start mark are not ours to change: they are about the
+ * lecture, not about the hands that present it.
  *
  * On THE SAME file: another document is another lecture, and it has to start
  * clean. Returns the new state, or `null` if there is nothing to hand over,
@@ -178,10 +218,65 @@ export function handOver(
   by: string,
   byName: string,
   color: string,
+  hands: { device?: LectureDevice | null; byPerson?: string | null } = {},
 ): LectureState | null {
   const room = rooms.get(sessionId)
   if (!room || room.state.file !== file) return null
-  room.state = { ...room.state, by, byName, color }
+  const now = Date.now()
+  /*
+   * The new hands are here and connected: whoever took the console pressed
+   * a button a moment ago, so the "offline" of the previous holder must not
+   * carry over to them, and "last action" starts at the take.
+   */
+  room.state = {
+    ...room.state,
+    by,
+    byName,
+    color,
+    device: hands.device ?? null,
+    byPerson: hands.byPerson ?? null,
+    since: now,
+    actedAt: now,
+    awaySince: null,
+  }
+  return room.state
+}
+
+/**
+ * The presenter did something the hall saw: note when, and from where.
+ *
+ * Returns the new state only when the DEVICE changed, which is what has to
+ * be broadcast: the time alone travels with the next state anyway, and a
+ * pen stroke is twenty-five frames a second, so a broadcast per frame would
+ * double the lecture's traffic for a number shown in seconds. The device
+ * changes when the same person picks up their other screen (the laptop
+ * started, the iPad turns the pages), and then "presented from the Mac"
+ * would be a wrong sentence until the next take-over.
+ */
+export function noteAct(sessionId: string, device: LectureDevice | null): LectureState | null {
+  const room = rooms.get(sessionId)
+  if (!room) return null
+  const before = room.state.device ?? null
+  const moved =
+    device !== null && (before === null || before.kind !== device.kind || before.console !== device.console)
+  room.state = moved
+    ? { ...room.state, actedAt: Date.now(), device }
+    : { ...room.state, actedAt: Date.now() }
+  return moved ? room.state : null
+}
+
+/**
+ * The presenter lost (or got back) their last connection to the room.
+ *
+ * `since` is when they went, `null` when they are back. Returns the new
+ * state when something changed, for the caller to broadcast. Nothing moves
+ * by itself: the lecture stays theirs, and taking it is a person's press
+ * (control.ts · `lecture:take`), only no longer one that waits for anybody.
+ */
+export function markAway(sessionId: string, since: number | null): LectureState | null {
+  const room = rooms.get(sessionId)
+  if (!room || (room.state.awaySince ?? null) === since) return null
+  room.state = { ...room.state, awaySince: since }
   return room.state
 }
 
@@ -221,45 +316,79 @@ export function setBlank(sessionId: string, blank: boolean): LectureState | null
  * end: the audience has to see the line while it is being drawn, otherwise
  * the pointer on the slide appears a second after it was mentioned out loud.
  *
- * Returns what has to be broadcast: only the NEW points, not the whole stroke.
- * A stroke of a thousand points broadcast on every twentieth is gigabytes of
- * traffic per lecture.
+ * Returns what has to be broadcast: only the NEW points, not the whole stroke,
+ * and `from`, where they start in the stroke. A stroke of a thousand points
+ * broadcast on every twentieth is gigabytes of traffic per lecture.
  *
- * And it tells two kinds of "no" apart. `null`: nothing to add, no lecture,
- * no page, fewer than two points. `full`: a cap was hit, and that has to be
- * SAID: both cases used to return `null`, the server stayed silent, and the
- * console resent the whole stroke eight times and four seconds later removed
- * it from the sheet without a single word. Who exactly says it is up to the
- * caller (control.ts · `case 'ink'`).
+ * APPENDS ARE POSITIONAL. A piece says where it starts (`patch.from`: how many
+ * numbers the console had handed over before it). The console resends what it
+ * has no echo for after half a second, and on a live socket a missing echo
+ * almost always means "late", not "lost": TCP delays, it does not drop. Bare
+ * appends took the late original and the resend both, and the hall's copy got
+ * a straight line back across the slide, up to eight times per stroke. Now
+ * what the server already has is cut off, and a piece that starts beyond the
+ * end (the frame before it died with a socket) is not glued on with a chord
+ * but answered with `need`: "I have this many, send from there". A piece
+ * without `from` is an old tab and is appended as before.
+ *
+ * And it tells the kinds of "no" apart. `null`: nothing to add, no lecture,
+ * no page, fewer than two points, or nothing new. `full`: a cap was hit, and
+ * that has to be SAID: both used to return `null`, the server stayed silent,
+ * and the console resent the whole stroke eight times and four seconds later
+ * removed it from the sheet without a single word. Who exactly says it is up
+ * to the caller (control.ts · `case 'ink'`).
  */
 export type InkAdded =
-  | { stroke: InkStroke; full?: undefined }
-  | { stroke?: undefined; full: InkFull }
+  | { stroke: InkStroke; from: number; full?: undefined; need?: undefined }
+  | { stroke?: undefined; from?: undefined; full: InkFull; need?: undefined }
+  | { stroke?: undefined; from?: undefined; full?: undefined; need: number }
 
 export function addInk(
   sessionId: string,
-  patch: { id: string; page: number; color: string; width: number; points: number[] },
+  patch: {
+    id: string
+    page: number
+    color: string
+    width: number
+    points: number[]
+    from?: number
+    group?: string
+  },
 ): InkAdded | null {
   const room = rooms.get(sessionId)
   if (!room) return null
   // A blank sheet is a page like any other, only with a negative number.
   const page = Math.trunc(patch.page)
   if (page === 0 || !Number.isFinite(page)) return null
-  const points = patch.points.slice(0, MAX_POINTS_PER_MESSAGE).filter(Number.isFinite)
+  let points = patch.points.slice(0, MAX_POINTS_PER_MESSAGE).filter(Number.isFinite)
+  if (points.length % 2 === 1) points = points.slice(0, -1)
   if (points.length < 2) return null
+  // Points travel in pairs, so a position is an even count; anything else is
+  // garbage and is read as "no position" rather than guessed at.
+  const asked = patch.from
+  const even = asked !== undefined && Number.isInteger(asked) && asked >= 0 && asked % 2 === 0
+  const from = even ? asked : undefined
 
   const strokes = room.ink.get(page) ?? []
+  const existing = strokes.find((stroke) => stroke.id === patch.id)
+  if (existing) {
+    const have = existing.points.length
+    if (from !== undefined) {
+      if (from > have) return { need: have }
+      points = points.slice(have - from)
+      // All of it was here already: a resend of a late frame, not news.
+      if (points.length < 2) return null
+    }
+    if (have >= MAX_POINTS_PER_STROKE) return { full: 'stroke-full' }
+    existing.points.push(...points)
+    room.rev = ++revisions
+    return { stroke: { ...existing, points }, from: have }
+  }
+  // The stroke's beginning has not arrived: nothing to append to.
+  if (from !== undefined && from > 0) return { need: 0 }
   if (!room.ink.has(page)) {
     if (room.ink.size >= MAX_INKED_PAGES) return { full: 'too-many-pages' }
     room.ink.set(page, strokes)
-  }
-
-  const existing = strokes.find((stroke) => stroke.id === patch.id)
-  if (existing) {
-    if (existing.points.length >= MAX_POINTS_PER_STROKE) return { full: 'stroke-full' }
-    existing.points.push(...points)
-    room.rev = ++revisions
-    return { stroke: { ...existing, points } }
   }
   if (strokes.length >= MAX_STROKES_PER_PAGE) return { full: 'page-full' }
   const made: InkStroke = {
@@ -269,18 +398,87 @@ export function addInk(
     width: patch.width,
     points: [...points],
   }
+  if (patch.group && patch.group !== patch.id) made.group = patch.group
   strokes.push(made)
+  /*
+   * A continuation joins the action of the piece it continues: one motion of
+   * the pen is one Undo, however many pieces the point ceiling cut it into.
+   */
+  const last = room.log.get(page)?.at(-1)
+  if (made.group && last?.kind === 'add' && last.ids.includes(made.group)) last.ids.push(made.id)
+  else remember(room, page, { kind: 'add', ids: [made.id] })
   room.rev = ++revisions
-  return { stroke: made }
+  return { stroke: made, from: 0 }
 }
 
-/** Remove the last stroke on this page. Returns its name if there was something to remove. */
-export function undoInk(sessionId: string, page: number): string | null {
+/**
+ * What Undo did: strokes taken away, or the page's strokes after something
+ * erased came back.
+ *
+ * Two different answers because they travel differently: a removal is a
+ * `ink:drop` per stroke, and a return is the page whole (`ink:page`), since a
+ * stroke must come back at its old place under the others, not on top.
+ */
+export type InkUndone = { dropped: string[] } | { restored: InkStroke[] }
+
+/**
+ * Take back the last ACTION on this page (see `InkAction`): a stroke with all
+ * its continuation pieces, a whole eraser sweep, a wiped page.
+ *
+ * Without a history (older than fifty actions, or strokes from before the
+ * history existed) it falls back to what Undo always did: the newest stroke,
+ * together with the rest of its motion.
+ */
+export function undoInk(sessionId: string, page: number): InkUndone | null {
   const room = rooms.get(sessionId)
-  const strokes = room?.ink.get(page)
-  if (!room || !strokes || strokes.length === 0) return null
+  if (!room) return null
+  const list = room.log.get(page)
+  while (list && list.length > 0) {
+    const action = list.pop()!
+    const strokes = room.ink.get(page) ?? []
+    if (action.kind === 'add') {
+      const dropped: string[] = []
+      for (const id of [...action.ids].reverse()) {
+        const at = strokes.findIndex((stroke) => stroke.id === id)
+        if (at === -1) continue
+        strokes.splice(at, 1)
+        dropped.push(id)
+      }
+      // Its strokes are already gone (erased and that erase taken back by
+      // hand is impossible, but a retracted palm is): look further back.
+      if (dropped.length === 0) continue
+      room.rev = ++revisions
+      return { dropped }
+    }
+    const present = new Set(strokes.map((stroke) => stroke.id))
+    if (action.kind === 'erase') {
+      // In reverse order of erasing: every index was taken AFTER the ones
+      // before it in the sweep were removed, so this puts the page back
+      // exactly as it was.
+      for (const { stroke, at } of [...action.gone].reverse()) {
+        if (present.has(stroke.id)) continue
+        strokes.splice(Math.min(at, strokes.length), 0, stroke)
+        present.add(stroke.id)
+      }
+    } else {
+      strokes.unshift(...action.gone.filter((stroke) => !present.has(stroke.id)))
+    }
+    room.ink.set(page, strokes)
+    room.rev = ++revisions
+    return { restored: [...strokes] }
+  }
+  const strokes = room.ink.get(page)
+  if (!strokes || strokes.length === 0) return null
+  const newest = strokes.pop()!
+  const dropped = [newest.id]
+  const group = newest.group
+  while (group && strokes.length > 0) {
+    const before = strokes[strokes.length - 1]
+    if (before.id !== group && before.group !== group) break
+    dropped.push(strokes.pop()!.id)
+  }
   room.rev = ++revisions
-  return strokes.pop()?.id ?? null
+  return { dropped }
 }
 
 /**
@@ -290,24 +488,63 @@ export function undoInk(sessionId: string, page: number): string | null {
  * one it touched, and those are different gestures. Returns whether it was
  * there: broadcasting "erase a stroke that does not exist" means making
  * twenty browsers redraw the page for nothing.
+ *
+ * `gesture` names one sweep: its strokes form one action in the history, and
+ * one Undo brings all of them back. `retract` is the console taking back a
+ * stroke it started by mistake (the palm that landed a moment before the
+ * pen): that is not an action of the presenter, and it leaves no trace for
+ * Undo to bring back.
  */
-export function eraseInk(sessionId: string, page: number, id: string): boolean {
+export function eraseInk(
+  sessionId: string,
+  page: number,
+  id: string,
+  how: { gesture?: string; retract?: boolean } = {},
+): boolean {
   const room = rooms.get(sessionId)
   const strokes = room?.ink.get(page)
   if (!room || !strokes) return false
   const at = strokes.findIndex((stroke) => stroke.id === id)
   if (at === -1) return false
-  strokes.splice(at, 1)
+  const [gone] = strokes.splice(at, 1)
+  const list = room.log.get(page) ?? []
+  if (how.retract) {
+    for (const action of list) {
+      if (action.kind === 'add') action.ids = action.ids.filter((known) => known !== id)
+    }
+    room.log.set(
+      page,
+      list.filter((action) => action.kind !== 'add' || action.ids.length > 0),
+    )
+  } else {
+    const last = list.at(-1)
+    const entry = { stroke: gone, at }
+    if (how.gesture && last?.kind === 'erase' && last.gesture === how.gesture) last.gone.push(entry)
+    else remember(room, page, { kind: 'erase', gesture: how.gesture ?? null, gone: [entry] })
+  }
   room.rev = ++revisions
   return true
 }
 
-/** Erase a whole page, or the whole lecture if no page is named. */
+/**
+ * Erase a whole page, or the whole lecture if no page is named.
+ *
+ * A page wiped by hand goes into its history: "erase page" pressed on the
+ * wrong slide is taken back by Undo like any other action. Erasing the whole
+ * lecture forgets the histories too: there is nothing left for them to
+ * describe.
+ */
 export function clearInk(sessionId: string, page?: number): void {
   const room = rooms.get(sessionId)
   if (!room) return
-  if (page === undefined) room.ink.clear()
-  else room.ink.delete(page)
+  if (page === undefined) {
+    room.ink.clear()
+    room.log.clear()
+  } else {
+    const gone = room.ink.get(page) ?? []
+    if (gone.length > 0) remember(room, page, { kind: 'clear', gone: [...gone] })
+    room.ink.delete(page)
+  }
   room.rev = ++revisions
 }
 

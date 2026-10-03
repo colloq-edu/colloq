@@ -25,6 +25,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   LASER_EVERY_MS,
+  LASER_HOLD_MS,
   MAX_INKED_PAGES,
   MAX_STROKES_PER_PAGE,
   inkFullSays,
@@ -109,7 +110,10 @@ test('the refusal words are typed in one file, and that is shared', () => {
   const shared = read('shared/lecture.ts')
   for (const phrase of says) {
     const calls = [...shared.matchAll(/tr\("([^"]+)"\)/g)].map(match => match[1])
-    assert.ok(calls.some(key => translate('ru', key) === phrase), `the phrase "${phrase}" is gone from shared/lecture.ts and its catalogue`)
+    assert.ok(
+      calls.some(key => translate('ru', key) === phrase),
+      `the phrase "${phrase}" is gone from shared/lecture.ts and its catalogue`,
+    )
   }
 
   /*
@@ -151,50 +155,53 @@ test('the console narrows the refusal from the shared type instead of typing the
 
 test('the pointer tick is one number for both ends', () => {
   const ink = code(read('web/src/components/lecture/InkLayer.svelte'))
-  assert.doesNotMatch(ink, /const\s+LASER_EVERY_MS\s*=/, 'the console has its own copy of the tick again')
+  assert.doesNotMatch(
+    ink,
+    /const\s+LASER_EVERY_MS\s*=/,
+    'the console has its own copy of the tick again',
+  )
   assert.match(
     ink,
     /import \{[^}]*\bLASER_EVERY_MS\b[^}]*\} from '@shared\/lecture'/,
     'the ink layer does not take the pointer tick from shared',
   )
 
+  /*
+   * The server's window is derived from the same number in shared
+   * (`LASER_HOLD_MS`), a little shorter than the console's tick so that a
+   * frame sent on time goes straight through. A copy of its own on the server
+   * would drift apart from the console's at the first edit.
+   */
   const control = code(read('server/src/control.ts'))
-  const own = /const\s+LASER_EVERY_MS\s*=\s*(\d+)/.exec(control)
-  if (own) {
-    /*
-     * The server copy is still there — control.ts is edited by its owner.
-     * While it stays, this test holds the numbers: a server holding the dot
-     * longer than the console adds to every frame a delay the host did not
-     * ask for, and a shorter one pays a full broadcast round for every sample.
-     */
-    assert.equal(Number(own[1]), LASER_EVERY_MS, 'the server holds the pointer back with the wrong window')
-  } else {
-    assert.match(
-      control,
-      /import \{[^}]*\bLASER_EVERY_MS\b[^}]*\} from '@shared\/lecture'/,
-      'the server pointer tick is neither from shared nor declared next to it',
-    )
-  }
+  assert.doesNotMatch(
+    control,
+    /const\s+LASER_(EVERY|HOLD)_MS\s*=/,
+    'the server declares its own pointer window',
+  )
+  assert.match(
+    control,
+    /import \{[^}]*\bLASER_HOLD_MS\b[^}]*\} from '@shared\/lecture'/,
+    'the server pointer window is not from shared',
+  )
+  assert.ok(
+    LASER_HOLD_MS < LASER_EVERY_MS,
+    'the server window is not shorter than the console tick',
+  )
 })
 
-test('the spring stiffness is derived from the tick that sits in shared', () => {
-  const source = read('web/src/components/lecture/InkLayer.svelte')
-  const spring = /Stiffness goes BY THE SAMPLE SOURCE[\s\S]*?const SPRING_WIRE = (\d+)/.exec(source)
-  assert.ok(spring, 'the SPRING_WIRE derivation is gone from the ink layer')
+test('the hall plays the pointer back on a timeline, not on a spring', () => {
   /*
-   * The 4 % remainder is reached in about 3.2/k seconds, so k ≈ 3.2 / tick:
-   * the head arrives exactly as the next sample does and does not stand still
-   * between them. The number is written out by hand — all the more reason for
-   * it to stay derived from THIS tick.
+   * The spring is gone from both ends: on the console it lagged the Pencil and
+   * rounded every corner, in the hall it chased fifteen points a second and
+   * drew its own polygon instead of the presenter's circle. The delay the
+   * hall plays the samples with is measured in ticks, so it follows the tick.
    */
-  const wanted = Math.round(3.2 / (LASER_EVERY_MS / 1000))
-  assert.ok(
-    Math.abs(Number(spring[1]) - wanted) <= 1,
-    `SPRING_WIRE = ${spring[1]} with a tick of ${LASER_EVERY_MS} ms: expected about ${wanted}`,
-  )
-  // And the explanation counts from it too, not from a number moved long ago.
-  assert.ok(
-    spring[0].includes(`${LASER_EVERY_MS} ms`),
-    'the stiffness derivation explains itself with a different tick',
+  const ink = code(read('web/src/components/lecture/InkLayer.svelte'))
+  assert.doesNotMatch(ink, /SPRING_(HAND|WIRE)/, 'the pointer is led by a spring again')
+  const laser = code(read('web/src/components/lecture/laser.ts'))
+  assert.match(
+    laser,
+    /LASER_DELAY_MS = LASER_EVERY_MS \* 2 \+ \d+/,
+    'the playback delay no longer follows the tick',
   )
 })

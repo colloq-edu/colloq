@@ -343,6 +343,21 @@ export const api = {
     `/api/sessions/${id}/file?path=${encodeURIComponent(path)}`,
 
   /**
+   * Speaker notes for many pages at once: an imported lecture script.
+   *
+   * HTTP, not the control socket: fifty slides of talk do not fit a socket
+   * frame, and an import in pieces could stop halfway (routes/notes.ts). All
+   * of it is written or none of it; the tabs with these notes open get the
+   * fresh map over their socket.
+   */
+  importNotes: (id: string, token: string, file: string, notes: Record<number, string>) =>
+    request<{ file: string; notes: Record<number, string> }>(`/api/sessions/${id}/notes`, {
+      method: 'PUT',
+      body: JSON.stringify({ file, notes }),
+      headers: { authorization: `Bearer ${token}` },
+    }),
+
+  /**
    * `mode` is what the server actually enforces; `enabled` is `mode !== 'off'`.
    *
    * The two ceilings are the instance's, before the room's rules: the rules

@@ -349,10 +349,13 @@
  *  · the sheet box with its margins — `touch-action: none` on the WHOLE of
  *    it, not only the canvas: strokes start in the margin, and the palm lies
  *    in the margin;
- *  · the notes field — the only place where selecting text makes sense; it
+ *  · the notes FIELD — the only place where selecting text makes sense; it
  *    takes `text` back, because WebKit's ban on an ancestor is inherited by
  *    descendants, and without this line a note could not even be corrected
- *    with the caret.
+ *    with the caret. Only the field: the notes READER (NotesReader) lies
+ *    where a right hand's palm rests while writing on the slide, and a long
+ *    touch on selectable text there opened a selection with a loupe over the
+ *    formula being written.
  *
  * Only under `[data-pult]`: the same classes do not occur outside the
  * console, but the address flag is the only thing that guarantees these bans
@@ -371,7 +374,7 @@
   touch-action: none;
 }
 
-[data-pult] .pult-prompt {
+[data-pult] textarea.pult-prompt {
   user-select: text;
   -webkit-user-select: text;
 }

@@ -197,10 +197,15 @@ test('a laser pointer without a page does not go out to the audience', () => {
   )
 
   dispatch(seat.ws, id, host, { t: 'laser', page: 3, x: 0.5, y: 0.5 })
+  const frames = seat.heard.filter((frame) => frame.t === 'laser')
+  assert.equal(frames.length, 1)
+  const at = frames[0].t === 'laser' ? frames[0].at : null
   assert.deepEqual(
-    seat.heard.filter((frame) => frame.t === 'laser'),
-    [{ t: 'laser', at: { page: 3, x: 0.5, y: 0.5, shape: 'line' } }],
+    at && { page: at.page, x: at.x, y: at.y, shape: at.shape },
+    { page: 3, x: 0.5, y: 0.5, shape: 'line' },
   )
+  // A frame from a tab without samples still travels as one sample, timed by the server.
+  assert.deepEqual(at?.pts?.slice(0, 2), [0.5, 0.5])
 
   stopLecture(id)
   closeControlRoom(id)

@@ -137,7 +137,9 @@ process.env.JUPYTER_URL = 'http://127.0.0.1:1'
 process.env.NODE_ENV = 'test'
 process.env.KERNEL_BACKEND = 'test'
 process.env.KERNEL_ISOLATION = 'off'
-process.env.STATIC_DIR = path.resolve('web/dist')
+// A build elsewhere can be checked without touching web/dist: several
+// agents and the owner's own `make dev` share one tree.
+process.env.STATIC_DIR = process.env.CHECK_STATIC_DIR ?? path.resolve('web/dist')
 process.env.OPENAI_API_KEY = 'pencil-check-not-a-real-key'
 process.env.OPENAI_BASE_URL = 'http://127.0.0.1:1/v1'
 
@@ -284,8 +286,11 @@ async function enter(page: Tab, name: string): Promise<void> {
       `set.call(i,${JSON.stringify(name)}); i.dispatchEvent(new Event('input',{bubbles:true})); return 1`,
   )
   await wait(300)
+  // The join button speaks the room's language: "Войти на занятие" on a Russian
+  // instance, "Join…" on an English one. Matching only /join/ left the stand at
+  // the door after the strings were translated.
   await page.js(
-    "const b=[...document.querySelectorAll('button')].find(x=>/join/i.test(x.textContent||'')); b&&b.click(); return 1",
+    "const b=[...document.querySelectorAll('button')].find(x=>/join|войти/i.test(x.textContent||'')); b&&b.click(); return 1",
   )
   await wait(3000)
 }
@@ -803,8 +808,17 @@ const pultBands = (m: Measure) => m.wet.bands.map((w, i) => w + m.dry.bands[i])
 
 /** Wipe the ink for the whole room and wait until it disappears everywhere. */
 async function clean(): Promise<void> {
+  /*
+   * "Erase" on the laptop bar asks first ("Стереть всё?") and erases on the
+   * second press. With one press the sheet was never wiped, and every
+   * scenario after the first measured the ink of the ones before it.
+   */
   await host.js(
     `const b=[...document.querySelectorAll('button')].find(x=>(x.textContent||'').trim()==='Стереть'); b&&b.click(); return 1`,
+  )
+  await wait(80)
+  await host.js(
+    `const b=[...document.querySelectorAll('button')].find(x=>(x.textContent||'').trim()==='Стереть всё?'); b&&b.click(); return 1`,
   )
   const empty = (cls: string) => `${inkExpr(cls, [])}.all <= 0`
   await until(student, empty('ink-dry'), 'the ink was wiped for the student', 8000)
@@ -1344,7 +1358,9 @@ if (RAZBOR) {
      * pointing, and not a single sign of a breakage.
      */
     await pult.js(press(PULT.laser))
-    await wait(250)
+    // The pen goes back into its case: a finger leads the pointer only after
+    // the pen has been away from the glass for a moment (InkLayer · mine).
+    await wait(2800)
     const g = await geometry()
     const path = Array.from({ length: 11 }, (_, i) => onCanvas(g, 0.75 - 0.45 * (i / 10), 0.5))
     const headX = `const h=window.__inkLat&&window.__inkLat.head;return h?Math.round(h.x):-1`
@@ -1497,6 +1513,124 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
     `colloq.pult.finger=${fingerKey}`,
   )
   await clean()
+
+  /* ------------------------------------- a swipe along the rail turns pages */
+
+  /*
+   * A real CDP touch along the rail's LONG side: up the side rail, left
+   * along the bottom one is forward, the opposite is back. It used to be
+   * measured across the rail (72 px wide on the side, 64 px tall at the
+   * bottom) with a 64 px threshold, so the gesture fired only edge to edge in
+   * landscape and never in portrait. The finger travels 120 px and lifts
+   * inside the rail.
+   */
+  {
+    const rail = (await geometry()).rail
+    const swipeRail = async (dir: 1 | -1): Promise<void> => {
+      if (!rail) return
+      const across = rail.width > rail.height
+      const from = across
+        ? { x: rail.left + rail.width * 0.55, y: rail.top + rail.height / 2 }
+        : { x: rail.left + rail.width / 2, y: rail.top + rail.height * 0.55 }
+      const point = (i: number) => {
+        const d = (120 * i * dir) / 8
+        return across ? { x: from.x - d, y: from.y } : { x: from.x, y: from.y - d }
+      }
+      await pult.send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [{ ...from, id: 961, radiusX: 10, radiusY: 10 }],
+      })
+      for (let i = 1; i <= 8; i += 1) {
+        await wait(20)
+        await pult.send('Input.dispatchTouchEvent', {
+          type: 'touchMove',
+          touchPoints: [{ ...point(i), id: 961, radiusX: 10, radiusY: 10 }],
+        })
+      }
+      await pult.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    }
+    const before = (await measure()).hall
+    await swipeRail(1)
+    const forward = await until(student, `${hallExpr} === '2'`, 'the rail swipe turned forward', 6000)
+    const gaugeFwd = (await measure()).gauge
+    await swipeRail(-1)
+    const back = await until(student, `${hallExpr} === '1'`, 'the rail swipe turned back', 6000)
+    check(
+      rail !== null && before === '1' && forward && back,
+      'a swipe along the rail turns the page forward and back',
+      `rail ${rail ? `${Math.round(rail.width)}×${Math.round(rail.height)}` : '—'} · hall ${before} → ${forward ? '2' : 'stayed'} (gauge ${gaugeFwd || '—'}) → ${back ? '1' : 'stayed'}`,
+    )
+    if (!back) {
+      await pult.js(press(PULT.prev))
+      await until(student, `${hallExpr} === '1'`, 'the hall is back on the first', 8000)
+    }
+    // The click a moved finger's lift may produce is swallowed for half a
+    // second; a scripted `.click()` has no press of its own to clear that.
+    await wait(700)
+  }
+
+  /* ------------------------------------------ "next" is always somewhere */
+
+  /*
+   * "Next": in landscape the thumbnail in the reading strip under the slide
+   * (with the notes column open or folded); in portrait the dock's footer
+   * says it in words, the next slide's title (Paper N2), and there is no
+   * picture to demand. Visible, inside the window, off the rail, and with
+   * nothing pressable in it.
+   */
+  {
+    const nextBox = () =>
+      pult.js(
+        `const n=document.querySelector('[data-pult-next]');if(!n) return null;const r=n.getBoundingClientRect();` +
+          `const over=e=>{if(!e) return false;const o=e.getBoundingClientRect();return r.left<o.right&&r.right>o.left&&r.top<o.bottom&&r.bottom>o.top};` +
+          `const fs=document.querySelector('.pult-sheet [aria-label="Во весь экран"]');` +
+          `return {w:Math.round(r.width),h:Math.round(r.height),inside:r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight,` +
+          `rail:over(document.querySelector('.pult-rail')),fs:over(fs),pe:getComputedStyle(n).pointerEvents,canvas:!!n.querySelector('canvas')}`,
+      ) as Promise<{
+        w: number
+        h: number
+        inside: boolean
+        rail: boolean
+        fs: boolean
+        pe: string
+        canvas: boolean
+      } | null>
+    const seen = (b: Awaited<ReturnType<typeof nextBox>>) =>
+      b
+        ? `${b.w}×${b.h} inside ${b.inside} · over the rail ${b.rail} · over "Fullscreen" ${b.fs} · pointer-events ${b.pe}`
+        : 'none'
+    const ok = (b: Awaited<ReturnType<typeof nextBox>>) =>
+      !!b && b.w >= 100 && b.inside && !b.rail && !b.fs && (H > W ? true : b.pe === 'none' && b.canvas)
+    if (W > H) await until(pult, `!!document.querySelector('[data-pult-next] canvas')`, 'the next thumbnail', 6000)
+    else await until(pult, `!!document.querySelector('[data-pult-next]')`, 'the next footer', 6000)
+    const plain = await nextBox()
+    check(ok(plain), '"next" is on the console', seen(plain))
+    if (W > H) {
+      const notesKey = () =>
+        pult.js(`return document.querySelector('[aria-label=${JSON.stringify(PULT.notes)}]')?.getAttribute('aria-pressed')`)
+      /** Bring the notes sheet to a state by its key, not by counting presses. */
+      const notesTo = async (open: boolean): Promise<boolean> => {
+        for (let i = 0; i < 3; i += 1) {
+          if ((await notesKey()) === String(open)) return true
+          await pult.js(press(PULT.notes))
+          await wait(400)
+        }
+        return (await notesKey()) === String(open)
+      }
+      const wasOpen = (await notesKey()) === 'true'
+      const opened = await notesTo(true)
+      await wait(300)
+      const withNotes = await nextBox()
+      const state = await notesKey()
+      // Leave the notes as they were: the scenarios below write on the lower bands.
+      await notesTo(wasOpen)
+      check(
+        opened && state === 'true' && ok(withNotes),
+        '"next" stays with the notes sheet open',
+        `notes ${state} · ${seen(withNotes)}`,
+      )
+    }
+  }
 
   /* ---------- 1. a two-contact palm 700 ms before the pen, three strokes */
 
@@ -2007,7 +2141,7 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
         `const notes=q('[data-pult-notes] textarea')||q('textarea');` +
         `return {rootSelect:g(q('.pult-root'),'userSelect'),sheetTouch:g(q('.pult-sheet'),'touchAction'),` +
         `inputTouch:g(q('.ink-input'),'touchAction'),inputSelect:g(q('.ink-input'),'userSelect'),` +
-        `notesSelect:notes?g(notes,'userSelect'):'no field'}`,
+        `notesSelect:notes?g(notes,'userSelect'):'no field',readerSelect:g(q('.pult-reader'),'userSelect')}`,
     )) as Record<string, string>
     check(
       held.selection === 0 && held.ranges === 0,
@@ -2022,10 +2156,16 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
       '10. the root, the sheet and the input layer are closed to selection and scrolling',
       `.pult-root user-select=${css.rootSelect} · .pult-sheet touch-action=${css.sheetTouch} · .ink-input touch-action=${css.inputTouch} user-select=${css.inputSelect}`,
     )
+    /*
+     * And the notes READER selects nothing: it lies where a right hand's palm
+     * rests while writing on the slide, and a long touch on selectable text
+     * there opens WebKit's selection with a loupe over the formula.
+     */
     check(
-      css.notesSelect === 'text' || css.notesSelect === 'auto' || css.notesSelect === 'no field',
+      (css.notesSelect === 'text' || css.notesSelect === 'auto' || css.notesSelect === 'no field') &&
+        (css.readerSelect === 'none' || css.readerSelect === 'missing'),
       '10. the notes field is the only place where text gets selected',
-      `textarea user-select=${css.notesSelect}`,
+      `textarea user-select=${css.notesSelect} · reader user-select=${css.readerSelect}`,
     )
     await clean()
   }
@@ -2036,7 +2176,17 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
     const g = await geometry()
     const portrait = H > W
     const railW = g.rail ? (portrait ? 0 : g.rail.width) : 0
-    const needWidth = 0.8 * (W - railW - 24)
+    /*
+     * The width the sheet must take is what the rail AND the notes column
+     * leave: in landscape the notes are a column beside the slide (open by
+     * default), and the slide refits to the rest instead of being covered.
+     */
+    const columnW = portrait
+      ? 0
+      : ((await pult.js(
+          `const n=document.querySelector('aside[data-pult-notes]');return n?n.getBoundingClientRect().width:0`,
+        )) as number)
+    const needWidth = 0.8 * (W - railW - columnW - 24)
     const share = Math.round(((g.canvas.width * g.canvas.height) / (W * H)) * 100)
     const railPlace = !g.rail
       ? 'no rail'
@@ -2351,6 +2501,79 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
     )
     await clean()
   }
+}
+
+/* ------------------------------------------- the rail fits every window */
+
+/*
+ * THE RAIL FITS, AND "NEXT" IS NEVER CUT OFF.
+ *
+ * Full screen is only on request, so a tablet in ordinary Safari loses its
+ * toolbars' height: 1180×746 and 1180×706 on an 11", 1133×744 on an iPad
+ * mini even in full screen, 744 and 678 wide in portrait and Split View. The
+ * rail used to need 816 px and cut "Next" in all of them. Every rail key,
+ * and both turn keys above all, must lie inside the window. The prompter is
+ * checked too: its rail and its reader, and no ink layer under them.
+ */
+if (!RAZBOR && !sizeArg) {
+  const railOutside =
+    `(()=>{const out=[];for(const b of document.querySelectorAll('.pult-rail button')){const r=b.getBoundingClientRect();` +
+    `if(r.width===0) continue;if(r.left<-0.5||r.top<-0.5||r.right>innerWidth+0.5||r.bottom>innerHeight+0.5)` +
+    `out.push((b.getAttribute('aria-label')||b.textContent.trim()).slice(0,20)+'@'+Math.round(r.left)+','+Math.round(r.top))}return out})()`
+  const turnInside =
+    `[${JSON.stringify(PULT.prev)},${JSON.stringify(PULT.next)}].every(n=>{const b=document.querySelector('.pult-rail [aria-label='+JSON.stringify(n)+']');` +
+    `if(!b) return false;const r=b.getBoundingClientRect();return r.top>=0&&r.left>=0&&r.bottom<=innerHeight+0.5&&r.right<=innerWidth+0.5&&r.height>=40})`
+  for (const [W, H] of [
+    [1180, 746],
+    [1180, 706],
+    [1133, 744],
+    [1133, 672],
+    [744, 1133],
+    [678, 1024],
+  ] as const) {
+    where = `[${W}×${H}]`
+    const opened = await open(W, H)
+    const outside = (await pult.js(`return ${railOutside}`)) as string[]
+    const turn = (await pult.js(`return ${turnInside}`)) as boolean
+    check(
+      opened && outside.length === 0 && turn,
+      'the rail fits the window, "Back" and "Next" whole',
+      outside.length ? `outside: ${outside.join(' · ')}` : `all keys inside · turn keys ${turn ? 'whole' : 'cut'}`,
+    )
+    if (SHOT) {
+      const shot = await pult.send('Page.captureScreenshot', { format: 'png' })
+      writeFileSync(path.resolve(`pencil-check-rail-${W}x${H}.png`), Buffer.from(shot.result.data as string, 'base64'))
+    }
+  }
+  for (const [W, H] of [
+    [1180, 820],
+    [834, 1194],
+  ] as const) {
+    where = `[${W}×${H} prompter]`
+    await tablet(W, H)
+    await pult.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/s/${ROOM}/pult` })
+    await until(pult, `!!document.querySelector('.pult-root')`, 'the console root')
+    await pult.js(`localStorage.setItem('colloq.pult.view','tele'); return 1`)
+    await pult.send('Page.reload')
+    const drawn = await until(pult, `!!document.querySelector('.pult-reader')`, 'the prompter drew the notes', 15000)
+    await wait(600)
+    const state = (await pult.js(
+      `const r=document.querySelector('.pult-reader')?.getBoundingClientRect();` +
+        `return {reader:r?Math.round(r.width)+'x'+Math.round(r.height):'none',ink:!!document.querySelector('.ink-input'),outside:${railOutside},turn:${turnInside},` +
+        `font:getComputedStyle(document.querySelector('.pult-prose')||document.body).fontSize}`,
+    )) as { reader: string; ink: boolean; outside: string[]; turn: boolean; font: string }
+    check(
+      drawn && !state.ink && state.outside.length === 0 && state.turn && parseFloat(state.font) >= 22,
+      'the prompter: notes over the screen, no ink, the rail whole',
+      `reader ${state.reader} at ${state.font} · ink layer ${state.ink ? 'present' : 'none'} · outside ${state.outside.join(' · ') || 'none'}`,
+    )
+    if (SHOT) {
+      const shot = await pult.send('Page.captureScreenshot', { format: 'png' })
+      writeFileSync(path.resolve(`pencil-check-prompter-${W}x${H}.png`), Buffer.from(shot.result.data as string, 'base64'))
+    }
+    await pult.js(`localStorage.setItem('colloq.pult.view','slide'); return 1`)
+  }
+  where = ''
 }
 
 /* ------------------------------------------------------------- report */

@@ -36,7 +36,10 @@
   import TerminalDrawer from '@/components/panels/TerminalDrawer.svelte'
   import PdfReader from '@/components/reader/PdfReader.svelte'
   import LectureView from '@/components/lecture/LectureView.svelte'
-  import { fullscreenPossible, goFullscreen, leaveFullscreen } from '@/lib/fullscreen'
+  import NotesEditor from '@/components/lecture/NotesEditor.svelte'
+  import { closeNotesEditor, notesEditor } from '@/lib/notes-editor.svelte'
+  import { ESCAPE_AGAIN_MS, isClickerReload } from '@/components/lecture/remote'
+  import { fullscreenNow, fullscreenPossible, goFullscreen, leaveFullscreen } from '@/lib/fullscreen'
   import { keepAwake } from '@/lib/wakelock'
   import ImageView from '@/components/reader/ImageView.svelte'
   import ThemeSwitch from '@/components/ui/ThemeSwitch.svelte'
@@ -141,6 +144,12 @@
   }: Props = $props()
 
   const projection = $derived(mode === 'screen')
+  /*
+   * The notes editor's open state lives in a module, not in this screen:
+   * leaving the room must close it, or the next room entered in this tab
+   * would open the editor on this room's document.
+   */
+  $effect(() => () => closeNotesEditor())
   const pult = $derived(mode === 'pult')
   /**
    * The council console is a separate window, and the room is not drawn under
@@ -909,6 +918,14 @@
    */
   const lecture = $derived(session.lecture)
   const leading = $derived(lecture !== null && lecture.by === session.me.id)
+  /*
+   * The server names the presenter's device by the connection that acts,
+   * so it has to know when this tab is the console rather than the room:
+   * "presented from the iPad, console" is what a second browser reads.
+   */
+  $effect(() => {
+    session.setConsole(pult)
+  })
   const lectureHere = $derived(lecture !== null && lecture.file === activePath)
 
   /**
@@ -962,27 +979,86 @@
     onnavigate?.(url)
   }
 
+  /** A deliberate exit is under way: the reload guard below stands aside. */
+  let leavingProjection = false
+
   function fromProjection(): void {
     void leaveFullscreen()
+    leavingProjection = true
     // A window opened from the room closes; a tab that arrived by the address
     // goes back to the room.
     if (window.opener) window.close()
-    if (!window.closed) onnavigate?.(`/s/${session.session.id}`)
+    if (!window.closed) {
+      leavingProjection = false
+      onnavigate?.(`/s/${session.session.id}`)
+    }
   }
 
   /*
-   * Escape leaves the projection. On the first press the browser closes
-   * fullscreen itself and does not pass the event to the page — so on the
-   * projector Escape is pressed twice, and that is exactly what is needed: a
-   * stray press does not kill the lecture.
+   * THE PROJECTION'S KEYBOARD IS A CLICKER'S KEYBOARD.
+   *
+   * A presentation clicker plugged into the laptop at the projector has a
+   * "slideshow" key that sends F5 and Escape in turn (see lecture/remote.ts).
+   * F5 reloaded the projection in front of the hall, and the next press,
+   * Escape, reached the page (the window was no longer full screen after
+   * the reload) and closed it: the projection vanished mid-lecture.
+   *
+   * So F5 means full screen here, as it does in a slideshow; the key press
+   * is the gesture the browser wants. Escape now takes TWO presses within a
+   * second and a half, and the first one says so in the corner: a single
+   * stray press, or the clicker's alternating key, never closes the window.
+   * While the window is full screen Escape is the browser's (it leaves full
+   * screen and, in most browsers, never reaches the page), and it is
+   * ignored here even if it does arrive.
    */
+  let escapeOnce = $state(false)
   $effect(() => {
     if (!projection) return
-    const onEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') fromProjection()
+    let timer = 0
+    const onKey = (event: KeyboardEvent) => {
+      if (isClickerReload(event)) {
+        event.preventDefault()
+        if (fullscreenPossible() && !fullscreenNow()) void goFullscreen(document.documentElement)
+        return
+      }
+      if (event.key !== 'Escape' || fullscreenNow()) return
+      window.clearTimeout(timer)
+      if (escapeOnce) {
+        escapeOnce = false
+        fromProjection()
+        return
+      }
+      escapeOnce = true
+      timer = window.setTimeout(() => (escapeOnce = false), ESCAPE_AGAIN_MS)
     }
-    window.addEventListener('keydown', onEscape)
-    return () => window.removeEventListener('keydown', onEscape)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('keydown', onKey)
+      escapeOnce = false
+    }
+  })
+
+  /*
+   * A reload of the projection mid-lecture asks first.
+   *
+   * Ctrl/Cmd+R, the toolbar button or a stray F5 the page did not see (focus
+   * in the address bar) drop full screen, and getting it back takes a click
+   * inside that window on the far screen. The browser's own "leave the
+   * page?" question is the only guard that covers all of them. Only while a
+   * lecture runs: the waiting screen has nothing to lose. A deliberate exit
+   * (`fromProjection`) is not asked about twice.
+   */
+  const lecturing = $derived(lecture !== null)
+  $effect(() => {
+    if (!projection || !lecturing) return
+    const hold = (event: BeforeUnloadEvent) => {
+      if (leavingProjection) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', hold)
+    return () => window.removeEventListener('beforeunload', hold)
   })
 
   /* -------------------------------------------------------------- console */
@@ -2059,6 +2135,15 @@
         <span class="text-2xs font-bold uppercase tracking-label">{tr('room.ui.890')}</span>
       </div>
     {/if}
+    {#if escapeOnce}
+      <!-- The first Escape: one line, gone in a second and a half. -->
+      <div
+        class="pointer-events-none absolute bottom-[max(1.5rem,env(safe-area-inset-bottom))] left-1/2 z-[110] -translate-x-1/2 text-2xs font-bold uppercase tracking-label text-white/60"
+        role="status"
+      >
+        {tr('room.lecture.escapeAgain')}
+      </div>
+    {/if}
     {#if lecture}
       <LectureView {lecture} role="projection" onleave={fromProjection} />
     {:else}
@@ -2887,7 +2972,7 @@
         {#if lecture && lectureHere && !soloRead}
           <LectureView
             {lecture}
-            role={leading ? 'presenter' : 'audience'}
+            role={leading ? 'presenter' : session.me.role === 'host' ? 'cohost' : 'audience'}
             onproject={toProjection}
             onsolo={leading ? undefined : () => (soloRead = true)}
           />
@@ -3133,6 +3218,19 @@
   {#await paletteView() then Palette}
     <Palette items={paletteList} onclose={() => (paletteOpen = false)} />
   {/await}
+{/if}
+
+{#if notesEditor() && !projection && session.me.role === 'host'}
+  <!--
+    The speaker-notes editor: over the whole room, opened from the PDF reader
+    or the lecture bar (lib/notes-editor.svelte.ts). Keyed by the document: a
+    different deck is a different editor, with its own drafts and its own
+    pages, not the previous one's state under a new name.
+  -->
+  {@const editing = notesEditor()!}
+  {#key editing.file}
+    <NotesEditor file={editing.file} page={editing.page} onclose={closeNotesEditor} />
+  {/key}
 {/if}
 
 {#if refusal && refusalShown && !projection}

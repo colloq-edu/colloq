@@ -54,6 +54,7 @@ import { plotlyRoutes } from './routes/plotly.js'
 import { fileRoutes } from './routes/files.js'
 import { historyRoutes } from './routes/history.js'
 import { activityRoutes } from './routes/activity.js'
+import { noteRoutes } from './routes/notes.js'
 import { sessionRoutes } from './routes/sessions.js'
 import { instanceSettingsRoutes } from './routes/instance-settings.js'
 import { instanceResourcesRoutes } from './routes/instance-resources.js'
@@ -614,6 +615,7 @@ app.use(sessionRoutes())
 app.use(banRoutes())
 app.use(historyRoutes())
 app.use(activityRoutes())
+app.use(noteRoutes())
 app.use(fileRoutes())
 // Output images live next to the room, not in its document (server/blobs.ts).
 app.use(blobRoutes())
