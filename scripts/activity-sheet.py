@@ -6,6 +6,7 @@ Seminar activity into a Google Sheet, one row per participant.
     python3 scripts/activity-sheet.py y84w9hpc --replace    # recount: replace the room's rows
     python3 scripts/activity-sheet.py --all                 # every room with activity not yet in the sheet
     python3 scripts/activity-sheet.py y84w9hpc --dry        # only show, write nothing
+    python3 scripts/activity-sheet.py y84w9hpc --after-class  # also count visits after the class ended
     python3 scripts/activity-sheet.py --create "Colloq · activity"   # create the spreadsheet
 
 Where to write: ACTIVITY_SHEET_ID from .env (or the environment), or --sheet <id>.
@@ -25,6 +26,11 @@ What is counted per person (all their sockets and devices under one name):
   successful / with an error / cancelled, and the compute seconds of the
   successful ones; questions to the Oracle; answers in the Council and how many
   of them are correct.
+
+Only the class itself is counted: everything after «Завершить занятие» (the
+room's finished_at) is left out, so students who come back later to read the
+finished room do not add minutes, and a recount weeks later gives the same row
+as the count made right after the class. --after-class counts everything.
 """
 
 from __future__ import annotations
@@ -134,10 +140,15 @@ def local(ms: int | None, fmt: str) -> str:
     return datetime.fromtimestamp(ms / 1000).strftime(fmt) if ms else ""
 
 
-def room_rows(con: sqlite3.Connection, room: str) -> list[list]:
+def room_rows(con: sqlite3.Connection, room: str, after_class: bool = False) -> list[list]:
     session = con.execute("SELECT * FROM sessions WHERE id = ?", (room,)).fetchone()
     if session is None:
         die(f"room {room} is not in the database")
+    # The end of the class; None while it runs, or when --after-class asks for everything.
+    until = None if after_class else session["finished_at"]
+
+    def clip(start: int, end: int) -> tuple[int, int]:
+        return (start, end if until is None else min(end, until))
     people = con.execute(
         "SELECT id, name, role, last_seen FROM participants WHERE session_id = ?", (room,)
     ).fetchall()
@@ -186,16 +197,21 @@ def room_rows(con: sqlite3.Connection, room: str) -> list[list]:
         d = json.loads(e["details"] or "{}")
         kind = e["kind"]
         at = e["created_at"]
+        if until is not None and at > until and kind != "presence.left":
+            continue
         if kind == "presence.joined":
             s["joins"] += 1
             s["first"] = at if s["first"] is None else min(s["first"], at)
             open_joins[e["actor_id"]].append(at)
         elif kind == "presence.left":
             dur = int(d.get("durationMs") or 0)
-            s["intervals"].append((at - dur, at))
-            s["last"] = at if s["last"] is None else max(s["last"], at)
+            if until is not None and at - dur >= until:
+                continue  # a visit that began after the class ended; its join was skipped too
             if open_joins[e["actor_id"]]:
                 open_joins[e["actor_id"]].pop()
+            start, end = clip(at - dur, at)
+            s["intervals"].append((start, end))
+            s["last"] = end if s["last"] is None else max(s["last"], end)
         elif kind == "notebook.contributed":
             s["edits"] += int(d.get("count") or 1)
         elif kind == "execution.finished":
@@ -213,8 +229,11 @@ def room_rows(con: sqlite3.Connection, room: str) -> list[list]:
             continue
         s = stat[p["name"]]
         for at in joins:
-            s["intervals"].append((at, p["last_seen"]))
-            s["last"] = p["last_seen"] if s["last"] is None else max(s["last"], p["last_seen"])
+            start, end = clip(at, p["last_seen"])
+            if end <= start:
+                continue
+            s["intervals"].append((start, end))
+            s["last"] = end if s["last"] is None else max(s["last"], end)
 
     for row in con.execute(
         """SELECT participant_id, submitted_at, correct FROM council_attempts
@@ -222,7 +241,7 @@ def room_rows(con: sqlite3.Connection, room: str) -> list[list]:
         (room,),
     ):
         p = by_id.get(row["participant_id"])
-        if not p:
+        if not p or (until is not None and row["submitted_at"] > until):
             continue
         stat[p["name"]]["council"] += 1
         if row["correct"]:
@@ -231,8 +250,11 @@ def room_rows(con: sqlite3.Connection, room: str) -> list[list]:
     date = local(session["created_at"], "%Y-%m-%d")
     out = []
     for name, s in stat.items():
-        role = "host" if "host" in s["roles"] else "participant"
         runs = s["runs"]
+        # Someone who only came after the class (or never came) was not at it.
+        if not s["intervals"] and not s["edits"] and not runs and not s["oracle"] and not s["council"]:
+            continue
+        role = "host" if "host" in s["roles"] else "participant"
         out.append(
             [
                 date,
@@ -326,9 +348,17 @@ def create_spreadsheet(title: str) -> str:
 
 
 def existing_rows(sid: str) -> list[list]:
+    # Unformatted, so numbers come back as numbers. The formatted default
+    # returns "79,3" and "5" as text, and a --replace writes the kept rows
+    # back RAW: they stayed text, aligned left, and the summary's sums
+    # skipped them.
     got = gws(
         "sheets", "spreadsheets", "values", "get",
-        params={"spreadsheetId": sid, "range": f"{SHEET_ROWS}!A2:{LAST_COL}"},
+        params={
+            "spreadsheetId": sid,
+            "range": f"{SHEET_ROWS}!A2:{LAST_COL}",
+            "valueRenderOption": "UNFORMATTED_VALUE",
+        },
     )
     return got.get("values", [])
 
@@ -374,6 +404,9 @@ def main() -> None:
     ap.add_argument("--all", action="store_true", help="every room with activity that is not in the sheet yet")
     ap.add_argument("--replace", action="store_true", help="replace these rooms' rows in the sheet")
     ap.add_argument("--dry", action="store_true", help="show and write nothing")
+    ap.add_argument(
+        "--after-class", action="store_true", help="also count what happened after the class ended"
+    )
     ap.add_argument("--create", metavar="TITLE", help="create a new spreadsheet with this title")
     ap.add_argument("--sheet", help="spreadsheet id (ACTIVITY_SHEET_ID from .env by default)")
     ap.add_argument("--db", default=str(ROOT / "data" / "colloq.db"))
@@ -386,7 +419,7 @@ def main() -> None:
     if not rooms and not a.create:
         ap.error("name a room, --all or --create")
 
-    computed = {room: room_rows(con, room) for room in rooms}
+    computed = {room: room_rows(con, room, a.after_class) for room in rooms}
     if a.dry:
         for room, rows in computed.items():
             print(f"— {room}: {len(rows)} rows")
