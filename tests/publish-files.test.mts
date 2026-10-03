@@ -70,22 +70,29 @@ after(() => {
   shutdownCollab()
 })
 
-test('the picker offers each file with a default tick and its reason', () => {
+test('the picker offers each root file and each top-level folder with a default tick and its reason', () => {
   const info = publishInfo(ID)!
   const files = Object.fromEntries(info.files.map((f) => [f.path, [f.kind, f.picked, f.why]]))
   assert.deepEqual(files['lecture.pdf'], ['pdf', true, null])
-  assert.deepEqual(files['data/train_home_price.csv'], ['data', true, null])
-  assert.deepEqual(files['data/unused.csv'], ['data', false, 'unused'])
+  // A folder is one choice: data/ goes out whole because the notebook reads a file in it.
+  assert.deepEqual(files['data/'], ['folder', true, null])
+  assert.equal(files['data/train_home_price.csv'], undefined)
   assert.deepEqual(files['surface.html'], ['file', false, 'generated'])
   assert.deepEqual(files['solutions.py'], ['code', false, 'answers'])
-  assert.deepEqual(files['outputs/pred.csv'], ['data', false, 'generated'])
+  assert.deepEqual(files['outputs/'], ['folder', false, 'generated'])
   assert.deepEqual(files['fig.png'], ['image', false, 'image'])
   assert.deepEqual(files['big.bin'], ['file', false, 'too-large'])
   assert.equal(info.limits.fileBytes, 6 * MB)
   assert.equal(info.limits.materials, 24)
+  const data = info.files.find((f) => f.path === 'data/')!
+  assert.deepEqual(data.usedBy, ['seminar.ipynb'])
+  assert.equal(data.files, 2)
   assert.deepEqual(
-    info.files.find((f) => f.path === 'data/train_home_price.csv')?.usedBy,
-    ['seminar.ipynb'],
+    data.entries?.map((e) => [e.path, e.why]),
+    [
+      ['data/train_home_price.csv', null],
+      ['data/unused.csv', null],
+    ],
   )
   // Notebooks are not offered twice, as files.
   assert.ok(!info.files.some((f) => f.path.endsWith('.ipynb')))
@@ -93,6 +100,7 @@ test('the picker offers each file with a default tick and its reason', () => {
   assert.deepEqual([offered.picked, offered.why], [false, 'private'])
 })
 
+// A pick saved before folders named a file inside data/ on its own: it still goes out as that file.
 test('picked files are copied byte for byte; one over the upload limit is refused by name', async () => {
   const result = await buildAndWrite(
     ID,

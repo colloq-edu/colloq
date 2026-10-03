@@ -5,9 +5,10 @@
  * reads and forwards, and the room, which keeps the marks and the oracle
  * thread with every asker's name, and whose eight characters are the right to
  * write in it. The page JSON never names the room. The door is a separate
- * POST that answers with the room's address only to staff, to everyone when
- * the teacher chose «Все», or to a browser that proves it was there with a
- * token minted for THAT room, of a participant who is not banned.
+ * POST that answers with the room's address to staff, to everyone under «Все»
+ * (the default: with no student accounts a token is only a browser), and
+ * under «Участники» only to a browser that proves it was there with a token
+ * minted for THAT room, of a participant who is not banned.
  *
  * Driven through the real app (server/src/app.ts), so the door stands behind
  * the same JSON parsing, origin check and staff cookie as in the product.
@@ -19,7 +20,7 @@ import assert from 'node:assert/strict'
 import type { Response as ExpressResponse } from 'express'
 import { STAFF_COOKIE } from '../shared/admin.js'
 import { addBook } from '../shared/notebook.js'
-import { MAX_DOOR_TOKENS, type RoomDoor } from '../shared/publish.js'
+import { DEFAULT_ROOM_ACCESS, MAX_DOOR_TOKENS, type RoomDoor } from '../shared/publish.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { createTeacher, rotateLinkKey } from '../server/src/admin/store.js'
 import { app } from '../server/src/app.js'
@@ -32,6 +33,7 @@ import {
   createCourse,
   getPublication,
   orphanPublication,
+  savePublicationSelection,
   setCourseItems,
   setCourseSlug,
   setPublicationState,
@@ -154,7 +156,30 @@ test('the course and the page never carry a room id, nor a room path', async () 
   }
 })
 
+/* ------------------------------------------------------------ the default */
+
+test('a page published without a choice leads anyone into the room', async () => {
+  assert.equal(DEFAULT_ROOM_ACCESS, 'anyone')
+  assert.equal(getPublication(pubId)!.selection?.roomAccess, 'anyone', 'a first publish saves it')
+  assert.equal(publishInfo(ROOM)?.roomAccess, 'anyone')
+  const { status, door } = await pageDoor([])
+  assert.equal(status, 200)
+  assert.deepEqual(door, {
+    access: 'anyone',
+    member: false,
+    staff: false,
+    room: { path: `/s/${ROOM}`, live: true },
+  })
+  // A participant coming back is told so, and gets the same way in.
+  const back = await pageDoor([token(ROOM, 'p_ann')])
+  assert.deepEqual([back.door.member, back.door.room?.path], [true, `/s/${ROOM}`])
+})
+
+/* --------------------------------------------------------- the members */
+
 test('a stranger is told the room is for participants, and nothing more', async () => {
+  // «Участники» from here on: the tests below restore it when they change it.
+  assert.equal(await setAccess('members'), 200)
   const { status, text, door } = await pageDoor([])
   assert.equal(status, 200)
   assert.deepEqual(door, { access: 'members', member: false, staff: false, room: null })
@@ -163,8 +188,6 @@ test('a stranger is told the room is for participants, and nothing more', async 
   const bare = await knock(`/api/p/${pubId}/room`, {})
   assert.deepEqual(bare.door, door)
 })
-
-/* --------------------------------------------------------- the members */
 
 test('a token of this room opens it, and says whether the class is still on', async () => {
   const { door } = await pageDoor([token(OTHER, 'p_eve'), token(ROOM, 'p_ann')])
@@ -252,29 +275,39 @@ test('«Все» opens it to anyone with the page; «Никто» closes it to m
 })
 
 test('saving the setting rebuilds nothing, and a rebuild keeps it', async () => {
+  // Not the default, so a rebuild that falls back to it would show.
   const before = getPublication(pubId)!
-  assert.equal(await setAccess('anyone'), 200)
+  assert.equal(await setAccess('none'), 200)
   const after = getPublication(pubId)!
   assert.equal(after.revision, before.revision, 'the setting bumped the revision')
   assert.equal(after.publishedAt, before.publishedAt, 'the setting counted as a publish')
   assert.equal(after.materialsRev, before.materialsRev, 'every cached tab was invalidated')
-  assert.equal(after.selection?.roomAccess, 'anyone')
-  assert.equal(publishInfo(ROOM)?.roomAccess, 'anyone')
+  assert.equal(after.selection?.roomAccess, 'none')
+  assert.equal(publishInfo(ROOM)?.roomAccess, 'none')
 
   const refreshed = await refreshPage(ROOM, { by: null })
   assert.ok(refreshed.ok, JSON.stringify(refreshed))
-  assert.equal(getPublication(pubId)!.selection?.roomAccess, 'anyone', 'a refresh forgot the door')
+  assert.equal(getPublication(pubId)!.selection?.roomAccess, 'none', 'a refresh forgot the door')
 
   // A publish from the screen that does not mention it keeps it too.
   const root = getPublication(pubId)!.selection!.notebooks[0].root
-  const rebuilt = await buildAndWrite(
-    ROOM,
-    { notebooks: [{ root, name: 'Семинар' }], files: [], autoRefresh: true, ack: [] },
-    { by: null },
-  )
-  assert.ok(rebuilt.ok)
-  assert.equal(getPublication(pubId)!.selection?.roomAccess, 'anyone')
+  const republish = () =>
+    buildAndWrite(
+      ROOM,
+      { notebooks: [{ root, name: 'Семинар' }], files: [], autoRefresh: true, ack: [] },
+      { by: null },
+    )
+  assert.ok((await republish()).ok)
+  assert.equal(getPublication(pubId)!.selection?.roomAccess, 'none')
+
+  // A page saved with «Участники» (every first publish of 0.13) keeps it: the default only fills
+  // an absent choice, and those pages are switched by hand.
   assert.equal(await setAccess('members'), 200)
+  assert.ok((await republish()).ok)
+  assert.ok((await refreshPage(ROOM, { by: null })).ok)
+  assert.equal(getPublication(pubId)!.selection?.roomAccess, 'members')
+  assert.equal(publishInfo(ROOM)?.roomAccess, 'members')
+  assert.equal((await pageDoor([])).door.room, null)
 })
 
 test('the setting is staff-only, checked, and needs a saved pick', async () => {
@@ -303,9 +336,34 @@ test('the setting is staff-only, checked, and needs a saved pick', async () => {
   })
   assert.equal(refused.status, 409)
   assert.equal(getPublication(legacy.id)!.selection, null)
-  // And it reads as 'members': a stranger gets the locked sentence, not the room.
+  // Until its next publish it has the default: anyone with the page gets in.
   const door = await knock(`/api/p/${legacy.id}/room`, { tokens: [] })
-  assert.deepEqual(door.door, { access: 'members', member: false, staff: false, room: null })
+  assert.deepEqual(door.door, {
+    access: 'anyone',
+    member: false,
+    staff: false,
+    room: { path: '/s/rdlegacy', live: true },
+  })
+})
+
+test('a pick saved before the door has the default, and choosing it writes it down', async () => {
+  createSession('rdpredoor', 'Страница без выбора', null)
+  const page = await publish('rdpredoor')
+  const pick = { ...getPublication(page)!.selection! }
+  delete pick.roomAccess
+  savePublicationSelection(page, pick)
+  const door = await knock(`/api/p/${page}/room`, { tokens: [] })
+  assert.equal(door.door.access, 'anyone')
+  assert.equal(door.door.room?.path, '/s/rdpredoor')
+
+  // Choosing what it already reads as still saves it: the choice is the teacher's from now on.
+  const res = await fetch(`${base}/api/admin/publications/${page}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie: staffCookie },
+    body: JSON.stringify({ roomAccess: 'anyone' }),
+  })
+  assert.equal(res.status, 200)
+  assert.equal(getPublication(page)!.selection?.roomAccess, 'anyone')
 })
 
 /* ------------------------------------------------------ nothing to lead to */
@@ -349,18 +407,24 @@ test('a page whose room was deleted leads nowhere', async () => {
 
 /* ---------------------------------------------------------- the course row */
 
-test('a course row opens its seated room before any page exists', async () => {
+test('a course row opens its seated room to anyone before any page exists', async () => {
+  // No page, no choice: the default. The «Сегодня» block is for the group, on any device.
   const path = '/api/c/rd-ml/room'
   const stranger = await knock(path, { key: 'rrd00002', tokens: [] })
   assert.equal(stranger.status, 200)
-  assert.deepEqual(stranger.door, { access: 'members', member: false, staff: false, room: null })
-  assert.ok(!stranger.text.includes(SEATED))
+  assert.deepEqual(stranger.door, {
+    access: 'anyone',
+    member: false,
+    staff: false,
+    room: { path: `/s/${SEATED}`, live: true },
+  })
 
   const member = await knock(path, { key: 'rrd00002', tokens: [token(SEATED, 'p_ann2')] })
+  assert.equal(member.door.member, true)
   assert.deepEqual(member.door.room, { path: `/s/${SEATED}`, live: true })
   // A token of the neighbouring row's room is not one of this row's.
   const neighbour = await knock(path, { key: 'rrd00002', tokens: [token(ROOM, 'p_ann')] })
-  assert.equal(neighbour.door.room, null)
+  assert.equal(neighbour.door.member, false)
 
   setFinished(SEATED, Date.now())
   try {
@@ -376,7 +440,10 @@ test('a course row opens its seated room before any page exists', async () => {
 
 test('a course row with a page follows the page\'s setting; a plan row has no room', async () => {
   const path = `/api/c/${courseId}/room`
-  assert.equal((await knock(path, { key: 'rrd00001', tokens: [] })).door.room, null)
+  assert.equal(await setAccess('members'), 200)
+  const locked = await knock(path, { key: 'rrd00001', tokens: [] })
+  assert.deepEqual([locked.door.access, locked.door.room], ['members', null])
+  assert.ok(!locked.text.includes(ROOM))
   assert.equal(await setAccess('anyone'), 200)
   try {
     assert.equal((await knock(path, { key: 'rrd00001', tokens: [] })).door.room?.path, `/s/${ROOM}`)

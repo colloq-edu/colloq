@@ -171,13 +171,17 @@ export function migratePage(pubId: string): void {
 
 /*
  * Rows of pages that no longer exist. 0.12 deletes a page (forever, or with
- * its room) without knowing publication_materials, so after a rollback and a
- * roll forward those rows are left behind, and since the page-file GC keeps
- * every hash a material row names, the page's PDFs and datasets would stay
- * on disk and in every backup for good.
+ * its room) without knowing publication_materials, and 0.13 without knowing
+ * publication_material_files, so after a rollback and a roll forward those
+ * rows are left behind, and since the page-file GC keeps every hash a
+ * material row or a folder file names, the page's PDFs and datasets would
+ * stay on disk and in every backup for good.
  */
 const dropOrphanRows = [
   db.prepare('DELETE FROM publication_materials WHERE pub NOT IN (SELECT id FROM publications)'),
+  db.prepare(
+    'DELETE FROM publication_material_files WHERE pub NOT IN (SELECT id FROM publications)',
+  ),
   db.prepare('DELETE FROM publication_blobs WHERE pub NOT IN (SELECT id FROM publications)'),
   db.prepare('DELETE FROM publication_steps WHERE pub NOT IN (SELECT id FROM publications)'),
 ]

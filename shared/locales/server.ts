@@ -1041,6 +1041,18 @@ export const serverMessages: MessageCatalog = {
     "ru": "{name}, тетрадь с результатами запусков",
     "en": "{name}, a notebook with its outputs"
   },
+  "server.zip.folder": {
+    "ru": {
+      "one": "папка, {count} файл",
+      "few": "папка, {count} файла",
+      "many": "папка, {count} файлов",
+      "other": "папка, {count} файла"
+    },
+    "en": {
+      "one": "a folder, {count} file",
+      "other": "a folder, {count} files"
+    }
+  },
   "server.zip.footer": {
     "ru": "Тетради — в том виде, в каком были при публикации, вместе с результатами запусков. Файлы лежат по тем же путям, что и в папке комнаты, так что код из тетрадей находит их без правок.",
     "en": "The notebooks are as they were when the page was published, with their outputs. Files sit at the same paths as in the room's folder, so the notebooks' code finds them unchanged."

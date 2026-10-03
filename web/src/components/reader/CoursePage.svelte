@@ -85,14 +85,12 @@
     if (now?.over) parts.push(tr('room.course.over'))
     return parts
   })
-  /** «3 с материалами · 30 впереди». */
+  /** «3 с материалами · 30 впереди», a part per line break, like the meta line above. */
   const counted = $derived(
     [
       tally.pages > 0 ? tr('room.course.withMaterials', { count: tally.pages }) : null,
       tally.ahead > 0 ? tr('room.course.ahead', { count: tally.ahead }) : null,
-    ]
-      .filter(Boolean)
-      .join(' · '),
+    ].filter((part): part is string => part !== null),
   )
   /** «Январь — май: ещё 17 занятий». */
   const foldedText = $derived.by(() => {
@@ -167,7 +165,7 @@
 </script>
 
 {#snippet chevron()}
-  <span class="flex w-6 shrink-0 justify-end pt-1 text-accent lg:pt-1" aria-hidden="true">
+  <span class="flex w-6 shrink-0 justify-end pt-1 text-accent lg:pt-1.5" aria-hidden="true">
     <Icon name="chevron-right" size={16} strokeWidth={2.6} />
   </span>
 {/snippet}
@@ -175,7 +173,7 @@
 {#snippet title(n: number | null, text: string, linked: boolean)}
   <span class="flex min-w-0 items-baseline gap-2.5">
     {#if n !== null}
-      <span class="shrink-0 font-mono text-[14px] leading-7 {linked ? 'text-ink' : 'text-muted'}">
+      <span class="shrink-0 font-mono text-[15px] leading-7 {linked ? 'text-ink' : 'text-muted'}">
         {ordinal(n)}
       </span>
     {/if}
@@ -190,9 +188,9 @@
     {@const live = up.kind === 'today' ? liveRoom : null}
     <section
       class="-mx-4 flex flex-col gap-2.5 border-t-2 border-brand bg-surface px-4 pb-[22px] pt-5
-             dark:border-accent sm:-mx-6 sm:px-6 lg:mx-0 lg:p-6"
+             dark:border-accent sm:-mx-10 sm:px-10 lg:mx-0 lg:p-6"
     >
-      <p class="flex items-center gap-2 font-mono text-micro uppercase tracking-label text-accent-text">
+      <p class="flex items-center gap-2 font-mono text-[13px] uppercase leading-5 tracking-label text-accent-text">
         {#if live}<span class="h-1.5 w-1.5 shrink-0 bg-accent" aria-hidden="true"></span>{/if}
         <span>{live ? tr('room.course.todayLive', { day: shortDay(up.row.day) }) : upcomingLabel(up)}</span>
       </p>
@@ -215,7 +213,7 @@
         <a
           href={live.path}
           class="press mt-1 flex h-12 shrink-0 items-center justify-center gap-2.5 bg-brand px-3
-                 text-[13px] font-bold uppercase leading-4 tracking-caps text-white
+                 text-[14px] font-bold uppercase leading-5 tracking-caps text-white
                  hover:brightness-110 dark:bg-primary dark:text-primary-ink"
         >
           <span>{tr('room.course.enter')}</span>
@@ -223,14 +221,14 @@
         </a>
       {/if}
       {#if up.kind === 'today' && !page}
-        <p class="text-ui-lg text-muted">{tr('room.course.afterClass')}</p>
+        <p class="text-[16px] leading-6 text-muted">{tr('room.course.afterClass')}</p>
       {:else if up.kind !== 'today' && up.row.about}
-        <p class="text-ui-lg text-muted">{up.row.about}</p>
+        <p class="text-[16px] leading-6 text-muted">{up.row.about}</p>
       {/if}
       {#if page}
         <div class="pt-1">
           {#if up.kind !== 'today'}
-            <p class="pb-2 font-mono text-micro uppercase tracking-label text-muted">
+            <p class="pb-2 font-mono text-[13px] uppercase leading-5 tracking-label text-muted">
               {tr('room.course.beforeClass')}
             </p>
           {/if}
@@ -257,7 +255,7 @@
     {@const brief = !!now.upcoming?.row.page && now.upcoming.kind === 'today'}
     <section class="flex flex-col pt-8 lg:pt-0">
       <div class="border-b-2 border-ink pb-3">
-        <p class="font-mono text-micro uppercase tracking-label text-muted">{pastLabel(past)}</p>
+        <p class="font-mono text-[13px] uppercase leading-5 tracking-label text-muted">{pastLabel(past)}</p>
       </div>
       {#if page}
         <a
@@ -280,7 +278,7 @@
         {/if}
       {:else}
         <div class="pb-1 pt-4">{@render title(past.row.n, past.row.title, false)}</div>
-        <p class="text-ui-lg text-muted">
+        <p class="text-[16px] leading-6 text-muted">
           {past.row.state === 'closed' ? tr('room.course.none') : tr('room.course.noneYet')}
         </p>
         {#if past.latest?.page}
@@ -288,7 +286,7 @@
           {@const href = pageHref(latest.page!.address)}
           <a
             {href}
-            class="flex min-h-11 items-center text-ui-lg text-accent-text"
+            class="flex min-h-11 items-center text-[16px] leading-6 text-accent-text"
             onclick={(event) => follow(event, href)}
           >
             {tr('room.course.latest', {
@@ -304,10 +302,12 @@
 {#snippet linkBlock()}
   <section class="flex flex-col gap-2.5 pb-14 pt-8 lg:p-0">
     <div class="border-b-2 border-ink pb-3">
-      <p class="font-mono text-micro uppercase tracking-label text-muted">{tr('room.course.link')}</p>
+      <p class="font-mono text-[13px] uppercase leading-5 tracking-label text-muted">
+        {tr('room.course.link')}
+      </p>
     </div>
     <CopyLink path={coursePath} />
-    <p class="text-[14px] leading-[21px] text-muted">{tr('room.course.note')}</p>
+    <p class="text-[15px] leading-[22px] text-muted">{tr('room.course.note')}</p>
   </section>
 {/snippet}
 
@@ -315,34 +315,34 @@
   {@const row = entry.row}
   {@const parts = lineParts(entry)}
   {#if entry.today}
-    <span class="absolute inset-y-0 -left-4 w-0.5 bg-accent sm:-left-6 lg:-left-4" aria-hidden="true"
+    <span class="absolute inset-y-0 -left-4 w-0.5 bg-accent sm:-left-10 lg:-left-4" aria-hidden="true"
     ></span>
   {/if}
   <span
     class="shrink-0 font-mono {wide.current
-      ? 'w-14 text-[14px] leading-6'
-      : 'w-8 text-[13px] leading-[22px]'} {linked ? 'text-ink' : 'text-faint'}"
+      ? 'w-14 text-[15px] leading-7'
+      : 'w-9 text-[14px] leading-6'} {linked ? 'text-ink' : 'text-faint'}"
   >
     {row.n !== null ? ordinal(row.n) : ''}
   </span>
   {#if wide.current}
-    <span class="w-28 shrink-0 text-[15px] leading-6 text-muted">{dayText(row)}</span>
+    <span class="w-32 shrink-0 text-[16px] leading-7 text-muted">{dayText(row)}</span>
   {/if}
   <span class="flex min-w-0 flex-1 flex-col gap-1">
     <span
-      class="{wide.current ? 'text-title' : 'text-[17px] leading-[22px]'}
+      class="{wide.current ? 'text-[20px] leading-7' : 'text-[18px] leading-6'}
              {linked ? 'font-semibold text-ink' : 'text-muted'}"
     >
       {row.title}
     </span>
     {#if parts.length > 0}
       <span
-        class="{wide.current ? 'text-[14px] leading-5' : 'text-[13px] leading-[18px]'} text-muted"
+        class="{wide.current ? 'text-[15px] leading-[22px]' : 'text-[14px] leading-5'} text-muted"
       >
         {#each parts as part, i (i)}
           {#if i > 0}<span aria-hidden="true">{' · '}</span>{/if}
           {#if part.accent}
-            <span class="font-mono text-[11px] uppercase tracking-label text-accent-text">
+            <span class="font-mono text-[12px] uppercase tracking-label text-accent-text">
               {part.text}
             </span>
           {:else}
@@ -359,16 +359,16 @@
   {/if}
 {/snippet}
 
-<div class="min-h-screen bg-canvas">
+<div class="reading-ui min-h-screen bg-canvas">
   <ReaderBar crumb={tr('room.course.top')} wide={wide.current} {onnavigate} />
 
   <div
-    class="mx-auto w-full max-w-[1440px] px-4 sm:px-6 lg:flex lg:items-start lg:gap-20 lg:px-10
-           lg:pb-24 lg:pt-16"
+    class="mx-auto w-full max-w-[1440px] px-4 sm:px-10 lg:flex lg:items-start lg:gap-20 lg:pb-24
+           lg:pt-16"
   >
     <main class="min-w-0 flex-1">
       <div class="flex flex-col gap-3 pb-7 pt-7 lg:gap-5 lg:pb-14 lg:pt-0">
-        <p class="font-mono text-micro uppercase tracking-label text-accent-text">
+        <p class="font-mono text-[13px] uppercase leading-5 tracking-label text-accent-text">
           {years ? tr('room.course.labelYears', { years }) : tr('room.course.top')}
         </p>
         <h1
@@ -378,13 +378,13 @@
           {course.name}
         </h1>
         {#if course.blurb}
-          <p class="max-w-[640px] text-[16px] leading-6 text-muted lg:text-[18px] lg:leading-7">
+          <p class="max-w-[680px] text-[17px] leading-[26px] text-muted lg:text-[19px] lg:leading-[30px]">
             {course.blurb}
           </p>
         {/if}
         <!-- Each part keeps its words together: «сентябрь — май» broken after the
              dash reads as two facts. -->
-        <p class="pt-1 font-mono text-micro uppercase tracking-label text-muted lg:pt-0">
+        <p class="pt-1 font-mono text-[13px] uppercase leading-5 tracking-label text-muted lg:pt-0">
           {#each meta as part, i (i)}
             {#if i > 0}<span aria-hidden="true">{' · '}</span>{/if}<span class="whitespace-nowrap"
               >{part}</span
@@ -402,30 +402,36 @@
         <div class="flex items-end justify-between gap-3 border-b-2 border-ink pb-3">
           <h2
             id="course-classes"
-            class="text-[13px] font-black uppercase leading-4 tracking-section text-ink"
+            class="text-[14px] font-black uppercase leading-5 tracking-section text-ink"
           >
             {tr('room.course.classes')}
           </h2>
-          {#if counted}
-            <p class="text-right font-mono text-micro uppercase tracking-caps text-muted">{counted}</p>
+          {#if counted.length > 0}
+            <p class="text-right font-mono text-[13px] uppercase leading-5 tracking-caps text-muted">
+              {#each counted as part, i (i)}
+                {#if i > 0}<span aria-hidden="true">{' · '}</span>{/if}<span class="whitespace-nowrap"
+                  >{part}</span
+                >
+              {/each}
+            </p>
           {/if}
         </div>
 
         {#if course.classes.length === 0}
-          <p class="pb-10 pt-5 text-title text-muted">{tr('room.course.empty')}</p>
+          <p class="pb-10 pt-5 text-[18px] leading-7 text-muted">{tr('room.course.empty')}</p>
         {:else}
           <ol>
             {#each entries as entry (entry.key)}
               {#if entry.kind === 'month'}
                 <li
-                  class="border-b border-line pb-2 pt-6 font-mono text-micro uppercase tracking-label
-                         text-muted lg:pb-2.5 lg:pt-7"
+                  class="border-b border-line pb-2 pt-6 font-mono text-[13px] uppercase leading-5
+                         tracking-label text-muted lg:pb-2.5 lg:pt-7"
                 >
                   {monthName(entry.month, entry.year)}
                 </li>
               {:else if entry.kind === 'now'}
                 <li class="flex items-center gap-3 pt-3.5" aria-label={tr('room.course.todayAt', { day: shortDay(today) })}>
-                  <span class="shrink-0 font-mono text-[11px] uppercase leading-4 tracking-label text-accent-text">
+                  <span class="shrink-0 font-mono text-[13px] uppercase leading-5 tracking-label text-accent-text">
                     {tr('room.course.todayAt', { day: shortDay(today) })}
                   </span>
                   <span class="h-0.5 flex-1 bg-accent" aria-hidden="true"></span>
@@ -435,12 +441,12 @@
                 <!-- A break in the timetable: no number, no link, hatched so it
                      reads as a gap and not as a class nobody published. -->
                 <li
-                  class="flex items-center border-b border-line py-3 text-[15px] leading-[22px] text-faint
+                  class="flex items-center border-b border-line py-3 text-[16px] leading-6 text-faint
                          [background-image:repeating-linear-gradient(135deg,rgb(var(--line)/0.45)_0_1px,transparent_1px_7px)]"
                 >
-                  <span class="{wide.current ? 'w-14' : 'w-8'} shrink-0" aria-hidden="true"></span>
+                  <span class="{wide.current ? 'w-14' : 'w-9'} shrink-0" aria-hidden="true"></span>
                   {#if wide.current}
-                    <span class="w-28 shrink-0">{dayText(row)}</span>
+                    <span class="w-32 shrink-0">{dayText(row)}</span>
                     <span class="min-w-0 flex-1">{tr('room.course.pause', { title: row.title })}</span>
                   {:else}
                     <span class="min-w-0 flex-1">
@@ -474,10 +480,10 @@
           </ol>
           {#if list.folded && !unfolded}
             <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-5">
-              <p class="text-[15px] leading-[22px] text-muted">{foldedText}</p>
+              <p class="text-[16px] leading-6 text-muted">{foldedText}</p>
               <button
                 type="button"
-                class="press -my-2 flex h-11 items-center text-[15px] leading-[22px] text-accent-text"
+                class="press -my-2 flex h-11 items-center text-[16px] leading-6 text-accent-text"
                 onclick={() => (unfolded = true)}
               >
                 <span class="border-b border-dashed border-current">{tr('room.course.showAll')}</span>

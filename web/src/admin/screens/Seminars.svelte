@@ -3,6 +3,11 @@
   import { tr, getLocale } from '@shared/i18n'
   import { onMount } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
+  import Check from '@/admin/ui/Check.svelte'
+  import Choice from '@/admin/ui/Choice.svelte'
+  import EmptyState from '@/admin/ui/EmptyState.svelte'
+  import SearchField from '@/admin/ui/SearchField.svelte'
+  import Badge from '@/admin/screens/competitions/Badge.svelte'
   import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -289,12 +294,11 @@
   /** Whose seminar this is — checked against createdBy, written with the same name. */
   const me = $derived(adminAuth.me?.teacher ?? null)
 
-  const TABBTN =
-    'inline-flex h-7 items-center px-3 text-2xs font-bold uppercase tracking-label text-muted ' +
-    'transition-colors duration-100 hover:text-ink focus-visible:outline-none ' +
-    'focus-visible:ring-2 focus-visible:ring-accent/50'
-
-  const ITEM = 'flex w-full items-center px-2.5 py-1.5 text-left text-ui transition-colors duration-100'
+  /** The two sources of the inline create row, as the panel's option chips. */
+  const SOURCES = $derived([
+    { value: 'blank', label: tr('admin.blank') },
+    { value: 'github', label: tr('admin.from.github') },
+  ])
 
   /* ----------------------------------------------------------- formatting */
 
@@ -917,7 +921,7 @@
   }
 </script>
 
-<AdminPage title={tr("admin.seminars")}>
+<AdminPage title={tr("admin.seminars")} subtitle={tr('admin.seminars.lede')}>
   {#snippet actions()}
     <!--
       An empty instance gets one path, not three. The search has nothing to
@@ -928,43 +932,34 @@
     <!--
       On a phone the header is a full-width column.
 
-      The 220px search and the button next to it fit in a line that a 390px
-      screen does not have: the rail takes 56, the page margins another 56,
-      and 278 is left for everything. The search and "New class" stacked
-      under each other anyway, but each at its content width — two short
-      stubs at the left edge. The height grows to 44px there too: 34 is a
-      size for a mouse, and here people poke with a finger.
+      The search and the button next to it fit in a line that a 390px screen
+      does not have: the rail takes 56, the page margins another 56, and 278
+      is left for everything. Stacked at their content widths they were two
+      short stubs at the left edge, so each takes the whole line there, at
+      the panel's 44px finger height. The search is the panel's shared field
+      (admin/ui/SearchField), the same box the competitions tab has.
     -->
-    <div
-      class="flex h-[34px] w-[220px] max-w-full items-center gap-2 border border-line bg-canvas px-3
-             focus-within:border-accent max-[640px]:h-11 max-[640px]:w-full"
-    >
-      <Icon name="search" size={13} class="shrink-0 text-faint" />
-      <input
-        type="search"
-        bind:value={query}
-        placeholder={tr("admin.search.seminars")}
-        aria-label={tr("admin.search.seminars.by.name")}
-        class="min-w-0 flex-1 bg-transparent text-ui text-ink outline-none placeholder:text-faint"
-      />
-    </div>
+    <SearchField
+      label={tr("admin.search.seminars.by.name")}
+      placeholder={tr("admin.search.seminars")}
+      bind:value={query}
+    />
     {#if archivedCount}
+      <!-- A secondary control, so it wears the secondary button's frame: the
+           same 40px as the field and the action beside it. -->
       <label
-        class="flex h-[34px] cursor-pointer select-none items-center gap-2 border border-line
-               bg-canvas px-3 text-2xs font-bold uppercase tracking-caps text-muted
-               hover:text-ink max-[640px]:h-11 max-[640px]:w-full"
+        class="btn-outline cursor-pointer select-none gap-2 max-[640px]:h-11 max-[640px]:w-full"
         title="{seminars.length - archivedCount} {tr("admin.active")} {archivedCount} {tr("admin.archived")}"
       >
-        <input type="checkbox" bind:checked={showArchived} class="accent-accent" />
+        <Check bind:checked={showArchived} size={16} />
         {tr("admin.archived.903")}
-        <span class="tabular-nums text-faint">{archivedCount}</span>
+        <span class="font-mono tabular-nums text-muted">{archivedCount}</span>
       </label>
     {/if}
     <button
       type="button"
       onclick={startCreate}
-      class="btn-primary h-[34px] gap-2 px-3.5 text-2xs font-bold uppercase tracking-caps
-             max-[640px]:h-11 max-[640px]:w-full"
+      class="btn-primary btn-caps gap-2 px-4 max-[640px]:h-11 max-[640px]:w-full"
     >
       <Icon name="plus" size={14} />
       {tr("admin.new.seminar")}
@@ -1005,10 +1000,7 @@
              max-[640px]:items-stretch max-[640px]:gap-y-2.5 max-[640px]:py-3.5"
     >
       <div class="flex min-w-[180px] flex-col gap-[3px] max-[640px]:min-w-0">
-        <p
-          class="flex items-center gap-[7px] whitespace-nowrap text-2xs font-bold uppercase
-                 tracking-label text-accent-text"
-        >
+        <p class="admin-label flex items-center gap-[7px] whitespace-nowrap text-accent-text">
           <span class="h-[7px] w-[7px] shrink-0 rounded-full bg-accent"></span>
           {tr("admin.running.now")}
         </p>
@@ -1016,7 +1008,7 @@
              third of a seminar's title, and "Machine learning and data
              anal…" cannot be told from a neighbour that starts the same. -->
         <h2
-          class="truncate text-title font-bold tracking-tight text-ink
+          class="truncate text-title font-semibold text-ink
                  max-[640px]:line-clamp-2 max-[640px]:whitespace-normal"
         >
           {seminar.name}
@@ -1054,7 +1046,7 @@
           onclick={() => copy(seminar)}
           title="{tr("admin.copy")}  {linkOf(seminar)}"
           class={cn(
-            'flex h-8 items-center gap-2 border border-line bg-canvas px-3 font-mono text-code',
+            'flex h-10 items-center gap-2 border border-line bg-canvas px-3 font-mono text-2xs',
             'transition-colors duration-100 hover:border-faint hover:text-ink',
             // A finger, not a cursor: 44px of height and all the remaining row width.
             'max-[640px]:h-11 max-[640px]:min-w-0 max-[640px]:flex-1 max-[640px]:justify-between',
@@ -1069,8 +1061,8 @@
           href={linkOf(seminar)}
           target="_blank"
           rel="noreferrer"
-          class="btn h-8 bg-accent px-3.5 text-2xs font-bold uppercase tracking-caps text-accent-ink
-                 hover:brightness-110 max-[640px]:h-11 max-[640px]:shrink-0 max-[640px]:px-4"
+          class="btn btn-caps bg-accent px-4 text-accent-ink hover:brightness-110 max-[640px]:h-11
+                 max-[640px]:shrink-0"
         >
           {tr("admin.open")}
         </a>
@@ -1079,9 +1071,13 @@
   {/each}
 
   {#if loadError}
-    <div class="mt-6 border border-danger/40 bg-surface px-4 py-3">
-      <p class="text-ui text-danger">{tr("admin.could.not.load.seminars")} {loadError}</p>
-      <button type="button" class="btn-outline mt-2.5" onclick={() => void load()}>{tr("admin.try.again")}</button>
+    <div class="flex flex-wrap items-center gap-3 py-4">
+      <p class="min-w-0 flex-1 text-ui text-danger" role="alert">
+        {tr("admin.could.not.load.seminars")} {loadError}
+      </p>
+      <button type="button" class="btn-outline shrink-0" onclick={() => void load()}>
+        {tr("admin.try.again")}
+      </button>
     </div>
   {/if}
 
@@ -1122,49 +1118,43 @@
       <col class="w-10" />
     </colgroup>
     <thead class={cn('max-[640px]:hidden', shown.length === 0 && !creating && 'sr-only')}>
-      <tr class="border-b border-line text-micro font-bold uppercase tracking-label text-muted">
-        <th scope="col" class="py-3 text-left">{tr("admin.seminar")}</th>
+      <tr class="border-b border-line">
+        <th scope="col" class="admin-label py-2.5 text-left">{tr("admin.seminar")}</th>
         <!--
           The environment this room's kernel is ACTUALLY on, which is not always
           the one configured: a seminar that was live through a switch keeps the
           image it came up on until its own kernel restarts. That gap is the
           only reason this column is worth a lane of its own.
         -->
-        <th scope="col" class="py-3 text-left">{tr("admin.environment.919")}</th>
-        <th scope="col" class="py-3 text-left">{tr("admin.date")}</th>
+        <th scope="col" class="admin-label py-2.5 text-left">{tr("admin.environment.919")}</th>
+        <th scope="col" class="admin-label py-2.5 text-left">{tr("admin.date")}</th>
         <!--
           "Joined", not "People". This column is everyone who ever joined; the
           banner above it counts who is connected right now. Both were labelled
           people, so the same view could read "2 people in the room" beside an
           11 and give the reader no way to tell which number was wrong.
         -->
-        <th scope="col" class="py-3 text-right">{tr("admin.joined")}</th>
-        <th scope="col" class="py-3 text-right">{tr("admin.status")}</th>
-        <th scope="col" class="py-3"><span class="sr-only">{tr("admin.actions")}</span></th>
+        <th scope="col" class="admin-label py-2.5 text-right">{tr("admin.joined")}</th>
+        <th scope="col" class="admin-label py-2.5 text-right">{tr("admin.status")}</th>
+        <th scope="col" class="py-2.5"><span class="sr-only">{tr("admin.actions")}</span></th>
       </tr>
     </thead>
     <tbody class="max-[640px]:block">
       {#if creating}
-        <tr class="border-b border-line-soft bg-surface max-[640px]:block">
-          <td colspan="6" class="py-3 max-[640px]:block">
+        <tr class="border-b border-line bg-surface max-[640px]:block">
+          <td colspan="6" class="py-3.5 max-[640px]:block">
             <!-- Two doors into one room: a blank seminar and a seminar from
                  ready material. A switch, not a second button in the header:
                  this is one "create" action with two sources. -->
-            <div class="mb-2.5 flex items-center gap-1">
-              <button
-                type="button"
-                class={cn(TABBTN, !fromGithub && 'bg-raised text-ink')}
-                onclick={() => ((fromGithub = false), (preview = null))}
-              >
-                {tr("admin.blank")}
-              </button>
-              <button
-                type="button"
-                class={cn(TABBTN, fromGithub && 'bg-raised text-ink')}
-                onclick={() => (fromGithub = true)}
-              >
-                {tr("admin.from.github")}
-              </button>
+            <div class="mb-2.5">
+              <Choice
+                options={SOURCES}
+                value={fromGithub ? 'github' : 'blank'}
+                onchange={(v) => {
+                  fromGithub = v === 'github'
+                  if (!fromGithub) preview = null
+                }}
+              />
             </div>
 
             {#if fromGithub}
@@ -1172,8 +1162,7 @@
                 <div class="flex flex-wrap items-center gap-2">
                   <input
                     bind:value={githubUrl}
-                    class="field min-w-[420px] flex-1 font-mono text-code-lg
-                           max-[640px]:w-full max-[640px]:min-w-0"
+                    class="field min-w-[420px] flex-1 font-mono max-[640px]:w-full max-[640px]:min-w-0"
                     placeholder="https://github.com/sleep3r/ml_hse/tree/main/week02"
                     autocomplete="off"
                     spellcheck="false"
@@ -1213,7 +1202,7 @@
                   {#if environments && environments.length > 1}
                     <select
                       bind:value={newEnvironment}
-                      class="field h-[38px] max-w-[240px] font-mono text-code-lg"
+                      class="field max-w-[240px] font-mono"
                       aria-label={tr("admin.python.environment")}
                     >
                       {#each environments as env (env.name)}
@@ -1230,7 +1219,7 @@
                 {#if previewing}
                   <p class="text-2xs text-muted">{tr("admin.reading.the.repository")}</p>
                 {:else if previewError}
-                  <p class="text-2xs text-danger">{previewError}</p>
+                  <p class="text-ui text-danger" role="alert">{previewError}</p>
                 {:else if preview}
                   <!-- What exactly will arrive. Shown before creation, not after. -->
                   <div class="flex flex-wrap items-center gap-2 text-2xs text-muted">
@@ -1240,7 +1229,7 @@
                     {#if preview.files.length > 0}
                       <span>·</span>
                       {#each preview.files as f (f.name)}
-                        <span class="bg-surface px-2 py-0.5 font-mono text-micro">{f.name}</span>
+                        <span class="chip bg-surface font-mono text-muted">{f.name}</span>
                       {/each}
                     {/if}
                     <span>·</span>
@@ -1264,11 +1253,7 @@
                         {tr("admin.count.skippedFiles", { count: preview.skipped.length })}
                       </span>
                       {#each preview.skipped as name (name)}
-                        <span
-                          class="bg-surface px-2 py-0.5 font-mono text-micro text-muted line-through"
-                        >
-                          {name}
-                        </span>
+                        <span class="chip bg-surface font-mono text-muted line-through">{name}</span>
                       {/each}
                     </div>
                   {/if}
@@ -1295,12 +1280,14 @@
               {#if environments && environments.length > 1}
                 <select
                   bind:value={newEnvironment}
-                  class="field h-[38px] max-w-[220px] font-mono text-code-lg"
+                  class="field max-w-[220px] font-mono"
                   aria-label={tr("admin.python.environment.for.the.new.seminar")}
                 >
-                                    {#each environments as env (env.name)}
+                  {#each environments as env (env.name)}
                     <option value={env.name} disabled={env.state !== 'ready'}>
-                      {env.name}{env.active ? ' — default' : ''}{env.state === 'ready' ? '' : ' — not built'}
+                      {env.name}{env.active ? (" " + tr("admin.default.937")) : ''}{env.state === 'ready'
+                        ? ''
+                        : (" " + tr("admin.not.built.939"))}
                     </option>
                   {/each}
                 </select>
@@ -1334,14 +1321,14 @@
         -->
         <tr
           class={cn(
-            'group border-b border-line-soft',
+            'group border-b border-line',
             'max-[640px]:flex max-[640px]:flex-wrap max-[640px]:items-center max-[640px]:py-1',
             fresh && 'bg-accent/10',
           )}
         >
           <td
-            class="py-2 pr-4 align-top max-[640px]:order-1 max-[640px]:min-w-0
-                   max-[640px]:basis-[calc(100%_-_44px)] max-[640px]:pr-2"
+            class="py-3.5 pr-4 align-top max-[640px]:order-1 max-[640px]:min-w-0
+                   max-[640px]:basis-[calc(100%_-_44px)] max-[640px]:py-2 max-[640px]:pr-2"
           >
             {#if renamingId === seminar.id}
               <!-- svelte-ignore a11y_autofocus -->
@@ -1367,8 +1354,8 @@
                 href={linkOf(seminar)}
                 target="_blank"
                 rel="noreferrer"
-                class="block text-ui font-semibold text-ink hover:underline
-                       max-[640px]:line-clamp-2 min-[641px]:truncate"
+                class="admin-row-title block hover:underline max-[640px]:line-clamp-2
+                       min-[641px]:truncate"
               >
                 {seminar.name}
               </a>
@@ -1386,7 +1373,7 @@
                 class={cn(
                   // -my-1 py-1: the row's path is 16px of type, which is too small
                   // a thing to aim at. The target grows to 24 and the row does not.
-                  'flex -my-1 items-center gap-1.5 py-1 font-mono text-2xs transition-colors duration-100',
+                  'admin-meta flex -my-1 items-center gap-1.5 py-1 font-mono transition-colors duration-100',
                   'hover:text-ink focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/30',
                   // 24 is a target for a mouse. A finger needs 44, and they
                   // come from the target's own height, not the row's: the
@@ -1422,10 +1409,10 @@
                 />
               </button>
               {#if seminar.status === 'draft'}
-                <span class="whitespace-nowrap text-2xs text-muted">{tr("admin.link.not.shared.yet")}</span>
+                <span class="admin-meta whitespace-nowrap">{tr("admin.link.not.shared.yet")}</span>
               {/if}
               {#if seminar.archivedAt}
-                <span class="whitespace-nowrap text-2xs text-muted"> {tr("admin.archived")}</span>
+                <span class="admin-meta whitespace-nowrap">{tr("admin.archived")}</span>
               {/if}
               <!--
                 Who set up the room. It was stored from the very start and
@@ -1436,7 +1423,7 @@
                 before the press.
               -->
               {#if seminar.createdBy}
-                <span class="whitespace-nowrap text-2xs text-faint">{tr("admin.by")} {seminar.createdBy}</span>
+                <span class="admin-meta whitespace-nowrap">{tr("admin.by")} {seminar.createdBy}</span>
               {/if}
               <!-- Course and publication go in the same line as the link: they
                    are facts about this seminar, not another column in a table
@@ -1446,39 +1433,41 @@
                      string of any length, and at 360px one of them pushed the
                      card past the edge. -->
                 <a
-                  class="max-w-full truncate whitespace-nowrap text-2xs text-accent-text"
+                  class="max-w-full truncate whitespace-nowrap text-micro text-accent-text"
                   href={`/admin/courses/${course.id}`}
                 >
                   · {course.name}
                 </a>
               {/each}
               {#if seminar.publication?.state === 'published'}
-                <a
-                  class="whitespace-nowrap text-2xs text-muted underline decoration-line underline-offset-2"
-                  href={`/p/${addressOf(seminar.publication)}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  · {tr('admin.course.page.page', { count: seminar.publication.materials })}
-                </a>
+                <!-- The page link the course table draws (Courses.svelte · c-page):
+                     the same words, the same dashed accent, so a page reads as one
+                     thing on both lists. The dot stays outside the underline. -->
+                <span class="admin-meta whitespace-nowrap">
+                  ·
+                  <a
+                    class="border-b border-dashed border-accent-text text-accent-text"
+                    href={`/p/${addressOf(seminar.publication)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {tr('admin.course.page.page', { count: seminar.publication.materials })}
+                  </a>
+                </span>
               {:else if seminar.publication}
-                <span class="whitespace-nowrap text-2xs text-muted">{tr("admin.page.taken.down")}</span>
+                <span class="admin-meta whitespace-nowrap">{tr("admin.page.taken.down")}</span>
               {/if}
             </div>
 
             {#if rowError?.id === seminar.id}
-              <p class="mt-1 text-2xs text-danger">{rowError.message()}</p>
+              <p class="mt-1 text-ui text-danger" role="alert">{rowError.message()}</p>
             {/if}
             {#if rowNote?.id === seminar.id}
               {@const note = rowNote}
               <p class="mt-1 flex flex-wrap items-baseline gap-x-2 text-2xs text-muted" role="status">
                 <span>{note.message()}</span>
                 {#if note.publish}
-                  <button
-                    type="button"
-                    class="font-semibold text-accent-text hover:underline"
-                    onclick={() => onpublish?.(seminar.id)}
-                  >
+                  <button type="button" class="admin-link" onclick={() => onpublish?.(seminar.id)}>
                     {tr('admin.seminar.choosePage')}
                   </button>
                 {/if}
@@ -1487,12 +1476,12 @@
           </td>
 
           <td
-            class="py-2 pr-3 align-middle max-[640px]:order-3 max-[640px]:pb-2.5 max-[640px]:pt-0"
+            class="py-3.5 pr-3 align-middle max-[640px]:order-3 max-[640px]:pb-2.5 max-[640px]:pt-0"
           >
             {#if seminar.environment}
               <a
                 href="/admin/environments"
-                class="truncate font-mono text-code text-ink underline decoration-line underline-offset-2 hover:decoration-ink"
+                class="truncate font-mono text-2xs text-ink underline decoration-line underline-offset-2 hover:decoration-ink"
                 title="{tr("admin.selected.environment")} {seminar.environment}"
               >
                 {seminar.environment}
@@ -1501,14 +1490,14 @@
               <!-- No kernel has started here, so there is nothing to report. It
                    will get whatever is configured when somebody presses Run —
                    saying that name now would be a guess dressed as a fact. -->
-              <span class="font-mono text-code text-faint" title={tr("admin.no.environment.recorded.for.this.seminar")}>
+              <span class="font-mono text-2xs text-muted" title={tr("admin.no.environment.recorded.for.this.seminar")}>
                 —
               </span>
             {/if}
           </td>
 
           <td
-            class="py-2 align-middle text-ui text-muted max-[640px]:order-4 max-[640px]:pb-2.5
+            class="admin-num py-3.5 align-middle text-muted max-[640px]:order-4 max-[640px]:pb-2.5
                    max-[640px]:pr-3 max-[640px]:pt-0"
           >
             <span title={new Date(seminar.createdAt).toLocaleString(getLocale())}>
@@ -1517,22 +1506,22 @@
           </td>
 
           <td
-            class="py-2 text-right align-middle font-mono text-code text-ink max-[640px]:order-5
-                   max-[640px]:pb-2.5 max-[640px]:pr-3 max-[640px]:pt-0"
+            class="admin-num py-3.5 text-right align-middle max-[640px]:order-5 max-[640px]:pb-2.5
+                   max-[640px]:pr-3 max-[640px]:pt-0"
           >
             <span title="{people(seminar.totalParticipants)} {tr("admin.joined.in.total")}">
               <!-- On a phone there is no column header, and a bare number
                    next to "base · 19.09" reads as anything at all. The word is
                    the same as in the table header — the column and the
                    caption do not diverge. -->
-              <span class="hidden text-2xs font-bold uppercase tracking-caps text-faint max-[640px]:inline">
+              <span class="admin-label hidden font-sans max-[640px]:inline">
                 {tr("admin.joined")}
               </span>
               {seminar.totalParticipants > 0 ? seminar.totalParticipants : '—'}
             </span>
           </td>
 
-          <td class="py-2 align-middle max-[640px]:order-6 max-[640px]:ml-auto max-[640px]:pb-2.5 max-[640px]:pt-0">
+          <td class="py-3.5 align-middle max-[640px]:order-6 max-[640px]:ml-auto max-[640px]:pb-2.5 max-[640px]:pt-0">
             <div class="flex items-center justify-end gap-2">
               {#if seminar.status === 'finished'}
                 <!--
@@ -1543,26 +1532,31 @@
                   someone is in the finished room after all: they are
                   re-reading the review, and that is visible.
                 -->
+                <!-- The state words are the panel's badge (competitions/Badge), the
+                     same 14px caps as a competition's state; the dot stays beside
+                     it, not inside a hand-built chip. And the same tones as a
+                     competition's (admin/competitions.ts · stateTone): live is
+                     accent, a draft is warning, finished is neutral: one
+                     "draft" in two colours on two neighbouring tabs read as
+                     two different states. -->
                 <span
-                  class="chip h-6 gap-1.5 bg-warning/[0.14] px-2 text-2xs font-bold uppercase tracking-caps text-warning"
+                  class="inline-flex items-center gap-1.5"
                   title="{tr("admin.class.ended")} {new Date(
                     seminar.finishedAt ?? 0,
                   ).toLocaleString(getLocale())} {tr("admin.student.editing.and.execution.are.disabled")}"
                 >
                   {#if seminar.liveCount > 0}
                     <span
-                      class="h-[5px] w-[5px] rounded-full bg-accent"
+                      class="h-[5px] w-[5px] shrink-0 rounded-full bg-accent"
                       title="{people(seminar.liveCount)} {tr("admin.in.the.room.right.now")}"
                     ></span>
                   {/if}
-                  {tr("admin.finished")}
+                  <Badge word={tr("admin.finished")} tone="neutral" />
                 </span>
               {:else if seminar.status === 'live'}
-                <span
-                  class="chip h-6 gap-1.5 bg-accent/15 px-2 text-2xs font-bold uppercase tracking-caps text-accent-text"
-                >
-                  <span class="h-[5px] w-[5px] rounded-full bg-accent"></span>
-                  {tr("admin.live.990")}
+                <span class="inline-flex items-center gap-1.5">
+                  <span class="h-[5px] w-[5px] shrink-0 rounded-full bg-accent"></span>
+                  <Badge word={tr("admin.live.990")} tone="accent" />
                   <!-- The head-count only on a phone: there is no "Joined"
                        column next to it there, and "live" without a number
                        does not tell a room with one visitor from a room with
@@ -1570,24 +1564,20 @@
                        own column, and the badge must not carry a second copy
                        of it. -->
                   <span
-                    class="hidden tabular-nums max-[640px]:inline"
+                    class="admin-num hidden max-[640px]:inline"
                     title="{people(seminar.liveCount)} {tr("admin.in.the.room.right.now")}"
                   >
                     · {seminar.liveCount}
                   </span>
                 </span>
               {:else if seminar.status === 'draft'}
-                <span
-                  class="chip h-6 border border-line px-2 text-2xs font-bold uppercase tracking-caps text-muted"
-                >
-                  {tr("admin.draft")}
-                </span>
+                <Badge word={tr("admin.draft")} tone="warning" />
               {:else}
                 <!-- Bare, so the four states share one right-hand lane: an empty
                      room is a fact, not a badge. The word is honest: people
                      came in, and now nobody is there — that does not mean
                      "finished". -->
-                <span class="text-2xs font-bold uppercase tracking-caps text-muted">{tr("admin.empty")}</span>
+                <span class="admin-label">{tr("admin.empty")}</span>
               {/if}
             </div>
           </td>
@@ -1604,8 +1594,8 @@
             line, under the date. Measured on the test bench on a 390px screen.
           -->
           <td
-            class="py-2 align-middle max-[640px]:order-2 max-[640px]:basis-11 max-[640px]:self-start
-                   max-[640px]:px-0"
+            class="py-3.5 align-middle max-[640px]:order-2 max-[640px]:basis-11 max-[640px]:self-start
+                   max-[640px]:px-0 max-[640px]:py-2"
           >
             <div class="relative flex justify-end">
               <button
@@ -1617,19 +1607,21 @@
                   event.stopPropagation()
                   openMenu(seminar, event.currentTarget as HTMLElement)
                 }}
-                class="flex h-8 w-8 items-center justify-center text-faint transition-colors duration-100 hover:bg-raised hover:text-ink max-[640px]:h-11 max-[640px]:w-11"
+                class="admin-icon-btn max-[640px]:h-11 max-[640px]:w-11"
               >
                 <Icon name="more" size={15} />
               </button>
 
               {#if openMenuId === seminar.id}
+                <!-- 272px rather than the competitions' 240: at the panel's 16px
+                     «Копировать ссылку на публикацию» is 269px and broke in two. -->
                 <div
                   role="menu"
                   tabindex="-1"
-                  class="row-menu fixed z-50 w-48 overflow-y-auto border border-line bg-canvas p-1 shadow-pop"
+                  class="row-menu admin-menu fixed z-50 w-[272px] overflow-y-auto"
                   style={menuStyle}
                 >
-                  <button role="menuitem" type="button" class="{ITEM} text-ink hover:bg-raised" onclick={() => copy(seminar)}>
+                  <button role="menuitem" type="button" class="admin-menu-item" onclick={() => copy(seminar)}>
                     {tr("admin.copy.link")}
                   </button>
                   <a
@@ -1637,17 +1629,17 @@
                     href={linkOf(seminar)}
                     target="_blank"
                     rel="noreferrer"
-                    class="{ITEM} text-ink hover:bg-raised"
+                    class="admin-menu-item"
                   >
                     {tr("admin.open.seminar")}
                   </a>
-                  <button role="menuitem" type="button" class="{ITEM} text-ink hover:bg-raised" onclick={() => startRename(seminar)}>
+                  <button role="menuitem" type="button" class="admin-menu-item" onclick={() => startRename(seminar)}>
                     {tr("admin.rename")}
                   </button>
                   <button
                     role="menuitem"
                     type="button"
-                    class="{ITEM} text-ink hover:bg-raised"
+                    class="admin-menu-item"
                     onclick={() => {
                       ruling = seminar
                       memoryErrorText = null
@@ -1664,16 +1656,16 @@
                   <button
                     role="menuitem"
                     type="button"
-                    class="{ITEM} text-ink hover:bg-raised"
+                    class="admin-menu-item"
                     onclick={() => void finish(seminar, !seminar.finishedAt)}
                   >
                     {seminar.finishedAt ? tr("admin.reopen.the.class") : tr("admin.end.the.class")}
                   </button>
-                  <div class="my-1 border-t border-line-soft"></div>
+                  <div class="admin-menu-sep"></div>
                   <button
                     role="menuitem"
                     type="button"
-                    class="{ITEM} text-ink hover:bg-raised"
+                    class="admin-menu-item"
                     onclick={() => onpublish?.(seminar.id)}
                   >
                     {tr('admin.course.menu.page')}
@@ -1682,7 +1674,7 @@
                     <button
                       role="menuitem"
                       type="button"
-                      class="{ITEM} text-ink hover:bg-raised"
+                      class="admin-menu-item"
                       onclick={() => void copyPublished(seminar)}
                     >
                       {tr("admin.copy.public.link")}
@@ -1690,7 +1682,7 @@
                     <button
                       role="menuitem"
                       type="button"
-                      class="{ITEM} text-ink hover:bg-raised"
+                      class="admin-menu-item"
                       onclick={() => void withdraw(seminar, true)}
                     >
                       {tr("admin.take.the.page.down")}
@@ -1699,7 +1691,7 @@
                     <button
                       role="menuitem"
                       type="button"
-                      class="{ITEM} text-ink hover:bg-raised"
+                      class="admin-menu-item"
                       onclick={() => void withdraw(seminar, false)}
                     >
                       {tr("admin.put.the.page.back")}
@@ -1708,17 +1700,17 @@
                   <button
                     role="menuitem"
                     type="button"
-                    class="{ITEM} text-ink hover:bg-raised"
+                    class="admin-menu-item"
                     onclick={() => void archive(seminar, !seminar.archivedAt)}
                   >
                     {seminar.archivedAt ? tr("admin.move.back.to.the.list") : tr("admin.archive")}
                   </button>
                   {#if canDelete}
-                    <div class="my-1 border-t border-line-soft"></div>
+                    <div class="admin-menu-sep"></div>
                     <button
                       role="menuitem"
                       type="button"
-                      class="{ITEM} text-danger hover:bg-danger/[0.08]"
+                      class="admin-menu-item text-danger"
                       onclick={() => confirmDelete(seminar)}
                     >
                       {tr("admin.delete")}
@@ -1737,21 +1729,23 @@
         </tr>
       {:else if shown.length === 0 && !creating}
         <tr class="max-[640px]:block">
-          <td colspan="6" class="py-12 text-center max-[640px]:block">
+          <td colspan="6" class="max-[640px]:block">
             {#if needle}
-              <p class="text-ui text-muted">{tr('admin.seminar.noMatch', { query: query.trim() })}</p>
-              <button type="button" class="btn-ghost mt-2" onclick={() => (query = '')}>
-                {tr("admin.show.all")} {count(seminars.length, 'seminar')}
-              </button>
+              <EmptyState title={tr('admin.seminar.noMatch', { query: query.trim() })}>
+                <button type="button" class="btn-ghost" onclick={() => (query = '')}>
+                  {tr("admin.show.all")} {count(seminars.length, 'seminar')}
+                </button>
+              </EmptyState>
             {:else if !loadError}
-              <p class="text-ui text-muted">{tr("admin.no.seminars.yet")}</p>
-              <p class="mt-1 text-ui text-muted">
-                {tr("admin.create.a.seminar.and.share.its.link.with.your.students")}
-              </p>
-              <button type="button" class="btn-primary mt-3" onclick={startCreate}>
-                <Icon name="plus" size={15} />
-                {tr("admin.new.seminar")}
-              </button>
+              <EmptyState
+                title={tr("admin.no.seminars.yet")}
+                hint={tr("admin.create.a.seminar.and.share.its.link.with.your.students")}
+              >
+                <button type="button" class="btn-primary" onclick={startCreate}>
+                  <Icon name="plus" size={14} />
+                  {tr("admin.new.seminar")}
+                </button>
+              </EmptyState>
             {/if}
           </td>
         </tr>
@@ -1761,7 +1755,7 @@
   </div>
 
   {#if seminars.length > 0}
-    <p class="mt-4 text-2xs text-muted">
+    <p class="admin-meta py-3.5">
       {#if needle}
         {tr("admin.showing")} {shown.length} {tr("admin.of")} {count(seminars.length, 'seminar')}
       {:else}
@@ -1794,7 +1788,10 @@
     aria-labelledby="seminar-rules-title"
     class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6"
   >
-    <div class="dialog-card flex max-h-full w-full max-w-[560px] flex-col border border-line bg-canvas shadow-pop">
+    <!-- 640, not 560: in the panel the rule switches are 16 px (RoomRulesRows ·
+         .admin-ui), and at 560 a three-way switch left its explanation a
+         column a few words wide. -->
+    <div class="dialog-card flex max-h-full w-full max-w-[640px] flex-col border border-line bg-canvas shadow-pop">
       <div class="flex flex-col gap-1.5 border-b border-line px-5 py-3.5">
         <div class="flex items-baseline gap-3">
           <h2 id="seminar-rules-title" class="min-w-0 truncate text-title font-semibold text-ink">
@@ -1902,7 +1899,7 @@
     aria-labelledby="delete-seminar-title"
     class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6"
   >
-    <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
+    <div class="dialog-card w-full max-w-[460px] border border-line bg-canvas p-5 shadow-pop">
       <h2 id="delete-seminar-title" class="text-title font-semibold text-ink">
         {tr('admin.seminar.deleteHeading', { name: doomed.name })}
       </h2>
@@ -1924,15 +1921,12 @@
       -->
       {#if doomed.publication}
         <label class="mt-3 flex cursor-pointer items-start gap-2.5 border border-line p-3">
-          <input
-            type="checkbox"
-            bind:checked={dropReading}
-            disabled={deleteBusy}
-            class="mt-0.5 accent-accent"
-          />
+          <span class="mt-1 flex">
+            <Check bind:checked={dropReading} disabled={deleteBusy} size={16} />
+          </span>
           <span class="text-ui leading-relaxed text-muted">
             {tr("admin.delete.the.public.page.as.well")}
-            <span class="font-mono text-code text-ink">/p/{addressOf(doomed.publication)}</span>{tr('admin.seminar.pageCopy', { count: doomed.publication.materials })}
+            <span class="font-mono text-2xs text-ink">/p/{addressOf(doomed.publication)}</span>{tr('admin.seminar.pageCopy', { count: doomed.publication.materials })}
             {#if dropReading}
               {tr("admin.the.link.the.class.was.given.stops.opening")}
             {:else}
@@ -1968,7 +1962,7 @@
         </button>
         <button
           type="button"
-          class="btn bg-danger text-white hover:brightness-110 active:brightness-95"
+          class="btn-danger-solid"
           disabled={deleteBusy}
           onclick={() => void destroy()}
         >

@@ -166,9 +166,16 @@
   line-height: var(--leading-small, 19px);
 }
 
+/* The three steps below read variables only .admin-ui (index.css) sets: the
+   tabs' scale lifts them so they never fall under the 16 px body. */
 .admin .text-code {
-  font-size: 13px;
-  line-height: 19px;
+  font-size: var(--type-code, 13px);
+  line-height: var(--leading-code, 19px);
+}
+
+.admin .text-code-lg {
+  font-size: var(--type-code-lg, 14px);
+  line-height: var(--leading-code-lg, 22px);
 }
 
 .admin .text-ui {
@@ -177,8 +184,8 @@
 }
 
 .admin .text-ui-lg {
-  font-size: 15px;
-  line-height: 22px;
+  font-size: var(--type-ui-lg, 15px);
+  line-height: var(--leading-ui-lg, 22px);
 }
 
 .admin .text-title {
@@ -204,7 +211,8 @@
 .admin .btn-primary,
 .admin .btn-ghost,
 .admin .btn-outline,
-.admin .btn-danger {
+.admin .btn-danger,
+.admin .btn-danger-solid {
   font-size: var(--type-ui, 14px);
   line-height: var(--leading-ui, 20px);
 }

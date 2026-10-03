@@ -16,9 +16,12 @@
  * a row without bytes.
  *
  * GC runs right after the writes that can orphan a file (a page write, a
- * removed material, a deleted page), synchronously with them: a build puts
- * its files and commits its page without yielding in between
- * (publish/materials.ts), so no GC can run between its steps 2 and 3.
+ * removed material, a deleted page), synchronously with them. A build puts
+ * its files through a hold (holdPageFiles), yielding between them: a folder
+ * is up to a thousand files with an fsync each, and doing them in one
+ * stretch froze every room on the instance for seconds. The GC skips what a
+ * hold has put, so a page deleted meanwhile cannot take a file the build
+ * is about to reference; the build releases the hold after its commit.
  */
 import { createHash, randomBytes } from 'node:crypto'
 import fs from 'node:fs'
@@ -82,11 +85,19 @@ const insertRow = db.prepare(
   'INSERT OR IGNORE INTO page_files (hash, mime, bytes, crc32, at) VALUES (?, ?, ?, ?, ?)',
 )
 const selectRow = db.prepare('SELECT hash, mime, bytes, crc32, at FROM page_files WHERE hash = ?')
+/*
+ * A file is in use while a material row names it, or a file of a folder
+ * material does (publication_material_files): a folder's own row carries no
+ * bytes, only the hash of its list.
+ */
 const selectOrphans = db.prepare(`
   SELECT hash FROM page_files f
   WHERE NOT EXISTS (SELECT 1 FROM publication_materials m WHERE m.hash = f.hash)
+    AND NOT EXISTS (SELECT 1 FROM publication_material_files d WHERE d.hash = f.hash)
 `)
 const deleteRow = db.prepare('DELETE FROM page_files WHERE hash = ?')
+/** Hashes put through a hold and not yet released, with how many holds have them. */
+const pending = new Map<string, number>()
 const selectAll = db.prepare('SELECT hash FROM page_files')
 
 export function sha256(body: Uint8Array): string {
@@ -125,6 +136,38 @@ export function putPageFile(body: Buffer, mime: string): PageFile {
   return pageFileInfo(hash)!
 }
 
+/**
+ * A build's files between their put and its commit.
+ *
+ * `put` stores the bytes like putPageFile and keeps the hash out of the GC
+ * until `release`. The put and the hold happen in one synchronous call, so
+ * no GC can find the row unreferenced in between; `release` is called once
+ * the page's transaction references the files, or once the build gave up
+ * (and then the next GC takes what nothing references).
+ */
+export function holdPageFiles(): {
+  put: (body: Buffer, mime: string) => PageFile
+  release: () => void
+} {
+  const held: string[] = []
+  return {
+    put(body, mime) {
+      const file = putPageFile(body, mime)
+      pending.set(file.hash, (pending.get(file.hash) ?? 0) + 1)
+      held.push(file.hash)
+      return file
+    },
+    release() {
+      for (const hash of held) {
+        const left = (pending.get(hash) ?? 1) - 1
+        if (left > 0) pending.set(hash, left)
+        else pending.delete(hash)
+      }
+      held.length = 0
+    },
+  }
+}
+
 function fileHolds(file: string, bytes: number): boolean {
   try {
     return fs.statSync(file).size === bytes
@@ -157,9 +200,14 @@ function unlinkQuietly(file: string): void {
   }
 }
 
-/** Remove every stored file no material refers to. Returns how many went. */
+/**
+ * Remove every stored file no material (nor a folder's file) refers to, and
+ * no build holds. Returns how many went.
+ */
 export function gcPageFiles(): number {
-  const orphans = (selectOrphans.all() as { hash: string }[]).map((row) => row.hash)
+  const orphans = (selectOrphans.all() as { hash: string }[])
+    .map((row) => row.hash)
+    .filter((hash) => !pending.has(hash))
   if (orphans.length === 0) return 0
   db.transaction(() => {
     for (const hash of orphans) deleteRow.run(hash)

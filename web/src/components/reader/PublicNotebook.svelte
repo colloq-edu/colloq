@@ -144,7 +144,7 @@
              The rule set is the same as for a note in the room (`.prose-note`) —
              the promise of "the same cells" is kept by those rules, not by a
              second description of the same thing. -->
-        <div class="prose-note prose-cell leading-relaxed">
+        <div class="prose-note prose-cell">
           {#if render}
             <!-- Note images load as they come near, like output images. lib/render
                  sets the attribute on the nodes: a string rewrite of sanitized
@@ -198,7 +198,7 @@
             <div class="bg-surface/60 px-4 pb-3">
               <button
                 type="button"
-                class="press -my-1 flex min-h-8 items-center gap-1 text-[14px] leading-5 text-accent-text"
+                class="press -my-1 flex min-h-8 items-center gap-1 text-[15px] leading-[22px] text-accent-text"
                 aria-expanded={shown.hidden === 0}
                 onclick={() => (unfolded = { ...unfolded, [cell.id]: !unfolded[cell.id] })}
               >

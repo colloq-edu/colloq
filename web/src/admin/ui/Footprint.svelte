@@ -44,8 +44,10 @@
 <div class="flex flex-col gap-2.5 border-t border-line-soft pt-5">
   <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
     <div class="flex flex-wrap items-baseline gap-x-2.5">
-      <span class="text-2xs font-black uppercase tracking-caps text-ink">{tr('admin.footprint.title')}</span>
-      <span class="text-head font-black tracking-tight text-ink">
+      <!-- The Resources tab's gauge voice («ПАМЯТЬ 28 из 72 ГБ»): a stacked
+           section title, then the figure. Black weight was the workspace's. -->
+      <span class="admin-section-title">{tr('admin.footprint.title')}</span>
+      <span class="text-head font-bold text-ink">
         {tr('admin.footprint.takes', { memory: gb(takes.memoryMb), count: takes.cpus })}
       </span>
     </div>
@@ -64,7 +66,7 @@
       <span class="bg-faint/35" style:width={width(machine.others, machine.scale)}></span>
       <span class="flex-1 border border-dashed border-line bg-surface"></span>
     </div>
-    <div class="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-2xs text-muted">
+    <div class="admin-meta flex flex-wrap items-center gap-x-5 gap-y-1.5">
       <span class="flex items-center gap-1.5">
         <span class="size-2 shrink-0 bg-primary"></span>{tr('admin.footprint.room', { memory: gb(roomMemoryMb) })}
       </span>
@@ -76,7 +78,7 @@
       <span class="flex items-center gap-1.5">
         <span class="size-2 shrink-0 bg-faint/35"></span>{tr('admin.footprint.others', { memory: gb(machine.others) })}
       </span>
-      <span class="ml-auto font-mono text-code text-faint">
+      <span class="ml-auto font-mono">
         {tr('admin.footprint.machine', { memory: gb(machine.totalMb), count: machine.totalCpus })}
       </span>
     </div>

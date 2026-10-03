@@ -2,7 +2,8 @@
  * Courses and publications: the queries against them.
  *
  * The SCHEMA of these tables (`courses`, `publications`, `publication_steps`,
- * `publication_blobs`, `publication_materials`, `page_files`) is not here but
+ * `publication_blobs`, `publication_materials`, `publication_material_files`,
+ * `page_files`) is not here but
  * in `db.ts`, together with the
  * migrations, and it has one owner: `sessions` is already edited by two files
  * (`db.ts` adds the environment and rules columns, `admin-instance.ts` the
@@ -18,6 +19,7 @@
 import { tr } from '@shared/i18n'
 import { randomBytes } from 'node:crypto'
 import { db } from '../db.js'
+import { holdsOf } from '@shared/materials'
 import {
   isRoomAccess,
   MATERIAL_KINDS,
@@ -578,6 +580,22 @@ const selectHasNotebook = db.prepare(
   "SELECT 1 AS one FROM publication_materials WHERE pub = ? AND key = ? AND kind = 'notebook'",
 )
 const deleteMaterialRow = db.prepare('DELETE FROM publication_materials WHERE pub = ? AND key = ?')
+const clearFolderFiles = db.prepare('DELETE FROM publication_material_files WHERE pub = ?')
+const deleteFolderFiles = db.prepare(
+  'DELETE FROM publication_material_files WHERE pub = ? AND key = ?',
+)
+const insertFolderFile = db.prepare(`
+  INSERT OR IGNORE INTO publication_material_files (pub, key, ord, path, hash, bytes)
+  VALUES (?, ?, ?, ?, ?, ?)
+`)
+const selectFolderFiles = db.prepare(`
+  SELECT key, path, hash, bytes FROM publication_material_files WHERE pub = ? ORDER BY key, ord
+`)
+const selectMissingFolderFiles = db.prepare(`
+  SELECT pub, key, path, hash FROM publication_material_files d
+  WHERE NOT EXISTS (SELECT 1 FROM page_files f WHERE f.hash = d.hash)
+  ORDER BY pub, key, ord
+`)
 const selectNotebookCells = db.prepare(`
   SELECT cells FROM publication_materials
   WHERE pub = ? AND kind = 'notebook' AND cells IS NOT NULL
@@ -646,16 +664,30 @@ export function listPublications(): Publication[] {
 
 /* --------------------------------------------------------------- materials */
 
+/** One file of a folder material: its room path ('data/train.csv') and its bytes in page_files. */
+export interface FolderFile {
+  path: string
+  hash: string
+  bytes: number
+}
+
 /** One material of a page, as the build hands it over and the store keeps it. */
 export interface StoredMaterial {
   key: string
   kind: MaterialKind
   name: string
-  /** Room-relative path; the ZIP and the download name come from it. */
+  /** Room-relative ('data' for the folder `data/`); the ZIP and the download name come from it. */
   path: string
-  /** page_files.hash of the downloadable bytes, put there BEFORE the write. */
+  /**
+   * page_files.hash of the downloadable bytes, put there BEFORE the write.
+   * A folder has no bytes of its own: its hash is the hash of its file list
+   * (materials.ts · folderHash), which page_files never holds.
+   */
   hash: string
+  /** A folder: every file in it, together. */
   bytes: number
+  /** Folders only: the files, each already in page_files. */
+  files?: FolderFile[] | null
   /** Notebooks only: the projected cells, the outline and the counts. */
   cells?: PublicCell[] | null
   outline?: OutlineEntry[] | null
@@ -675,6 +707,10 @@ export interface MaterialRow {
   outline: OutlineEntry[]
   cellCount: number | null
   outputCount: number | null
+  /** Folders only: the files, in the order they were published. */
+  files?: FolderFile[]
+  /** Folders only: what those files are (MaterialRef · holds), for tags and labels. */
+  holds?: MaterialKind[]
 }
 
 interface MaterialDbRow {
@@ -701,20 +737,88 @@ function parseOutline(text: string | null): OutlineEntry[] {
 }
 
 export function listMaterials(pub: string): MaterialRow[] {
-  return (selectMaterials.all(pub) as MaterialDbRow[]).map((row) => ({
-    key: row.key,
-    ord: row.ord,
-    kind: (MATERIAL_KINDS as readonly string[]).includes(row.kind)
+  const rows = selectMaterials.all(pub) as MaterialDbRow[]
+  // One query for every folder of the page, and none for a page without folders.
+  const files = rows.some((row) => row.kind === 'folder') ? folderFilesOf(pub) : null
+  return rows.map((row) => {
+    const kind = (MATERIAL_KINDS as readonly string[]).includes(row.kind)
       ? (row.kind as MaterialKind)
-      : 'file',
-    name: row.name,
-    path: row.path,
-    hash: row.hash,
-    bytes: row.bytes,
-    outline: parseOutline(row.outline),
-    cellCount: row.cell_count,
-    outputCount: row.output_count,
-  }))
+      : 'file'
+    const material: MaterialRow = {
+      key: row.key,
+      ord: row.ord,
+      kind,
+      name: row.name,
+      path: row.path,
+      hash: row.hash,
+      bytes: row.bytes,
+      outline: parseOutline(row.outline),
+      cellCount: row.cell_count,
+      outputCount: row.output_count,
+    }
+    if (kind === 'folder') {
+      material.files = files?.get(row.key) ?? []
+      material.holds = holdsOf(material.files.map((file) => file.path))
+    }
+    return material
+  })
+}
+
+/** Every folder file of a page, by material key. */
+function folderFilesOf(pub: string): Map<string, FolderFile[]> {
+  const out = new Map<string, FolderFile[]>()
+  const rows = selectFolderFiles.all(pub) as (FolderFile & { key: string })[]
+  for (const { key, path, hash, bytes } of rows) {
+    const list = out.get(key)
+    if (list) list.push({ path, hash, bytes })
+    else out.set(key, [{ path, hash, bytes }])
+  }
+  return out
+}
+
+/**
+ * Folder files whose bytes are not in page_files.
+ *
+ * A release before folders sweeps page files at startup by
+ * publication_materials alone, so a server rolled back to it and brought
+ * forward again finds its folders' rows with nothing behind them
+ * (materials.ts · repairFolderFiles).
+ */
+export function missingFolderFiles(): MissingFolderFile[] {
+  return selectMissingFolderFiles.all() as MissingFolderFile[]
+}
+
+interface MissingFolderFile {
+  pub: string
+  key: string
+  path: string
+  hash: string
+}
+
+/** A page's material rows and its folders' files, replacing the old ones (a build, an adoption). */
+function insertMaterials(pub: string, materials: readonly StoredMaterial[]): void {
+  clearMaterials.run(pub)
+  clearFolderFiles.run(pub)
+  materials.forEach((m, ord) => {
+    insertMaterial.run({
+      pub,
+      key: m.key,
+      ord,
+      kind: m.kind,
+      name: m.name,
+      path: m.path,
+      hash: m.hash,
+      bytes: m.bytes,
+      cells: m.cells ? JSON.stringify(m.cells) : null,
+      outline: m.outline ? JSON.stringify(m.outline) : null,
+      cell_count: m.cellCount ?? null,
+      output_count: m.outputCount ?? null,
+    })
+    if (m.kind !== 'folder') return
+    ;(m.files ?? []).forEach((file, at) => {
+      insertFolderFile.run(pub, m.key, at, file.path, file.hash, file.bytes)
+    })
+  })
 }
 
 export function materialCount(pub: string): number {
@@ -741,6 +845,7 @@ export function dropMaterial(
 ): boolean {
   const dropped = db.transaction(() => {
     if (deleteMaterialRow.run(pub, key).changes === 0) return false
+    deleteFolderFiles.run(pub, key)
     bumpForRemoval.run({
       id: pub,
       selection: change.selection ? JSON.stringify(change.selection) : null,
@@ -802,9 +907,10 @@ const LEGACY_STEP_LABEL = 80
  * last week's link lands in the same place. `first_at` is kept too, while
  * `published_at` becomes now and `revision` grows by one.
  *
- * The files behind `materials[].hash` must already be in page_files
- * (page-files.ts · putPageFile); the GC after the commit removes whatever
- * the previous build referenced and this one does not.
+ * The files behind `materials[].hash` and every folder's `files[].hash`
+ * must already be in page_files (page-files.ts · putPageFile); the GC after
+ * the commit removes whatever the previous build referenced and this one
+ * does not.
  */
 export function writePublication(input: {
   sessionId: string
@@ -854,23 +960,7 @@ export function writePublication(input: {
         zip_bytes: zipBytes,
       })
     }
-    clearMaterials.run(id)
-    input.materials.forEach((m, ord) => {
-      insertMaterial.run({
-        pub: id,
-        key: m.key,
-        ord,
-        kind: m.kind,
-        name: m.name,
-        path: m.path,
-        hash: m.hash,
-        bytes: m.bytes,
-        cells: m.cells ? JSON.stringify(m.cells) : null,
-        outline: m.outline ? JSON.stringify(m.outline) : null,
-        cell_count: m.cellCount ?? null,
-        output_count: m.outputCount ?? null,
-      })
-    })
+    insertMaterials(id, input.materials)
     clearBlobs.run(id)
     for (const blob of input.blobs) insertBlob.run(id, blob.hash, blob.mime, blob.body)
     clearSteps.run(id)
@@ -907,23 +997,7 @@ export function adoptMaterials(
   title?: string,
 ): void {
   db.transaction(() => {
-    clearMaterials.run(pub)
-    materials.forEach((m, ord) => {
-      insertMaterial.run({
-        pub,
-        key: m.key,
-        ord,
-        kind: m.kind,
-        name: m.name,
-        path: m.path,
-        hash: m.hash,
-        bytes: m.bytes,
-        cells: m.cells ? JSON.stringify(m.cells) : null,
-        outline: m.outline ? JSON.stringify(m.outline) : null,
-        cell_count: m.cellCount ?? null,
-        output_count: m.outputCount ?? null,
-      })
-    })
+    insertMaterials(pub, materials)
     adoptRow.run(Math.max(0, Math.round(zipBytes)), title ?? null, pub)
   })()
 }
@@ -984,6 +1058,7 @@ export function deletePublication(id: string): void {
     clearSteps.run(id)
     clearBlobs.run(id)
     clearMaterials.run(id)
+    clearFolderFiles.run(id)
     deletePubRow.run(id)
     forgetAddressesOf.run('publication', id)
   })()

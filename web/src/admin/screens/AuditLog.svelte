@@ -20,6 +20,7 @@
   import { adminAuth } from '@/admin/auth.svelte'
   import { auditActionLabel, auditDetail, auditTarget } from '@/admin/audit'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
+  import EmptyState from '@/admin/ui/EmptyState.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import type { AdminAuditEvent } from '@shared/admin'
 
@@ -66,16 +67,23 @@
     return formatDate(at, { dateStyle: 'medium', timeStyle: 'short' })
   }
 
-  /* The lanes, declared once so the header and every row cannot drift apart. */
-  const PHONE_LANE = 'max-[640px]:w-full max-[640px]:min-w-0 max-[640px]:pr-0'
-  const COL_WHEN = `w-[150px] shrink-0 pr-4 ${PHONE_LANE}`
-  const COL_WHO = `w-[200px] min-w-[140px] pr-4 ${PHONE_LANE}`
-  const COL_WHAT = `min-w-[220px] flex-1 pr-4 ${PHONE_LANE}`
+  /*
+   * The lanes, declared once so the header and every row cannot drift apart.
+   * The space between them is the shared rows' gap (admin-list-head,
+   * admin-data-row), not padding of their own, so it is the gap every other
+   * list in the panel has. The list's minimum is the floors plus the three
+   * gaps (150 + 140 + 220 + 130 + 3 × 16): below it the list scrolls sideways
+   * in its own box instead of pushing the address past the edge.
+   */
+  const PHONE_LANE = 'max-[640px]:w-full max-[640px]:min-w-0'
+  const COL_WHEN = `w-[150px] shrink-0 ${PHONE_LANE}`
+  const COL_WHO = `w-[200px] min-w-[140px] ${PHONE_LANE}`
+  const COL_WHAT = `min-w-[220px] flex-1 ${PHONE_LANE}`
   const COL_FROM = `w-[130px] shrink-0 ${PHONE_LANE}`
 </script>
 
 {#snippet eyebrow(text: string)}
-  <span class="block text-micro font-bold uppercase tracking-label text-muted">{text}</span>
+  <span class="admin-label block">{text}</span>
 {/snippet}
 
 <AdminPage
@@ -87,15 +95,17 @@
   {#if loading}
     <div class="h-24"></div>
   {:else if error && events.length === 0}
-    <div class="flex items-center gap-3 py-6">
-      <p class="text-ui text-danger">{error}</p>
-      <button type="button" class="btn-outline" onclick={() => void load()}>{tr('admin.try.again')}</button>
+    <div class="flex flex-wrap items-center gap-3 py-4">
+      <p class="min-w-0 flex-1 text-ui text-danger" role="alert">{error}</p>
+      <button type="button" class="btn-outline shrink-0" onclick={() => void load()}>
+        {tr('admin.try.again')}
+      </button>
     </div>
   {:else if events.length === 0}
-    <p class="py-6 text-ui text-muted">{tr('admin.audit.empty')}</p>
+    <EmptyState title={tr('admin.audit.empty')} />
   {:else}
-    <div class="min-w-[640px] max-[640px]:min-w-0">
-      <div class="sticky top-0 z-10 flex h-9 items-center border-b border-line bg-canvas max-[640px]:hidden">
+    <div class="min-w-[688px] max-[640px]:min-w-0">
+      <div class="admin-list-head sticky top-0 z-10 bg-canvas max-[640px]:hidden">
         <div class={COL_WHEN}>{@render eyebrow(tr('admin.audit.when'))}</div>
         <div class={COL_WHO}>{@render eyebrow(tr('admin.audit.who'))}</div>
         <div class={COL_WHAT}>{@render eyebrow(tr('admin.audit.what'))}</div>
@@ -105,14 +115,12 @@
       {#each events as event (event.id)}
         {@const detail = auditDetail(event)}
         {@const target = auditTarget(event)}
-        <div
-          class="flex items-start border-b border-line-soft py-3 max-[640px]:flex-wrap max-[640px]:gap-y-1.5"
-        >
-          <div class="{COL_WHEN} font-mono text-2xs text-muted">{when(event.at)}</div>
+        <div class="admin-data-row items-start max-[640px]:flex-wrap max-[640px]:gap-y-1.5">
+          <div class="{COL_WHEN} admin-num text-muted">{when(event.at)}</div>
           <div class={COL_WHO}>
             {#if event.actor}
-              <p class="truncate text-ui font-semibold text-ink">{event.actor.name}</p>
-              <p class="truncate font-mono text-2xs text-muted">{event.actor.email}</p>
+              <p class="admin-row-title truncate">{event.actor.name}</p>
+              <p class="admin-meta truncate font-mono">{event.actor.email}</p>
             {:else}
               <p class="text-ui text-muted">—</p>
             {/if}
@@ -126,16 +134,16 @@
               {/if}
             </p>
             {#if detail}
-              <p class="mt-0.5 whitespace-pre-line break-words font-mono text-2xs text-muted">{detail}</p>
+              <p class="admin-meta mt-0.5 whitespace-pre-line break-words font-mono">{detail}</p>
             {/if}
           </div>
-          <div class="{COL_FROM} break-all font-mono text-2xs text-muted">{event.ip ?? '—'}</div>
+          <div class="{COL_FROM} admin-meta break-all font-mono">{event.ip ?? '—'}</div>
         </div>
       {/each}
     </div>
 
     {#if error}
-      <p class="mt-3 text-ui text-danger">{error}</p>
+      <p class="mt-3 text-ui text-danger" role="alert">{error}</p>
     {/if}
     {#if next !== null}
       <div class="py-5">

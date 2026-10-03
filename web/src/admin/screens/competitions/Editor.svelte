@@ -372,7 +372,7 @@
   const refusal = $derived(view.ready)
   const blocked = $derived<string | null>(refusal === null ? null : refusalSection(refusal))
 
-  const HEAD = 'text-micro font-bold uppercase tracking-caps text-muted'
+  const HEAD = 'admin-label'
   const TILE = 'flex flex-col gap-1.5 border border-line px-3.5 py-3'
 </script>
 
@@ -402,10 +402,9 @@
           maxlength={LIMITS.title}
           bind:value={title}
         />
-        <div class="flex min-w-0 flex-[1_1_200px] items-center border border-line bg-surface px-3">
-          <span class="shrink-0 font-mono text-2xs text-faint">/k/</span>
+        <div class="admin-affix flex-[1_1_200px]">
+          <span class="shrink-0 font-mono text-2xs text-muted">/k/</span>
           <input
-            class="h-[38px] min-w-0 flex-1 bg-transparent font-mono text-2xs text-ink focus:outline-none"
             aria-label={tr('admin.competitions.slugLabel')}
             maxlength={LIMITS.slug}
             bind:value={slug}
@@ -576,8 +575,7 @@
         <div class="flex flex-col gap-1.5 px-3 py-2.5">
           <div class="flex items-center gap-2">
             <input
-              class="h-7 w-[52px] border border-line bg-canvas text-center font-mono text-2xs text-ink
-                     focus:outline-none focus:ring-2 focus:ring-accent/40"
+              class="field w-[76px] px-2 text-center font-mono"
               type="number"
               min={LIMITS.publicPercent.min}
               max={LIMITS.publicPercent.max}
@@ -714,8 +712,7 @@
             {/if}
             <button
               type="button"
-              class="shrink-0 text-2xs text-accent-text underline decoration-dotted underline-offset-4
-                     hover:brightness-110 disabled:text-faint"
+              class="admin-link shrink-0"
               disabled={busy || baselineInFlight || view.capabilities?.execution.available === false}
               onclick={() => void checkBaseline()}
             >
@@ -821,7 +818,7 @@
       <div class="flex flex-wrap items-center gap-3.5">
         <button
           type="button"
-          class="btn-outline h-[30px] border-primary px-3 text-micro font-bold text-primary"
+          class="btn-outline shrink-0"
           disabled={busy || !view.baseline || view.capabilities?.execution.available === false}
           onclick={() => void checkMetric()}
         >
@@ -846,8 +843,7 @@
       <div class="flex flex-wrap items-center gap-2.5 border border-line px-3.5 py-2.5">
         <span class="h-2 w-2 shrink-0 bg-accent" aria-hidden="true"></span>
         <select
-          class="h-7 min-w-0 border border-line bg-canvas px-1.5 font-mono text-2xs text-ink
-                 focus:outline-none focus:ring-2 focus:ring-accent/40"
+          class="field w-auto min-w-0 font-mono"
           aria-label={tr('admin.competitions.environmentLabel')}
           bind:value={environment}
         >
@@ -961,24 +957,24 @@
     <div class="flex flex-col gap-3.5">
       <div class="flex flex-wrap gap-2.5">
         <label class="min-w-0 flex-1 basis-[220px]">
-          <span class="mb-1 block {HEAD}">{tr('admin.competitions.startsAt')}</span>
+          <span class="mb-1.5 block {HEAD}">{tr('admin.competitions.startsAt')}</span>
           <input
-            class="field font-mono text-2xs"
+            class="field font-mono"
             type="datetime-local"
             aria-label={tr('admin.competitions.startsAt')}
             bind:value={startsAt}
           />
-          <span class="mt-1 block text-micro text-muted">{tr('admin.competitions.startsAtHint')}</span>
+          <span class="admin-meta mt-1.5 block">{tr('admin.competitions.startsAtHint')}</span>
         </label>
         <label class="min-w-0 flex-1 basis-[220px]">
-          <span class="mb-1 block {HEAD}">{tr('admin.competitions.deadlineAt')}</span>
+          <span class="mb-1.5 block {HEAD}">{tr('admin.competitions.deadlineAt')}</span>
           <input
-            class="field font-mono text-2xs"
+            class="field font-mono"
             type="datetime-local"
             aria-label={tr('admin.competitions.deadlineAt')}
             bind:value={deadline}
           />
-          <span class="mt-1 block text-micro text-muted">{tr('admin.competitions.deadlineHint')}</span>
+          <span class="admin-meta mt-1.5 block">{tr('admin.competitions.deadlineHint')}</span>
         </label>
       </div>
 
@@ -1068,7 +1064,7 @@
     {#snippet eyebrow()}
       <button
         type="button"
-        class="shrink-0 text-micro text-muted transition-colors duration-100 hover:text-ink"
+        class="shrink-0 transition-colors duration-100 hover:text-ink"
         onclick={() => navigate('/admin/competitions')}
       >
         {tr('competitions.title')}
@@ -1086,14 +1082,14 @@
     {#snippet actions()}
       <button
         type="button"
-        class="btn-ghost max-[640px]:h-11"
+        class="btn-ghost"
         onclick={() => navigate('/admin/competitions')}
       >
         {tr('admin.cancel')}
       </button>
       <button
         type="button"
-        class="btn-outline max-[640px]:h-11 max-[640px]:flex-1"
+        class="btn-outline max-[640px]:flex-1"
         disabled={busy}
         onclick={() => void save()}
       >
@@ -1105,7 +1101,7 @@
       {#if draftState}
         <button
           type="button"
-          class="btn-primary text-micro font-bold uppercase tracking-caps max-[640px]:h-11 max-[640px]:flex-1"
+          class="btn-primary btn-caps max-[640px]:flex-1"
           disabled={busy || refusal !== null || view.capabilities?.execution.available === false}
           title={refusal === null ? undefined : refusalText(refusal)}
           onclick={() => void open()}

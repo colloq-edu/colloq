@@ -15,6 +15,8 @@
   import { tr } from '@shared/i18n'
   import { onMount, tick } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
+  import EmptyState from '@/admin/ui/EmptyState.svelte'
+  import SearchField from '@/admin/ui/SearchField.svelte'
   import Editor from '@/admin/screens/competitions/Editor.svelte'
   import Live, { type LiveTab } from '@/admin/screens/competitions/Live.svelte'
   import Badge from '@/admin/screens/competitions/Badge.svelte'
@@ -251,22 +253,17 @@
     }
   })
 
-  const HEAD = 'text-micro font-bold uppercase tracking-caps text-muted'
-  /*
-   * A column caption that moves into the row once there are no columns left.
-   *
-   * On a narrow screen the header is hidden, and without captions "28 · 143 ·
-   * 0.0412" is three numbers with no names: the list of classes has been
-   * through exactly this already (admin-phone).
-   */
-  const MENU_ITEM =
-    'block w-full px-3 py-2 text-left text-ui text-ink transition-colors duration-100 hover:bg-raised'
 </script>
 
+<!--
+  A column caption that moves into the row once there are no columns left.
+
+  On a narrow screen the header is hidden, and without captions "28 · 143 ·
+  0.0412" is three numbers with no names: the list of classes has been
+  through exactly this already (admin-phone).
+-->
 {#snippet caption(label: string)}
-  <span class="comp-label mr-1.5 font-sans text-micro font-bold uppercase tracking-caps text-faint">
-    {label}
-  </span>
+  <span class="comp-label admin-label mr-1.5 font-sans">{label}</span>
 {/snippet}
 
 {#if open !== null && open !== 'new'}
@@ -281,42 +278,30 @@
          colleagues, so people will come here by a stale one — and an empty
          area without words would be the only thing they saw here. -->
     <AdminPage title={tr('competitions.title')}>
-      <div class="px-8 py-16 text-center">
-        {#if loadingOne}
-          <p class="text-ui text-muted">{tr('competitions.loading')}</p>
-        {:else}
-          <p class="text-title font-semibold text-ink">{tr('admin.competitions.notOpened')}</p>
-          <p class="mx-auto mt-2 max-w-sm text-ui text-muted">
-            {error ?? tr('admin.competitions.checkAddress')}
-          </p>
-          <button type="button" class="btn-primary mt-4" onclick={() => navigate('/admin/competitions')}>
+      {#if loadingOne}
+        <p class="py-16 text-center text-ui text-muted">{tr('competitions.loading')}</p>
+      {:else}
+        <EmptyState
+          title={tr('admin.competitions.notOpened')}
+          hint={error ?? tr('admin.competitions.checkAddress')}
+        >
+          <button type="button" class="btn-primary" onclick={() => navigate('/admin/competitions')}>
             {tr('admin.competitions.all')}
           </button>
-        {/if}
-      </div>
+        </EmptyState>
+      {/if}
     </AdminPage>
   {/if}
 {:else}
   <AdminPage title={tr('competitions.title')} subtitle={tr('admin.competitions.lede')}>
     {#snippet actions()}
-      <label class="relative flex items-center max-[640px]:w-full">
-        <Icon name="search" size={12} class="pointer-events-none absolute left-3 text-faint" />
-        <input
-          class="h-[34px] w-[220px] border border-line bg-canvas pl-8 pr-3 text-2xs text-ink
-                 placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40
-                 max-[640px]:h-11 max-[640px]:w-full"
-          placeholder={tr('admin.competitions.search')}
-          aria-label={tr('admin.competitions.search')}
-          bind:value={query}
-        />
-      </label>
+      <SearchField label={tr('admin.competitions.search')} bind:value={query} />
       <button
         type="button"
-        class="btn-primary h-[34px] gap-2 px-4 text-micro font-bold uppercase tracking-caps
-               max-[640px]:h-11 max-[640px]:w-full"
+        class="btn-primary btn-caps gap-2 px-4 max-[640px]:w-full"
         onclick={() => void startCreating()}
       >
-        <span aria-hidden="true" class="text-ui-lg leading-none">+</span>
+        <Icon name="plus" size={14} />
         {tr('admin.competitions.new')}
       </button>
     {/snippet}
@@ -339,15 +324,12 @@
           class={cn('h-2 w-2 shrink-0', list.queue.paused ? 'bg-faint' : 'bg-accent')}
           aria-hidden="true"
         ></span>
-        <span class="shrink-0 text-micro font-bold uppercase tracking-caps text-primary">
-          {tr('admin.competitions.runner')}
-        </span>
+        <span class="admin-label shrink-0 text-primary">{tr('admin.competitions.runner')}</span>
         <span class="text-2xs text-ink">{line.head}</span>
         <span class="min-w-0 text-2xs text-muted">{line.tail}</span>
         <button
           type="button"
-          class="ml-auto shrink-0 text-2xs text-accent-text underline decoration-dotted
-                 underline-offset-4 hover:brightness-110 disabled:text-faint"
+          class="admin-link ml-auto shrink-0"
           disabled={busy}
           onclick={() => void togglePause()}
         >
@@ -375,8 +357,7 @@
         <div class="mb-5 mt-4 flex flex-wrap items-center gap-3 border border-line bg-surface px-4 py-3">
           <input
             bind:this={titleField}
-            class="h-9 min-w-0 flex-[3_1_240px] border border-line bg-canvas px-3 text-ui text-ink
-                   placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
+            class="field min-w-0 flex-[3_1_240px]"
             placeholder={tr('admin.competitions.titlePlaceholder')}
             aria-label={tr('admin.competitions.titleLabel')}
             maxlength={LIMITS.title}
@@ -386,11 +367,9 @@
               if (event.key === 'Escape') creating = false
             }}
           />
-          <div class="flex min-w-0 flex-[1_1_200px] items-center border border-line bg-canvas px-3">
-            <span class="shrink-0 font-mono text-2xs text-faint">/k/</span>
+          <div class="admin-affix flex-[1_1_200px]">
+            <span class="shrink-0 font-mono text-2xs text-muted">/k/</span>
             <input
-              class="h-9 min-w-0 flex-1 bg-transparent font-mono text-2xs text-ink
-                     placeholder:text-faint focus:outline-none"
               aria-label={tr('admin.competitions.slugLabel')}
               maxlength={LIMITS.slug}
               value={proposedSlug}
@@ -432,34 +411,30 @@
       {#if loadingList && !list}
         <RowsSkeleton label={tr('competitions.loading')} />
       {:else if shown.length === 0}
-        <div class="py-16 text-center">
-          <p class="text-title font-semibold text-ink">
-            {query.trim()
-              ? tr('admin.competitions.noMatch', { query: query.trim() })
-              : tr('admin.competitions.none')}
-          </p>
-          {#if !query.trim()}
-            <p class="mx-auto mt-2 max-w-md text-ui text-muted">{tr('admin.competitions.noneHint')}</p>
+        {#if query.trim()}
+          <EmptyState title={tr('admin.competitions.noMatch', { query: query.trim() })} />
+        {:else}
+          <EmptyState title={tr('admin.competitions.none')} hint={tr('admin.competitions.noneHint')}>
             {#if !creating}
-              <button type="button" class="btn-primary mt-4" onclick={() => void startCreating()}>
+              <button type="button" class="btn-primary" onclick={() => void startCreating()}>
                 {tr('admin.competitions.new')}
               </button>
             {/if}
-          {/if}
-        </div>
+          </EmptyState>
+        {/if}
       {:else}
         <div class="comp-rows">
-          <div class="comp-head flex items-center gap-4 border-b border-line py-2.5">
-            <span class="min-w-0 flex-1 {HEAD}">{tr('admin.competitions.col.competition')}</span>
-            <span class="comp-cell w-[132px] shrink-0 {HEAD}">{tr('admin.competitions.col.status')}</span>
-            <span class="comp-cell w-[176px] shrink-0 {HEAD}">{tr('admin.competitions.col.deadline')}</span>
-            <span class="comp-cell w-[104px] shrink-0 text-right {HEAD}">
+          <div class="comp-head admin-list-head">
+            <span class="admin-label min-w-0 flex-1">{tr('admin.competitions.col.competition')}</span>
+            <span class="comp-cell admin-label w-[132px] shrink-0">{tr('admin.competitions.col.status')}</span>
+            <span class="comp-cell admin-label w-[176px] shrink-0">{tr('admin.competitions.col.deadline')}</span>
+            <span class="comp-cell admin-label w-[104px] shrink-0 text-right">
               {tr('admin.competitions.col.entrants')}
             </span>
-            <span class="comp-cell w-[88px] shrink-0 text-right {HEAD}">
+            <span class="comp-cell admin-label w-[88px] shrink-0 text-right">
               {tr('admin.competitions.col.submissions')}
             </span>
-            <span class="comp-cell w-[200px] shrink-0 text-right {HEAD}">
+            <span class="comp-cell admin-label w-[200px] shrink-0 text-right">
               {tr('admin.competitions.col.bestPublic')}
             </span>
             <span class="w-10 shrink-0"></span>
@@ -470,16 +445,16 @@
             {@const deadline = deadlineLine(c, now, row.ready)}
             {@const baseline = baselineNote(row)}
             {@const draft = c.state === 'draft'}
-            <div class="comp-row flex items-center gap-4 border-b border-line py-3.5">
+            <div class="comp-row admin-list-row">
               <button
                 type="button"
                 class="comp-name min-w-0 flex-1 text-left"
                 onclick={() => navigate(`/admin/competitions/${c.id}`)}
               >
-                <p class="truncate text-ui font-semibold text-ink">{c.title}</p>
+                <p class="admin-row-title truncate">{c.title}</p>
                 <p class="mt-1 flex flex-wrap items-baseline gap-x-3.5 gap-y-0.5">
-                  <span class="font-mono text-micro text-muted">/k/{c.slug}</span>
-                  <span class="min-w-0 text-micro text-muted">{metricLine(row, now)}</span>
+                  <span class="admin-meta font-mono">/k/{c.slug}</span>
+                  <span class="admin-meta min-w-0">{metricLine(row, now)}</span>
                 </p>
               </button>
 
@@ -502,19 +477,19 @@
               <!-- A draft has no numbers at all: zero entrants and zero
                    submissions would be a claim about a class that has not
                    been shown the competition yet. A dash tells the truth. -->
-              <span class="comp-cell w-[104px] shrink-0 text-right font-mono text-2xs text-ink">
+              <span class="comp-cell admin-num w-[104px] shrink-0 text-right">
                 {@render caption(tr('admin.competitions.col.entrants'))}{draft
                   ? '—'
                   : count(row.entrants)}
               </span>
-              <span class="comp-cell w-[88px] shrink-0 text-right font-mono text-2xs text-ink">
+              <span class="comp-cell admin-num w-[88px] shrink-0 text-right">
                 {@render caption(tr('admin.competitions.col.submissions'))}{draft
                   ? '—'
                   : count(row.submissions)}
               </span>
 
               <div class="comp-cell w-[200px] shrink-0 text-right">
-                <p class="font-mono text-2xs font-bold text-ink">
+                <p class="admin-num font-bold">
                   {@render caption(tr('admin.competitions.col.bestPublic'))}{draft
                     ? '—'
                     : metricNumber(row.bestPublic)}
@@ -527,8 +502,7 @@
               <div class="relative w-10 shrink-0 text-right">
                 <button
                   type="button"
-                  class="inline-flex h-9 w-9 items-center justify-center text-faint transition-colors
-                         duration-100 hover:bg-raised hover:text-ink max-[640px]:h-11 max-[640px]:w-11"
+                  class="admin-icon-btn"
                   aria-haspopup="menu"
                   aria-expanded={openMenu === c.id}
                   aria-label={tr('admin.competitions.rowMenu', { name: c.title })}
@@ -545,14 +519,13 @@
                   <div
                     role="menu"
                     tabindex="-1"
-                    class="row-menu absolute right-0 top-full z-20 mt-1 w-[240px] border border-line
-                           bg-canvas py-1 text-left shadow-pop"
+                    class="row-menu admin-menu absolute right-0 top-full z-20 mt-1 w-[240px]"
                     onclick={(event) => event.stopPropagation()}
                   >
                     <button
                       type="button"
                       role="menuitem"
-                      class={MENU_ITEM}
+                      class="admin-menu-item"
                       onclick={() => {
                         openMenu = null
                         navigate(`/admin/competitions/${c.id}`)
@@ -563,7 +536,7 @@
                     {#if !draft}
                       <a
                         role="menuitem"
-                        class={MENU_ITEM}
+                        class="admin-menu-item"
                         href={competitionPath(c.slug)}
                         target="_blank"
                         rel="noreferrer"
@@ -574,7 +547,7 @@
                       <button
                         type="button"
                         role="menuitem"
-                        class={MENU_ITEM}
+                        class="admin-menu-item"
                         onclick={() => {
                           openMenu = null
                           void copy(`${location.origin}${competitionPath(c.slug)}`, c.id)
@@ -589,7 +562,7 @@
                       <button
                         type="button"
                         role="menuitem"
-                        class="{MENU_ITEM} text-danger"
+                        class="admin-menu-item text-danger"
                         onclick={() => {
                           openMenu = null
                           doomed = row
@@ -604,7 +577,7 @@
             </div>
           {/each}
 
-          <p class="py-3.5 text-micro text-faint">
+          <p class="admin-meta py-3.5">
             {tr('admin.competitions.countAll', { count: list?.competitions.length ?? 0 })} ·
             {tr('admin.competitions.seenAt')}
           </p>
@@ -636,12 +609,7 @@
         <button type="button" class="btn-outline" disabled={busy} onclick={() => (doomed = null)}>
           {tr('admin.cancel')}
         </button>
-        <button
-          type="button"
-          class="btn bg-danger text-white dark:text-canvas hover:brightness-110 disabled:opacity-40"
-          disabled={busy}
-          onclick={() => void destroy()}
-        >
+        <button type="button" class="btn-danger-solid" disabled={busy} onclick={() => void destroy()}>
           {tr('admin.competitions.deleteConfirm')}
         </button>
       </div>

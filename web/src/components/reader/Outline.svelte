@@ -44,12 +44,12 @@
 <nav aria-label={tr('room.page.contents')}>
   {#if variant === 'rail'}
     <div class="border-b-2 border-ink pb-3">
-      <p class="font-mono text-micro uppercase tracking-label text-muted">
+      <p class="font-mono text-[13px] uppercase leading-5 tracking-label text-muted">
         {name ? tr('room.page.contentsOf', { name }) : tr('room.page.contents')}
       </p>
     </div>
   {:else}
-    <p class="pb-2 pt-3 font-mono text-micro uppercase tracking-label text-muted">
+    <p class="pb-2 pt-3 font-mono text-[13px] uppercase leading-5 tracking-label text-muted">
       {tr('room.page.contents')}
     </p>
   {/if}
@@ -60,7 +60,7 @@
         <a
           href={`#${entry.id}`}
           aria-current={on ? 'location' : undefined}
-          class="block text-[14px] leading-5 transition-colors duration-100 hover:text-ink
+          class="block text-[15px] leading-[22px] transition-colors duration-100 hover:text-ink
                  {on ? 'border-l-2 border-accent text-ink' : 'border-l-2 border-transparent text-muted'}
                  {INDENT[entry.level]}
                  {variant === 'rail' ? `py-1.5 ${on ? 'font-semibold' : ''}` : 'flex min-h-11 items-center'}"

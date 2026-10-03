@@ -58,6 +58,7 @@ import { createWorkerStartup } from './competitions/worker-startup.js'
 import { installOutboundProxy } from './outbound.js'
 import { migratePages } from './publish/migrate-pages.js'
 import { sweepPageFiles } from './publish/page-files.js'
+import { repairFolderFiles } from './publish/materials.js'
 
 /*
  * The institution's proxy (HTTPS_PROXY, HTTP_PROXY, NO_PROXY) is in place
@@ -402,15 +403,27 @@ const workerStartup = createWorkerStartup({
 /*
  * Courses and pages written by an older release are brought up to class
  * pages before the first request can read them (publish/migrate-pages.ts),
- * then page files a crash left without a row are swept. Both are idempotent
- * and both are logged, never fatal: a page that cannot be converted keeps
- * its 0.12 step, and the server still starts.
+ * then page files a crash left without a row are swept, and folder files a
+ * rollback to a release before folders deleted are put back from their
+ * rooms or their folders taken off the page (materials.ts ·
+ * repairFolderFiles). All idempotent and all logged, never fatal: a page
+ * that cannot be converted keeps its 0.12 step, and the server still starts.
  */
 try {
   migratePages()
   const swept = sweepPageFiles()
   if (swept.rows + swept.files > 0) {
     console.log(`[pages] swept ${swept.rows} unreferenced and ${swept.files} stray page file(s)`)
+  }
+  const repaired = repairFolderFiles()
+  if (repaired.restored > 0) {
+    console.log(`[pages] put back ${repaired.restored} folder file(s) from their rooms`)
+  }
+  for (const { pub, key } of repaired.dropped) {
+    console.error(
+      `[pages] folder "${key}" of page ${pub} lost files and was taken off the page; ` +
+        'publishing the page again brings it back',
+    )
   }
 } catch (err) {
   console.error('[pages] the class-page migration did not finish:', err)

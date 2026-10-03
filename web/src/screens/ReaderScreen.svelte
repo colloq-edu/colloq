@@ -175,10 +175,10 @@
 </script>
 
 {#if missing}
-  <div class="flex min-h-screen items-center justify-center bg-canvas px-6">
+  <div class="reading-ui flex min-h-screen items-center justify-center bg-canvas px-6">
     <div class="max-w-md text-center">
-      <p class="text-title font-semibold text-ink">{tr('room.ui.865')}</p>
-      <p class="mt-2 text-ui text-muted">{tr('room.ui.866')}</p>
+      <p class="text-[20px] font-semibold leading-7 text-ink">{tr('room.ui.865')}</p>
+      <p class="mt-2 text-[16px] leading-6 text-muted">{tr('room.ui.866')}</p>
     </div>
   </div>
 {:else if courseView}
@@ -191,13 +191,13 @@
     its way — or did not get through. A blank white screen stood for both, and
     for the second it read as "this course no longer exists".
   -->
-  <div class="min-h-screen bg-canvas {failure ? 'flex items-center justify-center px-6' : ''}">
+  <div class="reading-ui min-h-screen bg-canvas {failure ? 'flex items-center justify-center px-6' : ''}">
     {#if failure}
       <div class="max-w-md text-center">
-        <p class="text-title font-semibold text-ink">{tr('room.ui.884')}</p>
-        <p class="mt-2 text-ui text-muted">{failure}</p>
+        <p class="text-[20px] font-semibold leading-7 text-ink">{tr('room.ui.884')}</p>
+        <p class="mt-2 text-[16px] leading-6 text-muted">{failure}</p>
         <button
-          class="press mt-3 text-ui font-semibold text-accent-text"
+          class="press mt-3 min-h-11 text-[16px] font-semibold leading-6 text-accent-text"
           onclick={() => (attempt += 1)}
         >
           {tr('room.ui.552')}

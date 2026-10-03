@@ -14,6 +14,8 @@
   import { tr, getLocale } from '@shared/i18n'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Check from '@/admin/ui/Check.svelte'
+  import EmptyState from '@/admin/ui/EmptyState.svelte'
+  import Badge from '@/admin/screens/competitions/Badge.svelte'
   import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -326,7 +328,7 @@
      * A semester plan is typed in one go — fifteen topics in a single
      * sitting. The form stays open, the cursor goes back to the topic, and
      * the day moves on a week: otherwise every week would cost an extra
-     * press of "+ Тема по плану" and a date typed by hand.
+     * press of «Тема по плану» and a date typed by hand.
      *
      * The form empties IMMEDIATELY, not on the response. On the response it
      * went like this: Enter, the cursor stays, the next topic gets typed
@@ -525,10 +527,12 @@
     const right = Math.round(window.innerWidth - box.right)
     const below = window.innerHeight - box.bottom - 8
     const above = box.top - 8
+    // The origin rides with the side: `row-menu` unfolds from the corner at
+    // the button, and a menu flipped above it grows upwards (admin/motion.css).
     const style =
       below >= above
-        ? `top: ${Math.round(box.bottom + 4)}px; right: ${right}px; max-height: ${Math.round(below)}px`
-        : `bottom: ${Math.round(window.innerHeight - box.top + 4)}px; right: ${right}px; max-height: ${Math.round(above)}px`
+        ? `top: ${Math.round(box.bottom + 4)}px; right: ${right}px; max-height: ${Math.round(below)}px; transform-origin: top right`
+        : `bottom: ${Math.round(window.innerHeight - box.top + 4)}px; right: ${right}px; max-height: ${Math.round(above)}px; transform-origin: bottom right`
     menu = { index, style }
   }
 
@@ -907,18 +911,16 @@
     }
   }
 
-  const HEADCELL = 'font-mono text-micro uppercase tracking-label text-muted'
-  const FIELD = 'font-mono text-micro uppercase tracking-label text-muted'
-  const INPUT =
-    'h-[38px] w-full border border-line bg-canvas px-3 text-ui text-ink placeholder:text-faint ' +
-    'focus:border-brand focus:outline-none dark:focus:border-accent'
-  // No colour in here: an item adds its own (text-ink, or text-danger for the
-  // two that take something away), and two colour utilities on one element
-  // are decided by stylesheet order, not by the markup.
-  const ITEM =
-    'flex h-9 w-full shrink-0 items-center px-3.5 text-left text-ui hover:bg-surface ' +
-    'disabled:opacity-40'
-  const ACTION = 'text-2xs font-semibold text-accent-text hover:underline disabled:text-faint'
+  /*
+   * The panel's shared vocabulary (index.css · the teacher's panel), the one
+   * the competition screens speak: `admin-label` for a column and a field
+   * caption, `admin-menu-item` for a menu row, `admin-link` for an action in
+   * a line of text. Nothing is spelled here by hand, so a course row and a
+   * competition row cannot drift apart again.
+   */
+  // On the canvas, not the surface: the row form is a surface band, and a
+  // surface field on it would be a border with nothing inside.
+  const INPUT = 'field bg-canvas'
 </script>
 
 <!--
@@ -937,7 +939,7 @@
   <div class="row-form flex flex-col gap-[18px] border-b border-t border-dashed border-b-line border-t-line bg-surface [border-bottom-style:solid]">
     <div class="flex flex-wrap items-start gap-4">
       <label class="flex min-w-[200px] flex-1 flex-col gap-1.5">
-        <span class={FIELD}>{planned ? tr('admin.course.field.topic') : tr('admin.course.field.title')}</span>
+        <span class="admin-label">{planned ? tr('admin.course.field.topic') : tr('admin.course.field.title')}</span>
         <input
           bind:this={titleInput}
           class={INPUT}
@@ -947,7 +949,7 @@
         />
       </label>
       <label class="flex w-[220px] max-w-full flex-col gap-1.5">
-        <span class={FIELD}>{tr('admin.course.field.day')}</span>
+        <span class="admin-label">{tr('admin.course.field.day')}</span>
         <input
           type="date"
           class="{INPUT} font-mono"
@@ -956,24 +958,24 @@
         />
         <!-- The week the timetable gave this row, until a day replaces it. -->
         {#if !draft.day && when}
-          <span class="text-2xs text-muted">{tr('admin.course.field.whenLegacy', { when })}</span>
+          <span class="admin-meta">{tr('admin.course.field.whenLegacy', { when })}</span>
         {/if}
       </label>
     </div>
+    <!-- The textarea is the panel's field itself, so it takes the field's
+         frame and focus halo; the count sits under it, as a field's help does. -->
     <label class="flex flex-col gap-1.5">
-      <span class={FIELD}>{tr('admin.course.field.about')}</span>
-      <span class="flex min-h-16 flex-col gap-1.5 border border-line bg-canvas px-3 pb-2 pt-2.5 focus-within:border-brand dark:focus-within:border-accent">
-        <textarea
-          class="min-h-[40px] resize-none bg-transparent text-ui leading-5 text-ink focus:outline-none"
-          rows="2"
-          maxlength={MAX_CLASS_ABOUT}
-          bind:value={draft.about}
-          onkeydown={(event) => {
-            if (event.key === 'Escape') cancel()
-          }}
-        ></textarea>
-        <span class="self-end font-mono text-micro text-faint">{draft.about.length} / {MAX_CLASS_ABOUT}</span>
-      </span>
+      <span class="admin-label">{tr('admin.course.field.about')}</span>
+      <textarea
+        class="{INPUT} min-h-16 resize-none"
+        rows="2"
+        maxlength={MAX_CLASS_ABOUT}
+        bind:value={draft.about}
+        onkeydown={(event) => {
+          if (event.key === 'Escape') cancel()
+        }}
+      ></textarea>
+      <span class="admin-meta self-end font-mono">{draft.about.length} / {MAX_CLASS_ABOUT}</span>
     </label>
     <div class="flex flex-wrap items-center justify-between gap-4">
       {#if planned}
@@ -984,14 +986,15 @@
       {:else}
         <span></span>
       {/if}
-      <div class="flex items-center gap-[18px]">
-        <button type="button" class="text-2xs text-muted hover:text-ink" onclick={cancel}>
+      <div class="flex items-center gap-2">
+        <button type="button" class="btn-ghost" onclick={cancel}>
           {tr('admin.cancel')}
         </button>
+        <!-- A form's save, not the page's action: sentence case, as every
+             save in the panel. -->
         <button
           type="button"
-          class="press flex h-[34px] items-center bg-primary px-[18px] text-micro font-black uppercase tracking-label
-                 text-primary-ink hover:brightness-110 disabled:opacity-40"
+          class="btn-primary"
           disabled={busy || (planned && !draft.title.trim())}
           onclick={save}
         >
@@ -1015,8 +1018,8 @@
 )}
   <div class="picker border-b border-line bg-surface">
     <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 pb-2.5">
-      <p class="min-w-0 flex-1 text-2xs leading-snug text-muted">{question}</p>
-      <button type="button" class="shrink-0 text-2xs font-semibold text-muted hover:text-ink" onclick={cancel}>
+      <p class="min-w-0 flex-1 text-2xs text-muted">{question}</p>
+      <button type="button" class="btn-ghost shrink-0" onclick={cancel}>
         {tr('admin.cancel')}
       </button>
     </div>
@@ -1026,17 +1029,20 @@
       <ul class="flex max-h-[320px] flex-col overflow-y-auto border border-line bg-canvas">
         {#each choices as choice (choice.seminar.id)}
           <li class="border-b border-line-soft last:border-b-0">
+            <!-- The control height (40, 44 on a phone): a row to press, beside
+                 the 40 px «Отмена» above it. -->
             <button
               type="button"
-              class="flex min-h-11 w-full flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-2 text-left hover:bg-surface disabled:text-faint"
+              class="flex min-h-10 w-full flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-2 text-left transition-colors
+                     duration-quick hover:bg-raised disabled:text-faint max-[640px]:min-h-11"
               disabled={busy}
               onclick={() => pick(choice.seminar.id)}
             >
               <span class="min-w-0 flex-1 truncate text-ui text-ink">{choice.seminar.name}</span>
               {#if choice.fits}
-                <span class="shrink-0 text-micro font-semibold text-positive">{tr('admin.course.fits')}</span>
+                <Badge word={tr('admin.course.fits')} tone="positive" case="lower" />
               {/if}
-              <span class="shrink-0 text-2xs text-muted">
+              <span class="admin-meta shrink-0">
                 {formatDay(choice.day, getLocale())} · {tr(`admin.course.status.${choice.seminar.status}`)}
               </span>
             </button>
@@ -1053,22 +1059,29 @@
     subtitle={tr("admin.group.seminars.on.a.course.page.and.set.their.order")}
   >
     {#snippet actions()}
-      <button type="button" class="btn-primary" onclick={() => (creating = true)}>{tr("admin.new.course")}</button>
+      <!-- The competitions list's «+ НОВОЕ СОРЕВНОВАНИЕ», word for word in classes. -->
+      <button
+        type="button"
+        class="btn-primary btn-caps gap-2 px-4 max-[640px]:w-full"
+        onclick={() => (creating = true)}
+      >
+        <Icon name="plus" size={14} />
+        {tr("admin.new.course")}
+      </button>
     {/snippet}
 
-    <!-- Its own padding only from sm up: AdminPage already has one, and on a
-         phone the double padding ate almost a third of the width under the
-         course list. -->
-    <div class="py-6 sm:px-8">
+    <!-- No padding of its own: AdminPage already has one, and the rows start
+         at the title's edge, as the competitions list does. -->
+    <div class="py-4">
       {#if error}
-        <p class="pb-4 text-ui text-danger">{error}</p>
+        <p class="pb-4 text-ui text-danger" role="alert">{error}</p>
       {/if}
 
       {#if creating}
-        <div class="mb-5 flex items-center gap-3 border border-line bg-surface px-4 py-3">
+        <div class="mb-5 flex flex-wrap items-center gap-3 border border-line bg-surface px-4 py-3">
           <!-- svelte-ignore a11y_autofocus -->
           <input
-            class="h-9 min-w-0 flex-1 border border-line bg-canvas px-3 text-ui text-ink"
+            class="{INPUT} min-w-0 flex-[3_1_240px]"
             placeholder={tr("admin.course.name")}
             maxlength={MAX_COURSE_NAME}
             autofocus
@@ -1088,62 +1101,64 @@
       {/if}
 
       {#if courses.length === 0 && !creating}
-        <div class="py-16 text-center">
-          <p class="text-title font-semibold text-ink">{tr("admin.no.courses.yet")}</p>
-          <p class="mx-auto mt-2 max-w-sm text-ui text-muted">
-            {tr("admin.create.a.course.and.add.seminars.students.will.see.the.list.and.l")}
-          </p>
-        </div>
+        <EmptyState
+          title={tr("admin.no.courses.yet")}
+          hint={tr("admin.create.a.course.and.add.seminars.students.will.see.the.list.and.l")}
+        />
       {/if}
 
       {#each courses as item (item.id)}
         <!-- flex-wrap and basis-48: with the "planned" count the tally line is
              longer than the room left on a phone, and without wrapping it
              stuck out past the edge while the course title shrank to zero. -->
-        <div class="flex flex-wrap items-center gap-x-5 gap-y-1 border-b border-line py-3.5">
+        <div class="admin-list-row flex-wrap gap-x-5 gap-y-1">
           <button
             type="button"
             class="min-w-0 flex-1 basis-48 text-left"
             onclick={() => navigate(`/admin/courses/${item.id}`)}
           >
-            <p class="text-ui-lg font-semibold text-ink">{item.name}</p>
+            <p class="admin-row-title">{item.name}</p>
             <!-- The address printed is the same one dictated to the class: the
                  point of a name is that it is the link, not a second address
                  next to it. -->
-            <p class="mt-0.5 font-mono text-2xs text-muted">/c/{addressOf(item)}</p>
+            <p class="admin-meta mt-1 font-mono">/c/{addressOf(item)}</p>
           </button>
-          <p class="shrink-0 text-ui text-muted">{tallyText(item.items)}</p>
+          <p class="shrink-0 text-2xs text-muted">{tallyText(item.items)}</p>
         </div>
       {/each}
 
       <!--
         Pages without a room. The server serves them, but they were visible
         nowhere in the panel — a page left behind by a deleted seminar could
-        only be withdrawn by editing the database.
+        only be withdrawn by editing the database. The actions are links in
+        the row rather than four framed buttons: the list is a footnote to the
+        courses, and a row of buttons would outshout the courses above it.
       -->
       {#if orphans.length > 0}
-        <div class="mt-8 border-t border-line pt-5">
-          <p class="text-ui font-semibold text-ink">{tr("admin.pages.without.a.room")}</p>
-          <p class="mt-1 max-w-xl text-2xs leading-relaxed text-muted">
+        <section class="mt-10">
+          <div class="admin-section">
+            <h2 class="admin-section-title">{tr("admin.pages.without.a.room")}</h2>
+          </div>
+          <p class="mt-2.5 max-w-xl text-2xs text-muted">
             {tr("admin.the.seminar.was.deleted.but.its.publication.was.kept.you.can.with")}
           </p>
           {#each orphans as page (page.id)}
-            <div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line py-3">
-              <div class="min-w-0 flex-1">
+            <div class="admin-list-row flex-wrap gap-y-1">
+              <div class="min-w-0 flex-1 basis-48">
                 <p class="truncate text-ui text-ink">{page.title}</p>
-                <p class="mt-0.5 font-mono text-2xs text-muted">
+                <p class="admin-meta mt-1 font-mono">
                   /p/{addressOf(page)} · {tr('admin.course.page.page', { count: page.materials })}
                   {page.state === 'withdrawn' ? (" " + tr("admin.withdrawn")) : ''}
                 </p>
               </div>
-              <a class="shrink-0 text-ui text-accent-text" href={`/p/${addressOf(page)}`} target="_blank" rel="noreferrer">
+              <a class="admin-link shrink-0" href={`/p/${addressOf(page)}`} target="_blank" rel="noreferrer">
                 {tr("admin.open")}
               </a>
               <!-- What is on it can still be taken off one material at a
                    time: the class page screen, opened by the page's own id. -->
               <button
                 type="button"
-                class="shrink-0 text-ui font-semibold text-muted hover:text-ink"
+                class="admin-link shrink-0"
                 onclick={() => navigate(`/admin/publish/${page.id}?from=courses`)}
               >
                 {tr('admin.course.menu.page')}
@@ -1151,7 +1166,7 @@
               {#if page.state === 'published'}
                 <button
                   type="button"
-                  class="shrink-0 text-ui font-semibold text-muted hover:text-ink"
+                  class="admin-link shrink-0"
                   disabled={orphanBusy === page.id}
                   onclick={() => void actOnOrphan(page.id, () => adminApi.withdrawPublication(page.id))}
                 >
@@ -1160,7 +1175,7 @@
               {:else}
                 <button
                   type="button"
-                  class="shrink-0 text-ui font-semibold text-muted hover:text-ink"
+                  class="admin-link shrink-0"
                   disabled={orphanBusy === page.id}
                   onclick={() => void actOnOrphan(page.id, () => adminApi.restorePublication(page.id))}
                 >
@@ -1172,7 +1187,7 @@
                 {#if adminAuth.isOwner}
                   <button
                     type="button"
-                    class="shrink-0 text-ui font-semibold text-danger"
+                    class="admin-link shrink-0 text-danger"
                     disabled={orphanBusy === page.id}
                     onclick={() => {
                       if (!window.confirm(tr("admin.permanently.delete.page.p.it.cannot.be.restored.through.colloq", { p0: addressOf(page) }))) return
@@ -1185,7 +1200,7 @@
               {/if}
             </div>
           {/each}
-        </div>
+        </section>
       {/if}
     </div>
   </AdminPage>
@@ -1209,17 +1224,12 @@
            name was given. Otherwise the id went into the chat, and the class
            ended up with two different addresses for the same course. -->
       <span class="font-mono text-2xs text-ink">{location.host}/c/{addressOf(shown)}</span>
-      <a
-        class="border-b border-dashed border-accent-text text-2xs text-accent-text"
-        href={`/c/${addressOf(shown)}`}
-        target="_blank"
-        rel="noreferrer"
-      >
+      <a class="admin-link" href={`/c/${addressOf(shown)}`} target="_blank" rel="noreferrer">
         {tr('admin.course.openPage')}
       </a>
       <button
         type="button"
-        class="border-b border-dashed border-accent-text text-2xs text-accent-text"
+        class="admin-link"
         onclick={() => void copy(`${location.origin}/c/${addressOf(shown)}`, 'link')}
       >
         {copied === 'link' ? tr('admin.copied') : tr('admin.course.copyLink')}
@@ -1230,15 +1240,19 @@
     {#snippet actions()}
       <button
         type="button"
-        class="press flex h-[34px] items-center border border-line px-3.5 text-2xs leading-4 text-ink hover:border-faint disabled:opacity-40"
+        class="btn-outline gap-2 whitespace-nowrap max-[640px]:grow"
         disabled={busy}
         onclick={() => void openPlan()}
       >
+        <Icon name="plus" size={14} />
         {tr('admin.course.addPlanned')}
       </button>
+      <!-- The page's own action, spelled as every page's is («+ НОВЫЙ КУРС»,
+           «+ НОВОЕ СОРЕВНОВАНИЕ»): putting a class into the course is what
+           this screen is opened for. -->
       <button
         type="button"
-        class="press flex h-[34px] items-center border border-primary px-3.5 text-2xs font-bold leading-4 text-primary hover:bg-surface"
+        class="btn-primary btn-caps gap-2 whitespace-nowrap px-4 max-[640px]:grow"
         aria-expanded={adding}
         onclick={() => {
           closeRowForms()
@@ -1246,6 +1260,7 @@
           adding = !adding
         }}
       >
+        <Icon name="plus" size={14} />
         {tr('admin.course.addRoom')}
       </button>
     {/snippet}
@@ -1263,7 +1278,7 @@
           <span>{notice.text()}</span>
           {#if notice.href}
             {@const href = notice.href}
-            <button type="button" class={ACTION} onclick={() => navigate(href)}>{tr('admin.course.menu.page')}</button>
+            <button type="button" class="admin-link" onclick={() => navigate(href)}>{tr('admin.course.menu.page')}</button>
           {/if}
         </p>
       {/if}
@@ -1274,11 +1289,13 @@
         menu takes a different width on different screens.
       -->
       <div class="course-rows">
-        <div class="course-grid course-head h-10 items-center border-b-2 border-ink">
-          <span class={HEADCELL}>{tr('admin.course.col.n')}</span>
-          <span class={HEADCELL}>{tr('admin.course.col.day')}</span>
-          <span class={HEADCELL}>{tr('admin.course.col.class')}</span>
-          <span class={HEADCELL}>{tr('admin.course.col.page')}</span>
+        <!-- A column head sits on a hairline, as the competitions list's does
+             (.admin-list-head); the heavy ink rule is a section's. -->
+        <div class="course-grid course-head items-center border-b border-line py-2.5">
+          <span class="admin-label">{tr('admin.course.col.n')}</span>
+          <span class="admin-label">{tr('admin.course.col.day')}</span>
+          <span class="admin-label">{tr('admin.course.col.class')}</span>
+          <span class="admin-label">{tr('admin.course.col.page')}</span>
           <span></span>
         </div>
 
@@ -1297,24 +1314,24 @@
           {@const strong = state === 'page' || state === 'early' || state === 'missing' || state === 'room' || state === 'withdrawn'}
           {#if index === lineAt}
             <div class="flex items-center gap-3 pb-0.5 pt-3.5">
-              <span class="shrink-0 font-mono text-micro uppercase tracking-label text-accent-text">
+              <span class="admin-label shrink-0 text-accent-text">
                 {tr('admin.course.today', { day: formatDay(today, getLocale()) })}
               </span>
               <span class="h-0.5 flex-1 bg-accent"></span>
             </div>
           {/if}
           <div
-            class="course-grid course-row py-4 {editing || (isNext && item.kind === 'planned') ? 'bg-surface' : ''}
+            class="course-grid course-row py-3.5 {editing || (isNext && item.kind === 'planned') ? 'bg-surface' : ''}
                    {editing ? '' : 'border-b border-line'}"
           >
-            <span class="c-n font-mono text-ui leading-[22px] {state === 'page' || state === 'early' ? 'text-ink' : 'text-faint'}">
+            <span class="c-n admin-num {state === 'page' || state === 'early' ? '' : 'text-faint'}">
               {n === null ? '' : twoDigits(n)}
             </span>
-            <span class="c-day text-ui leading-[22px] text-muted">
+            <span class="c-day text-2xs text-muted">
               {#if day}
                 {formatDay(day, getLocale())}
               {:else if item.when}
-                <span class="text-2xs text-faint">{item.when}</span>
+                <span class="admin-meta">{item.when}</span>
               {:else}
                 —
               {/if}
@@ -1322,7 +1339,7 @@
             <div class="c-title flex min-w-0 flex-col items-start gap-1.5 pr-6">
               <button
                 type="button"
-                class="text-left text-ui-lg leading-[22px] {strong ? 'font-semibold text-ink' : isNext ? 'text-ink' : 'text-muted'}"
+                class="text-left {strong ? 'admin-row-title' : isNext ? 'text-ui text-ink' : 'text-ui text-muted'}"
                 onclick={() => void openRow(index)}
               >
                 {studentTitle(item)}
@@ -1335,19 +1352,19 @@
                     <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" />
                     <path d="M0.5 3.5h9" stroke="currentColor" />
                   </svg>
-                  <span class="truncate text-micro text-muted">{room?.name ?? item.name}</span>
+                  <span class="admin-meta truncate">{room?.name ?? item.name}</span>
                 </span>
               {:else if item.kind === 'gone'}
-                <span class="bg-surface px-2 py-0.5 text-micro text-muted">{tr('admin.course.roomGone')}</span>
+                <span class="admin-meta bg-surface px-2 py-0.5">{tr('admin.course.roomGone')}</span>
               {:else if isNext && day}
-                <span class="font-mono text-micro uppercase leading-[18px] tracking-label text-accent-text">{nextLabel(day)}</span>
+                <span class="admin-label text-accent-text">{nextLabel(day)}</span>
               {/if}
             </div>
             <div class="c-page flex min-w-0 flex-col items-start gap-1">
               {#if state === 'page' || state === 'early'}
                 {#if address}
                   <a
-                    class="border-b border-dashed border-accent-text text-ui font-semibold leading-[22px] text-accent-text"
+                    class="admin-link font-semibold"
                     href={`/p/${address}`}
                     target="_blank"
                     rel="noreferrer"
@@ -1358,11 +1375,11 @@
                       {tr('admin.course.page.bare')}
                     {/if}
                   </a>
-                  <span class="break-all font-mono text-micro text-faint">/p/{address}</span>
+                  <span class="admin-meta break-all font-mono">/p/{address}</span>
                 {/if}
               {:else if state === 'withdrawn'}
-                <span class="text-ui leading-[22px] text-muted">{tr('admin.course.page.withdrawn')}</span>
-                {#if address}<span class="break-all font-mono text-micro text-faint">/p/{address}</span>{/if}
+                <span class="text-2xs text-muted">{tr('admin.course.page.withdrawn')}</span>
+                {#if address}<span class="admin-meta break-all font-mono">/p/{address}</span>{/if}
               {:else if state === 'missing'}
                 <!-- The one state that asks for something: the class is over
                      and nothing was published. -->
@@ -1381,10 +1398,10 @@
                   {tr('admin.course.page.missing')}
                 </button>
               {:else if state === 'room'}
-                <span class="text-ui leading-[22px] text-muted">{tr('admin.course.page.room')}</span>
+                <span class="text-2xs text-muted">{tr('admin.course.page.room')}</span>
                 <button
                   type="button"
-                  class={ACTION}
+                  class="admin-link"
                   onclick={() => {
                     const href = pageScreen(item)
                     if (href) navigate(href)
@@ -1393,12 +1410,12 @@
                   {tr('admin.course.menu.page')}
                 </button>
               {:else if state === 'plan'}
-                <span class="text-ui leading-[22px] {isNext ? 'text-muted' : 'text-faint'}">{tr('admin.course.page.plan')}</span>
+                <span class="text-2xs {isNext ? 'text-muted' : 'text-faint'}">{tr('admin.course.page.plan')}</span>
                 {#if actionable(index)}
                   <span class="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      class={ACTION}
+                      class="admin-link"
                       onclick={() => navigate(`/admin/new?course=${shown.id}&row=${item.id ?? ''}`)}
                       disabled={!item.id}
                     >
@@ -1407,7 +1424,7 @@
                     <span class="text-2xs text-faint" aria-hidden="true">·</span>
                     <button
                       type="button"
-                      class={ACTION}
+                      class="admin-link"
                       disabled={busy}
                       aria-expanded={seating?.at === index}
                       onclick={() => openSeat(index)}
@@ -1417,9 +1434,9 @@
                   </span>
                 {/if}
               {:else if state === 'pause'}
-                <span class="text-ui leading-[22px] text-faint">{tr('admin.course.page.pause')}</span>
+                <span class="text-2xs text-faint">{tr('admin.course.page.pause')}</span>
               {:else}
-                <span class="text-ui leading-[22px] text-faint">{tr('admin.course.page.gone')}</span>
+                <span class="text-2xs text-faint">{tr('admin.course.page.gone')}</span>
               {/if}
             </div>
             <div class="c-menu flex justify-end">
@@ -1428,9 +1445,7 @@
                 aria-haspopup="menu"
                 aria-expanded={menu?.index === index}
                 aria-label={tr('admin.course.menu.label', { name: studentTitle(item) })}
-                class="press flex h-7 w-7 items-center justify-center border text-faint hover:text-ink
-                       max-[640px]:h-11 max-[640px]:w-11
-                       {menu?.index === index ? 'border-ink bg-surface text-ink' : 'border-transparent'}"
+                class="admin-icon-btn {menu?.index === index ? 'bg-raised text-ink' : ''}"
                 onclick={(event) => {
                   event.stopPropagation()
                   openMenu(index, event.currentTarget as HTMLElement)
@@ -1444,7 +1459,7 @@
                 <div
                   role="menu"
                   tabindex="-1"
-                  class="fixed z-50 flex w-[216px] flex-col overflow-y-auto border border-ink bg-canvas py-1.5"
+                  class="row-menu admin-menu fixed z-50 w-[240px] overflow-y-auto"
                   style={menu.style}
                   onclick={(event) => event.stopPropagation()}
                   onkeydown={(event) => {
@@ -1455,7 +1470,7 @@
                     <button
                       role="menuitem"
                       type="button"
-                      class="{ITEM} text-ink"
+                      class="admin-menu-item"
                       onclick={() => {
                         const href = pageScreen(item)
                         closeMenu()
@@ -1469,14 +1484,14 @@
                     <!-- Not for a withdrawn page: a rebuild is not a restore, and «Вернуть
                          страницу» below is the one way back (the server refuses too). -->
                     {#if !withdrawn}
-                      <button role="menuitem" type="button" class="{ITEM} text-ink" disabled={busy} onclick={() => void refresh(item)}>
+                      <button role="menuitem" type="button" class="admin-menu-item" disabled={busy} onclick={() => void refresh(item)}>
                         {tr('admin.course.menu.refresh')}
                       </button>
                     {/if}
                     <button
                       role="menuitem"
                       type="button"
-                      class="{ITEM} text-ink"
+                      class="admin-menu-item"
                       onclick={() => {
                         const href = pageScreen(item, '&focus=address')
                         closeMenu()
@@ -1490,7 +1505,7 @@
                     <button
                       role="menuitem"
                       type="button"
-                      class="{ITEM} text-ink"
+                      class="admin-menu-item"
                       disabled={!item.id}
                       onclick={() => {
                         closeMenu()
@@ -1502,7 +1517,7 @@
                     <button
                       role="menuitem"
                       type="button"
-                      class="{ITEM} text-ink"
+                      class="admin-menu-item"
                       onclick={() => openSeat(index)}
                     >
                       {tr('admin.course.seat')}
@@ -1511,7 +1526,7 @@
                   <button
                     role="menuitem"
                     type="button"
-                    class="{ITEM} text-ink"
+                    class="admin-menu-item"
                     onclick={() => {
                       closeMenu()
                       openAsStudent(item)
@@ -1520,16 +1535,16 @@
                     {tr('admin.course.menu.asStudent')}
                   </button>
                   {#if item.kind === 'seminar' && hasPage}
-                    <div class="my-1 h-px shrink-0 bg-line"></div>
+                    <div class="admin-menu-sep"></div>
                     {#if withdrawn}
-                      <button role="menuitem" type="button" class="{ITEM} text-ink" disabled={busy} onclick={() => void setShown(item, true)}>
+                      <button role="menuitem" type="button" class="admin-menu-item" disabled={busy} onclick={() => void setShown(item, true)}>
                         {tr('admin.course.menu.restore')}
                       </button>
                     {:else}
                       <button
                         role="menuitem"
                         type="button"
-                        class="{ITEM} text-danger"
+                        class="admin-menu-item text-danger"
                         disabled={busy}
                         onclick={() => void setShown(item, false)}
                       >
@@ -1537,11 +1552,11 @@
                       </button>
                     {/if}
                   {/if}
-                  <div class="my-1 h-px shrink-0 bg-line"></div>
+                  <div class="admin-menu-sep"></div>
                   <button
                     role="menuitem"
                     type="button"
-                    class="{ITEM} text-ink"
+                    class="admin-menu-item"
                     onclick={() => void openRow(index)}
                   >
                     {tr('admin.course.menu.edit')}
@@ -1551,7 +1566,7 @@
                   <button
                     role="menuitem"
                     type="button"
-                    class="{ITEM} text-ink"
+                    class="admin-menu-item"
                     disabled={index === 0 || busy}
                     onclick={() => move(index, -1)}
                   >
@@ -1560,7 +1575,7 @@
                   <button
                     role="menuitem"
                     type="button"
-                    class="{ITEM} text-ink"
+                    class="admin-menu-item"
                     disabled={index === shown.items.length - 1 || busy}
                     onclick={() => move(index, 1)}
                   >
@@ -1569,7 +1584,7 @@
                   <button
                     role="menuitem"
                     type="button"
-                    class="{ITEM} text-danger"
+                    class="admin-menu-item text-danger"
                     disabled={busy}
                     onclick={() => drop(index)}
                   >
@@ -1607,7 +1622,7 @@
 
         {#if lineAt === shown.items.length && !folded}
           <div class="flex items-center gap-3 pb-0.5 pt-3.5">
-            <span class="shrink-0 font-mono text-micro uppercase tracking-label text-accent-text">
+            <span class="admin-label shrink-0 text-accent-text">
               {tr('admin.course.today', { day: formatDay(today, getLocale()) })}
             </span>
             <span class="h-0.5 flex-1 bg-accent"></span>
@@ -1619,10 +1634,7 @@
             <span class="text-2xs text-muted">
               {tr('admin.course.moreRows', { count: shown.items.length - shownCount })}
             </span>
-            <button
-              type="button"
-              class="border-b border-dashed border-accent-text text-2xs text-accent-text"
-              onclick={() => (expanded = true)}
+            <button type="button" class="admin-link" onclick={() => (expanded = true)}
             >
               {tr('admin.course.showAll', { count: shown.items.length })}
             </button>
@@ -1630,9 +1642,7 @@
         {/if}
 
         {#if shown.items.length === 0 && !plan}
-          <p class="border-b border-line py-8 text-center text-ui text-muted">
-            {tr("admin.this.course.has.no.seminars.yet")}
-          </p>
+          <EmptyState title={tr("admin.this.course.has.no.seminars.yet")} />
         {/if}
 
         <!--
@@ -1653,16 +1663,16 @@
         {/if}
       </div>
 
-      <p class="pt-4 text-2xs leading-relaxed text-muted">{tr('admin.course.planHint')}</p>
+      <p class="admin-meta py-3.5">{tr('admin.course.planHint')}</p>
 
       <!--
         The course's own settings — title, caption, address — under its
         classes: they are set once, the table is opened every week.
       -->
-      <section class="mt-10 flex flex-col gap-4">
-        <h2 class="border-b-2 border-ink pb-3 font-mono text-micro uppercase tracking-label text-muted">
-          {tr('admin.course.settings')}
-        </h2>
+      <section class="mt-8 flex flex-col gap-4">
+        <div class="admin-section">
+          <h2 class="admin-section-title">{tr('admin.course.settings')}</h2>
+        </div>
 
         <!--
           Title and caption — in the same place as the address: a course with
@@ -1671,8 +1681,7 @@
         -->
         <div class="flex flex-wrap items-center gap-2">
           <input
-            class="h-9 w-[280px] max-w-full border border-line bg-canvas px-3 text-ui text-ink
-                   focus:outline-none focus:ring-2 focus:ring-accent/40"
+            class="field w-[280px] max-w-full"
             maxlength={MAX_COURSE_NAME}
             aria-label={tr("admin.course.name")}
             bind:value={nameDraft}
@@ -1681,8 +1690,7 @@
             }}
           />
           <input
-            class="h-9 min-w-[220px] flex-1 border border-line bg-canvas px-3 text-ui text-ink
-                   placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
+            class="field w-auto min-w-[220px] flex-1"
             placeholder={tr("admin.short.course.description.optional")}
             maxlength={MAX_COURSE_BLURB}
             aria-label={tr("admin.course.description")}
@@ -1694,7 +1702,7 @@
           {#if detailsChanged}
             <button
               type="button"
-              class="btn-primary h-9 shrink-0 px-3 text-2xs"
+              class="btn-primary shrink-0"
               disabled={busy}
               onclick={() => void saveDetails()}
             >
@@ -1710,19 +1718,21 @@
           people ask for them to be repeated more often.
         -->
         <div class="flex flex-wrap items-center gap-2">
-          <span class="font-mono text-2xs text-muted">{location.host}/c/</span>
-          <input
-            class="h-9 w-[220px] border border-line bg-canvas px-2 font-mono text-2xs text-ink
-                   placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
-            placeholder={shown.id}
-            maxlength={64}
-            bind:value={slugDraft}
-            onkeydown={(event) => {
-              if (event.key === 'Enter') void saveSlug()
-            }}
-          />
+          <!-- The host inside the frame, as the competition editor's /k/: one
+               field, the address read as one line. -->
+          <div class="admin-affix w-[400px] max-w-full">
+            <span class="shrink-0 font-mono text-2xs text-muted">{location.host}/c/</span>
+            <input
+              placeholder={shown.id}
+              maxlength={64}
+              bind:value={slugDraft}
+              onkeydown={(event) => {
+                if (event.key === 'Enter') void saveSlug()
+              }}
+            />
+          </div>
           {#if slugDraft.trim() !== (shown.slug ?? '')}
-            <button type="button" class="btn-primary h-9 px-3 text-2xs" disabled={busy} onclick={() => void saveSlug()}>
+            <button type="button" class="btn-primary" disabled={busy} onclick={() => void saveSlug()}>
               {tr("admin.save.address")}
             </button>
           {/if}
@@ -1734,7 +1744,7 @@
           {#if held}
             <button
               type="button"
-              class="btn-outline h-9 px-3 text-2xs"
+              class="btn-outline"
               disabled={busy}
               onclick={() => (askingSlug = true)}
             >
@@ -1742,12 +1752,12 @@
             </button>
           {/if}
           {#if shown.slug}
-            <span class="text-2xs text-muted">{tr("admin.the.old.address.c")}{shown.id} {tr("admin.also.works")}</span>
+            <span class="admin-meta">{tr("admin.the.old.address.c")}{shown.id} {tr("admin.also.works")}</span>
           {/if}
         </div>
 
         {#if held}
-          <p class="max-w-[640px] text-2xs leading-snug text-muted">
+          <p class="admin-meta max-w-[640px]">
             <span class="font-mono text-ink">/c/{held.slug}</span> {tr("admin.the.previous.address.of.the")}
             {held.holder.kind === 'course' ? tr("admin.course") : tr("admin.page")}
             {#if held.holder.name}«{held.holder.name}»{/if}{tr("admin.after.transfer.this.link.will.open.the.current.course.instead.of")}
@@ -1768,8 +1778,8 @@
         {#if former.length > 0}
           <div class="max-w-[640px] border border-line bg-surface">
             <div class="border-b border-line px-4 py-2.5">
-              <p class="text-ui font-semibold text-ink">{tr("admin.previous.addresses")}</p>
-              <p class="mt-0.5 text-2xs leading-snug text-muted">
+              <p class="admin-label text-primary">{tr("admin.previous.addresses")}</p>
+              <p class="admin-meta mt-0.5">
                 {tr("admin.these.links.open.the.current.course.releasing.an.address.stops.it")}
               </p>
             </div>
@@ -1778,7 +1788,7 @@
                 <span class="min-w-0 flex-1 truncate font-mono text-2xs text-ink">/c/{name}</span>
                 <button
                   type="button"
-                  class="btn-outline h-9 shrink-0 px-3 text-2xs"
+                  class="btn-outline shrink-0"
                   disabled={busy}
                   onclick={() => (dropping = name)}
                 >
@@ -1793,15 +1803,13 @@
              breaks: the seminars and their pages stay, what breaks is the
              address the class was dictated in the first week. -->
         <div class="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-4">
-          <p class="min-w-0 flex-1 text-2xs text-muted">
+          <p class="min-w-0 flex-1 basis-[240px] text-2xs text-muted">
             {tr("admin.deleting.the.course.removes.the.seminar.list.its.order.and.the.ad")}
             <span class="font-mono">/c/{addressOf(shown)}</span>{tr("admin.seminars.and.published.pages.will.be.kept")}
           </p>
-          <button
-            type="button"
-            class="shrink-0 text-ui font-semibold text-danger hover:brightness-110"
-            onclick={() => (doomed = true)}
-          >
+          <!-- Destructive outside a dialog: the panel's red frame, as «Завершить
+               сейчас» on a live competition. The dialog then asks. -->
+          <button type="button" class="btn-danger shrink-0" onclick={() => (doomed = true)}>
             {tr("admin.delete.course")}
           </button>
         </div>
@@ -1816,19 +1824,18 @@
     no way back.
   -->
   <AdminPage title={tr("admin.course.218")}>
-    <div class="px-8 py-16 text-center">
-      {#if loadingOne}
-        <p class="text-ui text-muted">{tr("admin.opening.course")}</p>
-      {:else}
-        <p class="text-title font-semibold text-ink">{tr("admin.could.not.open.course")}</p>
-        <p class="mx-auto mt-2 max-w-sm text-ui text-muted">
-          {error ?? tr("admin.check.the.address.or.return.to.the.course.list")}
-        </p>
-        <button type="button" class="btn-primary mt-4" onclick={() => navigate('/admin/courses')}>
+    {#if loadingOne}
+      <p class="py-16 text-center text-ui text-muted">{tr("admin.opening.course")}</p>
+    {:else}
+      <EmptyState
+        title={tr("admin.could.not.open.course")}
+        hint={error ?? tr("admin.check.the.address.or.return.to.the.course.list")}
+      >
+        <button type="button" class="btn-primary" onclick={() => navigate('/admin/courses')}>
           {tr("admin.all.courses")}
         </button>
-      {/if}
-    </div>
+      </EmptyState>
+    {/if}
   </AdminPage>
 {/if}
 
@@ -1856,7 +1863,7 @@
         </button>
         <button
           type="button"
-          class="btn bg-danger text-white hover:brightness-110 disabled:opacity-40"
+          class="btn-danger-solid"
           disabled={busy}
           onclick={() => void destroy()}
         >
@@ -1901,7 +1908,7 @@
         </button>
         <button
           type="button"
-          class="btn bg-danger text-white hover:brightness-110 disabled:opacity-40"
+          class="btn-danger-solid"
           disabled={busy}
           onclick={() => void releaseSlug()}
         >
@@ -1945,7 +1952,7 @@
         </button>
         <button
           type="button"
-          class="btn bg-danger text-white hover:brightness-110 disabled:opacity-40"
+          class="btn-danger-solid"
           disabled={busy}
           onclick={() => void dropFormer()}
         >

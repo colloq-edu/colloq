@@ -19,6 +19,7 @@ import {
   type ClassState,
   type Course,
   type CourseItem,
+  type MaterialRef,
   type PublicClass,
   type PublicCourseView,
   type PublicMaterial,
@@ -191,7 +192,7 @@ export function publicCourseView(course: Course): PublicCourseView {
       const materials = listMaterials(pub.id)
       page = {
         address: publicationAddress(pub),
-        materials: materials.map((m) => ({ key: m.key, kind: m.kind, name: m.name, bytes: m.bytes })),
+        materials: materials.map(materialRef),
         zipBytes: zipPlan(zipContextOf(pub, materials, course, row)).bytes,
         updatedAt: pub.publishedAt,
       }
@@ -250,8 +251,22 @@ function neighborOf(context: PageContext, step: 1 | -1): PublicNeighbor | null {
   return null
 }
 
+/**
+ * A material as every list shows it: the course row, the class page and the
+ * panel. A folder adds how many files it holds and what they are; its file
+ * list itself stays on the server, and goes out only inside its ZIP.
+ */
+export function materialRef(m: MaterialRow): MaterialRef {
+  const ref: MaterialRef = { key: m.key, kind: m.kind, name: m.name, bytes: m.bytes }
+  if (m.kind === 'folder') {
+    ref.files = m.files?.length ?? 0
+    ref.holds = m.holds ?? []
+  }
+  return ref
+}
+
 function publicMaterial(m: MaterialRow): PublicMaterial {
-  const out: PublicMaterial = { key: m.key, kind: m.kind, name: m.name, bytes: m.bytes, path: m.path }
+  const out: PublicMaterial = { ...materialRef(m), path: m.path }
   if (m.kind === 'notebook') {
     out.cells = m.cellCount ?? 0
     out.outputs = m.outputCount ?? 0

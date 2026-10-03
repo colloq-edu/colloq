@@ -40,6 +40,7 @@ import type {
   Course,
   CourseItem,
   PublishCheck,
+  PickedFile,
   PublishInfo,
   RoomAccess,
 } from '@shared/publish'
@@ -145,10 +146,14 @@ export interface AdminPublication {
   orphaned: boolean
 }
 
-/** What «Опубликовать» sends: the ticked notebooks (by root) and files (by path), in page order. */
+/**
+ * What «Опубликовать» sends: the ticked notebooks (by root) and files (by
+ * path, folders as 'data/' with the files inside the teacher ticked or
+ * unticked against the rules), in page order.
+ */
 export interface PublishBody {
   notebooks: { root: string; name: string }[]
-  files: { path: string; name: string }[]
+  files: PickedFile[]
   autoRefresh: boolean
   /** Check ids the teacher confirmed with «Проверил(а) — публиковать как есть». */
   ack: string[]
@@ -158,7 +163,12 @@ export interface PublishBody {
   roomAccess?: RoomAccess
 }
 
-export type RefusedReason = 'missing' | 'too-large' | 'budget'
+/**
+ * Why a ticked file or folder did not go out (server/src/publish/materials.ts
+ * · RefusedReason). A folder is refused whole; 'too-many' is a folder over
+ * MAX_FOLDER_FILES.
+ */
+export type RefusedReason = 'missing' | 'too-large' | 'budget' | 'too-many'
 
 export interface PublishResult {
   page: AdminPage

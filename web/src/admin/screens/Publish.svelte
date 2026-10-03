@@ -17,6 +17,7 @@
   import { onMount, tick } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Check from '@/admin/ui/Check.svelte'
+  import Badge from '@/admin/screens/competitions/Badge.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import {
     AdminApiError,
@@ -28,24 +29,34 @@
   import { copyText } from '@/lib/clipboard'
   import { formatDay } from '@shared/class-day'
   import {
+    MAX_FOLDER_FILES,
     MAX_MATERIAL_NAME,
     ROOM_ACCESS,
     slugOk,
     type AddressHolder,
     type AdminPage as PageInfo,
     type FileChoice,
+    type FolderEntry,
     type NotebookChoice,
     type PublishInfo,
     type RoomAccess,
   } from '@shared/publish'
   import {
     checkText,
+    entryPath,
+    entryReason,
     fileReason,
+    folderMeta,
+    folderReason,
+    folderRequest,
+    goingPaths,
     kindText,
+    lockedEntry,
     lockedFile,
     lockedNotebook,
     notebookMeta,
     notebookReason,
+    pickedBytes,
     publishBlocked,
     relevantChecks,
     sizeText,
@@ -80,7 +91,7 @@
   let acked = $state<string[]>([])
   let autoRefresh = $state(true)
   /** «Вход в комнату со страницы» (shared/publish.ts · RoomAccess). */
-  let roomAccess = $state<RoomAccess>('members')
+  let roomAccess = $state<RoomAccess>('anyone')
   /**
    * Whether the server keeps a pick for this page, so the door setting can be
    * saved on its own. Before the first publish (or on a page carried over
@@ -124,14 +135,18 @@
     info = body
     already = body.page
     books = ordered(body)
-    files = body.files.map((file) => ({ ...file }))
+    // A folder's files are ticked one by one too: copies, so a tick here never edits `info`.
+    files = body.files.map((file) => ({
+      ...file,
+      ...(file.entries ? { entries: file.entries.map((entry) => ({ ...entry })) } : {}),
+    }))
     suggested = new Map([
       ...body.notebooks.map((b): [string, string] => [b.root, b.name]),
       ...body.files.map((f): [string, string] => [f.path, f.name]),
     ])
     acked = body.selection?.ack ?? []
     autoRefresh = body.selection?.autoRefresh ?? true
-    roomAccess = body.roomAccess ?? 'members'
+    roomAccess = body.roomAccess ?? 'anyone'
     hasPick = body.selection !== null
     heldOn =
       body.heldOn ?? localDay(body.room.finishedAt ?? Date.now())
@@ -197,13 +212,37 @@
 
   const pickedBooks = $derived(books.filter((b) => b.picked))
   const pickedFiles = $derived(files.filter((f) => f.picked))
+  /*
+   * Root files first, the room's top-level folders after them: the page
+   * orders them the same way (shared/materials.ts · materialRank), and a
+   * folder row is a different shape — a count and a «состав папки» under it
+   * rather than a name field. Both are the same `files` objects, so a tick
+   * here is a tick in what gets published.
+   */
+  const rootFiles = $derived(files.filter((f) => f.kind !== 'folder'))
+  const folders = $derived(files.filter((f) => f.kind === 'folder'))
+  /** Folders whose «состав папки» is open. */
+  let opened = $state<string[]>([])
+  const toggleFolder = (path: string): void => {
+    opened = opened.includes(path) ? opened.filter((p) => p !== path) : [...opened, path]
+  }
+  /**
+   * A file in «состав папки» ticked or unticked. Ticking one in an unticked
+   * folder ticks the folder (that is what the teacher means), and a folder
+   * left with nothing ticked in it is unticked: it would go out empty.
+   */
+  function pickEntry(folder: FileChoice, entry: FolderEntry, on: boolean): void {
+    entry.picked = on
+    if (on) folder.picked = true
+    else if (!(folder.entries ?? []).some((e) => e.picked)) folder.picked = false
+  }
   const fileLimit = $derived(info?.limits.fileBytes ?? Infinity)
   const checks = $derived(
     info
       ? relevantChecks(
           info.checks,
           new Set(pickedBooks.map((b) => b.root)),
-          new Set(pickedFiles.map((f) => f.path)),
+          goingPaths(files),
         )
       : [],
   )
@@ -226,7 +265,7 @@
   const pageBytes = $derived.by(() => {
     const onPage = new Map(already?.materials.map((m) => [m.path, m.bytes]) ?? [])
     let sum = 0
-    for (const file of pickedFiles) sum += file.bytes
+    for (const file of pickedFiles) sum += pickedBytes(file)
     for (const book of pickedBooks) sum += onPage.get(book.path) ?? 0
     return sum
   })
@@ -260,6 +299,7 @@
           name: b.name.trim() || suggested.get(b.root) || '',
         })),
         files: pickedFiles.map((f) => ({
+          ...(f.kind === 'folder' ? folderRequest(f, '') : {}),
           path: f.path,
           name: f.name.trim() || suggested.get(f.path) || '',
         })),
@@ -505,8 +545,17 @@
   }
 
   function refusedText(item: { path: string; reason: RefusedReason }): string {
-    if (item.reason === 'missing') return tr('admin.page.refused.missing', { path: item.path })
+    // A folder is refused whole ('data/'): gone, or nothing in it may go out.
+    const folder = item.path.endsWith('/')
+    if (item.reason === 'missing') {
+      return tr(folder ? 'admin.page.refused.folderMissing' : 'admin.page.refused.missing', {
+        path: item.path,
+      })
+    }
     if (item.reason === 'too-large') return tr('admin.page.refused.tooLarge', { path: item.path })
+    if (item.reason === 'too-many') {
+      return tr('admin.page.refused.tooMany', { path: item.path, count: MAX_FOLDER_FILES })
+    }
     return tr('admin.page.refused.budget', { path: item.path })
   }
 
@@ -522,16 +571,18 @@
 
   const YES = 'M2.5 7.2L5.6 10.2L11.5 3.8'
   const NO = 'M3.5 3.5L10.5 10.5M10.5 3.5L3.5 10.5'
-  const HEAD = 'flex items-end justify-between gap-4 border-b-2 border-ink pb-3'
-  const LABEL = 'text-2xs leading-4 font-black uppercase tracking-section text-ink'
-  const COUNT = 'font-mono text-micro uppercase tracking-caps text-muted'
-  const ROW = 'pick-row flex items-center gap-x-4 gap-y-2 border-b border-line py-3'
-  const NAME =
-    'h-9 w-full border border-line bg-canvas px-3 text-ui text-ink placeholder:text-faint ' +
-    'focus:border-accent focus:outline-none'
-  const ARROW =
-    'press flex h-8 w-8 items-center justify-center border border-line text-muted ' +
-    'hover:border-faint hover:text-ink disabled:text-faint disabled:opacity-40'
+  /*
+   * The panel's shared vocabulary (index.css · the teacher's panel): one row,
+   * one section head and one icon button for this screen, the course table
+   * and the competition screens alike. Only the picker's own geometry lives
+   * here — the `pick-row` hooks the container query below reads.
+   */
+  const ROW = 'pick-row admin-list-row gap-y-2'
+  /* A folder row grows downwards (its reason, «состав папки»): the tick stays on the first line. */
+  const FOLDER_ROW = 'pick-row admin-list-row items-start gap-y-2'
+  /* The reorder arrows keep their frame: two bare chevrons side by side read
+     as decoration, not as two buttons. */
+  const ARROW = 'admin-icon-btn border border-line'
 </script>
 
 <svelte:window onkeydown={onKey} />
@@ -550,8 +601,8 @@
 {#snippet formerNames()}
   {#if former.length > 0}
     <div class="border-t border-line pt-3">
-      <p class="text-ui font-semibold text-ink">{tr("admin.previous.addresses")}</p>
-      <p class="mt-0.5 text-2xs leading-snug text-muted">
+      <p class="admin-label">{tr("admin.previous.addresses")}</p>
+      <p class="admin-meta mt-0.5">
         {tr("admin.these.links.open.the.current.publication.releasing.an.address.sto")}
       </p>
       <div class="mt-2 flex flex-col">
@@ -560,7 +611,7 @@
             <span class="min-w-0 flex-1 truncate font-mono text-2xs text-ink">/p/{name}</span>
             <button
               type="button"
-              class="btn-outline h-9 shrink-0 px-3 text-2xs"
+              class="btn-outline shrink-0"
               disabled={busy}
               onclick={() => (dropping = name)}
             >
@@ -574,21 +625,21 @@
 {/snippet}
 
 {#snippet sectionHead(label: string, note: string | null, count: string | null, warn: boolean)}
-  <div class={HEAD}>
-    <div class="flex min-w-0 flex-wrap items-baseline gap-x-2.5 gap-y-1">
-      <h2 class={LABEL}>{label}</h2>
-      {#if note}<span class="text-ui leading-4 text-muted">{note}</span>{/if}
-    </div>
+  <div class="admin-section">
+    <h2 class="admin-section-title">{label}</h2>
+    {#if note}<span class="text-2xs text-muted">{note}</span>{/if}
     {#if count}
-      <span class="{COUNT} shrink-0 {warn ? 'text-warning' : ''}">{count}</span>
+      <span class="ml-auto shrink-0 font-mono text-micro {warn ? 'text-warning' : 'text-muted'}">{count}</span>
     {/if}
   </div>
 {/snippet}
 
 <AdminPage title={tr('admin.page.title')}>
   {#snippet eyebrow()}
+    <!-- The eyebrow's own voice, as on every screen with one: AdminPage sizes
+         and colours it; min-w-0 lets a long course name wrap, not overflow. -->
     <a
-      class="pb-1.5 text-2xs leading-4 text-accent-text hover:underline"
+      class="min-w-0 transition-colors duration-quick hover:text-ink"
       href={back.href}
       onclick={(event) => {
         event.preventDefault()
@@ -600,12 +651,12 @@
   {/snippet}
   {#snippet lede()}
     {#if info?.course}
-      <span class="text-ui-lg leading-5 text-muted">{meta}</span>
+      <span class="text-ui text-muted">{meta}</span>
       <!-- The row editor of the course, not a copy of it here: the title, the
            day and the «о чём» belong to the course row, and two places to
            edit them would be two truths. -->
       <a
-        class="border-b border-dashed border-accent-text text-ui-lg leading-5 text-accent-text"
+        class="admin-link"
         href={`/admin/courses/${info.course.id}?edit=${info.course.row.id}`}
         onclick={(event) => {
           event.preventDefault()
@@ -617,17 +668,17 @@
     {:else if info}
       <!-- Outside a course there is no row to carry the day: the page keeps
            its own (held_on), defaulting to the day the class was finished. -->
-      <label class="flex items-center gap-3 text-ui-lg leading-5 text-muted">
+      <label class="flex items-center gap-3 text-ui text-muted">
         {tr('admin.page.heldOn')}
         <input
           type="date"
-          class="h-9 border border-line bg-canvas px-2 font-mono text-ui text-ink focus:border-accent focus:outline-none"
+          class="field w-auto font-mono"
           bind:value={heldOn}
           disabled={!info.room.exists}
         />
       </label>
     {:else}
-      <span class="text-ui-lg leading-5 text-muted">&nbsp;</span>
+      <span class="text-ui text-muted">&nbsp;</span>
     {/if}
   {/snippet}
 
@@ -646,18 +697,23 @@
         -->
         <section class="flex flex-col">
           {@render sectionHead(tr('admin.page.current'), null, String(already?.materials.length ?? 0), false)}
-          <p class="border-b border-line py-3 text-2xs text-muted">{tr('admin.page.roomGone')}</p>
+          <p class="border-b border-line py-3.5 text-2xs text-muted">{tr('admin.page.roomGone')}</p>
           {#each already?.materials ?? [] as material (material.key)}
             <div class={ROW}>
               <div class="flex min-w-0 flex-1 flex-col gap-0.5">
                 <span class="text-ui text-ink">{material.name}</span>
-                <span class="text-2xs leading-4 text-muted">
-                  <span class="font-mono">{material.path}</span> · {kindText(material.kind, material.path)} · {sizeText(material.bytes)}
+                <span class="admin-meta">
+                  {#if material.kind === 'folder'}
+                    <!-- A folder: its name is its path ('data/'), and what counts is how much went out in it. -->
+                    {kindText(material.kind, material.path)} · {folderMeta(material)}
+                  {:else}
+                    <span class="font-mono">{material.path}</span> · {kindText(material.kind, material.path)} · {sizeText(material.bytes)}
+                  {/if}
                 </span>
               </div>
               <button
                 type="button"
-                class="btn-outline h-9 shrink-0 px-3 text-2xs"
+                class="btn-outline shrink-0"
                 disabled={busy || (already?.materials.length ?? 0) <= 1}
                 onclick={() => void takeOff(material.key, material.name)}
               >
@@ -676,7 +732,7 @@
             false,
           )}
           {#if books.length === 0}
-            <p class="border-b border-line py-3 text-2xs text-muted">{tr('admin.page.noNotebooks')}</p>
+            <p class="border-b border-line py-3.5 text-2xs text-muted">{tr('admin.page.noNotebooks')}</p>
           {/if}
           {#each books as book, index (book.root)}
             {@const reason = notebookReason(book)}
@@ -691,7 +747,7 @@
               <div class="pick-name w-[220px] shrink-0">
                 {#if book.picked}
                   <input
-                    class={NAME}
+                    class="field"
                     placeholder={tr('admin.page.tabName')}
                     aria-label={tr('admin.page.tabName')}
                     maxlength={MAX_MATERIAL_NAME}
@@ -699,8 +755,9 @@
                   />
                 {:else}
                   <!-- The lane stays: an unticked row keeps the column where
-                       the name will be, so the paths line up down the list. -->
-                  <div class="flex h-9 items-center border border-line px-3 text-ui text-faint" aria-hidden="true">
+                       the name will be, so the paths line up down the list.
+                       Drawn as the field itself, so it is the field's height. -->
+                  <div class="field flex h-10 items-center bg-canvas text-faint max-[640px]:h-11" aria-hidden="true">
                     {tr('admin.page.tabName')}
                   </div>
                 {/if}
@@ -709,10 +766,10 @@
                 <span class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
                   <span class="min-w-0 break-all font-mono text-2xs {book.picked ? 'text-ink' : 'text-muted'}">{book.path}</span>
                   {#if book.isNew}
-                    <span class="border border-accent-text px-1.5 text-micro text-accent-text">{tr('admin.page.new')}</span>
+                    <Badge word={tr('admin.page.new')} tone="accent" form="outline" case="lower" />
                   {/if}
                 </span>
-                <span class="text-2xs leading-4 text-muted">{notebookMeta(book)}</span>
+                <span class="admin-meta">{notebookMeta(book)}</span>
               </div>
               <div class="pick-side flex w-[200px] shrink-0 justify-end gap-1">
                 {#if book.picked}
@@ -723,7 +780,7 @@
                     aria-label={tr('admin.move.up')}
                     onclick={() => move(index, -1)}
                   >
-                    <Icon name="chevron-up" size={12} />
+                    <Icon name="chevron-up" size={15} />
                   </button>
                   <button
                     type="button"
@@ -732,10 +789,10 @@
                     aria-label={tr('admin.move.down')}
                     onclick={() => move(index, 1)}
                   >
-                    <Icon name="chevron-down" size={12} />
+                    <Icon name="chevron-down" size={15} />
                   </button>
                 {:else if reason}
-                  <span class="text-right text-2xs text-muted">{reason}</span>
+                  <span class="admin-meta text-right">{reason}</span>
                 {/if}
               </div>
             </div>
@@ -751,9 +808,9 @@
             false,
           )}
           {#if files.length === 0}
-            <p class="border-b border-line py-3 text-2xs text-muted">{tr('admin.page.noFiles')}</p>
+            <p class="border-b border-line py-3.5 text-2xs text-muted">{tr('admin.page.noFiles')}</p>
           {/if}
-          {#each files as file (file.path)}
+          {#each rootFiles as file (file.path)}
             {@const reason = fileReason(file, fileLimit)}
             {@const named = file.kind === 'pdf' || file.kind === 'notebook'}
             <div class={ROW}>
@@ -767,7 +824,7 @@
               <div class="pick-name w-[220px] shrink-0 {named && file.picked ? '' : 'pick-spacer'}">
                 {#if named && file.picked}
                   <input
-                    class={NAME}
+                    class="field"
                     placeholder={tr('admin.page.fileName')}
                     aria-label={tr('admin.page.fileName')}
                     maxlength={MAX_MATERIAL_NAME}
@@ -779,18 +836,101 @@
                 <span class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
                   <span class="min-w-0 break-all font-mono text-2xs {file.picked ? 'text-ink' : 'text-muted'}">{file.path}</span>
                   {#if file.isNew}
-                    <span class="border border-accent-text px-1.5 text-micro text-accent-text">{tr('admin.page.new')}</span>
+                    <Badge word={tr('admin.page.new')} tone="accent" form="outline" case="lower" />
                   {/if}
                 </span>
-                <span class="text-2xs leading-4 text-muted">{kindText(file.kind, file.path)} · {sizeText(file.bytes)}</span>
+                <span class="admin-meta">{kindText(file.kind, file.path)} · {sizeText(file.bytes)}</span>
               </div>
               <div class="pick-side flex w-[200px] shrink-0 justify-end">
                 {#if reason}
-                  <span class="text-right text-2xs text-muted">{reason.text}</span>
+                  <span class="admin-meta text-right">{reason.text}</span>
                 {/if}
               </div>
             </div>
           {/each}
+
+          <!--
+            The room's top-level folders, one row each (F1): a class whose
+            notebooks import `scripts` and read `data/*.csv` needs both beside
+            them, with the paths intact, and fifteen datasets as fifteen rows
+            would not fit on the page. The reason sits under the name, not in
+            the side lane: «читается в lecture.ipynb и scripts/eda_tools.py» is
+            the line the teacher checks, and it is longer than a lane. Inside,
+            the same rules as anywhere (shared/materials.ts · folderEntryWhy),
+            and «состав папки» shows every file with what stays in the room
+            and why — a folder ticked whole must not hide an answer key — and
+            lets the teacher overrule the rules file by file.
+          -->
+          {#each folders as folder (folder.path)}
+            {@const reason = folderReason(folder, budget)}
+            {@const open = opened.includes(folder.path)}
+            {@const entries = folder.entries ?? []}
+            <div class={FOLDER_ROW}>
+              <span class="flex h-[22px] w-6 shrink-0 items-center">
+                <Check
+                  bind:checked={folder.picked}
+                  disabled={lockedFile(folder, fileLimit)}
+                  label={tr('admin.page.pickThis', { path: folder.path })}
+                />
+              </span>
+              <div class="pick-name pick-spacer w-[220px] shrink-0"></div>
+              <div class="flex min-w-0 flex-1 flex-col gap-[3px]">
+                <!-- The path may break anywhere (a long folder name), the count never
+                     does: «1,8 М» on one line and «Б» on the next is not a size. -->
+                <span class="flex min-w-0 flex-wrap items-center gap-x-[0.6ch] gap-y-0.5 font-mono text-2xs">
+                  <span class="min-w-0 break-all {folder.picked ? 'text-ink' : 'text-muted'}">{folder.path}</span>
+                  <span class="whitespace-nowrap text-muted">· {folderMeta(folder, entries)}</span>
+                  {#if folder.isNew}
+                    <Badge word={tr('admin.page.new')} tone="accent" form="outline" case="lower" />
+                  {/if}
+                </span>
+                {#if reason}
+                  <span class="admin-meta">{reason.text}</span>
+                {/if}
+                {#if entries.length > 0}
+                  <button
+                    type="button"
+                    class="admin-link self-start"
+                    aria-expanded={open}
+                    onclick={() => toggleFolder(folder.path)}
+                  >
+                    {tr('admin.page.folder.contents')} <span aria-hidden="true">{open ? '▴' : '▾'}</span>
+                  </button>
+                {/if}
+                {#if open}
+                  <!--
+                    Every file inside with its own tick, as the rules set it: a
+                    file they keep in the room says why, and the teacher may
+                    tick it anyway (a `_utils.py` the package imports) or
+                    untick one they send. The decision is kept with the page
+                    and survives a refresh; a file over the upload limit is
+                    locked.
+                  -->
+                  <ul class="mt-1.5 flex max-h-[300px] flex-col overflow-y-auto border-l-2 border-line pl-3">
+                    {#each entries as entry (entry.path)}
+                      {@const rule = entryReason(entry, fileLimit)}
+                      <li class="flex items-start gap-2.5 py-[3px]">
+                        <span class="flex h-5 shrink-0 items-center">
+                          <Check
+                            size={16}
+                            checked={entry.picked}
+                            disabled={lockedEntry(entry)}
+                            label={tr('admin.page.pickThis', { path: entry.path })}
+                            onchange={(on) => pickEntry(folder, entry, on)}
+                          />
+                        </span>
+                        <span class="min-w-0 flex-1 break-all font-mono text-micro {entry.picked ? 'text-ink' : 'text-muted'}">{entryPath(folder, entry)}</span>
+                        <span class="admin-meta shrink-0 text-right">{rule ?? sizeText(entry.bytes)}</span>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            </div>
+          {/each}
+          {#if folders.length > 0}
+            <p class="admin-meta py-3.5">{tr('admin.page.folder.note')}</p>
+          {/if}
         </section>
 
         <!--
@@ -810,7 +950,7 @@
             {#if info.scrubbed > 0}
               <div class="flex items-center gap-4 border-b border-line py-3.5">
                 <span class="flex w-6 shrink-0 items-center text-muted"><Icon name="info" size={18} /></span>
-                <p class="text-ui leading-5 text-ink">{tr('admin.page.scrubbed', { count: info.scrubbed })}</p>
+                <p class="text-ui text-ink">{tr('admin.page.scrubbed', { count: info.scrubbed })}</p>
               </div>
             {/if}
             {#each checks as check (check.id)}
@@ -821,14 +961,14 @@
                   <rect x="8.2" y="12.2" width="1.6" height="1.6" fill="currentColor" />
                 </svg>
                 <p class="flex min-w-0 flex-1 basis-[220px] flex-wrap items-baseline gap-x-2">
-                  <span class="text-ui leading-5 text-ink">{checkText(check)}</span>
+                  <span class="text-ui text-ink">{checkText(check)}</span>
                   {#if check.kind !== 'roomId'}
-                    <span class="font-mono text-2xs leading-5 text-warning">{check.sample}</span>
+                    <span class="font-mono text-2xs text-warning">{check.sample}</span>
                   {/if}
                 </p>
                 {#if check.kind !== 'roomId'}
                   <a
-                    class="press flex h-[34px] shrink-0 items-center border border-line bg-canvas px-3.5 text-2xs leading-4 text-ink hover:border-faint"
+                    class="btn-outline shrink-0"
                     href={`/s/${info.room.id}`}
                     target="_blank"
                     rel="noreferrer"
@@ -846,7 +986,7 @@
                     onchange={(on) => confirmChecks(on)}
                   />
                 </span>
-                <span class="text-ui font-semibold leading-5 text-ink">{tr('admin.page.ack')}</span>
+                <span class="text-ui font-semibold text-ink">{tr('admin.page.ack')}</span>
               </label>
             {/if}
           </section>
@@ -855,10 +995,14 @@
     </div>
 
     <!-- The rail: what goes public, how the page lives on, and the button. -->
-    <aside class="flex w-full shrink-0 flex-col gap-8 xl:w-[312px]">
+    <!-- 340, not the artboard's 312: at the panel's scale «ОПУБЛИКОВАТЬ СНОВА»
+         and «Отмена» take 337px side by side, and at 1440 the main column
+         still keeps its 760. Its sections are headed as the main column's
+         are (.admin-section): one voice for a section head on the screen. -->
+    <aside class="flex w-full shrink-0 flex-col gap-8 xl:w-[340px]">
       <section class="flex flex-col">
-        <div class="border-b-2 border-ink pb-3">
-          <h2 class="font-mono text-micro uppercase tracking-label text-muted">{tr('admin.page.public')}</h2>
+        <div class="admin-section">
+          <h2 class="admin-section-title">{tr('admin.page.public')}</h2>
         </div>
         <ul class="flex flex-col gap-2.5 border-b border-line py-3.5">
           {#each [tr('admin.page.public.notebooks'), tr('admin.page.public.files')] as line (line)}
@@ -868,7 +1012,7 @@
                   <path d={YES} fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" />
                 </svg>
               </span>
-              <span class="text-ui leading-5 text-ink">{line}</span>
+              <span class="text-2xs text-ink">{line}</span>
             </li>
           {/each}
         </ul>
@@ -880,7 +1024,7 @@
                   <path d={NO} fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" />
                 </svg>
               </span>
-              <span class="text-ui leading-5 text-muted">{line}</span>
+              <span class="text-2xs text-muted">{line}</span>
             </li>
           {/each}
         </ul>
@@ -892,8 +1036,8 @@
             <Check bind:checked={autoRefresh} />
           </span>
           <span class="flex min-w-0 flex-1 flex-col gap-1">
-            <span class="text-ui leading-5 text-ink">{tr('admin.page.autoRefresh')}</span>
-            <span class="text-2xs text-muted">{tr('admin.page.autoRefreshHint')}</span>
+            <span class="text-2xs text-ink">{tr('admin.page.autoRefresh')}</span>
+            <span class="admin-meta">{tr('admin.page.autoRefreshHint')}</span>
           </span>
         </label>
 
@@ -903,24 +1047,28 @@
           says its cost in the hint right under it.
         -->
         <section class="flex flex-col gap-3">
-          <div class="border-b-2 border-ink pb-3">
-            <h2 id="room-access" class="font-mono text-micro uppercase tracking-label text-muted">
+          <div class="admin-section">
+            <h2 id="room-access" class="admin-section-title">
               {tr('admin.page.roomAccess')}
             </h2>
           </div>
-          <div class="flex border border-line" role="radiogroup" aria-labelledby="room-access">
+          <!-- Drawn as the panel's option chips (admin/ui/Choice.svelte, sm): the
+               same 40 px chip as every other set of options in the panel. Not
+               Choice itself, because these are radios — one of three, read
+               out as a group — where Choice's chips are pressed toggles. -->
+          <div class="flex flex-wrap items-center gap-2" role="radiogroup" aria-labelledby="room-access">
             {#each ROOM_ACCESS as option, i (option)}
               {@const on = roomAccess === option}
               <button
                 type="button"
                 role="radio"
                 aria-checked={on}
-                class="press flex h-9 flex-1 basis-0 items-center justify-center px-2 text-2xs
-                       leading-4 transition-colors duration-100 disabled:cursor-wait
-                       {i > 0 ? 'border-l border-line' : ''}
+                class="inline-flex min-h-10 items-center border px-3 py-1.5 text-ui font-medium
+                       transition-colors duration-100 disabled:cursor-wait max-[640px]:min-h-11
+                       focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/15
                        {on
-                  ? 'bg-brand font-bold text-white dark:bg-primary dark:text-primary-ink'
-                  : 'text-muted hover:text-ink'}"
+                  ? 'border-primary bg-primary text-primary-ink'
+                  : 'border-line bg-surface text-ink hover:border-faint hover:bg-raised'}"
                 disabled={savingAccess}
                 onclick={() => void chooseAccess(option)}
               >
@@ -928,7 +1076,7 @@
               </button>
             {/each}
           </div>
-          <p class="text-2xs leading-[19px] text-muted">{tr('admin.page.roomAccessHint')}</p>
+          <p class="admin-meta">{tr('admin.page.roomAccessHint')}</p>
         </section>
       {/if}
 
@@ -938,14 +1086,16 @@
         and renaming it rebuilds nothing. The old address keeps working: a
         link that has already been given out must not break.
       -->
-      <section class="flex flex-col gap-2">
-        <h2 class="text-[11px] font-black uppercase leading-[14px] tracking-label text-muted">{tr('admin.page.address')}</h2>
+      <section class="flex flex-col gap-3">
+        <div class="admin-section">
+          <h2 class="admin-section-title">{tr('admin.page.address')}</h2>
+        </div>
         {#if already}
-          <div class="flex h-[38px] items-center border border-line bg-canvas px-3 focus-within:border-accent">
-            <span class="shrink-0 font-mono text-2xs leading-4 text-faint">{location.host}/p/</span>
+          <!-- The competition editor's /k/ field, here with /p/ (Editor.svelte · slug). -->
+          <div class="admin-affix">
+            <span class="shrink-0 font-mono text-2xs text-muted">{location.host}/p/</span>
             <input
               bind:this={addressField}
-              class="min-w-0 flex-1 bg-transparent font-mono text-2xs leading-4 text-ink placeholder:text-faint focus:outline-none"
               placeholder={already.id}
               maxlength={64}
               aria-label={tr('admin.page.address')}
@@ -960,7 +1110,7 @@
               {#if slugDraft.trim() !== slug}
                 <button
                   type="button"
-                  class="btn-primary h-9 px-3 text-2xs"
+                  class="btn-primary"
                   disabled={busy}
                   onclick={() => void saveSlug()}
                 >
@@ -973,7 +1123,7 @@
               {#if held}
                 <button
                   type="button"
-                  class="btn-outline h-9 px-3 text-2xs"
+                  class="btn-outline"
                   disabled={busy}
                   onclick={() => (asking = true)}
                 >
@@ -983,27 +1133,27 @@
             </div>
           {/if}
           {#if held}
-            <p class="text-2xs leading-snug text-muted">
+            <p class="admin-meta">
               <span class="font-mono text-ink">/p/{held.slug}</span> {tr("admin.the.previous.address.of.the.page")}
               {#if held.holder.name}«{held.holder.name}»{/if}{tr("admin.after.transfer.this.link.will.open.the.current.publication.instea")}
             </p>
           {/if}
           {#if slug}
-            <p class="text-2xs text-muted">{tr("admin.the.old.address.p")}{already.id} {tr("admin.also.works")}</p>
+            <p class="admin-meta">{tr("admin.the.old.address.p")}{already.id} {tr("admin.also.works")}</p>
           {/if}
           {@render formerNames()}
         {:else}
-          <div class="flex h-[38px] items-center border border-line px-3">
-            <span class="font-mono text-2xs leading-4 text-faint">{location.host}/p/…</span>
+          <div class="admin-affix">
+            <span class="font-mono text-2xs text-muted">{location.host}/p/…</span>
           </div>
-          <p class="text-2xs text-muted">{tr('admin.page.addressLater')}</p>
+          <p class="admin-meta">{tr('admin.page.addressLater')}</p>
         {/if}
       </section>
 
       {#if already?.state === 'withdrawn'}
         <div class="flex flex-col gap-2 border-l-2 border-warning bg-surface px-3 py-2.5">
-          <p class="text-ui leading-5 text-ink">{tr('admin.page.withdrawn')}</p>
-          <button type="button" class="btn-outline h-9 self-start px-3 text-2xs" disabled={busy} onclick={() => void restore()}>
+          <p class="text-ui text-ink">{tr('admin.page.withdrawn')}</p>
+          <button type="button" class="btn-outline self-start" disabled={busy} onclick={() => void restore()}>
             {tr('admin.put.the.page.back')}
           </button>
         </div>
@@ -1012,7 +1162,7 @@
       <div class="flex flex-col gap-4 border-t border-line pt-6">
         {#if info?.room.exists}
           <div class="flex flex-col gap-2">
-            <p class="text-ui leading-5 {pageBytes > budget ? 'text-danger' : 'text-ink'}">
+            <p class="text-ui {pageBytes > budget ? 'text-danger' : 'text-ink'}">
               {tr('admin.page.size', { size: sizeText(pageBytes), limit: sizeText(budget) })}
             </p>
             <div class="flex h-1 bg-line" aria-hidden="true">
@@ -1028,24 +1178,24 @@
         {#if done && link}
           <!-- The result: the address the class will be given, ready to copy. -->
           <div class="flex flex-col gap-2 border-l-2 border-positive bg-surface px-3 py-2.5">
-            <p class="text-ui leading-5 text-ink">{tr('admin.page.ready')}</p>
+            <p class="text-ui text-ink">{tr('admin.page.ready')}</p>
             <a class="block break-all font-mono text-2xs text-accent-text" href={link} target="_blank" rel="noreferrer">
               {location.host}/p/{address}
             </a>
             <div class="flex flex-wrap gap-2">
-              <button type="button" class="btn-outline h-9 px-3 text-2xs" onclick={() => void copyLink()}>
+              <button type="button" class="btn-outline" onclick={() => void copyLink()}>
                 {copied ? tr('admin.copied') : tr('admin.copy.link')}
               </button>
-              <a class="btn-outline h-9 px-3 text-2xs" href={link} target="_blank" rel="noreferrer">
+              <a class="btn-outline" href={link} target="_blank" rel="noreferrer">
                 {tr('admin.open')}
               </a>
             </div>
             {#if refused.length > 0}
               <div class="border-t border-line pt-2">
-                <p class="text-2xs font-semibold text-warning">{tr('admin.page.refused')}</p>
+                <p class="admin-label text-warning">{tr('admin.page.refused')}</p>
                 <ul class="mt-1 flex flex-col gap-0.5">
                   {#each refused as item (item.path)}
-                    <li class="break-all text-2xs text-muted">{refusedText(item)}</li>
+                    <li class="admin-meta break-all">{refusedText(item)}</li>
                   {/each}
                 </ul>
               </div>
@@ -1055,13 +1205,16 @@
 
         {#if info?.room.exists}
           {#if blockedText && !building}
-            <p class="text-2xs text-muted">{blockedText}</p>
+            <p class="admin-meta">{blockedText}</p>
           {/if}
-          <div class="flex gap-2.5">
+          <!-- One line in the rail; on a phone «Отмена» drops under the button
+               rather than breaking the button's words in two. -->
+          <div class="flex flex-wrap gap-2">
+            <!-- The competitions' primary action (Editor.svelte · «Открыть соревнование»),
+                 at the panel's control height: 40, 44 on a phone. -->
             <button
               type="button"
-              class="press flex h-11 flex-1 items-center justify-center gap-2 bg-primary px-4 text-micro font-black
-                     uppercase tracking-label text-primary-ink hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+              class="btn-primary btn-caps grow gap-2 whitespace-nowrap px-4"
               disabled={blocked !== null || building}
               onclick={() => void publish()}
             >
@@ -1077,9 +1230,10 @@
                     : tr('admin.page.publish')}
               {/if}
             </button>
+            <!-- «Отмена» beside the commit is the editor's ghost (Editor.svelte · actions). -->
             <button
               type="button"
-              class="press flex h-11 items-center border border-line px-[18px] text-2xs leading-4 text-ink hover:border-faint"
+              class="btn-ghost px-3 max-[640px]:grow"
               onclick={() => navigate(back.href)}
             >
               {done ? tr('admin.close') : tr('admin.cancel')}
@@ -1088,7 +1242,7 @@
         {:else if info}
           <button
             type="button"
-            class="press flex h-11 items-center justify-center border border-line px-[18px] text-2xs leading-4 text-ink hover:border-faint"
+            class="btn-outline"
             onclick={() => navigate(back.href)}
           >
             {tr('admin.close')}
@@ -1132,7 +1286,7 @@
         </button>
         <button
           type="button"
-          class="btn bg-danger text-white hover:brightness-110 disabled:opacity-40"
+          class="btn-danger-solid"
           disabled={busy}
           onclick={() => void release()}
         >
@@ -1175,7 +1329,7 @@
         </button>
         <button
           type="button"
-          class="btn bg-danger text-white hover:brightness-110 disabled:opacity-40"
+          class="btn-danger-solid"
           disabled={busy}
           onclick={() => void dropFormer()}
         >

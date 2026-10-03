@@ -372,6 +372,102 @@ export function listTree(sessionId: string): FileTree {
   return tree
 }
 
+/**
+ * One folder of a room as the tree lists it: hidden names and `__pycache__`
+ * left out, a symlink never followed, folders first and then files, each by
+ * name. `null` when the folder cannot be read. `mtimeMs` is the folder's
+ * modification time taken BEFORE reading (see walkTree for why the order).
+ */
+function readLevel(
+  root: string,
+  rel: string,
+): { entries: FileEntry[]; mtimeMs: number | null } | null {
+  const dir = rel ? path.join(root, rel) : root
+  let mtimeMs: number | null = null
+  try {
+    mtimeMs = workspaceFs.lstatSync(dir).mtimeMs
+  } catch {
+    /* gone — readdir below will see that too */
+  }
+  let names: string[]
+  try {
+    names = workspaceFs.readdirSync(dir)
+  } catch {
+    return null
+  }
+  const dirs: FileEntry[] = []
+  const files: FileEntry[] = []
+  for (const name of names) {
+    if (name.startsWith('.') || name === '__pycache__') continue
+    const here = rel ? `${rel}/${name}` : name
+    let stat: fs.Stats
+    try {
+      // lstat, not stat: a symlink is not a file of this room, whatever it
+      // points at, and listing it as one is how a link to a secret became a
+      // download button. A symlinked DIRECTORY is refused by the same line —
+      // it is neither isFile nor isDirectory under lstat.
+      stat = workspaceFs.lstatSync(path.join(root, here))
+    } catch {
+      continue /* vanished between readdir and stat; skip */
+    }
+    if (stat.isDirectory())
+      dirs.push({ name, path: here, dir: true, size: 0, modifiedAt: stat.mtimeMs })
+    else if (stat.isFile())
+      files.push({ name, path: here, dir: false, size: stat.size, modifiedAt: stat.mtimeMs })
+  }
+  const byName = (a: FileEntry, b: FileEntry) => a.name.localeCompare(b.name)
+  dirs.sort(byName)
+  files.sort(byName)
+  return { entries: [...dirs, ...files], mtimeMs }
+}
+
+/** The top of a room, or of one folder in it: its files and folders, not deeper. */
+export function listLevel(sessionId: string, rel = ''): FileEntry[] {
+  return readLevel(sessionDir(sessionId), rel)?.entries ?? []
+}
+
+/**
+ * Every file under one folder of a room, at any depth the tree allows, in
+ * the tree's order; folders themselves are not listed.
+ *
+ * Not from listTree: the tree stops at two thousand rows for the whole room
+ * and reads it breadth-first, so a `lib/` from `pip install --target` beside
+ * `data/` used up the ceiling before `data/raw/` was ever read. A class page
+ * publishes a folder whole or not at all, and needs to know which. This walk
+ * has its own ceiling, counted in the files `keep` accepts, and says when it
+ * stopped there.
+ */
+export function listFolder(
+  sessionId: string,
+  rel: string,
+  maxFiles: number,
+  keep: (entry: FileEntry) => boolean = () => true,
+): { files: FileEntry[]; truncated: boolean } {
+  const root = sessionDir(sessionId)
+  const files: FileEntry[] = []
+  let truncated = false
+  const walk = (dir: string, depth: number): void => {
+    const level = readLevel(root, dir)
+    if (!level) return
+    for (const entry of level.entries) {
+      if (truncated) return
+      if (entry.dir) {
+        if (depth + 1 < MAX_DEPTH) walk(entry.path, depth + 1)
+        continue
+      }
+      if (!keep(entry)) continue
+      if (files.length >= maxFiles) {
+        truncated = true
+        return
+      }
+      files.push(entry)
+    }
+  }
+  // Depth as in walkTree: a folder at the room's top is depth 1 of MAX_DEPTH levels.
+  walk(rel, rel.split('/').length)
+  return { files, truncated }
+}
+
 function walkTree(sessionId: string): { tree: FileTree; stamp: TreeStamp } {
   const root = sessionDir(sessionId)
   /** The contents of every folder read — in drawing order. */
@@ -381,7 +477,6 @@ function walkTree(sessionId: string): { tree: FileTree; stamp: TreeStamp } {
   let truncated = false
 
   const read = (rel: string): FileEntry[] => {
-    const dir = rel ? path.join(root, rel) : root
     /*
      * The folder's modification time is taken BEFORE reading, and the order
      * matters here.
@@ -392,45 +487,14 @@ function walkTree(sessionId: string): { tree: FileTree; stamp: TreeStamp } {
      * a list without the new entry but with the new time passes the check,
      * that is, it lies for the whole window.
      */
-    let mtimeMs: number | null = null
-    try {
-      mtimeMs = workspaceFs.lstatSync(dir).mtimeMs
-    } catch {
-      /* gone — readdir below will see that too */
-    }
-    let names: string[]
-    try {
-      names = workspaceFs.readdirSync(dir)
-    } catch {
-      return []
-    }
+    const level = readLevel(root, rel)
+    if (!level) return []
     // Only folders that were read: an unread one has nothing to be checked
     // against, and its appearance and disappearance show in the parent's time.
-    if (mtimeMs !== null) stamp.push({ path: dir, mtimeMs })
-    const dirs: FileEntry[] = []
-    const files: FileEntry[] = []
-    for (const name of names) {
-      if (name.startsWith('.') || name === '__pycache__') continue
-      const here = rel ? `${rel}/${name}` : name
-      let stat: fs.Stats
-      try {
-        // lstat, not stat: a symlink is not a file of this room, whatever it
-        // points at, and listing it as one is how a link to a secret became a
-        // download button. A symlinked DIRECTORY is refused by the same line —
-        // it is neither isFile nor isDirectory under lstat.
-        stat = workspaceFs.lstatSync(path.join(root, here))
-      } catch {
-        continue /* vanished between readdir and stat; skip */
-      }
-      if (stat.isDirectory())
-        dirs.push({ name, path: here, dir: true, size: 0, modifiedAt: stat.mtimeMs })
-      else if (stat.isFile())
-        files.push({ name, path: here, dir: false, size: stat.size, modifiedAt: stat.mtimeMs })
+    if (level.mtimeMs !== null) {
+      stamp.push({ path: rel ? path.join(root, rel) : root, mtimeMs: level.mtimeMs })
     }
-    const byName = (a: FileEntry, b: FileEntry) => a.name.localeCompare(b.name)
-    dirs.sort(byName)
-    files.sort(byName)
-    return [...dirs, ...files]
+    return level.entries
   }
 
   let level = ['']

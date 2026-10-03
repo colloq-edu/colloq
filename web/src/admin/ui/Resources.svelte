@@ -247,14 +247,15 @@
    * A placeholder goes exactly where the real element will stand half a
    * second later, and its point is that the section does not jump when the
    * numbers arrive. So the heights here are not invented but taken from the
-   * real section in a browser: the `.field` is 38 pixels, a hint line
-   * (text-2xs · leading-snug) is 18. Computing them from the tokens on paper
-   * did not work: at 11px the line height rounds differently from how it
-   * multiplies, and the section drifted by a pixel. If the font size or the
-   * padding changes, these numbers get re-measured.
+   * real section in a browser: the field is the panel's 40 pixels (index.css ·
+   * .admin-affix), a hint line (.admin-meta, 14/20 in the panel) is 20.
+   * Computing them from the tokens on paper did not work: at 11px the line
+   * height rounds differently from how it multiplies, and the section
+   * drifted by a pixel. If the font size or the padding changes, these
+   * numbers get re-measured.
    */
-  const FIELD_H = '38px'
-  const HINT_LINE = 18
+  const FIELD_H = '40px'
+  const HINT_LINE = 20
 </script>
 
 {#snippet hintLines(widths: string[])}
@@ -284,19 +285,13 @@
     -->
     <div role="status" aria-label={tr('admin.resources.reading')} aria-busy="true" class="contents">
       <span class="sr-only">{tr('admin.resources.reading')}</span>
-      <div class="flex flex-wrap items-center gap-2.5">
-        <Skeleton width="110px" height={FIELD_H} radius="0" />
-        <span class="text-ui text-muted">{tr('admin.resources.gb')}</span>
-      </div>
-      <Skeleton width="320px" height="4px" radius="0" />
+      <Skeleton width="200px" height={FIELD_H} radius="0" />
+      <Skeleton width="200px" height="4px" radius="0" />
       {@render hintLines(['72%'])}
 
       <div class="flex flex-col gap-3 border-t border-line-soft pt-4">
-        <div class="flex flex-wrap items-center gap-2.5">
-          <Skeleton width="110px" height={FIELD_H} radius="0" />
-          <span class="text-ui text-muted">{tr('admin.resources.cores')}</span>
-        </div>
-        <Skeleton width="320px" height="4px" radius="0" />
+        <Skeleton width="200px" height={FIELD_H} radius="0" />
+        <Skeleton width="200px" height="4px" radius="0" />
         {@render hintLines(['96%', '52%'])}
       </div>
 
@@ -316,34 +311,38 @@
       </div>
     </div>
   {:else}
-    <div class="flex flex-wrap items-center gap-2.5">
-      <input
-        type="number"
-        min="0.5"
-        step="0.5"
-        inputmode="decimal"
-        disabled={busy}
-        class="field w-[110px]"
-        aria-label={tr('admin.resources.memoryLabel')}
-        placeholder={unreadable ? tr('admin.resources.asDefault') : ''}
-        value={shown}
-        oninput={(event) => {
-          editing = true
-          typed = event.currentTarget.value
-        }}
-        onblur={commit}
-        onkeydown={(event) => {
-          if (event.key === 'Enter') event.currentTarget.blur()
-        }}
-      />
-      <span class="text-ui text-muted">{tr('admin.resources.gb')}</span>
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+      <!-- The shared prefixed field with the unit inside, as on the Resources
+           tab: the number and what it counts are one control. -->
+      <div class="admin-affix w-[200px] gap-2">
+        <input
+          type="number"
+          min="0.5"
+          step="0.5"
+          inputmode="decimal"
+          disabled={busy}
+          class="placeholder:font-sans"
+          aria-label={tr('admin.resources.memoryLabel')}
+          placeholder={unreadable ? tr('admin.resources.asDefault') : ''}
+          value={shown}
+          oninput={(event) => {
+            editing = true
+            typed = event.currentTarget.value
+          }}
+          onblur={commit}
+          onkeydown={(event) => {
+            if (event.key === 'Enter') event.currentTarget.blur()
+          }}
+        />
+        <span class="shrink-0 text-2xs text-muted">{tr('admin.resources.gb')}</span>
+      </div>
       {#if memoryMb !== null && defaultMb !== null}
         <!-- Back to the environment's value with one press: otherwise "as it
              was" has to be typed as a number, peeking at it in the hint
              below. -->
         <button
           type="button"
-          class="text-2xs text-muted underline decoration-line underline-offset-2 hover:text-ink"
+          class="admin-link"
           disabled={busy}
           onclick={() => {
             editing = false
@@ -358,7 +357,7 @@
     {#if resources}
       <!-- The bar: what share of the machine this room asks for. A number
            next to it would be redundant — it is in the field above. -->
-      <div class="flex h-1 w-full max-w-[320px] bg-line-soft" aria-hidden="true">
+      <div class="flex h-1 w-full max-w-[200px] bg-line-soft" aria-hidden="true">
         <div
           class={cn('h-full transition-[width] duration-[var(--speed-quick)] ease-out', tight ? 'bg-warning' : 'bg-accent')}
           style="width: {(share * 100).toFixed(1)}%"
@@ -376,7 +375,7 @@
         without docker), we say nothing about it — rather than print
         `freemem`, which is always near zero there.
       -->
-      <p class="text-2xs leading-snug text-muted">
+      <p class="admin-meta">
         {#if resources.memory.availableMb === null}
           {tr('admin.resources.hintNoFree', {
             p0: asGb(resources.memory.totalMb),
@@ -410,7 +409,7 @@
         chosen once, and it is chosen here.
       -->
       {#if !ownBelow}
-        <p class="text-2xs leading-snug text-muted">{tr('admin.resources.ownHint')}</p>
+        <p class="admin-meta">{tr('admin.resources.ownHint')}</p>
       {/if}
 
       <!--
@@ -425,7 +424,7 @@
         and the line appears only when the second container really exists.
       -->
       {#if ownRoom}
-        <p class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-2xs leading-snug text-muted">
+        <p class="admin-meta flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
           <span class="font-semibold text-ink">{tr('admin.resources.ownRow')}</span>
           <span>{tr('admin.resources.ownRoom', { p0: asGb(row?.memoryMb ?? 0), p1: String(row?.cpus ?? 0) })}</span>
           <span aria-hidden="true">·</span>
@@ -434,14 +433,14 @@
       {/if}
 
       {#if tight}
-        <p class="flex items-start gap-2 text-2xs leading-snug text-warning">
+        <p class="flex items-start gap-2 text-micro text-warning">
           <Icon name="alert" size={13} class="mt-px shrink-0" />
           <span>{tr('admin.resources.overFree')}</span>
         </p>
       {/if}
 
       {#if refusal}
-        <p class="text-2xs leading-snug text-danger" role="alert">{refusal}</p>
+        <p class="text-ui text-danger" role="alert">{refusal}</p>
       {/if}
 
       <!--
@@ -454,11 +453,11 @@
         once again split word from deed.
       -->
       <div class="flex flex-col gap-3 border-t border-line-soft pt-4">
-        <div class="flex flex-wrap items-center gap-2.5">
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5">
           {@render cpuField()}
         </div>
 
-        <div class="flex h-1 w-full max-w-[320px] bg-line-soft" aria-hidden="true">
+        <div class="flex h-1 w-full max-w-[200px] bg-line-soft" aria-hidden="true">
           <div
             class="h-full bg-accent transition-[width] duration-[var(--speed-quick)] ease-out"
             style="width: {(cpuShare * 100).toFixed(1)}%"
@@ -468,7 +467,7 @@
         <!-- Cores follow the same rule as memory: docker's VM has its own
              share of them ("--cpu 10" out of twelve), and they are named
              after it. -->
-        <p class="text-2xs leading-snug text-muted">
+        <p class="admin-meta">
           {#if resources.memory.source === 'docker'}
             {tr('admin.resources.cpuHintDocker', {
               p0: resources.cpus,
@@ -489,7 +488,7 @@
       <div class="flex flex-col gap-1.5 border-t border-line-soft pt-3">
         {#if resources.gpus.length > 0}
           {@const card = resources.gpus[0]}
-          <p class="text-2xs leading-snug text-muted">
+          <p class="admin-meta">
             <span class="font-semibold text-ink">GPU:</span>
             {card.name}, {asGb(card.memoryMb)} {tr('admin.resources.gb')}{resources.gpus.length > 1
               ? tr('admin.resources.moreCards', { p0: resources.gpus.length - 1 })
@@ -497,7 +496,7 @@
             ·
             {usesGpu ? tr('admin.resources.envUsesGpu') : tr('admin.resources.envNoGpu')}
           </p>
-          <p class="text-2xs leading-snug text-faint">{tr('admin.resources.vramShared')}</p>
+          <p class="admin-meta">{tr('admin.resources.vramShared')}</p>
         {/if}
       </div>
     {:else}
@@ -508,45 +507,47 @@
         will be none, and that is said in one line rather than with emptiness.
       -->
       <div class="flex flex-col gap-3 border-t border-line-soft pt-4">
-        <div class="flex flex-wrap items-center gap-2.5">
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5">
           {@render cpuField()}
         </div>
       </div>
 
       {#if refusal}
-        <p class="text-2xs leading-snug text-danger" role="alert">{refusal}</p>
+        <p class="text-ui text-danger" role="alert">{refusal}</p>
       {/if}
 
-      <p class="text-2xs leading-snug text-muted">{tr('admin.resources.unreadable')}</p>
+      <p class="admin-meta">{tr('admin.resources.unreadable')}</p>
     {/if}
   {/if}
 </div>
 
 {#snippet cpuField()}
-  <input
-    type="number"
-    min="1"
-    step="1"
-    inputmode="numeric"
-    disabled={busy}
-    class="field w-[110px]"
-    aria-label={tr('admin.resources.cpuLabel')}
-    placeholder={unreadable ? tr('admin.resources.asDefault') : ''}
-    value={shownCores}
-    oninput={(event) => {
-      editingCores = true
-      typedCores = event.currentTarget.value
-    }}
-    onblur={commitCores}
-    onkeydown={(event) => {
-      if (event.key === 'Enter') event.currentTarget.blur()
-    }}
-  />
-  <span class="text-ui text-muted">{tr('admin.resources.cores')}</span>
+  <div class="admin-affix w-[200px] gap-2">
+    <input
+      type="number"
+      min="1"
+      step="1"
+      inputmode="numeric"
+      disabled={busy}
+      class="placeholder:font-sans"
+      aria-label={tr('admin.resources.cpuLabel')}
+      placeholder={unreadable ? tr('admin.resources.asDefault') : ''}
+      value={shownCores}
+      oninput={(event) => {
+        editingCores = true
+        typedCores = event.currentTarget.value
+      }}
+      onblur={commitCores}
+      onkeydown={(event) => {
+        if (event.key === 'Enter') event.currentTarget.blur()
+      }}
+    />
+    <span class="shrink-0 text-2xs text-muted">{tr('admin.resources.cores')}</span>
+  </div>
   {#if cpus !== null && defaultCores !== null}
     <button
       type="button"
-      class="text-2xs text-muted underline decoration-line underline-offset-2 hover:text-ink"
+      class="admin-link"
       disabled={busy}
       onclick={() => {
         editingCores = false

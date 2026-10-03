@@ -293,7 +293,7 @@
             disabled={busy}
             onchange={(event) => commit(row, event.currentTarget)}
           />
-          <span class="text-2xs font-semibold text-muted">{row.unit}</span>
+          <span class="rule-unit text-2xs font-semibold text-muted">{row.unit}</span>
           <!-- Empty is exactly "as on the server", but there is no need to
                clear the field by hand: the button appears only where there
                is something to remove. -->
@@ -476,7 +476,10 @@
     color: rgb(var(--primary-ink));
     font-weight: 700;
   }
-  .rule-seg-on:hover {
+  /* `:not(:disabled)` matches the hover rule above at its own weight: without
+     it that rule (one pseudo-class heavier) painted the chosen segment's
+     label ink on the primary fill under the pointer — unreadable. */
+  .rule-seg-on:hover:not(:disabled) {
     color: rgb(var(--primary-ink));
   }
   .rule-seg:focus-visible {
@@ -570,5 +573,80 @@
   .rule-clear:focus-visible {
     outline: none;
     box-shadow: 0 0 0 2px rgb(var(--accent) / 0.5);
+  }
+
+  /*
+   * The teacher's panel: NewSeminar and the Seminars rules window.
+   *
+   * There these rows stand beside the panel's 40 px fields and 16 px option
+   * chips (index.css · .admin-ui), and the room's 32 px, 14 px segments read
+   * a size smaller than every other control on the page — the jump between
+   * tabs the panel's scale exists to remove. The room keeps its own measure:
+   * there the rules sit in a dense pult beside the notebook. Keyed to the
+   * panel's class, so nothing below reaches the room.
+   */
+  :global(.admin-ui) .rule-seg {
+    height: 40px;
+    padding-inline: 12px;
+    font-size: 16px;
+    font-weight: 500;
+    letter-spacing: 0;
+    color: rgb(var(--ink));
+  }
+  :global(.admin-ui) .rule-seg:not(.rule-seg-on):hover:not(:disabled) {
+    background: rgb(var(--surface));
+  }
+  :global(.admin-ui) .rule-seg-on {
+    font-weight: 600;
+    color: rgb(var(--primary-ink));
+  }
+  /* Numbers in the panel's fields are 15 px mono (.admin-affix). */
+  :global(.admin-ui) .rule-num {
+    width: 5rem;
+    height: 40px;
+    padding-inline: 10px;
+    font-family: var(--font-mono);
+    font-size: 15px;
+    font-weight: 400;
+  }
+  :global(.admin-ui) .rule-num::placeholder {
+    font-weight: 400;
+  }
+  :global(.admin-ui) .rule-pick {
+    height: 40px;
+    padding-inline: 10px;
+    font-size: 16px;
+    font-weight: 400;
+  }
+  /* A unit after a number, as inside the panel's affix fields: plain weight. */
+  :global(.admin-ui) .rule-unit {
+    font-weight: 400;
+  }
+  :global(.admin-ui) .rule-clear {
+    font-size: 15px;
+    font-weight: 400;
+  }
+  :global(.admin-ui) .own-res-title {
+    font-size: 16px;
+    font-weight: 600;
+  }
+  :global(.admin-ui) .own-res-label {
+    font-size: 15px;
+    font-weight: 400;
+  }
+  :global(.admin-ui) .own-res-gpu,
+  :global(.admin-ui) .own-res-note {
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 400;
+  }
+  /* The panel's phone height; the desktop rule above outweighs the room's
+     own phone rule, so it is named again here. */
+  @media (max-width: 640px) {
+    :global(.admin-ui) .rule-seg,
+    :global(.admin-ui) .rule-num,
+    :global(.admin-ui) .rule-pick {
+      height: 44px;
+    }
   }
 </style>

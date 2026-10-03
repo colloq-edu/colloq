@@ -17,6 +17,7 @@
   import { tr } from '@shared/i18n'
   import { onMount, untrack } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
+  import EmptyState from '@/admin/ui/EmptyState.svelte'
   import Badge from '@/admin/screens/competitions/Badge.svelte'
   import Editor from '@/admin/screens/competitions/Editor.svelte'
   import RowsSkeleton from '@/components/ui/RowsSkeleton.svelte'
@@ -521,9 +522,7 @@
     navigate(`/admin/competitions/${c.id}${next === 'submissions' ? '' : `/${next}`}`)
   }
 
-  const HEAD = 'text-micro font-bold uppercase tracking-caps text-muted'
-  const MENU_ITEM =
-    'block w-full px-3 py-2 text-left text-ui text-ink transition-colors duration-100 hover:bg-raised'
+  const HEAD = 'admin-label'
   const TABS: { id: LiveTab; label: string }[] = [
     { id: 'submissions', label: tr('admin.competitions.tab.submissions') },
     { id: 'board', label: tr('admin.competitions.tab.board') },
@@ -537,20 +536,18 @@
   without it "— — 0:00" on a narrow screen is three numbers with no names.
 -->
 {#snippet caption(label: string)}
-  <span class="feed-label mr-1.5 font-sans text-micro font-bold uppercase tracking-caps text-faint">
-    {label}
-  </span>
+  <span class="feed-label admin-label mr-1.5 font-sans">{label}</span>
 {/snippet}
 
 <!-- A field's caption in the add and rename forms: a span, since it sits
      inside the <label>, and the same one as the teachers' composer. -->
 {#snippet fieldCaption(text: string)}
-  <span class="block text-micro font-bold uppercase tracking-label text-muted">{text}</span>
+  <span class="admin-label block">{text}</span>
 {/snippet}
 
 {#snippet stat(label: string, value: number, tone: string)}
   <div class="shrink-0">
-    <p class="text-micro font-bold uppercase tracking-caps {tone}">{label}</p>
+    <p class="admin-label {tone}">{label}</p>
     <p class="font-mono text-gauge font-bold text-ink">{count(value)}</p>
   </div>
 {/snippet}
@@ -559,7 +556,7 @@
   {#snippet eyebrow()}
     <button
       type="button"
-      class="shrink-0 text-micro text-muted transition-colors duration-100 hover:text-ink"
+      class="shrink-0 transition-colors duration-100 hover:text-ink"
       onclick={() => navigate('/admin/competitions')}
     >
       {tr('competitions.title')}
@@ -576,13 +573,13 @@
   {#snippet actions()}
     <button
       type="button"
-      class="btn-outline max-[640px]:h-11"
+      class="btn-outline"
       onclick={() => void copy(`${location.origin}${competitionPath(c.slug)}`, 'link')}
     >
       {copied === 'link' ? tr('admin.copied') : tr('admin.competitions.entrantLink')}
     </button>
     <a
-      class="btn-outline max-[640px]:h-11"
+      class="btn-outline"
       href={`${competitionPath(c.slug)}/leaderboard/screen`}
       target="_blank"
       rel="noreferrer"
@@ -592,7 +589,7 @@
     {#if c.state === 'live' && adminAuth.isOwner}
       <button
         type="button"
-        class="btn border border-danger text-danger hover:bg-danger/10 max-[640px]:h-11"
+        class="btn-danger"
         onclick={() => (finishing = true)}
       >
         {tr('admin.competitions.finishNow')}
@@ -602,7 +599,7 @@
       <!-- "I will open it by hand — at the review": the teacher picks the
            moment, and until that second the private table is visible to
            nobody but them. -->
-      <button type="button" class="btn-primary max-[640px]:h-11" disabled={busy} onclick={() => void openPrivate()}>
+      <button type="button" class="btn-primary" disabled={busy} onclick={() => void openPrivate()}>
         {tr('admin.competitions.openPrivate')}
       </button>
     {/if}
@@ -610,22 +607,17 @@
 
   <!-- Tabs are addresses: "Leaderboard · both" gets linked to a colleague, and
        "Settings" is opened in the middle of a class and returned to. -->
-  <div class="-mx-7 flex gap-7 overflow-x-auto border-b border-line px-7">
+  <div class="admin-tabs">
     {#each TABS as one (one.id)}
       <button
         type="button"
         aria-current={tab === one.id ? 'page' : undefined}
-        class={cn(
-          'shrink-0 whitespace-nowrap border-b-[3px] text-ui transition-colors duration-100',
-          tab === one.id
-            ? 'border-accent pb-2.5 pt-3 font-semibold text-ink'
-            : 'border-transparent pb-3 pt-3 text-muted hover:text-ink',
-        )}
+        class="admin-tab"
         onclick={() => goTab(one.id)}
       >
         {one.label}
         {#if one.id === 'submissions' && counts.submissions > 0}
-          <span class="ml-1.5 font-mono text-micro text-muted">{counts.submissions}</span>
+          <span class="ml-1.5 font-mono text-micro font-normal text-muted">{counts.submissions}</span>
         {/if}
       </button>
     {/each}
@@ -683,7 +675,7 @@
         </form>
       {:else}
         <div class="mb-3 flex justify-end">
-          <button type="button" class="btn-outline max-[640px]:h-11" onclick={openAdd}>
+          <button type="button" class="btn-outline" onclick={openAdd}>
             <Icon name="plus" size={13} />
             {tr('admin.competitions.addEntrant')}
           </button>
@@ -713,12 +705,12 @@
       {#if entrants === null}
         <RowsSkeleton label={tr('competitions.loading')} />
       {:else if entrants.length === 0}
-        <div class="py-16 text-center">
-          <p class="text-title font-semibold text-ink">{tr('admin.competitions.noEntrants')}</p>
-          <p class="mx-auto mt-2 max-w-md text-ui text-muted">{tr('admin.competitions.noEntrantsHint')}</p>
-        </div>
+        <EmptyState
+          title={tr('admin.competitions.noEntrants')}
+          hint={tr('admin.competitions.noEntrantsHint')}
+        />
       {:else}
-        <div class="flex items-center gap-4 border-b border-line py-2.5 feed-head">
+        <div class="feed-head admin-list-head">
           <span class="min-w-0 flex-1 {HEAD}">{tr('admin.competitions.col.entrant')}</span>
           <span class="w-[80px] shrink-0 text-right {HEAD}">{tr('admin.competitions.col.place')}</span>
           <span class="w-[88px] shrink-0 text-right {HEAD}">{tr('admin.competitions.col.submissions')}</span>
@@ -727,10 +719,10 @@
           <span class="w-[72px] shrink-0"></span>
         </div>
         {#each entrants as row (row.id)}
-          <div class="feed-row flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line-soft py-3">
+          <div class="feed-row admin-list-row flex-wrap gap-y-1">
             <div class="flex min-w-0 flex-1 basis-[200px] items-start gap-3">
               <div class="min-w-0 flex-1">
-                <p class="truncate text-ui text-ink">{row.name}</p>
+                <p class="admin-row-title truncate">{row.name}</p>
                 {#if row.disabled}
                   <p class="mt-0.5 text-micro text-warning">{tr('admin.competitions.keyRevoked')}</p>
                 {/if}
@@ -744,12 +736,12 @@
                 {tr('admin.rename')}
               </button>
             </div>
-            <span class="w-[80px] shrink-0 text-right font-mono text-2xs text-ink">
+            <span class="admin-num w-[80px] shrink-0 text-right">
               {@render caption(tr('admin.competitions.col.place'))}{row.place === null
                 ? '—'
                 : row.place}
             </span>
-            <span class="w-[88px] shrink-0 text-right font-mono text-2xs text-ink">
+            <span class="admin-num w-[88px] shrink-0 text-right">
               {@render caption(tr('admin.competitions.col.submissions'))}{count(row.submissions)}
             </span>
             <!--
@@ -828,7 +820,7 @@
             </form>
           {/if}
         {/each}
-        <p class="py-3.5 text-micro leading-snug text-faint">{tr('admin.competitions.keyNote')}</p>
+        <p class="admin-meta py-3.5">{tr('admin.competitions.keyNote')}</p>
       {/if}
     </div>
   {:else if tab === 'board'}
@@ -836,12 +828,9 @@
       {#if board === null}
         <RowsSkeleton label={tr('competitions.loading')} />
       {:else if publicBoard.length === 0}
-        <div class="py-16 text-center">
-          <p class="text-title font-semibold text-ink">{tr('admin.competitions.noBoard')}</p>
-          <p class="mx-auto mt-2 max-w-md text-ui text-muted">{tr('admin.competitions.noBoardHint')}</p>
-        </div>
+        <EmptyState title={tr('admin.competitions.noBoard')} hint={tr('admin.competitions.noBoardHint')} />
       {:else}
-        <p class="pb-3 text-micro leading-snug text-muted">
+        <p class="admin-meta pb-3">
           {privateOpen
             ? tr('admin.competitions.boardBothOpen')
             : tr('admin.competitions.boardBothHidden')}
@@ -849,11 +838,11 @@
             <span class="text-warning">{tr('competitions.p.resultsCounting', { count: privatePending })}</span>
           {/if}
         </p>
-        <div class="feed-head flex items-center gap-4 border-b-2 border-ink py-2.5">
+        <div class="feed-head admin-list-head">
           <span class="w-[64px] shrink-0 {HEAD}">{tr('admin.competitions.col.place')}</span>
           <span class="min-w-0 flex-1 {HEAD}">{tr('admin.competitions.col.entrant')}</span>
           <span class="w-[104px] shrink-0 text-right {HEAD}">{tr('admin.competitions.col.public')}</span>
-          <span class="w-[112px] shrink-0 text-right text-micro font-bold uppercase tracking-caps text-primary">
+          <span class="admin-label w-[112px] shrink-0 text-right text-primary">
             {tr('admin.competitions.col.private')}
           </span>
           <span class="feed-shift w-[88px] shrink-0 text-right {HEAD}">
@@ -863,7 +852,7 @@
         {#each publicBoard as row (row.entrantId)}
           {@const mirror = privateBoard.find((one) => one.entrantId === row.entrantId) ?? null}
           {@const shift = placeShift(row.place, mirror?.place ?? null)}
-          <div class="feed-row flex flex-wrap items-center gap-4 border-b border-line-soft py-2.5">
+          <div class="feed-row admin-data-row flex-wrap">
             <span class="w-[64px] shrink-0 font-mono text-2xs text-muted">{row.place}</span>
             <span class="min-w-0 flex-1 truncate text-ui text-ink">
               {nameOf.get(row.entrantId) ?? tr('admin.competitions.unknownEntrant')}
@@ -890,7 +879,7 @@
           <!-- The baseline solution is a row without a place: it is not an
                entrant, and ranking it together with the class would take a
                place away from someone in favour of the teacher. -->
-          <div class="feed-row flex flex-wrap items-center gap-4 border-b border-line-soft py-2.5">
+          <div class="feed-row admin-data-row flex-wrap">
             <span class="w-[64px] shrink-0 font-mono text-2xs text-faint">—</span>
             <span class="min-w-0 flex-1 truncate text-ui text-muted">
               {tr('competitions.baselineEntrant')}
@@ -930,22 +919,21 @@
               class={cn('h-2 w-2 shrink-0', running.length > 0 ? 'bg-accent' : 'bg-faint')}
               aria-hidden="true"
             ></span>
-            <span class="text-micro font-bold uppercase tracking-caps text-primary">
+            <span class="admin-label text-primary">
               {tr('admin.competitions.slotsHead', { busy: running.length, count: slots })}
             </span>
           </div>
           <span class="text-2xs text-muted">{statusLine}</span>
           <button
             type="button"
-            class="ml-auto shrink-0 text-micro text-muted hover:text-ink"
+            class="admin-meta ml-auto shrink-0 hover:text-ink"
             onclick={() => navigate('/admin/resources')}
           >
             {tr('admin.competitions.slotsSetting')}
           </button>
           <button
             type="button"
-            class="shrink-0 text-micro text-accent-text underline decoration-dotted underline-offset-4
-                   hover:brightness-110 disabled:text-faint"
+            class="admin-link shrink-0"
             disabled={busy}
             onclick={() => void togglePause()}
           >
@@ -1021,7 +1009,7 @@
                    max-[900px]:border-l-0 max-[900px]:border-t"
           >
             <div class="flex items-center justify-between gap-3">
-              <span class="text-micro font-bold uppercase tracking-caps text-primary">
+              <span class="admin-label text-primary">
                 {tr('admin.competitions.waitingHead', { count: waiting.length })}
               </span>
               {#if waiting.length > 0}
@@ -1079,24 +1067,22 @@
         {#if feed === null}
           <RowsSkeleton label={tr('competitions.loading')} />
         {:else if rows.length === 0}
-          <div class="py-16 text-center">
-            <p class="text-title font-semibold text-ink">{tr('admin.competitions.noSubmissions')}</p>
-            <p class="mx-auto mt-2 max-w-md text-ui text-muted">
-              {tr('admin.competitions.noSubmissionsHint', { link: `/k/${c.slug}` })}
-            </p>
-          </div>
+          <EmptyState
+            title={tr('admin.competitions.noSubmissions')}
+            hint={tr('admin.competitions.noSubmissionsHint', { link: `/k/${c.slug}` })}
+          />
         {:else}
-          <div class="feed-head flex items-center gap-4 border-b-2 border-ink py-2.5">
+          <div class="feed-head admin-list-head">
             <span class="w-[74px] shrink-0 {HEAD}">{tr('admin.competitions.col.when')}</span>
             <span class="w-[210px] shrink-0 {HEAD}">{tr('admin.competitions.col.entrant')}</span>
             <span class="w-[180px] shrink-0 {HEAD}">{tr('admin.competitions.col.outcome')}</span>
             <span class="min-w-0 flex-1 {HEAD}">{tr('admin.competitions.col.happened')}</span>
             <span class="w-[96px] shrink-0 text-right {HEAD}">{tr('admin.competitions.col.public')}</span>
-            <span class="w-[104px] shrink-0 text-right text-micro font-bold uppercase tracking-caps text-primary">
+            <span class="admin-label w-[104px] shrink-0 text-right text-primary">
               {tr('admin.competitions.col.private')}
             </span>
             <span class="w-[72px] shrink-0 text-right {HEAD}">{tr('admin.competitions.col.took')}</span>
-            <span class="w-9 shrink-0"></span>
+            <span class="w-10 shrink-0"></span>
           </div>
 
           {#each rows as row (row.submission.id)}
@@ -1104,7 +1090,7 @@
             {@const badge = teacherBadge(s.state)}
             {@const broken = s.state === 'metricFailed'}
             <div
-              class={cn('feed-row flex flex-wrap items-start gap-x-4 gap-y-2 border-b border-line py-3', broken && 'bg-danger/5')}
+              class={cn('feed-row admin-list-row flex-wrap items-start gap-y-2', broken && 'bg-danger/5')}
             >
               <span class="w-[74px] shrink-0 font-mono text-micro text-muted">
                 {feedWhen(s.acceptedAt, now)}
@@ -1141,7 +1127,7 @@
                     {/if}
                     <button
                       type="button"
-                      class="btn-outline h-8 shrink-0 border-primary px-3 text-micro font-bold text-primary"
+                      class="btn-outline shrink-0"
                       disabled={busy}
                       onclick={() => void rescoreAll()}
                     >
@@ -1165,11 +1151,10 @@
                   : clock(s.durationMs)}
               </span>
 
-              <div class="relative w-9 shrink-0 text-right">
+              <div class="relative w-10 shrink-0 text-right">
                 <button
                   type="button"
-                  class="inline-flex h-8 w-8 items-center justify-center text-faint transition-colors
-                         duration-100 hover:bg-raised hover:text-ink max-[640px]:h-11 max-[640px]:w-11"
+                  class="admin-icon-btn"
                   aria-haspopup="menu"
                   aria-expanded={openMenu === s.id}
                   aria-label={tr('admin.competitions.submissionMenu', { number: s.number })}
@@ -1186,13 +1171,12 @@
                   <div
                     role="menu"
                     tabindex="-1"
-                    class="row-menu absolute right-0 top-full z-20 mt-1 w-[260px] border border-line
-                           bg-canvas py-1 text-left shadow-pop"
+                    class="row-menu admin-menu absolute right-0 top-full z-20 mt-1 w-[260px]"
                     onclick={(event) => event.stopPropagation()}
                   >
                     <a
                       role="menuitem"
-                      class={MENU_ITEM}
+                      class="admin-menu-item"
                       href={adminApi.submissionFileUrl(c.id, s.id, EXECUTED_NOTEBOOK_FILE)}
                       target="_blank"
                       rel="noreferrer"
@@ -1203,7 +1187,7 @@
                     <button
                       type="button"
                       role="menuitem"
-                      class={MENU_ITEM}
+                      class="admin-menu-item"
                       onclick={() => {
                         openMenu = null
                         void showDetail(s.id)
@@ -1214,7 +1198,7 @@
                     <button
                       type="button"
                       role="menuitem"
-                      class={MENU_ITEM}
+                      class="admin-menu-item"
                       onclick={() => {
                         openMenu = null
                         void rerun(s.id)
@@ -1225,7 +1209,7 @@
                     <button
                       type="button"
                       role="menuitem"
-                      class={MENU_ITEM}
+                      class="admin-menu-item"
                       onclick={() => {
                         openMenu = null
                         void rescoreOne(s.id)
@@ -1237,7 +1221,7 @@
                       <button
                         type="button"
                         role="menuitem"
-                        class="{MENU_ITEM} text-danger"
+                        class="admin-menu-item text-danger"
                         onclick={() => {
                           openMenu = null
                           void drop(s.id)
@@ -1254,7 +1238,7 @@
 
           {#if feed.total > rows.length}
             <div class="flex items-center gap-3 py-3.5">
-              <p class="min-w-0 flex-1 text-micro text-muted">
+              <p class="admin-meta min-w-0 flex-1">
                 {tr('admin.competitions.moreRows', { count: feed.total - rows.length })}
               </p>
               <button type="button" class="btn-outline shrink-0" onclick={() => void loadFeed(true)}>
@@ -1263,7 +1247,7 @@
             </div>
           {/if}
 
-          <p class="py-3.5 text-micro leading-snug text-muted">{tr('admin.competitions.feedNote')}</p>
+          <p class="admin-meta py-3.5">{tr('admin.competitions.feedNote')}</p>
         {/if}
       </div>
     </div>
@@ -1288,7 +1272,7 @@
         </div>
         <button
           type="button"
-          class="shrink-0 text-muted hover:text-ink"
+          class="admin-icon-btn -mr-2 -mt-1"
           aria-label={tr('admin.cancel')}
           onclick={() => (detail = null)}
         >
@@ -1380,12 +1364,7 @@
         <button type="button" class="btn-outline" disabled={busy} onclick={() => (removing = null)}>
           {tr('admin.cancel')}
         </button>
-        <button
-          type="button"
-          class="btn bg-danger text-white dark:text-canvas hover:brightness-110 disabled:opacity-40"
-          disabled={busy}
-          onclick={() => void confirmRemove()}
-        >
+        <button type="button" class="btn-danger-solid" disabled={busy} onclick={() => void confirmRemove()}>
           {tr('competitions.entrant.delete')}
         </button>
       </div>
@@ -1416,12 +1395,7 @@
         <button type="button" class="btn-outline" disabled={busy} onclick={() => (finishing = false)}>
           {tr('admin.cancel')}
         </button>
-        <button
-          type="button"
-          class="btn bg-danger text-white dark:text-canvas hover:brightness-110 disabled:opacity-40"
-          disabled={busy}
-          onclick={() => void finish()}
-        >
+        <button type="button" class="btn-danger-solid" disabled={busy} onclick={() => void finish()}>
           {tr('admin.competitions.finishNow')}
         </button>
       </div>

@@ -38,6 +38,7 @@ import {
   forgetCourseIndex,
   freshCourseItems,
   pageContext,
+  pageDay,
   publicCourseView,
   publicPageView,
   zipContextOf,
@@ -58,7 +59,15 @@ import { pageFileInfo, pageFilePath } from '../publish/page-files.js'
 import { readDoorTokens, roomDoor } from '../publish/room-door.js'
 import { addressForLimits } from '../net/inbound.js'
 import { tooOften } from '../net/too-often.js'
-import { leaveZip, waitForZip, ZIP_IDLE_MS, zipPlan, zipStream } from '../publish/zip.js'
+import {
+  folderZipPlan,
+  leaveZip,
+  waitForZip,
+  ZIP_IDLE_MS,
+  zipPlan,
+  zipStream,
+  type ZipPlan,
+} from '../publish/zip.js'
 import {
   addressHolder,
   createCourse,
@@ -243,15 +252,120 @@ function doorTokens(req: Request, res: Response): string[] | null {
   return tokens
 }
 
+/**
+ * An archive, through the line (publish/zip.ts · waitForZip): three at a
+ * time per page and six per instance, the rest wait for a slot, and only one
+ * that waited too long hears «через минуту». A stream that stops moving is
+ * dropped, so a paused download cannot keep a slot from the class.
+ *
+ * `plan` is asked after the wait, against the page as it is then: it may
+ * have been rebuilt or withdrawn while the download waited. An `error` from
+ * it is a 404 in those words.
+ */
+function sendArchive(
+  res: Response,
+  next: NextFunction,
+  pubId: string,
+  plan: () => { plan: ZipPlan } | { error: string },
+): void {
+  const gone = new AbortController()
+  let entered = false
+  let left = false
+  const leave = () => {
+    if (!entered || left) return
+    left = true
+    leaveZip(pubId)
+  }
+  // Before the answer this means the client left the line; after it, the download ended.
+  res.on('close', () => {
+    gone.abort()
+    leave()
+  })
+  waitForZip(pubId, { signal: gone.signal })
+    .then((admitted) => {
+      if (!admitted) {
+        if (gone.signal.aborted) return
+        res.setHeader('retry-after', '60')
+        res.status(429).json({ error: tr('server.zip.busy') })
+        return
+      }
+      entered = true
+      if (gone.signal.aborted) return leave()
+      const made = plan()
+      if ('error' in made) {
+        leave()
+        res.status(404).json({ error: made.error })
+        return
+      }
+      const archive = made.plan
+      res.setHeader('content-type', 'application/zip')
+      res.setHeader('content-length', String(archive.bytes))
+      res.setHeader('content-disposition', disposition('attachment', `${archive.top}.zip`))
+      res.setHeader('x-content-type-options', 'nosniff')
+      res.setHeader('x-robots-tag', ROBOTS_TAG)
+      res.setHeader('cache-control', 'no-cache')
+      /*
+       * The socket's idle timer: it fires when no bytes have moved for the
+       * whole span, which is exactly a reader that stopped reading
+       * (backpressure leaves the writes pending). Destroying the response
+       * fires 'close' above, which frees the slot.
+       */
+      res.setTimeout(ZIP_IDLE_MS, () => res.destroy())
+      pipeline(zipStream(archive), res).catch((err: unknown) => {
+        if (!res.writableEnded) {
+          const why = err instanceof Error ? err.message : err
+          console.error(`[pages] archive ${archive.top}.zip of ${pubId} broke off:`, why)
+        }
+        res.destroy()
+      })
+    })
+    .catch((err: unknown) => {
+      leave()
+      next(err)
+    })
+}
+
+/**
+ * A folder material as its own ZIP (`data.zip` with `data/` inside), through
+ * the same line as the class archive: it reads the same disk. The folder is
+ * looked up again after the wait, by its key, on the page as it is then.
+ */
+function sendFolder(
+  res: Response,
+  next: NextFunction,
+  pub: Publication,
+  handle: string,
+  key: string,
+): void {
+  sendArchive(res, next, pub.id, () => {
+    const now = livePage(handle)
+    if (!now) return { error: PUBLICATION_NOT_FOUND }
+    const folder = listMaterials(now.id).find((m) => m.key === key && m.kind === 'folder')
+    if (!folder || (folder.files ?? []).length === 0) return { error: MATERIAL_NOT_FOUND }
+    const day = pageDay(pageContext(now).row, now)
+    const plan = folderZipPlan(folder, day, { verify: true })
+    return plan.entries.length > 0 ? { plan } : { error: MATERIAL_NOT_FOUND }
+  })
+}
+
 /** A material's bytes from the page-file store: a download, or a PDF opened in place. */
-function sendMaterial(req: Request, res: Response, how: 'attachment' | 'inline'): void {
+function sendMaterial(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  how: 'attachment' | 'inline',
+): void {
   const pub = livePage(req.params.id)
   if (!pub) {
     res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     return
   }
   const material = listMaterials(pub.id).find((m) => m.key === req.params.key)
-  const info = material ? pageFileInfo(material.hash) : null
+  if (material?.kind === 'folder' && how === 'attachment') {
+    sendFolder(res, next, pub, req.params.id, material.key)
+    return
+  }
+  const info = material && material.kind !== 'folder' ? pageFileInfo(material.hash) : null
   if (!material || !info || (how === 'inline' && material.kind !== 'pdf')) {
     res.status(404).json({ error: MATERIAL_NOT_FOUND })
     return
@@ -777,7 +891,8 @@ export function courseRoutes(): Router {
    *
    * A page with no saved pick (one carried over from 0.12) has nothing to
    * keep it in yet: the setting goes out with its next publish from the
-   * screen, which writes a pick, and until then it reads as 'members'.
+   * screen, which writes a pick, and until then it reads as the default,
+   * 'anyone' (shared/publish.ts · DEFAULT_ROOM_ACCESS).
    */
   router.patch(
     '/api/admin/publications/:id',
@@ -793,7 +908,7 @@ export function courseRoutes(): Router {
       }
       const { was, publication: pub } = result
       if (was !== access) {
-        // Opening a room with names and oracle questions to anyone with a link is staff's call.
+        // Who reaches a room with names and oracle questions from a public link is staff's call.
         recordAdminEvent({
           actor: currentStaff(req),
           action: 'publication.room_access',
@@ -834,7 +949,7 @@ export function courseRoutes(): Router {
   /**
    * The way into the class's room, for whoever may take it
    * (publish/room-door.ts). The page above never names its room; this is
-   * the one answer that can, and only to staff, to everyone under 'anyone',
+   * the one answer that can, and only to staff, to everyone under 'anyone' (the default),
    * or to a browser whose token proves it was in that room under 'members'.
    * A withdrawn page leads nowhere.
    */
@@ -844,13 +959,14 @@ export function courseRoutes(): Router {
     const pub = findPublication(req.params.id)
     if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     const sessionId = pub.state === 'published' ? pub.sessionId : null
-    res.json(roomDoor(req, sessionId, pub.selection?.roomAccess ?? 'members', tokens))
+    res.json(roomDoor(req, sessionId, pub.selection?.roomAccess, tokens))
   })
 
   /**
    * The same door for a course row, by its key: the «Сегодня» block offers
    * the room while the class is on, before any page exists. The row's page,
-   * when there is one, sets the access; a row without a page is 'members'.
+   * when there is one, sets the access; a row without a page has the
+   * default, 'anyone' (publish/room-door.ts · roomDoor).
    * A withdrawn page closes the row's door too: the teacher took the class
    * back, and the course must not reopen it.
    */
@@ -864,7 +980,7 @@ export function courseRoutes(): Router {
     if (!row) return res.status(404).json({ error: tr("server.notFound.094b76") })
     const withdrawn = row.pub !== null && row.pub.state !== 'published'
     const sessionId = row.item.kind === 'seminar' && !withdrawn ? row.item.sessionId : null
-    res.json(roomDoor(req, sessionId, row.pub?.selection?.roomAccess ?? 'members', tokens))
+    res.json(roomDoor(req, sessionId, row.pub?.selection?.roomAccess, tokens))
   })
 
   /**
@@ -886,15 +1002,15 @@ export function courseRoutes(): Router {
   })
 
   /**
-   * A material's bytes, as a download.
+   * A material's bytes, as a download; a folder's, as its ZIP (sendFolder).
    *
    * The type comes from a fixed map of extensions (materials.ts ·
    * downloadTypeOf), never from the row: the bytes come from a room anyone in
    * it could write to, and `content-type` decides what a followed link turns
    * into. `sandbox` and `nosniff` are there in case it gets opened anyway.
    */
-  router.get('/api/p/:id/m/:key/download', (req, res) => {
-    sendMaterial(req, res, 'attachment')
+  router.get('/api/p/:id/m/:key/download', (req, res, next) => {
+    sendMaterial(req, res, next, 'attachment')
   })
 
   /**
@@ -903,8 +1019,8 @@ export function courseRoutes(): Router {
    * is exactly what Chrome's PDF viewer refuses to draw. A PDF is all this
    * route serves, under its own fixed type.
    */
-  router.get('/api/p/:id/m/:key/open', (req, res) => {
-    sendMaterial(req, res, 'inline')
+  router.get('/api/p/:id/m/:key/open', (req, res, next) => {
+    sendMaterial(req, res, next, 'inline')
   })
 
   /**
@@ -920,66 +1036,18 @@ export function courseRoutes(): Router {
     if (listMaterials(pub.id).length === 0) {
       return res.status(404).json({ error: MATERIAL_NOT_FOUND })
     }
-    const gone = new AbortController()
-    let entered = false
-    let left = false
-    const leave = () => {
-      if (!entered || left) return
-      left = true
-      leaveZip(pub.id)
-    }
-    // Before the answer this means the client left the line; after it, the download ended.
-    res.on('close', () => {
-      gone.abort()
-      leave()
+    sendArchive(res, next, pub.id, () => {
+      const now = livePage(req.params.id)
+      const materials = now ? listMaterials(now.id) : []
+      if (!now || materials.length === 0) {
+        return { error: now ? MATERIAL_NOT_FOUND : PUBLICATION_NOT_FOUND }
+      }
+      const context = pageContext(now)
+      const plan = zipPlan(zipContextOf(now, materials, context.course, context.row), {
+        verify: true,
+      })
+      return { plan }
     })
-    waitForZip(pub.id, { signal: gone.signal })
-      .then((admitted) => {
-        if (!admitted) {
-          if (gone.signal.aborted) return
-          res.setHeader('retry-after', '60')
-          res.status(429).json({ error: tr('server.zip.busy') })
-          return
-        }
-        entered = true
-        if (gone.signal.aborted) return leave()
-        // The page may have been rebuilt or withdrawn while this download waited.
-        const now = livePage(req.params.id)
-        const materials = now ? listMaterials(now.id) : []
-        if (!now || materials.length === 0) {
-          leave()
-          res.status(404).json({ error: now ? MATERIAL_NOT_FOUND : PUBLICATION_NOT_FOUND })
-          return
-        }
-        const context = pageContext(now)
-        const plan = zipPlan(zipContextOf(now, materials, context.course, context.row), {
-          verify: true,
-        })
-        res.setHeader('content-type', 'application/zip')
-        res.setHeader('content-length', String(plan.bytes))
-        res.setHeader('content-disposition', disposition('attachment', `${plan.top}.zip`))
-        res.setHeader('x-content-type-options', 'nosniff')
-        res.setHeader('x-robots-tag', ROBOTS_TAG)
-        res.setHeader('cache-control', 'no-cache')
-        /*
-         * The socket's idle timer: it fires when no bytes have moved for the
-         * whole span, which is exactly a reader that stopped reading
-         * (backpressure leaves the writes pending). Destroying the response
-         * fires 'close' above, which frees the slot.
-         */
-        res.setTimeout(ZIP_IDLE_MS, () => res.destroy())
-        pipeline(zipStream(plan), res).catch((err: unknown) => {
-          if (!res.writableEnded) {
-            const why = err instanceof Error ? err.message : err
-            console.error(`[pages] archive of ${now.id} broke off:`, why)
-          }
-          res.destroy()
-        })
-      })
-      .catch((err: unknown) => {
-        leave()
-        next(err)
-      })
   })
 
   /*

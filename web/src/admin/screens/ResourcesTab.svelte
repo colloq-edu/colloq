@@ -472,10 +472,10 @@
 
 {#snippet fieldLabel(key: FieldKey, text: string, id: string)}
   <label for={id} class="mb-1.5 flex items-baseline gap-2">
-    <span class="text-2xs font-semibold uppercase tracking-label text-muted">{text}</span>
+    <span class="admin-label">{text}</span>
     {#if isDirty(key) && !forgotten.includes(key)}
       {@const before = savedOf(key)}
-      <span class="text-2xs text-warning">
+      <span class="text-micro text-warning">
         {before === null ? tr('admin.resourcesTab.wasSameAsRoom') : tr('admin.resourcesTab.was', { value: display(key, before) })}
       </span>
     {/if}
@@ -492,25 +492,23 @@
   {@const source = sourceOf(key)}
   <div class={cn('min-w-0', width)}>
     {@render fieldLabel(key, label, id)}
-    <div
-      class={cn(
-        'field flex items-center gap-2 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/25',
-        isDirty(key) && 'border-accent',
-      )}
-    >
+    <!-- The shared prefixed field: its frame, height and focus halo are the
+         panel's. `!` because the scope paints every affix frame grey at two
+         classes, and an unsaved number has to stand out from a saved one. -->
+    <div class={cn('admin-affix gap-2', isDirty(key) && '!border-accent')}>
       <input
         {id}
         bind:value={texts[key]}
         oninput={() => typed(key)}
         onblur={() => tidy(key)}
-        class="min-w-0 flex-1 bg-transparent font-mono text-code text-ink outline-none placeholder:font-sans placeholder:text-faint"
+        class="placeholder:font-sans"
         inputmode="decimal"
         autocomplete="off"
         {placeholder}
       />
       <span class="shrink-0 text-2xs text-muted">{unit}</span>
     </div>
-    <p class="mt-1.5 min-h-4 text-2xs text-faint">
+    <p class="admin-meta mt-1.5 min-h-5">
       {#if forgotten.includes(key)}
         <span class="text-warning">{tr('admin.resourcesTab.willForget')}</span>
       {:else if source === 'saved'}
@@ -539,22 +537,27 @@
       <span class={cn('size-2.5 shrink-0', tone)}></span>
       <span class="text-ui font-semibold text-ink">{title}</span>
     </div>
-    <p class="mt-0.5 pl-[18px] font-mono text-code text-muted">{detail}</p>
+    <p class="mt-0.5 pl-[18px] font-mono text-micro text-muted">{detail}</p>
   </div>
 {/snippet}
 
 {#snippet actions()}
   {#if isOwner}
     {#if justSaved && !dirty}
-      <span class="flex items-center gap-1 text-2xs font-semibold uppercase tracking-label text-positive">
+      <span class="admin-label flex items-center gap-1 text-positive">
         <Icon name="check" size={13} />
         {tr('admin.saved')}
       </span>
     {:else if dirty}
-      <span class="text-ui text-warning">{tr('admin.resourcesTab.unsaved', { count: dirtyCount })}</span>
+      <span class="admin-label text-warning">
+        {tr('admin.resourcesTab.unsaved', { count: dirtyCount })}
+      </span>
       <button type="button" class="btn-ghost" onclick={discard} disabled={saving}>{tr('admin.discard')}</button>
     {/if}
-    <button type="button" class="btn-primary min-w-[112px]" onclick={save} disabled={!dirty || saving}>
+    <!-- flex-auto on a phone, not flex-1: from a zero basis the button stayed
+         on the status word's line and min-w-[112px] let it clip its label;
+         from its own width it drops to a line of its own and fills it. -->
+    <button type="button" class="btn-primary min-w-[112px] whitespace-nowrap max-[640px]:flex-auto" onclick={save} disabled={!dirty || saving}>
       {#if saving}
         <Icon name="spinner" size={15} class="animate-spin" />
         {tr('admin.saving')}
@@ -568,7 +571,7 @@
 <AdminPage title={tr('admin.resourcesTab.title')} subtitle={tr('admin.resourcesTab.subtitle')} {actions}>
   {#if loadError}
     <div class="mt-6 max-w-[560px] border border-line bg-surface px-4 py-3.5">
-      <p class="text-ui text-danger">{loadError}</p>
+      <p class="text-ui text-danger" role="alert">{loadError}</p>
       <button type="button" class="btn-outline mt-3" onclick={() => void load()}>{tr('admin.try.again')}</button>
     </div>
   {:else if !ready}
@@ -590,9 +593,9 @@
           <div>
             <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
               <div class="flex items-baseline gap-2.5">
-                <span class="text-2xs font-black uppercase tracking-caps text-ink">{tr('admin.resourcesTab.memory')}</span>
-                <span class="text-gauge font-black tracking-tight text-ink">{gb(memory.promised)}</span>
-                <span class="text-ui-lg text-muted">{tr('admin.resourcesTab.ofPromisedGb', { total: gb(memory.total) })}</span>
+                <span class="admin-section-title">{tr('admin.resourcesTab.memory')}</span>
+                <span class="font-mono text-gauge font-bold text-ink">{gb(memory.promised)}</span>
+                <span class="text-2xs text-muted">{tr('admin.resourcesTab.ofPromisedGb', { total: gb(memory.total) })}</span>
               </div>
               {#if memory.free < 0}
                 <span class="text-ui font-semibold text-danger">{tr('admin.resourcesTab.shortGb', { value: gb(-memory.free) })}</span>
@@ -629,9 +632,9 @@
           <div>
             <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
               <div class="flex items-baseline gap-2.5">
-                <span class="text-2xs font-black uppercase tracking-caps text-ink">{tr('admin.resourcesTab.cores')}</span>
-                <span class="text-gauge font-black tracking-tight text-ink">{cores.promised}</span>
-                <span class="text-ui-lg text-muted">{tr('admin.resourcesTab.ofPromised', { total: cores.total })}</span>
+                <span class="admin-section-title">{tr('admin.resourcesTab.cores')}</span>
+                <span class="font-mono text-gauge font-bold text-ink">{cores.promised}</span>
+                <span class="text-2xs text-muted">{tr('admin.resourcesTab.ofPromised', { total: cores.total })}</span>
               </div>
               {#if cores.promised > cores.total}
                 <span class="text-ui font-semibold text-warning">{tr('admin.resourcesTab.coresShared')}</span>
@@ -653,9 +656,9 @@
             <div>
               <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
                 <div class="flex items-baseline gap-2.5">
-                  <span class="text-2xs font-black uppercase tracking-caps text-ink">{row.label}</span>
-                  <span class="text-gauge font-black tracking-tight text-ink">{gbOfBytes(used)}</span>
-                  <span class="text-ui-lg text-muted">{tr('admin.resourcesTab.ofUsedGb', { total: gbOfBytes(row.space.totalBytes) })}</span>
+                  <span class="admin-section-title">{row.label}</span>
+                  <span class="font-mono text-gauge font-bold text-ink">{gbOfBytes(used)}</span>
+                  <span class="text-2xs text-muted">{tr('admin.resourcesTab.ofUsedGb', { total: gbOfBytes(row.space.totalBytes) })}</span>
                 </div>
                 <span class={cn('text-ui font-semibold', row.space.low ? 'text-danger' : 'text-positive')}>
                   {tr('admin.resourcesTab.freeGb', { value: gbOfBytes(row.space.freeBytes) })}
@@ -693,7 +696,7 @@
           <p class="mt-1 text-2xs text-muted">
             {tr('admin.resourcesTab.perEnvironment')}
             {#each loaded.perEnvironmentMemory as entry, i (entry.environment)}
-              <span class="font-mono text-code">{entry.environment} = {gb(entry.mb)} {tr('admin.resourcesTab.unitGb')}</span>{i < loaded.perEnvironmentMemory.length - 1 ? ', ' : ''}
+              <span class="font-mono text-2xs">{entry.environment} = {gb(entry.mb)} {tr('admin.resourcesTab.unitGb')}</span>{i < loaded.perEnvironmentMemory.length - 1 ? ', ' : ''}
             {/each}
           </p>
         {/if}
@@ -704,14 +707,16 @@
           {@render field('ownMemoryMb', tr('admin.resourcesTab.memoryPerClass'), tr('admin.resourcesTab.unitGb'), 'w-[200px]', tr('admin.resourcesTab.sameAsRoom'))}
           {@render field('ownCpus', tr('admin.resourcesTab.cores'), tr('admin.resourcesTab.unitCores'), 'w-[160px]', tr('admin.resourcesTab.sameAsRoom'))}
           <!-- The estimate the owner would otherwise do on a napkin: one
-               container for the class, divided by the people in it. -->
-          <div class="mt-[22px] flex min-h-[38px] min-w-[260px] flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 bg-surface px-3.5 py-2 text-ui text-ink">
+               container for the class, divided by the people in it.
+               26px down: the caption line beside it (20) and its gap (6), so
+               the box stands level with the fields. -->
+          <div class="mt-[26px] flex min-h-10 min-w-[260px] flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 bg-surface px-3.5 py-2 text-ui text-ink">
             <label for="resources-class-size">{tr('admin.resourcesTab.classOf')}</label>
             <input
               id="resources-class-size"
               bind:value={classSizeText}
               onblur={rememberClassSize}
-              class="w-10 border-b-[1.5px] border-ink bg-transparent px-1 text-center font-mono text-code outline-none"
+              class="w-10 border-b-[1.5px] border-ink bg-transparent px-1 text-center font-mono text-2xs outline-none"
               inputmode="numeric"
               autocomplete="off"
             />
@@ -726,16 +731,16 @@
         <div class="mt-2 flex flex-wrap items-start gap-4">
           {@render field('ownMax', tr('admin.resourcesTab.ownMax'), tr('admin.resourcesTab.unitPerClass'), 'w-[200px]')}
           {@render field('ownIdleMin', tr('admin.resourcesTab.ownIdle'), tr('admin.resourcesTab.unitIdleMinutes'), 'w-[160px]')}
-          <p class="mt-[22px] min-w-[220px] flex-1 text-2xs text-muted">{tr('admin.resourcesTab.ownMaxNote')}</p>
+          <p class="mt-[26px] min-w-[220px] flex-1 text-2xs text-muted">{tr('admin.resourcesTab.ownMaxNote')}</p>
         </div>
       </Section>
 
       <Section title={tr('admin.resourcesTab.competitionsTitle')} description={tr('admin.resourcesTab.competitionsNote')}>
         {#if competitionError}
-          <p class="text-ui text-danger">{competitionError}</p>
+          <p class="text-ui text-danger" role="alert">{competitionError}</p>
           <button type="button" class="btn-outline mt-3" onclick={() => void load()}>{tr('admin.try.again')}</button>
         {:else if competitions}
-          <p class="mb-1.5 text-2xs font-semibold uppercase tracking-label text-muted">{tr('admin.resourcesTab.slots')}</p>
+          <p class="admin-label mb-1.5">{tr('admin.resourcesTab.slots')}</p>
           <div class="resources-slots">
             <Choice
               options={slotOptions}
@@ -759,11 +764,11 @@
             {@render field('c.cpus', tr('admin.resourcesTab.cores'), '', 'w-[116px]')}
             {@render field('c.perDay', tr('admin.resourcesTab.perDay'), '', 'w-[176px]')}
           </div>
-          <p class="-mt-1 text-2xs text-muted">{tr('admin.resourcesTab.defaultsNote')}</p>
+          <p class="mt-2 text-2xs text-muted">{tr('admin.resourcesTab.defaultsNote')}</p>
 
           <div class="mt-4 flex flex-wrap items-start gap-4">
             {@render field('c.uploadsPerMinute', tr('admin.resourcesTab.uploads'), tr('admin.resourcesTab.unitPerMinute'), 'w-[376px] max-w-full')}
-            <p class="mt-[22px] min-w-[220px] flex-1 text-2xs text-muted">{tr('admin.resourcesTab.uploadsNote')}</p>
+            <p class="mt-[26px] min-w-[220px] flex-1 text-2xs text-muted">{tr('admin.resourcesTab.uploadsNote')}</p>
           </div>
         {/if}
       </Section>

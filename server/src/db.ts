@@ -157,6 +157,28 @@ export function closeDatabase(): void {
   db.close()
 }
 
+/*
+ * The columns of publication_materials, kept in one place: the table is
+ * created from them, and rebuilt from them when its CHECK predates folders
+ * (widenMaterialKinds below).
+ */
+const MATERIAL_COLUMNS = `
+    pub          TEXT NOT NULL,
+    key          TEXT NOT NULL,
+    ord          INTEGER NOT NULL,
+    kind         TEXT NOT NULL
+                 CHECK (kind IN ('notebook','pdf','data','code','text','image','file','folder')),
+    name         TEXT NOT NULL,
+    path         TEXT NOT NULL,
+    hash         TEXT NOT NULL,
+    bytes        INTEGER NOT NULL,
+    cells        TEXT,
+    outline      TEXT,
+    cell_count   INTEGER,
+    output_count INTEGER,
+    PRIMARY KEY (pub, key)
+`
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     id          TEXT PRIMARY KEY,
@@ -325,22 +347,26 @@ db.exec(`
    * (the same PublicCell[] a step page used to hold) and its outline, so the
    * public half serves a tab without unfolding anything.
    */
-  CREATE TABLE IF NOT EXISTS publication_materials (
-    pub          TEXT NOT NULL,
-    key          TEXT NOT NULL,
-    ord          INTEGER NOT NULL,
-    kind         TEXT NOT NULL CHECK (kind IN ('notebook','pdf','data','code','text','image','file')),
-    name         TEXT NOT NULL,
-    path         TEXT NOT NULL,
-    hash         TEXT NOT NULL,
-    bytes        INTEGER NOT NULL,
-    cells        TEXT,
-    outline      TEXT,
-    cell_count   INTEGER,
-    output_count INTEGER,
-    PRIMARY KEY (pub, key)
-  );
+  CREATE TABLE IF NOT EXISTS publication_materials (${MATERIAL_COLUMNS});
   CREATE INDEX IF NOT EXISTS publication_materials_hash ON publication_materials(hash);
+
+  /*
+   * The files of a folder material ('data/' published whole), one row each,
+   * at their room paths: the folder's own row in publication_materials keeps
+   * its name, its total bytes and a hash of this list, and the bytes are in
+   * page_files like any other material's. The page-file GC keeps a hash that
+   * either table names (publish/page-files.ts).
+   */
+  CREATE TABLE IF NOT EXISTS publication_material_files (
+    pub   TEXT NOT NULL,
+    key   TEXT NOT NULL,
+    ord   INTEGER NOT NULL,
+    path  TEXT NOT NULL,
+    hash  TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    PRIMARY KEY (pub, key, path)
+  );
+  CREATE INDEX IF NOT EXISTS publication_material_files_hash ON publication_material_files(hash);
 
   /*
    * The bytes of page materials, content-addressed: <DATA_DIR>/page-files/
@@ -377,6 +403,40 @@ db.exec(`
   -- a private per-person transcript on disk until this runs.
   DROP TABLE IF EXISTS ai_messages;
 `)
+
+/**
+ * Let publication_materials hold a folder.
+ *
+ * 0.13 created the table with a CHECK that lists the kinds it knew, and
+ * SQLite cannot change a CHECK in place: a table that still carries the old
+ * list is rebuilt once, every row copied, in one transaction. The columns and
+ * their meaning stay the same, so a rolled-back 0.13 reads the table as
+ * before; a folder row it does not know comes out of its listMaterials as a
+ * plain file whose bytes are not there (a 404), not as an error. `true` when
+ * the table was rebuilt.
+ */
+export function widenMaterialKinds(): boolean {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get('publication_materials') as { sql: string } | undefined
+  if (!row || row.sql.includes("'folder'")) return false
+  db.transaction(() => {
+    db.exec(`CREATE TABLE publication_materials_wide (${MATERIAL_COLUMNS})`)
+    db.exec(`
+      INSERT INTO publication_materials_wide
+        (pub, key, ord, kind, name, path, hash, bytes, cells, outline, cell_count, output_count)
+      SELECT pub, key, ord, kind, name, path, hash, bytes, cells, outline, cell_count, output_count
+      FROM publication_materials
+    `)
+    db.exec('DROP TABLE publication_materials')
+    db.exec('ALTER TABLE publication_materials_wide RENAME TO publication_materials')
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS publication_materials_hash ON publication_materials(hash)',
+    )
+  })()
+  return true
+}
+widenMaterialKinds()
 
 /**
  * The environment a seminar was created with.

@@ -5,14 +5,24 @@
   The course page is where a student lands from the bookmark, so the latest
   class's slides and notebooks are one tap away from it, not two. Each name
   goes where that kind belongs (links.ts · materialHref); the kind and size
-  sit on the right, small, because the name is what is looked for.
+  sit on the right, small, because the name is what is looked for. A folder
+  is one row like on the class page: its name in mono, as the code writes
+  the path, and the count of what is in it where a file has its extension.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
   import Icon from '@/components/ui/Icon.svelte'
   import { iconFor } from '@/lib/file-icons'
   import type { MaterialRef } from '@shared/publish'
-  import { extLabel, materialHref, pageHref, plainClick, sizeText, zipHref } from './links'
+  import {
+    extLabel,
+    folderCount,
+    materialHref,
+    pageHref,
+    plainClick,
+    sizeText,
+    zipHref,
+  } from './links'
 
   interface Props {
     address: string
@@ -36,11 +46,13 @@
   function icon(m: MaterialRef) {
     if (m.kind === 'notebook') return 'notebook' as const
     if (m.kind === 'pdf') return 'pdf' as const
+    if (m.kind === 'folder') return 'folder' as const
     return iconFor(m.name)
   }
 
   function meta(m: MaterialRef): string {
     if (m.kind === 'notebook') return tr('room.course.notebook')
+    if (m.kind === 'folder') return folderCount(m)
     const ext = m.kind === 'pdf' ? 'PDF' : extLabel(m.name)
     return ext ? `${ext} · ${sizeText(m.bytes)}` : sizeText(m.bytes)
   }
@@ -66,7 +78,7 @@
         target={m.kind === 'pdf' ? '_blank' : undefined}
         rel={m.kind === 'pdf' ? 'noopener' : undefined}
         download={m.kind === 'notebook' || m.kind === 'pdf' ? undefined : ''}
-        class="flex min-h-11 items-center gap-3 py-2.5 hover:bg-surface/70"
+        class="flex min-h-12 items-center gap-3 py-2.5 hover:bg-surface/70"
         onclick={(event) => follow(event, m)}
       >
         <span class="flex w-5 shrink-0 justify-center text-accent-text" aria-hidden="true">
@@ -74,12 +86,14 @@
         </span>
         <!-- Room paths have no break points; see MaterialList for why `anywhere`. -->
         <span
-          class="min-w-0 flex-1 text-[15px] font-semibold leading-[22px] text-accent-text
-                 [overflow-wrap:anywhere]"
+          class="min-w-0 flex-1 leading-6 text-accent-text [overflow-wrap:anywhere]
+                 {m.kind === 'folder'
+            ? 'font-mono text-[15px] font-medium'
+            : 'text-[16px] font-semibold'}"
         >
           {m.name}
         </span>
-        <span class="shrink-0 font-mono text-micro text-muted">{meta(m)}</span>
+        <span class="shrink-0 font-mono text-[13px] leading-5 text-muted">{meta(m)}</span>
       </a>
     </li>
   {/each}
@@ -87,7 +101,7 @@
     <li class="border-t border-line">
       <a
         href={pageHref(address)}
-        class="flex min-h-11 items-center py-2.5 text-[15px] leading-[22px] text-accent-text"
+        class="flex min-h-12 items-center py-2.5 text-[16px] leading-6 text-accent-text"
         onclick={toPage}
       >
         {tr('room.course.allMaterials', { count: materials.length })}
@@ -99,8 +113,8 @@
   href={zipHref(address)}
   download=""
   class="press mt-3 flex h-12 shrink-0 items-center justify-center gap-2.5 border border-brand px-3
-         text-[13px] font-bold uppercase leading-4 tracking-caps text-brand
-         dark:border-ink dark:text-ink lg:h-11 {onSurface ? 'bg-canvas' : ''}"
+         text-[14px] font-bold uppercase leading-5 tracking-caps text-brand
+         dark:border-ink dark:text-ink {onSurface ? 'bg-canvas' : ''}"
 >
   <Icon name="download" size={16} strokeWidth={2.2} class="shrink-0" />
   <span>{tr('room.course.zip', { size: sizeText(zipBytes) })}</span>

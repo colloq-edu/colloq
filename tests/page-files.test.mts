@@ -25,6 +25,7 @@ import {
   sha256,
   sweepPageFiles,
 } from '../server/src/publish/page-files.js'
+import { folderHash } from '../server/src/publish/materials.js'
 import {
   deletePublication,
   listMaterials,
@@ -123,4 +124,39 @@ test('the startup sweep removes files without a row and leftover temporary names
   assert.equal(fs.existsSync(`${pageFilePath(hash)}.tmp-abc123`), false)
   assert.ok(fs.existsSync(pageFilePath(sha256(kept))), 'the sweep removed a file in use')
   assert.ok(fs.readdirSync(pageFilesDir()).length > 0)
+})
+
+test('a folder material\'s files are kept by the GC and the sweep, and go when the folder goes', () => {
+  createSession('pf-folder', 'Папка', null)
+  const bodies = [Buffer.from('folder,one\n'), Buffer.from('folder,two\n')]
+  const files = bodies.map((body, i) => {
+    const put = putPageFile(body, 'text/csv')
+    return { path: `data/part-${i}.csv`, hash: put.hash, bytes: put.bytes }
+  })
+  const data: StoredMaterial = {
+    key: 'data',
+    kind: 'folder',
+    name: 'data/',
+    path: 'data',
+    hash: folderHash(files),
+    bytes: files.reduce((sum, f) => sum + f.bytes, 0),
+    files,
+  }
+  const other = fileMaterial('notes', 'notes.csv', Buffer.from('folder,page,notes\n'))
+  page('pf-folder', [other, data])
+  // Neither the GC after the write nor the startup sweep takes a file only a folder names.
+  sweepPageFiles()
+  for (const body of bodies) {
+    assert.ok(pageFileInfo(sha256(body)), 'a folder file lost its row')
+    assert.ok(fs.existsSync(pageFilePath(sha256(body))), 'a folder file left the disk')
+  }
+  assert.equal(pageFileInfo(data.hash), null, 'the folder row\'s own hash is not a stored file')
+  assert.deepEqual(listMaterials(page('pf-folder', [other, data]).id)[1].files, files)
+
+  // Republished without the folder: its files go.
+  page('pf-folder', [other])
+  for (const body of bodies) {
+    assert.equal(pageFileInfo(sha256(body)), null)
+    assert.equal(fs.existsSync(pageFilePath(sha256(body))), false)
+  }
 })

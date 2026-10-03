@@ -66,14 +66,14 @@ test('placeholder sizes come from shared numbers, not written into each one in p
   const resources = read(RESOURCES)
   // One number for all fields and one for all hint lines: they can drift
   // only together, and then the jump is visible to the eye.
-  assert.match(resources, /const FIELD_H = '38px'/, 'the field height is one number')
-  assert.match(resources, /const HINT_LINE = 18\b/, 'the hint line height is one number')
+  assert.match(resources, /const FIELD_H = '40px'/, 'the field height is one number')
+  assert.match(resources, /const HINT_LINE = 20\b/, 'the hint line height is one number')
   const waiting = loadingBranch(code(resources))
   // And the fields take their height from there instead of copying the
-  // number: a pair of "38px" in the markup and "38px" in the constant drifts
+  // number: a pair of "40px" in the markup and "40px" in the constant drifts
   // apart at the very first font-size edit.
-  assert.doesNotMatch(waiting, /height="38px"/, 'the field does not carry its own copy of the height')
-  assert.doesNotMatch(waiting, /height="18px"/, 'nor does the hint line')
+  assert.doesNotMatch(waiting, /height="40px"/, 'the field does not carry its own copy of the height')
+  assert.doesNotMatch(waiting, /height="20px"/, 'nor does the hint line')
 })
 
 test('the section waits for an answer only while the answer is on its way, not when it will never come', () => {
