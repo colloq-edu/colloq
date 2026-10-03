@@ -18,6 +18,7 @@
   import { loadPdf } from '@/lib/pdf.svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import { mayBeFollowed } from '@shared/rules'
+  import { openNotesEditor } from '@/lib/notes-editor.svelte'
   import { fits } from './budget'
   import PageRail from './PageRail.svelte'
 
@@ -645,6 +646,27 @@
 
     <span class="flex-1"></span>
 
+    {#if session.me.role === 'host'}
+      <!--
+        The speaker notes: written here, the evening before, with no lecture
+        running and nothing put on anyone's screen. The teacher's only, like
+        the notes themselves; at the page being read, so the editor opens on
+        the slide one was just looking at.
+      -->
+      <button
+        type="button"
+        class="flex shrink-0 items-center gap-2 px-4 text-2xs font-bold uppercase tracking-label
+               text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none
+               focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+        title={tr('room.notesEditor.openTitle')}
+        data-notes-open
+        onclick={() => openNotesEditor(file, page)}
+      >
+        <Icon name="file" size={12} /> {tr('room.notesEditor.open')}
+      </button>
+      <span class="my-2 w-px bg-line" aria-hidden="true"></span>
+    {/if}
+
     {#if backToLecture}
       <!--
         A lecture on this document is running right now, and this person has
@@ -674,7 +696,7 @@
                text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none
                focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
         title={tr('room.ui.726')}
-        onclick={() => session.send({ t: 'lecture:start', file })}
+        onclick={() => session.send({ t: 'lecture:start', file, device: session.device() })}
       >
         <Icon name="pencil" size={12} /> {tr('room.ui.444')} </button>
     {/if}

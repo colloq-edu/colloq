@@ -15,8 +15,9 @@
   screen whose proportions differ from the page.
 -->
 <script lang="ts">
-  import type { PDFDocumentProxy } from 'pdfjs-dist'
+  import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist'
   import { onDestroy, type Snippet, untrack } from 'svelte'
+  import { acquirePage, releasePage } from '@/lib/pdf-pages'
 
   interface Props {
     doc: PDFDocumentProxy | null
@@ -68,9 +69,30 @@
      * for notes" but "we know nothing yet".
      */
     onfit?: (size: { w: number; h: number; rest: number }) => void
+    /**
+     * The page whose picture is ACTUALLY on the sheet now; `null` when the
+     * sheet shows nothing yet.
+     *
+     * `page` is what was asked for, and between the two lies a render: on the
+     * relay a heavy slide takes a second or more, and all that time the sheet
+     * keeps the previous slide on purpose (see `buffer`). Whatever lies over
+     * the sheet must follow THIS, not `page`: ink of the new page painted
+     * over the old picture, and a live pen circling a formula of slide 6 that
+     * lands on slide 7, is what the hall saw before.
+     */
+    onshown?: (page: number | null) => void
   }
 
-  let { doc, page, over, dim = false, bare = false, align = 'center', onfit }: Props = $props()
+  let {
+    doc,
+    page,
+    over,
+    dim = false,
+    bare = false,
+    align = 'center',
+    onfit,
+    onshown,
+  }: Props = $props()
 
   let box = $state<HTMLDivElement | null>(null)
   let canvas = $state<HTMLCanvasElement | null>(null)
@@ -159,26 +181,73 @@
    * Five attempts in a little over a second is about the network, not about
    * patience. `alive` is asked of the caller: the page may have changed
    * while we waited.
+   *
+   * A page that comes back is HELD (lib/pdf-pages.ts): the caller gives it
+   * back with `releasePage` once it is done with it, or pdf.js keeps its
+   * decoded images for the rest of the lecture.
    */
   async function sheetOf(
     source: PDFDocumentProxy,
     index: number,
     alive: () => boolean,
-  ): Promise<Awaited<ReturnType<PDFDocumentProxy['getPage']>> | null> {
+  ): Promise<PDFPageProxy | null> {
     for (let tries = 0; tries < 5 && alive(); tries += 1) {
-      const sheet = await source.getPage(index).catch(() => null)
-      if (sheet) return sheet
+      const sheet = await acquirePage(source, index)
+      if (sheet) {
+        if (alive()) return sheet
+        releasePage(source, index)
+        return null
+      }
       if (!alive()) break
       await new Promise((r) => setTimeout(r, 120 * (tries + 1)))
     }
     return null
   }
 
+  /**
+   * Tell the parent what is on the sheet, once per change. Through `untrack`
+   * for the same reason as `onfit`: the parent rearranges itself in response.
+   */
+  let shownNow: number | null | undefined
+  function show(at: number | null): void {
+    if (at === shownNow) return
+    shownNow = at
+    untrack(() => onshown?.(at))
+  }
+
+  /** Wipe the visible sheet: what it holds is no longer the page asked for. */
+  function wipe(node: HTMLCanvasElement | null): void {
+    node?.getContext('2d')?.clearRect(0, 0, node.width, node.height)
+  }
+
+  /*
+   * The document is gone or not here yet: whatever the sheet still holds
+   * belongs to another document. A lecture switched to a new PDF used to
+   * keep showing the old deck's slide (and the new deck's ink over it) until
+   * the new one rendered.
+   */
+  $effect(() => {
+    if (doc) return
+    untrack(() => {
+      wipe(canvas)
+      show(null)
+    })
+  })
+
   /*
    * The aspect ratio is learned separately from rendering: the sheet's size
    * is needed before there is anything to draw into, and rendering waits for
    * the size. In one effect this closes in on itself.
+   *
+   * ONLY THE FIRST SHAPE, AND THE SHAPE OF A BLANK SHEET, ARE LEARNED HERE.
+   * A real page's shape is set by the render effect below, in the same step
+   * as its picture. When this effect also answered every page turn, the box
+   * took the new page's shape while the sheet still held the old picture,
+   * and on a mixed deck (16:9 plus an inserted A4) the hall watched the
+   * previous slide stretched into the new box until the render finished.
    */
+  /** The document whose shape `aspect` holds. Not a rune: only checked against. */
+  let aspectOf: PDFDocumentProxy | null = null
   $effect(() => {
     const source = doc
     /*
@@ -189,6 +258,7 @@
      */
     const index = page < 0 ? 1 : page
     if (!source) return
+    if (page > 0 && aspectOf === source && untrack(() => aspect) !== null) return
     let dropped = false
     void (async () => {
       let sheet = await sheetOf(source, index, () => !dropped)
@@ -204,9 +274,17 @@
        * first page travels in the document's very first chunk, so this
        * fallback almost always works.
        */
-      if (!sheet && index !== 1 && !dropped) sheet = await sheetOf(source, 1, () => !dropped)
-      if (!sheet || dropped) return
+      let held = index
+      if (!sheet && index !== 1 && !dropped) {
+        sheet = await sheetOf(source, 1, () => !dropped)
+        held = 1
+      }
+      if (!sheet) return
+      // Only the shape was wanted: the page goes back at once.
       const base = sheet.getViewport({ scale: 1 })
+      releasePage(source, held)
+      if (dropped) return
+      aspectOf = source
       aspect = base.width / base.height
     })()
     return () => {
@@ -278,8 +356,8 @@
        * left on the canvas either: the text of the page we came from would
        * show through under the ink.
        */
-      const paint = node.getContext('2d')
-      if (paint) paint.clearRect(0, 0, node.width, node.height)
+      wipe(node)
+      show(index)
       return
     }
     if (!source) return
@@ -294,110 +372,33 @@
       if (dropped) return
       // The page, with retries: the same `sheetOf` as for the aspect ratio.
       const sheet = await sheetOf(source, index, () => !dropped)
-      if (!sheet || dropped) return
-      const base = sheet.getViewport({ scale: 1 })
-      /*
-       * THE ASPECT RATIO COMES FROM HERE TOO, not only from the effect above.
-       *
-       * That effect answers the question "what shape is the sheet" BEFORE
-       * there is anything to draw into, and on a page change it answers late
-       * or not at all. While the sheet kept the PREVIOUS page's ratio and this
-       * code computed the scale from the new page's real width, the
-       * `h-full w-full` canvas stretched the finished picture into someone
-       * else's box: on a mixed deck (16:9 plus an inserted A4) the audience
-       * saw a distorted slide, and kept seeing it until something unrelated
-       * recomputed the layout.
-       *
-       * Here the sheet is real and already in hand, so the question is
-       * settled by fact. If it differs, we record it and LEAVE: `aspect` feeds
-       * `fit`, `fit` feeds this effect, and it comes right back here with the
-       * box's real size. Drawing into the old one would be a frame of a
-       * distorted picture on the projector, and writing unconditionally would
-       * be a loop ending in effect_update_depth_exceeded.
-       */
-      const real = base.width / base.height
-      if (untrack(() => aspect) !== real) {
-        aspect = real
+      if (!sheet) {
+        /*
+         * The page never came. The sheet must not go on passing the previous
+         * slide off as this one: it is wiped and reported as this page, so
+         * that the ink and the pen follow the number the hall is on (a white
+         * page with its ink is honest; a dead pen until the end of class is
+         * not).
+         */
+        if (!dropped) {
+          wipe(node)
+          show(index)
+        }
         return
       }
-      const ratio = Math.min(window.devicePixelRatio || 1, 2)
-      const viewport = sheet.getViewport({ scale: (w / base.width) * ratio })
-      /*
-       * Assigning width/height wipes both the pixels and the context state,
-       * and does so even when the value is the same. So only on a real size
-       * change: otherwise rotating the tablet would blank the page out of
-       * nowhere.
-       */
-      const W = Math.round(viewport.width)
-      const H = Math.round(viewport.height)
-      const paint = node.getContext('2d')
-      if (!paint) return
-      buffer ??= document.createElement('canvas')
-      // Assigning a size wipes the canvas and the context state, but the
-      // buffer is drawn from scratch anyway, so here it costs nothing.
-      if (buffer.width !== W || buffer.height !== H) {
-        buffer.width = W
-        buffer.height = H
-      }
-      const spare = buffer.getContext('2d')
-      if (!spare) return
-      spare.clearRect(0, 0, W, H)
-      const task = sheet.render({ canvas: buffer, canvasContext: spare, viewport })
-      /*
-       * WHO DRIVES THE RENDERING.
-       *
-       * pdf.js draws a page not in one piece but in portions, and by default
-       * it asks `requestAnimationFrame` for the next portion. For the reader
-       * that is right: the frame leaves time for scrolling. For the PROJECTION
-       * it is a refusal to work. The projection window lives on a second
-       * screen or is shared into Zoom, the teacher switches to another app,
-       * and the browser, noticing that the window is not visible at all,
-       * stops handing out frames. `document.hidden` is false meanwhile: the
-       * window is not hidden, it is covered by another one. Rendering stalls
-       * after the first portion, that is, after the white background fill,
-       * and the audience stays on the previous slide while the presenter
-       * flips on. Exactly this is what came back from class: "catches up in
-       * about five seconds, or never".
-       *
-       * So the frame here is not the boss but one of two messengers: whichever
-       * arrives first carries on. A hundred milliseconds is six missed frames:
-       * no live page ever accumulates that many, and on a dead one they will
-       * never come.
-       */
-      task.onContinue = (next: () => void) => {
-        let went = false
-        let late = 0
-        const go = (): void => {
-          if (went) return
-          went = true
-          window.clearTimeout(late)
-          next()
-        }
-        const frame = window.requestAnimationFrame(go)
-        late = window.setTimeout(() => {
-          window.cancelAnimationFrame(frame)
-          go()
-        }, 100)
-      }
-      running = task
       try {
-        await task.promise
-        if (dropped) return
-        /*
-         * The finished result goes to the screen. The visible canvas is
-         * resized ONLY here, and only on a real change: assignment wipes the
-         * pixels even when the value is the same, and rotating the tablet
-         * would otherwise blank the page out of nowhere.
-         */
-        if (node.width !== W || node.height !== H) {
-          node.width = W
-          node.height = H
-        }
-        paint.drawImage(buffer, 0, 0)
+        const done = await paintSheet(sheet, node, w, () => dropped)
+        if (done && !dropped) show(index)
       } catch {
-        // Cancelled for the sake of the next page: business as usual.
+        // Cancelled for the sake of the next page: business as usual. Anything
+        // else leaves a wiped sheet rather than the previous slide under this
+        // page's ink.
+        if (!dropped) {
+          wipe(node)
+          show(index)
+        }
       } finally {
-        if (running === task) running = null
+        releasePage(source, index)
       }
     })()
 
@@ -406,12 +407,140 @@
     }
   })
 
+  /**
+   * Draw one page into the visible canvas through the spare one. `false`
+   * when the box first has to take this page's shape (the effect comes back
+   * with the new size); throws when the render was cancelled.
+   */
+  async function paintSheet(
+    sheet: PDFPageProxy,
+    node: HTMLCanvasElement,
+    w: number,
+    dropped: () => boolean,
+  ): Promise<boolean> {
+    const base = sheet.getViewport({ scale: 1 })
+    /*
+     * THE ASPECT RATIO COMES FROM HERE, not from the effect above.
+     *
+     * That effect answers the question "what shape is the sheet" BEFORE
+     * there is anything to draw into, and it answers only once per document
+     * (and for blank sheets). While the sheet kept the PREVIOUS page's ratio
+     * and this code computed the scale from the new page's real width, the
+     * `h-full w-full` canvas stretched the finished picture into someone
+     * else's box: on a mixed deck (16:9 plus an inserted A4) the audience
+     * saw a distorted slide, and kept seeing it until something unrelated
+     * recomputed the layout.
+     *
+     * Here the sheet is real and already in hand, so the question is
+     * settled by fact. If it differs, we record it and LEAVE: `aspect` feeds
+     * `fit`, `fit` feeds the effect, and it comes right back here with the
+     * box's real size. Drawing into the old one would be a frame of a
+     * distorted picture on the projector, and writing unconditionally would
+     * be a loop ending in effect_update_depth_exceeded. The visible sheet is
+     * wiped on the way: the box is about to take the new shape, and the old
+     * picture stretched into it is exactly the distorted slide described
+     * above, only for the length of one render.
+     */
+    const real = base.width / base.height
+    if (untrack(() => aspect) !== real) {
+      wipe(node)
+      show(null)
+      aspect = real
+      return false
+    }
+    const ratio = Math.min(window.devicePixelRatio || 1, 2)
+    const viewport = sheet.getViewport({ scale: (w / base.width) * ratio })
+    /*
+     * Assigning width/height wipes both the pixels and the context state,
+     * and does so even when the value is the same. So only on a real size
+     * change: otherwise rotating the tablet would blank the page out of
+     * nowhere.
+     */
+    const W = Math.round(viewport.width)
+    const H = Math.round(viewport.height)
+    /*
+     * No context means the iPad's canvas budget is spent: nothing can be
+     * drawn, and saying "shown" at least keeps the pen on the right page.
+     */
+    const paint = node.getContext('2d')
+    if (!paint) return true
+    buffer ??= document.createElement('canvas')
+    // Assigning a size wipes the canvas and the context state, but the
+    // buffer is drawn from scratch anyway, so here it costs nothing.
+    if (buffer.width !== W || buffer.height !== H) {
+      buffer.width = W
+      buffer.height = H
+    }
+    const spare = buffer.getContext('2d')
+    if (!spare) return true
+    spare.clearRect(0, 0, W, H)
+    const task = sheet.render({ canvas: buffer, canvasContext: spare, viewport })
+    /*
+     * WHO DRIVES THE RENDERING.
+     *
+     * pdf.js draws a page not in one piece but in portions, and by default
+     * it asks `requestAnimationFrame` for the next portion. For the reader
+     * that is right: the frame leaves time for scrolling. For the PROJECTION
+     * it is a refusal to work. The projection window lives on a second
+     * screen or is shared into Zoom, the teacher switches to another app,
+     * and the browser, noticing that the window is not visible at all,
+     * stops handing out frames. `document.hidden` is false meanwhile: the
+     * window is not hidden, it is covered by another one. Rendering stalls
+     * after the first portion, that is, after the white background fill,
+     * and the audience stays on the previous slide while the presenter
+     * flips on. Exactly this is what came back from class: "catches up in
+     * about five seconds, or never".
+     *
+     * So the frame here is not the boss but one of two messengers: whichever
+     * arrives first carries on. A hundred milliseconds is six missed frames:
+     * no live page ever accumulates that many, and on a dead one they will
+     * never come.
+     */
+    task.onContinue = (next: () => void) => {
+      let went = false
+      let late = 0
+      const go = (): void => {
+        if (went) return
+        went = true
+        window.clearTimeout(late)
+        next()
+      }
+      const frame = window.requestAnimationFrame(go)
+      late = window.setTimeout(() => {
+        window.cancelAnimationFrame(frame)
+        go()
+      }, 100)
+    }
+    running = task
+    try {
+      await task.promise
+      if (dropped()) return false
+      /*
+       * The finished result goes to the screen. The visible canvas is
+       * resized ONLY here, and only on a real change: assignment wipes the
+       * pixels even when the value is the same, and rotating the tablet
+       * would otherwise blank the page out of nowhere.
+       */
+      if (node.width !== W || node.height !== H) {
+        node.width = W
+        node.height = H
+      }
+      paint.drawImage(buffer, 0, 0)
+      return true
+    } finally {
+      if (running === task) running = null
+    }
+  }
+
   /*
    * On the way out, give the buffer back. A canvas left in memory is not free
    * on iPad: the budget is one per process, and the lecture sheet lives next
    * to the thumbnail strip, which holds another dozen canvases.
    */
   onDestroy(() => {
+    // A render left running would finish into a buffer nobody shows and keep
+    // its page held until then.
+    running?.cancel()
     if (!buffer) return
     buffer.width = 1
     buffer.height = 1

@@ -1423,6 +1423,11 @@ export const roomMessages: MessageCatalog = {
     "ru": "щелчок или F — во весь экран",
     "en": "click or F for fullscreen"
   },
+  // The projection's first Escape (SessionScreen): a second one within 1.5 s closes it.
+  "room.lecture.escapeAgain": {
+    "ru": "Esc ещё раз — закрыть проекцию",
+    "en": "Esc again to close the projection"
+  },
   "room.ui.282": {
     "ru": "Указка — ведите пальцем или пером",
     "en": "Pointer — move your finger or pen"
@@ -1452,8 +1457,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Erase all?"
   },
   "room.ui.290": {
-    "ru": "Погасить проекцию — B. У вас страница останется",
-    "en": "Blank projection — B. Your page will stay visible"
+    "ru": "Скрыть от зала: проектор и экраны студентов — B или «.». У вас страница останется",
+    "en": "Hide from the audience: the projector and students’ screens — B or “.”. Your page stays visible"
   },
   "room.ui.291": {
     "ru": "Пауза",
@@ -4867,6 +4872,640 @@ export const roomMessages: MessageCatalog = {
     "ru": "Заметки к странице {count}",
     "en": "Notes for page {count}"
   },
+  // The notes column beside the slide for a teacher who does not lead (NotesPad · roomColumn).
+  "room.notes.slideOf": {"ru": "слайд {page}", "en": "slide {page}"},
+  // Not "only you", as the design has it: every teacher of the room sees the notes too.
+  "room.notes.onlyYou": {"ru": "студентам не видно", "en": "hidden from students"},
+  "room.notes.closeColumn": {"ru": "Скрыть заметки", "en": "Hide notes"},
+  // The speaker-notes editor and the script import (web/src/components/lecture/NotesEditor.svelte, NotesImport.svelte).
+  "room.notesEditor.open": {
+    "ru": "Заметки",
+    "en": "Notes"
+  },
+  "room.notesEditor.openTitle": {
+    "ru": "Заметки спикера: написать и подготовить. Видно только вам",
+    "en": "Speaker notes: write and prepare them. Only you see them"
+  },
+  "room.notesEditor.title": {
+    "ru": "Заметки спикера",
+    "en": "Speaker notes"
+  },
+  "room.notesEditor.slides": {
+    "ru": {
+      "one": "{count} слайд",
+      "few": "{count} слайда",
+      "many": "{count} слайдов",
+      "other": "{count} слайда"
+    },
+    "en": {
+      "one": "{count} slide",
+      "other": "{count} slides"
+    }
+  },
+  "room.notesEditor.filled": {
+    "ru": "{count} с заметками",
+    "en": "{count} with notes"
+  },
+  "room.notesEditor.idle": {
+    "ru": "Лекция не идёт — можно готовить до лекции. Зал и студенты заметок не видят.",
+    "en": "No lecture running — prepare ahead. The room and students never see notes."
+  },
+  "room.notesEditor.live": {
+    "ru": "Идёт лекция — правки сразу видны на пульте. Зал и студенты заметок не видят.",
+    "en": "A lecture is running — edits reach the console at once. The room and students never see notes."
+  },
+  "room.notesEditor.import": {
+    "ru": "Импорт сценария (.md)",
+    "en": "Import script (.md)"
+  },
+  "room.notesEditor.download": {
+    "ru": "Скачать .md",
+    "en": "Download .md"
+  },
+  "room.notesEditor.downloading": {
+    "ru": "Готовим…",
+    "en": "Preparing…"
+  },
+  "room.notesEditor.close": {
+    "ru": "Закрыть",
+    "en": "Close"
+  },
+  "room.notesEditor.closeUnsaved": {
+    "ru": "Не сохранено — закрыть?",
+    "en": "Not saved — close anyway?"
+  },
+  "room.notesEditor.closeTitle": {
+    "ru": "Закрыть редактор заметок (Esc)",
+    "en": "Close the notes editor (Esc)"
+  },
+  "room.notesEditor.list": {
+    "ru": "Слайды",
+    "en": "Slides"
+  },
+  "room.notesEditor.all": {
+    "ru": "все {count}",
+    "en": "all {count}"
+  },
+  "room.notesEditor.empty": {
+    "ru": "без заметок {count}",
+    "en": "no notes {count}"
+  },
+  "room.notesEditor.noNote": {
+    "ru": "Заметки нет",
+    "en": "No note"
+  },
+  "room.notesEditor.allFilled": {
+    "ru": "У всех слайдов есть заметки.",
+    "en": "Every slide has a note."
+  },
+  "room.notesEditor.slideTitle": {
+    "ru": "Слайд {page}",
+    "en": "Slide {page}"
+  },
+  "room.notesEditor.nearLimit": {
+    "ru": "Почти предел: {count} из {max} знаков",
+    "en": "Near the limit: {count} of {max} characters"
+  },
+  "room.notesEditor.overLimit": {
+    "ru": "Длиннее предела: {count} из {max} знаков",
+    "en": "Over the limit: {count} of {max} characters"
+  },
+  "room.notesEditor.opening": {
+    "ru": "Открываем {file}…",
+    "en": "Opening {file}…"
+  },
+  "room.notesEditor.docFailed": {
+    "ru": "Документ не открылся — заметки можно писать и без него.",
+    "en": "The document did not open — notes can still be written."
+  },
+  "room.notesEditor.minutes": {
+    "ru": "≈ {minutes} мин",
+    "en": "≈ {minutes} min"
+  },
+  "room.notesEditor.seconds": {"ru": "≈ {seconds} с", "en": "≈ {seconds} s"},
+  "room.notesEditor.words": {
+    "ru": {
+      "one": "{count} слово",
+      "few": "{count} слова",
+      "many": "{count} слов",
+      "other": "{count} слова"
+    },
+    "en": {
+      "one": "{count} word",
+      "other": "{count} words"
+    }
+  },
+  "room.notesEditor.next": {
+    "ru": "{page} · дальше",
+    "en": "{page} · next"
+  },
+  "room.notesEditor.prev": {
+    "ru": "{page} · раньше",
+    "en": "{page} · before"
+  },
+  "room.notesEditor.firstSlide": {
+    "ru": "Это первый слайд",
+    "en": "This is the first slide"
+  },
+  "room.notesEditor.lastSlide": {
+    "ru": "Это последний слайд",
+    "en": "This is the last slide"
+  },
+  "room.notesEditor.text": {
+    "ru": "Текст",
+    "en": "Text"
+  },
+  "room.notesEditor.textFor": {
+    "ru": "— что сказать на слайде {page}",
+    "en": "— what to say on slide {page}"
+  },
+  "room.notesEditor.bold": {
+    "ru": "Жирный — главная мысль слайда (⌘B)",
+    "en": "Bold — the line the slide exists for (⌘B)"
+  },
+  "room.notesEditor.italic": {
+    "ru": "Курсив (⌘I)",
+    "en": "Italic (⌘I)"
+  },
+  "room.notesEditor.remark": {
+    "ru": "Ремарка",
+    "en": "Remark"
+  },
+  "room.notesEditor.remarkTitle": {
+    "ru": "Ремарка — себе, не вслух: вся строка курсивом",
+    "en": "A remark — a cue for yourself, not said aloud: the whole line in italics"
+  },
+  "room.notesEditor.listForm": {
+    "ru": "Список",
+    "en": "List"
+  },
+  "room.notesEditor.quote": {
+    "ru": "Цитата",
+    "en": "Quote"
+  },
+  "room.notesEditor.ask": {
+    "ru": "Если спросят",
+    "en": "If asked"
+  },
+  "room.notesEditor.askTitle": {
+    "ru": "Ответ про запас: на пульте свёрнут до вопроса и раскрывается касанием",
+    "en": "An answer in reserve: folded to the question on the console, opened with a tap"
+  },
+  "room.notesEditor.placeholder": {
+    "ru": "Что сказать на этом слайде. **Главное** — жирным, *ремарка себе* — курсивом.",
+    "en": "What to say on this slide. **The key line** in bold, *a cue for yourself* in italics."
+  },
+  "room.notesEditor.field": {
+    "ru": "Заметка к слайду {page}",
+    "en": "Note for slide {page}"
+  },
+  "room.notesEditor.tabText": {
+    "ru": "Текст",
+    "en": "Text"
+  },
+  "room.notesEditor.tabPreview": {
+    "ru": "Как на пульте",
+    "en": "As on the console"
+  },
+  "room.notesEditor.preview": {
+    "ru": "Как на пульте",
+    "en": "As on the console"
+  },
+  "room.notesEditor.livePreview": {
+    "ru": "Живой просмотр",
+    "en": "Live preview"
+  },
+  "room.notesEditor.small": {
+    "ru": "Мелко",
+    "en": "Small"
+  },
+  "room.notesEditor.normal": {
+    "ru": "Обычно",
+    "en": "Normal"
+  },
+  "room.notesEditor.large": {
+    "ru": "Крупно",
+    "en": "Large"
+  },
+  "room.notesEditor.previewHead": {
+    "ru": "Заметки",
+    "en": "Notes"
+  },
+  "room.notesEditor.fits": {
+    "ru": "{size} px · помещается на экран iPad",
+    "en": "{size} px · fits one iPad screen"
+  },
+  "room.notesEditor.screens": {
+    "ru": "{size} px · {screens} экрана на iPad — листается пальцем",
+    "en": "{size} px · {screens} iPad screens — scrolls with a finger"
+  },
+  "room.notesEditor.askHint": {
+    "ru": "«Если спросят» на пульте свёрнуто — раскрывается касанием.",
+    "en": "“If asked” is folded on the console — a tap opens it."
+  },
+  "room.notesEditor.saved": {
+    "ru": "Сохранено · {time}",
+    "en": "Saved · {time}"
+  },
+  "room.notesEditor.saving": {
+    "ru": "Сохраняем…",
+    "en": "Saving…"
+  },
+  "room.notesEditor.offline": {
+    "ru": "Нет связи — сохраним, когда вернётся",
+    "en": "Offline — will save when it is back"
+  },
+  "room.notesEditor.over": {
+    "ru": "Длиннее {max} знаков — не сохраняется. Сократите на {count}.",
+    "en": "Longer than {max} characters — not saved. Cut {count}."
+  },
+  "room.notesEditor.untouched": {
+    "ru": "Сохраняется само, на каждое изменение",
+    "en": "Saves by itself on every change"
+  },
+  "room.notesEditor.neighbour": {
+    "ru": "⌘↑ / ⌘↓ — соседний слайд",
+    "en": "⌘↑ / ⌘↓ — neighbouring slide"
+  },
+  "room.notesEditor.imported": {
+    "ru": {
+      "one": "Сценарий загружен: {count} заметка",
+      "few": "Сценарий загружен: {count} заметки",
+      "many": "Сценарий загружен: {count} заметок",
+      "other": "Сценарий загружен: {count} заметки"
+    },
+    "en": {
+      "one": "Script loaded: {count} note",
+      "other": "Script loaded: {count} notes"
+    }
+  },
+  "room.notesImport.kicker": {
+    "ru": "Заметки спикера",
+    "en": "Speaker notes"
+  },
+  "room.notesImport.title": {
+    "ru": "Импорт сценария",
+    "en": "Import script"
+  },
+  "room.notesImport.lead": {
+    "ru": "Один .md на всю лекцию. Раздел «## 14 · …» станет заметкой к странице 14 — видно только вам.",
+    "en": "One .md for the whole lecture. A “## 14 · …” section becomes the note for page 14 — only you see it."
+  },
+  "room.notesImport.drop": {
+    "ru": "Перетащите .md со сценарием или вставьте текст",
+    "en": "Drop a .md script here or paste its text"
+  },
+  "room.notesImport.dropHint": {
+    "ru": "Раздел — заголовок «## 01 · Название». ⌘V — из буфера.",
+    "en": "A section is a “## 01 · Title” heading. ⌘V pastes."
+  },
+  "room.notesImport.choose": {
+    "ru": "Выбрать файл",
+    "en": "Choose file"
+  },
+  "room.notesImport.read": {
+    "ru": "{size} КБ · прочитан целиком",
+    "en": "{size} KB · read in full"
+  },
+  "room.notesImport.pasted": {
+    "ru": "из буфера",
+    "en": "from the clipboard"
+  },
+  "room.notesImport.other": {
+    "ru": "другой файл",
+    "en": "another file"
+  },
+  "room.notesImport.tooBig": {
+    "ru": "Файл больше 1 МБ: столько текста в заметки не войдёт.",
+    "en": "The file is over 1 MB: that much text will not fit into notes."
+  },
+  "room.notesImport.unreadable": {
+    "ru": "Файл не прочитался.",
+    "en": "The file could not be read."
+  },
+  "room.notesImport.noSections": {
+    "ru": "Разделов «## …» не нашли. Каждый слайд начинается с заголовка «## 01 · Название».",
+    "en": "No “## …” sections found. Start each slide with a “## 01 · Title” heading."
+  },
+  "room.notesImport.breakdown": {
+    "ru": "Разбор",
+    "en": "Breakdown"
+  },
+  "room.notesImport.mapping": {
+    "ru": "Раздел → страница PDF",
+    "en": "Section → PDF page"
+  },
+  "room.notesImport.sections": {
+    "ru": {
+      "one": "{count} раздел",
+      "few": "{count} раздела",
+      "many": "{count} разделов",
+      "other": "{count} раздела"
+    },
+    "en": {
+      "one": "{count} section",
+      "other": "{count} sections"
+    }
+  },
+  "room.notesImport.pages": {
+    "ru": {
+      "one": "{count} страница",
+      "few": "{count} страницы",
+      "many": "{count} страниц",
+      "other": "{count} страницы"
+    },
+    "en": {
+      "one": "{count} page",
+      "other": "{count} pages"
+    }
+  },
+  "room.notesImport.found": {
+    "ru": "Нашли {sections} — в PDF {pages}",
+    "en": "Found {sections} — the PDF has {pages}"
+  },
+  "room.notesImport.unchecked": {
+    "ru": "Документ не открылся: номера страниц не проверены.",
+    "en": "The document did not open: page numbers are not checked."
+  },
+  "room.notesImport.countNew": {
+    "ru": {
+      "one": "{count} новая",
+      "few": "{count} новые",
+      "many": "{count} новых",
+      "other": "{count} новые"
+    },
+    "en": {
+      "one": "{count} new",
+      "other": "{count} new"
+    }
+  },
+  "room.notesImport.countReplace": {
+    "ru": {
+      "one": "{count} заменит заметку",
+      "few": "{count} заменят заметку",
+      "many": "{count} заменят заметку",
+      "other": "{count} заменят заметку"
+    },
+    "en": {
+      "one": "{count} replaces a note",
+      "other": "{count} replace notes"
+    }
+  },
+  "room.notesImport.countSame": {
+    "ru": {
+      "one": "{count} без изменений",
+      "few": "{count} без изменений",
+      "many": "{count} без изменений",
+      "other": "{count} без изменений"
+    },
+    "en": {
+      "one": "{count} unchanged",
+      "other": "{count} unchanged"
+    }
+  },
+  "room.notesImport.countTooLong": {
+    "ru": {
+      "one": "{count} длиннее {max} знаков",
+      "few": "{count} длиннее {max} знаков",
+      "many": "{count} длиннее {max} знаков",
+      "other": "{count} длиннее {max} знаков"
+    },
+    "en": {
+      "one": "{count} over {max} characters",
+      "other": "{count} over {max} characters"
+    }
+  },
+  "room.notesImport.countNoSlide": {
+    "ru": {
+      "one": "{count} без слайда",
+      "few": "{count} без слайда",
+      "many": "{count} без слайда",
+      "other": "{count} без слайда"
+    },
+    "en": {
+      "one": "{count} without a slide",
+      "other": "{count} without a slide"
+    }
+  },
+  "room.notesImport.countEmpty": {
+    "ru": {
+      "one": "{count} пустой",
+      "few": "{count} пустых",
+      "many": "{count} пустых",
+      "other": "{count} пустых"
+    },
+    "en": {
+      "one": "{count} empty",
+      "other": "{count} empty"
+    }
+  },
+  "room.notesImport.countDuplicate": {
+    "ru": {
+      "one": "{count} повтор",
+      "few": "{count} повтора",
+      "many": "{count} повторов",
+      "other": "{count} повтора"
+    },
+    "en": {
+      "one": "{count} repeat",
+      "other": "{count} repeats"
+    }
+  },
+  "room.notesImport.slide": {
+    "ru": "слайд {page}",
+    "en": "slide {page}"
+  },
+  "room.notesImport.statusNew": {
+    "ru": "новая",
+    "en": "new"
+  },
+  "room.notesImport.statusReplace": {
+    "ru": "заменит заметку",
+    "en": "replaces note"
+  },
+  "room.notesImport.statusSame": {
+    "ru": "без изменений",
+    "en": "unchanged"
+  },
+  "room.notesImport.statusChars": {
+    "ru": "{count} знаков",
+    "en": "{count} characters"
+  },
+  "room.notesImport.statusEmpty": {
+    "ru": "пусто — пропустим",
+    "en": "empty — skipped"
+  },
+  "room.notesImport.statusDuplicate": {
+    "ru": "повтор — пропустим",
+    "en": "repeat — skipped"
+  },
+  "room.notesImport.statusNoSlide": {
+    "ru": "слайда нет",
+    "en": "no slide"
+  },
+  "room.notesImport.untitled": {
+    "ru": "без названия",
+    "en": "untitled"
+  },
+  "room.notesImport.run": {
+    "ru": "{range} · {what}",
+    "en": "{range} · {what}"
+  },
+  "room.notesImport.show": {
+    "ru": "показать",
+    "en": "show"
+  },
+  "room.notesImport.hide": {
+    "ru": "скрыть",
+    "en": "hide"
+  },
+  "room.notesImport.tooLongTitle": {
+    "ru": "Раздел {index} длиннее {max} знаков — {count}",
+    "en": "Section {index} is over {max} characters — {count}"
+  },
+  "room.notesImport.tooLongBody": {
+    "ru": "Не обрежем молча: раздел пропустим, заметка к слайду {page} останется прежней. Сократите его в файле и загрузите снова.",
+    "en": "We won't cut it silently: the section is skipped and slide {page} keeps its note. Shorten it in the file and load again."
+  },
+  "room.notesImport.showText": {
+    "ru": "Показать текст",
+    "en": "Show text"
+  },
+  "room.notesImport.hideText": {
+    "ru": "Скрыть текст",
+    "en": "Hide text"
+  },
+  "room.notesImport.noSlideTitle": {
+    "ru": "Раздел {index} — слайда нет",
+    "en": "Section {index} — no such slide"
+  },
+  "room.notesImport.noSlideBody": {
+    "ru": "«{title}» не войдёт: в PDF {pages}",
+    "en": "“{title}” will not go in: the PDF has {pages}"
+  },
+  "room.notesImport.into": {
+    "ru": {
+      "one": "Войдёт {count} из {total}",
+      "few": "Войдут {count} из {total}",
+      "many": "Войдут {count} из {total}",
+      "other": "Войдут {count} из {total}"
+    },
+    "en": {
+      "one": "{count} of {total} goes in",
+      "other": "{count} of {total} go in"
+    }
+  },
+  "room.notesImport.overwrite": {
+    "ru": "Перезапишем {count}",
+    "en": "Overwrites {count}"
+  },
+  "room.notesImport.skip": {
+    "ru": "пропустим {list}",
+    "en": "skips {list}"
+  },
+  "room.notesImport.applyReplace": {
+    "ru": "Заменить заметки",
+    "en": "Replace notes"
+  },
+  "room.notesImport.applyAdd": {
+    "ru": "Добавить заметки",
+    "en": "Add notes"
+  },
+  "room.notesImport.applying": {
+    "ru": "Записываем…",
+    "en": "Writing…"
+  },
+  "room.notesImport.nothing": {
+    "ru": "Записывать нечего: всё уже так или пропущено.",
+    "en": "Nothing to write: everything is already so or skipped."
+  },
+  "room.notesImport.cancel": {
+    "ru": "Отмена",
+    "en": "Cancel"
+  },
+  // The lecture console's notes reader, strip and teleprompter (ConsoleView, NotesReader).
+  "room.prompter.slideNo": {"ru": "Слайд {n}", "en": "Slide {n}"},
+  "room.prompter.sheetNo": {"ru": "Лист {n}", "en": "Sheet {n}"},
+  "room.prompter.smaller": {"ru": "Заметки мельче", "en": "Smaller notes"},
+  "room.prompter.bigger": {"ru": "Заметки крупнее", "en": "Larger notes"},
+  "room.prompter.size": {"ru": "Кегль", "en": "Size"},
+  "room.prompter.minutes": {"ru": "≈ {n} мин", "en": "≈ {n} min"},
+  "room.prompter.next": {"ru": "Дальше", "en": "Next"},
+  "room.prompter.nextNo": {"ru": "Дальше · {n}", "en": "Next · {n}"},
+  "room.prompter.thenNo": {"ru": "Затем · {n}", "en": "Then · {n}"},
+  "room.prompter.thenLine": {"ru": "затем {n} · {title}", "en": "then {n} · {title}"},
+  "room.prompter.last": {"ru": "Последний слайд", "en": "Last slide"},
+  "room.prompter.back": {"ru": "Дальше — слайд {n}", "en": "Next — back to slide {n}"},
+  "room.prompter.slide": {"ru": "слайд", "en": "slide"},
+  "room.prompter.time": {"ru": "время", "en": "time"},
+  "room.prompter.plan": {"ru": "по плану {time}", "en": "planned {time}"},
+  "room.prompter.now": {"ru": "сейчас {time}", "en": "now {time}"},
+  "room.prompter.onSlide": {"ru": "на этом слайде", "en": "on this slide"},
+  "room.prompter.onSlideShort": {"ru": "на слайде {spent}", "en": "on slide {spent}"},
+  "room.prompter.ask": {"ru": "Если спросят", "en": "If asked"},
+  "room.prompter.tele": {"ru": "Суфлёр", "en": "Prompter"},
+  "room.prompter.teleAria": {"ru": "Суфлёр: только заметки", "en": "Prompter: notes only"},
+  "room.prompter.slideAria": {"ru": "Показать слайд и перо", "en": "Show the slide and the pen"},
+  "room.prompter.divider": {"ru": "Граница слайда и заметок", "en": "Divider between the slide and the notes"},
+  "room.prompter.up": {"ru": "вверх — заметкам", "en": "up — more notes"},
+  "room.prompter.down": {"ru": "вниз — слайду", "en": "down — more slide"},
+  // Devices in the lecture's words (web/src/components/lecture/takeover.ts): the name, and "on …".
+  "room.device.ipad": {"ru": "iPad", "en": "iPad"},
+  "room.device.iphone": {"ru": "iPhone", "en": "iPhone"},
+  "room.device.android-tablet": {"ru": "планшет Android", "en": "Android tablet"},
+  "room.device.android": {"ru": "телефон Android", "en": "Android phone"},
+  "room.device.mac": {"ru": "Mac", "en": "Mac"},
+  "room.device.windows": {"ru": "компьютер с Windows", "en": "Windows PC"},
+  "room.device.linux": {"ru": "компьютер с Linux", "en": "Linux PC"},
+  "room.device.chromebook": {"ru": "Chromebook", "en": "Chromebook"},
+  "room.device.other": {"ru": "другое устройство", "en": "another device"},
+  "room.device.ipad.on": {"ru": "на iPad", "en": "on the iPad"},
+  "room.device.iphone.on": {"ru": "на iPhone", "en": "on the iPhone"},
+  "room.device.android-tablet.on": {"ru": "на планшете Android", "en": "on the Android tablet"},
+  "room.device.android.on": {"ru": "на телефоне Android", "en": "on the Android phone"},
+  "room.device.mac.on": {"ru": "на Mac", "en": "on the Mac"},
+  "room.device.windows.on": {"ru": "на компьютере с Windows", "en": "on the Windows PC"},
+  "room.device.linux.on": {"ru": "на компьютере с Linux", "en": "on the Linux PC"},
+  "room.device.chromebook.on": {"ru": "на Chromebook", "en": "on the Chromebook"},
+  "room.device.other.on": {"ru": "на другом устройстве", "en": "on the other device"},
+  "room.device.unknown.on": {"ru": "на другом устройстве", "en": "on the other device"},
+  // Taking the lecture over (LectureView's banner, ConsoleView's notice, takeover.ts).
+  "room.takeover.onConsole": {"ru": "{device}, пульт", "en": "{device}, console"},
+  "room.takeover.seconds": {"ru": "{n} с", "en": "{n} s"},
+  "room.takeover.minutes": {"ru": "{n} мин", "en": "{n} min"},
+  "room.takeover.hours": {"ru": "{n} ч", "en": "{n} h"},
+  "room.takeover.leadsSelfFrom": {"ru": "Лекцию ведёт {name} — с другого устройства ({device})", "en": "{name} is presenting — from another device ({device})"},
+  "room.takeover.leadsSelf": {"ru": "Лекцию ведёт {name} — с другого устройства", "en": "{name} is presenting — from another device"},
+  "room.takeover.leadsFrom": {"ru": "Лекцию ведёт {name} · {device}", "en": "{name} is presenting · {device}"},
+  "room.takeover.leads": {"ru": "Лекцию ведёт {name}", "en": "{name} is presenting"},
+  "room.takeover.online": {"ru": "в сети", "en": "online"},
+  "room.takeover.away": {"ru": "не в сети {ago}", "en": "offline for {ago}"},
+  "room.takeover.acted": {"ru": "последнее действие {ago} назад", "en": "last action {ago} ago"},
+  "room.takeover.page": {"ru": "страница {n}", "en": "page {n}"},
+  "room.takeover.sheet": {"ru": "чистый лист", "en": "blank sheet"},
+  "room.takeover.take": {"ru": "Перехватить лекцию", "en": "Take over the lecture"},
+  "room.takeover.takeShort": {"ru": "Перехватить", "en": "Take over"},
+  "room.takeover.takeSure": {"ru": "Да, перехватить", "en": "Yes, take over"},
+  "room.takeover.watch": {"ru": "Смотреть как зал", "en": "Watch as the hall"},
+  "room.takeover.unwatch": {"ru": "Показать, кто ведёт", "en": "Show who is presenting"},
+  "room.takeover.hintSelf": {"ru": "Пульт {on} перестанет управлять страницами; ручка и заметки переедут сюда.", "en": "The console {on} will stop turning pages; the pen and the notes move here."},
+  "room.takeover.hintOther": {"ru": "{name} перестанет управлять страницами и увидит, что лекцию перехватили. Нажмите ещё раз, чтобы перехватить.", "en": "{name} will stop turning pages and will see the lecture was taken over. Press again to take over."},
+  "room.takeover.hintOtherIdle": {"ru": "{name} перестанет управлять страницами и увидит, что лекцию перехватили.", "en": "{name} will stop turning pages and will see the lecture was taken over."},
+  "room.takeover.hintAway": {"ru": "Ведущий не в сети — пульт перейдёт сразу, ждать не нужно.", "en": "The presenter is offline — the console moves at once, no waiting."},
+  "room.takeover.offline": {"ru": "Нет связи. Перехватить можно, когда связь вернётся.", "en": "Offline. You can take over once the connection is back."},
+  "room.takeover.turnedBy": {"ru": "страницы листают {on}", "en": "pages turned {on}"},
+  "room.takeover.turnedByName": {"ru": "страницы листает {name}", "en": "pages turned by {name}"},
+  "room.takeover.next": {"ru": "дальше {n}", "en": "next {n}"},
+  "room.takeover.taken": {"ru": "Лекцию перехватили", "en": "The lecture was taken over"},
+  "room.takeover.takenBody": {"ru": "Вы можете смотреть или вернуть пульт себе", "en": "You can watch, or take the console back"},
+  "room.takeover.giveBack": {"ru": "Вернуть пульт", "en": "Take it back"},
+  "room.takeover.watchOnly": {"ru": "Смотреть", "en": "Watch"},
+  "room.takeover.takenInk": {"ru": "Линию, которую вы вели, сохранили до момента передачи.", "en": "The line you were drawing was kept up to the moment of the hand-over."},
+  "room.takeover.leadsRail": {"ru": "Ведёт", "en": "Presenting"},
+  "room.takeover.grabSelf": {"ru": "Лекцию сейчас ведёте вы — {on}. Вести отсюда? Страница и чернила сохранятся.", "en": "You are presenting this lecture {on}. Present from here instead? The page and the ink stay."},
+  "room.takeover.grabAway": {"ru": "{name} не в сети {ago}. Взять пульт? Страница и чернила сохранятся.", "en": "{name} has been offline for {ago}. Take the console? The page and the ink stay."},
+  "room.takeover.grabHere": {"ru": "Вести отсюда", "en": "Present from here"},
+  "room.takeover.youElsewhere": {"ru": "Вы · другое устройство", "en": "You · another device"},
   "room.oracle.asker": {
     "ru": "спрашивает {name}",
     "en": "asked by {name}"

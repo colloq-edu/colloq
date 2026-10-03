@@ -19,7 +19,7 @@ import type {
   KernelStatus,
 } from './notebook'
 export type { CellLock, CouncilSettings } from './notebook'
-import type { InkStroke, LectureState } from './lecture'
+import type { InkStroke, LectureDevice, LectureState } from './lecture'
 
 export type ParticipantRole = 'host' | 'participant'
 
@@ -620,8 +620,29 @@ export type ControlClientMessage =
    * kind of class. With the shared screen everyone looks at the document on
    * their own and is free to run ahead; a lecture has ONE projection the hall
    * sees, and its page is moved by the presenter.
+   *
+   * `device` names where the press came from, so the room can say "from the
+   * iPad" rather than only whose name is on the lecture.
    */
-  | { t: 'lecture:start'; file: string }
+  | { t: 'lecture:start'; file: string; device?: LectureDevice }
+  /**
+   * Take the console of a running lecture: page, ink and clock stay.
+   *
+   * Never a start. `lecture:start` used to double as the take-over, and a
+   * press queued without a connection restarted a lecture that had ended
+   * meanwhile, for the whole hall, or silently took the console from whoever
+   * had taken it in between. So this message names what it expects to find
+   * (`from` holding the lecture on `file` that began at `startedAt`) and the
+   * server refuses in words when the room has moved on; the tab never queues
+   * it offline (session.svelte.ts · DISCARDED_OFFLINE).
+   */
+  | { t: 'lecture:take'; file: string; from: string; startedAt: number; device?: LectureDevice }
+  /**
+   * What this connection is: the device and whether it is the console
+   * screen. Sent on every open and when the tab moves between the room and
+   * the console, so "presented from the iPad" follows the hand that acts.
+   */
+  | { t: 'device'; device: LectureDevice }
   | { t: 'lecture:stop' }
   | { t: 'lecture:page'; page: number }
   /** A black screen: turns off the projection, leaving the page on the presenter's console. */
@@ -641,6 +662,19 @@ export type ControlClientMessage =
       width: number
       /** Pairs of fractions: x0, y0, x1, y1 … */
       points: number[]
+      /**
+       * Where in the stroke these numbers start: how many of its numbers were
+       * handed over before this piece.
+       *
+       * Appends used to be tied to nothing, and a resend after a slow echo
+       * (TCP does not lose frames, it delays them) was appended a second time:
+       * the hall's copy got a straight line drawn back across the slide. With
+       * a position the server drops what it already has and asks for what it
+       * is missing (`ink:need`). Absent: an old tab, appended as before.
+       */
+      from?: number
+      /** The first piece's id when this stroke continues one motion (`InkStroke.group`). */
+      group?: string
     }
   | { t: 'ink:undo'; page: number }
   /**
@@ -653,7 +687,23 @@ export type ControlClientMessage =
    * down on, and in the middle of a lecture those are two different gestures,
    * not one with two buttons.
    */
-  | { t: 'ink:erase'; page: number; id: string }
+  | {
+      t: 'ink:erase'
+      page: number
+      id: string
+      /**
+       * One sweep of the eraser: every stroke it takes carries the same name,
+       * so that Undo brings the whole sweep back at once rather than one
+       * stroke per press.
+       */
+      gesture?: string
+      /**
+       * Take back a stroke the console started by mistake (the palm that
+       * landed a moment before the pen) rather than erase it: it leaves no
+       * trace in the page's history, and Undo does not bring it back.
+       */
+      retract?: boolean
+    }
   | { t: 'ink:clear'; page?: number }
   /**
    * Ask for the ink of ONE page.
@@ -700,7 +750,22 @@ export type ControlClientMessage =
    * byte in them is cheaper than one more state that can be missed and drift
    * apart.
    */
-  | { t: 'laser'; page: number; x: number; y: number; shape?: 'dot' | 'line' }
+  | {
+      t: 'laser'
+      page: number
+      /** The latest position: what a frame without samples is read by. */
+      x: number
+      y: number
+      shape?: 'dot' | 'line'
+      /**
+       * Which press this is. A new number is a new shape: a hall that missed
+       * the "off" between two presses starts a new shape instead of drawing a
+       * straight line from the old spot to the new one.
+       */
+      mark?: number
+      /** Every sample since the previous frame: `x, y, t` triples (lecture.ts · LaserSamples). */
+      pts?: number[]
+    }
   | { t: 'laser:off' }
   /**
    * What to complete at this place in the code — the cell editor asks the
@@ -956,7 +1021,24 @@ export type ControlServerMessage =
    * restart for its own owner. Presence of a staff cookie decides it, and this
    * is how the browser is told.
    */
-  | { t: 'role'; role: ParticipantRole }
+  | {
+      t: 'role'
+      role: ParticipantRole
+      /**
+       * This connection's staff account as the same opaque per-room key the
+       * lecture carries (`LectureState.byPerson`), or absent when the
+       * connection has none: how a second browser of the same teacher knows
+       * the presenter is itself.
+       */
+      person?: string
+    }
+  /**
+   * The participants in this room that are this connection's own staff
+   * account right now: the same teacher's other browsers. Sent by the server
+   * (it alone has seen the cookies), so the people list can say "you,
+   * another device" without trusting what a tab puts into its presence.
+   */
+  | { t: 'person:devices'; ids: string[] }
   | { t: 'terminal'; status: TerminalStatus }
   /** @param book whose news this is; without the field — the room's notebook. */
   | { t: 'kernel'; status: KernelStatus; book?: string }
@@ -1086,8 +1168,23 @@ export type ControlServerMessage =
    * for.
    */
   | { t: 'ink:pages'; pages: number[] }
-  /** New points. A stroke with a known name is extended, an unknown one is created. */
-  | { t: 'ink:add'; stroke: InkStroke }
+  /**
+   * New points. A stroke with a known name is extended, an unknown one is
+   * created.
+   *
+   * `from` is where these points start in the server's stroke. A tab whose
+   * copy is shorter than that missed a frame (the server skips stream frames
+   * for a socket that is far behind) and asks for the page again instead of
+   * joining the pieces with a chord; a longer copy keeps only the new tail.
+   */
+  | { t: 'ink:add'; stroke: InkStroke; from?: number }
+  /**
+   * To the sender only: the server has `have` numbers of this stroke, and the
+   * piece that just came starts further on. Something in between was lost
+   * (a frame handed to a socket that died), and the console resends from
+   * `have`.
+   */
+  | { t: 'ink:need'; page: number; id: string; have: number }
   | { t: 'ink:drop'; page: number; id: string }
   | { t: 'ink:clear'; page: number | null }
   /**
@@ -1118,7 +1215,20 @@ export type ControlServerMessage =
    * and at a second teacher's lecture the pointer turned out blue — that is,
    * indistinguishable from the ink.
    */
-  | { t: 'laser'; at: { page: number; x: number; y: number; shape: 'dot' | 'line' } | null }
+  | {
+      t: 'laser'
+      at: {
+        page: number
+        /** The latest position, for a tab that does not read the samples. */
+        x: number
+        y: number
+        shape: 'dot' | 'line'
+        /** Which press: a new number is a new shape. */
+        mark?: number
+        /** The samples, in order, as `x, y, t` triples on the presenter's clock. */
+        pts?: number[]
+      } | null
+    }
   /**
    * Council: one's own attempt — to one person.
    *

@@ -178,10 +178,20 @@
     else reveal(place)
   }
 
+  /**
+   * This teacher in another browser, as the server vouched (session ·
+   * myDevices): a second participant with the same staff account.
+   */
+  function elsewhere(person: Person): boolean {
+    return !person.isSelf && person.user.id !== session.me.id && session.myDevices.includes(person.user.id)
+  }
+
   /** Who the person is, instead of what they are doing; and the teacher tag. */
   function badgeFor(person: Person): string | null {
     const host = person.user.role === 'host'
     if (person.isSelf) return host ? tr('room.ui.674') : tr('room.ui.544')
+    // The same teacher in another browser: not a second person with the same name.
+    if (elsewhere(person)) return tr('room.takeover.youElsewhere')
     return host ? tr('room.ui.675') : null
   }
 </script>
@@ -242,7 +252,7 @@
         </span>
         <!-- Who you are outranks what you are doing: your own row and a host's
              carry the label, everyone else's carries the live line. -->
-        {#if badge && (person.isSelf || !activity)}
+        {#if badge && (person.isSelf || !activity || elsewhere(person))}
           <span class="text-2xs font-semibold text-accent-text">
             {badge}
           </span>

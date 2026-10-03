@@ -26,6 +26,8 @@ import WS from 'ws'
 const HEADED = process.argv.includes('--headed')
 const SELECTION_ONLY = process.argv.includes('--cell-selection-only')
 const OUTBOX_ONLY = process.argv.includes('--oracle-outbox-only')
+// Two browsers of one teacher: the second takes the lecture over (scripts/takeover-check.mts).
+const TAKEOVER_ONLY = process.argv.includes('--takeover-only')
 // Ports can be overridden from the environment — to debug the stand itself
 // while a full run goes on the regular ones.
 const PORT = Number(process.env.UI_CHECK_PORT ?? 3891)
@@ -75,6 +77,8 @@ function samplePdf(pages = 3): string {
 
 mkdirSync(path.join(root, 'workspace', ROOM), { recursive: true })
 writeFileSync(path.join(root, 'workspace', ROOM, 'lecture.pdf'), samplePdf(), 'latin1')
+// A second deck: switching the lecture document mid-class is checked on it.
+writeFileSync(path.join(root, 'workspace', ROOM, 'second.pdf'), samplePdf(2), 'latin1')
 /*
  * The image is real, so that the browser really decodes it.
  *
@@ -101,7 +105,9 @@ process.env.NODE_ENV = 'test'
 process.env.KERNEL_BACKEND = 'test'
 process.env.KERNEL_ISOLATION = 'off'
 if (SELECTION_ONLY || OUTBOX_ONLY) process.env.UI_LANGUAGE = 'en'
-process.env.STATIC_DIR = path.resolve('web/dist')
+// A build elsewhere can be checked without touching web/dist: several
+// agents and the owner's own `make dev` share one tree.
+process.env.STATIC_DIR = process.env.CHECK_STATIC_DIR ?? path.resolve('web/dist')
 /*
  * The Oracle is "configured" but goes nowhere: the key is made up, the address
  * is known to be dead. The check asks no questions; the key is needed exactly
@@ -322,8 +328,11 @@ async function enter(page: Tab, name: string): Promise<void> {
       `set.call(i,${JSON.stringify(name)}); i.dispatchEvent(new Event('input',{bubbles:true})); return 1`,
   )
   await wait(300)
+  // The join button speaks the room's language: "Войти на занятие" on a Russian
+  // instance, "Join…" on an English one. Matching only /join/ left the stand at
+  // the door after the strings were translated.
   await page.js(
-    "const b=[...document.querySelectorAll('button')].find(x=>/join/i.test(x.textContent||'')); b&&b.click(); return 1",
+    "const b=[...document.querySelectorAll('button')].find(x=>/join|войти/i.test(x.textContent||'')); b&&b.click(); return 1",
   )
   await wait(3500)
 }
@@ -343,6 +352,23 @@ await host.send('Network.setCookie', {
 })
 await host.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/s/${ROOM}` })
 await enter(host, 'Ада')
+
+if (TAKEOVER_ONLY) {
+  const { checkTakeover } = await import('./takeover-check.mts')
+  const ok = await checkTakeover({
+    host,
+    tab,
+    cdp,
+    port: PORT,
+    room: ROOM,
+    cookie: { name: STAFF_COOKIE, value: cookieValue },
+    wait,
+    until,
+    enter,
+    shots: process.env.TAKEOVER_SHOTS ?? path.join(root, 'shots'),
+  })
+  process.exit(ok ? 0 : 1)
+}
 
 if (SELECTION_ONLY) {
   const { checkCellSelection } = await import('./cell-selection-check.mts')
@@ -529,14 +555,22 @@ check(
   ),
 )
 
+/*
+ * The close button of the lecture.pdf tab. Its title depends on what the tab
+ * is ("Закрыть", "Убрать документ с общего экрана", …) and is followed by
+ * ": lecture.pdf"; the stand used to look for a label that no longer exists.
+ */
+const closeTab = (name: string) =>
+  `[...document.querySelectorAll('[aria-label$=${JSON.stringify(`: ${name}`)}]')].find(b=>/^(Закрыть|Убрать|Вернуться)/.test(b.getAttribute('aria-label')||''))`
+const closeLecturePdf = closeTab('lecture.pdf')
 /* There has to be a way to close the document — for the room, not only for oneself. */
 check(
-  (await host.js('return !!document.querySelector(\'[aria-label="Закрыть lecture.pdf"]\')')) ===
+  (await host.js(`return !!${closeLecturePdf}`)) ===
     true,
   'the document can be closed',
   'a button on the tab',
 )
-await host.js('document.querySelector(\'[aria-label="Закрыть lecture.pdf"]\').click(); return 1')
+await host.js(`${closeLecturePdf}.click(); return 1`)
 await until(
   host,
   'document.querySelectorAll("canvas").length === 0',
@@ -667,7 +701,7 @@ check(
 )
 
 /* A tab closes for oneself and touches nobody else. */
-await student.js(`document.querySelector('[aria-label="Закрыть train.py"]').click(); return 1`)
+await student.js(`${closeTab('train.py')}.click(); return 1`)
 await wait(500)
 check(
   (await student.js(`return !document.querySelector('.cm-file .cm-content')`)) === true,
@@ -871,7 +905,7 @@ check(
 const pageWidth = `Math.round(document.querySelector('[data-page="1"]').getBoundingClientRect().width)`
 const wasWide = (await host.js(`return ${pageWidth}`)) as number
 await host.js(
-  `[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Крупнее').click(); return 1`,
+  `[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Крупнее')?.click(); return 1`,
 )
 await wait(600)
 check(
@@ -887,7 +921,7 @@ check(
 
 /* A press on the percentage returns to "fit width" — the only zoom that needs no choice. */
 await host.js(
-  `[...document.querySelectorAll('button')].find(b=>(b.title||'')==='По ширине').click(); return 1`,
+  `[...document.querySelectorAll('button')].find(b=>(b.title||'')==='По ширине')?.click(); return 1`,
 )
 await wait(600)
 check(
@@ -907,7 +941,7 @@ check(
   'not there',
 )
 await host.js(
-  `[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Полоса страниц').click(); return 1`,
+  `[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Полоса страниц')?.click(); return 1`,
 )
 await until(host, `!!document.querySelector('[data-rail]')`, 'the strip opened')
 check(
@@ -1009,7 +1043,7 @@ check(
 
 /* The presenter turns the page — it arrives for everyone. */
 await host.js(
-  `[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Следующая страница').click(); return 1`,
+  `[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Следующая страница')?.click(); return 1`,
 )
 const onSecond = `[...document.querySelectorAll('span')].some(s=>/^2 \\/ 3$/.test((s.textContent||'').trim()))`
 await until(student, onSecond, 'the page reached the student')
@@ -1060,6 +1094,21 @@ const strokeOn = (page: Tab) =>
       `let n=0; for(let i=3;i<d.length;i+=4) if(d[i]>16) n+=1; return n`,
   )
 check(((await strokeOn(student)) as number) <= 0, 'before the stroke the page is clean', 'empty')
+/*
+ * The pen waits for the picture: right after a page turn the sheet still
+ * shows the previous slide until the new one renders, and a stroke then would
+ * land on the new page over the old picture (LecturePage · `onshown`). A
+ * background tab renders slowly (its timers are throttled), so the stand
+ * brings the presenter forward and waits for the input layer to come alive,
+ * as a person would wait for the slide to appear.
+ */
+await host.send('Page.bringToFront')
+await until(
+  host,
+  `!!document.querySelector('.ink-input')?.className.includes('pointer-events-auto')`,
+  'the presenter pen is live on the new page',
+  8000,
+)
 
 /*
  * The synthetic pen aims at the INPUT LAYER, not at a canvas.
@@ -1084,7 +1133,13 @@ await until(student, `(async()=>{const c=document.querySelector('canvas.ink-dry'
   `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
   `for(let i=3;i<d.length;i+=4) if(d[i]>16) return true; return false})()`, 'the stroke reached the student')
 const inked = (await strokeOn(student)) as number
-check(inked > 0, "the presenter's stroke appears for the student", `${inked} painted pixels`)
+check(
+  inked > 0,
+  "the presenter's stroke appears for the student",
+  `${inked} painted pixels · presenter input layer ${await host.js(
+    `return document.querySelector('.ink-input')?.className.includes('pointer-events-auto') ? 'live' : 'not live'`,
+  )}`,
+)
 
 /*
  * The pointer: press and HOLD.
@@ -1251,19 +1306,19 @@ const pressedIs = (aria: string) =>
  * seat in the audience.
  */
 await host.js(
-  `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').startsWith('Ссылка, по которой'));` +
+  `const b=[...document.querySelectorAll('button')].find(x=>/^(Ссылка, по которой|Открыть пульт)/.test(x.title||''));` +
     `if(!b) throw new Error('no "Пульт" button'); b.click(); return 1`,
 )
-await until(host, `!!document.querySelector('[aria-label="Пульт на планшет"]')`, 'the console link is ready')
+await until(host, `!!document.querySelector('[aria-label="Пульт на планшете"]')`, 'the console link is ready')
 const consoleLink = (await host.js(
-  `return document.querySelector('[aria-label="Пульт на планшет"] .select-all')?.textContent?.trim() ?? ''`,
+  `return document.querySelector('[aria-label="Пульт на планшете"] .select-all')?.textContent?.trim() ?? ''`,
 )) as string
 check(
   consoleLink.includes(`/s/${ROOM}/t/`),
   'the presenter is given the console link',
   consoleLink ? consoleLink.slice(0, 34) + '…'
     : await host.js(
-        `return (document.querySelector('[aria-label="Пульт на планшет"]')?.textContent||'').trim().slice(0,120)`,
+        `return (document.querySelector('[aria-label="Пульт на планшете"]')?.textContent||'').trim().slice(0,120)`,
       ),
 )
 
@@ -1513,8 +1568,11 @@ check(
 await escape()
 await pult.js(press(PULT.pen))
 await wait(200)
-await pult.js(press(PULT.notes))
-await wait(500)
+/* The notes column opens by default now: open it only if a run before folded it. */
+if ((await pult.js(`return ${pressedIs(PULT.notes)}`)) !== 'true') {
+  await pult.js(press(PULT.notes))
+  await wait(500)
+}
 // The notes on the console have no input field at all — they are pinned (see §9 below).
 const notesOpen = (await pult.js(`return !!document.querySelector('[data-pult-notes] .pult-prompt')`)) === true
 if (!notesOpen) absent.push('notes sheet [data-pult-notes]')
@@ -1771,11 +1829,11 @@ if (hall >= 0) {
 }
 
 /*
- * In landscape the notes are a sliding sheet over the lower part of the page:
- * the lecture sheet takes up the whole rest of the screen, and there is no
- * permanent strip under it any more. The "Notes" key on the rail raises it and
- * holds `aria-pressed`; above, the sheet has already been opened by the roll
- * call of controls — here it is checked that it closes and opens again.
+ * In landscape the notes are a column beside the slide, never over it: the
+ * slide refits to what is left. The "Notes" key on the rail folds and opens
+ * it and holds `aria-pressed`; above, the column has already been opened by
+ * the roll call of controls — here it is checked that it closes and opens
+ * again, and that open it does not cover the sheet.
  */
 await pult.js(press(PULT.notes))
 await wait(400)
@@ -1787,6 +1845,18 @@ check(
 )
 await pult.js(press(PULT.notes))
 await wait(500)
+check(
+  (await pult.js(
+    `const n=document.querySelector('[data-pult-notes]')?.getBoundingClientRect();` +
+      `const c=document.querySelector('canvas.ink-wet')?.getBoundingClientRect();` +
+      `return !!n&&!!c&&(n.left>=c.right-0.5||n.right<=c.left+0.5)`,
+  )) === true,
+  'the notes column lies beside the sheet, not over it',
+  await pult.js(
+    `const n=document.querySelector('[data-pult-notes]')?.getBoundingClientRect();const c=document.querySelector('canvas.ink-wet')?.getBoundingClientRect();` +
+      `return n&&c?'notes x='+Math.round(n.left)+'…'+Math.round(n.right)+' · sheet x='+Math.round(c.left)+'…'+Math.round(c.right):'missing'`,
+  ),
+)
 check(
   (await pult.js(`return !!document.querySelector('[data-pult-notes] .pult-prompt')`)) === true &&
     (await pult.js(`return ${pressedIs(PULT.notes)}`)) === 'true',
@@ -1810,11 +1880,18 @@ check(
     `return 'input fields '+document.querySelectorAll('[data-pult-notes] textarea, [data-pult-notes] [contenteditable]').length`,
   ),
 )
+/*
+ * And the reader selects nothing. It used to be the one selectable place on
+ * the console, and that was right while it was a field; as a reader in the
+ * notes column it lies where a right hand's palm rests while writing on the
+ * slide, and a long touch on selectable text opens WebKit's selection with a
+ * loupe over the formula being written.
+ */
 check(
   (await pult.js(
     `const t=document.querySelector('[data-pult-notes] .pult-prompt');return t?getComputedStyle(t).userSelect:'missing'`,
-  )) !== 'none',
-  'the notes text can be selected',
+  )) === 'none',
+  'the notes text cannot be selected by a resting palm',
   await pult.js(
     `const t=document.querySelector('[data-pult-notes] .pult-prompt');return 'user-select='+(t?getComputedStyle(t).userSelect:'missing')`,
   ),
@@ -1828,25 +1905,29 @@ check(
   'only the lecture',
 )
 /*
- * THE "MORE" SHEET — AND THE FACT THAT IT OPENS FROM THE NOTES HEADER.
+ * THE "MORE" SHEET — AND THE FACT THAT IT OPENS WITHOUT THE NOTES.
  *
  * The load of the removed strip lives here: full screen, "Change document",
- * "Left hand", a note on screen sleep and "End lecture". There is nowhere to
- * open this from except "⋯" in the header of the notes strip, and the place of
- * the button is part of the contract: the notes header starts UNDER the sheet.
- * A button that moved back to the top is the strip come back, only made of one
- * glyph.
+ * "Left hand", a note on screen sleep and "End lecture". "⋯" used to live
+ * only in the header of the notes sheet, and with the notes closed ending
+ * the lecture meant guessing to open "Notes" first. It is on the rail now,
+ * under the fader, and the check folds the notes before looking for it: the
+ * key must be reachable either way, and never at the top of the screen as a
+ * strip of its own.
  */
+if ((await pult.js(`return ${pressedIs(PULT.notes)}`)) === 'true') {
+  await pult.js(press(PULT.notes))
+  await wait(300)
+}
 const morePlace = (await pult.js(
   `const b=document.querySelector('[aria-label=${JSON.stringify(PULT.more)}]');` +
     `if(!b) return 'no "Ещё" button';` +
-    `const notes=document.querySelector('[data-pult-notes]');` +
-    `if(!notes) return 'no notes sheet';` +
-    `if(!notes.contains(b)) return 'outside the notes sheet';` +
-    `const r=b.getBoundingClientRect(),n=notes.getBoundingClientRect();` +
-    `return r.top-n.top<=48 ? 'in the notes header' : 'in the notes sheet, but '+Math.round(r.top-n.top)+'px below the header'`,
+    `const rail=document.querySelector('.pult-rail');` +
+    `if(!rail||!rail.contains(b)) return 'not on the rail';` +
+    `const r=b.getBoundingClientRect();` +
+    `return r.top>=0&&r.bottom<=innerHeight&&r.width>=40&&r.height>=40 ? 'on the rail' : 'on the rail, but '+Math.round(r.width)+'×'+Math.round(r.height)+' at y='+Math.round(r.top)`,
 )) as string
-check(morePlace === 'in the notes header', '"More" lives in the header of the notes sheet', morePlace)
+check(morePlace === 'on the rail', '"More" is on the rail, notes folded or not', morePlace)
 
 await pult.js(press(PULT.more))
 await wait(400)
@@ -1876,9 +1957,11 @@ for (const type of ['keyDown', 'keyUp'] as const) {
 }
 await until(pult, `!/закончить лекц/i.test(document.body.innerText||'')`, 'the "More" sheet closed', 4000)
 
-/* The notes sheet folds: further on the lecture sheet itself is measured. */
-await pult.js(press(PULT.notes))
-await wait(400)
+/* The notes column folds: further on the lecture sheet itself is measured. */
+if ((await pult.js(`return ${pressedIs(PULT.notes)}`)) === 'true') {
+  await pult.js(press(PULT.notes))
+  await wait(400)
+}
 
 /*
  * THE SHEET OVER THE WHOLE REST OF THE SCREEN — on three tablets.
@@ -2016,6 +2099,54 @@ async function pressUntil(key: string, seen: string, what: string): Promise<bool
 await wait(400)
 check(await pressUntil('ArrowRight', onThird, 'the arrow on the projection went on to the third page'), 'arrows on the projection turn the lecture pages', 'forward: 3 / 3')
 check(await pressUntil('ArrowLeft', onSecond, 'the arrow on the projection went back to the second page'), 'and back too', 'back: 2 / 3')
+
+/*
+ * A clicker's other keys. Its "slideshow" key sends F5 and Escape in turn,
+ * its "black screen" key sends '.'. F5 used to reload the projection in front
+ * of the hall and the following Escape closed it; '.' did nothing.
+ */
+const beamKey = (init: string) =>
+  beam.js(
+    `const e=new KeyboardEvent('keydown',Object.assign({bubbles:true,cancelable:true},${init}));` +
+      `document.body.dispatchEvent(e); return e.defaultPrevented`,
+  )
+check(
+  (await beamKey(`{key:'F5',code:'F5'}`)) === true,
+  'F5 on the projection does not reload it',
+  'the reload is prevented',
+)
+await beamKey(`{key:'Escape',code:'Escape'}`)
+await wait(200)
+const afterOneEscape = (await beam.js(
+  `return location.pathname + ' · ' + ((document.body.textContent||'').includes('Esc ещё раз') ? 'hint' : 'no hint')`,
+)) as string
+check(
+  afterOneEscape === `/s/${ROOM}/screen · hint`,
+  'one Escape does not close the projection, it asks for a second',
+  afterOneEscape,
+)
+await wait(1800)
+const hintGone = (await beam.js(`return !(document.body.textContent||'').includes('Esc ещё раз')`)) === true
+check(hintGone, 'the Escape hint goes away by itself', hintGone ? 'gone' : 'still on screen')
+await beamKey(`{key:'.',code:'Period'}`)
+const periodDark = await until(student, `(document.body.textContent||'').includes('пауза')`, "the clicker's '.' blanked the hall", 6000)
+await beamKey(`{key:'.',code:'Period'}`)
+const periodBack = await until(student, `!(document.body.textContent||'').includes('пауза')`, "a second '.' brought the hall back", 6000)
+check(periodDark && periodBack, "the clicker's black-screen key ('.') blanks and restores", `${periodDark ? 'dark' : 'did not go dark'} → ${periodBack ? 'back' : 'stayed dark'}`)
+/*
+ * The setup hint ("click or F for fullscreen") lives for seconds, not for
+ * the whole lecture: a projection shared into a call is never full screen,
+ * and the hall would read that corner all class long.
+ */
+const hintOpacity = (await beam.js(
+  `const p=[...document.querySelectorAll('p')].find(n=>/во весь экран/.test(n.textContent||''));` +
+    `return p ? getComputedStyle(p).opacity : 'absent'`,
+)) as string
+check(
+  hintOpacity === '0' || hintOpacity === 'absent',
+  'the projection setup hint has faded by now',
+  `opacity ${hintOpacity}`,
+)
 await host.send('Page.bringToFront')
 
 /*
@@ -2091,7 +2222,10 @@ await until(pult, named(PULT.toSlide), 'the back-to-slide key appeared')
 await pult.js(press(PULT.toSlide))
 await beam.send('Page.bringToFront')
 await wait(300)
-await until(beam, `!${blankSheet}`, 'the projection returned to the slide')
+// Awaited before negating: `!` of the promise itself is always false, and
+// this wait used to give up every run while the projection was fine.
+const backOnSlide = await until(beam, `!(await ${blankSheet})`, 'the projection returned to the slide')
+check(backOnSlide, 'the projection returns from the blank sheet to the slide', backOnSlide ? 'the slide' : 'still blank')
 await host.send('Page.bringToFront')
 
 /* Pause darkens the projection, but not the console: the presenter keeps the page. */
@@ -2108,9 +2242,90 @@ check(
   'pause darkens the hall, and the presenter keeps the page',
   dimmed ? (hostKept ? 'yes' : 'the hall went dark, but the presenter has no page either') : 'the hall did not go dark',
 )
+/* The projector's black is pure black: the word is for screen readers only. */
+const beamWords = (await beam.js(
+  `return [...document.querySelectorAll('span,p,div')].filter(n=>n.children.length===0&&(n.textContent||'').trim()&&` +
+    `n.getBoundingClientRect().width>2&&getComputedStyle(n).opacity!=='0').map(n=>n.textContent.trim()).join(' | ')`,
+)) as string
+check(beamWords === '', 'the blanked projection shows the hall no words', beamWords || 'no words')
+/* And the students' own screens go dark with it: no page, no ink, no pointer. */
+const studentDark = await until(
+  student,
+  `(document.body.textContent||'').includes('пауза') && !document.querySelector('canvas.ink-dry')`,
+  "the student's screen went dark too",
+  6000,
+)
+check(studentDark, "pause darkens the students' screens too", studentDark ? 'dark' : 'the student still sees the slide')
 await host.js(
   `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Пауза').click(); return 1`,
 )
+
+/*
+ * Switching the document mid-lecture is not the end of the lecture.
+ *
+ * "More → Change document… → Start over" used to make the server say "the
+ * lecture is over" before the new one: the console toasted "Lecture ended"
+ * and flashed its picker, and the projection fell to its "waiting for a
+ * lecture" screen. Both are watched for while the lecture goes to the second
+ * deck and back.
+ */
+await beam.js(
+  `window.__waited=false;new MutationObserver(()=>{if((document.body.textContent||'').includes('Экран готов')) window.__waited=true})` +
+    `.observe(document.body,{subtree:true,childList:true,characterData:true});return 1`,
+)
+await pult.js(
+  `window.__ended=false;new MutationObserver(()=>{if((document.body.innerText||'').includes('Лекция закончена')) window.__ended=true})` +
+    `.observe(document.body,{subtree:true,childList:true,characterData:true});return 1`,
+)
+/** The hall is on page one of a deck with this many pages: "1 / N" in the audience bar. */
+const onFirstOf = (pages: number) =>
+  `[...document.querySelectorAll('span')].some(s=>/^1 \\/ ${pages}$/.test((s.textContent||'').trim()))`
+async function switchDeck(name: string, pages: number): Promise<boolean> {
+  await pult.send('Page.bringToFront')
+  if (!(await pult.js(`return ${named(PULT.more)}`))) await pult.js(press(PULT.notes))
+  await wait(300)
+  await pult.js(press(PULT.more))
+  await wait(400)
+  const steps = [
+    `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim().startsWith('Сменить документ'))`,
+    `[...document.querySelectorAll('button')].find(b=>!b.disabled&&(b.textContent||'').includes(${JSON.stringify(name)}))`,
+    `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Начать заново')`,
+  ]
+  for (const step of steps) {
+    const ok = (await pult.js(`const b=${step}; if(!b) return false; b.click(); return true`)) === true
+    if (!ok) return false
+    await wait(400)
+  }
+  return until(student, onFirstOf(pages), `the hall is on ${name}`, 10000)
+}
+const toSecond = await switchDeck('second.pdf', 2)
+await beam.send('Page.bringToFront')
+const beamOnSecond = await until(
+  beam,
+  `[...document.querySelectorAll('canvas')].some(c=>c.getBoundingClientRect().width>200)`,
+  'the projection drew the second deck',
+  10000,
+)
+const deckBack = await switchDeck('lecture.pdf', 3)
+const waited = (await beam.js(`return window.__waited`)) === true
+const ended = (await pult.js(`return window.__ended`)) === true
+check(
+  toSecond && deckBack && beamOnSecond && !waited && !ended,
+  'switching the document does not announce the end of the lecture',
+  `to second.pdf ${toSecond ? 'yes' : 'no'} · back ${deckBack ? 'yes' : 'no'} · projection drew ${beamOnSecond ? 'yes' : 'no'}` +
+    ` · projection fell to "waiting" ${waited ? 'YES' : 'no'} · console said "ended" ${ended ? 'YES' : 'no'}`,
+)
+await host.send('Page.bringToFront')
+await until(host, `[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='Закончить')`, 'the presenter bar is back', 8000)
+
+/* Two Escapes in a row do close the projection (this tab came by address: back to the room). */
+await beam.send('Page.bringToFront')
+await beamKey(`{key:'Escape',code:'Escape'}`)
+await wait(150)
+await beamKey(`{key:'Escape',code:'Escape'}`)
+const leftBeam = await until(beam, `location.pathname === '/s/${ROOM}'`, 'two Escapes left the projection', 4000)
+check(leftBeam, 'two Escapes in a row leave the projection', await beam.js(`return location.pathname`))
+await host.send('Page.bringToFront')
 
 /*
  * The end of the lecture returns everyone to the ordinary reader — on the
@@ -2156,7 +2371,7 @@ check(
 )
 for (const line of beam.trouble.slice(0, 3)) console.log(`  (projection) ${line}`)
 
-await host.js(`document.querySelector('[aria-label="Закрыть lecture.pdf"]')?.click(); return 1`)
+await host.js(`${closeLecturePdf}?.click(); return 1`)
 await wait(400)
 
 /*
@@ -2169,7 +2384,7 @@ await wait(400)
 await host.js(pressCell(0))
 await wait(300)
 const inkOnInk = await host.js(
-  `const cell=document.querySelector('[aria-label$="selected"]');` +
+  `const cell=document.querySelector('[aria-label$="selected"]');if(!cell) return 'no selected cell';` +
     `const span=[...cell.querySelectorAll('span')].find(s=>/^\\d\\d$/.test((s.textContent||'').trim()));` +
     `if(!span) return 'no number found';` +
     `const css=getComputedStyle(span);` +
@@ -2206,7 +2421,7 @@ check(
     `return (document.querySelector('img[alt="схема.gif"]')?.naturalWidth ?? 0) + 'px'`,
   ),
 )
-await host.js(`document.querySelector('[aria-label="Закрыть схема.gif"]')?.click(); return 1`)
+await host.js(`${closeTab('схема.gif')}?.click(); return 1`)
 await wait(300)
 
 /* There are no more quick actions in the Oracle panel. */
@@ -2219,7 +2434,7 @@ check(
 )
 
 /* A notebook can be closed too — its tab used to be eternal. */
-await host.js(`document.querySelector('[aria-label="Закрыть разбор.ipynb"]').click(); return 1`)
+await host.js(`${closeTab('разбор.ipynb')}.click(); return 1`)
 await wait(400)
 check(
   (await host.js(`return document.querySelectorAll('main').length`)) === 1,

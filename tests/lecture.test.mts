@@ -69,11 +69,9 @@ test('a lecture on a different document starts clean', () => {
 
 test('handing over the console changes hands and does not touch the lecture itself', () => {
   /*
-   * A second teacher has no other way to say "I will take over": the "take
-   * the console" button sends the same `lecture:start` for the same file. If
-   * it went into `startLecture`, a press in the fortieth minute would send the
-   * page back to the first one, erase all the markup and reset the clock — in
-   * front of everyone, on the projector.
+   * A take-over (`lecture:take`) that went into `startLecture` would send
+   * the page back to the first one, erase all the markup and reset the
+   * clock, in the fortieth minute, in front of everyone, on the projector.
    */
   const id = room()
   turnTo(id, 14)
@@ -225,8 +223,8 @@ test('undo removes the last stroke, and only on its own page', () => {
   addInk(id, { id: 'b', page: 1, color: '#111', width: 0.004, points: [0, 0] })
   addInk(id, { id: 'c', page: 2, color: '#111', width: 0.004, points: [0, 0] })
 
-  assert.equal(undoInk(id, 1), 'b')
-  assert.equal(undoInk(id, 1), 'a')
+  assert.deepEqual(undoInk(id, 1), { dropped: ['b'] })
+  assert.deepEqual(undoInk(id, 1), { dropped: ['a'] })
   assert.equal(undoInk(id, 1), null, 'there is nothing to undo on an empty page')
   assert.equal(inkOf(id).length, 1)
 })

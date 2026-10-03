@@ -8,6 +8,7 @@ import { ALLOW_SCHEMA_DOWNGRADE, DATA_SCHEMA_VERSION } from './data-schema.js'
 import { snapshotBeforeSchemaRaise } from './db-snapshots.js'
 import { colorForId, type Participant, type SessionInfo } from '@shared/protocol'
 import { OPEN_ROOM, readRules, rulesAfterClass, type RoomRules } from '@shared/rules'
+import { MAX_NOTE_CHARS } from '@shared/lecture'
 
 // 0700 — one rule for everyone, see config.ensureDataDir: mkdirSync with a mode
 // does not change the mode of an existing directory, and the promise below did
@@ -1408,12 +1409,24 @@ export function notesOf(sessionId: string, file: string): Record<number, string>
   return out
 }
 
-/** An empty note is its absence, not a string of spaces. */
+/**
+ * An empty note is its absence, not a string of spaces.
+ *
+ * The ceiling is held HERE too, not only at the doors. A note longer than
+ * the editor may save used to get in through any path that skipped the
+ * socket's check, and then the first keystroke in the editor cut its tail
+ * off without a word. A refusal is thrown rather than the text trimmed: the
+ * callers check first and answer out loud, so this only ever fires on a path
+ * someone forgot to guard, and there it must fail loudly, not lose text.
+ */
 export function setNote(sessionId: string, file: string, page: number, text: string): void {
   const trimmed = text.trim()
   if (!trimmed) {
     dropNote.run(sessionId, file, page)
     return
+  }
+  if (trimmed.length > MAX_NOTE_CHARS) {
+    throw new RangeError(`note for ${file} p.${page} is ${trimmed.length} characters`)
   }
   upsertNote.run({
     session_id: sessionId,
@@ -1423,6 +1436,19 @@ export function setNote(sessionId: string, file: string, page: number, text: str
     updated_at: Date.now(),
   })
 }
+
+/**
+ * Many pages at once — a lecture script imported in one go.
+ *
+ * One transaction, so it is all or nothing: a script that stopped at slide
+ * 23 because slide 24 was refused would leave the deck half old, half new,
+ * with nothing on screen saying where the line runs.
+ */
+export const setNotes = db.transaction(
+  (sessionId: string, file: string, notes: ReadonlyMap<number, string>): void => {
+    for (const [page, text] of notes) setNote(sessionId, file, page, text)
+  },
+)
 
 /**
  * A file was renamed — the notes move after it, pushing out the tail at the

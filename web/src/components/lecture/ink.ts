@@ -146,3 +146,212 @@ export function forgetInkPages(): void {
   listed = null
   asked.clear()
 }
+
+/* ------------------------------------------------- positional appends */
+
+/**
+ * Lay a piece of a stroke onto the tab's copy BY POSITION. Returns the new
+ * ink, the same array when there was nothing new, or `null`: a gap.
+ *
+ * `from` is where the piece starts in the server's stroke (`ink:add`). Points
+ * used to be appended to whatever the tab had, and two things went wrong with
+ * that, both on the projector. A frame the server skipped for a socket that
+ * was far behind left a permanent hole, the next piece glued on with a chord;
+ * and a page fetched while pieces were still on the wire got those pieces a
+ * second time. Now a copy that already holds part of the piece keeps only the
+ * new tail, and a copy that is SHORTER than where the piece starts says so
+ * instead of drawing a line across the slide: the caller asks for the page
+ * again (`repairInkPage`).
+ *
+ * Without `from` (an older server) it appends as before.
+ */
+export function mergeInkPiece(
+  ink: InkStroke[],
+  piece: InkStroke,
+  from: number | undefined,
+): InkStroke[] | null {
+  const at = ink.findIndex((known) => known.id === piece.id)
+  const have = at === -1 ? 0 : ink[at].points.length
+  let points = piece.points
+  if (from !== undefined) {
+    if (from > have) return null
+    points = points.slice(have - from)
+    if (points.length === 0) return ink
+  }
+  if (at === -1) return [...ink, { ...piece, points: [...points] }]
+  const grown = { ...ink[at], points: [...ink[at].points, ...points] }
+  return [...ink.slice(0, at), grown, ...ink.slice(at + 1)]
+}
+
+/**
+ * How often one page may be asked for again to repair a gap. One question
+ * answers it, and the pieces still on the wire meanwhile would each ask
+ * again; a second later, if the answer was lost, asking once more is right.
+ */
+const REPAIR_EVERY_MS = 1000
+const repairs = new WeakMap<SessionState, Map<number, number>>()
+
+/** A piece did not fit (see `mergeInkPiece`): ask for the page whole, once a second at most. */
+export function repairInkPage(session: SessionState, page: number): void {
+  if (!session.connected) return
+  const asked = repairs.get(session) ?? new Map<number, number>()
+  repairs.set(session, asked)
+  const now = Date.now()
+  if (now - (asked.get(page) ?? Number.NEGATIVE_INFINITY) < REPAIR_EVERY_MS) return
+  asked.set(page, now)
+  session.send({ t: 'ink:page', page })
+}
+
+/** What the server is missing of one of our strokes (`ink:need`). */
+export interface InkNeed {
+  page: number
+  id: string
+  have: number
+}
+const needHearers = new WeakMap<SessionState, Set<(need: InkNeed) => void>>()
+
+/**
+ * Listen for `ink:need`. Returns the unsubscribe.
+ *
+ * The frame is parsed by the session, but only the ink layer holds the
+ * strokes it is about: the wet ones, not yet confirmed. A listener rather
+ * than a field: two frames in one tick must not overwrite each other.
+ */
+export function hearInkNeed(session: SessionState, hear: (need: InkNeed) => void): () => void {
+  const set = needHearers.get(session) ?? new Set()
+  needHearers.set(session, set)
+  set.add(hear)
+  return () => set.delete(hear)
+}
+
+/** Called by the session's parsing of `ink:need`. */
+export function inkNeeded(session: SessionState, need: InkNeed): void {
+  for (const hear of needHearers.get(session) ?? []) hear(need)
+}
+
+/* ---------------------------------------------------------- geometry */
+
+/** Whatever a path can be laid into: a canvas context or a `Path2D`. */
+export interface PathSink {
+  moveTo(x: number, y: number): void
+  lineTo(x: number, y: number): void
+  quadraticCurveTo(cx: number, cy: number, x: number, y: number): void
+}
+
+/**
+ * Lay the body of a curve through points: quadratic curves through the
+ * midpoints of the segments, from piece `from` up to the midpoint before the
+ * last point. Returns the piece to continue from.
+ *
+ * THE ONE PLACE WHERE A LINE'S SHAPE IS DECIDED, for ink and for the pointer
+ * alike. The caller ends the path with `lineTo` to the last point (the tail
+ * changes with every new sample, the body does not), and a body laid piece by
+ * piece is exactly the body laid whole: the pointer grows its path as samples
+ * come instead of rebuilding a thousand points every frame.
+ *
+ * The pointer used to have its own geometry: a Catmull–Rom refinement thinned
+ * to a hundred and twenty vertices by a stride, joined with straight lines.
+ * A long circle became a twenty-sided polygon whose corners jumped every time
+ * the stride changed: "a long line becomes a jagged polyline".
+ */
+export function layCurve(
+  sink: PathSink,
+  points: readonly number[],
+  count: number,
+  from: number,
+  px: number,
+  py: number,
+): number {
+  if (count < 1) return from
+  if (from === 0) {
+    sink.moveTo(points[0] * px, points[1] * py)
+    from = 1
+  }
+  for (let i = from; i < count - 1; i += 1) {
+    const cx = points[i * 2] * px
+    const cy = points[i * 2 + 1] * py
+    const mx = (cx + points[i * 2 + 2] * px) / 2
+    sink.quadraticCurveTo(cx, cy, mx, (cy + points[i * 2 + 3] * py) / 2)
+  }
+  return Math.max(from, count - 1)
+}
+
+/**
+ * Whether a stroke is one spot: every point within half a pixel of the first.
+ *
+ * A tap is never two coordinates on the wire: the lift adds its point, and a
+ * Pencil standing still keeps reporting pressure. Four identical numbers made
+ * a zero-length path, and a canvas draws nothing for that: the dot on an i
+ * showed under the pen and vanished with the echo, and in the hall with the
+ * next full repaint. Leaves at the first point that is not the spot, so a
+ * real line costs one comparison.
+ */
+export function isDot(points: readonly number[], px: number, py: number): boolean {
+  if (points.length < 2) return false
+  const x = points[0]
+  const y = points[1]
+  for (let i = 2; i + 1 < points.length; i += 2) {
+    if (Math.hypot((points[i] - x) * px, (points[i + 1] - y) * py) > 0.5) return false
+  }
+  return true
+}
+
+/* ----------------------------------------------------- the eraser */
+
+/**
+ * The eraser's reach on screen, in CSS px: the ring that is drawn and the
+ * area that erases are ONE number.
+ *
+ * The ring used to be a fixed sixteen pixels while the hit area was a share of
+ * the page width: in portrait (an 810 px sheet) a line clearly inside the
+ * ring, twelve pixels from its centre, survived the sweep. People look under
+ * the ring to see what it will take, so the ring must not lie.
+ */
+export const ERASER_PX = 16
+
+/**
+ * How close to a stroke's centreline the eraser takes it, in page widths: the
+ * ring, plus half the stroke's own thickness, since what the eye sees under
+ * the ring is the stroke's edge, not its centreline.
+ */
+export function eraserReach(strokeWidth: number, sheetWidth: number): number {
+  return ERASER_PX / Math.max(1, sheetWidth) + strokeWidth / 2
+}
+
+/* --------------------------------------------------- two-finger tap */
+
+/** One finger on the sheet, as the two-finger tap sees it. */
+export interface Tap {
+  pointer: number
+  x: number
+  y: number
+  down: number
+  up: number | null
+  moved: boolean
+}
+
+/** Two touches landing within this many ms count as "together". */
+export const TAP_TOGETHER_MS = 250
+/** Neither touch is held longer than this, and they lift within this of each other. */
+export const TAP_HOLD_MS = 300
+
+/**
+ * Whether two finished touches are a two-finger tap (undo).
+ *
+ * BOTH FINGERS ON THE GLASS AT ONCE, and that is the condition that was
+ * missing. Only the downs were compared, and a single finger tapping twice
+ * (the iOS habit of double-tap to zoom), or the edge of the resting hand
+ * touching the glass twice, read as two fingers: the last stroke vanished
+ * from the projector without a word. Now the second must land while the first
+ * is still down, the two must lift close together, and neither may be held:
+ * a palm does not do all of that while one writes.
+ */
+export function twoFingerTap(a: Tap, b: Tap): boolean {
+  const [first, second] = a.down <= b.down ? [a, b] : [b, a]
+  if (first.up === null || second.up === null) return false
+  if (first.moved || second.moved) return false
+  if (second.down - first.down > TAP_TOGETHER_MS) return false
+  if (second.down >= first.up) return false
+  if (Math.abs(first.up - second.up) > TAP_HOLD_MS) return false
+  return first.up - first.down <= TAP_HOLD_MS && second.up - second.down <= TAP_HOLD_MS
+}

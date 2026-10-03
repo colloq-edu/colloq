@@ -321,12 +321,12 @@ test('the eraser obeys the presenter and stays silent for everyone else', () => 
 
 test('a second teacher takes over the console without restarting the lecture', () => {
   /*
-   * The "take the console" button does not exist on the wire: it sends the
-   * same `lecture:start` for the same file. If that went into `startLecture`,
-   * a press in the fortieth minute would send the page back to the first,
-   * erase all the markup and reset the clock — and do it on the projector, in
-   * front of everyone. What is checked here is exactly the fork in `dispatch`:
-   * the handover itself is checked in lecture.test.mts.
+   * The take-over is its own message (`lecture:take`), never a start: a
+   * press in the fortieth minute that went into `startLecture` would send
+   * the page back to the first, erase all the markup and reset the clock,
+   * and do it on the projector, in front of everyone. The refusals around it
+   * (a lecture that ended, a console taken in between) are checked in
+   * lecture-take.test.mts; the handover itself in lecture.test.mts.
    */
   const id = room({})
   makeFile(id, 'l3.pdf', '%PDF-1.4')
@@ -337,8 +337,10 @@ test('a second teacher takes over the console without restarting the lecture', (
 
   const { ws } = socket()
   dispatch(ws, id, { sessionId: id, participantId: 'p_second', role: 'host' }, {
-    t: 'lecture:start',
+    t: 'lecture:take',
     file: 'l3.pdf',
+    from: 'p_first',
+    startedAt: began ?? 0,
   })
 
   assert.equal(lectureOf(id)?.by, 'p_second', 'the console did not change hands')

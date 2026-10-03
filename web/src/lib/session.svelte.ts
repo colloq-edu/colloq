@@ -25,9 +25,18 @@ import type {
   SessionInfo,
   TerminalStatus,
 } from '@shared/protocol'
-import type { InkStroke, LectureState } from '@shared/lecture'
+import type { InkStroke, LectureDevice, LectureState } from '@shared/lecture'
 import { readRules, type RoomRules } from '@shared/rules'
-import { inkedPages, noteInkedPages, replaceInkPage } from '@/components/lecture/ink'
+import {
+  inkedPages,
+  inkNeeded,
+  mergeInkPiece,
+  noteInkedPages,
+  repairInkPage,
+  replaceInkPage,
+} from '@/components/lecture/ink'
+import { laserArrived } from '@/components/lecture/laser'
+import { deviceKind } from './device'
 import { api } from './api'
 import { boardGone } from './board'
 import { collabBackoff, enqueueControl, OFFLINE_REASON, reconnectDelay } from './controls'
@@ -133,6 +142,16 @@ const DISCARDED_OFFLINE = new Set<ControlClientMessage['t']>([
    * twice already, and the rule has not changed once.
    */
   'define',
+  /*
+   * A take-over goes now or never. Queued, it reached the server after the
+   * lecture had ended (and used to restart it for the whole hall) or after a
+   * third teacher had taken the console; the server refuses those now, but a
+   * press the person made a minute ago and has forgotten should not even
+   * try. The console refuses it in words while offline (ConsoleView · grab).
+   */
+  'lecture:take',
+  // Sent again on every open (`#connectControl`): a queued copy is a stale one.
+  'device',
 ])
 
 /** The kernel's answer to a completion question — exactly what the editor shows. */
@@ -287,6 +306,31 @@ export class SessionState {
    * stopwatch of a running cell.
    */
   clockSkewMs = $state(0)
+  /**
+   * This connection's staff account as the room's opaque key (`role` frame),
+   * or `null` for someone in the room by its link only. Compared with
+   * `lecture.byPerson`: the same key on another participant is this very
+   * teacher in another browser, and the room says "you, from another device"
+   * instead of naming them as a stranger.
+   */
+  person = $state<string | null>(null)
+  /**
+   * The participants that are this same teacher in other browsers, as the
+   * server saw their cookies (`person:devices`). The people list names them
+   * "you, another device"; presence alone could be claimed by anyone.
+   */
+  myDevices = $state<string[]>([])
+  /**
+   * When this tab last heard the lecture's presenter act: a page, a stroke,
+   * the pointer. This browser's clock.
+   *
+   * Not reactive on purpose: the pen sends twenty-five frames a second, and
+   * the only reader (the take-over banner's "last action 12 s ago") ticks
+   * once a second on its own.
+   */
+  lectureHeardAt = 0
+  /** Whether this tab shows the lecture console (`/pult`) rather than the room. */
+  #onConsole = false
   /*
    * Reactive, because the role in it can be corrected after the fact: the
    * control socket reports the role the SERVER will act on, which is not
@@ -814,6 +858,8 @@ export class SessionState {
        * moment.
        */
       this.#askNotes()
+      // What this connection is: "presented from the iPad" follows it.
+      this.#sayDevice()
       const beat = () => {
         if (socket.readyState !== WebSocket.OPEN) return
         this.#pingSentAt = Date.now()
@@ -1002,11 +1048,14 @@ export class SessionState {
          * draws the Host badge on everyone else's screen. Setting the field
          * alone left a stale badge sitting there for the whole seminar.
          */
+        this.person = message.person ?? null
         if (this.me.role !== message.role) {
           this.me.role = message.role
           const current = this.awareness.getLocalState()?.user as AwarenessUser | undefined
           if (current) this.awareness.setLocalStateField('user', { ...current, role: message.role })
         }
+      } else if (message.t === 'person:devices') {
+        this.myDevices = message.ids
       } else if (message.t === 'pong') {
         /*
          * A correction to the browser's clock, taken from the round trip.
@@ -1087,12 +1136,16 @@ export class SessionState {
       else if (message.t === 'lecture') {
         const before = this.lecture
         this.lecture = message.state
+        if (message.state && (message.state.page !== before?.page || message.state.blank !== before?.blank)) {
+          this.lectureHeardAt = Date.now()
+        }
         // The lecture has ended — and its ink with it: the server has already
         // forgotten it.
         if (!message.state) {
           this.ink = []
           this.inkRevision += 1
           this.laser = null
+          laserArrived(this, null)
         }
         /*
          * And the inventory too — together with the ink and together with a
@@ -1181,21 +1234,28 @@ export class SessionState {
         noteInkedPages(this, message.pages)
         this.inkRevision += 1
       } else if (message.t === 'ink:add') {
+        this.lectureHeardAt = Date.now()
         /*
-         * Append the points to the stroke with the same name — or start a new
-         * one.
+         * Lay the points onto the stroke with the same name — or start a new
+         * one — BY POSITION (lecture/ink.ts · `mergeInkPiece`).
          *
          * The server sends only NEW points: a thousand-point stroke re-sent on
-         * every twentieth point is gigabytes of traffic per lecture.
+         * every twentieth point is gigabytes of traffic per lecture. And it
+         * says where they start: a copy that is shorter than that missed a
+         * frame (a socket far behind does not get stream frames), and gluing
+         * the piece on would draw a chord across the slide; the page is asked
+         * for again instead.
          */
-        const stroke = message.stroke
-        const at = this.ink.findIndex((known) => known.id === stroke.id)
-        if (at === -1) this.ink = [...this.ink, stroke]
-        else {
-          const grown = { ...this.ink[at], points: [...this.ink[at].points, ...stroke.points] }
-          this.ink = [...this.ink.slice(0, at), grown, ...this.ink.slice(at + 1)]
+        const merged = mergeInkPiece(this.ink, message.stroke, message.from)
+        if (merged === null) repairInkPage(this, message.stroke.page)
+        else if (merged !== this.ink) {
+          this.ink = merged
+          this.inkRevision += 1
         }
-        this.inkRevision += 1
+      } else if (message.t === 'ink:need') {
+        // The server is missing a piece of one of our strokes: the ink layer
+        // holds them and resends from where the server stopped.
+        inkNeeded(this, { page: message.page, id: message.id, have: message.have })
       } else if (message.t === 'ink:drop') {
         const had = this.ink.some((stroke) => stroke.page === message.page)
         this.ink = this.ink.filter((stroke) => stroke.id !== message.id)
@@ -1247,8 +1307,13 @@ export class SessionState {
           window.clearTimeout(waiting.timer)
           waiting.settle(message)
         }
-      } else if (message.t === 'laser') this.laser = message.at
-      else if (message.t === 'terminal') this.terminalStatus = message.status
+      } else if (message.t === 'laser') {
+        if (message.at) this.lectureHeardAt = Date.now()
+        this.laser = message.at
+        // Every frame to the ink layers, in order: each carries samples, and
+        // the field above keeps only the last (lecture/laser.ts · hearLaser).
+        laserArrived(this, message.at)
+      } else if (message.t === 'terminal') this.terminalStatus = message.status
       else if (message.t === 'error') this.lastError = message.message
       /*
        * Whether this instance can give a personal notebook its own kernel.
@@ -1281,6 +1346,7 @@ export class SessionState {
        * out a normal showing.
        */
       this.laser = null
+      laserArrived(this, null)
       if (this.#disposed) return
       /*
        * A banned person has nowhere to come back to: the handshake will be
@@ -1432,6 +1498,32 @@ export class SessionState {
      */
     forgetIdentity(this.session.id)
     this.expired = true
+  }
+
+  /**
+   * This tab moved between the room and the lecture console.
+   *
+   * The server keeps what each connection is, and names the presenter's
+   * device by the connection that acts: "presented from the iPad, console"
+   * must stay true when the same tab walks from the console to the room.
+   */
+  setConsole(on: boolean): void {
+    if (this.#onConsole === on) return
+    this.#onConsole = on
+    this.#sayDevice()
+  }
+
+  /** The device on the live socket only: `onopen` says it again for a new one. */
+  #sayDevice(): void {
+    if (this.#control?.readyState !== WebSocket.OPEN) return
+    this.#control.send(
+      JSON.stringify({ t: 'device', device: { kind: deviceKind(), console: this.#onConsole } }),
+    )
+  }
+
+  /** What this device is, for a start or a take-over to carry. */
+  device(): LectureDevice {
+    return { kind: deviceKind(), console: this.#onConsole }
   }
 
   send(message: ControlClientMessage) {
@@ -1644,6 +1736,42 @@ export class SessionState {
    * ten times a minute. Another file always passes the latch.
    */
   openNotes(file: string): void {
+    if (!file) return
+    this.#notesBase = file
+    this.#wantNotes()
+  }
+
+  /**
+   * Hold the notes of a document for as long as a surface needs them, and give
+   * them back when it closes. Returns the release.
+   *
+   * For the notes editor, which opens OVER a screen that may have its own
+   * notes open: the room's lecture column follows the lecture's file, while
+   * the editor may be preparing another deck. With `openNotes` alone the two
+   * would take the one map from each other, and closing the editor would leave
+   * the column under the lecture saying "loading" until the end of class: its
+   * effect asked once and does not know it was overruled. A hold outranks
+   * `openNotes` while it lasts, and its release asks for what is wanted under
+   * it again.
+   */
+  holdNotes(file: string): () => void {
+    const hold = { file }
+    this.#notesHolds.push(hold)
+    this.#wantNotes()
+    return () => {
+      const at = this.#notesHolds.indexOf(hold)
+      if (at < 0) return
+      this.#notesHolds.splice(at, 1)
+      this.#wantNotes()
+    }
+  }
+
+  /** The document `openNotes` asked for; a hold sits above it while it lasts. */
+  #notesBase: string | null = null
+  #notesHolds: { file: string }[] = []
+
+  #wantNotes(): void {
+    const file = this.#notesHolds.at(-1)?.file ?? this.#notesBase
     if (!file || this.#notesWanted === file) return
     this.#notesWanted = file
     /*

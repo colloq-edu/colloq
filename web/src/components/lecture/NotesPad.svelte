@@ -90,6 +90,21 @@
      */
     onmore?: () => void
     /**
+     * Open the full notes editor (NotesEditor) on this page. Passed by the
+     * presenter's column on the laptop, whose field is a narrow column: the
+     * talk is written comfortably there, one click away. Not passed: no
+     * button.
+     */
+    onexpand?: () => void
+    /**
+     * The room's column beside the slide (a teacher who does not lead, N4b):
+     * the slide the note belongs to next to the name, the reminder that
+     * nobody else sees it, and its own "close". The console and the
+     * presenter's column say neither: there the slide is right beside them,
+     * and they have their own ways to fold.
+     */
+    roomColumn?: { onclose: () => void }
+    /**
      * READ ONLY. This is how notes live on the console.
      *
      * The talk is written while preparing for class: at a desk, with a
@@ -117,6 +132,8 @@
     folded = false,
     onfold,
     onmore,
+    onexpand,
+    roomColumn,
     readonly = false,
   }: Props = $props()
 
@@ -225,10 +242,7 @@
 
   let draft = $state('')
   let typing = $state(false)
-  let field = $state<HTMLTextAreaElement | null>(null)
   let step = $state(readStep())
-  /** Grows when the field is reloaded not by typing: a cue to recompute the height. */
-  let reloads = $state(0)
 
   /*
    * Plain mirrors of the draft, not runes: they are read by the flush, which
@@ -253,6 +267,12 @@
    */
   let sentAt = Number.NEGATIVE_INFINITY
   let timer: number | undefined
+  /*
+   * Drafts longer than the ceiling, per page: shown, marked, never sent and
+   * never cut. A page turn must not throw them away either, so they wait
+   * here until shortened (the full editor keeps the same map, NotesEditor).
+   */
+  const overDrafts = new Map<number, string>()
 
   /*
    * The presenter's narrow column has no top step: 28 px in a 300 px column
@@ -297,16 +317,6 @@
    * files are kept in agreement.
    */
 
-  /*
-   * The reload counter is read OUTSIDE tracking. Writing `reloads += 1` right
-   * in the effect is not possible: a compound assignment reads first, the
-   * effect subscribes to what it writes itself, and Svelte goes into a loop
-   * ending in effect_update_depth_exceeded.
-   */
-  function refit(): void {
-    reloads = untrack(() => reloads) + 1
-  }
-
   function readStep(): number {
     const fallback = compact ? DEFAULT_COMPACT_STEP : DEFAULT_STEP
     try {
@@ -342,6 +352,16 @@
       return
     }
     pending = false
+    /*
+     * Over the ceiling: kept for this page and not sent. The server would
+     * refuse it out loud anyway; cutting it to fit is what this field used to
+     * do, and it took the tail off a long imported note at the first typo fix.
+     */
+    if (held.length > MAX) {
+      overDrafts.set(heldPage, held)
+      return
+    }
+    overDrafts.delete(heldPage)
     sentAt = performance.now()
     /*
      * We send the WHOLE text, not a diff. On a dropped connection the client
@@ -352,36 +372,19 @@
     session.send({ t: 'notes:set', file: heldFile, page: heldPage, text: held })
   }
 
+  /*
+   * No ceiling on the field itself: no `maxlength` and no slicing. Both cut
+   * text without a word (a paste lost its end, a note imported over the
+   * ceiling lost its tail at the first keystroke). The text is kept whole,
+   * the counter turns red, and `commit` refuses to send it until it fits.
+   */
   function onInput(event: Event): void {
     const el = event.currentTarget as HTMLTextAreaElement
-    /*
-     * The ceiling is held by `maxlength`, both when typing and when pasting.
-     * This line is for when it did not work (IME composition of a character,
-     * pasting through the system menu in Safari): we cannot send more than is
-     * visible in the field, the frame would be dropped silently anyway.
-     */
-    if (el.value.length > MAX) el.value = el.value.slice(0, MAX)
     draft = el.value
     held = el.value
     pending = true
-    // The height is fixed right here, synchronously: through an effect it
-    // would arrive a frame later, and a line wrapping onto the next one would
-    // have time to flicker under the caret.
-    fit(el)
     if (timer !== undefined) clearTimeout(timer)
     timer = window.setTimeout(commit, SAVE_AFTER_MS)
-  }
-
-  /*
-   * The browser computes the height itself: first "how much is needed", then
-   * we hit the box's max-height and from there the field scrolls. That way
-   * the field grows with the text in the column where there is room, and
-   * does not spill out of the sheet where there is none.
-   */
-  function fit(el: HTMLTextAreaElement | null): void {
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${el.scrollHeight}px`
   }
 
   /*
@@ -433,9 +436,8 @@
     const nextPage = page
     heldFile = nextFile
     heldPage = nextPage
-    held = untrack(() => stored)
+    held = untrack(() => overDrafts.get(nextPage) ?? stored)
     draft = held
-    refit()
     return () => commit()
   })
 
@@ -450,17 +452,9 @@
     if (typing || pending) return
     if (performance.now() - sentAt < ECHO_MS) return
     if (fresh === untrack(() => held)) return
+    if (untrack(() => overDrafts.has(page))) return
     held = fresh
     draft = fresh
-    refit()
-  })
-
-  /* Recompute the height after the field is reloaded or resized. */
-  $effect(() => {
-    void reloads
-    void folded
-    void size
-    fit(field)
   })
 
   /*
@@ -565,7 +559,7 @@
     -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <header
-      class="flex shrink-0 items-center gap-2 {PAD} {compact ? 'h-8' : 'h-10'}"
+      class="notes-head flex shrink-0 items-center gap-2 {PAD} {compact ? 'h-8' : 'h-10'}"
       style="touch-action: pan-x"
       onpointerdown={headDown}
       onpointermove={headMove}
@@ -575,6 +569,11 @@
       <span class="text-micro font-bold uppercase tracking-section text-muted">{tr('room.ui.194')}</span>
       {#if arrived && draft.trim()}
         <span class="h-3 w-0.5 shrink-0 bg-accent" title={tr('room.ui.307')}></span>
+      {/if}
+      {#if roomColumn && page > 0}
+        <span class="shrink-0 whitespace-nowrap font-mono text-code tabular-nums text-ink">
+          {tr('room.notes.slideOf', { page })}
+        </span>
       {/if}
       {#if showClock}
         <span class="ml-2 font-mono text-code tabular-nums text-muted" aria-label={tr('room.ui.308')}>
@@ -593,6 +592,17 @@
         where a finger lands without aiming, and collapsing the sheet is what
         people want most often.
       -->
+      {#if roomColumn}
+        <!-- Said where the note is written: in a room full of students the
+             first worry about a text box is who else reads it. -->
+        <span
+          class="notes-lock flex shrink-0 items-center gap-1 text-2xs text-faint"
+          title={tr('room.notes.onlyYou')}
+        >
+          <Icon name="lock" size={11} />
+          <span class="notes-hint">{tr('room.notes.onlyYou')}</span>
+        </span>
+      {/if}
       <div class="flex items-center">
         {#if arrived}
           <!--
@@ -627,6 +637,20 @@
             </svg>
           </button>
         {/if}
+        {#if onexpand && host}
+          <button
+            type="button"
+            class="{TAP} {CELL} flex items-center justify-center text-muted hover:text-ink"
+            aria-label={tr('room.notesEditor.openTitle')}
+            title={tr('room.notesEditor.openTitle')}
+            onclick={() => {
+              commit()
+              onexpand?.()
+            }}
+          >
+            <Icon name="expand" size={14} />
+          </button>
+        {/if}
         {#if onmore}
           <button
             type="button"
@@ -636,6 +660,20 @@
             onclick={() => onmore?.()}
           >
             <Icon name="more" size={16} />
+          </button>
+        {/if}
+        {#if roomColumn}
+          <button
+            type="button"
+            class="{TAP} {CELL} flex items-center justify-center text-muted hover:text-ink"
+            aria-label={tr('room.notes.closeColumn')}
+            title={tr('room.notes.closeColumn')}
+            onclick={() => {
+              commit()
+              roomColumn?.onclose()
+            }}
+          >
+            <Icon name="x" size={14} />
           </button>
         {/if}
         {#if onfold && !docked}
@@ -663,7 +701,7 @@
         12.9" (1366 px and wider) the measure is 900: the same sixty
         characters, but on a tablet held further from the eyes.
       -->
-      <div class="relative min-h-0 flex-1 overflow-hidden {PAD}">
+      <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden {PAD}">
         {#if !arrived}
           <!--
             Not "empty" but "not here yet". That one-line difference is worth
@@ -702,17 +740,25 @@
                 : draft.trim() || tr('room.ui.315')}
             </div>
           {:else}
+          <!--
+            The field FILLS the box and scrolls inside it. It used to size
+            itself to its text from a script, and measured before the new
+            page's text had reached it: a thirty-line note opened in a 50 px
+            slot, two lines of placeholder tall, with the rest of the column
+            empty below. A box-sized field has nothing to measure.
+
+            `data-notes`: a presentation clicker's PageDown still turns the
+            slide while the caret is in here (LectureView).
+          -->
           <textarea
-            bind:this={field}
             bind:value={draft}
-            rows="1"
-            maxlength={MAX}
+            data-notes
             aria-label={tr('room.notes.page', { count: page })}
+            aria-invalid={draft.length > MAX}
             placeholder={tr('room.ui.195')}
-            class="{size} pult-prompt pult-caret block max-h-full w-full max-w-[660px] resize-none
-                   overscroll-contain bg-transparent pb-6 text-ink placeholder:text-muted
-                   focus-visible:outline-offset-0 min-[1300px]:max-w-[900px]
-                   {compact ? 'min-h-[3rem]' : 'min-h-[4rem]'}"
+            class="{size} pult-prompt pult-caret block min-h-0 w-full max-w-[660px] flex-1 resize-none
+                   overflow-y-auto overscroll-contain bg-transparent pb-6 text-ink placeholder:text-muted
+                   focus-visible:outline-offset-0 min-[1300px]:max-w-[900px]"
             oninput={onInput}
             onfocus={() => (typing = true)}
             onblur={() => {
@@ -741,10 +787,21 @@
               class="pointer-events-none absolute bottom-0 max-w-[660px] text-right min-[1300px]:max-w-[900px]
                      {compact ? 'left-2 right-2' : 'left-6 right-6'}"
             >
-              <span
-                class="pl-2 font-mono text-2xs tabular-nums text-faint {compact ? 'bg-canvas' : 'bg-surface'}"
-              > {tr('room.ui.316')} {left}
-              </span>
+              {#if left < 0}
+                <!-- Over the ceiling: said in words, in the danger colour, and
+                     not sent until it fits. Nothing is cut. -->
+                <span
+                  class="pl-2 text-2xs font-bold text-danger {compact ? 'bg-canvas' : 'bg-surface'}"
+                  role="status"
+                >
+                  {tr('room.notesEditor.over', { max: MAX, count: -left })}
+                </span>
+              {:else}
+                <span
+                  class="pl-2 font-mono text-2xs tabular-nums text-faint {compact ? 'bg-canvas' : 'bg-surface'}"
+                > {tr('room.ui.316')} {left}
+                </span>
+              {/if}
             </span>
           {/if}
         {/if}
@@ -765,5 +822,27 @@
    */
   .pult-caret {
     caret-color: rgb(var(--accent));
+  }
+
+  /*
+   * The room column is 360 px at most and a third of a narrow middle at
+   * least: below about 340 px the words of the privacy hint would push the
+   * size and close keys out of the header, so only its lock stays (the words
+   * are still its title). The editor this column opens says the same in its
+   * header, at full width.
+   */
+  .notes-head {
+    container-type: inline-size;
+  }
+  @container (max-width: 340px) {
+    .notes-hint {
+      display: none;
+    }
+  }
+  /* Narrower still, the lock goes too: the slide number and the keys matter more. */
+  @container (max-width: 290px) {
+    .notes-lock {
+      display: none;
+    }
   }
 </style>

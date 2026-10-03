@@ -38,6 +38,14 @@ export interface MarkdownOptions {
    * screenshots, and a phone on campus data should not pull them all at once.
    */
   lazyImages?: boolean
+  /**
+   * Links become their words and images their alt text: for text that is read
+   * and never followed. The speaker notes on the lecture console are the case:
+   * a tap on a link there leaves the console mid-lecture, and an image in a
+   * note is a request from a tablet in a dark hall for a picture nobody has
+   * time to look at.
+   */
+  inert?: boolean
 }
 
 /*
@@ -225,6 +233,17 @@ async function importRenderers(): Promise<Renderers> {
         box.className = 'table-scroll'
         table.replaceWith(box)
         box.appendChild(table)
+      }
+      /*
+       * Inert text: on the detached node and before serializing, like the
+       * rest of this function, so the page never receives the `<a>` or the
+       * `<img>` at all, rather than receiving them and having them hidden.
+       */
+      if (options.inert) {
+        for (const anchor of holder.querySelectorAll('a')) anchor.replaceWith(...anchor.childNodes)
+        for (const img of holder.querySelectorAll('img')) {
+          img.replaceWith(document.createTextNode(img.getAttribute('alt') ?? ''))
+        }
       }
       // A note is written by a classmate; a link in it must not be able to
       // navigate the seminar tab away from the seminar.

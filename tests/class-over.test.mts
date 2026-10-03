@@ -586,9 +586,12 @@ test('after the bell the teacher presents the lecture by taking over the console
   assert.equal(say(id, 'host', { t: 'lecture:page', page: 4 }), null)
   assert.equal(lectureOf(id)?.page, 7, 'the console went to someone who did not take it')
 
-  // The takeover is the same `lecture:start` on the same file, and the markup
-  // is intact.
-  assert.equal(say(id, 'host', { t: 'lecture:start', file: 'lecture.pdf' }), null)
+  // The takeover (`lecture:take`) keeps the markup intact.
+  const going = lectureOf(id)!
+  assert.equal(
+    say(id, 'host', { t: 'lecture:take', file: 'lecture.pdf', from: going.by, startedAt: going.startedAt }),
+    null,
+  )
   assert.equal(lectureOf(id)?.by, 'p_host', 'the console did not pass to the teacher')
   assert.equal(lectureOf(id)?.page, 7, 'the takeover restarted the lecture')
   assert.equal(inkOf(id).length, 1, 'the takeover erased the markup')

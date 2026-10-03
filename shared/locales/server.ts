@@ -4050,5 +4050,35 @@ export const serverMessages: MessageCatalog = {
   "server.resources.sessionBelowUpload": {
     "ru": "Место под файлы занятия ({p0} МБ) меньше предела одной загрузки ({p1} МБ): такой файл не поместится ни в одно занятие. Поднимите первое или опустите второе.",
     "en": "A class's file space ({p0} MB) is below the single-upload limit ({p1} MB): such a file would fit into no class. Raise the first or lower the second."
+  },
+  // Taking the console of a running lecture (server/src/control.ts · lecture:take).
+  "server.lecture.takeInstead": {
+    "ru": "Эту лекцию уже ведёт {name}. Чтобы вести её отсюда, нажмите «Перехватить лекцию».",
+    "en": "{name} is already presenting this lecture. To present it from here, press “Take over the lecture”."
+  },
+  "server.lecture.takeEnded": {
+    "ru": "Эта лекция уже закончилась — перехватывать нечего.",
+    "en": "That lecture has already ended — there is nothing to take over."
+  },
+  "server.lecture.takeMoved": {
+    "ru": "Пульт тем временем перешёл к {name}. Посмотрите, кто ведёт, и нажмите ещё раз, если нужно.",
+    "en": "Meanwhile the console passed to {name}. Check who is presenting and press again if you still need to."
+  },
+  // A lecture script imported in one go (server/src/routes/notes.ts).
+  "server.notes.importBody": {
+    "ru": "Заметки пришли не в том виде: нужен документ и страницы с текстом.",
+    "en": "The notes arrived in the wrong shape: a document and pages with text are needed."
+  },
+  "server.notes.importFile": {
+    "ru": "Такого пути к документу быть не может.",
+    "en": "That cannot be a path to a document."
+  },
+  "server.notes.importTooMany": {
+    "ru": "За один раз — не больше {p0} страниц.",
+    "en": "At most {p0} pages at a time."
+  },
+  "server.notes.importTooLong": {
+    "ru": "Заметка к странице {p0} длиннее {p1} знаков ({p2}). Ничего не записали — сократите её и загрузите снова.",
+    "en": "The note for page {p0} is longer than {p1} characters ({p2}). Nothing was written — shorten it and load again."
   }
 }

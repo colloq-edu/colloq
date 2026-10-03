@@ -21,7 +21,7 @@
   the lecture hall.
 -->
 <script lang="ts">
-  import { tr } from '@shared/i18n'
+  import { getLocale, tr } from '@shared/i18n'
   import { untrack } from 'svelte'
   import type { PDFDocumentProxy } from 'pdfjs-dist'
   import Icon from '@/components/ui/Icon.svelte'
@@ -36,7 +36,24 @@
   import InkLayer from './InkLayer.svelte'
   import LecturePage from './LecturePage.svelte'
   import NotesPad from './NotesPad.svelte'
+  import { notesEditor, openNotesEditor } from '@/lib/notes-editor.svelte'
   import { INKS } from './pult'
+  import { BLANK_KEYS } from './remote'
+  import { slideTitle } from './slide-titles'
+  import {
+    actedAgo,
+    agoWords,
+    clockOf,
+    deviceLong,
+    deviceOn,
+    deviceWord,
+    handheld,
+    holderOf,
+    lostHands,
+    takeAsks,
+    takeMessage,
+    type Lost,
+  } from './takeover'
 
   interface Props {
     /*
@@ -45,8 +62,12 @@
      * store. The compiler says so unclearly, and the name was worse anyway.
      */
     lecture: LectureState
-    /** In which role this screen looks at the lecture. */
-    role: 'presenter' | 'audience' | 'projection'
+    /**
+     * In which role this screen looks at the lecture. `cohost` is a teacher
+     * who does not hold the console: a colleague, or the same teacher in
+     * another browser. They see who leads and can take the lecture over.
+     */
+    role: 'presenter' | 'cohost' | 'audience' | 'projection'
     /** Leave the projection, back to the room. */
     onleave?: () => void
     /** Send THIS screen to the projector. */
@@ -162,6 +183,178 @@
   const page = $derived(lecture.page)
   /** Host-only here: just the notes and the key link; a student may present too. */
   const host = $derived(session.me.role === 'host')
+
+  /* --------------------------------------------------------- take-over */
+
+  /*
+   * A teacher in the room who does not hold the console used to get the
+   * students' one-liner: "presented by Ada", said to Ada herself in her
+   * second browser, with no way to take the lecture back and no notes. If
+   * the laptop that held it died mid-class, the lecture stayed "presented"
+   * by nobody who could still press anything. Now the room says who leads
+   * and from where, whether they are still there, offers the take-over, and
+   * keeps the notes one press away whoever leads.
+   */
+  const cohost = $derived(role === 'cohost')
+  const holder = $derived(holderOf(lecture, session.person))
+
+  /** A one-second tick for "last action 12 s ago"; only while someone else leads. */
+  let now = $state(Date.now())
+  $effect(() => {
+    if (!cohost && lost === null) return
+    now = Date.now()
+    const tick = window.setInterval(() => (now = Date.now()), 1000)
+    return () => window.clearInterval(tick)
+  })
+  const acted = $derived(
+    cohost ? actedAgo(lecture, session.lectureHeardAt, session.clockSkewMs, now) : null,
+  )
+  /** How long the holder has been gone, by the server's clock; `null` while connected. */
+  const awayFor = $derived(
+    holder.awaySince === null ? null : Math.max(0, now - session.clockSkewMs - holder.awaySince),
+  )
+
+  /**
+   * The console this screen held and lost (takeover.ts · `lostHands`).
+   *
+   * Read from the state rather than a message: the state is what every tab
+   * already gets, again on reconnect, so a laptop that slept through the
+   * take-over still says so when it wakes. The previous presenter used to
+   * learn about it from the bar silently changing to someone else's name.
+   */
+  let lost = $state<Lost | null>(null)
+  let seen: LectureState | null = null
+  $effect(() => {
+    const next = lecture
+    untrack(() => {
+      const gone = lostHands(seen, next, session.me.id, session.person)
+      if (gone) {
+        lost = gone
+        hallView = false
+      } else if (next.by === session.me.id) {
+        lost = null
+      }
+      seen = next
+    })
+  })
+
+  /*
+   * The hands that took it went away too: what matters now is the stale
+   * lock and the take-over that does not wait, not who took it at 21:14.
+   */
+  $effect(() => {
+    if (lost !== null && holder.awaySince !== null) untrack(() => (lost = null))
+  })
+
+  /**
+   * "Watch as the hall": the banner folds into the audience's one line.
+   * Not remembered: the next lecture starts with the question in view.
+   */
+  let hallView = $state(false)
+  /** The notes column beside the slide, for a teacher watching. */
+  let notesShown = $state(true)
+  /**
+   * Whether the lecture area is wide enough for that column next to a slide
+   * still worth looking at. Measured on the area, not the window: the room's
+   * side panels take half of a tablet's width.
+   */
+  let areaW = $state(0)
+  const notesRoom = $derived(areaW >= 640)
+
+  /**
+   * "Take over" asks a second time only when it interrupts somebody: a
+   * colleague who is connected (takeover.ts · `takeAsks`). The question is
+   * dropped when the holder changes and after a few seconds, so a press
+   * made later does not count as the answer to an old question.
+   */
+  let takeAsked = $state(false)
+  $effect(() => {
+    void lecture.by
+    untrack(() => (takeAsked = false))
+  })
+  $effect(() => {
+    if (!takeAsked) return
+    const timer = window.setTimeout(() => (takeAsked = false), 6000)
+    return () => window.clearTimeout(timer)
+  })
+
+  function takeOver(): void {
+    /*
+     * Now or never: a take-over is not queued without a connection
+     * (session.svelte.ts · DISCARDED_OFFLINE), and a press that silently goes
+     * nowhere would read as a refusal from the holder.
+     */
+    if (!session.connected) {
+      takeAsked = false
+      refuse(tr('room.takeover.offline'))
+      return
+    }
+    if (lost === null && takeAsks(holder) && !takeAsked) {
+      takeAsked = true
+      return
+    }
+    takeAsked = false
+    session.send(takeMessage(lecture, session.device()))
+  }
+
+  const holderLong = $derived(deviceLong(holder.device))
+  const leadTitle = $derived(
+    holder.self
+      ? holderLong
+        ? tr('room.takeover.leadsSelfFrom', { name: lecture.byName, device: holderLong })
+        : tr('room.takeover.leadsSelf', { name: lecture.byName })
+      : holderLong
+        ? tr('room.takeover.leadsFrom', { name: lecture.byName, device: holderLong })
+        : tr('room.takeover.leads', { name: lecture.byName }),
+  )
+  const leadState = $derived(
+    [
+      awayFor !== null
+        ? tr('room.takeover.away', { ago: agoWords(awayFor) })
+        : tr('room.takeover.online'),
+      acted !== null ? tr('room.takeover.acted', { ago: agoWords(acted) }) : null,
+      page < 0 ? tr('room.takeover.sheet') : tr('room.takeover.page', { n: page }),
+    ]
+      .filter((part) => part !== null)
+      .join(' · '),
+  )
+  const takeHint = $derived(
+    awayFor !== null
+      ? tr('room.takeover.hintAway')
+      : holder.self
+        ? tr('room.takeover.hintSelf', { on: deviceOn(holder.device) })
+        : takeAsked
+          ? tr('room.takeover.hintOther', { name: lecture.byName })
+          : tr('room.takeover.hintOtherIdle', { name: lecture.byName }),
+  )
+  const lostMeta = $derived.by(() => {
+    if (lost === null) return ''
+    const where = deviceWord(lost.device)
+    const who = lost.self ? (where ?? lost.name) : where ? `${lost.name} · ${where}` : lost.name
+    return `${who} · ${clockOf(lost.at, session.clockSkewMs, getLocale())}`
+  })
+  /** "pages turned on the iPad" under the slide: whose hand the hall follows. */
+  const turnedBy = $derived(
+    holder.device
+      ? tr('room.takeover.turnedBy', { on: deviceOn(holder.device) })
+      : tr('room.takeover.turnedByName', { name: lecture.byName }),
+  )
+
+  /** The next slide's title for the strip under the slide, read from the PDF. */
+  let nextTitle = $state('')
+  $effect(() => {
+    const source = doc
+    const at = page
+    nextTitle = ''
+    if (!cohost || !source || at < 1 || at >= source.numPages) return
+    let alive = true
+    void slideTitle(source, at + 1).then((title) => {
+      if (alive) nextTitle = title
+    })
+    return () => {
+      alive = false
+    }
+  })
 
   /**
    * The class is over: the console became the teacher's.
@@ -462,6 +655,69 @@
   }
 
   /**
+   * THE SETUP HINT LIVES FOR SECONDS, NOT FOR THE WHOLE LECTURE.
+   *
+   * It used to stand whenever the window was not full screen, and that is
+   * not only "while the projection is being set up": a window shared into
+   * Zoom or Teams, a window on the second display, any reload (full screen
+   * needs a click in that window) all project the corner line to the hall
+   * for the rest of the class. Now it shows for eight seconds after the
+   * projection opens and for three after the mouse moves in its window,
+   * that is, exactly while someone at the laptop is looking at it.
+   */
+  const HINT_FIRST_MS = 8000
+  const HINT_AGAIN_MS = 3000
+  let hintUp = $state(false)
+  $effect(() => {
+    if (role !== 'projection') return
+    let timer = 0
+    const raise = (ms: number): void => {
+      hintUp = true
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => (hintUp = false), ms)
+    }
+    raise(HINT_FIRST_MS)
+    const moved = (): void => raise(HINT_AGAIN_MS)
+    window.addEventListener('mousemove', moved)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('mousemove', moved)
+    }
+  })
+
+  /**
+   * The page whose picture each sheet actually holds (LecturePage ·
+   * `onshown`), so the ink follows the picture rather than the number: on a
+   * heavy slide the previous picture stays up for the length of a render,
+   * and the new page's ink must not be painted over it. One value serves
+   * the projection, the audience and the laptop console: this component
+   * draws exactly one of those sheets at a time.
+   */
+  let shown = $state<number | null>(null)
+  function onshown(at: number | null): void {
+    shown = at
+  }
+  /**
+   * BLANKING IS FOR THE HALL, NOT ONLY FOR THE PROJECTOR.
+   *
+   * "Pause" exists to hide the slide while the presenter prepares a
+   * derivation with the pen; students following on their own laptops and
+   * phones kept seeing every stroke and the pointer, and the reveal was
+   * spoiled for them (and for everyone joining remotely). The audience role
+   * goes dark with the projector; the presenter and other teachers keep the
+   * page, as the console does.
+   */
+  const hidden = $derived(lecture.blank && role === 'audience' && !host)
+  /*
+   * A dark screen has no sheet, so nothing is shown on it. Forgotten here,
+   * the sheet that comes back would carry the page from before the pause
+   * (the presenter may have turned meanwhile) until its first render.
+   */
+  $effect(() => {
+    if (hidden || (role === 'projection' && lecture.blank)) untrack(() => (shown = null))
+  })
+
+  /**
    * An ink layer refusal: one line for six seconds.
    *
    * There is only one refusal: the page has collected its six hundred
@@ -481,6 +737,8 @@
   $effect(() => () => window.clearTimeout(refusalTimer))
 
   function onkeydown(event: KeyboardEvent): void {
+    // The clicker's F5 and Escape on the projection live in SessionScreen:
+    // they must work on the "waiting for a lecture" screen too.
     if (role === 'projection' && event.code === 'KeyF') {
       event.preventDefault()
       fillScreen()
@@ -492,6 +750,30 @@
     if (!pult && !(role === 'projection' && mine && acts)) return
     // The target may not be an element (document, window): no `closest` there.
     const target = event.target instanceof Element ? event.target : null
+    /*
+     * A presentation clicker sends PageUp/PageDown, and the laptop it is
+     * plugged into is also where notes get fixed mid-lecture. With the caret
+     * in a notes field (marked `data-notes`) those two keys still turn the
+     * slide: they are not keys anyone writing needs there, while arrows and
+     * Space are, and stay with the field. Before this the clicker went dead,
+     * with no sign why, until someone clicked outside the note.
+     */
+    const clicker =
+      (event.key === 'PageDown' || event.key === 'PageUp') &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey
+    if (clicker && target?.closest('[data-notes]')) {
+      event.preventDefault()
+      turn(event.key === 'PageDown' ? 1 : -1)
+      return
+    }
+    /*
+     * The notes editor lies over the room: its list and its buttons are not
+     * the lecture, and Space or an arrow pressed there must not turn the
+     * hall's slide. Only the clicker reaches through.
+     */
+    if (notesEditor() && !clicker) return
     if (target?.closest('input, textarea, [contenteditable]')) return
     if (event.key === 'Escape' && (wipeAsked || stopAsked)) {
       // A pending question is dismissed the way any question is dismissed.
@@ -506,8 +788,10 @@
     } else if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
       event.preventDefault()
       turn(-1)
-    } else if (event.code === 'KeyB') {
+    } else if (BLANK_KEYS.has(event.code) && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      // B, and the clicker's "black screen" key: '.', ',' or W (see ./remote).
       event.preventDefault()
+      if (event.repeat) return
       session.send({ t: 'lecture:blank', on: !lecture.blank })
     } else if (event.code === 'KeyZ' && !event.metaKey && !event.ctrlKey && !event.altKey) {
       // Only from the console: the tablet draws the ink, while the keyboard
@@ -548,6 +832,25 @@
    * the finger is exactly the confirmation that the press was heard, which
    * it lacked while it carried a lone `transition-colors`.
    */
+  /*
+   * The take-over row's keys: 40 px tall, the same press as the bar. They
+   * are pressed once a class at most, but at the worst moment of it.
+   */
+  const BANNER =
+    'flex h-10 shrink-0 items-center justify-center whitespace-nowrap ' +
+    'transition-[color,background-color,filter,transform] duration-press ease-out ' +
+    'enabled:active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 ' +
+    'focus-visible:ring-accent/40'
+
+  /**
+   * "Notes" for a teacher watching: the column beside the slide where there
+   * is room for it, the full editor where there is not.
+   */
+  function notesPress(): void {
+    if (notesRoom) notesShown = !notesShown
+    else openNotesEditor(lecture.file, page > 0 ? page : 1)
+  }
+
   const TOOL =
     'flex h-8 items-center gap-1.5 px-2.5 text-2xs font-bold uppercase tracking-label ' +
     'transition-[color,background-color,border-color,transform] duration-press ease-out ' +
@@ -577,8 +880,11 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="fixed inset-0 z-[100] flex flex-col bg-black" onclick={fillScreen}>
     {#if lecture.blank}
-      <div class="flex flex-1 items-center justify-center">
-        <span class="text-2xs uppercase tracking-section text-white/30">{tr('room.ui.276')}</span>
+      <!-- Pure black: a word in the middle of a dark projector is read by the
+           whole hall, and the presenter already has "Projection dimmed" on
+           the console. The state stays for screen readers. -->
+      <div class="flex flex-1" role="status">
+        <span class="sr-only">{tr('room.ui.276')}</span>
       </div>
     {:else if failure}
       <div class="flex flex-1 items-center justify-center px-8 text-center text-ui text-white/70">
@@ -586,10 +892,10 @@
       </div>
     {:else}
       <div class="flex min-h-0 flex-1 p-4">
-        <LecturePage {doc} {page}>
+        <LecturePage {doc} {page} {onshown}>
           {#snippet over(size)}
             <InkLayer
-              {page}
+              page={shown ?? page}
               live={false}
               tool="off"
               color={lecture.color}
@@ -613,19 +919,26 @@
     >
       <Icon name="x" size={16} />
     </button>
-    {#if !full && fullscreenPossible()}
+    {#if !full && fullscreenPossible() && !lecture.blank}
       <!--
-        The hint lives only WHILE the window is not full screen, that is,
-        while the projection is still being set up rather than shown to the
-        audience. The arrows are mentioned only to the owner of the slides: it
-        does not turn anyone else's.
+        The hint lives only WHILE the window is not full screen, and even
+        then only for a few seconds (see `hintUp`): a window shared into a
+        call is never full screen, and the hall would read this corner for
+        the whole class. Never on a blanked screen: black means black. The
+        arrows are mentioned only to the owner of the slides: it does not
+        turn anyone else's.
       -->
-      <p class="pointer-events-none absolute bottom-4 right-5 text-2xs uppercase tracking-label text-white/35">
+      <p
+        class="pointer-events-none absolute bottom-4 right-5 text-2xs uppercase tracking-label text-white/35 transition-opacity duration-300 {hintUp
+          ? 'opacity-100'
+          : 'opacity-0'}"
+        aria-hidden={!hintUp}
+      >
         {mine ? tr('room.ui.279') : ''}{tr('room.ui.280')} </p>
     {/if}
   </div>
 {:else}
-  <section class="flex min-h-0 flex-1 flex-col bg-surface">
+  <section class="flex min-h-0 flex-1 flex-col bg-surface" bind:clientWidth={areaW}>
     {#if pult}
       <!--
         The console. The bar under the tabs, where the notebook has Run All:
@@ -748,6 +1061,12 @@
           answers them 403, and a button whose only outcome is a refusal does
           not belong here.
         -->
+        <!--
+          A glyph, not a word, on this bar: it is already the most crowded
+          line in the room, and the notes column beside the slide carries its
+          own way into the editor (NotesPad · onexpand).
+        -->
+        {@render notesButton('', true)}
         {#if host}
           <ConsoleLink class="{TOOL} text-muted hover:text-ink" />
         {/if}
@@ -787,7 +1106,90 @@
         <span class="shrink-0 font-mono tabular-nums">
           {#if page < 0}{tr('room.ui.296')}{:else}{page} / {pages || '—'}{/if}
         </span>
+        {@render notesButton('-my-2')}
         {@render projectButton()}
+      </div>
+    {:else if cohost && !hallView}
+      <!--
+        A TEACHER WHO DOES NOT HOLD THE CONSOLE: who leads, from where, are
+        they still there, and the take-over. A full row, not the audience's
+        line: this is the screen a teacher lands on when their laptop died
+        mid-class, and the way back has to be the first thing they see.
+
+        Right after a take-over of THIS screen's console the same row says so
+        ("taken over · iPad · 21:14") and offers it back: the presenter used
+        to learn about it from the bar silently changing to another name.
+      -->
+      <div
+        class="flex shrink-0 flex-wrap items-center gap-x-[18px] gap-y-3 border-b border-line bg-canvas py-4 pl-5 pr-4"
+        data-takeover
+        role="region"
+        aria-label={lost ? tr('room.takeover.taken') : leadTitle}
+      >
+        {@render deviceGlyph(lost ? lost.device : holder.device, lost ? true : awayFor === null)}
+        <div class="flex min-w-0 flex-1 basis-64 flex-col gap-1">
+          <p class="text-title font-semibold text-ink" aria-live="polite">
+            {lost ? tr('room.takeover.taken') : leadTitle}
+          </p>
+          <p class="font-mono text-code text-muted">
+            {#if lost}{lostMeta} · {tr('room.takeover.takenBody')}{:else}{leadState}{/if}
+          </p>
+        </div>
+        <!--
+          The keys and the hint as one group pushed to the right edge: beside
+          the words on a wide room, under them (still at the right, where the
+          hand already is) when the room's panels leave the middle narrow.
+        -->
+        <div class="ml-auto flex max-w-full shrink-0 flex-col items-end gap-2">
+          <div class="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              class="{BANNER} border border-line bg-canvas px-4 text-ui-lg text-ink hover:bg-surface"
+              onclick={() => {
+                lost = null
+                takeAsked = false
+                hallView = true
+              }}
+            >
+              {lost ? tr('room.takeover.watchOnly') : tr('room.takeover.watch')}
+            </button>
+            <button
+              type="button"
+              class="{BANNER} px-5 text-code font-bold uppercase tracking-label {takeAsked
+                ? 'bg-danger text-white'
+                : 'bg-primary text-primary-ink hover:brightness-110'}"
+              data-take
+              aria-describedby="take-hint"
+              onclick={takeOver}
+              onblur={() => (takeAsked = false)}
+            >
+              {lost
+                ? tr('room.takeover.giveBack')
+                : takeAsked
+                  ? tr('room.takeover.takeSure')
+                  : tr('room.takeover.take')}
+            </button>
+            {#if host}
+              <span class="mx-2 h-6 w-px bg-line" aria-hidden="true"></span>
+              <button
+                type="button"
+                class="{BANNER} gap-2 px-3.5 text-ui-lg font-semibold text-ink {notesShown && notesRoom
+                  ? 'bg-raised'
+                  : 'bg-canvas hover:bg-surface'}"
+                aria-pressed={notesShown && notesRoom}
+                title={tr('room.notesEditor.openTitle')}
+                data-notes-open
+                onclick={notesPress}
+              >
+                <Icon name="file" size={14} />
+                {tr('room.notesEditor.open')}
+              </button>
+            {/if}
+          </div>
+          <p id="take-hint" class="max-w-[392px] text-balance text-right text-code text-muted">
+            {lost ? tr('room.takeover.takenInk') : takeHint}
+          </p>
+        </div>
       </div>
     {:else}
       <!-- One line for the audience: who presents and what is on. No controls at all. -->
@@ -805,7 +1207,9 @@
           read; the counter and the buttons stay whole.
         -->
         <span class="flex min-w-0 flex-1 items-center gap-2">
-          <span class="truncate"> {tr('room.ui.297')} {lecture.byName} </span>
+          <span class="truncate">
+            {#if cohost}{leadTitle}{:else}{tr('room.ui.297')} {lecture.byName}{/if}
+          </span>
           <span class="shrink-0 text-faint">·</span>
           <span class="truncate font-mono">{baseOf(lecture.file)}</span>
         </span>
@@ -826,6 +1230,29 @@
             onclick={() => onsolo?.()}
           > {tr('room.ui.299')} </button>
         {/if}
+        {#if cohost}
+          <!-- Folded by "Watch as the hall": the take-over stays one press away. -->
+          <button
+            type="button"
+            class="{TOOL} -my-2 {takeAsked ? 'bg-danger/10 text-danger' : 'text-accent-text hover:text-ink'}"
+            data-take
+            title={takeHint}
+            onclick={takeOver}
+            onblur={() => (takeAsked = false)}
+          >
+            {takeAsked ? tr('room.takeover.takeSure') : tr('room.takeover.takeShort')}
+          </button>
+          <button
+            type="button"
+            class="{TOOL} -my-2 text-muted hover:text-ink"
+            title={tr('room.takeover.unwatch')}
+            aria-label={tr('room.takeover.unwatch')}
+            onclick={() => (hallView = false)}
+          >
+            <Icon name="chevron-down" size={12} />
+          </button>
+        {/if}
+        {@render notesButton('-my-2')}
         {@render projectButton()}
       </div>
     {/if}
@@ -848,26 +1275,60 @@
         </div>
         {#if presenting && host}
           <aside class="hidden w-[28%] shrink-0 flex-col lg:flex">
-            <NotesPad file={lecture.file} {page} compact />
+            <NotesPad
+              file={lecture.file}
+              {page}
+              compact
+              onexpand={() => openNotesEditor(lecture.file, page > 0 ? page : 1)}
+            />
           </aside>
         {/if}
       </div>
     {:else}
       <div class="relative flex min-h-0 flex-1 gap-3 p-3">
-        <LecturePage {doc} {page}>
-          {#snippet over(size)}
-            <InkLayer
-              {page}
-              live={pult}
-              tool={pult ? tool : 'off'}
-              color={ink}
-              width={0.004}
-              w={size.w}
-              h={size.h}
-              onrefuse={refuse}
-            />
-          {/snippet}
-        </LecturePage>
+        <div class="flex min-h-0 min-w-0 flex-1 flex-col gap-2.5">
+          {#if hidden}
+            <!-- The hall's screen is dark: so is this one, with a word, since
+                 it is the student's own screen and black alone reads as broken.
+                 No page, no ink, no pointer underneath. -->
+            <div class="flex min-w-0 flex-1 items-center justify-center bg-black" role="status">
+              <span class="text-2xs uppercase tracking-section text-white/40">{tr('room.ui.276')}</span>
+            </div>
+          {:else}
+            <LecturePage {doc} {page} {onshown}>
+              {#snippet over(size)}
+                <!-- The pen waits for the picture (see `shown`); the pointer
+                     does not, it draws nothing. -->
+                <InkLayer
+                  page={shown ?? page}
+                  live={pult && (shown === page || tool === 'laser')}
+                  tool={pult ? tool : 'off'}
+                  color={ink}
+                  width={0.004}
+                  w={size.w}
+                  h={size.h}
+                  onrefuse={refuse}
+                />
+              {/snippet}
+            </LecturePage>
+          {/if}
+          {#if cohost}
+            <!--
+              Whose hand the hall follows, and what comes next: the watching
+              teacher reads the lecture's pace without a console of their own.
+            -->
+            <div class="flex shrink-0 items-center justify-between gap-4 font-mono text-code text-faint">
+              <span class="shrink-0">
+                {#if page < 0}{tr('room.takeover.sheet')}{:else}{page} / {pages || '—'}{/if} · {turnedBy}
+              </span>
+              {#if page > 0 && pages > page}
+                <span class="hidden min-w-0 truncate sm:block">
+                  {tr('room.takeover.next', { n: page + 1 })}{nextTitle ? ` · ${nextTitle}` : ''}
+                </span>
+              {/if}
+            </div>
+          {/if}
+        </div>
         {#if refusal}
           <!-- By the bottom edge on the left: nobody looks there while
                drawing, and everybody looks there when the drawing failed. -->
@@ -903,13 +1364,75 @@
                 <LecturePage {doc} page={page + 1} dim />
               </div>
             {/if}
-            <NotesPad file={lecture.file} {page} compact />
+            <NotesPad
+              file={lecture.file}
+              {page}
+              compact
+              onexpand={() => openNotesEditor(lecture.file, page > 0 ? page : 1)}
+            />
+          </aside>
+        {/if}
+        {#if cohost && host && notesShown && notesRoom}
+          <!--
+            The notes beside the slide for a teacher who does not lead: they
+            are written by whoever has a keyboard, whoever holds the console.
+            In a narrow middle (the room's panels open on a tablet) the column
+            would squeeze the slide to a stamp, so there the "Notes" key opens
+            the full editor instead (`notesRoom`, `notesPress`).
+          -->
+          <aside
+            class="flex w-[360px] max-w-[36%] shrink-0 flex-col border border-line bg-canvas"
+            data-cohost-notes
+          >
+            <NotesPad
+              file={lecture.file}
+              {page}
+              compact
+              onexpand={() => openNotesEditor(lecture.file, page > 0 ? page : 1)}
+              roomColumn={{ onclose: () => (notesShown = false) }}
+            />
           </aside>
         {/if}
       </div>
     {/if}
   </section>
 {/if}
+
+<!--
+  The holder's device, drawn: a tablet or a laptop, a pen when it is the
+  console, and a dot for "connected" (positive) or "gone" (faint, never red:
+  an absent presenter is a fact to act on, not an error).
+-->
+{#snippet deviceGlyph(device: LectureState['device'], online: boolean)}
+  {@const tablet = handheld(device)}
+  <span class="relative flex h-10 w-10 shrink-0 items-center justify-center bg-surface text-ink" aria-hidden="true">
+    {#if tablet}
+      <svg width="26" height="30" viewBox="0 0 26 30" fill="none">
+        <rect x="2" y="2" width="18" height="26" rx="2.5" stroke="currentColor" stroke-width="1.6" />
+        <path d="M9 24.5h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        {#if device?.console}
+          <path
+            d="M23.5 6v15l-1.25 3-1.25-3V6z"
+            class="text-brand-2"
+            stroke="currentColor"
+            stroke-width="1.3"
+            stroke-linejoin="round"
+          />
+        {/if}
+      </svg>
+    {:else}
+      <svg width="28" height="24" viewBox="0 0 28 24" fill="none">
+        <rect x="5" y="4" width="18" height="12" rx="2" stroke="currentColor" stroke-width="1.6" />
+        <path d="M2 20h24" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+      </svg>
+    {/if}
+    <span
+      class="absolute -right-[3px] -top-[3px] h-2.5 w-2.5 rounded-full border-2 border-canvas {online
+        ? 'bg-positive'
+        : 'bg-faint'}"
+    ></span>
+  </span>
+{/snippet}
 
 <!--
   "Project" is one button for two places: both the presenter and the
@@ -919,6 +1442,28 @@
   who entered the room by the same link. Requiring the console for this
   would mean requiring the teacher to walk over to the department laptop.
 -->
+<!--
+  "Notes" opens the speaker-notes editor over the room, for any teacher:
+  the one leading, a second teacher watching, and the same teacher in a
+  second browser, who used to get no editor anywhere. It opens at the page
+  on screen; a blank sheet has no notes, so that opens the first slide.
+-->
+{#snippet notesButton(extra: string, compact = false)}
+  {#if host}
+    <button
+      type="button"
+      class="{TOOL} {extra} text-muted hover:text-ink"
+      title={tr('room.notesEditor.openTitle')}
+      aria-label={compact ? tr('room.notesEditor.open') : undefined}
+      data-notes-open
+      onclick={() => openNotesEditor(lecture.file, page > 0 ? page : 1)}
+    >
+      <Icon name="file" size={12} />
+      {#if !compact}{tr('room.notesEditor.open')}{/if}
+    </button>
+  {/if}
+{/snippet}
+
 {#snippet projectButton()}
   {#if onproject}
     <button
