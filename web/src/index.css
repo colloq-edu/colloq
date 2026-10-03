@@ -436,7 +436,10 @@
 
 @layer components {
   /* Competition pages carry instructions, scores and dense forms. Keep their
-     reading scale local: the notebook's compact toolbars use the defaults. */
+     reading scale local: the notebook's compact toolbars use the defaults.
+     Every tab of the teacher's panel reads at it too (AdminShell puts it on
+     <main> next to .admin-ui, below), so no tab is a size smaller than the
+     one beside it. */
   .competition-ui {
     --type-micro: 14px;
     --leading-micro: 20px;
@@ -444,6 +447,20 @@
     --leading-small: 22px;
     --type-ui: 16px;
     --leading-ui: 24px;
+    --muted: var(--competition-muted);
+    --faint: var(--competition-muted);
+  }
+
+  /*
+   * The public course and class pages take the competition pages' palette for
+   * secondary text, and for the same reason: they are read, a week after the
+   * class and often on a phone, not glanced at beside a running cell. Every
+   * date, size and note a student needs there is muted or faint, and the
+   * workspace's greys were picked for a dense panel. The type scale stays in
+   * the components, which size it explicitly: the reader's mono labels would
+   * not survive the 14 px `text-micro` the competition scope gives them.
+   */
+  .reading-ui {
     --muted: var(--competition-muted);
     --faint: var(--competition-muted);
   }
@@ -569,6 +586,237 @@
   .chip {
     @apply inline-flex items-center gap-1 px-1.5 py-0.5 text-2xs font-medium;
   }
+
+  /*
+   * ------------------------------------------------------ the teacher's panel
+   *
+   * One scale and one vocabulary for every admin tab, lifted out of the
+   * competition screens the owner reads them against. Before this, classes
+   * and environments sat a step smaller than competitions and courses, and
+   * every screen spelled its own table header, row menu and «⋯» button, so
+   * moving between tabs made the type jump. tests/admin-scale.test.mts holds
+   * the tabs to it.
+   *
+   * The sizes are the scope's tokens, not literals: `@apply text-micro`
+   * below also generates `.competition-ui .admin-label { 14px }`, so each of
+   * these reads at the panel's scale inside <main> and at the compact one
+   * anywhere else it might be borrowed.
+   */
+  .admin-ui {
+    /*
+     * The two steps the competition scope does not move. Left alone, `ui-lg`
+     * (15) reads smaller than the 16 px body around it and `code` (13) two
+     * steps under the 15 px mono of a number cell; admin/motion.css reads
+     * these. They exist so a tab not yet converted does not invert its own
+     * hierarchy — new markup uses the canonical steps instead.
+     */
+    --type-ui-lg: 17px;
+    --leading-ui-lg: 24px;
+    --type-code: 15px;
+    --leading-code: 22px;
+    --type-code-lg: 15px;
+    --leading-code-lg: 22px;
+  }
+
+  /*
+   * One control height. Buttons came in at 30, 32, 34, 36 and 38 px across the
+   * tabs, fields at 38 and 42, and a field beside a button never lined up.
+   * 40 on a desktop, 44 on a phone — the finger target the panel's phone
+   * rules already use. min-height rather than height so a two-line label
+   * still grows; :where() keeps the weight at one class, so a `min-h-0` or a
+   * `w-*` at the call site still wins. Attribute selectors rather than class
+   * ones because Tailwind indexes every class in a components rule for
+   * @apply, and `.btn-primary`'s own `@apply btn` then copied this rule five
+   * times over.
+   */
+  .admin-ui :where(
+    [class~='btn'],
+    [class~='btn-primary'],
+    [class~='btn-ghost'],
+    [class~='btn-outline'],
+    [class~='btn-danger'],
+    [class~='btn-danger-solid']
+  ) {
+    min-height: 40px;
+  }
+  .admin-ui :where(input[class~='field'], select[class~='field']) {
+    height: 40px;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  @media (max-width: 640px) {
+    .admin-ui :where(
+      [class~='btn'],
+      [class~='btn-primary'],
+      [class~='btn-ghost'],
+      [class~='btn-outline'],
+      [class~='btn-danger'],
+      [class~='btn-danger-solid']
+    ) {
+      min-height: 44px;
+    }
+    .admin-ui :where(input[class~='field'], select[class~='field']) {
+      height: 44px;
+    }
+  }
+
+  /* The page's own action («+ Новое соревнование», «Обновить страницу»):
+     a modifier on .btn-primary, after it in the file so the weight wins. */
+  .btn-caps {
+    @apply font-bold uppercase tracking-caps;
+  }
+  /* On a phone the action takes the whole line, 278 px of it beside the rail,
+     and 16 px tracked capitals broke «Добавить преподавателя» in two. The
+     label voice's 14 px brings it to 279 px with the plus icon and 16 px
+     sides — one pixel over, so the sides drop to 12: a full-width button
+     centres its label, and the sides only matter where the line is tight.
+     Three classes: admin/motion.css sizes `.admin .btn-primary` with two, and
+     its chunk lands after this file. */
+  @media (max-width: 640px) {
+    .admin .admin-ui .btn-caps {
+      font-size: var(--type-micro);
+      line-height: var(--leading-micro);
+      padding-left: 12px;
+      padding-right: 12px;
+    }
+  }
+  /* «Завершить сейчас», «Удалить…» outside a dialog: a frame, not a fill. */
+  .btn-danger {
+    @apply btn border border-danger bg-surface text-danger hover:bg-danger/10;
+  }
+  /* The confirming button inside a delete dialog. Canvas-coloured text in the
+     dark theme, where the danger fill turns light. */
+  .btn-danger-solid {
+    @apply btn bg-danger text-white hover:brightness-110 active:brightness-95 dark:text-canvas;
+  }
+  .btn-danger:active:not(:disabled),
+  .btn-danger-solid:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+
+  /* The label voice: a column header, a field caption, a tile caption. */
+  .admin-label {
+    @apply text-micro font-bold uppercase tracking-caps text-muted;
+  }
+
+  /*
+   * A stacked section: «Настройки курса», «Тетради», «Что станет публичным».
+   * The heavy ink rule is what tells it from a column header, which sits on a
+   * hairline. A setting with its explanation beside it is admin/ui/Section.
+   */
+  .admin-section {
+    @apply flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b-2 border-ink pb-2.5;
+  }
+  .admin-section-title {
+    @apply text-micro font-bold uppercase tracking-caps text-ink;
+  }
+
+  /*
+   * A list drawn as flex rows (competitions, entrants, courses). A <table> uses
+   * .admin-table instead, which puts the same numbers on th and td.
+   */
+  .admin-list-head {
+    @apply flex items-center gap-4 border-b border-line py-2.5;
+  }
+  /* One object per row: a title with a meta line under it. */
+  .admin-list-row {
+    @apply flex items-center gap-4 border-b border-line py-3.5;
+  }
+  /* One line per row: a leaderboard, a file list, the audit log. */
+  .admin-data-row {
+    @apply flex items-center gap-4 border-b border-line-soft py-2.5;
+  }
+  /* The cells sit under :where(), so the table's own class is all the weight
+     they carry: a `text-right` or a phone card's `max-[640px]:py-0` written on
+     a cell still wins. Spelled `> thead > tr > th`, the rules outweighed every
+     class at the call site and turned the classes table's phone cards into
+     228 px blocks. */
+  .admin-table {
+    @apply w-full border-collapse;
+  }
+  .admin-table :where(thead > tr > th) {
+    @apply border-b border-line py-2.5 pr-4 text-left align-bottom text-micro font-bold uppercase
+           tracking-caps text-muted last:pr-0;
+  }
+  .admin-table :where(tbody > tr > td) {
+    @apply border-b border-line py-3.5 pr-4 align-middle last:pr-0;
+  }
+  .admin-row-title {
+    @apply text-ui font-semibold text-ink;
+  }
+  .admin-meta {
+    @apply text-micro text-muted;
+  }
+  /* Counts, scores, dates in a column: mono, so a column of them aligns. */
+  .admin-num {
+    @apply font-mono text-2xs tabular-nums text-ink;
+  }
+
+  /* An action that reads as part of a sentence: «Приостановить очередь». */
+  .admin-link {
+    @apply text-2xs text-accent-text underline decoration-dotted underline-offset-4
+           hover:brightness-110 disabled:cursor-not-allowed disabled:text-faint disabled:no-underline;
+  }
+
+  /* The «⋯» on a row, and any other square icon control. */
+  .admin-icon-btn {
+    @apply inline-flex h-9 w-9 shrink-0 items-center justify-center text-faint transition-colors
+           duration-quick hover:bg-raised hover:text-ink disabled:opacity-40 max-[640px]:h-11
+           max-[640px]:w-11;
+  }
+
+  /* A row menu's panel; where it hangs (absolute, fixed, its width) stays at the
+     call site, and `row-menu` beside it brings the entrance (admin/motion.css). */
+  .admin-menu {
+    @apply border border-line bg-canvas py-1 text-left shadow-pop;
+  }
+  .admin-menu-item {
+    @apply block w-full px-3 py-2 text-left text-ui text-ink transition-colors duration-quick
+           hover:bg-raised disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .admin-menu-sep {
+    @apply my-1 border-t border-line-soft;
+  }
+
+  /* Tabs under a page header; the active one is whatever aria marks current. */
+  .admin-tabs {
+    @apply -mx-7 flex gap-7 overflow-x-auto border-b border-line px-7;
+  }
+  .admin-tab {
+    @apply shrink-0 whitespace-nowrap border-b-[3px] border-transparent pb-3 pt-3 text-ui text-muted
+           transition-colors duration-quick hover:text-ink;
+  }
+  .admin-tab[aria-current='page'],
+  .admin-tab[aria-selected='true'] {
+    @apply border-accent font-semibold text-ink;
+  }
+
+  /*
+   * A field with a fixed part in front: «/k/» before a competition's address,
+   * the host before a course's. The frame is the field's, so it sits at the
+   * control height and takes the field's focus halo.
+   */
+  .admin-affix {
+    @apply flex h-10 min-w-0 items-center gap-1 border border-line bg-surface px-3 max-[640px]:h-11;
+    transition: border-color var(--speed-quick) ease;
+  }
+  .competition-ui .admin-affix {
+    border-color: rgb(var(--muted) / 0.8);
+  }
+  .admin-affix:focus-within {
+    border-color: rgb(var(--accent));
+    box-shadow: 0 0 0 4px var(--ring);
+  }
+  .admin-affix > input {
+    @apply h-full min-w-0 flex-1 bg-transparent font-mono text-2xs text-ink placeholder:text-faint
+           focus:outline-none;
+  }
+  /* The frame carries the focus; the scope's outline would draw a second ring
+     inside it. */
+  .admin-ui .admin-affix > input:focus-visible {
+    outline: none;
+  }
+
   /*
    * 160ms, written out rather than tokenised: a strip of peer avatars is a
    * small thing appearing, which is the 125-200ms tier, and the ladder above
@@ -833,6 +1081,34 @@
  * same reason: selectors of equal weight, order in the file settles it.
  */
 .prose-cell {
+  /*
+   * 16/26, not the 15/22 it used to be: the class page and the competition
+   * task are the two places where prose is the page itself, read top to
+   * bottom, and both share this class so they cannot drift apart. The
+   * headings and inline code step up with it; at the note's own sizes an h3
+   * would come out smaller than the paragraph under it.
+   */
+  font-size: 16px;
+  line-height: 26px;
+}
+/* Two classes, so these outrank the .prose-note rules further down the file. */
+.prose-note.prose-cell h1 {
+  font-size: 26px;
+  line-height: 32px;
+}
+.prose-note.prose-cell h2 {
+  font-size: 20px;
+  line-height: 28px;
+}
+.prose-note.prose-cell h3 {
+  font-size: 17px;
+  line-height: 26px;
+}
+.prose-note.prose-cell code,
+.prose-note.prose-cell pre code {
+  @apply text-code-lg;
+}
+.prose-note.prose-cell table {
   @apply text-ui-lg;
 }
 
@@ -1047,4 +1323,8 @@
 /* Cell outputs keep whitespace but must never widen the page. */
 .output-stream {
   @apply overflow-x-auto whitespace-pre-wrap break-words font-mono text-code;
+}
+/* On a class page the printout sits under 14 px code: one size for both, as in the cell above it. */
+.reading-ui .output-stream {
+  @apply text-code-lg;
 }

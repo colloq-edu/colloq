@@ -484,3 +484,123 @@ test('«обновлено» is the server\'s day, not the browser\'s zone', () 
   assert.doesNotMatch(CLASS, /resolvedOptions\(\)\.timeZone/, 'the browser zone decides the day')
   assert.match(iface('PublicPage'), /\n  updatedOn: string\n/, 'updatedOn is optional again')
 })
+
+/* ------------------------------------------------------- folder materials */
+
+test('a folder is one row in mono, with its count, and downloads as one ZIP', () => {
+  /*
+   * The EDA class publishes data/, scripts/ and assets/ whole (F1): fifteen
+   * datasets as fifteen rows did not fit the page, and the archive could not
+   * promise a folder that runs after unzipping.
+   */
+  assert.match(MATERIALS, /<Icon name=\{folder \? 'folder' : iconFor\(m\.path\)\} size=\{16\} \/>/)
+  assert.match(MATERIALS, /folder\s*\? 'font-mono text-\[16px\] font-medium leading-6'/, 'a folder name is not mono')
+  assert.match(MATERIALS, /tr\(`room\.page\.folder\.\$\{folderLabel\(m\.holds \?\? \[\]\)\}`\)/)
+  // The name downloads (it is no tab and no PDF), and the button stays beside it.
+  assert.match(MATERIALS, /download=\{opens\(m\) \? undefined : ''\}/)
+  assert.match(MATERIALS, /\{#if opens\(m\) \|\| folder\}/)
+  assert.match(MATERIALS, /tr\('room\.page\.downloadFolder', \{ name: m\.name \}\)/)
+  // The archive caption names the folders, and keeps the old sentence without them.
+  assert.match(MATERIALS, /const caption = \$derived\(zipNote\(page\.materials\)\)/)
+  const HREFS = code(read('web/src/components/reader/links.ts'))
+  assert.match(HREFS, /for \(const m of folders\) words\.push\(m\.name\)/)
+  assert.match(HREFS, /tr\(folders\.length > 0 \? 'room\.page\.zipNoteFolders' : 'room\.page\.zipNote', \{ what \}\)/)
+  // The course rail: the same icon and mono name, the count where a file has its extension.
+  assert.match(LINKS, /if \(m\.kind === 'folder'\) return 'folder' as const/)
+  assert.match(LINKS, /if \(m\.kind === 'folder'\) return folderCount\(m\)/)
+  assert.match(LINKS, /\? 'font-mono text-\[15px\] font-medium'/)
+})
+
+test('a folder counts its files in both languages, and its link is the material download', async () => {
+  const { setLocaleResolver } = await import('../shared/i18n.js')
+  const { folderCount, materialHref } = await import('../web/src/components/reader/links.js')
+  try {
+    setLocaleResolver(() => 'ru')
+    assert.equal(folderCount({ files: 15, bytes: 25 * 1024 * 1024 }), '15 файлов · 25 МБ')
+    assert.equal(folderCount({ files: 1, bytes: 512 }), '1 файл · 512 Б')
+    assert.equal(folderCount({ bytes: 64 * 1024 }), '64 КБ', 'a count the server did not send is made up')
+    setLocaleResolver(() => 'en')
+    assert.equal(folderCount({ files: 9, bytes: 64 * 1024 }), '9 files · 64 KB')
+  } finally {
+    setLocaleResolver(() => 'ru')
+  }
+  assert.equal(materialHref('ml-strong-03', { key: 'data', kind: 'folder' }), '/api/p/ml-strong-03/m/data/download')
+  for (const key of ['room.page.files', 'room.page.folder.data', 'room.page.folder.code', 'room.page.folder.image',
+    'room.page.folder.file', 'room.page.downloadFolder', 'room.page.zipNoteFolders']) {
+    assert.notEqual(translate('ru', key), key, `${key} has no Russian`)
+    assert.notEqual(translate('en', key), key, `${key} has no English`)
+  }
+})
+
+test('the ZIP caption capitalises its first word, never a folder path', async () => {
+  const { setLocaleResolver } = await import('../shared/i18n.js')
+  const { zipNote } = await import('../web/src/components/reader/links.js')
+  const nb = { kind: 'notebook' as const, name: 'Лекция' }
+  const pdf = { kind: 'pdf' as const, name: 'Слайды' }
+  const data = { kind: 'folder' as const, name: 'data/' }
+  const scripts = { kind: 'folder' as const, name: 'scripts/' }
+  try {
+    setLocaleResolver(() => 'ru')
+    assert.equal(
+      zipNote([nb, pdf, data, scripts]),
+      'Тетради с результатами, слайды, data/ и scripts/\u00a0— по тем же путям, что в комнате: распакуйте и запускайте.',
+    )
+    // A page of folders alone: «Data/» is a path no case-sensitive disk has.
+    assert.equal(
+      zipNote([data, scripts]),
+      'data/ и scripts/\u00a0— по тем же путям, что в комнате: распакуйте и запускайте.',
+    )
+    setLocaleResolver(() => 'en')
+    assert.match(zipNote([data]), /^data\/\u00a0— at the same paths/)
+    assert.match(zipNote([nb, data]), /^Notebooks/)
+  } finally {
+    setLocaleResolver(() => 'ru')
+  }
+})
+
+/* -------------------------------------------------------- the reading scale */
+
+test('the public pages read at the competition pages\' scale', () => {
+  /*
+   * The owner: the competition header is «the same kind but larger». A student
+   * moves between /k and /c in one evening; the reader now shares the bar's
+   * metrics, the muted ink and the prose step with the competition pages.
+   */
+  const top = code(read('web/src/components/competitions/TopBar.svelte'))
+  const header = (source: string) => (source.match(/<header\s+class="([^"]+)"/) ?? ['', ''])[1].split(/\s+/)
+  for (const cls of ['h-14', 'px-4', 'sm:px-10', 'border-b', 'border-line']) {
+    assert.ok(header(top).includes(cls), `the competition bar lost ${cls}: compare again`)
+    assert.ok(header(BAR).includes(cls), `the reader bar is not ${cls} like the competition bar`)
+  }
+  assert.ok(!header(BAR).some((cls) => /^(lg|sm|md):h-/.test(cls)), 'the reader bar changes height with the width again')
+  assert.match(BAR, /<Icon name="logo" size=\{16\} class="shrink-0 text-primary" \/>/)
+  assert.match(BAR, /text-\[15px\] font-black uppercase leading-\[22px\] tracking-section text-primary/)
+
+  // The competition palette for secondary text, on both pages and both refusals.
+  const css = read('web/src/index.css')
+  assert.match(css, /\.reading-ui \{\s*--muted: var\(--competition-muted\);\s*--faint: var\(--competition-muted\);/)
+  assert.match(COURSE, /<div class="reading-ui min-h-screen bg-canvas">/)
+  assert.match(CLASS, /<div class="reading-ui min-h-screen bg-canvas">/)
+  assert.equal((SCREEN.match(/reading-ui/g) ?? []).length, 2, 'a refusal screen is back on the workspace greys')
+
+  // Prose is 16/26 for the notebook and for the competition task alike.
+  assert.match(css, /\.prose-cell \{[^}]*font-size: 16px;\s*line-height: 26px;/)
+  assert.match(code(read('web/src/components/competitions/TaskView.svelte')), /prose-note prose-cell/)
+  assert.match(NOTEBOOK, /class="prose-note prose-cell"/)
+})
+
+test('nothing on a public page is set below 12 px, and sans text not below 14', () => {
+  const files = [COURSE, CLASS, MATERIALS, LINKS, BAR, NOTEBOOK, SCREEN, OUTLINE,
+    code(read('web/src/components/reader/RoomDoor.svelte')),
+    code(read('web/src/components/reader/CopyLink.svelte'))]
+  for (const source of files) {
+    for (const m of source.matchAll(/text-\[(\d+)px\]/g)) {
+      assert.ok(Number(m[1]) >= 12, `text-[${m[1]}px] on a page read from a phone`)
+    }
+    // 12 and 13 px (and the workspace steps that are those sizes): on these pages only for
+    // mono, whose caps run wider than the sans at the same size.
+    for (const m of source.matchAll(/class="([^"]*\btext-(?:micro|2xs|\[1[23]px\])[^"]*)"/g)) {
+      assert.match(m[1], /\bfont-mono\b/, `a sans line under 14 px: ${m[1]}`)
+    }
+  }
+})

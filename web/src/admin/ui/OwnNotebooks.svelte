@@ -146,7 +146,7 @@
 <div class="flex flex-col gap-2.5">
   <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
     <div class="flex min-w-0 flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
-      <span class="text-2xs font-black uppercase tracking-caps text-ink">{tr('admin.ownNotebooks.title')}</span>
+      <span class="admin-section-title">{tr('admin.ownNotebooks.title')}</span>
       <span class="text-2xs text-muted">{tr('admin.ownNotebooks.lede')}</span>
     </div>
     <div class="flex shrink-0 border border-line" role="group" aria-label={tr('admin.ownNotebooks.title')}>
@@ -158,7 +158,10 @@
           disabled={busy}
           onclick={() => onchange({ ownBooks: option.value as RoomRules['ownBooks'] })}
           class={cn(
-            'h-8 px-3 text-ui transition-colors duration-100 focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/15',
+            // The panel's control height, and the room rules' segments below
+            // (RoomRulesRows · .admin-ui) are drawn the same: one switch voice.
+            'min-h-10 px-3 text-ui font-medium transition-colors duration-100 max-[640px]:min-h-11',
+            'focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/15',
             pressed ? 'bg-primary font-semibold text-primary-ink' : 'bg-canvas text-ink hover:bg-surface',
           )}
         >
@@ -173,14 +176,14 @@
       <p class="text-2xs font-semibold text-warning">{tr('room.rules.ownBooks.noKernel')}</p>
     {/if}
     <div class="flex flex-wrap items-stretch gap-3">
-      <label class="field flex w-[200px] shrink-0 items-center gap-2 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/25">
+      <label class="admin-affix w-[200px] shrink-0 gap-2">
         <input
           value={memoryShown}
           oninput={(event) => (memoryText = event.currentTarget.value)}
           onblur={commitMemory}
           onkeydown={(event) => event.key === 'Enter' && event.currentTarget.blur()}
           disabled={busy}
-          class="min-w-0 flex-1 bg-transparent font-mono text-code text-ink outline-none placeholder:font-sans placeholder:text-2xs placeholder:text-faint"
+          class="placeholder:font-sans"
           inputmode="decimal"
           autocomplete="off"
           placeholder={memoryPlaceholder}
@@ -188,14 +191,14 @@
         />
         <span class="shrink-0 text-2xs text-muted">{tr('admin.ownNotebooks.gbPerClass')}</span>
       </label>
-      <label class="field flex w-[160px] shrink-0 items-center gap-2 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/25">
+      <label class="admin-affix w-[160px] shrink-0 gap-2">
         <input
           value={cpuShown}
           oninput={(event) => (cpuText = event.currentTarget.value)}
           onblur={commitCpus}
           onkeydown={(event) => event.key === 'Enter' && event.currentTarget.blur()}
           disabled={busy}
-          class="min-w-0 flex-1 bg-transparent font-mono text-code text-ink outline-none placeholder:font-sans placeholder:text-2xs placeholder:text-faint"
+          class="placeholder:font-sans"
           inputmode="numeric"
           autocomplete="off"
           placeholder={cpuPlaceholder}
@@ -209,7 +212,7 @@
           id="own-notebooks-class-size"
           bind:value={classSizeText}
           onblur={rememberClassSize}
-          class="w-10 border-b-[1.5px] border-ink bg-transparent px-1 text-center font-mono text-code outline-none"
+          class="w-10 border-b-[1.5px] border-ink bg-transparent px-1 text-center font-mono text-2xs outline-none"
           inputmode="numeric"
           autocomplete="off"
         />
@@ -218,6 +221,6 @@
         </span>
       </div>
     </div>
-    <p class="text-2xs text-muted">{tr('admin.ownNotebooks.note')}</p>
+    <p class="admin-meta">{tr('admin.ownNotebooks.note')}</p>
   {/if}
 </div>

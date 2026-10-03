@@ -18,7 +18,7 @@ import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createSession } from '../server/src/db.js'
 import { shutdownCollab } from '../server/src/collab/index.js'
-import { notebookMaterial } from '../server/src/publish/materials.js'
+import { folderHash, notebookMaterial } from '../server/src/publish/materials.js'
 import { putPageFile } from '../server/src/publish/page-files.js'
 import {
   createCourse,
@@ -69,6 +69,16 @@ const note = (id: string, source: string): PublicCell => ({
 function file(key: string, kind: StoredMaterial['kind'], name: string, path: string, body: string): StoredMaterial {
   const stored = putPageFile(Buffer.from(body), 'application/octet-stream')
   return { key, kind, name, path, hash: stored.hash, bytes: stored.bytes }
+}
+
+/** A folder material: its files in the page-file store, at their room paths. */
+function folder(key: string, path: string, files: Record<string, string>): StoredMaterial {
+  const stored = Object.entries(files).map(([rel, body]) => {
+    const put = putPageFile(Buffer.from(body), 'application/octet-stream')
+    return { path: `${path}/${rel}`, hash: put.hash, bytes: put.bytes }
+  })
+  const bytes = stored.reduce((sum, f) => sum + f.bytes, 0)
+  return { key, kind: 'folder', name: `${path}/`, path, hash: folderHash(stored), bytes, files: stored }
 }
 
 /** A room with a page holding the given materials. */
@@ -161,12 +171,16 @@ test('the page says which class it is, what is on it and where its neighbours ar
 })
 
 test('a notebook tab has its cells; any other key is «no such material»', async () => {
-  const pub = page('pp-tabs', 'Вкладки', [lecture(), file('slides', 'pdf', 'Слайды', 'slides.pdf', '%PDF-1.4\n')])
+  const pub = page('pp-tabs', 'Вкладки', [
+    lecture(),
+    file('slides', 'pdf', 'Слайды', 'slides.pdf', '%PDF-1.4\n'),
+    folder('data', 'data', { 'a.csv': 'a\n1\n' }),
+  ])
   const tab = await get<{ notebook: { key: string; cells: PublicCell[] } }>(`/api/p/${pub.id}/m/lecture`)
   assert.equal(tab.status, 200)
   assert.equal(tab.body.notebook.key, 'lecture')
   assert.deepEqual(tab.body.notebook.cells.map((c) => c.id), ['h1', 'c1', 'c2'])
-  for (const key of ['slides', 'nope', '12', 'LECTURE']) {
+  for (const key of ['slides', 'data', 'nope', '12', 'LECTURE']) {
     const refused = await get<{ error: string }>(`/api/p/${pub.id}/m/${key}`)
     assert.deepEqual([refused.status, refused.body.error], [404, 'material not found'], key)
   }
@@ -175,7 +189,17 @@ test('a notebook tab has its cells; any other key is «no such material»', asyn
 })
 
 test('a withdrawn page names itself with nothing on it, and its files are gone', async () => {
-  const pub = page('pp-withdrawn', 'Снятая', [lecture(), file('slides', 'pdf', 'Слайды', 'slides.pdf', '%PDF-1.4\n')])
+  const pub = page('pp-withdrawn', 'Снятая', [
+    lecture(),
+    file('slides', 'pdf', 'Слайды', 'slides.pdf', '%PDF-1.4\n'),
+    folder('data', 'data', { 'train.csv': 'x,y\n1,2\n' }),
+  ])
+  const live = (await get<{ page: PublicPage }>(`/api/p/${pub.id}`)).body.page
+  assert.deepEqual(
+    live.materials.find((m) => m.kind === 'folder'),
+    { key: 'data', kind: 'folder', name: 'data/', bytes: 8, files: 1, holds: ['data'], path: 'data' },
+  )
+  assert.equal((await fetch(`${base}/api/p/${pub.id}/m/data/download`)).status, 200)
   setPublicationState(pub.id, 'withdrawn')
   const { status, body } = await get<{ page: PublicPage }>(`/api/p/${pub.id}`)
   assert.equal(status, 200)
@@ -183,7 +207,7 @@ test('a withdrawn page names itself with nothing on it, and its files are gone',
   assert.equal(body.page.title, 'Снятая')
   assert.deepEqual(body.page.materials, [])
   assert.equal(body.page.zip, null)
-  for (const path of ['/m/lecture', '/m/lecture/download', '/m/slides/open', '/zip', '/notebook.ipynb']) {
+  for (const path of ['/m/lecture', '/m/lecture/download', '/m/slides/open', '/m/data/download', '/zip', '/notebook.ipynb']) {
     const res = await fetch(`${base}/api/p/${pub.id}${path}`, { redirect: 'manual' })
     assert.equal(res.status, 404, path)
     assert.equal(((await res.json()) as { error: string }).error, 'publication not found', path)

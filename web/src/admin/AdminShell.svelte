@@ -333,7 +333,14 @@
     {/if}
   </nav>
 
-  <main class="flex min-w-0 flex-1 flex-col overflow-hidden" class:competition-ui={tab === 'competitions'}>
+  <!--
+    Every tab at one scale: the competitions' type steps and greys
+    (.competition-ui) and the panel's control geometry (.admin-ui), both in
+    index.css. It used to be switched on per tab, and the owner moved from a
+    16 px course row to a 14 px class row with one click on the rail. The rail
+    itself stays outside: it is the one thing that never changes between tabs.
+  -->
+  <main class="competition-ui admin-ui flex min-w-0 flex-1 flex-col overflow-hidden">
     {@render children()}
   </main>
 </div>

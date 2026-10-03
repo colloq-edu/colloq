@@ -11,7 +11,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   MATERIAL_KEY_RE,
+  entryGoes,
   filePick,
+  folderEntryWhy,
+  folderLabel,
+  folderMentioned,
+  folderPick,
+  isPrivatePath,
   looksGenerated,
   looksLikeAnswers,
   materialKey,
@@ -19,6 +25,7 @@ import {
   materialRank,
   materialTags,
   mentioned,
+  neededModules,
   notebookPick,
   rosterMatch,
   suggestName,
@@ -196,4 +203,165 @@ test('generated output and big files are not ticked by default', () => {
     picked: false,
     why: 'image',
   })
+})
+
+test('a top-level folder is a kind of its own: its key, its place last, its tags and its label', () => {
+  assert.equal(materialKind('data/'), 'folder')
+  assert.equal(suggestName('data/'), 'data/')
+  assert.equal(materialKey('data/', 'folder'), 'data')
+  assert.equal(materialKey('data.v2/', 'folder'), 'data-v2')
+  assert.equal(materialKey('2026/', 'folder'), 'folder-2026')
+  const items = [
+    { kind: 'folder' as const, name: 'data/', path: 'data' },
+    { kind: 'data' as const, name: 'd.csv', path: 'd.csv' },
+    { kind: 'notebook' as const, name: 'Лекция', path: 'lecture.ipynb' },
+    { kind: 'file' as const, name: 'x.html', path: 'x.html' },
+  ]
+  const sorted = [...items].sort((a, b) => materialRank(a) - materialRank(b)).map((m) => m.name)
+  assert.deepEqual(sorted, ['Лекция', 'd.csv', 'x.html', 'data/'])
+  // A folder speaks for what it holds; a folder of pictures adds no word to the course row.
+  const tags = (holds: ('data' | 'code' | 'image' | 'text')[]) =>
+    materialTags([{ kind: 'folder', name: 'f/', holds }])
+  assert.deepEqual(tags(['data']), ['data'])
+  assert.deepEqual(tags(['data', 'code']), ['data', 'code'])
+  assert.deepEqual(tags(['image']), [])
+  assert.deepEqual(tags(['text', 'image']), ['files'])
+  assert.deepEqual(folderLabel(['data', 'code']), 'data')
+  assert.deepEqual(folderLabel(['code', 'text']), 'code')
+  assert.deepEqual(folderLabel(['image']), 'image')
+  assert.deepEqual(folderLabel(['text']), 'file')
+})
+
+test('inside a folder the rules are a file\'s, minus being needed; the folder is ticked when used', () => {
+  const why = (path: string, bytes = 100) =>
+    folderEntryWhy({ path, bytes, roster: ['Зуев Аким'], fileLimit: 1000 })
+  assert.equal(why('scripts/__init__.py'), null)
+  assert.equal(why('data/unread.csv'), null)
+  assert.equal(why('assets/fig.png'), null)
+  assert.equal(why('data/_raw.csv'), 'private')
+  assert.equal(why('data/_old/x.csv'), 'private')
+  assert.equal(why('scripts/solutions/x.py'), 'answers')
+  assert.equal(why('data/ZuevAkim.csv'), 'roster')
+  assert.equal(why('data/outputs/pred.csv'), 'generated')
+  assert.equal(why('data/big.csv', 2000), 'too-large')
+  assert.ok(!isPrivatePath('scripts/__init__.py'))
+  assert.ok(isPrivatePath('_drafts/__init__.py'))
+
+  const base = { files: 3, bytes: 100, usedBy: [], inNotes: [], roster: [], pageLimit: 1000 }
+  assert.deepEqual(folderPick({ ...base, path: 'data' }), { picked: false, why: 'unused' })
+  assert.deepEqual(folderPick({ ...base, path: 'data', usedBy: ['a.ipynb'] }), { picked: true, why: null })
+  assert.deepEqual(folderPick({ ...base, path: 'assets', inNotes: ['a.ipynb'] }), { picked: true, why: null })
+  assert.deepEqual(folderPick({ ...base, path: '_drafts', usedBy: ['a.ipynb'] }), { picked: false, why: 'private' })
+  assert.deepEqual(folderPick({ ...base, path: 'solutions', usedBy: ['a.ipynb'] }), { picked: false, why: 'answers' })
+  assert.deepEqual(folderPick({ ...base, path: 'outputs', usedBy: ['a.ipynb'] }), { picked: false, why: 'generated' })
+  assert.deepEqual(folderPick({ ...base, path: 'data', files: 0, usedBy: ['a.ipynb'] }), { picked: false, why: 'empty' })
+  assert.deepEqual(folderPick({ ...base, path: 'data', files: 1001, usedBy: ['a.ipynb'] }), { picked: false, why: 'too-many' })
+  assert.deepEqual(folderPick({ ...base, path: 'data', bytes: 2000, usedBy: ['a.ipynb'] }), { picked: false, why: 'too-large' })
+})
+
+test('inside a folder a student\'s name counts in any segment: hw/<student>/ stays in the room', () => {
+  const roster = ['Зуев Аким', 'Петров Иван']
+  const why = (path: string) => folderEntryWhy({ path, bytes: 100, roster, fileLimit: 1000 })
+  assert.equal(why('hw/Zuev Akim/model.py'), 'roster')
+  assert.equal(why('hw/zuev_akim/train.csv'), 'roster')
+  assert.equal(why('hw/petrov/preds.csv'), 'roster')
+  assert.equal(why('submissions/ZuevAkim/sub.csv'), 'roster')
+  assert.equal(why('hw/task1/model.py'), null)
+  assert.equal(why('data/train.csv'), null)
+})
+
+test('inside a folder what the checks cannot look into stays: key names, unknown binaries, big text', () => {
+  const why = (path: string, bytes = 100) =>
+    folderEntryWhy({ path, bytes, roster: [], fileLimit: 100 * 1024 * 1024 })
+  for (const path of [
+    'data/key.pem',
+    'data/server.key',
+    'data/credentials',
+    'data/credentials.json',
+    'data/id_rsa',
+    'data/token.txt',
+    'data/openai_key.txt',
+    'data/api-keys.yaml',
+    'data/my-service-account.json',
+  ]) {
+    assert.equal(why(path), 'secret', path)
+  }
+  for (const path of ['data/report.html', 'data/blob.bin', 'data/README', 'data/store.kdb']) {
+    assert.equal(why(path), 'unchecked', path)
+  }
+  assert.equal(why('docs/huge.md', 3 * 1024 * 1024), 'unchecked')
+  assert.equal(why('scripts/big.py', 3 * 1024 * 1024), 'unchecked')
+  // Data and pictures go however big and binary they are: they are what the folder is for.
+  assert.equal(why('data/tokens.csv'), null)
+  assert.equal(why('data/key_points.md'), null)
+  assert.equal(why('data/flats.csv', 30 * 1024 * 1024), null)
+  assert.equal(why('data/db.sqlite'), null)
+  assert.equal(why('data/model.pkl'), null)
+  assert.equal(why('assets/fig.png'), null)
+  assert.equal(why('slides/deck.pdf'), null)
+})
+
+test('the teacher\'s word on a file inside a folder beats the rules, except the upload limit', () => {
+  const choice = { include: new Set(['s/_utils.py', 's/big.bin']), exclude: new Set(['s/draft.py']) }
+  assert.equal(entryGoes({ path: 's/a.py', why: null }, choice), true)
+  assert.equal(entryGoes({ path: 's/draft.py', why: null }, choice), false)
+  assert.equal(entryGoes({ path: 's/_utils.py', why: 'private' }, choice), true)
+  assert.equal(entryGoes({ path: 's/_other.py', why: 'private' }, choice), false)
+  assert.equal(entryGoes({ path: 's/big.bin', why: 'too-large' }, choice), false)
+  assert.equal(entryGoes({ path: 's/a.py', why: null }, null), true)
+})
+
+test('a `_` module goes with its package when the code going out imports it', () => {
+  const entry = (path: string) => ({ path, why: isPrivatePath(path) ? ('private' as const) : null })
+  const entries = [
+    entry('scripts/__init__.py'),
+    entry('scripts/eda_tools.py'),
+    entry('scripts/_utils.py'),
+    entry('scripts/_core/__init__.py'),
+    entry('scripts/_core/engine.py'),
+    entry('scripts/_core/_impl.py'),
+    entry('scripts/_scratch.py'),
+    entry('scripts/_notes/old.py'),
+    entry('lib/_vendored.py'),
+  ]
+  const texts: Record<string, string> = {
+    'scripts/eda_tools.py': 'from ._utils import plot\nfrom scripts._core.engine import run\n',
+    'scripts/_core/engine.py': 'from . import _impl\n',
+    'scripts/_core/_impl.py': 'x = 1\n',
+  }
+  const needed = neededModules(entries, (path) => texts[path] ?? '', ['from scripts import eda_tools'])
+  assert.deepEqual(
+    [...needed].sort(),
+    [
+      'scripts/_core/__init__.py',
+      'scripts/_core/_impl.py',
+      'scripts/_core/engine.py',
+      'scripts/_utils.py',
+    ],
+  )
+  // Nobody imports _scratch.py; _notes/ has no __init__.py; lib/ is no package.
+  assert.ok(!needed.has('scripts/_scratch.py'))
+  assert.ok(!needed.has('scripts/_notes/old.py'))
+  // The same draft without anything importing it: nothing is brought back.
+  assert.equal(neededModules(entries, () => '', ['import pandas']).size, 0)
+  // A relative import names a sibling module, a dotted one a module of a subpackage.
+  assert.ok(mentioned('scripts/_utils.py', 'from . import _utils, other\n'))
+  assert.ok(mentioned('scripts/_core/engine.py', 'from ._core import engine\n'))
+  assert.ok(mentioned('scripts/_core/__init__.py', 'from ._core.engine import run\n'))
+})
+
+test('a folder is used when a file in it is named, when it is read, or when it is imported', () => {
+  const files = ['data/flats.csv', 'data/prices.parquet']
+  assert.ok(folderMentioned('data', files, "pd.read_csv('flats.csv')"))
+  assert.ok(folderMentioned('data', files, "glob.glob('data/*.csv')"))
+  assert.ok(folderMentioned('data', files, "pd.read_csv(f'data/{name}.csv')"))
+  assert.ok(folderMentioned('data', files, "ROOT = Path('data')"))
+  assert.ok(folderMentioned('data', files, "os.listdir('./data/')"))
+  assert.ok(!folderMentioned('data', files, "df['data'].mean()"))
+  assert.ok(!folderMentioned('data', files, "pd.read_csv('metadata/x.csv')"))
+  const code = ['scripts/eda_tools.py']
+  assert.ok(folderMentioned('scripts', code, 'import scripts'))
+  assert.ok(folderMentioned('scripts', code, 'from scripts import case_cian as cian'))
+  assert.ok(folderMentioned('scripts', code, 'import scripts.case_bpm as bpm'))
+  assert.ok(!folderMentioned('scripts', code, 'import scriptslib'))
 })

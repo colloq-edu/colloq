@@ -8,14 +8,27 @@
   opens. A notebook opens as its tab below, a PDF in the browser's own viewer
   (a phone has one, a page of canvases would be worse), and data or code
   downloads: the name of a data file is its room path, because the code
-  reads it by that path.
+  reads it by that path. A folder (`data/`, `scripts/`) is one row in mono,
+  like the path the code writes, and downloads as one ZIP with the folder
+  inside; it keeps the download button too, because its name is not a
+  file anyone expects a tap to fetch.
 -->
 <script lang="ts">
-  import { tr, getLocale } from '@shared/i18n'
+  import { tr } from '@shared/i18n'
   import Icon from '@/components/ui/Icon.svelte'
   import { iconFor } from '@/lib/file-icons'
   import type { PublicMaterial, PublicPage } from '@shared/publish'
-  import { downloadHref, extLabel, materialHref, plainClick, sizeText, zipHref } from './links'
+  import { folderLabel } from '@shared/materials'
+  import {
+    downloadHref,
+    extLabel,
+    folderCount,
+    materialHref,
+    plainClick,
+    sizeText,
+    zipHref,
+    zipNote,
+  } from './links'
 
   interface Props {
     page: PublicPage
@@ -43,24 +56,25 @@
         .join(' · ')
     }
     if (m.kind === 'pdf') return `PDF · ${size} · ${tr('room.page.inBrowser')}`
+    // «Данные · 15 файлов · 25 МБ»: named by what is inside, counted, weighed.
+    if (m.kind === 'folder') {
+      return `${tr(`room.page.folder.${folderLabel(m.holds ?? [])}`)} · ${folderCount(m)}`
+    }
     const ext = extLabel(m.path)
     return [tr(`room.page.kind.${m.kind}`), ext || null, size].filter(Boolean).join(' · ')
   }
 
-  /** What the archive holds, in words: «Тетради с результатами и слайды». */
-  const zipWhat = $derived.by(() => {
-    const kinds = new Set(page.materials.map((m) => m.kind))
-    const words: string[] = []
-    if (kinds.has('notebook')) words.push(tr('room.page.zipWhat.notebooks'))
-    if (kinds.has('pdf')) words.push(tr('room.page.zipWhat.slides'))
-    if (kinds.has('data')) words.push(tr('room.page.zipWhat.data'))
-    if (kinds.has('code')) words.push(tr('room.page.zipWhat.code'))
-    if (kinds.has('text') || kinds.has('image') || kinds.has('file')) {
-      words.push(tr('room.page.zipWhat.files'))
-    }
-    const list = new Intl.ListFormat(getLocale(), { type: 'conjunction' }).format(words)
-    return list.charAt(0).toUpperCase() + list.slice(1)
-  })
+  /** What the archive holds, in words, with the folders by name (links.ts · zipNote). */
+  const caption = $derived(zipNote(page.materials))
+
+  /** Opened by its name (a tab, the browser's PDF viewer) rather than downloaded by it. */
+  const opens = (m: PublicMaterial): boolean => m.kind === 'notebook' || m.kind === 'pdf'
+
+  function downloadLabel(m: PublicMaterial): string {
+    if (m.kind === 'notebook') return tr('room.page.downloadNotebook', { name: m.name })
+    if (m.kind === 'folder') return tr('room.page.downloadFolder', { name: m.name })
+    return tr('room.page.download', { name: m.name })
+  }
 
   function open(event: MouseEvent, m: PublicMaterial): void {
     if (m.kind !== 'notebook' || !plainClick(event)) return
@@ -73,26 +87,26 @@
   <div class="flex items-end justify-between border-b-2 border-ink pb-3">
     <h2
       id="page-materials"
-      class="text-[13px] font-black uppercase leading-4 tracking-section text-ink"
+      class="text-[14px] font-black uppercase leading-5 tracking-section text-ink"
     >
       {tr('room.page.materials')}
     </h2>
     {#if wide}
-      <span class="font-mono text-micro text-muted">{page.materials.length}</span>
+      <span class="font-mono text-[13px] leading-5 text-muted">{page.materials.length}</span>
     {/if}
   </div>
   <ul>
     {#each page.materials as m (m.key)}
-      {@const downloadable = m.kind === 'notebook' || m.kind === 'pdf'}
+      {@const folder = m.kind === 'folder'}
       <li
         class="relative flex items-center gap-3 border-b border-line
-               {wide ? 'py-3' : 'min-h-14 py-2'}"
+               {wide ? 'py-3' : 'min-h-[60px] py-2.5'}"
       >
         <span
-          class="flex h-[22px] w-5 shrink-0 items-center justify-center self-start text-accent-text"
+          class="flex h-6 w-5 shrink-0 items-center justify-center self-start text-accent-text"
           aria-hidden="true"
         >
-          <Icon name={iconFor(m.path)} size={16} />
+          <Icon name={folder ? 'folder' : iconFor(m.path)} size={16} />
         </span>
         <span class="flex min-w-0 flex-1 flex-col gap-0.5">
           <!-- A name defaults to the room path (data/sber_real_estate_train_2015.parquet),
@@ -102,21 +116,20 @@
             href={materialHref(page.address, m)}
             target={m.kind === 'pdf' ? '_blank' : undefined}
             rel={m.kind === 'pdf' ? 'noopener' : undefined}
-            download={downloadable ? undefined : ''}
-            class="text-[16px] font-semibold leading-[22px] [overflow-wrap:anywhere]
-                   after:absolute after:inset-0 hover:underline
+            download={opens(m) ? undefined : ''}
+            class="[overflow-wrap:anywhere] after:absolute after:inset-0 hover:underline
+                   {folder
+              ? 'font-mono text-[16px] font-medium leading-6'
+              : 'text-[17px] font-semibold leading-6'}
                    {m.key === active ? 'text-ink' : 'text-accent-text'}"
             onclick={(event) => open(event, m)}
           >
             {m.name}
           </a>
-          <span class="text-[13px] leading-[18px] text-muted">{meta(m)}</span>
+          <span class="text-[14px] leading-5 text-muted">{meta(m)}</span>
         </span>
-        {#if downloadable}
-          {@const label =
-            m.kind === 'notebook'
-              ? tr('room.page.downloadNotebook', { name: m.name })
-              : tr('room.page.download', { name: m.name })}
+        {#if opens(m) || folder}
+          {@const label = downloadLabel(m)}
           <a
             href={downloadHref(page.address, m.key)}
             download=""
@@ -137,18 +150,16 @@
       <a
         href={zipHref(page.address)}
         download={page.zip.name}
-        class="press flex shrink-0 items-center justify-center gap-2.5 px-3 text-[13px] font-bold
-               uppercase leading-4 tracking-caps
+        class="press flex shrink-0 items-center justify-center gap-2.5 px-3 text-[14px] font-bold
+               uppercase leading-5 tracking-caps
                {wide
-          ? 'h-11 bg-brand text-white dark:bg-primary dark:text-primary-ink'
+          ? 'h-12 bg-brand text-white dark:bg-primary dark:text-primary-ink'
           : 'h-12 border border-brand text-brand dark:border-ink dark:text-ink'}"
       >
         <Icon name="download" size={16} strokeWidth={2.2} class="shrink-0" />
         <span>{tr('room.course.zip', { size: sizeText(page.zip.bytes) })}</span>
       </a>
-      <p class="text-[13px] leading-[18px] text-muted {wide ? '' : 'text-center'}">
-        {tr('room.page.zipNote', { what: zipWhat })}
-      </p>
+      <p class="text-[14px] leading-5 text-muted {wide ? '' : 'text-center'}">{caption}</p>
     </div>
   {/if}
 </section>

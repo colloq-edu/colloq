@@ -256,7 +256,7 @@ test('the room-door setting saved during a build survives it', async () => {
     ack: [],
   }
   const first = ok(await buildAndWrite(id, pick, { by: 'Ада' }))
-  assert.equal(first.publication.selection?.roomAccess, 'members')
+  assert.equal(first.publication.selection?.roomAccess, 'anyone')
   const building = refreshPage(id, { by: null })
   const saving = setRoomAccess(first.publication.id, 'none')
   const [built, saved] = await Promise.all([building, saving])

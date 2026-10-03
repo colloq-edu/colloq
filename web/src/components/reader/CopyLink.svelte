@@ -48,13 +48,13 @@
 >
   <span
     class="min-w-0 select-all break-all font-mono text-ink
-           {size === 'md' ? 'text-[14px] leading-5' : 'text-[13px] leading-5'}"
+           {size === 'md' ? 'text-[15px] leading-[22px]' : 'text-[14px] leading-5'}"
   >
     {shown}
   </span>
   <button
     type="button"
-    class="press -my-2 flex h-11 shrink-0 items-center text-[14px] leading-5
+    class="press -my-2 flex h-11 shrink-0 items-center text-[15px] leading-[22px]
            {state === 'refused' ? 'text-warning' : 'text-accent-text'}"
     onclick={() => void copy()}
   >

@@ -4,7 +4,10 @@
  *
  * A student who unpacks `ml-strong-04.zip` gets one folder with the notebooks
  * (with their outputs), the slides and `data/train.csv` at the room's own
- * paths, so `pd.read_csv('data/train.csv')` runs unchanged. A README next to
+ * paths, so `pd.read_csv('data/train.csv')` runs unchanged; a folder
+ * material puts every file of it there too, so `from scripts import
+ * case_cian` imports after unzipping. A folder alone downloads the same way,
+ * as `data.zip` with `data/` inside (folderZipPlan). A README next to
  * them says which class this is and where its page lives; it never names the
  * room, whose id is the right to write into it.
  *
@@ -29,7 +32,7 @@ import type { MaterialRow, Publication } from './store.js'
 /** What the README and the folder name are made of. */
 export interface ZipContext {
   pub: Pick<Publication, 'id' | 'slug' | 'title' | 'sessionId'>
-  materials: readonly Pick<MaterialRow, 'kind' | 'name' | 'path' | 'hash' | 'bytes'>[]
+  materials: readonly Pick<MaterialRow, 'kind' | 'name' | 'path' | 'hash' | 'bytes' | 'files'>[]
   /** The student title, as the class page shows it. */
   title: string
   n: number | null
@@ -95,6 +98,13 @@ export function readmeOf(ctx: ZipContext): Buffer {
   lines.push(tr('server.zip.page', { url: `${origin}/p/${publicationAddress(ctx.pub)}` }), '')
   lines.push(`## ${tr('server.zip.files')}`, '')
   for (const m of ctx.materials) {
+    if (m.kind === 'folder') {
+      const folder = `${m.path}/`
+      const count = tr('server.zip.folder', { count: m.files?.length ?? 0 })
+      const label = m.name && m.name !== folder ? `${m.name}, ${count}` : count
+      lines.push(`- \`${folder}\` — ${label}`)
+      continue
+    }
     const label =
       m.kind === 'notebook'
         ? tr('server.zip.notebook', { name: m.name })
@@ -128,32 +138,65 @@ function dosStamp(day: string | null): { dosTime: number; dosDate: number } {
  */
 export function zipPlan(ctx: ZipContext, options: { verify?: boolean } = {}): ZipPlan {
   const top = zipTop(ctx.pub)
-  const files: ZipEntry[] = []
-  const used = new Set<string>()
+  const files = entriesOf(options.verify === true)
   for (const m of ctx.materials) {
-    const name = `${top}/${m.path}`
-    if (used.has(name.toLowerCase())) continue
-    const info = pageFileInfo(m.hash)
-    if (!info) continue
-    const file = pageFilePath(m.hash)
-    if (options.verify && !onDisk(file, info.bytes)) {
-      console.error(`[pages] ${m.hash} is missing from data/page-files; left out of the archive`)
-      continue
+    if (m.kind === 'folder') {
+      // At their room paths: `data/train.csv` lands where the notebook reads it.
+      for (const file of m.files ?? []) files.add(`${top}/${file.path}`, file.hash)
+    } else {
+      files.add(`${top}/${m.path}`, m.hash)
     }
-    used.add(name.toLowerCase())
-    files.push({ name, bytes: info.bytes, crc: info.crc32, file, body: null })
   }
   // The room's own README keeps its name; ours steps aside.
-  const readmeName = used.has(`${top}/readme.md`) ? 'README-colloq.md' : 'README.md'
+  const readmeName = files.has(`${top}/README.md`) ? 'README-colloq.md' : 'README.md'
   const body = readmeOf(ctx)
   const readme = { name: `${top}/${readmeName}`, bytes: body.length, crc: crc32(body), file: null, body }
-  const entries = [readme, ...files]
+  return planOf(top, [readme, ...files.list], ctx.day)
+}
+
+/**
+ * One folder material as its own archive: `data.zip` holding `data/` with
+ * every file at its room path, and no README (the folder is a part of a
+ * page, not a class). Unzipped next to the notebooks, it is the room's
+ * `data/` again.
+ */
+export function folderZipPlan(
+  folder: Pick<MaterialRow, 'path' | 'files'>,
+  day: string | null,
+  options: { verify?: boolean } = {},
+): ZipPlan {
+  const files = entriesOf(options.verify === true)
+  for (const file of folder.files ?? []) files.add(file.path, file.hash)
+  return planOf(folder.path, files.list, day)
+}
+
+/** The page files of an archive, each once, ignoring case: unzip on a Mac would merge them. */
+function entriesOf(verify: boolean) {
+  const list: ZipEntry[] = []
+  const used = new Set<string>()
+  const has = (name: string): boolean => used.has(name.toLowerCase())
+  const add = (name: string, hash: string): void => {
+    if (has(name)) return
+    const info = pageFileInfo(hash)
+    if (!info) return
+    const file = pageFilePath(hash)
+    if (verify && !onDisk(file, info.bytes)) {
+      console.error(`[pages] ${hash} is missing from data/page-files; left out of the archive`)
+      return
+    }
+    used.add(name.toLowerCase())
+    list.push({ name, bytes: info.bytes, crc: info.crc32, file, body: null })
+  }
+  return { list, has, add }
+}
+
+function planOf(top: string, entries: ZipEntry[], day: string | null): ZipPlan {
   let bytes = END_RECORD
   for (const entry of entries) {
     const name = Buffer.byteLength(entry.name)
     bytes += LOCAL_HEADER + name + entry.bytes + CENTRAL_HEADER + name
   }
-  return { top, entries, bytes, ...dosStamp(ctx.day) }
+  return { top, entries, bytes, ...dosStamp(day) }
 }
 
 function onDisk(file: string, bytes: number): boolean {

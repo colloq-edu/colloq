@@ -24,15 +24,30 @@ import path from 'node:path'
 import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { setLocaleResolver, translate, type Locale } from '../shared/i18n.js'
-import type { FileChoice, NotebookChoice, PickReason, PublishCheck } from '../shared/publish.js'
+import {
+  DEFAULT_ROOM_ACCESS,
+  ROOM_ACCESS,
+  type FileChoice,
+  type NotebookChoice,
+  type PickReason,
+  type PublishCheck,
+} from '../shared/publish.js'
 import {
   checkText,
+  entryPath,
+  entryReason,
   fileReason,
+  folderMeta,
+  folderReason,
+  folderRequest,
+  goingPaths,
   kindText,
+  lockedEntry,
   lockedFile,
   lockedNotebook,
   notebookMeta,
   notebookReason,
+  pickedBytes,
   publishBlocked,
   relevantChecks,
   sizeText,
@@ -159,6 +174,219 @@ test('the screen renders the reasons, and an unticked row keeps its reason besid
   assert.match(screen, /\{#if book\.isNew\}/, 'a notebook added since the last publish is marked')
 })
 
+/* ------------------------------------------------------- folders (F1) */
+
+const folder = (over: Partial<FileChoice>): FileChoice => ({
+  path: 'data/',
+  kind: 'folder',
+  bytes: 25 * MB,
+  name: 'data/',
+  picked: true,
+  why: null,
+  usedBy: [],
+  isNew: false,
+  files: 15,
+  holds: ['data'],
+  entries: [],
+  inNotes: [],
+  ...over,
+})
+const PAGE = 200 * MB
+
+test('a folder row reads like F1: «data/ · 15 файлов · 25 МБ» and how it is used', () => {
+  assert.equal(folderMeta(folder({})), '15 файлов · 25 МБ')
+  // Read by the code going out with it, not only by a notebook.
+  const data = folder({ usedBy: ['lecture.ipynb', 'scripts/eda_tools.py'] })
+  assert.deepEqual(folderReason(data, PAGE), {
+    text: 'читается в lecture.ipynb и scripts/eda_tools.py',
+    positive: true,
+  })
+  const scripts = folder({ path: 'scripts/', holds: ['code'], usedBy: ['lecture.ipynb'] })
+  assert.equal(folderReason(scripts, PAGE)?.text, 'импортируется в lecture.ipynb')
+  // Pictures the notes draw: said as such, even though the notebooks «use» them too.
+  const assets = folder({
+    path: 'assets/',
+    holds: ['image'],
+    usedBy: ['lecture.ipynb'],
+    inNotes: ['lecture.ipynb'],
+  })
+  assert.equal(
+    folderReason(assets, PAGE)?.text,
+    'картинки из текста тетрадей — нужны, чтобы архив открывался без интернета',
+  )
+  // Any other folder is «используется в», and an unused ticked one says nothing.
+  const mixed = folder({
+    path: 'docs/',
+    holds: ['text'],
+    usedBy: ['a.ipynb', 'b.ipynb', 'c.ipynb'],
+  })
+  assert.equal(folderReason(mixed, PAGE)?.text, 'используется в a.ipynb, b.ipynb и c.ipynb')
+  assert.equal(folderReason(folder({}), PAGE), null)
+  setLocaleResolver(() => 'en')
+  assert.equal(folderMeta(folder({})), '15 files · 25 MB')
+  assert.equal(folderReason(data, PAGE)?.text, 'read in lecture.ipynb and scripts/eda_tools.py')
+})
+
+test('an unticked folder says why; one too big for the page names the page, not a file', () => {
+  const out = (why: PickReason, over: Partial<FileChoice> = {}) =>
+    folderReason(folder({ picked: false, why, ...over }), PAGE)
+  assert.deepEqual(out('unused'), { text: 'не упоминается в тетрадях', positive: false })
+  assert.equal(out('private')?.text, 'имя начинается с «_»')
+  assert.equal(out('answers')?.text, 'похоже на ответы')
+  assert.equal(out('generated')?.text, 'похоже на результат запуска')
+  assert.equal(out('too-many')?.text, 'больше 1000 файлов')
+  assert.equal(out('too-large', { bytes: 300 * MB })?.text, 'больше 200 МБ')
+  // Empty, or everything inside stays in the room: two different sentences.
+  assert.equal(out('empty', { files: 0, bytes: 0 })?.text, 'пустая')
+  const kept = [
+    { path: 'data/_x.csv', kind: 'data' as const, bytes: 9, why: 'private' as const, picked: false },
+  ]
+  assert.equal(
+    out('empty', { files: 0, bytes: 0, entries: kept })?.text,
+    'внутри нечего публиковать',
+  )
+  // A folder nothing would go out of counts what is in it, not «0 файлов · 0 Б».
+  assert.equal(folderMeta(folder({ files: 0, bytes: 0 }), kept), '1 файл · 9 Б')
+  // Locked only when there is nothing to publish or too much of it; a 25 MB
+  // folder is not «over the 20 MB file limit».
+  assert.equal(lockedFile(folder({}), 20 * MB), false)
+  assert.equal(lockedFile(folder({ picked: false, why: 'empty', files: 0 }), LIMIT), true)
+  assert.equal(lockedFile(folder({ picked: false, why: 'too-many' }), LIMIT), true)
+  // Everything inside stays by the rules: locked until a file in it is ticked by hand.
+  assert.equal(lockedFile(folder({ picked: false, why: 'empty', files: 0, entries: kept }), LIMIT), true)
+  const ticked = [{ ...kept[0], picked: true }]
+  assert.equal(lockedFile(folder({ picked: false, why: 'empty', files: 0, entries: ticked }), LIMIT), false)
+})
+
+test('«состав папки» lists every file inside, with why the ones left out stay', () => {
+  const data = folder({})
+  const entry = (path: string, why: PickReason | null, bytes = 100) =>
+    ({ path, kind: 'data' as const, bytes, why, picked: why === null })
+  assert.equal(entryPath(data, entry('data/raw/train.csv', null)), 'raw/train.csv')
+  assert.equal(entryReason(entry('data/train.csv', null), LIMIT), null)
+  assert.equal(entryReason(entry('data/_draft.csv', 'private'), LIMIT), 'имя начинается с «_»')
+  assert.equal(entryReason(entry('data/solutions.csv', 'answers'), LIMIT), 'похоже на ответы')
+  assert.equal(entryReason(entry('data/big.bin', 'too-large', 60 * MB), LIMIT), 'больше 50 МБ')
+  assert.equal(entryReason(entry('data/server.pem', 'secret'), LIMIT), 'похоже на ключ или пароль')
+  assert.equal(
+    entryReason(entry('data/report.html', 'unchecked'), LIMIT),
+    'не проверить на ключи — откройте и решите сами',
+  )
+  // Every reason but the upload limit is the teacher's to overrule.
+  assert.equal(lockedEntry(entry('data/big.bin', 'too-large')), true)
+  assert.equal(lockedEntry(entry('data/_draft.csv', 'private')), false)
+})
+
+test('a tick inside a folder is sent as the teacher\'s word against the rules, and counted', () => {
+  const entry = (path: string, why: PickReason | null, picked: boolean, bytes = 100) =>
+    ({ path, kind: 'code' as const, bytes, why, picked })
+  const scripts = folder({
+    path: 'scripts/',
+    files: 2,
+    bytes: 200,
+    entries: [
+      entry('scripts/__init__.py', null, true, 10),
+      // Ticked against «_»: the package imports it.
+      entry('scripts/_utils.py', 'private', true, 20),
+      // Unticked though the rules would send it.
+      entry('scripts/draft.py', null, false, 40),
+      entry('scripts/_scratch.py', 'private', false, 80),
+    ],
+  })
+  assert.deepEqual(folderRequest(scripts, ''), {
+    path: 'scripts/',
+    name: '',
+    include: ['scripts/_utils.py'],
+    exclude: ['scripts/draft.py'],
+  })
+  // Untouched, a folder is just its path: the rules decide at every refresh.
+  const plain = folder({ entries: [entry('data/a.csv', null, true), entry('data/_b.csv', 'private', false)] })
+  assert.deepEqual(folderRequest(plain, 'data/'), { path: 'data/', name: 'data/' })
+  // The row and the page budget count what is ticked on screen.
+  assert.equal(folderMeta(scripts, scripts.entries), '2 файла · 30 Б')
+  assert.equal(pickedBytes(scripts), 30)
+  assert.equal(pickedBytes(folder({})), 25 * MB)
+  // What goes out: ticked root files, and the ticked files of ticked folders.
+  const root = { ...folder({}), path: 'slides.pdf', kind: 'pdf' as const, entries: undefined }
+  assert.deepEqual(
+    [...goingPaths([root, scripts, { ...plain, picked: false }])],
+    ['slides.pdf', 'scripts/__init__.py', 'scripts/_utils.py'],
+  )
+})
+
+test('a finding inside a ticked folder is asked about, and only while the folder is ticked', () => {
+  const inside = check({
+    id: 'inside',
+    root: null,
+    cellId: null,
+    path: 'data/notes.txt',
+    folder: 'data/',
+  })
+  const notes = (picked: boolean) =>
+    [{ path: 'data/notes.txt', kind: 'text' as const, bytes: 9, why: null, picked }]
+  const asked = relevantChecks([inside], new Set(), goingPaths([folder({ entries: notes(true) })]))
+  assert.deepEqual(asked.map((c) => c.id), ['inside'])
+  // The folder unticked, or that file unticked inside a ticked folder: nothing to ask.
+  const off = goingPaths([folder({ picked: false, entries: notes(true) })])
+  assert.deepEqual(relevantChecks([inside], new Set(), off), [])
+  assert.deepEqual(relevantChecks([inside], new Set(), goingPaths([folder({ entries: notes(false) })])), [])
+})
+
+test('the screen draws folders as F1: a row each, the reason under it, contents on demand', () => {
+  const screen = code(read(PUBLISH))
+  const files = screen.slice(
+    screen.indexOf("tr('admin.page.files')"),
+    screen.indexOf("tr('admin.page.check')"),
+  )
+  // Root files first, then folders, as the page orders them.
+  assert.ok(files.indexOf('{#each rootFiles as file') < files.indexOf('{#each folders as folder'))
+  assert.match(files, /folderReason\(folder, budget\)/)
+  assert.match(files, /disabled=\{lockedFile\(folder, fileLimit\)\}/)
+  assert.match(files, /aria-expanded=\{open\}/, 'the contents open and close')
+  assert.match(files, /entryReason\(entry, fileLimit\)/, 'a file left out says why')
+  assert.match(files, /tr\('admin\.page\.folder\.note'\)/)
+  assert.match(localized(files, 'ru'), /Папка публикуется целиком, одной строкой на странице/)
+  // A folder is still a file choice: its tick goes out with the publish, as 'data/'.
+  assert.match(screen, /files: pickedFiles\.map\(\(f\) => \(\{/)
+})
+
+test('a folder refused at build time is named as a folder', () => {
+  const screen = code(read(PUBLISH))
+  const refused = screen.slice(
+    screen.indexOf('function refusedText'),
+    screen.indexOf('const blockedText'),
+  )
+  assert.match(refused, /item\.path\.endsWith\('\/'\)/)
+  assert.match(refused, /admin\.page\.refused\.folderMissing/)
+  assert.match(refused, /admin\.page\.refused\.tooMany/)
+  assert.equal(
+    translate('ru', 'admin.page.refused.tooMany', { path: 'data/', count: 1000 }),
+    'data/ — в папке больше 1000 файлов',
+  )
+})
+
+/* --------------------------------------------------- one reading scale */
+
+test('courses and the class page read at the competitions\' scale', () => {
+  /*
+   * The owner: competition elements were bigger than the course ones next
+   * to them. The scale used to be switched on for competitions, courses and
+   * «Страница занятия» only; now the shell carries it for every tab
+   * (admin-scale.test.mts holds the rest of the panel to it), so the class
+   * page gets it wherever it was opened from.
+   */
+  const admin = code(read('web/src/screens/AdminScreen.svelte'))
+  assert.doesNotMatch(admin, /reading=/, 'no tab is left out of the scale')
+  const shell = code(read('web/src/admin/AdminShell.svelte'))
+  assert.match(shell, /<main class="competition-ui admin-ui /)
+  // ui-lg is no step of that scale: no words in it on either screen (the «+»
+  // glyph of a button is the one use).
+  for (const rel of [PUBLISH, 'web/src/admin/screens/Courses.svelte']) {
+    assert.doesNotMatch(code(read(rel)), /text-ui-lg(?! leading-none)/, rel)
+    assert.doesNotMatch(code(read(rel)), /text-\[\d+px\]/, `${rel}: a size outside the scale`)
+  }
+})
+
 /* --------------------------------------------- the check gates the button */
 
 const check = (over: Partial<PublishCheck>): PublishCheck => ({
@@ -240,7 +468,7 @@ test('a 409 is read for what it is: unconfirmed findings, or no saved pick', () 
 
 /* ------------------------------------------------------ the room door */
 
-test('«Вход в комнату со страницы»: three choices in the rail, members by default', () => {
+test('«Вход в комнату со страницы»: three choices in the rail, «Все» by default', () => {
   const screen = code(read(PUBLISH))
   const rail = screen.slice(screen.indexOf('<aside'), screen.indexOf('</aside>'))
   assert.match(rail, /role="radiogroup" aria-labelledby="room-access"/)
@@ -251,12 +479,22 @@ test('«Вход в комнату со страницы»: three choices in the
   // Only for a page whose room still exists: a deleted room leads nowhere anyway.
   const door = rail.slice(rail.indexOf("{#if info?.room.exists}"), rail.indexOf('id="room-access"'))
   assert.ok(door.length > 0, 'the control is no longer under the room check')
-  assert.match(screen, /roomAccess = body\.roomAccess \?\? 'members'/)
-  // The hint names the cost of «Все» in the teacher's words.
+  assert.match(screen, /let roomAccess = \$state<RoomAccess>\('anyone'\)/)
+  assert.match(screen, /roomAccess = body\.roomAccess \?\? 'anyone'/)
+  // Widest first, so the default leads the row.
+  assert.deepEqual(ROOM_ACCESS, ['anyone', 'members', 'none'])
+  assert.equal(DEFAULT_ROOM_ACCESS, ROOM_ACCESS[0])
+  // The hint names the default, what the other two do and the cost, in the teacher's words.
   const ru = translate('ru', 'admin.page.roomAccessHint')
+  assert.match(ru, /По умолчанию «Все»/)
+  assert.match(ru, /«Участники» — только браузеры, с которых входили в комнату/)
+  assert.match(ru, /«Никто» прячет вход/)
   assert.match(ru, /имена учеников/)
   assert.match(ru, /вопросы оракулу/)
-  assert.match(ru, /преподаватели видят вход всегда/)
+  assert.match(ru, /Преподаватели видят вход всегда/)
+  const en = translate('en', 'admin.page.roomAccessHint')
+  assert.match(en, /“Everyone” is the default/)
+  assert.match(en, /students’ names/)
 })
 
 test('the choice saves on its own when there is a pick, and rides with the publish otherwise', () => {
@@ -376,7 +614,9 @@ test('the publish calls go where the server listens, with the pick as the body',
 
 test('every word the picker shows exists in both languages', () => {
   const keys = [
-    ...['notebook', 'pdf', 'data', 'code', 'text', 'image', 'file'].map((k) => `admin.page.kind.${k}`),
+    ...['notebook', 'pdf', 'data', 'code', 'text', 'image', 'file', 'folder'].map(
+      (k) => `admin.page.kind.${k}`,
+    ),
     ...['draft', 'live', 'idle', 'finished'].map((k) => `admin.course.status.${k}`),
     'admin.course.page.early',
     'admin.course.page.page',

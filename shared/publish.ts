@@ -273,7 +273,16 @@ export interface MaterialRef {
   key: string
   kind: MaterialKind
   name: string
+  /** For a folder: every file that went out in it, together. */
   bytes: number
+  /** Folders only: how many files went out in it. */
+  files?: number
+  /**
+   * Folders only: what those files are, once each, in MATERIAL_KINDS order.
+   * The course row's tags and the page's «Данные · 15 файлов» are read from it
+   * (shared/materials.ts · folderLabel, tagsOf).
+   */
+  holds?: MaterialKind[]
 }
 
 export interface PublicClass {
@@ -361,8 +370,22 @@ export type PublicationState = 'published' | 'withdrawn'
  *
  * The stored kind decides how the class page offers it: a notebook opens as
  * a tab, a PDF in the browser's viewer, everything else downloads.
+ *
+ * 'folder' is a top-level folder of the room published whole, as one row: a
+ * class whose notebooks do `from scripts import case_cian` and read
+ * `data/*.csv` needs `scripts/` and `data/` next to them, with the paths
+ * intact, and fifteen datasets as fifteen rows would not fit on the page or
+ * in anyone's head. Its download is a ZIP of the folder.
  */
-export type MaterialKind = 'notebook' | 'pdf' | 'data' | 'code' | 'text' | 'image' | 'file'
+export type MaterialKind =
+  | 'notebook'
+  | 'pdf'
+  | 'data'
+  | 'code'
+  | 'text'
+  | 'image'
+  | 'file'
+  | 'folder'
 
 export const MATERIAL_KINDS: readonly MaterialKind[] = [
   'notebook',
@@ -372,6 +395,7 @@ export const MATERIAL_KINDS: readonly MaterialKind[] = [
   'text',
   'image',
   'file',
+  'folder',
 ]
 
 /** A heading of a notebook, for its table of contents. */
@@ -384,7 +408,10 @@ export interface OutlineEntry {
 }
 
 export interface PublicMaterial extends MaterialRef {
-  /** Room-relative: 'seminar.ipynb', 'data/train.csv'. The ZIP keeps the same paths. */
+  /**
+   * Room-relative: 'seminar.ipynb', 'lecture.pdf', and 'data' for the folder
+   * `data/`. The ZIP keeps the same paths.
+   */
   path: string
   cells?: number
   /** Cells with at least one output. */
@@ -433,6 +460,27 @@ export interface PublicNotebook {
 }
 
 /**
+ * One picked root file, or one picked folder ('data/').
+ *
+ * A folder goes out by the rules for what is inside it (shared/materials.ts
+ * · folderEntryWhy), and those rules are suggestions like every default
+ * tick: the teacher may keep a file the rules let through in the room
+ * (`exclude`), or send one they hold back (`include`: a `_utils.py` the
+ * package imports, a sample `submission.csv` the notebook reads). Both are
+ * room paths inside the folder, and both outlive a refresh: a file that
+ * arrives in the folder later follows the rules, a file decided about keeps
+ * the decision.
+ */
+export interface PickedFile {
+  path: string
+  name: string
+  /** Folders only: files inside that go out although the rules keep them in the room. */
+  include?: string[]
+  /** Folders only: files inside that stay in the room although the rules would send them. */
+  exclude?: string[]
+}
+
+/**
  * What the teacher picked, kept with the page so that «Обновить страницу»
  * and the end of class rebuild it without asking again.
  *
@@ -443,19 +491,27 @@ export interface PublicNotebook {
 export interface PublishSelection {
   v: 1
   notebooks: { root: string; name: string }[]
-  files: { path: string; name: string }[]
+  /**
+   * Root files by path, and folders by their path with a slash: 'data/'. A
+   * folder is picked as a folder: a refresh re-reads it and takes what is in
+   * it now (publish/materials.ts · build), each file by the default rules
+   * unless the teacher decided otherwise for it (PickedFile · include,
+   * exclude).
+   */
+  files: PickedFile[]
   autoRefresh: boolean
   /** Check ids the teacher confirmed («Проверил(а) — публиковать как есть»). */
   ack: string[]
   /**
-   * Every notebook root and file path the room had when this was saved. The
-   * picker marks anything not in it «новая»: added since, so neither ticked
-   * nor knowingly left out.
+   * Every notebook root, file path and top-level folder ('data/') the room
+   * had when this was saved. The picker marks anything not in it «новая»:
+   * added since, so neither ticked nor knowingly left out. A folder counts as
+   * seen when any file in it was (picks saved before folders list only files).
    */
   seen?: string[]
   /**
    * Who the page leads into the room (RoomAccess). Absent on picks saved
-   * before the door existed, which read as 'members'.
+   * before the door existed, which read as DEFAULT_ROOM_ACCESS (roomAccessOf).
    */
   roomAccess?: RoomAccess
 }
@@ -472,18 +528,40 @@ export interface PublishSelection {
  * them: the way in is asked for separately (POST /api/p/:id/room), by a
  * browser that proves it was there.
  *
+ * - 'anyone': everyone who can open the page. The default (DEFAULT_ROOM_ACCESS).
  * - 'members': whoever presents a token of this room (they joined from this
- *   browser) and is not banned. The default.
- * - 'anyone': everyone who can open the page. The teacher's decision, named
- *   with its cost in the panel.
+ *   browser) and is not banned.
  * - 'none': nobody but staff.
+ *
+ * Widest first, the order the panel draws them in.
  */
 export type RoomAccess = 'members' | 'anyone' | 'none'
 
-export const ROOM_ACCESS: readonly RoomAccess[] = ['members', 'anyone', 'none']
+export const ROOM_ACCESS: readonly RoomAccess[] = ['anyone', 'members', 'none']
+
+/**
+ * What a page with no saved choice leads to, and what a first publish saves.
+ *
+ * 'anyone', because 'members' promises more than it can keep: there are no
+ * student accounts, only the token a browser got when it joined. The same
+ * student on a phone, in another browser or after clearing site data is a
+ * stranger to it, while the class's own students are who the page is for.
+ * The cost (names and oracle questions on view) is said under the control,
+ * and the teacher narrows it per page. A page saved with 'members' (a first
+ * publish used to save it) keeps it: the default only fills an absent
+ * choice, and those pages are switched by hand.
+ */
+export const DEFAULT_ROOM_ACCESS: RoomAccess = 'anyone'
 
 export function isRoomAccess(value: unknown): value is RoomAccess {
   return typeof value === 'string' && (ROOM_ACCESS as readonly string[]).includes(value)
+}
+
+/** The access a saved pick sets: its own, else DEFAULT_ROOM_ACCESS (also with no pick at all). */
+export function roomAccessOf(
+  selection: { roomAccess?: RoomAccess } | null | undefined,
+): RoomAccess {
+  return selection?.roomAccess ?? DEFAULT_ROOM_ACCESS
 }
 
 /**
@@ -532,6 +610,20 @@ export type PickReason =
   | 'image'
   | 'too-large'
   | 'empty'
+  /** A folder with more than MAX_FOLDER_FILES files in it. */
+  | 'too-many'
+  /**
+   * A file inside a folder named like a key or a password: `id_rsa`,
+   * `server.pem`, `credentials.json`, `token.txt`.
+   */
+  | 'secret'
+  /**
+   * A file inside a folder the checks cannot read: a binary of no known data
+   * or picture kind (an exported .html, a .key, a file with no extension), or
+   * code and text over the size the checks read. Whatever is in it would go
+   * out unseen.
+   */
+  | 'unchecked'
 
 export interface NotebookChoice {
   root: string
@@ -548,6 +640,32 @@ export interface NotebookChoice {
   isNew: boolean
 }
 
+/** One file inside a folder choice, and whether it goes out with the folder. */
+export interface FolderEntry {
+  /** Room path: 'data/train.csv'. */
+  path: string
+  kind: MaterialKind
+  bytes: number
+  /** `null`: the rules send it with the folder; otherwise why they keep it in the room. */
+  why: PickReason | null
+  /**
+   * Whether it goes out with the folder under the pick on screen: the rules
+   * (`why`), or the teacher's word against them (PickedFile · include,
+   * exclude). A file over the upload limit never does.
+   */
+  picked: boolean
+}
+
+/**
+ * A root file of the room, or one of its top-level folders.
+ *
+ * A folder comes as one choice with `kind: 'folder'` and a path with a slash
+ * ('data/'); `bytes` and `files` count only what would go out under the
+ * saved pick (or the rules, before the first publish), and `entries` lists
+ * everything inside, each ticked or not, with the rules' reason for those
+ * they keep in the room («состав папки»). Notebooks are never inside: they
+ * are notebook choices of their own.
+ */
 export interface FileChoice {
   path: string
   kind: MaterialKind
@@ -555,9 +673,24 @@ export interface FileChoice {
   name: string
   picked: boolean
   why: PickReason | null
-  /** Paths of the notebooks that mention this file. */
+  /**
+   * Paths of the notebooks that mention this file. For a folder: of the
+   * notebooks, and of the code going out on the page, that mention a file in
+   * it, read the folder or import it as a package.
+   */
   usedBy: string[]
   isNew: boolean
+  /** Folders only: how many files would go out in it. */
+  files?: number
+  /** Folders only: what those files are (MaterialRef · holds). */
+  holds?: MaterialKind[]
+  /** Folders only: every file inside, in tree order (up to MAX_FOLDER_FILES + 1). */
+  entries?: FolderEntry[]
+  /**
+   * Folders only: the notebooks whose notes draw a picture from it. Such a
+   * folder is ticked by default: the archive needs the pictures to show them.
+   */
+  inNotes?: string[]
 }
 
 /**
@@ -577,6 +710,11 @@ export interface PublishCheck {
   path: string | null
   /** Masked for secrets («sk-p…3f»), as found for names. */
   sample: string
+  /**
+   * The folder choice a file finding belongs to ('data/'), when the file is
+   * inside one: the picker ticks the folder, not the file.
+   */
+  folder?: string
 }
 
 export interface AdminPage {
@@ -607,7 +745,7 @@ export interface PublishInfo {
   /** Cells the room address was removed from. */
   scrubbed: number
   selection: PublishSelection | null
-  /** The saved RoomAccess, else the default 'members'. */
+  /** The saved RoomAccess, else DEFAULT_ROOM_ACCESS (roomAccessOf). */
   roomAccess: RoomAccess
   page: AdminPage | null
   limits: { materials: number; pageBytes: number; fileBytes: number }
@@ -718,8 +856,17 @@ export const MAX_STEP_LABEL = 80
 /** How many steps can be published at once. Forty is already a semester. */
 export const MAX_STEPS = 40
 
-/** Materials on one page: two notebooks, slides and a few data files fit with room to spare. */
+/**
+ * Materials on one page: two notebooks, slides and a few data files fit with
+ * room to spare. A folder is one material, however many files it holds.
+ */
 export const MAX_MATERIALS = 24
+/**
+ * Files in one folder material. A dataset folder is tens of files; a thousand
+ * is a `pip install --target` or a dump of images, and every one of them is a
+ * row, a hash and a ZIP entry.
+ */
+export const MAX_FOLDER_FILES = 1000
 /** One page, all materials together: far under the 4 GB a plain (non-ZIP64) archive holds. */
 export const MAX_PAGE_BYTES = 200 * 1024 * 1024
 /** A tab name or a file label. */

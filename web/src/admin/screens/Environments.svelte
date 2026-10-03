@@ -15,7 +15,9 @@
    * discovered afterwards. Production environments come from the release catalog.
    */
   import { onMount, untrack } from 'svelte'
+  import Badge from '@/admin/screens/competitions/Badge.svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
+  import EmptyState from '@/admin/ui/EmptyState.svelte'
   import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -523,11 +525,6 @@
     return hues[sum % hues.length]
   }
 
-  const BTN =
-    'inline-flex h-8 shrink-0 items-center gap-1.5 border border-line px-3 text-2xs font-bold ' +
-    'uppercase tracking-label text-ink transition-colors duration-100 hover:bg-raised ' +
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ' +
-    'disabled:pointer-events-none disabled:opacity-40'
   /*
    * `order-1` below 640 is the card's second line.
    *
@@ -543,10 +540,10 @@
    * only the square, the name and the menu remain. The number lives here, on
    * the shared constant, rather than on each pill in place: there are six
    * pills across five branches, and they can only drift apart all at once.
+   * The pills themselves are the panel's state badge (competitions/Badge), so
+   * "Needs rebuild" here reads like "Draft" on a competition.
    */
-  const PILL =
-    'inline-flex h-7 shrink-0 items-center gap-1.5 px-2.5 text-2xs font-bold uppercase ' +
-    'tracking-label max-[640px]:order-1'
+  const PILL = 'max-[640px]:order-1'
   /*
    * The row's action — full width and two lines of text if needed.
    *
@@ -554,14 +551,8 @@
    * phone. The fixed 32px height is what kept the text on one line.
    */
   const ROW_ACTION =
-    'inline-flex h-8 shrink-0 items-center bg-primary px-3 text-2xs font-bold uppercase ' +
-    'tracking-label text-primary-ink transition-opacity duration-100 hover:opacity-90 ' +
-    'disabled:opacity-40 max-[640px]:order-1 max-[640px]:h-auto max-[640px]:min-h-[44px] ' +
-    'max-[640px]:w-full max-[640px]:justify-center max-[640px]:py-2 max-[640px]:text-center ' +
-    'max-[640px]:leading-snug'
-  const ITEM =
-    'flex w-full items-center px-2.5 py-1.5 text-left text-ui text-ink transition-colors ' +
-    'duration-100 hover:bg-raised disabled:pointer-events-none disabled:opacity-40'
+    'btn-primary shrink-0 max-[640px]:order-1 max-[640px]:h-auto max-[640px]:min-h-[44px] ' +
+    'max-[640px]:w-full max-[640px]:py-2 max-[640px]:text-center max-[640px]:leading-snug'
 
   /** Which row's overflow menu is open. One at a time, like the seminars table. */
   let openMenu = $state<string | null>(null)
@@ -575,7 +566,7 @@
     <button disabled={!mayWrite}
       type="button"
       title={!isOwner && !managed ? tr('admin.env.ownerEditsOnly') : undefined}
-      class="inline-flex h-9 items-center gap-2 bg-primary px-4 text-2xs font-bold uppercase tracking-label text-primary-ink transition-opacity duration-100 hover:opacity-90 disabled:opacity-40"
+      class="btn-primary btn-caps gap-2 px-4 max-[640px]:w-full"
       onclick={openCreate}
     >
       <Icon name="plus" size={14} />
@@ -601,7 +592,9 @@
   {#if loading}
     <div class="h-24"></div>
   {:else if error}
-    <p class="border-l-2 border-danger px-3 py-2 text-ui text-danger">{error}</p>
+    <p class="mt-5 border border-danger/40 bg-danger/5 px-4 py-3 text-ui text-danger" role="alert">
+      {error}
+    </p>
   {:else if envs}
     <div class="pt-5">
     {#each blocked as reason (reason)}
@@ -617,9 +610,12 @@
     {/each}
 
     {#if managed}
-      <p class="mb-4 border border-line bg-surface px-4 py-3 text-ui text-muted">
-        {tr("admin.environments.come.from.the.release.catalog.each.seminar.keeps.its")}
-      </p>
+      <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
+        <Icon name="info" size={14} class="mt-0.5 shrink-0 text-muted" />
+        <p class="text-2xs leading-relaxed text-muted">
+          {tr("admin.environments.come.from.the.release.catalog.each.seminar.keeps.its")}
+        </p>
+      </div>
     {:else if !isOwner}
       <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
         <Icon name="lock" size={14} class="mt-0.5 shrink-0 text-muted" />
@@ -678,7 +674,7 @@
                      desktop: `truncate` holds `white-space: nowrap`, and a
                      two-line clamp under it silently stays one line. -->
                 <span
-                  class="font-mono text-ui-lg font-semibold text-ink max-[640px]:min-w-0
+                  class="font-mono text-ui font-semibold text-ink max-[640px]:min-w-0
                          max-[640px]:line-clamp-2 min-[641px]:truncate"
                 >
                   <EnvironmentLink name={env.name} endpoint={`/api/admin/environments/${encodeURIComponent(env.name)}/inventory`} />
@@ -689,10 +685,10 @@
                      too. -->
                 {#if env.gpu}
                   <span
-                    class="inline-flex h-[18px] shrink-0 items-center bg-accent/15 px-1.5 text-micro font-bold uppercase tracking-label text-accent-text"
+                    class="inline-flex shrink-0"
                     title={tr("admin.a.room.on.this.environment.holds.a.gpu.slice.for.as.long.as.its.c")}
                   >
-                    GPU
+                    <Badge word="GPU" tone="accent" />
                   </span>
                 {/if}
               </div>
@@ -719,7 +715,7 @@
               -->
               <!-- On a phone the facts line wraps: cut at 178px, it showed
                    "Python 3.11 · 2…" and nothing more. -->
-              <p class="truncate text-2xs text-muted max-[640px]:whitespace-normal">
+              <p class="admin-meta truncate max-[640px]:whitespace-normal">
                 {[
                   pythonLabel(env),
                   env.imageBytes === null ? null : imageSize(env.imageBytes),
@@ -733,12 +729,13 @@
             </div>
 
             {#if env.state === 'building'}
-              <span class="{PILL} bg-accent/15 text-accent-text">
-                <span class="h-1.5 w-1.5 animate-blink rounded-full bg-accent"></span>
-                {tr("admin.building")}
+              <span class="{PILL} inline-flex shrink-0 items-center gap-1.5">
+                <span class="h-[5px] w-[5px] animate-blink rounded-full bg-accent" aria-hidden="true"
+                ></span>
+                <Badge word={tr("admin.building")} tone="accent" />
               </span>
               <button
-                class={cn(BTN, 'max-[640px]:order-1')}
+                class="btn-outline shrink-0 max-[640px]:order-1"
                 onclick={() => cancel(env)}
                 disabled={!isOwner || busy === env.name}
               >
@@ -754,17 +751,21 @@
                 that keyframe for its travel-free twin.
               -->
               {#if env.state === 'ready'}
-                <span class={cn(PILL, 'text-positive', justFinished === env.name && 'enter')}>
-                  <Icon name="check" size={12} />
-                  {tr("admin.ready")}
-                </span>
+                <Badge
+                  word={tr("admin.ready")}
+                  tone="positive"
+                  class={cn(PILL, justFinished === env.name && 'enter')}
+                />
               {:else if env.state === 'failed'}
                 <!-- The same mark on the failure. A wait ending badly is still
                      the wait ending, and a build that fails unannounced is the
                      worse of the two to miss. -->
-                <span class={cn(PILL, 'bg-danger text-white', justFinished === env.name && 'enter')}>
-                  {tr("admin.build.failed.297")}
-                </span>
+                <Badge
+                  word={tr("admin.build.failed.297")}
+                  tone="danger"
+                  form="strong"
+                  class={cn(PILL, justFinished === env.name && 'enter')}
+                />
               {:else if env.builtAt !== null}
                 <!--
                   BUILT, BUT STALE — and that is not the same as "not built".
@@ -781,7 +782,7 @@
                   rebuild" shows up on a file nobody has touched.
                 -->
                 <span
-                  class={cn(PILL, 'text-warning')}
+                  class="{PILL} inline-flex shrink-0"
                   title={pythonStale(env)
                     ? tr('admin.env.pythonNeedsRebuild', {
                         version: env.python,
@@ -791,10 +792,12 @@
                       ? tr("admin.the.package.list.changed.or.the.parent.image.was.rebuilt", { p0: env.parent })
                       : tr("admin.the.package.list.changed.after.the.build")}
                 >
-                  {tr("admin.needs.rebuild")}
+                  <Badge word={tr("admin.needs.rebuild")} tone="warning" />
                 </span>
               {:else}
-                <span class={cn(PILL, 'text-muted')}>{tr("admin.not.built")}</span>
+                <!-- Warning, as the competition editor and the new class form
+                     mark an unbuilt environment: one word, one tone. -->
+                <Badge word={tr("admin.not.built")} tone="warning" class={PILL} />
               {/if}
 
               {#if env.active}
@@ -803,7 +806,7 @@
                   several can be in use at once, a container for each. This
                   environment is what the next room created will get.
                 -->
-                <span class="{PILL} bg-accent/15 text-accent-text">{tr("admin.default")}</span>
+                <Badge word={tr("admin.default")} tone="accent" class={PILL} />
               {/if}
 
               <!--
@@ -838,7 +841,7 @@
                   aria-haspopup="menu"
                   aria-expanded={openMenu === env.name}
                   aria-label="{tr("admin.actions.for")} {env.name}"
-                  class="flex h-8 w-8 items-center justify-center border border-line text-muted transition-colors duration-100 hover:bg-raised hover:text-ink max-[640px]:h-11 max-[640px]:w-11"
+                  class="admin-icon-btn max-[640px]:h-11 max-[640px]:w-11"
                   onclick={(event) => {
                     event.stopPropagation()
                     openMenu = openMenu === env.name ? null : env.name
@@ -850,29 +853,39 @@
                   <div
                     role="menu"
                     tabindex="-1"
-                    class="row-menu absolute right-0 top-full z-30 mt-1 w-44 border border-line bg-canvas p-1 shadow-pop"
+                    class="row-menu admin-menu absolute right-0 top-full z-30 mt-1 w-[240px]"
                   >
-                    <button role="menuitem" class={ITEM} disabled={!mayWrite} onclick={() => openEditor(env.name)}>
+                    <button
+                      role="menuitem"
+                      class="admin-menu-item"
+                      disabled={!mayWrite}
+                      onclick={() => openEditor(env.name)}
+                    >
                       {tr("admin.edit.packages")}
                     </button>
-                    <button role="menuitem" class={ITEM} disabled={!mayWrite} onclick={() => duplicate(env)}>
+                    <button
+                      role="menuitem"
+                      class="admin-menu-item"
+                      disabled={!mayWrite}
+                      onclick={() => duplicate(env)}
+                    >
                       {tr("admin.duplicate")}
                     </button>
                     <button
                       role="menuitem"
-                      class={ITEM}
+                      class="admin-menu-item"
                       onclick={() => build(env)}
                       disabled={!isOwner || !canBuild}
                     >
                       {env.state === 'ready' ? tr("admin.rebuild") : tr("admin.build")}
                     </button>
-                    <button role="menuitem" class={ITEM} onclick={() => watch(env.name)}>
+                    <button role="menuitem" class="admin-menu-item" onclick={() => watch(env.name)}>
                       {tr("admin.build.log")}
                     </button>
                     {#if !managed && env.name !== 'base' && !env.active}
                       <button
                         role="menuitem"
-                        class={cn(ITEM, 'text-danger hover:bg-danger/10')}
+                        class="admin-menu-item text-danger"
                         onclick={() => (doomed = env.name)}
                         disabled={!isOwner}
                       >
@@ -888,10 +901,10 @@
           {#if env.packages.length > 0 && env.state !== 'building' && logFor !== env.name}
             <div class="flex flex-wrap gap-1.5 border-t border-line px-3.5 py-2.5">
               {#each env.packages.slice(0, 8) as pkg (pkg)}
-                <span class="bg-surface px-2 py-1 font-mono text-micro text-muted">{pkg}</span>
+                <span class="chip bg-surface font-mono text-muted">{pkg}</span>
               {/each}
               {#if env.packages.length > 8}
-                <span class="px-2 py-1 font-mono text-micro text-faint">
+                <span class="chip font-mono text-muted">
                   +{env.packages.length - 8} {tr("admin.more")}
                 </span>
               {/if}
@@ -903,7 +916,7 @@
               bind:this={logBox}
               class="max-h-[76px] overflow-y-auto border-t border-line bg-[#060C1C] px-3.5 py-2"
             >
-              <pre class="whitespace-pre-wrap font-mono text-code leading-relaxed text-[#9BA6BE]">{[...logLines, ...(logLost ? [tr("admin.log.connection.lost.reopen.build.log.to.check.the.build.status")] : [])].join('\n') || tr("admin.waiting.for.build.log")}</pre>
+              <pre class="whitespace-pre-wrap font-mono text-micro leading-relaxed text-[#9BA6BE]">{[...logLines, ...(logLost ? [tr("admin.log.connection.lost.reopen.build.log.to.check.the.build.status")] : [])].join('\n') || tr("admin.waiting.for.build.log")}</pre>
             </div>
           {:else if env.state === 'failed' && env.error}
             <div class="flex items-start gap-2 border-t border-line bg-danger/[0.06] px-3.5 py-2.5">
@@ -911,33 +924,36 @@
               <p class="min-w-0 flex-1 break-words font-mono text-micro leading-relaxed text-danger">
                 {env.error}
               </p>
-              <button class={BTN} onclick={() => watch(env.name)}>{tr("admin.full.log")}</button>
+              <button class="btn-outline shrink-0" onclick={() => watch(env.name)}>
+                {tr("admin.full.log")}
+              </button>
             </div>
           {/if}
 
           {#if rowError?.name === env.name}
-            <p class="border-t border-line px-3.5 py-2 text-2xs text-danger">{rowError.message()}</p>
+            <p class="border-t border-line px-3.5 py-2.5 text-ui text-danger" role="alert">
+              {rowError.message()}
+            </p>
           {/if}
         </section>
       {:else}
         <!-- An empty catalog is an install where nobody has set up an
              environment yet, not a breakage. This spot used to be a silent
              void. -->
-        <div class="border border-line px-3.5 py-6 text-center">
-          <p class="text-ui text-muted">{tr("admin.no.environments.yet")}</p>
-          <p class="mt-1 text-2xs text-muted">
-            {tr("admin.rooms.run.on.the.base.image.numpy.pandas.matplotlib.scikit.learn")}
-          </p>
-          <button disabled={managed} type="button" class="{BTN} mt-3" onclick={openCreate}>
+        <EmptyState
+          title={tr("admin.no.environments.yet")}
+          hint={tr("admin.rooms.run.on.the.base.image.numpy.pandas.matplotlib.scikit.learn")}
+        >
+          <button disabled={managed} type="button" class="btn-primary gap-2" onclick={openCreate}>
             <Icon name="plus" size={14} />
             {tr("admin.new.environment")}
           </button>
-        </div>
+        </EmptyState>
       {/each}
     </div>
 
-    <p class="mt-4 flex items-start gap-2 text-2xs leading-relaxed text-muted">
-      <Icon name="info" size={13} class="mt-0.5 shrink-0" />
+    <p class="admin-meta flex items-start gap-2 py-3.5">
+      <Icon name="info" size={14} class="mt-[3px] shrink-0" />
       <span>
         {tr("admin.an.environment.is.a.container.image.each.seminar.runs.in.its.own")} <b class="font-semibold text-ink">{tr("admin.new")}</b> {tr("admin.seminars.330")}
         {#if managed}{tr("admin.existing.seminars.keep.their.pinned.image.revision")}{/if}
@@ -949,32 +965,34 @@
 
 <!-- ------------------------------------------------------------- editor -->
 {#if editing !== null}
-  <div class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4">
+  <div class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6">
     <div
       class="dialog-card flex max-h-[80vh] w-full max-w-2xl flex-col border border-line bg-canvas shadow-pop"
     >
       <div class="flex items-center gap-3 border-b border-line px-5 py-3.5">
-        <h2 class="flex-1 text-head font-black tracking-tight text-ink">
+        <h2 class="min-w-0 flex-1 text-title font-semibold text-ink">
           {creating ? tr("admin.new.environment") : tr("admin.environment", { p0: draftName })}
         </h2>
-        <button class={BTN} onclick={() => ((editing = null), (creating = false))}>{tr("admin.close")}</button>
+        <button class="btn-ghost shrink-0" onclick={() => ((editing = null), (creating = false))}>
+          {tr("admin.close")}
+        </button>
       </div>
 
       <div class="flex flex-col gap-4 overflow-y-auto px-5 py-4">
         {#if creating}
-          <div class="flex flex-col gap-[7px]">
-            <label for="env-name" class="text-2xs font-bold uppercase tracking-label text-muted">
+          <div class="flex flex-col gap-1.5">
+            <label for="env-name" class="admin-label">
               {tr("admin.name")}
             </label>
             <input
               id="env-name"
               bind:value={draftName}
-              class="field h-[46px] bg-canvas px-4 font-mono text-code-lg"
+              class="field bg-canvas font-mono"
               placeholder="cv-torch"
               autocomplete="off"
               spellcheck="false"
             />
-            <p class={cn('text-2xs', nameTaken ? 'text-danger' : 'text-muted')}>
+            <p class={nameTaken ? 'text-ui text-danger' : 'admin-meta'}>
               {#if nameTaken}
                 {draftName.trim()} {tr("admin.already.exists.choose.another.name.or.use.edit.packages.on.the.ex")}
               {:else}
@@ -996,19 +1014,25 @@
             and a file with a line naming the default mean the same thing, and
             the second one also lies if the default is ever raised.
           -->
-          <div class="flex flex-col gap-[7px]">
-            <span class="text-2xs font-bold uppercase tracking-label text-muted">
+          <div class="flex flex-col gap-1.5">
+            <span class="admin-label">
               {tr('admin.env.pythonVersion')}
             </span>
-            <div class="flex flex-wrap gap-1.5">
+            <!-- Choice's small chips, spelled out: the set has to lock with a
+                 reason when a parent decides the version, and Choice has no
+                 disabled state. -->
+            <div class="flex flex-wrap gap-2">
               {#each PYTHON_VERSIONS as version (version)}
                 <button
                   type="button"
                   class={cn(
-                    BTN,
-                    'font-mono normal-case tracking-normal',
-                    (draftParent === null ? draftPython === version : parentPython === version) &&
-                      'border-accent bg-accent/10 text-accent-text',
+                    'inline-flex min-h-10 items-center border px-3 py-1.5 font-mono text-ui font-medium',
+                    'transition-colors duration-100 max-[640px]:min-h-11 focus:outline-none',
+                    'focus-visible:ring-4 focus-visible:ring-accent/15 disabled:cursor-not-allowed',
+                    'disabled:opacity-40',
+                    (draftParent === null ? draftPython === version : parentPython === version)
+                      ? 'border-primary bg-primary text-primary-ink'
+                      : 'border-line bg-surface text-ink hover:border-faint hover:bg-raised',
                   )}
                   aria-pressed={draftParent === null && draftPython === version}
                   disabled={draftParent !== null || !editorReady}
@@ -1018,7 +1042,7 @@
                 </button>
               {/each}
             </div>
-            <p class="text-2xs text-muted">
+            <p class="admin-meta">
               {#if draftParent !== null}
                 <!-- A layer on top of a ready image does not change the
                      interpreter: pip in it installs wheels for the Python that
@@ -1037,8 +1061,8 @@
           </div>
         {/if}
 
-        <div class="flex flex-col gap-[7px]">
-          <label for="env-source" class="text-2xs font-bold uppercase tracking-label text-muted">
+        <div class="flex flex-col gap-1.5">
+          <label for="env-source" class="admin-label">
             {tr("admin.packages")}
           </label>
           <!-- Until the file has arrived, the field takes no text: otherwise
@@ -1049,21 +1073,23 @@
             bind:value={draftSource}
             rows="14"
             disabled={!editorReady}
-            class="field bg-canvas px-4 py-3 font-mono text-code-lg leading-relaxed disabled:opacity-60"
+            class="field bg-canvas py-2.5 font-mono leading-relaxed disabled:opacity-60"
             spellcheck="false"
           ></textarea>
-          <p class="text-2xs text-muted">
+          <p class="admin-meta">
             {tr("admin.use.requirements.txt.syntax.one.package.per.line.packages.are.add")}
           </p>
         </div>
       </div>
 
-      <div class="flex items-center gap-2 border-t border-line px-5 py-3.5">
+      <div class="flex flex-wrap items-center gap-2 border-t border-line px-5 py-3">
         <!-- A refusal beats a warning, a warning beats a hint: one line for
-             all three, and the most urgent of them takes it. -->
+             all three, and the most urgent of them takes it. On a phone it
+             takes the whole line and the buttons go under it, to the right,
+             rather than squeezing it into a column a word wide. -->
         <p
           class={cn(
-            'min-w-0 flex-1 text-2xs',
+            'min-w-0 flex-1 basis-[220px] text-2xs',
             editorError ? 'text-danger' : draftWarning ? 'text-warning' : 'text-muted',
           )}
         >
@@ -1071,9 +1097,11 @@
             draftWarning?.() ??
             tr("admin.save.the.package.list.then.build.the.environment.to.install.its.p")}
         </p>
-        <button class={BTN} onclick={() => ((editing = null), (creating = false))}>{tr("admin.cancel")}</button>
+        <button class="btn-ghost ml-auto" onclick={() => ((editing = null), (creating = false))}>
+          {tr("admin.cancel")}
+        </button>
         <button
-          class="inline-flex h-8 items-center bg-primary px-4 text-2xs font-bold uppercase tracking-label text-primary-ink transition-opacity duration-100 hover:opacity-90 disabled:opacity-40"
+          class="btn-primary"
           onclick={save}
           disabled={!nameOk || nameTaken || !editorReady || busy !== null}
         >
@@ -1086,10 +1114,10 @@
 
 <!-- ------------------------------------------------------ confirmations -->
 {#if doomed}
-  <div class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4">
-    <div class="dialog-card w-full max-w-md border border-line bg-canvas p-5 shadow-pop">
-      <h2 class="text-head font-black tracking-tight text-ink">{tr("admin.delete.350")} {doomed}?</h2>
-      <p class="mt-2 text-ui text-muted">
+  <div class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6">
+    <div class="dialog-card w-full max-w-[460px] border border-line bg-canvas p-5 shadow-pop">
+      <h2 class="text-title font-semibold text-ink">{tr("admin.delete.350")} {doomed}?</h2>
+      <p class="mt-2 text-ui leading-relaxed text-muted">
         {tr("admin.this.deletes.the.package.list.the.built.image.remains.in.docker.a")}
       </p>
       <!-- The buttons grey out for the duration of the request. The dialog
@@ -1098,9 +1126,11 @@
            answered "no such environment" — a false error on top of a
            success. -->
       <div class="mt-5 flex justify-end gap-2">
-        <button class={BTN} onclick={() => (doomed = null)} disabled={busy !== null}>{tr("admin.cancel")}</button>
+        <button class="btn-outline" onclick={() => (doomed = null)} disabled={busy !== null}>
+          {tr("admin.cancel")}
+        </button>
         <button
-          class="inline-flex h-8 items-center bg-danger px-4 text-2xs font-bold uppercase tracking-label text-white disabled:opacity-40"
+          class="btn-danger-solid"
           onclick={confirmDelete}
           disabled={busy !== null}
         >
@@ -1112,21 +1142,21 @@
 {/if}
 
 {#if switching}
-  <div class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4">
-    <div class="dialog-card w-full max-w-md border border-line bg-canvas p-5 shadow-pop">
-      <h2 class="text-head font-black tracking-tight text-ink">{tr("admin.make")} {switching} {tr("admin.the.default")}</h2>
-      <p class="mt-2 text-ui text-muted">
+  <div class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6">
+    <div class="dialog-card w-full max-w-[460px] border border-line bg-canvas p-5 shadow-pop">
+      <h2 class="text-title font-semibold text-ink">{tr("admin.make")} {switching} {tr("admin.the.default")}</h2>
+      <p class="mt-2 text-ui leading-relaxed text-muted">
         {tr("admin.seminars.created.from.now.on.get")} {switching}{tr("admin.existing.seminars.keep.their.selected.environment")}
       </p>
       <!-- The same greying buttons: two presses are two `docker compose up`,
            and the second fails on a container conflict, answering "the
            kernel did not come back" where the switch has already happened. -->
       <div class="mt-5 flex justify-end gap-2">
-        <button class={BTN} onclick={() => (switching = null)} disabled={busy !== null}>
+        <button class="btn-outline" onclick={() => (switching = null)} disabled={busy !== null}>
           {tr("admin.cancel")}
         </button>
         <button
-          class="inline-flex h-8 items-center bg-primary px-4 text-2xs font-bold uppercase tracking-label text-primary-ink disabled:opacity-40"
+          class="btn-primary"
           onclick={confirmUse}
           disabled={busy !== null}
         >

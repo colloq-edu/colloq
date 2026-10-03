@@ -18,6 +18,7 @@
  */
 import type { Request } from 'express'
 import {
+  DEFAULT_ROOM_ACCESS,
   MAX_DOOR_TOKEN_BYTES,
   MAX_DOOR_TOKENS,
   type RoomAccess,
@@ -78,6 +79,12 @@ export function memberOf(
  * everybody, staff included: a teacher reaches a deleted room from nowhere,
  * and a withdrawn page draws no rail at all.
  *
+ * `saved` is the page's saved choice. `undefined` (a page with no saved pick,
+ * a pick from before the door, a course row that has no page yet) reads as
+ * DEFAULT_ROOM_ACCESS, 'anyone': with no student accounts, a token is only a
+ * browser, and the class's own students on another device are who the page
+ * and the «Сегодня» block are for (shared/publish.ts · DEFAULT_ROOM_ACCESS).
+ *
  * Otherwise `room` is given to staff always, to everyone under 'anyone', and
  * to a proven member under 'members'. Its `live` is the class still on: the
  * room exists, the class was not ended and the seminar not archived.
@@ -85,9 +92,10 @@ export function memberOf(
 export function roomDoor(
   req: Request,
   sessionId: string | null,
-  access: RoomAccess,
+  saved: RoomAccess | undefined,
   tokens: readonly string[],
 ): RoomDoor {
+  const access = saved ?? DEFAULT_ROOM_ACCESS
   const staff = currentStaff(req) !== null
   if (!sessionId || !getSession(sessionId)) {
     return { access: 'none', member: false, staff, room: null }

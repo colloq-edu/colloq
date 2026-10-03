@@ -137,6 +137,14 @@ export const adminMessages: MessageCatalog = {
     "ru": "Занятия",
     "en": "Classes"
   },
+  /*
+   * The classes tab's line under its title. Every tab carries one, so the
+   * header is the same height whichever tab is open (admin-scale.test.mts).
+   */
+  "admin.seminars.lede": {
+    "ru": "Комнаты ваших занятий: ссылка для входа, правила и страница после занятия.",
+    "en": "Your class rooms: the join link, the rules and the page after class."
+  },
   "admin.courses": {
     "ru": "Курсы",
     "en": "Courses"
@@ -2486,8 +2494,8 @@ export const adminMessages: MessageCatalog = {
     }
   },
   "admin.course.addPlanned": {
-    "ru": "+ Тема по плану",
-    "en": "+ Planned topic"
+    "ru": "Тема по плану",
+    "en": "Planned topic"
   },
   "admin.course.addToPlan": {
     "ru": "Добавить в план",
@@ -4575,6 +4583,14 @@ export const adminMessages: MessageCatalog = {
     "ru": "не упоминается в тетрадях",
     "en": "not mentioned in the notebooks"
   },
+  "admin.page.why.secret": {
+    "ru": "похоже на ключ или пароль",
+    "en": "looks like a key or a password"
+  },
+  "admin.page.why.unchecked": {
+    "ru": "не проверить на ключи — откройте и решите сами",
+    "en": "cannot be checked for keys — open it and decide"
+  },
   "admin.page.why.image": {
     "ru": "картинка уже в тексте тетради",
     "en": "the picture is already in a notebook's text"
@@ -4586,6 +4602,46 @@ export const adminMessages: MessageCatalog = {
   "admin.page.usedIn": {
     "ru": "используется в {paths}",
     "en": "used in {paths}"
+  },
+  "admin.page.kind.folder": {
+    "ru": "Папка",
+    "en": "Folder"
+  },
+  "admin.page.folder.readIn": {
+    "ru": "читается в {paths}",
+    "en": "read in {paths}"
+  },
+  "admin.page.folder.importedIn": {
+    "ru": "импортируется в {paths}",
+    "en": "imported in {paths}"
+  },
+  "admin.page.folder.pictures": {
+    "ru": "картинки из текста тетрадей — нужны, чтобы архив открывался без интернета",
+    "en": "pictures from the notebooks' text — the archive needs them to open offline"
+  },
+  "admin.page.folder.contents": {
+    "ru": "состав папки",
+    "en": "what is inside"
+  },
+  "admin.page.folder.note": {
+    "ru": "Папка публикуется целиком, одной строкой на странице. Внутри — те же правила: файлы на «_», ответы и мусор от запусков в неё не попадают.",
+    "en": "A folder goes out whole, as one row on the page. The same rules apply inside: files starting with «_», answers and leftovers from runs stay out of it."
+  },
+  "admin.page.why.tooMany": {
+    "ru": "больше {count} файлов",
+    "en": "over {count} files"
+  },
+  "admin.page.why.folderNothing": {
+    "ru": "внутри нечего публиковать",
+    "en": "nothing inside can go out"
+  },
+  "admin.page.refused.folderMissing": {
+    "ru": "{path} — папки больше нет или в ней нечего публиковать",
+    "en": "{path} — the folder is gone or holds nothing that can go out"
+  },
+  "admin.page.refused.tooMany": {
+    "ru": "{path} — в папке больше {count} файлов",
+    "en": "{path} — the folder holds over {count} files"
   },
   "admin.page.check": {
     "ru": "Проверка",
@@ -4688,8 +4744,8 @@ export const adminMessages: MessageCatalog = {
     "en": "No one"
   },
   "admin.page.roomAccessHint": {
-    "ru": "Участники — те, кто входил в комнату с этого браузера; преподаватели видят вход всегда. «Все» открывает комнату всем, кто видит страницу: в ней имена учеников и их вопросы оракулу.",
-    "en": "Participants are those who joined the room from that browser; teachers always see the way in. “Everyone” opens the room to anyone who sees the page: it shows the students’ names and their questions to the oracle."
+    "ru": "По умолчанию «Все»: вход видит каждый, у кого есть страница. «Участники» — только браузеры, с которых входили в комнату; «Никто» прячет вход. Преподаватели видят вход всегда. В комнате видны имена учеников и их вопросы оракулу.",
+    "en": "“Everyone” is the default: anyone with the page sees the way in. “Participants” limits it to browsers that have entered the room; “No one” hides it. Teachers always see the way in. The room shows the students’ names and their questions to the oracle."
   },
   "admin.page.roomAccessFailed": {
     "ru": "Не удалось сохранить вход в комнату — попробуйте ещё раз.",
@@ -4800,8 +4856,8 @@ export const adminMessages: MessageCatalog = {
     "en": "copy"
   },
   "admin.course.addRoom": {
-    "ru": "+ Добавить занятие",
-    "en": "+ Add a class"
+    "ru": "Добавить занятие",
+    "en": "Add a class"
   },
   "admin.course.addQuestion": {
     "ru": "Какое занятие добавить в конец курса? Сначала самые новые.",

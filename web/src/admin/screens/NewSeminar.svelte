@@ -23,6 +23,7 @@
   import Resources from '@/admin/ui/Resources.svelte'
   import OwnNotebooks from '@/admin/ui/OwnNotebooks.svelte'
   import Footprint from '@/admin/ui/Footprint.svelte'
+  import Badge from '@/admin/screens/competitions/Badge.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import { oracleCeiling, oracleOverCeiling, splitBySize, uploadMb } from '@/admin/panel'
@@ -194,7 +195,8 @@
     'max-[640px]:max-w-none max-[640px]:basis-full'
   const DOOR_ON = 'border-accent border-l-[3px] bg-surface'
   const DOOR_OFF = 'border-line bg-canvas hover:border-faint'
-  const CAP = 'text-2xs font-bold uppercase tracking-label'
+  /** A door's caption: the panel's label voice, inked on the chosen door. */
+  const CAP = 'admin-label'
 
   /**
    * Read the notebook and count what is in it.
@@ -763,11 +765,13 @@
        offering a duplicate. The button leads to where this room already is,
        with its link. -->
   {#if created}
-    <button type="button" class="btn-primary" onclick={() => ondone(created ?? undefined)}>
+    <button type="button" class="btn-primary whitespace-nowrap max-[640px]:flex-1" onclick={() => ondone(created ?? undefined)}>
       {tr("admin.back.to.seminars")}
     </button>
   {:else}
-    <button type="button" class="btn-primary" disabled={!canCreate} onclick={create}>
+    <!-- flex-1 on a phone, as the competition editor's actions: the page's
+         one action takes the rest of the line beside Cancel. -->
+    <button type="button" class="btn-primary whitespace-nowrap max-[640px]:flex-1" disabled={!canCreate} onclick={create}>
       {#if busy}
         <Icon name="spinner" size={15} class="animate-spin" />
         {tr("admin.creating")}
@@ -784,7 +788,7 @@
   {actions}
 >
   {#if error}
-    <p class="mb-4 border-l-2 border-danger bg-danger/[0.06] px-3 py-2 text-ui text-danger" role="alert">
+    <p class="mt-4 border border-danger/40 bg-danger/5 px-4 py-3 text-ui text-danger" role="alert">
       {error}
     </p>
   {/if}
@@ -801,10 +805,12 @@
       -->
       {#if options.length > 0}
         <div class="flex flex-col gap-1.5">
+          <!-- The panel's field caption (.admin-label) over the form's own
+               field, so the select is not taller than the name input under it. -->
           <label class="flex flex-col gap-1.5">
-            <span class="text-2xs font-semibold text-ink">{tr('admin.new.courseRow')}</span>
+            <span class="admin-label">{tr('admin.new.courseRow')}</span>
             <select
-              class="h-11 w-full min-w-0 border border-line bg-canvas px-3 text-ui text-ink focus:border-accent focus:outline-none"
+              class="field min-w-0"
               value={rowChoice}
               disabled={created !== null}
               onchange={(event) => {
@@ -819,7 +825,7 @@
             </select>
           </label>
           {#if seatRow}
-            <p class="text-2xs text-muted">{tr('admin.new.courseHint')}</p>
+            <p class="admin-meta">{tr('admin.new.courseHint')}</p>
           {/if}
         </div>
       {/if}
@@ -855,7 +861,7 @@
           <!-- The bytes ensureInitialNotebook() actually seeds, not a description
                of them: a door should show what is behind it. -->
           <span class="flex flex-col gap-0.5 border border-line bg-canvas px-2.5 py-2 font-mono text-micro">
-            <span class="text-faint">{tr("admin.welcome")}</span>
+            <span class="text-muted">{tr("admin.welcome")}</span>
             <span class="text-muted">print("hello")</span>
           </span>
           <span class="text-2xs leading-tight text-muted">{tr("admin.start.with.a.text.cell.and.a.code.cell")}</span>
@@ -873,8 +879,8 @@
           </span>
           <span
             class={cn(
-              'flex h-[33px] items-center gap-2 border px-2.5 font-mono text-micro',
-              notebook ? 'border-faint bg-canvas text-ink' : 'border-line bg-canvas text-faint',
+              'flex h-10 items-center gap-2 border px-2.5 font-mono text-micro',
+              notebook ? 'border-faint bg-canvas text-ink' : 'border-line bg-canvas text-muted',
             )}
           >
             {#if notebook}
@@ -903,8 +909,10 @@
             <Icon name="link" size={13} class={source === 'github' ? 'text-accent-text' : 'text-muted'} />
             <span class={cn(CAP, source === 'github' ? 'text-ink' : 'text-muted')}>{tr("admin.from.github")}</span>
           </span>
-          <span class="flex h-[33px] items-center border border-line bg-canvas px-2.5 font-mono text-micro text-faint">
-            github.com/…/week02
+          <!-- Breaks after «…/», not past the door's edge: the sample is wider
+               than a 182px door at the panel's 14px mono. -->
+          <span class="flex min-h-10 items-center border border-line bg-canvas px-2.5 py-1.5 font-mono text-micro text-muted">
+            <span class="min-w-0">github.com/…/<wbr />week02</span>
           </span>
           <!--
             "Public" is said here, not in the error message.
@@ -931,13 +939,13 @@
         onchange={(event) => void takeNotebook(event.currentTarget.files?.[0] ?? null)}
       />
       {#if notebookError}
-        <p class="text-2xs text-danger">{notebookError}</p>
+        <p class="text-ui text-danger" role="alert">{notebookError}</p>
       {/if}
 
       {#if fromGithub}
         <input
           bind:value={githubUrl}
-          class="field font-mono text-code-lg"
+          class="field font-mono"
           placeholder="https://github.com/sleep3r/ml_hse/tree/main/week02"
           autocomplete="off"
           spellcheck="false"
@@ -950,7 +958,7 @@
             <Skeleton width="4rem" height="0.8rem" />
           </div>
         {:else if previewError}
-          <p class="text-2xs text-danger">{previewError}</p>
+          <p class="text-ui text-danger" role="alert">{previewError}</p>
         {:else if preview}
           <div class="flex flex-wrap items-center gap-2 text-2xs text-muted">
             {#each preview.notebooks ?? [{ name: preview.notebook, cells: preview.cells }] as book (book.name)}
@@ -1027,10 +1035,10 @@
         class="flex flex-col gap-2.5"
       >
         <div class="flex flex-col border border-line">
-          <!-- 45px is the same py-3 around a 21px name line (font-mono
-               text-code-lg). The bars inside are thinner than the letters, so
-               the row holds the height, not them: otherwise the card comes
-               out seven pixels shorter. -->
+          <!-- 45px is the real row's floor (min-h-[45px] below): one number
+               for both, so the card does not jump when the list lands. The
+               bars inside are thinner than the letters, so the row holds the
+               height, not them. -->
           <div class="flex h-[45px] items-center gap-3 px-3.5">
             <Skeleton width="0.5rem" height="0.5rem" radius="0" />
             <Skeleton width="9rem" height="0.85rem" />
@@ -1038,9 +1046,9 @@
           </div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
-          <span class="text-micro font-bold uppercase tracking-label text-faint">{tr("admin.or.choose")}</span>
-          {#each ['4.5rem', '6rem'] as width (width)}
-            <Skeleton {width} height="24px" radius="0" />
+          <span class="admin-label">{tr("admin.or.choose")}</span>
+          {#each ['6.5rem', '8rem'] as width (width)}
+            <Skeleton {width} height="40px" radius="0" />
           {/each}
         </div>
       </div>
@@ -1049,18 +1057,16 @@
       <div class="flex flex-col gap-2.5">
         {#if chosen}
           <div class="flex flex-col border border-line">
-            <label class="flex cursor-pointer items-center gap-3 px-3.5 py-3">
+            <!-- A floor, not a lid: on a phone the facts on the right wrap
+                 under the name, and the row grows with them. -->
+            <label class="flex min-h-[45px] cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 px-3.5 py-2.5">
               <span class="h-2 w-2 shrink-0 bg-accent"></span>
-              <span class="font-mono text-code-lg font-medium text-ink">{chosen.name}</span>
+              <span class="font-mono text-ui font-medium text-ink">{chosen.name}</span>
               {#if chosen.state === 'ready'}
-                <span class="inline-flex h-6 items-center bg-positive/10 px-1.5 text-2xs font-bold uppercase tracking-label text-positive">
-                  {tr("admin.built")}
-                </span>
+                <Badge word={tr("admin.built")} tone="positive" />
               {/if}
               {#if chosen.gpu}
-                <span class="inline-flex h-[18px] items-center bg-accent/15 px-1.5 text-micro font-bold uppercase tracking-label text-accent-text">
-                  GPU
-                </span>
+                <Badge word="GPU" tone="accent" />
               {/if}
               <span class="ml-auto text-2xs text-muted">
                 {[
@@ -1087,10 +1093,10 @@
             {#if chosen.packages.length > 0}
               <div class="flex flex-wrap items-center gap-1.5 px-3.5 pb-3 pl-[34px]">
                 {#each chosen.packages.slice(0, 5) as pkg (pkg)}
-                  <span class="bg-surface px-2 py-0.5 font-mono text-micro text-muted">{pkg}</span>
+                  <span class="chip bg-surface font-mono text-muted">{pkg}</span>
                 {/each}
                 {#if chosen.packages.length > 5}
-                  <span class="text-2xs text-faint">+ {chosen.packages.length - 5} {tr("admin.more")}</span>
+                  <span class="text-2xs text-muted">+ {chosen.packages.length - 5} {tr("admin.more")}</span>
                 {/if}
               </div>
             {/if}
@@ -1101,7 +1107,7 @@
         <!-- and it cannot be chosen — a room will not start on it. -->
         {#if environments.length > 1}
           <div class="flex flex-wrap items-center gap-2">
-            <span class="text-micro font-bold uppercase tracking-label text-faint">{tr("admin.or.choose")}</span>
+            <span class="admin-label">{tr("admin.or.choose")}</span>
             {#each environments.filter((e) => e.name !== environment) as env (env.name)}
               <button
                 type="button"
@@ -1111,10 +1117,12 @@
                   : tr("admin.has.not.been.built.a.room.cannot.open.on.it", { p0: env.name })}
                 onclick={() => (environment = env.name)}
                 class={cn(
-                  'inline-flex h-6 items-center gap-1.5 px-2 font-mono text-2xs',
+                  // The panel's option chip (admin/ui/Choice · sm): 40px, 44 on a phone.
+                  'inline-flex min-h-10 items-center gap-1.5 px-3 font-mono text-2xs',
+                  'transition-colors duration-100 max-[640px]:min-h-11',
                   env.state === 'ready'
-                    ? 'border border-line text-muted hover:border-faint hover:text-ink'
-                    : 'border border-dashed border-line text-faint',
+                    ? 'border border-line bg-surface text-ink hover:border-faint hover:bg-raised'
+                    : 'cursor-not-allowed border border-dashed border-line text-muted',
                 )}
               >
                 {#if env.state !== 'ready'}
@@ -1234,12 +1242,20 @@
   >
     <div class="flex flex-col">
       {#if materials.length > 0}
-        <div class="flex items-center gap-3 border-b border-line pb-2">
+        <!-- The rows' own insets (11px before the icon, 8px after the remove
+             button), so each caption stands over its column. The role lane is
+             as wide as its widest badge (the Russian «СОВМЕСТНАЯ»).
+
+             Below 640 there are no lanes: the name takes the first line of a
+             row and role, size and the remove button the second, indented
+             under the name (the 13px icon + the row's 16px gap). Four lanes in
+             the 259px a phone leaves squeezed the file name to nothing. -->
+        <div class="admin-list-head pl-[11px] pr-2 max-[640px]:hidden">
           <span class="w-[13px] shrink-0"></span>
-          <span class="flex-1 text-2xs font-bold uppercase tracking-label text-muted">{tr("admin.file")}</span>
-          <span class="w-24 shrink-0 text-2xs font-bold uppercase tracking-label text-muted">{tr("admin.role")}</span>
-          <span class="w-14 shrink-0 text-right text-2xs font-bold uppercase tracking-label text-muted">{tr("admin.size")}</span>
-          <span class="w-8 shrink-0"></span>
+          <span class="admin-label flex-1">{tr("admin.file")}</span>
+          <span class="admin-label w-32 shrink-0">{tr("admin.role")}</span>
+          <span class="admin-label w-20 shrink-0 text-right">{tr("admin.size")}</span>
+          <span class="w-9 shrink-0"></span>
         </div>
       {/if}
 
@@ -1249,33 +1265,33 @@
         exactly what the LIVE chip says — "this is the one edited together".
       -->
       {#if notebook}
-        <div class="flex items-center gap-3 border-b border-line border-l-[3px] border-l-accent bg-surface py-2.5 pl-2 pr-2">
+        <div
+          class="admin-data-row border-l-[3px] border-l-accent bg-surface pl-2 pr-2
+                 max-[640px]:flex-wrap max-[640px]:gap-y-1"
+        >
           <Icon name="file" size={13} class="shrink-0 text-accent-text" />
-          <span class="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span class="flex min-w-0 flex-1 flex-col gap-0.5 max-[640px]:basis-[calc(100%_-_29px)]">
             <span class="truncate font-mono text-2xs font-medium text-ink">{notebook.filename}</span>
-            <span class="text-micro text-muted">{notebook.cells.length} {tr("admin.cells.outputs.dropped")}</span>
+            <span class="admin-meta">{notebook.cells.length} {tr("admin.cells.outputs.dropped")}</span>
           </span>
-          <span class="w-24 shrink-0">
-            <span class="inline-flex h-6 items-center gap-1.5 bg-accent px-2 text-2xs font-bold uppercase tracking-label text-white">
-              <span class="h-1 w-1 bg-white"></span>
-              {tr("admin.live")}
-            </span>
+          <span class="w-32 shrink-0 max-[640px]:ml-[29px] max-[640px]:w-auto">
+            <Badge word={tr("admin.live")} tone="accent" form="strong" />
           </span>
-          <span class="w-14 shrink-0 text-right font-mono text-micro text-muted">—</span>
-          <span class="w-8 shrink-0"></span>
+          <span class="admin-num w-20 shrink-0 text-right text-muted max-[640px]:w-auto">—</span>
+          <span class="w-9 shrink-0 max-[640px]:hidden"></span>
         </div>
       {/if}
 
       {#each materials as file (file.name)}
-        <div class="flex items-center gap-3 border-b border-line py-2.5 pl-[11px] pr-2">
+        <div class="admin-data-row pl-[11px] pr-2 max-[640px]:flex-wrap max-[640px]:gap-y-1">
           <Icon
             name={isNotebook(file.name) ? 'file' : 'box'}
             size={13}
             class="shrink-0 text-faint"
           />
-          <span class="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span class="flex min-w-0 flex-1 flex-col gap-0.5 max-[640px]:basis-[calc(100%_-_29px)]">
             <span class="truncate font-mono text-2xs text-ink">{file.name}</span>
-            <span class="text-micro text-muted">
+            <span class="admin-meta">
               {#if isNotebook(file.name)}
                 {tr("admin.attached.notebook.file")}
               {:else}
@@ -1283,19 +1299,19 @@
               {/if}
             </span>
           </span>
-          <span class="w-24 shrink-0 text-2xs text-muted">
+          <span class="w-32 shrink-0 text-2xs text-muted max-[640px]:ml-[29px] max-[640px]:w-auto">
             {isNotebook(file.name) ? tr("admin.notebook") : tr("admin.data")}
           </span>
-          <span class="w-14 shrink-0 text-right font-mono text-micro text-muted">
+          <span class="admin-num w-20 shrink-0 text-right text-muted max-[640px]:w-auto">
             {imageSize(file.size)}
           </span>
           <button
             type="button"
-            class="-my-2 flex h-8 w-8 shrink-0 items-center justify-center text-faint transition-colors duration-[var(--speed-quick)] hover:text-ink"
+            class="admin-icon-btn -my-2 max-[640px]:ml-auto"
             aria-label={tr("admin.remove.from.the.upload.list", { p0: file.name })}
             onclick={() => (materials = materials.filter((f) => f.name !== file.name))}
           >
-            <Icon name="x" size={13} />
+            <Icon name="x" size={15} />
           </button>
         </div>
       {/each}
@@ -1336,11 +1352,11 @@
       </label>
 
       {#if oversized}
-        <p class="pt-2.5 text-2xs text-danger" role="alert">{oversized}</p>
+        <p class="pt-2.5 text-ui text-danger" role="alert">{oversized}</p>
       {/if}
 
       {#if materials.length > 0}
-        <p class="pt-2.5 text-2xs text-faint">
+        <p class="admin-meta pt-2.5">
           {tr("admin.count.material", { count: materials.length + (notebook ? 1 : 0) })} ·
           {imageSize(materialBytes)}
         </p>
@@ -1370,7 +1386,7 @@
             >
               <span class="flex items-center gap-2.5">
                 <span class="mode-dot"></span>
-                <span class="mode-title text-title font-bold">{option.label}</span>
+                <span class="mode-title text-title font-semibold">{option.label}</span>
                 {#if option.value === 'lecture'}
                   <Icon name="lock" size={14} class="ml-auto shrink-0 opacity-80" />
                 {:else if option.value === 'council'}
@@ -1384,7 +1400,7 @@
             </button>
           {/each}
         </div>
-        <p class="text-2xs text-muted">{tr("admin.you.can.change.the.mode.on.the.seminar.page")}</p>
+        <p class="admin-meta">{tr("admin.you.can.change.the.mode.on.the.seminar.page")}</p>
       </div>
 
       <!-- "As for the class" names the number the form has just chosen above,

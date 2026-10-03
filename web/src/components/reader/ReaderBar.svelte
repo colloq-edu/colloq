@@ -6,12 +6,16 @@
   class page the way up to the course is the first thing on a phone, a real
   link, because the course is the address a student keeps and the class page
   is the one they were sent.
+
+  The metrics are the competition bar's (competitions/TopBar.svelte): 56 px
+  at every width, the same gutters, the mark and the caps at 16 and 15 px.
+  A student moves between /k and /c in one evening, and the two public
+  faces of one product must not change size under the same logo.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
   import Icon from '@/components/ui/Icon.svelte'
   import ThemeSwitch from '@/components/ui/ThemeSwitch.svelte'
-  import Wordmark from '@/components/ui/Wordmark.svelte'
   import { plainClick } from './links'
 
   interface Props {
@@ -34,13 +38,13 @@
 </script>
 
 <header
-  class="flex h-12 shrink-0 items-center justify-between gap-4 border-b border-line px-4 sm:px-6
-         lg:h-14 lg:px-10"
+  class="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-line bg-canvas px-4
+         sm:px-10"
 >
   {#if course && !wide}
     <a
       href={course.href}
-      class="press -my-2 flex h-12 min-w-0 items-center gap-1.5 text-[15px] font-semibold leading-5
+      class="press -my-2 flex h-14 min-w-0 items-center gap-1.5 text-[16px] font-semibold leading-6
              text-accent-text"
       aria-label={`${tr('room.page.back')}: ${course.name}`}
       onclick={up}
@@ -50,25 +54,28 @@
     </a>
   {:else}
     <div class="flex min-w-0 items-center gap-3.5">
-      <Wordmark tone="onLight" />
+      <Icon name="logo" size={16} class="shrink-0 text-primary" />
+      <span class="shrink-0 text-[15px] font-black uppercase leading-[22px] tracking-section text-primary">
+        Colloq
+      </span>
       {#if course || crumb}
         <span class="h-[18px] w-px shrink-0 bg-line" aria-hidden="true"></span>
       {/if}
       {#if course}
         <a
           href={course.href}
-          class="min-w-0 truncate text-[13px] font-semibold leading-4 text-accent-text
+          class="min-w-0 truncate text-[15px] font-semibold leading-[22px] text-accent-text
                  hover:underline"
           onclick={up}
         >
           {course.name}
         </a>
         {#if crumb}
-          <span class="shrink-0 text-[13px] leading-4 text-faint" aria-hidden="true">/</span>
+          <span class="shrink-0 text-[15px] leading-[22px] text-faint" aria-hidden="true">/</span>
         {/if}
       {/if}
       {#if crumb}
-        <span class="shrink-0 text-[13px] leading-4 text-muted">{crumb}</span>
+        <span class="shrink-0 text-[15px] leading-[22px] text-muted">{crumb}</span>
       {/if}
     </div>
   {/if}

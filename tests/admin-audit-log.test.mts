@@ -280,16 +280,16 @@ test('deleting a room, making and deleting a course and every change of a public
   assert.equal(taken.target?.id, publication.id)
   assert.equal(taken.detail?.material, 'Домашнее задание')
 
-  // Opening the room behind the page to everyone with the link is a staff decision too.
-  const opened = await call('PATCH', `/api/admin/publications/${publication.id}`, {
+  // Who reaches the room behind the page from its link is a staff decision too.
+  const narrowed = await call('PATCH', `/api/admin/publications/${publication.id}`, {
     cookie: ownerCookie,
-    body: { roomAccess: 'anyone' },
+    body: { roomAccess: 'members' },
   })
-  assert.equal(opened.status, 200)
+  assert.equal(narrowed.status, 200)
   const door = last('publication.room_access')
   assert.equal(door.target?.id, publication.id)
   const { access, was, room: doorRoom } = door.detail ?? {}
-  assert.deepEqual([access, was, doorRoom], ['anyone', 'members', 'auditpage'])
+  assert.deepEqual([access, was, doorRoom], ['members', 'anyone', 'auditpage'])
 
   assert.equal((await call('DELETE', '/api/admin/seminars/auditpage/publish', { cookie: ownerCookie })).status, 200)
   assert.equal(last('publication.withdrawn').target?.id, publication.id)

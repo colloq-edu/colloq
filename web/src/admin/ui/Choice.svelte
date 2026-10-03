@@ -53,7 +53,10 @@
         title={option.hint}
         onclick={() => onchange(option.value)}
         class={cn(
-          ' border px-3 py-1.5 text-ui font-medium transition-colors duration-100',
+          // The panel's control height (index.css · .admin-ui): a preset chip
+          // sits in a row with fields and buttons, and 38 beside 40 showed.
+          'inline-flex min-h-10 items-center border px-3 py-1.5 text-ui font-medium',
+          'transition-colors duration-100 max-[640px]:min-h-11',
           'focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/15',
           on
             ? 'border-primary bg-primary text-primary-ink'

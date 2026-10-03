@@ -22,6 +22,7 @@
   import { onMount } from 'svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import { navCounts } from '@/admin/AdminShell.svelte'
+  import Badge from '@/admin/screens/competitions/Badge.svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -53,15 +54,25 @@
    * and the menu stay on the first (default `order`), while role, link and
    * last seen move under them, each full width. The first line's width is
    * measured for the menu button — 44px — and the two numbers must agree.
+   *
+   * The space between lanes is the shared rows' gap (admin-list-head,
+   * admin-list-row), the same 16px every list in the panel has; the card
+   * drops its column gap, or the menu would no longer fit beside the person.
+   * The five floors and the four gaps come to the list's 600px minimum
+   * (160 + 156 + 84 + 96 + 40 + 4 × 16). The role floor is the role field
+   * itself — the Russian "Teacher" with its chevron is 156px, and a select
+   * cannot end in an ellipsis, it just cuts the word — while the link lane
+   * gives way down to its copy button: the masked link is a shape, not
+   * something read.
    */
-  const PHONE_LANE = 'max-[640px]:order-1 max-[640px]:w-full max-[640px]:min-w-0 max-[640px]:pr-0'
-  const COL_ROLE = `w-[168px] min-w-[110px] pr-4 ${PHONE_LANE}`
-  const COL_LINK = `w-[322px] min-w-[150px] pr-5 ${PHONE_LANE}`
-  const COL_SEEN = `w-[130px] min-w-[100px] ${PHONE_LANE}`
+  const PHONE_LANE = 'max-[640px]:order-1 max-[640px]:w-full max-[640px]:min-w-0'
+  const COL_ROLE = `w-[168px] min-w-[156px] ${PHONE_LANE}`
+  const COL_LINK = `w-[322px] min-w-[84px] ${PHONE_LANE}`
+  const COL_SEEN = `w-[176px] min-w-[96px] ${PHONE_LANE}`
   const COL_MENU = 'w-10 shrink-0 max-[640px]:w-11'
-  /** The person's own floor — an avatar, a name worth reading, and the gap. */
+  /** The person's own floor — an avatar, a name worth reading. */
   const COL_PERSON =
-    'min-w-[200px] flex-1 pr-5 max-[640px]:min-w-0 max-[640px]:basis-[calc(100%_-_44px)] ' +
+    'min-w-[160px] flex-1 max-[640px]:min-w-0 max-[640px]:basis-[calc(100%_-_44px)] ' +
     'max-[640px]:pr-2'
 
   /** All a row may ever show of a live link: its shape. */
@@ -464,15 +475,19 @@
 <svelte:window onclick={() => (menuId = null)} onkeydown={onKeydown} />
 
 {#snippet addTeacher()}
-  <button type="button" class="btn-primary text-2xs font-bold uppercase tracking-caps" onclick={openComposer}>
-    <Icon name="plus" size={13} />
+  <button
+    type="button"
+    class="btn-primary btn-caps gap-2 px-4 max-[640px]:w-full"
+    onclick={openComposer}
+  >
+    <Icon name="plus" size={14} />
     {tr("admin.add.a.teacher")}
   </button>
 {/snippet}
 
 <!-- A span, not a p: it also has to sit inside the composer's <label>. -->
 {#snippet eyebrow(text: string)}
-  <span class="block text-micro font-bold uppercase tracking-label text-muted">{text}</span>
+  <span class="admin-label block">{text}</span>
 {/snippet}
 
 <!--
@@ -504,7 +519,7 @@
           bind:value={draftName}
           maxlength={LIMITS.teacherName}
           placeholder={tr("admin.ada.lovelace")}
-          class="field mt-1.5 text-ui"
+          class="field mt-1.5"
         />
       </label>
       <label class="min-w-[210px] flex-1">
@@ -515,7 +530,7 @@
           maxlength={LIMITS.email}
           spellcheck="false"
           placeholder="ada@example.edu"
-          class="field mt-1.5 font-mono text-2xs"
+          class="field mt-1.5 font-mono"
         />
       </label>
       <button type="submit" class="btn-primary" disabled={creating}>
@@ -523,31 +538,37 @@
       </button>
       <button type="button" class="btn-ghost" onclick={() => (composing = false)}>{tr("admin.cancel")}</button>
       {#if composeError}
-        <p class="w-full text-ui text-danger">{composeError}</p>
+        <p class="w-full text-ui text-danger" role="alert">{composeError}</p>
       {/if}
-      <p class="w-full text-2xs text-muted">
+      <p class="admin-meta w-full">
         {tr("admin.this.creates.a.teacher.account.and.a.sign.in.link.you.can.change")}
       </p>
     </form>
   {/if}
 
   {#if rowCopyError}
-    <p role="alert" class="mb-3 border border-danger/40 bg-danger/5 px-4 py-2.5 text-ui text-danger">
+    <p role="alert" class="mb-3 border border-danger/40 bg-danger/5 px-4 py-3 text-ui text-danger">
       {rowCopyError}
     </p>
   {/if}
 
   <!--
-    The sum of every lane's floor. Past it the list scrolls sideways in the page
-    body rather than collapsing further — and it is the row that scrolls, so the
-    rules under the rows run the full width of what they are ruling. The notes
-    below the list stay at the window's own width: they are prose, and prose
-    should never need scrolling to read.
+    The sum of every lane's floor and the gaps between them. Past it the list
+    scrolls sideways in the page body rather than collapsing further — and it is
+    the row that scrolls, so the rules under the rows run the full width of what
+    they are ruling. The notes below the list stay at the window's own width:
+    they are prose, and prose should never need scrolling to read.
   -->
   <div class="min-w-[600px] max-[640px]:min-w-0">
   <!-- The lanes' header goes away together with the lanes: the captions move
        into the cards themselves, in the same words (see `lane` below). -->
-  <div class="sticky top-0 z-10 flex h-9 items-center border-b border-line bg-canvas max-[640px]:hidden">
+  <!-- min-h-fit outgrows the fixed 36px: the head takes the shared list head's
+       padded height, and a caption folded onto two lines in a narrow lane
+       grows the head instead of spilling over the page header above it. -->
+  <div
+    class="admin-list-head sticky top-0 z-10 flex h-9 items-center border-b border-line bg-canvas
+           max-[640px]:hidden min-h-fit"
+  >
     <div class={COL_PERSON}>{@render eyebrow(tr("admin.person.1127"))}</div>
     <div class={COL_ROLE}>{@render eyebrow(tr("admin.role.1128"))}</div>
     <div class={COL_LINK}>{@render eyebrow(tr("admin.sign.in.link"))}</div>
@@ -556,9 +577,11 @@
   </div>
 
   {#if listError}
-    <div class="flex items-center gap-3 py-6">
-      <p class="text-ui text-danger">{listError}</p>
-      <button type="button" class="btn-outline" onclick={() => void load()}>{tr("admin.try.again")}</button>
+    <div class="flex flex-wrap items-center gap-3 py-4">
+      <p class="min-w-0 flex-1 text-ui text-danger" role="alert">{listError}</p>
+      <button type="button" class="btn-outline shrink-0" onclick={() => void load()}>
+        {tr("admin.try.again")}
+      </button>
     </div>
   {/if}
 
@@ -566,21 +589,19 @@
     {@const you = t.id === me?.id}
     {@const locked = stranded(t)}
     <div
-      class="flex min-h-[66px] items-center border-b border-line-soft max-[640px]:flex-wrap
-             max-[640px]:items-start max-[640px]:gap-y-2.5 max-[640px]:py-3"
+      class="admin-list-row min-h-[66px] items-center border-b border-line-soft max-[640px]:flex-wrap
+             max-[640px]:items-start max-[640px]:gap-x-0 max-[640px]:gap-y-2.5 max-[640px]:py-3"
     >
       <div class={cn(COL_PERSON, 'flex items-center gap-3')}>
         <Avatar name={t.name} color={colorForId(t.id)} size="md" />
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
-            <span class="truncate text-ui-lg font-semibold text-ink">{t.name}</span>
+            <span class="admin-row-title truncate">{t.name}</span>
             {#if you}
-              <span class="chip bg-accent/10 text-micro font-bold uppercase tracking-label text-accent-text">
-                {tr("admin.you")}
-              </span>
+              <Badge word={tr("admin.you")} tone="accent" />
             {/if}
           </div>
-          <p class="truncate font-mono text-2xs text-muted">{t.email}</p>
+          <p class="admin-meta truncate font-mono">{t.email}</p>
         </div>
       </div>
 
@@ -589,25 +610,26 @@
         {#if !isOwner}
           <span class="text-ui capitalize text-muted">{tr(`admin.role.${t.role}`)}</span>
         {:else if locked}
-          <span class="block text-ui font-semibold text-ink">{tr("admin.owner")}</span>
-          <span class="flex items-center gap-1.5 text-2xs text-muted">
-            <Icon name="lock" size={11} class="shrink-0" />
+          <span class="block text-ui text-ink">{tr("admin.owner")}</span>
+          <span class="admin-meta flex items-center gap-1.5">
+            <Icon name="lock" size={12} class="shrink-0" />
             {tr("admin.last.owner.role.required")}
           </span>
         {:else}
-          <div class="relative inline-flex items-center">
+          <!-- max-w-full: at the lane's floor the field gives way and cuts its
+               word rather than lying across the link beside it. -->
+          <div class="relative inline-flex max-w-full items-center">
             <select
               value={t.role}
               disabled={roleBusy === t.id}
               aria-label="{tr("admin.role.for")} {t.name}"
               onchange={(event) => void setRole(t, event.currentTarget.value as AdminRole)}
-              class="h-8 cursor-pointer appearance-none bg-transparent pr-5 text-ui text-ink
-                     outline-none disabled:opacity-50"
+              class="field w-auto max-w-full cursor-pointer appearance-none pr-8 disabled:opacity-50"
             >
               <option value="owner">{tr("admin.owner")}</option>
               <option value="teacher">{tr("admin.teacher")}</option>
             </select>
-            <Icon name="chevron-down" size={11} class="pointer-events-none absolute right-0 text-faint" />
+            <Icon name="chevron-down" size={12} class="pointer-events-none absolute right-3 text-faint" />
           </div>
         {/if}
       </div>
@@ -617,7 +639,7 @@
         {#if t.hasLink}
           <div class="flex items-center gap-2">
             <p
-              class="min-w-0 flex-1 truncate font-mono text-code text-muted"
+              class="admin-meta min-w-0 flex-1 truncate font-mono"
               title={tr("admin.the.link.is.masked.here.copy.puts.the.full.sign.in.link.on.your.c")}
             >
               {MASKED}
@@ -627,12 +649,11 @@
                 type="button"
                 disabled={acting === t.id}
                 onclick={() => void copyExisting(t)}
-                class="inline-flex h-8 w-8 shrink-0 items-center justify-center border
-                       border-line text-faint transition-colors duration-100 hover:border-faint
-                       hover:text-ink disabled:opacity-50 max-[640px]:h-11 max-[640px]:w-11"
+                class="admin-icon-btn border border-line hover:border-faint max-[640px]:h-11
+                       max-[640px]:w-11"
                 aria-label={tr('admin.teacher.copyLinkLabel', { name: t.name })}
               >
-                <Icon name={copiedRow === t.id ? 'check' : 'copy'} size={13} />
+                <Icon name={copiedRow === t.id ? 'check' : 'copy'} size={15} />
               </button>
             {/if}
           </div>
@@ -641,22 +662,24 @@
             type="button"
             disabled={acting === t.id}
             onclick={() => ask(t, 'rotate')}
-            class="inline-flex items-center gap-1.5 text-ui font-semibold text-accent-text hover:underline disabled:opacity-50"
+            class="admin-link inline-flex items-center gap-1.5"
           >
-            <Icon name="link" size={13} />
+            <Icon name="link" size={14} />
             {acting === t.id ? tr("admin.creating") : tr("admin.create.a.link")}
           </button>
         {:else}
-          <p class="text-ui text-muted">{tr("admin.no.link.yet")}</p>
+          <p class="text-2xs text-muted">{tr("admin.no.link.yet")}</p>
         {/if}
       </div>
 
       <div class={COL_SEEN}>
         {@render lane(tr("admin.last.seen"))}
+        <!-- 15, the secondary cell's step: a course row's day, a competition's
+             deadline, a class's date. 16 is the row's title. -->
         {#if t.lastSeenAt}
-          <span class="text-ui text-ink">{relativeTime(t.lastSeenAt)}</span>
+          <span class="text-2xs text-ink">{relativeTime(t.lastSeenAt)}</span>
         {:else}
-          <span class="text-ui text-muted">{tr("admin.never")}</span>
+          <span class="text-2xs text-muted">{tr("admin.never")}</span>
         {/if}
       </div>
 
@@ -665,31 +688,36 @@
           <button
             type="button"
             aria-label="{tr("admin.actions.for")} {t.name}"
+            aria-haspopup="menu"
             aria-expanded={menuId === t.id}
             onclick={(event) => {
               event.stopPropagation()
               menuId = menuId === t.id ? null : t.id
             }}
-            class="flex h-8 w-8 items-center justify-center text-faint transition-colors duration-100 hover:bg-raised hover:text-ink max-[640px]:h-11 max-[640px]:w-11"
+            class="admin-icon-btn max-[640px]:h-11 max-[640px]:w-11"
           >
             <Icon name="more" size={15} />
           </button>
           {#if menuId === t.id}
             <div
-              class="row-menu absolute right-0 top-full z-20 mt-1 w-56 overflow-hidden bg-canvas py-1 shadow-pop"
+              role="menu"
+              tabindex="-1"
+              class="row-menu admin-menu absolute right-0 top-full z-20 mt-1 w-[280px]"
             >
               <button
                 type="button"
+                role="menuitem"
                 onclick={() => startEdit(t)}
-                class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-ui text-ink hover:bg-raised"
+                class="admin-menu-item flex items-center gap-2.5"
               >
                 <Icon name="pencil" size={14} class="text-faint" />
                 {tr("admin.edit.name.and.email")}
               </button>
               <button
                 type="button"
+                role="menuitem"
                 onclick={() => ask(t, 'rotate')}
-                class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-ui text-ink hover:bg-raised"
+                class="admin-menu-item flex items-center gap-2.5"
               >
                 <Icon name="link" size={14} class="text-faint" />
                 {t.hasLink ? tr("admin.rotate.sign.in.link") : tr("admin.create.a.sign.in.link")}
@@ -697,8 +725,9 @@
               {#if !locked}
                 <button
                   type="button"
+                  role="menuitem"
                   onclick={() => ask(t, 'remove')}
-                  class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-ui text-danger hover:bg-danger/[0.08]"
+                  class="admin-menu-item flex items-center gap-2.5 text-danger"
                 >
                   <Icon name="trash" size={14} />
                   {you ? tr("admin.remove.my.account") : tr("admin.remove.from.staff")}
@@ -726,7 +755,7 @@
             autofocus
             bind:value={editing.name}
             maxlength={LIMITS.teacherName}
-            class="field mt-1.5 text-ui"
+            class="field mt-1.5"
           />
         </label>
         <label class="min-w-[210px] flex-1">
@@ -736,14 +765,14 @@
             type="email"
             maxlength={LIMITS.email}
             spellcheck="false"
-            class="field mt-1.5 font-mono text-2xs"
+            class="field mt-1.5 font-mono"
           />
         </label>
         <button type="submit" class="btn-primary" disabled={savingEdit}>
           {savingEdit ? tr("admin.saving") : tr("admin.save")}
         </button>
         <button type="button" class="btn-ghost" onclick={() => (editing = null)}>{tr("admin.cancel")}</button>
-        <p class="w-full text-2xs text-muted">
+        <p class="admin-meta w-full">
           {tr("admin.this.updates.their.name.and.email.their.sign.in.link.stays.the.sa")}
         </p>
       </form>
@@ -752,14 +781,16 @@
     {#if confirming?.id === t.id}
       <div class="border-b border-line-soft bg-surface py-4 pl-11 pr-4">
         {#if confirming.kind === 'rotate'}
-          <p class="text-ui-lg font-semibold text-ink">{tr('admin.teacher.rotateHeading', { name: t.name })}</p>
+          <p class="text-title font-semibold text-ink">
+            {tr('admin.teacher.rotateHeading', { name: t.name })}
+          </p>
           <p class="mt-1.5 max-w-[640px] text-ui text-muted">
             {tr("admin.the.old.link.will.stop.working.and.their.signed.in.sessions.will")}{you
               ? tr("admin.except.this.browser.session.which.will.be.renewed")
               : ''}{tr("admin.a.new.link.will.appear.here.for.you.to.share")}
           </p>
         {:else}
-          <p class="text-ui-lg font-semibold text-ink">
+          <p class="text-title font-semibold text-ink">
             {you ? tr("admin.remove.your.own.account") : tr("admin.remove.1171", { p0: t.name })}
           </p>
           <p class="mt-1.5 max-w-[640px] text-ui text-muted">
@@ -768,12 +799,12 @@
               : ''}{tr("admin.their.seminars.will.remain.adding.them.again.creates.a.new.accoun")}
           </p>
         {/if}
-        <div class="mt-3 flex items-center gap-2">
+        <div class="mt-3 flex flex-wrap items-center gap-2">
           <button
             type="button"
             disabled={acting === t.id}
             onclick={() => void (confirming?.kind === 'rotate' ? rotate(t) : remove(t))}
-            class="btn border border-danger/40 bg-danger/[0.05] text-danger hover:bg-danger/20"
+            class="btn-danger"
           >
             {#if acting === t.id}
               {tr("admin.working")}
@@ -792,7 +823,7 @@
             {tr("admin.cancel")}
           </button>
           {#if confirmError}
-            <p class="text-ui text-danger">{confirmError}</p>
+            <p class="text-ui text-danger" role="alert">{confirmError}</p>
           {/if}
         </div>
       </div>
@@ -825,20 +856,20 @@
             spellcheck="false"
             aria-label="{tr("admin.sign.in.link.for")} {shown.name}"
             onfocus={(event) => event.currentTarget.select()}
-            class="field min-w-[280px] max-w-[560px] flex-1 bg-canvas font-mono text-code"
+            class="field min-w-[280px] max-w-[560px] flex-1 bg-canvas font-mono"
           />
           <button type="button" class="btn-primary" onclick={() => void copy(shown.url)}>
             <Icon name={copied ? 'check' : 'copy'} size={14} />
-            {copied ? 'Copied' : tr("admin.copy.link")}
+            {copied ? tr('admin.copied') : tr("admin.copy.link")}
           </button>
           <button type="button" class="btn-ghost" onclick={() => (reveal = null)}>
             {copied ? tr("admin.done") : tr("admin.close.without.copying")}
           </button>
         </div>
         {#if copyError}
-          <p class="mt-2 text-ui text-danger">{copyError}</p>
+          <p class="mt-2 text-ui text-danger" role="alert">{copyError}</p>
         {:else if !copied}
-          <p class="mt-2 text-2xs text-muted">
+          <p class="admin-meta mt-2">
             {tr("admin.after.closing.this.message.use.the.copy.button.on.their.row.to.co")}
           </p>
         {/if}
@@ -848,8 +879,8 @@
   </div>
 
   <div class="flex items-center gap-2.5 py-3.5">
-    <Icon name="link" size={13} class="shrink-0 text-faint" />
-    <p class="text-2xs text-muted">
+    <Icon name="link" size={14} class="shrink-0 text-faint" />
+    <p class="admin-meta">
       {#if isOwner}
         {tr("admin.anyone.with.a.personal.link.can.sign.in.to.that.account.replace.a")}
       {:else}
@@ -880,73 +911,82 @@
       Asking for the full width moves the button down — which is where it
       belongs.
     -->
-    <div class="flex flex-wrap items-start gap-3 border-t border-line-soft py-3.5">
-      <div class="min-w-0 max-w-[600px] flex-1 max-[640px]:basis-full">
-        {@render eyebrow(tr("admin.setup.token"))}
-        <!--
-          The token is printed by `make host`, reading it from the file — not
-          by the server: the server goes quiet as soon as the instance has an
-          owner, and this block is visible only to the owner. The promise "the
-          next run will print it" was true exactly where nobody reads it.
-        -->
-        <p class="mt-1.5 text-2xs text-muted">
-          {tr("admin.the.setup.token.signs.anyone.holding.it.in.as.the.longest.standin")}
-          <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span>.
-        </p>
-        {#if newSetupToken}
-          <div class="mt-2 flex flex-wrap items-center gap-2">
-            <p class="min-w-0 break-all font-mono text-2xs text-ink">{newSetupToken}</p>
-            <button
-              type="button"
-              class="btn-ghost shrink-0 text-2xs"
-              onclick={() => void copySetupToken(newSetupToken ?? '')}
-            >
-              {copiedSetup ? 'Copied' : tr("admin.copy")}
-            </button>
-          </div>
-          <p class="mt-1 text-2xs text-muted">
-            {tr("admin.the.token.is.also.available.through")} <span class="font-mono">make host</span>{tr("admin.which.reads.it.from")}
-            <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span>{tr("admin.the.server.logs.it.only.before.the.first.owner.is.created")}
-          </p>
-        {:else if setupTokenError}
-          <p class="mt-2 text-2xs text-danger">{setupTokenError}</p>
-        {/if}
+    <section class="mt-6">
+      <div class="admin-section">
+        <h2 class="admin-section-title">{tr("admin.setup.token")}</h2>
       </div>
-      <button
-        type="button"
-        class="btn-outline shrink-0 max-[640px]:h-11 max-[640px]:w-full max-[640px]:justify-center"
-        disabled={rotatingSetup}
-        onclick={() => void rotateSetup()}
-      >
-        {rotatingSetup ? tr("admin.rotating") : tr("admin.rotate.setup.token")}
-      </button>
-    </div>
+      <div class="flex flex-wrap items-start gap-3 py-3.5">
+        <div class="min-w-0 max-w-[600px] flex-1 max-[640px]:basis-full">
+          <!--
+            The token is printed by `make host`, reading it from the file — not
+            by the server: the server goes quiet as soon as the instance has an
+            owner, and this block is visible only to the owner. The promise "the
+            next run will print it" was true exactly where nobody reads it.
+          -->
+          <p class="text-2xs text-muted">
+            {tr("admin.the.setup.token.signs.anyone.holding.it.in.as.the.longest.standin")}
+            <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span>.
+          </p>
+          {#if newSetupToken}
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+              <p class="min-w-0 break-all font-mono text-2xs text-ink">{newSetupToken}</p>
+              <button
+                type="button"
+                class="btn-ghost shrink-0"
+                onclick={() => void copySetupToken(newSetupToken ?? '')}
+              >
+                {copiedSetup ? tr('admin.copied') : tr("admin.copy")}
+              </button>
+            </div>
+            <p class="mt-1 text-2xs text-muted">
+              {tr("admin.the.token.is.also.available.through")} <span class="font-mono">make host</span>{tr("admin.which.reads.it.from")}
+              <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span>{tr("admin.the.server.logs.it.only.before.the.first.owner.is.created")}
+            </p>
+          {:else if setupTokenError}
+            <p class="mt-2 text-ui text-danger" role="alert">{setupTokenError}</p>
+          {/if}
+        </div>
+        <button
+          type="button"
+          class="btn-outline shrink-0 max-[640px]:h-11 max-[640px]:w-full max-[640px]:justify-center"
+          disabled={rotatingSetup}
+          onclick={() => void rotateSetup()}
+        >
+          {rotatingSetup ? tr("admin.rotating") : tr("admin.rotate.setup.token")}
+        </button>
+      </div>
+    </section>
   {/if}
 
   <!-- The same story as with the token above: two columns with a 56px gap are
-       a story about a desktop. On a phone they stack under each other. -->
-  <div
-    class="flex flex-wrap items-start gap-14 border-t border-line-soft pt-5
-           max-[640px]:gap-x-0 max-[640px]:gap-y-6"
-  >
-    <div class="min-w-0 max-w-[600px] flex-1 max-[640px]:basis-full">
-      {@render eyebrow(tr("admin.masked.sign.in.links"))}
-      <p class="mt-1.5 text-2xs text-muted">
+       a story about a desktop. On a phone they stack under each other, and so
+       they do on a narrow desktop: the 320px basis is what makes the row wrap
+       before the left note is squeezed into a column a few words wide. -->
+  <div class="mt-6 flex flex-wrap items-start gap-x-14 gap-y-8 max-[640px]:gap-x-0 max-[640px]:gap-y-6">
+    <section class="min-w-0 max-w-[600px] flex-1 basis-[320px] max-[640px]:basis-full">
+      <div class="admin-section">
+        <h2 class="admin-section-title">{tr("admin.masked.sign.in.links")}</h2>
+      </div>
+      <p class="mt-3.5 text-2xs text-muted">
         {tr("admin.the.list.masks.sign.in.links.a.newly.created.or.replaced.link.is")}
       </p>
-    </div>
-    <div class="w-[392px] max-[640px]:w-full">
-      {@render eyebrow(isOwner ? tr("admin.lost.your.own.link") : tr("admin.lost.your.link"))}
+    </section>
+    <section class="w-[392px] max-[640px]:w-full">
+      <div class="admin-section">
+        <h2 class="admin-section-title">
+          {isOwner ? tr("admin.lost.your.own.link") : tr("admin.lost.your.link")}
+        </h2>
+      </div>
       {#if isOwner}
-        <p class="mt-1.5 text-2xs text-muted">
+        <p class="mt-3.5 text-2xs text-muted">
           {tr("admin.the.setup.token.in")} <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span>
           {tr("admin.signs.you.in.as.the.longest.standing.current.owner")}
         </p>
       {:else}
-        <p class="mt-1.5 text-2xs text-muted">
+        <p class="mt-3.5 text-2xs text-muted">
           {tr("admin.ask.an.owner.to.copy.and.share.your.current.link.if.it.may.have.r")}
         </p>
       {/if}
-    </div>
+    </section>
   </div>
 </AdminPage>

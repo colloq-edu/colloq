@@ -61,38 +61,38 @@
     <div class="flex items-end justify-between gap-3 border-b-2 border-ink pb-3">
       <h2
         id="room-door"
-        class="text-[13px] font-black uppercase leading-4 tracking-section text-ink"
+        class="text-[14px] font-black uppercase leading-5 tracking-section text-ink"
       >
         {tr('room.door.title')}
       </h2>
       {#if badge}
         <span
-          class="text-right font-mono text-[11px] uppercase leading-4 tracking-label {badge.tone}"
+          class="text-right font-mono text-[13px] uppercase leading-5 tracking-label {badge.tone}"
         >
           {badge.text}
         </span>
       {:else}
-        <span class="flex h-4 items-center text-faint" aria-hidden="true">
+        <span class="flex h-5 items-center text-faint" aria-hidden="true">
           <Icon name="lock" size={14} strokeWidth={2.2} />
         </span>
       {/if}
     </div>
     {#if room}
-      <p class="text-ui-lg text-ink">{tr('room.door.about')}</p>
+      <p class="text-[16px] leading-6 text-ink">{tr('room.door.about')}</p>
       <!-- A full load, in this tab: the room is its own app, and the way
            back is the browser's «Back». -->
       <a
         href={room.path}
-        class="press flex h-11 shrink-0 items-center justify-center gap-2.5 border border-brand px-3
-               text-[13px] font-bold uppercase leading-4 tracking-caps text-brand transition-colors
+        class="press flex h-12 shrink-0 items-center justify-center gap-2.5 border border-brand px-3
+               text-[14px] font-bold uppercase leading-5 tracking-caps text-brand transition-colors
                duration-100 hover:bg-brand/5 dark:border-ink dark:text-ink dark:hover:bg-ink/5"
       >
         <span>{tr('room.door.go')}</span>
         <Icon name="arrow-right" size={16} strokeWidth={2.2} class="shrink-0" />
       </a>
-      <p class="text-2xs text-muted">{note}</p>
+      <p class="text-[14px] leading-5 text-muted">{note}</p>
     {:else}
-      <p class="text-ui-lg text-muted">{tr('room.door.locked')}</p>
+      <p class="text-[16px] leading-6 text-muted">{tr('room.door.locked')}</p>
     {/if}
   </section>
 {:else if !wide && room}
@@ -104,10 +104,10 @@
       <Icon name="door" size={16} />
     </span>
     <span class="flex min-w-0 flex-1 flex-col gap-0.5">
-      <span class="text-[16px] font-semibold leading-[22px] text-accent-text">
+      <span class="text-[17px] font-semibold leading-6 text-accent-text">
         {tr('room.door.title')}
       </span>
-      <span class="text-2xs text-muted">{tr('room.door.rowNote')}</span>
+      <span class="text-[14px] leading-5 text-muted">{tr('room.door.rowNote')}</span>
     </span>
     <span class="shrink-0 text-accent" aria-hidden="true">
       <Icon name="chevron-right" size={16} strokeWidth={2.6} />
@@ -119,10 +119,10 @@
       <Icon name="lock" size={16} />
     </span>
     <span class="flex min-w-0 flex-1 flex-col gap-0.5">
-      <span class="text-[16px] font-semibold leading-[22px] text-muted">
+      <span class="text-[17px] font-semibold leading-6 text-muted">
         {tr('room.door.title')}
       </span>
-      <span class="text-2xs text-muted">{tr('room.door.rowLocked')}</span>
+      <span class="text-[14px] leading-5 text-muted">{tr('room.door.rowLocked')}</span>
     </span>
   </div>
 {/if}

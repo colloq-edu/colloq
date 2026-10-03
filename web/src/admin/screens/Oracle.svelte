@@ -33,6 +33,7 @@
     type UpdateOracleRequest,
   } from '@shared/admin'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
+  import Check from '@/admin/ui/Check.svelte'
   import Choice from '@/admin/ui/Choice.svelte'
   import Section from '@/admin/ui/Section.svelte'
   import Icon, { type IconName } from '@/components/ui/Icon.svelte'
@@ -489,7 +490,7 @@
 </script>
 
 {#snippet fieldLabel(text: string, forId: string)}
-  <label for={forId} class="mb-1.5 block text-2xs font-semibold uppercase tracking-label text-muted">
+  <label for={forId} class="admin-label mb-1.5 block">
     {text}
   </label>
 {/snippet}
@@ -497,19 +498,21 @@
 {#snippet offer(suggestion: string, accept: () => void, dismiss: () => void)}
   <p class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-muted">
     <span>
-      {provider === 'custom' ? tr('admin.custom.provider') : preset.label} {tr("admin.suggests")} <span class="font-mono text-code text-ink">{suggestion}</span>
+      {provider === 'custom' ? tr('admin.custom.provider') : preset.label} {tr("admin.suggests")} <span class="font-mono text-2xs text-ink">{suggestion}</span>
     </span>
-    <button type="button" class="font-semibold text-accent-text hover:underline" onclick={accept}>
+    <button type="button" class="admin-link" onclick={accept}>
       {tr("admin.use.it")}
     </button>
     <button type="button" class="text-muted hover:text-ink" onclick={dismiss}>{tr("admin.keep.mine")}</button>
   </p>
 {/snippet}
 
+<!-- The panel's number tile (the competition limits draw the same): the
+     caption in the label voice over a mono value. -->
 {#snippet tile(value: string, caption: string)}
-  <div class="px-4 py-3.5">
-    <p class="text-head font-bold tracking-tight text-ink">{value}</p>
-    <p class="mt-1 text-2xs text-muted">{caption}</p>
+  <div class="flex flex-col gap-1.5 px-4 py-3.5">
+    <p class="admin-label">{caption}</p>
+    <p class="font-mono text-head font-bold text-ink">{value}</p>
   </div>
 {/snippet}
 
@@ -517,7 +520,9 @@
   {#if chip}
     <span
       class={cn(
-        'flex items-center gap-1.5 px-2.5 py-1.5 text-2xs font-bold uppercase tracking-caps',
+        // The state badge's voice (competitions/Badge), with room for the
+        // spinner and the tick Badge has no slot for.
+        'inline-flex items-center gap-1.5 px-2 py-0.5 text-micro font-bold uppercase tracking-caps',
         chip.tone,
       )}
     >
@@ -530,16 +535,19 @@
 
   {#if isOwner}
     {#if justSaved && !dirty}
-      <span class="flex items-center gap-1 text-2xs font-semibold uppercase tracking-label text-positive">
+      <span class="admin-label flex items-center gap-1 text-positive">
         <Icon name="check" size={13} />
         {tr("admin.saved")}
       </span>
     {:else if dirty}
-      <span class="text-2xs font-semibold uppercase tracking-label text-warning">{tr("admin.unsaved")}</span>
+      <span class="admin-label text-warning">{tr("admin.unsaved")}</span>
       <button type="button" class="btn-ghost" onclick={discard} disabled={saving}>{tr("admin.discard")}</button>
     {/if}
 
-    <button type="button" class="btn-primary min-w-[112px]" onclick={save} disabled={!dirty || saving}>
+    <!-- flex-auto on a phone, not flex-1: from a zero basis the button stayed
+         on the status word's line and min-w-[112px] let it clip its label;
+         from its own width it drops to a line of its own and fills it. -->
+    <button type="button" class="btn-primary min-w-[112px] whitespace-nowrap max-[640px]:flex-auto" onclick={save} disabled={!dirty || saving}>
       {#if saving}
         <Icon name="spinner" size={15} class="animate-spin" />
         {tr("admin.saving")}
@@ -557,7 +565,7 @@
 >
   {#if loadError}
     <div class="mt-6 max-w-[560px] border border-line bg-surface px-4 py-3.5">
-      <p class="text-ui text-danger">{loadError}</p>
+      <p class="text-ui text-danger" role="alert">{loadError}</p>
       <p class="mt-1 text-2xs text-muted">
         {tr("admin.could.not.load.the.settings.try.again.to.view.the.server.configur")}
       </p>
@@ -596,7 +604,7 @@
             id="ai-base-url"
             bind:value={baseUrl}
             oninput={() => (offeredBaseUrl = null)}
-            class="field font-mono text-code"
+            class="field font-mono"
             placeholder="https://api.openai.com/v1"
             maxlength={LIMITS.baseUrl}
             autocomplete="off"
@@ -613,7 +621,7 @@
             id="ai-model"
             bind:value={model}
             oninput={() => (offeredModel = null)}
-            class="field font-mono text-code"
+            class="field font-mono"
             placeholder="gpt-4o-mini"
             maxlength={LIMITS.model}
             autocomplete="off"
@@ -636,14 +644,18 @@
         <div class="flex flex-wrap gap-2">
           <div class="min-w-[220px] flex-1">
             {#if clearKey}
-              <div class="field flex items-center gap-3 border-warning">
+              <!-- The field's frame at the field's height, holding words instead
+                   of an input. `!` because the scope paints affix frames grey
+                   at two classes, and this one is a warning. -->
+              <div class="admin-affix gap-3 !border-warning">
                 <span class="min-w-0 flex-1 truncate text-ui text-warning">
                   {tr("admin.the.stored.key.will.be.removed.when.you.save")}
                 </span>
+                <!-- self-stretch: the whole height of the frame is the target,
+                     not the 22px line of type inside it. -->
                 <button
                   type="button"
-                  class="-my-1 flex shrink-0 items-center py-1 text-ui font-medium text-accent-text
-                         hover:underline"
+                  class="admin-link shrink-0 self-stretch"
                   onclick={() => (clearKey = false)}
                 >
                   {tr("admin.keep.it")}
@@ -655,34 +667,25 @@
                 type="password"
                 bind:this={keyInput}
                 bind:value={newKey}
-                class="field font-mono text-code"
+                class="field font-mono"
                 placeholder="sk-…"
                 autocomplete="off"
                 spellcheck="false"
               />
             {:else}
-              <div class="field flex items-center gap-3">
-                <span
-                  class={cn(
-                    'min-w-0 flex-1 truncate font-mono text-code',
-                    storedMask ? 'text-muted' : 'text-faint',
-                  )}
-                >
+              <div class="admin-affix gap-3">
+                <span class="min-w-0 flex-1 truncate font-mono text-2xs text-muted">
                   {storedMask ?? tr("admin.no.key.set")}
                 </span>
-                <!-- -my-1 py-1: 19px of type is too small a thing to aim at, and the
-                     row it sits in has the height to give without moving. -->
-                <button
-                  type="button"
-                  class="-my-1 shrink-0 py-1 text-ui font-medium text-accent-text hover:underline"
-                  onclick={startReplace}
-                >
+                <!-- self-stretch: 22px of type is too small a thing to aim at, and
+                     the frame it sits in has the height to give without moving. -->
+                <button type="button" class="admin-link shrink-0 self-stretch" onclick={startReplace}>
                   {storedMask ? tr("admin.replace") : tr("admin.add.a.key")}
                 </button>
                 {#if canRemoveKey}
                   <button
                     type="button"
-                    class="shrink-0 text-ui font-medium text-muted hover:text-ink"
+                    class="shrink-0 self-stretch text-2xs text-muted hover:text-ink"
                     onclick={markForRemoval}
                   >
                     {tr("admin.remove")}
@@ -713,11 +716,11 @@
         </div>
 
         {#if replacingKey}
-          <p class="mt-1.5 text-2xs text-muted">
+          <p class="admin-meta mt-1.5">
             {tr("admin.the.new.key.is.stored.when.you.save.leaving.it.empty.changes.noth")}
             <button
               type="button"
-              class="font-semibold text-accent-text hover:underline"
+              class="text-accent-text underline decoration-dotted underline-offset-4 hover:brightness-110"
               onclick={cancelReplace}
             >
               {tr("admin.cancel.681")}
@@ -730,15 +733,15 @@
              there too; where it is kept is not, and repeating it under an open
              field is a third sentence nobody reads. -->
         {#if clearKey}
-          <p class="mt-1.5 text-2xs text-muted">
-            {tr("admin.the.server.will.use")} <span class="font-mono text-code">OPENAI_API_KEY</span> {tr("admin.if.it.is.set.providers.that.require.a.key.will.be.unavailable.wit")}
+          <p class="admin-meta mt-1.5">
+            {tr("admin.the.server.will.use")} <span class="font-mono">OPENAI_API_KEY</span> {tr("admin.if.it.is.set.providers.that.require.a.key.will.be.unavailable.wit")}
           </p>
         {:else if fromEnvironment}
-          <p class="mt-1.5 text-2xs text-muted">
-            {tr("admin.this.key.comes.from")} <span class="font-mono text-code">OPENAI_API_KEY</span> {tr("admin.in.the.server.environment.a.key.saved.here.overrides.it.for.this")}
+          <p class="admin-meta mt-1.5">
+            {tr("admin.this.key.comes.from")} <span class="font-mono">OPENAI_API_KEY</span> {tr("admin.in.the.server.environment.a.key.saved.here.overrides.it.for.this")}
           </p>
         {:else if !replacingKey}
-          <p class="mt-1.5 text-2xs text-muted">
+          <p class="admin-meta mt-1.5">
             {#if storedMask}
               {tr("admin.the.key.is.stored.on.the.server.and.masked.in.the.browser.the.ser")}
             {:else}
@@ -750,7 +753,7 @@
         {#if dirty}
           <!-- No longer a warning to obey: the button saves first and says so.
                This just tells you that pressing it will write, before it does. -->
-          <p class="mt-1.5 text-2xs text-muted">
+          <p class="admin-meta mt-1.5">
             <b class="font-semibold text-ink">{tr("admin.save.test")}</b> {tr("admin.saves.all.changes.on.this.page.before.sending.a.test.request")}
           </p>
         {/if}
@@ -798,11 +801,10 @@
       description={tr('admin.request.shape.note')}
     >
       <label class="flex cursor-pointer items-start gap-3">
-        <input
-          type="checkbox"
-          class="mt-0.5 size-4 shrink-0 accent-accent"
-          bind:checked={sendNames}
-        />
+        <!-- 3px down: the 18px box centred on the title's 24px line. -->
+        <span class="mt-[3px] flex">
+          <Check bind:checked={sendNames} />
+        </span>
         <span class="min-w-0">
           <span class="block text-ui font-semibold text-ink">{tr('common.sendNames')}</span>
           <span class="mt-1 block text-2xs text-muted">
@@ -813,7 +815,7 @@
       </label>
 
       <div class="mt-5">
-        <p class="mb-1.5 block text-2xs font-semibold uppercase tracking-label text-muted">
+        <p class="admin-label mb-1.5 block">
           {tr('common.reasoning')}
         </p>
         <div class="oracle-mode-choice">
@@ -824,7 +826,7 @@
             onchange={(value) => (reasoningEffort = value as ReasoningEffort)}
           />
         </div>
-        <p class="mt-2 text-2xs text-muted">{tr('common.reasoningNote')}</p>
+        <p class="admin-meta mt-2">{tr('common.reasoningNote')}</p>
       </div>
     </Section>
 
@@ -835,15 +837,12 @@
       <textarea
         id="ai-house-rules"
         bind:value={houseRules}
-        class="field min-h-[104px] resize-y text-prose"
+        class="field min-h-[104px] resize-y"
         maxlength={LIMITS.houseRules}
         placeholder={tr("admin.second.year.students.have.not.covered.autograd.explain.how.to.cal")}
       ></textarea>
       <p
-        class={cn(
-          'mt-2 text-2xs',
-          houseRules.length >= LIMITS.houseRules ? 'text-warning' : 'text-muted',
-        )}
+        class={cn('admin-meta mt-2', houseRules.length >= LIMITS.houseRules && 'text-warning')}
       >
         {counted.format(houseRules.length)} / {counted.format(LIMITS.houseRules)} {tr("admin.characters")}
       </p>
@@ -856,20 +855,17 @@
       <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div class="min-w-0">
           {@render fieldLabel(tr("admin.questions.per.student"), 'ai-questions')}
-          <div
-            class="field flex items-center gap-2 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/25"
-          >
+          <div class="admin-affix gap-2">
             <input
               id="ai-questions"
               bind:value={questionsText}
               onblur={() => (questionsText = String(questions))}
-              class="min-w-0 flex-1 bg-transparent font-mono text-code text-ink outline-none"
               inputmode="numeric"
               autocomplete="off"
             />
             <span class="shrink-0 text-2xs text-muted">{tr("admin.per.hour")}</span>
           </div>
-          <p class={cn('mt-1.5 text-2xs', questions === 0 ? 'text-warning' : 'text-muted')}>
+          <p class={cn('admin-meta mt-1.5', questions === 0 && 'text-warning')}>
             {#if questions === 0}
               {tr("admin.zero.switches.the.oracle.off.in.every.seminar")}
             {:else}
@@ -880,14 +876,11 @@
 
         <div class="min-w-0">
           {@render fieldLabel(tr("admin.between.questions"), 'ai-slow-mode')}
-          <div
-            class="field flex items-center gap-2 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/25"
-          >
+          <div class="admin-affix gap-2">
             <input
               id="ai-slow-mode"
               bind:value={slowText}
               onblur={() => (slowText = String(slow))}
-              class="min-w-0 flex-1 bg-transparent font-mono text-code text-ink outline-none"
               inputmode="numeric"
               autocomplete="off"
             />
@@ -900,7 +893,7 @@
             line, but it is required here: otherwise two number fields side by
             side read as the same thing twice.
           -->
-          <p class="mt-1.5 text-2xs text-muted">
+          <p class="admin-meta mt-1.5">
             {#if slow === 0}
               {tr("admin.no.minimum.interval.between.questions")}
             {:else}
@@ -911,57 +904,53 @@
 
         <div class="min-w-0">
           {@render fieldLabel(tr('common.agentSteps'), 'ai-agent-steps')}
-          <div class="field flex items-center gap-2 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/25">
+          <div class="admin-affix gap-2">
             <input
               id="ai-agent-steps"
               bind:value={stepsText}
               onblur={() => (stepsText = String(steps))}
-              class="min-w-0 flex-1 bg-transparent font-mono text-code text-ink outline-none"
               inputmode="numeric"
               autocomplete="off"
             />
             <span class="shrink-0 text-2xs text-muted">{tr('common.agentStepsUnit')}</span>
           </div>
-          <p class="mt-1.5 text-2xs text-muted">{tr('common.agentStepsNote')}</p>
-          {#if steps === 0}<p class="mt-1 text-2xs font-semibold text-muted">{tr('common.unlimitedActions')}</p>{/if}
+          <p class="admin-meta mt-1.5">{tr('common.agentStepsNote')}</p>
+          {#if steps === 0}<p class="admin-meta mt-1 font-semibold">{tr('common.unlimitedActions')}</p>{/if}
         </div>
 
         <div class="min-w-0">
           {@render fieldLabel(tr("admin.notebook.context"), 'ai-context')}
-          <div
-            class="field flex items-center gap-2 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/25"
-          >
+          <div class="admin-affix gap-2">
             <input
               id="ai-context"
               bind:value={contextText}
               onblur={() => (contextText = grouped(context))}
-              class="min-w-0 flex-1 bg-transparent font-mono text-code text-ink outline-none"
               inputmode="numeric"
               autocomplete="off"
             />
             <span class="shrink-0 text-2xs text-muted">{tr("admin.characters")}</span>
           </div>
-          <p class="mt-1.5 text-2xs text-muted">
+          <p class="admin-meta mt-1.5">
             {grouped(LIMITS.contextChars.min)}–{grouped(LIMITS.contextChars.max)}
             {tr("admin.characters.of.notebook.context.may.be.included.with.a.question")}
           </p>
         </div>
 
         <div class="min-w-0">
-          <p class="mb-1.5 block text-2xs font-semibold uppercase tracking-label text-muted">
+          <p class="admin-label mb-1.5 block">
             {tr("admin.maximum.file.upload")}
           </p>
           <!-- Dashed, because it is a reading of the environment and not a control:
                a box that looks like a field and ignores you is worse than a label.
                And now it is actually read: a variable name in place of the
                value is not a reading but the promise of one. -->
-          <div class="flex h-[38px] items-center border border-dashed border-line px-3">
-            <span class="truncate font-mono text-code text-muted">
+          <div class="flex h-10 items-center border border-dashed border-line px-3 max-[640px]:h-11">
+            <span class="truncate font-mono text-2xs text-muted">
               {maxUploadBytes === null ? 'MAX_UPLOAD_MB' : tr("admin.mb", { p0: uploadMb(maxUploadBytes) })}
             </span>
           </div>
-          <p class="mt-1.5 text-2xs text-muted">
-            <span class="font-mono text-code">MAX_UPLOAD_MB</span> {tr("admin.in.the.server.environment.read.at.boot.change.it.in")} <span class="font-mono text-code">.env</span> {tr("admin.and.restart")}
+          <p class="admin-meta mt-1.5">
+            <span class="font-mono">MAX_UPLOAD_MB</span> {tr("admin.in.the.server.environment.read.at.boot.change.it.in")} <span class="font-mono">.env</span> {tr("admin.and.restart")}
           </p>
         </div>
       </div>
@@ -972,7 +961,7 @@
       description={tr("admin.request.counts.recorded.by.this.server.token.counts.depend.on.wha")}
     >
       {#if usageError}
-        <p class="text-ui text-danger">{usageError}</p>
+        <p class="text-ui text-danger" role="alert">{usageError}</p>
         <button type="button" class="btn-outline mt-3" onclick={() => void loadUsage()}>
           {tr("admin.try.again")}
         </button>
@@ -984,7 +973,7 @@
                  zero — and only one of them is safe to print as a number. -->
             {@render tile('—', usageQuestions === 0 ? tr("admin.tokens") : tr("admin.tokens.not.reported.by.this.endpoint"))}
           {:else}
-            {@render tile(compact(usageTokens), 'tokens')}
+            {@render tile(compact(usageTokens), tr("admin.tokens"))}
           {/if}
           {@render tile(counted.format(usageSeminars), tr("admin.seminars.with.questions"))}
         </div>
@@ -997,11 +986,10 @@
             {#each breakdown as row (row.action)}
               <div class="flex items-center gap-3">
                 <span class="w-[116px] shrink-0 truncate text-ui text-ink">{row.label}</span>
-                <span class="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-surface">
-                  <span class="block h-full rounded-full bg-accent" style:width={`${row.share}%`}
-                  ></span>
+                <span class="h-1.5 min-w-0 flex-1 overflow-hidden bg-surface">
+                  <span class="block h-full bg-accent" style:width={`${row.share}%`}></span>
                 </span>
-                <span class="w-[56px] shrink-0 text-right font-mono text-code text-muted">
+                <span class="admin-num w-[56px] shrink-0 text-right text-muted">
                   {counted.format(row.count)}
                 </span>
               </div>
@@ -1014,7 +1002,7 @@
         {/if}
 
         {#if usageSince > 0}
-          <p class="mt-4 text-2xs text-muted">
+          <p class="admin-meta mt-4">
             <!-- Numeric, not a month name: the browser's locale would drop a
                  Russian word into a sentence that is otherwise English. -->
             {tr("admin.counted.since")} {new Date(usageSince).toLocaleDateString(getLocale())}.

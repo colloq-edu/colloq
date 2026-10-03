@@ -324,7 +324,7 @@
     class="flex flex-col gap-1.5 py-4 sm:flex-1 sm:py-0
            {side === 'next' ? 'items-end text-right' : ''}"
   >
-    <p class="order-2 font-mono text-micro text-muted sm:order-1 sm:uppercase sm:tracking-label">
+    <p class="order-2 font-mono text-[13px] leading-5 text-muted sm:order-1 sm:uppercase sm:tracking-label">
       <span class="hidden sm:inline">
         {side === 'prev' ? `← ${tr('room.page.prev')}` : tr('room.page.next')}{dateLine ? ' · ' : ''}
       </span>{dateLine}<span class="hidden sm:inline">{side === 'next' ? ' →' : ''}</span>
@@ -332,8 +332,8 @@
     {#if href}
       <a
         {href}
-        class="order-1 text-[16px] font-semibold leading-[22px] text-ink hover:underline sm:order-2
-               sm:text-[17px] sm:leading-6 sm:text-accent-text"
+        class="order-1 text-[17px] font-semibold leading-6 text-ink hover:underline sm:order-2
+               sm:text-[18px] sm:leading-[26px] sm:text-accent-text"
         onclick={(event) => follow(event, href)}
       >
         <span class="sm:hidden">{side === 'prev' ? '← ' : ''}</span>{name}<span class="sm:hidden"
@@ -341,14 +341,14 @@
         >
       </a>
     {:else}
-      <span class="order-1 text-[16px] leading-[22px] text-muted sm:order-2 sm:text-[17px] sm:leading-6">
+      <span class="order-1 text-[17px] leading-6 text-muted sm:order-2 sm:text-[18px] sm:leading-[26px]">
         {name}
       </span>
     {/if}
   </div>
 {/snippet}
 
-<div class="min-h-screen bg-canvas">
+<div class="reading-ui min-h-screen bg-canvas">
   <ReaderBar
     course={page.course && courseHref ? { name: page.course.name, href: courseHref } : null}
     crumb={page.n !== null ? tr('room.page.class', { n: ordinal(page.n) }) : null}
@@ -356,9 +356,9 @@
     {onnavigate}
   />
 
-  <div class="mx-auto w-full max-w-[1440px] px-4 pb-10 pt-8 sm:px-6 lg:px-10 lg:pb-12 lg:pt-14">
+  <div class="mx-auto w-full max-w-[1440px] px-4 pb-10 pt-8 sm:px-10 lg:pb-12 lg:pt-14">
     {#if label}
-      <p class="font-mono text-micro uppercase tracking-label text-muted lg:text-accent-text">
+      <p class="font-mono text-[13px] uppercase leading-5 tracking-label text-muted lg:text-accent-text">
         {label}{#if future && !withdrawn}<span class="text-accent-text"> · {tr('room.page.beforeClass')}</span>{/if}
       </p>
     {/if}
@@ -369,25 +369,28 @@
       {page.title}
     </h1>
     {#if page.about && !withdrawn}
-      <p class="max-w-[720px] pt-3.5 text-prose text-muted lg:pt-[18px] lg:text-[18px] lg:leading-7">
+      <p
+        class="max-w-[720px] pt-3.5 text-[17px] leading-[26px] text-muted lg:pt-[18px] lg:text-[19px]
+               lg:leading-[30px]"
+      >
         {page.about}
       </p>
     {/if}
     {#if updated && !withdrawn && !noMaterial}
-      <p class="pt-2.5 text-[13px] leading-[18px] text-muted">{updated}</p>
+      <p class="pt-2.5 text-[14px] leading-5 text-muted">{updated}</p>
     {/if}
   </div>
 
   {#if withdrawn}
     <!-- Never a 404 for a link a student was given: the page says it was
          taken down and leads up, to the course. -->
-    <div class="mx-auto w-full max-w-[1440px] px-4 pb-12 sm:px-6 lg:px-10">
+    <div class="mx-auto w-full max-w-[1440px] px-4 pb-12 sm:px-10">
       <div class="flex max-w-[720px] flex-col gap-1.5 border-t-2 border-faint bg-surface px-4 pb-2 pt-5">
         <p class="text-title text-ink">{tr('room.page.withdrawn')}</p>
         {#if page.course && courseHref}
           <a
             href={courseHref}
-            class="flex min-h-11 items-center text-[15px] font-semibold leading-[22px] text-accent-text"
+            class="flex min-h-11 items-center text-[16px] font-semibold leading-6 text-accent-text"
             onclick={(event) => follow(event, courseHref)}
           >
             {tr('room.page.toCourse', { name: page.course.name })}
@@ -396,13 +399,13 @@
       </div>
     </div>
   {:else if noMaterial}
-    <div class="mx-auto w-full max-w-[1440px] px-4 pb-12 sm:px-6 lg:px-10">
+    <div class="mx-auto w-full max-w-[1440px] px-4 pb-12 sm:px-10">
       <div class="flex max-w-[720px] flex-col gap-1.5 border-t-2 border-faint bg-surface px-4 pb-4 pt-5">
         <p class="text-title text-ink">{tr('room.page.noMaterial')}</p>
         <a
           href={firstHref}
-          class="press mt-2.5 flex h-11 shrink-0 items-center justify-center border border-brand
-                 text-[13px] font-bold uppercase leading-4 tracking-caps text-brand
+          class="press mt-2.5 flex h-12 shrink-0 items-center justify-center border border-brand
+                 text-[14px] font-bold uppercase leading-5 tracking-caps text-brand
                  dark:border-ink dark:text-ink"
           onclick={openFirst}
         >
@@ -411,7 +414,7 @@
       </div>
     </div>
   {:else}
-    <div class="mx-auto w-full max-w-[1440px] px-4 pb-12 sm:px-6 lg:flex lg:gap-[72px] lg:px-10 lg:pb-24">
+    <div class="mx-auto w-full max-w-[1440px] px-4 pb-12 sm:px-10 lg:flex lg:gap-[72px] lg:pb-24">
       <main class="min-w-0 flex-1">
         {#if !wide.current}
           <div class="pb-10">
@@ -423,10 +426,10 @@
         {#if active}
           <section bind:this={reader} aria-label={active.name}>
             {#if tabbed || wide.current || outline.length > 1}
-              <div class="sticky top-0 z-20 -mx-4 bg-canvas sm:-mx-6 lg:mx-0">
+              <div class="sticky top-0 z-20 -mx-4 bg-canvas sm:-mx-10 lg:mx-0">
                 <div
-                  class="flex h-12 items-stretch justify-between gap-4 border-b border-line px-4 sm:px-6
-                         lg:h-[52px] lg:px-0"
+                  class="flex h-[52px] items-stretch justify-between gap-4 border-b border-line px-4
+                         sm:px-10 lg:h-14 lg:px-0"
                 >
                   <nav
                     bind:this={strip}
@@ -441,8 +444,8 @@
                           href={pageHref(page.address, m.key)}
                           data-key={m.key}
                           aria-current={on ? 'page' : undefined}
-                          class="press flex shrink-0 items-center whitespace-nowrap border-b-2 pt-0.5
-                                 text-[15px] leading-5 transition-colors duration-100 lg:text-[16px]
+                          class="press flex shrink-0 items-center whitespace-nowrap border-b-[3px] pt-0.5
+                                 text-[16px] leading-6 transition-colors duration-100 lg:text-[17px]
                                  {on
                             ? 'border-ink font-semibold text-ink lg:font-bold'
                             : 'border-transparent font-semibold text-muted hover:text-ink lg:font-normal'}"
@@ -453,8 +456,8 @@
                       {/each}
                     {:else}
                       <span
-                        class="flex shrink-0 items-center whitespace-nowrap text-[15px] font-semibold
-                               leading-5 text-ink lg:text-[16px] lg:font-bold"
+                        class="flex shrink-0 items-center whitespace-nowrap text-[16px] font-semibold
+                               leading-6 text-ink lg:text-[17px] lg:font-bold"
                       >
                         {active.name}
                       </span>
@@ -464,10 +467,10 @@
                     <a
                       href={downloadHref(page.address, active.key)}
                       download=""
-                      class="flex shrink-0 items-center gap-2 text-[14px] leading-5 text-accent-text
+                      class="flex shrink-0 items-center gap-2 text-[15px] leading-[22px] text-accent-text
                              hover:underline"
                     >
-                      <Icon name="download" size={14} strokeWidth={2.2} />
+                      <Icon name="download" size={16} strokeWidth={2.2} />
                       <!-- «с результатами» only when there are some: a notebook
                            nobody ran downloads as plain code. -->
                       {(active.outputs ?? 0) > 0
@@ -477,7 +480,7 @@
                   {:else if outline.length > 1}
                     <button
                       type="button"
-                      class="press flex shrink-0 items-center gap-1 pl-3 text-[13px] leading-[18px]
+                      class="press flex shrink-0 items-center gap-1 pl-3 text-[15px] leading-[22px]
                              text-accent-text"
                       aria-expanded={contentsOpen}
                       aria-controls="page-contents"
@@ -492,7 +495,7 @@
                   <div
                     id="page-contents"
                     class="absolute inset-x-0 top-full max-h-[60vh] overflow-y-auto border-b border-line
-                           bg-canvas px-4 pb-3 pt-2 sm:px-6"
+                           bg-canvas px-4 pb-3 pt-2 sm:px-10"
                   >
                     <Outline entries={outline} {current} name={null} variant="panel" onpick={toCell} />
                   </div>
@@ -505,7 +508,7 @@
                 <PublicNotebook cells={notebook.cells} publication={page.id} />
               </div>
             {:else if status === 'failed'}
-              <p class="pt-8 text-ui text-muted">
+              <p class="pt-8 text-[16px] leading-6 text-muted">
                 {tr('room.page.notebookFailed')}
                 <button
                   type="button"
@@ -535,12 +538,14 @@
         {/if}
 
         <footer class="flex flex-col gap-5 pt-7 lg:gap-2 lg:pt-8">
-          <p class="max-w-[680px] text-[13px] leading-[18px] text-muted lg:text-[14px] lg:leading-[21px]">
+          <p class="max-w-[680px] text-[14px] leading-[21px] text-muted lg:text-[15px] lg:leading-[22px]">
             {tr('room.page.footer')}
           </p>
           <div class="flex flex-col gap-1">
             {#if !wide.current}
-              <p class="font-mono text-micro uppercase tracking-label text-muted">{tr('room.page.link')}</p>
+              <p class="font-mono text-[13px] uppercase leading-5 tracking-label text-muted">
+                {tr('room.page.link')}
+              </p>
             {/if}
             <CopyLink
               path={pageHref(page.address)}
@@ -552,7 +557,7 @@
       </main>
 
       {#if wide.current}
-        <aside class="flex w-[360px] shrink-0 flex-col gap-10 pt-[23px]">
+        <aside class="flex w-[360px] shrink-0 flex-col gap-10 pt-[22px]">
           <MaterialList {page} active={activeKey} wide onopen={(key) => void fromList(key)} />
           {#if door}<RoomDoor {door} wide />{/if}
           {#if outline.length > 0}
