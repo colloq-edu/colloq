@@ -21,9 +21,12 @@
 import { formatNumber, getLocale, tr } from '@shared/i18n'
 import { zonedClock } from '@shared/time-zone'
 import {
+  acceptsUploads,
+  compareScores,
   countedSubmission,
   countsTowardDailyQuota,
   entrantBadge,
+  hasScore,
   isTerminal,
   metricFailedNote,
   placesAmongPeople,
@@ -40,7 +43,20 @@ import {
   type SubmissionStage,
   type SubmissionState,
 } from '@shared/competitions'
-import type { SubmissionLive } from '@shared/competitions-entrant'
+import type {
+  Accepting,
+  EntrantCompetitionView,
+  EntrantSubmissions,
+  FailedAttempts,
+  SubmissionLive,
+} from '@shared/competitions-entrant'
+
+/*
+ * Re-exported for the components: the send box and the header ask "does the
+ * door take a notebook now" by the server's own rule, and the svelte files
+ * that tests compile on their own reach shared code only through this module.
+ */
+export { acceptsUploads }
 
 const SECOND = 1000
 const MINUTE = 60 * SECOND
@@ -288,9 +304,14 @@ export function clockOf(at: number): string {
  * the reader's own clock when this browser does not know the zone.
  */
 export function quotaResetWords(resetsAt: number | null | undefined, zone: string | null | undefined): string {
+  const time = resetClock(resetsAt, zone)
+  return time ? tr('competitions.p.quotaResets', { time }) : ''
+}
+
+/** "00:00 GMT+3" — the next midnight of the server's day; '' when the server named none. */
+function resetClock(resetsAt: number | null | undefined, zone: string | null | undefined): string {
   if (resetsAt === null || resetsAt === undefined || !Number.isFinite(resetsAt)) return ''
-  const time = (zone ? zonedClock(resetsAt, zone, getLocale()) : null) ?? clockOf(resetsAt)
-  return tr('competitions.p.quotaResets', { time })
+  return (zone ? zonedClock(resetsAt, zone, getLocale()) : null) ?? clockOf(resetsAt)
 }
 
 /** "27.09" — day and month, no year: a competition lives for weeks, not years. */
@@ -395,18 +416,18 @@ export function ownOrdinals(
 }
 
 /**
- * Whether a finished submission left the day's limit untouched — the "not
- * counted toward the limit" in its caption.
+ * Whether a finished submission left the day's limit untouched — the "limit
+ * not spent" beside its number (C1, C3).
  *
  * The rule itself is `countsTowardDailyQuota`, the one the server refuses by
  * and the leaderboard counts by; here it only decides when saying so is worth
  * a word. Not while the submission is in flight: a waiting one does hold a
- * place in the quota and gives it back only if it is cancelled or never gets
- * to run.
+ * place in the quota and gives it back if it fails or is cancelled. Every
+ * finished one without a score is free (since 4 Oct 2026).
  * And not without a limit, where there is nothing to count against.
  */
 export function outsideQuota(
-  submission: Pick<EntrantSubmission, 'acceptedAt' | 'state' | 'cellsDone'>,
+  submission: Pick<EntrantSubmission, 'acceptedAt' | 'state'>,
   perDay: number,
 ): boolean {
   return perDay > 0 && isTerminal(submission.state) && !countsTowardDailyQuota(submission)
@@ -480,8 +501,6 @@ export interface RowInput {
   now: number
   /** The phone layout (P4): shorter captions, no duration. */
   phone?: boolean
-  /** It finished without spending the day's limit (`outsideQuota`): the caption says so. */
-  offQuota?: boolean
 }
 
 /**
@@ -492,21 +511,28 @@ export interface RowInput {
  * after 41 s" versus "stopped at cell 11 of 16"), and assembled on the spot it
  * would drift apart between desktop and phone on the very first edit.
  *
- * "Not counted toward the limit" closes the first caption line rather than
- * taking a line of its own: it is a remark about the same submission, and on
- * a phone every line is a finger's height of scrolling.
+ * "Limit not spent" is not a caption any more: it stands under the number in
+ * its own colour (C1), where the eye that checks "did this cost me one" looks.
+ *
+ * A LATE submission says so where nothing else on the row does (C1, C3): a
+ * scored one carries the "after the deadline · not counted" chip on a desktop,
+ * so its caption stays as it was, and a failed one has no chip — nothing of it
+ * counts anyway — so "after the deadline" follows its time instead. The phone
+ * has a LATE badge on every late card, and spells "not counted" only under a
+ * score, the one thing a person might take for a result in the standings.
  */
 export function rowWords(input: RowInput): RowWords {
-  const words = outcomeWords(input)
-  if (!input.offQuota) return words
-  const note = tr('competitions.p.offQuota')
-  const [first, ...rest] = words.lines
-  return { title: words.title, lines: first ? [`${first} · ${note}`, ...rest] : [note] }
+  return outcomeWords(input)
 }
 
 function outcomeWords(input: RowInput): RowWords {
   const { submission, live, now } = input
   const file = submission.fileName
+  const late = !!submission.late && isTerminal(submission.state)
+  /** When it was sent — and, for a late one without a chip, that it was after the deadline. */
+  const stamp =
+    whenWords(submission.acceptedAt, now) +
+    (late && submission.state !== 'scored' && !input.phone ? ` · ${tr('competitions.p.afterDeadline')}` : '')
   switch (submission.state) {
     case 'running': {
       const lines: string[] = []
@@ -556,7 +582,7 @@ function outcomeWords(input: RowInput): RowWords {
         ].filter(Boolean),
       }
     case 'scored': {
-      const parts = [whenWords(submission.acceptedAt, now)]
+      const parts = [stamp]
       if (!input.phone) {
         parts.push(
           input.best
@@ -565,10 +591,14 @@ function outcomeWords(input: RowInput): RowWords {
         )
       }
       if (input.best) parts.push(tr('competitions.p.best'))
+      if (late && input.phone) parts.push(tr('competitions.p.afterDeadline'), tr('competitions.p.notCounted'))
       return { title: file, lines: [parts.join(' · ')] }
     }
     case 'notebookFailed': {
-      const head = [whenWords(submission.acceptedAt, now)]
+      // A blind card on a phone says the cell in its own mono line
+      // (blindCellLine, C3): here only when it was sent.
+      if (input.phone && submission.blind) return { title: file, lines: [stamp] }
+      const head = [stamp]
       if (submission.cellsTotal > 0) {
         head.push(
           tr('competitions.p.failedAtCell', {
@@ -578,10 +608,14 @@ function outcomeWords(input: RowInput): RowWords {
           }),
         )
       }
+      // The class of the exception, from the server's short list (never the
+      // traceback's own word): "KeyError" is half the diagnosis, and on a
+      // blind run it is all the diagnosis there is.
+      if (submission.errorType) head.push(submission.errorType)
       return { title: file, lines: [head.join(' · ')] }
     }
     case 'timedOut': {
-      const head = [whenWords(submission.acceptedAt, now)]
+      const head = [stamp]
       if (submission.cellsTotal > 0) {
         head.push(
           tr('competitions.p.stoppedAtCell', {
@@ -602,27 +636,27 @@ function outcomeWords(input: RowInput): RowWords {
        * answer".
        */
       const { head, rest } = splitError(submission.participantError)
-      const first = [whenWords(submission.acceptedAt, now), file]
+      const first = [stamp, file]
       if (!input.phone) first.push(spellDuration(submission.durationMs))
       const lines = [first.join(' · ')]
       if (rest && !input.phone) lines.push(rest)
       return { title: head || file, lines: input.phone && head ? [] : lines }
     }
     case 'outOfMemory': {
-      const lines = [whenWords(submission.acceptedAt, now)]
+      const lines = [stamp]
       if (submission.participantError && !input.phone) lines.push(submission.participantError)
       return { title: file, lines }
     }
     case 'metricFailed':
       return {
         title: file,
-        lines: [whenWords(submission.acceptedAt, now), metricFailedNote()],
+        lines: [stamp, metricFailedNote()],
       }
     case 'cancelled':
       return {
         title: file,
         lines: [
-          `${whenWords(submission.acceptedAt, now)} · ${
+          `${stamp} · ${
             submission.replacedBy != null
               ? tr('competitions.p.replacedNote', { number: submission.replacedBy })
               : tr('competitions.p.cancelledNote')
@@ -644,6 +678,310 @@ export function submissionBadge(submission: Pick<EntrantSubmission, 'state' | 'r
     return { word: tr('competitions.entrant.replaced'), tone: 'neutral', form: 'outline' }
   }
   return entrantBadge(submission.state)
+}
+
+/* ------------------------------------------------------- the day's limit */
+
+/** What the send box knows about the day: the server's answer, as it came. */
+export type QuotaState = Pick<EntrantSubmissions, 'leftToday' | 'perDay' | 'resetsAt' | 'dayZone' | 'failedAttempts'>
+
+/**
+ * The first line under the drop zone (C1): "Only scored submissions spend the
+ * limit — 3 of 5 left today, resets at 00:00 GMT+3."
+ *
+ * The rule LEADS, ahead of the number, since 4 Oct 2026: a failure stopped
+ * costing a submission, and a count that does not go down after a crash reads
+ * as a bug unless the sentence that holds it says why first. Spent, it is the
+ * door's own refusal with the reset after it; without a limit, one sentence
+ * that there is none.
+ */
+export function quotaLead(quota: QuotaState): string {
+  if (quota.leftToday === null) return tr('competitions.p.dropNoLimit')
+  const time = resetClock(quota.resetsAt, quota.dayZone)
+  if (quota.leftToday <= 0) {
+    return [tr('competitions.refusal.dailyQuota', { count: quota.perDay }), quotaResetWords(quota.resetsAt, quota.dayZone)]
+      .filter(Boolean)
+      .join(' ')
+  }
+  const params = { count: quota.leftToday, perDay: quota.perDay }
+  return time ? tr('competitions.p.quotaLeadResets', { ...params, time }) : tr('competitions.p.quotaLead', params)
+}
+
+/**
+ * The same on a phone, where the box has room for one paragraph (C3): the
+ * count first, its reset, and the rule in a short sentence after it.
+ */
+export function phoneQuota(quota: QuotaState): string {
+  if (quota.leftToday === null) return tr('competitions.p.dropNoLimit')
+  const resets = quotaResetWords(quota.resetsAt, quota.dayZone)
+  if (quota.leftToday <= 0) {
+    return [tr('competitions.refusal.dailyQuota', { count: quota.perDay }), resets].filter(Boolean).join(' ')
+  }
+  return [
+    tr('competitions.p.phoneLeftToday', { count: quota.leftToday, perDay: quota.perDay }),
+    resets,
+    tr('competitions.p.quotaShort'),
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
+/**
+ * The cells of the meter beside the lead (C1): one per submission of the day,
+ * filled while it is still left. Null past ten a day — thirty cells are a
+ * texture, not a count — and without a limit; the words beside it stay.
+ */
+export function quotaCells(leftToday: number | null, perDay: number): boolean[] | null {
+  if (leftToday === null || !Number.isFinite(perDay) || perDay <= 0 || perDay > 10) return null
+  return Array.from({ length: Math.floor(perDay) }, (_, index) => index < leftToday)
+}
+
+/** "3 of 5 left" under the meter. */
+export function quotaMeterWords(leftToday: number, perDay: number): string {
+  return tr('competitions.p.quotaMeter', { count: Math.max(0, leftToday), perDay })
+}
+
+/**
+ * The quiet line about the ceiling on FAILED submissions (C1): "Failed
+ * attempts: at most 15 a day; 3 today." Never worded as the limit — failures
+ * do not spend it, and the two sitting side by side are told apart by their
+ * names. Empty without a ceiling (no limit at all).
+ */
+export function attemptsNote(failed: FailedAttempts | null | undefined): string {
+  if (!failed) return ''
+  return failed.used > 0
+    ? tr('competitions.p.attemptsNoteUsed', { ceiling: failed.ceiling, used: failed.used })
+    : tr('competitions.p.attemptsNote', { ceiling: failed.ceiling })
+}
+
+/** The ceiling is reached: the box stops taking notebooks until midnight. */
+export function attemptsExhausted(failed: FailedAttempts | null | undefined): boolean {
+  return !!failed && failed.used >= failed.ceiling
+}
+
+/**
+ * What the box says once the ceiling is reached — the door's own refusal
+ * (`reason: 'attempts'`, routes/competitions.ts · attemptsWords) said BEFORE
+ * the click, with the moment the count of failures starts over. Empty while
+ * there is room.
+ */
+export function attemptsSpentWords(
+  failed: FailedAttempts | null | undefined,
+  resetsAt: number | null | undefined,
+  zone: string | null | undefined,
+): string {
+  if (!failed || !attemptsExhausted(failed)) return ''
+  const time = resetClock(resetsAt, zone)
+  return [
+    tr('competitions.refusal.dailyAttempts', { count: failed.ceiling }),
+    time ? tr('competitions.p.attemptsResets', { time }) : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
+/**
+ * The footer of a failed run's details (C1): "This attempt did not spend the
+ * limit — 3 of 5 left today". Empty without a limit, where there is nothing
+ * it could have spent.
+ */
+export function attemptFreeWords(leftToday: number | null, perDay: number): string {
+  if (!Number.isFinite(perDay) || perDay <= 0) return ''
+  return leftToday === null
+    ? tr('competitions.p.attemptFree')
+    : tr('competitions.p.attemptFreeLeft', { count: Math.max(0, leftToday), perDay })
+}
+
+/* ------------------------------------------------- after the deadline */
+
+/** "today", "yesterday", "03.10" — the day of a moment, as it reads in the middle of a line. */
+export function dayWord(at: number, now: number): string {
+  if (sameDay(at, now)) return tr('competitions.p.dayToday')
+  if (sameDay(at, now - DAY)) return tr('competitions.p.dayYesterday')
+  return dateOf(at)
+}
+
+/**
+ * The deadline that has passed, as day and clock; null when there is none to
+ * name: no deadline, or intake was ended early by «Завершить сейчас» and the
+ * deadline itself is still ahead — "the deadline passed" would be untrue.
+ */
+export function passedDeadline(deadlineAt: number | null, now: number): { day: string; time: string } | null {
+  if (deadlineAt === null || deadlineAt > now) return null
+  return { day: dayWord(deadlineAt, now), time: clockOf(deadlineAt) }
+}
+
+/**
+ * The line between late and on-time rows of "My submissions" (C1, C3):
+ * "DEADLINE · TODAY 12:00", or the bare word when the moment cannot be named.
+ */
+export function deadlineDividerWords(deadlineAt: number | null, now: number): string {
+  const passed = passedDeadline(deadlineAt, now)
+  return passed
+    ? tr('competitions.p.deadlineDivider', { when: `${passed.day} ${passed.time}` })
+    : tr('competitions.p.deadlineDividerBare')
+}
+
+/**
+ * Where that line goes in a list sorted newest first: before the first
+ * on-time row, when late ones stand above it. -1 — no late rows on top, or
+ * nothing on time below them, and a line "below: sent on time" over nothing
+ * would point at an empty space.
+ */
+export function deadlineSplit(rows: readonly Pick<EntrantSubmission, 'late'>[]): number {
+  const first = rows.findIndex((row) => !row.late)
+  return first > 0 ? first : -1
+}
+
+/**
+ * Under a late scored row (C1): "Better than the counted #14 by 0.0057, but it
+ * changes neither the place nor what counts." Said only when it IS better —
+ * that is the case a person reads as a lost result. Null otherwise.
+ */
+export function lateBetterNote(
+  submission: Pick<EntrantSubmission, 'late' | 'state' | 'publicScore'>,
+  counted: Pick<EntrantSubmission, 'number' | 'publicScore'> | null,
+  direction: MetricDirection,
+): string | null {
+  if (!submission.late || submission.state !== 'scored' || !counted) return null
+  if (!hasScore(submission.publicScore) || !hasScore(counted.publicScore)) return null
+  const gain = direction === 'lower' ? counted.publicScore - submission.publicScore : submission.publicScore - counted.publicScore
+  if (!(gain > 0)) return null
+  return tr('competitions.p.lateBetter', { number: counted.number, delta: formatScore(gain) })
+}
+
+/**
+ * One's best LATE public score — what the mini leaderboard says is not on it
+ * (C1). By the board's own comparison; null when no late one scored.
+ */
+export function bestLateScore(
+  submissions: readonly Pick<EntrantSubmission, 'late' | 'state' | 'publicScore' | 'acceptedAt'>[],
+  direction: MetricDirection,
+): number | null {
+  let best: { score: number; at: number } | null = null
+  for (const submission of submissions) {
+    if (!submission.late || submission.state !== 'scored' || !hasScore(submission.publicScore)) continue
+    const next = { score: submission.publicScore, at: submission.acceptedAt }
+    if (!best || compareScores(next, best, direction) < 0) best = next
+  }
+  return best?.score ?? null
+}
+
+/**
+ * Whether the page is past intake for the standings — closed, or taking late
+ * notebooks only. The final results, the counting banner and the closed pick
+ * all hang on this, not on the door being shut.
+ */
+export function standingsClosed(accepting: Accepting): boolean {
+  return accepting === 'closed' || accepting === 'late'
+}
+
+/* ------------------------------------------------------- the hidden test */
+
+/** The hidden file the words talk about, with the counts that make the point. */
+export interface SealedTarget {
+  /** `data/test.csv` — the path the notebook reads. */
+  file: string
+  rows: number | null
+  /** Rows of the open example it replaces; null — none, or not counted. */
+  exampleRows: number | null
+  /** It stands in for an example of the same name (otherwise it is a name new to `data/`). */
+  replaces: boolean
+}
+
+/**
+ * Which hidden file to name: the first that stands in for an example — the
+ * usual "test.csv is the hidden test" — or else the first one. Null without a
+ * hidden test, and then nothing on the page mentions one.
+ */
+export function sealedTarget(view: Pick<EntrantCompetitionView, 'files' | 'sealedFiles'>): SealedTarget | null {
+  const sealed = view.sealedFiles ?? []
+  const pick = sealed.find((file) => file.replaces !== null) ?? sealed[0]
+  if (!pick) return null
+  const example = pick.replaces === null ? null : (view.files.find((file) => file.name === pick.replaces) ?? null)
+  return {
+    file: `data/${pick.name}`,
+    rows: pick.rows,
+    exampleRows: example?.rows ?? null,
+    replaces: pick.replaces !== null,
+  }
+}
+
+/** "2 140 rows" — a row count in words, with the digits grouped. */
+export function rowsWords(rows: number): string {
+  return tr('competitions.p.rows', { count: rows, n: formatNumber(rows) })
+}
+
+/** The cell a failed notebook stopped at, by the count the caption uses; null — it did not fail in a cell. */
+function failedCell(submission: Pick<EntrantSubmission, 'state' | 'cellsDone' | 'cellsTotal'>): number | null {
+  return submission.state === 'notebookFailed' && submission.cellsTotal > 0 ? Math.max(1, submission.cellsDone) : null
+}
+
+/**
+ * The first line of a blind run's details (C1): "Checked on the hidden test:
+ * cell 12 · ValueError · output hidden". Built from the row's own numbers and
+ * the server's allow-listed exception class, never from text the notebook
+ * produced: on the hidden test that text may carry its rows.
+ */
+export function blindHead(submission: Pick<EntrantSubmission, 'state' | 'cellsDone' | 'cellsTotal' | 'errorType'>): string {
+  const cell = failedCell(submission)
+  if (cell === null) return tr('competitions.p.blindHead')
+  const where = [tr('competitions.p.blindCell', { cell }), submission.errorType ?? ''].filter(Boolean).join(' · ')
+  return tr('competitions.p.blindHeadAt', { where })
+}
+
+/** "cell 6 of 12 · ValueError" — the phone card's one mono line for a blind failure (C3). */
+export function blindCellLine(submission: Pick<EntrantSubmission, 'state' | 'cellsDone' | 'cellsTotal' | 'errorType'>): string {
+  const cell = failedCell(submission)
+  const at = cell === null ? '' : tr('competitions.p.blindCellOf', { cell, cells: submission.cellsTotal })
+  return [at, submission.errorType ?? ''].filter(Boolean).join(' · ')
+}
+
+/**
+ * Why the details are missing, and what to try (C1): the hidden test's rows
+ * against the example's — the difference a notebook fitted to the example
+ * trips on — and, for a failed cell, the advice to run that cell on the
+ * example and look for counts and ids it relies on.
+ */
+export function blindWhy(
+  submission: Pick<EntrantSubmission, 'state' | 'cellsDone' | 'cellsTotal'>,
+  target: SealedTarget | null,
+): string {
+  const why = !target || !target.replaces
+    ? tr('competitions.p.blindWhy')
+    : target.rows !== null && target.exampleRows !== null
+      ? tr('competitions.p.blindWhyRows', {
+          file: target.file,
+          rows: rowsWords(target.rows),
+          example: formatNumber(target.exampleRows),
+        })
+      : tr('competitions.p.blindWhyFile', { file: target.file })
+  const cell = failedCell(submission)
+  return cell === null ? why : `${why} ${tr('competitions.p.blindHint', { cell })}`
+}
+
+/**
+ * "during the check it is swapped for the hidden test (2 000 rows) at the
+ * same path" — under the example in the data list (C3).
+ */
+export function sealedSwapWords(rows: number | null): string {
+  return rows === null
+    ? tr('competitions.p.sealedSwapBare')
+    : tr('competitions.p.sealedSwap', { rows: rowsWords(rows) })
+}
+
+/**
+ * "37 columns: chamber_id, store_id, …" — the example's header, which the
+ * hidden test shares. Six names at most: the line says what kind of table it
+ * is, the file itself lists the rest.
+ */
+export function sealedColumnsWords(columns: readonly string[] | null): string {
+  if (!columns || columns.length === 0) return ''
+  const shown = columns.slice(0, 6).join(', ')
+  return tr('competitions.p.sealedColumns', {
+    count: columns.length,
+    names: columns.length > 6 ? `${shown} …` : shown,
+  })
 }
 
 /* ----------------------------------------------------------- leaderboard */

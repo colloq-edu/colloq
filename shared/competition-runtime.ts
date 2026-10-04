@@ -26,6 +26,14 @@ export interface CompetitionJobIntent {
   attemptId?: string
   preparationId?: string
   bundleId?: string
+  /**
+   * The notebook reads the hidden test: the broker mounts the attempt's own
+   * composed `inputs` folder at /data instead of the competition's open
+   * `data/`. A flag, not a path: the broker still maps typed IDs to fixed
+   * places. Notebook jobs only; an older broker refuses the unknown key, so
+   * such a run fails rather than quietly reading the open example.
+   */
+  sealedInputs?: true
   limits: CompetitionJobLimits
 }
 export interface CompetitionJobProgress { phase: 'dependencies' | 'notebook' | 'score' | 'resolve' | 'verify'; cell: number; cells: number; outputBytes: number }
@@ -51,7 +59,7 @@ const integer=(v:unknown,min:number,max:number):v is number => Number.isSafeInte
 export function parseCompetitionJobIntent(value:unknown):CompetitionJobIntent {
  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Invalid competition job')
  const v=value as Record<string,unknown>
- if(Object.keys(v).some(key=>!['schemaVersion','jobId','kind','environment','revision','competitionId','submissionId','attemptId','preparationId','bundleId','limits'].includes(key))||v.schemaVersion!==1||typeof v.kind!=='string'||!kinds.has(v.kind as CompetitionJobKind)||typeof v.jobId!=='string'||!COMPETITION_JOB_ID.test(v.jobId)||typeof v.environment!=='string'||!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,30}$/.test(v.environment)||typeof v.revision!=='string'||!COMPETITION_REVISION.test(v.revision))throw new Error('Invalid competition job identity')
+ if(Object.keys(v).some(key=>!['schemaVersion','jobId','kind','environment','revision','competitionId','submissionId','attemptId','preparationId','bundleId','sealedInputs','limits'].includes(key))||v.schemaVersion!==1||typeof v.kind!=='string'||!kinds.has(v.kind as CompetitionJobKind)||typeof v.jobId!=='string'||!COMPETITION_JOB_ID.test(v.jobId)||typeof v.environment!=='string'||!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,30}$/.test(v.environment)||typeof v.revision!=='string'||!COMPETITION_REVISION.test(v.revision))throw new Error('Invalid competition job identity')
  const present=(key:string,re:RegExp):boolean=>typeof v[key]==='string'&&re.test(v[key] as string)
  if((v.kind==='notebook'||v.kind==='metric')&&(!present('competitionId',COMPETITION_ROW_ID)||!present('submissionId',COMPETITION_ROW_ID)||!present('attemptId',COMPETITION_ATTEMPT_ID)))throw new Error('Invalid submission job identity')
  if((v.kind==='resolve'||v.kind==='verify')&&!present('preparationId',COMPETITION_ATTEMPT_ID))throw new Error('Invalid preparation job identity')
@@ -62,6 +70,8 @@ export function parseCompetitionJobIntent(value:unknown):CompetitionJobIntent {
  if(Object.keys(n).some(key=>!['wallSeconds','memoryMb','cpus','pids','tmpfsMb','targetBytes','packagesMb'].includes(key))||!integer(n.wallSeconds,1,14400)||!integer(n.memoryMb,128,65536)||!integer(n.cpus,1,32)||!integer(n.pids,16,2048)||!integer(n.tmpfsMb,16,4096)||!integer(n.targetBytes,1,512*1024*1024)||n.packagesMb!==undefined&&!integer(n.packagesMb,16,4096))throw new Error('Invalid competition job limits')
  // A package room belongs to a notebook with a set, and to nothing else.
  if(n.packagesMb!==undefined&&(v.kind!=='notebook'||v.bundleId===undefined))throw new Error('Unexpected package room')
+ // The hidden test is read by a notebook and by nothing else: the metric never sees it.
+ if(v.sealedInputs!==undefined&&(v.sealedInputs!==true||v.kind!=='notebook'))throw new Error('Unexpected sealed inputs')
  if(v.kind==='notebook'||v.kind==='metric'){
   if(v.preparationId!==undefined||v.kind==='metric'&&v.bundleId!==undefined)throw new Error('Unexpected job reference')
  }else if(v.kind==='resolve'||v.kind==='verify'){

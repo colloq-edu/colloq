@@ -23,6 +23,7 @@ import type {
   Entrant,
   MetricDirection,
   PrivateRelease,
+  OutputPolicy,
   RankedRow,
   RunKind,
   ScoringRule,
@@ -55,6 +56,10 @@ export interface CompetitionInput {
   privateRelease?: PrivateRelease
   scoring?: ScoringRule
   boardVisibility?: BoardVisibility
+  /** «Поздние посылки» — strictly true or false on the wire. */
+  lateSubmissions?: boolean
+  /** What a participant sees of a run on the hidden test. */
+  outputPolicy?: OutputPolicy
 }
 
 /* --------------------------------------------------------- list and queue */
@@ -116,6 +121,8 @@ export interface RunningNow {
   container: string | null
   /** A run of the sample notebook, not a participant's submission. */
   baseline: boolean
+  /** A late submission (outside the standings); the queue takes on-time work first. */
+  late?: boolean
 }
 
 /** A row of the "WAITING · N" list. */
@@ -131,6 +138,8 @@ export interface WaitingRow {
   etaMs: number | null
   resourcePending: boolean
   baseline: boolean
+  /** A late submission (outside the standings); the queue takes on-time work first. */
+  late?: boolean
 }
 
 /**
@@ -164,6 +173,16 @@ export interface CompetitionsList {
 export interface FileView extends CompetitionFile {
   /** CSV columns — "397 rows · id, orders". null: not CSV, or the file is too big. */
   columns: string[] | null
+}
+
+/**
+ * A hidden-test file as the teacher sees it: its name in `data/`, rows,
+ * columns, and the open example of the same name it replaces during the
+ * check. Its bytes have no door, the teacher's included.
+ */
+export interface SealedFileView extends FileView {
+  /** The open file of the same name the check swaps out; null — none, the name is new to `data/`. */
+  replaces: string | null
 }
 
 /** The card of the sample notebook and of its check. */
@@ -203,6 +222,10 @@ export interface CompetitionView {
   openFiles: FileView[]
   /** Hidden answers: names, rows and columns — the contents are never handed out. */
   hiddenFiles: FileView[]
+  /** The hidden test (sealed inputs): read by the notebook during the check, never downloaded. */
+  sealedFiles?: SealedFileView[]
+  /** How much the hidden test weighs against the `LIMITS.sealedBytes` ceiling. */
+  sealedBytes?: number
   baseline: BaselineView | null
   split: SplitView | null
   counts: CompetitionCounts
@@ -231,6 +254,11 @@ export interface CompetitionCounts {
   cancelled: number
   entrants: number
   bestPublic: number | null
+  /**
+   * Late submissions, apart from every number above: those are about the
+   * standings, and a late one is outside them. Absent where nothing counted it.
+   */
+  late?: number
 }
 
 /** A row of the submission feed (A3). */

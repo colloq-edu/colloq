@@ -3,7 +3,7 @@ import path from 'node:path'
 import { imageRevision, kernelRuntimeClient, loadRuntimeCatalog, type RuntimeClient } from '../kernel/runtime-client.js'
 import { resolveRuntimeEnvironment } from '@shared/runtime'
 import { parseCompetitionJobIntent, type CompetitionJobIntent, type CompetitionJobStatus } from '@shared/competition-runtime'
-import { competitionsFs, attemptDir } from './storage.js'
+import { competitionsFs, attemptDir, attemptPath } from './storage.js'
 import { DEFAULT_ID_COLUMN, dependencyFailureOf, verdictOfRun } from './docker-runner.js'
 import { brokerHarnessDir } from './harness.js'
 import { registerCompetitionRunner, type Capacity, type CompetitionRunner, type RunOutcome, type RunRequest, type ScoreOutcome, type ScoreRequest } from './runner-port.js'
@@ -82,9 +82,16 @@ export class BrokerCompetitionRunner implements CompetitionRunner {
     const bundleId=request.dependenciesDir ? path.basename(request.dependenciesDir) : undefined
     // The set's own memory-backed room, sized for it (runner-port.ts · RunRequest.packagesMb).
     const packagesMb=bundleId&&request.packagesMb ? Math.max(1,Math.ceil(request.packagesMb)) : undefined
+    // The broker mounts the attempt's inputs folder by its typed IDs; a data
+    // folder handed over as anything else would be read by nobody, and the run
+    // would quietly score the open example instead of the hidden test.
+    if (request.sealedInputs && path.resolve(request.dataDir)!==path.resolve(attemptPath(request.competition.id,request.submissionId,request.attemptId,'inputs'))) {
+      throw new Error('Competition broker: sealed inputs must be the attempt inputs folder')
+    }
     const jobId=randomUUID().replaceAll('-','')
     const intent:CompetitionJobIntent={schemaVersion:1,jobId,kind:'notebook',environment:request.competition.environment,revision,
       competitionId:request.competition.id,submissionId:request.submissionId,attemptId:request.attemptId,...(bundleId?{bundleId}:{}),
+      ...(request.sealedInputs?{sealedInputs:true as const}:{}),
       limits:{wallSeconds:request.limits.wallSeconds,memoryMb:request.limits.memoryMb,cpus:request.limits.cpus,pids:request.limits.pids,tmpfsMb:request.limits.tmpfsMb,targetBytes:request.limits.targetBytes,
         ...(packagesMb?{packagesMb}:{})}}
     let progress:CompetitionJobStatus['progress']=null

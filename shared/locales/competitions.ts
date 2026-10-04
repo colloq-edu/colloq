@@ -186,6 +186,36 @@ export const competitionsMessages: MessageCatalog = {
       other: 'No submissions left today: {count} per day per participant.',
     },
   },
+  /*
+   * The ceiling on FAILED submissions (shared/competitions.ts ·
+   * failedAttemptsCeiling). Never called "the limit": failures do not spend the
+   * limit, and a refusal that said "limit" here would read as the old rule.
+   */
+  'competitions.refusal.dailyAttempts': {
+    ru: {
+      one: 'Сегодня у вас уже {count} упавшая посылка — больше за день проверка не берёт. Это не лимит посылок: упавшие его не тратят, но и бесконечно запускать их нельзя. Проверьте тетрадь у себя.',
+      few: 'Сегодня у вас уже {count} упавшие посылки — больше за день проверка не берёт. Это не лимит посылок: упавшие его не тратят, но и бесконечно запускать их нельзя. Проверьте тетрадь у себя.',
+      many: 'Сегодня у вас уже {count} упавших посылок — больше за день проверка не берёт. Это не лимит посылок: упавшие его не тратят, но и бесконечно запускать их нельзя. Проверьте тетрадь у себя.',
+      other: 'Сегодня у вас уже {count} упавшей посылки — больше за день проверка не берёт. Это не лимит посылок: упавшие его не тратят, но и бесконечно запускать их нельзя. Проверьте тетрадь у себя.',
+    },
+    en: {
+      one: '{count} of your submissions failed today — the most the check takes in a day. This is not the submission limit: failed ones do not spend it, but they cannot run endlessly either. Check the notebook on your own machine.',
+      other: '{count} of your submissions failed today — the most the check takes in a day. This is not the submission limit: failed ones do not spend it, but they cannot run endlessly either. Check the notebook on your own machine.',
+    },
+  },
+  /*
+   * A late upload while the person's ON-TIME submission still waits: replacing
+   * it would cancel a notebook that was in the standings with one that is not
+   * (store.ts · intakePlan).
+   */
+  'competitions.refusal.inFlightOnTime': {
+    ru: 'Ваша посылка, отправленная до дедлайна, ещё ждёт проверки. Поздняя посылка её не заменит — дождитесь результата.',
+    en: 'Your submission sent before the deadline is still waiting for its check. A late one cannot take its place — wait for its result.',
+  },
+  'competitions.refusal.lateNotCounted': {
+    ru: 'Поздняя посылка вне зачёта: выбрать её нельзя.',
+    en: 'A late submission is outside the standings: it cannot be picked.',
+  },
   'competitions.refusal.tooOften': {
     ru: 'Слишком часто. Подождите минуту и повторите.',
     en: 'Too often. Wait a minute and try again.',
@@ -278,6 +308,20 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.refusal.dataFull': {
     ru: 'Данных у соревнования может быть до {mb} МБ. Удалите лишние файлы или уменьшите таблицу.',
     en: 'A competition holds up to {mb} MB of data. Drop the spare files or shrink the table.',
+  },
+  /* The hidden test's own budget (LIMITS.sealedBytes, LIMITS.sealedFiles). */
+  'competitions.refusal.sealedFull': {
+    ru: 'Скрытый тест может весить до {mb} МБ. Удалите лишние файлы или уменьшите таблицу.',
+    en: 'The hidden test holds up to {mb} MB. Drop the spare files or shrink the table.',
+  },
+  'competitions.refusal.tooManySealed': {
+    ru: 'Файлов скрытого теста может быть не больше {max}.',
+    en: 'The hidden test takes at most {max} files.',
+  },
+  // A target name sent with more than one file: each file would land on it.
+  'competitions.refusal.sealedOneName': {
+    ru: 'Имя в data/ задаётся для одного файла. Загрузите файлы по одному или без имени — тогда каждый ляжет под своим.',
+    en: 'A name in data/ is given for one file. Upload the files one by one, or without a name, and each keeps its own.',
   },
   'competitions.refusal.tooManyFiles': {
     ru: 'Файлов данных может быть до {max}.',
@@ -598,6 +642,72 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'Заменена посылкой #{number}, пока ждала в очереди.',
     en: 'Replaced by #{number} while it waited in the queue.',
   },
+
+  /*
+   * A run on the HIDDEN TEST, briefly (Competition.outputPolicy 'brief').
+   *
+   * Only our own words and numbers we can vouch for: the cell (clamped to the
+   * cells the sent notebook has), the class of the exception from a short
+   * list, the limits. Nothing the notebook printed or raised and nothing the
+   * metric quoted from the answer: the notebook had the hidden rows in memory,
+   * and any of those texts could carry them out (runner.ts · briefNote).
+   */
+  'competitions.answer.sealed.cellFailed': {
+    ru: 'Тетрадь упала на ячейке {cell} из {cells}: {type}. Текст ошибки и вывод скрыты — проверка шла на скрытом тесте.',
+    en: 'The notebook failed at cell {cell} of {cells}: {type}. The error text and outputs are hidden: the check ran on the hidden test.',
+  },
+  'competitions.answer.sealed.cellFailedUntyped': {
+    ru: 'Тетрадь упала на ячейке {cell} из {cells}. Текст ошибки и вывод скрыты — проверка шла на скрытом тесте.',
+    en: 'The notebook failed at cell {cell} of {cells}. The error text and outputs are hidden: the check ran on the hidden test.',
+  },
+  'competitions.answer.sealed.tooMuchOutput': {
+    ru: 'Тетрадь печатала слишком много и была остановлена на ячейке {cell}. Уберите печать из циклов.',
+    en: 'The notebook printed too much and was stopped at cell {cell}. Remove printing from your loops.',
+  },
+  'competitions.answer.sealed.metricRejected': {
+    ru: 'Метрика не приняла ответ. Подробности скрыты — проверка шла на скрытом тесте.',
+    en: 'The metric did not accept the answer. The details are hidden: the check ran on the hidden test.',
+  },
+  'competitions.answer.sealed.noIdColumn': {
+    ru: 'В ответе нет колонки «{column}».',
+    en: 'The answer has no column “{column}”.',
+  },
+  'competitions.answer.sealed.indexColumn': {
+    ru: "В ответе лишняя колонка — индекс таблицы. Запишите ответ так: sub.to_csv('{file}', index=False).",
+    en: "The answer has an extra column — the DataFrame index. Write the answer like this: sub.to_csv('{file}', index=False).",
+  },
+  'competitions.answer.sealed.duplicateId': {
+    ru: 'Колонка «{column}» повторяется. На каждую строку теста нужен ровно один прогноз.',
+    en: 'Column “{column}” repeats. Each test row needs exactly one prediction.',
+  },
+  'competitions.answer.sealed.missingRows': {
+    ru: 'В ответе есть не все строки теста. Стройте ответ по строкам data/, а не по номерам из примера.',
+    en: 'The answer does not have every test row. Build it from the rows in data/, not from the ids of the example.',
+  },
+  'competitions.answer.sealed.idForm': {
+    ru: '{column} в ответе записаны в другом виде, чем в тесте — сохраните {column} как в файле, строкой.',
+    en: 'The answer writes {column} differently from the test. Keep the {column} values exactly as in the file, as strings.',
+  },
+  'competitions.answer.sealed.emptyPredictions': {
+    ru: 'В колонке {column} есть пустые прогнозы.',
+    en: 'Column {column} has empty predictions.',
+  },
+  'competitions.answer.sealed.nonNumeric': {
+    ru: 'В колонке {column} нечисловые значения.',
+    en: 'Column {column} has non-numeric values.',
+  },
+  'competitions.answer.sealed.decimalComma': {
+    ru: 'В колонке {column} нечисловые значения. Десятичный разделитель — точка.',
+    en: 'Column {column} has non-numeric values. Use a dot as the decimal separator.',
+  },
+  'competitions.answer.sealed.infinitePredictions': {
+    ru: 'В колонке {column} есть бесконечные значения (inf).',
+    en: 'Column {column} has infinite values (inf).',
+  },
+  'competitions.answer.sealed.unparsable': {
+    ru: 'Файл ответа не читается как таблица.',
+    en: 'The answer file does not read as a table.',
+  },
   'competitions.refusal.tooLateToCancel': {
     ru: 'Отменять уже нечего: посылка закончилась, пока ехал запрос.',
     en: 'Nothing left to cancel: the submission finished while the request was on its way.',
@@ -804,17 +914,6 @@ export const competitionsMessages: MessageCatalog = {
       other: '{count} submissions left today, out of {perDay}.',
     },
   },
-  /*
-   * Follows the "left today" line: the rule of `countsTowardDailyQuota`, so
-   * that the number going back up after a result is not a mystery. The
-   * boundary is named from both sides: "failed before its first cell" was
-   * read as "failed on its first cell" (29 Sep 2026), and a notebook that
-   * raises in cell one has run and does count.
-   */
-  'competitions.p.quotaRule': {
-    ru: 'В счёт лимита идёт каждая посылка, чья тетрадь начала выполняться, — даже если упала на первой же ячейке или ответ не принят. Не в счёт: отменённая и та, что не дошла до выполнения (например, не установились пакеты).',
-    en: 'Every submission whose notebook starts running counts toward the limit — even if it fails on its very first cell or its answer is rejected. Not counted: a cancelled one, or one that never got to run (for example, its packages failed to install).',
-  },
   'competitions.p.phoneLimits': {
     ru: {
       one: 'Проверка: до {count} минуты, без доступа к интернету.',
@@ -906,8 +1005,6 @@ export const competitionsMessages: MessageCatalog = {
     en: 'stopped at cell {cell} of {cells}',
   },
   'competitions.p.cancelledNote': { ru: 'снята вами', en: 'cancelled by you' },
-  // A finished submission that did not spend the day's limit (competition-words · outsideQuota).
-  'competitions.p.offQuota': { ru: 'не в счёт лимита', en: 'not counted toward the limit' },
   /*
    * A waiting submission is replaced by a newer upload instead of refusing it:
    * the row says by which one, and the send box says so before the click.
@@ -1105,6 +1202,271 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.p.quotaResets': {
     ru: 'Лимит обновится в {time}.',
     en: 'The limit resets at {time}.',
+  },
+  // After the failed-attempts refusal: its own count, not the limit.
+  'competitions.p.attemptsResets': {
+    ru: 'Счёт упавших начнётся заново в {time}.',
+    en: 'The count of failed ones starts over at {time}.',
+  },
+
+  /*
+   * The send box's quota strip (C1). The rule leads and the number follows:
+   * since 4 Oct 2026 only a score spends the limit, and a count that stays put
+   * after a crash has to be explained in the same breath. Russian picks
+   * "осталась" for one, "осталось" for the rest.
+   */
+  'competitions.p.quotaLead': {
+    ru: {
+      one: 'Лимит тратят только посылки с оценкой — сегодня осталась {count} из {perDay}.',
+      few: 'Лимит тратят только посылки с оценкой — сегодня осталось {count} из {perDay}.',
+      many: 'Лимит тратят только посылки с оценкой — сегодня осталось {count} из {perDay}.',
+      other: 'Лимит тратят только посылки с оценкой — сегодня осталось {count} из {perDay}.',
+    },
+    en: {
+      one: 'Only scored submissions spend the limit: {count} of {perDay} left today.',
+      other: 'Only scored submissions spend the limit: {count} of {perDay} left today.',
+    },
+  },
+  'competitions.p.quotaLeadResets': {
+    ru: {
+      one: 'Лимит тратят только посылки с оценкой — сегодня осталась {count} из {perDay}, обновится в {time}.',
+      few: 'Лимит тратят только посылки с оценкой — сегодня осталось {count} из {perDay}, обновится в {time}.',
+      many: 'Лимит тратят только посылки с оценкой — сегодня осталось {count} из {perDay}, обновится в {time}.',
+      other: 'Лимит тратят только посылки с оценкой — сегодня осталось {count} из {perDay}, обновится в {time}.',
+    },
+    en: {
+      one: 'Only scored submissions spend the limit: {count} of {perDay} left today, resets at {time}.',
+      other: 'Only scored submissions spend the limit: {count} of {perDay} left today, resets at {time}.',
+    },
+  },
+  // What is free, named by what happened (shared/competitions.ts · countsTowardDailyQuota).
+  'competitions.p.quotaFree': {
+    ru: 'Упавшие не считаются: ошибка в тетради, нехватка времени или памяти, ответ не принят, сбой проверки. Посылка в работе держит место и вернёт его, если упадёт.',
+    en: 'Failed ones are free: a notebook error, running out of time or memory, a rejected answer, a failed check. A submission in progress holds a place and gives it back if it fails.',
+  },
+  // The phone's box has room for one paragraph: the rule shortened to its point (C3).
+  'competitions.p.quotaShort': {
+    ru: 'Лимит тратят только посылки с оценкой.',
+    en: 'Only scored submissions spend the limit.',
+  },
+  'competitions.p.quotaMeter': {
+    ru: { one: 'осталась {count} из {perDay}', few: 'осталось {count} из {perDay}', many: 'осталось {count} из {perDay}', other: 'осталось {count} из {perDay}' },
+    en: { one: '{count} of {perDay} left', other: '{count} of {perDay} left' },
+  },
+  /*
+   * The ceiling on failed submissions, quietly (failedAttemptsCeiling). "Failed
+   * attempts", never "the limit": the two stand side by side in the box.
+   */
+  'competitions.p.attemptsNote': {
+    ru: 'Неудачных попыток — не больше {ceiling} в день.',
+    en: 'Failed attempts: at most {ceiling} a day.',
+  },
+  'competitions.p.attemptsNoteUsed': {
+    ru: 'Неудачных попыток — не больше {ceiling} в день; сегодня {used}.',
+    en: 'Failed attempts: at most {ceiling} a day; {used} today.',
+  },
+  // Under a failed run's details, where the person decides whether to try again.
+  'competitions.p.attemptFree': { ru: 'Попытка лимит не потратила', en: 'This attempt did not spend the limit' },
+  'competitions.p.attemptFreeLeft': {
+    ru: {
+      one: 'Попытка лимит не потратила — сегодня осталась {count} из {perDay}',
+      few: 'Попытка лимит не потратила — сегодня осталось {count} из {perDay}',
+      many: 'Попытка лимит не потратила — сегодня осталось {count} из {perDay}',
+      other: 'Попытка лимит не потратила — сегодня осталось {count} из {perDay}',
+    },
+    en: {
+      one: 'This attempt did not spend the limit: {count} of {perDay} left today',
+      other: 'This attempt did not spend the limit: {count} of {perDay} left today',
+    },
+  },
+  // Beside the number of a finished submission that cost nothing (competition-words · outsideQuota).
+  'competitions.p.limitNotSpent': { ru: 'лимит не потрачен', en: 'limit not spent' },
+
+  /*
+   * «Поздние посылки» on the participant's side (C1, C3): intake for the
+   * standings is over, the door still takes notebooks, and every place they
+   * show up says they are outside the standings.
+   */
+  'competitions.p.lateOpen': { ru: 'приём поздних посылок открыт', en: 'late submissions open' },
+  'competitions.p.lateOpenShort': { ru: 'поздние посылки открыты', en: 'late submissions open' },
+  'competitions.p.deadlinePassedLabel': { ru: 'ДЕДЛАЙН ПРОШЁЛ', en: 'DEADLINE PASSED' },
+  'competitions.p.publicPlace': { ru: 'ПУБЛИЧНОЕ МЕСТО', en: 'PUBLIC PLACE' },
+  'competitions.p.countedScore': { ru: 'В ЗАЧЁТЕ', en: 'COUNTED' },
+  'competitions.p.dayToday': { ru: 'сегодня', en: 'today' },
+  'competitions.p.dayYesterday': { ru: 'вчера', en: 'yesterday' },
+  'competitions.p.lateDropNote': {
+    ru: 'Посылка после дедлайна будет проверена, но в зачёт и места не пойдёт. Оценку увидите только вы.',
+    en: 'A submission after the deadline is checked, but it does not count and takes no place. Only you see its score.',
+  },
+  'competitions.p.lateTitle': { ru: 'Поздняя посылка — вне зачёта', en: 'A late submission does not count' },
+  'competitions.p.deadlinePassed': {
+    ru: 'Дедлайн прошёл {day} в {time}.',
+    en: 'The deadline passed {day} at {time}.',
+  },
+  'competitions.p.lateNotePhone': {
+    ru: 'Тетрадь проверят как обычно, оценку увидите только вы — в лидерборд и места поздние посылки не попадают.',
+    en: 'The notebook is checked as usual and only you see the score: late submissions never reach the leaderboard or the places.',
+  },
+  'competitions.p.lateChip': { ru: 'ПОСЛЕ ДЕДЛАЙНА · ВНЕ ЗАЧЁТА', en: 'AFTER THE DEADLINE · NOT COUNTED' },
+  'competitions.p.lateBadge': { ru: 'ПОЗДНЯЯ', en: 'LATE' },
+  'competitions.p.afterDeadline': { ru: 'после дедлайна', en: 'after the deadline' },
+  'competitions.p.notCounted': { ru: 'вне зачёта', en: 'not counted' },
+  'competitions.p.lateBetter': {
+    ru: 'Лучше зачётной #{number} на {delta}, но место и зачёт не меняет.',
+    en: 'Better than the counted #{number} by {delta}, but it changes neither the place nor what counts.',
+  },
+  'competitions.p.deadlineDivider': { ru: 'ДЕДЛАЙН · {when}', en: 'DEADLINE · {when}' },
+  'competitions.p.deadlineDividerBare': { ru: 'ДЕДЛАЙН', en: 'DEADLINE' },
+  'competitions.p.deadlineDividerNote': {
+    ru: 'Выше — поздние посылки: проверены, но вне зачёта. Ниже — отправленные вовремя.',
+    en: 'Above: late submissions, checked but not counted. Below: the ones sent on time.',
+  },
+  'competitions.p.deadlineDividerNoteShort': {
+    ru: 'выше — поздние, вне зачёта; ниже — в зачёте',
+    en: 'above: late, not counted; below: on time',
+  },
+  // The pick froze with the deadline (routes/competitions.ts · choose): which one counts, said above the list.
+  'competitions.p.chooseClosed': {
+    ru: 'Выбор для зачёта закрыт с дедлайном: в зачёте посылка #{number}.',
+    en: 'The pick closed with the deadline: #{number} counts.',
+  },
+  'competitions.p.chooseClosedNone': {
+    ru: 'Выбор для зачёта закрыт с дедлайном.',
+    en: 'The pick closed with the deadline.',
+  },
+  'competitions.p.finalLater': {
+    ru: 'Итоговая оценка откроется вместе с итогами.',
+    en: 'The final score opens with the results.',
+  },
+  'competitions.p.lateFootnote': {
+    ru: 'Итоговые оценки — и у поздних посылок — откроются вместе с итогами. Места считаются только по посылкам до дедлайна.',
+    en: 'Final scores, late submissions’ included, open with the results. Places count only submissions sent before the deadline.',
+  },
+  'competitions.p.lateFootnoteOpen': {
+    ru: 'Места считаются только по посылкам до дедлайна.',
+    en: 'Places count only submissions sent before the deadline.',
+  },
+  'competitions.p.boardLateNote': {
+    ru: 'Места считаются только по посылкам до дедлайна. Ваша лучшая поздняя — {score} — сюда не входит.',
+    en: 'Places count only submissions sent before the deadline. Your best late one, {score}, is not in it.',
+  },
+
+  /*
+   * The hidden test as the participant meets it (C1, C3): its rows and path,
+   * never its contents, and why a failure on it shows so little. The
+   * exception class comes from the server's allow-list; a cell number from
+   * the run itself.
+   */
+  'competitions.p.sealedAtCheck': {
+    ru: { one: 'При проверке {files} — скрытый тест.', few: 'При проверке {files} — скрытый тест.', many: 'При проверке {files} — скрытый тест.', other: 'При проверке {files} — скрытый тест.' },
+    en: { one: 'During the check, {files} is the hidden test.', other: 'During the check, {files} are the hidden test.' },
+  },
+  'competitions.p.blindHead': {
+    ru: 'Проверка на скрытом тесте · вывод скрыт',
+    en: 'Checked on the hidden test · output hidden',
+  },
+  'competitions.p.blindHeadAt': {
+    ru: 'Проверка на скрытом тесте: {where} · вывод скрыт',
+    en: 'Checked on the hidden test: {where} · output hidden',
+  },
+  'competitions.p.blindCell': { ru: 'ячейка {cell}', en: 'cell {cell}' },
+  'competitions.p.blindCellOf': { ru: 'ячейка {cell} из {cells}', en: 'cell {cell} of {cells}' },
+  'competitions.p.blindWhy': {
+    ru: 'Тетрадь работала со скрытым тестом, поэтому текст ошибки, трассировка и вывод ячеек не показываются.',
+    en: 'The notebook worked with the hidden test, so the error text, the traceback and the cell outputs are not shown.',
+  },
+  'competitions.p.blindWhyFile': {
+    ru: 'Тетрадь работала с настоящим {file}, поэтому текст ошибки, трассировка и вывод ячеек не показываются.',
+    en: 'The notebook worked with the real {file}, so the error text, the traceback and the cell outputs are not shown.',
+  },
+  'competitions.p.blindWhyRows': {
+    ru: 'Тетрадь работала с настоящим {file} — {rows} вместо {example} в примере, — поэтому текст ошибки, трассировка и вывод ячеек не показываются.',
+    en: 'The notebook worked with the real {file} — {rows} instead of {example} in the example — so the error text, the traceback and the cell outputs are not shown.',
+  },
+  'competitions.p.blindHint': {
+    ru: 'Если на примере ячейка {cell} проходит, проверьте, не рассчитан ли код на число строк, конкретные id или значения из примера.',
+    en: 'If cell {cell} passes on the example, check whether the code relies on the number of rows, particular ids or values from the example.',
+  },
+  'competitions.p.blindShort': {
+    ru: 'Вывод скрыт: тетрадь исполнялась на скрытом тесте.',
+    en: 'Output hidden: the notebook ran on the hidden test.',
+  },
+  'competitions.p.sealedExample': { ru: 'ПРИМЕР', en: 'EXAMPLE' },
+  'competitions.p.sealedSwap': {
+    ru: 'при проверке заменяется скрытым тестом ({rows}) по тому же пути',
+    en: 'during the check it is swapped for the hidden test ({rows}) at the same path',
+  },
+  'competitions.p.sealedSwapBare': {
+    ru: 'при проверке заменяется скрытым тестом по тому же пути',
+    en: 'during the check it is swapped for the hidden test at the same path',
+  },
+  'competitions.p.sealedColumns': {
+    ru: { one: '{count} столбец: {names}', few: '{count} столбца: {names}', many: '{count} столбцов: {names}', other: '{count} столбца: {names}' },
+    en: { one: '{count} column: {names}', other: '{count} columns: {names}' },
+  },
+  'competitions.p.sealedNotListed': {
+    ru: 'Скрытого теста в списке нет — его не скачать.',
+    en: 'The hidden test is not in the list: it cannot be downloaded.',
+  },
+  'competitions.p.howTitle': { ru: 'Как проверяется посылка', en: 'How a submission is checked' },
+  'competitions.p.howRun': {
+    ru: {
+      one: 'Тетрадь запускается заново, все ячейки по порядку, в контейнере без интернета: до {count} минуты, {memory} памяти.',
+      few: 'Тетрадь запускается заново, все ячейки по порядку, в контейнере без интернета: до {count} минут, {memory} памяти.',
+      many: 'Тетрадь запускается заново, все ячейки по порядку, в контейнере без интернета: до {count} минут, {memory} памяти.',
+      other: 'Тетрадь запускается заново, все ячейки по порядку, в контейнере без интернета: до {count} минуты, {memory} памяти.',
+    },
+    en: {
+      one: 'The notebook starts from scratch and runs every cell in order, in a container with no internet: up to {count} minute, {memory} of memory.',
+      other: 'The notebook starts from scratch and runs every cell in order, in a container with no internet: up to {count} minutes, {memory} of memory.',
+    },
+  },
+  'competitions.p.howSwap': {
+    ru: 'В data/ лежат те же файлы, что выше, но на месте {file} — скрытый тест: те же столбцы, {rows}, другие строки. Читайте файл по этому пути и не рассчитывайте на число строк или конкретные id.',
+    en: 'data/ holds the same files as above, but in place of {file} sits the hidden test: the same columns, {rows}, different rows. Read the file by this path and do not count on the number of rows or particular ids.',
+  },
+  'competitions.p.howSwapBare': {
+    ru: 'В data/ лежат те же файлы, что выше, но на месте {file} — скрытый тест: те же столбцы, другие строки. Читайте файл по этому пути и не рассчитывайте на число строк или конкретные id.',
+    en: 'data/ holds the same files as above, but in place of {file} sits the hidden test: the same columns, different rows. Read the file by this path and do not count on the number of rows or particular ids.',
+  },
+  'competitions.p.howAdd': {
+    ru: 'В data/ лежат те же файлы, что выше, и ещё {file} — скрытый тест, которого нет в списке. Читайте его по этому пути и не рассчитывайте на число строк или конкретные id.',
+    en: 'data/ holds the same files as above and also {file}, the hidden test, which is not in the list. Read it by this path and do not count on the number of rows or particular ids.',
+  },
+  'competitions.p.howBrief': {
+    ru: 'Если тетрадь упадёт, вы увидите номер ячейки и тип ошибки — без вывода и traceback: тетрадь работала со скрытым тестом.',
+    en: 'If the notebook fails, you see the cell number and the error type, with no output or traceback: the notebook worked with the hidden test.',
+  },
+  'competitions.p.howFull': {
+    ru: 'Если тетрадь упадёт, вы увидите ошибку и вывод ячеек, как обычно.',
+    en: 'If the notebook fails, you see the error and the cell outputs, as usual.',
+  },
+  'competitions.p.howFree': {
+    ru: 'Упавшая посылка дневной лимит не тратит.',
+    en: 'A failed submission does not spend the daily limit.',
+  },
+  'competitions.p.howExampleCheck': {
+    ru: 'Проверьте ячейку {cell} на примере {file}.',
+    en: 'Check cell {cell} on the example {file}.',
+  },
+  'competitions.p.condSealed': { ru: 'скрытый · {rows}', en: 'hidden · {rows}' },
+  'competitions.p.condSealedBare': { ru: 'скрытый', en: 'hidden' },
+  'competitions.p.condOutput': { ru: 'Вывод при ошибке', en: 'Output on failure' },
+  'competitions.p.condOutputBrief': { ru: 'ячейка и тип', en: 'cell and type' },
+  'competitions.p.condOutputFull': { ru: 'полный', en: 'full' },
+  'competitions.p.condPerDay': { ru: 'Лимит в день', en: 'Daily limit' },
+  'competitions.p.condPerDayValue': { ru: '{count} с оценкой', en: '{count} scored' },
+  'competitions.p.conditionsSealedSwap': {
+    ru: 'Проверка запускает все ячейки по порядку и кладёт скрытый тест на место {file}.',
+    en: 'The check runs every cell in order and puts the hidden test in place of {file}.',
+  },
+  'competitions.p.conditionsSealedAdd': {
+    ru: 'Проверка запускает все ячейки по порядку и добавляет в data/ скрытый тест {file}.',
+    en: 'The check runs every cell in order and adds the hidden test {file} to data/.',
+  },
+  'competitions.p.conditionsSealedBrief': {
+    ru: 'Его строки не попадают ни в вывод, ни в сообщения об ошибке — поэтому при падении видны только номер ячейки и тип исключения.',
+    en: 'Its rows reach neither the output nor the error messages, so a failure shows only the cell number and the exception type.',
   },
 
   /* The teacher's side of the same setting, in the competition editor. */

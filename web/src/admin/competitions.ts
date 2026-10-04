@@ -16,6 +16,8 @@ import { tr, formatDate, formatNumber } from '@shared/i18n'
 import {
   boardOf,
   competitionWord,
+  countsTowardDailyQuota,
+  countsTowardFailedAttempts,
   directionWord,
   privateBoardOpen,
   type BoardEntry,
@@ -29,9 +31,12 @@ import {
 } from '@shared/competitions'
 import type {
   CompetitionRow,
+  CompetitionView,
   EntrantRow,
+  FileView,
   OpenRefusal,
   QueueSnapshot,
+  SealedFileView,
   SubmissionRow,
 } from '@shared/competitions-api'
 
@@ -563,25 +568,192 @@ function entryOf(submission: Submission): BoardEntry {
     publicScore: submission.publicScore,
     privateScore: submission.privateScore,
     chosen: submission.chosen,
+    // A late submission is never counted (countedSubmission): the teacher's
+    // board built from the feed must agree with the server's.
+    late: submission.late,
   }
 }
 
 /* --------------------------------------------------------------- words */
 
-/** What happened to a submission — the "WHAT HAPPENED" column. */
+/**
+ * What happened to a submission — the "WHAT HAPPENED" column.
+ *
+ * A late score says "not counted" before anything else: "new best" on a row
+ * that is in no table is the one word that would mislead the teacher into
+ * thinking the standings moved. A failure on the hidden test is summed up as
+ * "cell 9 · ValueError" and its full text goes into the box under the row
+ * (sealedErrorBox): that text can be a traceback quoting the hidden rows, and
+ * a one-line column is not where a teacher reads it.
+ */
 export function outcomeLine(row: SubmissionRow, best: boolean): string {
   const s = row.submission
   if (s.state === 'metricFailed') return tr('admin.competitions.outcome.metricFailed')
   if (s.state === 'scored') {
+    if (s.late) return tr('admin.competitions.outcome.late')
     if (best) return tr('admin.competitions.outcome.newBest')
     if (s.chosen) return tr('admin.competitions.outcome.chosen')
     return ''
+  }
+  if (s.sealedInputs && s.state === 'notebookFailed' && s.cellsDone > 0) {
+    return s.errorType
+      ? tr('admin.competitions.outcome.cellType', { cell: s.cellsDone, type: s.errorType })
+      : tr('admin.competitions.outcome.cellFailed', { cell: s.cellsDone })
   }
   if (s.participantError) return s.participantError
   if (s.state === 'notebookFailed' && s.cellsDone > 0) {
     return tr('admin.competitions.outcome.cellFailed', { cell: s.cellsDone })
   }
   return ''
+}
+
+/**
+ * The full error text of a run on the hidden test, for the box under its
+ * row; null when the column already says all of it.
+ *
+ * The teacher always reads the whole text, whatever the participant is shown
+ * (Competition.outputPolicy): it is the teacher's task that may be broken, and
+ * switching the policy must not need a rerun to see why.
+ */
+export function sealedErrorBox(row: SubmissionRow): string | null {
+  const s = row.submission
+  if (!s.sealedInputs || !s.participantError) return null
+  return s.participantError === outcomeLine(row, row.best) ? null : s.participantError
+}
+
+/* ------------------------------------------------- the limit, per row */
+
+/** The line under "WHAT HAPPENED": what the submission did to its author's day. */
+export interface LimitNote {
+  text: string
+  /** `positive` — the limit was spared, which is the news; `muted` — the ordinary case. */
+  tone: 'positive' | 'muted'
+}
+
+/**
+ * What a submission did to its author's daily limit.
+ *
+ * Since 4 Oct 2026 only a score spends one, and the teacher hears the
+ * question "why did my failed one eat my limit" from the class more than any
+ * other. The answer is written under each row, from the same rule the server
+ * counts by (countsTowardDailyQuota, countsTowardFailedAttempts): a copy of
+ * the rule here would quietly disagree on the day the rule changes again.
+ *
+ * A metric failure says one thing more — it is not the participant's doing,
+ * so it does not go toward the ceiling on failed ones either. With the limit
+ * off there is nothing to spend, and only a late score keeps its note.
+ */
+export function limitNote(row: SubmissionRow, perDay: number): LimitNote | null {
+  if (row.baseline) return null
+  const s = row.submission
+  const late = s.late && s.state === 'scored' ? tr('admin.competitions.outcome.lateNote') : null
+  if (!Number.isFinite(perDay) || perDay <= 0) return late ? { text: late, tone: 'muted' } : null
+  if (countsTowardDailyQuota(s)) {
+    const spent = s.state === 'scored' ? tr('admin.competitions.limitSpent') : tr('admin.competitions.limitHeld')
+    return { text: [late, spent].filter(Boolean).join(' · '), tone: 'muted' }
+  }
+  const ceiling = !countsTowardFailedAttempts(s) && s.state !== 'cancelled'
+  return {
+    text: ceiling ? tr('admin.competitions.limitNotSpentCeiling') : tr('admin.competitions.limitNotSpent'),
+    tone: 'positive',
+  }
+}
+
+/* ----------------------------------------------------- late in the feed */
+
+/** The feed's filter: everything, the standings only, or the late ones only. */
+export type LateFilter = 'all' | 'onTime' | 'late'
+
+/** The filter as the feed door's `late` parameter: '1', '0', or nothing. */
+export function lateQuery(filter: LateFilter): '1' | '0' | undefined {
+  return filter === 'late' ? '1' : filter === 'onTime' ? '0' : undefined
+}
+
+/**
+ * Where the "DEADLINE" rule goes in the feed: before the first row that was
+ * sent by the deadline and has a late row above it; -1 — nowhere.
+ *
+ * The feed is newest first, so after the deadline it reads late rows on top
+ * and the standings under them, and the rule is the only thing that says
+ * where one ends. Judged by the moment the upload began (`sentAt`), as the
+ * server judges it: a notebook sent at 23:59:50 that arrived at 00:00:40 is on
+ * time and belongs under the rule. No late row above — no rule: a line that
+ * separates nothing from something is noise.
+ */
+export function deadlineDividerAt(rows: readonly SubmissionRow[], deadlineAt: number | null): number {
+  if (deadlineAt === null) return -1
+  let lateAbove = false
+  for (let index = 0; index < rows.length; index += 1) {
+    const s = rows[index].submission
+    if (s.late) {
+      lateAbove = true
+      continue
+    }
+    if (lateAbove && (s.sentAt ?? s.acceptedAt) <= deadlineAt) return index
+  }
+  return -1
+}
+
+/* ---------------------------------------------------------- hidden test */
+
+/**
+ * A typed target name as the server's `name` field wants it: the name in
+ * `data/`, without the folder. People type the path the notebook reads —
+ * "data/test.csv" or "/data/test.csv" — and both mean `test.csv`.
+ */
+export function sealedTarget(typed: string): string {
+  return typed.trim().replace(/^\/?data\//, '')
+}
+
+/** One path in `data/`: what the participant downloads there, and what the check reads. */
+export interface SealedPath {
+  name: string
+  open: FileView | null
+  sealed: SealedFileView | null
+}
+
+/**
+ * The "WHAT IS AT THIS PATH" table: for the name in the path field, or the
+ * first hidden file when the field is empty; null — nothing to show yet.
+ *
+ * The whole point of a hidden test is that one path holds two different
+ * files, and the teacher must see both side by side: the 200-row example the
+ * class downloads and the 2 000 rows the check reads in its place.
+ */
+export function sealedPath(
+  view: Pick<CompetitionView, 'openFiles' | 'sealedFiles'>,
+  typed: string,
+): SealedPath | null {
+  const name = sealedTarget(typed) || view.sealedFiles?.[0]?.name || ''
+  if (!name) return null
+  return {
+    name,
+    open: view.openFiles.find((file) => file.name === name) ?? null,
+    sealed: view.sealedFiles?.find((file) => file.name === name) ?? null,
+  }
+}
+
+/** Whether a hidden file has its example's columns: `null` — nothing to compare. */
+export type ColumnsCheck =
+  | { same: true; count: number }
+  | { same: false; sealed: string; open: string }
+
+/**
+ * The hidden test against the example it replaces, by header.
+ *
+ * The one mistake a hidden test makes silently: a test whose columns differ
+ * from the example breaks every notebook written against the example, and
+ * the class reads it as their own bug. Order matters too — `pd.read_csv` hands
+ * a notebook columns by position as often as by name.
+ */
+export function columnsCheck(sealed: FileView, open: FileView | null): ColumnsCheck | null {
+  if (!open || !sealed.columns || !open.columns) return null
+  const same =
+    sealed.columns.length === open.columns.length &&
+    sealed.columns.every((name, index) => name === open.columns?.[index])
+  return same
+    ? { same: true, count: sealed.columns.length }
+    : { same: false, sealed: sealed.columns.join(', '), open: open.columns.join(', ') }
 }
 
 /** A competition's state as a word — one copy for the list and the header. */

@@ -35,7 +35,8 @@ export function pastGrace(c: Pick<Competition, 'deadlineAt'>, now: number): bool
  * In memory on purpose: an upload is a live connection, and a server restart
  * cuts it anyway — there is nothing to recover. After the deadline these are
  * exactly the uploads that began before it (new ones are refused at the
- * door), so they count as results still to come.
+ * door, or taken as late ones, which the door never holds: a late result is
+ * in no table), so they count as results still to come.
  */
 const uploading = new Map<string, number>()
 

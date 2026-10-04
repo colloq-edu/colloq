@@ -5,7 +5,9 @@
   the server checks readiness (server/src/competitions/panel.ts ·
   openRefusal). A person refused an opening goes down the form from top to
   bottom and fixes the first thing named, instead of jumping around the
-  screen after each next refusal.
+  screen after each next refusal. The hidden test sits right under the data
+  it replaces and blocks nothing: a competition without one runs on the open
+  example, as it always did.
 
   The screen's main rule is the answers. `solution.csv` goes through a door of
   its own, lives outside the classes' working directories and is handed back
@@ -26,12 +28,14 @@
   import { cn, formatBytes } from '@/lib/utils'
   import { loadRenderers, renderers } from '@/lib/render.svelte'
   import {
+    failedAttemptsCeiling,
     LIMITS,
     parseSlug,
     slugRefusal,
     type BoardVisibility,
     type CompetitionLimits,
     type MetricDirection,
+    type OutputPolicy,
     type PrivateRelease,
     type ScoringRule,
   } from '@shared/competitions'
@@ -40,6 +44,7 @@
   import {
     answerColumns,
     applyPreset,
+    columnsCheck,
     count,
     isUntouchedPreset,
     METRIC_PRESETS,
@@ -48,6 +53,8 @@
     presetCode,
     refusalSection,
     refusalText,
+    sealedPath,
+    sealedTarget,
     spanWords,
     stateTone,
     stateWord,
@@ -70,6 +77,12 @@
   let busy = $state(false)
   let errorText = $state<(() => string) | null>(null)
   const error = $derived(errorText?.() ?? null)
+  /**
+   * Where the refusal is drawn: the hidden test's own section answers in
+   * place. "The hidden test is limited to 200 MB" printed a screen and a half
+   * above the drop zone it refused is a drop that seemed to do nothing.
+   */
+  let errorAt = $state<'form' | 'sealed'>('form')
   let saved = $state(false)
   let now = $state(Date.now())
 
@@ -104,6 +117,8 @@
   let privateRelease = $state<PrivateRelease>('auto')
   let scoring = $state<ScoringRule>('chosen')
   let boardVisibility = $state<BoardVisibility>('public')
+  let lateSubmissions = $state(false)
+  let outputPolicy = $state<OutputPolicy>('brief')
 
   $effect(() => {
     const open = view.competition
@@ -124,6 +139,8 @@
     privateRelease = open.privateRelease
     scoring = open.scoring
     boardVisibility = open.boardVisibility ?? 'public'
+    lateSubmissions = open.lateSubmissions ?? false
+    outputPolicy = open.outputPolicy ?? 'brief'
   })
 
   /**
@@ -193,13 +210,16 @@
       privateRelease,
       scoring,
       boardVisibility,
+      lateSubmissions,
+      outputPolicy,
     }
   }
 
-  async function act<T>(what: () => Promise<T>): Promise<T | null> {
+  async function act<T>(what: () => Promise<T>, at: 'form' | 'sealed' = 'form'): Promise<T | null> {
     if (busy) return null
     busy = true
     errorText = null
+    errorAt = at
     try {
       return await what()
     } catch (cause) {
@@ -258,6 +278,65 @@
         ? adminApi.deleteCompetitionFile(id, file.name)
         : adminApi.deleteCompetitionSolution(id, file.name),
     )
+    if (fresh) onview(fresh)
+  }
+
+  /* ---------------------------------------------------------- hidden test */
+
+  /** The name typed in "PATH DURING THE CHECK"; empty — each file keeps its own. */
+  let sealedName = $state('')
+  let dragging = $state(false)
+
+  const sealedFiles = $derived(view.sealedFiles ?? [])
+  /** Open files the check swaps out: the data panel marks them "example". */
+  const swapped = $derived(new Set(sealedFiles.map((file) => file.replaces).filter(Boolean)))
+  const shownPath = $derived(sealedPath(view, sealedName))
+
+  /*
+   * One door for the drop zone, the picker and a row's "Replace".
+   *
+   * A row's "Replace" passes that row's name, so a test_v2.csv picked to
+   * replace test.csv lands as test.csv instead of becoming a second file next
+   * to it. A typed name goes with one file only — the server refuses two files
+   * under one name, and saying so here costs nothing.
+   */
+  async function uploadSealed(files: FileList | null | undefined, name = sealedTarget(sealedName)): Promise<void> {
+    const id = c.id
+    const list = [...(files ?? [])]
+    if (list.length === 0) return
+    if (name && list.length > 1) {
+      errorAt = 'sealed'
+      errorText = () => tr('admin.competitions.sealedPathOne')
+      return
+    }
+    const fresh = await act(() => adminApi.uploadCompetitionSealed(id, list, name), 'sealed')
+    if (!fresh) return void resyncSealed(id)
+    onview(fresh)
+    sealedName = ''
+  }
+
+  /*
+   * After a refused upload the list is read again from the server.
+   *
+   * Several files are written one after another, and a refusal on the third
+   * (a name the disk will not take) leaves the first two stored while the
+   * answer is an error: the panel would go on showing the hidden test as it
+   * was, and the class would be checked on files the teacher believes were
+   * never uploaded.
+   */
+  async function resyncSealed(id: string): Promise<void> {
+    try {
+      const { sealedFiles: listed } = await adminApi.competitionSealed(id)
+      if (id !== c.id) return
+      onview({ ...view, sealedFiles: listed, sealedBytes: listed.reduce((sum, file) => sum + file.bytes, 0) })
+    } catch (cause) {
+      lost(cause)
+    }
+  }
+
+  async function dropSealed(name: string): Promise<void> {
+    const id = c.id
+    const fresh = await act(() => adminApi.deleteCompetitionSealed(id, name), 'sealed')
     if (fresh) onview(fresh)
   }
 
@@ -368,6 +447,9 @@
 
   /* ----------------------------------------------------------------- gate */
 
+  /** The ceiling on failed submissions a day, by the same rule the upload door refuses with. */
+  const ceiling = $derived(failedAttemptsCeiling(Number(limits.perDay)))
+
   /** The first thing blocking the opening; null — go. The server counts, the screen names. */
   const refusal = $derived(view.ready)
   const blocked = $derived<string | null>(refusal === null ? null : refusalSection(refusal))
@@ -388,7 +470,7 @@
 {/snippet}
 
 {#snippet form()}
-  {#if error}
+  {#if error && errorAt === 'form'}
     <p class="pt-4 text-ui text-danger" role="alert">{error}</p>
   {/if}
 
@@ -468,7 +550,7 @@
   <!-- 2 · Data -->
   <Section title={tr('admin.competitions.section.data')} description={tr('admin.competitions.dataHint')}>
     <div class="flex flex-wrap items-start gap-3">
-      <div class="min-w-0 flex-[2_1_320px] border border-line">
+      <div class="open-files min-w-0 flex-[2_1_320px] border border-line">
         <div class="flex items-center border-b border-line px-3 py-2">
           <span class={HEAD}>{tr('admin.competitions.openFilesHead')}</span>
           <span class="ml-auto font-mono text-micro text-faint">
@@ -476,9 +558,25 @@
           </span>
         </div>
         {#each view.openFiles as file (file.name)}
-          <div class="flex items-center gap-3 border-b border-line-soft px-3 py-2 last:border-b-0">
-            <span class="min-w-0 flex-1 truncate font-mono text-micro text-ink" title={file.name}>
-              {file.name}
+          {@const example = swapped.has(file.name)}
+          <div
+            class={cn(
+              'open-file flex items-center gap-3 border-b border-line-soft px-3 py-2 last:border-b-0',
+              example && 'bg-accent/5',
+            )}
+          >
+            <span class="open-file-name flex min-w-0 flex-1 items-center gap-2.5">
+              <span class="min-w-0 truncate font-mono text-micro text-ink" title={file.name}>
+                {file.name}
+              </span>
+              {#if example}
+                <!-- The class downloads this one; the check reads the hidden
+                     file of the same name. Without the mark the teacher reads
+                     "test.csv · 200 rows" and wonders where the 2 000 went. -->
+                <span class="shrink-0" title={tr('admin.competitions.exampleTitle')}>
+                  <Badge word={tr('admin.competitions.exampleBadge')} tone="accent" />
+                </span>
+              {/if}
             </span>
             <span class="w-[110px] shrink-0 text-micro text-muted">
               {file.rows === null
@@ -597,11 +695,297 @@
             {:else}
               {tr('admin.competitions.splitUnknown')}
             {/if}
+            {#if sealedFiles.length > 0}
+              {tr('admin.competitions.solutionForSealed')}
+            {/if}
           </p>
         </div>
       </div>
     </div>
     {@render marker('data')}
+  </Section>
+
+  <!-- 2½ · Hidden test -->
+  <Section title={tr('admin.competitions.section.sealed')} description={tr('admin.competitions.sealedHint')}>
+    <div class="flex flex-col gap-5">
+      {#if error && errorAt === 'sealed'}
+        <p class="text-ui text-danger" role="alert">{error}</p>
+      {/if}
+
+      <!--
+        The same frame and colour as the answers, and for the same reason: a
+        hidden test dropped into the open files is downloaded by the whole
+        class, and that mistake cannot be undone.
+      -->
+      <div class="border border-brand">
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 border-b border-primary bg-brand px-3 py-2">
+          <Icon name="lock" size={12} class="shrink-0 text-white" />
+          <span class="text-micro font-bold uppercase tracking-caps text-white">
+            {tr('admin.competitions.sealedHead')}
+          </span>
+          <span class="ml-auto text-micro text-white/80">{tr('admin.competitions.sealedHeadNote')}</span>
+        </div>
+
+        {#each sealedFiles as file (file.name)}
+          {@const example = view.openFiles.find((one) => one.name === file.replaces) ?? null}
+          {@const check = columnsCheck(file, example)}
+          <div class="flex flex-wrap items-start gap-x-3.5 gap-y-2 border-b border-line px-3.5 py-3">
+            <div class="flex min-w-0 flex-1 basis-[260px] items-start gap-3.5">
+              <Icon name="file" size={15} class="mt-0.5 shrink-0 text-primary" />
+              <div class="flex min-w-0 flex-1 flex-col gap-1">
+                <p class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-ui text-ink">
+                  <span class="font-mono text-2xs font-semibold">{file.name}</span>
+                  {#if file.rows !== null}
+                    <span>· {tr('admin.competitions.rows', { count: file.rows, n: count(file.rows) })}</span>
+                  {/if}
+                  {#if file.replaces}
+                    <span>· {tr('admin.competitions.sealedReplaces')}</span>
+                    <span class="font-mono text-2xs">data/{file.replaces}</span>
+                    <span class="text-muted">
+                      {example?.rows != null
+                        ? tr('admin.competitions.sealedExampleOpen', {
+                            rows: tr('admin.competitions.rows', { count: example.rows, n: count(example.rows) }),
+                          })
+                        : tr('admin.competitions.sealedExampleOpenPlain')}
+                    </span>
+                  {:else}
+                    <span class="text-muted">· {tr('admin.competitions.sealedNewFile')}</span>
+                  {/if}
+                </p>
+                <p class="flex flex-wrap items-center gap-x-1.5 text-micro leading-snug">
+                  {#if check?.same}
+                    <span class="inline-flex items-center gap-1.5 text-positive">
+                      <Icon name="check" size={13} class="shrink-0" />
+                      {tr('admin.competitions.sealedColumnsSame', { n: check.count })}
+                    </span>
+                    <span class="text-muted">·</span>
+                  {:else if check}
+                    <!-- A test with other columns than its example breaks every
+                         notebook written against the example, and the class reads
+                         that as their own bug. -->
+                    <span class="inline-flex items-start gap-1.5 text-warning">
+                      <Icon name="alert" size={13} class="mt-px shrink-0" />
+                      {tr('admin.competitions.sealedColumnsDiffer', { sealed: check.sealed, open: check.open })}
+                    </span>
+                    <span class="text-muted">·</span>
+                  {/if}
+                  <span class="text-muted">
+                    {formatBytes(file.bytes)} · {tr('admin.competitions.uploadedAt', { when: moment(file.uploadedAt, now) })}
+                  </span>
+                </p>
+              </div>
+            </div>
+            <div class="flex shrink-0 items-center gap-4 max-[640px]:pl-[29px]">
+              <label class="admin-link cursor-pointer no-underline">
+                <input
+                  type="file"
+                  class="sr-only"
+                  disabled={busy}
+                  onchange={(event) => {
+                    void uploadSealed(event.currentTarget.files, file.name)
+                    event.currentTarget.value = ''
+                  }}
+                />
+                {tr('admin.competitions.replace')}
+              </label>
+              <button
+                type="button"
+                class="text-2xs text-danger transition-colors duration-100 hover:brightness-110 disabled:text-faint"
+                disabled={busy}
+                aria-label={tr('admin.competitions.dropFile', { name: file.name })}
+                onclick={() => void dropSealed(file.name)}
+              >
+                {tr('competitions.entrant.delete')}
+              </button>
+            </div>
+          </div>
+        {/each}
+
+        <div class="px-3.5 py-3">
+          <!-- A drop zone and a picker in one: the teacher drags the file
+               from the folder the task was built in, or presses the button. -->
+          <label
+            class={cn(
+              'flex cursor-pointer flex-wrap items-center gap-x-3.5 gap-y-2.5 border border-dashed px-4 py-3.5 transition-colors duration-100',
+              dragging ? 'border-accent-text bg-accent/5' : 'border-faint bg-surface',
+            )}
+            ondragover={(event) => {
+              event.preventDefault()
+              dragging = true
+            }}
+            ondragleave={() => (dragging = false)}
+            ondrop={(event) => {
+              event.preventDefault()
+              dragging = false
+              void uploadSealed(event.dataTransfer?.files)
+            }}
+          >
+            <input
+              type="file"
+              multiple
+              class="sr-only"
+              disabled={busy}
+              onchange={(event) => {
+                void uploadSealed(event.currentTarget.files)
+                event.currentTarget.value = ''
+              }}
+            />
+            <span class="flex min-w-0 flex-1 basis-[240px] items-start gap-3.5">
+              <Icon name="upload" size={17} class="mt-0.5 shrink-0 text-accent-text" />
+              <span class="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span class="text-ui font-semibold text-ink">
+                  {sealedFiles.length > 0
+                    ? tr('admin.competitions.sealedDropMore')
+                    : tr('admin.competitions.sealedDropFirst')}
+                </span>
+                <span class="text-2xs text-muted">
+                  {tr('admin.competitions.sealedDropHint', {
+                    mb: Math.round(LIMITS.sealedBytes / 1024 / 1024),
+                    max: LIMITS.sealedFiles,
+                  })}
+                </span>
+              </span>
+            </span>
+            <span class="btn-outline shrink-0">{tr('admin.competitions.pickFile')}</span>
+          </label>
+          {#if (view.sealedBytes ?? 0) > 0}
+            <p class="admin-meta pt-2 text-right font-mono">
+              {formatBytes(view.sealedBytes ?? 0)} / {formatBytes(LIMITS.sealedBytes)}
+            </p>
+          {/if}
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-start gap-x-7 gap-y-4">
+        <label class="flex min-w-0 flex-[1_1_240px] flex-col gap-2">
+          <span class={HEAD}>{tr('admin.competitions.sealedPathHead')}</span>
+          <span class="admin-affix">
+            <span class="shrink-0 font-mono text-2xs text-muted">data/</span>
+            <input
+              aria-label={tr('admin.competitions.sealedPathLabel')}
+              placeholder={tr('admin.competitions.sealedPathPlaceholder')}
+              maxlength={LIMITS.fileName}
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck="false"
+              class="font-mono"
+              bind:value={sealedName}
+            />
+          </span>
+          <span class="text-2xs text-muted">{tr('admin.competitions.sealedPathHint')}</span>
+        </label>
+
+        {#if shownPath}
+          <!--
+            One path, two files: the whole idea of a hidden test, and the one
+            thing the teacher has to see side by side before the class does.
+          -->
+          <div class="flex min-w-0 flex-[2_1_320px] flex-col gap-2">
+            <span class={HEAD}>{tr('admin.competitions.sealedWhatHead')}</span>
+            <div class="border-t-2 border-ink">
+              <div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-2.5 py-2.5">
+                <span class="w-[150px] shrink-0 text-2xs text-muted">{tr('admin.competitions.sealedInNotebook')}</span>
+                <span class="min-w-0 flex-1 basis-[140px] text-ui text-ink">
+                  {shownPath.open
+                    ? shownPath.open.rows !== null
+                      ? tr('admin.competitions.sealedExampleRows', {
+                          rows: tr('admin.competitions.rows', { count: shownPath.open.rows, n: count(shownPath.open.rows) }),
+                        })
+                      : tr('admin.competitions.sealedExampleFile')
+                    : tr('admin.competitions.sealedNoFile')}
+                </span>
+                {#if shownPath.open}
+                  <span class="shrink-0 text-2xs text-muted">{tr('admin.competitions.sealedDownloadable')}</span>
+                {/if}
+              </div>
+              <div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line bg-raised px-2.5 py-2.5">
+                <span class="w-[150px] shrink-0 text-2xs text-primary">{tr('admin.competitions.sealedOnCheck')}</span>
+                <span class="min-w-0 flex-1 basis-[140px] text-ui font-bold text-primary">
+                  {#if shownPath.sealed}
+                    {shownPath.sealed.rows !== null
+                      ? tr('admin.competitions.sealedTestRows', {
+                          rows: tr('admin.competitions.rows', { count: shownPath.sealed.rows, n: count(shownPath.sealed.rows) }),
+                        })
+                      : tr('admin.competitions.sealedTestFile')}
+                  {:else}
+                    <span class="font-normal text-muted">
+                      {shownPath.open ? tr('admin.competitions.sealedNotYet') : tr('admin.competitions.sealedNoFile')}
+                    </span>
+                  {/if}
+                </span>
+                {#if shownPath.sealed}
+                  <span class="flex shrink-0 items-center gap-1.5 text-2xs text-primary">
+                    <Icon name="lock" size={11} class="shrink-0" />
+                    {tr('admin.competitions.sealedNotGiven')}
+                  </span>
+                {/if}
+              </div>
+            </div>
+            <p class="pt-1 text-2xs leading-snug text-ink">{tr('admin.competitions.sealedNote')}</p>
+          </div>
+        {/if}
+      </div>
+
+      <!--
+        What a participant reads of a run on the hidden test. Two cards, not a
+        segmented switch: the second one carries a warning that has to be
+        read BEFORE it is chosen, and a switch hides it until after.
+      -->
+      <div class="flex min-w-0 flex-col gap-2.5">
+        <p class="flex flex-wrap items-baseline gap-x-3.5 gap-y-1">
+          <span id="output-policy-{c.id}" class={HEAD}>{tr('admin.competitions.policyHead')}</span>
+          <span class="text-2xs text-muted">{tr('admin.competitions.policyAside')}</span>
+        </p>
+        <div class="flex flex-wrap gap-3" role="radiogroup" aria-labelledby="output-policy-{c.id}">
+          {#each ['brief', 'full'] as const as one (one)}
+            {@const chosen = outputPolicy === one}
+            <label
+              class={cn(
+                'flex min-w-0 flex-1 basis-[280px] cursor-pointer flex-col gap-2.5 transition-colors duration-100',
+                chosen ? 'border-2 border-primary bg-surface p-4' : 'border border-line p-[17px] hover:bg-surface',
+              )}
+            >
+              <span class="flex flex-wrap items-center gap-2.5">
+                <input
+                  type="radio"
+                  name="output-policy-{c.id}"
+                  value={one}
+                  checked={chosen}
+                  class="size-4 shrink-0 accent-primary"
+                  onchange={() => (outputPolicy = one)}
+                />
+                <span class="text-ui font-semibold text-ink">
+                  {one === 'brief' ? tr('admin.competitions.policyBrief') : tr('admin.competitions.policyFull')}
+                </span>
+                {#if one === 'brief'}
+                  <Badge word={tr('admin.competitions.policyRecommended')} tone="positive" />
+                {/if}
+              </span>
+              <span class="pl-[26px] text-2xs leading-snug text-muted max-[640px]:pl-0">
+                {one === 'brief' ? tr('admin.competitions.policyBriefHint') : tr('admin.competitions.policyFullHint')}
+              </span>
+              {#if one === 'brief'}
+                <span class="ml-[26px] flex flex-col gap-1 border border-line bg-canvas px-3 py-2.5 max-[640px]:ml-0">
+                  <span class="admin-label">{tr('admin.competitions.policySees')}</span>
+                  <!-- The server's own words for such a run, not a picture of them. -->
+                  <span class="text-2xs text-danger">
+                    {tr('competitions.answer.sealed.cellFailed', { cell: 9, cells: 16, type: 'ValueError' })}
+                  </span>
+                </span>
+              {:else}
+                <span class="ml-[26px] flex gap-2.5 border-l-[3px] border-warning bg-warning/10 px-3 py-2.5 max-[640px]:ml-0">
+                  <Icon name="alert" size={15} class="mt-0.5 shrink-0 text-warning" />
+                  <span class="text-2xs leading-snug text-ink">{tr('admin.competitions.policyFullWarning')}</span>
+                </span>
+              {/if}
+            </label>
+          {/each}
+        </div>
+        {#if sealedFiles.length === 0}
+          <p class="admin-meta">{tr('admin.competitions.policyNoSealed')}</p>
+        {/if}
+      </div>
+    </div>
   </Section>
 
   <!-- 3 · Sample notebook -->
@@ -922,8 +1306,9 @@
             <span class="text-2xs text-muted">{tr('admin.competitions.limit.cpuUnit')}</span>
           </span>
         </label>
-        <label class="{TILE} min-w-0 flex-1 basis-[150px]">
-          <span class={HEAD}>{tr('admin.competitions.limit.perDay')}</span>
+        <!-- Framed apart: the one limit the class feels, and the one the rule below is about. -->
+        <label class="flex min-w-0 flex-1 basis-[150px] flex-col gap-1.5 border border-primary px-3.5 py-3">
+          <span class="admin-label text-primary">{tr('admin.competitions.limit.perDay')}</span>
           <span class="flex items-baseline gap-1.5">
             <input
               class="w-[64px] border-b border-line bg-transparent font-mono text-head font-bold text-ink
@@ -938,15 +1323,62 @@
         </label>
       </div>
 
-      <p class="text-micro leading-snug text-muted">
-        {#if resources?.memory.availableMb != null}
+      {#if resources?.memory.availableMb != null}
+        <p class="text-micro leading-snug text-muted">
           {tr('admin.competitions.machineFree', {
             free: gb(resources.memory.availableMb),
             rest: gb(Math.max(0, resources.memory.availableMb - limits.memoryMb)),
           })}
-        {/if}
-        {tr('admin.competitions.quotaNote')}
-      </p>
+        </p>
+      {/if}
+
+      <!--
+        What spends the limit, in three columns, and the ceiling under them.
+
+        The rule changed on 4 Oct 2026 (only a score spends one), and the
+        teacher is the one the class asks "why did my failed one eat my
+        limit". The ceiling sits under the column it is the brake for; on a
+        narrow form the cells stack, and the negative margins keep one hairline
+        between neighbours either way.
+      -->
+      {#if Number(limits.perDay) > 0}
+        <div class="rule-frame overflow-hidden border border-line">
+          <div class="rule-grid">
+            <div class="-ml-px -mt-px flex min-w-0 flex-col gap-2.5 border-l border-t border-line bg-surface px-4 py-3.5">
+              <span class="admin-label text-primary">{tr('admin.competitions.rule.spends')}</span>
+              <span class="flex"><Badge word={tr('competitions.teacher.scored')} tone="positive" /></span>
+              <span class="text-2xs leading-snug text-ink">{tr('admin.competitions.rule.spendsText')}</span>
+            </div>
+            <div class="-ml-px -mt-px flex min-w-0 flex-col gap-2.5 border-l border-t border-line px-4 py-3.5">
+              <span class={HEAD}>{tr('admin.competitions.rule.holds')}</span>
+              <span class="flex flex-wrap gap-1.5">
+                <Badge word={tr('admin.competitions.stateQueued')} tone="accent" form="outline" />
+                <Badge word={tr('admin.competitions.stateRunning')} tone="accent" />
+              </span>
+              <span class="text-2xs leading-snug text-ink">{tr('admin.competitions.rule.holdsText')}</span>
+            </div>
+            <div class="-ml-px -mt-px flex min-w-0 flex-col gap-2.5 border-l border-t border-line px-4 py-3.5">
+              <span class={HEAD}>{tr('admin.competitions.rule.free')}</span>
+              <span class="text-2xs leading-snug text-ink">{tr('admin.competitions.rule.freeText')}</span>
+            </div>
+            <div class="-ml-px -mt-px flex min-w-0 flex-col gap-1 border-l border-t border-line px-4 py-3.5">
+              <span class={HEAD}>{tr('admin.competitions.ceiling.head')}</span>
+              <span class="flex items-baseline gap-1.5">
+                <span class="font-mono text-head font-bold text-ink">{ceiling ?? '—'}</span>
+                <span class="text-2xs text-muted">{tr('admin.competitions.ceiling.unit')}</span>
+              </span>
+            </div>
+            <div class="rule-wide -ml-px -mt-px flex min-w-0 flex-col gap-1 border-l border-t border-line px-4 py-3.5">
+              <span class="text-2xs leading-snug text-ink">
+                {tr('admin.competitions.ceiling.text', { perDay: Math.floor(Number(limits.perDay)) })}
+              </span>
+              <span class="text-2xs leading-snug text-muted">{tr('admin.competitions.ceiling.hit')}</span>
+            </div>
+          </div>
+        </div>
+      {:else}
+        <p class="text-micro leading-snug text-muted">{tr('admin.competitions.ceiling.offText')}</p>
+      {/if}
     </div>
   </Section>
 
@@ -976,7 +1408,66 @@
           />
           <span class="admin-meta mt-1.5 block">{tr('admin.competitions.deadlineHint')}</span>
         </label>
+        <!--
+          «Поздние посылки» stands next to the deadline it is about. A real
+          switch (role="switch"), not a checkbox: it is a state of the
+          competition the console header repeats, and the label next to it
+          says the state in words, so the colour is never the only signal.
+        -->
+        <div class="min-w-0 flex-1 basis-[220px]">
+          <span class="mb-1.5 block {HEAD}">{tr('admin.competitions.afterDeadline')}</span>
+          <label class="flex min-h-10 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 max-[640px]:min-h-11">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={lateSubmissions}
+              aria-label={tr('admin.competitions.lateSwitch')}
+              class={cn(
+                'flex h-[22px] w-10 shrink-0 items-center rounded-full px-[3px] transition-colors duration-quick',
+                'focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/15',
+                lateSubmissions ? 'justify-end bg-primary' : 'justify-start bg-faint/60',
+              )}
+              onclick={() => (lateSubmissions = !lateSubmissions)}
+            >
+              <span class="size-4 rounded-full bg-canvas shadow-sm" aria-hidden="true"></span>
+            </button>
+            <span class="text-ui font-semibold text-ink">{tr('admin.competitions.lateSwitch')}</span>
+            <span class="text-2xs text-muted">
+              {lateSubmissions ? tr('admin.competitions.lateOn') : tr('admin.competitions.lateOff')}
+            </span>
+          </label>
+        </div>
       </div>
+
+      {#if lateSubmissions}
+        <!-- The three things a teacher asks before switching it on, answered
+             where the switch is: are they taken, what do they cost, do they count. -->
+        <div class="flex flex-wrap overflow-hidden border-l-[3px] border-primary bg-surface">
+          <div class="-ml-px flex min-w-0 flex-[1_1_220px] flex-col gap-1.5 border-l border-line px-4 py-3.5">
+            <span class="admin-label text-primary">{tr('admin.competitions.late.accepted')}</span>
+            <span class="text-2xs leading-snug text-ink">{tr('admin.competitions.late.acceptedText')}</span>
+          </div>
+          <div class="-ml-px flex min-w-0 flex-[1_1_220px] flex-col gap-1.5 border-l border-line px-4 py-3.5">
+            <span class="admin-label text-primary">{tr('admin.competitions.late.sameLimit')}</span>
+            <span class="text-2xs leading-snug text-ink">
+              {Number(limits.perDay) > 0
+                ? tr('admin.competitions.late.sameLimitText', { count: Math.floor(Number(limits.perDay)) })
+                : tr('admin.competitions.late.noLimitText')}
+            </span>
+          </div>
+          <div class="-ml-px flex min-w-0 flex-[1.2_1_240px] flex-col gap-1.5 border-l border-line px-4 py-3.5">
+            <span class="admin-label text-primary">{tr('admin.competitions.late.outside')}</span>
+            <span class="text-2xs leading-snug text-ink">{tr('admin.competitions.late.outsideText')}</span>
+          </div>
+        </div>
+      {:else}
+        <p class="text-micro leading-snug text-muted">{tr('admin.competitions.late.offNote')}</p>
+      {/if}
+      {#if !draftState && (lateSubmissions || (view.counts.late ?? 0) > 0)}
+        <!-- Said where the date is changed: moving it frees late work, and
+             only one way (server · store.ts · forgiveLateSubmissions). -->
+        <p class="text-micro leading-snug text-muted">{tr('admin.competitions.late.moveNote')}</p>
+      {/if}
 
       <div>
         <p class="mb-1.5 {HEAD}">{tr('admin.competitions.privateBoard')}</p>
@@ -1114,3 +1605,50 @@
     {@render form()}
   </AdminPage>
 {/if}
+
+<style>
+  /*
+   * The open files on a narrow panel (a phone): the name takes a line of its
+   * own and the rows, size and bin go under it. Side by side, the fixed rows
+   * and size columns left the name 40 px, and the «пример» mark, which cannot
+   * shrink, lay over the row count.
+   */
+  .open-files {
+    container-type: inline-size;
+  }
+
+  @container (max-width: 420px) {
+    .open-file {
+      flex-wrap: wrap;
+      row-gap: 0.25rem;
+    }
+
+    .open-file-name {
+      flex-basis: 100%;
+    }
+  }
+
+  /*
+   * The limits block: three columns and the ceiling under the first, on the
+   * width of the form itself rather than the window (the panel's rail takes
+   * 236 px of it), as the competitions list and the feed do.
+   */
+  .rule-frame {
+    container-type: inline-size;
+  }
+
+  .rule-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  @container (min-width: 620px) {
+    .rule-grid {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.4fr);
+    }
+
+    .rule-wide {
+      grid-column: span 2;
+    }
+  }
+</style>

@@ -58,11 +58,11 @@ for (const name of ['SubmissionRow', 'SubmissionCard']) test(`${name} leads with
   assert.doesNotMatch(bare, /3-я/)
 })
 
-for (const name of ['SubmissionRow', 'SubmissionCard']) test(`${name} says when a finished submission did not count toward the limit`, () => {
+for (const name of ['SubmissionRow', 'SubmissionCard']) test(`${name} says when a finished submission did not spend the limit`, () => {
   const dead = { ...submission, state: 'notebookFailed', chosen: false, cellsDone: 0, cellsTotal: 0, publicScore: null, participantError: null }
   const props = { ...rowProps, submission: dead }
-  assert.match(text(render(components.get(name)!, { props: { ...props, offQuota: true } }).body), /не в счёт лимита/)
-  assert.doesNotMatch(text(render(components.get(name)!, { props }).body), /в счёт лимита/)
+  assert.match(text(render(components.get(name)!, { props: { ...props, offQuota: true } }).body), /лимит не потрачен/)
+  assert.doesNotMatch(text(render(components.get(name)!, { props }).body), /лимит/)
 })
 
 for (const name of ['SubmissionRow', 'SubmissionCard']) test(`${name} offers a scored run's executed notebook only when there is one`, () => {

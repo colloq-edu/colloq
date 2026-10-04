@@ -259,13 +259,20 @@ for (const phone of [false, true]) {
       mine: { accepting: 'open', perDay: 5, inFlight: 0, ...mine },
       phone, busy: false, refusal: null, onsend: async () => null, onrefuse: () => {},
     } }).body
-    const rule = 'В счёт лимита идёт каждая посылка, чья тетрадь начала выполняться, — даже если упала на первой же ячейке или ответ не принят. Не в счёт: отменённая и та, что не дошла до выполнения (например, не установились пакеты).'
+    // Since 4 Oct 2026 the rule leads (desktop) or follows in one short
+    // sentence (phone): only a score spends one, failures are free.
+    const rule = phone ? 'Лимит тратят только посылки с оценкой.' : 'Лимит тратят только посылки с оценкой —'
+    const free = 'Упавшие не считаются: ошибка в тетради, нехватка времени или памяти, ответ не принят, сбой проверки.'
     assert.ok(show({ leftToday: 3 }).includes(
-      `${phone ? 'Сегодня осталось 3 посылки из 5.' : 'Сегодня можно отправить ещё 3 посылки из 5.'} ${rule}`,
+      phone ? `Сегодня осталось 3 посылки из 5. ${rule}` : `${rule} сегодня осталось 3 из 5.`,
     ))
-    // The day spent is exactly when "why did it come back?" gets asked.
-    assert.ok(show({ leftToday: 0 }).includes(`На сегодня посылки кончились: 5 в день на участника. ${rule}`))
-    assert.ok(!show({ leftToday: null }).includes(rule), 'no limit, no rule to explain')
-    assert.ok(!show({ leftToday: 3, accepting: 'closed' }).includes(rule), 'closed submissions promise nothing')
+    if (!phone) {
+      assert.ok(show({ leftToday: 3 }).includes(free))
+      // The day spent is exactly when "why did it not come back?" gets asked.
+      assert.ok(show({ leftToday: 0 }).includes(free))
+    }
+    assert.ok(show({ leftToday: 0 }).includes('На сегодня посылки кончились: 5 в день на участника.'))
+    assert.ok(!show({ leftToday: null }).includes('Лимит тратят'), 'no limit, no rule to explain')
+    assert.ok(!show({ leftToday: 3, accepting: 'closed' }).includes('Лимит тратят'), 'closed submissions promise nothing')
   })
 }

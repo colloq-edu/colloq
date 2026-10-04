@@ -14,9 +14,11 @@
   import type { EntrantCompetitionView } from '@shared/competitions-entrant'
   import Badge from './Badge.svelte'
   import {
+    acceptsUploads,
     deadlineUrgent,
     formatScore,
     metricArrow,
+    passedDeadline,
     remainingClock,
     shortName,
     avatarLetter,
@@ -62,8 +64,8 @@
 
   const competition = $derived(view.competition)
   /*
-   * "Over" means submissions are closed, not the state of a row in the
-   * database.
+   * "Over" means intake for the standings is over — closed, or late
+   * notebooks only — not the state of a row in the database.
    *
    * A passed deadline does NOT move the competition to `finished`: the
    * teacher changes the state with the "Finish now" button, and at that
@@ -76,9 +78,17 @@
    * `submissionsOpen` the door uses to refuse a submission — two answers to
    * one question would diverge at exactly the minute the whole class notices.
    */
-  const over = $derived(view.accepting === 'closed')
-  /** Submissions are open: the tab counter and the clock only make sense then. */
-  const open = $derived(view.accepting === 'open')
+  const over = $derived(view.accepting === 'closed' || view.accepting === 'late')
+  /*
+   * «Поздние посылки»: the standings are closed — "FINISHED", no countdown to
+   * a deadline that has passed — but the door still takes notebooks, and a
+   * chip beside the badge says so (C1, C3). Without it "FINISHED" next to a
+   * working send button reads as a contradiction.
+   */
+  const late = $derived(view.accepting === 'late')
+  const passed = $derived(late ? passedDeadline(competition.deadlineAt, now) : null)
+  /** Submissions are taken: the tab counter only makes sense then. */
+  const open = $derived(acceptsUploads(view.accepting))
   const urgent = $derived(deadlineUrgent(competition.deadlineAt, now))
   const stateBadge = $derived({
     word: competitionWord(over ? 'finished' : competition.state),
@@ -116,7 +126,7 @@
              P4 mockup the competition is live and there is nothing to say
              about it, but "FINISHED" must be said — otherwise closed
              submissions look like a broken button. -->
-        {#if over || competition.state !== 'live'}
+        {#if (over || competition.state !== 'live') && !late}
           <Badge word={stateBadge.word} tone={stateBadge.tone} form="filled" phone />
         {/if}
       </span>
@@ -131,6 +141,16 @@
         </span>
       {/if}
     </div>
+    {#if late}
+      <!-- Two badges do not fit beside "‹ Competitions" and the name at
+           390 px, so the late state gets a row of its own (C3). -->
+      <div class="flex flex-wrap items-center gap-2">
+        <Badge word={stateBadge.word} tone={stateBadge.tone} form="filled" phone />
+        <span class="border border-brand-2 px-1.5 py-px text-micro font-semibold text-brand-2 dark:border-accent dark:text-accent">
+          {tr('competitions.p.lateOpenShort')}
+        </span>
+      </div>
+    {/if}
     <h1 class="text-display font-black text-ink">{competition.title}</h1>
     <div class="flex flex-wrap gap-6">
       {#if !over && competition.deadlineAt !== null}
@@ -169,12 +189,18 @@
       <div class="flex min-w-0 flex-col gap-2.5">
         <div class="flex flex-wrap items-center gap-2.5">
           <Badge word={stateBadge.word} tone={stateBadge.tone} form="filled" />
+          {#if late}
+            <span class="flex items-center gap-1.5 border border-brand-2 px-2 py-0.5 text-micro font-semibold leading-4 text-brand-2 dark:border-accent dark:text-accent">
+              <span class="size-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true"></span>
+              {tr('competitions.p.lateOpen')}
+            </span>
+          {/if}
           <span class="text-2xs text-muted">
             {[
               competition.metric.name,
               directionWord(competition.metric.direction),
               tr('competitions.p.entrants', { count: view.entrants }),
-              over ? tr('competitions.p.submissionsCount', { count: view.submissions }) : '',
+              view.accepting === 'closed' ? tr('competitions.p.submissionsCount', { count: view.submissions }) : '',
             ]
               .filter(Boolean)
               .join(' · ')}
@@ -185,6 +211,15 @@
         </h1>
       </div>
       <div class="flex shrink-0 gap-9 pb-1">
+        {#if passed}
+          <!-- Where the countdown stood: the moment the standings closed (C1). -->
+          <div class="flex flex-col items-end gap-0.5">
+            <span class="text-micro font-black uppercase leading-5 tracking-label text-muted">
+              {tr('competitions.p.deadlinePassedLabel')}
+            </span>
+            <span class="font-mono text-[22px] font-bold leading-7 text-ink">{passed.day} · {passed.time}</span>
+          </div>
+        {/if}
         {#if !over && competition.deadlineAt !== null}
           <div class="flex flex-col items-end gap-0.5">
             <span
@@ -203,7 +238,13 @@
         {/if}
         <div class="flex flex-col items-end gap-0.5">
           <span class="text-micro font-black uppercase leading-5 tracking-label text-muted">
-            {tr(finalPlace === null ? 'competitions.p.yourPlace' : 'competitions.p.finalPlace')}
+            {tr(
+              finalPlace !== null
+                ? 'competitions.p.finalPlace'
+                : late
+                  ? 'competitions.p.publicPlace'
+                  : 'competitions.p.yourPlace',
+            )}
           </span>
           <span class="font-mono text-[22px] font-bold leading-7 text-ink">
             {finalPlace === null
@@ -211,6 +252,16 @@
               : tr('competitions.p.placeOf', { place: finalPlace, total })}
           </span>
         </div>
+        {#if late && finalPlace === null}
+          <!-- What stands for the person now that late notebooks no longer
+               move it: the counted public score (C1). -->
+          <div class="flex flex-col items-end gap-0.5">
+            <span class="text-micro font-black uppercase leading-5 tracking-label text-muted">
+              {tr('competitions.p.countedScore')}
+            </span>
+            <span class="font-mono text-[22px] font-bold leading-7 text-ink">{formatScore(score)}</span>
+          </div>
+        {/if}
         {#if shift !== null}
           <div class="flex flex-col items-end gap-0.5">
             <span class="text-micro font-black uppercase leading-5 tracking-label text-muted">

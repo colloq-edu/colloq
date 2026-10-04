@@ -72,6 +72,22 @@ export type BoardVisibility = 'public' | 'entrants'
 
 export const BOARD_VISIBILITIES: readonly BoardVisibility[] = ['public', 'entrants']
 
+/**
+ * What a participant reads about a run that saw the hidden test (sealed
+ * inputs, see FileVisibility).
+ *
+ * `brief` — the state, the failing cell and the exception's class, nothing the
+ * notebook printed or raised: the participant's code had the hidden rows in
+ * memory, and a traceback, an output or a metric message quoting the answer
+ * is a way to carry them out. `full` — everything, as without a hidden test:
+ * the teacher's call for a class where debugging matters more than the test.
+ * Absent means `brief`, so a competition that gains a hidden test is blind
+ * until someone decides otherwise.
+ */
+export type OutputPolicy = 'brief' | 'full'
+
+export const OUTPUT_POLICIES: readonly OutputPolicy[] = ['brief', 'full']
+
 /** The teacher's metric: the name in the column header, the direction and the `score` code itself. */
 export interface CompetitionMetric {
   /** A short name — substituted into "FINAL {metric}". */
@@ -123,6 +139,15 @@ export interface Competition {
   scoring: ScoringRule
   /** Who may see the leaderboard; absent means `public`, as before the setting existed. */
   boardVisibility?: BoardVisibility
+  /**
+   * «Поздние посылки»: after the deadline (or «Завершить сейчас») uploads are
+   * still accepted, run and scored, and flagged late — never on a board, never
+   * the counted one. Absent or false: intake closes at the deadline, as it
+   * always did.
+   */
+  lateSubmissions?: boolean
+  /** What a participant sees of a run on the hidden test; absent means `brief`. */
+  outputPolicy?: OutputPolicy
   /** When the private leaderboard was opened (by itself or by hand); null — still closed. */
   privateOpenedAt: number | null
   /** The sample notebook's submission: it is also the "baseline" row on the leaderboard. */
@@ -162,8 +187,16 @@ export function publicCompetition(c: Competition): CompetitionPublic {
  * Open files a participant downloads and sees in the container as `data/`;
  * hidden ones never leave the competition's DATA_DIR and get only into the
  * metric container.
+ *
+ * `sealed` is the hidden TEST: a file the participant's notebook reads during
+ * the check under its name in `data/` — in place of the open example of the
+ * same name, if there is one — and that nobody downloads. It lives in its own
+ * folder (storage.ts · sealedDir), and each run gets a fresh `data/` composed
+ * from the open files with the sealed ones swapped in. A name may be open AND
+ * sealed at once (the example and the test), which is why a file is keyed by
+ * its visibility as well as its name.
  */
-export type FileVisibility = 'open' | 'hidden'
+export type FileVisibility = 'open' | 'hidden' | 'sealed'
 
 export interface CompetitionFile {
   competitionId: string
@@ -254,6 +287,12 @@ export type CompetitionRefusal =
   /** The previous submission is still in flight: one at a time. */
   | 'in_flight'
   | 'quota'
+  /**
+   * Too many FAILED submissions today (failedAttemptsCeiling). Not the daily
+   * limit, and never called that: failures do not spend the limit, this is a
+   * separate brake on endless free failures.
+   */
+  | 'attempts'
   | 'too_often'
   | 'too_big'
   /** The leaderboard is shown only to this competition's entrants and staff. */
@@ -267,19 +306,31 @@ export interface CompetitionErrorBody {
 /**
  * Whether submissions are being accepted right now.
  *
- * Three answers instead of one `boolean`: before the opening a person is told
+ * Four answers instead of one `boolean`: before the opening a person is told
  * "not open yet", after the deadline "submissions are closed", and those are
- * different screens. A draft never gets here — it does not exist on `/k`.
+ * different screens. `late` is the fourth: intake is over, but the teacher
+ * turned on «Поздние посылки», so an upload is still taken — as a late one,
+ * outside the standings. A draft never gets here — it does not exist on `/k`.
+ *
+ * "Finish now" ends intake like a deadline does, so a finished competition
+ * with late submissions on answers `late` too: the teacher closed the
+ * standings, not the door.
  */
 export function submissionsOpen(
-  c: Pick<Competition, 'state' | 'startsAt' | 'deadlineAt'>,
+  c: Pick<Competition, 'state' | 'startsAt' | 'deadlineAt' | 'lateSubmissions'>,
   now: number,
-): 'open' | 'not_open' | 'closed' {
+): 'open' | 'late' | 'not_open' | 'closed' {
   if (c.state === 'draft') return 'not_open'
-  if (c.state === 'finished') return 'closed'
+  const over = c.lateSubmissions ? 'late' : 'closed'
+  if (c.state === 'finished') return over
   if (c.startsAt !== null && now < c.startsAt) return 'not_open'
-  if (c.deadlineAt !== null && now > c.deadlineAt) return 'closed'
+  if (c.deadlineAt !== null && now > c.deadlineAt) return over
   return 'open'
+}
+
+/** An upload door that takes a notebook right now, on time or late. */
+export function acceptsUploads(accepting: ReturnType<typeof submissionsOpen>): boolean {
+  return accepting === 'open' || accepting === 'late'
 }
 
 /**
@@ -548,6 +599,46 @@ export interface Submission {
    * `cancelled`: it never ran and does not count against the day.
    */
   replacedBy?: number | null
+  /**
+   * Accepted after intake ended, under «Поздние посылки». Decided in the
+   * transaction that accepted it, by the moment its upload began (`sentAt`):
+   * run and scored like any other, but never on a board, never the counted
+   * one, never in a summary or the final results' wait. Absent on rows older
+   * than the setting: those were all on time.
+   *
+   * One thing changes it afterwards, and only one way: the teacher moving the
+   * deadline later clears it on what was sent before the new deadline
+   * (store.ts · forgiveLateSubmissions). Nothing ever sets it after the fact.
+   */
+  late?: boolean
+  /**
+   * When its upload BEGAN — what the deadline is judged by. `acceptedAt` is
+   * when the body finished arriving, up to the grace later, so lateness cannot
+   * be read off it. Null on rows older than the column.
+   */
+  sentAt?: number | null
+  /**
+   * One of its notebook runs read the hidden test (sealed inputs). Sticky: an
+   * answer, an executed notebook or a message produced on the hidden test
+   * stays what it is after a rerun or a rescore, so the row stays blind for
+   * the participant under the `brief` policy (isBlind).
+   */
+  sealedInputs?: boolean
+  /**
+   * What the participant reads in place of `participantError` when the row is
+   * blind: our own words, the state and a cell number, nothing the notebook
+   * or the metric quoted. Written next to the full text on every sealed run,
+   * so switching the policy either way needs no rerun. The teacher's field;
+   * the participant gets it only as `participantError` (entrantSubmission).
+   */
+  briefError?: string | null
+  /**
+   * The class of the exception a failed cell raised, when it is one of the
+   * common ones (KeyError, ValueError, …); null otherwise. An allow-list, not
+   * the traceback's own word: a notebook on the hidden test can name its own
+   * exception class after the rows it read.
+   */
+  errorType?: string | null
 }
 
 /**
@@ -565,20 +656,48 @@ export interface Submission {
  * the upload returned, to the "My submissions" list and to a single row after
  * a recomputation — three places, any of which can be forgotten.
  */
-export type EntrantSubmission = Omit<Submission, 'teacherError' | 'privateScore'> & {
+export type EntrantSubmission = Omit<Submission, 'teacherError' | 'privateScore' | 'briefError'> & {
   privateScore: number | null
   /**
    * What the author's "download the notebook" link hands out, so that its
    * words can say it: the executed copy with the run's outputs, the notebook
-   * as it was sent (the run reached no cell), or nothing (the files were
-   * swept). Absent where the answer did not look at the disk.
+   * as it was sent (the run reached no cell, or the run was blind), or nothing
+   * (the files were swept). Absent where the answer did not look at the disk.
    */
   notebook?: 'executed' | 'sent' | null
+  /**
+   * The run saw the hidden test and the competition shows such runs briefly:
+   * `participantError` is our own words only, there is no executed notebook,
+   * and the page says why the details are missing.
+   */
+  blind?: boolean
 }
 
-export function entrantSubmission(s: Submission, privateOpen: boolean): EntrantSubmission {
-  const { teacherError: _trace, ...rest } = s
-  return { ...rest, privateScore: privateOpen ? s.privateScore : null }
+/**
+ * Whether a participant sees this submission briefly: it ran on the hidden
+ * test, and the competition's policy is not `full`.
+ *
+ * Decided where the answer is assembled, not where the run ends: the full
+ * texts are kept for the teacher either way, so the policy can be switched
+ * without running anything again.
+ */
+export function isBlind(
+  c: Pick<Competition, 'outputPolicy'>,
+  s: Pick<Submission, 'sealedInputs'>,
+): boolean {
+  return !!s.sealedInputs && (c.outputPolicy ?? 'brief') !== 'full'
+}
+
+export function entrantSubmission(s: Submission, privateOpen: boolean, blind = false): EntrantSubmission {
+  const { teacherError: _trace, briefError, ...rest } = s
+  const out: EntrantSubmission = { ...rest, privateScore: privateOpen ? s.privateScore : null }
+  if (!blind) return out
+  // The brief words replace the full ones, never sit beside them. The run
+  // time goes out in whole seconds: milliseconds are a side channel into the
+  // hidden test (a loop that sleeps on a row's value), seconds are what a
+  // person needs.
+  const durationMs = s.durationMs === null ? null : Math.round(s.durationMs / 1000) * 1000
+  return { ...out, durationMs, participantError: briefError ?? null, blind: true }
 }
 
 /**
@@ -598,8 +717,8 @@ export const EXECUTED_NOTEBOOK_FILE = 'executed.ipynb'
  * Checked HERE, before the queue, and not for taste: the notebook is read by
  * `nbformat` in a disposable container, and broken JSON there becomes
  * "notebook failed" — that is, a verdict on code the person did not write,
- * and a spent submission out of the five a day on top of that. The check is
- * cheap and answers in words about the file.
+ * and a slot of everyone's queue spent on it. The check is cheap and answers
+ * in words about the file.
  *
  * Exactly as strict as a real notebook from someone else's Jupyter will
  * survive: an object, a list of cells, each cell with its own `cell_type`.
@@ -952,29 +1071,59 @@ export function competitionPath(slug: string): string {
 export interface QuotaEntry {
   acceptedAt: number
   state: SubmissionState
-  cellsDone: number
 }
 
 /**
  * Whether a submission counts against the daily quota.
  *
- * Two exceptions, and the mockup names both. One withdrawn by the participant
- * does not count: they cancelled it, not spent it. And "a failed submission
- * does not count against the day if it died before the first cell" — that is,
- * a notebook that never started at all (broken JSON, a dead kernel at
- * startup, packages that failed to install) does not spend the quota: the
- * person did not get a single attempt at solving the task. An error IN the
- * first cell is not that: the notebook ran, `cellsDone` is 1, and it counts
- * (the words for the class name the boundary from both sides, see
- * `competitions.p.quotaRule`).
+ * ONLY A SCORE SPENDS ONE. The limit exists so that nobody fits the public
+ * board by sending forty variants a day, and only a number on that board
+ * carries what the limit protects. A failed notebook (any cell, the time or
+ * memory limit), a rejected answer, a crashed check (the teacher's metric, or
+ * our own breakage: a runner that threw, a run cut off by restarts) and a
+ * cancelled or replaced submission give nothing to fit by, so they are free.
+ * Until 4 Oct 2026 every failure past the first cell counted, and two crashes
+ * on a classroom morning used up a day of a limit of two — including crashes
+ * of the teacher's own metric.
  *
- * A queued one and a running one do count. Otherwise one person would queue a
- * hundred notebooks, and the daily quota would start working retroactively.
+ * A queued one and a running one do hold a place: otherwise one person would
+ * queue a hundred notebooks, and the daily quota would start working
+ * retroactively. A failure gives the place back.
+ *
+ * Endless free failures have their own brake (failedAttemptsCeiling).
  */
-export function countsTowardDailyQuota(entry: QuotaEntry): boolean {
-  if (entry.state === 'cancelled') return false
-  if (!isTerminal(entry.state) || entry.state === 'scored') return true
-  return entry.cellsDone > 0
+export function countsTowardDailyQuota(entry: Pick<QuotaEntry, 'state'>): boolean {
+  return entry.state === 'scored' || !isTerminal(entry.state)
+}
+
+/**
+ * Whether a finished submission is a FAILED attempt for the day's ceiling.
+ *
+ * The outcomes the participant's notebook decides: a failed cell, the time or
+ * memory limit, an answer that is missing or refused. Not `metricFailed`: that
+ * is the teacher's metric or our own machinery, never the participant's
+ * doing. Not `cancelled`: withdrawing, replacing a waiting one or the
+ * teacher's "drop" is a person's act, not an outcome of the notebook.
+ */
+export function countsTowardFailedAttempts(entry: Pick<QuotaEntry, 'state'>): boolean {
+  return entry.state === 'notebookFailed' || entry.state === 'timedOut'
+    || entry.state === 'outOfMemory' || entry.state === 'rejected'
+}
+
+/**
+ * How many failed submissions a person may have in one day; null — no ceiling.
+ *
+ * Once failures stopped spending the limit, nothing but "one at a time" was
+ * left between a person and a whole day of crashing runs, each holding a slot
+ * of the instance's queue; and with a hidden test, every failure tells a
+ * little about it (its cell, its time). Generous on purpose: three times the
+ * limit and never fewer than ten, so a student debugging honestly does not
+ * meet it. None when the limit itself is off (0): the teacher said "no
+ * limit", and a ceiling they never set would be one.
+ */
+export function failedAttemptsCeiling(perDay: number): number | null {
+  if (!Number.isFinite(perDay) || perDay <= 0) return null
+  return Math.max(10, 3 * Math.floor(perDay))
 }
 
 /**
@@ -1031,10 +1180,41 @@ export function submissionsLeftToday(
   if (!Number.isFinite(perDay) || perDay <= 0) return null
   let used = 0
   for (const entry of entries) {
-    if (entry.acceptedAt > now || entry.acceptedAt < quotaDayStart(entry.acceptedAt, now, timeZone, zoneSince)) continue
-    if (countsTowardDailyQuota(entry)) used += 1
+    if (inQuotaDay(entry, now, timeZone, zoneSince) && countsTowardDailyQuota(entry)) used += 1
   }
   return Math.max(0, Math.floor(perDay) - used)
+}
+
+/** Whether a submission belongs to today's count, by the day `quotaDayStart` draws. */
+function inQuotaDay(entry: Pick<QuotaEntry, 'acceptedAt'>, now: number, timeZone: string, zoneSince: number | null): boolean {
+  return entry.acceptedAt <= now && entry.acceptedAt >= quotaDayStart(entry.acceptedAt, now, timeZone, zoneSince)
+}
+
+/** How many of today's submissions failed (countsTowardFailedAttempts), by the quota's own day. */
+export function failedAttemptsToday(
+  entries: readonly QuotaEntry[],
+  now: number,
+  timeZone: string,
+  zoneSince: number | null = null,
+): number {
+  return entries.filter((entry) => inQuotaDay(entry, now, timeZone, zoneSince) && countsTowardFailedAttempts(entry)).length
+}
+
+/**
+ * How many more failed submissions today before the ceiling refuses; null —
+ * there is no ceiling (failedAttemptsCeiling). Never negative, for the same
+ * reason as the limit: the teacher may lower it in the middle of the day.
+ */
+export function attemptsLeftToday(
+  perDay: number,
+  entries: readonly QuotaEntry[],
+  now: number,
+  timeZone: string,
+  zoneSince: number | null = null,
+): number | null {
+  const ceiling = failedAttemptsCeiling(perDay)
+  if (ceiling === null) return null
+  return Math.max(0, ceiling - failedAttemptsToday(entries, now, timeZone, zoneSince))
 }
 
 /* ----------------------------------------------- what counts, and places */
@@ -1048,6 +1228,8 @@ export interface BoardEntry {
   publicScore: number | null
   privateScore: number | null
   chosen: boolean
+  /** A late submission (Submission.late): never counted, whatever the rule. */
+  late?: boolean
 }
 
 /** Whether a submission is fit for the leaderboard: it reached a number, and the number is real. */
@@ -1092,7 +1274,9 @@ export function countedSubmission(
   entries: readonly BoardEntry[],
   direction: MetricDirection,
 ): BoardEntry | null {
-  const scored = entries.filter((e) => e.state === 'scored' && hasScore(e.publicScore))
+  // A late one is outside the standings under every rule: the final board is
+  // the board as intake left it, and a fix sent after the deadline is not in it.
+  const scored = entries.filter((e) => e.state === 'scored' && hasScore(e.publicScore) && !e.late)
   if (scored.length === 0) return null
   if (rule === 'chosen') {
     const picked = scored.find((e) => e.chosen)
@@ -1426,4 +1610,12 @@ export const LIMITS = {
   notebookBytes: 20 * 1024 * 1024,
   /** The ceiling for the answer the harness takes from the container (prototype: max_target). */
   submissionBytes: 64 * 1024 * 1024,
+  /**
+   * The hidden test: as much as the open data may weigh, in its own budget.
+   * A copy of it lands in every run's folder where hard links are not
+   * available (storage.ts · composeRunInputs), and the queue reserves disk
+   * for that copy.
+   */
+  sealedBytes: 200 * 1024 * 1024,
+  sealedFiles: 10,
 } as const

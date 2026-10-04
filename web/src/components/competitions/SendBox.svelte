@@ -16,7 +16,20 @@
   import { onMount } from 'svelte'
   import { dependencyErrorText, dependencySize, packagesFit, packagesMemoryParams, packagesRoomMb, type DependencyOverview } from '@shared/dependencies'
   import { entrantApi } from '@/lib/entrantApi'
-  import { lastScoringNote, ownOrdinals, quotaResetWords, submissionOrdinal } from '@/lib/competition-words'
+  import {
+    acceptsUploads,
+    attemptsExhausted,
+    attemptsNote,
+    attemptsSpentWords,
+    lastScoringNote,
+    ownOrdinals,
+    passedDeadline,
+    phoneQuota,
+    quotaCells,
+    quotaLead,
+    quotaMeterWords,
+    submissionOrdinal,
+  } from '@/lib/competition-words'
   import { tr } from '@shared/i18n'
   import type {
     EntrantCompetitionView,
@@ -34,9 +47,11 @@
     /** The server's answer once the notebook is in — with "My submissions" already reloaded; null — refused. */
     onsend: (file: File, bundleId?: string | null) => Promise<SubmissionAccepted | null>
     onrefuse: (message: string) => void
+    /** The page clock: "the deadline passed today at 12:00" reads off it. */
+    now?: number
   }
 
-  const { view, mine, phone, busy, refusal, onsend, onrefuse }: Props = $props()
+  const { view, mine, phone, busy, refusal, onsend, onrefuse, now = Date.now() }: Props = $props()
 
   let chosenFile = $state<File | null>(null)
   let dependencies = $state<DependencyOverview | null>(null)
@@ -84,50 +99,62 @@
 
   /*
    * Scoring "last": sending replaces the counted result as soon as the new
-   * one scores, worse or not. Said next to the button that does it.
+   * one scores, worse or not. Said next to the button that does it — but not
+   * after the deadline: a late notebook replaces nothing, whatever it scores.
    */
-  const lastNote = $derived(lastScoringNote(view.competition, mine.submissions))
+  const lastNote = $derived(mine.accepting === 'late' ? null : lastScoringNote(view.competition, mine.submissions))
 
   let dragging = $state(false)
   let input = $state<HTMLInputElement | null>(null)
 
   const minutes = $derived(Math.max(1, Math.round(view.competition.limits.wallSeconds / 60)))
-  const quota = $derived.by(() => {
-    /*
-     * Closed submissions have no daily quota.
-     *
-     * "You can send 4 more submissions today, out of 5" above a button that
-     * will not accept anything any more is a promise, and it can be read in
-     * exactly one way: "so something is broken". Under the zone there is
-     * already a sentence saying why submissions are closed, and it is the
-     * only truth here.
-     */
-    if (mine.accepting !== 'open') return ''
-    if (mine.leftToday === null) return tr('competitions.p.dropNoLimit')
-    /*
-     * The rule rides with the number. A rejected answer spends a submission
-     * while a notebook that never got to run gives it back, and without a
-     * word about it "left today" going back up after a result looked like a
-     * glitch at the rehearsal (29 Sep 2026).
-     */
-    const rule = tr('competitions.p.quotaRule')
-    /*
-     * "Today" is the server's day, not the phone's: the midnight it ends at
-     * is named with its zone ("resets at 00:00 GMT+3"), right after the
-     * number it resets.
-     */
-    const resets = quotaResetWords(mine.resetsAt, mine.dayZone)
-    if (mine.leftToday <= 0) {
-      // A replacement costs no attempt: the hint below says so instead.
-      if (mine.replaceable) return ''
-      return [tr('competitions.refusal.dailyQuota', { count: mine.perDay }), resets, rule].filter(Boolean).join(' ')
-    }
-    const left = tr(phone ? 'competitions.p.phoneLeftToday' : 'competitions.p.dropLeftToday', {
-      count: mine.leftToday,
-      perDay: mine.perDay,
-    })
-    return [left, resets, rule].filter(Boolean).join(' ')
+  /*
+   * «Поздние посылки»: the deadline has passed and the door still takes a
+   * notebook — run, scored, shown to its author and kept out of the
+   * standings. The box says so before the click (C1, C3): a student sending
+   * a fix after the bell must not find out from the leaderboard.
+   */
+  const late = $derived(mine.accepting === 'late')
+  const takes = $derived(acceptsUploads(mine.accepting))
+  const passed = $derived(passedDeadline(view.competition.deadlineAt, now))
+  /*
+   * The hidden test, named where the notebook is chosen: "during the check
+   * data/test.csv is the hidden test". Said here as well as on the task tab,
+   * because this is the tab people send from.
+   */
+  const sealedSentence = $derived.by(() => {
+    const names = (view.sealedFiles ?? []).map((file) => `data/${file.name}`)
+    return names.length === 0 ? '' : tr('competitions.p.sealedAtCheck', { count: names.length, files: names.join(', ') })
   })
+  /*
+   * Closed submissions have no daily quota.
+   *
+   * "You can send 4 more submissions today, out of 5" above a button that
+   * will not accept anything any more is a promise, and it can be read in
+   * exactly one way: "so something is broken". Under the zone there is
+   * already a sentence saying why submissions are closed, and it is the only
+   * truth here. And a replacement costs no submission: once the day is spent,
+   * the replace note says that instead.
+   */
+  const showQuota = $derived(takes && !(mine.replaceable && mine.leftToday !== null && mine.leftToday <= 0))
+  /*
+   * The strip under the zone (C1): the rule and the count, what is free, and
+   * the quiet ceiling on failures. "Today" is the server's day, not the
+   * phone's: the midnight it ends at is named with its zone.
+   */
+  const lead = $derived(showQuota ? quotaLead(mine) : '')
+  const free = $derived(showQuota && mine.leftToday !== null ? tr('competitions.p.quotaFree') : '')
+  const cells = $derived(showQuota ? quotaCells(mine.leftToday, mine.perDay) : null)
+  const exhausted = $derived(attemptsExhausted(mine.failedAttempts))
+  /*
+   * Failures are free, but not endless (failedAttemptsCeiling): once the day's
+   * ceiling is reached, the box says the door's own words before the click
+   * rather than after an upload that is refused anyway.
+   */
+  const attemptsWords = $derived(
+    !takes ? '' : exhausted ? attemptsSpentWords(mine.failedAttempts, mine.resetsAt, mine.dayZone) : attemptsNote(mine.failedAttempts),
+  )
+  const phoneLine = $derived(showQuota ? phoneQuota(mine) : '')
   const unavailable = $derived(view.capabilities?.execution.available === false)
   /*
    * A submission still WAITING does not block the zone: the new notebook takes
@@ -136,10 +163,20 @@
    */
   const replaces = $derived(mine.replaceable ?? null)
   const blocked = $derived(
-    unavailable || busy || mine.accepting !== 'open' || (!replaces && (mine.inFlight > 0 || mine.leftToday === 0)),
+    unavailable || busy || !takes || exhausted || (!replaces && (mine.inFlight > 0 || mine.leftToday === 0)),
   )
   /** The zone is in "replace" mode: a drop takes the waiting submission's place. */
-  const replacing = $derived(!!replaces && mine.accepting === 'open' && !unavailable)
+  const replacing = $derived(!!replaces && takes && !unavailable)
+  /*
+   * The button is drawn as an outline in the late state (C1, C3): the action
+   * is still there, but it is no longer the page's main one — the standings
+   * are settled.
+   */
+  const button = $derived(
+    late
+      ? 'border-[1.5px] border-brand text-brand hover:bg-brand/5 dark:border-accent dark:text-accent dark:hover:bg-accent/10 disabled:border-faint disabled:text-faint disabled:hover:bg-transparent dark:disabled:border-faint dark:disabled:text-faint'
+      : 'bg-brand text-white hover:bg-brand-2 disabled:bg-faint',
+  )
 
   function take(list: FileList | null | undefined): void {
     if (blocked) return
@@ -156,28 +193,53 @@
 </script>
 
 <div class="flex flex-col gap-2">
-  {#if phone}
+  {#if phone && late}
+    <!-- A late notebook on a phone (C3): the box names what it is before the
+         button, since the phone has no zone title to carry it. -->
+    <div class="flex flex-col gap-3 border border-dashed border-brand-2/60 bg-surface p-4">
+      <div class="flex flex-col gap-1">
+        <p class="text-ui font-bold text-ink">{tr('competitions.p.lateTitle')}</p>
+        <p class="text-2xs text-muted">
+          {[passed ? tr('competitions.p.deadlinePassed', passed) : '', tr('competitions.p.lateNotePhone')]
+            .filter(Boolean)
+            .join(' ')}
+        </p>
+      </div>
+      <button
+        class="flex h-12 w-full items-center justify-center text-2xs font-black uppercase tracking-label {button}"
+        type="button"
+        disabled={blocked}
+        onclick={() => input?.click()}
+      >
+        {busy ? tr('competitions.p.sending') : tr('competitions.p.pickFilePhone')}
+      </button>
+      {#if phoneLine || attemptsWords}
+        <p class="text-2xs text-muted">
+          {phoneLine}{#if attemptsWords}{#if phoneLine}<br />{/if}<span class={exhausted ? 'text-warning' : ''}>{attemptsWords}</span>{/if}
+        </p>
+      {/if}
+    </div>
+  {:else if phone}
     <button
-      class="flex h-12 w-full items-center justify-center bg-brand text-2xs font-black uppercase tracking-label text-white disabled:bg-faint"
+      class="flex h-12 w-full items-center justify-center text-2xs font-black uppercase tracking-label {button}"
       type="button"
       disabled={blocked}
       onclick={() => input?.click()}
     >
       {busy
         ? tr('competitions.p.sending')
-        : replaces && mine.accepting === 'open'
-          ? tr('competitions.p.replaceButton', { number: replaces.number })
+        : replacing
+          ? tr('competitions.p.replaceButton', { number: replaces!.number })
           : tr('competitions.p.pickFilePhone')}
     </button>
     <p class="text-2xs leading-[18px] text-muted">
-      {tr('competitions.p.phoneNeedsCsv')}{#if quota}<br />{quota}{/if}<br />{tr(
-        'competitions.p.phoneLimits',
-        { count: minutes },
-      )}
+      {[tr('competitions.p.phoneNeedsCsv'), sealedSentence].filter(Boolean).join(' ')}{#if phoneLine}<br />{phoneLine}{/if}{#if attemptsWords}<br /><span
+          class={exhausted ? 'text-warning' : ''}>{attemptsWords}</span
+        >{/if}<br />{tr('competitions.p.phoneLimits', { count: minutes })}
     </p>
   {:else}
     <div
-      class="flex flex-col gap-4 border-[1.5px] border-dashed bg-surface sm:flex-row sm:items-center {dragging
+      class="flex flex-col border-[1.5px] border-dashed bg-surface {dragging
         ? 'border-accent bg-accent/5'
         : 'border-brand-2'}"
       role="region"
@@ -193,49 +255,82 @@
         if (!blocked) take(event.dataTransfer?.files)
       }}
     >
-      <div class="flex min-w-0 grow items-center gap-[18px] px-6 py-[22px]">
-        <svg width="28" height="32" viewBox="0 0 28 32" class="shrink-0 text-primary" aria-hidden="true">
-          <path d="M2 2h15l9 9v19H2V2Z" fill="none" stroke="currentColor" stroke-width="2" />
-          <path d="M17 2v9h9" fill="none" stroke="currentColor" stroke-width="2" />
-          <path d="M14 25V15m0 0-4 4m4-4 4 4" fill="none" stroke="rgb(var(--accent))" stroke-width="2" />
-        </svg>
-        <div class="flex min-w-0 flex-col gap-1">
-          <!--
-            The zone itself says what a drop will do. In the last minutes a
-            student re-sending a fix must not wonder whether it counts as a
-            second attempt or waits behind the first: it takes the waiting
-            one's place, and the title names which.
-          -->
-          <p class="text-title font-bold leading-6 text-ink">
-            {dragging
-              ? tr('competitions.p.dropHere')
-              : replacing
-                ? tr('competitions.p.dropReplaceTitle', { number: replaces!.number })
-                : tr('competitions.p.dropTitle')}
-          </p>
-          <p class="text-ui leading-5 text-muted">
+      <div class="flex flex-col gap-4 sm:flex-row sm:items-center">
+        <div class="flex min-w-0 grow items-center gap-[18px] px-6 pb-5 pt-[22px]">
+          <svg width="28" height="32" viewBox="0 0 28 32" class="shrink-0 text-primary" aria-hidden="true">
+            <path d="M2 2h15l9 9v19H2V2Z" fill="none" stroke="currentColor" stroke-width="2" />
+            <path d="M17 2v9h9" fill="none" stroke="currentColor" stroke-width="2" />
+            <path d="M14 25V15m0 0-4 4m4-4 4 4" fill="none" stroke="rgb(var(--accent))" stroke-width="2" />
+          </svg>
+          <div class="flex min-w-0 flex-col gap-1">
+            <!--
+              The zone itself says what a drop will do. In the last minutes a
+              student re-sending a fix must not wonder whether it counts as a
+              second attempt or waits behind the first: it takes the waiting
+              one's place, and the title names which.
+            -->
+            <p class="text-title font-bold leading-6 text-ink">
+              {dragging
+                ? tr('competitions.p.dropHere')
+                : replacing
+                  ? tr('competitions.p.dropReplaceTitle', { number: replaces!.number })
+                  : tr('competitions.p.dropTitle')}
+            </p>
             {#if replacing}
-              {tr('competitions.p.dropReplaceNote', { number: replaces!.number })}
+              <p class="text-ui leading-5 text-muted">{tr('competitions.p.dropReplaceNote', { number: replaces!.number })}</p>
             {:else}
-              {tr('competitions.p.dropNeedsCsv')}{#if quota}<br />{quota}{/if}
+              {#if late}
+                <p class="text-ui leading-5 text-ink">{tr('competitions.p.lateDropNote')}</p>
+              {/if}
+              <p class="text-ui leading-5 text-muted">
+                {[tr('competitions.p.dropNeedsCsv'), sealedSentence].filter(Boolean).join(' ')}
+              </p>
             {/if}
-          </p>
+          </div>
+        </div>
+        <div class="flex shrink-0 items-center justify-center px-6 pb-[22px] sm:w-[238px] sm:pb-0">
+          <button
+            class="h-11 w-[190px] max-w-full px-[18px] text-micro font-black uppercase tracking-label {button}"
+            type="button"
+            disabled={blocked}
+            onclick={() => input?.click()}
+          >
+            {busy
+              ? tr('competitions.p.sending')
+              : replacing
+                ? tr('competitions.p.replaceButton', { number: replaces!.number })
+                : tr('competitions.p.pickFile')}
+          </button>
         </div>
       </div>
-      <div class="flex shrink-0 items-center justify-center px-6 pb-[22px] sm:w-[238px] sm:pb-0">
-        <button
-          class="h-11 w-[190px] max-w-full bg-brand px-[18px] text-micro font-black uppercase tracking-label text-white hover:bg-brand-2 disabled:bg-faint"
-          type="button"
-          disabled={blocked}
-          onclick={() => input?.click()}
-        >
-          {busy
-            ? tr('competitions.p.sending')
-            : replacing
-              ? tr('competitions.p.replaceButton', { number: replaces!.number })
-              : tr('competitions.p.pickFile')}
-        </button>
-      </div>
+      {#if lead || attemptsWords}
+        <!-- The day in one strip (C1): the rule and the count, what is free,
+             and the ceiling on failures, quietest last; the meter beside them
+             says the count again for the eye that does not read. -->
+        <div class="flex flex-col gap-3 border-t border-dashed border-line px-6 pb-4 pt-3.5 sm:flex-row sm:items-start sm:pl-[70px] sm:pr-0">
+          <div class="flex min-w-0 grow flex-col gap-1">
+            {#if lead}
+              <p class="text-ui leading-5 text-ink">{lead}</p>
+            {/if}
+            {#if free}
+              <p class="text-2xs text-muted">{free}</p>
+            {/if}
+            {#if attemptsWords}
+              <p class="pt-0.5 text-micro {exhausted ? 'text-warning' : 'text-faint'}">{attemptsWords}</p>
+            {/if}
+          </div>
+          {#if cells && mine.leftToday !== null}
+            <div class="flex shrink-0 flex-col items-start gap-2 pt-1 sm:w-[238px] sm:items-center sm:px-6">
+              <div class="flex gap-1" aria-hidden="true">
+                {#each cells as filled, index (index)}
+                  <span class="h-2 w-[34px] shrink-0 {filled ? 'bg-brand-2 dark:bg-accent' : 'border border-line'}"></span>
+                {/each}
+              </div>
+              <span class="font-mono text-2xs font-bold text-ink">{quotaMeterWords(mine.leftToday, mine.perDay)}</span>
+            </div>
+          {/if}
+        </div>
+      {/if}
     </div>
   {/if}
 
@@ -276,7 +371,7 @@
   {/if}
   {#if refusal}
     <p class="text-2xs leading-[18px] text-danger" role="alert">{refusal}</p>
-  {:else if replaces && mine.accepting === 'open'}
+  {:else if replaces && takes}
     <!-- The zone itself says it on a desktop; a phone has no zone to carry the sentence. -->
     {#if phone}
       <p class="text-2xs leading-[18px] text-muted">{tr('competitions.p.replacesHint', { number: replaces.number })}</p>

@@ -16,17 +16,24 @@ import { setLocaleResolver } from '../shared/i18n.js'
 import {
   DIRECTION_ARROW,
   LIMITS,
+  acceptsUploads,
+  attemptsLeftToday,
   boardOf,
   compareScores,
   competitionWord,
   countedSubmission,
   countsTowardDailyQuota,
+  countsTowardFailedAttempts,
   dayStart,
   directionWord,
   entrantBadge,
   entrantHandle,
   entrantKeyOk,
   entrantNameKey,
+  entrantSubmission,
+  failedAttemptsCeiling,
+  failedAttemptsToday,
+  isBlind,
   isTerminal,
   metricFailedNote,
   nameForJoin,
@@ -48,12 +55,14 @@ import {
   stagePosition,
   stateOfVerdict,
   submissionsLeftToday,
+  submissionsOpen,
   teacherBadge,
   SUBMISSION_STAGES,
   SUBMISSION_STATES,
   type BoardEntry,
   type Competition,
   type QuotaEntry,
+  type Submission,
   type SubmissionState,
 } from '../shared/competitions.js'
 
@@ -315,34 +324,48 @@ test("the day boundary is computed in the class's time zone, not in UTC", () => 
   assert.equal(dayStart(earlyMsk, MSK), Date.UTC(2026, 8, 20, 21, 0))
 })
 
-test("cancelled and never-started submissions do not count towards the day's quota", () => {
-  const at = Date.UTC(2026, 8, 20, 12)
-  const entry = (state: SubmissionState, cellsDone: number): QuotaEntry => ({
-    acceptedAt: at,
-    state,
-    cellsDone,
-  })
-  assert.equal(countsTowardDailyQuota(entry('cancelled', 9)), false)
-  // "Failed submissions do not count towards the day if they failed before the
-  // first cell".
-  assert.equal(countsTowardDailyQuota(entry('notebookFailed', 0)), false)
-  assert.equal(countsTowardDailyQuota(entry('notebookFailed', 1)), true)
-  assert.equal(countsTowardDailyQuota(entry('rejected', 0)), false)
-  assert.equal(countsTowardDailyQuota(entry('scored', 0)), true)
-  // A queued one uses the quota right away, otherwise one person would queue a
-  // hundred.
-  assert.equal(countsTowardDailyQuota(entry('queued', 0)), true)
-  assert.equal(countsTowardDailyQuota(entry('running', 0)), true)
+test("only a scored submission, or one still in flight, counts towards the day's quota", () => {
+  const entry = (state: SubmissionState) => ({ acceptedAt: Date.UTC(2026, 8, 20, 12), state })
+  assert.equal(countsTowardDailyQuota(entry('scored')), true)
+  // A queued one holds a place right away, otherwise one person would queue a
+  // hundred; it gives the place back if it fails.
+  assert.equal(countsTowardDailyQuota(entry('queued')), true)
+  assert.equal(countsTowardDailyQuota(entry('running')), true)
+  // Every failure is free (4 Oct 2026), whichever cell it died at and whoever
+  // was to blame: the notebook, the limits, the answer, the metric, us.
+  for (const state of ['notebookFailed', 'timedOut', 'outOfMemory', 'rejected', 'metricFailed', 'cancelled'] as const) {
+    assert.equal(countsTowardDailyQuota(entry(state)), false, state)
+  }
+})
+
+test("failed attempts have a ceiling of their own: generous, without the metric's failures, none without a limit", () => {
+  const now = Date.UTC(2026, 8, 20, 12)
+  const entry = (state: SubmissionState, acceptedAt = now - 1000) => ({ acceptedAt, state })
+  assert.equal(failedAttemptsCeiling(2), 10)
+  assert.equal(failedAttemptsCeiling(5), 15)
+  assert.equal(failedAttemptsCeiling(0), null)
+  for (const state of ['notebookFailed', 'timedOut', 'outOfMemory', 'rejected'] as const) {
+    assert.equal(countsTowardFailedAttempts(entry(state)), true, state)
+  }
+  // Never the participant's doing, or not an outcome of the notebook at all.
+  for (const state of ['metricFailed', 'cancelled', 'scored', 'queued', 'running'] as const) {
+    assert.equal(countsTowardFailedAttempts(entry(state)), false, state)
+  }
+  const day = [
+    ...Array.from({ length: 9 }, () => entry('notebookFailed')),
+    entry('metricFailed'),
+    entry('timedOut', now - 2 * 24 * 60 * 60 * 1000),
+  ]
+  assert.equal(failedAttemptsToday(day, now, MSK), 9)
+  assert.equal(attemptsLeftToday(2, day, now, MSK), 1)
+  assert.equal(attemptsLeftToday(2, [...day, entry('rejected'), entry('rejected')], now, MSK), 0, 'never negative')
+  assert.equal(attemptsLeftToday(0, day, now, MSK), null)
 })
 
 test('left today: yesterday\'s do not count, zero means "no limit"', () => {
   const now = Date.UTC(2026, 8, 20, 12)
   const yesterday = now - 24 * 60 * 60 * 1000
-  const made = (acceptedAt: number): QuotaEntry => ({
-    acceptedAt,
-    state: 'scored',
-    cellsDone: 3,
-  })
+  const made = (acceptedAt: number): QuotaEntry => ({ acceptedAt, state: 'scored' })
   assert.equal(submissionsLeftToday(5, [made(now), made(now)], now, MSK), 3)
   assert.equal(submissionsLeftToday(5, [made(yesterday)], now, MSK), 5)
   assert.equal(submissionsLeftToday(0, [made(now)], now, MSK), null)
@@ -393,6 +416,59 @@ test('"last" means the last one that REACHED a score, not the last one sent', ()
   // table.
   assert.equal(countedSubmission('last', entries, 'lower')?.id, 'a')
   assert.equal(countedSubmission('chosen', [entries[1]], 'lower'), null)
+})
+
+test('a late submission is never the counted one, under any rule', () => {
+  const entries = [
+    entry({ id: 'on-time', number: 7, acceptedAt: 10, publicScore: 0.05 }),
+    // Later and better: it would win "last" and "bestPublic", and its author
+    // even picked it — but it came after the deadline.
+    entry({ id: 'late', number: 9, acceptedAt: 99, publicScore: 0.01, chosen: true, late: true }),
+  ]
+  for (const rule of ['chosen', 'bestPublic', 'last'] as const) {
+    assert.equal(countedSubmission(rule, entries, 'lower')?.id, 'on-time', rule)
+  }
+  assert.equal(countedSubmission('last', [entries[1]], 'lower'), null)
+  const board = boardOf([{ entrantId: 'anna', entries }], 'last', 'lower', 'public')
+  assert.deepEqual(board.map((row) => row.submissionId), ['on-time'])
+})
+
+test('after the deadline the door says "late" only when late submissions are on', () => {
+  const now = Date.UTC(2026, 8, 20, 12)
+  const base = { state: 'live' as const, startsAt: null, deadlineAt: now - 1 }
+  assert.equal(submissionsOpen(base, now), 'closed')
+  assert.equal(submissionsOpen({ ...base, lateSubmissions: false }, now), 'closed')
+  assert.equal(submissionsOpen({ ...base, lateSubmissions: true }, now), 'late')
+  // "Finish now" ends intake like a deadline: the standings close, the late door stays.
+  assert.equal(submissionsOpen({ state: 'finished', startsAt: null, deadlineAt: null, lateSubmissions: true }, now), 'late')
+  // Before the deadline nothing is late, and a draft or a future start is not open at all.
+  assert.equal(submissionsOpen({ ...base, deadlineAt: now + 1, lateSubmissions: true }, now), 'open')
+  assert.equal(submissionsOpen({ ...base, state: 'draft', lateSubmissions: true }, now), 'not_open')
+  assert.equal(submissionsOpen({ ...base, startsAt: now + 1, deadlineAt: null, lateSubmissions: true }, now), 'not_open')
+  assert.deepEqual((['open', 'late', 'closed', 'not_open'] as const).map(acceptsUploads), [true, true, false, false])
+})
+
+test('a run on the hidden test is blind by default: our words only, under its own field', () => {
+  const s = {
+    id: 'x', competitionId: 'c', entrantId: 'e', number: 1, fileName: 'a.ipynb', bytes: 1, acceptedAt: 0,
+    state: 'notebookFailed', stage: 'notebook', publicScore: null, privateScore: 0.3, durationMs: 1, cellsDone: 2,
+    cellsTotal: 3, participantError: 'ValueError: SECRET', teacherError: 'trace SECRET', chosen: false,
+    sealedInputs: true, briefError: 'The notebook failed at cell 2 of 3: ValueError.', errorType: 'ValueError',
+  } satisfies Submission
+  assert.equal(isBlind({}, s), true)
+  assert.equal(isBlind({ outputPolicy: 'brief' }, s), true)
+  assert.equal(isBlind({ outputPolicy: 'full' }, s), false)
+  assert.equal(isBlind({}, { ...s, sealedInputs: false }), false)
+  const blind = entrantSubmission(s, false, true)
+  assert.equal(blind.participantError, 'The notebook failed at cell 2 of 3: ValueError.')
+  assert.equal(blind.blind, true)
+  assert.equal(blind.errorType, 'ValueError')
+  assert.doesNotMatch(JSON.stringify(blind), /SECRET/)
+  assert.ok(!('briefError' in blind) && !('teacherError' in blind))
+  // Full output: the participant's own text, and still never the teacher's or the brief field.
+  const full = entrantSubmission(s, false, false)
+  assert.equal(full.participantError, 'ValueError: SECRET')
+  assert.ok(!('briefError' in full) && !('teacherError' in full) && full.blind === undefined)
 })
 
 test("leaderboard: the metric's direction decides the order, and of equal scores the earlier submission takes the higher place", () => {

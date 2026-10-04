@@ -11,6 +11,12 @@
  * response gets a little wider, the screen looks the same, and the
  * competition can be won without solving the task.
  *
+ * Nor the hidden test (FileVisibility `sealed`): its names and row counts are
+ * listed, its bytes have no door here, and a run that read it is shown
+ * briefly under the `brief` policy — our words, the cell and the exception's
+ * class, never an output, a traceback or the executed notebook
+ * (tests/competitions-sealed.test.mts).
+ *
  * WHAT IS HERE. The entrant's identity (sign-in key, sign-in, sign-out), the
  * list of competitions with a summary, the page of one, joining, my
  * submissions, sending a notebook as a file, cancelling one's own submission,
@@ -64,6 +70,8 @@ import {
   joinedAt,
   leaderboard,
   leftToday,
+  attemptsLeft,
+  failedToday,
   listCompetitions,
   listEntrantSubmissions,
   listFiles,
@@ -88,12 +96,16 @@ import {
   holdSubmittedNotebook,
   notebookOnDisk,
   putSubmissionNotebook,
+  readOpenHead,
   removeSubmission,
 } from '../competitions/storage.js'
-import { intakeNotebook } from '../competitions/intake.js'
+import { csvShape, intakeNotebook } from '../competitions/intake.js'
 import {
+  acceptsUploads,
   entrantSubmission,
   ENTRANT_SIGN_IN_PATH,
+  failedAttemptsCeiling,
+  isBlind,
   isTerminal,
   LIMITS,
   maskEntrantName,
@@ -114,6 +126,9 @@ import type { CompetitionCounts } from '@shared/competitions-api'
 import type {
   EntrantBoardLine,
   EntrantCompetitionList,
+  EntrantFile,
+  EntrantSealedFile,
+  FailedAttempts,
   EntrantCompetitionView,
   EntrantLeaderboard,
   EntrantMe,
@@ -345,16 +360,36 @@ function liveOf(competition: Competition, me: Entrant, now = Date.now()): Submis
  */
 const notebookSeen = new Map<string, { version: string; notebook: EntrantSubmission['notebook'] }>()
 
-function notebookOf(competitionId: string, submission: Submission): EntrantSubmission['notebook'] {
+/**
+ * What the author's download hands out. A blind run's executed notebook is
+ * not theirs to get: its outputs were printed with the hidden test in memory,
+ * so the link offers the notebook as sent, exactly what the door serves.
+ */
+function notebookOf(competitionId: string, submission: Submission, blind = false): EntrantSubmission['notebook'] {
   // Only a finished submission offers the link, so a running one costs no look at the disk.
   if (!isTerminal(submission.state)) return undefined
-  const version = `${submission.state}:${submission.durationMs}:${submission.cellsDone}:${submission.stage}`
+  const version = `${submission.state}:${submission.durationMs}:${submission.cellsDone}:${submission.stage}:${blind}`
   const seen = notebookSeen.get(submission.id)
   if (seen?.version === version) return seen.notebook
-  const notebook = notebookOnDisk(competitionId, submission.id)
+  const notebook = notebookOnDisk(competitionId, submission.id, !blind)
   if (notebookSeen.size >= 20_000) notebookSeen.clear()
   notebookSeen.set(submission.id, { version, notebook })
   return notebook
+}
+
+/** One submission as its author sees it: the private score by the board, briefly if the run was blind. */
+function ownView(competition: Competition, s: Submission, privateOpen: boolean): EntrantSubmission {
+  const blind = isBlind(competition, s)
+  return {
+    ...entrantSubmission(publicExecution(s, competition.environment), privateOpen, blind),
+    notebook: notebookOf(competition.id, s, blind),
+  }
+}
+
+/** The day's ceiling on failed submissions, as the send box may show it; null — there is none. */
+function failedAttemptsOf(competition: Competition, entrantId: string, now = Date.now()): FailedAttempts | null {
+  const ceiling = failedAttemptsCeiling(competition.limits.perDay)
+  return ceiling === null ? null : { used: failedToday(competition.id, entrantId, now), ceiling }
 }
 
 /** "My submissions" in one piece; the live stream serves the same piece. */
@@ -363,18 +398,16 @@ function submissionsView(competition: Competition, me: Entrant): EntrantSubmissi
   const { open } = privateBoardState(competition, now)
   const accepting = submissionsOpen(competition, now)
   return {
-    submissions: listEntrantSubmissions(competition.id, me.id).map((s) => ({
-      ...entrantSubmission(publicExecution(s, competition.environment), open),
-      notebook: notebookOf(competition.id, s),
-    })),
+    submissions: listEntrantSubmissions(competition.id, me.id).map((s) => ownView(competition, s, open)),
     leftToday: leftToday(competition, me.id),
     perDay: competition.limits.perDay,
+    failedAttempts: failedAttemptsOf(competition, me.id, now),
     inFlight: inFlightCount(competition.id, me.id),
     accepting,
     joined: joinedAt(competition.id, me.id) !== null,
     live: liveOf(competition, me, now),
     paused: queuePaused(),
-    replaceable: accepting === 'open' ? replaceableOf(competition, me.id, now) : null,
+    replaceable: acceptsUploads(accepting) ? replaceableOf(competition, me.id, now, accepting === 'late') : null,
     resetsAt: competition.limits.perDay > 0 ? instanceNextDayStart(now) : null,
     dayZone: instanceTimeZone(),
   }
@@ -385,22 +418,56 @@ function submissionsView(competition: Competition, me: Entrant): EntrantSubmissi
  * in the instance's language and with its zone named: the class reads it on
  * phones set to any zone, and "tomorrow" is nobody's midnight in particular.
  */
-function quotaResetWords(now = Date.now()): string {
+function quotaResetWords(now = Date.now(), key = 'competitions.p.quotaResets'): string {
   const time = zonedClock(instanceNextDayStart(now), instanceTimeZone(), getLocale())
-  return time ? tr('competitions.p.quotaResets', { time }) : ''
+  return time ? tr(key, { time }) : ''
+}
+
+/** The failed-attempts refusal, with its own reset words: never "the limit". */
+function attemptsWords(competition: Competition, now = Date.now()): string {
+  const count = failedAttemptsCeiling(competition.limits.perDay) ?? 0
+  return [tr('competitions.refusal.dailyAttempts', { count }), quotaResetWords(now, 'competitions.p.attemptsResets')].filter(Boolean).join(' ')
 }
 
 /**
  * The waiting submission a new upload would take the place of — only when
  * the upload would actually be accepted: the send box offers exactly what the
- * door will do.
+ * door will do. A late upload never takes an on-time one's place.
  */
-function replaceableOf(competition: Competition, entrantId: string, now: number): EntrantSubmissions['replaceable'] {
-  const plan = intakePlan(competition.id, entrantId)
-  if (plan === 'in_flight' || !plan.replaces) return null
+function replaceableOf(competition: Competition, entrantId: string, now: number, late = false): EntrantSubmissions['replaceable'] {
+  const plan = intakePlan(competition.id, entrantId, late)
+  if (plan === 'in_flight' || plan === 'on_time_waiting' || !plan.replaces) return null
   const left = leftToday(competition, entrantId, now, plan.replaces.id)
   if (left !== null && left <= 0) return null
+  const attempts = attemptsLeft(competition, entrantId, now)
+  if (attempts !== null && attempts <= 0) return null
   return { submissionId: plan.replaces.id, number: plan.replaces.number }
+}
+
+/**
+ * The open files as a participant downloads them, the examples a hidden test
+ * replaces marked as such; and the hidden test itself as names, rows and the
+ * example's columns. The hidden bytes are not read here at all: the row count
+ * comes from the database, the columns from the EXAMPLE's header.
+ */
+function filesOf(competitionId: string): { files: EntrantFile[]; sealedFiles: EntrantSealedFile[] } {
+  const open = listFiles(competitionId, 'open')
+  const sealed = listFiles(competitionId, 'sealed')
+  const sealedNames = new Set(sealed.map((file) => file.name))
+  const openNames = new Set(open.map((file) => file.name))
+  return {
+    files: open.map((file) => ({
+      name: file.name,
+      bytes: file.bytes,
+      rows: file.rows,
+      ...(sealedNames.has(file.name) ? { sealed: true } : {}),
+    })),
+    sealedFiles: sealed.map((file) => {
+      const replaces = openNames.has(file.name) ? file.name : null
+      const head = replaces && replaces.toLowerCase().endsWith('.csv') ? readOpenHead(competitionId, replaces) : null
+      return { name: file.name, rows: file.rows, replaces, columns: head ? csvShape(head)?.columns ?? null : null }
+    }),
+  }
 }
 
 /**
@@ -548,11 +615,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
       // competition.
       competition: publicCompetition(competition),
       capabilities: await competitionCapabilities(competition.environment, competitionRevision(competition.id)?.imageDigest),
-      files: listFiles(competition.id, 'open').map((file) => ({
-        name: file.name,
-        bytes: file.bytes,
-        rows: file.rows,
-      })),
+      ...filesOf(competition.id),
       entrants: summary.entrants,
       submissions: summary.submissions,
       bestPublic: boardOpenTo(req, competition, me) ? summary.bestPublic : null,
@@ -593,7 +656,9 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     /*
      * One can join only a running one. A finished one has no "JOIN" button on
      * P1 at all, just a "Results and review" link, and adding new people to it
-     * would mean adding names to a table that has already been counted.
+     * would mean adding names to a table that has already been counted. With
+     * late intake open, joining is let through: a late submission is in no
+     * table, so a newcomer changes none.
      */
     const accepting = submissionsOpen(competition, Date.now())
     if (accepting === 'not_open') return refuse(res, 403, 'not_open', tr('competitions.refusal.notOpen'))
@@ -687,7 +752,8 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
      * letters of the path. `storage.checkName` rejects `..` and slashes, but it
      * lets the name `solution.csv` through, and if such a file ever ends up in
      * `data/`, the door would serve it. The list is the only source of truth
-     * about what is open.
+     * about what is open. A hidden test named like an example gets the
+     * EXAMPLE here (from `data/`); one with a name of its own gets a 404.
      */
     if (!listFiles(competition.id, 'open').some((file) => file.name === name)) {
       return refuse(res, 404, 'not_found', tr('competitions.refusal.fileMissing'))
@@ -758,10 +824,14 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
    *
    * The refusals come in the order a person understands them: first
    * "submissions are closed", then "you have not joined", then "the previous
-   * one is still running", then "that is enough for today", and only after
-   * that is the file parsed. The other way round would be cruel: twenty
-   * megabytes over mobile internet for the answer "the deadline passed
-   * yesterday".
+   * one is still running", then "that is enough for today" (the limit, then
+   * the ceiling on failed ones), and only after that is the file parsed. The
+   * other way round would be cruel: twenty megabytes over mobile internet for
+   * the answer "the deadline passed yesterday".
+   *
+   * After the deadline with «Поздние посылки» on, the door says `late` and the
+   * upload goes on as a late one; whether it really is late is settled once,
+   * in the transaction that accepts it (dependencies/service.ts).
    */
   router.post('/api/k/competitions/:slug/submissions', requireEntrant, async (req, res) => {
     /*
@@ -796,14 +866,26 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
      * new notebook takes its place (store · intakePlan) — only a running one
      * is, or a waiting re-run, which already has a result to lose.
      */
-    const plan = intakePlan(competition.id, me.id)
+    const plan = intakePlan(competition.id, me.id, accepting === 'late')
     if (plan === 'in_flight') {
       return refuse(res, 409, 'in_flight', tr('competitions.refusal.inFlight'))
+    }
+    if (plan === 'on_time_waiting') {
+      return refuse(res, 409, 'in_flight', tr('competitions.refusal.inFlightOnTime'))
     }
     const left = leftToday(competition, me.id, startedAt, plan.replaces?.id ?? null)
     if (left !== null && left <= 0) {
       const words = [tr('competitions.refusal.dailyQuota', { count: competition.limits.perDay }), quotaResetWords(startedAt)]
       return refuse(res, 429, 'quota', words.filter(Boolean).join(' '))
+    }
+    /*
+     * Failures are free, so a day of them is not stopped by the limit: this
+     * ceiling is (shared/competitions.ts · failedAttemptsCeiling), with its own
+     * reason and its own words.
+     */
+    const attempts = attemptsLeft(competition, me.id, startedAt)
+    if (attempts !== null && attempts <= 0) {
+      return refuse(res, 429, 'attempts', attemptsWords(competition, startedAt))
     }
     if (tooOften(uploadsByAddress, addressForLimits(req), UPLOAD_WINDOW, MAX_UPLOADS_PER_ADDRESS)
       || tooOften(uploadsByEntrant, me.id, UPLOAD_WINDOW, uploadsPerMinute().value)) {
@@ -819,17 +901,22 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
      * the board open, private scores and all, for exactly that long. Every
      * way out below ends the response, and whichever comes first counts it
      * out: the answer handed to the socket, or the socket gone.
+     *
+     * A late upload is not held: its result is in no table, and holding it
+     * would let late intake keep the final results closed.
      */
-    const release = holdUpload(competition.id)
-    res.once('finish', release)
-    res.once('close', release)
+    if (accepting === 'open') {
+      const release = holdUpload(competition.id)
+      res.once('finish', release)
+      res.once('close', release)
+    }
     try {
       await assertCompetitionCapability('execution', competition.environment, competitionRevision(competition.id)?.imageDigest)
     } catch (error) {
       return refuse(res, 503, 'unavailable', error instanceof Error ? error.message : tr('runtime.brokerUnavailable'))
     }
 
-    readNotebook(req, res, async (fileName, body, bundleId) => {
+    readNotebook(req, res, competition, async (fileName, body, bundleId) => {
       const revision = await executionRevision(competition)
       /*
        * The acceptance and the notebook on disk commit together or not at
@@ -872,12 +959,15 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
        * stayed silent.
        */
       wakeCompetitionPump()
+      const fresh = getSubmission(submission.id)!
       reply<SubmissionAccepted>(res, {
         submission: entrantSubmission(
-          publicExecution(getSubmission(submission.id)!, competition.environment),
+          publicExecution(fresh, competition.environment),
           privateBoardState(competition).open,
+          isBlind(competition, fresh),
         ),
         leftToday: leftToday(competition, me.id),
+        failedAttempts: failedAttemptsOf(competition, me.id),
         replacedNumber: submission.replaced?.number ?? null,
       })
     })
@@ -911,6 +1001,11 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
      */
     if (submissionsOpen(competition, Date.now()) !== 'open') {
       return refuse(res, 403, 'closed', tr('competitions.refusal.chooseClosed'))
+    }
+    // A late one stays outside the standings. A deadline moved later has
+    // already cleared the mark on what was sent before it (forgiveLateSubmissions).
+    if (submission.late) {
+      return refuse(res, 409, 'invalid', tr('competitions.refusal.lateNotCounted'))
     }
     if (competition.scoring !== 'chosen') {
       return refuse(res, 409, 'invalid', tr('competitions.refusal.chooseAutomatic'))
@@ -969,6 +1064,10 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
    * time: each download was the person's own file, without a single output.
    * An executed copy that is there but will not open is an error, not a
    * reason to hand out the other file.
+   *
+   * A blind run (it read the hidden test, the policy is `brief`) hands out
+   * the sent notebook only: the executed copy's outputs were printed with the
+   * hidden rows in memory.
    */
   router.get('/api/k/competitions/:slug/submissions/:id/notebook', requireEntrant, (req, res) => {
     const competition = visible(req.params.slug)
@@ -980,6 +1079,9 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     }
     if (submission.entrantId !== me.id) {
       return refuse(res, 403, 'forbidden', tr('competitions.refusal.notYours'))
+    }
+    if (isBlind(competition, submission)) {
+      return sendHeld(res, () => holdSubmittedNotebook(competition.id, submission.id), submission.fileName)
     }
     let executed: HeldFile | null
     try {
@@ -1006,10 +1108,12 @@ class EntrantGone extends Error {}
  * same word the door would have said: the screen branches on `reason`, and
  * "invalid" after a passed deadline dims nothing.
  */
-const INTAKE_REFUSALS: Record<string, { reason: CompetitionRefusal; say: () => string }> = {
+const INTAKE_REFUSALS: Record<string, { reason: CompetitionRefusal; say: (c: Competition) => string }> = {
   dependency_closed: { reason: 'closed', say: () => tr('competitions.refusal.closed') },
   dependency_submission_active: { reason: 'in_flight', say: () => tr('competitions.refusal.inFlight') },
+  dependency_submission_on_time: { reason: 'in_flight', say: () => tr('competitions.refusal.inFlightOnTime') },
   dependency_submission_quota: { reason: 'quota', say: () => dependencyMessage('dependency_submission_quota') },
+  dependency_submission_attempts: { reason: 'attempts', say: (c) => attemptsWords(c) },
 }
 
 /**
@@ -1025,7 +1129,7 @@ const INTAKE_REFUSALS: Record<string, { reason: CompetitionRefusal; say: () => s
  * `config.maxUploadBytes` (room files) is no good here either as a cap or as
  * a guide: it is about the dataset a student brings to the lesson.
  */
-function readNotebook(req: Request, res: Response, done: (fileName: string, body: Buffer, bundleId: string | null) => void | Promise<void>): void {
+function readNotebook(req: Request, res: Response, competition: Competition, done: (fileName: string, body: Buffer, bundleId: string | null) => void | Promise<void>): void {
   let bb: ReturnType<typeof busboy>
   try {
     bb = busboy({
@@ -1092,8 +1196,8 @@ function readNotebook(req: Request, res: Response, done: (fileName: string, body
     /*
      * Parsing BEFORE the queue. Broken JSON in a one-off container becomes
      * "the notebook failed": a verdict on code the person never wrote, and a
-     * spent submission out of the five per day on top of that
-     * (@shared/competitions · whyNotebookRefused). What is stored is the body
+     * slot of everyone's queue spent on it (@shared/competitions ·
+     * whyNotebookRefused). What is stored is the body
      * the check read, a byte order mark already cut off (intake ·
      * intakeNotebook).
      */
@@ -1106,7 +1210,7 @@ function readNotebook(req: Request, res: Response, done: (fileName: string, body
         refuse(res, 401, 'unauthenticated', tr('competitions.refusal.signIn'))
       } else if (error instanceof DependencyStoreError) {
         const intake = INTAKE_REFUSALS[error.code]
-        if (intake) refuse(res, error.status, intake.reason, intake.say())
+        if (intake) refuse(res, error.status, intake.reason, intake.say(competition))
         // With its numbers: "the set needs 379 MB of the 1.0 GB a submission gets".
         else refuse(res, error.status, 'invalid', dependencyRefusal(error.code, error.detail))
       } else {

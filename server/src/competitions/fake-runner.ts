@@ -30,6 +30,15 @@
  * conscientious submission: it hands over the answer from the competition's
  * sample and gives a STABLE number derived from the content of the answer.
  *
+ * Three directives stand for what a notebook does with the data it is given,
+ * so that the hidden test can be checked without executing anything:
+ * `"read": "test.csv"` reads that file from the run's `data/` the way
+ * `open('data/test.csv')` would and puts its bytes into the answer;
+ * `"detailFrom": "test.csv"` raises with them (`ValueError: <bytes>`), the
+ * way a notebook printing the test into its traceback would; `"executed": true`
+ * leaves an executed notebook whose output is what was read. On the metric
+ * side `"echo": true` has a refusing metric quote the answer back.
+ *
  * The stability of the number is not decoration. The leaderboard, "the
  * participant's best submission" and the final rescoring after the deadline
  * are comparisons of numbers; random numbers turn such a check into a coin
@@ -38,7 +47,7 @@
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { competitionsFs } from './storage.js'
-import { baselineDir, NOTEBOOK_FILE, SUBMISSION_FILE } from './storage.js'
+import { baselineDir, EXECUTED_FILE, NOTEBOOK_FILE, SUBMISSION_FILE } from './storage.js'
 import {
   registerCompetitionRunner,
   type Capacity,
@@ -192,13 +201,28 @@ export class FakeCompetitionRunner implements CompetitionRunner {
     }
     request.onProgress?.({ cell, cells, outputBytes: 0 })
 
+    // What the notebook "read" from its data/: the run's own folder, hidden
+    // test and all — the stand-in looks where the container's /data points.
+    const readName = (key: string): Buffer | null =>
+      typeof asked[key] === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/.test(asked[key] as string)
+        ? readFile(path.join(request.dataDir, asked[key] as string))
+        : null
+    const read = readName('read')
+    const raised = readName('detailFrom')
+    if (asked.executed === true) {
+      competitionsFs.mkdirSync(request.resultDir, { recursive: true })
+      const text = (read ?? raised ?? Buffer.alloc(0)).toString('utf8')
+      const executed = { nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [{ cell_type: 'code', source: 'print(data)', metadata: {}, execution_count: 1, outputs: [{ output_type: 'stream', name: 'stdout', text }] }] }
+      competitionsFs.writeFileSync(path.join(request.resultDir, EXECUTED_FILE), JSON.stringify(executed), { mode: 0o600 })
+    }
+
     const status = asVerdict(asked.status, 'ok')
     if (status !== 'ok') {
       return this.outcome(status, {
         cell,
         cells,
         started,
-        detail: typeof asked.detail === 'string' ? asked.detail : '',
+        detail: raised ? `Traceback (most recent call last):\n  Cell In[1], line 1\nValueError: ${raised.toString('utf8')}` : typeof asked.detail === 'string' ? asked.detail : '',
         log: typeof asked.log === 'string' ? asked.log : '',
         oom: status === 'out-of-memory',
         exit: status === 'timeout' ? 137 : 1,
@@ -232,6 +256,7 @@ export class FakeCompetitionRunner implements CompetitionRunner {
       Buffer.from(head, 'utf8'),
       sample,
       Buffer.from(`\n# colloq-run: ${stamp}\n`, 'utf8'),
+      read ?? Buffer.alloc(0),
     ])
     competitionsFs.writeFileSync(answer, body, { mode: 0o600 })
     return this.outcome('ok', { cell: cells - 1, cells, started, submission: answer })
@@ -284,8 +309,9 @@ export class FakeCompetitionRunner implements CompetitionRunner {
         status,
         public: null,
         private: null,
-        message:
-          typeof asked.message === 'string'
+        message: asked.echo === true
+          ? answer.toString('utf8')
+          : typeof asked.message === 'string'
             ? asked.message
             : JSON.stringify({ code: 'missingRows', params: { count: 100, column: 'id', example: '398692' } }),
         teacherOnly: null,

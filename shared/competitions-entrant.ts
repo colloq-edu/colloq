@@ -21,8 +21,12 @@ import type {
   SubmissionStage,
 } from './competitions.js'
 
-/** Whether submissions are accepted — the same word `submissionsOpen` returns. */
-export type Accepting = 'open' | 'not_open' | 'closed'
+/**
+ * Whether submissions are accepted — the same word `submissionsOpen` returns.
+ * `late`: intake is over, and an upload is taken as a late one (outside the
+ * standings, see Submission.late).
+ */
+export type Accepting = 'open' | 'late' | 'not_open' | 'closed'
 
 /** Who I am and how I get back in: the "YOUR SIGN-IN KEY" card (P1). */
 export interface EntrantMe {
@@ -45,12 +49,45 @@ export interface EntrantStanding {
   leftToday: number | null
 }
 
+/**
+ * The day's ceiling on FAILED submissions (shared/competitions.ts ·
+ * failedAttemptsCeiling) — a brake of its own, not the limit: failures do not
+ * spend the limit. Absent when there is no ceiling (no limit at all).
+ */
+export interface FailedAttempts {
+  /** Failed submissions today (countsTowardFailedAttempts). */
+  used: number
+  /** How many failed ones the day allows. */
+  ceiling: number
+}
+
 /** An open data file for download. */
 export interface EntrantFile {
   name: string
   bytes: number
   /** Rows in the table; null — the file is not CSV or is too big to count. */
   rows: number | null
+  /**
+   * An EXAMPLE: during the check the notebook reads the hidden test under
+   * this same name in `data/` (EntrantSealedFile.replaces). Absent — the
+   * check reads this very file.
+   */
+  sealed?: boolean
+}
+
+/**
+ * The hidden test as a participant may know it: its name, how many rows,
+ * which example it stands in for. Never its bytes, and no door serves them.
+ */
+export interface EntrantSealedFile {
+  /** The name the notebook reads during the check: `data/<name>` and `/data/<name>`. */
+  name: string
+  /** Rows of the hidden file; null — not a CSV, or not counted. */
+  rows: number | null
+  /** The open example of the same name the check swaps out; null — there is none. */
+  replaces: string | null
+  /** The example's columns, which the hidden test is expected to share; null — no example, or not a CSV. */
+  columns: string[] | null
 }
 
 /** A row of the list of competitions (P1). */
@@ -77,6 +114,8 @@ export interface EntrantCompetitionView {
   capabilities?: CompetitionCapabilities
   competition: CompetitionPublic
   files: EntrantFile[]
+  /** The hidden test, as names and rows; empty — the check reads the open files only. */
+  sealedFiles?: EntrantSealedFile[]
   entrants: number
   submissions: number
   bestPublic: number | null
@@ -174,6 +213,8 @@ export interface EntrantSubmissions {
   submissions: EntrantSubmission[]
   leftToday: number | null
   perDay: number
+  /** The day's ceiling on failed submissions; null — none (no limit). */
+  failedAttempts?: FailedAttempts | null
   inFlight: number
   accepting: Accepting
   joined: boolean
@@ -203,4 +244,6 @@ export interface SubmissionAccepted {
   leftToday: number | null
   /** The number of the waiting submission this one replaced; null — none. */
   replacedNumber?: number | null
+  /** The same ceiling as in `EntrantSubmissions.failedAttempts`, after this upload. */
+  failedAttempts?: FailedAttempts | null
 }

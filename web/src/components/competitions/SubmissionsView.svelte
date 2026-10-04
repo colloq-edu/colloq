@@ -17,7 +17,17 @@
     EntrantSubmissions,
     SubmissionAccepted,
   } from '@shared/competitions-entrant'
-  import { outsideQuota, ownOrdinals } from '@/lib/competition-words'
+  import {
+    attemptFreeWords,
+    bestLateScore,
+    deadlineDividerWords,
+    deadlineSplit,
+    lateBetterNote,
+    outsideQuota,
+    ownOrdinals,
+    sealedTarget,
+    standingsClosed,
+  } from '@/lib/competition-words'
   import Conditions from './Conditions.svelte'
   import MiniBoard from './MiniBoard.svelte'
   import SendBox from './SendBox.svelte'
@@ -84,9 +94,48 @@
    * the server will not perform is worse than not offering it at all.
    */
   const canChoose = $derived(view.competition.scoring === 'chosen')
-  const counted = $derived(countedSubmission(view.competition.scoring, mine.submissions.map((s) => ({ ...s, privateScore: s.privateScore ?? null })), view.competition.metric.direction)?.id ?? null)
+  const countedRow = $derived(
+    countedSubmission(
+      view.competition.scoring,
+      mine.submissions.map((s) => ({ ...s, privateScore: s.privateScore ?? null })),
+      view.competition.metric.direction,
+    ),
+  )
+  const counted = $derived(countedRow?.id ?? null)
   const frozen = $derived(mine.accepting !== 'open')
   const limitMs = $derived(view.competition.limits.wallSeconds * 1000)
+  /*
+   * After the deadline the header says which submission the closed pick left
+   * counting (C1): the buttons are gone, and without the sentence a person
+   * hunts through the list for the green mark to learn what they are graded
+   * on.
+   */
+  const pickClosed = $derived(canChoose && standingsClosed(mine.accepting))
+  const pickClosedWords = $derived(
+    [
+      countedRow
+        ? tr('competitions.p.chooseClosed', { number: countedRow.number })
+        : tr('competitions.p.chooseClosedNone'),
+      view.privateOpen ? '' : tr('competitions.p.finalLater'),
+    ]
+      .filter(Boolean)
+      .join('\n'),
+  )
+  /** The hidden file the blind rows talk about, with its rows against the example's. */
+  const sealed = $derived(sealedTarget(view))
+  /** The footer of a failed run's details: the attempt was free, and how many are left. */
+  const freeNote = $derived(attemptFreeWords(mine.leftToday, mine.perDay))
+  /*
+   * Late rows (C1, C3): the line between them and the on-time ones, the best
+   * late score the mini board does not hold, and a note at the end of the
+   * list on a phone, which has no mini board to carry it.
+   */
+  const split = $derived(deadlineSplit(rows))
+  const divider = $derived(deadlineDividerWords(view.competition.deadlineAt, now))
+  const lateBest = $derived(bestLateScore(mine.submissions, view.competition.metric.direction))
+  const anyLate = $derived(mine.submissions.some((submission) => submission.late))
+  const lateNote = (submission: EntrantSubmission): string | null =>
+    lateBetterNote(submission, countedRow, view.competition.metric.direction)
 
   /**
    * Your own best submission — the one that counts without a choice.
@@ -102,9 +151,10 @@
     // the newest, told a student in the rehearsal (30 Sep 2026) the opposite
     // of the rule. There the counted mark alone says which one it is.
     if (view.competition.scoring === 'last') return null
+    // A late one is never a candidate: "best result" names what would count.
     const scored = mine.submissions.filter(
       (submission): submission is EntrantSubmission =>
-        submission.state === 'scored' && submission.publicScore !== null,
+        submission.state === 'scored' && submission.publicScore !== null && !submission.late,
     )
     if (scored.length === 0) return null
     return scored.reduce((winner, next) =>
@@ -128,7 +178,7 @@
 <div class="flex flex-col gap-6 xl:flex-row xl:gap-12">
   <div class="flex min-w-0 grow flex-col gap-4 sm:gap-7">
     {#if mine.joined || mine.submissions.length > 0}
-      <SendBox {view} {mine} {phone} busy={sending} {refusal} {onsend} {onrefuse} />
+      <SendBox {view} {mine} {phone} {now} busy={sending} {refusal} {onsend} {onrefuse} />
     {:else}
       <div class="flex flex-col items-start gap-3 border border-line bg-surface p-4">
         <p class="text-ui text-muted">{tr('competitions.p.joinFirst')}</p>
@@ -152,7 +202,7 @@
       leaderboard tab: this is the screen people stare at in the minute after
       the bell, and "why hasn't the board opened" is the question it answers.
     -->
-    {#if view.accepting === 'closed' && !view.privateOpen && (view.privatePending ?? 0) > 0}
+    {#if standingsClosed(view.accepting) && !view.privateOpen && (view.privatePending ?? 0) > 0}
       <div class="flex flex-wrap items-center gap-x-6 gap-y-3 border-l-[3px] border-accent bg-surface px-5 py-4">
         <div class="min-w-0 flex-1 basis-72">
           <p class="text-title font-bold leading-6 text-ink">{tr('competitions.p.countingTitle')}</p>
@@ -175,6 +225,8 @@
           <p class="whitespace-pre-line text-right text-2xs leading-[18px] text-muted">
             {tr('competitions.p.chooseHint')}
           </p>
+        {:else if !phone && pickClosed}
+          <p class="whitespace-pre-line text-right text-2xs leading-[18px] text-muted">{pickClosedWords}</p>
         {/if}
       </header>
 
@@ -182,7 +234,20 @@
         <p class="py-6 text-ui text-muted">{tr('competitions.p.noSubmissions')}</p>
       {/if}
 
-      {#each rows.slice(0, shown) as submission (submission.id)}
+      {#each rows.slice(0, shown) as submission, index (submission.id)}
+        {#if index === split}
+          <!-- The deadline as a line in the list (C1, C3): above it the late
+               rows, checked but outside the standings; below, what was sent
+               in time. -->
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b-2 border-ink pb-2.5 pt-[22px]">
+            <span class="shrink-0 bg-ink px-2 py-1 text-micro font-black uppercase leading-4 tracking-label text-canvas">
+              {divider}
+            </span>
+            <span class="min-w-0 flex-1 basis-48 text-2xs text-muted">
+              {tr(phone ? 'competitions.p.deadlineDividerNoteShort' : 'competitions.p.deadlineDividerNote')}
+            </span>
+          </div>
+        {/if}
         {#if phone}
           <SubmissionCard
             {submission}
@@ -192,6 +257,7 @@
             counted={submission.id === counted}
             ordinal={ordinals.get(submission.id) ?? null}
             offQuota={outsideQuota(submission, mine.perDay)}
+            {sealed}
             {canChoose}
             paused={mine.paused}
             {now}
@@ -211,6 +277,9 @@
             counted={submission.id === counted}
             ordinal={ordinals.get(submission.id) ?? null}
             offQuota={outsideQuota(submission, mine.perDay)}
+            {sealed}
+            {freeNote}
+            lateNote={lateNote(submission)}
             {canChoose}
             paused={mine.paused}
             {now}
@@ -235,13 +304,18 @@
           </button>
         </div>
       {/if}
+      {#if phone && anyLate}
+        <p class="pt-4 text-2xs text-muted">
+          {tr(view.privateOpen ? 'competitions.p.lateFootnoteOpen' : 'competitions.p.lateFootnote')}
+        </p>
+      {/if}
     </section>
   </div>
 
   <aside class="flex w-full shrink-0 flex-col gap-6 xl:w-[300px]">
-    <Conditions competition={view.competition} />
+    <Conditions competition={view.competition} sealedFiles={view.sealedFiles ?? []} />
     {#if !phone}
-      <MiniBoard lines={board} closed={boardClosed} onopen={onboard} />
+      <MiniBoard lines={board} closed={boardClosed} {lateBest} onopen={onboard} />
     {/if}
   </aside>
 </div>

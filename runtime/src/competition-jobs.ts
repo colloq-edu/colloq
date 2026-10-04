@@ -176,8 +176,12 @@ export class CompetitionJobs {
   private main(intent: CompetitionJobIntent, image: string) {
     const base = `competitions/${intent.competitionId}/s/${intent.submissionId}`
     const attempt = `${base}/attempts/${intent.attemptId}`
+    // With the hidden test the app has composed this attempt's own data folder
+    // (open files, the hidden ones swapped in); the competition's open data/
+    // is not mounted at all then, so nothing reads the example by mistake.
+    const dataSource = intent.sealedInputs ? `${attempt}/inputs` : `competitions/${intent.competitionId}/data`
     const input = intent.kind === 'notebook'
-      ? [mount('data', '/data', `competitions/${intent.competitionId}/data`, true), mount('data', '/submission', `${base}/in`, true),
+      ? [mount('data', '/data', dataSource, true), mount('data', '/submission', `${base}/in`, true),
           ...(intent.bundleId ? [mount('data', '/deps', `dependencies/bundles/${intent.bundleId}`, true)] : [])]
       : intent.kind === 'metric'
         ? [mount('data', '/secret', `${attempt}/secret`, true), mount('data', '/submission', `${attempt}/score`, true), mount('data', '/config', `${attempt}/score-config`, true)]

@@ -91,8 +91,17 @@ export interface RunRequest {
    * outside, before the start.
    */
   container: string
-  /** The open half of the data. `:ro`, and only it. */
+  /**
+   * The open half of the data. `:ro`, and only it. With a hidden test, this
+   * run's own composed folder instead (storage.ts · composeRunInputs).
+   */
   dataDir: string
+  /**
+   * `dataDir` is the attempt's composed folder with the hidden test in it. The
+   * broker gets this as a typed flag and mounts that folder itself; Docker
+   * simply mounts `dataDir`. Absent: the competition's open `data/`.
+   */
+  sealedInputs?: boolean
   /**
    * A directory with one notebook. A directory, not a file — see the header of
    * storage.ts.

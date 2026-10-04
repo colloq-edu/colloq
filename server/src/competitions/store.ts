@@ -33,9 +33,11 @@ import { removeCompetition as removeCompetitionFiles, pruneSubmissions } from '.
 import { competitionDefaults } from './settings.js'
 import { instanceTimeZone } from '../time-zone.js'
 import {
+  attemptsLeftToday,
   boardOf,
   countsTowardDailyQuota,
   dayStart,
+  failedAttemptsToday,
   entrantNameKey,
   LIMITS,
   quotaDayStart,
@@ -49,6 +51,7 @@ import {
   type FileVisibility,
   type MintedEntrant,
   type MetricDirection,
+  type OutputPolicy,
   type PrivateRelease,
   type RankedRow,
   type RunKind,
@@ -107,6 +110,16 @@ function liftEntrantKeys(): void {
 }
 liftEntrantKeys()
 
+/** competition_files' shape, one copy for the table and for its rekeying below. */
+const FILE_COLUMNS = `
+    competition_id TEXT NOT NULL,
+    name           TEXT NOT NULL,
+    bytes          INTEGER NOT NULL,
+    row_count      INTEGER,
+    visibility     TEXT NOT NULL,
+    uploaded_at    INTEGER NOT NULL,
+    PRIMARY KEY (competition_id, visibility, name)`
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS competitions (
     id                     TEXT PRIMARY KEY,
@@ -149,17 +162,10 @@ db.exec(`
    * Visibility as a column rather than two tables: the participant's list and
    * the teacher's list are the same query with a different WHERE, and if you
    * split the table in two, one day you will get answers added to the open
-   * list.
+   * list. Keyed by the visibility too: the hidden test's test.csv and the
+   * open example test.csv are two files with one name (rekeyCompetitionFiles).
    */
-  CREATE TABLE IF NOT EXISTS competition_files (
-    competition_id TEXT NOT NULL,
-    name           TEXT NOT NULL,
-    bytes          INTEGER NOT NULL,
-    row_count      INTEGER,
-    visibility     TEXT NOT NULL,
-    uploaded_at    INTEGER NOT NULL,
-    PRIMARY KEY (competition_id, name)
-  );
+  CREATE TABLE IF NOT EXISTS competition_files (${FILE_COLUMNS});
   CREATE INDEX IF NOT EXISTS competition_files_of
     ON competition_files(competition_id, visibility);
 
@@ -371,6 +377,62 @@ ensureColumn('submission_runs', 'input_revision', 'input_revision INTEGER')
  * itself on an update.
  */
 ensureColumn('competitions', 'board_visibility', "board_visibility TEXT NOT NULL DEFAULT 'public'")
+/*
+ * «Поздние посылки» and the hidden test's output policy. The defaults are what
+ * every existing competition did: intake closes at the deadline, and a run on
+ * a hidden test (which none of them has) would be shown briefly.
+ */
+ensureColumn('competitions', 'late_submissions', 'late_submissions INTEGER NOT NULL DEFAULT 0')
+ensureColumn('competitions', 'output_policy', "output_policy TEXT NOT NULL DEFAULT 'brief'")
+/*
+ * A late submission and the moment its upload began (Submission.late,
+ * Submission.sentAt). Every older row reads on time and without a start: late
+ * intake did not exist, and when an upload began was never recorded.
+ */
+ensureColumn('submissions', 'late', 'late INTEGER NOT NULL DEFAULT 0')
+ensureColumn('submissions', 'sent_at', 'sent_at INTEGER')
+ensureColumn('competition_queue', 'late', 'late INTEGER NOT NULL DEFAULT 0')
+/* A run on the hidden test, and what its participant reads then (Submission.briefError). */
+ensureColumn('submissions', 'sealed_inputs', 'sealed_inputs INTEGER NOT NULL DEFAULT 0')
+ensureColumn('submissions', 'brief_error', 'brief_error TEXT')
+ensureColumn('submissions', 'error_type', 'error_type TEXT')
+ensureColumn('submission_runs', 'sealed_inputs', 'sealed_inputs INTEGER NOT NULL DEFAULT 0')
+
+/**
+ * The files' key gains the visibility — a table rebuild, in one transaction.
+ *
+ * Keyed by (competition, name), a hidden test `test.csv` and its open example
+ * `test.csv` could not both have a row: the upsert of one flipped the other's
+ * visibility, and the open list quietly lost the example (or gained the
+ * test). It already happened to the answers: an open `solution.csv` upload
+ * turned the answers' row into an open one. SQLite cannot change a primary
+ * key in place, so the rows move to a new table; dropping the old one takes
+ * its index and triggers along, and both are made again here. Nothing fires
+ * on the way: the triggers belong to the table being dropped.
+ *
+ * Returns whether it rebuilt anything; a table already keyed so is left alone.
+ *
+ * Older code cannot live with the result: its upsert names the old key, and
+ * SQLite refuses to prepare it, so that server would not even start. Hence
+ * data schema 2 (data-schema.ts), which refuses the rollback before it runs.
+ */
+export function rekeyCompetitionFiles(): boolean {
+  const columns = db.prepare('PRAGMA table_info(competition_files)').all() as { name: string; pk: number }[]
+  const visibility = columns.find((column) => column.name === 'visibility')
+  if (!visibility || visibility.pk > 0) return false
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE competition_files_rekeyed (${FILE_COLUMNS});
+      INSERT INTO competition_files_rekeyed (competition_id, name, bytes, row_count, visibility, uploaded_at)
+        SELECT competition_id, name, bytes, row_count, visibility, uploaded_at FROM competition_files;
+      DROP TABLE competition_files;
+      ALTER TABLE competition_files_rekeyed RENAME TO competition_files;
+      CREATE INDEX IF NOT EXISTS competition_files_of ON competition_files(competition_id, visibility);
+    `)
+    revisionTriggers()
+  })()
+  return true
+}
 
 /*
  * The moment this instance began counting daily limits in its own time zone.
@@ -423,20 +485,34 @@ db.exec(`
     OR NEW.memory_mb IS NOT OLD.memory_mb OR NEW.cpus IS NOT OLD.cpus
   BEGIN UPDATE competitions SET input_revision = input_revision + 1 WHERE id = NEW.id; END;
 `)
-for (const table of ['submissions', 'competition_queue', 'competition_entrants', 'competition_files']) {
-  for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
-    const row = operation === 'DELETE' ? 'OLD' : 'NEW'
-    if (table === 'competition_files') db.exec(`CREATE TRIGGER IF NOT EXISTS competition_files_${operation.toLowerCase()}_notebook_revision
-      AFTER ${operation} ON competition_files
-      WHEN ${operation === 'UPDATE' ? "OLD.visibility = 'open' OR NEW.visibility = 'open'" : `${row}.visibility = 'open'`}
-      BEGIN UPDATE competitions SET notebook_input_revision = notebook_input_revision + 1 WHERE id = ${row}.competition_id; END;`)
-    db.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_${operation.toLowerCase()}_revision
-      AFTER ${operation} ON ${table}
-      BEGIN UPDATE competitions SET revision = revision + 1
-        ${table === 'competition_files' ? ', input_revision = input_revision + 1' : ''}
-        WHERE id = ${row}.competition_id; END;`)
+/*
+ * What the notebook reads is the open files AND the hidden test: a change to
+ * either makes the sample notebook's check stale. The triggers carry new names
+ * because `CREATE TRIGGER IF NOT EXISTS` cannot change an existing one, and the
+ * old ones (open files only) are dropped wherever they still are.
+ */
+function revisionTriggers(): void {
+  const NOTEBOOK_FILE = "IN ('open', 'sealed')"
+  for (const table of ['submissions', 'competition_queue', 'competition_entrants', 'competition_files']) {
+    for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+      const row = operation === 'DELETE' ? 'OLD' : 'NEW'
+      if (table === 'competition_files') {
+        db.exec(`DROP TRIGGER IF EXISTS competition_files_${operation.toLowerCase()}_notebook_revision`)
+        db.exec(`CREATE TRIGGER IF NOT EXISTS competition_files_${operation.toLowerCase()}_notebook_inputs
+        AFTER ${operation} ON competition_files
+        WHEN ${operation === 'UPDATE' ? `OLD.visibility ${NOTEBOOK_FILE} OR NEW.visibility ${NOTEBOOK_FILE}` : `${row}.visibility ${NOTEBOOK_FILE}`}
+        BEGIN UPDATE competitions SET notebook_input_revision = notebook_input_revision + 1 WHERE id = ${row}.competition_id; END;`)
+      }
+      db.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_${operation.toLowerCase()}_revision
+        AFTER ${operation} ON ${table}
+        BEGIN UPDATE competitions SET revision = revision + 1
+          ${table === 'competition_files' ? ', input_revision = input_revision + 1' : ''}
+          WHERE id = ${row}.competition_id; END;`)
+    }
   }
 }
+revisionTriggers()
+rekeyCompetitionFiles()
 
 /** Replacing an artifact without a competition_files row (the baseline). */
 export function invalidateCompetitionInputs(id: string, notebook = true): void {
@@ -494,6 +570,8 @@ interface CompetitionRow {
   private_release: string
   scoring: string
   board_visibility: string
+  late_submissions: number
+  output_policy: string
   private_opened_at: number | null
   baseline_submission_id: string | null
   baseline_entrant_id: string | null
@@ -532,6 +610,8 @@ function toCompetition(row: CompetitionRow): Competition {
     privateRelease: row.private_release as PrivateRelease,
     scoring: row.scoring as ScoringRule,
     boardVisibility: row.board_visibility === 'entrants' ? 'entrants' : 'public',
+    lateSubmissions: row.late_submissions === 1,
+    outputPolicy: row.output_policy === 'full' ? 'full' : 'brief',
     privateOpenedAt: row.private_opened_at,
     baselineSubmissionId: row.baseline_submission_id,
     baselineEntrantId: row.baseline_entrant_id,
@@ -548,11 +628,13 @@ const insertCompetition = db.prepare(`
   INSERT INTO competitions
     (id, slug, title, blurb, description, state, metric_name, metric_direction, metric_code,
      public_percent, split_seed, wall_seconds, memory_mb, cpus, per_day, environment,
-     starts_at, deadline_at, private_release, scoring, board_visibility, created_by, created_at, updated_at)
+     starts_at, deadline_at, private_release, scoring, board_visibility, late_submissions, output_policy,
+     created_by, created_at, updated_at)
   VALUES
     (@id, @slug, @title, @blurb, @description, 'draft', @metric_name, @metric_direction,
      @metric_code, @public_percent, @split_seed, @wall_seconds, @memory_mb, @cpus, @per_day,
-     @environment, @starts_at, @deadline_at, @private_release, @scoring, @board_visibility, @created_by, @at, @at)
+     @environment, @starts_at, @deadline_at, @private_release, @scoring, @board_visibility,
+     @late_submissions, @output_policy, @created_by, @at, @at)
 `)
 const selectCompetition = db.prepare('SELECT * FROM competitions WHERE id = ?')
 const selectBySlug = db.prepare('SELECT * FROM competitions WHERE slug = ?')
@@ -574,6 +656,8 @@ export interface NewCompetition {
   privateRelease?: PrivateRelease
   scoring?: ScoringRule
   boardVisibility?: BoardVisibility
+  lateSubmissions?: boolean
+  outputPolicy?: OutputPolicy
   createdBy?: string | null
 }
 
@@ -615,6 +699,8 @@ export function createCompetition(input: NewCompetition): Competition | null {
       private_release: input.privateRelease ?? 'auto',
       scoring: input.scoring ?? 'chosen',
       board_visibility: input.boardVisibility ?? 'public',
+      late_submissions: input.lateSubmissions ? 1 : 0,
+      output_policy: input.outputPolicy ?? 'brief',
       created_by: input.createdBy ?? null,
       at,
     })
@@ -661,6 +747,8 @@ export type CompetitionPatch = Partial<
     | 'privateRelease'
     | 'scoring'
     | 'boardVisibility'
+    | 'lateSubmissions'
+    | 'outputPolicy'
     | 'baselineSubmissionId'
   >
 > & { metric?: Partial<CompetitionMetricPatch>; limits?: Partial<Competition['limits']> }
@@ -679,6 +767,8 @@ const COLUMN_OF: Record<string, string> = {
   privateRelease: 'private_release',
   scoring: 'scoring',
   boardVisibility: 'board_visibility',
+  lateSubmissions: 'late_submissions',
+  outputPolicy: 'output_policy',
   baselineSubmissionId: 'baseline_submission_id',
   'metric.name': 'metric_name',
   'metric.direction': 'metric_direction',
@@ -723,7 +813,8 @@ export function updateCompetition(id: string, patch: CompetitionPatch): Competit
     const column = COLUMN_OF[key]
     if (!column) continue
     sets.push(`${column} = @${column}`)
-    params[column] = CLIP_OF[key] ? clip(value, CLIP_OF[key]) : value
+    // SQLite binds no booleans: a switch is stored as 0 or 1.
+    params[column] = CLIP_OF[key] ? clip(value, CLIP_OF[key]) : typeof value === 'boolean' ? (value ? 1 : 0) : value
   }
   if (sets.length === 0) return getCompetition(id)
   try {
@@ -737,6 +828,53 @@ export function updateCompetition(id: string, patch: CompetitionPatch): Competit
   }
   return getCompetition(id)
 }
+
+const forgiveLateRows = db.prepare(`
+  UPDATE submissions SET late = 0
+  WHERE competition_id = @id AND late = 1
+    AND (@deadline IS NULL
+      OR (COALESCE(sent_at, accepted_at) <= @deadline AND accepted_at <= @deadline + @grace))
+`)
+const forgiveLateQueue = db.prepare(`
+  UPDATE competition_queue SET late = 0
+  WHERE competition_id = ? AND late = 1
+    AND submission_id IN (SELECT id FROM submissions WHERE competition_id = ? AND late = 0)
+`)
+
+/**
+ * After the deadline moved, take the late mark off what the new deadline
+ * would have accepted on time; returns how many submissions it freed.
+ *
+ * The teacher's decision of 4 Oct 2026: a deadline moved LATER means the class
+ * had more time, so a notebook sent before the new deadline is on time — it
+ * joins the boards, can be chosen, and the final results wait for it. The test
+ * is the acceptance rule itself (dependencies/service.ts ·
+ * acceptPinnedSubmission) against the new deadline: the upload began by it,
+ * and its body arrived within `graceMs` after it. No deadline at all means
+ * intake never ended, so nothing is late.
+ *
+ * It only ever clears the mark. A deadline moved EARLIER does not make an
+ * on-time submission late: that would take a place away from someone after
+ * the fact, for a rule that did not exist when they pressed «Отправить». No
+ * one can be penalised retroactively. That is also what makes this safe to
+ * run on every save of the deadline: a row still late under the deadline it
+ * was judged by is late under any earlier one.
+ *
+ * Only a live competition: after «Завершить сейчас» intake ended at the
+ * finish, not at the deadline, and moving the date does not reopen standings
+ * the teacher closed by hand.
+ *
+ * The waiting queue row carries its own copy of the mark (the on-time-first
+ * order and the replace rule read it), so it is cleared in the same
+ * transaction.
+ */
+export const forgiveLateSubmissions = db.transaction((competitionId: string, graceMs: number): number => {
+  const c = getCompetition(competitionId)
+  if (!c || c.state !== 'live') return 0
+  const freed = forgiveLateRows.run({ id: competitionId, deadline: c.deadlineAt, grace: graceMs }).changes
+  if (freed > 0) forgiveLateQueue.run(competitionId, competitionId)
+  return freed
+})
 
 const updateState = db.prepare(
   'UPDATE competitions SET state = ?, updated_at = ? WHERE id = ?',
@@ -816,10 +954,9 @@ function toFile(row: FileRow): CompetitionFile {
 const upsertFile = db.prepare(`
   INSERT INTO competition_files (competition_id, name, bytes, row_count, visibility, uploaded_at)
   VALUES (@competition_id, @name, @bytes, @row_count, @visibility, @uploaded_at)
-  ON CONFLICT(competition_id, name) DO UPDATE SET
+  ON CONFLICT(competition_id, visibility, name) DO UPDATE SET
     bytes = excluded.bytes,
     row_count = excluded.row_count,
-    visibility = excluded.visibility,
     uploaded_at = excluded.uploaded_at
 `)
 const selectFiles = db.prepare(
@@ -829,14 +966,14 @@ const selectFilesOf = db.prepare(
   'SELECT * FROM competition_files WHERE competition_id = ? AND visibility = ? ORDER BY name',
 )
 const selectFile = db.prepare(
-  'SELECT * FROM competition_files WHERE competition_id = ? AND name = ?',
+  'SELECT * FROM competition_files WHERE competition_id = ? AND visibility = ? AND name = ?',
 )
 const deleteFileRow = db.prepare(
-  'DELETE FROM competition_files WHERE competition_id = ? AND name = ?',
+  'DELETE FROM competition_files WHERE competition_id = ? AND visibility = ? AND name = ?',
 )
-const sumOpenBytes = db.prepare(
+const sumBytesOf = db.prepare(
   `SELECT COALESCE(SUM(bytes), 0) AS bytes FROM competition_files
-   WHERE competition_id = ? AND visibility = 'open'`,
+   WHERE competition_id = ? AND visibility = ?`,
 )
 
 export function putFile(input: {
@@ -856,7 +993,7 @@ export function putFile(input: {
     visibility: input.visibility,
     uploaded_at: input.at ?? Date.now(),
   })
-  return toFile(selectFile.get(input.competitionId, name) as FileRow)
+  return toFile(selectFile.get(input.competitionId, input.visibility, name) as FileRow)
 }
 
 export function listFiles(id: string, visibility?: FileVisibility): CompetitionFile[] {
@@ -866,13 +1003,22 @@ export function listFiles(id: string, visibility?: FileVisibility): CompetitionF
   return rows.map(toFile)
 }
 
-export function dropFile(id: string, name: string): boolean {
-  return deleteFileRow.run(id, name).changes > 0
+/**
+ * Remove a file's row. The visibility is part of the name now: dropping the
+ * open example must leave the hidden test of the same name where it is.
+ */
+export function dropFile(id: string, name: string, visibility: FileVisibility = 'open'): boolean {
+  return deleteFileRow.run(id, visibility, name).changes > 0
 }
 
 /** What the open files weigh — against the "up to 200 MB per competition" ceiling. */
 export function openFileBytes(id: string): number {
-  return (sumOpenBytes.get(id) as { bytes: number }).bytes
+  return (sumBytesOf.get(id, 'open') as { bytes: number }).bytes
+}
+
+/** What the hidden test weighs — against its own `LIMITS.sealedBytes`. */
+export function sealedFileBytes(id: string): number {
+  return (sumBytesOf.get(id, 'sealed') as { bytes: number }).bytes
 }
 
 /* ------------------------------------------------------------ participants */
@@ -1240,6 +1386,11 @@ interface SubmissionRow {
   input_revision: number | null
   notebook_input_revision: number | null
   replaced_by: number | null
+  late: number
+  sent_at: number | null
+  sealed_inputs: number
+  brief_error: string | null
+  error_type: string | null
 }
 
 function toSubmission(row: SubmissionRow): Submission {
@@ -1264,13 +1415,19 @@ function toSubmission(row: SubmissionRow): Submission {
     inputRevision: row.input_revision,
     notebookInputRevision: row.notebook_input_revision,
     replacedBy: row.replaced_by ?? null,
+    late: row.late === 1,
+    sentAt: row.sent_at ?? null,
+    sealedInputs: row.sealed_inputs === 1,
+    briefError: row.brief_error ?? null,
+    errorType: row.error_type ?? null,
   }
 }
 
 const insertSubmission = db.prepare(`
   INSERT INTO submissions
-    (id, competition_id, entrant_id, number, file_name, bytes, accepted_at, state, stage, input_revision, notebook_input_revision)
-  VALUES (@id, @competition_id, @entrant_id, @number, @file_name, @bytes, @at, 'queued', 'accepted',
+    (id, competition_id, entrant_id, number, file_name, bytes, accepted_at, state, stage, late, sent_at,
+     input_revision, notebook_input_revision)
+  VALUES (@id, @competition_id, @entrant_id, @number, @file_name, @bytes, @at, 'queued', 'accepted', @late, @sent_at,
     (SELECT input_revision FROM competitions WHERE id = @competition_id),
     (SELECT notebook_input_revision FROM competitions WHERE id = @competition_id))
 `)
@@ -1286,7 +1443,7 @@ const selectMine = db.prepare(
    ORDER BY accepted_at DESC, number DESC`,
 )
 const selectSince = db.prepare(
-  `SELECT id, accepted_at, state, cells_done FROM submissions
+  `SELECT id, accepted_at, state FROM submissions
    WHERE competition_id = ? AND entrant_id = ? AND accepted_at >= ?`,
 )
 /**
@@ -1299,21 +1456,27 @@ const selectSince = db.prepare(
  */
 const TURN = `(SELECT COUNT(*) FROM competition_queue q
                WHERE q.entrant_id = @entrant_id AND q.submission_id != @submission_id)`
+/*
+ * A queue row is late when its submission is: read off the submission row
+ * itself, so a rerun or a rescore of a late one keeps waiting behind on-time
+ * work too (see the selection order below).
+ */
+const LATE = `COALESCE((SELECT late FROM submissions WHERE id = @submission_id), 0)`
 
 const insertQueueRow = db.prepare(`
   INSERT INTO competition_queue
-    (submission_id, competition_id, entrant_id, kind, state, enqueued_at, turn)
-  VALUES (@submission_id, @competition_id, @entrant_id, @kind, 'waiting', @at, ${TURN})
+    (submission_id, competition_id, entrant_id, kind, state, enqueued_at, turn, late)
+  VALUES (@submission_id, @competition_id, @entrant_id, @kind, 'waiting', @at, ${TURN}, ${LATE})
 `)
 /* A replacement inherits the place it takes: the same arrival time and turn. */
 const insertQueueRowAt = db.prepare(`
   INSERT INTO competition_queue
-    (submission_id, competition_id, entrant_id, kind, state, enqueued_at, turn)
-  VALUES (@submission_id, @competition_id, @entrant_id, 'notebook', 'waiting', @enqueued_at, @turn)
+    (submission_id, competition_id, entrant_id, kind, state, enqueued_at, turn, late)
+  VALUES (@submission_id, @competition_id, @entrant_id, 'notebook', 'waiting', @enqueued_at, @turn, ${LATE})
 `)
 const markReplaced = db.prepare(`
   UPDATE submissions SET state = 'cancelled', stage = 'queue', replaced_by = @number,
-    participant_error = NULL, teacher_error = @note
+    participant_error = NULL, brief_error = NULL, teacher_error = @note
   WHERE id = @id
 `)
 
@@ -1342,8 +1505,13 @@ export const acceptSubmission = db.transaction(
     bytes: number
     at?: number
     replaces?: string | null
+    /** Accepted after intake ended (Submission.late) — decided by the caller, once. */
+    late?: boolean
+    /** When the upload began (Submission.sentAt); defaults to `at`. */
+    sentAt?: number | null
   }): Submission => {
     const at = input.at ?? Date.now()
+    const late = input.late === true
     /*
      * A person removed by the teacher while their upload was still arriving
      * must not come back as a submission without a name: the removal took the
@@ -1353,7 +1521,7 @@ export const acceptSubmission = db.transaction(
     const id = newId()
     const number = (nextNumber.get(input.competitionId) as { n: number }).n
     const old = input.replaces ? queueRow(input.replaces) : null
-    if (input.replaces && (!old || !replaceableRow(old, input.competitionId, input.entrantId))) {
+    if (input.replaces && (!old || !replaceableRow(old, input.competitionId, input.entrantId, late))) {
       throw new Error('The replaced submission is no longer waiting')
     }
     insertSubmission.run({
@@ -1364,6 +1532,8 @@ export const acceptSubmission = db.transaction(
       file_name: clip(input.fileName, LIMITS.fileName),
       bytes: input.bytes,
       at,
+      late: late ? 1 : 0,
+      sent_at: input.sentAt ?? at,
     })
     if (old) {
       deleteQueueRow.run(old.submissionId)
@@ -1431,10 +1601,15 @@ const selectAnyRun = db.prepare('SELECT 1 FROM submission_runs WHERE submission_
  * teacher's "run again" waits exactly like a fresh upload, but it belongs to
  * a submission that already has a result (and maybe the scoring choice), and
  * cancelling it would throw both away.
+ *
+ * And of the same lateness: a late upload taking the place of an ON-TIME one
+ * still waiting would cancel a notebook sent at 23:59:50 that is in the
+ * standings for one sent at 00:00:10 that is not.
  */
-function replaceableRow(row: QueueRow, competitionId: string, entrantId: string): boolean {
+function replaceableRow(row: QueueRow, competitionId: string, entrantId: string, late = false): boolean {
   return row.competitionId === competitionId && row.entrantId === entrantId
     && row.state === 'waiting' && row.kind === 'notebook' && row.pendingKind === null
+    && row.late === late
     && selectAnyRun.get(row.submissionId) === undefined
 }
 
@@ -1448,19 +1623,28 @@ function replaceableRow(row: QueueRow, competitionId: string, entrantId: string)
  * rescore or a re-run waiting, or more than one in flight — refused, one at a
  * time: that one is already taking a slot or holds a result, and replacing it
  * would throw away the work.
+ *
+ * `late` is the new upload's lateness. A late one meeting a waiting ON-TIME
+ * submission is refused with its own word (`on_time_waiting`): the on-time one
+ * keeps its place, and the person is told why the fix was not taken.
  */
-export function intakePlan(competitionId: string, entrantId: string): { replaces: Submission | null } | 'in_flight' {
+export function intakePlan(
+  competitionId: string,
+  entrantId: string,
+  late = false,
+): { replaces: Submission | null } | 'in_flight' | 'on_time_waiting' {
   const flying = selectInFlight.all(competitionId, entrantId) as SubmissionRow[]
   if (flying.length === 0) return { replaces: null }
   if (flying.length > 1) return 'in_flight'
   const only = flying[0]
   const row = queueRow(only.id)
-  if (only.state !== 'queued' || !row || !replaceableRow(row, competitionId, entrantId)) return 'in_flight'
+  if (late && row && !row.late && replaceableRow(row, competitionId, entrantId, false)) return 'on_time_waiting'
+  if (only.state !== 'queued' || !row || !replaceableRow(row, competitionId, entrantId, late)) return 'in_flight'
   return { replaces: toSubmission(only) }
 }
 
 const selectSpendable = db.prepare(
-  'SELECT entrant_id, accepted_at, state, cells_done FROM submissions WHERE competition_id = ?',
+  'SELECT entrant_id, state FROM submissions WHERE competition_id = ? AND late = 0',
 )
 
 /**
@@ -1473,24 +1657,30 @@ const selectSpendable = db.prepare(
  * 29 Sep 2026 it showed "6" next to a limit of 5, and three classmates took it
  * for cheating. The number the class sees there and the "left today" its owner
  * reads must be one count, so the rule is called here, not copied into SQL.
+ *
+ * On-time rows only: the board is the standings as intake left them, and a
+ * late submission (Submission.late) is outside them, here as everywhere else
+ * on the board.
  */
 export function submissionCounts(competitionId: string): Map<string, number> {
-  const rows = selectSpendable.all(competitionId) as {
-    entrant_id: string
-    accepted_at: number
-    state: string
-    cells_done: number
-  }[]
+  const rows = selectSpendable.all(competitionId) as { entrant_id: string; state: string }[]
   const counts = new Map<string, number>()
   for (const row of rows) {
-    const spent = countsTowardDailyQuota({
-      acceptedAt: row.accepted_at,
-      state: row.state as SubmissionState,
-      cellsDone: row.cells_done,
-    })
-    if (spent) counts.set(row.entrant_id, (counts.get(row.entrant_id) ?? 0) + 1)
+    if (countsTowardDailyQuota({ state: row.state as SubmissionState })) {
+      counts.set(row.entrant_id, (counts.get(row.entrant_id) ?? 0) + 1)
+    }
   }
   return counts
+}
+
+/** Today's rows of one person, the window either day rule can begin at. */
+function todayRows(competitionId: string, entrantId: string, now: number, timeZone: string, except: string | null = null) {
+  // Today's start in the zone is the earliest either day can begin: the rule
+  // in @shared narrows it for older rows, never widens it.
+  const since = dayStart(now, timeZone)
+  return (selectSince.all(competitionId, entrantId, since) as { id: string; accepted_at: number; state: string }[])
+    .filter((row) => row.id !== except)
+    .map((row) => ({ acceptedAt: row.accepted_at, state: row.state as SubmissionState }))
 }
 
 /**
@@ -1518,26 +1708,7 @@ export function leftToday(
   timeZone = instanceTimeZone(),
   zoneSince: number | null = zoneDaysSince(),
 ): number | null {
-  // Today's start in the zone is the earliest either day can begin: the rule
-  // below narrows it for older rows, never widens it.
-  const since = dayStart(now, timeZone)
-  const rows = (selectSince.all(competition.id, entrantId, since) as {
-    id: string
-    accepted_at: number
-    state: string
-    cells_done: number
-  }[]).filter((row) => row.id !== except)
-  return submissionsLeftToday(
-    competition.limits.perDay,
-    rows.map((row) => ({
-      acceptedAt: row.accepted_at,
-      state: row.state as SubmissionState,
-      cellsDone: row.cells_done,
-    })),
-    now,
-    timeZone,
-    zoneSince,
-  )
+  return submissionsLeftToday(competition.limits.perDay, todayRows(competition.id, entrantId, now, timeZone, except), now, timeZone, zoneSince)
 }
 
 /** How many of the person's submissions counted toward today's quota — by the same day as `leftToday`. */
@@ -1548,22 +1719,35 @@ export function usedToday(
   timeZone = instanceTimeZone(),
   zoneSince: number | null = zoneDaysSince(),
 ): number {
-  const since = dayStart(now, timeZone)
-  const rows = selectSince.all(competitionId, entrantId, since) as {
-    accepted_at: number
-    state: string
-    cells_done: number
-  }[]
-  return rows.filter(
-    (row) =>
-      row.accepted_at <= now &&
-      row.accepted_at >= quotaDayStart(row.accepted_at, now, timeZone, zoneSince) &&
-      countsTowardDailyQuota({
-        acceptedAt: row.accepted_at,
-        state: row.state as SubmissionState,
-        cellsDone: row.cells_done,
-      }),
-  ).length
+  return todayRows(competitionId, entrantId, now, timeZone)
+    .filter((row) => row.acceptedAt <= now && row.acceptedAt >= quotaDayStart(row.acceptedAt, now, timeZone, zoneSince))
+    .filter((row) => countsTowardDailyQuota(row)).length
+}
+
+/**
+ * How many failed submissions the person still may have today before the
+ * ceiling refuses (@shared/competitions · failedAttemptsCeiling); null — there
+ * is no ceiling. The same day and the same rows as `leftToday`.
+ */
+export function attemptsLeft(
+  competition: Pick<Competition, 'id' | 'limits'>,
+  entrantId: string,
+  now = Date.now(),
+  timeZone = instanceTimeZone(),
+  zoneSince: number | null = zoneDaysSince(),
+): number | null {
+  return attemptsLeftToday(competition.limits.perDay, todayRows(competition.id, entrantId, now, timeZone), now, timeZone, zoneSince)
+}
+
+/** How many of the person's submissions failed today, by the ceiling's rule. */
+export function failedToday(
+  competitionId: string,
+  entrantId: string,
+  now = Date.now(),
+  timeZone = instanceTimeZone(),
+  zoneSince: number | null = zoneDaysSince(),
+): number {
+  return failedAttemptsToday(todayRows(competitionId, entrantId, now, timeZone), now, timeZone, zoneSince)
 }
 
 /** What the runner writes into a submission as it goes. */
@@ -1579,6 +1763,9 @@ export interface SubmissionPatch {
   cellsTotal?: number
   participantError?: string | null
   teacherError?: string | null
+  /** What a blind participant reads instead (Submission.briefError); cut like participantError. */
+  briefError?: string | null
+  errorType?: string | null
 }
 
 const SUBMISSION_COLUMN: Record<keyof SubmissionPatch, string> = {
@@ -1593,6 +1780,8 @@ const SUBMISSION_COLUMN: Record<keyof SubmissionPatch, string> = {
   cellsTotal: 'cells_total',
   participantError: 'participant_error',
   teacherError: 'teacher_error',
+  briefError: 'brief_error',
+  errorType: 'error_type',
 }
 
 export function updateSubmission(id: string, patch: SubmissionPatch): Submission | null {
@@ -1603,12 +1792,19 @@ export function updateSubmission(id: string, patch: SubmissionPatch): Submission
     const column = SUBMISSION_COLUMN[key as keyof SubmissionPatch]
     sets.push(`${column} = @${column}`)
     params[column] =
-      key === 'participantError'
+      key === 'participantError' || key === 'briefError'
         ? clip(value ?? '', LIMITS.participantError) || null
         : key === 'teacherError'
           ? clip(value ?? '', LIMITS.teacherError) || null
           : value
   }
+  /*
+   * A new participant text without its blind twin clears the twin: a stale
+   * brief sentence from an earlier run must not stand for this one, and a
+   * blind participant reading nothing is the safe way to be wrong. Whoever
+   * writes words that are safe to show blind passes them as `briefError`.
+   */
+  if (patch.participantError !== undefined && patch.briefError === undefined) sets.push('brief_error = NULL')
   if (sets.length === 0) return getSubmission(id)
   const result = db
     .prepare(`UPDATE submissions SET ${sets.join(', ')} WHERE id = @id`)
@@ -1631,7 +1827,8 @@ export const chooseSubmission = db.transaction(
     const row = selectSubmission.get(submissionId) as SubmissionRow | undefined
     if (!row || getCompetition(competitionId)?.scoring !== 'chosen') return false
     if (row.competition_id !== competitionId || row.entrant_id !== entrantId) return false
-    if (row.state !== 'scored') return false
+    // A late one is outside the standings: picking it would count it.
+    if (row.state !== 'scored' || row.late === 1) return false
     db.prepare(
       'UPDATE submissions SET chosen = 0 WHERE competition_id = ? AND entrant_id = ?',
     ).run(competitionId, entrantId)
@@ -1640,10 +1837,17 @@ export const chooseSubmission = db.transaction(
   },
 )
 
+/*
+ * On-time rows only. A late submission is scored like any other, and this is
+ * the one place that keeps it off every board at once: the public and the
+ * final one, places, "your place", the teacher's board and the entrants tab,
+ * the class's best result and what the sweep keeps. countedSubmission ignores
+ * late entries as well, for boards built elsewhere (the panel's feed).
+ */
 const selectBoardRows = db.prepare(`
   SELECT id, entrant_id, number, accepted_at, state, public_score, private_score, chosen
   FROM submissions
-  WHERE competition_id = ? AND state = 'scored' AND public_score IS NOT NULL
+  WHERE competition_id = ? AND state = 'scored' AND public_score IS NOT NULL AND late = 0
   ORDER BY entrant_id, accepted_at
 `)
 
@@ -1691,12 +1895,14 @@ export function leaderboard(competitionId: string, part: 'public' | 'private'): 
   return boardOf(people, competition.scoring, competition.metric.direction, part)
 }
 
+/* The summary is about the standings: late submissions are counted apart. */
 const selectSummary = db.prepare(`
-  SELECT state, COUNT(*) AS n FROM submissions WHERE competition_id = ? GROUP BY state
+  SELECT state, COUNT(*) AS n FROM submissions WHERE competition_id = ? AND late = 0 GROUP BY state
 `)
+const selectLateCount = db.prepare('SELECT COUNT(*) AS n FROM submissions WHERE competition_id = ? AND late = 1')
 const selectBest = db.prepare(`
   SELECT MIN(public_score) AS low, MAX(public_score) AS high FROM submissions
-  WHERE competition_id = ? AND state = 'scored' AND public_score IS NOT NULL
+  WHERE competition_id = ? AND state = 'scored' AND public_score IS NOT NULL AND late = 0
 `)
 
 export interface CompetitionSummary {
@@ -1712,6 +1918,8 @@ export interface CompetitionSummary {
   entrants: number
   /** The best public result — taking the metric's direction into account. */
   bestPublic: number | null
+  /** Late submissions, which none of the numbers above count. */
+  late: number
 }
 
 /** The five numbers of the A3 summary and what the A1 competition list shows. */
@@ -1731,17 +1939,23 @@ export function competitionSummary(id: string): CompetitionSummary {
     cancelled: of('cancelled'),
     entrants: listCompetitionEntrants(id).length,
     bestPublic: direction === 'lower' ? range.low : range.high,
+    late: (selectLateCount.get(id) as { n: number }).n,
   }
 }
 
 const countPendingResults = db.prepare(`
   SELECT COUNT(*) AS n FROM submissions
-  WHERE competition_id = ? AND state IN ('queued', 'running') AND accepted_at <= ?
+  WHERE competition_id = ? AND state IN ('queued', 'running') AND accepted_at <= ? AND late = 0
 `)
 
 /**
  * Submissions accepted by `cutoff` that have no result yet — what the
  * automatic private release waits for (results.ts).
+ *
+ * On-time ones only: a late submission is in no table, and waiting for it
+ * would hold the final results back for as long as late intake stays open —
+ * forever after "Finish now" without a deadline, where the cutoff is
+ * MAX_SAFE_INTEGER.
  */
 export function pendingResultsCount(competitionId: string, cutoff: number): number {
   return (countPendingResults.get(competitionId, cutoff) as { n: number }).n
@@ -1779,6 +1993,15 @@ export function recentDurations(competitionId: string | null, limit: number): nu
 /** Recent metric-only runs across the instance — what a rescore takes. */
 export function recentMetricRuns(limit: number): number[] {
   return (selectRecentMetricRuns.all(limit) as { ms: number }[]).map((row) => row.ms)
+}
+
+const selectLastLate = db.prepare(
+  'SELECT MAX(COALESCE(sent_at, accepted_at)) AS at FROM submissions WHERE competition_id = ? AND late = 1',
+)
+
+/** When the competition's latest late submission arrived; null — it has none (housekeeping.ts). */
+export function lastLateSubmissionAt(competitionId: string): number | null {
+  return (selectLastLate.get(competitionId) as { at: number | null }).at ?? null
 }
 
 /* ------------------------------------------------------------------- runs */
@@ -1828,9 +2051,11 @@ function toRun(row: RunRow): SubmissionRun {
 }
 
 const insertRun = db.prepare(`
-  INSERT INTO submission_runs (id, submission_id, seq, kind, started_at, container, attempt_id, input_revision)
-  VALUES (@id, @submission_id, @seq, @kind, @at, @container, @attempt_id, @input_revision)
+  INSERT INTO submission_runs (id, submission_id, seq, kind, started_at, container, attempt_id, input_revision, sealed_inputs)
+  VALUES (@id, @submission_id, @seq, @kind, @at, @container, @attempt_id, @input_revision, @sealed_inputs)
 `)
+/* Sticky: once a run of the submission has read the hidden test, it stays blind (Submission.sealedInputs). */
+const markSealed = db.prepare('UPDATE submissions SET sealed_inputs = 1 WHERE id = ?')
 const nextRunSeq = db.prepare(
   'SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM submission_runs WHERE submission_id = ?',
 )
@@ -1847,8 +2072,11 @@ export const startRun = db.transaction(
     kind: RunKind
     container?: string | null
     at?: number
+    /** The notebook reads the hidden test in this run. */
+    sealedInputs?: boolean
   }): SubmissionRun => {
     const id = newId()
+    if (input.sealedInputs) markSealed.run(input.submissionId)
     insertRun.run({
       id,
       submission_id: input.submissionId,
@@ -1858,6 +2086,7 @@ export const startRun = db.transaction(
       container: input.container ?? null,
       attempt_id: input.attemptId ?? null,
       input_revision: input.inputRevision ?? null,
+      sealed_inputs: input.sealedInputs ? 1 : 0,
     })
     return toRun(selectRun.get(id) as RunRow)
   },
@@ -1955,6 +2184,8 @@ export interface QueueRow {
   container: string | null
   attemptId: string | null
   pendingKind: RunKind | null
+  /** Its submission is late: on-time work goes first (see the selection order). */
+  late: boolean
 }
 
 interface QueueRowRaw {
@@ -1973,6 +2204,7 @@ interface QueueRowRaw {
   container: string | null
   attempt_id: string | null
   pending_kind: string | null
+  late: number
 }
 
 function toQueueRow(row: QueueRowRaw): QueueRow {
@@ -1992,15 +2224,17 @@ function toQueueRow(row: QueueRowRaw): QueueRow {
     container: row.container,
     attemptId: row.attempt_id,
     pendingKind: row.pending_kind as RunKind | null,
+    late: row.late === 1,
   }
 }
 
 const upsertQueue = db.prepare(`
   INSERT INTO competition_queue
-    (submission_id, competition_id, entrant_id, kind, state, enqueued_at, turn)
-  VALUES (@submission_id, @competition_id, @entrant_id, @kind, 'waiting', @at, ${TURN})
+    (submission_id, competition_id, entrant_id, kind, state, enqueued_at, turn, late)
+  VALUES (@submission_id, @competition_id, @entrant_id, @kind, 'waiting', @at, ${TURN}, ${LATE})
   ON CONFLICT(submission_id) DO UPDATE SET
     kind = excluded.kind,
+    late = excluded.late,
     state = 'waiting',
     enqueued_at = excluded.enqueued_at,
     turn = excluded.turn,
@@ -2104,6 +2338,10 @@ export function waitingCount(): number {
  * The third is arrival time, and it is also the last: with equal attempt
  * counts, whoever submitted earlier goes first.
  *
+ * Before all three, on-time work goes ahead of late work: a late submission
+ * is outside the standings, and the final results wait for every on-time
+ * notebook and every rescore of one, not for fixes sent after the deadline.
+ *
  * Computed in SQL, not in memory, because the queue is database state, and
  * two processes (the server and, one day, a separate runner) must see one and
  * the same answer.
@@ -2112,6 +2350,7 @@ const selectNext = db.prepare(`
   SELECT q.* FROM competition_queue q
   WHERE q.state = 'waiting' AND q.not_before <= @at
   ORDER BY
+    q.late ASC,
     (SELECT COUNT(*) FROM competition_queue r
       WHERE r.state = 'running' AND r.entrant_id = q.entrant_id) ASC,
     q.turn ASC,
@@ -2183,7 +2422,8 @@ export const deferResourceAttempt=db.transaction((row:QueueRow,reason:string,at=
   db.prepare(`UPDATE competition_queue SET kind=COALESCE(pending_kind,?),pending_kind=NULL,state='waiting',
     started_at=NULL,boot=NULL,container=NULL,attempt_id=NULL,attempts=?,resource_retries=?,not_before=?
     WHERE submission_id=? AND attempt_id=?`).run(nextKind,fresh?0:Math.max(0,current.attempts-1),fresh?0:current.resourceRetries+1,notBefore,row.submissionId,row.attemptId)
-  updateSubmission(row.submissionId,{state:'queued',stage:'queue',participantError:reason,teacherError:teacherReason})
+  // Our own words about the queue: safe to show a blind participant as they are.
+  updateSubmission(row.submissionId,{state:'queued',stage:'queue',participantError:reason,briefError:reason,teacherError:teacherReason})
   return notBefore
 })
 
