@@ -13,6 +13,18 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.15.0](https://github.com/colloq-edu/colloq/compare/v0.14.0...v0.15.0) (2026-10-03)
+
+
+### Features
+
+* **lecture:** speaker notes reader and editor, lecture take-over, a smooth pointer ([#27](https://github.com/colloq-edu/colloq/issues/27)) ([2eb62c9](https://github.com/colloq-edu/colloq/commit/2eb62c901e938f0bf0d8d749abe2a9341e519dfb))
+
+
+### Bug Fixes
+
+* **scripts:** the activity sheet keeps numbers and counts only the class itself ([#25](https://github.com/colloq-edu/colloq/issues/25)) ([7367666](https://github.com/colloq-edu/colloq/commit/73676669fd48032595b2f6ef67f0ff4a7a8beab0))
+
 ## [0.14.0](https://github.com/colloq-edu/colloq/compare/v0.13.0...v0.14.0) (2026-10-03)
 
 
