@@ -170,6 +170,18 @@ export function folderZipPlan(
   return planOf(folder.path, files.list, day)
 }
 
+/**
+ * An archive of plain files on disk, each with its size and CRC already
+ * known — a competition's open data (competitions/zip.ts). Store-only and
+ * stamped today, like the rest.
+ */
+export function diskZipPlan(
+  top: string,
+  files: readonly { name: string; file: string; bytes: number; crc: number }[],
+): ZipPlan {
+  return planOf(top, files.map((entry) => ({ ...entry, body: null })), null)
+}
+
 /** The page files of an archive, each once, ignoring case: unzip on a Mac would merge them. */
 function entriesOf(verify: boolean) {
   const list: ZipEntry[] = []

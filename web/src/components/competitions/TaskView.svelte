@@ -24,9 +24,11 @@
     view: EntrantCompetitionView
     phone: boolean
     fileUrl: (name: string) => string
+    /** «Скачать всё»: the archive of the open files. */
+    zipUrl?: string
   }
 
-  const { view, phone, fileUrl }: Props = $props()
+  const { view, phone, fileUrl, zipUrl }: Props = $props()
 
   loadRenderers()
   const render = $derived(renderers())
@@ -53,7 +55,7 @@
       <p class="text-ui text-muted">{tr('competitions.p.noDescription')}</p>
     {/if}
 
-    <DataFiles files={view.files} sealedFiles={view.sealedFiles ?? []} {fileUrl} />
+    <DataFiles files={view.files} sealedFiles={view.sealedFiles ?? []} {fileUrl} {zipUrl} />
     {#if target}
       <HowChecked competition={view.competition} {target} />
     {/if}

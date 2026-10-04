@@ -249,12 +249,14 @@ test('a stalled archive stream is dropped, so it cannot keep its slot', () => {
    * socket's, so it fires exactly when no bytes move, and destroying the
    * response fires the 'close' that frees the slot.
    */
-  const route = fs.readFileSync(path.resolve(import.meta.dirname, '../server/src/routes/courses.ts'), 'utf8')
-  // Every archive (the class's and a folder's) streams through sendArchive.
-  const zip = route.slice(route.indexOf('function sendArchive('), route.indexOf('function sendFolder('))
+  const read = (file: string) => fs.readFileSync(path.resolve(import.meta.dirname, file), 'utf8')
+  // Every archive — the class's, a folder's, a competition's — streams through sendArchive.
+  const zip = read('../server/src/publish/zip-send.ts')
   assert.match(zip, /res\.setTimeout\(ZIP_IDLE_MS, \(\) => res\.destroy\(\)\)/)
   assert.match(zip, /res\.on\('close', \(\) => \{\s*gone\.abort\(\)\s*leave\(\)/)
+  const route = read('../server/src/routes/courses.ts')
   const routes = route.slice(route.indexOf("router.get('/api/p/:id/zip'"), route.indexOf('The 0.12 addresses'))
   assert.match(routes, /sendArchive\(res, next, pub\.id,/)
+  assert.match(read('../server/src/routes/competitions.ts'), /sendArchive\(\s*res,\s*next,\s*`k:\$\{competition\.id\}`/)
   assert.ok(ZIP_IDLE_MS <= 120_000, 'a stalled stream holds its slot for too long')
 })

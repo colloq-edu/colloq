@@ -71,6 +71,16 @@ export function crc32(body: Uint8Array): number {
   return nativeCrc ? nativeCrc(body) >>> 0 : crc32Table(body)
 }
 
+/** CRC-32 of a file on disk, read in chunks: for archives of files that keep no CRC of their own. */
+export async function crc32OfFile(file: string): Promise<number> {
+  let crc = 0
+  for await (const chunk of fs.createReadStream(file)) {
+    const body = chunk as Buffer
+    crc = nativeCrc ? nativeCrc(body, crc) >>> 0 : crc32Table(body, crc)
+  }
+  return crc
+}
+
 /* ------------------------------------------------------------------- store */
 
 export interface PageFile {

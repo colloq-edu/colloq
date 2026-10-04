@@ -45,8 +45,10 @@
       : []),
   ])
   /*
-   * The note under the column: with a hidden test it says where the test goes
+   * The note under the column, only with a hidden test: where the test goes
    * and, under the brief policy, why a failure shows only a cell and a type.
+   * Without one the six rows say it all (the owner took out the general
+   * reminders on 4 Oct 2026).
    */
   const note = $derived(
     target
@@ -58,7 +60,7 @@
         ]
           .filter(Boolean)
           .join(' ')
-      : tr('competitions.p.conditionsNote'),
+      : '',
   )
 
   const rows: { label: string; value: string; environment?: boolean; sealed?: boolean }[] = $derived([
@@ -82,9 +84,8 @@
     { label: tr('competitions.p.condData'), value: tr('competitions.p.condDataValue') },
     ...sealedRows,
     { label: tr('competitions.p.condAnswer'), value: 'submission.csv' },
-    // Only a score spends one (since 4 Oct 2026), and the value says so.
     ...(competition.limits.perDay > 0
-      ? [{ label: tr('competitions.p.condPerDay'), value: tr('competitions.p.condPerDayValue', { count: competition.limits.perDay }) }]
+      ? [{ label: tr('competitions.p.condPerDay'), value: String(competition.limits.perDay) }]
       : []),
   ])
 </script>
@@ -111,8 +112,7 @@
       </div>
     {/each}
   </dl>
-  <p class="text-ui leading-5 text-muted">{note}</p>
-  <!-- Every writable folder of a submission is memory, and so is the room its
-       package set is installed into: the memory above is for all of it. -->
-  <p class="text-ui leading-5 text-muted">{tr('competitions.p.conditionsMemoryNote')}</p>
+  {#if note}
+    <p class="text-ui leading-5 text-muted">{note}</p>
+  {/if}
 </section>

@@ -35,6 +35,8 @@
 import busboy from 'busboy'
 import path from 'node:path'
 import { Router, type Request, type Response } from 'express'
+import { sendArchive } from '../publish/zip-send.js'
+import { competitionZipPlan } from '../competitions/zip.js'
 import { getLocale, tr } from '@shared/i18n'
 import { zonedClock } from '@shared/time-zone'
 import { currentStaff } from '../admin/auth.js'
@@ -776,6 +778,26 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
       return refuse(res, 404, 'not_found', tr('competitions.refusal.fileMissing'))
     }
     sendHeld(res, () => holdOpenFile(competition.id, name), name)
+  })
+
+  /**
+   * Every open file at once (competitions/zip.ts), through the same line as
+   * the class archives: up to 200 MB read on the class's process.
+   */
+  router.get('/api/k/competitions/:slug/files.zip', (req, res, next) => {
+    const competition = visible(req.params.slug)
+    if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
+    sendArchive(
+      res,
+      next,
+      `k:${competition.id}`,
+      async () => {
+        // After the wait, against the files as they are then.
+        const plan = await competitionZipPlan(competition)
+        return plan ? { plan } : { error: tr('competitions.refusal.fileMissing') }
+      },
+      'competitions',
+    )
   })
 
   /* --------------------------------------------------------- submissions */

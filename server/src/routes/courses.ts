@@ -59,15 +59,8 @@ import { pageFileInfo, pageFilePath } from '../publish/page-files.js'
 import { readDoorTokens, roomDoor } from '../publish/room-door.js'
 import { addressForLimits } from '../net/inbound.js'
 import { tooOften } from '../net/too-often.js'
-import {
-  folderZipPlan,
-  leaveZip,
-  waitForZip,
-  ZIP_IDLE_MS,
-  zipPlan,
-  zipStream,
-  type ZipPlan,
-} from '../publish/zip.js'
+import { folderZipPlan, zipPlan } from '../publish/zip.js'
+import { disposition, sendArchive } from '../publish/zip-send.js'
 import {
   addressHolder,
   createCourse,
@@ -188,19 +181,6 @@ function livePage(handle: string): Publication | null {
   return pub && pub.state === 'published' ? pub : null
 }
 
-/**
- * `filename*` per RFC 5987, plus a plain `filename` for clients that know
- * only that one: «Слайды лекции.pdf» must not arrive as `download`.
- */
-function disposition(kind: 'attachment' | 'inline', name: string): string {
-  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\;]/g, '_') || 'download'
-  const encoded = encodeURIComponent(name).replace(
-    /['()*]/g,
-    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`,
-  )
-  return `${kind}; filename="${ascii}"; filename*=UTF-8''${encoded}`
-}
-
 const baseName = (path: string) => path.slice(path.lastIndexOf('/') + 1) || path
 
 /**
@@ -250,79 +230,6 @@ function doorTokens(req: Request, res: Response): string[] | null {
     return null
   }
   return tokens
-}
-
-/**
- * An archive, through the line (publish/zip.ts · waitForZip): three at a
- * time per page and six per instance, the rest wait for a slot, and only one
- * that waited too long hears «через минуту». A stream that stops moving is
- * dropped, so a paused download cannot keep a slot from the class.
- *
- * `plan` is asked after the wait, against the page as it is then: it may
- * have been rebuilt or withdrawn while the download waited. An `error` from
- * it is a 404 in those words.
- */
-function sendArchive(
-  res: Response,
-  next: NextFunction,
-  pubId: string,
-  plan: () => { plan: ZipPlan } | { error: string },
-): void {
-  const gone = new AbortController()
-  let entered = false
-  let left = false
-  const leave = () => {
-    if (!entered || left) return
-    left = true
-    leaveZip(pubId)
-  }
-  // Before the answer this means the client left the line; after it, the download ended.
-  res.on('close', () => {
-    gone.abort()
-    leave()
-  })
-  waitForZip(pubId, { signal: gone.signal })
-    .then((admitted) => {
-      if (!admitted) {
-        if (gone.signal.aborted) return
-        res.setHeader('retry-after', '60')
-        res.status(429).json({ error: tr('server.zip.busy') })
-        return
-      }
-      entered = true
-      if (gone.signal.aborted) return leave()
-      const made = plan()
-      if ('error' in made) {
-        leave()
-        res.status(404).json({ error: made.error })
-        return
-      }
-      const archive = made.plan
-      res.setHeader('content-type', 'application/zip')
-      res.setHeader('content-length', String(archive.bytes))
-      res.setHeader('content-disposition', disposition('attachment', `${archive.top}.zip`))
-      res.setHeader('x-content-type-options', 'nosniff')
-      res.setHeader('x-robots-tag', ROBOTS_TAG)
-      res.setHeader('cache-control', 'no-cache')
-      /*
-       * The socket's idle timer: it fires when no bytes have moved for the
-       * whole span, which is exactly a reader that stopped reading
-       * (backpressure leaves the writes pending). Destroying the response
-       * fires 'close' above, which frees the slot.
-       */
-      res.setTimeout(ZIP_IDLE_MS, () => res.destroy())
-      pipeline(zipStream(archive), res).catch((err: unknown) => {
-        if (!res.writableEnded) {
-          const why = err instanceof Error ? err.message : err
-          console.error(`[pages] archive ${archive.top}.zip of ${pubId} broke off:`, why)
-        }
-        res.destroy()
-      })
-    })
-    .catch((err: unknown) => {
-      leave()
-      next(err)
-    })
 }
 
 /**
