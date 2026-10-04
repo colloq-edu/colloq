@@ -12,11 +12,13 @@
    * `{@html}` only after the sanitiser (lib/render.svelte.ts) — the same one
    * the notes in the room go through.
    */
-  import { formatNumber, tr } from '@shared/i18n'
+  import { tr } from '@shared/i18n'
   import { loadRenderers, renderers } from '@/lib/render.svelte'
-  import { fileSize } from '@/lib/competition-words'
+  import { sealedTarget } from '@/lib/competition-words'
   import type { EntrantCompetitionView } from '@shared/competitions-entrant'
   import Conditions from './Conditions.svelte'
+  import DataFiles from './DataFiles.svelte'
+  import HowChecked from './HowChecked.svelte'
 
   interface Props {
     view: EntrantCompetitionView
@@ -31,6 +33,8 @@
   const html = $derived(
     render && view.competition.description ? render.markdown(view.competition.description) : null,
   )
+  /** The hidden test the steps below the data explain; null — no hidden test, no steps. */
+  const target = $derived(sealedTarget(view))
 </script>
 
 <div class="flex flex-col gap-8 xl:flex-row xl:gap-12">
@@ -49,41 +53,13 @@
       <p class="text-ui text-muted">{tr('competitions.p.noDescription')}</p>
     {/if}
 
-    <section class="flex max-w-[720px] flex-col gap-3">
-      <h2 class="text-micro font-black uppercase leading-5 tracking-label text-muted">
-        {tr('competitions.p.dataTitle')}
-      </h2>
-      {#if view.files.length === 0}
-        <p class="text-2xs text-muted">{tr('competitions.p.noFiles')}</p>
-      {:else}
-        <div class="flex flex-col border-t border-line">
-          {#each view.files as file (file.name)}
-            <div class="flex items-center gap-3 border-b border-line py-2.5">
-              <a
-                class="min-w-0 grow truncate font-mono text-micro text-accent-text hover:underline"
-                href={fileUrl(file.name)}
-                download
-                title={file.name}
-              >
-                {file.name}
-              </a>
-              <span class="w-[120px] shrink-0 text-micro text-muted">
-                {file.rows === null
-                  ? ''
-                  : tr('competitions.p.rows', { count: file.rows, n: formatNumber(file.rows) })}
-              </span>
-              <span class="w-16 shrink-0 text-right text-micro text-muted">
-                {fileSize(file.bytes)}
-              </span>
-            </div>
-          {/each}
-        </div>
-        <p class="text-micro leading-[18px] text-muted">{tr('competitions.p.dataNote')}</p>
-      {/if}
-    </section>
+    <DataFiles files={view.files} sealedFiles={view.sealedFiles ?? []} {fileUrl} />
+    {#if target}
+      <HowChecked competition={view.competition} {target} />
+    {/if}
   </div>
 
   <aside class="w-full shrink-0 xl:w-[300px]">
-    <Conditions competition={view.competition} />
+    <Conditions competition={view.competition} sealedFiles={view.sealedFiles ?? []} />
   </aside>
 </div>

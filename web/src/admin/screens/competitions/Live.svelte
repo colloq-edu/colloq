@@ -8,6 +8,11 @@
   with its traceback, and the queue block with "Kill". None of it reaches an
   entrant.
 
+  After the deadline, with «Поздние посылки» on, late submissions keep
+  arriving: they are drawn in the same feed with a "LATE" mark and under a
+  rule that says where the deadline was, counted apart in the summary, and
+  filtered with one switch — never mixed into a number about the standings.
+
   The live state arrives as a stream (SSE), like the environments' build log:
   one direction, the browser reconnects by itself, and no second protocol for
   the sake of five numbers. The feed is re-read by server revision, including
@@ -17,6 +22,7 @@
   import { tr } from '@shared/i18n'
   import { onMount, untrack } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
+  import Choice from '@/admin/ui/Choice.svelte'
   import EmptyState from '@/admin/ui/EmptyState.svelte'
   import Badge from '@/admin/screens/competitions/Badge.svelte'
   import Editor from '@/admin/screens/competitions/Editor.svelte'
@@ -30,10 +36,12 @@
     competitionPath,
     entrantHandle,
     EXECUTED_NOTEBOOK_FILE,
+    isBlind,
     LIMITS,
     metricFailedNote,
     placeShift,
     privateBoardOpen,
+    submissionsOpen,
     teacherBadge,
   } from '@shared/competitions'
   import type {
@@ -47,16 +55,22 @@
   import {
     clock,
     count,
+    deadlineDividerAt,
     deadlineLine,
     etaWords,
     feedWhen,
+    lateQuery,
+    limitNote,
     metricNumber,
+    moment,
     outcomeLine,
+    sealedErrorBox,
     spanWords,
     stateTone,
     stateWord,
     withNewKey,
     worstCell,
+    type LateFilter,
   } from '@/admin/competitions'
 
   export type LiveTab = 'submissions' | 'board' | 'entrants' | 'settings'
@@ -90,8 +104,11 @@
     added = null
     renaming = null
     removing = null
+    lateFilter = 'all'
   })
   let entrants = $state<EntrantRow[] | null>(null)
+  /** The feed's late switch: all, the standings only, or the late ones only (`?late=`). */
+  let lateFilter = $state<LateFilter>('all')
   let detail = $state<SubmissionDetail | null>(null)
   let busy = $state(false)
   let errorText = $state<(() => string) | null>(null)
@@ -173,10 +190,13 @@
   })
 
   // A server mutation revision includes all terminal outcomes, score changes
-  // and manual choices, even when the summary counts stay the same.
+  // and manual choices, even when the summary counts stay the same. The late
+  // switch asks the server again rather than hiding rows of the page it has:
+  // a page of 200 is not the feed, and "late · 9" must show all nine.
   $effect(() => {
     c.id
     live?.revision
+    lateFilter
     untrack(() => void loadFeed())
   })
 
@@ -186,7 +206,11 @@
     const request = ++feedRequest
     const previous = more ? feed?.rows ?? [] : []
     try {
-      const next = await adminApi.competitionSubmissions(id, { limit: PAGE, offset: previous.length })
+      const next = await adminApi.competitionSubmissions(id, {
+        limit: PAGE,
+        offset: previous.length,
+        late: lateQuery(lateFilter),
+      })
       if (id !== c.id || active !== generation || request !== feedRequest) return
       feed = { rows: [...previous, ...next.rows], total: next.total }
       errorText = null
@@ -507,6 +531,13 @@
   )
   const rows = $derived(feed?.rows ?? [])
   const deadline = $derived(deadlineLine(c, now))
+  /** Late submissions so far: counted apart from every number about the standings. */
+  const lateCount = $derived(counts.late ?? 0)
+  /** The late vocabulary appears once it means something: the switch is on, or late rows exist. */
+  const lateShown = $derived(c.lateSubmissions === true || lateCount > 0)
+  const accepting = $derived(submissionsOpen(c, now))
+  /** Where the "DEADLINE" rule goes; only in the whole feed, where both sides of it are drawn. */
+  const divider = $derived(lateFilter === 'all' ? deadlineDividerAt(rows, c.deadlineAt) : -1)
   /** Results the automatic release still waits for: the board opens once the queue has them. */
   const privatePending = $derived(live?.privatePending ?? view.privatePending ?? 0)
   const privateOpen = $derived(privateBoardOpen(c, now, privatePending))
@@ -567,6 +598,11 @@
 
   {#snippet beside()}
     <Badge word={stateWord(c.state)} tone={stateTone(c.state)} />
+    {#if accepting === 'late'}
+      <!-- Intake is over for the standings, not for uploads: said in the
+           header, since the feed keeps moving after the deadline. -->
+      <Badge word={tr('admin.competitions.lateAccepting')} tone="neutral" />
+    {/if}
     <span class="text-2xs text-muted">{deadline.note}</span>
   {/snippet}
 
@@ -616,8 +652,8 @@
         onclick={() => goTab(one.id)}
       >
         {one.label}
-        {#if one.id === 'submissions' && counts.submissions > 0}
-          <span class="ml-1.5 font-mono text-micro font-normal text-muted">{counts.submissions}</span>
+        {#if one.id === 'submissions' && counts.submissions + lateCount > 0}
+          <span class="ml-1.5 font-mono text-micro font-normal text-muted">{counts.submissions + lateCount}</span>
         {/if}
       </button>
     {/each}
@@ -952,6 +988,9 @@
                   <span class="min-w-0 flex-1 truncate text-2xs font-semibold text-ink">
                     {run.baseline ? tr('competitions.baselineEntrant') : run.entrantName} · #{run.number}
                   </span>
+                  {#if run.late}
+                    <Badge word={tr('admin.competitions.lateBadge')} tone="brand" form="outline" />
+                  {/if}
                   {#if run.competitionId !== c.id}
                     <!-- One runner per instance: another competition's run takes a slot too. -->
                     <span class="shrink-0 font-mono text-micro text-faint">/k/{run.competitionSlug}</span>
@@ -1022,6 +1061,11 @@
                 <span class="min-w-0 flex-1 truncate text-2xs text-ink">
                   {row.baseline ? tr('competitions.baselineEntrant') : row.entrantName} · #{row.number}
                 </span>
+                {#if row.late}
+                  <!-- On-time work goes first (panel.ts · fairOrder): the mark
+                       explains why this one waits behind later arrivals. -->
+                  <Badge word={tr('admin.competitions.lateBadge')} tone="brand" form="outline" />
+                {/if}
                 <span class="shrink-0 font-mono text-micro text-ink">
                   {row.resourcePending ? tr('competitions.runtime.retrying') : etaWords(row.etaMs)}
                 </span>
@@ -1043,7 +1087,16 @@
 
       <!-- 2 · Summary -->
       <div class="flex flex-wrap items-end gap-x-10 gap-y-4">
-        {@render stat(tr('admin.competitions.sum.submissions'), counts.submissions, 'text-muted')}
+        <!-- With late intake the first number is the standings' own: the
+             late ones stand apart, next to it, and nowhere inside it. -->
+        {@render stat(
+          lateShown ? tr('admin.competitions.sum.counted') : tr('admin.competitions.sum.submissions'),
+          counts.submissions,
+          'text-muted',
+        )}
+        {#if lateShown}
+          {@render stat(tr('admin.competitions.sum.late'), lateCount, 'text-primary')}
+        {/if}
         {@render stat(tr('admin.competitions.sum.scored'), counts.scored, 'text-positive')}
         {@render stat(tr('admin.competitions.sum.notebookFailed'), counts.notebookFailed, 'text-danger')}
         {@render stat(tr('admin.competitions.sum.rejected'), counts.rejected, 'text-warning')}
@@ -1064,8 +1117,23 @@
 
       <!-- 3 · Submission feed -->
       <div class="comp-feed">
+        {#if lateShown}
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-2 pb-3" role="group" aria-label={tr('admin.competitions.filterLabel')}>
+            <Choice
+              options={[
+                { value: 'all', label: tr('admin.competitions.filter.all') },
+                { value: 'onTime', label: tr('admin.competitions.filter.onTime') },
+                { value: 'late', label: tr('admin.competitions.filter.late', { count: lateCount }) },
+              ]}
+              value={lateFilter}
+              onchange={(value) => (lateFilter = value as LateFilter)}
+            />
+          </div>
+        {/if}
         {#if feed === null}
           <RowsSkeleton label={tr('competitions.loading')} />
+        {:else if rows.length === 0 && lateFilter === 'late'}
+          <EmptyState title={tr('admin.competitions.noLate')} hint={tr('admin.competitions.noLateHint')} />
         {:else if rows.length === 0}
           <EmptyState
             title={tr('admin.competitions.noSubmissions')}
@@ -1085,10 +1153,27 @@
             <span class="w-10 shrink-0"></span>
           </div>
 
-          {#each rows as row (row.submission.id)}
+          {#each rows as row, index (row.submission.id)}
             {@const s = row.submission}
             {@const badge = teacherBadge(s.state)}
             {@const broken = s.state === 'metricFailed'}
+            {@const note = limitNote(row, c.limits.perDay)}
+            {@const box = sealedErrorBox(row)}
+            {@const blind = isBlind(c, s)}
+            {@const blindText = blind && s.briefError && s.briefError !== s.participantError ? s.briefError : null}
+            {#if index === divider && c.deadlineAt !== null}
+              <!-- Where intake for the standings ended: late rows above it,
+                   the standings under it (admin/competitions.ts · deadlineDividerAt). -->
+              <div class="flex flex-wrap items-center gap-x-3.5 gap-y-1 border-b-2 border-warning py-3">
+                <span class="flex shrink-0 items-center gap-2">
+                  <span class="h-2 w-2 shrink-0 bg-warning" aria-hidden="true"></span>
+                  <span class="admin-label text-warning">
+                    {tr('admin.competitions.deadlineDivider', { when: moment(c.deadlineAt, now) })}
+                  </span>
+                </span>
+                <span class="min-w-0 text-2xs text-muted">{tr('admin.competitions.deadlineDividerNote')}</span>
+              </div>
+            {/if}
             <div
               class={cn('feed-row admin-list-row flex-wrap items-start gap-y-2', broken && 'bg-danger/5')}
             >
@@ -1098,7 +1183,7 @@
               <span class="w-[210px] shrink-0 truncate text-2xs font-semibold text-ink">
                 {row.baseline ? tr('competitions.baselineEntrant') : row.entrantName} · #{s.number}
               </span>
-              <span class="w-[180px] shrink-0">
+              <span class="flex w-[180px] shrink-0 flex-col items-start gap-1.5">
                 {#if badge}
                   <Badge word={badge.word} tone={badge.tone} form={badge.form} />
                 {:else}
@@ -1111,31 +1196,19 @@
                       : tr('admin.competitions.stateQueued')}
                   </span>
                 {/if}
+                {#if s.late}
+                  <Badge word={tr('admin.competitions.lateBadge')} tone="brand" form="outline" />
+                {/if}
               </span>
               <div class="min-w-0 flex-1 basis-[240px]">
-                <p class={cn('text-2xs', broken ? 'text-ink' : 'text-muted')}>
+                <p class={cn('text-2xs', broken || box ? 'text-ink' : 'text-muted', box && 'font-mono')}>
                   {outcomeLine(row, row.best)}
                 </p>
-                {#if broken}
-                  <!-- The metric traceback — here and only here: the person
-                       looking at it is the one at fault, and only they can
-                       fix it. -->
-                  <div class="mt-2 flex flex-wrap items-start gap-4">
-                    {#if s.teacherError}
-                      <pre class="min-w-0 flex-1 basis-[280px] overflow-x-auto whitespace-pre-wrap
-                                  font-mono text-micro leading-5 text-ink">{s.teacherError}</pre>
-                    {/if}
-                    <button
-                      type="button"
-                      class="btn-outline shrink-0"
-                      disabled={busy}
-                      onclick={() => void rescoreAll()}
-                    >
-                      {tr('admin.competitions.fixAndRescore')}
-                    </button>
-                  </div>
-                  <p class="mt-2 text-micro text-muted">
-                    {tr('admin.competitions.entrantSees', { text: metricFailedNote() })}
+                {#if note}
+                  <!-- What it did to the author's day: "limit not spent" is the
+                       news, so it is the one said in colour. -->
+                  <p class={cn('mt-0.5 text-micro', note.tone === 'positive' ? 'font-semibold text-positive' : 'text-muted')}>
+                    {note.text}
                   </p>
                 {/if}
               </div>
@@ -1233,6 +1306,50 @@
                   </div>
                 {/if}
               </div>
+              {#if box || blindText || broken}
+                <!--
+                  Texts under the row, as wide as the row allows from the
+                  "WHAT HAPPENED" column on: a traceback squeezed into a
+                  240-pixel column is a column of single words.
+                -->
+                <div class="feed-detail flex basis-full flex-col gap-2 pl-[512px] pr-14">
+                  {#if box}
+                    <!-- The full text of a run on the hidden test: the teacher
+                         always reads it, whatever the class is shown. -->
+                    <pre class="overflow-x-auto whitespace-pre-wrap border-l-[3px] border-danger bg-danger/5 px-3 py-2.5
+                                font-mono text-micro leading-5 text-ink">{box}</pre>
+                    {#if !blind}
+                      <p class="text-micro text-muted">{tr('admin.competitions.blindNoteFull')}</p>
+                    {/if}
+                  {/if}
+                  {#if blindText}
+                    <p class="text-micro text-muted">{tr('admin.competitions.blindNote', { text: blindText })}</p>
+                  {/if}
+                  {#if broken}
+                    <!-- The metric traceback — here and only here: the person
+                         looking at it is the one at fault, and only they can
+                         fix it. -->
+                    <div class="flex flex-wrap items-start gap-4">
+                      {#if s.teacherError}
+                        <pre class="min-w-0 flex-1 basis-[280px] overflow-x-auto whitespace-pre-wrap
+                                    font-mono text-micro leading-5 text-ink">{s.teacherError}</pre>
+                      {/if}
+                      <!-- Held to the column on a phone: on one line it ran past the row. -->
+                      <button
+                        type="button"
+                        class="btn-outline max-w-full shrink-0 text-left"
+                        disabled={busy}
+                        onclick={() => void rescoreAll()}
+                      >
+                        {tr('admin.competitions.fixAndRescore')}
+                      </button>
+                    </div>
+                    <p class="text-micro text-muted">
+                      {tr('admin.competitions.entrantSees', { text: metricFailedNote() })}
+                    </p>
+                  {/if}
+                </div>
+              {/if}
             </div>
           {/each}
 
@@ -1247,7 +1364,10 @@
             </div>
           {/if}
 
-          <p class="admin-meta py-3.5">{tr('admin.competitions.feedNote')}</p>
+          <p class="admin-meta pt-3.5 {lateShown ? 'pb-1.5' : 'pb-3.5'}">{tr('admin.competitions.feedNote')}</p>
+          {#if lateShown}
+            <p class="admin-meta pb-3.5">{tr('admin.competitions.lateFeedNote')}</p>
+          {/if}
         {/if}
       </div>
     </div>
@@ -1309,6 +1429,11 @@
           {:else}
             <p class="text-ui text-muted">{tr('admin.competitions.noRuns')}</p>
           {/each}
+          {#if isBlind(c, shown.submission) && shown.submission.briefError}
+            <p class="text-micro text-muted">
+              {tr('admin.competitions.blindNote', { text: shown.submission.briefError })}
+            </p>
+          {/if}
 
           {#if shown.artifacts.length > 0}
             <div>
@@ -1432,6 +1557,12 @@
 
     .feed-label {
       display: inline;
+    }
+
+    /* Stacked rows have no columns to line the texts up with. */
+    .feed-detail {
+      padding-left: 0;
+      padding-right: 0;
     }
 
     /*

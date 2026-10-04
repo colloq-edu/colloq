@@ -161,6 +161,26 @@ test('the competition screens it was lifted from speak it', () => {
   }
 })
 
+test('late intake, the hidden test and the feed marks are drawn in the same vocabulary', () => {
+  // October 2026: «Поздние посылки», the hidden test and the late feed came
+  // after the panel became one product, and had to arrive speaking it.
+  const editor = flat(code(read(`${SCREENS}/competitions/Editor.svelte`)))
+  assert.match(editor, /<Section title=\{tr\('admin\.competitions\.section\.sealed'\)\}/, 'the hidden test is a section like the rest')
+  assert.match(editor, /role="switch" aria-checked=\{lateSubmissions\}/, 'the late switch is a real switch')
+  // The switch's row is the panel's control height, as the chips beside it.
+  assert.match(editor, /<label class="flex min-h-10 [^"]*max-\[640px\]:min-h-11">/)
+  assert.equal([...editor.matchAll(/class="admin-affix[ "]/g)].length, 2, 'the address and the path in data/ are both affix fields')
+  assert.match(editor, /<Badge word=\{tr\('admin\.competitions\.policyRecommended'\)\} tone="positive" \/>/)
+  assert.match(editor, /<Badge word=\{tr\('admin\.competitions\.exampleBadge'\)\} tone="accent" \/>/)
+  const live = flat(code(read(`${SCREENS}/competitions/Live.svelte`)))
+  assert.match(live, /<Choice options=\{\[/, 'the late filter is the shared chip row')
+  // One mark for a late submission wherever it stands: the feed, a running slot, the waiting list.
+  assert.equal(
+    [...live.matchAll(/<Badge word=\{tr\('admin\.competitions\.lateBadge'\)\} tone="brand" form="outline" \/>/g)].length,
+    3,
+  )
+})
+
 test('a state word wears one tone on every tab', () => {
   // «ЧЕРНОВИК» was amber on Competitions and a grey frame on Classes, and
   // «НЕ СОБРАНО» amber in the competition editor but grey on Environments:

@@ -10,15 +10,58 @@
    */
   import { tr } from '@shared/i18n'
   import type { CompetitionPublic } from '@shared/competitions'
+  import type { EntrantSealedFile } from '@shared/competitions-entrant'
   import EnvironmentLink from '@/components/ui/EnvironmentLink.svelte'
+  import { rowsWords, sealedTarget } from '@/lib/competition-words'
 
   interface Props {
     competition: CompetitionPublic
+    /** The hidden test, as names and rows: each gets a row of its own, and the note explains it. */
+    sealedFiles?: EntrantSealedFile[]
   }
 
-  const { competition }: Props = $props()
+  const { competition, sealedFiles = [] }: Props = $props()
 
-  const rows = $derived([
+  /*
+   * With a hidden test the column answers two more questions before they are
+   * asked (C1, C3): which file is swapped and how big it is, and what a
+   * failure on it will show. `brief` is the default policy: absent means it.
+   */
+  const brief = $derived((competition.outputPolicy ?? 'brief') !== 'full')
+  const target = $derived(sealedTarget({ files: [], sealedFiles }))
+  const sealedRows = $derived([
+    ...sealedFiles.map((file) => ({
+      label: `data/${file.name}`,
+      value: file.rows === null ? tr('competitions.p.condSealedBare') : tr('competitions.p.condSealed', { rows: rowsWords(file.rows) }),
+      sealed: true,
+    })),
+    ...(sealedFiles.length > 0
+      ? [
+          {
+            label: tr('competitions.p.condOutput'),
+            value: tr(brief ? 'competitions.p.condOutputBrief' : 'competitions.p.condOutputFull'),
+          },
+        ]
+      : []),
+  ])
+  /*
+   * The note under the column: with a hidden test it says where the test goes
+   * and, under the brief policy, why a failure shows only a cell and a type.
+   */
+  const note = $derived(
+    target
+      ? [
+          tr(target.replaces ? 'competitions.p.conditionsSealedSwap' : 'competitions.p.conditionsSealedAdd', {
+            file: target.file,
+          }),
+          brief ? tr('competitions.p.conditionsSealedBrief') : '',
+        ]
+          .filter(Boolean)
+          .join(' ')
+      : tr('competitions.p.conditionsNote'),
+  )
+
+  const rows: { label: string; value: string; environment?: boolean; sealed?: boolean }[] = $derived([
     {
       label: tr('competitions.p.condTime'),
       value: tr('competitions.p.condTimeValue', {
@@ -37,7 +80,12 @@
     { label: tr('competitions.p.condInternet'), value: tr('competitions.p.condNo') },
     { label: tr('competitions.p.condEnvironment'), value: competition.environment, environment: true },
     { label: tr('competitions.p.condData'), value: tr('competitions.p.condDataValue') },
+    ...sealedRows,
     { label: tr('competitions.p.condAnswer'), value: 'submission.csv' },
+    // Only a score spends one (since 4 Oct 2026), and the value says so.
+    ...(competition.limits.perDay > 0
+      ? [{ label: tr('competitions.p.condPerDay'), value: tr('competitions.p.condPerDayValue', { count: competition.limits.perDay }) }]
+      : []),
   ])
 </script>
 
@@ -48,8 +96,12 @@
   <dl class="flex flex-col border-t border-line">
     {#each rows as row (row.label)}
       <div class="flex justify-between gap-3 border-b border-line py-[9px]">
-        <dt class="text-2xs leading-4 text-muted">{row.label}</dt>
-        <dd class="min-w-0 truncate text-right font-mono text-micro leading-4 text-ink">
+        <dt class="min-w-0 truncate text-2xs leading-4 text-muted">{row.label}</dt>
+        <dd
+          class="min-w-0 truncate text-right font-mono text-micro leading-4 {row.sealed
+            ? 'font-bold text-brand-2 dark:text-accent'
+            : 'text-ink'}"
+        >
           {#if row.environment}
             <EnvironmentLink name={competition.environment} endpoint={`/api/k/competitions/${encodeURIComponent(competition.slug)}/environment`} />
           {:else}
@@ -59,7 +111,7 @@
       </div>
     {/each}
   </dl>
-  <p class="text-ui leading-5 text-muted">{tr('competitions.p.conditionsNote')}</p>
+  <p class="text-ui leading-5 text-muted">{note}</p>
   <!-- Every writable folder of a submission is memory, and so is the room its
        package set is installed into: the memory above is for all of it. -->
   <p class="text-ui leading-5 text-muted">{tr('competitions.p.conditionsMemoryNote')}</p>

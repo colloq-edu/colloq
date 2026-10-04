@@ -3267,16 +3267,12 @@ export const adminMessages: MessageCatalog = {
     "en": "SUBMISSIONS A DAY"
   },
   "admin.competitions.limit.perDayUnit": {
-    "ru": "на участника",
-    "en": "per participant"
+    "ru": "с числом, на участника",
+    "en": "with a score, per participant"
   },
   "admin.competitions.machineFree": {
     "ru": "На этой машине свободно {free} ГБ: одна посылка за раз оставляет идущему занятию {rest} ГБ.",
     "en": "This machine has {free} GB free: one submission at a time leaves {rest} GB to the class in progress."
-  },
-  "admin.competitions.quotaNote": {
-    "ru": "В счёт дневного лимита идёт каждая посылка, чья тетрадь начала выполняться, — даже если упала на первой же ячейке или ответ не принят. Не в счёт: отменённая и та, что не дошла до выполнения (например, не установились пакеты).",
-    "en": "Every submission whose notebook starts running counts toward the daily limit — even if it fails on its very first cell or its answer is rejected. Not counted: a cancelled one, or one that never got to run (for example, its packages failed to install)."
   },
   "admin.competitions.section.terms": {
     "ru": "Сроки и зачёт",
@@ -4178,6 +4174,374 @@ export const adminMessages: MessageCatalog = {
       "one": "The queue is fair: whoever already has something running lets the others go first. Times assume {count} executor and this competition's median; the participant sees the same number.",
       "other": "The queue is fair: whoever already has something running lets the others go first. Times assume {count} executors and this competition's median; the participant sees the same number."
     }
+  },
+  "admin.competitions.exampleBadge": {
+    "ru": "пример",
+    "en": "example"
+  },
+  "admin.competitions.exampleTitle": {
+    "ru": "При проверке вместо этого файла тетрадь читает скрытый тест",
+    "en": "During the check the notebook reads the hidden test instead of this file"
+  },
+  "admin.competitions.solutionForSealed": {
+    "ru": "Ответы — к скрытому тесту, а не к примеру.",
+    "en": "The answers belong to the hidden test, not to the example."
+  },
+  "admin.competitions.section.sealed": {
+    "ru": "Скрытый тест",
+    "en": "Hidden test"
+  },
+  "admin.competitions.sealedHint": {
+    "ru": "Файл, которого участник не скачает. На каждой проверке тетрадь получает его вместо открытого примера — модель проверяется на строках, которых никто не видел.",
+    "en": "A file participants never download. On every check the notebook gets it in place of the open example, so the model is tested on rows nobody has seen."
+  },
+  "admin.competitions.sealedHead": {
+    "ru": "Скрытый тест",
+    "en": "Hidden test"
+  },
+  "admin.competitions.sealedHeadNote": {
+    "ru": "не скачивается · подставляется при проверке",
+    "en": "never downloaded · swapped in during the check"
+  },
+  "admin.competitions.sealedReplaces": {
+    "ru": "заменяет пример",
+    "en": "replaces the example"
+  },
+  "admin.competitions.sealedExampleOpen": {
+    "ru": "({rows}, открыт участникам)",
+    "en": "({rows}, open to participants)"
+  },
+  "admin.competitions.sealedExampleOpenPlain": {
+    "ru": "(открыт участникам)",
+    "en": "(open to participants)"
+  },
+  "admin.competitions.sealedNewFile": {
+    "ru": "новый файл: в открытых данных такого нет",
+    "en": "a new file: the open data has none by this name"
+  },
+  "admin.competitions.sealedColumnsSame": {
+    "ru": "Колонки совпадают с примером — {n}",
+    "en": "Columns match the example — {n}"
+  },
+  "admin.competitions.sealedColumnsDiffer": {
+    "ru": "Колонки не совпадают с примером: {sealed} — а в примере {open}",
+    "en": "Columns differ from the example: {sealed}, while the example has {open}"
+  },
+  "admin.competitions.sealedDropFirst": {
+    "ru": "Перетащите скрытый файл",
+    "en": "Drop a hidden file here"
+  },
+  "admin.competitions.sealedDropMore": {
+    "ru": "Перетащите ещё один скрытый файл",
+    "en": "Drop one more hidden file"
+  },
+  "admin.competitions.sealedDropHint": {
+    "ru": "CSV, Parquet, картинки или ZIP · до {mb} МБ на весь скрытый тест, не больше {max} файлов. По умолчанию подменит открытый файл с тем же именем.",
+    "en": "CSV, Parquet, images or ZIP · up to {mb} MB for the whole hidden test, at most {max} files. By default it replaces the open file of the same name."
+  },
+  "admin.competitions.sealedPathHead": {
+    "ru": "Путь при проверке",
+    "en": "Path during the check"
+  },
+  "admin.competitions.sealedPathLabel": {
+    "ru": "Имя файла в data/ на проверке",
+    "en": "The file name in data/ during the check"
+  },
+  "admin.competitions.sealedPathPlaceholder": {
+    "ru": "имя выбранного файла",
+    "en": "the chosen file’s name"
+  },
+  "admin.competitions.sealedPathHint": {
+    "ru": "По умолчанию — путь примера с тем же именем. Новое имя добавит файл, а не заменит.",
+    "en": "By default the example’s path with the same name. A new name adds a file instead of replacing one."
+  },
+  "admin.competitions.sealedPathOne": {
+    "ru": "Своё имя можно дать только одному файлу за раз.",
+    "en": "A name of your own goes with one file at a time."
+  },
+  "admin.competitions.sealedWhatHead": {
+    "ru": "Что лежит по этому пути",
+    "en": "What is at this path"
+  },
+  "admin.competitions.sealedInNotebook": {
+    "ru": "в тетради участника",
+    "en": "in the participant’s notebook"
+  },
+  "admin.competitions.sealedOnCheck": {
+    "ru": "на каждой проверке",
+    "en": "on every check"
+  },
+  "admin.competitions.sealedExampleRows": {
+    "ru": "пример · {rows}",
+    "en": "example · {rows}"
+  },
+  "admin.competitions.sealedExampleFile": {
+    "ru": "пример",
+    "en": "example"
+  },
+  "admin.competitions.sealedNoFile": {
+    "ru": "файла нет",
+    "en": "no file"
+  },
+  "admin.competitions.sealedTestRows": {
+    "ru": "скрытый тест · {rows}",
+    "en": "hidden test · {rows}"
+  },
+  "admin.competitions.sealedTestFile": {
+    "ru": "скрытый тест",
+    "en": "hidden test"
+  },
+  "admin.competitions.sealedNotYet": {
+    "ru": "тот же пример — скрытого файла ещё нет",
+    "en": "the same example: no hidden file yet"
+  },
+  "admin.competitions.sealedDownloadable": {
+    "ru": "скачивается",
+    "en": "downloadable"
+  },
+  "admin.competitions.sealedNotGiven": {
+    "ru": "не отдаётся",
+    "en": "never handed out"
+  },
+  "admin.competitions.sealedNote": {
+    "ru": "Участники видят только пример; при проверке тетрадь читает скрытый файл по тому же пути. Имя и число строк скрытого теста видны им на странице соревнования, содержимое — никому.",
+    "en": "Participants see only the example; during the check the notebook reads the hidden file at the same path. Its name and row count are shown on the competition page; its contents to no one."
+  },
+  "admin.competitions.policyHead": {
+    "ru": "Что показывать участнику при проверке",
+    "en": "What participants see of a check"
+  },
+  "admin.competitions.policyAside": {
+    "ru": "вы в ленте всегда видите весь вывод",
+    "en": "you always see the full output in the feed"
+  },
+  "admin.competitions.policyBrief": {
+    "ru": "Только статус и тип ошибки",
+    "en": "Only the outcome and the error type"
+  },
+  "admin.competitions.policyRecommended": {
+    "ru": "рекомендуем",
+    "en": "recommended"
+  },
+  "admin.competitions.policyBriefHint": {
+    "ru": "Исход, номер упавшей ячейки и тип исключения. Ни вывода ячеек, ни текста ошибки, ни трассировки; исполненная тетрадь участнику не отдаётся.",
+    "en": "The outcome, the failing cell’s number and the exception type. No cell output, no error text, no traceback; the executed notebook is not handed back."
+  },
+  "admin.competitions.policySees": {
+    "ru": "Участник видит",
+    "en": "The participant sees"
+  },
+  "admin.competitions.policyFull": {
+    "ru": "Полный вывод",
+    "en": "Full output"
+  },
+  "admin.competitions.policyFullHint": {
+    "ru": "Как без скрытого теста: вывод ячеек, текст ошибки, трассировка и исполненная тетрадь с выводом.",
+    "en": "As without a hidden test: cell output, the error text, the traceback and the executed notebook with its output."
+  },
+  "admin.competitions.policyFullWarning": {
+    "ru": "Вывод может выдать скрытый тест: test.head(), describe() или текст KeyError со значением покажут участнику его строки — и подогнать ответ станет можно. Включайте, только если раскрыть эти строки не страшно.",
+    "en": "Output can give the hidden test away: test.head(), describe() or a KeyError quoting a value show the participant its rows, and fitting the answer becomes possible. Turn it on only if revealing those rows is harmless."
+  },
+  "admin.competitions.policyNoSealed": {
+    "ru": "Действует на проверки со скрытым тестом; пока его нет, участник видит весь вывод.",
+    "en": "Applies to checks on a hidden test; until there is one, participants see the full output."
+  },
+  "admin.competitions.rule.spends": {
+    "ru": "Тратит лимит",
+    "en": "Spends the limit"
+  },
+  "admin.competitions.rule.spendsText": {
+    "ru": "Только посылка, получившая число.",
+    "en": "Only a submission that gets a score."
+  },
+  "admin.competitions.rule.holds": {
+    "ru": "Занимает на время",
+    "en": "Holds a place for now"
+  },
+  "admin.competitions.rule.holdsText": {
+    "ru": "Держит место, пока проверяется. Упадёт — место вернётся.",
+    "en": "Holds a place while it is checked. If it fails, the place comes back."
+  },
+  "admin.competitions.rule.free": {
+    "ru": "Не тратит — любая неудача",
+    "en": "Free — any failure"
+  },
+  "admin.competitions.rule.freeText": {
+    "ru": "Ошибка в тетради, вышло время, не хватило памяти, ответ не принят или его нет, отмена. И сбой метрики или сервера — в нём участник не виноват вовсе.",
+    "en": "A notebook error, the time or memory limit, a missing or rejected answer, a cancellation. And a metric or server failure, which is never the participant’s fault."
+  },
+  "admin.competitions.ceiling.head": {
+    "ru": "Попыток с ошибкой",
+    "en": "Failed attempts"
+  },
+  "admin.competitions.ceiling.unit": {
+    "ru": "в день · автоматически",
+    "en": "a day · automatic"
+  },
+  "admin.competitions.ceiling.off": {
+    "ru": "без потолка",
+    "en": "no ceiling"
+  },
+  "admin.competitions.ceiling.text": {
+    "ru": "Отдельный щедрый потолок, чтобы упавшие посылки не забили очередь: втрое больше лимита, но не меньше 10 — max(10, 3 × {perDay}). Сбои метрики и сервера в него не считаются.",
+    "en": "A separate, generous ceiling so failed submissions do not clog the queue: three times the limit, never fewer than 10 — max(10, 3 × {perDay}). Metric and server failures do not count toward it."
+  },
+  "admin.competitions.ceiling.hit": {
+    "ru": "Упёрся — услышит, сколько упавших уже сегодня и когда счёт начнётся заново. Лимит посылок при этом не тронут.",
+    "en": "Whoever reaches it is told how many failed today and when the count starts over. The submission limit stays untouched."
+  },
+  "admin.competitions.ceiling.offText": {
+    "ru": "Лимит выключен: посылок в день сколько угодно, и потолка на упавшие тоже нет.",
+    "en": "The limit is off: any number of submissions a day, and no ceiling on failed ones either."
+  },
+  "admin.competitions.afterDeadline": {
+    "ru": "После дедлайна",
+    "en": "After the deadline"
+  },
+  "admin.competitions.lateSwitch": {
+    "ru": "Поздние посылки",
+    "en": "Late submissions"
+  },
+  "admin.competitions.lateOn": {
+    "ru": "принимаются",
+    "en": "accepted"
+  },
+  "admin.competitions.lateOff": {
+    "ru": "не принимаются",
+    "en": "not accepted"
+  },
+  "admin.competitions.late.accepted": {
+    "ru": "Принимаются",
+    "en": "Accepted"
+  },
+  "admin.competitions.late.acceptedText": {
+    "ru": "После дедлайна и после «Завершить сейчас». Проверяются так же: публичный счёт сразу, итоговый — когда откроются итоги.",
+    "en": "After the deadline and after “Finish now”. Checked the same way: the public score at once, the final one when the results open."
+  },
+  "admin.competitions.late.sameLimit": {
+    "ru": "Тот же лимит",
+    "en": "The same limit"
+  },
+  "admin.competitions.late.sameLimitText": {
+    "ru": {
+      "one": "{count} посылка с числом в день на участника, вместе с обычными. Неудачи и тут бесплатны.",
+      "few": "{count} посылки с числом в день на участника, вместе с обычными. Неудачи и тут бесплатны.",
+      "many": "{count} посылок с числом в день на участника, вместе с обычными. Неудачи и тут бесплатны.",
+      "other": "{count} посылки с числом в день на участника, вместе с обычными. Неудачи и тут бесплатны."
+    },
+    "en": {
+      "one": "{count} scored submission a day per participant, shared with the on-time ones. Failures are free here too.",
+      "other": "{count} scored submissions a day per participant, shared with the on-time ones. Failures are free here too."
+    }
+  },
+  "admin.competitions.late.noLimitText": {
+    "ru": "Без дневного лимита, как и до дедлайна. Неудачи бесплатны.",
+    "en": "No daily limit, as before the deadline. Failures are free."
+  },
+  "admin.competitions.late.outside": {
+    "ru": "Вне зачёта — всегда",
+    "en": "Outside the standings — always"
+  },
+  "admin.competitions.late.outsideText": {
+    "ru": "Не идут в места, лидерборд, зачёт, сводку и ожидание итогов. Участник видит «после дедлайна · вне зачёта», вы — «поздняя».",
+    "en": "Never in places, the leaderboard, the counted submission, the summary or the wait for results. The participant sees “after the deadline · not counted”, you see “late”."
+  },
+  "admin.competitions.late.offNote": {
+    "ru": "После дедлайна загрузка закрывается; «Завершить сейчас» закрывает её сразу.",
+    "en": "After the deadline uploads close; “Finish now” closes them at once."
+  },
+  "admin.competitions.late.moveNote": {
+    "ru": "Перенесёте дедлайн позже — посылки, отправленные до нового дедлайна, перестанут быть поздними и войдут в зачёт. Перенос раньше никого задним числом поздним не сделает.",
+    "en": "Move the deadline later and submissions sent before the new one stop being late and join the standings. Moving it earlier makes no one late after the fact."
+  },
+  "admin.competitions.lateAccepting": {
+    "ru": "Поздние принимаются",
+    "en": "Late ones accepted"
+  },
+  "admin.competitions.sum.late": {
+    "ru": "ПОЗДНИХ",
+    "en": "LATE"
+  },
+  "admin.competitions.sum.counted": {
+    "ru": "В ЗАЧЁТЕ",
+    "en": "COUNTED"
+  },
+  "admin.competitions.filterLabel": {
+    "ru": "Какие посылки показать",
+    "en": "Which submissions to show"
+  },
+  "admin.competitions.filter.all": {
+    "ru": "Все",
+    "en": "All"
+  },
+  "admin.competitions.filter.onTime": {
+    "ru": "В зачёте",
+    "en": "Counted"
+  },
+  "admin.competitions.filter.late": {
+    "ru": "Поздние · {count}",
+    "en": "Late · {count}"
+  },
+  "admin.competitions.lateBadge": {
+    "ru": "Поздняя",
+    "en": "Late"
+  },
+  "admin.competitions.deadlineDivider": {
+    "ru": "Дедлайн · {when}",
+    "en": "Deadline · {when}"
+  },
+  "admin.competitions.deadlineDividerNote": {
+    "ru": "выше — поздние: проверены, но в места, лидерборд, зачёт и итоги не идут",
+    "en": "above: late ones, checked but not in places, the leaderboard, the counted submission or the results"
+  },
+  "admin.competitions.limitNotSpent": {
+    "ru": "лимит не потрачен",
+    "en": "limit not spent"
+  },
+  "admin.competitions.limitNotSpentCeiling": {
+    "ru": "лимит не потрачен · в потолок неудач не идёт",
+    "en": "limit not spent · not toward the failure ceiling"
+  },
+  "admin.competitions.limitSpent": {
+    "ru": "в счёт лимита",
+    "en": "counts toward the limit"
+  },
+  "admin.competitions.limitHeld": {
+    "ru": "держит место в лимите",
+    "en": "holds a place in the limit"
+  },
+  "admin.competitions.outcome.late": {
+    "ru": "вне зачёта",
+    "en": "not counted"
+  },
+  "admin.competitions.outcome.lateNote": {
+    "ru": "в места и итоги не идёт",
+    "en": "not in places or the results"
+  },
+  "admin.competitions.outcome.cellType": {
+    "ru": "ячейка {cell} · {type}",
+    "en": "cell {cell} · {type}"
+  },
+  "admin.competitions.blindNote": {
+    "ru": "Участник видит только это: «{text}»",
+    "en": "The participant sees only this: “{text}”"
+  },
+  "admin.competitions.blindNoteFull": {
+    "ru": "Проверка на скрытом тесте; участник видит этот же текст — показ полного вывода включён.",
+    "en": "A check on the hidden test; the participant sees this same text, since full output is on."
+  },
+  "admin.competitions.noLate": {
+    "ru": "Поздних посылок нет",
+    "en": "No late submissions"
+  },
+  "admin.competitions.noLateHint": {
+    "ru": "Всё, что пришло после дедлайна, появится здесь с пометкой «поздняя».",
+    "en": "Anything that arrives after the deadline shows up here marked “late”."
+  },
+  "admin.competitions.lateFeedNote": {
+    "ru": "Под каждой строкой — что посылка сделала с лимитом участника. Поздние видны только здесь и у самого участника; в лидерборде, местах и «Итогах» их нет.",
+    "en": "Under each row: what the submission did to the participant’s limit. Late ones are seen only here and by their author; the leaderboard, the places and the results do not have them."
   },
   "admin.audit.title": {
     "ru": "Журнал действий",

@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express'
 import { requireStaff } from '../admin/auth.js'
 import { requireEntrant, type EntrantRequest } from '../competitions/identity.js'
 import { findCompetition, getCompetition } from '../competitions/store.js'
-import { submissionsOpen, type Competition } from '@shared/competitions'
+import { acceptsUploads, submissionsOpen, type Competition } from '@shared/competitions'
 import { dependencyActive } from '@shared/dependencies'
 import * as service from './service.js'
 import * as store from './store.js'
@@ -44,7 +44,8 @@ export function dependencyRoutes():Router{
  }))
  r.post(base+'/prepare',endpoint(async(req,res)=>{
   const c=visible(req)
-  if(submissionsOpen(c,Date.now())!=='open')throw new store.DependencyStoreError('dependency_closed',403)
+  // A late notebook may carry a package set too: it is run like any other.
+  if(!acceptsUploads(submissionsOpen(c,Date.now())))throw new store.DependencyStoreError('dependency_closed',403)
   // The hour as it stands after this one, so the line under the button does not lag a preparation behind.
   const bundle=await service.prepareBundle(c,entrant(req),requirements(req));res.status(202).json({bundle,quota:store.preparationQuota(entrant(req))})
  }))

@@ -54,7 +54,10 @@ import {
   getCompetition,
   getSubmission,
   leaveQueue,
+  listFiles,
   listSubmissions,
+  openFileBytes,
+  sealedFileBytes,
   noteQueueContainer,
   nextQueueRow,
   orphanedRuns,
@@ -73,6 +76,7 @@ import {
 import {
   competitionsFs,
   competitionsDir,
+  composeRunInputs,
   copyCompetitionFile,
   attemptDir,
   dropAttempt,
@@ -101,6 +105,7 @@ import {
 import {
   LIMITS,
   isTerminal,
+  notebookCellList,
   stateOfVerdict,
   type Competition,
   type RunKind,
@@ -291,8 +296,12 @@ export async function pumpOnce(): Promise<number> {
       }
       let secretBytes = 0
       try { secretBytes = competitionsFs.statSync(path.join(secretDir(candidate.competitionId), SOLUTION_FILE)).size } catch { /* no solution */ }
+      // A run on a hidden test composes its own data folder: hard links cost
+      // nothing, but where the volume refuses them every file is copied.
+      const sealedBytes = candidate.kind === 'notebook' ? sealedFileBytes(candidate.competitionId) : 0
+      const inputsBytes = sealedBytes > 0 ? sealedBytes + openFileBytes(candidate.competitionId) : 0
       const release = reserveWork({ id: `competition:${newToken()}`, kind: 'competition', memoryMb: needMb,
-        diskBytes: LIMITS.submissionBytes * 4 + secretBytes },
+        diskBytes: LIMITS.submissionBytes * 4 + secretBytes + inputsBytes },
       { availableMemoryMb: usableMb === null ? null : Math.max(0, usableMb - heldMb), availableDiskBytes })
       if (!release) {
         warnOnce(`[competitions] resource reservations leave insufficient capacity for ${candidate.submissionId}`)
@@ -504,7 +513,15 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
   const binding = getBinding(submission.id)
   const limits = limitsFor(competition, 'notebook')
   const container = containerName(submission.id, 'notebook', newToken())
-  const run = startRun({ submissionId: submission.id, kind: 'notebook', container, attemptId: row.attemptId!, inputRevision: provenance.inputRevision ?? undefined })
+  /*
+   * The hidden test is read off the rows when the run starts: a file the
+   * teacher adds a second later belongs to the next run, never half to this
+   * one. Without hidden files nothing below changes: the open data/ is
+   * mounted as it always was.
+   */
+  const sealedFiles = listFiles(competition.id, 'sealed').map((file) => file.name)
+  const sealed = sealedFiles.length > 0
+  const run = startRun({ submissionId: submission.id, kind: 'notebook', container, attemptId: row.attemptId!, inputRevision: provenance.inputRevision ?? undefined, sealedInputs: sealed })
   // The name also goes into the queue row: the container outlives the process
   // that started it, and taking it down after a restart will be the job of
   // another life of the server.
@@ -515,15 +532,36 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     cellsDone: 0,
     participantError: null,
     teacherError: null,
+    briefError: null,
+    errorType: null,
   })
 
-  const data = openDir(competition.id)
   const input = inputDir(competition.id, submission.id)
+  /*
+   * With a hidden test the run gets a data folder of its own, composed from
+   * the open files with the hidden ones swapped in; it goes with the attempt
+   * (dropAttempt). A hidden file gone from disk throws here, and runJob writes
+   * the outcome as our breakage rather than scoring the example.
+   */
+  const data = sealed
+    ? await composeRunInputs(competition.id, submission.id, row.attemptId!, {
+        open: listFiles(competition.id, 'open').map((file) => file.name),
+        sealed: sealedFiles,
+      })
+    : openDir(competition.id)
   const result = attemptDir(competition.id, submission.id, row.attemptId!)
   if (runner.backend !== 'test') {
     letContainerRead(data)
     letContainerRead(input)
   }
+  /*
+   * On the hidden test every number the notebook reports about itself is
+   * clamped to the notebook that was sent: run.json and progress.json live
+   * where the participant's code can write, and "cell 48213 of 99999" is a
+   * channel for whatever the code read. Null without a hidden test: the
+   * numbers stay exactly what they were.
+   */
+  const codeCells = sealed ? codeCellsIn(input) : null
 
   let dependenciesDir: string | undefined
   let preflightError: unknown = null
@@ -574,26 +612,31 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     signal: aborters.get(row.attemptId!)?.signal,
     container,
     dataDir: data,
+    ...(sealed ? { sealedInputs: true } : {}),
     inputDir: input,
     resultDir: result,
     limits,
     onProgress: (progress) => {
       if (!ownsQueueAttempt(row)) return
+      const seen = codeCells === null ? progress : clampCells(progress, codeCells)
       updateSubmission(submission.id, {
         stage: progress.phase === 'dependencies' ? 'dependencies' : 'notebook',
-        cellsDone: progress.cell + 1,
-        cellsTotal: progress.cells,
+        cellsDone: seen.cell + 1,
+        cellsTotal: seen.cells,
       })
     },
   }) } catch(error) {
     if(error instanceof CompetitionResourcePending)discardUnstartedRun(run.id,row.attemptId!)
     throw error
   }
+  if (codeCells !== null) outcome = { ...clampCells(outcome, codeCells), diagnostics: { ...outcome.diagnostics, peakBytes: null } }
   // One text for the run row and the submission row. Where packages come from
   // is read only for a failed cell: that is the one outcome a missing module
   // explains.
   const participantError = notebookNote(outcome, competition,
     outcome.status === 'cell_error' ? packageSources(competition, submission, binding) : null)
+  const errorType = outcome.status === 'cell_error' && outcome.diagnostics.killedBy !== 'output' ? errorTypeOf(outcome.detail) : null
+  const briefError = sealed ? briefNote(outcome, competition, errorType) : null
   finishRun(run.id, {
     finishedAt: Date.now(),
     verdict: outcome.status,
@@ -615,6 +658,8 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
       cellsDone: outcome.cell + 1,
       cellsTotal: outcome.cells,
       participantError,
+      briefError,
+      errorType,
       teacherError: teacherNote(outcome),
     })
     return
@@ -638,12 +683,36 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
       stage: 'check',
       durationMs: outcome.wall,
       participantError: answer,
+      // Our own words about the file, nothing read from it: safe to show blind.
+      briefError: sealed ? answer : null,
     })
     return
   }
   updateSubmission(submission.id, { notebookInputRevision: provenance.notebookInputRevision })
   promoteAttempt(competition.id, submission.id, result)
-  await scoreStep(competition, submission, path.join(resultDir(competition.id, submission.id), SUBMISSION_FILE), outcome.wall, outcome, row, provenance, secrets)
+  await scoreStep(competition, submission, path.join(resultDir(competition.id, submission.id), SUBMISSION_FILE), outcome.wall, outcome, row, provenance, secrets, sealed)
+}
+
+/**
+ * The code cells of the sent notebook — what the harness counts as "cells"
+ * (harness.ts · cells_total), read from the notebook we stored ourselves, not
+ * from anything the run reported. Zero when it does not parse (the door
+ * refuses such a notebook, so only a file swept from under the run gets
+ * here), and then nothing can be vouched for: every count is clamped to none.
+ */
+function codeCellsIn(input: string): number {
+  try {
+    const book: unknown = JSON.parse((competitionsFs.readFileSync(path.join(input, NOTEBOOK_FILE)) as Buffer).toString('utf8'))
+    return (notebookCellList(book) ?? []).filter((cell) => (cell as { cell_type?: unknown })?.cell_type === 'code').length
+  } catch {
+    return 0
+  }
+}
+
+/** A reported position held to the cells the notebook really has: -1 (none run) to its last. */
+export function clampCells<T extends { cell: number; cells: number }>(reported: T, codeCells: number): T {
+  const cell = Number.isFinite(reported.cell) ? Math.trunc(reported.cell) : -1
+  return { ...reported, cell: Math.max(-1, Math.min(cell, codeCells - 1)), cells: codeCells }
 }
 
 /**
@@ -701,7 +770,9 @@ async function scoreOnly(competition: Competition, submission: Submission, row: 
     participantError: null,
     teacherError: null,
   })
-  await scoreStep(competition, submission, answer.file, submission.durationMs ?? 0, null, row, provenance, secrets)
+  // The stored answer was made on the hidden test if any run of this
+  // submission read it: a rescore cleans the metric's words the same way.
+  await scoreStep(competition, submission, answer.file, submission.durationMs ?? 0, null, row, provenance, secrets, !!submission.sealedInputs)
 }
 
 /** Step two: the teacher's metric in the second disposable container. */
@@ -714,6 +785,8 @@ async function scoreStep(
   row: QueueRow,
   provenance: AttemptProvenance,
   snapshot: Promise<unknown>,
+  /** The answer was made on the hidden test: what the participant may read is cleaned (sealedMetricNote). */
+  sealed = false,
 ): Promise<void> {
   const runner = competitionRunner()
   updateSubmission(submission.id, { stage: 'score' })
@@ -792,6 +865,7 @@ async function scoreStep(
   }
   const state = stateOfVerdict('metric', outcome.status)
   const participant = metricNote(outcome)
+  const brief = sealed ? sealedMetricNote(outcome) : null
   finishRun(run.id, {
     finishedAt: Date.now(),
     verdict: outcome.status,
@@ -812,6 +886,7 @@ async function scoreStep(
     publicScore: state === 'scored' ? outcome.public : null,
     privateScore: state === 'scored' ? outcome.private : null,
     participantError: participant,
+    briefError: brief,
     teacherError: outcome.teacherOnly,
     ...(notebook ? { cellsDone: notebook.cell + 1, cellsTotal: notebook.cells } : {}),
   })
@@ -1113,6 +1188,108 @@ export function metricNote(outcome: ScoreOutcome): string | null {
   }
 }
 
+/* ------------------------------------------------- words on the hidden test */
+
+/**
+ * Exception classes a blind participant may be told: the common ones of
+ * Python and the data stack. A short list on purpose, not "whatever the last
+ * line says": a notebook on the hidden test can raise a class it made up and
+ * named after the rows it read, and the name would carry them out whole. The
+ * list caps that channel at a handful of bits.
+ */
+const ERROR_TYPES: ReadonlySet<string> = new Set([
+  'ArithmeticError', 'AssertionError', 'AttributeError', 'EmptyDataError', 'FileNotFoundError',
+  'ImportError', 'IndentationError', 'IndexError', 'KeyError', 'LinAlgError', 'LookupError',
+  'MemoryError', 'MergeError', 'ModuleNotFoundError', 'NameError', 'NotFittedError',
+  'NotImplementedError', 'OSError', 'OverflowError', 'ParserError', 'PermissionError',
+  'RecursionError', 'RuntimeError', 'StopIteration', 'SyntaxError', 'TypeError',
+  'UnboundLocalError', 'UnicodeDecodeError', 'UnicodeEncodeError', 'ValueError', 'ZeroDivisionError',
+])
+
+/**
+ * The class of the exception a failed cell died of, when it is on the list;
+ * null otherwise.
+ *
+ * Read from the end of the traceback: nbclient's text ends with `Name: message`,
+ * and a message with line breaks of its own pushes that line up, so the
+ * nearest line that looks like one is taken. A dotted name
+ * (`pandas.errors.ParserError`) is judged by its last part.
+ */
+export function errorTypeOf(detail: string): string | null {
+  const lines = String(detail ?? '').trimEnd().split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const found = /^([A-Za-z_][A-Za-z0-9_.]{0,99})(?::\s|:$|$)/.exec(lines[i].trim())
+    if (!found) continue
+    const name = found[1].split('.').pop() ?? ''
+    if (ERROR_TYPES.has(name)) return name
+  }
+  return null
+}
+
+/**
+ * What a BLIND participant reads about a failed notebook on the hidden test.
+ *
+ * Our own sentences, with only what we can vouch for: the cell (already
+ * clamped to the sent notebook), the class from the short list, the limits.
+ * Never the traceback, never the printed output, never the measured print
+ * size or anything else the run reported about itself, never the module a
+ * traceback names: each of those is text the notebook wrote while it had the
+ * hidden rows in memory. The sentences that already carry nothing but our
+ * numbers (time, memory, no file) are the usual ones.
+ */
+export function briefNote(outcome: RunOutcome, competition: Competition, errorType: string | null): string | null {
+  const at = outcome.cell + 1
+  switch (outcome.status) {
+    case 'cell_error':
+      if (outcome.diagnostics.killedBy === 'output') return tr('competitions.answer.sealed.tooMuchOutput', { cell: at })
+      return errorType
+        ? tr('competitions.answer.sealed.cellFailed', { cell: at, cells: outcome.cells, type: errorType })
+        : tr('competitions.answer.sealed.cellFailedUntyped', { cell: at, cells: outcome.cells })
+    case 'target_unreadable':
+      return tr('competitions.answer.unreadable', { file: SUBMISSION_FILE })
+    case 'dependency_error':
+      // The packages install before the notebook's first line, with no hidden
+      // row read yet, and the words are ours (sizes we measured).
+      return notebookNote(outcome, competition)
+    default:
+      return notebookNote({ ...outcome, detail: '' }, competition)
+  }
+}
+
+/** Codes of our own alignment checks whose blind words exist (competitions.answer.sealed.*). */
+const SEALED_METRIC_CODES: ReadonlySet<string> = new Set([
+  'noIdColumn', 'indexColumn', 'duplicateId', 'missingRows', 'idForm', 'emptyPredictions',
+  'nonNumeric', 'decimalComma', 'infinitePredictions', 'unparsable',
+])
+
+/**
+ * What a BLIND participant reads about the metric's refusal of an answer made
+ * on the hidden test.
+ *
+ * Our own checks keep their meaning and lose every value: no example ids (a
+ * solution id is a row of the hidden test), no values or column lists from the
+ * answer (the notebook wrote those, from the hidden rows), no counts (how many
+ * rows are missing is a number the notebook chose). The column names that
+ * stay are the answer key's own. A teacher's ParticipantVisibleError becomes
+ * one generic sentence: its text may quote the answer, and we cannot tell.
+ */
+export function sealedMetricNote(outcome: ScoreOutcome): string | null {
+  if (outcome.status !== 'participant_error') return null
+  const raw = outcome.message ?? ''
+  try {
+    const asked: unknown = raw.startsWith('{') ? JSON.parse(raw) : null
+    const code = (asked as { code?: unknown } | null)?.code
+    if (typeof code === 'string' && SEALED_METRIC_CODES.has(code)) {
+      const params = ((asked as { params?: unknown }).params ?? {}) as Record<string, unknown>
+      const column = typeof params.column === 'string' ? params.column.slice(0, 64) : ''
+      return tr(`competitions.answer.sealed.${code}`, { column, file: SUBMISSION_FILE })
+    }
+  } catch {
+    /* not our code: the teacher's own text, which is never shown blind */
+  }
+  return tr('competitions.answer.sealed.metricRejected')
+}
+
 /* -------------------------------------------------------------- intervention */
 
 /**
@@ -1206,6 +1383,7 @@ export function rerunSubmission(submissionId: string): boolean {
     stage: 'queue',
     participantError: null,
     teacherError: null,
+    errorType: null,
     publicScore: null,
     privateScore: null,
   })

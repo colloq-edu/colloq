@@ -5,7 +5,10 @@
  * live with: one that drops or renames a table or a column, moves values into
  * another column, or gives stored values a new meaning. competitions/store.ts ·
  * liftEntrantKeys is that kind: after it runs, a server from before it looks
- * for sign-in keys in a column that is empty and then gone. A new table, a
+ * for sign-in keys in a column that is empty and then gone. So is
+ * rekeyCompetitionFiles (2): the files table is rebuilt with the visibility in
+ * its key, and an older server's upsert names the old key — SQLite refuses to
+ * even prepare it, so that server would not start. A new table, a
  * new nullable column or a new index does not need a bump — older code simply
  * never reads it.
  *
@@ -28,7 +31,7 @@
  * down in RELEASING.md. release-build.py reads the line below with a regular
  * expression: keep it a plain integer literal.
  */
-export const DATA_SCHEMA_VERSION = 1
+export const DATA_SCHEMA_VERSION = 2
 
 /**
  * The variable that lets this code open a database stamped by newer code.

@@ -20,10 +20,16 @@
      * visitor is not one yet: "nobody has a score yet" would be untrue.
      */
     closed?: boolean
+    /**
+     * One's best late public score: the board holds on-time submissions only,
+     * and says so under itself (C1) — a better late number missing from the
+     * table otherwise reads as a lost result.
+     */
+    lateBest?: number | null
     onopen: () => void
   }
 
-  const { lines, closed = false, onopen }: Props = $props()
+  const { lines, closed = false, lateBest = null, onopen }: Props = $props()
 
   const TOP = 3
   const ranked = $derived(boardPlaces(lines))
@@ -98,5 +104,8 @@
         </div>
       {/each}
     </div>
+  {/if}
+  {#if lateBest !== null}
+    <p class="pt-1 text-2xs text-muted">{tr('competitions.p.boardLateNote', { score: formatScore(lateBest) })}</p>
   {/if}
 </section>

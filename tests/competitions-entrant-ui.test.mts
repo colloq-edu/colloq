@@ -501,13 +501,15 @@ test("a submission's own ordinal counts the person's list, not the competition's
 
 test('a finished submission that spent nothing of the day says so, by the quota rule itself', () => {
   const at = (patch: Partial<EntrantSubmission>) => outsideQuota(submission(patch), 5)
+  // Since 4 Oct 2026 only a score spends one: every failure is free, at any cell.
   assert.equal(at({ state: 'notebookFailed', cellsDone: 0 }), true)
-  assert.equal(at({ state: 'rejected', cellsDone: 0 }), true)
+  assert.equal(at({ state: 'notebookFailed', cellsDone: 1 }), true)
+  assert.equal(at({ state: 'rejected', cellsDone: 9 }), true)
+  assert.equal(at({ state: 'timedOut', cellsDone: 6 }), true)
+  assert.equal(at({ state: 'outOfMemory', cellsDone: 2 }), true)
+  assert.equal(at({ state: 'metricFailed', cellsDone: 4 }), true)
   assert.equal(at({ state: 'cancelled', cellsDone: 4 }), true)
   assert.equal(at({ state: 'cancelled', cellsDone: 0, replacedBy: 29 }), true)
-  // The notebook ran: a refused answer and a failed cell both spent one.
-  assert.equal(at({ state: 'rejected', cellsDone: 9 }), false)
-  assert.equal(at({ state: 'notebookFailed', cellsDone: 1 }), false)
   assert.equal(at({ state: 'scored' }), false)
   // In flight it does hold a place, so there is nothing to say yet.
   assert.equal(at({ state: 'queued', cellsDone: 0 }), false)
@@ -516,39 +518,54 @@ test('a finished submission that spent nothing of the day says so, by the quota 
   assert.equal(outsideQuota(submission({ state: 'notebookFailed', cellsDone: 0 }), 0), false)
 })
 
-test('"not counted toward the limit" closes the caption, or stands alone when there is none', () => {
+test('"limit not spent" left the caption for the number column: the caption says only what happened', () => {
+  // Since 4 Oct 2026 the mark stands under the number (C1); a caption that
+  // still carried it would say it twice on every failed row.
   const dead = submission({ state: 'notebookFailed', cellsDone: 0, cellsTotal: 0, publicScore: null })
-  const desktop = rowWords({ submission: dead, live: null, best: false, paused: false, now: NOW, offQuota: true })
-  assert.equal(desktop.lines[0], `Сегодня в ${clockOf(dead.acceptedAt)} · не в счёт лимита`)
+  assert.deepEqual(rowWords({ submission: dead, live: null, best: false, paused: false, now: NOW }).lines, [
+    `Сегодня в ${clockOf(dead.acceptedAt)}`,
+  ])
   const replaced = rowWords({
     submission: submission({ state: 'cancelled', cellsDone: 0, replacedBy: 29, publicScore: null }),
-    live: null, best: false, paused: false, now: NOW, offQuota: true,
+    live: null, best: false, paused: false, now: NOW,
   })
-  assert.match(replaced.lines[0], /заменена посылкой #29 · не в счёт лимита$/)
+  assert.match(replaced.lines[0], /заменена посылкой #29$/)
   // A phone's refused answer puts the reason in the title and has no caption.
   const refused = submission({ state: 'rejected', cellsDone: 0, publicScore: null, participantError: 'Нет файла submission.csv.' })
-  const phone = rowWords({ submission: refused, live: null, best: false, paused: false, now: NOW, phone: true, offQuota: true })
-  assert.deepEqual(phone.lines, ['не в счёт лимита'])
-  assert.doesNotMatch(rowWords({ submission: dead, live: null, best: false, paused: false, now: NOW }).lines.join(' '), /лимит/)
+  assert.deepEqual(rowWords({ submission: refused, live: null, best: false, paused: false, now: NOW, phone: true }).lines, [])
+  assert.doesNotMatch(tr('competitions.p.limitNotSpent'), /в счёт/)
   setLocaleResolver(() => 'en')
-  assert.match(rowWords({ submission: dead, live: null, best: false, paused: false, now: NOW, offQuota: true }).lines[0], /· not counted toward the limit$/)
+  assert.equal(tr('competitions.p.limitNotSpent'), 'limit not spent')
 })
 
-test('the day-limit rule names its boundary from both sides, in both languages', () => {
-  // "Failed before its first cell" was read as "failed on its first cell"
-  // (29 Sep 2026): the rule now says outright that an error in the very first
-  // cell counts, and what does not count is named by what happened.
-  assert.equal(
-    tr('competitions.p.quotaRule'),
-    'В счёт лимита идёт каждая посылка, чья тетрадь начала выполняться, — даже если упала на первой же ячейке или ответ не принят. Не в счёт: отменённая и та, что не дошла до выполнения (например, не установились пакеты).',
-  )
-  assert.doesNotMatch(tr('competitions.p.quotaRule'), /до первой ячейки/)
+test('a late row says "after the deadline" where nothing else on it does', () => {
+  const at = `Сегодня в ${clockOf(NOW - 3 * MINUTE)}`
+  const words = (patch: Partial<EntrantSubmission>, phone = false) =>
+    rowWords({ submission: submission({ late: true, ...patch }), live: null, best: false, paused: false, now: NOW, phone }).lines
+  // A failed late row has no chip, so its caption says it, right after the time (C1).
+  assert.match(words({ state: 'notebookFailed', cellsDone: 12, cellsTotal: 15, durationMs: 66_000, publicScore: null })[0],
+    new RegExp(`^${at} · после дедлайна · ошибка в ячейке 12 из 15 через 1 мин 6 с$`))
+  assert.match(words({ state: 'timedOut', cellsDone: 9, cellsTotal: 15, publicScore: null })[0], /· после дедлайна · остановка на ячейке 9 из 15$/)
+  // A scored one carries the chip beside its name on a desktop: the caption stays as it was.
+  assert.doesNotMatch(words({ state: 'scored' })[0], /дедлайн/)
+  // The phone has a LATE badge on every card and spells "not counted" under a score only.
+  assert.match(words({ state: 'scored' }, true)[0], /· после дедлайна · вне зачёта$/)
+  assert.doesNotMatch(words({ state: 'notebookFailed', cellsDone: 3, cellsTotal: 9, publicScore: null }, true)[0], /дедлайн/)
+  // On its way it says nothing yet: the chip and the badge do.
+  assert.doesNotMatch(words({ state: 'queued', cellsDone: 0 }).join(' '), /дедлайн/)
   setLocaleResolver(() => 'en')
-  assert.equal(
-    tr('competitions.p.quotaRule'),
-    'Every submission whose notebook starts running counts toward the limit — even if it fails on its very first cell or its answer is rejected. Not counted: a cancelled one, or one that never got to run (for example, its packages failed to install).',
-  )
-  assert.doesNotMatch(tr('competitions.p.quotaRule'), /before its first cell/)
+  assert.match(words({ state: 'notebookFailed', cellsDone: 2, cellsTotal: 4, publicScore: null })[0], /· after the deadline · failed at cell 2 of 4/)
+})
+
+test('a failed cell names the exception class the server allowed, and a blind phone card keeps only the time', () => {
+  const failed = submission({ state: 'notebookFailed', cellsDone: 7, cellsTotal: 14, durationMs: 41_000, publicScore: null, errorType: 'KeyError' })
+  assert.match(rowWords({ submission: failed, live: null, best: false, paused: false, now: NOW }).lines[0], /ошибка в ячейке 7 из 14 через 41 с · KeyError$/)
+  // No class from the list, no class: never the traceback's own last word.
+  assert.doesNotMatch(rowWords({ submission: { ...failed, errorType: null }, live: null, best: false, paused: false, now: NOW }).lines[0], /Error/)
+  const blind = { ...failed, blind: true }
+  assert.deepEqual(rowWords({ submission: blind, live: null, best: false, paused: false, now: NOW, phone: true }).lines, [
+    `Сегодня в ${clockOf(failed.acceptedAt)}`,
+  ])
 })
 
 test('under scoring "last" the send box names the counted submission a new score would replace', () => {

@@ -18,12 +18,16 @@ import {
   baselineNote,
   boardFromFeed,
   clock,
+  columnsCheck,
+  deadlineDividerAt,
   deadlineLine,
   etaWords,
   feedWhen,
   inFlight,
   isUntouchedPreset,
+  lateQuery,
   leftWords,
+  limitNote,
   metricLine,
   metricNumber,
   moment,
@@ -32,6 +36,9 @@ import {
   refusalSection,
   refusalText,
   runnerLine,
+  sealedErrorBox,
+  sealedPath,
+  sealedTarget,
   sinceWords,
   spanWords,
   stateTone,
@@ -43,8 +50,10 @@ import type { Competition, Submission } from '../shared/competitions.js'
 import type {
   CompetitionRow,
   EntrantRow,
+  FileView,
   OpenRefusal,
   QueueSnapshot,
+  SealedFileView,
   SubmissionRow,
 } from '../shared/competitions-api.js'
 
@@ -561,16 +570,174 @@ test('a new key changes the key in the Participants row, and keeps its place and
 
 /* --------------------------------------------------------------- language */
 
-test('the note under the daily limit names the boundary the class reads', () => {
-  // "Died before the first cell" was read as "died on the first cell" (29 Sep
-  // 2026): the teacher's form now says it the way the send box does.
-  assert.match(tr('admin.competitions.quotaNote'), /упала на первой же ячейке/)
-  assert.match(tr('admin.competitions.quotaNote'), /не дошла до выполнения/)
-  assert.doesNotMatch(tr('admin.competitions.quotaNote'), /до первой ячейки/)
+test('the limits block says only a score spends one, and names the ceiling apart', () => {
+  // Since 4 Oct 2026 failures are free: the teacher's form says so in three
+  // columns the way the send box does, and names the separate ceiling on
+  // failed ones with the very formula the server counts by.
+  assert.equal(tr('admin.competitions.rule.spendsText'), 'Только посылка, получившая число.')
+  assert.match(tr('admin.competitions.rule.holdsText'), /Упадёт — место вернётся/)
+  assert.match(tr('admin.competitions.rule.freeText'), /вышло время, не хватило памяти, ответ не принят/)
+  assert.match(tr('admin.competitions.rule.freeText'), /сбой метрики или сервера/)
+  assert.match(tr('admin.competitions.ceiling.text', { perDay: 5 }), /max\(10, 3 × 5\)/)
+  assert.match(tr('admin.competitions.ceiling.text', { perDay: 5 }), /Сбои метрики и сервера в него не считаются/)
+  assert.match(tr('admin.competitions.ceiling.hit'), /Лимит посылок при этом не тронут/)
   setLocaleResolver(() => 'en')
-  assert.match(tr('admin.competitions.quotaNote'), /fails on its very first cell/)
-  assert.match(tr('admin.competitions.quotaNote'), /never got to run/)
-  assert.doesNotMatch(tr('admin.competitions.quotaNote'), /before (its|the) first cell/)
+  assert.equal(tr('admin.competitions.rule.spendsText'), 'Only a submission that gets a score.')
+  assert.match(tr('admin.competitions.ceiling.text', { perDay: 5 }), /max\(10, 3 × 5\)/)
+  assert.doesNotMatch(tr('admin.competitions.rule.freeText'), /[а-яА-Я]/)
+})
+
+test('the late strip answers taken, cost and standing, with the limit spelled for the day', () => {
+  assert.match(tr('admin.competitions.late.acceptedText'), /после «Завершить сейчас»/)
+  assert.equal(
+    tr('admin.competitions.late.sameLimitText', { count: 5 }),
+    '5 посылок с числом в день на участника, вместе с обычными. Неудачи и тут бесплатны.',
+  )
+  assert.match(tr('admin.competitions.late.sameLimitText', { count: 2 }), /^2 посылки с числом/)
+  assert.match(tr('admin.competitions.late.sameLimitText', { count: 1 }), /^1 посылка с числом/)
+  assert.match(tr('admin.competitions.late.outsideText'), /Не идут в места, лидерборд, зачёт, сводку и ожидание итогов/)
+  // The deadline move frees late work, and only one way: the screen says both halves.
+  assert.match(tr('admin.competitions.late.moveNote'), /перестанут быть поздними/)
+  assert.match(tr('admin.competitions.late.moveNote'), /никого задним числом поздним не сделает/)
+  setLocaleResolver(() => 'en')
+  assert.equal(
+    tr('admin.competitions.late.sameLimitText', { count: 1 }),
+    '1 scored submission a day per participant, shared with the on-time ones. Failures are free here too.',
+  )
+})
+
+/* ------------------------------------------------------- late and hidden */
+
+test('under each row: what the submission did to its author\'s limit, by the server\'s rule', () => {
+  const note = (over: Partial<Submission>, perDay = 5, extra: Partial<SubmissionRow> = {}) =>
+    limitNote(feedRow(over, extra), perDay)
+  assert.deepEqual(note({ state: 'scored' }), { text: 'в счёт лимита', tone: 'muted' })
+  for (const state of ['notebookFailed', 'timedOut', 'outOfMemory', 'rejected', 'cancelled'] as const) {
+    assert.deepEqual(note({ state, publicScore: null }), { text: 'лимит не потрачен', tone: 'positive' }, state)
+  }
+  // The teacher's metric is never the participant's doing: not toward the ceiling either.
+  assert.deepEqual(note({ state: 'metricFailed' }), {
+    text: 'лимит не потрачен · в потолок неудач не идёт',
+    tone: 'positive',
+  })
+  // In flight it holds a place, and gives it back if it fails.
+  assert.deepEqual(note({ state: 'queued' }), { text: 'держит место в лимите', tone: 'muted' })
+  assert.deepEqual(note({ state: 'running' }), { text: 'держит место в лимите', tone: 'muted' })
+  // A late score spends the same limit and says it is outside the standings.
+  assert.deepEqual(note({ state: 'scored', late: true }), {
+    text: 'в места и итоги не идёт · в счёт лимита',
+    tone: 'muted',
+  })
+  // With the limit off there is nothing to spend; only the late note stays.
+  assert.equal(note({ state: 'notebookFailed' }, 0), null)
+  assert.deepEqual(note({ state: 'scored', late: true }, 0), { text: 'в места и итоги не идёт', tone: 'muted' })
+  // The baseline is the teacher's, and has no limit.
+  assert.equal(note({ state: 'notebookFailed' }, 5, { baseline: true }), null)
+})
+
+test('a late score is "not counted" before it is anything else', () => {
+  assert.equal(outcomeLine(feedRow({ state: 'scored', late: true }), true), 'вне зачёта')
+  assert.equal(outcomeLine(feedRow({ state: 'scored', late: true, chosen: true }), false), 'вне зачёта')
+  setLocaleResolver(() => 'en')
+  assert.equal(outcomeLine(feedRow({ state: 'scored', late: true }), false), 'not counted')
+})
+
+test('a failure on the hidden test is summed up in the column, and its full text goes in the box', () => {
+  const trace = "ячейка 9, строка 3:  X['t_door'] = X['t_door'].astype(float)\nValueError: could not convert string to float: 'н/д'"
+  const sealed = feedRow({
+    state: 'notebookFailed',
+    cellsDone: 9,
+    publicScore: null,
+    sealedInputs: true,
+    errorType: 'ValueError',
+    participantError: trace,
+    briefError: 'Тетрадь упала на ячейке 9 из 16: ValueError.',
+  })
+  assert.equal(outcomeLine(sealed, false), 'ячейка 9 · ValueError')
+  assert.equal(sealedErrorBox(sealed), trace, 'the teacher always reads the whole text')
+  const untyped = feedRow({ ...sealed.submission, errorType: null })
+  assert.equal(outcomeLine(untyped, false), 'ячейка 9')
+  // A one-line refusal is already the column: no box repeating it.
+  const rejected = feedRow({ state: 'rejected', sealedInputs: true, participantError: 'В ответе 1 990 строк вместо 2 000' })
+  assert.equal(outcomeLine(rejected, false), 'В ответе 1 990 строк вместо 2 000')
+  assert.equal(sealedErrorBox(rejected), null)
+  // Without the hidden test nothing changes: the text is the column.
+  const open = feedRow({ state: 'notebookFailed', cellsDone: 9, participantError: 'KeyError: id', errorType: 'KeyError' })
+  assert.equal(outcomeLine(open, false), 'KeyError: id')
+  assert.equal(sealedErrorBox(open), null)
+})
+
+test('the deadline rule sits under the late rows, judged by when the upload began', () => {
+  const deadline = 10 * HOUR
+  const rows = [
+    feedRow({ id: 'l2', late: true, acceptedAt: deadline + 2 * HOUR, sentAt: deadline + 2 * HOUR }),
+    feedRow({ id: 'l1', late: true, acceptedAt: deadline + HOUR, sentAt: deadline + HOUR }),
+    // Began at 23:59:50, arrived within the grace: on time, and under the rule.
+    feedRow({ id: 'g', late: false, acceptedAt: deadline + 40_000, sentAt: deadline - 10_000 }),
+    feedRow({ id: 'o', late: false, acceptedAt: deadline - HOUR, sentAt: deadline - HOUR }),
+  ]
+  assert.equal(deadlineDividerAt(rows, deadline), 2)
+  // Nothing late above: no rule, however the dates fall.
+  assert.equal(deadlineDividerAt(rows.slice(2), deadline), -1)
+  assert.equal(deadlineDividerAt(rows, null), -1)
+  // Only late rows: nothing under the rule to separate them from.
+  assert.equal(deadlineDividerAt(rows.slice(0, 2), deadline), -1)
+  // Rows from before the column existed are judged by when they arrived.
+  assert.equal(deadlineDividerAt([rows[0], feedRow({ id: 'old', acceptedAt: deadline - 1 })], deadline), 1)
+})
+
+test('the late switch asks the feed door for exactly one side', () => {
+  assert.equal(lateQuery('late'), '1')
+  assert.equal(lateQuery('onTime'), '0')
+  assert.equal(lateQuery('all'), undefined)
+})
+
+function file(over: Partial<SealedFileView>): SealedFileView {
+  return {
+    competitionId: 'k1',
+    name: 'test.csv',
+    bytes: 319_488,
+    rows: 2000,
+    visibility: 'sealed',
+    uploadedAt: 0,
+    columns: ['id', 'feature'],
+    replaces: 'test.csv',
+    ...over,
+  }
+}
+
+test('the hidden test is named by its path in data/, typed however the notebook reads it', () => {
+  assert.equal(sealedTarget('data/test.csv'), 'test.csv')
+  assert.equal(sealedTarget(' /data/test.csv '), 'test.csv')
+  assert.equal(sealedTarget('test_full.csv'), 'test_full.csv')
+  assert.equal(sealedTarget(''), '')
+})
+
+test('"what is at this path" pairs the example the class downloads with the file the check reads', () => {
+  const example: FileView = { ...file({}), visibility: 'open', rows: 200, bytes: 31_000 }
+  const sealed = file({})
+  const view = { openFiles: [example], sealedFiles: [sealed] }
+  // An empty field shows the first hidden file.
+  assert.deepEqual(sealedPath(view, ''), { name: 'test.csv', open: example, sealed })
+  assert.deepEqual(sealedPath(view, 'data/test.csv'), { name: 'test.csv', open: example, sealed })
+  // A name not uploaded yet: the example is still what the check reads.
+  assert.deepEqual(sealedPath(view, 'images.zip'), { name: 'images.zip', open: null, sealed: null })
+  assert.equal(sealedPath({ openFiles: [example], sealedFiles: [] }, ''), null)
+  assert.equal(sealedPath({ openFiles: [example] }, ''), null)
+})
+
+test('a hidden test with other columns than its example is caught before the class meets it', () => {
+  const example: FileView = { ...file({}), visibility: 'open', rows: 200 }
+  assert.deepEqual(columnsCheck(file({}), example), { same: true, count: 2 })
+  assert.deepEqual(columnsCheck(file({ columns: ['id', 'feature', 'target'] }), example), {
+    same: false,
+    sealed: 'id, feature, target',
+    open: 'id, feature',
+  })
+  // Order matters: notebooks read columns by position as often as by name.
+  assert.equal(columnsCheck(file({ columns: ['feature', 'id'] }), example)?.same, false)
+  assert.equal(columnsCheck(file({}), null), null)
+  assert.equal(columnsCheck(file({ columns: null }), example), null)
 })
 
 test("a row's menu is named by what each item does, and the note under the feed names all of it", () => {

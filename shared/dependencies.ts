@@ -257,6 +257,7 @@ export const DEPENDENCY_ERROR_KEYS: Readonly<Record<string, string>> = {
   dependency_memory: 'dependencies.error.memory',
   dependency_active: 'dependencies.error.active', dependency_quota: 'dependencies.error.quota',
   dependency_submission_active: 'competitions.refusal.inFlight', dependency_submission_quota: 'dependencies.error.submissionQuota',
+  dependency_submission_attempts: 'competitions.refusal.dailyAttempts', dependency_submission_on_time: 'competitions.refusal.inFlightOnTime',
   dependency_join: 'dependencies.error.join', dependency_closed: 'dependencies.error.closed',
   base_conflict: 'dependencies.error.conflict', dependency_conflict: 'dependencies.error.conflict',
   wheel_unavailable: 'dependencies.error.wheel', invalid_requirement: 'dependencies.error.syntax',

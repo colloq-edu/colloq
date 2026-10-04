@@ -19,6 +19,8 @@
   import SubmissionEnvironment from './SubmissionEnvironment.svelte'
   import Badge from './Badge.svelte'
   import {
+    blindCellLine,
+    blindWhy,
     elapsedClock,
     formatScore,
     rowWords,
@@ -26,6 +28,8 @@
     submissionOrdinal,
     runProgress,
     spellDuration,
+    splitError,
+    type SealedTarget,
   } from '@/lib/competition-words'
 
   interface Props {
@@ -37,6 +41,8 @@
     ordinal?: number | null
     /** Finished without spending the day's limit (`outsideQuota`). */
     offQuota?: boolean
+    /** The hidden file a blind run's details talk about (`sealedTarget`); null — none. */
+    sealed?: SealedTarget | null
     canChoose?: boolean
     paused: boolean
     now: number
@@ -50,13 +56,34 @@
     onchoose: (id: string) => void
   }
 
-  const { submission, live, best, counted = submission.chosen, ordinal = null, offQuota = false, canChoose = true, paused, now, busy, limitMs, notebookUrl, dependenciesSlug, frozen, oncancel, onchoose }: Props =
+  const { submission, live, best, counted = submission.chosen, ordinal = null, offQuota = false, sealed = null, canChoose = true, paused, now, busy, limitMs, notebookUrl, dependenciesSlug, frozen, oncancel, onchoose }: Props =
     $props()
 
   let open = $state(false)
 
   const badge = $derived(submissionBadge(submission))
-  const words = $derived(rowWords({ submission, live, best, paused, now, phone: true, offQuota }))
+  const words = $derived(rowWords({ submission, live, best, paused, now, phone: true }))
+  // Outside the standings, whatever the props say (SubmissionRow says why).
+  const late = $derived(!!submission.late)
+  const isCounted = $derived(counted && !late)
+  /*
+   * A blind failure on a phone (C3): the cell and the exception class in one
+   * mono line, "output hidden" under it — no first line of a traceback to
+   * show, because there is none.
+   */
+  const blind = $derived(!!submission.blind)
+  const cellLine = $derived(blind ? blindCellLine(submission) : '')
+  /*
+   * The brief words of any other blind outcome are our own and safe to show;
+   * a rejected answer's first sentence is already the card's title.
+   */
+  const blindText = $derived(
+    !blind || !submission.participantError || submission.state === 'notebookFailed'
+      ? ''
+      : submission.state === 'rejected'
+        ? splitError(submission.participantError).rest
+        : submission.participantError,
+  )
   // What the notebook link hands out, in its own words (SubmissionRow says why).
   const notebookWord = $derived(
     submission.notebook === null
@@ -83,11 +110,12 @@
 </script>
 
 <div
-  class="flex flex-col gap-1.5 border-b border-line py-3.5 {counted
+  class="flex flex-col gap-1.5 border-b border-line py-3.5 {isCounted
     ? 'bg-[#F2FAF7] dark:bg-positive/10'
     : ''}"
   data-submission={submission.number}
   data-state={submission.state}
+  data-late={late ? '' : undefined}
 >
   <div class="flex items-center gap-2">
     {#if badge}
@@ -97,12 +125,22 @@
          it. The ordinal is the one that gives way when a long timer needs the
          room: the number next to it still names the row. -->
     {#if ordinal !== null}
+      <!-- A late card carries its chip in the same line, and "15-я посылка"
+           beside it was cut to "15-я посыл…" on a phone: there the bare
+           ordinal says the same. -->
       <span class="min-w-0 truncate text-micro font-bold leading-4 text-ink">
-        {tr('competitions.p.ownOrdinal', { ordinal: submissionOrdinal(ordinal) })}
+        {late ? submissionOrdinal(ordinal) : tr('competitions.p.ownOrdinal', { ordinal: submissionOrdinal(ordinal) })}
       </span>
     {/if}
     <span class="shrink-0 font-mono text-micro leading-4 text-muted">#{submission.number}</span>
-    {#if counted}
+    {#if late}
+      <!-- Every late card carries it (C3): on a phone the list is read in
+           passing, and the caption alone is easy to miss. -->
+      <span class="shrink-0 border border-brand-2 px-1 text-[10px] font-black uppercase leading-4 tracking-[0.12em] text-brand-2 dark:border-accent dark:text-accent">
+        {tr('competitions.p.lateBadge')}
+      </span>
+    {/if}
+    {#if isCounted}
       <span class="bg-positive px-1.5 py-0.5 text-micro font-bold leading-5 text-white dark:text-canvas">
         {tr('competitions.counted')}
       </span>
@@ -131,14 +169,46 @@
   {/if}
 
   <SubmissionEnvironment execution={submission.execution} slug={dependenciesSlug} />
-      {#each words.lines as line, index (index)}
-    <span class="text-2xs leading-[18px] text-muted">{line}</span>
-  {/each}
 
-  {#if failed && submission.participantError}
+  {#if blind && failed}
+    {#if cellLine}
+      <span class="font-mono text-micro leading-[18px] text-ink">{cellLine}</span>
+    {/if}
+    {#if blindText}
+      <span class="text-2xs leading-[18px] text-ink">{blindText}</span>
+    {/if}
+    <span class="text-2xs leading-[18px] text-muted">{tr('competitions.p.blindShort')}</span>
+    {#if open}
+      <span class="text-2xs leading-[18px] text-muted">{blindWhy(submission, sealed)}</span>
+    {/if}
+  {/if}
+
+  {#snippet notSpent()}
+    <span class="inline-flex items-center gap-1 font-semibold text-positive">
+      <svg width="12" height="12" viewBox="0 0 14 14" class="shrink-0" aria-hidden="true">
+        <path d="M2.5 7.2 5.6 10.2 11.5 3.8" fill="none" stroke="currentColor" stroke-width="1.6" />
+      </svg>
+      {tr('competitions.p.limitNotSpent')}
+    </span>
+  {/snippet}
+  <!-- "Limit not spent" closes the last caption line (C3): the time and the
+       mark are one remark about the run, and a phone line is a finger's
+       height of scrolling. -->
+  {#each words.lines as line, index (index)}
+    <span class="text-2xs leading-[18px] text-muted">
+      {line}{#if offQuota && index === words.lines.length - 1}{' · '}{@render notSpent()}{/if}
+    </span>
+  {/each}
+  {#if offQuota && words.lines.length === 0}
+    <span class="text-2xs leading-[18px]">{@render notSpent()}</span>
+  {/if}
+
+  {#if failed && submission.participantError && !blind}
     <span class="font-mono text-micro leading-[18px] text-ink">
       {open ? submission.participantError : submission.participantError.split('\n')[0]}
     </span>
+  {/if}
+  {#if failed && (submission.participantError || blind)}
     <button
       class="self-start text-2xs leading-[18px] text-accent-text"
       type="button"
@@ -166,7 +236,7 @@
     >
       {tr('competitions.p.cancelRun')}
     </button>
-  {:else if submission.state === 'scored' && canChoose && !counted && !frozen}
+  {:else if submission.state === 'scored' && canChoose && !isCounted && !frozen && !late}
     <button
       class="self-start text-2xs text-accent-text disabled:text-faint"
       type="button"

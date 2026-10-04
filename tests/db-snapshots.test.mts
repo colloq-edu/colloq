@@ -540,12 +540,24 @@ test('db.ts copies the database before the first migration when it raises the sc
 })
 
 test('an ordinary start takes no snapshot: a new database, and one from before the stamp', () => {
-  for (const root of [scratch('colloq-schema-fresh-'), legacyRoot(0)]) {
+  // A file from before the stamp is schema 1: opening it under schema 1 raises
+  // nothing. Under a later schema it is a raise like any other (next test).
+  for (const [root, target] of [[scratch('colloq-schema-fresh-'), null], [legacyRoot(0), 1]] as const) {
     fs.mkdirSync(path.join(root, 'data'), { recursive: true, mode: 0o700 })
-    const r = openWithSchema(root, null)
+    const r = openWithSchema(root, target)
     assert.equal(r.status, 0, r.out)
-    assert.match(r.out, new RegExp(`stamp=${DATA_SCHEMA_VERSION}\\b`))
+    assert.match(r.out, new RegExp(`stamp=${target ?? DATA_SCHEMA_VERSION}\\b`))
     assert.ok(!fs.existsSync(path.join(root, 'data', 'snapshots')), `a snapshot folder in ${root}`)
     assert.doesNotMatch(r.out, /snapshot/)
   }
+})
+
+test('a file from before the stamp is schema 1, and a later schema copies it before raising', { skip: DATA_SCHEMA_VERSION === 1 }, () => {
+  const root = legacyRoot(0)
+  const r = openWithSchema(root, null)
+  assert.equal(r.status, 0, r.out)
+  assert.match(r.out, new RegExp(`stamp=${DATA_SCHEMA_VERSION}\\b`))
+  const names = fs.readdirSync(path.join(root, 'data', 'snapshots'))
+  assert.equal(names.length, 1, names.join(', '))
+  assert.match(names[0], new RegExp(`^pre-schema-1-to-${DATA_SCHEMA_VERSION}-\\d{8}T\\d{6}Z\\.db$`))
 })

@@ -15,6 +15,8 @@
  * class working folders (see SECURITY.md), and they have exactly one way out:
  * the metric container the runner brings up. The teacher sees the names and
  * columns of the answers (that is how A2 is drawn); nobody sees the bytes.
+ * The hidden test is held the same way: uploaded, listed and removed here,
+ * read by the notebook during the check, downloaded by no one.
  *
  * Running submissions does not live here. These routes put work into the
  * queue (`store.ts`) and wake the pump (`runner.ts`), and "run again", "kill"
@@ -62,6 +64,7 @@ import {
   openFileBytes,
   openPrivateBoard,
   putFile,
+  sealedFileBytes,
   queuePause,
   queueRow,
   queueRows,
@@ -71,6 +74,7 @@ import {
   setCompetitionState,
   setEntrantDisabled,
   updateCompetition,
+  forgiveLateSubmissions,
   updateSubmission,
   waitingCount,
   enqueue,
@@ -82,15 +86,18 @@ import {
   baselineDir,
   competitionsFs,
   dropOpenFile,
+  dropSealedFile,
   dropSecretFile,
   ensureCompetition,
   putBaseline,
   putOpenFile,
+  putSealedFile,
   putSecretFile,
   putSubmissionNotebook,
   readBaseline,
   readOpenFile,
   readResultFile,
+  readSealedFile,
   readSecretFile,
   resultDir,
 } from '../competitions/storage.js'
@@ -105,7 +112,7 @@ import {
   type InputRefusal,
 } from '../competitions/panel.js'
 import { queueForecast } from '../competitions/forecast.js'
-import { privateBoardState } from '../competitions/results.js'
+import { DEADLINE_GRACE_MS, privateBoardState } from '../competitions/results.js'
 import { machineShape, slotsResolution } from '../competitions/capacity.js'
 import { competitionDefaults, parseSettingsInput, saveCompetitionSettings, uploadsPerMinute, type SettingsRefusal } from '../competitions/settings.js'
 import { HOST_RESERVE_MB } from '../kernel/resources.js'
@@ -147,6 +154,7 @@ import type {
   FileView,
   QueueSnapshot,
   RunningNow,
+  SealedFileView,
   SubmissionDetail,
   SubmissionFeed,
   SubmissionRow,
@@ -277,7 +285,9 @@ function fileView(competitionId: string, file: CompetitionFile): FileView {
     const bytes =
       file.visibility === 'open'
         ? readOpenFile(competitionId, file.name, HEADER_READ_LIMIT)
-        : readSecretFile(competitionId, file.name, HEADER_READ_LIMIT)
+        : file.visibility === 'sealed'
+          ? readSealedFile(competitionId, file.name, HEADER_READ_LIMIT)
+          : readSecretFile(competitionId, file.name, HEADER_READ_LIMIT)
     columns = bytes ? csvShape(bytes)?.columns ?? null : null
   }
   return { ...file, columns }
@@ -314,6 +324,11 @@ async function viewOf(competition: Competition): Promise<CompetitionView> {
   const open = listFiles(competition.id, 'open')
   const hidden = listFiles(competition.id, 'hidden')
   const hiddenViews = hidden.map((file) => fileView(competition.id, file))
+  const openNames = new Set(open.map((file) => file.name))
+  const sealedViews: SealedFileView[] = listFiles(competition.id, 'sealed').map((file) => ({
+    ...fileView(competition.id, file),
+    replaces: openNames.has(file.name) ? file.name : null,
+  }))
   const solution =
     hiddenViews.find((file) => file.name === SOLUTION_FILE) ?? hiddenViews[0] ?? null
   /*
@@ -336,6 +351,8 @@ async function viewOf(competition: Competition): Promise<CompetitionView> {
     capabilities,
     openFiles: open.map((file) => fileView(competition.id, file)),
     hiddenFiles: hiddenViews,
+    sealedFiles: sealedViews,
+    sealedBytes: sealedFileBytes(competition.id),
     baseline: baselineView(competition),
     split:
       total === null || solutionBytes === null
@@ -376,6 +393,7 @@ function runningNow(row: QueueRow): RunningNow | null {
     limitMs: limitSeconds * 1000,
     container: row.container,
     baseline: row.entrantId === baselineEntrantOf(competition),
+    late: row.late,
   }
 }
 
@@ -457,6 +475,7 @@ function waitingRows(competitionId: string | null, snapshot: QueueSnapshot, now:
       etaMs: spot?.etaMs ?? null,
       resourcePending: queued.notBefore > now,
       baseline: queued.entrantId === baselineEntrantOf(competition),
+      late: queued.late,
     })
   }
   return rows
@@ -525,6 +544,8 @@ interface Upload {
 
 interface Received {
   files: Upload[]
+  /** Plain form fields, the last value of each name (a hidden test's target name). */
+  fields: Record<string, string>
   /** The name of the file that did not fit under the cap; null means all fit. */
   oversize: string | null
   /** More files were sent than the door accepts: busboy silently dropped the extra ones. */
@@ -566,7 +587,7 @@ function receive(
       return resolve('not-multipart')
     }
 
-    const out: Received = { files: [], oversize: null, tooMany: false }
+    const out: Received = { files: [], fields: {}, oversize: null, tooMany: false }
     let answered = false
     const done = (value: Received | 'cut-off') => {
       if (answered) return
@@ -576,6 +597,9 @@ function receive(
 
     bb.on('filesLimit', () => {
       out.tooMany = true
+    })
+    bb.on('field', (name, value, info) => {
+      if (!info.valueTruncated) out.fields[name] = value
     })
     bb.on('file', (_name, stream, info) => {
       const chunks: Buffer[] = []
@@ -821,7 +845,10 @@ export function adminCompetitionRoutes(): Router {
     const saved = updateCompetition(competition.id, parsed.input)
     if (saved === 'taken') return fail(res, 409, 'exists', tr('competitions.refusal.slug.taken'))
     if (!saved) return fail(res, 404, 'not_found', tr('competitions.refusal.notFound'))
-    res.json(await viewOf(saved))
+    // A deadline moved later frees what was sent before it; an earlier one
+    // never makes an on-time row late (store.ts · forgiveLateSubmissions).
+    if (parsed.input.deadlineAt !== undefined) forgiveLateSubmissions(saved.id, DEADLINE_GRACE_MS)
+    res.json(await viewOf(getCompetition(saved.id) ?? saved))
   })
 
   /**
@@ -957,7 +984,7 @@ export function adminCompetitionRoutes(): Router {
     const listed = listFiles(competition.id, 'open').find((file) => file.name === name)
     if (!listed) return fail(res, 404, 'not_found', tr('competitions.refusal.fileMissing'))
     dropOpenFile(competition.id, name)
-    dropFile(competition.id, name)
+    dropFile(competition.id, name, 'open')
     res.json(await viewOf(getCompetition(competition.id)!))
   })
 
@@ -1010,10 +1037,81 @@ export function adminCompetitionRoutes(): Router {
       const listed = listFiles(competition.id, 'hidden').find((file) => file.name === name)
       if (!listed) return fail(res, 404, 'not_found', tr('competitions.refusal.fileMissing'))
       dropSecretFile(competition.id, name)
-      dropFile(competition.id, name)
+      dropFile(competition.id, name, 'hidden')
       res.json(await viewOf(getCompetition(competition.id)!))
     },
   )
+
+  /* ------------------------------------------------------- hidden test */
+
+  /**
+   * The hidden test: files the notebook reads in `data/` during the check, in
+   * place of the open example of the same name.
+   *
+   * A door of its own, like the answers' and for the same reason: a hidden
+   * test sent through the open-data door would be downloadable by the class,
+   * and such a mistake must look like a different address. The target name is
+   * the file's own unless the `name` field says otherwise — "upload my
+   * test_full.csv as data/test.csv" — and a name may be given for one file
+   * only. Staff, like the open data: it is part of building the task.
+   *
+   * No GET for the bytes, here or anywhere: the list travels in the view.
+   */
+  router.post('/api/admin/competitions/:id/sealed', requireStaff, async (req, res) => {
+    const competition = competitionOf(req, res)
+    if (!competition) return
+    const room = LIMITS.sealedBytes - sealedFileBytes(competition.id)
+    if (room <= 0) return fail(res, 413, 'too_long', tr('competitions.refusal.sealedFull', { mb: mb(LIMITS.sealedBytes) }))
+    const received = await receive(req, { maxBytes: room, maxFiles: LIMITS.sealedFiles })
+    if (typeof received === 'string') return refuseUpload(res, received)
+    if (received.oversize) return fail(res, 413, 'too_long', tr('competitions.refusal.sealedFull', { mb: mb(LIMITS.sealedBytes) }))
+    if (received.files.length === 0) return fail(res, 400, 'invalid', tr('competitions.refusal.noFile'))
+    const target = (received.fields.name ?? '').trim()
+    if (target && received.files.length > 1) return fail(res, 400, 'invalid', tr('competitions.refusal.sealedOneName'))
+    const named = received.files.map((file) => ({ ...file, name: target || file.name }))
+    const existing = new Set(listFiles(competition.id, 'sealed').map((file) => file.name))
+    const fresh = new Set(named.map((file) => file.name).filter((name) => !existing.has(name)))
+    if (received.tooMany || existing.size + fresh.size > LIMITS.sealedFiles) {
+      return fail(res, 409, 'too_long', tr('competitions.refusal.tooManySealed', { max: LIMITS.sealedFiles }))
+    }
+    // The sum, before the first write: half a hidden test is a test on the wrong rows.
+    const replaced = listFiles(competition.id, 'sealed')
+      .filter((file) => named.some((one) => one.name === file.name))
+      .reduce((sum, file) => sum + file.bytes, 0)
+    if (named.reduce((sum, file) => sum + file.body.length, 0) - replaced > room) {
+      return fail(res, 413, 'too_long', tr('competitions.refusal.sealedFull', { mb: mb(LIMITS.sealedBytes) }))
+    }
+    for (const file of named) {
+      const shape = file.name.toLowerCase().endsWith('.csv') ? csvShape(file.body) : null
+      try {
+        // First the disk, then the row, as for the open data.
+        putSealedFile(competition.id, file.name, file.body)
+      } catch {
+        return fail(res, 400, 'invalid', tr('competitions.refusal.badName', { name: file.name }))
+      }
+      putFile({ competitionId: competition.id, name: file.name, bytes: file.body.length, rows: shape?.rows ?? null, visibility: 'sealed' })
+    }
+    res.json(await viewOf(getCompetition(competition.id)!))
+  })
+
+  /** The hidden test as names, rows and columns — the same list the view carries. */
+  router.get('/api/admin/competitions/:id/sealed', requireStaff, async (req, res) => {
+    const competition = competitionOf(req, res)
+    if (!competition) return
+    res.json({ sealedFiles: (await viewOf(competition)).sealedFiles ?? [] })
+  })
+
+  /** Remove a hidden-test file; the open example of the same name is the check's again from the next run. */
+  router.delete('/api/admin/competitions/:id/sealed/:name', requireStaff, async (req, res) => {
+    const competition = competitionOf(req, res)
+    if (!competition) return
+    const name = String(req.params.name)
+    const listed = listFiles(competition.id, 'sealed').find((file) => file.name === name)
+    if (!listed) return fail(res, 404, 'not_found', tr('competitions.refusal.fileMissing'))
+    dropSealedFile(competition.id, name)
+    dropFile(competition.id, name, 'sealed')
+    res.json(await viewOf(getCompetition(competition.id)!))
+  })
 
   async function executionAvailable(competition: Competition, res: Response): Promise<boolean> {
     try {
@@ -1261,6 +1359,8 @@ export function adminCompetitionRoutes(): Router {
     )[0]
     const wantedState = String(req.query.state ?? '')
     const wantedEntrant = String(req.query.entrant ?? '')
+    // `late=1` — late submissions only, `late=0` — on-time only; absent — both.
+    const wantedLate = req.query.late === '1' ? true : req.query.late === '0' ? false : null
     const needle = String(req.query.q ?? '').trim().toLowerCase()
     const names = new Map(listCompetitionEntrants(competition.id).map((it) => [it.id, it.name]))
 
@@ -1268,6 +1368,7 @@ export function adminCompetitionRoutes(): Router {
       .filter((submission) => {
         if (wantedState && submission.state !== wantedState) return false
         if (wantedEntrant && submission.entrantId !== wantedEntrant) return false
+        if (wantedLate !== null && !!submission.late !== wantedLate) return false
         if (!needle) return true
         const name = (names.get(submission.entrantId) ?? '').toLowerCase()
         return name.includes(needle) || submission.fileName.toLowerCase().includes(needle)
@@ -1380,6 +1481,7 @@ export function adminCompetitionRoutes(): Router {
         stage: 'score',
         participantError: null,
         teacherError: null,
+        errorType: null,
       })
       enqueue({
         submissionId: submission.id,
@@ -1413,10 +1515,9 @@ export function adminCompetitionRoutes(): Router {
       // queue.
       if (queueRow(submission.id)) await cancelSubmission(submission.id, 'teacher')
       leaveQueue(submission.id)
-      const saved = updateSubmission(submission.id, {
-        state: 'cancelled',
-        participantError: tr('competitions.note.droppedByTeacher'),
-      })
+      const note = tr('competitions.note.droppedByTeacher')
+      // Our own words: safe for a blind participant to read as they are.
+      const saved = updateSubmission(submission.id, { state: 'cancelled', participantError: note, briefError: note })
       res.json({ submission: saved })
     },
   )

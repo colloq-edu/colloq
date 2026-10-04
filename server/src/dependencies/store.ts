@@ -5,7 +5,7 @@ import { getCompetition, invalidateCompetitionInputs } from '../competitions/sto
 import { DEPENDENCY_LIMITS, normalizeRequirements, quotaWaitMinutes, requirementLineCount, requirementWithoutComment, unsupportedRequirementLine, dependencyActive, packagesFit, packagesMemoryParams, type DependencyBundle, type DependencyDraft, type DependencyErrorParams, type DependencyPolicy, type DependencyQuota, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
 import type { PreparationProgress, PreparationResult } from './preparation-contract.js'
 import { dependencyMessage, type DependencyRefusalDetail } from './messages.js'
-import { submissionsOpen, type CompetitionState } from '@shared/competitions'
+import { acceptsUploads, submissionsOpen, type CompetitionState } from '@shared/competitions'
 
 const id = () => randomUUID().replaceAll('-', '')
 // `detail` carries what the refusal's text needs beyond the code (messages.ts · dependencyRefusal).
@@ -192,8 +192,8 @@ export function listBundles(c:string,e?:string):DependencyBundle[]{
  return (rows as Row[]).map(toBundle)
 }
 export const createBundle=db.transaction((c:string,e:string,revisionId:string,text:string,now=Date.now()):DependencyBundle=>{
- const competition=db.prepare('SELECT state,starts_at,deadline_at,environment FROM competitions WHERE id=?').get(c) as {state:CompetitionState;starts_at:number|null;deadline_at:number|null;environment:string}|undefined
- if(!competition||submissionsOpen({state:competition.state,startsAt:competition.starts_at,deadlineAt:competition.deadline_at},now)!=='open')throw new DependencyStoreError('dependency_closed',403)
+ const competition=db.prepare('SELECT state,starts_at,deadline_at,late_submissions,environment FROM competitions WHERE id=?').get(c) as {state:CompetitionState;starts_at:number|null;deadline_at:number|null;late_submissions:number;environment:string}|undefined
+ if(!competition||!acceptsUploads(submissionsOpen({state:competition.state,startsAt:competition.starts_at,deadlineAt:competition.deadline_at,lateSubmissions:competition.late_submissions===1},now)))throw new DependencyStoreError('dependency_closed',403)
  if(getRevision(revisionId)?.environmentName!==competition.environment)throw new DependencyStoreError('dependency_revision')
  const policy=policyOf(c);if(!policy.enabled)throw new DependencyStoreError('dependency_disabled',403)
  text=checkRequirements(text);if(!text||!text.split('\n').some(s=>s.trim()&&!s.trim().startsWith('#')))throw new DependencyStoreError('dependency_empty',400)

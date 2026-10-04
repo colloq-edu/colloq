@@ -41,7 +41,7 @@
   import TaskView from '@/components/competitions/TaskView.svelte'
   import TopBar from '@/components/competitions/TopBar.svelte'
   import { firstScreenReady } from '@/lib/boot'
-  import { boardPlaces, clockStep } from '@/lib/competition-words'
+  import { acceptsUploads, boardPlaces, clockStep, standingsClosed } from '@/lib/competition-words'
   import { entrantApi, EntrantApiError } from '@/lib/entrantApi'
   import { COMPETITIONS_LANDING, type CompetitionRoute, type CompetitionView } from '@/lib/routes'
 
@@ -135,11 +135,18 @@
   const running = $derived((mine?.submissions ?? []).some((it) => !isTerminal(it.state)))
   /*
    * The deadline the header counts down to — the same condition PageHeader
-   * draws the countdown by: a deadline, and submissions not closed yet.
+   * draws the countdown by: a deadline, and intake for the standings not over
+   * yet. Late intake (`late`) is past it: the header names the passed
+   * deadline instead, and nothing ticks by the second for it.
    */
   const countdownTo = $derived(
-    route.slug !== null && page !== null && page.accepting !== 'closed' ? page.competition.deadlineAt : null,
+    route.slug !== null && page !== null && !standingsClosed(page.accepting) ? page.competition.deadlineAt : null,
   )
+  /*
+   * Whether a signed-in visitor may still join: the join door takes people
+   * while it takes notebooks, late ones included.
+   */
+  const joinable = $derived(page !== null && acceptsUploads(page.accepting))
   /*
    * The step is a number derived from `now`, and the effect below reads only
    * it: a `$derived` wakes its readers only when its value CHANGES, so the
@@ -451,7 +458,18 @@
       await loadMine(slug)
       return answer
     } catch (error: unknown) {
-      if (currentContext(context)) sendRefusal = say(error)
+      if (!currentContext(context)) return null
+      sendRefusal = say(error)
+      /*
+       * Refused by the day's numbers — the limit, or the ceiling on failed
+       * submissions — means the box's own numbers were stale: a run ended
+       * since the last frame. Fresh numbers make the box say it in its strip,
+       * with the reset time, and the same words twice are once too many.
+       */
+      if (error instanceof EntrantApiError && (error.reason === 'attempts' || error.reason === 'quota')) {
+        await loadMine(slug)
+        if (currentContext(context)) sendRefusal = null
+      }
       return null
     } finally {
       if (currentContext(context)) sending = false
@@ -548,20 +566,20 @@
       {tr('competitions.refusal.boardEntrantsOnly')}
       {#if !me?.entrant}
         {tr('competitions.refusal.signIn')}
-      {:else if page?.accepting === 'open'}
+      {:else if joinable}
         {tr('competitions.p.boardClosedJoin')}
       {/if}
     </p>
-    {#if route.view !== 'screen' && (!me?.entrant || page?.accepting === 'open')}
+    {#if route.view !== 'screen' && (!me?.entrant || joinable)}
       <button
         class="h-[38px] bg-brand px-4 text-micro font-black uppercase tracking-label text-white"
         type="button"
         onclick={() => {
           onnavigate(COMPETITIONS_LANDING)
-          if (page?.accepting === 'open') joining = page.competition.slug
+          if (joinable && page) joining = page.competition.slug
         }}
       >
-        {page?.accepting === 'open' ? tr('competitions.p.join') : tr('competitions.p.signIn')}
+        {joinable ? tr('competitions.p.join') : tr('competitions.p.signIn')}
       </button>
     {/if}
   </div>

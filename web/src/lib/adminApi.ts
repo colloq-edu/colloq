@@ -54,6 +54,7 @@ import type {
   EntrantRow,
   EntrantsList,
   QueueSnapshot,
+  SealedFileView,
   SubmissionDetail,
   SubmissionFeed,
 } from '@shared/competitions-api'
@@ -468,6 +469,29 @@ export const adminApi = {
       { method: 'DELETE' },
     ),
 
+  /**
+   * The hidden test — a third door, for the same reason as the answers'.
+   *
+   * `name` is the file's name in `data/` when it should differ from its own
+   * ("my test_full.csv is data/test.csv during the check"); the server takes
+   * it for one file only. An empty name means the file's own.
+   */
+  uploadCompetitionSealed: (id: string, files: readonly File[], name = '') => {
+    const form = new FormData()
+    if (name.trim()) form.append('name', name.trim())
+    for (const file of files) form.append('file', file, file.name)
+    return sendForm<CompetitionView>(`/competitions/${encodeURIComponent(id)}/sealed`, form)
+  },
+
+  competitionSealed: (id: string) =>
+    request<{ sealedFiles: SealedFileView[] }>(`/competitions/${encodeURIComponent(id)}/sealed`),
+
+  deleteCompetitionSealed: (id: string, name: string) =>
+    request<CompetitionView>(
+      `/competitions/${encodeURIComponent(id)}/sealed/${encodeURIComponent(name)}`,
+      { method: 'DELETE' },
+    ),
+
   uploadCompetitionBaseline: (id: string, file: File) => {
     const form = new FormData()
     form.append('file', file, file.name)
@@ -516,9 +540,17 @@ export const adminApi = {
    */
   competitionStreamUrl: (id: string) => `${BASE}/competitions/${encodeURIComponent(id)}/stream`,
 
+  /** `late`: '1' — late submissions only, '0' — on-time only; absent — both. */
   competitionSubmissions: (
     id: string,
-    opts: { state?: string; entrant?: string; q?: string; limit?: number; offset?: number } = {},
+    opts: {
+      state?: string
+      entrant?: string
+      q?: string
+      late?: '1' | '0'
+      limit?: number
+      offset?: number
+    } = {},
   ) => {
     const query = new URLSearchParams()
     for (const [key, value] of Object.entries(opts)) {

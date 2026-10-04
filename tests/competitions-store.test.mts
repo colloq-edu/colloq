@@ -280,8 +280,8 @@ test("the daily quota is counted in the class's time zone and leaves yesterday's
   assert.equal(usedToday(c.id, person.id, now, MSK, null), 1)
   assert.equal(leftToday(c, person.id, now, null, MSK, null), 4)
 
-  // One that failed BEFORE the first cell does not use the quota — the mockup
-  // promises that.
+  // A failed one gives its place back, at whatever cell it died (4 Oct 2026);
+  // only a score keeps it spent.
   const dead = acceptSubmission({
     competitionId: c.id,
     entrantId: person.id,
@@ -289,9 +289,12 @@ test("the daily quota is counted in the class's time zone and leaves yesterday's
     bytes: 1,
     at: now,
   })
+  assert.equal(leftToday(c, person.id, now, null, MSK, null), 3, 'a waiting one holds a place')
   updateSubmission(dead.id, { state: 'notebookFailed', cellsDone: 0 })
   assert.equal(leftToday(c, person.id, now, null, MSK, null), 4)
   updateSubmission(dead.id, { state: 'notebookFailed', cellsDone: 7 })
+  assert.equal(leftToday(c, person.id, now, null, MSK, null), 4)
+  updateSubmission(dead.id, { state: 'scored', publicScore: 0.5, cellsDone: 7 })
   assert.equal(leftToday(c, person.id, now, null, MSK, null), 3)
 
   // Zero means "no limit", which is not the same as "none at all".
@@ -309,17 +312,18 @@ test('the leaderboard counts only the submissions the daily quota counts', () =>
     acceptSubmission({ competitionId: c.id, entrantId, fileName, bytes: 1, at: now })
 
   updateSubmission(send(person.id, 'scored.ipynb').id, { state: 'scored', publicScore: 0.8, cellsDone: 9 })
-  // The notebook ran and the answer was refused: that spends a submission.
+  // The notebook ran and the answer was refused, a cell failed, the metric
+  // crashed, or it was withdrawn: none of it spends a submission (4 Oct 2026).
   updateSubmission(send(person.id, 'columns.ipynb').id, { state: 'rejected', cellsDone: 9 })
-  // Died before its first cell, and withdrawn by hand: neither does.
-  updateSubmission(send(person.id, 'dead.ipynb').id, { state: 'notebookFailed', cellsDone: 0 })
+  updateSubmission(send(person.id, 'crash.ipynb').id, { state: 'notebookFailed', cellsDone: 4 })
+  updateSubmission(send(person.id, 'metric.ipynb').id, { state: 'metricFailed', cellsDone: 9 })
   updateSubmission(send(person.id, 'withdrawn.ipynb').id, { state: 'cancelled', cellsDone: 3 })
   // Still waiting counts, the same way it holds a place in "left today".
   send(person.id, 'waiting.ipynb')
   updateSubmission(send(other.id, 'dead.ipynb').id, { state: 'notebookFailed', cellsDone: 0 })
 
   const counts = submissionCounts(c.id)
-  assert.equal(counts.get(person.id), 3)
+  assert.equal(counts.get(person.id), 2)
   assert.equal(counts.get(person.id), usedToday(c.id, person.id, now, MSK, null), 'the column and the quota disagree')
   assert.equal(counts.get(other.id), undefined)
   drainQueue()

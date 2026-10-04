@@ -13,10 +13,15 @@
  *     data/                 open files; mounted into a submission as /data:ro
  *     secret/               solution.csv and everything that never leaves the
  *                           server; mounted ONLY into the metric container
+ *     sealed/               the hidden test: never mounted itself, never served;
+ *                           linked into each run's own data folder
  *     baseline/             the teacher's sample notebook
  *     s/<submissionId>/in/  the submitted notebook, one, and nothing else
  *     s/<submissionId>/out/ run.json, submission.csv, executed.ipynb
  *     s/<submissionId>/score/  a copy of the answer for the metric container
+ *     s/<submissionId>/attempts/<attemptId>/inputs/
+ *                           with a hidden test: this run's data/, the open files
+ *                           with the sealed ones swapped in; mounted as /data:ro
  *
  * Directories rather than files, and each under its own NEW name. This was
  * bought by experience, not taste: on colima (virtiofs) a path whose inode
@@ -95,6 +100,19 @@ export function secretDir(id: string): string {
   return path.join(competitionDir(id), 'secret')
 }
 
+/**
+ * The hidden test (FileVisibility `sealed`).
+ *
+ * Next to `data/` and `secret/`, never inside either: `data/` travels into
+ * every notebook container whole and is downloaded file by file, `secret/`
+ * goes only to the metric. This one is seen by the notebook and nobody else,
+ * and only through a run's own composed folder (composeRunInputs) — so it is
+ * never mounted itself, and no door reads from it.
+ */
+export function sealedDir(id: string): string {
+  return path.join(competitionDir(id), 'sealed')
+}
+
 export function baselineDir(id: string): string {
   return path.join(competitionDir(id), 'baseline')
 }
@@ -115,8 +133,20 @@ export function resultDir(id: string, submissionId: string): string {
 
 /** Every execution owns its directories; previous results are never inputs to
  * a new notebook attempt. Only validated host exports are promoted to out/. */
-export function attemptDir(id: string, submissionId: string, attemptId: string, part: 'result' | 'score' | 'score-out' | 'score-config' | 'secret' = 'result'): string {
-  return ensureDir(path.join(submissionDir(id, submissionId), 'attempts', checkId(attemptId), part))
+export type AttemptPart = 'result' | 'score' | 'score-out' | 'score-config' | 'secret' | 'inputs'
+
+export function attemptDir(id: string, submissionId: string, attemptId: string, part: AttemptPart = 'result'): string {
+  return ensureDir(attemptPath(id, submissionId, attemptId, part))
+}
+
+/**
+ * The same path, without creating it — for comparing a path someone handed
+ * over against the one it must be (broker-runner.ts checks the run's data
+ * folder this way). The part is named `inputs`, not `data`: an existing check
+ * of the metric Pod refuses any mount ending in /data.
+ */
+export function attemptPath(id: string, submissionId: string, attemptId: string, part: AttemptPart): string {
+  return path.join(submissionDir(id, submissionId), 'attempts', checkId(attemptId), part)
 }
 
 export function dropAttempt(id: string, submissionId: string, attemptId: string): void {
@@ -261,10 +291,35 @@ export function ensureCompetition(id: string): void {
   ensureDir(baselineDir(id))
 }
 
+/**
+ * Write next to the file and rename over it, never truncate in place.
+ *
+ * A run in progress holds the old file — a copy of the answer key in its
+ * snapshot, a hard link in its composed data folder (composeRunInputs) — and
+ * the rename leaves it the old bytes whole instead of half of each. The
+ * temporary name starts with a dot, which no file name may (NAME_OK), so it
+ * can never be mistaken for, or collide with, a real one.
+ */
+function writeReplacing(directory: string, name: string, body: Uint8Array): void {
+  const file = path.join(directory, checkName(name))
+  const temporary = path.join(directory, `.${checkName(name)}-next`)
+  competitionsFs.writeFileSync(temporary, Buffer.from(body), { mode: 0o600 })
+  competitionsFs.renameSync(temporary, file)
+}
+
 /** Put an open data file. Returns how many bytes were written. */
 export function putOpenFile(id: string, name: string, body: Uint8Array): number {
-  const file = path.join(ensureDir(openDir(id)), checkName(name))
-  competitionsFs.writeFileSync(file, Buffer.from(body), { mode: 0o600 })
+  writeReplacing(ensureDir(openDir(id)), name, body)
+  return body.length
+}
+
+/**
+ * Put a hidden-test file under the name the notebook will read it by in
+ * `data/`. A door of its own, like the answers': a hidden test written into
+ * `data/` by a wrong parameter would be downloadable by the whole class.
+ */
+export function putSealedFile(id: string, name: string, body: Uint8Array): number {
+  writeReplacing(ensureDir(sealedDir(id)), name, body)
   return body.length
 }
 
@@ -276,18 +331,13 @@ export function putOpenFile(id: string, name: string, body: Uint8Array): number 
  * look like a different function name, not a different parameter value.
  */
 export function putSecretFile(id: string, name: string, body: Uint8Array): number {
-  const directory = ensureDir(secretDir(id))
-  const file = path.join(directory, checkName(name))
   /*
-   * Written next to it and renamed over it, never truncated in place: a job
-   * that started a minute ago is still copying the old answer key into its
-   * snapshot (runner.ts · snapshotSecrets), and the rename leaves it the old
-   * bytes whole instead of half of each. This directory is never mounted
-   * itself, so the new inode surprises no container.
+   * A job that started a minute ago is still copying the old answer key into
+   * its snapshot (runner.ts · snapshotSecrets): writeReplacing leaves it the
+   * old bytes whole. This directory is never mounted itself, so the new inode
+   * surprises no container.
    */
-  const temporary = path.join(directory, `.${checkName(name)}-next`)
-  competitionsFs.writeFileSync(temporary, Buffer.from(body), { mode: 0o600 })
-  competitionsFs.renameSync(temporary, file)
+  writeReplacing(ensureDir(secretDir(id)), name, body)
   return body.length
 }
 
@@ -363,6 +413,25 @@ function readIfExists(file: string, limit: number): Buffer | null {
   }
 }
 
+/**
+ * The first bytes of an open file — enough for its header line (the columns
+ * a participant is shown for the example a hidden test replaces), without
+ * reading a two-hundred-megabyte table for one line.
+ */
+export function readOpenHead(id: string, name: string, bytes = 64 * 1024): Buffer | null {
+  let fd: number | null = null
+  try {
+    fd = competitionsFs.openSync(path.join(openDir(id), checkName(name)), 'r')
+    const buffer = Buffer.alloc(bytes)
+    const read = fs.readSync(fd, buffer, 0, bytes, 0)
+    return buffer.subarray(0, read)
+  } catch {
+    return null
+  } finally {
+    if (fd !== null) fs.closeSync(fd)
+  }
+}
+
 /** The bytes of an open file — what the participant downloads. */
 export function readOpenFile(id: string, name: string, limit = 512 * 1024 * 1024): Buffer | null {
   return readIfExists(path.join(openDir(id), checkName(name)), limit)
@@ -371,6 +440,15 @@ export function readOpenFile(id: string, name: string, limit = 512 * 1024 * 1024
 /** The bytes of the answers. They never go outside — only into the metric container. */
 export function readSecretFile(id: string, name: string, limit = 512 * 1024 * 1024): Buffer | null {
   return readIfExists(path.join(secretDir(id), checkName(name)), limit)
+}
+
+/**
+ * The bytes of a hidden-test file — for the teacher's header preview only
+ * (its columns in the editor). Like the answers, it has no door that hands
+ * them out, and no `hold` function to build one with.
+ */
+export function readSealedFile(id: string, name: string, limit = 512 * 1024 * 1024): Buffer | null {
+  return readIfExists(path.join(sealedDir(id), checkName(name)), limit)
 }
 
 export function readBaseline(id: string, limit = 64 * 1024 * 1024): Buffer | null {
@@ -435,9 +513,13 @@ export function holdExecutedNotebook(id: string, submissionId: string): HeldFile
   }
 }
 
-/** Which notebook the author's download would hand out right now, by what is on disk. */
-export function notebookOnDisk(id: string, submissionId: string): 'executed' | 'sent' | null {
-  if (regularFileWithin(path.join(resultDir(id, submissionId), EXECUTED_FILE), EXECUTED_BYTES)) return 'executed'
+/**
+ * Which notebook the author's download would hand out right now, by what is on
+ * disk. `executed: false` for a blind run, whose download is the sent notebook
+ * only (routes/competitions.ts).
+ */
+export function notebookOnDisk(id: string, submissionId: string, executed = true): 'executed' | 'sent' | null {
+  if (executed && regularFileWithin(path.join(resultDir(id, submissionId), EXECUTED_FILE), EXECUTED_BYTES)) return 'executed'
   if (regularFileWithin(path.join(inputDir(id, submissionId), NOTEBOOK_FILE), Number.MAX_SAFE_INTEGER)) return 'sent'
   return null
 }
@@ -482,6 +564,77 @@ export function dropOpenFile(id: string, name: string): boolean {
 
 export function dropSecretFile(id: string, name: string): boolean {
   return remove(path.join(secretDir(id), checkName(name)))
+}
+
+/** A run already holding the file keeps its link; the next run composes without it. */
+export function dropSealedFile(id: string, name: string): boolean {
+  return remove(path.join(sealedDir(id), checkName(name)))
+}
+
+/* --------------------------------------------------------- a run's data */
+
+/** Errors by which a hard link says "not here", and a copy has to do. */
+const NO_LINK = new Set(['EXDEV', 'EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EMLINK', 'ENOSYS'])
+
+/** How a run's data folder gets its files — swapped out by a test to make links fail. */
+export const inputLinks = {
+  link: (from: string, to: string): void => competitionsFs.linkSync(from, to),
+}
+
+/**
+ * Compose one run's `data/`: the open files, with the hidden test swapped in.
+ *
+ * A folder of the attempt's own (`attempts/<attemptId>/inputs`), mounted at
+ * /data in place of the competition's open `data/`, so `data/test.csv` and
+ * `/data/test.csv` both read the hidden test (the harness links the working
+ * folder's `data` to /data) while the participant downloads the example. A
+ * hidden file named like an open one replaces it; any other name is added.
+ *
+ * Hard links, not copies: the open data may be two hundred megabytes, and a
+ * copy per run would be that much disk and time for every submission. Where
+ * the volume refuses a link (another device, a CSI driver without them), the
+ * file is copied instead. A link keeps the bytes the run started with even if
+ * the teacher replaces the file mid-run: every write renames a new inode
+ * over the name (writeReplacing).
+ *
+ * The set comes from the database rows, not from listing the folders. A
+ * hidden row whose file is missing throws: running quietly on the example
+ * would score a submission on the wrong rows. An open row without its file is
+ * left out, which is what the container saw of it before.
+ *
+ * Removed with the attempt (dropAttempt), after the run or after a restart.
+ */
+export async function composeRunInputs(
+  id: string,
+  submissionId: string,
+  attemptId: string,
+  files: { open: readonly string[]; sealed: readonly string[] },
+): Promise<string> {
+  const dir = attemptDir(id, submissionId, attemptId, 'inputs')
+  const sealed = new Set(files.sealed.map(checkName))
+  const place = async (from: string, name: string): Promise<void> => {
+    const to = path.join(dir, name)
+    try {
+      inputLinks.link(from, to)
+    } catch (error) {
+      if (!NO_LINK.has((error as NodeJS.ErrnoException).code ?? '')) throw error
+      await copyCompetitionFile(from, to)
+    }
+  }
+  for (const name of files.open.map(checkName)) {
+    if (sealed.has(name)) continue
+    const from = path.join(openDir(id), name)
+    if (!regularFileWithin(from, Number.MAX_SAFE_INTEGER)) continue
+    await place(from, name)
+  }
+  for (const name of sealed) {
+    const from = path.join(sealedDir(id), name)
+    if (!regularFileWithin(from, Number.MAX_SAFE_INTEGER)) {
+      throw new Error(`Competition storage: the hidden test file ${name} is missing on disk`)
+    }
+    await place(from, name)
+  }
+  return dir
 }
 
 function remove(absolute: string, recursive = false): boolean {

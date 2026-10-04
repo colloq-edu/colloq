@@ -4,7 +4,7 @@ import path from 'node:path'
 import { db } from '../db.js'
 import { submissionsOpen, type Competition, type Submission } from '@shared/competitions'
 import { DEPENDENCY_ERROR_KEYS, DEPENDENCY_LIMITS, dependencyActive, type AdminDependencyOverview, type DependencyBundle, type DependencyOverview, type EnvironmentRevision } from '@shared/dependencies'
-import { getCompetition, getEntrant, joinedAt, listEntrantSubmissions, acceptSubmission, intakePlan, leftToday } from '../competitions/store.js'
+import { getCompetition, getEntrant, joinedAt, listEntrantSubmissions, acceptSubmission, attemptsLeft, intakePlan, leftToday } from '../competitions/store.js'
 import { pastGrace } from '../competitions/results.js'
 import { competitionBackend, competitionRunner } from '../competitions/runner-port.js'
 import '../competitions/broker-runner.js'
@@ -93,22 +93,39 @@ export function publicExecution(submission:Submission,environmentName:string):Su
  * A person's submission that is still waiting is replaced by this one, and
  * the day's quota is counted as if it already were — the replaced one never
  * runs and does not count (store.ts · intakePlan).
+ *
+ * LATENESS IS DECIDED HERE, ONCE, inside the transaction that accepts: by the
+ * moment the upload began, against the competition as it is now. An upload
+ * begun on time whose body came after the grace is late when late intake is
+ * open, and refused when it is not; so is one begun before "Finish now" and
+ * finished after it. Every later reader takes the stored flag and never
+ * recomputes it (Submission.late); only the teacher moving the deadline later
+ * clears it (store.ts · forgiveLateSubmissions).
  */
 export const acceptPinnedSubmission=db.transaction((c:Competition,eid:string,fileName:string,bytes:number,revision:EnvironmentRevision|null,bundleId:string|null,options:{baseline?:boolean;startedAt?:number}={}):Submission&{replaced:Submission|null}=>{
  const current=getCompetition(c.id)
  if(!current||current.environment!==c.environment)throw new store.DependencyStoreError('dependency_revision')
  let replaced:Submission|null=null
+ let late=false
+ const now=Date.now()
  if(!options.baseline){
-  const now=Date.now()
-  if(submissionsOpen(current,options.startedAt??now)!=='open'||pastGrace(current,now))throw new store.DependencyStoreError('dependency_closed',403)
-  const plan=intakePlan(c.id,eid)
+  const startedAt=options.startedAt??now
+  const intake=submissionsOpen(current,startedAt)
+  late=intake==='late'||(intake==='open'&&pastGrace(current,now)&&submissionsOpen(current,now)==='late')
+  if(!late&&(intake!=='open'||pastGrace(current,now)))throw new store.DependencyStoreError('dependency_closed',403)
+  const plan=intakePlan(c.id,eid,late)
   if(plan==='in_flight')throw new store.DependencyStoreError('dependency_submission_active')
+  if(plan==='on_time_waiting')throw new store.DependencyStoreError('dependency_submission_on_time')
   replaced=plan.replaces
   const left=leftToday(current,eid,now,replaced?.id??null);if(left!==null&&left<=0)throw new store.DependencyStoreError('dependency_submission_quota',429)
+  const attempts=attemptsLeft(current,eid,now)
+  // The words, with the ceiling's number, are the upload door's (routes/competitions.ts · INTAKE_REFUSALS).
+  if(attempts!==null&&attempts<=0)throw new store.DependencyStoreError('dependency_submission_attempts',429)
+  options={...options,startedAt}
  }
  if(revision&&store.competitionRevision(c.id)?.id!==revision.id)throw new store.DependencyStoreError('dependency_revision')
  store.assertUsableBundle(c.id,eid,revision?.id??'',bundleId)
- const submission=acceptSubmission({competitionId:c.id,entrantId:eid,fileName,bytes,replaces:replaced?.id??null})
+ const submission=acceptSubmission({competitionId:c.id,entrantId:eid,fileName,bytes,replaces:replaced?.id??null,late,sentAt:options.startedAt??now})
  store.bindSubmission(submission.id,revision?.id??null,bundleId,revision===null)
  return {...publicExecution(submission,c.environment),replaced}
 })

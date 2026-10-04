@@ -10,8 +10,8 @@
  * submission until the competition itself was deleted.
  *
  * WHICH COMPETITIONS. Only those whose intake has been over for a week:
- * finished by hand, or past their deadline. During intake nothing is
- * removed, and not out of caution for its own sake: "rescore everyone" after
+ * finished by hand, or past their deadline — and with «Поздние посылки» off:
+ * late intake is intake too. During intake nothing is removed, and not out of caution for its own sake: "rescore everyone" after
  * a metric fix reads every stored answer, and an answer swept away mid-course
  * would leave that submission with a number from the old metric beside
  * numbers from the new one. A week after the end, the review is over and the
@@ -30,7 +30,7 @@
  * every six hours. The log says how many and how much, never whose.
  */
 import type { Competition } from '@shared/competitions'
-import { listCompetitions, pruneCompetitionFiles, queueRows } from './store.js'
+import { lastLateSubmissionAt, listCompetitions, pruneCompetitionFiles, queueRows } from './store.js'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -50,13 +50,25 @@ const SWEEP_EVERY_MS = 6 * HOUR
  * and many never do, so the deadline counts as the end by itself. One
  * finished early ended when it was finished — `updatedAt`, which a later edit
  * moves forward, and that only delays the sweep.
+ *
+ * With «Поздние посылки» on, intake never ended: late submissions keep
+ * arriving, and their authors are dealing with them now. Once the switch is
+ * off, the end is no earlier than the last late submission (`lastLateAt`):
+ * the week starts from the last thing anyone sent.
  */
-export function intakeEndedAt(competition: Pick<Competition, 'state' | 'deadlineAt' | 'updatedAt'>, now: number): number | null {
-  if (competition.state === 'draft') return null
+export function intakeEndedAt(
+  competition: Pick<Competition, 'state' | 'deadlineAt' | 'updatedAt' | 'lateSubmissions'>,
+  now: number,
+  lastLateAt: number | null = null,
+): number | null {
+  if (competition.state === 'draft' || competition.lateSubmissions) return null
+  let ended: number | null
   if (competition.state === 'finished') {
-    return competition.deadlineAt === null ? competition.updatedAt : Math.min(competition.updatedAt, competition.deadlineAt)
+    ended = competition.deadlineAt === null ? competition.updatedAt : Math.min(competition.updatedAt, competition.deadlineAt)
+  } else {
+    ended = competition.deadlineAt !== null && competition.deadlineAt <= now ? competition.deadlineAt : null
   }
-  return competition.deadlineAt !== null && competition.deadlineAt <= now ? competition.deadlineAt : null
+  return ended === null || lastLateAt === null ? ended : Math.max(ended, lastLateAt)
 }
 
 export interface SweepReport {
@@ -78,7 +90,7 @@ export interface SweepReport {
 export async function sweepOldSubmissions(now = Date.now()): Promise<SweepReport> {
   const report: SweepReport = { competitions: 0, busy: 0, removed: 0, bytes: 0 }
   for (const competition of listCompetitions()) {
-    const ended = intakeEndedAt(competition, now)
+    const ended = intakeEndedAt(competition, now, lastLateSubmissionAt(competition.id))
     if (ended === null || now - ended < PRUNE_AFTER_MS) continue
     // The queue is read in the same turn as the removal below: nothing can
     // take work between the look and the sweep.

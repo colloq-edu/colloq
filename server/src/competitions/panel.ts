@@ -16,11 +16,13 @@ import {
   BOARD_VISIBILITIES,
   isTerminal,
   LIMITS,
+  OUTPUT_POLICIES,
   parseSlug,
   slugRefusal,
   type BoardVisibility,
   type CompetitionLimits,
   type MetricDirection,
+  type OutputPolicy,
   type PrivateRelease,
   type ScoringRule,
   type SlugRefusal,
@@ -276,6 +278,8 @@ export function withoutBaseline(
     cancelled: Math.max(0, counts.cancelled - of('cancelled')),
     entrants: Math.max(0, counts.entrants - (baselineRows.length > 0 ? 1 : 0)),
     bestPublic,
+    // The sample notebook is never late: its runs are not uploads.
+    ...(counts.late === undefined ? {} : { late: counts.late }),
   }
 }
 
@@ -301,6 +305,7 @@ const CHOICES = {
   privateRelease: ['auto', 'manual'],
   scoring: ['chosen', 'bestPublic', 'last'],
   boardVisibility: BOARD_VISIBILITIES,
+  outputPolicy: OUTPUT_POLICIES,
 } as const
 
 /**
@@ -414,6 +419,21 @@ export function parseCompetitionInput(
     input.boardVisibility = value as BoardVisibility
   }
 
+  // A switch is true or false, not "anything truthy": "false" as a string is
+  // the form that would turn late intake ON by accident.
+  if (has('lateSubmissions')) {
+    if (typeof raw.lateSubmissions !== 'boolean') return { refusal: { field: 'lateSubmissions', why: 'value' } }
+    input.lateSubmissions = raw.lateSubmissions
+  }
+
+  if (has('outputPolicy')) {
+    const value = String(raw.outputPolicy ?? '')
+    if (!(CHOICES.outputPolicy as readonly string[]).includes(value)) {
+      return { refusal: { field: 'outputPolicy', why: 'value' } }
+    }
+    input.outputPolicy = value as OutputPolicy
+  }
+
   return { input }
 }
 
@@ -435,6 +455,8 @@ export interface QueueOrderRow {
   entrantId: string
   turn: number
   enqueuedAt: number
+  /** Late work waits behind every on-time row (store.ts · selectNext). */
+  late?: boolean
 }
 
 /**
@@ -444,15 +466,18 @@ export interface QueueOrderRow {
  * any other: SQL takes the work (two processes must see one answer), while
  * the screen numbers the rows. If they diverge, nothing crashes — the screen
  * simply lies: a person reads "you are second", while the executor takes the
- * third, and nothing can explain it. The rule is one: whoever already has
- * something running lets the others go ahead; one's own k-th submission gets
- * in line behind everyone else's (k−1)-th; on a tie, whoever sent it first.
+ * third, and nothing can explain it. The rule is one: on-time work before
+ * late work; whoever already has something running lets the others go ahead;
+ * one's own k-th submission gets in line behind everyone else's (k−1)-th; on
+ * a tie, whoever sent it first.
  */
 export function fairOrder<T extends QueueOrderRow>(
   waiting: readonly T[],
   busyEntrants: ReadonlySet<string>,
 ): T[] {
   return [...waiting].sort((a, b) => {
+    const late = Number(!!a.late) - Number(!!b.late)
+    if (late !== 0) return late
     const busy = Number(busyEntrants.has(a.entrantId)) - Number(busyEntrants.has(b.entrantId))
     if (busy !== 0) return busy
     if (a.turn !== b.turn) return a.turn - b.turn
