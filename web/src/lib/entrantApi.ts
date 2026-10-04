@@ -166,6 +166,9 @@ export const entrantApi = {
   fileUrl: (slug: string, name: string) =>
     `${BASE}/competitions/${encodeURIComponent(slug)}/files/${encodeURIComponent(name)}`,
 
+  /** Every open file in one archive: `data/` with the starter notebooks beside it. */
+  zipUrl: (slug: string) => `${BASE}/competitions/${encodeURIComponent(slug)}/files.zip`,
+
   /** One's own notebook: the executed one, and until the run finishes — the one sent. */
   notebookUrl: (slug: string, id: string) =>
     `${BASE}/competitions/${encodeURIComponent(slug)}/submissions/${encodeURIComponent(id)}/notebook`,

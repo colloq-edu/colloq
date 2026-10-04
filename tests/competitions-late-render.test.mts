@@ -154,6 +154,14 @@ test('the data list marks the example and promises the hidden test at the same p
   assert.doesNotMatch(plain, /ПРИМЕР|скрыт/)
 })
 
+test('«Скачать всё» stands over a list of more than one file, with the archive size and its layout', () => {
+  const shown = show('DataFiles', { files, fileUrl: (name: string) => `/f/${name}`, zipUrl: '/k.zip' })
+  assert.match(shown, /ОТКРЫТЫЕ ДАННЫЕ Скачать всё · ZIP · 20 МБ/)
+  assert.match(shown, /стартовые тетради рядом с ней/)
+  // One file is one link: no archive of it.
+  assert.doesNotMatch(show('DataFiles', { files: [files[0]], fileUrl: (name: string) => `/f/${name}`, zipUrl: '/k.zip' }), /Скачать всё/)
+})
+
 const competition = {
   slug: 'k', environment: 'base', outputPolicy: 'brief',
   limits: { wallSeconds: 600, memoryMb: 4096, cpus: 2, perDay: 5 },
@@ -174,15 +182,17 @@ test('"How a submission is checked" says the hidden test\'s place and what a fai
   assert.doesNotMatch(full, /KeyError|дневной лимит/)
 })
 
-test('the conditions column names the hidden test, the output on failure and the limit by score', () => {
+test('the conditions column names the hidden test, the output on failure and the limit as a bare number', () => {
   const shown = show('Conditions', { competition, sealedFiles })
   assert.match(shown, /data\/test\.csv скрытый · 2 000 строк/)
   assert.match(shown, /Вывод при ошибке ячейка и тип/)
-  assert.match(shown, /Лимит в день 5 с оценкой/)
+  assert.match(shown, /Лимит в день\s*5(?!\d)/)
+  assert.doesNotMatch(shown, /с оценкой/)
   assert.match(shown, /кладёт скрытый тест на место data\/test\.csv\. Его строки не попадают ни в вывод/)
   const plain = show('Conditions', { competition: { ...competition, limits: { ...competition.limits, perDay: 0 } } })
   assert.doesNotMatch(plain, /скрытый|Лимит в день/)
-  assert.match(plain, /без сохранённых переменных/)
+  // The general reminders were taken out (4 Oct 2026): without a hidden test, no note at all.
+  assert.doesNotMatch(plain, /без сохранённых переменных|Память посылки/)
 })
 
 test('the mini board says late scores are not on it', () => {

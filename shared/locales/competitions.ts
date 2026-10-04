@@ -873,6 +873,12 @@ export const competitionsMessages: MessageCatalog = {
     en: { one: '{n} row', other: '{n} rows' },
   },
   'competitions.p.noFiles': { ru: 'Файлов данных нет.', en: 'There are no data files.' },
+  /* «Скачать всё» над списком: один архив вместо десятка ссылок. */
+  'competitions.p.zipAll': { ru: 'Скачать всё · ZIP · {size}', en: 'Download all · ZIP · {size}' },
+  'competitions.p.zipNote': {
+    ru: 'В архиве папка data/ и стартовые тетради рядом с ней — как при проверке: пути вида data/train.csv работают сразу.',
+    en: 'The archive holds data/ with the starter notebooks next to it, as in the check: paths like data/train.csv work at once.',
+  },
   'competitions.p.sizeBytes': { ru: '{count} Б', en: '{count} B' },
   'competitions.p.sizeKb': { ru: '{size} КБ', en: '{size} KB' },
   'competitions.p.sizeMb': { ru: '{size} МБ', en: '{size} MB' },
@@ -1129,15 +1135,6 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.p.condData': { ru: 'Данные', en: 'Data' },
   'competitions.p.condDataValue': { ru: 'data/ · только чтение', en: 'data/ · read-only' },
   'competitions.p.condAnswer': { ru: 'Файл с прогнозами', en: 'Predictions file' },
-  'competitions.p.conditionsNote': {
-    ru: 'Проверка запускает все ячейки по порядку, без сохранённых переменных. Перед отправкой перезапустите ядро и выполните тетрадь целиком.',
-    en: 'The check runs every cell in order, with no variables carried over. Before sending, restart the kernel and run the whole notebook.',
-  },
-  // Every writable folder of a submission is memory-backed, and so is a package set's room.
-  'competitions.p.conditionsMemoryNote': {
-    ru: 'Память посылки — на всё сразу: тетрадь, файлы её рабочей папки и пакеты выбранного набора.',
-    en: 'A submission’s memory covers everything at once: the notebook, the files in its working folder and the packages of the chosen set.',
-  },
 
   /* Лидерборд (P2 · мини-таблица, P3 · таблица) */
   'competitions.p.publicBoard': { ru: 'ПУБЛИЧНЫЙ ЛИДЕРБОРД', en: 'PUBLIC LEADERBOARD' },
@@ -1467,7 +1464,6 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.p.condOutputBrief': { ru: 'ячейка и тип', en: 'cell and type' },
   'competitions.p.condOutputFull': { ru: 'полный', en: 'full' },
   'competitions.p.condPerDay': { ru: 'Лимит в день', en: 'Daily limit' },
-  'competitions.p.condPerDayValue': { ru: '{count} с оценкой', en: '{count} scored' },
   'competitions.p.conditionsSealedSwap': {
     ru: 'Проверка запускает все ячейки по порядку и кладёт скрытый тест на место {file}.',
     en: 'The check runs every cell in order and puts the hidden test in place of {file}.',

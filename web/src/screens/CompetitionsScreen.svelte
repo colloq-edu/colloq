@@ -667,6 +667,7 @@
             view={page}
             {phone}
             fileUrl={(file) => entrantApi.fileUrl(page!.competition.slug, file)}
+            zipUrl={entrantApi.zipUrl(page.competition.slug)}
           />
         {:else if tab === 'dependencies'}
           {#key `${page.competition.slug}:${me?.entrant?.id ?? ''}`}

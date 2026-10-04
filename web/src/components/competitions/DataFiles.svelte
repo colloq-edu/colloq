@@ -11,6 +11,11 @@
    *
    * The hidden test itself has no row and no link: there is nothing to
    * download, and the note under the list says so.
+   *
+   * «Скачать всё» stands over the list once there is more than one file: a
+   * dozen links pressed one by one lose a file, and a folder of images would
+   * be hundreds of them. The archive is laid out as a submission sees it
+   * (server · competitions/zip.ts).
    */
   import { formatNumber, tr } from '@shared/i18n'
   import type { EntrantFile, EntrantSealedFile } from '@shared/competitions-entrant'
@@ -20,18 +25,37 @@
     files: EntrantFile[]
     sealedFiles?: EntrantSealedFile[]
     fileUrl: (name: string) => string
+    /** The archive of every open file; absent — no button. */
+    zipUrl?: string
   }
 
-  const { files, sealedFiles = [], fileUrl }: Props = $props()
+  const { files, sealedFiles = [], fileUrl, zipUrl }: Props = $props()
+
+  const totalBytes = $derived(files.reduce((sum, file) => sum + file.bytes, 0))
 
   /** The hidden test standing in for each example, by the example's name. */
   const swaps = $derived(new Map(sealedFiles.filter((file) => file.replaces !== null).map((file) => [file.replaces!, file])))
 </script>
 
 <section class="flex max-w-[760px] flex-col gap-3">
-  <h2 class="text-micro font-black uppercase leading-5 tracking-label text-muted">
-    {tr('competitions.p.dataTitle')}
-  </h2>
+  <div class="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+    <h2 class="text-micro font-black uppercase leading-5 tracking-label text-muted">
+      {tr('competitions.p.dataTitle')}
+    </h2>
+    {#if zipUrl && files.length > 1}
+      <a
+        class="inline-flex min-h-9 items-center gap-2 bg-brand px-3.5 py-1.5 text-micro font-bold uppercase tracking-caps text-white hover:bg-brand-2"
+        href={zipUrl}
+        download
+        title={tr('competitions.p.zipNote')}
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" class="shrink-0" aria-hidden="true">
+          <path d="M8 2.5v8M4.5 7.5 8 11l3.5-3.5M3 13.5h10" fill="none" stroke="currentColor" stroke-width="1.6" />
+        </svg>
+        {tr('competitions.p.zipAll', { size: fileSize(totalBytes) })}
+      </a>
+    {/if}
+  </div>
   {#if files.length === 0}
     <p class="text-2xs text-muted">{tr('competitions.p.noFiles')}</p>
   {:else}
@@ -92,7 +116,11 @@
       {/each}
     </div>
     <p class="text-micro leading-[18px] text-muted">
-      {[tr('competitions.p.dataNote'), sealedFiles.length > 0 ? tr('competitions.p.sealedNotListed') : '']
+      {[
+        tr('competitions.p.dataNote'),
+        zipUrl && files.length > 1 ? tr('competitions.p.zipNote') : '',
+        sealedFiles.length > 0 ? tr('competitions.p.sealedNotListed') : '',
+      ]
         .filter(Boolean)
         .join(' ')}
     </p>
