@@ -15,6 +15,7 @@
 import { tr, formatDate, formatNumber } from '@shared/i18n'
 import {
   boardOf,
+  competitionPhase,
   competitionWord,
   countsTowardDailyQuota,
   countsTowardFailedAttempts,
@@ -22,6 +23,7 @@ import {
   privateBoardOpen,
   type BoardEntry,
   type Competition,
+  type CompetitionPhase,
   type CompetitionState,
   type Entrant,
   type MetricDirection,
@@ -258,25 +260,25 @@ export function metricLine(row: CompetitionRow, now: number): string {
   if (c.state === 'draft') {
     return `${head} · ${row.ready === null ? tr('admin.competitions.readyToOpen') : tr('admin.competitions.baselineNotPassed')}`
   }
-  if (c.state === 'finished') {
-    return `${head} · ${
-      privateBoardOpen(c, now, row.privatePending ?? 0)
-        ? tr('admin.competitions.privateBoardOpen')
-        : tr('admin.competitions.privateBoardClosed')
-    }`
-  }
+  if (competitionPhase(c, now) === 'over') return `${head} · ${resultsWords(c, now, row.privatePending ?? 0)}`
   return `${head} · ${tr('admin.competitions.publicPart', { percent: c.publicPercent })}`
+}
+
+/** "the private leaderboard is open" / "…still closed": what a finished competition waits for, if anything. */
+export function resultsWords(c: Competition, now: number, pending = 0): string {
+  return privateBoardOpen(c, now, pending)
+    ? tr('admin.competitions.privateBoardOpen')
+    : tr('admin.competitions.privateBoardClosed')
 }
 
 /**
  * The caption under the best public score: "baseline 0.0587" or its trouble.
  *
- * The baseline specifically, not the private result, even for a finished
- * one: there is no private number in a list row and there cannot be — it is
- * one row per competition, while the final result is computed from one
- * submission of EACH entrant. The baseline is exactly what the class's best
- * result is compared with: "0.0412 against 0.0587" is the only thing a list
- * row can say about the quality of the solutions at all.
+ * The baseline is what the class's best result is compared with while the
+ * competition runs: "0.0412 against 0.0587" is what a list row can say about
+ * the quality of the solutions. Once intake is over the row leads with the
+ * counted score instead (`bestLine`), and this caption gives way to the
+ * public one beside it.
  */
 export function baselineNote(row: CompetitionRow): { text: string; bad: boolean } {
   if (row.baselineState === null) return { text: tr('admin.competitions.baselineNotRun'), bad: false }
@@ -767,6 +769,43 @@ export function stateWord(state: CompetitionState): string {
  */
 export function stateTone(state: CompetitionState): 'accent' | 'warning' | 'neutral' {
   return state === 'live' ? 'accent' : state === 'draft' ? 'warning' : 'neutral'
+}
+
+/**
+ * The tone of a phase badge (Paper 07 · D2): running and about to start —
+ * accent, draft — warning, over — neutral. The phase, not the stored state:
+ * past its deadline a competition reads as finished (competitionPhase).
+ */
+export function phaseTone(phase: CompetitionPhase): 'accent' | 'warning' | 'neutral' {
+  return phase === 'open' || phase === 'soon' ? 'accent' : phase === 'draft' ? 'warning' : 'neutral'
+}
+
+/**
+ * The "BEST" column: the public best and the baseline while intake is open;
+ * once it is over, the best counted score with the public one under it — the
+ * standings are what a finished competition is about.
+ */
+export function bestLine(row: CompetitionRow, now: number): { score: number | null; note: string | null } {
+  if (competitionPhase(row.competition, now) === 'over' && row.bestPrivate !== undefined && row.bestPrivate !== null) {
+    return {
+      score: row.bestPrivate,
+      note: tr('admin.competitions.bestCountedNote', { score: metricNumber(row.bestPublic) }),
+    }
+  }
+  return { score: row.bestPublic, note: null }
+}
+
+/**
+ * The status line under a competition's title in its console (D3): the
+ * deadline that passed, or the time left, and whether the results are open.
+ */
+export function statusNote(c: Competition, now: number, pending: number): string {
+  const phase = competitionPhase(c, now)
+  if (phase !== 'over') return deadlineLine(c, now).note
+  const ended = c.deadlineAt !== null && c.deadlineAt <= now
+    ? tr('admin.competitions.deadlinePassedAgo', { ago: sinceWords(c.deadlineAt, now) })
+    : tr('admin.competitions.finishedEarly')
+  return `${ended} · ${resultsWords(c, now, pending)}`
 }
 
 /** Whether a submission is in flight now; queue rows are not drawn in the feed. */

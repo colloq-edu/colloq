@@ -47,6 +47,13 @@ export interface EntrantStanding {
   inFlight: number
   /** How many submissions are left today; null — there is no limit. */
   leftToday: number | null
+  /**
+   * The place and score in the standings once the final results are open:
+   * what a finished competition's row shows instead of the public place.
+   * Absent while the results are closed.
+   */
+  finalPlace?: number | null
+  finalScore?: number | null
 }
 
 /**
@@ -98,6 +105,11 @@ export interface EntrantCompetitionRow {
   bestPublic: number | null
   baselinePublic: number | null
   privateOpen: boolean
+  /**
+   * The winner's counted score, once the final results are open and the
+   * board is open to this visitor; absent otherwise.
+   */
+  bestFinal?: number | null
   /** Results the automatic release still waits for (see `privatePending` below). */
   privatePending?: number
   /** null — the person has not joined: they have no key yet. */

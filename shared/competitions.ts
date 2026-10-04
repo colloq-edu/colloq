@@ -334,6 +334,41 @@ export function acceptsUploads(accepting: ReturnType<typeof submissionsOpen>): b
 }
 
 /**
+ * Where a competition is in its life, as every list and header names it.
+ *
+ * The stored `state` moves only by a hand — «Открыть», «Завершить сейчас» —
+ * and a deadline never touches it: past the deadline a competition is still
+ * `live`, so that a deadline moved later reopens it with no second press.
+ * Lists that sorted by `state` kept such a competition under «Идут сейчас»
+ * with «приём закрыт» in its own row, and the teacher's console offered to
+ * finish what had finished hours ago. The word a person reads is worked out
+ * here, in the same order as `submissionsOpen`, so a page and a list never
+ * disagree.
+ *
+ * Late intake is not a phase. An over competition with «Поздние посылки» on
+ * is over — its standings are final — and carries the late mark beside the
+ * word (`submissionsOpen` answers `late`).
+ */
+export type CompetitionPhase = 'draft' | 'soon' | 'open' | 'over'
+
+export function competitionPhase(
+  c: Pick<Competition, 'state' | 'startsAt' | 'deadlineAt'>,
+  now: number,
+): CompetitionPhase {
+  if (c.state === 'draft') return 'draft'
+  if (c.state === 'finished') return 'over'
+  if (c.startsAt !== null && now < c.startsAt) return 'soon'
+  if (c.deadlineAt !== null && now > c.deadlineAt) return 'over'
+  return 'open'
+}
+
+/** The phase as a badge word: ИДЁТ, СКОРО, ЗАВЕРШЕНО, ЧЕРНОВИК. */
+export function phaseWord(phase: CompetitionPhase): string {
+  if (phase === 'soon') return tr('competitions.phase.soon')
+  return competitionWord(phase === 'open' ? 'live' : phase === 'over' ? 'finished' : 'draft')
+}
+
+/**
  * A name brought to the form in which NAMESAKES are compared.
  *
  * "Namesakes on the leaderboard are not allowed" is a rule about the eye, not

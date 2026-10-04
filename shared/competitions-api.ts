@@ -91,6 +91,13 @@ export interface CompetitionRow {
   submissions: number
   /** "BEST PUBLIC" — without the baseline solution: that one is shown separately beside it. */
   bestPublic: number | null
+  /**
+   * The best counted (private) score once intake is over; null before that
+   * and while nothing is scored. The teacher sees the private part anyway.
+   */
+  bestPrivate?: number | null
+  /** Late submissions so far: the list says late intake is open, and how many came. */
+  late?: number
   /** "baseline 0.0587" under the best result. */
   baselineScore: number | null
   /** How the sample notebook's last run ended; null — it has not been checked yet. */

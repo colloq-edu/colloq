@@ -13,6 +13,11 @@
   rule that says where the deadline was, counted apart in the summary, and
   filtered with one switch — never mixed into a number about the standings.
 
+  The header names the PHASE (Paper 07 · D3): past its deadline the
+  competition is finished, «Завершить сейчас» is gone — there is nothing left
+  to finish — and its place is taken by what can still be done: open the
+  private board by hand, and close or reopen late intake.
+
   The live state arrives as a stream (SSE), like the environments' build log:
   one direction, the browser reconnects by itself, and no second protocol for
   the sake of five numbers. The feed is re-read by server revision, including
@@ -34,11 +39,13 @@
   import { cn, formatBytes } from '@/lib/utils'
   import {
     competitionPath,
+    competitionPhase,
     entrantHandle,
     EXECUTED_NOTEBOOK_FILE,
     isBlind,
     LIMITS,
     metricFailedNote,
+    phaseWord,
     placeShift,
     privateBoardOpen,
     submissionsOpen,
@@ -56,7 +63,6 @@
     clock,
     count,
     deadlineDividerAt,
-    deadlineLine,
     etaWords,
     feedWhen,
     lateQuery,
@@ -65,9 +71,9 @@
     moment,
     outcomeLine,
     sealedErrorBox,
+    phaseTone,
     spanWords,
-    stateTone,
-    stateWord,
+    statusNote,
     withNewKey,
     worstCell,
     type LateFilter,
@@ -306,6 +312,12 @@
     }
   }
 
+  async function toggleLate(): Promise<void> {
+    const id = c.id
+    const fresh = await act(() => adminApi.updateCompetition(id, { lateSubmissions: !c.lateSubmissions }))
+    if (fresh) onview(fresh)
+  }
+
   async function openPrivate(): Promise<void> {
     const id = c.id
     const fresh = await act(() => adminApi.openPrivateBoard(id))
@@ -530,12 +542,13 @@
       .join(' · '),
   )
   const rows = $derived(feed?.rows ?? [])
-  const deadline = $derived(deadlineLine(c, now))
   /** Late submissions so far: counted apart from every number about the standings. */
   const lateCount = $derived(counts.late ?? 0)
   /** The late vocabulary appears once it means something: the switch is on, or late rows exist. */
   const lateShown = $derived(c.lateSubmissions === true || lateCount > 0)
   const accepting = $derived(submissionsOpen(c, now))
+  /** The phase the header names: past the deadline it is over whatever the stored state says. */
+  const phase = $derived(competitionPhase(c, now))
   /** Where the "DEADLINE" rule goes; only in the whole feed, where both sides of it are drawn. */
   const divider = $derived(lateFilter === 'all' ? deadlineDividerAt(rows, c.deadlineAt) : -1)
   /** Results the automatic release still waits for: the board opens once the queue has them. */
@@ -596,14 +609,22 @@
     <span class="truncate font-mono">/k/{c.slug}</span>
   {/snippet}
 
-  {#snippet beside()}
-    <Badge word={stateWord(c.state)} tone={stateTone(c.state)} />
-    {#if accepting === 'late'}
-      <!-- Intake is over for the standings, not for uploads: said in the
-           header, since the feed keeps moving after the deadline. -->
-      <Badge word={tr('admin.competitions.lateAccepting')} tone="neutral" />
-    {/if}
-    <span class="text-2xs text-muted">{deadline.note}</span>
+  <!-- The state under the title, not beside it: a long title with a badge, a
+       late mark and the deadline in one line wrapped into a column of words
+       (D3). The badge leads the line, so it still reads as the title's own. -->
+  {#snippet lede()}
+    <div class="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5">
+      <Badge word={phaseWord(phase)} tone={phaseTone(phase)} />
+      {#if accepting === 'late'}
+        <!-- Intake is over for the standings, not for uploads: said in the
+             header, since the feed keeps moving after the deadline. -->
+        <span class="flex items-center gap-1.5 border border-brand-2 px-2 py-0.5 text-micro font-semibold leading-4 text-brand-2 dark:border-accent dark:text-accent">
+          <span class="size-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true"></span>
+          {tr('competitions.p.lateOpen')}
+        </span>
+      {/if}
+      <span class="text-2xs text-muted">{statusNote(c, now, privatePending)}</span>
+    </div>
   {/snippet}
 
   {#snippet actions()}
@@ -622,7 +643,7 @@
     >
       {tr('admin.competitions.boardOnScreen')}
     </a>
-    {#if c.state === 'live' && adminAuth.isOwner}
+    {#if phase !== 'over' && c.state === 'live' && adminAuth.isOwner}
       <button
         type="button"
         class="btn-danger"
@@ -631,7 +652,14 @@
         {tr('admin.competitions.finishNow')}
       </button>
     {/if}
-    {#if c.state === 'finished' && !privateOpen}
+    {#if phase === 'over'}
+      <!-- Late intake from the header: after the deadline it is the one
+           switch a teacher reaches for, and «Настройки» is a tab away. -->
+      <button type="button" class="btn-outline" disabled={busy} onclick={() => void toggleLate()}>
+        {c.lateSubmissions ? tr('admin.competitions.closeLate') : tr('admin.competitions.openLate')}
+      </button>
+    {/if}
+    {#if phase === 'over' && !privateOpen}
       <!-- "I will open it by hand — at the review": the teacher picks the
            moment, and until that second the private table is visible to
            nobody but them. -->

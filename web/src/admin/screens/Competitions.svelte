@@ -27,18 +27,27 @@
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { copyText } from '@/lib/clipboard'
   import { cn } from '@/lib/utils'
-  import { competitionPath, LIMITS, parseSlug, slugRefusal } from '@shared/competitions'
+  import {
+    competitionPath,
+    competitionPhase,
+    LIMITS,
+    parseSlug,
+    phaseWord,
+    slugRefusal,
+    submissionsOpen,
+    type CompetitionPhase,
+  } from '@shared/competitions'
   import { suggestSlug } from '@shared/publish'
   import type { CompetitionRow, CompetitionView, CompetitionsList } from '@shared/competitions-api'
   import {
     baselineNote,
+    bestLine,
     count,
     deadlineLine,
     metricLine,
     metricNumber,
+    phaseTone,
     runnerLine,
-    stateTone,
-    stateWord,
   } from '@/admin/competitions'
 
   interface Props {
@@ -236,6 +245,31 @@
     )
   })
 
+  /*
+   * Groups by phase, as the participants' list has them (Paper 07 · D2):
+   * running ones first, then drafts, then the finished — a competition past
+   * its deadline among the finished even before anyone presses «Завершить».
+   * Empty groups are not drawn.
+   */
+  const GROUPS: { key: 'open' | 'draft' | 'over'; has: (phase: CompetitionPhase) => boolean }[] = [
+    { key: 'open', has: (phase) => phase === 'open' || phase === 'soon' },
+    { key: 'draft', has: (phase) => phase === 'draft' },
+    { key: 'over', has: (phase) => phase === 'over' },
+  ]
+  /** Inside a group: on-time intake before «скоро», late intake before closed — what still moves first. */
+  const weight = (row: CompetitionRow): number => {
+    const c = row.competition
+    return competitionPhase(c, now) === 'soon' || (competitionPhase(c, now) === 'over' && submissionsOpen(c, now) !== 'late') ? 1 : 0
+  }
+  const groups = $derived(
+    GROUPS.map((group) => ({
+      key: group.key,
+      rows: shown
+        .filter((row) => group.has(competitionPhase(row.competition, now)))
+        .sort((a, b) => weight(a) - weight(b)),
+    })).filter((group) => group.rows.length > 0),
+  )
+
   onMount(() => {
     // Half a minute: the deadline line counts hours and minutes, and a second
     // here would redraw the whole list for a digit that is not on the screen.
@@ -426,7 +460,7 @@
         <div class="comp-rows">
           <div class="comp-head admin-list-head">
             <span class="admin-label min-w-0 flex-1">{tr('admin.competitions.col.competition')}</span>
-            <span class="comp-cell admin-label w-[132px] shrink-0">{tr('admin.competitions.col.status')}</span>
+            <span class="comp-cell admin-label w-[196px] shrink-0">{tr('admin.competitions.col.status')}</span>
             <span class="comp-cell admin-label w-[176px] shrink-0">{tr('admin.competitions.col.deadline')}</span>
             <span class="comp-cell admin-label w-[104px] shrink-0 text-right">
               {tr('admin.competitions.col.entrants')}
@@ -440,11 +474,19 @@
             <span class="w-10 shrink-0"></span>
           </div>
 
-          {#each shown as row (row.competition.id)}
+          {#each groups as group (group.key)}
+          <div class="comp-group">
+            <span class="admin-label text-ink">{tr(`admin.competitions.group.${group.key}`)}</span>
+            <span class="font-mono text-micro text-muted">{group.rows.length}</span>
+          </div>
+          {#each group.rows as row (row.competition.id)}
             {@const c = row.competition}
+            {@const phase = competitionPhase(c, now)}
             {@const deadline = deadlineLine(c, now, row.ready)}
             {@const baseline = baselineNote(row)}
+            {@const best = bestLine(row, now)}
             {@const draft = c.state === 'draft'}
+            {@const late = submissionsOpen(c, now) === 'late'}
             <div class="comp-row admin-list-row">
               <button
                 type="button"
@@ -458,9 +500,19 @@
                 </p>
               </button>
 
-              <span class="comp-cell w-[132px] shrink-0">
-                <Badge word={stateWord(c.state)} tone={stateTone(c.state)} />
-              </span>
+              <div class="comp-cell w-[196px] shrink-0">
+                <Badge word={phaseWord(phase)} tone={phaseTone(phase)} />
+                {#if late}
+                  <!-- Intake for the standings is over, the door is not: said
+                       in the row, since nothing else in it moves any more. -->
+                  <p class="mt-1.5 flex items-center gap-1.5 whitespace-nowrap text-micro font-semibold text-accent-text">
+                    <span class="size-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true"></span>
+                    {row.late
+                      ? tr('admin.competitions.lateLine', { count: count(row.late) })
+                      : tr('admin.competitions.lateLineNone')}
+                  </p>
+                {/if}
+              </div>
 
               <div class="comp-cell w-[176px] shrink-0">
                 <p class="truncate text-2xs text-ink">{deadline.when}</p>
@@ -492,11 +544,15 @@
                 <p class="admin-num font-bold">
                   {@render caption(tr('admin.competitions.col.bestPublic'))}{draft
                     ? '—'
-                    : metricNumber(row.bestPublic)}
+                    : metricNumber(best.score)}
                 </p>
-                <p class={cn('mt-0.5 truncate text-micro', baseline.bad ? 'text-danger' : 'text-muted')}>
-                  {baseline.text}
-                </p>
+                {#if best.note}
+                  <p class="mt-0.5 truncate text-micro text-muted">{best.note}</p>
+                {:else}
+                  <p class={cn('mt-0.5 truncate text-micro', baseline.bad ? 'text-danger' : 'text-muted')}>
+                    {baseline.text}
+                  </p>
+                {/if}
               </div>
 
               <div class="relative w-10 shrink-0 text-right">
@@ -576,6 +632,7 @@
               </div>
             </div>
           {/each}
+          {/each}
 
           <p class="admin-meta py-3.5">
             {tr('admin.competitions.countAll', { count: list?.competitions.length ?? 0 })} ·
@@ -623,19 +680,29 @@
    *
    * The threshold goes by the width of the list itself, not the window: the
    * panel's rail takes 236px on a desktop and 56 on a phone, so the same
-   * window width leaves the list a different amount of room. 880px is six
-   * columns (132 + 176 + 104 + 88 + 200 + 40), five gaps and at least
+   * window width leaves the list a different amount of room. 940px is six
+   * columns (196 + 176 + 104 + 88 + 200 + 40), five gaps and at least
    * something for the title.
    */
   .comp-rows {
     container-type: inline-size;
   }
 
+  /* A phase group's heading: a word and a count over an ink rule, as the
+     sections of the participants' list (D1, D2). */
+  .comp-group {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 1.125rem 0 0.5rem;
+    border-bottom: 1px solid rgb(var(--ink));
+  }
+
   .comp-label {
     display: none;
   }
 
-  @container (max-width: 880px) {
+  @container (max-width: 940px) {
     .comp-row {
       flex-wrap: wrap;
       align-items: flex-start;
