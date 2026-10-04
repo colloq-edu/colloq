@@ -470,6 +470,12 @@ function filesOf(competitionId: string): { files: EntrantFile[]; sealedFiles: En
   }
 }
 
+/** The counted (private) board among people, the baseline taken out: places as the final results give them. */
+function countedBoard(competition: Competition) {
+  const baseline = baselineEntrantOf(competition)
+  return placesByScore(leaderboard(competition.id, 'private').filter((row) => row.entrantId !== baseline))
+}
+
 /**
  * What a person knows about themselves in this competition: the "YOU" block
  * of the P1 card.
@@ -586,17 +592,28 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
         const summary = summaryOf(competition)
         const about = me ? mineIn(competition, me) : null
         const board = privateBoardState(competition)
+        const seen = boardOpenTo(req, competition, me)
+        // A finished competition's row speaks of the standings, not of the
+        // public part: once the results are open, the winner and the person's
+        // own final place come from the counted board.
+        const final = board.open ? countedBoard(competition) : null
+        const own = final && me ? final.find((row) => row.entrantId === me.id) ?? null : null
         return {
           competition: publicCompetition(competition),
           entrants: summary.entrants,
           submissions: summary.submissions,
           // The leader's number is a line of the board: a closed board keeps
           // it too. The counts are the class's size, not anyone's result.
-          bestPublic: boardOpenTo(req, competition, me) ? summary.bestPublic : null,
+          bestPublic: seen ? summary.bestPublic : null,
           baselinePublic: baselineScore(competition),
           privateOpen: board.open,
           privatePending: board.pending,
-          mine: about && { ...about, joined: about.joined || mine.has(competition.id) },
+          ...(final ? { bestFinal: seen ? final[0]?.score ?? null : null } : {}),
+          mine: about && {
+            ...about,
+            joined: about.joined || mine.has(competition.id),
+            ...(final ? { finalPlace: own?.place ?? null, finalScore: own?.score ?? null } : {}),
+          },
         }
       })
     reply<EntrantCompetitionList>(res, { entrant: me, competitions: rows })

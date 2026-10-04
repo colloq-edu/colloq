@@ -20,6 +20,8 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.state.draft': { ru: 'ЧЕРНОВИК', en: 'DRAFT' },
   'competitions.state.live': { ru: 'ИДЁТ', en: 'LIVE' },
   'competitions.state.finished': { ru: 'ЗАВЕРШЕНО', en: 'FINISHED' },
+  /* Live, but before its start date (shared/competitions.ts · competitionPhase). */
+  'competitions.phase.soon': { ru: 'СКОРО', en: 'SOON' },
 
   /*
    * Исход посылки СЛОВАМИ УЧАСТНИКА (P2, P4). Второй набор ниже — те же
@@ -782,6 +784,16 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'Соревнований пока нет. Преподаватель откроет их, когда задача будет готова.',
     en: 'No competitions yet. The teacher opens one once the task is ready.',
   },
+  /* P1 by phase (D1, D4): «Идут сейчас» holds only what takes on-time submissions. */
+  'competitions.p.emptyRunningLate': {
+    ru: 'Сейчас ничего не идёт. В завершённые ниже ещё можно отправить решение вне зачёта.',
+    en: 'Nothing is running right now. Some finished competitions below still take a solution outside the standings.',
+  },
+  'competitions.p.startsIn': { ru: 'ДО СТАРТА', en: 'STARTS IN' },
+  'competitions.p.startsAt': { ru: 'старт {date}', en: 'starts {date}' },
+  'competitions.p.bestCounted': { ru: 'лучший в зачёте {score}', en: 'best counted {score}' },
+  'competitions.p.notJoinedOver': { ru: 'не участвовали', en: 'did not take part' },
+  'competitions.p.lateJoinHint': { ru: 'можно решить вне зачёта', en: 'can still be solved, outside the standings' },
 
   /* P1 · карточка ключа и вход по сохранённому ключу */
   'competitions.p.keyTitle': { ru: 'ВАШ КЛЮЧ ВХОДА', en: 'YOUR SIGN-IN KEY' },

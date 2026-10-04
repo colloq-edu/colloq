@@ -132,6 +132,7 @@ import type { AdminErrorBody, AdminErrorReason } from '@shared/admin'
 import { SETTINGS_LIMITS, type CompetitionSettings } from '@shared/competitions-settings'
 import {
   LIMITS,
+  competitionPhase,
   entrantHandle,
   placesAmongPeople,
   placesByScore,
@@ -252,6 +253,18 @@ function countsOf(competition: Competition): CompetitionCounts {
   )
 }
 
+/**
+ * The best counted score, once intake is over: the number a finished
+ * competition's row leads with. Before the deadline the private part means
+ * nothing yet, and the row keeps to the public one.
+ */
+function bestPrivateOf(competition: Competition, now = Date.now()): number | null {
+  if (competitionPhase(competition, now) !== 'over') return null
+  const baseline = baselineEntrantOf(competition)
+  const rows = leaderboard(competition.id, 'private').filter((row) => row.entrantId !== baseline)
+  return rows.length ? rows[0].score : null
+}
+
 function rowOf(competition: Competition): CompetitionRow {
   const counts = countsOf(competition)
   const baseline = competition.baselineSubmissionId
@@ -262,6 +275,8 @@ function rowOf(competition: Competition): CompetitionRow {
     entrants: counts.entrants,
     submissions: counts.submissions,
     bestPublic: counts.bestPublic,
+    bestPrivate: bestPrivateOf(competition),
+    ...(counts.late === undefined ? {} : { late: counts.late }),
     baselineScore: baseline?.publicScore ?? null,
     baselineState: baseline?.state ?? null,
     ready: readinessOf(competition),

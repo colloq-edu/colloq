@@ -2647,8 +2647,8 @@ export const adminMessages: MessageCatalog = {
     "en": "COMPETITION"
   },
   "admin.competitions.col.status": {
-    "ru": "СТАТУС",
-    "en": "STATUS"
+    "ru": "СОСТОЯНИЕ",
+    "en": "STATE"
   },
   "admin.competitions.col.deadline": {
     "ru": "ДЕДЛАЙН",
@@ -2663,8 +2663,8 @@ export const adminMessages: MessageCatalog = {
     "en": "SUBMISSIONS"
   },
   "admin.competitions.col.bestPublic": {
-    "ru": "ЛУЧШИЙ ПУБЛИЧНЫЙ",
-    "en": "BEST PUBLIC"
+    "ru": "ЛУЧШИЙ",
+    "en": "BEST"
   },
   "admin.competitions.col.entrant": {
     "ru": "УЧАСТНИК",
@@ -4455,9 +4455,45 @@ export const adminMessages: MessageCatalog = {
     "ru": "Перенесёте дедлайн позже — посылки, отправленные до нового дедлайна, перестанут быть поздними и войдут в зачёт. Перенос раньше никого задним числом поздним не сделает.",
     "en": "Move the deadline later and submissions sent before the new one stop being late and join the standings. Moving it earlier makes no one late after the fact."
   },
-  "admin.competitions.lateAccepting": {
-    "ru": "Поздние принимаются",
-    "en": "Late ones accepted"
+  "admin.competitions.group.open": {
+    "ru": "ИДУТ",
+    "en": "RUNNING"
+  },
+  "admin.competitions.group.draft": {
+    "ru": "ЧЕРНОВИКИ",
+    "en": "DRAFTS"
+  },
+  "admin.competitions.group.over": {
+    "ru": "ЗАВЕРШЁННЫЕ",
+    "en": "FINISHED"
+  },
+  "admin.competitions.lateLine": {
+    "ru": "поздние принимаются · {count}",
+    "en": "late ones accepted · {count}"
+  },
+  "admin.competitions.lateLineNone": {
+    "ru": "поздние принимаются",
+    "en": "late ones accepted"
+  },
+  "admin.competitions.bestCountedNote": {
+    "ru": "в зачёте · публичный {score}",
+    "en": "counted · public {score}"
+  },
+  "admin.competitions.deadlinePassedAgo": {
+    "ru": "дедлайн прошёл {ago}",
+    "en": "deadline passed {ago}"
+  },
+  "admin.competitions.finishedEarly": {
+    "ru": "завершено до дедлайна",
+    "en": "finished before the deadline"
+  },
+  "admin.competitions.closeLate": {
+    "ru": "Закрыть поздний приём",
+    "en": "Close late intake"
+  },
+  "admin.competitions.openLate": {
+    "ru": "Принимать поздние",
+    "en": "Take late submissions"
   },
   "admin.competitions.sum.late": {
     "ru": "ПОЗДНИХ",
