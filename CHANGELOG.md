@@ -13,6 +13,17 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.16.0](https://github.com/colloq-edu/colloq/compare/v0.15.0...v0.16.0) (2026-10-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* **competitions:** late submissions, failures that never eat the limit, a hidden test ([#28](https://github.com/colloq-edu/colloq/issues/28))
+
+### Features
+
+* **competitions:** late submissions, failures that never eat the limit, a hidden test ([#28](https://github.com/colloq-edu/colloq/issues/28)) ([743e405](https://github.com/colloq-edu/colloq/commit/743e4055ee040dafdb9209347394f12d2b6480fa))
+
 ## [0.15.0](https://github.com/colloq-edu/colloq/compare/v0.14.0...v0.15.0) (2026-10-03)
 
 
