@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.16.1](https://github.com/colloq-edu/colloq/compare/v0.16.0...v0.16.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **competitions:** one phase on every screen — a passed deadline is finished, late intake is visible ([#30](https://github.com/colloq-edu/colloq/issues/30)) ([542346c](https://github.com/colloq-edu/colloq/commit/542346c004fd3be8f02ae7aba4295d2dd71d529d))
+
 ## [0.16.0](https://github.com/colloq-edu/colloq/compare/v0.15.0...v0.16.0) (2026-10-04)
 
 
