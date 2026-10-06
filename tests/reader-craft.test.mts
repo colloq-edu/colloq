@@ -100,9 +100,8 @@ test('materials go where their kind belongs', () => {
 test('Markdown text is a tab of its page, drawn by the sanitizing renderer, with its own outline', () => {
   // The server marks it; both lists and the class page read the mark.
   assert.match(read('server/src/routes/course-view.ts'), /if \(readsOnPage\(m\.kind, m\.path\)\) ref\.reads = true/)
-  // The list opens it by its name and keeps a download button beside it, like a notebook.
+  // The list opens it by its name and keeps a download button beside it, like every row.
   assert.match(MATERIALS, /const opens = \(m: PublicMaterial\): boolean => opensAsTab\(m\) \|\| m\.kind === 'pdf'/)
-  assert.match(MATERIALS, /\{#if opens\(m\) \|\| folder\}/)
   // The text comes from the download door and goes through render.markdown, never raw.
   assert.match(CLASS, /fetch\(downloadHref\(page\.address, key\)\)/)
   assert.match(CLASS, /\{@html render\.markdown\(doc, \{ lazyImages: true \}\)\}/)
@@ -244,6 +243,22 @@ test('a long material name wraps instead of scrolling the phone page sideways', 
   assert.match(name.slice(0, name.indexOf('</a>')), /\[overflow-wrap:anywhere\]/)
   const link = LINKS.slice(LINKS.indexOf('href={materialHref(address, m)}'))
   assert.match(link.slice(0, link.indexOf('{m.name}')), /\[overflow-wrap:anywhere\]/)
+})
+
+test('every material row has the download button, not only the ones whose name opens something', () => {
+  /*
+   * The button used to be drawn only beside notebooks, Markdown, PDFs and
+   * folders, because a .py or .txt name downloads by itself. Nobody could
+   * see that rule: a teacher looked at a class page where two rows had no
+   * icon and asked why those files could not be downloaded. The button is
+   * now unconditional, and the name keeps its own behaviour.
+   */
+  const row = MATERIALS.slice(MATERIALS.indexOf('{#each page.materials as m (m.key)}'), MATERIALS.indexOf('{/each}'))
+  assert.match(row, /href=\{downloadHref\(page\.address, m\.key\)\}/, 'the row has no download button')
+  // No condition wraps the button: a row has no {#if} block at all.
+  assert.doesNotMatch(row, /\{#if /)
+  // Data and code names still download on their own, and opening names still open.
+  assert.match(row, /download=\{opens\(m\) \? undefined : ''\}/)
 })
 
 test('a download button never sits inside the link it is next to', () => {
@@ -517,7 +532,6 @@ test('a folder is one row in mono, with its count, and downloads as one ZIP', ()
   assert.match(MATERIALS, /tr\(`room\.page\.folder\.\$\{folderLabel\(m\.holds \?\? \[\]\)\}`\)/)
   // The name downloads (it is no tab and no PDF), and the button stays beside it.
   assert.match(MATERIALS, /download=\{opens\(m\) \? undefined : ''\}/)
-  assert.match(MATERIALS, /\{#if opens\(m\) \|\| folder\}/)
   assert.match(MATERIALS, /tr\('room\.page\.downloadFolder', \{ name: m\.name \}\)/)
   // The archive caption names the folders, and keeps the old sentence without them.
   assert.match(MATERIALS, /const caption = \$derived\(zipNote\(page\.materials\)\)/)

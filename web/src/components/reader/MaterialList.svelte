@@ -10,8 +10,15 @@
   downloads: the name of a data file is its room path, because the code
   reads it by that path. A folder (`data/`, `scripts/`) is one row in mono,
   like the path the code writes, and downloads as one ZIP with the folder
-  inside; it keeps the download button too, because its name is not a
-  file anyone expects a tap to fetch.
+  inside.
+
+  Every row carries the download button, whatever its name does. It used to
+  sit only beside names that open something (a notebook, Markdown, a PDF)
+  and beside folders, on the logic that a .py or .txt name already downloads.
+  That logic was invisible: on one page some rows had the icon and some did
+  not, and a teacher asked why .py and .txt "could not be downloaded". One
+  column of icons says "everything here downloads" without anyone having to
+  learn which names open and which fetch.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
@@ -99,6 +106,7 @@
   <ul>
     {#each page.materials as m (m.key)}
       {@const folder = m.kind === 'folder'}
+      {@const label = downloadLabel(m)}
       <li
         class="relative flex items-center gap-3 border-b border-line
                {wide ? 'py-3' : 'min-h-[60px] py-2.5'}"
@@ -129,20 +137,17 @@
           </a>
           <span class="text-[14px] leading-5 text-muted">{meta(m)}</span>
         </span>
-        {#if opens(m) || folder}
-          {@const label = downloadLabel(m)}
-          <a
-            href={downloadHref(page.address, m.key)}
-            download=""
-            class="press relative z-10 flex shrink-0 items-center justify-center transition-colors
-                   duration-100 hover:text-ink
-                   {wide ? 'h-9 w-9 text-muted' : '-my-1 h-11 w-11 text-accent-text'}"
-            aria-label={label}
-            title={label}
-          >
-            <Icon name="download" size={16} strokeWidth={2.2} />
-          </a>
-        {/if}
+        <a
+          href={downloadHref(page.address, m.key)}
+          download=""
+          class="press relative z-10 flex shrink-0 items-center justify-center transition-colors
+                 duration-100 hover:text-ink
+                 {wide ? 'h-9 w-9 text-muted' : '-my-1 h-11 w-11 text-accent-text'}"
+          aria-label={label}
+          title={label}
+        >
+          <Icon name="download" size={16} strokeWidth={2.2} />
+        </a>
       </li>
     {/each}
   </ul>

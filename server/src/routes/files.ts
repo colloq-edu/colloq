@@ -22,6 +22,7 @@ import {
 } from '../workspace.js'
 import { broadcastFiles, forgetMissingBoard } from '../control.js'
 import { signDownloadToken, verifyDownloadToken } from '../auth.js'
+import { canSeeRoom } from '../admin/access.js'
 import { currentStaff, sameOrigin } from '../admin/auth.js'
 import { banDoor, sessionAuth } from './sessions.js'
 import { allows, CLASS_IS_OVER } from '@shared/rules'
@@ -182,13 +183,21 @@ export function fileRoutes(): Router {
      * very same argument is written in sessions.ts above the role check.
      */
     const joined = sessionAuth(req)
-    if (!joined && !currentStaff(req)) {
+    /*
+     * The cookie is the teacher's only for a room they teach
+     * (admin/access.ts · canSeeRoom). Another course's teacher has no
+     * business putting files into this room without joining it, and inside
+     * it they are a participant like any other.
+     */
+    const staff = currentStaff(req)
+    const teaches = staff !== null && canSeeRoom(staff, sessionId)
+    if (!joined && !teaches) {
       return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     }
     // The role is decided right here: the teacher cookie beats a participant
     // token, and a person who entered the room before signing into the panel
     // is still a teacher.
-    const role = currentStaff(req) ? 'host' : (joined?.role ?? 'participant')
+    const role = teaches ? 'host' : (joined?.role ?? 'participant')
     if (!allows(getRules(sessionId).files, role)) {
       // A finished class tightens `files` by itself (db.getRules); only the
       // sentence is separate here: what matters to a person is not the rule

@@ -170,7 +170,45 @@ export function windowResetAt(
   return row ? row.created_at + windowMs : null
 }
 
-export function summariseUsage(sinceMs: number): OracleUsage {
+const totalsByRoom = db.prepare(`
+  SELECT session_id, COUNT(*) AS questions, SUM(tokens) AS tokens, COUNT(tokens) AS reported
+  FROM ai_usage WHERE created_at >= ? GROUP BY session_id
+`)
+const byActionByRoom = db.prepare(
+  'SELECT session_id, action, COUNT(*) AS n FROM ai_usage WHERE created_at >= ? GROUP BY session_id, action',
+)
+
+/**
+ * The summary since a moment: the whole instance (`rooms` null — an owner),
+ * or only these rooms (a teacher: the rooms they teach). A teacher reading
+ * the instance's totals would read every other course's class activity off
+ * successive windows; the grouping is per room, so the filter costs one pass
+ * over at most as many rows as there were rooms with questions.
+ */
+export function summariseUsage(sinceMs: number, rooms: ReadonlySet<string> | null = null): OracleUsage {
+  if (rooms) {
+    let questions = 0
+    let tokens = 0
+    let reported = 0
+    let seminars = 0
+    for (const entry of totalsByRoom.all(sinceMs) as {
+      session_id: string
+      questions: number
+      tokens: number | null
+      reported: number
+    }[]) {
+      if (!rooms.has(entry.session_id)) continue
+      questions += entry.questions
+      tokens += entry.tokens ?? 0
+      reported += entry.reported
+      seminars += 1
+    }
+    const byAction: Record<string, number> = {}
+    for (const entry of byActionByRoom.all(sinceMs) as { session_id: string; action: string; n: number }[]) {
+      if (rooms.has(entry.session_id)) byAction[entry.action] = (byAction[entry.action] ?? 0) + entry.n
+    }
+    return { since: sinceMs, questions, tokens: reported > 0 ? tokens : null, byAction, seminarsWithQuestions: seminars }
+  }
   const row = totals.get(sinceMs) as {
     questions: number
     tokens: number | null

@@ -285,6 +285,9 @@ test('a swept submission refuses a rescore instead of dropping off the board', a
   assert.ok(swept)
   const teacher = createTeacher({ name: 'Преподаватель', email: 'teacher.sweep@example.edu', role: 'teacher' })!
   rotateLinkKey(teacher.id)
+  // The teacher's own competition: a teacher runs only what they made or what
+  // their course holds (competitions/scope.ts).
+  db.prepare('UPDATE competitions SET created_by = ? WHERE id = ?').run(teacher.id, c.id)
   let value = ''
   issueStaffCookie({ cookie: (_n: string, v: string) => (value = v) } as unknown as ExpressResponse, teacher)
   const res = await fetch(`${base}/api/admin/competitions/${c.id}/submissions/${swept.id}/rescore`, {

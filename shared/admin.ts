@@ -77,6 +77,110 @@ export interface AdminMe {
   ownerCount: number
 }
 
+/* ------------------------------------------------- who teaches what (0.19) */
+
+/**
+ * A staff member as a chip: the name to show and the id to act on. Never the
+ * address — chips are shown to people who are not on the staff screen.
+ */
+export interface TeacherRef {
+  id: string
+  name: string
+}
+
+/**
+ * A member of a course's or a room's teachers, for the «Ведут» strip and the
+ * room's «Ведущие»: enough to tell two namesakes apart and to say «был …».
+ */
+export interface MemberTeacher {
+  id: string
+  name: string
+  email: string
+  role: AdminRole
+  /** null until they have signed in once. */
+  lastSeenAt: number | null
+  /** When they were added to this course or room. */
+  addedAt: number
+}
+
+/**
+ * The staff list as GET /api/admin/teachers returns it: each person with the
+ * courses they teach. An owner reads every course; a teacher reads only the
+ * courses they can see themselves — someone else's course name is not theirs
+ * to learn from a picker.
+ */
+export interface TeacherWithCourses extends Teacher {
+  courses: TeacherRef[]
+}
+
+/**
+ * Which slice a list returns. `mine` is the default for everyone: what the
+ * caller teaches (an owner included). `all` is the owner's «Все» switch, and
+ * a teacher asking for it gets 403, not a quietly narrowed list.
+ */
+export type ListScope = 'mine' | 'all'
+
+/** `{ staffId }` — add an existing staff member to a course's or a room's teachers. */
+export interface AddTeacherRequest {
+  staffId: string
+}
+
+/**
+ * «Пригласить по почте»: a person not on the staff list yet becomes a
+ * `teacher` and a member of the course in one step.
+ */
+export interface InviteTeacherRequest {
+  email: string
+  name: string
+}
+
+/**
+ * The answer to an invitation. `signInUrl` is set only when the person was
+ * created by this request: an existing staff member's link is a credential,
+ * and handing it to whoever typed their address would let any teacher sign
+ * in as anyone (an owner included). They are simply added to the course, and
+ * already know how to sign in.
+ */
+export interface InviteTeacherResponse {
+  teacher: MemberTeacher
+  signInUrl: string | null
+  /** True when a new staff row was created. */
+  created: boolean
+  /** The course's teachers after the change. */
+  teachers: MemberTeacher[]
+}
+
+/** The list a membership route answers with: the course's or the room's teachers after the change. */
+export interface MemberTeachersResponse {
+  teachers: MemberTeacher[]
+}
+
+/**
+ * Put a room into a course row at creation, on the server and in the same
+ * request (POST /api/admin/seminars, /import, /import/notebook).
+ *
+ * `rowId` names a planned row the room takes the place of (its topic, day and
+ * «о чём» go with it); without it the room is appended as a new row. The
+ * caller must teach the course (404 otherwise, so a course id does not leak);
+ * a row that is no longer an open plan row is a 409 before anything is
+ * created.
+ */
+export interface SeatRequest {
+  courseId: string
+  rowId?: string
+}
+
+/**
+ * Where the room landed. `replaced` is false when it was appended — asked
+ * without a row, or the row was taken by someone else in the second between
+ * the check and the write (then the room is still in the course, at the end).
+ */
+export interface SeatResult {
+  courseId: string
+  rowId: string
+  replaced: boolean
+}
+
 /* ------------------------------------------------------------ instance state */
 
 /**
@@ -104,6 +208,18 @@ export interface InstanceState {
    * nothing about the limit rather than making one up.
    */
   maxUploadBytes?: number
+  /**
+   * The instance's «сегодня» ('YYYY-MM-DD' in INSTANCE_TIME_ZONE), the day
+   * class rows are compared with.
+   *
+   * The room creation form used to borrow it from the first course's public
+   * view, so it depended on which course happened to be first in the list
+   * and on that course being readable at all. A teacher outside any course
+   * still needs the day: it orders the rows of a course they are added to
+   * later. Optional: an older build does not send it, and the form falls back
+   * to the browser's day.
+   */
+  today?: string
   /**
    * Sign-in by proxy (AUTH_JWT_*), present only when it is configured.
    * `identity` is whom the proxy vouched for on THIS request — the caller's
@@ -145,9 +261,14 @@ export type AdminAuditAction =
   | 'staff.link_rotated'
   | 'staff.link_copied'
   | 'setup_token.rotated'
+  | 'room.created'
   | 'room.deleted'
+  | 'room.teacher_added'
+  | 'room.teacher_removed'
   | 'course.created'
   | 'course.deleted'
+  | 'course.teacher_added'
+  | 'course.teacher_removed'
   | 'publication.published'
   | 'publication.withdrawn'
   | 'publication.restored'
@@ -180,9 +301,14 @@ export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
   'staff.link_rotated',
   'staff.link_copied',
   'setup_token.rotated',
+  'room.created',
   'room.deleted',
+  'room.teacher_added',
+  'room.teacher_removed',
   'course.created',
   'course.deleted',
+  'course.teacher_added',
+  'course.teacher_removed',
   'publication.published',
   'publication.withdrawn',
   'publication.restored',
@@ -319,8 +445,26 @@ export interface AdminSeminar {
     /** How many materials the page has: «страница · 4 материала». */
     materials: number
   } | null
-  /** The courses it belongs to. Usually one, but nothing forbids two. */
+  /**
+   * The courses it belongs to. Usually one, but nothing forbids two. Only
+   * the courses the viewer can see: a room seated in a stranger's course too
+   * does not name that course to someone who does not teach it.
+   */
   courses: { id: string; name: string }[]
+  /**
+   * The room's own teachers (room_teachers): its author, and whoever they
+   * added («Ведущие»). The course's teachers are not repeated here — they
+   * run the room through the course, and the course says who they are.
+   */
+  teachers: TeacherRef[]
+  /**
+   * Whether the viewer teaches this room — its own teacher or a teacher of a
+   * course that seats it. False only on an owner's «Все» list, for the rooms
+   * the owner sees by role alone.
+   */
+  mine: boolean
+  /** Only in the answer to a creation that asked for `seat`: where the room landed. */
+  seat?: SeatResult
   /**
    * When the teacher finished the class — or null while it is going on.
    *
@@ -401,6 +545,12 @@ export interface CreateSeminarRequest {
   memoryMb?: number | null
   /** How many cores to give the room; omitted or null — the instance default. */
   cpus?: number | null
+  /**
+   * Seat the new room into a course row in the same request (see SeatRequest).
+   * Without it the room is created outside any course, visible to its author
+   * and to whoever they add.
+   */
+  seat?: SeatRequest
 }
 
 export interface UpdateSeminarRequest {
@@ -1278,4 +1428,6 @@ export interface ImportResult {
   /** Files that could not be fetched: the name will not do or the download failed. */
   skipped: string[]
   createdBy: string | null
+  /** Where the room landed, when the import asked for `seat`; null when it did not. */
+  seat?: SeatResult | null
 }

@@ -15,7 +15,8 @@
  */
 import { operationalStatus } from '../ops/status.js'
 import { Router } from 'express'
-import { requireStaff } from '../admin/auth.js'
+import { currentStaff, requireStaff } from '../admin/auth.js'
+import { canSeeRoom } from '../admin/access.js'
 import { cpuBounds, machineResources, memoryBounds } from '../kernel/resources.js'
 
 export function instanceResourcesRoutes(): Router {
@@ -25,11 +26,19 @@ export function instanceResourcesRoutes(): Router {
     void operationalStatus().then(value=>res.set('Cache-Control','no-store').json(value)).catch(next)
   })
 
-  router.get('/api/instance/resources', requireStaff, (_req, res, next) => {
+  router.get('/api/instance/resources', requireStaff, (req, res, next) => {
+    const staff = currentStaff(req)
     machineResources()
       .then((resources) =>
         res.set('Cache-Control', 'no-store').json({
           ...resources,
+          /*
+           * The rooms by name only where the viewer teaches them
+           * (admin/access.ts): another course's class is not this teacher's
+           * to read about. The sums above stay instance-wide — the machine
+           * is shared, and "how much is free" must count every room.
+           */
+          rooms: resources.rooms.filter((room) => canSeeRoom(staff, room.id)),
           /*
            * The bounds travel with the numbers rather than being computed in
            * the browser.

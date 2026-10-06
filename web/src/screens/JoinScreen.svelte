@@ -39,7 +39,7 @@
     saveIdentity,
     type StoredIdentity,
   } from '@/lib/identity'
-  import type { Participant, SessionInfo } from '@shared/protocol'
+  import type { Participant, SessionInfo, StaffGuest } from '@shared/protocol'
 
   interface Props {
     session: SessionInfo
@@ -54,7 +54,11 @@
     notice?: string | null
     /** Load the room concurrently with the join request, without delaying it. */
     onjoining?: () => void
-    onjoined: (identity: StoredIdentity) => void
+    /**
+     * In the room. `guest` is set when a signed-in teacher was let in as a
+     * participant because the room is not theirs to run (JoinResponse.staffGuest).
+     */
+    onjoined: (identity: StoredIdentity, guest: StaffGuest | null) => void
   }
 
   let { session, notice = null, onjoining, onjoined }: Props = $props()
@@ -283,7 +287,7 @@
       role: result.participant.role,
     }
     saveIdentity(identity)
-    onjoined(identity)
+    onjoined(identity, result.staffGuest ?? null)
   }
 
   async function join(event?: SubmitEvent): Promise<void> {

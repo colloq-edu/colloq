@@ -13,7 +13,42 @@ import fs from 'node:fs'
 import { pipeline } from 'node:stream/promises'
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { ownerOnly, requireStaff, currentStaff } from '../admin/auth.js'
+import {
+  addCourseTeacher,
+  adoptOrphanedRooms,
+  canSeeCourse,
+  canSeePublication,
+  canSeeRoom,
+  courseRoomsLeft,
+  courseTeachers,
+  forgetCourseTeachers,
+  isOwner,
+  membershipDirectory,
+  removeCourseTeacher,
+  roomsOfCourse,
+  visibleCourseIds,
+  type StaffLike,
+} from '../admin/access.js'
+import {
+  createTeacher,
+  getTeacher,
+  getTeacherByEmail,
+  looksLikeEmail,
+  normalizeEmail,
+  rotateLinkKey,
+} from '../admin/store.js'
 import { recordAdminEvent } from '../admin/audit-log.js'
+import { readScope } from './admin-instance.js'
+import { config } from '../config.js'
+import { normalizeLabel } from '@shared/text'
+import {
+  LIMITS,
+  SIGN_IN_PATH,
+  type AdminErrorBody,
+  type InviteTeacherResponse,
+  type MemberTeachersResponse,
+  type TeacherRef,
+} from '@shared/admin'
 import { getSession } from '../db.js'
 import { isClassDay } from '@shared/class-day'
 import { MATERIAL_KEY_RE } from '@shared/materials'
@@ -30,6 +65,7 @@ import {
   STEPS_GONE,
   publicationAddress,
   slugOk,
+  type Course,
   type CourseItem,
   type CourseRowFields,
 } from '@shared/publish'
@@ -361,21 +397,86 @@ function rowFields(raw: Record<string, unknown>, known: CourseItem | undefined):
   return fields
 }
 
+/* ------------------------------------------------------------ access */
+
+const courseMissing = (res: Response): void => {
+  res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
+}
+
+/**
+ * The course, if the caller teaches it (or is an owner) — and the same 404 as
+ * a course that does not exist otherwise: an id in a URL must not tell a
+ * teacher that someone else's course is behind it (admin/access.ts).
+ */
+function courseOr404(req: Request, res: Response): Course | null {
+  const course = getCourse(req.params.id)
+  if (!course || !canSeeCourse(currentStaff(req), course.id)) {
+    courseMissing(res)
+    return null
+  }
+  return course
+}
+
+/** A room the caller teaches, for the routes keyed by room id; 404 otherwise, as for a missing room. */
+function roomOr404(req: Request, res: Response): boolean {
+  if (canSeeRoom(currentStaff(req), req.params.id)) return true
+  res.status(404).json({ error: SESSION_MISSING })
+  return false
+}
+
+/** A page reached through its room or through a course that still links it; 404 otherwise. */
+function pageOr404(req: Request, res: Response): Publication | null {
+  const pub = getPublication(req.params.id)
+  if (!pub || !canSeePublication(currentStaff(req), pub)) {
+    res.status(404).json({ error: PUBLICATION_NOT_FOUND })
+    return null
+  }
+  return pub
+}
+
+/**
+ * A course as the panel lists it: its live rows, its former addresses, who
+ * teaches it, and whether the viewer is one of them.
+ */
+function panelCourse(course: Course, teachers: Map<string, TeacherRef[]>, viewer: StaffLike | null) {
+  const names = teachers.get(course.id) ?? []
+  return {
+    ...course,
+    items: freshItems(course.items),
+    // Former names travel with the course: the refusal "this address is
+    // the former name of such-and-such course" sends you to its settings,
+    // and there has to be something to show and release there.
+    former: formerSlugs('course', course.id),
+    teachers: names,
+    mine: viewer !== null && names.some((member) => member.id === viewer.id),
+  }
+}
+
+function refuse(res: Response, status: number, error: string, reason: AdminErrorBody['reason'] = 'invalid'): void {
+  res.status(status).json({ error, reason } satisfies AdminErrorBody)
+}
+
 export function courseRoutes(): Router {
   const router = Router()
 
   /* ------------------------------------------------------------- panel */
 
-  router.get('/api/admin/courses', requireStaff, (_req, res) => {
+  /*
+   * The courses the caller teaches, or — an owner's «Все» — every course.
+   * Filtered before the rows are freshened: each seminar row costs a room
+   * read and a page read, and a teacher's list must not pay for the whole
+   * university's.
+   */
+  router.get('/api/admin/courses', requireStaff, (req, res) => {
+    const staff = currentStaff(req)!
+    const scope = readScope(req, res, staff)
+    if (!scope) return
+    const visible = visibleCourseIds(staff, scope === 'all')
+    const teachers = membershipDirectory().courses
     res.json({
-      courses: listCourses().map((course) => ({
-        ...course,
-        items: freshItems(course.items),
-        // Former names travel with the course: the refusal "this address is
-        // the former name of such-and-such course" sends you to its settings,
-        // and there has to be something to show and release there.
-        former: formerSlugs('course', course.id),
-      })),
+      courses: listCourses()
+        .filter((course) => !visible || visible.has(course.id))
+        .map((course) => panelCourse(course, teachers, staff)),
     })
   })
 
@@ -384,25 +485,22 @@ export function courseRoutes(): Router {
     if (!name) return bad(res, tr("server.aCourseNeedsAName.42dad0"))
     const teacher = currentStaff(req)
     const course = createCourse(name, str(req.body?.blurb, MAX_COURSE_BLURB) || null, teacher?.name ?? null)
+    // Whoever creates a course teaches it: otherwise a teacher's new course
+    // would vanish from their own list the moment it was made.
+    if (teacher) addCourseTeacher(course.id, teacher.id, teacher.id)
     recordAdminEvent({ actor: teacher, action: 'course.created', target: { type: 'course', id: course.id, label: course.name }, req })
-    res.json({ course })
+    res.json({ course: panelCourse(course, membershipDirectory().courses, teacher) })
   })
 
   router.get('/api/admin/courses/:id', requireStaff, (req, res) => {
-    const course = getCourse(req.params.id)
-    if (!course) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
-    res.json({
-      course: {
-        ...course,
-        items: freshItems(course.items),
-        former: formerSlugs('course', course.id),
-      },
-    })
+    const course = courseOr404(req, res)
+    if (!course) return
+    res.json({ course: panelCourse(course, membershipDirectory().courses, currentStaff(req)) })
   })
 
   router.patch('/api/admin/courses/:id', requireStaff, (req, res) => {
-    const course = getCourse(req.params.id)
-    if (!course) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
+    const course = courseOr404(req, res)
+    if (!course) return
     const blurb =
       req.body?.blurb === undefined ? course.blurb : str(req.body.blurb, MAX_COURSE_BLURB) || null
     res.json({
@@ -425,9 +523,27 @@ export function courseRoutes(): Router {
    * gets a new one.
    */
   router.put('/api/admin/courses/:id/items', requireStaff, (req, res) => {
-    const course = getCourse(req.params.id)
-    if (!course) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
+    const course = courseOr404(req, res)
+    if (!course) return
+    const staff = currentStaff(req)
     const incoming: unknown = req.body?.items
+    /*
+     * References are checked, not trusted (0.19). A room NEW to this course
+     * must be one the caller teaches: seating a room makes its course's
+     * teachers its hosts, so seating someone else's room would be taking it.
+     * A tombstone's page must already belong to this course: otherwise any
+     * page id could be pulled in and its course context taken over. Rows
+     * already in the course pass as they are — an older tab saving the order
+     * must not fail on a room a co-teacher seated.
+     */
+    const seatedBefore = new Set(
+      course.items.flatMap((item) => (item.kind === 'seminar' ? [item.sessionId] : [])),
+    )
+    const pagesBefore = new Set(
+      course.items.flatMap((item) =>
+        (item.kind === 'gone' || item.kind === 'seminar') && item.publication ? [item.publication.id] : [],
+      ),
+    )
     if (!Array.isArray(incoming)) return bad(res, tr("server.itemsMustBeAnArray.399a2e"))
 
     const byId = new Map<string, CourseItem>()
@@ -495,6 +611,12 @@ export function courseRoutes(): Router {
           typeof sent?.id === 'string'
             ? sent.id
             : (known?.kind === 'gone' && known.publication?.id) || null
+        // A page id new to this course is refused whether or not such a page
+        // exists: answering the two differently would let a teacher test
+        // other people's page ids against this door.
+        if (pubId && !pagesBefore.has(pubId) && !isOwner(staff)) {
+          return refuse(res, 403, tr('server.access.pageNotInCourse'), 'forbidden')
+        }
         const pub = pubId ? getPublication(pubId) : null
         items.push({
           kind: 'gone',
@@ -507,6 +629,14 @@ export function courseRoutes(): Router {
         continue
       }
       const sessionId = str(raw?.sessionId, 64)
+      // A room new to this course that is missing and one that is someone
+      // else's get the same refusal: a room id is the join credential, and a
+      // 403 for one and a silent drop for the other would confirm which ids
+      // are real. A row already in the course whose room has since gone is
+      // dropped quietly, as before (an older tab saving the order).
+      if (sessionId && !seatedBefore.has(sessionId) && !canSeeRoom(staff, sessionId)) {
+        return refuse(res, 403, tr('server.access.roomNotYours'), 'forbidden')
+      }
       const session = sessionId ? getSession(sessionId) : null
       if (!session) continue
       items.push({ kind: 'seminar', id, ...fields, sessionId, name: session.name, publication: null })
@@ -523,7 +653,131 @@ export function courseRoutes(): Router {
     }
     // The room's course hint and the class pages see the new rows on the next request.
     forgetCourseIndex()
+    // A room that left the plan is no longer run through this course: its
+    // teachers' open sockets re-check now (admin/access.ts · courseRoomsLeft).
+    const seatedAfter = new Set(items.flatMap((item) => (item.kind === 'seminar' ? [item.sessionId] : [])))
+    const left = [...seatedBefore].filter((id) => !seatedAfter.has(id))
+    // A room left with no course and no teachers of its own stays with this
+    // course's teachers instead of becoming owner-only (admin/access.ts ·
+    // adoptOrphanedRooms) — before the revocation, which then spares them.
+    adoptOrphanedRooms(course.id, left, staff?.id ?? null)
+    courseRoomsLeft(course.id, left)
     res.json({ course: { ...updated, items: freshItems(updated.items) } })
+  })
+
+  /* -------------------------------------------------- the course's teachers */
+
+  /*
+   * «Ведут»: who teaches this course, and so who sees it and runs its rooms.
+   * Any of them may add a colleague or remove one — a course is taught
+   * together, and waiting for an owner to add the assistant on the morning
+   * of the class is exactly the friction this is for. Owners may too.
+   */
+  router.get('/api/admin/courses/:id/teachers', requireStaff, (req, res) => {
+    const course = courseOr404(req, res)
+    if (!course) return
+    res.json({ teachers: courseTeachers(course.id) } satisfies MemberTeachersResponse)
+  })
+
+  /** Add someone already on the staff list. */
+  router.post('/api/admin/courses/:id/teachers', requireStaff, (req, res) => {
+    const course = courseOr404(req, res)
+    if (!course) return
+    const staffId = typeof req.body?.staffId === 'string' ? req.body.staffId : ''
+    const teacher = staffId ? getTeacher(staffId) : null
+    if (!teacher) return refuse(res, 404, tr('server.noSuchTeacher.dc9e13'))
+    const actor = currentStaff(req)
+    if (addCourseTeacher(course.id, teacher.id, actor?.id ?? null)) {
+      recordAdminEvent({
+        actor,
+        action: 'course.teacher_added',
+        target: { type: 'course', id: course.id, label: course.name },
+        detail: { staff: teacher.id, name: teacher.name },
+        req,
+      })
+    }
+    res.status(201).json({ teachers: courseTeachers(course.id) } satisfies MemberTeachersResponse)
+  })
+
+  /*
+   * «Пригласить по почте»: someone who is not on the staff list yet.
+   *
+   * A new address becomes a `teacher` (never an owner — granting that stays
+   * an owner's deliberate act on the staff screen) with a fresh personal link,
+   * returned once, like the owner's «Добавить преподавателя». An address
+   * already on the list is simply added to the course, and its link is NOT
+   * returned: it is that person's credential, and a teacher who typed an
+   * owner's address must not walk away signed in as the owner.
+   */
+  router.post('/api/admin/courses/:id/teachers/invite', requireStaff, (req, res) => {
+    const course = courseOr404(req, res)
+    if (!course) return
+    const email = normalizeEmail(typeof req.body?.email === 'string' ? req.body.email : '')
+    if (!email || email.length > LIMITS.email || !looksLikeEmail(email)) {
+      return refuse(res, 400, tr('server.aValidEmailAddressIsRequired.6f16a6'))
+    }
+    const actor = currentStaff(req)
+    let teacher = getTeacherByEmail(email)
+    let signInUrl: string | null = null
+    const created = teacher === null
+    if (!teacher) {
+      const name = normalizeLabel(req.body?.name)
+      if (!name) return refuse(res, 400, tr('server.aNameIsRequired.d1287e'))
+      if (name.length > LIMITS.teacherName) {
+        return refuse(res, 400, tr('server.nameMustBeCharactersOrFewer.f2480d', { p0: LIMITS.teacherName }))
+      }
+      const made = createTeacher({ email, name, role: 'teacher' })
+      const minted = made ? rotateLinkKey(made.id) : null
+      if (!made || !minted) return refuse(res, 409, tr('server.someoneWithThatEmailIsAlreadyOn.c19140'))
+      teacher = minted.teacher
+      signInUrl = `${config.publicUrl}${SIGN_IN_PATH}${minted.key}`
+      recordAdminEvent({
+        actor,
+        action: 'staff.added',
+        target: { type: 'staff', id: teacher.id, label: teacher.name },
+        detail: { email: teacher.email, role: teacher.role, course: course.id },
+        req,
+      })
+    }
+    if (addCourseTeacher(course.id, teacher.id, actor?.id ?? null)) {
+      recordAdminEvent({
+        actor,
+        action: 'course.teacher_added',
+        target: { type: 'course', id: course.id, label: course.name },
+        detail: { staff: teacher.id, name: teacher.name, ...(created ? { invited: true } : {}) },
+        req,
+      })
+    }
+    const teachers = courseTeachers(course.id)
+    const member = teachers.find((one) => one.id === teacher.id)!
+    res.status(created ? 201 : 200).json({ teacher: member, signInUrl, created, teachers } satisfies InviteTeacherResponse)
+  })
+
+  /*
+   * A course keeps at least one teacher, unless an owner removes the last:
+   * a course nobody teaches is visible to owners only, and whoever removed
+   * themselves last could not get it back. Removing yourself is allowed by
+   * the same rule.
+   */
+  router.delete('/api/admin/courses/:id/teachers/:staffId', requireStaff, (req, res) => {
+    const course = courseOr404(req, res)
+    if (!course) return
+    const actor = currentStaff(req)
+    const current = courseTeachers(course.id)
+    const target = current.find((member) => member.id === req.params.staffId)
+    if (!target) return refuse(res, 404, tr('server.access.notATeacherHere'))
+    if (!isOwner(actor) && current.length === 1) {
+      return refuse(res, 409, tr('server.access.courseKeepsATeacher'))
+    }
+    removeCourseTeacher(course.id, target.id)
+    recordAdminEvent({
+      actor,
+      action: 'course.teacher_removed',
+      target: { type: 'course', id: course.id, label: course.name },
+      detail: { staff: target.id, name: target.name },
+      req,
+    })
+    res.json({ teachers: courseTeachers(course.id) } satisfies MemberTeachersResponse)
   })
 
   /**
@@ -543,7 +797,16 @@ export function courseRoutes(): Router {
   router.delete('/api/admin/courses/:id', ownerOnly('delete a course'), (req, res) => {
     const course = getCourse(req.params.id)
     if (!course) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
+    const rooms = roomsOfCourse(course.id)
     deleteCourse(course.id)
+    // Its rooms that now sit in no course and have no teachers of their own
+    // stay with the course's teachers (admin/access.ts · adoptOrphanedRooms):
+    // deleting a course does not delete its rooms, and must not make them
+    // owner-only either.
+    adoptOrphanedRooms(course.id, rooms, currentStaff(req)?.id ?? null)
+    // Its teachers go with it, and stop running the rooms they no longer
+    // teach on this very frame.
+    forgetCourseTeachers(course.id, rooms)
     recordAdminEvent({ actor: currentStaff(req), action: 'course.deleted', target: { type: 'course', id: course.id, label: course.name }, req })
     res.json({ ok: true })
   })
@@ -563,7 +826,11 @@ export function courseRoutes(): Router {
     }
     const course = req.params.kind === 'course'
     const target = course ? getCourse(req.params.id) : getPublication(req.params.id)
-    if (!target) return res.status(404).json({ error: tr("server.notFound.094b76") })
+    const staff = currentStaff(req)
+    const reachable =
+      target !== null &&
+      (course ? canSeeCourse(staff, target.id) : canSeePublication(staff, target as Publication))
+    if (!target || !reachable) return res.status(404).json({ error: tr("server.notFound.094b76") })
 
     const outcome = course ? setCourseSlug(target.id, slug) : setPublicationSlug(target.id, slug)
     if (outcome === 'taken') {
@@ -588,7 +855,14 @@ export function courseRoutes(): Router {
        * course's settings: the release happens right here, two centimeters
        * away from it.
        */
-      const holder = addressHolder(course ? 'course' : 'publication', slug!)
+      const held = addressHolder(course ? 'course' : 'publication', slug!)
+      // Named only to someone who could open the holder: the refusal must not
+      // be how a teacher learns the name of a course they do not teach.
+      const holderPage = held && held.kind !== 'course' ? getPublication(held.id) : null
+      const holder =
+        held && (held.kind === 'course' ? canSeeCourse(staff, held.id) : holderPage !== null && canSeePublication(staff, holderPage))
+          ? held
+          : null
       const what = course ? tr("server.course.7c69f0") : tr("server.page.356bb7")
       const whose = course ? tr("server.course.91f120") : tr("server.page.3360a3")
       return res.status(409).json({
@@ -618,7 +892,10 @@ export function courseRoutes(): Router {
    */
   router.delete('/api/admin/slug/:kind/:id/former/:slug', requireStaff, (req, res) => {
     const kind = req.params.kind === 'course' ? 'course' : 'publication'
-    if (!releaseFormerSlug(kind, req.params.id, req.params.slug.toLowerCase())) {
+    const staff = currentStaff(req)
+    const page = kind === 'publication' ? getPublication(req.params.id) : null
+    const reachable = kind === 'course' ? canSeeCourse(staff, req.params.id) : page !== null && canSeePublication(staff, page)
+    if (!reachable || !releaseFormerSlug(kind, req.params.id, req.params.slug.toLowerCase())) {
       return res.status(404).json({ error: tr("server.notFound.094b76") })
     }
     res.json({ ok: true })
@@ -632,6 +909,12 @@ export function courseRoutes(): Router {
    * is one (publish/materials.ts · publishInfo).
    */
   router.get('/api/admin/seminars/:id/publish', requireStaff, (req, res) => {
+    // The room if the id is a room, the page if it is an orphaned page's id;
+    // either way only for whoever teaches it (admin/access.ts).
+    const staff = currentStaff(req)
+    const orphan = getSession(req.params.id) ? null : getPublication(req.params.id)
+    const reachable = orphan ? canSeePublication(staff, orphan) : canSeeRoom(staff, req.params.id)
+    if (!reachable) return res.status(404).json({ error: SESSION_MISSING })
     // A page whose room was deleted is asked for by its own id: it has no room any more.
     const info = publishInfo(req.params.id) ?? orphanPublishInfo(req.params.id)
     if (!info) return res.status(404).json({ error: SESSION_MISSING })
@@ -668,6 +951,7 @@ export function courseRoutes(): Router {
     '/api/admin/seminars/:id/publish',
     requireStaff,
     wrap(async (req: Request, res: Response) => {
+      if (!roomOr404(req, res)) return
       const request = readPublishRequest(req.body)
       if (typeof request === 'string') return bad(res, request)
       const teacher = currentStaff(req)
@@ -684,8 +968,8 @@ export function courseRoutes(): Router {
     '/api/admin/seminars/:id/publish/refresh',
     requireStaff,
     wrap(async (req: Request, res: Response) => {
-      if (!getSession(req.params.id)) {
-        res.status(404).json({ error: SESSION_MISSING })
+      if (!getSession(req.params.id) || !roomOr404(req, res)) {
+        if (!res.headersSent) res.status(404).json({ error: SESSION_MISSING })
         return
       }
       const teacher = currentStaff(req)
@@ -695,6 +979,7 @@ export function courseRoutes(): Router {
 
   /** Withdraw the page. The link stays and says that the page was withdrawn. */
   router.delete('/api/admin/seminars/:id/publish', requireStaff, (req, res) => {
+    if (!roomOr404(req, res)) return
     const pub = publicationOf(req.params.id)
     if (!pub) return res.status(404).json({ error: tr("server.notPublished.61a0a5") })
     setPublicationState(pub.id, 'withdrawn')
@@ -703,6 +988,7 @@ export function courseRoutes(): Router {
   })
 
   router.post('/api/admin/seminars/:id/publish/restore', requireStaff, (req, res) => {
+    if (!roomOr404(req, res)) return
     const pub = publicationOf(req.params.id)
     if (!pub) return res.status(404).json({ error: tr("server.notPublished.61a0a5") })
     setPublicationState(pub.id, 'published')
@@ -718,9 +1004,12 @@ export function courseRoutes(): Router {
    * page itself is alive and served by the server. There was no way to
    * withdraw it, and someone's personal output might have remained on it.
    */
-  router.get('/api/admin/publications', requireStaff, (_req, res) => {
+  router.get('/api/admin/publications', requireStaff, (req, res) => {
+    // The pages of rooms the caller teaches, and the orphaned pages their
+    // courses still link; an owner reads them all.
+    const staff = currentStaff(req)
     res.json({
-      publications: listPublications().map((pub) => ({
+      publications: listPublications().filter((pub) => canSeePublication(staff, pub)).map((pub) => ({
         ...pub,
         materials: materialCount(pub.id),
         orphaned: pub.sessionId === null,
@@ -729,16 +1018,16 @@ export function courseRoutes(): Router {
   })
 
   router.delete('/api/admin/publications/:id', requireStaff, (req, res) => {
-    const pub = getPublication(req.params.id)
-    if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
+    const pub = pageOr404(req, res)
+    if (!pub) return
     setPublicationState(pub.id, 'withdrawn')
     recordPublication(req, 'publication.withdrawn', pub)
     res.json({ ok: true })
   })
 
   router.post('/api/admin/publications/:id/restore', requireStaff, (req, res) => {
-    const pub = getPublication(req.params.id)
-    if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
+    const pub = pageOr404(req, res)
+    if (!pub) return
     setPublicationState(pub.id, 'published')
     recordPublication(req, 'publication.restored', pub)
     res.json({ ok: true })
@@ -767,6 +1056,7 @@ export function courseRoutes(): Router {
     '/api/admin/publications/:id/materials/:key',
     requireStaff,
     wrap(async (req: Request, res: Response) => {
+      if (!pageOr404(req, res)) return
       // Queued behind any build in flight, which would otherwise write the material back.
       const result = await removeMaterial(req.params.id, req.params.key)
       if (!result.ok) {
@@ -805,6 +1095,7 @@ export function courseRoutes(): Router {
     '/api/admin/publications/:id',
     requireStaff,
     wrap(async (req: Request, res: Response) => {
+      if (!pageOr404(req, res)) return
       const access = req.body?.roomAccess
       if (!isRoomAccess(access)) return bad(res, tr('server.roomDoor.badAccess'))
       // Queued behind any build in flight, which would otherwise save its own copy of the pick.

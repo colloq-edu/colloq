@@ -24,6 +24,7 @@ import { roleFor } from '../server/src/routes/sessions.js'
 import { app } from '../server/src/app.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { createTeacher, deleteTeacher, rotateLinkKey } from '../server/src/admin/store.js'
+import { addRoomTeacher } from '../server/src/admin/access.js'
 import { STAFF_COOKIE } from '../shared/admin.js'
 import type { Response as ExpressResponse } from 'express'
 import type { HandoffResponse, JoinResponse } from '../shared/protocol.js'
@@ -188,6 +189,8 @@ test('a console issued on the strength of a cookie is taken away along with it',
   const teacher = createTeacher({ name: 'Нина', email: 'nina.handoff@example.edu', role: 'teacher' })
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
+  // She teaches this room: since 0.19 a cookie is host only where its holder teaches.
+  addRoomTeacher(ROOM, teacher.id, null)
   const cookie = mintCookie(teacher)
 
   upsertParticipant({

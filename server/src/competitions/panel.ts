@@ -434,6 +434,21 @@ export function parseCompetitionInput(
     input.outputPolicy = value as OutputPolicy
   }
 
+  /*
+   * «Курс»: an id or null, and only the shape is checked here. Whether the
+   * course exists and is the caller's is a question about the person, which
+   * this parser does not know (routes/admin-competitions.ts asks it).
+   */
+  if (has('courseId')) {
+    if (raw.courseId === null || raw.courseId === '') {
+      input.courseId = null
+    } else if (typeof raw.courseId === 'string' && raw.courseId.trim().length > 0 && raw.courseId.length <= 64) {
+      input.courseId = raw.courseId.trim()
+    } else {
+      return { refusal: { field: 'courseId', why: 'value' } }
+    }
+  }
+
   return { input }
 }
 

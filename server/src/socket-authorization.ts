@@ -31,7 +31,11 @@ export function authorizeSocket(ws: WebSocket, credentials?: SocketCredentials):
     unsubscribe()
     try { ws.close(4401, 'Authorization changed; reconnect') } catch { ws.terminate() }
   }
-  const unsubscribe = onStaffAuthorizationChanged((id) => { if (id === staffId) revoke() })
+  // A change about some rooms only (a membership) closes the sockets in those
+  // rooms; one about the person (role, link, deletion) closes all of them.
+  const unsubscribe = onStaffAuthorizationChanged((id, sessionIds) => {
+    if (id === staffId && (!sessionIds || sessionIds.includes(payload.sessionId))) revoke()
+  })
   ws.on('close', unsubscribe)
   ws.on('error', unsubscribe)
   return () => {

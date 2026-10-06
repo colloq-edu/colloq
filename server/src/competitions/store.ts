@@ -31,6 +31,7 @@ import { db } from '../db.js'
 import { entrantKeyDigest, newEntrantKey, sealEntrantKey, unsealEntrantKey } from './key.js'
 import { removeCompetition as removeCompetitionFiles, pruneSubmissions } from './storage.js'
 import { competitionDefaults } from './settings.js'
+import { putSettingRow, settingRows } from '../admin/settings.js'
 import { instanceTimeZone } from '../time-zone.js'
 import {
   attemptsLeftToday,
@@ -397,6 +398,69 @@ ensureColumn('submissions', 'sealed_inputs', 'sealed_inputs INTEGER NOT NULL DEF
 ensureColumn('submissions', 'brief_error', 'brief_error TEXT')
 ensureColumn('submissions', 'error_type', 'error_type TEXT')
 ensureColumn('submission_runs', 'sealed_inputs', 'sealed_inputs INTEGER NOT NULL DEFAULT 0')
+/*
+ * The course a competition belongs to (Competition.courseId). Null for every
+ * existing row: a competition made before courses had teachers belongs to no
+ * course, and stays visible to its creator and the owners
+ * (competitions/scope.ts). No foreign key: courses live in the publish store,
+ * and a deleted course simply stops granting anyone anything.
+ */
+ensureColumn('competitions', 'course_id', 'course_id TEXT')
+/*
+ * Who ran a competition before 0.19: every member of staff.
+ *
+ * Until competitions had courses, every teacher saw and ran every one, and
+ * the scope rule that replaced that (competitions/scope.ts) grants a
+ * competition outside courses to its creator alone. Applied as is on an
+ * update, it took a running competition away mid-term from the teacher who
+ * co-ran it, and made rows copied from another instance (whose `created_by`
+ * names nobody here) the owners' only — with nothing telling anyone. So the
+ * first boot with courses on competitions stamps every existing competition
+ * with the moment: whoever was on the staff list by then keeps running it
+ * (scope.ts · canSeeCompetition) until it is given a course, which is the
+ * explicit scoping that replaces the stamp (`updateCompetition` clears it). A
+ * teacher who arrives later starts with what they create and what their
+ * courses hold, like anyone on a fresh install.
+ *
+ * Once, by a marker, the way admin/access.ts seeds the memberships: a
+ * competition an owner later scoped must not be shared again on a restart.
+ */
+ensureColumn('competitions', 'staff_shared_at', 'staff_shared_at INTEGER')
+const SHARED_MARKER = 'access.competitionsShared'
+if (!settingRows('access.').has(SHARED_MARKER)) {
+  const now = Date.now()
+  db.transaction(() => {
+    const stamped = db
+      .prepare('UPDATE competitions SET staff_shared_at = ? WHERE course_id IS NULL AND staff_shared_at IS NULL')
+      .run(now).changes
+    putSettingRow(SHARED_MARKER, String(now))
+    if (stamped > 0) {
+      console.log(`[access] kept today's visibility: ${stamped} competitions stay with everyone on the staff list today`)
+    }
+  })()
+}
+
+const selectSharedAt = db.prepare('SELECT staff_shared_at FROM competitions WHERE id = ?')
+
+/**
+ * When this competition was shared with the staff of that moment (see the
+ * stamp above), or null: a competition made since, or one given a course.
+ */
+export function staffSharedAt(competitionId: string): number | null {
+  return (selectSharedAt.get(competitionId) as { staff_shared_at: number | null } | undefined)?.staff_shared_at ?? null
+}
+
+/**
+ * For the migration test: stamp these competitions as the first boot would
+ * have (only these — the test file's other competitions are "made since").
+ */
+export function restampSharedCompetitionsForTest(ids: readonly string[]): number {
+  const stamp = db.prepare(
+    'UPDATE competitions SET staff_shared_at = ? WHERE id = ? AND course_id IS NULL AND staff_shared_at IS NULL',
+  )
+  const now = Date.now()
+  return ids.reduce((n, id) => n + stamp.run(now, id).changes, 0)
+}
 
 /**
  * The files' key gains the visibility — a table rebuild, in one transaction.
@@ -579,6 +643,7 @@ interface CompetitionRow {
   input_revision: number
   notebook_input_revision: number
   created_by: string | null
+  course_id: string | null
   created_at: number
   updated_at: number
 }
@@ -619,6 +684,7 @@ function toCompetition(row: CompetitionRow): Competition {
     inputRevision: row.input_revision,
     notebookInputRevision: row.notebook_input_revision,
     createdBy: row.created_by,
+    courseId: row.course_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -629,12 +695,12 @@ const insertCompetition = db.prepare(`
     (id, slug, title, blurb, description, state, metric_name, metric_direction, metric_code,
      public_percent, split_seed, wall_seconds, memory_mb, cpus, per_day, environment,
      starts_at, deadline_at, private_release, scoring, board_visibility, late_submissions, output_policy,
-     created_by, created_at, updated_at)
+     created_by, course_id, created_at, updated_at)
   VALUES
     (@id, @slug, @title, @blurb, @description, 'draft', @metric_name, @metric_direction,
      @metric_code, @public_percent, @split_seed, @wall_seconds, @memory_mb, @cpus, @per_day,
      @environment, @starts_at, @deadline_at, @private_release, @scoring, @board_visibility,
-     @late_submissions, @output_policy, @created_by, @at, @at)
+     @late_submissions, @output_policy, @created_by, @course_id, @at, @at)
 `)
 const selectCompetition = db.prepare('SELECT * FROM competitions WHERE id = ?')
 const selectBySlug = db.prepare('SELECT * FROM competitions WHERE slug = ?')
@@ -659,6 +725,7 @@ export interface NewCompetition {
   lateSubmissions?: boolean
   outputPolicy?: OutputPolicy
   createdBy?: string | null
+  courseId?: string | null
 }
 
 /**
@@ -702,6 +769,7 @@ export function createCompetition(input: NewCompetition): Competition | null {
       late_submissions: input.lateSubmissions ? 1 : 0,
       output_policy: input.outputPolicy ?? 'brief',
       created_by: input.createdBy ?? null,
+      course_id: input.courseId ?? null,
       at,
     })
   } catch (error) {
@@ -750,6 +818,7 @@ export type CompetitionPatch = Partial<
     | 'lateSubmissions'
     | 'outputPolicy'
     | 'baselineSubmissionId'
+    | 'courseId'
   >
 > & { metric?: Partial<CompetitionMetricPatch>; limits?: Partial<Competition['limits']> }
 
@@ -770,6 +839,7 @@ const COLUMN_OF: Record<string, string> = {
   lateSubmissions: 'late_submissions',
   outputPolicy: 'output_policy',
   baselineSubmissionId: 'baseline_submission_id',
+  courseId: 'course_id',
   'metric.name': 'metric_name',
   'metric.direction': 'metric_direction',
   'metric.code': 'metric_code',
@@ -817,6 +887,9 @@ export function updateCompetition(id: string, patch: CompetitionPatch): Competit
     params[column] = CLIP_OF[key] ? clip(value, CLIP_OF[key]) : typeof value === 'boolean' ? (value ? 1 : 0) : value
   }
   if (sets.length === 0) return getCompetition(id)
+  // A course given (or taken) is the explicit scoping that replaces the
+  // pre-0.19 sharing with the whole staff list (see `staff_shared_at`).
+  if (flat.courseId !== undefined) sets.push('staff_shared_at = NULL')
   try {
     const result = db
       .prepare(`UPDATE competitions SET ${sets.join(', ')}, updated_at = @at WHERE id = @id`)
@@ -1361,6 +1434,22 @@ const selectElsewhere = db.prepare(`
  */
 export function competitionsElsewhere(entrantId: string, competitionId: string): number {
   return (selectElsewhere.get({ e: entrantId, c: competitionId }) as { n: number }).n
+}
+
+const selectEveryCompetitionOf = db.prepare(`
+  SELECT competition_id FROM competition_entrants WHERE entrant_id = ?
+  UNION
+  SELECT competition_id FROM submissions WHERE entrant_id = ?
+`)
+
+/**
+ * Every competition the person takes part in, by the same two conditions as
+ * `takesPart` — the reach of anything done to the person as a whole (a
+ * rename, switching them off, their key), which the panel's scope rule weighs
+ * against the competitions the teacher runs.
+ */
+export function entrantCompetitionIds(entrantId: string): string[] {
+  return (selectEveryCompetitionOf.all(entrantId, entrantId) as { competition_id: string }[]).map((row) => row.competition_id)
 }
 
 /* ------------------------------------------------------------ submissions */

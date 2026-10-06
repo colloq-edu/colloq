@@ -32,17 +32,22 @@ import {
 import {
   applyDraft,
   classOptions,
+  courseCards,
   courseTally,
-  defaultClass,
+  defaultPlace,
   draftOf,
+  NO_COURSE,
   nextPlanDay,
   pageState,
+  placeInCourse,
   plannedRow,
+  prefillPlace,
   putPlanned,
   putRow,
   roomChoices,
   roomNameFor,
-  seatCreated,
+  rowsOf,
+  seatFor,
   seatSeminar,
 } from '../web/src/admin/course-plan.js'
 import type { AdminSeminar } from '../shared/admin.js'
@@ -299,48 +304,72 @@ test('the new room form offers unseated rows nearest first and guesses the teach
     'ahead in order, then the past, then undated; breaks are not offered and not numbered',
   )
   assert.equal(roomNameFor(options[0]), '02 · Лики и хаки данных')
+  // Rooms by staff id, not by name: two teachers called «Ада» are two people.
+  const ada = { id: 'st-ada', name: 'Ада' }
+  const boris = { id: 'st-boris', name: 'Борис' }
   const rooms = [
-    { createdAt: 1, createdBy: 'Ада', courses: [{ id: 'py', name: 'Питон' }] },
-    { createdAt: 5, createdBy: 'Борис', courses: [{ id: 'py', name: 'Питон' }] },
-    { createdAt: 3, createdBy: 'Ада', courses: [{ id: 'ml', name: 'МЛ' }] },
+    { createdAt: 1, teachers: [ada], courses: [{ id: 'py', name: 'Питон' }] },
+    { createdAt: 5, teachers: [boris], courses: [{ id: 'py', name: 'Питон' }] },
+    { createdAt: 3, teachers: [ada], courses: [{ id: 'ml', name: 'МЛ' }] },
   ]
-  assert.equal(defaultClass(options, rooms, 'Ада', '2026-10-02')?.rowId, 'r2', 'my latest seated room is in МЛ')
-  assert.equal(defaultClass(options, rooms, 'Борис', '2026-10-02')?.rowId, 'p1', 'an undated course offers its first row')
-  assert.equal(defaultClass(options, [], 'Ада', '2026-10-02'), null, 'no seated room: «Без курса»')
-  assert.equal(defaultClass(options, rooms, 'Ада', '2026-12-01'), null, 'nothing left ahead in that course')
+  const both = [ml, py]
+  assert.deepEqual(defaultPlace(options, both, rooms, 'st-ada', '2026-10-02'), { courseId: 'ml', rowId: 'r2' }, 'my latest seated room is in МЛ')
+  assert.deepEqual(defaultPlace(options, both, rooms, 'st-boris', '2026-10-02'), { courseId: 'py', rowId: 'p1' }, 'an undated course offers its first row')
+  assert.deepEqual(
+    defaultPlace(options, both, rooms, 'st-vera', '2026-10-02'),
+    { courseId: 'py', rowId: 'p1' },
+    'none of my own: the latest room of my list (scope=mine) decides',
+  )
+  assert.deepEqual(defaultPlace(options, both, [], 'st-ada', '2026-10-02'), NO_COURSE, 'two courses, no history: no guess')
+  assert.deepEqual(defaultPlace(options, [ml], [], 'st-ada', '2026-10-02'), { courseId: 'ml', rowId: 'r2' }, 'the only course is the guess')
+  assert.deepEqual(defaultPlace(options, [], [], 'st-ada', '2026-10-02'), NO_COURSE, 'a teacher with no course: «Без курса»')
+  assert.deepEqual(defaultPlace(options, both, rooms, 'st-ada', '2026-12-01'), NO_COURSE, 'nothing left ahead in that course')
+  // A room seated only in a course that is not on my list does not pull the guess there.
+  assert.deepEqual(defaultPlace(options, [py], [rooms[2]], 'st-ada', '2026-10-02'), { courseId: 'py', rowId: 'p1' })
 })
 
-test('a created room takes its row once more after a race, and never a taken row', async () => {
-  const row = { ...dated('Лики', '2026-10-04'), id: 'r2' }
-  const base = { id: 'ml', name: 'МЛ', slug: null, blurb: null, createdAt: 0, createdBy: null } as const
-  let rev = 1
-  let items: CourseItem[] = [row]
-  let saves = 0
-  const conflict = new Error('409')
-  const io = {
-    load: async () => ({ ...base, items, rev }) as Course,
-    save: async (sent: number, next: CourseItem[]) => {
-      saves++
-      if (saves === 1) {
-        rev++ // someone else wrote meanwhile
-        throw conflict
-      }
-      assert.equal(sent, rev)
-      items = next
-    },
-    isConflict: (cause: unknown) => cause === conflict,
-  }
-  assert.equal(await seatCreated('r2', { id: 'room4', name: '04 · Лики' }, io), 'seated')
-  assert.equal(saves, 2, 'one retry on 409')
-  assert.equal(items[0].kind === 'seminar' && items[0].sessionId, 'room4')
-  // The row is a room now: a second room does not seat over it.
-  assert.equal(await seatCreated('r2', { id: 'room5', name: 'x' }, io), 'taken')
-  // Two races in a row are a refusal said out loud, not a silent loop.
-  items = [row]
-  saves = 0
-  const always = { ...io, save: async () => { saves++; throw conflict } }
-  await assert.rejects(seatCreated('r2', { id: 'room6', name: 'x' }, always))
-  assert.equal(saves, 2)
+test('the new room form: a course card takes its nearest row, the address picks a course or none', () => {
+  const course = (id: string, name: string, items: CourseItem[], teachers?: { id: string; name: string }[]): Course =>
+    ({ id, name, slug: null, blurb: null, createdAt: 0, createdBy: null, items, rev: 1, teachers }) as Course
+  const ml = course(
+    'ml',
+    'МЛ',
+    [
+      { ...dated('Прошлое', '2026-09-27'), id: 'r1' },
+      { ...dated('Пайплайны', '2026-10-11'), id: 'r2' },
+      { ...dated('Каникулы', '2026-10-18'), id: 'r3', pause: true },
+    ],
+    [{ id: 'a', name: 'Ада' }, { id: 'b', name: 'Борис' }, { id: 'c', name: 'Вера' }],
+  )
+  const done = course('done', 'Сделано', [{ kind: 'seminar', id: 's', sessionId: 'x', name: 'x', publication: null }])
+  const options = classOptions([ml, done], '2026-10-06')
+  assert.deepEqual(rowsOf(options, 'ml').map((o) => o.rowId), ['r2', 'r1'], 'ahead first, then the past; no break')
+  assert.deepEqual(rowsOf(options, null), [], '«Без курса» has no rows')
+  assert.deepEqual(placeInCourse(options, 'ml'), { courseId: 'ml', rowId: 'r2' })
+  assert.deepEqual(placeInCourse(options, 'done'), { courseId: 'done', rowId: null }, 'no open row: at the end')
+
+  const cards = courseCards([ml, done], options)
+  assert.deepEqual(
+    cards.map((c) => [c.id, c.teachers, c.next?.rowId ?? null]),
+    [['ml', 3, 'r2'], ['done', null, null]],
+    '«ведут 3 · следующая строка»; a server that did not say how many says nothing',
+  )
+
+  const list = [ml, done]
+  assert.equal(prefillPlace(null, list, options), null)
+  assert.deepEqual(prefillPlace({ course: 'none' }, list, options), NO_COURSE, 'the «Без курса» folder')
+  assert.deepEqual(prefillPlace({ course: 'ml', row: 'r1' }, list, options), { courseId: 'ml', rowId: 'r1' }, 'a course row')
+  assert.deepEqual(prefillPlace({ course: 'ml' }, list, options), { courseId: 'ml', rowId: 'r2' }, 'a course folder')
+  assert.deepEqual(
+    prefillPlace({ course: 'ml', row: 'r3' }, list, options),
+    { courseId: 'ml', rowId: 'r2' },
+    'a row no longer open keeps the course, on its nearest row',
+  )
+  assert.equal(prefillPlace({ course: 'elsewhere', row: 'r1' }, list, options), null, 'a course not on the list: the default decides')
+
+  assert.equal(seatFor(NO_COURSE), undefined, 'no seat for a room outside courses')
+  assert.deepEqual(seatFor({ courseId: 'ml', rowId: 'r2' }), { courseId: 'ml', rowId: 'r2' })
+  assert.deepEqual(seatFor({ courseId: 'done', rowId: null }), { courseId: 'done' }, 'no rowId: appended')
 })
 
 /* ------------------------------------------------------------------- server */
@@ -523,26 +552,34 @@ test('a new topic: the form clears at once, not on the answer, and the answer do
   assert.match(keys, /isComposing\) return/, 'Enter from an IME saves a half-typed topic')
 })
 
-test('creating a room: the row is the one on screen at the press, and a failed seating still uploads the files', () => {
+test('creating a room: the place is the one on screen at the press, seated by the server on every door', () => {
   /*
    * Two ways a room came out wrong. The default row arrives with the slow
-   * room list, and `seatRow` was read after the creation's await, so a press
-   * made on «Без курса» could still seat a scratch room into the default row.
-   * And a seating refused or failed returned before the upload: the room had
-   * none of its datasets, and the message spoke only of the row.
+   * room list, and a place read after the creation's await let a press made
+   * on «Без курса» seat a scratch room into the default row. And seating was
+   * a second request after the room existed, so a room could be created and
+   * still miss its course; since 0.19 the server seats it in the same
+   * request (`seat`), and the client-side PUT of the course is gone.
    */
   const screen = source('web/src/admin/screens/NewSeminar.svelte')
   const create = screen.slice(screen.indexOf('async function create'), screen.indexOf('const ORACLE'))
-  const taken = create.indexOf('const row = seatRow')
-  assert.ok(taken > 0, 'the row is no longer read once at the press')
-  assert.ok(taken < create.indexOf('await '), 'the row is read after the creation, where a late default can move it')
-  assert.ok(create.indexOf('rowTouched = true') < create.indexOf('await '), 'a late default can still move the select')
-  const seat = create.indexOf('await seatCreated(')
+  const firstAwait = create.indexOf('await ')
+  const taken = create.indexOf('const at = place')
+  assert.ok(taken > 0 && taken < firstAwait, 'the place is read before the first await')
+  assert.ok(create.indexOf('const seat = seatFor(at)') < firstAwait)
+  assert.ok(create.indexOf('placeTouched = true') < firstAwait, 'a late default can still move the cards')
+  for (const door of ['importSeminar', 'importNotebook', 'createSeminar']) {
+    const call = create.slice(create.indexOf(`adminApi.${door}(`))
+    assert.match(call.slice(0, call.indexOf('})')), /\bseat,/, `${door} carries the seat`)
+  }
+  assert.doesNotMatch(screen, /setCourseItems|seatCreated/, 'no second request seats the room')
+  // A row taken between the check and the write is said, and the files still go up.
+  const said = create.indexOf("problems.push(() => tr('admin.new.rowTaken'))")
   const upload = create.indexOf('await uploadMaterials(')
-  assert.ok(seat > 0 && upload > seat)
-  assert.doesNotMatch(create.slice(seat, upload), /\breturn\b/, 'a seating problem skips the upload again')
-  // Both outcomes are said together, and the screen closes only when nothing went wrong.
-  assert.match(create, /problems\.push\(\(\) => tr\('admin\.new\.rowTaken'\)\)/)
+  assert.ok(said > 0 && upload > said)
+  assert.doesNotMatch(create.slice(said, upload), /\breturn\b/, 'a seating problem skips the upload again')
   assert.ok(create.indexOf('if (problems.length > 0)') > upload)
-  assert.ok(create.indexOf('ondone(seminar.id)') > create.indexOf('if (problems.length > 0)'))
+  assert.ok(create.indexOf('ondone(seminar.id, landedCourse)') > create.indexOf('if (problems.length > 0)'))
+  // The instance day is the server's, not the first course's.
+  assert.doesNotMatch(screen, /courseToday/)
 })

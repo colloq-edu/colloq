@@ -16,6 +16,9 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import * as Y from 'yjs'
 import { addBook, bookCells, bookList, createCell, getCells, getMeta, renameBook } from '@shared/notebook'
 import { currentStaff, requireStaff } from '../admin/auth.js'
+import { addRoomTeacher } from '../admin/access.js'
+import { recordAdminEvent } from '../admin/audit-log.js'
+import { readSeat, seatRoom } from '../admin/seat.js'
 import { setSeminarCreator } from './admin-instance.js'
 import { newSessionId } from '../auth.js'
 import { projectBooks } from '../collab/books.js'
@@ -118,6 +121,10 @@ export function adminImportRoutes(): Router {
       if (!target) {
         return fail(res, 400, 'invalid', tr("server.thatIsNotAGithubLink.d0476c"))
       }
+      // Before the network: a refused course row must not cost a GitHub walk.
+      const staff = currentStaff(req)
+      const seat = readSeat(req.body?.seat, staff)
+      if (!seat.ok) return fail(res, seat.status, 'invalid', seat.error)
 
       const wanted = typeof req.body?.environment === 'string' ? req.body.environment.trim() : ''
       if (wanted && (!ENVIRONMENT_NAME.test(wanted) || !environmentExists(wanted))) {
@@ -149,7 +156,6 @@ export function adminImportRoutes(): Router {
         LIMITS.seminarName,
       )
 
-      const staff = currentStaff(req)
       /*
        * One shared function for all doors; see seedSeminar.
        *
@@ -170,7 +176,15 @@ export function adminImportRoutes(): Router {
         mode: req.body?.mode,
         cells: plan.cells,
         notebooks: target.kind === 'dir' ? plan.notebooks : undefined,
-        author: staff?.name ?? null,
+        author: staff,
+      })
+      const seated = seat.seat ? seatRoom(seat.seat, { id, name }, staff) : null
+      recordAdminEvent({
+        actor: staff,
+        action: 'room.created',
+        target: { type: 'room', id, label: name },
+        detail: { via: 'github', ...(seated ? { course: seated.courseId } : {}) },
+        req,
       })
 
       const written: string[] = []
@@ -214,6 +228,7 @@ export function adminImportRoutes(): Router {
         files: written,
         skipped,
         createdBy: staff?.name ?? null,
+        seat: seated,
       })
     }),
   )
@@ -266,6 +281,9 @@ export function adminImportRoutes(): Router {
     if (cells.length === 0) {
       return fail(res, 400, 'invalid', tr("server.thisNotebookHasNoNonemptyCells.bc0428"))
     }
+    const staff = currentStaff(req)
+    const seat = readSeat(req.body?.seat, staff)
+    if (!seat.ok) return fail(res, seat.status, 'invalid', seat.error)
 
     const wanted = typeof req.body?.environment === 'string' ? req.body.environment.trim() : ''
     if (wanted && (!ENVIRONMENT_NAME.test(wanted) || !environmentExists(wanted))) {
@@ -279,14 +297,21 @@ export function adminImportRoutes(): Router {
       LIMITS.seminarName,
     )
 
-    const staff = currentStaff(req)
     const id = seedSeminar({
       name,
       environment: wanted || activeName(),
       rules: req.body?.rules,
       mode: req.body?.mode,
       cells,
-      author: staff?.name ?? null,
+      author: staff,
+    })
+    const seated = seat.seat ? seatRoom(seat.seat, { id, name }, staff) : null
+    recordAdminEvent({
+      actor: staff,
+      action: 'room.created',
+      target: { type: 'room', id, label: name },
+      detail: { via: 'notebook', ...(seated ? { course: seated.courseId } : {}) },
+      req,
     })
 
     res.status(201).json({
@@ -297,6 +322,7 @@ export function adminImportRoutes(): Router {
       files: [],
       skipped: [],
       createdBy: staff?.name ?? null,
+      seat: seated,
     })
   })
 
@@ -318,7 +344,8 @@ function seedSeminar(input: {
   mode: unknown
   cells: FlatCell[]
   notebooks?: ImportedNotebook[]
-  author: string | null
+  /** Who created it: their name goes on the row, and they become its first teacher. */
+  author: { id: string; name: string } | null
 }): string {
   const id = newSessionId()
   createSession(id, input.name, input.environment)
@@ -342,7 +369,10 @@ function seedSeminar(input: {
     input.mode === 'council' ? COUNCIL_ROOM : input.mode === 'lecture' ? LECTURE_ROOM : null
   const asked = input.rules && typeof input.rules === 'object' ? input.rules : null
   if (preset || asked) setRules(id, readRules({ ...(preset ?? {}), ...(asked ?? {}) }))
-  if (input.author) setSeminarCreator(id, input.author)
+  if (input.author) {
+    setSeminarCreator(id, input.author.name)
+    addRoomTeacher(id, input.author.id, input.author.id)
+  }
 
   /*
    * The document is created for the duration of the seeding and goes to

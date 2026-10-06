@@ -40,6 +40,7 @@
     type ScoringRule,
   } from '@shared/competitions'
   import type { AdminEnvironment, InstanceResources } from '@shared/admin'
+  import type { Course } from '@shared/publish'
   import type { CompetitionInput, CompetitionView, FileView } from '@shared/competitions-api'
   import {
     answerColumns,
@@ -119,6 +120,8 @@
   let boardVisibility = $state<BoardVisibility>('public')
   let lateSubmissions = $state(false)
   let outputPolicy = $state<OutputPolicy>('brief')
+  /** «Курс»: '' is «Без курса». */
+  let courseId = $state('')
 
   $effect(() => {
     const open = view.competition
@@ -141,6 +144,7 @@
     boardVisibility = open.boardVisibility ?? 'public'
     lateSubmissions = open.lateSubmissions ?? false
     outputPolicy = open.outputPolicy ?? 'brief'
+    courseId = open.courseId ?? ''
   })
 
   /**
@@ -212,6 +216,7 @@
       boardVisibility,
       lateSubmissions,
       outputPolicy,
+      courseId: courseId || null,
     }
   }
 
@@ -395,6 +400,11 @@
 
   let environments = $state<AdminEnvironment[]>([])
   let resources = $state<InstanceResources | null>(null)
+  /**
+   * The courses the «Курс» select offers: the ones this person teaches, or
+   * every course for an owner — the same set the server accepts.
+   */
+  let courses = $state<Course[]>([])
 
   onMount(() => {
     // Both answers are an addendum to the form, not the form itself: without
@@ -408,6 +418,10 @@
       .resources()
       .then((state) => (resources = state))
       .catch(() => (resources = null))
+    void adminApi
+      .listCourses(adminAuth.isOwner ? 'all' : 'mine')
+      .then((list) => (courses = list))
+      .catch(() => (courses = []))
   })
 
   const chosenEnvironment = $derived(environments.find((one) => one.name === environment) ?? null)
@@ -500,6 +514,31 @@
         maxlength={LIMITS.blurb}
         bind:value={blurb}
       />
+      <!--
+        «Курс» decides who else runs the competition: the course's teachers
+        see it in their panel, alongside its creator and the owners. The
+        options are this person's courses; one they no longer teach stays
+        listed while it is the chosen one, so a save does not move it.
+      -->
+      <label class="flex flex-wrap items-center gap-2.5">
+        <span class="{HEAD} shrink-0">{tr('admin.competitions.courseLabel')}</span>
+        <select
+          class="field w-auto min-w-0 flex-[0_1_320px]"
+          aria-label={tr('admin.competitions.courseLabel')}
+          bind:value={courseId}
+        >
+          <option value="">{tr('admin.competitions.noCourse')}</option>
+          {#if courseId && !courses.some((one) => one.id === courseId)}
+            <option value={courseId}>{tr('admin.competitions.courseNotYours')}</option>
+          {/if}
+          {#each courses as one (one.id)}
+            <option value={one.id}>{one.name}</option>
+          {/each}
+        </select>
+        <span class="min-w-0 flex-1 text-micro text-muted">
+          {courseId ? tr('admin.competitions.courseHint') : tr('admin.competitions.noCourseHint')}
+        </span>
+      </label>
 
       <div class="border border-line">
         <div class="flex items-center gap-4 border-b border-line px-3 py-2">

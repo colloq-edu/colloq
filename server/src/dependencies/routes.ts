@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express'
-import { requireStaff } from '../admin/auth.js'
+import { currentStaff, requireStaff } from '../admin/auth.js'
+import { canSeeCompetition } from '../competitions/scope.js'
 import { requireEntrant, type EntrantRequest } from '../competitions/identity.js'
 import { findCompetition, getCompetition } from '../competitions/store.js'
 import { acceptsUploads, submissionsOpen, type Competition } from '@shared/competitions'
@@ -22,8 +23,13 @@ function visible(req:Request):Competition{
  if(!c||c.state==='draft')throw new store.DependencyStoreError('dependency_owner',404)
  return c
 }
+// The panel's second lookup of a competition: it must ask the same scope
+// question as admin-competitions.ts · competitionOf, and answer someone else's
+// competition exactly like a missing one (competitions/scope.ts).
 function teacherCompetition(req:Request):Competition{
- const c=getCompetition(String(req.params.id));if(!c)throw new store.DependencyStoreError('dependency_owner',404);return c
+ const c=getCompetition(String(req.params.id))
+ if(!c||!canSeeCompetition(currentStaff(req),c))throw new store.DependencyStoreError('dependency_owner',404)
+ return c
 }
 const entrant=(req:Request):string=>(req as EntrantRequest).entrant!.id
 function requirements(req:Request):string{

@@ -20,7 +20,8 @@ import { tr } from '@shared/i18n'
 import crypto from 'node:crypto'
 import type { Request, Response } from 'express'
 import { staffFromCookieHeader } from './admin/auth.js'
-import { db, deviceOfParticipant, getParticipant } from './db.js'
+import { canSeeRoom } from './admin/access.js'
+import { db, deviceOfParticipant, getParticipant, isTokenHost } from './db.js'
 import { clientAddress, type RequestLike } from './net/inbound.js'
 import type { Ban } from '@shared/protocol'
 
@@ -243,16 +244,20 @@ export interface BanInForce {
  * sockets. Separately they would drift apart, and silently — a banned person
  * would be left with an open notebook in a room they are no longer let into.
  *
- * Staff pass any ban. This is not politeness to the bosses: a slip — banning
- * yourself from a second tab — must not lock the teacher out of their own room
- * in the middle of a class.
+ * The room's own staff pass any ban. This is not politeness to the bosses: a
+ * slip — banning yourself from a second tab — must not lock the teacher out of
+ * their own room in the middle of a class. Only the staff who teach THIS room
+ * (admin/access.ts · canSeeRoom): a teacher of another course who dropped in
+ * by the link is a participant here, and the host's ban holds for them like
+ * for anyone.
  */
 export function banFor(
   sessionId: string,
   participantId: string | null,
   cookieHeader: string | undefined,
 ): BanInForce | null {
-  if (staffFromCookieHeader(cookieHeader)) return null
+  const staff = staffFromCookieHeader(cookieHeader)
+  if (staff && canSeeRoom(staff, sessionId)) return null
   const device = deviceOf(cookieHeader)
   // Nothing to present means nothing to catch: this is a clean browser, and it
   // gets through. The hole is named out loud in the file header.
@@ -324,6 +329,18 @@ export function listBans(sessionId: string, viewerDevice: string | null): Ban[] 
  * here, next to the check itself, not in the route, where someone would one
  * day forget it.
  *
+ * "Its host" is asked of the authority the person holds NOW, not of the badge
+ * in their row. The row's role is written at the join and at the tablet's
+ * claim and only rewritten by the next of those (or a socket handshake), so a
+ * teacher removed from the course kept "host" there and, with it, an
+ * exemption from the remaining host's ban — while `roleFor` already made them
+ * a participant in every request. Two things make someone host for good or
+ * for now: the room's host token (`token_host`, which nothing takes away), and
+ * a connection open right now with the host role (`liveHost`, answered by
+ * control.ts) — a co-teacher in class on their staff cookie. A co-teacher who
+ * is not connected can be "banned", but the row binds nobody while they teach
+ * the room: `banFor` lets the room's own staff through.
+ *
  * Both marks go into the row — the id and the browser the person last came
  * from — plus the address as a hint. The mark is taken from the participant's
  * row: there is nowhere to take it from in the request, since the teacher sends
@@ -342,7 +359,7 @@ export function banParticipant(input: {
   until?: number
 }): Ban | null {
   const person = getParticipant(input.sessionId, input.participantId)
-  if (!person || person.role === 'host') return null
+  if (!person || isTokenHost(input.sessionId, person.id) || liveHost(input.sessionId, person.id)) return null
   const now = Date.now()
   const row: BanRow = {
     id: 'b_' + crypto.randomBytes(9).toString('base64url'),
@@ -359,6 +376,18 @@ export function banParticipant(input: {
   // The room now has someone to catch — and the cache has no way to know it.
   liveBans.delete(input.sessionId)
   return toBan(row, input.viewerDevice ?? null)
+}
+
+/**
+ * Whether this participant has a connection open right now that the room
+ * treats as its host. control.ts holds the sockets and answers (it imports
+ * this module, so the question is handed over rather than imported back).
+ * Until it registers — a test with no control sockets — nobody is.
+ */
+let liveHost: (sessionId: string, participantId: string) => boolean = () => false
+
+export function answerLiveHost(answer: (sessionId: string, participantId: string) => boolean): void {
+  liveHost = answer
 }
 
 /** Lift a ban. `false` means there is no such ban in this room (or it has expired). */

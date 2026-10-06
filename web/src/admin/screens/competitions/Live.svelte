@@ -419,8 +419,10 @@
     busy = true
     draftRefusal = null
     try {
-      const made = await adminApi.createEntrant(draft.trim())
+      const made = await adminApi.createEntrant(c.id, draft.trim())
       added = { name: made.entrant.name, key: made.key }
+      // Joined on creation, so the row belongs in the list right away.
+      if (entrants && !entrants.some((row) => row.id === made.entrant.id)) entrants = [...entrants, made.entrant]
       adding = false
       draft = ''
     } catch (cause) {
@@ -791,14 +793,16 @@
                   <p class="mt-0.5 text-micro text-warning">{tr('admin.competitions.keyRevoked')}</p>
                 {/if}
               </div>
-              <button
-                type="button"
-                class="shrink-0 text-2xs text-muted hover:text-ink disabled:text-faint"
-                disabled={busy}
-                onclick={() => startRename(row)}
-              >
-                {tr('admin.rename')}
-              </button>
+              {#if row.editable !== false}
+                <button
+                  type="button"
+                  class="shrink-0 text-2xs text-muted hover:text-ink disabled:text-faint"
+                  disabled={busy}
+                  onclick={() => startRename(row)}
+                >
+                  {tr('admin.rename')}
+                </button>
+              {/if}
             </div>
             <span class="admin-num w-[80px] shrink-0 text-right">
               {@render caption(tr('admin.competitions.col.place'))}{row.place === null
@@ -817,6 +821,7 @@
               type="button"
               class="w-[180px] shrink-0 text-left font-mono text-2xs text-accent-text hover:brightness-110"
               disabled={row.key === null}
+              title={row.keyWithheld ? tr('admin.competitions.keyWithheld') : undefined}
               onclick={() => row.key && void copy(row.key, row.id)}
             >
               {copied === row.id ? tr('admin.copied') : (row.key ?? '—')}
@@ -995,14 +1000,17 @@
           >
             {tr('admin.competitions.slotsSetting')}
           </button>
-          <button
-            type="button"
-            class="admin-link shrink-0"
-            disabled={busy}
-            onclick={() => void togglePause()}
-          >
-            {queue?.paused ? tr('admin.competitions.resumeQueue') : tr('admin.competitions.pauseQueue')}
-          </button>
+          <!-- One queue for the whole instance: pausing it is the owner's. -->
+          {#if adminAuth.isOwner}
+            <button
+              type="button"
+              class="admin-link shrink-0"
+              disabled={busy}
+              onclick={() => void togglePause()}
+            >
+              {queue?.paused ? tr('admin.competitions.resumeQueue') : tr('admin.competitions.pauseQueue')}
+            </button>
+          {/if}
         </div>
 
         <div class="flex flex-wrap items-stretch">
@@ -1013,26 +1021,35 @@
               {@const late = share > 0.85}
               <div class="flex min-w-0 flex-col gap-1.5 border border-line px-3 py-2.5">
                 <div class="flex items-center gap-2">
-                  <span class="min-w-0 flex-1 truncate text-2xs font-semibold text-ink">
-                    {run.baseline ? tr('competitions.baselineEntrant') : run.entrantName} · #{run.number}
-                  </span>
+                  {#if run.hidden}
+                    <!-- Another course's run: the slot is shown, whose it is is not. -->
+                    <span class="min-w-0 flex-1 truncate text-2xs text-muted">
+                      {tr('admin.competitions.otherCourseRun')}
+                    </span>
+                  {:else}
+                    <span class="min-w-0 flex-1 truncate text-2xs font-semibold text-ink">
+                      {run.baseline ? tr('competitions.baselineEntrant') : run.entrantName} · #{run.number}
+                    </span>
+                  {/if}
                   {#if run.late}
                     <Badge word={tr('admin.competitions.lateBadge')} tone="brand" form="outline" />
                   {/if}
-                  {#if run.competitionId !== c.id}
+                  {#if !run.hidden && run.competitionId !== c.id}
                     <!-- One runner per instance: another competition's run takes a slot too. -->
                     <span class="shrink-0 font-mono text-micro text-faint">/k/{run.competitionSlug}</span>
                   {/if}
-                  <button
-                    type="button"
-                    class="grid size-5 shrink-0 place-items-center text-faint hover:text-danger disabled:opacity-40"
-                    title={tr('admin.competitions.kill')}
-                    aria-label={`${tr('admin.competitions.kill')} #${run.number}`}
-                    disabled={busy}
-                    onclick={() => void kill(run.submissionId)}
-                  >
-                    <Icon name="x" size={12} />
-                  </button>
+                  {#if !run.hidden}
+                    <button
+                      type="button"
+                      class="grid size-5 shrink-0 place-items-center text-faint hover:text-danger disabled:opacity-40"
+                      title={tr('admin.competitions.kill')}
+                      aria-label={`${tr('admin.competitions.kill')} #${run.number}`}
+                      disabled={busy}
+                      onclick={() => void kill(run.submissionId)}
+                    >
+                      <Icon name="x" size={12} />
+                    </button>
+                  {/if}
                 </div>
                 <div class="h-[3px] w-full bg-raised" aria-hidden="true">
                   <div
@@ -1505,9 +1522,11 @@
         {person.submissions > 0
           ? tr('competitions.entrant.deleteSubmissions', { count: person.submissions })
           : tr('competitions.entrant.deleteNoSubmissions')}
-        {(person.otherCompetitions ?? 0) > 0
-          ? tr('competitions.entrant.deleteKeyStays', { count: person.otherCompetitions ?? 0 })
-          : tr('competitions.entrant.deleteKeyGone')}
+        {person.keyWithheld
+          ? tr('competitions.entrant.deleteKeyElsewhere')
+          : (person.otherCompetitions ?? 0) > 0
+            ? tr('competitions.entrant.deleteKeyStays', { count: person.otherCompetitions ?? 0 })
+            : tr('competitions.entrant.deleteKeyGone')}
         {tr('competitions.entrant.deleteFinal')}
       </p>
       {#if removeRefusal}

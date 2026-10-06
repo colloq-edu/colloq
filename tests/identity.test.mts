@@ -22,6 +22,7 @@ import { STAFF_COOKIE } from '../shared/admin.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { signHostToken, verifyHostToken } from '../server/src/auth.js'
 import { createTeacher, rotateLinkKey } from '../server/src/admin/store.js'
+import { addRoomTeacher } from '../server/src/admin/access.js'
 import { createHmac } from 'node:crypto'
 import { signToken, verifyToken, TOKEN_MAX_AGE_MS } from '../server/src/auth.js'
 import { createSession, db, getParticipant, isTokenHost } from '../server/src/db.js'
@@ -166,6 +167,8 @@ test('a teacher who joined as a student is a host to HTTP too', async () => {
   const teacher = createTeacher({ name: 'Ada', email: 'ada.identity@example.edu', role: 'teacher' })
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
+  // A teacher of this room: since 0.19 a cookie is host only where its holder teaches.
+  addRoomTeacher(ROOM, teacher.id, null)
 
   const student = await join({ name: 'Ada' })
   assert.equal(student.participant.role, 'participant', 'joined before signing in')
@@ -296,6 +299,8 @@ test('the stream of new participants is limited: a loop does not bloat the room'
   const teacher = createTeacher({ name: 'Vera', email: 'vera.flood@example.edu', role: 'teacher' })
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
+  // A teacher of this room: since 0.19 a cookie is host only where its holder teaches.
+  addRoomTeacher(room, teacher.id, null)
   const staff = await knock({ name: 'Vera' }, mintCookie(teacher))
   assert.equal(staff.status, 200, 'staff could not enter their own room')
 })
@@ -411,6 +416,8 @@ test('joining over HTTP and over the socket give the same answer', async () => {
   const teacher = createTeacher({ name: 'Emmy', email: 'emmy.identity@example.edu', role: 'teacher' })
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
+  // A teacher of this room: since 0.19 a cookie is host only where its holder teaches.
+  addRoomTeacher(ROOM, teacher.id, null)
   const cookie = mintCookie(teacher)
 
   const cases = [
@@ -436,6 +443,8 @@ test('a cookie gives host only while it exists', async () => {
   const teacher = createTeacher({ name: 'Sofia', email: 'sofia.identity@example.edu', role: 'teacher' })
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
+  // A teacher of this room: since 0.19 a cookie is host only where its holder teaches.
+  addRoomTeacher(ROOM, teacher.id, null)
   const joined = await join({ name: 'Sofia' }, mintCookie(teacher))
   assert.equal(joined.participant.role, 'host', 'the cookie did not give host on join')
   assert.equal(

@@ -260,10 +260,11 @@ import {
 } from './collab/books.js'
 import { config } from './config.js'
 import { staffFromCookieHeader } from './admin/auth.js'
+import { canSeeRoom, staffById } from './admin/access.js'
 import { sessionLimitBytes, uploadLimitBytes } from './admin/resource-settings.js'
 import { stopAll, undoTurn } from './ai/agent.js'
 import { onCouncilOracle } from './ai/council.js'
-import { evicted } from './bans.js'
+import { answerLiveHost, evicted } from './bans.js'
 import { seldom } from './log.js'
 import { appendActivity } from './activity.js'
 import { recordQuestion } from './admin/usage.js'
@@ -612,6 +613,21 @@ export function closeControlRoom(sessionId: string): void {
   }
   room.sockets.clear()
 }
+
+/*
+ * The ban's "is this person the room's host right now" (bans.ts ·
+ * banParticipant): a connection of theirs that came in as host. The role on a
+ * socket is the one `roleFor` gave it at the handshake, and a socket whose
+ * holder has since lost the room is closed (socket-authorization.ts), so this
+ * is current authority, not the badge in the participant's row.
+ */
+answerLiveHost((sessionId, participantId) => {
+  const room = rooms.get(sessionId)
+  const mine = room?.byParticipant.get(participantId)
+  if (!room || !mine) return false
+  for (const ws of mine) if (room.hosts.has(ws)) return true
+  return false
+})
 
 /**
  * Put a banned person out — now, not on their next visit.
@@ -6122,8 +6138,15 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
    * second browser of the same teacher is a second participant (each browser
    * proves only its own token), and this key is how both are told they are
    * one person; it changes words, never rights.
+   *
+   * Only for staff who teach this room: a teacher of another course in here
+   * by the link is a participant like any other, and their two browsers are
+   * two participants — the "one presenter" merge is for whoever leads.
    */
-  const staffId = staffFromCookieHeader(credentials?.cookieHeader)?.id ?? payload.staff ?? null
+  const cookieStaff = staffFromCookieHeader(credentials?.cookieHeader)
+  const staffId =
+    (cookieStaff && canSeeRoom(cookieStaff, sessionId) ? cookieStaff.id : null) ??
+    (payload.staff && canSeeRoom(staffById(payload.staff), sessionId) ? payload.staff : null)
   const person = staffId ? personKey(sessionId, staffId) : null
   if (person) persons.set(ws, person)
 

@@ -39,6 +39,8 @@ import { AWAY_GRACE_MS, type LectureState } from '../shared/lecture.js'
 import { OPEN_ROOM, type RoomRules } from '../shared/rules.js'
 import type { ControlClientMessage, ControlServerMessage } from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
+import { createTeacher } from '../server/src/admin/store.js'
+import { addRoomTeacher } from '../server/src/admin/access.js'
 
 interface Fake {
   ws: WebSocket
@@ -76,12 +78,22 @@ function socket(): Fake {
 
 let rooms = 0
 
+/*
+ * Two real staff rows. A tablet's `staff` claim counts as "the same teacher"
+ * only for someone who teaches the room (0.19), so every room below is
+ * taught by both of them.
+ */
+const ADA = createTeacher({ name: 'Ада', email: `take-ada-${process.pid}@example.edu`, role: 'teacher' })!.id
+const BORIS = createTeacher({ name: 'Борис', email: `take-boris-${process.pid}@example.edu`, role: 'teacher' })!.id
+
 function room(rules: Partial<RoomRules> = {}): string {
   const id = `take-${++rooms}`
   createSession(id, 'Лекция', null)
   setRules(id, { ...OPEN_ROOM, ...rules })
   makeFile(id, 'slides.pdf', '%PDF-1.4')
   makeFile(id, 'other.pdf', '%PDF-1.4')
+  addRoomTeacher(id, ADA, null)
+  addRoomTeacher(id, BORIS, null)
   return id
 }
 
@@ -413,11 +425,11 @@ test('the console of an absent holder is taken at once, and the "offline" goes w
 test('the same teacher in two browsers is one person to the room, and nobody else is', () => {
   const id = room()
   const a = socket()
-  handleControlSocket(a.ws, id, host(id, 'p_chrome', 'staff-ada'))
+  handleControlSocket(a.ws, id, host(id, 'p_chrome', ADA))
   const b = socket()
-  handleControlSocket(b.ws, id, host(id, 'p_safari', 'staff-ada'))
+  handleControlSocket(b.ws, id, host(id, 'p_safari', ADA))
   const c = socket()
-  handleControlSocket(c.ws, id, host(id, 'p_boris', 'staff-boris'))
+  handleControlSocket(c.ws, id, host(id, 'p_boris', BORIS))
   const d = socket()
   handleControlSocket(d.ws, id, student(id, 'p_student'))
 
@@ -429,9 +441,9 @@ test('the same teacher in two browsers is one person to the room, and nobody els
   assert.equal(person(a), person(b), 'two browsers of one teacher are two people')
   assert.notEqual(person(a), person(c), 'two teachers are one person')
   assert.equal(person(d), null, 'a student got a person key')
-  assert.ok(!String(person(a)).includes('staff-ada'), 'the key gives away the staff id')
+  assert.ok(!String(person(a)).includes(ADA), 'the key gives away the staff id')
 
-  dispatch(a.ws, id, host(id, 'p_chrome', 'staff-ada'), {
+  dispatch(a.ws, id, host(id, 'p_chrome', ADA), {
     t: 'lecture:start',
     file: 'slides.pdf',
     device: { kind: 'ipad', console: true },
@@ -455,11 +467,11 @@ test('each teacher connection is told which participants are its own other brows
     return null
   }
   const chrome = socket()
-  handleControlSocket(chrome.ws, id, host(id, 'p_chrome', 'staff-ada'))
+  handleControlSocket(chrome.ws, id, host(id, 'p_chrome', ADA))
   const boris = socket()
-  handleControlSocket(boris.ws, id, host(id, 'p_boris', 'staff-boris'))
+  handleControlSocket(boris.ws, id, host(id, 'p_boris', BORIS))
   const safari = socket()
-  handleControlSocket(safari.ws, id, host(id, 'p_safari', 'staff-ada'))
+  handleControlSocket(safari.ws, id, host(id, 'p_safari', ADA))
   const student = socket()
   handleControlSocket(student.ws, id, {
     sessionId: id,
@@ -489,9 +501,9 @@ test('a person key is per room: the same teacher reads differently next door', (
   const first = room()
   const second = room()
   const a = socket()
-  handleControlSocket(a.ws, first, host(first, 'p_1', 'staff-ada'))
+  handleControlSocket(a.ws, first, host(first, 'p_1', ADA))
   const b = socket()
-  handleControlSocket(b.ws, second, host(second, 'p_1', 'staff-ada'))
+  handleControlSocket(b.ws, second, host(second, 'p_1', ADA))
   const key = (sock: Fake) => sock.heard.find((m) => m.t === 'role')
   assert.notEqual(
     JSON.stringify(key(a)),
@@ -500,6 +512,17 @@ test('a person key is per room: the same teacher reads differently next door', (
   )
   closeControlRoom(first)
   closeControlRoom(second)
+})
+
+test('a teacher who does not teach the room gets no person key: their browsers stay two participants', () => {
+  const guest = createTeacher({ name: 'Глеб', email: `take-guest-${process.pid}@example.edu`, role: 'teacher' })!.id
+  const id = room()
+  const a = socket()
+  handleControlSocket(a.ws, id, host(id, 'p_g1', guest))
+  const role = a.heard.find((m) => m.t === 'role')
+  assert.ok(role && role.t === 'role')
+  assert.equal(role.person ?? null, null, 'a guest teacher was merged as the room’s presenter')
+  closeControlRoom(id)
 })
 
 test('the device follows the hand that acts', () => {

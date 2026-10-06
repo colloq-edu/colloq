@@ -172,8 +172,12 @@ export interface CreateSessionRequest {
 
 export interface CreateSessionResponse {
   session: SessionInfo
-  /** Signed host credential; the browser keeps it in localStorage. */
-  hostToken: string
+  /**
+   * Signed host credential; the browser keeps it in localStorage. Null when a
+   * signed-in staff member created the room: their grant is the room's
+   * membership (admin/access.ts), which removal can take away.
+   */
+  hostToken: string | null
 }
 
 /**
@@ -241,6 +245,31 @@ export interface JoinResponse {
   participant: Participant
   /** Signed credential for the control socket and AI endpoint. */
   token: string
+  /**
+   * Set when a signed-in staff member joined a room they do not teach: they
+   * are an ordinary participant here, and the room says why (see StaffGuest).
+   * Absent for everyone else, including a staff member who runs this room.
+   */
+  staffGuest?: StaffGuest | null
+}
+
+/**
+ * Why a staff member is a participant, not the host, in this room.
+ *
+ * Since 0.19 a staff cookie makes its holder host only in the rooms they
+ * teach: the room's own teachers, and the teachers of any course that seats
+ * it. Anyone else on the staff list still gets in by the link — as a student
+ * would — and the room shows one line (U5a): «Это комната курса «…». Вы здесь
+ * как участник. Вести её могут: … Попросите добавить вас — или владельца.»
+ *
+ * `course` is the course that seats the room (the newest, when there are
+ * several), or null for a room outside courses. `teachers` are the names of
+ * the people who may lead it — never their addresses; owners are not listed,
+ * the sentence names them on its own.
+ */
+export interface StaffGuest {
+  course: { id: string; name: string } | null
+  teachers: string[]
 }
 
 /**
@@ -2346,4 +2375,6 @@ export interface SessionMe {
   participantId: string | null
   /** The role the server will act with on this key, or null. */
   role: ParticipantRole | null
+  /** The same note as JoinResponse.staffGuest, for a staff member who is not host here. */
+  staffGuest?: StaffGuest | null
 }

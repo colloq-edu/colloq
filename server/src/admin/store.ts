@@ -28,6 +28,41 @@ db.exec(`
   -- Partial, because "no link minted yet" is a state many rows share at once
   -- while a live key must resolve to exactly one person.
   CREATE UNIQUE INDEX IF NOT EXISTS staff_link_key ON staff(link_key) WHERE link_key IS NOT NULL;
+
+  /*
+   * Who teaches what: a course's teachers, and a room's own teachers.
+   *
+   * Keyed by staff.id, never by the display name the older created_by
+   * columns hold: names are neither unique nor stable (a rename through the
+   * panel would orphan every room matched by name). The rule that reads these
+   * rows, and the one-time migration that filled them on an instance that
+   * existed before them, live in admin/access.ts; the schema is here because
+   * a membership is a fact about a staff member, and deleting the person
+   * (deleteTeacher below) has to take their memberships with it in the same
+   * breath. foreign_keys is off on this database, so the cascade is written
+   * out by hand rather than declared.
+   *
+   * room_teachers is mostly for rooms outside any course («Без курса»):
+   * a room seated in a course is already visible to that course's teachers
+   * through courses.items, and is never copied here.
+   */
+  CREATE TABLE IF NOT EXISTS course_teachers (
+    course_id  TEXT NOT NULL,
+    staff_id   TEXT NOT NULL,
+    added_by   TEXT,
+    added_at   INTEGER NOT NULL,
+    PRIMARY KEY (course_id, staff_id)
+  );
+  CREATE INDEX IF NOT EXISTS course_teachers_staff ON course_teachers(staff_id);
+
+  CREATE TABLE IF NOT EXISTS room_teachers (
+    session_id TEXT NOT NULL,
+    staff_id   TEXT NOT NULL,
+    added_by   TEXT,
+    added_at   INTEGER NOT NULL,
+    PRIMARY KEY (session_id, staff_id)
+  );
+  CREATE INDEX IF NOT EXISTS room_teachers_staff ON room_teachers(staff_id);
 `)
 
 // Existing credentials belong to generation 1. Rotation advances the durable
@@ -36,13 +71,28 @@ if (!(db.prepare('PRAGMA table_info(staff)').all() as { name: string }[]).some(r
   db.exec('ALTER TABLE staff ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1')
 }
 
-const authorizationListeners = new Set<(staffId: string) => void>()
-export function onStaffAuthorizationChanged(listener: (staffId: string) => void): () => void {
+/**
+ * A listener hears whose rights changed and, when the change is about some
+ * rooms only, which ones (`sessionIds`); without the list it was about the
+ * person as a whole (a role, a rotated link, a deleted row).
+ */
+export type StaffAuthorizationListener = (staffId: string, sessionIds?: readonly string[]) => void
+const authorizationListeners = new Set<StaffAuthorizationListener>()
+export function onStaffAuthorizationChanged(listener: StaffAuthorizationListener): () => void {
   authorizationListeners.add(listener)
   return () => { authorizationListeners.delete(listener) }
 }
-function authorizationChanged(id: string): void {
-  for (const listener of authorizationListeners) listener(id)
+/**
+ * Tell this person's open sockets to re-check their rights.
+ *
+ * Exported for admin/access.ts: a course or room membership taken away
+ * changes what this person may do in rooms they have open right now, exactly
+ * like a role change or a rotated link does. A membership is about rooms, so
+ * access.ts names them, and only the sockets in those rooms are closed: a
+ * teacher removed from one course keeps lecturing undisturbed in another.
+ */
+export function authorizationChanged(id: string, sessionIds?: readonly string[]): void {
+  for (const listener of authorizationListeners) listener(id, sessionIds)
 }
 export function staffAuthorizationVersion(id: string): number | null {
   return (selectAuthorizationVersion.get(id) as { auth_version: number } | undefined)?.auth_version ?? null
@@ -81,6 +131,8 @@ const updateRole = db.prepare('UPDATE staff SET role = ? WHERE id = ?')
 const updateIdentity = db.prepare('UPDATE staff SET name = ?, email = ? WHERE id = ?')
 const updateLinkKey = db.prepare('UPDATE staff SET link_key = ?, auth_version = auth_version + 1 WHERE id = ?')
 const deleteById = db.prepare('DELETE FROM staff WHERE id = ?')
+const deleteCourseMemberships = db.prepare('DELETE FROM course_teachers WHERE staff_id = ?')
+const deleteRoomMemberships = db.prepare('DELETE FROM room_teachers WHERE staff_id = ?')
 const touchSeen = db.prepare('UPDATE staff SET last_seen_at = ? WHERE id = ?')
 const countOwnersStmt = db.prepare("SELECT COUNT(*) AS n FROM staff WHERE role = 'owner'")
 const countStaffStmt = db.prepare('SELECT COUNT(*) AS n FROM staff')
@@ -216,8 +268,22 @@ export function rotateLinkKey(id: string): MintedLink | null {
   return teacher ? { teacher, key } : null
 }
 
-export function deleteTeacher(id: string): boolean {
+/**
+ * The memberships go with the row: a staff id is never reused, but a
+ * membership naming nobody would still be counted as "a course keeps at
+ * least one teacher" and shown as a chip with no name.
+ */
+const deleteTeacherTx = db.transaction((id: string): boolean => {
   const deleted = deleteById.run(id).changes > 0
+  if (deleted) {
+    deleteCourseMemberships.run(id)
+    deleteRoomMemberships.run(id)
+  }
+  return deleted
+})
+
+export function deleteTeacher(id: string): boolean {
+  const deleted = deleteTeacherTx(id)
   if (deleted) authorizationChanged(id)
   return deleted
 }

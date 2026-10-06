@@ -28,7 +28,7 @@ import { app } from '../server/src/app.js'
 import { db } from '../server/src/db.js'
 import {
   acceptSubmission,
-  createCompetition,
+  createCompetition as storeCreateCompetition,
   createEntrant,
   finishRun,
   getCompetition,
@@ -344,11 +344,23 @@ function staff(name: string, email: string, role: 'owner' | 'teacher') {
   const teacher = createTeacher({ name, email, role })
   assert.ok(teacher, email)
   rotateLinkKey(teacher.id)
+  if (role === 'teacher') teacherId = teacher.id
   return mintCookie(teacher)
 }
 
 let owner = ''
 let teacher = ''
+let teacherId: string | null = null
+
+/*
+ * The competitions here are the teacher's own: since competitions have a
+ * scope (competitions/scope.ts), a teacher runs only what they created or
+ * what their course holds, and the doors under test are the ones a teacher
+ * drives. Who may see whose competition is tests/scoping-competitions.
+ */
+function createCompetition(input: Parameters<typeof storeCreateCompetition>[0]): ReturnType<typeof storeCreateCompetition> {
+  return storeCreateCompetition({ createdBy: teacherId, ...input })
+}
 
 before(async () => {
   // The whole app is mounted — with the origin check and the cookie: a copy of
@@ -472,7 +484,9 @@ test('finishing, removing answers, issuing a new key and dropping a submission a
     const res = await call(method, path, { cookie: teacher })
     assert.equal(res.status, 403, path)
   }
-  const made = await call('POST', '/api/admin/competitions/entrants', {
+  // A teacher adds a person through the competition (a person outside every
+  // competition is the owner's to make: scoping-competitions).
+  const made = await call('POST', `/api/admin/competitions/${c.id}/entrants`, {
     cookie: teacher,
     body: { name: '@Anna_Kim' },
   })
@@ -495,7 +509,11 @@ test('finishing, removing answers, issuing a new key and dropping a submission a
 })
 
 test('the sign-in key is visible in the list: there is no other place to read it', async () => {
-  const res = await call('GET', '/api/admin/competitions/entrants', { cookie: teacher })
+  // The instance-wide list is the owner's since competitions have a scope;
+  // a teacher reads keys in the "Entrants" tab of their own competition.
+  const refused = await call('GET', '/api/admin/competitions/entrants', { cookie: teacher })
+  assert.equal(refused.status, 403)
+  const res = await call('GET', '/api/admin/competitions/entrants', { cookie: owner })
   assert.equal(res.status, 200)
   const body = (await res.json()) as { entrants: { name: string; key: string | null }[] }
   const anna = body.entrants.find((row) => row.name === '@anna_kim')
@@ -504,20 +522,23 @@ test('the sign-in key is visible in the list: there is no other place to read it
 })
 
 test('the teacher adds an entrant only under a Telegram username or an email, in its one form', async () => {
+  const c = createCompetition({ slug: 'handles', title: 'Логины' })
+  assert.ok(c)
+  const door = `/api/admin/competitions/${c.id}/entrants`
   for (const name of ['Анна Ким', 'ivan', '_ivan_petrov', 'ivan petrov@mail.ru', '']) {
-    const res = await call('POST', '/api/admin/competitions/entrants', { cookie: teacher, body: { name } })
+    const res = await call('POST', door, { cookie: teacher, body: { name } })
     assert.equal(res.status, 400, name)
     const body = (await res.json()) as { reason: string; error: string }
     assert.equal(body.reason, 'invalid', name)
     assert.match(body.error, /логин Telegram/, name)
   }
-  const telegram = await call('POST', '/api/admin/competitions/entrants', {
+  const telegram = await call('POST', door, {
     cookie: teacher,
     body: { name: 'Ivan_Petrov' },
   })
   assert.equal(telegram.status, 201)
   assert.equal(((await telegram.json()) as { entrant: { name: string } }).entrant.name, '@ivan_petrov')
-  const mail = await call('POST', '/api/admin/competitions/entrants', {
+  const mail = await call('POST', door, {
     cookie: teacher,
     body: { name: ' Ivan.Petrov@Mail.RU ' },
   })
@@ -767,8 +788,14 @@ test("the sample notebook's door answers like the entrant's: a byte order mark c
 })
 
 test("the instance's queue pauses and resumes", async () => {
-  const paused = await call('POST', '/api/admin/competitions/queue/pause', {
+  // One queue for every course: pausing it is the owner's.
+  const refused = await call('POST', '/api/admin/competitions/queue/pause', {
     cookie: teacher,
+    body: { paused: true },
+  })
+  assert.equal(refused.status, 403)
+  const paused = await call('POST', '/api/admin/competitions/queue/pause', {
+    cookie: owner,
     body: { paused: true },
   })
   assert.equal(paused.status, 200)
@@ -778,7 +805,7 @@ test("the instance's queue pauses and resumes", async () => {
   assert.equal(((await seen.json()) as { paused: boolean }).paused, true)
 
   const resumed = await call('POST', '/api/admin/competitions/queue/pause', {
-    cookie: teacher,
+    cookie: owner,
     body: { paused: false },
   })
   assert.equal(((await resumed.json()) as { paused: boolean }).paused, false)

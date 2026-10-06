@@ -24,6 +24,7 @@ import {
   type RoomAccess,
   type RoomDoor,
 } from '@shared/publish'
+import { canSeeRoom } from '../admin/access.js'
 import { currentStaff } from '../admin/auth.js'
 import { verifyToken } from '../auth.js'
 import { banFor } from '../bans.js'
@@ -85,9 +86,15 @@ export function memberOf(
  * browser, and the class's own students on another device are who the page
  * and the «Сегодня» block are for (shared/publish.ts · DEFAULT_ROOM_ACCESS).
  *
- * Otherwise `room` is given to staff always, to everyone under 'anyone', and
- * to a proven member under 'members'. Its `live` is the class still on: the
- * room exists, the class was not ended and the seminar not archived.
+ * Otherwise `room` is given to the room's staff always, to everyone under
+ * 'anyone', and to a proven member under 'members'. Its `live` is the class
+ * still on: the room exists, the class was not ended and the seminar not
+ * archived.
+ *
+ * "The room's staff" is the staff who teach it (admin/access.ts ·
+ * canSeeRoom), not the whole staff list: 'none' promises «никто, кроме
+ * преподавателей», and since teachers are scoped to their courses a teacher
+ * of another course is, at this door, one more reader with a link.
  */
 export function roomDoor(
   req: Request,
@@ -96,10 +103,11 @@ export function roomDoor(
   tokens: readonly string[],
 ): RoomDoor {
   const access = saved ?? DEFAULT_ROOM_ACCESS
-  const staff = currentStaff(req) !== null
+  const signedIn = currentStaff(req)
   if (!sessionId || !getSession(sessionId)) {
-    return { access: 'none', member: false, staff, room: null }
+    return { access: 'none', member: false, staff: signedIn !== null, room: null }
   }
+  const staff = canSeeRoom(signedIn, sessionId)
   const member = memberOf(sessionId, tokens, req.headers.cookie)
   const allowed = staff || access === 'anyone' || (access === 'members' && member)
   if (!allowed) return { access, member, staff, room: null }

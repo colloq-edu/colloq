@@ -160,6 +160,12 @@ export interface Competition {
   /** Inputs visible to the notebook; metric-only checks cannot refresh this. */
   notebookInputRevision?: number
   createdBy: string | null
+  /**
+   * The course this competition belongs to; absent or null — none. Teachers
+   * see a competition they created or one of a course they teach (the panel's
+   * scope rule, server/src/competitions/scope.ts); nothing public reads it.
+   */
+  courseId?: string | null
   createdAt: number
   updatedAt: number
 }
@@ -172,12 +178,14 @@ export interface Competition {
  * which rows are public, and knowing that, an answer can be fitted to the
  * hidden part without solving the task.
  */
-export type CompetitionPublic = Omit<Competition, 'metric' | 'splitSeed' | 'createdBy'> & {
+export type CompetitionPublic = Omit<Competition, 'metric' | 'splitSeed' | 'createdBy' | 'courseId'> & {
   metric: Omit<CompetitionMetric, 'code'>
 }
 
 export function publicCompetition(c: Competition): CompetitionPublic {
-  const { metric, splitSeed: _seed, createdBy: _by, ...rest } = c
+  // Who made it and which course holds it are the panel's business: the /k
+  // pages stay exactly what they were before competitions had a course.
+  const { metric, splitSeed: _seed, createdBy: _by, courseId: _course, ...rest } = c
   return { ...rest, metric: { name: metric.name, direction: metric.direction } }
 }
 

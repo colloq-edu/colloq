@@ -3028,6 +3028,11 @@ export const roomMessages: MessageCatalog = {
     "ru": "Вы вошли как преподаватель. Открываем занятие…",
     "en": "You are signed in as a teacher. Opening the class…"
   },
+  // A staff member in a room they do not teach (web/src/components/StaffGuestStrip.svelte, Paper U5a).
+  "room.staffGuest.course": {"ru": "Это комната курса «{course}». Вы здесь как участник.", "en": "This room belongs to the course “{course}”. You are here as a participant."},
+  "room.staffGuest.noCourse": {"ru": "Это комната вне курсов, и вы её не ведёте. Вы здесь как участник.", "en": "This room is outside any course, and you do not run it. You are here as a participant."},
+  "room.staffGuest.teachers": {"ru": "Вести её могут: {names}. Попросите их добавить вас — или владельца.", "en": "It can be run by: {names}. Ask them to add you — or the owner."},
+  "room.staffGuest.ownerOnly": {"ru": "Вести её сейчас может только владелец. Попросите его добавить вас.", "en": "Only the owner can run it right now. Ask the owner to add you."},
   "room.classEnd.title": {"ru": "Занятие завершено", "en": "Class finished"},
   "room.classEnd.offer": {"ru": "Положите материалы на страницу занятия — студенты найдут её в курсе «{course}».", "en": "Put the materials on the class page — students will find it in the course “{course}”."},
   "room.classEnd.pick": {"ru": "Выбрать материалы →", "en": "Choose materials →"},

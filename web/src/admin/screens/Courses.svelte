@@ -19,6 +19,8 @@
   import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
+  import Avatar from '@/components/ui/Avatar.svelte'
+  import { colorForId } from '@shared/protocol'
   import {
     AdminApiError,
     addressHolderOf,
@@ -39,7 +41,21 @@
     type Course,
     type CourseItem,
   } from '@shared/publish'
-  import type { AdminSeminar } from '@shared/admin'
+  import { LIMITS, type AdminSeminar, type ListScope, type TeacherRef, type TeacherWithCourses } from '@shared/admin'
+  import {
+    addableStaff,
+    canRemoveMember,
+    invitePrefill,
+    looksLikeEmail,
+    orderMembers,
+    pickerRooms,
+    reachableSignIn,
+    readCourseScope,
+    saveCourseScope,
+    selfRemoval,
+    seminarScopeFor,
+    teacherLine,
+  } from '@/admin/course-teachers'
   import {
     applyDraft,
     courseTally,
@@ -103,10 +119,50 @@
   /** The address read out loud: the name if one was given, otherwise the id. */
   const addressOf = (item: { id: string; slug: string | null }): string => item.slug ?? item.id
 
+  /*
+   * «Мои / Все» — the owner's switch, as on «Занятия» (Paper U1).
+   *
+   * A teacher's list is what they teach, and that is all the server gives
+   * them. An owner's default is the same «Мои»: on a university's instance
+   * the forty courses of other departments are not what an owner who also
+   * teaches opens this screen for. «Все» is a press away and remembered in
+   * this browser. Both lists come in one go for an owner, so both segments
+   * carry a count and switching is instant; the side navigation counts
+   * «Мои» either way (AdminShell.svelte · navCounts).
+   */
+  const browserStorage = (): Storage | null => (typeof localStorage === 'undefined' ? null : localStorage)
+  let scope = $state<ListScope>(readCourseScope(adminAuth.isOwner, browserStorage))
+  let mineCourses = $state<Course[]>([])
+  let allCourses = $state<Course[] | null>(null)
+  /** The switch is drawn only once the role is known to be an owner's. */
+  const showScope = $derived(adminAuth.isOwner)
+  /** Which room list the open course was drawn from (course-teachers.ts · seminarScopeFor). */
+  let seminarScope = $state<ListScope>('mine')
+
+  function chooseScope(next: ListScope): void {
+    if (next === scope) return
+    scope = next
+    saveCourseScope(next, browserStorage)
+    courses = next === 'all' && allCourses ? allCourses : mineCourses
+    // «Все» without its list (the role was not known yet when the screen
+    // loaded, or that request failed): ask now rather than show «Мои» under it.
+    if (next === 'all' && !allCourses) void loadList()
+  }
+
   async function loadList(): Promise<void> {
     try {
-      courses = await adminApi.listCourses()
-      navCounts.courses = courses.length
+      const owner = adminAuth.isOwner
+      // The role can arrive after the screen: a stored «Все» is honoured
+      // once it is known that this is an owner (and never sent otherwise).
+      scope = readCourseScope(owner, browserStorage)
+      const [mine, all] = await Promise.all([
+        adminApi.listCourses('mine'),
+        owner ? adminApi.listCourses('all') : Promise.resolve(null),
+      ])
+      mineCourses = mine
+      allCourses = all
+      courses = scope === 'all' && all ? all : mine
+      navCounts.courses = mine.length
       await loadOrphans()
     } catch (cause) {
       if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
@@ -135,11 +191,25 @@
         if (isClassDay(day)) today = day
       })
       .catch(() => {})
+    const opened = course
+    members = opened.teachers ?? []
+    // The full rows (address, role) for the chips' titles; the course itself
+    // already carried the names, so the strip is drawn before this lands.
+    void adminApi
+      .courseTeachers(opened.id)
+      .then((list) => {
+        if (course?.id === opened.id) members = list
+      })
+      .catch(() => {})
     try {
       // The seminar list feeds the pickers and the withdrawn/finished marks:
       // without it the course screen stays whole, and declaring the course
       // not found because of it would be wrong.
-      seminars = await adminApi.listSeminars()
+      const me = adminAuth.me?.teacher.id ?? null
+      const teaches = (opened.teachers ?? []).some((member) => member.id === me)
+      scope = readCourseScope(adminAuth.isOwner, browserStorage)
+      seminarScope = seminarScopeFor(adminAuth.isOwner, scope, teaches)
+      seminars = await adminApi.listSeminars(seminarScope)
     } catch (cause) {
       if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
       errorText = () => (explain(cause))
@@ -405,10 +475,19 @@
   const inCourse = $derived(
     new Set(course?.items.flatMap((i) => (i.kind === 'seminar' ? [i.sessionId] : [])) ?? []),
   )
+  /**
+   * The rooms the pickers may offer: what the server listed for this viewer
+   * and they teach (course-teachers.ts · pickerRooms). The full list
+   * `seminars` still feeds the table, which has to name the rooms of a
+   * course an owner opened without teaching it.
+   */
+  const pickable = $derived(
+    pickerRooms(seminars, seminarScope === 'all' && scope === 'all'),
+  )
   /** Seminars that are not in this course yet, newest first. */
-  const addable = $derived(roomChoices(seminars, null, inCourse))
+  const addable = $derived(roomChoices(pickable, null, inCourse))
   const seatChoices = $derived(
-    seating ? roomChoices(seminars, isClassDay(seating.was.day) ? seating.was.day : null, inCourse) : [],
+    seating ? roomChoices(pickable, isClassDay(seating.was.day) ? seating.was.day : null, inCourse) : [],
   )
 
   /* -------------------------------------------------------- the table */
@@ -911,6 +990,206 @@
     }
   }
 
+  /* ------------------------------------------- «Ведут»: the course's people */
+
+  /**
+   * The course's teachers, as the strip under the header draws them (Paper
+   * U2). Kept apart from `course`: the item and detail writes answer with
+   * the course without its people, and a strip that emptied after every
+   * reordering of rows would say nobody teaches it.
+   */
+  let members = $state<(TeacherRef & { email?: string })[]>([])
+  const meId = $derived(adminAuth.me?.teacher.id ?? null)
+  const shownMembers = $derived(orderMembers(members, meId))
+  /** Whether a chip's × is drawn at all (course-teachers.ts · canRemoveMember). */
+  const removable = $derived(canRemoveMember(members.length, adminAuth.isOwner))
+
+  /** The staff list for the search, fetched when the popover first opens. */
+  let staff = $state<TeacherWithCourses[] | null>(null)
+  let picking = $state<'search' | 'invite' | null>(null)
+  let query = $state('')
+  let inviteEmail = $state('')
+  let inviteName = $state('')
+  /*
+   * A new address needs a name (the server refuses one without it); an
+   * address already on the staff list keeps its person's name, so the field
+   * may stay empty. Decided here, before the round trip, from the list the
+   * search already loaded.
+   */
+  const inviteKnown = $derived.by(() => {
+    const email = inviteEmail.trim().toLowerCase()
+    return !!email && (staff ?? []).some((t) => t.email.toLowerCase() === email)
+  })
+  const inviteReady = $derived(!!inviteEmail.trim() && (inviteKnown || !!inviteName.trim()))
+  /** The prefill carried the address: the name is what is left to type. */
+  let inviteFocusName = $state(false)
+  let teamBusy = $state(false)
+  let teamErrorText = $state<(() => string) | null>(null)
+  const teamError = $derived(teamErrorText?.() ?? null)
+  /**
+   * A new colleague's sign-in link, held in this tab only for as long as
+   * the band stays open: the server hands it out once (InviteTeacherResponse).
+   */
+  let invited = $state<{ name: string; url: string } | null>(null)
+  let inviteCopied = $state(false)
+  let inviteCopyFailed = $state(false)
+  let inviteLinkField = $state<HTMLInputElement | null>(null)
+
+  const offered = $derived(staff ? addableStaff(staff, members, query) : null)
+
+  /**
+   * The strip belongs to a course: another course's half-typed invite must
+   * not follow you there. Keyed by the id, not the object — `course` is
+   * reassigned by every write's answer, and that must not close the band
+   * holding a link shown once.
+   */
+  const openId = $derived(course?.id ?? null)
+  $effect(() => {
+    void openId
+    picking = null
+    query = ''
+    invited = null
+    teamErrorText = null
+  })
+
+  function failTeam(cause: unknown): void {
+    if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+    teamErrorText = () => explain(cause)
+  }
+
+  async function openPicker(): Promise<void> {
+    if (picking) {
+      picking = null
+      return
+    }
+    picking = 'search'
+    query = ''
+    teamErrorText = null
+    // Re-read on every opening: someone added a minute ago on the Teachers
+    // screen, or by a colleague's invitation, belongs in the search now.
+    try {
+      staff = await adminApi.listTeachers()
+    } catch (cause) {
+      staff ??= []
+      failTeam(cause)
+    }
+  }
+
+  async function addMember(person: TeacherWithCourses): Promise<void> {
+    const open = course
+    if (!open || teamBusy) return
+    teamBusy = true
+    teamErrorText = null
+    try {
+      members = await adminApi.addCourseTeacher(open.id, person.id)
+      picking = null
+      notice = { text: () => tr('admin.course.teachers.added', { name: person.name }), tone: 'ok' }
+    } catch (cause) {
+      failTeam(cause)
+    } finally {
+      teamBusy = false
+    }
+  }
+
+  function openInvite(): void {
+    const typed = invitePrefill(query)
+    inviteEmail = typed.email
+    inviteName = typed.name
+    inviteFocusName = !!typed.email && !typed.name
+    teamErrorText = null
+    picking = 'invite'
+  }
+
+  async function invite(): Promise<void> {
+    const open = course
+    if (!open || teamBusy) return
+    const email = inviteEmail.trim()
+    if (!looksLikeEmail(email)) {
+      teamErrorText = () => tr('admin.course.teachers.badEmail')
+      return
+    }
+    teamBusy = true
+    teamErrorText = null
+    try {
+      const answer = await adminApi.inviteCourseTeacher(open.id, { email, name: inviteName.trim() })
+      members = answer.teachers
+      picking = null
+      const name = answer.teacher.name
+      if (answer.signInUrl) {
+        inviteCopied = false
+        inviteCopyFailed = false
+        invited = { name, url: reachableSignIn(answer.signInUrl, location.origin) }
+      } else {
+        // Someone already on the staff: their link is a credential, and the
+        // server never hands it to whoever typed their address. They know how
+        // to sign in; the screen says so instead of offering nothing to copy.
+        notice = { text: () => tr('admin.course.teachers.existing', { name }), tone: 'ok' }
+      }
+    } catch (cause) {
+      failTeam(cause)
+    } finally {
+      teamBusy = false
+    }
+  }
+
+  async function copyInvite(url: string): Promise<void> {
+    try {
+      await copyText(url)
+      inviteCopied = true
+      inviteCopyFailed = false
+    } catch {
+      // The link is on screen and selectable: say so and select it.
+      inviteCopyFailed = true
+      inviteLinkField?.select()
+    }
+  }
+
+  /**
+   * Removing a chip. Removing yourself is asked first, and the question
+   * names its price: a teacher loses the course and its rooms on the spot
+   * (the server closes their open room sockets too), an owner only stops
+   * being one of its teachers.
+   */
+  async function removeMember(member: TeacherRef): Promise<void> {
+    const open = course
+    if (!open || teamBusy) return
+    const self = member.id === meId
+    if (self) {
+      const key = selfRemoval(adminAuth.isOwner) === 'loses' ? 'admin.course.teachers.leave' : 'admin.course.teachers.leaveOwner'
+      if (!window.confirm(tr(key, { name: open.name }))) return
+    }
+    teamBusy = true
+    teamErrorText = null
+    try {
+      members = await adminApi.removeCourseTeacher(open.id, member.id)
+    } catch (cause) {
+      failTeam(cause)
+      return
+    } finally {
+      teamBusy = false
+    }
+    if (self && !adminAuth.isOwner) navigate('/admin/courses')
+  }
+
+  $effect(() => {
+    if (!picking) return
+    const close = () => (picking = null)
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close()
+    }
+    window.addEventListener('click', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  })
+
+  /** Focus lands where the typing goes, each time the popover changes face. */
+  function takeFocus(node: HTMLElement, wanted = true): void {
+    if (wanted) node.focus()
+  }
+
   /*
    * The panel's shared vocabulary (index.css · the teacher's panel), the one
    * the competition screens speak: `admin-label` for a column and a field
@@ -1059,6 +1338,27 @@
     subtitle={tr("admin.group.seminars.on.a.course.page.and.set.their.order")}
   >
     {#snippet actions()}
+      <!-- «Мои / Все», the owner's switch, drawn as on «Занятия» (Paper U1):
+           two joined segments, the chosen one filled, each with its count. -->
+      {#if showScope}
+        <div class="flex h-10 shrink-0 border border-primary max-[640px]:w-full" role="group" aria-label={tr('admin.course.scope.label')}>
+          {#each [['mine', mineCourses.length], ['all', allCourses?.length ?? null]] as const as [value, count] (value)}
+            {@const on = scope === value}
+            <button
+              type="button"
+              aria-pressed={on}
+              class="flex min-w-[88px] flex-1 items-center justify-center gap-2 px-4 text-ui transition-colors duration-quick
+                     {on ? 'bg-primary font-semibold text-primary-ink' : 'bg-canvas text-ink hover:bg-surface'}"
+              onclick={() => chooseScope(value)}
+            >
+              {tr(`admin.course.scope.${value}`)}
+              {#if count !== null}
+                <span class="font-mono text-2xs {on ? 'text-primary-ink/75' : 'text-muted'}">{count}</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
       <!-- The competitions list's «+ НОВОЕ СОРЕВНОВАНИЕ», word for word in classes. -->
       <button
         type="button"
@@ -1101,9 +1401,16 @@
       {/if}
 
       {#if courses.length === 0 && !creating}
+        <!-- «Нет курсов» means three different things now: a fresh instance,
+             a teacher nobody has added anywhere, an owner who teaches none of
+             the courses there are. Each is told what to do next. -->
         <EmptyState
           title={tr("admin.no.courses.yet")}
-          hint={tr("admin.create.a.course.and.add.seminars.students.will.see.the.list.and.l")}
+          hint={scope === 'mine' && (allCourses?.length ?? 0) > 0
+            ? tr('admin.course.list.ownerMineEmpty')
+            : !adminAuth.isOwner
+              ? tr('admin.course.list.mineEmpty')
+              : tr("admin.create.a.course.and.add.seminars.students.will.see.the.list.and.l")}
         />
       {/if}
 
@@ -1122,6 +1429,21 @@
                  point of a name is that it is the link, not a second address
                  next to it. -->
             <p class="admin-meta mt-1 font-mono">/c/{addressOf(item)}</p>
+            <!-- Who teaches it: on «Все» this is how an owner tells a
+                 colleague's course from their own, and a course nobody
+                 teaches any more says so in the warning colour. -->
+            {#if item.teachers}
+              {@const line = teacherLine(item.teachers)}
+              <p class="mt-1 text-2xs {line.names ? 'text-muted' : 'text-warning'}">
+                {#if !line.names}
+                  {tr('admin.course.list.nobody')}
+                {:else if line.more > 0}
+                  {tr('admin.course.list.teachersMore', { names: line.names, count: line.more })}
+                {:else}
+                  {tr('admin.course.list.teachers', { names: line.names })}
+                {/if}
+              </p>
+            {/if}
           </button>
           <p class="shrink-0 text-2xs text-muted">{tallyText(item.items)}</p>
         </div>
@@ -1264,6 +1586,219 @@
         {tr('admin.course.addRoom')}
       </button>
     {/snippet}
+
+    <!--
+      «ВЕДУТ» — the course's people, right under its header (Paper U2): the
+      chips, «+ Добавить преподавателя» with its search and invitation, and on
+      the right what being one of them means. Full-bleed like the header
+      above it (the page body pads by px-7, hence -mx-7).
+    -->
+    <section
+      class="-mx-7 border-b border-line bg-surface px-7 py-3.5"
+      aria-label={tr('admin.course.teachers.label')}
+    >
+      <div class="flex flex-wrap items-center gap-2.5">
+        <span class="admin-label pr-1.5">{tr('admin.course.teachers.label')}</span>
+        {#each shownMembers as member (member.id)}
+          {@const you = member.id === meId}
+          <span
+            class="flex h-8 max-w-full items-center gap-2 border border-line bg-canvas pl-1 {removable || you ? 'pr-2' : 'pr-2.5'}"
+            title={member.email}
+          >
+            <Avatar name={member.name} color={colorForId(member.id)} size="sm" />
+            <span class="truncate text-ui font-semibold text-ink">{member.name}</span>
+            {#if you}
+              <span class="text-2xs text-muted">{tr('admin.course.teachers.you')}</span>
+            {/if}
+            {#if removable}
+              <button
+                type="button"
+                class="-my-1 flex h-7 w-6 shrink-0 items-center justify-center text-faint transition-colors duration-quick hover:text-danger disabled:opacity-50"
+                aria-label={tr('admin.course.teachers.remove', { name: member.name })}
+                disabled={teamBusy}
+                onclick={() => void removeMember(member)}
+              >
+                <Icon name="x" size={12} />
+              </button>
+            {/if}
+          </span>
+        {:else}
+          <span class="text-2xs text-warning">{tr('admin.course.teachers.nobody')}</span>
+        {/each}
+
+        <div class="relative">
+          <button
+            type="button"
+            class="flex h-8 items-center border border-dashed border-accent-text px-3 text-ui font-semibold text-accent-text
+                   transition-colors duration-quick hover:bg-canvas"
+            aria-expanded={picking !== null}
+            aria-haspopup="dialog"
+            onclick={(event) => {
+              event.stopPropagation()
+              void openPicker()
+            }}
+          >
+            {tr('admin.course.teachers.add')}
+          </button>
+
+          {#if picking}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <div
+              role="dialog"
+              tabindex="-1"
+              aria-label={tr('admin.course.teachers.add')}
+              class="row-menu absolute left-0 top-[calc(100%+8px)] z-40 flex w-[400px] max-w-[calc(100vw-32px)] flex-col border border-ink bg-canvas shadow-pop"
+              style="transform-origin: top left"
+              onclick={(event) => event.stopPropagation()}
+            >
+              {#if picking === 'search'}
+                <div class="border-b border-line p-2.5">
+                  <input
+                    use:takeFocus
+                    class="field w-full"
+                    placeholder={tr('admin.course.teachers.search')}
+                    aria-label={tr('admin.course.teachers.search')}
+                    bind:value={query}
+                    onkeydown={(event) => {
+                      if (event.isComposing) return
+                      if (event.key === 'Enter' && offered?.shown.length === 1) void addMember(offered.shown[0])
+                    }}
+                  />
+                </div>
+                {#if offered === null}
+                  <p class="px-3 py-3 text-2xs text-muted">{tr('admin.course.teachers.loading')}</p>
+                {:else if offered.shown.length === 0}
+                  <p class="px-3 py-3 text-2xs text-muted">
+                    <!-- «Все уже в курсе» only when there was a staff list to say it of:
+                         a failed fetch leaves an empty one, and its error is below. -->
+                    {query.trim() || (staff?.length ?? 0) === 0 ? tr('admin.course.teachers.notFound') : tr('admin.course.teachers.everyoneIn')}
+                  </p>
+                {:else}
+                  <ul class="max-h-[264px] overflow-y-auto">
+                    {#each offered.shown as person (person.id)}
+                      <li>
+                        <button
+                          type="button"
+                          class="flex min-h-11 w-full items-center gap-2.5 px-3 py-2 text-left transition-colors duration-quick hover:bg-surface disabled:opacity-60"
+                          disabled={teamBusy}
+                          onclick={() => void addMember(person)}
+                        >
+                          <Avatar name={person.name} color={colorForId(person.id)} size="sm" />
+                          <span class="flex min-w-0 flex-1 flex-col">
+                            <span class="truncate text-ui font-semibold text-ink">{person.name}</span>
+                            <span class="admin-meta truncate font-mono">
+                              {person.email}{#if adminAuth.isOwner}
+                                · {person.courses.length > 0
+                                  ? tr('admin.course.teachers.courses', { count: person.courses.length })
+                                  : tr('admin.course.teachers.noCourses')}{/if}
+                            </span>
+                          </span>
+                          <span class="shrink-0 text-2xs font-bold text-accent-text">{tr('admin.course.teachers.addOne')}</span>
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                  {#if offered.more > 0}
+                    <p class="px-3 pb-2 text-2xs text-faint">{tr('admin.course.teachers.more', { count: offered.more })}</p>
+                  {/if}
+                {/if}
+                <p class="border-t border-line px-3 py-2.5 text-2xs leading-relaxed text-muted">
+                  {tr('admin.course.teachers.inviteLead')}
+                  <button type="button" class="admin-link" onclick={openInvite}>{tr('admin.course.teachers.inviteLink')}</button>
+                  {tr('admin.course.teachers.inviteTail')}
+                </p>
+              {:else}
+                <form
+                  class="flex flex-col gap-3 p-3"
+                  onsubmit={(event) => {
+                    event.preventDefault()
+                    void invite()
+                  }}
+                >
+                  <p class="admin-label text-primary">{tr('admin.course.teachers.inviteLink')}</p>
+                  <label class="flex flex-col gap-1.5">
+                    <span class="admin-label">{tr('admin.course.teachers.email')}</span>
+                    <input
+                      use:takeFocus={!inviteFocusName}
+                      type="email"
+                      class="field w-full"
+                      maxlength={LIMITS.email}
+                      autocomplete="off"
+                      placeholder="name@university.ru"
+                      bind:value={inviteEmail}
+                    />
+                  </label>
+                  <label class="flex flex-col gap-1.5">
+                    <span class="admin-label">{tr('admin.course.teachers.name')}</span>
+                    <input
+                      use:takeFocus={inviteFocusName}
+                      class="field w-full"
+                      maxlength={LIMITS.teacherName}
+                      autocomplete="off"
+                      bind:value={inviteName}
+                    />
+                    <span class="admin-meta">{tr('admin.course.teachers.nameHint')}</span>
+                  </label>
+                  <div class="flex items-center justify-end gap-2">
+                    <button type="button" class="btn-ghost" onclick={() => (picking = 'search')}>
+                      {tr('admin.course.teachers.back')}
+                    </button>
+                    <button type="submit" class="btn-primary" disabled={teamBusy || !inviteReady}>
+                      {tr('admin.course.teachers.invite')}
+                    </button>
+                  </div>
+                </form>
+              {/if}
+              {#if teamError}
+                <p class="border-t border-line px-3 py-2 text-2xs text-danger" role="alert">{teamError}</p>
+              {/if}
+            </div>
+          {/if}
+        </div>
+
+        <span class="min-w-0 flex-1 max-[900px]:hidden"></span>
+        <p class="max-w-[300px] text-right text-2xs text-muted max-[900px]:basis-full max-[900px]:max-w-none max-[900px]:text-left">
+          {tr('admin.course.teachers.note')}
+        </p>
+      </div>
+
+      {#if teamError && !picking}
+        <p class="mt-2 text-2xs text-danger" role="alert">{teamError}</p>
+      {/if}
+
+      <!-- The new colleague's link, shown once (the Teachers screen's band, in
+           this strip): copying it is the obvious next act. -->
+      {#if invited}
+        {@const shownLink = invited}
+        <div class="enter mt-3 border-l-2 border-l-accent bg-accent/5 p-4">
+          <p class="admin-label text-primary">{tr('admin.course.teachers.linkFor', { name: shownLink.name })}</p>
+          <p class="mt-1.5 max-w-[720px] text-ui text-ink">{tr('admin.course.teachers.invited', { name: shownLink.name })}</p>
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <input
+              bind:this={inviteLinkField}
+              readonly
+              value={shownLink.url}
+              spellcheck="false"
+              aria-label={tr('admin.course.teachers.linkFor', { name: shownLink.name })}
+              onfocus={(event) => event.currentTarget.select()}
+              class="field min-w-[240px] max-w-[560px] flex-1 bg-canvas font-mono"
+            />
+            <button type="button" class="btn-primary" onclick={() => void copyInvite(shownLink.url)}>
+              <Icon name={inviteCopied ? 'check' : 'copy'} size={14} />
+              {inviteCopied ? tr('admin.copied') : tr('admin.copy.link')}
+            </button>
+            <button type="button" class="btn-ghost" onclick={() => (invited = null)}>
+              {inviteCopied ? tr('admin.done') : tr('admin.close.without.copying')}
+            </button>
+          </div>
+          {#if inviteCopyFailed}
+            <p class="mt-2 text-ui text-danger" role="alert">{tr('admin.could.not.copy.the.link.it.is.selected.copy.it.manually')}</p>
+          {:else if !inviteCopied}
+            <p class="admin-meta mt-2">{tr('admin.course.teachers.linkLater')}</p>
+          {/if}
+        </div>
+      {/if}
+    </section>
 
     <div class="pt-2">
       {#if error}

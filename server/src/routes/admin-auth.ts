@@ -29,6 +29,7 @@ import {
   verifySetupToken,
 } from '../admin/auth.js'
 import { recordAdminEvent } from '../admin/audit-log.js'
+import { staffCourses } from '../admin/access.js'
 import {
   countOwners,
   createTeacher,
@@ -47,6 +48,7 @@ import {
   updateTeacherRole,
 } from '../admin/store.js'
 import { uploadLimitBytes } from '../admin/resource-settings.js'
+import { instanceToday } from '../time-zone.js'
 import { config } from '../config.js'
 import { ssoIdentityOf, ssoPolicy } from '../sso/identity.js'
 import { normalizeLabel } from '@shared/text'
@@ -60,6 +62,7 @@ import {
   type InstanceState,
   type SignInWithTokenRequest,
   type Teacher,
+  type TeacherWithCourses,
   type TeacherWithLink,
 } from '@shared/admin'
 
@@ -112,6 +115,8 @@ export function adminAuthRoutes(): Router {
        * owner moves it in the panel (admin/resource-settings.ts).
        */
       maxUploadBytes: uploadLimitBytes(),
+      // No secret either: every public course page prints the same day.
+      today: instanceToday(),
     }
     if (ssoPolicy().enabled) {
       const identity = ssoIdentityOf(req)
@@ -235,9 +240,17 @@ export function adminAuthRoutes(): Router {
   })
 
   // Any staff member may read it: a teacher needs to know who to ask when they
-  // want something only an owner can do.
-  router.get('/api/admin/teachers', requireStaff, (_req, res) => {
-    const teachers: Teacher[] = listTeachers()
+  // want something only an owner can do, and the «Добавить преподавателя»
+  // pickers of a course and a room search it. Each person comes with their
+  // courses — all of them for an owner, only the viewer's own for a teacher
+  // (admin/access.ts · staffCourses).
+  router.get('/api/admin/teachers', requireStaff, (req, res) => {
+    const viewer = currentStaff(req)!
+    const courses = staffCourses(viewer)
+    const teachers: TeacherWithCourses[] = listTeachers().map((teacher) => ({
+      ...teacher,
+      courses: courses.get(teacher.id) ?? [],
+    }))
     res.json(teachers)
   })
 

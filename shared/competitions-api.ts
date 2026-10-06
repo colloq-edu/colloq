@@ -60,6 +60,8 @@ export interface CompetitionInput {
   lateSubmissions?: boolean
   /** What a participant sees of a run on the hidden test. */
   outputPolicy?: OutputPolicy
+  /** «Курс»: one of the caller's courses, or null for none. */
+  courseId?: string | null
 }
 
 /* --------------------------------------------------------- list and queue */
@@ -106,6 +108,8 @@ export interface CompetitionRow {
   ready: OpenRefusal | null
   /** Results the automatic private release still waits for; 0 — none. */
   privatePending?: number
+  /** The course the competition belongs to, by name; null — none (or a course since deleted). */
+  course?: { id: string; name: string } | null
 }
 
 /** A run in progress — the "RUNNING NOW" block (A3) and the runner strip (A1). */
@@ -130,6 +134,14 @@ export interface RunningNow {
   baseline: boolean
   /** A late submission (outside the standings); the queue takes on-time work first. */
   late?: boolean
+  /**
+   * Another course's run: the slot it takes is shown, whose it is is not.
+   * The queue is one per instance, so a teacher must see why a slot is busy,
+   * but the entrant's name, the competition's address, the file and the
+   * container belong to a competition the viewer does not run — they arrive
+   * blank, and there is no kill button for it.
+   */
+  hidden?: boolean
 }
 
 /** A row of the "WAITING · N" list. */
@@ -331,8 +343,24 @@ export interface EntrantRow extends Entrant {
   /**
    * In how many OTHER competitions the person takes part (only in one
    * competition's list): removing them here leaves their key working there.
+   * A teacher counts only the ones they run: how many competitions of other
+   * courses a person is in is not theirs to track. When some are hidden,
+   * `keyWithheld` says so.
    */
   otherCompetitions?: number
+  /**
+   * The key is withheld (then `key` is null): the person also takes part in a
+   * competition this teacher does not run. A key works in every competition
+   * of its holder, so reading it here would be a working sign-in there; the
+   * owner still sees it, and so does the person on their own card.
+   */
+  keyWithheld?: boolean
+  /**
+   * Renaming or switching off is open to this teacher: every competition of
+   * the person is theirs. A rename reaches every competition, so one in
+   * another course leaves it to the owner. Absent — open (the owner's view).
+   */
+  editable?: boolean
 }
 
 /** The answer to removing a participant from a competition. */

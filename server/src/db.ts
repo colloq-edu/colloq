@@ -1022,6 +1022,26 @@ export function isTokenHost(sessionId: string, participantId: string): boolean {
   return host
 }
 
+const updateParticipantRole = db.prepare(
+  'UPDATE participants SET role = ? WHERE id = ? AND session_id = ? AND role != ?',
+)
+
+/**
+ * Bring the badge in the row to the role this person actually has now.
+ *
+ * The row's role is written at the join and at the tablet's claim, and the
+ * participants list, the oracle's names and the room's people all read it. A
+ * teacher removed from a course reconnects with their stored token and never
+ * joins again (the browser that once was host does not ask), so without this
+ * the list kept calling them the teacher. Called at the control socket's
+ * handshake with the role `roleFor` just decided; `token_host` is not touched
+ * (what a host token granted stays granted). A no-op write when nothing
+ * changed.
+ */
+export function syncParticipantRole(sessionId: string, participantId: string, role: Participant['role']): void {
+  updateParticipantRole.run(role, participantId, sessionId, role)
+}
+
 export function getParticipant(sessionId: string, participantId: string): Participant | null {
   const row = selectParticipant.get(participantId, sessionId) as ParticipantRow | undefined
   return row ? toParticipant(row) : null
