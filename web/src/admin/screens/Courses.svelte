@@ -1303,6 +1303,24 @@
           {@render roomPicker(tr('admin.course.addQuestion'), addable, add, () => (adding = false))}
         {/if}
 
+        <!-- What is on a class page is changed on the class page: a link of
+             its own under the address, not only an item in the row menu. -->
+        {#snippet editPage(item: CourseItem)}
+          {#if pageScreen(item)}
+            <button
+              type="button"
+              class="admin-link mt-0.5 flex items-center gap-1.5"
+              onclick={() => {
+                const href = pageScreen(item)
+                if (href) navigate(href)
+              }}
+            >
+              <Icon name="pencil" size={13} />
+              {tr('admin.course.page.edit')}
+            </button>
+          {/if}
+        {/snippet}
+
         {#each shown.items.slice(0, shownCount) as item, index (index)}
           {@const state = stateOf(item)}
           {@const n = numbers[index]}
@@ -1377,9 +1395,11 @@
                   </a>
                   <span class="admin-meta break-all font-mono">/p/{address}</span>
                 {/if}
+                {@render editPage(item)}
               {:else if state === 'withdrawn'}
                 <span class="text-2xs text-muted">{tr('admin.course.page.withdrawn')}</span>
                 {#if address}<span class="admin-meta break-all font-mono">/p/{address}</span>{/if}
+                {@render editPage(item)}
               {:else if state === 'missing'}
                 <!-- The one state that asks for something: the class is over
                      and nothing was published. -->

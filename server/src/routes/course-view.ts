@@ -13,6 +13,7 @@
  * two copies.
  */
 import { isClassDay } from '@shared/class-day'
+import { readsOnPage } from '@shared/materials'
 import {
   publicationAddress,
   studentTitle,
@@ -258,6 +259,7 @@ function neighborOf(context: PageContext, step: 1 | -1): PublicNeighbor | null {
  */
 export function materialRef(m: MaterialRow): MaterialRef {
   const ref: MaterialRef = { key: m.key, kind: m.kind, name: m.name, bytes: m.bytes }
+  if (readsOnPage(m.kind, m.path)) ref.reads = true
   if (m.kind === 'folder') {
     ref.files = m.files?.length ?? 0
     ref.holds = m.holds ?? []

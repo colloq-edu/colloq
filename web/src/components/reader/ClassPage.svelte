@@ -5,7 +5,9 @@
   The order is the order of the questions a student comes with. Which class
   is this (number, day, title), what is on it (every material, each opening
   where it belongs, and all of it as one archive), and then the notebooks
-  themselves, one tab each, with a table of contents. From 1024 px the
+  themselves, one tab each, with a table of contents. Markdown text the
+  teacher put on the page («Что почитать») is a tab too, laid out like a
+  notebook's prose, with its headings in the same table of contents. From 1024 px the
   materials and the contents move to a 360 px rail and the notebook gets the
   main column; below that the materials come first, then a sticky strip with
   the tabs and «Содержание».
@@ -22,13 +24,16 @@
   import Icon from '@/components/ui/Icon.svelte'
   import Splash from '@/components/ui/Splash.svelte'
   import { api, ApiError } from '@/lib/api'
+  import { loadRenderers, renderers } from '@/lib/render.svelte'
   import { longDay, ordinal, shortDay } from '@/lib/course-now'
   import { storedTokens } from '@/lib/identity'
   import { formatDay } from '@shared/class-day'
   import { baseOf } from '@shared/paths'
   import {
     MAX_DOOR_TOKENS,
+    MAX_OUTLINE_TEXT,
     refusedMaterial,
+    type OutlineEntry,
     type PublicNeighbor,
     type PublicNotebook as NotebookBody,
     type PublicPage,
@@ -41,7 +46,7 @@
   import PublicNotebook from './PublicNotebook.svelte'
   import RoomDoor from './RoomDoor.svelte'
   import { wideScreen } from './wide.svelte'
-  import { downloadHref, pageHref, plainClick } from './links'
+  import { downloadHref, opensAsTab, pageHref, plainClick } from './links'
 
   interface Props {
     page: PublicPage
@@ -58,26 +63,29 @@
 
   const wide = wideScreen()
 
-  const notebooks = $derived(page.materials.filter((m) => m.kind === 'notebook'))
+  /** The page's tabs: its notebooks and its Markdown text, in the teacher's order. */
+  const tabs = $derived(page.materials.filter((m) => opensAsTab(m)))
   const requested = $derived(
     materialKey === null ? null : (page.materials.find((m) => m.key === materialKey) ?? null),
   )
   /** A key the page does not have: an old tab link, or a typo. The page is alive. */
   const unknownKey = $derived(materialKey !== null && requested === null)
   const activeKey = $derived(
-    requested?.kind === 'notebook' ? requested.key : (notebooks[0]?.key ?? null),
+    requested && opensAsTab(requested) ? requested.key : (tabs[0]?.key ?? null),
   )
-  const active = $derived(notebooks.find((m) => m.key === activeKey) ?? null)
-  const outline = $derived(active?.outline ?? [])
+  const active = $derived(tabs.find((m) => m.key === activeKey) ?? null)
+  /** A notebook's outline comes with the page; a text's is read off its headings once drawn. */
+  let docOutline = $state<OutlineEntry[]>([])
+  const outline = $derived(active?.kind === 'notebook' ? (active.outline ?? []) : docOutline)
   /** Tabs are furniture with one notebook: a legacy page has exactly one. */
-  const tabbed = $derived(notebooks.length >= 2)
+  const tabbed = $derived(tabs.length >= 2)
 
   /*
    * A key that names a PDF or a data file is not a tab: the page opens on its
    * first notebook and the address stops pretending otherwise.
    */
   $effect(() => {
-    if (requested && requested.kind !== 'notebook') onreplace(pageHref(page.address))
+    if (requested && !opensAsTab(requested)) onreplace(pageHref(page.address))
   })
 
   /* ----------------------------------------------------------- the notebook */
@@ -85,6 +93,10 @@
   /** Cells by material key, for this visit: a tab opened twice is fetched once. */
   const cache = new Map<string, NotebookBody>()
   let notebook = $state<NotebookBody | null>(null)
+  /** A Markdown tab's text, by key, the same way. */
+  const texts = new Map<string, string>()
+  let doc = $state<string | null>(null)
+  let render = $state(renderers())
   let status = $state<'idle' | 'loading' | 'ready' | 'failed' | 'gone' | 'missing'>('idle')
   /** «Повторить»: a counter in the effect's dependencies, not a second way of loading. */
   let attempt = $state(0)
@@ -96,10 +108,13 @@
   $effect(() => {
     const key = activeKey
     const id = page.id
+    const text = active !== null && active.kind !== 'notebook'
     void attempt
     if (!key || unknownKey || page.state !== 'published') return
+    if (text) return loadText(key)
     const known = cache.get(key)
     if (known) {
+      doc = null
       notebook = known
       status = 'ready'
       return
@@ -107,6 +122,7 @@
     let cancelled = false
     // The previous tab's cells go at once: a lying page is worse than an empty one.
     notebook = null
+    doc = null
     status = 'loading'
     api
       .notebook(id, key)
@@ -142,6 +158,75 @@
     }
   })
 
+  /**
+   * A Markdown tab: the file itself, from the same door its download button
+   * uses, drawn by the sanitizing renderer the notebooks' prose goes through.
+   * A 404 is the page rebuilt without it, as for a notebook.
+   */
+  function loadText(key: string): (() => void) | undefined {
+    if (!render) void loadRenderers().then((loaded) => (render = loaded))
+    const known = texts.get(key)
+    notebook = null
+    if (known !== undefined) {
+      doc = known
+      status = 'ready'
+      return
+    }
+    let cancelled = false
+    doc = null
+    status = 'loading'
+    fetch(downloadHref(page.address, key))
+      .then(async (res) => {
+        if (cancelled) return
+        if (res.status === 404) {
+          status = 'missing'
+          failedKey = key
+          if (reloadedFor !== key) {
+            reloadedFor = key
+            onreload()
+          }
+          return
+        }
+        if (!res.ok) throw new Error(String(res.status))
+        const body = await res.text()
+        if (cancelled) return
+        texts.set(key, body)
+        doc = body
+        status = 'ready'
+      })
+      .catch(() => {
+        if (!cancelled) status = 'failed'
+      })
+    return () => {
+      cancelled = true
+    }
+  }
+
+  /*
+   * A text's table of contents: its h1–h3 as drawn, each given an id the
+   * outline scrolls to. Read off the page rather than parsed again from the
+   * source, so a heading inside a code block never shows up in it.
+   */
+  let docEl = $state<HTMLElement | null>(null)
+  $effect(() => {
+    const el = docEl
+    const key = activeKey
+    void render
+    void doc
+    if (!el || !key) {
+      docOutline = []
+      return
+    }
+    const found: OutlineEntry[] = []
+    el.querySelectorAll<HTMLElement>('h1, h2, h3').forEach((heading, i) => {
+      heading.id = `${key}-h${i + 1}`
+      heading.classList.add('scroll-mt-16', 'lg:scroll-mt-20')
+      const text = (heading.textContent ?? '').trim().slice(0, MAX_OUTLINE_TEXT)
+      if (text) found.push({ id: heading.id, level: Number(heading.tagName[1]) as 1 | 2 | 3, text })
+    })
+    docOutline = found
+  })
+
   /** A cell named in the address when the page opened: scrolled to once its notebook is drawn. */
   let pendingHash: string | null = (() => {
     try {
@@ -151,7 +236,7 @@
     }
   })()
   $effect(() => {
-    if (!notebook || pendingHash === null) return
+    if ((!notebook && !docOutline.length) || pendingHash === null) return
     const id = pendingHash
     pendingHash = null
     document.getElementById(id)?.scrollIntoView({ block: 'start' })
@@ -197,7 +282,7 @@
    */
   $effect(() => {
     const ids = [...new Set(outline.map((entry) => entry.id))]
-    if (!notebook || ids.length === 0) {
+    if ((!notebook && doc === null) || ids.length === 0) {
       current = null
       return
     }
@@ -230,23 +315,31 @@
   let strip = $state<HTMLElement | null>(null)
 
   /*
-   * The open tab brings itself to the middle of the strip. Only while the
-   * strip is on screen: scrollIntoView also scrolls the page, and on a phone
-   * the strip starts below the materials, so opening a tab link must not
-   * jump the page down to it. Off screen the strip is scrolled by hand.
+   * The open tab brings itself to the middle of the strip, by the strip's own
+   * scroll and never scrollIntoView: that scrolls the page too, and on a
+   * phone the strip starts below the materials, so opening a tab link must
+   * not jump the page down to it. Measured again whenever the strip or a tab
+   * changes size: the web fonts landing change every tab's width, and
+   * «Содержание» appears beside the strip only once a text's headings are
+   * read, narrowing it — a strip centred before either left the last tab
+   * («Что почитать») out of sight.
    */
   $effect(() => {
     const key = activeKey
     const root = strip
     if (!root || !key) return
-    const tabEl = root.querySelector<HTMLElement>(`[data-key="${key}"]`)
-    if (!tabEl) return
-    const box = root.getBoundingClientRect()
-    if (box.top >= 0 && box.bottom <= window.innerHeight) {
-      tabEl.scrollIntoView({ block: 'nearest', inline: 'center' })
-    } else {
-      root.scrollLeft = tabEl.offsetLeft - (root.clientWidth - tabEl.clientWidth) / 2
+    const center = () => {
+      const tabEl = root.querySelector<HTMLElement>(`[data-key="${key}"]`)
+      if (!tabEl) return
+      const box = root.getBoundingClientRect()
+      const at = tabEl.getBoundingClientRect()
+      root.scrollLeft += at.left - box.left - (box.width - at.width) / 2
     }
+    center()
+    const sizes = new ResizeObserver(center)
+    sizes.observe(root)
+    for (const child of root.children) sizes.observe(child)
+    return () => sizes.disconnect()
   })
 
   function openTab(key: string): void {
@@ -290,7 +383,7 @@
   })
   const courseHref = $derived(page.course ? `/c/${page.course.slug ?? page.course.id}` : null)
   /** The first tab that is still there; `null` when the visit knows of none (see `openFirst`). */
-  const firstKey = $derived(notebooks.find((m) => m.key !== failedKey)?.key ?? null)
+  const firstKey = $derived(tabs.find((m) => m.key !== failedKey)?.key ?? null)
   const firstHref = $derived(pageHref(page.address, firstKey))
   const withdrawn = $derived(page.state === 'withdrawn' || status === 'gone')
   const noMaterial = $derived(unknownKey || status === 'missing')
@@ -438,7 +531,7 @@
                            lg:gap-8 [&::-webkit-scrollbar]:hidden"
                   >
                     {#if tabbed}
-                      {#each notebooks as m (m.key)}
+                      {#each tabs as m (m.key)}
                         {@const on = m.key === activeKey}
                         <a
                           href={pageHref(page.address, m.key)}
@@ -507,6 +600,17 @@
               <div class="pt-6 lg:pt-8">
                 <PublicNotebook cells={notebook.cells} publication={page.id} />
               </div>
+            {:else if status === 'ready' && doc !== null}
+              <!-- The same rules as a notebook's prose (`.prose-note`): a text
+                   on the page reads like the text of the seminar. -->
+              <article bind:this={docEl} class="prose-note prose-cell pt-6 lg:pt-8">
+                {#if render}
+                  <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized in lib/render -->
+                  {@html render.markdown(doc, { lazyImages: true })}
+                {:else}
+                  <p class="whitespace-pre-wrap">{doc}</p>
+                {/if}
+              </article>
             {:else if status === 'failed'}
               <p class="pt-8 text-[16px] leading-6 text-muted">
                 {tr('room.page.notebookFailed')}

@@ -2,9 +2,9 @@ import { tr, formatNumber, getLocale } from '@shared/i18n'
 /**
  * Where a material leads, and how the reader words its size and kind.
  *
- * One copy for the course page and the class page: a notebook opens as a tab
- * of its page, a PDF in the browser's own viewer, anything else downloads (a
- * folder as one ZIP with the folder inside).
+ * One copy for the course page and the class page: a notebook or Markdown
+ * text opens as a tab of its page, a PDF in the browser's own viewer,
+ * anything else downloads (a folder as one ZIP with the folder inside).
  * Two copies of that rule would drift on the first new kind, and a PDF that
  * downloads on one page and opens on the other reads as a bug.
  */
@@ -14,6 +14,12 @@ import type { MaterialKind } from '@shared/publish'
 interface Linkable {
   key: string
   kind: MaterialKind
+  reads?: true
+}
+
+/** A tab of its class page: a notebook, or Markdown text (MaterialRef · reads). */
+export function opensAsTab(m: Linkable): boolean {
+  return m.kind === 'notebook' || m.reads === true
 }
 
 /** A plain left click: everything else (a new tab, a copied link) belongs to the browser. */
@@ -42,7 +48,7 @@ export function zipHref(address: string): string {
 
 /** The address a material's name leads to. */
 export function materialHref(address: string, m: Linkable): string {
-  if (m.kind === 'notebook') return pageHref(address, m.key)
+  if (opensAsTab(m)) return pageHref(address, m.key)
   if (m.kind === 'pdf') return `/api/p/${address}/m/${m.key}/open`
   return downloadHref(address, m.key)
 }

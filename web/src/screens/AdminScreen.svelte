@@ -96,6 +96,13 @@
                   ? 'courses'
                   : 'seminars',
   )
+  /**
+   * The tab's own list is the open screen: it counts itself for the rail. A
+   * single competition or course, or a class page opened from a course, is
+   * not — and the rail asks for that number on its own (AdminShell).
+   */
+  const LIST_PATHS = new Set(['/admin', '/admin/courses', '/admin/competitions', '/admin/environments', '/admin/teachers'])
+  const listShown = $derived(LIST_PATHS.has(path.replace(/\/+$/, '') || '/admin'))
 
   /*
    * The open course is in the address, unlike the seminar creation form:
@@ -302,7 +309,7 @@
 {:else if !adminAuth.me}
   <SignInScreen />
 {:else}
-  <AdminShell {tab} {navigate}>
+  <AdminShell {tab} {listShown} {navigate}>
     {#if publishing}
       {#key publishing}
         <Publish sessionId={publishing} from={query.get('from')} focus={query.get('focus')} {navigate} />

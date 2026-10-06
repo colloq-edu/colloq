@@ -54,6 +54,17 @@ export function materialKind(path: string): MaterialKind {
 }
 
 /**
+ * Markdown text: read on its class page as a tab beside the notebooks
+ * (MaterialRef · reads), and downloaded from the button beside its name.
+ * Plain `.txt` and the rest stay downloads: there is nothing to lay out.
+ */
+export function readsOnPage(kind: MaterialKind, path: string): boolean {
+  if (kind !== 'text') return false
+  const ext = extOf(path)
+  return ext === 'md' || ext === 'markdown'
+}
+
+/**
  * How much of a text file the publishing checks read (publish/checks.ts):
  * keys, students' names and the room's address are looked for in at most
  * this many bytes of a file.

@@ -283,6 +283,11 @@ export interface MaterialRef {
    * (shared/materials.ts · folderLabel, tagsOf).
    */
   holds?: MaterialKind[]
+  /**
+   * Markdown text, read on the class page as a tab of its own, like a
+   * notebook (shared/materials.ts · readsOnPage). Absent for everything else.
+   */
+  reads?: true
 }
 
 export interface PublicClass {

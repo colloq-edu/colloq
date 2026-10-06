@@ -5,7 +5,7 @@
   A row is a name to tap and a line saying what it is. The name is a link
   whose hit area stretches over the row; the download button on the right is
   a sibling, never nested, so a tap on it downloads and a tap anywhere else
-  opens. A notebook opens as its tab below, a PDF in the browser's own viewer
+  opens. A notebook or Markdown text opens as its tab below, a PDF in the browser's own viewer
   (a phone has one, a page of canvases would be worse), and data or code
   downloads: the name of a data file is its room path, because the code
   reads it by that path. A folder (`data/`, `scripts/`) is one row in mono,
@@ -24,6 +24,7 @@
     extLabel,
     folderCount,
     materialHref,
+    opensAsTab,
     plainClick,
     sizeText,
     zipHref,
@@ -68,7 +69,7 @@
   const caption = $derived(zipNote(page.materials))
 
   /** Opened by its name (a tab, the browser's PDF viewer) rather than downloaded by it. */
-  const opens = (m: PublicMaterial): boolean => m.kind === 'notebook' || m.kind === 'pdf'
+  const opens = (m: PublicMaterial): boolean => opensAsTab(m) || m.kind === 'pdf'
 
   function downloadLabel(m: PublicMaterial): string {
     if (m.kind === 'notebook') return tr('room.page.downloadNotebook', { name: m.name })
@@ -77,7 +78,7 @@
   }
 
   function open(event: MouseEvent, m: PublicMaterial): void {
-    if (m.kind !== 'notebook' || !plainClick(event)) return
+    if (!opensAsTab(m) || !plainClick(event)) return
     event.preventDefault()
     onopen(m.key)
   }
