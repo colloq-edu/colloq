@@ -5415,6 +5415,10 @@ export const adminMessages: MessageCatalog = {
     "ru": "Страница занятия…",
     "en": "Class page…"
   },
+  "admin.course.page.edit": {
+    "ru": "Изменить материалы",
+    "en": "Edit the materials"
+  },
   "admin.course.menu.refresh": {
     "ru": "Обновить страницу",
     "en": "Update the page"

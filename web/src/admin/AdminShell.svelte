@@ -108,11 +108,18 @@
 
   interface Props {
     tab: AdminTab
+    /**
+     * The open screen is the tab's own LIST, which reports its count itself.
+     * One competition, one course or a class page opened from a course is not
+     * (AdminScreen · listShown): there the shell asks for the number too, or a
+     * reload on such an address left the rail's figure empty.
+     */
+    listShown?: boolean
     navigate: (path: string) => void
     children: Snippet
   }
 
-  let { tab, navigate, children }: Props = $props()
+  let { tab, listShown = true, navigate, children }: Props = $props()
 
   interface NavItem {
     id: AdminTab
@@ -196,7 +203,7 @@
   // for, and a number that changed is put here by the very screen that
   // changed it.
   $effect(() => {
-    void navCounts.load(tab)
+    void navCounts.load(listShown ? tab : undefined)
   })
 
   function open(event: MouseEvent, href: string): void {

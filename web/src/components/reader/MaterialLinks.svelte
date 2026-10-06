@@ -18,6 +18,7 @@
     extLabel,
     folderCount,
     materialHref,
+    opensAsTab,
     pageHref,
     plainClick,
     sizeText,
@@ -58,7 +59,7 @@
   }
 
   function follow(event: MouseEvent, m: MaterialRef): void {
-    if (m.kind !== 'notebook' || !plainClick(event)) return
+    if (!opensAsTab(m) || !plainClick(event)) return
     event.preventDefault()
     onnavigate(materialHref(address, m))
   }
@@ -77,7 +78,7 @@
         href={materialHref(address, m)}
         target={m.kind === 'pdf' ? '_blank' : undefined}
         rel={m.kind === 'pdf' ? 'noopener' : undefined}
-        download={m.kind === 'notebook' || m.kind === 'pdf' ? undefined : ''}
+        download={opensAsTab(m) || m.kind === 'pdf' ? undefined : ''}
         class="flex min-h-12 items-center gap-3 py-2.5 hover:bg-surface/70"
         onclick={(event) => follow(event, m)}
       >

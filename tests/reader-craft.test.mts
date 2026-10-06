@@ -83,7 +83,9 @@ test('the step words and the disclaimer box are retired, not just unused', () =>
 
 test('materials go where their kind belongs', () => {
   const links = code(read('web/src/components/reader/links.ts'))
-  assert.match(links, /kind === 'notebook'\) return pageHref\(address, m\.key\)/)
+  // A notebook or Markdown text is a tab of its page (MaterialRef · reads).
+  assert.match(links, /return m\.kind === 'notebook' \|\| m\.reads === true/)
+  assert.match(links, /if \(opensAsTab\(m\)\) return pageHref\(address, m\.key\)/)
   assert.match(links, /kind === 'pdf'\) return `\/api\/p\/\$\{address\}\/m\/\$\{m\.key\}\/open`/)
   assert.match(links, /return downloadHref\(address, m\.key\)/)
   // A PDF opens in a tab of its own; anything that is not a notebook or a PDF downloads.
@@ -94,6 +96,18 @@ test('materials go where their kind belongs', () => {
 })
 
 /* -------------------------------------------------------------- class page */
+
+test('Markdown text is a tab of its page, drawn by the sanitizing renderer, with its own outline', () => {
+  // The server marks it; both lists and the class page read the mark.
+  assert.match(read('server/src/routes/course-view.ts'), /if \(readsOnPage\(m\.kind, m\.path\)\) ref\.reads = true/)
+  // The list opens it by its name and keeps a download button beside it, like a notebook.
+  assert.match(MATERIALS, /const opens = \(m: PublicMaterial\): boolean => opensAsTab\(m\) \|\| m\.kind === 'pdf'/)
+  assert.match(MATERIALS, /\{#if opens\(m\) \|\| folder\}/)
+  // The text comes from the download door and goes through render.markdown, never raw.
+  assert.match(CLASS, /fetch\(downloadHref\(page\.address, key\)\)/)
+  assert.match(CLASS, /\{@html render\.markdown\(doc, \{ lazyImages: true \}\)\}/)
+  assert.match(CLASS, /querySelectorAll<HTMLElement>\('h1, h2, h3'\)/)
+})
 
 test('the class page has no step navigation', () => {
   assert.doesNotMatch(CLASS + SCREEN, /aria-current=\{on \? 'step'/, 'a step rail is back')
@@ -107,9 +121,14 @@ test('notebook tabs mark the open one and live in a sticky strip that scrolls si
   assert.match(nav, /overflow-x-auto/, 'five notebooks in one line will not fit without scrolling')
   assert.match(CLASS, /sticky top-0/, 'once down the notebook, there is nothing to switch tabs with')
   assert.match(CLASS, /aria-current=\{on \? 'page' : undefined\}/, 'the open tab is not announced')
-  assert.match(CLASS, /scrollIntoView\(\{ block: 'nearest', inline: 'center' \}\)/)
+  // Centred by the strip's own scroll (never scrollIntoView, which scrolls the
+  // page), and again whenever the strip or a tab changes size.
+  assert.match(CLASS, /root\.scrollLeft \+= at\.left - box\.left - \(box\.width - at\.width\) \/ 2/)
+  assert.match(CLASS, /new ResizeObserver\(center\)/)
+  assert.doesNotMatch(CLASS, /inline: 'center'/)
   // Tabs only when there is something to switch between: a legacy page has one notebook.
-  assert.match(CLASS, /const tabbed = \$derived\(notebooks\.length >= 2\)/)
+  assert.match(CLASS, /const tabs = \$derived\(page\.materials\.filter\(\(m\) => opensAsTab\(m\)\)\)/)
+  assert.match(CLASS, /const tabbed = \$derived\(tabs\.length >= 2\)/)
 })
 
 test('a tab switch does not reload the page, and keeps the reader where it is', () => {
@@ -164,7 +183,7 @@ test('a tab that vanished in a rebuild reloads the page list, and «Открыт
    * navigating to the same path did nothing, and the tabs were hidden.
    */
   assert.match(CLASS, /failedKey = key\s+if \(reloadedFor !== key\) \{\s+reloadedFor = key\s+onreload\(\)/)
-  assert.match(CLASS, /const firstKey = \$derived\(notebooks\.find\(\(m\) => m\.key !== failedKey\)\?\.key \?\? null\)/)
+  assert.match(CLASS, /const firstKey = \$derived\(tabs\.find\(\(m\) => m\.key !== failedKey\)\?\.key \?\? null\)/)
   assert.match(CLASS, /if \(firstKey !== null\) onnavigate\(firstHref\)\s+else location\.assign\(firstHref\)/)
   assert.match(SCREEN, /onreload=\{\(\) => \(attempt \+= 1\)\}/)
 })
