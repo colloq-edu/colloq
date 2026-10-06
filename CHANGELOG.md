@@ -13,6 +13,17 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.19.0](https://github.com/colloq-edu/colloq/compare/v0.18.0...v0.19.0) (2026-10-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **panel:** course teachers — every teacher sees and runs only what they teach ([#36](https://github.com/colloq-edu/colloq/issues/36))
+
+### Features
+
+* **panel:** course teachers — every teacher sees and runs only what they teach ([#36](https://github.com/colloq-edu/colloq/issues/36)) ([fc53a2e](https://github.com/colloq-edu/colloq/commit/fc53a2e716f3f2e4e2396a1cd62c863f7283e03e))
+
 ## [0.18.0](https://github.com/colloq-edu/colloq/compare/v0.17.0...v0.18.0) (2026-10-06)
 
 
