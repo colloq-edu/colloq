@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.18.0](https://github.com/colloq-edu/colloq/compare/v0.17.0...v0.18.0) (2026-10-06)
+
+
+### Features
+
+* **pages:** Markdown reads as a tab, «Изменить материалы» on the course row, rail counts on deep addresses ([#34](https://github.com/colloq-edu/colloq/issues/34)) ([b34ac79](https://github.com/colloq-edu/colloq/commit/b34ac79931edf5bd9124e73535cdfa5c3e65c04d))
+
 ## [0.17.0](https://github.com/colloq-edu/colloq/compare/v0.16.1...v0.17.0) (2026-10-04)
 
 
