@@ -26,6 +26,7 @@ import { STAFF_COOKIE, type AdminSeminar, type InstanceState } from '../shared/a
 import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { createTeacher, rotateLinkKey } from '../server/src/admin/store.js'
 import { config } from '../server/src/config.js'
+import { instanceToday } from '../server/src/time-zone.js'
 import { createSession } from '../server/src/db.js'
 import { handleCollabSocket, liveSince, shutdownCollab } from '../server/src/collab/index.js'
 import { adminAuthRoutes } from '../server/src/routes/admin-auth.js'
@@ -104,6 +105,16 @@ test('the instance state names the upload limit as a number', async () => {
   )
 })
 
+test('the instance state names the instance day, so the room form needs no course to know it', async () => {
+  /*
+   * The creation form borrowed «сегодня» from the first course's public
+   * view: a teacher without courses got the browser's day, and the order of
+   * plan rows depended on which course happened to be listed first.
+   */
+  const state = (await (await fetch(`${base}/api/admin/state`)).json()) as InstanceState
+  assert.equal(state.today, instanceToday())
+})
+
 test('the class clock runs from the first socket, not from the room creation', async () => {
   assert.equal(liveSince(ROOM), null, 'a class is "running" in an empty room')
 
@@ -118,7 +129,8 @@ test('the class clock runs from the first socket, not from the room creation', a
   handleCollabSocket(second.ws, ROOM, 'participant', 'p_second')
   assert.equal(liveSince(ROOM), started, 'a latecomer moved the start of the class to themselves')
 
-  const res = await fetch(`${base}/api/admin/seminars`, { headers: { cookie } })
+  // The owner's «Все»: the room was made straight in the database, with no teachers of its own.
+  const res = await fetch(`${base}/api/admin/seminars?scope=all`, { headers: { cookie } })
   const rows = (await res.json()) as AdminSeminar[]
   const row = rows.find((one) => one.id === ROOM)
   assert.ok(row)

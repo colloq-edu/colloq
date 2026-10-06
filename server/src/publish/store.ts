@@ -39,6 +39,7 @@ import {
   type StepHeading,
 } from '@shared/publish'
 import { gcPageFiles } from './page-files.js'
+import { courseRowsChanged } from '../admin/access.js'
 
 /* ------------------------------------------------------------------- names */
 
@@ -252,6 +253,7 @@ export function createCourse(name: string, blurb: string | null, by: string | nu
     Date.now(),
     by,
   )
+  courseRowsChanged()
   return getCourse(id)!
 }
 
@@ -284,6 +286,7 @@ export function setCourseSlug(id: string, slug: string | null): 'ok' | 'taken' {
   }
   updateCourseSlug.run(slug, id)
   moveAddress('course', id, current?.slug ?? null, slug)
+  courseRowsChanged()
   return 'ok'
 }
 
@@ -299,6 +302,8 @@ export function renameCourse(id: string, name: string, blurb: string | null): Co
     blurb === null ? null : clip(blurb, MAX_COURSE_BLURB) || null,
     id,
   )
+  // The name is in the index too: the room's guest note says «комната курса «…»».
+  courseRowsChanged()
   return getCourse(id)
 }
 
@@ -312,11 +317,19 @@ export function renameCourse(id: string, name: string, blurb: string | null): Co
  */
 export function setCourseItems(id: string, rev: number, items: CourseItem[]): Course | null {
   const res = updateCourseItems.run(JSON.stringify(items), id, rev)
-  return res.changes === 1 ? getCourse(id) : null
+  if (res.changes !== 1) return null
+  /*
+   * Which rooms a course seats is who runs them (admin/access.ts): the
+   * reverse index goes now, so a room taken out of the plan stops making the
+   * course's teachers its hosts on the next frame, not after a timer.
+   */
+  courseRowsChanged()
+  return getCourse(id)
 }
 
 export function deleteCourse(id: string): void {
   deleteCourseRow.run(id)
+  courseRowsChanged()
   // A deleted course's addresses are freed: they have nothing left to point to.
   forgetAddressesOf.run('course', id)
 }

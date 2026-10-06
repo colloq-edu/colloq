@@ -111,10 +111,13 @@ function cookieOf(res: Response): string | null {
   return null
 }
 
+let teacherId: string | null = null
+
 function staffCookie(name: string, email: string, role: 'owner' | 'teacher'): string {
   const teacher = createTeacher({ name, email, role })
   assert.ok(teacher, email)
   rotateLinkKey(teacher.id)
+  if (role === 'teacher') teacherId = teacher.id
   let value = ''
   issueStaffCookie({ cookie: (_name: string, cookie: string) => (value = cookie) } as unknown as ExpressResponse, teacher)
   return `${STAFF_COOKIE}=${value}`
@@ -154,18 +157,22 @@ before(async () => {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
   base = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`
+  // Made first: the competitions are the teacher's own, and staff exemptions on
+  // the board belong to staff who run the competition (competitions/scope.ts).
+  teacher = staffCookie('Преподаватель', 'teacher.privacy@example.edu', 'teacher')
 
   const made = createCompetition({
     slug: 'privacy-k',
     title: 'Приватность',
     metric: { name: 'MAPE', direction: 'lower', code: 'def score(a, b):\n    return 0\n' },
     limits: { perDay: 20 },
+    createdBy: teacherId,
   })
   assert.ok(made)
   slug = made.slug
   competitionId = made.id
   setCompetitionState(competitionId, 'live')
-  const other = createCompetition({ slug: 'privacy-other', title: 'Соседнее' })
+  const other = createCompetition({ slug: 'privacy-other', title: 'Соседнее', createdBy: teacherId })
   assert.ok(other)
   otherSlug = other.slug
   setCompetitionState(other.id, 'live')
@@ -177,7 +184,6 @@ before(async () => {
   scored(competitionId, ivanov.id, 0.3)
   scored(competitionId, petrova.id, 0.1)
   scored(competitionId, telegram.id, 0.2)
-  teacher = staffCookie('Преподаватель', 'teacher.privacy@example.edu', 'teacher')
 })
 
 after(() => server?.close())

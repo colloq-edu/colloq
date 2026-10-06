@@ -263,6 +263,16 @@ export interface Course {
    * to know about former names.
    */
   former?: string[]
+  /**
+   * The course's teachers («Ведут»), names and ids. Panel only, like
+   * `former`: the public course page does not name its staff.
+   */
+  teachers?: { id: string; name: string }[]
+  /**
+   * Whether the viewer teaches this course. Panel only; false on an owner's
+   * «Все» list for the courses the owner sees by role alone.
+   */
+  mine?: boolean
 }
 
 /** What the course page needs to say about one row. */

@@ -28,7 +28,10 @@
   import Icon from '@/components/ui/Icon.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { cn, relativeTime } from '@/lib/utils'
-  import { LIMITS, SIGN_IN_PATH, type AdminRole, type Teacher } from '@shared/admin'
+  import { LIMITS, SIGN_IN_PATH, type AdminRole, type Teacher, type TeacherRef, type TeacherWithCourses } from '@shared/admin'
+  import type { Course } from '@shared/publish'
+  import { courseColor } from '@/admin/course-color'
+  import { addableCourses, coursesCell, joinCourses, withCourse, withoutCourse } from '@/admin/staff-courses'
   import { colorForId } from '@shared/protocol'
   import { copyText } from '@/lib/clipboard'
   import { seminarLink } from '@/lib/seminar-link'
@@ -58,8 +61,9 @@
    * The space between lanes is the shared rows' gap (admin-list-head,
    * admin-list-row), the same 16px every list in the panel has; the card
    * drops its column gap, or the menu would no longer fit beside the person.
-   * The five floors and the four gaps come to the list's 600px minimum
-   * (160 + 156 + 84 + 96 + 40 + 4 × 16). The role floor is the role field
+   * The six floors and the five gaps come to the list's 766px minimum
+   * (160 + 156 + 150 + 84 + 96 + 40 + 5 × 16); the courses lane (0.19) took
+   * 150 of it, and its chips wrap onto a second line rather than shrink. The role floor is the role field
    * itself — the Russian "Teacher" with its chevron is 156px, and a select
    * cannot end in an ellipsis, it just cuts the word — while the link lane
    * gives way down to its copy button: the masked link is a shape, not
@@ -67,8 +71,15 @@
    */
   const PHONE_LANE = 'max-[640px]:order-1 max-[640px]:w-full max-[640px]:min-w-0'
   const COL_ROLE = `w-[168px] min-w-[156px] ${PHONE_LANE}`
-  const COL_LINK = `w-[322px] min-w-[84px] ${PHONE_LANE}`
-  const COL_SEEN = `w-[176px] min-w-[96px] ${PHONE_LANE}`
+  /*
+   * The courses lane (0.19) was paid for by the link and «last seen» lanes,
+   * not by the person: at 1440 the masked link kept 322px and the name was
+   * cut to «Алекса…». The link is a shape nobody reads; 220 still shows its
+   * host and the dots.
+   */
+  const COL_COURSES = `w-[280px] min-w-[150px] ${PHONE_LANE}`
+  const COL_LINK = `w-[220px] min-w-[84px] ${PHONE_LANE}`
+  const COL_SEEN = `w-[150px] min-w-[96px] ${PHONE_LANE}`
   const COL_MENU = 'w-10 shrink-0 max-[640px]:w-11'
   /** The person's own floor — an avatar, a name worth reading. */
   const COL_PERSON =
@@ -108,7 +119,7 @@
     minted: boolean
   }
 
-  let teachers = $state<Teacher[]>([])
+  let teachers = $state<TeacherWithCourses[]>([])
   let listErrorText = $state<(() => string | null) | null>(null)
   const listError = $derived(listErrorText?.() ?? null)
 
@@ -116,6 +127,8 @@
   let draftName = $state('')
   let draftEmail = $state('')
   let creating = $state(false)
+  /** The courses ticked on the add form: the new teacher lands in them at once. */
+  let draftCourses = $state<string[]>([])
   let composeErrorText = $state<(() => string | null) | null>(null)
   const composeError = $derived(composeErrorText?.() ?? null)
 
@@ -175,8 +188,85 @@
   /** True for the person the instance cannot afford to lose. */
   const stranded = (t: Teacher): boolean => t.role === 'owner' && ownerCount <= 1
 
+  /* ---------------------------------------------------------- the courses */
+
+  /*
+   * «Курсы»: who teaches what (Paper U4).
+   *
+   * Since 0.19 a teacher sees only the courses they teach, so this column is
+   * where an owner sees that a new colleague is still in none — and an empty
+   * panel is what that colleague is looking at. An owner changes it right
+   * here, through the same course routes the course's «Ведут» strip uses;
+   * there is no separate staff-to-course API to drift from them.
+   */
+  /** Every course on the instance, for the owner's pickers; null until read (or for a teacher). */
+  let allCourses = $state<Course[] | null>(null)
+  /** The person whose «+ курс» picker is open. */
+  let coursePicker = $state<string | null>(null)
+  let courseQuery = $state('')
+  /** `${teacherId}:${courseId}` while that membership is being written. */
+  let courseBusy = $state<string | null>(null)
+  const pickable = $derived.by(() => {
+    const person = teachers.find((t) => t.id === coursePicker)
+    return person && allCourses ? addableCourses(allCourses, person.courses, courseQuery) : []
+  })
+
+  async function loadCourses(): Promise<void> {
+    if (!isOwner) return
+    try {
+      allCourses = await adminApi.listCourses('all')
+    } catch {
+      allCourses = null
+    }
+  }
+
+  function openPicker(t: TeacherWithCourses): void {
+    menuId = null
+    courseQuery = ''
+    coursePicker = coursePicker === t.id ? null : t.id
+    if (!allCourses) void loadCourses()
+  }
+
+  async function addCourse(t: TeacherWithCourses, course: TeacherRef): Promise<void> {
+    courseBusy = `${t.id}:${course.id}`
+    rowError = null
+    try {
+      await adminApi.addCourseTeacher(course.id, t.id)
+      teachers = teachers.map((x) => (x.id === t.id ? withCourse(x, course) : x))
+      coursePicker = null
+    } catch (cause: unknown) {
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      rowError = { id: t.id, message: () => report(cause) }
+    } finally {
+      courseBusy = null
+    }
+  }
+
+  /*
+   * No confirmation: one click on «+ курс» puts it back, and the server
+   * re-checks the person's open rooms at once either way.
+   */
+  async function removeCourse(t: TeacherWithCourses, course: TeacherRef): Promise<void> {
+    courseBusy = `${t.id}:${course.id}`
+    rowError = null
+    try {
+      await adminApi.removeCourseTeacher(course.id, t.id)
+      teachers = teachers.map((x) => (x.id === t.id ? withoutCourse(x, course.id) : x))
+    } catch (cause: unknown) {
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      rowError = { id: t.id, message: () => report(cause) }
+    } finally {
+      courseBusy = null
+    }
+  }
+
+  function toggleDraftCourse(id: string): void {
+    draftCourses = draftCourses.includes(id) ? draftCourses.filter((x) => x !== id) : [...draftCourses, id]
+  }
+
   onMount(() => {
     void load()
+    void loadCourses()
     return () => clearTimeout(copyTimer)
   })
 
@@ -218,14 +308,17 @@
     if (loaded) navCounts.teachers = teachers.length
   })
 
+  /** A row from a call that answers with the bare Teacher: the courses it does not carry stay. */
   function put(updated: Teacher): void {
-    teachers = teachers.map((t) => (t.id === updated.id ? updated : t))
+    teachers = teachers.map((t) => (t.id === updated.id ? { ...t, ...updated } : t))
   }
 
   function openComposer(): void {
     composing = true
     composeErrorText = null
     menuId = null
+    draftCourses = []
+    if (!allCourses) void loadCourses()
   }
 
   async function create(event: SubmitEvent): Promise<void> {
@@ -239,12 +332,28 @@
     composeErrorText = null
     try {
       const minted = await adminApi.createTeacher({ name, email })
+      /*
+       * Into the ticked courses, after the person exists: the link is the
+       * part that matters, and a course refused here does not undo it — it
+       * is said on the row, where «+ курс» is.
+       */
+      const ticked = (allCourses ?? [])
+        .filter((course) => draftCourses.includes(course.id))
+        .map((course) => ({ id: course.id, name: course.name }))
+      const { joined, failed } = await joinCourses(ticked, (courseId) =>
+        adminApi.addCourseTeacher(courseId, minted.teacher.id),
+      )
       // The list is ordered by creation, so the new row lands at the bottom —
       // which is also where the reveal band it owns will scroll itself into view.
-      teachers = [...teachers, minted.teacher]
+      teachers = [...teachers, { ...minted.teacher, courses: joined }]
+      if (failed.length > 0) {
+        const names = failed.map((course) => course.name).join(', ')
+        rowError = { id: minted.teacher.id, message: () => tr('admin.teachers.coursesNotJoined', { names }) }
+      }
       composing = false
       draftName = ''
       draftEmail = ''
+      draftCourses = []
       show({
         teacherId: minted.teacher.id,
         name: minted.teacher.name,
@@ -456,6 +565,7 @@
   function onKeydown(event: KeyboardEvent): void {
     if (event.key !== 'Escape') return
     if (menuId) return void (menuId = null)
+    if (coursePicker) return void (coursePicker = null)
     if (editing) return void (editing = null)
     // Not while the call is in flight: the band is where its answer lands.
     if (confirming && !acting) confirming = null
@@ -472,7 +582,7 @@
   }
 </script>
 
-<svelte:window onclick={() => (menuId = null)} onkeydown={onKeydown} />
+<svelte:window onclick={() => ((menuId = null), (coursePicker = null))} onkeydown={onKeydown} />
 
 {#snippet addTeacher()}
   <button
@@ -500,6 +610,112 @@
 -->
 {#snippet lane(text: string)}
   <span class="mb-1 hidden max-[640px]:block">{@render eyebrow(text)}</span>
+{/snippet}
+
+<!--
+  The «Курсы» cell (Paper U4): chips with the course's colour square; for an
+  owner a × on each and a dashed «+ курс» that opens a small picker of the
+  courses this person does not teach yet.
+-->
+{#snippet coursesOf(t: TeacherWithCourses)}
+  {@const cell = coursesCell(t, isOwner)}
+  {#if cell.kind === 'owner'}
+    <span class="text-2xs text-muted">
+      {cell.teaches === null
+        ? tr('admin.teachers.seesAll')
+        : `${tr('admin.teachers.seesAll')} · ${tr('admin.teachers.teaches', { count: cell.teaches })}`}
+    </span>
+  {:else}
+    <div class="flex flex-wrap items-center gap-1.5">
+      {#if cell.kind === 'chips'}
+        {#each cell.courses as course (course.id)}
+          <span class="inline-flex max-w-full items-center gap-1.5 border border-line py-[3px] pl-2 text-micro text-ink {isOwner ? 'pr-1' : 'pr-2'}">
+            <span class="h-[7px] w-[7px] shrink-0" style:background={courseColor(course.id)}></span>
+            <span class="truncate">{course.name}</span>
+            {#if isOwner}
+              <button
+                type="button"
+                class="admin-icon-btn h-4 w-4 text-faint hover:text-danger"
+                disabled={courseBusy === `${t.id}:${course.id}`}
+                aria-label={tr('admin.teachers.removeFromCourse', { name: t.name, course: course.name })}
+                onclick={() => void removeCourse(t, course)}
+              >
+                <Icon name="x" size={10} />
+              </button>
+            {/if}
+          </span>
+        {/each}
+      {:else if cell.kind === 'none'}
+        <span class="text-2xs text-warning">{tr('admin.teachers.noCourses')}</span>
+      {:else}
+        <span class="text-2xs text-faint">—</span>
+      {/if}
+      {#if isOwner}
+        <button
+          type="button"
+          class="border border-dashed border-accent-text px-2 py-[3px] text-micro text-accent-text hover:bg-accent/5"
+          aria-haspopup="listbox"
+          aria-expanded={coursePicker === t.id}
+          onclick={(event) => {
+            event.stopPropagation()
+            openPicker(t)
+          }}
+        >
+          + {tr('admin.teachers.addCourse')}
+        </button>
+      {/if}
+    </div>
+    {#if coursePicker === t.id}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <div
+        role="dialog"
+        tabindex="-1"
+        aria-label={tr('admin.teachers.pickCourse', { name: t.name })}
+        class="admin-menu absolute left-0 top-full z-20 mt-1 w-[300px] max-w-[calc(100vw-32px)] p-2"
+        onclick={(event) => event.stopPropagation()}
+      >
+        {#if allCourses === null}
+          <p class="px-2 py-1.5 text-2xs text-muted">{tr('admin.teachers.loadingCourses')}</p>
+        {:else}
+          {#if allCourses.length > 6}
+            <input
+              use:takeFocus
+              bind:value={courseQuery}
+              class="field mb-1.5 h-9"
+              placeholder={tr('admin.teachers.findCourse')}
+              aria-label={tr('admin.teachers.findCourse')}
+            />
+          {/if}
+          <div class="max-h-[240px] overflow-y-auto" role="listbox" aria-label={tr('admin.teachers.courses')}>
+            {#each pickable as course (course.id)}
+              <button
+                type="button"
+                role="option"
+                aria-selected="false"
+                disabled={courseBusy !== null}
+                class="admin-menu-item flex w-full items-center gap-2"
+                onclick={() => void addCourse(t, course)}
+              >
+                <span class="h-[7px] w-[7px] shrink-0" style:background={courseColor(course.id)}></span>
+                <span class="min-w-0 flex-1 truncate text-left">{course.name}</span>
+                {#if courseBusy === `${t.id}:${course.id}`}
+                  <Icon name="spinner" size={12} class="animate-spin text-faint" />
+                {/if}
+              </button>
+            {:else}
+              <p class="px-2 py-1.5 text-2xs text-muted">
+                {allCourses.length === 0
+                  ? tr('admin.teachers.noCoursesYet')
+                  : courseQuery.trim()
+                    ? tr('admin.teachers.noCourseMatches')
+                    : tr('admin.teachers.inEveryCourse')}
+              </p>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
+  {/if}
 {/snippet}
 
 <AdminPage
@@ -537,6 +753,31 @@
         {creating ? tr("admin.creating.a.link") : tr("admin.add.teacher")}
       </button>
       <button type="button" class="btn-ghost" onclick={() => (composing = false)}>{tr("admin.cancel")}</button>
+      <!-- Optional: a teacher may be added first and seated later, from the
+           row's «+ курс» or from the course's «Ведут». -->
+      {#if allCourses && allCourses.length > 0}
+        <fieldset class="w-full">
+          <legend class="admin-label">{tr('admin.teachers.composeCourses')}</legend>
+          <div class="mt-1.5 flex flex-wrap gap-1.5">
+            {#each allCourses as course (course.id)}
+              {@const on = draftCourses.includes(course.id)}
+              <button
+                type="button"
+                aria-pressed={on}
+                onclick={() => toggleDraftCourse(course.id)}
+                class={cn(
+                  'inline-flex items-center gap-1.5 border px-2 py-[3px] text-micro',
+                  on ? 'border-accent bg-accent/10 text-ink' : 'border-line bg-canvas text-muted hover:border-faint',
+                )}
+              >
+                <span class="h-[7px] w-[7px] shrink-0" style:background={courseColor(course.id)}></span>
+                {course.name}
+                {#if on}<Icon name="check" size={11} class="text-accent-text" />{/if}
+              </button>
+            {/each}
+          </div>
+        </fieldset>
+      {/if}
       {#if composeError}
         <p class="w-full text-ui text-danger" role="alert">{composeError}</p>
       {/if}
@@ -559,7 +800,7 @@
     they are ruling. The notes below the list stay at the window's own width:
     they are prose, and prose should never need scrolling to read.
   -->
-  <div class="min-w-[600px] max-[640px]:min-w-0">
+  <div class="min-w-[766px] max-[640px]:min-w-0">
   <!-- The lanes' header goes away together with the lanes: the captions move
        into the cards themselves, in the same words (see `lane` below). -->
   <!-- min-h-fit outgrows the fixed 36px: the head takes the shared list head's
@@ -571,6 +812,7 @@
   >
     <div class={COL_PERSON}>{@render eyebrow(tr("admin.person.1127"))}</div>
     <div class={COL_ROLE}>{@render eyebrow(tr("admin.role.1128"))}</div>
+    <div class={COL_COURSES}>{@render eyebrow(tr("admin.teachers.courses"))}</div>
     <div class={COL_LINK}>{@render eyebrow(tr("admin.sign.in.link"))}</div>
     <div class={COL_SEEN}>{@render eyebrow(tr("admin.last.seen"))}</div>
     <div class={COL_MENU}></div>
@@ -632,6 +874,11 @@
             <Icon name="chevron-down" size={12} class="pointer-events-none absolute right-3 text-faint" />
           </div>
         {/if}
+      </div>
+
+      <div class={cn(COL_COURSES, 'relative')}>
+        {@render lane(tr("admin.teachers.courses"))}
+        {@render coursesOf(t)}
       </div>
 
       <div class={COL_LINK}>

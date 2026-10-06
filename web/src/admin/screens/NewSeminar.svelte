@@ -33,13 +33,21 @@
   import type { Course } from '@shared/publish'
   import {
     classOptions,
-    defaultClass,
+    courseCards,
+    defaultPlace,
     localDay,
+    NO_COURSE,
+    placeInCourse,
+    prefillPlace,
     roomNameFor,
-    seatCreated,
+    rowsOf,
+    seatFor,
     twoDigits,
     type ClassOption,
+    type CourseCard,
+    type RoomPlace,
   } from '@/admin/course-plan'
+  import { courseColor } from '@/admin/course-color'
   import {
     LIMITS,
     type AdminEnvironment,
@@ -47,100 +55,162 @@
     type ImportPreview,
     type InstanceResources,
     type ResourceSettingsResponse,
+    type SeatResult,
     type OracleSettings,
   } from '@shared/admin'
   import { LECTURE_ROOM, OPEN_ROOM, type RoomRules, COUNCIL_ROOM } from '@shared/rules'
   import RoomRulesRows from '@/components/RoomRulesRows.svelte'
 
   interface Props {
-    /** Back to the list, with the new seminar's id when one was made. */
-    ondone: (createdId?: string) => void
     /**
-     * A course row to start from: the course row action «Создать комнату»
-     * opens /admin/new?course=<id>&row=<rowId>.
+     * The form is done: with the new room's id when one was made, and the
+     * course it landed in (null for a room outside courses, or when nothing
+     * was made). The caller decides where that leads.
      */
-    prefill?: { course: string; row: string } | null
+    ondone: (createdId?: string, courseId?: string | null) => void
+    /**
+     * Where to start from. A course row's «Создать комнату» opens
+     * /admin/new?course=<id>&row=<rowId>; a course's folder on «Занятия»
+     * passes just the course, and the «Без курса» folder passes 'none'.
+     */
+    prefill?: { course: string; row?: string | null } | null
+    /**
+     * Opened from a course: the way back after creating leads to the course
+     * the room landed in, and the button says so.
+     */
+    backToCourse?: boolean
   }
 
-  let { ondone, prefill = null }: Props = $props()
+  let { ondone, prefill = null, backToCourse = false }: Props = $props()
 
   let name = $state('')
 
-  /* ------------------------------------------------------- the course row */
+  /* ------------------------------------------------- the course and its row */
 
   /*
-   * «Занятие курса»: the room goes straight into its row of the course.
+   * «Курс»: where the room belongs, decided right under its name.
    *
-   * Every week the same three steps were done by hand — create the room,
-   * open the course, put the room in place of the topic — and the third was
-   * the one forgotten, so the course page kept showing a plan row while the
-   * class had already happened. The row already knows the topic and the
-   * day; the room only has to take it.
+   * It used to be one select of every plan row of every course on the
+   * instance, with «Без курса» last. On a university install that is a
+   * stranger's semester in your dropdown, and a choice of row before a
+   * choice of course. Now it is the viewer's own courses as cards (the
+   * server lists only those, scope=mine), «Без курса» as a card of equal
+   * weight — a consultation or a trial class is a normal room, not a
+   * leftover — and, once a course is picked, its open rows.
+   *
+   * The seating itself is the server's (the `seat` of the creation request):
+   * the room and its row are written by one request, so a room can no
+   * longer be created and then fail to land in the course.
    */
   let courses = $state<Course[]>([])
-  /** The instance's «сегодня», from a course's public view; the browser's day until it arrives. */
+  /** The course list has arrived (or failed): the block stops being a placeholder. */
+  let coursesLoaded = $state(false)
+  /**
+   * The instance's «сегодня», from the instance state; the browser's day
+   * until it arrives. It once came from the first course's public view, so
+   * a teacher whose first course was unpublished — or who had none — got
+   * the browser's day.
+   */
   let today = $state(localDay(Date.now()))
-  /** `courseId:rowId`, or '' for «Без курса». */
-  let rowChoice = $state('')
-  /** The teacher picked a row (or «Без курса») themselves: no default overrides that. */
-  let rowTouched = false
+  let place = $state<RoomPlace>({ ...NO_COURSE })
+  /** The teacher picked a place themselves (or the address did): no default overrides that. */
+  let placeTouched = false
   /** The name last put into the field from a row: replaced on a new row only while untouched. */
   let suggestedName = ''
 
-  const keyOf = (option: ClassOption): string => `${option.courseId}:${option.rowId}`
   const options = $derived(classOptions(courses, today))
-  const seatRow = $derived(options.find((option) => keyOf(option) === rowChoice) ?? null)
+  const cards = $derived(courseCards(courses, options))
+  const courseRows = $derived(rowsOf(options, place.courseId))
+  const seatRow = $derived(
+    place.rowId === null ? null : (courseRows.find((option) => option.rowId === place.rowId) ?? null),
+  )
 
-  /** «МЛ | сильная группа · 04 · Лики и хаки данных — вс, 4 окт». */
-  function optionLabel(option: ClassOption): string {
-    const head = `${option.courseName} · ${twoDigits(option.n)} · ${option.title}`
-    return option.day ? `${head} — ${formatDay(option.day, getLocale())}` : head
+  /** «05 · вс, 11 окт · Пайплайны для экспериментов». */
+  function rowLabel(option: ClassOption): string {
+    const head = twoDigits(option.n)
+    return option.day
+      ? `${head} · ${formatDay(option.day, getLocale())} · ${option.title}`
+      : `${head} · ${option.title}`
   }
 
-  function choose(key: string): void {
-    rowChoice = key
-    const option = options.find((o) => keyOf(o) === key)
-    if (!option) return
-    if (!name.trim() || name === suggestedName) {
-      suggestedName = roomNameFor(option)
-      name = suggestedName
+  /**
+   * «ведут 3 · следующая строка: 05, вс 11 окт». A course whose open rows
+   * are all behind it names the latest of them as what it is — a class
+   * held without a room — rather than as «следующая».
+   */
+  function cardLine(card: CourseCard): string {
+    const next = card.next
+    const label = next && (next.day ? `${twoDigits(next.n)}, ${formatDay(next.day, getLocale())}` : `${twoDigits(next.n)} · ${next.title}`)
+    const row = !next
+      ? tr('admin.new.course.noOpenRow')
+      : next.day !== null && next.day < today
+        ? tr('admin.new.course.pastRow', { row: label ?? '' })
+        : tr('admin.new.course.nextRow', { row: label ?? '' })
+    return card.teachers === null ? row : `${tr('admin.new.course.taughtBy', { count: card.teachers })} · ${row}`
+  }
+
+  function put(next: RoomPlace): void {
+    place = next
+    const option = next.rowId === null ? null : (rowsOf(options, next.courseId).find((o) => o.rowId === next.rowId) ?? null)
+    if (option) {
+      if (!name.trim() || name === suggestedName) {
+        suggestedName = roomNameFor(option)
+        name = suggestedName
+      }
+    } else if (suggestedName && name === suggestedName) {
+      /* A row's name on a room that no longer takes that row would be a
+         promise the course page does not keep. */
+      name = ''
+      suggestedName = ''
     }
   }
 
+  /** A pick made by the teacher: no late default moves it afterwards. */
+  function choose(next: RoomPlace): void {
+    placeTouched = true
+    put(next)
+  }
+
+  /**
+   * The courses, the instance day and the starting place, in that order.
+   *
+   * An owner opening «Создать комнату» on a course they do not teach (it is
+   * on their «Все» list) would not find it in their own; it is read on its
+   * own then, and a teacher's 404 for it simply leaves it out.
+   */
+  async function loadCourses(): Promise<void> {
+    const [mine, state] = await Promise.all([
+      adminApi.listCourses().catch(() => [] as Course[]),
+      adminApi.state().catch(() => null),
+    ])
+    let list = mine
+    if (prefill && prefill.course !== 'none' && !list.some((course) => course.id === prefill.course)) {
+      const asked = await adminApi.course(prefill.course).catch(() => null)
+      if (asked) list = [asked, ...list]
+    }
+    const day = state?.today
+    if (isClassDay(day)) today = day
+    courses = list
+    coursesLoaded = true
+    if (placeTouched) return
+    const asked = prefillPlace(prefill, list, options)
+    if (asked) return choose(asked)
+    if (list.length === 0) return
+    /*
+     * The default needs the rooms (whose most recent room sits in which
+     * course), and that list parses every room's snapshot: it is read here,
+     * after the form is already usable, and only refines a choice nobody
+     * has made yet.
+     */
+    const rooms = await adminApi.listSeminars().catch(() => [])
+    if (placeTouched) return
+    put(defaultPlace(options, list, rooms, adminAuth.me?.teacher.id ?? null, today))
+  }
+
   onMount(() => {
-    void adminApi
-      .listCourses()
-      .then(async (list) => {
-        courses = list
-        if (list.length === 0) return
-        try {
-          const day = await adminApi.courseToday(list[0].id)
-          if (isClassDay(day)) today = day
-        } catch {
-          /* the browser's day stays */
-        }
-        if (prefill) {
-          const key = `${prefill.course}:${prefill.row}`
-          if (options.some((o) => keyOf(o) === key)) {
-            rowTouched = true
-            choose(key)
-            return
-          }
-        }
-        /*
-         * The default needs the rooms (whose most recent room sits in which
-         * course), and that list parses every room's snapshot: it is read
-         * here, after the form is already usable, and only refines a choice
-         * nobody has made yet.
-         */
-        const rooms = await adminApi.listSeminars().catch(() => [])
-        if (rowTouched) return
-        const me = adminAuth.me?.teacher.name ?? null
-        const option = defaultClass(options, rooms, me, today)
-        if (option) choose(keyOf(option))
-      })
-      .catch(() => (courses = []))
+    void loadCourses()
   })
+
   /*
    * Three doors, not a flag.
    *
@@ -606,14 +676,15 @@
   async function create(): Promise<void> {
     if (!canCreate) return
     /*
-     * The row is taken NOW, before the first await. The default row arrives
-     * with the slow room list (onMount), and a press made while the select
+     * The place is taken NOW, before the first await. The default arrives
+     * with the slow room list (onMount), and a press made while the cards
      * still said «Без курса» must not seat a scratch room into a row that
      * landed during the creation. From here on a late default does not move
-     * the select either.
+     * the cards either.
      */
-    const row = seatRow
-    rowTouched = true
+    const at = place
+    const seat = seatFor(at)
+    placeTouched = true
     busy = true
     errorText = null
     /*
@@ -622,8 +693,17 @@
      * the datasets the teacher attached.
      */
     const problems: (() => string)[] = []
+    let seminar: { id: string; seat?: SeatResult | null }
     try {
-      const seminar =
+      /*
+       * The room and its course row in one request, on every door.
+       *
+       * The server checks the course before anything is created: a row that
+       * stopped being open since the form was filled (someone seated a room
+       * into it, made it a break) is a 409 here, and no room exists yet — the
+       * rows are read again below and the teacher picks once more.
+       */
+      seminar =
         source === 'github'
           ? await adminApi.importSeminar({
               url: githubUrl.trim(),
@@ -631,6 +711,7 @@
               environment: environment || null,
               mode,
               rules,
+              seat,
             })
           : source === 'file' && notebook
             ? await adminApi.importNotebook({
@@ -640,6 +721,7 @@
                 environment: environment || null,
                 mode,
                 rules,
+                seat,
               })
             : await adminApi.createSeminar({
                 name: name.trim(),
@@ -648,18 +730,42 @@
                 rules,
                 memoryMb,
                 cpus,
+                seat,
               })
-
+    } catch (cause) {
+      errorText = () => (cause instanceof Error ? cause.message : tr("admin.could.not.create.the.seminar"))
+      busy = false
       /*
-       * Materials go out after the room has appeared.
-       *
-       * An upload needs an existing seminar — the files are put into its
-       * directory — and creating a draft room for that costs more than it is
-       * worth. The price is known and small: if a file did not arrive, the
-       * room already exists, and that is said out loud instead of pretending
-       * that nothing was created.
+       * A refused seat (the row taken, the course gone or no longer the
+       * teacher's) leaves the form as it was, on rows that are stale: read
+       * them again, keeping the course when it is still there.
        */
-      created = seminar.id
+      if (seat && cause instanceof AdminApiError && (cause.status === 404 || cause.status === 409)) void refreshPlace(at)
+      return
+    }
+
+    /*
+     * Materials go out after the room has appeared.
+     *
+     * An upload needs an existing seminar — the files are put into its
+     * directory — and creating a draft room for that costs more than it is
+     * worth. The price is known and small: if a file did not arrive, the
+     * room already exists, and that is said out loud instead of pretending
+     * that nothing was created.
+     */
+    created = seminar.id
+    landedCourse = seminar.seat?.courseId ?? null
+    /*
+     * Where the room landed, said when it is not where it was sent. A row
+     * taken in the second between the check and the write puts the room at
+     * the end of the same course rather than over someone else's room; a
+     * seat the server could not write at all leaves it outside the course.
+     */
+    if (seat) {
+      if (!seminar.seat) problems.push(() => tr('admin.new.notSeated'))
+      else if (seat.rowId && !seminar.seat.replaced) problems.push(() => tr('admin.new.rowTaken'))
+    }
+    try {
       /*
        * Memory comes as a follow-up, and only for the import doors.
        *
@@ -681,29 +787,6 @@
           problems.push(() => tr('admin.resources.notApplied'))
         }
       }
-      /*
-       * Into the course row — against the course as it is now, not as it was
-       * when the form opened: a 409 is retried once, and a row someone else
-       * took in the meantime leaves the room outside the course, said out
-       * loud rather than seated over their room.
-       */
-      if (row) {
-        try {
-          const outcome = await seatCreated(row.rowId, seminar, {
-            load: () => adminApi.course(row.courseId),
-            save: (rev, items) => adminApi.setCourseItems(row.courseId, rev, items),
-            isConflict: (cause) => cause instanceof AdminApiError && cause.status === 409,
-          })
-          if (outcome === 'taken') problems.push(() => tr('admin.new.rowTaken'))
-        } catch (cause) {
-          const reason = cause instanceof Error ? cause.message : null
-          problems.push(() =>
-            tr('admin.new.seatFailed', {
-              reason: reason ?? tr('admin.could.not.complete.the.request.try.again'),
-            }),
-          )
-        }
-      }
       if (materials.length > 0) {
         const failed = await uploadMaterials(seminar.id)
         if (failed.length > 0) {
@@ -711,17 +794,33 @@
             tr("admin.did.not.upload.add.them.from.the.room", { p0: failed.join(', ') })))
         }
       }
-      if (problems.length > 0) {
-        // All of it at once: «Строка уже занята…» alone would hide that the files did not arrive.
-        errorText = () => sentences(problems.map((say) => say()))
-        busy = false
-        return
-      }
-      ondone(seminar.id)
     } catch (cause) {
-      errorText = () => (cause instanceof Error ? cause.message : tr("admin.could.not.create.the.seminar"))
-      busy = false
+      problems.push(() => (cause instanceof Error ? cause.message : tr("admin.could.not.complete.the.request.try.again")))
     }
+    if (problems.length > 0) {
+      // All of it at once: «Строку уже заняли…» alone would hide that the files did not arrive.
+      errorText = () => sentences(problems.map((say) => say()))
+      busy = false
+      return
+    }
+    ondone(seminar.id, landedCourse)
+  }
+
+  /** The course the new room landed in, for the way back. */
+  let landedCourse = $state<string | null>(null)
+
+  /**
+   * The rows again after the server refused the seat: the course stays
+   * picked if the teacher can still see it, on its nearest open row now.
+   */
+  async function refreshPlace(was: RoomPlace): Promise<void> {
+    const list = await adminApi.listCourses().catch(() => null)
+    if (!list) return
+    const kept = was.courseId !== null && list.some((course) => course.id === was.courseId)
+    // An owner's course from outside their own list stays on screen, read afresh.
+    const outside = was.courseId !== null && !kept ? await adminApi.course(was.courseId).catch(() => null) : null
+    courses = outside ? [outside, ...list] : list
+    put(was.courseId !== null && (kept || outside) ? placeInCourse(options, was.courseId) : { ...NO_COURSE })
   }
 
   /** One row of the rules table: a question, a sentence, and two answers. */
@@ -758,15 +857,15 @@
 </script>
 
 {#snippet actions()}
-  <button type="button" class="btn-ghost" onclick={() => ondone(created ?? undefined)}>
+  <button type="button" class="btn-ghost" onclick={() => ondone(created ?? undefined, landedCourse)}>
     {created ? tr("admin.close") : tr("admin.cancel")}
   </button>
   <!-- The room has already been created — offering "create" again means
        offering a duplicate. The button leads to where this room already is,
        with its link. -->
   {#if created}
-    <button type="button" class="btn-primary whitespace-nowrap max-[640px]:flex-1" onclick={() => ondone(created ?? undefined)}>
-      {tr("admin.back.to.seminars")}
+    <button type="button" class="btn-primary whitespace-nowrap max-[640px]:flex-1" onclick={() => ondone(created ?? undefined, landedCourse)}>
+      {backToCourse && landedCourse ? tr('admin.new.backToCourse') : tr("admin.back.to.seminars")}
     </button>
   {:else}
     <!-- flex-1 on a phone, as the competition editor's actions: the page's
@@ -798,37 +897,6 @@
     description={tr("admin.students.see.this.name.when.they.join.the.seminar")}
   >
     <div class="flex flex-col gap-3">
-      <!--
-        The course row first: it names the room, so the name field under it
-        is already filled when the eye gets there. Shown only when some
-        course has a row left to take.
-      -->
-      {#if options.length > 0}
-        <div class="flex flex-col gap-1.5">
-          <!-- The panel's field caption (.admin-label) over the form's own
-               field, so the select is not taller than the name input under it. -->
-          <label class="flex flex-col gap-1.5">
-            <span class="admin-label">{tr('admin.new.courseRow')}</span>
-            <select
-              class="field min-w-0"
-              value={rowChoice}
-              disabled={created !== null}
-              onchange={(event) => {
-                rowTouched = true
-                choose(event.currentTarget.value)
-              }}
-            >
-              {#each options as option (keyOf(option))}
-                <option value={keyOf(option)}>{optionLabel(option)}</option>
-              {/each}
-              <option value="">{tr('admin.new.noCourse')}</option>
-            </select>
-          </label>
-          {#if seatRow}
-            <p class="admin-meta">{tr('admin.new.courseHint')}</p>
-          {/if}
-        </div>
-      {/if}
       <input
         bind:value={name}
         class="field"
@@ -836,7 +904,105 @@
         maxlength={LIMITS.seminarName}
         aria-label={tr("admin.seminar.name")}
       />
+    </div>
+  </Section>
 
+  <!--
+    «Курс», right under the name (Paper U3). Cards rather than a select: the
+    choice is between a few courses the teacher knows by sight, and the card
+    has room for what decides it — who else teaches it and which row the room
+    would take. «Без курса» is a card of the same size, dashed: a different
+    kind of room, not a missing answer.
+  -->
+  <Section title={tr('admin.new.course.title')} description={tr('admin.new.course.about')}>
+    <div class="flex flex-col gap-3.5">
+      {#if !coursesLoaded}
+        <div class="course-cards" aria-hidden="true">
+          {#each [0, 1] as i (i)}
+            <div class="course-card pointer-events-none">
+              <Skeleton width="9rem" height="0.85rem" />
+              <Skeleton width="12rem" height="0.7rem" />
+            </div>
+          {/each}
+        </div>
+      {:else}
+        <div class="course-cards" role="radiogroup" aria-label={tr('admin.new.course.title')}>
+          {#each cards as card (card.id)}
+            {@const on = place.courseId === card.id}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={on}
+              class={cn('course-card', on && 'course-on')}
+              disabled={created !== null || busy}
+              onclick={() => choose(placeInCourse(options, card.id))}
+            >
+              <span class="flex min-w-0 items-center gap-2">
+                <span class="h-[7px] w-[7px] shrink-0" style:background={courseColor(card.id)}></span>
+                <span class="course-card-title truncate">{card.name}</span>
+              </span>
+              <span class="text-micro text-muted">{cardLine(card)}</span>
+            </button>
+          {/each}
+          <button
+            type="button"
+            role="radio"
+            aria-checked={place.courseId === null}
+            class={cn('course-card course-none', place.courseId === null && 'course-on')}
+            disabled={created !== null || busy}
+            onclick={() => choose({ ...NO_COURSE })}
+          >
+            <span class="course-card-title">{tr('admin.new.noCourse')}</span>
+            <span class="text-micro text-muted">{tr('admin.new.course.noneAbout')}</span>
+          </button>
+        </div>
+        {#if place.courseId !== null}
+          {@const courseId = place.courseId}
+          <!-- The row select: the course's open plan rows, nearest first, and
+               the end of the course — the one place a room always fits. -->
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <label class="admin-label" for="new-room-row">{tr('admin.new.courseRow')}</label>
+            <select
+              id="new-room-row"
+              class="field w-auto min-w-0 max-w-full"
+              value={place.rowId ?? ''}
+              disabled={created !== null || busy}
+              onchange={(event) => choose({ courseId, rowId: event.currentTarget.value || null })}
+            >
+              {#each courseRows as option (option.rowId)}
+                <option value={option.rowId}>{rowLabel(option)}</option>
+              {/each}
+              <option value="">{tr('admin.new.atTheEnd')}</option>
+            </select>
+            {#if place.rowId !== null}
+              <button
+                type="button"
+                class="admin-link text-2xs"
+                disabled={created !== null || busy}
+                onclick={() => choose({ courseId, rowId: null })}
+              >
+                {tr('admin.new.orAtTheEnd')}
+              </button>
+            {/if}
+          </div>
+          <p class="admin-meta">{seatRow ? tr('admin.new.courseHint') : tr('admin.new.appendHint')}</p>
+        {:else if courses.length === 0}
+          <!-- A teacher nobody has added to a course yet (Paper U5b): not an
+               error, and the room is theirs. -->
+          <p class="admin-meta">{tr('admin.new.course.noneYet')}</p>
+        {/if}
+      {/if}
+    </div>
+  </Section>
+
+  <!--
+    The doors stood in «Основное» under the name until 0.19; the course block
+    took that place (Paper U3: the course is decided right under the name),
+    and the doors became a section of their own, still before every setting
+    they change.
+  -->
+  <Section title={tr('admin.new.notebook.title')} description={tr('admin.new.notebook.about')}>
+    <div class="flex flex-col gap-3">
       <!--
         Two doors into one room, drawn as doors rather than as tabs.
 
@@ -1584,6 +1750,69 @@
     color: #fff;
   }
 
+  /*
+   * The «Курс» cards (Paper U3): a radio button the height of two lines.
+   * Auto-filled columns rather than a fixed three: a department head with
+   * eight courses gets rows of cards, a phone gets a column.
+   */
+  .course-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 8px;
+  }
+
+  .course-card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    padding: 12px 14px;
+    text-align: left;
+    background: rgb(var(--canvas));
+    border: 1px solid rgb(var(--line));
+    cursor: pointer;
+    transition:
+      border-color var(--speed-quick) var(--ease-out),
+      transform var(--speed-press) var(--ease-out);
+  }
+
+  .course-card:hover:not(:disabled) {
+    border-color: rgb(var(--faint));
+  }
+
+  .course-card:active:not(:disabled) {
+    transform: scale(0.99);
+  }
+
+  .course-card:disabled {
+    cursor: default;
+  }
+
+  .course-card-title {
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 18px;
+    color: rgb(var(--ink));
+  }
+
+  .course-none {
+    border-style: dashed;
+    border-color: rgb(var(--faint));
+  }
+
+  /* 2px, and the padding gives the extra pixel back: a pick must not shift
+     the card's text. */
+  .course-on,
+  .course-on:hover:not(:disabled) {
+    padding: 11px 13px;
+    border: 2px solid rgb(var(--accent));
+  }
+
+  .course-card:focus-visible {
+    outline: 2px solid rgb(var(--accent));
+    outline-offset: 2px;
+  }
+
   .oracle-card {
     display: flex;
     flex-direction: column;
@@ -1638,6 +1867,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .course-card,
     .mode-card,
     .oracle-card {
       transition-property: background-color, border-color, color;

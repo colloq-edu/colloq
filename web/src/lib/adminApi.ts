@@ -27,9 +27,16 @@ import type {
   UpdateResourceSettingsRequest,
   InstanceState,
   InstanceSettings,
+  InviteTeacherRequest,
+  InviteTeacherResponse,
+  ListScope,
+  MemberTeacher,
+  MemberTeachersResponse,
   SaveEnvironmentRequest,
+  SeatRequest,
   SignInWithTokenRequest,
   Teacher,
+  TeacherWithCourses,
   TeacherWithLink,
   UpdateOracleRequest,
   UpdateSeminarRequest,
@@ -324,6 +331,8 @@ export const adminApi = {
      */
     mode?: 'lab' | 'lecture' | 'council'
     rules?: Partial<RoomRules>
+    /** Seat the room into a course row in the same request (see SeatRequest). */
+    seat?: SeatRequest
   }) => request<ImportResult>('/import', { method: 'POST', ...json(body) }),
 
   /* -------------------------------------------------------- environments */
@@ -618,11 +627,15 @@ export const adminApi = {
       { method: 'DELETE' },
     ),
 
-  /** Every entrant on the instance — their identity is shared, not per room. */
+  /** Every entrant on the instance — their identity is shared, not per room. Owner only. */
   listEntrants: () => request<EntrantsList>('/competitions/entrants'),
 
-  createEntrant: (name: string) =>
-    request<{ entrant: EntrantRow; key: string }>('/competitions/entrants', {
+  /**
+   * A new person with a key, joined to this competition at once: a person
+   * made outside any competition would be visible to no teacher.
+   */
+  createEntrant: (competitionId: string, name: string) =>
+    request<{ entrant: EntrantRow; key: string }>(`/competitions/${encodeURIComponent(competitionId)}/entrants`, {
       method: 'POST',
       ...json({ name }),
     }),
@@ -669,7 +682,12 @@ export const adminApi = {
   updateResourceSettings: (body: UpdateResourceSettingsRequest) =>
     request<ResourceSettingsResponse>('/resources', { method: 'PUT', ...json(body) }),
 
-  listSeminars: () => request<AdminSeminar[]>('/seminars'),
+  /**
+   * The rooms the caller teaches — or, for an owner who passes 'all', every
+   * room on the instance. A teacher asking for 'all' gets a 403.
+   */
+  listSeminars: (scope: ListScope = 'mine') =>
+    request<AdminSeminar[]>(scope === 'all' ? '/seminars?scope=all' : '/seminars'),
 
   createSeminar: (body: CreateSeminarRequest) =>
     request<AdminSeminar>('/seminars', { method: 'POST', ...json(body) }),
@@ -682,7 +700,9 @@ export const adminApi = {
 
   /* ---------------------------------------------------------- courses */
 
-  listCourses: () => request<{ courses: Course[] }>('/courses').then((r) => r.courses),
+  /** The courses the caller teaches, or every course for an owner who passes 'all'. */
+  listCourses: (scope: ListScope = 'mine') =>
+    request<{ courses: Course[] }>(scope === 'all' ? '/courses?scope=all' : '/courses').then((r) => r.courses),
 
   course: (id: string) =>
     request<{ course: Course }>(`/courses/${encodeURIComponent(id)}`).then((r) => r.course),
@@ -887,7 +907,56 @@ export const adminApi = {
 
   /* ------------------------------------------------------------ teachers */
 
-  listTeachers: () => request<Teacher[]>('/teachers'),
+  /** Everyone on the staff list, each with the courses the caller may see them teach. */
+  listTeachers: () => request<TeacherWithCourses[]>('/teachers'),
+
+  /* ------------------------------------------- who teaches a course or room */
+
+  /** «Ведут»: a course's teachers. */
+  courseTeachers: (courseId: string) =>
+    request<MemberTeachersResponse>(`/courses/${encodeURIComponent(courseId)}/teachers`).then((r) => r.teachers),
+
+  /** Add someone already on the staff list; answers with the course's teachers after the change. */
+  addCourseTeacher: (courseId: string, staffId: string): Promise<MemberTeacher[]> =>
+    request<MemberTeachersResponse>(`/courses/${encodeURIComponent(courseId)}/teachers`, {
+      method: 'POST',
+      ...json({ staffId }),
+    }).then((r) => r.teachers),
+
+  /**
+   * «Пригласить по почте». A new address becomes a teacher of the course and
+   * `signInUrl` carries their personal link, once; an address already on the
+   * staff list is only added (`signInUrl: null`).
+   */
+  inviteCourseTeacher: (courseId: string, body: InviteTeacherRequest) =>
+    request<InviteTeacherResponse>(`/courses/${encodeURIComponent(courseId)}/teachers/invite`, {
+      method: 'POST',
+      ...json(body),
+    }),
+
+  /** A course keeps at least one teacher unless an owner removes the last (409 otherwise). */
+  removeCourseTeacher: (courseId: string, staffId: string): Promise<MemberTeacher[]> =>
+    request<MemberTeachersResponse>(
+      `/courses/${encodeURIComponent(courseId)}/teachers/${encodeURIComponent(staffId)}`,
+      { method: 'DELETE' },
+    ).then((r) => r.teachers),
+
+  /** «Ведущие»: a room's own teachers (not its course's). */
+  roomTeachers: (sessionId: string) =>
+    request<MemberTeachersResponse>(`/seminars/${encodeURIComponent(sessionId)}/teachers`).then((r) => r.teachers),
+
+  addRoomTeacher: (sessionId: string, staffId: string): Promise<MemberTeacher[]> =>
+    request<MemberTeachersResponse>(`/seminars/${encodeURIComponent(sessionId)}/teachers`, {
+      method: 'POST',
+      ...json({ staffId }),
+    }).then((r) => r.teachers),
+
+  /** A room outside courses keeps at least one teacher unless an owner removes the last (409 otherwise). */
+  removeRoomTeacher: (sessionId: string, staffId: string): Promise<MemberTeacher[]> =>
+    request<MemberTeachersResponse>(
+      `/seminars/${encodeURIComponent(sessionId)}/teachers/${encodeURIComponent(staffId)}`,
+      { method: 'DELETE' },
+    ).then((r) => r.teachers),
 
   /** Answers with the link, which is the only moment it is ever readable. */
   createTeacher: (body: CreateTeacherRequest) =>
@@ -911,6 +980,7 @@ export const adminApi = {
     environment?: string | null
     mode?: 'lab' | 'lecture' | 'council'
     rules?: unknown
+    seat?: SeatRequest
   }) => request<ImportResult>('/import/notebook', { method: 'POST', ...json(body) }),
 
   /**

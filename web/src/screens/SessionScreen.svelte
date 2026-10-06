@@ -31,6 +31,7 @@
   import AiPanel from '@/components/panels/AiPanel.svelte'
   import BanMenu from '@/components/panels/BanMenu.svelte'
   import BannedScreen from '@/components/BannedScreen.svelte'
+  import StaffGuestStrip from '@/components/StaffGuestStrip.svelte'
   import FilesPanel from '@/components/panels/FilesPanel.svelte'
   import PeoplePanel from '@/components/panels/PeoplePanel.svelte'
   import TerminalDrawer from '@/components/panels/TerminalDrawer.svelte'
@@ -70,7 +71,7 @@
   import { countLine, shownOutputLines, type CouncilCount } from '@/lib/council.svelte'
   import { pultPath } from '@/lib/council-pult-window'
   import { clock } from '@/lib/history'
-  import type { CouncilShown, SessionInfo } from '@shared/protocol'
+  import type { CouncilShown, SessionInfo, StaffGuest } from '@shared/protocol'
   import { copyText } from '@/lib/clipboard'
   import {
     beginVisit,
@@ -132,11 +133,17 @@
      * saved identity has already been wiped by this moment (see `#diagnose`).
      */
     onexpired?: () => void
+    /**
+     * A signed-in teacher who is only a participant here, and why
+     * (JoinResponse.staffGuest; the strip is Paper U5a).
+     */
+    staffGuest?: StaffGuest | null
   }
 
   let {
     session: info,
     identity,
+    staffGuest = null,
     mode = 'room',
     councilCell = null,
     onnavigate,
@@ -2824,7 +2831,20 @@
           onclick={() => setClassOver(false)}
         > {tr('room.ui.909')} </button>
       {/if}
+
     </div>
+  {/if}
+
+  <!--
+    A teacher who opened a colleague's room: they are a participant here, and
+    the room says why, right where the work begins (Paper U5a). Only while the
+    socket agrees: once someone adds them, the role turns host and the note
+    stops being true even before the next join refreshes it. Outside the
+    finished-class strip above: it belongs to every state of the room, and
+    inside that block it showed only after the class had ended.
+  -->
+  {#if staffGuest && !isHost}
+    <StaffGuestStrip guest={staffGuest} sessionId={session.session.id} />
   {/if}
 
   <!-- Positioned, so the panel drawers below cover the workspace and stop at

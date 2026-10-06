@@ -241,7 +241,8 @@
       (row) =>
         row.competition.title.toLowerCase().includes(needle) ||
         row.competition.slug.toLowerCase().includes(needle) ||
-        row.competition.metric.name.toLowerCase().includes(needle),
+        row.competition.metric.name.toLowerCase().includes(needle) ||
+        (row.course?.name.toLowerCase().includes(needle) ?? false),
     )
   })
 
@@ -361,16 +362,19 @@
         <span class="admin-label shrink-0 text-primary">{tr('admin.competitions.runner')}</span>
         <span class="text-2xs text-ink">{line.head}</span>
         <span class="min-w-0 text-2xs text-muted">{line.tail}</span>
-        <button
-          type="button"
-          class="admin-link ml-auto shrink-0"
-          disabled={busy}
-          onclick={() => void togglePause()}
-        >
-          {list.queue.paused
-            ? tr('admin.competitions.resumeQueue')
-            : tr('admin.competitions.pauseQueue')}
-        </button>
+        <!-- One queue for the whole instance: pausing it is the owner's. -->
+        {#if adminAuth.isOwner}
+          <button
+            type="button"
+            class="admin-link ml-auto shrink-0"
+            disabled={busy}
+            onclick={() => void togglePause()}
+          >
+            {list.queue.paused
+              ? tr('admin.competitions.resumeQueue')
+              : tr('admin.competitions.pauseQueue')}
+          </button>
+        {/if}
       </div>
     {/if}
 
@@ -496,6 +500,9 @@
                 <p class="admin-row-title truncate">{c.title}</p>
                 <p class="mt-1 flex flex-wrap items-baseline gap-x-3.5 gap-y-0.5">
                   <span class="admin-meta font-mono">/k/{c.slug}</span>
+                  {#if row.course}
+                    <span class="admin-meta min-w-0 truncate">{tr('admin.competitions.courseMeta', { name: row.course.name })}</span>
+                  {/if}
                   <span class="admin-meta min-w-0">{metricLine(row, now)}</span>
                 </p>
               </button>

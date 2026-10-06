@@ -40,6 +40,7 @@ import { competitionZipPlan } from '../competitions/zip.js'
 import { getLocale, tr } from '@shared/i18n'
 import { zonedClock } from '@shared/time-zone'
 import { currentStaff } from '../admin/auth.js'
+import { canSeeCompetition } from '../competitions/scope.js'
 import { instanceNextDayStart, instanceTimeZone } from '../time-zone.js'
 import { assertCompetitionCapability, competitionCapabilities } from '../competitions/capabilities.js'
 import { competitionRevision } from '../dependencies/store.js'
@@ -238,10 +239,14 @@ function summaryOf(competition: Competition): CompetitionCounts {
  * submission in it (store · takesPart) — and staff's: a teacher checking the
  * page through a student's eyes must still see it, and so must the projector
  * the panel opens.
+ *
+ * Staff of THIS competition — its creator, its course's teachers, an owner
+ * (competitions/scope.ts) — not anyone with a staff cookie: at a university a
+ * teacher of another course is, for this board, nobody in particular.
  */
 function boardOpenTo(req: Request, competition: Competition, me: Entrant | null): boolean {
   if ((competition.boardVisibility ?? 'public') === 'public') return true
-  if (currentStaff(req)) return true
+  if (canSeeCompetition(currentStaff(req), competition)) return true
   return me !== null && takesPart(competition.id, me.id)
 }
 
@@ -258,9 +263,12 @@ function boardOpenTo(req: Request, competition: Competition, me: Entrant | null)
  * projector"): opened from the teacher's own browser, with the staff cookie,
  * and shown to the whole room. There even staff get the class's view, or the
  * one screen everybody reads would print every address in full.
+ *
+ * Only staff who run this competition (`boardOpenTo` says why): a teacher of
+ * another course reads the board like any visitor.
  */
-function nameReveal(req: Request, me: Entrant | null): (entrantId: string) => boolean {
-  if (currentStaff(req) && req.query.audience !== 'class') return () => true
+function nameReveal(req: Request, competition: Competition, me: Entrant | null): (entrantId: string) => boolean {
+  if (canSeeCompetition(currentStaff(req), competition) && req.query.audience !== 'class') return () => true
   return (entrantId) => me !== null && entrantId === me.id
 }
 
@@ -746,7 +754,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     if (!boardOpenTo(req, competition, me)) {
       return refuse(res, me ? 403 : 401, 'board_closed', tr('competitions.refusal.boardEntrantsOnly'))
     }
-    const reveal = nameReveal(req, me)
+    const reveal = nameReveal(req, competition, me)
     const counts = submissionCounts(competition.id)
     const { open, pending } = privateBoardState(competition)
     const baseline = baselineEntrantOf(competition)

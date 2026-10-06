@@ -90,7 +90,9 @@ function plate(): string {
 
 /** A row of the classes table, from its `{#each}` to the closing `</tr>`. */
 function row(): string {
-  const start = seminars.indexOf('{#each shown as seminar')
+  // One `{#each}` per course group since 0.19 (Paper U1); the row inside is
+  // the same single markup for both views.
+  const start = seminars.indexOf('{#each group.rows as row')
   assert.notEqual(start, -1, 'the list rows are in place')
   const end = seminars.indexOf('</tr>', start)
   assert.notEqual(end, -1, 'the row has an end')
@@ -221,10 +223,20 @@ test('no row action is lost on a phone: there is one markup', () => {
 test('the screen header on a phone is a full-width column', () => {
   const start = seminars.indexOf('{#snippet actions()}')
   const head = seminars.slice(start, seminars.indexOf('{/snippet}', start))
+  // The search is admin/ui/SearchField, which takes the whole line itself;
+  // it is passed the same class here so the header says it out loud.
   const wide = [...head.matchAll(/max-\[640px\]:w-full/g)]
   assert.ok(wide.length >= 2, 'both the search and "New class" take the full width')
+  // The button says 44 itself; the search field gets it from the panel's
+  // one control height (index.css · .admin-ui input.field, 44px under 640).
   const tall = [...head.matchAll(/max-\[640px\]:h-11/g)]
-  assert.ok(tall.length >= 2, 'and both are finger-sized, not cursor-sized')
+  assert.ok(tall.length >= 1, 'and the button is finger-sized, not cursor-sized')
+  assert.match(head, /<SearchField/, 'the search is the shared field')
+  assert.match(
+    flat(code(read('web/src/index.css'))),
+    /@media \(max-width: 640px\) \{.*\.admin-ui :where\(input\[class~='field'\], select\[class~='field'\]\) \{ height: 44px; \}/,
+    'which is 44px on a phone',
+  )
   // A percentage is computed from the parent, and the parent shrank to its
   // content: without a width on it, `w-full` inside is a percentage of an
   // unknown number.
@@ -301,17 +313,17 @@ test('the environment states and action move under the name, not past the screen
 /* ---------------------------------------------------------- teachers */
 
 test('below 640 the teacher registry is cards, not lanes past the edge', () => {
-  assert.match(teachers, /min-w-\[600px\] max-\[640px\]:min-w-0/, 'the 600px minimum is removed')
+  assert.match(teachers, /min-w-\[766px\] max-\[640px\]:min-w-0/, 'the desktop minimum is removed')
   assert.match(
     teachers,
     /sticky top-0 z-10 flex h-9 items-center border-b border-line bg-canvas max-\[640px\]:hidden/,
     'the lanes header goes away together with the lanes',
   )
   assert.match(teachers, /min-h-\[66px\] items-center border-b border-line-soft max-\[640px\]:flex-wrap/, 'the row wraps')
-  // One constant for three lanes: role, link and last sign-in behave the
-  // same, and they can drift apart only together.
+  // One constant for four lanes: role, courses, link and last sign-in behave
+  // the same, and they can drift apart only together.
   assert.match(teachers, /const PHONE_LANE = '[^']*max-\[640px\]:order-1[^']*max-\[640px\]:w-full/, 'each lane gets its own line')
-  for (const col of ['COL_ROLE', 'COL_LINK', 'COL_SEEN']) {
+  for (const col of ['COL_ROLE', 'COL_COURSES', 'COL_LINK', 'COL_SEEN']) {
     assert.match(teachers, new RegExp(`const ${col} = \`[^\`]*\\$\\{PHONE_LANE\\}\``), `${col} takes it`)
   }
 })
@@ -327,7 +339,7 @@ test('the lane captions move into the card with the same words as in the header'
   // A masked row of dots and "never" without a caption do not say what is
   // "never" and what the dots are: the lanes header is hidden on a phone.
   const lanes = [...teachers.matchAll(/@render lane\(tr\("([^"]+)"\)\)/g)].map((m) => m[1])
-  assert.equal(lanes.length, 3, 'role, link and last sign-in are captioned')
+  assert.equal(lanes.length, 4, 'role, courses, link and last sign-in are captioned')
   const head = teachers.slice(teachers.indexOf('sticky top-0'), teachers.indexOf('{#if listError}'))
   const heading = [...head.matchAll(/@render eyebrow\(tr\("([^"]+)"\)\)/g)].map((m) => m[1])
   for (const key of lanes) {

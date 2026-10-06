@@ -71,7 +71,12 @@
         }
       }
       await Promise.all([
-        ask('seminars', this.seminars, () => adminApi.listSeminars().then((l) => l.length)),
+        // The viewer's own active rooms: the figure the Seminars screen pushes
+        // itself (its «Мои» without the archive), so the number does not jump
+        // when that tab is opened.
+        ask('seminars', this.seminars, () =>
+          adminApi.listSeminars().then((l) => l.filter((s) => s.mine && !s.archivedAt).length),
+        ),
         ask('courses', this.courses, () => adminApi.listCourses().then((l) => l.length)),
         ask('competitions', this.competitions, () =>
           adminApi.listCompetitions().then((r) => r.competitions.length),

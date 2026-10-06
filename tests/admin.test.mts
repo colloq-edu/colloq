@@ -348,7 +348,8 @@ test('the number of files on a card follows the folder', async () => {
   createSession(room, 'Файлы', null)
 
   const shown = async (): Promise<number> => {
-    const res = await call('GET', '/api/admin/seminars', { cookie })
+    // The owner's «Все»: a room made straight in the database has no teachers of its own.
+    const res = await call('GET', '/api/admin/seminars?scope=all', { cookie })
     const rows = (await res.json()) as { id: string; fileCount: number }[]
     return rows.find((row) => row.id === room)?.fileCount ?? -1
   }
@@ -378,7 +379,7 @@ test('the seminar card names the page address, not its id', async () => {
   })
   assert.equal(setPublicationSlug(pub.id, 'week-one'), 'ok')
 
-  const res = await call('GET', '/api/admin/seminars', { cookie: mintCookie(owner) })
+  const res = await call('GET', '/api/admin/seminars?scope=all', { cookie: mintCookie(owner) })
   const rows = (await res.json()) as { id: string; publication: { slug: string | null } | null }[]
   assert.equal(rows.find((row) => row.id === room)?.publication?.slug, 'week-one')
 })

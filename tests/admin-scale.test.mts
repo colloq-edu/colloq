@@ -189,9 +189,15 @@ test('a state word wears one tone on every tab', () => {
   const competitions = code(read('web/src/admin/competitions.ts'))
   assert.match(competitions, /state === 'live' \? 'accent' : state === 'draft' \? 'warning' : 'neutral'/)
   const seminars = flat(code(read(`${SCREENS}/Seminars.svelte`)))
-  assert.match(seminars, /<Badge word=\{tr\("admin\.draft"\)\} tone="warning" \/>/, 'a class draft is amber')
-  assert.match(seminars, /<Badge word=\{tr\("admin\.finished"\)\} tone="neutral" \/>/, 'a finished class is neutral')
-  assert.match(seminars, /<Badge word=\{tr\("admin\.live\.990"\)\} tone="accent" \/>/, 'a live class is accent')
+  // Since 0.19 a class row says where the class stands — «идёт»,
+  // «предстоит», «завершено» (Paper U1) — and «черновик» is gone from the
+  // classes tab, so there is no second amber draft to disagree with. Live
+  // stays accent and finished neutral, as on Competitions; «предстоит» is a
+  // grey frame, the artboard's own drawing of "nothing happening yet".
+  assert.doesNotMatch(seminars, /tr\("admin\.draft"\)/, 'no draft badge on classes any more')
+  assert.match(seminars, /<Badge word=\{tr\("admin\.seminars\.list\.badge\.finished"\)\} tone="neutral" \/>/, 'a finished class is neutral')
+  assert.match(seminars, /<Badge word=\{tr\("admin\.seminars\.list\.badge\.running"\)\} tone="accent" \/>/, 'a live class is accent')
+  assert.match(seminars, /<Badge word=\{tr\("admin\.seminars\.list\.badge\.upcoming"\)\} tone="neutral" form="outline" \/>/, 'an upcoming class is a grey frame')
   const environments = flat(code(read(`${SCREENS}/Environments.svelte`)))
   assert.match(environments, /<Badge word=\{tr\("admin\.not\.built"\)\} tone="warning"/, 'an unbuilt environment is amber')
   const editor = flat(code(read(`${SCREENS}/competitions/Editor.svelte`)))

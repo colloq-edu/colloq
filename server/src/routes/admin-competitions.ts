@@ -35,9 +35,13 @@ import { competitionRevision } from '../dependencies/store.js'
 import { DependencyStoreError } from '../dependencies/store.js'
 import { dependencyMessage } from '../dependencies/messages.js'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
+import { getTeacher } from '../admin/store.js'
 import { instanceDayStart } from '../time-zone.js'
 import { deleteEntrantFromCompetition } from '../competitions/erase.js'
 import { recordAdminEvent } from '../admin/audit-log.js'
+import { canSeeCourse, isOwner, type StaffLike } from '../admin/access.js'
+import { getCourse } from '../publish/store.js'
+import { canSeeCompetition, canSeeCompetitionId, courseRefOf, entrantReach } from '../competitions/scope.js'
 import {
   acceptSubmission,
   competitionsElsewhere,
@@ -46,12 +50,14 @@ import {
   createCompetition,
   createEntrant,
   deleteCompetition,
+  entrantCompetitionIds,
   dropFile,
   entrantKeyOf,
   findCompetition,
   getCompetition,
   getEntrant,
   getSubmission,
+  joinAsNewcomer,
   leaderboard,
   leaveQueue,
   listCompetitionEntrants,
@@ -175,13 +181,36 @@ const FEED_PAGE = 200
 
 /* --------------------------------------------------------------- helpers */
 
+/**
+ * The competition the address names — if the caller runs it.
+ *
+ * The scope check lives HERE, in the one lookup every per-competition door
+ * goes through, rather than in each of them: a door added later inherits it
+ * without anyone remembering. Someone else's competition answers exactly like
+ * a missing one, so a guessed slug tells nothing about what exists
+ * (competitions/scope.ts has the rule).
+ */
 function competitionOf(req: Request, res: Response): Competition | null {
   const found = findCompetition(String(req.params.id ?? ''))
-  if (!found) {
+  if (!found || !canSeeCompetition(currentStaff(req), found)) {
     fail(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     return null
   }
   return found
+}
+
+/**
+ * «Курс» from the form: absent, null, or a course the caller teaches. An owner
+ * may pick any existing course. A course the caller cannot see answers like a
+ * missing one. Returns false when it has already refused.
+ */
+function courseAllowed(staff: StaffLike | null, courseId: string | null | undefined, res: Response): boolean {
+  if (courseId === undefined || courseId === null) return true
+  if (!getCourse(courseId) || !canSeeCourse(staff, courseId)) {
+    fail(res, 404, 'not_found', tr('server.courseNotFound.0429ec'))
+    return false
+  }
+  return true
 }
 
 function submissionOf(competition: Competition, req: Request, res: Response): Submission | null {
@@ -265,7 +294,7 @@ function bestPrivateOf(competition: Competition, now = Date.now()): number | nul
   return rows.length ? rows[0].score : null
 }
 
-function rowOf(competition: Competition): CompetitionRow {
+function rowOf(competition: Competition, viewer: StaffLike | null): CompetitionRow {
   const counts = countsOf(competition)
   const baseline = competition.baselineSubmissionId
     ? getSubmission(competition.baselineSubmissionId)
@@ -281,6 +310,7 @@ function rowOf(competition: Competition): CompetitionRow {
     baselineState: baseline?.state ?? null,
     ready: readinessOf(competition),
     privatePending: privateBoardState(competition).pending,
+    course: courseRefOf(competition.courseId, viewer),
   }
 }
 
@@ -387,12 +417,39 @@ async function viewOf(competition: Competition): Promise<CompetitionView> {
 
 /* ----------------------------------------------------------------- queue */
 
-function runningNow(row: QueueRow): RunningNow | null {
+function runningNow(row: QueueRow, viewer: StaffLike | null): RunningNow | null {
   const submission = getSubmission(row.submissionId)
   const competition = getCompetition(row.competitionId)
   if (!submission || !competition) return null
   const limitSeconds =
     row.kind === 'metric' ? METRIC_WALL_SECONDS : competition.limits.wallSeconds
+  if (!canSeeCompetition(viewer, competition)) {
+    /*
+     * Another course's run: the slot and its clock, nothing of whose. The
+     * queue is the instance's, so "4 of 6 slots busy" must add up on every
+     * teacher's screen, but a name and an address from a course they do not
+     * teach are not theirs to read. The submission id stays — it keys the
+     * row on screen and opens nothing: the kill door checks scope itself.
+     */
+    return {
+      submissionId: submission.id,
+      competitionId: '',
+      competitionSlug: '',
+      entrantId: '',
+      entrantName: '',
+      number: 0,
+      fileName: '',
+      kind: row.kind,
+      cellsDone: submission.cellsDone,
+      cellsTotal: submission.cellsTotal,
+      startedAt: row.startedAt ?? submission.acceptedAt,
+      limitMs: limitSeconds * 1000,
+      container: null,
+      baseline: false,
+      late: row.late,
+      hidden: true,
+    }
+  }
   return {
     submissionId: submission.id,
     competitionId: competition.id,
@@ -445,14 +502,19 @@ function todayStats(now: number): { done: number; averageMs: number | null } {
   return value
 }
 
-function queueSnapshot(now = Date.now()): QueueSnapshot {
+/**
+ * The instance queue as this viewer may see it: every count whole (waiting,
+ * slots, run today), the running rows of competitions they do not run
+ * blanked (`runningNow`).
+ */
+function queueSnapshot(viewer: StaffLike | null, now = Date.now()): QueueSnapshot {
   const pause = queuePause()
   const today = todayStats(now)
   return {
     paused: pause.paused,
     pausedAt: pause.at,
     running: runningRows()
-      .map(runningNow)
+      .map((row) => runningNow(row, viewer))
       .filter((row): row is RunningNow => row !== null),
     waiting: waitingCount(),
     slots: queueSlots(),
@@ -496,8 +558,8 @@ function waitingRows(competitionId: string | null, snapshot: QueueSnapshot, now:
   return rows
 }
 
-function liveOf(competition: Competition, now = Date.now()): CompetitionLive {
-  const snapshot = queueSnapshot(now)
+function liveOf(competition: Competition, viewer: StaffLike | null, now = Date.now()): CompetitionLive {
+  const snapshot = queueSnapshot(viewer, now)
   const spans = listSubmissions(competition.id)
     .map((submission) => submission.durationMs)
     .filter((ms): ms is number => typeof ms === 'number' && ms > 0)
@@ -695,8 +757,8 @@ export function adminCompetitionRoutes(): Router {
 
   /* ------------------------------------------------------------- queue */
 
-  router.get('/api/admin/competitions/queue', requireStaff, (_req, res) => {
-    res.json(queueSnapshot())
+  router.get('/api/admin/competitions/queue', requireStaff, (req, res) => {
+    res.json(queueSnapshot(currentStaff(req)))
   })
 
   /* ---------------------------------------------------------- settings */
@@ -730,17 +792,28 @@ export function adminCompetitionRoutes(): Router {
    * A pause does not touch the run in progress: "start no new ones" and "kill
    * what is running" are different promises, and the second costs someone a
    * minute of work.
+   *
+   * By an owner: there is one queue per instance, so a pause stops every
+   * course's competitions, not only the caller's — it falls on people who are
+   * not in the request.
    */
-  router.post('/api/admin/competitions/queue/pause', requireStaff, (req, res) => {
+  router.post('/api/admin/competitions/queue/pause', ownerOnly('competitions.owner.pause'), (req, res) => {
     const paused = (req.body as { paused?: unknown } | undefined)?.paused !== false
     pauseCompetitionQueue(paused, currentStaff(req)?.id ?? null)
-    res.json(queueSnapshot())
+    res.json(queueSnapshot(currentStaff(req)))
   })
 
-  /** Kill the run in progress. The "Kill" button in the "RUNNING NOW" block. */
+  /**
+   * Kill the run in progress. The "Kill" button in the "RUNNING NOW" block.
+   *
+   * Only in a competition the caller runs: the id comes bare from the body,
+   * and another course's run answers like one that already ended, so the
+   * door does not confirm that it exists.
+   */
   router.post('/api/admin/competitions/queue/kill', requireStaff, async (req, res) => {
     const id = String((req.body as { submissionId?: unknown } | undefined)?.submissionId ?? '')
-    if (!queueRow(id)) {
+    const queued = queueRow(id)
+    if (!queued || !canSeeCompetitionId(currentStaff(req), queued.competitionId)) {
       return fail(res, 409, 'invalid', tr('competitions.refusal.notRunning'))
     }
     // The pump takes it down: a waiting one it removes from the queue itself,
@@ -758,10 +831,13 @@ export function adminCompetitionRoutes(): Router {
    *
    * The key is here on purpose: the teacher hands it out to the class, and
    * there is no other place in the product where the key can be read
-   * (`entrantKeyOf` is the only door to the secret). It is a panel door, and
-   * that is its whole lock.
+   * (`entrantKeyOf` is the only door to the secret).
+   *
+   * By an owner: it is every person on the instance with a working key, and
+   * a teacher's view of people goes through the competitions they run (the
+   * "Entrants" tab of each). The panel itself does not call this door.
    */
-  router.get('/api/admin/competitions/entrants', requireStaff, (_req, res) => {
+  router.get('/api/admin/competitions/entrants', ownerOnly('competitions.owner.entrants'), (_req, res) => {
     const body: EntrantsList = {
       entrants: listEntrants().map((entrant) => entrantRow(entrant, null, null)),
     }
@@ -774,17 +850,31 @@ export function adminCompetitionRoutes(): Router {
    * (shared/competitions.ts · entrantHandle). A panel that could still give
    * "Анна Ким" would bring back, one rename at a time, the free-text names
    * the rule exists to end.
+   *
+   * This door makes a person who belongs to no competition, so by an owner
+   * only: such a person is visible to nobody else. A teacher adds people
+   * through the competition (POST /:id/entrants below).
    */
-  router.post('/api/admin/competitions/entrants', requireStaff, (req, res) => {
+  router.post('/api/admin/competitions/entrants', ownerOnly('competitions.owner.entrantAnywhere'), (req, res) => {
     const name = entrantHandle(String((req.body as { name?: unknown } | undefined)?.name ?? ''))
     if (!name) return fail(res, 400, 'invalid', tr('competitions.refusal.nameNotHandle'))
     const minted = createEntrant(name)
     res.status(201).json({ entrant: entrantRow(minted.entrant, null, null), key: minted.key })
   })
 
+  /*
+   * Rename or switch off a person — everywhere at once, since a person has
+   * one name and one key per instance. So a teacher may do it only when every
+   * competition of the person is theirs; a person they do not see at all is
+   * `not_found`, and one who also sits in another course's competition is
+   * the owner's to change.
+   */
   router.patch('/api/admin/competitions/entrants/:eid', requireStaff, (req, res) => {
     const id = String(req.params.eid)
     if (!getEntrant(id)) return fail(res, 404, 'not_found', tr('competitions.refusal.noEntrant'))
+    const reach = entrantReach(currentStaff(req), id)
+    if (reach === 'none') return fail(res, 404, 'not_found', tr('competitions.refusal.noEntrant'))
+    if (reach === 'some') return fail(res, 403, 'forbidden', tr('competitions.refusal.entrantShared'))
     const body = (req.body ?? {}) as { name?: unknown; disabled?: unknown }
     if (typeof body.name === 'string') {
       const name = entrantHandle(body.name)
@@ -822,10 +912,19 @@ export function adminCompetitionRoutes(): Router {
 
   /* ------------------------------------------------------ competitions */
 
-  router.get('/api/admin/competitions', requireStaff, (_req, res) => {
+  /**
+   * The competitions the caller runs (competitions/scope.ts): an owner's list
+   * is the whole instance, a teacher's is what they created and what their
+   * courses hold. The rows are filtered before their counts are computed —
+   * those walk the submissions.
+   */
+  router.get('/api/admin/competitions', requireStaff, (req, res) => {
+    const staff = currentStaff(req)
     const body: CompetitionsList = {
-      competitions: listCompetitions().map(rowOf),
-      queue: queueSnapshot(),
+      competitions: listCompetitions()
+        .filter((competition) => canSeeCompetition(staff, competition))
+        .map((competition) => rowOf(competition, staff)),
+      queue: queueSnapshot(staff),
     }
     res.json(body)
   })
@@ -834,11 +933,13 @@ export function adminCompetitionRoutes(): Router {
   router.post('/api/admin/competitions', requireStaff, async (req, res) => {
     const parsed = parseCompetitionInput(req.body, { creating: true })
     if ('refusal' in parsed) return refuseInput(res, parsed.refusal)
+    const staff = currentStaff(req)
+    if (!courseAllowed(staff, parsed.input.courseId, res)) return
     const created = createCompetition({
       ...parsed.input,
       slug: parsed.input.slug!,
       title: parsed.input.title!,
-      createdBy: currentStaff(req)?.id ?? null,
+      createdBy: staff?.id ?? null,
     })
     if (!created) return fail(res, 409, 'exists', tr('competitions.refusal.slug.taken'))
     ensureCompetition(created.id)
@@ -857,6 +958,19 @@ export function adminCompetitionRoutes(): Router {
     if (!competition) return
     const parsed = parseCompetitionInput(req.body)
     if ('refusal' in parsed) return refuseInput(res, parsed.refusal)
+    const staff = currentStaff(req)
+    if (parsed.input.courseId !== undefined && parsed.input.courseId !== (competition.courseId ?? null)) {
+      if (!courseAllowed(staff, parsed.input.courseId, res)) return
+      /*
+       * A move that would take the competition out of the mover's own sight
+       * is refused: a course teacher who is not its creator, choosing «Без
+       * курса», would lose the competition mid-lesson with no way back but
+       * the owner.
+       */
+      if (!canSeeCompetition(staff, { createdBy: competition.createdBy, courseId: parsed.input.courseId })) {
+        return fail(res, 409, 'invalid', tr('competitions.refusal.courseWouldHide'))
+      }
+    }
     const saved = updateCompetition(competition.id, parsed.input)
     if (saved === 'taken') return fail(res, 409, 'exists', tr('competitions.refusal.slug.taken'))
     if (!saved) return fail(res, 404, 'not_found', tr('competitions.refusal.notFound'))
@@ -1307,7 +1421,7 @@ export function adminCompetitionRoutes(): Router {
   router.get('/api/admin/competitions/:id/live', requireStaff, (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
-    res.json(liveOf(competition))
+    res.json(liveOf(competition, currentStaff(req)))
   })
 
   /*
@@ -1330,21 +1444,44 @@ export function adminCompetitionRoutes(): Router {
       'X-Accel-Buffering': 'no',
     })
     let last = ''
+    /*
+     * The viewer is asked again on every push, not kept from the moment the
+     * stream opened: the cookie is re-verified (a rotated link, a deleted
+     * row) and the staff row re-read (a demoted owner), and the scope reads
+     * live membership — so a teacher taken off the course, a competition
+     * moved out of it, an owner made a teacher, loses the stream on the next
+     * tick instead of watching until they reload. The reconnect then meets
+     * the 401 or the 404.
+     */
+    const viewerNow = (): StaffLike | null => {
+      const signed = currentStaff(req)
+      return signed ? getTeacher(signed.id) : null
+    }
+    let tick: ReturnType<typeof setInterval> | null = null
+    let beat: ReturnType<typeof setInterval> | null = null
+    const stop = () => {
+      if (tick) clearInterval(tick)
+      if (beat) clearInterval(beat)
+      tick = beat = null
+    }
     const push = () => {
       const fresh = getCompetition(competition.id)
       if (!fresh) return
-      const body = JSON.stringify(liveOf(fresh))
+      const viewer = viewerNow()
+      if (!canSeeCompetition(viewer, fresh)) {
+        stop()
+        res.end()
+        return
+      }
+      const body = JSON.stringify(liveOf(fresh, viewer))
       if (body === last) return
       last = body
       res.write(`event: state\ndata: ${body}\n\n`)
     }
     push()
-    const tick = setInterval(push, 1500)
-    const beat = setInterval(() => res.write(': keep-alive\n\n'), 20_000)
-    req.on('close', () => {
-      clearInterval(tick)
-      clearInterval(beat)
-    })
+    tick = setInterval(push, 1500)
+    beat = setInterval(() => res.write(': keep-alive\n\n'), 20_000)
+    req.on('close', stop)
   })
 
   /* ------------------------------------------------------ submissions feed */
@@ -1564,21 +1701,56 @@ export function adminCompetitionRoutes(): Router {
   router.get('/api/admin/competitions/:id/entrants', requireStaff, (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
+    const staff = currentStaff(req)
     const baselineEntrant = baselineEntrantOf(competition)
     const board = placesAmongPeople(leaderboard(competition.id, 'public'), (row) => row.entrantId === baselineEntrant)
     const body: EntrantsList = {
-      entrants: listCompetitionEntrants(competition.id).map((entrant) => ({
-        ...entrantRow(
+      entrants: listCompetitionEntrants(competition.id).map((entrant) => {
+        const row = entrantRow(
           entrant,
           competition,
           entrant.id === baselineEntrant ? 'baseline' : null,
-          board.find((row) => row.entrantId === entrant.id)?.place ?? null,
-        ),
+          board.find((one) => one.entrantId === entrant.id)?.place ?? null,
+        )
         // What the confirmation says about the key: it keeps working there.
-        otherCompetitions: competitionsElsewhere(entrant.id, competition.id),
-      })),
+        const otherCompetitions = competitionsElsewhere(entrant.id, competition.id)
+        if (isOwner(staff) || otherCompetitions === 0) return { ...row, otherCompetitions }
+        /*
+         * The person is in other competitions too. If any of those is not
+         * this teacher's, the key — valid in all of them — is withheld, and
+         * the person as a whole (rename, switch off) is the owner's.
+         */
+        const all = entrantReach(staff, entrant.id) === 'all'
+        if (all) return { ...row, otherCompetitions }
+        // The count names only competitions this teacher runs: the rest are
+        // other courses', and how many of those a person is in is not theirs
+        // to learn. `keyWithheld` tells the dialog the key outlives this one.
+        const visibleElsewhere = entrantCompetitionIds(entrant.id)
+          .filter((id) => id !== competition.id && canSeeCompetitionId(staff, id)).length
+        return { ...row, otherCompetitions: visibleElsewhere, key: null, keyWithheld: true, editable: false }
+      }),
     }
     res.json(body)
+  })
+
+  /**
+   * Add a person to this competition from the panel: a new identity with its
+   * key, joined to the competition in the same transaction — the "Entrants"
+   * tab's «Добавить». Joined, not loose: a person who belongs to no
+   * competition is visible to no teacher, the one who made them included.
+   * A namesake already in this competition is refused, as at the join door.
+   */
+  router.post('/api/admin/competitions/:id/entrants', requireStaff, (req, res) => {
+    const competition = competitionOf(req, res)
+    if (!competition) return
+    const name = entrantHandle(String((req.body as { name?: unknown } | undefined)?.name ?? ''))
+    if (!name) return fail(res, 400, 'invalid', tr('competitions.refusal.nameNotHandle'))
+    const minted = joinAsNewcomer(competition.id, name)
+    if (minted === 'taken') return fail(res, 409, 'name_taken', tr('competitions.refusal.entrantNameTaken'))
+    res.status(201).json({
+      entrant: { ...entrantRow(minted.entrant, competition, null), otherCompetitions: 0 },
+      key: minted.key,
+    })
   })
 
   /**

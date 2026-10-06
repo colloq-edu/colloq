@@ -965,6 +965,38 @@ export const serverMessages: MessageCatalog = {
     "ru": "День занятия — в формате ГГГГ-ММ-ДД",
     "en": "The class day goes in the form YYYY-MM-DD"
   },
+  "server.access.allIsOwnerOnly": {
+    "ru": "Все занятия и курсы видит только владелец. Вам показаны те, что вы ведёте.",
+    "en": "Only an owner sees every class and course. You see the ones you teach."
+  },
+  "server.access.notATeacherHere": {
+    "ru": "Этот человек здесь не ведёт.",
+    "en": "That person does not teach here."
+  },
+  "server.access.roomKeepsATeacher": {
+    "ru": "У занятия без курса должен остаться хотя бы один ведущий — иначе его не увидит никто, кроме владельца.",
+    "en": "A class outside courses keeps at least one teacher — otherwise nobody but an owner can see it."
+  },
+  "server.access.courseKeepsATeacher": {
+    "ru": "У курса должен остаться хотя бы один преподаватель — иначе его не увидит никто, кроме владельца.",
+    "en": "A course keeps at least one teacher — otherwise nobody but an owner can see it."
+  },
+  "server.access.roomNotYours": {
+    "ru": "В курс можно поставить только занятие, которое вы ведёте.",
+    "en": "You can only put a class you teach into the course."
+  },
+  "server.access.pageNotInCourse": {
+    "ru": "Эта страница не из этого курса.",
+    "en": "That page does not belong to this course."
+  },
+  "server.seat.bad": {
+    "ru": "Курс для занятия указан неверно.",
+    "en": "The course for the class is given the wrong way."
+  },
+  "server.seat.rowTaken": {
+    "ru": "Эту строку курса уже заняли — обновите список и выберите строку снова.",
+    "en": "That course row is already taken — reload the list and pick a row again."
+  },
   "server.publish.checkInCell": {
     "ru": "«{name}», ячейка {n}",
     "en": "“{name}”, cell {n}"

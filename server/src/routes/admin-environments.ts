@@ -49,6 +49,7 @@ import {
   writeSource,
 } from '../environments.js'
 import { sessionsOnEnvironment } from '../db.js'
+import { canSeeRoom } from '../admin/access.js'
 import { gpuBusy, gpuDevices } from '../kernel/pool.js'
 import {
   ENVIRONMENT_NAME,
@@ -317,11 +318,17 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
      */
     const attached = sessionsOnEnvironment(name)
     if (attached.length > 0) {
+      // Named only where the caller teaches the room (admin/access.ts); the
+      // rest are counted. Today this door is an owner's, who sees every room,
+      // but the refusal is the kind of sentence that leaks once the door moves.
+      const actor = currentStaff(req)
       const names = attached
+        .filter((s) => canSeeRoom(actor, s.id))
         .slice(0, 3)
         .map((s) => s.name)
         .join(', ')
-      const more = attached.length > 3 ? `, and ${attached.length - 3} more` : ''
+      const named = Math.min(3, attached.filter((s) => canSeeRoom(actor, s.id)).length)
+      const more = attached.length > named ? `${named > 0 ? ', and ' : ''}${attached.length - named} more` : ''
       /*
        * The instruction has to be doable.
        *

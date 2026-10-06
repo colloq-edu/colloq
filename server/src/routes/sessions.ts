@@ -2,7 +2,9 @@ import { roleFor } from '../authorization.js'
 import { tr } from '@shared/i18n'
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { kernelRetirementInProgress } from '../kernel/retirement.js'
-import { currentStaff } from '../admin/auth.js'
+import { currentStaff, staffFromCookieHeader } from '../admin/auth.js'
+import { addRoomTeacher, canSeeRoom, staffById, staffGuestFor } from '../admin/access.js'
+import { recordAdminEvent } from '../admin/audit-log.js'
 import {
   HANDOFF_TTL_MS,
   newParticipantId,
@@ -26,6 +28,7 @@ import {
   storedRules,
   getSession,
   isFinished,
+  isTokenHost,
   listParticipants,
   setRules,
   setSessionCpus,
@@ -484,6 +487,12 @@ export function sessionRoutes(): Router {
     }
 
     const ban = banFor(payload.sessionId, payload.participantId, req.headers.cookie)
+    const role = ban ? null : roleFor(req.headers.cookie, payload)
+    // A staff member who does not teach this room is told why they are a
+    // participant here (shared/protocol.ts · StaffGuest). Asked only then:
+    // this door is hit by every reconnecting tab.
+    const guest =
+      role === 'participant' ? staffGuestFor(staffFromCookieHeader(req.headers.cookie), sessionId) : null
     const me: SessionMe = {
       tokenValid: true,
       ban: ban ? { until: ban.until } : null,
@@ -491,7 +500,8 @@ export function sessionRoutes(): Router {
       // The role is the one the server will act with on this key right now
       // (the cookie beats the token, see roleFor). A banned person has none:
       // they can do nothing, and calling them the host would be untrue.
-      role: ban ? null : roleFor(req.headers.cookie, payload),
+      role,
+      ...(guest ? { staffGuest: guest } : {}),
     }
     res.json(me)
   })
@@ -583,10 +593,30 @@ export function sessionRoutes(): Router {
     // is still theirs. There is no page that does it — the panel has its own
     // route — so this is the scripted path, and on an open instance it produces
     // a seminar with nobody's name on it.
-    if (staff) setSeminarCreator(id, staff.name)
+    if (staff) {
+      setSeminarCreator(id, staff.name)
+      // And theirs to run: the author is the room's first teacher
+      // (admin/access.ts), whichever door created it.
+      addRoomTeacher(id, staff.id, staff.id)
+      recordAdminEvent({
+        actor: staff,
+        action: 'room.created',
+        target: { type: 'room', id, label: session.name },
+        detail: { via: 'api' },
+        req,
+      })
+    }
+    /*
+     * The host token is for whoever has no other grant: an open instance's
+     * visitor, a script without a cookie. A signed-in teacher's grant is the
+     * membership written above, and a token on top of it would be a second,
+     * permanent one — `token_host` survives their removal from the room and
+     * from every course that seats it, which is exactly what removal must
+     * take away.
+     */
     const body: CreateSessionResponse = {
       session,
-      hostToken: signHostToken(id),
+      hostToken: staff ? null : signHostToken(id),
     }
     res.status(201).json(body)
   })
@@ -648,7 +678,15 @@ export function sessionRoutes(): Router {
      *    to this instance is exactly the person those controls are for, and the
      *    cookie is a stronger credential than the token.
      */
-    const staff = currentStaff(req)
+    const signedIn = currentStaff(req)
+    /*
+     * Only for a room they teach (admin/access.ts · canSeeRoom): its own
+     * teachers, the teachers of a course that seats it, owners. Anyone else
+     * on the staff list joins by the link like a student and is told why
+     * (`staffGuest` below). From here on `staff` means "staff of this room":
+     * the arrival limits, the host token and the log read it that way.
+     */
+    const staff = signedIn && canSeeRoom(signedIn, sessionId) ? signedIn : null
     // The two sources of the role are told apart in the log, so they are
     // computed separately. `!staff &&` keeps the old order: a cookie needs no
     // host token.
@@ -747,7 +785,9 @@ export function sessionRoutes(): Router {
      * failed.
      */
     const how = joinedAs(sessionId, claimed, req.body?.token, proof, known !== null)
-    const why = (staff ? 'staff' : byHostToken ? 'host-token' : 'link') + (identity ? ' via sso' : '')
+    const why =
+      (staff ? 'staff' : byHostToken ? 'host-token' : signedIn ? 'link (staff guest)' : 'link') +
+      (identity ? ' via sso' : '')
     console.log(
       `[join ${sessionId}] ${how === 'back' ? 'back' : 'new'} ${participantId} · ` +
         `${role} by ${why}${how === 'back' ? '' : ` · ${how}`}`,
@@ -786,7 +826,8 @@ export function sessionRoutes(): Router {
       void ensureKernel(sessionId).catch((err: unknown) => noteWarmupFailure(sessionId, err))
     }
 
-    const body: JoinResponse = { session, participant, token }
+    const guest = role === 'participant' ? staffGuestFor(signedIn, sessionId) : null
+    const body: JoinResponse = { session, participant, token, ...(guest ? { staffGuest: guest } : {}) }
     res.json(body)
   })
 
@@ -838,8 +879,11 @@ export function sessionRoutes(): Router {
      * host by their own host token has nothing to add — they already have
      * `token_host`, and nobody meant to take it away.
      */
+    // The cookie names the teacher only in a room they teach; a host by
+    // their own host token who also happens to be someone else's colleague
+    // hands over that token's right, not a staff grant that would not hold.
     const staff = currentStaff(req)
-    const grantedBy = staff?.id ?? payload.staff ?? null
+    const grantedBy = (staff && canSeeRoom(staff, sessionId) ? staff.id : null) ?? payload.staff ?? null
     /*
      * We hand out the address, not the teacher's browser.
      *
@@ -880,6 +924,21 @@ export function sessionRoutes(): Router {
     }
     const known = getParticipant(sessionId, who.participantId)
     if (!known) return res.status(404).json({ error: tr("server.participantNotFound.d59506") })
+    /*
+     * The key promises a console only while its grant still holds: the
+     * teacher it names still teaches this room, or the participant is host by
+     * the room's own token. A key minted in class and claimed after the
+     * teacher was removed from the course would otherwise write "host" into
+     * the row — the badge in the list, and once the ban's exemption — for
+     * someone `roleFor` no longer makes host. Such a key is refused like a
+     * spent one: there is no console to hand over.
+     */
+    const stillHost =
+      (who.staff !== null && canSeeRoom(staffById(who.staff), sessionId)) ||
+      isTokenHost(sessionId, known.id)
+    if (!stillHost) {
+      return res.status(401).json({ error: tr("server.thisPresenterLinkIsInvalidOrHas.0f5b09") })
+    }
     // The role in the row is for the badge in the list; `token_host` is left
     // alone: a host by their own key already has it, and a host by cookie must
     // not get it.

@@ -142,8 +142,8 @@ export const adminMessages: MessageCatalog = {
    * header is the same height whichever tab is open (admin-scale.test.mts).
    */
   "admin.seminars.lede": {
-    "ru": "Комнаты ваших занятий: ссылка для входа, правила и страница после занятия.",
-    "en": "Your class rooms: the join link, the rules and the page after class."
+    "ru": "Комнаты ваших курсов и занятия без курса: ссылка для входа, правила и страница после занятия.",
+    "en": "Rooms of your courses and classes outside them: the join link, the rules and the page after class."
   },
   "admin.courses": {
     "ru": "Курсы",
@@ -2070,8 +2070,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Add a teacher"
   },
   "admin.manage.teacher.accounts.and.sign.in.links.teachers.can.create.sem": {
-    "ru": "Управляйте аккаунтами преподавателей и ссылками для входа. Преподаватели могут создавать занятия и просматривать настройки оракула.",
-    "en": "Manage teacher accounts and sign-in links. Teachers can create classes and view oracle settings."
+    "ru": "Владелец видит и настраивает всё. Преподаватель видит свои курсы, их комнаты и свои занятия без курса.",
+    "en": "An owner sees and manages everything. A teacher sees their courses, those courses' rooms and their own classes outside courses."
   },
   "admin.ada.lovelace": {
     "ru": "Ада Лавлейс",
@@ -3568,12 +3568,44 @@ export const adminMessages: MessageCatalog = {
     "en": "Add a participant"
   },
   "admin.competitions.addEntrantNote": {
-    "ru": "Участник получит ключ входа — передайте его человеку. В этом списке он появится, когда войдёт по ключу и вступит в соревнование.",
-    "en": "The participant gets a sign-in key — pass it on to them. They appear in this list once they sign in with it and join the competition."
+    "ru": "Участник получит ключ входа — передайте его человеку. Он сразу вступает в это соревнование и появляется в списке.",
+    "en": "The participant gets a sign-in key — pass it on to them. They join this competition at once and appear in the list."
   },
   "admin.competitions.addedKey": {
     "ru": "Ключ входа для {name}:",
     "en": "Sign-in key for {name}:"
+  },
+  "admin.competitions.keyWithheld": {
+    "ru": "Ключ скрыт: участник есть и в соревнованиях, которые ведёте не вы. Ключ покажет владелец.",
+    "en": "The key is hidden: this person also takes part in competitions you do not run. An owner can show it."
+  },
+  "admin.competitions.otherCourseRun": {
+    "ru": "Посылка другого курса",
+    "en": "Another course's submission"
+  },
+  "admin.competitions.courseMeta": {
+    "ru": "курс «{name}»",
+    "en": "course “{name}”"
+  },
+  "admin.competitions.courseLabel": {
+    "ru": "Курс",
+    "en": "Course"
+  },
+  "admin.competitions.noCourse": {
+    "ru": "Без курса",
+    "en": "No course"
+  },
+  "admin.competitions.courseNotYours": {
+    "ru": "Курс, который вы не ведёте",
+    "en": "A course you do not teach"
+  },
+  "admin.competitions.courseHint": {
+    "ru": "Видно преподавателям курса, автору и владельцам.",
+    "en": "Visible to the course's teachers, its author and the owners."
+  },
+  "admin.competitions.noCourseHint": {
+    "ru": "Видно автору и владельцам.",
+    "en": "Visible to its author and the owners."
   },
   "admin.competitions.renameEntrantNote": {
     "ru": "Имя сменится во всех соревнованиях этого участника сразу; ключ входа останется прежним.",
@@ -4723,6 +4755,26 @@ export const adminMessages: MessageCatalog = {
     "ru": "Удалено занятие",
     "en": "Class deleted"
   },
+  "admin.audit.action.room.created": {
+    "ru": "Создано занятие",
+    "en": "Class created"
+  },
+  "admin.audit.action.room.teacher_added": {
+    "ru": "Добавлен ведущий занятия",
+    "en": "Class teacher added"
+  },
+  "admin.audit.action.room.teacher_removed": {
+    "ru": "Убран ведущий занятия",
+    "en": "Class teacher removed"
+  },
+  "admin.audit.action.course.teacher_added": {
+    "ru": "Добавлен преподаватель курса",
+    "en": "Course teacher added"
+  },
+  "admin.audit.action.course.teacher_removed": {
+    "ru": "Убран преподаватель курса",
+    "en": "Course teacher removed"
+  },
   "admin.audit.action.course.created": {
     "ru": "Создан курс",
     "en": "Course created"
@@ -5391,6 +5443,186 @@ export const adminMessages: MessageCatalog = {
     "ru": "подходит по дате",
     "en": "matches the day"
   },
+  "admin.course.scope.label": {
+    "ru": "Какие курсы показать",
+    "en": "Which courses to show"
+  },
+  "admin.course.scope.mine": {
+    "ru": "Мои",
+    "en": "Mine"
+  },
+  "admin.course.scope.all": {
+    "ru": "Все",
+    "en": "All"
+  },
+  "admin.course.list.teachers": {
+    "ru": "ведут: {names}",
+    "en": "taught by {names}"
+  },
+  "admin.course.list.teachersMore": {
+    "ru": {
+      "one": "ведут: {names} и ещё {count}",
+      "few": "ведут: {names} и ещё {count}",
+      "many": "ведут: {names} и ещё {count}",
+      "other": "ведут: {names} и ещё {count}"
+    },
+    "en": {
+      "one": "taught by {names} and {count} more",
+      "other": "taught by {names} and {count} more"
+    }
+  },
+  "admin.course.list.nobody": {
+    "ru": "никто не ведёт",
+    "en": "nobody teaches it"
+  },
+  "admin.course.list.mineEmpty": {
+    "ru": "Вас ещё не добавили ни в один курс. Создайте свой — или попросите коллегу добавить вас в его курс.",
+    "en": "You have not been added to any course yet. Create your own, or ask a colleague to add you to theirs."
+  },
+  "admin.course.list.ownerMineEmpty": {
+    "ru": "Вы не ведёте ни одного курса. Курсы коллег — во вкладке «Все».",
+    "en": "You do not teach any course. Your colleagues' courses are under «All»."
+  },
+  "admin.course.teachers.label": {
+    "ru": "Ведут",
+    "en": "Teaching"
+  },
+  "admin.course.teachers.you": {
+    "ru": "вы",
+    "en": "you"
+  },
+  "admin.course.teachers.remove": {
+    "ru": "Убрать {name} из курса",
+    "en": "Remove {name} from the course"
+  },
+  "admin.course.teachers.add": {
+    "ru": "+ Добавить преподавателя",
+    "en": "+ Add a teacher"
+  },
+  "admin.course.teachers.note": {
+    "ru": "Курс и его комнаты видят только они и владельцы. В комнате они — ведущие.",
+    "en": "Only they and the owners see the course and its rooms. In a room they are its hosts."
+  },
+  "admin.course.teachers.nobody": {
+    "ru": "Курс никто не ведёт — его видят только владельцы.",
+    "en": "Nobody teaches this course: only the owners see it."
+  },
+  "admin.course.teachers.search": {
+    "ru": "Имя или почта",
+    "en": "Name or email"
+  },
+  "admin.course.teachers.addOne": {
+    "ru": "Добавить",
+    "en": "Add"
+  },
+  "admin.course.teachers.courses": {
+    "ru": {
+      "one": "{count} курс",
+      "few": "{count} курса",
+      "many": "{count} курсов",
+      "other": "{count} курса"
+    },
+    "en": {
+      "one": "{count} course",
+      "other": "{count} courses"
+    }
+  },
+  "admin.course.teachers.noCourses": {
+    "ru": "без курсов",
+    "en": "no courses"
+  },
+  "admin.course.teachers.loading": {
+    "ru": "Загружаю список преподавателей…",
+    "en": "Loading the staff list…"
+  },
+  "admin.course.teachers.notFound": {
+    "ru": "Никого не нашли.",
+    "en": "Nobody found."
+  },
+  "admin.course.teachers.everyoneIn": {
+    "ru": "Все преподаватели инстанса уже ведут этот курс.",
+    "en": "Everyone on the staff already teaches this course."
+  },
+  "admin.course.teachers.more": {
+    "ru": {
+      "one": "Ещё {count} — уточните поиск.",
+      "few": "Ещё {count} — уточните поиск.",
+      "many": "Ещё {count} — уточните поиск.",
+      "other": "Ещё {count} — уточните поиск."
+    },
+    "en": {
+      "one": "{count} more: narrow the search.",
+      "other": "{count} more: narrow the search."
+    }
+  },
+  "admin.course.teachers.inviteLead": {
+    "ru": "Нет в списке?",
+    "en": "Not on the list?"
+  },
+  "admin.course.teachers.inviteLink": {
+    "ru": "Пригласить по почте",
+    "en": "Invite by email"
+  },
+  "admin.course.teachers.inviteTail": {
+    "ru": "— новый преподаватель сразу попадёт в этот курс.",
+    "en": "— the new teacher joins this course straight away."
+  },
+  "admin.course.teachers.email": {
+    "ru": "Почта",
+    "en": "Email"
+  },
+  "admin.course.teachers.name": {
+    "ru": "Имя",
+    "en": "Name"
+  },
+  "admin.course.teachers.nameHint": {
+    "ru": "Если почта уже в списке преподавателей, человека просто добавят в курс, а имя останется прежним.",
+    "en": "If the email is already on the staff list, that person is simply added to the course and keeps their name."
+  },
+  "admin.course.teachers.invite": {
+    "ru": "Пригласить",
+    "en": "Invite"
+  },
+  "admin.course.teachers.back": {
+    "ru": "Назад",
+    "en": "Back"
+  },
+  "admin.course.teachers.badEmail": {
+    "ru": "Введите адрес почты целиком: name@university.ru.",
+    "en": "Enter the whole email address: name@university.edu."
+  },
+  "admin.course.teachers.linkFor": {
+    "ru": "Ссылка для входа · {name} · показывается один раз",
+    "en": "Sign-in link · {name} · shown once"
+  },
+  "admin.course.teachers.invited": {
+    "ru": "{name} теперь в списке преподавателей и ведёт этот курс. Отправьте эту личную ссылку для входа — по ней не нужен пароль.",
+    "en": "{name} is on the staff list now and teaches this course. Send them this personal sign-in link: it needs no password."
+  },
+  "admin.course.teachers.linkLater": {
+    "ru": "Закроете — ссылку здесь больше не покажут; выдать её заново сможет владелец на экране «Преподаватели».",
+    "en": "Once closed, the link is not shown here again; an owner can hand it out again on the Teachers screen."
+  },
+  "admin.course.teachers.existing": {
+    "ru": "{name} уже в списке преподавателей — добавили в курс. Ссылка для входа у них уже есть.",
+    "en": "{name} is already on the staff list and has been added to the course. They already have a sign-in link."
+  },
+  "admin.course.teachers.added": {
+    "ru": "{name} теперь ведёт этот курс.",
+    "en": "{name} now teaches this course."
+  },
+  "admin.course.teachers.leave": {
+    "ru": "Убрать себя из курса «{name}»? Вы перестанете видеть курс и его комнаты. Вернуть вас сможет другой преподаватель курса или владелец.",
+    "en": "Remove yourself from «{name}»? You will no longer see the course or its rooms. Another teacher of the course or an owner can add you back."
+  },
+  "admin.course.teachers.leaveOwner": {
+    "ru": "Убрать себя из преподавателей курса «{name}»? Как владелец вы и дальше будете видеть курс.",
+    "en": "Remove yourself from the teachers of «{name}»? As an owner you will still see the course."
+  },
+  "admin.course.teachers.lastKept": {
+    "ru": "Это последний преподаватель курса: убрать его может только владелец.",
+    "en": "This is the course's last teacher: only an owner can remove them."
+  },
   "admin.course.status.draft": {
     "ru": "не начиналось",
     "en": "not started"
@@ -5520,8 +5752,8 @@ export const adminMessages: MessageCatalog = {
     "en": "in the plan: {when}"
   },
   "admin.new.courseRow": {
-    "ru": "Занятие курса",
-    "en": "Course class"
+    "ru": "Строка курса",
+    "en": "Course row"
   },
   "admin.new.noCourse": {
     "ru": "Без курса",
@@ -5531,13 +5763,141 @@ export const adminMessages: MessageCatalog = {
     "ru": "Комната встанет в эту строку курса: тема и дата уже там.",
     "en": "The room takes this course row: its topic and day are already there."
   },
-  "admin.new.rowTaken": {
-    "ru": "Строка уже занята — комната создана без курса",
-    "en": "That row is already taken — the room was created outside the course"
+  "admin.new.appendHint": {
+    "ru": "Комната встанет новой строкой в конце курса.",
+    "en": "The room becomes a new row at the end of the course."
   },
-  "admin.new.seatFailed": {
-    "ru": "Комната создана, но в курс не встала: {reason}",
-    "en": "The room was created but did not join the course: {reason}"
+  "admin.new.atTheEnd": {
+    "ru": "Новой строкой в конце",
+    "en": "As a new row at the end"
+  },
+  "admin.new.orAtTheEnd": {
+    "ru": "или новой строкой в конце",
+    "en": "or as a new row at the end"
+  },
+  "admin.new.rowTaken": {
+    "ru": "Строку уже заняли — комната встала новой строкой в конце курса",
+    "en": "That row was taken meanwhile — the room became a new row at the end of the course"
+  },
+  "admin.new.notSeated": {
+    "ru": "Комната создана, но в курс не встала — поставьте её со страницы курса",
+    "en": "The room was created but did not join the course — add it from the course page"
+  },
+  "admin.new.backToCourse": {
+    "ru": "К курсу",
+    "en": "Back to the course"
+  },
+  "admin.teachers.courses": {
+    "ru": "Курсы",
+    "en": "Courses"
+  },
+  "admin.teachers.seesAll": {
+    "ru": "видит все курсы",
+    "en": "sees every course"
+  },
+  "admin.teachers.teaches": {
+    "ru": {
+      "one": "ведёт {count}",
+      "few": "ведёт {count}",
+      "many": "ведёт {count}",
+      "other": "ведёт {count}"
+    },
+    "en": {
+      "one": "teaches {count}",
+      "other": "teaches {count}"
+    }
+  },
+  "admin.teachers.noCourses": {
+    "ru": "ещё ни в одном курсе",
+    "en": "not in any course yet"
+  },
+  "admin.teachers.addCourse": {
+    "ru": "курс",
+    "en": "course"
+  },
+  "admin.teachers.pickCourse": {
+    "ru": "Добавить {name} в курс",
+    "en": "Add {name} to a course"
+  },
+  "admin.teachers.findCourse": {
+    "ru": "Найти курс…",
+    "en": "Find a course…"
+  },
+  "admin.teachers.loadingCourses": {
+    "ru": "Загружаем курсы…",
+    "en": "Loading courses…"
+  },
+  "admin.teachers.noCoursesYet": {
+    "ru": "Курсов пока нет.",
+    "en": "There are no courses yet."
+  },
+  "admin.teachers.noCourseMatches": {
+    "ru": "Такого курса нет.",
+    "en": "No course matches."
+  },
+  "admin.teachers.inEveryCourse": {
+    "ru": "Уже ведёт все курсы.",
+    "en": "Already teaches every course."
+  },
+  "admin.teachers.removeFromCourse": {
+    "ru": "Убрать {name} из курса «{course}»",
+    "en": "Remove {name} from «{course}»"
+  },
+  "admin.teachers.composeCourses": {
+    "ru": "Курсы — необязательно",
+    "en": "Courses — optional"
+  },
+  "admin.teachers.coursesNotJoined": {
+    "ru": "Преподаватель добавлен, но не попал в курсы: {names}. Добавьте через «+ курс».",
+    "en": "The teacher was added but did not join: {names}. Add them with «+ course»."
+  },
+  "admin.new.notebook.title": {
+    "ru": "Тетрадь",
+    "en": "Notebook"
+  },
+  "admin.new.notebook.about": {
+    "ru": "С чего начнётся тетрадь занятия: с пустой, с файла .ipynb или с репозитория на GitHub.",
+    "en": "What the class notebook starts from: a blank one, an .ipynb file or a GitHub repository."
+  },
+  "admin.new.course.pastRow": {
+    "ru": "строка без комнаты: {row}",
+    "en": "row without a room: {row}"
+  },
+  "admin.new.course.title": {
+    "ru": "Курс",
+    "en": "Course"
+  },
+  "admin.new.course.about": {
+    "ru": "Комнату курса видят и ведут его преподаватели. Без курса — только вы и те, кого вы добавите.",
+    "en": "A course room is seen and run by the course's teachers. Without a course, only by you and whoever you add."
+  },
+  "admin.new.course.taughtBy": {
+    "ru": {
+      "one": "ведёт {count}",
+      "few": "ведут {count}",
+      "many": "ведут {count}",
+      "other": "ведут {count}"
+    },
+    "en": {
+      "one": "{count} teacher",
+      "other": "{count} teachers"
+    }
+  },
+  "admin.new.course.nextRow": {
+    "ru": "следующая строка: {row}",
+    "en": "next row: {row}"
+  },
+  "admin.new.course.noOpenRow": {
+    "ru": "строк по плану нет — встанет в конец",
+    "en": "no plan rows left — goes to the end"
+  },
+  "admin.new.course.noneAbout": {
+    "ru": "консультация, пробное, разовое",
+    "en": "a consultation, a trial, a one-off"
+  },
+  "admin.new.course.noneYet": {
+    "ru": "Курсов у вас пока нет: они появятся, когда вас добавит преподаватель курса или владелец. Комнату без курса видите вы и те, кого вы добавите.",
+    "en": "You have no courses yet: they appear once a course's teacher or an owner adds you. A room without a course is seen by you and whoever you add."
   },
   "admin.seminar.pageCopy": {
     "ru": {
@@ -5566,5 +5926,221 @@ export const adminMessages: MessageCatalog = {
   "admin.seminar.finishedRefreshing": {
     "ru": "Занятие завершено · страница занятия обновляется.",
     "en": "The class is over · the class page is being updated."
+  },
+  "admin.seminars.list.scope.label": {
+    "ru": "Чьи занятия показывать",
+    "en": "Whose classes to show"
+  },
+  "admin.seminars.list.scope.mine": {
+    "ru": "Мои",
+    "en": "Mine"
+  },
+  "admin.seminars.list.scope.all": {
+    "ru": "Все",
+    "en": "All"
+  },
+  "admin.seminars.list.folders.label": {
+    "ru": "Папки занятий",
+    "en": "Class folders"
+  },
+  "admin.seminars.list.folder.all": {
+    "ru": "Все занятия",
+    "en": "All classes"
+  },
+  "admin.seminars.list.folder.none": {
+    "ru": "Без курса",
+    "en": "No course"
+  },
+  "admin.seminars.list.folder.archive": {
+    "ru": "Архив",
+    "en": "Archive"
+  },
+  "admin.seminars.list.folder.myCourses": {
+    "ru": "Мои курсы",
+    "en": "My courses"
+  },
+  "admin.seminars.list.folder.courses": {
+    "ru": "Курсы",
+    "en": "Courses"
+  },
+  "admin.seminars.list.folder.newCourse": {
+    "ru": "+ Новый курс",
+    "en": "+ New course"
+  },
+  "admin.seminars.list.folder.newCourseName": {
+    "ru": "Название курса",
+    "en": "Course name"
+  },
+  "admin.seminars.list.folder.newCourseCreate": {
+    "ru": "Создать",
+    "en": "Create"
+  },
+  "admin.seminars.list.folder.newCourseFailed": {
+    "ru": "Курс не создан: {reason}",
+    "en": "The course was not created: {reason}"
+  },
+  "admin.seminars.list.folder.noteTeacher": {
+    "ru": "Курс видят только его преподаватели. Чужие курсы — во вкладке «Все», она есть у владельцев.",
+    "en": "A course is seen only by its teachers. Other courses are under «All», which owners have."
+  },
+  "admin.seminars.list.folder.noteOwner": {
+    "ru": "Курс видят только его преподаватели. «Все» — курсы и занятия всего инстанса: эта вкладка есть только у владельцев.",
+    "en": "A course is seen only by its teachers. «All» is every course and class on the instance: only owners have it."
+  },
+  "admin.seminars.list.tabs.label": {
+    "ru": "Состояние занятий",
+    "en": "Class state"
+  },
+  "admin.seminars.list.tab.all": {
+    "ru": "Все",
+    "en": "All"
+  },
+  "admin.seminars.list.tab.running": {
+    "ru": "Идут",
+    "en": "Live"
+  },
+  "admin.seminars.list.tab.upcoming": {
+    "ru": "Предстоят",
+    "en": "Upcoming"
+  },
+  "admin.seminars.list.tab.past": {
+    "ru": "Завершены",
+    "en": "Past"
+  },
+  "admin.seminars.list.group.teach": {
+    "ru": "ведут: {names}",
+    "en": "taught by {names}"
+  },
+  "admin.seminars.list.group.course": {
+    "ru": "Курс →",
+    "en": "Course →"
+  },
+  "admin.seminars.list.group.add": {
+    "ru": "+ Занятие в курс",
+    "en": "+ Class in this course"
+  },
+  "admin.seminars.list.group.noneHint": {
+    "ru": "видны автору и тем, кого он добавил",
+    "en": "seen by the author and whoever they added"
+  },
+  "admin.seminars.list.group.addNone": {
+    "ru": "+ Занятие без курса",
+    "en": "+ Class without a course"
+  },
+  "admin.seminars.list.group.empty": {
+    "ru": "Здесь пока нет занятий.",
+    "en": "No classes here yet."
+  },
+  "admin.seminars.list.badge.running": {
+    "ru": "идёт",
+    "en": "live"
+  },
+  "admin.seminars.list.badge.upcoming": {
+    "ru": "предстоит",
+    "en": "upcoming"
+  },
+  "admin.seminars.list.badge.past": {
+    "ru": "прошло",
+    "en": "held"
+  },
+  "admin.seminars.list.badge.finished": {
+    "ru": "завершено",
+    "en": "finished"
+  },
+  "admin.seminars.list.row.author": {
+    "ru": "автор: {name}",
+    "en": "author: {name}"
+  },
+  "admin.seminars.list.row.you": {
+    "ru": "вы",
+    "en": "you"
+  },
+  "admin.seminars.list.row.coTeachOne": {
+    "ru": "ещё ведёт {names}",
+    "en": "also taught by {names}"
+  },
+  "admin.seminars.list.row.coTeachMany": {
+    "ru": "ещё ведут: {names}",
+    "en": "also taught by {names}"
+  },
+  "admin.seminars.list.row.inRoom": {
+    "ru": "{count} в комнате",
+    "en": "{count} in the room"
+  },
+  "admin.seminars.list.row.today": {
+    "ru": "сегодня",
+    "en": "today"
+  },
+  "admin.seminars.list.row.number": {
+    "ru": "Номер в курсе",
+    "en": "Number in the course"
+  },
+  "admin.seminars.list.empty.title": {
+    "ru": "Пока у вас нет курсов",
+    "en": "You have no courses yet"
+  },
+  "admin.seminars.list.empty.hint": {
+    "ru": "Курсы появятся здесь, когда вас добавит их преподаватель или владелец. А занятие без курса можно создать прямо сейчас — его увидите вы и те, кого вы добавите.",
+    "en": "Courses appear here once one of their teachers or an owner adds you. A class without a course you can create right now: you and whoever you add will see it."
+  },
+  "admin.seminars.list.empty.room": {
+    "ru": "+ Занятие без курса",
+    "en": "+ Class without a course"
+  },
+  "admin.seminars.list.empty.course": {
+    "ru": "Создать курс",
+    "en": "Create a course"
+  },
+  "admin.seminars.list.hosts.title": {
+    "ru": "Ведущие",
+    "en": "Teachers"
+  },
+  "admin.seminars.list.hosts.hint": {
+    "ru": "Ведущие видят комнату в своих «Занятиях» и входят в неё как преподаватели. Остальные по ссылке входят участниками.",
+    "en": "Teachers see the room in their Classes and enter it as hosts. Anyone else with the link enters as a participant."
+  },
+  "admin.seminars.list.hosts.viaCourse": {
+    "ru": "Через курс «{course}» ведут: {names}",
+    "en": "Through the course «{course}»: {names}"
+  },
+  "admin.seminars.list.hosts.you": {
+    "ru": "вы",
+    "en": "you"
+  },
+  "admin.seminars.list.hosts.remove": {
+    "ru": "Убрать {name} из ведущих",
+    "en": "Remove {name} from the teachers"
+  },
+  "admin.seminars.list.hosts.add": {
+    "ru": "+ Добавить ведущего",
+    "en": "+ Add a teacher"
+  },
+  "admin.seminars.list.hosts.search": {
+    "ru": "Имя или почта",
+    "en": "Name or email"
+  },
+  "admin.seminars.list.hosts.addOne": {
+    "ru": "Добавить",
+    "en": "Add"
+  },
+  "admin.seminars.list.hosts.nobody": {
+    "ru": "Никого не нашлось.",
+    "en": "Nobody found."
+  },
+  "admin.seminars.list.hosts.everyone": {
+    "ru": "Все преподаватели инстанса уже ведут эту комнату.",
+    "en": "Every teacher on the instance already teaches this room."
+  },
+  "admin.seminars.list.hosts.loading": {
+    "ru": "Загружаем ведущих…",
+    "en": "Loading the teachers…"
+  },
+  "admin.seminars.list.hosts.none": {
+    "ru": "У комнаты нет своих ведущих.",
+    "en": "The room has no teachers of its own."
+  },
+  "admin.seminars.list.hosts.failed": {
+    "ru": "Не получилось: {reason}",
+    "en": "That did not work: {reason}"
   },
 }

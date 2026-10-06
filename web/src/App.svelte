@@ -29,7 +29,7 @@
   import { upgradeIfStaff } from '@/screens/staff'
   import { loadLocalizedScreen, reloadAreaMessages } from '@/lib/screen-language'
   import { language, messagesChanged } from '@/lib/i18n.svelte'
-  import { saysSessionMissing, type SessionInfo } from '@shared/protocol'
+  import { saysSessionMissing, type SessionInfo, type StaffGuest } from '@shared/protocol'
 
   // Removing a deleted room is the only entry-screen operation that needs
   // IndexedDB; normal cold entry must not download the notebook CRDT for it.
@@ -145,6 +145,12 @@
 
   let session = $state<SessionInfo | null>(null)
   let identity = $state<StoredIdentity | null>(null)
+  /**
+   * A signed-in teacher who is only a participant in this room, and why
+   * (Paper U5a). The server says it on every join, so it lives here, next to
+   * the identity it explains, and is forgotten with the room.
+   */
+  let staffGuest = $state<StaffGuest | null>(null)
   let failure = $state<{ missing: boolean; message: string } | null>(null)
   /** The room is known, not guessed: see `enter`. */
   let confirmed = $state(false)
@@ -263,6 +269,7 @@
   function enter(id: string | null): void {
     failure = null
     notice = null
+    staffGuest = null
     identity = id ? loadIdentity(id) : null
     const cached = id ? recallSessionInfo(id) : null
     /*
@@ -421,18 +428,40 @@
    * with the same rules, reading the same HttpOnly cookie. A stale mark is worth
    * exactly one refused request, after which it is dropped.
    */
+  /*
+   * Since 0.19 the decision can also go the other way: a teacher who hosted
+   * this room last week and has since been removed from its course still has
+   * an identity saying "host" here. So a stored host is asked too — once per
+   * room and participant per page load (`roleAskedFor`, deliberately not
+   * reactive: the answer replaces `identity`, which would otherwise ask
+   * again, forever).
+   */
+  let roleAskedFor: string | null = null
   $effect(() => {
     const id = sessionId
     const me = identity
-    if (!id || !me || me.role === 'host' || !mightBeStaff()) return
+    if (!id || !me || !mightBeStaff()) return
+    const key = `${id}\u0000${me.participantId}`
+    if (roleAskedFor === key) return
+    roleAskedFor = key
 
     let cancelled = false
     // One helper for both screens — see screens/staff.ts: removing the mark
     // and parsing the "no"/"don't know" answer lived here and in JoinScreen,
     // each in its own way.
     void upgradeIfStaff(id, me)
-      .then((next) => {
-        if (!cancelled && next) identity = next
+      .then((answer) => {
+        if (cancelled) return
+        if (answer.kind === 'host') {
+          staffGuest = null
+          identity = answer.identity
+        } else if (answer.kind === 'guest') {
+          // A teacher who is a guest here keeps their seat as a participant;
+          // the room only learns why, so it can say so instead of looking
+          // broken. A saved "host" is corrected with the fresh identity.
+          staffGuest = answer.guest
+          if (me.role !== answer.identity.role) identity = answer.identity
+        } else staffGuest = null
       })
       .catch(() => {
         // Offline, or the server blinked. Whoever is here keeps working as
@@ -671,6 +700,7 @@
       <Workspace
         session={room}
         identity={me}
+        {staffGuest}
         {mode}
         {councilCell}
         onnavigate={(next) => navigate(next)}
@@ -686,6 +716,11 @@
     {session}
     {notice}
     onjoining={() => { void workspace().catch(() => {}) }}
-    onjoined={(next) => (identity = next)}
+    onjoined={(next, guest) => {
+      staffGuest = guest
+      // This join has just answered the role question for this participant.
+      roleAskedFor = `${next.sessionId}\u0000${next.participantId}`
+      identity = next
+    }}
   />
 {/if}

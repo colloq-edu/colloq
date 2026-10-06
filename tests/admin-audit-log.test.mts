@@ -233,6 +233,31 @@ test('every change to the staff list and every sign-in is recorded, with who and
 
 /* ------------------------------------------------ rooms, courses, pages */
 
+test('creating a room and changing who teaches a course or a room are recorded', async () => {
+  const lena = createTeacher({ name: 'Лена Кузнецова', email: 'lena.audit@example.edu', role: 'teacher' })!
+  rotateLinkKey(lena.id)
+
+  const made = await call('POST', '/api/admin/seminars', { cookie: ownerCookie, body: { name: 'Аудит: занятие' } })
+  assert.equal(made.status, 201)
+  const { id: room } = (await made.json()) as { id: string }
+  const created = last('room.created')
+  assert.deepEqual(created.target, { type: 'room', id: room, label: 'Аудит: занятие' })
+  assert.equal(created.actor?.id, owner.id)
+
+  assert.equal((await call('POST', `/api/admin/seminars/${room}/teachers`, { cookie: ownerCookie, body: { staffId: lena.id } })).status, 201)
+  assert.equal(last('room.teacher_added').detail?.staff, lena.id)
+  assert.equal((await call('DELETE', `/api/admin/seminars/${room}/teachers/${lena.id}`, { cookie: ownerCookie })).status, 200)
+  assert.equal(last('room.teacher_removed').detail?.staff, lena.id)
+
+  const course = await call('POST', '/api/admin/courses', { cookie: ownerCookie, body: { name: 'Аудит: курс' } })
+  const { course: { id: courseId } } = (await course.json()) as { course: { id: string } }
+  assert.equal((await call('POST', `/api/admin/courses/${courseId}/teachers`, { cookie: ownerCookie, body: { staffId: lena.id } })).status, 201)
+  const added = last('course.teacher_added')
+  assert.deepEqual([added.target?.id, added.detail?.staff], [courseId, lena.id])
+  assert.equal((await call('DELETE', `/api/admin/courses/${courseId}/teachers/${lena.id}`, { cookie: ownerCookie })).status, 200)
+  assert.equal(last('course.teacher_removed').detail?.staff, lena.id)
+})
+
 test('deleting a room, making and deleting a course and every change of a public page are recorded', async () => {
   createSession('auditroom', 'Семинар 7', null)
   assert.equal((await call('DELETE', '/api/admin/seminars/auditroom', { cookie: ownerCookie })).status, 204)

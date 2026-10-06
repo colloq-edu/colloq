@@ -8,6 +8,7 @@ import * as encoding from 'lib0/encoding'
 import * as sync from 'y-protocols/sync'
 import { createSession, isFinished, setRules, db } from '../server/src/db.js'
 import { createTeacher, rotateLinkKey, deleteTeacher } from '../server/src/admin/store.js'
+import { addRoomTeacher } from '../server/src/admin/access.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { signToken, verifyToken, signHandoffToken, verifyHandoffToken } from '../server/src/auth.js'
 import { roleFor } from '../server/src/routes/sessions.js'
@@ -32,6 +33,8 @@ for (const action of ['remove', 'rotate', 'external-rotate'] as const) test(`sta
   createSession(id, 'Authorization regression', null)
   setRules(id, LECTURE_ROOM)
   const teacher = createTeacher({name:'Temporary',email:`${id}@test.local`,role:'teacher'})!
+  // Host because they teach this room (0.19): a cookie alone is host nowhere.
+  addRoomTeacher(id, teacher.id, null)
   let cookie = ''
   issueStaffCookie({cookie:(name:string,value:string)=>{cookie=`${name}=${value}`}} as any, teacher)
   const payload = {sessionId:id,participantId:'temporary',role:roleFor(cookie,{sessionId:id,participantId:'temporary'})}
@@ -62,6 +65,7 @@ for (const action of ['remove', 'rotate', 'external-rotate'] as const) test(`sta
 
 test('rotating a staff link durably invalidates handed-off tokens and unclaimed links', () => {
   const teacher = createTeacher({name:'Temporary',email:'handoff-version@test.local',role:'teacher'})!
+  addRoomTeacher('handoff-version', teacher.id, null)
   const payload = {sessionId:'handoff-version',participantId:'temporary',role:'host' as const,staff:teacher.id}
   const token = signToken(payload)
   const handoff = signHandoffToken(payload.sessionId,payload.participantId,teacher.id)

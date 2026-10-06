@@ -28,7 +28,7 @@ import {
   type CourseItemPlanned,
   type CourseItemSeminar,
 } from '@shared/publish'
-import { LIMITS, type AdminSeminar } from '@shared/admin'
+import { LIMITS, type AdminSeminar, type SeatRequest } from '@shared/admin'
 
 /** The optional fields of a plan row form. */
 export interface PlanFields {
@@ -229,41 +229,6 @@ export function seatSeminar(
 }
 
 /**
- * Seat a room that was just created into its course row, once more on a race.
- *
- * The row was chosen on the creation form a minute ago; by now someone may
- * have reordered the course (a 409, retried once against the fresh list) or
- * put another room into that very row ('taken': the room stays, outside the
- * course). The calls are passed in so the decision is testable without a
- * server.
- */
-export async function seatCreated(
-  rowId: string,
-  seminar: { id: string; name: string },
-  io: {
-    load: () => Promise<Course>
-    save: (rev: number, items: CourseItem[]) => Promise<unknown>
-    isConflict: (cause: unknown) => boolean
-  },
-): Promise<'seated' | 'taken'> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const course = await io.load()
-    const at = course.items.findIndex((item) => item.id === rowId)
-    const row = course.items[at]
-    if (!row || row.kind !== 'planned' || row.pause) return 'taken'
-    const next = seatSeminar(course.items, { at, was: row }, seminar)
-    if (!next) return 'taken'
-    try {
-      await io.save(course.rev, next)
-      return 'seated'
-    } catch (cause) {
-      if (!io.isConflict(cause) || attempt > 0) throw cause
-    }
-  }
-  return 'taken'
-}
-
-/**
  * How many rows are in which state: «3 со страницей · 30 по плану».
  *
  * The course list counted only classes — "2 published · 1 not yet" — and a
@@ -376,7 +341,7 @@ export function roomChoices(
   }))
 }
 
-/** One unseated plan row, as the «Занятие курса» select offers it. */
+/** One unseated plan row, as the new room form's «Строка курса» select offers it. */
 export interface ClassOption {
   courseId: string
   courseName: string
@@ -426,32 +391,123 @@ export function classOptions(courses: readonly Course[], today: string): ClassOp
 }
 
 /**
- * Which row a new room most likely belongs to.
+ * Where a new room goes: a course and a row in it.
  *
- * The course of the teacher's own most recently created room that sits in a
- * course (anyone's, when they have none), and in it the first unseated row
- * dated today or later; a course whose rows have no days at all offers its
- * first unseated row. `null` — nothing to suggest: «Без курса».
+ * `courseId: null` is «Без курса». `rowId: null` inside a course is «новой
+ * строкой в конце»: the server appends a seminar row instead of replacing a
+ * plan row (routes/admin-instance.ts · seat).
  */
-export function defaultClass(
+export interface RoomPlace {
+  courseId: string | null
+  rowId: string | null
+}
+
+export const NO_COURSE: RoomPlace = { courseId: null, rowId: null }
+
+/** The rows a course still has for a room, nearest first (they come from classOptions). */
+export function rowsOf(options: readonly ClassOption[], courseId: string | null): ClassOption[] {
+  return courseId === null ? [] : options.filter((option) => option.courseId === courseId)
+}
+
+/**
+ * A course card was picked: the course and its nearest row.
+ *
+ * The nearest by classOptions' order — today and ahead first, then the most
+ * recent row already gone (a class held before its room was made). A course
+ * with no open row left takes the room at the end.
+ */
+export function placeInCourse(options: readonly ClassOption[], courseId: string): RoomPlace {
+  return { courseId, rowId: rowsOf(options, courseId)[0]?.rowId ?? null }
+}
+
+/** One card of the «Курс» block: «ведут 3 · следующая строка: 05, вс 11 окт». */
+export interface CourseCard {
+  id: string
+  name: string
+  /** How many teachers the course has; null when the server did not say. */
+  teachers: number | null
+  /** The row a pick of this card takes, or null: the room goes to the end. */
+  next: ClassOption | null
+}
+
+export function courseCards(
+  courses: readonly Pick<Course, 'id' | 'name' | 'teachers'>[],
   options: readonly ClassOption[],
-  seminars: readonly Pick<AdminSeminar, 'createdAt' | 'createdBy' | 'courses'>[],
+): CourseCard[] {
+  return courses.map((course) => ({
+    id: course.id,
+    name: course.name,
+    teachers: course.teachers ? course.teachers.length : null,
+    next: rowsOf(options, course.id)[0] ?? null,
+  }))
+}
+
+/**
+ * What the address asked for: ?course=<id>&row=<rowId> from a course row,
+ * ?course=<id> from a course's folder or its «+ Занятие в курс», and
+ * ?course=none from the «Без курса» folder.
+ *
+ * `null` — nothing to go by (no prefill, or a course not in the list): the
+ * default decides. A row that is no longer open (taken, made a break, gone
+ * since the link was made) keeps the course and falls to its nearest row:
+ * the teacher asked for this course, and the row select under the cards
+ * says which row it is now.
+ */
+export function prefillPlace(
+  prefill: { course: string; row?: string | null } | null,
+  courses: readonly Pick<Course, 'id'>[],
+  options: readonly ClassOption[],
+): RoomPlace | null {
+  if (!prefill) return null
+  if (prefill.course === 'none') return NO_COURSE
+  if (!courses.some((course) => course.id === prefill.course)) return null
+  const row = prefill.row ? rowsOf(options, prefill.course).find((o) => o.rowId === prefill.row) : undefined
+  return row ? { courseId: prefill.course, rowId: row.rowId } : placeInCourse(options, prefill.course)
+}
+
+/**
+ * Which row a new room most likely belongs to, when nothing asked.
+ *
+ * The course of the teacher's own most recently created room that sits in one
+ * of their courses (by staff id: names are not unique and change); failing
+ * that, of the most recent seated room they teach; failing that, their only
+ * course. In it, the first open row dated today or later — or, in a course
+ * whose rows have no days at all, its first open row.
+ *
+ * Everything else is «Без курса», and on purpose: a course with only past
+ * rows left, or a teacher with several courses and no history, gets no guess.
+ * A wrong guess seats a scratch room into a course page the whole cohort
+ * reads; a missing one costs one click on a card. The rooms passed in are
+ * the caller's own list (scope=mine), so no other teacher's habits leak in.
+ */
+export function defaultPlace(
+  options: readonly ClassOption[],
+  courses: readonly Pick<Course, 'id'>[],
+  seminars: readonly Pick<AdminSeminar, 'createdAt' | 'courses' | 'teachers'>[],
   me: string | null,
   today: string,
-): ClassOption | null {
+): RoomPlace {
+  const listed = new Set(courses.map((course) => course.id))
   const seated = seminars
-    .filter((s) => s.courses.length > 0)
-    .sort((a, b) => b.createdAt - a.createdAt)
-  const mine = seated.find((s) => me !== null && s.createdBy === me) ?? seated[0]
-  const courseId = mine?.courses[0]?.id
-  if (!courseId) return null
-  const inCourse = options.filter((o) => o.courseId === courseId)
+    .map((s) => ({ s, course: s.courses.find((c) => listed.has(c.id))?.id ?? null }))
+    .filter((entry): entry is { s: (typeof seminars)[number]; course: string } => entry.course !== null)
+    .sort((a, b) => b.s.createdAt - a.s.createdAt)
+  const own = seated.find((entry) => me !== null && (entry.s.teachers ?? []).some((t) => t.id === me))
+  const courseId = (own ?? seated[0])?.course ?? (courses.length === 1 ? courses[0].id : null)
+  if (!courseId) return NO_COURSE
+  const inCourse = rowsOf(options, courseId)
   const ahead = inCourse
     .filter((o) => o.day !== null && o.day >= today)
     .sort((a, b) => (a.day! < b.day! ? -1 : a.day! > b.day! ? 1 : 0))
-  if (ahead.length > 0) return ahead[0]
-  if (inCourse.every((o) => o.day === null)) return inCourse[0] ?? null
-  return null
+  if (ahead.length > 0) return { courseId, rowId: ahead[0].rowId }
+  if (inCourse.length > 0 && inCourse.every((o) => o.day === null)) return { courseId, rowId: inCourse[0].rowId }
+  return NO_COURSE
+}
+
+/** The `seat` of a creation request for a place, or nothing for «Без курса». */
+export function seatFor(place: RoomPlace): SeatRequest | undefined {
+  if (place.courseId === null) return undefined
+  return place.rowId ? { courseId: place.courseId, rowId: place.rowId } : { courseId: place.courseId }
 }
 
 /** «04 · Лики и хаки данных»: the room name a course row suggests, cut to what a room name holds. */

@@ -4,24 +4,46 @@
   import { onMount } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Check from '@/admin/ui/Check.svelte'
-  import Choice from '@/admin/ui/Choice.svelte'
   import EmptyState from '@/admin/ui/EmptyState.svelte'
   import SearchField from '@/admin/ui/SearchField.svelte'
   import Badge from '@/admin/screens/competitions/Badge.svelte'
   import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
+  import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { people, ruleRefusal, runningLine } from '@/admin/panel'
+  import { localDay, twoDigits } from '@/admin/course-plan'
+  import { courseColor } from '@/admin/course-color'
+  import {
+    SCOPE_KEY,
+    folderCounts,
+    groupRows,
+    inFolder,
+    matches,
+    phaseForTabs,
+    railCourses,
+    readScope,
+    seatsOf,
+    tabCounts,
+    type Folder,
+    type ListRow,
+    type StatusTab,
+  } from '@/admin/seminar-list'
   import { seminarLink } from '@/lib/seminar-link'
   import { cn } from '@/lib/utils'
   import {
     LIMITS,
-    type AdminEnvironment,
     type AdminSeminar,
-    type ImportPreview,
     type InstanceResources,
+    type ListScope,
+    type MemberTeacher,
+    type TeacherRef,
+    type TeacherWithCourses,
   } from '@shared/admin'
+  import { MAX_COURSE_NAME, type Course } from '@shared/publish'
+  import { formatDay } from '@shared/class-day'
+  import { colorForId } from '@shared/protocol'
   import { copyText } from '@/lib/clipboard'
   import { plural } from '@/lib/plural'
   import RoomRulesRows from '@/components/RoomRulesRows.svelte'
@@ -33,19 +55,47 @@
    * link. It is on every row as a button, it is on the running banner, and it
    * is focused the moment a seminar is created — because the alternative is
    * opening a room to find its address, which is how a class starts late.
+   *
+   * Since 0.19 the list is the viewer's, not the instance's: a teacher gets
+   * the rooms they teach (their own and their courses'), an owner gets the
+   * same by default and the whole instance behind «Все». It is read the way
+   * a teacher thinks about it — folders on the left (all, outside any course,
+   * each course, the archive), what is on now / ahead / behind in the tabs,
+   * and rows grouped by course. Which room lands where is decided in
+   * admin/seminar-list.ts, so every number on the screen comes from one place.
    */
 
   let seminars = $state<AdminSeminar[]>([])
+  /**
+   * The courses for the rail and the group headers: names, teachers, and the
+   * rows that give a room its «05» and its class day.
+   *
+   * An owner always reads every course, whichever scope the rooms are in: a
+   * room the owner teaches can sit in a course the owner does not, and
+   * without that course's rows the room lost its number and its class day on
+   * «Мои». The rail still lists only the owner's courses there (`rail`).
+   */
+  let courses = $state<Course[]>([])
   let loading = $state(true)
   let loadErrorText = $state<(() => string | null) | null>(null)
   const loadError = $derived(loadErrorText?.() ?? null)
   let query = $state('')
   /** Ticks with the poll below so "started 12 min ago" does not freeze at 12. */
   let now = $state(Date.now())
+  /**
+   * «Сегодня» for the tabs and the date column. The browser's day: the list
+   * has no single instance day to ask for (the course screen asks per
+   * course), and a day's difference at midnight in another zone moves a row
+   * between two tabs, not out of the list.
+   */
+  const today = $derived(localDay(now))
 
   interface Props {
-    /** Hands over to the full New seminar screen; absent keeps the inline row. */
-    onfull?: () => void
+    /**
+     * Hands over to the full New seminar screen; `folder` is the course id
+     * (or 'none' for «Без курса») the form should start on.
+     */
+    onfull?: (folder?: string | null) => void
     /**
      * A seminar made on the other screen, so this one can put the room at the
      * top and the cursor on its Copy button — the same landing the inline form
@@ -62,9 +112,189 @@
     onarrived?: () => void
     /** Leads to the publishing screen: a decision, not a menu item with an effect. */
     onpublish?: (sessionId: string) => void
+    /**
+     * The panel's router: a course from a group header, a new room already
+     * aimed at a course (/admin/new?course=<id>), a course just created from
+     * the rail. Optional so the screen still renders without it; the links
+     * then fall back to the plain New seminar step.
+     */
+    navigate?: (path: string) => void
   }
 
-  let { onfull, arrived = null, onarrived, onpublish }: Props = $props()
+  let { onfull, arrived = null, onarrived, onpublish, navigate }: Props = $props()
+
+  /* --------------------------------------------------------------- scope */
+
+  const owner = $derived(adminAuth.isOwner)
+  /**
+   * «Мои» or «Все» — an owner's choice, remembered on this browser.
+   *
+   * Only an owner has the toggle; for a teacher this is always 'mine', and
+   * readScope says so even when the browser remembers 'all' from a time this
+   * person was an owner, so they never ask for a list the server refuses.
+   */
+  let scope = $state<ListScope>(
+    readScope(() => localStorage.getItem(SCOPE_KEY), adminAuth.isOwner),
+  )
+  /**
+   * The «Все» number while «Мои» is open. Known only once «Все» has been
+   * loaded in this tab: counting the whole instance just to print one figure
+   * is the very request the scoped list exists to avoid. Until then the
+   * toggle shows the word without a number rather than a guess.
+   */
+  let allCount = $state<number | null>(null)
+
+  function chooseScope(next: ListScope): void {
+    if (scope === next) return
+    scope = next
+    try {
+      localStorage.setItem(SCOPE_KEY, next)
+    } catch {
+      // A private window or blocked storage: the choice holds for this tab.
+    }
+    // A course folder from the other scope may not exist in this one.
+    folder = 'all'
+    // A response for the old scope is about a different list.
+    generation += 1
+    void load()
+  }
+
+  /* ------------------------------------------------------------- folders */
+
+  let folder = $state<Folder>('all')
+  let tab = $state<StatusTab>('all')
+
+  const seats = $derived(seatsOf(courses))
+  const counts = $derived(folderCounts(seminars))
+  const rail = $derived(
+    railCourses(scope === 'all' ? courses : courses.filter((c) => c.mine !== false), seminars),
+  )
+  const courseById = $derived(new Map(courses.map((course) => [course.id, course])))
+  /** «Мои N»: rooms the viewer teaches, whichever scope is loaded. */
+  const mineCount = $derived(seminars.filter((s) => s.mine && !s.archivedAt).length)
+
+  const needle = $derived(query.trim().toLowerCase())
+  /** The folder's rooms, before search and tab: the footer's "of N". */
+  const folderRooms = $derived(seminars.filter((s) => inFolder(s, folder)))
+  const searched = $derived(folderRooms.filter((s) => matches(s, needle)))
+  const tabs = $derived(tabCounts(searched, seats, today))
+  const shown = $derived(
+    tab === 'all' ? searched : searched.filter((s) => phaseForTabs(s, seats, today) === tab),
+  )
+  const groups = $derived(groupRows(shown, rail, seats, folder, today))
+
+  /*
+   * A folder that is no longer there is not left selected over an empty list.
+   * The archive empties when its last room is moved back; a course leaves
+   * the rail when the scope changes or the viewer is taken off it.
+   */
+  $effect(() => {
+    if (loading) return
+    if (folder === 'archive' && counts.archive === 0) folder = 'all'
+    else if (folder.startsWith('course:') && !rail.some((c) => `course:${c.id}` === folder)) folder = 'all'
+  })
+
+  /**
+   * A teacher nobody has put anywhere yet (U5b): no course and no room. The
+   * screen says what will happen and offers the two ways forward, instead of
+   * a rail of empty folders over an empty table.
+   */
+  const untouched = $derived(
+    !loading && !loadError && !owner && seminars.length === 0 && courses.length === 0,
+  )
+
+  /**
+   * Open the New seminar form aimed at a course, or at no course ('none').
+   * &from=list: the form was opened from this list, so the way back after
+   * creating is the list with the new room highlighted, not the course page
+   * (AdminScreen.svelte · newRoomFrom).
+   */
+  function newIn(course: string): void {
+    if (navigate) navigate(`/admin/new?course=${encodeURIComponent(course)}&from=list`)
+    else onfull?.(course)
+  }
+
+  function startCreate(): void {
+    if (onfull) onfull()
+    else navigate?.('/admin/new')
+  }
+
+  /*
+   * «+ Новый курс» right in the rail: a name is all a course needs to exist,
+   * and the course screen is where the rest of it (plan, teachers, address)
+   * is set up, so creating lands there.
+   */
+  let newCourseOpen = $state(false)
+  let newCourseName = $state('')
+  let newCourseBusy = $state(false)
+  let newCourseErrorText = $state<(() => string) | null>(null)
+  const newCourseError = $derived(newCourseErrorText?.() ?? null)
+
+  async function createCourse(event: SubmitEvent): Promise<void> {
+    event.preventDefault()
+    const name = newCourseName.trim()
+    if (!name || newCourseBusy) return
+    newCourseBusy = true
+    newCourseErrorText = null
+    try {
+      const course = await adminApi.createCourse({ name })
+      if (navCounts.courses !== null) navCounts.courses += 1
+      newCourseOpen = false
+      newCourseName = ''
+      if (navigate) navigate(`/admin/courses/${course.id}`)
+      else void load()
+    } catch (cause: unknown) {
+      noteDeadCookie(cause)
+      newCourseErrorText = () => tr('admin.seminars.list.folder.newCourseFailed', { reason: explain(cause) })
+    } finally {
+      newCourseBusy = false
+    }
+  }
+
+  function openNewCourse(): void {
+    newCourseOpen = true
+    newCourseErrorText = null
+  }
+
+  /* ---------------------------------------------------------------- rows */
+
+  /** The class day as a row prints it: «сегодня», «вс, 18 окт», a year when not this one. */
+  function dayLabel(row: ListRow): string {
+    if (row.day === today) return tr('admin.seminars.list.row.today')
+    return formatDay(row.day, getLocale(), { year: row.day.slice(0, 4) !== today.slice(0, 4) })
+  }
+
+  /** Whether a room teacher is the signed-in person. By id: names are not unique. */
+  const isMe = (ref: TeacherRef): boolean => ref.id === me?.id
+
+  /**
+   * «автор: Лера В.» — or «вы». `createdBy` is a display name written at
+   * creation, so «вы» needs the id as well: a namesake must not read as you.
+   */
+  function authorOf(seminar: AdminSeminar): string | null {
+    if (!seminar.createdBy) return null
+    const mine = seminar.createdBy === me?.name && seminar.teachers.some(isMe)
+    return mine ? tr('admin.seminars.list.row.you') : seminar.createdBy
+  }
+
+  /** The room's other own teachers: everyone in room_teachers but the author. */
+  function coTeachersOf(seminar: AdminSeminar): string[] {
+    let authorSkipped = false
+    const out: string[] = []
+    for (const ref of seminar.teachers) {
+      if (!authorSkipped && seminar.createdBy !== null && ref.name === seminar.createdBy) {
+        authorSkipped = true
+        continue
+      }
+      out.push(isMe(ref) ? tr('admin.seminars.list.row.you') : ref.name)
+    }
+    return out
+  }
+
+  /** «ведут: …» on a course group: the course's teachers, by name. */
+  function courseTeachers(id: string): string[] {
+    return (courseById.get(id)?.teachers ?? []).map((t) => t.name)
+  }
 
   /**
    * Withdraw or restore the public page.
@@ -78,7 +308,7 @@
       if (hide) await adminApi.withdraw(seminar.id)
       else await adminApi.republish(seminar.id)
       // Re-read the list: the row's publication state has changed.
-      local(await adminApi.listSeminars())
+      local(await adminApi.listSeminars(scope))
     } catch (cause: unknown) {
       noteDeadCookie(cause)
       rowError = { id: seminar.id, message: () => (tr("admin.could.not.update.the.publication", { p0: explain(cause) })) }
@@ -116,92 +346,16 @@
   $effect(() => {
     if (!arrived) return
     query = ''
+    // The folder and the tab are filters too: a new room is in «Все
+    // занятия» and, before its class, under «Предстоят» — not necessarily in
+    // the course or the tab that happened to be open.
+    folder = 'all'
+    tab = 'all'
     justCreatedId = arrived
     void load()
     onarrived?.()
   })
 
-  let creating = $state(false)
-  /**
-   * Environments for the dropdown. Loaded once and only when the form opens:
-   * the seminar list screen does not need them, and the request goes to
-   * docker and costs noticeably more than reading the table.
-   */
-  let environments = $state<AdminEnvironment[] | null>(null)
-  let newEnvironment = $state('')
-
-  /*
-   * Import from GitHub. A teacher's material almost never lives in this
-   * product — it lives in the course repository, a notebook per week, with
-   * the csv that notebook reads lying next to it. Asking to move everything
-   * by hand means asking people not to use the tool.
-   *
-   * The preview is a separate step on purpose: "a hundred and ten cells and
-   * train.csv" has to be seen BEFORE the room appears, not after.
-   */
-  let fromGithub = $state(false)
-  let githubUrl = $state('')
-  let preview = $state<ImportPreview | null>(null)
-  let previewing = $state(false)
-  let previewErrorText = $state<(() => string | null) | null>(null)
-  const previewError = $derived(previewErrorText?.() ?? null)
-
-  let previewTimer: number | undefined
-  $effect(() => {
-    const url = githubUrl.trim()
-    window.clearTimeout(previewTimer)
-    preview = null
-    previewErrorText = null
-    if (!fromGithub || url.length < 20) return
-    // A pause, not a request per keystroke: the link is pasted whole, but it
-    // also gets finished by hand, and every request goes out to GitHub.
-    previewTimer = window.setTimeout(() => {
-      previewing = true
-      void adminApi
-        .previewImport(url)
-        .then((p) => {
-          preview = p
-          if (!newName.trim()) newName = p.name
-        })
-        .catch((cause) => (previewErrorText = () => (explain(cause))))
-        .finally(() => (previewing = false))
-    }, 500)
-    return () => window.clearTimeout(previewTimer)
-  })
-
-  async function importFromGithub(event: SubmitEvent): Promise<void> {
-    event.preventDefault()
-    const url = githubUrl.trim()
-    if (!url || createBusy || !preview) return
-    createBusy = true
-    createErrorText = null
-    try {
-      const done = await adminApi.importSeminar({
-        url,
-        name: newName.trim() || undefined,
-        environment: newEnvironment || null,
-      })
-      local(await adminApi.listSeminars())
-      query = ''
-      justCreatedId = done.id
-      creating = false
-      fromGithub = false
-      githubUrl = ''
-      newName = ''
-      newEnvironment = ''
-      preview = null
-    } catch (cause: unknown) {
-      noteDeadCookie(cause)
-      createErrorText = () => (explain(cause))
-    } finally {
-      createBusy = false
-    }
-  }
-  let newName = $state('')
-  let createBusy = $state(false)
-  let createErrorText = $state<(() => string | null) | null>(null)
-  const createError = $derived(createErrorText?.() ?? null)
-  let nameInput = $state<HTMLInputElement | null>(null)
   let justCreatedId = $state<string | null>(null)
 
   let copiedId = $state<string | null>(null)
@@ -273,32 +427,16 @@
   const deleteError = $derived(deleteErrorText?.() ?? null)
   let cancelButton = $state<HTMLButtonElement | null>(null)
 
-  const live = $derived(seminars.filter((s) => s.status === 'live'))
-  const needle = $derived(query.trim().toLowerCase())
   /**
-   * Archived seminars are off the list until asked for.
-   *
-   * The button says "To take it off the list… archive it" and the list did not
-   * take it off anything: a term of archived rooms sat between this week's,
-   * and the word meant nothing. They are still reachable — a checkbox away,
-   * with a count, because archiving is a label and not a deletion.
+   * The running banner: live rooms the viewer teaches. On an owner's «Все»
+   * this keeps the plate to the owner's own classes — a dozen live rooms
+   * across a university are the «Идут» tab's job, not a stack of banners
+   * pushing the list below the fold.
    */
-  let showArchived = $state(false)
-  const archivedCount = $derived(seminars.filter((s) => s.archivedAt).length)
-  const shown = $derived(
-    seminars
-      .filter((s) => showArchived || !s.archivedAt)
-      .filter((s) => (needle ? s.name.toLowerCase().includes(needle) : true)),
-  )
+  const live = $derived(seminars.filter((s) => s.status === 'live' && s.mine))
   const canDelete = $derived(adminAuth.isOwner)
-  /** Whose seminar this is — checked against createdBy, written with the same name. */
+  /** The signed-in teacher: «вы» in the rows and in the teachers' chips. */
   const me = $derived(adminAuth.me?.teacher ?? null)
-
-  /** The two sources of the inline create row, as the panel's option chips. */
-  const SOURCES = $derived([
-    { value: 'blank', label: tr('admin.blank') },
-    { value: 'github', label: tr('admin.from.github') },
-  ])
 
   /* ----------------------------------------------------------- formatting */
 
@@ -326,10 +464,6 @@
     }
   }
 
-  function stamp(ts: number): string {
-    const date = new Date(ts)
-    return `${String(date.getDate()).padStart(2, '0')}.${String(date.getMonth() + 1).padStart(2, '0')}`
-  }
 
   const count = (n: number, noun: string): string => tr(`admin.count.${noun}`, { count: n })
 
@@ -384,23 +518,37 @@
   }
 
   /*
-   * The sidebar's "Seminars 5" is the length of this list, so it is mirrored
-   * from here rather than fetched twice — otherwise the count keeps standing at
-   * the number it had before the row you just deleted.
+   * The sidebar's "Seminars 5" is this list's own number, so it is mirrored
+   * from here rather than fetched twice — otherwise the count keeps standing
+   * at the number it had before the row you just deleted. It is the «Мои»
+   * number without the archive, the same figure the rail's toggle shows: an
+   * owner looking at «Все» still sees how many classes are theirs, and the
+   * shell counts the same way when this screen is not open (AdminShell).
    */
   $effect(() => {
-    if (!loading) navCounts.seminars = seminars.length
+    if (!loading) navCounts.seminars = mineCount
   })
 
   async function load(silent = false): Promise<void> {
     if (!silent) loading = true
     const started = generation
+    const asked = scope
     try {
-      const list = await adminApi.listSeminars()
+      /*
+       * The courses ride along: the rail, the group headers and every row's
+       * «05» come from them. Their failure costs the grouping its names and
+       * numbers, not the list, so it does not fail the rooms.
+       */
+      const [list, courseList] = await Promise.all([
+        adminApi.listSeminars(asked),
+        adminApi.listCourses(owner ? 'all' : 'mine').catch(() => null),
+      ])
       // Something changed on screen while the response was on its way. That
       // edit is newer.
-      if (started !== generation) return
+      if (started !== generation || asked !== scope) return
       seminars = list
+      if (courseList) courses = courseList
+      if (asked === 'all') allCount = list.filter((s) => !s.archivedAt).length
       loadErrorText = null
     } catch (cause: unknown) {
       noteDeadCookie(cause)
@@ -426,6 +574,10 @@
       if (event.key !== 'Escape') return
       if (doomed) {
         if (!deleteBusy) doomed = null
+        return
+      }
+      if (pickerOpen) {
+        pickerOpen = false
         return
       }
       openMenuId = null
@@ -463,52 +615,6 @@
       window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('resize', onScroll)
     }
-  })
-
-  /* -------------------------------------------------------------- create */
-
-  function startCreate(): void {
-    /*
-     * The inline row stays for the seminar you make in a hurry between two
-     * classes. Anything that needs a decision — the room's rules, the oracle,
-     * a notebook off GitHub — has a screen of its own, and this hands over to
-     * it rather than growing a form inside a table cell.
-     */
-    if (onfull) {
-      onfull()
-      return
-    }
-    creating = true
-    if (environments === null) {
-      void adminApi
-        .listEnvironments()
-        .then((r) => {
-          environments = r.environments
-          /*
-           * Preselect the instance's default. There is deliberately no empty
-           * "as on the instance" option here: it was a third state and
-           * contradicted the promise that a room's environment is chosen once
-           * and does not change under it afterwards. An unfilled list is just
-           * an empty field that does not tell what the seminar will get.
-           */
-          if (!newEnvironment) newEnvironment = r.environments.find((e) => e.active)?.name ?? ''
-        })
-        // No harm: without the list the form simply shows no choice, and the
-        // seminar gets the default environment — the same as it always has.
-        .catch(() => (environments = []))
-    }
-    createErrorText = null
-  }
-
-  function cancelCreate(): void {
-    creating = false
-    newName = ''
-    createErrorText = null
-  }
-
-  // The field lands a paint after the row does, so focus follows the element.
-  $effect(() => {
-    if (creating) nameInput?.focus()
   })
 
   /**
@@ -549,31 +655,6 @@
     button.focus()
   })
 
-  async function create(event: SubmitEvent): Promise<void> {
-    event.preventDefault()
-    const name = newName.trim()
-    if (!name || createBusy) return
-
-    createBusy = true
-    createErrorText = null
-    try {
-      const seminar = await adminApi.createSeminar({ name, environment: newEnvironment || null })
-      // A filter that hides the row you just made would send the teacher
-      // hunting for a seminar they are looking straight at.
-      query = ''
-      local([seminar, ...seminars.filter((s) => s.id !== seminar.id)])
-      justCreatedId = seminar.id
-      creating = false
-      newName = ''
-      newEnvironment = ''
-    } catch (cause: unknown) {
-      noteDeadCookie(cause)
-      createErrorText = () => (explain(cause))
-    } finally {
-      createBusy = false
-    }
-  }
-
   /* ---------------------------------------------------------------- link */
 
   async function copy(seminar: AdminSeminar): Promise<void> {
@@ -608,8 +689,9 @@
    * — fixing your own typo is not affected.
    */
   function othersLive(seminar: AdminSeminar): boolean {
-    const mine = !seminar.createdBy || seminar.createdBy === me?.name
-    return !mine && seminar.liveCount > 0
+    // "Someone else's" is now a fact from the server, not a name comparison:
+    // a room the viewer does not teach. Only an owner's «Все» lists those.
+    return !seminar.mine && seminar.liveCount > 0
   }
 
   /** "There are 12 people in “ML week 3” right now, and Maria set it up". */
@@ -919,6 +1001,157 @@
       deleteBusy = false
     }
   }
+
+  /* ------------------------------------------------------------- settings */
+
+  function openSettings(seminar: AdminSeminar): void {
+    ruling = seminar
+    memoryErrorText = null
+    // Numbers from the last opening are numbers from the last minute: since
+    // then someone else's room has been closed and memory freed. The window
+    // opens with placeholders and waits for a fresh answer.
+    resources = null
+    readResources()
+    hosts = null
+    hostsErrorText = null
+    pickerOpen = false
+    pickerQuery = ''
+    readHosts(seminar.id)
+  }
+
+  /* ---------------------------------------------------------------- hosts */
+
+  /**
+   * «Ведущие»: the room's own teachers (room_teachers).
+   *
+   * Read when the window opens, not carried by the list: the list has names
+   * only, and the chips need emails for the picker and the server's own
+   * order. The course's teachers are not here — they run the room through
+   * the course, and the line under the chips names them.
+   */
+  let hosts = $state<MemberTeacher[] | null>(null)
+  let hostsBusy = $state(false)
+  let hostsErrorText = $state<(() => string) | null>(null)
+  const hostsError = $derived(hostsErrorText?.() ?? null)
+  /**
+   * Everyone on the staff list, for the picker; asked for on first open, and
+   * again on the next open after a failure (`staffFailed`): an empty list
+   * kept from a failed request would read as «everyone already teaches it».
+   */
+  let staff = $state<TeacherWithCourses[] | null>(null)
+  let staffFailed = $state(false)
+  let pickerOpen = $state(false)
+  let pickerQuery = $state('')
+
+  const refsOf = (list: readonly MemberTeacher[]): TeacherRef[] =>
+    list.map((t) => ({ id: t.id, name: t.name }))
+
+  const candidates = $derived.by(() => {
+    if (!staff || !hosts) return []
+    const taken = new Set(hosts.map((t) => t.id))
+    const q = pickerQuery.trim().toLowerCase()
+    return staff
+      .filter((t) => !taken.has(t.id))
+      .filter((t) => !q || t.name.toLowerCase().includes(q) || t.email.toLowerCase().includes(q))
+      .slice(0, 8)
+  })
+  /** Whether anyone at all is left to add, search aside. */
+  const anyoneLeft = $derived(
+    staff !== null && hosts !== null && staff.some((t) => !hosts!.some((h) => h.id === t.id)),
+  )
+
+  /** «Через курс «…» ведут: …» for each course that seats the room. */
+  const viaCourses = $derived(
+    (ruling?.courses ?? [])
+      .map((ref) => ({ id: ref.id, name: ref.name, teachers: courseTeachers(ref.id) }))
+      .filter((c) => c.teachers.length > 0),
+  )
+
+  function readHosts(id: string): void {
+    void adminApi
+      .roomTeachers(id)
+      .then((list) => {
+        if (ruling?.id === id) hosts = list
+      })
+      .catch((cause: unknown) => {
+        noteDeadCookie(cause)
+        if (ruling?.id === id) {
+          hostsErrorText = () => tr('admin.seminars.list.hosts.failed', { reason: explain(cause) })
+        }
+      })
+  }
+
+  function openPicker(): void {
+    pickerOpen = !pickerOpen
+    pickerQuery = ''
+    if (staff === null) {
+      staffFailed = false
+      void adminApi
+        .listTeachers()
+        .then((list) => (staff = list))
+        .catch((cause: unknown) => {
+          noteDeadCookie(cause)
+          staffFailed = true
+          hostsErrorText = () => tr('admin.seminars.list.hosts.failed', { reason: explain(cause) })
+        })
+    }
+  }
+
+  /** The new list of teachers lands in the window and in the row under it. */
+  function settleHosts(id: string, list: MemberTeacher[]): void {
+    hosts = list
+    const teachers = refsOf(list)
+    patch(id, { teachers })
+    if (ruling?.id === id) ruling = { ...ruling, teachers }
+  }
+
+  async function addHost(staffId: string): Promise<void> {
+    const room = ruling
+    if (!room || hostsBusy) return
+    hostsBusy = true
+    hostsErrorText = null
+    try {
+      settleHosts(room.id, await adminApi.addRoomTeacher(room.id, staffId))
+      pickerOpen = false
+      pickerQuery = ''
+    } catch (cause: unknown) {
+      noteDeadCookie(cause)
+      hostsErrorText = () => tr('admin.seminars.list.hosts.failed', { reason: explain(cause) })
+    } finally {
+      hostsBusy = false
+    }
+  }
+
+  /**
+   * Take someone off the room. The server keeps the last own teacher of a
+   * room outside any course (409, said in the window) unless an owner asks.
+   * Taking yourself off may take the room out of your list — and out of the
+   * window — so that case re-reads the list rather than patching a row the
+   * viewer may no longer be allowed to see. An owner keeps the window (they
+   * still see the room) but re-reads too: the row's `mine`, «Мои N» and the
+   * sidebar count all change with it.
+   */
+  async function removeHost(staffId: string): Promise<void> {
+    const room = ruling
+    if (!room || hostsBusy) return
+    hostsBusy = true
+    hostsErrorText = null
+    try {
+      const list = await adminApi.removeRoomTeacher(room.id, staffId)
+      if (staffId === me?.id && !owner) {
+        ruling = null
+        void load()
+      } else {
+        settleHosts(room.id, list)
+        if (staffId === me?.id) void load()
+      }
+    } catch (cause: unknown) {
+      noteDeadCookie(cause)
+      hostsErrorText = () => tr('admin.seminars.list.hosts.failed', { reason: explain(cause) })
+    } finally {
+      hostsBusy = false
+    }
+  }
 </script>
 
 <AdminPage title={tr("admin.seminars")} subtitle={tr('admin.seminars.lede')}>
@@ -938,24 +1171,16 @@
       short stubs at the left edge, so each takes the whole line there, at
       the panel's 44px finger height. The search is the panel's shared field
       (admin/ui/SearchField), the same box the competitions tab has.
+
+      The «Архив» checkbox that stood between them is a folder in the rail
+      now: a place you go to, rather than a filter people forgot was on.
     -->
     <SearchField
       label={tr("admin.search.seminars.by.name")}
       placeholder={tr("admin.search.seminars")}
       bind:value={query}
+      class="max-[640px]:w-full"
     />
-    {#if archivedCount}
-      <!-- A secondary control, so it wears the secondary button's frame: the
-           same 40px as the field and the action beside it. -->
-      <label
-        class="btn-outline cursor-pointer select-none gap-2 max-[640px]:h-11 max-[640px]:w-full"
-        title="{seminars.length - archivedCount} {tr("admin.active")} {archivedCount} {tr("admin.archived")}"
-      >
-        <Check bind:checked={showArchived} size={16} />
-        {tr("admin.archived.903")}
-        <span class="font-mono tabular-nums text-muted">{archivedCount}</span>
-      </label>
-    {/if}
     <button
       type="button"
       onclick={startCreate}
@@ -967,6 +1192,219 @@
     {/if}
   {/snippet}
 
+  {#if untouched}
+    <!--
+      U5b: a teacher nobody has added anywhere yet. Not "no classes yet" over
+      an empty table: the honest answer is that courses come from other
+      people, and a room outside any course is theirs to make right now.
+    -->
+    <section class="mt-7 border border-line bg-surface p-7 max-[640px]:p-5">
+      <h2 class="text-title font-bold text-ink">{tr('admin.seminars.list.empty.title')}</h2>
+      <p class="mt-2.5 max-w-[620px] text-ui leading-relaxed text-muted">
+        {tr('admin.seminars.list.empty.hint')}
+      </p>
+      <!-- «Создать курс» opens the name field right here (the rail's own
+           form, `createCourse`), which lands on the new course: sending a
+           newcomer to an empty courses list to find the create button again
+           was one step too many. -->
+      {#if newCourseOpen}
+        <form class="mt-5 flex max-w-[480px] flex-col gap-2" onsubmit={createCourse}>
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            bind:value={newCourseName}
+            class="field"
+            placeholder={tr('admin.seminars.list.folder.newCourseName')}
+            aria-label={tr('admin.seminars.list.folder.newCourseName')}
+            maxlength={MAX_COURSE_NAME}
+            autocomplete="off"
+            autofocus
+            onkeydown={(event) => {
+              if (event.key === 'Escape') {
+                event.stopPropagation()
+                newCourseOpen = false
+              }
+            }}
+          />
+          <div class="flex items-center gap-2">
+            <button type="submit" class="btn-primary" disabled={!newCourseName.trim() || newCourseBusy}>
+              {#if newCourseBusy}<Icon name="spinner" size={14} class="animate-spin" />{/if}
+              {tr('admin.seminars.list.folder.newCourseCreate')}
+            </button>
+            <button type="button" class="btn-ghost" onclick={() => (newCourseOpen = false)}>
+              {tr('admin.cancel')}
+            </button>
+          </div>
+          {#if newCourseError}
+            <p class="text-2xs text-danger" role="alert">{newCourseError}</p>
+          {/if}
+        </form>
+      {:else}
+        <div class="mt-5 flex flex-wrap gap-2.5">
+          <button type="button" class="btn-primary btn-caps gap-2 px-4 max-[640px]:h-11" onclick={() => newIn('none')}>
+            {tr('admin.seminars.list.empty.room')}
+          </button>
+          <button type="button" class="btn-outline max-[640px]:h-11" onclick={openNewCourse}>
+            {tr('admin.seminars.list.empty.course')}
+          </button>
+        </div>
+      {/if}
+    </section>
+  {:else}
+  <!--
+    Two columns: the folders and the list. The pair is pulled over the page's
+    own margins (-mx-7) so the rail's rule runs from the header to the
+    bottom the way the artboard draws it, and each column puts the 28px back
+    on its own side.
+
+    Below 1100 the rail goes on top as a row of chips. At 1024 the panel's
+    own sidebar plus a 248px rail left the table 540px, under its 600px
+    floor, and the list scrolled sideways inside a laptop screen.
+  -->
+  <div class="-mx-7 flex min-h-full max-[1099px]:flex-col">
+    <nav
+      aria-label={tr('admin.seminars.list.folders.label')}
+      class="w-[248px] shrink-0 border-r border-line py-5 pl-7 pr-4
+             max-[1099px]:w-auto max-[1099px]:border-b max-[1099px]:border-r-0 max-[1099px]:px-7
+             max-[1099px]:py-3"
+    >
+      <div class="sticky top-5 flex flex-col gap-5 max-[1099px]:static max-[1099px]:gap-3">
+        {#if owner}
+          <!-- Only an owner has a choice to make here: a teacher's list is
+               always their own, and a toggle with one live side is noise. -->
+          <div
+            role="group"
+            aria-label={tr('admin.seminars.list.scope.label')}
+            class="flex border border-brand max-[1099px]:w-fit"
+          >
+            {#each [{ value: 'mine', label: tr('admin.seminars.list.scope.mine'), n: loading && scope === 'mine' ? null : mineCount }, { value: 'all', label: tr('admin.seminars.list.scope.all'), n: scope === 'all' && !loading ? counts.all : allCount }] as side (side.value)}
+              {@const on = scope === side.value}
+              <button
+                type="button"
+                aria-pressed={on}
+                class={cn(
+                  'flex h-8 flex-1 items-center justify-center gap-1.5 px-4 text-ui transition-colors duration-100',
+                  'max-[640px]:h-11',
+                  on ? 'bg-brand font-bold text-white' : 'text-brand hover:bg-raised',
+                )}
+                onclick={() => chooseScope(side.value as ListScope)}
+              >
+                {side.label}
+                {#if side.n !== null}
+                  <span class={cn('font-mono text-2xs font-normal tabular-nums', on ? 'text-white/70' : 'text-muted')}>{side.n}</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+
+        <!--
+          One list of folders. On a desktop it is a column with a «Мои
+          курсы» heading; on a narrow screen the same buttons wrap into a
+          row of chips and the heading steps aside — the squares still say
+          which ones are courses.
+        -->
+        <ul class="flex flex-col gap-0.5 max-[1099px]:flex-row max-[1099px]:flex-wrap max-[1099px]:gap-1.5">
+          {#snippet folderButton(key: Folder, label: string, n: number, swatch: string | null)}
+            {@const on = folder === key}
+            <li class="min-w-0">
+              <button
+                type="button"
+                aria-current={on ? 'true' : undefined}
+                class={cn(
+                  'flex min-h-[34px] w-full items-center gap-2.5 px-2.5 py-1.5 text-left text-ui text-ink',
+                  'transition-colors duration-100 hover:bg-raised',
+                  'max-[1099px]:w-auto max-[1099px]:border max-[1099px]:border-line max-[640px]:min-h-[44px]',
+                  on && 'bg-raised font-bold max-[1099px]:border-ink',
+                )}
+                onclick={() => (folder = key)}
+              >
+                {#if swatch}
+                  <span class="h-2 w-2 shrink-0" style:background={swatch}></span>
+                {/if}
+                <span class="min-w-0 flex-1 leading-[18px]">{label}</span>
+                <span class={cn('shrink-0 font-mono text-2xs tabular-nums text-muted', on && 'font-bold')}>{n}</span>
+              </button>
+            </li>
+          {/snippet}
+
+          {@render folderButton('all', tr('admin.seminars.list.folder.all'), counts.all, null)}
+          {@render folderButton('none', tr('admin.seminars.list.folder.none'), counts.none, null)}
+
+          <li class="px-2.5 pb-1.5 pt-4 max-[1099px]:hidden">
+            <span class="admin-label">
+              {owner && scope === 'all'
+                ? tr('admin.seminars.list.folder.courses')
+                : tr('admin.seminars.list.folder.myCourses')}
+            </span>
+          </li>
+          {#each rail as course (course.id)}
+            {@render folderButton(
+              `course:${course.id}`,
+              course.name,
+              counts.courses.get(course.id) ?? 0,
+              courseColor(course.id),
+            )}
+          {/each}
+
+          <li class="min-w-0">
+            {#if newCourseOpen}
+              <form class="flex flex-col gap-1.5 px-2.5 py-1.5" onsubmit={createCourse}>
+                <!-- svelte-ignore a11y_autofocus -->
+                <input
+                  bind:value={newCourseName}
+                  class="field"
+                  placeholder={tr('admin.seminars.list.folder.newCourseName')}
+                  aria-label={tr('admin.seminars.list.folder.newCourseName')}
+                  maxlength={MAX_COURSE_NAME}
+                  autocomplete="off"
+                  autofocus
+                  onkeydown={(event) => {
+                    if (event.key === 'Escape') {
+                      event.stopPropagation()
+                      newCourseOpen = false
+                    }
+                  }}
+                />
+                <div class="flex items-center gap-2">
+                  <button type="submit" class="btn-primary" disabled={!newCourseName.trim() || newCourseBusy}>
+                    {#if newCourseBusy}<Icon name="spinner" size={14} class="animate-spin" />{/if}
+                    {tr('admin.seminars.list.folder.newCourseCreate')}
+                  </button>
+                  <button type="button" class="btn-ghost" onclick={() => (newCourseOpen = false)}>
+                    {tr('admin.cancel')}
+                  </button>
+                </div>
+                {#if newCourseError}
+                  <p class="text-2xs text-danger" role="alert">{newCourseError}</p>
+                {/if}
+              </form>
+            {:else}
+              <button
+                type="button"
+                class="flex min-h-[34px] items-center px-2.5 text-ui text-accent-text hover:underline max-[640px]:min-h-[44px]"
+                onclick={openNewCourse}
+              >
+                {tr('admin.seminars.list.folder.newCourse')}
+              </button>
+            {/if}
+          </li>
+
+          {#if counts.archive > 0}
+            <li class="mt-3 border-t border-line pt-3 max-[1099px]:mt-0 max-[1099px]:border-t-0 max-[1099px]:pt-0">
+              <ul>
+                {@render folderButton('archive', tr('admin.seminars.list.folder.archive'), counts.archive, null)}
+              </ul>
+            </li>
+          {/if}
+        </ul>
+
+        <p class="border-t border-line px-2.5 pt-3 text-2xs text-muted max-[1099px]:hidden">
+          {owner ? tr('admin.seminars.list.folder.noteOwner') : tr('admin.seminars.list.folder.noteTeacher')}
+        </p>
+      </div>
+    </nav>
+
+    <div class="min-w-0 flex-1 px-7">
   <!-- Nothing live, no banner. An empty "running now" is a lie with a border. -->
   {#each live as seminar (seminar.id)}
     <!--
@@ -1081,238 +1519,158 @@
     </div>
   {/if}
 
-  <!-- Flush against the header, as on the artboard: the rule under the topbar
-       is the table's own top rule, and a gap there reads as a missing row. -->
-  <!--
-    The columns after the name are fixed and add up to 466px, and table-fixed
-    hands the name whatever is left: at 800px of window that was 42px and at
-    768px it was 10px, so the names vanished and the headings printed on top of
-    each other. The min-width is those 466px plus a lane a name can be read in.
-    It is set where the lane actually dies rather than where it starts to
-    tighten — every window that works today still gets no scrollbar — and it
-    scrolls inside this box, so the page itself still never moves sideways.
-  -->
-  <!--
-    Below 640 there is no table — there are row cards.
+      <!--
+        The tabs: on now, ahead, behind. Counted over the open folder and the
+        search, so «Предстоят 2» is two rows you will see when you press it.
+      -->
+      <div
+        role="tablist"
+        aria-label={tr('admin.seminars.list.tabs.label')}
+        class="mt-4 flex items-center gap-6 overflow-x-auto border-b border-line max-[640px]:gap-4"
+      >
+        {#each [{ value: 'all', label: tr('admin.seminars.list.tab.all') }, { value: 'running', label: tr('admin.seminars.list.tab.running') }, { value: 'upcoming', label: tr('admin.seminars.list.tab.upcoming') }, { value: 'past', label: tr('admin.seminars.list.tab.past') }] as item (item.value)}
+          {@const on = tab === item.value}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={on}
+            class={cn(
+              '-mb-px flex shrink-0 items-baseline gap-1.5 whitespace-nowrap border-b-[3px] pb-2.5 pt-2 text-ui',
+              'transition-colors duration-100 max-[640px]:min-h-[44px]',
+              on ? 'border-ink font-bold text-ink' : 'border-transparent text-muted hover:text-ink',
+            )}
+            onclick={() => (tab = item.value as StatusTab)}
+          >
+            {item.label}
+            <span class="font-mono text-2xs tabular-nums">{tabs[item.value as StatusTab]}</span>
+          </button>
+        {/each}
+      </div>
 
-    Six columns hold a 600px minimum and slide sideways in their own scroll:
-    at 390px "Date", "Joined", "Status" and — most costly of all — the
-    actions button stayed past the edge, and you had to guess to scroll
-    sideways in a box that gives no sign that it scrolls.
+      <!--
+        The columns after the name are fixed and add up to 392px, and
+        table-fixed hands the name whatever is left. The min-width is those
+        pixels plus a lane a name can be read in; below it the table scrolls
+        inside this box, so the page itself never moves sideways.
+      -->
+      <!--
+        Below 640 there is no table — there are row cards.
 
-    The cards are not a second markup but this same one unlocked: `table`,
-    `tbody` and `tr` become blocks and flex, `thead` goes away, the cells are
-    laid out with `order` — title and menu on the first line, environment,
-    date, joined and state on the second. A second markup would mean two
-    lists of actions, and one day one of them would fall behind the other —
-    and the row menu holds "Delete".
-  -->
-  <div class="-mx-1 overflow-x-auto px-1">
-  <table class="w-full min-w-[600px] table-fixed max-[640px]:block max-[640px]:min-w-0">
-    <colgroup class="max-[640px]:hidden">
-      <col />
-      <col class="w-[132px]" />
-      <col class="w-[104px]" />
-      <col class="w-[74px]" />
-      <col class="w-[116px]" />
-      <col class="w-10" />
-    </colgroup>
-    <thead class={cn('max-[640px]:hidden', shown.length === 0 && !creating && 'sr-only')}>
-      <tr class="border-b border-line">
-        <th scope="col" class="admin-label py-2.5 text-left">{tr("admin.seminar")}</th>
+        The cards are not a second markup but this same one unlocked: `table`,
+        `tbody` and `tr` become blocks and flex, `thead` goes away, the cells are
+        laid out with `order` — title and menu on the first line, number,
+        date, joined and state on the second. A second markup would mean two
+        lists of actions, and one day one of them would fall behind the other —
+        and the row menu holds "Delete".
+
+        One `tbody` per group: a group is a header row and its rooms, and the
+        header is a row of the same table so its rule lines up with theirs.
+      -->
+      <div class="-mx-1 overflow-x-auto px-1">
+      <table class="w-full min-w-[600px] table-fixed max-[640px]:block max-[640px]:min-w-0">
+        <colgroup class="max-[640px]:hidden">
+          <col class="w-11" />
+          <col />
+          <col class="w-[110px]" />
+          <col class="w-[74px]" />
+          <col class="w-[124px]" />
+          <col class="w-10" />
+        </colgroup>
         <!--
-          The environment this room's kernel is ACTUALLY on, which is not always
-          the one configured: a seminar that was live through a switch keeps the
-          image it came up on until its own kernel restarts. That gap is the
-          only reason this column is worth a lane of its own.
+          The artboard has no column headings: the group header is the line
+          above the rows, and the date, the head-count and the badge read on
+          their own. They stay for a screen reader, which reads a table by
+          its headings.
         -->
-        <th scope="col" class="admin-label py-2.5 text-left">{tr("admin.environment.919")}</th>
-        <th scope="col" class="admin-label py-2.5 text-left">{tr("admin.date")}</th>
-        <!--
-          "Joined", not "People". This column is everyone who ever joined; the
-          banner above it counts who is connected right now. Both were labelled
-          people, so the same view could read "2 people in the room" beside an
-          11 and give the reader no way to tell which number was wrong.
-        -->
-        <th scope="col" class="admin-label py-2.5 text-right">{tr("admin.joined")}</th>
-        <th scope="col" class="admin-label py-2.5 text-right">{tr("admin.status")}</th>
-        <th scope="col" class="py-2.5"><span class="sr-only">{tr("admin.actions")}</span></th>
-      </tr>
-    </thead>
-    <tbody class="max-[640px]:block">
-      {#if creating}
-        <tr class="border-b border-line bg-surface max-[640px]:block">
-          <td colspan="6" class="py-3.5 max-[640px]:block">
-            <!-- Two doors into one room: a blank seminar and a seminar from
-                 ready material. A switch, not a second button in the header:
-                 this is one "create" action with two sources. -->
-            <div class="mb-2.5">
-              <Choice
-                options={SOURCES}
-                value={fromGithub ? 'github' : 'blank'}
-                onchange={(v) => {
-                  fromGithub = v === 'github'
-                  if (!fromGithub) preview = null
-                }}
-              />
-            </div>
-
-            {#if fromGithub}
-              <form class="flex flex-col gap-2.5" onsubmit={importFromGithub}>
-                <div class="flex flex-wrap items-center gap-2">
-                  <input
-                    bind:value={githubUrl}
-                    class="field min-w-[420px] flex-1 font-mono max-[640px]:w-full max-[640px]:min-w-0"
-                    placeholder="https://github.com/sleep3r/ml_hse/tree/main/week02"
-                    autocomplete="off"
-                    spellcheck="false"
-                    aria-label={tr("admin.github.link.to.a.notebook.or.a.folder")}
-                  />
-                  <button
-                    class="btn-primary"
-                    type="submit"
-                    disabled={!preview || createBusy}
-                  >
-                    {#if createBusy}
-                      <Icon name="spinner" size={15} class="animate-spin" />
-                      {tr("admin.importing")}
-                    {:else}
-                      {tr("admin.import")}
-                    {/if}
-                  </button>
-                  <button class="btn-ghost" type="button" onclick={cancelCreate}>{tr("admin.cancel")}</button>
-                </div>
-
-                <!--
-                  The name and environment stand HERE, not inside the preview:
-                  they belong to the room being created, not to the link that
-                  was read. Hidden behind the preview, they appeared only
-                  after a successful read of the repository — and it looked as
-                  if there were no choice of environment on import at all.
-                -->
-                <div class="flex flex-wrap items-center gap-2">
-                  <input
-                    bind:value={newName}
-                    class="field max-w-[380px]"
-                    placeholder={tr("admin.name.filled.in.from.the.link")}
-                    maxlength={LIMITS.seminarName}
-                    autocomplete="off"
-                    aria-label={tr("admin.seminar.name")}
-                  />
-                  {#if environments && environments.length > 1}
-                    <select
-                      bind:value={newEnvironment}
-                      class="field max-w-[240px] font-mono"
-                      aria-label={tr("admin.python.environment")}
-                    >
-                      {#each environments as env (env.name)}
-                        <option value={env.name} disabled={env.state !== 'ready'}>
-                          {env.name}{env.active ? (" " + tr("admin.default.937")) : ''}{env.state === 'ready'
-                            ? ''
-                            : (" " + tr("admin.not.built.939"))}
-                        </option>
-                      {/each}
-                    </select>
-                  {/if}
-                </div>
-
-                {#if previewing}
-                  <p class="text-2xs text-muted">{tr("admin.reading.the.repository")}</p>
-                {:else if previewError}
-                  <p class="text-ui text-danger" role="alert">{previewError}</p>
-                {:else if preview}
-                  <!-- What exactly will arrive. Shown before creation, not after. -->
-                  <div class="flex flex-wrap items-center gap-2 text-2xs text-muted">
-                    <span class="font-mono text-ink">{preview.notebook}</span>
-                    <span>·</span>
-                    <span>{preview.cells} {tr("admin.cells")}</span>
-                    {#if preview.files.length > 0}
-                      <span>·</span>
-                      {#each preview.files as f (f.name)}
-                        <span class="chip bg-surface font-mono text-muted">{f.name}</span>
-                      {/each}
-                    {/if}
-                    <span>·</span>
-                    <span class="font-mono">{preview.source}</span>
-                    <span>·</span>
-                    <span>{tr("admin.outputs.not.imported")}</span>
-                  </div>
-                  <!--
-                    And what will not arrive. On a separate line, not as one
-                    more chip in the shared row: listed next to what is
-                    brought, these names would read as "also coming". The
-                    total is capped the same way as for an upload through the
-                    panel (server/src/routes/admin-import.ts ·
-                    withinRoomBudget), and learning about the rest after the
-                    import is too late — by then the files have already failed
-                    to arrive in the new room.
-                  -->
-                  {#if preview.skipped.length > 0}
-                    <div class="flex flex-wrap items-center gap-2 text-2xs text-warning">
-                      <span>
-                        {tr("admin.count.skippedFiles", { count: preview.skipped.length })}
+        <thead class={cn('max-[640px]:hidden', 'sr-only')}>
+          <tr>
+            <th scope="col">{tr('admin.seminars.list.row.number')}</th>
+            <th scope="col">{tr("admin.seminar")}</th>
+            <th scope="col">{tr("admin.date")}</th>
+            <!--
+              "Joined", not "People". This column is everyone who ever joined; the
+              banner above it counts who is connected right now.
+            -->
+            <th scope="col">{tr("admin.joined")}</th>
+            <th scope="col">{tr("admin.status")}</th>
+            <th scope="col">{tr("admin.actions")}</th>
+          </tr>
+        </thead>
+        {#each groups as group (group.key)}
+          <tbody class="max-[640px]:block">
+            <tr class="max-[640px]:block">
+              <td colspan="6" class="pt-5 max-[640px]:block">
+                <div class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-ink pb-2.5">
+                  {#if group.course}
+                    {@const course = group.course}
+                    {@const teachers = courseTeachers(course.id)}
+                    <!-- The course's square: the same colour as its folder here, its
+                         card on «Новое занятие» and its chip on «Преподаватели»
+                         (admin/course-color.ts). -->
+                    <span class="h-2.5 w-2.5 shrink-0" style:background={courseColor(course.id)}></span>
+                    <h2 class="min-w-0 max-w-full truncate text-title font-bold text-ink">{course.name}</h2>
+                    <span class="font-mono text-2xs tabular-nums text-muted">{group.rows.length}</span>
+                    {#if teachers.length > 0}
+                      <span class="min-w-0 text-ui text-muted">
+                        {tr('admin.seminars.list.group.teach', { names: teachers.join(', ') })}
                       </span>
-                      {#each preview.skipped as name (name)}
-                        <span class="chip bg-surface font-mono text-muted line-through">{name}</span>
-                      {/each}
-                    </div>
+                    {/if}
+                    <span class="flex-1"></span>
+                    <a
+                      href={`/admin/courses/${course.id}`}
+                      class="text-ui text-accent-text hover:underline max-[640px]:py-2.5"
+                      onclick={(event) => {
+                        if (!navigate || event.metaKey || event.ctrlKey || event.shiftKey) return
+                        event.preventDefault()
+                        navigate(`/admin/courses/${course.id}`)
+                      }}
+                    >
+                      {tr('admin.seminars.list.group.course')}
+                    </a>
+                    {#if folder !== 'archive'}
+                      <button
+                        type="button"
+                        class="text-ui text-accent-text hover:underline max-[640px]:py-2.5"
+                        onclick={() => newIn(course.id)}
+                      >
+                        {tr('admin.seminars.list.group.add')}
+                      </button>
+                    {/if}
+                  {:else}
+                    <span class="h-2.5 w-2.5 shrink-0 border-[1.5px] border-dashed border-faint"></span>
+                    <h2 class="text-title font-bold text-ink">{tr('admin.seminars.list.folder.none')}</h2>
+                    <span class="font-mono text-2xs tabular-nums text-muted">{group.rows.length}</span>
+                    <!-- Not on an owner's «Все»: there the group holds every room
+                         outside courses, not only rooms "seen by their author". -->
+                    {#if !(owner && scope === 'all')}
+                      <span class="min-w-0 text-ui text-muted">{tr('admin.seminars.list.group.noneHint')}</span>
+                    {/if}
+                    <span class="flex-1"></span>
+                    {#if folder !== 'archive'}
+                      <button
+                        type="button"
+                        class="text-ui text-accent-text hover:underline max-[640px]:py-2.5"
+                        onclick={() => newIn('none')}
+                      >
+                        {tr('admin.seminars.list.group.addNone')}
+                      </button>
+                    {/if}
                   {/if}
-                {/if}
-              </form>
-            {:else}
-            <form class="flex flex-wrap items-center gap-2" onsubmit={create}>
-              <input
-                bind:this={nameInput}
-                bind:value={newName}
-                class="field max-w-[380px]"
-                placeholder={tr("admin.computer.vision.seminar.25.08")}
-                maxlength={LIMITS.seminarName}
-                autocomplete="off"
-                aria-label={tr("admin.name.of.the.new.seminar")}
-              />
-
-              <!--
-                The environment is chosen ONCE, here. After that it is this
-                room's Python forever: a seminar whose packages changed in the
-                middle of a class is worse than a seminar without the newest
-                packages.
-              -->
-              {#if environments && environments.length > 1}
-                <select
-                  bind:value={newEnvironment}
-                  class="field max-w-[220px] font-mono"
-                  aria-label={tr("admin.python.environment.for.the.new.seminar")}
-                >
-                  {#each environments as env (env.name)}
-                    <option value={env.name} disabled={env.state !== 'ready'}>
-                      {env.name}{env.active ? (" " + tr("admin.default.937")) : ''}{env.state === 'ready'
-                        ? ''
-                        : (" " + tr("admin.not.built.939"))}
-                    </option>
-                  {/each}
-                </select>
-              {/if}
-
-              <button class="btn-primary" type="submit" disabled={!newName.trim() || createBusy}>
-                {#if createBusy}
-                  <Icon name="spinner" size={15} class="animate-spin" />
-                  {tr("admin.creating")}
-                {:else}
-                  {tr("admin.create")}
-                {/if}
-              </button>
-              <button class="btn-ghost" type="button" onclick={cancelCreate}>{tr("admin.cancel")}</button>
-            </form>
+                </div>
+              </td>
+            </tr>
+            {#if group.rows.length === 0}
+              <tr class="border-b border-line max-[640px]:block">
+                <td colspan="6" class="py-3.5 text-ui text-muted max-[640px]:block">
+                  {tr('admin.seminars.list.group.empty')}
+                </td>
+              </tr>
             {/if}
-            {#if createError}
-              <p class="mt-2 text-ui text-danger">{createError}</p>
-            {/if}
-          </td>
-        </tr>
-      {/if}
-
-      {#each shown as seminar (seminar.id)}
+      {#each group.rows as row (`${group.key}:${row.seminar.id}`)}
+        {@const seminar = row.seminar}
         {@const fresh = seminar.id === justCreatedId}
+        {@const author = authorOf(seminar)}
+        {@const others = coTeachersOf(seminar)}
         <!--
           Below 640 a row is a card: `order` gathers it into two lines, and
           the `basis` of the first hands out exactly 100% (the title + 44px
@@ -1326,6 +1684,19 @@
             fresh && 'bg-accent/10',
           )}
         >
+          <!--
+            «05»: the room's number in this course's plan, the same two digits
+            the course page prints. Empty outside a course — a number there
+            would be a position in nothing. On a phone it opens the card's
+            second line, in front of the date it belongs with.
+          -->
+          <td
+            class="py-3.5 pr-2 align-top font-mono text-ui text-muted max-[640px]:order-3 max-[640px]:pb-2.5
+                   max-[640px]:pt-0 {row.n === null ? 'max-[640px]:hidden' : ''}"
+            title={row.n !== null ? tr('admin.seminars.list.row.number') : undefined}
+          >
+            {row.n !== null ? twoDigits(row.n) : ''}
+          </td>
           <td
             class="py-3.5 pr-4 align-top max-[640px]:order-1 max-[640px]:min-w-0
                    max-[640px]:basis-[calc(100%_-_44px)] max-[640px]:py-2 max-[640px]:pr-2"
@@ -1415,30 +1786,28 @@
                 <span class="admin-meta whitespace-nowrap">{tr("admin.archived")}</span>
               {/if}
               <!--
-                Who set up the room. It was stored from the very start and
-                shown nowhere: on a department's shared instance the list is
-                other people's seminars mixed with your own, and "delete"
-                stands next to each. Any teacher can still edit — this is one
-                department, not tenants — but whose it is is now visible
-                before the press.
+                Who set up the room, and who else runs it. The list used to
+                say "by Maria" and stop: on a shared instance that was the
+                only hint whose room it was. Now the room's own teachers are
+                a fact on the server (room_teachers), so the line names them
+                — and says «вы» where it is you, by id, not by a name that a
+                namesake shares.
               -->
-              {#if seminar.createdBy}
-                <span class="admin-meta whitespace-nowrap">{tr("admin.by")} {seminar.createdBy}</span>
+              {#if author}
+                <span class="admin-meta whitespace-nowrap">{tr('admin.seminars.list.row.author', { name: author })}</span>
               {/if}
-              <!-- Course and publication go in the same line as the link: they
-                   are facts about this seminar, not another column in a table
-                   that already has six. -->
-              {#each seminar.courses as course (course.id)}
-                <!-- `max-w-full truncate`: a course name is someone else's
-                     string of any length, and at 360px one of them pushed the
-                     card past the edge. -->
-                <a
-                  class="max-w-full truncate whitespace-nowrap text-micro text-accent-text"
-                  href={`/admin/courses/${course.id}`}
-                >
-                  · {course.name}
-                </a>
-              {/each}
+              {#if others.length > 0}
+                <span class="admin-meta">
+                  {author ? '· ' : ''}{others.length === 1
+                    ? tr('admin.seminars.list.row.coTeachOne', { names: others[0] })
+                    : tr('admin.seminars.list.row.coTeachMany', { names: others.join(', ') })}
+                </span>
+              {/if}
+              {#if seminar.liveCount > 0}
+                <span class="admin-meta whitespace-nowrap">· {tr('admin.seminars.list.row.inRoom', { count: seminar.liveCount })}</span>
+              {/if}
+              <!-- The course is the group this row is drawn under, so it is
+                   not repeated here; the page is a fact about this room. -->
               {#if seminar.publication?.state === 'published'}
                 <!-- The page link the course table draws (Courses.svelte · c-page):
                      the same words, the same dashed accent, so a page reads as one
@@ -1476,32 +1845,17 @@
           </td>
 
           <td
-            class="py-3.5 pr-3 align-middle max-[640px]:order-3 max-[640px]:pb-2.5 max-[640px]:pt-0"
-          >
-            {#if seminar.environment}
-              <a
-                href="/admin/environments"
-                class="truncate font-mono text-2xs text-ink underline decoration-line underline-offset-2 hover:decoration-ink"
-                title="{tr("admin.selected.environment")} {seminar.environment}"
-              >
-                {seminar.environment}
-              </a>
-            {:else}
-              <!-- No kernel has started here, so there is nothing to report. It
-                   will get whatever is configured when somebody presses Run —
-                   saying that name now would be a guess dressed as a fact. -->
-              <span class="font-mono text-2xs text-muted" title={tr("admin.no.environment.recorded.for.this.seminar")}>
-                —
-              </span>
-            {/if}
-          </td>
-
-          <td
-            class="admin-num py-3.5 align-middle text-muted max-[640px]:order-4 max-[640px]:pb-2.5
+            class="py-3.5 align-middle text-ui text-muted max-[640px]:order-4 max-[640px]:pb-2.5
                    max-[640px]:pr-3 max-[640px]:pt-0"
           >
-            <span title={new Date(seminar.createdAt).toLocaleString(getLocale())}>
-              {stamp(seminar.createdAt)}
+            <!-- The plan's day when the course has one for this row (a
+                 timetable fact), else the room's own: when it was finished,
+                 or made. «сегодня» reads faster than today's date. -->
+            <span
+              class={row.planned ? 'text-ink' : ''}
+              title={new Date(seminar.createdAt).toLocaleString(getLocale())}
+            >
+              {dayLabel(row)}
             </span>
           </td>
 
@@ -1551,12 +1905,12 @@
                       title="{people(seminar.liveCount)} {tr("admin.in.the.room.right.now")}"
                     ></span>
                   {/if}
-                  <Badge word={tr("admin.finished")} tone="neutral" />
+                  <Badge word={tr("admin.seminars.list.badge.finished")} tone="neutral" />
                 </span>
               {:else if seminar.status === 'live'}
                 <span class="inline-flex items-center gap-1.5">
                   <span class="h-[5px] w-[5px] shrink-0 rounded-full bg-accent"></span>
-                  <Badge word={tr("admin.live.990")} tone="accent" />
+                  <Badge word={tr("admin.seminars.list.badge.running")} tone="accent" />
                   <!-- The head-count only on a phone: there is no "Joined"
                        column next to it there, and "live" without a number
                        does not tell a room with one visitor from a room with
@@ -1570,14 +1924,18 @@
                     · {seminar.liveCount}
                   </span>
                 </span>
-              {:else if seminar.status === 'draft'}
-                <Badge word={tr("admin.draft")} tone="warning" />
+              {:else if row.phase === 'upcoming'}
+                <!-- Ahead: the plan's day is today or later, or nobody has
+                     opened the room yet. An outline, not a fill — nothing is
+                     happening in it, and the artboard draws it as a frame. -->
+                <Badge word={tr("admin.seminars.list.badge.upcoming")} tone="neutral" form="outline" />
               {:else}
-                <!-- Bare, so the four states share one right-hand lane: an empty
-                     room is a fact, not a badge. The word is honest: people
-                     came in, and now nobody is there — that does not mean
-                     "finished". -->
-                <span class="admin-label">{tr("admin.empty")}</span>
+                <!-- Bare, so the four states share one right-hand lane: a past
+                     room nobody ended is a fact, not a badge. «Прошло», not
+                     «Пусто»: under «Завершены» a column of «пусто» read as
+                     rooms with nothing in them, while the day simply passed
+                     without anyone pressing «Завершить занятие». -->
+                <span class="admin-label">{tr("admin.seminars.list.badge.past")}</span>
               {/if}
             </div>
           </td>
@@ -1640,16 +1998,7 @@
                     role="menuitem"
                     type="button"
                     class="admin-menu-item"
-                    onclick={() => {
-                      ruling = seminar
-                      memoryErrorText = null
-                      // Numbers from the last opening are numbers from the
-                      // last minute: since then someone else's room has been
-                      // closed and memory freed. The window opens with
-                      // placeholders and waits for a fresh answer.
-                      resources = null
-                      readResources()
-                    }}
+                    onclick={() => openSettings(seminar)}
                   >
                     {tr('admin.seminar.settingsMenu')}
                   </button>
@@ -1722,46 +2071,63 @@
           </td>
         </tr>
       {/each}
+          </tbody>
+        {/each}
 
-      {#if loading && seminars.length === 0}
-        <tr class="max-[640px]:block">
-          <td colspan="6" class="px-3 py-4 max-[640px]:block"><RowsSkeleton label={tr('admin.loading.seminars')} /></td>
-        </tr>
-      {:else if shown.length === 0 && !creating}
-        <tr class="max-[640px]:block">
-          <td colspan="6" class="max-[640px]:block">
-            {#if needle}
-              <EmptyState title={tr('admin.seminar.noMatch', { query: query.trim() })}>
-                <button type="button" class="btn-ghost" onclick={() => (query = '')}>
-                  {tr("admin.show.all")} {count(seminars.length, 'seminar')}
-                </button>
-              </EmptyState>
-            {:else if !loadError}
-              <EmptyState
-                title={tr("admin.no.seminars.yet")}
-                hint={tr("admin.create.a.seminar.and.share.its.link.with.your.students")}
-              >
-                <button type="button" class="btn-primary" onclick={startCreate}>
-                  <Icon name="plus" size={14} />
-                  {tr("admin.new.seminar")}
-                </button>
-              </EmptyState>
-            {/if}
-          </td>
-        </tr>
+        {#if loading && seminars.length === 0}
+          <tbody class="max-[640px]:block">
+            <tr class="max-[640px]:block">
+              <td colspan="6" class="px-3 py-4 max-[640px]:block"><RowsSkeleton label={tr('admin.loading.seminars')} /></td>
+            </tr>
+          </tbody>
+        {:else if groups.length === 0}
+          <tbody class="max-[640px]:block">
+            <tr class="max-[640px]:block">
+              <td colspan="6" class="max-[640px]:block">
+                {#if needle || tab !== 'all'}
+                  <!-- A filter hides everything: say which one, and undo both,
+                       since the tab is as easy to forget as the search. -->
+                  <EmptyState title={needle ? tr('admin.seminar.noMatch', { query: query.trim() }) : tr('admin.seminars.list.group.empty')}>
+                    <button
+                      type="button"
+                      class="btn-ghost"
+                      onclick={() => {
+                        query = ''
+                        tab = 'all'
+                      }}
+                    >
+                      {tr("admin.show.all")} {count(folderRooms.length, 'seminar')}
+                    </button>
+                  </EmptyState>
+                {:else if !loadError}
+                  <EmptyState
+                    title={tr("admin.no.seminars.yet")}
+                    hint={tr("admin.create.a.seminar.and.share.its.link.with.your.students")}
+                  >
+                    <button type="button" class="btn-primary" onclick={startCreate}>
+                      <Icon name="plus" size={14} />
+                      {tr("admin.new.seminar")}
+                    </button>
+                  </EmptyState>
+                {/if}
+              </td>
+            </tr>
+          </tbody>
+        {/if}
+      </table>
+      </div>
+
+      {#if folderRooms.length > 0}
+        <p class="admin-meta py-3.5">
+          {#if needle || tab !== 'all'}
+            {tr("admin.showing")} {shown.length} {tr("admin.of")} {count(folderRooms.length, 'seminar')}
+          {:else}
+            {count(folderRooms.length, 'seminar')} {tr("admin.total")}
+          {/if}
+        </p>
       {/if}
-    </tbody>
-  </table>
+    </div>
   </div>
-
-  {#if seminars.length > 0}
-    <p class="admin-meta py-3.5">
-      {#if needle}
-        {tr("admin.showing")} {shown.length} {tr("admin.of")} {count(seminars.length, 'seminar')}
-      {:else}
-        {count(seminars.length, 'seminar')} {tr("admin.total")}
-      {/if}
-    </p>
   {/if}
 </AdminPage>
 
@@ -1814,6 +2180,117 @@
         {/if}
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto px-5">
+        <!--
+          «Ведущие»: who runs this room besides its course. Chips with ×, and
+          a picker over the staff list. Mostly for rooms outside any course,
+          where these people are the only ones who see the room at all; for a
+          course room the line under the chips names the course's teachers,
+          who need no chip — they run it through the course.
+
+          First in the window: who runs the room decides who may change
+          everything below it, and at the bottom of nine rules and the
+          resources nobody scrolled to it.
+        -->
+        <div class="border-b border-line-soft py-4">
+          <h3 class="text-ui font-semibold text-ink">{tr('admin.seminars.list.hosts.title')}</h3>
+          <p class="mb-3 mt-1.5 text-2xs text-muted">{tr('admin.seminars.list.hosts.hint')}</p>
+
+          {#if hosts === null && !hostsError}
+            <p class="text-2xs text-muted">{tr('admin.seminars.list.hosts.loading')}</p>
+          {:else if hosts}
+            <div class="flex flex-wrap items-center gap-2">
+              {#each hosts as host (host.id)}
+                <span class="flex h-9 items-center gap-2 border border-line bg-canvas pl-1.5 pr-1 max-[640px]:h-11">
+                  <Avatar name={host.name} color={colorForId(host.id)} size="xs" />
+                  <span class="text-ui font-semibold text-ink">{host.name}</span>
+                  {#if host.id === me?.id}
+                    <span class="text-micro text-muted">{tr('admin.seminars.list.hosts.you')}</span>
+                  {/if}
+                  <button
+                    type="button"
+                    class="admin-icon-btn h-7 w-7 max-[640px]:h-9 max-[640px]:w-9"
+                    aria-label={tr('admin.seminars.list.hosts.remove', { name: host.name })}
+                    disabled={hostsBusy}
+                    onclick={() => void removeHost(host.id)}
+                  >
+                    <Icon name="x" size={12} />
+                  </button>
+                </span>
+              {:else}
+                <span class="text-2xs text-muted">{tr('admin.seminars.list.hosts.none')}</span>
+              {/each}
+
+              <div>
+                <button
+                  type="button"
+                  aria-expanded={pickerOpen}
+                  class="flex h-9 items-center border border-dashed border-accent-text px-3 text-ui text-accent-text
+                         hover:bg-accent/5 max-[640px]:h-11"
+                  disabled={hostsBusy}
+                  onclick={openPicker}
+                >
+                  {tr('admin.seminars.list.hosts.add')}
+                </button>
+              </div>
+            </div>
+            {#if pickerOpen}
+              <!-- In the flow of the dialog body rather than floating: the
+                   body scrolls and clips, and a popover over it would be
+                   cut at the dialog's bottom edge. -->
+              <div class="mt-2 w-full max-w-[420px] border border-line bg-canvas">
+                <div class="border-b border-line p-2.5">
+                  <!-- svelte-ignore a11y_autofocus -->
+                  <input
+                    bind:value={pickerQuery}
+                    class="field"
+                    placeholder={tr('admin.seminars.list.hosts.search')}
+                    aria-label={tr('admin.seminars.list.hosts.search')}
+                    autocomplete="off"
+                    autofocus
+                  />
+                </div>
+                {#if staff === null}
+                  {#if !staffFailed}
+                    <p class="px-3 py-2.5 text-2xs text-muted">{tr('admin.seminars.list.hosts.loading')}</p>
+                  {/if}
+                {:else if !anyoneLeft}
+                  <p class="px-3 py-2.5 text-2xs text-muted">{tr('admin.seminars.list.hosts.everyone')}</p>
+                {:else if candidates.length === 0}
+                  <p class="px-3 py-2.5 text-2xs text-muted">{tr('admin.seminars.list.hosts.nobody')}</p>
+                {:else}
+                  <ul class="max-h-[240px] overflow-y-auto">
+                    {#each candidates as person (person.id)}
+                      <li class="flex items-center gap-2.5 border-b border-line-soft px-3 py-2 last:border-b-0">
+                        <Avatar name={person.name} color={colorForId(person.id)} size="xs" />
+                        <span class="min-w-0 flex-1">
+                          <span class="block truncate text-ui font-semibold text-ink">{person.name}</span>
+                          <span class="block truncate font-mono text-micro text-muted">{person.email}</span>
+                        </span>
+                        <button
+                          type="button"
+                          class="admin-link shrink-0 max-[640px]:min-h-[44px]"
+                          disabled={hostsBusy}
+                          onclick={() => void addHost(person.id)}
+                        >
+                          {tr('admin.seminars.list.hosts.addOne')}
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            {/if}
+          {/if}
+
+          {#each viaCourses as via (via.id)}
+            <p class="mt-2.5 text-2xs text-muted">
+              {tr('admin.seminars.list.hosts.viaCourse', { course: via.name, names: via.teachers.join(', ') })}
+            </p>
+          {/each}
+          {#if hostsError}
+            <p class="mt-2.5 text-2xs text-danger" role="alert">{hostsError}</p>
+          {/if}
+        </div>
         <!--
           The class's numbers and the machine's ceiling go into the "Personal
           notebooks" rule row: "as for the class" has to say HOW MUCH that is,

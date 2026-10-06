@@ -37,7 +37,7 @@ import { handleFileSocket } from './collab/files.js'
 import { normalizePath } from '@shared/paths'
 
 import { handleControlSocket } from './control.js'
-import { db, closeDatabase, getSession, touchLastSeenAll } from './db.js'
+import { db, closeDatabase, getSession, syncParticipantRole, touchLastSeenAll } from './db.js'
 import { startDatabaseSnapshots, stopDatabaseSnapshots } from './db-snapshots.js'
 import { startMetrics } from './ops/metrics.js'
 import { kernelCensus, shutdownKernels } from './kernel/index.js'
@@ -321,6 +321,9 @@ server.on('upgrade', (req, socket, head) => {
       try {
         noteLastSeen(payload.participantId)
         const role = effectiveRole(cookieHeader, payload)
+        // The badge in the participants list follows the access actually held
+        // (db.ts · syncParticipantRole) — once per tab, on its control socket.
+        if (channel === 'control') syncParticipantRole(sessionId, payload.participantId, role)
         const credentials = { cookieHeader, payload: { ...payload, role } }
         if (channel === 'collab')
           handleCollabSocket(ws, sessionId, role, payload.participantId, credentials)

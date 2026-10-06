@@ -78,11 +78,13 @@ useCompetitionRunner(runner)
 let base = ''
 let server: http.Server
 let teacher = ''
+let teacherId: string | null = null
 
 function staffCookie(name: string, email: string, role: 'owner' | 'teacher'): string {
   const made = createTeacher({ name, email, role })
   assert.ok(made, email)
   rotateLinkKey(made.id)
+  if (role === 'teacher') teacherId = made.id
   let value = ''
   issueStaffCookie({ cookie: (_name: string, cookie: string) => (value = cookie) } as unknown as ExpressResponse, made)
   return `${STAFF_COOKIE}=${value}`
@@ -118,6 +120,8 @@ function makeCompetition(slug: string) {
     title: `Удаление ${seq}`,
     metric: { name: 'MAPE', direction: 'lower', code: 'def score(a, b):\n    return 1.0\n' },
     limits: { perDay: 0, wallSeconds: 600, memoryMb: 4096, cpus: 2 },
+    // The teacher's own: a teacher runs what they made (competitions/scope.ts).
+    createdBy: teacherId,
   })
   assert.ok(made)
   setCompetitionState(made.id, 'live')

@@ -7,12 +7,32 @@ import { tr } from '@shared/i18n'
  * deliberate and narrow: a teacher can create, rename and archive rooms all
  * day, but only the owner can destroy one, because that is the only action on
  * this surface that takes work away from people who are not in the request.
+ *
+ * Since 0.19 "rooms" means the rooms the teacher teaches (admin/access.ts):
+ * their own, and those of the courses they teach. The list shows only those,
+ * and every per-room route answers 404 for a room the caller does not teach,
+ * exactly as for a room that does not exist.
  */
 import fs from 'node:fs'
 import { Router, type Request, type Response } from 'express'
 import * as Y from 'yjs'
 import { getCells, getMeta } from '@shared/notebook'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
+import {
+  addRoomTeacher,
+  canSeeCourse,
+  canSeeRoom,
+  coursesOfRoom,
+  forgetRoomTeachers,
+  isOwner,
+  membershipDirectory,
+  removeRoomTeacher,
+  roomTeachers,
+  teachesRoom,
+  visibleRoomIds,
+} from '../admin/access.js'
+import { readSeat, seatRoom } from '../admin/seat.js'
+import { getTeacher } from '../admin/store.js'
 import { recordAdminEvent } from '../admin/audit-log.js'
 import { getOracleSettings, parseOraclePatch, updateOracleSettings } from '../admin/settings.js'
 import { summariseUsage } from '../admin/usage.js'
@@ -74,7 +94,10 @@ import {
   type AdminAuditValue,
   type AdminErrorBody,
   type AdminSeminar,
+  type MemberTeachersResponse,
   type OracleSettings,
+  type Teacher,
+  type TeacherRef,
   type OracleTestResult,
   type SeminarStatus,
   type UpdateOracleRequest,
@@ -239,7 +262,22 @@ function statusOf(
   return totalParticipants === 0 ? 'draft' : 'idle'
 }
 
-function toSeminar(row: SeminarRow, courses = listCourses()): AdminSeminar {
+/**
+ * What one response needs to know about its viewer, read once per list: the
+ * courses (for the per-row links) and every room's own teachers, so sixty
+ * rows do not mean sixty identical reads.
+ */
+interface SeminarView {
+  viewer: Teacher | null
+  courses: Course[]
+  rooms: Map<string, TeacherRef[]>
+}
+
+function seminarView(viewer: Teacher | null): SeminarView {
+  return { viewer, courses: listCourses(), rooms: membershipDirectory().rooms }
+}
+
+function toSeminar(row: SeminarRow, view: SeminarView): AdminSeminar {
   // Open collab sockets, which is the only "who is here right now" the server
   // actually holds (collab/index.ts). A second tab counts twice; the control
   // socket keeps no per-session tally to cross-check against.
@@ -301,7 +339,11 @@ function toSeminar(row: SeminarRow, courses = listCourses()): AdminSeminar {
           materials: materialCount(publication.id),
         }
       : null,
-    courses: coursesWith(row.id, courses),
+    // Only the courses the viewer can see: a room seated in someone else's
+    // course too must not name that course to a teacher who is not in it.
+    courses: coursesWith(row.id, view.courses).filter((course) => canSeeCourse(view.viewer, course.id)),
+    teachers: view.rooms.get(row.id) ?? [],
+    mine: view.viewer !== null && teachesRoom(view.viewer.id, row.id),
   }
 }
 
@@ -404,6 +446,37 @@ function seminarOr404(req: Request, res: Response): SeminarRow | null {
   return row
 }
 
+/**
+ * The room, if the caller teaches it — and the same 404 as a missing room if
+ * not: a teacher who guessed or kept an id learns nothing about whether
+ * someone else's room is behind it (admin/access.ts · canSeeRoom).
+ */
+function visibleSeminarOr404(req: Request, res: Response): SeminarRow | null {
+  const row = selectSeminar.get(req.params.id) as SeminarRow | undefined
+  if (!row || !canSeeRoom(currentStaff(req), row.id)) {
+    notFound(res)
+    return null
+  }
+  return row
+}
+
+function forbidden(res: Response, error: string): Response {
+  const body: AdminErrorBody = { error, reason: 'forbidden' }
+  return res.status(403).json(body)
+}
+
+/**
+ * `?scope=all` is the owner's «Все» switch; everyone's default is what they
+ * teach. A teacher asking for everything gets a refusal in words rather than
+ * a quietly narrowed list that would read as "this is all there is".
+ */
+export function readScope(req: Request, res: Response, staff: Teacher): 'mine' | 'all' | null {
+  if (req.query.scope !== 'all') return 'mine'
+  if (isOwner(staff)) return 'all'
+  forbidden(res, tr('server.access.allIsOwnerOnly'))
+  return null
+}
+
 /** A week, which is the window a teacher is actually asking about after a class. */
 const DEFAULT_USAGE_WINDOW_MS = 7 * 24 * 3_600_000
 const MAX_USAGE_WINDOW_MS = 365 * 24 * 3_600_000
@@ -413,10 +486,20 @@ export function adminInstanceRoutes(): Router {
 
   /* --------------------------------------------------------- seminars */
 
-  router.get('/api/admin/seminars', requireStaff, (_req, res) => {
-    const rows = selectSeminars.all() as SeminarRow[]
-    const courses = listCourses()
-    res.json(rows.map((row) => toSeminar(row, courses)))
+  /*
+   * The rooms the caller teaches — their own and their courses' — or, for an
+   * owner who asked, every room. Filtered before a row is built: the counts
+   * per row (cells, files) are the expensive part, and a teacher's list must
+   * not pay for the whole university's.
+   */
+  router.get('/api/admin/seminars', requireStaff, (req, res) => {
+    const staff = currentStaff(req)!
+    const scope = readScope(req, res, staff)
+    if (!scope) return
+    const visible = visibleRoomIds(staff, scope === 'all')
+    const rows = (selectSeminars.all() as SeminarRow[]).filter((row) => !visible || visible.has(row.id))
+    const view = seminarView(staff)
+    res.json(rows.map((row) => toSeminar(row, view)))
   })
 
   router.post('/api/admin/seminars', requireStaff, (req, res) => {
@@ -425,6 +508,11 @@ export function adminInstanceRoutes(): Router {
     if (name.length > LIMITS.seminarName) {
       return invalid(res, tr("server.aSeminarNameMustBeCharactersOr.c9d56a", { p0: LIMITS.seminarName }))
     }
+    // The course row is checked before the room exists: a refusal after the
+    // creation would leave a room nobody asked for (admin/seat.ts).
+    const staff = currentStaff(req)
+    const seat = readSeat(req.body?.seat, staff)
+    if (!seat.ok) return res.status(seat.status).json({ error: seat.error, reason: 'invalid' } satisfies AdminErrorBody)
 
     /*
      * The environment is checked, not taken on trust: the name becomes an
@@ -506,15 +594,28 @@ export function adminInstanceRoutes(): Router {
       forgetResources()
     }
 
-    const staff = currentStaff(req)
-    if (staff) setSeminarCreator(id, staff.name)
+    if (staff) {
+      setSeminarCreator(id, staff.name)
+      // The author is the room's first teacher: without a course, they are
+      // who sees it at all (admin/access.ts).
+      addRoomTeacher(id, staff.id, staff.id)
+    }
+    const seated = seat.seat ? seatRoom(seat.seat, { id, name }, staff) : null
+    recordAdminEvent({
+      actor: staff,
+      action: 'room.created',
+      target: { type: 'room', id, label: name },
+      detail: { via: 'panel', ...(seated ? { course: seated.courseId } : {}) },
+      req,
+    })
 
     const row = selectSeminar.get(id) as SeminarRow
-    res.status(201).json(toSeminar(row))
+    const created = toSeminar(row, seminarView(staff))
+    res.status(201).json(seated ? { ...created, seat: seated } : created)
   })
 
   router.patch('/api/admin/seminars/:id', requireStaff, (req, res) => {
-    const row = seminarOr404(req, res)
+    const row = visibleSeminarOr404(req, res)
     if (!row) return
 
     const body = req.body as
@@ -666,8 +767,73 @@ export function adminInstanceRoutes(): Router {
       })
     }
 
-    const seminar = toSeminar(selectSeminar.get(row.id) as SeminarRow)
+    const seminar = toSeminar(selectSeminar.get(row.id) as SeminarRow, seminarView(currentStaff(req)))
     res.json(afterClass ? { ...seminar, afterClass } : seminar)
+  })
+
+  /* ---------------------------------------------- the room's own teachers */
+
+  /*
+   * «Ведущие»: who runs this room besides the teachers of its course. Mostly
+   * for a room outside courses, whose author is otherwise the only person
+   * who sees it; allowed for any room. Whoever teaches the room may add and
+   * remove — the same people who may rename it or finish the class.
+   */
+  router.get('/api/admin/seminars/:id/teachers', requireStaff, (req, res) => {
+    const row = visibleSeminarOr404(req, res)
+    if (!row) return
+    res.json({ teachers: roomTeachers(row.id) } satisfies MemberTeachersResponse)
+  })
+
+  router.post('/api/admin/seminars/:id/teachers', requireStaff, (req, res) => {
+    const row = visibleSeminarOr404(req, res)
+    if (!row) return
+    const staffId = typeof req.body?.staffId === 'string' ? req.body.staffId : ''
+    const teacher = staffId ? getTeacher(staffId) : null
+    if (!teacher) {
+      return res.status(404).json({ error: tr('server.noSuchTeacher.dc9e13'), reason: 'invalid' } satisfies AdminErrorBody)
+    }
+    const actor = currentStaff(req)
+    if (addRoomTeacher(row.id, teacher.id, actor?.id ?? null)) {
+      recordAdminEvent({
+        actor,
+        action: 'room.teacher_added',
+        target: { type: 'room', id: row.id, label: row.name },
+        detail: { staff: teacher.id, name: teacher.name },
+        req,
+      })
+    }
+    res.status(201).json({ teachers: roomTeachers(row.id) } satisfies MemberTeachersResponse)
+  })
+
+  /*
+   * A room outside courses keeps at least one teacher of its own, unless an
+   * owner removes the last: otherwise it falls out of every list but the
+   * owners' «Все», and its author cannot find it to put anyone back. A
+   * seated room is run by its course's teachers and may have none here.
+   * Removing yourself is allowed by the same rule.
+   */
+  router.delete('/api/admin/seminars/:id/teachers/:staffId', requireStaff, (req, res) => {
+    const row = visibleSeminarOr404(req, res)
+    if (!row) return
+    const actor = currentStaff(req)
+    const current = roomTeachers(row.id)
+    const target = current.find((member) => member.id === req.params.staffId)
+    if (!target) {
+      return res.status(404).json({ error: tr('server.access.notATeacherHere'), reason: 'invalid' } satisfies AdminErrorBody)
+    }
+    if (!isOwner(actor) && current.length === 1 && coursesOfRoom(row.id).length === 0) {
+      return res.status(409).json({ error: tr('server.access.roomKeepsATeacher'), reason: 'invalid' } satisfies AdminErrorBody)
+    }
+    removeRoomTeacher(row.id, target.id)
+    recordAdminEvent({
+      actor,
+      action: 'room.teacher_removed',
+      target: { type: 'room', id: row.id, label: row.name },
+      detail: { staff: target.id, name: target.name },
+      req,
+    })
+    res.json({ teachers: roomTeachers(row.id) } satisfies MemberTeachersResponse)
   })
 
   /**
@@ -752,6 +918,10 @@ export function adminInstanceRoutes(): Router {
           // And the bans: a ban row holds the person's address, and it must
           // not outlive a room that no longer exists.
           discardBans(id)
+          // Its own teachers go with it, in the same transaction: a crash
+          // between the two would leave memberships naming a room that is
+          // gone, counted in every list's «ведут».
+          forgetRoomTeachers(id)
           deleteSeminarRow.run(id)
         })
         purge(row.id)
@@ -878,7 +1048,9 @@ export function adminInstanceRoutes(): Router {
       Number.isFinite(asked) && asked > 0
         ? Math.min(Math.max(asked, now - MAX_USAGE_WINDOW_MS), now)
         : now - DEFAULT_USAGE_WINDOW_MS
-    res.json(summariseUsage(since))
+    // A teacher's figures are their own rooms'; an owner's, the instance's.
+    const staff = currentStaff(req)
+    res.json(summariseUsage(since, staff && !isOwner(staff) ? visibleRoomIds(staff) : null))
   })
 
   return router

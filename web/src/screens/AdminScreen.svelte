@@ -132,11 +132,29 @@
    * bare form from the classes list stays a step, not a place (`makingSeminar`).
    */
   const newRoom = $derived(path === '/admin/new')
+  /*
+   * ?course=<id>&row=<rowId> from a course row, ?course=<id> from a course's
+   * «+ Занятие», ?course=none for a room outside courses. The form checks
+   * them against the courses it can see (course-plan.ts · prefillPlace).
+   */
   const newRoomRow = $derived.by(() => {
     const course = query.get('course')
-    const row = query.get('row')
-    return course && row ? { course, row } : null
+    return course ? { course, row: query.get('row') } : null
   })
+  /**
+   * The course the address-form was opened from: the way back leads there.
+   * A folder of «Занятия» adds ?from=list — the way back is the list then,
+   * where the folder is.
+   */
+  const newRoomFrom = $derived(
+    newRoomRow && newRoomRow.course !== 'none' && query.get('from') !== 'list' ? newRoomRow.course : null,
+  )
+  /**
+   * The folder of «Занятия» the in-place form was opened from (a course id,
+   * or 'none' for «Без курса»): the form starts on it. The way back stays
+   * the list — that is where the folder is.
+   */
+  let newRoomFolder = $state<string | null>(null)
 
   // replaceState, never push: a spent credential must not sit in the address
   // bar, and must not be one Back press away either.
@@ -318,7 +336,16 @@
       {#key search}
         <NewSeminar
           prefill={newRoomRow}
-          ondone={(createdId) => {
+          backToCourse={newRoomFrom !== null}
+          ondone={(createdId, courseId) => {
+            /*
+             * Opened from a course, the form returns to it: to the course the
+             * room landed in, or — on «Отмена» — to the one it came from. A
+             * room created outside courses goes to the classes list, where
+             * it is.
+             */
+            const course = createdId ? (courseId ?? null) : newRoomFrom
+            if (newRoomFrom && course) return navigate(`/admin/courses/${encodeURIComponent(course)}`)
             arrived = createdId ?? null
             navigate('/admin')
           }}
@@ -340,6 +367,7 @@
       <AuditLog />
     {:else if makingSeminar}
       <NewSeminar
+          prefill={newRoomFolder ? { course: newRoomFolder } : null}
           ondone={(createdId) => {
             makingSeminar = false
             /*
@@ -358,10 +386,14 @@
            again and highlighted the same room as new on every return to the
            tab — and every twenty seconds stole focus in its favor. -->
       <Seminars
-        onfull={() => (makingSeminar = true)}
+        onfull={(folder?: string | null) => {
+          newRoomFolder = folder ?? null
+          makingSeminar = true
+        }}
         {arrived}
         onarrived={() => (arrived = null)}
         onpublish={(id) => navigate(`/admin/publish/${id}`)}
+        {navigate}
       />
     {/if}
   </AdminShell>

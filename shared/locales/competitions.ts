@@ -160,6 +160,21 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'Такого соревнования нет.',
     en: 'No such competition.',
   },
+  /* The panel's «Добавить участника»: a namesake already in this competition. */
+  'competitions.refusal.entrantNameTaken': {
+    ru: 'В этом соревновании уже есть участник с таким логином или почтой.',
+    en: 'This competition already has a participant with this username or email.',
+  },
+  /* A rename or switch-off would reach a competition of another course. */
+  'competitions.refusal.entrantShared': {
+    ru: 'Этот участник есть и в соревнованиях, которые ведёте не вы. Переименовать или отключить его может владелец.',
+    en: 'This person also takes part in competitions you do not run. An owner can rename them or switch them off.',
+  },
+  /* «Курс» changed to one that would hide the competition from the person changing it. */
+  'competitions.refusal.courseWouldHide': {
+    ru: 'После этого соревнование пропадёт из вашей панели: вы не автор и не ведёте выбранный курс. Выберите свой курс.',
+    en: 'The competition would vanish from your panel: you are not its author and do not teach that course. Choose one of your courses.',
+  },
   'competitions.refusal.notOpen': {
     ru: 'Соревнование ещё не открыто.',
     en: 'The competition has not opened yet.',
@@ -413,6 +428,18 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.owner.settings': {
     ru: 'менять настройки соревнований',
     en: 'change the competition settings',
+  },
+  'competitions.owner.pause': {
+    ru: 'приостанавливать очередь посылок — она одна на все курсы',
+    en: 'pause the submission queue — there is one for every course',
+  },
+  'competitions.owner.entrants': {
+    ru: 'смотреть всех участников всех соревнований',
+    en: 'see every participant of every competition',
+  },
+  'competitions.owner.entrantAnywhere': {
+    ru: 'создавать участника вне соревнования',
+    en: 'create a participant outside a competition',
   },
 
   /** Служебный участник, на которого записана сэмпл-тетрадь. */
@@ -1521,6 +1548,10 @@ export const competitionsMessages: MessageCatalog = {
       one: 'Their sign-in key keeps working in the {count} other competition they take part in.',
       other: 'Their sign-in key keeps working in the {count} other competitions they take part in.',
     },
+  },
+  'competitions.entrant.deleteKeyElsewhere': {
+    ru: 'Ключ входа продолжит работать в других соревнованиях, где он участвует.',
+    en: 'Their sign-in key keeps working in the other competitions they take part in.',
   },
   'competitions.entrant.deleteFinal': {
     ru: 'Места остальных пересчитаются. Отменить удаление нельзя.',

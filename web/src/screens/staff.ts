@@ -18,6 +18,8 @@
  * It lives next to the two screens that ask, not in lib/: it is their shared
  * half, and it has no other readers.
  */
+import { tr } from '@shared/i18n'
+import type { ParticipantRole, StaffGuest } from '@shared/protocol'
 import { api } from '../lib/api'
 import {
   clearStaffMark,
@@ -72,12 +74,63 @@ export async function staffName(): Promise<string | null> {
 }
 
 /**
+ * What a join answer says about a browser that might be staff.
+ *
+ * Since 0.19 a staff cookie makes its holder host only in the rooms they
+ * teach. Elsewhere the server lets them in as an ordinary participant and
+ * says so with `staffGuest`. That is still a signed-in teacher: the marker
+ * must survive, or the same person opening their OWN room tomorrow gets
+ * the name form instead of their room. Only a participant answer without
+ * the note means the sign-in is gone.
+ */
+export type JoinRole =
+  | { kind: 'host' }
+  | { kind: 'guest'; guest: StaffGuest }
+  | { kind: 'participant' }
+
+export function readJoinRole(role: ParticipantRole, staffGuest: StaffGuest | null | undefined): JoinRole {
+  if (role === 'host') return { kind: 'host' }
+  return staffGuest ? { kind: 'guest', guest: staffGuest } : { kind: 'participant' }
+}
+
+/**
+ * The two lines of the guest strip (Paper U5a), in the reader's language.
+ *
+ * The first says whose room this is and what the person is here; the second
+ * names who can run it and whom to ask. A room outside any course has no
+ * course to name, and a room nobody teaches but the owner has nobody to list.
+ */
+export function staffGuestText(guest: StaffGuest): { title: string; body: string } {
+  const title = guest.course
+    ? tr('room.staffGuest.course', { course: guest.course.name })
+    : tr('room.staffGuest.noCourse')
+  const body =
+    guest.teachers.length > 0
+      ? tr('room.staffGuest.teachers', { names: guest.teachers.join(', ') })
+      : tr('room.staffGuest.ownerOnly')
+  return { title, body }
+}
+
+/** What catching up with the role found out. */
+export type Upgrade =
+  /** The server made this browser host here; the new identity is saved. */
+  | { kind: 'host'; identity: StoredIdentity }
+  /**
+   * Signed in as staff, but this room is not theirs to run. The identity is
+   * the fresh participant one (already saved): a browser that stored "host"
+   * here before the teacher lost the room stops saying so.
+   */
+  | { kind: 'guest'; guest: StaffGuest; identity: StoredIdentity }
+  /** Not staff any more (or never was): the marker has been cleared. */
+  | { kind: 'participant' }
+
+/**
  * Catch up with a role that changed after it was remembered here.
  *
  * Through an ordinary join with the saved identity: the server assigns the
- * role by its own cookie, not by this string. Returns the new identity
- * (already saved) or `null` if the server said "participant" — then the
- * marker is cleared too.
+ * role by its own cookie, not by this string. A host answer returns the new
+ * identity (already saved). A guest answer keeps the marker and returns the
+ * note the room shows. A plain participant answer clears the marker.
  *
  * Throws if the server cannot be heard: whoever is here keeps working as
  * whoever they were, and the next visit will ask again.
@@ -85,17 +138,18 @@ export async function staffName(): Promise<string | null> {
 export async function upgradeIfStaff(
   sessionId: string,
   me: StoredIdentity,
-): Promise<StoredIdentity | null> {
+): Promise<Upgrade> {
   const res = await api.join(sessionId, {
     name: me.name,
     avatar: me.avatar,
     participantId: me.participantId,
     token: me.token,
   })
-  if (res.participant.role !== 'host') {
+  const role = readJoinRole(res.participant.role, res.staffGuest)
+  if (role.kind === 'participant') {
     // The sign-in is gone, or there never was one. Stop asking.
     clearStaffMark()
-    return null
+    return role
   }
   const next: StoredIdentity = {
     sessionId,
@@ -107,5 +161,6 @@ export async function upgradeIfStaff(
     role: res.participant.role,
   }
   saveIdentity(next)
-  return next
+  if (role.kind === 'guest') return { kind: 'guest', guest: role.guest, identity: next }
+  return { kind: 'host', identity: next }
 }
