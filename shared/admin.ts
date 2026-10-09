@@ -289,6 +289,8 @@ export type AdminAuditAction =
   | 'settings.resources_changed'
   | 'settings.competitions_changed'
   | 'settings.instance_changed'
+  /** The owner stopped a class's kernels from the Resources tab to free memory. */
+  | 'room.kernel_stopped'
 
 /** Every action: the panel has a label for each, and a test checks that each one is recorded somewhere. */
 export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
@@ -329,6 +331,7 @@ export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
   'settings.resources_changed',
   'settings.competitions_changed',
   'settings.instance_changed',
+  'room.kernel_stopped',
 ]
 
 /** What an action was done to. `id` is stable; `label` is how it read at that moment. */
@@ -707,6 +710,14 @@ export interface ResourceSettingValues {
   ownMax: number
   /** Idle minutes before a personal kernel is stopped; 0 never stops it (KERNEL_OWN_IDLE_MIN, 30). */
   ownIdleMin: number
+  /**
+   * Minutes an empty room keeps its containers before the idle sweep removes
+   * them; 0 never removes them (KERNEL_ROOM_IDLE_MIN, 120). Between 1 and 4 is
+   * raised to 5: the sweep looks no more often than once a minute, and a
+   * class whose last student stepped out for a minute must not lose its
+   * variables. The bounds say 0…1440 so that a field may hold the 0.
+   */
+  roomIdleMin: number
   /** The personal-notebook container's process ceiling (KERNEL_OWN_PIDS, 2048). */
   ownPids: number
   /** A room container's process ceiling (KERNEL_PIDS, 512). */
@@ -823,6 +834,194 @@ export interface ResourceSettingsResponse {
  */
 export type UpdateResourceSettingsRequest = {
   [K in ResourceSettingName]?: number | null
+}
+
+/* ------------------------------------------------- running kernels (now) */
+
+/**
+ * What a class is busy with right now, the reason it is not idle.
+ *
+ * `cell`, `attempt` and `queue` are work in a notebook's kernel, `restarting`
+ * a restart in flight, `terminal` a command in the shared shell; these five
+ * refuse the owner's stop unless forced. `starting` is a kernel coming up: it
+ * keeps the class off the idle list, but a stop is safe under it (the start
+ * sees the stop and lets go).
+ */
+export type RunningBusyKind = 'cell' | 'queue' | 'attempt' | 'terminal' | 'starting' | 'restarting'
+
+export interface RunningBusy {
+  kind: RunningBusyKind
+  /**
+   * Who pressed Run (or whose council attempt it is), by display name; `null`
+   * for the terminal, a start, a queue of several people, or a row the viewer
+   * may not read.
+   */
+  who: string | null
+  /** The notebook's path in the room; `null` for the terminal or a hidden row. */
+  book: string | null
+  /** Since when, ISO; `null` when the server does not know. */
+  since: string | null
+}
+
+/**
+ * One of a class's two containers: the room's (`room`) or its students'
+ * personal notebooks' (`own`). Under the broker these are its two Pods.
+ */
+export interface RunningContainer {
+  role: 'room' | 'own'
+  /** `starting`: a Pod still pending, or a container the census saw but has not started. */
+  state: 'running' | 'starting'
+  /** The memory limit it holds the machine to; `null` when the runtime could not tell. */
+  reservedMb: number | null
+  /** What it really uses (docker stats, without page cache); `null` when unknown. */
+  usedMb: number | null
+  cpus: number | null
+  /** CPU use in percent of ONE core, as docker reports it (200 = two cores busy); `null` when unknown. */
+  cpuPercent: number | null
+  /** ISO; `null` when unknown (the broker, a failed inspect). */
+  startedAt: string | null
+}
+
+/** The name the spec gives it; one shape. */
+export type Container = RunningContainer
+
+/** A notebook's kernel inside one of the containers. */
+export interface RunningBook {
+  /** The notebook's root in the room document; stable across renames. */
+  root: string
+  /** The notebook's path as the room shows it (the root when the document is not in memory). */
+  path: string
+  role: 'room' | 'own'
+  /** `off`: the scope exists but holds no kernel (it never came up, or it went). */
+  phase: 'starting' | 'idle' | 'busy' | 'restarting' | 'dead' | 'off'
+  /** A personal notebook's owner, by the name they had when they created it. */
+  owner: string | null
+  /** When it last finished work (or came up), ISO. */
+  lastWorkAt: string | null
+}
+
+/**
+ * One class with something running: a row of «Работают сейчас».
+ *
+ * `hidden`: a room the viewer does not teach (admin/access.ts · canSeeRoom).
+ * The machine is shared, so its numbers stay — the memory it holds, the people
+ * in it, whether it computes — but nothing that names it or its people: `id`,
+ * `name`, `course`, `environment`, the books and the busy `who`/`book` arrive
+ * empty, and `canStop` is false. The precedent is RunningSlot.hidden in
+ * competitions.
+ */
+export interface RunningClass {
+  id: string | null
+  hidden: boolean
+  /** The room's name; `null` when hidden or for a container whose room row is gone. */
+  name: string | null
+  course: { id: string; name: string } | null
+  environment: string | null
+  /** The GPU slice the room container holds, e.g. "0"; `null` without one. */
+  gpu: string | null
+  /** Open sockets in the room right now (a second tab counts twice). */
+  online: number
+  /** ISO; since when someone is in the room, `null` when nobody is. */
+  liveSince: string | null
+  busy: RunningBusy | null
+  /**
+   * Since when the idle sweep counts the room as empty, ISO; `null` while it
+   * is busy or occupied, or before the sweep's first look at it.
+   */
+  idleSince: string | null
+  /**
+   * When the idle sweep will remove the containers, ISO (an estimate to the
+   * sweep's tick); `null` while busy or occupied, and when the setting says
+   * never (`roomIdleMin` = 0).
+   */
+  stopsAt: string | null
+  room: RunningContainer | null
+  own: RunningContainer | null
+  books: RunningBook[]
+  /** The viewer may stop it: an owner, and something is there to stop. */
+  canStop: boolean
+  /** Nobody online, nothing computing or starting, the terminal free: what «Остановить простаивающие» takes. */
+  idle: boolean
+}
+
+/** A competition run or score holding memory now. */
+export interface RunningRun {
+  /** `null` when hidden. */
+  submissionId: string | null
+  competitionId: string | null
+  /** The competition's title; `null` when hidden. */
+  competition: string | null
+  hidden: boolean
+  kind: 'run' | 'score'
+  startedAt: string
+  limitSec: number | null
+  /** What the runner reserved for it: the larger step limit plus its own margin. */
+  reservedMb: number
+  /** Stopped through the competitions door (POST /api/admin/competitions/queue/kill). */
+  canStop: boolean
+}
+
+/** A dependency preparation (a competition's package bundle) holding its reservation now. */
+export interface RunningPreparation {
+  id: string
+  /** The competition's title; `null` for a viewer who may not read it. */
+  label: string | null
+  reservedMb: number
+  startedAt: string | null
+}
+
+/** GET /api/admin/resources/running. */
+export interface RunningKernels {
+  backend: 'docker' | 'broker' | 'test'
+  /** Whether the runtime answered the census; `false` means rows may be missing. */
+  complete: boolean
+  sampledAt: string
+  /** Whether `usedMb` was measured (docker stats answered) or is unknown. */
+  usage: 'live' | 'unknown'
+  /** The class containers' reservations together (rooms and personal notebooks; not runs). */
+  reservedMb: number
+  /** What those containers really use together; `null` when unknown. */
+  usedMb: number | null
+  classes: RunningClass[]
+  runs: RunningRun[]
+  preparations: RunningPreparation[]
+}
+
+/** POST /api/admin/resources/running/:sessionId/stop. */
+export interface StopKernelRequest {
+  /** `class`: both containers, every notebook and the terminal; `own`: only the personal-notebook container. */
+  what: 'class' | 'own'
+  /** Stop even while something computes. */
+  force?: boolean
+}
+
+export interface StopKernelResponse {
+  stopped: true
+  /** The reservations released, in megabytes. */
+  freedMb: number
+}
+
+/** The 409 body when the class is computing and `force` was not given. */
+export interface StopKernelBusy extends AdminErrorBody {
+  reason: 'busy'
+  busy: RunningBusy
+}
+
+/** POST /api/admin/resources/running/stop-idle. */
+export interface StopIdleKernelsRequest {
+  /**
+   * The classes the confirmation listed. Only these are stopped (each still
+   * re-checked) and only these are reported; a class that went idle after the
+   * dialog opened is not the owner's to lose. Left out: every idle class.
+   */
+  ids?: string[]
+}
+
+export interface StopIdleKernelsResponse {
+  stopped: { id: string; freedMb: number }[]
+  /** Re-checked at the moment of stopping: someone came in, a cell started, the stop failed. */
+  skipped: { id: string; reason: 'busy' | 'online' | 'stopping' | 'gone' | 'failed' }[]
+  freedMb: number
 }
 
 /* -------------------------------------------------------------- oracle */
@@ -1129,6 +1328,18 @@ export type AdminErrorReason =
    * not there.
    */
   | 'network'
+  /**
+   * The owner's "stop the kernel" (routes/admin-running.ts): the room is
+   * already being stopped or deleted, so a second stop would only race the
+   * first.
+   */
+  | 'stopping'
+  /**
+   * The same stop refused because something is computing in the room right
+   * now; the body names what (`StopKernelBusy`), and the panel offers to stop
+   * it anyway.
+   */
+  | 'busy'
 
 export interface AdminErrorBody {
   error: string

@@ -65,6 +65,7 @@ import {
   memoryLimitMb,
   ownIdleMinutes,
   ownKernelMax,
+  roomIdleMinutes,
   runArgs,
   useDockerForLimits,
 } from '../server/src/kernel/pool.js'
@@ -81,7 +82,7 @@ const MB = 1024 * 1024
  */
 const VARIABLES = [
   'KERNEL_MEM', 'KERNEL_MEM_BASE', 'KERNEL_MEM_BASE_GPU', 'KERNEL_CPUS', 'KERNEL_OWN_MAX',
-  'KERNEL_OWN_IDLE_MIN', 'KERNEL_OWN_PIDS', 'KERNEL_PIDS',
+  'KERNEL_OWN_IDLE_MIN', 'KERNEL_OWN_PIDS', 'KERNEL_PIDS', 'KERNEL_ROOM_IDLE_MIN',
 ]
 for (const name of VARIABLES) delete process.env[name]
 
@@ -171,6 +172,7 @@ test('with nothing saved and nothing in the environment, every setting is its bu
     ownCpus: null,
     ownMax: 60,
     ownIdleMin: 30,
+    roomIdleMin: 120,
     ownPids: 2048,
     roomPids: 512,
     uploadMb: 50,
@@ -180,7 +182,7 @@ test('with nothing saved and nothing in the environment, every setting is its bu
     assert.equal(settings[name].default, defaults[name], name)
     assert.equal(settings[name].source, 'default', name)
   }
-  for (const name of ['roomMemoryMb', 'roomCpus', 'ownMax', 'ownIdleMin', 'ownPids', 'roomPids'] as const) {
+  for (const name of ['roomMemoryMb', 'roomCpus', 'ownMax', 'ownIdleMin', 'roomIdleMin', 'ownPids', 'roomPids'] as const) {
     assert.equal(settings[name].value, defaults[name], name)
   }
   // The upload pair answers from config, which holds the same default read at boot.
@@ -246,6 +248,33 @@ test('an environment variable keeps the parse it always had: junk reads as unset
   assert.equal(perEnvironmentMemoryMb('base-gpu', { KERNEL_MEM_BASE_GPU: '12g' }), 12288)
   assert.equal(perEnvironmentMemoryMb('base-gpu', { KERNEL_MEM_BASE_GPU: '' }), null)
   assert.equal(perEnvironmentMemoryMb('base', { KERNEL_MEM_BASE_GPU: '12g' }), null)
+})
+
+test("an empty room's wait: two hours by default, 0 is never, and nothing between zero and five", () => {
+  // The variable: 0 is meaningful, a short wait is raised to the floor, junk is unset.
+  assert.equal(resourceValue('roomIdleMin', {}), 120)
+  assert.equal(resourceValue('roomIdleMin', { KERNEL_ROOM_IDLE_MIN: '0' }), 0)
+  assert.equal(resourceValue('roomIdleMin', { KERNEL_ROOM_IDLE_MIN: '2' }), 5)
+  assert.equal(resourceValue('roomIdleMin', { KERNEL_ROOM_IDLE_MIN: '45' }), 45)
+  for (const bad of ['полчаса', '-3', '7.5', '']) assert.equal(resourceValue('roomIdleMin', { KERNEL_ROOM_IDLE_MIN: bad }), 120, bad)
+  const settings = resourceSettings({ KERNEL_ROOM_IDLE_MIN: '30' })
+  assert.deepEqual(
+    [settings.roomIdleMin.value, settings.roomIdleMin.source, settings.roomIdleMin.envName, settings.roomIdleMin.appliesTo],
+    [30, 'env', 'KERNEL_ROOM_IDLE_MIN', 'live'],
+  )
+  assert.equal(settings.roomIdleMin.dockerOnly, false, 'the sweep removes broker Pods the same way')
+
+  // Saved: clamped into 0…1440, then raised off the gap below five.
+  for (const [saved, read] of [[3, 5], [1, 5], [0, 0], [-7, 0], [10, 10], [5000, 1440]] as const) {
+    updateResourceSettings({ roomIdleMin: saved }, MACHINE)
+    assert.equal(resourceValue('roomIdleMin', {}), read, String(saved))
+  }
+  // A hand-edited row is held to the same rule on read.
+  putSettingRow('resources.roomIdleMin', '2')
+  assert.equal(resourceValue('roomIdleMin', {}), 5)
+  // The sweep asks at every pass.
+  updateResourceSettings({ roomIdleMin: 15 }, MACHINE)
+  assert.equal(roomIdleMinutes(), 15)
 })
 
 /* ----------------------------------------------------------------- bounds */
@@ -451,6 +480,8 @@ test('staff read the resources, only the owner writes them', async () => {
   assert.equal(body.settings.uploadMb.dockerOnly, false)
   assert.equal(body.backend, 'test')
   assert.deepEqual(body.bounds.ownMax, { min: 1, max: 500 })
+  // 0 is a value the field must be able to hold ("never"); the floor of five is applied on write.
+  assert.deepEqual(body.bounds.roomIdleMin, { min: 0, max: 1440 })
   // Memory and cores are bounded by the machine, the same numbers the class form gets.
   assert.deepEqual(body.bounds.roomMemoryMb, { min: body.machine.limits.min, max: body.machine.limits.max })
   assert.deepEqual(body.bounds.roomCpus, body.machine.limits.cpus)

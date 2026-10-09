@@ -133,6 +133,8 @@
   } from '@/lib/output-seat'
   import { emptyCellIsRemovable } from './cell-keys'
   import CellOutputs from './CellOutputs.svelte'
+  import KernelMemoryNotice from './KernelMemoryNotice.svelte'
+  import { isKernelMemoryOutput } from '@shared/kernel-problem'
   import CodeEditor from './CodeEditor.svelte'
   import Markdown from './Markdown.svelte'
 
@@ -1333,6 +1335,18 @@
   const showEditor = $derived(isCode || editing)
 
   const outputs = watchOutputs(() => cell.current)
+  /*
+   * A kernel the server would not start for memory leaves an error on the
+   * cell (kernel/index.ts · reportDeadKernel), but it is news about the
+   * machine, not output of this code: the code never ran. So it is drawn as
+   * a notice under the code plate (K5), and everything that reads "what did
+   * this cell print" — the failure tone, the `[ ]` mark, the "saved output"
+   * line, the reserved height — reads `printed`, the outputs without it.
+   */
+  const memoryRefused = $derived(outputs.current.some(isKernelMemoryOutput))
+  const printed = $derived(
+    memoryRefused ? outputs.current.filter((output) => !isKernelMemoryOutput(output)) : outputs.current,
+  )
   const peersHere = watchCellPeers(session.awareness, () => id)
   // The queue is of ITS OWN notebook: each has its own kernel and its own
   // queue, and "third in the queue" from a neighbouring sheet has nothing to
@@ -1363,7 +1377,7 @@
   $effect(() => () => window.clearTimeout(copiedTimer))
   const queuePosition = $derived(notebook.current.queue.indexOf(id))
   const hasError = $derived(
-    cellState === 'error' || outputs.current.some((output) => output.kind === 'error'),
+    cellState === 'error' || printed.some((output) => output.kind === 'error'),
   )
 
   /** 01, 02, 03 — the ordinal the artboard leads the gutter with. */
@@ -1546,7 +1560,7 @@
   const outputFloor = $derived(
     outputSeat({
       running,
-      outputs: outputs.current.length,
+      outputs: printed.length,
       pendingImages: outputsPending,
       held: heldOutput,
     }),
@@ -1557,7 +1571,7 @@
       unnumberedResult({
         state: cellState,
         execCount: meta.current.execCount,
-        outputs: outputs.current.length,
+        outputs: printed.length,
       }),
   )
 
@@ -1583,7 +1597,7 @@
   $effect(() => {
     const input = {
       running,
-      outputs: outputs.current.length,
+      outputs: printed.length,
       pendingImages: outputsPending,
       measured: outputsMeasured,
       hasError,
@@ -1612,7 +1626,7 @@
       type: meta.current.type,
       state: shownState,
       execCount: meta.current.execCount,
-      outputs: outputs.current.length,
+      outputs: printed.length,
       running: shownRunning,
     }),
   )
@@ -3821,7 +3835,14 @@
             read them as not their own. The attempt has its own output, and it
             lies in the same place, right under the sheet.
           -->
-          {#if isCode && !ownSheet && (outputs.current.length > 0 || outputFloor > 0)}
+          {#if isCode && !ownSheet && memoryRefused}
+            <!-- Under the code plate, as wide as the cell body, outside the
+                 output slab: it is not this code's output (K5). -->
+            <div class="mt-2">
+              <KernelMemoryNotice owner={session.serverOwner} />
+            </div>
+          {/if}
+          {#if isCode && !ownSheet && (printed.length > 0 || outputFloor > 0)}
             <!--
               An empty space draws nothing: no background, no edge.
 
@@ -3836,7 +3857,7 @@
               something stands on it. So while there is nothing to put in, the
               block is pure height.
             -->
-            {@const seatOnly = outputs.current.length === 0}
+            {@const seatOnly = printed.length === 0}
             <!--
               Output lies on the SHEET, code on the slab: different backgrounds
               plus a hairline along the border.
@@ -3887,9 +3908,9 @@
                 quick test this looks perfectly right.
               -->
               <div bind:clientHeight={outputsMeasured}>
-                {#if outputs.current.length > 0}
+                {#if printed.length > 0}
                   <div class="px-2 py-1.5">
-                    <CellOutputs outputs={outputs.current} bind:pending={outputsPending} />
+                    <CellOutputs outputs={printed} bind:pending={outputsPending} />
                   </div>
                   <!--
                     The line under the output, only where it has something to SAY.

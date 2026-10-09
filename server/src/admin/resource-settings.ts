@@ -116,6 +116,26 @@ const idleVar = (name: string) => (env: Env): number | null => {
 }
 
 /**
+ * The shortest wait an empty room gets before its containers go, zero aside.
+ *
+ * The sweep looks once a minute at its fastest, and a room is "empty" the
+ * moment its last socket drops: a student whose laptop slept, the teacher
+ * who stepped out for a minute. Five minutes is the shortest wait that does
+ * not punish that with lost variables.
+ */
+const ROOM_IDLE_FLOOR_MIN = 5
+
+/**
+ * Room idle minutes: `0` is "never", a whole number from one up is a number
+ * of minutes, and one below the floor is raised to it: KERNEL_ROOM_IDLE_MIN=2
+ * plainly means "as soon as possible", not "unset".
+ */
+const roomIdleVar = (name: string) => (env: Env): number | null => {
+  const minutes = idleVar(name)(env)
+  return minutes === null || minutes === 0 ? minutes : Math.max(ROOM_IDLE_FLOOR_MIN, minutes)
+}
+
+/**
  * MAX_UPLOAD_MB and MAX_SESSION_MB are parsed once, at boot, into config
  * (config.ts), and that stays their environment layer. The variable counts as
  * set only when it is; a value that did not parse (NaN) is unset, where the
@@ -143,6 +163,12 @@ interface Spec {
   unset?: () => number | null
   /** 'memory' and 'cpus' are the machine's bounds, known only to the caller. */
   bounds: 'memory' | 'cpus' | ResourceBounds
+  /**
+   * Where `0` means "never" and the bounds start at 0 so that a field may
+   * hold it, the smallest number that is not zero: a value between is raised
+   * to it, on write and on read.
+   */
+  floorAboveZero?: number
   appliesTo: ResourceSetting<unknown>['appliesTo']
   dockerOnly: boolean
 }
@@ -207,6 +233,20 @@ const SPECS: Record<ResourceSettingName, Spec> = {
     appliesTo: 'live',
     dockerOnly: false,
   },
+  /*
+   * The empty room's wait, the class kernels' counterpart of `ownIdleMin`.
+   * Two hours by default, as the constant was (kernel/index.ts · the idle
+   * sweep); the sweep reads it on every pass, so a change applies live.
+   */
+  roomIdleMin: {
+    envName: 'KERNEL_ROOM_IDLE_MIN',
+    readEnv: roomIdleVar('KERNEL_ROOM_IDLE_MIN'),
+    fallback: 120,
+    bounds: { min: 0, max: 1440 },
+    floorAboveZero: ROOM_IDLE_FLOOR_MIN,
+    appliesTo: 'live',
+    dockerOnly: false,
+  },
   ownPids: {
     envName: 'KERNEL_OWN_PIDS',
     readEnv: wholeVar('KERNEL_OWN_PIDS', 64),
@@ -262,6 +302,13 @@ function clamp(value: number, min: number, max: number): number {
   return value < min ? min : value > max ? max : value
 }
 
+/** Clamped into the bounds, then raised off the gap between zero and the floor, where a setting has one. */
+function fit(spec: Spec, value: number, { min, max }: ResourceBounds): number {
+  const clamped = clamp(value, min, max)
+  const floor = spec.floorAboveZero
+  return floor !== undefined && clamped > 0 && clamped < floor ? floor : clamped
+}
+
 /** The bounds a saved row is held to when read: the static part only, the machine is not asked here. */
 function readBounds(spec: Spec): ResourceBounds {
   if (spec.bounds === 'memory') return { min: MIN_MEMORY_MB, max: Infinity }
@@ -275,8 +322,7 @@ function savedOf(name: ResourceSettingName, rows: Map<string, string>): number |
   if (raw === undefined || raw.trim() === '') return null
   const value = Number(raw)
   if (!Number.isFinite(value)) return null
-  const { min, max } = readBounds(SPECS[name])
-  return clamp(Math.round(value), min, max)
+  return fit(SPECS[name], Math.round(value), readBounds(SPECS[name]))
 }
 
 function resolve(name: ResourceSettingName, rows: Map<string, string>, env: Env): Resolved {
@@ -416,8 +462,7 @@ const write = db.transaction((patch: UpdateResourceSettingsRequest, machine: Mac
   for (const name of RESOURCE_SETTING_NAMES) {
     const value = patch[name]
     if (value === undefined) continue
-    const { min, max } = bounds[name]
-    putSettingRow(PREFIX + name, value === null ? null : String(clamp(value, min, max)))
+    putSettingRow(PREFIX + name, value === null ? null : String(fit(SPECS[name], value, bounds[name])))
   }
   if (patch.uploadMb !== undefined || patch.sessionMb !== undefined) {
     const upload = resourceValue('uploadMb')

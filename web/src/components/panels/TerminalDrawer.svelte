@@ -507,6 +507,18 @@
         {@const text = transcriptText(line.text)}
         <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized in lib/render -->
         <pre class="term-out">{#if render}{@html render.ansi(text)}{:else}{stripAnsi(text)}{/if}</pre>
+      {:else if line.code === 'kernel_memory'}
+        <!-- The server would not start a kernel or the shell: the machine's
+             memory is promised to other classes (K5). Not a whisper in italics
+             like the other notes: a «!» in the sigil column and the night
+             warning colour, because nothing in this room works until it
+             passes. The words are the server's, in the room's language. -->
+        <div class="term-row term-warn">
+          <span class="term-av"></span>
+          <span class="term-sigil">!</span>
+          <!-- One line: .term-cmd keeps whitespace, and an indent would print. -->
+          <span class="term-cmd">{#if shownTab === 'kernel'}<span class="term-time">{clock(line.createdAt)}</span>{/if}{line.text}</span>
+        </div>
       {:else}
         <div class="term-sys">
           {#if shownTab === 'kernel'}<span class="term-time">{clock(line.createdAt)}</span>{/if}
@@ -616,6 +628,8 @@
     --tm-faint: #78849f;
     --tm-accent: #2eb4e8;
     --tm-live: #3ec9a7;
+    /* The night warning (index.css · dark --warning): the memory refusal. */
+    --tm-warn: #f2a33c;
     /* The code stack is one for the product (web/src/index.css · --font-mono).
        The local copy had no fallback families with metric overrides, so until
        the woff2 arrived the whole drawer was set in uncorrected ui-monospace,
@@ -869,6 +883,14 @@
     font-size: 13px;
     line-height: 1.55;
     color: var(--tm-muted);
+  }
+
+  .term-warn .term-sigil {
+    font-weight: 700;
+    color: var(--tm-warn);
+  }
+  .term-warn .term-cmd {
+    color: var(--tm-warn);
   }
 
   .term-sys {

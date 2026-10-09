@@ -25,6 +25,11 @@ import type {
   InstanceResources,
   ResourceSettingsResponse,
   UpdateResourceSettingsRequest,
+  RunningKernels,
+  StopIdleKernelsRequest,
+  StopIdleKernelsResponse,
+  StopKernelRequest,
+  StopKernelResponse,
   InstanceState,
   InstanceSettings,
   InviteTeacherRequest,
@@ -681,6 +686,38 @@ export const adminApi = {
    */
   updateResourceSettings: (body: UpdateResourceSettingsRequest) =>
     request<ResourceSettingsResponse>('/resources', { method: 'PUT', ...json(body) }),
+
+  /**
+   * «Работают сейчас»: every class container with what it reserves and
+   * really uses, the competition runs and package preparations holding
+   * memory. Staff may read it; another course's class arrives as numbers
+   * only (`hidden`).
+   */
+  runningKernels: () => request<RunningKernels>('/resources/running'),
+
+  /**
+   * Owner only. Stop a class's kernels (`class`: both containers, every
+   * notebook and the terminal) or only its personal notebooks' (`own`).
+   * A 409 `busy` carries what is running in `body.busy` (StopKernelBusy);
+   * pass `force` to stop it anyway. A 409 `stopping`: a stop or a deletion
+   * of this class is already under way.
+   */
+  stopKernel: (sessionId: string, what: StopKernelRequest['what'], force = false) =>
+    request<StopKernelResponse>(`/resources/running/${encodeURIComponent(sessionId)}/stop`, {
+      method: 'POST',
+      ...json({ what, force } satisfies StopKernelRequest),
+    }),
+
+  /**
+   * Owner only. Stop the idle classes the confirmation listed, each
+   * re-checked at its moment; the answer lists what was skipped and why,
+   * and never names a class outside `ids`.
+   */
+  stopIdleKernels: (ids: string[]) =>
+    request<StopIdleKernelsResponse>('/resources/running/stop-idle', {
+      method: 'POST',
+      ...json({ ids } satisfies StopIdleKernelsRequest),
+    }),
 
   /**
    * The rooms the caller teaches — or, for an owner who passes 'all', every

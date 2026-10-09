@@ -260,7 +260,8 @@ import {
 } from './collab/books.js'
 import { config } from './config.js'
 import { staffFromCookieHeader } from './admin/auth.js'
-import { canSeeRoom, staffById } from './admin/access.js'
+import { canSeeRoom, isOwner, staffById } from './admin/access.js'
+import { tokenStaff } from './authorization.js'
 import { sessionLimitBytes, uploadLimitBytes } from './admin/resource-settings.js'
 import { stopAll, undoTurn } from './ai/agent.js'
 import { onCouncilOracle } from './ai/council.js'
@@ -6144,15 +6145,25 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
    * two participants — the "one presenter" merge is for whoever leads.
    */
   const cookieStaff = staffFromCookieHeader(credentials?.cookieHeader)
+  // The tablet's grant only while it stands: a rotated link key revokes it (authorization.ts · tokenStaff).
+  const handedOff = tokenStaff(payload)
   const staffId =
     (cookieStaff && canSeeRoom(cookieStaff, sessionId) ? cookieStaff.id : null) ??
-    (payload.staff && canSeeRoom(staffById(payload.staff), sessionId) ? payload.staff : null)
+    (handedOff && canSeeRoom(staffById(handedOff), sessionId) ? handedOff : null)
   const person = staffId ? personKey(sessionId, staffId) : null
   if (person) persons.set(ws, person)
+  /*
+   * Whether this connection is the server's owner: the one person who can
+   * free another class's memory on the Resources tab. It changes advice,
+   * never rights: a refused kernel start tells the owner where to stop idle
+   * classes and everyone else whom to ask (K5). The rights stay where they
+   * are checked, on the admin routes.
+   */
+  const serverOwner = isOwner(cookieStaff) || (handedOff ? isOwner(staffById(handedOff)) : false)
 
   // Before anything else: the browser gates its own interrupt/restart controls
   // on this, and the token it holds may say something staler than the truth.
-  send(ws, { t: 'role', role: payload.role, ...(person ? { person } : {}) })
+  send(ws, { t: 'role', role: payload.role, ...(person ? { person } : {}), ...(serverOwner ? { owner: true } : {}) })
   /*
    * The presenter came back on one of their devices: the room stops saying
    * "offline" right away, before this socket's welcome batch carries the

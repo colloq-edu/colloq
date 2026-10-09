@@ -27,6 +27,7 @@ import {
   type YCell,
   type YOutput,
 } from '@shared/notebook'
+import { isKernelMemoryOutput } from '@shared/kernel-problem'
 import { PLOTLY_MIME, figureShape, normalizeFigure, type PlotlyFigure } from '@shared/plotly'
 import { getOracleSettings } from '../admin/settings.js'
 import { getSessionDoc } from '../collab/index.js'
@@ -106,14 +107,21 @@ function outputArray(cell: YCell): Y.Array<YOutput> | null {
   return outputs ?? null
 }
 
-/** A cell's outputs — only when it really travels in the frame. */
+/**
+ * A cell's outputs — only when it really travels in the frame.
+ *
+ * Without the server's memory notice (KERNEL_MEMORY_ENAME): it says the
+ * machine was full when someone pressed Run, not anything about the code,
+ * which never ran. Handed to the model as `out[error]`, it read as the
+ * student's failure and pulled the answer towards it.
+ */
 function outputsOf(entry: Entry): CellOutput[] {
   const outputs = outputArray(entry.raw)
   if (!outputs) return []
   const out: CellOutput[] = []
   outputs.forEach((one: YOutput) => {
     const parsed = readOutput(one)
-    if (parsed) out.push(parsed)
+    if (parsed && !isKernelMemoryOutput(parsed)) out.push(parsed)
   })
   return out
 }
@@ -124,7 +132,11 @@ function headOf(cell: YCell, book: string, no: number, first: boolean): Entry {
   let failed = false
   if (outputs) {
     outputs.forEach((one: YOutput) => {
-      if (one.get('kind') === 'error') failed = true
+      if (failed || one.get('kind') !== 'error') return
+      // The memory notice is not a failure (see `outputsOf`): it must not pin
+      // the refused cell as "the one that failed last".
+      const parsed = readOutput(one)
+      if (!parsed || !isKernelMemoryOutput(parsed)) failed = true
     })
   }
   return {

@@ -177,7 +177,17 @@ export function setQueueSlots(slots: number | 'auto'): number {
  * Two hundred and fifty-six megabytes is the cushion at which `docker run`
  * does not refuse at the boundary.
  */
-const RUN_RESERVE_MB = 256
+export const RUN_RESERVE_MB = 256
+
+/**
+ * What the pump reserves for one queue row: the larger of its step's and the
+ * metric's memory, plus the headroom. Both steps run under the one lease, so
+ * the larger one is what it must cover. Also read by the owner's
+ * «Работают сейчас» (routes/admin-running.ts), which lists the reservation.
+ */
+export function runReservationMb(competition: Competition, kind: RunKind): number {
+  return RUN_RESERVE_MB + Math.max(limitsFor(competition, kind).memoryMb, limitsFor(competition, 'metric').memoryMb)
+}
 
 /**
  * Whether the machine has enough for new work.
@@ -279,9 +289,7 @@ export async function pumpOnce(): Promise<number> {
       const candidate = nextQueueRow()
       if (!candidate) break
       const competition = getCompetition(candidate.competitionId)
-      const needMb = RUN_RESERVE_MB + (competition
-        ? Math.max(limitsFor(competition, candidate.kind).memoryMb, limitsFor(competition, 'metric').memoryMb)
-        : 0)
+      const needMb = competition ? runReservationMb(competition, candidate.kind) : RUN_RESERVE_MB
       const admission = admitJob({
         needMb,
         reservedMb: workBudgetSnapshot().memoryMb + heldMb,

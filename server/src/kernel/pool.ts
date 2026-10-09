@@ -2,7 +2,7 @@ import { tr } from '@shared/i18n'
 import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, runtimeEnvironment, imageRevision, RuntimeRequestError } from './runtime-client.js'
 import type { RuntimeResizeRequest, RuntimeRoom } from '@shared/runtime'
 import { sessionCpus, sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, repinSessionKernelRevision, sessionMemoryMb, sessionRowExists, storedRules } from '../db.js'
-import { blockKernelStarts, kernelRetirementInProgress } from './retirement.js'
+import { blockKernelStarts, kernelRetirementInProgress, kernelStartsPaused } from './retirement.js'
 import { hasWorkAllocation, observedWorkMemory, releaseWorkAllocation, reserveWork, type WorkLease } from '../ops/work-budget.js'
 import { parseMemMb, perEnvironmentMemoryMb, resourceValue } from '../admin/resource-settings.js'
 /** Production starts fixed, isolated Pods through the private runtime broker.
@@ -268,6 +268,21 @@ export function ownKernelMax(env: NodeJS.ProcessEnv = process.env): number {
  */
 export function ownIdleMinutes(env: NodeJS.ProcessEnv = process.env): number {
   return resourceValue('ownIdleMin', env)
+}
+
+/**
+ * After how many minutes an EMPTY room's containers are removed; `0` means
+ * never.
+ *
+ * It was a constant, two hours, until 9 Oct 2026, when three idle classes on
+ * a fifteen-gigabyte machine held twelve gigabytes of reservations and every
+ * new kernel was refused for the evening. Two hours stay the default ("the
+ * class is over", not "the teacher went for coffee"); an owner with a small
+ * machine shortens it in the panel (`roomIdleMin`, KERNEL_ROOM_IDLE_MIN), and
+ * the sweep reads it on every pass (kernel/index.ts · sweepIdleKernels).
+ */
+export function roomIdleMinutes(env: NodeJS.ProcessEnv = process.env): number {
+  return resourceValue('roomIdleMin', env)
 }
 
 /**
@@ -1155,6 +1170,44 @@ let limitsInjected = false
 /** What happened to the limit: applied on a live container, waiting for the next start, or failed. */
 export type LimitOutcome = 'applied' | 'pending' | 'failed'
 
+/**
+ * Docker admission said no: the memory a kernel needs is promised elsewhere.
+ *
+ * Its message reaches people, not the journal. It used to be the raw English
+ * "Not enough available memory for this kernel allocation", and on 9 Oct 2026
+ * a Russian room read it as «не удалось открыть общую оболочку — Not enough…»:
+ * three idle classes held twelve gigabytes of reservations on a fifteen
+ * gigabyte machine, and nobody in the room could tell what held them or who
+ * could free them. The text now says both, in the instance's language, and it
+ * travels as is into every place that shows the error: the kernel log, the
+ * cell, the shell's opening line.
+ *
+ * `code` is the stable part for code and tests; `reason` tells a full machine
+ * (`full`) from a census that could not be read (`unverified`), where the
+ * advice differs: there is nothing to stop until Docker answers again.
+ */
+export class KernelMemoryRefusal extends Error {
+  readonly code = 'kernel_memory'
+  constructor(readonly reason: 'full' | 'unverified') {
+    super(tr(reason === 'full' ? 'server.kernel.memoryFull' : 'server.kernel.memoryUnverified'))
+    this.name = 'KernelMemoryRefusal'
+  }
+}
+
+/**
+ * The refusal the room draws as K5: the machine is full, other classes hold
+ * the memory. The cell gets the notice instead of an error, the kernel chip
+ * stays «НЕ ЗАПУЩЕНО» rather than «ЯДРО ОСТАНОВЛЕНО» (nothing died, nothing
+ * started), and the terminal line is marked `kernel_memory`.
+ *
+ * Only `full`: an unverified census is Docker not answering for a moment, and
+ * «другие занятия заняли память» would be a guess there. It keeps the plain
+ * error, with its own translated sentence.
+ */
+export function machineMemoryFull(err: unknown): err is KernelMemoryRefusal {
+  return err instanceof KernelMemoryRefusal && err.reason === 'full'
+}
+
 /** Docker has no scheduler: reserve before issuing run/start/update. The
  * complete census credits existing allocations, leaving only positive growth.
  * Broker admission remains Kubernetes' responsibility. */
@@ -1169,14 +1222,14 @@ async function reserveKernelMemory(
     for (const target of targets) {
       const allocationKey = slotFor(sessionId, target.role)
       const observed = observedWorkMemory(allocationKey)
-      if (observed === null) throw new Error('Available kernel memory cannot be verified while the allocation census is unavailable')
+      if (observed === null) throw new KernelMemoryRefusal('unverified')
       // Updating a stopped container consumes nothing; an in-flight start must
       // finish first so the update cannot outrun its admitted memory limit.
       if (runningOnly && !observed && !hasWorkAllocation(allocationKey)) continue
       if (target.memoryMb <= observed && !hasWorkAllocation(allocationKey)) continue
       const lease = reserveWork({ id: `kernel:${allocationKey}`, kind: 'kernel', allocationKey,
         memoryMb: target.memoryMb, diskBytes: 0 }, { availableMemoryMb: machine.memory.availableMb })
-      if (!lease) throw new Error('Not enough available memory for this kernel allocation')
+      if (!lease) throw new KernelMemoryRefusal('full')
       leases.set(target.role, lease)
     }
     return leases
@@ -1906,6 +1959,11 @@ export async function endpointForSession(
   requireKernelIsolation()
   assertLocalRoomRunning(sessionId)
   if (kernelRetirementInProgress(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarIsStopping.9820e1"))
+  // The owner is stopping this container's kernels to free memory
+  // (retirement.ts · pauseKernelStarts): a start now would be removed a second
+  // later. Only the role being stopped: the personal notebooks' stop leaves
+  // the lecture and the shell free to start.
+  if (kernelStartsPaused(sessionId, role)) throw new Error(tr('server.kernel.startsPaused'))
   const backend = kernelBackend()
   if (backend === 'test') return defaultEndpoint()
   if (backend === 'broker') {
@@ -1947,6 +2005,7 @@ export async function endpointForSession(
       if (kernelRetirementInProgress(sessionId) || !sessionRowExists(sessionId)) {
         throw new Error(tr("server.cannotStartKernelSeminarIsStopping.9820e1"))
       }
+      if (kernelStartsPaused(sessionId, role)) throw new Error(tr('server.kernel.startsPaused'))
       return endpoint
     } catch (err) {
       if (role === 'own' && brokerCannotOwn(err)) throw new OwnKernelUnavailable()
@@ -2012,6 +2071,44 @@ const slotsOf = (sessionId: string): string[] => [
 ]
 
 /**
+ * How the owner's stop from the panel (kernel/index.ts · stopKernelsByOwner)
+ * differs from the class ending.
+ *
+ * It holds its own gate, `pauseKernelStarts`, which refuses starts and keeps
+ * the door open: people stay in a class whose kernel was stopped. On the
+ * broker the class-ending path takes `blockKernelStarts` instead, the gate of
+ * a deletion, and for as long as the Pods take to terminate that answers 503
+ * «Занятие останавливается» to every room route and refuses every socket.
+ *
+ * And it must know whether the memory is free. The sweep and a deletion let
+ * a failed `docker rm` go (the next pass, or the label, finds the container
+ * again); the owner is told a number of gigabytes freed, and that number must
+ * not be said of a container that is still there.
+ */
+export interface OwnerStop {
+  /** The caller holds `pauseKernelStarts` for the roles it drops; confirm the removal or throw. */
+  owner?: boolean
+}
+
+/** `docker rm -f` of one slot; whether the container is gone (or never was). */
+async function removeSlot(slot: string): Promise<{ gone: boolean; out: string }> {
+  // A start in progress right now would put the container back a second
+  // later: we mark the slot, and the start removes it itself when it ends.
+  if (starting.has(slot)) abandoned.add(slot)
+  const result = await run(['rm', '-f', containerOfSlot(slot)], 60_000)
+  const gone = result.code === 0 || /no such container/i.test(result.out)
+  if (!starting.has(slot) && gone) releaseWorkAllocation(slot)
+  return { gone, out: result.out.trim() }
+}
+
+/** The error an owner's stop throws when a container may still hold its memory. */
+function notRemoved(failures: Array<{ slot: string; out: string }>): Error {
+  return new Error(failures.map(({ slot, out }) => `${containerOfSlot(slot)}: ${out || 'docker rm failed'}`).join('; '))
+}
+
+const ISOLATION_UNAVAILABLE = 'Room isolation is unavailable. Execution is disabled; shared Jupyter fallback is not permitted'
+
+/**
  * Remove the room's containers for good, BOTH of them.
  *
  * Called when a seminar is deleted and by the idle sweep. The files live on
@@ -2021,14 +2118,19 @@ const slotsOf = (sessionId: string): string[] => [
  * The personal-notebook container goes together with the room one, for the
  * same reason: the class is over. `dropOwnKernel` removes it separately, when
  * no live kernel is left in it while the class itself goes on.
+ *
+ * `owner`: the owner's stop from the panel (see `OwnerStop`).
  */
-export async function dropRoomKernel(sessionId: string, permanent = false): Promise<void> {
+export async function dropRoomKernel(sessionId: string, permanent = false, options: OwnerStop = {}): Promise<void> {
   if (kernelBackend() === 'broker') {
-    const release = blockKernelStarts(sessionId)
+    // The owner's stop already refuses starts of both roles, and its gate,
+    // unlike this one, keeps the room open while the Pods terminate.
+    const release = options.owner ? () => {} : blockKernelStarts(sessionId)
     try {
       // An already-issued ensure must settle before DELETE; otherwise its late
       // request can recreate the Pod after a successful stop response. Both
       // slots: the room's DELETE takes the personal notebooks' Pod as well.
+      // The ensure that settles meets the gate after its await and is refused.
       await Promise.allSettled(slotsOf(sessionId).flatMap((slot) => [...(brokerStarts.get(slot) ?? [])]))
       await kernelRuntimeClient().stop(sessionId, permanent)
     } finally { release() }
@@ -2036,15 +2138,17 @@ export async function dropRoomKernel(sessionId: string, permanent = false): Prom
   }
   if (kernelBackend() === 'test') return
   for (const slot of slotsOf(sessionId)) endpoints.delete(slot)
-  if (!(await canIsolate())) return
+  if (!(await canIsolate())) {
+    if (options.owner) throw new Error(ISOLATION_UNAVAILABLE)
+    return
+  }
+  const failures: Array<{ slot: string; out: string }> = []
   for (const slot of slotsOf(sessionId)) {
-    // A start in progress right now would put the container back a second
-    // later: we mark the slot, and the start removes it itself when it ends.
-    if (starting.has(slot)) abandoned.add(slot)
-    const result = await run(['rm', '-f', containerOfSlot(slot)], 60_000)
-    if (!starting.has(slot) && (result.code === 0 || /no such container/i.test(result.out))) releaseWorkAllocation(slot)
+    const removed = await removeSlot(slot)
+    if (!removed.gone) failures.push({ slot, out: removed.out })
   }
   await refreshKernelAllocations()
+  if (options.owner && failures.length > 0) throw notRemoved(failures)
 }
 
 /**
@@ -2054,27 +2158,45 @@ export async function dropRoomKernel(sessionId: string, permanent = false): Prom
  * every class where someone once opened a draft means piling them up exactly
  * the way room containers piled up before the idle sweep existed. This path
  * NEVER touches the room container, neither its Python nor its terminal.
+ *
+ * `owner`: the owner's stop from the panel (see `OwnerStop`).
  */
-export async function dropOwnKernel(sessionId: string): Promise<void> {
+export async function dropOwnKernel(sessionId: string, options: OwnerStop = {}): Promise<void> {
   if (kernelBackend() === 'broker') {
+    const starts = brokerStarts.get(slotFor(sessionId, 'own'))
+    if (options.owner) {
+      /*
+       * The owner asked for this Pod to go, and a student's first personal
+       * Run may be creating it right now. Leaving it "for later", as below,
+       * would answer "freed" while the Pod comes up a moment after with its
+       * full reservation and no kernel in it, until the untracked-Pod sweep.
+       * The start settles first (the stop's gate refuses it after its await,
+       * so it never connects), then the DELETE takes what it made.
+       */
+      await Promise.allSettled([...(starts ?? [])])
+      await kernelRuntimeClient().stop(sessionId, false, 'own')
+      return
+    }
     /*
      * A personal kernel starting right now needs this Pod: the broker would
      * cancel that start with the deletion, and a student would read an error
      * for a run nobody refused. The Pod stays, and goes with the next empty
      * moment or with the room.
      */
-    if (brokerStarts.get(slotFor(sessionId, 'own'))?.size) return
+    if (starts?.size) return
     await kernelRuntimeClient().stop(sessionId, false, 'own')
     return
   }
   if (kernelBackend() !== 'docker') return
   const slot = slotFor(sessionId, 'own')
   endpoints.delete(slot)
-  if (!(await canIsolate())) return
-  if (starting.has(slot)) abandoned.add(slot)
-  const result = await run(['rm', '-f', containerFor(sessionId, 'own')], 60_000)
-  if (!starting.has(slot) && (result.code === 0 || /no such container/i.test(result.out))) releaseWorkAllocation(slot)
+  if (!(await canIsolate())) {
+    if (options.owner) throw new Error(ISOLATION_UNAVAILABLE)
+    return
+  }
+  const removed = await removeSlot(slot)
   await refreshKernelAllocations()
+  if (options.owner && !removed.gone) throw notRemoved([{ slot, out: removed.out }])
 }
 
 /** Forget the resolved address so the next open re-checks the container. */

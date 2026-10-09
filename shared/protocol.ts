@@ -1060,6 +1060,14 @@ export type ControlServerMessage =
        * the presenter is itself.
        */
       person?: string
+      /**
+       * This connection's staff account is the server's owner, or absent. It
+       * changes advice, never rights: a cell refused for memory sends the
+       * owner to the Resources tab, where only the owner can stop another
+       * class's kernel, and tells everyone else whom to ask (K5). Older
+       * builds ignore the field.
+       */
+      owner?: true
     }
   /**
    * The participants in this room that are this connection's own staff

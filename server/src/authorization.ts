@@ -26,10 +26,22 @@ export function roleFor(
 ): TokenPayload['role'] {
   const staff = staffFromCookieHeader(cookieHeader)
   if (staff && canSeeRoom(staff, payload.sessionId)) return 'host'
-  if (
-    payload.staff &&
-    staffAuthorizationVersion(payload.staff) === (payload.staffVersion ?? 1) &&
-    canSeeRoom(staffById(payload.staff), payload.sessionId)
-  ) return 'host'
+  const handedOff = tokenStaff(payload)
+  if (handedOff && canSeeRoom(staffById(handedOff), payload.sessionId)) return 'host'
   return isTokenHost(payload.sessionId, payload.participantId) ? 'host' : 'participant'
+}
+
+/**
+ * The staff account a token speaks for, while that grant still stands.
+ *
+ * A handoff key puts the teacher's id and their authorization version into
+ * the tablet's token; rotating the link key bumps the version, and from that
+ * moment the tablet speaks for nobody. Everything that reads `payload.staff`
+ * asks through here, so a revoked tablet stops being host, stops being told
+ * it is the server's owner, and stops being merged with the teacher's own
+ * browser, all at once rather than when the token expires.
+ */
+export function tokenStaff(payload: Pick<TokenPayload, 'staff' | 'staffVersion'>): string | null {
+  if (!payload.staff) return null
+  return staffAuthorizationVersion(payload.staff) === (payload.staffVersion ?? 1) ? payload.staff : null
 }

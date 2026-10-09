@@ -20,6 +20,7 @@
  */
 import { writeIpynb, type FlatCell } from '@shared/ipynb'
 import { BLOB_MIMES, SPILL_MIMES, type PublicCell } from '@shared/publish'
+import { isKernelMemoryOutput } from '@shared/kernel-problem'
 import { PLOTLY_MIME } from '@shared/plotly'
 
 /** Where the bytes behind a `blob:<hash>` reference come from. */
@@ -79,6 +80,8 @@ function parseOr(text: string): unknown {
 function codeCell(cell: PublicCell, blob: BlobSource): FlatCell {
   const outputs: unknown[] = []
   for (const output of cell.outputs) {
+    // A page published before projectCell dropped the memory notice still carries it.
+    if (isKernelMemoryOutput(output)) continue
     if (output.kind === 'stream') {
       outputs.push({ output_type: 'stream', name: output.name, text: output.text })
     } else if (output.kind === 'error') {

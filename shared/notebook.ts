@@ -1162,8 +1162,24 @@ export function findChatEntry(doc: Y.Doc, id: string): YChatEntry | null {
  *   text     Y.Text              appended to while output streams
  *   createdAt number
  *   running  boolean             (command only) still producing output
+ *   code     string              (system only, optional) see TerminalLineCode
  */
 export type TerminalLineKind = 'command' | 'output' | 'system'
+
+/**
+ * Why the server wrote a system line, as a word that does not depend on the
+ * language: the text is a sentence in the instance's language, and a room
+ * that wants to treat a line differently must not do it by matching that
+ * sentence.
+ *
+ * `kernel_memory`: a kernel or the shared shell did not start because the
+ * machine's memory is promised to other classes (kernel/pool.ts ·
+ * KernelMemoryRefusal). The drawer sets it apart in the warning tone with a
+ * «!» in the sigil column (K5). The field is optional and new: a line without
+ * it is an ordinary note, and a tab opened before it existed reads a coded
+ * line as one, which is still true.
+ */
+export type TerminalLineCode = 'kernel_memory'
 
 export interface TerminalLineSnapshot {
   id: string
@@ -1173,6 +1189,7 @@ export interface TerminalLineSnapshot {
   text: string
   createdAt: number
   running: boolean
+  code: TerminalLineCode | null
 }
 
 export type YTerminalLine = Y.Map<any>
@@ -1187,6 +1204,7 @@ export function createTerminalLine(input: {
   name?: string | null
   color?: string | null
   participantId?: string | null
+  code?: TerminalLineCode | null
 }): YTerminalLine {
   const line = new Y.Map<any>()
   line.set('id', newId('t'))
@@ -1199,6 +1217,8 @@ export function createTerminalLine(input: {
   line.set('text', text)
   line.set('createdAt', Date.now())
   line.set('running', input.kind === 'command')
+  // Only when there is one: every other line keeps exactly the keys it had.
+  if (input.code) line.set('code', input.code)
   return line
 }
 
@@ -1220,6 +1240,7 @@ export function readTerminalLine(line: YTerminalLine): TerminalLineSnapshot {
     text: terminalText(line).toString(),
     createdAt: (line.get('createdAt') as number) ?? 0,
     running: Boolean(line.get('running')),
+    code: line.get('code') === 'kernel_memory' ? 'kernel_memory' : null,
   }
 }
 

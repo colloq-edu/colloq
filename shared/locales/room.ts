@@ -4797,6 +4797,22 @@ export const roomMessages: MessageCatalog = {
     "ru": "Kubernetes не может разместить эту комнату на узле, и дело не в памяти, процессоре или видеокарте. Передайте администратору сервера: причина — в событиях кластера (kubectl get events).",
     "en": "Kubernetes can’t place this room on the node, and it isn’t memory, CPU or a GPU. Pass this on to the server administrator: the reason is in the cluster events (kubectl get events)."
   },
+  "room.kernel.memory.title": {
+    "ru": "Не хватает памяти на сервере",
+    "en": "The server is out of memory"
+  },
+  "room.kernel.memory.body": {
+    "ru": "Другие занятия заняли память под свои ядра. Попробуйте через пару минут — или попросите владельца сервера остановить простаивающие.",
+    "en": "Other classes have taken the memory for their kernels. Try again in a couple of minutes — or ask the server owner to stop the idle ones."
+  },
+  "room.kernel.memory.bodyOwner": {
+    "ru": "Другие занятия заняли память под свои ядра. Попробуйте через пару минут — или остановите простаивающие во вкладке «Ресурсы».",
+    "en": "Other classes have taken the memory for their kernels. Try again in a couple of minutes — or stop the idle ones on the Resources tab."
+  },
+  "room.kernel.memory.open": {
+    "ru": "Открыть «Ресурсы»",
+    "en": "Open Resources"
+  },
   "room.head.fold": {
     "ru": "Свернуть шапку",
     "en": "Collapse the header"

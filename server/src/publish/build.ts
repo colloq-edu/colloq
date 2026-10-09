@@ -29,6 +29,7 @@ import {
   spillEncoding,
   type PublicCell,
 } from '@shared/publish'
+import { isKernelMemoryOutput } from '@shared/kernel-problem'
 import { readBlob, roomOfDoc } from '../blobs.js'
 import {
   applyEdits,
@@ -243,7 +244,13 @@ export function projectCell(
     id: cell.id,
     type: cell.type,
     source: cell.type === 'markdown' ? projectNote(cell.source, blobs, sessionId) : cell.source,
-    outputs: cell.outputs.map((o) => projectOutput(o, blobs, sessionId)),
+    /*
+     * Without the server's memory notice (KERNEL_MEMORY_ENAME): it was about
+     * the machine at the moment someone pressed Run, not about the code, and
+     * on a public page it read as a red failure carrying the owner's advice
+     * about the Resources tab. The .ipynb and the ZIP are built from this.
+     */
+    outputs: cell.outputs.filter((o) => !isKernelMemoryOutput(o)).map((o) => projectOutput(o, blobs, sessionId)),
     /*
      * The execution count is carried over as is, including `null` with a
      * non-empty output. That is not missing data but a fact: the result is on
