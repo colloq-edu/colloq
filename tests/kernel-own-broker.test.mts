@@ -37,6 +37,8 @@ const heard: Array<{ method: string; url: string; body: any }> = []
 let census: Array<Record<string, unknown>> = []
 let patchReply: { status: number; body: unknown } = { status: 200, body: { outcome: 'applied' } }
 let holdOwn: Promise<void> | null = null
+/** A DELETE that waits, the way the runtime's waits for the Pods to terminate. */
+let holdDelete: Promise<void> | null = null
 let broker: http.Server
 const saved = { ...process.env }
 
@@ -64,6 +66,7 @@ before(async () => {
         revision,
       }))
     }
+    if (req.method === 'DELETE' && holdDelete) await holdDelete
     res.end(JSON.stringify({ ok: true }))
   })
   await new Promise<void>((resolve) => broker.listen(0, '127.0.0.1', resolve))
@@ -96,6 +99,7 @@ beforeEach(() => {
   census = []
   patchReply = { status: 200, body: { outcome: 'applied' } }
   holdOwn = null
+  holdDelete = null
 })
 
 const posts = (id: string) => heard.filter((h) => h.method === 'POST' && h.url.startsWith(`/v1/rooms/${id}`))
@@ -237,4 +241,57 @@ test('a personal Pod that no kernel of this process lives in goes after the pers
   assert.deepEqual(deletes(), [], 'a student back within the idle time re-attaches')
   await sweepIdleKernels(start + 31 * 60_000)
   assert.deepEqual(deletes(), [`/v1/rooms/${id}/own`], 'only the personal Pod; the class keeps its Python')
+})
+
+/* ------------------------------------------------------ the owner's stop */
+
+const until = async (what: () => boolean, ms = 5000): Promise<void> => {
+  const deadline = Date.now() + ms
+  while (!what()) {
+    if (Date.now() > deadline) throw new Error('timed out')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
+test("the owner's stop keeps the room open while the Pods terminate; only kernel starts wait", async () => {
+  const { stopKernelsByOwner } = await import('../server/src/kernel/index.js')
+  const { kernelRetirementInProgress } = await import('../server/src/kernel/retirement.js')
+  const { tr } = await import('../shared/i18n.js')
+  const id = 'owner-stop-door'
+  createSession(id, 'Дверь', 'base')
+  let release!: () => void
+  holdDelete = new Promise<void>((resolve) => (release = resolve))
+  const stopping = stopKernelsByOwner(id, 'class', { force: true })
+  await until(() => heard.some((h) => h.method === 'DELETE'))
+  /*
+   * A deletion's gate answers 503 «Занятие останавливается» to every room
+   * route and refuses every socket; a stopped kernel is not a deleted room,
+   * and the people in it reconnect, autosave and join meanwhile.
+   */
+  assert.equal(kernelRetirementInProgress(id), false, 'the stop closed the room door')
+  await assert.rejects(endpointForSession(id, 'base'), new RegExp(tr('server.kernel.startsPaused')))
+  release()
+  await stopping
+  assert.deepEqual(heard.filter((h) => h.method === 'DELETE').map((h) => h.url), [`/v1/rooms/${id}`])
+  await endpointForSession(id, 'base')
+})
+
+test("the owner's stop of the personal notebooks waits for a personal Pod being created, then deletes it", async () => {
+  const { stopKernelsByOwner } = await import('../server/src/kernel/index.js')
+  const { tr } = await import('../shared/i18n.js')
+  const id = 'owner-stop-own'
+  createSession(id, 'Личный старт', 'base')
+  let release!: () => void
+  holdOwn = new Promise<void>((resolve) => (release = resolve))
+  const starting = endpointForSession(id, 'base', 'own')
+  await until(() => heard.some((h) => h.method === 'POST'))
+  const stopping = stopKernelsByOwner(id, 'own', { force: true })
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.deepEqual(heard.filter((h) => h.method === 'DELETE'), [], 'DELETE must wait for the accepted personal ensure')
+  release()
+  // The start settles into the stop's gate: refused, never connected.
+  await assert.rejects(starting, new RegExp(tr('server.kernel.startsPaused')))
+  await stopping
+  // Without the wait the stop answered "freed" and left the new Pod holding its reservation.
+  assert.deepEqual(heard.filter((h) => h.method === 'DELETE').map((h) => h.url), [`/v1/rooms/${id}/own`])
 })

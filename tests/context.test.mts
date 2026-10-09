@@ -24,6 +24,7 @@ import { createSession } from '../server/src/db.js'
 import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { createBook } from '../server/src/collab/books.js'
 import { buildContext } from '../server/src/ai/context.js'
+import { KERNEL_MEMORY_ENAME } from '../shared/kernel-problem.js'
 import { updateOracleSettings } from '../server/src/admin/settings.js'
 import { sessionDir } from '../server/src/workspace.js'
 
@@ -136,6 +137,26 @@ test('the newest failure wins when several cells have failed', () => {
   // execution count, not the lowest cell on the page.
   const text = buildContext(id, [ids[29]])
   assert.match(text, /NewestError/)
+})
+
+test("the server's memory notice is not the student's failure", () => {
+  // The kernel was refused for memory when cell 04 was run (kernel/index.ts ·
+  // reportDeadKernel): the notice sits on the cell, which stays unrun.
+  const { id, doc } = seminar(40, true)
+  const cell = getCells(doc).get(3)
+  cellOutputs(cell).push([
+    new Y.Map(
+      Object.entries({
+        kind: 'error',
+        json: JSON.stringify({ ename: KERNEL_MEMORY_ENAME, evalue: 'Не хватает памяти на сервере…', traceback: [] }),
+      }),
+    ),
+  ])
+  const text = buildContext(id, [])
+  assert.doesNotMatch(text, /KernelMemory|Не хватает памяти/, 'the notice reached the model as an error')
+  // Nothing pins cell 04 as "the one that failed last": the frame stays anchored at the end.
+  assert.doesNotMatch(text, /\[cell 40\][^\n]*elided/, 'the refused cell pulled the frame towards itself')
+  assert.match(text, /\[cell 04\][^\n]*elided/)
 })
 
 test('an empty notebook still produces a usable context', () => {

@@ -8,6 +8,7 @@ import {
   getMeta,
   getTerminal,
   terminalText,
+  type TerminalLineCode,
   type YTerminalLine,
 } from '@shared/notebook'
 import { plural } from '@shared/plural'
@@ -15,7 +16,7 @@ import { getSessionDoc } from '../collab/index.js'
 import { sessionEnvironment } from '../db.js'
 import { kernelCwd, sessionDir } from '../workspace.js'
 import { defaultEndpoint, type KernelEndpoint } from './jupyter.js'
-import { endpointForSession, forgetSessionKernel } from './pool.js'
+import { endpointForSession, forgetSessionKernel, machineMemoryFull } from './pool.js'
 
 /**
  * One shared terminal per seminar, in the same container as the kernel.
@@ -585,8 +586,44 @@ function removeEntry(term: Term, id: string): void {
   forgetEntry(term, id)
 }
 
-function systemLine(term: Term, text: string): void {
-  appendEntry(term, createTerminalLine({ kind: 'system', text }), text.length, countLines(text) + 1)
+function systemLine(term: Term, text: string, code?: TerminalLineCode): void {
+  appendEntry(term, createTerminalLine({ kind: 'system', text, code }), text.length, countLines(text) + 1)
+}
+
+/** How long a coded line stays news: older than this, the same sentence is said again. */
+const CODED_LINE_FRESH_MS = 10 * 60_000
+
+/**
+ * Whether a coded line saying `text` already stands at the end of the room's
+ * transcript and is recent enough not to repeat.
+ *
+ * A coded sentence is the same every time it is written, and on a full
+ * machine it is written by every entry (the join warm-up), every Run and
+ * every drawer that opens the shell: thirty students arriving would leave
+ * thirty identical refusals in the log. So the lines carrying one code are
+ * read as one block at the end of the transcript, whatever order they came
+ * in: the kernel's «Не хватает памяти…» and the shell's «Не удалось открыть
+ * общую оболочку…» take turns without either making the other news again.
+ * Anything else said after the block (a restart, the owner's stop, a
+ * command) ends it, and the next refusal is written.
+ *
+ * And only for a while: a refusal from yesterday's class, or from an hour
+ * ago, says nothing about now, and its clock shows no date. A machine that
+ * is full again gets a fresh line with a fresh time.
+ */
+export function codedLineStands(
+  lines: ReturnType<typeof getTerminal>,
+  code: TerminalLineCode,
+  text: string,
+  now: number = Date.now(),
+): boolean {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines.get(i)
+    if (line.get('code') !== code) return false
+    if (terminalText(line).toString() !== text) continue
+    return now - Number(line.get('createdAt') ?? 0) < CODED_LINE_FRESH_MS
+  }
+  return false
 }
 
 /** The counted word in "N commands removed": the plural rules are shared, from shared/. */
@@ -1318,7 +1355,7 @@ function rejectWaiters(term: Term, err: Error): void {
 }
 
 /** Gone for good: say so in the transcript the room is reading, not just in a log. */
-function fail(term: Term, message: string): void {
+function fail(term: Term, message: string, code?: TerminalLineCode): void {
   clearTimers(term)
   term.queued = []
   term.raw = ''
@@ -1326,7 +1363,12 @@ function fail(term: Term, message: string): void {
   clearRunning(term)
   closeSocket(term)
   setPhase(term, 'dead')
-  systemLine(term, `[colloq] ${message}`)
+  // A coded line is set apart by the drawer itself (the «!» in the sigil
+  // column), so it does not need the marker that tells our words from the
+  // shell's; a tab without the drawer's rule reads the sentence as is. And it
+  // is said once: every drawer opened on a full machine asks again.
+  if (!code) systemLine(term, `[colloq] ${message}`)
+  else if (!codedLineStands(getTerminal(docOf(term)), code, message)) systemLine(term, message, code)
   dropPending(term, tr("server.theTerminalNoLongerExists.fe4ae0"))
   rejectWaiters(term, new Error(message))
 }
@@ -1545,8 +1587,19 @@ export function openTerminal(sessionId: string): Promise<void> {
       // goes to the same dead address, and so on until the whole server
       // restarts.
       forgetSessionKernel(sessionId)
-      const message = tr("server.couldNotOpenTheSharedShell.c33160", { p0: errText(err) })
-      fail(term, message)
+      /*
+       * The shell needs the room's container, and on 9 Oct 2026 Docker
+       * admission refused it: the room read «не удалось открыть общую
+       * оболочку — Not enough available memory for this kernel allocation».
+       * Now the refusal is a sentence of its own, short enough for one line,
+       * marked so the drawer shows it as a warning (K5); what to do about it
+       * is said on the cell and in the kernel log.
+       */
+      const full = machineMemoryFull(err)
+      const message = full
+        ? tr('server.terminal.memoryFull')
+        : tr("server.couldNotOpenTheSharedShell.c33160", { p0: errText(err) })
+      fail(term, message, full ? 'kernel_memory' : undefined)
       throw new Error(message)
     } finally {
       if (term.generation === generation) term.opening = null

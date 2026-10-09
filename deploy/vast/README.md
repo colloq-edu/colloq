@@ -126,6 +126,7 @@ The server reads the container's environment and `/workspace/colloq/.env`. For m
 | `KERNEL_CPUS` | `2` | CPUs per room |
 | `KERNEL_OWN_MAX`, `KERNEL_OWN_PIDS` | `60`, `2048` | The second container a class gets for its students' personal notebooks, which never receives a GPU: how many kernels may live in it at once, and its process ceiling |
 | `KERNEL_OWN_IDLE_MIN` | `30` | Minutes of idling after which one personal notebook's kernel is stopped; the container goes with the last kernel in it. `0` never stops them |
+| `KERNEL_ROOM_IDLE_MIN` | `120` | Minutes a class with nobody inside and nothing computing keeps its containers before they are stopped and their memory is free again. `0` keeps them. The owner can also stop kernels by hand on the panel's Resources tab |
 | `KERNEL_GPUS` | all GPUs (detected by `colloq-host`) | GPU slices handed out one per GPU room, e.g. `0,1` or MIG ids |
 | `KERNEL_SHM` | `1g` | `/dev/shm` for GPU rooms |
 | `KERNEL_NETWORK` | `colloq` | Docker network shared by the server and room kernels |

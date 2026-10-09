@@ -29,6 +29,17 @@ let stopping=false
 let lastGC=0
 let lastGCAttempt=0
 const diagnostics={preparationFailures:0,cleanupFailures:0,published:0,waitingForResources:false}
+/**
+ * The preparations holding a memory reservation right now, for the owner's
+ * «Работают сейчас» (routes/admin-running.ts): from the moment the lease is
+ * taken to its release. Kept beside `controllers` rather than derived from
+ * it: a claimed bundle still waiting for memory holds nothing.
+ */
+const PREPARATION_MB=1664
+const preparing=new Map<string,{competitionId:string;startedAt:number}>()
+export function runningPreparations():{id:string;competitionId:string;startedAt:number;memoryMb:number}[]{
+ return [...preparing].map(([id,p])=>({id,...p,memoryMb:PREPARATION_MB}))
+}
 export function dependencyPreparationDiagnostics(){return {...diagnostics,active:controllers.size,running:timer!==null,starting:starting!==null,lastGCAt:lastGC||null}}
 const emit=(id:string):void=>{events.emit(id)}
 export function watchBundle(id:string,callback:()=>void):()=>void { events.on(id,callback);return()=>events.off(id,callback) }
@@ -145,9 +156,10 @@ export async function processNextPreparation(prepare:(request:PreparationRequest
   const diskBytes=files.preparationPeakBytes(limits.maxDownloadBytes)
   if(free!==null&&free<diskBytes)throw new store.DependencyStoreError('disk_full',507)
   const {availableMb}=await competitionRunner().capacity()
-  release=reserveWork({id:'prepare:'+bundle.id,kind:'preparation',memoryMb:1664,diskBytes},{availableMemoryMb:availableMb,availableDiskBytes:free})
+  release=reserveWork({id:'prepare:'+bundle.id,kind:'preparation',memoryMb:PREPARATION_MB,diskBytes},{availableMemoryMb:availableMb,availableDiskBytes:free})
   diagnostics.waitingForResources=!release
   if(!release){store.deferClaim(bundle.id);return false}
+  preparing.set(bundle.id,{competitionId:bundle.competitionId,startedAt:Date.now()})
   stage=files.freshStaging(bundle.id)
   const result=await prepare({id:bundle.id,imageDigest:revision.imageDigest,requirementsText:bundle.requirementsText,basePackages:revision.packages,workDir:stage,...limits,wallSeconds:DEPENDENCY_LIMITS.wallSeconds,signal:controller.signal,onProgress(update){
    // Our own steps are codes, kept only when they are ours; raw text (Docker's
@@ -173,6 +185,7 @@ export async function processNextPreparation(prepare:(request:PreparationRequest
   store.failBundle(bundle.id,code,message,error instanceof DependencyPreparationError?error.line:undefined,params)
  }finally{
   release?.()
+  preparing.delete(bundle.id)
   controllers.delete(bundle.id)
   if(stage)try{files.removeStaging(bundle.id)}catch(error){diagnostics.cleanupFailures=Math.min(Number.MAX_SAFE_INTEGER,diagnostics.cleanupFailures+1);console.error('[dependencies] staging cleanup failed',error)}
   emit(bundle.id)

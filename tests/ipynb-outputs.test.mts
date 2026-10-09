@@ -15,7 +15,9 @@ import * as Y from 'yjs'
 import { createSession } from '../server/src/db.js'
 import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { putBlob } from '../server/src/blobs.js'
-import { addBook, createCell } from '../shared/notebook.js'
+import { addBook, cellOutputs, cellSource, createCell, getCells, writeOutput } from '../shared/notebook.js'
+import { KERNEL_MEMORY_ENAME } from '../shared/kernel-problem.js'
+import { newBlobBag, pageOfDoc } from '../server/src/publish/build.js'
 import { notebookWithOutputs } from '../server/src/publish/notebook.js'
 import { buildAndWrite } from '../server/src/publish/materials.js'
 import { readPageFile } from '../server/src/publish/page-files.js'
@@ -93,6 +95,23 @@ test('every output type goes into the file, with execution counts', () => {
   })
   assert.equal(nb.cells[2].execution_count, null)
   assert.deepEqual(nb.cells[2].outputs, [])
+})
+
+test("the server's memory notice stays in the room: neither the page nor the file carries it", () => {
+  // A cell refused for memory (kernel/index.ts · reportDeadKernel) and never run again before publishing.
+  const notice = { kind: 'error' as const, ename: KERNEL_MEMORY_ENAME, evalue: 'Не хватает памяти на сервере…', traceback: [] }
+  const doc = new Y.Doc()
+  const cell = createCell('code', '')
+  cellSource(cell).insert(0, 'model.fit(X, y)')
+  getCells(doc).push([cell])
+  cellOutputs(cell).push([writeOutput({ kind: 'stream', name: 'stdout', text: 'epoch 1\n' }), writeOutput(notice)])
+  const page = pageOfDoc(doc, newBlobBag())
+  assert.deepEqual(page[0]!.outputs, [{ kind: 'stream', name: 'stdout', text: 'epoch 1\n' }])
+  // A page published before the filter existed still carries it; its download does not.
+  const file = JSON.parse(
+    notebookWithOutputs([{ id: 'old', type: 'code', source: 'x', outputs: [notice], execCount: null, ranMs: null }], () => null),
+  )
+  assert.deepEqual(file.cells[0].outputs, [])
 })
 
 test('images kept out of line come back inline, and a figure as JSON', () => {

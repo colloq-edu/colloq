@@ -64,11 +64,14 @@ test('there is no second cell above the sheet: the shared text is not drawn for 
 })
 
 test('the shared cell\'s output is not drawn for a student in a council', () => {
+  // `printed` is the cell's outputs without a memory refusal, which is drawn
+  // as a notice of its own (K5) — behind the same `!ownSheet`.
   assert.match(
     CELL,
-    /\{#if isCode && !ownSheet && \(outputs\.current\.length > 0 \|\| outputFloor > 0\)\}/,
+    /\{#if isCode && !ownSheet && \(printed\.length > 0 \|\| outputFloor > 0\)\}/,
     'the shared output remained under one\'s own sheet',
   )
+  assert.match(CELL, /\{#if isCode && !ownSheet && memoryRefused\}/, 'the memory notice reached one\'s own sheet')
   // While one's own is drawn, and exactly once: from `attemptRun`, not from
   // `mine.run` directly, otherwise output wiped by a restore would come back
   // by itself.

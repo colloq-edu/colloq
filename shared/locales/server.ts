@@ -2553,6 +2553,30 @@ export const serverMessages: MessageCatalog = {
     "ru": "Контейнер личных тетрадей пришлось пересоздать ({p0}). Переменные в личных тетрадях сброшены; файлы в панели не тронуты, запустите ячейки заново.",
     "en": "The container for personal notebooks had to be recreated ({p0}). Variables in personal notebooks are gone; the files in the Files panel are untouched, run your cells again."
   },
+  "server.kernel.memoryFull": {
+    "ru": "Не хватает памяти на сервере: другие занятия зарезервировали её под свои ядра. Владелец может остановить простаивающие во вкладке «Ресурсы».",
+    "en": "The server is out of memory: other classes have reserved it for their kernels. The owner can stop idle ones on the Resources tab."
+  },
+  "server.kernel.memoryUnverified": {
+    "ru": "Не удалось проверить, хватит ли памяти на сервере: Docker не ответил, сколько уже занято. Попробуйте ещё раз через минуту.",
+    "en": "Could not check whether the server has enough memory: Docker did not say how much is already taken. Try again in a minute."
+  },
+  "server.terminal.memoryFull": {
+    "ru": "Не удалось открыть общую оболочку: не хватает памяти на сервере",
+    "en": "Could not open the shared shell: the server is out of memory"
+  },
+  "server.kernel.startsPaused": {
+    "ru": "Ядро останавливают, запустите ещё раз через пару секунд",
+    "en": "The kernel is being stopped; run again in a couple of seconds"
+  },
+  "server.kernel.stoppedByOwner": {
+    "ru": "Владелец сервера остановил ядро, чтобы освободить память: переменные сброшены, файлы на месте. Запустите ячейку, чтобы поднять его снова.",
+    "en": "The server owner stopped the kernel to free memory: the variables are gone, the files are in place. Run a cell to bring it back."
+  },
+  "server.kernel.ownStoppedByOwner": {
+    "ru": "Владелец сервера остановил ядра личных тетрадей, чтобы освободить память: переменные в них сброшены, файлы на месте. Запустите ячейку, чтобы поднять ядро снова.",
+    "en": "The server owner stopped the personal notebooks' kernels to free memory: their variables are gone, the files are in place. Run a cell to bring a kernel back."
+  },
   "server.defaultNotebook": {
     "ru": "Тетрадь.ipynb",
     "en": "Notebook.ipynb"
@@ -4070,6 +4094,38 @@ export const serverMessages: MessageCatalog = {
   "server.ownerAction.editEnvironment": {
     "ru": "создавать и менять списки пакетов окружений",
     "en": "create or change environment package lists"
+  },
+  "server.ownerAction.stopKernel": {
+    "ru": "останавливать ядра занятий",
+    "en": "stop class kernels"
+  },
+  "server.running.notFound": {
+    "ru": "У этого занятия сейчас ничего не запущено.",
+    "en": "Nothing is running for this class now."
+  },
+  "server.running.stopping": {
+    "ru": "Это занятие уже останавливают. Обновите список через пару секунд.",
+    "en": "This class is already being stopped. Refresh the list in a couple of seconds."
+  },
+  "server.running.busy": {
+    "ru": "В занятии сейчас идёт работа, и остановка её прервёт.",
+    "en": "Something is running in this class now, and stopping would cut it off."
+  },
+  "server.running.failed": {
+    "ru": "Ядро не удалось остановить до конца: переменные уже сброшены, но контейнер может ещё держать память. {p0}",
+    "en": "The kernel could not be stopped completely: the variables are gone, but the container may still hold memory. {p0}"
+  },
+  "server.running.censusUnavailable": {
+    "ru": "Docker не ответил, что сейчас запущено, поэтому остановить нечего. Попробуйте ещё раз через минуту.",
+    "en": "Docker did not say what is running now, so there is nothing to stop. Try again in a minute."
+  },
+  "server.running.whatInvalid": {
+    "ru": "Укажите, что остановить: class или own.",
+    "en": "Say what to stop: class or own."
+  },
+  "server.running.idsInvalid": {
+    "ru": "ids — это список идентификаторов занятий.",
+    "en": "ids must be a list of class ids."
   },
   "server.resources.unknownField": {
     "ru": "Такой настройки ресурсов нет: {field}",

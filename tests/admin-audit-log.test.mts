@@ -39,6 +39,9 @@ import { addBook } from '../shared/notebook.js'
 import { createCompetition, getCompetition, updateCompetition, updateSubmission } from '../server/src/competitions/store.js'
 import { adminEnvironmentRoutes } from '../server/src/routes/admin-environments.js'
 import { adminAuditRoutes } from '../server/src/routes/admin-audit.js'
+import { forgetResources, useDockerInfo } from '../server/src/kernel/resources.js'
+import { forgetContainerUsage } from '../server/src/kernel/usage.js'
+import { fakeDocker } from './_fake-docker.mts'
 
 /*
  * Package lists are written into COLLOQ_HOME/environments when it is set, and
@@ -256,6 +259,40 @@ test('creating a room and changing who teaches a course or a room are recorded',
   assert.deepEqual([added.target?.id, added.detail?.staff], [courseId, lena.id])
   assert.equal((await call('DELETE', `/api/admin/courses/${courseId}/teachers/${lena.id}`, { cookie: ownerCookie })).status, 200)
   assert.equal(last('course.teacher_removed').detail?.staff, lena.id)
+})
+
+test("the owner's stop of a class's kernels is recorded with what it freed, and no student in it", async () => {
+  createSession('audit-kernel', 'Аудит: ядро', null)
+  // The one place this file needs containers: docker, faked at the process boundary.
+  const docker = fakeDocker()
+  useDockerInfo(async () => ({ code: 0, out: `${15 * 1024 ** 3} 8` }))
+  forgetResources()
+  forgetContainerUsage()
+  try {
+    docker.add('audit-kernel', 'room', { memoryMb: 4096 })
+    const stopped = await call('POST', '/api/admin/resources/running/audit-kernel/stop', {
+      cookie: ownerCookie,
+      body: { what: 'class' },
+    })
+    assert.equal(stopped.status, 200)
+    const event = last('room.kernel_stopped')
+    assert.deepEqual(event.target, { type: 'room', id: 'audit-kernel', label: 'Аудит: ядро' })
+    assert.deepEqual(event.detail, { what: 'class', freedMb: 4096, forced: false, online: 0 })
+    assert.equal(event.actor?.id, owner.id)
+    // A refusal leaves nothing: with the container gone there is nothing to stop.
+    const before = events().length
+    const gone = await call('POST', '/api/admin/resources/running/audit-kernel/stop', {
+      cookie: ownerCookie,
+      body: { what: 'class' },
+    })
+    assert.equal(gone.status, 404)
+    assert.equal(events().length, before)
+  } finally {
+    docker.restore()
+    useDockerInfo(null)
+    forgetResources()
+    forgetContainerUsage()
+  }
 })
 
 test('deleting a room, making and deleting a course and every change of a public page are recorded', async () => {

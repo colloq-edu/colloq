@@ -315,6 +315,13 @@ export class SessionState {
    */
   person = $state<string | null>(null)
   /**
+   * This connection is the server's owner (`role` frame): advice only, never
+   * a right. A cell refused for memory sends the owner to the Resources tab,
+   * where only an owner can stop idle classes, and tells everyone else to ask
+   * the owner (CellView · KernelMemoryNotice).
+   */
+  serverOwner = $state(false)
+  /**
    * The participants that are this same teacher in other browsers, as the
    * server saw their cookies (`person:devices`). The people list names them
    * "you, another device"; presence alone could be claimed by anyone.
@@ -1049,6 +1056,7 @@ export class SessionState {
          * alone left a stale badge sitting there for the whole seminar.
          */
         this.person = message.person ?? null
+        this.serverOwner = message.owner === true
         if (this.me.role !== message.role) {
           this.me.role = message.role
           const current = this.awareness.getLocalState()?.user as AwarenessUser | undefined

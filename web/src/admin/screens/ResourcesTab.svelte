@@ -26,6 +26,7 @@
   import type { DiskSpace } from '@shared/disk'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Choice from '@/admin/ui/Choice.svelte'
+  import RunningKernels from '@/admin/ui/RunningKernels.svelte'
   import Section from '@/admin/ui/Section.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
@@ -43,6 +44,7 @@
     'roomMemoryMb',
     'gpuRoomMemoryMb',
     'roomCpus',
+    'roomIdleMin',
     'ownMemoryMb',
     'ownCpus',
     'ownMax',
@@ -168,6 +170,13 @@
     if (!current || saving) return
     try {
       const fresh = await adminApi.resourceSettings()
+      /*
+       * A save (or a reload) landed while this was on its way: its answer is
+       * newer, settings included, and spreading the copy taken above over it
+       * would put the pre-save numbers back as "saved". The next tick
+       * refreshes the machine.
+       */
+      if (saving || loaded !== current) return
       // Only what the machine is doing; the settings stay what the form shows.
       loaded = { ...current, budget: fresh.budget, machine: fresh.machine, disk: fresh.disk }
     } catch {
@@ -211,6 +220,10 @@
     if (!bounds) return null
     const name = key.slice(2) as keyof CompetitionSettings['bounds']
     return bounds[name] ?? null
+  }
+
+  function fieldId(key: FieldKey): string {
+    return `resources-${key.replace('.', '-')}`
   }
 
   function display(key: FieldKey, value: number | null): string {
@@ -488,47 +501,54 @@
   it is the panel's, the .env's or nobody's.
 -->
 {#snippet field(key: FieldKey, label: string, unit: string, width: string, placeholder = '')}
-  {@const id = `resources-${key.replace('.', '-')}`}
-  {@const source = sourceOf(key)}
+  {@const id = fieldId(key)}
   <div class={cn('min-w-0', width)}>
     {@render fieldLabel(key, label, id)}
-    <!-- The shared prefixed field: its frame, height and focus halo are the
-         panel's. `!` because the scope paints every affix frame grey at two
-         classes, and an unsaved number has to stand out from a saved one. -->
-    <div class={cn('admin-affix gap-2', isDirty(key) && '!border-accent')}>
-      <input
-        {id}
-        bind:value={texts[key]}
-        oninput={() => typed(key)}
-        onblur={() => tidy(key)}
-        class="placeholder:font-sans"
-        inputmode="decimal"
-        autocomplete="off"
-        {placeholder}
-      />
-      <span class="shrink-0 text-2xs text-muted">{unit}</span>
-    </div>
-    <p class="admin-meta mt-1.5 min-h-5">
-      {#if forgotten.includes(key)}
-        <span class="text-warning">{tr('admin.resourcesTab.willForget')}</span>
-      {:else if source === 'saved'}
-        {tr('admin.resourcesTab.sourceSaved')}
-        {#if isOwner}
-          ·
-          <button type="button" class="text-accent-text hover:underline" onclick={() => forget(key)}>
-            {key.startsWith('c.') || !loaded?.settings[key as ResourceSettingName].envName
-              ? tr('admin.resourcesTab.backToDefault')
-              : tr('admin.resourcesTab.backToEnv')}
-          </button>
-        {/if}
-      {:else if source === 'env'}
-        {@const setting = key.startsWith('c.') ? null : loaded?.settings[key as ResourceSettingName]}
-        {tr('admin.resourcesTab.sourceEnv')} <span class="font-mono">{setting?.envName ?? 'COMPETITION_SLOTS'}</span>
-      {:else if source === 'default'}
-        {tr('admin.resourcesTab.sourceDefault')}
-      {/if}
-    </p>
+    {@render fieldControl(key, unit, id, placeholder)}
   </div>
+{/snippet}
+
+<!-- The box and its source line without the caption, for a field whose
+     caption is wider than its box («Пустая комната отпускает ядро через»):
+     the caption then spans the row and the hint stands beside the box. -->
+{#snippet fieldControl(key: FieldKey, unit: string, id: string, placeholder = '')}
+  {@const source = sourceOf(key)}
+  <!-- The shared prefixed field: its frame, height and focus halo are the
+       panel's. `!` because the scope paints every affix frame grey at two
+       classes, and an unsaved number has to stand out from a saved one. -->
+  <div class={cn('admin-affix gap-2', isDirty(key) && '!border-accent')}>
+    <input
+      {id}
+      bind:value={texts[key]}
+      oninput={() => typed(key)}
+      onblur={() => tidy(key)}
+      class="placeholder:font-sans"
+      inputmode="decimal"
+      autocomplete="off"
+      {placeholder}
+    />
+    <span class="shrink-0 text-2xs text-muted">{unit}</span>
+  </div>
+  <p class="admin-meta mt-1.5 min-h-5">
+    {#if forgotten.includes(key)}
+      <span class="text-warning">{tr('admin.resourcesTab.willForget')}</span>
+    {:else if source === 'saved'}
+      {tr('admin.resourcesTab.sourceSaved')}
+      {#if isOwner}
+        ·
+        <button type="button" class="text-accent-text hover:underline" onclick={() => forget(key)}>
+          {key.startsWith('c.') || !loaded?.settings[key as ResourceSettingName].envName
+            ? tr('admin.resourcesTab.backToDefault')
+            : tr('admin.resourcesTab.backToEnv')}
+        </button>
+      {/if}
+    {:else if source === 'env'}
+      {@const setting = key.startsWith('c.') ? null : loaded?.settings[key as ResourceSettingName]}
+      {tr('admin.resourcesTab.sourceEnv')} <span class="font-mono">{setting?.envName ?? 'COMPETITION_SLOTS'}</span>
+    {:else if source === 'default'}
+      {tr('admin.resourcesTab.sourceDefault')}
+    {/if}
+  </p>
 {/snippet}
 
 {#snippet legend(tone: string, title: string, detail: string)}
@@ -680,6 +700,16 @@
       {/if}
     </Section>
 
+    <!-- What holds the machine right now, and the owner's stop. Outside the
+         fieldset below: a teacher reads it too, and a disabled fieldset
+         would grey out the notebook lists they may open. -->
+    <Section
+      title={tr('admin.resourcesTab.running.title')}
+      description={isOwner ? tr('admin.resourcesTab.running.note') : tr('admin.resourcesTab.running.noteTeacher')}
+    >
+      <RunningKernels roomIdleMin={savedOf('roomIdleMin')} onchange={() => void refreshBudget()} />
+    </Section>
+
     <!-- One disabled fieldset rather than thirty disabled= attributes: a field
          added later cannot forget to be read-only for a teacher. -->
     <fieldset class="contents" disabled={!isOwner}>
@@ -700,6 +730,19 @@
             {/each}
           </p>
         {/if}
+        <!-- How long an empty room keeps its kernels (Paper K5). Before this
+             it was a hard-coded two hours, and three idle rooms held 12 GB of
+             a 15 GB machine for the whole of it. 0 is a real value here:
+             never. -->
+        <div class="mt-4">
+          {@render fieldLabel('roomIdleMin', tr('admin.resourcesTab.roomIdle'), fieldId('roomIdleMin'))}
+          <div class="flex flex-wrap items-start gap-4">
+            <div class="w-[200px] min-w-0">
+              {@render fieldControl('roomIdleMin', tr('admin.resourcesTab.unitRoomIdleMinutes'), fieldId('roomIdleMin'))}
+            </div>
+            <p class="min-w-[220px] max-w-[420px] flex-1 text-2xs text-muted">{tr('admin.resourcesTab.roomIdleNote')}</p>
+          </div>
+        </div>
       </Section>
 
       <Section title={tr('admin.resourcesTab.notebooksTitle')} description={tr('admin.resourcesTab.notebooksNote')}>

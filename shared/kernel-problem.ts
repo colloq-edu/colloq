@@ -1,4 +1,5 @@
 import { formatNumber, tr } from './i18n.js'
+import type { CellOutput } from './notebook.js'
 import { parseRuntimeStartFailure, type RuntimeStartFailure } from './runtime.js'
 
 /**
@@ -41,5 +42,49 @@ export function kernelProblemAdvice(problem: KernelProblem): string {
       return tr('room.kernel.unschedulable.gpu')
     default:
       return tr('room.kernel.unschedulable.other')
+  }
+}
+
+/* ----------------------------------------------- memory refused (Docker) */
+
+/**
+ * The name a cell's error carries when the server would not start its kernel
+ * because the machine's memory is promised to other classes (Docker
+ * admission, server/src/kernel/pool.ts · KernelMemoryRefusal, reason `full`).
+ *
+ * A word in the output rather than a match on its text: the text is a
+ * sentence in the instance's language, the name is the same in every language
+ * and every version, and it survives the round trip through the .ipynb on
+ * disk, where an extra field would not. The room draws the cell's notice from
+ * it (K5) in the viewer's words and by role, and does not count it as the
+ * cell's failure: the code never ran. A tab opened before the notice existed
+ * reads it as an ordinary error, «KernelMemory: Не хватает памяти на
+ * сервере…», which is still the truth.
+ */
+export const KERNEL_MEMORY_ENAME = 'KernelMemory'
+
+export function isKernelMemoryOutput(output: CellOutput): boolean {
+  return output.kind === 'error' && output.ename === KERNEL_MEMORY_ENAME
+}
+
+/** Where an owner frees memory: the Resources tab, whose «Работают сейчас» lists what holds it. */
+export const KERNEL_MEMORY_ADMIN_HREF = '/admin/resources'
+
+/**
+ * What the cell's notice says, and to whom.
+ *
+ * Everyone reads that other classes took the memory and that a retry in a
+ * couple of minutes may work. The second half is the advice, and it depends
+ * on who can act on it: only the server's owner stops kernels (the stop on
+ * the Resources tab is owner-only), so the owner is sent there with a link,
+ * and everyone else, teachers included, is told whom to ask. Telling a
+ * teacher to stop idle classes would send them to a tab where there is no
+ * button for it.
+ */
+export function kernelMemoryNotice(owner: boolean): { title: string; body: string; link: string | null } {
+  return {
+    title: tr('room.kernel.memory.title'),
+    body: tr(owner ? 'room.kernel.memory.bodyOwner' : 'room.kernel.memory.body'),
+    link: owner ? tr('room.kernel.memory.open') : null,
   }
 }

@@ -56,6 +56,7 @@ import {
   getTerminal,
   kernelEntry,
   kernelsMap,
+  readOutput,
   rootOfCell,
   CELLS_KEY,
   KERNELS_KEY,
@@ -65,12 +66,14 @@ import {
   KERNEL_STATUS_FIELD,
   type CellState,
   type KernelStatus,
+  type TerminalLineCode,
   type YCell,
+  type YOutput,
 } from '@shared/notebook'
 import { config } from '../config.js'
 import { appendActivity } from '../activity.js'
 import type { ActivityDetails, ActivityKind, ActivityOutcome } from '@shared/activity'
-import { getParticipant, sessionEnvironment, storedRules } from '../db.js'
+import { getParticipant, sessionEnvironment, sessionRowExists, storedRules } from '../db.js'
 import { bookHasOwnKernel } from '@shared/rules'
 import { activeName } from '../environments.js'
 import { formatNotebook, type FormatOutcome } from './format.js'
@@ -80,17 +83,20 @@ import {
   endpointForSession,
   forgetSessionKernel,
   listRoomKernels,
+  machineMemoryFull,
   onRoomKernelRecreated,
   ownIdleMinutes,
   ownKernelMax,
+  roomIdleMinutes,
   runningRoomKernels,
   OwnKernelUnavailable,
   type KernelRole,
 } from './pool.js'
 import { kernelBackend, RuntimeRequestError } from './runtime-client.js'
-import { KERNEL_PROBLEM_KEY, type KernelProblem } from '@shared/kernel-problem'
+import { isKernelMemoryOutput, KERNEL_MEMORY_ENAME, KERNEL_PROBLEM_KEY, type KernelProblem } from '@shared/kernel-problem'
 import { explain as explainDeath, forgetKills, sampleKills } from './postmortem.js'
 import { getSessionDoc, holdRoom, onlineCount, peekSessionDoc } from '../collab/index.js'
+import { kernelRetirementInProgress, pauseKernelStarts } from './retirement.js'
 import { seldom } from '../log.js'
 import { countKernelStart } from '../ops/counters.js'
 import { projectBooks } from '../collab/books.js'
@@ -141,7 +147,7 @@ import {
 } from './danger.js'
 import { durationWords } from '@shared/text'
 import type { BriefValue, CouncilRun, InspectMiss } from '@shared/protocol'
-import { closeTerminal, terminalPhase } from './terminal.js'
+import { closeTerminal, codedLineStands, terminalPhase } from './terminal.js'
 
 /**
  * The per-session Python runtime.
@@ -1569,6 +1575,7 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
       }
       runtime.kernel = kernel
       setKernelProblem(runtime, null)
+      clearMemoryNotices(runtime)
       kernel.onPhaseChange((phase, expected) => onPhase(runtime, phase, expected))
       // Before anything of ours is sent: a kernel that is already busy is
       // finishing a cell for a server that no longer exists, and it would make
@@ -1613,7 +1620,14 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
        */
       void sampleKills(sessionId, runtime.role)
     } catch (err) {
-      setStatus(runtime, 'dead')
+      /*
+       * A full machine is not a death: nothing started, and the next Run
+       * tries again. The chip says «НЕ ЗАПУЩЕНО», as for a notebook nobody
+       * ran yet, not «ЯДРО ОСТАНОВЛЕНО», which reads as "your code broke it"
+       * (K5, 9 Oct 2026).
+       */
+      const full = machineMemoryFull(err)
+      setStatus(runtime, full ? 'off' : 'dead')
       countKernelStart(runtime.role, false)
       // A scheduler refusal is a word for advice to the teacher; anything else removes it.
       const problem = err instanceof RuntimeRequestError ? err.failure ?? null : null
@@ -1640,7 +1654,7 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
       // Into the shared record too: the person who presses Run sees the message
       // on their cell, and everyone else sees a notebook that stopped.
       // A closed room gets silence: a note would create its document anew.
-      if (!runtime.retired) kernelNote(sessionId, errText(err))
+      if (!runtime.retired) kernelNote(sessionId, errText(err), full ? 'kernel_memory' : undefined)
       throw err
     } finally {
       clearTimeout(slow)
@@ -1689,11 +1703,14 @@ onRoomKernelRecreated((sessionId, why, role) => {
  * because the news matters whether or not anyone has the drawer open; the
  * terminal rebuilds its own bookkeeping from these lines when it next opens.
  */
-export function kernelNote(sessionId: string, text: string): void {
+export function kernelNote(sessionId: string, text: string, code?: TerminalLineCode): void {
   try {
     const { doc } = getSessionDoc(sessionId)
+    const terminal = getTerminal(doc)
+    // A coded note is said once while it stands and is fresh (terminal.ts · codedLineStands).
+    if (code && codedLineStands(terminal, code, text)) return
     doc.transact(() => {
-      getTerminal(doc).push([createTerminalLine({ kind: 'system', text })])
+      terminal.push([createTerminalLine({ kind: 'system', text, code })])
     }, ORIGIN)
   } catch {
     // Never let a log line be the reason a restart fails.
@@ -1746,7 +1763,7 @@ export async function restartSession(
     } catch (err) {
       // Never a rejection: the person clicked a button, the document carries the news.
       console.error(`[kernel] restart failed for ${sessionId}:`, errText(err))
-      setStatus(runtime, 'dead')
+      setStatus(runtime, machineMemoryFull(err) ? 'off' : 'dead')
       kernelNote(
         sessionId,
         tr("server.theKernelDidNotComeBackAfter.cadaf5"),
@@ -1923,7 +1940,17 @@ export async function shutdownSession(sessionId: string, permanent = false): Pro
  * will add its own ending to the cell, so the notebook's cell states are
  * levelled AFTER it, as the last word.
  */
-async function retireScope(runtime: Runtime, note: string | null): Promise<void> {
+async function retireScope(
+  runtime: Runtime,
+  note: string | null,
+  /**
+   * Leave the personal-notebook container to the caller. The owner's stop
+   * retires every scope at once and removes the container itself, once:
+   * otherwise each personal scope would race to `docker rm` the same
+   * container as it finished.
+   */
+  options: { keepContainer?: boolean } = {},
+): Promise<void> {
   const { sessionId, root } = runtime
   forgetScope(runtime)
   if (runtime.activityItem) runtime.activityItem.activityCancelled = true
@@ -1965,7 +1992,7 @@ async function retireScope(runtime: Runtime, note: string | null): Promise<void>
   clearScopeMirror(sessionId, root)
   if (note) kernelNote(sessionId, note)
   // The personal notebooks container is kept while it has at least one kernel.
-  if (runtime.role === 'own') await dropOwnIfEmpty(sessionId)
+  if (runtime.role === 'own' && !options.keepContainer) await dropOwnIfEmpty(sessionId)
 }
 
 /**
@@ -2103,7 +2130,8 @@ export function syncBookKernels(sessionId: string): void {
 /* ----------------------------------------------------------- idle cleanup */
 
 /**
- * How long a room's container lives after everyone has left.
+ * How long a room's container lives after everyone has left, when nothing
+ * else is said.
  *
  * A class lasts an hour and a half; two hours of an empty room mean "the class
  * is over", not "the teacher went out for coffee". Previously no cleanup was
@@ -2111,6 +2139,12 @@ export function syncBookKernels(sessionId: string): void {
  * there are TWO per seminar (its own and the one where students' personal
  * notebooks compute), and without cleanup the machine piles up a pair for every
  * class ever held. They go together: the class ended as a whole, not by half.
+ *
+ * Since 0.20 this is only the default of the owner's setting `roomIdleMin`
+ * (pool.ts · roomIdleMinutes), read at every pass: on a small machine two
+ * hours of three idle rooms' reservations refused every new kernel for the
+ * evening. `idleVerdict` keeps it as the default of its own, so a caller that
+ * says nothing about the limit gets the old rule.
  */
 const IDLE_KERNEL_MS = 2 * 60 * 60 * 1000
 /**
@@ -2124,10 +2158,31 @@ const IDLE_KERNEL_MS = 2 * 60 * 60 * 1000
  * that at once, so the price of waiting is a whole morning without a GPU.
  */
 const IDLE_STOPPED_KERNEL_MS = 30 * 60 * 1000
+/** The sweep's pace, and its slowest: a shorter room setting brings it closer (see `sweepEveryMs`). */
 const SWEEP_EVERY_MS = 10 * 60 * 1000
+/** Its fastest: a pass asks docker for every container, and once a minute is plenty. */
+const SWEEP_FLOOR_MS = 60 * 1000
 
-/** When someone was last in the room. */
-const lastOccupied = new Map<string, number>()
+/**
+ * Since when the sweep has seen a room empty: set by the first pass that
+ * finds it so, dropped by any pass that finds it occupied.
+ *
+ * Not "when someone was last seen", which it was until 0.20: a busy pass
+ * marked the room with its own time and the first empty pass kept that mark,
+ * so the countdown began at the last busy look rather than when the room
+ * emptied. Against two hours and a ten-minute pace that was a rounding error;
+ * with the owner's five minutes and a pass every two and a half, a class was
+ * dropped after half the wait it was promised. Now the wait is at least the
+ * setting, and at most one pass more.
+ */
+const emptySince = new Map<string, number>()
+
+/**
+ * The owner's stops in flight, per class (`stopKernelsByOwner`). A second
+ * stop of the same class is refused rather than joined: the second press
+ * came from a list that did not yet show the first.
+ */
+const ownerStops = new Map<string, Promise<void>>()
 
 /**
  * What to do with a room's container right now, by one rule and without docker.
@@ -2146,11 +2201,36 @@ export function idleVerdict(opts: {
   busy: boolean
   since: number | undefined
   now: number
+  /**
+   * How long a live container may stay empty, in milliseconds: the owner's
+   * `roomIdleMin`. `null` means never; left out, the old two hours.
+   *
+   * A stopped container keeps its own half hour (it holds no variables, only
+   * a GPU slice and a layer on disk), and goes sooner only when the room
+   * setting is shorter still: a stopped container never outlives a live one.
+   * "Never" is about live kernels, whose variables someone may come back to.
+   */
+  limitMs?: number | null
 }): 'busy' | 'watch' | 'drop' {
   if (opts.busy) return 'busy'
   if (opts.since === undefined) return 'watch'
-  const limit = opts.running ? IDLE_KERNEL_MS : IDLE_STOPPED_KERNEL_MS
+  const room = opts.limitMs === undefined ? IDLE_KERNEL_MS : opts.limitMs
+  const limit = opts.running
+    ? room
+    : room === null ? IDLE_STOPPED_KERNEL_MS : Math.min(room, IDLE_STOPPED_KERNEL_MS)
+  if (limit === null) return 'watch'
   return opts.now - opts.since < limit ? 'watch' : 'drop'
+}
+
+/** The room setting as the sweep counts it: milliseconds, or `null` for never. */
+function roomIdleLimitMs(): number | null {
+  let minutes = IDLE_KERNEL_MS / 60_000
+  try {
+    minutes = roomIdleMinutes()
+  } catch {
+    // An unreadable settings table keeps the old rule rather than stopping the sweep.
+  }
+  return minutes > 0 ? minutes * 60_000 : null
 }
 
 let idleSweep: Promise<void> | null = null
@@ -2285,7 +2365,12 @@ async function sweepIdleKernelsOnce(now: number): Promise<void> {
   const census = await listRoomKernels()
   for (const room of census) rooms.set(room.session, room.running)
   await sweepUntrackedOwnPods(now, census)
+  // Once per pass: the owner may change it between two passes, not within one.
+  const limitMs = roomIdleLimitMs()
   for (const [sessionId, running] of rooms) {
+    // The owner is stopping it by hand right now: that stop does what this
+    // would, and two at once only race each other to `docker rm`.
+    if (ownerStops.has(sessionId)) continue
     const scopes = scopesOf(sessionId)
     // A computing room is busy even if everyone closed their tabs: the cell has
     // an owner who will come back for the result. The same goes for a command
@@ -2300,27 +2385,379 @@ async function sweepIdleKernelsOnce(now: number): Promise<void> {
       onlineCount(sessionId) > 0 ||
       scopes.some((scope) => scope.currentCell !== null || scope.queue.length > 0) ||
       terminalPhase(sessionId) === 'busy'
-    const verdict = idleVerdict({ running, busy, since: lastOccupied.get(sessionId), now })
-    if (verdict !== 'drop') {
-      // A busy room is marked now; an empty one seen for the first time is also
-      // marked now: the countdown starts from the first look, not from zero.
-      if (verdict === 'busy' || !lastOccupied.has(sessionId)) lastOccupied.set(sessionId, now)
+    const verdict = idleVerdict({ running, busy, since: emptySince.get(sessionId), now, limitMs })
+    if (verdict === 'busy') {
+      // Occupied: no clock. The next pass that finds it empty starts one.
+      emptySince.delete(sessionId)
+      continue
+    }
+    if (verdict === 'watch') {
+      // The first look at it empty starts the countdown, from this pass, not
+      // from the last one that saw it busy.
+      if (!emptySince.has(sessionId)) emptySince.set(sessionId, now)
       continue
     }
     try {
       await shutdownSession(sessionId)
-      lastOccupied.delete(sessionId)
+      emptySince.delete(sessionId)
     } catch (err) {
       console.error(`[kernel] idle sweep failed for ${sessionId}:`, errText(err))
     }
   }
+  // A room without a container has no clock: if one comes back, its wait starts anew.
+  for (const sessionId of [...emptySince.keys()]) if (!rooms.has(sessionId)) emptySince.delete(sessionId)
 }
 
+/**
+ * How often the sweep looks: every ten minutes, or at half the room setting
+ * when that is shorter (but not more than once a minute).
+ *
+ * Ten minutes against a two-hour wait is a rounding error; against a
+ * ten-minute one it is double the wait the owner asked for. Half the setting
+ * keeps the overshoot within half of it.
+ */
+function sweepEveryMs(): number {
+  const limit = roomIdleLimitMs()
+  if (limit === null) return SWEEP_EVERY_MS
+  return Math.min(SWEEP_EVERY_MS, Math.max(SWEEP_FLOOR_MS, limit / 2))
+}
+
+/** When the next pass is due, for the panel's countdown (`classActivity`). */
+let nextSweepAt: number | null = null
+let sweepTimer: NodeJS.Timeout | null = null
+
 /*
+ * A chain of timeouts rather than an interval: the pace is read again after
+ * every pass, so a change of the setting needs no restart. A pass never
+ * overlaps the next one, since the next is scheduled when this one settles;
+ * `sweepIdleKernels` stays single-flight for the callers outside the chain.
+ *
  * `unref`: the timer must not keep the process alive: tests and one-off
  * scripts import this module and must be able to exit.
  */
-setInterval(() => void sweepIdleKernels(), SWEEP_EVERY_MS).unref()
+function scheduleIdleSweep(): void {
+  if (sweepTimer) clearTimeout(sweepTimer)
+  const delay = sweepEveryMs()
+  nextSweepAt = Date.now() + delay
+  sweepTimer = setTimeout(() => {
+    sweepTimer = null
+    nextSweepAt = null
+    void sweepIdleKernels().finally(scheduleIdleSweep)
+  }, delay)
+  sweepTimer.unref()
+}
+
+/**
+ * The owner changed the room idle setting: the next pass comes at the new
+ * pace instead of after the old one. A pass running right now schedules the
+ * next one itself when it ends.
+ */
+export function idleSweepSettingsChanged(): void {
+  if (sweepTimer) scheduleIdleSweep()
+}
+
+scheduleIdleSweep()
+
+/* ------------------------------------------------ what runs, for the panel */
+
+/**
+ * What a class is busy with, by this process's own records (the queue, the
+ * running cell, the restart promise), never by the document a student could
+ * write. `participantId` is the server's record of who pressed; the panel
+ * turns it into a name, and only for a room the viewer may read.
+ */
+export interface ClassBusy {
+  kind: 'cell' | 'queue' | 'attempt' | 'terminal' | 'starting' | 'restarting'
+  participantId: string | null
+  root: string | null
+  since: number | null
+}
+
+/** One notebook's kernel, as the panel lists it. */
+export interface ScopeActivity {
+  root: string
+  role: KernelRole
+  phase: 'starting' | 'idle' | 'busy' | 'restarting' | 'dead' | 'off'
+  lastWorkAt: number | null
+}
+
+/** A class's kernels and the idle sweep's view of it, read-only. */
+export interface ClassActivity {
+  scopes: ScopeActivity[]
+  /** The first reason the class is not idle, or `null`. */
+  busy: ClassBusy | null
+  /** The latest end of work across its notebooks. */
+  lastWorkAt: number | null
+  /** Since when the sweep counts the room as empty; `null` while occupied or before its first look. */
+  idleSince: number | null
+  /** When the sweep will remove the containers; `null` while occupied, or never by the setting. */
+  stopsAt: number | null
+  /** An owner's stop or the room's deletion is in flight. */
+  stopping: boolean
+}
+
+/**
+ * The first thing these scopes are busy with, in the order it matters to
+ * someone about to stop them: a restart, an attempt, a cell, a queue, then
+ * (when asked) the shell and a kernel still starting.
+ *
+ * The first five are what refuses an owner's stop. A start is not: it sees
+ * the stop and lets go of its kernel itself (`ensureKernel` checks
+ * `retired`), so it only keeps a class off the idle list.
+ */
+function busyOf(
+  sessionId: string,
+  scopes: Runtime[],
+  options: { terminal: boolean; starts: boolean },
+): ClassBusy | null {
+  for (const scope of scopes) {
+    if (scope.restarting) return { kind: 'restarting', participantId: null, root: scope.root, since: null }
+  }
+  for (const scope of scopes) {
+    const active = scope.job
+    if (active) {
+      return { kind: 'attempt', participantId: active.job.participantId, root: scope.root, since: active.run.startedAt }
+    }
+  }
+  for (const scope of scopes) {
+    if (scope.currentCell !== null) {
+      return {
+        kind: 'cell',
+        participantId: scope.currentRunById,
+        root: scope.root,
+        since: scope.started?.cellId === scope.currentCell ? scope.started.at : null,
+      }
+    }
+  }
+  for (const scope of scopes) {
+    if (scope.queue.length > 0) {
+      const people = new Set(scope.queue.map((item) => item.council?.participantId ?? item.runById))
+      return { kind: 'queue', participantId: people.size === 1 ? [...people][0]! : null, root: scope.root, since: null }
+    }
+  }
+  if (options.terminal && terminalPhase(sessionId) === 'busy') {
+    return { kind: 'terminal', participantId: null, root: null, since: null }
+  }
+  if (options.starts) {
+    for (const scope of scopes) {
+      if (scope.starting && !scope.kernel) return { kind: 'starting', participantId: null, root: scope.root, since: null }
+    }
+  }
+  return null
+}
+
+function phaseOf(scope: Runtime): ScopeActivity['phase'] {
+  if (scope.restarting) return 'restarting'
+  if (scope.kernel) return scope.currentCell !== null ? 'busy' : scope.kernel.phase
+  return scope.starting ? 'starting' : 'off'
+}
+
+/**
+ * The classes this process holds kernel scopes for, live or coming up.
+ *
+ * The panel lists classes by their containers; this is the second source,
+ * for the test backend (no containers at all) and for a docker census that
+ * did not answer. A scope whose kernel died or never came up holds nothing
+ * and is left out.
+ */
+export function kernelClasses(): string[] {
+  const out: string[] = []
+  for (const [sessionId, scopes] of runtimes) {
+    for (const scope of scopes.values()) {
+      if (scope.restarting || scope.starting || (scope.kernel && scope.kernel.phase !== 'dead')) {
+        out.push(sessionId)
+        break
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * One class's kernels and its place in the idle sweep, for the owner's
+ * «Работают сейчас». Read-only: it never creates a scope, starts a kernel,
+ * loads a document or moves the sweep's clock.
+ *
+ * `idleSince` is the sweep's own mark (`emptySince`), because that is what
+ * the sweep will act on; the countdown is that mark plus the room setting,
+ * and no earlier than the next pass, which is when the sweep can act. A room
+ * the sweep has not seen empty yet gets its clock from the next pass, exactly
+ * as the sweep will start it.
+ */
+export function classActivity(sessionId: string, now: number = Date.now()): ClassActivity {
+  const scopes = scopesOf(sessionId)
+  const busy = busyOf(sessionId, scopes, { terminal: true, starts: true })
+  const occupied = busy !== null || onlineCount(sessionId) > 0
+  const limit = roomIdleLimitMs()
+  const since = occupied ? null : (emptySince.get(sessionId) ?? null)
+  let stopsAt: number | null = null
+  if (!occupied && limit !== null) {
+    const pass = nextSweepAt ?? now
+    stopsAt = Math.max((since ?? pass) + limit, pass)
+  }
+  let lastWorkAt: number | null = null
+  for (const scope of scopes) {
+    if (scope.lastWorkAt !== null && (lastWorkAt === null || scope.lastWorkAt > lastWorkAt)) lastWorkAt = scope.lastWorkAt
+  }
+  return {
+    scopes: scopes.map((scope) => ({ root: scope.root, role: scope.role, phase: phaseOf(scope), lastWorkAt: scope.lastWorkAt })),
+    busy,
+    lastWorkAt,
+    idleSince: since,
+    stopsAt,
+    stopping: kernelStopInProgress(sessionId),
+  }
+}
+
+/* ------------------------------------------------------ the owner's stop */
+
+/** A deletion or another owner stop of this class is under way. */
+export function kernelStopInProgress(sessionId: string): boolean {
+  return ownerStops.has(sessionId) || kernelRetirementInProgress(sessionId)
+}
+
+/**
+ * What would refuse an owner's stop right now: work in the kernels being
+ * stopped (a cell, an attempt, a queue, a restart), and for the whole class
+ * the shared shell running a command too. People in the room are not a
+ * refusal; the panel warns about them in its confirmation.
+ */
+export function stopBlocker(sessionId: string, what: 'class' | 'own'): ClassBusy | null {
+  const scopes = scopesOf(sessionId).filter((scope) => what === 'class' || scope.role === 'own')
+  return busyOf(sessionId, scopes, { terminal: what === 'class', starts: false })
+}
+
+/**
+ * Why the owner's stop did not start; nothing was touched.
+ *
+ * `online`: only for a stop asked for an idle class (`idleOnly`), when
+ * somebody is in the room after all; a single stop warns about people and
+ * goes on.
+ */
+export class KernelStopRefusal extends Error {
+  constructor(
+    readonly reason: 'stopping' | 'busy' | 'online',
+    readonly busy: ClassBusy | null = null,
+  ) {
+    super(tr(reason === 'stopping' ? 'server.running.stopping' : 'server.running.busy'))
+    this.name = 'KernelStopRefusal'
+  }
+}
+
+/** How long a forced stop waits for a restart in flight before it goes on regardless. */
+const RESTART_WAIT_MS = 15_000
+
+/**
+ * The owner frees a class's memory from the panel: `class` takes both
+ * containers, every notebook's kernel and the shared shell; `own` only the
+ * personal-notebook container and the kernels in it.
+ *
+ * Not `shutdownSession`, which is made for a room that is over: it leaves the
+ * badge on its last word, queued cells «в очереди» and council attempts
+ * waiting for an answer that never comes, and it writes no line. This class
+ * goes on, often with people in it, so every scope is retired the way a
+ * notebook whose access changed is (`retireScope`): queues dropped and their
+ * authors told, cells put to rest, the badge «не запущено», then ONE line in
+ * the kernel log saying who stopped it, why, and how to bring it back.
+ *
+ * Starts of the containers being stopped are paused for the whole stop
+ * (retirement.ts · pauseKernelStarts): a Run in the gap before `docker rm`
+ * would start a container the stop then removes under it. Joins are not,
+ * unlike a deletion: nobody is thrown out, on the broker either (pool.ts ·
+ * OwnerStop). Stopping only the personal notebooks pauses only their
+ * container: the lecture and the shell start as usual meanwhile.
+ *
+ * `idleOnly`: the batch «Остановить простаивающие» promises to take only
+ * empty, quiet classes, and the panel's list it was pressed on is seconds
+ * old. Nobody online and nothing computing, starting or running in the shell
+ * is checked here, in the same synchronous stretch as the gate going up, so
+ * a person who walks in a moment before is never left without a kernel.
+ *
+ * Never `permanent`: on the broker that retires the room for good, and this
+ * room is expected back at its next Run.
+ *
+ * Throws KernelStopRefusal before touching anything (another stop or a
+ * deletion in flight; work running, unless `force`; for `idleOnly`, anyone
+ * in the room or any work at all), and the runtime's error when it did not
+ * confirm the removal: the variables are gone by then, and the caller must
+ * say the container may still hold memory.
+ */
+export async function stopKernelsByOwner(
+  sessionId: string,
+  what: 'class' | 'own',
+  options: { force?: boolean; idleOnly?: boolean } = {},
+): Promise<void> {
+  if (kernelStopInProgress(sessionId)) throw new KernelStopRefusal('stopping')
+  if (options.idleOnly) {
+    if (onlineCount(sessionId) > 0) throw new KernelStopRefusal('online')
+    // The panel's own word for idle (classActivity): a warm-up start counts too.
+    const busy = busyOf(sessionId, scopesOf(sessionId), { terminal: true, starts: true })
+    if (busy) throw new KernelStopRefusal('busy', busy)
+  }
+  const blocker = stopBlocker(sessionId, what)
+  if (blocker && !options.force) throw new KernelStopRefusal('busy', blocker)
+  // From here to the gate below, nothing awaits: the checks above hold when it goes up.
+  const release = pauseKernelStarts(sessionId, what === 'class' ? ['room', 'own'] : ['own'])
+  const ours = (scope: Runtime): boolean => what === 'class' || scope.role === 'own'
+  const stop = (async () => {
+    /*
+     * A restart in flight is let finish first, for a bounded while: retiring
+     * a scope under it makes the restart report "the kernel did not come
+     * back", and a dead kernel's restart goes through `ensureKernel`, which
+     * would make a fresh scope behind our back.
+     */
+    const restarts = scopesOf(sessionId).filter(ours).flatMap((scope) => (scope.restarting ? [scope.restarting] : []))
+    if (restarts.length > 0) {
+      let timer: NodeJS.Timeout | undefined
+      await Promise.race([
+        Promise.allSettled(restarts),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, RESTART_WAIT_MS)
+        }),
+      ])
+      clearTimeout(timer)
+    }
+    const victims = scopesOf(sessionId).filter(ours)
+    await Promise.all(victims.map((scope) => retireScope(scope, null, { keepContainer: true })))
+    let removed = false
+    try {
+      if (what === 'class') {
+        try {
+          await closeTerminal(sessionId)
+        } catch (err) {
+          console.error(`[kernel] could not stop the terminal for ${sessionId}:`, errText(err))
+        }
+        await dropRoomKernel(sessionId, false, { owner: true })
+        // A new container counts its kills and the room its deaths from zero,
+        // as after `shutdownSession`; and the idle clock starts over.
+        forgetKills(sessionId)
+        forgetDeaths(sessionId)
+        emptySince.delete(sessionId)
+      } else {
+        await dropOwnKernel(sessionId, { owner: true })
+      }
+      removed = true
+    } finally {
+      /*
+       * One line, written when it is true: the variables went with the
+       * scopes even if the runtime then failed to confirm the removal. A
+       * room whose row is gone (an orphan container) gets none: a note would
+       * create its document anew.
+       */
+      if ((removed || victims.length > 0) && sessionRowExists(sessionId)) {
+        kernelNote(sessionId, tr(what === 'class' ? 'server.kernel.stoppedByOwner' : 'server.kernel.ownStoppedByOwner'))
+      }
+    }
+    console.log(`[kernel ${sessionId}] ${what === 'class' ? 'class' : 'personal-notebook'} kernels stopped by the owner`)
+  })()
+  ownerStops.set(sessionId, stop)
+  try {
+    await stop
+  } finally {
+    ownerStops.delete(sessionId)
+    release()
+  }
+}
 
 /**
  * Stopping the server, not the seminars.
@@ -2723,6 +3160,8 @@ async function pump(runtime: Runtime): Promise<void> {
    */
   if (runtime.queue.length === 0) return
   runtime.pumping = true
+  // What the chip says when the loop ends without a kernel: see reportDeadKernel.
+  let down: KernelStatus = 'dead'
   try {
     while (runtime.queue.length > 0) {
       // A ban may interrupt one Council author while another waits behind
@@ -2741,7 +3180,9 @@ async function pump(runtime: Runtime): Promise<void> {
       try {
         await ensureKernel(runtime.sessionId, runtime.root)
       } catch (err) {
-        reportDeadKernel(runtime, errText(err))
+        const full = machineMemoryFull(err)
+        if (full) down = 'off'
+        reportDeadKernel(runtime, errText(err), full)
         return
       }
       const item = runtime.queue.shift()
@@ -2764,7 +3205,7 @@ async function pump(runtime: Runtime): Promise<void> {
     runtime.currentBatch = null
     runtime.currentRunById = null
     syncQueue(runtime)
-    const phase = runtime.kernel?.phase ?? 'dead'
+    const phase = runtime.kernel?.phase ?? down
     setStatus(runtime, phase === 'busy' ? 'idle' : (phase as KernelStatus))
   }
 }
@@ -4132,8 +4573,17 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
   }
 }
 
-/** A kernel that will not come up is an output on the cell, never a crash. */
-function reportDeadKernel(runtime: Runtime, message: string): void {
+/**
+ * A kernel that will not come up is an output on the cell, never a crash.
+ *
+ * `full`: it did not come up because the machine's memory is promised to
+ * other classes (pool.ts · machineMemoryFull). The cell that was waiting gets
+ * the error under KERNEL_MEMORY_ENAME, which the room draws as a notice
+ * rather than as a failure (K5), and stays `idle`: its code never ran, the
+ * oracle must not read it as a broken cell, and the chip says «НЕ ЗАПУЩЕНО».
+ */
+function reportDeadKernel(runtime: Runtime, message: string, full = false): void {
+  const down: KernelStatus = full ? 'off' : 'dead'
   if (runtime.activityItem && !runtime.job) {
     finishExecution(runtime, runtime.activityItem, 'error',
       Math.max(0, Date.now() - (runtime.started?.at ?? Date.now())))
@@ -4147,7 +4597,7 @@ function reportDeadKernel(runtime: Runtime, message: string): void {
     runtime.job.buffer.error('KernelError', message, [])
     finishCouncil(runtime, runtime.job, 'error')
     dropQueue(runtime)
-    setStatus(runtime, 'dead')
+    setStatus(runtime, down)
     return
   }
   const head = runtime.queue[0]
@@ -4163,14 +4613,17 @@ function reportDeadKernel(runtime: Runtime, message: string): void {
       by: head.council.by,
     })
     dropQueue(runtime)
-    setStatus(runtime, 'dead')
+    setStatus(runtime, down)
     return
   }
   const { doc } = getSessionDoc(runtime.sessionId)
   const stuck = runtime.currentCell ?? runtime.queue[0]?.cellId ?? null
   if (stuck) {
+    // One notice per cell: a second press on a full machine replaces the
+    // first refusal instead of stacking another box under it.
+    if (full) dropMemoryRefusals(doc, stuck)
     const writer = runtime.writer ?? new OutputWriter(doc, stuck)
-    writer.error('KernelError', message, [])
+    writer.error(full ? KERNEL_MEMORY_ENAME : 'KernelError', message, [])
     // Our own one, created a line above, does not hold the room, so there is
     // nothing to release; the one that sat in the runtime is released here.
     writer.dispose()
@@ -4202,10 +4655,59 @@ function reportDeadKernel(runtime: Runtime, message: string): void {
         }, ORIGIN)
       }
     }
-    setCellState(runtime.sessionId, stuck, 'error')
+    setCellState(runtime.sessionId, stuck, full ? 'idle' : 'error')
   }
   dropQueue(runtime)
-  setStatus(runtime, 'dead')
+  setStatus(runtime, down)
+}
+
+/** Remove a cell's earlier memory refusals (see reportDeadKernel); its real output stays. */
+function dropMemoryRefusals(doc: Y.Doc, cellId: string): void {
+  const found = findCell(doc, cellId)
+  if (!found) return
+  const outputs = cellOutputs(found.cell)
+  const stale: number[] = []
+  outputs.forEach((output, index) => {
+    const parsed = readOutput(output)
+    if (parsed && isKernelMemoryOutput(parsed)) stale.push(index)
+  })
+  if (stale.length === 0) return
+  doc.transact(() => {
+    for (const index of stale.reverse()) outputs.delete(index, 1)
+  }, ORIGIN)
+}
+
+/**
+ * The kernel came up: every memory notice in its notebook is out of date.
+ *
+ * A refusal lands on whichever cell was waiting (reportDeadKernel), and only
+ * a second refusal or a re-run of that same cell took it off. Student A's
+ * cell 3 and student B's cell 7 kept «Не хватает памяти на сервере… попросите
+ * владельца» while the teacher's cell 1 had long brought the kernel up and it
+ * was computing; and since outputs are saved with the notebook, the next class
+ * opened the room to the same notices. The notice is about the machine, not
+ * about the cell's code, so it goes when the machine has let a kernel in.
+ *
+ * Read without creating anything: a cell without outputs stays without the key.
+ */
+function clearMemoryNotices(runtime: Runtime): void {
+  const doc = peekSessionDoc(runtime.sessionId)?.doc
+  if (!doc) return
+  const stale: Array<{ outputs: Y.Array<YOutput>; index: number }> = []
+  bookCells(doc, runtime.root).forEach((cell) => {
+    const outputs = cell.get('outputs') as Y.Array<YOutput> | undefined
+    if (!(outputs instanceof Y.Array)) return
+    outputs.forEach((output, index) => {
+      if (output.get('kind') !== 'error') return
+      const parsed = readOutput(output)
+      if (parsed && isKernelMemoryOutput(parsed)) stale.push({ outputs, index })
+    })
+  })
+  if (stale.length === 0) return
+  doc.transact(() => {
+    // From the end, so each index still points at what it was read as.
+    for (const { outputs, index } of stale.reverse()) outputs.delete(index, 1)
+  }, ORIGIN)
 }
 
 function deadMessage(): string {

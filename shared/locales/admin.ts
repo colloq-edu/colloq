@@ -3927,6 +3927,550 @@ export const adminMessages: MessageCatalog = {
     "ru": "Следующая тетрадь подождёт, пока освободится место. Погашенное ядро теряет переменные, текст тетради остаётся. 0 минут — не гасить.",
     "en": "The next notebook waits until a place frees up. A stopped kernel loses its variables; the notebook's text stays. 0 minutes: never stop."
   },
+  "admin.resourcesTab.roomIdle": {
+    "ru": "Пустая комната отпускает ядро через",
+    "en": "An empty room releases its kernel after"
+  },
+  "admin.resourcesTab.unitRoomIdleMinutes": {
+    "ru": "мин",
+    "en": "min"
+  },
+  "admin.resourcesTab.roomIdleNote": {
+    "ru": "Когда в комнате никого нет и ничего не считается, ядро занятия освобождает память через это время: переменные теряются, файлы остаются. От 5 минут; 0 — не отпускать.",
+    "en": "When nobody is in the room and nothing is computing, the class kernel frees its memory after this long: the variables are lost, the files stay. From 5 minutes; 0: never."
+  },
+  "admin.resourcesTab.running.title": {
+    "ru": "Работают сейчас",
+    "en": "Running now"
+  },
+  "admin.resourcesTab.running.note": {
+    "ru": "Что держит память прямо сейчас. Резерв — это потолок ядра: пока контейнер запущен, другим занятиям его не отдать, даже если внутри почти пусто.",
+    "en": "What holds memory right now. A reservation is a kernel’s ceiling: while its container runs, no other class can have it, even when almost nothing is used inside."
+  },
+  "admin.resourcesTab.running.noteTeacher": {
+    "ru": "Что держит память прямо сейчас. Занятия и соревнования других курсов видны только цифрами — серым квадратом.",
+    "en": "What holds memory right now. Other courses’ classes and competitions show as numbers only, with a grey square."
+  },
+  "admin.resourcesTab.running.loading": {
+    "ru": "Смотрю, что запущено…",
+    "en": "Checking what is running…"
+  },
+  "admin.resourcesTab.running.loadFailed": {
+    "ru": "Не удалось узнать, что запущено.",
+    "en": "Could not find out what is running."
+  },
+  "admin.resourcesTab.running.empty": {
+    "ru": "Сейчас ни одно ядро не запущено.",
+    "en": "No kernel is running right now."
+  },
+  "admin.resourcesTab.running.incomplete": {
+    "ru": "Среда исполнения ответила не полностью: часть контейнеров может не попасть в список.",
+    "en": "The runtime did not answer in full: some containers may be missing from the list."
+  },
+  "admin.resourcesTab.running.held": {
+    "ru": {
+      "one": "{count} контейнер держит",
+      "few": "{count} контейнера держат",
+      "many": "{count} контейнеров держат",
+      "other": "{count} контейнера держат"
+    },
+    "en": {
+      "one": "{count} container holds",
+      "other": "{count} containers hold"
+    }
+  },
+  "admin.resourcesTab.running.gb": {
+    "ru": "{value}\u00a0ГБ",
+    "en": "{value}\u00a0GB"
+  },
+  "admin.resourcesTab.running.realUse": {
+    "ru": "реально занято",
+    "en": "really in use"
+  },
+  "admin.resourcesTab.running.useUnknown": {
+    "ru": "расход неизвестен",
+    "en": "use unknown"
+  },
+  "admin.resourcesTab.running.stopIdle": {
+    "ru": "Остановить простаивающие ({count}) · освободит {memory}\u00a0ГБ",
+    "en": "Stop idle ({count}) · frees {memory}\u00a0GB"
+  },
+  "admin.resourcesTab.running.ownerOnly": {
+    "ru": "Останавливать ядра может владелец сервера",
+    "en": "Only the server owner can stop kernels"
+  },
+  "admin.resourcesTab.running.col.class": {
+    "ru": "Занятие",
+    "en": "Class"
+  },
+  "admin.resourcesTab.running.col.now": {
+    "ru": "Сейчас",
+    "en": "Now"
+  },
+  "admin.resourcesTab.running.col.books": {
+    "ru": "Тетради",
+    "en": "Notebooks"
+  },
+  "admin.resourcesTab.running.col.memory": {
+    "ru": "Память",
+    "en": "Memory"
+  },
+  "admin.resourcesTab.running.col.cores": {
+    "ru": "Ядра",
+    "en": "Cores"
+  },
+  "admin.resourcesTab.running.busy.cell": {
+    "ru": "считает",
+    "en": "computing"
+  },
+  "admin.resourcesTab.running.busy.queue": {
+    "ru": "считает очередь",
+    "en": "running a queue"
+  },
+  "admin.resourcesTab.running.busy.attempt": {
+    "ru": "считает попытку",
+    "en": "running an attempt"
+  },
+  "admin.resourcesTab.running.busy.terminal": {
+    "ru": "терминал занят",
+    "en": "terminal busy"
+  },
+  "admin.resourcesTab.running.busy.starting": {
+    "ru": "запускается",
+    "en": "starting"
+  },
+  "admin.resourcesTab.running.busy.restarting": {
+    "ru": "перезапускается",
+    "en": "restarting"
+  },
+  "admin.resourcesTab.running.busyFor": {
+    "ru": "идёт {time}",
+    "en": "for {time}"
+  },
+  "admin.resourcesTab.running.people": {
+    "ru": "в\u00a0комнате {people}",
+    "en": "{people} in the room"
+  },
+  "admin.resourcesTab.running.runningFor": {
+    "ru": "занятие идёт {time}",
+    "en": "class on for {time}"
+  },
+  "admin.resourcesTab.running.idleFor": {
+    "ru": "пусто {time}",
+    "en": "empty for {time}"
+  },
+  "admin.resourcesTab.running.idleNow": {
+    "ru": "пусто",
+    "en": "empty"
+  },
+  "admin.resourcesTab.running.stopsIn": {
+    "ru": "сам остановится через {time}",
+    "en": "stops by itself in {time}"
+  },
+  "admin.resourcesTab.running.stopsSoon": {
+    "ru": "остановится с минуты на минуту",
+    "en": "stops any minute now"
+  },
+  "admin.resourcesTab.running.neverStops": {
+    "ru": "не остановится сам",
+    "en": "will not stop by itself"
+  },
+  "admin.resourcesTab.running.stopping": {
+    "ru": "останавливается…",
+    "en": "stopping…"
+  },
+  "admin.resourcesTab.running.hiddenClass": {
+    "ru": "Другое занятие",
+    "en": "Another class"
+  },
+  "admin.resourcesTab.running.hiddenRun": {
+    "ru": "Посылка соревнования",
+    "en": "Competition submission"
+  },
+  "admin.resourcesTab.running.hiddenOn": {
+    "ru": "идёт",
+    "en": "in progress"
+  },
+  "admin.resourcesTab.running.hiddenIdle": {
+    "ru": "простаивает",
+    "en": "idle"
+  },
+  "admin.resourcesTab.running.unnamed": {
+    "ru": "без названия",
+    "en": "untitled"
+  },
+  "admin.resourcesTab.running.minutes": {
+    "ru": "{count}\u00a0мин",
+    "en": "{count}\u00a0min"
+  },
+  "admin.resourcesTab.running.hours": {
+    "ru": "{count}\u00a0ч",
+    "en": "{count}\u00a0h"
+  },
+  "admin.resourcesTab.running.hoursMinutes": {
+    "ru": "{hours}\u00a0ч {minutes}\u00a0мин",
+    "en": "{hours}\u00a0h {minutes}\u00a0min"
+  },
+  "admin.resourcesTab.running.underMinute": {
+    "ru": "меньше минуты",
+    "en": "under a minute"
+  },
+  "admin.resourcesTab.running.ofGb": {
+    "ru": "{used} из {reserved}\u00a0ГБ",
+    "en": "{used} of {reserved}\u00a0GB"
+  },
+  "admin.resourcesTab.running.reserve": {
+    "ru": "резерв",
+    "en": "reserved"
+  },
+  "admin.resourcesTab.running.cores": {
+    "ru": {
+      "one": "{value}\u00a0ядро",
+      "few": "{value}\u00a0ядра",
+      "many": "{value}\u00a0ядер",
+      "other": "{value}\u00a0ядра"
+    },
+    "en": {
+      "one": "{value}\u00a0core",
+      "other": "{value}\u00a0cores"
+    }
+  },
+  "admin.resourcesTab.running.cpu": {
+    "ru": "{value}\u00a0%",
+    "en": "{value}%"
+  },
+  "admin.resourcesTab.running.gpu": {
+    "ru": "GPU\u00a0{value}",
+    "en": "GPU\u00a0{value}"
+  },
+  "admin.resourcesTab.running.booksCount": {
+    "ru": {
+      "one": "{count}\u00a0тетрадь",
+      "few": "{count}\u00a0тетради",
+      "many": "{count}\u00a0тетрадей",
+      "other": "{count}\u00a0тетради"
+    },
+    "en": {
+      "one": "{count}\u00a0notebook",
+      "other": "{count}\u00a0notebooks"
+    }
+  },
+  "admin.resourcesTab.running.showBooks": {
+    "ru": "Показать тетради «{name}»",
+    "en": "Show the notebooks of “{name}”"
+  },
+  "admin.resourcesTab.running.hideBooks": {
+    "ru": "Скрыть тетради «{name}»",
+    "en": "Hide the notebooks of “{name}”"
+  },
+  "admin.resourcesTab.running.phase.busy": {
+    "ru": "Считает",
+    "en": "Computing"
+  },
+  "admin.resourcesTab.running.phase.idle": {
+    "ru": "Ждёт",
+    "en": "Waiting"
+  },
+  "admin.resourcesTab.running.phase.starting": {
+    "ru": "Запускается…",
+    "en": "Starting…"
+  },
+  "admin.resourcesTab.running.phase.restarting": {
+    "ru": "Перезапуск",
+    "en": "Restarting"
+  },
+  "admin.resourcesTab.running.phase.dead": {
+    "ru": "Упало",
+    "en": "Crashed"
+  },
+  "admin.resourcesTab.running.phase.off": {
+    "ru": "Не запущено",
+    "en": "Not running"
+  },
+  "admin.resourcesTab.running.ownRow": {
+    "ru": "Личные тетради",
+    "en": "Personal notebooks"
+  },
+  "admin.resourcesTab.running.ownMeta": {
+    "ru": "отдельный контейнер для тетрадей студентов",
+    "en": "a separate container for students’ notebooks"
+  },
+  "admin.resourcesTab.running.run.meta": {
+    "ru": "соревнование · посылка",
+    "en": "competition · submission"
+  },
+  "admin.resourcesTab.running.run.metaScore": {
+    "ru": "соревнование · оценка",
+    "en": "competition · scoring"
+  },
+  "admin.resourcesTab.running.run.label": {
+    "ru": "запуск",
+    "en": "run"
+  },
+  "admin.resourcesTab.running.run.labelScore": {
+    "ru": "оценка",
+    "en": "scoring"
+  },
+  "admin.resourcesTab.running.run.of": {
+    "ru": "{elapsed} из {limit}",
+    "en": "{elapsed} of {limit}"
+  },
+  "admin.resourcesTab.running.run.stop": {
+    "ru": "Остановить посылку",
+    "en": "Stop the submission"
+  },
+  "admin.resourcesTab.running.run.title": {
+    "ru": "Остановить посылку в «{name}»?",
+    "en": "Stop the submission in “{name}”?"
+  },
+  "admin.resourcesTab.running.run.body": {
+    "ru": "Запуск прервётся. Освободится {memory}\u00a0ГБ.",
+    "en": "The run is cut short. This frees {memory}\u00a0GB."
+  },
+  "admin.resourcesTab.running.run.stopped": {
+    "ru": "Посылка в «{name}» остановлена",
+    "en": "The submission in “{name}” stopped"
+  },
+  "admin.resourcesTab.running.prep.title": {
+    "ru": "Подготовка пакетов",
+    "en": "Package preparation"
+  },
+  "admin.resourcesTab.running.prep.meta": {
+    "ru": "соревнование · пакеты",
+    "en": "competition · packages"
+  },
+  "admin.resourcesTab.running.prep.status": {
+    "ru": "собирает пакеты",
+    "en": "building packages"
+  },
+  "admin.resourcesTab.running.stopButton": {
+    "ru": "Остановить ядро",
+    "en": "Stop the kernel"
+  },
+  "admin.resourcesTab.running.stopOwnButton": {
+    "ru": "Остановить личные тетради",
+    "en": "Stop the personal notebooks"
+  },
+  "admin.resourcesTab.running.stop.title": {
+    "ru": "Остановить ядро «{name}»?",
+    "en": "Stop the kernel of “{name}”?"
+  },
+  "admin.resourcesTab.running.stop.titleOwn": {
+    "ru": "Остановить личные тетради «{name}»?",
+    "en": "Stop the personal notebooks of “{name}”?"
+  },
+  "admin.resourcesTab.running.stop.people": {
+    "ru": "Сейчас в\u00a0комнате {people}.",
+    "en": "In the room right now: {people}."
+  },
+  "admin.resourcesTab.running.stop.nobody": {
+    "ru": "В\u00a0комнате никого нет.",
+    "en": "Nobody is in the room."
+  },
+  "admin.resourcesTab.running.stop.idleFor": {
+    "ru": "В\u00a0комнате никого нет уже {time}.",
+    "en": "Nobody has been in the room for {time}."
+  },
+  "admin.resourcesTab.running.stop.books": {
+    "ru": {
+      "one": "Переменные {count}\u00a0тетради пропадут, файлы останутся.",
+      "few": "Переменные {count}\u00a0тетрадей пропадут, файлы останутся.",
+      "many": "Переменные {count}\u00a0тетрадей пропадут, файлы останутся.",
+      "other": "Переменные {count}\u00a0тетради пропадут, файлы останутся."
+    },
+    "en": {
+      "one": "The variables of {count} notebook are lost; the files stay.",
+      "other": "The variables of {count} notebooks are lost; the files stay."
+    }
+  },
+  "admin.resourcesTab.running.stop.noBooks": {
+    "ru": "Переменные пропадут, файлы останутся.",
+    "en": "The variables are lost; the files stay."
+  },
+  "admin.resourcesTab.running.stop.terminal": {
+    "ru": "Общий терминал закроется.",
+    "en": "The shared terminal closes."
+  },
+  "admin.resourcesTab.running.stop.frees": {
+    "ru": "Освободится {memory}\u00a0ГБ.",
+    "en": "This frees {memory}\u00a0GB."
+  },
+  "admin.resourcesTab.running.stop.back": {
+    "ru": "Ядро поднимется само, когда кто-нибудь запустит ячейку.",
+    "en": "The kernel comes back by itself when someone runs a cell."
+  },
+  "admin.resourcesTab.running.stop.backOwn": {
+    "ru": "Личная тетрадь поднимется сама, когда студент запустит в\u00a0ней ячейку.",
+    "en": "A personal notebook comes back by itself when its student runs a cell in it."
+  },
+  "admin.resourcesTab.running.stop.confirm": {
+    "ru": "Остановить",
+    "en": "Stop"
+  },
+  "admin.resourcesTab.running.stop.working": {
+    "ru": "Останавливаю…",
+    "en": "Stopping…"
+  },
+  "admin.resourcesTab.running.busy.title": {
+    "ru": "В\u00a0«{name}» сейчас считают",
+    "en": "“{name}” is computing right now"
+  },
+  "admin.resourcesTab.running.busy.titleTerminal": {
+    "ru": "В\u00a0«{name}» занят терминал",
+    "en": "The terminal of “{name}” is busy"
+  },
+  "admin.resourcesTab.running.busy.body.cell": {
+    "ru": "Считается ячейка.",
+    "en": "A cell is running."
+  },
+  "admin.resourcesTab.running.busy.body.queue": {
+    "ru": "Считается очередь ячеек.",
+    "en": "A queue of cells is running."
+  },
+  "admin.resourcesTab.running.busy.body.attempt": {
+    "ru": "Считается попытка консилиума.",
+    "en": "A council attempt is running."
+  },
+  "admin.resourcesTab.running.busy.body.terminal": {
+    "ru": "В общем терминале выполняется команда.",
+    "en": "A command is running in the shared terminal."
+  },
+  "admin.resourcesTab.running.busy.body.restarting": {
+    "ru": "Ядро как раз перезапускается.",
+    "en": "The kernel is restarting."
+  },
+  "admin.resourcesTab.running.busy.body.starting": {
+    "ru": "Ядро как раз запускается.",
+    "en": "The kernel is starting."
+  },
+  "admin.resourcesTab.running.busy.people": {
+    "ru": "В\u00a0комнате {people}.",
+    "en": "In the room: {people}."
+  },
+  "admin.resourcesTab.running.busy.loss": {
+    "ru": "Если остановить сейчас, расчёт прервётся и\u00a0у\u00a0всех пропадут переменные.",
+    "en": "Stopping now cuts the work short, and everyone loses their variables."
+  },
+  "admin.resourcesTab.running.busy.chip.compute": {
+    "ru": "Считает",
+    "en": "Computing"
+  },
+  "admin.resourcesTab.running.busy.chip.terminal": {
+    "ru": "Терминал",
+    "en": "Terminal"
+  },
+  "admin.resourcesTab.running.busy.chip.restarting": {
+    "ru": "Перезапуск",
+    "en": "Restarting"
+  },
+  "admin.resourcesTab.running.busy.chip.starting": {
+    "ru": "Запуск",
+    "en": "Starting"
+  },
+  "admin.resourcesTab.running.busy.force": {
+    "ru": "Остановить всё равно",
+    "en": "Stop anyway"
+  },
+  "admin.resourcesTab.running.bulk.title": {
+    "ru": {
+      "one": "Остановить {count} простаивающее занятие?",
+      "few": "Остановить {count} простаивающих занятия?",
+      "many": "Остановить {count} простаивающих занятий?",
+      "other": "Остановить {count} простаивающих занятия?"
+    },
+    "en": {
+      "one": "Stop {count} idle class?",
+      "other": "Stop {count} idle classes?"
+    }
+  },
+  "admin.resourcesTab.running.bulk.body": {
+    "ru": "В\u00a0этих комнатах никого нет и\u00a0ничего не считается. Переменные пропадут, файлы останутся.",
+    "en": "Nobody is in these rooms and nothing is computing. The variables are lost; the files stay."
+  },
+  "admin.resourcesTab.running.bulk.total": {
+    "ru": "Освободится",
+    "en": "Frees"
+  },
+  "admin.resourcesTab.running.bulk.confirm": {
+    "ru": {
+      "one": "Остановить",
+      "few": "Остановить все",
+      "many": "Остановить все",
+      "other": "Остановить все"
+    },
+    "en": {
+      "one": "Stop",
+      "other": "Stop all"
+    }
+  },
+  "admin.resourcesTab.running.result.stopped": {
+    "ru": "Ядро «{name}» остановлено · освобождено {memory}\u00a0ГБ",
+    "en": "The kernel of “{name}” stopped · {memory}\u00a0GB freed"
+  },
+  "admin.resourcesTab.running.result.stoppedOwn": {
+    "ru": "Личные тетради «{name}» остановлены · освобождено {memory}\u00a0ГБ",
+    "en": "The personal notebooks of “{name}” stopped · {memory}\u00a0GB freed"
+  },
+  "admin.resourcesTab.running.result.bulk": {
+    "ru": {
+      "one": "Остановлено {count}\u00a0занятие · освобождено {memory}\u00a0ГБ",
+      "few": "Остановлено {count}\u00a0занятия · освобождено {memory}\u00a0ГБ",
+      "many": "Остановлено {count}\u00a0занятий · освобождено {memory}\u00a0ГБ",
+      "other": "Остановлено {count}\u00a0занятия · освобождено {memory}\u00a0ГБ"
+    },
+    "en": {
+      "one": "{count} class stopped · {memory}\u00a0GB freed",
+      "other": "{count} classes stopped · {memory}\u00a0GB freed"
+    }
+  },
+  "admin.resourcesTab.running.result.partial": {
+    "ru": "Остановлено {done} из\u00a0{total} · освобождено {memory}\u00a0ГБ.",
+    "en": "{done} of {total} stopped · {memory}\u00a0GB freed."
+  },
+  "admin.resourcesTab.running.result.none": {
+    "ru": "Ни одно занятие не остановлено.",
+    "en": "No class was stopped."
+  },
+  "admin.resourcesTab.running.skipped.busy": {
+    "ru": "В\u00a0«{name}» только что запустили ячейку — его не тронули.",
+    "en": "Someone just ran a cell in “{name}”, so it was left alone."
+  },
+  "admin.resourcesTab.running.skipped.online": {
+    "ru": "В\u00a0«{name}» кто-то вошёл — его не тронули.",
+    "en": "Someone came into “{name}”, so it was left alone."
+  },
+  "admin.resourcesTab.running.skipped.stopping": {
+    "ru": "«{name}» уже останавливают.",
+    "en": "“{name}” is already being stopped."
+  },
+  "admin.resourcesTab.running.skipped.gone": {
+    "ru": "«{name}» уже остановлено.",
+    "en": "“{name}” had already stopped."
+  },
+  "admin.resourcesTab.running.skipped.failed": {
+    "ru": "«{name}» остановить не удалось.",
+    "en": "“{name}” could not be stopped."
+  },
+  "admin.resourcesTab.running.footnote": {
+    "ru": "Остановленное ядро теряет переменные, файлы остаются. Оно поднимется само при следующем запуске ячейки или входе в\u00a0комнату.",
+    "en": "A stopped kernel loses its variables; the files stay. It comes back by itself at the next cell run or when someone enters the room."
+  },
+  "admin.resourcesTab.running.footnoteIdle": {
+    "ru": "Пустая комната отпускает ядро сама через {time} — срок меняется в\u00a0«Комнате по умолчанию».",
+    "en": "An empty room releases its kernel by itself after {time}; the time is set under “Default room”."
+  },
+  "admin.resourcesTab.running.footnoteNever": {
+    "ru": "Пустая комната держит ядро, пока его не остановят, — срок меняется в\u00a0«Комнате по умолчанию».",
+    "en": "An empty room keeps its kernel until someone stops it; the time is set under “Default room”."
+  },
+  "admin.resourcesTab.running.footnoteIdleRead": {
+    "ru": "Пустая комната отпускает ядро сама через {time}.",
+    "en": "An empty room releases its kernel by itself after {time}."
+  },
+  "admin.resourcesTab.running.footnoteNeverRead": {
+    "ru": "Пустая комната держит ядро, пока его не остановит владелец сервера.",
+    "en": "An empty room keeps its kernel until the server owner stops it."
+  },
   "admin.resourcesTab.competitionsTitle": {
     "ru": "Соревнования",
     "en": "Competitions"
@@ -4862,6 +5406,10 @@ export const adminMessages: MessageCatalog = {
   "admin.audit.action.settings.instance_changed": {
     "ru": "Изменён язык сервера",
     "en": "Instance language changed"
+  },
+  "admin.audit.action.room.kernel_stopped": {
+    "ru": "Остановлено ядро занятия",
+    "en": "Class kernel stopped"
   },
   "admin.env.ownerEditsOnly": {
     "ru": "Создавать, менять и собирать списки пакетов может только владелец: при сборке образа пакеты из списка ставятся с правами root. Готовые окружения выбирает для своих занятий любой преподаватель.",

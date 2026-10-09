@@ -43,6 +43,7 @@ import { adminEnvironmentRoutes } from './routes/admin-environments.js'
 import { adminImportRoutes } from './routes/admin-import.js'
 import { adminInstanceRoutes } from './routes/admin-instance.js'
 import { adminResourceRoutes } from './routes/admin-resources.js'
+import { adminRunningRoutes } from './routes/admin-running.js'
 import { aiRoutes } from './routes/ai.js'
 import { banRoutes } from './routes/bans.js'
 import { competitionRoutes } from './routes/competitions.js'
@@ -601,6 +602,7 @@ app.use(adminInstanceRoutes())
 // The instance's resource defaults: staff read them, only the owner writes
 // (routes/admin-resources.ts).
 app.use(adminResourceRoutes())
+app.use(adminRunningRoutes())
 app.use(courseRoutes())
 app.use(adminEnvironmentRoutes())
 // The competitions panel — next to the other admin doors and under the same

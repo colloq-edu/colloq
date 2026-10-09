@@ -57,6 +57,8 @@ const PUBLISH = 'web/src/admin/screens/Publish.svelte'
 const SEMINARS = 'web/src/admin/screens/Seminars.svelte'
 const ENVIRONMENTS = 'web/src/admin/screens/Environments.svelte'
 const RESOURCES = 'web/src/admin/screens/ResourcesTab.svelte'
+const RUNNING = 'web/src/admin/ui/RunningKernels.svelte'
+const RUNNING_WORDS = 'web/src/admin/running-kernels.ts'
 
 /* ---------------------------------------------- former names in the address */
 
@@ -194,4 +196,23 @@ test('the resources screen follows the chosen language entirely', () => {
   assert.doesNotMatch(localized(source, 'en'), /[А-Яа-яЁё]/)
   assert.match(localized(source, 'ru'), /Как поделена машина/)
   assert.match(localized(source, 'en'), /How the machine is divided/)
+})
+
+test('«Работают сейчас» follows the chosen language entirely, and so do its words', () => {
+  // October 2026: the list the owner frees memory from. The component and
+  // the module that words its rows and dialogs are one surface.
+  const source = code(read(RUNNING))
+  assert.doesNotMatch(localized(source, 'en'), /[А-Яа-яЁё]/)
+  assert.match(localized(source, 'en'), /Stop anyway/)
+  const words = code(read(RUNNING_WORDS))
+  assert.match(localized(words, 'ru'), /Сейчас ни одно ядро не запущено\./)
+  assert.match(localized(words, 'en'), /No kernel is running right now\./)
+  assert.doesNotMatch(localized(words, 'en'), /[А-Яа-яЁё]/)
+  assert.match(localized(words, 'ru'), /не остановится сам/)
+  // The section stands on the resources screen, outside the owner-only
+  // fieldset: a teacher reads it, and a disabled fieldset would grey it out.
+  const resources = code(read(RESOURCES))
+  const section = resources.indexOf('<RunningKernels ')
+  assert.ok(section > 0, 'the list is on the resources screen')
+  assert.ok(section < resources.indexOf('<fieldset'), 'and before the owner-only fieldset')
 })

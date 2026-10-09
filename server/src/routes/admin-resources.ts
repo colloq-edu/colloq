@@ -12,6 +12,7 @@
  * clamped write turned into.
  */
 import { Router, type Response } from 'express'
+import { canSeeRoom, type StaffLike } from '../admin/access.js'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
 import { recordAdminEvent } from '../admin/audit-log.js'
 import {
@@ -26,6 +27,7 @@ import {
 import { slotsResolution } from '../competitions/capacity.js'
 import { competitionDefaults } from '../competitions/settings.js'
 import { listNames } from '../environments.js'
+import { idleSweepSettingsChanged } from '../kernel/index.js'
 import { reapplyInstanceDefaults, runningKernelLimits, type RunningKernel } from '../kernel/pool.js'
 import {
   cpuBounds,
@@ -143,10 +145,20 @@ function environmentOverrides(): ResourceSettingsResponse['perEnvironmentMemory'
   })
 }
 
-async function payload(): Promise<ResourceSettingsResponse> {
+async function payload(viewer: StaffLike | null): Promise<ResourceSettingsResponse> {
   const collected = await machineResources()
   const bounds = machineBounds()
-  const machine: InstanceResources = { ...collected, limits: { ...bounds.memory, cpus: bounds.cpus } }
+  const machine: InstanceResources = {
+    ...collected,
+    /*
+     * The rooms by name only where the viewer teaches them, as
+     * /api/instance/resources has done since 0.19: until 0.20 this door
+     * handed every teacher every room's name. The budget below is counted
+     * from the whole census, so the sums stay instance-wide.
+     */
+    rooms: collected.rooms.filter((room) => canSeeRoom(viewer, room.id)),
+    limits: { ...bounds.memory, cpus: bounds.cpus },
+  }
   return {
     settings: resourceSettings(),
     bounds: resourceBounds(bounds),
@@ -161,8 +173,8 @@ async function payload(): Promise<ResourceSettingsResponse> {
 export function adminResourceRoutes(): Router {
   const router = Router()
 
-  router.get('/api/admin/resources', requireStaff, (_req, res, next) => {
-    payload()
+  router.get('/api/admin/resources', requireStaff, (req, res, next) => {
+    payload(currentStaff(req))
       .then((body) => res.set('Cache-Control', 'no-store').json(body))
       .catch(next)
   })
@@ -190,6 +202,9 @@ export function adminResourceRoutes(): Router {
       })
       // The class form and the room list label their fields with these defaults.
       forgetResources()
+      // The idle sweep's pace follows the room setting: a shorter wait must
+      // not sit out the rest of the old ten-minute interval first.
+      if (changed.includes('roomIdleMin')) idleSweepSettingsChanged()
       // Not awaited: `docker update` on a busy machine takes hundreds of
       // milliseconds per container, and the settings are already saved.
       void reapplyInstanceDefaults(new Set(changed)).catch((err: unknown) => {
@@ -197,7 +212,7 @@ export function adminResourceRoutes(): Router {
         console.error('[admin] instance defaults did not reach running containers:', why)
       })
     }
-    payload()
+    payload(currentStaff(req))
       .then((body) => res.set('Cache-Control', 'no-store').json(body))
       .catch(next)
   })

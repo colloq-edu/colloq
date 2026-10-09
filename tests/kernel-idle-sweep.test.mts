@@ -51,3 +51,24 @@ test('a stopped container is swept — and sooner than a live one', () => {
     'drop',
   )
 })
+
+test("the owner's room setting replaces the two hours, and 0 keeps a live room for good", () => {
+  // `roomIdleMin` (admin/resource-settings.ts), in milliseconds as the sweep passes it.
+  const tenMinutes = 10 * MINUTE
+  assert.equal(idleVerdict({ running: true, busy: false, since: now - 9 * MINUTE, now, limitMs: tenMinutes }), 'watch')
+  assert.equal(idleVerdict({ running: true, busy: false, since: now - 11 * MINUTE, now, limitMs: tenMinutes }), 'drop')
+  // A longer setting keeps a room the old two hours would have taken.
+  assert.equal(idleVerdict({ running: true, busy: false, since: now - 150 * MINUTE, now, limitMs: 180 * MINUTE }), 'watch')
+  // Never: a live room stays however long it is empty; a busy one is busy as always.
+  assert.equal(idleVerdict({ running: true, busy: false, since: now - 7 * 24 * 60 * MINUTE, now, limitMs: null }), 'watch')
+  assert.equal(idleVerdict({ running: true, busy: true, since: now - 300 * MINUTE, now, limitMs: tenMinutes }), 'busy')
+})
+
+test('a stopped container never outlives a live one, and "never" leaves it its half hour', () => {
+  // It holds no variables, only a slice and a layer: the shorter of the two waits.
+  assert.equal(idleVerdict({ running: false, busy: false, since: now - 11 * MINUTE, now, limitMs: 10 * MINUTE }), 'drop')
+  assert.equal(idleVerdict({ running: false, busy: false, since: now - 20 * MINUTE, now, limitMs: 180 * MINUTE }), 'watch')
+  assert.equal(idleVerdict({ running: false, busy: false, since: now - 31 * MINUTE, now, limitMs: 180 * MINUTE }), 'drop')
+  // "Never" is about live kernels someone may come back to; a stopped one has none.
+  assert.equal(idleVerdict({ running: false, busy: false, since: now - 31 * MINUTE, now, limitMs: null }), 'drop')
+})
