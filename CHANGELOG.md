@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.20.0](https://github.com/colloq-edu/colloq/compare/v0.19.0...v0.20.0) (2026-10-09)
+
+
+### Features
+
+* **resources:** «Работают сейчас» — see what holds the machine's memory and stop it ([#38](https://github.com/colloq-edu/colloq/issues/38)) ([baa9409](https://github.com/colloq-edu/colloq/commit/baa9409f542e131f7cc44aa866d023c496a58275))
+
 ## [0.19.0](https://github.com/colloq-edu/colloq/compare/v0.18.0...v0.19.0) (2026-10-06)
 
 
