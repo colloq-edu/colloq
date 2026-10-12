@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.21.0](https://github.com/colloq-edu/colloq/compare/v0.20.0...v0.21.0) (2026-10-12)
+
+
+### Features
+
+* **lecture:** console v4 — a magnifier the hall follows, a pointer that holds the word, sheets you can walk ([#40](https://github.com/colloq-edu/colloq/issues/40)) ([ec8d5e2](https://github.com/colloq-edu/colloq/commit/ec8d5e2d29437ae909bb5d2bc3dc783db4e6cf3d))
+
 ## [0.20.0](https://github.com/colloq-edu/colloq/compare/v0.19.0...v0.20.0) (2026-10-09)
 
 
