@@ -349,6 +349,53 @@ test('"off" reaches a socket that is far behind: it is not a stream frame', () =
   done(id)
 })
 
+/** A press of a phrase: strokes written in a row share `trail` and fade together in the hall. */
+function phrased(mark: number, trail: unknown, pts: number[]): ControlClientMessage {
+  return { ...beam(mark, pts), trail } as ControlClientMessage
+}
+
+test('the phrase reaches the hall as the console named it, and is absent when it named none', () => {
+  /*
+   * The server rebuilds the pointer frame from known fields, so a field it
+   * does not copy is lost on the way. A default number would be worse: every
+   * press of an older console would land in one phrase, and the hall would
+   * keep a whole slide of strokes lit until the last one faded.
+   */
+  const { id, who, pen, hall } = room()
+  const sent: unknown[] = [42, undefined, 1.5, '7', Number.NaN, -3]
+  for (const [i, trail] of sent.entries()) {
+    dispatch(pen.ws, id, who, phrased(i + 1, trail, [0.5, 0.5, 0]))
+    dispatch(pen.ws, id, who, { t: 'laser:off' })
+  }
+  const heard = lasers(hall.heard).flatMap((frame) => (frame.at ? [frame.at] : []))
+  assert.deepEqual(
+    heard.map((at) => ('trail' in at ? at.trail : 'none')),
+    [42, 'none', 'none', 'none', 'none', -3],
+  )
+  done(id)
+})
+
+test('presses of different phrases are not glued into one frame', async () => {
+  // A glued frame carries the first one's phrase: samples of the other would
+  // fade in the hall at the wrong time.
+  const { id, who, pen, hall } = room()
+  dispatch(pen.ws, id, who, phrased(7, 1, [0.1, 0.1, 0]))
+  dispatch(pen.ws, id, who, phrased(7, 1, [0.2, 0.1, 40]))
+  dispatch(pen.ws, id, who, phrased(7, 2, [0.3, 0.1, 80]))
+  dispatch(pen.ws, id, who, phrased(7, 2, [0.4, 0.1, 120]))
+  await sleep(LASER_HOLD_MS * 3)
+  const xs = (pts: number[] = []) => pts.filter((_, i) => i % 3 === 0)
+  assert.deepEqual(
+    lasers(hall.heard).map((frame) => [frame.at?.trail, xs(frame.at?.pts)]),
+    [
+      [1, [0.1]],
+      [1, [0.2]],
+      [2, [0.3, 0.4]],
+    ],
+  )
+  done(id)
+})
+
 test('a frame of garbage samples is read by the shared rule: clamped, rounded, never backwards in time', () => {
   const { id, who, pen, hall } = room()
   dispatch(pen.ws, id, who, {

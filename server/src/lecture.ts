@@ -7,18 +7,27 @@
  * A pencil stroke that landed in the shared document would become a version
  * in the history, travel into the snapshot and come back on Ctrl+Z: three
  * ways to spoil what the lecture is given for. The price is stated out loud:
- * a server restart turns off the projection and erases the ink, just as it
- * turns off the shared screen and the queue.
+ * a server restart turns off the projection and erases the ink, the blank
+ * sheets and the zoom, just as it turns off the shared screen and the queue.
  */
 import {
   MAX_INKED_PAGES,
   MAX_POINTS_PER_MESSAGE,
   MAX_POINTS_PER_STROKE,
+  MAX_SHEETS,
+  MAX_SLIDES,
   MAX_STROKES_PER_PAGE,
+  readPaper,
+  readZoom,
+  sameZoom,
+  stepOff,
   type InkFull,
   type InkStroke,
   type LectureDevice,
+  type LectureSheet,
   type LectureState,
+  type LectureZoom,
+  type SheetPaper,
 } from '@shared/lecture'
 
 interface Room {
@@ -42,6 +51,19 @@ interface Room {
   rev: number
   /** What was done to each page, newest last: what Undo takes back (see `InkAction`). */
   log: Map<number, InkAction[]>
+  /**
+   * The number the next sheet is offered: −1 first, then on down, and it
+   * never goes back up. A number taken by an old console (`turnTo`) or lying
+   * in `dropped` is skipped, so no sheet of this lecture is ever handed a
+   * number that was already used.
+   */
+  nextSheet: number
+  /**
+   * The numbers of deleted sheets. A frame late for one of them is refused,
+   * and so is an old console turning to it (see `turnTo`). Otherwise the
+   * deleted sheet would come back for the whole hall, possibly with ink on it.
+   */
+  dropped: Set<number>
 }
 
 /**
@@ -169,10 +191,14 @@ export function startLecture(
       since: now,
       actedAt: now,
       awaySince: null,
+      zoom: null,
+      sheets: [],
     },
     ink: new Map(),
     rev: ++revisions,
     log: new Map(),
+    nextSheet: -1,
+    dropped: new Set(),
   }
   rooms.set(sessionId, room)
   return room.state
@@ -281,24 +307,40 @@ export function markAway(sessionId: string, since: number | null): LectureState 
 }
 
 /**
- * How many blank sheets may be created.
+ * Move the projection to a page. Returns the new state, or `null` when there
+ * is nothing to broadcast.
  *
- * Their numbers are negative and they are created by a press, so their count
- * is how many times the teacher pressed the button. The cap is not about
- * malice but about a stuck button: pages with ink are kept in memory, and the
- * memory they take has to be finite.
+ * The zoom belongs to the page it was made on, so a turn resets it: the next
+ * slide comes up whole, never magnified at the spot where the last one was.
+ *
+ * A slide past `MAX_SLIDES` is garbage, like page zero: no deck has it, and
+ * the page shown is where an old console's sheet is anchored (below) and
+ * where every screen without the deck walks up to.
+ *
+ * A negative page must be a sheet in the list. The exception is an OLD
+ * console: its «Лист» key made up the next number itself and sent
+ * `lecture:page` with it. A deploy swaps the server under a console that is
+ * already open, so a number the list does not know is taken as an add right
+ * after the page being shown, the way that console meant it, as long as the
+ * list has room. A number that was deleted is refused: a late turn must not
+ * bring back a sheet the presenter just removed.
  */
-const MAX_BOARDS = 50
-
 export function turnTo(sessionId: string, page: number): LectureState | null {
   const room = rooms.get(sessionId)
   if (!room) return null
   // Zero is not a page: it is garbage from a tab. A negative number is a blank sheet (see the vocabulary).
   const asked = Math.trunc(page)
-  if (asked === 0 || !Number.isFinite(asked)) return null
-  const wanted = asked < 0 ? Math.max(-MAX_BOARDS, asked) : asked
-  if (room.state.page === wanted) return null
-  room.state = { ...room.state, page: wanted }
+  if (asked === 0 || !Number.isFinite(asked) || asked > MAX_SLIDES) return null
+  if (room.state.page === asked) return null
+  if (asked < 0 && !hasSheet(room, asked)) {
+    if (!Number.isSafeInteger(asked) || room.dropped.has(asked)) return null
+    const list = room.state.sheets ?? []
+    if (list.length >= MAX_SHEETS) return null
+    const place = placeAfter(list, room.state.page) ?? { after: 0, at: 0 }
+    const sheets = inserted(list, place.at, { page: asked, after: place.after })
+    room.state = { ...room.state, sheets }
+  }
+  room.state = { ...room.state, page: asked, zoom: null }
   return room.state
 }
 
@@ -306,6 +348,191 @@ export function setBlank(sessionId: string, blank: boolean): LectureState | null
   const room = rooms.get(sessionId)
   if (!room || room.state.blank === blank) return null
   room.state = { ...room.state, blank }
+  return room.state
+}
+
+/**
+ * The hall zooms into part of the page, or back to the whole page with
+ * `null`. Returns the new state, or `null` when nothing changed: the page has
+ * turned since the frame was sent, or the zoom is the one already stored.
+ *
+ * Every value is kept, not only the settled one. The state is what a latecomer
+ * receives, and in the middle of a pinch the latest value is closer to the
+ * truth than the one before the pinch began. The motion itself reaches the
+ * room as `lecture:zoom` frames (control.ts · `zoomTo`), never as `lecture`
+ * frames.
+ *
+ * A frame for another page is dropped, not applied: it was meant for the
+ * slide before the turn, and the slide after it must come up whole.
+ */
+export function setZoom(
+  sessionId: string,
+  page: number,
+  zoom: LectureZoom | null,
+): LectureState | null {
+  const room = rooms.get(sessionId)
+  if (!room || room.state.page !== page) return null
+  const next = readZoom(zoom)
+  if (sameZoom(room.state.zoom, next)) return null
+  room.state = { ...room.state, zoom: next }
+  return room.state
+}
+
+/* ------------------------------------------------------------- sheets */
+
+/*
+ * THE SHEET LIST IS KEPT IN DECK ORDER: by the slide each sheet follows, and
+ * in the order they were placed among the sheets of one slide. That is the
+ * order `lectureSequence` walks them in, so the list reads the way the
+ * lecture is walked, and inserting in the right place is a matter of finding
+ * an index. Every change makes a new array: a state handed out a moment ago
+ * may still be on its way to a frame.
+ */
+
+function hasSheet(room: Room, page: number): boolean {
+  return (room.state.sheets ?? []).some((sheet) => sheet.page === page)
+}
+
+/**
+ * Where a sheet placed right after `page` goes: the slide it will follow and
+ * its index in the list. `null` when `page` cannot be a place: not an
+ * integer, a slide no deck has (past `MAX_SLIDES`), or a sheet the list does
+ * not have.
+ *
+ * After a slide, the new sheet goes BEFORE the sheets already following it,
+ * because it must be the very next page after the slide. After a sheet, it
+ * follows the same slide and goes right behind that sheet. Zero is the slot
+ * before the first slide and works like a slide.
+ */
+function placeAfter(
+  list: readonly LectureSheet[],
+  page: number,
+): { after: number; at: number } | null {
+  if (!Number.isSafeInteger(page) || page > MAX_SLIDES) return null
+  if (page < 0) {
+    const at = list.findIndex((sheet) => sheet.page === page)
+    return at < 0 ? null : { after: list[at].after, at: at + 1 }
+  }
+  const at = list.findIndex((sheet) => sheet.after >= page)
+  return { after: page, at: at < 0 ? list.length : at }
+}
+
+function inserted(list: readonly LectureSheet[], at: number, sheet: LectureSheet): LectureSheet[] {
+  return [...list.slice(0, at), sheet, ...list.slice(at)]
+}
+
+/** The next number nobody in this lecture has had: the list's and the deleted ones are skipped. */
+function freshSheet(room: Room): number {
+  const taken = new Set((room.state.sheets ?? []).map((sheet) => sheet.page))
+  let page = room.nextSheet
+  while (taken.has(page) || room.dropped.has(page)) page -= 1
+  room.nextSheet = page - 1
+  return page
+}
+
+/**
+ * What adding a sheet came to: the new state with the projection on the new
+ * sheet, or `full` when the list already has `MAX_SHEETS`. The caller says
+ * the refusal in words (shared/lecture.ts · `sheetsFullSays`).
+ */
+export type SheetAdded =
+  | { state: LectureState; page: number; full?: undefined }
+  | { state?: undefined; page?: undefined; full: true }
+
+/**
+ * Add a blank sheet right after page `after` and turn the projection to it.
+ *
+ * The server hands out the number, not the console. A console that made up
+ * the number itself could not know about a sheet started from another device
+ * or one deleted a minute ago, and two of them would pick the same number.
+ * An `after` that is not a place (garbage, a slide no deck has, or a sheet
+ * deleted in the meantime) means "after the page being shown", which is what
+ * the key on the console means anyway.
+ */
+export function addSheet(
+  sessionId: string,
+  after: number,
+  paper: SheetPaper = 'plain',
+): SheetAdded | null {
+  const room = rooms.get(sessionId)
+  if (!room) return null
+  const list = room.state.sheets ?? []
+  if (list.length >= MAX_SHEETS) return { full: true }
+  const place =
+    placeAfter(list, Math.trunc(after)) ?? placeAfter(list, room.state.page) ?? { after: 0, at: 0 }
+  const page = freshSheet(room)
+  const sheet: LectureSheet = { page, after: place.after }
+  const ruled = readPaper(paper)
+  if (ruled !== 'plain') sheet.paper = ruled
+  room.state = { ...room.state, sheets: inserted(list, place.at, sheet), page, zoom: null }
+  return { state: room.state, page }
+}
+
+/**
+ * What deleting a sheet did: the new state, the deleted number, and whether
+ * the projection had to move off it.
+ */
+export interface SheetDropped {
+  state: LectureState
+  page: number
+  moved: boolean
+}
+
+/**
+ * Delete a sheet with its ink and its undo history, and never hand its
+ * number out again. Returns `null` when it is not a sheet of this lecture.
+ *
+ * The ink goes from memory, not only from view. Its page leaves the
+ * inventory, so no tab keeps it in the strip and asks for ink that is gone,
+ * and it no longer takes one of the `MAX_INKED_PAGES`. Undo has nothing to
+ * bring back either.
+ *
+ * If the projection is on that sheet, it moves to the item before it in the
+ * sequence (the previous sheet of the same slide, else that slide). For a
+ * sheet in front of the first slide there is no item before it, so the
+ * projection moves to the next one, or to slide 1. That is the shared step
+ * (`stepOff`): the same "back" the console's key walks along
+ * `lectureSequence`, read straight off the list, because the server does not
+ * know the deck's length and building the walk up to the furthest anchor
+ * costs as much as that slide number.
+ */
+export function dropSheet(sessionId: string, page: number): SheetDropped | null {
+  const room = rooms.get(sessionId)
+  if (!room) return null
+  const list = room.state.sheets ?? []
+  if (!list.some((sheet) => sheet.page === page)) return null
+  const moved = room.state.page === page
+  // The sheet is in the list, so there is always a step; slide 1 only satisfies the type.
+  const next = moved ? (stepOff(list, page) ?? 1) : room.state.page
+  room.ink.delete(page)
+  room.log.delete(page)
+  room.dropped.add(page)
+  room.rev = ++revisions
+  const sheets = list.filter((sheet) => sheet.page !== page)
+  room.state = moved ? { ...room.state, sheets, page: next, zoom: null } : { ...room.state, sheets }
+  return { state: room.state, page, moved }
+}
+
+/**
+ * Rule a sheet differently. Returns the new state, or `null` when it is not a
+ * sheet of this lecture or already has that paper. Plain paper is stored as
+ * no field at all, as `LectureSheet` reads it.
+ */
+export function setSheetPaper(
+  sessionId: string,
+  page: number,
+  paper: SheetPaper,
+): LectureState | null {
+  const room = rooms.get(sessionId)
+  if (!room) return null
+  const list = room.state.sheets ?? []
+  const at = list.findIndex((sheet) => sheet.page === page)
+  if (at < 0) return null
+  const ruled = readPaper(paper)
+  if (readPaper(list[at].paper) === ruled) return null
+  const sheet: LectureSheet = { page: list[at].page, after: list[at].after }
+  if (ruled !== 'plain') sheet.paper = ruled
+  room.state = { ...room.state, sheets: list.map((one, i) => (i === at ? sheet : one)) }
   return room.state
 }
 
@@ -360,6 +587,14 @@ export function addInk(
   // A blank sheet is a page like any other, only with a negative number.
   const page = Math.trunc(patch.page)
   if (page === 0 || !Number.isFinite(page)) return null
+  /*
+   * But only a sheet the list has. A frame late for a deleted sheet would
+   * otherwise bring it back into the inventory with a stroke on it, and a
+   * number nobody created would become a page that only its ink knows about.
+   * Silence rather than words: the console already knows the sheet is gone,
+   * from the `lecture` frame that took it out of the list.
+   */
+  if (page < 0 && !hasSheet(room, page)) return null
   let points = patch.points.slice(0, MAX_POINTS_PER_MESSAGE).filter(Number.isFinite)
   if (points.length % 2 === 1) points = points.slice(0, -1)
   if (points.length < 2) return null

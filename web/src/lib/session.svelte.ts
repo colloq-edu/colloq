@@ -25,7 +25,15 @@ import type {
   SessionInfo,
   TerminalStatus,
 } from '@shared/protocol'
-import type { InkStroke, LectureDevice, LectureState } from '@shared/lecture'
+import {
+  readZoom,
+  sameZoom,
+  type InkStroke,
+  type LectureDevice,
+  type LectureState,
+  type LectureZoom,
+  type SheetPaper,
+} from '@shared/lecture'
 import { readRules, type RoomRules } from '@shared/rules'
 import {
   inkedPages,
@@ -152,6 +160,21 @@ const DISCARDED_OFFLINE = new Set<ControlClientMessage['t']>([
   'lecture:take',
   // Sent again on every open (`#connectControl`): a queued copy is a stale one.
   'device',
+  /*
+   * The zoom is a hand's motion like the pointer: twenty-five frames a second
+   * of a pinch would push the real presses out of the queue, and a region
+   * delivered a minute late would magnify the hall at a spot nobody is
+   * talking about any more.
+   */
+  'lecture:zoom',
+  /*
+   * A sheet press goes now or never, like a take-over. Queued, "add" would
+   * turn the projection to a new sheet a minute later in the middle of
+   * something else, and "drop" would delete a sheet after the presenter had
+   * forgotten pressing it. The console says it is offline instead
+   * (`addSheet` and its neighbours return whether the frame went out).
+   */
+  'lecture:sheet',
 ])
 
 /** The kernel's answer to a completion question — exactly what the editor shows. */
@@ -535,6 +558,27 @@ export class SessionState {
    * about the lecture. It goes out by itself when the leader stops moving it.
    */
   laser = $state<{ page: number; x: number; y: number; shape: 'dot' | 'line' } | null>(null)
+  /**
+   * The zoom on the shown page, as the server last told it: which page and
+   * which part of it (`null`: the whole page). `null` while there is no
+   * lecture.
+   *
+   * One field for both ways it arrives: the `zoom` inside every `lecture`
+   * frame (the welcome batch, a turn, which resets it) and the
+   * `lecture:zoom` frames of a pinch, twenty-five a second. A screen reads
+   * one place and never has to decide which of the two is newer. The order on
+   * the socket decides that.
+   *
+   * It carries its page because a zoom means nothing on another one: a
+   * screen whose page has already turned locally must not magnify the next
+   * slide at the spot of the previous one.
+   *
+   * `$state.raw`, and only assigned when the region really changed: every
+   * `lecture` frame carries the zoom (a device change, a sheet's paper), and a
+   * new object each time would re-run every motion that follows it for
+   * nothing.
+   */
+  zoomNow = $state.raw<{ page: number; zoom: LectureZoom | null } | null>(null)
 
   /**
    * Speaker notes for `notesFile`: page number → text.
@@ -1171,11 +1215,31 @@ export class SessionState {
           noteInkedPages(this, [])
         }
         /*
+         * The zoom rides in the state: the settled value for a latecomer, the
+         * reset after a turn, nothing at all after the end of the lecture. An
+         * older server sends no field, which reads as the whole page.
+         */
+        this.#hearZoom(
+          message.state ? { page: message.state.page, zoom: readZoom(message.state.zoom) } : null,
+        )
+        /*
          * But the notes are not cleared. They live in the database and are tied
          * to the FILE, not to the lecture: the same speech fits a second
          * lecture on the same document a week later, and preparation when
          * there is no lecture at all.
          */
+      } else if (message.t === 'lecture:zoom') {
+        /*
+         * The live motion of a pinch, or where it settled. The server sends
+         * it only for the page being shown, after the `lecture` frame that
+         * turned there, so the page check is a guard rather than a filter: a
+         * zoom is never laid on a page it was not made on. Read by the same
+         * rule as on the server.
+         */
+        if (this.lecture && message.page === this.lecture.page) {
+          this.lectureHeardAt = Date.now()
+          this.#hearZoom({ page: message.page, zoom: readZoom(message.zoom) })
+        }
       } else if (message.t === 'notes') {
         /*
          * The answer to our question — and only to the last one. While the map
@@ -1561,6 +1625,59 @@ export class SessionState {
     }
   }
 
+  /*
+   * THE CONSOLE'S ZOOM AND SHEETS. Each returns whether the frame went out:
+   * none of them is queued offline (`DISCARDED_OFFLINE`), so a false return
+   * means the press did nothing, and the console has to say so instead of
+   * leaving a key that silently does not work.
+   */
+
+  /**
+   * Zoom the hall into part of `page`, or back to the whole page with `null`.
+   *
+   * `final` marks where the hand settled: the server delivers that value to
+   * every socket for certain, while the frames of the motion may be skipped
+   * for a lagging one. The store does not apply the value itself, and
+   * `zoomNow` changes only when the echo comes back. While its own pinch is
+   * moving, the console follows its hand and ignores those echoes.
+   */
+  zoomTo(page: number, zoom: LectureZoom | null, final = false): boolean {
+    const live = this.#control?.readyState === WebSocket.OPEN
+    this.send(
+      final ? { t: 'lecture:zoom', page, zoom, final: true } : { t: 'lecture:zoom', page, zoom },
+    )
+    return live
+  }
+
+  /**
+   * A new blank sheet right after page `after` (a slide or a sheet). The
+   * server picks its number and turns the projection to it, and the new
+   * sheet arrives in `lecture.sheets` with that turn.
+   */
+  addSheet(after: number, paper?: SheetPaper): boolean {
+    const live = this.#control?.readyState === WebSocket.OPEN
+    this.send(
+      paper && paper !== 'plain'
+        ? { t: 'lecture:sheet', op: 'add', after, paper }
+        : { t: 'lecture:sheet', op: 'add', after },
+    )
+    return live
+  }
+
+  /** Delete a sheet with its ink. If the hall is on it, the server moves it back one page. */
+  dropSheet(page: number): boolean {
+    const live = this.#control?.readyState === WebSocket.OPEN
+    this.send({ t: 'lecture:sheet', op: 'drop', page })
+    return live
+  }
+
+  /** Rule a sheet differently: plain, squares, lines or dots. */
+  setSheetPaper(page: number, paper: SheetPaper): boolean {
+    const live = this.#control?.readyState === WebSocket.OPEN
+    this.send({ t: 'lecture:sheet', op: 'paper', page, paper })
+    return live
+  }
+
   /**
    * Ask the room's kernel what to complete at this place in the code.
    *
@@ -1818,6 +1935,18 @@ export class SessionState {
    */
   #forgetInkedPage(page: number): void {
     noteInkedPages(this, [...inkedPages(this)].filter((known) => known !== page))
+  }
+
+  /**
+   * Keep the zoom the server told, assigning only when the page or the region
+   * differs (see `zoomNow`).
+   */
+  #hearZoom(next: { page: number; zoom: LectureZoom | null } | null): void {
+    const now = this.zoomNow
+    if (now === null && next === null) return
+    const same = now !== null && next !== null && now.page === next.page
+    if (same && sameZoom(now.zoom, next.zoom)) return
+    this.zoomNow = next
   }
 
   /* --------------------------------------------------------------- state */

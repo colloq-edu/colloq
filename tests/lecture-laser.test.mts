@@ -12,7 +12,14 @@
  *   — the hall replays the same samples on a timeline: its head lies on the
  *     presenter's line, also through a Wi-Fi burst, and the shape ends where
  *     the pen left the glass;
- *   — a standing pointer with a trembling hand does not cost the room frames.
+ *   — a standing pointer with a trembling hand does not cost the room frames;
+ *   — and the owner's later words, "if I keep writing with the pointer the
+ *     strokes must not disappear, and when I stop, let it go": strokes written
+ *     in a row are one phrase, lit together and put out together, grouped
+ *     the same way in the hall, which holds a phrase through the network's
+ *     jitter and never flashes a fading one back;
+ *   — a finger's beam reaches the room only once it is not the first finger
+ *     of a two-finger gesture: every pinch used to leave a red squiggle.
  *
  * Pure logic from web/src/components/lecture/laser.ts and ink.ts; what the ink
  * layer does with it is read off its source at the end.
@@ -24,13 +31,26 @@ import assert from 'node:assert/strict'
 import { LASER_EVERY_MS, MAX_LASER_SAMPLES } from '../shared/lecture.js'
 import { layCurve } from '../web/src/components/lecture/ink.js'
 import {
+  HeardPhrases,
   hearLaser,
   laserArrived,
   LaserPlayback,
   LaserPress,
   LASER_DELAY_MS,
+  LASER_STAND,
+  LASER_STEP,
   MARK_MAX_SAMPLES,
+  MARKS_MAX,
+  PHRASE_FADE_MS,
+  PHRASE_HOLD_MS,
+  PHRASE_WIRE_MS,
+  PhraseClock,
+  phraseFor,
+  phraseGlow,
+  phraseOver,
+  phrasesOf,
   type LaserAt,
+  type PhraseMark,
 } from '../web/src/components/lecture/laser.js'
 
 /** The projector: 1920 × 1080, a 16:9 slide. */
@@ -288,6 +308,214 @@ test('a press continued under a new number starts from the head', () => {
   assert.deepEqual(frame.slice(0, 2), [press.last?.x, press.last?.y])
 })
 
+test('under a zoom the sender keeps the steps and stands of the screen, not of the page', () => {
+  // Steps of half the ×1 threshold: dropped at ×1, kept at ×4 (each is two of the threshold there).
+  const whole = new LaserPress(1, 0)
+  const near = new LaserPress(2, 0)
+  let keptWhole = 0
+  let keptNear = 0
+  for (let i = 0; i < 20; i += 1) {
+    const x = 0.5 + (i * LASER_STEP) / 2
+    if (whole.add(x, 0.5, i, ASPECT)) keptWhole += 1
+    if (near.add(x, 0.5, i, ASPECT, 4)) keptNear += 1
+  }
+  assert.ok(keptWhole <= 11, `at ×1 ${keptWhole} of 20 half-steps were kept`)
+  assert.equal(keptNear, 20, 'at ×4 a pixel of the screen is a quarter of the page step')
+  // A move of half the stand: still standing at ×1, a real move at ×4.
+  for (const [press, zoom, frames] of [
+    [new LaserPress(3, 0), 1, 0],
+    [new LaserPress(4, 0), 4, 1],
+  ] as const) {
+    press.add(0.5, 0.5, 0, ASPECT, zoom)
+    press.take(true, zoom)
+    press.add(0.5 + LASER_STAND / 2, 0.5, 40, ASPECT, zoom)
+    assert.equal(press.take(false, zoom).length, frames, `at ×${zoom}`)
+  }
+})
+
+/* ---------------------------------------------------------- phrases */
+
+/** A phrase clock with readable ids. */
+function clock(): PhraseClock {
+  let next = 0
+  return new PhraseClock(() => (next += 1))
+}
+
+test('strokes written in a row are one phrase; a pause of the hold starts a new one', () => {
+  const phrases = clock()
+  // A word: presses 200–600 ms apart.
+  const word: number[] = []
+  let t = 0
+  for (let i = 0; i < 12; i += 1) {
+    word.push(phrases.press(t))
+    t += 150
+    phrases.lift(t)
+    t += 200 + ((i * 97) % 400)
+  }
+  assert.equal(new Set(word).size, 1, 'a written word was split into phrases')
+  // A press while another of the phrase is held joins it too (the pen takes the beam from a finger).
+  const held = phrases.press(t)
+  assert.equal(phrases.press(t + 5000), held, 'a press during a held one started a new phrase')
+  phrases.lift(t + 5100)
+  phrases.lift(t + 5100)
+  // Just under the hold after the last lift: the same phrase; at the hold: a new one.
+  assert.equal(phrases.press(t + 5100 + PHRASE_HOLD_MS - 1), held)
+  phrases.lift(t + 7000)
+  const after = phrases.press(t + 7000 + PHRASE_HOLD_MS)
+  assert.notEqual(after, held, 'a press after the phrase began to fade revived it')
+})
+
+test('a phrase stays whole until its last lift and the hold, then fades together', () => {
+  // Three strokes lifted at 0, 400 and 900 ms.
+  const marks: PhraseMark[] = [
+    { phrase: 1, letGo: 0 },
+    { phrase: 1, letGo: 400 },
+    { phrase: 1, letGo: 900 },
+  ]
+  const state = phrasesOf(marks).get(1)
+  const last = 900
+  // The first stroke has long passed the old per-shape 0.9 + 0.9 s; it still glows whole.
+  assert.equal(phraseGlow(state, 1900), 1, 'the first letter faded while the word was still held')
+  assert.equal(phraseGlow(state, last + PHRASE_HOLD_MS), 1)
+  assert.ok(Math.abs(phraseGlow(state, last + PHRASE_HOLD_MS + PHRASE_FADE_MS / 2) - 0.5) < 1e-9)
+  assert.equal(phraseGlow(state, last + PHRASE_HOLD_MS + PHRASE_FADE_MS), 0)
+  assert.ok(!phraseOver(state, last + PHRASE_HOLD_MS + PHRASE_FADE_MS - 1))
+  assert.ok(phraseOver(state, last + PHRASE_HOLD_MS + PHRASE_FADE_MS))
+  // While any stroke of it is held, the phrase holds, however old the others are.
+  const writing = phrasesOf([...marks, { phrase: 1, letGo: null }]).get(1)
+  assert.equal(phraseGlow(writing, 60_000), 1)
+  assert.ok(!phraseOver(writing, 60_000))
+  // Hold and fade are the stand's numbers: a word stays a second and a half, then goes in 0.6 s.
+  assert.equal(PHRASE_HOLD_MS, 1500)
+  assert.equal(PHRASE_FADE_MS, 600)
+})
+
+test('a new phrase does not revive the one that is fading', () => {
+  const marks: PhraseMark[] = [
+    { phrase: 1, letGo: 0 },
+    { phrase: 2, letGo: null },
+  ]
+  const fading = phrasesOf(marks).get(1)
+  const at = PHRASE_HOLD_MS + PHRASE_FADE_MS / 3
+  assert.ok(phraseGlow(fading, at) < 1, 'the old phrase stopped fading when a new one began')
+  assert.equal(phraseGlow(phrasesOf(marks).get(2), at), 1)
+})
+
+test('the hall groups by the phrase the console names, not by gaps the network stretched', () => {
+  // The console: a lift at 0, the next press at 1450 ms. One phrase.
+  const phrases = clock()
+  const first = phrases.press(-300)
+  phrases.lift(0)
+  assert.equal(phrases.press(1450), first)
+  // The hall: the release is back-dated to the presenter's lift, but the next
+  // press arrives with the network's jitter on top, 120 ms later than sent.
+  const hall: PhraseMark[] = [{ phrase: first, letGo: 0 }]
+  assert.equal(
+    phraseFor(hall, 1450 + 120),
+    null,
+    'without the phrase on the wire the hall would split this word',
+  )
+  // Which is why the frames carry it: the ink layer hands `at.trail` to its grouping, and holds it the wire's grace.
+  const ink = code('web/src/components/lecture/InkLayer.svelte')
+  assert.match(
+    ink,
+    /const grace = at\.trail === undefined \? 0 : PHRASE_WIRE_MS[^]*?newMark\(mark, at\.page, stream\.xy, phraseHere\(at\.page, at\.trail, now\), grace\)/,
+    'the hall ignores the phrase the console sent',
+  )
+  assert.match(ink, /heard\.join\(/)
+  const now = ink.slice(ink.indexOf('function beamNow('))
+  assert.match(now.slice(0, now.indexOf('\n  function ')), /trail: pressTrail/, 'pointer frames do not carry the phrase')
+})
+
+test('the hall holds a phrase the console named through the network’s jitter, and still ends with the console', () => {
+  // The review's case: the console lifts at 0 and joins the next press at 1450 ms.
+  const lift = 0
+  const named: PhraseMark[] = [{ phrase: 5, letGo: lift, grace: PHRASE_WIRE_MS }]
+  const state = phrasesOf(named).get(5)
+  // The press arriving 300 ms late, at 1750: the hall had begun to fade the word, now it is still whole.
+  assert.equal(phraseGlow(state, 1450 + 300), 1, 'a late joining press finds its word half faded')
+  const hold = lift + PHRASE_HOLD_MS + PHRASE_WIRE_MS
+  assert.equal(phraseGlow(state, hold), 1)
+  // The grace comes out of the fade: the word goes out on the projector when it does on the console.
+  const end = lift + PHRASE_HOLD_MS + PHRASE_FADE_MS
+  assert.ok(Math.abs(phraseGlow(state, (hold + end) / 2) - 0.5) < 1e-9)
+  assert.ok(!phraseOver(state, end - 1))
+  assert.ok(phraseOver(state, end), 'the projector outlives the console')
+  const own = phrasesOf([{ phrase: 6, letGo: lift }]).get(6)
+  assert.ok(phraseOver(own, end) && !phraseOver(own, end - 1), 'the console and the hall end apart')
+  // A grace is jitter, not a second hold, and the fade stays a fade.
+  assert.ok(PHRASE_WIRE_MS >= 150 && PHRASE_WIRE_MS <= PHRASE_FADE_MS / 2, `the hall holds ${PHRASE_WIRE_MS} ms longer`)
+  // One's own shapes have none: the console's word fades on the console's clock.
+  assert.equal(own?.grace, 0)
+  assert.ok(phraseGlow(own, PHRASE_HOLD_MS + 1) < 1)
+})
+
+test('a press later than the grace starts its own phrase in the hall: a fading word is never revived', () => {
+  let next = 100
+  const heard = new HeardPhrases(() => (next += 1))
+  const trail = 5
+  const marks: PhraseMark[] = [{ phrase: trail, letGo: 0, grace: PHRASE_WIRE_MS }]
+  // Within the hold and its grace: the console's phrase, as the console wrote it.
+  assert.equal(heard.join(marks, trail, PHRASE_HOLD_MS + PHRASE_WIRE_MS - 1), trail)
+  // 400 ms late, at 1850 (the review's case): even with the grace the word has begun to fade here.
+  const late = 1450 + 400
+  assert.ok(phraseGlow(phrasesOf(marks).get(trail), late) < 1)
+  const own = heard.join(marks, trail, late)
+  assert.notEqual(own, trail, 'the fading word flashed back to full')
+  // The fading one keeps fading, untouched by the newcomer.
+  const after = [...marks, { phrase: own, letGo: null, grace: PHRASE_WIRE_MS }]
+  assert.ok(phraseGlow(phrasesOf(after).get(trail), late + 100) < 1)
+  // The rest of the word follows the press that split off, not the old phrase.
+  assert.equal(heard.join([...marks, { phrase: own, letGo: late + 200, grace: PHRASE_WIRE_MS }], trail, late + 600), own)
+  // Nothing of the phrase left here: nothing to revive, the trail is the phrase again.
+  assert.equal(new HeardPhrases(() => 1).join([], trail, 10_000), trail)
+  // An older console names no phrase: the timing rule decides (`phraseFor`).
+  assert.equal(heard.join([{ phrase: 9, letGo: 1000 }], undefined, 1000 + PHRASE_HOLD_MS - 1), 9)
+  assert.notEqual(heard.join([{ phrase: 9, letGo: 1000 }], undefined, 1000 + PHRASE_HOLD_MS), 9)
+})
+
+test('a press taken back as half of a gesture neither holds the phrase nor keeps it open', () => {
+  const phrases = clock()
+  const word = phrases.press(0)
+  phrases.lift(100)
+  // A finger lit the beam within the word's hold, and a second finger came: the press never was.
+  assert.equal(phrases.press(1_000), word)
+  phrases.cancel()
+  // It holds the word no longer and left no lift of its own: the word closes on its last real lift.
+  assert.notEqual(phrases.press(100 + PHRASE_HOLD_MS), word, 'a cancelled press kept the word open')
+  // A cancel with nothing held changes nothing.
+  const fresh = clock()
+  fresh.cancel()
+  const first = fresh.press(0)
+  fresh.lift(10)
+  fresh.cancel()
+  assert.equal(fresh.press(10 + PHRASE_HOLD_MS - 1), first)
+})
+
+test('without a phrase on the wire the hall applies the console’s timing rule itself', () => {
+  const marks: PhraseMark[] = [{ phrase: 9, letGo: 1000 }]
+  assert.equal(phraseFor(marks, 1000 + PHRASE_HOLD_MS - 1), 9)
+  assert.equal(phraseFor(marks, 1000 + PHRASE_HOLD_MS), null)
+  // A held shape keeps its phrase open, however long it has been held.
+  assert.equal(phraseFor([...marks, { phrase: 9, letGo: null }], 99_000), 9)
+  // Only the newest shape's phrase is open: an old phrase is not rejoined.
+  assert.equal(phraseFor([{ phrase: 3, letGo: null }, { phrase: 4, letGo: 0 }], 99_000), null)
+  assert.equal(phraseFor([], 0), null)
+})
+
+test('a phrase fits under the ceiling of kept shapes, and burnt shapes give their bitmaps back', () => {
+  // A line of handwriting is dozens of presses; the old ceiling of eight popped
+  // the first letter off the projector mid-word.
+  assert.ok(MARKS_MAX >= 64, `only ${MARKS_MAX} shapes are kept`)
+  const ink = code('web/src/components/lecture/InkLayer.svelte')
+  assert.doesNotMatch(ink, /const MARKS_MAX = /, 'the ink layer keeps a ceiling of its own again')
+  assert.match(ink, /marks\.slice\(-MARKS_MAX\)/)
+  // WebKit frees a canvas at once only when it is shrunk to one pixel.
+  const unbake = ink.slice(ink.indexOf('function unbake('))
+  assert.match(unbake.slice(0, unbake.indexOf('\n  function ')), /canvas\.width = 1/)
+  assert.match(ink, /if \(phraseOver\(phrases\.get\(mark\.phrase\), now\)\) unbake\(mark\)/, 'burnt shapes keep their bitmaps')
+})
+
 test('every pointer frame reaches every listener, in order, and unsubscribing stops it', () => {
   const session = {}
   const heard: (LaserAt | null)[] = []
@@ -339,4 +567,32 @@ test('the release sends the end of the shape before "off", and own echoes are to
     /ownMarks\.includes\(at\.mark\)/,
     'the echo of our own pointer is replayed as someone else’s',
   )
+})
+
+test('a finger’s beam lights on the console at once and reaches the room only once a second finger is ruled out', () => {
+  const ink = code('web/src/components/lecture/InkLayer.svelte')
+  const fn = (name: string) => {
+    const at = ink.indexOf(`function ${name}(`)
+    assert.notEqual(at, -1, `${name} is gone from the ink layer`)
+    const rest = ink.slice(at + 1)
+    const to = rest.search(/\n {2}function /)
+    return to === -1 ? rest : rest.slice(0, to)
+  }
+  // A finger's press is held for the tap's window; a pen's goes out at once.
+  assert.match(
+    fn('beamStart'),
+    /beamHeld = event\.pointerType === 'touch'\s*if \(beamHeld\) beamHeldTimer = window\.setTimeout\(sendBeam, TAP_TOGETHER_MS\)\s*else beamNow\(true\)/,
+  )
+  assert.match(fn('beamNow'), /if \(!press \|\| beamHeld\) return/, 'a held beam reaches the hall at the touch again')
+  // Lifted alone inside the window: a poke, sent whole before the "off".
+  const off = fn('beamOff')
+  const release = off.indexOf('beamHeld = false')
+  assert.ok(release !== -1 && release < off.indexOf('beamNow(true)'), 'a poke never reaches the hall')
+  // The second finger or a pen: the beam goes from the console too, and the room hears nothing.
+  const drop = fn('dropBeam')
+  assert.match(drop, /phraseClock\.cancel\(\)/)
+  assert.match(drop, /marks = marks\.filter\(\(mark\) => mark !== gone\)/)
+  assert.doesNotMatch(drop, /send\(|beamNow/, 'a dropped beam tells the room')
+  // A pen taking a finger's held beam: the finger was the palm.
+  assert.match(fn('down'), /if \(beaming !== null\) \{\s*if \(beamHeld\) dropBeam\(\)\s*else beamOff\(\)/)
 })

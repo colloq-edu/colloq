@@ -1035,10 +1035,6 @@ export const roomMessages: MessageCatalog = {
     "ru": "Выбрать страницу",
     "en": "Choose page"
   },
-  "room.ui.157": {
-    "ru": "Л{p0}",
-    "en": "S{p0}"
-  },
   "room.ui.158": {
     "ru": "Л{p0}",
     "en": "S{p0}"
@@ -1122,10 +1118,6 @@ export const roomMessages: MessageCatalog = {
   "room.ui.180": {
     "ru": "Линия",
     "en": "Line"
-  },
-  "room.ui.181": {
-    "ru": "обводить",
-    "en": "trace"
   },
   "room.ui.182": {
     "ru": "Точка",
@@ -1254,14 +1246,6 @@ export const roomMessages: MessageCatalog = {
   "room.ui.215": {
     "ru": "Рисовать пальцем",
     "en": "Draw with your finger"
-  },
-  "room.ui.216": {
-    "ru": "Вернуться к слайду",
-    "en": "Return to slide"
-  },
-  "room.ui.217": {
-    "ru": "Чистый лист",
-    "en": "Blank sheet"
   },
   "room.ui.218": {
     "ru": "листов:",
@@ -1533,8 +1517,8 @@ export const roomMessages: MessageCatalog = {
     "en": "More: fullscreen, left hand, change document, end"
   },
   "room.ui.314": {
-    "ru": "Заметки доступны только для страниц документа.",
-    "en": "Notes are available for document pages only."
+    "ru": "К листам заметок нет.",
+    "en": "Sheets have no notes."
   },
   "room.ui.315": {
     "ru": "Заметок к этой странице нет.",
@@ -4153,14 +4137,6 @@ export const roomMessages: MessageCatalog = {
     "ru": "{p0} {p1} — вывод в терминале",
     "en": "{p0} {p1} — output in the terminal"
   },
-  "room.extra.53": {
-    "ru": "Вернуться к слайду",
-    "en": "Return to slide"
-  },
-  "room.extra.54": {
-    "ru": "Чистый лист",
-    "en": "Blank sheet"
-  },
   "room.extra.55": {
     "ru": "Вернуть проекцию",
     "en": "Restore projection"
@@ -5456,7 +5432,6 @@ export const roomMessages: MessageCatalog = {
   "room.prompter.thenNo": {"ru": "Затем · {n}", "en": "Then · {n}"},
   "room.prompter.thenLine": {"ru": "затем {n} · {title}", "en": "then {n} · {title}"},
   "room.prompter.last": {"ru": "Последний слайд", "en": "Last slide"},
-  "room.prompter.back": {"ru": "Дальше — слайд {n}", "en": "Next — back to slide {n}"},
   "room.prompter.slide": {"ru": "слайд", "en": "slide"},
   "room.prompter.time": {"ru": "время", "en": "time"},
   "room.prompter.plan": {"ru": "по плану {time}", "en": "planned {time}"},
@@ -6414,5 +6389,86 @@ export const roomMessages: MessageCatalog = {
       "one": "{count} more line — scroll",
       "other": "{count} more lines — scroll"
     }
-  }
+  },
+  // Lecture console v4, the hall's screens (web/src/components/lecture/LectureView.svelte, walk.ts):
+  // a blank sheet named by its place among the lecture's sheets.
+  "room.lecture4.sheetOf": {"ru": "лист {n} из {total}", "en": "sheet {n} of {total}"},
+  // Lecture console v4, the console itself (web/src/components/lecture/ConsoleView.svelte,
+  // ToolPalette.svelte, pult.ts): the new pens and highlighters, their palettes, the magnifier.
+  // The pens' `name` is the control's aria-label (a contract with the stands), `…Short` is the
+  // adjective the laptop bar builds "Pen, blue" from.
+  "room.pult4.penBlue": {"ru": "Перо, синее", "en": "Pen, blue"},
+  "room.pult4.penBlueShort": {"ru": "синий", "en": "blue"},
+  "room.pult4.penPurple": {"ru": "Перо, фиолетовое", "en": "Pen, purple"},
+  "room.pult4.penPurpleShort": {"ru": "фиолетовый", "en": "purple"},
+  "room.pult4.penYellow": {"ru": "Перо, жёлтое", "en": "Pen, yellow"},
+  "room.pult4.penYellowShort": {"ru": "жёлтый", "en": "yellow"},
+  "room.pult4.penWhite": {"ru": "Перо, белое", "en": "Pen, white"},
+  "room.pult4.penWhiteShort": {"ru": "белый", "en": "white"},
+  "room.pult4.markerYellow": {"ru": "Маркер, жёлтый", "en": "Highlighter, yellow"},
+  "room.pult4.markerGreen": {"ru": "Маркер, зелёный", "en": "Highlighter, green"},
+  "room.pult4.markerBlue": {"ru": "Маркер, голубой", "en": "Highlighter, blue"},
+  "room.pult4.markerPink": {"ru": "Маркер, розовый", "en": "Highlighter, pink"},
+  "room.pult4.markerOrange": {"ru": "Маркер, оранжевый", "en": "Highlighter, orange"},
+  "room.pult4.markerNarrow": {"ru": "узкий", "en": "narrow"},
+  "room.pult4.markerRegular": {"ru": "обычный", "en": "regular"},
+  "room.pult4.markerWide": {"ru": "широкий", "en": "wide"},
+  "room.pult4.color": {"ru": "Цвет", "en": "Color"},
+  "room.pult4.markerColor": {"ru": "Цвет маркера", "en": "Highlighter color"},
+  "room.pult4.markerWidthLabel": {"ru": "Ширина", "en": "Width"},
+  "room.pult4.markerWidth": {"ru": "Ширина маркера", "en": "Highlighter width"},
+  "room.pult4.forDark": {"ru": "для тёмных слайдов", "en": "for dark slides"},
+  "room.pult4.markerSample": {"ru": "вероятность", "en": "probability"},
+  "room.pult4.penHold": {"ru": "Задержите перо в конце —\nлиния выпрямится", "en": "Hold the pen still at the end —\nthe line straightens"},
+  "room.pult4.markerHold": {"ru": "Задержите маркер в конце —\nлиния выпрямится", "en": "Hold the highlighter still at the end —\nthe line straightens"},
+  "room.pult4.lineSays": {"ru": "обводить и писать", "en": "trace and write"},
+  "room.pult4.laserNote": {"ru": "Пока пишете — слово держится. {s} с без касания — гаснет целиком.", "en": "While you write, the word stays lit. After {s} s without a touch it fades whole."},
+  "room.pult4.zoom": {"ru": "Лупа", "en": "Magnifier"},
+  "room.pult4.zoomWhole": {"ru": "Весь слайд", "en": "Whole slide"},
+  "room.pult4.zoomArm": {"ru": "обвести участок", "en": "frame an area"},
+  "room.pult4.zoomBack": {"ru": "{n} · весь слайд", "en": "{n} · whole slide"},
+  "room.pult4.hallSees": {"ru": "Зал видит {n}", "en": "Hall sees {n}"},
+  // Sheets on the console (ConsoleView.svelte, SheetMenu.svelte, film.ts): the "＋ Лист" key, the
+  // strip under the slide, the portrait ribbon, the "Pages" grid and the sheet menu. A sheet is
+  // named by its place among the lecture's sheets ("Лист 2"), never by its page number.
+  // `newSheetHere` is the name of every "＋" slot, kept apart from the rail key's "Новый лист"
+  // (room.ui.207): the stands press a control by the first element with its name.
+  "room.pult4.newSheetHere": {"ru": "Новый лист сюда", "en": "New sheet here"},
+  "room.pult4.sheetHere": {"ru": "Лист сюда", "en": "Sheet here"},
+  "room.pult4.sheetHereShort": {"ru": "лист сюда", "en": "sheet here"},
+  "room.pult4.sheetNeedsLecture": {"ru": "Листы появятся, когда начнётся лекция", "en": "Sheets come with a running lecture"},
+  "room.pult4.sheetsOffline": {"ru": "Нет связи — листы сейчас не меняются.", "en": "No connection — sheets cannot change right now."},
+  "room.pult4.afterSlide": {"ru": "после слайда {n}", "en": "after slide {n}"},
+  "room.pult4.beforeFirst": {"ru": "перед первым слайдом", "en": "before the first slide"},
+  "room.pult4.nextMark": {"ru": "{n} · дальше", "en": "{n} · next"},
+  "room.pult4.then": {"ru": "затем {n}", "en": "then {n}"},
+  "room.pult4.film": {"ru": "Лента", "en": "Strip"},
+  "room.pult4.sheetsCount": {
+    "ru": {"one": "{count} лист", "few": "{count} листа", "many": "{count} листов", "other": "{count} листа"},
+    "en": {"one": "{count} sheet", "other": "{count} sheets"}
+  },
+  "room.pult4.sheetOf": {"ru": "Лист {n} из {total}", "en": "Sheet {n} of {total}"},
+  "room.pult4.paper": {"ru": "Бумага", "en": "Paper"},
+  "room.pult4.paperPlain": {"ru": "Чистая", "en": "Plain"},
+  "room.pult4.paperGrid": {"ru": "Клетка", "en": "Grid"},
+  "room.pult4.paperLines": {"ru": "Линейка", "en": "Lined"},
+  "room.pult4.paperDots": {"ru": "Точки", "en": "Dots"},
+  "room.pult4.dropSheet": {"ru": "Удалить лист", "en": "Delete sheet"},
+  "room.pult4.dropAsk": {
+    "ru": {
+      "one": "Удалить лист {n} и его {count} штрих?",
+      "few": "Удалить лист {n} и его {count} штриха?",
+      "many": "Удалить лист {n} и его {count} штрихов?",
+      "other": "Удалить лист {n} и его {count} штриха?"
+    },
+    "en": {"one": "Delete sheet {n} and its {count} stroke?", "other": "Delete sheet {n} and its {count} strokes?"}
+  },
+  "room.pult4.dropEmpty": {"ru": "Удалить пустой лист {n}?", "en": "Delete empty sheet {n}?"},
+  "room.pult4.drop": {"ru": "Удалить", "en": "Delete"},
+  "room.pult4.onSheetShort": {"ru": "на листе {spent}", "en": "on sheet {spent}"},
+  // Lecture console v4, the room's laptop bar (web/src/components/lecture/LectureView.svelte):
+  // the way back from a zoomed hall. `zoomBack` is the key's tooltip, with the zoom as
+  // pult.ts · `zoomTimes` writes it ("×2,5") and the key that does the same, 0.
+  "room.lecture5.zoomBack": {"ru": "Зал видит {n}. Вернуть весь слайд — 0", "en": "The hall sees {n}. Back to the whole slide — 0"},
+  "room.lecture5.zoomOffline": {"ru": "Нет связи. Зал по-прежнему видит часть слайда.", "en": "Offline. The hall still sees part of the slide."}
 }

@@ -27,7 +27,6 @@ import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { InkStroke } from '../shared/lecture.js'
-import { boardsInked } from '../web/src/components/lecture/pult.js'
 import {
   askInkPage,
   forgetInkPages,
@@ -110,11 +109,51 @@ test('a page request does not go into the offline queue', () => {
   assert.match(offline[1], /'ink:page'/)
 })
 
+test('the zoom lives in one field, fed by the lecture state and by the zoom frames', () => {
+  /*
+   * Two ways it arrives: inside every `lecture` frame (the welcome batch, a
+   * turn that resets it) and as `lecture:zoom` frames during a pinch. Two
+   * fields would leave every screen to guess which is newer; the socket's
+   * order already knows.
+   */
+  assert.match(SESSION, /zoomNow = \$state\.raw</)
+  const lecture = branch('lecture')
+  assert.match(lecture, /this\.#hearZoom\(/, 'a lecture frame does not carry its zoom to the screens')
+  assert.match(lecture, /readZoom\(message\.state\.zoom\)/)
+  assert.match(lecture, /: null,?\s*\)/, 'the end of the lecture leaves its zoom behind')
+  const zoom = branch('lecture:zoom')
+  assert.match(zoom, /message\.page === this\.lecture\.page/, 'a zoom laid on a page not its own')
+  assert.match(zoom, /this\.#hearZoom\(\{ page: message\.page, zoom: readZoom\(message\.zoom\) \}\)/)
+  // And only a real change is assigned: every `lecture` frame carries the
+  // zoom, and a new object each time would restart every screen's motion.
+  const hear = SESSION.slice(SESSION.indexOf('#hearZoom(next'))
+  assert.match(hear.slice(0, 400), /sameZoom\(now\.zoom, next\.zoom\)/)
+})
+
+test("the console's zoom and sheet frames are never queued offline", () => {
+  // A pinch would fill the queue in a second; a sheet press delivered a minute
+  // late would turn or delete something the presenter has forgotten about.
+  const offline = /DISCARDED_OFFLINE = new Set<[^>]+>\(\[([^\]]*)\]/.exec(SESSION)
+  assert.ok(offline)
+  assert.match(offline[1], /'lecture:zoom'/)
+  assert.match(offline[1], /'lecture:sheet'/)
+})
+
+test('a pointer frame reaches the ink layers whole, its phrase included', () => {
+  // The phrase id (`trail`) rides in `at`: copying chosen fields here would
+  // drop it on the way to the hall's ink layer.
+  assert.match(branch('laser'), /laserArrived\(this, message\.at\)/)
+})
+
 /* -------------------------------------------------------------------- live */
 
 function stroke(page: number, id: string): InkStroke {
   return { id, page, color: '#101a33', width: 0.004, points: [0, 0, 0.1, 0.1] }
 }
+
+/** The sheets the inventory lists as inked: what the console asks the sheets' ink by. */
+const sheetsInked = (session: Parameters<typeof inkedPages>[0]) =>
+  [...inkedPages(session)].filter((page) => page < 0).sort((a, b) => a - b)
 
 /** A tab to the extent the ink knows it: it holds, it sends, it is connected. */
 function tab(ink: InkStroke[]) {
@@ -129,7 +168,7 @@ test('an erased page leaves the strip — as it did before per-page delivery', (
   // of the sum.
   const { session, state } = tab([stroke(-1, 'a'), stroke(-2, 'b')])
   noteInkedPages(session, [-2, -1, 3])
-  assert.equal(boardsInked(inkedPages(session)), 2)
+  assert.deepEqual(sheetsInked(session), [-2, -1])
 
   // The presenter erased the second sheet entirely: an `ink:clear` frame with
   // its page.
@@ -139,23 +178,23 @@ test('an erased page leaves the strip — as it did before per-page delivery', (
   assert.deepEqual(
     [...inkedPages(session)].sort((a, b) => a - b),
     [-1, 3],
-    'the page stayed in the inventory: the strip would draw an empty thumbnail, and the console would keep an extra sheet',
+    'the page stayed in the inventory: the strip would keep asking for ink that is gone',
   )
-  assert.equal(boardsInked(inkedPages(session)), 1)
+  assert.deepEqual(sheetsInked(session), [-1])
 })
 
 test('a new lecture does not inherit the sheets of the previous one', () => {
   const { session, state } = tab([stroke(-2, 'a')])
   noteInkedPages(session, [-2, -1])
-  assert.equal(boardsInked(inkedPages(session)), 2)
+  assert.deepEqual(sheetsInked(session), [-2, -1])
 
   // The lecture was ended and another begun: the server forgot the ink, the
   // tab forgot the inventory.
   state.ink = []
   noteInkedPages(session, [])
-  assert.equal(
-    boardsInked(inkedPages(session)),
-    0,
-    'two sheets of the previous lecture would stand empty in the strip of the new one',
+  assert.deepEqual(
+    sheetsInked(session),
+    [],
+    "the new lecture's strip would ask for the ink of two sheets of the previous one",
   )
 })

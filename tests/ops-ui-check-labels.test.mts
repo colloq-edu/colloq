@@ -20,12 +20,15 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { roomMessages } from '../shared/locales/room.js'
+import { INKS, MARKER_WIDTHS, MARKERS } from '../web/src/components/lecture/pult.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const read = (rel: string): string => readFileSync(path.join(root, rel), 'utf8')
 
 const view = read('web/src/components/lecture/LectureView.svelte')
 const stand = read('scripts/ui-check.mts')
+const pencil = read('scripts/pencil-check.mts')
 
 test('the two-step labels of the lecture bar and the stand talk about the same buttons', () => {
   // Both buttons are irreversible, and both ask for a second press. The order
@@ -105,4 +108,61 @@ test('the cell number selects it, and the area around clears the selection', () 
     /closest\('\[data-cell-pick\]'\)\) return/,
     'clearing the selection checks the wrong marker — a press on the number will clear what it has just selected',
   )
+})
+
+/* --------------------------------------------------------- the console */
+
+/** The names of the console's controls a stand presses by: its `const PULT = {…}` list. */
+function pultNames(source: string, file: string): string[] {
+  const block = /const PULT = \{([\s\S]*?)\} as const/.exec(source)?.[1]
+  assert.ok(block, `${file} has no PULT list of console names`)
+  return [...block.matchAll(/^\s*\w+: '([^']+)',?\s*$/gm)].map((m) => m[1])
+}
+
+test('every console name the stands press is a word of the room catalog', () => {
+  /*
+   * pencil-check and ui-check find the lecture console by aria-label, letter
+   * for letter, and nothing else tells them a key was renamed: `press` throws
+   * "the console has no control", and an `until` that waits for a key waits
+   * out its whole timeout. The fourth console renamed two at once ("Чистый
+   * лист" / "Вернуться к слайду" became one "Новый лист"), and the stand
+   * stopped in the middle of its run. Each name must be the Russian text of
+   * some room key: a rename in the catalog then fails here, at once.
+   */
+  const ru = new Set(
+    Object.values(roomMessages)
+      .map((text) => (typeof text.ru === 'string' ? text.ru : null))
+      .filter((text): text is string => text !== null),
+  )
+  for (const [file, source] of [
+    ['scripts/ui-check.mts', stand],
+    ['scripts/pencil-check.mts', pencil],
+  ] as const) {
+    const names = pultNames(source, file)
+    assert.ok(names.length >= 10, `${file}: the PULT list is too short to be the console (${names.length})`)
+    for (const name of names) assert.ok(ru.has(name), `${file}: no room text is "${name}"`)
+  }
+})
+
+test('the pens and highlighters the stand rolls call are the palette’s own, in its order', () => {
+  /*
+   * ui-check opens both palettes and looks for every pen and highlighter by
+   * name. The lists live in the stand, the palette in pult.ts: eight pens in
+   * the order the digit keys pick them, five highlighters, three widths.
+   */
+  const list = (name: string): string[] => {
+    const body = new RegExp(`const ${name} = \\[([\\s\\S]*?)\\]`).exec(stand)?.[1]
+    assert.ok(body, `ui-check has no ${name} list`)
+    return [...body.matchAll(/'([^']+)'/g)].map((m) => m[1])
+  }
+  assert.deepEqual(list('PENS'), INKS.map((ink) => ink.name))
+  assert.deepEqual(list('MARKER_COLORS'), MARKERS.map((marker) => marker.name))
+  assert.deepEqual(list('MARKER_WIDTHS'), MARKER_WIDTHS.map((width) => width.name))
+})
+
+test('the laptop bar pen the stands click is the one LectureView titles', () => {
+  // "Перо, красный": room.extra.83 with the red pen's short name (LectureView's pen title).
+  const red = tr('room.extra.83', { p0: INKS[1].short })
+  assert.equal(red, 'Перо, красный')
+  assert.ok(stand.includes(`'${red}'`), `ui-check does not click "${red}"`)
 })

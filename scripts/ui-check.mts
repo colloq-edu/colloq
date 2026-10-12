@@ -492,10 +492,20 @@ check(
   'the document appeared for the student by itself',
   await student.js('return document.querySelectorAll("canvas").length'),
 )
+/*
+ * The tab strip names whom the reader follows: "Ведущий: Ада" (room.ui.740;
+ * it said "Идём за Ада" before the interface texts were rewritten). Who leads
+ * comes with presence, half a second or so after the pages themselves, so the
+ * stand waits for the line instead of reading it the moment the pages are up.
+ */
+const following = `/Ведущий: Ада/.test(document.body.innerText)`
+await until(student, following, 'the student follows the teacher', 8000)
 check(
-  (await student.js('return /Идём за/.test(document.body.innerText)')) === true,
+  (await student.js(`return ${following}`)) === true,
   'the student follows the teacher',
-  await student.js("return /Идём за[^\\n]*/.exec(document.body.innerText)?.[0] ?? 'no such line'"),
+  await student.js(
+    "return /(Ведущий:|Перейти к|Ведущий отключился)[^\\n]*/.exec(document.body.innerText)?.[0] ?? 'no such line'",
+  ),
 )
 
 /* ------------------------------------------------------------------ summary */
@@ -755,13 +765,18 @@ check(
   'exactly one of them is shown',
   'one',
 )
-/* And it has its own toolbar: "Run all" applies to the notebook where it was pressed. */
+/*
+ * And it has its own toolbar: "Run all" applies to the notebook where it was
+ * pressed. On this Russian instance the button says "Запустить всё"
+ * (room.ui.446); the stand looked for the English word from before the
+ * interface was translated.
+ */
 check(
   (await host.js(
-    `return (document.querySelector('main:not(.hidden)')?.textContent||'').includes('Run all')`,
+    `return (document.querySelector('main:not(.hidden)')?.textContent||'').includes('Запустить всё')`,
   )) === true,
   'the second notebook has its own toolbar',
-  'Run all in place',
+  '"Запустить всё" in place',
 )
 
 /*
@@ -787,8 +802,13 @@ check(
  * Everything checked here used to be impossible: selecting a second cell,
  * clearing the selection at all. We count by aria-label, not by colour: colour
  * is read by eyes, a label by eyes and by a screen reader.
+ *
+ * The label is the room's language: "Ячейка 2, выделена" on this Russian
+ * instance (room.extra.98, "Cell 2, selected" in English). The stand looked
+ * for the English ending and counted nothing.
  */
-const selectedCount = `document.querySelectorAll('[aria-label$="selected"]').length`
+const SELECTED = '[aria-label$=", выделена"]'
+const selectedCount = `document.querySelectorAll('${SELECTED}').length`
 
 /**
  * A press on a cell is a press where cells are pressed, and the stand has to
@@ -854,29 +874,33 @@ check(
 /*
  * The panel names the field of view — and adds the selection to it.
  *
- * "Видит" (sees) is always there: it is about what goes out in any case.
- * "Особенно" (especially) appears only when there is something to focus on — a
- * line that is always lit says nothing.
+ * "Источники" (sources: the notebooks and the file list) is always there: it
+ * is about what goes out in any case. "В фокусе" (in focus) appears only when
+ * there is something to focus on — a line that is always lit says nothing.
+ * They read "Видит: всю комнату…" and "Особенно" until the interface texts
+ * were rewritten (room.ui.509, room.ui.511, room.ui.525), and the stand kept
+ * looking for the old words.
  */
+const SOURCES = String.raw`/Источники\s*\d+ тетрад[^·]*· список файлов: \d+/`
 check(
-  (await host.js(`return (document.body.textContent||'').includes('всю комнату')`)) === true,
-  'the panel says the Oracle sees the whole room',
+  (await host.js(`return ${SOURCES}.test(document.body.textContent||'')`)) === true,
+  'the panel names what the Oracle sees',
   await host.js(
-    `return /всю комнату[^А-Я]*/.exec(document.body.textContent||'')?.[0]?.trim() ?? 'silent'`,
+    `return /Источники[^А-Я]*/.exec(document.body.textContent||'')?.[0]?.trim() ?? 'silent'`,
   ),
 )
 check(
-  (await host.js(`return (document.body.textContent||'').includes('Особенно')`)) === false,
-  'without a selection "Особенно" is not shown',
+  (await host.js(`return (document.body.textContent||'').includes('В фокусе')`)) === false,
+  'without a selection "В фокусе" is not shown',
   'no line',
 )
 await host.js(pressCell(1))
 await wait(400)
 check(
-  (await host.js(`return (document.body.textContent||'').includes('Особенно')`)) === true,
+  (await host.js(`return (document.body.textContent||'').includes('В фокусе')`)) === true,
   'the selected cell is added to the field of view',
   await host.js(
-    `return /Особенно[^А-Я]*/.exec(document.body.textContent||'')?.[0]?.trim() ?? 'silent'`,
+    `return /В фокусе[^А-Я]*/.exec(document.body.textContent||'')?.[0]?.trim() ?? 'silent'`,
   ),
 )
 
@@ -904,8 +928,10 @@ check(
 
 const pageWidth = `Math.round(document.querySelector('[data-page="1"]').getBoundingClientRect().width)`
 const wasWide = (await host.js(`return ${pageWidth}`)) as number
+// "+" is named "Увеличить масштаб" (room.ui.723); it was "Крупнее" before the
+// interface texts were rewritten, and a press on a name nobody has is silent.
 await host.js(
-  `[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Крупнее')?.click(); return 1`,
+  `[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Увеличить масштаб')?.click(); return 1`,
 )
 await wait(600)
 check(
@@ -1260,8 +1286,14 @@ check(((await strokeOn(student)) as number) <= 0, 'erasing reaches the whole roo
  */
 const PULT = {
   gauge: 'Выбрать страницу',
-  blank: 'Чистый лист',
-  toSlide: 'Вернуться к слайду',
+  /*
+   * "＋ Лист": a new sheet right after the page on screen, always the same
+   * key. It used to be a pair, "Чистый лист" on a slide and "Вернуться к
+   * слайду" on a sheet; a sheet is left with "Back" now, like any page.
+   */
+  newSheet: 'Новый лист',
+  /** The magnifier at ×1; once zoomed the same key is "Весь слайд". */
+  zoom: 'Лупа',
   dim: 'Затемнить проекцию',
   undim: 'Вернуть проекцию',
   laser: 'Указка',
@@ -1313,8 +1345,14 @@ await until(host, `!!document.querySelector('[aria-label="Пульт на пла
 const consoleLink = (await host.js(
   `return document.querySelector('[aria-label="Пульт на планшете"] .select-all')?.textContent?.trim() ?? ''`,
 )) as string
+/*
+ * The link names the screen it opens: `/s/<room>/pult/t/<key>` (ConsoleLink ·
+ * `tail`; a council cell's is `/council/<cell>/t/<key>`). The bare
+ * `/s/<room>/t/<key>` of the first links still lands on the console
+ * (routes.ts · `handoffLanding`), but it is no longer what is handed out.
+ */
 check(
-  consoleLink.includes(`/s/${ROOM}/t/`),
+  consoleLink.includes(`/s/${ROOM}/pult/t/`),
   'the presenter is given the console link',
   consoleLink ? consoleLink.slice(0, 34) + '…'
     : await host.js(
@@ -1358,7 +1396,13 @@ check(
  * participant. The people list counts PEOPLE, not tabs, and a second "Ада" in
  * it would mean a lecture run by who knows whom.
  */
-const inRoom = `(document.body.textContent||'').match(/(\\d+) in the room/)?.[1] ?? '?'`
+/*
+ * The header's head count, in the room's language: "2 в комнате" (room.ui.896).
+ * In parentheses: the expression is spliced into `… === '2'`, and `??` binds
+ * looser than `===`, so the wait below compared '?' with '2' and returned the
+ * match itself, never `true`: it sat out its whole timeout on every run.
+ */
+const inRoom = `((document.body.textContent||'').match(/(\\d+) в комнате/)?.[1] ?? '?')`
 await until(host, `${inRoom} === '2'`, 'the head count in the room settled', 8000)
 check(
   (await host.js(`return ${inRoom}`)) === '2',
@@ -1493,15 +1537,39 @@ async function escape(): Promise<void> {
   }
   await wait(250)
 }
-const onRail = [PULT.gauge, PULT.pen, PULT.marker, PULT.laser, PULT.prev, PULT.next, PULT.undo, PULT.eraser, PULT.fader, PULT.notes]
-const inPalette = [PULT.red, PULT.green, PULT.black, PULT.thin, PULT.mid, PULT.thick]
+const onRail = [
+  PULT.gauge,
+  PULT.pen,
+  PULT.marker,
+  PULT.laser,
+  PULT.zoom,
+  PULT.prev,
+  PULT.next,
+  PULT.undo,
+  PULT.eraser,
+  PULT.fader,
+  PULT.notes,
+  PULT.newSheet,
+]
+/** The eight pens in their palette order (pult.ts · `INKS`): the digit keys 1–8 pick them in this order too. */
+const PENS = [
+  'Перо, чёрное',
+  'Перо, красное',
+  'Перо, синее',
+  'Перо, зелёное',
+  'Перо, оранжевое',
+  'Перо, фиолетовое',
+  'Перо, жёлтое',
+  'Перо, белое',
+]
+const inPalette = [...PENS, PULT.thin, PULT.mid, PULT.thick]
+/** The highlighter's palette (pult.ts · `MARKERS`, `MARKER_WIDTHS`). */
+const MARKER_COLORS = ['Маркер, жёлтый', 'Маркер, зелёный', 'Маркер, голубой', 'Маркер, розовый', 'Маркер, оранжевый']
+const MARKER_WIDTHS = ['узкий', 'обычный', 'широкий']
 const inNotes = [PULT.more, PULT.bigger]
 const absent: string[] = []
 for (const n of onRail) if (!(await pult.js(`return ${has(n)}`))) absent.push(n)
-for (const pair of [
-  [PULT.blank, PULT.toSlide],
-  [PULT.dim, PULT.undim],
-]) {
+for (const pair of [[PULT.dim, PULT.undim]]) {
   if (!(await pult.js(`return ${has(pair[0])} || ${has(pair[1])}`))) absent.push(pair.join(' / '))
 }
 const paletteOpen = await openPalette()
@@ -1545,6 +1613,53 @@ check(
   'Escape closes the palette',
   'closed',
 )
+
+/*
+ * THE HIGHLIGHTER HAS A PALETTE TOO, opened the same way: a second tap on the
+ * tool already taken. Five colours and three widths, each a radio of a named
+ * group, and a choice keeps it open, as the pen's does.
+ */
+await pult.js(press(PULT.marker))
+await wait(200)
+if (!(await pult.js(`return !!document.querySelector('[data-pult-palette]')`))) {
+  await pult.js(press(PULT.marker))
+  await wait(250)
+}
+const markerGroups = (await pult.js(
+  `const p=document.querySelector('[data-pult-palette]');` +
+    `return !!p && !!p.querySelector('[role="radiogroup"][aria-label="Цвет маркера"]') && !!p.querySelector('[role="radiogroup"][aria-label="Ширина маркера"]')`,
+)) as boolean
+const markerMissing: string[] = []
+for (const n of [...MARKER_COLORS, ...MARKER_WIDTHS]) if (!(await pult.js(`return ${has(n)}`))) markerMissing.push(n)
+let markerStays = false
+if (markerGroups) {
+  await pult.js(press('Маркер, зелёный'))
+  await wait(200)
+  const afterColor = (await pult.js(`return !!document.querySelector('[data-pult-palette]')`)) === true
+  await pult.js(press('широкий'))
+  await wait(200)
+  const afterWidth = (await pult.js(`return !!document.querySelector('[data-pult-palette]')`)) === true
+  markerStays = afterColor && afterWidth
+  // Back to the yellow of middle width, the highlighter's default.
+  await pult.js(press('Маркер, жёлтый'))
+  await wait(150)
+  await pult.js(press('обычный'))
+  await wait(150)
+}
+check(
+  markerGroups && markerMissing.length === 0 && markerStays,
+  'the highlighter palette: five colours, three widths, a choice keeps it open',
+  !markerGroups
+    ? 'no "Цвет маркера" / "Ширина маркера" groups in a palette'
+    : markerMissing.length
+      ? `missing: ${markerMissing.join(', ')}`
+      : markerStays
+        ? 'all in place, stays open'
+        : 'a choice CLOSED it',
+)
+await escape()
+await pult.js(press(PULT.pen))
+await wait(200)
 
 /*
  * THE POINTER HAS ITS OWN PALETTE: a dot points, a line circles. It opens with
@@ -1754,8 +1869,9 @@ await pult.js(press(PULT.pen))
  * A circled figure burns out even after the tool changes — just as in the
  * hall: putting it out on the console instantly would mean showing the
  * presenter something other than what the hall sees. We wait for the end of
- * the burn (HOLD_MS + FADE_MS in InkLayer) and demand emptiness: a pointer left
- * pressed is exactly what must not happen.
+ * the burn (the phrase's PHRASE_HOLD_MS + PHRASE_FADE_MS in laser.ts, 1.5 +
+ * 0.6 s) and demand emptiness: a pointer left pressed is exactly what must
+ * not happen.
  */
 const wentOut = await until(pult, `${pultRed} === 0`, 'the pointer figure burned out', 4000)
 check(
@@ -2190,12 +2306,15 @@ check(
  */
 await pult.send('Page.bringToFront')
 /*
- * The key stayed a key, but there is no word on it any more: a blank sheet is
- * created in the middle of a sentence, and two presses (the page strip → "+ new
- * sheet") for that are already a failure. It is found by name, not by label.
+ * The key stayed a key: a blank sheet is created in the middle of a sentence,
+ * and two presses (the page strip → "+ new sheet") for that are already a
+ * failure. It is found by name, not by label. "＋ Лист" asks for a sheet right
+ * after the page on screen; the server puts it there and turns the hall to it,
+ * and the console follows.
  */
-await until(pult, named(PULT.blank), 'the blank sheet key is in place')
-await pult.js(press(PULT.blank))
+const slideBefore = (await student.js(`return ${roomPage}`)) as string
+await until(pult, named(PULT.newSheet), 'the new sheet key is in place')
+await pult.js(press(PULT.newSheet))
 const blankSheet =
   `(async()=>{const c=[...document.querySelectorAll('canvas')].find(n=>n.getBoundingClientRect().width>200);` +
   `if(!c||!c.width) return false;` +
@@ -2211,21 +2330,29 @@ check(cleared, 'the blank sheet reaches the projector', 'a white field')
  * turn up by accident anywhere.
  */
 await pult.send('Page.bringToFront')
+await until(pult, `/Л\\s*\\d/.test(${gaugeText})`, 'the console followed the hall onto the sheet', 6000)
 const boardGauge = (await pult.js(`return ${gaugeText}`)) as string
 check(
-  /Л\s*\d/i.test(boardGauge) || /лист/i.test(boardGauge),
+  /Л\s*1/.test(boardGauge) && /лист 1 из 1/i.test(boardGauge),
   'the console says it shows a sheet, not a page',
   boardGauge || 'the gauge is silent',
 )
-/* And back to the slides — with the same press: the written sheet has not gone anywhere. */
-await until(pult, named(PULT.toSlide), 'the back-to-slide key appeared')
-await pult.js(press(PULT.toSlide))
+/*
+ * And back to the slide with "Back": the sheet stands right after the slide
+ * it was made on, and the written sheet has not gone anywhere.
+ */
+await pult.js(press(PULT.prev))
 await beam.send('Page.bringToFront')
 await wait(300)
 // Awaited before negating: `!` of the promise itself is always false, and
 // this wait used to give up every run while the projection was fine.
 const backOnSlide = await until(beam, `!(await ${blankSheet})`, 'the projection returned to the slide')
-check(backOnSlide, 'the projection returns from the blank sheet to the slide', backOnSlide ? 'the slide' : 'still blank')
+const sameSlide = await until(student, `${roomPage} === ${JSON.stringify(slideBefore)}`, 'the hall is back on its slide', 8000)
+check(
+  backOnSlide && sameSlide,
+  'the projection returns from the blank sheet to the slide',
+  `${backOnSlide ? 'the slide' : 'still blank'} · hall on ${(await student.js(`return ${roomPage}`)) || '—'} (was ${slideBefore || '—'})`,
+)
 await host.send('Page.bringToFront')
 
 /* Pause darkens the projection, but not the console: the presenter keeps the page. */
@@ -2384,7 +2511,7 @@ await wait(400)
 await host.js(pressCell(0))
 await wait(300)
 const inkOnInk = await host.js(
-  `const cell=document.querySelector('[aria-label$="selected"]');if(!cell) return 'no selected cell';` +
+  `const cell=document.querySelector('${SELECTED}');if(!cell) return 'no selected cell';` +
     `const span=[...cell.querySelectorAll('span')].find(s=>/^\\d\\d$/.test((s.textContent||'').trim()));` +
     `if(!span) return 'no number found';` +
     `const css=getComputedStyle(span);` +

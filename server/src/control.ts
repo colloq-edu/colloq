@@ -215,19 +215,27 @@ import {
 } from '@shared/paths'
 import {
   AWAY_GRACE_MS,
+  INK_WIDTH_MAX,
+  INK_WIDTH_MIN,
   inkFullSays,
   laserSamples,
   LASER_HOLD_MS,
   MAX_LASER_SAMPLES,
   MAX_NOTE_CHARS,
   readDevice,
+  readPaper,
+  readZoom,
+  sheetsFullSays,
   type InkStroke,
   type LectureDevice,
+  type LectureZoom,
 } from '@shared/lecture'
 import { flushFile, forgetFile, onFileSaved } from './collab/files.js'
 import {
   addInk,
+  addSheet,
   clearInk,
+  dropSheet,
   eraseInk,
   forgetLecture,
   handOver,
@@ -240,6 +248,8 @@ import {
   moveLecture,
   noteAct,
   setBlank,
+  setSheetPaper,
+  setZoom,
   startLecture,
   stopLecture,
   turnTo,
@@ -455,6 +465,9 @@ type FrameClass = 'essential' | 'stream'
  */
 const STREAM_FRAMES = new Set<ControlServerMessage['t']>([
   'laser',
+  // The motion of a pinch. Where it settled goes out as essential
+  // (`zoomTo`), the way the pointer's "off" does.
+  'lecture:zoom',
   'ink:add',
   'complete:reply',
   'inspect:reply',
@@ -595,6 +608,7 @@ export function closeControlRoom(sessionId: string): void {
   treeSent.delete(sessionId)
   inkFrames.delete(sessionId)
   laserHeld.delete(sessionId)
+  zoomHeld.delete(sessionId)
   inkHeld.delete(sessionId)
   // And all open coalescing windows: their tails would look for a room that
   // is gone.
@@ -985,6 +999,12 @@ type LaserAt = {
   y: number
   shape: 'dot' | 'line'
   mark: number
+  /**
+   * The phrase the press belongs to, as the console grouped it: the presses
+   * of one phrase stay lit together and fade together in the hall. Absent
+   * from an older console, and then the hall groups by timing itself.
+   */
+  trail?: number
   pts: number[]
 }
 /** Frames that arrived while the window was open, in order. */
@@ -1012,7 +1032,18 @@ const LASER_HELD_MAX = MAX_LASER_SAMPLES * 4
 function holdLaser(sessionId: string, at: LaserAt): void {
   const held = laserHeld.get(sessionId) ?? []
   const last = held.at(-1)
-  if (last && last.mark === at.mark && last.page === at.page && last.shape === at.shape) {
+  /*
+   * The phrase is part of what "the same press" means. A glued frame keeps
+   * the first one's `trail`, so samples of a press in another phrase would
+   * reach the hall under the wrong phrase and fade at the wrong time.
+   */
+  if (
+    last &&
+    last.mark === at.mark &&
+    last.page === at.page &&
+    last.shape === at.shape &&
+    last.trail === at.trail
+  ) {
     const pts = [...last.pts, ...at.pts]
     last.pts = pts.length > LASER_HELD_MAX * 3 ? pts.slice(pts.length - LASER_HELD_MAX * 3) : pts
     last.x = at.x
@@ -1091,6 +1122,67 @@ function openLaserWindow(sessionId: string): void {
     // The hand is still moving — send what was held and open the next window.
     if (flushLaser(sessionId)) openLaserWindow(sessionId)
   })
+}
+
+/* ------------------------------------------------------------------ zoom */
+
+/**
+ * The zoom moved while the window was open: the page it moved on. The value
+ * is not held here. The state already has the latest one (lecture.ts ·
+ * `setZoom`), and only the latest one matters: unlike the pointer's samples,
+ * a zoom between two others is not part of any shape.
+ */
+const zoomHeld = new Map<string, number>()
+
+/**
+ * The zoom to the room, with the same leading edge and window as the
+ * pointer, but with the last value winning instead of gluing.
+ *
+ * A pinch arrives at the pointer's tick, and each frame goes to every socket
+ * of the room. A `lecture` frame per value would be essential-class and
+ * would make every tab re-run everything that depends on the lecture, so the
+ * motion goes as `lecture:zoom`. It is a STREAM frame, like the pointer: a
+ * socket that is far behind gets no frames of the motion, and nothing is
+ * lost by that.
+ *
+ * Where the hand SETTLED is different: it must reach every socket, or a
+ * lagging projector stays magnified on a stale spot for the rest of the
+ * slide. So a `final` frame goes as an ESSENTIAL frame. The window's trailing
+ * value goes the same way, because it may well be the last of the motion when
+ * the console did not mark one.
+ */
+function zoomTo(sessionId: string, page: number, zoom: LectureZoom | null, settled: boolean): void {
+  if (ticking(sessionId, 'zoom')) {
+    zoomHeld.set(sessionId, page)
+    return
+  }
+  broadcast(sessionId, { t: 'lecture:zoom', page, zoom }, settled ? 'essential' : 'stream')
+  openZoomWindow(sessionId)
+}
+
+function openZoomWindow(sessionId: string): void {
+  onTick(sessionId, 'zoom', LASER_HOLD_MS, () => {
+    // Still moving: send the latest value and open the next window.
+    if (flushZoom(sessionId)) openZoomWindow(sessionId)
+  })
+}
+
+/**
+ * The held zoom, into the wire now, as an essential frame. Returns whether
+ * there was anything to send.
+ *
+ * It sends the value from the state, and only if the lecture is still on the
+ * page the zoom was made on. If the page turned inside the window, the turn's
+ * `lecture` frame has already told everyone "whole page", and a zoom for the
+ * previous slide must not arrive after it.
+ */
+function flushZoom(sessionId: string): boolean {
+  const page = zoomHeld.get(sessionId)
+  zoomHeld.delete(sessionId)
+  const lecture = lectureOf(sessionId)
+  if (page === undefined || !lecture || lecture.page !== page) return false
+  broadcast(sessionId, { t: 'lecture:zoom', page, zoom: lecture.zoom ?? null }, 'essential')
+  return true
 }
 
 /* ------------------------------------------------------------------- ink */
@@ -1421,6 +1513,8 @@ function clearAway(sessionId: string): void {
 const CONSOLE_ACTS = new Set<ControlClientMessage['t']>([
   'lecture:page',
   'lecture:blank',
+  'lecture:zoom',
+  'lecture:sheet',
   'ink',
   'ink:erase',
   'ink:undo',
@@ -4252,14 +4346,89 @@ export function dispatch(
       return
     }
 
+    /*
+     * The zoom: which part of the page the hall sees (shared/lecture.ts ·
+     * `LectureZoom`). It is stored in the state for whoever connects later,
+     * and relayed as `lecture:zoom` frames (`zoomTo`), never as a `lecture`
+     * frame per value.
+     *
+     * A frame for a page other than the one shown is dropped: it was sent
+     * before a turn, and the new page must come up whole. A value that changes
+     * nothing is not relayed either, except a `final` one. A lagging socket may
+     * have skipped the stream frame that carried that value, and the settled
+     * value has to reach every projector.
+     */
+    case 'lecture:zoom': {
+      if (!atTheRemote(sessionId, payload)) return
+      const going = lectureOf(sessionId)
+      const page = Number(message.page)
+      if (!going || page !== going.page) return
+      const zoom = readZoom(message.zoom)
+      const settled = message.final === true
+      if (!setZoom(sessionId, page, zoom) && !settled) return
+      zoomTo(sessionId, page, zoom, settled)
+      return
+    }
+
+    /*
+     * The blank sheets: the server keeps the list and hands out the numbers
+     * (lecture.ts · `addSheet`), the console only says what to do.
+     */
+    case 'lecture:sheet': {
+      if (!atTheRemote(sessionId, payload)) return
+      if (message.op === 'add') {
+        const after = typeof message.after === 'number' ? message.after : Number.NaN
+        const added = addSheet(sessionId, after, readPaper(message.paper))
+        if (!added) return
+        /*
+         * A sheet past the ceiling (`MAX_SHEETS`): refused in words, to the
+         * one who pressed, the same way as the ink limits. Silence here would
+         * look like a key that does not work.
+         */
+        if (added.full) {
+          send(ws, { t: 'error', message: sheetsFullSays() })
+          return
+        }
+        broadcast(sessionId, { t: 'lecture', state: added.state })
+        // The new page's ink follows the state, as after any turn (`lecture:page`).
+        // A new number has never had any, so the list is empty.
+        const strokes = inkPageOf(sessionId, added.page)
+        broadcast(sessionId, { t: 'ink:page', page: added.page, strokes })
+        return
+      }
+      if (message.op === 'drop') {
+        const dropped = dropSheet(sessionId, Number(message.page))
+        if (!dropped) return
+        broadcast(sessionId, { t: 'lecture', state: dropped.state })
+        if (dropped.moved) {
+          const shown = dropped.state.page
+          broadcast(sessionId, { t: 'ink:page', page: shown, strokes: inkPageOf(sessionId, shown) })
+        }
+        /*
+         * And the deleted sheet's ink leaves every tab, then a fresh
+         * inventory. Otherwise the strip would keep a thumbnail of a sheet
+         * that no longer exists, and the tab would keep asking for its ink.
+         */
+        broadcast(sessionId, { t: 'ink:clear', page: dropped.page })
+        broadcast(sessionId, { t: 'ink:pages', pages: inkedPagesOf(sessionId) })
+        return
+      }
+      if (message.op === 'paper') {
+        const ruled = setSheetPaper(sessionId, Number(message.page), readPaper(message.paper))
+        if (ruled) broadcast(sessionId, { t: 'lecture', state: ruled })
+      }
+      return
+    }
+
     case 'ink': {
       if (!atTheRemote(sessionId, payload)) return
       const added = addInk(sessionId, {
         id: optionalId(message.id) ?? '',
         page: Number(message.page),
         color: typeof message.color === 'string' ? message.color.slice(0, 32) : '#000000',
+        // The bounds are shared: the console clamps a zoomed stroke by the same numbers.
         width: Number.isFinite(message.width)
-          ? Math.min(0.05, Math.max(0.0005, message.width))
+          ? Math.min(INK_WIDTH_MAX, Math.max(INK_WIDTH_MIN, message.width))
           : 0.004,
         points: Array.isArray(message.points) ? (message.points as number[]) : [],
         from: typeof message.from === 'number' ? message.from : undefined,
@@ -4381,7 +4550,15 @@ export function dispatch(
       }
       const shape = message.shape === 'dot' ? 'dot' : 'line'
       const mark = Number.isSafeInteger(message.mark) ? Number(message.mark) : 0
-      laserTo(sessionId, { page, x: pts[pts.length - 3], y: pts[pts.length - 2], shape, mark, pts })
+      const at: LaserAt = { page, x: pts[pts.length - 3], y: pts[pts.length - 2], shape, mark, pts }
+      /*
+       * The phrase only when the console named one. A default number would
+       * put every press of an older console into one phrase, and the hall
+       * would keep a whole slide of pointer strokes lit until the last one
+       * faded. Without the field the hall groups by timing itself.
+       */
+      if (Number.isSafeInteger(message.trail)) at.trail = Number(message.trail)
+      laserTo(sessionId, at)
       return
     }
 
@@ -6284,6 +6461,7 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
       treeSent.delete(sessionId)
       inkFrames.delete(sessionId)
       laserHeld.delete(sessionId)
+      zoomHeld.delete(sessionId)
       inkHeld.delete(sessionId)
       // The coalescing tails go the same way: there is nobody to send them to
       // and nowhere.

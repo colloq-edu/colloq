@@ -47,6 +47,7 @@ import { listFiles, makeFile } from '../server/src/workspace.js'
 import { boardOf, closeControlRoom, dispatch, handleControlSocket } from '../server/src/control.js'
 import {
   addInk,
+  addSheet,
   inkOf,
   lectureOf,
   startLecture,
@@ -515,12 +516,17 @@ test('the room learns about the bell from a frame, and a latecomer from the welc
 /* ------------------------------------------------------ lecture console */
 
 /**
- * All eight console messages: what the presenter drives the lecture with for
- * the whole audience.
+ * All the console messages: what the presenter drives the lecture with for
+ * the whole audience. A new one belongs here, or a student presenter keeps
+ * it after the bell.
  */
 const REMOTE: ControlClientMessage[] = [
   { t: 'lecture:page', page: 8 },
   { t: 'lecture:blank', on: true },
+  { t: 'lecture:zoom', page: 7, zoom: { x: 0.25, y: 0.25, z: 2 }, final: true },
+  { t: 'lecture:sheet', op: 'add', after: 7 },
+  { t: 'lecture:sheet', op: 'paper', page: -1, paper: 'grid' },
+  { t: 'lecture:sheet', op: 'drop', page: -1 },
   { t: 'ink', page: 7, id: 's_new', color: '#000000', width: 0.004, points: [0.3, 0.3, 0.4, 0.4] },
   { t: 'ink:undo', page: 7 },
   { t: 'ink:erase', page: 7, id: 's_first' },
@@ -529,9 +535,13 @@ const REMOTE: ControlClientMessage[] = [
   { t: 'laser:off' },
 ]
 
-/** A lecture presented by a student: exactly what `board: 'room'` exists for. */
+/**
+ * A lecture presented by a student: exactly what `board: 'room'` exists for.
+ * It has one blank sheet (−1) after slide 7, for the sheet messages to aim at.
+ */
 function lecture(id: string): void {
   startLecture(id, { file: 'lecture.pdf', by: 'p_participant', byName: 'Нина', color: '#d4162f' })
+  addSheet(id, 7)
   turnTo(id, 7)
   addInk(id, {
     id: 's_first',
@@ -566,6 +576,12 @@ test('after the bell the console is taken from a student presenter, but the lect
   assert.equal(lectureOf(id)?.file, 'lecture.pdf', 'the lecture went dark together with the class')
   assert.equal(lectureOf(id)?.page, 7, 'a student turned pages for the audience after the bell')
   assert.equal(lectureOf(id)?.blank, false, 'a student blanked the screen after the bell')
+  assert.equal(lectureOf(id)?.zoom ?? null, null, 'a student zoomed the projection after the bell')
+  assert.deepEqual(
+    lectureOf(id)?.sheets,
+    [{ page: -1, after: 7 }],
+    'a student added, deleted or re-ruled a sheet after the bell',
+  )
   assert.equal(inkOf(id).length, 1, 'the markup was touched after the bell')
   assert.equal(inkOf(id)[0]?.id, 's_first', 'a stroke was replaced after the bell')
 

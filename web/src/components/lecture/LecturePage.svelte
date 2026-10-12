@@ -3,7 +3,7 @@
 
   The reader stacks pages in a column and scrolls them; the lecture shows
   exactly one, whole. These are different tasks, and the second is simpler:
-  no scrolling, no zoom, just a rectangle and a sheet fitted into it.
+  no scrolling, just a rectangle and a sheet fitted into it.
 
   Fitted on BOTH sides, not by width: the projector is 16:9, while a slide
   can be 4:3 or A4, and a page fitted by width runs off the bottom of the
@@ -13,11 +13,40 @@
   The component hands its own space outward: the ink must lie exactly on the
   sheet, not on the container around it, or it drifts off the text on any
   screen whose proportions differ from the page.
+
+  ZOOM HAPPENS INSIDE THE SHEET (shared/lecture.ts · `LectureZoom`). The
+  sheet keeps its size and its place, and a region of the page fills it, so
+  the console, the projector and a student's laptop, each fitting the page
+  its own way, all show the same region. This component owns the motion of
+  the zoom and hands it to whatever lies over the sheet as a `ZoomView`
+  (zoom.ts): the picture and the ink read the same view, and so cannot
+  drift apart while it moves.
+
+  And it says whether its picture is light or dark (`data-ink-backdrop`):
+  the ink's highlighter multiplies with a light page and screens a dark
+  one, and only the page knows which it painted (page-region.ts ·
+  `InkBackdrop`).
 -->
 <script lang="ts">
   import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist'
   import { onDestroy, type Snippet, untrack } from 'svelte'
+  import type { LectureZoom, SheetPaper } from '@shared/lecture'
+  import { deviceKind } from '@/lib/device'
   import { acquirePage, releasePage } from '@/lib/pdf-pages'
+  import {
+    backdropOf,
+    backdropOfColor,
+    meanLuminance,
+    PAPER_GROUND,
+    paperMarks,
+    regionBudget,
+    regionViewport,
+    SLIDE_GROUND,
+    type InkBackdrop,
+    type PaperMarks,
+  } from './page-region'
+  import { EARLY_MS, SheetZoom } from './sheet-zoom'
+  import type { ZoomHow, ZoomView } from './zoom'
 
   interface Props {
     doc: PDFDocumentProxy | null
@@ -29,8 +58,13 @@
      * ink layer must match the sheet pixel for pixel, and two measurements of
      * the same thing diverge, first by a frame, and on a tablet, where frames
      * come only as the tab happens to be visible, for good.
+     *
+     * The second argument is the zoom the picture under it is drawn at and
+     * moved to (zoom.ts · `ZoomView`): the ink paints at `painted` and is
+     * moved by `css`, exactly like the picture, or it slides off the text
+     * for the length of every motion.
      */
-    over?: Snippet<[{ w: number; h: number }]>
+    over?: Snippet<[{ w: number; h: number }, ZoomView]>
     /** Quieter and smaller: the next page on the console. */
     dim?: boolean
     /**
@@ -81,6 +115,30 @@
      * lands on slide 7, is what the hall saw before.
      */
     onshown?: (page: number | null) => void
+    /**
+     * The part of `page` to show (shared/lecture.ts · `LectureZoom`), or
+     * `null` / absent for the whole page. A target: the view travels to it
+     * as `zoomHow` says, and a new page starts at its own zoom at once.
+     */
+    zoom?: LectureZoom | null
+    /**
+     * How the view reaches a new `zoom` (zoom.ts · `ZoomMotion`): `jump`
+     * while the presenter's own fingers move it (any lag reads as dragging
+     * through syrup), `ease` for a deliberate jump made here, `glide` for
+     * targets that arrive over the wire. Those come either alone (the
+     * magnifier, "whole slide": eased like a jump made here) or as the
+     * stream of a pinch, twenty-five a second, which is chased
+     * (sheet-zoom.ts · `STREAM_MS`).
+     */
+    zoomHow?: ZoomHow
+    /** What a blank sheet (a negative page) is ruled with. Ignored on a slide. */
+    paper?: SheetPaper
+    /**
+     * This sheet is the projection: a blank sheet's rules are drawn a little
+     * stronger there (page-region.ts · `paperMarks`), to survive the
+     * projector's contrast in a lit room.
+     */
+    projector?: boolean
   }
 
   let {
@@ -92,6 +150,10 @@
     align = 'center',
     onfit,
     onshown,
+    zoom = null,
+    zoomHow = 'ease',
+    paper = 'plain',
+    projector = false,
   }: Props = $props()
 
   let box = $state<HTMLDivElement | null>(null)
@@ -204,15 +266,180 @@
     return null
   }
 
+  /* ------------------------------------------------------------- zoom */
+
+  /*
+   * The zoom's state lives in `SheetZoom` (sheet-zoom.ts): where the view is
+   * going, what to render next and what the ink is given, decided without a
+   * canvas so that it can be tested without one. Here are its clock, its
+   * timers, and its two runes: `paintAt`, which the render effect follows,
+   * and `view`, which the canvas and the `over` snippet read.
+   */
+  const zoomer = new SheetZoom(
+    untrack(() => page),
+    untrack(() => zoom),
+  )
+  /** The zoom the next picture is to be drawn at. */
+  let paintAt = $state.raw<LectureZoom | null>(zoomer.paintAt)
+  /** What the picture and everything over it are given (zoom.ts · `ZoomView`). */
+  let view = $state.raw<ZoomView>(zoomer.view)
+  /**
+   * The zoom of the picture just put on the canvas: `show` reports it along
+   * with the page, and only then does the ink repaint at it.
+   */
+  let canvasZoom: LectureZoom | null = null
+
+  /** Carry the zoom's decisions out to the runes; it hands out new objects only on a change. */
+  function sync(): void {
+    untrack(() => {
+      if (zoomer.paintAt !== paintAt) paintAt = zoomer.paintAt
+      if (zoomer.view !== view) view = zoomer.view
+    })
+  }
+
+  // A new target, or a new page (sheet-zoom.ts · `aim`).
+  $effect(() => {
+    const at = page
+    const target = zoom
+    const how = zoomHow
+    untrack(() => {
+      if (at !== zoomer.page) window.clearTimeout(earlyTimer)
+      const moving = zoomer.aim(at, target, how, performance.now())
+      sync()
+      if (!moving) return
+      if (how !== 'jump') drawAheadSoon()
+      run()
+    })
+  })
+
+  /**
+   * THE MOTION IS DRIVEN BY FRAMES AND BY A TIMER, whichever comes first.
+   *
+   * The same two messengers as pdf.js's `onContinue` below, for the same
+   * reason: a projection window that is covered, or shared into a call, gets
+   * no animation frames at all, and the hall would stay on the old region
+   * until somebody clicked into it. Its picture must still arrive; smoothly
+   * where frames come, in 40 ms steps (the pointer's tick) where they do
+   * not.
+   */
+  const LATE_MS = 40
+  let tickFrame = 0
+  let tickLate = 0
+  function run(): void {
+    if (tickFrame !== 0 || tickLate !== 0) return
+    tickFrame = window.requestAnimationFrame(tick)
+    tickLate = window.setTimeout(tick, LATE_MS)
+  }
+
+  function tick(): void {
+    window.cancelAnimationFrame(tickFrame)
+    window.clearTimeout(tickLate)
+    tickFrame = 0
+    tickLate = 0
+    const more = zoomer.step(performance.now())
+    sync()
+    wake()
+    if (more) run()
+  }
+
+  /** The region of a deliberate move is drawn ahead of the view (sheet-zoom.ts · `drawAhead`). */
+  let earlyTimer = 0
+  function drawAheadSoon(): void {
+    window.clearTimeout(earlyTimer)
+    earlyTimer = window.setTimeout(() => {
+      zoomer.drawAhead()
+      sync()
+    }, EARLY_MS)
+  }
+
+  /**
+   * Pictures that are ready and wait for the view to come inside their
+   * region (`until`, sheet-zoom.ts · `fits`). Checked on every step of the
+   * motion, and by the effects that drop them.
+   */
+  const waiting = new Set<() => void>()
+  function wake(): void {
+    for (const check of [...waiting]) check()
+  }
+  function until(ready: () => boolean): Promise<void> {
+    return new Promise((resolve) => {
+      const check = (): void => {
+        if (!ready()) return
+        waiting.delete(check)
+        resolve()
+      }
+      waiting.add(check)
+      check()
+    })
+  }
+
+  /* ------------------------------------------------------------ sheet */
+
   /**
    * Tell the parent what is on the sheet, once per change. Through `untrack`
    * for the same reason as `onfit`: the parent rearranges itself in response.
+   *
+   * The zoom hears every call, not once per page: a new picture of the same
+   * page at another zoom (`canvasZoom`) is news for the ink too. The view
+   * and the page go out in one step, so the ink of the new page is never
+   * painted at the old picture's zoom, nor the other way round.
    */
   let shownNow: number | null | undefined
   function show(at: number | null): void {
-    if (at === shownNow) return
+    const fresh = at !== shownNow
     shownNow = at
-    untrack(() => onshown?.(at))
+    untrack(() => (backdrop = backdropNow(at)))
+    zoomer.holds(at, canvasZoom)
+    sync()
+    if (fresh) untrack(() => onshown?.(at))
+  }
+
+  /** The sheet's own colour under the canvas: a blank sheet's paper, or white under a slide. */
+  function groundOf(index: number): string {
+    return index < 0 ? PAPER_GROUND : SLIDE_GROUND
+  }
+
+  /**
+   * WHETHER THE PICTURE IS DARK, for the highlighter (page-region.ts ·
+   * `InkBackdrop`), and the attribute the sheet carries it in
+   * (`data-ink-backdrop`, see the style at the end).
+   *
+   * Read off the canvas itself, every time it changes (`show`), not guessed
+   * from the deck: a dark theme, a photograph, a zoom into the dark corner of
+   * a light slide are all just pixels here. The picture is shrunk into a
+   * canvas of 32 × 18 and averaged: a few hundred pixels, read back once per
+   * picture that lands, never per frame. A blank sheet, a wiped one and
+   * anything that cannot be read are their ground, which is light. Only a
+   * sheet with something laid over it asks: the thumbnails carry no ink.
+   */
+  let backdrop = $state<InkBackdrop>('light')
+  let probe: HTMLCanvasElement | null = null
+  const PROBE_W = 32
+  const PROBE_H = 18
+
+  function backdropNow(at: number | null): InkBackdrop {
+    const ground = groundOf(at ?? page)
+    const node = canvas
+    if (!over || !node || at === null || at < 0 || node.width === 0 || node.height === 0) {
+      return backdropOfColor(ground)
+    }
+    try {
+      probe ??= document.createElement('canvas')
+      if (probe.width !== PROBE_W || probe.height !== PROBE_H) {
+        probe.width = PROBE_W
+        probe.height = PROBE_H
+      }
+      const look = probe.getContext('2d')
+      if (!look) return backdropOfColor(ground)
+      look.clearRect(0, 0, PROBE_W, PROBE_H)
+      // An average, not a sample: smoothing on, at its best where there is a best.
+      look.imageSmoothingEnabled = true
+      look.imageSmoothingQuality = 'high'
+      look.drawImage(node, 0, 0, node.width, node.height, 0, 0, PROBE_W, PROBE_H)
+      return backdropOf(meanLuminance(look.getImageData(0, 0, PROBE_W, PROBE_H).data, ground))
+    } catch {
+      return backdropOfColor(ground)
+    }
   }
 
   /** Wipe the visible sheet: what it holds is no longer the page asked for. */
@@ -339,7 +566,8 @@
    * one per process, and when it overflows WebKit starts handing out
    * canvases transparent, including ones that did not overflow it (see the
    * thumbnail strip). On the way out we give the buffer back:
-   * `width = height = 1`.
+   * `width = height = 1`. Under a zoom it stays the frame's size too: only
+   * the visible region is rendered into it (page-region.ts).
    */
   let buffer: HTMLCanvasElement | null = null
 
@@ -347,18 +575,40 @@
     const node = canvas
     const source = doc
     const index = page
+    const at = paintAt
     const { w, h } = fit
     if (!node || w === 0) return
     if (index < 0) {
       /*
-       * A blank sheet. The canvas is cleared, and the backing makes it white:
-       * there is no point drawing emptiness, but the previous slide cannot be
-       * left on the canvas either: the text of the page we came from would
-       * show through under the ink.
+       * A blank sheet. The canvas holds its paper's rules and nothing else
+       * (the sheet's own background is the paper's colour): there is no point
+       * drawing emptiness, but the previous slide cannot be left on the canvas
+       * either, or the text of the page we came from would show through under
+       * the ink. The rules are drawn at the zoom like a page's region, so they
+       * zoom with the ink written over them.
        */
-      wipe(node)
-      show(index)
-      return
+      const ruled = paper
+      const strong = projector
+      // A slide still rendering would only finish into a buffer nobody shows.
+      running?.cancel()
+      let dropped = false
+      const lay = (): void => {
+        if (dropped) return
+        const ratio = Math.min(window.devicePixelRatio || 1, 2)
+        const W = Math.round(w * ratio)
+        const H = Math.round(h * ratio)
+        layPaper(node, W, H, paperMarks(ruled, W, H, at, strong))
+        canvasZoom = at
+        show(index)
+      }
+      // Drawn ahead of a zoom-in, the rules wait for the view like a page's
+      // region does (see `paintSheet`).
+      if (zoomer.fits(at)) lay()
+      else void until(() => dropped || zoomer.fits(at)).then(lay)
+      return () => {
+        dropped = true
+        wake()
+      }
     }
     if (!source) return
 
@@ -382,19 +632,42 @@
          */
         if (!dropped) {
           wipe(node)
+          canvasZoom = at
           show(index)
         }
         return
       }
       try {
-        const done = await paintSheet(sheet, node, w, () => dropped)
+        let done: boolean
+        try {
+          done = await paintSheet(sheet, node, w, at, () => dropped)
+        } catch (error) {
+          /*
+           * A zoomed region that failed is drawn once more at half the scale
+           * (page-region.ts · `REGION_BUDGET`): a softer picture of the right
+           * region beats none. A cancelled render is not tried again.
+           */
+          if (dropped || at === null) throw error
+          done = await paintSheet(sheet, node, w, at, () => dropped, true)
+        }
         if (done && !dropped) show(index)
       } catch {
-        // Cancelled for the sake of the next page: business as usual. Anything
-        // else leaves a wiped sheet rather than the previous slide under this
-        // page's ink.
+        /*
+         * Cancelled for the sake of the next page: business as usual.
+         * Anything else leaves a wiped sheet rather than the previous slide
+         * under this page's ink. But a picture of THIS page, drawn at
+         * another zoom, stays: moved by the view to where the hall looks, it
+         * is the right slide, if soft; wiped, it was a white sheet under the
+         * presenter's ink at every zoom that failed. It is reported again
+         * all the same (`canvasZoom` is still its own), so that the view
+         * moves it with the zoom rather than holding a picture from before
+         * a turn still for good (sheet-zoom.ts · `#outdated`).
+         */
         if (!dropped) {
-          wipe(node)
+          if (shownNow !== index) {
+            wipe(node)
+            canvasZoom = at
+          }
           show(index)
         }
       } finally {
@@ -404,19 +677,36 @@
 
     return () => {
       dropped = true
+      // A finished render waiting for the view (`paintSheet`) lets go now.
+      wake()
     }
   })
 
   /**
+   * The most pixels the whole page may span at a region's scale on this
+   * device (page-region.ts · `REGION_BUDGET`): past it pdf.js's scratch
+   * canvases outgrow what an iPad can hold, and the slide's text vanishes.
+   */
+  const budget = regionBudget(deviceKind())
+
+  /**
    * Draw one page into the visible canvas through the spare one. `false`
    * when the box first has to take this page's shape (the effect comes back
-   * with the new size); throws when the render was cancelled.
+   * with the new size) or when the render was dropped; throws when it was
+   * cancelled.
+   *
+   * `at` is the zoom to draw: the region of the page under it, rendered into
+   * a canvas the size of the frame (page-region.ts · `regionViewport`), or a
+   * smaller one where the device's budget lowers the scale. `coarse` halves
+   * the scale once more: the second try at a region whose render failed.
    */
   async function paintSheet(
     sheet: PDFPageProxy,
     node: HTMLCanvasElement,
     w: number,
+    at: LectureZoom | null,
     dropped: () => boolean,
+    coarse = false,
   ): Promise<boolean> {
     const base = sheet.getViewport({ scale: 1 })
     /*
@@ -449,15 +739,26 @@
       return false
     }
     const ratio = Math.min(window.devicePixelRatio || 1, 2)
-    const viewport = sheet.getViewport({ scale: (w / base.width) * ratio })
+    let region = regionViewport(base, w, at, ratio, budget)
+    if (coarse) {
+      // Half the scale is a quarter of the pixels the whole page spans.
+      const area = base.width * region.scale * base.height * region.scale
+      region = regionViewport(base, w, at, ratio, area / 4)
+    }
+    const viewport = sheet.getViewport({
+      scale: region.scale,
+      offsetX: region.offsetX,
+      offsetY: region.offsetY,
+    })
     /*
      * Assigning width/height wipes both the pixels and the context state,
      * and does so even when the value is the same. So only on a real size
      * change: otherwise rotating the tablet would blank the page out of
-     * nowhere.
+     * nowhere. The size is the frame's, never the zoomed page's (or less,
+     * past the budget: the canvas's CSS size stretches it over the frame).
      */
-    const W = Math.round(viewport.width)
-    const H = Math.round(viewport.height)
+    const W = region.width
+    const H = region.height
     /*
      * No context means the iPad's canvas budget is spent: nothing can be
      * drawn, and saying "shown" at least keeps the pen on the right page.
@@ -495,40 +796,102 @@
      * arrives first carries on. A hundred milliseconds is six missed frames:
      * no live page ever accumulates that many, and on a dead one they will
      * never come.
+     *
+     * AND THE MESSENGER MUST BE THE LAST ONE. What `onContinue` is handed is
+     * pdf.js's own `_scheduleNext`, and for any render that is not printing
+     * it asks for ANOTHER frame before the next portion. So the timeout only
+     * passed the baton to a runner who waited for a frame anyway: measured in
+     * Chrome with frames stopped, neither a page turn nor a zoom ever
+     * rendered. pdf.js's own wait is switched off (an internal flag of the
+     * pinned 6.x, set only when present) and taken over here: the same two
+     * frames per portion as before where frames come, which leaves every
+     * other frame to the pen on a tablet, and 100 ms where they do not.
      */
+    const internal = (task as unknown as { _internalRenderTask?: { _useRequestAnimationFrame?: boolean } })
+      ._internalRenderTask
+    if (internal && '_useRequestAnimationFrame' in internal) internal._useRequestAnimationFrame = false
     task.onContinue = (next: () => void) => {
       let went = false
       let late = 0
+      let frame = 0
       const go = (): void => {
         if (went) return
         went = true
         window.clearTimeout(late)
+        window.cancelAnimationFrame(frame)
         next()
       }
-      const frame = window.requestAnimationFrame(go)
-      late = window.setTimeout(() => {
-        window.cancelAnimationFrame(frame)
-        go()
-      }, 100)
+      frame = window.requestAnimationFrame(() => {
+        frame = window.requestAnimationFrame(go)
+      })
+      late = window.setTimeout(go, 100)
     }
     running = task
     try {
       await task.promise
-      if (dropped()) return false
-      /*
-       * The finished result goes to the screen. The visible canvas is
-       * resized ONLY here, and only on a real change: assignment wipes the
-       * pixels even when the value is the same, and rotating the tablet
-       * would otherwise blank the page out of nowhere.
-       */
-      if (node.width !== W || node.height !== H) {
-        node.width = W
-        node.height = H
-      }
-      paint.drawImage(buffer, 0, 0)
-      return true
     } finally {
       if (running === task) running = null
+    }
+    if (dropped()) return false
+    /*
+     * A region drawn ahead of a zoom-in waits for the view to come inside it
+     * (sheet-zoom.ts · `drawAhead`): put up now, it would show the hall a
+     * small sharp picture in a white field instead of the old one enlarged.
+     * Any other picture covers the view already and goes straight up. The
+     * render is over by then, so the next one does not wait for this:
+     * dropping it is enough, and the effect's cleanup does that.
+     */
+    if (!zoomer.fits(at)) await until(() => dropped() || zoomer.fits(at))
+    if (dropped()) return false
+    /*
+     * The finished result goes to the screen. The visible canvas is resized
+     * ONLY here, and only on a real change: assignment wipes the pixels even
+     * when the value is the same, and rotating the tablet would otherwise
+     * blank the page out of nowhere.
+     */
+    if (node.width !== W || node.height !== H) {
+      node.width = W
+      node.height = H
+    }
+    paint.drawImage(buffer, 0, 0)
+    // From this moment the canvas holds `at`; `show` tells the ink.
+    canvasZoom = at
+    return true
+  }
+
+  /**
+   * A blank sheet's paper on the visible canvas: its rules on a clear
+   * ground (the sheet's background is the paper itself). Plain paper leaves
+   * the canvas clear, which is what the projection checks for a blank sheet.
+   */
+  function layPaper(node: HTMLCanvasElement, W: number, H: number, marks: PaperMarks): void {
+    if (node.width !== W || node.height !== H) {
+      node.width = W
+      node.height = H
+    }
+    const paint = node.getContext('2d')
+    if (!paint) return
+    paint.setTransform(1, 0, 0, 1, 0, 0)
+    paint.clearRect(0, 0, W, H)
+    if (marks.lines.length > 0) {
+      paint.strokeStyle = marks.color
+      paint.lineWidth = marks.width
+      paint.lineCap = 'butt'
+      paint.beginPath()
+      for (let i = 0; i + 3 < marks.lines.length; i += 4) {
+        paint.moveTo(marks.lines[i], marks.lines[i + 1])
+        paint.lineTo(marks.lines[i + 2], marks.lines[i + 3])
+      }
+      paint.stroke()
+    }
+    if (marks.dots.length > 0) {
+      paint.fillStyle = marks.color
+      paint.beginPath()
+      for (let i = 0; i + 1 < marks.dots.length; i += 2) {
+        paint.moveTo(marks.dots[i] + marks.radius, marks.dots[i + 1])
+        paint.arc(marks.dots[i], marks.dots[i + 1], marks.radius, 0, Math.PI * 2)
+      }
+      paint.fill()
     }
   }
 
@@ -541,6 +904,14 @@
     // A render left running would finish into a buffer nobody shows and keep
     // its page held until then.
     running?.cancel()
+    window.cancelAnimationFrame(tickFrame)
+    window.clearTimeout(tickLate)
+    window.clearTimeout(earlyTimer)
+    if (probe) {
+      probe.width = 1
+      probe.height = 1
+      probe = null
+    }
     if (!buffer) return
     buffer.width = 1
     buffer.height = 1
@@ -551,6 +922,7 @@
 <div
   bind:this={box}
   class="relative flex min-h-0 min-w-0 flex-1 justify-center {align === 'top' ? 'items-start' : 'items-center'}"
+  data-ink-backdrop={backdrop}
 >
   <!-- The sheet and everything on it, as one block: the ink layer must match
        the sheet pixel for pixel, not the container around it.
@@ -563,9 +935,40 @@
        for free. -->
   <div
     class="relative {bare ? '' : 'shadow-pop'} {dim ? 'opacity-70' : ''}"
-    style={`width:${fit.w}px;height:${fit.h}px;background:${page < 0 ? '#F4F6FA' : '#fff'}`}
+    style={`width:${fit.w}px;height:${fit.h}px;background:${groundOf(page)}`}
   >
-    <canvas bind:this={canvas} class="block h-full w-full"></canvas>
-    {@render over?.(fit)}
+    <!-- The frame the zoomed picture moves in. It clips by `overflow` and by
+         nothing else: no transform, opacity, filter or z-index here or on the
+         sheet (the dimmed "next" thumbnail carries no ink), because any of
+         them makes a stacking context, and the ink's highlighter blends
+         with the page only while nothing stands between them. The clip is
+         the picture's own, not the sheet's: the ink clips its canvases
+         itself, and its input layer reaches past the sheet on the console
+         (InkLayer · `reach`), where a clip on the sheet would cut it off,
+         and the console's feathering around the paper with it. -->
+    <div class="absolute inset-0 overflow-hidden">
+      <canvas
+        bind:this={canvas}
+        class="block h-full w-full origin-top-left"
+        style:transform={view.css || null}
+      ></canvas>
+    </div>
+    {@render over?.(fit, view)}
   </div>
 </div>
+
+<style>
+  /*
+   * THE HIGHLIGHTER ON A DARK PAGE (page-region.ts · `InkBackdrop`). The ink
+   * layer multiplies its marker canvas with the page, and multiply only
+   * darkens: on a dark slide the highlight vanished. On a picture this sheet
+   * found dark (`backdrop`), the marker canvas screens instead, which only
+   * lightens: light text stays light, and the dark ground lights up in the
+   * marker's colour. Here, not in the ink layer, because only the page knows
+   * what it painted; and it out-ranks the ink layer's own `.ink-mark` rule
+   * (once scoped: an attribute, two classes and a tag against two classes).
+   */
+  [data-ink-backdrop='dark'] :global(canvas.ink-mark) {
+    mix-blend-mode: screen;
+  }
+</style>

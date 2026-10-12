@@ -31,15 +31,34 @@
 
   One component, three homes: a pull-out sheet over the page on the tablet
   console in landscape, a block docked under the sheet in portrait
-  (`docked`), and a narrow column under "next" on the laptop (`compact`). If
-  they drifted apart, they would show the presenter different text in
-  different places, and the presenter would notice it in the lecture hall.
+  (`docked`), and the laptop's card (`compact`): a column under "next" where
+  the room's middle is wide, a card under the slide where it is not. If they
+  drifted apart, they would show the presenter different text in different
+  places, and the presenter would notice it in the lecture hall.
 
   What is not here: markdown (a talk is written in lines, not as a
   document), a thumbnail of the next page (that is the sheet's job, not the
   text's) and showing it to anyone but the host: not to the audience, not to
   the projection, under no circumstances.
 -->
+<script module lang="ts">
+  /*
+   * Drafts longer than the ceiling, per document and page: shown, marked,
+   * never sent and never cut. A page turn must not throw them away, so they
+   * wait here until shortened (the full editor keeps the same map,
+   * NotesEditor). Here, beside the component rather than in one of its
+   * instances: the field changes homes under the presenter's hands (a
+   * take-over moves the notes from the presenter's place to a watching
+   * teacher's column), and a draft kept by the instance went with the home
+   * it was typed in, the server's older text coming up in the new one.
+   */
+  const overDrafts = new Map<string, string>()
+  /** The draft's key: a page of a document. */
+  function draftKey(file: string, page: number): string {
+    return `${page}\u0000${file}`
+  }
+</script>
+
 <script lang="ts">
   import { tr } from '@shared/i18n'
   import { untrack } from 'svelte'
@@ -54,14 +73,15 @@
     /** The current page. Changing it commits the previous page's draft. */
     page: number
     /**
-     * The narrow home: the presenter's column on the laptop, under "next".
+     * The laptop's home: the presenter's column in the room, under "next",
+     * or the card under the slide where the room's middle has no room for
+     * the column (LectureView · `stacked`). Never narrower than 280 in
+     * either: below that the column goes away rather than shrinks.
      *
      * Not "a smaller font" but a different measure of space: in a 300 px
      * column the third size step gives eleven characters per line, that is,
      * a column of scraps instead of a paragraph. The console no longer uses
-     * this flag (its notes sheet is always the full width of the screen), but
-     * the LectureView column has stayed exactly as wide as it was, and its
-     * measure has not changed.
+     * this flag (its notes sheet is always the full width of the screen).
      */
     compact?: boolean
     /**
@@ -96,6 +116,17 @@
      * button.
      */
     onexpand?: () => void
+    /**
+     * What comes after this page, said in the header: "NEXT 15 Learning
+     * rate", or "NEXT Л1 лист 1 из 2" when the arrow goes to a sheet
+     * (room-next.ts). Passed by the laptop's card under the slide
+     * (LectureView · `stacked`), where there is no column for the "next"
+     * thumbnail and its height belongs to the notes. Only the title gives way
+     * to a narrow header; the mark never does, as a cut number names a wrong
+     * slide. Absent or `null` (the end of the lecture, every other home):
+     * nothing is said.
+     */
+    next?: { mark: string; title: string } | null
     /**
      * The room's column beside the slide (a teacher who does not lead, N4b):
      * the slide the note belongs to next to the name, the reminder that
@@ -133,6 +164,7 @@
     onfold,
     onmore,
     onexpand,
+    next = null,
     roomColumn,
     readonly = false,
   }: Props = $props()
@@ -144,7 +176,7 @@
    * and it NEVER HAS a note: the server answers "A note must belong to a
    * document page." and the text vanishes at the very first page flip. The
    * field used to be drawn here as if nothing were wrong, labelled "Notes for
-   * page −1".
+   * page −1". On a sheet it is read-only and says that sheets have no notes.
    */
   const onBoard = $derived(page < 1)
 
@@ -267,12 +299,6 @@
    */
   let sentAt = Number.NEGATIVE_INFINITY
   let timer: number | undefined
-  /*
-   * Drafts longer than the ceiling, per page: shown, marked, never sent and
-   * never cut. A page turn must not throw them away either, so they wait
-   * here until shortened (the full editor keeps the same map, NotesEditor).
-   */
-  const overDrafts = new Map<number, string>()
 
   /*
    * The presenter's narrow column has no top step: 28 px in a 300 px column
@@ -358,10 +384,10 @@
      * do, and it took the tail off a long imported note at the first typo fix.
      */
     if (held.length > MAX) {
-      overDrafts.set(heldPage, held)
+      overDrafts.set(draftKey(heldFile, heldPage), held)
       return
     }
-    overDrafts.delete(heldPage)
+    overDrafts.delete(draftKey(heldFile, heldPage))
     sentAt = performance.now()
     /*
      * We send the WHOLE text, not a diff. On a dropped connection the client
@@ -436,7 +462,7 @@
     const nextPage = page
     heldFile = nextFile
     heldPage = nextPage
-    held = untrack(() => overDrafts.get(nextPage) ?? stored)
+    held = untrack(() => overDrafts.get(draftKey(nextFile, nextPage)) ?? stored)
     draft = held
     return () => commit()
   })
@@ -452,7 +478,7 @@
     if (typing || pending) return
     if (performance.now() - sentAt < ECHO_MS) return
     if (fresh === untrack(() => held)) return
-    if (untrack(() => overDrafts.has(page))) return
+    if (untrack(() => overDrafts.has(draftKey(file, page)))) return
     held = fresh
     draft = fresh
   })
@@ -581,6 +607,23 @@
         </span>
       {/if}
       <span class="flex-1" aria-hidden="true"></span>
+      {#if next}
+        <!--
+          "Next" in words, at the right, by the keys: the place in the
+          header the eye reaches last, which is how often it is wanted. The
+          title is the only part that gives way (`min-w-0 truncate`, the
+          whole of it kept in its tooltip); "NEXT 15" never does, as a cut
+          number names a wrong slide. 4 px more before the keys than between
+          the words.
+        -->
+        <span class="flex min-w-0 items-center gap-2 pr-1">
+          <span class="shrink-0 text-micro font-bold uppercase tracking-section text-muted">{tr('room.ui.197')}</span>
+          <span class="shrink-0 font-mono text-code tabular-nums text-ink">{next.mark}</span>
+          {#if next.title}
+            <span class="min-w-0 truncate text-ui text-muted" title={next.title}>{next.title}</span>
+          {/if}
+        </span>
+      {/if}
       <!--
         The cluster has NO gaps between targets: a finger lands here without
         taking the eyes off the audience, and a gap between neighbouring
@@ -701,7 +744,13 @@
         12.9" (1366 px and wider) the measure is 900: the same sixty
         characters, but on a tablet held further from the eyes.
       -->
-      <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden {PAD}">
+      <!--
+        `py-0.5` on the laptop's card: the field's focus outline (2 px, drawn
+        outside it) stood on the box's top and bottom edges and was cut there,
+        so a click into the notes lit two lines at the sides and nothing above
+        or below.
+      -->
+      <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden {PAD} {compact ? 'py-0.5' : ''}">
         {#if !arrived}
           <!--
             Not "empty" but "not here yet". That one-line difference is worth
@@ -723,7 +772,7 @@
             root (`.pult-root { user-select: none }`) lives there too, and the
             permission must stand next to the ban, not in another file.
           -->
-          {#if readonly || onBoard}
+          {#if readonly}
             <!--
               A nailed-down note. Not a button: there is nothing to press, and
               a button that does nothing is a promise the console will not
@@ -749,13 +798,25 @@
 
             `data-notes`: a presentation clicker's PageDown still turns the
             slide while the caret is in here (LectureView).
+
+            ON A SHEET THE FIELD STAYS, read-only, saying that sheets carry no
+            notes. It used to give way to a plain line of text, and the walk
+            of the laptop's clicker steps onto the sheets after a slide now:
+            fixing slide 14's note with the clicker in hand, one PageDown
+            onto the sheet took the field away with the caret in it, the next
+            one brought a new field with no caret, and the sentence typed on
+            went to the lecture's shortcuts instead (Space turns the hall's
+            slide, B blanks the projector, "E E" erases the page's ink). A
+            read-only field keeps the focus across the sheet, takes no letter
+            on it, and the clicker turns on from it as from any page.
           -->
           <textarea
             bind:value={draft}
             data-notes
-            aria-label={tr('room.notes.page', { count: page })}
+            readonly={onBoard}
+            aria-label={onBoard ? tr('room.ui.314') : tr('room.notes.page', { count: page })}
             aria-invalid={draft.length > MAX}
-            placeholder={tr('room.ui.195')}
+            placeholder={onBoard ? tr('room.ui.314') : tr('room.ui.195')}
             class="{size} pult-prompt pult-caret block min-h-0 w-full max-w-[660px] flex-1 resize-none
                    overflow-y-auto overscroll-contain bg-transparent pb-6 text-ink placeholder:text-muted
                    focus-visible:outline-offset-0 min-[1300px]:max-w-[900px]"
@@ -825,16 +886,20 @@
   }
 
   /*
-   * The room column is 360 px at most and a third of a narrow middle at
-   * least: below about 340 px the words of the privacy hint would push the
-   * size and close keys out of the header, so only its lock stays (the words
-   * are still its title). The editor this column opens says the same in its
-   * header, at full width.
+   * The room column is 280 to 360 px wide (LectureView), and the words of
+   * the privacy hint fit beside the size, editor and close keys only from
+   * about 420 px of header: the name 73, the note's mark 10, "slide 114" 70,
+   * the lock with its words 133, the three keys 96, five gaps of 8. The line
+   * stood at 340, which a 360 column (342 inside its padding) passed: the
+   * words stayed and pushed the close key past the edge, on every middle of
+   * 1024 and wider. Below it only the lock stays (the words are still its
+   * title); the editor this column opens says the same in its header, at
+   * full width.
    */
   .notes-head {
     container-type: inline-size;
   }
-  @container (max-width: 340px) {
+  @container (max-width: 419px) {
     .notes-hint {
       display: none;
     }

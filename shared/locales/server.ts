@@ -1277,6 +1277,10 @@ export const serverMessages: MessageCatalog = {
     "ru": "Достигнут лимит длины штриха. Поднимите перо и продолжите новым штрихом",
     "en": "The stroke length limit has been reached. Lift the pen and start a new stroke."
   },
+  "server.lectureSheetsFull": {
+    "ru": "Листов уже {p0}. Удалите ненужный лист, чтобы начать новый",
+    "en": "There are already {p0} sheets. Delete one you no longer need to start a new one."
+  },
   "server.theNamesAndAreReservedChooseAnother.d0854b": {
     "ru": "Имена «.» и «..» зарезервированы. Выберите другое имя.",
     "en": "The names “.” and “..” are reserved. Choose another name."

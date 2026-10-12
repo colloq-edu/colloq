@@ -945,10 +945,19 @@
    * out into the ordinary reader takes one press — and so does coming back.
    *
    * Reset when the lecture changes: the next one starts shared by everyone.
+   *
+   * "Changes" is a new document or a new start, read as one string first.
+   * `lecture` is a fresh object on every frame the server sends (a page
+   * turn, a pause, a new sheet), and an effect that read `lecture?.file`
+   * subscribed to the object: the student who stepped out was pulled back
+   * into the lecture at the presenter's next turn of the page. A string
+   * passes on only a real change (LectureView's `file` is the same trap,
+   * avoided the same way).
    */
   let soloRead = $state(false)
+  const lectureKey = $derived(lecture === null ? null : `${lecture.startedAt}:${lecture.file}`)
   $effect(() => {
-    void lecture?.file
+    void lectureKey
     untrack(() => (soloRead = false))
   })
 
