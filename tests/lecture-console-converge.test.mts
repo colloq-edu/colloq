@@ -17,6 +17,12 @@
  * up to the first one for its page, and nothing else empties it but a move
  * no request names, a give-up, or age.
  *
+ * Age counted the time offline too: a turn whose echo died with the socket
+ * read, after an outage past four seconds, as someone else's move, and the
+ * pages pressed offline were dropped. The first frame after the socket
+ * reopens (the welcome) now settles everything asked before the drop, by
+ * what was asked, not by when (`hearWelcome`).
+ *
  * The decisions are walked here with the real helpers, the way the effect
  * takes them; the effect itself is pinned by its source at the end, as in
  * lecture-console-sheets: it lives in the component, and a quiet edit would
@@ -26,7 +32,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ASKED_FOR_MS, askTurn, hearTurn, type AskedTurn } from '../web/src/components/lecture/walk.js'
+import { ASKED_FOR_MS, askTurn, hearTurn, hearWelcome, type AskedTurn } from '../web/src/components/lecture/walk.js'
 
 /* ------------------------------------------------------------ the list */
 
@@ -79,6 +85,32 @@ test('a request nobody answered is forgotten past the console’s repeats', () =
   assert.equal(hearTurn(lost, 6, ASKED_FOR_MS + 1).ours, false)
 })
 
+/*
+ * The review's recheck of B11: the age rule counted the time offline. A turn
+ * that reached the server just before the Wi-Fi went had its echo die with
+ * the socket; back more than four seconds later, the welcome showed that very
+ * page, the request had aged out, and the console took its own turn for
+ * someone else's move: it followed it and dropped the pages pressed offline.
+ */
+test('the welcome after a drop settles what was asked before it, whatever its age', () => {
+  const asked = askTurn([], 11, 0)
+  const reopened = 5000
+  const welcome = hearWelcome(asked, 11, reopened)
+  assert.equal(welcome.ours, true, 'the console’s own last turn read as someone else’s move')
+  assert.deepEqual(welcome.left, [], 'a request from before the drop is waited for after it')
+  // By age alone it was foreign.
+  assert.equal(hearTurn(asked, 11, reopened + 50).ours, false)
+  // A page no request names is someone else's, and nothing from before the drop is waited for any more.
+  assert.deepEqual(hearWelcome(askTurn(askTurn([], 11, 0), 12, 10), 15, reopened), { ours: false, left: [] })
+  // Turns asked on the new socket, before the welcome, are still on their way, unless the welcome shows their page.
+  let mixed = askTurn([], 11, 0)
+  mixed = askTurn(mixed, 12, reopened + 10)
+  mixed = askTurn(mixed, 13, reopened + 20)
+  assert.deepEqual(hearWelcome(mixed, 12, reopened), { ours: true, left: [{ page: 13, at: reopened + 20 }] })
+  // No lecture in the welcome: nothing is waited for.
+  assert.deepEqual(hearWelcome(mixed, null, reopened), { ours: false, left: [] })
+})
+
 /* ------------------------------------------------ the console, walked */
 
 /**
@@ -100,12 +132,19 @@ function hall(start: number) {
     now: 0,
     wire: [] as number[],
     followed: [] as number[],
+    /** When the control socket reopened, until the welcome is heard. */
+    reopened: null as number | null,
   }
   const effect = (): void => {
     const changed = state.seen !== null && state.seen !== state.at
     state.seen = state.at
     let ours = false
-    if (changed) {
+    if (state.reopened !== null) {
+      const welcome = hearWelcome(state.asked, state.at, state.reopened)
+      state.reopened = null
+      state.asked = welcome.left
+      ours = welcome.ours
+    } else if (changed) {
       const echo = hearTurn(state.asked, state.at, state.now)
       state.asked = echo.left
       ours = echo.ours
@@ -142,6 +181,23 @@ function hall(start: number) {
     },
     serveAll(): void {
       while (state.wire.length > 0) this.serve()
+    },
+    /** The server reads the next request and moves, but its echo dies with the console's socket. */
+    serveUnheard(): void {
+      const page = state.wire.shift()
+      if (page !== undefined) state.server = page
+    },
+    /** The control socket dies: requests not yet read are lost, presses stay on the console. */
+    drop(): void {
+      state.online = false
+      state.wire.length = 0
+    },
+    /** It reopens now, and the welcome brings the server's page, changed or not. */
+    reopen(): void {
+      state.online = true
+      state.reopened = state.now
+      state.at = state.server
+      effect()
     },
     /** Someone else (the laptop bar, a clicker) turns the hall. */
     elsewhere(page: number): void {
@@ -222,6 +278,65 @@ test('a request lost with the connection does not pass a later clicker turn off 
   assert.equal(pult.state.wanted, 6)
 })
 
+test('a turn whose echo died with the socket is ours after a long outage, and the offline presses go out', () => {
+  const pult = hall(10)
+  pult.press(11)
+  // The server turns to 11; the Wi-Fi drops before the echo comes back.
+  pult.serveUnheard()
+  pult.drop()
+  // Offline, Next twice.
+  pult.press(12)
+  pult.press(13)
+  pult.tick(5000)
+  pult.reopen()
+  assert.deepEqual(pult.state.followed, [], 'the console took its own turn for someone else’s and dropped 12 and 13')
+  assert.equal(pult.state.wanted, 13)
+  assert.deepEqual(pult.state.asked, [], 'a request from before the drop is waited for after it')
+  // The repeat delivers what was pressed offline, and its echo is ours.
+  pult.tick(600)
+  pult.repeat()
+  pult.serveAll()
+  assert.deepEqual(pult.state.followed, [])
+  assert.equal(pult.state.server, 13)
+})
+
+test('Back pressed offline goes out after the drop; a clicker’s turn meanwhile is still followed', () => {
+  const back = hall(10)
+  back.press(11)
+  back.serveUnheard()
+  back.drop()
+  back.press(10)
+  back.tick(5000)
+  back.reopen()
+  assert.deepEqual(back.state.followed, [])
+  back.tick(600)
+  back.repeat()
+  back.serveAll()
+  assert.equal(back.state.server, 10, 'the hall stayed on the page the console left offline')
+  // While the console was away, the laptop's clicker turned the hall: that is someone else's move.
+  const clicker = hall(10)
+  clicker.press(11)
+  clicker.serveUnheard()
+  clicker.drop()
+  clicker.press(12)
+  clicker.state.server = 14
+  clicker.tick(5000)
+  clicker.reopen()
+  assert.deepEqual(clicker.state.followed, [14])
+  assert.equal(clicker.state.wanted, 14)
+  // A request lost with the socket is settled by the welcome too: a clicker's turn to its page
+  // a moment after the reconnect is someone else's, not an echo the console would pull back from.
+  const lost = hall(5)
+  lost.press(6)
+  lost.drop()
+  lost.press(5)
+  lost.tick(1000)
+  lost.reopen()
+  lost.tick(500)
+  lost.elsewhere(6)
+  assert.deepEqual(lost.state.followed, [6])
+})
+
 test('someone else’s move is followed at once, and the server’s own (a new sheet) is too', () => {
   const pult = hall(14)
   pult.elsewhere(15)
@@ -271,4 +386,20 @@ test('a turn is remembered as asked only when its request goes out, the repeat i
   const remember = again.indexOf('asked = askTurn(asked, mine, performance.now())')
   const resend = again.indexOf("session.send({ t: 'lecture:page', page: mine })")
   assert.ok(remember > 0 && resend > remember, 'the repeat goes out unremembered')
+})
+
+test('the first frame after the control socket reopens settles the turns asked before the drop', () => {
+  // When the socket reopens, and the frame in hand then: the next one is the welcome.
+  assert.match(PULT, /if \(up && !turnSocketWas\) reopened = \{ at: performance\.now\(\), stale: lecture \}/)
+  assert.match(PULT, /const frame = lecture\s+const at = frame\?\.page \?\? null/)
+  // Heard before the echo rule, and in place of it: the age of a request from before the drop means nothing.
+  const heard = effect.slice(0, effect.indexOf('if (at === null) {'))
+  const welcome = heard.indexOf('if (reopened !== null && frame !== reopened.stale) {')
+  assert.ok(welcome !== -1 && welcome < heard.indexOf('const echo = hearTurn('), 'the welcome is heard by age again')
+  assert.match(
+    heard,
+    /const welcome = hearWelcome\(asked, at, reopened\.at\)\s+reopened = null\s+asked = welcome\.left\s+return \{ moved: changed, ours: welcome\.ours \}/,
+  )
+  // Declared before the convergence, so that the reopening is known when the welcome comes.
+  assert.ok(PULT.indexOf('let reopened:') < PULT.indexOf('const { moved, ours } = untrack(() => {'))
 })

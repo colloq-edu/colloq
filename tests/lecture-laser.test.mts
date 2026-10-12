@@ -29,7 +29,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { LASER_EVERY_MS, MAX_LASER_SAMPLES } from '../shared/lecture.js'
-import { layCurve } from '../web/src/components/lecture/ink.js'
+import { layCurve, TAP_TOGETHER_MS } from '../web/src/components/lecture/ink.js'
 import {
   HeardPhrases,
   hearLaser,
@@ -49,6 +49,8 @@ import {
   phraseGlow,
   phraseOver,
   phrasesOf,
+  pressBegan,
+  PRESS_HELD_MAX_MS,
   type LaserAt,
   type PhraseMark,
 } from '../web/src/components/lecture/laser.js'
@@ -419,7 +421,7 @@ test('the hall groups by the phrase the console names, not by gaps the network s
   const ink = code('web/src/components/lecture/InkLayer.svelte')
   assert.match(
     ink,
-    /const grace = at\.trail === undefined \? 0 : PHRASE_WIRE_MS[^]*?newMark\(mark, at\.page, stream\.xy, phraseHere\(at\.page, at\.trail, now\), grace\)/,
+    /const grace = at\.trail === undefined \? 0 : PHRASE_WIRE_MS[^]*?newMark\(mark, at\.page, stream\.xy, phraseHere\(at\.page, at\.trail, began\), grace\)/,
     'the hall ignores the phrase the console sent',
   )
   assert.match(ink, /heard\.join\(/)
@@ -472,6 +474,74 @@ test('a press later than the grace starts its own phrase in the hall: a fading w
   // An older console names no phrase: the timing rule decides (`phraseFor`).
   assert.equal(heard.join([{ phrase: 9, letGo: 1000 }], undefined, 1000 + PHRASE_HOLD_MS - 1), 9)
   assert.notEqual(heard.join([{ phrase: 9, letGo: 1000 }], undefined, 1000 + PHRASE_HOLD_MS), 9)
+})
+
+/*
+ * The review's recheck of A17: a finger's beam reaches the wire a quarter of
+ * a second after its touch (held back for the two-finger window), and the
+ * hall judged the phrase when that first frame arrived. The quarter came out
+ * of the grace for the network's jitter: a press the console joined 1.45 s
+ * after the lift, with 120 ms of jitter, split the word on the projector, its
+ * first letters dark while the console kept them lit.
+ */
+test('the hall judges a press where it began: a finger’s held beam does not eat the grace for jitter', () => {
+  const trail = 77
+  // The hall back-dates the lift to the presenter's, at the network's best.
+  const best = 30
+  const marks: PhraseMark[] = [{ phrase: trail, letGo: best, grace: PHRASE_WIRE_MS }]
+  for (const [gap, jitter] of [
+    [1450, 120],
+    [1490, 60],
+    [1350, 200],
+    [1200, 280],
+  ]) {
+    assert.ok(gap < PHRASE_HOLD_MS, 'the console joins this press to the word')
+    for (const finger of [false, true]) {
+      // A finger standing still through its window: its first frame leaves after the hold, stamped.
+      const press = new LaserPress(1, 0)
+      press.add(0.5, 0.5, 0, ASPECT)
+      if (finger) press.stamp(TAP_TOGETHER_MS)
+      const [pts] = press.take(true)
+      const arrives = gap + (finger ? TAP_TOGETHER_MS : 0) + best + jitter
+      const joined = new HeardPhrases(() => 1000).join(marks, trail, pressBegan(pts, arrives))
+      assert.equal(joined, trail, `${finger ? 'a finger' : 'the pen'} ${gap} ms after the lift, ${jitter} ms late: the word split`)
+    }
+  }
+  // Judged on arrival, the same finger press split it: the hold and the jitter passed the grace.
+  assert.notEqual(new HeardPhrases(() => 1000).join(marks, trail, 1450 + TAP_TOGETHER_MS + best + 120), trail)
+})
+
+test('a held press says how old it is, standing still too, and the hall keeps no vertex for the saying', () => {
+  // A finger held still through the window: one sample, then the stamp as the beam goes out.
+  const press = new LaserPress(3, 1000)
+  press.add(0.4, 0.6, 1000, ASPECT)
+  press.stamp(TAP_TOGETHER_MS)
+  const [pts] = press.take(true)
+  assert.deepEqual(pts, [0.4, 0.6, 0, 0.4, 0.6, TAP_TOGETHER_MS])
+  assert.equal(pressBegan(pts, 5000), 5000 - TAP_TOGETHER_MS)
+  // A stamp no later than what is queued says nothing; nor one with nothing pressed.
+  const moving = new LaserPress(4, 0)
+  moving.add(0.1, 0.1, 0, ASPECT)
+  moving.add(0.2, 0.2, 240, ASPECT)
+  moving.stamp(200)
+  assert.deepEqual(moving.take(true), [[0.1, 0.1, 0, 0.2, 0.2, 240]])
+  const empty = new LaserPress(5, 0)
+  empty.stamp(250)
+  assert.deepEqual(empty.take(true), [])
+  // The hall holds the console's shape, one vertex on the spot, and the movement after it plays as a pen's.
+  const play = new LaserPlayback(3, 1, 'line')
+  play.hear(pts, 5000)
+  assert.deepEqual(play.xy, [0.4, 0.6], 'the stamp became a vertex of the hall’s shape')
+  assert.deepEqual(play.ts, [0])
+  play.hear([0.5, 0.6, TAP_TOGETHER_MS + 100], 5100)
+  play.advance(5100 + LASER_DELAY_MS + 1)
+  assert.deepEqual(play.head(), { x: 0.5, y: 0.6 })
+  // Nothing in a frame, or a press older than any hold (one continued under a new number): the hold is all that is undone.
+  assert.equal(pressBegan(undefined, 70_000), 70_000)
+  assert.equal(pressBegan([], 70_000), 70_000)
+  assert.equal(pressBegan([0.1, 0.1, 60_000], 70_000), 70_000 - PRESS_HELD_MAX_MS)
+  assert.ok(PRESS_HELD_MAX_MS >= TAP_TOGETHER_MS + LASER_EVERY_MS, `a late hold timer is cut at ${PRESS_HELD_MAX_MS} ms`)
+  assert.ok(PRESS_HELD_MAX_MS < PHRASE_HOLD_MS / 2)
 })
 
 test('a press taken back as half of a gesture neither holds the phrase nor keeps it open', () => {
@@ -595,4 +665,12 @@ test('a finger’s beam lights on the console at once and reaches the room only 
   assert.doesNotMatch(drop, /send\(|beamNow/, 'a dropped beam tells the room')
   // A pen taking a finger's held beam: the finger was the palm.
   assert.match(fn('down'), /if \(beaming !== null\) \{\s*if \(beamHeld\) dropBeam\(\)\s*else beamOff\(\)/)
+  // A held beam's first frame says how long it waited, however still the finger stood (a poke too).
+  assert.match(fn('beamStart'), /pressedAt = performance\.now\(\)\s*pressTrail = phraseClock\.press\(pressedAt\)/)
+  const send = fn('sendBeam')
+  const stamp = send.indexOf('press?.stamp(performance.now() - pressedAt)')
+  assert.ok(stamp !== -1 && stamp < send.indexOf('beamNow(true)'), 'a held beam goes out without its age')
+  assert.match(off, /if \(press && beamHeld\) press\.stamp\(performance\.now\(\) - pressedAt\)\s*beamHeld = false\s*if \(press\) beamNow\(true\)/)
+  // The hall judges a named phrase where its press began; an older console's samples are timed by the server's clock.
+  assert.match(fn('hearRemote'), /const began = at\.trail === undefined \? now : pressBegan\(at\.pts, now\)/)
 })

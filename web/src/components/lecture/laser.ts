@@ -236,6 +236,28 @@ export class LaserPress {
   }
 
   /**
+   * The press is `age` ms old and the hand is still where the last sample
+   * put it: that sample goes into the queue again, at this time. It adds
+   * nothing to the shape (the hall keeps no vertex for a sample that did not
+   * move, `LaserPlayback.hear`), only the time.
+   *
+   * A finger's beam is held back from the room for a moment (InkLayer ·
+   * `beamHeld`), and the hall judges the phrase a press joins at the press's
+   * start, back-dated by its first frame's newest sample (`pressBegan`). A
+   * finger that stood still while held gave that frame nothing newer than the
+   * press itself, and the hold ate the hall's grace for the network's jitter
+   * all the same.
+   */
+  stamp(age: number): void {
+    const last = this.#last
+    if (!last) return
+    const t = Math.round(age)
+    const queued = this.#queue.length > 0 ? this.#queue[this.#queue.length - 1] : last.t
+    if (!(t > queued)) return
+    this.#queue.push(last.x, last.y, t)
+  }
+
+  /**
    * Continue under a new number from the current head: the shape reached
    * `MARK_MAX_SAMPLES`. Call `take(true)` first, so that the old shape's last
    * samples go out under its own number.
@@ -299,8 +321,10 @@ export class LaserPlayback {
       const last = this.ts.length - 1
       // The timeline only goes forward: a duplicate or a stale sample adds nothing.
       if (last >= 0 && t < this.ts[last]) continue
+      // Nor does one that did not move: it says only how old the press is
+      // (`LaserPress.stamp`), and that much `newest` takes from it.
       const same = pts[i] === this.xy[last * 2] && pts[i + 1] === this.xy[last * 2 + 1]
-      if (last >= 0 && t === this.ts[last] && same) continue
+      if (last >= 0 && same) continue
       this.xy.push(pts[i], pts[i + 1])
       this.ts.push(t)
     }
@@ -426,7 +450,10 @@ export const PHRASE_FADE_MS = 600
  * past the fade the earlier letters were gone while the console still showed
  * them. Holding whole this much longer, the hall absorbs the ordinary jitter
  * of a classroom network; a press later than that starts a phrase of its own
- * there (`HeardPhrases`), never a flash back.
+ * there (`HeardPhrases`), never a flash back. The press is judged where it
+ * BEGAN on the hall's clock (`pressBegan`): a finger's first frame leaves a
+ * quarter of a second after its touch, and judged on arrival that quarter
+ * came out of this grace.
  *
  * THE END STAYS WHERE IT WAS: the grace comes out of the fade, not on top of
  * it. A word still goes out on the projector when it goes out on the console,
@@ -588,13 +615,20 @@ export class PhraseClock {
  *
  * The presenter's phrase (`trail`) while it still holds on this screen, its
  * grace included (`PHRASE_WIRE_MS`): the console's grouping, not a guess from
- * gaps the network stretched. But when the press arrives so late that the
- * phrase has begun to fade here, the press starts a phrase of its own and the
+ * gaps the network stretched. But when the press began so late that the
+ * phrase had begun to fade here, the press starts a phrase of its own and the
  * fading one keeps fading: the rule for every screen is that a phrase on its
  * way out is not revived, and on the projector a word flashing back to full
  * reads as a glitch. Later presses of the same trail follow it to that phrase,
  * so the rest of the word still holds together. A frame naming no phrase (a
  * console from before phrases) is grouped by the timing rule (`phraseFor`).
+ *
+ * "Began", on this screen's clock (`pressBegan`), not "arrived": a finger's
+ * press reaches the wire a quarter of a second after its touch, and a word
+ * the console joined it to then split on the projector for the rest of its
+ * life. Judged at its start, such a press, late in the window, may find its
+ * word just beginning to dim when it arrives, and lights it again, as the
+ * console kept it: a dip of a moment, where the split lasted seconds.
  */
 export class HeardPhrases {
   /** Trails whose phrase was fading here when a press of theirs came: where their presses go now. */
@@ -605,7 +639,7 @@ export class HeardPhrases {
     this.#fresh = fresh
   }
 
-  /** The phrase a press heard at `now` joins, judged from the shapes on its page. */
+  /** The phrase a press that began at `now` joins, judged from the shapes on its page. */
   join(marks: readonly PhraseMark[], trail: number | undefined, now: number): number {
     if (trail === undefined) return phraseFor(marks, now) ?? this.#fresh()
     const here = this.#moved.get(trail) ?? trail
@@ -618,6 +652,37 @@ export class HeardPhrases {
     if (this.#moved.size > 16) this.#moved.delete(this.#moved.keys().next().value as number)
     return next
   }
+}
+
+/**
+ * How old a press may already be when its first frame leaves the console, as
+ * far as the hall is concerned: a finger's beam is held back for a quarter of
+ * a second (InkLayer · `beamHeld`, ink.ts · `TAP_TOGETHER_MS`), and a busy
+ * tablet fires that timer late. Anything older is no hold: a press continued
+ * under a new number, or across a turn (`LaserPress.roll`), joins by the lift
+ * of its own previous shape whatever this says.
+ */
+export const PRESS_HELD_MAX_MS = 400
+
+/**
+ * When a press heard from the wire began, on this screen's clock: the moment
+ * its first frame came (`now`), back-dated by how old the press already was
+ * when that frame left, which its newest sample says (samples are timed from
+ * the press). At most `PRESS_HELD_MAX_MS`.
+ *
+ * The phrase a press joins is judged at its start (`HeardPhrases.join`). A
+ * pen's press goes out at the touch, and the frame's arrival is its start
+ * plus the network. A finger's is held back for the tap's window first, and
+ * judged on arrival it lost that much of the hall's grace for the network's
+ * jitter (`PHRASE_WIRE_MS`): a word the console kept whole split on the
+ * projector, its first letters fading while the console showed them lit.
+ */
+export function pressBegan(pts: readonly number[] | undefined, now: number): number {
+  let newest = 0
+  if (pts) {
+    for (let i = 2; i < pts.length; i += 3) if (pts[i] > newest) newest = pts[i]
+  }
+  return now - Math.min(PRESS_HELD_MAX_MS, newest)
 }
 
 /* ----------------------------------------------------------- hearers */

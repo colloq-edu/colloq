@@ -55,7 +55,10 @@
   On a dark page `multiply` can only darken the dark, and the highlight
   vanished: there LecturePage marks itself `data-ink-backdrop="dark"` from
   what it painted and switches this canvas to `screen`, the same idea turned
-  over (light text stays light, the band glows on the dark ground).
+  over (light text stays light, the band glows on the dark ground). A page
+  with real areas of both (a white plot on a navy slide, an X-ray on a white
+  one) is `mixed`, and gets plain alpha blending: either blend would erase
+  the band on one of its parts.
 
   THE ZOOM (`zoom`, zoom.ts): the page may be magnified inside its frame, the
   same region on every screen. Every canvas is PAINTED at `zoom.painted`: the
@@ -99,11 +102,13 @@
     pinchCommits,
     pinchMayStart,
     pinchZoom,
+    RestingPalms,
     STRAIGHT_HOLD_MS,
     STRAIGHT_STILL_PX,
     straightens,
     TAP_TOGETHER_MS,
     twoFingerTap,
+    type BusyKind,
     type FingerPair,
     type HoldRing,
     type Tap,
@@ -123,6 +128,7 @@
     phraseGlow,
     phraseOver,
     phrasesOf,
+    pressBegan,
     type LaserAt,
     type LaserSample,
   } from './laser'
@@ -237,8 +243,12 @@
      * The parent uses this flag to keep the palm away from the rail buttons.
      * Without it the console would press "Back" with the heel of the writing
      * hand.
+     *
+     * When the spell ends, `kind` says how (ink.ts · `BusyKind`): with work
+     * that stood, after which the heel follows the hand, or as a two-finger
+     * gesture, after which the thumb's next tap on the rail is meant.
      */
-    onbusy?: (busy: boolean) => void
+    onbusy?: (busy: boolean, kind?: BusyKind) => void
     /** Two fingers tapped the sheet: undo the last stroke. */
     onundo?: () => void
     /** First pen on this screen in the component's lifetime: fingers stop drawing. */
@@ -1648,10 +1658,18 @@
        * still starts a phrase here rather than revive a fading one. A console
        * from before phrases does not say, and then the same rule is applied
        * here, to this screen's shapes (laser.ts · `HeardPhrases`).
+       *
+       * Judged where the press BEGAN, not where its first frame came: a
+       * finger's press reaches the wire a quarter of a second late (its
+       * beam is held back, `beamHeld`), and judged on arrival that quarter
+       * came out of the grace (laser.ts · `pressBegan`). A console from
+       * before phrases never holds a beam, and an older one's samples are
+       * timed by the server's clock: those are judged as they come.
        */
       const grace = at.trail === undefined ? 0 : PHRASE_WIRE_MS
+      const began = at.trail === undefined ? now : pressBegan(at.pts, now)
       streamMark =
-        at.shape === 'line' ? newMark(mark, at.page, stream.xy, phraseHere(at.page, at.trail, now), grace) : null
+        at.shape === 'line' ? newMark(mark, at.page, stream.xy, phraseHere(at.page, at.trail, began), grace) : null
     }
     stream.hear(at.pts && at.pts.length >= 3 ? at.pts : [at.x, at.y, Math.round(now)], now)
     wake()
@@ -2033,14 +2051,28 @@
     return true
   }
 
-  /** Whether we hold the pointer. The parent uses it to keep the palm off the buttons. */
+  /**
+   * Whether we hold the pointer. The parent uses it to keep the palm off the
+   * buttons.
+   *
+   * `ended` is how a spell that ends here ended: with work that stood, by
+   * default, or as a gesture, said by the paths that make a finger's work
+   * never happen (`forgetFirst` and what it calls, `takeBack`) and by the
+   * pinch's own end. The console's palm guard on the rail follows the
+   * writing hand, and it used to start after every spell: after a pinch, and
+   * after the first finger of a pinch forgotten as its second one landed, it
+   * swallowed the thumb's next tap on "Whole slide" or "Next", without a word.
+   * It used to read the kind from the order of the layer's calls; now it is
+   * told.
+   */
   let busy = false
-  function syncBusy(): void {
+  function syncBusy(ended: BusyKind = 'ink'): void {
     const next =
       drawing !== null || erasing !== null || beaming !== null || lit || framing !== null || pinch?.committed === true
     if (next === busy) return
     busy = next
-    onbusy?.(next)
+    if (next) onbusy?.(true)
+    else onbusy?.(false, ended)
   }
 
   /**
@@ -2189,7 +2221,8 @@
     paintWetAll()
     paintMarkers()
     wake()
-    syncBusy()
+    // Half of a gesture, or the palm under a landing pen: nothing stood.
+    syncBusy('gesture')
   }
 
   /**
@@ -2226,7 +2259,7 @@
     paintWetAll()
     paintMarkers()
     wake()
-    syncBusy()
+    syncBusy('gesture')
   }
 
   /**
@@ -2266,7 +2299,7 @@
     paintWetAll()
     paintMarkers()
     wake()
-    syncBusy()
+    syncBusy('gesture')
   }
 
   /**
@@ -2434,6 +2467,12 @@
    */
   let beamHeld = false
   let beamHeldTimer: number | undefined
+  /**
+   * When the press began, on this page's clock: a held beam's first frame
+   * says how long it waited (laser.ts · `LaserPress.stamp`), so that the hall
+   * judges its phrase from its start (`pressBegan`).
+   */
+  let pressedAt = 0
 
   /** The press: the shape starts, the first frame goes at once (a finger's: see `beamHeld`). */
   function beamStart(event: PointerEvent, place: { x: number; y: number }): void {
@@ -2441,7 +2480,8 @@
     rememberOwn(mark)
     press = new LaserPress(mark, event.timeStamp)
     pressPage = page
-    pressTrail = phraseClock.press(performance.now())
+    pressedAt = performance.now()
+    pressTrail = phraseClock.press(pressedAt)
     ownBack = []
     tip = null
     ownMark = laserShape === 'line' ? newMark(mark, page, [], pressTrail) : null
@@ -2460,6 +2500,8 @@
     beamHeldTimer = undefined
     if (!beamHeld) return
     beamHeld = false
+    // However still the finger stood, the frame says how long the press waited.
+    press?.stamp(performance.now() - pressedAt)
     beamNow(true)
   }
 
@@ -2487,7 +2529,7 @@
     }
     if (!stream) head = null
     wake()
-    syncBusy()
+    syncBusy('gesture')
   }
 
   /** Samples of a moving press, and where the pen will be a moment from now. */
@@ -2583,9 +2625,10 @@
       if (kept) keepOwn(kept)
     }
     // A finger let go inside its window (`beamHeld`): a poke, not half of a
-    // gesture, and the room gets all of it.
+    // gesture, and the room gets all of it, with how long it waited.
     window.clearTimeout(beamHeldTimer)
     beamHeldTimer = undefined
+    if (press && beamHeld) press.stamp(performance.now() - pressedAt)
     beamHeld = false
     if (press) beamNow(true)
     press = null
@@ -2835,7 +2878,7 @@
     const held = eraseHeld
     eraseHeld = null
     if (held) unhide(held)
-    stopErase()
+    stopErase('gesture')
   }
 
   /** What a held erase hid shows again, its drying strokes back among the wet ones. */
@@ -2851,14 +2894,14 @@
   }
 
   /** The eraser lifts, or the tool changes: what a finger still held back stands, and goes first. */
-  function stopErase(): void {
+  function stopErase(ended: BusyKind = 'ink'): void {
     sendErase()
     erasing = null
     rubbed = null
     ring = null
     erasingTold = false
     wake()
-    syncBusy()
+    syncBusy(ended)
   }
 
   /* ---------------------------------------------------- two-finger tap */
@@ -2926,14 +2969,16 @@
    *  — fingers only, never the pen, never a palm-sized contact; and only two
    *    fingers that LANDED TOGETHER, with no palm on the glass and the pen not
    *    near, hover included (ink.ts · `pinchMayStart`). A palm is kept count
-   *    of while it rests (`palms`) rather than ignored: the heel lying on the
-   *    glass is what gives away its pinky and knuckles as the hand's;
+   *    of while it rests (`palms`) rather than ignored, anywhere on the glass
+   *    and from the whole window (`hearPalms`): the heel lying on the glass is
+   *    what gives away its pinky and knuckles as the hand's;
    *  — a pinch finger is judged again on every move: a heel whose first patch
    *    was small spreads past a palm's size as it settles, and then the pair
    *    was the hand all along (`palmPinch`);
    *  — and it COMMITS late (ink.ts · `pinchCommits`): until the fingers have
-   *    spread by a tenth or slid by sixteen pixels, they still belong to the
-   *    two-finger tap, which is Undo. Once committed, the tap is cancelled.
+   *    spread by a tenth and twelve pixels, or slid by sixteen, they still
+   *    belong to the two-finger tap, which is Undo, or to a hand settling.
+   *    Once committed, the tap is cancelled.
    *    What the first finger had begun, the room never saw: landing together,
    *    the second finger came within the window for which a finger's stroke,
    *    erase and beam are held back, and `down` forgot them (`forgetFirst`).
@@ -2945,10 +2990,11 @@
   /** Fingers on the sheet: where they are now, in screen px, and when they landed. */
   const fingers = new Map<number, { x: number; y: number; down: number }>()
   /**
-   * Palm-sized contacts on the glass: those that landed so, and pinch fingers
-   * that grew so. While one rests, no two fingers start a pinch.
+   * Palm-sized contacts on the glass, wherever they lie: those that landed
+   * so, and those that grew so, pinch fingers included. While one rests, no
+   * two fingers start a pinch. Counted by `hearPalms`, and only there.
    */
-  const palms = new Set<number>()
+  const palms = new RestingPalms()
   /** Fingers left over from a pinch: they do nothing more until they lift. */
   const spent = new Set<number>()
   /** Pens touching the glass now. */
@@ -3000,12 +3046,8 @@
       return false
     }
     if (event.pointerType !== 'touch') return false
-    if (palmish(event)) {
-      palms.add(event.pointerId)
-      // The hand came to rest: the two "fingers" still waiting to move are its own.
-      if (pinch && !pinch.committed) dropPinch()
-      return false
-    }
+    // Counted already, and a candidate dropped, by `hearPalms`.
+    if (palmish(event)) return false
     const landed = performance.now()
     fingers.set(event.pointerId, { x: event.clientX, y: event.clientY, down: landed })
     if (!onzoom) return false
@@ -3022,7 +3064,7 @@
     if (free.length !== 2) return false
     const a = free[0] === event.pointerId ? free[1] : free[0]
     const first = fingers.get(a)
-    if (!first || !pinchMayStart(landed - first.down, palms.size, penNear())) return false
+    if (!first || !pinchMayStart(landed - first.down, palms.count(landed), penNear())) return false
     const frame = frameNode?.getBoundingClientRect()
     if (!frame || frame.width === 0 || frame.height === 0) return false
     pinch = {
@@ -3049,9 +3091,8 @@
     finger.y = event.clientY
     const held = pinch
     if (!held || (event.pointerId !== held.a && event.pointerId !== held.b)) return spent.has(event.pointerId)
-    // A pinch finger spread to a palm's size: the pair was the resting hand.
+    // A pinch finger spread to a palm's size (`hearPalms` counted it): the pair was the resting hand.
     if (palmish(event)) {
-      palms.add(event.pointerId)
       palmPinch(held)
       return true
     }
@@ -3099,8 +3140,8 @@
       if (beamHeld) dropBeam()
       else beamOff()
     }
-    if (framing?.pointer === held.a) cancelFrame()
-    syncBusy()
+    if (framing?.pointer === held.a) cancelFrame('gesture')
+    syncBusy('gesture')
   }
 
   /** A candidate that never became a pinch: the reserved finger stays idle until it lifts. */
@@ -3121,7 +3162,7 @@
     for (const id of [held.a, held.b]) if (fingers.has(id)) spent.add(id)
     for (const tap of taps) if (tap.pointer === held.a || tap.pointer === held.b) tap.moved = true
     if (held.committed) onzoom?.(held.from, true)
-    syncBusy()
+    syncBusy('gesture')
   }
 
   /** The pinch is over: the view stays where the fingers left it, said once more as final. */
@@ -3131,7 +3172,7 @@
     pinch = null
     for (const id of [held.a, held.b]) if (fingers.has(id)) spent.add(id)
     if (held.committed) onzoom?.(held.last, true)
-    syncBusy()
+    syncBusy('gesture')
   }
 
   /**
@@ -3143,7 +3184,6 @@
       pens.delete(event.pointerId)
       return false
     }
-    palms.delete(event.pointerId)
     if (!fingers.delete(event.pointerId)) return false
     const idle = spent.delete(event.pointerId)
     const held = pinch
@@ -3160,6 +3200,55 @@
     else dropPinch()
     return reserved
   }
+
+  /**
+   * A touch anywhere in the window, heard before anyone else hears it: the
+   * palm count (`palms`).
+   *
+   * The sheet's own handlers never saw a palm on the console. Its root
+   * swallows a palm-sized touch the moment it lands, wherever it lands, so
+   * that the heel presses nothing; and the armrest under the sheet and the
+   * rail, where the heel lies as often as on the sheet, are not the sheet at
+   * all. Counted from the sheet alone, no palm was ever there, and the pinky
+   * and a knuckle beside the resting heel made a pinch: the hall zoomed
+   * around the palm. So the layer listens to the whole window in the capture
+   * phase, which runs before the console's root: a contact that lands
+   * palm-sized, or grows so, counts until it lifts or falls silent (ink.ts ·
+   * `RestingPalms`), and one that comes to rest drops a pinch that has not
+   * moved yet, its two "fingers" being the same hand. A pinch finger that
+   * grows is the pinch's own business (`pinchMove`). Only counting happens
+   * here: the touch goes on its way untouched.
+   */
+  function hearPalms(event: PointerEvent): void {
+    if (event.pointerType !== 'touch') return
+    const id = event.pointerId
+    if (event.type === 'pointerup' || event.type === 'pointercancel') {
+      palms.lift(id)
+      return
+    }
+    const known = palms.has(id)
+    if (!known && !palmish(event)) return
+    palms.rest(id, performance.now())
+    if (known || !pinch || pinch.committed || id === pinch.a || id === pinch.b) return
+    dropPinch()
+  }
+
+  /** The layer takes input: palms are heard from the whole window meanwhile. */
+  const hearing = $derived(live && tool !== 'off')
+  $effect(() => {
+    if (!hearing) return
+    const options = { capture: true, passive: true }
+    window.addEventListener('pointerdown', hearPalms, options)
+    window.addEventListener('pointermove', hearPalms, options)
+    window.addEventListener('pointerup', hearPalms, options)
+    window.addEventListener('pointercancel', hearPalms, options)
+    return () => {
+      window.removeEventListener('pointerdown', hearPalms, options)
+      window.removeEventListener('pointermove', hearPalms, options)
+      window.removeEventListener('pointerup', hearPalms, options)
+      window.removeEventListener('pointercancel', hearPalms, options)
+    }
+  })
 
   /* ------------------------------------------------------ magnifier */
 
@@ -3221,11 +3310,12 @@
     onzoom?.(frameZoom(zoom.shown, done.from, done.moved ? place : null), true)
   }
 
-  function cancelFrame(): void {
+  /** The frame goes, asking for nothing: `ended` as in `syncBusy`. */
+  function cancelFrame(ended: BusyKind = 'ink'): void {
     if (!framing) return
     framing = null
     wake()
-    syncBusy()
+    syncBusy(ended)
   }
 
   /* ---------------------------------------------- straight on hold */
@@ -3484,6 +3574,15 @@
     return false
   }
 
+  /** Whether a pointer other than `pointer` holds work on the sheet now: a stroke, an erase or the beam. */
+  function heldByOther(pointer: number): boolean {
+    return (
+      (drawing !== null && drawing.pointer !== pointer) ||
+      (erasing !== null && erasing !== pointer) ||
+      (beaming !== null && beaming !== pointer)
+    )
+  }
+
   function down(event: PointerEvent): void {
     measure()
     // The heel of the palm is not a finger and does not count towards a
@@ -3501,10 +3600,24 @@
     // A second finger is not a frame: the magnifier is a one-finger gesture,
     // and two fingers are Undo or a pinch, never both that and a zoom step.
     if (framing?.byFinger && event.pointerType === 'touch') {
-      cancelFrame()
+      cancelFrame('gesture')
       return
     }
     if (reserved || spent.has(event.pointerId)) return
+    /*
+     * ANOTHER FINGER ALREADY HOLDS WORK ON THE SHEET: a stroke, an erase or
+     * the beam. Landing with it, this one was half of a gesture, and the
+     * first one's work was forgotten above (`forgetFirst`). Landing later,
+     * past the window for which a finger's work is held back, it is too late
+     * to be a gesture, and it starts nothing beside the first one's work, nor
+     * takes it over: a thumb landing a moment late in a slow pinch with the
+     * eraser armed took the sweep over and erased along its own path for the
+     * hall, a second sweep that Undo had to be pressed twice for. The pen and
+     * the pointer already kept a finger off a held stroke and beam; this is
+     * that rule for every tool. The pen still takes over, below: it always
+     * wins.
+     */
+    if (event.pointerType === 'touch' && heldByOther(event.pointerId)) return
     event.preventDefault()
     capture(event)
     if (tool === 'zoom') {
@@ -3882,7 +3995,7 @@
         else beamOff()
       }
       if (eraseHeld) forgetErase()
-      if (framing?.byFinger) cancelFrame()
+      if (framing?.byFinger) cancelFrame('gesture')
     })
   })
 
@@ -3915,7 +4028,7 @@
           pinch = null
           for (const id of [held.a, held.b]) if (fingers.has(id)) spent.add(id)
           if (held.committed) onzoom?.(null, true)
-          syncBusy()
+          syncBusy('gesture')
         }
       }
       /*
@@ -4153,7 +4266,8 @@
    * yellow, yellow over black text is black text. Where a screen cannot
    * blend, it is still drawn under the pen ink, so a marker never covers a
    * pen line either way. On a dark page LecturePage's
-   * `[data-ink-backdrop='dark']` rule outranks this one with `screen`.
+   * `[data-ink-backdrop='dark']` rule outranks this one with `screen`, on a
+   * mixed one `[data-ink-backdrop='mixed']` with `normal`.
    */
   .ink-mark {
     mix-blend-mode: multiply;

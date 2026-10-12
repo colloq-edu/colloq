@@ -17,7 +17,9 @@
  *   — a thumb coming to rest beside a drawing finger turned it into a pinch,
  *     and two seconds of its curve were taken back from the hall for good;
  *   — with the eraser armed, the first finger of a pinch or of a two-finger
- *     tap erased the ink under it for the whole hall.
+ *     tap erased the ink under it for the whole hall, and a thumb landing a
+ *     moment too late for a pinch took the sweep over and erased along its
+ *     own path.
  *
  * Pure functions from web/src/components/lecture/ink.ts, and the ink layer's
  * use of them read off its source.
@@ -373,4 +375,30 @@ test('a finger’s erase is hidden at once but reaches the room only once a seco
   assert.doesNotMatch(forget, /send\(/)
   assert.match(body('unhide'), /erased = new Set\(\[\.\.\.erased\]\.filter\(\(id\) => !back\.has\(id\)\)\)/)
   assert.match(body('unhide'), /wet = \[\.\.\.wet, \.\.\.held\.wet\]/)
+})
+
+/*
+ * The review's recheck, a slow pinch on a console without a pen: the thumb
+ * landed 300 ms after the index finger, past the window in which a second
+ * finger makes the pair a gesture. With the eraser armed it took the sweep
+ * over (`erasing` became its pointer) and erased along its own path for the
+ * hall under a second sweep id, two Undos to bring back; the pen and the
+ * pointer already kept such a finger off a held stroke or beam.
+ */
+test('a finger landing past the window beside another finger’s work starts nothing and takes nothing over', () => {
+  const down = body('down')
+  const guard = down.indexOf("if (event.pointerType === 'touch' && heldByOther(event.pointerId)) return")
+  assert.ok(guard !== -1, 'a late finger takes the first one’s sweep over again')
+  // Judged after the gesture's own fingers are set aside, before any tool starts its work.
+  assert.ok(guard > down.indexOf('if (reserved || spent.has(event.pointerId)) return'))
+  for (const branch of ["if (tool === 'zoom') {", "if (tool === 'laser') {", "if (tool === 'eraser') {", 'openStroke(']) {
+    const at = down.indexOf(branch)
+    assert.ok(at !== -1 && guard < at, `a late finger reaches ${branch}`)
+  }
+  // Every kind of work a finger holds: a stroke, an erase, the beam. The pen is not a finger: it still takes over.
+  const held = body('heldByOther')
+  assert.match(held, /drawing !== null && drawing\.pointer !== pointer/)
+  assert.match(held, /erasing !== null && erasing !== pointer/)
+  assert.match(held, /beaming !== null && beaming !== pointer/)
+  assert.match(down, /if \(eraseHeld\) forgetErase\(\)\s*erasing = event\.pointerId/, 'a pen no longer takes a finger’s held erase')
 })

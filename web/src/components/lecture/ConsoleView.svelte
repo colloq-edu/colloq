@@ -114,7 +114,7 @@
   import SheetCard from './SheetCard.svelte'
   import SheetMenu from './SheetMenu.svelte'
   import ToolPalette from './ToolPalette.svelte'
-  import { askInkPage } from './ink'
+  import { askInkPage, type BusyKind } from './ink'
   import { LASER_RED } from './laser'
   import { budgetOf, firstLine, plannedSeconds } from './notes-script'
   import { slideTitle } from './slide-titles'
@@ -131,6 +131,7 @@
   import {
     askTurn,
     hearTurn,
+    hearWelcome,
     sheetPlace,
     turnTarget,
     walkLength,
@@ -299,6 +300,21 @@
    * still on its way".
    */
   let seenPage: number | null = null
+  /**
+   * The control socket reopened after a drop: when, and the `lecture` frame
+   * in hand at that moment. The next frame is the welcome, and the turns
+   * asked before the drop are settled against it (walk.ts · `hearWelcome`):
+   * their echoes went down the dead socket. Not a rune: only checked against.
+   */
+  let reopened: { at: number; stale: typeof lecture } | null = null
+  let turnSocketWas = session.controlConnected
+  $effect(() => {
+    const up = session.controlConnected
+    untrack(() => {
+      if (up && !turnSocketWas) reopened = { at: performance.now(), stale: lecture }
+      turnSocketWas = up
+    })
+  })
 
   /*
    * CONVERGING WITH THE PROJECTOR.
@@ -325,7 +341,8 @@
    * pressed again, not understanding why.
    */
   $effect(() => {
-    const at = lecture?.page ?? null
+    const frame = lecture
+    const at = frame?.page ?? null
     const mine = wanted
     /*
      * Whether the server's page has changed since the last pass, and whether
@@ -336,6 +353,13 @@
     const { moved, ours } = untrack(() => {
       const changed = seenPage !== null && seenPage !== at
       seenPage = at
+      // The welcome after a drop: what was asked before it is settled by it, at any age.
+      if (reopened !== null && frame !== reopened.stale) {
+        const welcome = hearWelcome(asked, at, reopened.at)
+        reopened = null
+        asked = welcome.left
+        return { moved: changed, ours: welcome.ours }
+      }
       if (!changed || at === null) return { moved: changed, ours: false }
       const echo = hearTurn(asked, at, performance.now())
       asked = echo.left
@@ -916,6 +940,13 @@
    * LecturePage starts the new slide magnified at the old spot.
    */
   let zoomTarget = $state.raw<{ page: number; zoom: LectureZoom | null } | null>(null)
+  /**
+   * The last view this console said to the hall (`sendZoom`), until the
+   * hall's word agrees with it: the key reads no divergence meanwhile (see
+   * `keyZoom`). Forgotten on a turn, another deck, a take-over and a
+   * reconnect, where the hall's word starts afresh.
+   */
+  let zoomAwaited = $state.raw<{ page: number; zoom: LectureZoom | null } | null>(null)
   /** How the sheet reaches the target: at once under the fingers, eased after a key or a frame. */
   let zoomHow = $state<ZoomHow>('ease')
   /** The fingers are moving the view: their frames are a stream, and the final one closes it. */
@@ -966,9 +997,32 @@
    * Not offline: the hall's word is stale then, and the key must go on
    * arming the magnifier for the console's own view, which the hall gets on
    * reconnect anyway.
+   *
+   * Nor while the hall has yet to hear what the console last said of this
+   * page (`zoomAwaited`): that is the round trip of our own frame, not a
+   * divergence. After "Whole slide", or a pinch back to it, the hall's word
+   * is the old zoom until the echo comes, and the key kept offering
+   * "×2 / Whole slide" for the press that had just been made; a tap in that
+   * moment meant to arm the magnifier took the hall to the whole slide
+   * instead, and the next drag on the sheet drew ink rather than a frame.
    */
-  const keyZoom = $derived(zoomShownTarget ?? (leading && !offline ? hallZoom : null))
+  const keyZoom = $derived(
+    zoomShownTarget ?? (leading && !offline && zoomAwaited?.page !== wanted ? hallZoom : null),
+  )
   const zoomed = $derived(keyZoom !== null)
+
+  /*
+   * The hall's word agrees with what we said: nothing is awaited any more.
+   * Not only the echo of that very frame: a view the hall already had is
+   * not relayed again (session · `#hearZoom` keeps an unchanged word), and
+   * then it agrees the moment it is said.
+   */
+  $effect(() => {
+    const heard = session.zoomNow
+    const said = zoomAwaited
+    if (said === null || heard === null || heard.page !== said.page || !sameZoom(heard.zoom, said.zoom)) return
+    untrack(() => (zoomAwaited = null))
+  })
 
   /*
    * A TURN RESETS THE ZOOM, at once and here as well: the server does the
@@ -984,6 +1038,7 @@
       window.clearTimeout(zoomTimer)
       zoomTimer = undefined
       zoomDue = null
+      zoomAwaited = null
     })
   })
 
@@ -1011,6 +1066,7 @@
       window.clearTimeout(zoomTimer)
       zoomTimer = undefined
       zoomDue = null
+      zoomAwaited = null
     })
   })
 
@@ -1028,6 +1084,7 @@
         zoomTarget = heard !== null && heard.page === wanted ? { page: wanted, zoom: heard.zoom } : null
         zoomHow = 'ease'
         pinching = false
+        zoomAwaited = null
       }
       ledBefore = now
     })
@@ -1074,7 +1131,11 @@
   $effect(() => {
     const up = session.controlConnected
     untrack(() => {
-      if (up && !controlWas) zoomStale = lecture
+      if (up && !controlWas) {
+        zoomStale = lecture
+        // A frame said before the drop may have died with the socket: its echo is not coming.
+        zoomAwaited = null
+      }
       controlWas = up
     })
   })
@@ -1114,12 +1175,13 @@
         zoomTimer = undefined
         if (due === null || !leading) return
         zoomSentAt = performance.now()
-        session.zoomTo(due.page, due.zoom, false)
+        if (session.zoomTo(due.page, due.zoom, false)) zoomAwaited = due
       }, wait)
       return
     }
     zoomSentAt = now
-    session.zoomTo(page, zoom, final)
+    // Said, and awaited until the hall's word agrees (see `keyZoom`).
+    if (session.zoomTo(page, zoom, final)) zoomAwaited = { page, zoom }
   }
 
   /**
@@ -1130,8 +1192,6 @@
    * on every screen of the hall.
    */
   function onzoom(next: LectureZoom | null, final: boolean): void {
-    // Said while the layer holds the pointer, it is a pinch's (see `pinchSpell`).
-    if (busy) pinchSpell = true
     /*
      * A REPORT ABOUT A PAGE BEING LEFT says nothing about the page the
      * console goes to. A turn during a pinch (a clicker, the keyboard, the
@@ -1862,30 +1922,30 @@
   )
 
   /**
-   * The ink layer's spell of holding the pointer is a PINCH: two fingers,
-   * no pen. The layer reports the view while it holds the pointer for a
-   * pinch alone (a magnifier's frame reports once the pointer is let go), so
-   * a report inside the spell marks it (`onzoom`).
+   * The ink layer let go, and says how the spell ended (ink.ts ·
+   * `BusyKind`): with work that stood, or as a two-finger gesture.
    *
-   * A pinch is no reason for the palm guard below: its 600 ms after the ink
+   * Only the first starts the palm guard below: its 600 ms after the ink
    * layer lets go are for the heel of the WRITING hand, which follows the
-   * pen onto the rail. After a pinch there is no pen and no palm, and the
+   * hand onto the rail. After a pinch there is no palm to follow, and the
    * window swallowed the thumb's next tap: "Whole slide" or "Next" pressed
    * right after pinching back did nothing, without a word, and only the
-   * second tap worked.
+   * second tap worked. The same after the first finger of a pinch, whose
+   * stroke, erase or beam the layer forgets as the second finger lands: on a
+   * console without a pen, or with the pointer led by a finger, that ended a
+   * spell of its own at the second finger's landing, and the window ran from
+   * there. This used to be read from the order of the layer's calls (a zoom
+   * report inside the spell marked it a pinch), and the forgotten first
+   * finger, which reports nothing, slipped through.
    */
-  let pinchSpell = false
-
-  function onbusy(next: boolean): void {
+  function onbusy(next: boolean, kind?: BusyKind): void {
     busy = next
     if (next) {
-      pinchSpell = false
       // The first touch of the sheet closes the palette: its job is done.
       palette = null
       return
     }
-    if (!pinchSpell) lastBusyAt = performance.now()
-    pinchSpell = false
+    if (kind !== 'gesture') lastBusyAt = performance.now()
   }
 
   /**
@@ -1918,7 +1978,10 @@
    * the notes field in portrait, where it moved focus into the textarea and
    * raised the keyboard mid-sentence. The browser does not report the size
    * everywhere (older WebKit gives 1×1), so this is a second lock, not a
-   * replacement for the first.
+   * replacement for the first. Swallowed here, the heel is still counted by
+   * the ink layer, which hears the whole window before this root does
+   * (InkLayer · `hearPalms`): a resting heel is what keeps its pinky and a
+   * knuckle from making a pinch.
    */
   const PALM_MS = 600
   const PALM_PX = 40

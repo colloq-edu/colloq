@@ -22,26 +22,26 @@
   (zoom.ts): the picture and the ink read the same view, and so cannot
   drift apart while it moves.
 
-  And it says whether its picture is light or dark (`data-ink-backdrop`):
-  the ink's highlighter multiplies with a light page and screens a dark
-  one, and only the page knows which it painted (page-region.ts ·
-  `InkBackdrop`).
+  And it says whether its picture is light, dark or both
+  (`data-ink-backdrop`): the ink's highlighter multiplies with a light page,
+  screens a dark one and lies plainly over one with a good share of each,
+  and only the page knows which it painted (page-region.ts · `InkBackdrop`).
 -->
 <script lang="ts">
   import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist'
   import { onDestroy, type Snippet, untrack } from 'svelte'
   import type { LectureZoom, SheetPaper } from '@shared/lecture'
-  import { deviceKind } from '@/lib/device'
+  import { deviceKind, touchPoints } from '@/lib/device'
   import { acquirePage, releasePage } from '@/lib/pdf-pages'
   import {
     backdropOf,
     backdropOfColor,
-    meanLuminance,
     PAPER_GROUND,
     paperMarks,
     regionBudget,
     regionViewport,
     SLIDE_GROUND,
+    tonesOf,
     type InkBackdrop,
     type PaperMarks,
   } from './page-region'
@@ -400,17 +400,21 @@
   }
 
   /**
-   * WHETHER THE PICTURE IS DARK, for the highlighter (page-region.ts ·
-   * `InkBackdrop`), and the attribute the sheet carries it in
-   * (`data-ink-backdrop`, see the style at the end).
+   * WHETHER THE PICTURE IS LIGHT, DARK OR BOTH, for the highlighter
+   * (page-region.ts · `InkBackdrop`), and the attribute the sheet carries it
+   * in (`data-ink-backdrop`, see the style at the end).
    *
    * Read off the canvas itself, every time it changes (`show`), not guessed
    * from the deck: a dark theme, a photograph, a zoom into the dark corner of
    * a light slide are all just pixels here. The picture is shrunk into a
-   * canvas of 32 × 18 and averaged: a few hundred pixels, read back once per
-   * picture that lands, never per frame. A blank sheet, a wiped one and
-   * anything that cannot be read are their ground, which is light. Only a
-   * sheet with something laid over it asks: the thumbnails carry no ink.
+   * canvas of 32 × 18, each of its cells the average of a patch of the
+   * page about a line of text high, and the cells are counted as well as
+   * averaged (`tonesOf`): a white plot over a fifth of a dark slide is a
+   * fifth of the cells, while the mean stays a dark page's. A few hundred
+   * pixels, read back once per picture that lands, never per frame. A blank
+   * sheet, a wiped one and anything that cannot be read are their ground,
+   * which is light. Only a sheet with something laid over it asks: the
+   * thumbnails carry no ink.
    */
   let backdrop = $state<InkBackdrop>('light')
   let probe: HTMLCanvasElement | null = null
@@ -436,7 +440,7 @@
       look.imageSmoothingEnabled = true
       look.imageSmoothingQuality = 'high'
       look.drawImage(node, 0, 0, node.width, node.height, 0, 0, PROBE_W, PROBE_H)
-      return backdropOf(meanLuminance(look.getImageData(0, 0, PROBE_W, PROBE_H).data, ground))
+      return backdropOf(tonesOf(look.getImageData(0, 0, PROBE_W, PROBE_H).data, ground))
     } catch {
       return backdropOfColor(ground)
     }
@@ -686,8 +690,10 @@
    * The most pixels the whole page may span at a region's scale on this
    * device (page-region.ts · `REGION_BUDGET`): past it pdf.js's scratch
    * canvases outgrow what an iPad can hold, and the slide's text vanishes.
+   * The touch screen is asked too: an Android tablet in Chrome's desktop
+   * mode calls itself Linux.
    */
-  const budget = regionBudget(deviceKind())
+  const budget = regionBudget(deviceKind(), touchPoints())
 
   /**
    * Draw one page into the visible canvas through the spare one. `false`
@@ -959,16 +965,23 @@
 
 <style>
   /*
-   * THE HIGHLIGHTER ON A DARK PAGE (page-region.ts · `InkBackdrop`). The ink
-   * layer multiplies its marker canvas with the page, and multiply only
-   * darkens: on a dark slide the highlight vanished. On a picture this sheet
-   * found dark (`backdrop`), the marker canvas screens instead, which only
-   * lightens: light text stays light, and the dark ground lights up in the
-   * marker's colour. Here, not in the ink layer, because only the page knows
-   * what it painted; and it out-ranks the ink layer's own `.ink-mark` rule
-   * (once scoped: an attribute, two classes and a tag against two classes).
+   * THE HIGHLIGHTER ON A DARK PAGE, AND ON A MIXED ONE (page-region.ts ·
+   * `InkBackdrop`). The ink layer multiplies its marker canvas with the
+   * page, and multiply only darkens: on a dark slide the highlight vanished.
+   * On a picture this sheet found dark (`backdrop`), the marker canvas
+   * screens instead, which only lightens: light text stays light, and the
+   * dark ground lights up in the marker's colour. On a picture with a good
+   * share of both, either blend would wipe the highlight off one of them,
+   * so the marker lies over the page as it is, the way 0.20.0 drew it: it
+   * shows on both, and greys the text under it. Here, not in the ink layer,
+   * because only the page knows what it painted; and both rules out-rank the
+   * ink layer's own `.ink-mark` rule (once scoped: an attribute, two classes
+   * and a tag against two classes).
    */
   [data-ink-backdrop='dark'] :global(canvas.ink-mark) {
     mix-blend-mode: screen;
+  }
+  [data-ink-backdrop='mixed'] :global(canvas.ink-mark) {
+    mix-blend-mode: normal;
   }
 </style>

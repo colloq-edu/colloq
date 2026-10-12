@@ -7,6 +7,8 @@
  *    a bigger one (the iPad's canvas budget turns overflowing canvases
  *    transparent), and the region pdf.js draws is exactly the one the ink
  *    and every other screen show: checked against pdf.js's own viewport;
+ *    a tablet's scale is capped lower than a computer's, an Android tablet
+ *    that calls itself Linux included;
  *  • a fresh render goes up in the middle of a motion only when it covers
  *    the view (zooming out), and waits for the view otherwise;
  *  • the sheet's zoom (sheet-zoom.ts): the ink repaints only when the new
@@ -45,6 +47,7 @@ import {
 import { EARLY_MS, SheetZoom, STREAM_MS } from '../web/src/components/lecture/sheet-zoom.js'
 import { sheetPlace, walkLength, walkStep } from '../web/src/components/lecture/walk.js'
 import { EASE_MS, sameRegion, SETTLE_MS, ZoomMotion } from '../web/src/components/lecture/zoom.js'
+import { deviceKindOf } from '../web/src/lib/device.js'
 
 function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
@@ -160,17 +163,48 @@ test('past the budget a region is drawn at the scale the budget allows, smaller,
 })
 
 test('a phone or a tablet gets the small budget; a computer, the projector most often, the large one', () => {
-  for (const kind of ['ipad', 'iphone', 'android', 'android-tablet', 'other'] as const) {
-    assert.equal(regionBudget(kind), REGION_BUDGET.touch, kind)
+  for (const touchPoints of [0, 5]) {
+    for (const kind of ['ipad', 'iphone', 'android', 'android-tablet', 'other'] as const) {
+      assert.equal(regionBudget(kind, touchPoints), REGION_BUDGET.touch, `${kind}, ${touchPoints} touch points`)
+    }
+    // A touch screen does not make a Mac, a Windows tablet-laptop or a Chromebook a phone.
+    for (const kind of ['mac', 'windows', 'chromebook'] as const) {
+      assert.equal(regionBudget(kind, touchPoints), REGION_BUDGET.desktop, `${kind}, ${touchPoints} touch points`)
+    }
   }
-  for (const kind of ['mac', 'windows', 'linux', 'chromebook'] as const) {
-    assert.equal(regionBudget(kind), REGION_BUDGET.desktop, kind)
-  }
+  assert.equal(regionBudget('linux', 0), REGION_BUDGET.desktop)
   // Under iPadOS 17's 4096² per canvas.
   assert.ok(REGION_BUDGET.touch < 4096 * 4096)
   // A 1080p projector's sheet stays as sharp as the frame all the way to ×4.
   const projector = regionViewport({ width: 960, height: 540 }, 1888, { x: 0.375, y: 0.375, z: 4 }, 1, REGION_BUDGET.desktop)
   close(projector.scale, (1888 / 960) * 4)
+})
+
+test('an Android tablet in Chrome\'s desktop mode calls itself Linux, and still gets a tablet\'s budget', () => {
+  /*
+   * Chrome on a large Android tablet asks for the desktop site by default:
+   * no "Android" in its name, only "X11; Linux x86_64". Taken for a computer,
+   * it got the 64-megapixel budget, and a page-wide image mask at ×4 could
+   * ask its tablet memory for a 256 MB scratch canvas again. Its touch
+   * screen gives it away, as it gives away an iPad dressed as a Mac.
+   */
+  const desktopSite =
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
+  assert.equal(deviceKindOf(desktopSite, 10), 'linux')
+  assert.equal(regionBudget(deviceKindOf(desktopSite, 10), 10), REGION_BUDGET.touch)
+  assert.equal(regionBudget('linux', 2), REGION_BUDGET.touch)
+  // A Linux desktop without a touch screen is a computer, a projector's most often.
+  assert.equal(regionBudget(deviceKindOf(desktopSite, 0), 0), REGION_BUDGET.desktop)
+  // One touch point is not enough to go by: the same line deviceKindOf draws for the iPad.
+  assert.equal(regionBudget('linux', 1), REGION_BUDGET.desktop)
+  // The iPad dressed as a Mac was a tablet already, by its kind.
+  const iPadAsMac =
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
+  assert.equal(regionBudget(deviceKindOf(iPadAsMac, 5), 5), REGION_BUDGET.touch)
+  // On the tablet the region at ×4 is capped like an iPad's: the whole page within 16 MP.
+  const capped = regionViewport({ width: 960, height: 540 }, 1280, { x: 0.3, y: 0.3, z: 4 }, 2, regionBudget('linux', 10))
+  const spans = (capped.width * 4) * (capped.height * 4)
+  assert.ok(spans <= REGION_BUDGET.touch * 1.001, `the whole page spans ${(spans / 1e6).toFixed(1)} MP`)
 })
 
 test('pdf.js draws exactly the region: its corners land on the canvas corners, every rotation, every budget', () => {
@@ -769,7 +803,10 @@ test('the page frame clips the moving picture without cutting the ink off the pa
   // The region render: offsets into a frame-sized canvas (or smaller, past
   // the device's budget), through the old swap.
   assert.match(sheet, /regionViewport\(base, w, at, ratio, budget\)/)
-  assert.match(sheet, /const budget = regionBudget\(deviceKind\(\)\)/)
+  // The budget asks the touch screen as well as the name (an Android tablet in
+  // Chrome's desktop mode calls itself Linux).
+  assert.match(sheet, /const budget = regionBudget\(deviceKind\(\), touchPoints\(\)\)/)
+  assert.match(sheet, /import \{ deviceKind, touchPoints \} from '@\/lib\/device'/)
   assert.match(sheet, /offsetX: region\.offsetX,\s*offsetY: region\.offsetY/)
   assert.match(sheet, /paint\.drawImage\(buffer, 0, 0\)\s*\n\s*\/\/[^\n]*\n\s*canvasZoom = at/)
   // The picture moves by the view, from its top-left corner, inside a frame

@@ -430,6 +430,8 @@ export function fingerPair(a: { x: number; y: number }, b: { x: number; y: numbe
 
 /** How much the fingers must spread or close, as a share of where they started, to be a pinch. */
 export const PINCH_SPREAD = 0.1
+/** And by how much at least, in screen px, whatever the share: see `pinchCommits`. */
+export const PINCH_SPREAD_PX = 12
 /** How far their midpoint must travel, in screen px, to be a two-finger pan. */
 export const PINCH_SLIDE_PX = 16
 
@@ -446,11 +448,83 @@ export const PINCH_SLIDE_PX = 16
  * tap is cancelled. What the first finger began never reached the room: the
  * pair landed together (`pinchMayStart`), within the window for which a
  * finger's work is held back.
+ *
+ * THE SPREAD IS COUNTED IN PIXELS TOO, not only as a share. The pinky and a
+ * knuckle of a resting hand touch the glass a finger's width apart, and a
+ * tenth of fifty pixels is the five a settling hand rolls by at once: the
+ * hall zoomed ×1.13 around the palm. Twelve pixels is more than a hand
+ * settles and less than the first moment of any deliberate pinch; fingers
+ * that start far apart still need their tenth.
  */
 export function pinchCommits(start: FingerPair, now: FingerPair): boolean {
-  if (start.d > 0 && Math.abs(now.d / start.d - 1) >= PINCH_SPREAD) return true
+  const spread = Math.abs(now.d - start.d)
+  if (start.d > 0 && spread >= PINCH_SPREAD_PX && spread / start.d >= PINCH_SPREAD) return true
   return Math.hypot(now.x - start.x, now.y - start.y) >= PINCH_SLIDE_PX
 }
+
+/**
+ * How long a palm on the glass counts without a word from it, in ms: see
+ * `RestingPalms`.
+ */
+export const PALM_QUIET_MS = 5000
+
+/**
+ * The palm-sized contacts on the glass: wherever they lie, the sheet, the
+ * armrest under it or the rail, and whatever stops them on their way to the
+ * sheet. While one rests, no two fingers start a pinch (`pinchMayStart`).
+ *
+ * The ink layer counts them from the whole window, before anyone else hears
+ * of them: the console's root swallows a palm-sized touch the moment it
+ * lands, so that the heel presses nothing, and a layer that counted palms
+ * from its own sheet never saw one. The pinky and a knuckle of the resting
+ * hand then made a pinch and zoomed the hall.
+ *
+ * A count that never forgets is worse than none: a palm whose lift the page
+ * missed would forbid every pinch until the console went dark. So a palm
+ * counts while it says something: landing, moving or changing its size; one
+ * silent for `PALM_QUIET_MS` has gone, and comes back with its next word if
+ * it was only lying still.
+ */
+export class RestingPalms {
+  readonly #heard = new Map<number, number>()
+
+  /** A palm-sized contact landed, grew so, or stirred at `now`. */
+  rest(pointer: number, now: number): void {
+    this.#heard.set(pointer, now)
+  }
+
+  /** Whether `pointer` is a palm. */
+  has(pointer: number): boolean {
+    return this.#heard.has(pointer)
+  }
+
+  /** The contact lifted, or the browser took it away. */
+  lift(pointer: number): void {
+    this.#heard.delete(pointer)
+  }
+
+  /** How many palms rest at `now`: a silent one has gone, see above. */
+  count(now: number): number {
+    for (const [pointer, heard] of this.#heard) {
+      if (now - heard >= PALM_QUIET_MS) this.#heard.delete(pointer)
+    }
+    return this.#heard.size
+  }
+
+  clear(): void {
+    this.#heard.clear()
+  }
+}
+
+/**
+ * How a spell of the ink layer holding the pointer ended (InkLayer ·
+ * `onbusy`): with work that stood (`ink`: the pen's, or a finger's that
+ * reached the room), or as a two-finger gesture (`gesture`: a pinch, or a
+ * first finger whose held work a second finger made never happen). The
+ * console guards its rail against the writing hand's heel after the one, and
+ * not after the other: after a pinch the thumb's next tap is meant.
+ */
+export type BusyKind = 'ink' | 'gesture'
 
 /**
  * Whether the second finger to land makes a pinch with the first: a
@@ -467,9 +541,10 @@ export function pinchCommits(start: FingerPair, now: FingerPair): boolean {
  *    taken back. It is also the window for which a finger's stroke, erase
  *    and beam are held back from the room (InkLayer · `forgetFirst`), so the
  *    first finger of a pinch never had time to show the hall anything;
- *  — NO PALM ON THE GLASS: `palms` palm-sized contacts are down. The heel
- *    rests while the pinky and the knuckles of the same hand touch as small
- *    contacts and creep, and those are exactly two "fingers";
+ *  — NO PALM ON THE GLASS: `palms` palm-sized contacts are down, anywhere on
+ *    it (`RestingPalms`). The heel rests while the pinky and the knuckles of
+ *    the same hand touch as small contacts and creep, and those are exactly
+ *    two "fingers";
  *  — THE PEN NOT NEAR (`penNear`): not touching, and neither touching nor
  *    HOVERING a moment ago. Unlike the tap's, this guard counts hover: a hand
  *    resting while the presenter talks keeps the Pencil hovering, and its

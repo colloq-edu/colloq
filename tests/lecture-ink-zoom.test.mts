@@ -31,11 +31,14 @@ import {
   fingerPair,
   frameZoom,
   inkWidthAt,
+  PALM_QUIET_MS,
   PINCH_SLIDE_PX,
   PINCH_SPREAD,
+  PINCH_SPREAD_PX,
   pinchCommits,
   pinchMayStart,
   pinchZoom,
+  RestingPalms,
   TAP_TOGETHER_MS,
 } from '../web/src/components/lecture/ink.js'
 import { boxToPage, zoomStep, zoomToRect } from '../web/src/components/lecture/zoom.js'
@@ -236,21 +239,100 @@ test('only the presenter zooms: without `onzoom` two fingers are what they alway
 
 test('the pinch judges how the fingers landed: together, no palm resting, the pen not even hovering', () => {
   const down = body('pinchDown')
-  // A palm is kept count of while it rests, and drops a candidate it lands on.
-  assert.match(down, /if \(palmish\(event\)\) \{\s*palms\.add\(event\.pointerId\)\s*[^]*?if \(pinch && !pinch\.committed\) dropPinch\(\)/)
+  // A palm is no finger; it was counted, and a candidate dropped, before the sheet heard of it.
+  assert.match(down, /if \(palmish\(event\)\) return false/)
+  assert.doesNotMatch(down, /palms\.(add|rest)\(/, 'the sheet counts palms of its own again: the console root hides them from it')
   assert.match(down, /fingers\.set\(event\.pointerId, \{ x: event\.clientX, y: event\.clientY, down: landed \}\)/)
-  assert.match(down, /pinchMayStart\(landed - first\.down, palms\.size, penNear\(\)\)/)
+  // The palms resting NOW: one silent past its time has gone (ink.ts · RestingPalms).
+  assert.match(down, /pinchMayStart\(landed - first\.down, palms\.count\(landed\), penNear\(\)\)/)
   // Hover counts, in the tap's short window, not the pointer's long one.
   assert.match(body('penNear'), /performance\.now\(\) - lastPenNearAt < TAP_AFTER_PEN_MS/)
-  assert.match(body('pinchUp'), /palms\.delete\(event\.pointerId\)/)
+  assert.match(INK, /const palms = new RestingPalms\(\)/)
   assert.match(INK, /fingers\.clear\(\)\s*palms\.clear\(\)/, 'a palm outlives the input layer')
+})
+
+/*
+ * The review's A6 as the console really sees it: ConsoleView's root swallows
+ * a palm-sized touch in the capture phase, anywhere on the console, the sheet
+ * included, so the ink layer's own handlers never heard of the heel. Its palm
+ * count stayed empty, and the pinky and a knuckle of the resting hand zoomed
+ * the hall ×1.13 (replayed on the real layer under a copy of that root).
+ */
+test('palms are heard from the whole window, before the console’s root, and counted until they lift', () => {
+  const hear = body('hearPalms')
+  // Heard in the capture phase on the window: nothing on the page runs before it.
+  for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
+    assert.match(
+      hear,
+      new RegExp(`window\\.addEventListener\\('${type}', hearPalms, options\\)`),
+      `${type} is not heard from the window`,
+    )
+    assert.match(hear, new RegExp(`window\\.removeEventListener\\('${type}', hearPalms, options\\)`))
+  }
+  assert.match(hear, /const options = \{ capture: true, passive: true \}/)
+  // Only while the layer takes input: off live, the count is wiped (see above).
+  assert.match(INK, /const hearing = \$derived\(live && tool !== 'off'\)/)
+  assert.match(hear, /\$effect\(\(\) => \{\s*if \(!hearing\) return/)
+  // Touches only; a lift or a cancel takes the palm off.
+  assert.match(hear, /if \(event\.pointerType !== 'touch'\) return/)
+  assert.match(hear, /if \(event\.type === 'pointerup' \|\| event\.type === 'pointercancel'\) \{\s*palms\.lift\(id\)/)
+  // A contact that lands palm-sized or grows so counts; a palm that stirs is heard again.
+  assert.match(hear, /if \(!known && !palmish\(event\)\) return\s*palms\.rest\(id, performance\.now\(\)\)/)
+  // A palm coming to rest drops a pinch that has not moved; its own fingers growing are the pinch's business.
+  assert.match(
+    hear,
+    /if \(known \|\| !pinch \|\| pinch\.committed \|\| id === pinch\.a \|\| id === pinch\.b\) return\s*dropPinch\(\)/,
+  )
+  // Counting only: the touch goes on to the console's root untouched.
+  assert.doesNotMatch(hear.slice(0, hear.indexOf('const hearing')), /stopPropagation|preventDefault/)
+})
+
+test('a palm whose lift the page missed stops counting once it falls silent; a resting one is heard again', () => {
+  const palms = new RestingPalms()
+  palms.rest(901, 0)
+  palms.rest(902, 100)
+  assert.equal(palms.count(200), 2)
+  palms.lift(902)
+  assert.equal(palms.count(300), 1)
+  assert.ok(palms.has(901))
+  // The lift of 901 never came: it forbids pinching for a few seconds, not for the rest of the lecture.
+  assert.equal(palms.count(PALM_QUIET_MS - 1), 1)
+  assert.equal(palms.count(PALM_QUIET_MS), 0, 'a palm whose lift was missed blocks every pinch for good')
+  assert.ok(!palms.has(901))
+  // A palm that keeps saying something (a heel stirring, a size changing) keeps counting.
+  palms.rest(903, 10_000)
+  for (let at = 11_000; at <= 30_000; at += 1_000) palms.rest(903, at)
+  assert.equal(palms.count(30_000 + PALM_QUIET_MS - 1), 1)
+  palms.clear()
+  assert.equal(palms.count(0), 0)
+  // A few seconds: longer than a heel lies still while one talks, short against a lecture.
+  assert.ok(PALM_QUIET_MS >= 3000 && PALM_QUIET_MS <= 10_000, `${PALM_QUIET_MS} ms`)
+})
+
+test('a resting hand that rolls a few pixels is no pinch: the spread is counted in pixels too', () => {
+  // The review's A6: the pinky and a knuckle land 51 px apart, the pinky rolls 6 px.
+  const start = fingerPair({ x: 740, y: 430 }, { x: 790, y: 420 })
+  const rolled = fingerPair({ x: 734, y: 433 }, { x: 790, y: 420 })
+  assert.ok(rolled.d / start.d - 1 > PINCH_SPREAD, 'the roll is more than a tenth of the spread')
+  assert.equal(pinchCommits(start, rolled), false, 'a 6 px roll of a resting hand zoomed the hall ×1.13')
+  // Fingers close together still need their twelve pixels, and get them.
+  const near = pair(0.5, 0.5, 40)
+  assert.equal(pinchCommits(near, pair(0.5, 0.5, 40 + PINCH_SPREAD_PX - 1)), false)
+  assert.equal(pinchCommits(near, pair(0.5, 0.5, 40 + PINCH_SPREAD_PX)), true)
+  assert.equal(pinchCommits(near, pair(0.5, 0.5, 40 - PINCH_SPREAD_PX)), true, 'closing counts as spreading')
+  // The stand's pinch (pencil-check 15): 80 px apart, 5 px per step each side, commits on the second step.
+  const stand = pair(0.5, 0.5, 80)
+  assert.equal(pinchCommits(stand, pair(0.5, 0.5, 90)), false)
+  assert.equal(pinchCommits(stand, pair(0.5, 0.5, 100)), true)
+  // Twelve pixels: more than a hand settles, less than the first moment of any pinch.
+  assert.ok(PINCH_SPREAD_PX >= 8 && PINCH_SPREAD_PX < PINCH_SLIDE_PX)
 })
 
 test('a pinch finger that spreads to a palm’s size undoes the pinch, and the hall goes back', () => {
   const move = body('pinchMove')
   const palm = move.indexOf('if (palmish(event)) {')
   assert.ok(palm !== -1 && palm < move.indexOf('pinchCommits('), 'a heel that grew is judged after it moved the view')
-  assert.match(move, /palms\.add\(event\.pointerId\)\s*palmPinch\(held\)/)
+  assert.match(move, /if \(palmish\(event\)\) \{\s*palmPinch\(held\)/)
   const undo = body('palmPinch')
   assert.match(undo, /if \(held\.committed\) onzoom\?\.\(held\.from, true\)/, 'the palm\'s zoom stays in the hall')
   assert.match(undo, /tap\.moved = true/, 'the palm still counts as half of an Undo tap')

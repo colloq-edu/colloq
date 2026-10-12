@@ -16,7 +16,8 @@
  *
  * And one thing only the console meets: it turns its own sheet at once and
  * tells the server after, so it has to tell the echoes of its own turns from
- * someone else's (`askTurn`, `hearTurn`).
+ * someone else's (`askTurn`, `hearTurn`), across a dropped connection too
+ * (`hearWelcome`).
  *
  * Pure logic, no runes: tests/lecture-hall-zoom.test.mts and
  * tests/lecture-console-converge.test.mts walk it.
@@ -162,4 +163,33 @@ export function hearTurn(
   const hit = fresh.findIndex((turn) => turn.page === page)
   if (hit < 0) return { ours: false, left: [] }
   return { ours: true, left: fresh.slice(hit + 1) }
+}
+
+/**
+ * The first `lecture` frame after the control socket reopened at `reopened`
+ * (the welcome) shows `page` (`null`: no lecture): whether that is a turn
+ * this console asked for, and the turns still waited for.
+ *
+ * NOTHING ASKED BEFORE THE DROP WILL EVER BE ECHOED: whatever the server did
+ * with it, its answer went down the dead socket. So the welcome settles all of
+ * it at once, and by what was asked, not by when. The time offline is not
+ * time a request was waited for (`ASKED_FOR_MS`), and counted as such it made
+ * the console's own last turn someone else's: a turn that reached the server
+ * just before the Wi-Fi went, and an outage past four seconds, and the welcome
+ * showing that very page read as a foreign move. The console followed it and
+ * dropped the pages pressed offline, which the convergence was to deliver.
+ * Turns asked on the new socket, before the welcome came, are still on their
+ * way, unless they ask for the page the welcome already shows: a server
+ * already there stays silent.
+ */
+export function hearWelcome(
+  asked: readonly AskedTurn[],
+  page: number | null,
+  reopened: number,
+): { ours: boolean; left: AskedTurn[] } {
+  if (page === null) return { ours: false, left: [] }
+  return {
+    ours: asked.some((turn) => turn.page === page),
+    left: asked.filter((turn) => turn.at > reopened && turn.page !== page),
+  }
 }

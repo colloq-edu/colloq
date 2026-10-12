@@ -134,9 +134,10 @@ export const PEN_WIDTHS: readonly Width[] = [
  * carries its own alpha is drawn as ONE path (InkLayer · `seeThrough`), so the
  * alpha does not double where the stroke crosses itself or where its pieces
  * join, and it is laid on the highlighter's own canvas UNDER the pen ink,
- * multiplied with the slide (screened on a dark one: LecturePage ·
- * `data-ink-backdrop`). A highlighter written as an opaque colour plus a
- * separate opacity would blot at every joint and cover the writing.
+ * multiplied with the slide (screened on a dark one, plainly blended on a
+ * mixed one: LecturePage · `data-ink-backdrop`). A highlighter written as an
+ * opaque colour plus a separate opacity would blot at every joint and cover
+ * the writing.
  *
  * 55 %, not the old 50 %: under `multiply` a highlighter darkens nothing that
  * is already dark, so it can afford to be a little denser and still leave the

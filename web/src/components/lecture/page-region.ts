@@ -2,7 +2,7 @@
  * The page's own pixels under a zoom: which part of a PDF page is rendered
  * into the sheet's canvas, how a blank sheet's paper is ruled, when a
  * picture drawn for one view can stand in for another, and whether the
- * picture is light or dark under the highlighter.
+ * picture is light, dark or both under the highlighter.
  *
  * WHY A REGION, NOT A BIGGER PAGE. Rendering the whole page `z` times larger
  * and showing a piece of it is the obvious way, and it does not survive the
@@ -49,12 +49,20 @@ import type { DeviceKind, LectureZoom, SheetPaper } from '@shared/lecture'
 export const REGION_BUDGET = { touch: 16_000_000, desktop: 64_000_000 } as const
 
 /**
- * The budget of a device (lib/device.ts · `deviceKind`): a computer gets the
- * large one, and everything else, a device nobody could name included, the
- * small one.
+ * The budget of a device (lib/device.ts · `deviceKind`, and how many touch
+ * points its screen has): a computer gets the large one, and everything
+ * else, a device nobody could name included, the small one.
+ *
+ * A "Linux" with a touch screen is not taken for a computer. Chrome on a
+ * large Android tablet asks for the desktop site by default and introduces
+ * itself as `X11; Linux x86_64`, without a word of Android: only its touch
+ * screen gives it away, as it gives away an iPad dressed as a Mac. It has a
+ * tablet's memory, and gets a tablet's budget; a Linux laptop with a touch
+ * screen loses only a little sharpness at the closest zooms.
  */
-export function regionBudget(kind: DeviceKind): number {
-  const computer = kind === 'mac' || kind === 'windows' || kind === 'linux' || kind === 'chromebook'
+export function regionBudget(kind: DeviceKind, touchPoints: number): number {
+  if (kind === 'linux') return touchPoints > 1 ? REGION_BUDGET.touch : REGION_BUDGET.desktop
+  const computer = kind === 'mac' || kind === 'windows' || kind === 'chromebook'
   return computer ? REGION_BUDGET.desktop : REGION_BUDGET.touch
 }
 
@@ -292,7 +300,7 @@ export function paperMarks(
 /* --------------------------------------------------------- backdrop */
 
 /**
- * WHAT THE HIGHLIGHTER LIES ON: a light page or a dark one.
+ * WHAT THE HIGHLIGHTER LIES ON: a light page, a dark one, or both at once.
  *
  * The ink layer lays every translucent stroke on a canvas of its own, under
  * the pen ink, blended with the page by `multiply` (InkLayer · `.ink-mark`):
@@ -305,14 +313,44 @@ export function paperMarks(
  * mirror image: it can only lighten, so light text stays light under the
  * highlight and the dark ground lights up in the marker's colour.
  *
+ * Each blend loses the highlight on the other's ground, and loses it
+ * WHOLLY, not by degrees: screen over white is white, multiply over black is
+ * black. One blend for a page that has a good share of both, a white plot
+ * on a dark deck or an X-ray on a white slide, leaves every highlight over
+ * the smaller part invisible. Such a page is `mixed`, and gets the blend of
+ * 0.20.0 (`normal`: the marker over the page at its own alpha), which shows
+ * on any ground (CIELAB ΔE over 24 on every grey) at the price of the text
+ * under it: about 3:1 against the band, where multiply keeps black text at
+ * 11 to 15 and screen keeps white text at 3.5 to 5.
+ *
  * Every screen decides from its own picture of the same page and region, so
  * the console, the projector and the laptops agree without a word on the
- * wire.
+ * wire. And a zoom decides for the region it shows: zoomed into the X-ray,
+ * the sheet is dark.
  */
-export type InkBackdrop = 'light' | 'dark'
+export type InkBackdrop = 'light' | 'dark' | 'mixed'
 
 /**
- * Below this mean relative luminance a page is dark.
+ * Where each blend loses the highlight: at or above `VERY_LIGHT` relative
+ * luminance `screen` leaves the five highlighters under a colour difference
+ * of 10 on average (CIELAB ΔE, with the 5 % flare WCAG's contrast assumes:
+ * a projector in a lit room), too faint to point anything out to a hall; at
+ * or below `VERY_DARK`, `multiply` does. Between the two either blend shows
+ * them.
+ */
+export const VERY_LIGHT = 0.6
+export const VERY_DARK = 0.08
+
+/**
+ * The share of a picture a blend may lose the highlight on and still be
+ * used: a logo, a thin title band. A tenth, so that a white plot over 15 %
+ * of a dark slide still counts: in the 32 × 18 probe its tick labels, and
+ * the cells it only partly covers, leave 12 to 14 % very light.
+ */
+export const LOST_SHARE = 0.1
+
+/**
+ * Below this mean relative luminance a page neither blend loses is dark.
  *
  * Measured for the five highlighters over greys: by contrast with the bare
  * page (WCAG), `screen` shows a highlight better than `multiply` below a
@@ -340,34 +378,67 @@ function channels(color: string): [number, number, number] {
   return [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16)) as [number, number, number]
 }
 
+/** What a picture is made of, as far as the highlighter is concerned (`tonesOf`). */
+export interface Tones {
+  /** The mean relative luminance. */
+  mean: number
+  /** The share of the pixels at or above `VERY_LIGHT`: where `screen` loses a highlight. */
+  light: number
+  /** The share at or below `VERY_DARK`: where `multiply` does. */
+  dark: number
+}
+
 /**
- * The mean relative luminance of RGBA pixels as `getImageData` hands them
- * out, each laid over `ground` the way the sheet lays its canvas over its
- * own colour: a canvas with nothing on it is its ground.
+ * The tones of RGBA pixels as `getImageData` hands them out, each laid over
+ * `ground` the way the sheet lays its canvas over its own colour: a canvas
+ * with nothing on it is its ground.
+ *
+ * Counted pixel by pixel, not only averaged: the mean of a navy slide with
+ * a white plot over a fifth of it is a dark page's, and says nothing of the
+ * plot.
  */
-export function meanLuminance(rgba: ArrayLike<number>, ground: string = SLIDE_GROUND): number {
+export function tonesOf(rgba: ArrayLike<number>, ground: string = SLIDE_GROUND): Tones {
   const [gr, gg, gb] = channels(ground)
   const count = Math.floor(rgba.length / 4)
-  if (count === 0) return luminance(gr, gg, gb)
+  if (count === 0) return tonesOf([gr, gg, gb, 255])
   let sum = 0
+  let light = 0
+  let dark = 0
   for (let i = 0; i < count * 4; i += 4) {
     const a = rgba[i + 3] / 255
-    sum += luminance(
+    const value = luminance(
       rgba[i] * a + gr * (1 - a),
       rgba[i + 1] * a + gg * (1 - a),
       rgba[i + 2] * a + gb * (1 - a),
     )
+    sum += value
+    if (value >= VERY_LIGHT) light += 1
+    if (value <= VERY_DARK) dark += 1
   }
-  return sum / count
+  return { mean: sum / count, light: light / count, dark: dark / count }
 }
 
-/** Light or dark, from a picture's mean luminance (`meanLuminance`). */
-export function backdropOf(mean: number): InkBackdrop {
+/**
+ * Light, dark or mixed, from a picture's tones (`tonesOf`).
+ *
+ * A blend is ruled out when it would lose the highlight on `LOST_SHARE` of
+ * the picture or more: multiply on its very dark part, screen on its very
+ * light one. Both ruled out, the page is mixed. One ruled out, the other is
+ * taken, whatever the mean says: a grey slide with a dark photograph over a
+ * fifth of it averages light, and multiply would wipe the highlight off the
+ * photograph, while screen still shows on the grey. Neither, the mean picks
+ * the blend that suits most of the page, as for one colour.
+ */
+export function backdropOf({ mean, light, dark }: Tones): InkBackdrop {
+  const multiplyLoses = dark >= LOST_SHARE
+  const screenLoses = light >= LOST_SHARE
+  if (multiplyLoses && screenLoses) return 'mixed'
+  if (multiplyLoses) return 'dark'
+  if (screenLoses) return 'light'
   return mean < DARK_BELOW ? 'dark' : 'light'
 }
 
 /** Light or dark, for a page of one colour: a blank sheet's paper, a wiped slide. */
 export function backdropOfColor(color: string): InkBackdrop {
-  const [r, g, b] = channels(color)
-  return backdropOf(luminance(r, g, b))
+  return backdropOf(tonesOf([...channels(color), 255]))
 }
