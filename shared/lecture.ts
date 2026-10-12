@@ -113,6 +113,289 @@ export interface LectureState {
    * so an iPad waking from sleep does not flash "offline" at everyone.
    */
   awaySince?: number | null
+  /**
+   * The part of the page the hall sees, or `null` / absent for the whole
+   * page (see `LectureZoom`). It belongs to `page`: turning the page resets
+   * it on the server, so a latecomer never gets one page's zoom applied to
+   * another.
+   *
+   * The state carries the SETTLED value for whoever connects; the live
+   * motion of a pinch travels as `lecture:zoom` frames and never as whole
+   * `lecture` frames, which every tab reacts to as a change of lecture.
+   */
+  zoom?: LectureZoom | null
+  /**
+   * The blank sheets of this lecture, in the order they stand in the deck
+   * (see `LectureSheet` and `lectureSequence`). Absent from an older server:
+   * read as "no sheets".
+   */
+  sheets?: LectureSheet[]
+}
+
+/* ------------------------------------------------------------- zoom */
+
+/**
+ * WHAT PART OF THE PAGE THE HALL SEES: `z` times closer, starting at `x, y`.
+ *
+ * The zoom happens INSIDE the page's own frame. The frame keeps its size and
+ * place on every screen, and what is magnified is the page under it, so the
+ * visible region is always `[x, x + 1/z] × [y, y + 1/z]` in page fractions —
+ * a rectangle of the page's own proportions. That is the whole point: the
+ * console is a 4:3 tablet, the projector 16:9, a student's laptop anything,
+ * but each of them fits the PAGE by "contain", and so each of them shows
+ * exactly the same region at exactly the same magnification. A rectangle of
+ * the console's own proportions would have to be cut or padded somewhere,
+ * and the presenter would circle a detail the hall cannot see.
+ *
+ * Coordinates are page fractions, like ink and the pointer.
+ */
+export interface LectureZoom {
+  /** The left edge of the visible region, in page widths: 0 … 1 − 1/z. */
+  x: number
+  /** The top edge of the visible region, in page heights: 0 … 1 − 1/z. */
+  y: number
+  /** How many times closer: 1 … ZOOM_MAX. */
+  z: number
+}
+
+/**
+ * How close the zoom goes.
+ *
+ * Coordinates travel rounded to 1e-4 of the page. At ×4 one such step is
+ * under a pixel on an iPad sheet and about three on a 4K projector filled
+ * edge to edge: past that a careful line would show its steps. Four times
+ * is also enough for the purpose — a detail of a picture, a subscript in a
+ * formula — and it keeps the region re-render on the projector cheap.
+ */
+export const ZOOM_MAX = 4
+
+/** Below this the zoom is "the whole page": a pinch rarely lands on exactly 1. */
+export const ZOOM_MIN_SHOWN = 1.02
+
+/**
+ * Read a zoom from the wire or from a gesture: finite numbers, `z` clamped
+ * to `[1, ZOOM_MAX]`, the corner clamped so the region stays on the page,
+ * rounded like ink. `null` means the whole page, and so does anything below
+ * `ZOOM_MIN_SHOWN` or anything that is not a zoom at all.
+ *
+ * One function for both ends, like `laserSamples`: the server validates a
+ * console's frame with it, and every screen reads the same rule.
+ */
+export function readZoom(raw: unknown): LectureZoom | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const { x, y, z } = raw as { x?: unknown; y?: unknown; z?: unknown }
+  const zoom = Number(z)
+  if (!Number.isFinite(zoom) || zoom < ZOOM_MIN_SHOWN) return null
+  /*
+   * `z` is rounded BEFORE the room for the corner is measured from it, so a
+   * value read once reads the same the second time. The server stores what it
+   * read, every screen reads the stored value again, and the console compares
+   * the echo with what it sent (`sameZoom`). Measured from the unrounded `z`,
+   * a corner clamped at the edge of the page often came back 1e-4 off on the
+   * second read, and the console would not recognise its own echo.
+   */
+  const near = Math.round(Math.min(ZOOM_MAX, zoom) * 1e3) / 1e3
+  const room = 1 - 1 / near
+  const left = Number(x)
+  const top = Number(y)
+  if (!Number.isFinite(left) || !Number.isFinite(top)) return null
+  return {
+    x: Math.round(Math.min(room, Math.max(0, left)) * 1e4) / 1e4,
+    y: Math.round(Math.min(room, Math.max(0, top)) * 1e4) / 1e4,
+    z: near,
+  }
+}
+
+/** The same region, as far as anybody could see. `null` and `null` are the same. */
+export function sameZoom(a: LectureZoom | null | undefined, b: LectureZoom | null | undefined): boolean {
+  if (!a || !b) return !a && !b
+  return a.x === b.x && a.y === b.y && a.z === b.z
+}
+
+/* ----------------------------------------------------------- sheets */
+
+/**
+ * What a blank sheet is ruled with. Plain paper, squares for a derivation,
+ * lines for prose, a dot grid for a diagram.
+ */
+export const SHEET_PAPERS = ['plain', 'grid', 'lines', 'dots'] as const
+export type SheetPaper = (typeof SHEET_PAPERS)[number]
+
+/** A paper from the wire, or `plain` for anything that is not one. */
+export function readPaper(raw: unknown): SheetPaper {
+  return typeof raw === 'string' && (SHEET_PAPERS as readonly string[]).includes(raw) ? (raw as SheetPaper) : 'plain'
+}
+
+/**
+ * A blank sheet of the lecture and where it stands.
+ *
+ * WHY A LIST, AND WHY ON THE SERVER. A sheet used to be nothing but a
+ * negative page number the console made up (−1, −2, …), counted back from
+ * the ink: "sheet N has strokes, so sheets 1 … N were started". It could not
+ * be deleted (its number would come back from the ink of a later one), it
+ * could not stand anywhere but after the whole deck, an empty one was known
+ * only to the tab that started it, and the 51st landed silently on the 50th.
+ * Now the server keeps the sheets, in deck order, and hands out their
+ * numbers; a number is never reused within a lecture, so a frame late for a
+ * deleted sheet cannot bring it back or write onto another one.
+ *
+ * `page` stays negative: everything that already treats a negative page as
+ * a sheet (ink, the pointer, the projector's white field) keeps working.
+ */
+export interface LectureSheet {
+  /** The sheet's page number: negative, unique in the lecture, never reused. */
+  page: number
+  /**
+   * The slide this sheet follows; 0 puts it before the first slide. Sheets
+   * that follow the same slide stand in the order of this list.
+   */
+  after: number
+  /** Plain when absent. */
+  paper?: SheetPaper
+}
+
+/**
+ * Sheets per lecture, at most. They count toward `MAX_INKED_PAGES` too, and
+ * fifty is already two per slide of a long lecture; past it the console says
+ * so instead of quietly reusing the last sheet.
+ */
+export const MAX_SHEETS = 50
+
+/**
+ * The highest slide number the lecture takes for a slide. Far past any real
+ * deck: an hour and a half of lecture is a hundred slides, a scanned
+ * textbook a thousand pages.
+ *
+ * It is a bound on garbage, and the garbage is not harmless, because a slide
+ * number is walked as a count. The sequence lists every slide up to the
+ * furthest one anything names (`lectureSequence`), the server never learns
+ * the deck's length, and a screen that has not opened the deck yet walks up
+ * to the furthest slide a sheet follows. A sheet "after slide 1 000 000 000"
+ * from a buggy or hostile tab froze every such screen in the hall, and the
+ * server, building the same walk to move the hall off that sheet when it was
+ * deleted, ran out of memory and took every room of the instance down with
+ * it. So the server refuses a slide past this number the way it refuses
+ * other garbage (a turn to it does nothing, a sheet after it goes after the
+ * page being shown), and no walk is longer than this, whatever a list says.
+ */
+export const MAX_SLIDES = 10_000
+
+/**
+ * Where a sheet stands in the walk: after slide `after`, whole, with 0 for
+ * the slot in front of the first slide, and no further than `last`.
+ */
+function anchorOf(sheet: LectureSheet, last: number): number {
+  return Math.min(Math.max(0, Math.floor(sheet.after)), last)
+}
+
+/**
+ * THE ORDER THE LECTURE IS WALKED IN: slides with their sheets in place.
+ *
+ * Slide 14, its two sheets, slide 15: "next" on the second sheet is slide
+ * 15, "back" on the first is slide 14 — the derivation stands where it was
+ * made, not in a pile after the deck. One order for the console, the laptop
+ * bar, the strip and the server (which moves the hall off a deleted sheet,
+ * see `stepOff`), so that "next" means the same thing everywhere.
+ *
+ * `pages` is the deck's length; 0 when it is not known yet. A sheet that
+ * follows a slide past the end (the document was replaced by a shorter one)
+ * stands after the last slide. The walk never goes past `MAX_SLIDES`,
+ * whatever `pages` says: a screen without the deck passes a length worked out
+ * from the sheets' slides (walk.ts · `walkLength`), and the list comes over
+ * the wire.
+ */
+export function lectureSequence(pages: number, sheets: readonly LectureSheet[] | null | undefined): number[] {
+  const list = sheets ?? []
+  const last = Math.min(MAX_SLIDES, Math.max(0, Math.floor(pages)))
+  const byAnchor = new Map<number, number[]>()
+  for (const sheet of list) {
+    const anchor = anchorOf(sheet, last)
+    const group = byAnchor.get(anchor)
+    if (group) group.push(sheet.page)
+    else byAnchor.set(anchor, [sheet.page])
+  }
+  const out: number[] = [...(byAnchor.get(0) ?? [])]
+  for (let slide = 1; slide <= last; slide += 1) {
+    out.push(slide)
+    out.push(...(byAnchor.get(slide) ?? []))
+  }
+  return out
+}
+
+/**
+ * The page one step away along the sequence, or `null` at either end.
+ *
+ * A slide that is not in the sequence (the deck is still loading, so its
+ * length is not known) steps by its own number, within 1 … `MAX_SLIDES`: a
+ * step past the ceiling would be a turn the server refuses. A sheet that is
+ * not in it (deleted a moment ago) has no place to step from: `null`, and
+ * the server moves the hall off it by itself.
+ */
+export function stepIn(sequence: readonly number[], page: number, dir: 1 | -1): number | null {
+  const at = sequence.indexOf(page)
+  if (at >= 0) {
+    const next = sequence[at + dir]
+    return next === undefined ? null : next
+  }
+  if (page > 0) {
+    const next = page + dir
+    return next >= 1 && next <= MAX_SLIDES ? next : null
+  }
+  return null
+}
+
+/**
+ * Where the hall goes when the sheet it is on is deleted, or `null` when the
+ * list has no such sheet.
+ *
+ * One step back along the walk: the sheet before it at the same slide, else
+ * that slide. A sheet in front of the first slide has nothing before it, so
+ * the hall steps forward instead: to the next sheet in front of the first
+ * slide, else to slide 1. That is `stepIn` back (then forward) along
+ * `lectureSequence`, read straight off the list.
+ *
+ * Straight off the list, because the server does not know the deck's length.
+ * It used to build the walk up to the furthest slide any sheet follows to take
+ * this one step, so the cost was the largest slide number in the list rather
+ * than the list, and one absurd number was enough to stop the process (see
+ * `MAX_SLIDES`). Here it is two passes over the list at most, and the list
+ * is fifty sheets.
+ */
+export function stepOff(sheets: readonly LectureSheet[] | null | undefined, page: number): number | null {
+  const list = sheets ?? []
+  const at = list.findIndex((sheet) => sheet.page === page)
+  if (at < 0) return null
+  // The walk keeps the sheets of one slide in the order of the list.
+  const anchor = anchorOf(list[at], MAX_SLIDES)
+  for (let i = at - 1; i >= 0; i -= 1) {
+    if (anchorOf(list[i], MAX_SLIDES) === anchor) return list[i].page
+  }
+  if (anchor >= 1) return anchor
+  for (let i = at + 1; i < list.length; i += 1) {
+    if (anchorOf(list[i], MAX_SLIDES) === 0) return list[i].page
+  }
+  return 1
+}
+
+/** The sheet's place among the sheets, counting from one in deck order; 0 for a slide or an unknown sheet. */
+export function sheetNumber(sequence: readonly number[], page: number): number {
+  if (page >= 0) return 0
+  let n = 0
+  for (const p of sequence) {
+    if (p < 0) n += 1
+    if (p === page) return n
+  }
+  return 0
+}
+
+/**
+ * Why a sheet was not added, in words: there are already `MAX_SHEETS`. One
+ * copy for both ends, like `inkFullSays`. The number is filled in from the
+ * constant, so the words cannot name a different ceiling from the one the
+ * server enforces.
+ */
+export function sheetsFullSays(): string {
+  return tr('server.lectureSheetsFull', { p0: MAX_SHEETS })
 }
 
 /**
@@ -224,6 +507,22 @@ export const MAX_POINTS_PER_MESSAGE = 512
  * going into its third hour.
  */
 export const MAX_INKED_PAGES = 200
+
+/**
+ * How thin and how thick a stroke may be, in page widths. The server clamps
+ * every stroke into this range (control.ts · `case 'ink'`).
+ *
+ * Shared rather than two literals in the server, because the console now has
+ * to know the floor as well. Under the zoom a new stroke is sent at the chosen
+ * width divided by the magnification, so that it looks as thick on the
+ * console as it would at ×1. The thinnest pen at ×4 is 0.000625, just above
+ * the floor, and a thinner pen or a deeper zoom would go below it. If only the
+ * server knew the floor, it would clamp that stroke quietly and the hall would
+ * draw the line thicker than the presenter saw it. With the numbers shared,
+ * the console clamps before sending, and both ends draw the same line.
+ */
+export const INK_WIDTH_MIN = 0.0005
+export const INK_WIDTH_MAX = 0.05
 
 /**
  * WHAT COUNTS AS AN INKED PAGE — one rule for both ends.

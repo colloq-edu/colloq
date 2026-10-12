@@ -34,6 +34,7 @@ import { createSession, setRules } from '../server/src/db.js'
 import { closeControlRoom, dispatch, handleControlSocket } from '../server/src/control.js'
 import {
   addInk,
+  addSheet,
   clearInk,
   eraseInk,
   inkOf,
@@ -41,6 +42,7 @@ import {
   inkPageOf,
   startLecture,
   stopLecture,
+  turnTo,
 } from '../server/src/lecture.js'
 import { makeFile } from '../server/src/workspace.js'
 import { inkPagesOf } from '../shared/lecture.js'
@@ -127,6 +129,9 @@ function pageFrames(sock: Fake): { page: number; strokes: number }[] {
 test('the welcome batch carries the shown page — and an inventory of the rest', () => {
   const id = room()
   startLecture(id, { file: 'лекция.pdf', by: 'p_1', byName: 'Ада', color: '#c273e6' })
+  // A sheet takes ink only once it is in the list: add one, then go back.
+  assert.equal(addSheet(id, 1)?.page, -1)
+  turnTo(id, 1)
   draw(id, 1, 's1')
   draw(id, 2, 's2')
   draw(id, 2, 's3')

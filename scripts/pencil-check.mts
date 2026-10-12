@@ -48,6 +48,13 @@
  * `rapidStrokes`, `palm.down / move / up`, `laserHold`, `measure`. A scenario
  * is a few helper calls and one or two `check`s. Between scenarios the sheet
  * is wiped (`clean()`), so that the numbers of one do not end up in another.
+ *
+ * The fourth console's scenarios (15–21: the pinch and the magnifier the hall
+ * mirrors, the pointer phrase, the highlighter under the ink, the sheets)
+ * read what the hall is TOLD from the server's memory (this process runs the
+ * server: `lectureOf`, `inkPageOf`) and what it SHOWS from the student's
+ * canvases: two screens showing the same region of a page show the same ink
+ * at the same fractions of their frames (`inkBoxExpr`).
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -148,6 +155,13 @@ const { createSession } = await import('../server/src/db.js')
 const { createTeacher } = await import('../server/src/admin/store.js')
 const { issueStaffCookie } = await import('../server/src/admin/auth.js')
 const { STAFF_COOKIE } = await import('../shared/admin.js')
+/*
+ * The server runs in this very process, so what the hall is TOLD (the
+ * lecture's page, zoom and sheets, the strokes it keeps) is read straight
+ * from its memory, as lecture-sync-check reads the page. What the hall SHOWS
+ * is still measured on the student's screen.
+ */
+const { lectureOf, inkPageOf } = await import('../server/src/lecture.js')
 await new Promise((r) => setTimeout(r, 700))
 createSession(ROOM, 'Стенд пера', null)
 const teacher = createTeacher({ name: 'Ада', email: 'ada@pencil.local', role: 'owner' })!
@@ -366,6 +380,13 @@ const PULT = {
   red: 'Перо, красное',
   black: 'Перо, чёрное',
   notes: 'Заметки',
+  // The magnifier at ×1, and the same key once zoomed: the way back.
+  zoom: 'Лупа',
+  zoomWhole: 'Весь слайд',
+  // "＋ Лист": a sheet right after the page on screen. Back is "Back".
+  newSheet: 'Новый лист',
+  more: 'Ещё',
+  dropSheet: 'Удалить лист',
 } as const
 const press = (aria: string) =>
   `const b=document.querySelector('[aria-label=${JSON.stringify(aria)}]');` +
@@ -457,6 +478,20 @@ async function open(width: number, height: number): Promise<boolean> {
       4000,
     )
     await wait(300)
+  }
+  /*
+   * Every geometry starts where the first one did: slide 1, the whole page,
+   * no sheets. The server keeps all three across a reopened console, and a
+   * scenario that failed half-way must cost its own check, not every check
+   * of the next geometry (`wholePage`, `noSheets`).
+   */
+  if (ok) {
+    await wholePage()
+    await noSheets()
+    for (let i = 0; i < 4 && hallPage() > 1; i += 1) {
+      await pult.js(press(PULT.prev))
+      await untilHere(() => hallPage() === 1, 'the hall is back on slide 1', 3000)
+    }
   }
   return ok
 }
@@ -821,10 +856,11 @@ async function clean(): Promise<void> {
     `const b=[...document.querySelectorAll('button')].find(x=>(x.textContent||'').trim()==='Стереть всё?'); b&&b.click(); return 1`,
   )
   const empty = (cls: string) => `${inkExpr(cls, [])}.all <= 0`
-  await until(student, empty('ink-dry'), 'the ink was wiped for the student', 8000)
+  // The highlighter has a canvas of its own, under the pen ink (`ink-mark`).
+  await until(student, `${empty('ink-dry')} && ${empty('ink-mark')}`, 'the ink was wiped for the student', 8000)
   await until(
     pult,
-    `${empty('ink-dry')} && ${empty('ink-wet')}`,
+    `${empty('ink-dry')} && ${empty('ink-wet')} && ${empty('ink-mark')}`,
     'the ink was wiped on the console',
     8000,
   )
@@ -887,6 +923,167 @@ async function penTool(): Promise<void> {
       await key('Escape', 27)
     await until(pult, `!document.querySelector('[data-pult-palette]')`, 'the palette closed', 2000)
   }
+}
+
+/* ---------------------------------------------- zoom and sheets: readings */
+
+/** "Such a control is on the screen", by its name. */
+const named = (aria: string) => `!!document.querySelector('[aria-label=${JSON.stringify(aria)}]')`
+
+/** Wait for what the harness itself can see: the server's memory, or a value it computes. */
+async function untilHere(test: () => boolean | Promise<boolean>, what: string, ms = 8000): Promise<boolean> {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if (await test()) return true
+    await wait(100)
+  }
+  console.log(`  (gave up waiting: ${what})`)
+  return false
+}
+
+interface Zoom {
+  x: number
+  y: number
+  z: number
+}
+/** The zoom the server holds: what every screen of the hall is told to show. `null` is the whole page. */
+const hallZoom = (): Zoom | null => lectureOf(ROOM)?.zoom ?? null
+const zoomWords = (zoom: Zoom | null): string => (zoom ? `${zoom.x} ${zoom.y} ${zoom.z}` : 'whole page')
+/** The console's own view, as `.pult-sheet` marks it (`data-pult-zoom`); `null` at the whole page. */
+const pultZoom = (): Promise<string | null> =>
+  pult.js(`return document.querySelector('.pult-sheet')?.getAttribute('data-pult-zoom') ?? null`)
+/** The console and the server agree on one zoom, the one `test` wants. */
+const zoomAgreed = async (test: (zoom: Zoom | null) => boolean): Promise<boolean> => {
+  const zoom = hallZoom()
+  return test(zoom) && (await pultZoom()) === (zoom ? zoomWords(zoom) : null)
+}
+/** A zoom as the magnifier key writes it: "×2,5", "×2", one decimal, the Russian comma. */
+const times = (z: number): string => `×${String(Math.round(z * 10) / 10).replace('.', ',')}`
+
+/**
+ * Back to the whole page by the console's own key, "0", and the server must
+ * agree. Every geometry starts there: the server keeps the zoom across a
+ * reconnect and a reopened console adopts it, so a scenario that failed
+ * half-way would otherwise hand the next geometry a magnified sheet, and
+ * every stroke there would land somewhere else.
+ */
+async function wholePage(): Promise<boolean> {
+  if (await zoomAgreed((zoom) => zoom === null)) return true
+  await key('0', 48, 'Digit0')
+  return untilHere(() => zoomAgreed((zoom) => zoom === null), 'the whole page again', 6000)
+}
+
+/** The lecture's sheets, as the server lists them, in the order they stand. */
+const sheetsNow = () => lectureOf(ROOM)?.sheets ?? []
+/** The page the hall is on, by the server's word: a sheet is a negative number. */
+const hallPage = () => lectureOf(ROOM)?.page ?? 0
+
+/**
+ * Leave the lecture without sheets. The sheets scenario deletes its own
+ * through the sheet menu; this is the safety net for one that failed
+ * half-way, so that "Next" from slide 1 does not lead the next geometry onto
+ * a forgotten sheet. It sends exactly the frame the menu's "Delete" sends,
+ * through the console's own socket.
+ */
+async function noSheets(): Promise<boolean> {
+  const left = sheetsNow().map((sheet) => sheet.page)
+  if (left.length === 0) return true
+  await pult.js(
+    `const s=${liveSocket};if(!s) return 0;` +
+      `for(const page of ${JSON.stringify(left)}) s.send(JSON.stringify({t:'lecture:sheet',op:'drop',page}));return 1`,
+  )
+  return untilHere(() => sheetsNow().length === 0, 'the sheets are gone', 6000)
+}
+
+/**
+ * WHERE THE INK IS, as a box in fractions of the page's frame: the union of
+ * the opaque pixels of the given canvases. Every screen fits the page by
+ * "contain" and shows the same region of it, so two screens that show the
+ * same region show the same strokes at the same fractions of their frames,
+ * whatever their sizes. Comparing these boxes is comparing regions: a hall
+ * left at the whole page while the console zoomed shows the strokes
+ * elsewhere, and smaller.
+ *
+ * The bitmaps are read, not what is on the glass: during a motion a canvas
+ * is moved by CSS until the view rests and it is repainted. So the boxes are
+ * compared at rest, polled until they agree.
+ */
+interface Frac {
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+}
+const inkBoxExpr = (classes: string[]) =>
+  `(()=>{let box=null;for(const cls of ${JSON.stringify(classes)}){const c=document.querySelector('canvas.'+cls);` +
+  `if(!c||c.width<2||c.height<2) continue;const W=c.width,H=c.height;const d=c.getContext('2d').getImageData(0,0,W,H).data;` +
+  `let x0=W,y0=H,x1=-1,y1=-1;for(let i=3,p=0;i<d.length;i+=4,p+=1){if(d[i]<=16) continue;const x=p%W,y=(p-x)/W;` +
+  `if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y}` +
+  `if(x1<0) continue;const b={x0:x0/W,y0:y0/H,x1:(x1+1)/W,y1:(y1+1)/H};` +
+  `box=box?{x0:Math.min(box.x0,b.x0),y0:Math.min(box.y0,b.y0),x1:Math.max(box.x1,b.x1),y1:Math.max(box.y1,b.y1)}:b}` +
+  `return box})()`
+/** The console's ink: its own strokes are wet until the echo, then dry. */
+const pultInk = (): Promise<Frac | null> => pult.js(`return ${inkBoxExpr(['ink-dry', 'ink-wet'])}`)
+const hallInk = (): Promise<Frac | null> => student.js(`return ${inkBoxExpr(['ink-dry'])}`)
+/** A page box as a screen zoomed to `zoom` shows it: the region stretched over the whole frame. */
+const zoomedBox = (box: Frac | null, zoom: Zoom | null): Frac | null =>
+  box && zoom
+    ? {
+        x0: (box.x0 - zoom.x) * zoom.z,
+        y0: (box.y0 - zoom.y) * zoom.z,
+        x1: (box.x1 - zoom.x) * zoom.z,
+        y1: (box.y1 - zoom.y) * zoom.z,
+      }
+    : box
+/**
+ * The same place to within 1.5 % of the frame: a pixel or two of
+ * anti-aliasing on a projector-sized frame, against the 7 % and more that
+ * the zooms below (×2.25 and up) move the edges of the landmark, a cross a
+ * tenth of the page wide around its middle.
+ */
+const sameBox = (a: Frac | null, b: Frac | null, slack = 0.015): boolean =>
+  !!a &&
+  !!b &&
+  Math.abs(a.x0 - b.x0) <= slack &&
+  Math.abs(a.y0 - b.y0) <= slack &&
+  Math.abs(a.x1 - b.x1) <= slack &&
+  Math.abs(a.y1 - b.y1) <= slack
+const boxWords = (b: Frac | null): string =>
+  b ? `${b.x0.toFixed(3)}…${b.x1.toFixed(3)} × ${b.y0.toFixed(3)}…${b.y1.toFixed(3)}` : 'no ink'
+/** Read a box until it is what `want` wants (the view settled and was repainted), or give the last one. */
+async function boxUntil(
+  read: () => Promise<Frac | null>,
+  want: (box: Frac | null) => boolean,
+  ms = 6000,
+): Promise<Frac | null> {
+  const deadline = Date.now() + ms
+  let last = await read()
+  while (!want(last) && Date.now() < deadline) {
+    await wait(200)
+    last = await read()
+  }
+  return last
+}
+/** A box once it stops changing: the echo has landed and the repaint is done. */
+async function restingBox(read: () => Promise<Frac | null>, ms = 6000): Promise<Frac | null> {
+  const deadline = Date.now() + ms
+  let last: Frac | null = null
+  while (Date.now() < deadline) {
+    await wait(250)
+    const now = await read()
+    if (now && sameBox(now, last, 0.002)) return now
+    last = now
+  }
+  return last
+}
+
+/** A console screenshot under a name, with `--shot`. */
+async function shoot(name: string): Promise<void> {
+  if (!SHOT) return
+  const shot = await pult.send('Page.captureScreenshot', { format: 'png' })
+  const file = path.resolve(`pencil-check-${name}.png`)
+  writeFileSync(file, Buffer.from(shot.result.data as string, 'base64'))
+  console.log(`  screenshot: ${file}`)
 }
 
 /**
@@ -966,11 +1163,13 @@ async function laserHold(points: [number, number][], stepMs = 4) {
   await pult.js(`window.__laser.release=performance.now()-window.__laser.t0; return 1`)
   await pen('mouseReleased', px[px.length - 1])
   /*
-   * After lifting, watch until the end of the shape's life: it holds for
-   * HOLD_MS and fades over FADE_MS (900 + 900 in InkLayer), and all that time it
-   * must not flare up again: hovering no longer picks it up.
+   * After lifting, watch until the end of the shape's life and a little past
+   * it: a shape is a phrase of one press, which holds for PHRASE_HOLD_MS after
+   * its last lift and fades over PHRASE_FADE_MS (1500 + 600 in laser.ts), so
+   * it is dark by 2.1 s. All that time and 600 ms after it, it must not flare
+   * up again: hovering no longer picks it up.
    */
-  await wait(2200)
+  await wait(2800)
   const raw = (await pult.js(`window.__laser.stop=true; return window.__laser`)) as {
     first: number
     firstRed: number
@@ -1258,7 +1457,19 @@ if (RAZBOR) {
     await pult.js(press(PULT.pen))
     await wait(200)
     const pal = await pult.js(`return !!document.querySelector('[data-pult-palette]')`)
-    await stroke([[0.2, 0.4], [0.6, 0.45]], { speed: 250 })
+    /*
+     * The stroke starts on the sheet BESIDE the palette, not under it: the
+     * palette is 304 px wide now, and at 1180×820 a stroke from 20 % of the
+     * sheet started on the red pen's chip and picked a colour instead. Its
+     * card is pressable and is not the sheet; what this scenario asks is
+     * whether the first stroke on the sheet draws while the palette is open.
+     */
+    const g7 = await geometry()
+    const right = (await pult.js(
+      `const p=document.querySelector('[data-pult-palette] > *');return p?p.getBoundingClientRect().right:0`,
+    )) as number
+    const from = Math.min(0.6, Math.max(0.2, (right - g7.canvas.left) / g7.canvas.width + 0.05))
+    await stroke([[from, 0.4], [Math.min(0.95, from + 0.35), 0.45]], { speed: 250 })
     await wait(1200)
     const m = await measure()
     const palAfter = await pult.js(`return !!document.querySelector('[data-pult-palette]')`)
@@ -1572,39 +1783,64 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
   /* ------------------------------------------ "next" is always somewhere */
 
   /*
-   * "Next": in landscape the thumbnail in the reading strip under the slide
-   * (with the notes column open or folded); in portrait the dock's footer
-   * says it in words, the next slide's title (Paper N2), and there is no
-   * picture to demand. Visible, inside the window, off the rail, and with
-   * nothing pressable in it.
+   * "Next": in landscape the next item's tile in the strip under the slide
+   * (board 06: the slide's thumbnail, captioned "2 · дальше"), and, with the
+   * notes column open, the column's footer in words as well; in portrait the
+   * dock's footer says it in words, after the ribbon of chips (board 08), and
+   * there is no picture to demand. Visible, inside the window, off the rail
+   * and clear of "Fullscreen".
+   *
+   * The tile used to be a picture with nothing pressable in it. It is a page
+   * of the strip now, like every other tile, and a tap on it goes there: that
+   * is checked too, and the hall must follow.
    */
   {
-    const nextBox = () =>
+    const NEXT_TILE = '[data-pult-film] [data-pult-next]'
+    const nextBox = (selector: string) =>
       pult.js(
-        `const n=document.querySelector('[data-pult-next]');if(!n) return null;const r=n.getBoundingClientRect();` +
+        `const n=document.querySelector(${JSON.stringify(selector)});if(!n) return null;const r=n.getBoundingClientRect();` +
           `const over=e=>{if(!e) return false;const o=e.getBoundingClientRect();return r.left<o.right&&r.right>o.left&&r.top<o.bottom&&r.bottom>o.top};` +
-          `const fs=document.querySelector('.pult-sheet [aria-label="Во весь экран"]');` +
+          `const fs=document.querySelector('.pult-sheet [aria-label="Во весь экран"]');const c=n.querySelector('canvas');` +
+          // The words, without the ribbon's chips: "ДАЛЬШЕ Stranica 2 · затем 3".
+          `const words=[...n.children].filter(e=>!e.matches('[data-pult-ribbon]')).map(e=>e.innerText||'').join(' ').replace(/\\s+/g,' ').trim();` +
           `return {w:Math.round(r.width),h:Math.round(r.height),inside:r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight,` +
-          `rail:over(document.querySelector('.pult-rail')),fs:over(fs),pe:getComputedStyle(n).pointerEvents,canvas:!!n.querySelector('canvas')}`,
+          `rail:over(document.querySelector('.pult-rail')),fs:over(fs),drawn:!!c&&c.width>1,page:n.getAttribute('data-pult-page'),` +
+          `words:(words||n.innerText||'').replace(/\\s+/g,' ').trim().slice(0,60)}`,
       ) as Promise<{
         w: number
         h: number
         inside: boolean
         rail: boolean
         fs: boolean
-        pe: string
-        canvas: boolean
+        drawn: boolean
+        page: string | null
+        words: string
       } | null>
     const seen = (b: Awaited<ReturnType<typeof nextBox>>) =>
       b
-        ? `${b.w}×${b.h} inside ${b.inside} · over the rail ${b.rail} · over "Fullscreen" ${b.fs} · pointer-events ${b.pe}`
+        ? `${b.w}×${b.h} inside ${b.inside} · over the rail ${b.rail} · over "Fullscreen" ${b.fs} · "${b.words}"${b.page ? ` · page ${b.page}${b.drawn ? ', drawn' : ', no picture'}` : ''}`
         : 'none'
-    const ok = (b: Awaited<ReturnType<typeof nextBox>>) =>
-      !!b && b.w >= 100 && b.inside && !b.rail && !b.fs && (H > W ? true : b.pe === 'none' && b.canvas)
-    if (W > H) await until(pult, `!!document.querySelector('[data-pult-next] canvas')`, 'the next thumbnail', 6000)
-    else await until(pult, `!!document.querySelector('[data-pult-next]')`, 'the next footer', 6000)
-    const plain = await nextBox()
-    check(ok(plain), '"next" is on the console', seen(plain))
+    const placed = (b: Awaited<ReturnType<typeof nextBox>>) => !!b && b.inside && !b.rail && !b.fs
+    /** The strip's tile: page 2, its thumbnail drawn, "2 · дальше" under it. */
+    const tileOk = (b: Awaited<ReturnType<typeof nextBox>>) =>
+      placed(b) && b!.w >= 90 && b!.page === '2' && b!.drawn && /2\s*·\s*дальше/i.test(b!.words)
+    /** A footer in words: "ДАЛЬШЕ" and the next slide (its title, or "Слайд 2"). */
+    const wordsOk = (b: Awaited<ReturnType<typeof nextBox>>) =>
+      placed(b) && b!.w >= 100 && /дальше/i.test(b!.words) && /2/.test(b!.words)
+    if (W > H) {
+      await until(
+        pult,
+        `(document.querySelector(${JSON.stringify(NEXT_TILE + ' canvas')})?.width||0)>1`,
+        'the next thumbnail',
+        6000,
+      )
+      const plain = await nextBox(NEXT_TILE)
+      check(tileOk(plain), '"next" is on the console', seen(plain))
+    } else {
+      await until(pult, `!!document.querySelector('[data-pult-next]')`, 'the next footer', 6000)
+      const plain = await nextBox('[data-pult-next]')
+      check(wordsOk(plain), '"next" is on the console', seen(plain))
+    }
     if (W > H) {
       const notesKey = () =>
         pult.js(`return document.querySelector('[aria-label=${JSON.stringify(PULT.notes)}]')?.getAttribute('aria-pressed')`)
@@ -1620,15 +1856,39 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
       const wasOpen = (await notesKey()) === 'true'
       const opened = await notesTo(true)
       await wait(300)
-      const withNotes = await nextBox()
+      await until(
+        pult,
+        `(document.querySelector(${JSON.stringify(NEXT_TILE + ' canvas')})?.width||0)>1`,
+        'the next thumbnail beside the notes',
+        6000,
+      )
+      const withNotes = await nextBox(NEXT_TILE)
+      // The notes column says it in words too, at its foot.
+      const column = await nextBox('aside[data-pult-notes] [data-pult-next]')
       const state = await notesKey()
       // Leave the notes as they were: the scenarios below write on the lower bands.
       await notesTo(wasOpen)
       check(
-        opened && state === 'true' && ok(withNotes),
+        opened && state === 'true' && tileOk(withNotes) && wordsOk(column),
         '"next" stays with the notes sheet open',
-        `notes ${state} · ${seen(withNotes)}`,
+        `notes ${state} · strip ${seen(withNotes)} · column ${seen(column)}`,
       )
+      /* The tile is a page of the strip: a tap goes there, for the hall too. */
+      await until(pult, `!!document.querySelector(${JSON.stringify(NEXT_TILE)})`, 'the next tile', 4000)
+      await pult.js(
+        `const b=document.querySelector(${JSON.stringify(NEXT_TILE)});if(!b) throw new Error('no next tile'); b.click(); return 1`,
+      )
+      const went = await until(student, `${hallExpr} === '2'`, 'a tap on the next tile turned the hall', 6000)
+      const gaugeThere = (await measure()).gauge
+      await pult.js(press(PULT.prev))
+      const back = await until(student, `${hallExpr} === '1'`, 'the hall is back on the first', 6000)
+      check(
+        went && gaugeThere === '2' && back,
+        'a tap on the "next" tile turns the page there',
+        `hall ${went ? '1 → 2' : 'stayed'} · gauge ${gaugeThere || '—'} · back ${back ? 'on 1' : 'not on 1'}`,
+      )
+      // Page 1 renders again before the palm scenarios below write on it (the pen waits for the picture).
+      await wait(300)
     }
   }
 
@@ -1829,6 +2089,18 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
       '7. a two-finger tap undoes the last stroke',
       `was ${before.student.dry.bands.join(' / ')} px → became ${m.student.dry.bands.join(' / ')} px`,
     )
+    /*
+     * Two fingers are a pinch now as well, and the tap must stay Undo and
+     * nothing else: a pinch commits only once the fingers spread by a tenth
+     * or slide 16 px (ink.ts · `pinchCommits`), and the stand's tap does
+     * neither.
+     */
+    const tapZoom = { hall: hallZoom(), pult: await pultZoom() }
+    check(
+      tapZoom.hall === null && tapZoom.pult === null,
+      '7. …and zooms nothing',
+      `hall ${zoomWords(tapZoom.hall)} · console ${tapZoom.pult ?? 'whole page'}`,
+    )
     await clean()
     /*
      * And during writing the same tap does nothing: the pen is in contact, the
@@ -1922,12 +2194,28 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
       '8. a frame with the pointer does not drop',
       `frames longer than 34 ms: ${laser.slowFrames}/${laser.frameGaps} (cold ${cold.slowFrames}/${cold.frameGaps}) · worst ${laser.worstFrame} ms (cold ${cold.worstFrame})`,
     )
+    /*
+     * A lifted shape is a phrase of one press, and a phrase holds before it
+     * fades (laser.ts · PHRASE_HOLD_MS 1500, PHRASE_FADE_MS 600): still lit
+     * 1.2 s after the lift, which the old 900 ms hold of each shape was not,
+     * and dark by 2.1 s, 2.6 s at the latest with the observer's own frames.
+     */
     check(
-      laser.offAfterMs >= 0 && !laser.relit && !cold.relit,
-      '8. the lifted pointer goes out and does not flare up again',
-      laser.offAfterMs < 0
-        ? 'did not go out within 2.2 s'
-        : `went out after ${laser.offAfterMs} ms · flare after: ${laser.relit || cold.relit ? 'yes' : 'no'}`,
+      laser.offAfterMs > 1200 && cold.offAfterMs > 1200,
+      '8. the lifted pointer still shines 1.2 s after the lift',
+      `went out after ${laser.offAfterMs} ms (cold ${cold.offAfterMs} ms)`,
+    )
+    check(
+      laser.offAfterMs >= 0 &&
+        laser.offAfterMs <= 2600 &&
+        cold.offAfterMs >= 0 &&
+        cold.offAfterMs <= 2600 &&
+        !laser.relit &&
+        !cold.relit,
+      '8. the lifted pointer goes out within 2.6 s and does not flare up again',
+      laser.offAfterMs < 0 || cold.offAfterMs < 0
+        ? 'did not go out within 2.8 s'
+        : `went out after ${laser.offAfterMs} ms (cold ${cold.offAfterMs} ms) · flare after: ${laser.relit || cold.relit ? 'yes' : 'no'}`,
     )
     /*
      * The pointer is a palette tool, as in GoodNotes/Notability: choosing the
@@ -1997,10 +2285,10 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
     check(beam, '9. the beam lights up on touch and reaches the hall', beam ? 'arrived' : 'no')
 
     /*
-     * A traced shape HOLDS and then fades out whole: HOLD_MS = 900 and
-     * FADE_MS = 900 in InkLayer. First we make sure that half a second after
-     * the pen lifts it is still in place (that is "pinned it, it stays"), then
-     * we wait for it to melt away.
+     * A traced shape HOLDS and then fades out whole: PHRASE_HOLD_MS = 1500
+     * and PHRASE_FADE_MS = 600 in laser.ts. First we make sure that half a
+     * second after the pen lifts it is still in place (that is "pinned it, it
+     * stays"), then we wait for it to melt away.
      */
     await wait(500)
     const held = (await measure()).live.red
@@ -2235,6 +2523,722 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
     const file = path.resolve(`pencil-check-${W}x${H}.png`)
     writeFileSync(file, Buffer.from(shot.result.data as string, 'base64'))
     console.log(`  screenshot: ${file}`)
+  }
+
+  /* ============================================================ console v4 */
+
+  /*
+   * What the fourth console added, on every geometry: the zoom the hall
+   * mirrors (15–18), the pointer phrase (19), the highlighter under the ink
+   * (20) and the sheets the server keeps (21). The hall is the student's
+   * screen; what it is TOLD is read from the server's memory.
+   */
+
+  /* ------------------------------------ 15. a pinch: the hall sees the detail */
+
+  {
+    await penTool()
+    await wholePage()
+    await clean()
+    /*
+     * A landmark in the middle of the page, drawn at ×1: a cross. Whatever
+     * the view, every screen must show it at the same place of its frame, and
+     * the console where the zoom the server holds puts it.
+     */
+    await stroke([[0.45, 0.44], [0.55, 0.56]], { speed: 160 })
+    await stroke([[0.45, 0.56], [0.55, 0.44]], { speed: 160 })
+    const whole = await restingBox(pultInk)
+    const hallWhole = await boxUntil(hallInk, (box) => sameBox(box, whole))
+    const g = await geometry()
+    const mid = { x: g.canvas.left + g.canvas.width * 0.5, y: g.canvas.top + g.canvas.height * 0.5 }
+    const fingers = (d: number) => [
+      { x: mid.x - d, y: mid.y, id: 971, radiusX: 6, radiusY: 6 },
+      { x: mid.x + d, y: mid.y, id: 972, radiusX: 6, radiusY: 6 },
+    ]
+    /*
+     * The pen rests first: within 600 ms of its last touch two fingers on
+     * the sheet are the writing hand's heel and pinky, and they never zoom.
+     * Then two real touches 80 px apart spread to 200 about the middle of the
+     * sheet: ×2.5, the region 0.3…0.7 of the page.
+     */
+    await wait(800)
+    await pult.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [fingers(40)[0]] })
+    await wait(30)
+    await pult.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: fingers(40) })
+    let midway: Zoom | null = null
+    for (let i = 1; i <= 12; i += 1) {
+      await wait(16)
+      await pult.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: fingers(40 + i * 5) })
+      if (i === 8) midway = hallZoom()
+    }
+    await wait(60)
+    await pult.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    const agreed = await untilHere(
+      () => zoomAgreed((zoom) => zoom !== null && zoom.z > 2),
+      'the console and the server settled on the pinch',
+      6000,
+    )
+    const zoom = hallZoom()
+    check(
+      agreed &&
+        zoom !== null &&
+        Math.abs(zoom.z - 2.5) <= 0.15 &&
+        Math.abs(zoom.x - 0.3) <= 0.02 &&
+        Math.abs(zoom.y - 0.3) <= 0.02 &&
+        midway !== null &&
+        midway.z < zoom.z,
+      '15. a pinch zooms the console, and the hall follows the fingers',
+      `server ${zoomWords(zoom)} · console ${(await pultZoom()) ?? 'whole page'} · while the fingers moved ${zoomWords(midway)}`,
+    )
+    const pultSees = await boxUntil(pultInk, (box) => sameBox(box, zoomedBox(whole, zoom)))
+    const hallSees = await boxUntil(hallInk, (box) => sameBox(box, pultSees))
+    check(
+      sameBox(hallWhole, whole) && sameBox(pultSees, zoomedBox(whole, zoom)) && sameBox(hallSees, pultSees),
+      '15. the hall shows the region the console shows',
+      `landmark at ×1 ${boxWords(whole)} (hall ${boxWords(hallWhole)}) · zoomed: console ${boxWords(pultSees)}, hall ${boxWords(hallSees)}`,
+    )
+    const keyWords = (await pult.js(
+      `return (document.querySelector('[aria-label=${JSON.stringify(PULT.zoomWhole)}]')?.textContent||'').replace(/\\s+/g,' ').trim()`,
+    )) as string
+    const armrest = (await pult.js(
+      `const a=document.querySelector('[data-pult-hall-zoom]');return a?a.getAttribute('data-pult-hall-zoom')+' '+(a.textContent||'').replace(/\\s+/g,' ').trim():''`,
+    )) as string
+    const lupaGone = (await pult.js(`return !${named(PULT.zoom)}`)) === true
+    check(
+      zoom !== null &&
+        keyWords.includes(times(zoom.z)) &&
+        /весь слайд/i.test(keyWords) &&
+        lupaGone &&
+        armrest.startsWith(`${zoom.z} `) &&
+        armrest.includes(times(zoom.z)),
+      '15. the magnifier key reads the zoom, the armrest what the hall sees',
+      `key "${keyWords}" · armrest "${armrest}"`,
+    )
+    await shoot(`zoom-${W}x${H}`)
+    /*
+     * A stroke on the magnified detail: in page space it lands where the pen
+     * was in the region (x + fx / z), and it is the chosen width divided by
+     * the zoom, so on the glass it is as thick as at ×1.
+     */
+    const known = new Set(inkPageOf(ROOM, 1).map((s) => s.id))
+    const tip = { fx: 0.2, fy: 0.25 }
+    await stroke([[tip.fx, tip.fy], [tip.fx + 0.12, tip.fy + 0.04]], { speed: 200 })
+    await untilHere(() => inkPageOf(ROOM, 1).some((s) => !known.has(s.id)), 'the stroke over the zoom reached the server', 6000)
+    const fresh = inkPageOf(ROOM, 1).find((s) => !known.has(s.id))
+    const want = zoom ? { x: zoom.x + tip.fx / zoom.z, y: zoom.y + tip.fy / zoom.z, w: 0.005 / zoom.z } : null
+    const landed =
+      !!fresh &&
+      !!want &&
+      Math.abs(fresh.points[0] - want.x) <= 0.003 &&
+      Math.abs(fresh.points[1] - want.y) <= 0.003 &&
+      Math.abs(fresh.width - want.w) <= 0.0002
+    const pultAfter = await restingBox(pultInk)
+    const hallAfter = await boxUntil(hallInk, (box) => sameBox(box, pultAfter))
+    check(
+      landed && sameBox(hallAfter, pultAfter),
+      '15. a stroke on the zoomed detail lands where the pen was, in the hall too',
+      fresh && want
+        ? `first point ${fresh.points[0].toFixed(4)}, ${fresh.points[1].toFixed(4)} (want ${want.x.toFixed(4)}, ${want.y.toFixed(4)}) · width ${fresh.width} (want ${want.w.toFixed(4)}) · console ${boxWords(pultAfter)} · hall ${boxWords(hallAfter)}`
+        : 'no new stroke on the server',
+    )
+    /* "0" on the keyboard: the whole slide again, everywhere. */
+    await key('0', 48, 'Digit0')
+    const unzoomed = await untilHere(() => zoomAgreed((z) => z === null), 'the whole page after "0"', 6000)
+    const wholeAgain =
+      zoom && pultAfter
+        ? {
+            x0: zoom.x + pultAfter.x0 / zoom.z,
+            y0: zoom.y + pultAfter.y0 / zoom.z,
+            x1: zoom.x + pultAfter.x1 / zoom.z,
+            y1: zoom.y + pultAfter.y1 / zoom.z,
+          }
+        : null
+    const pultBack = await boxUntil(pultInk, (box) => sameBox(box, wholeAgain))
+    const hallBack = await boxUntil(hallInk, (box) => sameBox(box, wholeAgain))
+    check(
+      unzoomed &&
+        sameBox(pultBack, wholeAgain) &&
+        sameBox(hallBack, wholeAgain) &&
+        (await pult.js(`return ${named(PULT.zoom)}`)) === true,
+      '15. "0" takes the console and the hall back to the whole slide',
+      `server ${zoomWords(hallZoom())} · console ${boxWords(pultBack)} · hall ${boxWords(hallBack)} · want ${boxWords(wholeAgain)}`,
+    )
+  }
+
+  /* ------------------------------- 16. the magnifier: a frame, then "Whole slide" */
+
+  {
+    /*
+     * "Лупа" arms the magnifier: the pen drags a frame instead of a stroke,
+     * the frame fills the sheet, and the key gives the pen back at once, to
+     * write on the detail. Zoomed, the key is the way back: "Весь слайд".
+     * The landmark and the stroke of 15 are still on the page; the hall's
+     * view is read by them.
+     */
+    const page = await restingBox(pultInk)
+    await pult.js(press(PULT.zoom))
+    await wait(200)
+    const armed = await pult.js(`return ${pressed(PULT.zoom)}`)
+    // From 30 % to 70 % of the sheet: a 0.4 square of the page, ×2.5 about its middle.
+    const strokesBefore = inkPageOf(ROOM, 1).length
+    await stroke([[0.3, 0.3], [0.7, 0.7]], { speed: 250 })
+    const framed = await untilHere(() => zoomAgreed((z) => z !== null), 'the frame zoomed the console and the server', 6000)
+    const zoom = hallZoom()
+    const penBack = await pult.js(`return ${pressed(PULT.pen)}`)
+    const turned = (await pult.js(`return ${named(PULT.zoomWhole)} && !${named(PULT.zoom)}`)) === true
+    const strokesAfter = inkPageOf(ROOM, 1).length
+    check(
+      armed === 'true' &&
+        framed &&
+        zoom !== null &&
+        Math.abs(zoom.z - 2.5) <= 0.1 &&
+        Math.abs(zoom.x - 0.3) <= 0.01 &&
+        Math.abs(zoom.y - 0.3) <= 0.01 &&
+        penBack === 'true' &&
+        turned &&
+        strokesAfter === strokesBefore,
+      '16. the magnifier: a frame drawn with the pen fills the sheet, and the pen is back',
+      `armed ${armed} · server ${zoomWords(zoom)} · pen aria-pressed=${penBack} · key ${turned ? '"Весь слайд"' : 'unchanged'} · strokes ${strokesBefore} → ${strokesAfter}`,
+    )
+    const hallFramed = await boxUntil(hallInk, (box) => sameBox(box, zoomedBox(page, zoom)))
+    await pult.js(press(PULT.zoomWhole))
+    const back = await untilHere(() => zoomAgreed((z) => z === null), '"Весь слайд" took the zoom away', 6000)
+    const hallBack = await boxUntil(hallInk, (box) => sameBox(box, page))
+    const lupa = (await pult.js(`return ${named(PULT.zoom)} && !${named(PULT.zoomWhole)}`)) === true
+    check(
+      sameBox(hallFramed, zoomedBox(page, zoom)) && back && sameBox(hallBack, page) && lupa,
+      '16. the hall follows the frame, and "Весь слайд" takes everyone back',
+      `hall framed ${boxWords(hallFramed)} (want ${boxWords(zoomedBox(page, zoom))}) · after "Весь слайд": server ${zoomWords(hallZoom())}, hall ${boxWords(hallBack)} · key ${lupa ? '"Лупа"' : 'not back'}`,
+    )
+  }
+
+  /* --------------------------------------------- 17. a turn resets the zoom */
+
+  {
+    /*
+     * A page turn resets the zoom for everyone (the server's `turnTo`), and
+     * coming back does not bring it back: the next slide starts whole, and
+     * so does the previous one when it is shown again.
+     */
+    const page = await restingBox(pultInk)
+    // "=" twice: ×1.5, then ×2.25, about the middle of the view.
+    await key('=', 187, 'Equal')
+    await wait(150)
+    await key('=', 187, 'Equal')
+    const keyed = await untilHere(
+      () => zoomAgreed((z) => z !== null && Math.abs(z.z - 2.25) < 0.01),
+      '"=" twice zoomed ×2.25',
+      6000,
+    )
+    const zoom = hallZoom()
+    const hallZoomed = await boxUntil(hallInk, (box) => sameBox(box, zoomedBox(page, zoom)))
+    await pult.js(press(PULT.next))
+    const turned = await until(student, `${hallExpr} === '2'`, 'the hall turned to page 2', 8000)
+    const reset = await untilHere(
+      async () => hallPage() === 2 && (await zoomAgreed((z) => z === null)),
+      'the turn reset the zoom',
+      6000,
+    )
+    const keyBack = (await pult.js(`return ${named(PULT.zoom)}`)) === true
+    await pult.js(press(PULT.prev))
+    const back = await until(student, `${hallExpr} === '1'`, 'the hall is back on page 1', 8000)
+    const pultWhole = await boxUntil(pultInk, (box) => sameBox(box, page))
+    const hallWhole = await boxUntil(hallInk, (box) => sameBox(box, page))
+    check(
+      keyed &&
+        sameBox(hallZoomed, zoomedBox(page, zoom)) &&
+        turned &&
+        reset &&
+        keyBack &&
+        back &&
+        hallZoom() === null &&
+        sameBox(pultWhole, page) &&
+        sameBox(hallWhole, page),
+      '17. a page turn resets the zoom, on the console and in the hall',
+      `"=" twice → ${zoomWords(zoom)} (hall ${sameBox(hallZoomed, zoomedBox(page, zoom)) ? 'followed' : `at ${boxWords(hallZoomed)}`}) · after the turn ${reset ? 'whole page' : zoomWords(hallZoom())} · back on page 1: server ${zoomWords(hallZoom())}, console ${boxWords(pultWhole)}, hall ${boxWords(hallWhole)}`,
+    )
+    await clean()
+  }
+
+  /* -------------------------------------------- 18. the palm does not zoom */
+
+  {
+    /*
+     * The writing hand's heel and pinky are two contacts, and they creep: the
+     * review's R1 drift, 20 px between five quick strokes. The heel is
+     * palm-sized and ignored; the pinky alone is one finger. Then the same
+     * hand as older WebKit reports it, every contact small: two "fingers"
+     * that land right after the pen lifts and spread. Neither may zoom: no
+     * pinch under the pen, nor within 600 ms of its last touch.
+     */
+    await wholePage()
+    const g = await geometry()
+    const b5 = bands(5)
+    await palm.down(onCanvas(g, 0.8, 0.9), { contacts: 2, via: 'dom' })
+    await wait(300)
+    await rapidStrokes(5, { speed: 110 }, async () => {
+      await palm.move(6, 20, 2)
+    })
+    await settled(b5)
+    const m = await measure(b5)
+    await palm.up()
+    const drifted = { hall: hallZoom(), pult: await pultZoom() }
+    await stroke([[0.2, 0.1], [0.4, 0.12]], { speed: 120 })
+    const small = (d: number): Contact[] => [
+      { id: 981, x: g.canvas.left + g.canvas.width * 0.6 - d, y: g.canvas.top + g.canvas.height * 0.88, r: 9 },
+      { id: 982, x: g.canvas.left + g.canvas.width * 0.6 + d, y: g.canvas.top + g.canvas.height * 0.88, r: 9 },
+    ]
+    for (const [i, contact] of small(25).entries()) await palm.dom('pointerdown', contact, i === 0)
+    for (let s = 1; s <= 6; s += 1) {
+      await wait(20)
+      for (const [i, contact] of small(25 + s * 7).entries()) await palm.dom('pointermove', contact, i === 0)
+    }
+    for (const [i, contact] of small(67).entries()) await palm.dom('pointerup', contact, i === 0)
+    await wait(600)
+    const spread = { hall: hallZoom(), pult: await pultZoom() }
+    check(
+      m.student.dry.bands.every((n) => n > 0) &&
+        drifted.hall === null &&
+        drifted.pult === null &&
+        spread.hall === null &&
+        spread.pult === null,
+      '18. a palm drifting by the pen zooms nothing, and every stroke lands',
+      `student ${m.student.dry.bands.join(' / ')} px · after the heel ${zoomWords(drifted.hall)} · after two small contacts by the pen ${zoomWords(spread.hall)}`,
+    )
+    await clean()
+  }
+
+  /* ------------------------------ 19. a pointer phrase: lit while one writes */
+
+  {
+    /*
+     * A WORD WRITTEN WITH THE POINTER STAYS LIT WHILE IT IS BEING WRITTEN.
+     * Three strokes 400 ms apart are one phrase (laser.ts · PHRASE_HOLD_MS
+     * 1500): the first is still at full brightness when the third lifts, the
+     * whole phrase holds 1.5 s after the last lift and then goes out
+     * together over 0.6 s, on the console and in the hall. Under the old rule
+     * each stroke burnt out on its own clock, 0.9 + 0.9 s after its own lift,
+     * and the start of a word was gone before its end was written.
+     *
+     * A watcher in each page counts the red in three boxes, one per stroke,
+     * every 50 ms; the last lift is marked on both clocks.
+     */
+    await pult.js(press(PULT.laser))
+    await wait(250)
+    const watch =
+      `const cs=['ink-live','ink-wet'].map(k=>document.querySelector('canvas.'+k)).filter(Boolean);` +
+      `const red=(f0,f1)=>{let n=0;for(const c of cs){if(c.width<2) continue;const x0=Math.floor(c.width*f0),x1=Math.ceil(c.width*f1);` +
+      `const y0=Math.floor(c.height*0.16),y1=Math.ceil(c.height*0.42);const d=c.getContext('2d').getImageData(x0,y0,x1-x0,y1-y0).data;` +
+      `for(let i=0;i<d.length;i+=16) if(d[i+3]>24&&d[i]>150&&d[i+1]<120) n+=1}return n};` +
+      `const w={t0:performance.now(),s:[],stop:false,lift:-1};window.__phrase=w;` +
+      `const tick=()=>{if(w.stop) return;w.s.push({t:performance.now()-w.t0,a:red(0.08,0.36),b:red(0.38,0.66),c:red(0.68,0.96)});setTimeout(tick,50)};` +
+      `tick();return 1`
+    await pult.js(watch)
+    await student.js(watch)
+    const g = await geometry()
+    const strokes: [number, number][] = [
+      [0.12, 0.32],
+      [0.42, 0.62],
+      [0.72, 0.92],
+    ]
+    for (const [i, [from, to]] of strokes.entries()) {
+      if (i > 0) await wait(400)
+      await strokeAt([onCanvas(g, from, 0.32), onCanvas(g, (from + to) / 2, 0.24), onCanvas(g, to, 0.32)], {
+        speed: 150,
+      })
+    }
+    const lifted = `window.__phrase.lift=performance.now()-window.__phrase.t0;return 1`
+    await pult.js(lifted)
+    await student.js(lifted)
+    await wait(2900)
+    type Sample = { t: number; a: number; b: number; c: number }
+    type Phrase = { lift: number; s: Sample[] }
+    const read = `const w=window.__phrase;w.stop=true;return {lift:w.lift,s:w.s}`
+    const onPult = (await pult.js(read)) as Phrase
+    const inHall = (await student.js(read)) as Phrase
+    const near = (p: Phrase, t: number): Sample | undefined =>
+      p.s.reduce<Sample | undefined>((best, x) => (!best || Math.abs(x.t - t) < Math.abs(best.t - t) ? x : best), undefined)
+    const lit = (x: Sample | undefined) => !!x && x.a > 0 && x.b > 0 && x.c > 0
+    const say = (x: Sample | undefined) => (x ? `${x.a}/${x.b}/${x.c}` : '—')
+    /** When, after the last lift, a box (or all three) first has no red: −1 if never. */
+    const off = (p: Phrase, box: 'a' | 'b' | 'c' | 'all') => {
+      const x = p.s.find((y) => y.t > p.lift && (box === 'all' ? y.a + y.b + y.c === 0 : y[box] === 0))
+      return x ? Math.round(x.t - p.lift) : -1
+    }
+    const relit = (p: Phrase) => {
+      const dark = p.s.find((y) => y.t > p.lift && y.a + y.b + y.c === 0)
+      return dark ? p.s.some((y) => y.t > dark.t && y.a + y.b + y.c > 0) : false
+    }
+    const each = (['a', 'b', 'c'] as const).map((box) => off(onPult, box))
+    const pultOff = off(onPult, 'all')
+    const hallOff = off(inHall, 'all')
+    check(
+      lit(near(onPult, onPult.lift)) && lit(near(inHall, inHall.lift + 300)),
+      '19. a pointer phrase: the first stroke still shines when the third lifts',
+      `red per stroke at the last lift: console ${say(near(onPult, onPult.lift))} · hall ${say(near(inHall, inHall.lift + 300))}`,
+    )
+    check(
+      lit(near(onPult, onPult.lift + 1200)) && lit(near(inHall, inHall.lift + 1200)),
+      '19. the whole phrase still shines 1.2 s after the last lift',
+      `console ${say(near(onPult, onPult.lift + 1200))} · hall ${say(near(inHall, inHall.lift + 1200))}`,
+    )
+    check(
+      pultOff >= 1800 &&
+        pultOff <= 2600 &&
+        Math.min(...each) >= 0 &&
+        Math.max(...each) - Math.min(...each) <= 250 &&
+        !relit(onPult) &&
+        hallOff >= 1700 &&
+        hallOff <= 2900 &&
+        !relit(inHall),
+      '19. …and goes out whole 2.1–2.6 s after the last lift, everywhere',
+      `console dark after ${pultOff} ms (strokes ${each.join(' / ')} ms) · hall dark after ${hallOff} ms · relit: console ${relit(onPult) ? 'yes' : 'no'}, hall ${relit(inHall) ? 'yes' : 'no'}`,
+    )
+    await pult.js(press(PULT.pen))
+    await wait(300)
+  }
+
+  /* ----------------------------------- 20. the highlighter lies under the ink */
+
+  {
+    /*
+     * The highlighter goes UNDER the pen: on a canvas of its own at the
+     * bottom of the ink layer (`ink-mark`), multiplied with the page, so a
+     * pen line and the slide's text under a highlight stay crisp. A marker
+     * drawn over a pen line must land there on both screens, never on the
+     * pen ink's canvas, where it would cover the line.
+     */
+    await penTool()
+    await stroke([[0.2, 0.62], [0.6, 0.62]], { speed: 200 })
+    await pult.js(press(PULT.marker))
+    await wait(200)
+    const markerOn = await pult.js(`return ${pressed(PULT.marker)}`)
+    await stroke([[0.17, 0.62], [0.63, 0.625]], { speed: 260 })
+    const yellow = (cls: string) =>
+      `(()=>{const c=document.querySelector('canvas.${cls}');if(!c||c.width<2) return 0;` +
+      `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let n=0;` +
+      `for(let i=0;i<d.length;i+=4) if(d[i+3]>16&&d[i]>200&&d[i+1]>150&&d[i+2]<120) n+=1;return n})()`
+    const penInk = (cls: string) =>
+      `(()=>{const c=document.querySelector('canvas.${cls}');if(!c||c.width<2) return 0;` +
+      `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let n=0;` +
+      `for(let i=0;i<d.length;i+=4) if(d[i+3]>200&&d[i]+d[i+1]+d[i+2]<250) n+=1;return n})()`
+    // The console's own strokes are wet until their echo: wait until both have settled.
+    await until(
+      pult,
+      `${yellow('ink-mark')} > 0 && ${yellow('ink-wet')} === 0 && ${penInk('ink-dry')} > 0`,
+      'the highlight and the line settled on the console',
+      8000,
+    )
+    await until(student, `${yellow('ink-mark')} > 0 && ${penInk('ink-dry')} > 0`, 'the highlight reached the hall', 8000)
+    const look = (tab: Tab) =>
+      tab.js(
+        `const m=document.querySelector('canvas.ink-mark'),k=document.querySelector('canvas.ink-dry');` +
+          `return {mark:${yellow('ink-mark')},dry:${yellow('ink-dry')},wet:${yellow('ink-wet')},pen:${penInk('ink-dry')},` +
+          `blend:m?getComputedStyle(m).mixBlendMode:'none',under:!!m&&!!k&&!!(m.compareDocumentPosition(k)&Node.DOCUMENT_POSITION_FOLLOWING)}`,
+      ) as Promise<{ mark: number; dry: number; wet: number; pen: number; blend: string; under: boolean }>
+    const here = await look(pult)
+    const there = await look(student)
+    const ok = (s: typeof here) => s.mark > 0 && s.dry === 0 && s.wet === 0 && s.pen > 0 && s.blend === 'multiply' && s.under
+    const words = (s: typeof here) =>
+      `highlight on ink-mark ${s.mark} px, on ink-dry ${s.dry}, on ink-wet ${s.wet} · pen line ${s.pen} px · ${s.blend}${s.under ? ', under the ink' : ', NOT under the ink'}`
+    check(
+      markerOn === 'true' && ok(here) && ok(there),
+      '20. the highlighter lies under the pen ink, on its own canvas, on both screens',
+      `console: ${words(here)} · hall: ${words(there)}`,
+    )
+    await shoot(`highlighter-${W}x${H}`)
+    await penTool()
+    await clean()
+  }
+
+  /* --------------------------------------- 21. sheets: made, walked, deleted */
+
+  {
+    /*
+     * "НОВЫЙ ЛИСТ" TWICE, AND THE LECTURE KNOWS BOTH. The server owns the
+     * list: a press asks for a sheet right after the page on screen, the
+     * server numbers it, puts it there and turns the hall to it, and the
+     * console follows. Labels go by place ("Л2", "лист 2 из 2"), the strip
+     * (the ribbon in portrait) shows both in place, "Back" walks from Л2
+     * through Л1 to the slide, and a sheet goes from its own menu with a
+     * question that names its strokes, moving the hall back one step.
+     */
+    const landscape = W > H
+    const STRIP = landscape ? '[data-pult-film]' : '[data-pult-ribbon]'
+    const gaugeJs = `((document.querySelector('[aria-label=${JSON.stringify(PULT.gauge)}]')?.innerText)||'').replace(/\\s+/g,' ').trim()`
+    const gaugeWords = () => pult.js(`return ${gaugeJs}`) as Promise<string>
+    const hallSays = () =>
+      student.js(`return ((/лист \\d+ из \\d+/i.exec(document.body.innerText||'')||[''])[0]).toLowerCase()`) as Promise<string>
+    const tiles = () =>
+      pult.js(
+        `const s=document.querySelector(${JSON.stringify(STRIP)});if(!s) return [];` +
+          `return [...s.querySelectorAll('[data-pult-page]')].map(b=>({page:+b.getAttribute('data-pult-page'),name:b.getAttribute('aria-label'),current:b.getAttribute('aria-current')==='page'}))`,
+      ) as Promise<{ page: number; name: string; current: boolean }[]>
+    const tileWords = (list: { page: number; name: string; current: boolean }[]) =>
+      list.map((t) => `${t.name}${t.current ? ' (current)' : ''}`).join(' · ') || 'no tiles'
+    const menuKey = `document.querySelector('[data-pult-menu-key]')`
+    const openMenu = async (): Promise<boolean> => {
+      await until(pult, `!!${menuKey}`, 'the current sheet offers its menu', 4000)
+      await pult.js(`const b=${menuKey};if(!b) throw new Error('the current sheet has no menu key'); b.click(); return 1`)
+      return until(pult, `!!document.querySelector('[data-pult-menu]')`, 'the sheet menu opened', 4000)
+    }
+
+    await noSheets()
+    await pult.js(press(PULT.newSheet))
+    const one = await untilHere(
+      () => sheetsNow().length === 1 && hallPage() === sheetsNow()[0].page,
+      'the first sheet, and the hall on it',
+      8000,
+    )
+    const p1 = sheetsNow()[0]?.page ?? 0
+    await until(pult, `/Л\\s*1/.test(${gaugeJs})`, 'the console followed the hall to Л1', 6000)
+    await pult.js(press(PULT.newSheet))
+    const two = await untilHere(
+      () => sheetsNow().length === 2 && hallPage() === sheetsNow().find((s) => s.page !== p1)?.page,
+      'the second sheet, and the hall on it',
+      8000,
+    )
+    const p2 = sheetsNow().find((s) => s.page !== p1)?.page ?? 0
+    await until(pult, `/Л\\s*2/.test(${gaugeJs})`, 'the console followed the hall to Л2', 6000)
+    await until(student, `/лист 2 из 2/i.test(document.body.innerText||'')`, 'the hall says "лист 2 из 2"', 6000)
+    const gauge2 = await gaugeWords()
+    const hall2 = await hallSays()
+    const order = sheetsNow()
+      .map((s) => `${s.page}@${s.after}`)
+      .join(' ')
+    check(
+      one &&
+        two &&
+        p1 < 0 &&
+        p2 < 0 &&
+        order === `${p1}@1 ${p2}@1` &&
+        /Л\s*2/.test(gauge2) &&
+        (landscape ? /лист 2 из 2/i.test(gauge2) : /лист/i.test(gauge2)) &&
+        hall2 === 'лист 2 из 2',
+      '21. «Новый лист» twice: Л1 and Л2 after the slide, the hall on Л2',
+      `sheets ${order || 'none'} · hall on ${hallPage()} ("${hall2}") · gauge "${gauge2}"`,
+    )
+    const shown = await tiles()
+    const at = (page: number) => shown.findIndex((t) => t.page === page)
+    check(
+      shown[at(p1)]?.name === 'Лист 1' &&
+        shown[at(p2)]?.name === 'Лист 2' &&
+        shown[at(p2)]?.current === true &&
+        at(1) >= 0 &&
+        at(1) < at(p1) &&
+        at(p1) < at(p2) &&
+        (at(2) < 0 || at(p2) < at(2)),
+      `21. the ${landscape ? 'strip' : 'ribbon'} shows both sheets in place, Л2 current`,
+      tileWords(shown),
+    )
+    await shoot(`sheets-${W}x${H}`)
+
+    // One stroke on Л2, for the question before it goes.
+    await until(
+      pult,
+      `!!document.querySelector('.ink-input')?.className.includes('pointer-events-auto')`,
+      'the pen is live on the sheet',
+      6000,
+    )
+    await stroke([[0.3, 0.4], [0.6, 0.45]], { speed: 200 })
+    const inked = await untilHere(() => inkPageOf(ROOM, p2).length === 1, 'the stroke on Л2 reached the server', 6000)
+
+    await pult.js(press(PULT.prev))
+    const toL1 = await untilHere(() => hallPage() === p1, 'Back went to Л1', 6000)
+    await until(pult, `/Л\\s*1/.test(${gaugeJs})`, 'the console on Л1', 6000)
+    const gauge1 = await gaugeWords()
+    await pult.js(press(PULT.prev))
+    const toSlide = await untilHere(() => hallPage() === 1, 'Back went on to the slide', 6000)
+    await until(student, `${hallExpr} === '1'`, 'the hall shows slide 1', 6000)
+    const gaugeSlide = (await measure()).gauge
+    // On the slide, "next" is the sheet after it: the strip's next tile, or the footer's words.
+    const nextHere = (await pult.js(
+      landscape
+        ? `const n=document.querySelector('[data-pult-film] [data-pult-next]');return n?n.getAttribute('data-pult-page')+' '+(n.innerText||'').replace(/\\s+/g,' ').trim():''`
+        : `const n=document.querySelector('[data-pult-next]');return n?[...n.children].filter(e=>!e.matches('[data-pult-ribbon]')).map(e=>e.innerText||'').join(' ').replace(/\\s+/g,' ').trim():''`,
+    )) as string
+    check(
+      inked &&
+        toL1 &&
+        /Л\s*1/.test(gauge1) &&
+        toSlide &&
+        gaugeSlide === '1' &&
+        (landscape ? nextHere.startsWith(`${p1} `) && /Л1\s*·\s*дальше/i.test(nextHere) : /Лист 1/.test(nextHere)),
+      '21. «Back» walks from Л2 through Л1 to the slide, where "next" is Л1',
+      `Л2 → ${toL1 ? 'Л1' : hallPage()} (gauge "${gauge1}") → ${toSlide ? 'slide 1' : hallPage()} (gauge ${gaugeSlide || '—'}) · next "${nextHere}"`,
+    )
+
+    // Forward again through Л1 to Л2, and its menu.
+    await pult.js(press(PULT.next))
+    await untilHere(() => hallPage() === p1, 'Next went to Л1', 6000)
+    await until(pult, `/Л\\s*1/.test(${gaugeJs})`, 'the console on Л1', 6000)
+    await pult.js(press(PULT.next))
+    await untilHere(() => hallPage() === p2, 'Next went to Л2', 6000)
+    await until(pult, `/Л\\s*2/.test(${gaugeJs})`, 'the console on Л2', 6000)
+    const menuOpen = await openMenu()
+    const menuName = (await pult.js(`return document.querySelector('[data-pult-menu]')?.getAttribute('aria-label') ?? ''`)) as string
+    await pult.js(
+      `const b=document.querySelector('[data-pult-menu] [data-paper="grid"]');if(!b) throw new Error('no "Клетка" in the menu'); b.click(); return 1`,
+    )
+    const ruled = await untilHere(() => sheetsNow().find((s) => s.page === p2)?.paper === 'grid', 'the paper reached the server', 4000)
+    await until(
+      pult,
+      `document.querySelector('[data-pult-menu] [data-paper="grid"]')?.getAttribute('aria-checked')==='true'`,
+      'the menu marks the new paper',
+      3000,
+    )
+    const stays = (await pult.js(
+      `return !!document.querySelector('[data-pult-menu]') && document.querySelector('[data-pult-menu] [data-paper="grid"]')?.getAttribute('aria-checked')==='true'`,
+    )) as boolean
+    check(
+      menuOpen && menuName === 'Лист 2 из 2' && ruled && stays,
+      "21. the current sheet's tile opens its menu, and «Клетка» rules it at once",
+      `menu ${menuOpen ? `"${menuName}"` : 'did not open'} · paper on the server ${sheetsNow().find((s) => s.page === p2)?.paper ?? 'plain'} · menu ${stays ? 'stays, «Клетка» checked' : 'closed or unchecked'}`,
+    )
+    if (landscape) {
+      /*
+       * The strip's tile is a picture of the sheet: its paper and its ink
+       * (SheetCard), redrawn a moment after the pen lifts. It is by its ink
+       * that one finds "the sheet where I derived the limit" again. (The
+       * portrait ribbon's chips carry the paper and "Л2", not the ink.)
+       */
+      const tile = JSON.stringify(`${STRIP} [data-pult-page="${p2}"]`)
+      const tileInk = `[...(document.querySelector(${tile})?.querySelectorAll('svg path')??[])].filter(p=>p.getAttribute('stroke-linejoin')==='round').length`
+      const pictured = await until(pult, `${tileInk} === 1`, "Л2's tile shows its stroke", 4000)
+      const ruledTile = await pult.js(`return !!document.querySelector(${tile})?.querySelector('svg path[stroke="#dce2ee"]')`)
+      check(
+        pictured && ruledTile === true,
+        "21. Л2's tile in the strip shows its paper and its stroke",
+        `${await pult.js(`return ${tileInk}`)} ink path(s) on the tile · paper ${ruledTile ? 'ruled' : 'plain'}`,
+      )
+    }
+    await shoot(`sheet-menu-${W}x${H}`)
+    await pult.js(press(PULT.dropSheet))
+    await until(pult, `!!document.querySelector('[data-pult-drop]')`, 'the question before deleting', 4000)
+    const question2 = (await pult.js(
+      `return (document.querySelector('[data-pult-menu]')?.innerText||'').replace(/\\s+/g,' ').trim()`,
+    )) as string
+    await pult.js(`document.querySelector('[data-pult-drop]').click(); return 1`)
+    const dropped = await untilHere(
+      () => sheetsNow().length === 1 && sheetsNow()[0].page === p1 && hallPage() === p1,
+      'Л2 is gone and the hall is on Л1',
+      8000,
+    )
+    await until(pult, `/Л\\s*1/.test(${gaugeJs})`, 'the console on Л1', 6000)
+    await until(student, `/лист 1 из 1/i.test(document.body.innerText||'')`, 'the hall says "лист 1 из 1"', 6000)
+    const hall1 = await hallSays()
+    const left = (await tiles()).filter((t) => t.page < 0)
+    check(
+      /Удалить лист 2 и его 1 штрих\?/.test(question2) &&
+        dropped &&
+        inkPageOf(ROOM, p2).length === 0 &&
+        hall1 === 'лист 1 из 1' &&
+        left.length === 1 &&
+        left[0].page === p1,
+      '21. Л2 goes from its menu, its stroke with it, and the hall moves back to Л1',
+      `asked "${question2}" · sheets ${sheetsNow().map((s) => s.page).join(',') || 'none'} · hall on ${hallPage()} ("${hall1}") · ${landscape ? 'strip' : 'ribbon'}: ${tileWords(left)}`,
+    )
+
+    // The empty Л1 too: the question says it is empty, and the hall is back on the slide.
+    const menuAgain = await openMenu()
+    await pult.js(press(PULT.dropSheet))
+    await until(pult, `!!document.querySelector('[data-pult-drop]')`, 'the question before deleting', 4000)
+    const question1 = (await pult.js(
+      `return (document.querySelector('[data-pult-menu]')?.innerText||'').replace(/\\s+/g,' ').trim()`,
+    )) as string
+    await pult.js(`document.querySelector('[data-pult-drop]')?.click(); return 1`)
+    const none = await untilHere(() => sheetsNow().length === 0 && hallPage() === 1, 'no sheets, the hall on slide 1', 8000)
+    await until(student, `${hallExpr} === '1'`, 'the hall shows slide 1', 6000)
+    const gaugeEnd = (await measure()).gauge
+    check(
+      menuAgain && /Удалить пустой лист 1\?/.test(question1) && none && gaugeEnd === '1',
+      '21. the empty Л1 goes too, and the hall is back on the slide',
+      `asked "${question1}" · sheets ${sheetsNow().length} · hall on ${hallPage()} · gauge ${gaugeEnd || '—'}`,
+    )
+    await noSheets()
+  }
+
+  /* ------------------------------ 22. a pen held still straightens the line */
+
+  {
+    /*
+     * HOLD THE PEN AT THE END AND THE LINE STRAIGHTENS (ink.ts ·
+     * STRAIGHT_HOLD_MS 550): a slightly wobbly line rests under a pen held
+     * perfectly still (no events at all, as a resting Pencil may send none),
+     * and on the console, and only there, a ring closes round the tip
+     * (`window.__inkLat.hold`): nothing for the first 150 ms of the rest, then
+     * closing, full at the snap, gone right after it. On the lift the room
+     * gets the line as ONE stroke of two points, the freehand taken back, and
+     * one Undo removes it whole.
+     */
+    await penTool()
+    await clean()
+    const g = await geometry()
+    const pen = (type: 'mousePressed' | 'mouseMoved' | 'mouseReleased', fx: number, fy: number) =>
+      pult.send('Input.dispatchMouseEvent', {
+        type,
+        ...onCanvas(g, fx, fy),
+        button: 'left',
+        buttons: type === 'mouseReleased' ? 0 : 1,
+        clickCount: 1,
+        pointerType: 'pen',
+        force: type === 'mouseReleased' ? 0 : 0.5,
+      })
+    await pult.js(
+      `const w={s:[],stop:false,t0:performance.now(),rest:-1};window.__ring=w;` +
+        `const tick=()=>{if(w.stop) return;const h=window.__inkLat&&window.__inkLat.hold;` +
+        `w.s.push({t:performance.now()-w.t0,c:h?h.closed:-1});requestAnimationFrame(tick)};requestAnimationFrame(tick);return 1`,
+    )
+    const wobble = (i: number) => 0.5 + 0.004 * Math.sin(i * 1.7)
+    await pen('mousePressed', 0.2, wobble(0))
+    for (let i = 1; i <= 24; i += 1) {
+      await wait(8)
+      await pen('mouseMoved', 0.2 + 0.4 * (i / 24), wobble(i))
+    }
+    await pult.js(`window.__ring.rest=performance.now()-window.__ring.t0;return 1`)
+    await wait(900)
+    await pen('mouseReleased', 0.6, wobble(24))
+    const ring = (await pult.js(`const w=window.__ring;w.stop=true;return {rest:w.rest,s:w.s}`)) as {
+      rest: number
+      s: { t: number; c: number }[]
+    }
+    const after = ring.s.filter((x) => x.t >= ring.rest)
+    const firstShown = after.find((x) => x.c >= 0)
+    const closing = after.some((x) => x.c >= 0.2 && x.c <= 0.8)
+    const full = after.find((x) => x.c >= 0.999)
+    const gone = full ? after.find((x) => x.t > full.t && x.c < 0) : undefined
+    const one = await untilHere(
+      () => inkPageOf(ROOM, 1).length === 1 && inkPageOf(ROOM, 1)[0].points.length === 4,
+      'the room has the straight line alone',
+      6000,
+    )
+    const line = inkPageOf(ROOM, 1)[0]
+    const straight =
+      one &&
+      Math.abs(line.points[0] - 0.2) <= 0.01 &&
+      Math.abs(line.points[2] - 0.6) <= 0.01 &&
+      Math.abs(line.points[1] - 0.5) <= 0.01 &&
+      Math.abs(line.points[3] - 0.5) <= 0.01
+    const hallLine = await boxUntil(hallInk, (box) => !!box && box.x1 - box.x0 > 0.35 && box.y1 - box.y0 < 0.03)
+    check(
+      !!firstShown &&
+        firstShown.t - ring.rest >= 100 &&
+        closing &&
+        !!full &&
+        full.t - ring.rest >= 450 &&
+        !!gone &&
+        gone.t - full.t <= 300 &&
+        straight &&
+        !!hallLine &&
+        hallLine.x1 - hallLine.x0 > 0.35 &&
+        hallLine.y1 - hallLine.y0 < 0.03,
+      '22. a pen held still straightens the line, and a ring on the console counts it down',
+      `ring: shown ${firstShown ? Math.round(firstShown.t - ring.rest) : '—'} ms into the rest, closing ${closing ? 'seen' : 'not seen'}, full at ${full ? Math.round(full.t - ring.rest) : '—'} ms, gone ${gone && full ? Math.round(gone.t - full.t) : '—'} ms later · room: ${inkPageOf(ROOM, 1).length} stroke(s), ${line ? line.points.map((n) => n.toFixed(3)).join(',') : '—'} · hall ${boxWords(hallLine)}`,
+    )
+    await pult.js(press(PULT.undo))
+    const undone = await untilHere(() => inkPageOf(ROOM, 1).length === 0, 'Undo took the line back', 6000)
+    check(undone, '22. one Undo takes the straight line back whole', `${inkPageOf(ROOM, 1).length} stroke(s) left`)
+    await clean()
   }
 
   if (!first) continue
@@ -2539,6 +3543,30 @@ if (!RAZBOR && !sizeArg) {
       opened && outside.length === 0 && turn,
       'the rail fits the window, "Back" and "Next" whole',
       outside.length ? `outside: ${outside.join(' · ')}` : `all keys inside · turn keys ${turn ? 'whole' : 'cut'}`,
+    )
+    /*
+     * A tight rail gives keys up rather than overflow, but never the
+     * magnifier or "＋ Лист" for good: what has no room on the rail is a row
+     * of "More".
+     */
+    const onRail = async (name: string): Promise<boolean> =>
+      (await pult.js(`return !!document.querySelector('.pult-rail [aria-label=${JSON.stringify(name)}]')`)) === true
+    const where2 = { zoom: (await onRail(PULT.zoom)) ? 'rail' : '', sheet: (await onRail(PULT.newSheet)) ? 'rail' : '' }
+    if (!where2.zoom || !where2.sheet) {
+      await pult.js(press(PULT.more))
+      await until(pult, `!!document.querySelector('.pult-drawer')`, 'the "More" sheet', 3000)
+      const rows = (await pult.js(
+        `return [...document.querySelectorAll('.pult-drawer button')].map(b=>(b.innerText||'').replace(/\\s+/g,' ').trim())`,
+      )) as string[]
+      if (!where2.zoom && rows.some((r) => r.startsWith(PULT.zoom))) where2.zoom = 'More'
+      if (!where2.sheet && rows.some((r) => r.startsWith(PULT.newSheet))) where2.sheet = 'More'
+      await key('Escape', 27)
+      await until(pult, `!document.querySelector('.pult-drawer')`, 'the "More" sheet closed', 3000)
+    }
+    check(
+      opened && !!where2.zoom && !!where2.sheet,
+      'the magnifier and «Новый лист» are on the rail or in "More"',
+      `magnifier: ${where2.zoom || 'nowhere'} · «Новый лист»: ${where2.sheet || 'nowhere'}`,
     )
     if (SHOT) {
       const shot = await pult.send('Page.captureScreenshot', { format: 'png' })

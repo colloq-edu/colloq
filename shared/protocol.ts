@@ -19,7 +19,7 @@ import type {
   KernelStatus,
 } from './notebook'
 export type { CellLock, CouncilSettings } from './notebook'
-import type { InkStroke, LectureDevice, LectureState } from './lecture'
+import type { InkStroke, LectureDevice, LectureState, LectureZoom, SheetPaper } from './lecture'
 
 export type ParticipantRole = 'host' | 'participant'
 
@@ -677,6 +677,30 @@ export type ControlClientMessage =
   /** A black screen: turns off the projection, leaving the page on the presenter's console. */
   | { t: 'lecture:blank'; on: boolean }
   /**
+   * Zoom into a part of the page the presenter is on (`LectureZoom`), or
+   * back to the whole page with `null`.
+   *
+   * `page` names the page this zoom is for: a frame that arrives after a page
+   * turn is dropped instead of zooming the new page. A pinch sends at the
+   * pointer's tick; `final` marks the value the hand settled on, which the
+   * server stores in the state and delivers to every socket for certain,
+   * while the frames of the motion itself may be skipped for a lagging one.
+   */
+  | { t: 'lecture:zoom'; page: number; zoom: LectureZoom | null; final?: boolean }
+  /**
+   * The blank sheets (`LectureSheet`). The server owns the list and hands out
+   * the numbers; the console only says what to do.
+   *
+   * `add` puts a new sheet right after page `after` (a slide or a sheet) and
+   * turns the projection to it; `drop` deletes a sheet with its ink, moving
+   * the hall off it if it was there; `paper` changes what it is ruled with.
+   * An `add` past `MAX_SHEETS` is answered to the sender alone with an
+   * `error` in words (`sheetsFullSays`), and nothing else happens.
+   */
+  | { t: 'lecture:sheet'; op: 'add'; after: number; paper?: SheetPaper }
+  | { t: 'lecture:sheet'; op: 'drop'; page: number }
+  | { t: 'lecture:sheet'; op: 'paper'; page: number; paper: SheetPaper }
+  /**
    * Append to a pencil stroke.
    *
    * In points, not the whole stroke at the end: the hall must see the line
@@ -792,6 +816,14 @@ export type ControlClientMessage =
        * straight line from the old spot to the new one.
        */
       mark?: number
+      /**
+       * Which phrase this press belongs to (laser.ts · `PHRASE_HOLD_MS`).
+       * Strokes written in a row share one, and the hall keeps them lit
+       * together and lets them fade together, exactly as the console grouped
+       * them, instead of guessing the grouping from gaps the network has
+       * stretched.
+       */
+      trail?: number
       /** Every sample since the previous frame: `x, y, t` triples (lecture.ts · LaserSamples). */
       pts?: number[]
     }
@@ -1172,6 +1204,13 @@ export type ControlServerMessage =
    */
   | { t: 'lecture'; state: LectureState | null }
   /**
+   * The zoom on the shown page moved: the live motion of a pinch, or where it
+   * settled. Not a whole `lecture` frame on purpose: twenty-five of those a
+   * second would make every tab re-run everything that depends on the
+   * lecture. The settled value is also in `LectureState.zoom`.
+   */
+  | { t: 'lecture:zoom'; page: number; zoom: LectureZoom | null }
+  /**
    * The lecture's ink — a FULL replacement of everything the tab holds.
    *
    * Comes on connection and after "erase everything". How many pages travel
@@ -1262,6 +1301,8 @@ export type ControlServerMessage =
         shape: 'dot' | 'line'
         /** Which press: a new number is a new shape. */
         mark?: number
+        /** Which phrase the press belongs to: presses of one phrase fade together. */
+        trail?: number
         /** The samples, in order, as `x, y, t` triples on the presenter's clock. */
         pts?: number[]
       } | null

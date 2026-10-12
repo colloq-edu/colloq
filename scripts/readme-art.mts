@@ -1971,12 +1971,12 @@ function lectureArt(): Scene {
     line: '#dce3ef',
     label: '#0a6e96',
     red: '#d4162f', // INKS[1] in web/src/components/lecture/pult.ts, the landing's underline
-    green: '#0c7a64', // INKS[2], the landing's arrow
+    green: '#0c7a64', // INKS[3], the landing's arrow
     highlight: '#fff0ad', // .lecture-formula > span on the landing
   }
 
-  const LASER = '#ff2b1d' // LASER_RED, ConsoleView.svelte
-  const MARKER = '#ffd60a80' // MARKER, ConsoleView.svelte
+  const LASER = '#ff2b1d' // LASER_RED in web/src/components/lecture/laser.ts
+  const MARKER = '#ffd60a80' // the yellow highlighter, MARKERS[0] in pult.ts (#ffd60a8c there)
   const ALEX = '#c273e6' // a participant colour (shared/protocol.ts)
   const TAG_INK = '#06203a'
 

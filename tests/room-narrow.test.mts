@@ -112,6 +112,65 @@ test('the file bar: the refusal reason shrinks, not the "Run" button', () => {
   assert.match(bar, /class="truncate text-2xs text-muted">\{user\.name\}/, 'so are the names of the others')
 })
 
+/** The presenter's bar in LectureView: from its marker to the next branch of the bar. */
+function presenterBar(view: string): string {
+  const at = view.indexOf('data-lecture-bar')
+  assert.notEqual(at, -1, 'the presenter bar is marked')
+  return view.slice(view.lastIndexOf('<div', at), view.indexOf('{:else if presenting}', at))
+}
+
+test('the presenter bar: the strip gives way and End stays whole at the edge', () => {
+  const bar = presenterBar(code(read(LECTURE)))
+  /*
+   * Every word and four pens came to 1117 px, while a laptop with the room's
+   * panels open leaves the bar 660–820: "Project" and "End" stood past the
+   * right edge, out of reach, and "1 / 12" stood in three lines. Wrapping
+   * would take a second row from the slide on every such laptop; the bar
+   * gives way in steps instead (see the next test), and where even the steps
+   * run out (a phone) the strip scrolls under a fade, as the notebook's run
+   * bar does. Nothing is squeezed: the keys keep their width.
+   */
+  assert.match(bar, /class="min-w-0 flex-1 overflow-x-auto overflow-y-hidden[^"]*"/, 'the strip does not scroll')
+  assert.match(
+    bar,
+    /<div class="flex h-full w-max min-w-full items-stretch">/,
+    'the keys are squeezed instead of keeping their width',
+  )
+  assert.match(bar, /\{#if stripMore\}/, 'nothing says the strip runs on')
+  // End is outside the strip: never scrolled away, and a question that widens
+  // it squeezes the strip rather than moving the key from under the pointer.
+  const strip = bar.slice(0, bar.indexOf('{#if stripMore}'))
+  assert.doesNotMatch(strip, /onclick=\{askStop\}/, 'End scrolls with the strip')
+  assert.match(
+    bar.slice(bar.indexOf('{#if stripMore}')),
+    /<div class="flex shrink-0 items-stretch whitespace-nowrap">[\s\S]*onclick=\{askStop\}/,
+    'End is not pinned at the edge',
+  )
+})
+
+test('the presenter bar gives way by its own width, and a key that lost its word keeps it as its name', () => {
+  const view = code(read(LECTURE))
+  // The bar's width, not the window's: the room's panels narrow it, not the
+  // screen. And the row of pens is counted by the pens, not by a number that
+  // was right for four.
+  assert.match(view, /const spelled = \$derived\(areaW >= [^)]*PENS_ROW_PX[^)]*\)/)
+  assert.match(view, /const pensOut = \$derived\(areaW >= [^)]*PENS_ROW_PX[^)]*\)/)
+  assert.match(view, /const PENS_ROW_PX = INKS\.length \* 24 \+ 8/)
+  const bar = presenterBar(view)
+  // `sr-only`, not `{#if}`: screen readers and the stands press the same names.
+  assert.match(bar, /<span class=\{spelled \? '' : 'sr-only'\}>\{tr\('room\.ui\.165'\)\}<\/span>/, 'the pointer lost its name')
+  assert.match(bar, /aria-label=\{tr\('room\.ui\.166'\)\}/, 'undo lost its name')
+  // The question is read even where the key at rest is a glyph.
+  assert.match(
+    bar,
+    /<span class=\{spelled \|\| wipeAsked \? '' : 'sr-only'\}>\{wipeAsked \? tr\('room\.ui\.288'\) : tr\('room\.ui\.221'\)\}<\/span>/,
+    'erase lost its name, or its question is no longer spelled out',
+  )
+  assert.match(bar, /<ConsoleLink class="\{TOOL\} text-muted hover:text-ink" caption=\{spelled\} \/>/)
+  assert.match(bar, /\{@render projectButton\(!spelled\)\}/)
+  assert.match(view, /<span class=\{glyph \? 'sr-only' : ''\}>\{tr\('room\.ui\.301'\)\}<\/span>/, 'the projector lost its name')
+})
+
 test('the lecture bar: the presenter name does not push out the page counter', () => {
   const view = code(read(LECTURE))
   const at = view.indexOf("{tr('room.ui.297')}")

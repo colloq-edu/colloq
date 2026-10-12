@@ -7,7 +7,7 @@ import { runInNewContext } from 'node:vm'
 import { setLocaleResolver, translate, tr } from '../shared/i18n.js'
 import { roomMessages } from '../shared/locales/room.js'
 import { MARKS, markName } from '../web/src/lib/marks.js'
-import { INKS } from '../web/src/components/lecture/pult.js'
+import { INKS, MARKERS } from '../web/src/components/lecture/pult.js'
 import { controlTitle, OFFLINE_REASON } from '../web/src/lib/controls.js'
 import { plural } from '../web/src/lib/plural.js'
 import { formatBytes, elapsed, relativeTime, builtAgo } from '../web/src/lib/utils.js'
@@ -28,6 +28,10 @@ test('already-created mark, pen, and participant labels follow live language wit
  assert.equal(fox.name, 'fox')
  assert.equal(markName('🦊'), 'fox')
  assert.equal(pen.name, 'Pen, black')
+ // The pens and highlighters added for the console's palettes follow the language too.
+ assert.equal(INKS[2].name, 'Pen, blue')
+ assert.equal(INKS[7].short, 'white')
+ assert.equal(MARKERS[0].name, 'Highlighter, yellow')
  assert.equal(person.title, 'Лиса Fox (you)')
  assert.equal(person.name, 'Лиса Fox')
  assert.equal(person.id, 'student')

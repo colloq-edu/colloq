@@ -59,8 +59,32 @@ test('the pen circle changes size instantly, and the press is left to the finger
   assert.doesNotMatch(inks, /transition-transform/, 'the state change of the circle is animated again')
   assert.match(inks, /scale-110/, 'the selected pen no longer differs in size')
   // The helper is used by name: the button has no other transition utilities,
-  // so nothing can rewrite transition-property.
-  assert.match(inks, /class="press flex w-8/, 'the pen button does not press')
+  // so nothing can rewrite transition-property. 24 px a pen, not 32: eight
+  // pens stand where four stood.
+  assert.match(inks, /class="press flex w-6/, 'the pen button does not press')
+})
+
+test('eight pens on the laptop bar: each one seen, the chosen one ringed, the folded ones still there', () => {
+  const view = code(read(VIEW))
+  const inks = /\{#each INKS as choice[\s\S]*?\{\/each\}/.exec(view)?.[0] ?? ''
+  /*
+   * White on the day bar and black on the night bar were circles nobody
+   * could see: the light pens (pult.ts · `light`) and the near-black one
+   * carry a hairline in the ink colour.
+   */
+  assert.match(inks, /\{edge\(choice\)\}/, 'a pen circle lost its edge')
+  const edge = view.slice(view.indexOf('function edge('), view.indexOf('function edge(') + 300)
+  assert.match(edge, /if \(choice\.light\) return 'border-ink\/25'/, 'the light pens vanish on the day bar')
+  assert.match(edge, /dark:border-ink\/35/, 'the black pen vanishes on the night bar')
+  // A ring laid straight on the circle vanished around black by day and white
+  // by night: the chosen pen is ringed with a gap of the bar's own ground.
+  assert.match(inks, /scale-110 ring-\[1\.5px\] ring-ink ring-offset-\[1\.5px\] ring-offset-canvas/)
+  // One set of pen keys, in the row or in the palette: the palette is hidden,
+  // not unmounted, so "Pen, red" is always there to be pressed.
+  assert.match(view, /\{#snippet pens\(\)\}\s*\{#each INKS as choice/)
+  const palette = view.slice(view.indexOf('id="lecture-pens"'), view.indexOf('{@render pens()}', view.indexOf('id="lecture-pens"')))
+  assert.match(palette, /\{penOpen\s*\?\s*'grid'\s*:\s*'hidden'\}/, 'the folded pens leave the document while closed')
+  assert.doesNotMatch(view, /\{#if penOpen\}/)
 })
 
 /* --------------------------------------------------- dead console */

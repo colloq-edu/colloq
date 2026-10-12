@@ -26,13 +26,31 @@
  *    frame that comes late still lands before it is needed, and the head
  *    moves between real samples instead of chasing them (`LaserPlayback`);
  *  — a held shape never shortens; it fades by time, as a whole, after the
- *    pen is lifted (the ink layer's HOLD_MS and FADE_MS).
+ *    pen is lifted — and not alone: shapes written in a row are one PHRASE,
+ *    which stays lit while the hand keeps writing and fades together once it
+ *    stops (`PHRASE_HOLD_MS`, `PhraseClock`).
  *
  * Pure logic, no canvas and no runes: it is checked in a test without a
  * browser (tests/lecture-laser.test.mts), and the ink layer draws what it
  * returns.
  */
 import { LASER_EVERY_MS, MAX_LASER_SAMPLES } from '@shared/lecture'
+
+/**
+ * Red. Not in the presenter's colour.
+ *
+ * A pointer is recognised without thinking: a red dot on a slide means
+ * "look here", in every lecture hall in the world that has a laser
+ * pointer. The presenter's colour came here from a general habit of
+ * colouring everything by author, and a second teacher's pointer turned
+ * out blue, that is, indistinguishable from their own ink with which they
+ * will underline a line a second later.
+ *
+ * One value for every place that shows it: the ink layer burns the pointer
+ * in it, and the console's key, its palette and the laptop bar's key draw
+ * their comet in it, so no key shows a red the hall does not see.
+ */
+export const LASER_RED = '#ff2b1d'
 
 /** A pointer frame as the room delivers it (protocol `laser.at`). */
 export interface LaserAt {
@@ -41,6 +59,8 @@ export interface LaserAt {
   y: number
   shape: 'dot' | 'line'
   mark?: number
+  /** The phrase the press belongs to (`PhraseClock`); absent from an older console. */
+  trail?: number
   pts?: number[]
 }
 
@@ -157,12 +177,18 @@ export class LaserPress {
    *
    * `aspect` is the sheet's height over its width: distances are measured in
    * page widths, so that the threshold is the same pixel across and down.
+   *
+   * `near` is the zoom's magnification (1 for the whole page). The step is
+   * about a pixel of the SCREEN, and every screen shows the same magnified
+   * region: under a ×4 zoom a pixel is a quarter of the page distance, and a
+   * threshold kept in page units would draw a magnified circle in visible
+   * chords.
    */
-  add(x: number, y: number, at: number, aspect: number): LaserSample | null {
+  add(x: number, y: number, at: number, aspect: number, near = 1): LaserSample | null {
     const px = round(x)
     const py = round(y)
     const last = this.#last
-    if (last && Math.hypot(px - last.x, (py - last.y) * aspect) < LASER_STEP) return null
+    if (last && Math.hypot(px - last.x, (py - last.y) * aspect) < LASER_STEP / Math.max(1, near)) return null
     const t = Math.max(last?.t ?? 0, Math.round(at - this.#t0))
     const kept = { x: px, y: py, t }
     this.#last = kept
@@ -176,17 +202,20 @@ export class LaserPress {
    * Not `final`, a queue that has not left the hall's last known position by
    * `LASER_STAND` is held back (the pointer stands, the hand trembles), and
    * only its newest few samples are kept (`STAND_KEEP`). `final` (the press,
-   * the release, the end of a shape) sends whatever is there.
+   * the release, the end of a shape) sends whatever is there. `near` is the
+   * zoom's magnification, as in `add`: a stand is still the size of the red
+   * dot on the screen.
    */
-  take(final: boolean): number[][] {
+  take(final: boolean, near = 1): number[][] {
     const queue = this.#queue
     if (queue.length === 0) return []
     if (!final && !Number.isNaN(this.#sentX)) {
+      const stand = LASER_STAND / Math.max(1, near)
       let far = false
       for (let i = 0; i + 1 < queue.length; i += 3) {
         const dx = Math.abs(queue[i] - this.#sentX)
         const dy = Math.abs(queue[i + 1] - this.#sentY)
-        if (dx >= LASER_STAND || dy >= LASER_STAND) {
+        if (dx >= stand || dy >= stand) {
           far = true
           break
         }
@@ -204,6 +233,28 @@ export class LaserPress {
     this.#sentY = queue[queue.length - 2]
     this.#queue = []
     return frames
+  }
+
+  /**
+   * The press is `age` ms old and the hand is still where the last sample
+   * put it: that sample goes into the queue again, at this time. It adds
+   * nothing to the shape (the hall keeps no vertex for a sample that did not
+   * move, `LaserPlayback.hear`), only the time.
+   *
+   * A finger's beam is held back from the room for a moment (InkLayer ·
+   * `beamHeld`), and the hall judges the phrase a press joins at the press's
+   * start, back-dated by its first frame's newest sample (`pressBegan`). A
+   * finger that stood still while held gave that frame nothing newer than the
+   * press itself, and the hold ate the hall's grace for the network's jitter
+   * all the same.
+   */
+  stamp(age: number): void {
+    const last = this.#last
+    if (!last) return
+    const t = Math.round(age)
+    const queued = this.#queue.length > 0 ? this.#queue[this.#queue.length - 1] : last.t
+    if (!(t > queued)) return
+    this.#queue.push(last.x, last.y, t)
   }
 
   /**
@@ -270,8 +321,10 @@ export class LaserPlayback {
       const last = this.ts.length - 1
       // The timeline only goes forward: a duplicate or a stale sample adds nothing.
       if (last >= 0 && t < this.ts[last]) continue
+      // Nor does one that did not move: it says only how old the press is
+      // (`LaserPress.stamp`), and that much `newest` takes from it.
       const same = pts[i] === this.xy[last * 2] && pts[i + 1] === this.xy[last * 2 + 1]
-      if (last >= 0 && t === this.ts[last] && same) continue
+      if (last >= 0 && same) continue
       this.xy.push(pts[i], pts[i + 1])
       this.ts.push(t)
     }
@@ -349,6 +402,287 @@ export class LaserPlayback {
       y: this.xy[a * 2 + 1] + (this.xy[a * 2 + 3] - this.xy[a * 2 + 1]) * k,
     }
   }
+}
+
+/* ----------------------------------------------------------- phrases */
+
+/**
+ * A PHRASE: shapes written in a row, lit together and put out together.
+ *
+ * The owner, from the hall: a word written with the pointer must keep its
+ * strokes while the hand is still writing, and go once the hand stops. Every
+ * shape used to hold for 0.9 s after its OWN lift and fade by itself, so a
+ * word melted from its first letter while its last was being written (and
+ * the ninth stroke pushed the first off the slide: the ceiling was eight).
+ *
+ * The rule, one for the console and the hall:
+ *  — a press that starts while a press of the phrase is held, or less than
+ *    `PHRASE_HOLD_MS` after the phrase's last lift, joins the phrase;
+ *  — every shape of the phrase stays at full strength until the phrase's
+ *    LAST lift plus `PHRASE_HOLD_MS`, then all of them fade together over
+ *    `PHRASE_FADE_MS`;
+ *  — a press that starts once the phrase has begun to fade starts a new one.
+ *    The fading phrase is not revived: a word on its way out does not flash
+ *    back because the hand came down somewhere else;
+ *  — a screen that hears the phrase from the wire holds it whole
+ *    `PHRASE_WIRE_MS` longer, for the network's jitter, and fades it that
+ *    much quicker: it still goes out with the console (`HeardPhrases`).
+ *
+ * A second and a half is longer than the pause between the letters of a word
+ * and most pauses between words, and short enough that a phrase does not
+ * outstay the thought it was written for. The fade is shorter than the old
+ * 0.9 s: after the longer hold, a phrase that has started to go should be
+ * gone before the hand writes the next one over the same place.
+ */
+export const PHRASE_HOLD_MS = 1500
+export const PHRASE_FADE_MS = 600
+
+/**
+ * How much longer a phrase the presenter named on the wire (`trail`) holds
+ * whole on the screens that hear it, and how much quicker it then fades.
+ *
+ * The hall learns that a press joined the phrase only when the press's first
+ * frame arrives, and the hall's clock for the phrase starts from the last
+ * lift, which it hears at the network's best (InkLayer · `finishStream`). Any
+ * Wi-Fi delay above that best stretches the pause on the hall's clock: a press
+ * the console joined 1.45 s after the lift arrived 400 ms late, at 1.85 s,
+ * when the projector had begun to fade the word. It flashed back to full, and
+ * past the fade the earlier letters were gone while the console still showed
+ * them. Holding whole this much longer, the hall absorbs the ordinary jitter
+ * of a classroom network; a press later than that starts a phrase of its own
+ * there (`HeardPhrases`), never a flash back. The press is judged where it
+ * BEGAN on the hall's clock (`pressBegan`): a finger's first frame leaves a
+ * quarter of a second after its touch, and judged on arrival that quarter
+ * came out of this grace.
+ *
+ * THE END STAYS WHERE IT WAS: the grace comes out of the fade, not on top of
+ * it. A word still goes out on the projector when it goes out on the console,
+ * so the presenter, seeing their own word gone, is right about the hall; it
+ * only starts going a moment later there, and goes quicker.
+ */
+export const PHRASE_WIRE_MS = 300
+
+/**
+ * How many shapes a screen keeps.
+ *
+ * A ceiling against a slide turning red over a class, not a design. It was
+ * eight while every shape lived alone; a phrase is a word or a line, and a
+ * handwritten word is ten to twenty presses, a short formula forty. Ninety-six
+ * holds that and the phrase before it while it fades. Past the ceiling the
+ * oldest shape goes at once. Each released shape keeps a small bitmap
+ * (InkLayer · `bakeOf`), freed as soon as the shape burns out.
+ */
+export const MARKS_MAX = 96
+
+/** A shape as its phrase sees it: which phrase, and when it was let go (`null` while held). */
+export interface PhraseMark {
+  phrase: number
+  letGo: number | null
+  /**
+   * How much longer than `PHRASE_HOLD_MS` its phrase holds whole on this
+   * screen (and how much quicker it fades): `PHRASE_WIRE_MS` for a shape
+   * heard from the wire with the presenter's phrase, none (absent) for one's
+   * own and for an older console's.
+   */
+  grace?: number
+}
+
+/** A phrase: whether any of its shapes is held, its newest lift, and how long it holds after it. */
+export interface PhraseState {
+  held: boolean
+  /** The newest lift among its shapes; −∞ while none was let go. */
+  lift: number
+  /** The longest grace among its shapes (`PhraseMark.grace`): see `PHRASE_WIRE_MS`. */
+  grace: number
+}
+
+/** Every phrase on screen, from its shapes. */
+export function phrasesOf(marks: Iterable<PhraseMark>): Map<number, PhraseState> {
+  const out = new Map<number, PhraseState>()
+  for (const mark of marks) {
+    let state = out.get(mark.phrase)
+    if (!state) {
+      state = { held: false, lift: Number.NEGATIVE_INFINITY, grace: 0 }
+      out.set(mark.phrase, state)
+    }
+    if (mark.letGo === null) state.held = true
+    else if (mark.letGo > state.lift) state.lift = mark.letGo
+    if ((mark.grace ?? 0) > state.grace) state.grace = mark.grace ?? 0
+  }
+  return out
+}
+
+/**
+ * How long a phrase holds whole after its last lift, and how long it then
+ * fades: a grace lengthens the one and shortens the other by as much, and
+ * the end stays `PHRASE_HOLD_MS + PHRASE_FADE_MS` after the lift (see
+ * `PHRASE_WIRE_MS`).
+ */
+function holdOf(state: PhraseState): number {
+  return PHRASE_HOLD_MS + Math.min(state.grace, PHRASE_FADE_MS / 2)
+}
+
+/** How brightly a phrase glows at `now`: whole while held and for the hold after its last lift, then down to nothing. */
+export function phraseGlow(state: PhraseState | undefined, now: number): number {
+  if (!state || state.held) return 1
+  const since = now - state.lift
+  const hold = holdOf(state)
+  if (since <= hold) return 1
+  return Math.max(0, 1 - (since - hold) / (PHRASE_HOLD_MS + PHRASE_FADE_MS - hold))
+}
+
+/** Whether a phrase has burnt out completely, so its shapes can go. */
+export function phraseOver(state: PhraseState | undefined, now: number): boolean {
+  return state !== undefined && !state.held && now - state.lift >= PHRASE_HOLD_MS + PHRASE_FADE_MS
+}
+
+/** Whether a press starting at `now` still joins the phrase: it has not begun to fade. */
+function phraseOpen(state: PhraseState | undefined, now: number): boolean {
+  return state !== undefined && (state.held || now - state.lift < holdOf(state))
+}
+
+/**
+ * The phrase a press starting at `now` joins BY THE TIMING RULE, judged from
+ * the shapes on screen; `null` starts a new one.
+ *
+ * The hall's fallback for frames that do not name their phrase (a console
+ * from before phrases): the same rule the console applies, on the hall's own
+ * clock, where a release is back-dated to the moment the presenter let go
+ * (InkLayer · `finishStream`). Only the newest shape's phrase can still be
+ * open, since presses come one after another.
+ */
+export function phraseFor(marks: readonly PhraseMark[], now: number): number | null {
+  const newest = marks[marks.length - 1]
+  if (!newest) return null
+  const state = phrasesOf(marks.filter((mark) => mark.phrase === newest.phrase)).get(newest.phrase)
+  return phraseOpen(state, now) ? newest.phrase : null
+}
+
+/**
+ * The presenter's phrase clock: which phrase each press belongs to.
+ *
+ * The console decides, and says it in every pointer frame (`trail`), so that
+ * the hall groups the shapes as the presenter wrote them instead of guessing
+ * from the gaps between frames: the network stretches and squeezes those, and
+ * a 1.45 s pause on the console arriving as 1.55 s would split a word in two
+ * on the projector only. A clock of its own rather than the shapes, because a
+ * dot (`laserShape`) leaves no shape and still belongs to the phrase.
+ */
+export class PhraseClock {
+  #id = 0
+  #held = 0
+  #lift = Number.NEGATIVE_INFINITY
+  readonly #fresh: () => number
+
+  constructor(fresh: () => number = newMarkId) {
+    this.#fresh = fresh
+  }
+
+  /** A press starts at `now`: the phrase it belongs to. */
+  press(now: number): number {
+    const state = { held: this.#held > 0, lift: this.#lift, grace: 0 }
+    if (!phraseOpen(state, now)) this.#id = this.#fresh()
+    this.#held += 1
+    return this.#id
+  }
+
+  /** A press of the phrase was let go at `now`. */
+  lift(now: number): void {
+    if (this.#held === 0) return
+    this.#held -= 1
+    this.#lift = Math.max(this.#lift, now)
+  }
+
+  /**
+   * A press that turned out not to be one: the first finger of a two-finger
+   * gesture, or the palm before the pen (InkLayer · `dropBeam`). Nothing of it
+   * reached the room, and here too it is as if it never was: it holds the
+   * phrase no longer, and leaves no lift behind to keep the phrase open.
+   */
+  cancel(): void {
+    if (this.#held > 0) this.#held -= 1
+  }
+
+  /** The phrase of the latest press; 0 before the first. */
+  get id(): number {
+    return this.#id
+  }
+}
+
+/**
+ * The phrases of presses heard from the wire, as a screen that hears them
+ * groups them: which phrase each new press joins HERE.
+ *
+ * The presenter's phrase (`trail`) while it still holds on this screen, its
+ * grace included (`PHRASE_WIRE_MS`): the console's grouping, not a guess from
+ * gaps the network stretched. But when the press began so late that the
+ * phrase had begun to fade here, the press starts a phrase of its own and the
+ * fading one keeps fading: the rule for every screen is that a phrase on its
+ * way out is not revived, and on the projector a word flashing back to full
+ * reads as a glitch. Later presses of the same trail follow it to that phrase,
+ * so the rest of the word still holds together. A frame naming no phrase (a
+ * console from before phrases) is grouped by the timing rule (`phraseFor`).
+ *
+ * "Began", on this screen's clock (`pressBegan`), not "arrived": a finger's
+ * press reaches the wire a quarter of a second after its touch, and a word
+ * the console joined it to then split on the projector for the rest of its
+ * life. Judged at its start, such a press, late in the window, may find its
+ * word just beginning to dim when it arrives, and lights it again, as the
+ * console kept it: a dip of a moment, where the split lasted seconds.
+ */
+export class HeardPhrases {
+  /** Trails whose phrase was fading here when a press of theirs came: where their presses go now. */
+  readonly #moved = new Map<number, number>()
+  readonly #fresh: () => number
+
+  constructor(fresh: () => number = newMarkId) {
+    this.#fresh = fresh
+  }
+
+  /** The phrase a press that began at `now` joins, judged from the shapes on its page. */
+  join(marks: readonly PhraseMark[], trail: number | undefined, now: number): number {
+    if (trail === undefined) return phraseFor(marks, now) ?? this.#fresh()
+    const here = this.#moved.get(trail) ?? trail
+    const state = phrasesOf(marks.filter((mark) => mark.phrase === here)).get(here)
+    // Nothing of it is on screen (new, or burnt out): nothing to revive either.
+    if (state === undefined || phraseOpen(state, now)) return here
+    const next = this.#fresh()
+    this.#moved.set(trail, next)
+    // A trail is a phrase or two: the oldest ones are long over.
+    if (this.#moved.size > 16) this.#moved.delete(this.#moved.keys().next().value as number)
+    return next
+  }
+}
+
+/**
+ * How old a press may already be when its first frame leaves the console, as
+ * far as the hall is concerned: a finger's beam is held back for a quarter of
+ * a second (InkLayer · `beamHeld`, ink.ts · `TAP_TOGETHER_MS`), and a busy
+ * tablet fires that timer late. Anything older is no hold: a press continued
+ * under a new number, or across a turn (`LaserPress.roll`), joins by the lift
+ * of its own previous shape whatever this says.
+ */
+export const PRESS_HELD_MAX_MS = 400
+
+/**
+ * When a press heard from the wire began, on this screen's clock: the moment
+ * its first frame came (`now`), back-dated by how old the press already was
+ * when that frame left, which its newest sample says (samples are timed from
+ * the press). At most `PRESS_HELD_MAX_MS`.
+ *
+ * The phrase a press joins is judged at its start (`HeardPhrases.join`). A
+ * pen's press goes out at the touch, and the frame's arrival is its start
+ * plus the network. A finger's is held back for the tap's window first, and
+ * judged on arrival it lost that much of the hall's grace for the network's
+ * jitter (`PHRASE_WIRE_MS`): a word the console kept whole split on the
+ * projector, its first letters fading while the console showed them lit.
+ */
+export function pressBegan(pts: readonly number[] | undefined, now: number): number {
+  let newest = 0
+  if (pts) {
+    for (let i = 2; i < pts.length; i += 3) if (pts[i] > newest) newest = pts[i]
+  }
+  return now - Math.min(PRESS_HELD_MAX_MS, newest)
 }
 
 /* ----------------------------------------------------------- hearers */

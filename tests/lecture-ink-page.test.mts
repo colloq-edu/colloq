@@ -27,7 +27,6 @@ import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { inkPagesOf, type InkStroke } from '../shared/lecture.js'
-import { boardsInked } from '../web/src/components/lecture/pult.js'
 import {
   askInkPage,
   forgetInkPages,
@@ -86,13 +85,18 @@ test('the inventory and the ink at hand add up: neither of the two sources is co
   assert.deepEqual([...inkedPages(session)].sort((a, b) => a - b), [-2, 1, 4])
 })
 
-test('sheets in the strip are counted by the inventory, not by what the tab holds', () => {
-  // Exactly the loss for which the sheet count moved from the tab's memory
-  // into the ink: the console was reloaded mid-class, the ink at hand is one
-  // current page, and three sheets were created.
-  const { session } = tab([stroke(7, 'now')])
+test("the sheets' ink is known by the inventory, not by what the tab holds", () => {
+  // The console was reloaded mid-class: the ink at hand is one current page,
+  // and two sheets have ink. The strip and "Pages" ask for a sheet's ink by
+  // the inventory as its picture comes into view; counted by what the tab
+  // holds, they would never ask, and every sheet would show blank paper.
+  // (The sheets themselves come from the server's list now, ink or no ink.)
+  const { session, asked } = tab([stroke(7, 'now')])
   noteInkedPages(session, [-3, -1, 7])
-  assert.equal(boardsInked(inkedPages(session)), 3)
+  assert.deepEqual([...inkedPages(session)].filter((page) => page < 0).sort((a, b) => a - b), [-3, -1])
+  askInkPage(session, -3)
+  askInkPage(session, -2)
+  assert.deepEqual(asked, [-3], 'a sheet with no ink was asked about, or one with ink was not')
 })
 
 /* ------------------------------------------------------------------ request */
@@ -171,15 +175,17 @@ test('the ink for the shown page is requested by the ink layer — one for all t
   assert.match(layer, /setTimeout\(\(\) => untrack\(\(\) => askInkPage/)
 })
 
-test('the console counts sheets by the inventory and requests their markup when it opens the strip', () => {
+test("the console lays the sheets out from the server's list and requests their markup as they come into view", () => {
   const pult = code('web/src/components/lecture/ConsoleView.svelte')
+  // The sheets are the server's list: a sheet started and left empty is a
+  // sheet after a reload too, and none is counted back from the ink.
   assert.match(
     pult,
-    /boardsInked\(inkedPages\(session\)\)/,
-    'the sheet count went back to the ink at hand — after a reload there will be none',
+    /lectureSequence\(deckLength, lecture\?\.sheets\)/,
+    'the console stopped walking the server\'s list of sheets',
   )
-  assert.doesNotMatch(pult, /boardsInked\(session\.ink\)/)
-  assert.match(pult, /askInkPage\(session, -index\)/, 'the thumbnail strip stopped requesting the sheet markup')
+  assert.doesNotMatch(pult, /boardsInked|boardsHere/, 'the sheet count went back to the ink or the tab\'s memory')
+  assert.match(pult, /askInkPage\(session, item\.page\)/, 'the strip stopped requesting the sheet markup')
 })
 
 test('the request, the answer and the inventory are in the shared vocabulary — the other half is written against them', () => {

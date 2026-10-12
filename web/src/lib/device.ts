@@ -23,5 +23,15 @@ export function deviceKindOf(agent: string, touchPoints: number): DeviceKind {
 
 export function deviceKind(): DeviceKind {
   if (typeof navigator === 'undefined') return 'other'
-  return deviceKindOf(navigator.userAgent ?? '', navigator.maxTouchPoints ?? 0)
+  return deviceKindOf(navigator.userAgent ?? '', touchPoints())
+}
+
+/**
+ * How many touches the screen tells apart at once: 0 without a touch
+ * screen. With the kind it tells a tablet from a computer whose name it
+ * borrows (lecture/page-region.ts · `regionBudget`).
+ */
+export function touchPoints(): number {
+  if (typeof navigator === 'undefined') return 0
+  return navigator.maxTouchPoints ?? 0
 }

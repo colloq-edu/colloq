@@ -29,6 +29,7 @@ import {
   turnTo,
   undoInk,
 } from '../server/src/lecture.js'
+import { MAX_SHEETS, MAX_SLIDES } from '../shared/lecture.js'
 
 let n = 0
 /** A room of its own for each test: the module is shared process memory. */
@@ -113,6 +114,22 @@ test('the page does not go below the first and is not broadcast when unchanged',
   assert.equal(turnTo(id, 2.7)?.page, 2, 'a fractional page is rounded down')
 })
 
+test('a slide no deck has is junk as well: the hall does not turn past MAX_SLIDES', () => {
+  /*
+   * The server never learns the deck's length, and a slide number is walked
+   * as a count: every screen that has not opened the deck yet walks up to the
+   * page shown, and an old console's sheet is anchored at it. A turn to slide
+   * 1 000 000 000 handed all of them a walk that long.
+   */
+  const id = room()
+  assert.equal(turnTo(id, MAX_SLIDES)?.page, MAX_SLIDES, 'the ceiling itself is a slide')
+  assert.equal(turnTo(id, 3)?.page, 3)
+  for (const far of [MAX_SLIDES + 1, 1e9, Number.MAX_SAFE_INTEGER, 1e300, Number.POSITIVE_INFINITY]) {
+    assert.equal(turnTo(id, far), null, `the hall turned to slide ${far}`)
+  }
+  assert.equal(lectureOf(id)?.page, 3, 'a slide no deck has reached the hall')
+})
+
 test('a blank sheet is just a page, only with a minus', () => {
   /*
    * The slide ran out, but the derivation of the formula did not: the teacher
@@ -123,6 +140,8 @@ test('a blank sheet is just a page, only with a minus', () => {
    * everything else about it already works.
    */
   const id = room()
+  // An old console's «Лист» turns to a number it made up: the server takes
+  // that as an add (see lecture-sheets for the list itself).
   assert.equal(turnTo(id, -1)?.page, -1)
   addInk(id, { id: 'b1', page: -1, color: '#111', width: 0.004, points: [0.1, 0.1, 0.2, 0.2] })
   assert.deepEqual(inkOf(id).map((stroke) => stroke.page), [-1])
@@ -132,8 +151,17 @@ test('a blank sheet is just a page, only with a minus', () => {
   assert.equal(turnTo(id, 3)?.page, 3)
   assert.equal(inkOf(id).length, 1)
 
-  // A stuck button does not create sheets without end.
-  assert.equal(turnTo(id, -5000)?.page, -50)
+  /*
+   * A stuck button does not create sheets without end. This used to be a
+   * clamp at −50, which quietly sent the 51st sheet onto the 50th. The ceiling
+   * is now the length of the list (`MAX_SHEETS`), and a number past it is
+   * refused instead of being reused.
+   */
+  for (let k = 2; k <= MAX_SHEETS; k += 1) assert.equal(turnTo(id, -k)?.page, -k)
+  assert.equal(lectureOf(id)?.sheets?.length, MAX_SHEETS)
+  assert.equal(turnTo(id, -(MAX_SHEETS + 1)), null, 'the 51st sheet was created')
+  assert.equal(lectureOf(id)?.page, -MAX_SHEETS)
+  assert.equal(lectureOf(id)?.sheets?.length, MAX_SHEETS)
 })
 
 test('the pause toggles once', () => {

@@ -94,10 +94,12 @@ an isolated grading sandbox ([details below](#presets-and-cell-locks)).
 ### Lecture: a PDF, your pen, every screen
 
 Present a PDF from the **Lecture console**, built for an iPad and a pen: turn
-pages, draw, point with the laser. The projector window (`/s/:id/screen`) and
-every student's screen follow, and ink lands at the same spot on each of them.
-Students can press **Read on my own** to page through by themselves, and **To
-lecture** brings them back to the presenter's page.
+pages, write in eight colours, highlight under the ink, write with the pointer
+(a word fades only once you stop), zoom in on a detail and add a sheet of grid
+or lined paper after any slide. The projector window (`/s/:id/screen`) and
+every student's screen follow, zoom included, and ink lands at the same spot
+on each of them. Students can press **Read on my own** to page through by
+themselves, and **To lecture** brings them back to the presenter's page.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/readme/lecture-dark.svg"><img src=".github/assets/readme/lecture-light.svg" width="880" alt="The teacher underlines a formula and writes a note on the iPad lecture console; the ink and the red laser appear at the same spot on the projector; the page turns everywhere, and a student reading an earlier page returns to the presenter's page in one tap."></picture></p>
 

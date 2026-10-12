@@ -23,6 +23,7 @@
  *
  *   npx tsx scripts/lecture-sync-check.mts
  *   npx tsx scripts/lecture-sync-check.mts --headed
+ *   CHECK_STATIC_DIR=<dir> npx tsx scripts/lecture-sync-check.mts  — a build elsewhere, web/dist untouched
  */
 import { spawn } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -97,7 +98,10 @@ process.env.PORT = String(PORT)
 process.env.PUBLIC_URL = `http://127.0.0.1:${PORT}`
 process.env.JUPYTER_URL = 'http://127.0.0.1:1'
 process.env.KERNEL_ISOLATION = 'off'
-process.env.STATIC_DIR = path.resolve('web/dist')
+// A build elsewhere can be checked without touching web/dist, as in ui-check
+// and pencil-check: several agents and the owner's own `make dev` share one
+// tree, and rebuilding web/dist breaks the tabs a live server has open.
+process.env.STATIC_DIR = process.env.CHECK_STATIC_DIR ?? path.resolve('web/dist')
 process.env.OPENAI_API_KEY = 'sync-check-not-a-real-key'
 process.env.OPENAI_BASE_URL = 'http://127.0.0.1:1/v1'
 
@@ -236,8 +240,12 @@ async function enter(page: Tab, name: string): Promise<void> {
       `set.call(i,${JSON.stringify(name)}); i.dispatchEvent(new Event('input',{bubbles:true})); return 1`,
   )
   await wait(250)
+  // The join button speaks the room's language: "Войти на занятие" on a
+  // Russian instance (the default), "Join…" on an English one. Matching only
+  // /join/ left the student at the door, and every check of the hall then
+  // compared the projector with a student who had no sheet at all.
   await page.js(
-    "const b=[...document.querySelectorAll('button')].find(x=>/join/i.test(x.textContent||'')); b&&b.click(); return 1",
+    "const b=[...document.querySelectorAll('button')].find(x=>/join|войти/i.test(x.textContent||'')); b&&b.click(); return 1",
   )
   await wait(2500)
 }
@@ -294,15 +302,21 @@ await until(
  * Pages are told apart by a black bar that grows with the number; a row in the
  * middle of the sheet always crosses it. The page canvas is looked up once: it
  * is the only opaque one, the ink layers are transparent.
+ *
+ * The lookup is ONE expression, not statements: `until` evaluates
+ * `return ${expr}`, and the statement form ("window.__sheet = …; return
+ * !!window.__sheet") made that `return window.__sheet = …`, the canvas itself
+ * and never `true`. The canvas was found all the same, but both waits sat out
+ * their twenty seconds and printed "gave up" on every run.
  */
 const FIND_SHEET =
-  `window.__sheet = [...document.querySelectorAll('canvas')].find(q=>{` +
+  `(()=>{window.__sheet = [...document.querySelectorAll('canvas')].find(q=>{` +
   `  if(!q.width||!q.height) return false;` +
   `  const g=q.getContext('2d',{willReadFrequently:true}); if(!g) return false;` +
   `  const d=g.getImageData(0,(q.height/2)|0,q.width,1).data;` +
   `  for(let i=3;i<d.length;i+=4) if(d[i]>8) return true;` +
   `  return false;` +
-  `}) || null; return !!window.__sheet`
+  `}) || null; return !!window.__sheet})()`
 
 const FINGERPRINT =
   `const c=window.__sheet; if(!c||!c.width) return null;` +

@@ -12,13 +12,13 @@
  *
  * That brings two things that did not exist before, and both live here:
  *
- *  • THE INVENTORY. The console counts from the ink how many blank sheets
- *    were started (sheet number N proves that every sheet before it was
- *    started too), and the thumbnail strip lays them out. A tab can no longer
- *    count this from what it has on hand: holding one page, it would count
- *    zero sheets and drop the inked ones from the strip, exactly the loss for
- *    which the count moved out of the tab's memory and into the ink (see
- *    `boardsInked` in pult.ts).
+ *  • THE INVENTORY. Which pages have ink somewhere, the tab's or not. The
+ *    sheets themselves are the server's list (`lecture.sheets`), and the
+ *    console's strip lays them out from it; their ink is what the tab may
+ *    not hold. Holding one page, a tab cannot tell a blank sheet from one
+ *    whose ink it has not been sent, so the inventory is what says which
+ *    page is worth a question (the strip's sheet thumbnails, the page on
+ *    screen).
  *  • THE QUESTION. A page with no ink on hand is requested exactly once per
  *    welcome batch: a pen on a neighbouring page wakes a redraw twenty times a
  *    second, and a question with no memory of the ones already asked would
@@ -37,7 +37,8 @@
  * session.svelte.ts).
  */
 import type { SessionState } from '@/lib/session.svelte'
-import { inkPagesOf, type InkStroke } from '@shared/lecture'
+import { INK_WIDTH_MAX, INK_WIDTH_MIN, inkPagesOf, type InkStroke, type LectureZoom } from '@shared/lecture'
+import { panZoom, zoomAround, zoomStep, zoomToRect } from './zoom'
 
 /**
  * The inventory and the questions asked belong to one room.
@@ -85,7 +86,9 @@ export function noteInkedPages(session: SessionState, pages: readonly number[]):
  * arrives as an echo (`ink:add`) and is not in the inventory; conversely, a
  * page the tab asked for and received is in the inventory, and after
  * `ink:clear` would remain only there. Neither source is complete on its
- * own, and "I don't know" costs more here than an extra sheet in the strip.
+ * own, and "I don't know" costs more here than an extra question: a page
+ * left out is never asked for and stays blank, while an extra one costs a
+ * frame answered with an empty page.
  */
 export function inkedPages(session: SessionState): ReadonlySet<number> {
   own(session)
@@ -313,6 +316,10 @@ export const ERASER_PX = 16
  * How close to a stroke's centreline the eraser takes it, in page widths: the
  * ring, plus half the stroke's own thickness, since what the eye sees under
  * the ring is the stroke's edge, not its centreline.
+ *
+ * `sheetWidth` is how wide the WHOLE page is on screen: the sheet times the
+ * zoom. The ring keeps its size on the glass under a magnified detail, so it
+ * covers a quarter of the page distance at ×4, and so does the reach.
  */
 export function eraserReach(strokeWidth: number, sheetWidth: number): number {
   return ERASER_PX / Math.max(1, sheetWidth) + strokeWidth / 2
@@ -354,4 +361,368 @@ export function twoFingerTap(a: Tap, b: Tap): boolean {
   if (second.down >= first.up) return false
   if (Math.abs(first.up - second.up) > TAP_HOLD_MS) return false
   return first.up - first.down <= TAP_HOLD_MS && second.up - second.down <= TAP_HOLD_MS
+}
+
+/* ------------------------------------------- the start of a gesture */
+
+/** A finger stroke younger than this may still be the start of something else. */
+export const PALM_YOUNG_MS = 300
+/** A finger stroke that has travelled less than this on the glass, in px, may too. */
+export const PALM_TRAVEL_PX = 10
+
+/**
+ * Whether a finger's stroke may be taken back from the room: it is young, or
+ * it has hardly moved on the glass. `age` is in ms; `px` and `py` turn page
+ * fractions into px of the glass (the sheet times the zoom).
+ *
+ * Two things can turn out, a moment late, to have begun with a finger's
+ * stroke: the palm under a pen that is landing (InkLayer · `dropPalm`), and
+ * the first finger of a pinch (`commitPinch`). Either may take back what that
+ * finger had drawn so far, and ONLY that much: a stroke a second old and an
+ * inch long is ink the hall has been watching being written. A thumb coming
+ * to rest beside a drawing finger once turned the finger into a pinch, and
+ * two seconds of a curve vanished from the projector, with no trace for
+ * Undo to bring back.
+ */
+export function mayTakeBack(
+  points: readonly number[],
+  age: number,
+  px: number,
+  py: number,
+): boolean {
+  if (age < PALM_YOUNG_MS) return true
+  let travel = 0
+  for (let i = 2; i + 1 < points.length; i += 2) {
+    travel += Math.hypot((points[i] - points[i - 2]) * px, (points[i + 1] - points[i - 1]) * py)
+    if (travel >= PALM_TRAVEL_PX) return false
+  }
+  return true
+}
+
+/* ------------------------------------------------------------ the zoom */
+
+/**
+ * A new stroke's thickness under the zoom, in page widths.
+ *
+ * The chosen width divided by the magnification: a line written on a
+ * magnified detail looks on the console exactly as thick as the same pen at
+ * ×1, which is what the hand expects, and lies on the page that much finer,
+ * which is what writing on a detail is for. Clamped into the server's range
+ * HERE, before sending: a stroke the server clamped quietly would come back
+ * in the echo thicker than the presenter drew it, and the hall would have a
+ * different line.
+ */
+export function inkWidthAt(width: number, zoom: LectureZoom | null | undefined): number {
+  const thin = width / Math.max(1, zoom?.z ?? 1)
+  return Math.round(Math.min(INK_WIDTH_MAX, Math.max(INK_WIDTH_MIN, thin)) * 1e6) / 1e6
+}
+
+/** Two fingers as a pinch sees them: their midpoint and the distance between them, in screen px. */
+export interface FingerPair {
+  x: number
+  y: number
+  d: number
+}
+
+export function fingerPair(a: { x: number; y: number }, b: { x: number; y: number }): FingerPair {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, d: Math.hypot(b.x - a.x, b.y - a.y) }
+}
+
+/** How much the fingers must spread or close, as a share of where they started, to be a pinch. */
+export const PINCH_SPREAD = 0.1
+/** And by how much at least, in screen px, whatever the share: see `pinchCommits`. */
+export const PINCH_SPREAD_PX = 12
+/** How far their midpoint must travel, in screen px, to be a two-finger pan. */
+export const PINCH_SLIDE_PX = 16
+
+/**
+ * Whether two fingers on the sheet have become a pinch.
+ *
+ * Until they have, the two-finger TAP owns them: that is Undo, and it is
+ * strict about movement (`TAP_SLACK_PX` in the ink layer) but not about these
+ * few pixels. A tap's fingers land and lift within a quarter of a second and
+ * barely move; the stand's tap is two touches 56 px apart that do not move at
+ * all. A tenth of the spread is six pixels of such a tap, more than a real
+ * tap's wobble and less than any deliberate pinch, and sixteen pixels of
+ * slide is a pan nobody makes by accident. Once a pinch, always a pinch: the
+ * tap is cancelled. What the first finger began never reached the room: the
+ * pair landed together (`pinchMayStart`), within the window for which a
+ * finger's work is held back.
+ *
+ * THE SPREAD IS COUNTED IN PIXELS TOO, not only as a share. The pinky and a
+ * knuckle of a resting hand touch the glass a finger's width apart, and a
+ * tenth of fifty pixels is the five a settling hand rolls by at once: the
+ * hall zoomed ×1.13 around the palm. Twelve pixels is more than a hand
+ * settles and less than the first moment of any deliberate pinch; fingers
+ * that start far apart still need their tenth.
+ */
+export function pinchCommits(start: FingerPair, now: FingerPair): boolean {
+  const spread = Math.abs(now.d - start.d)
+  if (start.d > 0 && spread >= PINCH_SPREAD_PX && spread / start.d >= PINCH_SPREAD) return true
+  return Math.hypot(now.x - start.x, now.y - start.y) >= PINCH_SLIDE_PX
+}
+
+/**
+ * How long a palm on the glass counts without a word from it, in ms: see
+ * `RestingPalms`.
+ */
+export const PALM_QUIET_MS = 5000
+
+/**
+ * The palm-sized contacts on the glass: wherever they lie, the sheet, the
+ * armrest under it or the rail, and whatever stops them on their way to the
+ * sheet. While one rests, no two fingers start a pinch (`pinchMayStart`).
+ *
+ * The ink layer counts them from the whole window, before anyone else hears
+ * of them: the console's root swallows a palm-sized touch the moment it
+ * lands, so that the heel presses nothing, and a layer that counted palms
+ * from its own sheet never saw one. The pinky and a knuckle of the resting
+ * hand then made a pinch and zoomed the hall.
+ *
+ * A count that never forgets is worse than none: a palm whose lift the page
+ * missed would forbid every pinch until the console went dark. So a palm
+ * counts while it says something: landing, moving or changing its size; one
+ * silent for `PALM_QUIET_MS` has gone, and comes back with its next word if
+ * it was only lying still.
+ */
+export class RestingPalms {
+  readonly #heard = new Map<number, number>()
+
+  /** A palm-sized contact landed, grew so, or stirred at `now`. */
+  rest(pointer: number, now: number): void {
+    this.#heard.set(pointer, now)
+  }
+
+  /** Whether `pointer` is a palm. */
+  has(pointer: number): boolean {
+    return this.#heard.has(pointer)
+  }
+
+  /** The contact lifted, or the browser took it away. */
+  lift(pointer: number): void {
+    this.#heard.delete(pointer)
+  }
+
+  /** How many palms rest at `now`: a silent one has gone, see above. */
+  count(now: number): number {
+    for (const [pointer, heard] of this.#heard) {
+      if (now - heard >= PALM_QUIET_MS) this.#heard.delete(pointer)
+    }
+    return this.#heard.size
+  }
+
+  clear(): void {
+    this.#heard.clear()
+  }
+}
+
+/**
+ * How a spell of the ink layer holding the pointer ended (InkLayer ·
+ * `onbusy`): with work that stood (`ink`: the pen's, or a finger's that
+ * reached the room), or as a two-finger gesture (`gesture`: a pinch, or a
+ * first finger whose held work a second finger made never happen). The
+ * console guards its rail against the writing hand's heel after the one, and
+ * not after the other: after a pinch the thumb's next tap is meant.
+ */
+export type BusyKind = 'ink' | 'gesture'
+
+/**
+ * Whether the second finger to land makes a pinch with the first: a
+ * candidate, which still has to move before it zooms (`pinchCommits`).
+ *
+ * The palm must zoom no more than it may write or undo, and a pinch's own
+ * test is a few pixels of spread: a settling hand gives that at once. So the
+ * pair is judged by how it LANDED, and all three must hold:
+ *  — TOGETHER: `apart`, the ms between the two landings, is within
+ *    `TAP_TOGETHER_MS`. A pinch is two fingers put down as one. A finger
+ *    that has been drawing for a second and a thumb that comes to rest
+ *    beside it are not a pinch, and used to be one: the drawing finger alone
+ *    moved the pair's midpoint, the hall zoomed after it, and the stroke was
+ *    taken back. It is also the window for which a finger's stroke, erase
+ *    and beam are held back from the room (InkLayer · `forgetFirst`), so the
+ *    first finger of a pinch never had time to show the hall anything;
+ *  — NO PALM ON THE GLASS: `palms` palm-sized contacts are down, anywhere on
+ *    it (`RestingPalms`). The heel rests while the pinky and the knuckles of
+ *    the same hand touch as small contacts and creep, and those are exactly
+ *    two "fingers";
+ *  — THE PEN NOT NEAR (`penNear`): not touching, and neither touching nor
+ *    HOVERING a moment ago. Unlike the tap's, this guard counts hover: a hand
+ *    resting while the presenter talks keeps the Pencil hovering, and its
+ *    small contacts used to pass a guard of contact alone and zoom the hall
+ *    around the palm.
+ */
+export function pinchMayStart(apart: number, palms: number, penNear: boolean): boolean {
+  return !penNear && palms === 0 && Math.abs(apart) <= TAP_TOGETHER_MS
+}
+
+/**
+ * Where a pinch has taken the view.
+ *
+ * Computed from the view at the START of the gesture each time, never from
+ * the previous step: the rounding a zoom gets on its way to the wire would
+ * otherwise pile up, and the page would creep under resting fingers. The
+ * place under the fingers' first midpoint stays under their midpoint: it
+ * grows with their spread (`zoomAround`) and travels with the midpoint
+ * (`panZoom`). `frame` is the sheet on screen, which does not move with the
+ * zoom: the zoom happens inside it.
+ */
+export function pinchZoom(
+  from: LectureZoom | null | undefined,
+  frame: { left: number; top: number; width: number; height: number },
+  start: FingerPair,
+  now: FingerPair,
+): LectureZoom | null {
+  if (frame.width <= 0 || frame.height <= 0 || start.d <= 0) return from ?? null
+  const u0 = (start.x - frame.left) / frame.width
+  const v0 = (start.y - frame.top) / frame.height
+  const u1 = (now.x - frame.left) / frame.width
+  const v1 = (now.y - frame.top) / frame.height
+  const grown = zoomAround(from, u0, v0, (from?.z ?? 1) * (now.d / start.d))
+  return panZoom(grown, u1 - u0, v1 - v0)
+}
+
+/**
+ * How far a magnifier press may travel, in screen px, and still be a tap:
+ * twice as close around the point instead of a frame.
+ */
+export const FRAME_TAP_PX = 10
+
+/**
+ * What the magnifier asks for: a dragged frame from `a` to `b` fills the
+ * sheet (`zoomToRect`); a tap (`b` is `null`) comes twice as close around `a`
+ * (`zoomStep`). Points are page fractions, taken through the view the
+ * presenter sees, so the frame is relative to the CURRENT zoom: a frame drawn
+ * on a magnified detail magnifies further.
+ */
+export function frameZoom(
+  view: LectureZoom | null | undefined,
+  a: { x: number; y: number },
+  b: { x: number; y: number } | null,
+): LectureZoom | null {
+  if (!b) return zoomStep(view, a.x, a.y)
+  return zoomToRect({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) })
+}
+
+/* ------------------------------------------------- straight on hold */
+
+/** How long the pen must rest, still pressed, before the stroke straightens. */
+export const STRAIGHT_HOLD_MS = 550
+/** How far the resting pen may tremble, in screen px, and still be resting. */
+export const STRAIGHT_STILL_PX = 4
+/** How far from its start the stroke must reach, in screen px: a dot or a tick does not become a line. */
+export const STRAIGHT_MIN_PX = 24
+/**
+ * How far the stroke may stray from the straight line between its ends and
+ * still be meant as a line: 8 % of its length, but never less than the
+ * three pixels a steady hand trembles by. A bracket bows by a sixth of its
+ * height and more, a ruled-looking freehand line by a few percent.
+ */
+const STRAIGHT_BEND = 0.08
+const STRAIGHT_SLACK_PX = 3
+
+/**
+ * Whether a stroke the pen has come to rest on becomes a straight line from
+ * its first point to `end` (where the pen rests now).
+ *
+ * The rule from the lecture hall is "hold the pen at the end and the line
+ * straightens", the way drawing apps do it. But a pen also rests mid-letter
+ * while the presenter thinks, and a bracket or an arc that turned into a
+ * straight bar under a resting hand would be ink the presenter never meant,
+ * in front of everyone. So the stroke must already BE a line: long enough to
+ * be one (`STRAIGHT_MIN_PX`) and never further from the straight segment than
+ * a hand that meant a line strays (`STRAIGHT_BEND`). An underline, an axis,
+ * a fraction bar, an arrow's shaft pass; a bracket, an arc, a tick or a
+ * letter do not.
+ *
+ * `px`, `py` turn page fractions into screen px: the sheet's size times the
+ * zoom, because the thresholds are about what the hand did on the glass.
+ */
+export function straightens(
+  points: readonly number[],
+  end: { x: number; y: number },
+  px: number,
+  py: number,
+): boolean {
+  if (points.length < 2) return false
+  const ax = points[0] * px
+  const ay = points[1] * py
+  const bx = end.x * px
+  const by = end.y * py
+  const dx = bx - ax
+  const dy = by - ay
+  const chord = Math.hypot(dx, dy)
+  if (chord < STRAIGHT_MIN_PX) return false
+  const slack = Math.max(STRAIGHT_SLACK_PX, chord * STRAIGHT_BEND)
+  const near = slack * slack
+  for (let i = 2; i + 1 < points.length; i += 2) {
+    const x = points[i] * px - ax
+    const y = points[i + 1] * py - ay
+    const along = Math.max(0, Math.min(1, (x * dx + y * dy) / (chord * chord)))
+    const ox = x - along * dx
+    const oy = y - along * dy
+    if (ox * ox + oy * oy > near) return false
+  }
+  return true
+}
+
+/* ------------------------------------------------------- the hold ring */
+
+/**
+ * How long the pen must rest before the hold ring shows.
+ *
+ * The ring answers a question the hand cannot see the answer to: "if I keep
+ * holding, will this line straighten?" Without it the rule is invisible, and
+ * a presenter who does not know it finds out by accident, in front of the
+ * hall. But a pen also stops for a moment in the middle of handwriting, at
+ * the turn of a letter or before the lift, and a ring that flickered at every
+ * such stop would be noise under the pen all lecture long. So the ring keeps
+ * out of the first moments of a rest: a writing hand's stop is over by then,
+ * and a hand that holds on purpose is still there.
+ */
+export const HOLD_RING_AFTER_MS = 150
+/**
+ * How long the closed ring takes to go out once the line has straightened:
+ * the snap of the line is the news, and the ring only steps aside for it. A
+ * trace short enough not to lag behind the hand that already moves on.
+ */
+export const HOLD_RING_FADE_MS = 120
+
+/** The hold ring as one frame draws it. */
+export interface HoldRing {
+  /** How much of the circle is closed, 0..1, clockwise from twelve o'clock. */
+  closed: number
+  /** How strongly the whole ring is drawn, 0..1: it fades only on its way out. */
+  alpha: number
+  /**
+   * Whether it changes by itself: while it closes or fades, the next frame
+   * draws it differently. A closed ring waiting for its line asks for none.
+   */
+  moving: boolean
+}
+
+/**
+ * The hold ring at `now`: for a pen resting since `since`, or, once the line
+ * has straightened at `snapped`, the closed ring going out. `null`: nothing
+ * to draw. All three are `performance.now()` times.
+ *
+ * THE RING IS A COUNTDOWN TO THE SNAP, and it closes at exactly
+ * `STRAIGHT_HOLD_MS` of rest, the moment the line straightens: the hand learns
+ * how long to hold by watching, not from a manual. It shows up EMPTY after
+ * `HOLD_RING_AFTER_MS` and closes from there, rather than appearing already a
+ * quarter done: a ring that jumps in part-way reads as a glitch, one that
+ * starts at the top and runs round reads as time. The pace is even, as the
+ * clock it shows is.
+ *
+ * Pure time, so it can be checked without a pen: which stroke deserves a ring
+ * at all, and where it is drawn, is the ink layer's business (`holdShown`).
+ */
+export function holdRingAt(now: number, since: number, snapped: number | null = null): HoldRing | null {
+  if (snapped !== null) {
+    const gone = Math.max(0, now - snapped) / HOLD_RING_FADE_MS
+    return gone >= 1 ? null : { closed: 1, alpha: 1 - gone, moving: true }
+  }
+  const rested = now - since
+  if (rested < HOLD_RING_AFTER_MS) return null
+  const closed = Math.min(1, (rested - HOLD_RING_AFTER_MS) / (STRAIGHT_HOLD_MS - HOLD_RING_AFTER_MS))
+  return { closed, alpha: 1, moving: closed < 1 }
 }

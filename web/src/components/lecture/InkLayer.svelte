@@ -45,41 +45,95 @@
   the dry one, and again nobody could notice it anywhere but in the lecture
   hall.
 
+  And a fourth UNDER them, for the highlighter (`ink-mark`): every
+  translucent stroke, the room's and one's own, on a canvas blended with
+  `multiply`. A highlighter belongs under the writing: on paper the text
+  shows black through the yellow. Drawn among the pen strokes, a marker
+  greyed the slide's text and covered the presenter's own formula on the
+  projector. Below the pen ink and multiplied with the slide, text stays
+  crisp under it, and no marker can cover a pen line, whichever came first.
+  On a dark page `multiply` can only darken the dark, and the highlight
+  vanished: there LecturePage marks itself `data-ink-backdrop="dark"` from
+  what it painted and switches this canvas to `screen`, the same idea turned
+  over (light text stays light, the band glows on the dark ground). A page
+  with real areas of both (a white plot on a navy slide, an X-ray on a white
+  one) is `mixed`, and gets plain alpha blending: either blend would erase
+  the band on one of its parts.
+
+  THE ZOOM (`zoom`, zoom.ts): the page may be magnified inside its frame, the
+  same region on every screen. Every canvas is PAINTED at `zoom.painted`: the
+  zoom folds into `fitTo`'s transform and nowhere else, so all the geometry
+  stays page fractions times the sheet size. While the view is on its way
+  somewhere, each canvas is MOVED by `zoom.css`, exactly like the page's own
+  bitmap; once it rests, both are painted again, sharp, together. What is
+  about the hand rather than the page keeps its size on the glass under a
+  zoom: the eraser ring, the pointer, the pen's shadow, the thresholds for a
+  step, a dot, a palm. A new stroke keeps its look too: its width is divided
+  by the zoom (ink.ts · `inkWidthAt`).
+
   THE PALM IS NOT AN EVENT. The layer used to hand a "foreign" finger to the
   parent, which read it as a swipe, and two fingers as "this stroke never
   happened", erasing what had been started. The heel of the palm and the
   little finger are exactly two fingers, and the palm rests on the tablet the
   whole time one writes: the third of three quick strokes did not get drawn.
   Now the only owner of touches on the sheet is this layer, and a finger,
-  when there is a pen, means nothing except a two-finger tap: undo.
+  when there is a pen, means nothing except two gestures of two fingers: a
+  tap is Undo, a pinch or a two-finger drag moves the zoom (see `pinch`).
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
   import { untrack } from 'svelte'
   import { getSessionState } from '@/lib/session.svelte'
-  import { inkFullSays, LASER_EVERY_MS, type InkStroke } from '@shared/lecture'
+  import { inkFullSays, LASER_EVERY_MS, sameZoom, type InkStroke, type LectureZoom } from '@shared/lecture'
   import {
     askInkPage,
     ERASER_PX,
     eraserReach,
+    fingerPair,
+    FRAME_TAP_PX,
+    frameZoom,
     hearInkNeed,
+    HOLD_RING_AFTER_MS,
+    holdRingAt,
+    inkWidthAt,
     isDot,
     layCurve,
+    mayTakeBack,
+    pinchCommits,
+    pinchMayStart,
+    pinchZoom,
+    RestingPalms,
+    STRAIGHT_HOLD_MS,
+    STRAIGHT_STILL_PX,
+    straightens,
     TAP_TOGETHER_MS,
     twoFingerTap,
+    type BusyKind,
+    type FingerPair,
+    type HoldRing,
     type Tap,
   } from './ink'
   import {
+    HeardPhrases,
     hearLaser,
     LASER_DELAY_MS,
+    LASER_RED,
     LaserPlayback,
     LaserPress,
     MARK_MAX_SAMPLES,
+    MARKS_MAX,
     newMarkId,
+    PHRASE_WIRE_MS,
+    PhraseClock,
+    phraseGlow,
+    phraseOver,
+    phrasesOf,
+    pressBegan,
     type LaserAt,
     type LaserSample,
   } from './laser'
   import { inkRefusal } from './pult'
+  import { boxToPage, visibleRect, WHOLE, type ZoomView } from './zoom'
 
   interface Props {
     /** The page whose ink we show. */
@@ -92,8 +146,11 @@
      * writing", not "this never happened".
      */
     live: boolean
-    /** What we draw with now: pen, marker, eraser or pointer. */
-    tool: 'pen' | 'marker' | 'eraser' | 'laser' | 'off'
+    /**
+     * What we draw with now: pen, marker, eraser, pointer, or the magnifier
+     * (`zoom`: a frame dragged on the sheet becomes the view, see `framing`).
+     */
+    tool: 'pen' | 'marker' | 'eraser' | 'laser' | 'zoom' | 'off'
     /**
      * The pointer: as a dot or as a line.
      *
@@ -150,14 +207,48 @@
      */
     reach?: { top: number; right: number; bottom: number; left: number }
     /**
+     * The zoom the page is shown at, as the page hands it to its `over`
+     * snippet (zoom.ts · `ZoomView`): the zoom the canvases are painted at,
+     * the zoom the hall sees now, and the transform between the two. The
+     * whole page when absent.
+     */
+    zoom?: ZoomView
+    /**
+     * The presenter moved the zoom on the sheet: a pinch (`final` false while
+     * the fingers move, true once they lift) or the magnifier's frame (always
+     * `final`). `null` is the whole page.
+     *
+     * Not passed, nothing on the sheet zooms: the projector, the audience and
+     * the laptop column FOLLOW the zoom, they do not move it.
+     */
+    onzoom?: (zoom: LectureZoom | null, final: boolean) => void
+    /**
+     * Whether a pen stroke held still at its end straightens into a line
+     * (see `straightenNow`). On unless the parent turns it off.
+     */
+    straighten?: boolean
+    /**
+     * Whether to show the hold ring: a ring that closes round the pen's tip
+     * while a stroke that would straighten is held still, and is full at the
+     * moment it does (see `holdShown`). The console's, and only the
+     * console's: it is about the hand on this glass, the hall never sees it
+     * and nothing of it goes down the wire. Off unless the parent turns it
+     * on, so the projector, the audience and the laptop column never draw it.
+     */
+    holdRing?: boolean
+    /**
      * The layer has captured the pointer: a stroke, an erase or the laser
      * pointer is in progress.
      *
      * The parent uses this flag to keep the palm away from the rail buttons.
      * Without it the console would press "Back" with the heel of the writing
      * hand.
+     *
+     * When the spell ends, `kind` says how (ink.ts · `BusyKind`): with work
+     * that stood, after which the heel follows the hand, or as a two-finger
+     * gesture, after which the thumb's next tap on the rail is meant.
      */
-    onbusy?: (busy: boolean) => void
+    onbusy?: (busy: boolean, kind?: BusyKind) => void
     /** Two fingers tapped the sheet: undo the last stroke. */
     onundo?: () => void
     /** First pen on this screen in the component's lifetime: fingers stop drawing. */
@@ -193,6 +284,10 @@
     w,
     h,
     reach = { top: 0, right: 0, bottom: 0, left: 0 },
+    zoom = WHOLE,
+    onzoom,
+    straighten = true,
+    holdRing = false,
     onbusy,
     onundo,
     onpen,
@@ -200,10 +295,24 @@
   }: Props = $props()
   const session = getSessionState()
 
+  let markerCanvas = $state<HTMLCanvasElement | null>(null)
   let dryCanvas = $state<HTMLCanvasElement | null>(null)
   let wetCanvas = $state<HTMLCanvasElement | null>(null)
   let liveCanvas = $state<HTMLCanvasElement | null>(null)
+  let frameNode = $state<HTMLDivElement | null>(null)
   let inputNode = $state<HTMLDivElement | null>(null)
+
+  /**
+   * The zoom the canvases are painted at, as a key. Its change is the reason
+   * to repaint every canvas whole; the transform that moves them meanwhile
+   * (`zoom.css`) costs nothing and repaints nothing.
+   */
+  const paintedKey = $derived(zoom.painted ? `${zoom.painted.x},${zoom.painted.y},${zoom.painted.z}` : '')
+  /**
+   * How many times closer the canvases are painted: everything about the
+   * hand is divided by it to keep its size on the glass (see the header).
+   */
+  const near = $derived(zoom.painted?.z ?? 1)
 
   /* -------------------------------------------------- stroke geometry */
 
@@ -222,7 +331,17 @@
    * `desynchronized` for the wet and the live canvas: the browser then does
    * not wait for the compositor and puts pixels under the pen a frame
    * earlier. Not for the dry one: it changes over the network, a tear in a
-   * frame shows on it as flicker, and there is no gain whatsoever.
+   * frame shows on it as flicker, and there is no gain whatsoever. Nor for
+   * the marker canvas: it is blended with the page, and a canvas the browser
+   * may hand straight to the display is one it may not blend.
+   *
+   * THE ZOOM LIVES HERE AND NOWHERE ELSE. The bitmap stays the size of the
+   * sheet (memory does not grow with the zoom), and the transform maps the
+   * page so that the region `zoom.painted` fills it, exactly as the page's
+   * own picture is rendered (LecturePage, `getViewport` with an offset).
+   * Every path is still built from fractions times `w` and `h`, so the wet
+   * line's incremental tail, the pointer's laid body and every cache keyed on
+   * the sheet size hold under any zoom.
    */
   function fitTo(
     node: HTMLCanvasElement,
@@ -239,11 +358,25 @@
     }
     const paint = node.getContext('2d', fast ? { desynchronized: true } : undefined)
     if (!paint) return null
-    paint.setTransform(ratio, 0, 0, ratio, 0, 0)
+    const view = zoom.painted
+    const k = ratio * (view?.z ?? 1)
+    paint.setTransform(k, 0, 0, k, -(view?.x ?? 0) * w * k, -(view?.y ?? 0) * h * k)
     paint.lineCap = 'round'
     paint.lineJoin = 'round'
     paint.globalAlpha = 1
     return { paint, blank }
+  }
+
+  /**
+   * Clear the whole bitmap, in device pixels. Not through the page
+   * transform: under a zoom it maps the page past the canvas's edges, and
+   * "clear the page" is then a rectangle somewhere off to the side.
+   */
+  function wipe(paint: CanvasRenderingContext2D): void {
+    paint.save()
+    paint.setTransform(1, 0, 0, 1, 0, 0)
+    paint.clearRect(0, 0, paint.canvas.width, paint.canvas.height)
+    paint.restore()
   }
 
   /**
@@ -283,8 +416,10 @@
     py: number,
   ): void {
     if (points.length < 2) return
-    const line = Math.max(1, thick * px)
-    if (isDot(points, px, py)) {
+    // At least a pixel of the screen, which under a zoom is a fraction of a
+    // pixel of the page; and a dot is a dot by what the screen shows.
+    const line = Math.max(1 / near, thick * px)
+    if (isDot(points, px * near, py * near)) {
       /*
        * A tap: one spot, however many numbers it took (see `isDot`). A path
        * of zero length draws nothing, and the dot on an i vanished with the
@@ -308,13 +443,15 @@
   }
 
   /**
-   * Strokes in order, with the pieces of one TRANSLUCENT motion drawn as one
-   * path.
+   * Strokes, with the pieces of one TRANSLUCENT motion drawn as one path,
+   * motion by motion in the order they began.
    *
    * A motion longer than the point ceiling is several strokes (see
    * `InkStroke.group`), and two marker pieces stroked apart overlap at the
    * joint with doubled alpha: a dark blot in the middle of a highlighted line.
-   * An opaque pen does not care, and draws stroke by stroke.
+   * An opaque pen does not care, and draws stroke by stroke. The pieces are
+   * gathered by motion wherever they stand in the list: someone else's
+   * stroke may arrive between two pieces of a long highlight.
    */
   function drawRuns(
     paint: CanvasRenderingContext2D,
@@ -322,19 +459,17 @@
     px: number,
     py: number,
   ): void {
-    for (let i = 0; i < strokes.length; i += 1) {
-      const first = strokes[i]
-      if (!seeThrough(first.color)) {
-        drawStroke(paint, first.points, first.color, first.width, px, py)
+    const runs = new Map<string, { color: string; width: number; points: number[] }>()
+    for (const stroke of strokes) {
+      if (!seeThrough(stroke.color)) {
+        drawStroke(paint, stroke.points, stroke.color, stroke.width, px, py)
         continue
       }
-      let points = first.points
-      while (i + 1 < strokes.length && groupOf(strokes[i + 1]) === groupOf(first)) {
-        i += 1
-        points = [...points, ...strokes[i].points]
-      }
-      drawStroke(paint, points, first.color, first.width, px, py)
+      const run = runs.get(groupOf(stroke))
+      if (run) run.points = [...run.points, ...stroke.points]
+      else runs.set(groupOf(stroke), { color: stroke.color, width: stroke.width, points: stroke.points })
     }
+    for (const run of runs.values()) drawStroke(paint, run.points, run.color, run.width, px, py)
   }
 
   /** Translucent = 8-digit (or 4-digit) hex: the marker's alpha lives in its colour. */
@@ -388,13 +523,13 @@
     if (last < 0) return
     // Still one spot (a Pencil pressed and not yet moved): a dot, not
     // zero-length segments the canvas would drop.
-    if (last === 0 || isDot(points, w, h)) {
+    if (last === 0 || isDot(points, w * near, h * near)) {
       drawStroke(paint, points, tint, thick, w, h)
       Object.assign(tail, tailOf(points))
       return
     }
     paint.strokeStyle = tint
-    paint.lineWidth = Math.max(1, thick * w)
+    paint.lineWidth = Math.max(1 / near, thick * w)
     for (let i = tail.curved + 1; i < last; i += 1) {
       const cx = points[i * 2] * w
       const cy = points[i * 2 + 1] * h
@@ -439,6 +574,14 @@
    * echo is still on the way, and showing it would be a flash.
    */
   const erasedSeen = new Set<string>()
+  /**
+   * Hidden ids the grace timer must not bring back: the freehand pieces a
+   * straight line is replacing while the pen still holds it (see
+   * `straightenNow`). The room keeps them until the pen lifts, so the server
+   * cannot confirm anything yet, and a second and a half of holding the line
+   * must not resurrect the wobbly original under it.
+   */
+  const withheld = new Set<string>()
 
   $effect(() => {
     void session.inkRevision
@@ -462,35 +605,24 @@
    * grown one only by its new piece. A full repaint remains for the cases
    * when pixels must be REMOVED or reordered: a stroke vanished (undo,
    * eraser, clearing), a stroke came back under others (undo of an erase), the
-   * page changed, the size changed.
+   * page changed, the size changed, the zoom was painted anew.
+   *
+   * Opaque strokes only. A marker cannot be laid down in pieces (see
+   * `drawStroke`), and it used to cost this canvas a full repaint per echo
+   * batch, or a detour through the wet canvas while it grew; now every
+   * translucent stroke lives on the marker canvas (`paintMarkers`), and this
+   * one never has to take a stroke back out.
    */
   const drawn = new Map<string, Tail>()
   let drawnPage = Number.NaN
-
-  /**
-   * Someone else's translucent strokes that are still GROWING, by motion
-   * (`groupOf`), with when they last grew.
-   *
-   * A marker cannot be laid down in pieces (see `drawStroke`), and it used to
-   * repaint the WHOLE dry page on every echo batch: twenty-two full repaints a
-   * second on the projector and every student's tab while the presenter
-   * highlighted, over six hundred strokes on a weak CPU. On the presenter's
-   * console that is invisible (its own stroke is wet there), for the hall
-   * every stroke is someone else's. So a growing marker lives on the wet
-   * canvas, where redrawing it is redrawing one stroke, and is laid onto the
-   * dry one once it has stopped growing for `GROW_SETTLE_MS`.
-   */
-  const growing = new Map<string, number>()
-  const GROW_SETTLE_MS = 300
-  let growTimer: number | undefined
-  /** Moves when a growing stroke settles: the dry canvas takes it over. */
-  let growRev = $state(0)
+  /** The zoom the dry canvas was painted at (`paintedKey`). */
+  let drawnAt = ''
 
   $effect(() => {
     const node = dryCanvas
     // Read the edit counter: it is the very reason to repaint.
     void session.inkRevision
-    void growRev
+    void paintedKey
     const hidden = wetIds
     const gone = erased
     const now = page
@@ -537,39 +669,11 @@
     const ready = fitTo(node, false)
     if (!ready) return
     const paint = ready.paint
-    const onPage = session.ink.filter(
-      (stroke) => stroke.page === now && !hidden.has(stroke.id) && !gone.has(stroke.id),
+    const visible = session.ink.filter(
+      (stroke) =>
+        stroke.page === now && !hidden.has(stroke.id) && !gone.has(stroke.id) && !seeThrough(stroke.color),
     )
-    let full = ready.blank || drawnPage !== now
-    /*
-     * Translucent strokes that grow go to the wet canvas (see `growing`). A
-     * new one simply is not drawn here; one that was already laid down and
-     * grows again (the hand paused longer than the settle time) has to leave
-     * this canvas: one full repaint per pause, not per batch.
-     */
-    const stamp = performance.now()
-    let grew = false
-    if (!full) {
-      for (const stroke of onPage) {
-        if (!seeThrough(stroke.color)) continue
-        const key = groupOf(stroke)
-        const known = drawn.get(stroke.id)
-        if (growing.has(key)) {
-          if ((grownLen.get(stroke.id) ?? -1) !== stroke.points.length) {
-            growing.set(key, stamp)
-            grew = true
-          }
-        } else if (!known) {
-          growing.set(key, stamp)
-          grew = true
-        } else if (stroke.points.length > known.n) {
-          growing.set(key, stamp)
-          grew = true
-          full = true
-        }
-      }
-    }
-    const visible = onPage.filter((stroke) => !growing.has(groupOf(stroke)))
+    let full = ready.blank || drawnPage !== now || drawnAt !== paintedKey
     if (!full) {
       const present = new Set(visible.map((stroke) => stroke.id))
       for (const id of drawn.keys()) {
@@ -597,11 +701,14 @@
       }
     }
     if (full) {
-      paint.clearRect(0, 0, w, h)
+      wipe(paint)
       drawn.clear()
       drawnPage = now
-      drawRuns(paint, visible, w, h)
-      for (const stroke of visible) drawn.set(stroke.id, tailOf(stroke.points))
+      drawnAt = paintedKey
+      for (const stroke of visible) {
+        drawStroke(paint, stroke.points, stroke.color, stroke.width, w, h)
+        drawn.set(stroke.id, tailOf(stroke.points))
+      }
     } else {
       for (const stroke of visible) {
         const known = drawn.get(stroke.id)
@@ -613,65 +720,91 @@
         }
       }
     }
-    if (grew) {
-      paintWetAll()
-      armGrow()
-    }
   }
 
-  /** How long each growing stroke was when the wet canvas last drew it. */
-  const grownLen = new Map<string, number>()
+  /* --------------------------------------------------- marker canvas */
 
-  /** Wake when the oldest growing stroke may have settled. */
-  function armGrow(): void {
-    if (growTimer !== undefined || growing.size === 0) return
-    const oldest = Math.min(...growing.values())
-    growTimer = window.setTimeout(
-      () => {
-        growTimer = undefined
-        settleGrowing()
-      },
-      Math.max(16, oldest + GROW_SETTLE_MS - performance.now()),
+  /**
+   * What the marker canvas holds now, as a key: the strokes with their
+   * lengths and ends, the page, the size, the zoom. The room's ink changes
+   * twenty times a second while someone writes with a PEN, and that is no
+   * reason to repaint the highlights. The end is in the key because one's
+   * own marker can change without growing: its predicted tip moves, and a
+   * straight line's end follows the pen.
+   */
+  let markersDrawn = ''
+
+  /** The translucent strokes of the page as they should look now: the room's, and one's own still drying. */
+  function markersHere(): Pick<InkStroke, 'id' | 'group' | 'color' | 'width' | 'points'>[] {
+    const out: Pick<InkStroke, 'id' | 'group' | 'color' | 'width' | 'points'>[] = session.ink.filter(
+      (stroke) =>
+        stroke.page === page && seeThrough(stroke.color) && !wetIds.has(stroke.id) && !erased.has(stroke.id),
     )
+    for (const stroke of wet) {
+      if (stroke.page !== page || !seeThrough(stroke.color) || erased.has(stroke.id)) continue
+      /*
+       * The predicted tip of one's own marker is part of ITS path, not a
+       * second stroke on the live canvas: two translucent strokes overlapping
+       * at the round end used to darken into a blot that ran ahead of the
+       * pen. Here it costs nothing, the canvas is repainted whole anyway.
+       */
+      const ahead = drawing?.stroke === stroke && guess ? [...stroke.points, guess.x, guess.y] : stroke.points
+      out.push({ id: stroke.id, group: stroke.group, color: stroke.color, width: stroke.width, points: ahead })
+    }
+    return out
   }
 
   /**
-   * Strokes that have stopped growing go from the wet canvas to the dry one.
+   * THE HIGHLIGHTER'S CANVAS: every translucent stroke of the page, under
+   * the pen ink, blended with the page by `multiply` (see the header).
    *
-   * Laid down here, not left to the next `paintDry`: there a translucent
-   * stroke the dry canvas does not know reads as a NEW growing one, and it
-   * would bounce back to the wet canvas.
+   * Repainted WHOLE on every change. A translucent stroke cannot be laid in
+   * pieces (the joints would darken), and highlights on a page are few, so
+   * one canvas repainted whole is both the simplest and the cheapest: no
+   * stroke has to be taken out of a canvas that also holds the pen's ink. An
+   * empty one gives its bitmap back: a page-sized canvas per screen is the
+   * scarcest thing on an iPad (one canvas budget per process), and most
+   * pages have no highlight at all.
    */
-  function settleGrowing(): void {
-    const now = performance.now()
-    const settled = [...growing].filter(([, at]) => now - at >= GROW_SETTLE_MS).map(([key]) => key)
-    if (settled.length > 0) {
-      const done = new Set(settled)
-      for (const key of settled) growing.delete(key)
-      const node = dryCanvas
-      const ready = node && w > 0 && h > 0 ? fitTo(node, false) : null
-      if (ready && !ready.blank && drawnPage === page) {
-        const strokes = session.ink.filter(
-          (stroke) =>
-            stroke.page === page &&
-            done.has(groupOf(stroke)) &&
-            !wetIds.has(stroke.id) &&
-            !erased.has(stroke.id),
-        )
-        drawRuns(ready.paint, strokes, w, h)
-        for (const stroke of strokes) drawn.set(stroke.id, tailOf(stroke.points))
+  function paintMarkers(): void {
+    const node = markerCanvas
+    if (!node) return
+    const strokes = w > 0 && h > 0 ? markersHere() : []
+    if (strokes.length === 0) {
+      if (node.width !== 1 || node.height !== 1) {
+        node.width = 1
+        node.height = 1
       }
-      for (const id of [...grownLen.keys()]) {
-        const stroke = session.ink.find((known) => known.id === id)
-        if (!stroke || done.has(groupOf(stroke))) grownLen.delete(id)
-      }
-      paintWetAll()
-      // Anything this pass could not lay down (the page moved, the canvas
-      // was refitted) is left to a full repaint.
-      growRev += 1
+      markersDrawn = ''
+      return
     }
-    armGrow()
+    const key =
+      `${page}|${w}x${h}|${paintedKey}|` +
+      strokes
+        .map((stroke) => {
+          const n = stroke.points.length
+          return `${stroke.id}:${n}:${stroke.points[n - 2]},${stroke.points[n - 1]}`
+        })
+        .join(',')
+    const ready = fitTo(node, false)
+    if (!ready) return
+    if (!ready.blank && key === markersDrawn) return
+    wipe(ready.paint)
+    drawRuns(ready.paint, strokes, w, h)
+    markersDrawn = key
   }
+
+  $effect(() => {
+    void markerCanvas
+    void session.inkRevision
+    void wetIds
+    void erased
+    void page
+    void w
+    void h
+    void paintedKey
+    untrack(() => paintMarkers())
+  })
 
   /* ----------------------------------------------------- wet canvas */
 
@@ -713,6 +846,11 @@
     echoed: boolean
     /** How far the curve on the wet canvas reaches. */
     tail: Tail
+    /**
+     * A straight line still held under the pen (see `straightenNow`): its end
+     * follows the pen, so nothing of it goes out until the lift.
+     */
+    straight?: boolean
   }
 
   /**
@@ -726,12 +864,17 @@
     wetIds = new Set(wet.map((stroke) => stroke.id))
   }
 
+  /** The zoom the wet canvas was painted at: a stroke cannot grow onto a canvas painted at another. */
+  let wetAt = ''
+
   /**
    * The whole wet canvas, only when the LIST of wet strokes has changed: a
    * stroke landed on the dry one, the page was turned, the sheet changed
-   * size. One's own pen movement is put on the canvas by `growWet` right
-   * from the handler; neither the pointer nor the ring is here: they live on
-   * the live canvas and do not compete with the ink for a frame.
+   * size, the zoom was painted anew. One's own pen movement is put on the
+   * canvas by `growWet` right from the handler; neither the pointer nor the
+   * ring is here: they live on the live canvas and do not compete with the
+   * ink for a frame. One's own markers are not here either: they lie under
+   * the ink, on the marker canvas.
    */
   function paintWetAll(): void {
     const node = wetCanvas
@@ -739,21 +882,13 @@
     const ready = fitTo(node, true)
     if (!ready) return
     const paint = ready.paint
-    paint.clearRect(0, 0, w, h)
-    const own = wet.filter((stroke) => stroke.page === page)
-    drawRuns(paint, own, w, h)
-    for (const stroke of own) stroke.tail = tailOf(stroke.points)
-    // Someone else's growing markers (see `growing`): one stroke each, cheap to redraw.
-    if (growing.size === 0) return
-    const others = session.ink.filter(
-      (stroke) =>
-        stroke.page === page &&
-        growing.has(groupOf(stroke)) &&
-        !wetIds.has(stroke.id) &&
-        !erased.has(stroke.id),
-    )
-    drawRuns(paint, others, w, h)
-    for (const stroke of others) grownLen.set(stroke.id, stroke.points.length)
+    wipe(paint)
+    wetAt = paintedKey
+    for (const stroke of wet) {
+      if (stroke.page !== page || seeThrough(stroke.color)) continue
+      drawStroke(paint, stroke.points, stroke.color, stroke.width, w, h)
+      stroke.tail = tailOf(stroke.points)
+    }
   }
 
   $effect(() => {
@@ -761,23 +896,28 @@
     void page
     void w
     void h
+    void paintedKey
     void wetCanvas
     untrack(() => paintWetAll())
   })
 
   /** One's own stroke under the pen: incrementally, in this same frame. */
   function growWet(stroke: Wet): void {
+    /*
+     * The marker is translucent and must be one `stroke()`: its canvas is
+     * rebuilt (see `paintMarkers`). Highlights on a page are few, so this is
+     * cheap, and there is no other way.
+     */
+    if (seeThrough(stroke.color)) {
+      paintMarkers()
+      return
+    }
     const node = wetCanvas
     if (!node || w === 0 || h === 0) return
     const ready = fitTo(node, true)
     if (!ready) return
-    /*
-     * The marker is translucent and must be one `stroke()`: for it the wet
-     * canvas is rebuilt. The list of wet strokes is short (closed ones go out
-     * after a round trip to the server), so this is cheap, and there is no
-     * other way.
-     */
-    if (ready.blank || seeThrough(stroke.color)) {
+    // A straight line's end moves rather than grows: it is drawn anew.
+    if (ready.blank || wetAt !== paintedKey || stroke.straight) {
       paintWetAll()
       return
     }
@@ -786,46 +926,30 @@
 
   /* ---------------------------------------------------- live canvas */
 
-  /**
-   * Red. Not in the presenter's colour.
-   *
-   * A pointer is recognised without thinking: a red dot on a slide means
-   * "look here", in every lecture hall in the world that has a laser
-   * pointer. The presenter's colour came here from a general habit of
-   * colouring everything by author, and a second teacher's pointer turned
-   * out blue, that is, indistinguishable from their own ink with which they
-   * will underline a line a second later.
-   */
-  const LASER = '#ff2b1d'
-
   /*
    * How long the trail holds WHOLE and how long it fades.
    *
    * With the pointer one circles a shape and talks about it: "this area".
    * While they talk, the shape must stand, all of it, rather than melt from
-   * the tail. So the trail has two phases: it holds at full strength for
-   * HOLD_MS after the pen is lifted, and then fades WHOLE over FADE_MS.
-   * Individual points have no age, and a shape that is being drawn has no
-   * length limit to be cut to: both the old "each point lives its 1.2 s" and
-   * the later "the last six hundred frame-points" ate the start of the shape
-   * while the hand was still drawing it, the "unwinding" from the lecture
-   * hall. The fading is by time and only after the release; the one safety
-   * net for a press held over a minute is in laser.ts (`MARK_MAX_SAMPLES`),
-   * and it, too, lets the old shape go whole instead of shortening it.
-   */
-  const HOLD_MS = 900
-  const FADE_MS = 900
-  /*
-   * There are several shapes on a slide.
+   * the tail. So the trail has two phases: it holds at full strength after
+   * the pen is lifted, and then fades WHOLE. Individual points have no age,
+   * and a shape that is being drawn has no length limit to be cut to: both
+   * the old "each point lives its 1.2 s" and the later "the last six hundred
+   * frame-points" ate the start of the shape while the hand was still drawing
+   * it, the "unwinding" from the lecture hall. The fading is by time and only
+   * after the release; the one safety net for a press held over a minute is
+   * in laser.ts (`MARK_MAX_SAMPLES`), and it, too, lets the old shape go whole
+   * instead of shortening it.
    *
+   * And not each shape by itself: by PHRASE (laser.ts · `PHRASE_HOLD_MS`).
    * People do not circle with the pointer in a single flourish: they
-   * underline a line, then circle a formula, then poke at an axis. While each
-   * new touch erased the previous one, it was impossible to finish a
-   * sentence: half of what was shown vanished under the hand. Now a touch
-   * starts ITS OWN shape, and each one lives out its life by itself; the
-   * ceiling keeps the slide from turning into ink over a class.
+   * underline a line, then circle a formula, then write a word with it. While
+   * each shape lived out its life alone, a word written with the pointer
+   * melted from its first letter while its last was being written. Shapes
+   * pressed in a row now hold together while the hand keeps going and go out
+   * together once it stops; the ceiling (`MARKS_MAX`) keeps the slide from
+   * turning into ink over a class.
    */
-  const MARKS_MAX = 8
 
   /**
    * A shape's path in canvas px, laid piece by piece as samples come.
@@ -850,9 +974,12 @@
    * twice a frame (halo and core) for nearly two seconds was the most
    * expensive idle work on a projector with a software rasteriser. A blit
    * with `globalAlpha` costs the area of the shape, once.
+   *
+   * `canvas` is `null` when nothing of the shape can be seen (a zoom has
+   * left it off the sheet): there is nothing to blit and nothing to stroke.
    */
   interface Bake {
-    canvas: HTMLCanvasElement
+    canvas: HTMLCanvasElement | null
     x: number
     y: number
     w: number
@@ -861,6 +988,10 @@
   interface Mark {
     id: number
     page: number
+    /** The phrase the shape belongs to (laser.ts · `PhraseClock`): it glows and goes out with it. */
+    phrase: number
+    /** How much longer its phrase holds here: the wire's jitter, for someone else's (`PHRASE_WIRE_MS`). */
+    grace: number
     /** The samples, page fractions in pairs: the same layout as ink. */
     xy: number[]
     /** How many samples are drawn: all of one's own, up to the playhead of someone else's. */
@@ -871,22 +1002,18 @@
     alpha: number
     trail: Trail | null
     bake: Bake | null
-    /** The sheet size the bake was tried for: a refitted canvas bakes again. */
+    /** The sheet size and zoom the bake was tried for: a refitted or re-zoomed canvas bakes again. */
     bakedFor: string
   }
 
-  /** How brightly a shape glows: it stands for HOLD_MS, melts over FADE_MS. */
-  function glow(mark: Mark, now: number): number {
-    if (mark.letGo === null) return 1
-    const since = now - mark.letGo
-    return since <= HOLD_MS ? 1 : Math.max(0, 1 - (since - HOLD_MS) / FADE_MS)
-  }
   let marks: Mark[] = []
 
-  function newMark(id: number, at: number, xy: number[]): Mark {
+  function newMark(id: number, at: number, xy: number[], phrase: number, grace = 0): Mark {
     const mark: Mark = {
       id,
       page: at,
+      phrase,
+      grace,
       xy,
       shown: 0,
       letGo: null,
@@ -896,8 +1023,36 @@
       bakedFor: '',
     }
     marks.push(mark)
-    if (marks.length > MARKS_MAX) marks = marks.slice(-MARKS_MAX)
+    if (marks.length > MARKS_MAX) {
+      for (const gone of marks.slice(0, marks.length - MARKS_MAX)) unbake(gone)
+      marks = marks.slice(-MARKS_MAX)
+    }
     return mark
+  }
+
+  /**
+   * The bitmaps of released shapes, in device pixels, all together.
+   *
+   * A phrase keeps every one of its shapes lit, and so baked, until it goes
+   * out: a word written with the pointer is twenty bitmaps alive at once
+   * where there used to be one or two. On an iPad every canvas comes out of
+   * one budget per process, and when it runs out WebKit hands out canvases
+   * that silently stay transparent, the PAGE among them. So the bakes have a
+   * budget of their own: past it a shape is stroked per frame, which costs
+   * time, never the page. Each bitmap is given back the moment its shape
+   * goes (`unbake`).
+   */
+  const BAKE_BUDGET_PX = 8_000_000
+  let bakedPx = 0
+
+  /** Give a shape's bitmap back: width and height of one is how WebKit frees a canvas at once. */
+  function unbake(mark: Mark): void {
+    const canvas = mark.bake?.canvas
+    mark.bake = null
+    if (!canvas) return
+    bakedPx = Math.max(0, bakedPx - canvas.width * canvas.height)
+    canvas.width = 1
+    canvas.height = 1
   }
 
   /**
@@ -932,7 +1087,7 @@
    */
   let tipAt = 0
   const TIP_TTL_MS = 40
-  /** The longest a prediction may reach past the last sample, in sheet px. */
+  /** The longest a prediction may reach past the last sample, in px of the glass. */
   const TIP_MAX_PX = 12
   /**
    * Where the head was drawn in the last frame, in canvas px, for the test
@@ -963,6 +1118,8 @@
   /** Someone else's press being played back now, and its shape (a line). */
   let stream: LaserPlayback | null = null
   let streamMark: Mark | null = null
+  /** How this screen groups the presses it hears into phrases (laser.ts · `HeardPhrases`). */
+  const heard = new HeardPhrases()
 
   /** Where the eraser is right now: the ring under the pen is drawn only for us. */
   let ring: { x: number; y: number } | null = null
@@ -974,9 +1131,35 @@
    * (`getPredictedEvents`), or we ourselves from the speed of the last
    * samples, draw ten milliseconds ahead. It lives on the live canvas: it is
    * wiped before the next increment and never gets into the points: on the
-   * projector it would be a line the hand never drew.
+   * projector it would be a line the hand never drew. A marker's tip is the
+   * exception: it extends the marker's own path on the marker canvas
+   * (`markersHere`), since a second translucent stroke over its end darkens.
    */
   let guess: { fromX: number; fromY: number; x: number; y: number; color: string; width: number } | null = null
+
+  /**
+   * The hold ring's look (see `holdShown`), in px of the glass: 2.5 px on a
+   * radius of 15, closing over a track of its own colour at a quarter
+   * strength.
+   *
+   * THE ACCENT, not the pen's colour and not the pointer's red. It is the
+   * interface speaking, not ink: in the pen's colour it would read as a blot
+   * the hand made, and red is what the hall looks at. The accent is the cyan
+   * that means "under way" everywhere in the app (`--accent`, the same in
+   * both themes), and it holds on a white slide and on a dark one alike.
+   * Wide enough to show round the Pencil's tip rather than under it, small
+   * enough not to hide the end of the line it is about.
+   */
+  const HOLD_RING = '#0fa0d7'
+  const HOLD_RING_PX = 15
+  const HOLD_RING_LINE_PX = 2.5
+  const HOLD_RING_TRACK = 0.25
+  /**
+   * The ring the live canvas holds now, and where (page fractions): a frame
+   * repaints for it only when it would look different. The test bench reads
+   * it too (`window.__inkLat.hold`), for the reason it reads `head`.
+   */
+  let holdDrawn: (HoldRing & { x: number; y: number }) | null = null
 
   let liveFrame: number | undefined
   let liveDirty = false
@@ -1017,7 +1200,7 @@
     }
     /*
      * Burnt down completely: the shape leaves whole, in one piece, as it
-     * stood.
+     * stood, together with its whole phrase, and gives its bitmap back.
      *
      * And the main thing: while a shape HOLDS, nothing on the canvas changes,
      * yet the frame used to redraw it sixty times a second for nearly a
@@ -1029,28 +1212,44 @@
     let alive = false
     let burnt = false
     let changed = false
+    const phrases = phrasesOf(marks)
     for (const mark of marks) {
-      if (mark.letGo !== null && now - mark.letGo >= HOLD_MS + FADE_MS) {
+      const phrase = phrases.get(mark.phrase)
+      if (phraseOver(phrase, now)) {
         burnt = true
         continue
       }
       if (mark.letGo !== null) alive = true
       // A shape from another page is not drawn at all, and asks for no frame.
-      if (mark.page === page && Math.abs(glow(mark, now) - mark.alpha) > 0.004) changed = true
+      if (mark.page === page && Math.abs(phraseGlow(phrase, now) - mark.alpha) > 0.004) changed = true
     }
-    if (burnt) marks = marks.filter((mark) => mark.letGo === null || now - mark.letGo < HOLD_MS + FADE_MS)
+    if (burnt) {
+      const kept: Mark[] = []
+      for (const mark of marks) {
+        if (phraseOver(phrases.get(mark.phrase), now)) unbake(mark)
+        else kept.push(mark)
+      }
+      marks = kept
+    }
+    /*
+     * The hold ring runs by the clock: a frame while it closes or fades, one
+     * more to draw where it stopped, and none while it waits full for its
+     * line or is not there at all.
+     */
+    const hold = holdShown(now)
+    if (hold?.closed !== holdDrawn?.closed || hold?.alpha !== holdDrawn?.alpha) liveDirty = true
     if (liveDirty || moving || changed || burnt) paintLive(now)
     liveDirty = false
     /*
      * Frames keep spinning while there is unfinished business: samples ahead
      * of the playhead, or some shape not burnt down yet. A standing shape is
-     * still visited by the frame (otherwise nobody would notice that HOLD_MS
-     * is up and it is time to fade), but it is NOT DRAWN: while the
+     * still visited by the frame (otherwise nobody would notice that its
+     * phrase's hold is up and it is time to fade), but it is NOT DRAWN: while the
      * brightness is the same, `changed` stays false and the live canvas is
      * not touched at all. What is expensive here is rasterising, not walking
      * the list.
      */
-    if (moving || alive) liveFrame = requestAnimationFrame(tick)
+    if (moving || alive || hold?.moving) liveFrame = requestAnimationFrame(tick)
   }
 
   /** A shape's body for its first `count` samples, extended from where it was laid last. */
@@ -1100,7 +1299,7 @@
   ): void {
     paint.lineJoin = 'round'
     paint.lineCap = 'round'
-    paint.strokeStyle = LASER
+    paint.strokeStyle = LASER_RED
     paint.globalAlpha = 0.18 * dim
     paint.lineWidth = core * 5.2
     paint.stroke(path)
@@ -1115,11 +1314,19 @@
    */
   const BAKE_MAX_PX = 2_500_000
 
+  /**
+   * A released shape's bitmap, made once per sheet size and zoom.
+   *
+   * At the zoom's resolution, so that a shape under a magnified detail is as
+   * sharp as the ink around it, and only the part of it that can be seen:
+   * at ×4 the rest of the shape lies off the sheet, and baking it would cost
+   * sixteen times its area for nothing.
+   */
   function bakeOf(mark: Mark, core: number): Bake | null {
-    const size = `${w}x${h}`
+    const size = `${w}x${h}@${paintedKey}`
     if (mark.bakedFor === size) return mark.bake
+    unbake(mark)
     mark.bakedFor = size
-    mark.bake = null
     const count = mark.shown
     if (count < 2) return null
     let loX = Number.POSITIVE_INFINITY
@@ -1134,18 +1341,29 @@
       if (y < loY) loY = y
       if (y > hiY) hiY = y
     }
-    const pad = core * 2.6 + 2
-    const left = Math.floor(loX - pad)
-    const top = Math.floor(loY - pad)
-    const wide = Math.ceil(hiX + pad) - left
-    const high = Math.ceil(hiY + pad) - top
-    const ratio = Math.min(window.devicePixelRatio || 1, 2)
-    if (wide * high * ratio * ratio > BAKE_MAX_PX) return null
+    const pad = core * 2.6 + 2 / near
+    const seen = visibleRect(zoom.painted)
+    const left = Math.floor(Math.max(loX - pad, seen.x * w))
+    const top = Math.floor(Math.max(loY - pad, seen.y * h))
+    const wide = Math.ceil(Math.min(hiX + pad, (seen.x + seen.w) * w)) - left
+    const high = Math.ceil(Math.min(hiY + pad, (seen.y + seen.h) * h)) - top
+    if (wide <= 0 || high <= 0) {
+      mark.bake = { canvas: null, x: left, y: top, w: 0, h: 0 }
+      return mark.bake
+    }
+    const ratio = Math.min(window.devicePixelRatio || 1, 2) * near
+    const cost = Math.ceil(wide * ratio) * Math.ceil(high * ratio)
+    if (cost > BAKE_MAX_PX || bakedPx + cost > BAKE_BUDGET_PX) return null
     const canvas = document.createElement('canvas')
     canvas.width = Math.max(1, Math.ceil(wide * ratio))
     canvas.height = Math.max(1, Math.ceil(high * ratio))
     const paint = canvas.getContext('2d')
-    if (!paint) return null
+    if (!paint) {
+      canvas.width = 1
+      canvas.height = 1
+      return null
+    }
+    bakedPx += canvas.width * canvas.height
     paint.setTransform(ratio, 0, 0, ratio, -left * ratio, -top * ratio)
     strokeTrail(paint, pathOf(mark, count, null), core, 1)
     mark.bake = { canvas, x: left, y: top, w: wide, h: high }
@@ -1158,24 +1376,27 @@
     const ready = fitTo(node, true)
     if (!ready) return
     const paint = ready.paint
-    paint.clearRect(0, 0, w, h)
+    wipe(paint)
 
-    if (guess) {
+    // A marker's predicted tip is part of its own path (see `markersHere`).
+    if (guess && !seeThrough(guess.color)) {
       paint.strokeStyle = guess.color
-      paint.lineWidth = Math.max(1, guess.width * w)
+      paint.lineWidth = Math.max(1 / near, guess.width * w)
       paint.beginPath()
       paint.moveTo(guess.fromX * w, guess.fromY * h)
       paint.lineTo(guess.x * w, guess.y * h)
       paint.stroke()
     }
 
-    const radius = Math.max(9, w * 0.011)
+    // Sizes on the glass, the same under any zoom: the canvas is painted `near` times closer.
+    const radius = Math.max(9, w * 0.011) / near
     const core = radius * 0.34
     // The head as drawn: one's own pushed to the predicted tip, someone else's on the playhead.
     const shown = head && head.page === page ? (press && tip ? { x: tip.x, y: tip.y } : head) : null
+    const phrases = phrasesOf(marks)
     for (const mark of marks) {
       if (mark.page !== page) continue
-      const dim = glow(mark, now)
+      const dim = phraseGlow(phrases.get(mark.phrase), now)
       mark.alpha = dim
       if (dim <= 0 || mark.shown === 0) continue
       const held = mark === ownMark || mark === streamMark
@@ -1183,7 +1404,7 @@
       if (mark.shown === 1 && !end) {
         // Poked and not moved: a "right here" dot is a shape too.
         paint.globalAlpha = 0.85 * dim
-        paint.fillStyle = LASER
+        paint.fillStyle = LASER_RED
         paint.beginPath()
         paint.arc(mark.xy[0] * w, mark.xy[1] * h, core, 0, Math.PI * 2)
         paint.fill()
@@ -1191,8 +1412,10 @@
       }
       const bake = held ? null : bakeOf(mark, core)
       if (bake) {
-        paint.globalAlpha = dim
-        paint.drawImage(bake.canvas, bake.x, bake.y, bake.w, bake.h)
+        if (bake.canvas) {
+          paint.globalAlpha = dim
+          paint.drawImage(bake.canvas, bake.x, bake.y, bake.w, bake.h)
+        }
         continue
       }
       strokeTrail(paint, pathOf(mark, mark.shown, end), core, dim)
@@ -1216,7 +1439,7 @@
        * ten metres.
        */
       const halo = paint.createRadialGradient(x, y, 0, x, y, radius * 1.5)
-      halo.addColorStop(0, LASER)
+      halo.addColorStop(0, LASER_RED)
       halo.addColorStop(1, 'transparent')
       paint.globalAlpha = 0.5
       paint.fillStyle = halo
@@ -1224,7 +1447,7 @@
       paint.arc(x, y, radius * 1.5, 0, Math.PI * 2)
       paint.fill()
       paint.globalAlpha = 1
-      paint.fillStyle = LASER
+      paint.fillStyle = LASER_RED
       paint.beginPath()
       paint.arc(x, y, radius * 0.55, 0, Math.PI * 2)
       paint.fill()
@@ -1241,7 +1464,7 @@
        */
       const x = ring.x * w
       const y = ring.y * h
-      const r = Math.max(4, radius * 0.42)
+      const r = Math.max(4 / near, radius * 0.42)
       paint.globalAlpha = 0.5
       paint.fillStyle = 'rgba(120,132,153,1)'
       paint.beginPath()
@@ -1249,9 +1472,9 @@
       paint.fill()
       paint.globalAlpha = 0.45
       paint.strokeStyle = 'rgba(255,255,255,0.9)'
-      paint.lineWidth = 1.5
+      paint.lineWidth = 1.5 / near
       paint.beginPath()
-      paint.arc(x, y, r + 1.5, 0, Math.PI * 2)
+      paint.arc(x, y, r + 1.5 / near, 0, Math.PI * 2)
       paint.stroke()
       paint.globalAlpha = 1
     }
@@ -1261,11 +1484,12 @@
        * The pen's shadow: a spot exactly as wide as the stroke will be and of
        * the same colour, but at half strength: this is not ink yet. A thin
        * dark outline holds it on a white slide, where a translucent spot of
-       * its own colour would otherwise get lost.
+       * its own colour would otherwise get lost. As wide as the stroke WILL
+       * be: under a zoom that is the chosen width divided by it.
        */
       const x = ring.x * w
       const y = ring.y * h
-      const r = Math.max(3, (width * w) / 2)
+      const r = Math.max(3 / near, (inkWidthAt(width, zoom.shown) * w) / 2)
       paint.globalAlpha = 0.55
       paint.fillStyle = color
       paint.beginPath()
@@ -1273,9 +1497,9 @@
       paint.fill()
       paint.globalAlpha = 0.5
       paint.strokeStyle = 'rgba(255,255,255,0.85)'
-      paint.lineWidth = 1.5
+      paint.lineWidth = 1.5 / near
       paint.beginPath()
-      paint.arc(x, y, r + 1.5, 0, Math.PI * 2)
+      paint.arc(x, y, r + 1.5 / near, 0, Math.PI * 2)
       paint.stroke()
       paint.globalAlpha = 1
     }
@@ -1285,30 +1509,83 @@
        * The eraser ring is our own, and only ours: it is not on the
        * projector. Hollow, not filled: people look under it to see whether it
        * hits the stroke, and its radius is exactly the reach that erases
-       * (`ERASER_PX`, see `rub`). A white outline under a dark one is the only
-       * way to stay visible both on a white slide and on a dark full-sheet
-       * picture.
+       * (`ERASER_PX`, see `rub`): on the glass, so under a zoom both are the
+       * same fraction of the page, divided by the same `near`. A white
+       * outline under a dark one is the only way to stay visible both on a
+       * white slide and on a dark full-sheet picture.
        */
       const x = ring.x * w
       const y = ring.y * h
       paint.beginPath()
-      paint.arc(x, y, ERASER_PX, 0, Math.PI * 2)
+      paint.arc(x, y, ERASER_PX / near, 0, Math.PI * 2)
       paint.strokeStyle = 'rgba(255,255,255,0.9)'
-      paint.lineWidth = 3
+      paint.lineWidth = 3 / near
       paint.stroke()
       paint.strokeStyle = 'rgba(16,26,51,0.85)'
-      paint.lineWidth = 1.5
+      paint.lineWidth = 1.5 / near
       paint.stroke()
+    }
+
+    if (framing && framing.moved) {
+      /*
+       * The magnifier's frame, ours only: the hall sees where it leads, not
+       * the frame. Drawn like the eraser ring, white under dark, dashed so
+       * that it reads as "a choice", not as ink.
+       */
+      const x = Math.min(framing.from.x, framing.to.x) * w
+      const y = Math.min(framing.from.y, framing.to.y) * h
+      const fw = Math.abs(framing.to.x - framing.from.x) * w
+      const fh = Math.abs(framing.to.y - framing.from.y) * h
+      paint.strokeStyle = 'rgba(255,255,255,0.9)'
+      paint.lineWidth = 3 / near
+      paint.strokeRect(x, y, fw, fh)
+      paint.setLineDash([6 / near, 5 / near])
+      paint.strokeStyle = 'rgba(16,26,51,0.85)'
+      paint.lineWidth = 1.5 / near
+      paint.strokeRect(x, y, fw, fh)
+      paint.setLineDash([])
+    }
+
+    const hold = holdShown(now)
+    holdDrawn = hold
+    if (hold) {
+      /*
+       * The hold ring, round the pen's tip (see `holdShown`): the track
+       * first, then the part that has closed, clockwise from twelve o'clock,
+       * as a clock runs. Its sizes are on the glass, so under a zoom they are
+       * divided by it like the eraser's ring.
+       */
+      const x = hold.x * w
+      const y = hold.y * h
+      const r = HOLD_RING_PX / near
+      paint.lineWidth = HOLD_RING_LINE_PX / near
+      paint.lineCap = 'round'
+      paint.strokeStyle = HOLD_RING
+      paint.globalAlpha = HOLD_RING_TRACK * hold.alpha
+      paint.beginPath()
+      paint.arc(x, y, r, 0, Math.PI * 2)
+      paint.stroke()
+      if (hold.closed > 0) {
+        paint.globalAlpha = hold.alpha
+        paint.beginPath()
+        paint.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * hold.closed)
+        paint.stroke()
+      }
+      paint.globalAlpha = 1
     }
   }
 
-  // The live canvas: a page or size change means repaint; a tool change may
-  // have made the eraser ring out of place.
+  // The live canvas: a page, size or painted zoom change means repaint; a
+  // tool change may have made the eraser ring out of place, and turning the
+  // hold ring or the straight line off takes a showing ring away.
   $effect(() => {
     void page
     void w
     void h
+    void paintedKey
     void tool
+    void holdRing
+    void straighten
     void liveCanvas
     untrack(() => wake())
   })
@@ -1317,14 +1594,16 @@
 
   /**
    * Someone else's press is over: everything it drew shows at once, the
-   * head goes out, and the shape stands and melts in its own time.
+   * head goes out, and the shape stands and melts with its phrase.
    *
    * `early` is how long ago, in the presenter's terms, the pen really left the
    * glass: a playback that ran to its end is `LASER_DELAY_MS` behind the
    * presenter, and the shape's life is counted from the release, not from
    * the replay. So it goes out in the hall at the same moment as on the
    * console: the presenter, seeing their own shape gone, is right about the
-   * projector too. Its hold is a tenth of a second shorter, which nobody sees.
+   * projector too. (A phrase the console named holds whole a little longer
+   * here and fades quicker, for the network's jitter: laser.ts ·
+   * `PHRASE_WIRE_MS`. It still ends with the console's.)
    */
   function finishStream(now: number, early = 0): void {
     if (!stream) return
@@ -1372,11 +1651,37 @@
        * As a dot, no shape is started at all. Not "draw and hide": a shape
        * that does not exist accumulates no points and asks for no frames to
        * fade, and the pointer has always had its own head: that is the dot.
+       *
+       * The phrase is the presenter's (`trail`): the hall groups the shapes
+       * as the hand wrote them, and holds them the wire's grace longer, so a
+       * press the network brought late still finds its word lit. One later
+       * still starts a phrase here rather than revive a fading one. A console
+       * from before phrases does not say, and then the same rule is applied
+       * here, to this screen's shapes (laser.ts · `HeardPhrases`).
+       *
+       * Judged where the press BEGAN, not where its first frame came: a
+       * finger's press reaches the wire a quarter of a second late (its
+       * beam is held back, `beamHeld`), and judged on arrival that quarter
+       * came out of the grace (laser.ts · `pressBegan`). A console from
+       * before phrases never holds a beam, and an older one's samples are
+       * timed by the server's clock: those are judged as they come.
        */
-      streamMark = at.shape === 'line' ? newMark(mark, at.page, stream.xy) : null
+      const grace = at.trail === undefined ? 0 : PHRASE_WIRE_MS
+      const began = at.trail === undefined ? now : pressBegan(at.pts, now)
+      streamMark =
+        at.shape === 'line' ? newMark(mark, at.page, stream.xy, phraseHere(at.page, at.trail, began), grace) : null
     }
     stream.hear(at.pts && at.pts.length >= 3 ? at.pts : [at.x, at.y, Math.round(now)], now)
     wake()
+  }
+
+  /** The phrase someone else's press joins here: the one its frames name, or the timing rule's. */
+  function phraseHere(at: number, trail: number | undefined, now: number): number {
+    return heard.join(
+      marks.filter((mark) => mark.page === at),
+      trail,
+      now,
+    )
   }
 
   $effect(() => hearLaser(session, hearRemote))
@@ -1515,7 +1820,19 @@
    * The stroke being drawn now. `pointer` so that no other touch closes it;
    * `byFinger` so that the pen can: see `down`.
    */
-  let drawing: { pointer: number; byFinger: boolean; stroke: Wet } | null = null
+  interface Drawing {
+    pointer: number
+    byFinger: boolean
+    stroke: Wet
+    /** Where the pointer is now, unsmoothed: where a straight line ends. */
+    tip: { x: number; y: number }
+    /**
+     * Set once the stroke has straightened (`straightenNow`): the freehand
+     * pieces the line replaces, to be taken back from the room on the lift.
+     */
+    replaced: { page: number; id: string }[] | null
+  }
+  let drawing: Drawing | null = null
   /** The pointer that pressed the laser: a hovering pen does not put it out. */
   let beaming: number | null = null
   /** It is a finger: when the finger is turned off, it lets the beam go. */
@@ -1580,12 +1897,14 @@
    */
   const SPLIT_AT_NUMBERS = 3900
   /**
-   * The smallest step worth a point, in sheet px.
+   * The smallest step worth a point, in px of the screen (the sheet times
+   * the zoom).
    *
    * Every coalesced sample used to be kept, and a Pencil held still keeps
    * reporting pressure and tilt: the four-thousand-number budget filled up
    * without the pen travelling, and the motion split for no visible reason.
-   * Half a pixel is below what any screen in the room can show.
+   * Half a pixel is below what any screen in the room can show, the
+   * magnified ones included: every screen shows the same zoom.
    */
   const INK_MIN_STEP_PX = 0.5
 
@@ -1609,26 +1928,51 @@
    * times a second; Pencil does not forgive that.
    */
   let rect: DOMRect | null = null
+  /**
+   * The view moved since `rect` was taken. The size observer does not see a
+   * transform, and under a moving zoom the canvas's rect is not the sheet's:
+   * it is the bitmap painted at `zoom.painted`, moved by `zoom.css`. The next
+   * point asks for a fresh one, once per change, not per sample.
+   */
+  let rectStale = true
   function measure(): void {
     const node = wetCanvas
     rect = node ? node.getBoundingClientRect() : null
+    rectStale = false
   }
 
+  $effect(() => {
+    void zoom
+    rectStale = true
+  })
+
   /**
-   * Coordinates as fractions of the sheet, clamped to [0, 1].
+   * Coordinates as fractions of the PAGE, clamped to what the sheet shows.
    *
    * The input layer is wider than the sheet: the margins are on it too. A
    * stroke started on the margin and carried onto the sheet does start: on
    * paper one draws from the edge, and a pen that stays silent until it
    * crosses an invisible line is a pen that "didn't work".
+   *
+   * Under a zoom the rect is the bitmap's, which is painted at
+   * `zoom.painted`: the place across it is a place in that region of the
+   * page (`boxToPage`), whatever transform moves the bitmap meanwhile. The
+   * clamp is to the region the hall sees, not to the page: a stroke carried
+   * past the edge of a magnified detail stays on its edge, as it stays on
+   * the page's edge at ×1, instead of running on where nobody can see it.
    */
   function at(event: { clientX: number; clientY: number }): { x: number; y: number } | null {
+    if (rectStale) measure()
     if (!rect || rect.width === 0 || rect.height === 0) return null
-    const x = (event.clientX - rect.left) / rect.width
-    const y = (event.clientY - rect.top) / rect.height
+    const place = boxToPage(
+      zoom.painted,
+      (event.clientX - rect.left) / rect.width,
+      (event.clientY - rect.top) / rect.height,
+    )
+    const seen = visibleRect(zoom.shown)
     return {
-      x: round(x < 0 ? 0 : x > 1 ? 1 : x),
-      y: round(y < 0 ? 0 : y > 1 ? 1 : y),
+      x: round(Math.min(seen.x + seen.w, Math.max(seen.x, place.x))),
+      y: round(Math.min(seen.y + seen.h, Math.max(seen.y, place.y))),
     }
   }
 
@@ -1707,13 +2051,28 @@
     return true
   }
 
-  /** Whether we hold the pointer. The parent uses it to keep the palm off the buttons. */
+  /**
+   * Whether we hold the pointer. The parent uses it to keep the palm off the
+   * buttons.
+   *
+   * `ended` is how a spell that ends here ended: with work that stood, by
+   * default, or as a gesture, said by the paths that make a finger's work
+   * never happen (`forgetFirst` and what it calls, `takeBack`) and by the
+   * pinch's own end. The console's palm guard on the rail follows the
+   * writing hand, and it used to start after every spell: after a pinch, and
+   * after the first finger of a pinch forgotten as its second one landed, it
+   * swallowed the thumb's next tap on "Whole slide" or "Next", without a word.
+   * It used to read the kind from the order of the layer's calls; now it is
+   * told.
+   */
   let busy = false
-  function syncBusy(): void {
-    const next = drawing !== null || erasing !== null || beaming !== null || lit
+  function syncBusy(ended: BusyKind = 'ink'): void {
+    const next =
+      drawing !== null || erasing !== null || beaming !== null || lit || framing !== null || pinch?.committed === true
     if (next === busy) return
     busy = next
-    onbusy?.(next)
+    if (next) onbusy?.(true)
+    else onbusy?.(false, ended)
   }
 
   /**
@@ -1765,6 +2124,8 @@
     flushTimer = undefined
     if (!drawing) return
     const stroke = drawing.stroke
+    // A straight line still held: its end moves, and the wire only appends.
+    if (stroke.straight) return
     // Not sent: the points stay behind `handed` and go as one piece when the
     // connection returns. Nothing is cut out of the stroke where the Wi-Fi
     // blinked.
@@ -1777,12 +2138,17 @@
     flushTimer = window.setTimeout(flush, SEND_EVERY_MS)
   }
 
+  function newStrokeId(): string {
+    return `s${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
+  }
+
   function newStroke(x: number, y: number, force: number, group?: string): Wet {
     return {
-      id: `s${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`,
+      id: newStrokeId(),
       page,
       color,
-      width,
+      // As thick on the glass as the chosen pen, under whatever zoom (ink.ts · `inkWidthAt`).
+      width: inkWidthAt(width, zoom.shown),
       points: [x, y],
       force: [force],
       handed: 0,
@@ -1818,7 +2184,7 @@
     smoothY = place.y
     wet = [...wet, stroke]
     rememberWet()
-    drawing = { pointer, byFinger, stroke }
+    drawing = { pointer, byFinger, stroke, tip: place, replaced: null }
     growWet(stroke)
     /*
      * The first point goes at once: a pen tap must arrive even if the pen was
@@ -1826,10 +2192,11 @@
      * the first point.
      *
      * With a finger, after a quarter-second delay: that much is set aside for
-     * a second finger to turn the touch into an undo tap (see `down`). A sent
-     * point cannot be taken back, while an unsent one "never happened": this
-     * is the only case when a stroke disappears silently, and it is allowed
-     * precisely because nothing from it has gone out.
+     * a second finger to turn the touch into an undo tap or a pinch (see
+     * `forgetFirst`). A sent point cannot be taken back, while an unsent one
+     * "never happened": this is the only case when a stroke disappears
+     * silently, and it is allowed precisely because nothing from it has gone
+     * out.
      */
     if (byFinger) {
       window.clearTimeout(flushTimer)
@@ -1842,17 +2209,57 @@
 
   /** A stroke from which not a single point went out: forget it, see `openStroke`. */
   function forgetUnsent(): void {
-    if (!drawing || drawing.stroke.handed !== 0) return
+    if (!drawing || drawing.stroke.handed !== 0 || drawing.replaced) return
     window.clearTimeout(flushTimer)
     flushTimer = undefined
+    unrest()
     const gone = drawing.stroke
     drawing = null
     guess = null
     wet = wet.filter((stroke) => stroke !== gone)
     rememberWet()
     paintWetAll()
+    paintMarkers()
     wake()
-    syncBusy()
+    // Half of a gesture, or the palm under a landing pen: nothing stood.
+    syncBusy('gesture')
+  }
+
+  /**
+   * The stroke under the finger was the start of a gesture, not ink (a
+   * pinch, see `commitPinch`): take it back whole. What never went out is
+   * forgotten; what did is retracted, like the palm in `dropPalm`, and so is
+   * the freehand motion a straight line was about to replace.
+   */
+  function takeBack(): void {
+    const held = drawing
+    if (!held) return
+    if (held.stroke.handed === 0 && !held.replaced) {
+      forgetUnsent()
+      return
+    }
+    window.clearTimeout(flushTimer)
+    flushTimer = undefined
+    unrest()
+    drawing = null
+    guess = null
+    const stroke = held.stroke
+    const out = [...(held.replaced ?? [])]
+    if (stroke.handed > 0) out.push({ page: stroke.page, id: stroke.id })
+    for (const piece of out) {
+      session.send({ t: 'ink:erase', page: piece.page, id: piece.id, retract: true })
+      withheld.delete(piece.id)
+    }
+    if (out.length > 0) {
+      erased = new Set([...erased, ...out.map((piece) => piece.id)])
+      forgetLater()
+    }
+    wet = wet.filter((known) => known !== stroke)
+    rememberWet()
+    paintWetAll()
+    paintMarkers()
+    wake()
+    syncBusy('gesture')
   }
 
   /**
@@ -1865,22 +2272,14 @@
    * here, and closing flushed the very point that was being held back so that
    * it could be forgotten: a dot stayed on the projector. Unsent, it is simply
    * forgotten; already sent, it is retracted on the server, which leaves no
-   * trace for Undo (`retract`). An older or longer finger stroke is a real
-   * one and is finished as usual.
+   * trace for Undo (`retract`). An older and longer finger stroke is a real
+   * one and is finished as usual (ink.ts · `mayTakeBack`).
    */
-  const PALM_YOUNG_MS = 300
-  const PALM_TRAVEL_PX = 10
   function dropPalm(): void {
     if (!drawing?.byFinger) return
     const stroke = drawing.stroke
-    let travel = 0
-    for (let i = 2; i + 1 < stroke.points.length; i += 2) {
-      travel += Math.hypot(
-        (stroke.points[i] - stroke.points[i - 2]) * w,
-        (stroke.points[i + 1] - stroke.points[i - 1]) * h,
-      )
-    }
-    if (performance.now() - stroke.bornAt >= PALM_YOUNG_MS && travel >= PALM_TRAVEL_PX) {
+    // Its travel is on the glass: the sheet times the zoom.
+    if (!mayTakeBack(stroke.points, performance.now() - stroke.bornAt, w * near, h * near)) {
       closeStroke()
       return
     }
@@ -1890,6 +2289,7 @@
     }
     window.clearTimeout(flushTimer)
     flushTimer = undefined
+    unrest()
     drawing = null
     guess = null
     session.send({ t: 'ink:erase', page: stroke.page, id: stroke.id, retract: true })
@@ -1897,8 +2297,9 @@
     wet = wet.filter((known) => known !== stroke)
     rememberWet()
     paintWetAll()
+    paintMarkers()
     wake()
-    syncBusy()
+    syncBusy('gesture')
   }
 
   /**
@@ -1907,14 +2308,34 @@
    * never erased: what the presenter has already drawn, the audience has
    * already seen; "this never happened" is only the eraser and undo, and
    * both by hand.
+   *
+   * A straight line is finished here too, and only here does the room learn
+   * about it: the freehand motion it replaces is taken back (`retract`, so
+   * Undo never brings it back), and the line goes out as a stroke of its own,
+   * in this order on one socket. Until this moment the hall kept seeing the
+   * freehand line, so it never sees the place go blank in between.
    */
   function closeStroke(): void {
     if (!drawing) return
+    unrest()
+    const held = drawing
+    if (held.replaced) {
+      for (const piece of held.replaced) {
+        session.send({ t: 'ink:erase', page: piece.page, id: piece.id, retract: true })
+        withheld.delete(piece.id)
+      }
+      if (held.replaced.length > 0) forgetLater()
+      held.replaced = null
+      held.stroke.straight = false
+    }
+    const translucent = guess !== null && seeThrough(held.stroke.color)
     flush()
-    drawing.stroke.closed = true
-    drawing.stroke.closedAt = performance.now()
+    held.stroke.closed = true
+    held.stroke.closedAt = performance.now()
     drawing = null
     guess = null
+    // A marker's predicted tip was part of its path: the path loses it now.
+    if (translucent) paintMarkers()
     wake()
     syncBusy()
     arm()
@@ -1967,7 +2388,7 @@
     const last = stroke.points.length - 2
     if (
       last >= 0 &&
-      Math.hypot((place.x - stroke.points[last]) * w, (place.y - stroke.points[last + 1]) * h) <
+      Math.hypot((place.x - stroke.points[last]) * w, (place.y - stroke.points[last + 1]) * h) * near <
         INK_MIN_STEP_PX
     ) {
       return
@@ -1993,6 +2414,13 @@
    * bothered.
    */
   let spotTimer: number | undefined
+  /**
+   * Which phrase each press of ours belongs to (laser.ts · `PhraseClock`),
+   * and the one being held now: it goes out with every frame (`trail`), so
+   * that the hall groups the shapes exactly as they were written here.
+   */
+  const phraseClock = new PhraseClock()
+  let pressTrail = 0
 
   function rememberOwn(mark: number): void {
     ownMarks = [...ownMarks.slice(-15), mark]
@@ -2017,22 +2445,91 @@
     rememberOwn(next)
     press.roll(next)
     ownMark.letGo = performance.now()
-    ownMark = newMark(next, pressPage, [sample.x, sample.y])
+    ownMark = newMark(next, pressPage, [sample.x, sample.y], pressTrail)
     ownMark.shown = 1
   }
 
-  /** The press: the shape starts, the first frame goes at once. */
+  /**
+   * A FINGER'S BEAM IS HELD BACK FROM THE ROOM for `TAP_TOGETHER_MS`, like its
+   * stroke (`openStroke`) and its erase (`eraseHeld`).
+   *
+   * A finger that comes down may be the first of two: an Undo tap or a pinch.
+   * The beam it lit used to go out at once, and every pinch made with the
+   * pointer armed left a red squiggle at the pinch spot on the projector, held
+   * there for the phrase's two seconds. Now the console lights it at once (a
+   * pointer that appears late under the finger feels stuck), but the room gets
+   * it only once a second finger is ruled out: when the window closes
+   * (`sendBeam`), or when the finger lifts alone, a poke. A second finger
+   * inside the window takes the beam back as if it never was (`dropBeam`), and
+   * so does a pen that lands in it: the finger was the palm. The hall replays
+   * the held samples from the press on, a quarter of a second late, a little
+   * faster until it catches up (`LaserPlayback`).
+   */
+  let beamHeld = false
+  let beamHeldTimer: number | undefined
+  /**
+   * When the press began, on this page's clock: a held beam's first frame
+   * says how long it waited (laser.ts · `LaserPress.stamp`), so that the hall
+   * judges its phrase from its start (`pressBegan`).
+   */
+  let pressedAt = 0
+
+  /** The press: the shape starts, the first frame goes at once (a finger's: see `beamHeld`). */
   function beamStart(event: PointerEvent, place: { x: number; y: number }): void {
     const mark = newMarkId()
     rememberOwn(mark)
     press = new LaserPress(mark, event.timeStamp)
     pressPage = page
+    pressedAt = performance.now()
+    pressTrail = phraseClock.press(pressedAt)
     ownBack = []
     tip = null
-    ownMark = laserShape === 'line' ? newMark(mark, page, []) : null
-    const first = press.add(place.x, place.y, event.timeStamp, h / w)
+    ownMark = laserShape === 'line' ? newMark(mark, page, [], pressTrail) : null
+    const first = press.add(place.x, place.y, event.timeStamp, h / w, near)
     if (first) keepOwn(first)
+    window.clearTimeout(beamHeldTimer)
+    beamHeldTimer = undefined
+    beamHeld = event.pointerType === 'touch'
+    if (beamHeld) beamHeldTimer = window.setTimeout(sendBeam, TAP_TOGETHER_MS)
+    else beamNow(true)
+  }
+
+  /** No second finger came: the finger's beam is the pointer after all, sent from the press on. */
+  function sendBeam(): void {
+    window.clearTimeout(beamHeldTimer)
+    beamHeldTimer = undefined
+    if (!beamHeld) return
+    beamHeld = false
+    // However still the finger stood, the frame says how long the press waited.
+    press?.stamp(performance.now() - pressedAt)
     beamNow(true)
+  }
+
+  /**
+   * The finger's held beam was the first finger of a two-finger gesture, or
+   * the palm under a landing pen: it goes from this screen as if it had never
+   * been lit, and the room, which got nothing of it, hears nothing either.
+   */
+  function dropBeam(): void {
+    window.clearTimeout(beamHeldTimer)
+    beamHeldTimer = undefined
+    beamHeld = false
+    window.clearTimeout(spotTimer)
+    spotTimer = undefined
+    if (press) phraseClock.cancel()
+    press = null
+    beaming = null
+    tip = null
+    ownBack = []
+    const gone = ownMark
+    ownMark = null
+    if (gone) {
+      unbake(gone)
+      marks = marks.filter((mark) => mark !== gone)
+    }
+    if (!stream) head = null
+    wake()
+    syncBusy('gesture')
   }
 
   /** Samples of a moving press, and where the pen will be a moment from now. */
@@ -2041,7 +2538,7 @@
     for (const step of samples(event)) {
       const place = at(step)
       if (!place) continue
-      const kept = press.add(place.x, place.y, step.timeStamp, h / w)
+      const kept = press.add(place.x, place.y, step.timeStamp, h / w, near)
       if (kept) keepOwn(kept)
     }
     tip = foreseeLaser(event)
@@ -2068,9 +2565,10 @@
       ahead = { x: last.x + (last.x - back.x) / 2, y: last.y + (last.y - back.y) / 2 }
     }
     if (!ahead) return null
+    // In px of the glass: the sheet times the zoom.
     const before = ownBack[ownBack.length - 2]
-    const step = before ? Math.hypot((last.x - before.x) * w, (last.y - before.y) * h) : 0
-    const reach = Math.hypot((ahead.x - last.x) * w, (ahead.y - last.y) * h)
+    const step = before ? Math.hypot((last.x - before.x) * w, (last.y - before.y) * h) * near : 0
+    const reach = Math.hypot((ahead.x - last.x) * w, (ahead.y - last.y) * h) * near
     const limit = Math.min(TIP_MAX_PX, step * 1.5)
     if (reach <= 0.5 || limit <= 0.5) return null
     const k = reach > limit ? limit / reach : 1
@@ -2085,8 +2583,9 @@
   function beamNow(final: boolean): void {
     window.clearTimeout(spotTimer)
     spotTimer = undefined
-    if (!press) return
-    const frames = press.take(final)
+    // A finger's beam waits for its window (`beamHeld`): the samples stay queued in the press.
+    if (!press || beamHeld) return
+    const frames = press.take(final, near)
     // On a closed socket the pointer frame is not queued: a hand's position
     // a second ago has nowhere to be delivered, while the places in the
     // sixteen-message queue belong to presses.
@@ -2099,6 +2598,7 @@
           y: pts[pts.length - 2],
           shape: laserShape,
           mark: press.mark,
+          trail: pressTrail,
           pts,
         })
       }
@@ -2119,10 +2619,17 @@
   function beamOff(end?: { x: number; y: number; t: number }): void {
     window.clearTimeout(spotTimer)
     spotTimer = undefined
+    const pressed = press !== null
     if (press && end) {
-      const kept = press.add(end.x, end.y, end.t, h / w)
+      const kept = press.add(end.x, end.y, end.t, h / w, near)
       if (kept) keepOwn(kept)
     }
+    // A finger let go inside its window (`beamHeld`): a poke, not half of a
+    // gesture, and the room gets all of it, with how long it waited.
+    window.clearTimeout(beamHeldTimer)
+    beamHeldTimer = undefined
+    if (press && beamHeld) press.stamp(performance.now() - pressedAt)
+    beamHeld = false
     if (press) beamNow(true)
     press = null
     beaming = null
@@ -2134,10 +2641,12 @@
     }
     // Our own, at once: waiting for the echo to put out OUR OWN pointer means
     // keeping it on screen one extra network round trip after the finger was
-    // lifted. The shape stays behind to hold and burn down: it is exactly
-    // what one circles with the pointer for.
+    // lifted. The shape stays behind to hold and burn down with its phrase:
+    // it is exactly what one circles with the pointer for.
+    const now = performance.now()
+    if (pressed) phraseClock.lift(now)
     if (ownMark) {
-      ownMark.letGo = performance.now()
+      ownMark.letGo = now
       ownMark = null
     }
     if (!stream) head = null
@@ -2154,6 +2663,24 @@
   let rubbed: { x: number; y: number } | null = null
   /** Offline already reported for this sweep. Cleared when the eraser lifts. */
   let erasingTold = false
+  /**
+   * A FINGER'S ERASE IS HELD BACK FROM THE ROOM for `TAP_TOGETHER_MS`, as its
+   * stroke is (`openStroke`).
+   *
+   * A finger that comes down may be the first of two: an Undo tap or a pinch.
+   * With the eraser armed it used to erase at the touch, for the whole hall:
+   * a pinch over the ink (zooming in to erase precisely is exactly when one
+   * pinches) took away every line its first finger crossed, and a two-finger
+   * tap undid the erase its own first finger had just made instead of the
+   * stroke before it. Now what a finger rubs in its first moments vanishes
+   * here at once and is kept, not sent: when the window closes, or the finger
+   * lifts alone, it goes out (`sendErase`); a second finger inside the window,
+   * or a pen landing in it (the finger was the palm), and it shows again as if
+   * it had never been touched (`forgetErase`). `wet` keeps the drying strokes
+   * it took, to be put back.
+   */
+  let eraseHeld: { gesture: string; hits: { page: number; id: string }[]; wet: Wet[] } | null = null
+  let eraseHeldTimer: number | undefined
 
   /** Squared distance from a point to a segment. All in fractions of the page WIDTH. */
   function toSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
@@ -2263,8 +2790,9 @@
     ]
     const hit: string[] = []
     for (const stroke of targets) {
-      // The ring on screen and the reach are one number (ink.ts · `eraserReach`).
-      const reach = eraserReach(stroke.width, w)
+      // The ring on screen and the reach are one number (ink.ts · `eraserReach`),
+      // on the glass: the page is the sheet times the zoom wide there.
+      const reach = eraserReach(stroke.width, w * near)
       const loX = Math.min(ax, bx) - reach
       const hiX = Math.max(ax, bx) + reach
       const loY = Math.min(ay, by) - reach
@@ -2288,7 +2816,13 @@
     }
     if (hit.length === 0) return
     erased = new Set([...erased, ...hit])
-    for (const id of hit) session.send({ t: 'ink:erase', page, id, gesture: eraseGesture })
+    if (eraseHeld) {
+      // A finger's first moments: gone here, kept for the room (see `eraseHeld`).
+      eraseHeld.hits.push(...hit.map((id) => ({ page, id })))
+      eraseHeld.wet.push(...wet.filter((stroke) => hit.includes(stroke.id)))
+    } else {
+      for (const id of hit) session.send({ t: 'ink:erase', page, id, gesture: eraseGesture })
+    }
     // Otherwise the wet copy of what was erased would stay until the echo,
     // that is, for a network round trip a line would live on that was just
     // removed in front of everyone.
@@ -2297,23 +2831,77 @@
       wet = dried
       rememberWet()
     }
+    forgetLater()
+  }
+
+  /**
+   * Show again, after `ERASE_GRACE_MS`, whatever was hidden here and never
+   * confirmed by the server: what the server confirmed has already left the
+   * ink, and what did not get through is more honest to show again than to
+   * leave erased only for ourselves. Except what a straight line still held
+   * under the pen replaces (`withheld`): the room has not been asked yet.
+   */
+  function forgetLater(): void {
     window.clearTimeout(forgetTimer)
     forgetTimer = window.setTimeout(() => {
-      // Time is up: what the server confirmed has already left the ink, and
-      // what did not get through is more honest to show again than to leave
-      // erased only for ourselves.
-      erased = new Set()
+      erased = withheld.size === 0 ? new Set() : new Set([...erased].filter((id) => withheld.has(id)))
       erasedSeen.clear()
     }, ERASE_GRACE_MS)
   }
 
-  function stopErase(): void {
+  /** No second finger came: what the finger hid is erased for the room too, the rest as it goes. */
+  function sendErase(): void {
+    window.clearTimeout(eraseHeldTimer)
+    eraseHeldTimer = undefined
+    const held = eraseHeld
+    eraseHeld = null
+    if (!held || held.hits.length === 0) return
+    // The connection went meanwhile: the eraser erases nothing, and says so (see `rub`).
+    if (!session.connected) {
+      unhide(held)
+      if (!erasingTold) {
+        erasingTold = true
+        onrefuse?.(tr('room.ui.274'))
+      }
+      return
+    }
+    for (const hit of held.hits) {
+      session.send({ t: 'ink:erase', page: hit.page, id: hit.id, gesture: held.gesture })
+    }
+    forgetLater()
+  }
+
+  /** A second finger or the pen came within the window: the finger's erase never happened. */
+  function forgetErase(): void {
+    window.clearTimeout(eraseHeldTimer)
+    eraseHeldTimer = undefined
+    const held = eraseHeld
+    eraseHeld = null
+    if (held) unhide(held)
+    stopErase('gesture')
+  }
+
+  /** What a held erase hid shows again, its drying strokes back among the wet ones. */
+  function unhide(held: NonNullable<typeof eraseHeld>): void {
+    if (held.hits.length === 0) return
+    const back = new Set(held.hits.map((hit) => hit.id))
+    erased = new Set([...erased].filter((id) => !back.has(id)))
+    for (const id of back) erasedSeen.delete(id)
+    if (held.wet.length > 0) {
+      wet = [...wet, ...held.wet]
+      rememberWet()
+    }
+  }
+
+  /** The eraser lifts, or the tool changes: what a finger still held back stands, and goes first. */
+  function stopErase(ended: BusyKind = 'ink'): void {
+    sendErase()
     erasing = null
     rubbed = null
     ring = null
     erasingTold = false
     wake()
-    syncBusy()
+    syncBusy(ended)
   }
 
   /* ---------------------------------------------------- two-finger tap */
@@ -2321,10 +2909,11 @@
   /**
    * Two fingers briefly touching the sheet mean undo. As in Procreate.
    *
-   * The only thing fingers on the sheet mean when there is a pen. Everything
-   * else is the palm: it rests, creeps, lifts off and lands again, and any
-   * other reading of fingers sooner or later fires from it. The conditions
-   * are strict precisely for that reason (ink.ts · `twoFingerTap`): two
+   * One of the two things fingers on the sheet mean when there is a pen (the
+   * other is the pinch, below, and it waits for this one to be ruled out).
+   * Everything else is the palm: it rests, creeps, lifts off and lands
+   * again, and any other reading of fingers sooner or later fires from it.
+   * The conditions are strict precisely for that reason (ink.ts · `twoFingerTap`): two
    * touches ON THE GLASS AT ONCE, landing within a quarter of a second and
    * lifting together, neither held nor moved, the pen not in contact and not
    * touching the sheet in the last half second; a palm does not behave like
@@ -2364,6 +2953,578 @@
     onundo?.()
   }
 
+  /* -------------------------------------------------------------- pinch */
+
+  /*
+   * TWO FINGERS THAT SPREAD, CLOSE OR SLIDE MOVE THE ZOOM, for the presenter
+   * only (`onzoom`), and the hall sees the same region.
+   *
+   * The console used to forbid it outright: "drawing on a magnified piece
+   * means not knowing where the stroke will land on the projector". With the
+   * zoom mirrored, the objection is gone: the projector shows exactly the
+   * magnified piece. What is left is the palm, which must not zoom any more
+   * than it may write or undo, and a pinch's own test is a few pixels of
+   * spread, which a settling hand gives at once. So the pinch is guarded
+   * harder than the tap:
+   *  — fingers only, never the pen, never a palm-sized contact; and only two
+   *    fingers that LANDED TOGETHER, with no palm on the glass and the pen not
+   *    near, hover included (ink.ts · `pinchMayStart`). A palm is kept count
+   *    of while it rests (`palms`) rather than ignored, anywhere on the glass
+   *    and from the whole window (`hearPalms`): the heel lying on the glass is
+   *    what gives away its pinky and knuckles as the hand's;
+   *  — a pinch finger is judged again on every move: a heel whose first patch
+   *    was small spreads past a palm's size as it settles, and then the pair
+   *    was the hand all along (`palmPinch`);
+   *  — and it COMMITS late (ink.ts · `pinchCommits`): until the fingers have
+   *    spread by a tenth and twelve pixels, or slid by sixteen, they still
+   *    belong to the two-finger tap, which is Undo, or to a hand settling.
+   *    Once committed, the tap is cancelled.
+   *    What the first finger had begun, the room never saw: landing together,
+   *    the second finger came within the window for which a finger's stroke,
+   *    erase and beam are held back, and `down` forgot them (`forgetFirst`).
+   *
+   * The view is computed from where it was when the second finger landed
+   * (ink.ts · `pinchZoom`), never step by step, and handed to the parent per
+   * move (`onzoom(next, false)`) and once more when a finger lifts (`final`).
+   */
+  /** Fingers on the sheet: where they are now, in screen px, and when they landed. */
+  const fingers = new Map<number, { x: number; y: number; down: number }>()
+  /**
+   * Palm-sized contacts on the glass, wherever they lie: those that landed
+   * so, and those that grew so, pinch fingers included. While one rests, no
+   * two fingers start a pinch. Counted by `hearPalms`, and only there.
+   */
+  const palms = new RestingPalms()
+  /** Fingers left over from a pinch: they do nothing more until they lift. */
+  const spent = new Set<number>()
+  /** Pens touching the glass now. */
+  const pens = new Set<number>()
+  interface Pinch {
+    /** The first finger: whatever it began has been forgotten (`forgetFirst`). */
+    a: number
+    /** The second finger: reserved for the gesture from the moment it lands. */
+    b: number
+    /** The sheet on screen: the zoom happens inside it, it does not move. */
+    frame: DOMRect
+    /** The view the hall saw when the second finger landed. */
+    from: LectureZoom | null
+    start: FingerPair
+    committed: boolean
+    /** The latest view the fingers asked for. */
+    last: LectureZoom | null
+  }
+  let pinch: Pinch | null = null
+
+  /**
+   * The pen writes, or was near the glass a moment ago: two fingers now are
+   * the palm.
+   *
+   * HOVER COUNTS HERE, unlike for the tap (`penSeen`). A hand resting while
+   * the presenter talks keeps the Pencil hovering over the glass, and its
+   * pinky and knuckles, small contacts that creep, passed a guard of contact
+   * alone and zoomed the hall around the palm. The window is the tap's short
+   * one, so a pinch right after writing stays possible once the pen is
+   * lifted away; the price is a pinch with one hand while the other holds the
+   * Pencil hovering over the sheet, which waits for the pen to go.
+   */
+  function penNear(): boolean {
+    return pens.size > 0 || performance.now() - lastPenNearAt < TAP_AFTER_PEN_MS
+  }
+
+  /**
+   * A pointer came down: count the finger (or the palm), and start a pinch if
+   * it is the second free finger and the pair may be one. Returns whether this
+   * pointer is now reserved for the gesture (it then does nothing else). A pen
+   * coming down ends any pinch: the pen always wins, and the view stays where
+   * the fingers left it.
+   */
+  function pinchDown(event: PointerEvent): boolean {
+    if (event.pointerType === 'pen') {
+      pens.add(event.pointerId)
+      if (pinch?.committed) endPinch()
+      else dropPinch()
+      return false
+    }
+    if (event.pointerType !== 'touch') return false
+    // Counted already, and a candidate dropped, by `hearPalms`.
+    if (palmish(event)) return false
+    const landed = performance.now()
+    fingers.set(event.pointerId, { x: event.clientX, y: event.clientY, down: landed })
+    if (!onzoom) return false
+    if (pinch) {
+      // A third finger: a committed pinch ignores it; a candidate was not a pinch.
+      if (pinch.committed) {
+        spent.add(event.pointerId)
+        return true
+      }
+      dropPinch()
+      return false
+    }
+    const free = [...fingers.keys()].filter((id) => !spent.has(id))
+    if (free.length !== 2) return false
+    const a = free[0] === event.pointerId ? free[1] : free[0]
+    const first = fingers.get(a)
+    if (!first || !pinchMayStart(landed - first.down, palms.count(landed), penNear())) return false
+    const frame = frameNode?.getBoundingClientRect()
+    if (!frame || frame.width === 0 || frame.height === 0) return false
+    pinch = {
+      a,
+      b: event.pointerId,
+      frame,
+      from: zoom.shown,
+      start: fingerPair(first, { x: event.clientX, y: event.clientY }),
+      committed: false,
+      last: zoom.shown,
+    }
+    return true
+  }
+
+  /**
+   * A finger moved. Returns whether the move is the pinch's: the reserved
+   * finger's always, the first finger's once the pinch has committed, and any
+   * spent finger's.
+   */
+  function pinchMove(event: PointerEvent): boolean {
+    const finger = fingers.get(event.pointerId)
+    if (!finger) return false
+    finger.x = event.clientX
+    finger.y = event.clientY
+    const held = pinch
+    if (!held || (event.pointerId !== held.a && event.pointerId !== held.b)) return spent.has(event.pointerId)
+    // A pinch finger spread to a palm's size (`hearPalms` counted it): the pair was the resting hand.
+    if (palmish(event)) {
+      palmPinch(held)
+      return true
+    }
+    const a = fingers.get(held.a)
+    const b = fingers.get(held.b)
+    if (!a || !b) return event.pointerId === held.b
+    const now = fingerPair(a, b)
+    if (!held.committed) {
+      if (!pinchCommits(held.start, now)) return event.pointerId === held.b
+      // The pen touched or came near the glass since the second finger landed: the palm after all.
+      if (penNear()) {
+        dropPinch()
+        return event.pointerId === held.b
+      }
+      commitPinch(held)
+    }
+    const next = pinchZoom(held.from, held.frame, held.start, now)
+    if (!sameZoom(next, held.last)) {
+      held.last = next
+      onzoom?.(next, false)
+    }
+    return true
+  }
+
+  /**
+   * The fingers became a pinch: no Undo. What the first finger began was
+   * forgotten when the second landed (`forgetFirst`); should anything of it
+   * still stand, held work is forgotten too, and a stroke is taken back only
+   * if a pinch could have begun it (ink.ts · `mayTakeBack`), or else finished
+   * as the ink it is.
+   */
+  function commitPinch(held: Pinch): void {
+    held.committed = true
+    for (const tap of taps) if (tap.pointer === held.a || tap.pointer === held.b) tap.moved = true
+    const stroke = drawing?.pointer === held.a ? drawing.stroke : null
+    if (stroke) {
+      if (mayTakeBack(stroke.points, performance.now() - stroke.bornAt, w * near, h * near)) takeBack()
+      else closeStroke()
+    }
+    if (erasing === held.a) {
+      if (eraseHeld) forgetErase()
+      else stopErase()
+    }
+    if (beaming === held.a) {
+      if (beamHeld) dropBeam()
+      else beamOff()
+    }
+    if (framing?.pointer === held.a) cancelFrame('gesture')
+    syncBusy('gesture')
+  }
+
+  /** A candidate that never became a pinch: the reserved finger stays idle until it lifts. */
+  function dropPinch(): void {
+    if (!pinch) return
+    if (fingers.has(pinch.b)) spent.add(pinch.b)
+    pinch = null
+  }
+
+  /**
+   * A pinch finger turned out to be the palm: the pair was the resting hand,
+   * and no gesture at all. A candidate simply goes. A committed pinch has
+   * already moved the hall: the view goes back to where the fingers found it,
+   * said as final. Both are spent, and neither is half of a tap.
+   */
+  function palmPinch(held: Pinch): void {
+    pinch = null
+    for (const id of [held.a, held.b]) if (fingers.has(id)) spent.add(id)
+    for (const tap of taps) if (tap.pointer === held.a || tap.pointer === held.b) tap.moved = true
+    if (held.committed) onzoom?.(held.from, true)
+    syncBusy('gesture')
+  }
+
+  /** The pinch is over: the view stays where the fingers left it, said once more as final. */
+  function endPinch(): void {
+    const held = pinch
+    if (!held) return
+    pinch = null
+    for (const id of [held.a, held.b]) if (fingers.has(id)) spent.add(id)
+    if (held.committed) onzoom?.(held.last, true)
+    syncBusy('gesture')
+  }
+
+  /**
+   * A pointer lifted (or was cancelled). Returns whether the lift was the
+   * pinch's: the tool must not act on it.
+   */
+  function pinchUp(event: PointerEvent): boolean {
+    if (event.pointerType === 'pen') {
+      pens.delete(event.pointerId)
+      return false
+    }
+    if (!fingers.delete(event.pointerId)) return false
+    const idle = spent.delete(event.pointerId)
+    const held = pinch
+    if (!held || (event.pointerId !== held.a && event.pointerId !== held.b)) return idle
+    if (held.committed) {
+      endPinch()
+      spent.delete(event.pointerId)
+      return true
+    }
+    // A candidate that never moved enough: a tap, or nothing. The first
+    // finger's lift is its tool's, as usual; the reserved one did nothing.
+    const reserved = event.pointerId === held.b
+    if (reserved) pinch = null
+    else dropPinch()
+    return reserved
+  }
+
+  /**
+   * A touch anywhere in the window, heard before anyone else hears it: the
+   * palm count (`palms`).
+   *
+   * The sheet's own handlers never saw a palm on the console. Its root
+   * swallows a palm-sized touch the moment it lands, wherever it lands, so
+   * that the heel presses nothing; and the armrest under the sheet and the
+   * rail, where the heel lies as often as on the sheet, are not the sheet at
+   * all. Counted from the sheet alone, no palm was ever there, and the pinky
+   * and a knuckle beside the resting heel made a pinch: the hall zoomed
+   * around the palm. So the layer listens to the whole window in the capture
+   * phase, which runs before the console's root: a contact that lands
+   * palm-sized, or grows so, counts until it lifts or falls silent (ink.ts ·
+   * `RestingPalms`), and one that comes to rest drops a pinch that has not
+   * moved yet, its two "fingers" being the same hand. A pinch finger that
+   * grows is the pinch's own business (`pinchMove`). Only counting happens
+   * here: the touch goes on its way untouched.
+   */
+  function hearPalms(event: PointerEvent): void {
+    if (event.pointerType !== 'touch') return
+    const id = event.pointerId
+    if (event.type === 'pointerup' || event.type === 'pointercancel') {
+      palms.lift(id)
+      return
+    }
+    const known = palms.has(id)
+    if (!known && !palmish(event)) return
+    palms.rest(id, performance.now())
+    if (known || !pinch || pinch.committed || id === pinch.a || id === pinch.b) return
+    dropPinch()
+  }
+
+  /** The layer takes input: palms are heard from the whole window meanwhile. */
+  const hearing = $derived(live && tool !== 'off')
+  $effect(() => {
+    if (!hearing) return
+    const options = { capture: true, passive: true }
+    window.addEventListener('pointerdown', hearPalms, options)
+    window.addEventListener('pointermove', hearPalms, options)
+    window.addEventListener('pointerup', hearPalms, options)
+    window.addEventListener('pointercancel', hearPalms, options)
+    return () => {
+      window.removeEventListener('pointerdown', hearPalms, options)
+      window.removeEventListener('pointermove', hearPalms, options)
+      window.removeEventListener('pointerup', hearPalms, options)
+      window.removeEventListener('pointercancel', hearPalms, options)
+    }
+  })
+
+  /* ------------------------------------------------------ magnifier */
+
+  /**
+   * THE MAGNIFIER'S FRAME (`tool === 'zoom'`): drag a rectangle over what
+   * should fill the sheet, and on the lift the view goes there; a tap
+   * without a drag comes twice as close around the point (ink.ts ·
+   * `frameZoom`). Relative to the view the presenter sees: a frame drawn on a
+   * magnified detail magnifies further. It never draws ink, and the parent
+   * gives the previous tool back once it has been used, so that one can write
+   * on the magnified detail at once.
+   */
+  let framing: {
+    pointer: number
+    byFinger: boolean
+    /** Where the press came down and where the pointer is now, in page fractions. */
+    from: { x: number; y: number }
+    to: { x: number; y: number }
+    /** Where it came down on the glass: a press that travels less than `FRAME_TAP_PX` is a tap. */
+    downX: number
+    downY: number
+    moved: boolean
+  } | null = null
+
+  function frameStart(event: PointerEvent, place: { x: number; y: number }): void {
+    framing = {
+      pointer: event.pointerId,
+      byFinger: event.pointerType === 'touch',
+      from: place,
+      to: place,
+      downX: event.clientX,
+      downY: event.clientY,
+      moved: false,
+    }
+    ring = null
+    wake()
+    syncBusy()
+  }
+
+  function frameMove(event: PointerEvent): void {
+    if (!framing) return
+    const place = at(event)
+    if (place) framing.to = place
+    if (!framing.moved && Math.hypot(event.clientX - framing.downX, event.clientY - framing.downY) > FRAME_TAP_PX) {
+      framing.moved = true
+    }
+    wake()
+  }
+
+  /** The frame was let go: the view goes where it says. Not on a cancel: a frame cut short asks for nothing. */
+  function frameEnd(event: PointerEvent, cancelled: boolean): void {
+    const done = framing
+    if (!done) return
+    framing = null
+    wake()
+    syncBusy()
+    if (cancelled) return
+    const place = (done.moved ? at(event) : null) ?? done.to
+    onzoom?.(frameZoom(zoom.shown, done.from, done.moved ? place : null), true)
+  }
+
+  /** The frame goes, asking for nothing: `ended` as in `syncBusy`. */
+  function cancelFrame(ended: BusyKind = 'ink'): void {
+    if (!framing) return
+    framing = null
+    wake()
+    syncBusy(ended)
+  }
+
+  /* ---------------------------------------------- straight on hold */
+
+  /**
+   * HOLD THE PEN AT THE END AND THE LINE STRAIGHTENS, as in drawing apps.
+   *
+   * An underline, an axis, a fraction bar: freehand, they wobble on the
+   * projector at three metres wide. Now the pen that rests, still pressed,
+   * for `STRAIGHT_HOLD_MS` turns the stroke into a straight segment from its
+   * first point to where the pen rests, if the stroke already was a line
+   * (ink.ts · `straightens`: a bracket or an arc under a resting hand stays
+   * as drawn). Moving the pen before lifting moves the end; the lift
+   * finalises (`closeStroke`): the room takes the freehand motion back and
+   * gets the line as a stroke of its own, so one Undo removes the line.
+   *
+   * On a timer, not on movement: a pen standing perfectly still may send no
+   * events at all.
+   *
+   * THE RULE IS SHOWN, NOT ONLY KEPT (`holdRing`, the console's): while a
+   * stroke that would straighten rests under the pen, a ring closes round
+   * the tip and is full at the moment the line snaps. A rule nobody can see
+   * is found out by accident, in front of the hall; and "how long is long
+   * enough" is learnt by watching the ring, not from a manual nobody opens
+   * in the middle of a lecture.
+   */
+  let still: { x: number; y: number } | null = null
+  let stillTimer: number | undefined
+  /** When the pen came to rest on `still`: the ring counts from this moment, like the line. */
+  let stillSince = 0
+  /** The ring waits out the first moments of a rest (ink.ts · `HOLD_RING_AFTER_MS`). */
+  let holdTimer: number | undefined
+  /** This rest's stroke would straighten, so the ring may promise it (see `holdCheck`). */
+  let holdFits = false
+  /** Where and when the line straightened: its closed ring goes out right there. */
+  let holdSnapped: { page: number; x: number; y: number; at: number } | null = null
+
+  /** The drawing pen is at `x, y` on the glass: moving off its resting spot starts the wait over. */
+  function restAt(x: number, y: number): void {
+    if (!straighten || !drawing || drawing.replaced) return
+    if (still && Math.hypot(x - still.x, y - still.y) <= STRAIGHT_STILL_PX) {
+      // Still resting, but the stroke under a showing ring may have changed:
+      // a trembling tip adds points, and the promise is judged again.
+      if (holdRing && holdTimer === undefined && stillTimer !== undefined) holdCheck()
+      return
+    }
+    still = { x, y }
+    stillSince = performance.now()
+    window.clearTimeout(stillTimer)
+    stillTimer = window.setTimeout(straightenNow, STRAIGHT_HOLD_MS)
+    // The pen moved on: the last rest's ring goes at once, the next one waits its turn.
+    holdHide()
+    window.clearTimeout(holdTimer)
+    holdTimer = holdRing ? window.setTimeout(holdCheck, HOLD_RING_AFTER_MS) : undefined
+  }
+
+  function unrest(): void {
+    window.clearTimeout(stillTimer)
+    stillTimer = undefined
+    window.clearTimeout(holdTimer)
+    holdTimer = undefined
+    still = null
+    holdHide()
+  }
+
+  /** What straightening a stroke takes (see `straightPlan`). */
+  interface Straight {
+    /** The whole motion's points, its first piece first: the line starts where they do. */
+    points: number[]
+    /** Its pieces still drying here: the line takes their place among the wet strokes. */
+    drying: Wet[]
+    /** Its pieces the room already has: taken back on the lift. */
+    out: { id: string; page: number }[]
+  }
+
+  /**
+   * What straightening the held stroke takes, or `null` when it would not
+   * straighten now.
+   *
+   * ONE JUDGEMENT for the line and for the ring that promises it: a ring that
+   * closes over a stroke which then stays as drawn lies to the hand, and a
+   * hand lied to once stops looking at the ring.
+   */
+  function straightPlan(held: Drawing): Straight | null {
+    if (!straighten || held.replaced || (tool !== 'pen' && tool !== 'marker')) return null
+    const stroke = held.stroke
+    const key = groupOf(stroke)
+    // Every piece of the motion: a long one may already be several strokes,
+    // some still drying here, some only in the room's ink.
+    const drying = wet.filter((piece) => piece.page === stroke.page && groupOf(piece) === key)
+    const ids = new Set(drying.map((piece) => piece.id))
+    const landed = session.ink.filter(
+      (piece) => piece.page === stroke.page && groupOf(piece) === key && !ids.has(piece.id),
+    )
+    const pieces: { id: string; page: number; points: number[]; handed: number }[] = [
+      ...landed.map((piece) => ({ id: piece.id, page: piece.page, points: piece.points, handed: piece.points.length })),
+      ...drying,
+    ]
+    pieces.sort((p, q) => (p.id === key ? -1 : q.id === key ? 1 : 0))
+    const points = pieces.flatMap((piece) => piece.points)
+    if (!straightens(points, held.tip, w * near, h * near)) return null
+    // What the room has must be taken back on the lift; without a connection
+    // that cannot be promised, and the freehand line stays as it is.
+    const out = pieces.filter((piece) => piece.handed > 0)
+    if (out.length > 0 && !session.connected) return null
+    return { points, drying, out }
+  }
+
+  /**
+   * Whether this rest shows the ring: its stroke would straighten now. Asked
+   * once the rest has lasted `HOLD_RING_AFTER_MS`, and again whenever the
+   * pen stirs within it, not every frame: a frame only draws what was
+   * decided here.
+   */
+  function holdCheck(): void {
+    holdTimer = undefined
+    const held = drawing
+    const fits =
+      holdRing && held !== null && still !== null && stillTimer !== undefined && straightPlan(held) !== null
+    if (fits === holdFits) return
+    holdFits = fits
+    wake()
+  }
+
+  /** The ring of this rest goes, at once: the pen moved on, lifted, or the stroke was taken back. */
+  function holdHide(): void {
+    if (!holdFits) return
+    holdFits = false
+    wake()
+  }
+
+  /**
+   * The hold ring this frame draws, and where, or `null` (ink.ts ·
+   * `holdRingAt` keeps the time). Round the tip while the rest goes on; once
+   * the line has snapped, full and fading where it snapped, even if the pen
+   * is lifted or drags the line's end away meanwhile: it says "done" in the
+   * place where it was done. Ours only: it is drawn on the live canvas,
+   * which nobody else sees, and goes nowhere.
+   */
+  function holdShown(now: number): (HoldRing & { x: number; y: number }) | null {
+    if (!live || !holdRing) return null
+    if (holdSnapped && holdSnapped.page === page) {
+      const going = holdRingAt(now, 0, holdSnapped.at)
+      if (going) return { ...going, x: holdSnapped.x, y: holdSnapped.y }
+    }
+    const held = drawing
+    if (!straighten || !holdFits || !held || !still || held.replaced) return null
+    if (held.stroke.page !== page || (tool !== 'pen' && tool !== 'marker')) return null
+    const closing = holdRingAt(now, stillSince)
+    return closing ? { ...closing, x: held.tip.x, y: held.tip.y } : null
+  }
+
+  /** The pen has rested long enough: if the stroke is a line, it becomes a straight one. */
+  function straightenNow(): void {
+    stillTimer = undefined
+    // The ring's count is over either way: it steps aside for the line, or goes.
+    const promised = holdFits
+    holdFits = false
+    const held = drawing
+    const plan = held ? straightPlan(held) : null
+    if (!held || !plan) {
+      if (promised) wake()
+      return
+    }
+    const stroke = held.stroke
+    const { points, drying, out } = plan
+    const ids = new Set(drying.map((piece) => piece.id))
+    window.clearTimeout(flushTimer)
+    flushTimer = undefined
+    const line: Wet = {
+      id: newStrokeId(),
+      page: stroke.page,
+      color: stroke.color,
+      width: stroke.width,
+      points: [points[0], points[1], held.tip.x, held.tip.y],
+      force: [stroke.force[0] ?? 0, stroke.force[stroke.force.length - 1] ?? 0],
+      handed: 0,
+      // As old as the motion: `dropPalm` judges a stroke's age by it.
+      bornAt: Math.min(...drying.map((piece) => piece.bornAt)),
+      closed: false,
+      closedAt: 0,
+      resent: 0,
+      echoed: false,
+      tail: { n: 0, curved: 0, tipX: points[0] * w, tipY: points[1] * h },
+      straight: true,
+    }
+    held.replaced = out.map((piece) => ({ page: piece.page, id: piece.id }))
+    held.stroke = line
+    for (const piece of held.replaced) withheld.add(piece.id)
+    if (held.replaced.length > 0) erased = new Set([...erased, ...held.replaced.map((piece) => piece.id)])
+    wet = [...wet.filter((piece) => !ids.has(piece.id)), line]
+    guess = null
+    if (promised) holdSnapped = { page: stroke.page, x: held.tip.x, y: held.tip.y, at: performance.now() }
+    rememberWet()
+    paintWetAll()
+    paintMarkers()
+    wake()
+  }
+
+  /** The straight line's end follows the pen until the lift. */
+  function moveEnd(place: { x: number; y: number }): void {
+    const held = drawing
+    if (!held?.replaced) return
+    held.tip = place
+    held.stroke.points[2] = place.x
+    held.stroke.points[3] = place.y
+    growWet(held.stroke)
+  }
+
   /* ----------------------------------------------------------- pointer */
 
   function capture(event: PointerEvent): void {
@@ -2380,33 +3541,91 @@
     }
   }
 
+  /**
+   * TWO FINGERS LANDING TOGETHER ARE A GESTURE, NOT INK: an Undo tap, or a
+   * pinch. A second finger has just landed; whatever the first one began and
+   * is still holding back from the room is forgotten, as if it never was.
+   * Returns whether something was, and then the second finger starts nothing.
+   *
+   * Everything a finger does waits `TAP_TOGETHER_MS` for exactly this: its
+   * stroke's first points (`openStroke`), its erase (`eraseHeld`), its beam
+   * (`beamHeld`). It used to be the stroke alone. The first finger of a
+   * two-finger tap had already put a dot, and the tap's Undo raced it on the
+   * server against the real previous stroke; with the eraser armed it erased
+   * the ink under it for the hall, and with the pointer it drew a red squiggle
+   * there, for every pinch.
+   */
+  function forgetFirst(): boolean {
+    if (drawing?.byFinger && drawing.stroke.handed === 0 && !drawing.replaced) {
+      const first = taps.find((tap) => tap.pointer === drawing?.pointer)
+      if (first && performance.now() - first.down <= TAP_TOGETHER_MS) {
+        forgetUnsent()
+        return true
+      }
+    }
+    if (erasing !== null && eraseHeld) {
+      forgetErase()
+      return true
+    }
+    if (beaming !== null && beamHeld) {
+      dropBeam()
+      return true
+    }
+    return false
+  }
+
+  /** Whether a pointer other than `pointer` holds work on the sheet now: a stroke, an erase or the beam. */
+  function heldByOther(pointer: number): boolean {
+    return (
+      (drawing !== null && drawing.pointer !== pointer) ||
+      (erasing !== null && erasing !== pointer) ||
+      (beaming !== null && beaming !== pointer)
+    )
+  }
+
   function down(event: PointerEvent): void {
     measure()
     // The heel of the palm is not a finger and does not count towards a
     // two-finger tap: a tap is two SMALL touches, while the heel plus the
     // little finger is exactly the pair that used to be taken for undo.
     if (event.pointerType === 'touch' && !palmish(event)) tapDown(event)
+    // The second finger of a pinch is the gesture's from the moment it lands.
+    const reserved = pinchDown(event)
+    // A second finger, landed with the first: the first one's work never was.
+    // Before `mine`: with the finger off, the first may be leading the beam.
+    if (event.pointerType === 'touch' && !palmish(event) && forgetFirst()) return
     if (!mine(event)) return
     const place = at(event)
     if (!place) return
-    /*
-     * Two fingers landed almost at once, the pen has not been found yet and
-     * the finger draws: this is an undo tap, not two dots. The first finger
-     * has already opened a stroke, but its points have not gone out yet (see
-     * `openStroke`): the stroke is simply forgotten, and the second finger
-     * opens no stroke. Previously the first put a dot and the second, on
-     * lift, undid "the last stroke", and on the server that was a race
-     * between the point just sent and the real previous stroke.
-     */
-    if (event.pointerType === 'touch' && drawing?.byFinger && drawing.stroke.handed === 0) {
-      const first = taps.find((tap) => tap.pointer === drawing?.pointer)
-      if (first && performance.now() - first.down <= TAP_TOGETHER_MS) {
-        forgetUnsent()
-        return
-      }
+    // A second finger is not a frame: the magnifier is a one-finger gesture,
+    // and two fingers are Undo or a pinch, never both that and a zoom step.
+    if (framing?.byFinger && event.pointerType === 'touch') {
+      cancelFrame('gesture')
+      return
     }
+    if (reserved || spent.has(event.pointerId)) return
+    /*
+     * ANOTHER FINGER ALREADY HOLDS WORK ON THE SHEET: a stroke, an erase or
+     * the beam. Landing with it, this one was half of a gesture, and the
+     * first one's work was forgotten above (`forgetFirst`). Landing later,
+     * past the window for which a finger's work is held back, it is too late
+     * to be a gesture, and it starts nothing beside the first one's work, nor
+     * takes it over: a thumb landing a moment late in a slow pinch with the
+     * eraser armed took the sweep over and erased along its own path for the
+     * hall, a second sweep that Undo had to be pressed twice for. The pen and
+     * the pointer already kept a finger off a held stroke and beam; this is
+     * that rule for every tool. The pen still takes over, below: it always
+     * wins.
+     */
+    if (event.pointerType === 'touch' && heldByOther(event.pointerId)) return
     event.preventDefault()
     capture(event)
+    if (tool === 'zoom') {
+      // The pen takes the frame over from a finger, as it takes the beam.
+      if (framing?.byFinger && event.pointerType !== 'touch') cancelFrame()
+      if (!framing) frameStart(event, place)
+      return
+    }
     if (tool === 'laser') {
       // The beam is already led by another pointer: the pen takes it from a
       // finger (the pen always wins), a finger from the pen never. Otherwise
@@ -2415,10 +3634,15 @@
         if (event.pointerType === 'touch') return
       }
       // The pen takes the beam over from a finger: the finger's press ends
-      // here, with its shape let go whole, and the pen's starts afresh.
-      if (beaming !== null) beamOff()
+      // here, with its shape let go whole, and the pen's starts afresh. A
+      // finger's beam still held back was the palm, and goes as if never lit.
+      if (beaming !== null) {
+        if (beamHeld) dropBeam()
+        else beamOff()
+      }
       // The first touch, at once: a pointer appearing forty milliseconds
-      // after it was pressed feels stuck.
+      // after it was pressed feels stuck. A finger's goes to the room a
+      // moment later (`beamHeld`).
       beaming = event.pointerId
       beamingByFinger = event.pointerType === 'touch'
       ring = null
@@ -2430,8 +3654,16 @@
       return
     }
     if (tool === 'eraser') {
+      // A pen landing on a finger's held erase: the finger was the palm.
+      if (eraseHeld) forgetErase()
       erasing = event.pointerId
       eraseGesture = `e${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`
+      window.clearTimeout(eraseHeldTimer)
+      eraseHeldTimer = undefined
+      if (event.pointerType === 'touch') {
+        eraseHeld = { gesture: eraseGesture, hits: [], wet: [] }
+        eraseHeldTimer = window.setTimeout(sendErase, TAP_TOGETHER_MS)
+      }
       ring = place
       rubbed = place
       rub(place, place)
@@ -2478,6 +3710,7 @@
       return
     }
     openStroke(event.pointerId, event.pointerType === 'touch', place, event.pressure)
+    restAt(event.clientX, event.clientY)
   }
 
   /** The event's samples: the coalesced ones, if the browser provides them. */
@@ -2511,7 +3744,10 @@
   }
 
   function move(event: PointerEvent): void {
-    if (event.pointerType === 'touch') tapMove(event)
+    if (event.pointerType === 'touch') {
+      tapMove(event)
+      if (pinchMove(event)) return
+    }
     /*
      * The pen is alive while it moves, not only while it goes down: the "pen
      * seen" time used to be set only on touch, and after a stroke lasting a
@@ -2523,19 +3759,27 @@
      * counted two fingers would never undo anything.
      */
     penSeen(event)
+    // A hovering pen is not on the glass, whatever lift the layer missed.
+    if (event.pointerType === 'pen' && event.buttons === 0) pens.delete(event.pointerId)
     // One's own stroke continues with its own pointer, whatever changes
     // around it: a spring-loaded pointer on a key does not cut a letter off
     // in the middle.
     if (drawing && drawing.pointer === event.pointerId) {
       event.preventDefault()
+      if (drawing.replaced) {
+        const place = at(event)
+        if (place) moveEnd(place)
+        return
+      }
+      let reached: { x: number; y: number } | null = null
       for (const step of samples(event)) {
         const place = at(step)
         if (!place) continue
         addPoint(place, step.pressure)
+        reached = place
       }
       if (!drawing) return
-      // The line under the pen: in this same frame, not after a round trip to the server.
-      growWet(drawing.stroke)
+      if (reached) drawing.tip = reached
       const ahead = foresee(event, drawing.stroke)
       const points = drawing.stroke.points
       guess = ahead
@@ -2548,9 +3792,18 @@
             width: drawing.stroke.width,
           }
         : null
+      // The line under the pen: in this same frame, not after a round trip to
+      // the server. After the prediction: a marker's tip is part of its path.
+      growWet(drawing.stroke)
       wake()
+      restAt(event.clientX, event.clientY)
       measureLatency(event.timeStamp)
       schedule()
+      return
+    }
+    if (framing && framing.pointer === event.pointerId) {
+      event.preventDefault()
+      frameMove(event)
       return
     }
     if (!mine(event)) return
@@ -2625,16 +3878,23 @@
 
   function up(event: PointerEvent): void {
     if (event.pointerType === 'touch') tapUp(event, event.type === 'pointercancel')
+    const theirs = pinchUp(event)
     penSeen(event)
     if (drawing && drawing.pointer === event.pointerId) {
       if (event.type === 'pointerup') {
         const place = at(event)
-        if (place) {
+        if (place && drawing.replaced) moveEnd(place)
+        else if (place) {
           addPoint(place, event.pressure)
           if (drawing) growWet(drawing.stroke)
         }
       }
       closeStroke()
+      return
+    }
+    if (theirs) return
+    if (framing && framing.pointer === event.pointerId) {
+      frameEnd(event, event.type !== 'pointerup')
       return
     }
     if (beaming === event.pointerId) {
@@ -2666,6 +3926,7 @@
     if (drawing && drawing.pointer === event.pointerId) return
     if (beaming === event.pointerId) return
     if (erasing === event.pointerId) return
+    if (framing && framing.pointer === event.pointerId) return
     if (ring) {
       ring = null
       wake()
@@ -2684,6 +3945,10 @@
    * Switching to and from the pointer does NOT touch the stroke: the
    * spring-loaded pointer on a key lights up in the middle of a letter, and
    * the letter must be finished with its own pen.
+   *
+   * With the input gone (`live` off, no tool) the layer hears no more lifts:
+   * the fingers and pens it counted are forgotten, and a pinch in progress
+   * ends where it stands, said as final.
    */
   let wasTool: Props['tool'] | null = null
   $effect(() => {
@@ -2696,12 +3961,19 @@
         closeStroke()
         if (erasing !== null || ring) stopErase()
         beamOff()
+        cancelFrame()
+        endPinch()
+        fingers.clear()
+        palms.clear()
+        spent.clear()
+        pens.clear()
         taps = []
         return
       }
       if (now !== 'laser' && before !== 'laser' && now !== before) closeStroke()
       if (now !== 'laser') beamOff()
       if (now !== 'eraser' && (erasing !== null || ring)) stopErase()
+      if (now !== 'zoom') cancelFrame()
     })
   })
 
@@ -2709,14 +3981,21 @@
    * The parent turned the finger off (a pen was found): the finger's stroke
    * is finished, or, if it is the palm that landed a moment before the pen,
    * taken back (`dropPalm`). A finger leading the pointer lets go of it: from
-   * now on a finger leads nothing.
+   * now on a finger leads nothing, and frames nothing. What a finger still
+   * held back from the room (a beam, an erase) was that palm too: it goes as
+   * if it never was.
    */
   $effect(() => {
     const on = finger
     untrack(() => {
       if (on) return
       if (drawing?.byFinger) dropPalm()
-      if (beaming !== null && beamingByFinger) beamOff()
+      if (beaming !== null && beamingByFinger) {
+        if (beamHeld) dropBeam()
+        else beamOff()
+      }
+      if (eraseHeld) forgetErase()
+      if (framing?.byFinger) cancelFrame('gesture')
     })
   })
 
@@ -2729,23 +4008,44 @@
    * its points have already gone), and the pen on the new sheet starts from
    * a clean spot. The pointer on a new page starts afresh.
    */
+  let wasPage: number | null = null
   $effect(() => {
     const now = page
     untrack(() => {
+      const turned = wasPage !== null && wasPage !== now
+      wasPage = now
       if (drawing && drawing.stroke.page !== now) closeStroke()
+      /*
+       * A frame or a pinch belongs to the page it began on: the new page
+       * starts at the whole page (the server resets the zoom on a turn). A
+       * pinch caught by the turn says so once, as final, so that whoever
+       * follows it stops following.
+       */
+      if (turned) {
+        cancelFrame()
+        if (pinch) {
+          const held = pinch
+          pinch = null
+          for (const id of [held.a, held.b]) if (fingers.has(id)) spent.add(id)
+          if (held.committed) onzoom?.(null, true)
+          syncBusy('gesture')
+        }
+      }
       /*
        * One's own pointer held across the turn: what was gathered goes out
        * labelled with the OLD page, and the press continues on the new one as
        * a new shape, from the same spot under the pen.
        */
       if (press && pressPage !== now) {
+        // A finger's beam still held back goes out too, on its own page.
+        sendBeam()
         beamNow(true)
         const next = newMarkId()
         rememberOwn(next)
         press.roll(next)
         pressPage = now
         const last = press.last
-        ownMark = laserShape === 'line' && last ? newMark(next, now, [last.x, last.y]) : null
+        ownMark = laserShape === 'line' && last ? newMark(next, now, [last.x, last.y], pressTrail) : null
         if (ownMark) ownMark.shown = 1
         if (last) head = { page: now, x: last.x, y: last.y }
       }
@@ -2759,7 +4059,12 @@
       // come from.
       if ((head && head.page !== now) || marks.some((mark) => mark.page !== now)) {
         if (head && head.page !== now) head = null
-        marks = marks.filter((mark) => mark.page === now)
+        const kept: Mark[] = []
+        for (const mark of marks) {
+          if (mark.page === now) kept.push(mark)
+          else unbake(mark)
+        }
+        marks = kept
         wake()
       }
     })
@@ -2832,17 +4137,25 @@
       get head(): { x: number; y: number; at: number } | null {
         return shownHead
       },
+      get hold(): { closed: number; alpha: number; x: number; y: number } | null {
+        return holdDrawn ? { closed: holdDrawn.closed, alpha: holdDrawn.alpha, x: holdDrawn.x, y: holdDrawn.y } : null
+      },
     }
   }
 
-  // The tab was closed mid-stroke: we take the timers with us.
+  // The tab was closed mid-stroke: we take the timers with us, and give the
+  // pointer's bitmaps back.
   $effect(() => () => {
     window.clearTimeout(flushTimer)
     window.clearTimeout(spotTimer)
     window.clearTimeout(settleTimer)
     window.clearTimeout(forgetTimer)
-    window.clearTimeout(growTimer)
+    window.clearTimeout(stillTimer)
+    window.clearTimeout(holdTimer)
+    window.clearTimeout(eraseHeldTimer)
+    window.clearTimeout(beamHeldTimer)
     if (liveFrame !== undefined) cancelAnimationFrame(liveFrame)
+    for (const mark of marks) unbake(mark)
     /*
      * And tell the outside that the pointer is released.
      *
@@ -2859,7 +4172,11 @@
     }
   })
 
-  const cursor = $derived(tool === 'laser' || tool === 'eraser' ? 'none' : 'crosshair')
+  const cursor = $derived(
+    tool === 'laser' || tool === 'eraser' ? 'none' : tool === 'zoom' ? 'zoom-in' : 'crosshair',
+  )
+  /** How the canvases are moved while the view travels: as the page's own bitmap is (zoom.ts · `zoomCss`). */
+  const moved = $derived(zoom.css || null)
 </script>
 
 <!--
@@ -2872,12 +4189,35 @@
   page lies under it.
 
   The canvases never catch the pointer: only the input layer takes input.
+
+  Under a moving zoom EACH canvas carries the transform, not a wrapper: a
+  transformed wrapper would be a stacking context of its own, and the marker
+  canvas would multiply with that empty wrapper instead of with the page. The
+  page box only clips, with `overflow: hidden`, which isolates nothing. The
+  input layer stays outside the clip: it reaches over the margins.
 -->
 <div class="pointer-events-none absolute inset-0">
-  <div class="ink-page absolute inset-0" style="width: {w}px; height: {h}px">
-    <canvas bind:this={dryCanvas} class="ink ink-dry absolute inset-0 h-full w-full select-none"></canvas>
-    <canvas bind:this={wetCanvas} class="ink ink-wet absolute inset-0 h-full w-full select-none"></canvas>
-    <canvas bind:this={liveCanvas} class="ink ink-live absolute inset-0 h-full w-full select-none"></canvas>
+  <div bind:this={frameNode} class="ink-page absolute inset-0 overflow-hidden" style="width: {w}px; height: {h}px">
+    <canvas
+      bind:this={markerCanvas}
+      class="ink ink-mark absolute inset-0 h-full w-full select-none"
+      style:transform={moved}
+    ></canvas>
+    <canvas
+      bind:this={dryCanvas}
+      class="ink ink-dry absolute inset-0 h-full w-full select-none"
+      style:transform={moved}
+    ></canvas>
+    <canvas
+      bind:this={wetCanvas}
+      class="ink ink-wet absolute inset-0 h-full w-full select-none"
+      style:transform={moved}
+    ></canvas>
+    <canvas
+      bind:this={liveCanvas}
+      class="ink ink-live absolute inset-0 h-full w-full select-none"
+      style:transform={moved}
+    ></canvas>
   </div>
   <div
     bind:this={inputNode}
@@ -2916,5 +4256,20 @@
    */
   .ink-input {
     touch-action: none;
+  }
+  /* The zoom's transform is a mapping of the page's corner: see `zoomCss`. */
+  .ink-page canvas {
+    transform-origin: 0 0;
+  }
+  /*
+   * The highlighter multiplies with the page under it: yellow over white is
+   * yellow, yellow over black text is black text. Where a screen cannot
+   * blend, it is still drawn under the pen ink, so a marker never covers a
+   * pen line either way. On a dark page LecturePage's
+   * `[data-ink-backdrop='dark']` rule outranks this one with `screen`, on a
+   * mixed one `[data-ink-backdrop='mixed']` with `normal`.
+   */
+  .ink-mark {
+    mix-blend-mode: multiply;
   }
 </style>
