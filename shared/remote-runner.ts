@@ -1455,6 +1455,215 @@ export function remoteOutcome(raw: RemoteOutcomeSource): RemoteRunOutcome {
   }
 }
 
+/* -------------------------------------------- texts made on a machine */
+
+/**
+ * WHAT A MACHINE SAYS, HOME SAYS IN ITS OWN WORDS. The machine's bundle
+ * carries no translations (docs/architecture/remote-runners.md §13, note 9).
+ * shared/i18n.ts registers every catalogue of the UI when it loads, some
+ * 1.6 MB of strings, and the core the agent runs reaches it through `tr`:
+ * docker-runner.ts and secure-files.ts, and shared/competitions.ts,
+ * dependencies.ts and publish.ts under them. Bundled, every edit of a UI text
+ * anywhere would change dist/runner.js and its sha256, which is the machine's
+ * build: after a release that changed nothing a run depends on, every machine
+ * would be «устарела» until `make runners-update` (decision 5, §8.4). And the
+ * texts would be drawn in the machine's language, Russian, whatever home
+ * speaks.
+ *
+ * So the runner's build (server/scripts/build-runner.mjs) puts
+ * server/src/runner-agent/i18n-shim.ts where shared/i18n.ts would be, and its
+ * `tr(key, params)` is remoteTextMarker(key, params): the key and its params
+ * between invisible characters, inside whatever text the core builds around
+ * them. Home turns each marker into its own sentence, in its own language,
+ * with remoteRenderTexts(text, tr, hasTranslation) when it takes in what a
+ * machine sent: an outcome's detail and log, a decline's or a problem's
+ * detail.
+ *
+ * THE CHARACTERS. U+2063 INVISIBLE SEPARATOR opens a marker and closes it,
+ * U+2064 INVISIBLE PLUS parts the key from the params. No catalogue text has
+ * either (tests/remote-runner-protocol.test.mts), and JSON.stringify escapes
+ * neither, so a marker inside another's param travels as it is: `reason` in
+ * competitions.answer.gpuUnreadKilled is itself a `tr` when the card never
+ * answered (docker-runner.ts · unreadCardNotes), and the reader finds the
+ * outer marker's end by skipping JSON strings. Both are invisible on a screen,
+ * too, should a text ever reach one unrendered. A marker that remoteText cuts
+ * through at a cap is no longer well formed, and is read as plain text.
+ */
+export const REMOTE_TEXT_OPEN = '\u2063'
+export const REMOTE_TEXT_SPLIT = '\u2064'
+
+/** A marker's key: as the catalogues spell theirs (shared/locales/), at most 160 characters. */
+export const REMOTE_TEXT_KEY = /^[A-Za-z0-9_.]{1,160}$/
+/** At most this many params in a marker; a catalogue text has five at most. */
+export const REMOTE_TEXT_PARAMS_MAX = 16
+/** The longest string param: the longest the core passes is the first line of nvidia-smi's output, cut at 200 (docker-runner.ts · VramWatch). */
+export const REMOTE_TEXT_PARAM_CHARS = 300
+/** The longest params' JSON, between REMOTE_TEXT_SPLIT and the closing REMOTE_TEXT_OPEN. */
+export const REMOTE_TEXT_JSON_CHARS = 2000
+/**
+ * How deep a marker inside a string param is still rendered: the outermost
+ * is at depth 0, and an honest text goes one deeper at most (unreadCardNotes).
+ * Below that a marker is plain text: nesting costs escapes that double with
+ * every level, so only a made-up text goes further.
+ */
+export const REMOTE_TEXT_DEPTH = 3
+
+/** A marker's params: what TranslationParams holds (shared/i18n-types.ts), and booleans. */
+export type RemoteTextParams = Readonly<Record<string, string | number | boolean>>
+
+/**
+ * `tr(key, params)` on a machine (server/src/runner-agent/i18n-shim.ts): the
+ * key and its params as a marker home renders, REMOTE_TEXT_OPEN, the key,
+ * REMOTE_TEXT_SPLIT, the params as JSON and REMOTE_TEXT_OPEN again.
+ *
+ * Written as it is asked for, not checked: a key outside REMOTE_TEXT_KEY or
+ * params past their caps make a marker home shows as plain text (the key and
+ * the JSON), never a refusal or a failed run. Every call in the core is well
+ * inside them: catalogue keys, a few params, short values.
+ */
+export function remoteTextMarker(key: string, params?: RemoteTextParams): string {
+  return `${REMOTE_TEXT_OPEN}${key}${REMOTE_TEXT_SPLIT}${JSON.stringify(params ?? {})}${REMOTE_TEXT_OPEN}`
+}
+
+/**
+ * Every marker in `text` as home says it: `render(key, params)` (home's `tr`)
+ * where home knows the key (`known`, home's hasTranslation), and the bare key
+ * where it does not, a newer build's key or a made-up one, as translate itself
+ * answers a key it does not know. A string param is read the same way before
+ * it is passed on, so a marker inside a marker comes out whole, down to
+ * REMOTE_TEXT_DEPTH; a boolean is passed on as the word translate would print
+ * for it.
+ *
+ * A marker that is not well formed stays as plain text with the two
+ * characters taken out: a text cut through one at its cap (remoteText), a key
+ * outside REMOTE_TEXT_KEY, params that are not a JSON object of at most
+ * REMOTE_TEXT_PARAMS_MAX strings of at most REMOTE_TEXT_PARAM_CHARS, finite
+ * numbers and booleans in at most REMOTE_TEXT_JSON_CHARS characters, or a
+ * notebook's own U+2063. Neither character is left in what comes back. And it
+ * never throws: the text is a machine's or a notebook's, and taking an outcome
+ * in must not fail over its words. A render or a `known` that throws, or
+ * gives no string, gives the bare key.
+ *
+ * WHAT A NOTEBOOK GAINS BY PRINTING A MARKER ITSELF: nothing. Its traceback is
+ * the outcome's detail and its output goes into the log, so it can print one,
+ * and home will render it. But a marker can only render one of our own
+ * catalogue texts with primitive params, put in as plain text, and that is a
+ * sentence the notebook could have printed word for word without it. Where
+ * home goes by our own words (a blind participant reads a detail only when it
+ * is exactly one of our sentences, runner.ts · unreadCardSentence), a rendered
+ * forgery is a sentence the notebook could print already. A forged marker
+ * ends only where its own JSON ends, so it takes in an honest marker after it
+ * only if the notebook wrote on both sides of that one; one that never closes
+ * is plain text, and the honest marker after it renders. What a marker has
+ * that its sentence lacks is brevity: thirty characters may say five hundred,
+ * so a rendered text is cut to its field's cap afterwards, as the store cuts
+ * participantError and teacherError (competitions/store.ts · clip).
+ */
+export function remoteRenderTexts(
+  text: string,
+  render: (key: string, params: Record<string, string | number>) => string,
+  known: (key: string) => boolean,
+): string {
+  return typeof text === 'string' ? renderTextMarkers(text, render, known, 0) : ''
+}
+
+const TEXT_OPEN = 0x2063
+const TEXT_SPLIT = 0x2064
+const TEXT_MARKS = /[\u2063\u2064]/g
+
+type TextParam = [name: string, value: string | number | boolean]
+
+function renderTextMarkers(text: string, render: Parameters<typeof remoteRenderTexts>[1], known: (key: string) => boolean, depth: number): string {
+  if (!text.includes(REMOTE_TEXT_OPEN)) return text.includes(REMOTE_TEXT_SPLIT) ? text.replace(TEXT_MARKS, '') : text
+  let out = ''
+  let from = 0
+  for (let open = text.indexOf(REMOTE_TEXT_OPEN); open >= 0; open = text.indexOf(REMOTE_TEXT_OPEN, from)) {
+    out += text.slice(from, open).replace(TEXT_MARKS, '')
+    const marker = depth < REMOTE_TEXT_DEPTH ? textMarkerAt(text, open) : null
+    if (marker === null) {
+      // Not a marker: the character goes, and the text after it is read as text.
+      from = open + 1
+      continue
+    }
+    out += textMarkerSaid(marker.key, marker.params, render, known, depth)
+    from = marker.end
+  }
+  return out + text.slice(from).replace(TEXT_MARKS, '')
+}
+
+/** The well-formed marker that opens at `open`, with where it ends; `null` — none opens there. */
+function textMarkerAt(text: string, open: number): { key: string; params: TextParam[]; end: number } | null {
+  let at = open + 1
+  // One past the longest key: a longer run of key characters is no key.
+  const keyEnd = Math.min(text.length, at + 161)
+  while (at < keyEnd && textKeyChar(text.charCodeAt(at))) at++
+  const key = text.slice(open + 1, at)
+  if (!REMOTE_TEXT_KEY.test(key) || text.charCodeAt(at) !== TEXT_SPLIT) return null
+  const close = textMarkerEnd(text, at + 1)
+  if (close < 0) return null
+  const params = textMarkerParams(text.slice(at + 1, close))
+  return params === null ? null : { key, params, end: close + 1 }
+}
+
+function textKeyChar(code: number): boolean {
+  return (code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a) || code === 0x5f || code === 0x2e
+}
+
+/**
+ * Where the params that start at `start` end: the first REMOTE_TEXT_OPEN
+ * outside a JSON string, within REMOTE_TEXT_JSON_CHARS. `-1` when there is
+ * none, when no object starts there, or when a REMOTE_TEXT_SPLIT comes first
+ * outside a string: inside one it belongs to a marker in a param.
+ */
+function textMarkerEnd(text: string, start: number): number {
+  if (text.charCodeAt(start) !== 0x7b) return -1
+  const last = Math.min(text.length - 1, start + REMOTE_TEXT_JSON_CHARS)
+  let quoted = false
+  for (let at = start + 1; at <= last; at++) {
+    const code = text.charCodeAt(at)
+    if (quoted) {
+      if (code === 0x5c) at++
+      else if (code === 0x22) quoted = false
+    } else if (code === 0x22) quoted = true
+    else if (code === TEXT_OPEN) return at
+    else if (code === TEXT_SPLIT) return -1
+  }
+  return -1
+}
+
+/** The params a marker's JSON holds, if they are within the caps; `null` — not params. */
+function textMarkerParams(json: string): TextParam[] | null {
+  let value: unknown
+  try {
+    value = JSON.parse(json)
+  } catch {
+    return null
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const params = Object.entries(value)
+  if (params.length > REMOTE_TEXT_PARAMS_MAX) return null
+  for (const [, v] of params) {
+    // JSON.parse reads 1e999 as Infinity: only the type of a number says nothing about it.
+    const fits = typeof v === 'string' ? v.length <= REMOTE_TEXT_PARAM_CHARS : typeof v === 'number' ? Number.isFinite(v) : typeof v === 'boolean'
+    if (!fits) return null
+  }
+  return params as TextParam[]
+}
+
+/** One marker as home says it. The params go in own properties (Object.fromEntries), so a param named __proto__ is a param. */
+function textMarkerSaid(key: string, params: TextParam[], render: Parameters<typeof remoteRenderTexts>[1], known: (key: string) => boolean, depth: number): string {
+  try {
+    if (!known(key)) return key
+    const said = render(key, Object.fromEntries(params.map(([name, value]) => [
+      name,
+      typeof value === 'string' ? renderTextMarkers(value, render, known, depth + 1) : typeof value === 'boolean' ? String(value) : value,
+    ])))
+    return typeof said === 'string' ? said : key
+  } catch {
+    return key
+  }
+}
+
 /* ---------------------------------------------------------------- helpers */
 
 function refuse(what: string, code: RemoteProtocolError['code'] = 'invalid'): never {

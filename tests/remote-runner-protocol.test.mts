@@ -1,8 +1,9 @@
 /**
  * The contract between home and its machines for submissions
  * (shared/remote-runner.ts): every parser's accept and refuse cases, the
- * sizes adding up, what the agent sends made safe, and the numbers it shares
- * with the rest of the code.
+ * sizes adding up, what the agent sends made safe, the texts a machine makes
+ * read on home in home's words, and the numbers it shares with the rest of
+ * the code.
  *
  * What is checked is what breaks on a rented machine in the middle of a
  * class and nowhere else. A parser that takes an extra key lets a forged
@@ -64,6 +65,13 @@ import {
   REMOTE_RUN_MS_MAX,
   REMOTE_SILENCE_MS,
   REMOTE_SYNC_BYTES,
+  REMOTE_TEXT_DEPTH,
+  REMOTE_TEXT_JSON_CHARS,
+  REMOTE_TEXT_KEY,
+  REMOTE_TEXT_OPEN,
+  REMOTE_TEXT_PARAMS_MAX,
+  REMOTE_TEXT_PARAM_CHARS,
+  REMOTE_TEXT_SPLIT,
   REMOTE_URL_CHARS,
   REMOTE_WALL_SECONDS_MAX,
   REMOTE_WHEELS_BYTES,
@@ -92,12 +100,15 @@ import {
   remoteOutcomeDigest,
   remotePaths,
   remoteProgress,
+  remoteRenderTexts,
   remoteText,
+  remoteTextMarker,
   remoteTransient,
   remoteWheelUrl,
   type RemoteOutcomeRequest,
   type RemoteOutcomeSource,
 } from '../shared/remote-runner.js'
+import { hasTranslation, messages, tr, translate } from '../shared/i18n.js'
 import { COMPETITION_ATTEMPT_ID } from '../shared/competition-runtime.js'
 import { EXECUTED_NOTEBOOK_FILE, LIMITS } from '../shared/competitions.js'
 import { SETTINGS_LIMITS } from '../shared/competitions-settings.js'
@@ -797,6 +808,225 @@ test('texts are cut to their caps at either end, never through a surrogate pair'
   assert.equal(remoteCount(1e300, 0, 10), 10)
   assert.equal(remoteCount(NaN, 3, 10), 3)
   assert.equal(remoteCount(-Infinity, 1, 10), 1)
+})
+
+/* ------------------------------------------------- texts made on a machine */
+
+/*
+ * The machine's bundle has no dictionaries (server/src/runner-agent/i18n-shim.ts):
+ * its `tr` is remoteTextMarker, and home reads the markers back in its own
+ * language. These hold the two ends together with the real catalogues: what
+ * the machine wrote reads on home exactly as home's own `tr` says it, and no
+ * text, cut or forged, makes the reader throw or lets a marker character
+ * through.
+ */
+
+const OPEN = REMOTE_TEXT_OPEN
+const SPLIT = REMOTE_TEXT_SPLIT
+/** Home's renderer in one language, as remoteRenderTexts takes it: translate, without the instance's setting in between. */
+const homeIn = (locale: 'ru' | 'en') => (key: string, params: Record<string, string | number>): string => translate(locale, key, params)
+/** A text read as plain text: the two characters gone and nothing else. */
+const plain = (text: string): string => text.replace(/[\u2063\u2064]/g, '')
+/** A marker's raw shape, for the ones remoteTextMarker would never write. */
+const rawMarker = (key: string, json: string): string => `${OPEN}${key}${SPLIT}${json}${OPEN}`
+const GPU_UNREAD = 'competitions.answer.gpuUnread'
+
+/** Params whose JSON is exactly `chars` long, every string within its cap. */
+function paramsOfJson(chars: number): Record<string, string | number> {
+  const params: Record<string, string | number> = { count: 3 }
+  const fill = 'x'.repeat(250)
+  for (let i = 0; JSON.stringify({ ...params, [`p${i}`]: fill, pad: '' }).length <= chars; i++) params[`p${i}`] = fill
+  params.pad = 'y'.repeat(chars - JSON.stringify({ ...params, pad: '' }).length)
+  assert.equal(JSON.stringify(params).length, chars)
+  assert.ok(Object.keys(params).length <= REMOTE_TEXT_PARAMS_MAX && (params.pad as string).length <= REMOTE_TEXT_PARAM_CHARS)
+  return params
+}
+
+test('a marker is the key and its params between two invisible characters, which no catalogue text holds', () => {
+  assert.equal(OPEN, '\u2063')
+  assert.equal(SPLIT, '\u2064')
+  assert.equal(remoteTextMarker(GPU_UNREAD, { count: 3 }), '\u2063competitions.answer.gpuUnread\u2064{"count":3}\u2063')
+  assert.equal(remoteTextMarker('competitions.answer.gpuNeverRead'), '\u2063competitions.answer.gpuNeverRead\u2064{}\u2063')
+  // JSON.stringify escapes neither character, so a marker inside a param travels as it is.
+  assert.equal(JSON.stringify(`${OPEN}${SPLIT}`), `"${OPEN}${SPLIT}"`)
+  const holding = Object.entries(messages).filter(([key, pair]) => /[\u2063\u2064]/.test(key + JSON.stringify(pair))).map(([key]) => key)
+  assert.deepEqual(holding, [], 'a catalogue text with a marker character in it would read as a broken marker')
+  // The catalogues' own spelling of a key is a marker's (every key the runner's core says is checked in
+  // tests/runner-import-graph.test.mts); a phrase used as a key is not, and stays home's.
+  assert.match(GPU_UNREAD, REMOTE_TEXT_KEY)
+  assert.match('server.theHostMayBeMissingNvidiaContainer.f5c0df', REMOTE_TEXT_KEY)
+  assert.doesNotMatch('room.editor.match case', REMOTE_TEXT_KEY)
+})
+
+test('a machine\'s marker reads on home as exactly what tr says there, in home\'s language', () => {
+  const marker = remoteTextMarker(GPU_UNREAD, { count: 3 })
+  assert.equal(remoteRenderTexts(marker, tr, hasTranslation), tr(GPU_UNREAD, { count: 3 }))
+  const ru = remoteRenderTexts(marker, homeIn('ru'), hasTranslation)
+  const en = remoteRenderTexts(marker, homeIn('en'), hasTranslation)
+  assert.equal(ru, translate('ru', GPU_UNREAD, { count: 3 }))
+  assert.equal(en, translate('en', GPU_UNREAD, { count: 3 }))
+  assert.notEqual(ru, en, 'one marker, two languages: the machine does not pick one')
+  assert.ok(en.includes('3') && !en.includes(GPU_UNREAD))
+  // The count travels as a number, so the plural is home's as well.
+  for (const count of [1, 2, 5, 21]) {
+    for (const locale of ['ru', 'en'] as const) {
+      assert.equal(remoteRenderTexts(remoteTextMarker(GPU_UNREAD, { count }), homeIn(locale), hasTranslation), translate(locale, GPU_UNREAD, { count }))
+    }
+  }
+  // Inside a text, what is around the marker stays as it was.
+  assert.equal(remoteRenderTexts(`Failed at cell 4.\n${marker}\n`, homeIn('en'), hasTranslation), `Failed at cell 4.\n${en}\n`)
+  // A text with no marker is the text itself, character for character.
+  const traceback = 'Traceback (most recent call last):\n  File "<cell>", line 1\nValueError: {count} — ü 😀 \uD83D'
+  assert.equal(remoteRenderTexts(traceback, tr, hasTranslation), traceback)
+  assert.equal(remoteRenderTexts('', tr, hasTranslation), '')
+})
+
+test('a key home does not know reads as the bare key', () => {
+  const newer = remoteTextMarker('competitions.answer.fromANewerBuild', { count: 3, device: '0' })
+  assert.equal(remoteRenderTexts(newer, tr, hasTranslation), 'competitions.answer.fromANewerBuild')
+  assert.equal(remoteRenderTexts(`a ${newer} b`, tr, hasTranslation), 'a competitions.answer.fromANewerBuild b')
+  // `known` decides, and a render that would make up words for any key is not asked.
+  let asked = 0
+  assert.equal(remoteRenderTexts(newer, () => `invented ${++asked}`, () => false), 'competitions.answer.fromANewerBuild')
+  assert.equal(asked, 0)
+  // An unknown key inside a known sentence: the sentence, with the key in its place.
+  const killed = { device: '0', count: 3, reason: remoteTextMarker('competitions.answer.fromANewerBuild'), slice: 6141 }
+  assert.equal(
+    remoteRenderTexts(remoteTextMarker('competitions.answer.gpuUnreadKilled', killed), homeIn('en'), hasTranslation),
+    translate('en', 'competitions.answer.gpuUnreadKilled', { ...killed, reason: 'competitions.answer.fromANewerBuild' }),
+  )
+})
+
+test('a marker that is not well formed stays as plain text, without the two characters', () => {
+  const whole = remoteTextMarker(GPU_UNREAD, { count: 3 })
+  const malformed = [
+    // Cut through at a cap (remoteText), from either end.
+    whole.slice(1), whole.slice(0, -1), whole.slice(9), whole.slice(0, 25), whole.slice(0, -5),
+    // Keys a catalogue may have but a marker cannot carry, and none at all.
+    rawMarker('', '{}'), rawMarker('room.editor.match case', '{}'), rawMarker('k'.repeat(161), '{}'), rawMarker('competitions/answer', '{}'),
+    // Params that are no JSON object.
+    rawMarker(GPU_UNREAD, '[3]'), rawMarker(GPU_UNREAD, '"3"'), rawMarker(GPU_UNREAD, 'null'), rawMarker(GPU_UNREAD, '3'), rawMarker(GPU_UNREAD, ''),
+    rawMarker(GPU_UNREAD, '{"count":3'), rawMarker(GPU_UNREAD, '{"count":}'), rawMarker(GPU_UNREAD, '{} {}'), rawMarker(GPU_UNREAD, ' {}'),
+    rawMarker(GPU_UNREAD, `{"count":3${SPLIT}}`),
+    // Values that are no primitive, or no finite number.
+    rawMarker(GPU_UNREAD, '{"count":{"n":3}}'), rawMarker(GPU_UNREAD, '{"count":[3]}'), rawMarker(GPU_UNREAD, '{"count":null}'), rawMarker(GPU_UNREAD, '{"count":1e999}'),
+    // Over the caps: entries, a string, the JSON.
+    remoteTextMarker(GPU_UNREAD, Object.fromEntries(Array.from({ length: REMOTE_TEXT_PARAMS_MAX + 1 }, (_, i) => [`p${i}`, i]))),
+    remoteTextMarker(GPU_UNREAD, { count: 3, reason: 'r'.repeat(REMOTE_TEXT_PARAM_CHARS + 1) }),
+    remoteTextMarker(GPU_UNREAD, paramsOfJson(REMOTE_TEXT_JSON_CHARS + 1)),
+    // The characters on their own.
+    OPEN, SPLIT, `${OPEN}${OPEN}`, `${SPLIT}${OPEN}${SPLIT}`, `a${OPEN}b${SPLIT}c${OPEN}`, `${OPEN}${GPU_UNREAD}${SPLIT}`,
+  ]
+  for (const text of malformed) {
+    assert.equal(remoteRenderTexts(text, tr, hasTranslation), plain(text), JSON.stringify(text).slice(0, 200))
+  }
+  // At the caps a marker is still one.
+  const atCaps = [
+    { device: '0', count: 3, reason: 'r'.repeat(REMOTE_TEXT_PARAM_CHARS), slice: 6141 },
+    { ...Object.fromEntries(Array.from({ length: REMOTE_TEXT_PARAMS_MAX - 1 }, (_, i) => [`p${i}`, i])), count: 3 },
+    paramsOfJson(REMOTE_TEXT_JSON_CHARS),
+  ]
+  for (const params of atCaps) {
+    const key = 'competitions.answer.gpuUnreadKilled'
+    assert.equal(remoteRenderTexts(remoteTextMarker(key, params), tr, hasTranslation), tr(key, params))
+  }
+  assert.equal(remoteRenderTexts(rawMarker('k'.repeat(160), '{"flag":true}'), (key, params) => `${key.length} ${JSON.stringify(params)}`, () => true), '160 {"flag":"true"}')
+})
+
+test('markers inside a param and side by side come out whole, and a cut one spoils only itself', () => {
+  // docker-runner.ts · unreadCardNotes, when the card never answered: the reason is itself a tr.
+  const stalled = { seconds: 5 }
+  const killed = (reason: string) => ({ device: 'GPU-0b1c2d3e', count: 3, reason, slice: 6141 })
+  const nested = remoteTextMarker('competitions.answer.gpuUnreadKilled', killed(remoteTextMarker('competitions.answer.gpuSampleStalled', stalled)))
+  const neverMarker = remoteTextMarker('competitions.answer.gpuNeverRead')
+  for (const locale of ['ru', 'en'] as const) {
+    const home = homeIn(locale)
+    const expected = translate(locale, 'competitions.answer.gpuUnreadKilled', killed(translate(locale, 'competitions.answer.gpuSampleStalled', stalled)))
+    const never = translate(locale, 'competitions.answer.gpuNeverRead')
+    assert.equal(remoteRenderTexts(nested, home, hasTranslation), expected)
+    // With a space between, as unreadCardNotes joins them; with nothing between; at either end of a text.
+    assert.equal(remoteRenderTexts(`${nested} ${neverMarker}`, home, hasTranslation), `${expected} ${never}`)
+    assert.equal(remoteRenderTexts(`${nested}${neverMarker}${neverMarker}`, home, hasTranslation), `${expected}${never}${never}`)
+    assert.equal(remoteRenderTexts(`docker: exit 125\n${neverMarker}`, home, hasTranslation), `docker: exit 125\n${never}`)
+    assert.equal(remoteRenderTexts(`${neverMarker}\nthe log goes on`, home, hasTranslation), `${never}\nthe log goes on`)
+    // A log cut at its start (remoteText keeps a log's end) keeps a broken head and the whole marker after it.
+    for (let cut = 1; cut < nested.length; cut += 7) {
+      const head = nested.slice(cut)
+      assert.equal(remoteRenderTexts(`${head}${neverMarker}`, home, hasTranslation), `${plain(head)}${never}`, `cut at ${cut}`)
+    }
+  }
+  // Deeper than REMOTE_TEXT_DEPTH a marker is plain text: only a made-up text nests further.
+  const echo = (key: string, params: Record<string, string | number>): string => `${key}(${params.x ?? ''})`
+  let deep = remoteTextMarker(`k${REMOTE_TEXT_DEPTH}`)
+  const innermost = deep
+  for (let level = REMOTE_TEXT_DEPTH - 1; level >= 0; level--) deep = remoteTextMarker(`k${level}`, { x: deep })
+  const opened = Array.from({ length: REMOTE_TEXT_DEPTH }, (_, level) => `k${level}(`).join('')
+  assert.equal(remoteRenderTexts(deep, echo, () => true), `${opened}${plain(innermost)}${')'.repeat(REMOTE_TEXT_DEPTH)}`)
+})
+
+test('a marker a notebook prints itself renders a sentence it could have printed, and takes in nothing else', () => {
+  // The notebook raises with a marker for a message: home shows what `raise RuntimeError(<our sentence>)` would have.
+  const forged = remoteTextMarker(GPU_UNREAD, { count: 3 })
+  const ours = translate('en', GPU_UNREAD, { count: 3 })
+  const traceback = `Traceback (most recent call last):\n  File "<cell>", line 1, in <module>\nRuntimeError: ${forged}`
+  assert.equal(remoteRenderTexts(traceback, homeIn('en'), hasTranslation), traceback.replace(forged, ours))
+  // Its params go into our sentence as plain text, as translate puts them in, and are read as nothing more.
+  const markup = { device: '<img src=x onerror=alert(1)>', count: 3, reason: '{device} ${process.env.SECRET}', slice: 6141 }
+  assert.equal(
+    remoteRenderTexts(remoteTextMarker('competitions.answer.gpuUnreadKilled', markup), homeIn('en'), hasTranslation),
+    translate('en', 'competitions.answer.gpuUnreadKilled', markup),
+  )
+  // A param that is no primitive makes no sentence at all.
+  const shaped = rawMarker(GPU_UNREAD, '{"count":{"valueOf":3,"toString":"x"}}')
+  assert.equal(remoteRenderTexts(shaped, homeIn('en'), hasTranslation), plain(shaped))
+  // A forged marker that never closes is plain text, and the honest marker after it renders as ever.
+  const unclosed = `${OPEN}${GPU_UNREAD}${SPLIT}{"count":"`
+  const honest = remoteTextMarker('competitions.answer.gpuNeverRead')
+  assert.equal(remoteRenderTexts(`${unclosed} ${honest}`, homeIn('en'), hasTranslation), `${plain(unclosed)} ${translate('en', 'competitions.answer.gpuNeverRead')}`)
+  // The notebook's own invisible characters go, and nothing else of what it printed.
+  assert.equal(remoteRenderTexts(`total${OPEN} 3${SPLIT}`, tr, hasTranslation), 'total 3')
+})
+
+test('rendering never throws and never lets a marker character through, whatever the text or the renderer', () => {
+  const marker = remoteTextMarker(GPU_UNREAD, { count: 3 })
+  assert.equal(remoteRenderTexts(marker, () => { throw new Error('render') }, hasTranslation), GPU_UNREAD)
+  assert.equal(remoteRenderTexts(marker, tr, () => { throw new Error('known') }), GPU_UNREAD)
+  assert.equal(remoteRenderTexts(marker, (() => undefined) as never, hasTranslation), GPU_UNREAD)
+  assert.equal(remoteRenderTexts(undefined as never, tr, hasTranslation), '')
+  assert.equal(remoteRenderTexts(null as never, tr, hasTranslation), '')
+  // A param named after Object's own is a param, in a property of its own.
+  const named = rawMarker('k', '{"__proto__":"x","constructor":"y","count":2}')
+  const seen = (key: string, params: Record<string, string | number>): string =>
+    `${key} ${Object.hasOwn(params, '__proto__')} ${params.__proto__} ${params.constructor} ${Object.getPrototypeOf(params) === Object.prototype}`
+  assert.equal(remoteRenderTexts(named, seen, () => true), 'k true x y true')
+
+  let seed = 20261014
+  const random = (): number => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+  const pieces = [
+    OPEN, SPLIT, OPEN, SPLIT, '{', '}', '"', '\\', ':', ',', '[', ']', ' ', 'count', '3', '1e999', 'true', 'null', 'é', '😀', '\uD83D',
+    GPU_UNREAD, 'competitions.answer.gpuNeverRead', 'k'.repeat(170), 'x'.repeat(400), marker, remoteTextMarker('competitions.answer.gpuNeverRead'),
+    remoteTextMarker('competitions.answer.gpuUnreadKilled', { device: '0', count: 3, reason: marker, slice: 1 }),
+  ]
+  for (let round = 0; round < 3000; round++) {
+    const text = Array.from({ length: Math.floor(random() * 24) }, () => pieces[Math.floor(random() * pieces.length)]).join('')
+    let out = ''
+    assert.doesNotThrow(() => { out = remoteRenderTexts(text, homeIn('en'), hasTranslation) }, JSON.stringify(text).slice(0, 300))
+    assert.doesNotMatch(out, /[\u2063\u2064]/, JSON.stringify(text).slice(0, 300))
+    // So a rendered text renders as itself: reading twice, as a retried apply might, changes nothing.
+    assert.equal(remoteRenderTexts(out, homeIn('en'), hasTranslation), out)
+  }
+
+  // The worst a detail at its cap can do: a marker opened every six characters, each reading a JSON string to the
+  // end of its cap (an escaped quote never closes one). Every opening is read that far, and still it is quick.
+  const worstCase = `${OPEN}a${SPLIT}{\\"`.repeat(Math.ceil(REMOTE_DETAIL_CHARS / 6)).slice(0, REMOTE_DETAIL_CHARS)
+  const started = performance.now()
+  assert.equal(remoteRenderTexts(worstCase, tr, hasTranslation), plain(worstCase))
+  assert.ok(performance.now() - started < 2_000, `${Math.round(performance.now() - started)} ms`)
 })
 
 /* -------------------------------------------------------- the sizes add up */
