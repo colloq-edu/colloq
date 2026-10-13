@@ -22,10 +22,19 @@
  * no card, but it keeps its GPU notebooks to the number the broker has units
  * for (gpu.ts · clusterGpuSlots), and the simulation counts that number as
  * the cards' places.
+ *
+ * TWO LANES, as the pump runs them (runner.ts · pumpOnce): notebooks under
+ * the slots — none at all while this server runs no notebooks — and
+ * metric-only work under the metric lane's places, a fresh result before a
+ * rescore (panel.ts · scoreOrder). Each lane is simulated against its own
+ * places and its own running rows, and the places on the screens are the
+ * simulated starts of both, merged: a notebook that starts now is not
+ * numbered behind a hundred rescores that start after it.
  */
-import { expectedRunMs, fairOrder, queueEtas, type Eta } from './panel.js'
+import { expectedRunMs, fairOrder, queueEtas, runningCounts, scoreOrder, type Eta } from './panel.js'
 import { METRIC_WALL_SECONDS } from './runner-port.js'
-import { getCompetition, queueRows, recentDurations, recentMetricRuns, type QueueRow } from './store.js'
+import { getCompetition, getSubmission, queueRows, recentDurations, recentMetricRuns, type QueueRow } from './store.js'
+import { homeNotebooksSetting, scoreSlotsSetting } from './settings.js'
 import { clusterGpuSlots, runnerCardsHere, runnerGpuDevices, runnerGpuPerDevice, runnerGpuState, sliceOverCards } from './gpu.js'
 import { gpuCards } from '../kernel/resources.js'
 
@@ -38,7 +47,8 @@ export interface Forecast {
   running: QueueRow[]
   /**
    * Claimable waiting jobs, in the order they will be taken: by place, and
-   * after them the GPU work that has no card to start on at all.
+   * after them the work that has nowhere to start at all — GPU work with no
+   * card, and notebooks while this server runs none.
    */
   eligible: QueueRow[]
   /** Postponed by a resource retry: visible, but not claimable yet. */
@@ -48,40 +58,83 @@ export interface Forecast {
 }
 
 /**
- * `gpuSlots` — how many runs may hold a card share at once (under the
- * cluster, a place among its units); `null` — no card is counted at all, and
- * GPU work is simulated like any other. By default what the screens show
- * (forecastGpuSlots).
+ * The pump's lanes as the forecast simulates them (runner.ts · pumpOnce):
+ * whether this server runs notebooks («Тетради на этом сервере»), and the
+ * metric lane's places. By default the settings in force.
  */
-export function queueForecast(slots: number, now = Date.now(), gpuSlots: number | null = forecastGpuSlots(now)): Forecast {
+export interface ForecastLanes {
+  homeNotebooks: boolean
+  scoreSlots: number
+}
+
+export function forecastLanes(): ForecastLanes {
+  return { homeNotebooks: homeNotebooksSetting().value, scoreSlots: scoreSlotsSetting().value }
+}
+
+/**
+ * `slots` — the notebook lane's places (the machine's slots). `gpuSlots` —
+ * how many runs may hold a card share at once (under the cluster, a place
+ * among its units); `null` — no card is counted at all, and GPU work is
+ * simulated like any other. By default what the screens show
+ * (forecastGpuSlots). `lanes` — by default the settings in force
+ * (forecastLanes).
+ */
+export function queueForecast(slots: number, now = Date.now(), gpuSlots: number | null = forecastGpuSlots(now), lanes: ForecastLanes = forecastLanes()): Forecast {
   const rows = queueRows()
   const running = rows.filter((row) => row.state === 'running')
   const waiting = rows.filter((row) => row.state === 'waiting')
-  const busy = new Set(running.map((row) => row.entrantId))
-  const preferred = fairOrder(waiting.filter((row) => row.notBefore <= now), busy)
+  // The fair order's own count: each person's running rows, wherever they run (store.ts · selectNext).
+  const busy = runningCounts(running)
+  const ready = waiting.filter((row) => row.notBefore <= now)
   const deferred = fairOrder(waiting.filter((row) => row.notBefore > now), busy)
   const expected = runEstimator()
   const needsCard = cardNeeds()
   // Under the cluster a running GPU notebook holds no card of ours, but it does hold one of the cluster's places.
   const cluster = !runnerCardsHere()
-  const etas = queueEtas({
-    slots,
-    running: running.map((row) => ({
+  // This server's lanes hold only its own rows: a machine's run takes none of its places.
+  const here = running.filter((row) => row.holder === null)
+  const notebooks = fairOrder(ready.filter((row) => row.kind === 'notebook'), busy)
+  const metrics = scoreOrder(ready.filter((row) => row.kind === 'metric'), busy, freshResult)
+  // No notebook runs here with the switch off: none starts, and nobody can say when one will.
+  const notebookEtas = lanes.homeNotebooks
+    ? queueEtas({
+        slots,
+        running: here.filter((row) => row.kind === 'notebook').map((row) => ({
+          expectedMs: expected(row),
+          elapsedMs: row.startedAt === null ? 0 : Math.max(0, now - row.startedAt),
+          gpu: row.gpu !== null || (cluster && needsCard(row)),
+        })),
+        waiting: notebooks.map((row) => ({ expectedMs: expected(row), gpu: needsCard(row) })),
+        ...(gpuSlots === null ? {} : { gpuSlots }),
+      })
+    : notebooks.map(() => null)
+  // A metric never waits for a card: no card is simulated in its lane.
+  const metricEtas = queueEtas({
+    slots: lanes.scoreSlots,
+    running: here.filter((row) => row.kind === 'metric').map((row) => ({
       expectedMs: expected(row),
       elapsedMs: row.startedAt === null ? 0 : Math.max(0, now - row.startedAt),
-      gpu: row.gpu !== null || (cluster && needsCard(row)),
     })),
-    waiting: preferred.map((row) => ({ expectedMs: expected(row), gpu: needsCard(row) })),
-    ...(gpuSlots === null ? {} : { gpuSlots }),
+    waiting: metrics.map((row) => ({ expectedMs: expected(row) })),
   })
-  // Places by start; among jobs starting at one moment, the queue's order.
-  const starting = preferred
-    .map((row, index) => ({ row, index, eta: etas[index] }))
-    .filter((entry): entry is { row: QueueRow; index: number; eta: Eta } => entry.eta !== null)
-    .sort((a, b) => a.eta.startMs - b.eta.startMs || a.index - b.index)
+  // Places by start; among jobs starting at one moment, the notebooks first (a pass takes their lane first), then the queue's order.
+  const starting = [
+    ...notebooks.map((row, index) => ({ row, lane: 0, index, eta: notebookEtas[index] })),
+    ...metrics.map((row, index) => ({ row, lane: 1, index, eta: metricEtas[index] })),
+  ]
+    .filter((entry): entry is { row: QueueRow; lane: number; index: number; eta: Eta } => entry.eta !== null)
+    .sort((a, b) => a.eta.startMs - b.eta.startMs || a.lane - b.lane || a.index - b.index)
   const at = new Map(starting.map((entry, place) => [entry.row.submissionId, { place: place + 1, ...entry.eta }] as const))
-  const eligible = [...starting.map((entry) => entry.row), ...preferred.filter((row) => !at.has(row.submissionId))]
+  const eligible = [...starting.map((entry) => entry.row), ...[...notebooks, ...metrics].filter((row) => !at.has(row.submissionId))]
   return { running, eligible, deferred, at }
+}
+
+/**
+ * Whether a metric row is a fresh result's — its submission still running, at
+ * its score stage — rather than a rescore's (store.ts · selectNextScore).
+ */
+function freshResult(row: QueueRow): boolean {
+  return getSubmission(row.submissionId)?.state === 'running'
 }
 
 /**

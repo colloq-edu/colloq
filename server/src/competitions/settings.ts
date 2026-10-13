@@ -5,7 +5,8 @@
  * WHY THE SHARED BOX (`instance_settings`) and not a table of our own: these
  * are settings of the MACHINE, next to the Oracle's — how many submissions run
  * at once, how often one participant may upload, what a NEW competition starts
- * with — not state of one competition or of the queue. A missing row is not an
+ * with, how the work is shared with the machines that run submissions for it
+ * — not state of one competition or of the queue. A missing row is not an
  * error but "as by default": everyone who upgraded has none, and reading that
  * as zero would stall the queue or refuse every upload.
  *
@@ -28,6 +29,8 @@ import {
   SETTINGS_LIMITS,
   type CompetitionDefaults,
   type CompetitionGpuSettingsInput,
+  type CompetitionRunnerSettings,
+  type CompetitionRunnerSettingsInput,
   type CompetitionSettingsInput,
   type SettingSource,
 } from '@shared/competitions-settings'
@@ -42,7 +45,15 @@ const KEY = {
   /** A JSON array of `KERNEL_GPUS` entries; `[]` is "none", unlike a missing row. */
   gpuDevices: 'competitions.gpu.devices',
   gpuPerDevice: 'competitions.gpu.perDevice',
+  /** `1` or `0`; a missing row is the default, on. */
+  homeNotebooks: 'competitions.homeNotebooks',
+  scoreSlots: 'competitions.scoreSlots',
+  runnerBlobMBps: 'competitions.runners.blobMBps',
+  runnerUploads: 'competitions.runners.uploads',
 } as const
+
+/** The machines' numbers: each read like the slots of the box, by its own bounds. */
+const RUNNER_NUMBERS = ['scoreSlots', 'runnerBlobMBps', 'runnerUploads'] as const
 
 const DEFAULT_FIELDS = ['wallSeconds', 'memoryMb', 'cpus', 'perDay'] as const
 
@@ -207,10 +218,69 @@ export function gpuPerDeviceSetting(env: NodeJS.ProcessEnv = process.env): { val
   })
 }
 
+/* --------------------------------------------- machines that run submissions */
+
+/*
+ * The settings of the machines that run submissions for this server
+ * (docs/architecture/remote-runners.md §5.1). No environment variable names
+ * any of them: they are decided in the panel, while the machines join, and an
+ * .env value would be a second answer to «does this server run notebooks»
+ * that the switch could not overrule. Read on every call, like the rest of
+ * the box: the pump asks each pass, and an owner who turns this server's
+ * notebooks off between two passes must see the next one take none.
+ */
+
+/** A stored switch: `1` on, `0` off; anything else reads as "not set". */
+function storedFlag(key: string): boolean | null {
+  const raw = stored(key)?.trim()
+  return raw === '1' ? true : raw === '0' ? false : null
+}
+
+/**
+ * «Тетради на этом сервере»: whether the pump's notebook lane runs here
+ * (runner.ts · pumpOnce). Off, this server takes no notebook and only scores
+ * — the metric lane runs whatever the switch says.
+ */
+export function homeNotebooksSetting(): { value: boolean; source: 'saved' | 'default' } {
+  const saved = storedFlag(KEY.homeNotebooks)
+  return saved === null ? { value: SETTINGS_LIMITS.homeNotebooks.default, source: 'default' } : { value: saved, source: 'saved' }
+}
+
+/** A stored whole number within its bounds, or the default. */
+function runnerNumber(field: (typeof RUNNER_NUMBERS)[number]): { value: number; source: 'saved' | 'default' } {
+  const saved = storedWhole(KEY[field], SETTINGS_LIMITS[field])
+  return saved === null ? { value: SETTINGS_LIMITS[field].default, source: 'default' } : { value: saved, source: 'saved' }
+}
+
+/** The metric lane's places: metric-only work run here at once. */
+export function scoreSlotsSetting(): { value: number; source: 'saved' | 'default' } {
+  return runnerNumber('scoreSlots')
+}
+
+/** «Скорость раздачи»: MB/s for every blob the machines fetch, together. */
+export function runnerBlobMBpsSetting(): { value: number; source: 'saved' | 'default' } {
+  return runnerNumber('runnerBlobMBps')
+}
+
+/** Results the machines upload that are stored at once. */
+export function runnerUploadsSetting(): { value: number; source: 'saved' | 'default' } {
+  return runnerNumber('runnerUploads')
+}
+
+/** All four, as the machines' block reads them. */
+export function runnerSettings(): CompetitionRunnerSettings {
+  return {
+    homeNotebooks: homeNotebooksSetting(),
+    scoreSlots: scoreSlotsSetting(),
+    runnerBlobMBps: runnerBlobMBpsSetting(),
+    runnerUploads: runnerUploadsSetting(),
+  }
+}
+
 /* ------------------------------------------------------------ the form */
 
 /** A checked form: a value to store, or `null` to forget the stored one. */
-export type SettingsPatch = CompetitionSettingsInput & CompetitionGpuSettingsInput
+export type SettingsPatch = CompetitionSettingsInput & CompetitionGpuSettingsInput & CompetitionRunnerSettingsInput
 
 export type SettingsRefusal =
   | { field: string; why: 'range'; min: number; max: number }
@@ -317,6 +387,33 @@ export function parseSettingsInput(
       patch.gpuPerDevice = value
     }
   }
+
+  /*
+   * The machines' half. The switch is true or false, never "anything truthy"
+   * (panel.ts · lateSubmissions): "false" as a string is the form that would
+   * stop this server's notebooks by accident. The numbers have bounds of
+   * their own, not the machine's: a lane of eight metrics or eight uploads
+   * fits any server that runs a class.
+   */
+  if (has('homeNotebooks')) {
+    if (cleared(raw.homeNotebooks)) patch.homeNotebooks = null
+    else if (typeof raw.homeNotebooks !== 'boolean') return { refusal: { field: 'homeNotebooks', why: 'value' } }
+    else patch.homeNotebooks = raw.homeNotebooks
+  }
+  for (const field of RUNNER_NUMBERS) {
+    if (!has(field)) continue
+    if (cleared(raw[field])) {
+      patch[field] = null
+      continue
+    }
+    const value = whole(raw[field])
+    const range = SETTINGS_LIMITS[field]
+    if (value === null) return { refusal: { field, why: 'value' } }
+    if (value < range.min || value > range.max) {
+      return { refusal: { field, why: 'range', min: range.min, max: range.max } }
+    }
+    patch[field] = value
+  }
   return { patch }
 }
 
@@ -343,5 +440,15 @@ export const saveCompetitionSettings = db.transaction((patch: SettingsPatch): vo
   if (patch.gpuPerDevice !== undefined) {
     if (patch.gpuPerDevice === null) dropSetting.run(KEY.gpuPerDevice)
     else writeSetting.run(KEY.gpuPerDevice, String(patch.gpuPerDevice))
+  }
+  if (patch.homeNotebooks !== undefined) {
+    if (patch.homeNotebooks === null) dropSetting.run(KEY.homeNotebooks)
+    else writeSetting.run(KEY.homeNotebooks, patch.homeNotebooks ? '1' : '0')
+  }
+  for (const field of RUNNER_NUMBERS) {
+    const value = patch[field]
+    if (value === undefined) continue
+    if (value === null) dropSetting.run(KEY[field])
+    else writeSetting.run(KEY[field], String(value))
   }
 })

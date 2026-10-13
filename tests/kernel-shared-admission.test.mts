@@ -11,6 +11,8 @@ import { applyMemoryLimit, applyOwnLimits, dropRoomKernel, endpointForSession } 
 import { forgetResources, machineResources, useDockerInfo } from '../server/src/kernel/resources.js'
 import { reserveWork, workBudgetSnapshot } from '../server/src/ops/work-budget.js'
 import '../server/src/competitions/docker-runner.js'
+// The Docker runner's memory picture is the admission's (capacity.ts hands it over when it loads; docker-runner.ts may not import it).
+import '../server/src/competitions/capacity.js'
 import { competitionRunner, forgetCompetitionRunner } from '../server/src/competitions/runner-port.js'
 
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r }); return { promise, resolve } }

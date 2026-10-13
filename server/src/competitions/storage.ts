@@ -43,13 +43,14 @@ import path from 'node:path'
 import fs from 'node:fs'
 import { createHash } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
-import { config } from '../config.js'
+// The data root without config.ts: a machine that runs submissions keeps this layout too (data-dir.ts).
+import { dataDir } from '../data-dir.js'
 import { createAnchoredFilesystem, type HeldFile } from '../secure-files.js'
 import { cachedSha256 } from '../dependencies/files.js'
 import { EXECUTED_NOTEBOOK_FILE } from '@shared/competitions'
 
 /** The root of all competition belongings. */
-export const competitionsDir = path.join(config.dataDir, 'competitions')
+export const competitionsDir = path.join(dataDir, 'competitions')
 
 /**
  * No paths of our own are assembled by hand here: every operation goes
@@ -177,34 +178,102 @@ export async function copyCompetitionFile(from: string, to: string): Promise<voi
 }
 
 /**
+ * What an attempt has done to its submission's `out/`, written down beside
+ * the attempt's own folders (never in them: `result/` is filled by exports
+ * from a container or a machine, and nothing they write may pass for this).
+ *
+ * The moves below are renames, so a second call for the same attempt finds
+ * its sources gone. That second call is real: a machine's outcome that
+ * crashed this server half applied is applied again from the start (its
+ * lease is re-driven, docs/architecture/remote-runners.md §3.6), and without
+ * the record the second publish read "no executed notebook" and removed the
+ * one the first had just put in place, and the second promote threw on an
+ * answer it had already promoted. Written BEFORE the first move: a record
+ * means its moves were decided, and only those that did not happen yet are
+ * made again. Gone with the attempt (dropAttempt).
+ */
+function attemptRecord(id: string, submissionId: string, attemptId: string, name: 'published' | 'promoted'): string {
+  return path.join(ensureDir(path.join(submissionDir(id, submissionId), 'attempts', checkId(attemptId))), `${name}.json`)
+}
+
+function readRecord(file: string): unknown {
+  try {
+    return JSON.parse((competitionsFs.readFileSync(file) as Buffer).toString('utf8'))
+  } catch {
+    // None, or cut short by a crash while it was written: no move had been made yet.
+    return null
+  }
+}
+
+/**
  * The attempt's answer becomes the submission's answer — by rename, not by
- * copy.
+ * copy. Returns where it is now.
  *
  * The attempt directory is dropped right after the run, so moving the file
  * costs one metadata operation instead of reading and writing up to 64 MB on
  * the event loop. The rename replaces `out/submission.csv` atomically:
  * readers see the last complete successful answer, never half of the next.
+ *
+ * Once per attempt, however many times it is called (attemptRecord): a
+ * second call finishes a rename the first did not get to and otherwise does
+ * nothing, and returns the same place. With no answer to promote and no
+ * record it throws, as the rename always did.
  */
-export function promoteAttempt(id: string, submissionId: string, from: string): void {
+export function promoteAttempt(id: string, submissionId: string, attemptId: string): string {
   const out = ensureDir(resultDir(id, submissionId))
-  competitionsFs.renameSync(path.join(from, SUBMISSION_FILE), path.join(out, SUBMISSION_FILE))
+  const target = path.join(out, SUBMISSION_FILE)
+  const source = path.join(attemptPath(id, submissionId, attemptId, 'result'), SUBMISSION_FILE)
+  const record = attemptRecord(id, submissionId, attemptId, 'promoted')
+  if (readRecord(record) !== null) {
+    if (competitionsFs.existsSync(source)) competitionsFs.renameSync(source, target)
+    return target
+  }
+  // There must be something to promote before the record says it was.
+  competitionsFs.statSync(source)
+  competitionsFs.writeFileSync(record, JSON.stringify({ promoted: true }), { mode: 0o600 })
+  competitionsFs.renameSync(source, target)
+  return target
+}
+
+/** Whether this attempt's answer was promoted already: a second pass must not judge the moved file missing. */
+export function attemptPromoted(id: string, submissionId: string, attemptId: string): boolean {
+  return readRecord(attemptRecord(id, submissionId, attemptId, 'promoted')) !== null
+}
+
+/** Which of the attempt's artifacts went to `out/`; the others' names were cleared there. */
+export interface PublishedArtifacts {
+  executed: boolean
+  runJson: boolean
 }
 
 /**
  * A failed notebook still has useful current output; retain its execution
  * artifacts separately from the last successful CSV used by metric rescoring.
  *
- * Moved, not copied, for the same reason as the answer — and so called ONCE
- * per attempt: a second call finds nothing to move and removes what the first
- * one published.
+ * Moved, not copied, for the same reason as the answer. Decided once per
+ * attempt (attemptRecord): the first call reads which artifacts the attempt
+ * has and records it before it moves anything; a later one makes only the
+ * moves the first did not get to, and clears only what the first cleared —
+ * it never removes what the first one published. Returns the first call's
+ * answer.
  */
-export function publishAttemptArtifacts(id: string, submissionId: string, from: string): void {
+export function publishAttemptArtifacts(id: string, submissionId: string, attemptId: string): PublishedArtifacts {
   const out = ensureDir(resultDir(id, submissionId))
-  for (const name of [EXECUTED_FILE, 'run.json']) {
+  const from = attemptPath(id, submissionId, attemptId, 'result')
+  const record = attemptRecord(id, submissionId, attemptId, 'published')
+  const recorded = readRecord(record)
+  const first = recorded !== null && typeof recorded === 'object' ? recorded as Partial<PublishedArtifacts> : null
+  const plan: PublishedArtifacts = first
+    ? { executed: first.executed === true, runJson: first.runJson === true }
+    : { executed: regularFileWithin(path.join(from, EXECUTED_FILE), EXECUTED_BYTES), runJson: regularFileWithin(path.join(from, 'run.json'), EXECUTED_BYTES) }
+  if (!first) competitionsFs.writeFileSync(record, JSON.stringify(plan), { mode: 0o600 })
+  for (const [name, kept] of [[EXECUTED_FILE, plan.executed], ['run.json', plan.runJson]] as const) {
     const source = path.join(from, name)
-    if (regularFileWithin(source, EXECUTED_BYTES)) competitionsFs.renameSync(source, path.join(out, name))
-    else competitionsFs.rmSync(path.join(out, name), { force: true })
+    if (!kept) competitionsFs.rmSync(path.join(out, name), { force: true })
+    // Already moved by the first call when it is not there any more.
+    else if (regularFileWithin(source, EXECUTED_BYTES)) competitionsFs.renameSync(source, path.join(out, name))
   }
+  return plan
 }
 
 /** A regular file no bigger than `limit`, looked at through O_NOFOLLOW: a link is not an artifact. */
@@ -273,7 +342,7 @@ export const SOLUTION_FILE = 'solution.csv'
 export function hostPathOf(inside: string): string {
   const root = (process.env.DATA_HOST_DIR ?? '').trim()
   if (!root) return inside
-  return path.join(root, path.relative(config.dataDir, inside))
+  return path.join(root, path.relative(dataDir, inside))
 }
 
 /* -------------------------------------------------------------- writing */

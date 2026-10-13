@@ -886,6 +886,12 @@ export type RunVerdict =
 export interface SubmissionRun {
   attemptId?: string | null
   inputRevision?: number | null
+  /**
+   * The environment revision a metric run scored in: the submission's pinned
+   * one, or the light kaggle-base one for a competition with a card
+   * (runner.ts · gpuScoringImage). Absent on notebook runs and older rows.
+   */
+  revisionId?: string | null
   id: string
   submissionId: string
   /** The run's ordinal number within the submission. */

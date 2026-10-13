@@ -18,9 +18,7 @@
  * missing on someone else's machine, answer with garbage or hang; then the
  * seminar form simply does not show the hint instead of breaking entirely.
  */
-import fs from 'node:fs'
 import os from 'node:os'
-import { spawn } from 'node:child_process'
 import { db, sessionMemoryMb } from '../db.js'
 import { listNames, needsGpu } from '../environments.js'
 import { containerLimits, defaultCpus, defaultMemoryMb, dockerRead, gpuDevices, roomContainers, memoryLimitMb, ownLimits } from './pool.js'
@@ -28,6 +26,8 @@ import { kernelBackend, kernelRuntimeClient } from './runtime-client.js'
 import type { GpuCard, InstanceResources, RoomResource } from '@shared/admin'
 import type { RuntimeRoom } from '@shared/runtime'
 import { observeWorkMemory, workBudgetSnapshot } from '../ops/work-budget.js'
+import { hostMemAvailableMb } from '../ops/meminfo.js'
+import { nvidiaSmi, parseGpus, probeCards, type GpuCardFacts, type GpuCardProbe } from './card-probe.js'
 
 const MB = 1024 * 1024
 
@@ -37,6 +37,12 @@ const MB = 1024 * 1024
  * similar ones.
  */
 export type { GpuCard, InstanceResources, RoomResource } from '@shared/admin'
+/*
+ * How the cards are asked lives in card-probe.ts, which a machine that runs
+ * submissions loads without this module; its parsers and types are still
+ * found here, where they always were.
+ */
+export { parseCardFacts, parseCardList, parseGpus, type CardRow, type GpuCardFacts, type GpuCardProbe } from './card-probe.js'
 type Collected = Omit<InstanceResources, 'limits'>
 
 /* --------------------------------------------------------------- memory */
@@ -58,17 +64,11 @@ type Collected = Omit<InstanceResources, 'limits'>
  *
  * So where there is no /proc of our own, the answer is `null`, "don't know":
  * the form then says nothing about free memory. Silence is more honest than a
- * number that scares for nothing.
+ * number that scares for nothing. The reading itself is the server's one
+ * reader of /proc/meminfo (ops/meminfo.ts), the queue's admission's too.
  */
 function hostAvailableMb(): number | null {
-  try {
-    const meminfo = fs.readFileSync('/proc/meminfo', 'utf8')
-    const match = /^MemAvailable:\s+(\d+)\s*kB/m.exec(meminfo)
-    if (match) return Math.floor(Number(match[1]) / 1024)
-  } catch {
-    /* not Linux, or /proc is not mounted: an honest "don't know" below */
-  }
-  return null
+  return hostMemAvailableMb()
 }
 
 /* ---------------------------------------------------------- docker daemon */
@@ -282,42 +282,8 @@ export function memoryPicture(input: {
 /* ------------------------------------------------------------------ GPU */
 
 /**
- * What the local `nvidia-smi` prints for these arguments; `null` — it is not
- * there, it failed, or it did not answer in time.
- *
- * Neither errors nor a missing binary escape. The timeout is short and real
- * (kill, not just reject): `nvidia-smi` on a machine with a hung driver never
- * returns, and this read hangs on the panel's request.
- */
-function nvidiaSmi(args: string[]): Promise<string | null> {
-  return new Promise((resolve) => {
-    let child: ReturnType<typeof spawn>
-    try {
-      child = spawn('nvidia-smi', args)
-    } catch {
-      resolve(null)
-      return
-    }
-    let out = ''
-    let done = false
-    const finish = (value: string | null): void => {
-      if (done) return
-      done = true
-      clearTimeout(timer)
-      resolve(value)
-    }
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL')
-      finish(null)
-    }, 3_000)
-    child.stdout?.on('data', (chunk: Buffer) => (out += chunk.toString()))
-    child.on('error', () => finish(null))
-    child.on('close', (code) => finish(code === 0 ? out : null))
-  })
-}
-
-/**
- * The machine's cards, from `nvidia-smi`, if it is there.
+ * The machine's cards, from `nvidia-smi`, if it is there (card-probe.ts ·
+ * nvidiaSmi, parseGpus).
  *
  * An empty list means "no cards visible", and the seminar form then says
  * nothing about GPUs.
@@ -325,20 +291,6 @@ function nvidiaSmi(args: string[]): Promise<string | null> {
 async function readGpus(): Promise<GpuCard[]> {
   const out = await nvidiaSmi(['--query-gpu=index,name,memory.total', '--format=csv,noheader,nounits'])
   return out === null ? [] : parseGpus(out)
-}
-
-/** "0, NVIDIA GeForce RTX 3090, 24576": one line per card. */
-export function parseGpus(out: string): GpuCard[] {
-  const cards: GpuCard[] = []
-  for (const line of out.split('\n')) {
-    const parts = line.split(',').map((part) => part.trim())
-    if (parts.length < 3) continue
-    const index = Number(parts[0])
-    const memoryMb = Number(parts[2].replace(/[^\d]/g, ''))
-    if (!Number.isFinite(index) || !parts[1]) continue
-    cards.push({ index, name: parts[1], memoryMb: Number.isFinite(memoryMb) ? memoryMb : 0 })
-  }
-  return cards
 }
 
 /* ------------------------------------------- the cards behind KERNEL_GPUS */
@@ -350,31 +302,15 @@ export function parseGpus(out: string): GpuCard[] {
  * form, and inside the colloq-vast container it answers nothing: nvidia-smi is
  * not in the app's image (deploy/vast/README.md lists it as a known gap).
  * Runner cards need more than a picture. A card's memory decides the share
- * every submission on it is promised AND held to (competitions/gpu.ts ·
- * gpuSliceMb), so it has to be read wherever the app actually runs. Two
- * sources, in this order:
- *
- *  - the local `nvidia-smi`, when the server runs on the host: one call for
- *    every card, matched by index or by UUID, the two ways KERNEL_GPUS names a
- *    whole card;
- *  - otherwise the cards themselves, asked from ONE throwaway container that
- *    is given all of them (`docker run --gpus all --entrypoint nvidia-smi`, on
- *    a kernel image already on the machine) and matched the same way. The
- *    NVIDIA toolkit mounts nvidia-smi into every container it gives a card
- *    to, and with every card visible the container numbers them as the host
- *    does, which is how `--gpus device=<index>` names them too. One container
- *    for all of them, not one per card: on the 2 × 4090 VM a probe container
- *    took ~6 s for both cards and ~7 s for each card alone (13 Oct 2026), and
- *    a refresh in the middle of a class is then one container on a busy
- *    daemon rather than one per card. An entry that container did not name
- *    (it failed, or the entry is spelled in a way only `--gpus device=`
- *    understands) is asked from a container of its own,
- *    `--gpus device=<id>`, whose answer is about the card docker hands out
- *    under that very id.
- *
- * A MIG instance stays unknown on purpose: the per-card query describes the
- * physical card the instance is cut from, and a share computed from that would
- * promise each run more than the whole instance has.
+ * every submission on it is promised AND held to (competitions/gpu-math.ts ·
+ * gpuSliceMb), so it has to be read wherever the app actually runs: the local
+ * `nvidia-smi` when the server runs on the host, otherwise ONE throwaway
+ * container given every card, and a container of its own for an entry that
+ * one did not name. How, and why one container rather than one per card, is
+ * card-probe.ts · probeCards, the same probe a machine that runs submissions
+ * asks its own cards with; what is this server's is here: the cards are the
+ * entries of KERNEL_GPUS, the docker is this module's (useDockerInfo), and
+ * the test stand and the broker are answered without a probe.
  *
  * Read when the server starts and kept warm from then on (`watchGpuCards`),
  * so that neither the owner's Resources tab nor the first GPU run after a
@@ -386,29 +322,16 @@ export function parseGpus(out: string): GpuCard[] {
  * (`remembered`).
  */
 
-/** A card's own word about itself; `null` — it could not be asked, nobody guesses. */
-export interface GpuCardFacts {
-  name: string | null
-  memoryMb: number | null
-}
-
 /** An entry of KERNEL_GPUS with what is known about it. */
 export interface KnownGpuCard extends GpuCardFacts {
   id: string
 }
-
-/** Asks about entries of KERNEL_GPUS; an entry missing from the answer is unknown. */
-export type GpuCardProbe = (devices: readonly string[]) => Promise<Map<string, GpuCardFacts>>
 
 const CARD_TTL_MS = 10 * 60_000
 const UNKNOWN_CARD_TTL_MS = 60_000
 const UNKNOWN_CARD: GpuCardFacts = { name: null, memoryMb: null }
 /** The test stand's card: the same made-up 3090 `collect` shows. */
 const FAKE_CARD: GpuCardFacts = { name: 'NVIDIA GeForce RTX 3090', memoryMb: 24_576 }
-/** Kernel images are `colloq-kernel:<environment>` (kernel/pool.ts · IMAGE_PREFIX). */
-const KERNEL_IMAGE = 'colloq-kernel'
-/** What the local nvidia-smi and the all-cards container are asked: one line per card (`parseCardList`). */
-const CARD_QUERY = ['--query-gpu=index,uuid,name,memory.total', '--format=csv,noheader,nounits']
 
 /** What the cache holds for a card: its facts, and when they are old enough to be asked again. */
 interface SeenCard {
@@ -561,125 +484,17 @@ function within(work: Promise<void>, ms: number): Promise<void> {
 }
 
 /**
- * The real probe: the local nvidia-smi first, then one throwaway container
- * given every card, then a container of its own for an entry neither named.
+ * The real probe of this server's cards (card-probe.ts · probeCards: the local
+ * nvidia-smi first, then one throwaway container given every card, then a
+ * container of its own for an entry neither named), with this module's docker,
+ * read at the call so that a test's useDockerInfo reaches it. The test stand
+ * makes its card up, and under the broker nobody here gives cards out.
  */
 async function probeGpuCards(devices: readonly string[]): Promise<Map<string, GpuCardFacts>> {
-  const answer = new Map<string, GpuCardFacts>()
-  if (kernelBackend() === 'test' && !dockerInjected) {
-    for (const device of devices) answer.set(device, FAKE_CARD)
-    return answer
-  }
+  if (kernelBackend() === 'test' && !dockerInjected) return new Map(devices.map((device) => [device, FAKE_CARD]))
   // Under the broker the cluster has the cards; nobody here gives them out.
-  if (kernelBackend() !== 'docker' && !dockerInjected) return answer
-  const name = (listed: CardRow[]): void => {
-    for (const device of devices) {
-      const card = listed.find((row) => row.index === device || row.uuid === device)
-      if (card && !answer.has(device)) answer.set(device, { name: card.name, memoryMb: card.memoryMb })
-    }
-  }
-  const unnamed = (): string[] => devices.filter((device) => !answer.has(device) && !device.startsWith('MIG-'))
-  const local = await nvidiaSmi(CARD_QUERY)
-  if (local !== null) name(parseCardList(local))
-  if (unnamed().length === 0) return answer
-  const image = await probeImage()
-  if (!image) return answer
-  const all = await cardsInContainer(image)
-  if (all) name(all)
-  await Promise.all(
-    unnamed().map(async (device) => {
-      const facts = await cardInContainer(device, image)
-      if (facts) answer.set(device, facts)
-    }),
-  )
-  return answer
-}
-
-/** One line of `CARD_QUERY`'s answer. */
-export type CardRow = { index: string; uuid: string; name: string; memoryMb: number | null }
-
-/**
- * "0, GPU-8f…, NVIDIA GeForce RTX 4090, 24564": one line per card, as
- * `--query-gpu=index,uuid,name,memory.total` prints it. A memory field that
- * is not a number ("[N/A]") is unknown, not zero.
- */
-export function parseCardList(out: string): CardRow[] {
-  const cards: CardRow[] = []
-  for (const line of out.split('\n')) {
-    const parts = line.split(',').map((part) => part.trim())
-    if (parts.length < 4 || !/^\d+$/.test(parts[0]) || !parts[1]) continue
-    const memoryMb = Number(parts[parts.length - 1])
-    cards.push({
-      index: parts[0],
-      uuid: parts[1],
-      name: parts.slice(2, -1).join(', '),
-      memoryMb: Number.isSafeInteger(memoryMb) && memoryMb > 0 ? memoryMb : null,
-    })
-  }
-  return cards
-}
-
-/**
- * "NVIDIA GeForce RTX 4090, 24564" from the probe container. Docker's own
- * words may come before it on the same stream (`run` merges stderr), so the
- * first line of that shape is taken, not the first line.
- */
-export function parseCardFacts(out: string): GpuCardFacts | null {
-  for (const line of out.split('\n')) {
-    const match = /^(.+?),\s*(\d+)\s*$/.exec(line.trim())
-    if (!match) continue
-    const memoryMb = Number(match[2])
-    if (Number.isSafeInteger(memoryMb) && memoryMb > 0) return { name: match[1].trim(), memoryMb }
-  }
-  return null
-}
-
-/**
- * A kernel image to start the probe from, among those already on the
- * machine: `base-gpu` first, it is surely there on a machine with cards. Never
- * pulled (`--pull=never` below): `colloq-kernel` is not on any registry, and a
- * pull attempt is half a minute of nothing.
- */
-async function probeImage(): Promise<string | null> {
-  const res = await askDocker(['image', 'ls', '--format', '{{.Repository}}:{{.Tag}}', KERNEL_IMAGE], 10_000)
-  if (res.code !== 0) return null
-  const tags = res.out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith(`${KERNEL_IMAGE}:`) && !line.endsWith(':<none>'))
-  return tags.find((tag) => tag === `${KERNEL_IMAGE}:base-gpu`) ?? tags.find((tag) => tag === `${KERNEL_IMAGE}:base`) ?? tags[0] ?? null
-}
-
-/**
- * Ask the cards themselves what they are, from a container that lives a few
- * seconds: no network, no capabilities, removed on exit. Read-only for the
- * cards — the query takes no memory on them and disturbs no run already there.
- */
-function probeContainer(gpus: string, image: string, query: readonly string[]): Promise<{ code: number; out: string }> {
-  return askDocker(
-    [
-      'run', '--rm', '--pull=never', '--network', 'none', '--cap-drop=ALL', '--security-opt=no-new-privileges',
-      '--gpus', gpus, '--entrypoint', 'nvidia-smi', image, ...query,
-    ],
-    30_000,
-  )
-}
-
-/**
- * Every card at once, from one container given all of them: the same question
- * and the same lines as the local nvidia-smi. `null` — docker did not start
- * it or nvidia-smi failed in it; a partial answer is not read, since a line
- * cut short by the timeout would read as a smaller card.
- */
-async function cardsInContainer(image: string): Promise<CardRow[] | null> {
-  const res = await probeContainer('all', image, CARD_QUERY)
-  return res.code === 0 ? parseCardList(res.out) : null
-}
-
-/** One card, from a container given only it: for an entry the all-cards container did not name. */
-async function cardInContainer(device: string, image: string): Promise<GpuCardFacts | null> {
-  const res = await probeContainer(`device=${device}`, image, ['--query-gpu=name,memory.total', '--format=csv,noheader,nounits'])
-  return res.code === 0 ? parseCardFacts(res.out) : null
+  if (kernelBackend() !== 'docker' && !dockerInjected) return new Map()
+  return probeCards(devices, { docker: askDocker })
 }
 
 /* ------------------------------------------------------------------ rooms */

@@ -22,13 +22,23 @@
  * memory out of MemAvailable, and subtracting the reservation on top made
  * every running submission cost the machine twice.
  */
-import fs from 'node:fs'
 import os from 'node:os'
 import { HOST_RESERVE_MB, machineCpus, machineResources, memoryBounds } from '../kernel/resources.js'
 import { kernelBackend } from '../kernel/runtime-client.js'
+import { hostMemAvailableMb } from '../ops/meminfo.js'
 import { observedWorkCensus } from '../ops/work-budget.js'
 import { SETTINGS_LIMITS, type SettingSource, type SlotsResolution } from '@shared/competitions-settings'
+import { provideMachineMemory, type MachineMemory } from './docker-runner.js'
 import { competitionDefaults, parseSlots, savedSlots } from './settings.js'
+
+/*
+ * The kernel's own "how much can be taken without swap", raw: one reader for
+ * the whole server (ops/meminfo.ts), re-exported where it was always found.
+ * Read raw rather than through resources.ts, which hands out only the smaller
+ * of it and the unpromised memory — exactly the mix that counted a running
+ * submission twice.
+ */
+export { hostMemAvailableMb }
 
 const MB = 1024 * 1024
 
@@ -193,22 +203,6 @@ export function usableMemoryMb(input: { totalMb: number | null; census: CensusRe
 }
 
 /**
- * The kernel's own "how much can be taken without swap", raw.
- *
- * Read here rather than through resources.ts, which hands out only the
- * smaller of it and the unpromised memory — exactly the mix that counted a
- * running submission twice.
- */
-export function hostMemAvailableMb(): number | null {
-  try {
-    const match = /^MemAvailable:\s+(\d+)\s*kB/m.exec(fs.readFileSync('/proc/meminfo', 'utf8'))
-    return match ? Math.floor(Number(match[1]) / 1024) : null
-  } catch {
-    return null
-  }
-}
-
-/**
  * The machine's numbers for competition admission, from one fresh census.
  *
  * `availableMb` keeps its old meaning (what resources.ts hands out) for the
@@ -217,7 +211,7 @@ export function hostMemAvailableMb(): number | null {
  * containers share this kernel: a colima VM has its own, and the Mac's says
  * nothing about it.
  */
-export async function competitionMemory(): Promise<{ usableMb: number | null; memAvailableMb: number | null; availableMb: number | null }> {
+export async function competitionMemory(): Promise<MachineMemory> {
   try {
     const machine = await machineResources({ fresh: true, beforeReservations: true })
     const usableMb = usableMemoryMb({ totalMb: machine.memory.totalMb, census: observedWorkCensus(), now: Date.now() })
@@ -227,3 +221,16 @@ export async function competitionMemory(): Promise<{ usableMb: number | null; me
     return { usableMb: null, memAvailableMb: null, availableMb: null }
   }
 }
+
+/*
+ * And these numbers are what the Docker runner reports as its capacity: it is
+ * handed them here rather than reaching for them. docker-runner.ts is loaded
+ * by the machines that run this server's submissions as well
+ * (docs/architecture/remote-runners.md), whose agent may load neither the
+ * room census nor the database behind this module, so it imports nothing of
+ * this one; the runner it registers for this server asks for these at every
+ * capacity() call (docker-runner.ts · provideMachineMemory). Handed over when
+ * this module loads, which the queue itself sees to: runner.ts imports it for
+ * admitJob.
+ */
+provideMachineMemory(competitionMemory)

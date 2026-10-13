@@ -1,0 +1,455 @@
+{
+  "recordedFrom": "runNotebookThenScore at 03a65bb, before the split",
+  "columns": {"submissions":["id","competition_id","entrant_id","number","file_name","bytes","accepted_at","state","stage","public_score","private_score","duration_ms","cells_done","cells_total","participant_error","teacher_error","chosen","input_revision","notebook_input_revision","replaced_by","late","sent_at","sealed_inputs","brief_error","error_type"],"submission_runs":["id","submission_id","seq","kind","started_at","finished_at","verdict","container","exit_code","oom","cells_done","cells_total","public_score","private_score","participant_error","teacher_error","attempt_id","input_revision","sealed_inputs"],"competition_queue":["submission_id","competition_id","entrant_id","kind","state","enqueued_at","started_at","attempts","resource_retries","not_before","turn","boot","container","attempt_id","pending_kind","gpu","gpu_per_device","gpu_slice_mb","late"]},
+  "scenarios": {
+    "scored, with an executed notebook": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":3}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":3}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"ok","exit_code":0,"cells_done":3,"cells_total":3}],
+        ["submissions","UPDATE","<sub1>",{"stage":"check"}],
+        ["submissions","UPDATE","<sub1>",{}],
+        ["submissions","UPDATE","<sub1>",{"stage":"score"}],
+        ["submission_runs","INSERT","<run2>",{"id":"<run2>","submission_id":"<sub1>","seq":2,"kind":"metric","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok2>-score","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok2>-score"}],
+        ["submission_runs","UPDATE","<run2>",{"finished_at":"<t>","verdict":"ok","exit_code":0,"public_score":0.977467,"private_score":0.8023}],
+        ["submissions","UPDATE","<sub1>",{"state":"scored","public_score":0.977467,"private_score":0.8023,"duration_ms":0}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"5c5860d817b7118a","out/executed.ipynb":"8db6e2feaf6fe9d3","out/submission.csv":"e23d5c848851891f"}}
+    },
+    "a cell fails with its traceback": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":6}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":5}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"cell_error","exit_code":1,"cells_done":5,"cells_total":6,"participant_error":"Тетрадь упала на ячейке 5 из 6.\n\nTraceback (most recent call last):\n  Cell In[5], line 1\nZeroDivisionError: division by zero","teacher_error":"cell_error · exit 1"}],
+        ["submissions","UPDATE","<sub1>",{"state":"notebookFailed","duration_ms":0,"participant_error":"Тетрадь упала на ячейке 5 из 6.\n\nTraceback (most recent call last):\n  Cell In[5], line 1\nZeroDivisionError: division by zero","teacher_error":"cell_error · exit 1","error_type":"ZeroDivisionError"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"6c88092c581279f7"}}
+    },
+    "a cell fails on a module that is not there": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":4}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":4}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"cell_error","exit_code":1,"cells_done":4,"cells_total":4,"participant_error":"Тетрадь упала на ячейке 4 из 4.\n\n---------------------------------------------------------------------------\nModuleNotFoundError                       Traceback (most recent call last)\nCell In[4], line 1\n----> 1 import lightgbm as lgb\n\nModuleNotFoundError: No module named 'lightgbm'\n\nПакета lightgbm нет в окружении соревнования, а сети при проверке нет, поэтому `pip install` в тетради не сработает. Напишите преподавателю.","teacher_error":"cell_error · exit 1"}],
+        ["submissions","UPDATE","<sub1>",{"state":"notebookFailed","duration_ms":0,"participant_error":"Тетрадь упала на ячейке 4 из 4.\n\n---------------------------------------------------------------------------\nModuleNotFoundError                       Traceback (most recent call last)\nCell In[4], line 1\n----> 1 import lightgbm as lgb\n\nModuleNotFoundError: No module named 'lightgbm'\n\nПакета lightgbm нет в окружении соревнования, а сети при проверке нет, поэтому `pip install` в тетради не сработает. Напишите преподавателю.","teacher_error":"cell_error · exit 1","error_type":"ModuleNotFoundError"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"329b1bf4e7ee6d8a"}}
+    },
+    "the time limit": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":7}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"timeout","exit_code":137,"cells_done":7,"cells_total":2,"participant_error":"Тетрадь не уложилась в 10 минут: прогон остановлен на ячейке 7 из 2.","teacher_error":"timeout · exit 137"}],
+        ["submissions","UPDATE","<sub1>",{"state":"timedOut","duration_ms":0,"participant_error":"Тетрадь не уложилась в 10 минут: прогон остановлен на ячейке 7 из 2.","teacher_error":"timeout · exit 137"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"ce247473894822af"}}
+    },
+    "stopped early at its limit": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":3}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":3}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"cell_timeout","exit_code":1,"cells_done":3,"cells_total":3,"participant_error":"Тетрадь не уложилась в 10 минут: прогон остановлен на ячейке 3 из 3 за несколько секунд до лимита, чтобы успеть сохранить её вывод.","teacher_error":"cell_timeout · exit 1"}],
+        ["submissions","UPDATE","<sub1>",{"state":"timedOut","duration_ms":0,"participant_error":"Тетрадь не уложилась в 10 минут: прогон остановлен на ячейке 3 из 3 за несколько секунд до лимита, чтобы успеть сохранить её вывод.","teacher_error":"cell_timeout · exit 1"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"42da992b6104f2db"}}
+    },
+    "out of memory": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":3}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":3}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"out-of-memory","exit_code":1,"oom":1,"cells_done":3,"cells_total":3,"participant_error":"Тетрадь заняла больше 4 ГБ и была остановлена на ячейке 3.","teacher_error":"out-of-memory · exit 1 · OOMKilled"}],
+        ["submissions","UPDATE","<sub1>",{"state":"outOfMemory","duration_ms":0,"participant_error":"Тетрадь заняла больше 4 ГБ и была остановлена на ячейке 3.","teacher_error":"out-of-memory · exit 1 · OOMKilled"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"d54526b4f2d8492a"}}
+    },
+    "the kernel died before the first cell": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":1}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":0}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"kernel_died","exit_code":1,"cells_total":1,"participant_error":"Ядро умерло на ячейке 0. Так бывает от os._exit(), от падения в си и от нехватки памяти внутри самой ячейки.","teacher_error":"kernel_died · exit 1"}],
+        ["submissions","UPDATE","<sub1>",{"state":"notebookFailed","duration_ms":0,"participant_error":"Ядро умерло на ячейке 0. Так бывает от os._exit(), от падения в си и от нехватки памяти внутри самой ячейки.","teacher_error":"kernel_died · exit 1"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"d87cfa9b9d425d64"}}
+    },
+    "the notebook exited": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":2}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"exit","exit_code":1,"cells_done":2,"cells_total":2,"participant_error":"Тетрадь завершила работу сама на ячейке 2, не дойдя до конца.","teacher_error":"exit · exit 1"}],
+        ["submissions","UPDATE","<sub1>",{"state":"notebookFailed","duration_ms":0,"participant_error":"Тетрадь завершила работу сама на ячейке 2, не дойдя до конца.","teacher_error":"exit · exit 1"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"41842937ab0b34ec"}}
+    },
+    "no answer written": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":2}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"no-submission","exit_code":1,"cells_done":2,"cells_total":2,"participant_error":"Тетрадь дошла до конца, но файла submission.csv не оставила. Запишите ответ в текущую папку — именно его забирает проверка.","teacher_error":"no-submission · exit 1"}],
+        ["submissions","UPDATE","<sub1>",{"state":"rejected","stage":"check","duration_ms":0,"participant_error":"Тетрадь дошла до конца, но файла submission.csv не оставила. Запишите ответ в текущую папку — именно его забирает проверка.","teacher_error":"no-submission · exit 1"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"6ce56bdef683eec3"}}
+    },
+    "an answer too large": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":2}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"target_too_large","exit_code":1,"cells_done":2,"cells_total":2,"participant_error":"Файл submission.csv больше 64 МБ — такой ответ не принимается.","teacher_error":"target_too_large · exit 1"}],
+        ["submissions","UPDATE","<sub1>",{"state":"rejected","duration_ms":0,"participant_error":"Файл submission.csv больше 64 МБ — такой ответ не принимается.","teacher_error":"target_too_large · exit 1"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"f6716fb10444078d"}}
+    },
+    "an answer that does not parse": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":2}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"target_unreadable","exit_code":1,"cells_done":2,"cells_total":2,"participant_error":"Файл submission.csv не удалось прочитать.\n\nError tokenizing data. C error: Expected 2 fields in line 3, saw 4","teacher_error":"target_unreadable · exit 1"}],
+        ["submissions","UPDATE","<sub1>",{"state":"rejected","duration_ms":0,"participant_error":"Файл submission.csv не удалось прочитать.\n\nError tokenizing data. C error: Expected 2 fields in line 3, saw 4","teacher_error":"target_unreadable · exit 1"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"aed4a6643b65ed22"}}
+    },
+    "the harness failed": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":2}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"harness_error","exit_code":1,"cells_done":2,"cells_total":2,"teacher_error":"harness_error · exit 1"}],
+        ["submissions","UPDATE","<sub1>",{"state":"metricFailed","duration_ms":0,"teacher_error":"harness_error · exit 1"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"a49d0b0f6610b250"}}
+    },
+    "the metric refuses the answer": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":2}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"ok","exit_code":0,"cells_done":2,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"stage":"check"}],
+        ["submissions","UPDATE","<sub1>",{}],
+        ["submissions","UPDATE","<sub1>",{"stage":"score"}],
+        ["submission_runs","INSERT","<run2>",{"id":"<run2>","submission_id":"<sub1>","seq":2,"kind":"metric","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok2>-score","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok2>-score"}],
+        ["submission_runs","UPDATE","<run2>",{"finished_at":"<t>","verdict":"participant_error","exit_code":1,"participant_error":"В ответе нет 100 строк, например id=398692."}],
+        ["submissions","UPDATE","<sub1>",{"state":"rejected","duration_ms":0,"participant_error":"В ответе нет 100 строк, например id=398692."}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"bf68e8cd1f7701df","out/submission.csv":"06813cf30ec734e9"}}
+    },
+    "the metric crashes": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":2}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"ok","exit_code":0,"cells_done":2,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"stage":"check"}],
+        ["submissions","UPDATE","<sub1>",{}],
+        ["submissions","UPDATE","<sub1>",{"stage":"score"}],
+        ["submission_runs","INSERT","<run2>",{"id":"<run2>","submission_id":"<sub1>","seq":2,"kind":"metric","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok2>-score","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok2>-score"}],
+        ["submission_runs","UPDATE","<run2>",{"finished_at":"<t>","verdict":"metric_error","exit_code":1,"teacher_error":"ZeroDivisionError: division by zero\n  File \"metric.py\", line 7, in score"}],
+        ["submissions","UPDATE","<sub1>",{"state":"metricFailed","duration_ms":0,"teacher_error":"ZeroDivisionError: division by zero\n  File \"metric.py\", line 7, in score"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"1ccb2a26d7805ad6","out/submission.csv":"2fc3af298ca96674"}}
+    },
+    "cancelled by the teacher while it runs": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":2}],
+        ["competition_queue","UPDATE","<sub1>",{}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"timeout","exit_code":1,"cells_done":2,"cells_total":2,"participant_error":"Тетрадь не уложилась в 10 минут: прогон остановлен на ячейке 2 из 2.","teacher_error":"timeout · exit 1 · killed by wall"}],
+        ["submissions","UPDATE","<sub1>",{"state":"cancelled","duration_ms":0,"teacher_error":"Прогон прерван преподавателем."}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"7a69cc3b1e26e958"}}
+    },
+    "a rescore": {
+      "writes": [
+        ["submissions","UPDATE","<sub1>",{"state":"queued"}],
+        ["competition_queue","INSERT","<sub1>",{"submission_id":"<sub1>","competition_id":"<comp1>","entrant_id":"<ent1>","kind":"metric","state":"waiting","enqueued_at":"<t>","started_at":null,"attempts":0,"resource_retries":0,"not_before":0,"turn":0,"boot":null,"container":null,"attempt_id":null,"pending_kind":null,"gpu":null,"gpu_per_device":null,"gpu_slice_mb":null,"late":0}],
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running"}],
+        ["submissions","UPDATE","<sub1>",{}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":3,"kind":"metric","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-score","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-score"}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"ok","exit_code":0,"public_score":0.977841,"private_score":0.841955}],
+        ["submissions","UPDATE","<sub1>",{"state":"scored"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"14c80a9ba667a4b3","out/submission.csv":"ec68a881be593475"}}
+    },
+    "a rescore asked while a rerun of the notebook runs": {
+      "writes": [
+        ["submissions","UPDATE","<sub1>",{"state":"queued","stage":"queue","public_score":null,"private_score":null}],
+        ["competition_queue","INSERT","<sub1>",{"submission_id":"<sub1>","competition_id":"<comp1>","entrant_id":"<ent1>","kind":"notebook","state":"waiting","enqueued_at":"<t>","started_at":null,"attempts":0,"resource_retries":0,"not_before":0,"turn":0,"boot":null,"container":null,"attempt_id":null,"pending_kind":null,"gpu":null,"gpu_per_device":null,"gpu_slice_mb":null,"late":0}],
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":3,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook","cells_done":0}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1}],
+        ["competition_queue","UPDATE","<sub1>",{"pending_kind":"metric"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":2}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"ok","exit_code":0,"cells_done":2,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"stage":"check"}],
+        ["submissions","UPDATE","<sub1>",{}],
+        ["submissions","UPDATE","<sub1>",{"stage":"score"}],
+        ["submission_runs","INSERT","<run2>",{"id":"<run2>","submission_id":"<sub1>","seq":4,"kind":"metric","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok2>-score","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok2>-score"}],
+        ["submission_runs","UPDATE","<run2>",{"finished_at":"<t>","verdict":"ok","exit_code":0,"public_score":0.967875,"private_score":0.536786}],
+        ["submissions","UPDATE","<sub1>",{"state":"scored","public_score":0.967875,"private_score":0.536786}],
+        ["competition_queue","UPDATE","<sub1>",{"kind":"metric","state":"waiting","started_at":null,"attempts":0,"boot":null,"container":null,"attempt_id":null,"pending_kind":null}],
+        ["submissions","UPDATE","<sub1>",{"state":"queued","stage":"queue","public_score":null,"private_score":null}],
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att2>"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"score"}],
+        ["submissions","UPDATE","<sub1>",{}],
+        ["submission_runs","INSERT","<run3>",{"id":"<run3>","submission_id":"<sub1>","seq":5,"kind":"metric","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok3>-score","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att2>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok3>-score"}],
+        ["submission_runs","UPDATE","<run3>",{"finished_at":"<t>","verdict":"ok","exit_code":0,"public_score":0.967875,"private_score":0.536786}],
+        ["submissions","UPDATE","<sub1>",{"state":"scored","public_score":0.967875,"private_score":0.536786}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"ff8aa4e72293dd85","out/submission.csv":"670d25d0a0cacd29"}}
+    },
+    "on the hidden test: scored": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submissions","UPDATE","<sub1>",{"sealed_inputs":1}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":3,"sealed_inputs":1}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":2}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"ok","exit_code":0,"cells_done":2,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"stage":"check"}],
+        ["submissions","UPDATE","<sub1>",{}],
+        ["submissions","UPDATE","<sub1>",{"stage":"score"}],
+        ["submission_runs","INSERT","<run2>",{"id":"<run2>","submission_id":"<sub1>","seq":2,"kind":"metric","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok2>-score","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":3,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok2>-score"}],
+        ["submission_runs","UPDATE","<run2>",{"finished_at":"<t>","verdict":"ok","exit_code":0,"public_score":0.752405,"private_score":0.7979}],
+        ["submissions","UPDATE","<sub1>",{"state":"scored","public_score":0.752405,"private_score":0.7979,"duration_ms":0}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"40f718ede6de3153","out/submission.csv":"db129390c9917f28"}}
+    },
+    "on the hidden test: a traceback that would carry the hidden rows": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submissions","UPDATE","<sub1>",{"sealed_inputs":1}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":3,"sealed_inputs":1}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"cell_error","exit_code":1,"cells_done":1,"cells_total":2,"participant_error":"Тетрадь упала на ячейке 1 из 2.\n\nTraceback (most recent call last):\n  Cell In[1], line 1\nValueError: id,feature\n101,KANAREIKA-a\n102,KANAREIKA-b\n","teacher_error":"cell_error · exit 1"}],
+        ["submissions","UPDATE","<sub1>",{"state":"notebookFailed","duration_ms":0,"participant_error":"Тетрадь упала на ячейке 1 из 2.\n\nTraceback (most recent call last):\n  Cell In[1], line 1\nValueError: id,feature\n101,KANAREIKA-a\n102,KANAREIKA-b\n","teacher_error":"cell_error · exit 1","brief_error":"Тетрадь упала на ячейке 1 из 2: ValueError. Текст ошибки и вывод скрыты — проверка шла на скрытом тесте.","error_type":"ValueError"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"06d3857aa922aaf2"}}
+    },
+    "on the hidden test: numbers held to the notebook sent": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submissions","UPDATE","<sub1>",{"sealed_inputs":1}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":3,"sealed_inputs":1}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":2}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"cell_error","exit_code":1,"cells_done":2,"cells_total":2,"participant_error":"Тетрадь упала на ячейке 2 из 2.\n\nValueError: 48213 of 99999","teacher_error":"cell_error · exit 1"}],
+        ["submissions","UPDATE","<sub1>",{"state":"notebookFailed","duration_ms":0,"participant_error":"Тетрадь упала на ячейке 2 из 2.\n\nValueError: 48213 of 99999","teacher_error":"cell_error · exit 1","brief_error":"Тетрадь упала на ячейке 2 из 2: ValueError. Текст ошибки и вывод скрыты — проверка шла на скрытом тесте.","error_type":"ValueError"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"42176faf68ad50fb"}}
+    },
+    "on the hidden test: the metric refuses the answer": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submissions","UPDATE","<sub1>",{"sealed_inputs":1}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":3,"sealed_inputs":1}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":2}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"ok","exit_code":0,"cells_done":2,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{"stage":"check"}],
+        ["submissions","UPDATE","<sub1>",{}],
+        ["submissions","UPDATE","<sub1>",{"stage":"score"}],
+        ["submission_runs","INSERT","<run2>",{"id":"<run2>","submission_id":"<sub1>","seq":2,"kind":"metric","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok2>-score","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":3,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok2>-score"}],
+        ["submission_runs","UPDATE","<run2>",{"finished_at":"<t>","verdict":"participant_error","exit_code":1,"participant_error":"# colloq-test: {\"metric\":\"participant_error\",\"echo\":true}\nid,target\n1,0\n2,0\n\n# colloq-run: be18a5ed7199283b\n"}],
+        ["submissions","UPDATE","<sub1>",{"state":"rejected","duration_ms":0,"participant_error":"# colloq-test: {\"metric\":\"participant_error\",\"echo\":true}\nid,target\n1,0\n2,0\n\n# colloq-run: be18a5ed7199283b\n","brief_error":"Метрика не приняла ответ. Подробности скрыты — проверка шла на скрытом тесте."}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"be18a5ed7199283b","out/submission.csv":"a3f30797a6f344da"}}
+    },
+    "a package set that no longer fits the submission": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>"}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":3,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"dependencies"}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"dependency_error","participant_error":"Набор пакетов не поместится в посылку: в памяти он займёт до 379 МБ, а набору можно не больше половины из 512 МБ, отведённых посылке. Уберите из набора тяжёлые пакеты или попросите преподавателя увеличить память.","teacher_error":"dependency_error · exit —\nPackage set room of 379 MiB exceeds half of the submission's 512 MiB memory"}],
+        ["submissions","UPDATE","<sub1>",{"state":"rejected","duration_ms":0,"participant_error":"Набор пакетов не поместится в посылку: в памяти он займёт до 379 МБ, а набору можно не больше половины из 512 МБ, отведённых посылке. Уберите из набора тяжёлые пакеты или попросите преподавателя увеличить память.","teacher_error":"dependency_error · exit —\nPackage set room of 379 MiB exceeds half of the submission's 512 MiB memory"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"621d5112a97ddf9b"}}
+    },
+    "on a shared card: scored": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>","gpu":"0","gpu_per_device":2}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["competition_queue","UPDATE","<sub1>",{"gpu_slice_mb":12282}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":1}],
+        ["submissions","UPDATE","<sub1>",{}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"ok","exit_code":0,"cells_done":1,"cells_total":1}],
+        ["submissions","UPDATE","<sub1>",{"stage":"check"}],
+        ["submissions","UPDATE","<sub1>",{}],
+        ["submissions","UPDATE","<sub1>",{"stage":"score"}],
+        ["submission_runs","INSERT","<run2>",{"id":"<run2>","submission_id":"<sub1>","seq":2,"kind":"metric","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok2>-score","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok2>-score"}],
+        ["submission_runs","UPDATE","<run2>",{"finished_at":"<t>","verdict":"ok","exit_code":0,"public_score":0.714758,"private_score":0.648463}],
+        ["submissions","UPDATE","<sub1>",{"state":"scored","public_score":0.714758,"private_score":0.648463,"duration_ms":0}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"4a2c323c08f1ba99","out/submission.csv":"40f5df4ac2cd893a"}}
+    },
+    "on a shared card: stopped for going past its share": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>","gpu":"0","gpu_per_device":2}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["competition_queue","UPDATE","<sub1>",{"gpu_slice_mb":12282}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":2}],
+        ["submissions","UPDATE","<sub1>",{}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"out-of-memory","exit_code":1,"cells_done":1,"cells_total":2,"participant_error":"Посылка заняла на видеокарте больше своего среза в 12 ГБ; её остановили на ячейке 1, чтобы не мешать соседям по карте.","teacher_error":"out-of-memory · exit 1 · killed by gpu\nВидеокарта 0: два замера подряд выше 12538 МБ ( МБ) при срезе 12282 МБ — прогон остановлен снаружи."}],
+        ["submissions","UPDATE","<sub1>",{"state":"outOfMemory","duration_ms":0,"participant_error":"Посылка заняла на видеокарте больше своего среза в 12 ГБ; её остановили на ячейке 1, чтобы не мешать соседям по карте.","teacher_error":"out-of-memory · exit 1 · killed by gpu\nВидеокарта 0: два замера подряд выше 12538 МБ ( МБ) при срезе 12282 МБ — прогон остановлен снаружи."}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"8eab1a644d811f04"}}
+    },
+    "on a shared card: crowded out by a neighbour nobody could read, back to the queue once": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>","gpu":"0","gpu_per_device":2}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["competition_queue","UPDATE","<sub2>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att2>","gpu":"0","gpu_per_device":2}],
+        ["submission_runs","INSERT","<run2>",{"id":"<run2>","submission_id":"<sub2>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub2>-<tok2>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att2>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub2>",{"container":"colloq-comp-<sub2>-<tok2>-run"}],
+        ["submissions","UPDATE","<sub2>",{"state":"running","stage":"notebook"}],
+        ["competition_queue","UPDATE","<sub1>",{"gpu_slice_mb":12282}],
+        ["competition_queue","UPDATE","<sub2>",{"gpu_slice_mb":12282}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":1,"cells_total":1}],
+        ["submissions","UPDATE","<sub2>",{"cells_done":1,"cells_total":1}],
+        ["submissions","UPDATE","<sub1>",{}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"cell_error","exit_code":1,"cells_done":1,"cells_total":1,"participant_error":"Тетрадь упала на ячейке 1 из 1.\n\nTraceback (most recent call last):\n  Cell In[3], line 1\nOutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB.\n\nУ посылки срез видеокарты 12 ГБ: уменьшите batch_size или модель.","teacher_error":"cell_error · exit 1"}],
+        ["competition_queue","UPDATE","<sub1>",{"state":"waiting","started_at":null,"attempts":0,"resource_retries":1,"not_before":"<t+5000>","boot":null,"container":null,"attempt_id":null,"gpu":null,"gpu_per_device":null,"gpu_slice_mb":null}],
+        ["submissions","UPDATE","<sub1>",{"state":"queued","stage":"queue","participant_error":"Соседняя посылка на той же видеокарте заняла больше своего среза, и этой посылке не хватило видеопамяти. Тетрадь тут ни при чём: посылка снова в очереди и запустится заново, эта попытка не засчитывается.","teacher_error":"Видеокарта 0: CUDA out of memory, пока сторож останавливал соседнюю посылку на этой карте за выход за срез. Прогон повторяется один раз.","brief_error":"Соседняя посылка на той же видеокарте заняла больше своего среза, и этой посылке не хватило видеопамяти. Тетрадь тут ни при чём: посылка снова в очереди и запустится заново, эта попытка не засчитывается."}],
+        ["submissions","UPDATE","<sub1>",{"cells_done":0,"cells_total":0}],
+        ["submissions","UPDATE","<sub2>",{}],
+        ["submission_runs","UPDATE","<run2>",{"finished_at":"<t>","verdict":"cell_error","exit_code":137,"cells_done":1,"cells_total":1,"participant_error":"Тетрадь упала на ячейке 1 из 1.\n\nПосылку остановили снаружи: 4 раза подряд не удалось прочитать, сколько видеопамяти она занимает, а на карте, которую делят несколько посылок, прогон без присмотра не оставляют. Так бывает, когда тетрадь занимает процессор сотнями потоков или процессов, или когда сама карта перестаёт отвечать.","teacher_error":"cell_error · exit 137 · killed by gpu-unread\nВидеокарта 0: пик 450 МБ при срезе 12282 МБ.\nВидеокарта 0: 4 замера подряд не ответили (последний: нет ответа за 5 с) при срезе 12282 МБ — прогон остановлен снаружи: на общей карте прогон без присмотра не оставляют."}],
+        ["submissions","UPDATE","<sub2>",{"state":"notebookFailed","duration_ms":0,"participant_error":"Тетрадь упала на ячейке 1 из 1.\n\nПосылку остановили снаружи: 4 раза подряд не удалось прочитать, сколько видеопамяти она занимает, а на карте, которую делят несколько посылок, прогон без присмотра не оставляют. Так бывает, когда тетрадь занимает процессор сотнями потоков или процессов, или когда сама карта перестаёт отвечать.","teacher_error":"cell_error · exit 137 · killed by gpu-unread\nВидеокарта 0: пик 450 МБ при срезе 12282 МБ.\nВидеокарта 0: 4 замера подряд не ответили (последний: нет ответа за 5 с) при срезе 12282 МБ — прогон остановлен снаружи: на общей карте прогон без присмотра не оставляют."}],
+        ["competition_queue","DELETE","<sub2>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"96c3cf68e5089fb9"},"#2":{"in/notebook.ipynb":"4090f8dcf65d4e38"}}
+    },
+    "on a card the owner takes back before the start": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>","gpu":"0","gpu_per_device":1}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["competition_queue","UPDATE","<sub1>",{"gpu_slice_mb":24564}],
+        ["submission_runs","DELETE","<run1>"],
+        ["competition_queue","UPDATE","<sub1>",{"state":"waiting","started_at":null,"attempts":0,"resource_retries":1,"not_before":"<t+5000>","boot":null,"container":null,"attempt_id":null,"gpu":null,"gpu_per_device":null,"gpu_slice_mb":null}],
+        ["submissions","UPDATE","<sub1>",{"state":"queued","stage":"queue","participant_error":"Сейчас не хватает ресурсов для запуска. Посылка остаётся в очереди и запустится автоматически.","teacher_error":"Видеокарту 0 вернули занятиям, пока прогон готовился к запуску: на ней он не начался и ждёт в очереди карту, отданную посылкам.","brief_error":"Сейчас не хватает ресурсов для запуска. Посылка остаётся в очереди и запустится автоматически."}],
+        ["submissions","UPDATE","<sub1>",{}]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"d4c1649b73de7c9b"}}
+    },
+    "cancelled while it waits for its card": {
+      "writes": [
+        ["competition_queue","UPDATE","<sub1>",{"state":"running","started_at":"<t>","attempts":1,"boot":"<boot1>","attempt_id":"<att1>","gpu":"0","gpu_per_device":1}],
+        ["submission_runs","INSERT","<run1>",{"id":"<run1>","submission_id":"<sub1>","seq":1,"kind":"notebook","started_at":"<t>","finished_at":null,"verdict":null,"container":"colloq-comp-<sub1>-<tok1>-run","exit_code":null,"oom":0,"cells_done":0,"cells_total":0,"public_score":null,"private_score":null,"participant_error":null,"teacher_error":null,"attempt_id":"<att1>","input_revision":2,"sealed_inputs":0}],
+        ["competition_queue","UPDATE","<sub1>",{"container":"colloq-comp-<sub1>-<tok1>-run"}],
+        ["submissions","UPDATE","<sub1>",{"state":"running","stage":"notebook"}],
+        ["competition_queue","UPDATE","<sub1>",{}],
+        ["competition_queue","UPDATE","<sub1>",{"gpu_slice_mb":24564}],
+        ["submissions","UPDATE","<sub1>",{"state":"cancelled","duration_ms":0,"teacher_error":"Прогон прерван преподавателем."}],
+        ["submission_runs","UPDATE","<run1>",{"finished_at":"<t>","verdict":"exit","teacher_error":"Cancelled before container start"}],
+        ["competition_queue","DELETE","<sub1>"]
+      ],
+      "files": {"#1":{"in/notebook.ipynb":"d4c1649b73de7c9b"}}
+    }
+  }
+}

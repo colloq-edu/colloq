@@ -1,12 +1,13 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { config } from '../config.js'
+// The data root without config.ts: a machine that runs submissions keeps its package sets here too (data-dir.ts).
+import { dataDir } from '../data-dir.js'
 import type { DependencyBundle } from '@shared/dependencies'
 import type { PreparationResult } from './preparation-contract.js'
 import { DependencyPreparationError, manifestPackages } from './preparation-contract.js'
 
-export const dependencyRoot = path.join(config.dataDir, 'dependencies')
+export const dependencyRoot = path.join(dataDir, 'dependencies')
 const checked = (key: string): string => {
   if (!/^[a-f0-9]{32}$/.test(key)) throw new Error('Invalid dependency identifier')
   return key

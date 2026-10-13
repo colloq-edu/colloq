@@ -593,15 +593,21 @@ export interface QueueOrderRow {
  * depends on the moment, so that part lives in the simulation (queueEtas),
  * and the places on both screens are numbered by the simulated starts
  * (forecast.ts) — with no GPU work waiting, exactly this order.
+ *
+ * "Something running" is a COUNT, as in the SQL, not a yes or no: a person
+ * with two runs going lets a person with one go ahead, and a person's runs
+ * count wherever they run — here or on a machine that runs submissions
+ * (RunningCounts). As a yes or no the screen put the person with two first
+ * among equals by arrival, while the executor took the other.
  */
 export function fairOrder<T extends QueueOrderRow>(
   waiting: readonly T[],
-  busyEntrants: ReadonlySet<string>,
+  running: RunningCounts,
 ): T[] {
   return [...waiting].sort((a, b) => {
     const late = Number(!!a.late) - Number(!!b.late)
     if (late !== 0) return late
-    const busy = Number(busyEntrants.has(a.entrantId)) - Number(busyEntrants.has(b.entrantId))
+    const busy = runningOf(running, a.entrantId) - runningOf(running, b.entrantId)
     if (busy !== 0) return busy
     if (a.turn !== b.turn) return a.turn - b.turn
     if (a.enqueuedAt !== b.enqueuedAt) return a.enqueuedAt - b.enqueuedAt
@@ -609,12 +615,45 @@ export function fairOrder<T extends QueueOrderRow>(
   })
 }
 
+/**
+ * How many runs each person has going, by entrant — every running row of
+ * the queue, whoever holds it (store.ts · selectNext counts them all). A set
+ * of entrants is the older form, and reads as one run each.
+ */
+export type RunningCounts = ReadonlyMap<string, number> | ReadonlySet<string>
+
+/** The running rows counted per person, the way selectNext counts them. */
+export function runningCounts(running: readonly { entrantId: string }[]): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const row of running) counts.set(row.entrantId, (counts.get(row.entrantId) ?? 0) + 1)
+  return counts
+}
+
+function runningOf(running: RunningCounts, entrantId: string): number {
+  return running instanceof Set ? (running.has(entrantId) ? 1 : 0) : ((running as ReadonlyMap<string, number>).get(entrantId) ?? 0)
+}
+
+/**
+ * The metric lane's order — A COPY OF store.ts · selectNextScore, for the same
+ * reason fairOrder copies selectNext: a fresh result (`fresh` — its
+ * submission still running at its score stage, the metric of a notebook a
+ * machine ran) before every rescore, and the fair order within each.
+ */
+export function scoreOrder<T extends QueueOrderRow>(
+  waiting: readonly T[],
+  running: RunningCounts,
+  fresh: (row: T) => boolean,
+): T[] {
+  const fair = fairOrder(waiting, running)
+  return [...fair.filter(fresh), ...fair.filter((row) => !fresh(row))]
+}
+
 /** Delayed resource retries remain visible, but cannot claim a queue slot yet. */
 export function waitingEligibilityOrder<T extends QueueOrderRow & {notBefore:number}>(
-  waiting:readonly T[],busyEntrants:ReadonlySet<string>,now=Date.now(),
+  waiting:readonly T[],running:RunningCounts,now=Date.now(),
 ):{eligible:T[];deferred:T[]} {
   return {
-    eligible:fairOrder(waiting.filter(row=>row.notBefore<=now),busyEntrants),
-    deferred:fairOrder(waiting.filter(row=>row.notBefore>now),busyEntrants),
+    eligible:fairOrder(waiting.filter(row=>row.notBefore<=now),running),
+    deferred:fairOrder(waiting.filter(row=>row.notBefore>now),running),
   }
 }

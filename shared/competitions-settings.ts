@@ -9,6 +9,7 @@
  * editor would refuse to save is not a default.
  */
 import { LIMITS, type CompetitionLimits } from './competitions.js'
+import { REMOTE_BLOB_MBPS, REMOTE_UPLOADS } from './remote-runner.js'
 
 export const SETTINGS_LIMITS = {
   /** Parallel executors when the owner fixes the number by hand. */
@@ -27,6 +28,31 @@ export const SETTINGS_LIMITS = {
    * context and a model worth training.
    */
   gpuPerDevice: { min: 1, max: 8, default: 1 },
+  /**
+   * «Тетради на этом сервере»: whether this server runs notebooks at all, or
+   * only scores what machines that run submissions sent back
+   * (docs/architecture/remote-runners.md §5.3). On by default, and that is
+   * every server from before the machines: without one, a server that ran no
+   * notebooks would run nothing.
+   */
+  homeNotebooks: { default: true },
+  /**
+   * The metric lane's places: metric-only work this server runs at once — a
+   * rescore, or the metric of a notebook a machine ran (runner.ts · pumpOnce).
+   * Two by default: a metric holds two gigabytes at most for a few seconds,
+   * and with the class on the same machine the lane is a tail to keep short,
+   * not a queue to make wide (§5.7, Q5). Eight is where a burst of results
+   * would take the class's memory instead.
+   */
+  scoreSlots: { min: 1, max: 8, default: 2 },
+  /**
+   * «Скорость раздачи», MB/s for every blob the machines fetch, all together
+   * (shared/remote-runner.ts · REMOTE_BLOB_MBPS); the default is a placeholder
+   * until the relay is measured (§4.5, P0).
+   */
+  runnerBlobMBps: REMOTE_BLOB_MBPS,
+  /** Results the machines upload that this server stores at once (REMOTE_UPLOADS); past them 503 with Retry-After. */
+  runnerUploads: REMOTE_UPLOADS,
 } as const
 
 /** Where a number came from: the owner's choice, the environment, or our default. */
@@ -185,4 +211,36 @@ export interface CompetitionSettingsInput {
 export interface CompetitionGpuSettingsInput {
   gpuDevices?: string[] | null
   gpuPerDevice?: number | null
+}
+
+/**
+ * The settings of machines that run submissions (Resources → «Машины для
+ * посылок», docs/architecture/remote-runners.md §5.1), as read: each value
+ * with where it came from. Machine-wide, like everything in this file; the
+ * same box and the same pair of doors.
+ *
+ * `homeNotebooks` — this server runs notebooks too (off: it only scores what
+ * the machines send back). `scoreSlots` — the metric lane's places.
+ * `runnerBlobMBps` — the rate of every blob the machines fetch, together.
+ * `runnerUploads` — results stored at once.
+ */
+export interface CompetitionRunnerSettings {
+  homeNotebooks: { value: boolean; source: Exclude<SettingSource, 'env'> }
+  scoreSlots: { value: number; source: Exclude<SettingSource, 'env'> }
+  runnerBlobMBps: { value: number; source: Exclude<SettingSource, 'env'> }
+  runnerUploads: { value: number; source: Exclude<SettingSource, 'env'> }
+}
+
+/**
+ * What the owner's form sends for them, on the same door as the halves above
+ * (`CompetitionSettingsInput & CompetitionGpuSettingsInput &
+ * CompetitionRunnerSettingsInput`). An interface of its own for the same
+ * reason the cards have one: a switch is not a number from a text field.
+ * `null` forgets the saved value, and the default answers again.
+ */
+export interface CompetitionRunnerSettingsInput {
+  homeNotebooks?: boolean | null
+  scoreSlots?: number | null
+  runnerBlobMBps?: number | null
+  runnerUploads?: number | null
 }

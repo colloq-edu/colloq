@@ -719,6 +719,13 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'Файла ответов {file} нет на диске — посылку не по чему проверять.',
     en: 'The answer file {file} is not on disk — there is nothing to check the submission against.',
   },
+  // The metric of a competition with a card runs in the light {environment}
+  // (kaggle-base), or in the submission's own pinned image when that is not
+  // ready here (runner.ts · gpuScoringImage); this is neither.
+  'competitions.answer.noScoringImage': {
+    ru: 'Метрику негде посчитать: на сервере нет готового образа {environment}, а у посылки нет закреплённого окружения. Соберите {environment} в разделе «Окружения» и пересчитайте посылку.',
+    en: 'There is nowhere to run the metric: no {environment} image is ready on this server, and the submission has no pinned environment. Build {environment} under Environments and rescore the submission.',
+  },
   'competitions.answer.gone': {
     ru: 'Пересчитать нечего: файл {file} этой посылки уже убран с диска.',
     en: 'Nothing to rescore: this submission’s {file} has already been swept from disk.',
