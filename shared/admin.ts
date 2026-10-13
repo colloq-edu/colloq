@@ -44,6 +44,7 @@
  */
 import type { RoomRules } from './rules.js'
 import type { DiskUsage } from './disk.js'
+import type { RunningRemote } from './remote-admin.js'
 
 export type AdminRole = 'owner' | 'teacher'
 
@@ -1002,6 +1003,12 @@ export interface RunningKernels {
   classes: RunningClass[]
   runs: RunningRun[]
   preparations: RunningPreparation[]
+  /**
+   * Competitions whose submissions run on machines (Paper M5): they hold no
+   * memory here, so they are not in `runs`; their metrics here are. Absent —
+   * no machine holds a run.
+   */
+  remote?: RunningRemote[]
 }
 
 /** POST /api/admin/resources/running/:sessionId/stop. */

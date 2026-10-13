@@ -1,4 +1,6 @@
 import type { CompetitionCapabilities } from './capabilities.js'
+import type { RemoteAttemptPhase } from './remote-runner.js'
+import type { RemoteConsoleGroup, RemoteWaitReason } from './remote-admin.js'
 /**
  * What the teacher's panel asks the server about competitions, and what it
  * answers.
@@ -149,6 +151,14 @@ export interface RunningNow {
    * CPU. The card is held until the attempt ends, metric included.
    */
   gpu: { device: string; sliceMb: number | null } | null
+  /**
+   * The machine the run is on («машины для посылок»); absent or null — this
+   * server. The console groups its cells by it (Paper M4), and a run there
+   * holds no memory here.
+   */
+  machine?: { id: string; name: string } | null
+  /** Where a run on a machine is: its container may not have started yet (`accepted`, `preparing`). Absent for this server's runs. */
+  remotePhase?: RemoteAttemptPhase
 }
 
 /** A row of the "WAITING · N" list. */
@@ -173,6 +183,17 @@ export interface WaitingRow {
    * (admin/competitions.ts · waitsForCard). Absent from servers before cards.
    */
   gpu?: boolean
+  /**
+   * Why no executor takes it yet, when the reason is a machine's rather than
+   * its turn (shared/remote-admin.ts · RemoteWaitReason); absent — it waits
+   * for its turn. The participant sees «готовится» instead of a place for
+   * every reason except `returned`.
+   */
+  reason?: RemoteWaitReason
+  /** With `returned`: the machine it came back from, by name. */
+  returnedFrom?: string
+  /** A fresh result waiting for its metric here («оценивается»): its notebook already ran, on a machine or here. */
+  scoring?: boolean
 }
 
 /**
@@ -206,6 +227,12 @@ export interface QueueSnapshot {
    * cards are the cluster's.
    */
   gpu: { slots: number; busy: number; sliceMb: number | null } | null
+  /**
+   * The console's grid groups (Paper M4): this server first, then each
+   * machine that takes work or still holds runs. Absent — no machine was ever
+   * connected, and the grid stays one block as before.
+   */
+  groups?: RemoteConsoleGroup[]
 }
 
 export interface CompetitionsList {
