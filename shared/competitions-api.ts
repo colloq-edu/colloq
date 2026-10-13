@@ -142,6 +142,13 @@ export interface RunningNow {
    * blank, and there is no kill button for it.
    */
   hidden?: boolean
+  /**
+   * The runner card the run holds and the video memory it is promised there —
+   * the share it was taken at, whatever the runs per card are now (null — the
+   * card did not say its size, so nothing is promised); `null` — a run on the
+   * CPU. The card is held until the attempt ends, metric included.
+   */
+  gpu: { device: string; sliceMb: number | null } | null
 }
 
 /** A row of the "WAITING · N" list. */
@@ -159,6 +166,13 @@ export interface WaitingRow {
   baseline: boolean
   /** A late submission (outside the standings); the queue takes on-time work first. */
   late?: boolean
+  /**
+   * The job needs a share of a runner card: a notebook of a competition with
+   * the card on. With every share taken it is passed over while CPU work
+   * flows past it, and the console says what it waits for
+   * (admin/competitions.ts · waitsForCard). Absent from servers before cards.
+   */
+  gpu?: boolean
 }
 
 /**
@@ -179,6 +193,19 @@ export interface QueueSnapshot {
   doneToday: number
   /** "2 min 40 s on average"; null — nothing has finished today yet. */
   averageMs: number | null
+  /**
+   * The runner cards, when any are given to submissions: how many GPU runs
+   * may go at once (cards × runs per card, less the cards a class still
+   * holds), how many of those places are taken now, and the video memory each
+   * is promised (null — unknown). A run taken when fewer runs shared a card
+   * holds the places of its bigger share until it ends, so `busy` may exceed
+   * the runs on the cards. A GPU run needs a general slot AND a share of a
+   * card, so `slots` above stays the ceiling for both kinds. With no card
+   * given while GPU notebooks wait, zero places (`slots: 0`): they wait for a
+   * card nobody gave. `null` — no card is given and no GPU work waits, or the
+   * cards are the cluster's.
+   */
+  gpu: { slots: number; busy: number; sliceMb: number | null } | null
 }
 
 export interface CompetitionsList {
@@ -238,6 +265,14 @@ export interface SplitView {
 export interface CompetitionView {
   capabilities?: CompetitionCapabilities
   competition: Competition
+  /**
+   * The video memory each run of this competition is promised, MB, next to
+   * its limits: a runner card's memory over the runs sharing it, the smallest
+   * card's. `null` — the competition runs on the CPU (`limits.gpu` off), or
+   * the size is unknown (no card given yet, a card that did not say, or a
+   * cluster that decides it). Never a number that is not enforced.
+   */
+  gpuSliceMb: number | null
   openFiles: FileView[]
   /** Hidden answers: names, rows and columns — the contents are never handed out. */
   hiddenFiles: FileView[]

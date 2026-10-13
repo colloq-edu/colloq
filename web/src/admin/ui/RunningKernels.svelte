@@ -31,6 +31,7 @@
     busyBody,
     busyChip,
     busyOf,
+    cardWord,
     clock,
     coresLane,
     duration,
@@ -250,7 +251,7 @@
       <span class="font-mono text-2xs text-faint">—</span>
     {/if}
     {#if gpu}
-      <span class="block whitespace-nowrap font-mono text-micro text-muted">{tr('admin.resourcesTab.running.gpu', { value: gpu })}</span>
+      <span class="block whitespace-nowrap font-mono text-micro text-muted" title={gpu}>{cardWord(gpu)}</span>
     {/if}
   </div>
 {/snippet}
@@ -480,7 +481,10 @@
           {@const elapsed = since(run.startedAt, now)}
           {@const share = runShare(run)}
           <div class="border-b border-line">
-            <div class="rk-row rk-row-end">
+            <!-- A run on a runner card keeps its meta line on a phone card
+                 too: «GPU 0» stands where a class row has its cores, the one
+                 fact about the run that row has room for. -->
+            <div class={cn('rk-row', !run.gpu && 'rk-row-end')}>
               <div class="rk-lead flex min-w-0 items-start">
                 <span class={cn('rk-square shrink-0', run.hidden ? 'bg-faint' : 'bg-accent')} aria-hidden="true"></span>
                 <div class="min-w-0 flex-1">
@@ -530,9 +534,14 @@
                 <span class="admin-num font-bold">{gbText(run.reservedMb)}</span>
                 <span class="text-2xs text-muted">{tr('admin.resourcesTab.running.reserve')}</span>
               </div>
-              <div class="rk-meta rk-meta-quiet">
-                <span class="rk-cores font-mono text-2xs text-faint">—</span>
-                <span class="rk-books font-mono text-2xs text-faint">—</span>
+              <div class={cn('rk-meta', !run.gpu && 'rk-meta-quiet')}>
+                {#if run.gpu}
+                  <span class="rk-cores whitespace-nowrap font-mono text-micro text-muted" title={run.gpu}>{cardWord(run.gpu)}</span>
+                  <span class="rk-books rk-dash font-mono text-2xs text-faint">—</span>
+                {:else}
+                  <span class="rk-cores font-mono text-2xs text-faint">—</span>
+                  <span class="rk-books font-mono text-2xs text-faint">—</span>
+                {/if}
               </div>
             </div>
           </div>

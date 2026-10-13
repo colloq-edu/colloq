@@ -83,7 +83,9 @@
    * only the server can know that. It is here so that the line above the list
    * and the mark in a row say the same number.
    */
-  const gpus = $derived(envs?.gpus ?? { total: 0, free: 0 })
+  const gpus = $derived<EnvironmentsState['gpus']>(envs?.gpus ?? { total: 0, free: 0 })
+  /** Cards the owner gave to competition submissions: no class can take them (`runners`, absent on older servers). */
+  const runnerCards = $derived(gpus.runners ?? 0)
   const someoneWantsGpu = $derived(
     envs?.environments.some((e: AdminEnvironment) => e.gpu) ?? false,
   )
@@ -635,6 +637,16 @@
         <Icon name="info" size={14} class="mt-0.5 shrink-0 text-muted" />
         <p class="text-2xs leading-relaxed text-muted">
           {tr("admin.gpu")} {tr("admin.count.gpu", { count: gpus.total })}, {gpus.free} {tr("admin.free.a.room.on.a.gpu.environment.holds.its.slice.for.as.long.as.i")}
+          {#if runnerCards > 0}{tr("admin.env.gpuRunnersToo", { count: runnerCards })}{/if}
+        </p>
+      </div>
+    {:else if gpuCapacityKnown && runnerCards > 0}
+      <!-- Cards exist, but every one is given to competition submissions: the
+           rooms' pool is empty for a reason «not configured» would hide. -->
+      <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
+        <Icon name="info" size={14} class="mt-0.5 shrink-0 text-muted" />
+        <p class="text-2xs leading-relaxed text-muted">
+          {tr("admin.env.gpuAllToSubmissions", { count: runnerCards })}
         </p>
       </div>
     {:else if gpuCapacityKnown && someoneWantsGpu}

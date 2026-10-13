@@ -7,4 +7,6 @@ export const operationMessages: MessageCatalog = {
  'runtime.preparationVersion': {ru:'Для безопасной подготовки пакетов требуется Docker Engine 28 или новее.',en:'Safe package preparation requires Docker Engine 28 or newer.'},
  'runtime.storageUnavailable': {ru:'Хранилище исполнителя недоступно. Обратитесь к администратору.',en:'The executor storage is unavailable. Contact the administrator.'},
  'runtime.prepareUnavailable': {ru:'Подготовка пакетов недоступна.',en:'Package preparation is unavailable.'},
+ 'runtime.gpuUnavailable': {ru:'Этому соревнованию нужна видеокарта, а посылкам соревнований на этой машине не отдана ни одна. Владелец отдаёт видеокарты посылкам во вкладке «Ресурсы».',en:'This competition needs a GPU, but no card on this machine is given to competition submissions. The owner gives cards to submissions on the Resources tab.'},
+ 'runtime.gpuUnavailableCluster': {ru:'Этому соревнованию нужна видеокарта, а кластер не выдаёт видеокарт посылкам соревнований. Обратитесь к администратору.',en:'This competition needs a GPU, but the cluster gives no GPU to competition submissions. Contact the administrator.'},
 }

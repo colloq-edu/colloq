@@ -225,6 +225,47 @@ test('broker gives a package set the room the app sized, and reads a full room a
   assert.deepEqual(outcome.dependencyFailure,{reason:'no_space',roomBytes:379*1024*1024})
 })
 
+test('a notebook asks the broker for a card only when the queue gave its attempt one, and the metric never asks',async()=>{
+  const resultDir=path.join(TEST_ROOT,'data','competitions',competitionId,'s',submissionId,'attempts',attemptId,'result')
+  const outDir=path.join(TEST_ROOT,'data','competitions',competitionId,'s',submissionId,'attempts',attemptId,'score-out')
+  fs.mkdirSync(resultDir,{recursive:true})
+  fs.mkdirSync(outDir,{recursive:true})
+  const gpuImage=`registry.example/colloq/kaggle-gpu@${digest}`
+  const sent:CompetitionJobIntent[]=[]
+  const client=fakeClient(intent=>{
+    sent.push(intent)
+    if(intent.kind==='metric')fs.writeFileSync(path.join(outDir,'score.json'),JSON.stringify({attemptId,status:'ok',public:0.5,private:0.5}))
+    else fs.writeFileSync(path.join(resultDir,'run.json'),JSON.stringify({attemptId,status:'ok',cell:0,cells:1}))
+  })
+  const runner=new BrokerCompetitionRunner(client as any,{catalog:()=>({schemaVersion:1,release:'r',defaultEnvironment:'kaggle-base',environments:[
+    {name:'kaggle-base',image,gpu:false,current:true},{name:'kaggle-gpu',image:gpuImage,gpu:true,current:true}]}),pollMs:1})
+  const onGpu={...competition,environment:'kaggle-gpu'}
+  const run=(extra:object)=>runner.run({submissionId,attemptId,container:'colloq-comp-gpu',dataDir:'ignored',inputDir:'ignored',resultDir,limits,...extra} as any)
+  // The queue gave this attempt a card: the broker gets the bare flag, never a device, a size or a count.
+  await run({competition:onGpu,imageDigest:gpuImage,gpu:{device:'cluster',sliceMb:null,perDevice:1}})
+  // A GPU environment without a card, and a CPU one: not a word, so an older broker still takes them.
+  await run({competition:onGpu,imageDigest:gpuImage})
+  await run({competition,imageDigest:image})
+  assert.deepEqual(sent.map(intent=>intent.gpu),[true,undefined,undefined])
+  assert.deepEqual(sent.map(intent=>'gpu' in intent),[true,false,false])
+  // The metric holds the hidden answers: it runs on the CPU, whatever the notebook had.
+  await runner.score({competition:onGpu,submissionId,attemptId,container:'colloq-comp-gpu-score',imageDigest:gpuImage,secretDir:'ignored',submissionDir:'ignored',outDir,limits})
+  assert.equal(sent.at(-1)!.kind,'metric')
+  assert.equal('gpu' in sent.at(-1)!,false)
+})
+
+test('a GPU notebook that found no free card goes back to the queue as a gpu shortage',async()=>{
+  const client={
+    async startCompetitionJob(intent:CompetitionJobIntent){return {jobId:intent.jobId,kind:'notebook',phase:'failed',startedAt:1,finishedAt:2,exitCode:null,oomKilled:false,progress:null,error:'Competition resources are unavailable',failure:{code:'unschedulable',resource:'gpu'}}},
+    async competitionJob(){throw new Error('terminal already')},async collectCompetitionJob(){throw new Error('must not collect')},
+    async cancelCompetitionJob(){},async competitionJobs(){return []},
+  }
+  const runner=new BrokerCompetitionRunner(client as any,{catalog:()=>({schemaVersion:1,release:'r',defaultEnvironment:'kaggle-base',environments:[{name:'kaggle-base',image,gpu:true,current:true}]}),pollMs:1})
+  const resultDir=path.join(TEST_ROOT,'data','competitions',competitionId,'s',submissionId,'attempts',attemptId,'result')
+  await assert.rejects(()=>runner.run({competition,submissionId,attemptId,container:'colloq-comp-no-card',imageDigest:image,dataDir:'ignored',inputDir:'ignored',resultDir,limits,gpu:{device:'cluster',sliceMb:null,perDevice:1}}),
+    error=>error instanceof CompetitionResourcePending&&error.resource==='gpu'&&error.kind==='notebook')
+})
+
 test('broker sends no package room without a set',async()=>{
   const resultDir=path.join(TEST_ROOT,'data','competitions',competitionId,'s',submissionId,'attempts',attemptId,'result')
   fs.mkdirSync(resultDir,{recursive:true})
@@ -233,4 +274,81 @@ test('broker sends no package room without a set',async()=>{
   const runner=new BrokerCompetitionRunner(client as any,{catalog:()=>({schemaVersion:1,release:'r',defaultEnvironment:'kaggle-base',environments:[{name:'kaggle-base',image,gpu:false,current:true}]}),pollMs:1})
   await runner.run({competition,submissionId,attemptId,container:'colloq-comp-no-set',imageDigest:image,dataDir:'ignored',inputDir:'ignored',resultDir,limits,packagesMb:379})
   assert.equal(sent!.limits.packagesMb,undefined)
+})
+
+/*
+ * The API server refused a GPU notebook's Pod (a quota, a RuntimeClass, an
+ * admission policy): the broker says which in `error`, and the teacher reads
+ * it while the job waits in the queue, where before there was only
+ * "unschedulable (gpu)" — or, before the broker deferred these, "Forbidden".
+ */
+test('a GPU notebook refused at admission waits with the broker\'s words for the teacher; a scheduler refusal keeps the short note',async()=>{
+  const words="Kubernetes refused the GPU notebook's Pod: the namespace's resource quota is used up (requests.nvidia.com/gpu)"
+  const refused=(error:string)=>({
+    async startCompetitionJob(intent:CompetitionJobIntent){return {jobId:intent.jobId,kind:'notebook' as const,phase:'failed' as const,startedAt:1,finishedAt:1,exitCode:null,oomKilled:false,progress:null,error,failure:{code:'unschedulable' as const,resource:'gpu' as const}}},
+    async competitionJob(){throw new Error('terminal already')},async collectCompetitionJob(){throw new Error('must not collect')},
+    async cancelCompetitionJob(){},async competitionJobs(){return []},
+  })
+  const catalog=()=>({schemaVersion:1 as const,release:'r',defaultEnvironment:'kaggle-base',environments:[{name:'kaggle-base',image,gpu:true,current:true}]})
+  const resultDir=path.join(TEST_ROOT,'data','competitions',competitionId,'s',submissionId,'attempts',attemptId,'result')
+  const run=(error:string)=>new BrokerCompetitionRunner(refused(error) as any,{catalog,pollMs:1})
+    .run({competition,submissionId,attemptId,container:'colloq-comp-refused',imageDigest:image,dataDir:'ignored',inputDir:'ignored',resultDir,limits,gpu:{device:'',sliceMb:null,perDevice:1}})
+  await assert.rejects(()=>run(words),(error:any)=>error instanceof CompetitionResourcePending&&error.resource==='gpu'&&error.detail===words&&
+    error.teacherReason===`Competition Pod unschedulable (gpu): ${words}; retrying automatically.`)
+  await assert.rejects(()=>run('Competition resources are unavailable'),(error:any)=>error instanceof CompetitionResourcePending&&error.detail===null&&
+    error.teacherReason==='Competition Pod unschedulable (gpu); retrying automatically.')
+})
+
+/*
+ * A GPU environment's image may be pulled onto the node first (10 to 13 GB),
+ * and the broker allows for it. The app's own wait counted the pull against
+ * the job's limit and cancelled a notebook that trained to its limit after a
+ * long pull; for such an image it now counts from the moment the job runs.
+ */
+test('the wait for a GPU image\'s job counts from its start, not from the call; a CPU image keeps its deadline',async()=>{
+  const resultDir=path.join(TEST_ROOT,'data','competitions',competitionId,'s',submissionId,'attempts',attemptId,'result')
+  fs.mkdirSync(resultDir,{recursive:true})
+  const wall=60
+  // Each poll is ten seconds on this clock: queued for five minutes (the pull), then running for the limit.
+  const timeline=(clock:{now:number},queuedFor:number,runFor:number)=>{
+    let jobId='',polls=0,cancelled=false
+    const phase=():CompetitionJobStatus['phase']=>{
+      const at=polls*10
+      return at<queuedFor?'queued':at<queuedFor+runFor?'running':'complete'
+    }
+    const at=(intent?:CompetitionJobIntent)=>{
+      if(intent)jobId=intent.jobId
+      return {jobId,kind:'notebook' as const,phase:phase(),startedAt:1,finishedAt:null,exitCode:phase()==='complete'?0:null,oomKilled:false,progress:null,error:null}
+    }
+    return {get cancelled(){return cancelled},client:{
+      async startCompetitionJob(intent:CompetitionJobIntent){return at(intent)},
+      async competitionJob(){polls++;clock.now+=10_000;return at()},
+      async collectCompetitionJob(){fs.writeFileSync(path.join(resultDir,'run.json'),JSON.stringify({attemptId,status:'ok',cell:0,cells:1}));return {files:[],totalBytes:0}},
+      async cancelCompetitionJob(){if(phase()!=='complete')cancelled=true},async competitionJobs(){return []},
+    }}
+  }
+  const gpuImage=`registry.example/colloq/kaggle-gpu@${digest}`
+  const catalog=()=>({schemaVersion:1 as const,release:'r',defaultEnvironment:'kaggle-base',environments:[
+    {name:'kaggle-base',image,gpu:false,current:true},{name:'kaggle-gpu',image:gpuImage,gpu:true,current:true}]})
+  const run=(gpu:boolean,queuedFor:number,runFor:number)=>{
+    const clock={now:1_000_000}
+    const job=timeline(clock,queuedFor,runFor)
+    const runner=new BrokerCompetitionRunner(job.client as any,{catalog,pollMs:0,now:()=>clock.now})
+    return {job,outcome:runner.run({competition:gpu?{...competition,environment:'kaggle-gpu'}:competition,submissionId,attemptId,container:'colloq-comp-pull',
+      imageDigest:gpu?gpuImage:image,dataDir:'ignored',inputDir:'ignored',resultDir,limits:{...limits,wallSeconds:wall}})}
+  }
+  // Five minutes pulling, then the whole limit: the GPU image's job is not given up on.
+  const pulled=run(true,300,wall)
+  assert.equal((await pulled.outcome).status,'ok')
+  assert.equal(pulled.job.cancelled,false)
+  // Once it runs, its own limit and a minute to export, as for any job.
+  const overran=run(true,300,wall+80)
+  await assert.rejects(overran.outcome,/exceeded its deadline/)
+  assert.equal(overran.job.cancelled,true)
+  // A CPU image's job keeps the deadline from the call: the same five minutes in the queue end it.
+  const cpu=run(false,300,wall)
+  await assert.rejects(cpu.outcome,/exceeded its deadline/)
+  assert.equal(cpu.job.cancelled,true)
+  // ...and within it, it runs as before.
+  assert.equal((await run(false,20,wall).outcome).status,'ok')
 })

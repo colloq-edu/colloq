@@ -131,6 +131,24 @@ spec:
             - name: RUNTIME_GPU_TOLERATIONS
               value: {{ toJson . | quote }}
             {{- end }}
+            {{- /* With the resource or not at all: without one competition jobs get no GPU, and the count, the slots and /dev/shm mean nothing. */}}
+            {{- with .Values.gpu.competitions.resource }}
+            - name: RUNTIME_COMPETITION_GPU_RESOURCE
+              value: {{ . | quote }}
+            - name: RUNTIME_COMPETITION_GPU_COUNT
+              value: {{ $.Values.gpu.competitions.count | int | toString | quote }}
+            {{- /* null is "not said": never an empty variable, which the broker reads as an unparseable number. */}}
+            {{- with $.Values.gpu.competitions.slots }}
+            - name: RUNTIME_COMPETITION_GPU_SLOTS
+              value: {{ . | int | toString | quote }}
+            {{- end }}
+            {{- /* 0 is a setting of its own (no /dev/shm of ours, for MPS), so it is passed, not dropped. */}}
+            - name: RUNTIME_COMPETITION_GPU_SHM_MB
+              value: {{ $.Values.gpu.competitions.shmMb | int | toString | quote }}
+            {{- end }}
+            {{- /* Every Pod of a GPU catalog image, with a GPU or without one. */}}
+            - name: RUNTIME_COMPETITION_GPU_PULL_SECONDS
+              value: {{ .Values.gpu.competitions.pullSeconds | int | toString | quote }}
             {{- with .Values.rooms.priorityClassName }}
             - name: RUNTIME_PRIORITY_CLASS
               value: {{ . | quote }}

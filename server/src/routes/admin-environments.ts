@@ -50,7 +50,7 @@ import {
 } from '../environments.js'
 import { sessionsOnEnvironment } from '../db.js'
 import { canSeeRoom } from '../admin/access.js'
-import { gpuBusy, gpuDevices } from '../kernel/pool.js'
+import { gpuBusy, gpuDevices, roomGpuDevices, submissionGpuCards } from '../kernel/pool.js'
 import {
   ENVIRONMENT_NAME,
   type AdminErrorBody,
@@ -102,13 +102,23 @@ function listChanges(before: string | null, after: string): { added: string[]; r
  * On a machine without cards docker is not asked at all: there is no point
  * paying for `docker ps -a` on every screen open for a list known to be
  * empty.
+ *
+ * Only the rooms' pool is counted: a card the owner gave to competition
+ * submissions is no class's to take (kernel/pool.ts · roomGpuDevices), and
+ * counting it here would promise a seminar a card the start then refuses.
+ * For the same reason a card of the pool that a submission still holds (given
+ * back to classes mid-run) is not free yet, whether its container is up or the
+ * queue has only just bound the card to a run that is about to start
+ * (kernel/pool.ts · submissionGpuCards). `runners` says how many went to
+ * submissions, so "no slices" can say why.
  */
-async function gpuState(): Promise<{ total: number; free: number }> {
-  if (usingRuntimeBroker()) return { total: 0, free: 0 }
-  const devices = gpuDevices()
-  if (devices.length === 0) return { total: 0, free: 0 }
-  const busy = new Set(await gpuBusy())
-  return { total: devices.length, free: devices.filter((device) => !busy.has(device)).length }
+async function gpuState(): Promise<{ total: number; free: number; runners: number }> {
+  if (usingRuntimeBroker()) return { total: 0, free: 0, runners: 0 }
+  const devices = roomGpuDevices()
+  const runners = gpuDevices().length - devices.length
+  if (devices.length === 0) return { total: 0, free: 0, runners }
+  const busy = new Set([...(await gpuBusy()), ...(await submissionGpuCards())])
+  return { total: devices.length, free: devices.filter((device) => !busy.has(device)).length, runners }
 }
 
 /**

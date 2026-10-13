@@ -70,7 +70,7 @@ import type {
   SubmissionDetail,
   SubmissionFeed,
 } from '@shared/competitions-api'
-import type { CompetitionSettings, CompetitionSettingsInput } from '@shared/competitions-settings'
+import type { CompetitionGpuSettingsInput, CompetitionSettings, CompetitionSettingsInput } from '@shared/competitions-settings'
 
 export type AdminErrorReason = AdminErrorBody['reason']
 
@@ -405,8 +405,12 @@ export const adminApi = {
   /** The instance's competition settings: slots, uploads per minute, defaults for new competitions. */
   competitionSettings: () => request<CompetitionSettings>('/competitions/settings'),
 
-  /** Owner only. `null` in a field forgets the saved value and falls back to the default. */
-  saveCompetitionSettings: (body: CompetitionSettingsInput) =>
+  /**
+   * Owner only. `null` in a field forgets the saved value and falls back to
+   * the default. The runner cards travel in the same body, as their own half
+   * (CompetitionGpuSettingsInput: a list of cards is not a number field).
+   */
+  saveCompetitionSettings: (body: CompetitionSettingsInput & CompetitionGpuSettingsInput) =>
     request<CompetitionSettings>('/competitions/settings', { method: 'PUT', ...json(body) }),
 
   competitionDependencies: (id: string) => request<AdminDependencyOverview>(`/competitions/${encodeURIComponent(id)}/dependencies`),

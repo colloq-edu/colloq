@@ -202,7 +202,8 @@ test('new competitions start from the instance defaults, field by field', () => 
     assert.deepEqual(competitionDefaults().sources, { wallSeconds: 'saved', memoryMb: 'saved', cpus: 'default', perDay: 'default' })
     assert.deepEqual(uploadsPerMinute(), { value: 20, source: 'saved' })
     const made = createCompetition({ slug: 'defaults-born', title: 'Defaults' })!
-    assert.deepEqual(made.limits, { wallSeconds: 900, memoryMb: 2048, cpus: 2, perDay: 5 })
+    // Never with a video card: that is the teacher's switch, not an instance default.
+    assert.deepEqual(made.limits, { wallSeconds: 900, memoryMb: 2048, cpus: 2, perDay: 5, gpu: false })
     // What the editor sends still wins over the defaults.
     const explicit = createCompetition({ slug: 'defaults-explicit', title: 'Explicit', limits: { memoryMb: 8192 } })!
     assert.equal(explicit.limits.memoryMb, 8192)

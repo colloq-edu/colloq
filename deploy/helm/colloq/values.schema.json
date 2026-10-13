@@ -284,7 +284,18 @@
       "properties": {
         "runtimeClassName": { "type": "string" },
         "nodeSelector": { "$ref": "#/definitions/stringMap" },
-        "tolerations": { "$ref": "#/definitions/objectList" }
+        "tolerations": { "$ref": "#/definitions/objectList" },
+        "competitions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "resource": { "type": "string", "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$" },
+            "count": { "type": "integer", "minimum": 1, "maximum": 8 },
+            "slots": { "type": ["integer", "null"], "minimum": 1, "maximum": 256 },
+            "shmMb": { "type": "integer", "minimum": 0, "maximum": 65536 },
+            "pullSeconds": { "type": "integer", "minimum": 0, "maximum": 3600 }
+          }
+        }
       }
     },
     "persistence": {

@@ -108,9 +108,10 @@ Room kernel images install Python packages from PyPI at build time:
 
 - `kernel/requirements.txt`: Jupyter Server, ipykernel, NumPy, pandas,
   Matplotlib, Plotly, scikit-learn, requests and Black;
-- `kernel/environments/*.txt`, for example seaborn, PyTorch (the CPU build in
-  `cv`, the CUDA build in `base-gpu`), torchvision, timm, OpenCV and
-  Transformers.
+- `kernel/environments/*.txt`, for example seaborn, CatBoost, LightGBM and
+  XGBoost (`kaggle-base`), PyTorch and torchvision (the CUDA build in
+  `base-gpu`), and OpenCV and timm (`kaggle-gpu`).
 
 Each package keeps its own license inside the image. The CUDA build of PyTorch
 brings NVIDIA CUDA libraries, which are covered by NVIDIA's license terms.
+XGBoost on Linux also installs NVIDIA's NCCL package (`nvidia-nccl-cu12`).

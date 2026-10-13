@@ -186,6 +186,20 @@ export function coresLane(container: RunningContainer | null): string | null {
   return `${cores} · ${percent}`
 }
 
+/**
+ * A card as the panel names it, wherever it stands — a class row, a run row,
+ * a running slot of the console, the owner's list of cards: "GPU 0" for an
+ * index of KERNEL_GPUS, the id itself cut to a dozen characters for a UUID
+ * ("GPU-6540c1d2…", "MIG-…": the prefix already says what it is, and forty
+ * characters would push the row's numbers off the line), and a bare "GPU" for
+ * a cluster's card, which has no id of ours (RunningNow.gpu.device '').
+ */
+export function cardWord(device: string): string {
+  if (device === '') return 'GPU'
+  if (/^\d+$/.test(device)) return tr('admin.resourcesTab.running.gpu', { value: device })
+  return device.length > 13 ? `${device.slice(0, 12)}…` : device
+}
+
 export type Tone = 'accent' | 'warning' | 'ink' | 'muted'
 
 /** The «Сейчас» lane: what the class is doing, in two lines. */

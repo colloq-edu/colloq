@@ -127,10 +127,13 @@ test('the shipped gpu environment does declare the slice, and the base ones do n
 })
 
 test('a child of base-gpu gets the slice by inheritance', async () => {
+  // kaggle-gpu does not repeat the directive, and must not have to: the slice
+  // follows the chain, or a room on it runs on the CPU and a competition on it
+  // is refused the GPU switch, which only a GPU environment may have.
+  assert.equal(declaresGpu(readSource('kaggle-gpu')), false)
+  assert.equal(needsGpu('kaggle-gpu'), true)
   await withHome(async () => {
-    // The repository no longer ships a child of base-gpu, so a course's own
-    // environment stands in: the slice must follow the chain, or a room built
-    // on top of base-gpu runs on the CPU.
+    // A course's own environment on top of base-gpu gets it the same way.
     writeSource('own-gpu', '# colloq: from base-gpu\ntransformers>=4.44\n')
     assert.equal(needsGpu('own-gpu'), true)
   })
@@ -174,6 +177,20 @@ test('the repository\'s shipped environments are chained exactly like this', () 
   assert.equal(declaresParent(readSource('kaggle-base')), 'base')
   assert.deepEqual(buildChain('kaggle-base'), ['base', 'kaggle-base'])
   assert.deepEqual(buildChain('base-gpu'), ['base-gpu'])
+  // kaggle-gpu stands on base-gpu, not on kaggle-base: torch with CUDA is the
+  // heavy layer worth sharing, and the kaggle pins are seconds on top of it.
+  assert.equal(declaresParent(readSource('kaggle-gpu')), 'base-gpu')
+  assert.deepEqual(buildChain('kaggle-gpu'), ['base-gpu', 'kaggle-gpu'])
+})
+
+test('kaggle-gpu is kaggle-base on a card: every kaggle-base pin is in it, at the same version', () => {
+  // A class moves a task from kaggle-base to kaggle-gpu to get a card, not to
+  // get another catboost. A pin bumped in one file and forgotten in the other
+  // would change the scores of the same notebook with no word about why.
+  const pins = (name: string) =>
+    new Map(parsePackages(readSource(name)).filter((line) => line.includes('==')).map((line) => line.split('==') as [string, string]))
+  const gpu = pins('kaggle-gpu')
+  for (const [pkg, version] of pins('kaggle-base')) assert.equal(gpu.get(pkg), version, `${pkg} in kaggle-gpu`)
 })
 
 /* ------------------------------------------------- order and refusals */
@@ -611,11 +628,12 @@ test('a variable promised in .env.example reaches the container', () => {
 /**
  * Environments live in two places, and this is not symmetry but necessity.
  *
- * The ones shipped with the product (base, base-gpu, cv, gpu) lie next to
- * the application; for colloq installed via pip that is site-packages — a
- * directory the next `pip install -U` overwrites, and on many machines it
- * is not writable at all. One's own a person creates with `colloq env new`,
- * and they go into the state directory, next to .env and data/.
+ * The ones shipped with the product (base, kaggle-base, base-gpu,
+ * kaggle-gpu) lie next to the application; for colloq installed via pip
+ * that is site-packages — a directory the next `pip install -U`
+ * overwrites, and on many machines it is not writable at all. One's own a
+ * person creates with `colloq env new`, and they go into the state
+ * directory, next to .env and data/.
  *
  * The panel knew about one directory of the two, and on one screen
  * contradicted itself: an environment the person created was not shown in

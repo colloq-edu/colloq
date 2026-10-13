@@ -22,16 +22,16 @@
  * WHERE THE ENVIRONMENTS LIE is the main decision of the group, and it is
  * this.
  *
- *   · The ones shipped with the product (base, base-gpu, cv, gpu) are in
- *     <app>/kernel/environments and are only read: for an installed colloq
- *     that is site-packages, and it cannot be written to in any sense (see
- *     env.ts · ownEnvDir).
+ *   · The ones shipped with the product (base, kaggle-base, base-gpu,
+ *     kaggle-gpu) are in <app>/kernel/environments and are only read: for
+ *     an installed colloq that is site-packages, and it cannot be written to
+ *     in any sense (see env.ts · ownEnvDir).
  *   · One's own are in <home>/environments, next to .env and data/. In the
  *     repository that is the very same kernel/environments, and nothing
  *     changes there.
  *   · The list is the union of the two directories; one's own name overrides
- *     a shipped one, because redefining cv for one's course is a legitimate
- *     wish.
+ *     a shipped one, because redefining kaggle-base for one's course is a
+ *     legitimate wish.
  *
  * Exactly one function turns a name into a path, envFile(); everything else
  * calls it. A second answer to the question "where does cv lie" would split

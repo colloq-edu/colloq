@@ -48,7 +48,7 @@ namespace fails on those names instead of sharing rooms with the first.
 | 8 | Secrets from Vault through External Secrets, deployment through ArgoCD. The chart never needs a random value at render time: every secret can come from an existing Secret. | `config.existingSecret`, `secrets.*`, `metrics.existingSecret` |
 | 9 | Prometheus Operator (optional ServiceMonitor), logs from stdout. | `metrics.*`, `config.logFormat` |
 | 10 | Backups by volume snapshots (Velero, CSI) plus consistent database snapshots the app writes into its data volume. | `config.dbSnapshotHours`, `config.dbSnapshotKeep` |
-| 11 | GPU nodes optional: runtime class, node selector and tolerations of GPU rooms are values. | `gpu.*` |
+| 11 | GPU nodes optional: runtime class, node selector and tolerations of GPU rooms are values, and so is the extended resource a GPU competition's submissions request; the device plugin and its sharing (time-slicing, MPS, MIG) are the platform's. | `gpu.*` |
 
 ## Storage: ReadWriteOnce or ReadWriteMany
 
@@ -72,6 +72,89 @@ room and personal-notebook Pods mount the workspace, competition Pods the data.
 `existingClaim` the chart creates nothing and cannot see the claim: set
 `accessMode` to that claim's mode. Claims are annotated to survive
 `helm uninstall` and the deletion of an ArgoCD application.
+
+## GPU for competition submissions
+
+Off by default. A teacher may ask for a GPU per competition (on a catalog
+environment with `gpu: true`); with `gpu.competitions.resource` set, the
+notebook step of each submission then requests `gpu.competitions.count` units of
+that extended resource (requests equal limits) and runs with the GPU rooms'
+`gpu.runtimeClassName`, `gpu.nodeSelector` and `gpu.tolerations`, and with a
+memory-backed `/dev/shm` of half its memory, at most `gpu.competitions.shmMb`
+(1024 MiB), for PyTorch's DataLoader workers. The metric step never gets a GPU:
+it mounts the hidden answers. Everything else on a GPU environment's image (the metric, package
+preparation, a competition that asked for no GPU) runs on the CPU with
+`NVIDIA_VISIBLE_DEVICES=void`, so an image built from `nvidia/cuda` gets no card
+on a node whose default runtime is NVIDIA's. While the resource is empty the app
+refuses submissions to a competition that asks for a GPU and says why; it never
+runs them on the CPU instead.
+
+What one unit is, the platform's NVIDIA device plugin decides (directly, or
+through the GPU operator's `devicePlugin.config`), not the chart:
+
+- **Time-slicing** (`sharing.timeSlicing.resources: [{name: nvidia.com/gpu, replicas: 4}]`):
+  every card is offered four times and four submissions share it in time, with
+  no memory or fault isolation between them. With `renameByDefault: true` the
+  replicas are `nvidia.com/gpu.shared`: set that name here.
+- **MPS** (`sharing.mps`, device plugin 0.15 or newer): replicas as above, each
+  limited to an equal part of the card's memory. **Set `gpu.competitions.shmMb: 0`.**
+  The plugin mounts its MPS daemon's shared memory at the container's `/dev/shm`,
+  and the kubelet mounts a Pod's own volumes after the plugin's: a submission's
+  own `/dev/shm` would hide the daemon's, CUDA could not reach the MPS server,
+  and every GPU notebook would train on the CPU or fail
+  ([NVIDIA/k8s-device-plugin#467](https://github.com/NVIDIA/k8s-device-plugin/issues/467)).
+  With 0 the `/dev/shm` is the daemon's, shared by the node's MPS clients and
+  sized by it. Rooms keep their own 1Gi `/dev/shm`, so keep them off MPS nodes:
+  rename the MPS replicas (`renameByDefault: true`, `nvidia.com/gpu.shared`)
+  and set that name here.
+- **MIG** (A100, A30, H100 and newer): slices isolated in hardware. The `mixed`
+  strategy names them by profile, e.g. `nvidia.com/mig-1g.10gb`; `single` keeps
+  `nvidia.com/gpu`.
+
+Rooms always request one `nvidia.com/gpu`. Where the cards a class uses must
+never be shared with submissions, give submissions a name of their own (a MIG
+profile, or time-sliced replicas renamed to `nvidia.com/gpu.shared` on nodes
+labelled for that device-plugin configuration). A count above 1 makes sense for
+whole cards and MIG slices; time-sliced replicas of one card add no compute
+(`failRequestsGreaterThanOne: true` makes the plugin refuse such requests).
+
+**ReadWriteOnce storage pins every competition Pod to the app's node**
+(`RUNTIME_COLOCATE_WITH_APP=1`, above), GPU submissions included: the units
+must be on that node, so the app must run on a GPU node (`app.nodeSelector`,
+`app.tolerations`), or the data claim must be ReadWriteMany. Otherwise no node
+satisfies both, and every GPU submission waits in the queue "for resources" for
+as long as nobody looks. The chart sees no nodes and cannot check this; after
+the install, run a competition's baseline check on a GPU environment.
+
+**How many at once: `gpu.competitions.slots`.** The app's queue keeps that many
+GPU submissions at the broker and lets CPU work (other competitions, rescores,
+baseline checks) go past the GPU submissions that wait for their turn. Set it
+to how many submissions the resource can serve at once, `count` units each,
+after what GPU rooms take when they request the same resource. Unset, the queue
+sends one at a time. Too high costs throughput, not results: a GPU submission
+the scheduler cannot place holds a general slot for 30 seconds and then waits
+in the queue again.
+
+**When Kubernetes refuses a GPU submission's Pod.** A ResourceQuota that names
+the resource (`requests.nvidia.com/gpu: "2"`) bounds GPU rooms and GPU
+submissions together, and the API server refuses a Pod over it. That refusal,
+a missing RuntimeClass (`gpu.runtimeClassName`; `nvidia` is created by the GPU
+operator, and absent without it), or an admission policy that turns down the GPU
+parts of the Pod sends the submission back to the queue: it is retried a few
+seconds to a minute later, and its teacher sees the cause next to it. A CPU job
+refused the same way still fails, as it always did. Keep
+`gpu.competitions.slots` × `count` within such a quota, less what GPU rooms
+hold.
+
+**Image pull: `gpu.competitions.pullSeconds`.** GPU catalog images are 10 to
+13 GB, and every job of a GPU environment runs one: the notebook on a GPU node,
+the metric and package preparation on any node of the students' pool. A node
+that has never run the image pulls it after the Pod is created, and the broker
+waits up to `pullSeconds` (900) for that before the job's own time starts; the
+Pod's `activeDeadlineSeconds` grows by as much. A job that started still gets
+exactly its own limit. To spare the first class the wait, pull the GPU images
+onto those nodes beforehand (for instance, a DaemonSet on those nodes whose init
+containers are the GPU images, each running `true`).
 
 ## Secrets, Vault and ArgoCD
 
@@ -292,9 +375,14 @@ out so the app's default applies. The app reads the ConfigMap, then the Secret
 | `rooms.priorityClassName` | `""` | `RUNTIME_PRIORITY_CLASS` (every broker-created Pod) |
 | `rooms.podLabels` | `{}` | `RUNTIME_POD_LABELS` (JSON, with `app.kubernetes.io/name`, `part-of` and `commonLabels`; never `instance`, which ArgoCD's label tracking would take for its own and prune) |
 | `rooms.podAnnotations` | `{}` | `RUNTIME_POD_ANNOTATIONS` (JSON) |
-| `gpu.runtimeClassName` | `nvidia` | `RUNTIME_GPU_RUNTIME_CLASS` (`""`: none) |
-| `gpu.nodeSelector` | `{}` | `RUNTIME_GPU_NODE_SELECTOR` (JSON) |
-| `gpu.tolerations` | `[]` | `RUNTIME_GPU_TOLERATIONS` (JSON) |
+| `gpu.runtimeClassName` | `nvidia` | `RUNTIME_GPU_RUNTIME_CLASS` (`""`: none); also a competition notebook given a GPU |
+| `gpu.nodeSelector` | `{}` | `RUNTIME_GPU_NODE_SELECTOR` (JSON); also a competition notebook given a GPU |
+| `gpu.tolerations` | `[]` | `RUNTIME_GPU_TOLERATIONS` (JSON); also a competition notebook given a GPU |
+| `gpu.competitions.resource` | `""` (off) | `RUNTIME_COMPETITION_GPU_RESOURCE`, rendered only when set: the extended resource a GPU competition's notebook step requests, e.g. `nvidia.com/gpu`, `nvidia.com/mig-1g.10gb` (see *GPU for competition submissions*) |
+| `gpu.competitions.count` | `1` | `RUNTIME_COMPETITION_GPU_COUNT`, with the resource: units per submission, 1..8 |
+| `gpu.competitions.slots` | `null` (one at a time) | `RUNTIME_COMPETITION_GPU_SLOTS`, with the resource, rendered only when set: GPU submissions the cluster runs at once, 1..256 |
+| `gpu.competitions.shmMb` | `1024` | `RUNTIME_COMPETITION_GPU_SHM_MB`, with the resource: the ceiling of a GPU submission's `/dev/shm`, MiB (also at most half its memory); `0`: none, for MPS |
+| `gpu.competitions.pullSeconds` | `900` | `RUNTIME_COMPETITION_GPU_PULL_SECONDS`: the image pull allowance of every Pod of a GPU catalog image, 0..3600 |
 
 Set `rooms.maxMemory` on a cluster of unequal nodes: without it the broker takes
 its own node's memory as every room's ceiling. A room reserves its memory and

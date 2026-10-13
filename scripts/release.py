@@ -171,9 +171,27 @@ def read_env(file):
 # default memory and its ceiling was to edit the Deployment by hand, and the
 # next update rendered it anew and silently wiped the edit. Now they live in
 # config.env next to PUBLIC_URL and survive an update just as it does.
-RUNTIME_SETTINGS = ('RUNTIME_KERNEL_MEMORY', 'RUNTIME_KERNEL_MEMORY_MAX')
+#
+# The competition GPU pair gives the notebook of a competition that asks for a
+# GPU that many units of the named extended resource (runtime/src/config.ts);
+# on this k3s the installer's device plugin offers whole cards as
+# nvidia.com/gpu, shared with GPU rooms. With it: how many such notebooks run
+# at once (the app's queue keeps that many at the broker) and the ceiling of
+# their own /dev/shm; and for every Pod of a GPU image, how long its pull may
+# take before the job's own time starts.
+MEMORY_SETTINGS = ('RUNTIME_KERNEL_MEMORY', 'RUNTIME_KERNEL_MEMORY_MAX')
+GPU_SETTINGS = ('RUNTIME_COMPETITION_GPU_RESOURCE', 'RUNTIME_COMPETITION_GPU_COUNT',
+                'RUNTIME_COMPETITION_GPU_SLOTS', 'RUNTIME_COMPETITION_GPU_SHM_MB', 'RUNTIME_COMPETITION_GPU_PULL_SECONDS')
+# Whole numbers and their bounds, as the broker checks them (runtime/src/config.ts).
+GPU_NUMBERS = {'RUNTIME_COMPETITION_GPU_COUNT': (1, 8), 'RUNTIME_COMPETITION_GPU_SLOTS': (1, 256),
+               'RUNTIME_COMPETITION_GPU_SHM_MB': (0, 65536), 'RUNTIME_COMPETITION_GPU_PULL_SECONDS': (0, 3600)}
+RUNTIME_SETTINGS = MEMORY_SETTINGS + GPU_SETTINGS
 # The broker's default (runtime/src/config.ts): a configured ceiling is compared with it.
 RUNTIME_DEFAULT_MEMORY = '2Gi'
+# Kubernetes' rule for an extended resource name, as the broker checks it
+# (runtime/src/pod-policy.ts · parseExtendedResource): domain/name, the domain
+# outside kubernetes.io and not the quota prefix requests.
+EXTENDED_RESOURCE = re.compile(r'[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?')
 
 
 def memory_mi(value):
@@ -192,8 +210,19 @@ def runtime_settings(file):
         # An empty value means "as by default": to the broker an empty
         # environment variable is not the default but an unparseable number.
         settings = {key: val for key, val in read_env(file).items() if key in RUNTIME_SETTINGS and val}
-    for key, val in settings.items():
-        require(memory_mi(val), f'{key} must be a Kubernetes quantity in whole Mi or Gi from 64Mi to 256Gi, e.g. 4Gi')
+    for key in MEMORY_SETTINGS:
+        if key in settings:
+            require(memory_mi(settings[key]), f'{key} must be a Kubernetes quantity in whole Mi or Gi from 64Mi to 256Gi, e.g. 4Gi')
+    # The broker refuses either at start; here the update stops before anything does.
+    resource = settings.get('RUNTIME_COMPETITION_GPU_RESOURCE')
+    if resource is not None:
+        require(EXTENDED_RESOURCE.fullmatch(resource) and 'kubernetes.io/' not in resource and not resource.startswith('requests.'),
+                'RUNTIME_COMPETITION_GPU_RESOURCE must be an extended resource name, for example nvidia.com/gpu or nvidia.com/mig-1g.10gb')
+    for key, (low, high) in GPU_NUMBERS.items():
+        if key in settings:
+            value = settings[key]
+            require(re.fullmatch(r'0|[1-9][0-9]{0,5}', value) and low <= int(value) <= high,
+                    f'{key} must be a whole number from {low} to {high}')
     if 'RUNTIME_KERNEL_MEMORY_MAX' in settings:
         # Without a ceiling the broker itself takes the node's memory minus a
         # gigabyte and fits the default under it; a configured ceiling below the

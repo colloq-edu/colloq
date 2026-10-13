@@ -1,10 +1,20 @@
 import { tr } from '@shared/i18n'
 import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, runtimeEnvironment, imageRevision, RuntimeRequestError } from './runtime-client.js'
 import type { RuntimeResizeRequest, RuntimeRoom } from '@shared/runtime'
-import { sessionCpus, sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, repinSessionKernelRevision, sessionMemoryMb, sessionRowExists, storedRules } from '../db.js'
+import { db, sessionCpus, sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, repinSessionKernelRevision, sessionMemoryMb, sessionRowExists, storedRules } from '../db.js'
 import { blockKernelStarts, kernelRetirementInProgress, kernelStartsPaused } from './retirement.js'
 import { hasWorkAllocation, observedWorkMemory, releaseWorkAllocation, reserveWork, type WorkLease } from '../ops/work-budget.js'
 import { parseMemMb, perEnvironmentMemoryMb, resourceValue } from '../admin/resource-settings.js'
+/*
+ * The cards the owner gave to competition submissions, as the setting names
+ * them, and whether submissions run on this machine's cards at all. Both
+ * modules drag in nothing but the settings box and types (they are written to
+ * stay importable from here); everything else about runner cards lives in
+ * competitions/gpu.ts, which imports this pool and so must never be imported
+ * back. Read only inside functions, at the moment a room asks for a card.
+ */
+import { runnerGpuSetting } from '../competitions/settings.js'
+import { competitionBackend } from '../competitions/runner-port.js'
 /** Production starts fixed, isolated Pods through the private runtime broker.
  * The direct Docker adapter is retained only for explicit local development.
  * Neither backend falls back to a shared Jupyter server. */
@@ -767,6 +777,43 @@ export function gpuDevices(): string[] {
 }
 
 /**
+ * The cards rooms may take: KERNEL_GPUS without the ones the owner gave to
+ * competition submissions (the Resources tab, or COMPETITION_GPUS).
+ *
+ * A card goes either to classes or to submissions, never to both: docker does
+ * not refuse a second container on a card, and a submission's runaway
+ * training sharing the lecture's card takes the lecture's video memory with
+ * it. So a card given to submissions leaves the rooms' pool at once — for NEW
+ * holders. A class that already holds it keeps it until its container ends
+ * (`takeGpu`), and submissions wait for it until then (competitions/gpu.ts ·
+ * runnerGpuState): taking a card out from under a lesson would recreate its
+ * container and wipe its variables.
+ *
+ * When submissions run on the cluster, not here, no card of this machine is
+ * theirs (competitions/gpu.ts · runnerGpuDevices says the same), and none is
+ * withheld from the rooms for nothing.
+ */
+export function roomGpuDevices(): string[] {
+  if (!submissionsUseLocalCards()) return gpuDevices()
+  const runners = new Set(runnerGpuSetting().devices)
+  return gpuDevices().filter((device) => !runners.has(device))
+}
+
+/**
+ * Whether competition submissions run on this machine's cards: the docker
+ * runner and its test stand-in do; under the broker the cluster has the
+ * cards. A backend that does not resolve (competitionBackend throws on a
+ * misconfiguration) uses none — the queue says so louder elsewhere.
+ */
+export function submissionsUseLocalCards(): boolean {
+  try {
+    return competitionBackend() !== 'broker'
+  } catch {
+    return false
+  }
+}
+
+/**
  * Slices handed out in this process that have not yet become a label on a
  * container.
  *
@@ -788,6 +835,11 @@ const reserved = new Map<string, string>()
  * (the operator rewrote the list), however, does not count as the room's own:
  * the device may no longer be on the machine.
  *
+ * `keep` widens only "the same one": the cards a room may go on holding
+ * (all of KERNEL_GPUS), while a new card comes only from `devices` (the
+ * rooms' pool). A card the owner has since given to competition submissions
+ * stays with the class that holds it, and is never handed to a new one.
+ *
  * A pure function, because this rule is exactly what has to be proven, and
  * there is no real docker in the tests.
  */
@@ -795,8 +847,9 @@ export function pickGpu(
   devices: string[],
   taken: Array<Pick<RoomContainer, 'session' | 'gpu'>>,
   sessionId: string,
+  keep: string[] = devices,
 ): string | null {
-  const mine = taken.find((held) => held.session === sessionId && devices.includes(held.gpu))
+  const mine = taken.find((held) => held.session === sessionId && keep.includes(held.gpu))
   if (mine) return mine.gpu
   const busy = new Set(taken.map((held) => held.gpu).filter((gpu) => gpu.length > 0))
   return devices.find((device) => !busy.has(device)) ?? null
@@ -811,11 +864,25 @@ export function pickGpu(
  * environment are built for CUDA, `import torch` goes through, and the first
  * `.cuda()` in the middle of the lesson says something about the driver, and
  * nobody connects that with the slice being taken.
+ *
+ * `devices` is the rooms' pool, and `toSubmissions` how many cards of
+ * KERNEL_GPUS the owner gave to competition submissions: "none allocated" on
+ * a machine whose every card went to submissions would send the person to
+ * edit .env, while the cards are one click away in the Resources tab.
+ *
+ * `finishing` is how many cards of the pool a competition submission still
+ * holds: the owner gave them back to classes while a run was on them, and
+ * the run keeps its card until it ends (`submissionGpuCards`). "All in use by
+ * other classes" sent the teacher looking for a class that was not there,
+ * while the card was a submission's for minutes more and then the classes'
+ * by itself.
  */
-export function gpuRefusal(env: string, devices: string[]): string {
+export function gpuRefusal(env: string, devices: string[], toSubmissions = 0, finishing = 0): string {
   if (devices.length === 0) {
+    if (toSubmissions > 0) return tr('server.gpu.allToSubmissions', { p0: env, p1: toSubmissions })
     return tr("server.environmentRequiresAGpuButNoneIs.53af19", { p0: env })
   }
+  if (finishing > 0) return tr('server.gpu.submissionFinishing', { p0: env, count: finishing })
   return tr("server.environmentRequiresAGpuButAllAvailable.f3d4d9", { p0: env, p1: devices.length })
 }
 
@@ -823,9 +890,14 @@ export function gpuRefusal(env: string, devices: string[]): string {
  * Who holds which slice right now, by the labels of live AND stopped
  * containers, plus this process's reservations. Needed by the panel and by
  * the allocation.
+ *
+ * `strict` throws when docker does not answer the census instead of
+ * answering "nobody": competition submissions ask with it
+ * (competitions/gpu.ts · runnerGpuState), because for them an unread census
+ * must mean "wait", not "every card is free".
  */
-export async function gpuAssignments(): Promise<Array<Pick<RoomContainer, 'session' | 'gpu'>>> {
-  const held: Array<Pick<RoomContainer, 'session' | 'gpu'>> = (await roomContainers())
+export async function gpuAssignments(options: { strict?: boolean } = {}): Promise<Array<Pick<RoomContainer, 'session' | 'gpu'>>> {
+  const held: Array<Pick<RoomContainer, 'session' | 'gpu'>> = (await roomContainers({ strict: options.strict }))
     /*
      * The personal-notebook container takes no part in slice allocation AT
      * ALL.
@@ -849,11 +921,116 @@ export async function gpuBusy(): Promise<string[]> {
   return [...new Set((await gpuAssignments()).map((room) => room.gpu))]
 }
 
-/** A slice for the room, or a refusal. The reservation is set at once; see `reserved`. */
+/**
+ * The cards competition submissions hold right now: the ones the queue has
+ * bound to a running run (`queueBoundCards`), whether or not its container is
+ * up yet, and the ones a submission's container carries by the same
+ * `colloq.gpu` label rooms carry — live or stopped, and whichever instance on
+ * this daemon started them: a card in use is in use.
+ *
+ * Runner cards are out of the rooms' pool, so a room never meets a
+ * submission on a card — except in one window: the owner gives a card back
+ * to classes while a submission still holds it, for up to its time limit.
+ * The room census does not see a submission (it counts
+ * `colloq.kind=room-kernel` only), and `docker run` would put a lecture on the
+ * same card without a word. So a new room is kept off every card a
+ * submission holds, and the panels (routes/admin-environments.ts ·
+ * gpuState, routes/admin-resources.ts · gpuShare) promise no class such a
+ * card. Not strict, like the room census beside it: a daemon that does not
+ * answer here fails the room's own start a moment later anyway, and the
+ * queue's bindings are read whatever docker says.
+ */
+export async function submissionGpuCards(): Promise<string[]> {
+  const containers = await submissionContainerCards()
+  return [...new Set([...containers, ...queueBoundCards()])]
+}
+
+/**
+ * The cards the competition queue has bound to its running runs
+ * (competition_queue.gpu), read from the database at the moment of asking.
+ *
+ * The queue writes a run's card into its row in the very transaction that
+ * takes the run (competitions/store.ts · takeNext), while the run's container
+ * carries the `colloq.gpu` label only once `docker run` is issued: seconds
+ * later, tens of seconds on the first GPU run after a restart (the run's
+ * inputs are composed, its package set hashed, its card's size probed). In
+ * between, the label census sees nothing, and a card the owner gave back to
+ * classes in that window went to a new lecture while the submission was
+ * about to start on it, uncapped at one run per card (review, 13 Oct 2026).
+ * The row is the binding from the take on; the label is still read, for a
+ * container that outlives its row.
+ *
+ * Through the database module, with a statement prepared on first use, not
+ * through the queue's store: the store imports competitions/gpu.ts, which
+ * imports this pool, and this pool loads with the server's first imports.
+ * The table is the store's to create; before it exists (a process that never
+ * loaded the store, a test of the pool alone) no row can hold a card.
+ */
+let selectBoundCards: { all(): unknown[] } | null = null
+
+function queueBoundCards(): string[] {
+  try {
+    selectBoundCards ??= db.prepare(
+      "SELECT DISTINCT gpu FROM competition_queue WHERE state = 'running' AND gpu IS NOT NULL AND gpu != ''",
+    )
+  } catch (err) {
+    if (/no such (table|column)/i.test(err instanceof Error ? err.message : String(err))) return []
+    throw err
+  }
+  return (selectBoundCards.all() as Array<{ gpu: string }>).map((row) => row.gpu)
+}
+
+/** The `colloq.gpu` labels of submissions' containers; none when docker does not answer. */
+async function submissionContainerCards(): Promise<string[]> {
+  if (!(await canIsolate())) return []
+  const res = await run([
+    'ps',
+    '-a',
+    '--filter',
+    'label=colloq.kind=competition-run',
+    '--filter',
+    'label=colloq.gpu',
+    '--format',
+    '{{.Label "colloq.gpu"}}',
+  ])
+  if (res.code !== 0) return []
+  // A device id has no blanks in it; a line that does is not a label value.
+  const cards = res.out.split('\n').map((line) => line.trim())
+  return [...new Set(cards.filter((gpu) => gpu.length > 0 && gpu !== '<no value>' && !/\s/.test(gpu)))]
+}
+
+/**
+ * A slice for the room, or a refusal. The reservation is set at once; see
+ * `reserved`. A new card comes from the rooms' pool only, and never one a
+ * submission holds (`submissionGpuCards`); the card the room already holds is
+ * kept even if it has since been given to competition submissions
+ * (`roomGpuDevices`).
+ *
+ * The two docker censuses come first, and everything else is read after
+ * them, in one synchronous step with the pick and the reservation: the rooms'
+ * pool (the owner's setting), the queue's bindings, and the reservations of
+ * other rooms (the room census reads them at its very end, so it is the last
+ * thing awaited). The pool used to be read before the censuses, a docker round
+ * trip earlier: a card the owner gave to submissions in that trip, which the
+ * pump bound to a GPU run at once, still went to this room, and a card given
+ * back to classes was refused to it (review, 13 Oct 2026). Read in one step
+ * with the reservation, an owner's save lands either before it, and this room
+ * sees the new pool, or after it, and the pump's census, which reads the
+ * reservations at its end, sees this room's card as held.
+ */
 async function takeGpu(sessionId: string, env: string): Promise<string> {
-  const devices = gpuDevices()
-  const gpu = pickGpu(devices, await gpuAssignments(), sessionId)
-  if (!gpu) throw new Error(gpuRefusal(env, devices))
+  const containers = await submissionContainerCards()
+  const rooms = await gpuAssignments()
+  const all = gpuDevices()
+  const devices = roomGpuDevices()
+  const bySubmissions = new Set([...containers, ...queueBoundCards()])
+  // A holder with no session: it can never be "the same one" for any room.
+  const submissions = [...bySubmissions].map((gpu) => ({ session: '', gpu }))
+  const gpu = pickGpu(devices, [...rooms, ...submissions], sessionId, all)
+  if (!gpu) {
+    const finishing = [...new Set(devices)].filter((device) => bySubmissions.has(device)).length
+    throw new Error(gpuRefusal(env, devices, all.length - devices.length, finishing))
+  }
   reserved.set(sessionId, gpu)
   return gpu
 }

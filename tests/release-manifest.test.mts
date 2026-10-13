@@ -291,3 +291,61 @@ test('render refuses memory the broker would refuse at start: bad quantity, out 
     assert.equal(run('render', release(), ['--env-file', file]).status, 0)
   })
 })
+/*
+ * A GPU for competition submissions on k3s: the extended resource the notebook
+ * of a competition that asks for a GPU requests, and how many units. The
+ * installer's device plugin offers whole cards as nvidia.com/gpu. They travel
+ * like the memory pair, from the operator's file into the broker alone, and a
+ * value the broker would refuse at start stops the render first.
+ */
+test('render gives the broker the competition GPU resource and count, and refuses what the broker would', () => {
+  withEnv('RUNTIME_COMPETITION_GPU_RESOURCE=nvidia.com/gpu\nRUNTIME_COMPETITION_GPU_COUNT="2"\n', file => {
+    const result = run('render', release(), ['--env-file', file])
+    assert.equal(result.status, 0, result.stderr)
+    const env = brokerEnv(result.stdout)
+    assert.equal(env.RUNTIME_COMPETITION_GPU_RESOURCE, 'nvidia.com/gpu')
+    assert.equal(env.RUNTIME_COMPETITION_GPU_COUNT, '2')
+    const app = JSON.parse(result.stdout).items.find((x: any) => x.kind === 'Deployment' && x.metadata.name === 'colloq-app')
+    assert.equal(JSON.stringify(app).includes('RUNTIME_COMPETITION_GPU'), false)
+    // Known settings, not "unknown" ones, and none of them in the app's Secret.
+    const config = run('config', release(), ['--env-file', file])
+    assert.equal(config.status, 0, config.stderr)
+    assert.deepEqual(Object.keys(JSON.parse(config.stdout).stringData), [])
+  })
+  // Unset or empty: off, and not an empty variable the broker cannot parse.
+  withEnv('RUNTIME_COMPETITION_GPU_RESOURCE=\nRUNTIME_COMPETITION_GPU_COUNT=\nRUNTIME_COMPETITION_GPU_SLOTS=\nRUNTIME_COMPETITION_GPU_SHM_MB=\nRUNTIME_COMPETITION_GPU_PULL_SECONDS=\n', file => {
+    const env = brokerEnv(run('render', release(), ['--env-file', file]).stdout)
+    assert.equal(Object.keys(env).some(key => key.startsWith('RUNTIME_COMPETITION_GPU')), false)
+  })
+  // How many at once, the /dev/shm ceiling (0 for MPS) and the pull allowance travel the same way.
+  withEnv('RUNTIME_COMPETITION_GPU_RESOURCE=nvidia.com/gpu\nRUNTIME_COMPETITION_GPU_SLOTS=2\nRUNTIME_COMPETITION_GPU_SHM_MB=0\nRUNTIME_COMPETITION_GPU_PULL_SECONDS=1800\n', file => {
+    const result = run('render', release(), ['--env-file', file])
+    assert.equal(result.status, 0, result.stderr)
+    const env = brokerEnv(result.stdout)
+    assert.deepEqual([env.RUNTIME_COMPETITION_GPU_SLOTS, env.RUNTIME_COMPETITION_GPU_SHM_MB, env.RUNTIME_COMPETITION_GPU_PULL_SECONDS], ['2', '0', '1800'])
+    const config = run('config', release(), ['--env-file', file])
+    assert.equal(config.status, 0, config.stderr)
+    assert.deepEqual(Object.keys(JSON.parse(config.stdout).stringData), [])
+  })
+  for (const [text, pattern] of [
+    ['RUNTIME_COMPETITION_GPU_RESOURCE=gpu', /RUNTIME_COMPETITION_GPU_RESOURCE must be an extended resource name/],
+    ['RUNTIME_COMPETITION_GPU_RESOURCE=kubernetes.io/gpu', /RUNTIME_COMPETITION_GPU_RESOURCE must be/],
+    ['RUNTIME_COMPETITION_GPU_RESOURCE=requests.nvidia.com/gpu', /RUNTIME_COMPETITION_GPU_RESOURCE must be/],
+    ['RUNTIME_COMPETITION_GPU_RESOURCE=NVIDIA.com/gpu', /RUNTIME_COMPETITION_GPU_RESOURCE must be/],
+    ['RUNTIME_COMPETITION_GPU_COUNT=0', /RUNTIME_COMPETITION_GPU_COUNT must be a whole number from 1 to 8/],
+    ['RUNTIME_COMPETITION_GPU_COUNT=9', /RUNTIME_COMPETITION_GPU_COUNT must be/],
+    ['RUNTIME_COMPETITION_GPU_COUNT=1.5', /RUNTIME_COMPETITION_GPU_COUNT must be/],
+    ['RUNTIME_COMPETITION_GPU_SLOTS=0', /RUNTIME_COMPETITION_GPU_SLOTS must be a whole number from 1 to 256/],
+    ['RUNTIME_COMPETITION_GPU_SLOTS=257', /RUNTIME_COMPETITION_GPU_SLOTS must be/],
+    ['RUNTIME_COMPETITION_GPU_SHM_MB=-1', /RUNTIME_COMPETITION_GPU_SHM_MB must be a whole number from 0 to 65536/],
+    ['RUNTIME_COMPETITION_GPU_SHM_MB=1Gi', /RUNTIME_COMPETITION_GPU_SHM_MB must be/],
+    ['RUNTIME_COMPETITION_GPU_PULL_SECONDS=3601', /RUNTIME_COMPETITION_GPU_PULL_SECONDS must be a whole number from 0 to 3600/],
+    ['RUNTIME_COMPETITION_GPU_PULL_SECONDS=15m', /RUNTIME_COMPETITION_GPU_PULL_SECONDS must be/],
+  ] as const) {
+    withEnv(text + '\n', file => {
+      const result = run('render', release(), ['--env-file', file])
+      assert.notEqual(result.status, 0, text)
+      assert.match(result.stderr, pattern, text)
+    })
+  }
+})

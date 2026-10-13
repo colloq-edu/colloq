@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { createServer as createTlsServer } from 'node:https'
 import { createRuntimeServer } from '../runtime/src/http.js'
-import { HttpsKubernetesClient } from '../runtime/src/kubernetes.js'
+import { HttpsKubernetesClient, KubernetesError, refusalOf } from '../runtime/src/kubernetes.js'
 import { loadRuntimeConfig, readStrongSecret } from '../runtime/src/config.js'
 import { parseRuntimeCatalog } from '../shared/runtime.js'
 
@@ -212,6 +212,20 @@ test('Kubernetes HTTPS client verifies CA, rereads rotating token, and bounds re
           `pods "x" is forbidden: node didn't have enough allocatable resources: memory, requested: 1, allocatable: 0 ${'secret-value'.repeat(10)}` }))
         return
       }
+      // The API server's refusals of a Pod: a quota, a RuntimeClass, RBAC, a webhook, and a plain bad request.
+      const refusals: Record<string, [number, string, string]> = {
+        '/quota': [403, 'Forbidden', `pods "colloq-job-a" is forbidden: exceeded quota: gpu-${'secret-value'}, requested: requests.nvidia.com/gpu=1, used: requests.nvidia.com/gpu=2, limited: requests.nvidia.com/gpu=2`],
+        '/runtimeclass': [403, 'Forbidden', 'pods "colloq-job-a" is forbidden: pod rejected: RuntimeClass "nvidia" not found'],
+        '/rbac': [403, 'Forbidden', 'pods is forbidden: User "system:serviceaccount:colloq:colloq-runtime" cannot create resource "pods" in API group "" in the namespace "colloq"'],
+        '/webhook': [400, 'BadRequest', 'admission webhook "validate.kyverno.svc-fail" denied the request: secret-value policy'],
+        '/invalid': [422, 'Invalid', 'Pod "colloq-job-a" is invalid: spec.containers[0].image: Required value'],
+      }
+      if (refusals[req.url ?? '']) {
+        const [code, reason, message] = refusals[req.url!]
+        res.writeHead(code)
+        res.end(JSON.stringify({ reason, message }))
+        return
+      }
       if (req.url === '/huge') {
         res.end('x'.repeat(3000))
         return
@@ -243,6 +257,19 @@ test('Kubernetes HTTPS client verifies CA, rereads rotating token, and bounds re
       client.request('PATCH', '/resize', {}, 'application/strategic-merge-patch+json'),
       (err: any) => err.insufficient === 'memory' && !err.message.includes('secret-value'),
     )
+    // A node short of memory is that, not an admission policy.
+    await assert.rejects(client.request('PATCH', '/resize', {}, 'application/strategic-merge-patch+json'), (err: any) => err.refusal === undefined)
+    // Of a refusal only its kind leaves the body, and of a quota its resource names.
+    for (const [path, refusal] of [
+      ['/quota', { kind: 'quota', resources: ['requests.nvidia.com/gpu'] }],
+      ['/runtimeclass', { kind: 'runtime-class' }],
+      ['/rbac', { kind: 'permission' }],
+      ['/webhook', { kind: 'admission' }],
+      ['/invalid', undefined],
+    ] as const)
+      await assert.rejects(client.request('POST', path, {}), (err: any) =>
+        err instanceof KubernetesError && JSON.stringify(err.refusal) === JSON.stringify(refusal) &&
+          !err.message.includes('secret-value') && !err.message.includes('quota') && err.message.length < 250)
     await assert.rejects(client.request('PATCH', '/resize', {}, 'text/x-evil'), /content type/)
     await assert.rejects(client.request('GET', '/huge'), /large|limit/i)
     writeFileSync(cert, '')
@@ -252,4 +279,31 @@ test('Kubernetes HTTPS client verifies CA, rereads rotating token, and bounds re
     await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())))
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+/*
+ * The API server's "no" to a Pod, as the broker tells its kinds apart: a GPU
+ * notebook refused for a quota, a RuntimeClass or a policy goes back to the
+ * app's queue instead of failing as a metric (competition-jobs.ts ·
+ * refusedAtAdmission), while the broker's own missing permission does not.
+ */
+test('refusals: a quota with its resource names, a missing RuntimeClass, RBAC, and admission of any other kind', () => {
+  const quota = 'pods "colloq-job-a" is forbidden: exceeded quota: compute, requested: limits.memory=2Gi,requests.memory=2Gi,requests.nvidia.com/mig-1g.10gb=1, used: limits.memory=30Gi, limited: limits.memory=31Gi'
+  assert.deepEqual(refusalOf(403, quota), { kind: 'quota', resources: ['limits.memory', 'requests.memory', 'requests.nvidia.com/mig-1g.10gb'] })
+  // At most three names, whatever the quota lists.
+  assert.equal(refusalOf(403, 'exceeded quota: q, requested: a/b=1,c/d=1,e/f=1,g/h=1, used: a/b=1')?.kind, 'quota')
+  assert.deepEqual((refusalOf(403, 'exceeded quota: q, requested: a/b=1,c/d=1,e/f=1,g/h=1, used: a/b=1') as any).resources, ['a/b', 'c/d', 'e/f'])
+  assert.deepEqual(refusalOf(403, 'pods "x" is forbidden: pod rejected: RuntimeClass "nvidia-cdi" not found'), { kind: 'runtime-class' })
+  assert.deepEqual(refusalOf(403, 'pods is forbidden: User "system:serviceaccount:colloq:colloq-runtime" cannot create resource "pods" in API group ""'), { kind: 'permission' })
+  // Pod Security, a LimitRange, a ValidatingAdmissionPolicy, a webhook with its own code, an empty body: admission.
+  for (const message of ['pods "x" is forbidden: violates PodSecurity "restricted:latest": runAsNonRoot != true',
+    'pods "x" is forbidden: maximum memory usage per Container is 4Gi, but limit is 8Gi', '', 'admission webhook "gatekeeper" denied the request: no GPUs here'])
+    assert.deepEqual(refusalOf(403, message), { kind: 'admission' }, message)
+  assert.deepEqual(refusalOf(422, 'pods "x" is forbidden: ValidatingAdmissionPolicy \'gpu\' with binding \'gpu\' denied request: no'), { kind: 'admission' })
+  assert.deepEqual(refusalOf(400, 'admission webhook "validate.kyverno.svc-fail" denied the request: x'), { kind: 'admission' })
+  // A request we built wrong, a conflict, a missing object: no refusal of that kind at all.
+  assert.equal(refusalOf(422, 'Pod "x" is invalid: spec.containers[0].image: Required value'), undefined)
+  assert.equal(refusalOf(400, 'the body of the request was in an unknown format'), undefined)
+  assert.equal(refusalOf(409, 'pods "x" already exists'), undefined)
+  assert.equal(refusalOf(404, 'namespaces "colloq" not found'), undefined)
 })

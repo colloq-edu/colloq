@@ -22,6 +22,7 @@
     bestLateScore,
     deadlineDividerWords,
     deadlineSplit,
+    gpuCondition,
     lateBetterNote,
     outsideQuota,
     ownOrdinals,
@@ -313,7 +314,7 @@
   </div>
 
   <aside class="flex w-full shrink-0 flex-col gap-6 xl:w-[300px]">
-    <Conditions competition={view.competition} sealedFiles={view.sealedFiles ?? []} />
+    <Conditions competition={view.competition} sealedFiles={view.sealedFiles ?? []} gpu={gpuCondition(view)} />
     {#if !phone}
       <MiniBoard lines={board} closed={boardClosed} {lateBest} onopen={onboard} />
     {/if}

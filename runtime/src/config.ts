@@ -1,7 +1,9 @@
 import { readFileSync, statSync } from 'node:fs'
 import { totalmem } from 'node:os'
 import { parseRuntimeCatalog, type RuntimeCatalog } from '../../shared/runtime.js'
+import { COMPETITION_GPU_PULL_SECONDS_MAX, COMPETITION_GPU_SLOTS_MAX } from '../../shared/competition-runtime.js'
 import {
+  parseExtendedResource,
   parsePriorityClass,
   parseRuntimeClass,
   parseStringMap,
@@ -65,6 +67,38 @@ export interface RuntimeConfig extends WorkloadConfig {
   competitionExporterImage: string
   competitionInstanceId: string
   competitionDataClaim: string
+  /**
+   * RUNTIME_COMPETITION_GPU_RESOURCE: what the notebook Pod of a competition
+   * that asks for a GPU requests, as the cluster's device plugin names it
+   * (pod-policy.ts · parseExtendedResource); empty is off, and such a
+   * notebook is refused. What one unit is (a whole card, a time-sliced or MPS
+   * replica, a MIG slice) is the device plugin's configuration, not ours.
+   */
+  competitionGpuResource: string
+  /** RUNTIME_COMPETITION_GPU_COUNT: how many units of it, 1 to 8; 1 when unset. */
+  competitionGpuCount: number
+  /**
+   * RUNTIME_COMPETITION_GPU_SLOTS: how many such notebooks of this instance
+   * the cluster runs at once, 1 to 256, as the operator knows it (the units
+   * set aside for submissions over the count); null when unset. The broker
+   * only reports it (/v1/health · competition.gpuSlots): the app's queue
+   * keeps that many GPU notebooks at the broker, one when it is null, and
+   * lets CPU work go past the rest.
+   */
+  competitionGpuSlots: number | null
+  /**
+   * RUNTIME_COMPETITION_GPU_SHM_MB: the ceiling of such a notebook's own
+   * memory-backed /dev/shm, MiB, 0 to 65536; 1024 when unset. 0 gives it
+   * none, for MPS sharing, whose device plugin mounts its daemon's shared
+   * memory there (competition-jobs.ts · shmMb).
+   */
+  competitionGpuShmMb: number
+  /**
+   * RUNTIME_COMPETITION_GPU_PULL_SECONDS: how long a Pod of a GPU
+   * environment's image may take to pull it before the job's own time starts,
+   * 0 to 3600; 900 when unset (competition-jobs.ts · pullSeconds).
+   */
+  competitionGpuPullSeconds: number
   dependencyIndexUrl: string
   dependencyFilesHosts: string
 }
@@ -182,6 +216,27 @@ export function loadRuntimeConfig(
   const roomTolerations = parseTolerations('RUNTIME_ROOM_TOLERATIONS', env.RUNTIME_ROOM_TOLERATIONS)
   const gpuNodeSelector = parseStringMap('RUNTIME_GPU_NODE_SELECTOR', env.RUNTIME_GPU_NODE_SELECTOR, 'nodeSelector')
   const gpuTolerations = parseTolerations('RUNTIME_GPU_TOLERATIONS', env.RUNTIME_GPU_TOLERATIONS)
+  /*
+   * A competition's GPU: the resource and how many units of it. The count is
+   * checked even while the resource is unset, so that a typo there does not
+   * wait to surface until the day someone turns the feature on.
+   */
+  const competitionGpuResource = parseExtendedResource('RUNTIME_COMPETITION_GPU_RESOURCE', env.RUNTIME_COMPETITION_GPU_RESOURCE)
+  const gpuCount = (env.RUNTIME_COMPETITION_GPU_COUNT ?? '').trim()
+  if (gpuCount !== '' && !/^[1-8]$/.test(gpuCount))
+    throw new Error('RUNTIME_COMPETITION_GPU_COUNT must be a whole number from 1 to 8')
+  const competitionGpuCount = gpuCount === '' ? 1 : Number(gpuCount)
+  // The rest of the GPU settings: whole numbers in their bounds, or unset.
+  const whole = (name: string, min: number, max: number, unset: number | null): number | null => {
+    const raw = (env[name] ?? '').trim()
+    if (raw === '') return unset
+    if (!/^(?:0|[1-9][0-9]{0,5})$/.test(raw) || Number(raw) < min || Number(raw) > max)
+      throw new Error(`${name} must be a whole number from ${min} to ${max}`)
+    return Number(raw)
+  }
+  const competitionGpuSlots = whole('RUNTIME_COMPETITION_GPU_SLOTS', 1, COMPETITION_GPU_SLOTS_MAX, null)
+  const competitionGpuShmMb = whole('RUNTIME_COMPETITION_GPU_SHM_MB', 0, 65536, 1024)!
+  const competitionGpuPullSeconds = whole('RUNTIME_COMPETITION_GPU_PULL_SECONDS', 0, COMPETITION_GPU_PULL_SECONDS_MAX, 900)!
   return {
     port,
     tokenFile,
@@ -201,6 +256,11 @@ export function loadRuntimeConfig(
     competitionExporterImage: env.RUNTIME_COMPETITION_EXPORTER_IMAGE ?? '',
     competitionInstanceId: env.RUNTIME_COMPETITION_INSTANCE_ID ?? '',
     competitionDataClaim: env.RUNTIME_COMPETITION_DATA_CLAIM ?? '',
+    competitionGpuResource,
+    competitionGpuCount,
+    competitionGpuSlots,
+    competitionGpuShmMb,
+    competitionGpuPullSeconds,
     // Passed through to the package proxy Pod unread (competition-jobs.ts).
     dependencyIndexUrl: (env.DEPENDENCY_INDEX_URL ?? '').trim(),
     dependencyFilesHosts: (env.DEPENDENCY_FILES_HOSTS ?? '').trim(),

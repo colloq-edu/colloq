@@ -239,8 +239,11 @@ rooms:
   # COLLOQ_ROOM_NETWORK: rooms reach cluster DNS and nothing else; `none` takes
   # DNS away too.
   network: ""
-  # RUNTIME_ROOM_NODE_SELECTOR / RUNTIME_ROOM_TOLERATIONS: where room and
-  # personal-notebook Pods run.
+  # RUNTIME_ROOM_NODE_SELECTOR / RUNTIME_ROOM_TOLERATIONS: where every Pod
+  # that runs student code goes: rooms, personal notebooks, and competition
+  # submissions, metrics and package preparation (not its package proxy). A
+  # GPU submission gets gpu.nodeSelector and gpu.tolerations on top, so its
+  # node must match both.
   nodeSelector: {}
   tolerations: []
   # RUNTIME_PRIORITY_CLASS: priorityClassName of every Pod the broker creates.
@@ -251,14 +254,44 @@ rooms:
   podLabels: {}
   podAnnotations: {}
 
-# Rooms of a catalog environment with gpu: true.
+# Rooms of a catalog environment with gpu: true, and the submissions of
+# competitions that ask for a GPU.
 gpu:
-  # RUNTIME_GPU_RUNTIME_CLASS: the RuntimeClass of GPU rooms, created by your
-  # platform (the NVIDIA GPU operator makes `nvidia`). Empty: none.
+  # RUNTIME_GPU_RUNTIME_CLASS: the RuntimeClass of GPU rooms and GPU
+  # submissions, created by your platform (the NVIDIA GPU operator makes
+  # `nvidia`). Empty: none.
   runtimeClassName: nvidia
-  # RUNTIME_GPU_NODE_SELECTOR / RUNTIME_GPU_TOLERATIONS: added for GPU rooms.
+  # RUNTIME_GPU_NODE_SELECTOR / RUNTIME_GPU_TOLERATIONS: added for GPU rooms,
+  # and for a competition notebook given a GPU.
   nodeSelector: {}
   tolerations: []
+  # A competition whose teacher asked for a GPU gives the notebook step of each
+  # submission this extended resource (never the metric step, which holds the
+  # hidden answers); it also gets the runtime class, node selector and
+  # tolerations above. What one unit is your device plugin decides: a whole
+  # card, a time-sliced or MPS replica, a MIG slice. Empty: off, and such
+  # competitions take no submissions. See README, "GPU for competition
+  # submissions".
+  competitions:
+    # RUNTIME_COMPETITION_GPU_RESOURCE, e.g. nvidia.com/gpu or nvidia.com/mig-1g.10gb.
+    resource: ""
+    # RUNTIME_COMPETITION_GPU_COUNT: units per submission, 1..8.
+    count: 1
+    # RUNTIME_COMPETITION_GPU_SLOTS: how many GPU submissions the cluster runs
+    # at once for this release, 1..256 — the units you set aside for
+    # submissions over `count`. The queue keeps that many at the broker and
+    # lets CPU work go past the rest. null: one at a time.
+    slots: null
+    # RUNTIME_COMPETITION_GPU_SHM_MB: the ceiling of a GPU submission's own
+    # memory-backed /dev/shm, MiB (it also never exceeds half the job's
+    # memory). 0: none — required with MPS sharing, whose device plugin mounts
+    # its own /dev/shm, which ours would hide.
+    shmMb: 1024
+    # RUNTIME_COMPETITION_GPU_PULL_SECONDS: how long any Pod of a GPU catalog
+    # image (10-13 GB) may spend pulling it before the job's own time starts,
+    # 0..3600. Applies with or without `resource`: the metric and package
+    # preparation of a GPU environment run its image on the CPU.
+    pullSeconds: 900
 
 persistence:
   # ReadWriteOnce: everything that mounts the data or workspace volume (the app,

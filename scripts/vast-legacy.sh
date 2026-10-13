@@ -914,8 +914,9 @@ offers = json.load(sys.stdin).get("offers") or []
 # this condition in the query not one of them is found (checked by reading,
 # twice in a row, 5 September 2026). That is, the filter threw out exactly the
 # GPUs the machine is rented for. The field in the answer is right, though —
-# the same condition, applied to the answer.
-offers = [o for o in offers if float(o.get("cuda_max_good") or 0) >= 12.1]
+# the same condition, applied to the answer. Since 13 Oct 2026 the floor is
+# 13.0: base-gpu pins torch 2.14.1 with CUDA 13.0 wheels (driver 580 or newer).
+offers = [o for o in offers if float(o.get("cuda_max_good") or 0) >= 13.0]
 for o in offers[:8]:
     print("    %-10s %s x %-10s %4.0f GB  $%.3f/hr  %s" % (
         o.get("id"), o.get("num_gpus"), o.get("gpu_name"),

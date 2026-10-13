@@ -184,7 +184,11 @@ const kaggle = parseRuntimeCatalog({ schemaVersion: 1, release: 'v1', defaultEnv
   { name: 'kaggle-base', image: `registry.example/kernel@${revision}`, gpu: false },
 ] })
 const limits = { wallSeconds: 120, memoryMb: 1024, cpus: 2, pids: 128, tmpfsMb: 256, targetBytes: 10_000_000 }
-function competition(policy: Record<string, unknown>) {
+const kaggleGpu = parseRuntimeCatalog({ schemaVersion: 1, release: 'v1', defaultEnvironment: 'kaggle-base', environments: [
+  { name: 'kaggle-base', image: `registry.example/kernel@${revision}`, gpu: false },
+  { name: 'kaggle-gpu', image: `registry.example/kernel-gpu@${revision}`, gpu: true },
+] })
+function competition(policy: Record<string, unknown>, list = kaggle) {
   const created: KubeObject[] = []
   const objects = new Map<string, any>()
   objects.set('/api/v1/namespaces/colloq/persistentvolumeclaims/colloq-data', { metadata: { name: 'colloq-data' } })
@@ -203,7 +207,7 @@ function competition(policy: Record<string, unknown>) {
     }
     return {} as T
   } }
-  const jobs = new CompetitionJobs({ kube, catalog: () => kaggle, secret: () => 'x'.repeat(64),
+  const jobs = new CompetitionJobs({ kube, catalog: () => list, secret: () => 'x'.repeat(64),
     config: { namespace: 'colloq', dataClaim: 'colloq-data', exporterImage: `registry.example/runtime@sha256:${'d'.repeat(64)}`, instanceId: 'instance123', ...policy } })
   return { jobs, created }
 }
@@ -252,6 +256,35 @@ test("student code goes where rooms go: job and resolver Pods take the rooms' no
   }
   assert.equal(proxy.spec.nodeSelector, undefined, 'the package proxy runs no student code')
   assert.equal(proxy.spec.tolerations, undefined)
+})
+
+test("a notebook given a card goes where GPU rooms go; the metric, the resolver and the proxy where they always went", async () => {
+  const toleration = { key: 'colloq/students', operator: 'Exists', effect: 'NoSchedule' }
+  const gpuToleration = { key: 'nvidia.com/gpu', operator: 'Exists', effect: 'NoSchedule' }
+  const { jobs, created } = competition({
+    studentNodeSelector: { pool: 'students' }, studentTolerations: [toleration],
+    gpu: { resource: 'nvidia.com/gpu', count: 1 }, gpuRuntimeClass: 'nvidia',
+    gpuNodeSelector: { 'nvidia.com/gpu.present': 'true' }, gpuTolerations: [gpuToleration],
+  }, kaggleGpu)
+  const submission = { schemaVersion: 1, environment: 'kaggle-gpu', revision, limits, competitionId: 'abcd2345', submissionId: 'efgh2345', attemptId } as const
+  await jobs.start(jobId, { ...submission, jobId, kind: 'notebook', gpu: true })
+  const metricJob = 'c'.repeat(32), resolverJob = 'f'.repeat(32)
+  await jobs.start(metricJob, { ...submission, jobId: metricJob, kind: 'metric' })
+  await jobs.start(resolverJob, { schemaVersion: 1, jobId: resolverJob, kind: 'resolve', environment: 'kaggle-gpu', revision, limits, preparationId: attemptId })
+  const byJob = (id: string, role = 'competition-job') => created.find((pod) => pod.metadata.labels?.['colloq.dev/job'] === id && pod.metadata.labels?.['colloq.dev/role'] === role)!
+  const notebook = byJob(jobId)
+  assert.equal(notebook.spec.runtimeClassName, 'nvidia')
+  assert.deepEqual(notebook.spec.nodeSelector, { pool: 'students', 'nvidia.com/gpu.present': 'true' })
+  assert.deepEqual(notebook.spec.tolerations, [toleration, gpuToleration])
+  assert.equal(notebook.spec.containers[0].resources.limits['nvidia.com/gpu'], 1)
+  // The same GPU image, no card: the students' placement and nothing more.
+  for (const pod of [byJob(metricJob), byJob(resolverJob, 'competition-resolver')]) {
+    assert.equal('runtimeClassName' in pod.spec, false, pod.metadata.name)
+    assert.deepEqual(pod.spec.nodeSelector, { pool: 'students' }, pod.metadata.name)
+    assert.deepEqual(pod.spec.tolerations, [toleration], pod.metadata.name)
+  }
+  const proxy = byJob(resolverJob, 'competition-proxy')
+  for (const field of ['runtimeClassName', 'nodeSelector', 'tolerations']) assert.equal(field in proxy.spec, false, field)
 })
 
 /* ------------------------------------------------------------ GPU and room placement */
@@ -349,6 +382,8 @@ test('settings are read at start: defaults are the single-node k3s, and each val
     assert.equal(defaults.priorityClass, '')
     assert.deepEqual([defaults.podLabels, defaults.podAnnotations, defaults.roomNodeSelector, defaults.gpuNodeSelector], [{}, {}, {}, {}])
     assert.deepEqual([defaults.roomTolerations, defaults.gpuTolerations], [[], []])
+    // Competition jobs get no GPU until the operator names the cluster's resource.
+    assert.deepEqual([defaults.competitionGpuResource, defaults.competitionGpuCount], ['', 1])
     const set = loadRuntimeConfig({
       ...values,
       RUNTIME_COLOCATE_WITH_APP: '1',
@@ -369,6 +404,23 @@ test('settings are read at start: defaults are the single-node k3s, and each val
     assert.deepEqual(set.podLabels, { 'cost-center': 'edu-42' })
     assert.deepEqual(set.gpuTolerations, [{ key: 'nvidia.com/gpu', operator: 'Exists', effect: 'NoExecute', tolerationSeconds: 60 }])
     assert.equal(loadRuntimeConfig({ ...values, RUNTIME_COLOCATE_WITH_APP: 'true' }, 16384).colocateWithApp, true)
+    // The cluster's GPU resource for competition notebooks, as its device plugin names it: whole cards, replicas, MIG slices.
+    for (const resource of ['nvidia.com/gpu', 'nvidia.com/gpu.shared', 'nvidia.com/mig-1g.10gb', 'gpu.intel.com/i915']) {
+      const gpu = loadRuntimeConfig({ ...values, RUNTIME_COMPETITION_GPU_RESOURCE: ` ${resource} `, RUNTIME_COMPETITION_GPU_COUNT: '2' }, 16384)
+      assert.deepEqual([gpu.competitionGpuResource, gpu.competitionGpuCount], [resource, 2])
+    }
+    // Empty is unset: what a chart or an env file renders for "off".
+    const empty = loadRuntimeConfig({ ...values, RUNTIME_COMPETITION_GPU_RESOURCE: '', RUNTIME_COMPETITION_GPU_COUNT: '' }, 16384)
+    assert.deepEqual([empty.competitionGpuResource, empty.competitionGpuCount], ['', 1])
+    // How many at once (unsaid: null, and the app keeps one), the /dev/shm ceiling
+    // (0 for MPS, whose plugin mounts its own) and a GPU image's pull allowance.
+    const unset = loadRuntimeConfig({ ...values, RUNTIME_COMPETITION_GPU_SLOTS: '', RUNTIME_COMPETITION_GPU_SHM_MB: '', RUNTIME_COMPETITION_GPU_PULL_SECONDS: '' }, 16384)
+    assert.deepEqual([unset.competitionGpuSlots, unset.competitionGpuShmMb, unset.competitionGpuPullSeconds], [null, 1024, 900])
+    assert.deepEqual([empty.competitionGpuSlots, empty.competitionGpuShmMb, empty.competitionGpuPullSeconds], [null, 1024, 900])
+    const told = loadRuntimeConfig({ ...values, RUNTIME_COMPETITION_GPU_SLOTS: ' 256 ', RUNTIME_COMPETITION_GPU_SHM_MB: '0', RUNTIME_COMPETITION_GPU_PULL_SECONDS: '3600' }, 16384)
+    assert.deepEqual([told.competitionGpuSlots, told.competitionGpuShmMb, told.competitionGpuPullSeconds], [256, 0, 3600])
+    const low = loadRuntimeConfig({ ...values, RUNTIME_COMPETITION_GPU_SLOTS: '1', RUNTIME_COMPETITION_GPU_SHM_MB: '65536', RUNTIME_COMPETITION_GPU_PULL_SECONDS: '0' }, 16384)
+    assert.deepEqual([low.competitionGpuSlots, low.competitionGpuShmMb, low.competitionGpuPullSeconds], [1, 65536, 0])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -400,6 +452,19 @@ test('a wrong setting stops the broker at start with the variable named, and res
       [{ RUNTIME_PRIORITY_CLASS: 'Not A Name' }, /RUNTIME_PRIORITY_CLASS must be a PriorityClass name/],
       [{ RUNTIME_GPU_RUNTIME_CLASS: 'NVIDIA!' }, /RUNTIME_GPU_RUNTIME_CLASS must be a RuntimeClass name/],
       [{ RUNTIME_POD_LABELS: JSON.stringify({ x: 'y'.repeat(20000) }) }, /exceeds 16384 bytes/],
+      // Not an extended resource: a bare name, Kubernetes' own, the quota prefix, no name, upper-case domain, a space.
+      ...['gpu', 'memory', 'kubernetes.io/gpu', 'example.kubernetes.io/gpu', 'requests.nvidia.com/gpu', 'nvidia.com/', '/gpu',
+        'NVIDIA.com/gpu', 'nvidia.com/gpu shared', 'nvidia.com/gpu/1'].map((resource): [Record<string, string>, RegExp] =>
+        [{ RUNTIME_COMPETITION_GPU_RESOURCE: resource }, /RUNTIME_COMPETITION_GPU_RESOURCE must be an extended resource name/]),
+      // Refused even while the resource is unset: the typo would otherwise wait for the day it is turned on.
+      ...['0', '9', '1.5', 'two', '-1'].map((count): [Record<string, string>, RegExp] =>
+        [{ RUNTIME_COMPETITION_GPU_COUNT: count }, /RUNTIME_COMPETITION_GPU_COUNT must be a whole number from 1 to 8/]),
+      ...['0', '257', '1.5', '01', 'two', '-1'].map((slots): [Record<string, string>, RegExp] =>
+        [{ RUNTIME_COMPETITION_GPU_SLOTS: slots }, /RUNTIME_COMPETITION_GPU_SLOTS must be a whole number from 1 to 256/]),
+      ...['-1', '65537', '512Mi', '1e3'].map((shm): [Record<string, string>, RegExp] =>
+        [{ RUNTIME_COMPETITION_GPU_SHM_MB: shm }, /RUNTIME_COMPETITION_GPU_SHM_MB must be a whole number from 0 to 65536/]),
+      ...['-1', '3601', '15m', '9.5'].map((pull): [Record<string, string>, RegExp] =>
+        [{ RUNTIME_COMPETITION_GPU_PULL_SECONDS: pull }, /RUNTIME_COMPETITION_GPU_PULL_SECONDS must be a whole number from 0 to 3600/]),
     ]
     for (const [extra, message] of refused)
       assert.throws(() => loadRuntimeConfig({ ...values, ...extra }, 16384), message, JSON.stringify(extra))

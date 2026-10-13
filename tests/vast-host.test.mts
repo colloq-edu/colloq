@@ -379,6 +379,23 @@ test('settings given once to up hold for a later update: state directory, bind a
   } finally { m.done() }
 })
 
+test('the competition runner settings reach the container: slots, and the cards given to submissions', () => {
+  const m = machine({ registry: { [APP]: appImage('sha256:aaa1', '0.9.0') } })
+  try {
+    // Without them in APP_KEYS an on-start could not set the runner at all:
+    // write_env takes only the listed keys, and the container reads only the
+    // file. The panel's Resources tab wins over these, later.
+    const r = m.run(['up'], { COLLOQ_IMAGE: APP, KERNEL_GPUS: '0,1', COMPETITION_SLOTS: '6', COMPETITION_GPUS: '1',
+      COMPETITION_GPU_PER_DEVICE: '3' })
+    assert.equal(r.status, 0, r.out)
+    const env = m.envFile()
+    for (const line of ['KERNEL_GPUS=0,1', 'COMPETITION_SLOTS=6', 'COMPETITION_GPUS=1', 'COMPETITION_GPU_PER_DEVICE=3'])
+      assert.match(env, new RegExp(`^${line}$`, 'm'))
+    const c = m.state().containers.colloq!
+    assert.equal(c.flags[c.flags.indexOf('--env-file') + 1], path.join(m.conf, 'colloq.env'))
+  } finally { m.done() }
+})
+
 test('update to another image backs up first, prints the way back, and a failed backup changes nothing', () => {
   const m = machine({ registry: { [APP]: appImage('sha256:aaa1', '0.9.0'), [NEXT]: appImage('sha256:bbb2', '0.9.1') } })
   try {

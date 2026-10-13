@@ -110,9 +110,38 @@ export interface RunRequest {
   /** Host-only destination for bounded artifacts exported from the attempt. */
   resultDir: string
   limits: StepLimits
+  /**
+   * The runner card this attempt holds, given by the queue when it took the
+   * job (competitions/gpu.ts · pickRunnerGpu); absent — the notebook runs on
+   * the CPU, exactly as before cards existed.
+   *
+   * `device` is the `KERNEL_GPUS` entry as docker names it; inside the
+   * container the card is index 0. `sliceMb` — the video memory this run is
+   * promised (the card's memory over `perDevice`), `null` when the card did
+   * not say its size: then nothing is capped and nothing is watched, because
+   * a limit nobody can state is not one to enforce. `perDevice` — how many
+   * runs share the card; with one the run has the whole card and needs no
+   * cap at all. Only the notebook step ever gets this: the metric step holds
+   * the hidden answers.
+   *
+   * Under Kubernetes the queue holds no card (competition_queue.gpu stays
+   * NULL): the cluster schedules the Pod onto a unit of its own GPU resource,
+   * and a node without one sends the job back as a `gpu` resource deferral.
+   * A GPU notebook there carries `CLUSTER_GPU` below — an empty device, "the
+   * cluster picks", no share of ours and nothing to watch — and the broker
+   * runner reads only that the field is there (`gpu: true` in its intent).
+   */
+  gpu?: { device: string; sliceMb: number | null; perDevice: number }
   /** Called as the run goes; the queue puts this into the submission row. */
   onProgress?: (progress: RunProgress) => void
 }
+
+/**
+ * A GPU notebook under Kubernetes (RunRequest.gpu): no device of ours, no
+ * share we could state, and so no cap and no watchdog — the cluster's device
+ * plugin decides what a unit of its GPU resource is.
+ */
+export const CLUSTER_GPU: Readonly<NonNullable<RunRequest['gpu']>> = Object.freeze({ device: '', sliceMb: null, perDevice: 1 })
 
 /** What became of the notebook. The same on both runners. */
 export interface RunOutcome {
@@ -156,10 +185,29 @@ export interface RunDiagnostics {
   exit: number | null
   oomKilled: boolean
   backend: CompetitionBackend
-  /** Who cut the container off from outside: time limit, printing, disk writes. */
-  killedBy?: 'wall' | 'output' | 'disk'
+  /**
+   * Who cut the container off from outside: time limit, printing, disk
+   * writes, video memory past the run's share of a card (`gpu`: two
+   * samples in a row above the share plus its tolerance, competitions/gpu.ts ·
+   * GPU_TOLERANCE_MB), or a shared card that could not be read at all
+   * (`gpu-unread`: docker-runner.ts · VRAM_UNREAD_LIMIT samples in a row
+   * failed, and the run was stopped rather than left unwatched).
+   */
+  killedBy?: 'wall' | 'output' | 'disk' | 'gpu' | 'gpu-unread'
   /** Memory peak read by the harness from inside — it shows "right at the limit". */
   peakBytes?: number | null
+  /**
+   * The most video memory the run's container was seen holding, MB, for the
+   * teacher; `null` — no sample answered; absent — a run nobody watched: no
+   * card, a whole card (nothing to enforce), or a share of unknown size.
+   */
+  gpuPeakMb?: number | null
+  /**
+   * The last samples that answered, MB, oldest first, at most four — for a
+   * run killed for its card, the two that decided it (docker-runner.ts ·
+   * gpuOverShare). Absent, like the peak, for a run nobody watched.
+   */
+  gpuSamplesMb?: number[]
 }
 
 /** An order to compute the metric. The participant is not in this container. */
@@ -214,6 +262,13 @@ export interface Capacity {
   memAvailableMb?: number | null
   /** Memory still held by containers whose removal failed and is being retried. */
   heldMb?: number
+  /**
+   * Runner cards still held the same way, card → containers: a notebook
+   * container that outlived its attempt keeps its share of the card until it
+   * is gone, and the queue counts it as a run on that card (store.ts ·
+   * takeNext). Absent — none, or a runner without cards of its own.
+   */
+  heldGpus?: Record<string, number>
 }
 
 export interface CompetitionRunner {

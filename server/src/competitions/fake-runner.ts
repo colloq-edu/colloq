@@ -37,7 +37,10 @@
  * `"detailFrom": "test.csv"` raises with them (`ValueError: <bytes>`), the
  * way a notebook printing the test into its traceback would; `"executed": true`
  * leaves an executed notebook whose output is what was read. On the metric
- * side `"echo": true` has a refusing metric quote the answer back.
+ * side `"echo": true` has a refusing metric quote the answer back. And
+ * `"killedBy": "gpu"` next to `"status": "oom"` is a run the watchdog stopped
+ * for going past its share of a card (docker-runner.ts · VramWatch): what
+ * its neighbours on the card are judged against (runner.ts · neighbourOverran).
  *
  * The stability of the number is not decoration. The leaderboard, "the
  * participant's best submission" and the final rescoring after the deadline
@@ -181,6 +184,20 @@ export class FakeCompetitionRunner implements CompetitionRunner {
   /** The machine's MemAvailable for the admission floor; `null` — unknown, not checked. */
   memAvailableMb: number | null = null
 
+  /**
+   * Cards held by containers "still awaiting removal", card → how many
+   * (Capacity.heldGpus): the queue must count them as runs on the card
+   * without a daemon that fails a `docker rm`.
+   */
+  heldGpus: Record<string, number> = {}
+
+  /**
+   * The notebook runs asked of it, newest last, with the card each was given
+   * (`null` — none): which card the queue chose is visible only here, at the
+   * moment of the run. Bounded: the test stand lives for days.
+   */
+  readonly notebookRuns: Array<{ submissionId: string; container: string; gpu: RunRequest['gpu'] | null }> = []
+
   /** Runs in progress: container name → how to cut it short. */
   private readonly live = new Map<string, () => void>()
 
@@ -189,6 +206,8 @@ export class FakeCompetitionRunner implements CompetitionRunner {
 
   async run(request: RunRequest): Promise<RunOutcome> {
     const started = Date.now()
+    this.notebookRuns.push({ submissionId: request.submissionId, container: request.container, gpu: request.gpu ?? null })
+    if (this.notebookRuns.length > 256) this.notebookRuns.shift()
     const notebook = readFile(path.join(request.inputDir, NOTEBOOK_FILE))
     const asked = notebook ? directiveOf(notebook) : {}
     const cells = notebook ? cellsOf(notebook) : 0
@@ -224,8 +243,10 @@ export class FakeCompetitionRunner implements CompetitionRunner {
         started,
         detail: raised ? `Traceback (most recent call last):\n  Cell In[1], line 1\nValueError: ${raised.toString('utf8')}` : typeof asked.detail === 'string' ? asked.detail : '',
         log: typeof asked.log === 'string' ? asked.log : '',
-        oom: status === 'out-of-memory',
+        // A run the watchdog stopped for its share of a card (`"killedBy": "gpu"`) is no OOM of the machine.
+        oom: status === 'out-of-memory' && asked.killedBy !== 'gpu',
         exit: status === 'timeout' ? 137 : 1,
+        killedBy: asked.killedBy === 'gpu' ? 'gpu' : undefined,
       })
     }
 
@@ -374,7 +395,7 @@ export class FakeCompetitionRunner implements CompetitionRunner {
   }
 
   async capacity(): Promise<Capacity> {
-    return { availableMb: this.availableMb, memAvailableMb: this.memAvailableMb }
+    return { availableMb: this.availableMb, memAvailableMb: this.memAvailableMb, heldGpus: { ...this.heldGpus } }
   }
 
   /**
@@ -414,7 +435,7 @@ export class FakeCompetitionRunner implements CompetitionRunner {
       log?: string
       oom?: boolean
       exit?: number
-      killedBy?: 'wall' | 'output' | 'disk'
+      killedBy?: 'wall' | 'output' | 'disk' | 'gpu'
     },
   ): RunOutcome {
     return {

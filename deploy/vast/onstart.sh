@@ -27,7 +27,15 @@ export ADMIN_EMAIL=""              # prefills the owner claim form
 export INSTITUTION=""              # shown next to the logo
 export OPENAI_API_KEY=""           # empty: the assistant is off (can be set later in the panel)
 
-# Python environments prepared before the first class. On a GPU offer: base,base-gpu
+# Python environments prepared before the first class. On a GPU offer:
+#   base,base-gpu              GPU rooms (CUDA PyTorch)
+#   base,base-gpu,kaggle-gpu   and a GPU competition (the kaggle-base stack on CUDA)
+# The GPU ones are built here on the first boot: base-gpu is about 9.9 GB and
+# kaggle-gpu adds about 2.8 GB (12.7 GB in all), so rent such a VM with 100 GB
+# of disk or more (make vast-vm DISK=100). Submissions get a card only when
+# the owner gives them one in the panel (Resources > GPUs for submissions), or
+# with COMPETITION_GPUS="1" COMPETITION_GPU_PER_DEVICE="2" exported here:
+# card 1 for submissions, two at a time; the other cards stay with the rooms.
 export KERNEL_PRELOAD="base"
 # Where prebuilt kernel images come from, as <repo>:v<version>-<env>. Empty:
 # the published ghcr.io/colloq-edu/colloq-kernel ones (base, kaggle-base), and

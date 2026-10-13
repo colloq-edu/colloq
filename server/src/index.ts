@@ -21,6 +21,7 @@ import { tr } from '@shared/i18n'
 import { startJournal, stopJournal } from './log.js'
 import { retireDatabaseKernels, stopsLocalKernelsOnExit } from './local/kernel-cleanup.js'
 import { dropLocalRoomKernel, warmRoomPerimeter } from './kernel/pool.js'
+import { watchGpuCards } from './kernel/resources.js'
 import { kernelRetirementInProgress } from './kernel/retirement.js'
 import { kernelBackend } from './kernel/runtime-client.js'
 import http from 'node:http'
@@ -471,6 +472,14 @@ server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const))
    * does not wait an extra second (kernel/perimeter.ts).
    */
   void warmRoomPerimeter()
+  /*
+   * The cards behind KERNEL_GPUS are asked about now, in the background, and
+   * kept warm from then on (kernel/resources.ts · watchGpuCards): the owner's
+   * first look at the Resources tab after a restart, and the first GPU
+   * submission the queue picks up again below, find the card sizes known
+   * instead of waiting for a probe container.
+   */
+  watchGpuCards()
   /*
    * The competition queue also starts right away, and in this order.
    *

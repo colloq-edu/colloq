@@ -18,9 +18,11 @@
   interface Props {
     competition: Pick<CompetitionPublic, 'limits' | 'outputPolicy'>
     target: SealedTarget
+    /** The card the run gets, as the conditions word it (gpuCondition); `null` — the CPU. */
+    gpu?: string | null
   }
 
-  const { competition, target }: Props = $props()
+  const { competition, target, gpu = null }: Props = $props()
 
   const brief = $derived((competition.outputPolicy ?? 'brief') !== 'full')
   const minutes = $derived(Math.max(1, Math.round(competition.limits.wallSeconds / 60)))
@@ -28,7 +30,7 @@
     tr('competitions.p.gigabytes', { count: Math.round((competition.limits.memoryMb / 1024) * 10) / 10 }),
   )
   const steps = $derived([
-    tr('competitions.p.howRun', { count: minutes, memory }),
+    gpu ? tr('competitions.p.howRunGpu', { count: minutes, memory, gpu }) : tr('competitions.p.howRun', { count: minutes, memory }),
     target.replaces
       ? target.rows === null
         ? tr('competitions.p.howSwapBare', { file: target.file })

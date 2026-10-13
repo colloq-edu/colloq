@@ -31,7 +31,8 @@ import { competitionCapabilities } from './capabilities.js'
 import { admitJob, MAX_SLOTS, slotsResolution } from './capacity.js'
 import { saveSlots } from './settings.js'
 import { submissionUsesCurrentBase, type AttemptProvenance } from './provenance.js'
-import { tr } from '@shared/i18n'
+import { gpuKillAboveMb, gpuSliceFor, noteClusterGpuSlots, runnerCardsHere, runnerGpuDevices, runnerGpuPerDevice, runnerGpuState } from './gpu.js'
+import { formatNumber, tr } from '@shared/i18n'
 /*
  * Not decoration: `admin/settings` installs the translator that reads the
  * instance language, and the strings the runner writes to the participant go
@@ -45,6 +46,7 @@ import { dependencyMessage } from '../dependencies/messages.js'
 import { dependencySize, packagesFit, packagesRoomMb } from '@shared/dependencies'
 import {
   BOOT,
+  cardWorkWaiting,
   enqueue,
   deferResourceAttempt,
   discardUnstartedRun,
@@ -59,6 +61,7 @@ import {
   openFileBytes,
   sealedFileBytes,
   noteQueueContainer,
+  noteQueueGpuShare,
   nextQueueRow,
   orphanedRuns,
   queuePaused,
@@ -71,6 +74,7 @@ import {
   takeNext,
   updateSubmission,
   waitingCount,
+  type QueueGpu,
   type QueueRow,
 } from './store.js'
 import {
@@ -90,16 +94,19 @@ import {
   SOLUTION_FILE,
   SUBMISSION_FILE,
 } from './storage.js'
-import { METRIC_NAME, competitionDockerDiagnostics } from './docker-runner.js'
+import { METRIC_NAME, VRAM_UNREAD_LIMIT, competitionDockerDiagnostics } from './docker-runner.js'
 import { startSubmissionSweep, stopSubmissionSweep } from './housekeeping.js'
 import { CompetitionResourcePending } from './broker-runner.js'
 import {
+  CLUSTER_GPU,
   competitionBackend,
   competitionRunner,
   limitsFor,
+  type Capacity,
   type CompetitionBackend,
   type DependencyFailure,
   type RunOutcome,
+  type RunRequest,
   type ScoreOutcome,
 } from './runner-port.js'
 import {
@@ -255,6 +262,13 @@ let pumping = false
 let stopped = false
 
 /**
+ * Until when no GPU notebook is taken under the cluster (queueCards): the
+ * backoff of the last one the cluster sent back for want of a unit. Zero —
+ * no rest.
+ */
+let clusterGpuRestUntil = 0
+
+/**
  * Take as much work as the machine and the setting allow, and do NOT wait for
  * it.
  *
@@ -271,7 +285,8 @@ export async function pumpOnce(): Promise<number> {
     const slots = queueSlots()
     if (runningRows().length >= slots) return 0
     if (waitingCount() === 0) return 0
-    if (!(await competitionCapabilities()).execution.available) return 0
+    const capabilities = await competitionCapabilities()
+    if (!capabilities.execution.available) return 0
     const capacity = await competitionRunner().capacity()
     const usableMb = capacity.usableMb !== undefined ? capacity.usableMb : capacity.availableMb
     const heldMb = capacity.heldMb ?? 0
@@ -284,9 +299,17 @@ export async function pumpOnce(): Promise<number> {
     let admittedMb = 0
     let availableDiskBytes: number | null = null
     try { const disk = fs.statfsSync(competitionsDir); availableDiskBytes = disk.bavail * disk.bsize } catch { /* unknown capacity */ }
+    /*
+     * The runner cards, once per pass: what each may hold is a census of the
+     * rooms' containers, and that is a docker call. Who holds them is not read
+     * here: the queue counts its own running rows at every take, so the
+     * second take of this pass already sees the card the first one took.
+     */
+    const gpu = await queueCards(capacity, noteClusterGpuSlots(capabilities.gpuSlots))
     for (;;) {
       if (runningRows().length >= slots) break
-      const candidate = nextQueueRow()
+      // The same filter as the take below: the work admitted is the work taken.
+      const candidate = nextQueueRow(Date.now(), gpu)
       if (!candidate) break
       const competition = getCompetition(candidate.competitionId)
       const needMb = competition ? runReservationMb(competition, candidate.kind) : RUN_RESERVE_MB
@@ -316,7 +339,7 @@ export async function pumpOnce(): Promise<number> {
         break
       }
       forgetWarning()
-      const row = takeNext({ boot: BOOT, slots })
+      const row = takeNext({ boot: BOOT, slots, gpu })
       if (!row) { release(); break }
       admittedMb += needMb
       started++
@@ -338,6 +361,49 @@ export async function pumpOnce(): Promise<number> {
     pumping = false
   }
   return started
+}
+
+/**
+ * The runner cards for one pass of the pump (store.ts · QueueGpu).
+ *
+ * A GPU notebook needs a general slot AND a free share of a card, and the
+ * queue passes it over while no share is free instead of waiting behind it:
+ * CPU work flows past a GPU notebook that waits for a card, and the GPU
+ * notebook waits for nothing else but a general slot (store.ts ·
+ * selectNext). The cards are this machine's — the docker runner and its test
+ * stand-in; each may hold `perDevice` runs, none while a class still holds it
+ * or while docker cannot say who does (competitions/gpu.ts ·
+ * runnerGpuState), what it holds already is weighed by the shares its runs
+ * were taken at (gpu.ts · cardsInUse), and a container whose removal failed
+ * still holds its share (Capacity.heldGpus).
+ *
+ * Under the cluster the queue keeps no card (Kubernetes schedules the Pod
+ * onto a unit of its GPU resource, and a node without one sends the job back
+ * as a `gpu` resource deferral), but it does keep to the number of GPU
+ * notebooks the broker has units for (`clusterSlots`, gpu.ts ·
+ * clusterGpuSlots): a GPU notebook taken past it held a general slot for the
+ * half minute its Pod waited, came back to the head of the queue, and was
+ * taken again — with 25 GPU notebooks waiting no CPU work got a slot for
+ * hours. And once the cluster has sent one back for want of a unit, none is
+ * taken until that one's backoff ends (or a GPU notebook of ours ends and
+ * frees a unit): the cluster has said it has none now, and the CPU work goes
+ * past in the meantime, as it does past a full card here.
+ *
+ * Without GPU work waiting there is no census at all: no cards to count, and
+ * a GPU notebook that arrives during the pass simply waits for the next one,
+ * a second away.
+ */
+async function queueCards(capacity: Capacity, clusterSlots: number): Promise<QueueGpu> {
+  if (!runnerCardsHere()) return Date.now() < clusterGpuRestUntil ? { cards: [] } : { cards: [], cluster: clusterSlots }
+  if (!cardWorkWaiting()) return { cards: [] }
+  try {
+    const state = await runnerGpuState()
+    return { cards: state.cards, held: capacity.heldGpus ?? {} }
+  } catch (error) {
+    // No count, no card: the GPU work waits for the next pass, the rest goes on.
+    warnOnce(`[competitions] runner cards could not be counted: ${error instanceof Error ? error.message : String(error)}`)
+    return { cards: [] }
+  }
 }
 
 /** Wait for everything running in this process. */
@@ -486,12 +552,16 @@ async function runJob(row: QueueRow): Promise<void> {
     secrets = snapshotSecrets(competition, submission, row).then(() => null, (error: unknown) => error ?? new Error('Secret snapshot failed'))
     if (row.kind === 'metric') await scoreOnly(competition, submission, row, provenance, secrets)
     else await runNotebookThenScore(competition, submission, row, provenance, secrets)
+    // A GPU notebook of ours ended under the cluster: its unit is free, and the next one may ask for it.
+    if (row.kind === 'notebook' && competition.limits.gpu === true && !runnerCardsHere()) clusterGpuRestUntil = 0
   } catch (err) {
     if (err instanceof CompetitionResourcePending && ownsQueueAttempt(row)) {
       const reason=tr('competitions.runtime.resourcesWaiting')
-      const after=deferResourceAttempt(row,reason,Date.now(),`Competition Pod unschedulable (${err.resource}); retrying automatically.`,err.kind)
+      const after=deferResourceAttempt(row,reason,Date.now(),err.teacherReason,err.kind)
       if (after!==null) {
         updateSubmission(submission.id,{cellsDone:submission.cellsDone,cellsTotal:submission.cellsTotal,durationMs:submission.durationMs})
+        // The cluster has no unit now: no GPU notebook asks again until this one may (queueCards).
+        if (err.resource === 'gpu' && !runnerCardsHere()) clusterGpuRestUntil = Math.max(clusterGpuRestUntil, after)
         return
       }
     }
@@ -593,11 +663,20 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
       }
     } catch (error) { preflightError = error }
   }
+  // Read before the cancellation check, like the set's hash: a card nobody
+  // has asked about yet takes a few seconds to say its size.
+  const gpu = unfit || preflightError ? undefined : await runGpu(row, competition)
   // Hashing a large set yields to cancellation before any container exists.
   if (!ownsQueueAttempt(row) || takeCancellation(submission.id, 0)) {
     finishRun(run.id, { finishedAt: Date.now(), verdict: 'exit', cellsDone: 0, cellsTotal: 0,
       teacherError: 'Cancelled before container start' })
     return
+  }
+  // After the cancellation, which outranks it: a cancelled run is not put back in the queue.
+  const withdrawn = takenBack(gpu)
+  if (withdrawn !== null) {
+    discardUnstartedRun(run.id, row.attemptId!)
+    throw new CardWithdrawn(withdrawn)
   }
   let outcome: RunOutcome
   try { outcome = unfit ? {
@@ -624,6 +703,7 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     inputDir: input,
     resultDir: result,
     limits,
+    ...(gpu ? { gpu } : {}),
     onProgress: (progress) => {
       if (!ownsQueueAttempt(row)) return
       const seen = codeCells === null ? progress : clampCells(progress, codeCells)
@@ -637,14 +717,19 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     if(error instanceof CompetitionResourcePending)discardUnstartedRun(run.id,row.attemptId!)
     throw error
   }
+  const endedAt = Date.now()
+  // Said at once, before anything below waits: a neighbour on the card may be waiting to learn it (neighbourOverran).
+  const stoppedBy = outcome.diagnostics.killedBy
+  if ((stoppedBy === 'gpu' || stoppedBy === 'gpu-unread') && gpu?.device) noteShareKill(gpu.device, endedAt, stoppedBy)
   if (codeCells !== null) outcome = { ...clampCells(outcome, codeCells), diagnostics: { ...outcome.diagnostics, peakBytes: null } }
   // One text for the run row and the submission row. Where packages come from
   // is read only for a failed cell: that is the one outcome a missing module
   // explains.
   const participantError = notebookNote(outcome, competition,
-    outcome.status === 'cell_error' ? packageSources(competition, submission, binding) : null)
+    outcome.status === 'cell_error' ? packageSources(competition, submission, binding) : null, gpu)
   const errorType = outcome.status === 'cell_error' && outcome.diagnostics.killedBy !== 'output' ? errorTypeOf(outcome.detail) : null
-  const briefError = sealed ? briefNote(outcome, competition, errorType) : null
+  const briefError = sealed ? briefNote(outcome, competition, errorType, gpu) : null
+  const teacherError = teacherNote(outcome, gpu)
   finishRun(run.id, {
     finishedAt: Date.now(),
     verdict: outcome.status,
@@ -653,10 +738,29 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     cellsDone: outcome.cell + 1,
     cellsTotal: outcome.cells,
     participantError,
-    teacherError: teacherNote(outcome),
+    teacherError,
   })
 
   if (!ownsQueueAttempt(row) || takeCancellation(submission.id, outcome.wall)) return
+  /*
+   * Torch ran out of video memory on a shared card while the watchdog was
+   * stopping a neighbour on the same card for going past its share: the
+   * neighbour's burst took the memory this run was promised, in the seconds
+   * the watchdog needs for its two samples. That is not this notebook's
+   * failure, and judging it one told the participant to shrink a model that
+   * fit. So the run goes back to the queue, once (a second time it is judged
+   * like any other), with our own words, and counts toward nothing.
+   */
+  if (gpu?.device && gpu.perDevice > 1 && errorType === 'OutOfMemoryError' && row.resourceRetries === 0
+    && await neighbourOverran(row, gpu.device, endedAt)) {
+    if (!ownsQueueAttempt(row) || takeCancellation(submission.id, outcome.wall)) return
+    const retried = deferResourceAttempt(row, tr('competitions.answer.gpuNeighbourRetry'), Date.now(),
+      tr('competitions.answer.gpuNeighbourRetryTeacher', { device: gpu.device }))
+    if (retried !== null) {
+      updateSubmission(submission.id, { cellsDone: submission.cellsDone, cellsTotal: submission.cellsTotal, durationMs: submission.durationMs })
+      return
+    }
+  }
   publishAttemptArtifacts(competition.id, submission.id, result)
   if (outcome.status !== 'ok') {
     updateSubmission(submission.id, {
@@ -668,7 +772,7 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
       participantError,
       briefError,
       errorType,
-      teacherError: teacherNote(outcome),
+      teacherError,
     })
     return
   }
@@ -699,6 +803,167 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
   updateSubmission(submission.id, { notebookInputRevision: provenance.notebookInputRevision })
   promoteAttempt(competition.id, submission.id, result)
   await scoreStep(competition, submission, path.join(resultDir(competition.id, submission.id), SUBMISSION_FILE), outcome.wall, outcome, row, provenance, secrets, sealed)
+}
+
+/**
+ * The card a notebook run is given (RunRequest.gpu); `undefined` — the CPU.
+ *
+ * On this machine's cards it is the one the queue took for the attempt
+ * (QueueRow.gpu), with the share promised on THAT card: the panel promises
+ * the smallest card's share, and a run on a bigger card gets its bigger one.
+ * The share is the one the row was taken at (QueueRow.gpuPerDevice), never
+ * the number in force: the queue admitted the run by it, and an owner who
+ * changed «посылок на карту» a second after the take must not hand this run
+ * a share its card has no room for, or a whole uncapped card next to capped
+ * neighbours. What it comes to in MB goes back into the row for the console.
+ *
+ * Under the cluster the queue holds no card, and a GPU notebook carries
+ * CLUSTER_GPU: the Pod asks the cluster for a unit of its GPU resource. A
+ * rescore never gets here with one, and the metric step after the notebook
+ * never asks (scoreStep): it holds the hidden answers.
+ */
+async function runGpu(row: QueueRow, competition: Competition): Promise<RunRequest['gpu']> {
+  if (row.gpu) {
+    const perDevice = row.gpuPerDevice ?? runnerGpuPerDevice()
+    const sliceMb = await gpuSliceFor(row.gpu, { perDevice })
+    noteQueueGpuShare(row, sliceMb)
+    return { device: row.gpu, sliceMb, perDevice }
+  }
+  if (!runnerCardsHere() && row.kind === 'notebook' && competition.limits.gpu === true) return { ...CLUSTER_GPU }
+  return undefined
+}
+
+/**
+ * The card of a run about to start that the owner has taken back from
+ * submissions since the queue took it; `null` — none: the card is still
+ * given, the run has no card, or it has the cluster's.
+ *
+ * Asked once more right before `docker run`, after the slow part: the card's
+ * size (runGpu) takes seconds on a card nobody has asked about, and before it
+ * the run's inputs were composed and its package set hashed. An owner who
+ * gave the card back to classes in between gave it to a class that needs it
+ * now. The rooms keep off a card a running row holds (kernel/pool.ts ·
+ * takeGpu), so a run started on it anyway kept the card from that class for
+ * the run's whole time limit, for a run that had not begun. Instead the run
+ * goes back to the queue for a card still given (CardWithdrawn), and the
+ * card is the classes' at once.
+ */
+function takenBack(gpu: RunRequest['gpu']): string | null {
+  return gpu?.device && !runnerGpuDevices().includes(gpu.device) ? gpu.device : null
+}
+
+/**
+ * A GPU notebook whose card the owner took back from submissions between the
+ * queue's take and `docker run` (takenBack). A resource deferral, like a Pod
+ * the cluster could not place (runJob · deferResourceAttempt): no run began,
+ * the card goes with the attempt, and the row waits for a card still given,
+ * counting toward nothing. The participant reads the queue's usual words
+ * about resources; the teacher reads ours, which name the card — not the
+ * cluster's "Pod unschedulable", which on this machine would be untrue.
+ */
+class CardWithdrawn extends CompetitionResourcePending {
+  constructor(readonly device: string) {
+    super('gpu', 'notebook')
+  }
+
+  override get teacherReason(): string {
+    return tr('competitions.answer.gpuWithdrawnTeacher', { device: this.device })
+  }
+}
+
+/**
+ * How close, either way, the watchdog's kill of a neighbour and a run's
+ * out-of-memory on the same card must be for the second to be the first's
+ * doing. The watchdog stops a run only on its second sample over the line,
+ * three seconds apart and up to five each (docker-runner.ts · VramWatch), and
+ * both runs then take a few seconds to end and be collected.
+ */
+export const NEIGHBOUR_WINDOW_MS = 20_000
+
+/**
+ * The same after the stop of a neighbour whose card could not be read
+ * (`gpu-unread`, docker-runner.ts · VRAM_UNREAD_LIMIT). Such a run held
+ * memory nobody saw for as long as its unanswered samples took — up to about
+ * twenty-five seconds, each given up at its five-second deadline on the
+ * three-second cycle, against the three to six of two samples over the line.
+ * Its burst may come at the start of that stretch and its stop at the end, so
+ * the stop may land that much later after the run it crowded out: fifteen
+ * seconds more. It is also how long a run that ran out of memory beside a
+ * neighbour still on the card waits to learn whether that neighbour is
+ * stopped (neighbourVerdict) — fifteen seconds longer than before for an
+ * out-of-memory that turns out to be its own, which nothing on this side can
+ * tell from a neighbour's in advance. That is the price of not billing the
+ * participant for a card a run nobody could read had taken.
+ */
+export const UNREAD_NEIGHBOUR_WINDOW_MS = NEIGHBOUR_WINDOW_MS + 15_000
+
+/** A neighbour stopped from outside: when, and how long after a run's end the stop may still be that run's cause. */
+export interface NeighbourStop {
+  at: number
+  windowMs: number
+}
+
+/**
+ * A run stopped from outside at `at`, as the runs beside it on its card are
+ * judged against it: for going past its share (`gpu`), or because its card
+ * could not be read (`gpu-unread`). Both count. A run whose memory nobody
+ * could read may have held any of the card meanwhile — the fail-closed rule
+ * exists for a notebook that keeps itself unreadable to take the card — and a
+ * neighbour that ran out of memory then was crowded out by it as surely as by
+ * a burst the watchdog saw; only later, by the length of its unread stretch.
+ */
+export function neighbourStop(at: number, by: 'gpu' | 'gpu-unread'): NeighbourStop {
+  return { at, windowMs: by === 'gpu-unread' ? UNREAD_NEIGHBOUR_WINDOW_MS : NEIGHBOUR_WINDOW_MS }
+}
+
+/** The stops of runs on each card, by device; only the recent ones are kept. */
+const shareKills = new Map<string, NeighbourStop[]>()
+
+function noteShareKill(device: string, at: number, by: 'gpu' | 'gpu-unread'): void {
+  const recent = (shareKills.get(device) ?? []).filter((stop) => at - stop.at <= 3 * UNREAD_NEIGHBOUR_WINDOW_MS)
+  recent.push(neighbourStop(at, by))
+  shareKills.set(device, recent)
+}
+
+/**
+ * Pure: whether a run that died of torch's out-of-memory at `endedAt` on a
+ * shared card, taken at `startedAt`, was crowded out by a neighbour's stop
+ * (`crowded`), may still learn of one (`wait`: another run `stays` on the
+ * card, and a stop could yet land within its window), or died of its own
+ * (`own`). A stop counts when it came while this run ran — one before it was
+ * taken freed the memory before it asked for any — at most
+ * NEIGHBOUR_WINDOW_MS before its end and at most the stop's own window after.
+ */
+export function neighbourVerdict(
+  stops: readonly NeighbourStop[],
+  run: { startedAt: number; endedAt: number },
+  now: number,
+  stays: boolean,
+): 'crowded' | 'wait' | 'own' {
+  const since = Math.max(run.startedAt, run.endedAt - NEIGHBOUR_WINDOW_MS)
+  if (stops.some((stop) => stop.at >= since && stop.at <= run.endedAt + stop.windowMs)) return 'crowded'
+  return stays && now - run.endedAt < UNREAD_NEIGHBOUR_WINDOW_MS ? 'wait' : 'own'
+}
+
+/**
+ * Whether a run that died of torch's out-of-memory at `endedAt` on a shared
+ * card died of a neighbour (neighbourVerdict). The stop may land after the
+ * victim has already failed — its cudaMalloc fails during the burst, and the
+ * burst is stopped only on the second sample over the line, or after the last
+ * of VRAM_UNREAD_LIMIT unanswered ones — so while another run is still on the
+ * card this waits for it: up to the longest window, and no longer than that
+ * run stays (a neighbour that ends of its own accord was not stopped).
+ */
+async function neighbourOverran(row: QueueRow, device: string, endedAt: number): Promise<boolean> {
+  const signal = aborters.get(row.attemptId!)?.signal
+  const run = { startedAt: row.startedAt ?? 0, endedAt }
+  for (;;) {
+    const stays = runningRows().some((other) => other.gpu === device && other.submissionId !== row.submissionId)
+    const verdict = neighbourVerdict(shareKills.get(device) ?? [], run, Date.now(), stays)
+    if (verdict !== 'wait') return verdict === 'crowded'
+    if (stopped || signal?.aborted) return false
+    await new Promise<void>((resolve) => setTimeout(resolve, 100))
+  }
 }
 
 /**
@@ -956,11 +1221,14 @@ const MB = 1024 * 1024
  * number: "did not fit into 10 minutes" is more useful than "time limit".
  *
  * One more sentence of ours may follow the traceback: when the cell died on
- * a missing module, it says what only the platform knows (missingPackageHint).
- * `sources` is where the submission's packages could come from; without it
- * the traceback goes alone.
+ * a missing module, it says what only the platform knows (missingPackageHint),
+ * and when torch ran out of video memory on a card, the share the run had
+ * (gpuMemoryHint). `sources` is where the submission's packages could come
+ * from; without it the traceback goes alone. `gpu` is the card the run was
+ * given: a run stopped for its share of the card is told so in numbers
+ * (gpuKillNote).
  */
-export function notebookNote(outcome: RunOutcome, competition: Competition, sources: PackageSources | null = null): string | null {
+export function notebookNote(outcome: RunOutcome, competition: Competition, sources: PackageSources | null = null, gpu: RunRequest['gpu'] | null = null): string | null {
   const at = outcome.cell + 1
   switch (outcome.status) {
     case 'ok':
@@ -982,7 +1250,10 @@ export function notebookNote(outcome: RunOutcome, competition: Competition, sour
         })
       }
       const head = tr('competitions.answer.cellFailed', { cell: at, cells: outcome.cells })
-      return outcome.detail ? withinLimit(head, outcome.detail, missingPackageHint(outcome.detail, sources)) : head
+      if (!outcome.detail) return head
+      // One hint at most: a missing module and torch's out-of-memory are different last lines.
+      const hint = missingPackageHint(outcome.detail, sources) ?? gpuMemoryHint(errorTypeOf(outcome.detail), gpu)
+      return withinLimit(head, outcome.detail, hint)
     }
     case 'cell_timeout':
     case 'timeout':
@@ -998,7 +1269,7 @@ export function notebookNote(outcome: RunOutcome, competition: Competition, sour
         cells: outcome.cells,
       })
     case 'out-of-memory':
-      return tr('competitions.answer.outOfMemory', {
+      return gpuKillNote(outcome, gpu) ?? tr('competitions.answer.outOfMemory', {
         count: Math.max(1, Math.round(competition.limits.memoryMb / 1024)),
         cell: at,
       })
@@ -1161,14 +1432,101 @@ export function missingPackageHint(detail: string, sources: PackageSources | nul
     : tr('competitions.answer.missingPackage.attach', { name })
 }
 
-/** What the TEACHER reads: the exit code, OOM and the tail of the container log. */
-export function teacherNote(outcome: RunOutcome): string | null {
+/**
+ * "6", "7,1": a share or a peak in gigabytes to a tenth — what a person
+ * compares at a glance, in the instance's own decimal separator.
+ */
+const gigabytes = (mb: number): string => formatNumber(Math.round(mb / 102.4) / 10)
+
+/**
+ * What the PARTICIPANT reads about a run stopped for its share of a card;
+ * `null` — the run was not stopped for that (any other out-of-memory is the
+ * machine's memory, and keeps its own sentence).
+ *
+ * Our own words and our own numbers: the share is the card's memory over the
+ * runs sharing it, and the peak is what the watchdog read from outside the
+ * notebook (docker-runner.ts · VramWatch). Neither a traceback nor anything
+ * the notebook printed — there is none: it was killed from outside. `brief`
+ * leaves the peak out. Under the brief output policy how far past its share
+ * a run went is a number the notebook chose while it had the hidden test in
+ * memory — a channel, exactly like how much it printed (briefNote) — and only
+ * the share, which is ours, stays.
+ */
+export function gpuKillNote(outcome: RunOutcome, gpu: RunRequest['gpu'] | null, brief = false): string | null {
+  const slice = gpu?.sliceMb ?? null
+  if (outcome.diagnostics.killedBy !== 'gpu' || slice === null) return null
+  const peak = outcome.diagnostics.gpuPeakMb ?? null
+  const cell = outcome.cell + 1
+  if (brief || peak === null) return tr('competitions.answer.gpuOverShare', { slice: gigabytes(slice), cell })
+  return tr('competitions.answer.gpuOutOfMemory', { peak: gigabytes(peak), slice: gigabytes(slice), cell })
+}
+
+/**
+ * The sentence after torch's own OutOfMemoryError in a run that had a card;
+ * `null` — no card, or another error.
+ *
+ * Not the watchdog's kill (gpuKillNote): here torch met its share inside the
+ * participant's own cell — the allocator's cap (harness.ts · SITECUSTOMIZE) or
+ * a full card — and the traceback says "CUDA out of memory" with nothing about
+ * why a 24 GB card ran out at six. The share is ours: the card's memory over
+ * the runs sharing it, as the run was given it (RunRequest.gpu), never a
+ * number the notebook reported. So a blind participant may read it too, next
+ * to the type (briefNote). With a card to itself there is no share to name,
+ * and under the cluster, or on a card that did not say its size, nobody can
+ * name one — the advice stays.
+ */
+export function gpuMemoryHint(errorType: string | null, gpu: RunRequest['gpu'] | null): string | null {
+  if (!gpu || errorType !== 'OutOfMemoryError') return null
+  // The cluster's card (CLUSTER_GPU): its device plugin decides the share, not us.
+  if (gpu.device === '') return tr('competitions.answer.gpuOomCard')
+  if (gpu.perDevice <= 1) return tr('competitions.answer.gpuOomWhole')
+  return gpu.sliceMb === null
+    ? tr('competitions.answer.gpuOomCard')
+    : tr('competitions.answer.gpuOomShare', { slice: gigabytes(gpu.sliceMb) })
+}
+
+/**
+ * What the TEACHER reads: the exit code, OOM and the tail of the container
+ * log — and for a run with a watched share of a card, a line about the card
+ * (cardNote).
+ */
+export function teacherNote(outcome: RunOutcome, gpu: RunRequest['gpu'] | null = null): string | null {
   if (outcome.status === 'ok') return null
   const head = `${outcome.status} · exit ${outcome.diagnostics.exit ?? '—'}${
     outcome.diagnostics.oomKilled ? ' · OOMKilled' : ''
   }${outcome.diagnostics.killedBy ? ` · killed by ${outcome.diagnostics.killedBy}` : ''}`
   const detail = outcome.status === 'dependency_error' ? outcome.detail : ''
-  return [head, detail, outcome.log].filter(Boolean).join('\n')
+  return [head, detail, cardNote(outcome, gpu), outcome.log].filter(Boolean).join('\n')
+}
+
+/**
+ * The teacher's line about the card of a failed run that had a watched share:
+ * which card, the share and the peak — and for a run stopped for it, the two
+ * samples that decided the kill and the line they crossed, so a teacher who
+ * thinks the share too small has the numbers to say by how much. `null` — no
+ * card, a whole card, or a share of unknown size: nobody watched, and there
+ * is nothing to say.
+ *
+ * A watched run that no sample ever saw holding memory — none answered, or
+ * every one that did listed nothing — says the peak was not measured, not
+ * "peak 0 MB": a notebook that trained on the card for minutes read as one
+ * that never touched it.
+ */
+function cardNote(outcome: RunOutcome, gpu: RunRequest['gpu'] | null): string | null {
+  if (!gpu?.device || gpu.sliceMb === null) return null
+  if (outcome.diagnostics.killedBy === 'gpu') {
+    return tr('competitions.answer.gpuKilled', {
+      device: gpu.device,
+      samples: (outcome.diagnostics.gpuSamplesMb ?? []).slice(-2).join(', '),
+      limit: gpuKillAboveMb(gpu.sliceMb),
+      slice: gpu.sliceMb,
+    })
+  }
+  const peak = outcome.diagnostics.gpuPeakMb
+  if (peak === undefined) return null
+  return typeof peak === 'number' && peak > 0
+    ? tr('competitions.answer.gpuPeak', { device: gpu.device, peak, slice: gpu.sliceMb })
+    : tr('competitions.answer.gpuPeakUnmeasured', { device: gpu.device, slice: gpu.sliceMb })
 }
 
 /**
@@ -1204,12 +1562,17 @@ export function metricNote(outcome: ScoreOutcome): string | null {
  * line says": a notebook on the hidden test can raise a class it made up and
  * named after the rows it read, and the name would carry them out whole. The
  * list caps that channel at a handful of bits.
+ *
+ * `OutOfMemoryError` is torch's (torch.OutOfMemoryError, the CUDA allocator
+ * out of room): on a shared card it is what a run meets at its share, raised
+ * in the participant's own cell (harness.ts · SITECUSTOMIZE), and the one
+ * word a blind participant needs to look at their batch size.
  */
 const ERROR_TYPES: ReadonlySet<string> = new Set([
   'ArithmeticError', 'AssertionError', 'AttributeError', 'EmptyDataError', 'FileNotFoundError',
   'ImportError', 'IndentationError', 'IndexError', 'KeyError', 'LinAlgError', 'LookupError',
   'MemoryError', 'MergeError', 'ModuleNotFoundError', 'NameError', 'NotFittedError',
-  'NotImplementedError', 'OSError', 'OverflowError', 'ParserError', 'PermissionError',
+  'NotImplementedError', 'OSError', 'OutOfMemoryError', 'OverflowError', 'ParserError', 'PermissionError',
   'RecursionError', 'RuntimeError', 'StopIteration', 'SyntaxError', 'TypeError',
   'UnboundLocalError', 'UnicodeDecodeError', 'UnicodeEncodeError', 'ValueError', 'ZeroDivisionError',
 ])
@@ -1243,16 +1606,27 @@ export function errorTypeOf(detail: string): string | null {
  * size or anything else the run reported about itself, never the module a
  * traceback names: each of those is text the notebook wrote while it had the
  * hidden rows in memory. The sentences that already carry nothing but our
- * numbers (time, memory, no file) are the usual ones.
+ * numbers (time, memory, no file) are the usual ones. A run stopped for its
+ * share of a card is told the share and not how far past it went
+ * (gpuKillNote); one stopped because its card could not be read, our
+ * sentence about that (unreadCardSentence).
  */
-export function briefNote(outcome: RunOutcome, competition: Competition, errorType: string | null): string | null {
+export function briefNote(outcome: RunOutcome, competition: Competition, errorType: string | null, gpu: RunRequest['gpu'] | null = null): string | null {
   const at = outcome.cell + 1
   switch (outcome.status) {
-    case 'cell_error':
+    case 'cell_error': {
       if (outcome.diagnostics.killedBy === 'output') return tr('competitions.answer.sealed.tooMuchOutput', { cell: at })
-      return errorType
+      const head = errorType
         ? tr('competitions.answer.sealed.cellFailed', { cell: at, cells: outcome.cells, type: errorType })
         : tr('competitions.answer.sealed.cellFailedUntyped', { cell: at, cells: outcome.cells })
+      // A paragraph of its own: the blind row shows only what follows the
+      // head it already repeats (web/src/lib/competition-words.ts · blindAdvice).
+      const unread = outcome.diagnostics.killedBy === 'gpu-unread' ? unreadCardSentence(outcome.detail) : null
+      const hint = unread ?? gpuMemoryHint(errorType, gpu)
+      return hint ? `${head}\n\n${hint}` : head
+    }
+    case 'out-of-memory':
+      return gpuKillNote(outcome, gpu, true) ?? notebookNote({ ...outcome, detail: '' }, competition)
     case 'target_unreadable':
       return tr('competitions.answer.unreadable', { file: SUBMISSION_FILE })
     case 'dependency_error':
@@ -1262,6 +1636,28 @@ export function briefNote(outcome: RunOutcome, competition: Competition, errorTy
     default:
       return notebookNote({ ...outcome, detail: '' }, competition)
   }
+}
+
+/**
+ * The docker runner's sentence for a run stopped because its card could not
+ * be read, when the detail is exactly that sentence (docker-runner.ts ·
+ * unreadCardNotes puts it where a traceback would be); `null` otherwise.
+ *
+ * Without it a blind participant read "the notebook failed at cell 5, the
+ * output is hidden" about a run no code of theirs failed in: we stopped it,
+ * and why — the card went unanswered sample after sample, most often a
+ * notebook starving its own processor — is the one thing they can act on.
+ * Matched word for word against our own catalogue rather than passed on for
+ * the kill's name: the detail is the traceback's place, and under the brief
+ * policy nothing the notebook wrote may leave. The count in it is the
+ * runner's: the limit, and a sample still in flight at the stop.
+ */
+function unreadCardSentence(detail: string): string | null {
+  for (let count = VRAM_UNREAD_LIMIT; count <= 2 * VRAM_UNREAD_LIMIT; count++) {
+    const ours = tr('competitions.answer.gpuUnread', { count })
+    if (detail === ours) return ours
+  }
+  return null
 }
 
 /** Codes of our own alignment checks whose blind words exist (competitions.answer.sealed.*). */
@@ -1370,6 +1766,37 @@ export async function settleSubmission(submissionId: string, timeoutMs: number):
   clearTimeout(timeout)
   if (outcome === 'late') return false
   return queueRow(submissionId)?.state !== 'running'
+}
+
+/**
+ * Take every run of a competition off the executor before the competition
+ * is deleted: the waiting ones leave the queue, the running ones are killed
+ * the way "Kill" kills them and waited for, each for at most `settleMs`.
+ *
+ * Without it the delete took the running rows away under live containers:
+ * the run went on to its time limit holding its share of a card, while the
+ * queue, which knows a card is busy only from its rows, put the next GPU
+ * notebook on it — "the whole card" promised on a card a stranger filled.
+ * `false` — a run is still going (it did not stop in time, or it belongs to a
+ * previous life of the server that nobody here can wait for), and nothing
+ * may be deleted yet. The waiting ones stay cancelled either way, as when a
+ * participant is removed (erase.ts): the competition is going.
+ */
+export async function stopCompetitionRuns(competitionId: string, settleMs: number): Promise<boolean> {
+  const rows = queueRows().filter((row) => row.competitionId === competitionId)
+  if (rows.some((row) => row.state === 'running' && !runningHere(row.submissionId))) return false
+  // Before the first await: the pump must not start them while the running ones are taken down.
+  for (const row of rows) {
+    if (row.state !== 'waiting') continue
+    leaveQueue(row.submissionId)
+    updateSubmission(row.submissionId, { state: 'cancelled', stage: 'queue', teacherError: tr('competitions.answer.killedByTeacher') })
+  }
+  for (const row of rows) {
+    if (row.state !== 'running') continue
+    await cancelSubmission(row.submissionId, 'teacher')
+    if (!(await settleSubmission(row.submissionId, settleMs))) return false
+  }
+  return true
 }
 
 /**

@@ -19,6 +19,7 @@
   import SubmissionEnvironment from './SubmissionEnvironment.svelte'
   import Badge from './Badge.svelte'
   import {
+    blindAdvice,
     blindCellLine,
     blindWhy,
     elapsedClock,
@@ -75,14 +76,18 @@
   const cellLine = $derived(blind ? blindCellLine(submission) : '')
   /*
    * The brief words of any other blind outcome are our own and safe to show;
-   * a rejected answer's first sentence is already the card's title.
+   * a rejected answer's first sentence is already the card's title. A failed
+   * cell's sentence repeats the mono line, and only the advice after it, when
+   * the server added one (a GPU share, `blindAdvice`), is shown.
    */
   const blindText = $derived(
-    !blind || !submission.participantError || submission.state === 'notebookFailed'
+    !blind || !submission.participantError
       ? ''
-      : submission.state === 'rejected'
-        ? splitError(submission.participantError).rest
-        : submission.participantError,
+      : submission.state === 'notebookFailed'
+        ? blindAdvice(submission)
+        : submission.state === 'rejected'
+          ? splitError(submission.participantError).rest
+          : submission.participantError,
   )
   // What the notebook link hands out, in its own words (SubmissionRow says why).
   const notebookWord = $derived(

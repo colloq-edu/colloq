@@ -1629,6 +1629,26 @@ export const serverMessages: MessageCatalog = {
     "ru": "Окружению «{p0}» нужен GPU, а свободных срезов нет: их {p1}, и все заняты другими занятиями. Подождите, пока освободится — срез уходит вместе с ядром комнаты, — или откройте занятие на окружении без GPU: на процессоре это окружение не поедет.",
     "en": "Environment “{p0}” requires a GPU, but all {p1} available devices are in use by other classes. Wait for a room kernel to release one, or use a CPU environment. This environment cannot run on CPU alone."
   },
+  // Every card of KERNEL_GPUS was given to competition submissions (kernel/pool.ts · gpuRefusal).
+  "server.gpu.allToSubmissions": {
+    "ru": "Окружению «{p0}» нужен GPU, а все видеокарты этой машины ({p1}) отданы посылкам соревнований. Владелец может вернуть видеокарту занятиям во вкладке «Ресурсы» — или откройте занятие на окружении без GPU: на процессоре это окружение не поедет.",
+    "en": "Environment “{p0}” requires a GPU, but every card on this machine ({p1}) is given to competition submissions. The owner can give a card back to classes on the Resources tab, or use a CPU environment. This environment cannot run on CPU alone."
+  },
+  // No free slice, and on {count} of them a competition submission is still
+  // running: the owner gave those cards back to classes mid-run, and a run
+  // keeps its card until it ends (kernel/pool.ts · gpuRefusal).
+  "server.gpu.submissionFinishing": {
+    "ru": {
+      "one": "Окружению «{p0}» нужен GPU, а свободных срезов нет: на {count} из них ещё досчитывается посылка соревнования — эту видеокарту вернули занятиям, пока посылка шла. Подождите, пока она закончится, — срез перейдёт занятиям сам, — или откройте занятие на окружении без GPU: на процессоре это окружение не поедет.",
+      "few": "Окружению «{p0}» нужен GPU, а свободных срезов нет: на {count} из них ещё досчитываются посылки соревнований — эти видеокарты вернули занятиям, пока посылки шли. Подождите, пока одна из них закончится, — её срез перейдёт занятиям сам, — или откройте занятие на окружении без GPU: на процессоре это окружение не поедет.",
+      "many": "Окружению «{p0}» нужен GPU, а свободных срезов нет: на {count} из них ещё досчитываются посылки соревнований — эти видеокарты вернули занятиям, пока посылки шли. Подождите, пока одна из них закончится, — её срез перейдёт занятиям сам, — или откройте занятие на окружении без GPU: на процессоре это окружение не поедет.",
+      "other": "Окружению «{p0}» нужен GPU, а свободных срезов нет: на {count} из них ещё досчитываются посылки соревнований — эти видеокарты вернули занятиям, пока посылки шли. Подождите, пока одна из них закончится, — её срез перейдёт занятиям сам, — или откройте занятие на окружении без GPU: на процессоре это окружение не поедет."
+    },
+    "en": {
+      "one": "Environment “{p0}” requires a GPU, but no device is free: a competition submission is still running on {count} of them, a card given back to classes while the submission ran. Wait for it to end (the device then goes to classes by itself), or use a CPU environment. This environment cannot run on CPU alone.",
+      "other": "Environment “{p0}” requires a GPU, but no device is free: competition submissions are still running on {count} of them, cards given back to classes while the submissions ran. Wait for one of them to end (its device then goes to classes by itself), or use a CPU environment. This environment cannot run on CPU alone."
+    }
+  },
   "server.couldNotStartTheRoomContainer.cf7398": {
     "ru": "контейнер комнаты не удалось поднять: {p0}",
     "en": "could not start the room container: {p0}"
@@ -4172,5 +4192,18 @@ export const serverMessages: MessageCatalog = {
   "server.notes.importTooLong": {
     "ru": "Заметка к странице {p0} длиннее {p1} знаков ({p2}). Ничего не записали — сократите её и загрузите снова.",
     "en": "The note for page {p0} is longer than {p1} characters ({p2}). Nothing was written — shorten it and load again."
+  },
+  // Video cards for competition submissions (competitions/settings.ts, competitions/panel.ts).
+  "server.competitions.gpuUnknownDevice": {
+    "ru": "Видеокарты «{device}» нет в KERNEL_GPUS: посылкам можно отдать только карту из этого списка, записанную так же, как там.",
+    "en": "“{device}” is not in KERNEL_GPUS: only a card from that list, written the same way, can be given to submissions."
+  },
+  "server.competitions.gpuManaged": {
+    "ru": "На Kubernetes видеокарты для посылок соревнований задаёт кластер (RUNTIME_COMPETITION_GPU_RESOURCE), а не эта форма.",
+    "en": "On Kubernetes the cluster sets the cards for competition submissions (RUNTIME_COMPETITION_GPU_RESOURCE), not this form."
+  },
+  "server.competitions.gpuCpuEnvironment": {
+    "ru": "Видеокарта нужна только окружению с GPU, а «{environment}» считает на процессоре. Выберите окружение с GPU или выключите видеокарту.",
+    "en": "Only an environment with a GPU can use a card, and “{environment}” runs on the CPU. Pick a GPU environment or turn the card off."
   }
 }

@@ -1,8 +1,9 @@
 import { createHmac } from 'node:crypto'
 import { isIP } from 'node:net'
+import type { CompetitionCapabilities, RuntimeCapability } from '../../shared/capabilities.js'
 import { resolveRuntimeEnvironment, type RuntimeCatalog } from '../../shared/runtime.js'
 import {
-  COMPETITION_JOB_ID, parseCompetitionJobIntent,
+  COMPETITION_GPU_PULL_SECONDS_MAX, COMPETITION_JOB_ID, COMPETITION_RESOURCES_UNAVAILABLE, parseCompetitionJobIntent,
   type CompetitionJobCollection, type CompetitionJobIntent, type CompetitionJobKind,
   type CompetitionJobProgress, type CompetitionJobStatus,
 } from '../../shared/competition-runtime.js'
@@ -17,11 +18,22 @@ const jobName = (id: string) => `colloq-job-${id}`
 const proxyName = (id: string) => `colloq-proxy-${id}`
 const iso = (time: number) => new Date(time).toISOString()
 
-/** Where Pods that run student code go: the rooms' node selector and tolerations, when set. */
-function studentPlacement(config: CompetitionJobConfig): Record<string, unknown> {
+/**
+ * Where Pods that run student code go: the rooms' node selector and
+ * tolerations, when set. A notebook given a GPU adds what a GPU room adds
+ * (controller.ts · placement): the GPU RuntimeClass, unless set empty, and the
+ * GPU nodes' selector over the students' and their tolerations after them.
+ * The cards a platform keeps for rooms are on those nodes; a submission's share
+ * of one is no different.
+ */
+function studentPlacement(config: CompetitionJobConfig, gpu = false): Record<string, unknown> {
+  const runtimeClass = gpu ? config.gpuRuntimeClass ?? 'nvidia' : ''
+  const nodeSelector = { ...config.studentNodeSelector, ...(gpu ? config.gpuNodeSelector : {}) }
+  const tolerations = [...(config.studentTolerations ?? []), ...(gpu ? config.gpuTolerations ?? [] : [])]
   return {
-    ...(config.studentNodeSelector && Object.keys(config.studentNodeSelector).length ? { nodeSelector: config.studentNodeSelector } : {}),
-    ...(config.studentTolerations?.length ? { tolerations: config.studentTolerations } : {}),
+    ...(runtimeClass ? { runtimeClassName: runtimeClass } : {}),
+    ...(Object.keys(nodeSelector).length ? { nodeSelector } : {}),
+    ...(tolerations.length ? { tolerations } : {}),
   }
 }
 
@@ -54,6 +66,38 @@ export interface CompetitionJobConfig extends PodPolicy {
   /** RUNTIME_ROOM_NODE_SELECTOR / RUNTIME_ROOM_TOLERATIONS, for the Pods that run student code. */
   studentNodeSelector?: Record<string, string>
   studentTolerations?: Toleration[]
+  /**
+   * RUNTIME_COMPETITION_GPU_RESOURCE / _COUNT: what the main container of a
+   * notebook job whose intent asks for a GPU requests, in its requests and its
+   * limits alike (an extended resource is never overcommitted). Absent: no
+   * competition job gets a GPU, and one that asks is refused.
+   *
+   * Every other job runs a GPU environment's image on the CPU: an inventory, a
+   * package preparation, the metric (it mounts the hidden answers and must
+   * never share a device with a participant's code), and a notebook whose
+   * competition asked for no card.
+   *
+   * `slots` (RUNTIME_COMPETITION_GPU_SLOTS): how many such notebooks the
+   * cluster runs at once for this instance, as the operator knows it; only
+   * reported (health), for the app's queue. `shmMb`
+   * (RUNTIME_COMPETITION_GPU_SHM_MB): the ceiling of the notebook's own
+   * /dev/shm, 1024 when absent, 0 for none (shmMb below).
+   */
+  gpu?: { resource: string; count: number; slots?: number | null; shmMb?: number }
+  /**
+   * RUNTIME_COMPETITION_GPU_PULL_SECONDS: the pull allowance of every Pod of a
+   * GPU environment's image, whether or not it gets a card; 900 when absent
+   * (pullSeconds below).
+   */
+  gpuPullSeconds?: number
+  /**
+   * RUNTIME_GPU_RUNTIME_CLASS / _NODE_SELECTOR / _TOLERATIONS: the GPU rooms'
+   * placement, which a notebook given a GPU shares. As for rooms, an absent
+   * RuntimeClass is `nvidia` and an empty one is none.
+   */
+  gpuRuntimeClass?: string
+  gpuNodeSelector?: Record<string, string>
+  gpuTolerations?: Toleration[]
 }
 interface Options {
   kube: KubernetesClient
@@ -113,6 +157,43 @@ while True:
 function packageRoom(intent: CompetitionJobIntent): number | null {
   return intent.kind === 'notebook' && intent.bundleId && intent.limits.packagesMb ? intent.limits.packagesMb : null
 }
+/**
+ * The annotation of a job Pod that holds its image pull allowance, seconds
+ * (CompetitionJobs · pullSeconds): the Pod's own record, so that its clock
+ * stays the one it was created with across a broker restart with other
+ * settings.
+ */
+const PULL_SECONDS = 'colloq.dev/pull-seconds'
+/** The pull allowance a job Pod was created with; 0 for a CPU image's Pod and for one from a broker before it. */
+function pullAllowance(pod: KubeObject): number {
+  const seconds = Number(pod.metadata.annotations?.[PULL_SECONDS])
+  return Number.isSafeInteger(seconds) && seconds > 0 ? Math.min(seconds, COMPETITION_GPU_PULL_SECONDS_MAX) : 0
+}
+/**
+ * For every container of a GPU environment's image that requests no GPU: the
+ * metric, an inventory, a preparation, a notebook without a card, the egress
+ * preflight. Images built from nvidia/cuda carry NVIDIA_VISIBLE_DEVICES=all,
+ * and on a node whose default container runtime is NVIDIA's (the GPU
+ * operator's default on many clusters) that alone mounts every card of the
+ * node into the container, whatever the scheduler counted. `void` is the
+ * runtime's own word for "no GPU and no driver at all"; any other runtime
+ * ignores the variable. Never on the main container of a notebook given a
+ * GPU: there the device plugin sets it to the units it allocated, and ours
+ * would override it.
+ */
+const noGpu = () => env('NVIDIA_VISIBLE_DEVICES', 'void')
+/**
+ * The resource names a scheduler refusal says it lacked: "0/3 nodes are
+ * available: 1 Insufficient nvidia.com/gpu, 2 Insufficient memory." gives
+ * `nvidia.com/gpu` and `memory`. Only the names, as for rooms
+ * (controller.ts · unschedulable): the rest is about other nodes and other
+ * Pods. A name ends with a letter or a digit, so a dot after it is the end of
+ * the scheduler's sentence.
+ */
+function shortages(message: string): Set<string> {
+  return new Set([...message.slice(0, 4096).matchAll(/\binsufficient\s+([a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?)/gi)]
+    .map((match) => match[1].toLowerCase()))
+}
 function exportBudget(kind: CompetitionJobKind, target: number): number {
   if (kind === 'notebook') return Math.min(2 * target, 256 * MiB)
   if (kind === 'metric') return Math.min(2 * target, 16 * MiB)
@@ -137,27 +218,52 @@ export class CompetitionJobs {
     if (!IMAGE.test(exporterImage) || !/^[a-z0-9-]{1,40}$/.test(instanceId) || !/^[a-z0-9-]{1,63}$/.test(dataClaim))
       throw new RuntimeError('Competition broker is not configured', 503)
   }
-  async health(): Promise<import('../../shared/capabilities.js').CompetitionCapabilities> {
+  async health(): Promise<CompetitionCapabilities> {
     const unavailable = (code: string, reason: string) => ({ available: false, code, reason })
     const available = { available: true, code: 'ready', reason: null }
+    /*
+     * `gpu`: whether a notebook that asks for a card can run. Only where the
+     * operator named the cluster's GPU resource, and then exactly when
+     * execution can: a GPU job is a job first, with the same claim, isolation
+     * and images. The app refuses a GPU competition's uploads and baseline
+     * check at the door on this answer, instead of queueing work this broker
+     * would refuse.
+     *
+     * `gpuSlots`: how many such notebooks the operator says the cluster runs
+     * at once (RUNTIME_COMPETITION_GPU_SLOTS), null when unset or off. The
+     * app's queue keeps that many at the broker, one for null, and lets CPU
+     * work go past the others: a GPU notebook Kubernetes cannot place holds
+     * a general slot for the 30 seconds this broker waits on the scheduler
+     * (phase · unschedulable), and a queue that sent every waiting one would
+     * keep every slot busy with them.
+     */
+    const off = unavailable('gpu_unavailable', 'Competition jobs get no GPU on this cluster: RUNTIME_COMPETITION_GPU_RESOURCE (Helm: gpu.competitions.resource) is not set')
+    const answer = (execution: RuntimeCapability, preparation: RuntimeCapability): CompetitionCapabilities =>
+      ({ execution, preparation, gpu: this.options.config.gpu ? execution : off, gpuSlots: this.options.config.gpu?.slots ?? null })
     try { this.configured() }
-    catch { const state = unavailable('broker_unavailable', 'Competition broker configuration is incomplete'); return { execution: state, preparation: state } }
+    catch { const state = unavailable('broker_unavailable', 'Competition broker configuration is incomplete'); return answer(state, state) }
+    /*
+     * Any pinned image will do. This used to ask for an image without a GPU,
+     * because a GPU environment's image was refused for every job; now it runs
+     * every kind of job on the CPU, and only a notebook that asked for a card
+     * gets one, so a catalog of GPU environments alone is a working catalog.
+     */
     let hasImage = false
-    try { hasImage = this.options.catalog().environments.some(row => IMAGE.test(row.image) && !row.gpu) } catch { /* reported below */ }
+    try { hasImage = this.options.catalog().environments.some(row => IMAGE.test(row.image)) } catch { /* reported below */ }
     if (!hasImage) {
       const state = unavailable('image_unavailable', 'No pinned competition registry image is available')
-      return { execution: state, preparation: state }
+      return answer(state, state)
     }
     try { await this.options.kube.request('GET', `${this.root}/persistentvolumeclaims/${this.options.config.dataClaim}`) }
-    catch { const state = unavailable('storage_unavailable', 'Competition data claim is unavailable'); return { execution: state, preparation: state } }
+    catch { const state = unavailable('storage_unavailable', 'Competition data claim is unavailable'); return answer(state, state) }
     const policy = async (name: string) => this.options.kube.request('GET', `/apis/networking.k8s.io/v1/namespaces/${this.options.config.namespace}/networkpolicies/${name}`)
     try { await policy('competition-job-isolation') }
-    catch { const state = unavailable('isolation_unavailable', 'Competition job network isolation is unavailable'); return { execution: state, preparation: state } }
-    let preparation: import('../../shared/capabilities.js').RuntimeCapability = available
+    catch { const state = unavailable('isolation_unavailable', 'Competition job network isolation is unavailable'); return answer(state, state) }
+    let preparation: RuntimeCapability = available
     try { await policy('competition-resolver-isolation'); await policy('competition-proxy-isolation');
       await this.options.kube.request('GET', `${this.root}/services?limit=1`) }
     catch { preparation = unavailable('preparation_unavailable', 'Dependency resolver proxy isolation is unavailable') }
-    return { execution: available, preparation }
+    return answer(available, preparation)
   }
   private labels(jobId: string, role: string) {
     return { 'app.kubernetes.io/managed-by': MANAGER, 'colloq.dev/instance': this.options.config.instanceId,
@@ -173,7 +279,60 @@ export class CompetitionJobs {
     const attempt = `competitions/${intent.competitionId}/s/${intent.submissionId}/attempts/${intent.attemptId}`
     return `${attempt}/${intent.kind === 'metric' ? 'score-out' : 'result'}`
   }
-  private main(intent: CompetitionJobIntent, image: string) {
+  /**
+   * The GPU this job's Pod requests, or null: a notebook intent with
+   * `gpu: true` on a broker that names the cluster's GPU resource. Anything
+   * else that asks for one never reaches a Pod (startPrepared).
+   */
+  private gpu(intent: CompetitionJobIntent): NonNullable<CompetitionJobConfig['gpu']> | null {
+    return intent.kind === 'notebook' && intent.gpu === true && this.options.config.gpu ? this.options.config.gpu : null
+  }
+  /**
+   * /dev/shm of a notebook given a GPU, MiB; 0 — none of ours. PyTorch's
+   * DataLoader workers hand their batches over through it, and the 64 MiB a
+   * container has by default ends such a run with "bus error". Memory-backed,
+   * and so paid for from the job's memory like every such volume: half of it
+   * at most, and never more than the operator's ceiling
+   * (RUNTIME_COMPETITION_GPU_SHM_MB), by default the 1 GiB a GPU room gets
+   * (controller.ts).
+   *
+   * A ceiling of 0 is for MPS sharing: there the device plugin mounts its MPS
+   * daemon's shared memory at /dev/shm for the CUDA client to reach the
+   * server, and the kubelet mounts the Pod's own volumes after the plugin's,
+   * so a volume of ours at the same path hides it: CUDA fails to start, and
+   * the notebook trains on the CPU until its limit or dies in its first
+   * `.cuda()` (NVIDIA/k8s-device-plugin#467, #805). The /dev/shm is then the
+   * daemon's, shared by the node's MPS clients and sized by it.
+   */
+  private shmMb(intent: CompetitionJobIntent): number {
+    const gpu = this.gpu(intent)
+    return gpu ? Math.min(gpu.shmMb ?? 1024, Math.floor(intent.limits.memoryMb / 2)) : 0
+  }
+  /**
+   * The pull allowance of a Pod of this image, seconds: 0 for a CPU image, and
+   * for a GPU environment's image RUNTIME_COMPETITION_GPU_PULL_SECONDS (900
+   * when unset).
+   *
+   * Such an image is 10 to 13 GB, and every job of a GPU competition runs it,
+   * the metric and a package preparation included, on whatever node the
+   * scheduler picks: a metric on a CPU node that never ran it, a notebook on a
+   * GPU node that has not yet. Its pull happens after the Pod is created and
+   * before its first container starts, and without the allowance it came out
+   * of the job's own time: 30 seconds of startup and then the wall limit of
+   * the job (a metric's is two minutes), so the first metric on every cold
+   * node failed as "Wall time limit exceeded", and a notebook lost to the pull
+   * what it had to train. With it, the broker waits that much longer for
+   * `main` to start (phase), the Pod's activeDeadlineSeconds grows by as
+   * much, and so does the package proxy's life for a preparation. A started
+   * job still gets exactly its limit from its own start: the broker counts
+   * the wall from `main`'s start, and the notebook's harness stops it from
+   * its own (run_notebook.py · stop_at), so the allowance only ever covers
+   * the wait before.
+   */
+  private pullSeconds(gpuImage: boolean): number {
+    return gpuImage ? Math.min(this.options.config.gpuPullSeconds ?? 900, COMPETITION_GPU_PULL_SECONDS_MAX) : 0
+  }
+  private main(intent: CompetitionJobIntent, image: string, gpuImage: boolean) {
     const base = `competitions/${intent.competitionId}/s/${intent.submissionId}`
     const attempt = `${base}/attempts/${intent.attemptId}`
     // With the hidden test the app has composed this attempt's own data folder
@@ -195,10 +354,14 @@ export class CompetitionJobs {
           : `/harness/broker_prepare.py ${intent.kind}`
     // Entrant stdout can be unbounded. Reports live in the bounded memory volume.
     const command = ['sh', '-c', `exec python -I -u ${script} >/dev/null 2>&1`]
+    // The units of the cluster's GPU resource, in requests and limits alike:
+    // Kubernetes allows an extended resource no other way.
+    const gpu = this.gpu(intent)
+    const card = gpu ? { [gpu.resource]: gpu.count } : {}
     return { name: 'main', image, imagePullPolicy: 'IfNotPresent', command,
       workingDir: '/work', securityContext: security,
-      resources: { requests: { cpu: `${intent.limits.cpus}`, memory: `${intent.limits.memoryMb}Mi`, 'ephemeral-storage': '64Mi' },
-        limits: { cpu: `${intent.limits.cpus}`, memory: `${intent.limits.memoryMb}Mi`, 'ephemeral-storage': '256Mi' } },
+      resources: { requests: { cpu: `${intent.limits.cpus}`, memory: `${intent.limits.memoryMb}Mi`, 'ephemeral-storage': '64Mi', ...card },
+        limits: { cpu: `${intent.limits.cpus}`, memory: `${intent.limits.memoryMb}Mi`, 'ephemeral-storage': '256Mi', ...card } },
       env: [env('HOME', '/tmp/home'), env('PYTHONDONTWRITEBYTECODE', '1'), env('PYTHONNOUSERSITE', '1'),
         env('PYTHONUNBUFFERED', '1'), env('PIP_CONFIG_FILE', '/dev/null'),
         // Every thread pool a notebook is likely to meet, capped at the Pod's
@@ -217,25 +380,34 @@ export class CompetitionJobs {
         ...(packageRoom(intent) ? [env('COMP_PACKAGES', '/packages')] : []),
         ...(intent.kind === 'resolve' ? [env('HTTPS_PROXY', `http://${proxyName(intent.jobId)}:3128`), env('HTTP_PROXY', `http://${proxyName(intent.jobId)}:3128`),
           env('https_proxy', `http://${proxyName(intent.jobId)}:3128`), env('http_proxy', `http://${proxyName(intent.jobId)}:3128`),
-          env('NO_PROXY', ''), env('no_proxy', ''), env('ALL_PROXY', ''), env('all_proxy', '')] : [])],
+          env('NO_PROXY', ''), env('no_proxy', ''), env('ALL_PROXY', ''), env('all_proxy', '')] : []),
+        ...(gpuImage && !gpu ? [noGpu()] : [])],
       volumeMounts: [mount('out', '/out'), mount('work', '/work'), mount('tmp', '/tmp'),
         ...(packageRoom(intent) ? [mount('packages', '/packages')] : []),
+        ...(this.shmMb(intent) ? [mount('shm', '/dev/shm')] : []),
         mount('data', '/harness', intent.kind === 'notebook' || intent.kind === 'metric' ? 'competitions/harness' : 'dependencies/harness', true), ...input],
     }
   }
-  private pod(intent: CompetitionJobIntent, image: string): KubeObject {
+  private pod(intent: CompetitionJobIntent, image: string, gpuImage: boolean): KubeObject {
     const role = intent.kind === 'resolve' ? 'competition-resolver' : 'competition-job'
+    const gpu = this.gpu(intent)
+    const pull = this.pullSeconds(gpuImage)
+    const shm = this.shmMb(intent)
     return { apiVersion: 'v1', kind: 'Pod', metadata: { name: jobName(intent.jobId),
-        ...policyMetadata(this.options.config, this.labels(intent.jobId, role), this.annotations(intent)) },
+        ...policyMetadata(this.options.config, this.labels(intent.jobId, role),
+          { ...this.annotations(intent), ...(pull ? { [PULL_SECONDS]: String(pull) } : {}) }) },
       spec: { restartPolicy: 'Never', automountServiceAccountToken: false, enableServiceLinks: false,
-        terminationGracePeriodSeconds: 5, activeDeadlineSeconds: intent.limits.wallSeconds + 90,
+        // Counted by the kubelet from the Pod's start, the image pull included.
+        terminationGracePeriodSeconds: 5, activeDeadlineSeconds: intent.limits.wallSeconds + 90 + pull,
         securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000 },
         ...(this.options.config.imagePullSecret ? { imagePullSecrets: [{ name: this.options.config.imagePullSecret }] } : {}),
         // Both of this Pod's containers mount the data claim.
         ...policyPlacement(this.options.config, true),
-        ...studentPlacement(this.options.config),
+        ...studentPlacement(this.options.config, gpu !== null),
         ...(intent.kind === 'resolve' ? {} : { initContainers: [{ name: 'egress-probe', image,
           imagePullPolicy: 'IfNotPresent', command: ['python', '-I', '-c', OFFLINE_PROBE],
+          // The preflight runs the job's image, but never needs its card.
+          ...(gpuImage ? { env: [noGpu()] } : {}),
           securityContext: security,
           resources: { requests: { cpu: '50m', memory: '64Mi' }, limits: { cpu: '250m', memory: '128Mi', 'ephemeral-storage': '16Mi' } },
         }] }),
@@ -248,8 +420,9 @@ export class CompetitionJobs {
           // Never more than 256 MiB, whatever the job: a package preparation works
           // in /work (COMP_OUT), which the app sizes for the phase through tmpfsMb.
           { name: 'tmp', emptyDir: memory(Math.min(intent.limits.tmpfsMb, 256)) },
-          ...(packageRoom(intent) ? [{ name: 'packages', emptyDir: memory(packageRoom(intent)!) }] : [])],
-        containers: [this.main(intent, image), { name: 'exporter', image: this.options.config.exporterImage,
+          ...(packageRoom(intent) ? [{ name: 'packages', emptyDir: memory(packageRoom(intent)!) }] : []),
+          ...(shm ? [{ name: 'shm', emptyDir: memory(shm) }] : [])],
+        containers: [this.main(intent, image, gpuImage), { name: 'exporter', image: this.options.config.exporterImage,
           imagePullPolicy: 'IfNotPresent', command: ['node', '/app/export-sidecar.js'], securityContext: security,
           resources: { requests: { cpu: '100m', memory: '64Mi' }, limits: { cpu: '500m', memory: '256Mi', 'ephemeral-storage': '64Mi' } },
           env: [env('COMP_EXPORT_TOKEN', this.token(intent.jobId)), env('COMP_EXPORT_KIND', intent.kind),
@@ -261,11 +434,17 @@ export class CompetitionJobs {
         }],
       } }
   }
-  private proxyPod(intent: CompetitionJobIntent): KubeObject {
+  /**
+   * `pull`: the resolver's image pull allowance (pullSeconds). The proxy is
+   * up before the resolver's Pod is created, and its own clock
+   * (COMP_PROXY_WALL_SECONDS) runs from its start: a resolver that spends its
+   * allowance pulling still has the proxy for its whole limit.
+   */
+  private proxyPod(intent: CompetitionJobIntent, pull = 0): KubeObject {
     return { apiVersion: 'v1', kind: 'Pod', metadata: { name: proxyName(intent.jobId),
         ...policyMetadata(this.options.config, this.labels(intent.jobId, 'competition-proxy'), this.annotations(intent)) },
       spec: { restartPolicy: 'Never', automountServiceAccountToken: false, enableServiceLinks: false,
-        activeDeadlineSeconds: intent.limits.wallSeconds + 90, securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000 },
+        activeDeadlineSeconds: intent.limits.wallSeconds + 90 + pull, securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000 },
         // No claim mounted: the priority, but no colocation.
         ...policyPlacement(this.options.config, false),
         containers: [{ name: 'proxy', image: this.options.config.exporterImage, command: ['node', '/app/competition-proxy.js'],
@@ -274,7 +453,7 @@ export class CompetitionJobs {
           livenessProbe: SERVER_LIVENESS(3128),
           resources: { requests: { cpu: '100m', memory: '64Mi' }, limits: { cpu: '500m', memory: '128Mi', 'ephemeral-storage': '32Mi' } },
           env: [env('COMP_PROXY_MAX_BYTES', String(Math.min(intent.limits.targetBytes * 3 + 32 * 1024 * 1024, 1536 * 1024 * 1024))),
-            env('COMP_PROXY_WALL_SECONDS', String(intent.limits.wallSeconds)),
+            env('COMP_PROXY_WALL_SECONDS', String(intent.limits.wallSeconds + pull)),
             ...(this.options.config.dependencyIndexUrl ? [env('DEPENDENCY_INDEX_URL', this.options.config.dependencyIndexUrl)] : []),
             ...(this.options.config.dependencyFilesHosts ? [env('DEPENDENCY_FILES_HOSTS', this.options.config.dependencyFilesHosts)] : [])],
           volumeMounts: [{ name: 'tmp', mountPath: '/tmp' }],
@@ -328,15 +507,28 @@ export class CompetitionJobs {
   private async startPrepared(intent: CompetitionJobIntent): Promise<CompetitionJobStatus> {
     const jobId = intent.jobId
     let image: string
-    let gpu = false
+    let gpuImage = false
     try {
       const environment = resolveRuntimeEnvironment(this.options.catalog(), intent.environment, intent.revision)
       image = environment.image
-      gpu = environment.gpu
+      gpuImage = environment.gpu
     }
     catch { throw new RuntimeError('Competition image revision is unavailable in catalog', 409) }
     if (!IMAGE.test(image)) throw new RuntimeError('Competition image is not a pinned registry digest', 409)
-    if (gpu) throw new RuntimeError('GPU competition images are unsupported by this executor', 409)
+    /*
+     * A GPU environment's image runs any job on the CPU, as a personal
+     * notebook's Pod runs it (controller.ts · pod). A card goes only to a
+     * notebook whose intent asks for one, and only where the operator named
+     * the cluster's GPU resource. Asked for anywhere else, it is refused here,
+     * before a Pod exists: training on the CPU without a word to anyone is
+     * what GPU competitions did before they could get a card, and it is not
+     * an answer.
+     */
+    if (intent.gpu === true) {
+      if (!this.options.config.gpu)
+        throw new RuntimeError('Competition GPU jobs are off on this broker: RUNTIME_COMPETITION_GPU_RESOURCE is not set', 409)
+      if (!gpuImage) throw new RuntimeError('A competition GPU job needs a GPU environment from the catalog', 409)
+    }
     const readiness = await this.health()
     const capability = intent.kind === 'resolve' || intent.kind === 'verify' ? readiness.preparation : readiness.execution
     if (!capability.available) throw new RuntimeError(capability.reason ?? 'Competition executor is unavailable', 503)
@@ -349,7 +541,7 @@ export class CompetitionJobs {
     }
     if (intent.kind === 'resolve') {
       await this.cleanupProxy(jobId)
-      const proxy = this.proxyPod(intent)
+      const proxy = this.proxyPod(intent, this.pullSeconds(gpuImage))
       const service = this.proxyService(intent)
       await this.options.kube.request('POST', `${this.root}/pods`, proxy)
       try { await this.options.kube.request('POST', `${this.root}/services`, service); await this.awaitProxy(jobId) }
@@ -357,10 +549,49 @@ export class CompetitionJobs {
     }
     if (this.cancelled.has(jobId)) { if (intent.kind === 'resolve') await this.cleanupProxy(jobId); throw new RuntimeError('Competition job was cancelled', 409) }
     let created: KubeObject
-    try { created = await this.options.kube.request<KubeObject>('POST', `${this.root}/pods`, this.pod(intent, image)) }
-    catch (err) { if (intent.kind === 'resolve') await this.cleanupProxy(jobId).catch(() => {}); throw err }
+    try { created = await this.options.kube.request<KubeObject>('POST', `${this.root}/pods`, this.pod(intent, image, gpuImage)) }
+    catch (err) {
+      if (intent.kind === 'resolve') await this.cleanupProxy(jobId).catch(() => {})
+      const refused = this.refusedAtAdmission(intent, err)
+      if (refused) return refused
+      throw err
+    }
     if (this.cancelled.has(jobId)) throw new RuntimeError('Competition job was cancelled', 409)
     return this.phase(created, intent)
+  }
+  /**
+   * The API server's "no" to the Pod of a notebook given a GPU, as the status
+   * of a job that found no room: `unschedulable`, resource `gpu`, and the
+   * cause in words of our own for the teacher, while the app puts the job
+   * back into its queue and tries again a few seconds to a minute later.
+   *
+   * The Pod is refused before it exists when the namespace's ResourceQuota
+   * has no unit of the GPU resource left (GPU rooms and the submissions
+   * already running hold them: it frees itself), when the cluster has no
+   * RuntimeClass of the name RUNTIME_GPU_RUNTIME_CLASS gives (the chart's
+   * `nvidia`, absent on a cluster without the GPU operator), or when an
+   * admission policy turns down what only a GPU notebook's Pod carries: the
+   * units, the RuntimeClass, the GPU nodes' tolerations. It used to come back
+   * as an error, which the app records as a failed metric: every GPU
+   * submission of the class "failed" within seconds, nothing retried them,
+   * and the teacher read only "Forbidden". As with the scheduler and the
+   * kubelet (phase · cardRefused), it is "no card for this job now".
+   *
+   * Only for a GPU notebook: a CPU job refused at admission is not waiting
+   * for a card and stays the error it was. Nor a refusal of the broker's own
+   * permissions (RBAC), which every job would meet.
+   */
+  private refusedAtAdmission(intent: CompetitionJobIntent, err: unknown): CompetitionJobStatus | null {
+    const refusal = this.gpu(intent) && err instanceof KubernetesError ? err.refusal : undefined
+    if (!refusal || refusal.kind === 'permission') return null
+    const error = refusal.kind === 'quota'
+      ? `Kubernetes refused the GPU notebook's Pod: the namespace's resource quota is used up${refusal.resources.length ? ` (${refusal.resources.join(', ')})` : ''}`
+      : refusal.kind === 'runtime-class'
+        ? `Kubernetes refused the GPU notebook's Pod: the cluster has no RuntimeClass "${this.options.config.gpuRuntimeClass ?? 'nvidia'}" (RUNTIME_GPU_RUNTIME_CLASS, Helm: gpu.runtimeClassName)`
+        : "Kubernetes refused the GPU notebook's Pod at admission: a policy of the cluster denied it"
+    const now = this.now()
+    return { jobId: intent.jobId, kind: intent.kind, phase: 'failed', startedAt: now, finishedAt: now, exitCode: null, oomKilled: false,
+      progress: null, error: error.slice(0, 300), failure: { code: 'unschedulable', resource: 'gpu' } }
   }
   private parseIntent(pod: KubeObject): CompetitionJobIntent {
     try { return parseCompetitionJobIntent(JSON.parse(pod.metadata.annotations?.['colloq.dev/intent'] ?? '')) }
@@ -372,8 +603,11 @@ export class CompetitionJobs {
     const terminated = main?.state?.terminated
     const mainStartedAt = Date.parse(main?.state?.running?.startedAt ?? terminated?.startedAt ?? '')
     // Image startup and policy propagation can consume 30 seconds before main
-    // starts. Kubernetes reports the main start time once it has actually run.
-    const wallStartedAt = Number.isFinite(mainStartedAt) ? mainStartedAt : startedAt + (terminated ? 0 : 30_000)
+    // starts, and a GPU environment's image its pull allowance on top
+    // (pullSeconds). Kubernetes reports the main start time once it has
+    // actually run, and the limit counts from there.
+    const wallStartedAt = Number.isFinite(mainStartedAt) ? mainStartedAt
+      : startedAt + (terminated ? 0 : 30_000 + pullAllowance(pod) * 1000)
     const wallDeadline = wallStartedAt + intent.limits.wallSeconds * 1000
     const timedOut = this.now() > wallDeadline
     const scheduling = Array.isArray(pod.status?.conditions) ? pod.status.conditions.find((condition: any) =>
@@ -395,18 +629,33 @@ export class CompetitionJobs {
       imageUnavailable && !collected || exporterFailed) ? 'failed' :
       terminated ? collected ? exitCode === 0 ? 'complete' : 'failed' : 'exporting' : main?.state?.running ? 'running' : 'queued'
     const schedulerMessage = typeof scheduling?.message === 'string' ? scheduling.message : ''
-    const resource = /insufficient\s+memory/i.test(schedulerMessage) ? 'memory' :
+    // The card first, as for rooms (controller.ts · SHORTAGES): advice to ask
+    // for less memory does nothing for a job that did not get a card.
+    const gpu = this.gpu(intent)
+    const resource = gpu && shortages(schedulerMessage).has(gpu.resource.toLowerCase()) ? 'gpu' :
+      /insufficient\s+memory/i.test(schedulerMessage) ? 'memory' :
       /insufficient\s+cpu/i.test(schedulerMessage) ? 'cpu' :
         /insufficient\s+ephemeral-storage/i.test(schedulerMessage) ? 'storage' : 'other'
+    /*
+     * The kubelet can still refuse a GPU Pod the scheduler has placed: the
+     * device plugin failed to hand the units over (UnexpectedAdmissionError;
+     * a card whose previous job is still being torn down is a typical cause),
+     * or the node has none left after all (OutOf<resource>). For the job that
+     * is the same "no card free right now" as a scheduler refusal, and the
+     * same answer: back to the queue, not a failed metric.
+     */
+    const cardRefused = !!gpu && failedPod && !terminated &&
+      (pod.status?.reason === 'UnexpectedAdmissionError' || pod.status?.reason === `OutOf${gpu.resource}`)
     const failure: CompetitionJobStatus['failure'] | undefined = deadlineExceeded ? undefined :
       unschedulable ? { code: 'unschedulable', resource } :
+      cardRefused ? { code: 'unschedulable', resource: 'gpu' } :
       imageUnavailable ? { code: 'image_unavailable' } :
         exporterFailed ? { code: 'export_failed' } :
           (failedPod && pod.status?.reason !== 'DeadlineExceeded' || preflightFailed) && !terminated ? { code: 'runtime_unavailable' } : undefined
     return { jobId: intent.jobId, kind: intent.kind, phase, startedAt,
       finishedAt: deadlineExceeded ? this.now() : terminated ? mainFinishedAt || this.now() : phase === 'failed' ? this.now() : null,
       exitCode, oomKilled: !deadlineExceeded && terminated?.reason === 'OOMKilled', progress: null,
-      error: deadlineExceeded ? 'Wall time limit exceeded' : preflightFailed ? 'Network isolation preflight failed' : unschedulable ? 'Competition resources are unavailable' :
+      error: deadlineExceeded ? 'Wall time limit exceeded' : preflightFailed ? 'Network isolation preflight failed' : unschedulable || cardRefused ? COMPETITION_RESOURCES_UNAVAILABLE :
         imageUnavailable ? 'Competition image is unavailable' : exporterFailed ? 'Competition exporter failed' :
         failedPod && !terminated ? 'Competition Pod failed before execution' :
             terminated?.reason === 'OOMKilled' ? 'Memory limit exceeded' : null,
@@ -545,7 +794,8 @@ export class CompetitionJobs {
         jobName(id))) continue
       const age = this.now() - (Number(pod.metadata.annotations?.['colloq.dev/started-at']) || this.now())
       let ttl: number
-      try { ttl = Math.max(2 * 3600_000, this.parseIntent(pod).limits.wallSeconds * 1000 + 600_000) }
+      // A GPU image's pull allowance is the job's time as much as its limit is.
+      try { ttl = Math.max(2 * 3600_000, (this.parseIntent(pod).limits.wallSeconds + pullAllowance(pod)) * 1000 + 600_000) }
       catch { continue }
       if (age >= ttl) await this.cancel(id)
     }

@@ -6,7 +6,9 @@
    * the teacher in the course chat: how much time, how much memory, is there
    * internet, where the data is, what to call the predictions file. The
    * numbers are the same ones the container is started with
-   * (`competition.limits`), not copied into the mockup by hand.
+   * (`competition.limits`), not copied into the mockup by hand. A notebook
+   * with a video card gets one more pair: the share it runs in, which the
+   * server holds (Paper 15 · G4).
    */
   import { tr } from '@shared/i18n'
   import type { CompetitionPublic } from '@shared/competitions'
@@ -18,9 +20,15 @@
     competition: CompetitionPublic
     /** The hidden test, as names and rows: each gets a row of its own, and the note explains it. */
     sealedFiles?: EntrantSealedFile[]
+    /**
+     * The «Видеокарта» row's value (competition-words.ts · gpuCondition):
+     * «срез ≈ 6 ГБ · cuda:0». `null` — the notebook runs on the CPU, and the
+     * column keeps its usual rows.
+     */
+    gpu?: string | null
   }
 
-  const { competition, sealedFiles = [] }: Props = $props()
+  const { competition, sealedFiles = [], gpu = null }: Props = $props()
 
   /*
    * With a hidden test the column answers two more questions before they are
@@ -63,7 +71,7 @@
       : '',
   )
 
-  const rows: { label: string; value: string; environment?: boolean; sealed?: boolean }[] = $derived([
+  const rows: { label: string; value: string; environment?: boolean; sealed?: boolean; gpu?: boolean }[] = $derived([
     {
       label: tr('competitions.p.condTime'),
       value: tr('competitions.p.condTimeValue', {
@@ -79,6 +87,9 @@
         cores: tr('competitions.p.cores', { count: competition.limits.cpus }),
       }),
     },
+    // Under the machine it shares the check with (Paper 15 · G4): the card is
+    // the one condition a GPU notebook is written for.
+    ...(gpu ? [{ label: tr('competitions.p.condGpu'), value: gpu, gpu: true }] : []),
     { label: tr('competitions.p.condInternet'), value: tr('competitions.p.condNo') },
     { label: tr('competitions.p.condEnvironment'), value: competition.environment, environment: true },
     { label: tr('competitions.p.condData'), value: tr('competitions.p.condDataValue') },
@@ -101,7 +112,9 @@
         <dd
           class="min-w-0 truncate text-right font-mono text-micro leading-4 {row.sealed
             ? 'font-bold text-brand-2 dark:text-accent'
-            : 'text-ink'}"
+            : row.gpu
+              ? 'font-bold text-accent-text'
+              : 'text-ink'}"
         >
           {#if row.environment}
             <EnvironmentLink name={competition.environment} endpoint={`/api/k/competitions/${encodeURIComponent(competition.slug)}/environment`} />

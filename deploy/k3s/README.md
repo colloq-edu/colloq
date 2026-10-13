@@ -77,8 +77,8 @@ preserved. Kubernetes API access is required from the broker through the cluster
 network; the app and room Pods do not receive service-account tokens.
 
 Environment settings are read as data, never sourced as shell commands. Only the
-app variable allowlist becomes a Kubernetes Secret; the two broker memory keys
-below go into the broker Deployment. The original configuration
+app variable allowlist becomes a Kubernetes Secret; the broker keys below (room
+memory, competition GPU) go into the broker Deployment. The original configuration
 is retained at `/var/lib/colloq/config.env` with mode 0600 for recovery. Runtime
 auth and room-token derivation secrets are distinct and persistent under
 `/var/lib/colloq/secrets/`; only the broker receives the latter.
@@ -112,6 +112,53 @@ A room that the node cannot fit stays `Pending` with `Insufficient memory`
 (or `cpu`, `nvidia.com/gpu`). After 20 seconds the broker gives up, deletes that
 never-scheduled Pod and reports the resource; the teacher sees how much the room
 asked for and what to lower, students see a short note that the teacher can fix it.
+
+## Competition GPU
+
+Competition submissions get no GPU unless the env file names one. A
+competition on a GPU environment that asks for no GPU runs its notebooks on the
+CPU; one that asks for a GPU takes no submissions until this is set:
+
+```sh
+RUNTIME_COMPETITION_GPU_RESOURCE=nvidia.com/gpu
+RUNTIME_COMPETITION_GPU_COUNT=1
+```
+
+The notebook step of each such submission then requests that many units, with
+the `nvidia` RuntimeClass; the metric step never gets one. The installer's
+device plugin has no sharing configured, so a unit here is a whole card, taken
+from the same cards as GPU rooms for as long as the submission runs; a
+submission that finds none free waits in the queue. It works the other way
+too: a GPU room that finds every card held by submissions is refused after 20
+seconds (*Room memory* above), for as long as they run, up to the
+competition's time limit. On a one-card VM GPU submissions and GPU rooms
+therefore exclude each other: leave the resource unset while classes need a
+GPU room, or add a card. A resource of their own for submissions (MIG slices,
+renamed time-sliced replicas) needs a device-plugin configuration that this
+installer does not make.
+
+Three more settings are optional:
+
+```sh
+RUNTIME_COMPETITION_GPU_SLOTS=1
+RUNTIME_COMPETITION_GPU_SHM_MB=1024
+RUNTIME_COMPETITION_GPU_PULL_SECONDS=900
+```
+
+Values are read as written: keep a comment on a line of its own.
+`RUNTIME_COMPETITION_GPU_SLOTS` (1 to 256) is how many GPU submissions the
+app's queue keeps at the broker at once, while CPU work goes past the rest;
+with whole cards and a count of 1, the number of cards submissions may hold.
+Unset, it is one, which suits a one-card VM. A GPU submission's `/dev/shm` is
+half its memory, at most `RUNTIME_COMPETITION_GPU_SHM_MB` (0 to 65536, 1024
+when unset; 0 gives it none). `RUNTIME_COMPETITION_GPU_PULL_SECONDS` (0 to
+3600, 900 when unset) is how long a Pod of a GPU environment's image may take
+to pull it before the job's own time starts; the installer pulls every catalog
+image onto this node beforehand, so here it is only a reserve. The resource
+must be a Kubernetes extended resource name and the numbers whole numbers in
+those bounds (the count from 1 to 8); `install`, `prepare` and `update` check
+all five settings, render them into the broker Deployment and keep them on
+every update, like the room memory above.
 
 ## Storage and recovery
 
@@ -222,7 +269,9 @@ manifest as proof. Containers still share the host Linux kernel.
 
 GPU hosts must retain a working NVIDIA driver and install an explicitly pinned
 NVIDIA Container Toolkit and device-plugin release, configured for k3s/containerd
-and the `nvidia` RuntimeClass. Do not run the old Docker-specific runtime setup.
+and the `nvidia` RuntimeClass. The driver must be 580 or newer for the shipped
+GPU environments: `base-gpu` and `kaggle-gpu` carry torch 2.14.1 as CUDA 13.0
+wheels, which import on an older driver but never see the card. Do not run the old Docker-specific runtime setup.
 For GPU catalogs, release.tooling.gpu must name an exact toolkitVersion (apt
 package version) and digest-pinned devicePluginImage. The installer verifies
 nvidia-smi, installs all four NVIDIA toolkit packages at that exact version
@@ -232,6 +281,7 @@ devices, and runs a disposable non-root CUDA tensor Pod on start. Drivers are
 never replaced and no latest GPU operator is installed. The CUDA probe requires
 one free GPU; it fails without evicting an existing room if none is available.
 Use cluster.sh gpu-preflight to repeat it. One GPU room requests one `nvidia.com/gpu`; sharing is not implicit.
+A competition notebook given a GPU requests its units from the same cards (*Competition GPU* above).
 Before promising GPU availability, check node allocatable devices and run an
 actual CUDA operation in a disposable room. [K3s NVIDIA configuration](https://docs.k3s.io/advanced#nvidia-container-runtime)
 

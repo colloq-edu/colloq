@@ -17,7 +17,7 @@ import { dependencyMessage } from './messages.js'
 import * as store from './store.js'
 import * as files from './files.js'
 import { reserveWork, workBudgetSnapshot } from '../ops/work-budget.js'
-import { competitionCapabilities, assertCompetitionCapability } from '../competitions/capabilities.js'
+import { competitionCapabilities, assertCompetitionCapability, type CompetitionNeeds } from '../competitions/capabilities.js'
 
 const events=new EventEmitter()
 events.setMaxListeners(0)
@@ -48,22 +48,39 @@ function retainedRevision(c:Competition):EnvironmentRevision|null {
  const revision=store.competitionRevision(c.id)
  return revision?.environmentName===c.environment?revision:null
 }
-export async function executionRevision(c:Competition):Promise<EnvironmentRevision|null>{
+/**
+ * The competition's pinned base, pinned now if it is not yet, once the
+ * executor can run it. `needs` is what the caller is about to run: the doors
+ * that run the notebook (the upload, the baseline check) pass its card
+ * (capabilities.ts · notebookNeeds) and are refused here too when no card is
+ * given; preparing a package set and saving a draft run no notebook and ask
+ * for none. Asked with the card, a GPU competition without one refused the
+ * preparation its own panel offered (preparation.available), in the words
+ * "this competition needs a GPU".
+ */
+export async function executionRevision(c:Competition,needs:CompetitionNeeds={}):Promise<EnvironmentRevision|null>{
  const retained=retainedRevision(c)
- await assertCompetitionCapability('execution',c.environment,competitionBackend()==='broker'?undefined:retained?.imageDigest)
+ await assertCompetitionCapability('execution',c.environment,competitionBackend()==='broker'?undefined:retained?.imageDigest,needs)
  if(competitionBackend()==='test')return retained
  return ensureCompetitionRevision(c)
 }
+/**
+ * Whether the base may be pinned for the panels: the executor works, or works
+ * and only the card is missing (`gpu_unavailable` comes last, on a runtime
+ * that is otherwise up) — the base is the same with a card or without, and a
+ * participant must be able to prepare packages before the owner gives one.
+ */
+const basePinnable=(execution:{available:boolean;code:string}):boolean=>execution.available||execution.code==='gpu_unavailable'
 export async function dependencyOverview(c:Competition,eid:string):Promise<DependencyOverview>{
  const retained=retainedRevision(c)
- const capabilities=await competitionCapabilities(c.environment,competitionBackend()==='broker'?undefined:retained?.imageDigest)
- const revision=capabilities.execution.available?await executionRevision(c).catch(()=>retained):retained
+ const capabilities=await competitionCapabilities(c.environment,competitionBackend()==='broker'?undefined:retained?.imageDigest,{gpu:c.limits.gpu===true})
+ const revision=basePinnable(capabilities.execution)?await executionRevision(c).catch(()=>retained):retained
  return {capabilities,policy:store.policyOf(c.id),revision,draft:store.draftOf(c.id,eid),bundles:store.listBundles(c.id,eid),joined:hasJoined(c.id,eid),quota:store.preparationQuota(eid),memoryMb:c.limits.memoryMb}
 }
 export async function adminDependencyOverview(c:Competition):Promise<AdminDependencyOverview>{
  const retained=retainedRevision(c)
- const capabilities=await competitionCapabilities(c.environment,competitionBackend()==='broker'?undefined:retained?.imageDigest)
- const revision=capabilities.execution.available?await executionRevision(c).catch(()=>retained):retained
+ const capabilities=await competitionCapabilities(c.environment,competitionBackend()==='broker'?undefined:retained?.imageDigest,{gpu:c.limits.gpu===true})
+ const revision=basePinnable(capabilities.execution)?await executionRevision(c).catch(()=>retained):retained
  return {capabilities,policy:store.policyOf(c.id),revision,bundles:store.listBundles(c.id).map(b=>({...b,entrantName:getEntrant(b.entrantId)?.name??'—'}))}
 }
 export function ownBundle(c:string,eid:string,bid:string):DependencyBundle{

@@ -519,6 +519,77 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'Тетрадь заняла больше {count} ГБ и была остановлена на ячейке {cell}.',
     en: 'The notebook used more than {count} GB and was stopped at cell {cell}.',
   },
+  // A run with a share of a video card held more than the share and was
+  // stopped from outside (server/src/competitions/runner.ts · gpuKillNote).
+  // {peak} and {slice} are gigabytes to a tenth, in the instance's own
+  // decimal separator; all of it is ours, measured outside the notebook.
+  'competitions.answer.gpuOutOfMemory': {
+    ru: 'Посылка заняла на видеокарте {peak} ГБ при срезе {slice} ГБ; её остановили на ячейке {cell}, чтобы не мешать соседям по карте.',
+    en: 'The submission took {peak} GB on the GPU with a {slice} GB share; it was stopped at cell {cell} so it would not disturb the other runs on the card.',
+  },
+  // The same without the peak: the words a run on the hidden test gets under
+  // the brief output policy, where how far past its share a run went is a
+  // number its notebook chose (runner.ts · gpuKillNote).
+  'competitions.answer.gpuOverShare': {
+    ru: 'Посылка заняла на видеокарте больше своего среза в {slice} ГБ; её остановили на ячейке {cell}, чтобы не мешать соседям по карте.',
+    en: 'The submission took more than its {slice} GB share of the GPU; it was stopped at cell {cell} so it would not disturb the other runs on the card.',
+  },
+  // A run on a shared card whose video memory stopped being readable: the
+  // watchdog's samples failed {count} times in a row after the card had
+  // answered, and the run was stopped rather than left unwatched
+  // (server/src/competitions/docker-runner.ts · unreadCardNotes). It follows
+  // the "failed at cell" head in place of a traceback; no number in it is the
+  // notebook's, so a blind participant may read it too.
+  'competitions.answer.gpuUnread': {
+    ru: {
+      one: 'Посылку остановили снаружи: {count} раз подряд не удалось прочитать, сколько видеопамяти она занимает, а на карте, которую делят несколько посылок, прогон без присмотра не оставляют. Так бывает, когда тетрадь занимает процессор сотнями потоков или процессов, или когда сама карта перестаёт отвечать.',
+      few: 'Посылку остановили снаружи: {count} раза подряд не удалось прочитать, сколько видеопамяти она занимает, а на карте, которую делят несколько посылок, прогон без присмотра не оставляют. Так бывает, когда тетрадь занимает процессор сотнями потоков или процессов, или когда сама карта перестаёт отвечать.',
+      many: 'Посылку остановили снаружи: {count} раз подряд не удалось прочитать, сколько видеопамяти она занимает, а на карте, которую делят несколько посылок, прогон без присмотра не оставляют. Так бывает, когда тетрадь занимает процессор сотнями потоков или процессов, или когда сама карта перестаёт отвечать.',
+      other: 'Посылку остановили снаружи: {count} раза подряд не удалось прочитать, сколько видеопамяти она занимает, а на карте, которую делят несколько посылок, прогон без присмотра не оставляют. Так бывает, когда тетрадь занимает процессор сотнями потоков или процессов, или когда сама карта перестаёт отвечать.',
+    },
+    en: {
+      one: 'The submission was stopped from outside: how much GPU memory it held could not be read {count} time in a row, and a run nobody can watch is not left on a card shared with other runs. That happens when a notebook keeps its processor busy with hundreds of threads or processes, or when the card itself stops answering.',
+      other: 'The submission was stopped from outside: how much GPU memory it held could not be read {count} times in a row, and a run nobody can watch is not left on a card shared with other runs. That happens when a notebook keeps its processor busy with hundreds of threads or processes, or when the card itself stops answering.',
+    },
+  },
+  // The sentence after torch's own OutOfMemoryError in a run that had a card
+  // (runner.ts · gpuMemoryHint, Paper 15 · G4 #6): torch met its share inside
+  // the participant's cell, and the traceback says "CUDA out of memory" and
+  // nothing about the share. Ours, and so safe for a blind participant too.
+  // {slice} is gigabytes to a tenth; with a card of its own there is no number.
+  'competitions.answer.gpuOomShare': {
+    ru: 'У посылки срез видеокарты {slice} ГБ: уменьшите batch_size или модель.',
+    en: 'This submission has a {slice} GB GPU share: reduce the batch size or the model.',
+  },
+  'competitions.answer.gpuOomWhole': {
+    ru: 'У посылки вся карта: уменьшите batch_size или модель.',
+    en: 'This submission has the whole card: reduce the batch size or the model.',
+  },
+  // A share nobody could state: the cluster's card, or a card that did not say its size.
+  'competitions.answer.gpuOomCard': {
+    ru: 'Видеопамяти посылке не хватило: уменьшите batch_size или модель.',
+    en: 'The submission ran out of GPU memory: reduce the batch size or the model.',
+  },
+  // A run that ran out of video memory while the watchdog was stopping its
+  // neighbour on the same card for going past its share: put back into the
+  // queue once instead of being judged (runner.ts · neighbourOverran). Our
+  // own words with no number in them, so a blind participant reads them too.
+  'competitions.answer.gpuNeighbourRetry': {
+    ru: 'Соседняя посылка на той же видеокарте заняла больше своего среза, и этой посылке не хватило видеопамяти. Тетрадь тут ни при чём: посылка снова в очереди и запустится заново, эта попытка не засчитывается.',
+    en: 'Another submission on the same GPU took more than its share, and this one ran out of video memory. That is not the notebook’s fault: the submission is back in the queue and will run again; this attempt does not count.',
+  },
+  // The same, in the teacher's column. {device} is the card as KERNEL_GPUS names it.
+  'competitions.answer.gpuNeighbourRetryTeacher': {
+    ru: 'Видеокарта {device}: CUDA out of memory, пока сторож останавливал соседнюю посылку на этой карте за выход за срез. Прогон повторяется один раз.',
+    en: 'GPU {device}: CUDA out of memory while the watchdog was stopping a neighbouring submission on this card for going past its share. The run is repeated once.',
+  },
+  // The teacher's column of a GPU notebook whose card the owner gave back to
+  // classes between the queue's take and the start (runner.ts · runGpu): it
+  // never started there, and waits in the queue for a card still given.
+  'competitions.answer.gpuWithdrawnTeacher': {
+    ru: 'Видеокарту {device} вернули занятиям, пока прогон готовился к запуску: на ней он не начался и ждёт в очереди карту, отданную посылкам.',
+    en: 'GPU {device} was given back to classes while the run was getting ready to start: it did not start there, and waits in the queue for a card given to submissions.',
+  },
   'competitions.answer.kernelDied': {
     ru: 'Ядро умерло на ячейке {cell}. Так бывает от os._exit(), от падения в си и от нехватки памяти внутри самой ячейки.',
     en: 'The kernel died at cell {cell}. That happens with os._exit(), with a crash inside a C extension, and when a single cell runs out of memory.',
@@ -665,6 +736,53 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.answer.killedByEntrant': {
     ru: 'Посылку снял сам участник.',
     en: 'The participant cancelled the submission.',
+  },
+  // A run with a share of a video card, in the teacher's column
+  // (server/src/competitions/runner.ts · cardNote). {device} is the card as
+  // KERNEL_GPUS names it; the numbers are megabytes as nvidia-smi reports
+  // them: {samples} the two readings that decided a kill, {limit} the line
+  // they crossed (the share plus its tolerance).
+  'competitions.answer.gpuKilled': {
+    ru: 'Видеокарта {device}: два замера подряд выше {limit} МБ ({samples} МБ) при срезе {slice} МБ — прогон остановлен снаружи.',
+    en: 'GPU {device}: two samples in a row above {limit} MB ({samples} MB) with a {slice} MB share — the run was stopped from outside.',
+  },
+  'competitions.answer.gpuPeak': {
+    ru: 'Видеокарта {device}: пик {peak} МБ при срезе {slice} МБ.',
+    en: 'GPU {device}: peak {peak} MB with a {slice} MB share.',
+  },
+  // A watched run no sample ever saw holding memory: not "peak 0 MB", which
+  // read as a notebook that never touched the card (runner.ts · cardNote).
+  'competitions.answer.gpuPeakUnmeasured': {
+    ru: 'Видеокарта {device}: пик не измерен — ни один замер не увидел памяти посылки (срез {slice} МБ).',
+    en: 'GPU {device}: the peak was not measured — no sample saw the submission’s memory ({slice} MB share).',
+  },
+  // A run on a shared card stopped because its card could not be read
+  // (server/src/competitions/docker-runner.ts · unreadCardNotes), at the head
+  // of the teacher's log. {reason} is what the last failed sample said —
+  // docker's or nvidia-smi's own line, or gpuSampleStalled — and {slice} is
+  // megabytes, like gpuKilled.
+  'competitions.answer.gpuUnreadKilled': {
+    ru: {
+      one: 'Видеокарта {device}: {count} замер подряд не ответил (последний: {reason}) при срезе {slice} МБ — прогон остановлен снаружи: на общей карте прогон без присмотра не оставляют.',
+      few: 'Видеокарта {device}: {count} замера подряд не ответили (последний: {reason}) при срезе {slice} МБ — прогон остановлен снаружи: на общей карте прогон без присмотра не оставляют.',
+      many: 'Видеокарта {device}: {count} замеров подряд не ответили (последний: {reason}) при срезе {slice} МБ — прогон остановлен снаружи: на общей карте прогон без присмотра не оставляют.',
+      other: 'Видеокарта {device}: {count} замера подряд не ответили (последний: {reason}) при срезе {slice} МБ — прогон остановлен снаружи: на общей карте прогон без присмотра не оставляют.',
+    },
+    en: {
+      one: 'GPU {device}: {count} sample in a row did not answer (the last: {reason}) with a {slice} MB share — the run was stopped from outside: an unwatched run is not left on a shared card.',
+      other: 'GPU {device}: {count} samples in a row did not answer (the last: {reason}) with a {slice} MB share — the run was stopped from outside: an unwatched run is not left on a shared card.',
+    },
+  },
+  // Added when not one sample answered in the whole run: then it is the host,
+  // not the notebook, and the run ends as our own failure (harness_error).
+  'competitions.answer.gpuNeverRead': {
+    ru: 'Карта не ответила за весь прогон ни разу: если так кончается каждый прогон на ней, проверьте, работает ли nvidia-smi внутри контейнера на этом хосте.',
+    en: 'The card never answered during this run: if every run on it ends like this, check that nvidia-smi works inside a container on this host.',
+  },
+  // A sample that said nothing before its deadline ({seconds}), as {reason} above.
+  'competitions.answer.gpuSampleStalled': {
+    ru: 'нет ответа за {seconds} с',
+    en: 'no answer within {seconds} s',
   },
   // The teacher's column of a waiting submission a newer upload replaced.
   'competitions.answer.replaced': {
@@ -1162,6 +1280,17 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.p.condData': { ru: 'Данные', en: 'Data' },
   'competitions.p.condDataValue': { ru: 'data/ · только чтение', en: 'data/ · read-only' },
   'competitions.p.condAnswer': { ru: 'Файл с прогнозами', en: 'Predictions file' },
+  // The card's row (Paper 15 · G4), only for a competition whose notebook runs
+  // with a share of a video card: the share the server holds, the whole card,
+  // or — where the size is the cluster's or unknown — only that there is one.
+  // Inside the container the card is always cuda:0.
+  'competitions.p.condGpu': { ru: 'Видеокарта', en: 'GPU' },
+  'competitions.p.condGpuSlice': { ru: 'срез ≈\u00a0{size}\u00a0ГБ · cuda:0', en: 'share ≈\u00a0{size}\u00a0GB · cuda:0' },
+  'competitions.p.condGpuWhole': { ru: 'вся карта · cuda:0', en: 'whole card · cuda:0' },
+  'competitions.p.condGpuOn': { ru: 'есть · cuda:0', en: 'yes · cuda:0' },
+  // No card is given to submissions yet: the send box refuses with the
+  // reason (runtime.gpuUnavailable), and this row says the same, not «есть».
+  'competitions.p.condGpuNone': { ru: 'посылкам пока не выдана', en: 'not given to submissions yet' },
 
   /* Лидерборд (P2 · мини-таблица, P3 · таблица) */
   'competitions.p.publicBoard': { ru: 'ПУБЛИЧНЫЙ ЛИДЕРБОРД', en: 'PUBLIC LEADERBOARD' },
@@ -1457,6 +1586,20 @@ export const competitionsMessages: MessageCatalog = {
       other: 'The notebook starts from scratch and runs every cell in order, in a container with no internet: up to {count} minutes, {memory} of memory.',
     },
   },
+  // The same first step for a notebook with a video card: {gpu} is the
+  // conditions row's own value («срез ≈ 6 ГБ · cuda:0»).
+  'competitions.p.howRunGpu': {
+    ru: {
+      one: 'Тетрадь запускается заново, все ячейки по порядку, в контейнере без интернета: до {count} минуты, {memory} памяти; видеокарта — {gpu}.',
+      few: 'Тетрадь запускается заново, все ячейки по порядку, в контейнере без интернета: до {count} минут, {memory} памяти; видеокарта — {gpu}.',
+      many: 'Тетрадь запускается заново, все ячейки по порядку, в контейнере без интернета: до {count} минут, {memory} памяти; видеокарта — {gpu}.',
+      other: 'Тетрадь запускается заново, все ячейки по порядку, в контейнере без интернета: до {count} минуты, {memory} памяти; видеокарта — {gpu}.',
+    },
+    en: {
+      one: 'The notebook starts from scratch and runs every cell in order, in a container with no internet: up to {count} minute, {memory} of memory; GPU: {gpu}.',
+      other: 'The notebook starts from scratch and runs every cell in order, in a container with no internet: up to {count} minutes, {memory} of memory; GPU: {gpu}.',
+    },
+  },
   'competitions.p.howSwap': {
     ru: 'В data/ лежат те же файлы, что выше, но на месте {file} — скрытый тест: те же столбцы, {rows}, другие строки. Читайте файл по этому пути и не рассчитывайте на число строк или конкретные id.',
     en: 'data/ holds the same files as above, but in place of {file} sits the hidden test: the same columns, {rows}, different rows. Read the file by this path and do not count on the number of rows or particular ids.',
@@ -1560,6 +1703,11 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.refusal.entrantRunning': {
     ru: 'Посылка этого участника ещё выполняется и не успела остановиться. Повторите через минуту.',
     en: 'One of this participant’s submissions is still running and has not stopped yet. Try again in a minute.',
+  },
+  // Deleting a competition whose run did not stop in time (runner.ts · stopCompetitionRuns).
+  'competitions.refusal.competitionRunning': {
+    ru: 'Посылка этого соревнования ещё выполняется и не успела остановиться. Повторите удаление через минуту.',
+    en: 'A submission of this competition is still running and has not stopped yet. Try deleting it again in a minute.',
   },
   'competitions.refusal.entrantBaseline': {
     ru: 'Это служебный участник сэмпл-тетради — его удалить нельзя.',

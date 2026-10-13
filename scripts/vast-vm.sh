@@ -4,7 +4,9 @@
 #   make vast-vm                         the cheapest suitable VM offer
 #   make vast-vm GPU="RTX 3070"          only this card
 #   make vast-vm CPU=48 RAM=96           at least 48 cores and 96 GB, any card
-#   make vast-vm OFFER=51006376          exactly this offer
+#   make vast-vm GPUS=2 GPU_RAM=24       at least two cards, each with 24 GB or more
+#   make vast-vm DISK=100 MAX_PRICE=1.5  this disk (GB) and price cap ($/hr), not .env's
+#   make vast-vm OFFER=51006376          exactly this offer, however far down the market
 #   make vast-vm HOST=vsos               class address vsos.<RELAY_DOMAIN> (default: the on-start's)
 #   make vast-vm INSTANCE=53175270 HOST=vsos   redeploy on a VM already rented
 #
@@ -28,8 +30,18 @@
 # the VM expect a little less than the listing: 30 of 32 cores and 49 of 63 GB
 # on 29 Sep 2026.
 #
+# A GPU class, or a competition whose submissions get a share of a card, wants
+# the cards themselves: GPUS= is how many at least (num_gpus), GPU_RAM= how
+# much memory each one has at least, in GB (gpu_ram). And disk: the CUDA
+# images are built on the VM, base-gpu about 9.9 GB and kaggle-gpu about 2.8 GB
+# more (12.7 GB in all, measured 13 Oct 2026), so DISK=100 rather than the
+# default 60.
+#
 # Reads from .env: VAST_TOKEN, VAST_SSH_KEY, VAST_IMAGE, VAST_DISK,
 # VAST_MAX_PRICE, VAST_GPU; the key is never printed or passed on a command line.
+# DISK=, MAX_PRICE= and GPU= on the command line win over theirs for one
+# rental; GPUS= and GPU_RAM= exist on the command line only, so a plain
+# `make vast-vm` searches exactly as it did before them.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -43,11 +55,20 @@ py() { python3 -c "$1"; }
 API=https://console.vast.ai/api/v0
 ONSTART="${ONSTART:-backups/vast-onstart.sh}"
 IMAGE="$(read_env VAST_IMAGE)";         IMAGE="${IMAGE:-docker.io/vastai/kvm:ubuntu_cli_22.04-2025-11-21}"
-DISK="$(read_env VAST_DISK)";           DISK="${DISK:-60}"
-MAX_PRICE="$(read_env VAST_MAX_PRICE)"; MAX_PRICE="${MAX_PRICE:-1.0}"
+DISK="${DISK:-$(read_env VAST_DISK)}";  DISK="${DISK:-60}"
+MAX_PRICE="${MAX_PRICE:-$(read_env VAST_MAX_PRICE)}"; MAX_PRICE="${MAX_PRICE:-1.0}"
 GPU_NAME="${GPU:-$(read_env VAST_GPU)}"
 MIN_CPUS="${CPU:-0}";                   MIN_RAM_GB="${RAM:-0}"
+MIN_GPUS="${GPUS:-1}";                  MIN_GPU_RAM="${GPU_RAM:-}"
 case "$MIN_CPUS$MIN_RAM_GB" in *[!0-9]*) die "CPU= and RAM= are whole numbers (cores, GB).";; esac
+case "$MIN_GPUS" in ''|*[!0-9]*|0) die "GPUS= is a whole number of cards, 1 or more.";; esac
+# They go into the query as numbers: a typo must stop here in words, not as a
+# Python traceback halfway through the search.
+number() { [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]; }
+number "$DISK" || die "DISK= (VAST_DISK in .env) is a size in GB, not \"$DISK\"."
+number "$MAX_PRICE" || die "MAX_PRICE= (VAST_MAX_PRICE in .env) is dollars per hour, not \"$MAX_PRICE\"."
+[ -z "$MIN_GPU_RAM" ] || number "$MIN_GPU_RAM" || die "GPU_RAM= is one card's memory in GB, not \"$MIN_GPU_RAM\"."
+case "${OFFER:-}" in *[!0-9]*) die "OFFER= is an offer number from the list, not \"$OFFER\".";; esac
 SSH_KEY="$(read_env VAST_SSH_KEY)";     SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 # shellcheck disable=SC2088
 case "$SSH_KEY" in "~/"*) SSH_KEY="$HOME/${SSH_KEY#\~/}" ;; esac
@@ -106,23 +127,40 @@ if [ -n "${INSTANCE:-}" ]; then
   say "${BOLD}instance $id${OFF}: deploying ${ADDRESS:+for $ADDRESS }without renting"
 else
 # ---------------------------------------------------------------- offer
-query="$(DISK="$DISK" MAX_PRICE="$MAX_PRICE" GPU_NAME="$GPU_NAME" MIN_CPUS="$MIN_CPUS" MIN_RAM_GB="$MIN_RAM_GB" py '
+query="$(DISK="$DISK" MAX_PRICE="$MAX_PRICE" GPU_NAME="$GPU_NAME" MIN_CPUS="$MIN_CPUS" MIN_RAM_GB="$MIN_RAM_GB" \
+  MIN_GPUS="$MIN_GPUS" MIN_GPU_RAM="$MIN_GPU_RAM" OFFER="${OFFER:-}" py '
 import json, os
 q = {"vms_enabled": {"eq": True}, "type": "ondemand", "rentable": {"eq": True}, "rented": {"eq": False},
-     "verified": {"eq": True}, "reliability": {"gte": 0.98}, "num_gpus": {"gte": 1},
+     "verified": {"eq": True}, "reliability": {"gte": 0.98}, "num_gpus": {"gte": int(os.environ["MIN_GPUS"])},
      "disk_space": {"gte": float(os.environ["DISK"]) + 10},
      "dph_total": {"lte": float(os.environ["MAX_PRICE"])}, "order": [["dph_total", "asc"]], "limit": 60}
 if os.environ["GPU_NAME"].strip(): q["gpu_name"] = {"in": [os.environ["GPU_NAME"].strip()]}
 if int(os.environ["MIN_CPUS"]): q["cpu_cores_effective"] = {"gte": int(os.environ["MIN_CPUS"])}
 if int(os.environ["MIN_RAM_GB"]): q["cpu_ram"] = {"gte": int(os.environ["MIN_RAM_GB"]) * 1024}
+# Megabytes, and deliberately not GB * 1024: a "24 GB" card reports 24564 MB,
+# and a round power of two would cut off every 4090 (as in vast-legacy.sh).
+if os.environ["MIN_GPU_RAM"]: q["gpu_ram"] = {"gte": int(float(os.environ["MIN_GPU_RAM"]) * 1000)}
+# OFFER is asked for by number, not by "id": on 13 Oct 2026 an "id" condition
+# made the bundles API answer with no offers at all (an earlier note here said
+# it was ignored), and no answer holds more than 64 offers, whatever "limit"
+# says. Matched only in the answer, as it was here before, OFFER was found
+# among the 60 cheapest and nowhere else: a better card or a known host further
+# down the market was "not found" although it passed every filter.
+# ask_contract_id holds the same number, and the API keeps to it. The other
+# conditions stay, so OFFER still cannot rent what the price cap, the disk or
+# the VM filters refuse.
+if os.environ["OFFER"]: q["ask_contract_id"] = {"eq": int(os.environ["OFFER"])}
 print(json.dumps(q))
 ')"
 # cuda_max_good is checked on the answer, not in the query: the server-side
-# filter hid RTX 5070/5090 offers in September 2026 (see vast-legacy.sh).
-# The bundles API silently ignores an "id" condition, so OFFER is matched here.
+# filter hid RTX 5070/5090 offers in September 2026 (see vast-legacy.sh). The
+# floor is 13.0 since 13 Oct 2026: kernel/environments/base-gpu.txt pins torch
+# 2.14.1 with CUDA 13.0 wheels, which a host with a CUDA 12 driver cannot run.
+# OFFER is matched in the answer as well, in case the API ever drops the
+# condition above as quietly as it once dropped "id".
 suitable="$(api POST bundles/ "$query" | OFFER="${OFFER:-}" py '
 import json, os, sys
-offers = [o for o in json.load(sys.stdin).get("offers") or [] if float(o.get("cuda_max_good") or 0) >= 12.1]
+offers = [o for o in json.load(sys.stdin).get("offers") or [] if float(o.get("cuda_max_good") or 0) >= 13.0]
 if os.environ["OFFER"].strip(): offers = [o for o in offers if str(o["id"]) == os.environ["OFFER"].strip()]
 for o in offers[:8]:
     print("    %-10s %s x %-12s %3.0f GB  %3.0f cores  %4.0f GB RAM  $%.3f/hr  %s" % (o["id"], o.get("num_gpus"),
@@ -130,7 +168,9 @@ for o in offers[:8]:
           (o.get("cpu_ram") or 0) / 1024, o.get("dph_total") or 0, o.get("geolocation") or ""), file=sys.stderr)
 for o in offers: print("%s\t%.3f\t%s x %s" % (o["id"], o.get("dph_total") or 0, o.get("num_gpus"), o.get("gpu_name")))
 ')"
-[ -n "$suitable" ] || die "no VM offer matches: GPU \"${GPU_NAME:-any}\"${OFFER:+, offer $OFFER}${CPU:+, from $CPU cores}${RAM:+, from $RAM GB RAM}, up to \$$MAX_PRICE/hr, disk from $DISK GB."
+# The Max CUDA floor above is named with the other conditions: an offer it
+# alone refuses passes every one of those, and a message without it blamed none.
+[ -n "$suitable" ] || die "no VM offer matches: GPU \"${GPU_NAME:-any}\"${OFFER:+, offer $OFFER}${GPUS:+, from $GPUS cards}${GPU_RAM:+, from $GPU_RAM GB per card}${CPU:+, from $CPU cores}${RAM:+, from $RAM GB RAM}, up to \$$MAX_PRICE/hr, disk from $DISK GB, Max CUDA from 13.0."
 IFS=$'\t' read -r offer_id price what <<<"$(printf '%s\n' "$suitable" | head -n 1)"
 say ""
 say "${BOLD}VM offer $offer_id${OFF}: $what, \$$price/hr, image $(sed -n 's/^export COLLOQ_IMAGE="\(.*\)"/\1/p' "$SCRIPT")${ADDRESS:+, address $ADDRESS}"

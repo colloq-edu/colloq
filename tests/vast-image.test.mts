@@ -314,6 +314,31 @@ exit 0
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('the kernels job refuses kaggle-gpu through its parent: GPU images stay local builds', () => {
+  // kaggle-gpu says nothing about the GPU itself, it inherits the flag from
+  // base-gpu. Named in ENVIRONMENTS by mistake, it must stop the job at its
+  // parent, before any build: the CUDA wheels stay off a runner's disk and
+  // out of every pull (the job's own comment says why), and a GPU machine
+  // builds the chain itself on first boot (KERNEL_PRELOAD=base,base-gpu,kaggle-gpu).
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-kernels-gpu-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'job.sh'), jobScript(read('.github/workflows/publish.yml'), 'kernels'))
+    fs.mkdirSync(path.join(dir, 'bin'))
+    const log = path.join(dir, 'docker.log')
+    fs.writeFileSync(path.join(dir, 'bin', 'docker'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\nexit 0\n`, { mode: 0o755 })
+    const r = spawnSync('bash', [path.join(dir, 'job.sh')], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { PATH: `${path.join(dir, 'bin')}:${process.env.PATH}`, OWNER: 'colloq-edu', VERSION: '0.9.0', COMMIT: 'c0ffee',
+        SOURCE_URL: 'https://github.com/colloq-edu/colloq', ENVIRONMENTS: 'base kaggle-gpu', RUNNER_TEMP: dir },
+    })
+    assert.notEqual(r.status, 0, r.stdout + r.stderr)
+    assert.match(r.stdout + r.stderr, /::error::base-gpu is a GPU environment; this job publishes CPU environments only/)
+    assert.equal(fs.existsSync(log), false, 'nothing reached docker before the refusal')
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('the server image is pushed as colloq-vast and colloq-server in one build', () => {
   const publish = read('.github/workflows/publish.yml')
   assert.match(publish, /server="ghcr\.io\/\$\{OWNER,,\}\/colloq-server"/)
@@ -332,7 +357,12 @@ test('colloq-host carries the settings of the university contract into the conta
     // Sign-in by proxy (server/src/sso/identity.ts): a VM behind Teleport needs every one of them.
     'AUTH_JWT_JWKS_URL', 'AUTH_JWT_JWKS_FILE', 'AUTH_JWT_HEADER', 'AUTH_JWT_ISSUER', 'AUTH_JWT_AUDIENCE', 'AUTH_JWT_ALGORITHMS',
     'AUTH_JWT_LEEWAY_SECONDS', 'AUTH_JWT_SUBJECT_CLAIM', 'AUTH_JWT_NAME_CLAIM', 'AUTH_JWT_EMAIL_CLAIM', 'AUTH_JWT_ROLES_CLAIM',
-    'AUTH_JWT_EMAIL_DOMAIN', 'AUTH_JWT_TEACHER_ROLES', 'AUTH_JWT_OWNER_ROLES']) {
+    'AUTH_JWT_EMAIL_DOMAIN', 'AUTH_JWT_TEACHER_ROLES', 'AUTH_JWT_OWNER_ROLES',
+    // The competition runner's fallbacks (server/src/competitions): how many
+    // submissions run at once, and the cards given to submissions with how
+    // many share one. The panel's Resources tab wins over them, but a machine
+    // set up by its on-start alone has nothing else.
+    'COMPETITION_SLOTS', 'COMPETITION_GPUS', 'COMPETITION_GPU_PER_DEVICE']) {
     assert.ok(keys.includes(key), `APP_KEYS lacks ${key}`)
   }
   // The Vast on-start names the two Vast-only behaviours itself.
@@ -344,7 +374,7 @@ test('colloq-host carries the settings of the university contract into the conta
 
 test('the vast files name only the environments that exist', () => {
   const shipped = fs.readdirSync(path.join(ROOT, 'kernel/environments')).filter((f) => f.endsWith('.txt')).map((f) => f.slice(0, -4))
-  assert.deepEqual(shipped.sort(), ['base', 'base-gpu', 'kaggle-base'])
+  assert.deepEqual(shipped.sort(), ['base', 'base-gpu', 'kaggle-base', 'kaggle-gpu'])
   for (const file of ['deploy/vast/onstart.sh', 'deploy/vast/README.md', 'deploy/vast/entrypoint.sh', 'deploy/vast/colloq-host']) {
     const text = read(file)
     assert.doesNotMatch(text, /base,gpu\b|KERNEL_MEM_GPU\b|\bgpu stands on\b|kernel\/environments\/(cv|gpu|pvz-geo)\.txt/, file)
