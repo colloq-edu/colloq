@@ -330,10 +330,12 @@ Later that day the same VM ran the build that adds GPU submissions, an unrelease
 | 1 card × 8 (a share of about 3 GB) | 29 s | 60 s | 117 s |
 | 2 cards × 8 | 31 s | 36 s | 62 s |
 
+Checked again on the released 0.22.0 image, 13 Oct 2026, same VM: the watchdog reading as root inside the hardened container (a run that lifted the cap and took 10.4 GB, and one that took 19.8 GB, were stopped; a uid-1000 process cannot kill the root reader), the cap after a library asks about torch first (held at 5.25 GiB of a 6141 MB share), CatBoost's `gpu_ram_part` default (0.229 of a 24 GB card at 4 per card, the run finished), raising runs per card while a whole-card run holds the card (the new runs waited until it ended), deleting a competition while its run holds a card (the run was stopped, the card freed), the retry after a neighbour's burst (the victim's out-of-memory run was rerun and scored), a class on the other card, and 25 simultaneous submissions on 2 cards × 4 (run 22–29 s, last verdict 104 s).
+
 Not verified yet:
 
 - `kaggle-gpu` built by `KERNEL_PRELOAD` on a first boot: the image on that VM was built by hand, at the same versions;
-- on a card, what changed after that run's review: the watchdog reading as root inside the hardened container and stopping a run whose card cannot be read, the cap after a library that asks about torch first, CatBoost's `gpu_ram_part` default, and the retry after a neighbour's burst (each checked with stand-ins only);
+- on a card, stopping a run whose card cannot be read (the fail-closed rule; checked with stand-ins only, a failing `nvidia-smi` cannot be provoked without breaking the driver);
 - pulling the kernel images `publish.yml` publishes from 0.9.0;
 - on a real Linux VM rather than with stand-ins: `colloq-host doctor`, `bundle` and `load` on an offline machine, `backup-timer`, the backup and rollback around `update`, and the trusted-proxy default behind a proxy on the same host.
 
