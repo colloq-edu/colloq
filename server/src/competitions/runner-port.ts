@@ -60,6 +60,43 @@ export interface StepLimits {
   outputKillBytes: number
 }
 
+/**
+ * The competition as a runner sees it: exactly the fields `run` reads, and
+ * nothing else of the row.
+ *
+ * The runners read so little of it: its id (the broker's job, the paths it
+ * checks, the stand-in's sample) and its environment (the image when a request
+ * names none). Everything else a run needs comes in the request itself, as
+ * paths, limits and an image. Narrowed on purpose, and picked field by field
+ * (runCompetition), not cast: the request is what a machine that runs
+ * submissions for this server will be handed as a small JSON, and a whole
+ * Competition would hand it the metric code, the seed that splits the answer
+ * key into public and private rows, and the teacher's texts along with it.
+ */
+export type RunCompetition = Pick<Competition, 'id' | 'environment'>
+
+/**
+ * The same for `score`, which also reads how the answer key's rows split
+ * (`publicPercent`, `splitSeed`). The metric runs where the answers are, on
+ * this server, so these two never travel with a notebook.
+ */
+export type ScoreCompetition = Pick<Competition, 'id' | 'environment' | 'publicPercent' | 'splitSeed'>
+
+/** What of a competition a notebook run carries (RunRequest.competition). */
+export function runCompetition(competition: RunCompetition): RunCompetition {
+  return { id: competition.id, environment: competition.environment }
+}
+
+/** What of a competition a metric run carries (ScoreRequest.competition). */
+export function scoreCompetition(competition: ScoreCompetition): ScoreCompetition {
+  return {
+    id: competition.id,
+    environment: competition.environment,
+    publicPercent: competition.publicPercent,
+    splitSeed: competition.splitSeed,
+  }
+}
+
 /** How far a running notebook has got — what "cell 9 of 14" is made of. */
 export interface RunProgress {
   phase?: 'dependencies' | 'notebook'
@@ -84,7 +121,8 @@ export interface RunRequest {
    * inside pip for the 256 MB that folder gets at 2 GB.
    */
   packagesMb?: number
-  competition: Competition
+  /** The fields of the competition a run reads (RunCompetition), not the whole row. */
+  competition: RunCompetition
   submissionId: string
   /**
    * The container name; it is also what the container is killed by. Given from
@@ -216,7 +254,8 @@ export interface ScoreRequest {
   signal?: AbortSignal
   /** The scorer's pinned base, without participant packages. */
   imageDigest?: string
-  competition: Competition
+  /** The fields of the competition the metric reads (ScoreCompetition), not the whole row. */
+  competition: ScoreCompetition
   submissionId: string
   container: string
   /** The closed half: solution.csv and the metric code. Only here, and only `:ro`. */

@@ -107,6 +107,7 @@ import {
   readSealedFile,
   readSecretFile,
   resultDir,
+  type StoredFile,
 } from '../competitions/storage.js'
 import {
   executedToday,
@@ -1158,19 +1159,23 @@ export function adminCompetitionRoutes(): Router {
     }
     for (const file of received.files) {
       const shape = file.name.toLowerCase().endsWith('.csv') ? csvShape(file.body) : null
+      let stored: StoredFile
       try {
         // First the disk, then the row: a file that did not make it into place
-        // must not be listed where the used space is counted.
-        putOpenFile(competition.id, file.name, file.body)
+        // must not be listed where the used space is counted. The two in one
+        // step, with nothing awaited between: a reader of the row then finds
+        // the bytes its hash names (store.ts · competitionFileHashes).
+        stored = putOpenFile(competition.id, file.name, file.body)
       } catch {
         return fail(res, 400, 'invalid', tr('competitions.refusal.badName', { name: file.name }))
       }
       putFile({
         competitionId: competition.id,
         name: file.name,
-        bytes: file.body.length,
+        bytes: stored.bytes,
         rows: shape?.rows ?? null,
         visibility: 'open',
+        sha256: stored.sha256,
       })
     }
     res.json(await viewOf(getCompetition(competition.id)!))
@@ -1304,13 +1309,14 @@ export function adminCompetitionRoutes(): Router {
     }
     for (const file of named) {
       const shape = file.name.toLowerCase().endsWith('.csv') ? csvShape(file.body) : null
+      let stored: StoredFile
       try {
-        // First the disk, then the row, as for the open data.
-        putSealedFile(competition.id, file.name, file.body)
+        // First the disk, then the row, in one step, as for the open data.
+        stored = putSealedFile(competition.id, file.name, file.body)
       } catch {
         return fail(res, 400, 'invalid', tr('competitions.refusal.badName', { name: file.name }))
       }
-      putFile({ competitionId: competition.id, name: file.name, bytes: file.body.length, rows: shape?.rows ?? null, visibility: 'sealed' })
+      putFile({ competitionId: competition.id, name: file.name, bytes: stored.bytes, rows: shape?.rows ?? null, visibility: 'sealed', sha256: stored.sha256 })
     }
     res.json(await viewOf(getCompetition(competition.id)!))
   })

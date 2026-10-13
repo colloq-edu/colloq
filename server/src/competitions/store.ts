@@ -29,7 +29,7 @@ import { randomInt, randomUUID } from 'node:crypto'
 import { tr } from '@shared/i18n'
 import { db } from '../db.js'
 import { entrantKeyDigest, newEntrantKey, sealEntrantKey, unsealEntrantKey } from './key.js'
-import { removeCompetition as removeCompetitionFiles, pruneSubmissions } from './storage.js'
+import { removeCompetition as removeCompetitionFiles, openFileSha256, pruneSubmissions, sealedFileSha256 } from './storage.js'
 import { competitionDefaults } from './settings.js'
 /*
  * The rule by which a GPU run picks its card, called inside `takeNext`'s
@@ -125,7 +125,20 @@ const FILE_COLUMNS = `
     row_count      INTEGER,
     visibility     TEXT NOT NULL,
     uploaded_at    INTEGER NOT NULL,
+    sha256         TEXT,
     PRIMARY KEY (competition_id, visibility, name)`
+
+/*
+ * The columns that say WHAT a file is — every column of competition_files but
+ * its hash. An update of any of these is a change of the competition's inputs
+ * (the revision triggers below fire on them alone); an update of the hash
+ * alone is a fact learned about bytes that did not change, and must bump
+ * nothing: the lazy backfill (competitionFileHashes) would otherwise make
+ * every baseline check stale and send the teacher to run the sample notebook
+ * again for nothing. A column added to the table later belongs here unless it
+ * too only describes what is already there.
+ */
+const FILE_CONTENT_COLUMNS = 'competition_id, name, bytes, row_count, visibility, uploaded_at'
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS competitions (
@@ -436,6 +449,16 @@ ensureColumn('submissions', 'brief_error', 'brief_error TEXT')
 ensureColumn('submissions', 'error_type', 'error_type TEXT')
 ensureColumn('submission_runs', 'sealed_inputs', 'sealed_inputs INTEGER NOT NULL DEFAULT 0')
 /*
+ * The sha256 of an open or hidden-test file (the content address a machine
+ * that runs submissions asks for it by), written at upload from the bytes in
+ * hand (storage.ts · putOpenFile). NULL for every row uploaded before it and
+ * for the answers, which are never handed out by hash; the open and hidden
+ * rows get theirs lazily (competitionFileHashes). A new nullable column, which
+ * older code never reads; what an older server's re-upload would leave in it
+ * is cleared by a trigger (fileHashTriggers).
+ */
+ensureColumn('competition_files', 'sha256', 'sha256 TEXT')
+/*
  * The course a competition belongs to (Competition.courseId). Null for every
  * existing row: a competition made before courses had teachers belongs to no
  * course, and stays visible to its creator and the owners
@@ -530,7 +553,7 @@ export function rekeyCompetitionFiles(): boolean {
       ALTER TABLE competition_files_rekeyed RENAME TO competition_files;
       CREATE INDEX IF NOT EXISTS competition_files_of ON competition_files(competition_id, visibility);
     `)
-    revisionTriggers()
+    competitionTriggers()
   })()
   return true
 }
@@ -607,28 +630,70 @@ db.exec(`
  * either makes the sample notebook's check stale. The triggers carry new names
  * because `CREATE TRIGGER IF NOT EXISTS` cannot change an existing one, and the
  * old ones (open files only) are dropped wherever they still are.
+ *
+ * A file's UPDATE fires only on the columns that say what the file is
+ * (FILE_CONTENT_COLUMNS), not on its hash. Those two triggers keep their names
+ * and are replaced where an older start made them fire on any update: an
+ * older server rolled back to finds them under the names it knows and leaves
+ * them, and its upsert names `bytes`, so they fire for it as they always did.
  */
 function revisionTriggers(): void {
   const NOTEBOOK_FILE = "IN ('open', 'sealed')"
   for (const table of ['submissions', 'competition_queue', 'competition_entrants', 'competition_files']) {
     for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
       const row = operation === 'DELETE' ? 'OLD' : 'NEW'
+      const event = table === 'competition_files' && operation === 'UPDATE' ? `UPDATE OF ${FILE_CONTENT_COLUMNS}` : operation
       if (table === 'competition_files') {
+        const name = `competition_files_${operation.toLowerCase()}_notebook_inputs`
         db.exec(`DROP TRIGGER IF EXISTS competition_files_${operation.toLowerCase()}_notebook_revision`)
-        db.exec(`CREATE TRIGGER IF NOT EXISTS competition_files_${operation.toLowerCase()}_notebook_inputs
-        AFTER ${operation} ON competition_files
+        if (operation === 'UPDATE') dropUnlessColumnScoped(name)
+        db.exec(`CREATE TRIGGER IF NOT EXISTS ${name}
+        AFTER ${event} ON competition_files
         WHEN ${operation === 'UPDATE' ? `OLD.visibility ${NOTEBOOK_FILE} OR NEW.visibility ${NOTEBOOK_FILE}` : `${row}.visibility ${NOTEBOOK_FILE}`}
         BEGIN UPDATE competitions SET notebook_input_revision = notebook_input_revision + 1 WHERE id = ${row}.competition_id; END;`)
       }
+      if (table === 'competition_files' && operation === 'UPDATE') dropUnlessColumnScoped(`${table}_update_revision`)
       db.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_${operation.toLowerCase()}_revision
-        AFTER ${operation} ON ${table}
+        AFTER ${event} ON ${table}
         BEGIN UPDATE competitions SET revision = revision + 1
           ${table === 'competition_files' ? ', input_revision = input_revision + 1' : ''}
           WHERE id = ${row}.competition_id; END;`)
     }
   }
 }
-revisionTriggers()
+
+/** Drop a trigger of competition_files made by an older start, one that fires on any update. */
+function dropUnlessColumnScoped(name: string): void {
+  const found = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(name) as { sql: string } | undefined
+  if (found && !/\bUPDATE\s+OF\b/i.test(found.sql)) db.exec(`DROP TRIGGER ${name}`)
+}
+
+/*
+ * A file's hash belongs to the bytes of the upload that wrote it. A re-upload
+ * that does not set a new one (an older server's upsert, which knows nothing
+ * of the column, or ours before it writes the hash it took: putFile) leaves
+ * the old hash naming bytes that are gone, so it is forgotten, and the file
+ * gets its own from the disk lazily (competitionFileHashes). Only the hash is
+ * touched, so nothing above fires again.
+ */
+function fileHashTriggers(): void {
+  db.exec(`CREATE TRIGGER IF NOT EXISTS competition_files_hash_forgotten
+    AFTER UPDATE OF bytes, uploaded_at ON competition_files
+    WHEN NEW.sha256 IS OLD.sha256 AND NEW.sha256 IS NOT NULL
+    BEGIN UPDATE competition_files SET sha256 = NULL
+      WHERE competition_id = NEW.competition_id AND visibility = NEW.visibility AND name = NEW.name; END;`)
+}
+
+/**
+ * The triggers of the competition tables, made where missing and brought up
+ * to date where an older start made them: at startup, after the files table
+ * is rebuilt (rekeyCompetitionFiles), and by the migration test. Idempotent.
+ */
+export function competitionTriggers(): void {
+  revisionTriggers()
+  fileHashTriggers()
+}
+competitionTriggers()
 rekeyCompetitionFiles()
 
 /** Replacing an artifact without a competition_files row (the baseline). */
@@ -1081,6 +1146,7 @@ interface FileRow {
   row_count: number | null
   visibility: string
   uploaded_at: number
+  sha256: string | null
 }
 
 function toFile(row: FileRow): CompetitionFile {
@@ -1094,14 +1160,39 @@ function toFile(row: FileRow): CompetitionFile {
   }
 }
 
+/*
+ * The hash is not in the DO UPDATE: a re-upload forgets the old one by trigger
+ * (fileHashTriggers), whoever's upsert it is, and putFile then writes the new
+ * one, alone, which fires nothing.
+ */
 const upsertFile = db.prepare(`
-  INSERT INTO competition_files (competition_id, name, bytes, row_count, visibility, uploaded_at)
-  VALUES (@competition_id, @name, @bytes, @row_count, @visibility, @uploaded_at)
+  INSERT INTO competition_files (competition_id, name, bytes, row_count, visibility, uploaded_at, sha256)
+  VALUES (@competition_id, @name, @bytes, @row_count, @visibility, @uploaded_at, @sha256)
   ON CONFLICT(competition_id, visibility, name) DO UPDATE SET
     bytes = excluded.bytes,
     row_count = excluded.row_count,
     uploaded_at = excluded.uploaded_at
 `)
+const writeFileHash = db.prepare(
+  'UPDATE competition_files SET sha256 = @sha256 WHERE competition_id = @competition_id AND visibility = @visibility AND name = @name',
+)
+/*
+ * The backfill's write, for the upload it read and no other: a row re-uploaded
+ * while the file was being hashed has a new uploaded_at (and, from this door, a
+ * hash of its own already), and the hash taken is of bytes that are gone.
+ */
+const fillFileHash = db.prepare(`
+  UPDATE competition_files SET sha256 = @sha256
+  WHERE competition_id = @competition_id AND visibility = @visibility AND name = @name
+    AND sha256 IS NULL AND uploaded_at = @uploaded_at AND bytes = @bytes
+`)
+const SHA256 = /^[a-f0-9]{64}$/
+const writeFileRow = db.transaction((row: Record<string, unknown> & { sha256: string | null }) => {
+  upsertFile.run(row)
+  // After the upsert, alone: a re-upload of the same bytes forgot the hash it
+  // brings back (fileHashTriggers), and a write of the hash bumps no revision.
+  if (row.sha256) writeFileHash.run({ competition_id: row.competition_id, visibility: row.visibility, name: row.name, sha256: row.sha256 })
+})
 const selectFiles = db.prepare(
   'SELECT * FROM competition_files WHERE competition_id = ? ORDER BY name',
 )
@@ -1119,6 +1210,15 @@ const sumBytesOf = db.prepare(
    WHERE competition_id = ? AND visibility = ?`,
 )
 
+/**
+ * Record a file the disk now holds (storage.ts · putOpenFile and its kin).
+ *
+ * `sha256` is the hash the upload took of the bytes it wrote; without one the
+ * row has none, and an open or hidden-test file gets it from the disk when it
+ * is first asked for (competitionFileHashes). The answers never keep one, even
+ * if handed one: a row with a hash is a row that may be asked for by it, and
+ * no door hands the answers out.
+ */
 export function putFile(input: {
   competitionId: string
   name: string
@@ -1126,17 +1226,64 @@ export function putFile(input: {
   rows?: number | null
   visibility: FileVisibility
   at?: number
+  sha256?: string | null
 }): CompetitionFile {
   const name = clip(input.name, LIMITS.fileName)
-  upsertFile.run({
+  writeFileRow({
     competition_id: input.competitionId,
     name,
     bytes: input.bytes,
     row_count: input.rows ?? null,
     visibility: input.visibility,
     uploaded_at: input.at ?? Date.now(),
+    sha256: input.visibility !== 'hidden' && typeof input.sha256 === 'string' && SHA256.test(input.sha256) ? input.sha256 : null,
   })
   return toFile(selectFile.get(input.competitionId, input.visibility, name) as FileRow)
+}
+
+/** A data file as a machine that runs submissions asks for it: its name, size and content hash. */
+export interface HashedFile {
+  name: string
+  bytes: number
+  /** The sha256 of its bytes (hex); `null` — the file is not on disk as its row describes it. */
+  sha256: string | null
+}
+
+/**
+ * The competition's open files, or its hidden test, each with the sha256 of
+ * its bytes, filling in the hashes rows uploaded before 0.23 lack.
+ *
+ * Lazily, and once: the first ask reads such a file from the disk (storage.ts
+ * · openFileSha256, which a repeated ask about the same unchanged file costs
+ * one stat) and writes the hash into the row, so the next one reads only the
+ * row. The write is a fact about bytes that did not change: it bumps no
+ * revision (FILE_CONTENT_COLUMNS), and the sample notebook's check stays
+ * valid. A file whose size disagrees with its row, that is gone, or that
+ * cannot be read gets no hash: whatever is on disk is not what the row lists,
+ * and the next ask tries again. The answers are not asked for here: there is
+ * no door that hands them out by hash.
+ *
+ * Each row is read again right before its file is opened, in the same tick: an
+ * upload writes the disk and the row in one synchronous step
+ * (routes/admin-competitions.ts), so the pair is one upload's, and the guarded
+ * write (fillFileHash) refuses a hash whose upload has been replaced since. The
+ * answer is what the rows say once the pass is done.
+ */
+export async function competitionFileHashes(competitionId: string, visibility: 'open' | 'sealed'): Promise<HashedFile[]> {
+  const hashOf = visibility === 'open' ? openFileSha256 : sealedFileSha256
+  const out: HashedFile[] = []
+  for (const { name } of selectFilesOf.all(competitionId, visibility) as FileRow[]) {
+    let row = selectFile.get(competitionId, visibility, name) as FileRow | undefined
+    if (row && !row.sha256) {
+      const found = await hashOf(competitionId, name).catch(() => null)
+      if (found && found.bytes === row.bytes) {
+        fillFileHash.run({ competition_id: competitionId, visibility, name, sha256: found.sha256, uploaded_at: row.uploaded_at, bytes: row.bytes })
+      }
+      row = selectFile.get(competitionId, visibility, name) as FileRow | undefined
+    }
+    if (row) out.push({ name: row.name, bytes: row.bytes, sha256: row.sha256 ?? null })
+  }
+  return out
 }
 
 export function listFiles(id: string, visibility?: FileVisibility): CompetitionFile[] {

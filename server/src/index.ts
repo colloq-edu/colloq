@@ -52,7 +52,7 @@ import { roleFor } from './routes/sessions.js'
 import { app } from './app.js'
 import { COLLOQ_VERSION } from './version.js'
 import { startDependencyPump, stopDependencyPump } from './dependencies/service.js'
-import { pinLegacySubmissions } from './dependencies/revisions.js'
+import { backfillRevisionImages, pinLegacySubmissions } from './dependencies/revisions.js'
 import { competitionBackend } from './competitions/runner-port.js'
 import { assertCompetitionCapability } from './competitions/capabilities.js'
 import { createWorkerStartup } from './competitions/worker-startup.js'
@@ -397,6 +397,9 @@ const workerStartup = createWorkerStartup({
     await reclaimCompetitionQueue()
     // Legacy pinning invokes image probes; the test backend has no containers.
     if (competitionBackend() !== 'test') await pinLegacySubmissions()
+    // What older revisions' images are beyond this machine, in the background:
+    // nothing here waits on it (dependencies/revisions.ts · backfillRevisionImages).
+    void backfillRevisionImages().catch((error: unknown) => console.warn('[dependencies] revision images were not inspected', error))
     startCompetitionPump()
   },
   startPreparation: startDependencyPump,

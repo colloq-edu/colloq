@@ -18,7 +18,8 @@
  *     baseline/             the teacher's sample notebook
  *     s/<submissionId>/in/  the submitted notebook, one, and nothing else
  *     s/<submissionId>/out/ run.json, submission.csv, executed.ipynb
- *     s/<submissionId>/score/  a copy of the answer for the metric container
+ *     s/<submissionId>/score/  the answer for the metric container (a hard
+ *                           link; a copy where the volume refuses links)
  *     s/<submissionId>/attempts/<attemptId>/inputs/
  *                           with a hidden test: this run's data/, the open files
  *                           with the sealed ones swapped in; mounted as /data:ro
@@ -40,9 +41,11 @@
  */
 import path from 'node:path'
 import fs from 'node:fs'
+import { createHash } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 import { config } from '../config.js'
 import { createAnchoredFilesystem, type HeldFile } from '../secure-files.js'
+import { cachedSha256 } from '../dependencies/files.js'
 import { EXECUTED_NOTEBOOK_FILE } from '@shared/competitions'
 
 /** The root of all competition belongings. */
@@ -154,7 +157,8 @@ export function dropAttempt(id: string, submissionId: string, attemptId: string)
 }
 
 /**
- * Snapshot through anchored descriptors, streamed.
+ * Snapshot through anchored descriptors, streamed — where a hard link cannot
+ * be had (placeCompetitionFile).
  *
  * Asynchronous on purpose: the answer key may weigh two hundred megabytes, and
  * a synchronous copy per submission stops the event loop that serves the
@@ -294,11 +298,13 @@ export function ensureCompetition(id: string): void {
 /**
  * Write next to the file and rename over it, never truncate in place.
  *
- * A run in progress holds the old file — a copy of the answer key in its
- * snapshot, a hard link in its composed data folder (composeRunInputs) — and
- * the rename leaves it the old bytes whole instead of half of each. The
- * temporary name starts with a dot, which no file name may (NAME_OK), so it
- * can never be mistaken for, or collide with, a real one.
+ * A run in progress holds the old file — a hard link to the answer key in its
+ * snapshot (a copy where the volume refuses links), a hard link in its
+ * composed data folder (composeRunInputs) — and the rename leaves it the old
+ * bytes whole instead of half of each. A link shares the inode, so a write in
+ * place would reach into every run holding it; the rename never touches that
+ * inode. The temporary name starts with a dot, which no file name may
+ * (NAME_OK), so it can never be mistaken for, or collide with, a real one.
  */
 function writeReplacing(directory: string, name: string, body: Uint8Array): void {
   const file = path.join(directory, checkName(name))
@@ -307,20 +313,39 @@ function writeReplacing(directory: string, name: string, body: Uint8Array): void
   competitionsFs.renameSync(temporary, file)
 }
 
-/** Put an open data file. Returns how many bytes were written. */
-export function putOpenFile(id: string, name: string, body: Uint8Array): number {
+/**
+ * What a put wrote: its size, and the sha256 of its bytes — the content
+ * address the file's row keeps (store.ts · putFile), by which a machine that
+ * runs submissions asks for it and checks what it got.
+ */
+export interface StoredFile {
+  bytes: number
+  sha256: string
+}
+
+/*
+ * Hashed from the buffer the upload already holds: a fraction of a second for
+ * two hundred megabytes in memory, against reading them back from the disk
+ * later. The rows uploaded before the hash existed get theirs from the disk,
+ * lazily (openFileSha256).
+ */
+const stored = (body: Uint8Array): StoredFile => ({ bytes: body.length, sha256: createHash('sha256').update(body).digest('hex') })
+
+/** Put an open data file. Returns its size and its sha256. */
+export function putOpenFile(id: string, name: string, body: Uint8Array): StoredFile {
   writeReplacing(ensureDir(openDir(id)), name, body)
-  return body.length
+  return stored(body)
 }
 
 /**
  * Put a hidden-test file under the name the notebook will read it by in
  * `data/`. A door of its own, like the answers': a hidden test written into
  * `data/` by a wrong parameter would be downloadable by the whole class.
+ * Returns its size and its sha256, like an open file.
  */
-export function putSealedFile(id: string, name: string, body: Uint8Array): number {
+export function putSealedFile(id: string, name: string, body: Uint8Array): StoredFile {
   writeReplacing(ensureDir(sealedDir(id)), name, body)
-  return body.length
+  return stored(body)
 }
 
 /**
@@ -332,10 +357,15 @@ export function putSealedFile(id: string, name: string, body: Uint8Array): numbe
  */
 export function putSecretFile(id: string, name: string, body: Uint8Array): number {
   /*
-   * A job that started a minute ago is still copying the old answer key into
-   * its snapshot (runner.ts · snapshotSecrets): writeReplacing leaves it the
-   * old bytes whole. This directory is never mounted itself, so the new inode
-   * surprises no container.
+   * A job that started a minute ago holds the old answer key in its snapshot
+   * (runner.ts · snapshotSecrets): a hard link to the old inode, or, where the
+   * volume refuses links, a copy still streaming from it. writeReplacing leaves
+   * it the old bytes whole either way. This directory is never mounted itself,
+   * so the new inode surprises no container.
+   *
+   * No hash is taken here, unlike the open data and the hidden test: the
+   * answers are never handed out by content address, and a row without a
+   * hash cannot be found by one (store.ts · putFile).
    */
   writeReplacing(ensureDir(secretDir(id)), name, body)
   return body.length
@@ -453,6 +483,46 @@ export function readSealedFile(id: string, name: string, limit = 512 * 1024 * 10
 
 export function readBaseline(id: string, limit = 64 * 1024 * 1024): Buffer | null {
   return readIfExists(path.join(baselineDir(id), NOTEBOOK_FILE), limit)
+}
+
+/**
+ * The sha256 of an open data file as it lies on disk now, with its size, or
+ * `null` when there is no such file: for a row uploaded before the hash had a
+ * column (store.ts · competitionFileHashes). Read once per file identity
+ * (dependencies/files.ts · cachedSha256): asking again about a file that has
+ * not changed costs a stat, not a read of two hundred megabytes.
+ */
+export function openFileSha256(id: string, name: string): Promise<StoredFile | null> {
+  return heldSha256(path.join(openDir(id), checkName(name)))
+}
+
+/** The same for a hidden-test file. There is no such door for the answers (putSecretFile). */
+export function sealedFileSha256(id: string, name: string): Promise<StoredFile | null> {
+  return heldSha256(path.join(sealedDir(id), checkName(name)))
+}
+
+/*
+ * One descriptor for the identity and the bytes: the stat the cache is keyed
+ * by and the stream it reads are of the same inode, even if the teacher
+ * replaces the file between the two (writeReplacing renames a new one over
+ * the name). Opened through the anchored file system, like every read here.
+ */
+async function heldSha256(file: string): Promise<StoredFile | null> {
+  let fd: number
+  try {
+    fd = competitionsFs.openSync(file, 'r')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+  try {
+    const stat = fs.fstatSync(fd)
+    if (!stat.isFile()) return null
+    const sha256 = await cachedSha256(file, stat, () => fs.createReadStream(file, { fd, autoClose: false, start: 0 }))
+    return { bytes: stat.size, sha256 }
+  } finally {
+    fs.closeSync(fd)
+  }
 }
 
 /**
@@ -576,9 +646,44 @@ export function dropSealedFile(id: string, name: string): boolean {
 /** Errors by which a hard link says "not here", and a copy has to do. */
 const NO_LINK = new Set(['EXDEV', 'EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EMLINK', 'ENOSYS'])
 
-/** How a run's data folder gets its files — swapped out by a test to make links fail. */
+/**
+ * How a run gets its files by link (placeCompetitionFile): its data folder,
+ * its snapshot of the answer key, the metric's answer. Swapped out by a test
+ * to make links fail.
+ */
 export const inputLinks = {
   link: (from: string, to: string): void => competitionsFs.linkSync(from, to),
+}
+
+/**
+ * Put `from` at `to` as a hard link, or as a streamed copy where the volume
+ * refuses links (another device, a CSI driver without them).
+ *
+ * For what a run holds while it runs: its composed data folder
+ * (composeRunInputs), its snapshot of the answer key and the metric's copy of
+ * the answer (runner.ts · snapshotSecrets, scoreStep). A link costs one
+ * metadata operation where a copy read and wrote up to two hundred megabytes
+ * per job, and it holds the bytes the job started with just as a copy did:
+ * every write here renames a new inode over the name (writeReplacing), the
+ * promoted answer included (promoteAttempt), and the link keeps the old one.
+ * Every mount of such a folder is read-only, so no container can write
+ * through a link into the original. What does reach it is the mode the runner
+ * gives a mounted file (runner.ts · letContainerRead, 0644): the inode is one,
+ * and inside DATA_DIR's 0700 that opens it to nobody new — the open data
+ * linked into a run's folder has always been so.
+ *
+ * Not `async`, on purpose: the link — or the copy's source, opened before the
+ * first await — is taken when this is called, so the snapshot is the file as
+ * it was at that moment, not a tick later.
+ */
+export function placeCompetitionFile(from: string, to: string): Promise<void> {
+  try {
+    inputLinks.link(from, to)
+    return Promise.resolve()
+  } catch (error) {
+    if (!NO_LINK.has((error as NodeJS.ErrnoException).code ?? '')) return Promise.reject(error)
+    return copyCompetitionFile(from, to)
+  }
 }
 
 /**
@@ -612,15 +717,7 @@ export async function composeRunInputs(
 ): Promise<string> {
   const dir = attemptDir(id, submissionId, attemptId, 'inputs')
   const sealed = new Set(files.sealed.map(checkName))
-  const place = async (from: string, name: string): Promise<void> => {
-    const to = path.join(dir, name)
-    try {
-      inputLinks.link(from, to)
-    } catch (error) {
-      if (!NO_LINK.has((error as NodeJS.ErrnoException).code ?? '')) throw error
-      await copyCompetitionFile(from, to)
-    }
-  }
+  const place = (from: string, name: string): Promise<void> => placeCompetitionFile(from, path.join(dir, name))
   for (const name of files.open.map(checkName)) {
     if (sealed.has(name)) continue
     const from = path.join(openDir(id), name)

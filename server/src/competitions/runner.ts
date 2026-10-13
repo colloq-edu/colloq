@@ -81,9 +81,9 @@ import {
   competitionsFs,
   competitionsDir,
   composeRunInputs,
-  copyCompetitionFile,
   attemptDir,
   dropAttempt,
+  placeCompetitionFile,
   promoteAttempt,
   publishAttemptArtifacts,
   inputDir,
@@ -102,6 +102,8 @@ import {
   competitionBackend,
   competitionRunner,
   limitsFor,
+  runCompetition,
+  scoreCompetition,
   type Capacity,
   type CompetitionBackend,
   type DependencyFailure,
@@ -325,6 +327,8 @@ export async function pumpOnce(): Promise<number> {
           : `[competitions] resource reservations leave insufficient capacity for ${candidate.submissionId}`)
         break
       }
+      // The answer key's snapshot is a hard link and costs no disk, except
+      // where the volume refuses links and it is copied: reserved for that case.
       let secretBytes = 0
       try { secretBytes = competitionsFs.statSync(path.join(secretDir(candidate.competitionId), SOLUTION_FILE)).size } catch { /* no solution */ }
       // A run on a hidden test composes its own data folder: hard links cost
@@ -537,11 +541,12 @@ async function runJob(row: QueueRow): Promise<void> {
     return
   }
   /*
-   * The answer key is snapshotted as of the moment the job starts, but copied
-   * in the background while the notebook runs: it only has to be in place by
+   * The answer key is snapshotted as of the moment the job starts: a hard
+   * link, in place at once. Where the volume refuses links it is copied in the
+   * background while the notebook runs instead: it only has to be in place by
    * the time the metric runs, and a two-hundred-megabyte copy in front of the
    * notebook would be two hundred megabytes of everyone's queue. Resolves to
-   * the copy's error, or null.
+   * the snapshot's error, or null.
    */
   let secrets: Promise<unknown> = Promise.resolve(null)
   try {
@@ -693,7 +698,8 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     dependenciesDir,
     // The set's own room, sized for it; the runner mounts it only with a set.
     packagesMb: dependenciesDir && bundle ? packagesRoomMb(bundle.installedBytes) : undefined,
-    competition,
+    // What the runner reads of the competition, not the row (runner-port.ts · RunCompetition).
+    competition: runCompetition(competition),
     submissionId: submission.id,
     attemptId: row.attemptId!,
     signal: aborters.get(row.attemptId!)?.signal,
@@ -998,8 +1004,9 @@ export function clampCells<T extends { cell: number; cells: number }>(reported: 
  * place.
  *
  * Only looked at, never read: the answer moves to the submission by rename
- * and into the metric's directory by a streamed copy, so up to 64 MB of it
- * never sit in this process's memory or on its event loop.
+ * and into the metric's directory by a hard link (a streamed copy where the
+ * volume refuses one), so up to 64 MB of it never sit in this process's memory
+ * or on its event loop.
  */
 function answerIn(directory: string): { file: string } | string {
   const file = path.join(directory, SUBMISSION_FILE)
@@ -1063,7 +1070,8 @@ async function scoreStep(
 ): Promise<void> {
   const runner = competitionRunner()
   updateSubmission(submission.id, { stage: 'score' })
-  // The answer key's background copy must be whole before the metric may see it.
+  // The answer key's snapshot must be whole before the metric may see it: a
+  // link is at once, a copy where links are refused may still be streaming.
   const snapshotFailed = await snapshot
   if (snapshotFailed) throw snapshotFailed
 
@@ -1097,9 +1105,12 @@ async function scoreStep(
   // see neither the participant's executed notebook nor its output. The
   // directory for the metric's answer is a separate, NEIGHBOURING one: one and
   // the same path mounted both read-only and writable would hand the answer's
-  // size to the watchdog as "the metric writes to disk".
+  // size to the watchdog as "the metric writes to disk". Linked, not copied
+  // (storage.ts · placeCompetitionFile): up to 64 MB per job read and written
+  // for a file the metric only reads, and a new answer promoted meanwhile
+  // renames a new inode over `out/` and leaves this one the bytes it scores.
   const scoreInput = attemptDir(competition.id, submission.id, row.attemptId!, 'score')
-  await copyCompetitionFile(answerFile, path.join(scoreInput, SUBMISSION_FILE))
+  await placeCompetitionFile(answerFile, path.join(scoreInput, SUBMISSION_FILE))
   const outDir = attemptDir(competition.id, submission.id, row.attemptId!, 'score-out')
   if (runner.backend !== 'test') {
     letContainerRead(secrets)
@@ -1110,7 +1121,8 @@ async function scoreStep(
   try {
     outcome = await runner.score({
       imageDigest,
-      competition,
+      // What the metric reads of the competition, not the row (runner-port.ts · ScoreCompetition).
+      competition: scoreCompetition(competition),
       submissionId: submission.id,
       container,
       attemptId: row.attemptId!,
@@ -1125,11 +1137,11 @@ async function scoreStep(
     throw error
   } finally {
     /*
-     * The second copy of the answer and the metric's json live exactly for
-     * the duration of scoring. Keeping them longer means storing every answer
-     * twice: in a competition of three hundred submissions that is gigabytes
-     * nobody reads. Rescoring creates the directory anew — and it has to be a
-     * new one.
+     * The answer's link and the metric's json live exactly for the duration
+     * of scoring. Where links are refused the answer is a second copy, and
+     * keeping it longer means storing every answer twice: in a competition of
+     * three hundred submissions that is gigabytes nobody reads. Rescoring
+     * creates the directory anew — and it has to be a new one.
      */
     try {
       competitionsFs.rmSync(scoreInput, { recursive: true, force: true })
@@ -1176,16 +1188,20 @@ async function scoreStep(
  * safe (see the header of storage.ts about virtiofs).
  *
  * The directory and the metric are written right away, and a failure there
- * fails the job before its notebook runs; the answer key's copy is returned
- * as a promise. Its source is opened here, synchronously, so the snapshot is
+ * fails the job before its notebook runs; the answer key's snapshot is
+ * returned as a promise. It is a hard link to the answer key's inode, made
+ * here, synchronously (storage.ts · placeCompetitionFile), so the snapshot is
  * the file as it was when the job started — a new answer key replaces the
- * name, not these bytes (storage.ts · putSecretFile).
+ * name, not these bytes (storage.ts · putSecretFile). It used to be a copy:
+ * two hundred megabytes read and written per job, on the disk the class
+ * works from. A volume that refuses links still gets the copy, its source
+ * opened here just the same, streamed while the notebook runs.
  */
 function snapshotSecrets(competition: Competition, submission: Submission, row: QueueRow): Promise<void> {
   const directory = attemptDir(competition.id, submission.id, row.attemptId!, 'secret')
   competitionsFs.writeFileSync(path.join(directory, METRIC_NAME), Buffer.from(`${competition.metric.code}\n`), { mode: 0o600 })
   const solution = path.join(secretDir(competition.id), SOLUTION_FILE)
-  return competitionsFs.existsSync(solution) ? copyCompetitionFile(solution, path.join(directory, SOLUTION_FILE)) : Promise.resolve()
+  return competitionsFs.existsSync(solution) ? placeCompetitionFile(solution, path.join(directory, SOLUTION_FILE)) : Promise.resolve()
 }
 
 /**

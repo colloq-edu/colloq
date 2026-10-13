@@ -438,6 +438,11 @@ export function runArgs(opts: {
   return [
     'run',
     '-d',
+    // The image is the revision the submission was pinned to, and it is here
+    // or the run is not ours to start: a missing image fails the launch at once
+    // with docker's "No such image", never a pull under the launch's 120 s
+    // that fetches whatever a registry holds under that name today.
+    '--pull=never',
     '--name',
     container,
     // No network at all: no DNS, no loopback, no bridge. A competition is
@@ -578,6 +583,9 @@ export function scoreArgs(opts: {
   return [
     'run',
     '-d',
+    // Never a pull, as for the notebook (runArgs): the metric runs in the image
+    // the submission was pinned to, beside the answers, or not at all.
+    '--pull=never',
     '--name',
     container,
     '--network',

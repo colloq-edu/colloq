@@ -7,30 +7,48 @@ import { ENVIRONMENT_NAME } from '@shared/admin'
 import type { Competition } from '@shared/competitions'
 import type { EnvironmentRevision, InstalledPackage } from '@shared/dependencies'
 import { getCompetition } from '../competitions/store.js'
-import { competitionRevision, getBinding, putRevision, selectRevision, bindSubmission, revisions } from './store.js'
+import { competitionRevision, getBinding, getRevision, noteRevisionImage, putRevision, selectRevision, bindSubmission, revisions } from './store.js'
 import { db } from '../db.js'
 import { competitionBackend } from '../competitions/runner-port.js'
 import { imageRevision, kernelRuntimeClient, loadRuntimeCatalog } from '../kernel/runtime-client.js'
 import { resolveRuntimeEnvironment } from '@shared/runtime'
 import { config } from '../config.js'
 import { dependencyBrokerHarnessDir } from './broker-harness.js'
+import { imageIdentity } from './image-identity.js'
 import type { CompetitionJobIntent } from '@shared/competition-runtime'
 const execute=promisify(execFile)
 const snapshots=new Map<string,Promise<EnvironmentRevision>>()
 const PROBE=`import json,platform,sysconfig,importlib.metadata as m
 print(json.dumps({'python':platform.python_version(),'abi':sysconfig.get_config_var('SOABI'),'packages':[{'name':d.metadata['Name'],'version':d.version} for d in m.distributions()]}))`
-async function docker(args:string[],timeout=20000):Promise<string>{return (await execute('docker',args,{timeout,maxBuffer:2*1024*1024})).stdout.trim()}
+const realDocker=async(args:string[],timeout:number):Promise<string>=>(await execute('docker',args,{timeout,maxBuffer:2*1024*1024})).stdout.trim()
+let dockerCall=realDocker
+/**
+ * Swap out docker for the tests of what a revision learns about its image
+ * (inspect fixtures from the classic and the containerd stores); `null` puts
+ * the real one back. The same seam as docker-runner.ts · useDockerForCompetitions:
+ * the suite has no daemon, and what is checked is what is read off its answers.
+ */
+export function useDockerForRevisions(fake:((args:string[])=>Promise<string>)|null):void{
+  dockerCall=fake?async(args)=>fake(args):realDocker
+}
+async function docker(args:string[],timeout=20000):Promise<string>{return dockerCall(args,timeout)}
+const IMAGE_ID=/^sha256:[a-f0-9]{64}$/
 export async function captureRevision(environmentName:string):Promise<EnvironmentRevision>{
   if(!ENVIRONMENT_NAME.test(environmentName))throw new Error('Invalid environment name')
   if(competitionBackend()==='broker')return captureBrokerRevision(environmentName)
   const info=JSON.parse(await docker(['image','inspect',`colloq-kernel:${environmentName}`]))[0] as {Id:string;Os:string;Architecture:string}
-  if(!/^sha256:[a-f0-9]{64}$/.test(info.Id))throw new Error('Environment image is not available')
+  if(!IMAGE_ID.test(info.Id))throw new Error('Environment image is not available')
+  // What the image is beyond this machine comes with the same inspect, at no
+  // extra call: an image pushed since its revision was captured gains its
+  // registry reference the next time the revision is captured.
+  const identity=imageIdentity(info)
   const key=environmentName+info.Id
   const inFlight=snapshots.get(key);if(inFlight)return inFlight
   const existing=revisions().find(r=>r.environmentName===environmentName&&r.imageDigest===info.Id)
   if(existing){
     await docker(['tag',info.Id,`colloq-revision:${existing.id}`])
-    return existing
+    noteRevisionImage(existing.id,identity)
+    return getRevision(existing.id)??existing
   }
   const pending=(async()=>{
     const name='colloq-revision-probe-'+createHash('sha256').update(key).digest('hex').slice(0,20)
@@ -46,7 +64,8 @@ export async function captureRevision(environmentName:string):Promise<Environmen
     const result=putRevision({environmentName,imageDigest:info.Id,pythonVersion:data.python,pythonAbi:data.abi,platform:`${info.Os}/${info.Architecture}`,packages,baseConstraintsHash:createHash('sha256').update(JSON.stringify(packages)).digest('hex')})
     // Preserve a reference independently of the mutable environment alias.
     await docker(['tag',info.Id,`colloq-revision:${result.id}`])
-    return result
+    noteRevisionImage(result.id,identity)
+    return getRevision(result.id)??result
   })()
   snapshots.set(key,pending)
   try{return await pending}finally{snapshots.delete(key)}
@@ -111,6 +130,40 @@ export async function ensureCompetitionRevision(c:Competition,refresh=false):Pro
   selectRevision(c.id,captured.id)
   return captured
 }
+/**
+ * Learn what the images of revisions recorded before 0.23 are beyond this
+ * machine (EnvironmentRevision.registryRef, .layers), and whether an image
+ * built here has been pushed since; returns how many revisions now read
+ * differently. Called at startup, in the background: nothing at home waits on
+ * it, and a revision that is still unknown simply stays at home.
+ *
+ * Each image is asked by the tag that pins it, `colloq-revision:<id>`
+ * (captureRevision puts it there), falling back to the image id itself where
+ * the tag is gone. Either answer counts only when its id is the revision's
+ * own: a tag moved onto another image must not lend that image's registry
+ * reference to this revision. Only the docker backend keeps images of its own;
+ * under the broker the revision is the catalog's reference already, and the
+ * test backend has no daemon.
+ */
+export async function backfillRevisionImages():Promise<number>{
+  if(competitionBackend()!=='docker')return 0
+  let changed=0
+  for(const revision of revisions()){
+    if(!IMAGE_ID.test(revision.imageDigest))continue
+    // A fingerprint never changes; only a reference can still appear (a push since).
+    if(revision.layers&&revision.registryRef)continue
+    let info:Record<string,unknown>|null=null
+    for(const reference of [`colloq-revision:${revision.id}`,revision.imageDigest]){
+      try{
+        const found=(JSON.parse(await docker(['image','inspect',reference])) as Record<string,unknown>[])[0]
+        if(found?.Id===revision.imageDigest){info=found;break}
+      }catch{ /* No such image under this reference: try the next one. */ }
+    }
+    if(info&&noteRevisionImage(revision.id,imageIdentity(info)))changed++
+  }
+  return changed
+}
+
 /** Existing history cannot prove its original tag value: mark observations as legacy. */
 export async function pinLegacySubmissions():Promise<void>{
  const rows=db.prepare(`SELECT s.id,c.environment FROM submissions s JOIN competitions c ON c.id=s.competition_id

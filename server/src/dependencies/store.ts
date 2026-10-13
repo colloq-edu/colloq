@@ -2,8 +2,9 @@
 import { randomUUID } from 'node:crypto'
 import { db } from '../db.js'
 import { getCompetition, invalidateCompetitionInputs } from '../competitions/store.js'
-import { DEPENDENCY_LIMITS, normalizeRequirements, quotaWaitMinutes, requirementLineCount, requirementWithoutComment, unsupportedRequirementLine, dependencyActive, packagesFit, packagesMemoryParams, type DependencyBundle, type DependencyDraft, type DependencyErrorParams, type DependencyPolicy, type DependencyQuota, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
-import type { PreparationProgress, PreparationResult } from './preparation-contract.js'
+import { DEPENDENCY_LIMITS, normalizeRequirements, quotaWaitMinutes, requirementLineCount, requirementWithoutComment, unsupportedRequirementLine, dependencyActive, packagesFit, packagesMemoryParams, type DependencyBundle, type DependencyDraft, type DependencyErrorParams, type DependencyPackage, type DependencyPolicy, type DependencyQuota, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
+import { manifestPackages, type PreparationProgress, type PreparationResult } from './preparation-contract.js'
+import type { ImageIdentity } from './image-identity.js'
 import { dependencyMessage, type DependencyRefusalDetail } from './messages.js'
 import { acceptsUploads, submissionsOpen, type CompetitionState } from '@shared/competitions'
 
@@ -62,22 +63,78 @@ CREATE TABLE IF NOT EXISTS submission_environments (
  bundle_id TEXT REFERENCES dependency_bundles(id), legacy INTEGER NOT NULL DEFAULT 0
 );
 `)
+/*
+ * What a revision's image is beyond this machine (EnvironmentRevision.registryRef
+ * and .layers, image-identity.ts): learned from `docker image inspect` when the
+ * revision is captured, and for older revisions at startup (revisions.ts ·
+ * backfillRevisionImages).
+ *
+ * A table of its own rather than two columns of environment_revisions, and not
+ * for tidiness: 0.22 and every release before it record a revision with a
+ * positional `INSERT INTO environment_revisions VALUES (?,?,?,?,?,?,?,?,?)`.
+ * With two more columns, a server rolled back to such a release could not
+ * record a single new revision (SQLite refuses nine values for eleven columns),
+ * which is exactly the migration older code cannot live with and would take a
+ * data-schema bump (data-schema.ts). A new table is state older code never
+ * reads. A row is upserted, never removed: the revisions it describes are not
+ * removed either.
+ */
+db.exec(`
+CREATE TABLE IF NOT EXISTS environment_revision_images (
+ revision_id TEXT PRIMARY KEY REFERENCES environment_revisions(id) ON DELETE CASCADE,
+ registry_ref TEXT, layers TEXT, inspected_at INTEGER NOT NULL
+);
+`)
 
 type Row = Record<string, string | number | null>
 const json = <T>(value: Row[string], fallback: T): T => value ? JSON.parse(String(value)) as T : fallback
+const REVISIONS = `SELECT r.*, i.registry_ref, i.layers FROM environment_revisions r
+ LEFT JOIN environment_revision_images i ON i.revision_id = r.id`
 function toRevision(row: Row): EnvironmentRevision {
- return {id:String(row.id),environmentName:String(row.environment_name),imageDigest:String(row.image_digest),pythonVersion:String(row.python_version),pythonAbi:String(row.python_abi),platform:String(row.platform),packages:json(row.packages_json,[]),baseConstraintsHash:String(row.constraints_hash),createdAt:Number(row.created_at)}
+ return {id:String(row.id),environmentName:String(row.environment_name),imageDigest:String(row.image_digest),pythonVersion:String(row.python_version),pythonAbi:String(row.python_abi),platform:String(row.platform),packages:json(row.packages_json,[]),baseConstraintsHash:String(row.constraints_hash),createdAt:Number(row.created_at),
+  registryRef:row.registry_ref?String(row.registry_ref):null,layers:row.layers?String(row.layers):null}
 }
 export function getRevision(revisionId: string): EnvironmentRevision | null {
- const row=db.prepare('SELECT * FROM environment_revisions WHERE id=?').get(revisionId) as Row|undefined
+ const row=db.prepare(`${REVISIONS} WHERE r.id=?`).get(revisionId) as Row|undefined
  return row?toRevision(row):null
 }
-export function revisions(): EnvironmentRevision[] { return (db.prepare('SELECT * FROM environment_revisions').all() as Row[]).map(toRevision) }
-export function putRevision(value: Omit<EnvironmentRevision,'id'|'createdAt'> & {createdAt?:number}): EnvironmentRevision {
- const existing=db.prepare('SELECT * FROM environment_revisions WHERE environment_name=? AND image_digest=?').get(value.environmentName,value.imageDigest) as Row|undefined
+export function revisions(): EnvironmentRevision[] { return (db.prepare(REVISIONS).all() as Row[]).map(toRevision) }
+/**
+ * Record a revision, or find the one already recorded for this environment and
+ * image. What the image is beyond this machine is not taken from `value`: it
+ * is learned only from the image itself (noteRevisionImage), and a revision
+ * copied into another one's fields must not hand it its registry reference.
+ */
+export function putRevision(value: Omit<EnvironmentRevision,'id'|'createdAt'|'registryRef'|'layers'> & {createdAt?:number}): EnvironmentRevision {
+ const existing=db.prepare(`${REVISIONS} WHERE r.environment_name=? AND r.image_digest=?`).get(value.environmentName,value.imageDigest) as Row|undefined
  if(existing)return toRevision(existing)
- const key=id();db.prepare('INSERT INTO environment_revisions VALUES (?,?,?,?,?,?,?,?,?)').run(key,value.environmentName,value.imageDigest,value.pythonVersion,value.pythonAbi,value.platform,JSON.stringify(value.packages),value.baseConstraintsHash,value.createdAt??Date.now())
+ const key=id();db.prepare('INSERT INTO environment_revisions (id,environment_name,image_digest,python_version,python_abi,platform,packages_json,constraints_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(key,value.environmentName,value.imageDigest,value.pythonVersion,value.pythonAbi,value.platform,JSON.stringify(value.packages),value.baseConstraintsHash,value.createdAt??Date.now())
  return getRevision(key)!
+}
+const upsertRevisionImage = db.prepare(`INSERT INTO environment_revision_images (revision_id, registry_ref, layers, inspected_at)
+ VALUES (@revision, @registry_ref, @layers, @at)
+ ON CONFLICT(revision_id) DO UPDATE SET registry_ref = COALESCE(excluded.registry_ref, registry_ref),
+  layers = COALESCE(excluded.layers, layers), inspected_at = excluded.inspected_at`)
+/**
+ * What an inspect of the revision's own image said about it (image-identity.ts ·
+ * imageIdentity). Returns whether the revision now reads differently.
+ *
+ * A `null` never replaces what is known. An image whose registry tag was
+ * removed here is still in the registry under its reference, and an inspect
+ * that could not read RootFS proves nothing about the layers it had. A new
+ * reference does replace the old one: the image went to the preferred
+ * repository since (image-identity.ts · registryRefOf). Anything that is not
+ * a digest reference or a fingerprint in shape is kept as no answer at all.
+ */
+export function noteRevisionImage(revisionId: string, identity: ImageIdentity, at = Date.now()): boolean {
+ const before = getRevision(revisionId)
+ if (!before) return false
+ const registryRef = typeof identity.registryRef === 'string' && identity.registryRef.length <= 512 && /^[^\s@]+@sha256:[a-f0-9]{64}$/.test(identity.registryRef) ? identity.registryRef : null
+ const layers = typeof identity.layers === 'string' && /^[a-f0-9]{64}$/.test(identity.layers) ? identity.layers : null
+ if (registryRef === null && layers === null && (before.registryRef !== null || before.layers !== null)) return false
+ upsertRevisionImage.run({ revision: revisionId, registry_ref: registryRef, layers, at })
+ const after = getRevision(revisionId)!
+ return after.registryRef !== before.registryRef || after.layers !== before.layers
 }
 function policyRow(competitionId: string): Row {
  db.prepare('INSERT OR IGNORE INTO competition_dependency_policies (competition_id,max_download_bytes,max_installed_bytes) VALUES (?,?,?)').run(competitionId,DEPENDENCY_LIMITS.downloadBytes,DEPENDENCY_LIMITS.installedBytes)
@@ -177,11 +234,28 @@ export const saveDraft=db.transaction((c:string,e:string,value:{requirementsText
  db.prepare('UPDATE dependency_drafts SET requirements_text=?,updated_at=? WHERE competition_id=? AND entrant_id=?').run(text,Date.now(),c,e)
  return draftOf(c,e)
 })
+/*
+ * A set as the pages and the runner read it: the wheels without their download
+ * addresses. Those are for the machines that run submissions (bundleWheels); a
+ * participant's page has no use for them, and an institution's mirror is not
+ * named to the class (service.ts · sanitizedLog keeps registry URLs out of the
+ * log for the same reason).
+ */
 function toBundle(r: Row): DependencyBundle {
- return {id:String(r.id),number:Number(r.number),competitionId:String(r.competition_id),entrantId:String(r.entrant_id),revisionId:String(r.revision_id),requirementsText:String(r.requirements_text),normalizedRequirements:json(r.normalized_json,[]),state:String(r.state) as DependencyBundle['state'],packages:json(r.packages_json,[]),downloadBytes:Number(r.download_bytes),installedBytes:Number(r.installed_bytes),contentHash:r.content_hash?String(r.content_hash):null,error:json(r.error_json,null),log:json(r.log_json,[]),createdAt:Number(r.created_at),readyAt:r.ready_at===null?null:Number(r.ready_at)}
+ return {id:String(r.id),number:Number(r.number),competitionId:String(r.competition_id),entrantId:String(r.entrant_id),revisionId:String(r.revision_id),requirementsText:String(r.requirements_text),normalizedRequirements:json(r.normalized_json,[]),state:String(r.state) as DependencyBundle['state'],packages:json<DependencyPackage[]>(r.packages_json,[]).map(({url:_url,...pkg})=>pkg),downloadBytes:Number(r.download_bytes),installedBytes:Number(r.installed_bytes),contentHash:r.content_hash?String(r.content_hash):null,error:json(r.error_json,null),log:json(r.log_json,[]),createdAt:Number(r.created_at),readyAt:r.ready_at===null?null:Number(r.ready_at)}
 }
 export function getBundle(key: string): DependencyBundle|null {
  const r=db.prepare('SELECT * FROM dependency_bundles WHERE id=?').get(key) as Row|undefined;return r?toBundle(r):null
+}
+/**
+ * The wheels of a ready set as its manifest keeps them, download addresses
+ * included (DependencyPackage.url): what a machine that runs submissions
+ * fetches from the index's CDN and checks by sha256 and size. `null` — no such
+ * set, or not ready.
+ */
+export function bundleWheels(key: string): DependencyPackage[]|null {
+ const r=db.prepare("SELECT packages_json FROM dependency_bundles WHERE id=? AND state='ready'").get(key) as Row|undefined
+ return r?json<DependencyPackage[]>(r.packages_json,[]):null
 }
 export function bundleLimits(key:string): Pick<DependencyPolicy,'maxDownloadBytes'|'maxInstalledBytes'> {
  const r=db.prepare('SELECT max_download_bytes,max_installed_bytes FROM dependency_bundles WHERE id=?').get(key) as Row
@@ -226,11 +300,13 @@ export function updateProgress(key:string,progress:PreparationProgress):void{
 }
 export const completeBundle=db.transaction((key:string,result:PreparationResult):boolean=>{
  const b=getBundle(key);if(!b||!dependencyActive(b.state))return false
- for(const p of result.packages){
+ // The same list the manifest on disk keeps (files.ts · publishBundle), download addresses checked.
+ const packages=manifestPackages(result.packages)
+ for(const p of packages){
   db.prepare('INSERT OR IGNORE INTO dependency_artifacts VALUES(?,?,?,?,?,?)').run(p.sha256,p.fileName,p.name,p.version,p.bytes,Date.now())
   db.prepare('INSERT INTO dependency_bundle_artifacts VALUES(?,?)').run(key,p.sha256)
  }
- db.prepare("UPDATE dependency_bundles SET state='ready',normalized_json=?,packages_json=?,download_bytes=?,installed_bytes=?,content_hash=?,lock_text=?,error_json=NULL,ready_at=? WHERE id=?").run(JSON.stringify(result.normalizedRequirements),JSON.stringify(result.packages),result.downloadBytes,result.installedBytes,result.contentHash,result.lock,Date.now(),key)
+ db.prepare("UPDATE dependency_bundles SET state='ready',normalized_json=?,packages_json=?,download_bytes=?,installed_bytes=?,content_hash=?,lock_text=?,error_json=NULL,ready_at=? WHERE id=?").run(JSON.stringify(result.normalizedRequirements),JSON.stringify(packages),result.downloadBytes,result.installedBytes,result.contentHash,result.lock,Date.now(),key)
  return true
 })
 export function failBundle(key:string,code:string,message:string,line?:number,params?:DependencyErrorParams):void{
