@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.22.0](https://github.com/colloq-edu/colloq/compare/v0.21.0...v0.22.0) (2026-10-13)
+
+
+### Features
+
+* **competitions:** GPU slices for submission runners ([#42](https://github.com/colloq-edu/colloq/issues/42)) ([73640ec](https://github.com/colloq-edu/colloq/commit/73640ec436760085607a03051914fc831881c771))
+
 ## [0.21.0](https://github.com/colloq-edu/colloq/compare/v0.20.0...v0.21.0) (2026-10-12)
 
 
