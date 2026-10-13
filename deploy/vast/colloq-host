@@ -15,6 +15,12 @@
 #   colloq-host bundle FILE [IMAGE]  on a connected machine: everything an offline server needs, in one file
 #   colloq-host load FILE            on the offline server: load that file; up then needs no network
 #
+#   colloq-host runner up URL CODE [IMAGE]    this machine runs another instance's submissions
+#   colloq-host runner update [VERSION|IMAGE] [--now]   to the home's version, its runs finished first
+#   colloq-host runner status | logs | leave  joined and syncing? / its log / revoke itself and go
+#   colloq-host runner-code [--machines N] [--hours H] [--trusted] [--slots S]   on an instance: a code
+#                                    for such machines, printed inside the commands that join them
+#
 # The image puts it on the machine (`colloq-vast install-host`). On a Vast VM
 # the template's on-start (deploy/vast/onstart.sh) calls it; on a server of
 # your own a person does (docs/pages/en/server.html). Runs as root, apart from
@@ -39,6 +45,21 @@
 # COLLOQ_IMAGE from the on-start only creates the file, and from then on
 # `update` and `load` own it. See image() below.
 #
+# A MACHINE FOR SUBMISSIONS («машина для посылок») is the same image in another
+# mode, `runner`: no server, no tunnel, no database, only the agent that runs
+# another instance's notebook steps (docs/architecture/remote-runners.md). It
+# keeps apart from the instance in every file: its container colloq-runner,
+# its settings /etc/colloq/runner.env, its image /etc/colloq/runner-image, and
+# its tree /var/lib/colloq-runner, mounted at the same path on both sides.
+# That is so that neither can rewrite the other's settings, not so that one
+# server can be both. Such a machine is given over to its home whole: the
+# agent shares out every card it finds and admits submissions by the whole
+# machine's memory, knowing nothing of a class's rooms on the same Docker, and
+# it holds the Docker socket, which is root there. Like a home, a machine for
+# submissions needs a machine of its own (§6 of the design), and `runner up`
+# says so when it finds an instance next to it: a university lends a server
+# it can spare for the competition, not the one its class runs on.
+#
 # NOTHING ON THE HOST CHANGES UNASKED. Automatic updates are switched off and
 # the NVIDIA packages held only under COLLOQ_FREEZE_UPDATES=1, which the Vast
 # on-start sets (freeze_host_updates says why). A university's server keeps its
@@ -50,6 +71,12 @@ set -euo pipefail
 CONF_DIR="${COLLOQ_CONF_DIR:-/etc/colloq}"
 ENV_FILE="$CONF_DIR/colloq.env"
 IMAGE_FILE="$CONF_DIR/image"
+# A machine for submissions: its own settings, image, container and record of
+# the codes it has left with (runner_command switches ENV_FILE to its file).
+RUNNER_ENV_FILE="$CONF_DIR/runner.env"
+RUNNER_IMAGE_FILE="$CONF_DIR/runner-image"
+RUNNER_LEFT_FILE="$CONF_DIR/runner.left"
+RUNNER_NAME=colloq-runner
 # Where the on-start and the docs put colloq-host, and where `load` installs the
 # bundled one.
 HOST_BIN=/usr/local/sbin
@@ -108,6 +135,19 @@ AUTH_JWT_EMAIL_DOMAIN AUTH_JWT_TEACHER_ROLES AUTH_JWT_OWNER_ROLES"
 # with -e anyway, or unused.
 HOST_KEYS="COLLOQ_HOME COLLOQ_CONTAINER_NAME KERNEL_NETWORK PORT COLLOQ_BIND COLLOQ_FREEZE_UPDATES"
 
+# What a machine for submissions keeps in runner.env, its container's only
+# settings besides the join itself (COLLOQ_RUNNER_JOIN, written by `runner
+# up`): the way out to the home (a proxy, an internal CA, which the agent
+# honours as the server does), the zone and format of its log, the two Vast
+# flags, where its tree is, and which repository its image comes from. None of
+# the instance's: no relay, no tunnel, no assistant key, no sign-in, no
+# database. A machine opens no address and serves nobody, and RELAY_TOKEN in
+# particular never reaches one (a stolen machine is not a way onto the relay).
+RUNNER_KEYS="HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy NODE_EXTRA_CA_CERTS TZ LOG_FORMAT
+COLLOQ_ON_VAST COLLOQ_FREEZE_UPDATES COLLOQ_RUNNER_STATE COLLOQ_RUNNER_REPO COLLOQ_RUNNER_DRAIN_SEC"
+# The keys write_env takes; runner_command sets it to RUNNER_KEYS.
+ENV_KEYS=""
+
 # ------------------------------------------------------------ settings
 ensure_conf() {
   mkdir -p "$CONF_DIR"; chmod 0700 "$CONF_DIR"
@@ -126,15 +166,18 @@ put_line() {
 
 write_env() {
   ensure_conf
-  local key value tmp exported
+  local key value tmp exported keys
   tmp="$(mktemp "$CONF_DIR/.colloq.env.XXXXXX")"
   cp "$ENV_FILE" "$tmp"
   # Only what the caller exported: the script's own variables are not settings.
   exported=" $(compgen -e | tr '\n' ' ') "
   # KERNEL_MEM_<ENVIRONMENT> is one variable per environment (pool.ts ·
   # memoryLimit: base-gpu → KERNEL_MEM_BASE_GPU), so they cannot be listed in
-  # advance: every such variable in the caller's environment is taken.
-  for key in $APP_KEYS $HOST_KEYS $(compgen -e | grep -E '^KERNEL_MEM_[A-Z0-9_]+$' || true); do
+  # advance: every such variable in the caller's environment is taken. A
+  # machine for submissions has a list of its own (ENV_KEYS = RUNNER_KEYS).
+  keys="$ENV_KEYS"
+  [ -n "$keys" ] || keys="$APP_KEYS $HOST_KEYS $(compgen -e | grep -E '^KERNEL_MEM_[A-Z0-9_]+$' || true)"
+  for key in $keys; do
     case "$exported" in *" $key "*) ;; *) continue ;; esac
     # An empty value means "not given", not "erase": the template's on-start
     # declares every variable, and its empty strings must not wipe what the
@@ -271,30 +314,43 @@ ensure_docker() {
 }
 
 ensure_gpu() {
-  command -v nvidia-smi >/dev/null 2>&1 || { say "no NVIDIA GPU on this machine; GPU environments will refuse to start"; return 0; }
+  # runner: a machine for submissions, which probes and shares out its own
+  # cards (the agent), so it gets the toolkit and the driver check, and no
+  # list of cards for rooms it does not have.
+  local role="${1:-}"
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    if [ "$role" = runner ]; then say "no NVIDIA GPU on this machine: it takes CPU submissions only"
+    else say "no NVIDIA GPU on this machine; GPU environments will refuse to start"
+    fi
+    return 0
+  fi
   nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null | sed 's/^/[colloq-host]   gpu /' || true
   # The driver is there, but without nvidia-container-toolkit docker does not
   # hand the card to a container: the kernel comes up without CUDA, and people
   # find out in class from torch.cuda.is_available() == False.
+  #
+  # An instance stops there: its GPU rooms are what it was set up for. A
+  # machine for submissions does not. CPU submissions run on it whatever the
+  # cards, and its agent finds no card through Docker and offers none, so a
+  # host where the toolkit cannot be installed (no apt-get: a RHEL or an Arch
+  # server; no way out to nvidia.github.io) joins as a CPU machine, said so,
+  # rather than not at all.
   if ! docker info 2>/dev/null | grep -qi nvidia; then
     if offline; then
+      if [ "$role" = runner ]; then
+        warn "nvidia-container-toolkit is missing, and COLLOQ_OFFLINE=1 downloads nothing: this machine takes CPU submissions only until it is installed by hand (then nvidia-ctk runtime configure --runtime=docker, and colloq-host runner update)"
+        return 0
+      fi
       warn "nvidia-container-toolkit is missing, and COLLOQ_OFFLINE=1 downloads nothing: install it by hand (then nvidia-ctk runtime configure --runtime=docker), or GPU rooms get no card"
-    else
-      say "installing nvidia-container-toolkit"
-      apt_quiet update -qq || die "no apt-get: install nvidia-container-toolkit by hand"
-      apt_quiet install -y -qq curl gnupg ca-certificates >/dev/null
-      curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-        | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-      curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
-        | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-        > /etc/apt/sources.list.d/nvidia-container-toolkit.list
-      apt_quiet update -qq
-      apt_quiet install -y -qq nvidia-container-toolkit >/dev/null
-      nvidia-ctk runtime configure --runtime=docker >/dev/null
-      systemctl restart docker
-      ensure_docker
+    elif ! install_container_toolkit; then
+      if [ "$role" = runner ]; then
+        warn "nvidia-container-toolkit could not be installed ($TOOLKIT_PROBLEM): this machine takes CPU submissions only until it is installed by hand (then nvidia-ctk runtime configure --runtime=docker, and colloq-host runner update)"
+        return 0
+      fi
+      die "$TOOLKIT_PROBLEM: install nvidia-container-toolkit by hand"
     fi
   fi
+  if [ "$role" = runner ]; then check_driver_floor; return 0; fi
   # The slices for rooms are card numbers in the form docker understands. A
   # list given by hand (MIG, some of the cards) is left alone.
   if [ -z "$(env_value KERNEL_GPUS)" ]; then
@@ -312,6 +368,54 @@ ensure_gpu() {
          say "rooms on GPU environments get one of: $gpus" ;;
     esac
   fi
+}
+
+# NVIDIA's own apt repository, the one way the toolkit is installed here. Every
+# step is checked by hand, and TOOLKIT_PROBLEM names the one that failed: the
+# function runs as a condition (ensure_gpu), where `set -e` stops nothing, and
+# a machine for submissions goes on without the toolkit rather than with half
+# of it.
+TOOLKIT_PROBLEM=""
+install_container_toolkit() {
+  say "installing nvidia-container-toolkit"
+  command -v apt-get >/dev/null 2>&1 || { TOOLKIT_PROBLEM="no apt-get"; return 1; }
+  apt_quiet update -qq || { TOOLKIT_PROBLEM="apt-get update failed"; return 1; }
+  apt_quiet install -y -qq curl gnupg ca-certificates >/dev/null || { TOOLKIT_PROBLEM="apt-get could not install curl and gnupg"; return 1; }
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+    | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
+    || { TOOLKIT_PROBLEM="NVIDIA's signing key could not be fetched from nvidia.github.io"; return 1; }
+  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+    | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+    > /etc/apt/sources.list.d/nvidia-container-toolkit.list \
+    || { TOOLKIT_PROBLEM="NVIDIA's package list could not be fetched from nvidia.github.io"; return 1; }
+  apt_quiet update -qq || { TOOLKIT_PROBLEM="apt-get update failed with NVIDIA's repository"; return 1; }
+  apt_quiet install -y -qq nvidia-container-toolkit >/dev/null || { TOOLKIT_PROBLEM="apt-get could not install nvidia-container-toolkit"; return 1; }
+  nvidia-ctk runtime configure --runtime=docker >/dev/null || { TOOLKIT_PROBLEM="nvidia-ctk could not configure Docker"; return 1; }
+  systemctl restart docker || { TOOLKIT_PROBLEM="Docker did not restart with the NVIDIA runtime"; return 1; }
+  ensure_docker
+}
+
+# The GPU kernels are CUDA 13 builds (base-gpu pins torch 2.14.1+cu130), and
+# CUDA 13 wants an NVIDIA driver of 580 or newer (shared/remote-runner.ts ·
+# REMOTE_DRIVER_MIN): under an older one torch imports and never sees the card.
+# The agent's smoke test refuses such a kernel anyway, with the reason in the
+# home's panel («драйвер 535, нужен 580+»); it is said here first, to the
+# person who can change the driver. Not a refusal: CPU submissions run
+# whatever the driver.
+check_driver_floor() {
+  local driver major
+  driver="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+  major="${driver%%.*}"
+  case "$major" in
+    ''|*[!0-9]*)
+      warn "nvidia-smi does not answer (${driver:-no driver version}): this machine takes CPU submissions only until it does; after a driver update that is usually a reboot" ;;
+    *)
+      if [ "$major" -lt 580 ]; then
+        warn "NVIDIA driver $driver: the GPU kernels need 580 or newer, so this machine takes CPU submissions only"
+      else
+        say "NVIDIA driver $driver: GPU submissions can run here"
+      fi ;;
+  esac
 }
 
 registry_login() {
@@ -865,6 +969,716 @@ EOF
   say "next: colloq-host doctor, then colloq-host up (a first install) or colloq-host update (a running one)"
 }
 
+# ---------------------------------------------- a machine for submissions
+#
+# `runner up` joins this machine to a home with its owner's code, `runner
+# update` moves it to the home's version, `runner leave` takes it away. The
+# rest is the agent's (dist/runner.js in the image): it pulls the kernels by
+# digest and prefetches the data it is asked for, takes leases, runs each
+# notebook in a container of its own on this Docker, uploads the answers. The
+# metric, the hidden answers and the database never leave the home. All this
+# script does is say `docker run` once, with the socket and the tree, and
+# again after an update.
+
+runner_usage() {
+  cat <<'USAGE'
+colloq-host runner: this machine runs another Colloq instance's submissions
+
+  colloq-host runner up URL CODE [IMAGE]   join the home at URL with its owner's code
+  colloq-host runner update [VERSION|IMAGE] [--now]
+                                           move to the home's version (or the one named): the runs it
+                                           holds finish first; --now hands them back to the home's queue
+  colloq-host runner status                joined and syncing (exit 0), as JSON
+  colloq-host runner logs                  follow the agent's log (Ctrl+C to leave)
+  colloq-host runner leave                 finish its runs, revoke itself on the home, remove the container
+
+The code comes from the home's owner: the panel (Resources, machines for
+submissions) or colloq-host runner-code on the home. Settings:
+/etc/colloq/runner.env; the image: /etc/colloq/runner-image; the tree:
+/var/lib/colloq-runner (COLLOQ_RUNNER_STATE: a directory of its own). A
+machine joined with the panel's plain `docker run` is taken over by the first
+update, leave, status or logs: its settings are read out of its container.
+Nothing else should run on the machine's Docker: it is its home's whole.
+USAGE
+}
+
+runner_command() {
+  ENV_FILE="$RUNNER_ENV_FILE"
+  ENV_KEYS="$RUNNER_KEYS"
+  RUNNER_STATE="$(setting COLLOQ_RUNNER_STATE /var/lib/colloq-runner)"
+  # It goes into `-v PATH:PATH` and to the agent, which hands the same path to
+  # the daemon: absolute, plain, and the agent's alone (runner_state_problem).
+  [ "$RUNNER_STATE" = / ] || RUNNER_STATE="${RUNNER_STATE%/}"
+  local problem sub="${1:-help}"
+  problem="$(runner_state_problem "$RUNNER_STATE" "$STATE")"
+  [ -z "$problem" ] || die "COLLOQ_RUNNER_STATE=$problem"
+  [ "$#" -eq 0 ] || shift
+  case "$sub" in
+    up) runner_up "$@" ;;
+    update) runner_update "$@" ;;
+    status) runner_status ;;
+    logs) need_root; adopt_runner quiet; exec docker logs -f --tail 200 "$RUNNER_NAME" ;;
+    leave) runner_leave ;;
+    help|-h|--help) runner_usage ;;
+    *) die "unknown command: runner $sub (colloq-host runner help)" ;;
+  esac
+}
+
+# The tree is the agent's alone. The entry point hands it to uid 1000 whole
+# (every file under it chowned, the top made 0700) and the agent evicts what
+# it does not know there, so a system directory named by mistake,
+# COLLOQ_RUNNER_STATE=/var or /home, would be handed over the same way, and
+# the host with it. It must be a directory of its own: the default
+# /var/lib/colloq-runner, or one under /srv, /data, /mnt or /opt, never a
+# system root, a directory every Linux keeps its own files in, Docker's own
+# store, a person's home itself, or the instance's state directory (the second
+# argument) on a machine that has one. Prints what is wrong, nothing when the
+# path will do. The entry point holds a copy of this function, which does the
+# chown (tests/vast-runner-host.test.mts keeps the two the same); here it is
+# said before anything is pulled.
+runner_state_problem() {
+  local p="$1" home="${2:-}" own="a system directory: give the machine's tree a directory of its own, like /var/lib/colloq-runner, /srv/colloq-runner or /data/colloq-runner"
+  case "$p" in
+    /*) ;;
+    *) printf '%s is not an absolute path' "$p"; return 0 ;;
+  esac
+  case "$p" in
+    *:*|*[[:space:]]*) printf '%s: a path without colons or spaces, please' "$p"; return 0 ;;
+    *//*|*/./*|*/../*|*/.|*/..) printf '%s: a plain path, please, without . or .. or //' "$p"; return 0 ;;
+  esac
+  case "$p" in
+    /home/*/*|/root/?*) ;;
+    /|/bin|/boot|/data|/dev|/etc|/home|/home/*|/lib|/lib32|/lib64|/libx32|/lost+found|/media|/mnt|/opt|/proc \
+    |/root|/run|/sbin|/snap|/srv|/sys|/tmp|/usr|/var|/workspace \
+    |/var/backups|/var/cache|/var/lib|/var/local|/var/lock|/var/log|/var/mail|/var/opt|/var/run|/var/spool|/var/tmp \
+    |/bin/*|/boot/*|/dev/*|/etc/*|/lib/*|/lib32/*|/lib64/*|/libx32/*|/proc/*|/run/*|/sbin/*|/snap/*|/sys/*|/usr/* \
+    |/var/lock/*|/var/log/*|/var/run/*|/var/lib/docker|/var/lib/docker/*|/var/lib/containerd|/var/lib/containerd/* \
+    |/opt/colloq|/opt/colloq/*)
+      printf '%s is %s' "$p" "$own"; return 0 ;;
+  esac
+  [ -n "$home" ] || return 0
+  [ "$p" != "${home%/}" ] || { printf "%s is the instance's state directory" "$p"; return 0; }
+  case "$p/" in "${home%/}/"*) printf "%s is inside the instance's state directory %s" "$p" "$home"; return 0 ;; esac
+  case "${home%/}/" in "$p/"*) printf "%s holds the instance's state directory %s" "$p" "$home"; return 0 ;; esac
+  return 0
+}
+
+# The home as the agent keeps it (shared/remote-runner.ts · homeOrigin): an
+# http(s) origin and nothing after it. A path, a query or a user in it would
+# ride along with every call the machine makes, and the code goes after a `#`
+# precisely so that it never travels in a request line.
+check_home() {
+  local rest re='^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$'
+  case "$1" in
+    https://*|http://*) rest="${1#*://}" ;;
+    *) die "$1: the home's address starts with https:// (http:// only for a home on the same network)" ;;
+  esac
+  [[ "$rest" =~ $re ]] || die "$1 is not a home's address: give its origin alone, like https://vsos.colloq.ru (no path, no query, no user)"
+}
+
+# The owner's enrollment code (remote-runner.ts · REMOTE_JOIN_CODE): 128 bits,
+# 32 hex digits. Never repeated back: it is a key.
+check_code() {
+  local re='^[a-f0-9]{32}$'
+  [[ "$1" =~ $re ]] || die "that is not an enrollment code (32 hex digits): take one from the home's owner, from the panel (Resources, machines for submissions) or colloq-host runner-code there"
+}
+
+check_version() {
+  local re='^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}(-[0-9A-Za-z.-]{1,40})?$'
+  [[ "$1" =~ $re ]] || die "$1 is neither a version (0.24.0) nor an image (ghcr.io/colloq-edu/colloq-server:0.24.0)"
+}
+
+# What runner.left keeps of a join it left with: its hash, never the code.
+join_digest() { printf '%s' "$1" | sha256sum | cut -c1-64; }
+
+unset_env_value() {
+  ensure_conf
+  local tmp
+  tmp="$(mktemp "$CONF_DIR/.colloq.env.XXXXXX")"
+  grep -v "^$1=" "$ENV_FILE" > "$tmp" || true
+  chmod 0600 "$tmp"; mv -f "$tmp" "$ENV_FILE"
+}
+
+# The home of this machine, from the join `runner up` wrote.
+runner_home() {
+  local join; join="$(env_value COLLOQ_RUNNER_JOIN)"
+  printf '%s' "${join%%#*}"
+}
+
+# The release a home runs, as its /api/health tells anyone who asks: the
+# version is in the short answer a stranger gets too, and in a 503 as much as
+# in a 200. Through this machine's proxy when it has one; an internal CA,
+# which curl takes only instead of its own bundle, only when the plain call
+# got nothing.
+home_version() {
+  local url="$1" body ca proxies
+  proxies=("HTTPS_PROXY=$(setting HTTPS_PROXY)" "https_proxy=$(setting https_proxy)" "http_proxy=$(setting http_proxy)"
+    "NO_PROXY=$(setting NO_PROXY)" "no_proxy=$(setting no_proxy)")
+  body="$(env "${proxies[@]}" curl -sS --max-time 20 "$url/api/health" 2>/dev/null || true)"
+  ca="$(setting NODE_EXTRA_CA_CERTS)"
+  if [ -z "$body" ] && [ -n "$ca" ] && [ -f "$ca" ]; then
+    body="$(env "${proxies[@]}" curl -sS --max-time 20 --cacert "$ca" "$url/api/health" 2>/dev/null || true)"
+  fi
+  printf '%s' "$body" \
+    | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)".*/\1/p' | head -1
+}
+
+# The home's version as the agent last heard it in a sync (homeVersion), for
+# a home this host's own curl cannot reach although the agent can.
+agent_home_version() {
+  docker exec "$RUNNER_NAME" colloq-vast runner status 2>/dev/null \
+    | sed -nE 's/.*"homeVersion"[[:space:]]*:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)".*/\1/p' | head -1 || true
+}
+
+# The repository of an image reference: no tag, no digest, a registry port kept.
+image_repo() {
+  local ref="${1%@*}"
+  case "${ref##*/}" in *:*) ref="${ref%:*}" ;; esac
+  printf '%s' "$ref"
+}
+
+# The image this machine runs. Named in the call: that one. Otherwise the one
+# `runner update` chose last ($RUNNER_IMAGE_FILE), the way /etc/colloq/image
+# belongs to `update` for an instance: a reboot must not move a machine to
+# another build behind its owner's back. On a first `up`, the published
+# colloq-server of the very version the home runs: a machine takes new work
+# only while its runner code is the home's (decision 5), and that code is in
+# the image of the home's release. COLLOQ_RUNNER_REPO names a registry of
+# one's own (a fork, a mirror).
+runner_image() {
+  local named="$1" url="$2" version
+  if [ -n "$named" ]; then printf '%s' "$named"; return 0; fi
+  if [ -s "$RUNNER_IMAGE_FILE" ]; then head -1 "$RUNNER_IMAGE_FILE"; return 0; fi
+  version="$(home_version "$url")"
+  [ -n "$version" ] || die "$url did not say which version it runs (GET $url/api/health): is it up, and can this machine reach it? Or name the image: colloq-host runner up $url <code> ghcr.io/colloq-edu/colloq-server:<version>"
+  printf '%s:%s' "$(setting COLLOQ_RUNNER_REPO ghcr.io/colloq-edu/colloq-server)" "$version"
+}
+
+# The fingerprint of what the container is made from, as config_sum for the
+# instance: a repeated `runner up` (the Vast on-start runs it on every boot)
+# with the same image and settings leaves a working machine alone.
+runner_config_sum() {
+  { printf '%s\n' "$1"; docker image inspect -f '{{.Id}}' "$1" 2>/dev/null; sort "$ENV_FILE"; printf 'state %s\n' "$RUNNER_STATE"; config_extras ""; } \
+    | sha256sum | cut -c1-16
+}
+
+# The agent's container. No port: it only ever calls out (the home, the
+# registry, the package index). The socket: every submission runs in a
+# container of its own on this Docker. The tree at the same path on both sides
+# (entrypoint.sh · require_same_path).
+#
+# Its health is the image's own check, which knows the mode it was started in
+# (entrypoint.sh · health): the agent's answer to "joined and syncing" here,
+# so that `docker ps` tells the truth on a machine joined by the panel's plain
+# `docker run` too. Only the pace is set here: the answer is a node process
+# rather than a curl, and a machine is in no hurry.
+#
+# Two words the agent uses for itself. COLLOQ_RUNNER_IMAGE is the image it
+# runs, the one it probes the cards with: `--gpus all` puts nvidia-smi into
+# any container, and this one is on the machine for certain, where a CUDA
+# image would be a pull of gigabytes to count the cards. COLLOQ_RUNNER_CONTAINER
+# is this container, whose restart policy the agent turns off before it
+# stops on a 401: a machine its owner revoked must not be started again by
+# Docker's unless-stopped into a home that refuses it, every few seconds, for
+# as long as the VM is up.
+#
+# A minute and a half to stop (--stop-timeout, stop_runner): on SIGTERM the
+# agent hands back what it holds, a `draining` decline per run, and those
+# calls go out like any other. Through a relay that is restarting they wait
+# out the agent's backoff, up to 30 s a try (REMOTE_BACKOFF_MAX_MS), and half
+# a minute was one try.
+run_runner() {
+  local img="$1" sum ca extra=()
+  sum="$(runner_config_sum "$img")"
+  if docker container inspect "$RUNNER_NAME" >/dev/null 2>&1; then
+    if [ "$(docker inspect -f '{{index .Config.Labels "colloq.config"}}' "$RUNNER_NAME")" = "$sum" ]; then
+      docker start "$RUNNER_NAME" >/dev/null 2>&1 || true
+      say "$RUNNER_NAME is already running with these settings"
+      return 0
+    fi
+    say "replacing $RUNNER_NAME (new image or settings)"
+    docker stop -t 90 "$RUNNER_NAME" >/dev/null 2>&1 || true
+    docker rm "$RUNNER_NAME" >/dev/null
+  fi
+  mkdir -p "$RUNNER_STATE"
+  # The registry credentials, as for the instance: the agent's docker pulls
+  # the kernels by digest, from a private registry too.
+  if [ -s /root/.docker/config.json ]; then
+    extra+=(-v /root/.docker/config.json:/run/colloq/docker-config.json:ro)
+  fi
+  ca="$(env_value NODE_EXTRA_CA_CERTS)"
+  if [ -n "$ca" ]; then
+    if [ -f "$ca" ]; then extra+=(-v "$ca:$ca:ro")
+    else warn "NODE_EXTRA_CA_CERTS=$ca is not a file on this machine; the container gets the path as it is"
+    fi
+  fi
+  docker run -d --name "$RUNNER_NAME" \
+    --restart unless-stopped \
+    --stop-timeout 90 \
+    --log-opt max-size=50m --log-opt max-file=5 \
+    --health-interval 30s --health-timeout 20s --health-start-period 120s --health-retries 3 \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "$RUNNER_STATE:$RUNNER_STATE" \
+    ${extra[@]+"${extra[@]}"} \
+    --env-file "$ENV_FILE" \
+    -e "COLLOQ_RUNNER_STATE=$RUNNER_STATE" \
+    -e "COLLOQ_RUNNER_IMAGE=$img" \
+    -e "COLLOQ_RUNNER_CONTAINER=$RUNNER_NAME" \
+    --label colloq.kind=runner --label "colloq.config=$sum" \
+    "$img" runner >/dev/null
+  say "started $RUNNER_NAME from $img"
+}
+
+# Joined and syncing, which `runner status` answers 0 for: seconds after a
+# start. The kernels and the data come after, in the background, and are the
+# home's panel to show («образ ↓ 45 %»).
+wait_joined() {
+  local url="$1" wait tries _
+  wait="$(setting COLLOQ_RUNNER_JOIN_WAIT 180)"
+  case "$wait" in ''|*[!0-9]*) wait=180 ;; esac
+  tries=$(( (wait + 1) / 2 )); [ "$tries" -ge 1 ] || tries=1
+  for _ in $(seq 1 "$tries"); do
+    if docker exec "$RUNNER_NAME" colloq-vast runner status >/dev/null 2>&1; then
+      say "$RUNNER_NAME has joined ${url:-its home}, which now lists it among its machines for submissions"
+      say "it pulls the kernels and the data it is asked for in the background; watch: colloq-host runner status | logs"
+      return 0
+    fi
+    [ "$(docker inspect -f '{{.State.Running}}' "$RUNNER_NAME" 2>/dev/null || true)" = true ] || break
+    sleep 2
+  done
+  docker logs --tail 60 "$RUNNER_NAME" >&2 || true
+  if [ "$(docker inspect -f '{{.State.Running}}' "$RUNNER_NAME" 2>/dev/null || true)" = true ]; then
+    die "$RUNNER_NAME has not joined ${url:-its home} in $wait s, and keeps trying; the log is above (colloq-host runner logs)"
+  fi
+  die "$RUNNER_NAME stopped before it joined ${url:-its home}; the log is above"
+}
+
+runner_up() {
+  need_root
+  local url="${1:-}" code="${2:-}" named="${3:-}" img join
+  [ "$#" -le 3 ] || die "usage: colloq-host runner up https://<home> <code> [IMAGE]"
+  [ -n "$url" ] && [ -n "$code" ] \
+    || die "usage: colloq-host runner up https://<home> <code> [IMAGE]   (the code comes from the home's owner: the panel, Resources, machines for submissions, or colloq-host runner-code there)"
+  url="${url%/}"
+  check_home "$url"
+  check_code "$code"
+  join="$url#$code"
+  # A code may keep uses for other machines after this one leaves with it, and
+  # the Vast on-start says this very `runner up` on every boot: a machine that
+  # left must not come back on its old code.
+  if [ -f "$RUNNER_LEFT_FILE" ] && grep -qxF "$(join_digest "$join")" "$RUNNER_LEFT_FILE"; then
+    die "this machine left $url with this code (colloq-host runner leave); a new code from the home's owner joins it again"
+  fi
+  if on_vast; then export COLLOQ_ON_VAST=1; fi
+  freeze_host_updates
+  ensure_docker
+  # Said, not refused: the owner may be trying the agent out on a spare
+  # instance. But a class here would find its cards shared out to submissions
+  # and its memory counted for them (the header says why).
+  if docker container inspect "$NAME" >/dev/null 2>&1; then
+    warn "this machine runs an instance too ($NAME): the agent shares out every card here and admits submissions by the whole machine's memory, knowing nothing of its rooms; give the submissions a machine of their own"
+  fi
+  write_env
+  set_env_value COLLOQ_RUNNER_JOIN "$join"
+  ensure_gpu runner
+  img="$(runner_image "$named" "$url")"
+  registry_login "$img"
+  fetch_image "$img"
+  mkdir -p "$CONF_DIR"; printf '%s\n' "$img" > "$RUNNER_IMAGE_FILE"
+  run_runner "$img"
+  wait_joined "$url"
+}
+
+# A MACHINE JOINED BY HAND. The panel's first join command (§8.1 of the
+# design) is a plain `docker run` of the image: such a machine has its
+# container and nothing else, no runner.env, no runner-image, perhaps no
+# /etc/colloq at all, and its settings are in the container. So before update
+# and leave act, and when status or logs look, they are read out of it: the
+# image it runs, the join and the tree in its environment (or the join in its
+# command, `runner join URL CODE`), the mount its tree comes from. They go
+# where colloq-host keeps its own, and from then on the machine is managed as
+# if `runner up` had started it. Of the rest of its environment only
+# RUNNER_KEYS come along: everything else there is the image's own ENV, which
+# the next container gets from its image anyway. A container colloq-host
+# started (its colloq.config label) whose two files are in place is left
+# alone; one whose files went missing gets them back the same way.
+#
+# The mounts decide whether the old agent can be replaced at all. Its tree
+# must come from the host at the same path, as the entry point demands
+# (require_same_path: a machine whose tree is mounted otherwise never started
+# its agent). The socket, a CA bundle at the path NODE_EXTRA_CA_CERTS names
+# and the registry credentials are given again by run_runner. Anything else
+# would be lost with the old container, so an update refuses before it drains
+# (ADOPT_EXTRA, runner_inputs_ready); leave, status and logs do not need it.
+#
+# `strict` (update, leave) refuses what it cannot take over; `quiet` (status,
+# logs) says so and goes on, since a look must not fail for it. Its words go
+# to stderr: status prints the agent's JSON on stdout, and scripts read it.
+ADOPT_EXTRA=""
+adopt_runner() {
+  local how="$1" label img line key value join="" state="" ca="" dest src best="" host="" extra="" problem kv
+  local c0="" c1="" c2="" c3="" kept=() keys
+  docker container inspect "$RUNNER_NAME" >/dev/null 2>&1 || return 0
+  label="$(docker container inspect -f '{{index .Config.Labels "colloq.config"}}' "$RUNNER_NAME" 2>/dev/null || true)"
+  if [ -n "$label" ] && [ -f "$RUNNER_ENV_FILE" ] && [ -s "$RUNNER_IMAGE_FILE" ]; then return 0; fi
+  img="$(docker container inspect -f '{{.Config.Image}}' "$RUNNER_NAME" 2>/dev/null || true)"
+  keys=" $(printf '%s' "$RUNNER_KEYS" | tr '\n' ' ') "
+  while IFS= read -r line; do
+    key="${line%%=*}"; value="${line#*=}"
+    [ "$key" != "$line" ] || continue
+    case "$key" in
+      COLLOQ_RUNNER_JOIN) join="$value" ;;
+      COLLOQ_RUNNER_STATE) state="$value" ;;
+      NODE_EXTRA_CA_CERTS) ca="$value" ;;
+    esac
+    case "$keys" in *" $key "*) kept+=("$key=$value") ;; esac
+  done < <(docker container inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$RUNNER_NAME" 2>/dev/null || true)
+  if [ -z "$join" ]; then
+    { IFS= read -r c0 || true; IFS= read -r c1 || true; IFS= read -r c2 || true; IFS= read -r c3 || true; } \
+      < <(docker container inspect -f '{{range .Config.Cmd}}{{println .}}{{end}}' "$RUNNER_NAME" 2>/dev/null || true)
+    if [ "$c0" = runner ] && [ "$c1" = join ] && [ -n "$c2" ] && [ -n "$c3" ]; then join="${c2%/}#$c3"; fi
+  fi
+  # The entry point's default when the container names none.
+  state="${state:-/var/lib/colloq-runner}"
+  [ "$state" = / ] || state="${state%/}"
+  problem="$(runner_state_problem "$state" "$STATE")"
+  if [ -z "$problem" ]; then
+    while IFS=$'\t' read -r dest src; do
+      [ -n "$dest" ] || continue
+      # The tree, or a directory above it mounted whole: the longest one counts,
+      # as in the entry point (host_path_of).
+      if [ "$state" = "$dest" ] || [ "${state#"$dest"/}" != "$state" ]; then
+        if [ "${#dest}" -gt "${#best}" ]; then best="$dest"; host="${src}${state#"$dest"}"; fi
+        continue
+      fi
+      case "$dest" in /var/run/docker.sock|/run/colloq/docker-config.json) continue ;; esac
+      if [ -n "$ca" ] && [ "$dest" = "$ca" ]; then continue; fi
+      extra="${extra:+$extra, }$dest (from $src)"
+    done < <(docker container inspect -f '{{range .Mounts}}{{.Destination}}{{"\t"}}{{.Source}}{{"\n"}}{{end}}' "$RUNNER_NAME" 2>/dev/null || true)
+    if [ -z "$best" ]; then problem="its tree $state is not mounted from this machine, so its agent never started (the entry point refuses that)"
+    elif [ "$host" != "$state" ]; then problem="its tree $state is mounted from $host, so its agent never started (the entry point wants the same path on both sides)"
+    elif [ -z "$img" ]; then problem="docker does not say which image it runs"
+    fi
+  fi
+  if [ -n "$problem" ]; then
+    if [ "$how" = strict ]; then
+      die "$RUNNER_NAME was not started by colloq-host, and cannot be taken over: $problem. Nothing was changed; revoke it on the home (Resources, machines for submissions) and remove it (docker rm -f $RUNNER_NAME), or join again with colloq-host runner up"
+    fi
+    warn "$RUNNER_NAME was not started by colloq-host, and is not taken over: $problem"
+    return 0
+  fi
+  if [ -n "${COLLOQ_RUNNER_STATE:-}" ] && [ "${COLLOQ_RUNNER_STATE%/}" != "$state" ]; then
+    warn "COLLOQ_RUNNER_STATE=$COLLOQ_RUNNER_STATE is not the tree $RUNNER_NAME runs on; it keeps its own, $state"
+  fi
+  ensure_conf
+  for kv in ${kept[@]+"${kept[@]}"}; do set_env_value "${kv%%=*}" "${kv#*=}"; done
+  [ -z "$join" ] || set_env_value COLLOQ_RUNNER_JOIN "$join"
+  set_env_value COLLOQ_RUNNER_STATE "$state"
+  printf '%s\n' "$img" > "$RUNNER_IMAGE_FILE"
+  RUNNER_STATE="$state"
+  ADOPT_EXTRA="$extra"
+  say "$RUNNER_NAME was started without colloq-host: its settings are now in $RUNNER_ENV_FILE and its image ($img) in $RUNNER_IMAGE_FILE" >&2
+}
+
+runner_status() {
+  need_root
+  if ! docker container inspect "$RUNNER_NAME" >/dev/null 2>&1; then
+    say "there is no $RUNNER_NAME on this machine: colloq-host runner up https://<home> <code>"
+    exit 1
+  fi
+  adopt_runner quiet
+  if [ "$(docker container inspect -f '{{.State.Running}}' "$RUNNER_NAME" 2>/dev/null || true)" != true ]; then
+    say "$RUNNER_NAME is not running ($(docker container inspect -f '{{.State.Status}}' "$RUNNER_NAME" 2>/dev/null || true)); why: colloq-host runner logs"
+    exit 1
+  fi
+  exec docker exec "$RUNNER_NAME" colloq-vast runner status
+}
+
+# The update a class does not notice: the agent takes no new leases, finishes
+# the runs it holds and uploads their answers, and only then is the container
+# replaced. `runner drain` returns once nothing is held, bounded by the
+# longest any run can last: the ceiling of the longest wall
+# (remote-runner.ts · REMOTE_RUN_MS_MAX, 15,720 s).
+#
+# Stopping the container is the other way, the one --now takes and the one a
+# reboot takes: SIGTERM, on which the agent hands back what it holds (a
+# `draining` decline, which the home requeues counting no loss and spending
+# no attempt) and exits, with a minute and a half to say so before Docker
+# kills it (run_runner says why so long). So the stop that ends a drain hands
+# back nothing, and one that ends a drain cut short hands back only what was
+# still running.
+stop_runner() { docker stop -t 90 "$RUNNER_NAME" >/dev/null 2>&1 || true; }
+
+drain_runner() {
+  local bound rc=0
+  bound="$(setting COLLOQ_RUNNER_DRAIN_SEC 15720)"
+  case "$bound" in ''|*[!0-9]*) die "COLLOQ_RUNNER_DRAIN_SEC=$bound is not a number of seconds" ;; esac
+  say "draining $RUNNER_NAME: it finishes the runs it holds and takes no new ones (at most $((bound / 60)) min; --now does not wait)"
+  with_timeout "$bound" docker exec "$RUNNER_NAME" colloq-vast runner drain || rc=$?
+  case "$rc" in
+    0) ;;
+    124) warn "$RUNNER_NAME still holds runs after $((bound / 60)) min; stopping it hands them back to the home's queue" ;;
+    *) warn "$RUNNER_NAME did not drain on request (above); stopping it hands its runs back to the home's queue" ;;
+  esac
+  stop_runner
+}
+
+# Everything the new container is made of, checked while the old agent still
+# runs. Once it has been drained and stopped, a piece found missing would
+# leave the machine with no agent at all and its home a machine short until
+# somebody looks, so each refusal here comes before the drain and changes
+# nothing: the image is here, the settings file and its directory exist (the
+# image file is written after the stop), the tree with the machine's identity
+# is where the settings say, the CA bundle the agent needs to reach its home
+# is a file, and nothing the old container mounted would be left behind.
+runner_inputs_ready() {
+  local img="$1" ca
+  docker image inspect "$img" >/dev/null 2>&1 || die "$img is not on this machine; nothing was changed"
+  { [ -d "$CONF_DIR" ] && [ -f "$ENV_FILE" ]; } || die "there is no $ENV_FILE to start the new agent with; nothing was changed"
+  [ -d "$RUNNER_STATE" ] \
+    || die "$RUNNER_STATE, the tree that holds this machine's identity, is not on this machine; nothing was changed (COLLOQ_RUNNER_STATE in $ENV_FILE names it)"
+  ca="$(env_value NODE_EXTRA_CA_CERTS)"
+  [ -z "$ca" ] || [ -f "$ca" ] \
+    || die "NODE_EXTRA_CA_CERTS=$ca is not a file on this machine, and the new agent would not reach its home without it; nothing was changed"
+  [ -z "$ADOPT_EXTRA" ] \
+    || die "$RUNNER_NAME also mounts $ADOPT_EXTRA, which colloq-host does not give the agent, and it would be gone with the old container; nothing was changed. Recreate it without, or join again with colloq-host runner up"
+}
+
+runner_update() {
+  need_root
+  local want="" now=0 arg cur img version url new_id cur_id sum
+  for arg in "$@"; do
+    case "$arg" in
+      --now) now=1 ;;
+      -*) die "usage: colloq-host runner update [VERSION|IMAGE] [--now]" ;;
+      *) [ -z "$want" ] || die "usage: colloq-host runner update [VERSION|IMAGE] [--now]"; want="$arg" ;;
+    esac
+  done
+  docker container inspect "$RUNNER_NAME" >/dev/null 2>&1 \
+    || die "there is no $RUNNER_NAME on this machine: colloq-host runner up https://<home> <code>"
+  adopt_runner strict
+  cur="$(head -1 "$RUNNER_IMAGE_FILE" 2>/dev/null || true)"
+  [ -n "$cur" ] || cur="$(docker container inspect -f '{{.Config.Image}}' "$RUNNER_NAME")"
+  case "$want" in
+    '')
+      # The home's version: what makes a machine «устарел» is the home moving on.
+      url="$(runner_home)"; version=""
+      [ -z "$url" ] || version="$(home_version "$url")"
+      [ -n "$version" ] || version="$(agent_home_version)"
+      [ -n "$version" ] || die "neither ${url:-the home} nor the agent says which version the home runs; name it: colloq-host runner update <version>"
+      img="$(image_repo "$cur"):$version" ;;
+    */*|*:*|*@*) img="$want" ;;
+    *) check_version "$want"; img="$(image_repo "$cur"):$want" ;;
+  esac
+  # The new image first: a pull that fails must not have cost the machine its runs.
+  registry_login "$img"
+  fetch_image "$img"
+  new_id="$(docker image inspect -f '{{.Id}}' "$img")"
+  cur_id="$(docker container inspect -f '{{.Image}}' "$RUNNER_NAME" 2>/dev/null || true)"
+  sum="$(runner_config_sum "$img")"
+  if [ "$cur_id" = "$new_id" ] && [ "$(docker container inspect -f '{{index .Config.Labels "colloq.config"}}' "$RUNNER_NAME" 2>/dev/null || true)" = "$sum" ]; then
+    printf '%s\n' "$img" > "$RUNNER_IMAGE_FILE"
+    docker start "$RUNNER_NAME" >/dev/null 2>&1 || true
+    say "$RUNNER_NAME already runs $img"
+    return 0
+  fi
+  # The same image under other settings (runner.env edited, or a container
+  # colloq-host did not start) is a replacement all the same, and goes the
+  # same way: a container is never swapped under a running agent undrained.
+  [ "$cur_id" != "$new_id" ] || say "$RUNNER_NAME runs $img already, but not with these settings: it is replaced the same way"
+  runner_inputs_ready "$img"
+  if [ "$(docker container inspect -f '{{.State.Running}}' "$RUNNER_NAME" 2>/dev/null || true)" = true ]; then
+    if [ "$now" = 1 ]; then
+      say "stopping $RUNNER_NAME now (--now): the runs it holds go back to the home's queue and run again, spending no participant's attempts"
+      stop_runner
+    else
+      drain_runner
+    fi
+  fi
+  printf '%s\n' "$img" > "$RUNNER_IMAGE_FILE"
+  run_runner "$img"
+  wait_joined "$(runner_home)"
+  # The manager moves with the image it manages, as in update.
+  if [ -w "$HOST_BIN" ] && docker run --rm -v "$HOST_BIN:/host" "$img" install-host /host >/dev/null 2>&1; then
+    say "colloq-host itself updated from $img"
+  else
+    warn "colloq-host itself is still the one from before; the new one: docker run --rm -v $HOST_BIN:/host $img install-host /host"
+  fi
+}
+
+# The identity the machine left with (runner.json: its id and its secret) is
+# revoked on the home from now on. Left in the tree, it would greet the next
+# join: a `runner up` with a new code would start an agent that calls its home
+# as the machine it was, and hears 401 for good. So it is put aside, under a
+# name no agent reads, and the caches (kernels, data, wheels) stay for the
+# next join to use.
+retire_identity() {
+  local id="$RUNNER_STATE/runner.json" kept
+  [ -f "$id" ] || return 0
+  kept="$id.left-$(date -u +%Y%m%dT%H%M%SZ)"
+  mv -f "$id" "$kept"
+  say "its revoked identity is put aside as $kept; a new join starts without it"
+}
+
+runner_leave() {
+  need_root
+  local join img
+  if ! docker container inspect "$RUNNER_NAME" >/dev/null 2>&1; then
+    say "there is no $RUNNER_NAME on this machine: nothing to leave"
+    return 0
+  fi
+  adopt_runner strict
+  join="$(env_value COLLOQ_RUNNER_JOIN)"
+  # Gone for good once it has revoked itself: the agent stops when the home
+  # answers 401, and Docker's unless-stopped would start it again, into a
+  # machine its home no longer knows.
+  docker update --restart=no "$RUNNER_NAME" >/dev/null
+  if [ "$(docker container inspect -f '{{.State.Running}}' "$RUNNER_NAME" 2>/dev/null || true)" = true ]; then
+    say "$RUNNER_NAME leaves its home: it finishes the runs it holds, takes no new ones, then revokes itself"
+    if ! docker exec "$RUNNER_NAME" colloq-vast runner leave; then
+      docker update --restart=unless-stopped "$RUNNER_NAME" >/dev/null 2>&1 || true
+      die "$RUNNER_NAME did not leave (its words are above) and keeps running; retry, or revoke it on the home (Resources, machines for submissions)"
+    fi
+  else
+    img="$(docker container inspect -f '{{.Config.Image}}' "$RUNNER_NAME")"
+    say "$RUNNER_NAME is stopped: it revokes itself from a one-off container of $img"
+    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$RUNNER_STATE:$RUNNER_STATE" \
+      --env-file "$ENV_FILE" -e "COLLOQ_RUNNER_STATE=$RUNNER_STATE" "$img" runner leave \
+      || die "$RUNNER_NAME did not leave (its words are above) and stays stopped; revoke it on the home (Resources, machines for submissions), or start it and retry"
+  fi
+  docker rm -f "$RUNNER_NAME" >/dev/null 2>&1 || true
+  retire_identity
+  if [ -n "$join" ]; then
+    ensure_conf
+    printf '%s\n' "$(join_digest "$join")" >> "$RUNNER_LEFT_FILE"
+    chmod 0600 "$RUNNER_LEFT_FILE"
+    unset_env_value COLLOQ_RUNNER_JOIN
+  fi
+  # A machine that joins again follows its new home's version, not this one's.
+  rm -f "$RUNNER_IMAGE_FILE"
+  say "left: the home no longer counts on this machine. Its cache stays in $RUNNER_STATE (remove it to free the disk)"
+  say "to join again: colloq-host runner up https://<home> <a new code>"
+}
+
+# ------------------------------------------- codes for machines (on a home)
+#
+# The owner's enrollment code minted on the instance itself, for when the
+# panel is out of reach (Teleport's SSH is the way in to a university's VM,
+# not its browser): the same row the panel writes, by the same code
+# (dist/runner-code.js through the entry point, as the server's user). Printed
+# once, inside the three commands a machine joins with.
+
+runner_code_usage() {
+  cat <<'USAGE'
+colloq-host runner-code: a code that lets machines run this instance's submissions
+
+  colloq-host runner-code [--machines N] [--hours H] [--trusted] [--slots S] [--prefix NAME] [--url URL]
+
+  --machines N   how many machines may join with it (1 to 100; 1)
+  --hours H      how long it stays valid (1 to 24; 24)
+  --trusted      the machines may receive the hidden test (off: a sealed competition waits for a trusted one)
+  --slots S      at most S places on each machine (default: what each machine offers)
+  --prefix NAME  how the machines are named on the home
+  --url URL      the address machines reach this instance at (default: PUBLIC_URL)
+USAGE
+}
+
+in_range() {
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
+}
+
+expiry_text() {
+  local s=$(( $1 / 1000 ))
+  date -u -d "@$s" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || date -u -r "$s" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || printf '%s ms' "$1"
+}
+
+runner_code() {
+  need_root
+  local machines=1 hours=24 trusted=0 slots="" prefix="" url="" out line code expires granted trust img shown version suffix
+  local args=() prefix_re='^[A-Za-z0-9][A-Za-z0-9-]{0,31}$' official_re='^ghcr\.io/colloq-edu/colloq-(vast|server)(:[^/@]+|@sha256:[a-f0-9]{64})$'
+  local release_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' published_re='^ghcr\.io/colloq-edu/colloq-server:[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --machines|--hours|--slots|--prefix|--url)
+        [ "$#" -ge 2 ] || die "$1 needs a value (colloq-host runner-code --help)"
+        case "$1" in
+          --machines) machines="$2" ;;
+          --hours) hours="$2" ;;
+          --slots) slots="$2" ;;
+          --prefix) prefix="$2" ;;
+          --url) url="$2" ;;
+        esac
+        shift 2 ;;
+      --trusted) trusted=1; shift ;;
+      -h|--help) runner_code_usage; return 0 ;;
+      *) die "unknown option $1 (colloq-host runner-code --help)" ;;
+    esac
+  done
+  in_range "$machines" 1 100 || die "--machines is how many machines may join with the code: 1 to 100"
+  in_range "$hours" 1 24 || die "--hours is how long the code stays valid: 1 to 24 (a code is a door, and a door left open is found)"
+  [ -z "$slots" ] || in_range "$slots" 1 64 || die "--slots caps the places on each machine: 1 to 64"
+  [ -z "$prefix" ] || [[ "$prefix" =~ $prefix_re ]] || die "--prefix is a short name: letters, digits and hyphens, up to 32"
+  [ -n "$url" ] || url="$(grep -E '^PUBLIC_URL=' "$STATE/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r' || true)"
+  [ -n "$url" ] || die "this instance has no address yet (PUBLIC_URL in $STATE/.env); name the one machines reach: --url https://<address>"
+  url="${url%/}"
+  check_home "$url"
+  case "${url#*://}" in
+    localhost|localhost:*|127.*)
+      warn "$url is this machine's own loopback: a machine anywhere else cannot reach it; give the address it can: --url https://<address>" ;;
+  esac
+  [ "$(docker container inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null || true)" = true ] \
+    || die "$NAME is not running here: the code is minted by the instance itself (colloq-host start)"
+  args=(--machines "$machines" --hours "$hours")
+  [ "$trusted" = 0 ] || args+=(--trusted)
+  [ -z "$slots" ] || args+=(--slots "$slots")
+  [ -z "$prefix" ] || args+=(--prefix "$prefix")
+  out="$(docker exec "$NAME" colloq-vast runner-code "${args[@]}")" || die "$NAME did not mint a code (its words are above)"
+  line="$(printf '%s\n' "$out" | grep -E '^[[:space:]]*\{' | tail -1 || true)"
+  code="$(printf '%s' "$line" | sed -nE 's/.*"code"[[:space:]]*:[[:space:]]*"([a-f0-9]{32})".*/\1/p')"
+  expires="$(printf '%s' "$line" | sed -nE 's/.*"expiresAt"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p')"
+  granted="$(printf '%s' "$line" | sed -nE 's/.*"machines"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p')"
+  trust="$(printf '%s' "$line" | sed -nE 's/.*"trusted"[[:space:]]*:[[:space:]]*(true|false).*/\1/p')"
+  [ -n "$code" ] && [ -n "$expires" ] \
+    || die "$NAME answered without a code this script can read; mint one in the panel (Resources, machines for submissions)"
+  # The machines run the very build the instance runs: its own image, under
+  # the name that says what it is off Vast when it is the published one (one
+  # digest, two names), and by the release it was built as, not a moving tag.
+  img="$(docker container inspect -f '{{.Config.Image}}' "$NAME")"
+  shown="$img"
+  if [[ "$img" =~ $official_re ]]; then
+    version="$(image_label "$img" org.opencontainers.image.version)"
+    if [[ "$version" =~ $release_re ]]; then
+      shown="ghcr.io/colloq-edu/colloq-server:$version"
+    else
+      # No release label to go by: the same tag or digest under the other name.
+      suffix="${img#ghcr.io/colloq-edu/colloq-vast}"
+      [ "$suffix" != "$img" ] || suffix="${img#ghcr.io/colloq-edu/colloq-server}"
+      shown="ghcr.io/colloq-edu/colloq-server$suffix"
+    fi
+  fi
+  say "a code for ${granted:-$machines} machine(s), valid until $(expiry_text "$expires")$( [ "$trust" = true ] && printf '; trusted with the hidden test' || printf '; not given the hidden test')${slots:+; at most $slots places each}"
+  say "it is shown once, below; it lets those machines take this instance's submissions: send it to whoever sets them up, never to a class chat"
+  printf '\nDocker already installed (Linux amd64, Docker Engine 28+; GPU hosts also need nvidia-container-toolkit):\n\n'
+  printf '  docker run -d --name colloq-runner --restart unless-stopped \\\n'
+  printf '    -v /var/run/docker.sock:/var/run/docker.sock \\\n'
+  printf '    -v /var/lib/colloq-runner:/var/lib/colloq-runner \\\n'
+  printf "    -e COLLOQ_RUNNER_JOIN='%s#%s' \\\\\n" "$url" "$code"
+  printf '    %s runner\n' "$shown"
+  printf '\nA bare machine (adds the NVIDIA toolkit, checks for driver 580+, freezes updates on Vast):\n\n'
+  printf '  command -v docker || curl -fsSL https://get.docker.com | sh\n'
+  printf '  docker run --rm -v /usr/local/sbin:/host %s install-host /host\n' "$shown"
+  if [[ "$shown" =~ $published_re ]]; then
+    # The very image `runner up` takes by itself: this release, published.
+    printf '  colloq-host runner up %s %s\n' "$url" "$code"
+    printf '\nVast VMs, from a checkout of the repository:\n\n'
+    printf '  make vast-runner COUNT=%s CODE=%s URL=%s\n\n' "${granted:-$machines}" "$code" "$url"
+  else
+    printf '  colloq-host runner up %s %s %s\n\n' "$url" "$code" "$shown"
+    say "make vast-runner is left out: its machines take the published colloq-server of this release, and this instance runs $img"
+  fi
+}
+
 # -------------------------------------------------------------- doctor
 #
 # One line per question, PASS / WARN / FAIL (and INFO for what is only worth
@@ -1233,6 +2047,11 @@ colloq-host: run Colloq (the colloq-vast / colloq-server image) on this machine'
   colloq-host bundle FILE [IMAGE]    on a connected machine: images for an offline server, in one file
   colloq-host load FILE              on the offline server: load that file; up then needs no network
 
+  colloq-host runner up URL CODE [IMAGE]   this machine runs another instance's submissions
+  colloq-host runner update [VERSION|IMAGE] [--now] | status | logs | leave   (colloq-host runner help)
+  colloq-host runner-code [--machines N] [--hours H] [--trusted] [--slots S]
+                                     on an instance: a code for such machines, inside the commands that join them
+
 Settings: /etc/colloq/colloq.env (written by `up` from its environment); the image: /etc/colloq/image.
 A server of your own: docs/pages/en/server.html. A Vast VM: deploy/vast/README.md.
 USAGE
@@ -1253,6 +2072,8 @@ case "$cmd" in
   start) need_root; docker start "$NAME" >/dev/null && wait_ready ;;
   bundle) bundle "$@" ;;
   load) load "$@" ;;
+  runner) runner_command "$@" ;;
+  runner-code) runner_code "$@" ;;
   help|-h|--help) usage ;;
   *) die "unknown command: $cmd (colloq-host help)" ;;
 esac

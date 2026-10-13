@@ -413,11 +413,14 @@ jobs:
   # root on the python its list names (`# colloq: python X.Y`; none leaves the
   # Dockerfile's own default). kernel/locks is not a build input there and is
   # not one here: it records a verified kaggle-base, and its check script is
-  # run against the image before it is pushed. base-gpu stays out: nine
-  # gigabytes of CUDA wheels on a runner's disk and in every pull, and a GPU
-  # machine builds it once anyway. Each image carries its version and
-  # environment as labels, by which the entry point knows a loaded image for
-  # the published one.
+  # run against the image before it is pushed. base-gpu and kaggle-gpu stay
+  # out: kaggle-gpu is 12.7 GB unpacked, about 30 GB once built, loaded and
+  # pushed this way, on a runner documented with 14 GB of disk, and their
+  # check (torch on a CUDA card) needs a card. `make kernel-publish`
+  # publishes them at release time from a machine with one, under the same
+  # tags and labels and after the same kind of check (scripts/kernel-publish.sh,
+  # RELEASING.md). Each image carries its version and environment as labels,
+  # by which the entry point knows a loaded image for the published one.
   kernels:
     name: Kernel images to GHCR
     needs: build

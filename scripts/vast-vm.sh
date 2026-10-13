@@ -9,6 +9,8 @@
 #   make vast-vm OFFER=51006376          exactly this offer, however far down the market
 #   make vast-vm HOST=vsos               class address vsos.<RELAY_DOMAIN> (default: the on-start's)
 #   make vast-vm INSTANCE=53175270 HOST=vsos   redeploy on a VM already rented
+#   ROLE=runner ONSTART=<filled onstart-runner.sh>   a machine for another instance's
+#                                        submissions (scripts/vast-runner.sh starts these)
 #
 # Why this exists instead of a template in the Vast console: renting from a
 # template in the web UI starts even a vastai/kvm image as an ordinary Docker
@@ -74,11 +76,30 @@ SSH_KEY="$(read_env VAST_SSH_KEY)";     SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed2551
 case "$SSH_KEY" in "~/"*) SSH_KEY="$HOME/${SSH_KEY#\~/}" ;; esac
 LABEL="colloq-vm${NAME:+-$NAME}"
 
+# ROLE=runner: a machine for another instance's submissions («машина для
+# посылок»), which scripts/vast-runner.sh rents COUNT at a time, not an
+# instance of its own. Three things differ and nothing else: the label
+# (colloq-runner, by which make runners-update and runners-down find the
+# fleet), the on-start it checks (deploy/vast/onstart-runner.sh filled with the
+# home's address and an enrollment code; a machine opens no address, so it
+# has no HOST= and no relay token), and what "ready" means: `colloq-host runner
+# status`, joined and syncing, where an instance answers /api/health.
+ROLE="${ROLE:-app}"
+case "$ROLE" in app|runner) ;; *) die "ROLE= is app or runner, not \"$ROLE\"." ;; esac
+[ "$ROLE" != runner ] || LABEL="colloq-runner${NAME:+-$NAME}"
+
 [ -f "$ONSTART" ] || die "no on-start script at $ONSTART.
   Copy deploy/vast/onstart.sh there and fill in its settings block (image, relay)."
-image_line="$(grep '^export COLLOQ_IMAGE=' "$ONSTART" || true)"
-case "$image_line" in *OWNER*|*:VERSION*|*'=""') image_line="" ;; esac
-[ -n "$image_line" ] || die "COLLOQ_IMAGE in $ONSTART is not filled in (ghcr.io/<owner>/colloq-vast:<version>)."
+if [ "$ROLE" = runner ]; then
+  grep -qE '^export COLLOQ_RUNNER_URL="https?://[^"]+"' "$ONSTART" && ! grep -q '^export COLLOQ_RUNNER_URL="https://HOME"' "$ONSTART" \
+    && grep -qE '^export COLLOQ_RUNNER_CODE="[a-f0-9]{32}"' "$ONSTART" \
+    || die "COLLOQ_RUNNER_URL and COLLOQ_RUNNER_CODE in $ONSTART are not filled in (scripts/vast-runner.sh fills deploy/vast/onstart-runner.sh)."
+  [ -z "${HOST:-}" ] || die "HOST= names a class address, and a machine for submissions has none (ROLE=runner)."
+else
+  image_line="$(grep '^export COLLOQ_IMAGE=' "$ONSTART" || true)"
+  case "$image_line" in *OWNER*|*:VERSION*|*'=""') image_line="" ;; esac
+  [ -n "$image_line" ] || die "COLLOQ_IMAGE in $ONSTART is not filled in (ghcr.io/<owner>/colloq-vast:<version>)."
+fi
 [ -f "$SSH_KEY" ] || die "no ssh key $SSH_KEY (VAST_SSH_KEY in .env)."
 
 CURLRC="$(mktemp -t colloq-vast.XXXXXX)"
@@ -173,7 +194,11 @@ for o in offers: print("%s\t%.3f\t%s x %s" % (o["id"], o.get("dph_total") or 0, 
 [ -n "$suitable" ] || die "no VM offer matches: GPU \"${GPU_NAME:-any}\"${OFFER:+, offer $OFFER}${GPUS:+, from $GPUS cards}${GPU_RAM:+, from $GPU_RAM GB per card}${CPU:+, from $CPU cores}${RAM:+, from $RAM GB RAM}, up to \$$MAX_PRICE/hr, disk from $DISK GB, Max CUDA from 13.0."
 IFS=$'\t' read -r offer_id price what <<<"$(printf '%s\n' "$suitable" | head -n 1)"
 say ""
-say "${BOLD}VM offer $offer_id${OFF}: $what, \$$price/hr, image $(sed -n 's/^export COLLOQ_IMAGE="\(.*\)"/\1/p' "$SCRIPT")${ADDRESS:+, address $ADDRESS}"
+if [ "$ROLE" = runner ]; then
+  say "${BOLD}VM offer $offer_id${OFF}: $what, \$$price/hr, a machine for $(sed -n 's/^export COLLOQ_RUNNER_URL="\(.*\)"/\1/p' "$SCRIPT")"
+else
+  say "${BOLD}VM offer $offer_id${OFF}: $what, \$$price/hr, image $(sed -n 's/^export COLLOQ_IMAGE="\(.*\)"/\1/p' "$SCRIPT")${ADDRESS:+, address $ADDRESS}"
+fi
 if [ "${FORCE:-}" != 1 ]; then
   [ -t 0 ] || die "no terminal to ask in. FORCE=1 rents without asking."
   printf '%srent it? [y/N] %s' "$BOLD" "$OFF"; read -r answer
@@ -239,6 +264,26 @@ fi
 # (HOST=) recreate the container; colloq-host keeps it across reboots.
 ssh_run 'umask 077; mkdir -p /etc/colloq; cat > /etc/colloq/onstart.sh' < "$SCRIPT"
 ssh_run 'setsid nohup bash /etc/colloq/onstart.sh >/dev/null 2>&1 < /dev/null &'
+
+# A machine for submissions is ready once it has joined its home and syncs:
+# the image pull and the join take a few minutes, the kernels and the data
+# come after, in the background. Its exit code is the answer, because
+# scripts/vast-runner.sh counts the machines that made it.
+if [ "$ROLE" = runner ]; then
+  say "waiting for the machine to join its home (colloq-host runner status)…"
+  for _ in $(seq 1 60); do
+    ssh_run 'colloq-host runner status >/dev/null 2>&1' 2>/dev/null && break
+    sleep 20
+  done
+  if ! ssh_run 'colloq-host runner status' 2>/dev/null; then
+    say "${RED}the machine has not joined after 20 minutes; the on-start log follows.${OFF}"
+    ssh_run 'tail -30 /var/log/colloq-onstart.log' || true
+    exit 1
+  fi
+  say ""
+  say "on the VM: colloq-host runner status | logs | leave"
+  exit 0
+fi
 
 # The on-start installs colloq-host and brings the container up on
 # 127.0.0.1:3000; /api/health turns 200 once the default environment exists.
