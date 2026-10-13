@@ -65,19 +65,24 @@
     deadlineDividerAt,
     etaWords,
     feedWhen,
+    lastResultWords,
     lateQuery,
     limitNote,
     metricNumber,
     moment,
+    noPlaceOnCards,
     outcomeLine,
     sealedErrorBox,
     phaseTone,
     spanWords,
     statusNote,
+    waitingWords,
+    waitsForCard,
     withNewKey,
     worstCell,
     type LateFilter,
   } from '@/admin/competitions'
+  import { cardWord } from '@/admin/running-kernels'
 
   export type LiveTab = 'submissions' | 'board' | 'entrants' | 'settings'
 
@@ -533,11 +538,25 @@
     const known = waiting.map((row) => row.etaMs).filter((ms): ms is number => ms !== null)
     return known.length > 0 ? Math.max(...known) : null
   })
-  /** "4 waiting · the last result in ≈ 2 min · median 0:52" — only the parts that are known. */
+  /**
+   * This competition's jobs that wait for a place on a runner card, not for
+   * a slot (Paper 15 · G3): they are passed over while CPU work goes by.
+   */
+  const onCards = $derived(waiting.filter((row) => waitsForCard(row, queue)).length)
+  /**
+   * Those jobs have no share on any card to wait for — none is given to
+   * submissions, or a class holds every one — so nothing frees one by
+   * itself: the list under «ЖДУТ» says why, and whose tab changes it.
+   */
+  const cardless = $derived(noPlaceOnCards(waiting, queue))
+  /**
+   * "4 waiting, one of them for a GPU · the last result in ≈ 2 min · median
+   * 0:52" — only the parts that are known.
+   */
   const statusLine = $derived(
     [
-      tr('admin.competitions.waitingCount', { count: queue?.waiting ?? waiting.length }),
-      lastEtaMs !== null ? tr('admin.competitions.lastResult', { eta: etaWords(lastEtaMs) }) : null,
+      waitingWords(queue?.waiting ?? waiting.length, onCards),
+      lastEtaMs !== null ? lastResultWords(lastEtaMs) : null,
       live?.medianMs != null ? tr('admin.competitions.medianShort', { span: spanWords(live.medianMs) }) : null,
     ]
       .filter(Boolean)
@@ -988,8 +1007,17 @@
               class={cn('h-2 w-2 shrink-0', running.length > 0 ? 'bg-accent' : 'bg-faint')}
               aria-hidden="true"
             ></span>
+            <!-- With runner cards the header counts both things a GPU run
+                 holds: a slot and a place on a card (Paper 15 · G3). -->
             <span class="admin-label text-primary">
-              {tr('admin.competitions.slotsHead', { busy: running.length, count: slots })}
+              {queue?.gpu
+                ? tr('admin.competitions.slotsHeadGpu', {
+                    busy: running.length,
+                    count: slots,
+                    gpuBusy: queue.gpu.busy,
+                    gpuCount: queue.gpu.slots,
+                  })
+                : tr('admin.competitions.slotsHead', { busy: running.length, count: slots })}
             </span>
           </div>
           <span class="text-2xs text-muted">{statusLine}</span>
@@ -1037,6 +1065,15 @@
                   {#if !run.hidden && run.competitionId !== c.id}
                     <!-- One runner per instance: another competition's run takes a slot too. -->
                     <span class="shrink-0 font-mono text-micro text-faint">/k/{run.competitionSlug}</span>
+                  {/if}
+                  {#if run.gpu}
+                    <!-- The card the run holds until its attempt ends («GPU 0»;
+                         the cluster's card has no id of ours: «GPU»). Shown on
+                         another course's run too: which card is busy is the
+                         machine's business, not anyone's. -->
+                    <span class="inline-flex shrink-0" title={run.gpu.device || undefined}>
+                      <Badge word={cardWord(run.gpu.device)} tone="accent" case="lower" class="font-mono" />
+                    </span>
                   {/if}
                   {#if !run.hidden}
                     <button
@@ -1100,11 +1137,23 @@
                 <span class="text-micro text-muted">{tr('admin.competitions.resultIn')}</span>
               {/if}
             </div>
+            {#if cardless}
+              <!-- No share on any card: the rows below will not move however
+                   many executors stand free, and the reason is not on this tab. -->
+              <p class="text-2xs leading-snug text-warning">{tr('admin.competitions.gpuNoPlace')}</p>
+            {/if}
             {#each waiting as row (row.submissionId)}
               <div class="flex items-center gap-2.5">
                 <span class="w-4 shrink-0 font-mono text-micro text-muted">{row.place ?? '—'}</span>
-                <span class="min-w-0 flex-1 truncate text-2xs text-ink">
-                  {row.baseline ? tr('competitions.baselineEntrant') : row.entrantName} · #{row.number}
+                <span class="flex min-w-0 flex-1 flex-col">
+                  <span class="truncate text-2xs text-ink">
+                    {row.baseline ? tr('competitions.baselineEntrant') : row.entrantName} · #{row.number}
+                  </span>
+                  {#if waitsForCard(row, queue)}
+                    <!-- Passed over for a card while CPU work goes by: said, so
+                         the order of the list does not read as unfair. -->
+                    <span class="text-micro text-accent-text">{tr('admin.competitions.waitsForCard')}</span>
+                  {/if}
                 </span>
                 {#if row.late}
                   <!-- On-time work goes first (panel.ts · fairOrder): the mark

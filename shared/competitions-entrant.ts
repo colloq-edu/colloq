@@ -125,6 +125,20 @@ export interface EntrantCompetitionList {
 export interface EntrantCompetitionView {
   capabilities?: CompetitionCapabilities
   competition: CompetitionPublic
+  /**
+   * The video memory a run gets, MB, beside the checking conditions; `null` —
+   * the competition runs on the CPU, or the size is not known and so not
+   * promised (competitions-api.ts · CompetitionView.gpuSliceMb).
+   */
+  gpuSliceMb: number | null
+  /**
+   * Each run has a card to itself (one run per runner card): the conditions
+   * say «вся карта» rather than a share — with one run per card the share is
+   * the whole card, and «срез ≈ 24 ГБ» would read as a quarter of something.
+   * Absent or false — a share (`gpuSliceMb`), the CPU, or the cluster's card,
+   * whose size the cluster decides.
+   */
+  gpuWholeCard?: boolean
   files: EntrantFile[]
   /** The hidden test, as names and rows; empty — the check reads the open files only. */
   sealedFiles?: EntrantSealedFile[]

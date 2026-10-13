@@ -25,10 +25,11 @@ import {
   type MachineBounds,
 } from '../admin/resource-settings.js'
 import { slotsResolution } from '../competitions/capacity.js'
+import { runnerGpuDevices } from '../competitions/gpu.js'
 import { competitionDefaults } from '../competitions/settings.js'
 import { listNames } from '../environments.js'
 import { idleSweepSettingsChanged } from '../kernel/index.js'
-import { reapplyInstanceDefaults, runningKernelLimits, type RunningKernel } from '../kernel/pool.js'
+import { gpuBusy, gpuDevices, reapplyInstanceDefaults, runningKernelLimits, submissionGpuCards, type RunningKernel } from '../kernel/pool.js'
 import {
   cpuBounds,
   forgetResources,
@@ -83,6 +84,38 @@ function competitionShare(): ResourceBudget['competitions'] {
   }
 }
 
+/**
+ * ADAPTER, the same way: the machine's cards — all of KERNEL_GPUS, the ones a
+ * room's container holds now, and the submissions' (a promise, like the slots
+ * above, whether or not a submission runs). Each card is counted once. A card
+ * given to submissions that a class still holds counts as the submissions':
+ * it is theirs as soon as the class lets go. A card given back to classes
+ * that a submission still holds (its container, or the queue's binding of a
+ * run about to start) counts as the submissions' too, until that run ends: no
+ * class can take it before then (kernel/pool.ts · submissionGpuCards). Under
+ * Kubernetes the cluster has the cards, and the bar leaves them out.
+ *
+ * The census is the panel's, not the allocator's: an unanswered `docker ps`
+ * reads as "nobody holds a card", which `complete` on the memory side
+ * already warns about in the same answer.
+ */
+async function gpuShare(): Promise<ResourceBudget['gpus']> {
+  if (kernelBackend() === 'broker') return null
+  const devices = gpuDevices()
+  if (devices.length === 0) return { total: 0, rooms: 0, runners: 0 }
+  const [held, running] = await Promise.all([
+    gpuBusy().catch(() => [] as string[]),
+    submissionGpuCards().catch(() => [] as string[]),
+  ])
+  const submissions = new Set([...runnerGpuDevices(), ...running])
+  const rooms = new Set(held)
+  return {
+    total: devices.length,
+    rooms: devices.filter((device) => !submissions.has(device) && rooms.has(device)).length,
+    runners: devices.filter((device) => submissions.has(device)).length,
+  }
+}
+
 /* ---------------------------------------------------------------- budget */
 
 /**
@@ -128,6 +161,7 @@ async function budget(machine: InstanceResources): Promise<ResourceBudget> {
     freeMb: Math.max(0, totalMb - reserveMb - promised),
     overcommitted: promised > totalMb - reserveMb,
     complete,
+    gpus: await gpuShare(),
   }
 }
 

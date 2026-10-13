@@ -105,6 +105,24 @@ export interface CompetitionLimits {
   cpus: number
   /** Submissions per day per participant; 0 — no limit. */
   perDay: number
+  /**
+   * The notebook runs with a share of a video card — «Видеокарта» in the
+   * editor.
+   *
+   * A switch of its own rather than "the environment needs a GPU": a
+   * competition made on a GPU environment before runner cards existed ran its
+   * CUDA torch on the CPU, and turning a card on under it by itself would
+   * change how fast every one of its submissions runs, in the middle of the
+   * competition. So the teacher turns it on, and only on an environment that
+   * needs a GPU (competitions/panel.ts · gpuEnvironmentRefusal). Only the
+   * notebook step gets the card; the metric never does — it holds the hidden
+   * answers.
+   *
+   * Absent means false: everything made before the switch, and every fixture
+   * that never heard of it, runs on the CPU as it always did. The store always
+   * writes it out.
+   */
+  gpu?: boolean
 }
 
 export interface Competition {

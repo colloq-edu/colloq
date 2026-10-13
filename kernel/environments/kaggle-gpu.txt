@@ -1,0 +1,34 @@
+# Colloq: the kaggle-base stack on CUDA PyTorch, for neural networks in classes and competitions.
+# This is not the official Kaggle image.
+#
+# It is built on base-gpu (torch and torchvision as CUDA wheels) and inherits
+# its GPU flag. A room on it takes a card from KERNEL_GPUS; a competition on it
+# gets a share of a card only with its GPU switch on and cards given to
+# submissions in Resources. The card reaches the container through the NVIDIA
+# container runtime; where none is given (personal notebooks, a competition
+# with the switch off) the same image computes on the CPU.
+#
+# Above the kaggle-base pins: seaborn, which base-gpu lacks (it is a root, not
+# built on base), and OpenCV and timm for images. Built on the host like
+# base-gpu: publish.yml keeps GPU images out.
+# colloq: from base-gpu
+numpy==2.4.6
+pandas==3.0.6
+scipy==1.17.1
+scikit-learn==1.9.1
+catboost==1.2.10
+lightgbm==4.6.0
+xgboost==3.2.0
+optuna==4.9.0
+polars==1.44.2
+pyarrow==23.0.1
+statsmodels==0.15.0
+imbalanced-learn==0.14.2
+category-encoders==2.11.1
+shap==0.51.0
+h3==4.5.0
+nbclient==0.11.0
+nbformat==5.11.1
+seaborn==0.13.2
+opencv-python-headless==5.0.0.93
+timm==1.0.30

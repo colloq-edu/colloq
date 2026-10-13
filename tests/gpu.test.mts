@@ -20,7 +20,9 @@
 import './_env.mts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { gpuDevices, gpuRefusal, pickGpu, runArgs } from '../server/src/kernel/pool.js'
+import { gpuDevices, gpuRefusal, pickGpu, roomGpuDevices, runArgs, submissionGpuCards } from '../server/src/kernel/pool.js'
+import { saveCompetitionSettings } from '../server/src/competitions/settings.js'
+import { db } from '../server/src/db.js'
 
 /** Environment variables are read at call time, so they can be swapped. */
 function withEnv(vars: Record<string, string | undefined>, body: () => void): void {
@@ -115,6 +117,81 @@ test('on a machine without allocated slices the refusal names the variable', () 
   const none = gpuRefusal('gpu', [])
   assert.match(none, /KERNEL_GPUS/)
   assert.match(none, /«gpu»/)
+})
+
+/* ------------------------------------------ cards given to competitions */
+
+/*
+ * A card goes either to classes or to competition submissions, never to both:
+ * docker does not refuse a second container on a card, and a submission's
+ * runaway training on the lecture's card takes the lecture's video memory
+ * with it. So the owner's runner cards leave the rooms' pool — for new
+ * holders only: a class already on such a card keeps it until its container
+ * ends, since a different card means a recreated container and a lesson's
+ * variables gone.
+ */
+
+test("a card given to competition submissions leaves the rooms' pool", () => {
+  withEnv({ KERNEL_GPUS: '0,1,2', COMPETITION_GPUS: '1' }, () => {
+    assert.deepEqual(gpuDevices(), ['0', '1', '2'])
+    assert.deepEqual(roomGpuDevices(), ['0', '2'])
+  })
+  withEnv({ KERNEL_GPUS: '0,1,2', COMPETITION_GPUS: '1' }, () => {
+    try {
+      // The owner's choice in the Resources tab beats the environment's...
+      saveCompetitionSettings({ gpuDevices: ['0', '2'] })
+      assert.deepEqual(roomGpuDevices(), ['1'])
+      // ...and taking every card back gives every card to the classes again.
+      saveCompetitionSettings({ gpuDevices: [] })
+      assert.deepEqual(roomGpuDevices(), ['0', '1', '2'])
+    } finally {
+      saveCompetitionSettings({ gpuDevices: null })
+    }
+  })
+  // Nobody chose: every card is the rooms', exactly as before submissions could have one.
+  withEnv({ KERNEL_GPUS: '0,1', COMPETITION_GPUS: undefined }, () => {
+    assert.deepEqual(roomGpuDevices(), ['0', '1'])
+  })
+  // Submissions on the cluster use none of this machine's cards: none is withheld for nothing.
+  withEnv({ KERNEL_GPUS: '0,1', COMPETITION_GPUS: '1', COMPETITION_BACKEND: 'broker' }, () => {
+    assert.deepEqual(roomGpuDevices(), ['0', '1'])
+  })
+})
+
+test('a class keeps the card it holds when that card goes to submissions; a new class never gets it', () => {
+  // KERNEL_GPUS is 0,1, and card 1 has just been given to submissions.
+  const taken = [{ session: 'лекция', gpu: '1' }]
+  assert.equal(pickGpu(['0'], taken, 'лекция', ['0', '1']), '1')
+  assert.equal(pickGpu(['0'], taken, 'семинар', ['0', '1']), '0')
+  assert.equal(pickGpu(['0'], [...taken, { session: 'семинар', gpu: '0' }], 'третий', ['0', '1']), null)
+  // Without the wider "may keep" list a room's card must be in the pool: what
+  // a room start did before, and why takeGpu passes all of KERNEL_GPUS.
+  assert.equal(pickGpu(['0'], taken, 'лекция'), '0')
+})
+
+test("before the queue's table exists no queue row holds a card, and asking is no failure", async () => {
+  /*
+   * The pool loads with the server's first imports and reads the queue's
+   * bindings through the database, not through the queue's store (which
+   * imports competitions/gpu.ts, which imports the pool). The store creates
+   * the table when it loads; this file never loads it, as a process that
+   * starts rooms before competitions would not.
+   */
+  const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'competition_queue'")
+  assert.equal(table.get(), undefined, 'the competitions store was loaded: this test proves nothing')
+  assert.deepEqual(await submissionGpuCards(), [])
+})
+
+test('every card went to submissions: the refusal says so and sends the person to the Resources tab, not to .env', () => {
+  const all = gpuRefusal('base-gpu', [], 2)
+  assert.match(all, /«base-gpu»/)
+  assert.match(all, /посылкам соревнований/)
+  assert.match(all, /«Ресурсы»/)
+  assert.doesNotMatch(all, /KERNEL_GPUS/)
+  // Still a refusal, never a quiet start on the CPU.
+  assert.match(all, /без GPU/)
+  // Nothing configured at all is still the .env refusal.
+  assert.match(gpuRefusal('base-gpu', [], 0), /KERNEL_GPUS/)
 })
 
 /* ------------------------------------------------- the docker run line */

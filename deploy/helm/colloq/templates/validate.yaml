@@ -76,6 +76,30 @@ behind a green sync.
 {{- fail "rooms.cpu: at most 64 cores" -}}
 {{- end -}}
 
+{{- /* A GPU for competition submissions: Kubernetes' rule for an extended resource, as the broker checks it (runtime/src/pod-policy.ts · parseExtendedResource). */ -}}
+{{- with $values.gpu.competitions.resource -}}
+{{- if or (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" .)) (contains "kubernetes.io/" .) (hasPrefix "requests." .) -}}
+{{- fail (printf "gpu.competitions.resource %q: the extended resource your GPU device plugin offers, e.g. nvidia.com/gpu or nvidia.com/mig-1g.10gb" .) -}}
+{{- end -}}
+{{- $count := int $values.gpu.competitions.count -}}
+{{- if or (lt $count 1) (gt $count 8) -}}
+{{- fail (printf "gpu.competitions.count %v: 1 to 8 units of %s per submission" $values.gpu.competitions.count .) -}}
+{{- end -}}
+{{- with $values.gpu.competitions.slots -}}
+{{- if or (lt (int .) 1) (gt (int .) 256) -}}
+{{- fail (printf "gpu.competitions.slots %v: 1 to 256 GPU submissions at once, or null" .) -}}
+{{- end -}}
+{{- end -}}
+{{- $shm := int $values.gpu.competitions.shmMb -}}
+{{- if or (lt $shm 0) (gt $shm 65536) -}}
+{{- fail (printf "gpu.competitions.shmMb %v: 0 to 65536 MiB (0: no /dev/shm of ours, for MPS)" $values.gpu.competitions.shmMb) -}}
+{{- end -}}
+{{- end -}}
+{{- $pull := int $values.gpu.competitions.pullSeconds -}}
+{{- if or (lt $pull 0) (gt $pull 3600) -}}
+{{- fail (printf "gpu.competitions.pullSeconds %v: 0 to 3600 seconds" $values.gpu.competitions.pullSeconds) -}}
+{{- end -}}
+
 {{- /* Keys that belong to the chart and the broker. */ -}}
 {{- range $key, $_ := $values.commonLabels -}}
 {{- if or (hasPrefix "app.kubernetes.io/" $key) (hasPrefix "colloq.dev/" $key) (hasPrefix "helm.sh/" $key) -}}

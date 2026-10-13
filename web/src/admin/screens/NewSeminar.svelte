@@ -408,7 +408,7 @@
    * none are free that has to be said BEFORE creation — otherwise the
    * teacher learns it from the first cell run in the middle of a class.
    */
-  let gpus = $state<{ total: number; free: number }>({ total: 0, free: 0 })
+  let gpus = $state<EnvironmentsState['gpus']>({ total: 0, free: 0 })
 
   /** Does the chosen environment ask for a GPU slice — by its file, not by name. */
   const chosenGpu = $derived(
@@ -1321,7 +1321,13 @@
       <div class="mt-2.5 flex items-start gap-2.5 border-l-2 border-warning bg-warning/[0.07] px-3.5 py-2.5">
         <Icon name="alert" size={13} class="mt-0.5 shrink-0 text-warning" />
         <p class="min-w-0 text-2xs leading-snug text-muted">
-          {#if gpus.total === 0}
+          {#if gpus.total === 0 && (gpus.runners ?? 0) > 0}
+            <!-- The machine has cards, but the owner gave every one of them to
+                 competition submissions (Resources): «not configured» would
+                 send the teacher after a KERNEL_GPUS that is set. -->
+            <span class="font-semibold text-ink">{tr("admin.gpu.allToSubmissions")}</span>
+            {tr("admin.gpu.allToSubmissionsNote")}
+          {:else if gpus.total === 0}
             <span class="font-semibold text-ink">{tr("admin.gpu.is.not.configured")}</span>
             {tr("admin.this.environment.needs.a.gpu.but.kernel.gpus.is.not.set.choose.an")}
           {:else}

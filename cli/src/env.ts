@@ -297,12 +297,12 @@ export function createEnv(opts: EnvOptions = {}): Env {
      * The second directory of environments, and it is created exactly where
      * the first one cannot be written to.
      *
-     * The environments that arrived with the product (base, base-gpu, cv, gpu)
-     * lie in <app>/kernel/environments. For an installed colloq that is
-     * site-packages: the directory is overwritten entirely by the next
-     * `pip install -U`, and on many machines is not writable at all. Creating
-     * one's own environment there means either a permission refusal or losing
-     * the file on the very first update.
+     * The environments that arrived with the product (base, kaggle-base,
+     * base-gpu, kaggle-gpu) lie in <app>/kernel/environments. For an
+     * installed colloq that is site-packages: the directory is overwritten
+     * entirely by the next `pip install -U`, and on many machines is not
+     * writable at all. Creating one's own environment there means either a
+     * permission refusal or losing the file on the very first update.
      *
      * So one's own lives in the state directory, next to .env and data/, where
      * nobody will overwrite it: <home>/environments.

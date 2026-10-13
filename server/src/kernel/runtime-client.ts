@@ -1,5 +1,5 @@
 import { tr } from '@shared/i18n'
-import { COMPETITION_JOB_ID, parseCompetitionJobIntent, parseCompetitionJobStatus, parseCompetitionJobCollection, type CompetitionJobCollection, type CompetitionJobIntent, type CompetitionJobStatus } from '@shared/competition-runtime'
+import { COMPETITION_GPU_SLOTS_MAX, COMPETITION_JOB_ID, parseCompetitionJobIntent, parseCompetitionJobStatus, parseCompetitionJobCollection, type CompetitionJobCollection, type CompetitionJobIntent, type CompetitionJobStatus } from '@shared/competition-runtime'
 /** The web process sends room intent; it never forwards a container specification. */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -247,8 +247,28 @@ export class RuntimeClient {
         const row=raw as Record<string,unknown>
         return typeof row.available==='boolean'&&typeof row.code==='string'&&row.code.length<=100&&(row.reason===null||typeof row.reason==='string'&&row.reason.length<=500)
       }
-      const competition=value.competition as Record<string,unknown>|undefined
-      const validCompetition=competition&&capability(competition.execution)&&capability(competition.preparation)
+      /*
+       * The broker's competition capabilities, each checked, and only those.
+       * `gpu` (whether a notebook that asks for a card can run) is left out
+       * when the broker does not say it, as one from before GPU jobs does not,
+       * or says it in a shape that is not a capability: absent reads as "no",
+       * and a GPU competition is then refused at the door rather than queued
+       * for a broker that would refuse its jobs.
+       */
+      const own=(row:{available:boolean;code:string;reason:string|null})=>({available:row.available,code:row.code,reason:row.reason})
+      const reported=value.competition as Record<string,unknown>|undefined
+      /*
+       * `gpuSlots`, how many GPU notebooks the operator says the cluster runs
+       * at once (RUNTIME_COMPETITION_GPU_SLOTS): a whole number in its
+       * bounds, or null for "not said". Anything else is left out, as an
+       * older broker leaves it out, and the queue then keeps one.
+       */
+      const slots=reported?.gpuSlots
+      const gpuSlots=slots===null||Number.isSafeInteger(slots)&&(slots as number)>=1&&(slots as number)<=COMPETITION_GPU_SLOTS_MAX?slots as number|null:undefined
+      const competition=reported&&capability(reported.execution)&&capability(reported.preparation)
+        ?{execution:own(reported.execution),preparation:own(reported.preparation),...(capability(reported.gpu)?{gpu:own(reported.gpu)}:{}),
+          ...(gpuSlots!==undefined?{gpuSlots}:{})}
+        :undefined
       return {
         ok:value.ok,reason:value.ok ? null : value.reason as string | null,
         ...(typeof cpus === 'number' ? {defaultCpus:cpus} : {}),
@@ -256,7 +276,7 @@ export class RuntimeClient {
         ...(typeof value.maxMemoryMb === 'number' ? {maxMemoryMb:value.maxMemoryMb} : {}),
         ...(typeof value.inPlaceResize === 'boolean' ? {inPlaceResize:value.inPlaceResize} : {}),
         ...(validRecovery ? { recovery } : {}),
-        ...(validCompetition ? {competition:competition as unknown as NonNullable<RuntimeHealth['competition']>} : {}),
+        ...(competition ? {competition} : {}),
       }
     } catch(error) { return {ok:false,reason:error instanceof Error ? error.message : tr("server.kernelRuntimeIsUnavailable.44455e")} }
   }

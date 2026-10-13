@@ -96,10 +96,22 @@ export const MIN_REMAINING_MS = 5_000
 export interface EtaInput {
   /** How many submissions run at once. */
   slots: number
-  /** Jobs running now: how long each is expected to take and how long it has run. */
-  running: readonly { expectedMs: number; elapsedMs: number }[]
-  /** Waiting jobs in the order the runner will take them, each with its expected run time. */
-  waiting: readonly { expectedMs: number }[]
+  /**
+   * Jobs running now: how long each is expected to take and how long it has
+   * run, and whether it holds a share of a runner card.
+   */
+  running: readonly { expectedMs: number; elapsedMs: number; gpu?: boolean }[]
+  /**
+   * Waiting jobs in the order the runner prefers them (fairOrder), each with
+   * its expected run time and whether it needs a card share.
+   */
+  waiting: readonly { expectedMs: number; gpu?: boolean }[]
+  /**
+   * How many runs may hold a card share at once (QueueSnapshot.gpu.slots).
+   * Absent — no job waits for a card here: the cluster places GPU work
+   * itself, and it is simulated like any other.
+   */
+  gpuSlots?: number
 }
 
 export interface Eta {
@@ -114,29 +126,78 @@ export interface Eta {
  * not until its start: the person waits for a number, not for a container.
  *
  * Computed by simulating the slots, not by multiplying the position by the
- * average: a min-heap of the moments slots free up (a running job frees one
- * after what it still has left, never sooner than five seconds; an idle slot
- * is free now), and the waiting jobs take them in queue order. With two
- * executors the fifth in the queue waits half as long, and a number computed
- * without this lies by exactly that factor.
+ * average: the moments slots free up (a running job frees one after what it
+ * still has left, never sooner than five seconds; an idle slot is free now),
+ * and the waiting jobs take them in queue order. With two executors the
+ * fifth in the queue waits half as long, and a number computed without this
+ * lies by exactly that factor.
  *
  * More running jobs than slots (the owner lowered the number mid-class): the
  * first of them to finish free nothing for the queue — only the last `slots`
  * of them do.
+ *
+ * With `gpuSlots`, the card shares are simulated as the queue takes them
+ * (store.ts · selectNext): a job that needs a card takes a slot AND a share,
+ * and while no share is free it is passed over, and the jobs behind it take
+ * the slot. So a GPU job may start after jobs that come after it in the
+ * order, and the caller numbers places by start (forecast.ts). `null` — a job
+ * that needs a card where there are no shares at all: it does not start, and
+ * nobody can say when it will.
  */
-export function queueEtas(input: EtaInput): Eta[] {
+export function queueEtas(input: EtaInput): Array<Eta | null> {
   const slots = Math.max(1, Math.floor(input.slots))
-  const left = input.running
-    .map((job) => Math.max(job.expectedMs - job.elapsedMs, MIN_REMAINING_MS))
-    .sort((a, b) => a - b)
-  const free = new MinHeap(left.slice(Math.max(0, left.length - slots)))
-  while (free.size < slots) free.push(0)
-  return input.waiting.map((job) => {
-    const startMs = free.pop()
-    const etaMs = startMs + Math.max(0, job.expectedMs)
-    free.push(etaMs)
-    return { startMs, etaMs }
-  })
+  const cards = input.gpuSlots === undefined ? null : Math.max(0, Math.floor(input.gpuSlots))
+  const needsCard = (job: { gpu?: boolean }): boolean => cards !== null && job.gpu === true
+  // When the jobs holding a slot end; those holding a card share apart, since they free both.
+  const slotEnds = new MinHeap()
+  const cardEnds = new MinHeap()
+  let freeSlots = slots - input.running.length
+  let freeCards = cards ?? 0
+  for (const job of input.running) {
+    const left = Math.max(job.expectedMs - job.elapsedMs, MIN_REMAINING_MS)
+    if (needsCard(job)) {
+      cardEnds.push(left)
+      freeCards--
+    } else slotEnds.push(left)
+  }
+  const etas: Array<Eta | null> = input.waiting.map(() => null)
+  const pending = input.waiting.map((_, index) => index)
+  let now = 0
+  for (;;) {
+    // Everything that can start now starts, in queue order, the way one pass of the pump takes it.
+    for (let at = 0; at < pending.length && freeSlots > 0; ) {
+      const index = pending[at]
+      const job = input.waiting[index]
+      const card = needsCard(job)
+      if (card && freeCards <= 0) {
+        at++
+        continue
+      }
+      const etaMs = now + Math.max(0, job.expectedMs)
+      etas[index] = { startMs: now, etaMs }
+      freeSlots--
+      if (card) {
+        freeCards--
+        cardEnds.push(etaMs)
+      } else slotEnds.push(etaMs)
+      pending.splice(at, 1)
+    }
+    if (pending.length === 0) break
+    // Then time moves to the next end; every job that ends at that moment frees its slot first.
+    const next = Math.min(slotEnds.size > 0 ? slotEnds.peek() : Infinity, cardEnds.size > 0 ? cardEnds.peek() : Infinity)
+    if (next === Infinity) break
+    now = next
+    while (slotEnds.size > 0 && slotEnds.peek() === now) {
+      slotEnds.pop()
+      freeSlots++
+    }
+    while (cardEnds.size > 0 && cardEnds.peek() === now) {
+      cardEnds.pop()
+      freeSlots++
+      freeCards++
+    }
+  }
+  return etas
 }
 
 /**
@@ -168,6 +229,11 @@ class MinHeap {
 
   get size(): number {
     return this.items.length
+  }
+
+  /** The smallest, left where it is; only for a heap that is not empty. */
+  peek(): number {
+    return this.items[0]
   }
 
   push(value: number): void {
@@ -299,6 +365,8 @@ export type InputRefusal =
   | { field: 'environment'; why: 'chars' }
   | { field: string; why: 'range'; min: number; max: number }
   | { field: string; why: 'value' }
+  /** A video card for an environment that runs on the CPU (`gpuEnvironmentRefusal`). */
+  | { field: 'limits.gpu'; why: 'cpuEnvironment'; environment: string }
 
 const CHOICES = {
   direction: ['lower', 'higher'],
@@ -380,6 +448,11 @@ export function parseCompetitionInput(
       }
       out[name] = value
     }
+    // A switch, like late intake below: true or false, never "anything truthy".
+    if (Object.prototype.hasOwnProperty.call(limits, 'gpu')) {
+      if (typeof limits.gpu !== 'boolean') return { refusal: { field: 'limits.gpu', why: 'value' } }
+      out.gpu = limits.gpu
+    }
     input.limits = out
   }
 
@@ -453,6 +526,35 @@ export function parseCompetitionInput(
 }
 
 /**
+ * A video card is for an environment that needs one; `null` — the edit is fine.
+ *
+ * Judged on what the competition is AFTER the edit — the environment and the
+ * switch as sent, or as they are where the form did not send them — so both
+ * ways in are closed: turning the card on for a CPU environment, and moving a
+ * competition that has a card to a CPU environment. A card under a CPU
+ * environment is a card held for nothing: no package there can use it, and
+ * the run takes it from a submission that could. Only an edit that touches
+ * one of the two is judged: a title saved under an environment that has since
+ * lost its GPU directive is not the place to stop someone.
+ *
+ * `needsGpu` comes in from outside (competitions/gpu.ts · environmentNeedsGpu):
+ * whether an environment needs a GPU is read from its package list on disk,
+ * or from the cluster's catalog, and this module reads neither.
+ */
+export function gpuEnvironmentRefusal(
+  input: CompetitionInput,
+  current: { environment: string; limits: { gpu?: boolean } } | null,
+  needsGpu: (environment: string) => boolean,
+): InputRefusal | null {
+  if (input.environment === undefined && input.limits?.gpu === undefined) return null
+  // A new competition is born on `base` (store.ts · createCompetition).
+  const environment = input.environment ?? current?.environment ?? 'base'
+  const gpu = input.limits?.gpu ?? current?.limits.gpu ?? false
+  if (!gpu || needsGpu(environment)) return null
+  return { field: 'limits.gpu', why: 'cpuEnvironment', environment }
+}
+
+/**
  * An integer from the request body; `null` means it is not a number
  * (including `"5"` with garbage).
  */
@@ -485,6 +587,12 @@ export interface QueueOrderRow {
  * late work; whoever already has something running lets the others go ahead;
  * one's own k-th submission gets in line behind everyone else's (k−1)-th; on
  * a tie, whoever sent it first.
+ *
+ * The one part of `selectNext` that is not an order is not here: work that
+ * needs a card share is passed over while none is free. Whether it is
+ * depends on the moment, so that part lives in the simulation (queueEtas),
+ * and the places on both screens are numbered by the simulated starts
+ * (forecast.ts) — with no GPU work waiting, exactly this order.
  */
 export function fairOrder<T extends QueueOrderRow>(
   waiting: readonly T[],

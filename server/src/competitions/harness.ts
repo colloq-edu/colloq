@@ -1328,7 +1328,221 @@ else:
     sys.stdout.write(base64.b64encode(read(name)).decode("ascii"))
 `
 
-/** What lies in the harness directory: the file name is what the container calls it. */
+// A submission's share of a shared video card, held from inside its own
+// Python: the soft half of the share (competitions/gpu.ts explains the two
+// halves; the hard one is docker-runner.ts · VramWatch). It lies in a
+// directory of its own, `site/`, because that directory goes on PYTHONPATH:
+// the whole harness there would make run_notebook, colloq_metric and the rest
+// importable by name from the participant's notebook, and shadow whatever of
+// theirs is called the same. The torch cap is the draft tried on the lab VM on
+// 13 Oct 2026 (2 × RTX 4090): with a 4096 MB share the 17th allocation of 256
+// MiB raised torch.OutOfMemoryError, and without the variable nothing changed.
+// The same day's review found two holes in it: the finder left at the first
+// question about torch, so a library that only asked (polars, at its import)
+// took the cap away; and CatBoost's GPU pool, sized as a part of the card and
+// never seen by torch, would take nearly all of it. Both are checked against
+// stand-in packages under a real python (tests/competition-gpu-runs.test.mts).
+const SITECUSTOMIZE = `"""Colloq: a submission's share of a shared video card, held inside its own Python.
+
+Several submissions may time-share one card, and each is promised a share of
+its video memory. The runner then passes COLLOQ_GPU_MEMORY_MB (the share less
+what the CUDA context takes outside any allocator) and COLLOQ_GPU_CARD_MB (the
+card the share was cut from), and puts this directory on PYTHONPATH: Python
+imports sitecustomize in every process it starts, the notebook's kernel
+included, before a line of the participant's code runs.
+
+Nothing is imported here. Importing torch costs a second and a half and half a
+gigabyte of memory, and most processes of the container never use it (the
+harness itself does not). A finder waits in front of the import system
+instead, for the libraries of the GPU images that would take more than the
+share on their own:
+
+torch: when the notebook imports it, a callback is queued for the moment CUDA
+initialises, and the callback caps torch's caching allocator at
+COLLOQ_GPU_MEMORY_MB on device 0 (inside the container the card given to it is
+the only one). An allocation past the cap then raises torch.OutOfMemoryError
+in the participant's own cell, with the numbers in its message, instead of
+taking the memory of the other runs on the card.
+
+catboost: a GPU fit takes gpu_ram_part of the card's free memory at once, 95
+per cent by default, as one pool torch never sees; on a card shared by two
+runs that is nearly the whole card, and the watchdog stops the run for it
+however small its data. Unless the participant names their own, gpu_ram_part
+becomes COLLOQ_GPU_MEMORY_MB over COLLOQ_GPU_CARD_MB: the free memory is never
+more than the card, so the pool never outgrows the share, whatever the
+neighbours hold (with them holding much, it is smaller, and a participant who
+knows better names their own). It is set
+where catboost 1.2 hands its parameters on to the GPU, the training
+parameters of fit, grid and randomized search and feature selection
+(CatBoost._prepare_train_params) and those of cv (catboost.core._cv), each a
+copy made for that call; the model's own parameters stay as written.
+
+xgboost needs nothing: on device="cuda" it allocates as it goes, through a
+caching allocator that grows on demand, never a part of the card up front.
+What outgrows the share there meets the watchdog, like anything else outside
+torch's cap.
+
+The finder stays in front for the whole process, and a library is hooked when
+its module is executed, not when someone asks about it. Libraries ask whether
+torch is installed long before anyone imports it (polars does, at its own
+import, through importlib.util.find_spec), and the first version of this
+finder, which left at the first question, was gone by the real import: a
+notebook that imported polars first ran without a cap (13 Oct 2026). So every
+answer it gives carries the hook, and the hook runs once per process, on the
+first execution of the library's module, whichever answer that came from.
+
+This is the soft half, and it lives in the participant's process: code that
+lifts the cap, or a library that allocates past it, meets the hard half, the
+runner's watchdog, which reads the card from outside and stops a run that
+holds more than its share. Without the variables (a whole card, a card of
+unknown size, a run on the CPU) nothing here does anything, and whatever goes
+wrong here is said on stderr and never breaks the participant's import.
+"""
+import _thread
+import functools
+import importlib.util
+import os
+import sys
+
+
+def _mb(name):
+    try:
+        return int(os.environ.get(name) or 0)
+    except ValueError:
+        return 0
+
+
+def _not_applied(what, error):
+    print(f"colloq: {what} not applied: {error}", file=sys.stderr)
+
+
+def _cap_torch(torch):
+    mb = _mb("COLLOQ_GPU_MEMORY_MB")
+    if mb <= 0:
+        return
+
+    def apply():
+        try:
+            total = torch.cuda.get_device_properties(0).total_memory
+            torch.cuda.set_per_process_memory_fraction(min(1.0, mb * 2**20 / total), 0)
+        except Exception as e:  # never break the participant's CUDA
+            _not_applied("GPU memory cap", e)
+
+    try:
+        # Queued, not called: the fraction needs an initialised device, and
+        # initialising CUDA here would take the card's memory on import.
+        torch.cuda._lazy_call(apply)
+    except Exception as e:  # never break the participant's import
+        _not_applied("GPU memory cap", e)
+
+
+def _catboost_part():
+    card = _mb("COLLOQ_GPU_CARD_MB")
+    part = _mb("COLLOQ_GPU_MEMORY_MB") / card if card > 0 else 0
+    return part if 0 < part <= 1 else None
+
+
+def _default_catboost(catboost):
+    part = _catboost_part()
+    if part is None:
+        return
+
+    def default(params):
+        # A GPU fit, and only when the participant named no part of their own.
+        if str(params.get("task_type") or "").upper() == "GPU" and params.get("gpu_ram_part") is None:
+            params["gpu_ram_part"] = part
+
+    try:
+        # The two doors of catboost 1.2; a version without them loads as it is.
+        core = catboost.core
+        prepare = core.CatBoost._prepare_train_params
+        cv = core._cv
+    except Exception as e:
+        _not_applied("CatBoost GPU memory default", e)
+        return
+
+    @functools.wraps(prepare)
+    def _prepare_train_params(self, *args, **kwargs):
+        prepared = prepare(self, *args, **kwargs)
+        try:
+            default(prepared["params"])
+        except Exception as e:  # never break the participant's fit
+            _not_applied("CatBoost GPU memory default", e)
+        return prepared
+
+    @functools.wraps(cv)
+    def _cv(params, *args, **kwargs):
+        try:
+            default(params)
+        except Exception as e:
+            _not_applied("CatBoost GPU memory default", e)
+        return cv(params, *args, **kwargs)
+
+    core.CatBoost._prepare_train_params = _prepare_train_params
+    core._cv = _cv
+
+
+class _GpuFinder:
+    """Finds nothing itself: the finders behind it find a library, and it hooks the library's execution."""
+
+    def __init__(self, hooks):
+        self._hooks = hooks
+        self._done = set()
+        # Threads inside the lookup below, which asks the import system again
+        # and so this finder again: there it must step aside, not leave.
+        self._asking = set()
+
+    def find_spec(self, name, path=None, target=None):
+        hook = self._hooks.get(name)
+        if hook is None or name in self._done or name in sys.modules:
+            return None
+        asker = _thread.get_ident()
+        if asker in self._asking:
+            return None
+        self._asking.add(asker)
+        try:
+            spec = importlib.util.find_spec(name)
+        except Exception:
+            return None  # the import system asks the others itself and says what they say
+        finally:
+            self._asking.discard(asker)
+        loader = getattr(spec, "loader", None)
+        run = getattr(loader, "exec_module", None)
+        if run is None:
+            return spec
+
+        def exec_module(module):
+            run(module)
+            # Once per process, and on the library itself (a loader may serve several modules).
+            if getattr(module, "__name__", None) == name and name not in self._done:
+                self._done.add(name)
+                try:
+                    hook(module)
+                except Exception as e:  # never break the participant's import
+                    _not_applied(f"{name} hook", e)
+
+        try:
+            # The path finders make a new loader for every answer, so this
+            # hooks the answer given now, whoever asked, and nothing else.
+            loader.exec_module = exec_module
+        except Exception as e:
+            _not_applied(f"{name} hook", e)
+        return spec
+
+
+_HOOKS = {}
+if _mb("COLLOQ_GPU_MEMORY_MB") > 0:
+    _HOOKS["torch"] = _cap_torch
+    if _catboost_part() is not None:
+        _HOOKS["catboost"] = _default_catboost
+if _HOOKS:
+    sys.meta_path.insert(0, _GpuFinder(_HOOKS))
+`
+
+/**
+ * What lies in the harness directory: the file name is what the container
+ * calls it, under /harness — a subdirectory included (`site/`).
+ */
 const FILES: ReadonlyArray<readonly [string, string]> = [
   ['run_notebook.py', RUN_NOTEBOOK],
   ['kernel_streams.py', KERNEL_STREAMS],
@@ -1349,7 +1563,14 @@ os.environ['COMP_PUBLIC_PERCENT'] = str(config['publicPercent'])
 os.environ['COMP_SPLIT_SEED'] = config['splitSeed']
 runpy.run_path('/harness/score_metric.py', run_name='__main__')
 `],
+  ['site/sitecustomize.py', SITECUSTOMIZE],
 ]
+
+/**
+ * The directory the runner puts on PYTHONPATH for a run with a share of a
+ * card, as the container sees it (the harness is mounted at /harness).
+ */
+export const HARNESS_SITE = '/harness/site'
 
 /**
  * The source of the split module — for the suite that checks it against
@@ -1388,6 +1609,8 @@ export function harnessDir(): string {
     // Already there, so we do not rewrite it: in a directory with a hash in its
     // name the content is either the same or not there at all.
     if (competitionsFs.existsSync(file)) continue
+    // A file in a subdirectory (`site/`) needs the subdirectory first.
+    competitionsFs.mkdirSync(path.dirname(file), { recursive: true })
     competitionsFs.writeFileSync(file, Buffer.from(body, 'utf8'), { mode: 0o644 })
   }
   materialized = dir
@@ -1401,9 +1624,13 @@ export function brokerHarnessDir(): string {
   competitionsFs.chmodSync(dir,0o755)
   for(const [name,body] of FILES) {
     const file=path.join(dir,name)
+    // A file in a subdirectory (`site/`) gets the subdirectory, readable by the Pod's user like the root.
+    const folder=path.dirname(file)
+    if(folder!==dir){competitionsFs.mkdirSync(folder,{recursive:true});competitionsFs.chmodSync(folder,0o755)}
     const hash=createHash('sha256').update(body).digest('hex')
     if(competitionsFs.existsSync(file) && createHash('sha256').update(competitionsFs.readFileSync(file) as Buffer).digest('hex')===hash)continue
-    const temp=path.join(dir,`.${name}-${HARNESS_REVISION}.tmp`)
+    // The temporary file next to its target: a rename never crosses directories.
+    const temp=path.join(folder,`.${path.basename(file)}-${HARNESS_REVISION}.tmp`)
     competitionsFs.writeFileSync(temp,Buffer.from(body,'utf8'),{mode:0o644})
     competitionsFs.renameSync(temp,file)
   }

@@ -50,6 +50,21 @@
  *    honest, unlike in a room, where it sticks forever and postmortem.ts has
  *    to count kills with a cgroup counter: the container lives once.
  *
+ * 8. A video card comes back only for a notebook the queue gave one
+ *    (RunRequest.gpu, competitions/gpu.ts), with what a room gets for it:
+ *    `--gpus device=`, a /dev/shm big enough for DataLoader workers (docker's
+ *    64 MB kills them with a bus error; it counts toward `--memory`), and the
+ *    `colloq.gpu` label, by which a class is kept off the card while the run
+ *    holds it (kernel/pool.ts · submissionGpuCards). Every hardening flag
+ *    stays: the card was tried under `--read-only`, `--cap-drop=ALL`, uid
+ *    1000 and `--network none` on the lab VM. A card shared by several runs
+ *    has each held to its share twice: torch's allocator and CatBoost's GPU
+ *    pool are capped from inside (harness.ts · SITECUSTOMIZE), and the
+ *    container is watched from outside (VramWatch), because the inside is
+ *    the participant's own. The watch is not theirs either: it samples as
+ *    root, whom their uid cannot signal, and it fails closed — a run on a
+ *    shared card that cannot be read is stopped, not left unwatched.
+ *
  * And one rule, bought at a higher price than any other: we mount ONLY
  * directories, and only at paths that did not exist before this submission
  * (see the header of storage.ts).
@@ -59,10 +74,12 @@ import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { Transform, type TransformCallback, type Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
+import { tr } from '@shared/i18n'
 import { config } from '../config.js'
 import { competitionsFs, hostPathOf, EXECUTED_BYTES, EXECUTED_FILE } from './storage.js'
-import { harnessDir } from './harness.js'
+import { HARNESS_SITE, harnessDir } from './harness.js'
 import { competitionMemory } from './capacity.js'
+import { gpuAllocatorMb, gpuKillAboveMb } from './gpu.js'
 import {
   METRIC_WALL_SECONDS,
   registerCompetitionRunner,
@@ -203,22 +220,33 @@ async function retried(
 }
 
 /**
- * Containers whose removal failed: name → the memory they may still hold.
+ * What a container still holds while its removal is pending: memory, and the
+ * runner card it was given (`null` — none).
+ */
+interface Held {
+  memoryMb: number
+  gpu: string | null
+}
+
+/**
+ * Containers whose removal failed: name → what they may still hold.
  *
  * A failed `docker rm` after a finished run is the daemon's trouble, not the
  * submission's: the verdict stands, the removal is retried later, and until
  * it succeeds only THAT container's memory stays out of the queue's reach.
- * It used to close the whole queue.
+ * It used to close the whole queue. Its card too: a notebook that may still
+ * be on the card holds its share, and the next GPU run goes to it only after
+ * the container is gone (capacity · heldGpus).
  */
-const pendingCleanup = new Map<string, number>()
+const pendingCleanup = new Map<string, Held>()
 let cleanupTimer: NodeJS.Timeout | null = null
 const CLEANUP_RETRY_MS = 30_000
 let cleanupFailures = 0
 let unverifiedLegacyContainers = 0
 export function competitionDockerDiagnostics() { return { cleanupFailures, pendingCleanup: pendingCleanup.size, unverifiedLegacyContainers } }
 
-/** Remove a container; `false` means it is left for the retry, holding `memoryMb`. Never throws. */
-async function removeContainer(container: string, memoryMb = 0, patient = true): Promise<boolean> {
+/** Remove a container; `false` means it is left for the retry, holding what `held` says. Never throws. */
+async function removeContainer(container: string, held: Partial<Held> = {}, patient = true): Promise<boolean> {
   const removal = () => docker(['rm', '-f', container], 60_000)
   const gone = (result: { code: number; out: string }) => result.code === 0 || missing(result.out)
   const result = patient ? await retried(removal, gone) : await removal()
@@ -230,7 +258,11 @@ async function removeContainer(container: string, memoryMb = 0, patient = true):
     cleanupFailures = Math.min(Number.MAX_SAFE_INTEGER, cleanupFailures + 1)
     console.warn('[competitions] container removal failed; retrying later', container)
   }
-  pendingCleanup.set(container, Math.max(pendingCleanup.get(container) ?? 0, memoryMb))
+  const before = pendingCleanup.get(container)
+  pendingCleanup.set(container, {
+    memoryMb: Math.max(before?.memoryMb ?? 0, held.memoryMb ?? 0),
+    gpu: held.gpu || before?.gpu || null,
+  })
   scheduleCleanup()
   return false
 }
@@ -241,7 +273,7 @@ let retrying: Promise<void> | null = null
 /** One more try for every container still awaiting removal; the next pump or timer is the backoff. */
 function retryPendingCleanup(): Promise<void> {
   retrying ??= (async () => {
-    for (const [container, memoryMb] of [...pendingCleanup]) await removeContainer(container, memoryMb, false)
+    for (const [container, held] of [...pendingCleanup]) await removeContainer(container, held, false)
   })().finally(() => { retrying = null })
   return retrying
 }
@@ -339,12 +371,47 @@ function mount(inside: string, at: string, readOnly = false): string[] {
 }
 
 /**
+ * The video memory a run is held to on its card, MB, or `null` — nothing to
+ * hold: no card, a whole card to itself (`perDevice` 1, nobody to disturb),
+ * or a card that did not say its size (a limit nobody can state is not one
+ * to enforce). Both halves of the share key off this one answer: the cap
+ * inside (runArgs) and the watchdog outside (VramWatch).
+ */
+export function heldShareMb(gpu: RunRequest['gpu']): number | null {
+  if (!gpu?.device || gpu.sliceMb === null || !(gpu.perDevice > 1)) return null
+  return gpu.sliceMb
+}
+
+/**
+ * /dev/shm for a run with a card, MB: half its memory, at most a gigabyte —
+ * what a room gets by default (KERNEL_SHM). It is memory-backed and counted
+ * in `--memory`, so a bigger one is only a bigger way to die of memory.
+ */
+function shmMb(memoryMb: number): number {
+  return Math.min(1024, Math.floor(memoryMb / 2))
+}
+
+/**
+ * PYTHONPATH from its entries, in order; nothing at all without any.
+ *
+ * The one variable both the runner and the image could want: the kernel
+ * images set none (kernel/Dockerfile), so the entries here are the whole of
+ * it, and a second one the runner adds later goes into this list rather than
+ * into a second `-e` that would replace the first.
+ */
+function pythonPath(entries: readonly string[]): string[] {
+  return entries.length > 0 ? ['-e', `PYTHONPATH=${entries.join(':')}`] : []
+}
+
+/**
  * `docker run` arguments for the NOTEBOOK container.
  *
  * A separate pure function, because the tests have no real docker, and
  * assembling this line correctly matters more than calling it: a lost
  * `--network none` here is a submission with internet access, and it can only
  * be noticed when someone makes use of it.
+ *
+ * Without `gpu` the line is exactly what it was before cards existed.
  */
 export function runArgs(opts: {
   attemptId?: string
@@ -358,12 +425,16 @@ export function runArgs(opts: {
   packagesMb?: number
   limits: StepLimits
   target: string
+  /** The card the queue gave this run (RunRequest.gpu); an empty device is none of ours. */
+  gpu?: RunRequest['gpu']
 }): string[] {
   const { container, limits } = opts
   const memory = `${limits.memoryMb}m`
   const packagesMb = opts.dependenciesDir && opts.packagesMb ? Math.max(1, Math.ceil(opts.packagesMb)) : 0
   // No file of the set is bigger than its room, and every file lives in a capped tmpfs.
   const fsize = Math.max(limits.fsizeBytes, packagesMb * 1024 ** 2)
+  const device = opts.gpu?.device || null
+  const share = heldShareMb(opts.gpu)
   return [
     'run',
     '-d',
@@ -427,6 +498,20 @@ export function runArgs(opts: {
     `--tmpfs=/result:rw,nosuid,nodev,size=${Math.max(1, Math.ceil(limits.targetBytes * 2 / 1024 ** 2))}m,mode=1777`,
     '-e', `COMP_ATTEMPT_ID=${opts.attemptId ?? opts.container}`,
     '-e', `COMP_MAX_OUTPUT_KILL_BYTES=${limits.outputKillBytes}`,
+    /*
+     * A share of a card: torch's allocator is capped a little below it (the
+     * CUDA context lives outside the allocator, competitions/gpu.ts ·
+     * gpuAllocatorMb) by the harness's sitecustomize, which Python finds on
+     * PYTHONPATH in every process of the container, the kernel included.
+     * CatBoost's GPU pool is a fraction of the card rather than a size, so
+     * the same sitecustomize also needs the card the share was cut from: the
+     * share times the runs on the card, within a few megabytes of what
+     * nvidia-smi said (gpuSliceMb rounds down).
+     */
+    ...(share !== null
+      ? ['-e', `COLLOQ_GPU_MEMORY_MB=${gpuAllocatorMb(share)}`, '-e', `COLLOQ_GPU_CARD_MB=${share * (opts.gpu?.perDevice ?? 1)}`]
+      : []),
+    ...pythonPath(share !== null ? [HARNESS_SITE] : []),
     ...(opts.dependenciesDir ? [...mount(opts.dependenciesDir, '/deps', true), '-e', 'COMP_DEPENDENCIES=/deps'] : []),
     /*
      * The set's environment: `exec`, because its libraries are mapped as code;
@@ -443,10 +528,14 @@ export function runArgs(opts: {
     // in pool.ts).
     `--memory-swap=${memory}`,
     `--cpus=${limits.cpus}`,
+    // The card by its KERNEL_GPUS name; inside the container it is device 0.
+    ...(device ? ['--gpus', `device=${device}`, `--shm-size=${shmMb(limits.memoryMb)}m`] : []),
     `--ulimit=fsize=${fsize}:${fsize}`,
     '--restart=no',
     '--label',
     RUN_LABEL,
+    // The label rooms carry too: by it a new class is kept off the card while this run holds it.
+    ...(device ? ['--label', `colloq.gpu=${device}`] : []),
     '-w',
     '/out',
     '--entrypoint',
@@ -465,6 +554,10 @@ export function runArgs(opts: {
  * open data and the executed notebook do not get here — the teacher's code
  * runs next to the answers, and anything put there may leak into the text of
  * its error.
+ *
+ * Never a card, whatever the notebook had, and there is no way to ask for
+ * one here: a container that holds the hidden answers shares a card with
+ * nobody, and a metric over one CSV has no use for it.
  */
 export function scoreArgs(opts: {
   attemptId?: string
@@ -541,9 +634,183 @@ export function scoreArgs(opts: {
 
 /** What the watchdog over a running container returned. */
 interface Watched {
-  killedBy: 'wall' | 'output' | 'disk' | null
+  killedBy: 'wall' | 'output' | 'disk' | 'gpu' | 'gpu-unread' | null
   progress: RunProgress | null
   exit?: number
+}
+
+/* ------------------------------------------------- a share of a card, outside */
+
+/**
+ * How long one sample of a card may take. nvidia-smi answers in a tenth of a
+ * second; one that has not answered in five is stuck — in the driver, or
+ * starved of the processor by the container it runs in (VramWatch).
+ */
+const VRAM_SAMPLE_MS = 5_000
+
+/**
+ * How long past VRAM_SAMPLE_MS a sample is waited for before it counts as
+ * failed anyway. The shell kills the docker client at VRAM_SAMPLE_MS and
+ * answers when it exits; this is for the day that exit never comes, so that
+ * no client, however stuck, holds the next sample off for the rest of a run.
+ */
+const VRAM_LATE_MS = 1_000
+
+/** How many answered samples a run keeps: the peak is kept apart, and the rule needs two. */
+const VRAM_KEPT = 4
+
+/**
+ * How many samples in a row may fail before a run on a shared card is
+ * stopped as one nobody can watch (VramWatch · unwatchable).
+ *
+ * One failed sample decides nothing: a daemon under load fails an exec now
+ * and then (every other call here is retried for that reason, `retried`),
+ * and two in a row happen. Four in a row is twelve seconds on the status
+ * cycle (STATUS_EVERY_MS), about twenty-five when each hangs to its deadline
+ * (a hung one spans two cycles), in which nothing at all is known of a run
+ * that may hold the whole card: twice what the over-share rule needs to
+ * decide (two samples, three to six seconds) and a hiccup on top. Fewer would
+ * stop honest runs for a slow daemon; more would hand the card, a stretch at
+ * a time, to a run that keeps itself unreadable, and every run sharing the
+ * card would pay for it in out-of-memory errors of their own.
+ */
+export const VRAM_UNREAD_LIMIT = 4
+
+/**
+ * The video memory a run's container holds on its card, MiB, from
+ * `nvidia-smi --query-compute-apps=used_memory --format=csv,noheader,nounits`
+ * run INSIDE it: there it lists that container's processes only (checked on
+ * the lab VM: two containers on one card each see themselves), so the sum is
+ * this run's and nobody else's. No line at all is a valid answer — nothing
+ * on the card yet, 0. `null` — not an answer: a field that is not a whole
+ * number ("[N/A]"), or anything else nvidia-smi might print.
+ */
+export function parseGpuMemory(out: string): number | null {
+  let total = 0
+  for (const raw of out.split('\n')) {
+    const line = raw.trim()
+    if (!line || /^no running processes found$/i.test(line)) continue
+    if (!/^\d+$/.test(line)) return null
+    total += Number(line)
+  }
+  return Number.isSafeInteger(total) ? total : null
+}
+
+/**
+ * The watchdog's rule: whether a run is over its share, given its samples
+ * oldest first (MiB; `null` — a sample that failed or did not parse).
+ *
+ * Over means the last two samples that answered are both above the share
+ * plus its tolerance (competitions/gpu.ts · gpuKillAboveMb). Two, because one
+ * reading may catch a moment — an allocator that grows and gives back within
+ * a second — and a kill is final; two, three seconds apart, are a run that
+ * stays where it should not be. A sample that did not answer decides
+ * nothing either way here: it neither counts toward this kill (a failure is
+ * not a reading) nor resets one (a run that keeps the daemon from answering
+ * must not buy itself the card that way). Failures in a row have a rule of
+ * their own, VRAM_UNREAD_LIMIT.
+ */
+export function gpuOverShare(samples: ReadonlyArray<number | null>, sliceMb: number): boolean {
+  const limit = gpuKillAboveMb(sliceMb)
+  const answered = samples.filter((sample): sample is number => sample !== null)
+  return answered.length >= 2 && answered[answered.length - 1] > limit && answered[answered.length - 2] > limit
+}
+
+/**
+ * The video memory of one run with a share of a card, watched from outside —
+ * the hard half of the share (the soft one is inside, harness.ts ·
+ * SITECUSTOMIZE, which the participant's code can lift and other libraries
+ * never see).
+ *
+ * The participant is the one watched, so the watch must not be theirs to
+ * stop. nvidia-smi has to run inside the container — only there does it list
+ * that container's processes and nobody else's — and a plain `docker exec`
+ * enters as the container's user: uid 1000, the participant's own, and a
+ * process may signal any other of its uid without a single capability. One
+ * SIGSTOP blinded the first version of this watch for the rest of a run, and
+ * a loop of SIGKILLs left every sample unanswered and the run unstopped
+ * (review, 13 Oct 2026). So the sample runs as root: uid 1000 cannot signal
+ * root without CAP_KILL, and the container has no capability at all
+ * (`--cap-drop=ALL`). Nor does root gain anything in there: no capability, a
+ * read-only root filesystem, and nvidia-smi found on the image's own PATH,
+ * every directory of which is on that read-only root.
+ *
+ * What root cannot buy is the processor: the sample runs in the container's
+ * cgroup, and a notebook that keeps hundreds of threads busy starves it past
+ * its deadline. So no failure is final and none is ignored. Samples are
+ * taken on the watchdog's status cycle, in the background (a slow one must
+ * not hold up the deadline or the progress beacon), never two at once; one
+ * that has not answered by its deadline is given up and the next cycle tries
+ * again; and the samples that fail in a row are counted, VRAM_UNREAD_LIMIT of
+ * them stopping the run (`unwatchable`, watch). A stuck nvidia-smi stays in
+ * the container until it ends, which bounds them at that many as well.
+ */
+class VramWatch {
+  /** The most seen at once, MiB; `null` until a sample answers. */
+  peakMb: number | null = null
+  /** Samples that did not answer since the last one that did. */
+  failures = 0
+  /**
+   * What the last failed sample said, for the teacher: the first line of its
+   * output, or its exit code; `null` — nothing before its deadline.
+   */
+  lastFailure: string | null = null
+  private readonly answered: number[] = []
+  private inFlight = false
+
+  constructor(
+    private readonly container: string,
+    readonly sliceMb: number,
+  ) {}
+
+  sample(): void {
+    if (this.inFlight) return
+    this.inFlight = true
+    const started = Date.now()
+    let late: NodeJS.Timeout | undefined
+    let open = true
+    const settle = (result: { code: number; out: string }): void => {
+      if (!open) return
+      open = false
+      clearTimeout(late)
+      this.inFlight = false
+      this.record(result, Date.now() - started >= VRAM_SAMPLE_MS)
+    }
+    late = setTimeout(() => settle({ code: -1, out: '' }), VRAM_SAMPLE_MS + VRAM_LATE_MS)
+    // As root: see the class's comment. The client itself is killed at VRAM_SAMPLE_MS (shell).
+    docker(
+      ['exec', '--user', '0:0', this.container, 'nvidia-smi', '--query-compute-apps=used_memory', '--format=csv,noheader,nounits'],
+      VRAM_SAMPLE_MS,
+      64 * 1024,
+    ).then(settle, () => settle({ code: -1, out: '' }))
+  }
+
+  private record(result: { code: number; out: string }, stalled: boolean): void {
+    const mb = result.code === 0 ? parseGpuMemory(result.out) : null
+    if (mb === null) {
+      this.failures++
+      this.lastFailure = stalled ? null : result.out.split('\n')[0].trim().slice(0, 200) || `exit ${result.code}`
+      return
+    }
+    this.failures = 0
+    this.peakMb = Math.max(this.peakMb ?? 0, mb)
+    this.answered.push(mb)
+    if (this.answered.length > VRAM_KEPT) this.answered.shift()
+  }
+
+  over(): boolean {
+    return gpuOverShare(this.answered, this.sliceMb)
+  }
+
+  /** Whether the card has gone unread long enough to stop the run (VRAM_UNREAD_LIMIT). */
+  unwatchable(): boolean {
+    return this.failures >= VRAM_UNREAD_LIMIT
+  }
+
+  /** What the teacher reads next to the kill: the last samples that answered. */
+  samples(): number[] {
+    return [...this.answered]
+  }
 }
 
 const INSPECT = '{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}}'
@@ -575,11 +842,15 @@ function num(value: unknown): number | null {
  * Disk growth is bounded by tmpfs itself, including nested directories. The
  * host watchdog handles time/output and reads only bounded progress JSON.
  *
- * `salvage` runs right before a kill for time or printing, while the tmpfs is
- * still there to read: the harness normally stops a late notebook itself and
- * exits in time, and this is for the day it could not — the copy of the
- * notebook it keeps on disk is all that is left to show. A cancellation takes
- * nothing: a withdrawn run publishes nothing.
+ * `salvage` runs right before a kill for time, printing or a card's memory,
+ * while the tmpfs is still there to read: the harness normally stops a late
+ * notebook itself and exits in time, and this is for the day it could not —
+ * the copy of the notebook it keeps on disk is all that is left to show. A
+ * cancellation takes nothing: a withdrawn run publishes nothing.
+ *
+ * `vram` watches a run's share of a card (VramWatch): sampled on the same
+ * status cycle, and a run over its share is killed from outside like one over
+ * its printing — and so is a run whose card cannot be read at all.
  */
 async function watch(
   container: string,
@@ -589,6 +860,7 @@ async function watch(
   onProgress?: (progress: RunProgress) => void,
   signal?: AbortSignal,
   salvage?: () => Promise<void>,
+  vram?: VramWatch | null,
 ): Promise<Watched> {
   const deadline = Date.now() + limits.wallSeconds * 1000
   let last: RunProgress | null = null
@@ -611,6 +883,8 @@ async function watch(
     // concluded from that — the deadline still bounds the wait.
     if (state === 'running' && (due || Date.now() - lookedInside >= STATUS_EVERY_MS)) {
       lookedInside = Date.now()
+      // Started first and not waited for: it lands while the beacon is read, or by the next look.
+      vram?.sample()
       const snapshot = await docker(['exec', container, 'python', '-I', '/harness/export_files.py', 'status', resultDir], 5000, 128 * 1024)
       let report: any = {}
       try { report = snapshot.code === 0 ? JSON.parse(snapshot.out) : {} } catch { /* incomplete report */ }
@@ -646,6 +920,33 @@ async function watch(
       }
       if (report.complete?.attemptId === attemptId && Number.isInteger(report.complete.exit))
         return { killedBy: null, progress: last, exit: report.complete.exit }
+    }
+    /*
+     * Over its share of the card: the other runs on the card are losing their
+     * memory to it right now, and the soft cap inside did not hold it (lifted
+     * by the participant's code, or memory torch never saw). Before the
+     * deadline's own kill: the run has been over its share for a status
+     * cycle at least, and that is what it is stopped for.
+     */
+    if (state === 'running' && vram?.over()) {
+      await salvage?.().catch(() => undefined)
+      await docker(['kill', '--signal=KILL', container], 30_000)
+      return { killedBy: 'gpu', progress: last }
+    }
+    /*
+     * A run on a shared card that nobody can read: fail closed. Whatever
+     * keeps its samples from answering — a notebook starving the container's
+     * processor, a driver that hangs, a daemon that cannot exec — the run may
+     * be holding the whole card meanwhile, and the runs beside it pay. After
+     * the evidence above, so a run seen over its share is told that instead.
+     * No salvage first: what keeps nvidia-smi from answering — most often a
+     * starved processor — would most likely keep the notebook's copy in for
+     * the ten seconds a salvage may take as well, and each of those seconds
+     * may be the card.
+     */
+    if (state === 'running' && vram?.unwatchable()) {
+      await docker(['kill', '--signal=KILL', container], 30_000)
+      return { killedBy: 'gpu-unread', progress: last }
     }
     if (due) {
       if (state === 'running') await salvage?.().catch(() => undefined)
@@ -783,15 +1084,31 @@ async function postmortem(container: string): Promise<{ exit: number | null; oom
  * Printing over the cap is a crash of their notebook (`cell_error`, "NOTEBOOK
  * ERROR"), with a sentence next to it about how much it printed. A write over
  * the cap into the host directory is "answer rejected" (`target_too_large`),
- * because that is exactly what happened.
+ * because that is exactly what happened. A card's memory over the run's share
+ * is out of memory, like the machine's: the same badge, and a sentence of its
+ * own about the share (runner.ts · gpuKillNote).
+ *
+ * A card that could not be read (`gpu-unread`) is named by what was seen
+ * before it went silent. A card that answered and then stopped answering in
+ * this run is a notebook that broke the rule of a shared card — most often by
+ * starving its own container's processor — and its cell fails with our
+ * sentence in place of a traceback (unreadCardNotes); it counts like any
+ * failed notebook, so stopping a run this way cannot be had for free again
+ * and again. A card that never answered at all is our machinery (no
+ * nvidia-smi in the container, a driver in trouble), never the participant's
+ * doing: a harness error, which blames nobody and costs them nothing.
  */
 export function verdictOfRun(input: {
   oom: boolean
-  killedBy: 'wall' | 'output' | 'disk' | null
+  killedBy: 'wall' | 'output' | 'disk' | 'gpu' | 'gpu-unread' | null
   status: string | null
   produced: boolean
+  /** Whether the run's card answered at least once (VramWatch); only `gpu-unread` asks. */
+  cardRead?: boolean
 }): RunVerdict {
   if (input.oom) return 'out-of-memory'
+  if (input.killedBy === 'gpu') return 'out-of-memory'
+  if (input.killedBy === 'gpu-unread') return input.cardRead ? 'cell_error' : 'harness_error'
   if (input.killedBy === 'wall') return 'timeout'
   if (input.killedBy === 'output') return 'cell_error'
   if (input.killedBy === 'disk') return 'target_too_large'
@@ -833,6 +1150,41 @@ function asVerdict(status: string): RunVerdict {
 }
 
 /**
+ * The words for a run stopped because its card could not be read (watch ·
+ * `gpu-unread`): `participant` goes where a traceback would (RunOutcome.detail,
+ * after runner.ts's own "failed at cell" head), `teacher` heads the log.
+ *
+ * Both are ours alone. Every number in them was counted outside the notebook
+ * (the samples, the share), and there is no cell number in the participant's
+ * sentence: the head that precedes it names the cell, clamped to the notebook
+ * that was sent (runner.ts · clampCells), and a cell read from the beacon
+ * here would not be. The reason in the teacher's line is what docker or
+ * nvidia-smi said, running as root where the notebook cannot reach. A card
+ * that never answered has no participant sentence at all — that run ends as
+ * our own failure (verdictOfRun) — and the teacher is told where to look.
+ */
+export function unreadCardNotes(input: {
+  device: string
+  sliceMb: number
+  failures: number
+  /** What the last failed sample said; `null` — nothing before its deadline. */
+  lastFailure: string | null
+  /** Whether the card answered at least once in this run. */
+  answered: boolean
+}): { participant: string | null; teacher: string } {
+  const reason = input.lastFailure ?? tr('competitions.answer.gpuSampleStalled', { seconds: VRAM_SAMPLE_MS / 1000 })
+  const teacher = tr('competitions.answer.gpuUnreadKilled', {
+    device: input.device,
+    count: input.failures,
+    reason,
+    slice: input.sliceMb,
+  })
+  return input.answered
+    ? { participant: tr('competitions.answer.gpuUnread', { count: input.failures }), teacher }
+    : { participant: null, teacher: `${teacher} ${tr('competitions.answer.gpuNeverRead')}` }
+}
+
+/**
  * Why the package set failed to install, when the harness could tell — read
  * off its run.json by both runners, so that both give the participant the
  * same words: a set that ran out of room is not a reason to "try again".
@@ -864,11 +1216,19 @@ class DockerCompetitionRunner implements CompetitionRunner {
       packagesMb: request.packagesMb,
       limits: request.limits,
       target: SUBMISSION_NAME,
+      gpu: request.gpu,
     })
     const started_ = await docker(args, 120_000)
-    const held = request.limits.memoryMb + CONTAINER_CUSHION_MB
+    const held = { memoryMb: request.limits.memoryMb + CONTAINER_CUSHION_MB, gpu: request.gpu?.device || null }
     if (started_.code !== 0) {
       await removeContainer(request.container, held)
+      /*
+       * The most common trouble of a card is not ours: the host lacks
+       * nvidia-container-toolkit, and docker answers "could not select device
+       * driver". The teacher reads the same hint a GPU room gives, and only
+       * when docker said exactly that.
+       */
+      const noDriver = held.gpu !== null && /device driver|nvidia/i.test(started_.out)
       return {
         status: 'harness_error',
         cell: -1,
@@ -876,15 +1236,17 @@ class DockerCompetitionRunner implements CompetitionRunner {
         wall: Date.now() - started,
         submission: null,
         detail: '',
-        log: started_.out,
+        log: noDriver ? `${started_.out}${tr('server.theHostMayBeMissingNvidiaContainer.f5c0df')}` : started_.out,
         diagnostics: { exit: null, oomKilled: false, backend: this.backend },
       }
     }
+    const share = heldShareMb(request.gpu)
+    const vram = share === null ? null : new VramWatch(request.container, share)
     let watched: Watched = { killedBy: null, progress: null }
     let dead = { exit: null as number | null, oom: false, tail: '' }
     try {
       const salvage = () => collectExports(request.container, '/result', request.resultDir, [[EXECUTED_FILE, EXECUTED_BYTES]], SALVAGE_MS)
-      watched = await watch(request.container, '/result', request.limits, attemptId, request.onProgress, request.signal, salvage)
+      watched = await watch(request.container, '/result', request.limits, attemptId, request.onProgress, request.signal, salvage, vram)
       dead = await postmortem(request.container)
       if (watched.exit !== undefined) {
         dead.exit = watched.exit
@@ -902,7 +1264,17 @@ class DockerCompetitionRunner implements CompetitionRunner {
     const answer = path.join(request.resultDir, SUBMISSION_NAME)
     const produced = competitionsFs.existsSync(answer)
     const status = dead.exit !== 0 && report?.status === 'ok' ? 'exit' : typeof report?.status === 'string' ? report.status : null
-    const verdict = verdictOfRun({ oom: dead.oom, killedBy: watched.killedBy, status, produced })
+    const cardRead = vram !== null && vram.peakMb !== null
+    const verdict = verdictOfRun({ oom: dead.oom, killedBy: watched.killedBy, status, produced, cardRead })
+    const unread = watched.killedBy === 'gpu-unread' && vram
+      ? unreadCardNotes({
+        device: request.gpu?.device ?? '',
+        sliceMb: vram.sliceMb,
+        failures: vram.failures,
+        lastFailure: vram.lastFailure,
+        answered: cardRead,
+      })
+      : null
     const beat = watched.progress
     return {
       status: verdict,
@@ -910,8 +1282,9 @@ class DockerCompetitionRunner implements CompetitionRunner {
       cells: num(report?.cells) ?? beat?.cells ?? 0,
       wall: Date.now() - started,
       submission: verdict === 'ok' && produced ? answer : null,
-      detail: typeof report?.detail === 'string' ? report.detail : '',
-      log: dead.tail,
+      // The sentence goes only where it is read: after a cell's head (runner.ts · notebookNote).
+      detail: verdict === 'cell_error' && unread?.participant ? unread.participant : typeof report?.detail === 'string' ? report.detail : '',
+      log: unread ? [unread.teacher, dead.tail].filter(Boolean).join('\n') : dead.tail,
       ...dependencyFailureOf(verdict, report, request.packagesMb ?? request.limits.tmpfsMb),
       diagnostics: {
         exit: dead.exit,
@@ -919,6 +1292,8 @@ class DockerCompetitionRunner implements CompetitionRunner {
         backend: this.backend,
         killedBy: watched.killedBy ?? undefined,
         peakBytes: num(report?.peakBytes),
+        // Measured from outside, for the teacher; only a watched run has them.
+        ...(vram ? { gpuPeakMb: vram.peakMb, gpuSamplesMb: vram.samples() } : {}),
       },
     }
   }
@@ -942,7 +1317,8 @@ class DockerCompetitionRunner implements CompetitionRunner {
       splitSeed: request.competition.splitSeed,
     })
     const launched = await docker(args, 120_000)
-    const held = request.limits.memoryMb + CONTAINER_CUSHION_MB
+    // Memory only: the metric's container never has a card.
+    const held = { memoryMb: request.limits.memoryMb + CONTAINER_CUSHION_MB }
     if (launched.code !== 0) {
       await removeContainer(request.container, held)
       return metricFailure(this.backend, launched.out, Date.now() - started, null, false)
@@ -1008,14 +1384,23 @@ class DockerCompetitionRunner implements CompetitionRunner {
    * `competition-run`/`competition-score` are created only by this module and
    * live only for the duration of one submission, so any found after startup
    * is already orphaned.
+   *
+   * Each is read with the card it holds (its `colloq.gpu` label): an orphan
+   * whose removal fails keeps that card out of the queue's reach until the
+   * retry gets it, exactly like a container of this life (capacity ·
+   * heldGpus). The queue rows of the previous life gave their cards back
+   * when they were put back into waiting (store.ts · reclaimQueue).
    */
   async sweep(legacyContainers: readonly string[] = []): Promise<number> {
     let dropped = 0
     for (const label of [RUN_LABEL, SCORE_LABEL]) {
-      const found = await docker(['ps', '-aq', '--filter', `label=${label}`, '--filter', `label=${INSTANCE_LABEL}`], 20_000)
+      const found = await docker(['ps', '-a', '--filter', `label=${label}`, '--filter', `label=${INSTANCE_LABEL}`, '--format', '{{.ID}}\t{{.Label "colloq.gpu"}}'], 20_000)
       if (found.code !== 0) continue
-      for (const id of found.out.split('\n').map((line) => line.trim()).filter(Boolean)) {
-        if (await removeContainer(id)) dropped++
+      for (const line of found.out.split('\n').map((entry) => entry.trim()).filter(Boolean)) {
+        const [id, card = ''] = line.split('\t').map((part) => part.trim())
+        // No label prints nothing or "<no value>"; a device id has no blanks in it.
+        const gpu = card && card !== '<no value>' && !/\s/.test(card) ? card : null
+        if (await removeContainer(id, { gpu })) dropped++
       }
     }
     // Old queue rows name specific pre-scope containers. Never scan/delete all
@@ -1054,7 +1439,8 @@ class DockerCompetitionRunner implements CompetitionRunner {
    * Mac, and on colima that is twelve gigabytes out of the machine's
    * thirty-six. Counting by the host would mean taking on a submission that
    * `docker run` will refuse in the middle of a class. Containers still
-   * awaiting removal keep their own memory out of reach, and nothing more.
+   * awaiting removal keep their own memory out of reach, and nothing more —
+   * and their cards, a share each (`heldGpus`).
    */
   async capacity(): Promise<Capacity> {
     // Not awaited: the pump asks this with admission held, and a daemon that
@@ -1062,13 +1448,18 @@ class DockerCompetitionRunner implements CompetitionRunner {
     // Until they go, the stuck ones hold their memory, as counted below.
     if (pendingCleanup.size > 0) void retryPendingCleanup()
     let heldMb = 0
-    for (const mb of pendingCleanup.values()) heldMb += mb
+    const heldGpus: Record<string, number> = {}
+    for (const held of pendingCleanup.values()) {
+      heldMb += held.memoryMb
+      if (held.gpu) heldGpus[held.gpu] = (heldGpus[held.gpu] ?? 0) + 1
+    }
     const memory = await competitionMemory()
     return {
       availableMb: memory.availableMb === null ? null : Math.max(0, memory.availableMb - heldMb),
       usableMb: memory.usableMb,
       memAvailableMb: memory.memAvailableMb,
       heldMb,
+      heldGpus,
     }
   }
 }

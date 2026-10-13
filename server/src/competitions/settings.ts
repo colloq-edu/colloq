@@ -11,7 +11,11 @@
  *
  * WHAT IS NOT HERE: what `auto` means on this machine. That is a question for
  * the machine (competitions/capacity.ts), and this module stays importable
- * from store.ts without dragging the kernel modules along.
+ * from store.ts without dragging the kernel modules along. Nor what the cards
+ * given to submissions mean on this machine (competitions/gpu.ts): only which
+ * ones the owner chose — so that kernel/pool.ts, which loads before anything
+ * competition-shaped, can leave them out of the rooms' pool without an import
+ * cycle.
  */
 /*
  * The box is created by `admin/settings`, and the import is not decoration:
@@ -20,8 +24,13 @@
  */
 import '../admin/settings.js'
 import { db } from '../db.js'
-import type { CompetitionLimits } from '@shared/competitions'
-import { SETTINGS_LIMITS, type CompetitionSettingsInput } from '@shared/competitions-settings'
+import {
+  SETTINGS_LIMITS,
+  type CompetitionDefaults,
+  type CompetitionGpuSettingsInput,
+  type CompetitionSettingsInput,
+  type SettingSource,
+} from '@shared/competitions-settings'
 
 const KEY = {
   slots: 'competitions.slots',
@@ -30,6 +39,9 @@ const KEY = {
   memoryMb: 'competitions.defaults.memoryMb',
   cpus: 'competitions.defaults.cpus',
   perDay: 'competitions.defaults.perDay',
+  /** A JSON array of `KERNEL_GPUS` entries; `[]` is "none", unlike a missing row. */
+  gpuDevices: 'competitions.gpu.devices',
+  gpuPerDevice: 'competitions.gpu.perDevice',
 } as const
 
 const DEFAULT_FIELDS = ['wallSeconds', 'memoryMb', 'cpus', 'perDay'] as const
@@ -99,11 +111,11 @@ export function uploadsPerMinute(): { value: number; source: 'saved' | 'default'
  * never touched.
  */
 export function competitionDefaults(): {
-  limits: CompetitionLimits
-  sources: Record<keyof CompetitionLimits, 'saved' | 'default'>
+  limits: CompetitionDefaults
+  sources: Record<keyof CompetitionDefaults, 'saved' | 'default'>
 } {
-  const limits = {} as CompetitionLimits
-  const sources = {} as Record<keyof CompetitionLimits, 'saved' | 'default'>
+  const limits = {} as CompetitionDefaults
+  const sources = {} as Record<keyof CompetitionDefaults, 'saved' | 'default'>
   for (const field of DEFAULT_FIELDS) {
     const saved = storedWhole(KEY[field], SETTINGS_LIMITS[field])
     limits[field] = saved ?? SETTINGS_LIMITS[field].default
@@ -112,14 +124,101 @@ export function competitionDefaults(): {
   return { limits, sources }
 }
 
+/* ------------------------------------------------------- runner cards */
+
+/*
+ * The cards given to competition submissions, and how many runs share one.
+ *
+ * Only the SETTING lives here: the ids the owner chose, as saved or as the
+ * environment names them. What they mean on this machine — which of them
+ * KERNEL_GPUS still lists, who holds them now, how much memory a run gets —
+ * is competitions/gpu.ts's question; this half is what kernel/pool.ts needs to
+ * keep those cards out of the rooms' pool, and the pool cannot import gpu.ts.
+ *
+ * The same order as every setting of the box: the owner's saved choice, then
+ * the environment (COMPETITION_GPUS, COMPETITION_GPU_PER_DEVICE — how an
+ * instance is configured through .env), then the default: no card, one run
+ * per card. No card by default, and that is the point: a machine with cards
+ * keeps giving every one of them to rooms, exactly as it did before
+ * submissions could have one, until the owner moves a card over.
+ */
+
+/** A device list as KERNEL_GPUS is written: comma-separated, trimmed, each id once. */
+export function parseDeviceList(raw: string | undefined): string[] {
+  return [...new Set((raw ?? '').split(',').map((device) => device.trim()).filter((device) => device.length > 0))]
+}
+
+/**
+ * Which cards are given to submissions: the saved list, then
+ * COMPETITION_GPUS, then none. Pure, so the order is checked without a
+ * database. A saved `[]` is an answer ("none"), not a missing row: an owner
+ * who took every card back from submissions must not have .env hand them out
+ * again.
+ */
+export function resolveRunnerGpus(input: { saved: string[] | null; env?: string }): { devices: string[]; source: SettingSource } {
+  if (input.saved !== null) return { devices: input.saved, source: 'saved' }
+  const fromEnv = parseDeviceList(input.env)
+  if (fromEnv.length > 0) return { devices: fromEnv, source: 'env' }
+  return { devices: [], source: 'default' }
+}
+
+/**
+ * Runs per card: the saved number, then COMPETITION_GPU_PER_DEVICE, then one.
+ * A typo in .env is passed over rather than obeyed; a number past the bounds is
+ * pulled into them, the way COMPETITION_SLOTS is.
+ */
+export function resolveGpuPerDevice(input: { saved: number | null; env?: string }): { value: number; source: SettingSource } {
+  const range = SETTINGS_LIMITS.gpuPerDevice
+  if (input.saved !== null) return { value: input.saved, source: 'saved' }
+  const raw = (input.env ?? '').trim()
+  if (/^\d+$/.test(raw)) return { value: Math.min(range.max, Math.max(range.min, Number(raw))), source: 'env' }
+  return { value: range.default, source: 'default' }
+}
+
+/** What the owner saved; `null` — nothing (or a row nobody can read), the environment decides. */
+export function savedRunnerGpus(): string[] | null {
+  const raw = stored(KEY.gpuDevices)
+  if (raw === null) return null
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed) || parsed.some((device) => typeof device !== 'string' || !device.trim())) return null
+    return [...new Set(parsed.map((device: string) => device.trim()))]
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The cards given to submissions as the setting names them — NOT yet checked
+ * against KERNEL_GPUS (competitions/gpu.ts · runnerGpuDevices does that).
+ * Read on every call, like every setting of the box: kernel/pool.ts asks it
+ * at each room start, and a stale answer would hand a submissions' card to a
+ * class.
+ */
+export function runnerGpuSetting(env: NodeJS.ProcessEnv = process.env): { devices: string[]; source: SettingSource } {
+  return resolveRunnerGpus({ saved: savedRunnerGpus(), env: env.COMPETITION_GPUS })
+}
+
+/** How many runs share one runner card, and where the number came from. */
+export function gpuPerDeviceSetting(env: NodeJS.ProcessEnv = process.env): { value: number; source: SettingSource } {
+  return resolveGpuPerDevice({
+    saved: storedWhole(KEY.gpuPerDevice, SETTINGS_LIMITS.gpuPerDevice),
+    env: env.COMPETITION_GPU_PER_DEVICE,
+  })
+}
+
 /* ------------------------------------------------------------ the form */
 
 /** A checked form: a value to store, or `null` to forget the stored one. */
-export type SettingsPatch = CompetitionSettingsInput
+export type SettingsPatch = CompetitionSettingsInput & CompetitionGpuSettingsInput
 
 export type SettingsRefusal =
   | { field: string; why: 'range'; min: number; max: number }
   | { field: string; why: 'value' }
+  /** A card that is not an entry of KERNEL_GPUS. */
+  | { field: 'gpuDevices'; why: 'device'; device: string }
+  /** Under Kubernetes the cluster sets the submissions' cards, not this form. */
+  | { field: 'gpuDevices' | 'gpuPerDevice'; why: 'managed' }
 
 /**
  * Read the owner's form against the bounds AND the machine.
@@ -128,11 +227,12 @@ export type SettingsRefusal =
  * a competition every submission of which dies of memory, and eight CPUs on a
  * docker that has four is a `docker run` refused in the middle of a class.
  * Pure: the machine comes in as numbers (capacity.ts · machineShape), so the
- * rules are checked without one.
+ * rules are checked without one. Its cards come in the same way: `gpus` is
+ * KERNEL_GPUS (none when absent), and `gpuManaged` says the cluster has them.
  */
 export function parseSettingsInput(
   body: unknown,
-  machine: { cpus: number; memoryMb: number; reserveMb: number },
+  machine: { cpus: number; memoryMb: number; reserveMb: number; gpus?: readonly string[]; gpuManaged?: boolean },
 ): { patch: SettingsPatch } | { refusal: SettingsRefusal } {
   const raw = (body ?? {}) as Record<string, unknown>
   const has = (key: string) => Object.prototype.hasOwnProperty.call(raw, key)
@@ -176,6 +276,47 @@ export function parseSettingsInput(
     }
     patch[field] = value
   }
+
+  /*
+   * The cards. Only a card the server already gives out: an entry of
+   * KERNEL_GPUS, spelled as there. Docker gets the id as written, and the same
+   * card named "GPU-…" here while KERNEL_GPUS calls it "0" would be one card
+   * handed out twice — to a class and to submissions — with no isolation
+   * between them. The list is stored in KERNEL_GPUS order, each card once.
+   *
+   * Under Kubernetes the cluster has the cards (RUNTIME_COMPETITION_GPU_*),
+   * and a value saved here would be a promise nothing keeps; forgetting one
+   * (`null`) is still allowed, it changes nothing.
+   */
+  if (has('gpuDevices')) {
+    if (cleared(raw.gpuDevices)) patch.gpuDevices = null
+    else {
+      if (machine.gpuManaged) return { refusal: { field: 'gpuDevices', why: 'managed' } }
+      const list = raw.gpuDevices
+      if (!Array.isArray(list) || list.some((device) => typeof device !== 'string' || !device.trim())) {
+        return { refusal: { field: 'gpuDevices', why: 'value' } }
+      }
+      const known = [...new Set(machine.gpus ?? [])]
+      const chosen = new Set((list as string[]).map((device) => device.trim()))
+      for (const device of chosen) {
+        if (!known.includes(device)) return { refusal: { field: 'gpuDevices', why: 'device', device } }
+      }
+      patch.gpuDevices = known.filter((device) => chosen.has(device))
+    }
+  }
+  if (has('gpuPerDevice')) {
+    if (cleared(raw.gpuPerDevice)) patch.gpuPerDevice = null
+    else {
+      if (machine.gpuManaged) return { refusal: { field: 'gpuPerDevice', why: 'managed' } }
+      const value = whole(raw.gpuPerDevice)
+      const range = SETTINGS_LIMITS.gpuPerDevice
+      if (value === null) return { refusal: { field: 'gpuPerDevice', why: 'value' } }
+      if (value < range.min || value > range.max) {
+        return { refusal: { field: 'gpuPerDevice', why: 'range', min: range.min, max: range.max } }
+      }
+      patch.gpuPerDevice = value
+    }
+  }
   return { patch }
 }
 
@@ -194,5 +335,13 @@ export const saveCompetitionSettings = db.transaction((patch: SettingsPatch): vo
     if (value === undefined) continue
     if (value === null) dropSetting.run(KEY[field])
     else writeSetting.run(KEY[field], String(value))
+  }
+  if (patch.gpuDevices !== undefined) {
+    if (patch.gpuDevices === null) dropSetting.run(KEY.gpuDevices)
+    else writeSetting.run(KEY.gpuDevices, JSON.stringify(patch.gpuDevices))
+  }
+  if (patch.gpuPerDevice !== undefined) {
+    if (patch.gpuPerDevice === null) dropSetting.run(KEY.gpuPerDevice)
+    else writeSetting.run(KEY.gpuPerDevice, String(patch.gpuPerDevice))
   }
 })

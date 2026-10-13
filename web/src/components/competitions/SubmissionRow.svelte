@@ -17,6 +17,7 @@
   import Badge from './Badge.svelte'
   import StageStrip from './StageStrip.svelte'
   import {
+    blindAdvice,
     blindHead,
     blindWhy,
     elapsedClock,
@@ -166,7 +167,14 @@
     {:else}
       <span class="w-12 shrink-0 font-mono text-2xs leading-4 text-muted">#{submission.number}</span>
     {/if}
-    <span class="flex w-[184px] shrink-0">
+    <!-- The chip's lane: the widest word with a gap after it, and never
+         narrower than its chip. At 184 px «НЕ ХВАТИЛО ПАМЯТИ» — the widest
+         word of the set, 188 px in the bold caps of the competition scale —
+         ran into the file name, and a run stopped past its GPU share ends
+         with exactly that word. A minimum, not a width: the words fit in its
+         192 px, so the column stays one width down the list, and a wider
+         word would push the name over rather than run under it. -->
+    <span class="flex min-w-[204px] shrink-0 pr-3">
       {#if badge}
         <Badge word={badge.word} tone={badge.tone} form={badge.form} />
       {/if}
@@ -291,6 +299,10 @@
           </div>
           {#if submission.participantError && submission.state !== 'notebookFailed'}
             <p class="max-w-[760px] pl-5 text-2xs text-ink">{submission.participantError}</p>
+          {:else if blindAdvice(submission)}
+            <!-- After a failed cell, only our advice past the repeated head:
+                 the GPU share torch ran out of (Paper 15 · G4 #6). -->
+            <p class="max-w-[760px] pl-5 text-2xs text-ink">{blindAdvice(submission)}</p>
           {/if}
           <p class="max-w-[760px] pl-5 text-2xs text-muted">{blindWhy(submission, sealed)}</p>
         </div>

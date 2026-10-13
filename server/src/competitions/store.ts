@@ -31,6 +31,12 @@ import { db } from '../db.js'
 import { entrantKeyDigest, newEntrantKey, sealEntrantKey, unsealEntrantKey } from './key.js'
 import { removeCompetition as removeCompetitionFiles, pruneSubmissions } from './storage.js'
 import { competitionDefaults } from './settings.js'
+/*
+ * The rule by which a GPU run picks its card, called inside `takeNext`'s
+ * transaction with the counts read there. gpu.ts reaches nothing of this
+ * module, so the import closes no cycle.
+ */
+import { cardsInUse, pickRunnerGpu } from './gpu.js'
 import { putSettingRow, settingRows } from '../admin/settings.js'
 import { instanceTimeZone } from '../time-zone.js'
 import {
@@ -353,6 +359,29 @@ ensureColumn('competition_queue', 'attempt_id', 'attempt_id TEXT')
 ensureColumn('competition_queue', 'pending_kind', 'pending_kind TEXT')
 ensureColumn('competition_queue', 'resource_retries', 'resource_retries INTEGER NOT NULL DEFAULT 0')
 ensureColumn('competition_queue', 'not_before', 'not_before INTEGER NOT NULL DEFAULT 0')
+/*
+ * The runner card a running row holds (a KERNEL_GPUS entry), written by the
+ * transaction that takes the row and cleared by every way out of 'running'.
+ * In the row and not in the runner's memory for the same reason as the queue
+ * itself: which card is busy must survive a restart in the middle of a run,
+ * and the next card is chosen by counting these (takeNext). NULL for every
+ * existing row and for every run without a card — and for a GPU run on the
+ * cluster, which places the Pod itself.
+ */
+ensureColumn('competition_queue', 'gpu', 'gpu TEXT')
+/*
+ * What that run was promised on its card, written with the card and cleared
+ * with it: how many runs shared the card when it was taken (`gpu_per_device`,
+ * 1 — the whole card) and the share in MB that makes there (`gpu_slice_mb`,
+ * filled in once the card has said its size, runner.ts · runGpu). In the row
+ * because the owner may change «посылок на карту» while runs hold a card: a
+ * share read from the live setting gave the runs taken after the change a
+ * share the card no longer had room for (36 GB promised on a 24 GB card), and
+ * the console showed the old runs with the new, smaller one. The run is built
+ * from these, and the queue weighs a card's load by them (gpu.ts · cardsInUse).
+ */
+ensureColumn('competition_queue', 'gpu_per_device', 'gpu_per_device INTEGER')
+ensureColumn('competition_queue', 'gpu_slice_mb', 'gpu_slice_mb INTEGER')
 
 // Revisions are durable database state, so direct runner/queue mutations cannot
 // bypass the live feed invalidation contract. Legacy scores have unknown inputs
@@ -385,6 +414,14 @@ ensureColumn('competitions', 'board_visibility', "board_visibility TEXT NOT NULL
  */
 ensureColumn('competitions', 'late_submissions', 'late_submissions INTEGER NOT NULL DEFAULT 0')
 ensureColumn('competitions', 'output_policy', "output_policy TEXT NOT NULL DEFAULT 'brief'")
+/*
+ * «Видеокарта» (CompetitionLimits.gpu): the notebook runs with a share of a
+ * runner card. Zero for every existing row: a competition made on a GPU
+ * environment before this switch ran on the CPU, and keeps doing so until its
+ * teacher turns the card on — its submissions must not change speed by
+ * themselves in the middle of the competition.
+ */
+ensureColumn('competitions', 'gpu', 'gpu INTEGER NOT NULL DEFAULT 0')
 /*
  * A late submission and the moment its upload began (Submission.late,
  * Submission.sentAt). Every older row reads on time and without a start: late
@@ -550,6 +587,22 @@ db.exec(`
   BEGIN UPDATE competitions SET input_revision = input_revision + 1 WHERE id = NEW.id; END;
 `)
 /*
+ * The card is a limit like the CPUs: a sample notebook that passed on the CPU
+ * says nothing about the same notebook with a card (a `.cuda()` that had no
+ * device to fail on, a time limit met only with one), so turning the card on
+ * or off makes the check stale exactly as a changed CPU count does — both
+ * revisions, the notebook's and the whole input's. A trigger of its own, with
+ * a name of its own: the two above were created with IF NOT EXISTS on every
+ * existing database and cannot learn a new column.
+ */
+db.exec(`
+  CREATE TRIGGER IF NOT EXISTS competition_gpu_inputs_changed
+  AFTER UPDATE OF gpu ON competitions
+  WHEN NEW.gpu IS NOT OLD.gpu
+  BEGIN UPDATE competitions SET notebook_input_revision = notebook_input_revision + 1,
+    input_revision = input_revision + 1 WHERE id = NEW.id; END;
+`)
+/*
  * What the notebook reads is the open files AND the hidden test: a change to
  * either makes the sample notebook's check stale. The triggers carry new names
  * because `CREATE TRIGGER IF NOT EXISTS` cannot change an existing one, and the
@@ -628,6 +681,7 @@ interface CompetitionRow {
   memory_mb: number
   cpus: number
   per_day: number
+  gpu: number
   environment: string
   starts_at: number | null
   deadline_at: number | null
@@ -668,6 +722,7 @@ function toCompetition(row: CompetitionRow): Competition {
       memoryMb: row.memory_mb,
       cpus: row.cpus,
       perDay: row.per_day,
+      gpu: row.gpu === 1,
     },
     environment: row.environment,
     startsAt: row.starts_at,
@@ -693,12 +748,12 @@ function toCompetition(row: CompetitionRow): Competition {
 const insertCompetition = db.prepare(`
   INSERT INTO competitions
     (id, slug, title, blurb, description, state, metric_name, metric_direction, metric_code,
-     public_percent, split_seed, wall_seconds, memory_mb, cpus, per_day, environment,
+     public_percent, split_seed, wall_seconds, memory_mb, cpus, per_day, gpu, environment,
      starts_at, deadline_at, private_release, scoring, board_visibility, late_submissions, output_policy,
      created_by, course_id, created_at, updated_at)
   VALUES
     (@id, @slug, @title, @blurb, @description, 'draft', @metric_name, @metric_direction,
-     @metric_code, @public_percent, @split_seed, @wall_seconds, @memory_mb, @cpus, @per_day,
+     @metric_code, @public_percent, @split_seed, @wall_seconds, @memory_mb, @cpus, @per_day, @gpu,
      @environment, @starts_at, @deadline_at, @private_release, @scoring, @board_visibility,
      @late_submissions, @output_policy, @created_by, @course_id, @at, @at)
 `)
@@ -760,6 +815,8 @@ export function createCompetition(input: NewCompetition): Competition | null {
       memory_mb: input.limits?.memoryMb ?? defaults.memoryMb,
       cpus: input.limits?.cpus ?? defaults.cpus,
       per_day: input.limits?.perDay ?? defaults.perDay,
+      // Never an instance default: a card is the teacher's switch, on a GPU environment.
+      gpu: input.limits?.gpu ? 1 : 0,
       environment: input.environment ?? 'base',
       starts_at: input.startsAt ?? null,
       deadline_at: input.deadlineAt ?? null,
@@ -847,6 +904,7 @@ const COLUMN_OF: Record<string, string> = {
   'limits.memoryMb': 'memory_mb',
   'limits.cpus': 'cpus',
   'limits.perDay': 'per_day',
+  'limits.gpu': 'gpu',
 }
 
 const CLIP_OF: Record<string, number> = {
@@ -977,9 +1035,20 @@ export function openPrivateBoard(id: string, at = Date.now()): boolean {
  * The files are removed AFTER the transaction, and deliberately out loud: a
  * directory left behind quietly means the answers of a deleted competition
  * lying on disk for an unlimited time, with nobody to notice.
+ *
+ * `'running'` — a run of it is still going, and nothing is deleted. Its
+ * queue row is what holds its slot and its share of a runner card; deleted
+ * under a live container, it let the next GPU notebook onto a card the
+ * container still filled, promised a share nobody had. The door stops the
+ * runs first (runner.ts · stopCompetitionRuns); this is the last check, in
+ * the same transaction as the delete, so a run that started in between
+ * refuses the whole of it.
  */
-export function deleteCompetition(id: string): boolean {
-  const rows = db.transaction((competitionId: string) => {
+export function deleteCompetition(id: string): boolean | 'running' {
+  const rows = db.transaction((competitionId: string): number | 'running' => {
+    if (db.prepare("SELECT 1 FROM competition_queue WHERE competition_id = ? AND state = 'running' LIMIT 1").get(competitionId)) {
+      return 'running'
+    }
     db.prepare(
       `DELETE FROM submission_runs WHERE submission_id IN
          (SELECT id FROM submissions WHERE competition_id = ?)`,
@@ -992,6 +1061,7 @@ export function deleteCompetition(id: string): boolean {
     db.prepare('DELETE FROM competition_entrants WHERE competition_id = ?').run(competitionId)
     return deleteCompetitionRow.run(competitionId).changes
   })(id)
+  if (rows === 'running') return 'running'
   if (rows === 0) return false
   removeCompetitionFiles(id)
   return true
@@ -2275,6 +2345,23 @@ export interface QueueRow {
   pendingKind: RunKind | null
   /** Its submission is late: on-time work goes first (see the selection order). */
   late: boolean
+  /**
+   * The runner card this run holds, from the moment it was taken until the
+   * attempt ends, metric step included; `null` — no card of ours: a run on
+   * the CPU, a waiting row, or a GPU run the cluster places itself.
+   */
+  gpu: string | null
+  /**
+   * How many runs shared that card when this one took it — its share is one
+   * of them (1: the whole card, uncapped). Pinned at the take, whatever the
+   * owner sets afterwards; `null` with no card.
+   */
+  gpuPerDevice: number | null
+  /**
+   * The share in MB that makes on that card; `null` with no card, until the
+   * card has said its size (runner.ts · runGpu), or when it cannot.
+   */
+  gpuSliceMb: number | null
 }
 
 interface QueueRowRaw {
@@ -2294,6 +2381,11 @@ interface QueueRowRaw {
   attempt_id: string | null
   pending_kind: string | null
   late: number
+  gpu: string | null
+  gpu_per_device?: number | null
+  gpu_slice_mb?: number | null
+  /** Only from `selectNext`: whether this work needs a card share (NEEDS_CARD). */
+  needs_gpu?: number
 }
 
 function toQueueRow(row: QueueRowRaw): QueueRow {
@@ -2314,9 +2406,16 @@ function toQueueRow(row: QueueRowRaw): QueueRow {
     attemptId: row.attempt_id,
     pendingKind: row.pending_kind as RunKind | null,
     late: row.late === 1,
+    gpu: row.gpu ?? null,
+    gpuPerDevice: row.gpu_per_device ?? null,
+    gpuSliceMb: row.gpu_slice_mb ?? null,
   }
 }
 
+/** A row letting its card go: the card and what was promised on it go together. */
+const NO_CARD = 'gpu = NULL, gpu_per_device = NULL, gpu_slice_mb = NULL'
+
+// A waiting row never holds a card: a row put back into waiting lets its card go.
 const upsertQueue = db.prepare(`
   INSERT INTO competition_queue
     (submission_id, competition_id, entrant_id, kind, state, enqueued_at, turn, late)
@@ -2334,7 +2433,8 @@ const upsertQueue = db.prepare(`
     boot = NULL,
     container = NULL,
     attempt_id = NULL,
-    pending_kind = NULL
+    pending_kind = NULL,
+    ${NO_CARD}
   WHERE competition_queue.state != 'running'
 `)
 /* Running on top, the waiting after it in arrival order — as the panel reads it. */
@@ -2351,12 +2451,13 @@ const countWaiting = db.prepare(
 const markRunning = db.prepare(`
   UPDATE competition_queue
   SET state = 'running', started_at = @at, attempts = attempts + 1, boot = @boot,
-      container = @container, attempt_id = @attempt_id
+      container = @container, attempt_id = @attempt_id, gpu = @gpu,
+      gpu_per_device = @gpu_per_device, gpu_slice_mb = NULL
   WHERE submission_id = @submission_id
 `)
 const markWaiting = db.prepare(`
   UPDATE competition_queue
-  SET state = 'waiting', started_at = NULL, boot = NULL, container = NULL, attempt_id = NULL, not_before = 0
+  SET state = 'waiting', started_at = NULL, boot = NULL, container = NULL, attempt_id = NULL, not_before = 0, ${NO_CARD}
   WHERE submission_id = ?
 `)
 const noteContainer = db.prepare(
@@ -2407,6 +2508,17 @@ export function waitingCount(): number {
   return (countWaiting.get() as { n: number }).n
 }
 
+/*
+ * Work that needs a share of a runner card: a NOTEBOOK run of a competition
+ * whose card is on (CompetitionLimits.gpu). A rescore runs only the metric,
+ * and the metric never gets a card — it holds the hidden answers — so it
+ * waits for none. Read from the competition at the take, like everything the
+ * order reads: a teacher who turns the card off lets the waiting notebooks go
+ * on the CPU at once.
+ */
+const NEEDS_CARD = `(q.kind = 'notebook' AND EXISTS
+  (SELECT 1 FROM competitions c WHERE c.id = q.competition_id AND c.gpu = 1))`
+
 /**
  * Who is next — fairly per person.
  *
@@ -2431,13 +2543,22 @@ export function waitingCount(): number {
  * is outside the standings, and the final results wait for every on-time
  * notebook and every rescore of one, not for fixes sent after the deadline.
  *
+ * And one filter, which is not a key: work that needs a share of a runner
+ * card (NEEDS_CARD) is passed over while no share is free (`@card_free`), and
+ * the next work in the order is taken instead. Passed over, not waited for:
+ * a GPU notebook waiting for a card must not hold up the CPU work behind it,
+ * and CPU work never makes a GPU notebook wait for anything but a general
+ * slot — the moment a share frees, the GPU notebook is first again in the
+ * place the keys give it. panel.ts · queueEtas simulates exactly this.
+ *
  * Computed in SQL, not in memory, because the queue is database state, and
  * two processes (the server and, one day, a separate runner) must see one and
  * the same answer.
  */
 const selectNext = db.prepare(`
-  SELECT q.* FROM competition_queue q
+  SELECT q.*, ${NEEDS_CARD} AS needs_gpu FROM competition_queue q
   WHERE q.state = 'waiting' AND q.not_before <= @at
+    AND (@card_free = 1 OR NOT ${NEEDS_CARD})
   ORDER BY
     q.late ASC,
     (SELECT COUNT(*) FROM competition_queue r
@@ -2448,9 +2569,94 @@ const selectNext = db.prepare(`
   LIMIT 1
 `)
 
-export function nextQueueRow(at=Date.now()): QueueRow | null {
-  const row = selectNext.get({at}) as QueueRowRaw | undefined
+/**
+ * The runner cards, as the queue takes work that needs one
+ * (competitions/gpu.ts · runnerGpuState): each card with how many runs it may
+ * hold now — none while a class still holds it — and the containers the
+ * runner still has to remove, card → how many (Capacity.heldGpus): such a
+ * container keeps its share until it is gone.
+ *
+ * A card's `capacity` is the runs per card a new run is taken at, and the
+ * take writes it into the row (QueueRow.gpuPerDevice): what the card already
+ * holds is weighed by the shares its runs were given, not counted by heads
+ * (gpu.ts · cardsInUse), so a card whose runs were taken at one run per card
+ * stays full after the owner raises the number, until they end.
+ *
+ * `cluster` — under the cluster: how many GPU notebooks of this instance may
+ * run at once (the broker's competition.gpuSlots, runner.ts · queueCards).
+ * The queue keeps no card there, and counts its running GPU notebooks
+ * instead: a GPU notebook taken past that number held a general slot for half
+ * a minute while its Pod waited for a unit, and came back to the head of the
+ * queue, over and over, while the CPU work behind it waited.
+ *
+ * Absent, the queue takes GPU work like any other and gives it no card: for
+ * callers from before cards.
+ */
+export interface QueueGpu {
+  cards: ReadonlyArray<{ id: string; capacity: number }>
+  held?: Readonly<Record<string, number>>
+  cluster?: number
+}
+
+const selectCardLoad = db.prepare(`
+  SELECT gpu, gpu_per_device FROM competition_queue
+  WHERE state = 'running' AND gpu IS NOT NULL
+`)
+
+const countClusterGpuRuns = db.prepare(`
+  SELECT COUNT(*) AS n FROM competition_queue q
+  WHERE q.state = 'running' AND q.gpu IS NULL AND ${NEEDS_CARD}
+`)
+
+/**
+ * Where the next GPU run would go right now: a card and the runs per card it
+ * is taken at, or — under the cluster — no card of ours (`device: null`);
+ * `null` — no share is free. Counted from the running rows at this very
+ * moment, not from the pump's picture at the start of its pass: each take
+ * writes its card into its row, so the second take of a pass already sees
+ * the first.
+ */
+function freeShare(gpu: QueueGpu): { device: string | null; perDevice: number | null } | null {
+  if (gpu.cluster !== undefined) {
+    return (countClusterGpuRuns.get() as { n: number }).n < gpu.cluster ? { device: null, perDevice: null } : null
+  }
+  const runs = (selectCardLoad.all() as Array<{ gpu: string; gpu_per_device: number | null }>)
+    .map((row) => ({ device: row.gpu, perDevice: row.gpu_per_device }))
+  const device = pickRunnerGpu(gpu.cards, cardsInUse(gpu.cards, runs, gpu.held))
+  if (device === null) return null
+  return { device, perDevice: gpu.cards.find((card) => card.id === device)?.capacity ?? null }
+}
+
+/** `@card_free` of the selection: without cards to count there is nothing to filter by. */
+function cardFree(gpu: QueueGpu | undefined, share: unknown): 0 | 1 {
+  return gpu === undefined || share !== null ? 1 : 0
+}
+
+/**
+ * The work the next take would start, without taking it — what the pump
+ * admits for memory before it takes. `gpu` must be the one the take gets:
+ * the same filter over the same rows names the same work, and an admission
+ * for one job followed by the take of another is a reservation sized for
+ * the wrong submission.
+ */
+export function nextQueueRow(at = Date.now(), gpu?: QueueGpu): QueueRow | null {
+  const row = selectNext.get({ at, card_free: cardFree(gpu, gpu ? freeShare(gpu) : null) }) as QueueRowRaw | undefined
   return row ? toQueueRow(row) : null
+}
+
+const selectCardWork = db.prepare(`
+  SELECT 1 FROM competition_queue q
+  WHERE q.state = 'waiting' AND q.not_before <= @at AND ${NEEDS_CARD}
+  LIMIT 1
+`)
+
+/**
+ * Whether any work that may be taken now needs a card share. The pump asks
+ * before it counts the cards: the count is a census of the rooms' containers
+ * (docker ps), and a queue of CPU work has no use for it.
+ */
+export function cardWorkWaiting(at = Date.now()): boolean {
+  return selectCardWork.get({ at }) !== undefined
 }
 
 /**
@@ -2462,16 +2668,23 @@ export function nextQueueRow(at=Date.now()): QueueRow | null {
  * away from the class rather than speeding up the queue.
  *
  * In a transaction, because "look and take" as two queries means two copies
- * of one run on the day there are two runners.
+ * of one run on the day there are two runners. The card is chosen in it for
+ * the same reason (`gpu`, see QueueGpu): with the counts read here, by the
+ * one rule (competitions/gpu.ts · pickRunnerGpu) — two takes that each saw
+ * "one share left" on a card would otherwise both put a run on it. The card
+ * goes only to work that needs one; any other work takes none, whatever is
+ * free.
  */
 export const takeNext = db.transaction(
-  (opts: { boot?: string; at?: number; slots?: number } = {}): QueueRow | null => {
+  (opts: { boot?: string; at?: number; slots?: number; gpu?: QueueGpu } = {}): QueueRow | null => {
     if (queuePaused()) return null
     const slots = opts.slots ?? 1
     if ((selectRunning.all() as QueueRowRaw[]).length >= slots) return null
     const at = opts.at ?? Date.now()
-    const row = selectNext.get({at}) as QueueRowRaw | undefined
+    const share = opts.gpu ? freeShare(opts.gpu) : null
+    const row = selectNext.get({ at, card_free: cardFree(opts.gpu, share) }) as QueueRowRaw | undefined
     if (!row) return null
+    const card = opts.gpu && row.needs_gpu === 1 ? share : null
     markRunning.run({
       submission_id: row.submission_id,
       at,
@@ -2482,10 +2695,24 @@ export const takeNext = db.transaction(
       // made every submission on the broker fail at once as "Invalid submission
       // job identity"; the k3s smoke named its attempts itself and never saw it.
       attempt_id: randomUUID().replaceAll('-', ''),
+      gpu: card?.device ?? null,
+      // The share is pinned with the card: the run is built from it, whatever the owner sets next.
+      gpu_per_device: card?.device ? card.perDevice : null,
     })
     return toQueueRow(selectQueueRow.get(row.submission_id) as QueueRowRaw)
   },
 )
+
+/**
+ * The share in MB a running row's card makes of its pinned runs per card,
+ * once the card has said its size (runner.ts · runGpu): what the console
+ * shows next to the run, and what the run itself was capped to.
+ */
+export function noteQueueGpuShare(row: QueueRow, sliceMb: number | null): void {
+  if (!row.attemptId) return
+  db.prepare('UPDATE competition_queue SET gpu_slice_mb = ? WHERE submission_id = ? AND attempt_id = ? AND gpu IS NOT NULL')
+    .run(sliceMb, row.submissionId, row.attemptId)
+}
 
 /** Remember the container of a running run — it is what the run is killed by. */
 export function noteQueueContainer(submissionId: string, container: string | null, attemptId?: string): void {
@@ -2509,7 +2736,7 @@ export const deferResourceAttempt=db.transaction((row:QueueRow,reason:string,at=
   const delay=fresh?0:Math.min(60_000,5_000*2**Math.min(4,current.resourceRetries))
   const notBefore=at+delay
   db.prepare(`UPDATE competition_queue SET kind=COALESCE(pending_kind,?),pending_kind=NULL,state='waiting',
-    started_at=NULL,boot=NULL,container=NULL,attempt_id=NULL,attempts=?,resource_retries=?,not_before=?
+    started_at=NULL,boot=NULL,container=NULL,attempt_id=NULL,${NO_CARD},attempts=?,resource_retries=?,not_before=?
     WHERE submission_id=? AND attempt_id=?`).run(nextKind,fresh?0:Math.max(0,current.attempts-1),fresh?0:current.resourceRetries+1,notBefore,row.submissionId,row.attemptId)
   // Our own words about the queue: safe to show a blind participant as they are.
   updateSubmission(row.submissionId,{state:'queued',stage:'queue',participantError:reason,briefError:reason,teacherError:teacherReason})
@@ -2520,7 +2747,8 @@ export const finishQueueAttempt = db.transaction((row: QueueRow): boolean => {
   if (!ownsQueueAttempt(row)) return false
   const current = queueRow(row.submissionId)!
   if (current.pendingKind) {
-    db.prepare("UPDATE competition_queue SET kind = pending_kind, pending_kind = NULL, state = 'waiting', started_at = NULL, container = NULL, boot = NULL, attempt_id = NULL, attempts = 0,resource_retries=0,not_before=0 WHERE submission_id = ? AND attempt_id = ?").run(row.submissionId, row.attemptId)
+    // Back to waiting for the work asked meanwhile: the card goes with the attempt that held it.
+    db.prepare(`UPDATE competition_queue SET kind = pending_kind, pending_kind = NULL, state = 'waiting', started_at = NULL, container = NULL, boot = NULL, attempt_id = NULL, ${NO_CARD}, attempts = 0,resource_retries=0,not_before=0 WHERE submission_id = ? AND attempt_id = ?`).run(row.submissionId, row.attemptId)
     updateSubmission(row.submissionId, { state: 'queued', stage: 'queue', publicScore: null, privateScore: null })
   } else db.prepare('DELETE FROM competition_queue WHERE submission_id = ? AND attempt_id = ?').run(row.submissionId, row.attemptId)
   return true

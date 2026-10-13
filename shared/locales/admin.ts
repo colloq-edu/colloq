@@ -585,6 +585,22 @@ export const adminMessages: MessageCatalog = {
     "ru": "В KERNEL_GPUS не настроены срезы GPU. Занятия с GPU-окружением не смогут запустить ядро, пока срез GPU не станет доступен.",
     "en": "No GPU slices are configured in KERNEL_GPUS. Classes using a GPU environment cannot start a kernel until a GPU slice is available."
   },
+  "admin.env.gpuAllToSubmissions": {
+    "ru": "Все видеокарты машины ({count}) отданы посылкам соревнований: занятия с GPU-окружением не запустят ядро, пока владелец не вернёт карту занятиям во вкладке «Ресурсы».",
+    "en": "Every GPU on this machine ({count}) is given to competition submissions: classes on a GPU environment cannot start a kernel until the owner gives a card back to classes on the Resources tab."
+  },
+  "admin.env.gpuRunnersToo": {
+    "ru": {
+      "one": "Ещё {count} карта отдана посылкам соревнований.",
+      "few": "Ещё {count} карты отданы посылкам соревнований.",
+      "many": "Ещё {count} карт отдано посылкам соревнований.",
+      "other": "Ещё {count} карты отданы посылкам соревнований."
+    },
+    "en": {
+      "one": "{count} more card is given to competition submissions.",
+      "other": "{count} more cards are given to competition submissions."
+    }
+  },
   "admin.a.room.on.this.environment.holds.a.gpu.slice.for.as.long.as.its.c": {
     "ru": "Комната с этим окружением занимает срез GPU, пока работает её контейнер",
     "en": "A room on this environment holds a GPU slice for as long as its container lives"
@@ -940,6 +956,14 @@ export const adminMessages: MessageCatalog = {
   "admin.all.slices.are.held.by.containers.from.other.seminars.including.i": {
     "ru": "Все срезы заняты контейнерами других занятий, в том числе неактивных. Занятие можно создать, но для запуска ядра потребуется освободить срез.",
     "en": "All slices are held by containers from other classes, including inactive ones. You can create the class, but a slice must be freed before starting its kernel."
+  },
+  "admin.gpu.allToSubmissions": {
+    "ru": "Все видеокарты отданы посылкам.",
+    "en": "Every GPU is given to submissions."
+  },
+  "admin.gpu.allToSubmissionsNote": {
+    "ru": "Окружению нужен GPU, а все видеокарты машины владелец отдал посылкам соревнований. Занятие можно создать, но ядро не запустится, пока владелец не вернёт карту занятиям во вкладке «Ресурсы».",
+    "en": "This environment needs a GPU, but the owner gave every card on this machine to competition submissions. You can create the class, but its kernel will not start until the owner gives a card back to classes on the Resources tab."
   },
   "admin.materials": {
     "ru": "Материалы",
@@ -2638,6 +2662,10 @@ export const adminMessages: MessageCatalog = {
     "ru": "очередь приостановлена",
     "en": "the queue is paused"
   },
+  "admin.competitions.gpuBusyN": {
+    "ru": "видеокарты {busy} из {count}",
+    "en": "GPUs {busy} of {count}"
+  },
   "admin.competitions.queuePausedLong": {
     "ru": "Очередь приостановлена: посылки принимаются, но не исполняются.",
     "en": "The queue is paused: submissions are accepted but not run."
@@ -3274,6 +3302,98 @@ export const adminMessages: MessageCatalog = {
     "ru": "На этой машине свободно {free} ГБ: одна посылка за раз оставляет идущему занятию {rest} ГБ.",
     "en": "This machine has {free} GB free: one submission at a time leaves {rest} GB to the class in progress."
   },
+  "admin.competitions.limit.gpu": {
+    "ru": "ВИДЕОКАРТА",
+    "en": "GPU"
+  },
+  "admin.competitions.gpuOff": {
+    "ru": "нет",
+    "en": "off"
+  },
+  "admin.competitions.gpuSlice": {
+    "ru": "срез ≈\u00a0{value}\u00a0ГБ",
+    "en": "share ≈\u00a0{value}\u00a0GB"
+  },
+  "admin.competitions.gpuSliceBare": {
+    "ru": "срез",
+    "en": "share"
+  },
+  "admin.competitions.gpuWhole": {
+    "ru": "вся карта",
+    "en": "whole card"
+  },
+  "admin.competitions.gpuOnHint": {
+    "ru": "посылка видит карту как cuda:0; срез и число мест задаёт владелец в «Ресурсах»",
+    "en": "the submission sees the card as cuda:0; the owner sets the share and the number of places in Resources"
+  },
+  "admin.competitions.gpuOnHintCluster": {
+    "ru": "посылка видит карту как cuda:0; долю карты задаёт кластер",
+    "en": "the submission sees the card as cuda:0; the cluster decides its share"
+  },
+  "admin.competitions.gpuCpuEnv": {
+    "ru": "окружение {environment} без CUDA — карту посылке дать нельзя, считает процессор",
+    "en": "{environment} has no CUDA: a submission cannot get a card, the CPU computes"
+  },
+  "admin.competitions.gpuOffHint": {
+    "ru": "посылки пойдут на процессоре: torch с CUDA работает и без карты, но медленнее",
+    "en": "submissions will run on the CPU: CUDA torch works without a card, only slower"
+  },
+  "admin.competitions.gpuNoCards": {
+    "ru": "посылкам не выдано ни одной видеокарты",
+    "en": "no GPU is given to submissions"
+  },
+  "admin.competitions.gpuNoCardsOwner": {
+    "ru": "Пока карт нет, посылки не примутся, а сэмпл-тетрадь не проверится: участник увидит, что видеокарт для посылок нет. Владелец отдаёт карты посылкам во вкладке «Ресурсы».",
+    "en": "Until there is a card, submissions are not accepted and the sample notebook is not checked: the participant sees that there are no GPUs for submissions. The owner gives cards to submissions on the Resources tab."
+  },
+  "admin.competitions.gpuNoCardsTeacher": {
+    "ru": "Пока карт нет, посылки не примутся, а сэмпл-тетрадь не проверится: участник увидит, что видеокарт для посылок нет. Попросите владельца отдать посылкам карту во вкладке «Ресурсы».",
+    "en": "Until there is a card, submissions are not accepted and the sample notebook is not checked: the participant sees that there are no GPUs for submissions. Ask the owner to give submissions a card on the Resources tab."
+  },
+  "admin.competitions.gpuNoCardsClusterOwner": {
+    "ru": "Пока кластер не выдаёт посылкам видеокарт, посылки не примутся, а сэмпл-тетрадь не проверится: участник увидит, что видеокарт для посылок нет. Видеокарты посылкам выдаёт кластер: задайте gpu.competitions.resource в Helm (у брокера это RUNTIME_COMPETITION_GPU_RESOURCE) — или обновите брокер, если он старше приложения.",
+    "en": "Until the cluster gives submissions a GPU, submissions are not accepted and the sample notebook is not checked: the participant sees that there are no GPUs for submissions. The cluster gives GPUs to submissions: set gpu.competitions.resource in Helm (RUNTIME_COMPETITION_GPU_RESOURCE on the broker), or update the broker if it is older than the app."
+  },
+  "admin.competitions.openResources": {
+    "ru": "Открыть «Ресурсы» в новой вкладке",
+    "en": "Open Resources in a new tab"
+  },
+  "admin.competitions.gpuPlaces": {
+    "ru": {
+      "one": "На картах для посылок {count} место: {cards} по {per}, {share}.",
+      "few": "На картах для посылок {count} места: {cards} по {per}, {share}.",
+      "many": "На картах для посылок {count} мест: {cards} по {per}, {share}.",
+      "other": "На картах для посылок {count} места: {cards} по {per}, {share}."
+    },
+    "en": {
+      "one": "{count} place on the submission cards ({cards}, {per} each), {share}.",
+      "other": "{count} places on the submission cards ({cards}, {per} each), {share}."
+    }
+  },
+  "admin.competitions.gpuRunsPer": {
+    "ru": {
+      "one": "{count} посылке",
+      "few": "{count} посылки",
+      "many": "{count} посылок",
+      "other": "{count} посылки"
+    },
+    "en": {
+      "one": "{count} run",
+      "other": "{count} runs"
+    }
+  },
+  "admin.competitions.gpuShareWhole": {
+    "ru": "карта целиком",
+    "en": "the whole card"
+  },
+  "admin.competitions.gpuShareUnknown": {
+    "ru": "объём карты неизвестен",
+    "en": "card size unknown"
+  },
+  "admin.competitions.gpuMemoryNote": {
+    "ru": "Память {memory} ГБ — это память машины для данных и torch, видеопамять считается отдельно.",
+    "en": "Memory {memory} GB is the machine's memory for data and torch; GPU memory is counted separately."
+  },
   "admin.competitions.section.terms": {
     "ru": "Сроки и зачёт",
     "en": "Dates and standings"
@@ -3818,6 +3938,86 @@ export const adminMessages: MessageCatalog = {
   "admin.resourcesTab.coresNote": {
     "ru": "{rooms} — комнаты, {own} — личные тетради, {queue} — исполнители соревнований. Потоки numpy и torch в каждом контейнере ограничены его ядрами, поэтому соседи не отнимают друг у друга машину.",
     "en": "{rooms} for rooms, {own} for personal notebooks, {queue} for competition executors. numpy and torch threads in each container are capped at its cores, so neighbours do not take the machine from each other."
+  },
+  "admin.resourcesTab.gpus": {
+    "ru": "Видеокарты",
+    "en": "GPUs"
+  },
+  "admin.resourcesTab.gpusOnMachine": {
+    "ru": {
+      "one": "карта на машине",
+      "few": "карты на машине",
+      "many": "карт на машине",
+      "other": "карты на машине"
+    },
+    "en": {
+      "one": "card on the machine",
+      "other": "cards on the machine"
+    }
+  },
+  "admin.resourcesTab.gpusFree": {
+    "ru": {
+      "one": "свободна {count} карта",
+      "few": "свободны {count} карты",
+      "many": "свободно {count} карт",
+      "other": "свободно {count} карты"
+    },
+    "en": {
+      "one": "{count} card free",
+      "other": "{count} cards free"
+    }
+  },
+  "admin.resourcesTab.gpusBusyOne": {
+    "ru": "свободной нет — карта при деле",
+    "en": "none free — the card is in use"
+  },
+  "admin.resourcesTab.gpusBusyTwo": {
+    "ru": "свободных нет — обе при деле",
+    "en": "none free — both are in use"
+  },
+  "admin.resourcesTab.gpusBusyAll": {
+    "ru": "свободных нет — все при деле",
+    "en": "none free — all are in use"
+  },
+  "admin.resourcesTab.gpuClasses": {
+    "ru": "Классы",
+    "en": "Classes"
+  },
+  "admin.resourcesTab.gpuSubmissions": {
+    "ru": "Посылки",
+    "en": "Submissions"
+  },
+  "admin.resourcesTab.gpuCount": {
+    "ru": {
+      "one": "{count} карта",
+      "few": "{count} карты",
+      "many": "{count} карт",
+      "other": "{count} карты"
+    },
+    "en": {
+      "one": "{count} card",
+      "other": "{count} cards"
+    }
+  },
+  "admin.resourcesTab.gpuWholePerClass": {
+    "ru": "целиком на класс",
+    "en": "a whole card per class"
+  },
+  "admin.resourcesTab.gpuAtOnce": {
+    "ru": "по {count} сразу",
+    "en": "{count} at once"
+  },
+  "admin.resourcesTab.gpuWholePerRun": {
+    "ru": "каждой посылке целиком",
+    "en": "a whole card per submission"
+  },
+  "admin.resourcesTab.gpuSliceShort": {
+    "ru": "срез ≈\u00a0{value}\u00a0ГБ",
+    "en": "share ≈\u00a0{value}\u00a0GB"
+  },
+  "admin.resourcesTab.gpusNote": {
+    "ru": "Карта одна на двоих не бывает: класс и посылки никогда не делят видеопамять.",
+    "en": "A card is never shared between the two: a class and submissions never share GPU memory."
   },
   "admin.resourcesTab.disk": {
     "ru": "Диск",
@@ -4476,8 +4676,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Competitions"
   },
   "admin.resourcesTab.competitionsNote": {
-    "ru": "Каждая посылка исполняется с нуля в своём контейнере без сети. Здесь — сколько их идёт одновременно и что получает новое соревнование.",
-    "en": "Every submission runs from scratch in its own container without network. Here: how many run at once and what a new competition gets."
+    "ru": "Каждая посылка исполняется с нуля в своём контейнере без сети. Здесь — сколько их идёт одновременно, что получает новое соревнование и какие видеокарты отданы посылкам.",
+    "en": "Every submission runs from scratch in its own container without network. Here: how many run at once, what a new competition gets, and which GPUs are given to submissions."
   },
   "admin.resourcesTab.slots": {
     "ru": "Исполнителей одновременно",
@@ -4538,6 +4738,126 @@ export const adminMessages: MessageCatalog = {
   "admin.resourcesTab.uploadsNote": {
     "ru": "Считается по участнику, а не по адресу: класс за одним школьным NAT больше не делит общий лимит.",
     "en": "Counted per participant, not per address: a class behind one school NAT no longer shares one limit."
+  },
+  "admin.resourcesTab.gpuTitle": {
+    "ru": "Видеокарты для посылок",
+    "en": "GPUs for submissions"
+  },
+  "admin.resourcesTab.gpuCardsHere": {
+    "ru": {
+      "one": "на машине {count} карта",
+      "few": "на машине {count} карты",
+      "many": "на машине {count} карт",
+      "other": "на машине {count} карты"
+    },
+    "en": {
+      "one": "{count} card on the machine",
+      "other": "{count} cards on the machine"
+    }
+  },
+  "admin.resourcesTab.gpuSizeUnknown": {
+    "ru": "объём неизвестен",
+    "en": "size unknown"
+  },
+  "admin.resourcesTab.gpuHolder.runners": {
+    "ru": "у посылок",
+    "en": "for submissions"
+  },
+  "admin.resourcesTab.gpuHolder.leaving": {
+    "ru": "у класса, пока он открыт",
+    "en": "a class has it until it ends"
+  },
+  "admin.resourcesTab.gpuHolder.rooms": {
+    "ru": "у классов",
+    "en": "for classes"
+  },
+  "admin.resourcesTab.gpuHolder.finishing": {
+    "ru": "у посылки, пока она не досчитается",
+    "en": "a submission has it until its run ends"
+  },
+  "admin.resourcesTab.gpuHolder.free": {
+    "ru": "свободна",
+    "en": "free"
+  },
+  "admin.resourcesTab.gpuPick": {
+    "ru": "Отдать посылкам {card}",
+    "en": "Give {card} to submissions"
+  },
+  "admin.resourcesTab.gpuPerDevice": {
+    "ru": "Посылок на одной карте",
+    "en": "Runs per card"
+  },
+  "admin.resourcesTab.gpuPerDeviceUnit": {
+    "ru": "от {min} до {max}",
+    "en": "{min} to {max}"
+  },
+  "admin.resourcesTab.gpuSlice": {
+    "ru": "Срез",
+    "en": "Share"
+  },
+  "admin.resourcesTab.gpuSliceGb": {
+    "ru": "≈\u00a0{value}\u00a0ГБ",
+    "en": "≈\u00a0{value}\u00a0GB"
+  },
+  "admin.resourcesTab.gpuSliceWhole": {
+    "ru": "вся карта",
+    "en": "whole card"
+  },
+  "admin.resourcesTab.gpuSlicePerRun": {
+    "ru": "видеопамяти на посылку",
+    "en": "of GPU memory per submission"
+  },
+  "admin.resourcesTab.gpuPlaces": {
+    "ru": {
+      "one": "{count} место на картах",
+      "few": "{count} места на картах",
+      "many": "{count} мест на картах",
+      "other": "{count} места на картах"
+    },
+    "en": {
+      "one": "{count} place on the cards",
+      "other": "{count} places on the cards"
+    }
+  },
+  "admin.resourcesTab.gpuHeld": {
+    "ru": "Срез держится честно: torch в посылке не возьмёт больше {value} ГБ, а посылку, которая всё же заняла больше, сервер остановит и скажет участнику, что она вышла за свой срез.",
+    "en": "The share is enforced: torch in a submission will not take more than {value} GB, and a submission that takes more anyway is stopped by the server, which tells the participant it went past its share."
+  },
+  "admin.resourcesTab.gpuTimeShared": {
+    "ru": {
+      "one": "Карта делится по времени: срез бережёт память соседей, а не скорость — {count} посылка на одной карте считает медленнее, чем одна. Отданная посылкам карта уходит у классов; при 1 на карте каждая посылка получает её целиком.",
+      "few": "Карта делится по времени: срез бережёт память соседей, а не скорость — {count} посылки на одной карте считают медленнее, чем одна. Отданная посылкам карта уходит у классов; при 1 на карте каждая посылка получает её целиком.",
+      "many": "Карта делится по времени: срез бережёт память соседей, а не скорость — {count} посылок на одной карте считают медленнее, чем одна. Отданная посылкам карта уходит у классов; при 1 на карте каждая посылка получает её целиком.",
+      "other": "Карта делится по времени: срез бережёт память соседей, а не скорость — {count} посылки на одной карте считают медленнее, чем одна. Отданная посылкам карта уходит у классов; при 1 на карте каждая посылка получает её целиком."
+    },
+    "en": {
+      "one": "A card is shared in time: the share protects the neighbours' memory, not their speed — {count} submission on one card runs slower than one. A card given to submissions leaves the classes; at 1 per card each submission gets the whole card.",
+      "other": "A card is shared in time: the share protects the neighbours' memory, not their speed — {count} submissions on one card run slower than one. A card given to submissions leaves the classes; at 1 per card each submission gets the whole card."
+    }
+  },
+  "admin.resourcesTab.gpuWholeLine": {
+    "ru": "Каждая посылка получает карту целиком.",
+    "en": "Each submission gets the whole card."
+  },
+  "admin.resourcesTab.gpuLeavesClasses": {
+    "ru": "Отданная посылкам карта уходит у классов.",
+    "en": "A card given to submissions leaves the classes."
+  },
+  "admin.resourcesTab.gpuUnknownLine": {
+    "ru": "Объём карты неизвестен: доля видеопамяти не ограничена.",
+    "en": "The card's size is unknown: the GPU memory share is not capped."
+  },
+  "admin.resourcesTab.gpuNoneGiven": {
+    "ru": "Посылкам не отдана ни одна карта: соревнование с видеокартой не примет посылки.",
+    "en": "No card is given to submissions: a competition with a GPU will not accept submissions."
+  },
+  "admin.resourcesTab.gpuNoCards": {
+    "ru": "На этой машине видеокарт нет (KERNEL_GPUS пуст).",
+    "en": "This machine has no GPUs (KERNEL_GPUS is empty)."
+  },
+  "admin.resourcesTab.gpuCluster": {
+    "ru": "Видеокарты посылкам выдаёт кластер: gpu.competitions.resource в Helm.",
+    "en": "The cluster gives GPUs to submissions: gpu.competitions.resource in Helm."
   },
   "admin.resourcesTab.filesTitle": {
     "ru": "Файлы",
@@ -4711,6 +5031,10 @@ export const adminMessages: MessageCatalog = {
     "ru": "последняя досчитается ≈ через {eta}",
     "en": "the last result in ≈ {eta}"
   },
+  "admin.competitions.lastResultSoon": {
+    "ru": "последняя досчитается вот-вот",
+    "en": "the last result any moment now"
+  },
   "admin.competitions.medianShort": {
     "ru": "медиана {span}",
     "en": "median {span}"
@@ -4750,6 +5074,46 @@ export const adminMessages: MessageCatalog = {
       "one": "The queue is fair: whoever already has something running lets the others go first. Times assume {count} executor and this competition's median; the participant sees the same number.",
       "other": "The queue is fair: whoever already has something running lets the others go first. Times assume {count} executors and this competition's median; the participant sees the same number."
     }
+  },
+  "admin.competitions.slotsHeadGpu": {
+    "ru": "ИСПОЛНИТЕЛИ · {busy} ИЗ {count} · ВИДЕОКАРТЫ {gpuBusy} ИЗ {gpuCount}",
+    "en": "EXECUTORS · {busy} OF {count} · GPUS {gpuBusy} OF {gpuCount}"
+  },
+  "admin.competitions.waitingCard": {
+    "ru": {
+      "one": "{count} из них — видеокарту",
+      "few": "{count} из них — видеокарту",
+      "many": "{count} из них — видеокарту",
+      "other": "{count} из них — видеокарту"
+    },
+    "en": {
+      "one": "{count} of them for a GPU",
+      "other": "{count} of them for a GPU"
+    }
+  },
+  "admin.competitions.waitingCardOne": {
+    "ru": "одна из них — видеокарту",
+    "en": "one of them for a GPU"
+  },
+  "admin.competitions.gpuNoPlace": {
+    "ru": "Посылкам с видеокартой сейчас негде считать: ни одна карта не отдана посылкам или её ещё держит класс. Карту посылкам отдаёт владелец во вкладке «Ресурсы».",
+    "en": "GPU submissions have nowhere to run right now: no card is given to submissions, or a class still holds it. The owner gives submissions a card on the Resources tab."
+  },
+  "admin.competitions.waitingAllCard": {
+    "ru": {
+      "one": "{count} ждёт видеокарту",
+      "few": "{count} ждут видеокарту",
+      "many": "{count} ждут видеокарту",
+      "other": "{count} ждут видеокарту"
+    },
+    "en": {
+      "one": "{count} waiting for a GPU",
+      "other": "{count} waiting for a GPU"
+    }
+  },
+  "admin.competitions.waitsForCard": {
+    "ru": "ждёт место на видеокарте",
+    "en": "waiting for a place on a GPU"
   },
   "admin.competitions.exampleBadge": {
     "ru": "пример",

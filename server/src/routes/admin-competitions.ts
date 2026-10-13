@@ -29,7 +29,7 @@ import busboy from 'busboy'
 import { Router, type Request, type Response } from 'express'
 import { tr } from '@shared/i18n'
 import { acceptPinnedSubmission, executionRevision, publicExecution } from '../dependencies/service.js'
-import { assertCompetitionCapability, competitionCapabilities } from '../competitions/capabilities.js'
+import { assertCompetitionCapability, competitionCapabilities, notebookNeeds, type CompetitionNeeds } from '../competitions/capabilities.js'
 import { submissionUsesCurrentBase } from '../competitions/provenance.js'
 import { competitionRevision } from '../dependencies/store.js'
 import { DependencyStoreError } from '../dependencies/store.js'
@@ -37,7 +37,7 @@ import { dependencyMessage } from '../dependencies/messages.js'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
 import { getTeacher } from '../admin/store.js'
 import { instanceDayStart } from '../time-zone.js'
-import { deleteEntrantFromCompetition } from '../competitions/erase.js'
+import { deleteEntrantFromCompetition, SETTLE_MS } from '../competitions/erase.js'
 import { recordAdminEvent } from '../admin/audit-log.js'
 import { canSeeCourse, isOwner, type StaffLike } from '../admin/access.js'
 import { getCourse } from '../publish/store.js'
@@ -84,6 +84,7 @@ import {
   updateSubmission,
   waitingCount,
   enqueue,
+  cardWorkWaiting,
 } from '../competitions/store.js'
 import {
   EXECUTED_FILE,
@@ -109,6 +110,7 @@ import {
 } from '../competitions/storage.js'
 import {
   executedToday,
+  gpuEnvironmentRefusal,
   medianOf,
   openRefusal,
   parseCompetitionInput,
@@ -117,10 +119,12 @@ import {
   type DoneEntry,
   type InputRefusal,
 } from '../competitions/panel.js'
-import { queueForecast } from '../competitions/forecast.js'
+import { queueForecast, runnerGpuPicture } from '../competitions/forecast.js'
 import { DEADLINE_GRACE_MS, privateBoardState } from '../competitions/results.js'
 import { machineShape, slotsResolution } from '../competitions/capacity.js'
 import { competitionDefaults, parseSettingsInput, saveCompetitionSettings, uploadsPerMinute, type SettingsRefusal } from '../competitions/settings.js'
+import { competitionGpuSliceMb, environmentNeedsGpu, gpuSettingsView, placesTaken, runnerCardsHere } from '../competitions/gpu.js'
+import { gpuDevices } from '../kernel/pool.js'
 import { HOST_RESERVE_MB } from '../kernel/resources.js'
 import { baseName, csvShape, csvUsageSplit, intakeNotebook, notebookCells } from '../competitions/intake.js'
 import {
@@ -130,6 +134,7 @@ import {
   queueSlots,
   rerunSubmission,
   rescoreCompetition,
+  stopCompetitionRuns,
   wakeCompetitionPump,
 } from '../competitions/runner.js'
 import type { QueueRow } from '../competitions/store.js'
@@ -364,8 +369,9 @@ function baselineView(competition: Competition): BaselineView | null {
 }
 
 async function viewOf(competition: Competition): Promise<CompetitionView> {
-  const capabilities = await competitionCapabilities(competition.environment, competitionRevision(competition.id)?.imageDigest)
+  const capabilities = await competitionCapabilities(competition.environment, competitionRevision(competition.id)?.imageDigest, notebookNeeds(competition))
   competition = getCompetition(competition.id) ?? competition
+  const gpuSliceMb = await competitionGpuSliceMb(competition)
   const open = listFiles(competition.id, 'open')
   const hidden = listFiles(competition.id, 'hidden')
   const hiddenViews = hidden.map((file) => fileView(competition.id, file))
@@ -394,6 +400,7 @@ async function viewOf(competition: Competition): Promise<CompetitionView> {
   return {
     competition,
     capabilities,
+    gpuSliceMb,
     openFiles: open.map((file) => fileView(competition.id, file)),
     hiddenFiles: hiddenViews,
     sealedFiles: sealedViews,
@@ -417,6 +424,25 @@ async function viewOf(competition: Competition): Promise<CompetitionView> {
 
 /* ----------------------------------------------------------------- queue */
 
+/**
+ * The card a running row holds, as the runner grid shows it.
+ *
+ * On this machine's cards: the one the queue took for it, with the share the
+ * run was given there (QueueRow.gpuSliceMb, null until the card said its
+ * size, or when it cannot) — the run's own, not what the number of runs per
+ * card in force would make now: after the owner changes it, the runs already
+ * on a card keep the share they were started with, and showing them the new
+ * one was a number nothing enforced. Under the cluster the queue keeps no
+ * card, and a GPU notebook runs on whatever unit the cluster gave it: an
+ * empty device, no share of ours. The card is held until the attempt ends,
+ * so a notebook's metric step still shows it.
+ */
+function runningCard(row: QueueRow, competition: Competition): RunningNow['gpu'] {
+  if (row.gpu !== null) return { device: row.gpu, sliceMb: row.gpuSliceMb }
+  if (!runnerCardsHere() && row.kind === 'notebook' && competition.limits.gpu === true) return { device: '', sliceMb: null }
+  return null
+}
+
 function runningNow(row: QueueRow, viewer: StaffLike | null): RunningNow | null {
   const submission = getSubmission(row.submissionId)
   const competition = getCompetition(row.competitionId)
@@ -430,6 +456,8 @@ function runningNow(row: QueueRow, viewer: StaffLike | null): RunningNow | null 
      * teacher's screen, but a name and an address from a course they do not
      * teach are not theirs to read. The submission id stays — it keys the
      * row on screen and opens nothing: the kill door checks scope itself.
+     * The card stays too, for the same sum over the GPU slots: which card is
+     * busy is the machine's business, not anyone's.
      */
     return {
       submissionId: submission.id,
@@ -448,6 +476,7 @@ function runningNow(row: QueueRow, viewer: StaffLike | null): RunningNow | null 
       baseline: false,
       late: row.late,
       hidden: true,
+      gpu: runningCard(row, competition),
     }
   }
   return {
@@ -466,6 +495,7 @@ function runningNow(row: QueueRow, viewer: StaffLike | null): RunningNow | null 
     container: row.container,
     baseline: row.entrantId === baselineEntrantOf(competition),
     late: row.late,
+    gpu: runningCard(row, competition),
   }
 }
 
@@ -506,20 +536,41 @@ function todayStats(now: number): { done: number; averageMs: number | null } {
  * The instance queue as this viewer may see it: every count whole (waiting,
  * slots, run today), the running rows of competitions they do not run
  * blanked (`runningNow`).
+ *
+ * The runner cards come with it when any are given to submissions here
+ * (competitions/forecast.ts · runnerGpuPicture): how many GPU runs may go at
+ * once, how many of those places are taken — by the shares the runs were
+ * given, so a card still full of runs taken at fewer per card reads full
+ * (gpu.ts · placesTaken) — and the share each is promised. Under the cluster
+ * there are none to count.
+ *
+ * And with no card given at all, while GPU notebooks wait: zero places. They
+ * wait for a card nobody gave (the owner took the last one back, or the
+ * switch went on after they were sent), and without the block the console
+ * showed them as plain waiting, with no word of what for, while the queue
+ * passed them over at every take.
  */
 function queueSnapshot(viewer: StaffLike | null, now = Date.now()): QueueSnapshot {
   const pause = queuePause()
   const today = todayStats(now)
+  const running = runningRows()
+  const cards = runnerGpuPicture(now)
+  const onCards = running.flatMap((row) => row.gpu === null ? [] : [{ device: row.gpu, perDevice: row.gpuPerDevice }])
   return {
     paused: pause.paused,
     pausedAt: pause.at,
-    running: runningRows()
+    running: running
       .map((row) => runningNow(row, viewer))
       .filter((row): row is RunningNow => row !== null),
     waiting: waitingCount(),
     slots: queueSlots(),
     doneToday: today.done,
     averageMs: today.averageMs,
+    gpu: cards
+      ? { slots: cards.slots, busy: placesTaken(cards.cards, onCards), sliceMb: cards.sliceMb }
+      : runnerCardsHere() && cardWorkWaiting(Number.MAX_SAFE_INTEGER)
+        ? { slots: 0, busy: placesTaken([], onCards), sliceMb: null }
+        : null,
   }
 }
 
@@ -553,6 +604,8 @@ function waitingRows(competitionId: string | null, snapshot: QueueSnapshot, now:
       resourcePending: queued.notBefore > now,
       baseline: queued.entrantId === baselineEntrantOf(competition),
       late: queued.late,
+      // The queue's own rule of who needs a card share (store.ts · selectNext, forecast.ts · cardNeeds).
+      gpu: queued.kind === 'notebook' && competition.limits.gpu === true,
     })
   }
   return rows
@@ -580,11 +633,15 @@ function liveOf(competition: Competition, viewer: StaffLike | null, now = Date.n
  *
  * The machine goes along with the numbers: "8 slots" means nothing without
  * "on 16 CPUs and 64 GB", and the bounds for memory and CPUs are the
- * machine's, not the editor's.
+ * machine's, not the editor's. So do its cards: which of KERNEL_GPUS went to
+ * submissions, what each one is and how big a run's share comes out — read
+ * from the cards themselves, which may take a few seconds on a cold server
+ * (kernel/resources.ts · gpuCards), hence asynchronous.
  */
-function settingsView(): CompetitionSettings {
+async function settingsView(): Promise<CompetitionSettings> {
   const machine = machineShape()
   const { limits, sources } = competitionDefaults()
+  const gpu = await gpuSettingsView()
   return {
     slots: slotsResolution(),
     uploadsPerMinute: uploadsPerMinute(),
@@ -602,10 +659,18 @@ function settingsView(): CompetitionSettings {
       cpus: { min: SETTINGS_LIMITS.cpus.min, max: Math.max(1, Math.min(SETTINGS_LIMITS.cpus.max, machine.cpus)) },
       perDay: { min: SETTINGS_LIMITS.perDay.min, max: SETTINGS_LIMITS.perDay.max },
     },
+    gpu,
   }
 }
 
 function refuseSetting(res: Response, refusal: SettingsRefusal): void {
+  if (refusal.why === 'device') {
+    return fail(res, 400, 'invalid', tr('server.competitions.gpuUnknownDevice', { device: refusal.device }))
+  }
+  if (refusal.why === 'managed') {
+    // The same answer the environments door gives under the cluster: not a typo, the wrong place.
+    return fail(res, 409, 'managed_environment', tr('server.competitions.gpuManaged'))
+  }
   if (refusal.why === 'range') {
     return fail(res, 400, 'invalid', tr('competitions.refusal.range', { field: refusal.field, min: refusal.min, max: refusal.max }))
   }
@@ -717,6 +782,10 @@ function refuseUpload(res: Response, received: 'not-multipart' | 'cut-off'): voi
 const mb = (bytes: number) => Math.round(bytes / 1024 / 1024)
 
 function refuseInput(res: Response, refusal: InputRefusal): void {
+  // Before the field checks: this one names `limits.gpu` but is about the environment too.
+  if (refusal.why === 'cpuEnvironment') {
+    return fail(res, 400, 'invalid', tr('server.competitions.gpuCpuEnvironment', { environment: refusal.environment }))
+  }
   if (refusal.field === 'slug') {
     return fail(res, 400, 'invalid', tr(`competitions.refusal.slug.${refusal.why}`))
   }
@@ -763,8 +832,10 @@ export function adminCompetitionRoutes(): Router {
 
   /* ---------------------------------------------------------- settings */
 
-  router.get('/api/admin/competitions/settings', requireStaff, (_req, res) => {
-    res.json(settingsView())
+  router.get('/api/admin/competitions/settings', requireStaff, (_req, res, next) => {
+    settingsView()
+      .then((body) => res.json(body))
+      .catch(next)
   })
 
   /**
@@ -773,17 +844,26 @@ export function adminCompetitionRoutes(): Router {
    * By an owner: slots decide how much of the machine the queue takes from
    * the class running next to it, and the defaults become every new
    * competition's limits — both fall on people who are not in the request.
+   * The cards even more so: a card given to submissions is a card no class
+   * can start on from that moment.
    */
-  router.put('/api/admin/competitions/settings', ownerOnly('competitions.owner.settings'), (req, res) => {
+  router.put('/api/admin/competitions/settings', ownerOnly('competitions.owner.settings'), (req, res, next) => {
     const machine = machineShape()
-    const parsed = parseSettingsInput(req.body, { ...machine, reserveMb: HOST_RESERVE_MB })
+    const parsed = parseSettingsInput(req.body, {
+      ...machine,
+      reserveMb: HOST_RESERVE_MB,
+      gpus: gpuDevices(),
+      gpuManaged: !runnerCardsHere(),
+    })
     if ('refusal' in parsed) return refuseSetting(res, parsed.refusal)
     saveCompetitionSettings(parsed.patch)
     // The audit log (admin/audit-log.ts): which of the instance's competition settings, by whom.
     recordAdminEvent({ actor: currentStaff(req), action: 'settings.competitions_changed', target: { type: 'settings', id: 'competitions' }, detail: { changed: Object.keys(parsed.patch) }, req })
-    // More slots may mean work can start right now.
+    // More slots (or a card) may mean work can start right now.
     wakeCompetitionPump()
-    res.json(settingsView())
+    settingsView()
+      .then((body) => res.json(body))
+      .catch(next)
   })
 
   /**
@@ -933,6 +1013,8 @@ export function adminCompetitionRoutes(): Router {
   router.post('/api/admin/competitions', requireStaff, async (req, res) => {
     const parsed = parseCompetitionInput(req.body, { creating: true })
     if ('refusal' in parsed) return refuseInput(res, parsed.refusal)
+    const gpu = gpuEnvironmentRefusal(parsed.input, null, environmentNeedsGpu)
+    if (gpu) return refuseInput(res, gpu)
     const staff = currentStaff(req)
     if (!courseAllowed(staff, parsed.input.courseId, res)) return
     const created = createCompetition({
@@ -958,6 +1040,8 @@ export function adminCompetitionRoutes(): Router {
     if (!competition) return
     const parsed = parseCompetitionInput(req.body)
     if ('refusal' in parsed) return refuseInput(res, parsed.refusal)
+    const gpu = gpuEnvironmentRefusal(parsed.input, competition, environmentNeedsGpu)
+    if (gpu) return refuseInput(res, gpu)
     const staff = currentStaff(req)
     if (parsed.input.courseId !== undefined && parsed.input.courseId !== (competition.courseId ?? null)) {
       if (!courseAllowed(staff, parsed.input.courseId, res)) return
@@ -986,14 +1070,22 @@ export function adminCompetitionRoutes(): Router {
    *
    * By an owner: the submissions, scores and places of a hundred people
    * disappear for good, and there is nothing to restore them from.
+   *
+   * Its runs are taken off the executor first and waited for (runner.ts ·
+   * stopCompetitionRuns): a container left running holds its slot and its
+   * share of a card while the queue, its row gone, gives that share to the
+   * next GPU notebook. A run that does not stop in time refuses the delete,
+   * and the owner tries again in a moment.
    */
   router.delete(
     '/api/admin/competitions/:id',
     ownerOnly('competitions.owner.delete'),
-    (req, res) => {
+    async (req, res) => {
       const competition = competitionOf(req, res)
       if (!competition) return
-      deleteCompetition(competition.id)
+      if (!(await stopCompetitionRuns(competition.id, SETTLE_MS)) || deleteCompetition(competition.id) === 'running') {
+        return fail(res, 409, 'failed', tr('competitions.refusal.competitionRunning'))
+      }
       recordAdminEvent({ actor: currentStaff(req), action: 'competition.deleted', target: { type: 'competition', id: competition.id, label: competition.title }, req })
       res.status(204).end()
     },
@@ -1242,9 +1334,19 @@ export function adminCompetitionRoutes(): Router {
     res.json(await viewOf(getCompetition(competition.id)!))
   })
 
-  async function executionAvailable(competition: Competition, res: Response): Promise<boolean> {
+  /**
+   * Whether the executor can do what this door asks of it, said in words when
+   * it cannot. `needs` is what the door runs: a door that runs the notebook
+   * (the baseline check, a rerun, opening the competition) asks for a card
+   * when the competition has one (`notebookNeeds`); a door that runs only the
+   * metric (the metric check, a rescore) asks for none — the metric never
+   * gets a card (store.ts · NEEDS_CARD). Asked with the card, a rescore after
+   * the owner gave the cards back to classes was refused "this competition
+   * needs a GPU" for work the queue would have run on the CPU at once.
+   */
+  async function executionAvailable(competition: Competition, res: Response, needs: CompetitionNeeds): Promise<boolean> {
     try {
-      await assertCompetitionCapability('execution', competition.environment, competitionRevision(competition.id)?.imageDigest)
+      await assertCompetitionCapability('execution', competition.environment, competitionRevision(competition.id)?.imageDigest, needs)
       return true
     } catch (error) {
       fail(res, 503, 'failed', error instanceof Error ? error.message : tr('runtime.brokerUnavailable'))
@@ -1300,14 +1402,14 @@ export function adminCompetitionRoutes(): Router {
   router.post('/api/admin/competitions/:id/baseline/check', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
-    if (!await executionAvailable(competition, res)) return
+    if (!await executionAvailable(competition, res, notebookNeeds(competition))) return
     const notebook = readBaseline(competition.id, LIMITS.notebookBytes)
     if (!notebook) {
       return fail(res, 409, 'not_ready', tr('competitions.refusal.noBaselineFile'))
     }
     const entrantId = baselineEntrantOf(competition) ?? newBaselineEntrant()
     let revision
-    try { revision = await executionRevision(competition) } catch (error) {
+    try { revision = await executionRevision(competition, notebookNeeds(competition)) } catch (error) {
       // The teacher reads "check the base"; the operator needs the cause, which
       // was swallowed here (found on a bank-like cluster, 1 Oct 2026).
       console.warn(`[competitions] ${competition.id}: the environment image could not be pinned: ${error instanceof Error ? error.message.slice(0, 300) : String(error)}`)
@@ -1346,7 +1448,7 @@ export function adminCompetitionRoutes(): Router {
   router.post('/api/admin/competitions/:id/metric/check', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
-    if (!await executionAvailable(competition, res)) return
+    if (!await executionAvailable(competition, res, {})) return
     const baseline = competition.baselineSubmissionId
       ? getSubmission(competition.baselineSubmissionId)
       : null
@@ -1368,7 +1470,7 @@ export function adminCompetitionRoutes(): Router {
   router.post('/api/admin/competitions/:id/open', requireStaff, async (req, res) => {
     let competition = competitionOf(req, res)
     if (!competition) return
-    if (!await executionAvailable(competition, res)) return
+    if (!await executionAvailable(competition, res, notebookNeeds(competition))) return
     competition = getCompetition(competition.id)
     if (!competition) return fail(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     if (competition.state !== 'draft') {
@@ -1591,7 +1693,7 @@ export function adminCompetitionRoutes(): Router {
     async (req, res) => {
       const competition = competitionOf(req, res)
       if (!competition) return
-    if (!await executionAvailable(competition, res)) return
+    if (!await executionAvailable(competition, res, notebookNeeds(competition))) return
       const submission = submissionOf(competition, req, res)
       if (!submission) return
       /*
@@ -1616,7 +1718,7 @@ export function adminCompetitionRoutes(): Router {
     async (req, res) => {
       const competition = competitionOf(req, res)
       if (!competition) return
-    if (!await executionAvailable(competition, res)) return
+    if (!await executionAvailable(competition, res, {})) return
       const submission = submissionOf(competition, req, res)
       if (!submission) return
       /*
@@ -1684,7 +1786,7 @@ export function adminCompetitionRoutes(): Router {
   router.post('/api/admin/competitions/:id/rescore', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
-    if (!await executionAvailable(competition, res)) return
+    if (!await executionAvailable(competition, res, {})) return
     // The pump counts: a submission qualifies if its answer IS ON DISK, and
     // that is a question for the files, not for the row's state.
     res.status(202).json({ queued: rescoreCompetition(competition.id) })

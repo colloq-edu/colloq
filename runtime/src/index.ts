@@ -33,6 +33,17 @@ const jobs = new CompetitionJobs({
     priorityClass: config.priorityClass,
     podLabels: config.podLabels,
     podAnnotations: config.podAnnotations,
+    // A notebook whose competition asks for a GPU: the cluster's resource,
+    // and the GPU rooms' placement, which such a notebook shares.
+    ...(config.competitionGpuResource
+      ? { gpu: { resource: config.competitionGpuResource, count: config.competitionGpuCount,
+          slots: config.competitionGpuSlots, shmMb: config.competitionGpuShmMb } }
+      : {}),
+    gpuRuntimeClass: config.gpuRuntimeClass,
+    gpuNodeSelector: config.gpuNodeSelector,
+    gpuTolerations: config.gpuTolerations,
+    // Every Pod of a GPU environment's image, with a card or without.
+    gpuPullSeconds: config.competitionGpuPullSeconds,
   },
   kube: new HttpsKubernetesClient({
     url: config.kubeUrl,
@@ -56,7 +67,12 @@ server.listen(config.port, '0.0.0.0', () =>
   console.log(
     `Colloq runtime listening on ${config.port}; namespace ${config.namespace}` +
       `; colocation with the app ${config.colocateWithApp ? 'on' : 'off'}` +
-      `; in-place resize ${config.inPlaceResize ? 'on' : 'off'}`,
+      `; in-place resize ${config.inPlaceResize ? 'on' : 'off'}` +
+      `; competition GPU ${config.competitionGpuResource
+        ? `${config.competitionGpuResource} (${config.competitionGpuCount} per job, slots ${config.competitionGpuSlots ?? 'unset'}` +
+          `, /dev/shm ${config.competitionGpuShmMb ? `up to ${config.competitionGpuShmMb} MiB` : 'none'})`
+        : 'off'}` +
+      `; GPU image pull allowance ${config.competitionGpuPullSeconds} s`,
   ),
 )
 for (const signal of ['SIGTERM', 'SIGINT'] as const)

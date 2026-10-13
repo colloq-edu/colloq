@@ -49,6 +49,11 @@ Secret and catalog files are reread on requests, supporting atomic file updates.
 | `RUNTIME_GPU_RUNTIME_CLASS` | `nvidia` (empty: no RuntimeClass)                      |
 | `RUNTIME_GPU_NODE_SELECTOR` | `{}`                                                   |
 | `RUNTIME_GPU_TOLERATIONS`   | `[]`                                                   |
+| `RUNTIME_COMPETITION_GPU_RESOURCE` | unset (competition jobs get no GPU)             |
+| `RUNTIME_COMPETITION_GPU_COUNT` | `1`                                                |
+| `RUNTIME_COMPETITION_GPU_SLOTS` | unset (`null` in health: the app keeps one)        |
+| `RUNTIME_COMPETITION_GPU_SHM_MB` | `1024` (`0`: no `/dev/shm` volume, for MPS)       |
+| `RUNTIME_COMPETITION_GPU_PULL_SECONDS` | `900`                                       |
 | `RUNTIME_ROOM_NODE_SELECTOR`| `{}`                                                   |
 | `RUNTIME_ROOM_TOLERATIONS`  | `[]`                                                   |
 | `RUNTIME_PRIORITY_CLASS`    | unset                                                  |
@@ -63,6 +68,68 @@ a live resize refuses). The default must not exceed the ceiling. GPU environment
 `nvidia.com/gpu` with RuntimeClass `RUNTIME_GPU_RUNTIME_CLASS`. GPU shared memory is 1Gi; CPU shared
 memory is 64Mi; memory-backed volumes consume the Pod memory limit. The operator
 sets the node PID limit and namespace quota. PVC capacity is not a per-room quota.
+
+### Competition jobs on a GPU environment
+
+A GPU environment's image runs every competition job on the CPU: an inventory,
+a package preparation, the metric, and the notebook of a competition that asked
+for no GPU. Their `main` containers, and the egress preflight of every Pod of
+such an image, get `NVIDIA_VISIBLE_DEVICES=void`, so an image built from
+`nvidia/cuda` gets no card on a node whose default runtime is NVIDIA's. Only a
+notebook intent with `gpu: true` (the app sends it for a competition that asks
+for a GPU, and never for the metric, which mounts the hidden answers) gets one:
+
+- `RUNTIME_COMPETITION_GPU_COUNT` units (1 to 8) of
+  `RUNTIME_COMPETITION_GPU_RESOURCE` in the requests and limits of its `main`
+  container, never in the exporter or the preflight. The resource is an extended
+  resource name as the cluster's device plugin offers it: `nvidia.com/gpu` (a
+  whole card, or a time-sliced or MPS replica of one), `nvidia.com/gpu.shared`,
+  `nvidia.com/mig-1g.10gb`. What a unit is, the plugin's configuration decides;
+  the broker only asks for it.
+- The GPU rooms' placement: RuntimeClass `RUNTIME_GPU_RUNTIME_CLASS` (none when
+  empty), `RUNTIME_GPU_NODE_SELECTOR` over the rooms' selector, and
+  `RUNTIME_GPU_TOLERATIONS` after the rooms' tolerations.
+- A memory-backed `/dev/shm` of half the job's memory, at most
+  `RUNTIME_COMPETITION_GPU_SHM_MB` (1024), for PyTorch's DataLoader workers.
+  `0` gives the Pod no `/dev/shm` volume at all: with MPS sharing the device
+  plugin mounts its daemon's shared memory there, and the kubelet mounts a
+  Pod's own volumes after the plugin's, so ours would hide it and CUDA could
+  not reach the MPS server (NVIDIA/k8s-device-plugin#467). MPS setups set `0`.
+
+With `RUNTIME_COMPETITION_GPU_RESOURCE` unset such an intent is refused with 409
+before any Pod exists, and so is one for an environment whose catalog entry is
+not `gpu`. `/v1/health` reports `competition.gpu`: unavailable with code
+`gpu_unavailable` while the resource is unset, otherwise exactly what
+`competition.execution` says; and `competition.gpuSlots`:
+`RUNTIME_COMPETITION_GPU_SLOTS` (1 to 256, how many such notebooks of this
+instance the cluster runs at once, as the operator knows it), `null` when it
+is unset or the resource is. The broker only reports it: the app's queue keeps
+that many GPU notebooks at the broker, one for `null`, and lets CPU work go
+past the rest.
+
+A GPU notebook the scheduler cannot place (`Insufficient <resource>`), whose
+card the kubelet could not hand over (`UnexpectedAdmissionError`,
+`OutOf<resource>`), or whose Pod the API server refuses (HTTP 403, or a 400/422
+that says an admission check denied it: a ResourceQuota used up, a RuntimeClass
+the cluster lacks, an admission policy) fails as `unschedulable` with resource
+`gpu`, and the app returns it to its queue. For an API refusal `error` says
+which of the three, in the broker's words (a quota's resource names are the
+only thing taken from the API's message); the app shows it to the teacher.
+A refusal of the broker's own permissions, and any refusal of a job without a
+GPU, stays an error.
+
+### Image pull of a GPU environment
+
+Every Pod of a GPU environment's image (10 to 13 GB), whatever its job and
+whether or not it gets a GPU, has `RUNTIME_COMPETITION_GPU_PULL_SECONDS` (900; 0
+to 3600) to pull it onto a node that has never run it: the broker waits that
+much longer, after the 30 seconds of startup every job has, for `main` to
+start, its `activeDeadlineSeconds` grows by as much (annotation
+`colloq.dev/pull-seconds` keeps the Pod's own number), and so does the package
+proxy's life for a preparation. The job's limit still counts from `main`'s
+start, in the broker and in the notebook harness, which stops the notebook
+from its own start (`run_notebook.py` · `stop_at`); the app's wait for such a
+job counts from the moment it sees it running. A CPU image's Pods are as before.
 
 ### The customer's cluster
 
@@ -81,9 +148,11 @@ variable's name in the message.
   an ensure keeps a live Pod with its current memory and CPU, and the room's next
   Pod gets the new numbers. `0`/`1` (`true`/`false` too).
 - `RUNTIME_ROOM_NODE_SELECTOR` (JSON object) and `RUNTIME_ROOM_TOLERATIONS` (JSON
-  array of Kubernetes tolerations) apply to room and personal-notebook Pods;
+  array of Kubernetes tolerations) apply to room and personal-notebook Pods, and
+  to competition job and resolver Pods, which run student code too;
   `RUNTIME_GPU_NODE_SELECTOR` / `RUNTIME_GPU_TOLERATIONS` are added for GPU rooms
-  only (a personal notebook never has a GPU). Competition Pods take neither.
+  and for a competition notebook given a GPU only (a personal notebook never has
+  a GPU). The package proxy takes neither.
 - `RUNTIME_PRIORITY_CLASS` is the priorityClassName of every broker Pod; a
   `system-*` class is refused.
 - `RUNTIME_POD_LABELS` / `RUNTIME_POD_ANNOTATIONS` (JSON objects of strings) are
@@ -93,19 +162,24 @@ variable's name in the message.
   refused. Use them for a policy engine's required labels, cost labels, or to opt
   the Pods out of sidecar injection (`sidecar.istio.io/inject: "false"`).
 
-On k3s, set `RUNTIME_KERNEL_MEMORY` and `RUNTIME_KERNEL_MEMORY_MAX` in the
-operator env file (`--env-file` of `cluster.sh install|prepare|update`, kept as
-`/var/lib/colloq/config.env`). `release.py render` copies only these two runtime
-keys into the broker Deployment, validates them with the same grammar and bounds
-as the broker (and an explicit ceiling against the default, `2Gi` when unset),
-and re-renders them on every update. An empty value means the broker default.
+On k3s, set `RUNTIME_KERNEL_MEMORY` and `RUNTIME_KERNEL_MEMORY_MAX`, and the
+`RUNTIME_COMPETITION_GPU_*` settings (`RESOURCE`, `COUNT`, `SLOTS`, `SHM_MB`,
+`PULL_SECONDS`), in the operator env file (`--env-file` of `cluster.sh
+install|prepare|update`, kept as `/var/lib/colloq/config.env`). `release.py
+render` copies only these seven runtime keys into the broker Deployment,
+validates them with the same grammar and bounds as the broker (and an explicit
+ceiling against the default, `2Gi` when unset), and re-renders them on every
+update. An empty value means the broker default.
 Other `RUNTIME_*` variables stay fixed by the installer. See
 [deploy/k3s/README.md](../deploy/k3s/README.md#room-memory).
 
 Kubernetes requests verify the configured CA and reread projected credentials
 on every request. Redirects are not followed. Requests have a 10-second timeout,
 256KiB request bound, and 2MiB response bound. Kubernetes error messages expose
-only status/reason, never arbitrary API response bodies.
+only status/reason, never arbitrary API response bodies; of a refusal's message
+the client keeps only the resource name a node lacked, and which kind of
+refusal it was (quota, with the quota's resource names; missing RuntimeClass;
+permission; admission).
 
 ## HTTP contract
 
@@ -116,7 +190,7 @@ private cluster network; use a secured transport boundary for remote access.
 
 | Method and path                    | Request                    | Response                                                         |
 | ---------------------------------- | -------------------------- | ---------------------------------------------------------------- |
-| GET `/v1/health`                   | —                          | `{ok, reason, defaultCpus?, defaultMemoryMb?, maxMemoryMb?, inPlaceResize?}`; 503 when unavailable |
+| GET `/v1/health`                   | —                          | `{ok, reason, defaultCpus?, defaultMemoryMb?, maxMemoryMb?, inPlaceResize?, competition: {execution, preparation, gpu, gpuSlots}}`; 503 when unavailable |
 | GET `/v1/catalog`                  | —                          | validated catalog                                                |
 | GET `/v1/rooms`                    | —                          | `{rooms: RuntimeRoom[]}`, personal-notebook Pods with `role: "own"` |
 | POST `/v1/rooms/:id`               | `{environment, revision?, cpus?, memoryMb?}` | `RuntimeEndpoint`                              |

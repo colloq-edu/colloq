@@ -56,3 +56,76 @@ test('image probes coalesce and expired negative results recover', async () => {
  assert.equal((await read('base')).execution.available,true)
  assert.equal(calls.filter(a=>a[0]==='image').length,2)
 })
+
+/*
+ * A competition whose notebook wants a video card, on an executor that has
+ * none for submissions: refused at the door with its own code, never queued
+ * for a card nobody gave, never failed "in the metric" by a broker that
+ * cannot place it. Preparation needs no card and keeps its own verdict.
+ */
+test('a GPU competition without a card for submissions: gpu_unavailable on docker, in the owner\'s words', async () => {
+ const {evaluateCapabilities}=await import('../server/src/competitions/capabilities.js')
+ const docker={backend:'docker' as const,dockerVersion:'28.3.0',imageAvailable:true,storageAvailable:true}
+ const none=evaluateCapabilities({...docker,gpu:true,runnerGpus:false})
+ assert.equal(none.execution.available,false);assert.equal(none.execution.code,'gpu_unavailable')
+ assert.match(none.execution.reason!,/«Ресурсы»/)
+ assert.equal(none.preparation.available,true)
+ assert.equal(evaluateCapabilities({...docker,gpu:true,runnerGpus:true}).execution.available,true)
+ // A competition on the CPU never asks, whatever the machine has.
+ assert.equal(evaluateCapabilities({...docker,gpu:false,runnerGpus:false}).execution.available,true)
+ assert.equal(evaluateCapabilities(docker).execution.available,true)
+ // The more basic trouble is said first.
+ assert.equal(evaluateCapabilities({backend:'docker',dockerVersion:null,gpu:true,runnerGpus:false}).execution.code,'docker_unavailable')
+ assert.equal(evaluateCapabilities({...docker,imageAvailable:false,gpu:true,runnerGpus:false}).execution.code,'image_unavailable')
+ // The test stand-in follows the same rule, so queue tests can give it cards.
+ assert.equal(evaluateCapabilities({backend:'test',gpu:true,runnerGpus:false}).execution.code,'gpu_unavailable')
+ assert.equal(evaluateCapabilities({backend:'test',gpu:true,runnerGpus:true}).execution.available,true)
+})
+
+test('under the broker a GPU competition needs the broker\'s own GPU capability, and a broker that reports none has none', async () => {
+ const {evaluateCapabilities}=await import('../server/src/competitions/capabilities.js')
+ const ready={available:true,code:'available',reason:null}
+ const broker={backend:'broker' as const,imageAvailable:true,storageAvailable:true}
+ // An older broker says nothing about cards: read as "none", with the cluster's words.
+ const silent=evaluateCapabilities({...broker,brokerCapabilities:{execution:ready,preparation:ready},gpu:true})
+ assert.equal(silent.execution.code,'gpu_unavailable')
+ // A participant reads this when the upload is refused: no setting to tell them
+ // about, which might be set anyway on a broker older than the app; their way is
+ // the administrator, as for every other executor trouble.
+ const {getLocale,setLocaleResolver}=await import('../shared/i18n.js')
+ const before=getLocale()
+ try {
+  for (const language of ['ru','en'] as const) {
+   setLocaleResolver(()=>language)
+   const reason=evaluateCapabilities({...broker,brokerCapabilities:{execution:ready,preparation:ready},gpu:true}).execution.reason!
+   assert.doesNotMatch(reason,/RUNTIME_|gpu\.competitions|Helm/,language)
+   assert.match(reason,language==='ru'?/Обратитесь к администратору/:/Contact the administrator/)
+  }
+ } finally { setLocaleResolver(()=>before) }
+ assert.equal(silent.preparation.available,true)
+ const off=evaluateCapabilities({...broker,brokerCapabilities:{execution:ready,preparation:ready,gpu:{available:false,code:'gpu_disabled',reason:'off'}},gpu:true})
+ assert.equal(off.execution.code,'gpu_unavailable')
+ const on=evaluateCapabilities({...broker,brokerCapabilities:{execution:ready,preparation:ready,gpu:ready},gpu:true})
+ assert.equal(on.execution.available,true)
+ // The runner cards of this machine mean nothing to the cluster.
+ assert.equal(evaluateCapabilities({...broker,brokerCapabilities:{execution:ready,preparation:ready},gpu:true,runnerGpus:true}).execution.code,'gpu_unavailable')
+ assert.equal(evaluateCapabilities({...broker,brokerCapabilities:{execution:ready,preparation:ready},gpu:false}).execution.available,true)
+})
+
+test('the image probe is shared by a GPU and a CPU competition, the verdict is not, and a card given later is seen at once', async () => {
+ const {createCapabilityReader}=await import('../server/src/competitions/capabilities.js')
+ const calls:string[][]=[]
+ let cards=false
+ const read=createCapabilityReader({backend:()=> 'docker',clock:()=>0,storageAvailable:()=>true,runnerGpus:()=>cards,
+  run:async(args:string[])=>{calls.push(args);return args[0]==='version'?'28.3.0':'sha256:'+'b'.repeat(64)}})
+ assert.equal((await read('base-gpu',undefined,{gpu:true})).execution.code,'gpu_unavailable')
+ assert.equal((await read('base-gpu')).execution.available,true)
+ assert.equal((await read('base-gpu',undefined,{gpu:false})).execution.available,true)
+ assert.equal(calls.filter(a=>a[0]==='image').length,1)
+ cards=true
+ assert.equal((await read('base-gpu',undefined,{gpu:true})).execution.available,true)
+ const broker=createCapabilityReader({backend:()=> 'broker',storageAvailable:()=>true,catalogAvailable:()=>true,
+  brokerCapabilities:async()=>({execution:{available:true,code:'available',reason:null},preparation:{available:true,code:'available',reason:null}})})
+ assert.equal((await broker('base-gpu',undefined,{gpu:true})).execution.code,'gpu_unavailable')
+ assert.equal((await broker('base-gpu')).execution.available,true)
+})

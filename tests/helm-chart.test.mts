@@ -392,8 +392,12 @@ test('the broker gets every setting it reads, with the room defaults and the pat
   })
   // Empty variables would be read as unparseable numbers or names, not as defaults.
   for (const key of ['RUNTIME_KERNEL_MEMORY_MAX', 'RUNTIME_PRIORITY_CLASS', 'RUNTIME_ROOM_NODE_SELECTOR', 'RUNTIME_ROOM_TOLERATIONS',
-    'RUNTIME_GPU_NODE_SELECTOR', 'RUNTIME_GPU_TOLERATIONS', 'RUNTIME_POD_ANNOTATIONS', 'DEPENDENCY_INDEX_URL'])
+    'RUNTIME_GPU_NODE_SELECTOR', 'RUNTIME_GPU_TOLERATIONS', 'RUNTIME_POD_ANNOTATIONS', 'DEPENDENCY_INDEX_URL',
+    // Competition submissions get no GPU until the platform names its resource: neither variable, not even the count.
+    'RUNTIME_COMPETITION_GPU_RESOURCE', 'RUNTIME_COMPETITION_GPU_COUNT', 'RUNTIME_COMPETITION_GPU_SLOTS', 'RUNTIME_COMPETITION_GPU_SHM_MB'])
     assert.equal(key in env, false, key)
+  // A GPU catalog image's pull allowance holds with or without the resource: its metric runs on the CPU.
+  assert.equal(env.RUNTIME_COMPETITION_GPU_PULL_SECONDS, '900')
   // The broker never reads the database: no data volume, so a ReadWriteOnce claim does not pin it.
   const runtime = deployment(await render({}), 'colloq-runtime').spec.template.spec
   assert.ok(!runtime.volumes.some((v: Json) => v.persistentVolumeClaim), 'no claim mounted in the broker')
@@ -412,7 +416,8 @@ test('rooms, GPU and placement values become the broker\'s JSON settings', { ski
       nodeSelector: { 'node-pool': 'rooms' }, tolerations: [{ key: 'rooms', operator: 'Exists', effect: 'NoSchedule' }],
       priorityClassName: 'classroom', podAnnotations: { 'bank.example/owner': 'edu' },
     },
-    gpu: { runtimeClassName: 'nvidia-cdi', nodeSelector: { 'nvidia.com/gpu.present': 'true' }, tolerations: [{ key: 'nvidia.com/gpu', operator: 'Exists' }] },
+    gpu: { runtimeClassName: 'nvidia-cdi', nodeSelector: { 'nvidia.com/gpu.present': 'true' }, tolerations: [{ key: 'nvidia.com/gpu', operator: 'Exists' }],
+      competitions: { resource: 'nvidia.com/mig-1g.10gb', count: 2 } },
     catalog: { defaultEnvironment: 'base', environments: [
       { name: 'base', image: KERNEL('c'), gpu: false },
       { name: 'base-gpu', image: KERNEL('e'), gpu: true, packages: ['torch'] },
@@ -430,6 +435,21 @@ test('rooms, GPU and placement values become the broker\'s JSON settings', { ski
   assert.equal(env.RUNTIME_GPU_RUNTIME_CLASS, 'nvidia-cdi')
   assert.deepEqual(JSON.parse(env.RUNTIME_GPU_NODE_SELECTOR), { 'nvidia.com/gpu.present': 'true' })
   assert.deepEqual(JSON.parse(env.RUNTIME_GPU_TOLERATIONS), [{ key: 'nvidia.com/gpu', operator: 'Exists' }])
+  // The extended resource a GPU competition's notebook requests, and how many units: strings, as the broker reads them.
+  assert.equal(env.RUNTIME_COMPETITION_GPU_RESOURCE, 'nvidia.com/mig-1g.10gb')
+  assert.equal(env.RUNTIME_COMPETITION_GPU_COUNT, '2')
+  const plain = envOf(container(await render({ gpu: { competitions: { resource: 'nvidia.com/gpu' } } }), 'colloq-runtime'))
+  assert.equal(plain.RUNTIME_COMPETITION_GPU_COUNT, '1')
+  // Unsaid slots stay unsaid (the app keeps one at a time); /dev/shm and the pull have their defaults.
+  assert.equal('RUNTIME_COMPETITION_GPU_SLOTS' in plain, false)
+  assert.deepEqual([plain.RUNTIME_COMPETITION_GPU_SHM_MB, plain.RUNTIME_COMPETITION_GPU_PULL_SECONDS], ['1024', '900'])
+  // MPS: 0 is a setting of its own (no /dev/shm of ours), passed, not dropped.
+  const mps = envOf(container(await render({ gpu: { competitions: { resource: 'nvidia.com/gpu.shared', slots: 6, shmMb: 0, pullSeconds: 0 } } }), 'colloq-runtime'))
+  assert.deepEqual([mps.RUNTIME_COMPETITION_GPU_SLOTS, mps.RUNTIME_COMPETITION_GPU_SHM_MB, mps.RUNTIME_COMPETITION_GPU_PULL_SECONDS], ['6', '0', '0'])
+  // Without the resource only the pull allowance remains, whatever else is set.
+  const off = envOf(container(await render({ gpu: { competitions: { slots: 6, shmMb: 0, pullSeconds: 1200 } } }), 'colloq-runtime'))
+  assert.equal(Object.keys(off).filter((key) => key.startsWith('RUNTIME_COMPETITION_GPU')).join(), 'RUNTIME_COMPETITION_GPU_PULL_SECONDS')
+  assert.equal(off.RUNTIME_COMPETITION_GPU_PULL_SECONDS, '1200')
   assert.equal(catalogOf(objects).environments[1].gpu, true)
   // An empty runtime class is a setting of its own (none), so it is passed, not dropped.
   const none = envOf(container(await render({ gpu: { runtimeClassName: '' } }), 'colloq-runtime'))
@@ -892,6 +912,18 @@ test('values the app or the broker would refuse stop the render, with the reason
     [{ rooms: { cpu: 'two' } }, /rooms\.cpu "two"/],
     [{ rooms: { maxMemory: '512Gi' } }, /rooms\.maxMemory "512Gi"/],
     [{ rooms: { network: 'open' } }, /network/],
+    [{ gpu: { competitions: { resource: 'gpu' } } }, /gpu\.competitions\.resource|does not match pattern/],
+    [{ gpu: { competitions: { resource: 'kubernetes.io/gpu' } } }, /gpu\.competitions\.resource "kubernetes\.io\/gpu": the extended resource/],
+    [{ gpu: { competitions: { resource: 'requests.nvidia.com/gpu' } } }, /gpu\.competitions\.resource "requests\.nvidia\.com\/gpu"/],
+    [{ gpu: { competitions: { resource: 'nvidia.com/gpu', count: 9 } } }, /count|maximum/],
+    [{ gpu: { competitions: { resource: 'nvidia.com/gpu', count: 1.5 } } }, /count|integer/],
+    [{ gpu: { competitions: { slices: 4 } } }, /slices|additional/],
+    [{ gpu: { competitions: { resource: 'nvidia.com/gpu', slots: 0 } } }, /slots|minimum/],
+    [{ gpu: { competitions: { resource: 'nvidia.com/gpu', slots: 257 } } }, /slots|maximum/],
+    [{ gpu: { competitions: { resource: 'nvidia.com/gpu', shmMb: -1 } } }, /shmMb|minimum/],
+    [{ gpu: { competitions: { resource: 'nvidia.com/gpu', shmMb: 65537 } } }, /shmMb|maximum/],
+    [{ gpu: { competitions: { pullSeconds: 3601 } } }, /pullSeconds|maximum/],
+    [{ gpu: { competitions: { pullSeconds: 1.5 } } }, /pullSeconds|integer/],
     [{ rooms: { podLabels: { 'colloq.dev/role': 'kernel' } } }, /rooms\.podLabels\.colloq\.dev\/role/],
     [{ rooms: { podLabels: { 'app.kubernetes.io/managed-by': 'me' } } }, /rooms\.podLabels\.app\.kubernetes\.io\/managed-by/],
     [{ rooms: { podAnnotations: { 'colloq.dev/session-id': 'x' } } }, /rooms\.podAnnotations\.colloq\.dev\/session-id/],

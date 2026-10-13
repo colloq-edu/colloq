@@ -14,7 +14,7 @@
    */
   import { tr } from '@shared/i18n'
   import { loadRenderers, renderers } from '@/lib/render.svelte'
-  import { sealedTarget } from '@/lib/competition-words'
+  import { gpuCondition, sealedTarget } from '@/lib/competition-words'
   import type { EntrantCompetitionView } from '@shared/competitions-entrant'
   import Conditions from './Conditions.svelte'
   import DataFiles from './DataFiles.svelte'
@@ -37,6 +37,8 @@
   )
   /** The hidden test the steps below the data explain; null — no hidden test, no steps. */
   const target = $derived(sealedTarget(view))
+  /** The card a run gets («срез ≈ 6 ГБ · cuda:0»); null — the notebook runs on the CPU. */
+  const gpu = $derived(gpuCondition(view))
 </script>
 
 <div class="flex flex-col gap-8 xl:flex-row xl:gap-12">
@@ -57,11 +59,11 @@
 
     <DataFiles files={view.files} sealedFiles={view.sealedFiles ?? []} {fileUrl} {zipUrl} />
     {#if target}
-      <HowChecked competition={view.competition} {target} />
+      <HowChecked competition={view.competition} {target} {gpu} />
     {/if}
   </div>
 
   <aside class="w-full shrink-0 xl:w-[300px]">
-    <Conditions competition={view.competition} sealedFiles={view.sealedFiles ?? []} />
+    <Conditions competition={view.competition} sealedFiles={view.sealedFiles ?? []} {gpu} />
   </aside>
 </div>

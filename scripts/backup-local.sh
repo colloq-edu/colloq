@@ -73,7 +73,7 @@
 # second goes into the backup:
 #
 #   <application>/kernel/environments   shipped with the product (base, base-gpu,
-#       kaggle-base).
+#       kaggle-base, kaggle-gpu).
 #       Nothing to copy: they come again with any installation of the package.
 #   <state>/environments                created by a person. These exist
 #       nowhere else; why the directory is separate is worked through at

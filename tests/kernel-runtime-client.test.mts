@@ -184,6 +184,51 @@ test('broker health carries its memory default and ceiling, and garbage there is
   }finally{await remote.close()}
 })
 
+test('broker health carries the competition capabilities, the GPU one only when it is one', async()=>{
+  const ready={available:true,code:'ready',reason:null}
+  const off={available:false,code:'gpu_unavailable',reason:'Competition jobs get no GPU on this cluster'}
+  let reply:unknown={ok:true,reason:null,competition:{execution:ready,preparation:ready,gpu:ready}}
+  const remote=await fixture((_req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify(reply))})
+  try{
+    const client=new RuntimeClient({url:remote.url,token:'a'.repeat(64)})
+    assert.deepEqual((await client.health()).competition,{execution:ready,preparation:ready,gpu:ready})
+    reply={ok:true,reason:null,competition:{execution:ready,preparation:ready,gpu:off}}
+    assert.deepEqual((await client.health()).competition?.gpu,off)
+    // A broker from before GPU jobs says nothing about them: absent, which reads as "no".
+    reply={ok:true,reason:null,competition:{execution:ready,preparation:ready}}
+    assert.deepEqual((await client.health()).competition,{execution:ready,preparation:ready})
+    // A GPU answer that is not a capability is not believed, and nothing unchecked rides along.
+    reply={ok:true,reason:null,competition:{execution:{...ready,extra:1},preparation:ready,gpu:{available:'yes',code:'ready',reason:null},other:{x:1}}}
+    assert.deepEqual((await client.health()).competition,{execution:ready,preparation:ready})
+    // Without a valid execution there are no competition capabilities at all, as before.
+    reply={ok:true,reason:null,competition:{execution:{available:true},preparation:ready,gpu:ready}}
+    assert.equal('competition' in (await client.health()),false)
+  }finally{await remote.close()}
+})
+
+test('broker health carries how many GPU notebooks the cluster runs at once: a number in its bounds, null when unsaid, nothing else', async()=>{
+  const ready={available:true,code:'ready',reason:null}
+  let reply:unknown=null
+  const remote=await fixture((_req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify(reply))})
+  try{
+    const client=new RuntimeClient({url:remote.url,token:'a'.repeat(64)})
+    const slots=async(value:unknown)=>{
+      reply={ok:true,reason:null,competition:{execution:ready,preparation:ready,gpu:ready,...(value===undefined?{}:{gpuSlots:value})}}
+      return (await client.health()).competition
+    }
+    assert.deepEqual(await slots(3),{execution:ready,preparation:ready,gpu:ready,gpuSlots:3})
+    assert.equal((await slots(1))?.gpuSlots,1)
+    assert.equal((await slots(256))?.gpuSlots,256)
+    // The operator did not say: null, which the queue reads as one at a time.
+    assert.deepEqual(await slots(null),{execution:ready,preparation:ready,gpu:ready,gpuSlots:null})
+    // A broker from before the setting says nothing: absent, read the same way.
+    assert.deepEqual(await slots(undefined),{execution:ready,preparation:ready,gpu:ready})
+    // Garbage is not believed, and the rest of the answer stands.
+    for (const bad of [0,257,1.5,-1,'2',true,{n:2}])
+      assert.deepEqual(await slots(bad),{execution:ready,preparation:ready,gpu:ready},JSON.stringify(bad))
+  }finally{await remote.close()}
+})
+
 test('an unschedulable room reaches the app as a word and numbers, and the room reads a short note instead of the broker text', async()=>{
   let reply:unknown={error:'Room Pod cannot be scheduled: node lacks allocatable memory',unschedulable:'memory',memoryMb:6144,cpus:2}
   const remote=await fixture((_req,res)=>{res.statusCode=503;res.setHeader('content-type','application/json');res.end(JSON.stringify(reply))})

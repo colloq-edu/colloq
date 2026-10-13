@@ -34,6 +34,15 @@ export interface CompetitionJobIntent {
    * such a run fails rather than quietly reading the open example.
    */
   sealedInputs?: true
+  /**
+   * The notebook gets a share of a card: the broker adds the cluster's GPU
+   * resource (RUNTIME_COMPETITION_GPU_RESOURCE) and the GPU nodes' placement
+   * to its Pod, and refuses the job when it has none. A flag, not a resource
+   * name or a count: those are the operator's, never the app's. Notebook jobs
+   * only (the metric holds the hidden answers); an older broker refuses the
+   * unknown key, so such a run fails rather than quietly training on the CPU.
+   */
+  gpu?: true
   limits: CompetitionJobLimits
 }
 export interface CompetitionJobProgress { phase: 'dependencies' | 'notebook' | 'score' | 'resolve' | 'verify'; cell: number; cells: number; outputBytes: number }
@@ -47,19 +56,44 @@ export interface CompetitionJobStatus {
   oomKilled: boolean
   progress: CompetitionJobProgress | null
   error: string | null
-  failure?: { code: 'unschedulable' | 'image_unavailable' | 'runtime_unavailable' | 'export_failed'; resource?: 'memory' | 'cpu' | 'storage' | 'other' }
+  /** `resource: 'gpu'`: no node had a free unit of the GPU resource, or the node's device plugin could not hand one over. */
+  failure?: { code: 'unschedulable' | 'image_unavailable' | 'runtime_unavailable' | 'export_failed'; resource?: 'memory' | 'cpu' | 'storage' | 'gpu' | 'other' }
 }
 export interface CompetitionJobCollection { files: {name:string;bytes:number;sha256:string}[]; totalBytes:number }
 export const COMPETITION_JOB_ID = /^[a-f0-9]{32}$/
 export const COMPETITION_ATTEMPT_ID = /^[a-f0-9]{32}$/
 export const COMPETITION_ROW_ID = /^[a-z2-9]{8}$/
 export const COMPETITION_REVISION = /^sha256:[a-f0-9]{64}$/
+/**
+ * The broker's `error` for a job that found no room on the cluster (a
+ * scheduler or kubelet refusal), next to `failure.code: 'unschedulable'`. When
+ * the broker knows more (the API server refused a GPU notebook's Pod for a
+ * quota, a missing RuntimeClass or an admission policy), `error` says that
+ * instead, and the app shows it to the teacher while the job waits in its
+ * queue (broker-runner.ts · CompetitionResourcePending).
+ */
+export const COMPETITION_RESOURCES_UNAVAILABLE = 'Competition resources are unavailable'
+/**
+ * RUNTIME_COMPETITION_GPU_SLOTS, the most GPU notebooks of one instance the
+ * operator says the cluster runs at once, is 1 to this; the broker reports it
+ * in /v1/health (CompetitionCapabilities.gpuSlots), and the app believes no
+ * other number.
+ */
+export const COMPETITION_GPU_SLOTS_MAX = 256
+/**
+ * RUNTIME_COMPETITION_GPU_PULL_SECONDS, how long the broker lets a GPU
+ * environment's image (10 to 13 GB) be pulled onto a node before a job's own
+ * time starts, is 0 to this. The app waits that long on top for such a job to
+ * leave the queue before it gives up on the broker, whatever the broker's own
+ * setting (broker-runner.ts · execute).
+ */
+export const COMPETITION_GPU_PULL_SECONDS_MAX = 3600
 const kinds: ReadonlySet<CompetitionJobKind> = new Set(['notebook','metric','inventory','resolve','verify'])
 const integer=(v:unknown,min:number,max:number):v is number => Number.isSafeInteger(v)&&Number(v)>=min&&Number(v)<=max
 export function parseCompetitionJobIntent(value:unknown):CompetitionJobIntent {
  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Invalid competition job')
  const v=value as Record<string,unknown>
- if(Object.keys(v).some(key=>!['schemaVersion','jobId','kind','environment','revision','competitionId','submissionId','attemptId','preparationId','bundleId','sealedInputs','limits'].includes(key))||v.schemaVersion!==1||typeof v.kind!=='string'||!kinds.has(v.kind as CompetitionJobKind)||typeof v.jobId!=='string'||!COMPETITION_JOB_ID.test(v.jobId)||typeof v.environment!=='string'||!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,30}$/.test(v.environment)||typeof v.revision!=='string'||!COMPETITION_REVISION.test(v.revision))throw new Error('Invalid competition job identity')
+ if(Object.keys(v).some(key=>!['schemaVersion','jobId','kind','environment','revision','competitionId','submissionId','attemptId','preparationId','bundleId','sealedInputs','gpu','limits'].includes(key))||v.schemaVersion!==1||typeof v.kind!=='string'||!kinds.has(v.kind as CompetitionJobKind)||typeof v.jobId!=='string'||!COMPETITION_JOB_ID.test(v.jobId)||typeof v.environment!=='string'||!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,30}$/.test(v.environment)||typeof v.revision!=='string'||!COMPETITION_REVISION.test(v.revision))throw new Error('Invalid competition job identity')
  const present=(key:string,re:RegExp):boolean=>typeof v[key]==='string'&&re.test(v[key] as string)
  if((v.kind==='notebook'||v.kind==='metric')&&(!present('competitionId',COMPETITION_ROW_ID)||!present('submissionId',COMPETITION_ROW_ID)||!present('attemptId',COMPETITION_ATTEMPT_ID)))throw new Error('Invalid submission job identity')
  if((v.kind==='resolve'||v.kind==='verify')&&!present('preparationId',COMPETITION_ATTEMPT_ID))throw new Error('Invalid preparation job identity')
@@ -72,6 +106,8 @@ export function parseCompetitionJobIntent(value:unknown):CompetitionJobIntent {
  if(n.packagesMb!==undefined&&(v.kind!=='notebook'||v.bundleId===undefined))throw new Error('Unexpected package room')
  // The hidden test is read by a notebook and by nothing else: the metric never sees it.
  if(v.sealedInputs!==undefined&&(v.sealedInputs!==true||v.kind!=='notebook'))throw new Error('Unexpected sealed inputs')
+ // A card goes to a notebook and to nothing else: never the metric, which holds the answers.
+ if(v.gpu!==undefined&&(v.gpu!==true||v.kind!=='notebook'))throw new Error('Unexpected GPU request')
  if(v.kind==='notebook'||v.kind==='metric'){
   if(v.preparationId!==undefined||v.kind==='metric'&&v.bundleId!==undefined)throw new Error('Unexpected job reference')
  }else if(v.kind==='resolve'||v.kind==='verify'){
@@ -88,7 +124,7 @@ export function parseCompetitionJobStatus(value:unknown):CompetitionJobStatus {
  if(Object.keys(v).some(k=>!['jobId','kind','phase','startedAt','finishedAt','exitCode','oomKilled','progress','error','failure'].includes(k))||typeof v.jobId!=='string'||!COMPETITION_JOB_ID.test(v.jobId)||typeof v.kind!=='string'||!kinds.has(v.kind as CompetitionJobKind)||typeof v.phase!=='string'||!phases.has(v.phase as CompetitionJobStatus['phase'])||!integer(v.startedAt,0,Number.MAX_SAFE_INTEGER)||v.finishedAt!==null&&!integer(v.finishedAt,0,Number.MAX_SAFE_INTEGER)||v.exitCode!==null&&!integer(v.exitCode,0,255)||typeof v.oomKilled!=='boolean'||v.error!==null&&(typeof v.error!=='string'||v.error.length>500))throw new Error('Invalid competition job status')
  if(v.failure!==undefined){
   const f=v.failure
-  if(!f||typeof f!=='object'||Array.isArray(f)||Object.keys(f).some(k=>!['code','resource'].includes(k))||!['unschedulable','image_unavailable','runtime_unavailable','export_failed'].includes((f as Record<string,unknown>).code as string)||((f as Record<string,unknown>).resource!==undefined&&!['memory','cpu','storage','other'].includes((f as Record<string,unknown>).resource as string)))throw new Error('Invalid competition job failure')
+  if(!f||typeof f!=='object'||Array.isArray(f)||Object.keys(f).some(k=>!['code','resource'].includes(k))||!['unschedulable','image_unavailable','runtime_unavailable','export_failed'].includes((f as Record<string,unknown>).code as string)||((f as Record<string,unknown>).resource!==undefined&&!['memory','cpu','storage','gpu','other'].includes((f as Record<string,unknown>).resource as string)))throw new Error('Invalid competition job failure')
  }
  if(v.progress!==null){
   if(!v.progress||typeof v.progress!=='object'||Array.isArray(v.progress))throw new Error('Invalid competition job progress')

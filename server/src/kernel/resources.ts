@@ -23,7 +23,7 @@ import os from 'node:os'
 import { spawn } from 'node:child_process'
 import { db, sessionMemoryMb } from '../db.js'
 import { listNames, needsGpu } from '../environments.js'
-import { containerLimits, defaultCpus, defaultMemoryMb, dockerRead, roomContainers, memoryLimitMb, ownLimits } from './pool.js'
+import { containerLimits, defaultCpus, defaultMemoryMb, dockerRead, gpuDevices, roomContainers, memoryLimitMb, ownLimits } from './pool.js'
 import { kernelBackend, kernelRuntimeClient } from './runtime-client.js'
 import type { GpuCard, InstanceResources, RoomResource } from '@shared/admin'
 import type { RuntimeRoom } from '@shared/runtime'
@@ -282,41 +282,49 @@ export function memoryPicture(input: {
 /* ------------------------------------------------------------------ GPU */
 
 /**
- * The machine's cards, from `nvidia-smi`, if it is there.
+ * What the local `nvidia-smi` prints for these arguments; `null` — it is not
+ * there, it failed, or it did not answer in time.
  *
- * Neither errors nor a missing binary escape: an empty list means "no cards
- * visible", and the seminar form then says nothing about GPUs. The timeout is
- * short and real (kill, not just reject): `nvidia-smi` on a machine with a
- * hung driver never returns, and this read hangs on the panel's request.
+ * Neither errors nor a missing binary escape. The timeout is short and real
+ * (kill, not just reject): `nvidia-smi` on a machine with a hung driver never
+ * returns, and this read hangs on the panel's request.
  */
-function readGpus(): Promise<GpuCard[]> {
+function nvidiaSmi(args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn('nvidia-smi', [
-        '--query-gpu=index,name,memory.total',
-        '--format=csv,noheader,nounits',
-      ])
+      child = spawn('nvidia-smi', args)
     } catch {
-      resolve([])
+      resolve(null)
       return
     }
     let out = ''
     let done = false
-    const finish = (cards: GpuCard[]): void => {
+    const finish = (value: string | null): void => {
       if (done) return
       done = true
       clearTimeout(timer)
-      resolve(cards)
+      resolve(value)
     }
     const timer = setTimeout(() => {
       child.kill('SIGKILL')
-      finish([])
+      finish(null)
     }, 3_000)
     child.stdout?.on('data', (chunk: Buffer) => (out += chunk.toString()))
-    child.on('error', () => finish([]))
-    child.on('close', (code) => finish(code === 0 ? parseGpus(out) : []))
+    child.on('error', () => finish(null))
+    child.on('close', (code) => finish(code === 0 ? out : null))
   })
+}
+
+/**
+ * The machine's cards, from `nvidia-smi`, if it is there.
+ *
+ * An empty list means "no cards visible", and the seminar form then says
+ * nothing about GPUs.
+ */
+async function readGpus(): Promise<GpuCard[]> {
+  const out = await nvidiaSmi(['--query-gpu=index,name,memory.total', '--format=csv,noheader,nounits'])
+  return out === null ? [] : parseGpus(out)
 }
 
 /** "0, NVIDIA GeForce RTX 3090, 24576": one line per card. */
@@ -331,6 +339,347 @@ export function parseGpus(out: string): GpuCard[] {
     cards.push({ index, name: parts[1], memoryMb: Number.isFinite(memoryMb) ? memoryMb : 0 })
   }
   return cards
+}
+
+/* ------------------------------------------- the cards behind KERNEL_GPUS */
+
+/*
+ * What each entry of KERNEL_GPUS is: the card's name and its video memory.
+ *
+ * `readGpus` above answers "what cards does this machine have" for the class
+ * form, and inside the colloq-vast container it answers nothing: nvidia-smi is
+ * not in the app's image (deploy/vast/README.md lists it as a known gap).
+ * Runner cards need more than a picture. A card's memory decides the share
+ * every submission on it is promised AND held to (competitions/gpu.ts ·
+ * gpuSliceMb), so it has to be read wherever the app actually runs. Two
+ * sources, in this order:
+ *
+ *  - the local `nvidia-smi`, when the server runs on the host: one call for
+ *    every card, matched by index or by UUID, the two ways KERNEL_GPUS names a
+ *    whole card;
+ *  - otherwise the cards themselves, asked from ONE throwaway container that
+ *    is given all of them (`docker run --gpus all --entrypoint nvidia-smi`, on
+ *    a kernel image already on the machine) and matched the same way. The
+ *    NVIDIA toolkit mounts nvidia-smi into every container it gives a card
+ *    to, and with every card visible the container numbers them as the host
+ *    does, which is how `--gpus device=<index>` names them too. One container
+ *    for all of them, not one per card: on the 2 × 4090 VM a probe container
+ *    took ~6 s for both cards and ~7 s for each card alone (13 Oct 2026), and
+ *    a refresh in the middle of a class is then one container on a busy
+ *    daemon rather than one per card. An entry that container did not name
+ *    (it failed, or the entry is spelled in a way only `--gpus device=`
+ *    understands) is asked from a container of its own,
+ *    `--gpus device=<id>`, whose answer is about the card docker hands out
+ *    under that very id.
+ *
+ * A MIG instance stays unknown on purpose: the per-card query describes the
+ * physical card the instance is cut from, and a share computed from that would
+ * promise each run more than the whole instance has.
+ *
+ * Read when the server starts and kept warm from then on (`watchGpuCards`),
+ * so that neither the owner's Resources tab nor the first GPU run after a
+ * restart waits for docker. Cached for ten minutes per card (one minute for
+ * "unknown", so a kernel image built a minute ago is noticed soon), one probe
+ * at a time for everyone who asks, and nothing ever throws: a card that cannot
+ * be asked is a card of unknown size, and the panel says exactly that. A card
+ * that has once said its size keeps it through a re-probe that brings none
+ * (`remembered`).
+ */
+
+/** A card's own word about itself; `null` — it could not be asked, nobody guesses. */
+export interface GpuCardFacts {
+  name: string | null
+  memoryMb: number | null
+}
+
+/** An entry of KERNEL_GPUS with what is known about it. */
+export interface KnownGpuCard extends GpuCardFacts {
+  id: string
+}
+
+/** Asks about entries of KERNEL_GPUS; an entry missing from the answer is unknown. */
+export type GpuCardProbe = (devices: readonly string[]) => Promise<Map<string, GpuCardFacts>>
+
+const CARD_TTL_MS = 10 * 60_000
+const UNKNOWN_CARD_TTL_MS = 60_000
+const UNKNOWN_CARD: GpuCardFacts = { name: null, memoryMb: null }
+/** The test stand's card: the same made-up 3090 `collect` shows. */
+const FAKE_CARD: GpuCardFacts = { name: 'NVIDIA GeForce RTX 3090', memoryMb: 24_576 }
+/** Kernel images are `colloq-kernel:<environment>` (kernel/pool.ts · IMAGE_PREFIX). */
+const KERNEL_IMAGE = 'colloq-kernel'
+/** What the local nvidia-smi and the all-cards container are asked: one line per card (`parseCardList`). */
+const CARD_QUERY = ['--query-gpu=index,uuid,name,memory.total', '--format=csv,noheader,nounits']
+
+/** What the cache holds for a card: its facts, and when they are old enough to be asked again. */
+interface SeenCard {
+  facts: GpuCardFacts
+  until: number
+}
+
+const seenCards = new Map<string, SeenCard>()
+let cardProbe: GpuCardProbe = probeGpuCards
+let cardsInflight: { devices: Set<string>; done: Promise<void> } | null = null
+let cardWatch: ReturnType<typeof setInterval> | null = null
+
+/**
+ * Substitute the probe, for tests; `null` restores the real one. The cache
+ * goes with it either way: an answer of the old probe is not the new one's.
+ */
+export function useGpuCardProbe(fake: GpuCardProbe | null): void {
+  cardProbe = fake ?? probeGpuCards
+  seenCards.clear()
+  cardsInflight = null
+}
+
+/**
+ * The cards behind these KERNEL_GPUS entries, in the same order.
+ *
+ * A card asked about before is answered from memory at once, even when the
+ * answer is old: the old answer goes out and a fresh probe starts behind it
+ * (a card does not change its memory between two page loads). A card never
+ * asked about waits for the probe, at most `waitMs`: a participant's page
+ * must not wait half a minute for `docker run` on a cold server, and after
+ * the deadline the card is simply unknown on this answer and known on the next.
+ */
+export async function gpuCards(devices: readonly string[], options: { waitMs?: number } = {}): Promise<KnownGpuCard[]> {
+  const now = Date.now()
+  const unseen = devices.filter((device) => !seenCards.has(device))
+  const stale = devices.filter((device) => {
+    const seen = seenCards.get(device)
+    return seen !== undefined && now >= seen.until
+  })
+  if (unseen.length + stale.length > 0) {
+    const done = refreshCards([...unseen, ...stale])
+    if (unseen.length > 0) await within(done, options.waitMs ?? Infinity)
+  }
+  return devices.map((id) => ({ id, ...(seenCards.get(id)?.facts ?? UNKNOWN_CARD) }))
+}
+
+/** One probe for everyone: a caller whose cards are already being asked about joins it. */
+function refreshCards(devices: readonly string[]): Promise<void> {
+  const flight = cardsInflight
+  if (flight && devices.every((device) => flight.devices.has(device))) return flight.done
+  const asked = new Set(devices)
+  const probe = cardProbe
+  const done: Promise<void> = Promise.resolve()
+    .then(() => probe([...asked]))
+    .catch(() => new Map<string, GpuCardFacts>())
+    .then((answer) => {
+      // A test swapped the probe meanwhile: this answer belongs to the old one.
+      if (probe !== cardProbe) return
+      const at = Date.now()
+      for (const device of asked) seenCards.set(device, remembered(seenCards.get(device)?.facts, answer.get(device), at))
+    })
+    .finally(() => {
+      if (cardsInflight?.done === done) cardsInflight = null
+    })
+  cardsInflight = { devices: asked, done }
+  return done
+}
+
+/**
+ * What the cache keeps for a card after a probe: `known` is what it held,
+ * `heard` what the probe said (nothing — it failed, timed out or did not name
+ * the card).
+ *
+ * A size the card said goes in, replacing whatever was there, for ten
+ * minutes. A probe that brought no size does NOT erase a size the card said
+ * before: a card does not change its memory between two probes, while a probe
+ * container that times out on a daemon busy with a class's runs, or a
+ * `docker image ls` that fails once, is ordinary. Erasing it meant that every
+ * GPU run started in the next minute was promised no share at all — no
+ * allocator cap and no watchdog (competitions/gpu.ts · gpuSliceFor), on a card
+ * whose other runs were capped to theirs, so one greedy notebook could take
+ * the memory they had been promised (review, 13 Oct 2026). The kept size is
+ * asked again within a minute instead of ten, so the cache is confirmed as
+ * soon as the daemon answers. A card that never said its size stays unknown,
+ * and is asked again in a minute, as before.
+ */
+function remembered(known: GpuCardFacts | undefined, heard: GpuCardFacts | undefined, at: number): SeenCard {
+  if (heard && heard.memoryMb !== null) return { facts: heard, until: at + CARD_TTL_MS }
+  if (known && known.memoryMb !== null) return { facts: known, until: at + UNKNOWN_CARD_TTL_MS }
+  return { facts: heard ?? UNKNOWN_CARD, until: at + UNKNOWN_CARD_TTL_MS }
+}
+
+/**
+ * Keep the inventory warm from the server's start: every card of KERNEL_GPUS
+ * is asked about now, in the background, and looked at again every minute,
+ * which asks docker only about what has gone stale by the rules above (a size
+ * after ten minutes, an unknown one after one) and costs nothing otherwise.
+ *
+ * Before this, nothing asked until somebody needed an answer. The first open
+ * of the Resources tab after a restart waited for the probe containers (the
+ * owner's settings read waits seconds for a card never asked about, and the
+ * whole tab stays blank meanwhile — ~7 s on the 2 × 4090 VM), and the first
+ * GPU run the queue picked up again after a restart waited for its card the
+ * same way. Now the answer is there before anyone asks, and a request that
+ * comes while the first probe still runs joins it instead of starting another
+ * one.
+ *
+ * Only where this server gives the cards out (the docker backend: under the
+ * broker the cluster has them, and the test backend makes them up) and only
+ * on a machine whose KERNEL_GPUS lists any. Returns the way to stop it, for
+ * tests; the timer does not keep the process alive.
+ */
+export function watchGpuCards(): () => void {
+  if (cardWatch !== null || !dockerGivesCards()) return () => {}
+  // Each card once, as the owner's block asks about them: KERNEL_GPUS may name one twice.
+  const devices = [...new Set(gpuDevices())]
+  if (devices.length === 0) return () => {}
+  const look = (): void => void gpuCards(devices, { waitMs: 0 })
+  look()
+  const watch = setInterval(look, UNKNOWN_CARD_TTL_MS)
+  watch.unref?.()
+  cardWatch = watch
+  return () => {
+    clearInterval(watch)
+    if (cardWatch === watch) cardWatch = null
+  }
+}
+
+/** Whether this server hands the machine's cards out itself; a backend setting that does not parse is a "no", not a crash at start. */
+function dockerGivesCards(): boolean {
+  try {
+    return kernelBackend() === 'docker'
+  } catch {
+    return false
+  }
+}
+
+/** The work, or the deadline, whichever comes first; never rejects (the work does not). */
+function within(work: Promise<void>, ms: number): Promise<void> {
+  if (!Number.isFinite(ms)) return work
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, Math.max(0, ms))
+    // A deadline is no reason to keep a finished process alive.
+    timer.unref?.()
+    void work.then(() => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
+/**
+ * The real probe: the local nvidia-smi first, then one throwaway container
+ * given every card, then a container of its own for an entry neither named.
+ */
+async function probeGpuCards(devices: readonly string[]): Promise<Map<string, GpuCardFacts>> {
+  const answer = new Map<string, GpuCardFacts>()
+  if (kernelBackend() === 'test' && !dockerInjected) {
+    for (const device of devices) answer.set(device, FAKE_CARD)
+    return answer
+  }
+  // Under the broker the cluster has the cards; nobody here gives them out.
+  if (kernelBackend() !== 'docker' && !dockerInjected) return answer
+  const name = (listed: CardRow[]): void => {
+    for (const device of devices) {
+      const card = listed.find((row) => row.index === device || row.uuid === device)
+      if (card && !answer.has(device)) answer.set(device, { name: card.name, memoryMb: card.memoryMb })
+    }
+  }
+  const unnamed = (): string[] => devices.filter((device) => !answer.has(device) && !device.startsWith('MIG-'))
+  const local = await nvidiaSmi(CARD_QUERY)
+  if (local !== null) name(parseCardList(local))
+  if (unnamed().length === 0) return answer
+  const image = await probeImage()
+  if (!image) return answer
+  const all = await cardsInContainer(image)
+  if (all) name(all)
+  await Promise.all(
+    unnamed().map(async (device) => {
+      const facts = await cardInContainer(device, image)
+      if (facts) answer.set(device, facts)
+    }),
+  )
+  return answer
+}
+
+/** One line of `CARD_QUERY`'s answer. */
+export type CardRow = { index: string; uuid: string; name: string; memoryMb: number | null }
+
+/**
+ * "0, GPU-8f…, NVIDIA GeForce RTX 4090, 24564": one line per card, as
+ * `--query-gpu=index,uuid,name,memory.total` prints it. A memory field that
+ * is not a number ("[N/A]") is unknown, not zero.
+ */
+export function parseCardList(out: string): CardRow[] {
+  const cards: CardRow[] = []
+  for (const line of out.split('\n')) {
+    const parts = line.split(',').map((part) => part.trim())
+    if (parts.length < 4 || !/^\d+$/.test(parts[0]) || !parts[1]) continue
+    const memoryMb = Number(parts[parts.length - 1])
+    cards.push({
+      index: parts[0],
+      uuid: parts[1],
+      name: parts.slice(2, -1).join(', '),
+      memoryMb: Number.isSafeInteger(memoryMb) && memoryMb > 0 ? memoryMb : null,
+    })
+  }
+  return cards
+}
+
+/**
+ * "NVIDIA GeForce RTX 4090, 24564" from the probe container. Docker's own
+ * words may come before it on the same stream (`run` merges stderr), so the
+ * first line of that shape is taken, not the first line.
+ */
+export function parseCardFacts(out: string): GpuCardFacts | null {
+  for (const line of out.split('\n')) {
+    const match = /^(.+?),\s*(\d+)\s*$/.exec(line.trim())
+    if (!match) continue
+    const memoryMb = Number(match[2])
+    if (Number.isSafeInteger(memoryMb) && memoryMb > 0) return { name: match[1].trim(), memoryMb }
+  }
+  return null
+}
+
+/**
+ * A kernel image to start the probe from, among those already on the
+ * machine: `base-gpu` first, it is surely there on a machine with cards. Never
+ * pulled (`--pull=never` below): `colloq-kernel` is not on any registry, and a
+ * pull attempt is half a minute of nothing.
+ */
+async function probeImage(): Promise<string | null> {
+  const res = await askDocker(['image', 'ls', '--format', '{{.Repository}}:{{.Tag}}', KERNEL_IMAGE], 10_000)
+  if (res.code !== 0) return null
+  const tags = res.out
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith(`${KERNEL_IMAGE}:`) && !line.endsWith(':<none>'))
+  return tags.find((tag) => tag === `${KERNEL_IMAGE}:base-gpu`) ?? tags.find((tag) => tag === `${KERNEL_IMAGE}:base`) ?? tags[0] ?? null
+}
+
+/**
+ * Ask the cards themselves what they are, from a container that lives a few
+ * seconds: no network, no capabilities, removed on exit. Read-only for the
+ * cards — the query takes no memory on them and disturbs no run already there.
+ */
+function probeContainer(gpus: string, image: string, query: readonly string[]): Promise<{ code: number; out: string }> {
+  return askDocker(
+    [
+      'run', '--rm', '--pull=never', '--network', 'none', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+      '--gpus', gpus, '--entrypoint', 'nvidia-smi', image, ...query,
+    ],
+    30_000,
+  )
+}
+
+/**
+ * Every card at once, from one container given all of them: the same question
+ * and the same lines as the local nvidia-smi. `null` — docker did not start
+ * it or nvidia-smi failed in it; a partial answer is not read, since a line
+ * cut short by the timeout would read as a smaller card.
+ */
+async function cardsInContainer(image: string): Promise<CardRow[] | null> {
+  const res = await probeContainer('all', image, CARD_QUERY)
+  return res.code === 0 ? parseCardList(res.out) : null
+}
+
+/** One card, from a container given only it: for an entry the all-cards container did not name. */
+async function cardInContainer(device: string, image: string): Promise<GpuCardFacts | null> {
+  const res = await probeContainer(`device=${device}`, image, ['--query-gpu=name,memory.total', '--format=csv,noheader,nounits'])
+  return res.code === 0 ? parseCardFacts(res.out) : null
 }
 
 /* ------------------------------------------------------------------ rooms */

@@ -66,4 +66,28 @@ test('broker reports scheduling refusal separately from a participant failure',a
  const status={jobId:'a'.repeat(32),kind:'notebook',phase:'failed',startedAt:1,finishedAt:2,exitCode:null,oomKilled:false,progress:null,error:'Competition resources are unavailable',failure:{code:'unschedulable',resource:'memory'}}
  assert.deepEqual(parseCompetitionJobStatus(status),status)
  assert.throws(()=>parseCompetitionJobStatus({...status,failure:{code:'unschedulable',resource:'../../hidden'}}),/Invalid/)
+ // No free card is a shortage like memory: the job waits in the queue.
+ const card={...status,failure:{code:'unschedulable',resource:'gpu'}}
+ assert.deepEqual(parseCompetitionJobStatus(card),card)
+ assert.throws(()=>parseCompetitionJobStatus({...status,failure:{code:'unschedulable',resource:'nvidia.com/gpu'}}),/Invalid/)
+})
+
+test('a card is a flag of a notebook and of nothing else: never the metric, never a resource the app names',()=>{
+ const gpu={...job,gpu:true}
+ assert.deepEqual(parseCompetitionJobIntent(gpu),gpu)
+ // With a package set and the hidden test too: the flag is about the card alone.
+ const full={...gpu,bundleId:'d'.repeat(32),sealedInputs:true,limits:{...job.limits,packagesMb:379}}
+ assert.deepEqual(parseCompetitionJobIntent(full),full)
+ // A CPU notebook says nothing at all: an older broker refuses the unknown key.
+ assert.equal('gpu' in parseCompetitionJobIntent(job),false)
+ const prep={schemaVersion:1,jobId:'f'.repeat(32),environment:'kaggle-base',revision:job.revision,limits:job.limits}
+ for(const bad of [
+  {...job,kind:'metric',gpu:true},
+  {...prep,kind:'inventory',gpu:true},
+  {...prep,kind:'resolve',preparationId:'e'.repeat(32),gpu:true},
+  {...prep,kind:'verify',preparationId:'e'.repeat(32),gpu:true},
+  {...job,gpu:false},{...job,gpu:'true'},{...job,gpu:1},{...job,gpu:'nvidia.com/gpu'},{...job,gpu:{count:1}},
+ ])assert.throws(()=>parseCompetitionJobIntent(bad),/Unexpected GPU request/,JSON.stringify(bad))
+ // Nor is a count a limit the app may set: units are the cluster's (RUNTIME_COMPETITION_GPU_COUNT).
+ assert.throws(()=>parseCompetitionJobIntent({...gpu,limits:{...job.limits,gpu:1}}),/Invalid competition job limits/)
 })

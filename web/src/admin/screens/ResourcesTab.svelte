@@ -22,21 +22,55 @@
     ResourceSource,
     UpdateResourceSettingsRequest,
   } from '@shared/admin'
-  import type { CompetitionSettings, CompetitionSettingsInput } from '@shared/competitions-settings'
+  import type {
+    CompetitionGpuSettingsInput,
+    CompetitionSettings,
+    CompetitionSettingsInput,
+  } from '@shared/competitions-settings'
   import type { DiskSpace } from '@shared/disk'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
+  import Check from '@/admin/ui/Check.svelte'
   import Choice from '@/admin/ui/Choice.svelte'
   import RunningKernels from '@/admin/ui/RunningKernels.svelte'
   import Section from '@/admin/ui/Section.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
+  import { cardWord } from '@/admin/running-kernels'
+  import {
+    cardFacts,
+    cardHolder,
+    cardsBar,
+    cardsFallback,
+    holderWord,
+    perDeviceFallback,
+    shareDetail,
+    shareGauge,
+    shareLines,
+    shareReadout,
+    sizesUnknown,
+    withCardFacts,
+    type CardHolder,
+  } from '@/admin/runner-cards'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { cn } from '@/lib/utils'
 
   /* ------------------------------------------------------------- fields */
 
-  /** The competition half is prefixed so one record can hold the whole form. */
-  type CompetitionKey = 'c.slots' | 'c.wallSeconds' | 'c.memoryMb' | 'c.cpus' | 'c.perDay' | 'c.uploadsPerMinute'
+  /**
+   * The competition half is prefixed so one record can hold the whole form.
+   * `c.gpuDevices` is the one field that is not a number: the runner cards,
+   * kept as a list beside the texts (`gpuChosen`) and saved through its own
+   * half of the door (CompetitionGpuSettingsInput).
+   */
+  type CompetitionKey =
+    | 'c.slots'
+    | 'c.wallSeconds'
+    | 'c.memoryMb'
+    | 'c.cpus'
+    | 'c.perDay'
+    | 'c.uploadsPerMinute'
+    | 'c.gpuPerDevice'
+    | 'c.gpuDevices'
   type FieldKey = ResourceSettingName | CompetitionKey
 
   /** The fields this page edits; the process ceilings stay env-and-API only. */
@@ -54,13 +88,26 @@
   ] as const satisfies readonly ResourceSettingName[]
   type EditedResource = (typeof RESOURCE_KEYS)[number]
 
+  /** The competition half's number fields; the slots and the card list have their own controls. */
   const COMPETITION_KEYS = [
     'c.wallSeconds',
     'c.memoryMb',
     'c.cpus',
     'c.perDay',
     'c.uploadsPerMinute',
+    'c.gpuPerDevice',
   ] as const satisfies readonly CompetitionKey[]
+
+  /**
+   * The environment variable behind a field, for its "from .env" caption:
+   * the room settings name their own; of the competition half only the slots
+   * and the runner cards have one.
+   */
+  const COMPETITION_ENV: Partial<Record<CompetitionKey, string>> = {
+    'c.slots': 'COMPETITION_SLOTS',
+    'c.gpuDevices': 'COMPETITION_GPUS',
+    'c.gpuPerDevice': 'COMPETITION_GPU_PER_DEVICE',
+  }
 
   /** Memory is typed in gigabytes and stored in megabytes; the rest are plain counts. */
   const IN_GB = new Set<FieldKey>(['roomMemoryMb', 'gpuRoomMemoryMb', 'ownMemoryMb', 'c.memoryMb'])
@@ -80,6 +127,8 @@
   /** Fields asked to forget their saved value and fall back to .env or the default. */
   let forgotten = $state<FieldKey[]>([])
   let slotsMode = $state<'auto' | 'fixed'>('auto')
+  /** The cards ticked for competition submissions, in KERNEL_GPUS order (`c.gpuDevices`). */
+  let gpuChosen = $state<string[]>([])
 
   let saving = $state(false)
   let saveErrorText = $state<(() => string | null) | null>(null)
@@ -110,12 +159,14 @@
     return () => {
       clearInterval(timer)
       clearTimeout(noteTimer)
+      disposed = true
+      clearTimeout(sizesTimer)
     }
   })
 
   function blankTexts(): Record<FieldKey, string> {
     const record = {} as Record<FieldKey, string>
-    for (const key of [...RESOURCE_KEYS, ...COMPETITION_KEYS, 'c.slots' as const]) record[key] = ''
+    for (const key of [...RESOURCE_KEYS, ...COMPETITION_KEYS, 'c.slots' as const, 'c.gpuDevices' as const]) record[key] = ''
     return record
   }
 
@@ -146,23 +197,68 @@
     if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
   }
 
+  /*
+   * Each half is applied the moment it lands, not when both have. The queue
+   * half names every card with its size, and after a restart the sizes are
+   * still being asked (a throwaway container per machine, seconds): waiting
+   * for both kept the whole tab — «Работают сейчас» and its stop buttons
+   * included — behind «Загружаем ресурсы…» for up to eight seconds. The rooms
+   * half draws the page; the competitions section waits under its own line.
+   */
   async function load(): Promise<void> {
-    const [resources, queue] = await Promise.allSettled([adminApi.resourceSettings(), adminApi.competitionSettings()])
-    if (resources.status === 'fulfilled') {
-      applyResources(resources.value)
-      loadErrorText = null
-    } else {
-      loadErrorText = () => messageFor(resources.reason)
-      reauthenticate(resources.reason)
-    }
-    // The queue half failing must not take the rooms half with it: the owner
-    // who came to raise notebook memory can still do that.
-    if (queue.status === 'fulfilled') {
-      applyCompetitions(queue.value)
-      competitionErrorText = null
-    } else {
-      competitionErrorText = () => messageFor(queue.reason)
-    }
+    await Promise.allSettled([
+      adminApi.resourceSettings().then(
+        (response) => {
+          applyResources(response)
+          loadErrorText = null
+        },
+        (cause: unknown) => {
+          loadErrorText = () => messageFor(cause)
+          reauthenticate(cause)
+        },
+      ),
+      // The queue half failing must not take the rooms half with it: the owner
+      // who came to raise notebook memory can still do that.
+      adminApi.competitionSettings().then(
+        (settings) => {
+          applyCompetitions(settings)
+          competitionErrorText = null
+          askSizesLater()
+        },
+        (cause: unknown) => {
+          competitionErrorText = () => messageFor(cause)
+        },
+      ),
+    ])
+  }
+
+  /*
+   * A card the server has not measured yet («объём неизвестен») is asked
+   * about again a few times, a little later each time: the sizes come from a
+   * probe in the background, and the answer that drew the form may have come
+   * before it. Only the cards' own facts are taken from the new answer
+   * (withCardFacts), never the saved choice the owner may be editing; a card
+   * that never says its size (a MIG instance) stops the asking after the last
+   * try, and a reload asks again.
+   */
+  const SIZE_ASKS = 4
+  const SIZE_ASK_MS = 3_000
+  let sizesTimer: ReturnType<typeof setTimeout> | undefined
+  /** The tab is gone: an answer still on its way schedules nothing more. */
+  let disposed = false
+
+  function askSizesLater(attempt = 0): void {
+    clearTimeout(sizesTimer)
+    if (disposed || attempt >= SIZE_ASKS || !sizesUnknown(competitions?.gpu ?? null)) return
+    sizesTimer = setTimeout(() => {
+      void adminApi
+        .competitionSettings()
+        .then((fresh) => {
+          if (competitions) competitions = { ...competitions, gpu: withCardFacts(competitions.gpu, fresh.gpu) }
+        })
+        .catch(() => undefined)
+        .finally(() => askSizesLater(attempt + 1))
+    }, SIZE_ASK_MS * (attempt + 1))
   }
 
   async function refreshBudget(): Promise<void> {
@@ -210,12 +306,15 @@
         return queue.defaults.cpus
       case 'c.perDay':
         return queue.defaults.perDay
+      case 'c.gpuPerDevice':
+        return queue.gpu.perDevice
     }
     return null
   }
 
   function boundsOf(key: FieldKey): { min: number; max: number } | null {
     if (!key.startsWith('c.')) return loaded?.bounds[key as ResourceSettingName] ?? null
+    if (key === 'c.gpuPerDevice') return competitions?.gpu.bounds.perDevice ?? null
     const bounds = competitions?.bounds
     if (!bounds) return null
     const name = key.slice(2) as keyof CompetitionSettings['bounds']
@@ -248,7 +347,20 @@
     if (!queue) return null
     if (key === 'c.slots') return queue.slots.source
     if (key === 'c.uploadsPerMinute') return queue.uploadsPerMinute.source
+    if (key === 'c.gpuDevices') return queue.gpu.source.devices
+    if (key === 'c.gpuPerDevice') return queue.gpu.source.perDevice
     return queue.defaultSources[key.slice(2) as keyof CompetitionSettings['defaultSources']] ?? null
+  }
+
+  /** The variable a field falls back to; `null` — none, and "back to" means the default. */
+  function envNameOf(key: FieldKey): string | null {
+    if (key.startsWith('c.')) return COMPETITION_ENV[key as CompetitionKey] ?? null
+    return loaded?.settings[key as ResourceSettingName].envName ?? null
+  }
+
+  /** Two card lists hold the same cards: the order is KERNEL_GPUS's on both sides. */
+  function sameCards(a: readonly string[], b: readonly string[]): boolean {
+    return a.length === b.length && a.every((id) => b.includes(id))
   }
 
   function isDirty(key: FieldKey): boolean {
@@ -259,12 +371,13 @@
       if (slotsMode !== queue.slots.mode) return true
       return slotsMode === 'fixed' && valueOf('c.slots') !== queue.slots.value
     }
+    if (key === 'c.gpuDevices') return competitions !== null && !sameCards(gpuChosen, competitions.gpu.devices)
     return valueOf(key) !== savedOf(key)
   }
 
   const resourceDirty = $derived(RESOURCE_KEYS.filter((key) => isDirty(key)))
   const competitionDirty = $derived(
-    competitions ? [...COMPETITION_KEYS, 'c.slots' as const].filter((key) => isDirty(key)) : [],
+    competitions ? [...COMPETITION_KEYS, 'c.slots' as const, 'c.gpuDevices' as const].filter((key) => isDirty(key)) : [],
   )
   const dirtyCount = $derived(resourceDirty.length + competitionDirty.length)
   const dirty = $derived(dirtyCount > 0)
@@ -282,7 +395,22 @@
     slotsMode = settings.slots.mode
     texts['c.slots'] = String(settings.slots.mode === 'fixed' ? settings.slots.value : settings.slots.auto)
     for (const key of COMPETITION_KEYS) texts[key] = display(key, savedOf(key))
+    gpuChosen = [...settings.gpu.devices]
     forgotten = forgotten.filter((key) => !key.startsWith('c.'))
+  }
+
+  /**
+   * A card ticked or unticked. The list keeps KERNEL_GPUS's order, so "the
+   * same cards" is a plain comparison, and a tick over a forgotten list is a
+   * new decision, the way typing over a forgotten number is.
+   */
+  function pickCard(id: string, on: boolean): void {
+    const cards = competitions?.gpu.cards ?? []
+    const next = new Set(gpuChosen)
+    if (on) next.add(id)
+    else next.delete(id)
+    gpuChosen = cards.map((card) => card.id).filter((card) => next.has(card))
+    typed('c.gpuDevices')
   }
 
   /** Blur tidies the text into what will be saved, so "4,25" becomes "4,3" before anyone saves it. */
@@ -294,12 +422,47 @@
   /** "Back to .env": the saved row goes away on Save and the field shows what will answer instead. */
   function forget(key: FieldKey): void {
     if (!forgotten.includes(key)) forgotten = [...forgotten, key]
+    /*
+     * The runner cards show what answers instead at once, like a room field:
+     * the ticks, the holders and the share under them become what Save will
+     * leave — the COMPETITION_GPUS cards or none, COMPETITION_GPU_PER_DEVICE
+     * or one — instead of the saved ones they kept showing until Save. A
+     * server that does not say (CompetitionGpuSettings.fallback) leaves the
+     * old picture with the «после сохранения» line under it.
+     */
+    if (key === 'c.gpuDevices') {
+      const fallback = cardsFallback(competitions?.gpu ?? null)
+      if (fallback) gpuChosen = fallback.devices
+      return
+    }
+    if (key === 'c.gpuPerDevice') {
+      const fallback = perDeviceFallback(competitions?.gpu ?? null)
+      texts[key] = fallback ? display(key, fallback.perDevice) : ''
+      return
+    }
     if (key.startsWith('c.')) {
       texts[key] = ''
       return
     }
     const setting = loaded?.settings[key as ResourceSettingName]
     if (setting) texts[key] = display(key, setting.env ?? setting.default)
+  }
+
+  /**
+   * The word on the button that forgets a saved value: back to .env where a
+   * variable answers instead, back to the default where none does. Of the
+   * competition half only the runner cards can tell (their fallback):
+   * «вернуть умолчание» there gave the COMPETITION_GPUS cards back to
+   * submissions.
+   */
+  function backWord(key: FieldKey): string {
+    const fromEnv =
+      key === 'c.gpuDevices'
+        ? cardsFallback(competitions?.gpu ?? null)?.source === 'env'
+        : key === 'c.gpuPerDevice'
+          ? perDeviceFallback(competitions?.gpu ?? null)?.source === 'env'
+          : !key.startsWith('c.') && !!loaded?.settings[key as ResourceSettingName].envName
+    return tr(fromEnv ? 'admin.resourcesTab.backToEnv' : 'admin.resourcesTab.backToDefault')
   }
 
   function typed(key: FieldKey): void {
@@ -326,10 +489,19 @@
     for (const key of resourceDirty) {
       resourcePatch[key as EditedResource] = forgotten.includes(key) ? null : valueOf(key)
     }
-    const competitionPatch: CompetitionSettingsInput = {}
+    const competitionPatch: CompetitionSettingsInput & CompetitionGpuSettingsInput = {}
     for (const key of competitionDirty) {
       if (key === 'c.slots') {
         competitionPatch.slots = forgotten.includes(key) ? null : slotsMode === 'auto' ? 'auto' : valueOf(key)
+        continue
+      }
+      // The cards' half of the same body (shared/competitions-settings.ts · CompetitionGpuSettingsInput).
+      if (key === 'c.gpuDevices') {
+        competitionPatch.gpuDevices = forgotten.includes(key) ? null : [...gpuChosen]
+        continue
+      }
+      if (key === 'c.gpuPerDevice') {
+        competitionPatch.gpuPerDevice = forgotten.includes(key) ? null : valueOf(key)
         continue
       }
       const name = key.slice(2) as Exclude<keyof CompetitionSettingsInput, 'slots'>
@@ -344,6 +516,7 @@
       if (Object.keys(resourcePatch).length > 0) applyResources(await adminApi.updateResourceSettings(resourcePatch))
       if (Object.keys(competitionPatch).length > 0) {
         applyCompetitions(await adminApi.saveCompetitionSettings(competitionPatch))
+        askSizesLater()
         // The budget's competition segment is computed from these settings.
         void refreshBudget()
       }
@@ -410,6 +583,43 @@
     const promised = rooms + own + queue
     return { rooms, own, queue, promised, total: budget.totalCpus, scale: Math.max(budget.totalCpus, promised) }
   })
+
+  /*
+   * The cards, as the server counted them: all of KERNEL_GPUS, the ones a
+   * class holds, the ones given to submissions (ResourceBudget.gpus). Not the
+   * form's ticks: like the rooms' memory this is a census of what is held,
+   * and it catches up after Save (refreshBudget). No bar under Kubernetes,
+   * where the cluster has the cards, nor on a machine without any.
+   */
+  const gpuBar = $derived(cardsBar(loaded?.budget.gpus, competitions?.gpu ?? null))
+
+  /*
+   * «Видеокарты для посылок» as the form now stands: the ticked cards, the
+   * runs per card typed, and the share that makes — by the server's own rule
+   * (admin/runner-cards.ts · shareReadout). The panel promises this number
+   * only because the server enforces it.
+   */
+  const gpuForm = $derived.by(() => {
+    const block = competitions?.gpu
+    if (!block || block.managed || block.cards.length === 0) return null
+    return shareReadout(block.cards, gpuChosen, valueOf('c.gpuPerDevice') ?? block.perDevice)
+  })
+
+  /**
+   * How a card's holder word is painted: the submissions' in accent; in amber
+   * one that changed hands while its holder is still on it — a class on a card
+   * given to submissions, a submission on one given back to classes.
+   */
+  const HOLDER_TONE: Record<CardHolder, string> = {
+    runners: 'font-semibold text-accent-text',
+    leaving: 'font-semibold text-warning',
+    rooms: 'text-muted',
+    finishing: 'font-semibold text-warning',
+    free: 'text-muted',
+  }
+
+  /** The first line under the readout, by its tone (admin/runner-cards.ts · shareLines). */
+  const LINE_TONE = { ink: 'text-ink', warning: 'text-warning', muted: 'text-muted' } as const
 
   function share(part: number, scale: number): string {
     return `${Math.max(0, (part / Math.max(scale, 1)) * 100)}%`
@@ -529,6 +739,13 @@
     />
     <span class="shrink-0 text-2xs text-muted">{unit}</span>
   </div>
+  {@render sourceLine(key, source)}
+{/snippet}
+
+<!-- Where a value came from, under its control: a number box, or the list of
+     runner cards. The variable named is the field's own (envNameOf): every
+     competition field used to be captioned COMPETITION_SLOTS. -->
+{#snippet sourceLine(key: FieldKey, source: ResourceSource | null)}
   <p class="admin-meta mt-1.5 min-h-5">
     {#if forgotten.includes(key)}
       <span class="text-warning">{tr('admin.resourcesTab.willForget')}</span>
@@ -537,14 +754,11 @@
       {#if isOwner}
         ·
         <button type="button" class="text-accent-text hover:underline" onclick={() => forget(key)}>
-          {key.startsWith('c.') || !loaded?.settings[key as ResourceSettingName].envName
-            ? tr('admin.resourcesTab.backToDefault')
-            : tr('admin.resourcesTab.backToEnv')}
+          {backWord(key)}
         </button>
       {/if}
     {:else if source === 'env'}
-      {@const setting = key.startsWith('c.') ? null : loaded?.settings[key as ResourceSettingName]}
-      {tr('admin.resourcesTab.sourceEnv')} <span class="font-mono">{setting?.envName ?? 'COMPETITION_SLOTS'}</span>
+      {tr('admin.resourcesTab.sourceEnv')} <span class="font-mono">{envNameOf(key) ?? ''}</span>
     {:else if source === 'default'}
       {tr('admin.resourcesTab.sourceDefault')}
     {/if}
@@ -558,6 +772,89 @@
       <span class="text-ui font-semibold text-ink">{title}</span>
     </div>
     <p class="mt-0.5 pl-[18px] font-mono text-micro text-muted">{detail}</p>
+  </div>
+{/snippet}
+
+<!--
+  «Видеокарты для посылок» (Paper 15 · G1): which of KERNEL_GPUS the owner
+  gives to competition submissions, how many runs share one, and the share of
+  video memory that makes. A card given here leaves the classes' pool whole —
+  a class and submissions never meet on one card. Under Kubernetes the
+  cluster gives the cards (Helm), and this form has nothing to give.
+-->
+{#snippet runnerCards(gpu: CompetitionSettings['gpu'])}
+  <div class="mt-5 flex flex-col gap-3 border-t border-line pt-5">
+    <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+      <p class="admin-label">{tr('admin.resourcesTab.gpuTitle')}</p>
+      {#if !gpu.managed && gpu.cards.length > 0}
+        <span class="admin-meta min-w-0">
+          {tr('admin.resourcesTab.gpuCardsHere', { count: gpu.cards.length })} ·
+          <span class="break-all font-mono">KERNEL_GPUS={gpu.cards.map((card) => card.id).join(',')}</span>
+        </span>
+      {/if}
+    </div>
+    {#if gpu.managed}
+      <p class="text-2xs text-muted">{tr('admin.resourcesTab.gpuCluster')}</p>
+    {:else if gpu.cards.length === 0}
+      <p class="text-2xs text-muted">{tr('admin.resourcesTab.gpuNoCards')}</p>
+    {:else}
+      <!-- One lane for the names down the list: an index («GPU 0») is narrow,
+           a UUID or MIG id («MIG-5c8e9a71…») takes a wider lane for every row. -->
+      {@const lane = gpu.cards.every((card) => /^\d+$/.test(card.id)) ? 'w-[72px]' : 'w-[136px]'}
+      <div>
+        <div class="flex flex-col border border-line">
+          {#each gpu.cards as card (card.id)}
+            {@const picked = gpuChosen.includes(card.id)}
+            {@const holder = cardHolder(card, picked)}
+            <label
+              class={cn(
+                'flex min-h-11 flex-wrap items-center gap-x-3.5 gap-y-1 border-t border-line px-4 py-2.5 first:border-t-0',
+                picked && 'bg-accent/[0.07]',
+                isOwner && 'cursor-pointer',
+              )}
+            >
+              <Check
+                checked={picked}
+                label={tr('admin.resourcesTab.gpuPick', { card: cardWord(card.id) })}
+                onchange={(on) => pickCard(card.id, on)}
+              />
+              <span class={cn('shrink-0 truncate font-mono text-2xs font-semibold text-ink', lane)} title={card.id}>{cardWord(card.id)}</span>
+              <span class="min-w-0 flex-1 basis-[180px] text-2xs text-ink">{cardFacts(card)}</span>
+              <span class={cn('ml-auto shrink-0 text-right text-micro', HOLDER_TONE[holder])}>{holderWord(holder)}</span>
+            </label>
+          {/each}
+        </div>
+        {@render sourceLine('c.gpuDevices', sourceOf('c.gpuDevices'))}
+      </div>
+
+      <div class="flex flex-wrap items-start gap-4">
+        {@render field(
+          'c.gpuPerDevice',
+          tr('admin.resourcesTab.gpuPerDevice'),
+          tr('admin.resourcesTab.gpuPerDeviceUnit', { min: gpu.bounds.perDevice.min, max: gpu.bounds.perDevice.max }),
+          'w-[250px] max-w-full',
+        )}
+        {#if gpuForm && gpuForm.chosen > 0}
+          <!-- 26px down: the caption line (20) and its gap (6), so the
+               readout stands level with the box beside it. -->
+          <div class="mt-[26px] flex min-h-10 min-w-[220px] flex-1 flex-wrap items-baseline gap-x-2.5 gap-y-1">
+            <span class="admin-label">{tr('admin.resourcesTab.gpuSlice')}</span>
+            <span class="font-mono text-gauge font-bold text-ink">{shareGauge(gpuForm)}</span>
+            <span class="text-2xs text-muted">{shareDetail(gpuForm)}</span>
+          </div>
+        {/if}
+      </div>
+
+      {#if gpuForm}
+        {@const lines = shareLines(gpuForm)}
+        <div class="flex max-w-[760px] flex-col gap-1">
+          <p class={cn('text-2xs', LINE_TONE[lines.tone])}>{lines.lead}</p>
+          {#if lines.note}
+            <p class="text-micro text-muted">{lines.note}</p>
+          {/if}
+        </div>
+      {/if}
+    {/if}
   </div>
 {/snippet}
 
@@ -670,6 +967,35 @@
               {tr('admin.resourcesTab.coresNote', { rooms: cores.rooms, own: cores.own, queue: cores.queue })}
             </p>
           </div>
+
+          <!-- The cards (Paper 15 · G1): a card is a class's or the
+               submissions', whole, never both — so the bar counts cards, and
+               the share a submission gets on one is said beside it. -->
+          {#if gpuBar}
+            <div>
+              <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                <div class="flex items-baseline gap-2.5">
+                  <span class="admin-section-title">{tr('admin.resourcesTab.gpus')}</span>
+                  <span class="font-mono text-gauge font-bold text-ink">{gpuBar.total}</span>
+                  <span class="text-2xs text-muted">{tr('admin.resourcesTab.gpusOnMachine', { count: gpuBar.total })}</span>
+                </div>
+                <span class="text-ui font-semibold text-positive">{gpuBar.status}</span>
+              </div>
+              <div class="mt-2.5 flex h-3 gap-0.5" aria-hidden="true">
+                <span class="bg-primary" style:width={share(gpuBar.rooms, gpuBar.total)}></span>
+                <span class="bg-accent" style:width={share(gpuBar.runners, gpuBar.total)}></span>
+                {#if gpuBar.free > 0}
+                  <span class="flex-1 border border-dashed border-line bg-surface"></span>
+                {/if}
+              </div>
+              <div class="mt-3 flex flex-wrap gap-x-7 gap-y-3">
+                {@render legend('bg-primary', tr('admin.resourcesTab.gpuClasses'), gpuBar.roomsDetail)}
+                {@render legend('bg-accent', tr('admin.resourcesTab.gpuSubmissions'), gpuBar.runnersDetail)}
+                {@render legend('border border-dashed border-faint bg-surface', tr('admin.resourcesTab.free'), gpuBar.freeDetail)}
+              </div>
+              <p class="mt-2 text-2xs text-muted">{tr('admin.resourcesTab.gpusNote')}</p>
+            </div>
+          {/if}
 
           {#each diskRows as row (row.key)}
             {@const used = Math.max(0, row.space.totalBytes - row.space.freeBytes)}
@@ -813,6 +1139,11 @@
             {@render field('c.uploadsPerMinute', tr('admin.resourcesTab.uploads'), tr('admin.resourcesTab.unitPerMinute'), 'w-[376px] max-w-full')}
             <p class="mt-[26px] min-w-[220px] flex-1 text-2xs text-muted">{tr('admin.resourcesTab.uploadsNote')}</p>
           </div>
+
+          {@render runnerCards(competitions.gpu)}
+        {:else}
+          <!-- The rooms half drew the page; this one is still asking the cards. -->
+          <p class="text-ui text-muted">{tr('common.loading')}</p>
         {/if}
       </Section>
 

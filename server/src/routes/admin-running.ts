@@ -205,6 +205,8 @@ function runRows(viewer: StaffLike): RunningRun[] {
       limitSec: competition ? limitsFor(competition, row.kind).wallSeconds : null,
       reservedMb: competition ? runReservationMb(competition, row.kind) : 0,
       canStop: visible,
+      // The runner card the attempt holds, as the queue took it (QueueRow.gpu); none on the CPU or the cluster.
+      gpu: row.gpu,
     })
   }
   return out

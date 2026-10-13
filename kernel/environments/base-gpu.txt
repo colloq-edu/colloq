@@ -17,5 +17,11 @@
 # Обычный индекс pypi, а не .../whl/cpu, как в cv: именно там колёса с CUDA.
 # Драйвер приходит с хоста через nvidia-container-toolkit, ставить его в образ
 # не надо. Первая сборка идёт долго, дальше образ лежит в кеше docker.
-torch>=2.4
-torchvision>=0.19
+#
+# Pinned since 13 Oct 2026: an unpinned torch followed PyPI to CUDA 13.0 wheels
+# (torch 2.14.1+cu130), which need an NVIDIA driver of at least 580, while the
+# rental scripts still took hosts with CUDA 12 drivers, where torch imports and
+# never sees the card. A pin moves only on purpose, together with the driver
+# floor in scripts/vast-vm.sh and the kaggle-gpu pins checked on a card.
+torch==2.14.1
+torchvision==0.29.1

@@ -50,6 +50,9 @@ services:
       KERNEL_MEM_BASE_GPU: ${KERNEL_MEM_BASE_GPU:-}
       KERNEL_CPUS: ${KERNEL_CPUS:-2}
       KERNEL_GPUS: ${KERNEL_GPUS:-}
+      # Cards of KERNEL_GPUS given to competition submissions, and runs per card.
+      COMPETITION_GPUS: ${COMPETITION_GPUS:-}
+      COMPETITION_GPU_PER_DEVICE: ${COMPETITION_GPU_PER_DEVICE:-}
       KERNEL_SHM: ${KERNEL_SHM:-1g}
       # The second container per class, the one holding students' personal
       # notebooks: how many kernels may live in it and how many processes it

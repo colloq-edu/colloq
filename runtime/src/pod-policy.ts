@@ -202,6 +202,27 @@ export function parseRuntimeClass(raw: string | undefined): string {
   return value
 }
 
+/**
+ * RUNTIME_COMPETITION_GPU_RESOURCE: the name under which the cluster's device
+ * plugin offers a share of a card, `nvidia.com/gpu` (a whole card, or one
+ * time-sliced or MPS replica of it) or `nvidia.com/mig-1g.10gb` (a MIG slice).
+ * Empty or unset is none.
+ *
+ * Kubernetes' own rule for an extended resource, so that a typo stops the
+ * broker at start: otherwise every GPU submission would wait in the queue for
+ * a resource no node has, under the word "resources", until somebody looked.
+ * A domain-qualified name outside `kubernetes.io` (cpu and memory are not
+ * extended resources), not starting with `requests.`, which quotas reserve,
+ * and still a qualified name with that prefix, which is how a quota names it.
+ */
+export function parseExtendedResource(name: string, raw: string | undefined): string {
+  const value = (raw ?? '').trim()
+  if (!value) return ''
+  if (!value.includes('/') || value.includes('kubernetes.io/') || value.startsWith('requests.') || !qualifiedName(`requests.${value}`))
+    throw new Error(`${name} must be an extended resource name, for example nvidia.com/gpu or nvidia.com/mig-1g.10gb`)
+  return value
+}
+
 /** The label of the app's Pod that the colocation affinity looks for; the chart sets it. */
 export const APP_POD_SELECTOR = { 'colloq.dev/role': 'app' } as const
 const TOPOLOGY = 'kubernetes.io/hostname'

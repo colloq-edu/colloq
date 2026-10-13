@@ -42,7 +42,8 @@ import { zonedClock } from '@shared/time-zone'
 import { currentStaff } from '../admin/auth.js'
 import { canSeeCompetition } from '../competitions/scope.js'
 import { instanceNextDayStart, instanceTimeZone } from '../time-zone.js'
-import { assertCompetitionCapability, competitionCapabilities } from '../competitions/capabilities.js'
+import { assertCompetitionCapability, competitionCapabilities, notebookNeeds } from '../competitions/capabilities.js'
+import { competitionGpuSliceMb, runnerCardsHere, runnerGpuDevices, runnerGpuPerDevice } from '../competitions/gpu.js'
 import { competitionRevision } from '../dependencies/store.js'
 import { readEnvironmentInventory } from '../environment-inventory.js'
 import { acceptPinnedSubmission, executionRevision, publicExecution } from '../dependencies/service.js'
@@ -641,7 +642,10 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
       // where the metric code and the row split seed are stripped from the
       // competition.
       competition: publicCompetition(competition),
-      capabilities: await competitionCapabilities(competition.environment, competitionRevision(competition.id)?.imageDigest),
+      capabilities: await competitionCapabilities(competition.environment, competitionRevision(competition.id)?.imageDigest, notebookNeeds(competition)),
+      gpuSliceMb: await competitionGpuSliceMb(competition),
+      // One run per card on this machine's cards: the run has the whole card (EntrantCompetitionView.gpuWholeCard).
+      gpuWholeCard: competition.limits.gpu === true && runnerCardsHere() && runnerGpuDevices().length > 0 && runnerGpuPerDevice() === 1,
       ...filesOf(competition.id),
       entrants: summary.entrants,
       submissions: summary.submissions,
@@ -958,13 +962,14 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
       res.once('close', release)
     }
     try {
-      await assertCompetitionCapability('execution', competition.environment, competitionRevision(competition.id)?.imageDigest)
+      await assertCompetitionCapability('execution', competition.environment, competitionRevision(competition.id)?.imageDigest, notebookNeeds(competition))
     } catch (error) {
       return refuse(res, 503, 'unavailable', error instanceof Error ? error.message : tr('runtime.brokerUnavailable'))
     }
 
     readNotebook(req, res, competition, async (fileName, body, bundleId) => {
-      const revision = await executionRevision(competition)
+      // Asked with the card again: the owner may have taken the last one back while the body arrived.
+      const revision = await executionRevision(competition, notebookNeeds(competition))
       /*
        * The acceptance and the notebook on disk commit together or not at
        * all. A replacement cancels the person's waiting submission inside the

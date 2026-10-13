@@ -23,6 +23,44 @@ export interface KubernetesClient {
    */
   request<T>(method: string, path: string, body?: unknown, contentType?: string): Promise<T>
 }
+/**
+ * What the API server's "no" to a write was about, in the few words of its
+ * message we know, and nothing else of that message: the rest names the
+ * cluster's objects, its policies and other tenants' usage.
+ *
+ * - `quota`: a ResourceQuota of the namespace has no room left ("exceeded
+ *   quota"), with the quota's names for what was asked over it
+ *   (`requests.nvidia.com/gpu`, `limits.memory`), at most three;
+ * - `runtime-class`: the Pod names a RuntimeClass the cluster does not have;
+ * - `permission`: the broker's ServiceAccount may not do it (RBAC);
+ * - `admission`: something else said no at admission — a policy engine's
+ *   webhook, a ValidatingAdmissionPolicy, Pod Security, a LimitRange.
+ *
+ * A 403 is one of them (unless a node lacked a resource: `insufficient`
+ * below); a 400 or 422 only when it says an admission check denied the
+ * request (a webhook's denial is a 400 unless the webhook picks its own code),
+ * since otherwise it is a request we built wrong.
+ */
+export type KubernetesRefusal =
+  | { kind: 'quota'; resources: string[] }
+  | { kind: 'runtime-class' | 'permission' | 'admission' }
+const QUOTA = /\bexceeded quota: [^,]{0,253}, requested: (.{0,1024}?), used: /
+// The quota's resource names are sorted and joined with bare commas: `limits.memory=2Gi,requests.memory=2Gi`.
+const QUOTA_NAME = /(?:^|,)\s*([A-Za-z0-9](?:[A-Za-z0-9._/-]{0,98}[A-Za-z0-9])?)=/g
+export function refusalOf(status: number, message: string): KubernetesRefusal | undefined {
+  const text = message.slice(0, 4096)
+  if (status === 403) {
+    const quota = QUOTA.exec(text)
+    if (quota) return { kind: 'quota', resources: [...new Set([...quota[1].matchAll(QUOTA_NAME)].map((match) => match[1]))].slice(0, 3) }
+    // The RuntimeClass admission plugin: `pod rejected: RuntimeClass "nvidia" not found`.
+    if (/\bRuntimeClass "[^"]{1,253}" not found/.test(text)) return { kind: 'runtime-class' }
+    // RBAC: `User "system:serviceaccount:…" cannot create resource "pods" in API group ""…`.
+    if (/\bcannot [a-z]{1,32} resource "/.test(text)) return { kind: 'permission' }
+    return { kind: 'admission' }
+  }
+  if ((status === 400 || status === 422) && /\bdenied (?:the )?request\b/.test(text)) return { kind: 'admission' }
+  return undefined
+}
 export class KubernetesError extends Error {
   constructor(
     readonly status: number,
@@ -36,6 +74,11 @@ export class KubernetesError extends Error {
      * the operator the first; they must not be confused.
      */
     readonly insufficient?: string,
+    /**
+     * Why the API server refused it, as far as refusalOf can tell; never in
+     * the message, which stays the status and the reason word.
+     */
+    readonly refusal?: KubernetesRefusal,
   ) {
     super(
       `Kubernetes HTTP ${status}: ${/^[A-Za-z]{1,80}$/.test(reason) ? reason : 'RequestFailed'}` +
@@ -121,13 +164,15 @@ export class HttpsKubernetesClient implements KubernetesClient {
             }
             const status = res.statusCode ?? 502
             if (status < 200 || status >= 300) {
-              const lacking =
-                typeof data?.message === 'string' ? INSUFFICIENT.exec(data.message)?.[1] : undefined
+              const message = typeof data?.message === 'string' ? data.message : ''
+              const lacking = message ? INSUFFICIENT.exec(message)?.[1] : undefined
               reject(
                 new KubernetesError(
                   status,
                   typeof data?.reason === 'string' ? data.reason : 'RequestFailed',
                   lacking,
+                  // A node short of a resource is that, not an admission policy.
+                  lacking ? undefined : refusalOf(status, message),
                 ),
               )
               return

@@ -31,6 +31,7 @@ import {
   type Submission,
   type SubmissionState,
 } from '@shared/competitions'
+import type { CompetitionCapabilities } from '@shared/capabilities'
 import type {
   CompetitionRow,
   CompetitionView,
@@ -40,6 +41,7 @@ import type {
   QueueSnapshot,
   SealedFileView,
   SubmissionRow,
+  WaitingRow,
 } from '@shared/competitions-api'
 
 /* ------------------------------------------------------------- numbers */
@@ -316,6 +318,10 @@ export function runnerLine(queue: QueueSnapshot): RunnerLine {
       ? tr('admin.competitions.runningN', { count: queue.running.length })
       : tr('admin.competitions.runningNone'),
   )
+  // The runner cards, when any are given to submissions: "GPUs 2 of 4" —
+  // a GPU run holds a slot AND a place on a card, and either can be the wait.
+  const cards = queue.gpu ?? null
+  if (cards) parts.push(tr('admin.competitions.gpuBusyN', { busy: cards.busy, count: cards.slots }))
   if (queue.waiting > 0) parts.push(tr('admin.competitions.waitingN', { count: queue.waiting }))
   const tail = [
     tr('admin.competitions.slots', { count: queue.slots }),
@@ -330,11 +336,84 @@ export function runnerLine(queue: QueueSnapshot): RunnerLine {
   return { head: parts.join(' · '), tail: tail.join(' · ') }
 }
 
+/**
+ * Whether a waiting job waits for a place on a runner card (Paper 15 · G3):
+ * a notebook that needs a card share (WaitingRow.gpu), with every share of
+ * every runner card taken — or none to take: a class still holds the cards,
+ * or no card is given to submissions at all. Such a job is passed over while
+ * CPU work flows past it, and «ждёт» alone would read as the queue being
+ * stuck. A job postponed by a resource retry waits for that instead.
+ *
+ * No card picture (`queue.gpu` null) is two different things, told apart by
+ * the row's place. Under the cluster the cluster places GPU work itself, and
+ * the forecast gives a GPU notebook its place like any other job: nothing to
+ * say here. On this machine with no card given to submissions the server
+ * sends zero places while GPU work waits (routes/admin-competitions.ts ·
+ * queueSnapshot), but one from before that sent no picture at all — and then
+ * the forecast gives a GPU notebook no place, since it starts nowhere
+ * (forecast.ts · forecastGpuSlots is 0). That is the wait the console must
+ * name: twenty rows that never move under free executors read as a queue
+ * that stopped for no reason. A caller that passes no place keeps the old
+ * answer.
+ */
+export function waitsForCard(
+  row: Pick<WaitingRow, 'gpu' | 'resourcePending'> & Partial<Pick<WaitingRow, 'place'>>,
+  queue: Pick<QueueSnapshot, 'gpu'> | null,
+): boolean {
+  if (row.gpu !== true || row.resourcePending || queue === null) return false
+  const cards = queue.gpu ?? null
+  return cards === null ? row.place === null : cards.busy >= cards.slots
+}
+
+/**
+ * Whether the GPU work in the queue has no place on any card to start on —
+ * no card is given to submissions, or a class still holds every one — rather
+ * than every share being busy for the moment. Then the rows' «ждёт место на
+ * видеокарте» is not enough: nothing will free a share by itself, and the
+ * console says why and who can change it (admin.competitions.gpuNoPlace).
+ */
+export function noPlaceOnCards(
+  waiting: ReadonlyArray<Pick<WaitingRow, 'gpu' | 'resourcePending'> & Partial<Pick<WaitingRow, 'place'>>>,
+  queue: Pick<QueueSnapshot, 'gpu'> | null,
+): boolean {
+  const cards = queue?.gpu ?? null
+  if (cards !== null && cards.slots > 0) return false
+  return waiting.some((row) => waitsForCard(row, queue))
+}
+
+/**
+ * "4 waiting, one of them for a GPU" — the console's count of the queue with
+ * the jobs that wait for a card named inside it (`onCards`, from the rows this
+ * console sees), or "2 waiting for a GPU" when that is all of them.
+ *
+ * «одна из них» is said for exactly one and nothing else: the Russian 'one'
+ * plural form also takes 21, 31, 101, and «23 ждут, одна из них —
+ * видеокарту» was the console's line with 21 notebooks waiting for a card.
+ */
+export function waitingWords(count: number, onCards: number): string {
+  if (onCards > 0 && onCards >= count) return tr('admin.competitions.waitingAllCard', { count })
+  const head = tr('admin.competitions.waitingCount', { count })
+  if (onCards <= 0) return head
+  const part = onCards === 1 ? tr('admin.competitions.waitingCardOne') : tr('admin.competitions.waitingCard', { count: onCards })
+  return `${head}, ${part}`
+}
+
 /** "≈ 3 min"; with no estimate it says so, rather than "≈ 0 min". */
 export function etaWords(ms: number | null): string {
   if (ms === null) return tr('admin.competitions.etaUnknown')
   if (ms < MINUTE) return tr('admin.competitions.etaSoon')
   return tr('admin.competitions.eta', { time: leftWords(ms) })
+}
+
+/**
+ * "the last result in ≈ 2 min", or "…any moment now" under a minute — the
+ * console's status line. Its own words, not `etaWords` dropped into the
+ * sentence: that one brings its own «≈», and the line read «≈ через ≈ 1 мин»
+ * and «≈ через вот-вот».
+ */
+export function lastResultWords(ms: number): string {
+  if (ms < MINUTE) return tr('admin.competitions.lastResultSoon')
+  return tr('admin.competitions.lastResult', { eta: leftWords(ms) })
 }
 
 /* ------------------------------------------------ why it will not open */
@@ -368,6 +447,23 @@ export function refusalSection(refusal: OpenRefusal): EditorSection {
 /** The refusal phrase — the same one the `/open` door refuses with. */
 export function refusalText(refusal: OpenRefusal): string {
   return tr(`competitions.refusal.open.${refusal}`)
+}
+
+/* --------------------------------------------- what the executor can run */
+
+/**
+ * Whether work that runs only the metric — «Проверить метрику», a rescore —
+ * can go now: the executor can run anything at all, or all it lacks is the
+ * competition's card (`gpu_unavailable`), which the metric never gets
+ * (server/src/routes/admin-competitions.ts · executionAvailable). The view's
+ * verdict is the notebook's — CompetitionView.capabilities is asked with the
+ * card — and read as it stands it kept the metric check disabled once the
+ * owner had given the cards back to classes, while the server would have run
+ * it at once. No verdict at all (a server from before it) refuses nothing.
+ */
+export function metricWorkAvailable(capabilities: CompetitionCapabilities | null | undefined): boolean {
+  const execution = capabilities?.execution
+  return !execution || execution.available || execution.code === 'gpu_unavailable'
 }
 
 /* ---------------------------------------------------- metric templates */

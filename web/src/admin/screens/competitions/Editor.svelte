@@ -39,9 +39,11 @@
     type PrivateRelease,
     type ScoringRule,
   } from '@shared/competitions'
-  import type { AdminEnvironment, InstanceResources } from '@shared/admin'
+  import type { AdminEnvironment, EnvironmentsState, InstanceResources } from '@shared/admin'
   import type { Course } from '@shared/publish'
   import type { CompetitionInput, CompetitionView, FileView } from '@shared/competitions-api'
+  import type { CompetitionGpuSettings } from '@shared/competitions-settings'
+  import { gpuPlacesNote, gpuRowState, gpuSwitchWord } from '@/admin/runner-cards'
   import {
     answerColumns,
     applyPreset,
@@ -50,6 +52,7 @@
     isUntouchedPreset,
     METRIC_PRESETS,
     metricNumber,
+    metricWorkAvailable,
     moment,
     presetCode,
     refusalSection,
@@ -353,9 +356,13 @@
     if (started) await refresh(id)
   }
 
-  /** "Check against the baseline" — only the metric; the notebook is not run again. */
+  /**
+   * "Check against the baseline" — only the metric; the notebook is not run
+   * again. So no card is asked for: a GPU competition whose cards went back
+   * to classes still checks its metric (metricWorkAvailable).
+   */
   async function checkMetric(): Promise<void> {
-    if (view.capabilities?.execution.available === false) return
+    if (!metricWorkAvailable(view.capabilities)) return
     const id = c.id
     if (!(await save())) return
     const started = await act(() => adminApi.checkCompetitionMetric(id))
@@ -399,6 +406,22 @@
   /* --------------------------------------------------------- environments */
 
   let environments = $state<AdminEnvironment[]>([])
+  /**
+   * The rooms' GPU slices and the cards given to submissions (`runners`), as
+   * the environments door counts them; `null` until it answers. Kept rather
+   * than dropped: «посылкам не выдано ни одной видеокарты» is decided by it
+   * before the slower settings door below has answered.
+   */
+  let environmentGpus = $state<EnvironmentsState['gpus'] | null>(null)
+  /** False under Kubernetes: the cluster has the cards, and nobody here counts them. */
+  let gpuCapacityKnown = $state(true)
+  /**
+   * The runner cards as the owner set them in «Ресурсы» (GET
+   * /api/admin/competitions/settings, readable by any teacher): which cards,
+   * runs per card, the share that makes. `null` until it answers — it may
+   * take a few seconds on a cold server, while the cards are asked their size.
+   */
+  let runnerCards = $state<CompetitionGpuSettings | null>(null)
   let resources = $state<InstanceResources | null>(null)
   /**
    * The courses the «Курс» select offers: the ones this person teaches, or
@@ -407,13 +430,21 @@
   let courses = $state<Course[]>([])
 
   onMount(() => {
-    // Both answers are an addendum to the form, not the form itself: without
+    // These answers are an addendum to the form, not the form itself: without
     // them the "Running a submission" section shows its own numbers and says
     // nothing about the machine.
     void adminApi
       .listEnvironments()
-      .then((state) => (environments = state.environments))
+      .then((state) => {
+        environments = state.environments
+        environmentGpus = state.gpus
+        gpuCapacityKnown = state.gpuCapacityKnown !== false
+      })
       .catch(() => (environments = []))
+    void adminApi
+      .competitionSettings()
+      .then((settings) => (runnerCards = settings.gpu))
+      .catch(() => (runnerCards = null))
     void adminApi
       .resources()
       .then((state) => (resources = state))
@@ -422,6 +453,33 @@
       .listCourses(adminAuth.isOwner ? 'all' : 'mine')
       .then((list) => (courses = list))
       .catch(() => (courses = []))
+
+    /*
+     * The cards are read again when this tab comes back into view. The red
+     * box's link opens «Ресурсы» in a NEW tab — following it here used to
+     * unmount the form and drop every unsaved field, the GPU switch just
+     * turned on included — and the owner who gave a card there comes back to
+     * a row that should already say the share. Only for a competition the
+     * card can matter to, and not more than once in a couple of seconds: a
+     * focus and a visibility change arrive together. A failed read keeps what
+     * the row shows.
+     */
+    let readAt = Date.now()
+    const rereadCards = (): void => {
+      if (document.visibilityState !== 'visible' || Date.now() - readAt < 2_000) return
+      if (environmentGpu !== true && !gpuOn) return
+      readAt = Date.now()
+      void adminApi
+        .competitionSettings()
+        .then((settings) => (runnerCards = settings.gpu))
+        .catch(() => undefined)
+    }
+    window.addEventListener('focus', rereadCards)
+    document.addEventListener('visibilitychange', rereadCards)
+    return () => {
+      window.removeEventListener('focus', rereadCards)
+      document.removeEventListener('visibilitychange', rereadCards)
+    }
   })
 
   const chosenEnvironment = $derived(environments.find((one) => one.name === environment) ?? null)
@@ -429,6 +487,88 @@
   /** Gigabytes to a tenth — with the decimal mark the instance's language uses. */
   const gb = (mb: number): string =>
     formatNumber(mb / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+
+  /* ------------------------------------------------------------------ GPU */
+
+  /*
+   * «ВИДЕОКАРТА» (Paper 15 · G2): whether the notebook runs with a share of a
+   * runner card (CompetitionLimits.gpu). A switch the teacher turns, and only
+   * on an environment that needs a GPU — the server refuses a card for a CPU
+   * environment (competitions/panel.ts · gpuEnvironmentRefusal), so picking
+   * one turns the switch off here before Save is pressed. A GPU environment
+   * with the switch off still runs, its CUDA torch on the CPU: said in amber,
+   * because that is what every competition on base-gpu silently did before.
+   */
+
+  /**
+   * Whether the chosen environment needs a GPU, by its file; `null` while
+   * nothing says. The list of environments says it — and where the list does
+   * not name the environment (still on its way, refused, or an instance
+   * without that file), the saved competition still does when its card is
+   * on: the server keeps a card only on an environment that needs one
+   * (panel.ts · gpuEnvironmentRefusal). So a live competition's Settings tab
+   * marks its GPU environment as the draft did, list or no list.
+   */
+  const environmentGpu = $derived(
+    chosenEnvironment
+      ? chosenEnvironment.gpu === true
+      : environment === c.environment && c.limits.gpu === true
+        ? true
+        : null,
+  )
+  const gpuOn = $derived(limits.gpu === true)
+  /** The cards are the cluster's (RUNTIME_COMPETITION_GPU_RESOURCE): the panel neither lists nor gives them. */
+  const gpuCluster = $derived(runnerCards ? runnerCards.managed : !gpuCapacityKnown)
+  /**
+   * Nobody gave submissions a card: a run with the switch on would be refused
+   * at the door («runtime.gpuUnavailable»). Here, the owner's list of cards;
+   * under the cluster only the executor knows, and it says so through the
+   * saved competition's capability.
+   */
+  const gpuNoCards = $derived(
+    gpuCluster
+      ? c.limits.gpu === true && view.capabilities?.execution.code === 'gpu_unavailable'
+      : (runnerCards?.devices.length ?? environmentGpus?.runners ?? null) === 0,
+  )
+  const gpuState = $derived(gpuRowState({ environmentGpu, on: gpuOn, noCards: gpuNoCards }))
+
+  /** The row's frame, caption tone and the line beside the switch, by state. */
+  const gpuLook = $derived.by(() => {
+    switch (gpuState) {
+      case 'cpu':
+        return {
+          frame: 'border-line bg-surface',
+          head: 'text-faint',
+          hint: tr('admin.competitions.gpuCpuEnv', { environment }),
+          hintTone: 'text-muted',
+        }
+      case 'off':
+        return { frame: 'border-line', head: '', hint: tr('admin.competitions.gpuOffHint'), hintTone: 'text-warning' }
+      case 'noCards':
+        return { frame: 'border-danger', head: 'text-danger', hint: tr('admin.competitions.gpuNoCards'), hintTone: 'font-semibold text-danger' }
+      case 'on':
+        return {
+          frame: 'border-accent',
+          head: 'text-accent-text',
+          hint: tr(gpuCluster ? 'admin.competitions.gpuOnHintCluster' : 'admin.competitions.gpuOnHint'),
+          hintTone: 'text-muted',
+        }
+      default:
+        return { frame: 'border-line', head: '', hint: '', hintTone: 'text-muted' }
+    }
+  })
+
+  /** Under the row with the card on: the places and the share, and that the memory tile is the machine's. */
+  const gpuNote = $derived(gpuState === 'on' ? gpuPlacesNote(runnerCards, Number(limits.memoryMb)) : null)
+
+  /**
+   * Another environment picked: a CPU one takes the card away with it, in the
+   * form as on the server, which refuses the pair.
+   */
+  function environmentPicked(name: string): void {
+    const picked = environments.find((one) => one.name === name)
+    if (picked && !picked.gpu && limits.gpu === true) limits.gpu = false
+  }
 
   /* --------------------------------------------------------------- metric */
 
@@ -1242,7 +1382,7 @@
         <button
           type="button"
           class="btn-outline shrink-0"
-          disabled={busy || !view.baseline || view.capabilities?.execution.available === false}
+          disabled={busy || !view.baseline || !metricWorkAvailable(view.capabilities)}
           onclick={() => void checkMetric()}
         >
           {tr('admin.competitions.checkMetric')}
@@ -1269,6 +1409,7 @@
           class="field w-auto min-w-0 font-mono"
           aria-label={tr('admin.competitions.environmentLabel')}
           bind:value={environment}
+          onchange={(event) => environmentPicked(event.currentTarget.value)}
         >
           {#if !environments.some((one) => one.name === environment)}
             <option value={environment}>{environment}</option>
@@ -1284,6 +1425,15 @@
               : tr('admin.competitions.envUnbuilt')}
             tone={chosenEnvironment.state === 'ready' ? 'positive' : 'warning'}
           />
+        {/if}
+        {#if environmentGpu}
+          <!-- As on Environments and NewSeminar: what the environment is, by
+               its file — or, before the list names it, by the card the saved
+               competition holds (environmentGpu). The same mark on a draft
+               and on a live competition's Settings tab. -->
+          <Badge word="GPU" tone="accent" />
+        {/if}
+        {#if chosenEnvironment}
           <span class="min-w-0 flex-1 truncate text-micro text-muted">
             {chosenEnvironment.packages.slice(0, 6).join(', ')}
           </span>
@@ -1361,6 +1511,64 @@
           </span>
         </label>
       </div>
+
+      <!--
+        «ВИДЕОКАРТА» (Paper 15 · G2): a row under the tiles, not a fifth tile —
+        it is a switch with a sentence beside it, and the sentence is the point:
+        what the run will see (cuda:0), why it cannot have a card here, or that
+        it will quietly compute on the CPU. Without a card given to submissions
+        the row turns red and the box under it says who can fix it.
+      -->
+      <div class="flex flex-col">
+        <div class={cn('flex flex-wrap items-center gap-x-4 gap-y-2 border px-3.5 py-3', gpuLook.frame)}>
+          <span class={cn(HEAD, 'w-[110px] shrink-0', gpuLook.head)}>{tr('admin.competitions.limit.gpu')}</span>
+          <div class="w-[260px] max-w-full shrink-0">
+            <Choice
+              size="lg"
+              options={[
+                { value: 'off', label: tr('admin.competitions.gpuOff') },
+                { value: 'on', label: gpuSwitchWord(runnerCards) },
+              ]}
+              value={gpuOn ? 'on' : 'off'}
+              disabled={gpuState === 'cpu' && !gpuOn}
+              onchange={(value) => (limits.gpu = value === 'on')}
+            />
+          </div>
+          {#if gpuLook.hint}
+            <span class={cn('min-w-0 flex-1 basis-[240px] text-2xs', gpuLook.hintTone)}>{gpuLook.hint}</span>
+          {/if}
+        </div>
+        {#if gpuState === 'noCards'}
+          <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 bg-danger/[0.06] px-3.5 py-3">
+            <p class="min-w-0 flex-1 basis-[280px] text-2xs text-ink">
+              <!-- Under the cluster the owner reads which setting gives
+                   submissions a GPU; a teacher reads the words a participant
+                   reads, which name no setting. -->
+              {#if gpuCluster && adminAuth.isOwner}
+                {tr('admin.competitions.gpuNoCardsClusterOwner')}
+              {:else if gpuCluster}
+                {view.capabilities?.execution.reason ?? tr('runtime.gpuUnavailableCluster')}
+              {:else if adminAuth.isOwner}
+                {tr('admin.competitions.gpuNoCardsOwner')}
+              {:else}
+                {tr('admin.competitions.gpuNoCardsTeacher')}
+              {/if}
+            </p>
+            {#if adminAuth.isOwner && !gpuCluster}
+              <!-- A new tab, not this one: the form's unsaved fields live only
+                   in this screen, and leaving it dropped them all — the switch
+                   just turned on included. The row reads the cards again when
+                   this tab is back in view (rereadCards). -->
+              <a class="btn-outline shrink-0" href="/admin/resources" target="_blank" rel="noreferrer">
+                {tr('admin.competitions.openResources')}
+              </a>
+            {/if}
+          </div>
+        {/if}
+      </div>
+      {#if gpuNote}
+        <p class="text-micro leading-snug text-muted">{gpuNote}</p>
+      {/if}
 
       {#if resources?.memory.availableMb != null}
         <p class="text-micro leading-snug text-muted">

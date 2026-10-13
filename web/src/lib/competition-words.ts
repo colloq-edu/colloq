@@ -961,6 +961,51 @@ export function blindWhy(
 }
 
 /**
+ * Our own advice after a blind failed cell, when the server added one: the
+ * part of the brief text after its first blank line (runner.ts · briefNote).
+ * The first paragraph repeats the head the card already shows and stays out;
+ * what follows is a sentence nobody else gives, the GPU share a run ran out of
+ * ("This submission has a 6 GB GPU share: reduce the batch size or the
+ * model.", Paper 15 · G4 #6). Our words and our numbers only — the notebook's
+ * own text never reaches a blind row — so it is safe to show.
+ */
+export function blindAdvice(submission: Pick<EntrantSubmission, 'state' | 'participantError'>): string {
+  if (submission.state !== 'notebookFailed' || !submission.participantError) return ''
+  const cut = submission.participantError.indexOf('\n\n')
+  return cut < 0 ? '' : submission.participantError.slice(cut + 2).trim()
+}
+
+/* ------------------------------------------------------------------ card */
+
+/**
+ * The «Видеокарта» row of the check conditions (Paper 15 · G4): what a run
+ * gets on its card, which inside the container is always cuda:0 — the share
+ * the server promises and holds, the whole card, or, where the size is the
+ * cluster's business or unknown, only that there is one. `null` — the
+ * competition runs on the CPU, and the conditions keep their usual rows.
+ *
+ * Unless no card is given to submissions at all: then the executor refuses
+ * every run with `gpu_unavailable`, and the send box on the same page says so
+ * (runtime.gpuUnavailable). «есть · cuda:0» beside it was a promise the next
+ * line took back — the server's "no card" and "size unknown" are the same
+ * null share, and only the capability tells them apart. The row stays: without
+ * it the task would read as a CPU competition.
+ */
+export function gpuCondition(
+  view: { competition: { limits: { gpu?: boolean } } } & Partial<
+    Pick<EntrantCompetitionView, 'gpuSliceMb' | 'gpuWholeCard' | 'capabilities'>
+  >,
+): string | null {
+  if (view.competition.limits.gpu !== true) return null
+  if (view.capabilities?.execution.code === 'gpu_unavailable') return tr('competitions.p.condGpuNone')
+  if (view.gpuWholeCard) return tr('competitions.p.condGpuWhole')
+  if (view.gpuSliceMb != null) {
+    return tr('competitions.p.condGpuSlice', { size: formatNumber(Math.round(view.gpuSliceMb / 102.4) / 10) })
+  }
+  return tr('competitions.p.condGpuOn')
+}
+
+/**
  * "during the check it is swapped for the hidden test (2 000 rows) at the
  * same path" — under the example in the data list (C3).
  */

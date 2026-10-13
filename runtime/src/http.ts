@@ -65,6 +65,8 @@ export function createRuntimeServer(options: Options) {
           const competition = options.jobs ? await options.jobs.health() : {
             execution: { available: false, code: 'broker_unavailable', reason: 'Competition broker is not configured' },
             preparation: { available: false, code: 'broker_unavailable', reason: 'Competition broker is not configured' },
+            gpu: { available: false, code: 'broker_unavailable', reason: 'Competition broker is not configured' },
+            gpuSlots: null,
           }
           reply(res, health.ok ? 200 : 503, { ...health, competition })
           return

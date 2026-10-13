@@ -798,6 +798,17 @@ export interface ResourceBudget {
    * answer the census: the bar then shows less than is really promised.
    */
   complete: boolean
+  /**
+   * The machine's cards, for a bar of their own: all of `KERNEL_GPUS`, the
+   * ones a room's container holds right now, and the submissions' — the ones
+   * given to competition submissions (a promise like the competition slots,
+   * held whether or not a submission runs), plus one given back to classes
+   * that a submission still runs on. Each card is counted once: a card given
+   * to submissions that a class has not let go yet is a submissions' card.
+   * What is left is free for the next GPU class. `null` — the cluster has the
+   * cards (Kubernetes), and the panel does not know them.
+   */
+  gpus: { total: number; rooms: number; runners: number } | null
 }
 
 /** GET /api/admin/resources, and the answer to PUT. */
@@ -959,6 +970,12 @@ export interface RunningRun {
   reservedMb: number
   /** Stopped through the competitions door (POST /api/admin/competitions/queue/kill). */
   canStop: boolean
+  /**
+   * The runner card the attempt holds, e.g. "1"; `null` — a run on the CPU.
+   * The card's id is the machine's business, so it is shown for hidden runs
+   * too, like `RunningClass.gpu`.
+   */
+  gpu: string | null
 }
 
 /** A dependency preparation (a competition's package bundle) holding its reservation now. */
@@ -1464,14 +1481,16 @@ export interface EnvironmentsState extends EnvironmentAbilities {
   /** Legacy wire field, always false: shared production execution is disabled. */
   shared: boolean
   /**
-   * GPU slices: how many are listed in KERNEL_GPUS and how many are free now.
+   * GPU slices: how many rooms may take (KERNEL_GPUS without the cards the
+   * owner gave to competition submissions) and how many of those are free now.
    *
    * A slice is free when it is on no room's container — the server counts
    * this, because only it knows. `total: 0` is an ordinary install without
    * cards, not a breakage: the panel says so in words and does not alarm
-   * anyone.
+   * anyone. `runners` — the cards given to submissions, so "no slices" can
+   * say why when every card went there; absent from servers before them.
    */
-  gpus: { total: number; free: number }
+  gpus: { total: number; free: number; runners?: number }
 }
 
 export interface SaveEnvironmentRequest {
