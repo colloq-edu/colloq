@@ -227,27 +227,34 @@ test('the agent\'s build is the same under two releases', async () => {
   assert.notEqual(one.sha256, two.sha256)
 })
 
-test('the built agent reads its version beside dist/ when it runs, says it cannot work yet, and exits 2', async () => {
+test('the built agent reads its version beside dist/ when it runs, and a machine that has not joined is refused before it touches docker or home', async () => {
   const app = path.join(scratch, 'app')
   fs.mkdirSync(path.join(app, 'dist'), { recursive: true })
   fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ name: '@colloq/server', version: '9.8.7', type: 'module' }))
   await buildRunner(path.join(app, 'dist'), { logLevel: 'silent' })
-  const ran = spawnSync(process.execPath, [path.join(app, 'dist/runner.js')], { encoding: 'utf8', timeout: 30_000, env: { ...process.env, COLLOQ_VERSION: '1.1.1' } })
-  assert.equal(ran.status, 2, ran.stderr)
-  assert.equal(ran.stdout, '')
   // The package.json next to the code wins over the environment: it is the code's own.
-  assert.match(ran.stderr, /^colloq-runner 9\.8\.7\n/)
-  assert.match(ran.stderr, /cannot run submissions yet/)
-  assert.equal(ran.stderr.trim().split('\n').length, 2)
+  const version = spawnSync(process.execPath, [path.join(app, 'dist/runner.js'), 'version'], { encoding: 'utf8', timeout: 30_000, env: { ...process.env, COLLOQ_VERSION: '1.1.1' } })
+  assert.equal(version.status, 0, version.stderr)
+  assert.equal(version.stdout, '9.8.7\n')
+  // No join and no identity on its tree: EX_CONFIG, its words on stderr, nothing on stdout.
+  const tree = path.join(scratch, 'machine-tree')
+  const env: NodeJS.ProcessEnv = { ...process.env, COLLOQ_RUNNER_STATE: tree, DATA_DIR: path.join(tree, 'data') }
+  delete env.COLLOQ_RUNNER_JOIN
+  const ran = spawnSync(process.execPath, [path.join(app, 'dist/runner.js')], { encoding: 'utf8', timeout: 30_000, env })
+  assert.equal(ran.status, 78, ran.stderr)
+  assert.equal(ran.stdout, '')
+  assert.match(ran.stderr, /COLLOQ_RUNNER_JOIN/)
+  // The health check's question has an answer without an agent: not joined, not syncing.
+  const status = spawnSync(process.execPath, [path.join(app, 'dist/runner.js'), 'status'], { encoding: 'utf8', timeout: 30_000, env })
+  assert.equal(status.status, 1, status.stderr)
+  assert.equal(JSON.parse(status.stdout).joined, false)
 
-  // The enrollment minter's stub refuses the same way, and prints no code: stdout is the code's alone.
+  // The enrollment minter builds as its own entry. It is home's (it opens the instance's database), so it
+  // cannot run from a scratch folder without the server's packages: tests/remote-runner-code.test.mts runs it.
   const minter = buildEntry('dist/runner-code.js')
   assert.equal(minter.entry, 'src/ops/runner-code.ts')
   await build({ ...minter.options, entryPoints: [minter.entry], absWorkingDir: SERVER, outfile: path.join(app, 'dist/runner-code.js'), logLevel: 'silent' })
-  const minted = spawnSync(process.execPath, [path.join(app, 'dist/runner-code.js'), '--machines', '2', '--hours', '3'], { encoding: 'utf8', timeout: 30_000 })
-  assert.equal(minted.status, 2, minted.stderr)
-  assert.equal(minted.stdout, '')
-  assert.match(minted.stderr, /cannot mint enrollment codes yet/)
+  assert.doesNotMatch(fs.readFileSync(path.join(app, 'dist/runner-code.js'), 'utf8'), /cannot mint enrollment codes yet/, 'no longer the stub')
 })
 
 test('the server\'s build writes the agent and its sha256 through build-runner.mjs, and the minter', () => {
