@@ -1319,6 +1319,17 @@ export async function competitionFileHashes(competitionId: string, visibility: '
   return out
 }
 
+/**
+ * The same list as the rows say it NOW, without reading a byte: for the take
+ * of a machine that runs submissions (competitions/remote/lease.ts), which is
+ * one synchronous transaction and builds a lease's data manifest from these.
+ * A row still without its hash reads `null`, and its competition is not
+ * leased until competitionFileHashes has filled it in.
+ */
+export function fileHashesNow(competitionId: string, visibility: 'open' | 'sealed'): HashedFile[] {
+  return (selectFilesOf.all(competitionId, visibility) as FileRow[]).map((row) => ({ name: row.name, bytes: row.bytes, sha256: row.sha256 ?? null }))
+}
+
 export function listFiles(id: string, visibility?: FileVisibility): CompetitionFile[] {
   const rows = (
     visibility ? selectFilesOf.all(id, visibility) : selectFiles.all(id)
@@ -3098,6 +3109,100 @@ export function leaveQueue(submissionId: string): boolean {
 /** Return work to waiting: cancelled by a pause, killed by hand, did not get through. */
 export function requeue(submissionId: string): boolean {
   return markWaiting.run(submissionId).changes > 0
+}
+
+/* -------------------------------------------- rows a machine holds (holder) */
+
+/**
+ * The waiting notebook rows in the order `selectNext` takes them (FAIR_ORDER),
+ * each with whether it needs a card share (NEEDS_CARD): what the take for a
+ * machine that runs submissions walks (competitions/remote/lease.ts ·
+ * takeForRunner). One query, one order: the machine skips the rows it cannot
+ * run, but never reorders the rest, so a person's place is the same whoever
+ * takes their notebook.
+ */
+const selectWaitingNotebooks = db.prepare(`
+  SELECT q.*, ${NEEDS_CARD} AS needs_gpu FROM competition_queue q
+  WHERE q.state = 'waiting' AND q.not_before <= @at AND q.kind = 'notebook'
+  ORDER BY ${FAIR_ORDER}
+`)
+
+export function waitingNotebookOrder(at = Date.now()): Array<QueueRow & { needsGpu: boolean }> {
+  return (selectWaitingNotebooks.all({ at }) as QueueRowRaw[]).map((row) => ({ ...toQueueRow(row), needsGpu: row.needs_gpu === 1 }))
+}
+
+/*
+ * The take's own write for a machine (markRunning with a holder), fenced on
+ * the row still waiting: inside the take's transaction nothing else can have
+ * moved it, and the fence keeps it so should the take ever be called outside
+ * one. The card is never written: a machine's cards are its own and never
+ * enter competition_queue.gpu (§5.1), and `boot` is this server's life, which
+ * a machine's row never needs and reclaimQueue never reads for it.
+ */
+const markHeld = db.prepare(`
+  UPDATE competition_queue
+  SET state = 'running', started_at = @at, attempts = attempts + 1, boot = @boot,
+      container = NULL, attempt_id = @attempt_id, gpu = NULL, gpu_per_device = NULL, gpu_slice_mb = NULL, holder = @holder
+  WHERE submission_id = @submission_id AND state = 'waiting' AND kind = 'notebook'
+`)
+
+/**
+ * Mark a waiting notebook row as the machine `holder`'s run, under a new
+ * attempt; `null` — it is not waiting any more. A `null` holder takes it as
+ * this server's own run of this life (BOOT), for one that never reaches a
+ * container: a package set that cannot fit, settled here when this server
+ * runs no notebooks (competitions/remote/liveness.ts · settleUnfit).
+ */
+export function holdQueueRow(submissionId: string, holder: string | null, at = Date.now()): QueueRow | null {
+  const attemptId = randomUUID().replaceAll('-', '')
+  const changed = markHeld.run({ submission_id: submissionId, at, boot: BOOT, attempt_id: attemptId, holder }).changes
+  return changed > 0 ? queueRow(submissionId) : null
+}
+
+/*
+ * A machine's run goes back to waiting (markWaiting), fenced on its attempt
+ * and holder: a loss, a withdrawn offer, a decline. The row keeps its
+ * arrival, its turn and its lateness — the machine's trouble is no reason to
+ * send a person to the end of the queue — and `lost` counts a loss after the
+ * container started (`lost` 1), toward the third that ends the submission as
+ * our failure (decision 6). The attempt is refunded either way: `attempts`
+ * counts this server's restarts (reclaimQueue), never a machine's losses.
+ */
+const requeueHeld = db.prepare(`
+  UPDATE competition_queue
+  SET state = 'waiting', started_at = NULL, boot = NULL, container = NULL, attempt_id = NULL, not_before = 0, holder = NULL,
+      attempts = MAX(0, attempts - 1), lost = lost + @lost, ${NO_CARD}
+  WHERE submission_id = @submission_id AND attempt_id = @attempt_id AND holder = @holder AND state = 'running'
+`)
+
+export function requeueHeldRow(row: Pick<QueueRow, 'submissionId' | 'attemptId' | 'holder'>, lost: boolean): boolean {
+  if (!row.attemptId || !row.holder) return false
+  return requeueHeld.run({ submission_id: row.submissionId, attempt_id: row.attemptId, holder: row.holder, lost: lost ? 1 : 0 }).changes > 0
+}
+
+/** The row of a machine's run leaves the queue, fenced on its attempt and holder: a cancel, a third loss. */
+export function leaveHeldRow(row: Pick<QueueRow, 'submissionId' | 'attemptId' | 'holder'>): boolean {
+  if (!row.attemptId || !row.holder) return false
+  return db.prepare("DELETE FROM competition_queue WHERE submission_id = ? AND attempt_id = ? AND holder = ? AND state = 'running'")
+    .run(row.submissionId, row.attemptId, row.holder).changes > 0
+}
+
+/**
+ * When a machine's container really started, on this server's clock (now
+ * less what the machine says it has run): the console's clock and the
+ * forecast's elapsed time count from here, so pulls and downloads never eat
+ * the participant's time (§2, step 5). Written once per attempt, and only
+ * while the attempt is still this row's.
+ */
+export function noteHeldStart(row: Pick<QueueRow, 'submissionId' | 'attemptId' | 'holder'>, startedAt: number): boolean {
+  if (!row.attemptId || !row.holder) return false
+  return db.prepare("UPDATE competition_queue SET started_at = ? WHERE submission_id = ? AND attempt_id = ? AND holder = ? AND state = 'running'")
+    .run(startedAt, row.submissionId, row.attemptId, row.holder).changes > 0
+}
+
+/** Every running row a machine holds (holder NOT NULL), for the console and «Работают сейчас». */
+export function heldRows(): QueueRow[] {
+  return (db.prepare("SELECT * FROM competition_queue WHERE state = 'running' AND holder IS NOT NULL ORDER BY started_at, submission_id").all() as QueueRowRaw[]).map(toQueueRow)
 }
 
 /**

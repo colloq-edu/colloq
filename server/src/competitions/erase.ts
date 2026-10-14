@@ -85,8 +85,10 @@ export async function deleteEntrantFromCompetition(
   // A run of a previous life of the server is nobody's here to kill or to
   // wait for until the queue reclaims it: refused before anything is touched
   // (ordering its cancellation would only leave a note that cancels its next,
-  // legitimate run).
-  if (mine.some((row) => row.state === 'running' && !runningHere(row.submissionId))) {
+  // legitimate run). A machine's run is not one: it is cancelled durably
+  // below (runner.ts · cancelSubmission → remote/release.ts · cancelRemote),
+  // and a late upload of it is refused before it creates anything.
+  if (mine.some((row) => row.state === 'running' && row.holder === null && !runningHere(row.submissionId))) {
     return { ok: false, why: 'running' }
   }
   // Waiting work leaves the queue at once, before the first await below: the

@@ -90,6 +90,7 @@ import {
 } from '../competitions/store.js'
 import { withoutBaseline } from '../competitions/panel.js'
 import { queueForecast } from '../competitions/forecast.js'
+import { blocking } from '../competitions/remote/views.js'
 import { holdUpload, privateBoardState } from '../competitions/results.js'
 import { uploadsPerMinute } from '../competitions/settings.js'
 import { cancelSubmission, queueSlots, wakeCompetitionPump } from '../competitions/runner.js'
@@ -357,6 +358,9 @@ function liveOf(competition: Competition, me: Entrant, now = Date.now()): Submis
       stage: submission.stage,
       cellsDone: submission.cellsDone,
       cellsTotal: submission.cellsTotal,
+      // The machines' reasons (remote/views.ts · waitReasons): a word for all of them, and never which one.
+      ...(blocking(forecast.reasons.get(submission.id)) ? { preparing: true } : {}),
+      ...(waiting?.kind === 'metric' && submission.state === 'running' ? { scoring: true } : {}),
     }
   })
 }

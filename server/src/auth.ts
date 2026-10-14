@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import { config } from './config.js'
 import { staffAuthorizationVersion } from './admin/store.js'
 import type { ParticipantRole } from '@shared/protocol'
+import { isRemoteCredential } from '@shared/remote-runner'
 
 export interface TokenPayload {
   sessionId: string
@@ -63,6 +64,12 @@ export function signToken(payload: TokenPayload): string {
 
 export function verifyToken(token: string | undefined | null): TokenPayload | null {
   if (!token || !token.includes('.')) return null
+  /*
+   * A machine's credential is never a room token, whatever its signature
+   * would say: it has dots too, and only the machines' router takes it
+   * (competitions/remote/routes.ts). Refused by its shape, before any HMAC.
+   */
+  if (isRemoteCredential(token)) return null
   const [body, sig] = token.split('.')
   if (!body || !sig) return null
   const expected = crypto.createHmac('sha256', config.sessionSecret).update(body).digest('base64url')

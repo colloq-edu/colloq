@@ -178,6 +178,12 @@ export interface CompetitionSettings {
   }
   /** The cards given to competition submissions. */
   gpu: CompetitionGpuSettings
+  /**
+   * The machines' half of the box: «Тетради на этом сервере», the metric
+   * lane's places, the blob rate and the uploads stored at once, each with
+   * where it came from. Absent from servers before machines.
+   */
+  runners?: CompetitionRunnerSettings
 }
 
 /**

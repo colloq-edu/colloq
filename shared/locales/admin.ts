@@ -7055,4 +7055,1632 @@ export const adminMessages: MessageCatalog = {
     "ru": "Не получилось: {reason}",
     "en": "That did not work: {reason}"
   },
+  /*
+   * «Машины для посылок» (docs/architecture/remote-runners.md, Paper 16 ·
+   * M1–M7): the Resources block, the connect dialog, a machine's page, and
+   * what the console, «Работают сейчас» and the editor say about runs on
+   * machines. «Машина» is feminine, so its states are too (decision 9):
+   * «устарела», «отключена», «доверенная». The console's «исполнители» keep
+   * meaning places.
+   */
+  "admin.runners.title": {
+    "ru": "Машины для посылок",
+    "en": "Machines for submissions"
+  },
+  "admin.runners.note": {
+    "ru": "Посылки соревнований считаются не только здесь: подключённые машины берут их из общей очереди, считают в той же песочнице и возвращают ответ. Материалы, очередь, ответы и метрика остаются на этом сервере.",
+    "en": "Competition submissions are not only run here: connected machines take them from the shared queue, run them in the same sandbox and send the answer back. The materials, the queue, the answers and the metric stay on this server."
+  },
+  "admin.runners.ownerOnly": {
+    "ru": "Машины для посылок подключает и видит только владелец сервера.",
+    "en": "Only the server's owner connects and sees the machines for submissions."
+  },
+  "admin.runners.loading": {
+    "ru": "Загружаем машины…",
+    "en": "Loading the machines…"
+  },
+  "admin.runners.loadFailed": {
+    "ru": "Список машин не загрузился:",
+    "en": "The list of machines did not load:"
+  },
+  "admin.runners.connect": {
+    "ru": "Подключить машину",
+    "en": "Connect a machine"
+  },
+  "admin.runners.auto": {
+    "ru": "авто",
+    "en": "auto"
+  },
+  "admin.runners.and": {
+    "ru": "и",
+    "en": "and"
+  },
+  "admin.runners.trusted": {
+    "ru": "доверенная",
+    "en": "trusted"
+  },
+  "admin.runners.gb": {
+    "ru": "{value} ГБ",
+    "en": "{value} GB"
+  },
+  "admin.runners.mb": {
+    "ru": "{value} МБ",
+    "en": "{value} MB"
+  },
+  "admin.runners.updateCommand": {
+    "ru": "make runners-update",
+    "en": "make runners-update"
+  },
+  "admin.runners.state.online": {
+    "ru": "на связи",
+    "en": "online"
+  },
+  "admin.runners.state.silent": {
+    "ru": "молчит",
+    "en": "silent"
+  },
+  "admin.runners.state.silentMin": {
+    "ru": "молчит {count} мин",
+    "en": "silent {count} min"
+  },
+  "admin.runners.state.silentHours": {
+    "ru": "молчит {count} ч",
+    "en": "silent {count} h"
+  },
+  "admin.runners.state.outdated": {
+    "ru": "устарела",
+    "en": "outdated"
+  },
+  "admin.runners.state.draining": {
+    "ru": "осушается",
+    "en": "draining"
+  },
+  "admin.runners.state.quarantined": {
+    "ru": "на карантине",
+    "en": "quarantined"
+  },
+  "admin.runners.state.revoked": {
+    "ru": "отключена",
+    "en": "disconnected"
+  },
+  "admin.runners.state.left": {
+    "ru": "ушла",
+    "en": "left"
+  },
+  "admin.runners.seen.seconds": {
+    "ru": "{count} с назад",
+    "en": "{count} s ago"
+  },
+  "admin.runners.seen.minutes": {
+    "ru": "{count} мин назад",
+    "en": "{count} min ago"
+  },
+  "admin.runners.seen.hours": {
+    "ru": "{count} ч назад",
+    "en": "{count} h ago"
+  },
+  "admin.runners.seen.days": {
+    "ru": {
+      "one": "{count} день назад",
+      "few": "{count} дня назад",
+      "many": "{count} дней назад",
+      "other": "{count} дня назад"
+    },
+    "en": {
+      "one": "{count} day ago",
+      "other": "{count} days ago"
+    }
+  },
+  "admin.runners.seen.never": {
+    "ru": "ещё не выходила на связь",
+    "en": "not heard from yet"
+  },
+  "admin.runners.seen.lastAt": {
+    "ru": "была в {time}",
+    "en": "last heard at {time}"
+  },
+  "admin.runners.cores": {
+    "ru": {
+      "one": "{count} ядро",
+      "few": "{count} ядра",
+      "many": "{count} ядер",
+      "other": "{count} ядра"
+    },
+    "en": {
+      "one": "{count} core",
+      "other": "{count} cores"
+    }
+  },
+  "admin.runners.noCards": {
+    "ru": "без карт",
+    "en": "no GPUs"
+  },
+  "admin.runners.cardsPer": {
+    "ru": "по {count}",
+    "en": "{count} per card"
+  },
+  "admin.runners.placesOf": {
+    "ru": "{busy} из {count}",
+    "en": "{busy} of {count}"
+  },
+  "admin.runners.summary.online": {
+    "ru": "на связи из {count}",
+    "en": "online of {count}"
+  },
+  "admin.runners.summary.places": {
+    "ru": {
+      "one": "место",
+      "few": "места",
+      "many": "мест",
+      "other": "места"
+    },
+    "en": {
+      "one": "place",
+      "other": "places"
+    }
+  },
+  "admin.runners.summary.busy": {
+    "ru": {
+      "one": "{count} занято",
+      "few": "{count} заняты",
+      "many": "{count} занято",
+      "other": "{count} занято"
+    },
+    "en": {
+      "one": "{count} busy",
+      "other": "{count} busy"
+    }
+  },
+  "admin.runners.summary.cards": {
+    "ru": {
+      "one": "карта",
+      "few": "карты",
+      "many": "карт",
+      "other": "карты"
+    },
+    "en": {
+      "one": "GPU",
+      "other": "GPUs"
+    }
+  },
+  "admin.runners.homeNotebooks": {
+    "ru": "Тетради на этом сервере",
+    "en": "Notebooks on this server"
+  },
+  "admin.runners.homeNotebooks.on": {
+    "ru": "считать и здесь",
+    "en": "run them here too"
+  },
+  "admin.runners.homeNotebooks.off": {
+    "ru": "только метрики",
+    "en": "metrics only"
+  },
+  "admin.runners.homeNotebooks.onNote": {
+    "ru": "Тетради считают и этот сервер, и машины; метрику всегда считает сервер.",
+    "en": "This server and the machines both run notebooks; the metric always runs here."
+  },
+  "admin.runners.homeNotebooks.offNote": {
+    "ru": "Тетради считают машины; здесь — только оценка готовых ответов. Ядра сервера остаются занятию.",
+    "en": "The machines run the notebooks; this server only scores finished answers. Its cores stay with the class."
+  },
+  "admin.runners.scoreSlots": {
+    "ru": "Оценок одновременно",
+    "en": "Scores at once"
+  },
+  "admin.runners.scoreSlots.unit": {
+    "ru": "метрики",
+    "en": "metrics"
+  },
+  "admin.runners.scoreSlots.note": {
+    "ru": "Метрика — до 2 минут и 2 ГБ на ответ; от {min} до {max}.",
+    "en": "A metric takes up to 2 minutes and 2 GB per answer; {min} to {max}."
+  },
+  "admin.runners.col.state": {
+    "ru": "Состояние",
+    "en": "State"
+  },
+  "admin.runners.col.machine": {
+    "ru": "Машина",
+    "en": "Machine"
+  },
+  "admin.runners.col.resources": {
+    "ru": "Ресурсы",
+    "en": "Resources"
+  },
+  "admin.runners.col.places": {
+    "ru": "Места",
+    "en": "Places"
+  },
+  "admin.runners.col.readiness": {
+    "ru": "Готовность",
+    "en": "Readiness"
+  },
+  "admin.runners.col.readinessOf": {
+    "ru": "Готовность · {title}",
+    "en": "Readiness · {title}"
+  },
+  "admin.runners.readyFor": {
+    "ru": "«{title}»:",
+    "en": "“{title}”:"
+  },
+  "admin.runners.empty.title": {
+    "ru": "Машин пока нет",
+    "en": "No machines yet"
+  },
+  "admin.runners.empty.hint": {
+    "ru": "Подключите машину с Docker — арендованную на vast или университетский сервер: она будет брать посылки из общей очереди.",
+    "en": "Connect a machine with Docker, a vast rental or a university server: it takes submissions from the shared queue."
+  },
+  "admin.runners.nobodyRuns": {
+    "ru": "Тетради на этом сервере выключены, а ни одной машины на связи нет: посылки будут ждать, пока не подключится машина.",
+    "en": "Notebooks on this server are off and no machine is online: submissions wait until a machine connects."
+  },
+  "admin.runners.revokeAll": {
+    "ru": "Отключить все",
+    "en": "Disconnect all"
+  },
+  "admin.runners.footnote": {
+    "ru": "Машина видит тетради участников и открытые данные. Скрытый тест получают только доверенные машины; ответы и метрика никогда не уезжают с этого сервера.",
+    "en": "A machine sees participants' notebooks and the open data. Only trusted machines get the hidden test; the answers and the metric never leave this server."
+  },
+  "admin.runners.banner": {
+    "ru": "{name} на карантине с {time}: слишком много потерь или отказов подряд, и сервер перестал давать ей посылки. Посмотрите её события и верните в работу, когда причина устранена.",
+    "en": "{name} is quarantined since {time}: too many losses or declines in a row, and this server stopped giving it submissions. Look at its events, and resume it once the cause is fixed."
+  },
+  "admin.runners.bannerOpen": {
+    "ru": "Открыть машину",
+    "en": "Open the machine"
+  },
+  "admin.runners.menu.label": {
+    "ru": "Действия с машиной {name}",
+    "en": "Actions for {name}"
+  },
+  "admin.runners.menu.open": {
+    "ru": "Страница машины",
+    "en": "Machine page"
+  },
+  "admin.runners.menu.places": {
+    "ru": "Места…",
+    "en": "Places…"
+  },
+  "admin.runners.menu.perDevice": {
+    "ru": "Посылок на карту…",
+    "en": "Runs per GPU…"
+  },
+  "admin.runners.menu.trust": {
+    "ru": "Доверенная",
+    "en": "Trusted"
+  },
+  "admin.runners.menu.drain": {
+    "ru": "Осушить",
+    "en": "Drain"
+  },
+  "admin.runners.menu.resume": {
+    "ru": "Вернуть в работу",
+    "en": "Resume"
+  },
+  "admin.runners.menu.revoke": {
+    "ru": "Отключить",
+    "en": "Disconnect"
+  },
+  "admin.runners.working": {
+    "ru": "Отправляем…",
+    "en": "Sending…"
+  },
+  "admin.runners.places.title": {
+    "ru": "Места на {name}",
+    "en": "Places on {name}"
+  },
+  "admin.runners.places.body": {
+    "ru": "Сколько посылок машина считает одновременно. Пусто — авто: сколько она сама предлагает по ядрам и памяти.",
+    "en": "How many submissions the machine runs at once. Empty means auto: what it offers by its own cores and memory."
+  },
+  "admin.runners.places.field": {
+    "ru": "Мест",
+    "en": "Places"
+  },
+  "admin.runners.places.autoNow": {
+    "ru": "авто · {count}",
+    "en": "auto · {count}"
+  },
+  "admin.runners.places.invalid": {
+    "ru": "Целое число от {min} до {max} — или пусто.",
+    "en": "A whole number from {min} to {max}, or empty."
+  },
+  "admin.runners.perDevice.title": {
+    "ru": "Посылок на карту на {name}",
+    "en": "Runs per GPU on {name}"
+  },
+  "admin.runners.perDevice.body": {
+    "ru": "Сколько посылок делят одну карту этой машины; срез видеопамяти — её карта, делённая на это число. Пусто — как во вкладке «Видеокарты для посылок».",
+    "en": "How many submissions share one of this machine's GPUs; each gets that GPU's memory divided by this number. Empty: as set under GPUs for submissions."
+  },
+  "admin.runners.perDevice.field": {
+    "ru": "Посылок на карту",
+    "en": "Runs per GPU"
+  },
+  "admin.runners.perDevice.inherit": {
+    "ru": "как на сервере",
+    "en": "as on the server"
+  },
+  "admin.runners.trust.title": {
+    "ru": "Доверить {name} скрытый тест?",
+    "en": "Trust {name} with the hidden test?"
+  },
+  "admin.runners.trust.body": {
+    "ru": "Машина получит скрытый тест каждого соревнования, где он есть, и сможет его прочитать. Включайте только для своих машин: арендованной лучше не отдавать — посылки со скрытым тестом дождутся доверенной.",
+    "en": "The machine gets the hidden test of every competition that has one, and can read it. Turn this on only for your own machines: better not give it to a rented one, since hidden-test submissions wait for a trusted machine."
+  },
+  "admin.runners.trust.confirm": {
+    "ru": "Доверить",
+    "en": "Trust it"
+  },
+  "admin.runners.revoke.title": {
+    "ru": "Отключить {name}?",
+    "en": "Disconnect {name}?"
+  },
+  "admin.runners.revoke.body": {
+    "ru": "Её посылки вернутся в очередь без потери лимита, поздние ответы не примутся, скрытый тест удалится с машины. Подключить её снова можно только новым кодом.",
+    "en": "Its submissions go back to the queue without spending any quota, late answers are refused, and the hidden test is purged from the machine. It can only join again with a new code."
+  },
+  "admin.runners.revoke.confirm": {
+    "ru": "Отключить",
+    "en": "Disconnect"
+  },
+  "admin.runners.revokeAll.body": {
+    "ru": "Их посылки вернутся в очередь без потери лимита, поздние ответы не примутся, скрытый тест удалится с машин. Подключить их снова можно только новым кодом.",
+    "en": "Their submissions go back to the queue without spending any quota, late answers are refused, and the hidden test is purged from them. They can only join again with a new code."
+  },
+  "admin.runners.revokeAll.title": {
+    "ru": {
+      "one": "Отключить {count} машину?",
+      "few": "Отключить {count} машины?",
+      "many": "Отключить {count} машин?",
+      "other": "Отключить {count} машины?"
+    },
+    "en": {
+      "one": "Disconnect {count} machine?",
+      "other": "Disconnect {count} machines?"
+    }
+  },
+  "admin.runners.ready.what.image": {
+    "ru": "образ",
+    "en": "image"
+  },
+  "admin.runners.ready.what.data": {
+    "ru": "данные",
+    "en": "data"
+  },
+  "admin.runners.ready.what.sealed": {
+    "ru": "тест",
+    "en": "hidden test"
+  },
+  "admin.runners.ready.item.ready": {
+    "ru": "{what} ✓",
+    "en": "{what} ✓"
+  },
+  "admin.runners.ready.item.fetching": {
+    "ru": "{what} ↓ {percent} %",
+    "en": "{what} ↓ {percent}%"
+  },
+  "admin.runners.ready.item.fetchingBare": {
+    "ru": "{what} ↓",
+    "en": "{what} ↓"
+  },
+  "admin.runners.ready.item.waiting": {
+    "ru": "{what} в очереди",
+    "en": "{what} queued"
+  },
+  "admin.runners.ready.item.problem": {
+    "ru": "{what} ✗",
+    "en": "{what} ✗"
+  },
+  "admin.runners.ready.taking": {
+    "ru": "готова",
+    "en": "ready"
+  },
+  "admin.runners.ready.dataSize": {
+    "ru": "данные {size}",
+    "en": "data {size}"
+  },
+  "admin.runners.ready.preparingBare": {
+    "ru": "готовится",
+    "en": "preparing"
+  },
+  "admin.runners.ready.preparing": {
+    "ru": "посылки «{title}» возьмёт, когда скачает всё нужное",
+    "en": "takes “{title}” submissions once everything is downloaded"
+  },
+  "admin.runners.ready.preparingBusy": {
+    "ru": "посылки «{title}» возьмёт, когда скачает всё нужное; другие уже считает",
+    "en": "takes “{title}” submissions once everything is downloaded; already running others"
+  },
+  "admin.runners.ready.problem": {
+    "ru": "не готова: подготовка не удалась",
+    "en": "not ready: preparing failed"
+  },
+  "admin.runners.ready.homeOnly": {
+    "ru": "считает только сервер",
+    "en": "only this server runs it"
+  },
+  "admin.runners.ready.homeOnlyDetail": {
+    "ru": "среду {environment} собрали здесь — её образа нет в реестре",
+    "en": "{environment} was built here: its image is not in the registry"
+  },
+  "admin.runners.ready.needsTrusted": {
+    "ru": "скрытый тест — только доверенным",
+    "en": "hidden test: trusted machines only"
+  },
+  "admin.runners.ready.needsTrustedDetail": {
+    "ru": "посылки «{title}» не возьмёт, пока она не доверенная",
+    "en": "takes no “{title}” submissions until it is trusted"
+  },
+  "admin.runners.ready.needsCard": {
+    "ru": "без карт — посылки «{title}» не возьмёт",
+    "en": "no GPU: takes no “{title}” submissions"
+  },
+  "admin.runners.ready.outdated": {
+    "ru": "код {machine}, сервер {home} — новых посылок не берёт",
+    "en": "code {machine}, server {home}: takes no new submissions"
+  },
+  "admin.runners.ready.outdatedBare": {
+    "ru": "код машины не совпадает с сервером — новых посылок не берёт",
+    "en": "its code differs from the server's: takes no new submissions"
+  },
+  "admin.runners.ready.outdatedBusy": {
+    "ru": "досчитает начатые ({count}); make runners-update обновит все машины",
+    "en": "finishes the {count} it holds; make runners-update updates every machine"
+  },
+  "admin.runners.ready.outdatedIdle": {
+    "ru": "make runners-update обновит все машины",
+    "en": "make runners-update updates every machine"
+  },
+  "admin.runners.ready.draining": {
+    "ru": "осушается: досчитает начатые ({count}), новых не берёт",
+    "en": "draining: finishes the {count} it holds, takes nothing new"
+  },
+  "admin.runners.ready.drained": {
+    "ru": "осушена: новых посылок не берёт",
+    "en": "drained: takes no new submissions"
+  },
+  "admin.runners.ready.resumeHint": {
+    "ru": "вернуть в работу — в меню ⋯",
+    "en": "resume it from the ⋯ menu"
+  },
+  "admin.runners.ready.quarantined": {
+    "ru": "на карантине: слишком много потерь или отказов подряд",
+    "en": "quarantined: too many losses or declines in a row"
+  },
+  "admin.runners.ready.quarantinedWhy": {
+    "ru": "на карантине: {why}",
+    "en": "quarantined: {why}"
+  },
+  "admin.runners.ready.quarantinedHint": {
+    "ru": "вернуть в работу — когда причина устранена, в меню ⋯",
+    "en": "once the cause is fixed, resume it from the ⋯ menu"
+  },
+  "admin.runners.ready.revoked": {
+    "ru": "отключена — посылок не берёт",
+    "en": "disconnected: takes no submissions"
+  },
+  "admin.runners.ready.left": {
+    "ru": "ушла сама — посылок не берёт",
+    "en": "left on its own: takes no submissions"
+  },
+  "admin.runners.ready.none": {
+    "ru": "готовиться пока не к чему",
+    "en": "nothing to prepare for yet"
+  },
+  "admin.runners.ready.noneDetail": {
+    "ru": "скачает образ и данные, когда откроется соревнование",
+    "en": "downloads the image and the data once a competition opens"
+  },
+  "admin.runners.ready.unknown": {
+    "ru": "о «{title}» машина ничего не сообщила",
+    "en": "the machine said nothing about “{title}”"
+  },
+  "admin.runners.ready.notAnswering": {
+    "ru": "не отвечает",
+    "en": "not answering"
+  },
+  "admin.runners.ready.silentDetail": {
+    "ru": "если не ответит, её посылки вернутся в очередь и их посчитают другие; лимит не тратится",
+    "en": "if it stays silent, its submissions go back to the queue for others to run; no quota is spent"
+  },
+  "admin.runners.problem.driver": {
+    "ru": "драйвер {driver}, нужен {min}+ — GPU-образ не запустится",
+    "en": "driver {driver}, {min}+ needed: the GPU image will not start"
+  },
+  "admin.runners.problem.smoke": {
+    "ru": "torch не видит CUDA — GPU-образ не запустится",
+    "en": "torch sees no CUDA: the GPU image will not start"
+  },
+  "admin.runners.problem.image": {
+    "ru": "образ не скачался",
+    "en": "the image did not download"
+  },
+  "admin.runners.problem.layers": {
+    "ru": "скачанный образ не совпал с образом сервера",
+    "en": "the downloaded image does not match the server's"
+  },
+  "admin.runners.problem.data": {
+    "ru": "данные не скачались или не сошлись суммы",
+    "en": "the data did not download, or its checksums did not match"
+  },
+  "admin.runners.problem.wheels": {
+    "ru": "пакеты не скачались",
+    "en": "the packages did not download"
+  },
+  "admin.runners.problem.disk": {
+    "ru": "на диске мало места",
+    "en": "low on disk"
+  },
+  "admin.runners.problem.docker": {
+    "ru": "Docker не отвечает",
+    "en": "Docker does not answer"
+  },
+  "admin.runners.problem.cards": {
+    "ru": "карты не отвечают",
+    "en": "the GPUs do not answer"
+  },
+  "admin.runners.connect.lede": {
+    "ru": "Любая машина с Docker: арендованная на vast, университетский сервер. Она сама придёт сюда по HTTPS — открывать порты не нужно.",
+    "en": "Any machine with Docker: a vast rental, a university server. It comes here by itself over HTTPS, with no ports to open."
+  },
+  "admin.runners.connect.machines": {
+    "ru": "Сколько машин",
+    "en": "How many machines"
+  },
+  "admin.runners.connect.machinesUnit": {
+    "ru": "по одному коду",
+    "en": "on one code"
+  },
+  "admin.runners.connect.hours": {
+    "ru": "Код действует",
+    "en": "Code valid for"
+  },
+  "admin.runners.connect.hoursUnit": {
+    "ru": {
+      "one": "час",
+      "few": "часа",
+      "many": "часов",
+      "other": "часа"
+    },
+    "en": {
+      "one": "hour",
+      "other": "hours"
+    }
+  },
+  "admin.runners.connect.places": {
+    "ru": "Места",
+    "en": "Places"
+  },
+  "admin.runners.connect.placesAuto": {
+    "ru": "по ядрам",
+    "en": "by cores"
+  },
+  "admin.runners.connect.placesFixed": {
+    "ru": "на машину",
+    "en": "per machine"
+  },
+  "admin.runners.connect.sealed": {
+    "ru": "Скрытый тест",
+    "en": "Hidden test"
+  },
+  "admin.runners.connect.trust": {
+    "ru": "Доверить машинам скрытый тест",
+    "en": "Trust the machines with the hidden test"
+  },
+  "admin.runners.connect.trustNote": {
+    "ru": "Машины с этим кодом сразу получат скрытый тест. Отмечайте так только свои машины.",
+    "en": "Machines joining with this code get the hidden test at once. Do this only for your own machines."
+  },
+  "admin.runners.connect.untrustedNote": {
+    "ru": "Скрытый тест машины не получат: посылки с ним посчитают сервер и доверенные машины. Доверить можно и потом, на странице машины.",
+    "en": "The machines do not get the hidden test: this server and trusted machines run those submissions. You can trust a machine later, on its page."
+  },
+  "admin.runners.connect.mint": {
+    "ru": "Показать команды",
+    "en": "Show the commands"
+  },
+  "admin.runners.connect.bounds": {
+    "ru": "Код покажем один раз: на 1–{machines} машин, действует до {hours} ч.",
+    "en": "The code is shown once: for 1 to {machines} machines, valid up to {hours} h."
+  },
+  "admin.runners.connect.run": {
+    "ru": "Выполните одну команду на машине",
+    "en": "Run one command on the machine"
+  },
+  "admin.runners.connect.once": {
+    "ru": {
+      "one": "код показан один раз · действует {hours} ч · на {count} машину",
+      "few": "код показан один раз · действует {hours} ч · на {count} машины",
+      "many": "код показан один раз · действует {hours} ч · на {count} машин",
+      "other": "код показан один раз · действует {hours} ч · на {count} машины"
+    },
+    "en": {
+      "one": "the code is shown once · valid {hours} h · for {count} machine",
+      "other": "the code is shown once · valid {hours} h · for {count} machines"
+    }
+  },
+  "admin.runners.connect.docker": {
+    "ru": "Docker уже стоит",
+    "en": "Docker is installed"
+  },
+  "admin.runners.connect.bare": {
+    "ru": "Голая машина (Ubuntu) — поставит Docker и драйвер карт",
+    "en": "A bare machine (Ubuntu): installs Docker and the GPU toolkit"
+  },
+  "admin.runners.connect.vast": {
+    "ru": "Арендовать на vast и подключить (из репозитория)",
+    "en": "Rent on vast and connect (from the repository)"
+  },
+  "admin.runners.connect.copy": {
+    "ru": "Копировать",
+    "en": "Copy"
+  },
+  "admin.runners.connect.copyFailed": {
+    "ru": "Не скопировалось — выделите команду и скопируйте её вручную.",
+    "en": "Could not copy: select the command and copy it by hand."
+  },
+  "admin.runners.connect.waiting": {
+    "ru": "Ждём первую машину…",
+    "en": "Waiting for the first machine…"
+  },
+  "admin.runners.connect.waitingMore": {
+    "ru": "Ждём остальные машины…",
+    "en": "Waiting for the other machines…"
+  },
+  "admin.runners.connect.allJoined": {
+    "ru": "Все машины подключились",
+    "en": "Every machine has joined"
+  },
+  "admin.runners.connect.waitingNote": {
+    "ru": "Выполните команду на машине — она появится здесь сама. Окно можно закрыть: машины появятся в списке.",
+    "en": "Run a command on the machine: it shows up here by itself. You can close this window; the machines appear in the list."
+  },
+  "admin.runners.connect.andMore": {
+    "ru": "и ещё {count}",
+    "en": "and {count} more"
+  },
+  "admin.runners.connect.joined": {
+    "ru": {
+      "one": "Подключилась {count} из {total}: {names} — {status}. Окно можно закрыть: машины появятся в списке сами.",
+      "few": "Подключились {count} из {total}: {names} — {status}. Окно можно закрыть: машины появятся в списке сами.",
+      "many": "Подключились {count} из {total}: {names} — {status}. Окно можно закрыть: машины появятся в списке сами.",
+      "other": "Подключились {count} из {total}: {names} — {status}. Окно можно закрыть: машины появятся в списке сами."
+    },
+    "en": {
+      "one": "{count} of {total} joined: {names}, {status}. You can close this window; the machines appear in the list by themselves.",
+      "other": "{count} of {total} joined: {names}, {status}. You can close this window; the machines appear in the list by themselves."
+    }
+  },
+  "admin.runners.connect.status.quiet": {
+    "ru": "ещё не вышла на связь",
+    "en": "not heard from yet"
+  },
+  "admin.runners.connect.status.image": {
+    "ru": "качает образ {environment}",
+    "en": "downloading the {environment} image"
+  },
+  "admin.runners.connect.status.imageSized": {
+    "ru": "качает образ {environment}, {size}",
+    "en": "downloading the {environment} image, {size}"
+  },
+  "admin.runners.connect.status.data": {
+    "ru": "качает данные «{title}»",
+    "en": "downloading the data of “{title}”"
+  },
+  "admin.runners.connect.status.ready": {
+    "ru": "готова к посылкам",
+    "en": "ready for submissions"
+  },
+  "admin.runners.connect.status.online": {
+    "ru": "на связи",
+    "en": "online"
+  },
+  "admin.runners.connect.done": {
+    "ru": "Готово",
+    "en": "Done"
+  },
+  "admin.runners.connect.invalid.machines": {
+    "ru": "Машин — от 1 до {max}.",
+    "en": "Machines: 1 to {max}."
+  },
+  "admin.runners.connect.invalid.hours": {
+    "ru": "Код действует от 1 до {max} часов.",
+    "en": "A code lasts 1 to {max} hours."
+  },
+  "admin.runners.connect.invalid.places": {
+    "ru": "Мест — от 1 до {max}, или пусто: авто.",
+    "en": "Places: 1 to {max}, or empty for auto."
+  },
+  "admin.runners.page.loading": {
+    "ru": "Загружаем машину…",
+    "en": "Loading the machine…"
+  },
+  "admin.runners.page.notFound": {
+    "ru": "Такой машины нет: её удалили, или в адресе ошибка.",
+    "en": "There is no such machine: it was removed, or the address is wrong."
+  },
+  "admin.runners.page.toList": {
+    "ru": "Ко всем машинам",
+    "en": "To all machines"
+  },
+  "admin.runners.page.codeSame": {
+    "ru": "код совпадает с сервером",
+    "en": "its code matches the server's"
+  },
+  "admin.runners.page.codeDiffers": {
+    "ru": "код отличается от сервера",
+    "en": "its code differs from the server's"
+  },
+  "admin.runners.page.joined": {
+    "ru": "подключена {when}",
+    "en": "joined {when}"
+  },
+  "admin.runners.page.heard": {
+    "ru": "на связи {ago}",
+    "en": "heard {ago}"
+  },
+  "admin.runners.page.heardAt": {
+    "ru": "была на связи в {time}",
+    "en": "last heard at {time}"
+  },
+  "admin.runners.page.scored": {
+    "ru": {
+      "one": "посылку посчитала",
+      "few": "посылки посчитала",
+      "many": "посылок посчитала",
+      "other": "посылки посчитала"
+    },
+    "en": {
+      "one": "submission run",
+      "other": "submissions run"
+    }
+  },
+  "admin.runners.page.busyOf": {
+    "ru": {
+      "one": "из {count} места в работе",
+      "few": "из {count} мест в работе",
+      "many": "из {count} мест в работе",
+      "other": "из {count} места в работе"
+    },
+    "en": {
+      "one": "of {count} place in use",
+      "other": "of {count} places in use"
+    }
+  },
+  "admin.runners.page.lost": {
+    "ru": {
+      "one": "потеря",
+      "few": "потери",
+      "many": "потерь",
+      "other": "потери"
+    },
+    "en": {
+      "one": "loss",
+      "other": "losses"
+    }
+  },
+  "admin.runners.page.declined": {
+    "ru": {
+      "one": "отказ",
+      "few": "отказа",
+      "many": "отказов",
+      "other": "отказа"
+    },
+    "en": {
+      "one": "decline",
+      "other": "declines"
+    }
+  },
+  "admin.runners.page.lastTrouble": {
+    "ru": "Последний сбой: {text}",
+    "en": "Last trouble: {text}"
+  },
+  "admin.runners.page.machine": {
+    "ru": "Машина",
+    "en": "Machine"
+  },
+  "admin.runners.page.machineNote": {
+    "ru": "Что машина сообщила о себе при подключении и в последнем отклике. Места и срез карты задаёте здесь; машина применит их к следующим посылкам.",
+    "en": "What the machine said about itself when it joined and in its last call. You set its places and GPU share here; it applies them to its next submissions."
+  },
+  "admin.runners.fact.cores": {
+    "ru": "Ядра",
+    "en": "Cores"
+  },
+  "admin.runners.fact.memory": {
+    "ru": "Память",
+    "en": "Memory"
+  },
+  "admin.runners.fact.disk": {
+    "ru": "Диск",
+    "en": "Disk"
+  },
+  "admin.runners.fact.cards": {
+    "ru": "Видеокарты",
+    "en": "GPUs"
+  },
+  "admin.runners.fact.driver": {
+    "ru": "Драйвер",
+    "en": "Driver"
+  },
+  "admin.runners.fact.docker": {
+    "ru": "Docker",
+    "en": "Docker"
+  },
+  "admin.runners.fact.host": {
+    "ru": "Хост",
+    "en": "Host"
+  },
+  "admin.runners.page.placesNote": {
+    "ru": "Пусто — авто: сколько машина предлагает по ядрам и памяти, сейчас {count}.",
+    "en": "Empty means auto: what the machine offers by its cores and memory, {count} now."
+  },
+  "admin.runners.page.perDeviceInherit": {
+    "ru": "как на сервере · {count}",
+    "en": "as on the server · {count}"
+  },
+  "admin.runners.page.perDeviceNote": {
+    "ru": "Как во вкладке «Видеокарты для посылок», но для этой машины. Пусто — как там.",
+    "en": "As under GPUs for submissions, but for this machine. Empty: as set there."
+  },
+  "admin.runners.page.trustedOn": {
+    "ru": "Доверенная: получает скрытый тест",
+    "en": "Trusted: gets the hidden test"
+  },
+  "admin.runners.page.trustedOff": {
+    "ru": "Не доверенная: скрытый тест не получает",
+    "en": "Not trusted: gets no hidden test"
+  },
+  "admin.runners.page.trustNote": {
+    "ru": "Включайте только для своих машин. Арендованной машине скрытый тест лучше не отдавать: посылки с ним дождутся доверенной.",
+    "en": "Turn this on only for your own machines. Better not give a rented machine the hidden test: those submissions wait for a trusted one."
+  },
+  "admin.runners.page.applies": {
+    "ru": "Сохранено — машина применит со следующей посылки",
+    "en": "Saved: the machine applies it from its next submission"
+  },
+  "admin.runners.page.readiness": {
+    "ru": "Готовность к соревнованиям",
+    "en": "Readiness for competitions"
+  },
+  "admin.runners.page.readinessNote": {
+    "ru": "Машина заранее скачивает образ среды, пакеты и данные каждого открытого соревнования. Посылки соревнования она берёт, только когда всё на месте и суммы сошлись.",
+    "en": "The machine downloads the environment image, the packages and the data of every open competition in advance. It takes a competition's submissions only once everything is in place and the checksums match."
+  },
+  "admin.runners.page.noReadiness": {
+    "ru": "Готовиться пока не к чему: открытых соревнований нет.",
+    "en": "Nothing to prepare for yet: no competition is open."
+  },
+  "admin.runners.page.col.competition": {
+    "ru": "Соревнование",
+    "en": "Competition"
+  },
+  "admin.runners.page.col.image": {
+    "ru": "Образ",
+    "en": "Image"
+  },
+  "admin.runners.page.col.data": {
+    "ru": "Данные",
+    "en": "Data"
+  },
+  "admin.runners.page.col.result": {
+    "ru": "Итог",
+    "en": "Verdict"
+  },
+  "admin.runners.page.withCard": {
+    "ru": "видеокарта",
+    "en": "GPU"
+  },
+  "admin.runners.page.withoutCard": {
+    "ru": "без карты",
+    "en": "no GPU"
+  },
+  "admin.runners.page.withSealed": {
+    "ru": "скрытый тест",
+    "en": "hidden test"
+  },
+  "admin.runners.page.builtHere": {
+    "ru": "собрана на этом сервере",
+    "en": "built on this server"
+  },
+  "admin.runners.page.envReady": {
+    "ru": "{environment} ✓",
+    "en": "{environment} ✓"
+  },
+  "admin.runners.page.envFetching": {
+    "ru": "{environment} ↓ {percent} %",
+    "en": "{environment} ↓ {percent}%"
+  },
+  "admin.runners.page.envFetchingBare": {
+    "ru": "{environment} ↓",
+    "en": "{environment} ↓"
+  },
+  "admin.runners.page.envWaiting": {
+    "ru": "{environment} — в очереди",
+    "en": "{environment}: queued"
+  },
+  "admin.runners.page.envProblem": {
+    "ru": "{environment} ✗",
+    "en": "{environment} ✗"
+  },
+  "admin.runners.page.ofSize": {
+    "ru": "{done} из {total}",
+    "en": "{done} of {total}"
+  },
+  "admin.runners.page.sealedTrustedOnly": {
+    "ru": "тест — только доверенным",
+    "en": "hidden test: trusted only"
+  },
+  "admin.runners.page.dataReady": {
+    "ru": "✓ {size}",
+    "en": "✓ {size}"
+  },
+  "admin.runners.page.dataFetching": {
+    "ru": "↓ {percent} %",
+    "en": "↓ {percent}%"
+  },
+  "admin.runners.page.dataFetchingBare": {
+    "ru": "↓ качается",
+    "en": "↓ downloading"
+  },
+  "admin.runners.page.dataWaiting": {
+    "ru": "в очереди",
+    "en": "queued"
+  },
+  "admin.runners.page.dataProblem": {
+    "ru": "✗ не скачались",
+    "en": "✗ not downloaded"
+  },
+  "admin.runners.page.result.taking": {
+    "ru": "берёт посылки",
+    "en": "takes submissions"
+  },
+  "admin.runners.page.result.running": {
+    "ru": "сейчас считает {count}",
+    "en": "running {count} now"
+  },
+  "admin.runners.page.result.preparing": {
+    "ru": "возьмёт, когда скачает",
+    "en": "takes them once downloaded"
+  },
+  "admin.runners.page.result.problem": {
+    "ru": "не берёт: подготовка не удалась",
+    "en": "takes none: preparing failed"
+  },
+  "admin.runners.page.result.homeOnly": {
+    "ru": "среду, собранную на этом сервере, машины не получают: её образа нет в реестре",
+    "en": "machines never get an environment built on this server: its image is not in the registry"
+  },
+  "admin.runners.page.result.needsTrusted": {
+    "ru": "не берёт: скрытый тест",
+    "en": "takes none: hidden test"
+  },
+  "admin.runners.page.result.needsTrustedWhy": {
+    "ru": "скрытый тест получают только доверенные машины",
+    "en": "only trusted machines get the hidden test"
+  },
+  "admin.runners.page.result.needsCard": {
+    "ru": "не берёт: нужна видеокарта",
+    "en": "takes none: needs a GPU"
+  },
+  "admin.runners.page.result.outdated": {
+    "ru": "не берёт: код устарел",
+    "en": "takes none: outdated code"
+  },
+  "admin.runners.page.runs": {
+    "ru": "Сейчас считает · {count}",
+    "en": "Running now · {count}"
+  },
+  "admin.runners.page.runsNote": {
+    "ru": "Остановка доходит до машины со следующим её откликом, до 15 с. Если машина замолчит, посылка вернётся в очередь сама.",
+    "en": "A stop reaches the machine with its next call, within 15 s. If the machine goes silent, the submission goes back to the queue by itself."
+  },
+  "admin.runners.page.noRuns": {
+    "ru": "Сейчас ничего не считает.",
+    "en": "Nothing running now."
+  },
+  "admin.runners.page.stop": {
+    "ru": "Остановить посылку",
+    "en": "Stop the submission"
+  },
+  "admin.runners.page.stopLabel": {
+    "ru": "Остановить посылку {who}",
+    "en": "Stop {who}"
+  },
+  "admin.runners.page.events": {
+    "ru": "События",
+    "en": "Events"
+  },
+  "admin.runners.page.eventsNote": {
+    "ru": "Последние 50. Отказ — машина сама вернула посылку и назвала причину; потеря — машина замолчала, и посылку пересчитал кто-то другой.",
+    "en": "The last 50. A decline is the machine giving a submission back with a reason; a loss is the machine going silent, so someone else ran it again."
+  },
+  "admin.runners.page.noEvents": {
+    "ru": "Событий пока нет.",
+    "en": "No events yet."
+  },
+  "admin.runners.page.showAll": {
+    "ru": "Показать все {count}",
+    "en": "Show all {count}"
+  },
+  "admin.runners.phase.accepted": {
+    "ru": "принята",
+    "en": "accepted"
+  },
+  "admin.runners.phase.preparing": {
+    "ru": "готовится",
+    "en": "preparing"
+  },
+  "admin.runners.phase.exporting": {
+    "ru": "отдаёт результат",
+    "en": "exporting"
+  },
+  "admin.runners.phase.uploading": {
+    "ru": "отправляет ответ",
+    "en": "uploading"
+  },
+  "admin.runners.event.someone": {
+    "ru": "(удалена)",
+    "en": "(deleted)"
+  },
+  "admin.runners.event.competition": {
+    "ru": "«{title}»",
+    "en": "“{title}”"
+  },
+  "admin.runners.event.joined": {
+    "ru": "Подключилась",
+    "en": "Joined"
+  },
+  "admin.runners.event.leased": {
+    "ru": "Взяла посылку {who}",
+    "en": "Took {who}"
+  },
+  "admin.runners.event.applied": {
+    "ru": "Ответ посылки {who} принят; метрику считает сервер",
+    "en": "The answer of {who} was accepted; this server runs the metric"
+  },
+  "admin.runners.event.declined": {
+    "ru": "Отказ: посылка {who} не запустилась — вернулась в очередь, лимит не потрачен",
+    "en": "Declined: {who} did not start; back in the queue, no quota spent"
+  },
+  "admin.runners.event.lost": {
+    "ru": "Потеря: посылка {who}; лимит не потрачен",
+    "en": "Lost: {who}; no quota spent"
+  },
+  "admin.runners.event.withdrawn": {
+    "ru": "Не подтвердила посылку {who} — та вернулась в очередь",
+    "en": "Never confirmed {who}: it went back to the queue"
+  },
+  "admin.runners.event.revokedRun": {
+    "ru": "Посылка {who} отменена на машине",
+    "en": "{who} was cancelled on the machine"
+  },
+  "admin.runners.event.revoked": {
+    "ru": "Отключена: посылки вернулись в очередь, поздние ответы не примутся",
+    "en": "Disconnected: its submissions went back to the queue, late answers are refused"
+  },
+  "admin.runners.event.quarantined": {
+    "ru": "На карантине: осушена, пока её не вернут в работу",
+    "en": "Quarantined: drained until it is resumed"
+  },
+  "admin.runners.event.resumed": {
+    "ru": "Возвращена в работу",
+    "en": "Resumed"
+  },
+  "admin.runners.event.drained": {
+    "ru": "Осушается: досчитает начатое и новых не берёт",
+    "en": "Draining: finishes what it holds and takes nothing new"
+  },
+  "admin.runners.event.trusted": {
+    "ru": "Отмечена доверенной: получает скрытый тест",
+    "en": "Marked trusted: gets the hidden test"
+  },
+  "admin.runners.event.untrusted": {
+    "ru": "Больше не доверенная: скрытый тест удалён с машины",
+    "en": "No longer trusted: the hidden test was purged from it"
+  },
+  "admin.runners.event.renamed": {
+    "ru": "Переименована",
+    "en": "Renamed"
+  },
+  "admin.runners.event.outdated": {
+    "ru": "Код устарел — новых посылок не берёт",
+    "en": "Its code is outdated: takes no new submissions"
+  },
+  "admin.runners.event.image_ready": {
+    "ru": "Образ скачан и проверен",
+    "en": "Image downloaded and verified"
+  },
+  "admin.runners.event.data_ready": {
+    "ru": "Данные получены, суммы сошлись",
+    "en": "Data received, checksums match"
+  },
+  "admin.runners.event.sealed_fetched": {
+    "ru": "Скрытый тест получен",
+    "en": "Hidden test received"
+  },
+  "admin.runners.event.problem": {
+    "ru": "Ошибка",
+    "en": "Problem"
+  },
+  "admin.runners.event.left": {
+    "ru": "Ушла сама: colloq-host runner leave",
+    "en": "Left on its own: colloq-host runner leave"
+  },
+  "admin.competitions.fleet.where": {
+    "ru": {
+      "one": "на сервере и {count} машине",
+      "few": "на сервере и {count} машинах",
+      "many": "на сервере и {count} машинах",
+      "other": "на сервере и {count} машинах"
+    },
+    "en": {
+      "one": "on this server and {count} machine",
+      "other": "on this server and {count} machines"
+    }
+  },
+  "admin.competitions.fleet.whereMachines": {
+    "ru": {
+      "one": "на {count} машине",
+      "few": "на {count} машинах",
+      "many": "на {count} машинах",
+      "other": "на {count} машинах"
+    },
+    "en": {
+      "one": "on {count} machine",
+      "other": "on {count} machines"
+    }
+  },
+  "admin.competitions.fleet.home": {
+    "ru": "Сервер",
+    "en": "This server"
+  },
+  "admin.competitions.fleet.homeMetrics": {
+    "ru": "только метрики · {busy} из {count}",
+    "en": "metrics only · {busy} of {count}"
+  },
+  "admin.competitions.fleet.places": {
+    "ru": "{busy} из {count}",
+    "en": "{busy} of {count}"
+  },
+  "admin.competitions.fleet.cards": {
+    "ru": {
+      "one": "{count} карта по {per}",
+      "few": "{count} карты по {per}",
+      "many": "{count} карт по {per}",
+      "other": "{count} карты по {per}"
+    },
+    "en": {
+      "one": "{count} GPU, {per} a card",
+      "other": "{count} GPUs, {per} a card"
+    }
+  },
+  "admin.competitions.fleet.homeScores": {
+    "ru": "ответы с машин оцениваются здесь",
+    "en": "answers from the machines are scored here"
+  },
+  "admin.competitions.fleet.finishing": {
+    "ru": "досчитывает {count} · новых не берёт",
+    "en": "finishing {count} · takes nothing new"
+  },
+  "admin.competitions.fleet.noNew": {
+    "ru": "новых посылок не берёт",
+    "en": "takes no new submissions"
+  },
+  "admin.competitions.fleet.versions": {
+    "ru": "на ней {machine}, на сервере {home}",
+    "en": "it runs {machine}, the server {home}"
+  },
+  "admin.competitions.fleet.silent": {
+    "ru": "не отвечает: если не ответит, её посылки вернутся в начало очереди",
+    "en": "not answering: if it stays silent, its submissions go back to the head of the queue"
+  },
+  "admin.competitions.fleet.silentReturned": {
+    "ru": {
+      "one": "её {count} посылка вернулась в начало очереди; лимит участников не потрачен",
+      "few": "её {count} посылки вернулись в начало очереди; лимит участников не потрачен",
+      "many": "её {count} посылок вернулись в начало очереди; лимит участников не потрачен",
+      "other": "её {count} посылки вернулись в начало очереди; лимит участников не потрачен"
+    },
+    "en": {
+      "one": "its {count} submission went back to the head of the queue; no participant's quota was spent",
+      "other": "its {count} submissions went back to the head of the queue; no participant's quota was spent"
+    }
+  },
+  "admin.competitions.fleet.open": {
+    "ru": "карточка машины",
+    "en": "machine page"
+  },
+  "admin.competitions.fleet.more": {
+    "ru": "ещё {count} на этой машине",
+    "en": "{count} more on this machine"
+  },
+  "admin.competitions.fleet.less": {
+    "ru": "свернуть",
+    "en": "show fewer"
+  },
+  "admin.competitions.fleet.free": {
+    "ru": {
+      "one": "свободно {count} место",
+      "few": "свободно {count} места",
+      "many": "свободно {count} мест",
+      "other": "свободно {count} места"
+    },
+    "en": {
+      "one": "{count} place free",
+      "other": "{count} places free"
+    }
+  },
+  "admin.competitions.fleet.setting": {
+    "ru": "машины — во вкладке «Ресурсы»",
+    "en": "machines are on the Resources tab"
+  },
+  "admin.competitions.fleet.queueNote": {
+    "ru": "Очередь общая для сервера и машин: посылку берёт первое свободное место, где готова её среда; вернувшиеся с машины идут первыми и лимит не тратят.",
+    "en": "The queue is shared by this server and the machines: a submission goes to the first free place where its environment is ready; those that came back from a machine go first and spend no quota."
+  },
+  "admin.competitions.fleet.phase.accepted": {
+    "ru": "принята машиной",
+    "en": "accepted by the machine"
+  },
+  "admin.competitions.fleet.phase.preparing": {
+    "ru": "готовится на машине",
+    "en": "preparing on the machine"
+  },
+  "admin.competitions.fleet.phase.exporting": {
+    "ru": "отдаёт результат",
+    "en": "exporting the result"
+  },
+  "admin.competitions.fleet.phase.uploading": {
+    "ru": "возвращает ответ",
+    "en": "sending the answer back"
+  },
+  "admin.competitions.fleet.reason.returnedBare": {
+    "ru": "вернулась в очередь с машины",
+    "en": "back in the queue from a machine"
+  },
+  "admin.competitions.fleet.reason.returned": {
+    "ru": "вернулась с машины {machine}",
+    "en": "back from {machine}"
+  },
+  "admin.competitions.fleet.reason.returnedSilent": {
+    "ru": "вернулась: {machine} замолчала",
+    "en": "back: {machine} went silent"
+  },
+  "admin.competitions.fleet.reason.returnedDeclined": {
+    "ru": "вернулась: {machine} не смогла её запустить",
+    "en": "back: {machine} could not start it"
+  },
+  "admin.competitions.fleet.reason.returnedReleased": {
+    "ru": "вернулась: {machine} её отпустила",
+    "en": "back: {machine} let it go"
+  },
+  "admin.competitions.fleet.reason.no_runners": {
+    "ru": "некому считать: сервер считает только метрики, а машины работу не берут",
+    "en": "nobody to run it: this server only scores, and no machine takes work"
+  },
+  "admin.competitions.fleet.reason.no_gpu_runner": {
+    "ru": "ждёт карту: её нет ни здесь, ни на машинах",
+    "en": "waiting for a GPU: none here or on the machines"
+  },
+  "admin.competitions.fleet.reason.preparing_image": {
+    "ru": "машины качают образ",
+    "en": "machines are downloading the image"
+  },
+  "admin.competitions.fleet.reason.preparing_data": {
+    "ru": "машины качают данные",
+    "en": "machines are downloading the data"
+  },
+  "admin.competitions.fleet.reason.needs_trusted": {
+    "ru": "ждёт доверенную машину: скрытый тест",
+    "en": "waiting for a trusted machine: hidden test"
+  },
+  "admin.competitions.fleet.reason.home_only_env": {
+    "ru": "среда есть только на сервере, а он считает только метрики",
+    "en": "its environment is on this server only, and this server only scores"
+  },
+  "admin.competitions.fleet.reason.scoring": {
+    "ru": "оценивается",
+    "en": "being scored"
+  },
+  "admin.resourcesTab.running.remote.onMachines": {
+    "ru": {
+      "one": "{count} посылка на машинах",
+      "few": "{count} посылки на машинах",
+      "many": "{count} посылок на машинах",
+      "other": "{count} посылки на машинах"
+    },
+    "en": {
+      "one": "{count} submission on machines",
+      "other": "{count} submissions on machines"
+    }
+  },
+  "admin.resourcesTab.running.remote.scoringHere": {
+    "ru": {
+      "one": "здесь только метрика: {count} ответ",
+      "few": "здесь только метрика: {count} ответа",
+      "many": "здесь только метрика: {count} ответов",
+      "other": "здесь только метрика: {count} ответа"
+    },
+    "en": {
+      "one": "only the metric here: {count} answer",
+      "other": "only the metric here: {count} answers"
+    }
+  },
+  "admin.resourcesTab.running.remote.nothingHere": {
+    "ru": "здесь — только их строки в очереди",
+    "en": "only their rows in the queue are here"
+  },
+  "admin.resourcesTab.running.remote.meta": {
+    "ru": "соревнование · посылки на машинах",
+    "en": "competition · submissions on machines"
+  },
+  "admin.resourcesTab.running.remote.hidden": {
+    "ru": "Соревнование другого курса",
+    "en": "Another course's competition"
+  },
+  "admin.resourcesTab.running.remote.zero": {
+    "ru": "0 МБ",
+    "en": "0 MB"
+  },
+  "admin.resourcesTab.running.remote.here": {
+    "ru": "здесь",
+    "en": "here"
+  },
+  "admin.resourcesTab.running.remote.metricHere": {
+    "ru": "метрика · здесь",
+    "en": "metric · here"
+  },
+  "admin.resourcesTab.running.remote.chipScoring": {
+    "ru": "считает",
+    "en": "scoring"
+  },
+  "admin.resourcesTab.running.remote.chipOnMachine": {
+    "ru": "на машине",
+    "en": "on a machine"
+  },
+  "admin.resourcesTab.running.remote.metricLine": {
+    "ru": {
+      "one": "{count} ответ с машин",
+      "few": "{count} ответа с машин",
+      "many": "{count} ответов с машин",
+      "other": "{count} ответа с машин"
+    },
+    "en": {
+      "one": "{count} answer from the machines",
+      "other": "{count} answers from the machines"
+    }
+  },
+  "admin.resourcesTab.running.remote.machineRuns": {
+    "ru": {
+      "one": "{count} посылка",
+      "few": "{count} посылки",
+      "many": "{count} посылок",
+      "other": "{count} посылки"
+    },
+    "en": {
+      "one": "{count} submission",
+      "other": "{count} submissions"
+    }
+  },
+  "admin.resourcesTab.running.remote.zeroHere": {
+    "ru": "здесь 0 МБ",
+    "en": "0 MB here"
+  },
+  "admin.resourcesTab.running.remote.footnote": {
+    "ru": "Посылки на машинах память сервера не занимают: здесь остаются только их строки в очереди и метрика на пришедшие ответы. Остановка посылки на машине доходит со следующим её откликом, до 15 с.",
+    "en": "Submissions on machines hold none of this server's memory: only their rows in the queue and the metric of the answers that came back stay here. A stop reaches a machine with its next call, within 15 s."
+  },
+  "admin.competitions.where.head": {
+    "ru": "Где считается",
+    "en": "Runs on"
+  },
+  "admin.competitions.where.home": {
+    "ru": "сервер",
+    "en": "this server"
+  },
+  "admin.competitions.where.homeMetrics": {
+    "ru": "сервер · метрика",
+    "en": "this server · metric"
+  },
+  "admin.competitions.where.homeOnly": {
+    "ru": "только этот сервер",
+    "en": "this server only"
+  },
+  "admin.competitions.where.homeOnlyLine": {
+    "ru": "машины эту среду не получат",
+    "en": "machines will not get this environment"
+  },
+  "admin.competitions.where.homeOnlyLead": {
+    "ru": "среда {environment} собрана здесь — машины её не получат",
+    "en": "{environment} was built here: machines will not get it"
+  },
+  "admin.competitions.where.machines": {
+    "ru": {
+      "one": "{count} машина",
+      "few": "{count} машины",
+      "many": "{count} машин",
+      "other": "{count} машины"
+    },
+    "en": {
+      "one": "{count} machine",
+      "other": "{count} machines"
+    }
+  },
+  "admin.competitions.where.machinesCards": {
+    "ru": {
+      "one": "{count} машина с картами",
+      "few": "{count} машины с картами",
+      "many": "{count} машин с картами",
+      "other": "{count} машины с картами"
+    },
+    "en": {
+      "one": "{count} machine with GPUs",
+      "other": "{count} machines with GPUs"
+    }
+  },
+  "admin.competitions.where.places": {
+    "ru": {
+      "one": "{count} место",
+      "few": "{count} места",
+      "many": "{count} мест",
+      "other": "{count} места"
+    },
+    "en": {
+      "one": "{count} place",
+      "other": "{count} places"
+    }
+  },
+  "admin.competitions.where.noneTaking": {
+    "ru": "ни одна машина пока не берёт",
+    "en": "no machine takes it yet"
+  },
+  "admin.competitions.where.noMachines": {
+    "ru": "машин нет",
+    "en": "no machines"
+  },
+  "admin.competitions.where.preparing": {
+    "ru": {
+      "one": "{names} готовится",
+      "few": "{names} готовятся",
+      "many": "{names} готовятся",
+      "other": "{names} готовятся"
+    },
+    "en": {
+      "one": "{names} is preparing",
+      "other": "{names} are preparing"
+    }
+  },
+  "admin.competitions.where.preparingDraft": {
+    "ru": {
+      "one": "{names} подготовится к открытию",
+      "few": "{names} подготовятся к открытию",
+      "many": "{names} подготовятся к открытию",
+      "other": "{names} подготовятся к открытию"
+    },
+    "en": {
+      "one": "{names} prepares once it opens",
+      "other": "{names} prepare once it opens"
+    }
+  },
+  "admin.competitions.where.unfit": {
+    "ru": "{name} не подходит — {why}",
+    "en": "{name} does not fit: {why}"
+  },
+  "admin.competitions.where.moreUnfit": {
+    "ru": "и ещё {count}",
+    "en": "and {count} more"
+  },
+  "admin.competitions.where.why.needs_card": {
+    "ru": "у неё нет карт",
+    "en": "it has no GPU"
+  },
+  "admin.competitions.where.why.needs_trusted": {
+    "ru": "она не доверенная, а здесь скрытый тест",
+    "en": "it is not trusted, and this has a hidden test"
+  },
+  "admin.competitions.where.why.outdated": {
+    "ru": "её код устарел",
+    "en": "its code is outdated"
+  },
+  "admin.competitions.where.why.problem": {
+    "ru": "её подготовка не удалась",
+    "en": "it failed to prepare"
+  },
+  "admin.competitions.where.gpuOnHint": {
+    "ru": "посылка видит карту как cuda:0; срез задаёт машина, на которой считается посылка",
+    "en": "the submission sees the card as cuda:0; the machine it runs on sets the share"
+  },
+  "admin.competitions.where.gpuNote": {
+    "ru": "Срез задаёт каждая машина сама.",
+    "en": "Each machine sets its own GPU share."
+  },
+  "admin.competitions.where.gpuNoHomeCards": {
+    "ru": "На этом сервере карт для посылок нет — посылки примутся, пока машина с картами была на связи за последний час.",
+    "en": "This server gives no GPU to submissions: uploads are accepted while a machine with GPUs was heard within the last hour."
+  },
+  "admin.competitions.where.homeOnlyHome": {
+    "ru": {
+      "one": "Посылки посчитает сервер: {count} место. Чтобы помогали машины, выберите среду из реестра — {list}: их образы машины берут сами.",
+      "few": "Посылки посчитает сервер: {count} места. Чтобы помогали машины, выберите среду из реестра — {list}: их образы машины берут сами.",
+      "many": "Посылки посчитает сервер: {count} мест. Чтобы помогали машины, выберите среду из реестра — {list}: их образы машины берут сами.",
+      "other": "Посылки посчитает сервер: {count} места. Чтобы помогали машины, выберите среду из реестра — {list}: их образы машины берут сами."
+    },
+    "en": {
+      "one": "This server runs the submissions: {count} place. For machines to help, pick an environment from the registry ({list}): machines fetch those images themselves.",
+      "other": "This server runs the submissions: {count} places. For machines to help, pick an environment from the registry ({list}): machines fetch those images themselves."
+    }
+  },
+  "admin.competitions.where.homeOnlyHomeBare": {
+    "ru": {
+      "one": "Посылки посчитает сервер: {count} место. Чтобы помогали машины, нужна среда, образ которой есть в реестре.",
+      "few": "Посылки посчитает сервер: {count} места. Чтобы помогали машины, нужна среда, образ которой есть в реестре.",
+      "many": "Посылки посчитает сервер: {count} мест. Чтобы помогали машины, нужна среда, образ которой есть в реестре.",
+      "other": "Посылки посчитает сервер: {count} места. Чтобы помогали машины, нужна среда, образ которой есть в реестре."
+    },
+    "en": {
+      "one": "This server runs the submissions: {count} place. For machines to help, the environment needs an image in the registry.",
+      "other": "This server runs the submissions: {count} places. For machines to help, the environment needs an image in the registry."
+    }
+  },
+  "admin.competitions.where.homeOnlyNobody": {
+    "ru": "Эти посылки никто не посчитает: тетради на этом сервере выключены, а машины среду {environment} не получат. Выберите среду из реестра — {list} — или включите «Тетради на этом сервере» во вкладке «Ресурсы».",
+    "en": "Nobody will run these submissions: this server runs no notebooks, and machines will not get {environment}. Pick an environment from the registry ({list}), or turn Notebooks on this server back on in Resources."
+  },
+  "admin.competitions.where.homeOnlyNobodyBare": {
+    "ru": "Эти посылки никто не посчитает: тетради на этом сервере выключены, а машины среду {environment} не получат. Включите «Тетради на этом сервере» во вкладке «Ресурсы» или выберите среду, образ которой есть в реестре.",
+    "en": "Nobody will run these submissions: this server runs no notebooks, and machines will not get {environment}. Turn Notebooks on this server back on in Resources, or pick an environment with an image in the registry."
+  },
+  "admin.competitions.where.changeEnvironment": {
+    "ru": "Сменить среду",
+    "en": "Change the environment"
+  },
+  "admin.competitions.where.sealedHead": {
+    "ru": "Скрытый тест",
+    "en": "Hidden test"
+  },
+  "admin.competitions.where.sealedTrusted": {
+    "ru": "посылки этого соревнования считают только доверенные машины: скрытый тест на другие не уезжает",
+    "en": "only trusted machines run this competition's submissions: the hidden test goes nowhere else"
+  },
+  "admin.competitions.where.sealedHomeOnly": {
+    "ru": "доверенных машин нет — посылки со скрытым тестом посчитает только сервер",
+    "en": "no machine is trusted: only this server runs submissions with the hidden test"
+  },
+  "admin.competitions.where.sealedWaits": {
+    "ru": "доверенных машин нет, а сервер считает только метрики — посылки со скрытым тестом будут ждать",
+    "en": "no machine is trusted and this server only scores: submissions with the hidden test will wait"
+  },
+  "admin.competitions.where.noCardsHint": {
+    "ru": "карт нет ни на сервере, ни на машинах за последний час",
+    "en": "no GPU here or on any machine heard within the last hour"
+  },
+  "admin.competitions.where.noCardsOwner": {
+    "ru": "Посылки не примутся, пока не подключится машина с картами: участник увидит, что видеокарт для посылок нет.",
+    "en": "Submissions are not accepted until a machine with GPUs connects: the participant sees that there are no GPUs for submissions."
+  },
+  "admin.competitions.where.noCardsTeacher": {
+    "ru": "Посылки не примутся, пока у посылок нет карты: участник увидит, что видеокарт для посылок нет. Попросите владельца подключить машину с картами.",
+    "en": "Submissions are not accepted until there is a GPU for them: the participant sees that there are no GPUs for submissions. Ask the owner to connect a machine with GPUs."
+  },
+  "admin.competitions.where.noCardsLast": {
+    "ru": "Последняя машина с картами, {name}, была на связи {ago}.",
+    "en": "The last machine with GPUs, {name}, was heard {ago}."
+  },
+  "admin.audit.action.runner.enrolled": {
+    "ru": "Подключена машина для посылок",
+    "en": "Submission machine connected"
+  },
+  "admin.audit.action.runner.trusted": {
+    "ru": "Машине доверен скрытый тест",
+    "en": "Machine trusted with the hidden test"
+  },
+  "admin.audit.action.runner.revoked": {
+    "ru": "Отключена машина для посылок",
+    "en": "Submission machine disconnected"
+  },
 }

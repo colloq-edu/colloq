@@ -401,6 +401,12 @@ const LABELS: Record<string, Record<string, readonly string[] | RegExp>> = {
   colloq_rate_limited_total: { reason: ['join_room', 'join_address', 'oracle', 'competitions', 'other'] },
   colloq_disk_free_bytes: { volume: ['data', 'workspace'] },
   colloq_disk_size_bytes: { volume: ['data', 'workspace'] },
+  // The machines that run submissions (ops/metrics.ts · runnerFamilies): states and outcomes, never a machine.
+  colloq_runner_machines: { state: ['online', 'silent', 'outdated', 'draining', 'quarantined', 'revoked', 'left'] },
+  colloq_runner_joins_total: { result: ['joined', 'refused'] },
+  colloq_runner_lease_endings_total: { outcome: ['applied', 'refused', 'withdrawn', 'lost', 'declined', 'revoked', 'cancelled', 'failed'] },
+  colloq_runner_uploads_total: { result: ['stored', 'repeated', 'refused', 'busy'] },
+  colloq_runner_blobs_total: { result: ['served', 'refused', 'gone'] },
 }
 
 test('labels come from fixed sets: rooms, people and addresses never reach the page, and classes add no series', async () => {

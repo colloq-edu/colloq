@@ -110,6 +110,13 @@ import {
 } from './storage.js'
 import { METRIC_NAME, VRAM_UNREAD_LIMIT, competitionDockerDiagnostics } from './docker-runner.js'
 import { startSubmissionSweep, stopSubmissionSweep } from './housekeeping.js'
+/*
+ * A machine's run is cancelled and woken through these two, and neither
+ * imports this module back: the cancel lives apart from the take for that
+ * reason (competitions/remote/release.ts).
+ */
+import { cancelRemote } from './remote/release.js'
+import { wakeAllRunners } from './remote/wake.js'
 import { CompetitionResourcePending } from './broker-runner.js'
 import {
   CLUSTER_GPU,
@@ -517,8 +524,14 @@ export async function drainCompetitionQueue(rounds = 50): Promise<void> {
   }
 }
 
-/** Wake the pump — after an accepted submission, a lifted pause, a rescore. */
+/**
+ * Wake the pump — after an accepted submission, a lifted pause, a rescore —
+ * and the machines' held syncs with it (competitions/remote/wake.ts): new
+ * work is theirs to take as much as this server's, and an idle machine
+ * would otherwise wait up to twenty-five seconds to ask again.
+ */
 export function wakeCompetitionPump(): void {
+  wakeAllRunners()
   if (stopped || timer === null) return
   void pumpOnce()
 }
@@ -2121,6 +2134,13 @@ export async function cancelSubmission(
 ): Promise<boolean> {
   const row = queueRow(submissionId)
   if (!row) return false
+  /*
+   * A machine's run is cancelled durably, in one transaction, whether or not
+   * this server's own runtime is up (competitions/remote/release.ts ·
+   * cancelRemote): its container is the machine's, and the machine's next
+   * sync carries the revoke that takes it down.
+   */
+  if (row.state === 'running' && row.holder !== null) return cancelRemote(row, by)
   if (row.state === 'waiting') {
     leaveQueue(submissionId)
     updateSubmission(submissionId, {
@@ -2194,15 +2214,27 @@ export async function settleSubmission(submissionId: string, timeoutMs: number):
  */
 export async function stopCompetitionRuns(competitionId: string, settleMs: number): Promise<boolean> {
   const rows = queueRows().filter((row) => row.competitionId === competitionId)
-  if (rows.some((row) => row.state === 'running' && !runningHere(row.submissionId))) return false
+  // A machine's run is no run of this process, and needs none: it is cancelled durably below.
+  if (rows.some((row) => row.state === 'running' && row.holder === null && !runningHere(row.submissionId))) return false
   // Before the first await: the pump must not start them while the running ones are taken down.
   for (const row of rows) {
     if (row.state !== 'waiting') continue
     leaveQueue(row.submissionId)
     updateSubmission(row.submissionId, { state: 'cancelled', stage: 'queue', teacherError: tr('competitions.answer.killedByTeacher') })
   }
+  /*
+   * A machine's run goes in one transaction, with nothing to wait for
+   * (competitions/remote/release.ts · cancelRemote): its row leaves the queue
+   * at once, its lease is revoked, and a late result is refused, so the
+   * deletion that follows finds no running row of it.
+   */
   for (const row of rows) {
-    if (row.state !== 'running') continue
+    if (row.state !== 'running' || row.holder === null || cancelRemote(row, 'teacher')) continue
+    // It ended meanwhile (applied, lost, given back): only a run still going holds the deletion up.
+    if (queueRow(row.submissionId)?.state === 'running') return false
+  }
+  for (const row of rows) {
+    if (row.state !== 'running' || row.holder !== null) continue
     await cancelSubmission(row.submissionId, 'teacher')
     if (!(await settleSubmission(row.submissionId, settleMs))) return false
   }

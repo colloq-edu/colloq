@@ -1,0 +1,226 @@
+/**
+ * A machine's results arriving (§3.6 "PUT"): `submission.csv` and
+ * `executed.ipynb` of one attempt, gzipped, one PUT each.
+ *
+ * WHAT COMES BACK IS PARTICIPANT DATA (§6), and is taken in as such. Only the
+ * two names; the body is gzip, and X-Colloq-Sha256 and X-Colloq-Bytes say
+ * what the file is uncompressed. The caps apply AFTER decompression — the
+ * answer at most its lease's `targetBytes`, the notebook at most
+ * REMOTE_FILE_BYTES — and decompression stops at the declared length plus
+ * one byte, so a gzip bomb costs one byte past what it declared. The file is
+ * kept only when its length and its sha256 are what the headers said.
+ *
+ * STAGED OUTSIDE THE ATTEMPT'S TREE: competitions/.remote/<attempt>/, a
+ * folder no submission's directory is under. The outcome moves the files in
+ * (apply.ts), so an upload for an attempt that was cancelled or erased
+ * meanwhile can never recreate the directories of a submission that is gone
+ * — it is refused before a byte is written, and nothing is created for it.
+ * The staged name carries the file's own sha256, so the same file PUT again
+ * is a no-op. Each PUT writes a `.part` of its own, renamed into that name
+ * only once its bytes are what the headers said: a machine's retry that
+ * arrives while its first PUT is still streaming (the relay kept that one
+ * alive) never truncates the other's file under it, so what is kept is one
+ * whole write, never two halves. A part left by an interrupted write is
+ * removed with it, or with the staging folder (liveness.ts · sweepStaging).
+ *
+ * BACK-PRESSURE. At most `runnerUploads` uploads are stored at once across
+ * the instance (REMOTE_UPLOADS), and each needs REMOTE_UPLOAD_FREE_BYTES of
+ * free disk by statfs: past the first, 503 with Retry-After; below the floor,
+ * 507. The machine keeps its outcome and tries again; nothing is lost.
+ */
+import fs from 'node:fs'
+import path from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { Transform, Writable, type TransformCallback } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import zlib from 'node:zlib'
+import type { Request } from 'express'
+import {
+  REMOTE_BYTES_HEADER,
+  REMOTE_SHA256_HEADER,
+  REMOTE_UPLOAD_FREE_BYTES,
+  RemoteProtocolError,
+  parseRemoteUploadMeta,
+  type RemoteFileName,
+  type RemoteUploadReply,
+} from '@shared/remote-runner'
+import { COMPETITION_ATTEMPT_ID } from '@shared/competition-runtime'
+import { competitionsDir, competitionsFs } from '../storage.js'
+import { runnerUploadsSetting } from '../settings.js'
+import { getLease, type LeaseRow, type RunnerRow } from './store.js'
+
+/** The folder an attempt's uploads wait in until its outcome moves them (or the sweep removes them). */
+export function stagingDir(attemptId: string): string {
+  if (!COMPETITION_ATTEMPT_ID.test(attemptId)) throw new Error('Invalid attempt id')
+  return path.join(competitionsDir, '.remote', attemptId)
+}
+
+/** A staged file, named by its own sha256: one name per content. */
+export function stagedPath(attemptId: string, name: RemoteFileName, sha256: string): string {
+  if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error('Invalid sha256')
+  return path.join(stagingDir(attemptId), `${name}.${sha256}`)
+}
+
+/** Whether a file is staged whole: present under its sha256, with its length. */
+export function stagedWhole(attemptId: string, file: { name: RemoteFileName; sha256: string; bytes: number }): boolean {
+  try {
+    const info = competitionsFs.statSync(stagedPath(attemptId, file.name, file.sha256))
+    return info.isFile() && info.size === file.bytes
+  } catch {
+    return false
+  }
+}
+
+export function dropStaging(attemptId: string): void {
+  try {
+    competitionsFs.rmSync(stagingDir(attemptId), { recursive: true, force: true })
+  } catch {
+    // The sweep tries again (liveness.ts · sweepStaging).
+  }
+}
+
+/** Every attempt that has a staging folder, for the sweep. */
+export function stagedAttempts(): string[] {
+  try {
+    return (competitionsFs.readdirSync(path.join(competitionsDir, '.remote')) as string[]).filter((name) => COMPETITION_ATTEMPT_ID.test(name))
+  } catch {
+    return []
+  }
+}
+
+/** Uploads being stored now, across the instance. */
+let active = 0
+export const uploadCounts = { stored: 0, repeated: 0, refused: 0, busy: 0 }
+
+/** A refusal of an upload, with the router's code for it (REMOTE_ERRORS). */
+export class UploadRefusal extends Error {
+  constructor(readonly code: 'not_found' | 'revoked' | 'conflict' | 'too_large' | 'mismatch' | 'busy' | 'disk', message: string, readonly retryAfterS?: number) {
+    super(message)
+  }
+}
+
+/** The lease states an upload may arrive in: the machine holds the attempt. */
+const UPLOADING: ReadonlySet<string> = new Set(['offered', 'accepted', 'running'])
+
+/** Free bytes for the competitions' volume, or `null` — unknown, which is no reason to refuse. */
+function freeBytes(): number | null {
+  try {
+    fs.mkdirSync(competitionsDir, { recursive: true })
+    const disk = fs.statfsSync(competitionsDir)
+    return disk.bavail * disk.bsize
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Store one uploaded file of `runner`'s attempt, or throw an UploadRefusal
+ * (or the contract's RemoteProtocolError for headers that do not parse) —
+ * before reading a byte of the body for every refusal that does not need
+ * the body to be told.
+ */
+export async function receiveUpload(req: Request, runner: RunnerRow, attemptId: string, name: string): Promise<RemoteUploadReply> {
+  const lease = getLease(attemptId)
+  if (!lease || lease.runnerId !== runner.id) throw new UploadRefusal('not_found', 'No such attempt on this machine')
+  const meta = parseRemoteUploadMeta({
+    name,
+    encoding: req.headers['content-encoding'],
+    sha256: req.headers[REMOTE_SHA256_HEADER.toLowerCase()],
+    bytes: req.headers[REMOTE_BYTES_HEADER.toLowerCase()],
+  }, lease.manifest.limits.targetBytes)
+  if (!UPLOADING.has(lease.state)) return repeatAfterOutcome(lease, meta)
+  // The same file again (a reply that was lost): already here whole, nothing to read.
+  if (stagedWhole(attemptId, meta)) {
+    uploadCounts.repeated++
+    return meta
+  }
+  if (active >= runnerUploadsSetting().value) {
+    uploadCounts.busy++
+    throw new UploadRefusal('busy', 'Uploads are at their limit', 2)
+  }
+  const free = freeBytes()
+  if (free !== null && free < (active + 1) * REMOTE_UPLOAD_FREE_BYTES) throw new UploadRefusal('disk', 'Too little free disk for results', 30)
+  active++
+  try {
+    await store(req, attemptId, meta)
+    uploadCounts.stored++
+    return meta
+  } finally {
+    active--
+  }
+}
+
+/**
+ * An upload after the outcome was applied: the agent repeats a PUT whose
+ * reply it never got. The file the outcome listed with this name and hash
+ * is answered as stored; anything else is refused — the attempt is settled,
+ * or it was cancelled, erased or lost, and the agent discards it.
+ */
+function repeatAfterOutcome(lease: LeaseRow, meta: RemoteUploadReply): RemoteUploadReply {
+  const outcome = lease.outcome as { files?: { name: string; sha256: string; bytes: number }[] } | null
+  const listed = outcome?.files?.some((file) => file.name === meta.name && file.sha256 === meta.sha256 && file.bytes === meta.bytes)
+  if ((lease.state === 'applying' || lease.state === 'applied') && listed) return meta
+  uploadCounts.refused++
+  throw new UploadRefusal(lease.state === 'applying' || lease.state === 'applied' ? 'conflict' : 'revoked', 'The attempt is over')
+}
+
+/** How far a compressed body may run past its file's own length: gzip of incompressible bytes grows by a few per thousand. */
+const compressedCap = (bytes: number): number => bytes + Math.ceil(bytes / 100) + 64 * 1024
+
+async function store(req: Request, attemptId: string, meta: RemoteUploadReply): Promise<void> {
+  const dir = stagingDir(attemptId)
+  competitionsFs.mkdirSync(dir, { recursive: true })
+  const part = path.join(dir, `${meta.name}.${randomUUID()}.part`)
+  const fd = competitionsFs.openSync(part, 'w', 0o600)
+  const hash = createHash('sha256')
+  let compressed = 0
+  let plain = 0
+  const counted = new Transform({
+    transform(chunk: Buffer, _encoding, done: TransformCallback) {
+      compressed += chunk.length
+      if (compressed > compressedCap(meta.bytes)) return done(new UploadRefusal('too_large', 'The compressed body is longer than its file could be'))
+      done(null, chunk)
+    },
+  })
+  const unzipped = new Transform({
+    transform(chunk: Buffer, _encoding, done: TransformCallback) {
+      plain += chunk.length
+      // One byte past the declared length is proof enough: decompression stops here.
+      if (plain > meta.bytes) return done(new UploadRefusal('too_large', 'The file is longer than it was declared'))
+      hash.update(chunk)
+      done(null, chunk)
+    },
+  })
+  let closed = false
+  const sink = new Writable({
+    write(chunk: Buffer, _encoding, done) {
+      fs.write(fd, chunk, 0, chunk.length, null, (error) => done(error ?? null))
+    },
+    final(done) {
+      // On disk before it is renamed into its name: a crash after the rename must find the bytes it promised.
+      fs.fsync(fd, (error) => done(error ?? null))
+    },
+  })
+  try {
+    await pipeline(req, counted, zlib.createGunzip({ chunkSize: 64 * 1024 }), unzipped, sink)
+    fs.closeSync(fd)
+    closed = true
+    if (plain !== meta.bytes || hash.digest('hex') !== meta.sha256) throw new UploadRefusal('mismatch', 'The file is not what its headers said')
+    competitionsFs.renameSync(part, stagedPath(attemptId, meta.name, meta.sha256))
+  } catch (error) {
+    if (!closed) {
+      try { fs.closeSync(fd) } catch { /* already closed by the failing stream */ }
+    }
+    try { competitionsFs.rmSync(part, { force: true }) } catch { /* the sweep removes it */ }
+    uploadCounts.refused++
+    if (error instanceof UploadRefusal || error instanceof RemoteProtocolError) throw error
+    // zlib's own refusal of what is not gzip, or a body cut short: the file is not what was declared.
+    if ((error as { code?: string }).code?.startsWith('Z_')) throw new UploadRefusal('mismatch', 'The body is not gzip')
+    throw error
+  }
+}
+
+/** For tests: uploads being stored now. */
+export function activeUploads(): number {
+  return active
+}

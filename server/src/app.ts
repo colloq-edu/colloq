@@ -44,6 +44,9 @@ import { adminImportRoutes } from './routes/admin-import.js'
 import { adminInstanceRoutes } from './routes/admin-instance.js'
 import { adminResourceRoutes } from './routes/admin-resources.js'
 import { adminRunningRoutes } from './routes/admin-running.js'
+import { adminRunnerRoutes } from './routes/admin-runners.js'
+import { remoteRunnerRoutes } from './competitions/remote/routes.js'
+import { REMOTE_API_BASE } from '@shared/remote-runner'
 import { aiRoutes } from './routes/ai.js'
 import { banRoutes } from './routes/bans.js'
 import { competitionRoutes } from './routes/competitions.js'
@@ -276,6 +279,17 @@ app.use((req, res, next) => {
   }
   next()
 })
+
+/*
+ * The machines that run this server's submissions (competitions/remote/
+ * routes.ts), before everything below that is about browsers: compression
+ * (a Range download must not be re-encoded, and an upload is gzip already),
+ * the sign-in proxy's identity, express.json and the same-origin gate. The
+ * router has its own body caps and its own credential, and answers every
+ * path under it itself, refusals included, so nothing below ever sees a
+ * machine's call.
+ */
+app.use(REMOTE_API_BASE, remoteRunnerRoutes())
 
 app.use(compression)
 
@@ -603,6 +617,8 @@ app.use(adminInstanceRoutes())
 // (routes/admin-resources.ts).
 app.use(adminResourceRoutes())
 app.use(adminRunningRoutes())
+// The machines for submissions, the owner's (routes/admin-runners.ts).
+app.use(adminRunnerRoutes())
 app.use(courseRoutes())
 app.use(adminEnvironmentRoutes())
 // The competitions panel — next to the other admin doors and under the same

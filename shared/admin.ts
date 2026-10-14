@@ -292,6 +292,15 @@ export type AdminAuditAction =
   | 'settings.instance_changed'
   /** The owner stopped a class's kernels from the Resources tab to free memory. */
   | 'room.kernel_stopped'
+  /**
+   * The machines that run submissions (docs/architecture/remote-runners.md
+   * §6 "Audit"): a machine joined with the owner's code (the actor is whoever
+   * minted it), the owner trusted it with the hidden test or stopped, and the
+   * owner disconnected it.
+   */
+  | 'runner.enrolled'
+  | 'runner.trusted'
+  | 'runner.revoked'
 
 /** Every action: the panel has a label for each, and a test checks that each one is recorded somewhere. */
 export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
@@ -333,6 +342,9 @@ export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
   'settings.competitions_changed',
   'settings.instance_changed',
   'room.kernel_stopped',
+  'runner.enrolled',
+  'runner.trusted',
+  'runner.revoked',
 ]
 
 /** What an action was done to. `id` is stable; `label` is how it read at that moment. */
@@ -346,6 +358,8 @@ export type AdminAuditTargetType =
   | 'environment'
   | 'settings'
   | 'setup_token'
+  /** A machine that runs submissions (remote_runners). */
+  | 'runner'
 
 /** A value in an event's detail: small and flat, never a secret. */
 export type AdminAuditValue = string | number | boolean | null | readonly string[]

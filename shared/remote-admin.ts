@@ -145,6 +145,13 @@ export interface RemoteMachine {
   /** The last decline's or loss's words, for the counter's caption; null — none. */
   lastTrouble: string | null
   createdAt: number
+  /**
+   * What its last sync said is wrong with the machine itself, not with one
+   * competition's image or data (those are in `readiness`): `disk` below its
+   * floor, `docker` not answering, `cards` that could not be probed, with the
+   * machine's words in this server's language. Absent — nothing.
+   */
+  problems?: { code: RemoteProblemCode; detail: string }[]
 }
 
 /** A code minted for the dialog, as the list keeps it until it is spent or expires. The code itself is never shown again. */
@@ -288,11 +295,26 @@ export type RemoteMachineAction = 'drain' | 'resume' | 'revoke'
  * `no_gpu_runner`: a GPU competition and no card anywhere. `preparing_image`
  * / `preparing_data`: the machines that could take it are still downloading.
  * `needs_trusted`: it reads the hidden test and no trusted machine is free.
- * `home_only_env`: its environment runs only here and this server runs no
- * notebooks. `returned`: it came back to the queue from a machine (`from`
- * names it), first in line and with no quota spent.
+ * `home_only_env`: its environment runs only here and this server cannot
+ * take it — it runs no notebooks, or the notebook needs a card and this
+ * server has none. The same holds for the machines' other reasons: with this
+ * server's notebooks on, a GPU notebook on a server without cards waits for
+ * the machines alone, and for their reasons. `returned`: it came back to the
+ * queue from a machine (`from` names it), first in line and with no quota
+ * spent.
  */
 export type RemoteWaitReason = 'no_runners' | 'no_gpu_runner' | 'preparing_image' | 'preparing_data' | 'needs_trusted' | 'home_only_env' | 'returned'
+
+/**
+ * Why a `returned` row came back, when home knows (WaitingRow.returnedWhy):
+ * `silent` — the machine went silent and its lease was lost (the console's
+ * «вернулась: vast-1 замолчала»); `declined` — the machine refused it before
+ * its container started; `released` — the machine gave it back on the
+ * owner's word or its own: a drain with `--now`, a leave, a disconnect.
+ * Absent — the panel says only which machine it came from, never a cause it
+ * was not told.
+ */
+export type RemoteReturnReason = 'silent' | 'declined' | 'released'
 
 /** A group header of the console grid (M4): this server or one machine, with the places it gives this queue. */
 export interface RemoteConsoleGroup {
@@ -305,6 +327,60 @@ export interface RemoteConsoleGroup {
   cards: { count: number; perDevice: number } | null
   /** This server only: «только метрики» when it runs no notebooks. */
   metricsOnly?: boolean
+  /** A `silent` machine: since when, ms, for «молчит 4 мин» (RemoteMachine.silentSince). Absent — the chip says «молчит» alone. */
+  silentSince?: number | null
+  /** The machine's colloq version, for an `outdated` one's «на ней 0.23.0, на сервере 0.24.0». Absent — the versions are not named. */
+  version?: string | null
+}
+
+/**
+ * A machine as the competition editor's «Где считается» row names it (Paper
+ * M6): its verdict for this one competition (the same words as the machine's
+ * readiness, RemoteReadiness.verdict), the places and cards it brings, and
+ * whether it may hold the hidden test.
+ */
+export interface RemoteWhereMachine {
+  id: string
+  name: string
+  /**
+   * For a competition machines do not prefetch yet (a draft), `preparing`
+   * means it fits and will prepare once the competition opens.
+   */
+  verdict: RemoteReadinessVerdict
+  /** Places it gives submissions (its approved or offered places). */
+  places: number
+  /** Its cards; 0 — none. */
+  cards: number
+  trusted: boolean
+}
+
+/**
+ * «Где считается» (Paper M6, CompetitionView.where): who can run this
+ * competition's notebooks — this server and the machines — and what the
+ * editor warns about, for the competition as saved. Absent — no machine was
+ * ever connected, and the editor draws neither the row nor its warnings, as
+ * before machines.
+ */
+export interface RemoteCompetitionWhere {
+  /** This server: whether it runs notebooks («Тетради на этом сервере») or only scores, and its places for notebooks. */
+  home: { notebooks: boolean; places: number }
+  /** Machines not revoked and not gone, against this competition. */
+  machines: RemoteWhereMachine[]
+  /**
+   * The environments machines can run: those whose revision has an image in
+   * the registry. Warning 1 names them, and an environment picked in the form
+   * but not saved yet is checked against them.
+   */
+  registry: string[]
+  /** The saved environment has no registry image (built or edited on this server): only this server runs it (warning 1). */
+  homeOnly: boolean
+  /**
+   * Cards on machines for a GPU competition (decision 8): how many machines
+   * with cards were heard within REMOTE_GPU_SEEN_MS (the door accepts GPU
+   * uploads while there is one), and the last machine with cards ever heard,
+   * for warning 3's «была на связи 2 ч назад».
+   */
+  cards: { recent: number; last: { name: string; at: number } | null }
 }
 
 /**

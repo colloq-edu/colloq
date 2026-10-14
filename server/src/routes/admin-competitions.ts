@@ -85,6 +85,7 @@ import {
   waitingCount,
   enqueue,
   cardWorkWaiting,
+  heldRows,
 } from '../competitions/store.js'
 import {
   EXECUTED_FILE,
@@ -121,10 +122,12 @@ import {
   type InputRefusal,
 } from '../competitions/panel.js'
 import { queueForecast, runnerGpuPicture } from '../competitions/forecast.js'
+import { competitionWhere, consoleGroups, heldRunView, remoteFleet, type WaitReason } from '../competitions/remote/views.js'
+import { anyRunnerEver } from '../competitions/remote/store.js'
 import { DEADLINE_GRACE_MS, privateBoardState } from '../competitions/results.js'
 import { machineShape, slotsResolution } from '../competitions/capacity.js'
-import { competitionDefaults, parseSettingsInput, saveCompetitionSettings, uploadsPerMinute, type SettingsRefusal } from '../competitions/settings.js'
-import { competitionGpuSliceMb, environmentNeedsGpu, gpuSettingsView, placesTaken, runnerCardsHere } from '../competitions/gpu.js'
+import { competitionDefaults, homeNotebooksSetting, parseSettingsInput, runnerSettings, saveCompetitionSettings, uploadsPerMinute, type SettingsRefusal } from '../competitions/settings.js'
+import { competitionGpuSliceMb, environmentNeedsGpu, gpuSettingsView, placesTaken, runnerCardsHere, runnerGpuDevices, runnerGpuPerDevice } from '../competitions/gpu.js'
 import { gpuDevices } from '../kernel/pool.js'
 import { HOST_RESERVE_MB } from '../kernel/resources.js'
 import { baseName, csvShape, csvUsageSplit, intakeNotebook, notebookCells } from '../competitions/intake.js'
@@ -420,7 +423,14 @@ async function viewOf(competition: Competition): Promise<CompetitionView> {
     ready: readinessOf(competition),
     dataBytes: openFileBytes(competition.id),
     privatePending: privateBoardState(competition).pending,
+    // «Где считается» (M6): only once a machine was ever connected (remote/views.ts · competitionWhere).
+    ...whereOf(competition),
   }
+}
+
+function whereOf(competition: Competition): Pick<CompetitionView, 'where'> {
+  const where = competitionWhere(competition, queueSlots())
+  return where ? { where } : {}
 }
 
 /* ----------------------------------------------------------------- queue */
@@ -439,6 +449,8 @@ async function viewOf(competition: Competition): Promise<CompetitionView> {
  * so a notebook's metric step still shows it.
  */
 function runningCard(row: QueueRow, competition: Competition): RunningNow['gpu'] {
+  // A machine's run: the card its machine gave it, as the machine reported it (remote_leases).
+  if (row.holder !== null) return heldRunView(row)?.card ?? null
   if (row.gpu !== null) return { device: row.gpu, sliceMb: row.gpuSliceMb }
   if (!runnerCardsHere() && row.kind === 'notebook' && competition.limits.gpu === true) return { device: '', sliceMb: null }
   return null
@@ -450,6 +462,13 @@ function runningNow(row: QueueRow, viewer: StaffLike | null): RunningNow | null 
   if (!submission || !competition) return null
   const limitSeconds =
     row.kind === 'metric' ? METRIC_WALL_SECONDS : competition.limits.wallSeconds
+  /*
+   * A machine's run says which machine and how far (Paper M4): its container
+   * may not have started yet. The machine is the instance's, not a course's,
+   * so another course's run keeps it too — the sums per machine must add up.
+   */
+  const held = heldRunView(row)
+  const remote: Pick<RunningNow, 'machine' | 'remotePhase'> = held ? { machine: held.machine, remotePhase: held.phase ?? 'accepted' } : {}
   if (!canSeeCompetition(viewer, competition)) {
     /*
      * Another course's run: the slot and its clock, nothing of whose. The
@@ -478,6 +497,7 @@ function runningNow(row: QueueRow, viewer: StaffLike | null): RunningNow | null 
       late: row.late,
       hidden: true,
       gpu: runningCard(row, competition),
+      ...remote,
     }
   }
   return {
@@ -497,6 +517,7 @@ function runningNow(row: QueueRow, viewer: StaffLike | null): RunningNow | null 
     baseline: row.entrantId === baselineEntrantOf(competition),
     late: row.late,
     gpu: runningCard(row, competition),
+    ...remote,
   }
 }
 
@@ -557,7 +578,12 @@ function queueSnapshot(viewer: StaffLike | null, now = Date.now()): QueueSnapsho
   const running = runningRows()
   const cards = runnerGpuPicture(now)
   const onCards = running.flatMap((row) => row.gpu === null ? [] : [{ device: row.gpu, perDevice: row.gpuPerDevice }])
-  return {
+  const homeGpu = cards
+    ? { slots: cards.slots, busy: placesTaken(cards.cards, onCards), sliceMb: cards.sliceMb }
+    : runnerCardsHere() && cardWorkWaiting(Number.MAX_SAFE_INTEGER)
+      ? { slots: 0, busy: placesTaken([], onCards), sliceMb: null }
+      : null
+  const snapshot: QueueSnapshot = {
     paused: pause.paused,
     pausedAt: pause.at,
     running: running
@@ -567,12 +593,34 @@ function queueSnapshot(viewer: StaffLike | null, now = Date.now()): QueueSnapsho
     slots: queueSlots(),
     doneToday: today.done,
     averageMs: today.averageMs,
-    gpu: cards
-      ? { slots: cards.slots, busy: placesTaken(cards.cards, onCards), sliceMb: cards.sliceMb }
-      : runnerCardsHere() && cardWorkWaiting(Number.MAX_SAFE_INTEGER)
-        ? { slots: 0, busy: placesTaken([], onCards), sliceMb: null }
-        : null,
+    gpu: homeGpu,
   }
+  if (!anyRunnerEver()) return snapshot
+  /*
+   * WITH MACHINES (§5.7, Paper M4): the runs they hold are in `running` too,
+   * the places are this server's (with its notebooks on) and every live
+   * machine's, the GPU block counts their card shares beside this server's,
+   * and `groups` says whose each is. Before any machine was ever connected
+   * none of this is here, and the console stays as it was.
+   */
+  const fleet = remoteFleet(now)
+  const held = heldRows()
+  const homeOn = homeNotebooksSetting().value
+  const heldGpu = held.filter((row) => getCompetition(row.competitionId)?.limits.gpu === true).length
+  snapshot.running.push(...held.map((row) => runningNow(row, viewer)).filter((row): row is RunningNow => row !== null))
+  snapshot.slots = (homeOn ? queueSlots() : 0) + fleet.places
+  if (fleet.gpuShares > 0 || heldGpu > 0) {
+    const here = homeOn ? homeGpu : null
+    const slices = [here?.sliceMb, fleet.gpuShares > 0 ? fleet.sliceMb : undefined].filter((slice): slice is number | null => slice !== undefined)
+    snapshot.gpu = {
+      slots: (here?.slots ?? 0) + fleet.gpuShares,
+      busy: (here?.busy ?? 0) + heldGpu,
+      sliceMb: slices.length === 0 || slices.some((slice) => slice === null) ? null : Math.min(...(slices as number[])),
+    }
+  }
+  const devices = runnerGpuDevices()
+  snapshot.groups = consoleGroups(queueSlots(), devices.length ? { count: devices.length, perDevice: runnerGpuPerDevice() } : null, now)
+  return snapshot
 }
 
 /**
@@ -584,8 +632,9 @@ function queueSnapshot(viewer: StaffLike | null, now = Date.now()): QueueSnapsho
  * competition's rows are returned. The estimate is the participant's own
  * (competitions/forecast.ts): the projector and the phone name one number.
  */
-function waitingRows(competitionId: string | null, snapshot: QueueSnapshot, now: number): WaitingRow[] {
-  const forecast = queueForecast(snapshot.slots, now)
+function waitingRows(competitionId: string | null, _snapshot: QueueSnapshot, now: number): WaitingRow[] {
+  // This server's own slots: the forecast adds the machines' places itself (forecast.ts · queueForecast).
+  const forecast = queueForecast(queueSlots(), now)
   const rows: WaitingRow[] = []
   for (const queued of [...forecast.eligible, ...forecast.deferred]) {
     if (competitionId && queued.competitionId !== competitionId) continue
@@ -607,9 +656,21 @@ function waitingRows(competitionId: string | null, snapshot: QueueSnapshot, now:
       late: queued.late,
       // The queue's own rule of who needs a card share (store.ts · selectNext, forecast.ts · cardNeeds).
       gpu: queued.kind === 'notebook' && competition.limits.gpu === true,
+      // A machine's reason it waits for (remote/views.ts · waitReasons), and a fresh result's metric («оценивается»).
+      ...waitReasonOf(forecast.reasons.get(queued.submissionId)),
+      ...(queued.kind === 'metric' && submission.state === 'running' ? { scoring: true } : {}),
     })
   }
   return rows
+}
+
+function waitReasonOf(reason: WaitReason | undefined): Pick<WaitingRow, 'reason' | 'returnedFrom' | 'returnedWhy'> {
+  if (!reason) return {}
+  return {
+    reason: reason.reason,
+    ...(reason.returnedFrom !== undefined ? { returnedFrom: reason.returnedFrom } : {}),
+    ...(reason.returnedWhy !== undefined ? { returnedWhy: reason.returnedWhy } : {}),
+  }
 }
 
 function liveOf(competition: Competition, viewer: StaffLike | null, now = Date.now()): CompetitionLive {
@@ -661,6 +722,8 @@ async function settingsView(): Promise<CompetitionSettings> {
       perDay: { min: SETTINGS_LIMITS.perDay.min, max: SETTINGS_LIMITS.perDay.max },
     },
     gpu,
+    // The machines' half of the same box (competitions/settings.ts · runnerSettings): saved through the same PUT.
+    runners: runnerSettings(),
   }
 }
 

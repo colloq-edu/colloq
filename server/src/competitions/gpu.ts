@@ -44,9 +44,11 @@ import { gpuCards } from '../kernel/resources.js'
 import { kernelBackend } from '../kernel/runtime-client.js'
 import { needsGpu } from '../environments.js'
 import { gpuPerDeviceSetting, resolveGpuPerDevice, resolveRunnerGpus, runnerGpuSetting } from './settings.js'
-import { gpuSliceFor as sliceOnCard, runnerGpuCards, sliceOverCards, type RunnerGpuState } from './gpu-math.js'
+import { gpuSliceFor as sliceOnCard, gpuSliceMb, runnerGpuCards, sliceOverCards, type RunnerGpuState } from './gpu-math.js'
 import { SETTINGS_LIMITS, type CompetitionGpuSettings } from '@shared/competitions-settings'
 import { COMPETITION_GPU_SLOTS_MAX } from '@shared/competition-runtime'
+import { REMOTE_PER_DEVICE_MAX } from '@shared/remote-runner'
+import { remoteCardsSeen, runnerCards } from './remote/heard.js'
 
 /*
  * The arithmetic of a share and of a card's places (gpu-math.ts), under the
@@ -173,7 +175,34 @@ export async function gpuSliceFor(device: string, options: { waitMs?: number; pe
  */
 export async function competitionGpuSliceMb(competition: { limits: { gpu?: boolean } }): Promise<number | null> {
   if (competition.limits.gpu !== true) return null
-  return runnerSliceMb({ waitMs: CARD_WAIT_MS })
+  /*
+   * The promise is the smallest share a run may get anywhere it may run:
+   * this server's cards, and the cards of the machines heard within the
+   * hour (decision 8, §5.8 "The promised share is the one on the smallest
+   * advertised card") — each card's memory over the runs per card that
+   * machine is held to. A card that did not say its size makes the promise
+   * unknown, as it does here.
+   */
+  const remote = remoteSliceMb()
+  if (runnerGpuDevices().length === 0) return remote === undefined ? null : remote
+  const here = await runnerSliceMb({ waitMs: CARD_WAIT_MS })
+  if (remote === undefined) return here
+  return here === null || remote === null ? null : Math.min(here, remote)
+}
+
+/** The smallest share on the machines' cards heard within the hour; `undefined` — none has cards; `null` — a size unknown. */
+function remoteSliceMb(): number | null | undefined {
+  const seen = remoteCardsSeen()
+  let least: number | null | undefined
+  for (const runner of seen.runners) {
+    const perDevice = Math.min(REMOTE_PER_DEVICE_MAX, Math.max(1, runner.perDevice ?? runnerGpuPerDevice()))
+    for (const card of runnerCards(runner)) {
+      const slice = gpuSliceMb(card.memoryMb, perDevice)
+      if (slice === null) return null
+      least = least === undefined || least === null ? slice : Math.min(least, slice)
+    }
+  }
+  return least
 }
 
 /**

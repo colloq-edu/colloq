@@ -6,6 +6,7 @@ import { imageRevision, kernelRuntimeClient, loadRuntimeCatalog } from '../kerne
 import { resolveRuntimeEnvironment } from '@shared/runtime'
 import { competitionBackend } from './runner-port.js'
 import { runnerGpuDevices } from './gpu.js'
+import { remoteCardsSeen } from './remote/heard.js'
 import { tr } from '@shared/i18n'
 import type { CompetitionCapabilities, RuntimeCapability } from '@shared/capabilities'
 
@@ -96,7 +97,15 @@ interface CapabilityReaderOptions {
 export function createCapabilityReader(options: CapabilityReaderOptions = {}) {
   const clock = options.clock ?? Date.now
   const backendOf = options.backend ?? (() => competitionBackend())
-  const runnerGpus = options.runnerGpus ?? (() => runnerGpuDevices().length > 0)
+  /*
+   * THE GPU DOOR (decision 8 of docs/architecture/remote-runners.md §12): this
+   * server's own cards given to submissions, as in 0.22.0, or a machine with
+   * cards heard within the last hour (remote/heard.ts · remoteCardsSeen). Not
+   * only one online now: a GPU competition keeps taking uploads through a
+   * machine's restart or an update, and its notebooks wait in the queue for
+   * the machine rather than being refused at the door.
+   */
+  const runnerGpus = options.runnerGpus ?? (() => runnerGpuDevices().length > 0 || remoteCardsSeen().recent > 0)
   const run = options.run ?? (async (args) => (await execute('docker', args, { timeout: 3000, maxBuffer: 4096 })).stdout.trim())
   const storageAvailable = options.storageAvailable ?? (() => {
     try { fs.mkdirSync(config.dataDir, { recursive: true }); fs.accessSync(config.dataDir, fs.constants.R_OK | fs.constants.W_OK); return true }

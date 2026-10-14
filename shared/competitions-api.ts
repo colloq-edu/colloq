@@ -1,6 +1,6 @@
 import type { CompetitionCapabilities } from './capabilities.js'
 import type { RemoteAttemptPhase } from './remote-runner.js'
-import type { RemoteConsoleGroup, RemoteWaitReason } from './remote-admin.js'
+import type { RemoteCompetitionWhere, RemoteConsoleGroup, RemoteReturnReason, RemoteWaitReason } from './remote-admin.js'
 /**
  * What the teacher's panel asks the server about competitions, and what it
  * answers.
@@ -192,6 +192,8 @@ export interface WaitingRow {
   reason?: RemoteWaitReason
   /** With `returned`: the machine it came back from, by name. */
   returnedFrom?: string
+  /** With `returned`: why it came back, when home knows (RemoteReturnReason); absent — the console names only the machine. */
+  returnedWhy?: RemoteReturnReason
   /** A fresh result waiting for its metric here («оценивается»): its notebook already ran, on a machine or here. */
   scoring?: boolean
 }
@@ -318,6 +320,14 @@ export interface CompetitionView {
    * accepted before it: "results are still being counted: N left".
    */
   privatePending?: number
+  /**
+   * «Где считается» (Paper M6): this server and the machines that can run
+   * this competition's notebooks, and the editor's three warnings — an
+   * environment only this server has, a hidden test only trusted machines
+   * get, a GPU competition with no card anywhere. Absent — no machine was
+   * ever connected (shared/remote-admin.ts · RemoteCompetitionWhere).
+   */
+  where?: RemoteCompetitionWhere
 }
 
 /* --------------------------------------------------------- live competition */
