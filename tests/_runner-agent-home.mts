@@ -148,7 +148,12 @@ export async function fakeHome(): Promise<FakeHome> {
     violations: [],
     syncs: () => calls.filter((call) => call.path.endsWith('/sync')).map((call) => call.body as RemoteSyncRequest),
     close: async () => {
-      await new Promise<void>((resolve) => server.close(() => resolve()))
+      // Teardown cuts what is still open rather than wait on it: a test that failed before it stopped
+      // its agent leaves a long-poll that keeps its connection busy for ever, and Node 22's fetch keeps
+      // a stopped agent's idle socket for three seconds more.
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()))
+      server.closeAllConnections()
+      await closed
       if (home.violations.length > 0) throw new Error(`the agent sent requests home's parsers refuse:\n${home.violations.join('\n')}`)
     },
   }

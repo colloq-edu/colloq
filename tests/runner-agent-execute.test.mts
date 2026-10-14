@@ -26,12 +26,16 @@ import { ADMISSION_FLOOR_MB, cardReport, freeCapacity, machineFacts, memoryFits,
 import { Cache } from '../server/src/runner-agent/cache.ts'
 import { revisionImage } from '../server/src/runner-agent/images.ts'
 import type { RunOutcome } from '../server/src/competitions/runner-port.ts'
+import { competitionsFs } from '../server/src/competitions/storage.ts'
 import { TEST_ROOT } from './_env.mts'
 import { REVISION, dataSet, fakeAgentDocker, makeLease } from './_runner-agent-home.mts'
 
 beforeEach(() => {
   fs.rmSync(path.join(TEST_ROOT, 'data'), { recursive: true, force: true })
   fs.rmSync(path.join(TEST_ROOT, 'books'), { recursive: true, force: true })
+  // storage.ts holds the competitions folder open: on Linux the walk goes by that descriptor, so a
+  // folder removed here would stay the one it writes into. Closed, it opens the new one.
+  competitionsFs.close()
 })
 
 test('the neighbour window is home\'s, case by case', () => {

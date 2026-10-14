@@ -23,7 +23,7 @@ import { readIdentity, stateLayout, writeIdentity, writeLease, writeOutcome, typ
 import { askAgent, serveControl, type ControlMessage } from '../server/src/runner-agent/control.ts'
 import { INSTANCE_LABEL, revisionImage } from '../server/src/runner-agent/images.ts'
 import { main, status } from '../server/src/runner-agent/main.ts'
-import { attemptPath, competitionsDir } from '../server/src/competitions/storage.ts'
+import { attemptPath, competitionsDir, competitionsFs } from '../server/src/competitions/storage.ts'
 import { TEST_ROOT } from './_env.mts'
 import {
   DIFF_IDS, FakeSeam, LAYERS, REVISION, RUNNER_ID, SECRET, dataSet, fakeAgentDocker, fakeHome, hex, makeLease, outcomeReply, sha256, syncReply, waitFor,
@@ -39,6 +39,9 @@ beforeEach(() => {
   for (const name of fs.readdirSync(TEST_ROOT)) {
     if (/^(runner\.json.*|status\.json|leases|books|data|agent\.sock|nowhere)$/.test(name)) fs.rmSync(path.join(TEST_ROOT, name), { recursive: true, force: true })
   }
+  // storage.ts holds the competitions folder open: on Linux the walk goes by that descriptor, so a
+  // folder removed here would stay the one it writes into. Closed, it opens the new one.
+  competitionsFs.close()
 })
 
 function agentFor(home: FakeHome, options: Partial<AgentOptions> = {}) {
@@ -494,8 +497,8 @@ test('an outcome past its lease\'s ceiling at home, which has given it up, is di
   const running = agent.run()
   try {
     await waitFor(() => !fs.existsSync(path.join(layout.leasesDir, `${lease.attemptId}.json`)), 'the expired outcome discarded')
-    const syncs = home.syncs()
-    assert.ok(syncs.length > 0)
+    // The discard can come before the first sync is answered: wait for one, so the check below has a sync to look at.
+    const syncs = await waitFor(() => home.syncs().length > 0 && home.syncs(), 'a sync')
     assert.ok(syncs.every((sync) => !attemptOf(sync, lease.attemptId)), 'an attempt past its ceiling was still reported')
   } finally {
     await agent.stop()

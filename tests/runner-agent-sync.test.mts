@@ -21,7 +21,7 @@ import { Agent, type AgentOptions } from '../server/src/runner-agent/sync.ts'
 import { readIdentity, stateLayout } from '../server/src/runner-agent/state.ts'
 import { INSTANCE_LABEL, revisionImage } from '../server/src/runner-agent/images.ts'
 import { status } from '../server/src/runner-agent/main.ts'
-import { competitionsDir } from '../server/src/competitions/storage.ts'
+import { competitionsDir, competitionsFs } from '../server/src/competitions/storage.ts'
 import { TEST_ROOT } from './_env.mts'
 import {
   DIFF_IDS, FakeSeam, LAYERS, REVISION, RUNNER_ID, SECRET, dataSet, fakeAgentDocker, fakeHome, hex, makeLease, outcomeReply, sha256, syncReply, waitFor,
@@ -37,6 +37,9 @@ beforeEach(() => {
   for (const name of fs.readdirSync(TEST_ROOT)) {
     if (/^(runner\.json.*|status\.json|leases|books|data|agent\.sock)$/.test(name)) fs.rmSync(path.join(TEST_ROOT, name), { recursive: true, force: true })
   }
+  // storage.ts holds the competitions folder open: on Linux the walk goes by that descriptor, so a
+  // folder removed here would stay the one it writes into. Closed, it opens the new one.
+  competitionsFs.close()
 })
 
 function agentFor(home: FakeHome, options: Partial<AgentOptions> = {}) {

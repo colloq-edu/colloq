@@ -18,7 +18,7 @@ import path from 'node:path'
 import { remoteManifest, type RemoteWantBundle } from '../shared/remote-runner.ts'
 import { Cache, CacheError } from '../server/src/runner-agent/cache.ts'
 import { RemoteClient, Backoff } from '../server/src/runner-agent/client.ts'
-import { competitionsDir } from '../server/src/competitions/storage.ts'
+import { competitionsDir, competitionsFs } from '../server/src/competitions/storage.ts'
 import { bundleDir } from '../server/src/dependencies/files.ts'
 import { TEST_ROOT } from './_env.mts'
 import { dataSet, fakeHome, hex, makeLease, serveBlob, sha256, waitFor, type FakeHome } from './_runner-agent-home.mts'
@@ -28,6 +28,9 @@ const BOOKS = path.join(TEST_ROOT, 'books')
 beforeEach(() => {
   fs.rmSync(path.join(TEST_ROOT, 'data'), { recursive: true, force: true })
   fs.rmSync(BOOKS, { recursive: true, force: true })
+  // storage.ts holds the competitions folder open: on Linux the walk goes by that descriptor, so a
+  // folder removed here would stay the one it writes into. Closed, it opens the new one.
+  competitionsFs.close()
 })
 
 function cacheFor(home: FakeHome, extra: Partial<ConstructorParameters<typeof Cache>[0]> = {}): Cache {
