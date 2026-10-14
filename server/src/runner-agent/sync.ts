@@ -135,6 +135,9 @@ export const STATUS_EVERY_MS = 10_000
 export const STATUS_STALE_MS = 90_000
 /** A refused join is asked again after this: an expired or spent code does not come back, but a fixed home might. */
 const JOIN_REFUSED_WAIT_MS = 10 * 60_000
+/** What a filesystem loses below the size its disk was rented at (sizeProblem): a few percent, never a missing kernel. */
+const DISK_SLACK = 0.05
+
 /** How often the cards and the daemon are asked again; sooner after a probe that failed. */
 const PROBE_EVERY_MS = 30 * 60_000
 const PROBE_RETRY_MS = 2 * 60_000
@@ -1709,11 +1712,17 @@ export class Agent extends EventEmitter {
    * CPU kernel is a gigabyte, a GPU one four to thirteen, and the caches and
    * runs come on top): said to the owner as a `disk` problem, beside the
    * floor's own, for as long as it is so.
+   *
+   * The floor is the size a disk is rented or sold at, and a filesystem on it
+   * shows a few percent less (partition table, ext4's journal and inodes): a
+   * Vast VM rented with 150 GB showed 146 in df on 14 Oct 2026, so one rented
+   * with `make vast-runner`'s default 120 would be told it is too small for
+   * the very floor it was rented by. DISK_SLACK keeps that difference out.
    */
   private sizeProblem(): RemoteProblem[] {
     const total = this.machine().diskTotalMb
     const needGb = this.probe.cards.length > 0 ? REMOTE_DISK_MIN_GB.gpu : REMOTE_DISK_MIN_GB.cpu
-    if (total === null || total >= needGb * 1024 || this.problems.has('disk')) return []
+    if (total === null || total >= needGb * 1024 * (1 - DISK_SLACK) || this.problems.has('disk')) return []
     return [{ code: 'disk', detail: remoteText(`the disk holds ${Math.round(total / 1024)} GB, less than the ${needGb} GB a machine ${this.probe.cards.length > 0 ? 'with cards' : 'without cards'} needs`, REMOTE_REASON_CHARS, 'start') }]
   }
 

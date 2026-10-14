@@ -462,6 +462,38 @@ test('a disk smaller than a machine of its kind needs is said to the owner', asy
   }
 })
 
+test('a disk rented at the floor but shown a few percent smaller by its filesystem is not called too small', async () => {
+  const home = await fakeHome()
+  // 120 GB rented, 116 GiB in df: what a Vast VM rented with make vast-runner's default shows. With a
+  // card, so the floor is the GPU one (120); a disk truly below it is still said (the case after).
+  const { agent, docker } = agentFor(home, { machine: () => ({ ...PICTURE, diskTotalMb: 116 * 1024 }) })
+  docker.cards = '0, GPU-aa, NVIDIA GeForce RTX 4090, 24564\n'
+  const running = agent.run()
+  try {
+    const seen = await waitFor(() => (home.syncs().some((sync) => sync.cards.length > 0) && home.syncs().length >= 3 ? home.syncs() : null), 'syncs after the card probe')
+    assert.ok(seen.every((sync) => !sync.problems.some((problem) => problem.code === 'disk')), 'no disk problem for a disk at its rented size')
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('a GPU machine whose disk is truly below the floor is still told so', async () => {
+  const home = await fakeHome()
+  const { agent, docker } = agentFor(home, { machine: () => ({ ...PICTURE, diskTotalMb: 100 * 1024 }) })
+  docker.cards = '0, GPU-aa, NVIDIA GeForce RTX 4090, 24564\n'
+  const running = agent.run()
+  try {
+    const sync = await waitFor(() => home.syncs().find((found) => found.problems.some((problem) => problem.code === 'disk')), 'the disk size problem')
+    assert.match(sync.problems.find((problem) => problem.code === 'disk')!.detail, /100 GB, less than the 120 GB a machine with cards/)
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
 test('home\'s cap on the places (approvedSlots) caps what the machine offers, is written down with the identity, and is in the status', async () => {
   const home = await fakeHome()
   const { agent } = agentFor(home)
