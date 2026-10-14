@@ -18,7 +18,7 @@
    */
   import { onMount } from 'svelte'
   import { adminAuth } from '@/admin/auth.svelte'
-  import { auditActionLabel, auditDetail, auditTarget } from '@/admin/audit'
+  import { auditActionLabel, auditActorless, auditDetail, auditTarget } from '@/admin/audit'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import EmptyState from '@/admin/ui/EmptyState.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
@@ -122,7 +122,8 @@
               <p class="admin-row-title truncate">{event.actor.name}</p>
               <p class="admin-meta truncate font-mono">{event.actor.email}</p>
             {:else}
-              <p class="text-ui text-muted">—</p>
+              <!-- Nobody signed in: the server's console, or a dash for the server's own doing. -->
+              <p class="text-ui text-muted">{auditActorless(event)}</p>
             {/if}
           </div>
           <div class={COL_WHAT}>

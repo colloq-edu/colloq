@@ -26,6 +26,7 @@ import type { Response as ExpressResponse } from 'express'
 import { tr } from '../shared/i18n.js'
 import { STAFF_COOKIE } from '../shared/admin.js'
 import type { Competition, Submission } from '../shared/competitions.js'
+import type { CompetitionView } from '../shared/competitions-api.js'
 import type { EnvironmentRevision } from '../shared/dependencies.js'
 import { db } from '../server/src/db.js'
 import {
@@ -332,6 +333,13 @@ function post(url: string, cookie: string) {
   return fetch(`${base}${url}`, { method: 'POST', headers: { cookie }, signal: AbortSignal.timeout(10_000) })
 }
 
+/** The competition as the editor loads it (GET /api/admin/competitions/:id). */
+async function editorView(id: string, cookie: string): Promise<CompetitionView> {
+  const response = await fetch(`${base}/api/admin/competitions/${id}`, { headers: { cookie }, signal: AbortSignal.timeout(10_000) })
+  assert.equal(response.status, 200, await response.clone().text())
+  return (await response.json()) as CompetitionView
+}
+
 test('the metric-only doors of a GPU competition check the kaggle-base its metric runs in, not its own GPU image', async () => {
   reset()
   const owner = ownerCookie('owner.metric.pin@example.edu')
@@ -478,6 +486,34 @@ test('a competition checked on the CPU and then given a card pins kaggle-base at
     await rescore(scored)
     assert.deepEqual(metricPin(scored.id), { revisionId: null })
     assert.equal(metricRun(board.id)?.revisionId, gpuImage.id)
+  } finally {
+    reset()
+  }
+})
+
+test('the editor is told the metric scores in its pin with the card turned off, and not for a competition never pinned on the CPU', async () => {
+  reset()
+  const owner = ownerCookie('owner.metric.view@example.edu')
+  const light = revision(LIGHT_METRIC_ENVIRONMENT, 'a', 10_000)
+  const gpuImage = revision('kaggle-gpu', 'b', 10_100)
+  useCompetitionCapabilities(dockerWith([light.imageDigest, gpuImage.imageDigest]))
+  try {
+    const g = competition(true)
+    selectRevision(g.id, gpuImage.id)
+    // With the card the row is there before any metric ran: the first one takes the pin.
+    assert.equal((await editorView(g.id, owner)).metricScoresInPin, true)
+    answered(g, gpuImage)
+    await rescore(g)
+    assert.deepEqual(metricPin(g.id), { revisionId: light.id })
+    // The card turned off: the metric still scores in the pin, and the editor keeps the row that moves it.
+    updateCompetition(g.id, { limits: { ...g.limits, gpu: false } })
+    const off = await editorView(g.id, owner)
+    assert.equal(off.competition.limits.gpu, false)
+    assert.equal(off.metricScoresInPin, true)
+    // Never pinned, on the CPU: its metric scores in its own pin, the move door refuses it, and there is no row.
+    const cpu = competition(false)
+    assert.equal((await editorView(cpu.id, owner)).metricScoresInPin, false)
+    assert.equal(await moveMetricToLightImage(cpu), 'cpu')
   } finally {
     reset()
   }

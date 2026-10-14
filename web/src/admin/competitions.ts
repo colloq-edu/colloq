@@ -514,6 +514,23 @@ export function moveMetricOutcome(answer: { queued: number }): string {
   return tr('admin.competitions.metricImage.moved', { count: answer.queued })
 }
 
+/**
+ * The note of the metric section's «Образ метрики» row, or `null` — no row:
+ * the metric scores in the competition's own pin, moved with its base, and
+ * the move door would refuse it (competitions.refusal.metricImageCpu).
+ *
+ * The row stands wherever the metric scores in the kaggle-base pinned to the
+ * competition, by the server's own reading (CompetitionView.metricScoresInPin,
+ * runner.ts · scoresInPin). Drawn by the card switch, it was gone for a
+ * competition whose card was turned off after its metric was pinned: that
+ * metric still scores in the pinned kaggle-base, and the panel had no way
+ * left to move it. With the card off, the note says why the row is there.
+ */
+export function metricImageNote(view: Pick<CompetitionView, 'competition' | 'metricScoresInPin'>): string | null {
+  if (!view.metricScoresInPin) return null
+  return tr(view.competition.limits.gpu === true ? 'admin.competitions.metricImage.note' : 'admin.competitions.metricImage.noteCardOff')
+}
+
 /* ---------------------------------------------------- metric templates */
 
 /** A template: the chip's name, which way the metric points and its code. */

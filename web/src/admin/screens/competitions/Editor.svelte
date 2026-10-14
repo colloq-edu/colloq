@@ -53,6 +53,7 @@
     isUntouchedPreset,
     METRIC_PRESETS,
     metricNumber,
+    metricImageNote,
     metricWorkAvailable,
     moment,
     moveMetricOutcome,
@@ -377,13 +378,20 @@
   let metricMoved = $state<string | null>(null)
 
   /**
+   * The «Образ метрики» row's note, or `null` — no row: wherever the metric
+   * scores in its pinned kaggle-base, the card turned off after the pin
+   * included (competitions.ts · metricImageNote).
+   */
+  const metricImage = $derived(metricImageNote(view))
+
+  /**
    * The metric of a competition with a card runs in the kaggle-base pinned to
    * it (decision 2), and only the teacher moves it to the current one, with a
    * rescore of every submission (POST …/metric/image) — the way out when the
    * pinned image left the server and every metric fails with
    * scoringImageGone. Asked first: the whole competition is scored again. A
-   * refusal (a competition on the CPU, no kaggle-base here) is said in the
-   * server's words under the row.
+   * refusal (no kaggle-base here) is said in the server's words under the
+   * row.
    */
   async function moveMetric(): Promise<void> {
     const id = c.id
@@ -1467,14 +1475,15 @@
           {tr('admin.competitions.checkMetricHint')}
         </p>
       </div>
-      {#if c.limits.gpu === true}
+      {#if metricImage !== null}
         <!-- The metric of a competition with a card runs in the kaggle-base
-             pinned to it (decision 2), never moved by a newer one: the one
-             way to move it is here, and the console offers the same next to
-             a metric that failed because the pinned image is gone. -->
+             pinned to it (decision 2), never moved by a newer one, and goes
+             on running there when the card is turned off: the one way to
+             move it is here, and the console offers the same next to a
+             metric that failed because the pinned image is gone. -->
         <div class="flex flex-wrap items-center gap-x-4 gap-y-2.5 border border-line px-3.5 py-3">
           <span class={cn(HEAD, 'w-[110px] shrink-0')}>{tr('admin.competitions.metricImage.head')}</span>
-          <p class="min-w-0 flex-1 basis-[280px] text-micro leading-snug text-muted">{tr('admin.competitions.metricImage.note')}</p>
+          <p class="min-w-0 flex-1 basis-[280px] text-micro leading-snug text-muted">{metricImage}</p>
           <button type="button" class="btn-outline shrink-0 max-[640px]:w-full" disabled={busy} onclick={() => void moveMetric()}>
             {tr('admin.competitions.metricImage.move')}
           </button>

@@ -141,6 +141,7 @@ import {
   queueSlots,
   rerunSubmission,
   rescoreCompetition,
+  scoresInPin,
   stopCompetitionRuns,
   wakeCompetitionPump,
 } from '../competitions/runner.js'
@@ -408,6 +409,8 @@ async function viewOf(competition: Competition): Promise<CompetitionView> {
     competition,
     capabilities,
     gpuSliceMb,
+    // The metric section's «Образ метрики» row stands by where the metric scores, not by the card switch (runner.ts · scoresInPin).
+    metricScoresInPin: scoresInPin(competition),
     openFiles: open.map((file) => fileView(competition.id, file)),
     hiddenFiles: hiddenViews,
     sealedFiles: sealedViews,

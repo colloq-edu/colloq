@@ -46,7 +46,10 @@
  * the log through `GET /api/admin/audit-log` (routes/admin-audit.ts).
  */
 import type { IncomingHttpHeaders } from 'node:http'
-import { addressOf } from '../bans.js'
+// The address straight from net/inbound.ts, not through bans.ts: that module loads the panel's sign-in
+// (admin/auth.ts), which writes a setup token at load when there is none, and the console's code minter
+// (ops/runner-code.ts) imports this log with nothing of the panel around it.
+import { clientAddress } from '../net/inbound.js'
 import { db } from '../db.js'
 import type {
   AdminAuditAction,
@@ -194,7 +197,7 @@ export function recordAdminEvent(event: AdminEventInput): void {
       target_id: event.target?.id ?? null,
       target_label: event.target?.label ? clampText(event.target.label, 200) : null,
       detail: cleanDetail(event.detail),
-      ip: event.req ? addressOf(event.req) : null,
+      ip: event.req ? clientAddress(event.req) : null,
     })
   } catch (err) {
     // The action itself has already happened; failing it now would lie about that.

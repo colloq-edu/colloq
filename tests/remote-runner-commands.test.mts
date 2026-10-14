@@ -63,6 +63,8 @@ const CASES: Array<{ name: string; image: string; version: string; published: bo
   { name: 'colloq-server by a moving tag, by its release', image: 'ghcr.io/colloq-edu/colloq-server:latest', version: '0.24.1', published: true, shown: 'ghcr.io/colloq-edu/colloq-server:0.24.1' },
   { name: 'an official image with no release label, by its own digest', image: `ghcr.io/colloq-edu/colloq-vast@sha256:${'a'.repeat(64)}`, version: '', published: false, shown: `ghcr.io/colloq-edu/colloq-server@sha256:${'a'.repeat(64)}` },
   { name: 'an image of the university\'s own, whole', image: 'registry.example.org/colloq/colloq-vast:0.24.0-campus', version: '0.24.0', published: false, shown: 'registry.example.org/colloq/colloq-vast:0.24.0-campus' },
+  { name: 'an image run by its id, by its release', image: `sha256:${'c'.repeat(64)}`, version: '0.24.0', published: true, shown: 'ghcr.io/colloq-edu/colloq-server:0.24.0' },
+  { name: 'the local tag of a rollback, by its release', image: 'colloq-previous:20261014-153000', version: '0.24.0', published: true, shown: 'ghcr.io/colloq-edu/colloq-server:0.24.0' },
 ]
 
 for (const one of CASES) {
@@ -97,4 +99,22 @@ test('a server that knows no image of its own names the published one of its rel
   assert.deepEqual(runnerImage(null, '0.24.0'), { image: 'ghcr.io/colloq-edu/colloq-server:0.24.0', published: true })
   const commands = runnerJoinCommands({ home: 'https://vsos.colloq.ru/', code: CODE, image: 'ghcr.io/colloq-edu/colloq-server:0.24.0', published: true, machines: 1 })
   assert.match(commands.docker, /COLLOQ_RUNNER_JOIN='https:\/\/vsos\.colloq\.ru#0123/, 'the origin alone, its trailing slash gone')
+})
+
+test('a server run by an image only its host holds names the published image of its release, as one that knows no image', () => {
+  // `colloq-host update sha256:…` passes the id as COLLOQ_SERVER_IMAGE, and the rollback it prints
+  // (`restore --image`) the colloq-previous tag rollback_ref made: a machine runs either only if it
+  // already holds that very image, and pulls none.
+  const unknown = runnerImage(null, '0.24.0')
+  const join = (named: { image: string; published: boolean }) => runnerJoinCommands({ home: 'https://vsos.colloq.ru', code: CODE, ...named, machines: 2 })
+  for (const id of [`sha256:${'a'.repeat(64)}`, 'a'.repeat(64), '0123456789ab', 'sha256:0123456789ab', 'colloq-previous:20261014-153000']) {
+    assert.deepEqual(runnerImage(id, '0.24.0'), unknown, id)
+    assert.deepEqual(join(runnerImage(id, '0.24.0')), join(unknown), id)
+  }
+  assert.equal(join(runnerImage(`sha256:${'a'.repeat(64)}`, '0.24.0')).vast, `make vast-runner COUNT=2 CODE=${CODE} URL=https://vsos.colloq.ru`)
+  // A name with hex in it is still a name: by a digest, a repository spelled in hex, a tag; and so is
+  // a colloq-previous in someone's registry.
+  for (const named of [`registry.example.org/colloq/colloq-vast@sha256:${'b'.repeat(64)}`, 'registry.example.org/0123456789ab:0.24.0', '0123456789ab:0.24.0', 'registry.example.org/colloq-previous:20261014-153000']) {
+    assert.deepEqual(runnerImage(named, '0.24.0'), { image: named, published: false }, named)
+  }
 })

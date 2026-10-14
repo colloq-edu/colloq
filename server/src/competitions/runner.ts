@@ -1597,9 +1597,13 @@ function pinnedScoringImage(competition: Competition, submission: Submission): S
  * board of two images, a metric that imports torch failing or scoring with
  * the switch, and the door that moves the pin refused while the card was
  * off. Only that door moves it (moveMetricToLightImage); a competition never
- * pinned, on the CPU, scores in its own pin as it always has.
+ * pinned, on the CPU, scores in its own pin as it always has. The editor
+ * draws the row with that door by this same reading
+ * (CompetitionView.metricScoresInPin), not by the switch: drawn by the
+ * switch, a competition whose card was turned off had no way left to move
+ * the pin its metric still scored in.
  */
-function scoresInPin(competition: Competition): boolean {
+export function scoresInPin(competition: Competition): boolean {
   return competition.limits.gpu === true || metricPin(competition.id) !== null
 }
 

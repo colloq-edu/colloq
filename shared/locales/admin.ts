@@ -3238,6 +3238,10 @@ export const adminMessages: MessageCatalog = {
     "ru": "Метрика соревнования с видеокартой считается не в GPU-образе посылок, а в лёгком kaggle-base, закреплённом за соревнованием: новый kaggle-base на сервере её не сдвигает, чтобы баллы одного рейтинга не пришли из двух образов. Пропал закреплённый образ с сервера — метрика падает у каждой посылки, пока её не переведут.",
     "en": "The metric of a competition with a GPU runs not in the submissions' GPU image but in the light kaggle-base pinned to the competition: a newer kaggle-base on this server does not move it, so that one leaderboard never holds scores from two images. If the pinned image leaves the server, the metric fails for every submission until it is moved."
   },
+  "admin.competitions.metricImage.noteCardOff": {
+    "ru": "У соревнования выключена видеокарта, но его метрика по-прежнему считается в закреплённом за ним kaggle-base — чтобы баллы одного рейтинга не пришли из двух образов. Перевести метрику можно только здесь.",
+    "en": "The competition's GPU is off, but its metric still runs in the kaggle-base pinned to it, so that one leaderboard never holds scores from two images. The metric moves only from here."
+  },
   "admin.competitions.metricImage.move": {
     "ru": "Перевести на текущий kaggle-base",
     "en": "Move to the current kaggle-base"
@@ -8974,5 +8978,9 @@ export const adminMessages: MessageCatalog = {
   "admin.audit.action.runner.code_ended": {
     "ru": "Отменён код подключения машин",
     "en": "Machine enrollment code cancelled"
+  },
+  "admin.audit.console": {
+    "ru": "Консоль сервера",
+    "en": "Server console"
   },
 }
