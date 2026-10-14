@@ -26,18 +26,24 @@
  * TWO LANES, as the pump runs them (runner.ts · pumpOnce): notebooks under
  * the slots — none at all while this server runs no notebooks — and
  * metric-only work under the metric lane's places, a fresh result before a
- * rescore (panel.ts · scoreOrder). Each lane is simulated against its own
- * places and its own running rows, and the places on the screens are the
- * simulated starts of both, merged: a notebook that starts now is not
- * numbered behind a hundred rescores that start after it.
+ * rescore (panel.ts · scoreOrder). Each lane has its own places and its own
+ * running rows, and both take from this server's one memory: when it fits
+ * only one lane's next work, the one that waited longer goes first, and the
+ * other waits behind it (panel.ts · laneEtas, the pump's rule simulated). The
+ * places on the screens are the simulated starts of both, in the order the
+ * pump makes them: a notebook that starts now is not numbered behind a
+ * hundred rescores that start after it, and one the memory holds back is not
+ * promised a start now.
  */
-import { expectedRunMs, fairOrder, queueEtas, runningCounts, scoreOrder, type Eta } from './panel.js'
+import { expectedRunMs, fairOrder, laneEtas, runningCounts, scoreOrder } from './panel.js'
 import { METRIC_WALL_SECONDS } from './runner-port.js'
+import { queueMemory, runReservationMb, RUN_RESERVE_MB, type QueueMemory } from './runner.js'
 import { getCompetition, queueRows, recentDurations, recentMetricRuns, type QueueRow } from './store.js'
 import { homeNotebooksSetting, scoreSlotsSetting } from './settings.js'
 import { clusterGpuSlots, runnerCardsHere, runnerGpuDevices, runnerGpuPerDevice, runnerGpuState, sliceOverCards } from './gpu.js'
 import { gpuCards } from '../kernel/resources.js'
-import { blocking, remoteFleet, waitReasons, type RemoteFleet, type WaitReason } from './remote/views.js'
+import { blocking, placeMix, remoteFleet, waitReasons, type RemoteFleet, type WaitReason } from './remote/views.js'
+import { fitCache, homeTakes, rowSetUnfit } from './remote/fit.js'
 
 /** A competition's "recent" runs: a competition lives for weeks, and its first runs solved a different task. */
 const RECENT_RUNS = 20
@@ -58,24 +64,28 @@ export interface Forecast {
   at: Map<string, { place: number; startMs: number; etaMs: number }>
   /**
    * Why a waiting notebook is not taken, when the reason is a machine's
-   * (remote/views.ts · waitReasons): every reason but `returned` keeps it
-   * out of `at` — no executor that is up can take it now.
+   * (remote/views.ts · waitReasons), or no executor can ever fit it
+   * (unfitReasons): every reason but `returned` keeps it out of `at` — no
+   * executor that is up can take it now.
    */
   reasons: Map<string, WaitReason>
 }
 
 /**
  * The pump's lanes as the forecast simulates them (runner.ts · pumpOnce):
- * whether this server runs notebooks («Тетради на этом сервере»), and the
- * metric lane's places. By default the settings in force.
+ * whether this server runs notebooks («Тетради на этом сервере»), the metric
+ * lane's places, and the memory both take from (runner.ts · queueMemory) —
+ * absent, none is simulated, and no job waits for memory. By default the
+ * settings in force and the pump's own memory.
  */
 export interface ForecastLanes {
   homeNotebooks: boolean
   scoreSlots: number
+  memory?: QueueMemory
 }
 
 export function forecastLanes(): ForecastLanes {
-  return { homeNotebooks: homeNotebooksSetting().value, scoreSlots: scoreSlotsSetting().value }
+  return { homeNotebooks: homeNotebooksSetting().value, scoreSlots: scoreSlotsSetting().value, memory: queueMemory() }
 }
 
 /**
@@ -111,49 +121,101 @@ export function queueForecast(slots: number, now = Date.now(), gpuSlots?: number
    * gets no place at all (`reasons`), and the participant reads «готовится».
    */
   // Read once for the whole forecast — the places, the card shares, the wait reasons: it is recomputed every second on every participant's page.
-  const fleet = remoteFleet(now)
+  // A machine's places are counted in the queue's own runs (remote/views.ts · placeMix), never in its smallest possible ones.
+  const fleet = remoteFleet(now, placeMix(rows, now))
   const cardSlots = gpuSlots === undefined ? forecastGpuSlots(now, fleet) : gpuSlots
   const onMachines = running.filter((row) => row.holder !== null && fleet.runners.has(row.holder))
   // This server takes GPU work on its own cards, or under the cluster on the cluster's.
-  const reasons = waitReasons(ready, { homeCards: cluster || runnerGpuDevices().length > 0, now, fleet })
+  const homeCards = cluster || runnerGpuDevices().length > 0
+  const reasons = waitReasons(ready, { homeCards, now, fleet })
+  unfitReasons(ready, reasons, needsCard, { homeNotebooks: lanes.homeNotebooks, homeCards })
   const notebooks = fairOrder(ready.filter((row) => row.kind === 'notebook'), busy)
   const placeable = notebooks.filter((row) => !blocking(reasons.get(row.submissionId)))
   const metrics = scoreOrder(ready.filter((row) => row.kind === 'metric'), busy, freshResult)
-  const notebookSlots = (lanes.homeNotebooks ? slots : 0) + fleet.places
-  // No notebook runs anywhere with this server's off and no machine: none starts, and nobody can say when one will.
-  const placeableEtas = notebookSlots > 0
-    ? queueEtas({
-        slots: notebookSlots,
-        running: [...here.filter((row) => row.kind === 'notebook'), ...onMachines].map((row) => ({
-          expectedMs: expected(row),
-          elapsedMs: row.startedAt === null ? 0 : Math.max(0, now - row.startedAt),
-          gpu: row.holder !== null ? needsCard(row) : row.gpu !== null || (cluster && needsCard(row)),
-        })),
-        waiting: placeable.map((row) => ({ expectedMs: expected(row), gpu: needsCard(row) })),
-        ...(cardSlots === null ? {} : { gpuSlots: cardSlots }),
-      })
-    : placeable.map(() => null)
-  const etaOf = new Map(placeable.map((row, index) => [row.submissionId, placeableEtas[index]] as const))
-  const notebookEtas = notebooks.map((row) => etaOf.get(row.submissionId) ?? null)
-  // A metric never waits for a card: no card is simulated in its lane.
-  const metricEtas = queueEtas({
-    slots: lanes.scoreSlots,
-    running: here.filter((row) => row.kind === 'metric').map((row) => ({
-      expectedMs: expected(row),
-      elapsedMs: row.startedAt === null ? 0 : Math.max(0, now - row.startedAt),
-    })),
-    waiting: metrics.map((row) => ({ expectedMs: expected(row) })),
+  /*
+   * BOTH LANES AT ONCE, over the memory they share (panel.ts · laneEtas), as
+   * the pump takes them (runner.ts · takeLanes). Simulated apart, each lane
+   * read only its places, and a notebook ahead of a bulk rescore was told
+   * «начнётся сейчас» for as long as the rescore kept the memory from it. No
+   * notebook runs anywhere with this server's off and no machine: none
+   * starts, and nobody can say when one will. A metric never waits for a
+   * card: no card is simulated in its lane.
+   */
+  const memory = lanes.memory
+  const reserve = reservationOf()
+  const held = (row: QueueRow): number => (memory && row.attemptId !== null ? memory.jobs.get(row.attemptId) ?? 0 : 0)
+  const elapsed = (row: QueueRow): number => (row.startedAt === null ? 0 : Math.max(0, now - row.startedAt))
+  const job = (row: QueueRow) => ({ expectedMs: expected(row), memoryMb: reserve(row), submissionId: row.submissionId, enqueuedAt: row.enqueuedAt, late: row.late })
+  const simulated = laneEtas({
+    memoryMb: memory?.totalMb ?? null,
+    notebook: {
+      slots: lanes.homeNotebooks ? slots : 0,
+      elsewhere: fleet.places,
+      running: [
+        ...here.filter((row) => row.kind === 'notebook').map((row) => ({ expectedMs: expected(row), elapsedMs: elapsed(row), gpu: row.gpu !== null || (cluster && needsCard(row)), memoryMb: held(row) })),
+        ...onMachines.map((row) => ({ expectedMs: expected(row), elapsedMs: elapsed(row), gpu: needsCard(row), memoryMb: 0, elsewhere: true })),
+      ],
+      // A notebook this server's pump never takes (a GPU one where it has no card) starts only on a machine's place, at no memory here.
+      waiting: placeable.map((row) => ({ ...job(row), gpu: needsCard(row), home: homeTakes({ gpu: needsCard(row), homeNotebooks: lanes.homeNotebooks, homeCards }) })),
+      ...(cardSlots === null ? {} : { gpuSlots: cardSlots }),
+    },
+    metric: {
+      slots: lanes.scoreSlots,
+      running: here.filter((row) => row.kind === 'metric').map((row) => ({ expectedMs: expected(row), elapsedMs: elapsed(row), memoryMb: held(row) })),
+      waiting: metrics.map(job),
+    },
   })
-  // Places by start; among jobs starting at one moment, the metrics first (a pass takes their lane first, runner.ts · pumpLanes), then the queue's order.
-  const starting = [
-    ...metrics.map((row, index) => ({ row, lane: 0, index, eta: metricEtas[index] })),
-    ...notebooks.map((row, index) => ({ row, lane: 1, index, eta: notebookEtas[index] })),
-  ]
-    .filter((entry): entry is { row: QueueRow; lane: number; index: number; eta: Eta } => entry.eta !== null)
-    .sort((a, b) => a.eta.startMs - b.eta.startMs || a.lane - b.lane || a.index - b.index)
+  // Places by start, in the order the pump makes them.
+  const starting = simulated.starts.map(({ lane, index }) => ({
+    row: lane === 'notebook' ? placeable[index] : metrics[index],
+    eta: (lane === 'notebook' ? simulated.notebook : simulated.metric)[index]!,
+  }))
   const at = new Map(starting.map((entry, place) => [entry.row.submissionId, { place: place + 1, ...entry.eta }] as const))
   const eligible = [...starting.map((entry) => entry.row), ...[...notebooks, ...metrics].filter((row) => !at.has(row.submissionId))]
   return { running, eligible, deferred, at, reasons }
+}
+
+/**
+ * A notebook whose package set can never ride with its competition's memory
+ * (remote/fit.ts · rowSetUnfit) is refused before any container — by this
+ * server's pump the moment it takes the row (runner.ts · unfitOutcome), and
+ * by the clock with this server's notebooks off (liveness.ts · settleUnfit) —
+ * and no machine ever leases it. One this server's pump does not take at all
+ * (remote/fit.ts · homeTakes: a GPU notebook where this server has no card
+ * for it, its notebooks on) is settled by neither, and waited with place 1,
+ * «начнётся сейчас» and no reason for as long as it stayed: it gets the
+ * reason no executor can ever fit it, and no place. Asked by the predicates
+ * the take and the reasons ask, never a copy of them; a row already held
+ * back for a machine's reason keeps it. A server that takes every notebook —
+ * its notebooks on, and cards for the GPU ones — has nothing to ask.
+ */
+function unfitReasons(ready: readonly QueueRow[], reasons: Map<string, WaitReason>, needsCard: (row: QueueRow) => boolean, home: { homeNotebooks: boolean; homeCards: boolean }): void {
+  if (home.homeNotebooks && home.homeCards) return
+  const cache = fitCache()
+  for (const row of ready) {
+    if (row.kind !== 'notebook' || blocking(reasons.get(row.submissionId))) continue
+    if (homeTakes({ gpu: needsCard(row), ...home }) || !rowSetUnfit(row, cache)) continue
+    reasons.set(row.submissionId, { reason: 'no_fit' })
+  }
+}
+
+/**
+ * What each waiting row would reserve of this server's memory, as the pump
+ * admits it (runner.ts · runReservationMb), each competition's read once per
+ * forecast.
+ */
+function reservationOf(): (row: QueueRow) => number {
+  const known = new Map<string, number>()
+  return (row) => {
+    const key = `${row.competitionId}:${row.kind}`
+    let mb = known.get(key)
+    if (mb === undefined) {
+      const competition = getCompetition(row.competitionId)
+      mb = competition ? runReservationMb(competition, row.kind) : RUN_RESERVE_MB
+      known.set(key, mb)
+    }
+    return mb
+  }
 }
 
 /**

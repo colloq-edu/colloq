@@ -4295,5 +4295,25 @@ export const serverMessages: MessageCatalog = {
   "server.runners.trustedInvalid": {
     "ru": "«Доверенная» — да или нет.",
     "en": "“Trusted” is yes or no."
+  },
+  "server.runners.why.orphan": {
+    "ru": "сервер больше не ждал этого прогона: посылка уже шла иначе",
+    "en": "this server no longer waited for the run: the submission had gone another way"
+  },
+  "server.runners.orphanTeacher": {
+    "ru": "Прогон на машине {machine} снят без штрафа: сервер к тому времени запустил посылку иначе (откат версии сервера).",
+    "en": "The run on machine {machine} was taken back with no penalty: by then this server had run the submission another way (the server was rolled back)."
+  },
+  "server.runners.why.starved": {
+    "ru": "сервер не успел отдать машине данные прогона: это не отказ машины",
+    "en": "this server could not hand the machine the run's data in time: no refusal of the machine's"
+  },
+  "server.runners.codeNotFound": {
+    "ru": "Такого действующего кода нет: он уже израсходован, истёк или отменён.",
+    "en": "There is no such valid code: it is used up, expired or cancelled already."
+  },
+  "server.runners.codeAmbiguous": {
+    "ru": "Этот номер подходит к нескольким кодам: обновите список и отмените код из него.",
+    "en": "This id matches more than one code: reload the list and cancel the code from it."
   }
 }

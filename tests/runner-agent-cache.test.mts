@@ -595,3 +595,109 @@ test('one manifest for two competitions is fetched once and laid out for each, f
     await home.close()
   }
 })
+
+test('prefetch follows the latest want: a competition home now lists first goes ahead of what was queued before it, and the download under way is left alone', async () => {
+  const home = await fakeHome()
+  const cache = cacheFor(home)
+  try {
+    const later = dataSet({ 'a.csv': 'a\n'.repeat(50), 'b.csv': 'b\n'.repeat(50) })
+    const urgent = dataSet({ 'train.csv': 't\n'.repeat(50) })
+    for (const [sha, body] of [...later.bodies, ...urgent.bodies]) home.blobs.set(sha, body)
+    const names = new Map([...later.files, ...urgent.files].map((file) => [file.sha256, file.name]))
+    const order: string[] = []
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    home.onBlob = ({ sha, range }) => {
+      order.push(names.get(sha) ?? sha)
+      const body = home.blobs.get(sha)!
+      // Another group's homework comes first, slowly: its bytes, then nothing until the test says so.
+      if (order.length === 1) return { status: 200, slow: { pieces: [body], gapMs: 5, until: held }, headers: { 'Content-Type': 'application/octet-stream' } }
+      return serveBlob(body, range)
+    }
+    cache.want([{ competitionId: 'complater', manifest: later.manifest, sealed: false, files: later.files }], [])
+    await waitFor(() => order.length === 1, 'the first file under way')
+    // The class's competition gets waiting submissions: home lists it first now.
+    cache.want([
+      { competitionId: 'compclass', manifest: urgent.manifest, sealed: false, files: urgent.files },
+      { competitionId: 'complater', manifest: later.manifest, sealed: false, files: later.files },
+    ], [])
+    release()
+    await waitFor(() => cache.readyData().length === 2, 'both fetched')
+    assert.deepEqual(order, ['a.csv', 'train.csv', 'b.csv'], 'the competition home lists first waited behind what was queued before it')
+  } finally {
+    cache.stop()
+    await home.close()
+  }
+})
+
+test('a blob home answered 404 for is asked again by the next want that still lists it, not after the refusal\'s pause; once a want, never in a loop', async () => {
+  const home = await fakeHome()
+  const cache = cacheFor(home)
+  try {
+    const set = dataSet({ 'train.csv': 'id\n1\n' })
+    const [file] = set.files
+    // The want raced home's index of blobs: the first ask is out of this machine's scope.
+    let scoped = false
+    home.onBlob = ({ sha, range }) => (scoped ? serveBlob(set.bodies.get(sha), range) : { status: 404, json: { error: 'not_found' } })
+    const data = [{ competitionId: 'compabcd', manifest: set.manifest, sealed: false, files: set.files }]
+    cache.want(data, [])
+    await waitFor(() => cache.problemList().length > 0, 'the refusal said')
+    const asks = (): number => home.calls.filter((call) => call.path.endsWith(file!.sha256)).length
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.equal(asks(), 1, 'a blob home refused was asked again before the next want')
+    scoped = true
+    cache.want(data, [])
+    await waitFor(() => cache.readyData().includes(set.manifest), 'the blob fetched at the next want', 3_000)
+    assert.equal(asks(), 2)
+    assert.deepEqual(cache.problemList(), [])
+    // A blob refused for another reason (here: its bytes are not what was asked) still waits out its pause.
+    const other = dataSet({ 'other.csv': 'id\n2\n' })
+    home.onBlob = () => ({ status: 200, body: Buffer.from('id\n9\n'), headers: { 'Content-Type': 'application/octet-stream' } })
+    const otherData = [{ competitionId: 'compabcd', manifest: other.manifest, sealed: false, files: other.files }]
+    cache.want(otherData, [])
+    await waitFor(() => cache.problemList().some((problem) => problem.manifest === other.manifest), 'the mismatch said')
+    cache.want(otherData, [])
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.equal(home.calls.filter((call) => call.path.endsWith(other.files[0]!.sha256)).length, 1)
+  } finally {
+    cache.stop()
+    await home.close()
+  }
+})
+
+test('a package set\'s folder, the participant\'s /deps, names no download address of its wheels; one an earlier build installed with them is built again', async () => {
+  const home = await fakeHome()
+  const wheel = Buffer.from('wheel-with-an-address')
+  const index: typeof fetch = async (input, init) => (String(input).startsWith('https://mirror.example/') ? new Response(wheel) : fetch(input, init))
+  const id = hex(16)
+  const bundle: RemoteWantBundle = {
+    id,
+    packagesMb: 64,
+    lock: 'w==1.0 --hash=sha256:aa\n',
+    wheels: [{ fileName: 'w-1.0-py3-none-any.whl', sha256: sha256(wheel), bytes: wheel.length, url: 'https://mirror.example/simple/w/w-1.0-py3-none-any.whl' }],
+  }
+  const first = cacheFor(home, { fetch: index })
+  try {
+    first.want([], [bundle])
+    await waitFor(() => first.readyBundles().includes(id), 'the set installed')
+    const text = fs.readFileSync(path.join(bundleDir(id), 'manifest.json'), 'utf8')
+    assert.ok(!text.includes('mirror.example'), `the set's manifest names the mirror: ${text}`)
+    assert.deepEqual(JSON.parse(text).packages, [{ fileName: 'w-1.0-py3-none-any.whl', sha256: sha256(wheel), bytes: wheel.length }])
+  } finally {
+    first.stop()
+  }
+  // What an earlier build wrote: the same folder with the address in its manifest. The next life does not take it as in place.
+  const manifest = path.join(bundleDir(id), 'manifest.json')
+  fs.chmodSync(manifest, 0o644)
+  fs.writeFileSync(manifest, JSON.stringify({ id, packagesMb: 64, packages: bundle.wheels }))
+  const second = cacheFor(home, { fetch: index })
+  try {
+    assert.deepEqual(second.readyBundles(), [], 'a set whose manifest names an address was taken as in place')
+    second.want([], [bundle])
+    await waitFor(() => second.readyBundles().includes(id), 'the set built again')
+    assert.ok(!fs.readFileSync(manifest, 'utf8').includes('mirror.example'))
+  } finally {
+    second.stop()
+    await home.close()
+  }
+})

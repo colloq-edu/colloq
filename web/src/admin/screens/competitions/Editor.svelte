@@ -55,6 +55,8 @@
     metricNumber,
     metricWorkAvailable,
     moment,
+    moveMetricOutcome,
+    moveMetricQuestion,
     presetCode,
     refusalSection,
     refusalText,
@@ -87,7 +89,7 @@
    * place. "The hidden test is limited to 200 MB" printed a screen and a half
    * above the drop zone it refused is a drop that seemed to do nothing.
    */
-  let errorAt = $state<'form' | 'sealed'>('form')
+  let errorAt = $state<'form' | 'sealed' | 'metric'>('form')
   let saved = $state(false)
   let now = $state(Date.now())
 
@@ -224,11 +226,12 @@
     }
   }
 
-  async function act<T>(what: () => Promise<T>, at: 'form' | 'sealed' = 'form'): Promise<T | null> {
+  async function act<T>(what: () => Promise<T>, at: 'form' | 'sealed' | 'metric' = 'form'): Promise<T | null> {
     if (busy) return null
     busy = true
     errorText = null
     errorAt = at
+    metricMoved = null
     try {
       return await what()
     } catch (cause) {
@@ -368,6 +371,27 @@
     if (!(await save())) return
     const started = await act(() => adminApi.checkCompetitionMetric(id))
     if (started) await refresh(id)
+  }
+
+  /** What the move of the metric's image came to, under its row; gone with the next action. */
+  let metricMoved = $state<string | null>(null)
+
+  /**
+   * The metric of a competition with a card runs in the kaggle-base pinned to
+   * it (decision 2), and only the teacher moves it to the current one, with a
+   * rescore of every submission (POST …/metric/image) — the way out when the
+   * pinned image left the server and every metric fails with
+   * scoringImageGone. Asked first: the whole competition is scored again. A
+   * refusal (a competition on the CPU, no kaggle-base here) is said in the
+   * server's words under the row.
+   */
+  async function moveMetric(): Promise<void> {
+    const id = c.id
+    if (busy || !window.confirm(moveMetricQuestion(c.title))) return
+    const moved = await act(() => adminApi.moveCompetitionMetricImage(id), 'metric')
+    if (!moved) return
+    metricMoved = moveMetricOutcome(moved)
+    await refresh(id)
   }
 
   async function refresh(id: string): Promise<void> {
@@ -543,10 +567,15 @@
    * Save (admin/runners.ts · whereRow).
    */
   const environmentUnsaved = $derived(environment !== c.environment)
-  const whereLine = $derived(where ? whereRow(where, { gpu: gpuOn, draft: draftState, homeOnly, unsaved: environmentUnsaved }) : null)
+  /*
+   * `homeCards` too: with the card on, this server runs these notebooks only
+   * on a card of its own (admin/runners.ts · homeRuns), and warnings 1 and 2
+   * said «посчитает сервер» over a server with none.
+   */
+  const whereLine = $derived(where ? whereRow(where, { gpu: gpuOn, draft: draftState, homeOnly, unsaved: environmentUnsaved, homeCards }) : null)
   /** A hidden test goes to trusted machines only (decision 1): which, or why it then runs here or waits (warning 2). */
   const sealedNote = $derived(
-    where && (view.sealedFiles?.length ?? 0) > 0 ? sealedWarning(where, { homeOnly, unsaved: environmentUnsaved, gpu: gpuOn }) : null,
+    where && (view.sealedFiles?.length ?? 0) > 0 ? sealedWarning(where, { homeOnly, unsaved: environmentUnsaved, gpu: gpuOn, homeCards }) : null,
   )
 
   /**
@@ -1438,6 +1467,24 @@
           {tr('admin.competitions.checkMetricHint')}
         </p>
       </div>
+      {#if c.limits.gpu === true}
+        <!-- The metric of a competition with a card runs in the kaggle-base
+             pinned to it (decision 2), never moved by a newer one: the one
+             way to move it is here, and the console offers the same next to
+             a metric that failed because the pinned image is gone. -->
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-2.5 border border-line px-3.5 py-3">
+          <span class={cn(HEAD, 'w-[110px] shrink-0')}>{tr('admin.competitions.metricImage.head')}</span>
+          <p class="min-w-0 flex-1 basis-[280px] text-micro leading-snug text-muted">{tr('admin.competitions.metricImage.note')}</p>
+          <button type="button" class="btn-outline shrink-0 max-[640px]:w-full" disabled={busy} onclick={() => void moveMetric()}>
+            {tr('admin.competitions.metricImage.move')}
+          </button>
+        </div>
+        {#if error && errorAt === 'metric'}
+          <p class="text-ui text-danger" role="alert">{error}</p>
+        {:else if metricMoved}
+          <p class="text-ui text-positive" role="status">{metricMoved}</p>
+        {/if}
+      {/if}
       {#if isUntouchedPreset(metricCode, columns) && solution}
         <p class="text-micro text-muted">
           {tr('admin.competitions.presetColumns', { id: columns.id, target: columns.target })}
@@ -1657,7 +1704,7 @@
           </div>
           {#if whereLine.homeOnly}
             <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 bg-warning/[0.07] px-3.5 py-3">
-              <p class="min-w-0 flex-1 basis-[280px] text-2xs text-ink">{homeOnlyBox(where, environment)}</p>
+              <p class="min-w-0 flex-1 basis-[280px] text-2xs text-ink">{homeOnlyBox(where, environment, { gpu: gpuOn, homeCards })}</p>
               <button type="button" class="btn-outline shrink-0" onclick={changeEnvironment}>
                 {tr('admin.competitions.where.changeEnvironment')}
               </button>

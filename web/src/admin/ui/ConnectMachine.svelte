@@ -9,10 +9,12 @@
    *
    * Under the commands a live line names the machines as they join, read
    * from the list the Resources block keeps polling (every three seconds
-   * while this is open). How many joined is this code's own count (its id in
-   * the list's codes): a machine new since the code was shown may have come
-   * with another code. The code itself is never kept, and closing the window
-   * forgets it for good.
+   * while this is open). How many joined is this code's own count: the
+   * machines the server says came with it (RemoteMachine.codeId), or its
+   * uses as the list's codes count them — a machine new since the code was
+   * shown may have come with another code. The code is never kept here, and
+   * closing the window only hides it: it stays valid until it expires, is
+   * used up, or the owner cancels it in the list of codes.
    */
   import { onMount } from 'svelte'
   import { tr } from '@shared/i18n'
@@ -23,9 +25,9 @@
   import {
     HOURS_BOUNDS,
     MACHINES_BOUNDS,
-    codeJoined,
     connectDefaults,
-    joinProgress,
+    connectProgress,
+    joinCommands,
     mintRequest,
     runnersApi,
     type ConnectForm,
@@ -61,9 +63,13 @@
     if (id && codes.some((code) => code.id === id)) codeSeen = true
   })
 
-  const progress = $derived(
-    minted ? joinProgress(known, machines, minted.machines, codeJoined(minted, codes, Date.now(), codeSeen)) : null,
-  )
+  /*
+   * By this code's own machines when the server names each machine's code,
+   * otherwise by the code's count of uses (admin/runners.ts · connectProgress):
+   * a code used up before any read showed it no longer leaves "waiting for
+   * the first machine" over the machine that used it.
+   */
+  const progress = $derived(minted ? connectProgress(minted, known, machines, codes, Date.now(), codeSeen) : null)
 
   onMount(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -124,15 +130,9 @@
     node.focus()
   }
 
-  const COMMANDS = $derived(
-    minted
-      ? [
-          { key: 'docker', label: tr('admin.runners.connect.docker'), text: minted.commands.docker },
-          { key: 'bare', label: tr('admin.runners.connect.bare'), text: minted.commands.bare },
-          { key: 'vast', label: tr('admin.runners.connect.vast'), text: minted.commands.vast },
-        ]
-      : [],
-  )
+  /** Only the commands the server filled in; `vast` is left out on purpose for an instance on its own image (admin/runners.ts · joinCommands). */
+  const shown = $derived(minted ? joinCommands(minted.commands) : null)
+  const COMMANDS = $derived(shown?.commands ?? [])
 </script>
 
 <div
@@ -251,6 +251,9 @@
               </div>
             </div>
           {/each}
+          {#if shown?.vastLeftOut}
+            <p class="text-2xs text-muted">{tr('admin.runners.connect.vastLeftOut')}</p>
+          {/if}
           {#if copyFailed}
             <p class="text-2xs text-danger" role="alert">{tr('admin.runners.connect.copyFailed')}</p>
           {/if}

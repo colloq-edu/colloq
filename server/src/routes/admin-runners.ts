@@ -30,6 +30,9 @@ import { revokeRunner, untrustRunner } from '../competitions/remote/release.js'
 import {
   REMOTE_CODE_MACHINES_MAX,
   RUNNER_NAME_CHARS,
+  codeIdOf,
+  endLiveCodes,
+  endRemoteCode,
   getRunner,
   listRunners,
   mintRefusal,
@@ -90,6 +93,14 @@ export function adminRunnerRoutes(): Router {
     const input = { machines, hours, trusted: body.trusted === true, approvedSlots, namePrefix, createdBy: currentStaff(req)!.id }
     if (mintRefusal(input) === 'prefix') return fail(res, 400, 'invalid', tr('server.runners.prefixInvalid'))
     const minted = mintRemoteCode(input)
+    // A code is a door for its machines and its hours, trusted ones too: who opened it, and how wide, is the audit's (§6 "Audit").
+    recordAdminEvent({
+      actor: currentStaff(req),
+      action: 'runner.code_minted',
+      target: { type: 'runner_code', id: minted.id, label: namePrefix },
+      detail: { machines: minted.machines, hours, trusted: minted.trusted, approvedSlots: minted.approvedSlots },
+      req,
+    })
     /*
      * The image this very server runs, as colloq-host names it to the
      * container (COLLOQ_SERVER_IMAGE): a machine joined from the panel runs
@@ -111,7 +122,34 @@ export function adminRunnerRoutes(): Router {
     res.set('Cache-Control', 'no-store').json(answer)
   })
 
-  /* «Отключить все»: every machine still connected, each recorded as the owner's disconnect of it. */
+  /*
+   * «Отменить» a code (M1's list of codes): it enrolls no machine from now
+   * on — no use left, expired now (store.ts · endRemoteCode). Declared before
+   * `/:id` with the other fixed paths. The machines it already enrolled stay;
+   * the owner disconnects those one by one, or all at once.
+   */
+  router.delete('/api/admin/runners/codes/:id', owner, (req, res, next) => {
+    const id = String(req.params.id)
+    const ended = endRemoteCode(id)
+    if ('refused' in ended) {
+      return ended.refused === 'ambiguous'
+        ? fail(res, 409, 'invalid', tr('server.runners.codeAmbiguous'))
+        : fail(res, 404, 'not_found', tr('server.runners.codeNotFound'))
+    }
+    recordAdminEvent({ actor: currentStaff(req), action: 'runner.code_ended', target: { type: 'runner_code', id, label: ended.ended.namePrefix || null }, detail: { machines: ended.ended.machines, trusted: ended.ended.trusted }, req })
+    machinesResponse()
+      .then((body) => res.set('Cache-Control', 'no-store').json(body))
+      .catch(next)
+  })
+
+  /*
+   * «Отключить все»: every machine still connected, each recorded as the
+   * owner's disconnect of it — and every code still valid ended with them.
+   * Disconnecting every machine while a code had uses left left the door it
+   * came through open: whoever held the code (it sits in every machine's
+   * COLLOQ_RUNNER_JOIN) enrolled a fresh machine at once, trusted if the code
+   * was. After «Отключить все» a machine comes back only with a new code.
+   */
   router.post('/api/admin/runners/revoke-all', owner, (req, res, next) => {
     const now = Date.now()
     for (const runner of listRunners()) {
@@ -119,6 +157,9 @@ export function adminRunnerRoutes(): Router {
       if (revokeRunner(runner.id, now)) {
         recordAdminEvent({ actor: currentStaff(req), action: 'runner.revoked', target: { type: 'runner', id: runner.id, label: runner.name }, detail: { all: true }, req })
       }
+    }
+    for (const code of endLiveCodes(now)) {
+      recordAdminEvent({ actor: currentStaff(req), action: 'runner.code_ended', target: { type: 'runner_code', id: codeIdOf(code.codeSha256), label: code.namePrefix || null }, detail: { machines: code.machines, trusted: code.trusted, all: true }, req })
     }
     machinesResponse()
       .then((body) => res.json(body))
@@ -189,8 +230,8 @@ export function adminRunnerRoutes(): Router {
         remoteEvent(runner.id, 'drained', {}, now)
       }
       if (action === 'resume' && (runner.state === 'draining' || runner.quarantinedAt !== null)) {
-        // Back to work, and a quarantine forgotten: the owner has looked, and decided.
-        updateRunner(runner.id, { state: 'active', quarantinedAt: null, quarantineSeen: true })
+        // Back to work, and a quarantine forgotten: the owner has looked, and decided — its window starts over from here (release.ts · quarantineIfDue).
+        updateRunner(runner.id, { state: 'active', quarantinedAt: null, quarantineSeen: true, resumedAt: now })
         remoteEvent(runner.id, 'resumed', {}, now)
       }
       wakeRunner(runner.id)

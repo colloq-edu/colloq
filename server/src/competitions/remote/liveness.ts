@@ -31,10 +31,13 @@
  * a live lease (which no transaction here can leave, but a hand in the
  * database can) goes back to waiting.
  */
+import dns from 'node:dns'
+import os from 'node:os'
+import { isIP } from 'node:net'
 import { REMOTE_BLIND_MS, REMOTE_OFFER_MS, REMOTE_PROBE_MS, REMOTE_SEEN_FLUSH_MS, REMOTE_SILENCE_MS } from '@shared/remote-runner'
-import { packagesFit } from '@shared/dependencies'
 import { config } from '../../config.js'
 import { getBinding } from '../../dependencies/store.js'
+import { runnerCardsHere, runnerGpuDevices } from '../gpu.js'
 import { homeNotebooksSetting } from '../settings.js'
 import { prepareNotebook, settleNotebook, unfitOutcome } from '../runner.js'
 import { dropAttempt } from '../storage.js'
@@ -49,10 +52,11 @@ import {
   waitingNotebookOrder,
 } from '../store.js'
 import { redriveApplying } from './apply.js'
+import { fitCache, homeTakes, rowNeedsCard, setUnfit } from './fit.js'
 import { loopbackAddress } from './origin.js'
-import { heardAt, inBootGrace, noteProbe, pathEvidence, remoteBootAt, seenDue } from './heard.js'
-import { loseLease, withdrawLease } from './release.js'
-import { LIVE_LEASE_STATES, driveInFlight, flushRunnerSeen, getLease, leasesInState, listRunners, openLeases, pruneRemoteRows, runnerStanding } from './store.js'
+import { heardAt, inBootGrace, noteBlind, noteProbe, pathEvidence, provenSilence, remoteBootAt, seenDue } from './heard.js'
+import { loseLease, orphanLease, withdrawLease } from './release.js'
+import { LIVE_LEASE_STATES, driveInFlight, flushRunnerSeen, getLease, leasesInState, listStandingRunners, openLeases, pruneRemoteRows } from './store.js'
 import { dropStaging, stagedAttempts } from './upload.js'
 import { wakeAllRunners } from './wake.js'
 
@@ -71,6 +75,8 @@ export function remoteTick(now = Date.now()): { withdrawn: number; lost: number 
   let withdrawn = 0
   let lost = 0
   const grace = inBootGrace(now)
+  // No path evidence at all at this pass: a silence is proven only from the next pass that has some (heard.ts · provenSilence).
+  if (!pathEvidence(now)) noteBlind(now)
   const silentSince = new Map<string, number>()
   for (const lease of openLeases()) {
     if (lease.state === 'offered' && now - lease.offeredAt > REMOTE_OFFER_MS) {
@@ -90,7 +96,14 @@ export function remoteTick(now = Date.now()): { withdrawn: number; lost: number 
     }
     const silent = now - since
     if (silent <= REMOTE_SILENCE_MS) continue
-    if (!pathEvidence(now, lease.runnerId) && silent <= REMOTE_BLIND_MS) continue
+    /*
+     * Lost for a silence only while the path is proven, and only for as much
+     * of the silence as it was proven: after an outage every machine gets a
+     * whole REMOTE_SILENCE_MS from the moment the evidence came back. Without
+     * evidence, REMOTE_BLIND_MS of real silence all the same.
+     */
+    const proven = pathEvidence(now, lease.runnerId) && provenSilence(lease.runnerId, now) > REMOTE_SILENCE_MS
+    if (!proven && silent <= REMOTE_BLIND_MS) continue
     if (loseLease(lease.attemptId, now, 'silent')) lost++
   }
   // The ceiling holds for a result being applied too: one that cannot be, by then, goes back to the queue (never one whose drive is under way).
@@ -100,7 +113,7 @@ export function remoteTick(now = Date.now()): { withdrawn: number; lost: number 
       if (loseLease(lease.attemptId, now, 'unapplied')) lost++
     }
   }
-  for (const runner of listRunners()) {
+  for (const runner of listStandingRunners()) {
     const due = seenDue(runner.id, now, REMOTE_SEEN_FLUSH_MS)
     if (due) flushRunnerSeen(runner.id, due.at, due.address)
   }
@@ -109,7 +122,7 @@ export function remoteTick(now = Date.now()): { withdrawn: number; lost: number 
     pruneRemoteRows(now)
     sweepStaging()
   }
-  if (!homeNotebooksSetting().value) settleUnfit(now)
+  settleUnfit(now)
   if (withdrawn + lost > 0) wakeAllRunners()
   return { withdrawn, lost }
 }
@@ -134,20 +147,28 @@ export function sweepStaging(): number {
  * SETS THAT DO NOT FIT SETTLE HERE (§10.1 "Lifecycle"). A package set
  * attached while it fit, after which the teacher lowered the memory, is
  * refused before any container, wherever the run was to go (runner.ts ·
- * unfitOutcome) — and the take never leases it to a machine. With this
- * server's notebooks on, its pump settles such a row the moment it takes it;
- * with them off nobody would, and the row would wait for ever. So the clock
- * takes it as this server's own, settles it with the refusal and lets the
- * row go, all in one turn: no container, no machine, the participant told
+ * unfitOutcome) — and the take never leases it to a machine. Where this
+ * server's pump takes the row (fit.ts · homeTakes: its notebooks on, and a
+ * GPU notebook only with cards of its own), the pump settles it the moment it
+ * takes it; anywhere else nobody would — its notebooks off, or a GPU notebook
+ * on a server with no card, which the pump passes over whatever the switch
+ * says — and the row would wait for ever, with place 1 and no reason. So the
+ * clock takes it as this server's own, settles it with the refusal and lets
+ * the row go, all in one turn: no container, no machine, the participant told
  * how big their set is against the memory, exactly as a run here tells them.
  */
 export function settleUnfit(now = Date.now()): number {
   if (queuePaused()) return 0
   let settled = 0
+  const homeNotebooks = homeNotebooksSetting().value
+  // This server takes GPU work on its own cards, or under the cluster on the cluster's (forecast.ts asks the same).
+  const homeCards = !runnerCardsHere() || runnerGpuDevices().length > 0
+  const cache = fitCache()
   for (const waiting of waitingNotebookOrder(now)) {
+    if (homeTakes({ gpu: rowNeedsCard(waiting, cache), homeNotebooks, homeCards })) continue
     const competition = getCompetition(waiting.competitionId)
     const bundle = getBinding(waiting.submissionId)?.bundle ?? null
-    if (!competition || !bundle || packagesFit(bundle.installedBytes, competition.limits.memoryMb)) continue
+    if (!competition || !bundle || !setUnfit(bundle, competition)) continue
     const row = holdQueueRow(waiting.submissionId, null, now)
     if (!row) continue
     const prepared = prepareNotebook(row, 'remote')
@@ -181,10 +202,20 @@ export function settleUnfit(now = Date.now()): number {
  * host (a relay that sends plain http to https, as Caddy does): taken for a
  * refusal, a public http PUBLIC_URL was never evidence at all. Any other
  * redirect is not followed — it leads somewhere that is not this server.
+ *
+ * AND NOT A NAME THAT LEADS BACK HERE. A literal loopback was the only one
+ * refused, but PUBLIC_URL=http://lab-gpu:3000 on a Debian host resolves to
+ * 127.0.1.1 through /etc/hosts, and one naming this host's own LAN address
+ * goes out of the process and straight back in: the probe passed every 30 s
+ * whatever the network did, and when the LAN or the uplink failed every run
+ * on every machine was lost after three minutes. So the host is resolved
+ * first (leavesHost), and a probe of an address that is loopback, unspecified
+ * or link-local, or one of this host's own interfaces, is no evidence.
  */
-export async function probeOwnPath(now = Date.now(), fetcher: typeof fetch = fetch, publicUrl: string = config.publicUrl): Promise<boolean> {
-  if (!listRunners().some((runner) => runnerStanding(runner))) return false
+export async function probeOwnPath(now = Date.now(), fetcher: typeof fetch = fetch, publicUrl: string = config.publicUrl, leaves: (url: string) => Promise<boolean> = leavesHost): Promise<boolean> {
+  if (listStandingRunners().length === 0) return false
   if (loopbackAddress(publicUrl)) return false
+  if (!(await leaves(publicUrl).catch(() => false))) return false
   let ok = false
   try {
     const target = new URL('/api/readyz', publicUrl)
@@ -206,13 +237,55 @@ export async function probeOwnPath(now = Date.now(), fetcher: typeof fetch = fet
   return ok
 }
 
+/** An address that never leaves this host whatever the network does: loopback, unspecified, link-local. */
+function localOnly(address: string): boolean {
+  const ip = address.toLowerCase().replace(/^\[|\]$/g, '').replace(/^::ffff:(?=\d+\.)/, '')
+  if (isIP(ip) === 4) return /^(?:127\.|0\.|169\.254\.)/.test(ip)
+  if (isIP(ip) === 6) return ip === '::1' || ip === '::' || /^fe[89ab][0-9a-f]:/.test(ip)
+  return false
+}
+
+/** This host's own addresses, by its interfaces (the container's own, when this server runs in one). */
+function ownAddresses(): Set<string> {
+  const out = new Set<string>()
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const one of list ?? []) out.add(one.address.toLowerCase().replace(/%.*$/, ''))
+  }
+  return out
+}
+
+/**
+ * Whether a probe of `url` would have to leave this host: its name resolves
+ * to no address that is this host's own (an interface's, or loopback,
+ * unspecified, link-local). A name that does not resolve is not probed.
+ * Exported for the tests, which pass their own resolver and interfaces.
+ */
+export async function leavesHost(
+  url: string,
+  resolve: (host: string) => Promise<string[]> = async (host) => (await dns.promises.lookup(host, { all: true, verbatim: true })).map((one) => one.address),
+  own: () => Set<string> = ownAddresses,
+): Promise<boolean> {
+  let host: string
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  } catch {
+    return false
+  }
+  const addresses = isIP(host) ? [host] : await resolve(host)
+  if (addresses.length === 0) return false
+  const mine = own()
+  return addresses.every((address) => !localOnly(address) && !mine.has(address.toLowerCase().replace(/^::ffff:(?=\d+\.)/, '')))
+}
+
 /**
  * At boot: what the previous life left half done. Offers it made are
- * withdrawn; outcomes it left `applying` are driven again; and a machine's
+ * withdrawn; outcomes it left `applying` are driven again; a machine's
  * queue row whose lease is over (or missing) goes back to waiting, keeping
- * its place.
+ * its place; and a lease whose queue row it no longer owns — a rollback ran
+ * the row itself (release.ts · orphanLease) — is ended with no penalty, so
+ * that the machine's next sync hears it and drops the run.
  */
-export async function bootRemoteRunners(now = Date.now()): Promise<{ withdrawn: number; redriven: number; orphans: number }> {
+export async function bootRemoteRunners(now = Date.now()): Promise<{ withdrawn: number; redriven: number; orphans: number; strays: number }> {
   let withdrawn = 0
   for (const lease of leasesInState('offered')) if (withdrawLease(lease.attemptId, now, 'restart')) withdrawn++
   const redriven = await redriveApplying(now)
@@ -225,10 +298,13 @@ export async function bootRemoteRunners(now = Date.now()): Promise<{ withdrawn: 
       orphans++
     }
   }
-  if (withdrawn + redriven + orphans > 0) {
-    console.log(`[runners] after restart: offers withdrawn ${withdrawn}, outcomes applied again ${redriven}, rows given back ${orphans}`)
+  let strays = 0
+  for (const lease of openLeases()) if (orphanLease(lease.attemptId, now)) strays++
+  if (withdrawn + redriven + orphans + strays > 0) {
+    console.log(`[runners] after restart: offers withdrawn ${withdrawn}, outcomes applied again ${redriven}, rows given back ${orphans}, leases without their row ended ${strays}`)
   }
-  return { withdrawn, redriven, orphans }
+  if (strays > 0) wakeAllRunners()
+  return { withdrawn, redriven, orphans, strays }
 }
 
 /** Start the clock and the probe: once, after the server listens (index.ts). */

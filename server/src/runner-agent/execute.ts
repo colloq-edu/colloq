@@ -118,7 +118,8 @@ export async function prepareRun(input: PrepareInput): Promise<Prepared> {
   if (lease.harness !== HARNESS_REVISION) {
     return decline('version', `this machine's build carries harness ${HARNESS_REVISION}, the lease names ${lease.harness}`)
   }
-  const image = await input.images.verify(lease.revision)
+  // Its inspect asked again through a daemon's hiccup (images.ts), for as long as the lease waits at all.
+  const image = await input.images.verify(lease.revision, input.signal)
   if (image === null) return decline('image', `the revision ${lease.revision.id.slice(0, 12)} is not ready here`)
   if (!diskFits(input.picture, input.attempts)) return decline('disk', `free disk ${input.picture.diskFreeMb} MB is below what ${input.attempts} attempt(s) need`)
   if (!memoryFits(input.picture, input.holding, input.heldMb, { memoryMb: lease.limits.memoryMb, cpus: lease.limits.cpus })) {

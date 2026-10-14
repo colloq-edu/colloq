@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { REMOTE_DRIVER_MIN, REMOTE_EVICT_AFTER_MS } from '../shared/remote-runner.ts'
-import { CHECK_LABEL, INSTANCE_LABEL, Images, revisionImage } from '../server/src/runner-agent/images.ts'
+import { CHECK_LABEL, INSTANCE_LABEL, Images, SOON_MS, revisionImage } from '../server/src/runner-agent/images.ts'
 import { TEST_ROOT } from './_env.mts'
 import { DIFF_IDS, LAYERS, REVISION, fakeAgentDocker, waitFor } from './_runner-agent-home.mts'
 
@@ -239,4 +239,123 @@ test('the smoke test is labelled for this tree as well as for its kind, and name
   assert.match(INSTANCE_LABEL, /^ru\.colloq\.competition-instance=[a-f0-9]{16}$/)
   const name = smoke[smoke.indexOf('--name') + 1]!
   assert.ok(name.includes(INSTANCE_LABEL.split('=')[1]!.slice(0, 8)), name)
+})
+
+test('an inspect that fails without saying why is asked again before it is believed: a hiccup neither fails the check before a run nor unreadies the revision, nor does it at a start', async () => {
+  const docker = fakeAgentDocker()
+  docker.registry.set(REVISION.ref, { diffIds: DIFF_IDS })
+  const options = { docker, dir: DIR, cards: () => ({ count: 0, driver: null }), inspectRetryMs: [5, 5, 5], log: () => undefined }
+  const images = new Images(options)
+  images.want(want())
+  await images.idle()
+  assert.deepEqual(images.readyIds(), [REVISION.id])
+  const tag = revisionImage(REVISION.id)
+  const tagInspects = (): number => docker.calls.filter((args) => args[0] === 'image' && args[1] === 'inspect' && args[2] === tag).length
+  // A daemon under a burst, in its three ways of saying nothing: an error of its own, a CLI killed at its timeout, a socket that refused.
+  for (const hiccup of [
+    { code: 1, out: 'Error response from daemon: context deadline exceeded' },
+    { code: -1, out: '' },
+    { code: 1, out: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' },
+  ]) {
+    let failed = 0
+    docker.intercept = (args) => (args[0] === 'image' && args[1] === 'inspect' && args[2] === tag && failed++ === 0 ? hiccup : undefined)
+    assert.equal(await images.verify({ id: REVISION.id, layers: LAYERS }), tag, `one failed inspect (${JSON.stringify(hiccup)}) declined the run`)
+    assert.equal(failed, 2, 'the failed inspect was not asked again')
+    assert.deepEqual(images.readyIds(), [REVISION.id], 'one failed inspect unreadied the revision')
+  }
+  // An answer is believed at once: "no such image" is the image gone, not asked again.
+  docker.intercept = null
+  docker.images.delete(tag)
+  const before = tagInspects()
+  assert.equal(await images.verify({ id: REVISION.id, layers: LAYERS }), null)
+  assert.equal(tagInspects() - before, 1)
+  assert.deepEqual(images.readyIds(), [])
+  await images.idle()
+  // Made ready again from its ref, as before.
+  assert.deepEqual(images.readyIds(), [REVISION.id])
+  images.stop()
+
+  // A start with one hiccup: still ready. A start with a daemon that fails every try: the book's word stands for the check before a run.
+  let failedAtStart = 0
+  docker.intercept = (args) => (args[0] === 'image' && args[1] === 'inspect' && args[2] === tag && failedAtStart++ === 0 ? { code: 1, out: 'Error response from daemon: context deadline exceeded' } : undefined)
+  const second = new Images(options)
+  await second.load()
+  assert.deepEqual(second.readyIds(), [REVISION.id], 'one failed inspect at a start unreadied the revision')
+  second.stop()
+  docker.intercept = (args) => (args[0] === 'image' && args[1] === 'inspect' && args[2] === tag ? { code: 1, out: 'Error response from daemon: context deadline exceeded' } : undefined)
+  const third = new Images(options)
+  await third.load()
+  assert.deepEqual(third.readyIds(), [REVISION.id], 'a daemon that did not answer at a start unreadied the revision')
+  // Right before a run, every try failing: the lease is not run on it, and the revision is checked again before it is ready.
+  const tries = tagInspects()
+  assert.equal(await third.verify({ id: REVISION.id, layers: LAYERS }), null)
+  assert.equal(tagInspects() - tries, 4, 'the check before a run was not asked again the backoff\'s three times')
+  assert.deepEqual(third.readyIds(), [])
+  // A lease that stops waiting stops the tries, and unreadies nothing.
+  await third.idle()
+  docker.intercept = null
+  third.want(want())
+  await third.idle()
+  assert.deepEqual(third.readyIds(), [REVISION.id])
+  docker.intercept = (args) => (args[0] === 'image' && args[1] === 'inspect' && args[2] === tag ? { code: 1, out: 'Error response from daemon: context deadline exceeded' } : undefined)
+  const stopped = new AbortController()
+  stopped.abort()
+  assert.equal(await third.verify({ id: REVISION.id, layers: LAYERS }, stopped.signal), null)
+  assert.deepEqual(third.readyIds(), [REVISION.id], 'a lease that stopped waiting unreadied the revision')
+  third.stop()
+})
+
+test('a GPU revision\'s check runs on the card with room it is given, held while it runs; no card with room, or one a burst filled under it, is a short wait and says nothing against the revision', async () => {
+  const docker = fakeAgentDocker()
+  docker.registry.set(REVISION.ref, { diffIds: DIFF_IDS })
+  let clock = Date.now()
+  let free: string | null = null
+  const held: string[] = []
+  const released: string[] = []
+  const images = new Images({
+    docker,
+    dir: DIR,
+    now: () => clock,
+    cards: () => ({ count: 2, driver: '580.65.06' }),
+    smokeCard: () => {
+      if (free === null) return null
+      const device = free
+      held.push(device)
+      return { device, release: () => released.push(device) }
+    },
+    log: () => undefined,
+  })
+  const checks = (): string[][] => docker.calls.filter((args) => args[0] === 'run' && args.includes('python'))
+  try {
+    // Every share of every card taken (a burst): no check at all, and nothing said against the revision.
+    images.want(want(true))
+    await images.idle()
+    assert.equal(checks().length, 0, 'a GPU check ran with no card that had room for it')
+    assert.deepEqual(images.problemList(), [])
+    assert.deepEqual(images.readyIds(), [])
+    // A share frees on card 1, and a run fills the card before the check gets its context: CUDA out of memory, still no verdict.
+    free = '1'
+    docker.smoke = { code: 1, out: 'Traceback (most recent call last):\n  File "<string>", line 7, in <module>\ntorch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 MiB' }
+    clock += SOON_MS + 1
+    images.want(want(true))
+    await images.idle()
+    assert.equal(checks().length, 1)
+    assert.equal(checks()[0]![checks()[0]!.indexOf('--gpus') + 1], 'device=1', 'the check did not run on the card it was given')
+    assert.deepEqual({ held, released }, { held: ['1'], released: ['1'] }, 'the check\'s share was not held and given back')
+    assert.deepEqual(images.problemList(), [], 'a card full of runs was said as a broken revision')
+    assert.deepEqual(images.readyIds(), [])
+    // Asked again after the short wait, not two minutes doubling to thirty: the card has room now.
+    docker.smoke = { code: 0, out: 'cuda-ok 13.0' }
+    clock += SOON_MS - 2_000
+    images.want(want(true))
+    await images.idle()
+    assert.equal(checks().length, 1, 'asked again before its wait was over')
+    clock += 3_000
+    images.want(want(true))
+    await images.idle()
+    assert.equal(checks().length, 2)
+    assert.deepEqual(images.readyIds(), [REVISION.id])
+  } finally {
+    images.stop()
+  }
 })

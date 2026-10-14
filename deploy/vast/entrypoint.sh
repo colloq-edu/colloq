@@ -264,6 +264,31 @@ locate_self() {
     || die "cannot inspect this container as \"$SELF\". Start it without --hostname, or set COLLOQ_CONTAINER=<its name>."
 }
 
+# The image this instance runs, for the panel's join commands of the machines
+# for submissions (competitions/remote/commands.ts · ownImage): a machine
+# joined from the panel must run the build its home runs. colloq-host passes
+# it as COLLOQ_SERVER_IMAGE, and what it passes wins; without it the daemon
+# says, for the container locate_self found, as the runner mode learns its
+# own image. Without it is no rare case: the first `colloq-host update` to a
+# release with machines for submissions is run by the colloq-host of the
+# release before, whose `docker run` knows no such variable, and the
+# settings' fingerprint does not count it either, so the container it
+# started was never made again with it (field notes, 14 Oct 2026). An
+# instance on an image of its own then printed the published image in the
+# panel, which a closed campus cannot pull and which is another build than
+# a fork's. A bare image id is no name a machine can pull: then nothing, and
+# the panel names the published image of its release, as before.
+locate_server_image() {
+  [ -z "${COLLOQ_SERVER_IMAGE:-}" ] || return 0
+  local named
+  named="$(docker inspect -f '{{.Config.Image}}' "$SELF" 2>/dev/null || true)"
+  case "$named" in
+    ''|sha256:*) return 0 ;;
+  esac
+  [[ "$named" =~ ^[a-f0-9]{12,64}$ ]] && return 0
+  export COLLOQ_SERVER_IMAGE="$named"
+}
+
 # The path of the state directory as the host sees it: the longest mount that
 # contains it. If none matches, the state lives in the container layer: the
 # daemon will mount an empty place into a room, the seminar files will diverge
@@ -848,6 +873,7 @@ serve() {
   say "Colloq ${VERSION} (${COLLOQ_REVISION:-unknown}) — image colloq-vast"
   require_docker
   locate_self
+  locate_server_image
   locate_host_state
   ensure_network
   RUN_DIR="$(mktemp -d /tmp/colloq-vast.XXXXXX)"

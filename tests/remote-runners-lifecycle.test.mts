@@ -517,6 +517,10 @@ test('a lease with a package set names it, the set is described with its wheels,
   const c = competition({ memoryMb: 4096 })
   setPolicy(c.id, { enabled: true })
   const sent = send(c, { revisionId: null })
+  // A machine whose last reply was before the set existed: its want never named it (blobs.ts · scope, as its reply set it).
+  const stranger = new Machine(await serve())
+  assert.equal((await stranger.join(code())).status, 200)
+  assert.equal((await stranger.sync()).status, 200)
   const wheel = Buffer.from(`a wheel as pip downloaded it, for ${c.id}`)
   const sha = createHash('sha256').update(wheel).digest('hex')
   const fileName = 'catboost-1.2.10-py3-none-any.whl'
@@ -550,8 +554,6 @@ test('a lease with a package set names it, the set is described with its wheels,
   const fetched = await m.call('GET', `blobs/${sha}`)
   assert.equal(fetched.status, 200)
   assert.deepEqual(Buffer.from(await fetched.arrayBuffer()), wheel)
-  const stranger = new Machine(home)
-  assert.equal((await stranger.join(code())).status, 200)
   assert.equal((await stranger.call('GET', `blobs/${sha}`)).status, 404, 'a machine never told of the set')
 })
 

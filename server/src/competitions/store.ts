@@ -2702,6 +2702,9 @@ const countWaiting = db.prepare(
 const countWaitingOf = db.prepare(
   `SELECT COUNT(*) AS n FROM competition_queue WHERE state = 'waiting' AND kind = ?`,
 )
+const countFreshWaiting = db.prepare(
+  `SELECT COUNT(*) AS n FROM competition_queue WHERE state = 'waiting' AND kind = 'metric' AND fresh = 1`,
+)
 const markRunning = db.prepare(`
   UPDATE competition_queue
   SET state = 'running', started_at = @at, attempts = attempts + 1, boot = @boot,
@@ -2770,8 +2773,8 @@ export function runningRows(): QueueRow[] {
  * only its own kind and counts only its own running rows against its own
  * places, so a hundred rescores never hold a notebook's slot, and no notebook
  * keeps a fresh result's metric waiting. The places are each lane's own, the
- * memory is one: the pump asks the metric lane first, so the memory a
- * notebook frees is not always the next notebook's (runner.ts · pumpOnce).
+ * memory is one: when it fits only one lane's next work, the one that has
+ * waited longer takes it (runner.ts · takeLanes, panel.ts · laneHeadOrder).
  *
  * No lane — any work, against every running row of this server: how the
  * queue took work before the lanes, kept for the callers from before them.
@@ -2783,8 +2786,12 @@ export function runningCount(lane?: QueueLane): number {
   return (countRunningHere.get({ kind: lane ?? null }) as { n: number }).n
 }
 
-/** Waiting work, of one lane's kind or of any (QueueLane). */
-export function waitingCount(lane?: QueueLane): number {
+/**
+ * Waiting work, of one lane's kind or of any (QueueLane). `paused` — only the
+ * work a pause does not hold: a fresh result's metric (selectNextScore).
+ */
+export function waitingCount(lane?: QueueLane, paused = false): number {
+  if (paused) return lane === 'notebook' ? 0 : (countFreshWaiting.get() as { n: number }).n
   if (!lane) return (countWaiting.get() as { n: number }).n
   return (countWaitingOf.get(lane) as { n: number }).n
 }
@@ -2830,7 +2837,8 @@ const NEEDS_CARD = `(q.kind = 'notebook' AND EXISTS
  * a GPU notebook waiting for a card must not hold up the CPU work behind it,
  * and CPU work never makes a GPU notebook wait for anything but a general
  * slot — the moment a share frees, the GPU notebook is first again in the
- * place the keys give it. panel.ts · queueEtas simulates exactly this.
+ * place the keys give it. panel.ts · queueEtas and laneEtas simulate exactly
+ * this.
  *
  * Computed in SQL, not in memory, because the queue is database state, and
  * two processes (the server and, one day, a separate runner) must see one and
@@ -2872,10 +2880,18 @@ const selectNext = db.prepare(`
  * the result whose metric the restart cut off then went behind every rescore.
  * panel.ts · scoreOrder is the same order for the screens. No card filter: a
  * metric never gets a card (NEEDS_CARD is only ever a notebook's).
+ *
+ * `@paused` — the queue is paused, and only a fresh result is taken. Its
+ * notebook has run, and its metric is the second half of work under way,
+ * which a pause does not touch: a run here keeps its metric under its own
+ * lease whatever the pause, and a machine's result, held, stayed «оценивается»
+ * with no score for the whole pause while its participant's next upload was
+ * refused as in flight. A rescore is new work, and waits for the pause to end.
  */
 const selectNextScore = db.prepare(`
   SELECT q.*, 0 AS needs_gpu FROM competition_queue q
   WHERE q.state = 'waiting' AND q.not_before <= @at AND q.kind = 'metric'
+    AND (@paused = 0 OR q.fresh = 1)
   ORDER BY
     q.fresh DESC,
     ${FAIR_ORDER}
@@ -2956,11 +2972,12 @@ function cardFree(gpu: QueueGpu | undefined, share: unknown): 0 | 1 {
 /**
  * The next work of a lane (QueueLane; any work without one), and the card
  * share it would be given. The metric lane has its own order and no card: a
- * metric never gets one, whatever is free.
+ * metric never gets one, whatever is free; and under a pause it names only a
+ * fresh result (selectNextScore).
  */
 function pickNext(at: number, gpu: QueueGpu | undefined, lane: QueueLane | undefined): { row: QueueRowRaw; share: ReturnType<typeof freeShare> } | null {
   if (lane === 'metric') {
-    const row = selectNextScore.get({ at }) as QueueRowRaw | undefined
+    const row = selectNextScore.get({ at, paused: queuePaused() ? 1 : 0 }) as QueueRowRaw | undefined
     return row ? { row, share: null } : null
   }
   const share = gpu ? freeShare(gpu) : null
@@ -3014,11 +3031,13 @@ export function cardWorkWaiting(at = Date.now()): boolean {
  * `lane` — one lane of the pump (QueueLane): its own work against its own
  * places (`slots`), counted over this server's running rows of that lane
  * only. A row a machine holds is neither taken (it is running) nor counted
- * (it holds nothing here); the row taken here has no holder.
+ * (it holds nothing here); the row taken here has no holder. Under a pause
+ * the metric lane still takes a fresh result, the rest of work under way
+ * (selectNextScore); nothing else is taken.
  */
 export const takeNext = db.transaction(
   (opts: { boot?: string; at?: number; slots?: number; gpu?: QueueGpu; lane?: QueueLane } = {}): QueueRow | null => {
-    if (queuePaused()) return null
+    if (queuePaused() && opts.lane !== 'metric') return null
     const slots = opts.slots ?? 1
     if (runningCount(opts.lane) >= slots) return null
     const at = opts.at ?? Date.now()
@@ -3201,10 +3220,20 @@ export function waitingNotebookOrder(at = Date.now()): Array<QueueRow & { needsG
  * one. The card is never written: a machine's cards are its own and never
  * enter competition_queue.gpu (§5.1), and `boot` is this server's life, which
  * a machine's row never needs and reclaimQueue never reads for it.
+ *
+ * A MACHINE'S ROW IS TAKEN WITH NO started_at: its run starts when its
+ * container does (noteHeldStart, from the machine's sync), not at the take.
+ * Stamped at the take, the participant's stopwatch counted minutes of the
+ * machine's preparation — wheels from the index, a notebook fetched by hash —
+ * as their notebook's time, and jumped back once the container started
+ * (§2 step 5: pulls and downloads never eat the participant's timer). The
+ * forecast counts a running row with no start as just begun, and the live
+ * view shows no clock until there is one. A row this server takes for itself
+ * (`holder` null: a set settled with its refusal) starts at the take.
  */
 const markHeld = db.prepare(`
   UPDATE competition_queue
-  SET state = 'running', started_at = @at, attempts = attempts + 1, boot = @boot,
+  SET state = 'running', started_at = CASE WHEN @holder IS NULL THEN @at ELSE NULL END, attempts = attempts + 1, boot = @boot,
       container = NULL, attempt_id = @attempt_id, gpu = NULL, gpu_per_device = NULL, gpu_slice_mb = NULL, holder = @holder
   WHERE submission_id = @submission_id AND state = 'waiting' AND kind = 'notebook'
 `)
@@ -3261,6 +3290,28 @@ export function noteHeldStart(row: Pick<QueueRow, 'submissionId' | 'attemptId' |
   if (!row.attemptId || !row.holder) return false
   return db.prepare("UPDATE competition_queue SET started_at = ? WHERE submission_id = ? AND attempt_id = ? AND holder = ? AND state = 'running'")
     .run(startedAt, row.submissionId, row.attemptId, row.holder).changes > 0
+}
+
+/**
+ * The same start for the machine's run row (submission_runs), which the take
+ * started with the take's own time (runner.ts · prepareNotebook): the
+ * teacher's history reads a run's time as its end less its start, and a run
+ * of four seconds read «2 мин» for the machine's preparation. Fenced on the
+ * attempt and on the run still open.
+ */
+export function noteHeldRunStart(runId: string, attemptId: string, startedAt: number): boolean {
+  return db.prepare('UPDATE submission_runs SET started_at = ? WHERE id = ? AND attempt_id = ? AND finished_at IS NULL').run(startedAt, runId, attemptId).changes > 0
+}
+
+/**
+ * A machine's settled run row, timed as its container ran: from its start to
+ * its start plus the wall it reported (the settle finishes the row at the
+ * moment the outcome is applied, which is the run, its export and its
+ * uploads). Fenced on the attempt.
+ */
+export function timeHeldRun(runId: string, attemptId: string, startedAt: number, finishedAt: number): boolean {
+  return db.prepare('UPDATE submission_runs SET started_at = ?, finished_at = ? WHERE id = ? AND attempt_id = ? AND finished_at IS NOT NULL')
+    .run(startedAt, Math.max(startedAt, finishedAt), runId, attemptId).changes > 0
 }
 
 /** Every running row a machine holds (holder NOT NULL), for the console and «Работают сейчас». */
@@ -3410,7 +3461,9 @@ export function queuePause(): { paused: boolean; at: number | null; by: string |
  * The pause does not touch a running run: killing it is a separate action
  * with a separate button ("Kill"), and merging them would mean losing someone
  * else's minute of work to a click that only promised "do not start new
- * ones".
+ * ones". Nor the metric of a notebook that has run — a machine's result, or
+ * one of ours whose metric was put off (selectNextScore): it is the rest of
+ * that run, not a new one.
  */
 export function setQueuePaused(paused: boolean, by: string | null = null, at = Date.now()): void {
   updatePause.run(paused ? 1 : 0, paused ? at : null, paused ? by : null)

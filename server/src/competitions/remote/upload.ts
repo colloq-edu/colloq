@@ -27,6 +27,21 @@
  * the instance (REMOTE_UPLOADS), and each needs REMOTE_UPLOAD_FREE_BYTES of
  * free disk by statfs: past the first, 503 with Retry-After; below the floor,
  * 507. The machine keeps its outcome and tries again; nothing is lost.
+ *
+ * ONE MACHINE NEVER HOLDS EVERY SLOT: at most half of them (machineShare),
+ * and a body that sends nothing for UPLOAD_STALL_MS is ended. A machine that
+ * kept four PUTs trickling held the instance's four slots for as long as it
+ * liked, every other machine's results got 503 until their leases reached the
+ * ceiling, and those losses were charged to the honest machines' quarantine.
+ *
+ * AN ATTEMPT STAGES AT MOST ONE FILE PER NAME, and at most what its two caps
+ * add up to (stagingRoom). The staged name carries the sha256, so a PUT of the
+ * same name with other bytes used to land beside the first — and a machine
+ * could stage gigabytes under one lease from kilobytes of gzip, on the volume
+ * colloq.db shares, down to the disk floor. A file with a new hash for a name
+ * now replaces the one staged under it, and a PUT past the attempt's room is
+ * refused before its body is read. An honest agent never meets either: its
+ * hashes are fixed in its persisted outcome.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -37,6 +52,8 @@ import zlib from 'node:zlib'
 import type { Request } from 'express'
 import {
   REMOTE_BYTES_HEADER,
+  REMOTE_FILE_BYTES,
+  REMOTE_FILE_NAMES,
   REMOTE_SHA256_HEADER,
   REMOTE_UPLOAD_FREE_BYTES,
   RemoteProtocolError,
@@ -88,9 +105,87 @@ export function stagedAttempts(): string[] {
   }
 }
 
-/** Uploads being stored now, across the instance. */
+/** Uploads being stored now, across the instance and by machine. */
 let active = 0
-export const uploadCounts = { stored: 0, repeated: 0, refused: 0, busy: 0 }
+const activeBy = new Map<string, number>()
+/** What the uploads under way declared, by attempt and name: what an attempt's room counts beside what it has staged (stagingRoom). */
+const declared = new Map<string, Map<RemoteFileName, number[]>>()
+export const uploadCounts = { stored: 0, repeated: 0, refused: 0, busy: 0, replaced: 0, stalled: 0 }
+
+/**
+ * A machine's share of the instance's upload slots: half of them, and never
+ * none. The agent puts an attempt's two files side by side, so the default
+ * four leave every machine its two and keep two for the rest of the fleet.
+ */
+export function machineShare(slots: number): number {
+  return Math.max(1, Math.floor(slots / 2))
+}
+
+/** How long an upload's body may send nothing before it is ended and its slot freed (useUploadStallMs for tests). */
+const UPLOAD_STALL_MS = 60_000
+let uploadStallMs = UPLOAD_STALL_MS
+
+/** The most one attempt stages: its answer at its cap and its executed notebook at its own. */
+export function attemptRoomBytes(targetBytes: number): number {
+  return Math.min(targetBytes, REMOTE_FILE_BYTES) + REMOTE_FILE_BYTES
+}
+
+/** An attempt's completed staged files (no `.part`), by the name and sha256 their file names carry. */
+function stagedFiles(attemptId: string): Array<{ name: RemoteFileName; sha256: string; bytes: number; file: string }> {
+  const dir = stagingDir(attemptId)
+  let names: string[]
+  try {
+    names = competitionsFs.readdirSync(dir) as string[]
+  } catch {
+    return []
+  }
+  const out: Array<{ name: RemoteFileName; sha256: string; bytes: number; file: string }> = []
+  for (const entry of names) {
+    const match = /^(submission\.csv|executed\.ipynb)\.([a-f0-9]{64})$/.exec(entry)
+    if (!match) continue
+    try {
+      const file = path.join(dir, entry)
+      const info = competitionsFs.statSync(file)
+      if (info.isFile()) out.push({ name: match[1] as RemoteFileName, sha256: match[2], bytes: info.size, file })
+    } catch {
+      // Gone between the listing and the look: nothing staged under it.
+    }
+  }
+  return out
+}
+
+/**
+ * Whether one more upload of `name`, of `bytes`, fits the attempt's room:
+ * for each name the larger of what is staged under it and what an upload of
+ * it under way declared — the one of this name staged now is replaced by
+ * this one, so only the uploads of it under way count beside it.
+ */
+function fitsRoom(attemptId: string, name: RemoteFileName, bytes: number, room: number): boolean {
+  const staged = stagedFiles(attemptId)
+  const going = declared.get(attemptId)
+  let total = 0
+  for (const each of REMOTE_FILE_NAMES) {
+    const underWay = Math.max(0, ...(going?.get(each) ?? []))
+    total += each === name
+      ? Math.max(underWay, bytes)
+      : Math.max(underWay, staged.filter((file) => file.name === each).reduce((sum, file) => sum + file.bytes, 0))
+  }
+  return total <= room
+}
+
+function noteDeclared(attemptId: string, name: RemoteFileName, bytes: number, on: boolean): void {
+  let byName = declared.get(attemptId)
+  if (on) {
+    if (!byName) declared.set(attemptId, (byName = new Map()))
+    byName.set(name, [...(byName.get(name) ?? []), bytes])
+    return
+  }
+  const list = byName?.get(name) ?? []
+  const at = list.indexOf(bytes)
+  if (at >= 0) list.splice(at, 1)
+  if (byName && list.length === 0) byName.delete(name)
+  if (byName && byName.size === 0) declared.delete(attemptId)
+}
 
 /** A refusal of an upload, with the router's code for it (REMOTE_ERRORS). */
 export class UploadRefusal extends Error {
@@ -134,19 +229,34 @@ export async function receiveUpload(req: Request, runner: RunnerRow, attemptId: 
     uploadCounts.repeated++
     return meta
   }
-  if (active >= runnerUploadsSetting().value) {
+  const slots = runnerUploadsSetting().value
+  if ((activeBy.get(runner.id) ?? 0) >= machineShare(slots)) {
+    uploadCounts.busy++
+    throw new UploadRefusal('busy', "This machine's uploads are at its share of the limit", 2)
+  }
+  if (active >= slots) {
     uploadCounts.busy++
     throw new UploadRefusal('busy', 'Uploads are at their limit', 2)
+  }
+  if (!fitsRoom(attemptId, meta.name, meta.bytes, attemptRoomBytes(lease.manifest.limits.targetBytes))) {
+    uploadCounts.refused++
+    throw new UploadRefusal('too_large', 'The attempt has staged all its two files may take')
   }
   const free = freeBytes()
   if (free !== null && free < (active + 1) * REMOTE_UPLOAD_FREE_BYTES) throw new UploadRefusal('disk', 'Too little free disk for results', 30)
   active++
+  activeBy.set(runner.id, (activeBy.get(runner.id) ?? 0) + 1)
+  noteDeclared(attemptId, meta.name, meta.bytes, true)
   try {
     await store(req, attemptId, meta)
     uploadCounts.stored++
     return meta
   } finally {
     active--
+    const mine = (activeBy.get(runner.id) ?? 1) - 1
+    if (mine > 0) activeBy.set(runner.id, mine)
+    else activeBy.delete(runner.id)
+    noteDeclared(attemptId, meta.name, meta.bytes, false)
   }
 }
 
@@ -175,8 +285,19 @@ async function store(req: Request, attemptId: string, meta: RemoteUploadReply): 
   const hash = createHash('sha256')
   let compressed = 0
   let plain = 0
+  /*
+   * A body that sends nothing for uploadStallMs is ended: its slot is one of
+   * the instance's few, and a machine gone mid-upload (or one holding the
+   * slot on purpose) must not keep it until Node's request timeout.
+   */
+  const stall = setTimeout(() => {
+    uploadCounts.stalled++
+    body.destroy(Object.assign(new Error('The upload sent nothing for too long'), { code: 'ERR_STREAM_PREMATURE_CLOSE' }))
+  }, uploadStallMs)
+  stall.unref?.()
   const counted = new Transform({
     transform(chunk: Buffer, _encoding, done: TransformCallback) {
+      stall.refresh()
       compressed += chunk.length
       if (compressed > compressedCap(meta.bytes)) return done(new UploadRefusal('too_large', 'The compressed body is longer than its file could be'))
       done(null, chunk)
@@ -191,14 +312,39 @@ async function store(req: Request, attemptId: string, meta: RemoteUploadReply): 
       done(null, chunk)
     },
   })
-  let closed = false
+  /*
+   * THE DESCRIPTOR OUTLIVES EVERY WRITE GIVEN TO IT. pipeline() rejects the
+   * moment a stream fails, and destroys the sink without waiting for a write
+   * still queued in the thread pool (fs.WriteStream waits; a bare Writable
+   * does not). Closed at once, the descriptor's number went to the next file
+   * opened — another upload's part — and the queued write landed there: a
+   * whole, honest answer staged 64 KiB longer than it was, its outcome refused
+   * and its run counted lost against a healthy machine. So every write and the
+   * fsync are counted while they are queued, and the descriptor is closed only
+   * once none is (drained), whichever way the pipeline ended.
+   */
+  let queued = 0
+  const waiting: Array<() => void> = []
+  const settle = (): void => {
+    queued--
+    if (queued === 0) for (const resolve of waiting.splice(0)) resolve()
+  }
+  const drained = (): Promise<void> => (queued === 0 ? Promise.resolve() : new Promise((resolve) => waiting.push(resolve)))
   const sink = new Writable({
     write(chunk: Buffer, _encoding, done) {
-      fs.write(fd, chunk, 0, chunk.length, null, (error) => done(error ?? null))
+      queued++
+      fs.write(fd, chunk, 0, chunk.length, null, (error) => {
+        settle()
+        done(error ?? null)
+      })
     },
     final(done) {
       // On disk before it is renamed into its name: a crash after the rename must find the bytes it promised.
-      fs.fsync(fd, (error) => done(error ?? null))
+      queued++
+      fs.fsync(fd, (error) => {
+        settle()
+        done(error ?? null)
+      })
     },
   })
   /*
@@ -219,18 +365,24 @@ async function store(req: Request, attemptId: string, meta: RemoteUploadReply): 
     if (!req.complete) body.destroy(Object.assign(new Error('The upload was cut short'), { code: 'ERR_STREAM_PREMATURE_CLOSE' }))
   })
   req.pipe(body)
+  let failure: unknown = null
   try {
     await pipeline(body, counted, zlib.createGunzip({ chunkSize: 64 * 1024 }), unzipped, sink)
-    fs.closeSync(fd)
-    closed = true
-    if (plain !== meta.bytes || hash.digest('hex') !== meta.sha256) throw new UploadRefusal('mismatch', 'The file is not what its headers said')
-    competitionsFs.renameSync(part, stagedPath(attemptId, meta.name, meta.sha256))
   } catch (error) {
+    failure = error
     req.unpipe(body)
     req.pause()
-    if (!closed) {
-      try { fs.closeSync(fd) } catch { /* already closed by the failing stream */ }
-    }
+  } finally {
+    clearTimeout(stall)
+  }
+  // Never closed while a write queued to it may still run: that write would land in whatever file gets the number next.
+  await drained()
+  try { fs.closeSync(fd) } catch { /* nothing left to close */ }
+  try {
+    if (failure !== null) throw failure
+    if (plain !== meta.bytes || hash.digest('hex') !== meta.sha256) throw new UploadRefusal('mismatch', 'The file is not what its headers said')
+    keep(attemptId, meta, part)
+  } catch (error) {
     try { competitionsFs.rmSync(part, { force: true }) } catch { /* the sweep removes it */ }
     uploadCounts.refused++
     if (error instanceof UploadRefusal || error instanceof RemoteProtocolError) throw error
@@ -240,7 +392,37 @@ async function store(req: Request, attemptId: string, meta: RemoteUploadReply): 
   }
 }
 
-/** For tests: uploads being stored now. */
-export function activeUploads(): number {
-  return active
+/**
+ * A verified part into its staged name, in one synchronous turn: the lease
+ * is asked once more (an outcome applied, or a cancel, while the body was
+ * arriving: nothing is staged for an attempt that is over — the outcome
+ * moves what it listed in the same kind of turn, apply.ts · finish), and the
+ * other files staged under this name go — one completed file per name and
+ * attempt, never one per hash.
+ */
+function keep(attemptId: string, meta: RemoteUploadReply, part: string): void {
+  const lease = getLease(attemptId)
+  if (!lease || !UPLOADING.has(lease.state)) {
+    throw new UploadRefusal(lease?.state === 'applying' || lease?.state === 'applied' ? 'conflict' : 'revoked', 'The attempt ended while its file was arriving')
+  }
+  competitionsFs.renameSync(part, stagedPath(attemptId, meta.name, meta.sha256))
+  for (const other of stagedFiles(attemptId)) {
+    if (other.name !== meta.name || other.sha256 === meta.sha256) continue
+    try {
+      competitionsFs.rmSync(other.file, { force: true })
+      uploadCounts.replaced++
+    } catch {
+      // The sweep removes it with the folder.
+    }
+  }
+}
+
+/** For tests: uploads being stored now, the instance's or one machine's. */
+export function activeUploads(runnerId?: string): number {
+  return runnerId === undefined ? active : (activeBy.get(runnerId) ?? 0)
+}
+
+/** For tests: how long a body may send nothing; `null` — as in production. */
+export function useUploadStallMs(ms: number | null): void {
+  uploadStallMs = ms ?? UPLOAD_STALL_MS
 }

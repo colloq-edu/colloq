@@ -39,7 +39,7 @@ import { queueRow } from '../server/src/competitions/store.js'
 import { saveCompetitionSettings } from '../server/src/competitions/settings.js'
 import { db } from '../server/src/db.js'
 import { activeUploads, stagedPath, stagingDir } from '../server/src/competitions/remote/upload.js'
-import { resetBlobBucket } from '../server/src/competitions/remote/blobs.js'
+import { openBlobStreams, resetBlobBucket, starvedLease } from '../server/src/competitions/remote/blobs.js'
 import { ANSWER, Machine, close, code, competition, finished, reset, send, serve, type TestCompetition } from './_remote.mts'
 
 useCompetitionRunner(new FakeCompetitionRunner())
@@ -345,8 +345,9 @@ test('a file two competitions share, replaced in one of them, is still served fr
   }
 })
 
-test('one blob stream per machine: a second request while one is open is told to come back', async () => {
+test('one blob stream per machine: its newer request replaces the stream it let go, and is never told to come back for it', async () => {
   reset()
+  resetBlobBucket()
   saveCompetitionSettings({ runnerBlobMBps: 1 })
   try {
     const c = competition()
@@ -358,27 +359,38 @@ test('one blob stream per machine: a second request while one is open is told to
     await m.sync()
     const first = await m.call('GET', `blobs/${stored.sha256}`)
     assert.equal(first.status, 200)
+    const old = first.body!.getReader()
+    await old.read()
+    // The agent runs one stream at a time: its next request means it let the first go (cache.ts · enqueue preempting a prefetch).
     const second = await m.call('GET', `blobs/${stored.sha256}`)
-    assert.equal(second.status, 429)
-    assert.ok(Number(second.headers.get('retry-after')) > 0)
-    const reader = first.body!.getReader()
-    const started = Date.now()
-    let bytes = 0
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      bytes += value.length
+    assert.equal(second.status, 200, 'its own new request is served, not 429')
+    assert.equal(openBlobStreams(m.runnerId), 1, 'and it still holds one stream')
+    let rest = 0
+    let cut = false
+    try {
+      for (;;) {
+        const { done, value } = await old.read()
+        if (done) break
+        rest += value.length
+      }
+    } catch {
+      cut = true
     }
-    assert.equal(bytes, big.length)
+    assert.ok(cut || rest < big.length, 'the stream it let go is ended')
+    const started = Date.now()
+    const body = Buffer.from(await second.arrayBuffer())
+    assert.equal(body.length, big.length)
     // Three megabytes at one a second, a quarter-second burst aside.
     assert.ok(Date.now() - started >= 1500, 'the owner\'s rate holds')
   } finally {
     saveCompetitionSettings({ runnerBlobMBps: null })
+    resetBlobBucket()
   }
 })
 
-test('three blob streams for the whole server: a fourth machine is told to come back until one ends', async () => {
+test('three blob streams for the whole server: prefetch takes two, the third is for a lease\'s own blobs, and a lease takes a prefetch\'s place when all are taken', async () => {
   reset()
+  resetBlobBucket()
   saveCompetitionSettings({ runnerBlobMBps: 1 })
   const readers: ReadableStreamDefaultReader<Uint8Array>[] = []
   try {
@@ -386,30 +398,54 @@ test('three blob streams for the whole server: a fourth machine is told to come 
     const big = Buffer.alloc(2 * 1024 * 1024, 5)
     const stored = putOpenFile(c.id, 'big.bin', big)
     putFile({ competitionId: c.id, name: 'big.bin', bytes: stored.bytes, visibility: 'open', sha256: stored.sha256 })
-    send(c)
-    const machines = [await joined(), await joined(), await joined(), await joined()]
-    for (const one of machines) await one.sync()
-    for (const one of machines.slice(0, 3)) {
+    // Notebooks with saved outputs, a megabyte and a half each: they ride by hash, and their streams last.
+    const heavy = ['x = 1', `# ${'o'.repeat(1536 * 1024)}`]
+    for (let i = 0; i < 4; i++) send(c, { cells: heavy, at: Date.now() - 10_000 + i })
+    const prefetchers = [await joined(), await joined(), await joined()]
+    for (const one of prefetchers) await one.sync()
+    for (const one of prefetchers.slice(0, 2)) {
       const open = await one.call('GET', `blobs/${stored.sha256}`)
       assert.equal(open.status, 200)
       readers.push(open.body!.getReader())
+      await readers.at(-1)!.read()
     }
-    const fourth = await machines[3].call('GET', `blobs/${stored.sha256}`)
-    assert.equal(fourth.status, 429, 'past the server\'s streams, whoever asks')
-    assert.ok(Number(fourth.headers.get('retry-after')) > 0)
+    const third = await prefetchers[2].call('GET', `blobs/${stored.sha256}`)
+    assert.equal(third.status, 429, 'prefetch never takes the stream kept for leases')
+    assert.ok(Number(third.headers.get('retry-after')) > 0)
+    await third.arrayBuffer()
+    // Machines with a lease each: the first is served on the stream kept for leases, the second takes a prefetcher's place.
+    const holders: Array<{ m: Machine; lease: RemoteLease }> = []
+    for (let i = 0; i < 4; i++) {
+      const m = await joined()
+      const first = await m.sync()
+      const data = first.body.want.data.find((entry) => entry.competitionId === c.id && !entry.sealed)!
+      const leased = await m.sync({ ready: { revisions: [c.revisionId], data: [data.manifest], sealed: [], bundles: [] }, free: { slots: 1, memoryMb: 32_768, cpus: 16, gpuShares: 0, diskMb: 100_000 } })
+      const lease = leased.body.leases[0]
+      assert.ok(lease, 'leased')
+      // Acked with no place left: one lease each.
+      await m.sync({ seq: lease.seq, ready: { revisions: [c.revisionId], data: [data.manifest], sealed: [], bundles: [] }, free: { slots: 0, memoryMb: 28_000, cpus: 14, gpuShares: 0, diskMb: 99_000 }, attempts: [{ id: lease.attemptId, phase: 'preparing' }] })
+      holders.push({ m, lease })
+    }
+    const own = async (holder: { m: Machine; lease: RemoteLease }) => holder.m.call('GET', `blobs/${holder.lease.notebook.sha256}`)
+    const kept = await own(holders[0])
+    assert.equal(kept.status, 200, 'a lease\'s blob on the stream prefetch leaves it')
+    readers.push(kept.body!.getReader())
+    await readers.at(-1)!.read()
+    const preempting = await own(holders[1])
+    assert.equal(preempting.status, 200, 'and with every stream taken, in a prefetcher\'s place')
+    readers.push(preempting.body!.getReader())
+    await readers.at(-1)!.read()
+    assert.equal(openBlobStreams(), 3)
+    const third2 = await own(holders[2])
+    assert.equal(third2.status, 200, 'the other prefetcher\'s place too')
+    readers.push(third2.body!.getReader())
+    await readers.at(-1)!.read()
+    // Every stream a lease's now: the next lease is told to come back, and its wait is this server's, not the machine's (blobs.ts · starvedLease).
+    const fourth = await own(holders[3])
+    assert.equal(fourth.status, 429)
     await fourth.arrayBuffer()
-    // One stream read to its end frees its place for the machine that waited.
-    const first = readers.shift()!
-    for (;;) if ((await first.read()).done) break
-    const deadline = Date.now() + 5_000
-    let again = await machines[3].call('GET', `blobs/${stored.sha256}`, { headers: { range: 'bytes=0-0' } })
-    while (again.status === 429 && Date.now() < deadline) {
-      await again.arrayBuffer()
-      await new Promise((resolve) => setTimeout(resolve, 50))
-      again = await machines[3].call('GET', `blobs/${stored.sha256}`, { headers: { range: 'bytes=0-0' } })
-    }
-    assert.equal(again.status, 206)
-    await again.arrayBuffer()
+    assert.equal(starvedLease(holders[3].lease.attemptId), true)
+    assert.equal(starvedLease(holders[0].lease.attemptId), false)
   } finally {
     for (const reader of readers) await reader.cancel().catch(() => undefined)
     saveCompetitionSettings({ runnerBlobMBps: null })

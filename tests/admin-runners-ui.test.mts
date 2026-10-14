@@ -723,8 +723,11 @@ test('«Где считается» lists who takes the competition and names th
   )
   assert.deepEqual([drafting.home, drafting.machines, drafting.text], ['сервер', ['vast-4090-ro'], 'vast-4090-ro подготовится к открытию'])
   assert.equal(whereRow({ ...WHERE, machines: [] }, { gpu: false, draft: false, homeOnly: false }).text, 'машин нет')
-  const local = whereRow(WHERE, { gpu: false, draft: false, homeOnly: true })
+  // Only here and this server runs notebooks: «только этот сервер». With its
+  // notebooks off it only scores them, environment or not: nobody runs these.
+  const local = whereRow({ ...WHERE, home: { notebooks: true, places: 8 } }, { gpu: false, draft: false, homeOnly: true })
   assert.deepEqual([local.home, local.homeOnly, local.machines], ['только этот сервер', true, []])
+  assert.equal(whereRow(WHERE, { gpu: false, draft: false, homeOnly: true }).home, 'сервер · метрика')
   setLocaleResolver(() => 'en')
   assert.equal(whereRow(WHERE, { gpu: true, draft: false, homeOnly: false }).text, '2 machines with GPUs, 28 places; vast-epyc-128 does not fit: it has no GPU')
 })
@@ -851,8 +854,11 @@ test('the list is read again while it is on screen, faster while a machine is ex
   assert.match(RUNNERS, /<ConnectMachine machines=\{data\.machines\} codes=\{data\.codes\} onclose=\{\(\) => \(connecting = false\)\} \/>/)
   assert.match(CONNECT, /known = new Set\(machines\.map\(\(machine\) => machine\.id\)\) minted = await runnersApi\.mintCode\(asked\.request\)/)
   // Counted by this code's own joins (admin-runners-ui-review.test.mts).
-  assert.match(CONNECT, /const progress = \$derived\( minted \? joinProgress\(known, machines, minted\.machines, codeJoined\(minted, codes, Date\.now\(\), codeSeen\)\) : null, \)/)
-  for (const kind of ['docker', 'bare', 'vast']) assert.match(CONNECT, new RegExp(`text: minted\\.commands\\.${kind}`))
+  assert.match(CONNECT, /const progress = \$derived\(minted \? connectProgress\(minted, known, machines, codes, Date\.now\(\), codeSeen\) : null\)/)
+  // The three commands the server filled in, built by the words module (admin-runners-ui-r2.test.mts: no empty one).
+  assert.match(CONNECT, /const shown = \$derived\(minted \? joinCommands\(minted\.commands\) : null\)/)
+  const words = flat(code(read('web/src/admin/runners.ts')))
+  for (const kind of ['docker', 'bare', 'vast']) assert.match(words, new RegExp(`key: '${kind}', label: tr\\('admin\\.runners\\.connect\\.${kind}'[^)]*\\), text: commands\\.${kind}`))
   // On a phone the commands wrap instead of scrolling sideways, and Copy is a finger's size.
   assert.match(CONNECT, /<pre class="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono/)
   assert.match(CONNECT, /max-\[640px\]:min-h-11"/)
@@ -878,7 +884,7 @@ test('a machine\'s page saves each setting as it is committed, and stops a run t
   assert.match(PAGE, /run\(\(\) => runnersApi\.update\(machineId, \{ approvedSlots: parsed\.value \}\)\)/)
   assert.match(PAGE, /run\(\(\) => runnersApi\.update\(machineId, \{ perDevice: parsed\.value \}\)\)/)
   assert.match(PAGE, /if \(machine\.trusted\) \{ void run\(\(\) => runnersApi\.update\(machineId, \{ trusted: false \}\)\)/)
-  assert.match(PAGE, /adminApi\.killCompetitionRun\(item\.submissionId\)/)
+  assert.match(PAGE, /adminApi\.killCompetitionRun\(item\.submissionId, \{ onMachine: true \}\)/)
   assert.match(PAGE, /\{#each showAll \? machine\.events : machine\.events\.slice\(0, EVENTS_SHOWN\) as event, index/)
   assert.match(PAGE, /role="switch" aria-checked=\{machine\.trusted\}/)
 })
@@ -894,7 +900,7 @@ test('the console groups its grid by machine only when there are machines, with 
   assert.match(LIVE, /tr\('admin\.competitions\.fleet\.free', \{ count: free \}\)/)
   assert.match(LIVE, /\{#if !home && entry\.runs\.length > GROUP_CELLS\}/)
   // The waiting rows say the machines' reasons before the card's (admin-runners-ui-review.test.mts).
-  assert.match(LIVE, /\{#each waiting as row \(row\.submissionId\)\} \{@const line = waitingLine\(row, waitsForCard\(row, queue\)\)\}/)
+  assert.match(LIVE, /\{#each waiting as row \(row\.submissionId\)\} \{@const line = waitingLine\(row, waitsForCard\(row, queue\), homeWord\)\}/)
   assert.match(LIVE, /\{#if line\} <span class=\{cn\('text-micro', REASON_TONE\[line\.tone\]\)\}>\{line\.text\}<\/span> \{\/if\}/)
   assert.match(LIVE, /machineGroups \? fleetWords\(machineGroups\) : null,/)
   // Under the waiting list: the queue is the fleet's, and a return from a machine goes first.
@@ -918,10 +924,10 @@ test('the editor counts a machine with cards as a card, and draws «Где сч�
   assert.match(EDITOR, /: homeCards === 0 && !machineCards,/, 'the GPU door is open while a machine with cards was heard within the hour')
   assert.match(EDITOR, /const homeOnly = \$derived\(where \? whereHomeOnly\(where, environment, c\.environment\) : false\)/)
   assert.match(EDITOR, /\{#if where && whereLine\}/)
-  assert.match(EDITOR, /<p class="min-w-0 flex-1 basis-\[280px\] text-2xs text-ink">\{homeOnlyBox\(where, environment\)\}<\/p> <button type="button" class="btn-outline shrink-0" onclick=\{changeEnvironment\}>/)
+  assert.match(EDITOR, /<p class="min-w-0 flex-1 basis-\[280px\] text-2xs text-ink">\{homeOnlyBox\(where, environment, \{ gpu: gpuOn, homeCards \}\)\}<\/p> <button type="button" class="btn-outline shrink-0" onclick=\{changeEnvironment\}>/)
   assert.match(
     EDITOR,
-    /const sealedNote = \$derived\( where && \(view\.sealedFiles\?\.length \?\? 0\) > 0 \? sealedWarning\(where, \{ homeOnly, unsaved: environmentUnsaved, gpu: gpuOn \}\) : null, \)/,
+    /const sealedNote = \$derived\( where && \(view\.sealedFiles\?\.length \?\? 0\) > 0 \? sealedWarning\(where, \{ homeOnly, unsaved: environmentUnsaved, gpu: gpuOn, homeCards \}\) : null, \)/,
   )
   // No card anywhere: the owner connects a machine in a new tab, the form keeps its fields.
   assert.match(

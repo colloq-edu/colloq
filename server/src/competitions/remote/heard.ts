@@ -32,7 +32,7 @@ import {
   type RemoteSyncRequest,
 } from '@shared/remote-runner'
 import type { RemoteMachineState } from '@shared/remote-admin'
-import { homeRunnerBuild, listRunners, saveWantedCompetitions, wantedCompetitions, type RunnerRow } from './store.js'
+import { homeRunnerBuild, listStandingRunners, saveWantedCompetitions, wantedCompetitions, type RunnerRow } from './store.js'
 
 interface Heard {
   /** The last call of any kind that authenticated, on this server's clock. */
@@ -46,12 +46,22 @@ interface Heard {
   /** The digest of what the last sync reply said beyond its leases (routes.ts · newsDigest). */
   sentDigest: string | null
   /**
-   * Competitions the replies have named in `want` and not forgotten since:
-   * what `forget` is computed against. Read from the machine's row when this
-   * life first hears of it (store.ts · wantedCompetitions) and written back
-   * whenever it changes, so a restart forgets nothing it should forget.
+   * Competitions the replies have named in `want`, each with the data
+   * manifests named for it, until the machine is seen to hold none of them:
+   * what `forget` is computed against (want.ts · runnerWant). Read from the
+   * machine's row when this life first hears of it (store.ts ·
+   * wantedCompetitions) and written back whenever it changes, so a restart
+   * forgets nothing it should forget.
    */
-  wanted: Set<string>
+  wanted: Map<string, Set<string>>
+  /**
+   * What this server has asked the machine for — the revisions, the data
+   * manifests and the package sets of its replies' `want` and of its leases,
+   * since this life first answered it: the only ids a readiness or problem
+   * line of its log may name (routes.ts · noteFacts). A machine's ready lists are its own words, and ids home
+   * never asked for wrote rows nobody wanted.
+   */
+  asked: { revisions: Set<string>; manifests: Set<string>; bundles: Set<string> }
 }
 
 const heard = new Map<string, Heard>()
@@ -62,10 +72,20 @@ let bootAt = Date.now()
 /** When the probe of PUBLIC_URL/api/readyz through the relay last passed (liveness.ts · probe). */
 let probeOkAt: number | null = null
 
+/**
+ * The last pass of the clock at which this server had no path evidence at
+ * all (liveness.ts · remoteTick, noteBlind): a silence is proven only from
+ * there on (provenSilence).
+ */
+let blindAt: number | null = null
+
 function entry(runnerId: string, now: number): Heard {
   let found = heard.get(runnerId)
   if (!found) {
-    found = { at: now, address: null, flushedAt: 0, sync: null, syncAt: null, sentDigest: null, wanted: new Set(wantedCompetitions(runnerId)) }
+    found = {
+      at: now, address: null, flushedAt: 0, sync: null, syncAt: null, sentDigest: null, wanted: wantedCompetitions(runnerId),
+      asked: { revisions: new Set(), manifests: new Set(), bundles: new Set() },
+    }
     heard.set(runnerId, found)
   }
   return found
@@ -128,20 +148,54 @@ export function sentDigest(runnerId: string): string | null {
   return heard.get(runnerId)?.sentDigest ?? null
 }
 
-export function noteSent(runnerId: string, digest: string, wanted: Iterable<string>, forgotten: Iterable<string>, now = Date.now()): void {
-  const found = entry(runnerId, now)
-  found.sentDigest = digest
-  const size = found.wanted.size
-  for (const id of wanted) found.wanted.add(id)
-  let changed = found.wanted.size !== size
-  for (const id of forgotten) changed = found.wanted.delete(id) || changed
-  // Written only when the set moved: competitions open and close, syncs do not.
-  if (changed) saveWantedCompetitions(runnerId, found.wanted)
+/** What a reply about to go out named, for the machine's picture here (noteSent). */
+export interface SentReply {
+  /** The digest of everything but its per-call lists (routes.ts · newsDigest). */
+  digest: string
+  /** The (competition, manifest) pairs its `want.data` named. */
+  wanted: ReadonlyArray<{ competitionId: string; manifest: string }>
+  /** Competitions it no longer needs to forget: no longer wanted, and the machine reports none of their data (want.ts · runnerWant). */
+  gone: Iterable<string>
+  /** The revisions and manifests its `want` and its leases named: what a readiness line may name (routes.ts · noteFacts). */
+  asked: { revisions: Iterable<string>; manifests: Iterable<string>; bundles: Iterable<string> }
 }
 
-/** Competitions named in this machine's `want` so far, across restarts: those no longer wanted are what `forget` names. */
-export function wantedBefore(runnerId: string): ReadonlySet<string> {
-  return heard.get(runnerId)?.wanted ?? new Set(wantedCompetitions(runnerId))
+export function noteSent(runnerId: string, sent: SentReply, now = Date.now()): void {
+  const found = entry(runnerId, now)
+  found.sentDigest = sent.digest
+  let changed = false
+  for (const { competitionId, manifest } of sent.wanted) {
+    let manifests = found.wanted.get(competitionId)
+    if (!manifests) {
+      manifests = new Set()
+      found.wanted.set(competitionId, manifests)
+      changed = true
+    }
+    if (!manifests.has(manifest)) {
+      manifests.add(manifest)
+      changed = true
+    }
+  }
+  for (const id of sent.gone) changed = found.wanted.delete(id) || changed
+  // Written only when the set moved: competitions open and close, syncs do not.
+  if (changed) saveWantedCompetitions(runnerId, found.wanted)
+  // A life's worth of what was asked; a set grown past any fleet's competitions is started over rather than kept growing.
+  if (found.asked.revisions.size > 4096) found.asked.revisions.clear()
+  if (found.asked.manifests.size > 4096) found.asked.manifests.clear()
+  if (found.asked.bundles.size > 4096) found.asked.bundles.clear()
+  for (const id of sent.asked.revisions) found.asked.revisions.add(id)
+  for (const manifest of sent.asked.manifests) found.asked.manifests.add(manifest)
+  for (const bundle of sent.asked.bundles) found.asked.bundles.add(bundle)
+}
+
+/** Competitions named in this machine's `want` so far, with their manifests, across restarts: those no longer wanted are what `forget` names. */
+export function wantedBefore(runnerId: string): ReadonlyMap<string, ReadonlySet<string>> {
+  return heard.get(runnerId)?.wanted ?? wantedCompetitions(runnerId)
+}
+
+/** The revisions and manifests this server has asked the machine for in this life: what its readiness lines may name. */
+export function askedOf(runnerId: string): { revisions: ReadonlySet<string>; manifests: ReadonlySet<string>; bundles: ReadonlySet<string> } {
+  return heard.get(runnerId)?.asked ?? { revisions: new Set(), manifests: new Set(), bundles: new Set() }
 }
 
 /**
@@ -199,11 +253,42 @@ export function pathEvidence(now: number, except: string | null = null): boolean
   return false
 }
 
+/**
+ * A pass of the clock with no path evidence at all — no machine heard within
+ * REMOTE_EVIDENCE_MS and no probe passed (liveness.ts · remoteTick).
+ */
+export function noteBlind(now: number): void {
+  blindAt = blindAt === null ? now : Math.max(blindAt, now)
+}
+
+/**
+ * HOW MUCH OF A MACHINE'S SILENCE THE PATH WAS PROVEN FOR: its silence on
+ * this server's clock (since its last call, or this life's start), counted
+ * only from the last moment this server had no path evidence at all.
+ *
+ * Evidence is asked at the moment of the clock's pass, and a silence was
+ * taken for proven over its whole length the moment any evidence came back:
+ * after ten minutes of a dead relay the first machine back (or the probe,
+ * passing through the restored tunnel) made every machine not yet back
+ * "silent with the path proven" — while each was still waiting out its own
+ * backoff of up to thirty seconds — and their runs, started and nearly done,
+ * were lost and run again from the start; with two machines that was most
+ * outages. Counted from the end of the blind stretch, every machine gets a
+ * whole REMOTE_SILENCE_MS from the moment the path came back. A machine
+ * partitioned while another keeps talking is proven silent all along: the
+ * other machine's calls leave no blind stretch.
+ */
+export function provenSilence(runnerId: string, now: number): number {
+  const since = Math.max(heardAt(runnerId) ?? bootAt, bootAt, blindAt ?? Number.NEGATIVE_INFINITY)
+  return Math.max(0, now - since)
+}
+
 /** For the tests: a new life of the server, with nothing heard and its boot at `at`. */
 export function resetHeard(at = Date.now()): void {
   heard.clear()
   bootAt = at
   probeOkAt = null
+  blindAt = null
 }
 
 /* -------------------------------------------------------- what a machine is */
@@ -253,8 +338,7 @@ export function remoteCardsSeen(now = Date.now()): { recent: number; last: { nam
   let recent = 0
   let last: { name: string; at: number } | null = null
   const runners: RunnerRow[] = []
-  for (const runner of listRunners()) {
-    if (runner.state === 'revoked' || runner.state === 'left') continue
+  for (const runner of listStandingRunners()) {
     if (runnerCards(runner).length === 0) continue
     const at = heardAt(runner.id) ?? runner.lastSeenAt
     if (at === null) continue

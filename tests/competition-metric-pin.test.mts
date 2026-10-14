@@ -54,6 +54,7 @@ import { useCompetitionRunner, type CompetitionRunner, type ScoreRequest } from 
 import {
   LIGHT_METRIC_ENVIRONMENT,
   drainCompetitionQueue,
+  metricScoringImage,
   moveMetricToLightImage,
   rescoreCompetition,
   setQueueSlots,
@@ -388,6 +389,95 @@ test('the door that moves a GPU competition\'s metric to kaggle-base rescores ev
     const none = await post(`/api/admin/competitions/${competition(true).id}/metric/image`, owner)
     assert.equal(none.status, 503)
     assert.equal(((await none.json()) as { error: string }).error, tr('competitions.refusal.noMetricImage', { environment: LIGHT_METRIC_ENVIRONMENT }))
+  } finally {
+    reset()
+  }
+})
+
+/* ------------------------------------------------ the pin and the switch */
+
+test("turning a GPU competition's card off keeps its metric in the pinned kaggle-base, and the door still moves it", async () => {
+  reset()
+  const light = revision(LIGHT_METRIC_ENVIRONMENT, 'm', 8_000)
+  const gpuImage = revision('kaggle-gpu', 'n', 8_100)
+  // Only these images are here: a kaggle-base recorded by another test of this file must not be taken for the current one.
+  useCompetitionCapabilities(dockerWith([light.imageDigest, gpuImage.imageDigest]))
+  try {
+    const g = competition(true)
+    selectRevision(g.id, gpuImage.id)
+    const early = answered(g, gpuImage)
+    await rescore(g)
+    assert.deepEqual(metricPin(g.id), { revisionId: light.id })
+    assert.equal(metricRun(early.id)?.revisionId, light.id)
+    // The machines with cards are gone: the teacher turns the card off for the waiting notebooks to go on the CPU.
+    updateCompetition(g.id, { limits: { ...g.limits, gpu: false } })
+    const off = getCompetition(g.id)!
+    assert.equal(off.limits.gpu, false)
+    const late = answered(off, gpuImage)
+    runner.scores.length = 0
+    await rescore(off)
+    assert.deepEqual(metricPin(g.id), { revisionId: light.id })
+    for (const s of [early, late]) assert.equal(metricRun(s.id)?.revisionId, light.id, 'one board, one image')
+    assert.ok(runner.scores.length === 2 && runner.scores.every((one) => one.imageDigest === light.imageDigest && one.competition.environment === LIGHT_METRIC_ENVIRONMENT))
+    // The doors that run only the metric check the image it runs in.
+    assert.deepEqual(await metricScoringImage(off), { environment: LIGHT_METRIC_ENVIRONMENT, imageDigest: light.imageDigest })
+    // A newer kaggle-base: the teacher's door moves the pin with the card off as with it on.
+    const newer = revision(LIGHT_METRIC_ENVIRONMENT, 'o', 8_200)
+    useCompetitionCapabilities(dockerWith([light.imageDigest, newer.imageDigest, gpuImage.imageDigest]))
+    const moved = await moveMetricToLightImage(off)
+    assert.ok(typeof moved === 'object', String(moved))
+    assert.deepEqual([moved.revision.id, moved.queued], [newer.id, 2])
+    await drainCompetitionQueue()
+    for (const s of [early, late]) assert.equal(metricRun(s.id)?.revisionId, newer.id)
+    // A competition on the CPU that was never pinned scores in its own pin, and the door says so.
+    assert.equal(await moveMetricToLightImage(competition(false)), 'cpu')
+  } finally {
+    reset()
+  }
+})
+
+test('a competition checked on the CPU and then given a card pins kaggle-base at its first metric with the card', async () => {
+  reset()
+  const light = revision(LIGHT_METRIC_ENVIRONMENT, 'k', 9_000)
+  const cpuImage = revision('base', 'f', 9_100)
+  const gpuImage = revision('kaggle-gpu', 'd', 9_200)
+  useCompetitionCapabilities(dockerWith([light.imageDigest, cpuImage.imageDigest, gpuImage.imageDigest]))
+  try {
+    // Born on base: the teacher uploads a baseline and checks it there — a metric run under the base revision.
+    const c = competition(false)
+    selectRevision(c.id, cpuImage.id)
+    const baseline = answered(c, cpuImage)
+    updateCompetition(c.id, { baselineSubmissionId: baseline.id })
+    await rescore(c)
+    assert.equal(metricRun(baseline.id)?.revisionId, cpuImage.id)
+    assert.equal(metricPin(c.id), null, 'a competition on the CPU pins nothing')
+    // Then kaggle-gpu and a card.
+    updateCompetition(c.id, { environment: 'kaggle-gpu', limits: { ...c.limits, gpu: true } })
+    selectRevision(c.id, gpuImage.id)
+    const student = answered(getCompetition(c.id)!, gpuImage)
+    await rescore(getCompetition(c.id)!)
+    assert.deepEqual(metricPin(c.id), { revisionId: light.id }, 'not each submission\'s own GPU image')
+    assert.equal(metricRun(student.id)?.revisionId, light.id)
+
+    // Scored by 0.22 (no revision recorded): its baseline's check and a metric that failed tie no board to an image.
+    const k = competition(true)
+    const check = answered(k, gpuImage)
+    updateCompetition(k.id, { baselineSubmissionId: check.id })
+    const checked = startRun({ submissionId: check.id, kind: 'metric', container: 'colloq-comp-check-score', at: 1 })
+    finishRun(checked.id, { finishedAt: 2, verdict: 'ok', publicScore: 1, privateScore: 1 })
+    const broken = answered(k, gpuImage)
+    const failed = startRun({ submissionId: broken.id, kind: 'metric', container: 'colloq-comp-broken-score', at: 3 })
+    finishRun(failed.id, { finishedAt: 4, verdict: 'metric_error' })
+    await rescore(k)
+    assert.deepEqual(metricPin(k.id), { revisionId: light.id })
+    // A score 0.22 put on its board does: that competition keeps scoring in each submission's own image.
+    const scored = competition(true)
+    const board = answered(scored, gpuImage)
+    const legacy = startRun({ submissionId: board.id, kind: 'metric', container: 'colloq-comp-board-score', at: 1 })
+    finishRun(legacy.id, { finishedAt: 2, verdict: 'ok', publicScore: 1, privateScore: 1 })
+    await rescore(scored)
+    assert.deepEqual(metricPin(scored.id), { revisionId: null })
+    assert.equal(metricRun(board.id)?.revisionId, gpuImage.id)
   } finally {
     reset()
   }

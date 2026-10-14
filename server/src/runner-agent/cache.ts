@@ -104,13 +104,16 @@ export class CacheError extends Error {
     message: string,
     /**
      * `transient`: try again (the path hiccuped); `refused`: home will not
-     * hand it out (out of scope, 404); `gone`: replaced since (410), the next
-     * want names the new one; `mismatch`: what came is not what was asked;
-     * `unauthorized`: the machine is revoked; `preempted`: a lease's blob went
-     * first; `purged`: the hidden test was purged meanwhile; `disk`: no room
-     * for it (below a floor, or a write the disk refused), after a wait.
+     * hand it out, or it is not here to be had; `unscoped`: home answered 404,
+     * the blob out of this machine's scope as home sees it now (a want that
+     * raced its index, a lease since gone), asked again by the next want that
+     * still lists it; `gone`: replaced since (410), the next want names the
+     * new one; `mismatch`: what came is not what was asked; `unauthorized`:
+     * the machine is revoked; `preempted`: a lease's blob went first;
+     * `purged`: the hidden test was purged meanwhile; `disk`: no room for it
+     * (below a floor, or a write the disk refused), after a wait.
      */
-    readonly kind: 'transient' | 'refused' | 'gone' | 'mismatch' | 'unauthorized' | 'preempted' | 'purged' | 'disk',
+    readonly kind: 'transient' | 'refused' | 'unscoped' | 'gone' | 'mismatch' | 'unauthorized' | 'preempted' | 'purged' | 'disk',
     readonly retryAfterMs: number | null = null,
   ) {
     super(message)
@@ -229,6 +232,8 @@ export class Cache {
   private readonly problems = new Map<string, RemoteProblem>()
   private readonly jobs = new Map<string, BlobJob>()
   private readonly refusedUntil = new Map<string, number>()
+  /** Blobs home answered 404 for since the last want (`unscoped`): their pause ends with the next want. */
+  private readonly unscoped = new Set<string>()
   private wantedData: string[] = []
   private wantedBundles: string[] = []
   private current: { job: BlobJob; abort: AbortController; received: number } | null = null
@@ -368,6 +373,18 @@ export class Cache {
     for (const [key, problem] of this.problems) {
       if ((problem.manifest && !listed.has(problem.manifest)) || (problem.bundleId && !this.wantedBundles.includes(problem.bundleId))) this.problems.delete(key)
     }
+    /*
+     * A blob home answered 404 for, and lists again, is asked for again now,
+     * not after REFUSED_WAIT_MS: a want names only what home means this
+     * machine to have, so a 404 under it is home's scope catching up (its
+     * index built after the want was sent, a lease that ended between them),
+     * and five minutes of waiting kept a competition's data short here — its
+     * notebooks leased to no machine without it — for a blob home would have
+     * served at the next ask. Once a want, never in a loop: a refusal again
+     * waits for the next one.
+     */
+    for (const key of this.unscoped) this.refusedUntil.delete(key)
+    this.unscoped.clear()
     this.schedule()
   }
 
@@ -738,7 +755,21 @@ export class Cache {
 
   /* ----------------------------------------------------------- the stream */
 
-  /** Queue what the wanted manifests and sets lack, in want's order; drop prefetch nobody wants any more. */
+  /**
+   * Queue what the wanted manifests and sets lack, in want's order; drop
+   * prefetch nobody wants any more.
+   *
+   * IN THE ORDER OF THE LATEST WANT, NOT THE ONE A BLOB WAS FIRST QUEUED IN.
+   * Home lists the competitions with waiting submissions first (§4.3), and a
+   * list changes: a competition gets waiting rows, a teacher replaces a file
+   * (a new manifest). The queue kept each job where it first came, and the
+   * stream takes the lowest place first, so the class's new file waited
+   * behind every file still queued of two other groups' homework, minutes at
+   * the shared rate, while its notebooks were leased to no machine that
+   * lacked it. So every needed blob is placed anew, in this want's order, and
+   * whatever else is queued (a wheel home serves) after them in its own; the
+   * download under way is left alone.
+   */
   private schedule(): void {
     if (this.stopped) return
     const needed = new Set<string>()
@@ -747,14 +778,15 @@ export class Cache {
       if (!record) continue
       for (const file of record.files) {
         const key = blobKey(file.sha256, record.sealed)
-        if (this.present.has(key) || (this.refusedUntil.get(key) ?? 0) > this.now()) continue
+        if (needed.has(key) || this.present.has(key) || (this.refusedUntil.get(key) ?? 0) > this.now()) continue
         needed.add(key)
-        this.enqueue(file.sha256, file.bytes, record.sealed, 0)
+        this.enqueue(file.sha256, file.bytes, record.sealed, 0).order = this.order++
       }
     }
     for (const job of [...this.jobs.values()]) {
       if (job.priority === 0 && job.waiters.size === 0 && !needed.has(job.key) && !(job.key.startsWith('o:') && this.wheelWanted(job.sha))) this.cancel(job, null)
     }
+    for (const job of [...this.jobs.values()].filter((other) => !needed.has(other.key)).sort((a, b) => a.order - b.order)) job.order = this.order++
     this.pump()
     this.prefetchWheels()
   }
@@ -844,6 +876,8 @@ export class Cache {
       // Refused, gone, or not what was asked: not asked again for a while, and said.
       this.jobs.delete(job.key)
       this.refusedUntil.set(job.key, this.now() + REFUSED_WAIT_MS)
+      // Out of scope is home's word of the moment, not the blob's: the next want that still lists it asks again (want).
+      if (error.kind === 'unscoped') this.unscoped.add(job.key)
       for (const waiter of job.waiters) waiter.reject(error)
       this.problemOf(job, error)
     } finally {
@@ -929,7 +963,7 @@ export class Cache {
         fs.rmSync(part, { force: true })
         return this.download(job, signal)
       }
-      throw new CacheError(`home refused ${job.sha.slice(0, 12)}: ${reply.error}${reply.detail ? ` (${reply.detail})` : ''}`, 'refused')
+      throw new CacheError(`home refused ${job.sha.slice(0, 12)}: ${reply.error}${reply.detail ? ` (${reply.detail})` : ''}`, reply.error === 'not_found' ? 'unscoped' : 'refused')
     }
     if (reply.kind === 'transient') throw new CacheError(reply.reason, 'transient', reply.retryAfterMs)
     let start = 0
@@ -1184,7 +1218,16 @@ export class Cache {
     try {
       for (const wheel of record.wheels) this.linkBlob(this.blobPath(wheel.sha256, false), path.join(temporary, 'wheels', wheel.fileName), wheel.sha256)
       fs.writeFileSync(path.join(temporary, 'requirements.lock'), record.lock, { mode: 0o444 })
-      fs.writeFileSync(path.join(temporary, 'manifest.json'), JSON.stringify({ id: record.id, packagesMb: record.packagesMb, packages: record.wheels }), { mode: 0o444 })
+      /*
+       * The wheels by their file, hash and length, and no download address:
+       * this folder is the participant's /deps, readable by the notebook, and
+       * the address of an institution's package mirror is not named to the
+       * class (home keeps its own manifest.json the same way: dependencies/
+       * preparation-contract.ts · manifestPackages). The addresses stay in the
+       * set's book (books/bundles), which no container mounts.
+       */
+      const packages = record.wheels.map((wheel) => ({ fileName: wheel.fileName, sha256: wheel.sha256, bytes: wheel.bytes }))
+      fs.writeFileSync(path.join(temporary, 'manifest.json'), JSON.stringify({ id: record.id, packagesMb: record.packagesMb, packages }), { mode: 0o444 })
       fs.chmodSync(temporary, 0o755)
       fs.rmSync(dir, { recursive: true, force: true })
       fs.renameSync(temporary, dir)
@@ -1211,6 +1254,9 @@ export class Cache {
     const dir = bundleDir(record.id)
     try {
       if (fs.readFileSync(path.join(dir, 'requirements.lock'), 'utf8') !== record.lock) return false
+      // An earlier build named the wheels' download addresses in it (install): such a folder is built again, never mounted as it is.
+      const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')) as { packages?: unknown }
+      if (!Array.isArray(manifest.packages) || manifest.packages.some((pkg: unknown) => !pkg || typeof pkg !== 'object' || 'url' in pkg)) return false
       return record.wheels.every((wheel) => {
         const file = path.join(dir, 'wheels', wheel.fileName)
         const stat = fs.lstatSync(file)

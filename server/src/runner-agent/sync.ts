@@ -14,9 +14,11 @@
  * disk (state.ts · writeLease, flushed) before the next sync lists them, and a
  * run's outcome is on the disk before a byte of it is uploaded. A machine that
  * dies comes back, removes its containers (the Docker runner's sweep, by the
- * label that names this tree), uploads the outcomes it had written down, and
- * reports nothing else: home marks the rest lost at once instead of waiting
- * out the silence (§3.4 "Agent restart").
+ * label that names this tree; asked again until the daemon says none of its
+ * runs still runs, before a lease of theirs is given up: sweptForGood),
+ * uploads the outcomes it had written down, and reports nothing else: home
+ * marks the rest lost at once instead of waiting out the silence (§3.4
+ * "Agent restart").
  *
  * NO LEASE IS EVER DROPPED OVER A TRANSIENT ANSWER (client.ts says what one
  * is). The machine backs off, asks the relay whether home is offline (for the
@@ -58,6 +60,7 @@ import {
   REMOTE_FETCHING_MAX,
   REMOTE_HOLD_BUSY_MS,
   REMOTE_HOLD_IDLE_MS,
+  REMOTE_JOIN_REPEAT_MS,
   REMOTE_OFFER_MS,
   REMOTE_PROBLEMS_MAX,
   REMOTE_PROTOCOL,
@@ -82,14 +85,14 @@ import {
   type RemoteSyncReply,
   type RemoteSyncRequest,
 } from '@shared/remote-runner'
-import { DockerCompetitionRunner } from '../competitions/docker-runner.js'
+import { DockerCompetitionRunner, RUN_LABEL } from '../competitions/docker-runner.js'
 import { competitionsDir, dropAttempt, removeSubmission, attemptPath } from '../competitions/storage.js'
 import type { Capacity, RunOutcome } from '../competitions/runner-port.js'
-import { Backoff, RemoteClient, type CallResult } from './client.js'
+import { Backoff, RemoteClient, type CallResult, type HomeWord } from './client.js'
 import { Cache, diskRefused, type Keep } from './cache.js'
 import { realDocker, type Docker } from './docker.js'
 import { brokenOutcome, NeighbourWindow, prepareRun, runPrepared, type Decline, type RunCard, type RunSeam } from './execute.js'
-import { CHECK_LABEL, CHECK_LABELS, INSTANCE_LABEL, Images } from './images.js'
+import { CHECK_LABEL, CHECK_LABELS, INSTANCE_LABEL, Images, type SmokeCard } from './images.js'
 import {
   cardReport,
   dockerInfo,
@@ -99,6 +102,7 @@ import {
   pickCard,
   probeCards,
   readMachine,
+  type CardRun,
   type DiskSpace,
   type MachinePicture,
   type ProbedCard,
@@ -152,6 +156,8 @@ const OFFER_DECLINE_MS = REMOTE_OFFER_MS + 60_000
 const IDENTITY_RETRY_MS = 30_000
 /** A write the disk refused stays said this long after the last one (a disk that refuses writes does not say when it stops). */
 const DISK_FULL_KEEP_MS = 10 * 60_000
+/** The status's line for a machine whose build home does not take. */
+const OUTDATED = 'this machine\'s build is not its home\'s: it finishes what it holds and takes nothing new (colloq-host runner update)'
 
 export interface AgentOptions {
   layout: StateLayout
@@ -234,6 +240,8 @@ export class Agent extends EventEmitter {
   private readonly images: Images
   private readonly neighbours = new NeighbourWindow()
   private readonly held = new Map<string, Held>()
+  /** The card shares GPU smoke tests hold while they run (checkCard): runs are not placed into the room a check uses. */
+  private readonly checkHolds = new Set<CardRun>()
   private readonly settled = new Set<string>()
   private readonly problems = new Map<string, RemoteProblem>()
   private readonly describedWaiters = new Map<string, Set<() => void>>()
@@ -308,6 +316,7 @@ export class Agent extends EventEmitter {
       onChange: () => this.changed(),
       diskGate: () => this.mayPull(),
       onDiskFull: (detail) => this.diskFull(detail),
+      smokeCard: () => this.checkCard(),
       log: this.log,
     })
   }
@@ -324,7 +333,10 @@ export class Agent extends EventEmitter {
     this.statusTimer.unref?.()
     try {
       await this.sweep()
-      this.recover()
+      const stored = readLeases(this.layout)
+      // Leases with nothing written down are given up below: only once no container of theirs still runs.
+      if (stored.some((entry) => entry.outcome === null) && !(await this.sweptForGood())) return { reason: 'stopped', code: 0 }
+      this.recover(stored)
       this.cache.load()
       await this.images.load()
       const identity = await this.ensureJoined()
@@ -421,23 +433,38 @@ export class Agent extends EventEmitter {
    * anyone else may run it. Held for no time (holdMs 0) and for at most
    * FINAL_SYNC_MS. What the reply revokes or applied is taken in, so that a run
    * home has already given up is not handed back; its offers are passed.
+   *
+   * AND THE SEQ THEY MOVED IS SAID ONCE MORE. The reply repeats every offer
+   * home made the machine and has not seen acked — those of the held sync
+   * the stop cut off on its way back among them, which the agent never read.
+   * Passing them moves the agent's seq past them, and home withdraws an
+   * offer at once only when a sync says a seq at or above its own; the
+   * hand-backs' replies carry none, and no sync followed: home held those
+   * rows offered to a machine on its way out for REMOTE_OFFER_MS, while
+   * other machines and this server sat idle beside them. So when the reply
+   * moved the seq, a second draining sync, held for no time and within the
+   * same FINAL_SYNC_MS, says it, and the offers go back to the queue now.
    */
   private async finalSync(): Promise<void> {
     const identity = this.identity
     if (!this.client || !identity || !joined(identity) || retired(identity)) return
-    const request: RemoteSyncRequest = { ...this.syncRequest(), holdMs: 0 }
-    const answer = await this.client.sync(request, AbortSignal.timeout(FINAL_SYNC_MS))
-    if (answer.kind !== 'ok') {
-      this.log(`[runner] home did not hear the stop (${answer.kind === 'refused' ? answer.error : answer.reason}); the runs go back as they are handed back`)
-      return
-    }
-    try {
-      for (const revoke of answer.value.revoke) this.revoke(revoke.id, revoke.reason)
-      for (const id of answer.value.applied) this.applied(id)
-      this.trust(answer.value.trusted)
-      this.acceptLeases(answer.value.leases, answer.value.seq)
-    } catch (error) {
-      this.log(`[runner] the stop's last reply could not be taken in: ${String(error)}`)
+    const within = AbortSignal.timeout(FINAL_SYNC_MS)
+    for (let round = 0; round < 2; round++) {
+      const request: RemoteSyncRequest = { ...this.syncRequest(), holdMs: 0 }
+      const answer = await this.client.sync(request, within)
+      if (answer.kind !== 'ok') {
+        this.log(`[runner] home did not hear the stop (${answer.kind === 'refused' ? answer.error : answer.reason}); the runs go back as they are handed back`)
+        return
+      }
+      try {
+        for (const revoke of answer.value.revoke) this.revoke(revoke.id, revoke.reason)
+        for (const id of answer.value.applied) this.applied(id)
+        this.trust(answer.value.trusted)
+        this.acceptLeases(answer.value.leases, answer.value.seq)
+      } catch (error) {
+        this.log(`[runner] the stop's last reply could not be taken in: ${String(error)}`)
+      }
+      if (this.seq <= request.seq) return
     }
   }
 
@@ -489,6 +516,58 @@ export class Agent extends EventEmitter {
   }
 
   /**
+   * Before the leases an earlier life wrote down without an outcome are given
+   * up (recover), the daemon must say that no run of this tree still runs:
+   * the sweep again and again, with a backoff, until it does. True once it
+   * has; false — the agent stops meanwhile.
+   *
+   * THE SWEEP SAYS NOTHING WHEN IT FAILS. The Docker runner's sweep skips a
+   * `docker ps` that failed (a busy daemon, a timeout) and reports nothing
+   * removed, and once it read as done: the leases were dropped and their
+   * trees deleted under containers that still ran a notebook each, home
+   * marked them lost at once and requeued them, to this same machine as like
+   * as not, whose `free` counted none of the memory, CPUs or card those
+   * containers held — the same notebook run twice here, and runs placed
+   * beside them dying of an out-of-memory nobody accounted for, billed to
+   * their participants. So the leases stay written down, the machine syncs
+   * not at all (home's own clock decides when a silent machine's leases are
+   * lost, and it takes nothing meanwhile), and the status says why, until
+   * the daemon answers that none of this tree's runs is still running
+   * (runsLeft). Exited ones are no concern: they hold nothing, and the Docker
+   * runner's cleanup keeps after them.
+   */
+  private async sweptForGood(): Promise<boolean> {
+    const backoff = this.newBackoff()
+    let said: string | null = null
+    for (;;) {
+      if (this.stopping) return false
+      const left = await this.runsLeft()
+      if (left === 0) {
+        if (said !== null) this.log('[runner] no run of an earlier life runs here any more: its leases are given up')
+        this.problemLine = null
+        return true
+      }
+      const problem = left === null
+        ? 'docker does not answer whether the runs of an earlier life still run; their leases are kept until it does, and nothing is taken meanwhile'
+        : `${left} run(s) of an earlier life still run here and could not be removed; their leases are kept until they are, and nothing is taken meanwhile`
+      if (problem !== said) this.log(`[runner] ${problem}`)
+      said = problem
+      this.problemLine = problem
+      this.writeStatus()
+      await this.sleep(backoff.next())
+      if (this.stopping) return false
+      await this.sweep()
+    }
+  }
+
+  /** How many of this tree's runs are still running, as the daemon says (`docker ps` lists the running ones); null — it did not answer. */
+  private async runsLeft(): Promise<number | null> {
+    const found = await this.docker(['ps', '-q', '--filter', `label=${RUN_LABEL}`, '--filter', `label=${INSTANCE_LABEL}`], { timeoutMs: 20_000 })
+    if (found.code !== 0) return null
+    return found.out.split('\n').map((line) => line.trim()).filter((line) => /^[a-f0-9]{12,64}$/.test(line)).length
+  }
+
+  /**
    * What the identity being put aside held: its leases are its home's to
    * requeue, its outcomes can no longer be sent by anyone, and its seq was
    * its own (a new machine's offers start from the first).
@@ -502,13 +581,13 @@ export class Agent extends EventEmitter {
   }
 
   /**
-   * The leases an earlier life wrote down: those whose outcome it wrote down
-   * are uploaded again (and listed as uploading); the rest are dropped with
-   * their trees and not reported, so home marks them lost at once. Attempt
-   * trees no kept lease names go too.
+   * The leases an earlier life wrote down (`stored`, read before the sweep
+   * was made sure of: sweptForGood): those whose outcome it wrote down are
+   * uploaded again (and listed as uploading); the rest are dropped with their
+   * trees and not reported, so home marks them lost at once. Attempt trees no
+   * kept lease names go too.
    */
-  private recover(): void {
-    const stored = readLeases(this.layout)
+  private recover(stored: ReturnType<typeof readLeases>): void {
     for (const { lease } of stored) this.seq = Math.max(this.seq, lease.seq)
     const kept = new Set<string>()
     let dropped = 0
@@ -600,13 +679,32 @@ export class Agent extends EventEmitter {
     if (!target) return { reason: 'refused', code: 78, detail: 'COLLOQ_RUNNER_JOIN is not set and this machine has not joined a home: -e COLLOQ_RUNNER_JOIN=\'https://<home>#<code>\'' }
     if (!identity || identity.codeSha256 !== code) {
       // Written down before the first try: a join whose reply is lost is the same join next time.
-      identity = { home: target.home, joinId: randomBytes(16).toString('hex'), codeSha256: code! }
+      identity = { home: target.home, joinId: randomBytes(16).toString('hex'), joinIdAt: this.now(), codeSha256: code! }
       const stopped = await this.writeJoinId(identity)
       if (stopped) return stopped
     }
     return this.joinWith(identity, target.code)
   }
 
+  /**
+   * The join, asked until home answers it (a transient answer is asked
+   * again with a backoff, a refusal after JOIN_REFUSED_WAIT_MS).
+   *
+   * A JOIN ID HOME NO LONGER HONOURS IS MINTED ANEW. The same id is the same
+   * join, which home answers with the same machine and a new secret — but
+   * only within REMOTE_JOIN_REPEAT_MS of the machine's first join; past it
+   * home refuses the id (`code`), whatever uses the code has left. A join
+   * whose reply was lost, then a home unreachable for longer than that (or a
+   * disk that refused the identity after the join, and a restart later), met
+   * that refusal on every try for ever: the machine stayed out, its first
+   * row in the panel never synced, and its host needed a new code by hand.
+   * So a `code` refusal of a join id at least that old mints a new one and
+   * asks again at once: home did not honour the old one, so no second
+   * machine is made where the first would have been answered, and a code
+   * that is spent or expired refuses the new id as well, which then waits
+   * as any refusal does. Never sooner than that: within the window a refusal
+   * is the code's own.
+   */
   private async joinWith(identity: Identity, code: string): Promise<Joined | AgentExit> {
     this.identity = identity
     this.state = 'joining'
@@ -623,6 +721,15 @@ export class Agent extends EventEmitter {
         this.log(`[runner] joined ${identity.home} as ${done.runnerId}${done.trusted ? ', trusted with the hidden test' : ''}`)
         this.syncedAt = this.now()
         return this.adopt(done)
+      }
+      if (answer.kind === 'refused' && answer.error === 'code' && this.now() - (identity.joinIdAt ?? 0) >= REMOTE_JOIN_REPEAT_MS) {
+        const minted: Identity = { ...identity, joinId: randomBytes(16).toString('hex'), joinIdAt: this.now() }
+        this.log(`[runner] home no longer honours this machine's join (its first try is over ${Math.round(REMOTE_JOIN_REPEAT_MS / 60_000)} min old); joining again as a new machine`)
+        const stopped = await this.writeJoinId(minted)
+        if (stopped) return stopped
+        identity = minted
+        this.identity = minted
+        continue
       }
       if (answer.kind === 'refused') {
         this.state = 'refused'
@@ -655,8 +762,26 @@ export class Agent extends EventEmitter {
     return identity
   }
 
-  /** Revoked or left for good: Docker must not start this container again into a home that refuses it. */
+  /**
+   * Revoked or left for good. The hidden test goes first, whichever way out
+   * this is (§4.2: purged on a 401 and on the way out): a leave purges it
+   * only as far as the runs held allow (requestLeave), and what the last of
+   * them read went with the leaving sync's reply — unless that reply was
+   * lost and the retry met the 401 of a machine home had marked left
+   * already, or the owner disconnected it in between, when nothing else
+   * would ever purge it: the machine never syncs again, and a university
+   * server keeps a disk for years. A start of an identity that is gone
+   * purges it too, for what an earlier life left behind. Nothing is held
+   * here: a leaving sync goes out only with nothing held, and a revocation
+   * has discarded everything first (discardAll). Then Docker must not start
+   * this container again into a home that refuses it.
+   */
   private async gone(why: 'left' | 'revoked', detail: string): Promise<AgentExit> {
+    try {
+      this.cache.purgeSealed(why)
+    } catch (error) {
+      this.log(`[runner] the hidden test could not be purged on the way out: ${error instanceof Error ? error.message : String(error)}`)
+    }
     await this.noRestart()
     this.state = why
     this.problemLine = detail
@@ -746,7 +871,7 @@ export class Agent extends EventEmitter {
       if (answer.kind === 'ok') {
         backoff.reset()
         this.path = 'ok'
-        this.problemLine = answer.value.compatible ? null : 'this machine\'s build is not its home\'s: it finishes what it holds and takes nothing new (colloq-host runner update)'
+        this.problemLine = answer.value.compatible ? null : OUTDATED
         this.syncedAt = this.now()
         if (request.facts) this.factsSent = JSON.stringify(request.facts)
         try {
@@ -779,18 +904,52 @@ export class Agent extends EventEmitter {
         await this.sleep(backoff.next(this.options.backoffMs?.max ?? REMOTE_BACKOFF_MAX_MS))
         continue
       }
+      if (answer.heard) {
+        await this.unread(answer, answer.heard, backoff)
+        continue
+      }
       await this.hiccup(answer, backoff)
     }
   }
 
-  /** After a transient answer: what the relay says (on the first of a streak and every fifth), and a wait. */
+  /**
+   * Home answered the sync in words this build's parser refuses (a home of
+   * another build, or our own bug): nothing of it is taken in, and the leases
+   * stay as they are, as after any transient answer — but home's plain word
+   * on this build is the status's (client.ts · HomeWord): `runner status` once
+   * kept saying `compatible: true` from the last reply it could read, while
+   * every reply since said false. No relay to ask: home itself answered.
+   */
+  private async unread(answer: Extract<CallResult<never>, { kind: 'transient' }>, word: HomeWord, backoff: Backoff): Promise<void> {
+    this.compatible = word.compatible
+    if (word.homeVersion) this.homeVersion = word.homeVersion
+    this.path = 'ok'
+    this.problemLine = word.compatible ? `home's reply could not be read by this machine: ${answer.reason}` : OUTDATED
+    if (backoff.streak === 0) this.log(`[runner] ${answer.reason}${word.compatible ? '' : `; ${OUTDATED}`}; trying again`)
+    this.writeStatus()
+    await this.sleep(backoff.next(answer.retryAfterMs))
+  }
+
+  /**
+   * After a transient answer: what the relay says (on the first of a streak
+   * and every fifth), and a wait.
+   *
+   * THE RELAY'S "TUNNEL UP" IS NOT A CONFIRMATION. It is frps's word that the
+   * home's proxy is registered, and frps notices a tunnel cut under it (a
+   * firewall, a dead link) only when its heartbeats time out, a minute or
+   * more later: through a cut of four minutes the agent logged that its
+   * relay's tunnel was up. Only `tunnel: false` is the relay knowing; with
+   * the tunnel said up and home silent, whether the tunnel is up is said to
+   * be unknown — a home that hangs, or a tunnel the relay has not yet seen
+   * go.
+   */
   private async hiccup(answer: Extract<CallResult<never>, { kind: 'transient' }>, backoff: Backoff): Promise<void> {
     const before = this.path
     if (backoff.streak % 5 === 0) this.path = await this.client!.relayState(this.stopAbort.signal)
     if (this.path !== before || backoff.streak === 0) {
       const words: Record<string, string> = {
         home_offline: 'home is offline (its relay has no tunnel to it)',
-        home_silent: 'home does not answer (its relay\'s tunnel is up)',
+        home_silent: 'home does not answer, and whether its relay\'s tunnel to it is up is unknown (the relay says so, but sees a cut tunnel only a while later)',
         home_unknown: 'the relay serves no home by this name (is the address in COLLOQ_RUNNER_JOIN right?)',
         unreachable: 'neither home nor its relay answers',
       }
@@ -824,7 +983,7 @@ export class Agent extends EventEmitter {
       const kept = this.putAside('revoked')
       this.log(`[runner] home revoked this machine; its identity is put aside (${kept}) and it joins again with the new code`)
       this.forgetHeld()
-      const next: Identity = { home: target.home, joinId: randomBytes(16).toString('hex'), codeSha256: sha256(target.code) }
+      const next: Identity = { home: target.home, joinId: randomBytes(16).toString('hex'), joinIdAt: this.now(), codeSha256: sha256(target.code) }
       const stopped = await this.writeJoinId(next)
       if (stopped) return stopped
       const done = await this.joinWith(next, target.code)
@@ -1271,7 +1430,7 @@ export class Agent extends EventEmitter {
       attemptId: lease.attemptId,
       stored,
       uploads,
-      free: () => this.free(),
+      free: () => this.free(held),
       signal: held.send.signal,
       onReply: (reply) => this.outcomeReply(reply),
       backoff: () => this.newBackoff(),
@@ -1335,8 +1494,33 @@ export class Agent extends EventEmitter {
     return [...this.held.values()].filter((held) => held.holds && !held.ended).map((held) => ({ memoryMb: held.lease.limits.memoryMb, cpus: held.lease.limits.cpus }))
   }
 
-  private cardRuns(): Array<{ device: string; perDevice: number }> {
-    return [...this.held.values()].filter((held) => held.holds && held.card).map((held) => ({ device: held.card!.device, perDevice: held.card!.perDevice }))
+  /** The shares taken on the cards: each run's, at the runs per card its lease pinned, and each smoke test's while it runs. */
+  private cardRuns(): CardRun[] {
+    const runs = [...this.held.values()].filter((held) => held.holds && held.card).map((held) => ({ device: held.card!.device, perDevice: held.card!.perDevice }))
+    return [...runs, ...this.checkHolds]
+  }
+
+  /**
+   * The card a GPU revision's smoke test runs on (images.ts ·
+   * ImagesOptions.smokeCard): the one a run would take now, the least loaded
+   * with a share free at home's runs per card (pickCard, the pick of the
+   * runs' own shares), and held as a run's share is until the test ends, so
+   * that no lease is placed into the room the check uses meanwhile; null —
+   * every card is full, and the check waits for one.
+   */
+  private checkCard(): SmokeCard | null {
+    const device = pickCard(this.probe.cards, this.perDevice, this.cardRuns(), this.runnerHeld.heldGpus ?? {})
+    if (device === null) return null
+    const hold: CardRun = { device, perDevice: this.perDevice }
+    this.checkHolds.add(hold)
+    this.changed()
+    return {
+      device,
+      release: () => {
+        this.checkHolds.delete(hold)
+        this.changed()
+      },
+    }
   }
 
   private cardsNow(): ReturnType<typeof cardReport> {
@@ -1350,12 +1534,24 @@ export class Agent extends EventEmitter {
     return device
   }
 
-  private free(): RemoteFree {
+  /**
+   * What the machine can still take (machine.ts · freeCapacity), in a sync
+   * or with an outcome. An outcome's leaves out the attempt it reports
+   * (`reporting`): home applies or ends that lease before it reads the room
+   * the outcome offers for the next one, and its stale-capacity rule adds
+   * back only the live leases the last sync listed (lease.ts · runnerRoom),
+   * so a place still counted here for an attempt home has just let go was a
+   * place lost: a machine at its places (the owner's «Места») got none in
+   * any completion reply, and each run cost one more sync and its round
+   * trip before the next began. What that attempt holds besides is out of
+   * `free` already: its container is gone.
+   */
+  private free(reporting: Held | null = null): RemoteFree {
     return freeCapacity({
       picture: this.machine(),
       holding: this.holding(),
       heldMb: this.runnerHeld.heldMb ?? 0,
-      attempts: this.held.size,
+      attempts: this.held.size - (reporting !== null && this.held.get(reporting.lease.attemptId) === reporting ? 1 : 0),
       gpuShares: this.cardsNow().freeShares,
       approvedSlots: this.approvedSlots,
     })

@@ -24,10 +24,11 @@
  * THE PREPARATION IS REBUILT FROM THE LEASE, never prepared again (§13b note
  * 11): preparing again would start a second run row for one run. The lease
  * keeps what the take read — the run row, the container, the hidden files
- * by name, the code cells, the provenance, the limits, the competition
- * itself (its limits and texts word the outcome, as the job's own read does
- * for a run here), and the submission's numbers from before the run, which
- * the neighbour retry puts back.
+ * by name, the code cells, the provenance, the limits, what the settle reads
+ * of the competition (its limits word the outcome, as the job's own read does
+ * for a run here; the rest is the competition's row as it is now), and the
+ * submission's numbers from before the run, which the neighbour retry puts
+ * back.
  *
  * EVERY TEXT FROM THE MACHINE IS RENDERED HERE, in this server's language:
  * the machine's bundle carries no translations, and its core's sentences
@@ -50,8 +51,8 @@ import { getBinding } from '../../dependencies/store.js'
 import type { RunOutcome, RunRequest } from '../runner-port.js'
 import { continueAsMetric, settleNotebook, type PreparedNotebook } from '../runner.js'
 import { attemptDir, attemptPromoted, competitionsFs, dropAttempt, inputDir, SUBMISSION_FILE } from '../storage.js'
-import { finishQueueAttempt, getCompetition, getSubmission, listRuns, queueRow, type QueueRow } from '../store.js'
-import { declineLease, loseLease } from './release.js'
+import { finishQueueAttempt, getCompetition, getSubmission, listRuns, queueRow, timeHeldRun, type QueueRow } from '../store.js'
+import { declineLease, loseLease, orphanLease } from './release.js'
 import { getLease, leasesInState, noteDrive, remoteEvent, sha256, updateLease, type LeaseRow } from './store.js'
 import { dropStaging, stagedPath, stagedWhole } from './upload.js'
 import { homeWords } from './words.js'
@@ -121,6 +122,8 @@ function decline(lease: LeaseRow, request: RemoteDeclinedRequest, digest: string
 /** A finished run: fenced, written down as `applying`, then driven. */
 async function finish(lease: LeaseRow, request: RemoteFinishedRequest, digest: string, now: number): Promise<ApplyResult> {
   if (!ownedRow(lease)) {
+    // A lease whose row it no longer owns ends here, with no penalty, rather than living on to be lost as `missing` (release.ts · orphanLease).
+    orphanLease(lease.attemptId, now)
     applyCounts.revoked++
     return 'revoked'
   }
@@ -199,12 +202,12 @@ async function driveOnce(attemptId: string, now: number): Promise<ApplyResult> {
   const report = runJsonOf(stored.runJson, attemptId)
   if (report && !competitionsFs.existsSync(path.join(result, 'run.json'))) competitionsFs.writeFileSync(path.join(result, 'run.json'), report, { mode: 0o600 })
 
-  // 4. Settled by the code a run here is settled by, from what the lease kept: the competition among it, as the take read it.
+  // 4. Settled by the code a run here is settled by, from what the lease kept: what the settle reads of the competition, as the take read it, over its row as it is.
   const binding = getBinding(lease.submissionId)
   const before = lease.prepared.before
   const prepared: PreparedNotebook = {
     placement: 'remote',
-    competition: lease.prepared.competition ?? competition,
+    competition: { ...competition, ...(lease.prepared.competition ?? {}) },
     submission: { ...submission, cellsDone: before.cellsDone, cellsTotal: before.cellsTotal, durationMs: before.durationMs },
     row,
     provenance: lease.provenance,
@@ -224,6 +227,15 @@ async function driveOnce(attemptId: string, now: number): Promise<ApplyResult> {
   const card = stored.outcome.card
   const gpu: RunRequest['gpu'] = card ? { device: card.device, sliceMb: card.sliceMb, perDevice: card.perDevice } : undefined
   const settled = await settleNotebook(prepared, { outcome, endedAt: now, ...(gpu ? { gpu } : {}), crowded: stored.outcome.crowded })
+  /*
+   * The run row as the container ran: from its start on this server's clock
+   * (the sync that said `running`; or, when no sync caught it between its
+   * start and its end, the outcome's arrival less its wall) to that plus the
+   * wall the machine measured — not from the take to the apply, which counted
+   * the machine's preparation, the export and the uploads as the run's time.
+   */
+  const ranFrom = lease.startedAt ?? (lease.endedAt ?? now) - Math.max(0, stored.outcome.wall)
+  timeHeldRun(lease.runId, attemptId, ranFrom, ranFrom + Math.max(0, stored.outcome.wall))
 
   /*
    * 5 and 6 in one transaction: a crash leaves either both or neither. Fenced

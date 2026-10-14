@@ -240,7 +240,12 @@ export interface SubmissionLive {
    * before.
    */
   preparing?: boolean
-  /** Its notebook has run, and its metric waits here («оценивается»). Absent — not that. */
+  /**
+   * Its notebook has run, and its metric waits or runs here («оценивается»).
+   * While a machine's result is scored here, `startedAt` reads so that the
+   * clock goes on from the notebook's own time rather than starting again at
+   * the metric's start. Absent — not that.
+   */
   scoring?: boolean
 }
 

@@ -65,10 +65,18 @@
 # machine whose runner code differs from its home's is «устарел» and gets no
 # work (decision 5). A release that leaves the runner code alone keeps the
 # fleet serving (§8.4), and draining a machine for it would only idle it for
-# as long as its longest run: so a machine whose agent says its build is its
-# home's (`compatible` in its status, or else its `version` its home's) is
-# left as it is, unless FORCE=1. VERSION= names the version for every machine
-# and skips none: colloq-host itself does nothing for one already on it.
+# as long as its longest run: so a machine whose home has just said its build
+# is the home's own (`compatible` in its agent's status) is left as it is,
+# unless FORCE=1. Just said: in a sync made after this run asked, which the
+# survey waits for, up to RUNNER_SURVEY_SEC (60) seconds. The status keeps
+# the word of the last sync it had, and "right after the home", as the docs
+# have it, that is the home that was: its container replaced, its tunnel
+# back seconds later, the agent hearing relay pages meanwhile. A machine
+# skipped on that word was «устарел» from its next sync on, while this
+# script reported every machine on its home's build (review, 14 Oct 2026).
+# One that gives no fresh word is updated, and colloq-host decides there.
+# VERSION= names the version for every machine and skips none: colloq-host
+# itself does nothing for one already on it.
 #
 # A drain lasts up to four hours and a laptop's ssh does not, and an ssh that
 # drops kills what it runs: halfway through an update that is a machine
@@ -83,14 +91,19 @@
 # machine that did not leave is lost to its home after three minutes of
 # silence, its runs requeued spending no participant's attempts, while the
 # machine stays in the panel until the owner revokes it. A leave cut short by
-# a dropped ssh ends the same way, which is why it is not detached.
+# a dropped ssh ends the same way, which is why it is not detached. A leave
+# ends with the home's answer, and colloq-host waits for it only while the
+# home answers: after ten minutes without a word from it (a home destroyed
+# before its machines, a tunnel down) the leave is given up, said so, and the
+# VM destroyed all the same, rather than billing while this waits for good.
 #
 # Reads from .env: VAST_TOKEN, VAST_SSH_KEY, VAST_MAX_PRICE, VAST_RUNNER_URL.
 # The token and the code are never printed. Logs of the copies go to
 # logs/vast-runner/<time>/ (RUNNER_LOGS= for another directory); a copy refused
 # for a vanished offer searches again after RENT_RETRY_SEC (20) seconds. An
 # update is polled every RUNNER_POLL_SEC (15) seconds, for at most
-# RUNNER_FOLLOW_SEC (18000: the longest drain and then some).
+# RUNNER_FOLLOW_SEC (18000: the longest drain and then some); before it, each
+# machine's agent is given RUNNER_SURVEY_SEC (60) seconds for a fresh sync.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -373,27 +386,45 @@ EOF
   [ "$failed" = 0 ]
 }
 
-# What a machine says of itself, in one ssh call: its home and its agent's
-# status line. The status goes first: on a machine joined with the panel's
-# plain `docker run`, colloq-host's status writes runner.env out of the
-# container (colloq-host · adopt_runner), and the home is read from there.
-# The marker comment is how tests/vast-runner-fleet.test.mts tells the
-# scripts apart.
+# What a machine says of itself, in one ssh call run as `bash -s -- WAIT`:
+# its home, the moment it was asked (ms, the machine's own clock, the one
+# its agent writes syncedAt by) and its agent's status line. The status goes
+# first: on a machine joined with the panel's plain `docker run`,
+# colloq-host's status writes runner.env out of the container (colloq-host ·
+# adopt_runner), and the home is read from there. With WAIT, an update's, a
+# working agent is given that many seconds for a sync made after it was
+# asked, so that what the line says of the home's word on its build is the
+# home's word now (UPDATE above says why); a machine whose agent does not
+# work (stopped, refused, no container) is not waited for. The marker
+# comment is how tests/vast-runner-fleet.test.mts tells the scripts apart.
 SURVEY_SCRIPT='# colloq-runner-fleet: survey
 # One group, read whole before a word of it runs: the script comes on
 # stdin, and bash 3.2 lost its place in it once a child shared that stdin.
 {
-s="$(colloq-host runner status 2>/dev/null | grep "^{" | tail -1)"
+bound="${1:-0}"
+asked="$(date +%s)000"
+while :; do
+  s="$(colloq-host runner status 2>/dev/null | grep "^{" | tail -1)"
+  at="$(printf "%s" "$s" | sed -n "s/.*\"syncedAt\":\([0-9][0-9]*\).*/\1/p")"
+  [ -z "$at" ] || [ "$at" -lt "$asked" ] || break
+  case "$s" in *"\"state\":\"active\""*|*"\"state\":\"draining\""*|*"\"state\":\"leaving\""*) ;; *) break ;; esac
+  [ "$bound" -gt 0 ] || break
+  sleep 2; bound=$((bound - 2))
+done
 h="$(sed -n "s/^COLLOQ_RUNNER_JOIN=\([^#]*\)#.*/\1/p" /etc/colloq/runner.env 2>/dev/null | tail -1)"
-printf "home %s\nstatus %s\n" "$h" "$s"
+printf "home %s\nasked %s\nstatus %s\n" "$h" "$asked" "$s"
 exit
 }'
+
+# The seconds the survey gives each agent for a fresh sync: RUNNER_SURVEY_SEC
+# for an update (update() checks it), none for a look or a leave.
+SURVEY_WAIT=0
 
 survey_one() {
   local id="$1" host="$2" port="$3" status="$4" out=""
   if [ -z "$host" ] || [ -z "$port" ]; then
     say "instance $id is $status and has no ssh: its home is not known"
-  elif ! out="$(ssh_to "$host" "$port" 'bash -s' <<<"$SURVEY_SCRIPT")"; then
+  elif ! out="$(ssh_to "$host" "$port" "bash -s -- $SURVEY_WAIT" <<<"$SURVEY_SCRIPT")"; then
     say "no answer over ssh: its home is not known"
   fi
   printf '%s\n' "$out" > "$SURVEY/$id"
@@ -401,21 +432,25 @@ survey_one() {
 
 # FLEET with each machine's home and verdict after its five fields, and only
 # the machines of URL= when it is given; the others are named on stderr. The
-# verdict reads the agent's status: `current` when home said the machine's
-# build is its own (compatible) or, failing that, when the agent's version is
-# its home's; `outdated` when home said it is not; `unknown` otherwise, which
-# an update treats as outdated (colloq-host decides on the machine).
+# verdict reads the agent's status: `current` when its home said, in a sync
+# made after the survey asked, that the machine's build is its own
+# (compatible); `outdated` when home said it is not; `unknown` otherwise,
+# which an update treats as outdated (colloq-host decides on the machine).
+# No `current` from an older word, and none from the agent's version against
+# its home's: that too is the last sync's, and one version may be two builds
+# (a fork's image and the published one).
 FLEET_PY='
 import json, os, sys
 survey, want = os.environ["SURVEY"], (os.environ.get("WANT") or "").rstrip("/")
 for line in sys.stdin:
     cells = line.rstrip("\n").split("\x1f")
     if len(cells) < 5 or not cells[0]: continue
-    home = status = ""
+    home = status = asked = ""
     try:
         with open(os.path.join(survey, cells[0])) as f:
             for row in f:
                 if row.startswith("home "): home = row[5:].strip().rstrip("/")
+                elif row.startswith("asked "): asked = row[6:].strip()
                 elif row.startswith("status "): status = row[7:].strip()
     except OSError:
         pass
@@ -423,9 +458,10 @@ for line in sys.stdin:
     except ValueError: said = None
     verdict = "unknown"
     if isinstance(said, dict) and said.get("joined") is True:
-        if said.get("compatible") is True: verdict = "current"
-        elif said.get("compatible") is False: verdict = "outdated"
-        elif said.get("version") and said.get("version") == said.get("homeVersion"): verdict = "current"
+        synced = said.get("syncedAt")
+        fresh = type(synced) is int and asked.isdigit() and synced >= int(asked)
+        if said.get("compatible") is False: verdict = "outdated"
+        elif said.get("compatible") is True and fresh: verdict = "current"
     if want and home != want:
         print("  instance %s  %s  left alone: %s" % (cells[0], cells[4], ("its home is " + home) if home else "its home is not known"), file=sys.stderr)
         continue
@@ -442,7 +478,11 @@ load_fleet() {
     exit 0
   fi
   SURVEY="$(mktemp -d -t colloq-runners-survey.XXXXXX)"
-  say "${DIM}asking each machine which home it serves…${OFF}"
+  if [ "$SURVEY_WAIT" -gt 0 ]; then
+    say "${DIM}asking each machine which home it serves, and its home's word on its build in a sync from now on (up to $SURVEY_WAIT s)…${OFF}"
+  else
+    say "${DIM}asking each machine which home it serves…${OFF}"
+  fi
   for_each_machine survey_one || true
   [ -z "$want" ] || say "${DIM}only the machines of $want (URL=):${OFF}"
   FLEET="$(printf '%s\n' "$FLEET" | SURVEY="$SURVEY" WANT="$want" py "$FLEET_PY")"
@@ -579,6 +619,12 @@ update() {
   # reads an apostrophe inside ${…} as a quote even within double quotes.
   target="${VERSION:-}"; [ -n "$target" ] || target="the version of their home"
   how=", their runs finished first"; [ -z "$NOW_FLAG" ] || how=", handing their runs back now"
+  # The wait for each home's fresh word, only where it can spare a machine
+  # its drain: VERSION= and FORCE=1 skip none.
+  if [ -z "${VERSION:-}" ] && [ "${FORCE:-}" != 1 ]; then
+    SURVEY_WAIT="${RUNNER_SURVEY_SEC:-60}"
+    case "$SURVEY_WAIT" in ''|*[!0-9]*) die "RUNNER_SURVEY_SEC= is a number of seconds, not \"$SURVEY_WAIT\"." ;; esac
+  fi
   load_fleet
   say "${BOLD}updating $(printf '%s\n' "$FLEET" | grep -c .) machine(s)${OFF} to $target$how:"
   show_fleet verdict

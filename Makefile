@@ -730,15 +730,19 @@ runners-update: ## Every rented machine for submissions to its home's version, i
 	@# a machine whose runner code differs from its home's gets no new work
 	@# (decision 5), so after updating the home this is the second half. Each
 	@# machine is asked its home first: URL= takes only that home's machines,
-	@# and one whose build is already its home's is left alone (FORCE=1 updates
-	@# it all the same). NOW=1 hands the runs back to the home's queue instead
-	@# of waiting for them; nobody's attempts are spent either way.
+	@# and one whose home says, in a sync made after it was asked (up to
+	@# RUNNER_SURVEY_SEC, 60 s), that its build is the home's own is left alone
+	@# (FORCE=1 updates it all the same). NOW=1 hands the runs back to the
+	@# home's queue instead of waiting for them; nobody's attempts are spent
+	@# either way.
 	@NAME="$(NAME)" URL="$(URL)" VERSION="$(VERSION)" NOW="$(NOW)" FORCE="$(FORCE)" ./scripts/vast-runner.sh update
 
 runners-down: ## Every rented machine for submissions leaves its home, then is destroyed. URL=… NOW=1 — without waiting for its runs
 	@# `colloq-host runner leave` over ssh (its runs finish, it revokes itself
-	@# on the home), then the VM is destroyed with its disk. The list asked
-	@# about names each machine's home, and URL= takes only that home's. NOW=1
+	@# on the home), then the VM is destroyed with its disk; a leave waits for
+	@# the home only while it answers (ten minutes of silence give it up, and
+	@# the VM goes all the same). The list asked about names each machine's
+	@# home, and URL= takes only that home's. NOW=1
 	@# destroys at once: the home loses the machine after three minutes of
 	@# silence and runs its submissions again elsewhere, and the owner revokes
 	@# it in the panel.

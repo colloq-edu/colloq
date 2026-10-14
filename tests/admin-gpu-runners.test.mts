@@ -547,10 +547,11 @@ test('the GPU mark beside the environment does not wait for the list to name the
 
 test('the console shows the card a run holds and what a waiting notebook waits for', () => {
   assert.match(LIVE, /\{#if run\.gpu\} <span class="inline-flex shrink-0" title=\{run\.gpu\.device \|\| undefined\}> <Badge word=\{cardWord\(run\.gpu\.device\)\} tone="accent" case="lower" class="font-mono" \/>/)
-  assert.match(LIVE, /tr\('admin\.competitions\.slotsHeadGpu', \{ busy: running\.length, count: slots, gpuBusy: queue\.gpu\.busy, gpuCount: queue\.gpu\.slots, \}\)/)
+  // The busy places are notebook runs on executors that give places (admin/runners.ts · consoleLoad, admin-runners-ui-r2.test.mts).
+  assert.match(LIVE, /tr\('admin\.competitions\.slotsHeadGpu', \{ busy: load\.busy, count: slots, gpuBusy: queue\.gpu\.busy, gpuCount: queue\.gpu\.slots, \}\)/)
   // The card a waiting notebook waits for, after a machine's reason when it has one
   // (admin/runners.ts · waitingLine, admin-runners-ui-review.test.mts).
-  assert.match(LIVE, /\{@const line = waitingLine\(row, waitsForCard\(row, queue\)\)\}/)
+  assert.match(LIVE, /\{@const line = waitingLine\(row, waitsForCard\(row, queue\), homeWord\)\}/)
   assert.match(LIVE, /waitingWords\(queue\?\.waiting \?\? waiting\.length, onCards\)/)
   // With no share on any card, the list under «ЖДУТ» says why before its rows.
   assert.match(LIVE, /const cardless = \$derived\(noPlaceOnCards\(waiting, queue\)\)/)

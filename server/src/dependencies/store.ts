@@ -248,14 +248,29 @@ export const moveMetricPin = db.transaction((competitionId: string, revisionId: 
  if(before?.revisionId!==revisionId)invalidateCompetitionInputs(competitionId,false)
 })
 /**
- * The revision the latest metric run of a competition was recorded under
- * (submission_runs.revision_id): `null` — no metric of it has run;
- * `{ revisionId: null }` — one ran with none recorded, as every metric before
- * 0.23 did, in its submission's own image.
+ * The latest metric run of a competition that ties its scores to an image
+ * (competitions/runner.ts · metricPinOfHistory): one recorded under a revision
+ * of the `light` environment — scored in kaggle-base before there were pins —
+ * or a SCORED one recorded under none, as every metric before 0.23 was, in
+ * its submission's own image; never the baseline's. `null` — none did;
+ * `{ revisionId: null }` — the latest was one of 0.22's.
+ *
+ * Every metric run used to count, and the latest named the pin: a
+ * competition born on `base`, its baseline checked there (a metric run under
+ * the base revision), then given kaggle-gpu and a card, pinned each
+ * submission's own image for good at its first metric with the card — its
+ * metric ran in the ten-to-thirteen-gigabyte GPU image, neither where the
+ * baseline was checked nor in kaggle-base. A run in the competition's own
+ * pin on the CPU is no score of a board with a card, a failed metric is no
+ * score at all, and the baseline is on no board.
  */
-export function lastMetricRevision(competitionId: string): { revisionId: string | null } | null {
+export function metricHistoryRevision(competitionId: string, light: string): { revisionId: string | null } | null {
  const row=db.prepare(`SELECT r.revision_id FROM submission_runs r JOIN submissions s ON s.id=r.submission_id
-  WHERE s.competition_id=? AND r.kind='metric' ORDER BY r.started_at DESC,r.seq DESC LIMIT 1`).get(competitionId) as Row|undefined
+  JOIN competitions c ON c.id=s.competition_id LEFT JOIN environment_revisions e ON e.id=r.revision_id
+  WHERE s.competition_id=? AND r.kind='metric'
+   AND (e.environment_name=? OR (r.revision_id IS NULL AND r.verdict='ok'
+    AND s.id IS NOT c.baseline_submission_id AND s.entrant_id IS NOT c.baseline_entrant_id))
+  ORDER BY r.started_at DESC,r.seq DESC LIMIT 1`).get(competitionId,light) as Row|undefined
  return row?{revisionId:row.revision_id===null||row.revision_id===undefined?null:String(row.revision_id)}:null
 }
 export function setPolicy(competitionId: string, change: Partial<DependencyPolicy>): DependencyPolicy {

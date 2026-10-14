@@ -395,6 +395,13 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'Прогон убить не вышло: исполнителя в этом процессе нет или контейнер уже закончился.',
     en: 'The run could not be killed: this process has no runner, or the container had already finished.',
   },
+  // A stop aimed at a run on a machine (POST …/queue/kill with onMachine)
+  // whose notebook has already run: its answer is on the way here, or waits
+  // for its metric — it is not cancelled for a press that was about the run.
+  'competitions.refusal.notOnMachine': {
+    ru: 'Эта посылка уже не на машине: её тетрадь выполнена, а ответ возвращается сюда или ждёт метрику. Снять её с машины больше нельзя.',
+    en: 'This submission is no longer on a machine: its notebook has run, and its answer is on its way here or waiting for its metric. It can no longer be stopped on a machine.',
+  },
   'competitions.refusal.notRescorable': {
     ru: 'Пересчитывать нечего: эта посылка не оставила ответа.',
     en: 'Nothing to rescore: this submission left no answer.',

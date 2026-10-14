@@ -16,15 +16,15 @@ import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { REMOTE_CONTAINER_CUSHION_MB, REMOTE_HOST_RESERVE_MB, type RemoteHeldAttempt, type RemoteLease, type RemoteSyncRequest } from '../shared/remote-runner.ts'
+import { REMOTE_CONTAINER_CUSHION_MB, REMOTE_HOST_RESERVE_MB, REMOTE_JOIN_REPEAT_MS, type RemoteFree, type RemoteHeldAttempt, type RemoteLease, type RemoteSyncRequest } from '../shared/remote-runner.ts'
 import { Agent, type AgentOptions } from '../server/src/runner-agent/sync.ts'
 import { readIdentity, stateLayout } from '../server/src/runner-agent/state.ts'
-import { INSTANCE_LABEL } from '../server/src/runner-agent/images.ts'
+import { INSTANCE_LABEL, revisionImage } from '../server/src/runner-agent/images.ts'
 import { status } from '../server/src/runner-agent/main.ts'
 import { competitionsDir } from '../server/src/competitions/storage.ts'
 import { TEST_ROOT } from './_env.mts'
 import {
-  DIFF_IDS, FakeSeam, LAYERS, REVISION, RUNNER_ID, SECRET, dataSet, fakeAgentDocker, fakeHome, makeLease, outcomeReply, sha256, syncReply, waitFor,
+  DIFF_IDS, FakeSeam, LAYERS, REVISION, RUNNER_ID, SECRET, dataSet, fakeAgentDocker, fakeHome, hex, makeLease, outcomeReply, sha256, syncReply, waitFor,
   type FakeHome,
 } from './_runner-agent-home.mts'
 
@@ -135,10 +135,16 @@ test('a lease is written down before a sync lists it, runs, uploads its files gz
   seam.next = 'wait'
   const leaseFile = path.join(layout.leasesDir, `${lease.attemptId}.json`)
   const writtenBeforeListed: boolean[] = []
+  // A sync sent while the attempt was still held may reach this home after its outcome was applied and its files went: only the listings before that must find the lease.
+  let applied = false
   offerWhenReady(home, set, lease, (body) => {
-    if (attemptOf(body, lease.attemptId)) writtenBeforeListed.push(fs.existsSync(leaseFile))
+    if (attemptOf(body, lease.attemptId)) writtenBeforeListed.push(applied || fs.existsSync(leaseFile))
     return {}
   })
+  home.onOutcome = () => {
+    applied = true
+    return { json: outcomeReply() }
+  }
   const running = agent.run()
   try {
     await waitFor(() => seam.runs.length === 1, 'the run')
@@ -578,6 +584,209 @@ test('Docker\'s own disk, where it is a filesystem of its own, gates the pulls a
     const measure = docker.calls.find((args) => args[0] === 'run' && args.includes('stat'))!
     assert.ok(measure.includes('/var/lib/docker:/docker-root:ro') && measure.includes(`${TEST_ROOT}:/tree:ro`) && measure.includes('--read-only'), measure.join(' '))
     assert.ok(measure.includes(INSTANCE_LABEL))
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('a daemon that fails one inspect of the revision right before a run is asked again: the lease runs, and nothing is declined', async () => {
+  const home = await fakeHome()
+  const { agent, seam, docker } = agentFor(home)
+  const set = dataSet({ 'train.csv': 'id\n1\n' })
+  for (const [sha, body] of set.bodies) home.blobs.set(sha, body)
+  const lease = makeLease({ data: set.manifest })
+  offerWhenReady(home, set, lease)
+  // The revision is ready; the one check right before the run meets a daemon slowed by a burst.
+  let failed = 0
+  docker.intercept = (args) => {
+    if (args[0] === 'image' && args[1] === 'inspect' && args[2] === revisionImage(REVISION.id) && failed === 0) {
+      failed++
+      return { code: 1, out: 'Error response from daemon: context deadline exceeded' }
+    }
+  }
+  const running = agent.run()
+  try {
+    await waitFor(() => seam.runs.length === 1, 'the run')
+    assert.equal(failed, 1)
+    await settled(home, lease)
+    const outcome = home.calls.find((call) => call.path.endsWith(`/attempts/${lease.attemptId}/outcome`))!.body as { kind: string }
+    assert.equal(outcome.kind, 'finished', 'one failed inspect declined the lease')
+    // Never unreadied meanwhile: home would have leased nothing of its competition here.
+    assert.ok(home.syncs().filter((sync) => sync.seq >= lease.seq).every((sync) => sync.ready.revisions.includes(REVISION.id)))
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('a GPU revision checked while a run holds card 0 is checked on the card with a share free', async () => {
+  const home = await fakeHome()
+  const { agent, seam, docker } = agentFor(home)
+  docker.cards = '0, GPU-aa, NVIDIA GeForce RTX 4090, 24564\n1, GPU-bb, NVIDIA GeForce RTX 4090, 24564\n'
+  const set = dataSet({ 'train.csv': 'id\n1\n' })
+  for (const [sha, body] of set.bodies) home.blobs.set(sha, body)
+  // One run per card: the lease's run holds the whole of card 0.
+  const lease = makeLease({ data: set.manifest, gpu: true, perDevice: 1 })
+  const other = { id: 'b'.repeat(32), ref: REVISION.ref, layers: LAYERS, gpu: true }
+  seam.next = 'wait'
+  let second = false
+  home.onSync = (body) => {
+    const gpuWant = { ...want(set), revisions: [{ id: REVISION.id, ref: REVISION.ref, layers: LAYERS, gpu: true }, ...(second ? [other] : [])] }
+    const ready = body.ready.revisions.includes(REVISION.id) && body.ready.data.includes(set.manifest) && body.cards.length === 2
+    const leases = ready && !attemptOf(body, lease.attemptId) && body.seq < lease.seq ? [lease] : []
+    return { json: syncReply({ seq: lease.seq, leases, want: gpuWant }), delayMs: leases.length ? 0 : 20 }
+  }
+  const checks = (id: string): string[][] => docker.calls.filter((args) => args[0] === 'run' && args.includes('python') && args[args.indexOf('--name') + 1]!.endsWith(id.slice(0, 12)))
+  const running = agent.run()
+  try {
+    await waitFor(() => seam.runs.length === 1, 'the GPU run')
+    assert.equal(seam.runs[0]!.gpu?.device, '0')
+    // Home wants another GPU revision of the competition's while the run holds card 0.
+    second = true
+    await waitFor(() => checks(other.id).length > 0, 'the second revision\'s GPU check')
+    const check = checks(other.id)[0]!
+    assert.equal(check[check.indexOf('--gpus') + 1], 'device=1', 'the GPU check ran on the card a run holds')
+    await waitFor(() => home.syncs().some((sync) => sync.ready.revisions.includes(other.id)), 'the second revision ready')
+    // While the check held its share, card 1 was not free to a lease: in the syncs since, its share came back.
+    const last = await waitFor(() => home.syncs().slice(-1).find((sync) => sync.ready.revisions.includes(other.id) && sync.cards[1]?.busyShares === 0), 'the check\'s share given back')
+    assert.equal(last.free.gpuShares, 1)
+    seam.release()
+    await settled(home, lease)
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('the free an outcome offers leaves out the attempt it reports: a machine at its places is given its next run in the completion reply', async () => {
+  const home = await fakeHome()
+  home.onJoin = () => ({ json: { runnerId: RUNNER_ID, secret: SECRET, trusted: false, approvedSlots: 1 } })
+  const { agent, seam } = agentFor(home)
+  const set = dataSet({ 'train.csv': 'id\n1\n' })
+  for (const [sha, body] of set.bodies) home.blobs.set(sha, body)
+  const lease = makeLease({ data: set.manifest })
+  seam.next = 'wait'
+  // The owner's «Места»: one at a time.
+  offerWhenReady(home, set, lease, () => ({ approvedSlots: 1 }))
+  const offered: RemoteFree[] = []
+  home.onOutcome = ({ body }) => {
+    offered.push(body.free as RemoteFree)
+    return { json: outcomeReply({ seq: lease.seq }) }
+  }
+  const running = agent.run()
+  try {
+    // While it runs, the one place is taken.
+    await waitFor(() => home.syncs().some((sync) => attemptOf(sync, lease.attemptId)?.phase === 'running' && sync.free.slots === 0), 'a sync with the place taken')
+    seam.release()
+    await settled(home, lease)
+    assert.equal(offered.length, 1)
+    assert.equal(offered[0]!.slots, 1, 'the outcome counted the place of the attempt it reports')
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('a join home no longer honours (its first try longer ago than REMOTE_JOIN_REPEAT_MS) is made again at once with a new join id; within that window a refusal keeps the id and waits', async () => {
+  const home = await fakeHome()
+  let clock = Date.now()
+  const { agent } = agentFor(home, { now: () => clock })
+  const ids: string[] = []
+  home.onJoin = (body: { joinId: string }) => {
+    ids.push(body.joinId)
+    if (ids.length === 1) {
+      // Home made the machine and its answer was lost; then home could not be reached for longer than it honours the id.
+      clock += REMOTE_JOIN_REPEAT_MS + 60_000
+      return { status: 502, text: '<html>Bad Gateway</html>', marker: false }
+    }
+    if (body.joinId === ids[0]) return { status: 403, json: { error: 'code' } }
+    return { json: { runnerId: RUNNER_ID, secret: SECRET, trusted: false, approvedSlots: null } }
+  }
+  const running = agent.run()
+  try {
+    await waitFor(() => home.syncs().length > 0, 'the machine joined and syncing', 5_000)
+    assert.equal(ids.length, 3)
+    assert.equal(ids[1], ids[0], 'the lost join was not asked again as the same join first')
+    assert.notEqual(ids[2], ids[0], 'a join home no longer honours was asked again with its old id')
+    const identity = readIdentity(layout)!
+    assert.deepEqual({ joinId: identity.joinId, runnerId: identity.runnerId }, { joinId: ids[2], runnerId: RUNNER_ID })
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+  // Within the window a `code` refusal is the code's own: the same id, and the long wait.
+  for (const name of fs.readdirSync(TEST_ROOT)) if (/^(runner\.json.*|status\.json)$/.test(name)) fs.rmSync(path.join(TEST_ROOT, name), { force: true })
+  const refusing = await fakeHome()
+  let joins = 0
+  refusing.onJoin = () => {
+    joins++
+    return { status: 403, json: { error: 'code' } }
+  }
+  const fresh = agentFor(refusing)
+  const second = fresh.agent.run()
+  try {
+    await waitFor(() => joins === 1, 'the refused join')
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.equal(joins, 1, 'a join refused within the window was asked again at once')
+  } finally {
+    await fresh.agent.stop()
+    await second
+    await refusing.close()
+  }
+})
+
+test('`runner status` says what home last said of this build, also from replies this build cannot read whole', async () => {
+  const home = await fakeHome()
+  const { agent } = agentFor(home)
+  let unreadable = false
+  home.onSync = () => {
+    // Home moves to another build: it says so, in replies this build's parser refuses (a reason it does not know).
+    const reply = unreadable ? { ...syncReply({ compatible: false, homeVersion: '0.25.0' }), revoke: [{ id: hex(16), reason: 'retired' }] } : syncReply()
+    return { json: reply, delayMs: 20 }
+  }
+  const out: string[] = []
+  const said = (): { compatible: boolean | null; homeVersion?: string; problem: string | null } => {
+    status(layout, { out: (text) => out.push(text), err: () => undefined })
+    return JSON.parse(out.pop()!)
+  }
+  const running = agent.run()
+  try {
+    await waitFor(() => fs.existsSync(layout.statusFile) && JSON.parse(fs.readFileSync(layout.statusFile, 'utf8')).compatible === true, 'a status after a sync')
+    assert.equal(said().compatible, true)
+    unreadable = true
+    await waitFor(() => JSON.parse(fs.readFileSync(layout.statusFile, 'utf8')).compatible === false, 'the status saying home does not take this build', 5_000)
+    const now = said()
+    assert.equal(now.compatible, false)
+    assert.equal(now.homeVersion, '0.25.0')
+    assert.match(now.problem ?? '', /not its home's/)
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('a relay that says its tunnel is up while home is silent is not taken at its word: whether the tunnel is up is said to be unknown', async () => {
+  const home = await fakeHome()
+  const { agent, logs } = agentFor(home)
+  let down = false
+  home.onSync = () => (down ? { status: 404, text: '<html>Colloq is not answering</html>', marker: false } : { json: syncReply(), delayMs: 20 })
+  // frps still lists the home's proxy: the tunnel under it was cut a moment ago.
+  home.relay = { known: true, tunnel: true }
+  const running = agent.run()
+  try {
+    await waitFor(() => home.syncs().length > 0, 'a sync')
+    down = true
+    await waitFor(() => JSON.parse(fs.readFileSync(layout.statusFile, 'utf8')).path === 'home_silent', 'the status saying home is silent')
+    const line = await waitFor(() => logs.find((found) => /home does not answer/.test(found)), 'the log line')
+    assert.match(line, /unknown/, line)
+    assert.ok(!logs.some((found) => /tunnel is up\)/.test(found)), 'the relay\'s word that its tunnel is up was taken for a fact')
   } finally {
     await agent.stop()
     await running

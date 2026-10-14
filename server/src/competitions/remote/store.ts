@@ -42,6 +42,7 @@ import {
   REMOTE_LEASES_KEEP_MS,
   REMOTE_PER_DEVICE_MAX,
   REMOTE_REASON_CHARS,
+  REMOTE_RUNNERS_KEEP_MS,
   REMOTE_RUNNER_ID,
   REMOTE_SECRET,
   REMOTE_VERSION,
@@ -201,6 +202,14 @@ ensureColumn('remote_leases', 'cause', 'cause TEXT')
  * only when the set changes: competitions open and close, syncs do not.
  */
 ensureColumn('remote_runners', 'wanted', 'wanted TEXT')
+/*
+ * remote_runners.resumed_at — when the owner last put the machine back to
+ * work («Вернуть в работу»): the quarantine counts only losses and declines
+ * after it (release.ts · quarantineIfDue). Without it a machine resumed five
+ * minutes after its third loss was drained again by its fourth, one event
+ * undoing the owner's decision instead of three.
+ */
+ensureColumn('remote_runners', 'resumed_at', 'resumed_at INTEGER')
 
 /* ----------------------------------------------------------------- hashes */
 
@@ -286,6 +295,8 @@ export interface RunnerRow {
   offerSeq: number
   quarantinedAt: number | null
   quarantineSeen: boolean
+  /** When the owner last resumed it (remote_runners.resumed_at): its quarantine window starts there at the earliest. */
+  resumedAt: number | null
 }
 
 interface RunnerRaw {
@@ -310,6 +321,7 @@ interface RunnerRaw {
   offer_seq: number
   quarantined_at: number | null
   quarantine_seen: number
+  resumed_at: number | null
 }
 
 function parsed<T>(text: string | null | undefined, fallback: T): T {
@@ -344,11 +356,13 @@ function toRunner(row: RunnerRaw): RunnerRow {
     offerSeq: row.offer_seq,
     quarantinedAt: row.quarantined_at,
     quarantineSeen: row.quarantine_seen === 1,
+    resumedAt: row.resumed_at ?? null,
   }
 }
 
 const selectRunner = db.prepare('SELECT * FROM remote_runners WHERE id = ?')
 const selectRunners = db.prepare('SELECT * FROM remote_runners ORDER BY created_at, id')
+const selectStanding = db.prepare("SELECT * FROM remote_runners WHERE state IN ('active', 'draining') ORDER BY created_at, id")
 const selectByJoin = db.prepare('SELECT * FROM remote_runners WHERE join_id = ?')
 
 export function getRunner(id: string): RunnerRow | null {
@@ -358,6 +372,17 @@ export function getRunner(id: string): RunnerRow | null {
 
 export function listRunners(): RunnerRow[] {
   return (selectRunners.all() as RunnerRaw[]).map(toRunner)
+}
+
+/**
+ * The machines still allowed to call (active or draining): what the hot
+ * paths read — every forecast, the clock's pass, the GPU door, the console's
+ * groups. Revoked and gone machines stay in remote_runners for their history
+ * (the owner's list shows them) until the prune, and a list every
+ * participant's page parsed once a second grew with every event's fleet.
+ */
+export function listStandingRunners(): RunnerRow[] {
+  return (selectStanding.all() as RunnerRaw[]).map(toRunner)
 }
 
 /** Whether a machine was ever connected: until then every screen stays as it was before machines. */
@@ -399,6 +424,7 @@ export interface RunnerPatch {
   revokedAt?: number | null
   quarantinedAt?: number | null
   quarantineSeen?: boolean
+  resumedAt?: number | null
 }
 
 const RUNNER_COLUMN: Record<keyof RunnerPatch, string> = {
@@ -414,6 +440,7 @@ const RUNNER_COLUMN: Record<keyof RunnerPatch, string> = {
   revokedAt: 'revoked_at',
   quarantinedAt: 'quarantined_at',
   quarantineSeen: 'quarantine_seen',
+  resumedAt: 'resumed_at',
 }
 
 export function updateRunner(id: string, patch: RunnerPatch): RunnerRow | null {
@@ -511,9 +538,16 @@ export function mintRemoteCode(input: MintCode, now = Date.now()): MintedCode {
   return { id: codeIdOf(sha256(code)), code, expiresAt, machines: input.machines, trusted: input.trusted, approvedSlots: input.approvedSlots }
 }
 
-/** A code's id in the owner's list: the first eight hex digits of its sha256 — enough to tell two codes apart, useless to join with. */
+/**
+ * A code's id in the owner's list: the first sixteen hex digits of its
+ * sha256 — useless to join with, and enough to name one code to cancel
+ * (endRemoteCode). Eight were enough to tell the codes of one dialog apart,
+ * but an id the owner's «Отменить» acts on must never be two codes at once.
+ */
+export const REMOTE_CODE_ID = /^[a-f0-9]{16}$/
+
 export function codeIdOf(codeSha256: string): string {
-  return codeSha256.slice(0, 8)
+  return codeSha256.slice(0, 16)
 }
 
 export interface CodeRow {
@@ -567,6 +601,37 @@ export function codeBySha(codeSha256: string): CodeRow | null {
 export function codeJoins(codeSha256: string): number {
   return (db.prepare('SELECT COUNT(*) AS n FROM remote_runners WHERE code_sha256 = ?').get(codeSha256) as { n: number }).n
 }
+
+/*
+ * ENDING A CODE (the owner's «Отменить», and «Отключить все»). A code is a
+ * door for its machines and its hours, and until it is spent or expires
+ * whoever holds it enrolls a fresh machine — trusted, if the code was: it
+ * sits in clear in every machine's COLLOQ_RUNNER_JOIN, in a Vast on-start
+ * script, in a chat. Disconnecting the machines left it open, and only
+ * sqlite on the host closed it. Ended, it has no use left and has expired
+ * now: the row stays (the dialog still counts what it enrolled, and the
+ * week's prune removes it), and a join with it is refused like any spent
+ * code's (joinRunner). A machine's repeated join of its own lost reply is
+ * no new use and is not refused by this (REMOTE_JOIN_REPEAT_MS).
+ */
+const endCode = db.prepare('UPDATE remote_runner_codes SET uses_left = 0, expires_at = MIN(expires_at, ?) WHERE code_sha256 = ?')
+
+/** End the live code `id` names (codeIdOf); `unknown` — no live code has it, `ambiguous` — more than one does. */
+export function endRemoteCode(id: string, now = Date.now()): { ended: CodeRow } | { refused: 'unknown' | 'ambiguous' } {
+  if (!REMOTE_CODE_ID.test(id)) return { refused: 'unknown' }
+  const matching = liveCodes(now).filter((code) => codeIdOf(code.codeSha256) === id)
+  if (matching.length === 0) return { refused: 'unknown' }
+  if (matching.length > 1) return { refused: 'ambiguous' }
+  endCode.run(now, matching[0].codeSha256)
+  return { ended: codeBySha(matching[0].codeSha256)! }
+}
+
+/** End every live code («Отключить все»: no machine can come back through a door left open); returns the codes ended, as they were. */
+export const endLiveCodes = db.transaction((now: number = Date.now()): CodeRow[] => {
+  const live = liveCodes(now)
+  for (const code of live) endCode.run(now, code.codeSha256)
+  return live
+})
 
 /* ---------------------------------------------------------------- joining */
 
@@ -642,23 +707,54 @@ export const joinRunner = db.transaction((input: { code: string; joinId: string;
 })
 
 /**
- * The competitions a machine may hold data of, from what outlives a restart:
- * those its replies named in `want` since it was last told to forget them
+ * The competitions a machine may hold data of, each with the data manifests
+ * it was named under, from what outlives a restart: those its replies named
+ * in `want` since the machine was last seen to hold none of their data
  * (remote_runners.wanted), and those it was leased a run of in the leases'
  * week — a lease's data is the machine's to hold whether or not a want ever
  * named it. Read once per life of this server (heard.ts), and `forget` names
- * those no longer wanted (want.ts · runnerWant).
+ * those no longer wanted for as long as the machine still reports one of
+ * their manifests (want.ts · runnerWant).
+ *
+ * THE MANIFESTS ARE WHAT MAKES `forget` LEVEL-TRIGGERED. A competition was
+ * dropped from this set the moment a reply named it in `forget`, and a reply
+ * lost on the way (frps's 504 after home wrote it, the agent's own poke
+ * cutting the held sync) meant it was never named again: its data, a deleted
+ * competition's included, stayed on the machine until the disk ran low. Now
+ * it stays here, and is forgotten in every reply, until a sync no longer
+ * lists any manifest it was named under. A list of bare ids (written before
+ * the manifests were kept) reads as competitions with none known: those are
+ * forgotten once, as before.
  */
-export function wantedCompetitions(runnerId: string): string[] {
+export function wantedCompetitions(runnerId: string): Map<string, Set<string>> {
   const row = db.prepare('SELECT wanted FROM remote_runners WHERE id = ?').get(runnerId) as { wanted: string | null } | undefined
   const saved = parsed<unknown>(row?.wanted, [])
-  const leased = db.prepare('SELECT DISTINCT competition_id FROM remote_leases WHERE runner_id = ?').all(runnerId) as { competition_id: string }[]
-  const ids = [...(Array.isArray(saved) ? saved : []), ...leased.map((one) => one.competition_id)]
-  return [...new Set(ids.filter((id): id is string => typeof id === 'string'))]
+  const out = new Map<string, Set<string>>()
+  const add = (id: unknown, manifest?: unknown): void => {
+    if (typeof id !== 'string') return
+    const set = out.get(id) ?? new Set<string>()
+    if (typeof manifest === 'string' && /^[a-f0-9]{64}$/.test(manifest)) set.add(manifest)
+    out.set(id, set)
+  }
+  if (Array.isArray(saved)) for (const id of saved) add(id)
+  else if (saved && typeof saved === 'object') {
+    for (const [id, manifests] of Object.entries(saved as Record<string, unknown>)) {
+      add(id)
+      if (Array.isArray(manifests)) for (const manifest of manifests) add(id, manifest)
+    }
+  }
+  const leased = db.prepare('SELECT competition_id, manifest FROM remote_leases WHERE runner_id = ?').all(runnerId) as { competition_id: string; manifest: string }[]
+  for (const lease of leased) {
+    const manifest = parsed<Partial<LeaseManifest> | null>(lease.manifest, null)
+    add(lease.competition_id, manifest?.data?.manifest)
+    if (manifest?.sealed) add(lease.competition_id, manifest.sealed.manifest)
+  }
+  return out
 }
 
-export function saveWantedCompetitions(runnerId: string, ids: Iterable<string>): void {
-  db.prepare('UPDATE remote_runners SET wanted = ? WHERE id = ?').run(JSON.stringify([...ids].sort()), runnerId)
+export function saveWantedCompetitions(runnerId: string, wanted: ReadonlyMap<string, ReadonlySet<string>>): void {
+  const value = Object.fromEntries([...wanted.keys()].sort().map((id) => [id, [...(wanted.get(id) ?? [])].sort()]))
+  db.prepare('UPDATE remote_runners SET wanted = ? WHERE id = ?').run(JSON.stringify(value), runnerId)
 }
 
 /** The machine revoked itself (colloq-host runner leave): its secret is refused from now on. */
@@ -694,18 +790,30 @@ export interface LeaseManifest {
   bundle: { id: string; packagesMb: number } | null
 }
 
+/**
+ * What of the competition the settle of a run reads (runner.ts ·
+ * settleNotebook: the limits its words name — «10 минут», «4 ГБ» — and the
+ * baseline it tells apart), as the take read it.
+ */
+export type LeaseCompetition = Pick<Competition, 'id' | 'limits' | 'baselineSubmissionId' | 'baselineEntrantId'>
+
 /** What settling the outcome needs that is not in the database any more by then (§13b note 11). */
 export interface LeasePrepared {
   sealedFiles: string[]
   before: { cellsDone: number; cellsTotal: number; durationMs: number | null }
   /**
-   * The competition as the take read it: the outcome is settled against it
-   * (apply.ts), as a run here is settled against the competition its job read
-   * when it took the row — a teacher's edit of the limits or the texts during
-   * a four-hour run must not word its outcome by numbers it never ran under.
+   * The competition as the take read it, what the settle reads of it: the
+   * outcome is settled against it (apply.ts), as a run here is settled against
+   * the competition its job read when it took the row — a teacher's edit of
+   * the limits during a four-hour run must not word its outcome by numbers it
+   * never ran under. Only that: the whole competition carried its metric's
+   * code (40,000 characters) and its description (20,000) into every lease
+   * row, and every forecast and every sync parsed them for nothing; the rest
+   * is read from the competition's row at the apply (lease.ts · leaseRow,
+   * apply.ts · driveOnce). A lease written with the whole one reads the same.
    * Absent on a lease written before it was kept: the competition as it is.
    */
-  competition?: Competition
+  competition?: LeaseCompetition
 }
 
 export interface LeaseProvenance {
@@ -750,14 +858,33 @@ export interface LeaseRow {
  * `unapplied` (its result came, and this server could not apply it by the
  * lease's ceiling: this server's failure, not the machine's).
  * Withdrawals: `unacked`, `unseen`, `restart`. A decline: its reason
- * (RemoteDeclineReason). Taken back: `revoked` (the machine disconnected),
- * `untrusted`, `cancelled`.
+ * (RemoteDeclineReason), or `starved` — a decline for its data that this
+ * server's own blob streams caused (blobs.ts · starvedLease): the machine
+ * asked for the lease's blob and was told to wait until its preparation
+ * ran out, which is no refusal of the machine's. Taken back: `revoked`
+ * (the machine disconnected), `untrusted`, `cancelled`, `orphan` — a lease
+ * whose queue row it no longer owns, ended with no penalty (release.ts ·
+ * orphanLease: a rollback to a release without leases ran the row itself).
  */
 export type LeaseCause =
   | 'silent' | 'ceiling' | 'missing' | 'refused' | 'declined' | 'unapplied'
   | 'unacked' | 'unseen' | 'restart'
-  | 'image' | 'data' | 'wheels' | 'disk' | 'memory' | 'card' | 'draining' | 'version'
-  | 'revoked' | 'untrusted' | 'cancelled'
+  | 'image' | 'data' | 'wheels' | 'disk' | 'memory' | 'card' | 'draining' | 'version' | 'starved'
+  | 'revoked' | 'untrusted' | 'cancelled' | 'orphan'
+
+/**
+ * The declines that are no refusal of the machine's: a drain (it stops), and
+ * a decline this server's own back-pressure caused (`starved`). They count
+ * toward no quarantine, no machine's decline limit, no submission's — and a
+ * drain before the container started is not skipped by its machine either
+ * (declinedBy).
+ */
+export const NO_FAULT_DECLINES: ReadonlySet<string> = new Set<LeaseCause>(['draining', 'starved'])
+
+/** Whether a declined lease is a refusal of the machine's (not a drain, not this server's own starving of its data). */
+export function refusedDecline(lease: Pick<LeaseRow, 'cause' | 'reason'>): boolean {
+  return !NO_FAULT_DECLINES.has(lease.cause ?? '') && lease.reason !== 'draining'
+}
 
 interface LeaseRaw {
   attempt_id: string
@@ -864,13 +991,25 @@ export function submissionLeases(submissionId: string, since: number): LeaseRow[
  * cost growing with the queue. The window function picks each submission's
  * newest lease in SQLite itself, so a submission leased many times reads one
  * row, not all of them.
+ *
+ * LEAN: where a row came back from is its machine, its state, its cause and
+ * when it was offered, and nothing else is read — not the manifest, the
+ * prepared snapshot or the applied outcome (its texts and the harness's raw
+ * report run to a hundred kilobytes), which the window's subquery would
+ * otherwise materialise for every lease of every waiting submission on every
+ * participant's poll. The rows come back with an empty manifest and no
+ * outcome: they are for the wait reasons (views.ts · returnedOf) only.
  */
+const LEAN_LEASE_COLUMNS = `attempt_id, runner_id, competition_id, submission_id, run_id, state, seq, sealed, code_cells,
+  '{}' AS provenance, 'null' AS manifest, '{}' AS prepared, container, device, per_device, slice_mb, phase,
+  offered_at, accepted_at, started_at, ended_at, deadline_at, outcome_sha256, NULL AS outcome, NULL AS reply, reason, cause`
+
 export function lastLeasesOf(submissionIds: readonly string[]): Map<string, LeaseRow> {
   const out = new Map<string, LeaseRow>()
   for (let at = 0; at < submissionIds.length; at += 500) {
     const chunk = submissionIds.slice(at, at + 500)
     const rows = db.prepare(`SELECT * FROM (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY submission_id ORDER BY offered_at DESC, attempt_id DESC) AS newest
+        SELECT ${LEAN_LEASE_COLUMNS}, ROW_NUMBER() OVER (PARTITION BY submission_id ORDER BY offered_at DESC, attempt_id DESC) AS newest
         FROM remote_leases WHERE submission_id IN (${chunk.map(() => '?').join(', ')})
       ) WHERE newest = 1`).all(...chunk) as LeaseRaw[]
     for (const row of rows) out.set(row.submission_id, toLease(row))
@@ -885,21 +1024,48 @@ export function endedLeases(runnerId: string, states: readonly LeaseState[], sin
 }
 
 /**
- * The submissions a machine refused since `since` (its drains aside), or
- * whose result it could not deliver — a result that did not match its
- * uploads, a run stuck past its ceiling: the take does not offer them to it
- * again until REMOTE_DECLINE_SKIP_MS has passed (§3.4 "Decline"), so that
- * another machine, or this server, gets the next try — and the three losses
- * that end a submission are three different machines' (decision 6). A run
- * lost to a silence or an agent's restart is not skipped: the machine that
- * comes back is as good as any for it. Read from the leases themselves, so
- * it outlives a restart and holds nothing row-wide.
+ * The submissions a machine refused since `since`, or whose result it could
+ * not deliver — a result that did not match its uploads, a run stuck past
+ * its ceiling: the take does not offer them to it again until
+ * REMOTE_DECLINE_SKIP_MS has passed (§3.4 "Decline"), so that another
+ * machine, or this server, gets the next try — and the three losses that end
+ * a submission are three different machines' (decision 6). A run lost to a
+ * silence or an agent's restart is not skipped: the machine that comes back
+ * is as good as any for it. Read from the leases themselves, so it outlives a
+ * restart and holds nothing row-wide.
+ *
+ * A DRAIN IS SKIPPED ONLY ONCE ITS CONTAINER HAD STARTED. Given back before
+ * it (`docker stop` while the run was preparing) the run cost nothing, and
+ * the updated machine is as good as any for it. Given back after it (`runner
+ * update --now`) it cost no quota and no loss either (§13 note 3), but the
+ * same machine taking it again at once made the drain free to repeat for
+ * ever: a machine with a stolen secret held a submission as long as it liked,
+ * running and handing it back just before its ceiling, past the ceiling and
+ * the quarantine §6 names as the limits of hoarding. Skipped for the decline's
+ * window, the row goes to another machine or this server, and the drained
+ * machine may take it again after. A decline this server's own blob streams
+ * caused (`starved`) is never skipped: the machine refused nothing.
  */
+const SKIPPED_SQL = `((state = 'declined' AND (cause IS NULL OR cause NOT IN ('draining', 'starved') OR (cause = 'draining' AND started_at IS NOT NULL)))
+        OR (state = 'lost' AND cause IN ('refused', 'ceiling', 'declined')))`
+
 export function declinedBy(runnerId: string, since: number): Set<string> {
-  const rows = db.prepare(`SELECT submission_id FROM remote_leases WHERE runner_id = ? AND ended_at >= ?
-      AND ((state = 'declined' AND (cause IS NULL OR cause != 'draining')) OR (state = 'lost' AND cause IN ('refused', 'ceiling', 'declined')))`)
+  const rows = db.prepare(`SELECT submission_id FROM remote_leases WHERE runner_id = ? AND ended_at >= ? AND ${SKIPPED_SQL}`)
     .all(runnerId, since) as { submission_id: string }[]
   return new Set(rows.map((row) => row.submission_id))
+}
+
+/** declinedBy for many machines in one query (the forecast's fleet reads it once per pass, views.ts · remoteFleet). */
+export function declinedByRunners(runnerIds: readonly string[], since: number): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>(runnerIds.map((id) => [id, new Set<string>()]))
+  if (runnerIds.length === 0) return out
+  for (let at = 0; at < runnerIds.length; at += 500) {
+    const chunk = runnerIds.slice(at, at + 500)
+    const rows = db.prepare(`SELECT runner_id, submission_id FROM remote_leases WHERE runner_id IN (${chunk.map(() => '?').join(', ')}) AND ended_at >= ? AND ${SKIPPED_SQL}`)
+      .all(...chunk, since) as { runner_id: string; submission_id: string }[]
+    for (const row of rows) out.get(row.runner_id)?.add(row.submission_id)
+  }
+  return out
 }
 
 /**
@@ -910,16 +1076,17 @@ export function declinedBy(runnerId: string, since: number): Set<string> {
  * conclusion about the machine.
  */
 export function runnerLeaseCounts(runnerId: string): { scored: number; lost: number; declined: number; requeued: number } {
-  const rows = db.prepare(`SELECT state, reason, COUNT(*) AS n FROM remote_leases WHERE runner_id = ? GROUP BY state, reason`).all(runnerId) as { state: string; reason: string | null; n: number }[]
+  const rows = db.prepare(`SELECT state, reason, cause, COUNT(*) AS n FROM remote_leases WHERE runner_id = ? GROUP BY state, reason, cause`)
+    .all(runnerId) as { state: string; reason: string | null; cause: LeaseCause | null; n: number }[]
   const scored = (db.prepare(`SELECT COUNT(DISTINCT l.submission_id) AS n FROM remote_leases l JOIN submissions s ON s.id = l.submission_id
     WHERE l.runner_id = ? AND l.state = 'applied' AND s.state = 'scored'`).get(runnerId) as { n: number }).n
   const out = { scored, lost: 0, declined: 0, requeued: 0 }
   for (const row of rows) {
     if (row.state === 'applied') continue
     else if (row.state === 'lost') out.lost += row.n
-    else if (row.state === 'declined' && row.reason !== 'draining') out.declined += row.n
-    // Given back with no loss counted: a drain, a withdrawn offer, a revoked machine's runs, an untrust.
-    else if (row.state === 'withdrawn' || (row.state === 'declined' && row.reason === 'draining') || (row.state === 'revoked' && row.reason !== 'cancelled')) out.requeued += row.n
+    else if (row.state === 'declined' && refusedDecline(row)) out.declined += row.n
+    // Given back with no loss counted: a drain, a decline this server starved, a withdrawn offer, a revoked machine's runs, an untrust.
+    else if (row.state === 'withdrawn' || row.state === 'declined' || (row.state === 'revoked' && row.reason !== 'cancelled')) out.requeued += row.n
   }
   return out
 }
@@ -1117,14 +1284,28 @@ export function deleteCompetitionLeases(competitionId: string): { leases: number
  * Old leases and events go: a week of leases (the counters and late replies
  * need no more), three months of events. A lease still live is kept whatever
  * its age: a four-hour run of last week is not last week's.
+ *
+ * AND MACHINES GONE FOR A MONTH (REMOTE_RUNNERS_KEEP_MS): a machine revoked
+ * or left that long ago, with no live lease, goes with its log and its
+ * leases. `make vast-runner` makes new machines for every event, and a list
+ * kept for ever was read whole by every forecast; the owner's list shows a
+ * disconnected machine for its history, and a month is its history.
  */
-export function pruneRemoteRows(now = Date.now()): { leases: number; events: number; codes: number } {
+export const pruneRemoteRows = db.transaction((now: number = Date.now()): { leases: number; events: number; codes: number; runners: number } => {
   const leases = db.prepare(`DELETE FROM remote_leases WHERE state NOT IN ${LIVE_SQL} AND offered_at < ?`).run(now - REMOTE_LEASES_KEEP_MS).changes
   const events = db.prepare('DELETE FROM remote_events WHERE at < ?').run(now - REMOTE_EVENTS_KEEP_MS).changes
   // A code expired a week ago enrolls nothing and counts nothing the dialog still shows.
   const codes = db.prepare('DELETE FROM remote_runner_codes WHERE expires_at < ?').run(now - REMOTE_LEASES_KEEP_MS).changes
-  return { leases, events, codes }
-}
+  const gone = (db.prepare(`SELECT id FROM remote_runners r WHERE r.state IN ('revoked', 'left') AND COALESCE(r.revoked_at, r.created_at) < ?
+      AND NOT EXISTS (SELECT 1 FROM remote_leases l WHERE l.runner_id = r.id AND l.state IN ${LIVE_SQL})`).all(now - REMOTE_RUNNERS_KEEP_MS) as { id: string }[])
+    .map((row) => row.id)
+  for (const id of gone) {
+    db.prepare('DELETE FROM remote_events WHERE runner_id = ?').run(id)
+    db.prepare('DELETE FROM remote_leases WHERE runner_id = ?').run(id)
+    db.prepare('DELETE FROM remote_runners WHERE id = ?').run(id)
+  }
+  return { leases, events, codes, runners: gone.length }
+})
 
 /** The instance setting «Посылок на карту», bounded to what the contract carries. */
 export function boundedPerDevice(value: number): number {

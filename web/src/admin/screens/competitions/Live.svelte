@@ -69,8 +69,11 @@
     lastResultWords,
     lateQuery,
     limitNote,
+    metricImageGone,
     metricNumber,
     moment,
+    moveMetricOutcome,
+    moveMetricQuestion,
     noPlaceOnCards,
     outcomeLine,
     sealedErrorBox,
@@ -89,13 +92,16 @@
     cardlessWarning,
     cellPhaseWord,
     consoleGroups,
+    consoleLoad,
     fleetWords,
     freePlaces,
     groupChip,
     groupLine,
     machinePagePath,
     machinesListPath,
+    metricLaneHead,
     returnedFrom,
+    stoppableOnMachine,
     waitingLine,
     type LineTone,
   } from '@/admin/runners'
@@ -161,6 +167,7 @@
     if (busy) return null
     busy = true
     errorText = null
+    metricMoved = null
     try {
       return await what()
     } catch (cause) {
@@ -320,8 +327,14 @@
     if (queue && live) live = { ...live, queue }
   }
 
-  async function kill(submissionId: string): Promise<void> {
-    await act(() => adminApi.killCompetitionRun(submissionId))
+  /**
+   * A cell's ×. On a machine's cell it is a stop of the run THERE
+   * (`onMachine`): the cell is up to five seconds old, and a run whose
+   * notebook finished meanwhile — its answer on its way here, or waiting for
+   * its metric — is refused in words instead of cancelled.
+   */
+  async function kill(run: Pick<RunningNow, 'submissionId' | 'machine'>): Promise<void> {
+    await act(() => adminApi.killCompetitionRun(run.submissionId, { onMachine: !!run.machine }))
   }
 
   async function finish(): Promise<void> {
@@ -358,6 +371,26 @@
   async function rescoreAll(): Promise<void> {
     const id = c.id
     if (await act(() => adminApi.rescoreCompetition(id))) await loadFeed()
+  }
+
+  /** What the move of the metric's image came to, under the tabs; gone with the next action. */
+  let metricMoved = $state<string | null>(null)
+
+  /**
+   * The metric's pinned image is gone from this server (admin/competitions.ts
+   * · metricImageGone): every metric of the competition fails the same way
+   * and a rescore repeats it, so the way out is the move to the current
+   * kaggle-base (POST …/metric/image) — asked first, since it scores every
+   * submission again. A refusal (no kaggle-base here, a competition on the
+   * CPU) comes back in the server's words, like any other.
+   */
+  async function moveMetric(): Promise<void> {
+    const id = c.id
+    if (busy || !window.confirm(moveMetricQuestion(c.title))) return
+    const moved = await act(() => adminApi.moveCompetitionMetricImage(id))
+    if (!moved) return
+    metricMoved = moveMetricOutcome(moved)
+    await loadFeed()
   }
 
   async function drop(submissionId: string): Promise<void> {
@@ -579,8 +612,19 @@
     muted: 'text-muted',
     ink: 'text-ink',
   }
-  /** Slots with nothing in them: drawn as dashed outlines, never negative. */
-  const freeSlots = $derived(Math.max(0, slots - running.length))
+  /**
+   * The header's busy places and the metric lane beside them
+   * (admin/runners.ts · consoleLoad): a metric runs under «Оценок
+   * одновременно», not in a notebook place, and counted against the places
+   * a single server read «3 ИЗ 1» and drew no free cell over a free place.
+   */
+  const load = $derived(consoleLoad(running, machineGroups))
+  const metricHead = $derived(metricLaneHead(load))
+  /** This server as its group says it, for the wait reason that depends on whether it runs notebooks (admin/runners.ts · waitReason). */
+  const homeGroup = $derived(machineGroups?.find((group) => group.machineId === null) ?? null)
+  const homeWord = $derived(homeGroup ? { notebooks: homeGroup.metricsOnly !== true } : null)
+  /** Notebook places with nothing in them: drawn as dashed outlines, never negative; a metric run here takes none. */
+  const freeSlots = $derived(Math.max(0, slots - load.homeNotebooks))
   /** When the last queued submission of this competition should have its result. */
   const lastEtaMs = $derived.by(() => {
     const known = waiting.map((row) => row.etaMs).filter((ms): ms is number => ms !== null)
@@ -704,14 +748,17 @@
           <Badge word={cardWord(run.gpu.device)} tone="accent" case="lower" class="font-mono" />
         </span>
       {/if}
-      {#if !run.hidden}
+      {#if !run.hidden && (!run.machine || stoppableOnMachine(run.remotePhase))}
+        <!-- On a machine only while its notebook is there: exporting or
+             uploading, it has run, and its answer is on its way to be
+             scored (admin/runners.ts · stoppableOnMachine). -->
         <button
           type="button"
           class="grid size-5 shrink-0 place-items-center text-faint hover:text-danger disabled:opacity-40 max-[640px]:size-11"
           title={tr('admin.competitions.kill')}
           aria-label={`${tr('admin.competitions.kill')} #${run.number}`}
           disabled={busy}
-          onclick={() => void kill(run.submissionId)}
+          onclick={() => void kill(run)}
         >
           <Icon name="x" size={12} />
         </button>
@@ -849,6 +896,8 @@
         {tr('admin.try.again')}
       </button>
     </div>
+  {:else if metricMoved}
+    <p class="pt-4 text-ui text-positive" role="status">{metricMoved}</p>
   {/if}
 
   {#if tab === 'settings'}
@@ -1136,23 +1185,30 @@
       -->
       <div class="flex flex-col border border-line">
         <div class="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-b border-line px-4 py-3">
-          <div class="flex items-center gap-2.5">
+          <!-- Wraps on a phone: with the metric lane said beside the places,
+               the two labels are wider than a 360 px row. -->
+          <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1">
             <span
               class={cn('h-2 w-2 shrink-0', running.length > 0 ? 'bg-accent' : 'bg-faint')}
               aria-hidden="true"
             ></span>
             <!-- With runner cards the header counts both things a GPU run
-                 holds: a slot and a place on a card (Paper 15 · G3). -->
+                 holds: a slot and a place on a card (Paper 15 · G3). The
+                 busy places are notebook runs on executors that give places
+                 (consoleLoad); the metric lane is said apart, beside them. -->
             <span class="admin-label text-primary">
               {queue?.gpu
                 ? tr('admin.competitions.slotsHeadGpu', {
-                    busy: running.length,
+                    busy: load.busy,
                     count: slots,
                     gpuBusy: queue.gpu.busy,
                     gpuCount: queue.gpu.slots,
                   })
-                : tr('admin.competitions.slotsHead', { busy: running.length, count: slots })}
+                : tr('admin.competitions.slotsHead', { busy: load.busy, count: slots })}
             </span>
+            {#if metricHead}
+              <span class="admin-label text-positive">{metricHead}</span>
+            {/if}
           </div>
           <span class="text-2xs text-muted">{statusLine}</span>
           <button
@@ -1298,7 +1354,7 @@
               <p class="text-2xs leading-snug text-warning">{cardlessWarning(machineGroups !== null)}</p>
             {/if}
             {#each waiting as row (row.submissionId)}
-              {@const line = waitingLine(row, waitsForCard(row, queue))}
+              {@const line = waitingLine(row, waitsForCard(row, queue), homeWord)}
               <div class="flex items-center gap-2.5">
                 <span class="w-4 shrink-0 font-mono text-micro text-muted">{row.place ?? '—'}</span>
                 <span class="flex min-w-0 flex-1 flex-col">
@@ -1588,15 +1644,30 @@
                         <pre class="min-w-0 flex-1 basis-[280px] overflow-x-auto whitespace-pre-wrap
                                     font-mono text-micro leading-5 text-ink">{s.teacherError}</pre>
                       {/if}
-                      <!-- Held to the column on a phone: on one line it ran past the row. -->
-                      <button
-                        type="button"
-                        class="btn-outline max-w-full shrink-0 text-left"
-                        disabled={busy}
-                        onclick={() => void rescoreAll()}
-                      >
-                        {tr('admin.competitions.fixAndRescore')}
-                      </button>
+                      <div class="flex max-w-full shrink-0 flex-col items-start gap-2">
+                        {#if metricImageGone(s.teacherError)}
+                          <!-- The pinned image left the server: a rescore
+                               repeats the failure, and the text asks for the
+                               move this button makes. -->
+                          <button
+                            type="button"
+                            class="btn-primary max-w-full text-left"
+                            disabled={busy}
+                            onclick={() => void moveMetric()}
+                          >
+                            {tr('admin.competitions.metricImage.rowMove')}
+                          </button>
+                        {/if}
+                        <!-- Held to the column on a phone: on one line it ran past the row. -->
+                        <button
+                          type="button"
+                          class="btn-outline max-w-full text-left"
+                          disabled={busy}
+                          onclick={() => void rescoreAll()}
+                        >
+                          {tr('admin.competitions.fixAndRescore')}
+                        </button>
+                      </div>
                     </div>
                     <p class="text-micro text-muted">
                       {tr('admin.competitions.entrantSees', { text: metricFailedNote() })}

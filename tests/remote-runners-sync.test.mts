@@ -165,11 +165,13 @@ test('what a machine is asked to hold: GPU kernels only with cards, the hidden t
   assert.equal(revision.gpu, true)
   assert.ok(carded.want.data.some((entry) => entry.competitionId === sealed.id && entry.sealed), 'a trusted machine is asked for the hidden test')
   assert.equal(carded.trusted, true)
-  // The competition closes: the machine is told to forget it.
+  // The competition closes: the machine, which holds its data, is told to forget it.
+  const held = carded.want.data.filter((entry) => entry.competitionId === sealed.id)
+  const holding = { revisions: [], data: held.filter((entry) => !entry.sealed).map((entry) => entry.manifest), sealed: held.filter((entry) => entry.sealed).map((entry) => entry.manifest), bundles: [] }
   setCompetitionState(sealed.id, 'finished')
   const { forgetStock } = await import('../server/src/competitions/remote/want.js')
   forgetStock()
-  const after = (await trusted.sync({ cards: [{ device: '0', name: 'RTX 4090', memoryMb: 24_564, perDevice: 1, busyShares: 0 }] })).body
+  const after = (await trusted.sync({ ready: holding, cards: [{ device: '0', name: 'RTX 4090', memoryMb: 24_564, perDevice: 1, busyShares: 0 }] })).body
   assert.ok(after.forget.includes(sealed.id))
   assert.equal(after.want.data.some((entry) => entry.competitionId === sealed.id), false)
 })
@@ -312,10 +314,20 @@ test('what a machine was asked to hold outlives a restart of this server: a comp
   setCompetitionState(sealed.id, 'finished')
   setCompetitionState(leased.id, 'finished')
   forgetStock()
-  const told = (await m.sync()).body
+  const of = (id: string) => back.body.want.data.filter((entry) => entry.competitionId === id)
+  const holding = {
+    revisions: [],
+    data: [...new Set([...of(sealed.id), ...of(leased.id)].filter((entry) => !entry.sealed).map((entry) => entry.manifest).concat(ready.data))],
+    sealed: of(sealed.id).filter((entry) => entry.sealed).map((entry) => entry.manifest),
+    bundles: [],
+  }
+  const told = (await m.sync({ ready: holding })).body
   assert.ok(back.body.want.data.some((entry) => entry.competitionId === sealed.id), 'still wanted before they closed')
   assert.ok(told.forget.includes(sealed.id), 'the hidden test of a competition closed after a restart is purged')
   assert.ok(told.forget.includes(leased.id), 'and the data of one it only ran a lease of')
-  // Forgotten once, not in every reply after.
+  // Level-triggered: named again while the machine still says it holds their data (the reply may have been lost) ...
+  assert.ok((await m.sync({ ready: holding })).body.forget.includes(sealed.id), 'a lost reply is only a delay')
+  // ... and not once it holds none of it.
   assert.deepEqual((await m.sync()).body.forget.filter((id) => id === sealed.id || id === leased.id), [])
+  assert.deepEqual((await m.sync({ ready: holding })).body.forget.filter((id) => id === sealed.id || id === leased.id), [], 'and forgotten for good once dropped')
 })

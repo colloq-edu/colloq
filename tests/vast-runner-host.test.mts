@@ -37,7 +37,13 @@
  *   9. a machine that left keeps its caches but not its revoked identity, and
  *      its tree is never a system directory;
  *  10. the image's health check knows its mode, and the agent learns its own
- *      container and image, and never a join code on a command line.
+ *      container and image, and never a join code on a command line;
+ *  11. an image without the agent in it (a home rolled back to 0.22) is
+ *      refused before anything is drained, recorded or started, and the
+ *      agent's word on its home's version counts only from a fresh sync;
+ *  12. a running agent's leave is waited for only while its home answers,
+ *      and a stopped one's one-off sees the agent's mounts, CA bundle above
+ *      all; an instance started without COLLOQ_SERVER_IMAGE learns its own.
  */
 import './_env.mts'
 import test from 'node:test'
@@ -64,9 +70,13 @@ const SERVER = (v: string) => `ghcr.io/colloq-edu/colloq-server:${v}`
  * The stand-in docker. Every call goes to the log as a JSON array; images,
  * the registry, containers and what the agent answers live in a JSON file the
  * test prepares and reads back. The agent's answers: `runner status` exits 0
- * while agent.joined, `runner drain` and `runner leave` with agent.drain and
+ * while agent.joined (its syncedAt is agent.syncedAt, `now` for the moment it
+ * is asked), `runner drain` and `runner leave` with agent.drain and
  * agent.leave (0 by default); a leave that succeeds stops the container, as
- * the real agent stops once the home answers 401.
+ * the real agent stops once the home answers 401, and agent.leave `hang` is
+ * one that waits for a home that never answers, until its client is killed.
+ * A throwaway `--entrypoint cat` of an image's runner.sha256 prints the
+ * image's runnerBuild, and fails for an image without one (0.22 and older).
  */
 const FAKE_DOCKER = `#!${process.execPath}
 const fs = require('node:fs')
@@ -137,6 +147,11 @@ if (cmd === 'run') {
   c.image = rest[i]; c.command = rest.slice(i + 1)
   const img = findImage(c.image); if (!img) fail('Unable to find image ' + c.image + ' locally')
   c.imageId = img.id
+  if (c.flags.includes('--rm') && c.flags[c.flags.indexOf('--entrypoint') + 1] === 'cat') {
+    st.peeks = (st.peeks ?? []).concat([[c.image, ...c.command]]); save()
+    if (c.command.join(' ') === '/opt/colloq/server/dist/runner.sha256' && img.runnerBuild) { out(img.runnerBuild + '\\n'); process.exit(0) }
+    fail('cat: ' + c.command.join(' ') + ': No such file or directory')
+  }
   if (c.flags.includes('--rm')) { st.oneOffs = (st.oneOffs ?? []).concat([c]); save(); process.exit(st.oneOffFails ? 1 : 0) }
   c.running = true; st.containers[c.name] = c; save(); out('0123456789ab\\n'); process.exit(0)
 }
@@ -158,10 +173,16 @@ if (cmd === 'exec') {
   const agent = st.agent ?? {}
   if (what[0] === 'colloq-vast' && what[1] === 'runner') {
     if (what[2] === 'status') {
-      out(JSON.stringify({ joined: !!agent.joined, ...(agent.homeVersion ? { homeVersion: agent.homeVersion } : {}) }) + '\\n')
+      // 'later': a sync of long ago for the first two asks, and one made just now from the third on.
+      st.statusAsks = (st.statusAsks ?? 0) + 1; save()
+      const at = agent.syncedAt === 'now' || (agent.syncedAt === 'later' && st.statusAsks > 2) ? Date.now() : agent.syncedAt === 'later' ? 0 : agent.syncedAt
+      const synced = agent.syncedAt === undefined ? {} : { syncedAt: at }
+      out(JSON.stringify({ joined: !!agent.joined, ...(agent.homeVersion ? { homeVersion: agent.homeVersion } : {}), ...synced }) + '\\n')
       process.exit(agent.joined ? 0 : 1)
     }
     if (what[2] === 'drain') process.exit(agent.drain ?? 0)
+    // Waiting for a home that never answers: only a kill ends this client (CommonJS lets the script return).
+    if (what[2] === 'leave' && agent.leave === 'hang') { setInterval(() => {}, 1000); return }
     if (what[2] === 'leave') { if (!agent.leave) { c.running = false; save() } process.exit(agent.leave ?? 0) }
   }
   if (what[0] === 'colloq-vast' && what[1] === 'runner-code') {
@@ -178,7 +199,7 @@ function write(file: string, text: string, mode = 0o755): void {
   fs.writeFileSync(file, text, { mode })
 }
 
-type Image = { id: string; labels?: Record<string, string> }
+type Image = { id: string; labels?: Record<string, string>; runnerBuild?: string }
 type Container = {
   image: string; imageId: string; running: boolean; flags: string[]; env: Record<string, string>; labels: Record<string, string>
   mounts: string[]; publish?: string; command: string[]; restart: string; health?: string; envFile?: string; stoppedWith?: string[]
@@ -188,14 +209,22 @@ type State = {
   images: Record<string, Image>
   registry: Record<string, Image>
   containers: Record<string, Container>
-  agent?: { joined?: boolean; drain?: number; leave?: number; homeVersion?: string }
+  agent?: { joined?: boolean; drain?: number; leave?: number | 'hang'; homeVersion?: string; syncedAt?: number | 'now' | 'later' }
+  statusAsks?: number
   execs?: { name: string; what: string[]; files?: { env: boolean; image: boolean } | null }[]
   oneOffs?: Container[]
+  /** The throwaway `cat`s: image, then the file asked for. */
+  peeks?: string[][]
   minted?: Record<string, unknown>
   [key: string]: unknown
 }
 
-const release = (id: string, version: string): Image => ({ id, labels: { 'org.opencontainers.image.version': version } })
+/** A release with machines for submissions: its runner build is a hash of its own. */
+const release = (id: string, version: string): Image => ({
+  id, labels: { 'org.opencontainers.image.version': version }, runnerBuild: createHash('sha256').update(`runner.js of ${id}`).digest('hex'),
+})
+/** A release from before them (0.22.0 and older): no dist/runner.sha256, no `runner` mode. */
+const preRunner = (id: string, version: string): Image => ({ id, labels: { 'org.opencontainers.image.version': version } })
 
 /** A machine: the stand-ins, a state file, and the paths colloq-host writes, all in a temporary directory. */
 function machine(given: Partial<State> = {}, opts: { gpu?: boolean } = {}) {
@@ -231,6 +260,8 @@ function machine(given: Partial<State> = {}, opts: { gpu?: boolean } = {}) {
     COLLOQ_RUNNER_STATE: tree,
     // A machine that never joins is found out in two seconds, not three minutes.
     COLLOQ_RUNNER_JOIN_WAIT: '2',
+    // An agent's word on its home is taken from a sync already made or not at all, not waited a minute for.
+    COLLOQ_RUNNER_FRESH_SEC: '0',
     FAKE_CONF: conf,
   }
   const run = (args: string[], env: Record<string, string> = {}) => {
@@ -429,8 +460,10 @@ test('runner update pulls first, drains, then restarts on the home\'s version; -
     const pulled = callIndex(calls, (c) => c[0] === 'pull' && c.includes(SERVER('0.25.0')))
     const drained = callIndex(calls, (c) => c[0] === 'exec' && c.slice(-3).join(' ') === 'colloq-vast runner drain')
     const stopped = callIndex(calls, (c) => c[0] === 'stop')
-    const started = callIndex(calls, (c) => c[0] === 'run' && c.includes(SERVER('0.25.0')))
-    assert.ok(pulled >= 0 && pulled < drained && drained < stopped && stopped < started, calls.map((c) => c.join(' ')).join('\n'))
+    const started = callIndex(calls, (c) => c[0] === 'run' && c[1] === '-d' && c.includes(SERVER('0.25.0')))
+    // The new image was asked whether the agent is in it after the pull and before the drain.
+    const peeked = callIndex(calls, (c) => c[0] === 'run' && c.includes('--rm') && c.includes('cat') && c.includes(SERVER('0.25.0')))
+    assert.ok(pulled >= 0 && pulled < peeked && peeked < drained && drained < stopped && stopped < started, calls.map((c) => c.join(' ')).join('\n'))
     assert.match(r.out, /draining colloq-runner: it finishes the runs it holds and takes no new ones \(at most 262 min/)
     assert.equal(m.state().containers['colloq-runner']!.image, SERVER('0.25.0'))
     assert.equal(m.runnerImage(), SERVER('0.25.0'))
@@ -481,10 +514,12 @@ test('runner update pulls first, drains, then restarts on the home\'s version; -
 })
 
 test('runner update follows the home through the agent when this host cannot ask the home itself', () => {
-  const m = machine({ registry: { [SERVER('0.24.0')]: release('sha256:r24', '0.24.0'), [SERVER('0.25.0')]: release('sha256:r25', '0.25.0') } })
+  const m = machine({ registry: {
+    [SERVER('0.24.0')]: release('sha256:r24', '0.24.0'), [SERVER('0.25.0')]: release('sha256:r25', '0.25.0'), [SERVER('0.26.0')]: release('sha256:r26', '0.26.0'),
+  } })
   try {
     assert.equal(m.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.24.0' }).status, 0)
-    m.setState((s) => { s.agent = { joined: true, homeVersion: '0.25.0' } })
+    m.setState((s) => { s.agent = { joined: true, homeVersion: '0.25.0', syncedAt: 'now' } })
     let r = m.run(['runner', 'update'])
     assert.equal(r.status, 0, r.out)
     assert.equal(m.state().containers['colloq-runner']!.image, SERVER('0.25.0'))
@@ -492,8 +527,66 @@ test('runner update follows the home through the agent when this host cannot ask
     m.setState((s) => { s.agent = { joined: true } })
     r = m.run(['runner', 'update'])
     assert.notEqual(r.status, 0)
-    assert.match(r.out, /neither https:\/\/vsos\.colloq\.ru nor the agent says which version the home runs; name it: colloq-host runner update <version>/)
+    assert.match(r.out, /neither https:\/\/vsos\.colloq\.ru nor the agent says which version the home runs \(the agent's word counts from a sync since this update began, and none came: is the home up\?\); name it: colloq-host runner update <version>/)
+    // Right after its home moved on: the home's container replaced, its tunnel not back, the agent's
+    // status still saying the release it left, from a sync a minute ago. That is no answer: the machine
+    // is not "already" on it, and nothing is pulled or drained on its word.
+    m.setState((s) => { s.agent = { joined: true, homeVersion: '0.25.0', syncedAt: Date.now() - 60_000 } })
+    m.clearCalls()
+    r = m.run(['runner', 'update'])
+    assert.notEqual(r.status, 0, r.out)
+    assert.doesNotMatch(r.out, /already runs/)
+    assert.match(r.out, /nor the agent says which version the home runs \(the agent's word counts from a sync since this update began/)
+    assert.deepEqual(m.dockerCalls().filter((c) => c[0] === 'pull' || c[0] === 'stop' || (c[0] === 'exec' && c.includes('drain'))), [])
+    // A sync that comes while the update waits for one counts: the agent heard the home on 0.26.0.
+    m.setState((s) => { s.agent = { joined: true, homeVersion: '0.26.0', syncedAt: 'later' }; s.statusAsks = 0 })
+    r = m.run(['runner', 'update'], { COLLOQ_RUNNER_FRESH_SEC: '10' })
+    assert.equal(r.status, 0, r.out)
+    assert.equal(m.state().containers['colloq-runner']!.image, SERVER('0.26.0'))
   } finally { m.done() }
+})
+
+test('a home rolled back to a release from before machines for submissions: runner update and up refuse before anything changes', () => {
+  const m = machine({ registry: { [SERVER('0.24.0')]: release('sha256:r24', '0.24.0'), [SERVER('0.22.0')]: preRunner('sha256:r22', '0.22.0') } })
+  try {
+    assert.equal(m.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.24.0' }).status, 0)
+    m.clearCalls()
+    // `colloq-host restore --image …:0.22.0` on the home, then the documented next step here.
+    let r = m.run(['runner', 'update'], { FAKE_HOME_VERSION: '0.22.0' })
+    assert.notEqual(r.status, 0, r.out)
+    assert.match(r.out, /the home runs 0\.22\.0, a release from before machines for submissions: ghcr\.io\/colloq-edu\/colloq-server:0\.22\.0 has no runner mode\. Nothing was changed: colloq-runner keeps running ghcr\.io\/colloq-edu\/colloq-server:0\.24\.0/)
+    // Asked of the image itself, by a throwaway container that runs nothing of it.
+    assert.deepEqual(m.state().peeks!.at(-1), [SERVER('0.22.0'), '/opt/colloq/server/dist/runner.sha256'])
+    const touched = (calls: string[][]) => calls.filter((c) => c[0] === 'stop' || c[0] === 'rm' || (c[0] === 'run' && c[1] === '-d') || (c[0] === 'exec' && c.includes('drain')))
+    assert.deepEqual(touched(m.dockerCalls()), [], 'no drain, no stop, nothing started')
+    const c = m.state().containers['colloq-runner']!
+    assert.equal(c.running, true)
+    assert.equal(c.image, SERVER('0.24.0'))
+    assert.equal(m.runnerImage(), SERVER('0.24.0'), 'a reboot keeps the working agent')
+    // The version named by mistake, or the image itself: the same.
+    for (const named of ['0.22.0', SERVER('0.22.0')]) {
+      m.clearCalls()
+      r = m.run(['runner', 'update', named])
+      assert.notEqual(r.status, 0, named)
+      assert.match(r.out, /ghcr\.io\/colloq-edu\/colloq-server:0\.22\.0 has no machines for submissions in it \(no runner mode: a release from before them, or not a colloq-server image\); nothing was changed: colloq-runner keeps running/)
+      assert.deepEqual(touched(m.dockerCalls()), [], named)
+    }
+    assert.equal(m.runnerImage(), SERVER('0.24.0'))
+  } finally { m.done() }
+  // A machine joining a home on such a release: nothing is recorded, nothing started.
+  const fresh = machine({ registry: { [SERVER('0.22.0')]: preRunner('sha256:r22', '0.22.0') } })
+  try {
+    const r = fresh.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.22.0' })
+    assert.notEqual(r.status, 0, r.out)
+    assert.match(r.out, /https:\/\/vsos\.colloq\.ru runs 0\.22\.0, a release from before machines for submissions: ghcr\.io\/colloq-edu\/colloq-server:0\.22\.0 has no runner mode, and nothing was started/)
+    assert.equal(fresh.runnerImage(), null)
+    assert.equal(fresh.state().containers['colloq-runner'], undefined)
+    // An image named for it is refused the same way.
+    const named = fresh.run(['runner', 'up', 'https://vsos.colloq.ru', CODE, SERVER('0.22.0')])
+    assert.notEqual(named.status, 0)
+    assert.match(named.out, /has no machines for submissions in it .*nothing was started/)
+    assert.equal(fresh.state().containers['colloq-runner'], undefined)
+  } finally { fresh.done() }
 })
 
 test('the drain is bounded by the longest a run can last', () => {
@@ -548,7 +641,7 @@ test('runner update takes over a machine joined with a plain docker run, writes 
     const calls = m.dockerCalls()
     const drained = callIndex(calls, (c) => c[0] === 'exec' && c.slice(-3).join(' ') === 'colloq-vast runner drain')
     const stopped = callIndex(calls, (c) => c[0] === 'stop')
-    const started = callIndex(calls, (c) => c[0] === 'run' && c.includes(SERVER('0.25.0')))
+    const started = callIndex(calls, (c) => c[0] === 'run' && c[1] === '-d' && c.includes(SERVER('0.25.0')))
     assert.ok(drained >= 0 && drained < stopped && stopped < started, calls.map((c) => c.join(' ')).join('\n'))
     // The new container is colloq-host's, on the old one's join, tree and way out, and nothing of the image's ENV.
     const c = m.state().containers['colloq-runner']!
@@ -813,6 +906,68 @@ test('a leave that fails keeps the machine running as it was; a stopped one leav
   } finally { m.done() }
 })
 
+test('the one-off a stopped machine leaves from sees what the agent saw: the CA bundle above all', () => {
+  const m = machine({ registry: { [SERVER('0.24.0')]: release('sha256:r24', '0.24.0') } })
+  try {
+    // A university server behind an internal CA (or a TLS-inspecting proxy), joined as the docs say.
+    const ca = path.join(m.dir, 'campus-ca.pem')
+    fs.writeFileSync(ca, '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n')
+    let r = m.run(['runner', 'up', 'https://colloq.campus.example', CODE], { FAKE_HOME_VERSION: '0.24.0', NODE_EXTRA_CA_CERTS: ca, HTTPS_PROXY: 'http://proxy.campus:3128' })
+    assert.equal(r.status, 0, r.out)
+    const agent = m.state().containers['colloq-runner']!
+    assert.ok(agent.mounts.includes(`${ca}:${ca}:ro`), agent.mounts.join(' '))
+    // Stopped (a reboot that left it down, a docker stop), then asked to leave.
+    m.setState((s) => { s.containers['colloq-runner']!.running = false })
+    r = m.run(['runner', 'leave'])
+    assert.equal(r.status, 0, r.out)
+    const oneOff = m.state().oneOffs!.find((o) => o.command.join(' ') === 'runner leave')!
+    assert.equal(oneOff.env.NODE_EXTRA_CA_CERTS, ca, 'told to trust it')
+    assert.ok(oneOff.mounts.includes(`${ca}:${ca}:ro`), `and given it: ${oneOff.mounts.join(' ')}`)
+    // The very mounts the agent had, the same list.
+    assert.deepEqual(oneOff.mounts, agent.mounts)
+    // Its image to probe with, and no container of its own: this one-off is not the machine's.
+    assert.equal(oneOff.env.COLLOQ_RUNNER_IMAGE, SERVER('0.24.0'))
+    assert.equal(oneOff.env.COLLOQ_RUNNER_CONTAINER, '')
+    assert.equal(oneOff.env.COLLOQ_RUNNER_STATE, m.tree)
+  } finally { m.done() }
+})
+
+test('a running agent\'s leave is waited for only while its home answers, and never for good', () => {
+  const m = machine({ registry: { [SERVER('0.24.0')]: release('sha256:r24', '0.24.0') } })
+  try {
+    assert.equal(m.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.24.0' }).status, 0)
+    fs.writeFileSync(path.join(m.tree, 'runner.json'), '{"runnerId":"still-here"}\n')
+    // The home is gone (destroyed before its machines, its tunnel down): the agent last heard it an hour ago,
+    // and its leave waits for an answer that never comes.
+    const status = (syncedAt: number) => fs.writeFileSync(path.join(m.tree, 'status.json'), `${JSON.stringify({ state: 'leaving', syncedAt, updatedAt: Date.now() })}\n`)
+    status(Date.now() - 3_600_000)
+    m.setState((s) => { s.agent = { joined: true, leave: 'hang' } })
+    const began = Date.now()
+    let r = m.run(['runner', 'leave'], { COLLOQ_RUNNER_LEAVE_SILENT_SEC: '2' })
+    assert.notEqual(r.status, 0, r.out)
+    assert.ok(Date.now() - began < 30_000, 'given up within seconds, not waited for good')
+    assert.match(r.out, /colloq-runner has heard nothing from its home \(https:\/\/vsos\.colloq\.ru\) for 2 s while leaving, and a leave ends with the home's answer\. It keeps running and leaving: it takes no new work, and revokes itself as soon as the home answers/)
+    // The machine is as it was: running, restarted by Docker again, still joined, its identity in place.
+    let c = m.state().containers['colloq-runner']!
+    assert.equal(c.running, true)
+    assert.equal(c.restart, 'unless-stopped', 'the restart policy is given back')
+    assert.match(m.runnerEnv(), /^COLLOQ_RUNNER_JOIN=/m)
+    assert.equal(fs.existsSync(path.join(m.tree, 'runner.json')), true)
+    // A home that answers is waited for while the runs finish, up to the bound, and no longer.
+    status(Date.now() + 3_600_000)
+    r = m.run(['runner', 'leave'], { COLLOQ_RUNNER_LEAVE_SEC: '2' })
+    assert.notEqual(r.status, 0, r.out)
+    assert.match(r.out, /colloq-runner has not left in 2 s: it still finishes its runs, or waits for its home \(its words are above\)/)
+    c = m.state().containers['colloq-runner']!
+    assert.equal(c.running, true)
+    assert.equal(c.restart, 'unless-stopped')
+    // The defaults: ten minutes of silence, the drain's bound and ten minutes in all.
+    const host = read('deploy/vast/colloq-host')
+    assert.match(host, /bound="\$\(setting COLLOQ_RUNNER_LEAVE_SEC \$\(\(drain \+ 600\)\)\)"/)
+    assert.match(host, /silent="\$\(setting COLLOQ_RUNNER_LEAVE_SILENT_SEC 600\)"/)
+  } finally { m.done() }
+})
+
 test('runner status answers for the agent, and says so when there is none', () => {
   const m = machine({ registry: { [SERVER('0.24.0')]: release('sha256:r24', '0.24.0') } })
   try {
@@ -859,7 +1014,7 @@ test('runner-code mints on the instance and prints the code once, inside the thr
     assert.match(r.out, /a code for 3 machine\(s\), valid until 2025-10-14 12:00 UTC; trusted with the hidden test; at most 4 places each/)
     // The three commands of the design, filled in: the image the instance runs, under its colloq-server name.
     assert.ok(r.out.includes([
-      '  docker run -d --name colloq-runner --restart unless-stopped \\',
+      '  docker run -d --name colloq-runner --restart unless-stopped --stop-timeout 90 \\',
       '    -v /var/run/docker.sock:/var/run/docker.sock \\',
       '    -v /var/lib/colloq-runner:/var/lib/colloq-runner \\',
       `    -e COLLOQ_RUNNER_JOIN='https://vsos.colloq.ru#${CODE}' \\`,
@@ -1095,6 +1250,33 @@ test('the agent learns its own container and image: from colloq-host, or from th
   } finally { rig.done() }
 })
 
+test('an instance started without COLLOQ_SERVER_IMAGE learns its own image from the daemon, for the panel\'s join commands', () => {
+  // An instance updated to this release by the colloq-host of the one before: its container was started
+  // without the variable, and its settings' fingerprint does not count it, so nothing ever adds it.
+  const serve = shellFunction(ENTRYPOINT, 'serve')
+  assert.ok(serve.indexOf('locate_self') < serve.indexOf('locate_server_image') && serve.indexOf('locate_server_image') < serve.indexOf('start_server'),
+    'serve asks after it has found its container, and before the server starts')
+  const rig = entrypointRig()
+  try {
+    // A child process sees it: the server, started by serve, inherits it.
+    const ask = (env: Record<string, string>) => rig.run(['locate_server_image'],
+      'SELF=self0123\nlocate_server_image\nbash -c \'printf "IMAGE[%s]\\n" "${COLLOQ_SERVER_IMAGE:-}"\'\n', env)
+    const own = 'registry.example.org/colloq/colloq-vast:0.24.0-campus'
+    let r = ask({ FAKE_IMAGE: own })
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, new RegExp(`^IMAGE\\[${esc(own)}\\]$`, 'm'))
+    // What colloq-host passes wins.
+    r = ask({ FAKE_IMAGE: own, COLLOQ_SERVER_IMAGE: 'ghcr.io/colloq-edu/colloq-vast:0.24.0' })
+    assert.match(r.out, /^IMAGE\[ghcr\.io\/colloq-edu\/colloq-vast:0\.24\.0\]$/m)
+    // A bare id is no name a machine can pull, and a daemon that does not say leaves it unknown: the panel then names the published image.
+    for (const id of [`sha256:${'a'.repeat(64)}`, 'a'.repeat(64), '0123456789ab', '']) {
+      r = ask({ FAKE_IMAGE: id })
+      assert.equal(r.status, 0, r.out)
+      assert.match(r.out, /^IMAGE\[\]$/m, id)
+    }
+  } finally { rig.done() }
+})
+
 test('the image\'s health check knows its mode: the agent\'s status for a machine, the server\'s livez for an instance', () => {
   const dockerfile = read('deploy/vast/Dockerfile')
   assert.match(dockerfile, /^HEALTHCHECK [^\n]*\\\n\s+CMD \["\/usr\/local\/bin\/colloq-vast", "health"\]$/m)
@@ -1250,12 +1432,13 @@ test('the runner on-start takes the home\'s version from the repository COLLOQ_R
     const bin = path.join(dir, 'bin')
     const sbin = path.join(dir, 'sbin')
     const calls = path.join(dir, 'calls')
-    write(path.join(bin, 'docker'), `#!/bin/sh\necho "docker $*" >> '${calls}'\nexit 0\n`)
+    // The image's runner build, read by a throwaway cat: there, or (FAKE_PRE_RUNNER) a release from before machines for submissions.
+    write(path.join(bin, 'docker'), `#!/bin/sh\necho "docker $*" >> '${calls}'\ncase "$*" in\n  *"--entrypoint cat "*runner.sha256) [ -z "$FAKE_PRE_RUNNER" ] || { echo "cat: no such file" >&2; exit 1; }; echo ${'c'.repeat(64)} ;;\nesac\nexit 0\n`)
     write(path.join(bin, 'systemctl'), '#!/bin/sh\nexit 0\n')
     write(path.join(bin, 'curl'), `#!/bin/sh\necho "curl $*" >> '${calls}'\nprintf '{"ok":false,"version":"0.24.0"}'\n`)
     write(path.join(sbin, 'colloq-host'), `#!/bin/sh\necho "colloq-host $* REPO=$COLLOQ_RUNNER_REPO" >> '${calls}'\n`)
     // The file as make vast-runner fills it, with its machine paths moved into this directory.
-    const boot = (repo: string) => {
+    const boot = (repo: string, env: Record<string, string> = {}) => {
       fs.rmSync(calls, { force: true })
       const script = path.join(dir, 'onstart-runner.sh')
       fs.writeFileSync(script, read('deploy/vast/onstart-runner.sh')
@@ -1265,7 +1448,7 @@ test('the runner on-start takes the home\'s version from the repository COLLOQ_R
         .replaceAll('/var/log/colloq-onstart.log', path.join(dir, 'onstart.log'))
         .replaceAll('/etc/colloq/', `${path.join(dir, 'etc-colloq')}/`)
         .replaceAll('/usr/local/sbin', sbin))
-      const r = spawnSync('bash', [script], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: `${bin}:/usr/bin:/bin` } })
+      const r = spawnSync('bash', [script], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: `${bin}:/usr/bin:/bin`, ...env } })
       return { status: r.status, out: (r.stdout ?? '') + (r.stderr ?? ''), calls: fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '' }
     }
     let r = boot('')
@@ -1273,6 +1456,15 @@ test('the runner on-start takes the home\'s version from the repository COLLOQ_R
     assert.match(r.calls, /^curl -sS --max-time 20 https:\/\/vsos\.colloq\.ru\/api\/health$/m)
     assert.ok(r.calls.includes(`docker run --rm -v ${sbin}:/host ${SERVER('0.24.0')} install-host /host\n`), r.calls)
     assert.ok(r.calls.includes(`colloq-host runner up https://vsos.colloq.ru ${CODE} ${SERVER('0.24.0')} REPO=\n`), r.calls)
+    // The image was asked whether the agent is in it before its colloq-host replaced the one here.
+    const peek = r.calls.indexOf(`docker run --rm --network none --entrypoint cat ${SERVER('0.24.0')} /opt/colloq/server/dist/runner.sha256\n`)
+    assert.ok(peek >= 0 && peek < r.calls.indexOf('install-host'), r.calls)
+    // A home rolled back to a release from before machines for submissions: the boot stops in words,
+    // before that release's colloq-host (one with no `runner` at all) is put on the machine.
+    r = boot('', { FAKE_PRE_RUNNER: '1' })
+    assert.equal(r.status, 1, r.out)
+    assert.match(r.out, /ghcr\.io\/colloq-edu\/colloq-server:0\.24\.0 has no machines for submissions in it \(a release from before them\): https:\/\/vsos\.colloq\.ru must run a release with them first/)
+    assert.doesNotMatch(r.calls, /install-host|colloq-host runner up/)
     // A fork's registry: its image of the home's version, and colloq-host told the repository for the updates to come.
     const fork = 'registry.example.org/fork/colloq-server'
     r = boot(fork)

@@ -26,7 +26,12 @@
  *      joined is named with its destroy command, or destroyed;
  *   4. the GPU kernels are published parents first, each checked on a card
  *      before its push, under the very tag the entry point pulls;
- *   5. everything a value can break is refused in words before any request.
+ *   5. everything a value can break is refused in words before any request;
+ *   6. an update leaves a machine alone only on its home's word from a sync
+ *      made after it asked, never on the last word its status kept;
+ *   7. the class tooling (vast.sh, vast-legacy.sh) never takes a machine for
+ *      submissions for a deployment, and no deployment takes their label;
+ *   8. a VM's wait survives polls Vast answers with no JSON, or nothing.
  */
 import './_cli.mts'
 import test from 'node:test'
@@ -56,8 +61,9 @@ const OFFERS = [101, 102, 103].map((id, i) => ({
  * with `lag` the first search after a rent still lists the offer just taken,
  * as the market did for a few seconds after a rent. A rent of a taken offer is
  * refused the way Vast refuses one; a rent of a free one makes an instance,
- * which answers with a running VM and its own ssh port. Every call goes to
- * the shared log, the state file is rewritten whole by a rename.
+ * which answers with a running VM and its own ssh port, after the bodies in
+ * `garbled`, one per poll. Every call goes to the shared log, the state file
+ * is rewritten whole by a rename.
  */
 const FAKE_CURL = `#!${process.execPath}
 const fs = require('node:fs')
@@ -81,6 +87,8 @@ if (call.method === 'POST' && where === 'bundles/') {
   if (st.rented.includes(id)) { save(); out({ success: false, error: 'no_such_ask', msg: 'Instance type by id ' + id + ' is not available.' }) }
   else { st.rented.push(id); st.lastRented = id; const contract = 900 + st.rented.length; save(); out({ success: true, new_contract: contract }) }
 } else if (call.method === 'GET' && (m = /^instances\\/(\\d+)\\/$/.exec(where))) {
+  // A poll answered as Vast's API sometimes does: a body that is not JSON, or none (one per poll, in order).
+  if ((st.garbled ?? []).length > 0) { const body = st.garbled.shift(); save(); process.stdout.write(body); process.exit(0) }
   const id = Number(m[1])
   out({ instances: { id, actual_status: 'running', cur_state: 'running', status_msg: '', public_ipaddr: '198.51.100.' + (id % 250),
     ports: { '22/tcp': [{ HostIp: '0.0.0.0', HostPort: String(40000 + id) }] } } })
@@ -96,13 +104,15 @@ if (call.method === 'POST' && where === 'bundles/') {
  * on-start a copy uploads is kept, and so is every script sent to `bash -s`.
  * A host in FAKE_SSH_FAIL fails whatever it is asked. What each machine says
  * lives in FAKE_MACHINES, a JSON file by host: its home and its agent's status
- * line for the survey, `unjoined` for one whose agent never joins, and `polls`,
+ * line for the survey (asked at ASKED on the machine's clock, unless `asked`
+ * says otherwise), `unjoined` for one whose agent never joins, and `polls`,
  * the answers its detached update gives one poll after another (`running`,
  * `drop` for a poll whose connection drops, `gone`, or `exit <code>`; the last
  * one repeats). How far each machine's polls have got is a file of its own:
  * the machines are polled at once, and one file rewritten by each would lose
  * the other's count.
  */
+const ASKED = 1_760_000_000_000
 const FAKE_SSH = `#!${process.execPath}
 const fs = require('node:fs')
 const args = process.argv.slice(2)
@@ -122,7 +132,7 @@ const file = process.env.FAKE_MACHINES
 const m = (file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {})[host] || {}
 const out = (s) => process.stdout.write(s)
 if (command.startsWith('systemctl is-system-running')) out('running\\n')
-else if (input.includes('colloq-runner-fleet: survey')) out('home ' + (m.home || '') + '\\nstatus ' + (m.status || '') + '\\n')
+else if (input.includes('colloq-runner-fleet: survey')) out('home ' + (m.home || '') + '\\nasked ' + (m.asked || '${ASKED}') + '\\nstatus ' + (m.status || '') + '\\n')
 else if (input.includes('colloq-runner-fleet: start the update')) out('colloq-host runner update' + (command.slice('bash -s --'.length) ? ' ' + command.slice('bash -s --'.length).trim() : '') + ' runs detached on this machine\\n')
 else if (input.includes('colloq-runner-fleet: poll the update')) {
   const steps = m.polls || ['exit 0']
@@ -143,8 +153,8 @@ else if (command.includes('colloq-host runner leave')) out('[colloq-host] left: 
 process.exit(0)
 `
 
-type Call = { tool: 'curl' | 'ssh'; method?: string; url?: string; body?: string | null; host?: string; port?: string; command?: string; input?: string }
-type Vast = { offers: typeof OFFERS; rented: number[]; rents: { offer: number; body: Record<string, unknown> }[]; listed: unknown[]; destroyed: number[]; lag: boolean; lastRented?: number }
+type Call = { tool: 'curl' | 'ssh' | 'rsync'; method?: string; url?: string; body?: string | null; host?: string; port?: string; command?: string; input?: string }
+type Vast = { offers: typeof OFFERS; rented: number[]; rents: { offer: number; body: Record<string, unknown> }[]; listed: unknown[]; destroyed: number[]; lag: boolean; lastRented?: number; garbled?: string[] }
 
 function write(file: string, text: string, mode = 0o755): void {
   fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -233,6 +243,32 @@ test('vast-vm.sh with ROLE=runner rents a VM labelled colloq-runner and waits fo
       assert.equal(named.vast().rents[0]!.body.label, 'colloq-runner-gpu')
     } finally { named.done() }
   } finally { m.done() }
+})
+
+test('vast-vm.sh waits through polls Vast answers with something that is not JSON, or with nothing, and stops on a refusal in words', () => {
+  // On 14 Oct 2026 the API answered one poll so: a Python traceback stood in the log, and the wait went on only
+  // because the answer fell to a line whose failure set -e does not see. On the status line it ended the script
+  // without a word, the VM rented and billing.
+  const garbled = ['<html><body><h1>502 Bad Gateway</h1></body></html>', '', '{"instances": {"id": 901, "actual_st', '<html>…</html>', '']
+  const m = rig({ garbled }, {}, { fast: true })
+  try {
+    const r = m.run(VM, [], { ROLE: 'runner', ONSTART: m.filledOnstart(), FORCE: '1' })
+    assert.equal(r.status, 0, r.out)
+    assert.doesNotMatch(r.out, /Traceback|JSONDecodeError|vast answered with nothing/)
+    const polls = r.calls.filter((c) => c.tool === 'curl' && c.method === 'GET' && /\/instances\/\d+\/$/.test(c.url!))
+    assert.ok(polls.length > garbled.length, `every lost poll was asked again: ${polls.length}`)
+    assert.deepEqual(m.vast().garbled, [])
+    assert.match(r.out, /on the VM: colloq-host runner status \| logs \| leave/)
+  } finally { m.done() }
+  // An answer that says no in words is still an end: the instance is gone, and the wait says so.
+  const refusal = JSON.stringify({ success: false, error: 'no_such_instance', msg: 'Instance 901 does not exist.' })
+  const gone = rig({ garbled: [refusal, refusal, refusal] }, {}, { fast: true })
+  try {
+    const r = gone.run(VM, [], { ROLE: 'runner', ONSTART: gone.filledOnstart(), FORCE: '1' })
+    assert.equal(r.status, 1, r.out)
+    assert.match(r.out, /vast refused: no_such_instance Instance 901 does not exist\./)
+    assert.doesNotMatch(r.out, /Traceback/)
+  } finally { gone.done() }
 })
 
 test('vast-vm.sh with ROLE=runner refuses an unfilled on-start, a class address and an unknown role, before any request', () => {
@@ -370,9 +406,11 @@ const vm = (id: number, label: string, running = true) => ({
 const LISTED = [vm(11, 'colloq-runner'), vm(12, 'colloq-runner-gpu'), vm(13, 'colloq-vm'), vm(14, 'colloq'), vm(15, 'colloq-runnerx')]
 
 // What an agent says in its status (the fields the fleet reads: joined, and
-// compatible from its last sync, else version against homeVersion).
-const OUTDATED = '{"joined":true,"compatible":false,"version":"0.24.0","homeVersion":"0.25.0"}'
-const CURRENT = '{"joined":true,"compatible":true,"version":"0.24.0","homeVersion":"0.24.1"}'
+// compatible from a sync made after the survey asked, by syncedAt).
+const OUTDATED = `{"joined":true,"compatible":false,"version":"0.24.0","homeVersion":"0.25.0","syncedAt":${ASKED + 4_000}}`
+const CURRENT = `{"joined":true,"compatible":true,"version":"0.24.0","homeVersion":"0.24.1","syncedAt":${ASKED + 4_000}}`
+// The home's word from before it was asked: the last sync with the home that was, its replacement not heard yet.
+const STALE = `{"joined":true,"compatible":true,"version":"0.24.0","homeVersion":"0.24.0","syncedAt":${ASKED - 20_000},"path":"unreachable"}`
 const LAB = 'https://lab.example.org'
 
 /** The updates a run started, host:port and the remote command, sorted. */
@@ -457,6 +495,93 @@ test('runners-update takes the machines of URL= alone, leaves those already on t
   } finally { m.done() }
 })
 
+test('runners-update takes no home\'s word from before it asked: a machine whose status is stale is updated, one just heard is left alone', () => {
+  // "Right after the home", as the docs have it: the home's container replaced, its tunnel back seconds later.
+  // Machine 11's agent last heard the home that was (compatible, a sync before the survey asked); machine 12's
+  // heard the new one say its build is its own.
+  const m = rig({ listed: [vm(11, 'colloq-runner'), vm(12, 'colloq-runner')] }, {
+    '198.51.100.11': { home: HOME, status: STALE },
+    '198.51.100.12': { home: HOME, status: CURRENT },
+  })
+  try {
+    let r = m.run(RUNNER, ['update'])
+    assert.equal(r.status, 0, r.out)
+    assert.deepEqual(starts(r.calls), ['198.51.100.11:40011 bash -s --'])
+    assert.match(r.out, /\[12\].*its runner build is already its home's \(https:\/\/vsos\.colloq\.ru\): left as it is/)
+    assert.doesNotMatch(r.out, /\[11\].*left as it is/)
+    assert.doesNotMatch(r.out, /instance 11 .*\(on its home's build\)/)
+    // Each agent is given a minute for a sync made after the survey asked; a run that skips no machine waits for none.
+    const surveys = (calls: Call[]) => calls.filter((c) => c.input?.includes('colloq-runner-fleet: survey')).map((c) => c.command)
+    assert.deepEqual(surveys(r.calls), ['bash -s -- 60', 'bash -s -- 60'])
+    assert.match(r.out, /asking each machine which home it serves, and its home's word on its build in a sync from now on \(up to 60 s\)/)
+    r = m.run(RUNNER, ['update'], { RUNNER_SURVEY_SEC: '5' })
+    assert.deepEqual(surveys(r.calls), ['bash -s -- 5', 'bash -s -- 5'])
+    for (const env of [{ FORCE: '1' }, { VERSION: '0.25.0' }] as Record<string, string>[]) {
+      r = m.run(RUNNER, ['update'], env)
+      assert.deepEqual(surveys(r.calls), ['bash -s -- 0', 'bash -s -- 0'], JSON.stringify(env))
+    }
+    r = m.run(RUNNER, ['down'], { FORCE: '1', NOW: '1' })
+    assert.deepEqual(surveys(r.calls), ['bash -s -- 0', 'bash -s -- 0'])
+    r = m.run(RUNNER, ['update'], { RUNNER_SURVEY_SEC: 'soon' })
+    assert.equal(r.status, 1, r.out)
+    assert.match(r.out, /RUNNER_SURVEY_SEC= is a number of seconds, not "soon"/)
+    assert.deepEqual(r.calls, [])
+  } finally { m.done() }
+})
+
+test('the survey on a machine waits for a sync made after it asked, for a working agent only, and the fleet reads it so', () => {
+  const script = /\nSURVEY_SCRIPT='([\s\S]*?)'\n/.exec(read('scripts/vast-runner.sh'))?.[1]
+  assert.ok(script, 'no SURVEY_SCRIPT in scripts/vast-runner.sh')
+  const fleetPy = /\nFLEET_PY='([\s\S]*?)'\n/.exec(read('scripts/vast-runner.sh'))![1]!
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-runner-survey-'))
+  try {
+    const bin = path.join(dir, 'bin')
+    const asks = path.join(dir, 'asks')
+    const runnerEnv = path.join(dir, 'runner.env')
+    fs.writeFileSync(runnerEnv, `HTTPS_PROXY=http://proxy:3128\nCOLLOQ_RUNNER_JOIN=${HOME}#${CODE}\n`)
+    // colloq-host runner status on the machine: a sync of long ago for the first FAKE_STALE asks, then one made just now.
+    write(path.join(bin, 'colloq-host'), `#!/bin/sh
+n=$(( $(cat '${asks}' 2>/dev/null || echo 0) + 1 )); echo "$n" > '${asks}'
+if [ "$n" -le "\${FAKE_STALE:-0}" ]; then at=1000; else at="$(date +%s)999"; fi
+echo "[colloq-host] a word on stderr" >&2
+printf '{"joined":true,"state":"%s","compatible":true,"syncedAt":%s}\\n' "\${FAKE_STATE:-active}" "$at"
+`)
+    write(path.join(bin, 'sleep'), '#!/bin/sh\nexit 0\n')
+    const file = path.join(dir, 'survey.sh')
+    fs.writeFileSync(file, script.replaceAll('/etc/colloq/runner.env', runnerEnv))
+    const survey = (wait: string, env: Record<string, string> = {}) => {
+      fs.rmSync(asks, { force: true })
+      // As `bash -s -- WAIT` gets it on the machine: the wait is the script's first word.
+      const r = spawnSync('bash', [file, wait], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: `${bin}:${process.env.PATH}`, HOME: dir, ...env } })
+      assert.equal(r.status, 0, r.stderr)
+      const asked = Number(/^asked (\d+)$/m.exec(r.stdout)?.[1])
+      const said = JSON.parse(/^status (.*)$/m.exec(r.stdout)?.[1] ?? 'null')
+      // What the fleet makes of it.
+      const surveyDir = path.join(dir, 'answers')
+      fs.mkdirSync(surveyDir, { recursive: true })
+      fs.writeFileSync(path.join(surveyDir, '11'), r.stdout)
+      const py = spawnSync('python3', ['-c', fleetPy], { input: ['11', '198.51.100.11', '40011', 'running', 'colloq-runner'].join('\x1f') + '\n',
+        encoding: 'utf8', env: { ...process.env, SURVEY: surveyDir, WANT: '' } })
+      assert.equal(py.status, 0, py.stderr)
+      return { out: r.stdout, asked, said, asks: Number(fs.readFileSync(asks, 'utf8')), verdict: py.stdout.trim().split('\x1f').pop() }
+    }
+    // A sync that comes while it waits: asked three times, and the line is the fresh one.
+    let s = survey('6', { FAKE_STALE: '2' })
+    assert.equal(s.asks, 3)
+    assert.match(s.out, /^home https:\/\/vsos\.colloq\.ru$/m)
+    assert.ok(s.said.syncedAt >= s.asked, s.out)
+    assert.equal(s.verdict, 'current')
+    // None comes: the wait is bounded, and the stale word is no `current`.
+    s = survey('6', { FAKE_STALE: '99' })
+    assert.equal(s.asks, 4)
+    assert.ok(s.said.syncedAt < s.asked)
+    assert.equal(s.verdict, 'unknown')
+    // An agent that does not work is not waited for, and neither is a look (no wait asked).
+    assert.equal(survey('6', { FAKE_STALE: '99', FAKE_STATE: 'stopped' }).asks, 1)
+    assert.equal(survey('0', { FAKE_STALE: '99' }).asks, 1)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('an update outlives a dropped ssh: the polls go on where they were, and a machine that rebooted under its update is said so', () => {
   const m = rig({ listed: [vm(11, 'colloq-runner'), vm(12, 'colloq-runner')] }, {
     '198.51.100.11': { home: HOME, status: OUTDATED, polls: ['running', 'drop', 'running', 'exit 0'] },
@@ -532,6 +657,118 @@ test('runners-down: every machine leaves its home first, then is destroyed; the 
     assert.match(r.out, /no machines for submissions are rented/)
     assert.deepEqual(none.destroyed(r.calls), [])
   } finally { none.done() }
+})
+
+// ------------------------------------------- the class tooling's own labels
+
+/*
+ * A made-up Vast for scripts/vast.sh and scripts/vast-legacy.sh, whose api
+ * takes the body from the file after -o and the code from stdout (-w). The
+ * account lists FAKE_INSTANCES; the ssh key is registered and there is
+ * credit, so that `up` gets as far as looking for its machine; no offer
+ * matches. ssh and rsync only write down that they were called.
+ */
+const CLASS_CURL = `#!${process.execPath}
+const fs = require('node:fs')
+const a = process.argv.slice(2)
+const at = (f) => { const i = a.indexOf(f); return i < 0 ? null : a[i + 1] }
+const url = a[a.length - 1], method = at('-X') ?? 'GET', out = at('-o')
+fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ tool: 'curl', method, url }) + '\\n')
+let body = {}
+if (method === 'GET' && url.endsWith('/instances/')) body = { instances: JSON.parse(process.env.FAKE_INSTANCES) }
+else if (method === 'GET' && url.endsWith('/ssh/')) body = [{ public_key: process.env.FAKE_KEY }]
+else if (method === 'GET' && url.endsWith('/users/current/')) body = { credit: 10 }
+else if (method === 'POST' && url.endsWith('/bundles/')) body = { offers: [] }
+else if (method === 'DELETE') body = { success: true }
+const text = JSON.stringify(body)
+if (out) fs.writeFileSync(out, text); else process.stdout.write(text)
+if (a.includes('-w')) process.stdout.write('200')
+`
+
+function classTooling(instances: unknown[]) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-class-tooling-'))
+  fs.mkdirSync(path.join(dir, 'scripts'))
+  for (const f of ['vast.sh', 'vast-legacy.sh', 'lib.sh']) fs.copyFileSync(path.join(ROOT, 'scripts', f), path.join(dir, 'scripts', f))
+  const log = path.join(dir, 'calls.log')
+  const key = path.join(dir, 'id_test')
+  fs.writeFileSync(key, 'not a key\n', { mode: 0o600 })
+  fs.writeFileSync(`${key}.pub`, 'ssh-ed25519 AAAAtestkey test@laptop\n')
+  // The class's own secrets, which must never reach a machine for submissions.
+  fs.writeFileSync(path.join(dir, '.env'), `VAST_TOKEN=t\nVAST_SSH_KEY=${key}\nRELAY_DOMAIN=colloq.ru\nRELAY_TOKEN=relay-secret\nSESSION_SECRET=session-secret\n`)
+  write(path.join(dir, 'bin', 'curl'), CLASS_CURL)
+  for (const tool of ['ssh', 'rsync']) write(path.join(dir, 'bin', tool), `#!/bin/sh\nprintf '{"tool":"${tool}"}\\n' >> '${log}'\nexit 97\n`)
+  const run = (script: string, args: string[], env: Record<string, string> = {}) => {
+    fs.rmSync(log, { force: true })
+    const r = spawnSync('bash', [path.join(dir, 'scripts', script), ...args], {
+      cwd: dir, encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { PATH: `${path.join(dir, 'bin')}:${process.env.PATH}`, HOME: dir, FAKE_LOG: log, FAKE_INSTANCES: JSON.stringify(instances),
+        FAKE_KEY: 'ssh-ed25519 AAAAtestkey', NAME: '', HOST: '', RELEASE: '', FORCE: '1', ...env },
+    })
+    const calls: Call[] = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []
+    return { status: r.status, out: ((r.stdout ?? '') + (r.stderr ?? '')).replace(/\x1b\[[0-9;]*m/g, ''), calls }
+  }
+  return { run, done: () => fs.rmSync(dir, { recursive: true, force: true }) }
+}
+
+const RENTED_RUNNER = { id: 901, label: 'colloq-runner', actual_status: 'running', public_ipaddr: '198.51.100.9',
+  ports: { '22/tcp': [{ HostPort: '40901' }] }, dph_total: 0.5, gpu_name: 'RTX 4090', num_gpus: 2, start_date: 0 }
+
+test('the class tooling never takes a machine for submissions for a deployment, and no deployment takes their label', () => {
+  // The owner's vsos lives elsewhere; the account rents one GPU machine with make vast-runner COUNT=1.
+  const alone = classTooling([RENTED_RUNNER])
+  try {
+    // make vast-down with no name: nothing of the class's is rented, and the machine is not destroyed without its leave.
+    let r = alone.run('vast-legacy.sh', ['down'])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /nothing with label "colloq" is rented on vast\.ai/)
+    assert.doesNotMatch(r.out, /taking "runner"|destroy instance 901/)
+    assert.deepEqual(r.calls.filter((c) => c.method === 'DELETE' || c.tool !== 'curl'), [])
+    r = alone.run('vast.sh', ['down'])
+    assert.equal(r.status, 0, r.out)
+    assert.deepEqual(r.calls.filter((c) => c.method === 'DELETE' || c.tool !== 'curl'), [])
+    // make vast-up with no name: it looks for a machine of its own, never deploys the class (and .env) over this one.
+    r = alone.run('vast-legacy.sh', ['up'])
+    assert.doesNotMatch(r.out, /taking "runner"|already rented: instance 901|deploying over it/, r.out)
+    assert.match(r.out, /not rented — looking for an offer/, r.out)
+    assert.deepEqual(r.calls.filter((c) => c.tool !== 'curl'), [], 'no ssh or rsync to the machine')
+    // make vast-status: no deployment, but the bill is not hidden.
+    for (const script of ['vast-legacy.sh', 'vast.sh']) {
+      r = alone.run(script, ['status'])
+      assert.equal(r.status, 0, `${script}: ${r.out}`)
+      assert.match(r.out, /nothing is rented on vast\.ai/, script)
+      assert.match(r.out, /machines for submissions rented too: 1 \(label colloq-runner…\), not deployments: make runners-update · make runners-down take care of them/, script)
+    }
+  } finally { alone.done() }
+  // Next to a class deployment, the machines change nothing: there is one deployment, and it is hse.
+  const mixed = classTooling([
+    { id: 11, label: 'colloq-hse', actual_status: 'running', dph_total: 0.3, gpu_name: 'RTX 5070', num_gpus: 1, start_date: 0 },
+    RENTED_RUNNER, { ...RENTED_RUNNER, id: 902, label: 'colloq-runner-gpu' },
+  ])
+  try {
+    let r = mixed.run('vast-legacy.sh', ['status'])
+    assert.equal(r.status, 0, r.out)
+    assert.doesNotMatch(r.out, /deployments rented|several deployments/)
+    assert.match(r.out, /deployment hse · instance 11/)
+    assert.match(r.out, /machines for submissions rented too: 2 /)
+    r = mixed.run('vast-legacy.sh', ['down'])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /there is one deployment — taking "hse"/)
+    assert.deepEqual(r.calls.filter((c) => c.method === 'DELETE').map((c) => c.url), ['https://console.vast.ai/api/v0/instances/11/'])
+  } finally { mixed.done() }
+  // A deployment named runner (or runner-…, or by its address) would be labelled as the machines are: refused before any request.
+  const named = classTooling([RENTED_RUNNER])
+  try {
+    for (const script of ['vast-legacy.sh', 'vast.sh']) {
+      for (const env of [{ NAME: 'runner' }, { NAME: 'runner-gpu' }, { HOST: 'runner.colloq.ru' }] as Record<string, string>[]) {
+        const r = named.run(script, ['status'], env)
+        assert.equal(r.status, 1, `${script} ${JSON.stringify(env)}: ${r.out}`)
+        assert.match(r.out, /would label its machine colloq-runner(-gpu)?, and colloq-runner labels the machines for submissions \(make vast-runner · runners-update · runners-down\)\. Choose another name\./)
+        assert.deepEqual(r.calls, [], `${script} ${JSON.stringify(env)} reached the API`)
+      }
+    }
+    // A name that only starts like it is a name of its own.
+    assert.equal(named.run('vast-legacy.sh', ['status'], { NAME: 'runners' }).status, 0)
+  } finally { named.done() }
 })
 
 // ----------------------------------------------------------- the Makefile

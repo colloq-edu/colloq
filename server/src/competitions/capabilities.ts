@@ -4,10 +4,17 @@ import fs from 'node:fs'
 import { config } from '../config.js'
 import { imageRevision, kernelRuntimeClient, loadRuntimeCatalog } from '../kernel/runtime-client.js'
 import { resolveRuntimeEnvironment } from '@shared/runtime'
-import { competitionBackend } from './runner-port.js'
+import { competitionBackend, limitsFor } from './runner-port.js'
 import { runnerGpuDevices } from './gpu.js'
-import { remoteCardsSeen } from './remote/heard.js'
+import { homeNotebooksSetting } from './settings.js'
+import { getCompetition } from './store.js'
+import { competitionRevision } from '../dependencies/store.js'
+import { heardAt, remoteCardsSeen, runnerCards } from './remote/heard.js'
+import { homeTakes, stepClaim } from './remote/fit.js'
+import { listStandingRunners } from './remote/store.js'
+import { portableRevision } from './remote/want.js'
 import { tr } from '@shared/i18n'
+import { REMOTE_GPU_SEEN_MS, REMOTE_HOST_RESERVE_MB } from '@shared/remote-runner'
 import type { CompetitionCapabilities, RuntimeCapability } from '@shared/capabilities'
 
 const execute = promisify(execFile)
@@ -60,8 +67,13 @@ export function evaluateCapabilities(input: { backend: Backend; dockerVersion?: 
   return { execution, preparation, ...(gpuSlots !== undefined ? { gpuSlots } : {}) }
 }
 
-/** What a check of ONE competition adds to the image: whether its notebook wants a card. */
-export interface CompetitionNeeds { gpu?: boolean }
+/**
+ * What a check of ONE competition adds to the image: whether its notebook
+ * wants a card, and which competition it is — so that one whose notebooks
+ * only the machines run is judged by the image its metric needs here
+ * (machinesRunIt), not by the one its notebooks run in there.
+ */
+export interface CompetitionNeeds { gpu?: boolean; competitionId?: string }
 
 /**
  * What a door that runs a competition's NOTEBOOK asks of the executor: its
@@ -69,8 +81,46 @@ export interface CompetitionNeeds { gpu?: boolean }
  * a card, and a door that runs only the metric (a rescore, the metric check)
  * or no notebook at all (package preparation, a draft) asks for none.
  */
-export function notebookNeeds(competition: { limits: { gpu?: boolean } }): CompetitionNeeds {
-  return { gpu: competition.limits.gpu === true }
+export function notebookNeeds(competition: { id?: string; limits: { gpu?: boolean } }): CompetitionNeeds {
+  return { gpu: competition.limits.gpu === true, ...(competition.id ? { competitionId: competition.id } : {}) }
+}
+
+/*
+ * A COMPETITION WHOSE NOTEBOOKS ONLY MACHINES RUN NEEDS ITS METRIC'S IMAGE
+ * HERE, NOT ITS OWN. With «Тетради на этом сервере» off, or a GPU competition
+ * on a server with no card for submissions, this server never starts the
+ * competition's own image: the machines pull it from the registry by digest,
+ * and this server only scores — a GPU competition in the light kaggle-base it
+ * is pinned to (decision 2). The door still asked for the competition's own
+ * image, 13 GB of kaggle-gpu on vsos's disk for nothing. So when that image
+ * is not here, the notebooks are the machines' alone (fit.ts · homeTakes),
+ * its revision is in a registry (want.ts · portableRevision), and a machine
+ * that fits its runs was heard within REMOTE_GPU_SEEN_MS (with cards, for a
+ * GPU competition), the image the door asks for is the metric's
+ * (runner.ts · metricScoringImage): kaggle-base for a GPU competition, which
+ * must be here. A CPU competition's metric runs in its own pinned image, so
+ * for one of those nothing changes: its own image must still be here.
+ */
+async function machinesRunIt(competitionId: string, gpu: boolean, ownDigest: string | undefined, now = Date.now()): Promise<{ environment: string; imageDigest: string | undefined } | null> {
+  const competition = getCompetition(competitionId)
+  if (!competition) return null
+  if (homeTakes({ gpu, homeNotebooks: homeNotebooksSetting().value, homeCards: runnerGpuDevices().length > 0 })) return null
+  if (!portableRevision(competitionRevision(competition.id))) return null
+  const claim = stepClaim(limitsFor(competition, 'notebook'))
+  const fitting = listStandingRunners().some((runner) => {
+    const at = heardAt(runner.id) ?? runner.lastSeenAt
+    if (at === null || now - at > REMOTE_GPU_SEEN_MS) return false
+    if (gpu && runnerCards(runner).length === 0) return false
+    // What the machine said it is when it joined (or since): its memory less the host's reserve, its CPUs less one, against one run's claim.
+    const facts = runner.facts
+    return !facts || (facts.memoryMb - REMOTE_HOST_RESERVE_MB >= claim.memoryMb && facts.cpus - 1 >= claim.cpus)
+  })
+  if (!fitting) return null
+  // The pump's own choice of the metric's image, read where it is decided (an import of the module that imports this one, made when it is asked).
+  const { metricScoringImage } = await import('./runner.js')
+  const metric = await metricScoringImage(competition)
+  if (metric.environment === competition.environment && metric.imageDigest === ownDigest) return null
+  return metric
 }
 
 type Command = (args: string[]) => Promise<string>
@@ -158,16 +208,24 @@ export function createCapabilityReader(options: CapabilityReaderOptions = {}) {
     if (!daemon || daemon.until <= clock()) daemon = probe(() => run(['version', '--format', '{{.Server.Version}}']).then(value => value || null, () => null))
     const version = await daemon.value
     if (!version) return evaluateCapabilities({ backend, dockerVersion: null })
-    let imageAvailable = true
-    if (environmentName || imageDigest) {
-      const image = imageDigest ?? `colloq-kernel:${environmentName}`
+    const imagePresent = (name: string | undefined, digest: string | undefined): Promise<boolean | null> => {
+      const image = digest ?? `colloq-kernel:${name}`
       let cached = images.get(image)
       if (!cached || cached.until <= clock()) {
         cached = probe(() => run(['image', 'inspect', '--format', '{{.Id}}', image]).then(() => true, (error: unknown) => imageAbsent(error) ? false : null))
         if (images.size >= 64 && !images.has(image)) images.delete(images.keys().next().value!)
         images.set(image, cached)
       }
-      const present = await cached.value
+      return cached.value
+    }
+    let imageAvailable = true
+    if (environmentName || imageDigest) {
+      let present = await imagePresent(environmentName, imageDigest)
+      // Not here, and the notebooks only machines run: the image this server needs is the metric's (machinesRunIt).
+      if (present === false && needs.competitionId) {
+        const metric = await machinesRunIt(needs.competitionId, gpu, imageDigest).catch(() => null)
+        if (metric) present = await imagePresent(metric.environment, metric.imageDigest)
+      }
       // Docker did not answer about the image: said as a daemon that does not answer, never as an image that is gone.
       if (present === null) return evaluateCapabilities({ backend, dockerVersion: null })
       imageAvailable = present

@@ -688,3 +688,137 @@ test('an outcome\'s reply that says the machine is no longer trusted purges the 
     await home.close()
   }
 })
+
+test('a leave whose answer is lost and then meets the 401 of a machine home has marked left still purges the hidden test its last run read; so does any start of an identity that is gone', async () => {
+  const home = await fakeHome()
+  joinedBefore(home)
+  const sealedDir = path.join(competitionsDir, '.sealed')
+  const open = dataSet({ 'train.csv': 'id,y\n1,0\n' })
+  const hidden = dataSet({ 'test.csv': 'id\n9\n' })
+  for (const [sha, body] of [...open.bodies, ...hidden.bodies]) home.blobs.set(sha, body)
+  const lease = makeLease({ data: open.manifest, sealed: true, sealedData: hidden.manifest })
+  let left = false
+  home.onSync = (body) => {
+    if (left) return { status: 401, json: { error: 'unauthorized' } }
+    // Home marks the machine left before it answers the leaving sync, and that answer is lost on the way (the relay's page).
+    if (body.state === 'leaving') {
+      left = true
+      return { status: 502, text: '<html>Bad Gateway</html>', marker: false }
+    }
+    const ready = body.ready.revisions.includes(REVISION.id) && body.ready.data.includes(open.manifest) && body.ready.sealed.includes(hidden.manifest)
+    const leases = ready && !attemptOf(body, lease.attemptId) && body.seq < lease.seq ? [lease] : []
+    const data = [{ competitionId: 'compabcd', manifest: open.manifest, sealed: false, files: open.files }, { competitionId: 'compabcd', manifest: hidden.manifest, sealed: true, files: hidden.files }]
+    // A draining sync is held as a long-poll is: the run's end cuts it short, so no draining reply comes after the run.
+    return { json: syncReply({ seq: lease.seq, leases, trusted: true, want: { revisions: [{ id: REVISION.id, ref: REVISION.ref, layers: LAYERS, gpu: false }], data, bundles: [] } }), delayMs: leases.length > 0 ? 0 : body.state === 'draining' ? 3_000 : 20 }
+  }
+  home.onOutcome = () => ({ json: outcomeReply({ seq: lease.seq, trusted: true }) })
+  const { agent, seam } = agentFor(home)
+  seam.next = 'wait'
+  const life = agent.run()
+  try {
+    await waitFor(() => seam.runs.length === 1, 'the hidden-test run')
+    const leaving = agent.requestLeave()
+    agent.leaveAcknowledged()
+    await waitFor(() => home.syncs().some((sync) => sync.state === 'draining'), 'the leave draining the machine')
+    assert.ok(fs.readdirSync(sealedDir).length > 0, 'the leave purged the hidden test a held run reads')
+    seam.release()
+    const exit = await life
+    assert.equal(exit.reason, 'left')
+    assert.equal(await leaving, 'left')
+    assert.ok(home.syncs().filter((sync) => sync.state === 'leaving').length >= 2, 'the lost leaving sync was not asked again')
+    assert.deepEqual(fs.readdirSync(sealedDir), [], 'a machine that left kept the hidden test')
+    assert.ok(!fs.readdirSync(path.join(layout.booksDir, 'manifests')).some((name) => name.endsWith('.sealed.json')), 'a machine that left kept the hidden test\'s book')
+  } finally {
+    await home.close()
+  }
+  // What an earlier build left in the tree of a machine that has left: the next start of that identity purges it, without a call to home.
+  const leftover = dataSet({ 'test.csv': 'id\n7\n' })
+  const [file] = leftover.files
+  fs.mkdirSync(sealedDir, { recursive: true })
+  fs.writeFileSync(path.join(sealedDir, file!.sha256), leftover.bodies.get(file!.sha256)!)
+  const book = path.join(layout.booksDir, 'manifests', `${leftover.manifest}.sealed.json`)
+  fs.writeFileSync(book, JSON.stringify({ competitions: ['compabcd'], manifest: leftover.manifest, sealed: true, files: leftover.files }))
+  const calls = home.calls.length
+  const again = agentFor(home)
+  const second = await again.agent.run()
+  assert.equal(second.reason, 'left')
+  assert.equal(home.calls.length, calls)
+  assert.deepEqual(fs.readdirSync(sealedDir), [], 'a start of a machine that has left kept the hidden test')
+  assert.ok(!fs.existsSync(book))
+})
+
+test('a start whose sweep the daemon does not answer gives up no lease of an earlier life until it does: the lease and its tree are kept, nothing is synced, and they go once no run of theirs runs', async () => {
+  const home = await fakeHome()
+  joinedBefore(home)
+  const cutOff = makeLease({ data: 'f'.repeat(64), submissionId: 'subzombi' })
+  writeLease(layout, { lease: cutOff, receivedAt: Date.now() - 30_000 })
+  const tree = attemptPath('compabcd', cutOff.submissionId, cutOff.attemptId, 'result')
+  fs.mkdirSync(tree, { recursive: true })
+  const { agent, docker, seam, logs } = agentFor(home)
+  // The earlier life's container still runs. The daemon, busy, fails `docker ps` for a while (the Docker runner's sweep skips it silently), then lists the container until a sweep removes it, the second after the daemon is back.
+  let busy = true
+  let stillRuns = true
+  let asked = 0
+  let removals = 0
+  docker.intercept = (args) => {
+    if (args[0] !== 'ps' || !args.includes('label=colloq.kind=competition-run')) return
+    asked++
+    if (busy) return { code: 1, out: 'Error response from daemon: context deadline exceeded' }
+    return { code: 0, out: stillRuns ? 'abcdef012345\n' : '' }
+  }
+  seam.sweep = async () => {
+    seam.sweeps++
+    if (busy || ++removals < 2) return 0
+    stillRuns = false
+    return 1
+  }
+  const life = agent.run()
+  try {
+    await waitFor(() => asked >= 3, 'the daemon asked again')
+    assert.ok(fs.existsSync(path.join(layout.leasesDir, `${cutOff.attemptId}.json`)), 'a lease was given up while its container may still run')
+    assert.ok(fs.existsSync(tree), 'the tree of a run that may still run was deleted under it')
+    assert.equal(home.syncs().length, 0, 'the machine synced before its earlier life\'s runs were known gone')
+    assert.ok(seam.sweeps > 1, 'the sweep was not tried again')
+    assert.match(JSON.parse(fs.readFileSync(layout.statusFile, 'utf8')).problem, /docker does not answer/)
+    busy = false
+    await waitFor(() => home.syncs().length > 0, 'the first sync, once the daemon has said none of them runs')
+    assert.ok(logs.some((line) => /1 run\(s\) of an earlier life still run here/.test(line)), logs.join('\n'))
+    assert.ok(!fs.existsSync(path.join(layout.leasesDir, `${cutOff.attemptId}.json`)))
+    assert.ok(!fs.existsSync(tree))
+    assert.ok(home.syncs().every((sync) => !attemptOf(sync, cutOff.attemptId)))
+  } finally {
+    await agent.stop()
+    await life
+    await home.close()
+  }
+})
+
+test('a stop whose draining sync is answered with offers says their seq in one more sync, held for no time: home withdraws them at once', async () => {
+  const home = await fakeHome()
+  const set = dataSet({ 'train.csv': 'id\n1\n' })
+  for (const [sha, body] of set.bodies) home.blobs.set(sha, body)
+  const lease = makeLease({ data: set.manifest })
+  const pending = makeLease({ data: set.manifest, submissionId: 'subpendg' })
+  offerWhenReady(home, set, lease)
+  const answer = home.onSync
+  // The stop's draining sync: home repeats an offer it made the machine, whose reply the stop cut off on its way back.
+  home.onSync = (body, call) => (body.state === 'draining'
+    ? { json: syncReply({ seq: pending.seq, leases: body.seq < pending.seq ? [pending] : [], want: want(set) }) }
+    : answer(body, call))
+  const { agent, seam } = agentFor(home)
+  seam.next = 'wait'
+  const life = agent.run()
+  try {
+    await waitFor(() => seam.runs.length === 1, 'the run')
+    await agent.stop()
+    await life
+    const draining = home.syncs().filter((sync) => sync.state === 'draining')
+    assert.ok(draining.some((sync) => sync.seq >= pending.seq), `no sync said the seq of the offers the stop passed: ${draining.map((sync) => sync.seq).join(', ')} < ${pending.seq}`)
+    assert.ok(draining.length <= 2 && draining.every((sync) => sync.holdMs === 0))
+    assert.ok(!fs.existsSync(path.join(layout.leasesDir, `${pending.attemptId}.json`)), 'a stopping machine wrote down an offer')
+    assert.ok(!home.calls.some((call) => call.path.includes(pending.attemptId)))
+    assert.equal(seam.runs.length, 1)
+  } finally {
+    await home.close()
+  }
+})

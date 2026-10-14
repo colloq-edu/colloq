@@ -215,7 +215,13 @@ print(json.dumps({
     "onstart": open(os.environ["SCRIPT"]).read(),
     "target_state": "running", "cancel_unavail": True,
 }))')"
-id="$(api PUT "asks/$offer_id/" "$body" | py 'import json, sys; print(json.load(sys.stdin).get("new_contract") or "")')"
+# An answer that is not JSON says no more than an empty one: the refusal
+# below, which sends the person to the console, rather than a traceback.
+id="$(api PUT "asks/$offer_id/" "$body" | py '
+import json, sys
+try: d = json.load(sys.stdin)
+except Exception: d = {}
+print((d.get("new_contract") if isinstance(d, dict) else "") or "")')"
 [ -n "$id" ] || die "vast did not say what it rented; look at https://cloud.vast.ai/instances/"
 say "${DIM}instance $id (label $LABEL); destroy with: vastai destroy instance $id${OFF}"
 fi
@@ -223,7 +229,27 @@ fi
 # ----------------------------------------------------------------- wait
 # A VM's actual_status stays "created" even once it runs (seen 28 Sep 2026), so
 # readiness is "ssh lets us in", not a status value.
-field() { api GET "instances/$id/" | py "import json, sys; d = json.load(sys.stdin).get('instances') or {}; print($1)"; }
+#
+# One field of the instance, for the waits below. A poll that gets no answer
+# (a timeout) or one that is not JSON (a proxy's error page, a body cut short)
+# is a poll lost: it prints nothing, and the loop asks again ten seconds
+# later. On 14 Oct 2026 Vast's API answered one poll so, and a Python
+# traceback stood in the log while the wait went on only by luck: the same
+# answer to the status line's assignment would have ended the script under
+# set -e, without a word, the VM rented and billing. A refusal in words (an
+# "error" in a JSON answer) still ends it, as api does everywhere.
+field() {
+  local text
+  text="$(curl -s --max-time 90 -K "$CURLRC" -X GET "$API/instances/$id/" || true)"
+  printf '%s' "$text" | py "
+import json, sys
+try: d = json.load(sys.stdin)
+except Exception: raise SystemExit
+if isinstance(d, dict) and d.get('error'): raise SystemExit('vast refused: %s %s' % (d['error'], (d.get('msg') or '').replace(chr(10), ' ')))
+d = (d.get('instances') if isinstance(d, dict) else None) or {}
+if not isinstance(d, dict): raise SystemExit
+print($1)"
+}
 say "waiting for the VM to boot and open ssh (a few minutes)…"
 ip=""; port=""
 for _ in $(seq 1 120); do

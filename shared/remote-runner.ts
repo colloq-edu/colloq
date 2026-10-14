@@ -434,6 +434,8 @@ export const REMOTE_SEEN_FLUSH_MS = 60_000
 /** remote_leases rows are kept a week, remote_events three months. */
 export const REMOTE_LEASES_KEEP_MS = 7 * 24 * 60 * 60_000
 export const REMOTE_EVENTS_KEEP_MS = 90 * 24 * 60 * 60_000
+/** A machine revoked or gone this long ago, with no live lease, is pruned with its log and its leases. */
+export const REMOTE_RUNNERS_KEEP_MS = 30 * 24 * 60 * 60_000
 /** A GPU competition takes uploads while a machine with cards was heard within this, home's own cards aside (decision 8). */
 export const REMOTE_GPU_SEEN_MS = 60 * 60_000
 
@@ -555,7 +557,15 @@ function canonical(value: unknown): string {
 
 /** What a machine can still take, as it measures itself: MemTotal less the host reserve and its runs, nproc less one and its runs, disk over its floor. */
 export interface RemoteFree {
-  /** Places it would still run at once, before home's own cap (approvedSlots). */
+  /**
+   * Places it would still run at once: how many more of the smallest run fit
+   * its CPUs, memory and disk, within home's cap on its places
+   * (approvedSlots, which the agent applies itself — runner-agent/machine.ts
+   * · freeCapacity — and home applies again, lease.ts · runnerRoom). In units
+   * of the smallest run: a competition's own run may take several of them,
+   * and home counts a machine's places for that run by its memory and CPUs
+   * (remote/views.ts · placesFor).
+   */
   slots: number
   memoryMb: number
   cpus: number

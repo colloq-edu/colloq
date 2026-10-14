@@ -161,6 +161,42 @@ export interface RowNeeds extends CompetitionNeeds {
  */
 export type RowRefusal = 'gone' | 'home_only' | 'limits' | 'unfit' | 'bundle' | 'notebook'
 
+/*
+ * THE TWO QUESTIONS THE PUMP'S SIDE ASKS TOO (runner.ts, forecast.ts), here
+ * so that they are asked one way: whether this server's own pump takes a
+ * notebook at all, and whether a row's package set can never ride with its
+ * memory — which no executor runs, and which this server settles itself with
+ * the refusal (liveness.ts · settleUnfit, runner.ts · unfitOutcome).
+ */
+
+/**
+ * Whether this server's own pump takes a waiting notebook (§5.3): its
+ * notebooks are on («Тетради на этом сервере»), and a GPU notebook only where
+ * it has cards for submissions (its own, or the cluster's under the broker).
+ * Otherwise only the machines run it, whatever the switch says.
+ */
+export function homeTakes(input: { gpu: boolean; homeNotebooks: boolean; homeCards: boolean }): boolean {
+  return input.homeNotebooks && !(input.gpu && !input.homeCards)
+}
+
+/** Whether a set cannot ride with a submission of the competition's memory (packagesFit): the refusal settled before any container. */
+export function setUnfit(set: { installedBytes: number } | null | undefined, competition: { limits: { memoryMb: number } }): boolean {
+  return !!set && !packagesFit(set.installedBytes, competition.limits.memoryMb)
+}
+
+/** Whether a waiting row's own package set can never ride with its competition's memory (setUnfit), read through a pass's cache. */
+export function rowSetUnfit(row: { competitionId: string; submissionId: string }, cache: FitCache = fitCache()): boolean {
+  const base = competitionNeeds(row.competitionId, cache)
+  const pin = pinOf(row.submissionId)
+  const set = pin?.bundleId ? read(cache.bundles, pin.bundleId, getBundle) : null
+  return base !== null && setUnfit(set, base.competition)
+}
+
+/** Whether a waiting row is a GPU notebook (its competition's card is on), read through a pass's cache: what homeTakes is asked about. */
+export function rowNeedsCard(row: { competitionId: string }, cache: FitCache = fitCache()): boolean {
+  return competitionNeeds(row.competitionId, cache)?.gpu === true
+}
+
 export function rowNeeds(row: { competitionId: string; submissionId: string }, cache: FitCache): { ok: true; needs: RowNeeds } | { ok: false; why: RowRefusal } {
   const base = competitionNeeds(row.competitionId, cache)
   if (!base) return { ok: false, why: 'gone' }
@@ -171,7 +207,7 @@ export function rowNeeds(row: { competitionId: string; submissionId: string }, c
   if (!contractLimits(base.limits)) return { ok: false, why: 'limits' }
   const set = pin?.bundleId ? read(cache.bundles, pin.bundleId, getBundle) : null
   // A set that cannot fit is refused before any container, by this server; one whose room the contract cannot carry runs here.
-  if (set && (set.state !== 'ready' || !packagesFit(set.installedBytes, base.competition.limits.memoryMb))) return { ok: false, why: 'unfit' }
+  if (set && (set.state !== 'ready' || setUnfit(set, base.competition))) return { ok: false, why: 'unfit' }
   const packagesMb = set ? packagesRoomMb(set.installedBytes) : 0
   if (set && (packagesMb < 16 || packagesMb > 4096)) return { ok: false, why: 'bundle' }
   const notebook = notebookOf(base.competition.id, row.submissionId)

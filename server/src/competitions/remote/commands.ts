@@ -57,12 +57,19 @@ export function runnerImage(image: string | null | undefined, version: string): 
  * colloq-host, which adds the NVIDIA toolkit and checks the driver), and
  * `vast` for rented Vast VMs from a checkout — '' when the instance runs an
  * image of its own, which those VMs would not take.
+ *
+ * `--stop-timeout 90`, as colloq-host's own `docker run` of the agent gives
+ * it: on SIGTERM the agent hands back the runs it holds (a `draining`
+ * decline each, through a relay's backoff of up to 30 s a try), and an image
+ * cannot set its own stop timeout. With Docker's 10 s a `docker stop`, a
+ * restart or a reboot of a machine joined this way killed the agent first,
+ * and its runs came back as losses after the container started.
  */
 export function runnerJoinCommands(input: { home: string; code: string; image: string; published: boolean; machines: number }): { docker: string; bare: string; vast: string } {
   const url = homeOrigin(input.home) ?? input.home.replace(/\/+$/, '')
   const { code, image } = input
   const docker = [
-    `docker run -d --name ${RUNNER_CONTAINER} --restart unless-stopped \\`,
+    `docker run -d --name ${RUNNER_CONTAINER} --restart unless-stopped --stop-timeout 90 \\`,
     '  -v /var/run/docker.sock:/var/run/docker.sock \\',
     '  -v /var/lib/colloq-runner:/var/lib/colloq-runner \\',
     `  -e COLLOQ_RUNNER_JOIN='${url}#${code}' \\`,

@@ -559,7 +559,7 @@ test('the forecast runs a metric in its own lane: a rescore starts now beside a 
 
 /* ------------------------------------------- one memory for both lanes */
 
-test('memory a notebook frees goes to waiting metric work first: a rescore does not wait for the notebook backlog', async () => {
+test('memory a notebook frees goes to the work that waited longer: a rescore asked before the notebook backlog does not wait for it', async () => {
   await reset()
   setQueueSlots(2)
   // A notebook here reserves 256 + 4096 MB; a metric 256 + 2048.
@@ -586,12 +586,14 @@ test('memory a notebook frees goes to waiting metric work first: a rescore does 
   await reset()
 })
 
-test('the screens number a metric and a notebook that start at one moment as a pass takes them: the metric first', async () => {
+test('the screens number a metric and a notebook that start at one moment as a pass takes them: the one that waited longer first', async () => {
   await reset()
   const c = competition()
   const rescore = await scoredWithSlowAnswer(c, 60_000)
-  const notebook = send(c, person('Вместе'), HOLD)
+  // The rescore is asked for first, the notebook sent after it (competition-lane-fairness has it the other way round).
   assert.equal(rescoreCompetition(c.id), 1)
+  await sleep(5)
+  const notebook = send(c, person('Вместе'), HOLD)
   const forecast = queueForecast(1, Date.now(), null, { homeNotebooks: true, scoreSlots: 1 })
   assert.deepEqual([forecast.at.get(rescore.id)?.startMs, forecast.at.get(notebook.id)?.startMs], [0, 0])
   assert.deepEqual([forecast.at.get(rescore.id)?.place, forecast.at.get(notebook.id)?.place], [1, 2])

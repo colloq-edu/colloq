@@ -65,9 +65,29 @@ export function portableRevision(revision: EnvironmentRevision | null | undefine
     && typeof revision.layers === 'string' && REMOTE_SHA256.test(revision.layers)
 }
 
+/*
+ * WHETHER A REVISION IS A GPU KERNEL, REMEMBERED. The answer is read from the
+ * environment's Dockerfiles (environments.ts · needsGpu: the chain of files,
+ * three to six reads), and the take, the wait reasons and the want ask it of
+ * every waiting row: every participant's page recomputes the forecast once a
+ * second, so 300 waiting rows were 900 file reads a second per person
+ * watching — a class's event loop spent on one bit that changes only when an
+ * environment is edited. So it is kept by revision for GPU_BIT_TTL_MS: an
+ * edit of the environment is seen within the minute, and forgetStock (after
+ * something the picture is made of changed) forgets it at once.
+ */
+const GPU_BIT_TTL_MS = 60_000
+const gpuBits = new Map<string, { gpu: boolean; at: number }>()
+
 /** Whether a revision is a GPU kernel: only machines with cards are asked for it, and it passes the smoke test there. */
-export function gpuRevision(revision: Pick<EnvironmentRevision, 'environmentName'>): boolean {
-  return environmentNeedsGpu(revision.environmentName)
+export function gpuRevision(revision: Pick<EnvironmentRevision, 'environmentName'> & Partial<Pick<EnvironmentRevision, 'id'>>, now = Date.now()): boolean {
+  const key = `${revision.id ?? ''}|${revision.environmentName}`
+  const known = gpuBits.get(key)
+  if (known && now - known.at < GPU_BIT_TTL_MS) return known.gpu
+  const gpu = environmentNeedsGpu(revision.environmentName)
+  if (gpuBits.size >= 1024) gpuBits.clear()
+  gpuBits.set(key, { gpu, at: now })
+  return gpu
 }
 
 /** A set of data files as a manifest names it (§3.3); `null` — a file is not hashed yet, or not one a machine may hold. */
@@ -129,6 +149,25 @@ const STOCK_TTL_MS = 2_000
 let stock: { at: number; value: Map<string, CompetitionStock> } | null = null
 let stocking: Promise<Map<string, CompetitionStock>> | null = null
 
+/*
+ * THE PACKAGE SETS' ROOMS, WITH THE STOCK. A want names every set of the
+ * stock by its id and its room, and each was read whole — its packages, its
+ * normalised list, its logs of up to two hundred lines — on every reply and
+ * every recompute of every held sync. The stock reads them once per build
+ * anyway (listBundles, the waiting rows' bindings), so their rooms are kept
+ * from there, and a set described in full (its lock and its wheels) is kept
+ * by id: a ready set's lock and wheels never change.
+ */
+let rooms = new Map<string, number | null>()
+const descriptions = new Map<string, { lock: string; wheels: NonNullable<RemoteWantBundle['wheels']> } | null>()
+
+/** A ready set's room as a lease names it; `null` — not ready, or a room the contract cannot carry (the broker's bounds, shared/remote-runner.ts · packagesMb). */
+function bundleRoom(bundle: { state: string; installedBytes: number }): number | null {
+  if (bundle.state !== 'ready') return null
+  const packagesMb = packagesRoomMb(bundle.installedBytes)
+  return packagesMb < 16 || packagesMb > 4096 ? null : packagesMb
+}
+
 /**
  * Every competition the machines should hold now, worked out at most every
  * two seconds and shared by every sync: ten machines asking within the same
@@ -153,6 +192,8 @@ export function homeStock(now = Date.now()): Promise<Map<string, CompetitionStoc
 /** For tests, and after something the picture is made of changed in a way two seconds matter for. */
 export function forgetStock(): void {
   stock = null
+  gpuBits.clear()
+  descriptions.clear()
 }
 
 /**
@@ -177,6 +218,7 @@ async function buildStock(now: number): Promise<Map<string, CompetitionStock>> {
     if (row.kind !== 'notebook' || row.state !== 'waiting') continue
     waitingNotebooks.set(row.competitionId, [...(waitingNotebooks.get(row.competitionId) ?? []), row.submissionId])
   }
+  const nextRooms = new Map<string, number | null>()
   const out = new Map<string, CompetitionStock>()
   for (const competition of listCompetitions()) {
     const rank = rankOf(competition, waitingNotebooks.has(competition.id), now)
@@ -188,7 +230,10 @@ async function buildStock(now: number): Promise<Map<string, CompetitionStock>> {
     for (const submissionId of waitingNotebooks.get(competition.id) ?? []) {
       const binding = getBinding(submissionId)
       if (portableRevision(binding?.revision)) pinned.set(binding.revision.id, binding.revision)
-      if (binding?.bundle?.state === 'ready') bound.add(binding.bundle.id)
+      if (binding?.bundle?.state === 'ready') {
+        bound.add(binding.bundle.id)
+        nextRooms.set(binding.bundle.id, bundleRoom(binding.bundle))
+      }
     }
     /*
      * A competition no machine can run (its environment is this server's
@@ -208,6 +253,7 @@ async function buildStock(now: number): Promise<Map<string, CompetitionStock>> {
     for (const bundle of listBundles(competition.id)) {
       if (bundle.state !== 'ready' || newest.has(bundle.entrantId)) continue
       newest.add(bundle.entrantId)
+      nextRooms.set(bundle.id, bundleRoom(bundle))
       if (!bound.has(bundle.id)) bundles.push(bundle.id)
     }
     out.set(competition.id, {
@@ -222,6 +268,7 @@ async function buildStock(now: number): Promise<Map<string, CompetitionStock>> {
       bundles,
     })
   }
+  rooms = nextRooms
   return out
 }
 
@@ -237,10 +284,17 @@ function rankOf(competition: Competition, waiting: boolean, now: number): number
 
 export interface RunnerWant {
   want: RemoteWant
-  /** Competitions to drop: named in this machine's want before, wanted no longer, and with no lease of it out. */
+  /**
+   * Competitions to drop: named in this machine's want before, wanted no
+   * longer, with no lease of it out, and — level-triggered — still holding
+   * data there by the machine's own sync: named in every reply until the
+   * machine reports none of their manifests.
+   */
   forget: string[]
   /** Competitions named in `want.data` now. */
   wanted: string[]
+  /** Competitions to stop remembering: no longer wanted, and the machine reports none of their data (heard.ts · noteSent). */
+  gone: string[]
 }
 
 /**
@@ -257,7 +311,8 @@ export function runnerWant(input: {
   cards: boolean
   sync: RemoteSyncRequest | null
   leases: readonly LeaseRow[]
-  wantedBefore: ReadonlySet<string>
+  /** Competitions named in its want before, each with its manifests (heard.ts · wantedBefore). */
+  wantedBefore: ReadonlyMap<string, ReadonlySet<string>>
 }): RunnerWant {
   const { trusted, cards, sync, leases } = input
   const ordered = [...input.stock.values()].sort((a, b) => a.rank - b.rank || a.competition.createdAt - b.competition.createdAt || (a.competition.id < b.competition.id ? -1 : 1))
@@ -295,6 +350,8 @@ export function runnerWant(input: {
     bundleSet.add(id)
     bundleIds.push(id)
   }
+  // The room a lease named its set with: no row to read for it.
+  const leaseRooms = new Map<string, number>()
 
   // What the machine's live leases run with comes first: it must stay, whatever else is wanted.
   for (const lease of leases) {
@@ -302,7 +359,10 @@ export function runnerWant(input: {
     addRevision(lease.manifest.revision, pinned ? gpuRevision(pinned) : false, true)
     addData(lease.competitionId, lease.manifest.data, false)
     if (lease.manifest.sealed) addData(lease.competitionId, lease.manifest.sealed, true)
-    if (lease.manifest.bundle) addBundle(lease.manifest.bundle.id)
+    if (lease.manifest.bundle) {
+      addBundle(lease.manifest.bundle.id)
+      leaseRooms.set(lease.manifest.bundle.id, lease.manifest.bundle.packagesMb)
+    }
   }
   for (const entry of ordered) {
     for (const revision of entry.revisions) addRevision({ id: revision.id, ref: revision.registryRef, layers: revision.layers }, gpuRevision(revision))
@@ -323,37 +383,72 @@ export function runnerWant(input: {
   }
   const bundles: RemoteWantBundle[] = []
   for (const id of bundleIds) {
-    const item = wantBundle(id, described.has(id))
+    const item = wantBundle(id, described.has(id), leaseRooms.get(id))
     if (item) bundles.push(item)
   }
 
   const wanted = [...new Set(data.map((entry) => entry.competitionId))]
   const held = new Set(leases.map((lease) => lease.competitionId))
-  // At most what one reply may name (REMOTE_MANIFESTS_MAX); the rest are named by the next replies.
-  const forget = [...input.wantedBefore].filter((id) => !wanted.includes(id) && !held.has(id)).slice(0, REMOTE_MANIFESTS_MAX)
-  return { want: { revisions, data, bundles }, forget, wanted }
+  /*
+   * FORGET IS LEVEL-TRIGGERED. A competition wanted no longer and with no
+   * lease out is named in `forget` for as long as the machine's sync reports
+   * a manifest it was named under (ready, hidden test ready, or being
+   * fetched), and stops being remembered (`gone`) once none is: a reply lost
+   * on the way costs a delay, as the protocol promises, never a competition's
+   * data kept on the machine for good. One whose manifests were never known
+   * (remembered before they were) is named once more and let go.
+   */
+  const reported = new Set([...(sync?.ready.data ?? []), ...(sync?.ready.sealed ?? []), ...(sync?.fetching.flatMap((one) => (one.manifest ? [one.manifest] : [])) ?? [])])
+  const forget: string[] = []
+  const gone: string[] = []
+  for (const [id, manifests] of input.wantedBefore) {
+    if (wanted.includes(id) || held.has(id)) continue
+    const holds = manifests.size === 0 || [...manifests].some((manifest) => reported.has(manifest))
+    if (!holds || manifests.size === 0) gone.push(id)
+    // At most what one reply may name (REMOTE_MANIFESTS_MAX); the rest are named by the next replies.
+    if (holds && forget.length < REMOTE_MANIFESTS_MAX) forget.push(id)
+  }
+  return { want: { revisions, data, bundles }, forget, wanted, gone }
 }
 
 /** A package set as `want` names it: by id with its room, and described in full (lock and wheels) when asked. */
-function wantBundle(id: string, describe: boolean): RemoteWantBundle | null {
-  const bundle = getBundle(id)
-  if (!bundle || bundle.state !== 'ready') return null
-  const packagesMb = packagesRoomMb(bundle.installedBytes)
-  // The broker's own bounds for a set's room (shared/remote-runner.ts · packagesMb).
-  if (packagesMb < 16 || packagesMb > 4096) return null
+function wantBundle(id: string, describe: boolean, leaseRoom: number | undefined): RemoteWantBundle | null {
+  let packagesMb: number | null | undefined = rooms.has(id) ? rooms.get(id) : leaseRoom
+  if (packagesMb === undefined) {
+    // A set the stock did not read (a picture made by hand, a set bound since): read once, and kept with the rest until the next stock.
+    const bundle = getBundle(id)
+    packagesMb = bundle ? bundleRoom(bundle) : null
+    rooms.set(id, packagesMb)
+  }
+  if (packagesMb === null) return null
   if (!describe) return { id, packagesMb }
+  const full = describedOf(id)
+  return full ? { id, packagesMb, lock: full.lock, wheels: full.wheels } : { id, packagesMb }
+}
+
+/** A ready set's lock and wheels as a want describes them, read once per set; `null` — it cannot be described within the contract. */
+function describedOf(id: string): { lock: string; wheels: NonNullable<RemoteWantBundle['wheels']> } | null {
+  if (descriptions.has(id)) return descriptions.get(id)!
   const lock = lockOf(id)
   const wheels = bundleWheels(id)
-  if (lock === null || wheels === null || lock.length > REMOTE_LOCK_CHARS || !/^[\x20-\x7E\n]*$/.test(lock) || wheels.length > REMOTE_WHEELS_MAX) return { id, packagesMb }
-  let bytes = 0
-  const out = []
-  for (const wheel of wheels) {
-    if (!REMOTE_WHEEL_NAME.test(wheel.fileName) || !REMOTE_SHA256.test(wheel.sha256) || !Number.isSafeInteger(wheel.bytes) || wheel.bytes < 0) return { id, packagesMb }
-    bytes += wheel.bytes
-    // An address the contract's rule drops is fetched from this server by its hash instead (remoteWheelUrl).
-    const url = remoteWheelUrl(wheel.url)
-    out.push({ fileName: wheel.fileName, sha256: wheel.sha256, bytes: wheel.bytes, ...(url ? { url } : {}) })
+  let found: { lock: string; wheels: NonNullable<RemoteWantBundle['wheels']> } | null = null
+  if (lock !== null && wheels !== null && lock.length <= REMOTE_LOCK_CHARS && /^[\x20-\x7E\n]*$/.test(lock) && wheels.length <= REMOTE_WHEELS_MAX) {
+    let bytes = 0
+    const out: NonNullable<RemoteWantBundle['wheels']> = []
+    let fits = true
+    for (const wheel of wheels) {
+      if (!REMOTE_WHEEL_NAME.test(wheel.fileName) || !REMOTE_SHA256.test(wheel.sha256) || !Number.isSafeInteger(wheel.bytes) || wheel.bytes < 0) {
+        fits = false
+        break
+      }
+      bytes += wheel.bytes
+      // An address the contract's rule drops is fetched from this server by its hash instead (remoteWheelUrl).
+      const url = remoteWheelUrl(wheel.url)
+      out.push({ fileName: wheel.fileName, sha256: wheel.sha256, bytes: wheel.bytes, ...(url ? { url } : {}) })
+    }
+    if (fits && bytes <= REMOTE_WHEELS_BYTES) found = { lock, wheels: out }
   }
-  if (bytes > REMOTE_WHEELS_BYTES) return { id, packagesMb }
-  return { id, packagesMb, lock, wheels: out }
+  if (descriptions.size >= 256) descriptions.delete(descriptions.keys().next().value!)
+  descriptions.set(id, found)
+  return found
 }

@@ -45,6 +45,7 @@
     runPhaseWord,
     runnersApi,
     stateChip,
+    stoppableOnMachine,
     wholeOrAuto,
     type LineTone,
   } from '@/admin/runners'
@@ -249,8 +250,10 @@
 
   async function stopRun(item: RemoteMachineRun): Promise<void> {
     // The console's own door: on a machine it is a durable cancel that
-    // reaches the machine with its next call (§3.5).
-    await run(() => adminApi.killCompetitionRun(item.submissionId).then(() => undefined))
+    // reaches the machine with its next call (§3.5). Only while the run's
+    // notebook is still there (`onMachine`): the page is up to five seconds
+    // old, and a run that finished meanwhile is refused, not thrown away.
+    await run(() => adminApi.killCompetitionRun(item.submissionId, { onMachine: true }).then(() => undefined))
   }
 
   function back(event: MouseEvent, path: string): void {
@@ -545,16 +548,21 @@
                 {elapsed === null ? (runPhaseWord(item.phase) ?? '—') : `${clock(elapsed)} / ${clock(item.limitMs)}`}
               </span>
               <div class="rm-stop flex justify-end">
-                <button
-                  type="button"
-                  class="admin-icon-btn hover:text-danger"
-                  title={tr('admin.runners.page.stop')}
-                  aria-label={tr('admin.runners.page.stopLabel', { who: `${item.entrantName} · #${item.number}` })}
-                  disabled={busy}
-                  onclick={() => void stopRun(item)}
-                >
-                  <Icon name="x" size={13} />
-                </button>
+                <!-- Exporting or uploading, the notebook has run and its
+                     answer is on its way to be scored: nothing to stop
+                     (admin/runners.ts · stoppableOnMachine). -->
+                {#if stoppableOnMachine(item.phase)}
+                  <button
+                    type="button"
+                    class="admin-icon-btn hover:text-danger"
+                    title={tr('admin.runners.page.stop')}
+                    aria-label={tr('admin.runners.page.stopLabel', { who: `${item.entrantName} · #${item.number}` })}
+                    disabled={busy}
+                    onclick={() => void stopRun(item)}
+                  >
+                    <Icon name="x" size={13} />
+                  </button>
+                {/if}
               </div>
             </div>
           {/each}

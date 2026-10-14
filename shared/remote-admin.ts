@@ -132,7 +132,14 @@ export interface RemoteMachine {
   places: {
     /** The owner's cap; null — whatever the machine offers. */
     approved: number | null
-    /** What the machine offers: its free places plus the runs it holds. */
+    /**
+     * What the machine offers: its free places plus the runs it holds, in
+     * runs of the work at hand — the queue's notebooks, or with none the
+     * largest run a competition taking uploads asks for (server ·
+     * remote/views.ts · placeMix): the machine counts its places in its
+     * smallest possible runs, and a 61-vCPU machine that offers 60 of them
+     * holds 30 runs of two CPUs.
+     */
     offered: number
     /** Runs it holds now. */
     busy: number
@@ -156,11 +163,36 @@ export interface RemoteMachine {
    * machine's words in this server's language. Absent — nothing.
    */
   problems?: { code: RemoteProblemCode; detail: string }[]
+  /**
+   * The code it joined with, by the id the list's codes carry
+   * (RemoteCodeView.id, MintRemoteCodeResponse.id); `null` — not known (a
+   * machine joined before codes were recorded). The connect dialog counts
+   * its own code's machines by it, however the list's reads fell: a
+   * one-machine code spent before any read showed it is no longer in
+   * `codes`. Absent — a server from before it.
+   */
+  codeId?: string | null
+  /**
+   * With `draining`: the machine drains by itself, not by the owner's or
+   * home's word — its own last sync said so (`colloq-host runner update` or
+   * a stop: `draining`; `leave`: `leaving`). The resume door has nothing to
+   * lift then, so the panel offers «Осушить» rather than «Вернуть в работу».
+   * Absent — not draining, or drained by the owner (or home's quarantine).
+   */
+  selfDrain?: 'draining' | 'leaving'
 }
 
-/** A code minted for the dialog, as the list keeps it until it is spent or expires. The code itself is never shown again. */
+/**
+ * A code still valid, as the list keeps it until it is spent, expires or is
+ * cancelled (DELETE /api/admin/runners/codes/:id, «Отменить»). The code itself
+ * is never shown again: whoever holds it can enroll a machine — trusted, if
+ * the code says so — until then, and the owner ends it from this list.
+ */
 export interface RemoteCodeView {
-  /** The first 8 hex characters of the code's sha256: enough to tell two codes apart, useless to join with. */
+  /**
+   * The first 16 hex characters of the code's sha256: useless to join with,
+   * and what the cancel door names the code by. Not a code itself.
+   */
   id: string
   createdAt: number
   expiresAt: number
@@ -168,6 +200,12 @@ export interface RemoteCodeView {
   used: number
   trusted: boolean
   approvedSlots: number | null
+  /** The machines' names start with it («vast-4090-2»); null — none, each is named after its host. */
+  namePrefix?: string | null
+  /** Who minted it, as the staff list names them; null — the instance's console, or someone since removed. */
+  createdBy?: string | null
+  /** Minted on the instance's console (`colloq-host runner-code`), not in the panel. */
+  console?: boolean
 }
 
 /** GET /api/admin/runners — the M1 block. */
@@ -176,7 +214,7 @@ export interface RemoteMachinesResponse {
     /** Machines `online` / not revoked or left. */
     online: number
     total: number
-    /** Places on machines that take work now, and how many are busy. */
+    /** Places on machines that take work now, in runs of the work at hand (RemoteMachine.places.offered), and how many are busy. */
     places: number
     busy: number
     /** Cards on machines that take work now, the runs per card most of them use, and the smallest share among them. */
@@ -189,7 +227,7 @@ export interface RemoteMachinesResponse {
   /** «Оценок одновременно»: the metric lane's places (scoreSlots). */
   scoreSlots: number
   machines: RemoteMachine[]
-  /** Codes still valid, for the dialog's «ждём первую машину…». */
+  /** Codes still valid, newest first: the dialog's «ждём первую машину…», and the block's list of codes with «Отменить». */
   codes: RemoteCodeView[]
   /** Home's own version and build, for «устарела: на ней 0.23.0, на сервере 0.24.0». */
   home: { version: string; build: string }
@@ -376,11 +414,17 @@ export interface RemoteWhereMachine {
   id: string
   name: string
   /**
+   * The machine's state on this server's clock (RemoteMachine.state): the
+   * editor's hidden-test warning counts only trusted machines that are
+   * `online`, not one silent for an hour or outdated.
+   */
+  state: RemoteMachineState
+  /**
    * For a competition machines do not prefetch yet (a draft), `preparing`
    * means it fits and will prepare once the competition opens.
    */
   verdict: RemoteReadinessVerdict
-  /** Places it gives submissions (its approved or offered places). */
+  /** Places it gives this competition's submissions: its approved or offered places, in runs of this competition's own size. */
   places: number
   /** Its cards; 0 — none. */
   cards: number

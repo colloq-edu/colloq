@@ -10,7 +10,7 @@
  * opening a quarantined machine's page is the owner having looked
  * (`quarantineSeen`).
  */
-import { REMOTE_ATTEMPT_DISK_MB, remoteCompatible, type RemoteSyncRequest } from '@shared/remote-runner'
+import { REMOTE_ATTEMPT_DISK_MB, REMOTE_DECLINE_SKIP_MS, remoteCompatible, type RemoteSyncRequest } from '@shared/remote-runner'
 import type {
   RemoteCodeView,
   RemoteCompetitionWhere,
@@ -29,20 +29,23 @@ import type {
   RemoteWaitReason,
   RunningRemote,
 } from '@shared/remote-admin'
-import type { Competition } from '@shared/competitions'
+import { acceptsUploads, submissionsOpen, type Competition } from '@shared/competitions'
 import { competitionRevision, revisions } from '../../dependencies/store.js'
 import { canSeeCompetition } from '../scope.js'
 import type { StaffLike } from '../../admin/access.js'
+import { getTeacher } from '../../admin/store.js'
 import { gpuSliceMb } from '../gpu-math.js'
-import { gpuPerDeviceSetting, homeNotebooksSetting, scoreSlotsSetting } from '../settings.js'
-import { getCompetition, getEntrant, getSubmission, heldRows, runningRows, type QueueRow } from '../store.js'
+import { limitsFor } from '../runner-port.js'
+import { competitionDefaults, gpuPerDeviceSetting, homeNotebooksSetting, scoreSlotsSetting } from '../settings.js'
+import { getCompetition, getEntrant, getSubmission, heldRows, listCompetitions, queueRows, runningRows, type QueueRow } from '../store.js'
 import { heardAddress, heardAt, lastSync, liveRunner, machineState, remoteCardsSeen, runnerCards } from './heard.js'
-import { fitCache, machineFit, rowNeeds, stepClaim, type FitCache, type FitMachine, type MachineRefusal } from './fit.js'
+import { fitCache, homeTakes, machineFit, rowNeedsCard, rowNeeds, stepClaim, type FitCache, type FitMachine, type MachineRefusal } from './fit.js'
 import {
   anyRunnerEver,
   boundedPerDevice,
   codeIdOf,
   codeJoins,
+  declinedByRunners,
   getLease,
   getRunner,
   homeRunnerBuild,
@@ -52,6 +55,7 @@ import {
   liveCodes,
   liveLeases,
   listRunners,
+  listStandingRunners,
   runnerEvents,
   runnerLeaseCounts,
   updateRunner,
@@ -68,11 +72,95 @@ export function perDeviceOf(runner: Pick<RunnerRow, 'perDevice'>): number {
   return boundedPerDevice(runner.perDevice ?? gpuPerDeviceSetting().value)
 }
 
-/** A machine's places: the owner's cap, what it offers (free and held), what it holds now, and the places that makes. */
-export function machinePlaces(runner: RunnerRow): { approved: number | null; offered: number; busy: number; places: number } {
+/*
+ * PLACES ARE COUNTED IN THE RUNS THERE ARE (§5.7). A machine says how many
+ * more of the smallest run it would take (RemoteFree.slots: a CPU and 384 MB
+ * each), and that number was read as the notebooks it runs: a 61-vCPU VM
+ * «offered 60» for a competition whose runs need two CPUs each, and the
+ * forecast promised «starts now» and the console free cells to rows the take
+ * would never lease there — ETAs two to four times too short. So a machine's
+ * places are its cap (the owner's, or what it offers) bounded by how many of
+ * the competition's own runs — its memory and the container's cushion, its
+ * CPUs (fit.ts · stepClaim) — what the machine has AT ALL holds (capacityOf),
+ * for the competition a screen is about, or for the mix of runs the queue
+ * holds (placeMix).
+ */
+
+/** What one run claims of a machine (fit.ts · stepClaim): the unit a machine's places are counted in. */
+export interface PlaceClaim {
+  memoryMb: number
+  cpus: number
+}
+
+/** The run sizes a count of places is for, each with its weight (the rows of that size). */
+export type PlaceMix = ReadonlyArray<{ claim: PlaceClaim; weight: number }>
+
+/** A machine's places for runs of one size: its cap, bounded by how many such runs its memory and its CPUs hold at all. */
+export function placesFor(cap: number, room: Pick<FitMachine['room'], 'memoryMb' | 'cpus'>, claim: PlaceClaim): number {
+  return Math.max(0, Math.min(cap, Math.floor(room.memoryMb / Math.max(1, claim.memoryMb)), Math.floor(room.cpus / Math.max(1, claim.cpus))))
+}
+
+/** A machine's places for a mix of runs: the mean of placesFor over the mix, by weight, rounded down; no mix — its cap. */
+export function placesForMix(cap: number, room: Pick<FitMachine['room'], 'memoryMb' | 'cpus'>, mix: PlaceMix): number {
+  let sum = 0
+  let weight = 0
+  for (const one of mix) {
+    sum += one.weight * placesFor(cap, room, one.claim)
+    weight += one.weight
+  }
+  return weight > 0 ? Math.floor(sum / weight) : Math.max(0, cap)
+}
+
+/** One competition's own run (limitsFor's notebook step), as a mix of one. */
+export function competitionMix(competition: Competition): PlaceMix {
+  return [{ claim: stepClaim(limitsFor(competition, 'notebook')), weight: 1 }]
+}
+
+/**
+ * The runs the machines' places are counted in when no one competition is
+ * asked about: the queue's notebook work, waiting or running, by count; with
+ * none, the largest run of a competition that takes uploads now (an empty
+ * queue must not promise places a run the next upload brings will not
+ * have); with none open, the instance's default limits.
+ */
+export function placeMix(rows: readonly QueueRow[] = queueRows(), now = Date.now()): PlaceMix {
+  const counts = new Map<string, number>()
+  for (const row of rows) {
+    if (row.kind !== 'notebook' || (row.state !== 'waiting' && row.state !== 'running')) continue
+    counts.set(row.competitionId, (counts.get(row.competitionId) ?? 0) + 1)
+  }
+  const mix: Array<{ claim: PlaceClaim; weight: number }> = []
+  for (const [competitionId, weight] of counts) {
+    const competition = getCompetition(competitionId)
+    if (competition) mix.push({ claim: stepClaim(limitsFor(competition, 'notebook')), weight })
+  }
+  if (mix.length > 0) return mix
+  let largest: PlaceClaim | null = null
+  for (const competition of listCompetitions()) {
+    if (!acceptsUploads(submissionsOpen(competition, now))) continue
+    const claim = stepClaim(limitsFor(competition, 'notebook'))
+    largest = largest === null ? claim : { memoryMb: Math.max(largest.memoryMb, claim.memoryMb), cpus: Math.max(largest.cpus, claim.cpus) }
+  }
+  if (largest) return [{ claim: largest, weight: 1 }]
+  const { limits } = competitionDefaults()
+  return [{ claim: stepClaim({ memoryMb: limits.memoryMb, cpus: limits.cpus }), weight: 1 }]
+}
+
+/**
+ * A machine's places: the owner's cap, what it offers (free and held) in
+ * runs of the mix, what it holds now, and the places that makes. `offered`
+ * is what the machine said in units of the smallest run, bounded by how many
+ * of these runs it holds at all (placesFor): the number the panel shows, and
+ * the one the take will lease up to.
+ */
+export function machinePlaces(runner: RunnerRow, mix: PlaceMix = placeMix()): { approved: number | null; offered: number; busy: number; places: number } {
   const sync = lastSync(runner.id)
-  const offered = sync ? sync.free.slots + sync.attempts.length : 0
-  const busy = liveLeases(runner.id).length
+  const held = liveLeases(runner.id)
+  const busy = held.length
+  if (!sync) return { approved: runner.approvedSlots, offered: 0, busy, places: 0 }
+  const room = capacityOf(runner, sync, held, 0).room
+  const said = sync.free.slots + sync.attempts.length
+  const offered = placesForMix(said, room, mix)
   const places = runner.approvedSlots === null ? offered : Math.min(runner.approvedSlots, offered)
   return { approved: runner.approvedSlots, offered, busy, places }
 }
@@ -159,10 +247,10 @@ function readinessOf(runner: RunnerRow, stock: ReadonlyMap<string, CompetitionSt
 
 /* ----------------------------------------------------------- the machines */
 
-export function machineView(runner: RunnerRow, stock: ReadonlyMap<string, CompetitionStock>, now = Date.now()): RemoteMachine {
+export function machineView(runner: RunnerRow, stock: ReadonlyMap<string, CompetitionStock>, now = Date.now(), mix: PlaceMix = placeMix(queueRows(), now)): RemoteMachine {
   const state = machineState(runner, now)
   const at = heardAt(runner.id) ?? runner.lastSeenAt
-  const places = machinePlaces(runner)
+  const places = machinePlaces(runner, mix)
   const counts = runnerLeaseCounts(runner.id)
   // «Был на связи» is a sync's: a machine that joined and never synced has none, in this life or a previous one (seenDue).
   const seen = lastSync(runner.id) !== null ? heardAt(runner.id) : runner.lastSeenAt
@@ -187,7 +275,23 @@ export function machineView(runner: RunnerRow, stock: ReadonlyMap<string, Compet
     lastTrouble: trouble === null ? null : homeWords(trouble),
     createdAt: runner.createdAt,
     ...machineProblems(runner),
+    // The code it came with, by the list's own id: the connect dialog counts its code's machines by it.
+    codeId: runner.codeSha256 === null ? null : codeIdOf(runner.codeSha256),
+    ...selfDrain(runner, state),
   }
+}
+
+/**
+ * A machine draining by its own word (RemoteMachine.selfDrain): its last
+ * sync said `draining` (an update, a stop) or `leaving`, while its row is
+ * still active — the owner did not drain it, and home did not quarantine it
+ * (machineState reads either as `draining`). The resume door lifts only
+ * those two, so it answered 200 and changed nothing for this one.
+ */
+function selfDrain(runner: RunnerRow, state: RemoteMachine['state']): Pick<RemoteMachine, 'selfDrain'> {
+  if (state !== 'draining' || runner.state !== 'active') return {}
+  const own = lastSync(runner.id)?.state
+  return own === 'draining' || own === 'leaving' ? { selfDrain: own } : {}
 }
 
 /** The machine's own problems of its last sync (disk, docker, cards): none of them is one competition's. */
@@ -205,6 +309,9 @@ function codeView(code: ReturnType<typeof liveCodes>[number]): RemoteCodeView {
     used: codeJoins(code.codeSha256),
     trusted: code.trusted,
     approvedSlots: code.approvedSlots,
+    namePrefix: code.namePrefix || null,
+    createdBy: code.createdBy === 'colloq-host' ? null : (getTeacher(code.createdBy)?.name ?? null),
+    console: code.createdBy === 'colloq-host',
   }
 }
 
@@ -221,7 +328,9 @@ function mode(values: readonly number[]): number | null {
 export async function machinesResponse(now = Date.now()): Promise<RemoteMachinesResponse> {
   const stock = await homeStock(now).catch(() => new Map<string, CompetitionStock>())
   const runners = listRunners()
-  const machines = runners.map((runner) => machineView(runner, stock, now))
+  // Every machine's places in the same runs: the queue's, or the next upload's (placeMix).
+  const mix = placeMix(queueRows(), now)
+  const machines = runners.map((runner) => machineView(runner, stock, now, mix))
   const online = machines.filter((machine) => machine.state === 'online')
   const onlineCards = online.flatMap((machine) => machine.cards)
   const slices = onlineCards.map((card) => card.sliceMb)
@@ -288,7 +397,7 @@ export async function machineDetail(id: string, now = Date.now()): Promise<Remot
     }
   })
   return {
-    ...machineView(runner, stock, now),
+    ...machineView(runner, stock, now, placeMix(queueRows(), now)),
     runs: liveLeases(id).map(runView).filter((run): run is RemoteMachineRun => run !== null),
     events,
   }
@@ -301,6 +410,10 @@ export interface FleetMachine {
   runner: RunnerRow
   /** Judged against all the machine has — its room with its runs ended — not what is left now: a row no machine can EVER fit is `no_fit`. */
   fit: FitMachine
+  /** Its places before the size of the runs: the owner's cap, or what it offers in all (free and held). */
+  cap: number
+  /** The submissions it is skipping for a decline (store.ts · declinedBy): it will not take them for REMOTE_DECLINE_SKIP_MS. */
+  declined: ReadonlySet<string>
 }
 
 /** The machines that take work now (§5.7), as the forecast and the wait reasons read them, once per pass. */
@@ -315,22 +428,24 @@ export interface RemoteFleet {
 /**
  * The places and card shares of the machines that take work now (§5.7):
  * what the forecast adds to this server's own. A machine's places are the
- * owner's cap or what it offers; its shares, its cards times the runs per
- * card it is held to.
+ * owner's cap or what it offers, in runs of `mix` (placesForMix: the
+ * forecast's queue, the console's competition); its shares, its cards times
+ * the runs per card it is held to.
  *
  * ONCE PER FORECAST. Every participant's page recomputes the forecast every
  * second, so the machines are read here in one pass — the rows once, every
  * live lease once — and the same picture goes to the GPU places, the wait
  * reasons and the places (forecast.ts · queueForecast), rather than each
- * asking again per machine.
+ * asking again per machine. Only machines still allowed to call are read: a
+ * revoked or gone machine is no part of any forecast (listStandingRunners).
  */
-export function remoteFleet(now = Date.now()): RemoteFleet {
+export function remoteFleet(now = Date.now(), mix?: PlaceMix): RemoteFleet {
   let places = 0
   let gpuShares = 0
   let sliceMb: number | null = null
   const runners = new Set<string>()
   const machines: FleetMachine[] = []
-  const live = listRunners().filter((runner) => liveRunner(runner, now))
+  const live = listStandingRunners().filter((runner) => liveRunner(runner, now))
   const leases = new Map<string, LeaseRow[]>()
   if (live.length > 0) {
     for (const lease of liveLeases()) {
@@ -339,12 +454,15 @@ export function remoteFleet(now = Date.now()): RemoteFleet {
       else leases.set(lease.runnerId, [lease])
     }
   }
+  const sizes = live.length > 0 ? (mix ?? placeMix(queueRows(), now)) : []
+  // What each machine is skipping for a decline, for all of them in one read (the take's own skip, store.ts · declinedBy).
+  const skipped = declinedByRunners(live.map((runner) => runner.id), now - REMOTE_DECLINE_SKIP_MS)
   for (const runner of live) {
     runners.add(runner.id)
     const sync = lastSync(runner.id)!
     const held = leases.get(runner.id) ?? []
     const offered = sync.free.slots + sync.attempts.length
-    places += runner.approvedSlots === null ? offered : Math.min(runner.approvedSlots, offered)
+    const cap = runner.approvedSlots === null ? offered : Math.min(runner.approvedSlots, offered)
     const cards = runnerCards(runner)
     const perDevice = perDeviceOf(runner)
     gpuShares += cards.length * perDevice
@@ -352,7 +470,9 @@ export function remoteFleet(now = Date.now()): RemoteFleet {
       const slice = gpuSliceMb(card.memoryMb, perDevice)
       if (slice !== null) sliceMb = sliceMb === null ? slice : Math.min(sliceMb, slice)
     }
-    machines.push({ runner, fit: capacityOf(runner, sync, held, cards.length * perDevice) })
+    const fit = capacityOf(runner, sync, held, cards.length * perDevice)
+    places += placesForMix(cap, fit.room, sizes)
+    machines.push({ runner, fit, cap, declined: skipped.get(runner.id) ?? new Set() })
   }
   return { places, gpuShares, runners, sliceMb, machines }
 }
@@ -394,9 +514,11 @@ function capacityOf(runner: RunnerRow, sync: RemoteSyncRequest, held: readonly L
  * version beside the machines' — then each machine that takes work or still
  * holds runs. `undefined` — no machine was ever connected, and the grid
  * stays one block as before. This server's `busy` is its notebook runs only:
- * a metric of the metric lane holds no notebook place, here or anywhere.
+ * a metric of the metric lane holds no notebook place, here or anywhere. A
+ * machine's places are in runs of `mix` (placesForMix): the console's own
+ * competition, or the queue's work.
  */
-export function consoleGroups(homeSlots: number, homeCards: { count: number; perDevice: number } | null, now = Date.now()): RemoteConsoleGroup[] | undefined {
+export function consoleGroups(homeSlots: number, homeCards: { count: number; perDevice: number } | null, now = Date.now(), mix: PlaceMix = placeMix(queueRows(), now)): RemoteConsoleGroup[] | undefined {
   if (!anyRunnerEver()) return undefined
   const homeOn = homeNotebooksSetting().value
   const here = runningRows()
@@ -410,11 +532,15 @@ export function consoleGroups(homeSlots: number, homeCards: { count: number; per
     ...(homeOn ? {} : { metricsOnly: true, metric: { places: scoreSlotsSetting().value, busy: here.filter((row) => row.kind === 'metric').length } }),
     version: homeVersion(),
   }]
-  for (const runner of listRunners()) {
+  // The machines still allowed to call, and any other that still holds a row (a result of a machine revoked meanwhile, being applied).
+  const standing = listStandingRunners()
+  const holders = new Set(heldRows().flatMap((row) => (row.holder !== null && !standing.some((runner) => runner.id === row.holder) ? [row.holder] : [])))
+  const others = [...holders].flatMap((id) => getRunner(id) ?? [])
+  for (const runner of [...standing, ...others]) {
     const busy = liveLeases(runner.id).length
     if (!liveRunner(runner, now) && busy === 0) continue
     const state = machineState(runner, now)
-    const places = machinePlaces(runner)
+    const places = machinePlaces(runner, mix)
     const cards = runnerCards(runner)
     const at = heardAt(runner.id) ?? runner.lastSeenAt
     groups.push({
@@ -438,11 +564,18 @@ export interface WaitReason {
   /** With `returned`: the machine, by name, and why when known. */
   returnedFrom?: string
   returnedWhy?: RemoteReturnReason
+  /**
+   * With `returned`: every live machine is skipping it for a decline (the
+   * take will not lease it to any of them within REMOTE_DECLINE_SKIP_MS), and
+   * this server does not take it either — back in its place, and still no
+   * place to start in for now.
+   */
+  skipped?: boolean
 }
 
 /** Whether a reason keeps a row out of every executor's reach now: no place, «готовится» for the participant. */
 export function blocking(reason: WaitReason | undefined): boolean {
-  return reason !== undefined && reason.reason !== 'returned'
+  return reason !== undefined && (reason.reason !== 'returned' || reason.skipped === true)
 }
 
 /**
@@ -472,12 +605,14 @@ export function waitReasons(rows: readonly QueueRow[], options: { homeCards: boo
   }
   for (const row of notebooks) {
     const blocked = blockedBy(row, homeOn, options.homeCards, fleet.machines, cache)
-    if (blocked) {
+    if (blocked && blocked !== 'skipped') {
       out.set(row.submissionId, { reason: blocked })
       continue
     }
     const returned = returnedOf(row, last.get(row.submissionId) ?? null, nameOf)
-    if (returned) out.set(row.submissionId, returned)
+    // Skipped by every live machine for a decline: back from one of them, and no place until the skip ends or another machine comes.
+    if (blocked === 'skipped') out.set(row.submissionId, { ...(returned ?? { reason: 'returned' as const }), skipped: true })
+    else if (returned) out.set(row.submissionId, returned)
   }
   return out
 }
@@ -488,9 +623,9 @@ function returnedOf(row: QueueRow, last: LeaseRow | null, nameOf: (runnerId: str
   if (last.state !== 'lost' && last.state !== 'withdrawn' && last.state !== 'declined' && !(last.state === 'revoked' && last.cause !== 'cancelled')) return null
   const why: RemoteReturnReason | undefined = last.cause === 'silent'
     ? 'silent'
-    : last.state === 'declined' && last.cause !== 'draining'
+    : last.state === 'declined' && last.cause !== 'draining' && last.cause !== 'starved'
       ? 'declined'
-      : last.cause === 'draining' || last.cause === 'revoked' || last.cause === 'untrusted'
+      : last.cause === 'draining' || last.cause === 'revoked' || last.cause === 'untrusted' || last.cause === 'orphan'
         ? 'released'
         : undefined
   return { reason: 'returned', returnedFrom: nameOf(last.runnerId), ...(why ? { returnedWhy: why } : {}) }
@@ -512,29 +647,51 @@ const REFUSAL_ORDER: readonly MachineRefusal[] = ['card', 'trusted', 'room', 'im
  * this server has, or something no machine changes (`no_fit`) — then each
  * live machine against all it has, and of their refusals the furthest one,
  * the reason the nearest machine waits on. `null` — some live machine can
- * run it once its turn and a place come, or this server will.
+ * run it once its turn and a place come, or this server will. `skipped` —
+ * every live machine that could run it is skipping it for a decline (the
+ * take's own skip, store.ts · declinedBy), so nothing takes it before the
+ * skip ends: it gets no place either, as the take gives it none.
+ *
+ * WHETHER THIS SERVER TAKES IT IS ASKED FIRST, from the competition alone
+ * (fit.ts · homeTakes): on a server that runs its notebooks itself the row's
+ * needs of a machine change nothing, and reading them — the revision, the
+ * set, the notebook, whether the image is a GPU kernel — for every waiting row
+ * on every participant's poll was the forecast's whole cost.
  */
-function blockedBy(row: QueueRow, homeOn: boolean, homeCards: boolean, live: readonly FleetMachine[], cache: FitCache): RemoteWaitReason | null {
+function blockedBy(row: QueueRow, homeOn: boolean, homeCards: boolean, live: readonly FleetMachine[], cache: FitCache): RemoteWaitReason | 'skipped' | null {
+  if (homeTakes({ gpu: rowNeedsCard(row, cache), homeNotebooks: homeOn, homeCards })) return null
   const read = rowNeeds(row, cache)
-  // A competition gone is a row on its way out; a set that cannot fit is settled by this server itself (liveness.ts · settleUnfit).
-  if (!read.ok && (read.why === 'gone' || read.why === 'unfit')) return null
-  const gpu = read.ok ? read.needs.gpu : getCompetition(row.competitionId)?.limits.gpu === true
+  // A competition gone is a row on its way out.
+  if (!read.ok && read.why === 'gone') return null
   /*
-   * This server runs it, on its own cards for a GPU notebook. A GPU notebook
-   * on a server without cards is the machines' alone, whatever this server's
-   * switch says, so it waits for the same reasons it would with the switch
-   * off: no machine with cards, an environment only this server has, the
-   * trust, the room, the image, the data.
+   * A set that cannot fit runs nowhere: this server settles it with the
+   * refusal (liveness.ts · settleUnfit) — within a pass of the clock — and
+   * until then it has no place. Only this server's own pump settles it at
+   * once, and that pump takes this row only where homeTakes said so above.
    */
-  if (homeOn && !(gpu && !homeCards)) return null
+  if (!read.ok && read.why === 'unfit') return 'no_fit'
+  /*
+   * A GPU notebook on a server without cards is the machines' alone, whatever
+   * this server's switch says, so it waits for the same reasons it would with
+   * the switch off: no machine with cards, an environment only this server
+   * has, the trust, the room, the image, the data.
+   */
   if (!read.ok) return read.why === 'home_only' ? 'home_only_env' : 'no_fit'
   if (live.length === 0) return homeOn ? 'no_gpu_runner' : 'no_runners'
   let furthest = -1
+  let skipping = false
   for (const machine of live) {
+    // Its run's size against all the machine has (capacityOf): a machine whose places are full now is no machine it can never fit.
     const refusal = machineFit(read.needs, machine.fit)
-    if (refusal === null) return null
+    if (refusal === null) {
+      if (!machine.declined.has(row.submissionId)) return null
+      skipping = true
+      continue
+    }
     furthest = Math.max(furthest, REFUSAL_ORDER.indexOf(refusal))
   }
+  // The nearest machine is one that could run it and skips it: any that cannot yet is further from it.
+  if (skipping) return 'skipped'
   return REFUSAL_REASON[REFUSAL_ORDER[furthest]]
 }
 
@@ -563,12 +720,16 @@ export function heldRunView(row: QueueRow): { machine: { id: string; name: strin
  * (runner.ts · cancelSubmission → release.ts · cancelRemote). Another
  * course's competitions are one line of numbers, with no ids to act on.
  * `undefined` — no machine holds a run.
+ *
+ * `scoring` counts the metrics of results that came from machines (a fresh
+ * result's row, QueueRow.fresh), never a rescore: «Пересчитать все» during a
+ * burst read as «2 ответа с машин» for submissions scored long ago.
  */
 export function runningRemote(viewer: StaffLike): RunningRemote[] | undefined {
   const held = heldRows()
   if (held.length === 0) return undefined
   const metrics = new Map<string, number>()
-  for (const row of runningRows()) if (row.kind === 'metric') metrics.set(row.competitionId, (metrics.get(row.competitionId) ?? 0) + 1)
+  for (const row of runningRows()) if (row.kind === 'metric' && row.fresh) metrics.set(row.competitionId, (metrics.get(row.competitionId) ?? 0) + 1)
   const out = new Map<string, RunningRemote>()
   const hiddenKey = '\u0000hidden'
   for (const row of held) {
@@ -610,13 +771,15 @@ export function competitionWhere(competition: Competition, homeSlots: number, no
   const homeOn = homeNotebooksSetting().value
   const stock = stockNow(now)
   const entry: CompetitionStock = stock.get(competition.id) ?? stockEntry(competition)
-  const machines = listRunners()
-    .filter((runner) => runner.state !== 'revoked' && runner.state !== 'left')
+  // This competition's places on each machine are in runs of its own size: what the take will lease there.
+  const mix = competitionMix(competition)
+  const machines = listStandingRunners()
     .map((runner) => ({
       id: runner.id,
       name: runner.name,
+      state: machineState(runner, now),
       verdict: readinessFor(runner, entry).verdict,
-      places: machinePlaces(runner).places,
+      places: machinePlaces(runner, mix).places,
       cards: runnerCards(runner).length,
       trusted: runner.trusted,
     }))

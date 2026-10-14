@@ -66,6 +66,21 @@ if [ -z "$image" ]; then
   image="${COLLOQ_RUNNER_REPO:-ghcr.io/colloq-edu/colloq-server}:$version"
 fi
 
+# Only an image with the agent in it: its runner build, dist/runner.sha256,
+# read by a throwaway container that runs nothing of the image's own. A home
+# rolled back to a release from before machines for submissions names one
+# without, whose install-host below would put that release's colloq-host
+# here, a colloq-host with no `runner` at all. Such a boot waits for the home
+# rather than half-install the machine (colloq-host · runner_build_of). The
+# pull goes first and on its own, so that a registry out of reach stops the
+# boot with Docker's own words, not as an image without the agent.
+docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" >/dev/null
+build="$(docker run --rm --network none --entrypoint cat "$image" /opt/colloq/server/dist/runner.sha256 2>/dev/null || true)"
+if ! [[ "$build" =~ ^[a-f0-9]{64}([[:space:]]|$) ]]; then
+  echo "$image has no machines for submissions in it (a release from before them): $COLLOQ_RUNNER_URL must run a release with them first. Reboot to try again."
+  exit 1
+fi
+
 # The host-side manager lives in the image; install it, then let it do the rest.
 docker run --rm -v /usr/local/sbin:/host "$image" install-host /host
 exec /usr/local/sbin/colloq-host runner up "$COLLOQ_RUNNER_URL" "$COLLOQ_RUNNER_CODE" "$image"

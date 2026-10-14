@@ -749,4 +749,4 @@ scenario('this server restarts while a machine fetches a competition\'s data: on
   } finally {
     saveCompetitionSettings({ runnerBlobMBps: REMOTE_BLOB_MBPS.default })
   }
-}, 'product defect: after a restart the blob route has no want scope for a machine until its first sync of the new life is answered (remote/blobs.ts · scopedSources reads only the in-memory wantScopes), so the downloads it resumes first get 404, and the agent asks for a refused blob again only after cache.ts · REFUSED_WAIT_MS (5 min): the machine holds no data, and takes none of the competition\'s work, for five minutes')
+})

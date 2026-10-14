@@ -24,7 +24,7 @@
    */
   import { onMount, type Snippet } from 'svelte'
   import { tr } from '@shared/i18n'
-  import type { RemoteMachine, RemoteMachinesResponse } from '@shared/remote-admin'
+  import type { RemoteCodeView, RemoteMachine, RemoteMachinesResponse } from '@shared/remote-admin'
   import Badge from '@/admin/screens/competitions/Badge.svelte'
   import ConnectMachine from '@/admin/ui/ConnectMachine.svelte'
   import EmptyState from '@/admin/ui/EmptyState.svelte'
@@ -35,6 +35,7 @@
     PLACES_BOUNDS,
     cardsLine,
     clockTime,
+    codeWords,
     focusCompetition,
     heardLine,
     listOrder,
@@ -74,6 +75,7 @@
     | { kind: 'trust'; machine: RemoteMachine }
     | { kind: 'revoke'; machine: RemoteMachine }
     | { kind: 'revokeAll'; count: number }
+    | { kind: 'cancelCode'; code: RemoteCodeView }
 
   let data = $state<RemoteMachinesResponse | null>(null)
   let loadErrorText = $state<(() => string) | null>(null)
@@ -261,6 +263,9 @@
     } else if (current.kind === 'revoke') {
       const id = current.machine.id
       patch = () => runnersApi.act(id, 'revoke')
+    } else if (current.kind === 'cancelCode') {
+      const id = current.code.id
+      patch = () => runnersApi.cancelCode(id)
     } else {
       patch = () => runnersApi.revokeAll()
     }
@@ -517,6 +522,38 @@
       {/if}
     {/if}
 
+    {#if data.codes.length > 0}
+      <!-- The codes still valid (admin/runners.ts · codeWords): a code
+           outlives the dialog that showed it and every machine that joined
+           with it, so this is where the owner sees one and ends it. Drawn
+           with no machine yet too: a code minted a minute ago is the reason
+           the empty list above will not stay empty. -->
+      <div class="mt-5">
+        <p class="admin-label mb-1.5">{tr('admin.runners.codes.title')}</p>
+        <div class="border-t border-line">
+          {#each data.codes as code (code.id)}
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line py-2">
+              <span class="shrink-0 font-mono text-2xs font-bold text-ink">{code.id}</span>
+              {#if code.namePrefix}
+                <span class="shrink-0 font-mono text-micro text-muted">{code.namePrefix}-…</span>
+              {/if}
+              {#if code.trusted}{@render trustedMark()}{/if}
+              <span class="min-w-0 flex-1 basis-[220px] text-2xs text-muted">{codeWords(code, now)}</span>
+              <button
+                type="button"
+                class="btn-outline shrink-0 max-[640px]:min-h-11"
+                aria-label={tr('admin.runners.codes.cancelLabel', { id: code.id })}
+                onclick={() => ask({ kind: 'cancelCode', code })}
+              >
+                {tr('admin.runners.codes.cancel')}
+              </button>
+            </div>
+          {/each}
+        </div>
+        <p class="mt-1.5 text-micro text-muted">{tr('admin.runners.codes.note')}</p>
+      </div>
+    {/if}
+
     <div class="mt-5 flex items-start gap-2.5 bg-surface px-4 py-3.5">
       <Icon name="info" size={16} class="mt-px shrink-0 text-muted" />
       <p class="text-2xs text-muted">{tr('admin.runners.footnote')}</p>
@@ -593,23 +630,34 @@
             ? tr('admin.runners.trust.title', { name: current.machine.name })
             : current.kind === 'revoke'
               ? tr('admin.runners.revoke.title', { name: current.machine.name })
-              : tr('admin.runners.revokeAll.title', { count: current.count })}
+              : current.kind === 'cancelCode'
+                ? tr('admin.runners.codes.cancelTitle', { id: current.code.id })
+                : tr('admin.runners.revokeAll.title', { count: current.count })}
         </h2>
         <p class="mt-2 text-ui leading-relaxed text-muted">
           {current.kind === 'trust'
             ? tr('admin.runners.trust.body')
             : current.kind === 'revoke'
               ? tr('admin.runners.revoke.body')
-              : tr('admin.runners.revokeAll.body')}
+              : current.kind === 'cancelCode'
+                ? tr('admin.runners.codes.cancelBody')
+                : tr('admin.runners.revokeAll.body')}
         </p>
         {#if dialogError}
           <p class="mt-3 text-ui text-danger" role="alert">{dialogError}</p>
         {/if}
         <div class="mt-5 flex flex-wrap justify-end gap-2">
-          <button type="button" class="btn-outline" disabled={working} onclick={closeDialog}>{tr('admin.cancel')}</button>
+          <!-- "Cancel" beside "Cancel the code" reads as two cancels: the way out keeps the code. -->
+          <button type="button" class="btn-outline" disabled={working} onclick={closeDialog}>
+            {current.kind === 'cancelCode' ? tr('admin.runners.codes.keep') : tr('admin.cancel')}
+          </button>
           {#if current.kind === 'trust'}
             <button type="button" class="btn-primary" disabled={working} onclick={() => void confirm()}>
               {working ? tr('admin.runners.working') : tr('admin.runners.trust.confirm')}
+            </button>
+          {:else if current.kind === 'cancelCode'}
+            <button type="button" class="btn-danger-solid" disabled={working} onclick={() => void confirm()}>
+              {working ? tr('admin.runners.working') : tr('admin.runners.codes.cancelConfirm')}
             </button>
           {:else}
             <button type="button" class="btn-danger-solid" disabled={working} onclick={() => void confirm()}>

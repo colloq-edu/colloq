@@ -460,15 +460,19 @@ function runnerFamilies(): MetricFamily[] {
       { labels: { result: 'refused' }, value: callCounts.joinsRefused },
     ]),
     counter('colloq_runner_unauthorized_total', 'Calls refused for a missing, wrong or revoked machine credential.', single(callCounts.unauthorized)),
-    counter('colloq_runner_lease_endings_total', 'How leases ended: applied, refused, withdrawn, lost, declined, revoked (taken back), cancelled, failed (the submission given up on).',
+    counter('colloq_runner_lease_endings_total', 'How leases ended: applied, refused, withdrawn, lost, declined, revoked (taken back), cancelled, failed (the submission given up on), orphaned (its queue row was no longer its own, after a rollback).',
       Object.entries(endings).map(([outcome, n]) => ({ labels: { outcome }, value: n }))),
-    counter('colloq_runner_uploads_total', 'Result files from machines: stored, repeated (already here), refused, busy (503).',
+    counter('colloq_runner_uploads_total', 'Result files from machines: stored, repeated (already here), refused, busy (503), replaced (a new hash for a name already staged), stalled (a body that sent nothing for a minute).',
       Object.entries(uploadCounts).map(([result, n]) => ({ labels: { result }, value: n }))),
     counter('colloq_runner_blob_bytes_total', 'Bytes of data, wheels and notebooks served to machines.', single(blobCounts.bytes)),
     counter('colloq_runner_blobs_total', 'Blob requests: served, refused (out of scope or too many streams), gone (replaced since).', [
       { labels: { result: 'served' }, value: blobCounts.served },
       { labels: { result: 'refused' }, value: blobCounts.refused },
       { labels: { result: 'gone' }, value: blobCounts.gone },
+    ]),
+    counter('colloq_runner_blob_streams_cut_total', 'Blob streams this server ended: cut (a revoke, an untrust, a newer stream of the same machine, a lease taking a prefetch\'s place), stalled (nothing taken off it for 45 s).', [
+      { labels: { why: 'cut' }, value: blobCounts.cut },
+      { labels: { why: 'stalled' }, value: blobCounts.stalled },
     ]),
   ]
 }

@@ -404,9 +404,10 @@ const LABELS: Record<string, Record<string, readonly string[] | RegExp>> = {
   // The machines that run submissions (ops/metrics.ts · runnerFamilies): states and outcomes, never a machine.
   colloq_runner_machines: { state: ['online', 'silent', 'outdated', 'draining', 'quarantined', 'revoked', 'left'] },
   colloq_runner_joins_total: { result: ['joined', 'refused'] },
-  colloq_runner_lease_endings_total: { outcome: ['applied', 'refused', 'withdrawn', 'lost', 'declined', 'revoked', 'cancelled', 'failed'] },
-  colloq_runner_uploads_total: { result: ['stored', 'repeated', 'refused', 'busy'] },
+  colloq_runner_lease_endings_total: { outcome: ['applied', 'refused', 'withdrawn', 'lost', 'declined', 'revoked', 'cancelled', 'failed', 'orphaned'] },
+  colloq_runner_uploads_total: { result: ['stored', 'repeated', 'refused', 'busy', 'replaced', 'stalled'] },
   colloq_runner_blobs_total: { result: ['served', 'refused', 'gone'] },
+  colloq_runner_blob_streams_cut_total: { why: ['cut', 'stalled'] },
 }
 
 test('labels come from fixed sets: rooms, people and addresses never reach the page, and classes add no series', async () => {

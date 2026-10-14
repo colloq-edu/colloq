@@ -296,11 +296,15 @@ export type AdminAuditAction =
    * The machines that run submissions (docs/architecture/remote-runners.md
    * §6 "Audit"): a machine joined with the owner's code (the actor is whoever
    * minted it), the owner trusted it with the hidden test or stopped, and the
-   * owner disconnected it.
+   * owner disconnected it. And the codes themselves, each a door for its
+   * machines and hours, trusted ones too: minted (with how many machines, for
+   * how long, trusted or not) and ended («Отменить», or «Отключить все»).
    */
   | 'runner.enrolled'
   | 'runner.trusted'
   | 'runner.revoked'
+  | 'runner.code_minted'
+  | 'runner.code_ended'
 
 /** Every action: the panel has a label for each, and a test checks that each one is recorded somewhere. */
 export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
@@ -345,6 +349,8 @@ export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
   'runner.enrolled',
   'runner.trusted',
   'runner.revoked',
+  'runner.code_minted',
+  'runner.code_ended',
 ]
 
 /** What an action was done to. `id` is stable; `label` is how it read at that moment. */
@@ -360,6 +366,8 @@ export type AdminAuditTargetType =
   | 'setup_token'
   /** A machine that runs submissions (remote_runners). */
   | 'runner'
+  /** An enrollment code for those machines, by its id in the owner's list (RemoteCodeView.id). */
+  | 'runner_code'
 
 /** A value in an event's detail: small and flat, never a secret. */
 export type AdminAuditValue = string | number | boolean | null | readonly string[]

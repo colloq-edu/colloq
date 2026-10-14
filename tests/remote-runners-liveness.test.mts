@@ -36,6 +36,9 @@ import { FACTS, code, competition, reset, send, syncRequest, type TestCompetitio
 
 useCompetitionRunner(new FakeCompetitionRunner())
 
+/** The probe's address resolves elsewhere: no DNS asked in a test (liveness.ts · leavesHost has tests of its own). */
+const elsewhere = async (): Promise<boolean> => true
+
 function machine(): RunnerRow {
   const joined = joinRunner({ code: code(), joinId: randomUUID().replaceAll('-', ''), build: 'dev', facts: FACTS, address: null }, Date.now())
   assert.ok(joined.ok)
@@ -167,7 +170,7 @@ test('this server\'s probe of its own address through the relay is path evidence
   const lease = running(m, c, now)
   const passing = (async () => new Response('{"ok":true}', { status: 200 })) as unknown as typeof fetch
   const later = now + REMOTE_SILENCE_MS + 5000
-  assert.equal(await probeOwnPath(later - 1000, passing, 'https://vsos.colloq.ru'), true)
+  assert.equal(await probeOwnPath(later - 1000, passing, 'https://vsos.colloq.ru', elsewhere), true)
   assert.equal(remoteTick(later).lost, 1)
   assert.equal(getLease(lease.attemptId)?.state, 'lost')
   reset()
@@ -202,9 +205,9 @@ test('the probe follows one redirect from http to https on its own host, and no 
   const redirecting = (to: string) => (async (url: URL) => String(url).startsWith('http://')
     ? new Response(null, { status: 308, headers: { location: to } })
     : new Response('{"ok":true}', { status: 200 })) as unknown as typeof fetch
-  assert.equal(await probeOwnPath(Date.now(), redirecting('https://vsos.colloq.ru/api/readyz'), 'http://vsos.colloq.ru'), true, 'Caddy\'s http to https')
-  assert.equal(await probeOwnPath(Date.now(), redirecting('https://elsewhere.example/api/readyz'), 'http://vsos.colloq.ru'), false, 'another host is not this server')
-  assert.equal(await probeOwnPath(Date.now(), redirecting('http://vsos.colloq.ru/login'), 'http://vsos.colloq.ru'), false)
+  assert.equal(await probeOwnPath(Date.now(), redirecting('https://vsos.colloq.ru/api/readyz'), 'http://vsos.colloq.ru', elsewhere), true, 'Caddy\'s http to https')
+  assert.equal(await probeOwnPath(Date.now(), redirecting('https://elsewhere.example/api/readyz'), 'http://vsos.colloq.ru', elsewhere), false, 'another host is not this server')
+  assert.equal(await probeOwnPath(Date.now(), redirecting('http://vsos.colloq.ru/login'), 'http://vsos.colloq.ru', elsewhere), false)
   reset()
 })
 
@@ -272,9 +275,30 @@ test('a run given back on a drain, even after its container started, waits again
   assert.equal(row.state, 'waiting')
   assert.equal(row.lost, 0)
   assert.equal(getLease(lease.attemptId)?.cause, 'draining')
-  // And it is not skipped by that machine: a drain is no refusal of the submission.
+  assert.equal(getRunner(m.id)!.state, 'active', 'and no quarantine')
+  reset()
+})
+
+test('a drain after the container started is skipped by that machine for the decline\'s window, one before it is not: a giveback cannot hold a submission for ever', () => {
+  reset()
+  const c = competition()
+  const sent = send(c)
+  const m = machine()
+  const now = Date.now()
+  // Before its container started: as if never taken, and the same machine may take it again at once (an updated agent).
+  const early = running(m, c, now, null)
+  assert.equal(declineLease(early.attemptId, now + 10, 'draining', 'docker stop'), 'declined')
   const again = takeForRunner(getRunner(m.id)!, offerFor(m, c), now + 20)
-  assert.equal(again[0]?.submissionId, sent.id)
+  assert.equal(again[0]?.submissionId, sent.id, 'a drain before any container is no refusal')
+  // After its container started: no loss, no quota — and not this machine again until the window ends.
+  updateLease(again[0].attemptId, { state: 'running', acceptedAt: now + 20, startedAt: now + 25, phase: 'running' })
+  assert.equal(declineLease(again[0].attemptId, now + 30, 'draining', 'colloq-host runner update --now'), 'declined')
+  const row = queueRow(sent.id)!
+  assert.deepEqual([row.state, row.lost], ['waiting', 0])
+  assert.deepEqual(takeForRunner(getRunner(m.id)!, offerFor(m, c), now + 40), [], 'the same machine does not take it straight back')
+  const other = machine()
+  assert.equal(takeForRunner(other, offerFor(other, c), now + 50)[0]?.submissionId, sent.id, 'another machine does')
+  assert.equal(getRunner(m.id)!.state, 'active', 'and the drains drained nothing')
   reset()
 })
 

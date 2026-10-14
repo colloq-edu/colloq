@@ -38,6 +38,7 @@ import {
   REMOTE_RELAY_STATE_PATH,
   REMOTE_REPLY_BYTES,
   REMOTE_SHA256_HEADER,
+  REMOTE_VERSION,
   parseRemoteErrorReply,
   parseRemoteJoinReply,
   parseRemoteOutcomeReply,
@@ -63,7 +64,20 @@ import type { HomePath } from './state.js'
 export type CallResult<T> =
   | { kind: 'ok'; status: number; value: T }
   | { kind: 'refused'; status: number; error: RemoteErrorCode; detail: string }
-  | { kind: 'transient'; status: number | null; reason: string; retryAfterMs: number | null }
+  | { kind: 'transient'; status: number | null; reason: string; retryAfterMs: number | null; heard?: HomeWord }
+
+/**
+ * What a reply of home's that this build's parser refuses still says
+ * plainly about the build (parsed): whether home takes it, and home's
+ * version. Read for the status and nothing else (sync.ts · loop): a home of
+ * another build is exactly the one whose replies may not parse here, and the
+ * machine's `runner status` kept saying `compatible: true` while home said
+ * false on every reply it could not read.
+ */
+export interface HomeWord {
+  compatible: boolean
+  homeVersion: string | null
+}
 
 /** A blob's reply: the bytes as they come, after the marker was checked. */
 export type BlobResult =
@@ -169,7 +183,9 @@ export class RemoteClient {
   /**
    * What the relay in front of home says about it (REMOTE_RELAY_STATE_PATH):
    * `home_offline` — the relay knows home and its tunnel is down,
-   * `home_silent` — the tunnel is up and home did not answer, `home_unknown` —
+   * `home_silent` — the relay says the tunnel is up and home did not answer
+   * (a word that lags a cut tunnel: whether it is up is unknown, state.ts ·
+   * HomePath), `home_unknown` —
    * the relay serves no home by this name at all (`known: false`: a wrong
    * address, or a name given up; no tunnel will ever come up for it, and
    * telling the owner "offline" would have them wait for it), `unreachable` —
@@ -262,14 +278,21 @@ export class RemoteClient {
     }
   }
 
-  /** A 2xx with the marker, through the contract's parser; one the parser refuses is a hiccup of the path. */
+  /**
+   * A 2xx with the marker, through the contract's parser; one the parser
+   * refuses is a hiccup of the path, with what it still says plainly about
+   * this build when it says it (HomeWord).
+   */
   private async parsed<T>(response: Response, parse: (value: unknown) => T): Promise<CallResult<T>> {
     const text = await capped(response, REMOTE_REPLY_BYTES)
     if (text === null) return { kind: 'transient', status: response.status, reason: 'a reply over its size cap', retryAfterMs: null }
+    let value: unknown
     try {
-      return { kind: 'ok', status: response.status, value: parse(JSON.parse(text)) }
+      value = JSON.parse(text)
+      return { kind: 'ok', status: response.status, value: parse(value) }
     } catch (error) {
-      return { kind: 'transient', status: response.status, reason: `a reply the contract refuses: ${error instanceof Error ? error.message : String(error)}`, retryAfterMs: null }
+      const heard = homeWord(value)
+      return { kind: 'transient', status: response.status, reason: `a reply the contract refuses: ${error instanceof Error ? error.message : String(error)}`, retryAfterMs: null, ...(heard ? { heard } : {}) }
     }
   }
 
@@ -295,6 +318,14 @@ export class RemoteClient {
     const said = `home speaks protocol ${spoken ?? 'unknown'}, this machine ${REMOTE_PROTOCOL}`
     return { ...refused, detail: remoteText(refused.detail ? `${said}: ${refused.detail}` : said, REMOTE_REASON_CHARS, 'start') }
   }
+}
+
+/** A reply's plain word on this build (HomeWord), from a value the contract's parser refused; null — it says none. */
+function homeWord(value: unknown): HomeWord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const v = value as { compatible?: unknown; homeVersion?: unknown }
+  if (typeof v.compatible !== 'boolean') return null
+  return { compatible: v.compatible, homeVersion: typeof v.homeVersion === 'string' && REMOTE_VERSION.test(v.homeVersion) ? v.homeVersion : null }
 }
 
 /** A body read as text up to `limit` bytes; `null` — it was longer (and the rest is not read). */

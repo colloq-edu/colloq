@@ -32,6 +32,7 @@ import {
   REMOTE_PER_DEVICE_MAX,
   REMOTE_RUN_MS_MAX,
   remoteCeilingMs,
+  type RemoteCard,
   type RemoteFree,
   type RemoteHeldAttempt,
   type RemoteLease,
@@ -40,6 +41,7 @@ import {
 } from '@shared/remote-runner'
 import type { Competition } from '@shared/competitions'
 import { db } from '../../db.js'
+import { cardsInUse } from '../gpu-math.js'
 import { HARNESS_REVISION } from '../harness.js'
 import { clampCells, prepareNotebook } from '../runner.js'
 import { gpuPerDeviceSetting } from '../settings.js'
@@ -48,6 +50,7 @@ import {
   finishQueueAttempt,
   getSubmission,
   holdQueueRow,
+  noteHeldRunStart,
   noteHeldStart,
   queuePaused,
   queueRow,
@@ -71,7 +74,7 @@ import {
   type LeaseRow,
   type RunnerRow,
 } from './store.js'
-import { loseLease, withdrawLease } from './release.js'
+import { loseLease, orphanLease, withdrawLease } from './release.js'
 
 /* ------------------------------------------------------------ the room */
 
@@ -110,10 +113,19 @@ function claimOf(manifest: Pick<LeaseManifest, 'limits'>): { memoryMb: number; c
  * on its stale numbers. The places are the owner's cap, or what the machine
  * offers in all (free and held), less every lease out to it.
  *
- * `listed` — the attempts the machine's sync listed, with the ones that hold
- * a card; `null` — no sync to go by, and nothing is taken as accounted for.
+ * `listed` — the attempts the machine's sync listed, with the card each one
+ * holds; `null` — no sync to go by, and nothing is taken as accounted for.
+ * `cards` — its cards as that sync said them, and `perDevice` the runs per
+ * card a GPU lease is pinned at now: the card shares are counted in those
+ * (cardRoom), never in the machine's own unit.
  */
-export function runnerRoom(runner: Pick<RunnerRow, 'id' | 'approvedSlots'>, free: RemoteFree, listed: ReadonlyMap<string, boolean> | null): RunnerRoom {
+export function runnerRoom(
+  runner: Pick<RunnerRow, 'id' | 'approvedSlots'>,
+  free: RemoteFree,
+  listed: ReadonlyMap<string, { device: string } | null> | null,
+  cards: readonly RemoteCard[] | null = null,
+  perDevice: number | null = null,
+): RunnerRoom {
   const live = liveLeases(runner.id)
   const unlisted = live.filter((lease) => !listed?.has(lease.attemptId))
   const offered = free.slots + (live.length - unlisted.length)
@@ -126,25 +138,72 @@ export function runnerRoom(runner: Pick<RunnerRow, 'id' | 'approvedSlots'>, free
     memoryMb -= claim.memoryMb
     cpus -= claim.cpus
   }
-  const shares = live.filter((lease) => lease.manifest.gpu && listed?.get(lease.attemptId) !== true).length
   return {
     slots: Math.max(0, cap - live.length),
     memoryMb,
     cpus,
-    gpuShares: free.gpuShares - shares,
+    gpuShares: cardRoom(free, live, listed, cards, perDevice),
     diskMb: free.diskMb - unlisted.length * REMOTE_ATTEMPT_DISK_MB,
   }
 }
 
-/** The attempts a sync lists, each with whether it holds a card: runnerRoom's `listed`. */
-export function listedOf(sync: Pick<RemoteSyncRequest, 'attempts'> | null): Map<string, boolean> | null {
-  return sync ? new Map(sync.attempts.map((attempt) => [attempt.id, attempt.card !== undefined])) : null
+/**
+ * THE CARD SHARES A MACHINE HAS LEFT, IN THE UNIT A LEASE IS PINNED AT NOW.
+ *
+ * The machine counts its free shares at the runs per card home last told it
+ * (cardReport at `perDevice` of its last reply), and the take pins each GPU
+ * lease at the number in force now. Taken as they came, the two were mixed
+ * the moment the owner lowered «Посылок на карту»: two idle 24 GB cards
+ * reported sixteen free shares at eight a card, home leased sixteen GPU runs
+ * pinned at two, the machine placed four — a card holds two runs at two —
+ * and declined twelve as `card`, each counted: the machine quarantined, the
+ * submissions skipped there for ten minutes, by the owner's own change.
+ *
+ * So the shares are worked out here, card by card, in the number in force
+ * (`perDevice`): each listed run on its card weighs the share its lease was
+ * pinned at (gpu-math.ts · cardsInUse, the rule the machine and this server
+ * use for their cards), the containers still awaiting removal there are the
+ * card's heads beyond its runs, and each GPU lease not yet on a card takes the
+ * shares its pin will. And never more than the machine itself said was free:
+ * when the owner raised the number, the machine's own count, in its old unit,
+ * is the smaller one for a round trip, until its next sync is in the new.
+ */
+function cardRoom(
+  free: RemoteFree,
+  live: readonly LeaseRow[],
+  listed: ReadonlyMap<string, { device: string } | null> | null,
+  cards: readonly RemoteCard[] | null,
+  perDevice: number | null,
+): number {
+  const placing = live.filter((lease) => lease.manifest.gpu && !listed?.get(lease.attemptId))
+  if (cards === null || perDevice === null || cards.length === 0) return free.gpuShares - placing.length
+  const pin = Math.max(1, Math.min(REMOTE_PER_DEVICE_MAX, perDevice))
+  const pins = new Map(live.map((lease) => [lease.attemptId, lease.manifest.perDevice] as const))
+  const runs: Array<{ device: string; perDevice: number | null }> = []
+  for (const [attemptId, card] of listed ?? []) if (card) runs.push({ device: card.device, perDevice: pins.get(attemptId) ?? null })
+  const held: Record<string, number> = {}
+  for (const card of cards) {
+    const heads = runs.filter((run) => run.device === card.device).length
+    if (card.busyShares > heads) held[card.device] = card.busyShares - heads
+  }
+  const used = cardsInUse(cards.map((card) => ({ id: card.device, capacity: pin })), runs, held)
+  let shares = 0
+  for (const card of cards) shares += Math.max(0, pin - (used.get(card.device) ?? 0))
+  // A GPU lease not yet on a card takes, at its own pin, the shares of the number in force it will hold.
+  for (const lease of placing) shares -= Math.ceil(pin / Math.max(1, lease.manifest.perDevice ?? pin))
+  return Math.min(shares, free.gpuShares - placing.length)
+}
+
+/** The attempts a sync lists, each with the card it holds (`null` — none yet): runnerRoom's `listed`. */
+export function listedOf(sync: Pick<RemoteSyncRequest, 'attempts'> | null): Map<string, { device: string } | null> | null {
+  return sync ? new Map(sync.attempts.map((attempt) => [attempt.id, attempt.card ? { device: attempt.card.device } : null])) : null
 }
 
 /** The take's view of a machine from its sync (or, after an outcome, its last sync and the outcome's `free`). */
 export function runnerOffer(runner: RunnerRow, free: RemoteFree, sync: Pick<RemoteSyncRequest, 'attempts' | 'ready'> & Partial<Pick<RemoteSyncRequest, 'cards'>> | null): RunnerOffer {
+  const perDevice = boundedPerDevice(runner.perDevice ?? gpuPerDeviceSetting().value)
   return {
-    room: runnerRoom(runner, free, listedOf(sync)),
+    room: runnerRoom(runner, free, listedOf(sync), sync?.cards ?? null, perDevice),
     ready: {
       revisions: new Set(sync?.ready.revisions ?? []),
       data: new Set(sync?.ready.data ?? []),
@@ -152,7 +211,7 @@ export function runnerOffer(runner: RunnerRow, free: RemoteFree, sync: Pick<Remo
     },
     trusted: runner.trusted,
     cards: (sync?.cards?.length ?? 0) > 0 || free.gpuShares > 0,
-    perDevice: boundedPerDevice(runner.perDevice ?? gpuPerDeviceSetting().value),
+    perDevice,
   }
 }
 
@@ -280,7 +339,13 @@ function leaseRow(runner: RunnerRow, submissionId: string, fit: Extract<Fit, { o
     prepared: {
       sealedFiles: prepared.sealedFiles,
       before: { cellsDone: prepared.submission.cellsDone, cellsTotal: prepared.submission.cellsTotal, durationMs: prepared.submission.durationMs },
-      competition: prepared.competition,
+      // What the settle reads of the competition, as the take read it — not its metric's code or its description (store.ts · LeaseCompetition).
+      competition: {
+        id: prepared.competition.id,
+        limits: prepared.competition.limits,
+        baselineSubmissionId: prepared.competition.baselineSubmissionId,
+        baselineEntrantId: prepared.competition.baselineEntrantId,
+      },
     },
     container: prepared.container,
     perDevice: fit.manifest.perDevice,
@@ -393,8 +458,26 @@ function noteAttempt(lease: LeaseRow, attempt: RemoteHeldAttempt, now: number): 
   }
   const row = queueRow(lease.submissionId)
   const owned = row && row.state === 'running' && row.attemptId === lease.attemptId && row.holder === lease.runnerId ? row : null
-  if (!owned) return
-  if (startedAt !== undefined) noteHeldStart(owned, startedAt)
+  /*
+   * An open lease whose row it no longer owns is over, whatever the machine
+   * is doing with it (release.ts · orphanLease): this very reply tells it
+   * `cancelled`, rather than the lease living on until it ends as a loss.
+   */
+  if (!owned) {
+    orphanLease(lease.attemptId, now)
+    return
+  }
+  /*
+   * The container's start is the run's start, on the participant's clock and
+   * in the teacher's history: the queue row was taken with no started_at
+   * (store.ts · holdQueueRow), and the run row the take started gets the
+   * container's start too (noteHeldRunStart) — minutes of pulls, wheels and a
+   * notebook fetched by hash are the machine's preparation, not the run.
+   */
+  if (startedAt !== undefined) {
+    noteHeldStart(owned, startedAt)
+    noteHeldRunStart(lease.runId, lease.attemptId, startedAt)
+  }
   if (attempt.progress && attempt.phase === 'running') {
     const seen = lease.codeCells === null ? attempt.progress : clampCells(attempt.progress, lease.codeCells)
     const stage = attempt.progress.phase === 'dependencies' ? 'dependencies' : 'notebook'

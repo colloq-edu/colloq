@@ -1265,6 +1265,34 @@
           <p class="text-ui text-danger" role="alert">{competitionError}</p>
           <button type="button" class="btn-outline mt-3" onclick={() => void load()}>{tr('admin.try.again')}</button>
         {:else if competitions}
+          {#if dockerOnlyIgnored && competitions.runners?.homeNotebooks.value === false}
+            <!-- Kubernetes: the broker runs the submissions and no machine
+                 can (§1), so the machines block with the switch is not drawn
+                 here. Yet the setting can still be off — saved through the
+                 door, or carried over in a database from a VM home whose
+                 machines ran the notebooks — and with it off the pump takes
+                 no notebook at all and every submission waits. The way back
+                 is said here: the switch goes on in the form, and Save sends
+                 it with the rest. -->
+            <div class="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2.5 border-l-[3px] border-warning bg-warning/[0.07] px-3.5 py-3" role="status">
+              <Icon name="alert" size={15} class="shrink-0 text-warning" />
+              <p class="min-w-0 flex-1 basis-[240px] text-2xs text-ink">
+                {homeChoice === true ? tr('admin.resourcesTab.brokerNotebooksPending') : tr('admin.resourcesTab.brokerNotebooksOff')}
+              </p>
+              {#if homeChoice !== true}
+                <button
+                  type="button"
+                  class="btn-outline shrink-0 max-[640px]:w-full"
+                  onclick={() => {
+                    homeChoice = true
+                    typed('c.homeNotebooks')
+                  }}
+                >
+                  {tr('admin.resourcesTab.brokerNotebooksOn')}
+                </button>
+              {/if}
+            </div>
+          {/if}
           <p class="admin-label mb-1.5">{tr('admin.resourcesTab.slots')}</p>
           <div class="resources-slots">
             <Choice

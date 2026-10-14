@@ -34,6 +34,7 @@ import {
   REMOTE_HOLD_IDLE_MS,
   REMOTE_JOIN_BYTES,
   REMOTE_JOINS_PER_ADDRESS,
+  REMOTE_MANIFESTS_MAX,
   REMOTE_MARKER,
   REMOTE_MARKER_HEADER,
   REMOTE_OUTCOME_BYTES,
@@ -63,12 +64,14 @@ import { gpuPerDeviceSetting } from '../settings.js'
 import { applyOutcome } from './apply.js'
 import { homeWords } from './words.js'
 import { BlobRefusal, noteWantScope, serveBlob } from './blobs.js'
-import { lastSync, noteCall, noteSent, noteSync, sentDigest, wantedBefore, type SyncNews } from './heard.js'
+import { askedOf, lastSync, noteCall, noteSent, noteSync, sentDigest, wantedBefore, type SentReply, type SyncNews } from './heard.js'
 import { pendingOffers, reconcileSync, runnerOffer, syncVerdicts, takeForRunner } from './lease.js'
 import { leaveRunner } from './release.js'
 import {
+  LIVE_LEASE_STATES,
   authenticateRunner,
   boundedPerDevice,
+  getLease,
   getRunner,
   homeRunnerBuild,
   homeVersion,
@@ -205,6 +208,9 @@ const joinBucket = new Map<string, number[]>()
 /** Problem lines one machine may add to its log in an hour (noteFacts). */
 const PROBLEM_EVENTS = 60
 const problemEvents = new Map<string, number[]>()
+/** Readiness lines (image_ready, data_ready) one machine may add to its log in an hour (noteFacts). */
+const READY_EVENTS = 120
+const readyEvents = new Map<string, number[]>()
 
 /** The machine a call's credential names, or 401; then its own rate for this kind of call, or 429. */
 function machine(kind: keyof typeof PER_MINUTE) {
@@ -297,6 +303,21 @@ export function remoteRunnerRoutes(): Router {
 /** The least time between two recomputes of one held sync's reply. */
 const RECOMPUTE_MS = 200
 
+/*
+ * ONE HELD SYNC PER MACHINE. The agent keeps one long-poll open (its loop
+ * awaits each sync, and its own poke aborts the one in flight first), but
+ * nothing here held it to that: a client with a machine's secret kept a
+ * hundred syncs held at once within the per-minute rate, and every upload,
+ * every finished metric and every outcome made this server recompute all of
+ * them — the take over every waiting row, the want, the digest — in one
+ * synchronous stretch: two seconds of a blocked event loop per wake, felt by
+ * every room on the server. So a machine's newer sync answers its older one
+ * at once, with the reply that one has (never a refusal: an honest agent's
+ * aborted sync may still be held here for a moment when its next one
+ * arrives), and only the newest is held.
+ */
+const holding = new Map<string, () => void>()
+
 /**
  * The heartbeat, the long-poll and the reconciliation (§3.4). What the sync
  * says is written down at once (reconcileSync); the reply is held for at
@@ -320,30 +341,57 @@ async function sync(req: Request, res: Response): Promise<void> {
   const ends = now + hold
   const hungUp = new AbortController()
   res.on('close', () => hungUp.abort())
-  let reply = await syncReply(current.id, request, request.state === 'leaving')
-  let computed = Date.now()
-  while (reply !== null && !reply.news && Date.now() < ends && !hungUp.signal.aborted) {
-    await waitForNews(current.id, ends - Date.now(), hungUp.signal)
-    if (hungUp.signal.aborted) return
-    /*
-     * A burst of uploads is a burst of wakes, each of every held sync: one
-     * recompute per RECOMPUTE_MS takes them all in, rather than a take per
-     * upload per machine.
-     */
-    const pause = Math.min(computed + RECOMPUTE_MS - Date.now(), ends - Date.now())
-    if (pause > 0) await new Promise((resolve) => setTimeout(resolve, pause))
-    if (hungUp.signal.aborted) return
-    reply = await syncReply(current.id, request, request.state === 'leaving')
-    computed = Date.now()
+  // This sync is the machine's newest: the one it held before answers now.
+  const superseded = new AbortController()
+  holding.get(current.id)?.()
+  const release = (): void => superseded.abort()
+  holding.set(current.id, release)
+  const done = (): void => {
+    if (holding.get(current.id) === release) holding.delete(current.id)
   }
-  if (hungUp.signal.aborted) return
-  if (reply === null) return refuse(res, 'unauthorized')
-  noteSent(current.id, reply.digest, reply.wanted, reply.body.forget)
-  noteWantScope(current.id, reply.body.want)
-  res.json(reply.body)
+  try {
+    let reply = await syncReply(current.id, request, request.state === 'leaving')
+    let computed = Date.now()
+    while (reply !== null && !reply.news && Date.now() < ends && !hungUp.signal.aborted && !superseded.signal.aborted) {
+      await waitForNews(current.id, ends - Date.now(), AbortSignal.any([hungUp.signal, superseded.signal]))
+      if (hungUp.signal.aborted) return
+      if (superseded.signal.aborted) break
+      /*
+       * A burst of uploads is a burst of wakes, each of every held sync: one
+       * recompute per RECOMPUTE_MS takes them all in, rather than a take per
+       * upload per machine.
+       */
+      const pause = Math.min(computed + RECOMPUTE_MS - Date.now(), ends - Date.now())
+      if (pause > 0) await new Promise((resolve) => setTimeout(resolve, pause))
+      if (hungUp.signal.aborted) return
+      if (superseded.signal.aborted) break
+      reply = await syncReply(current.id, request, request.state === 'leaving')
+      computed = Date.now()
+    }
+    if (hungUp.signal.aborted) return
+    if (reply === null) return refuse(res, 'unauthorized')
+    noteSent(current.id, { digest: reply.digest, wanted: reply.wanted, gone: reply.gone, asked: reply.asked })
+    noteWantScope(current.id, reply.body.want)
+    res.json(reply.body)
+  } finally {
+    done()
+  }
 }
 
-/** What a sync says about the machine itself into its row, and its readiness news into its log. */
+/**
+ * What a sync says about the machine itself into its row, and its readiness
+ * news into its log.
+ *
+ * THE LOG IS BOUNDED BY WHAT HOME ASKED FOR. A machine's ready lists are its
+ * own words, checked for their shape alone: one flipping between two sets of
+ * made-up ids wrote 288 rows a sync, tens of thousands a minute into
+ * colloq.db, kept for three months, and its page's last fifty lines were all
+ * noise — the join and the hidden-test fetches pushed off it. So a readiness
+ * line names only a revision or a manifest this server asked the machine for
+ * (heard.ts · askedOf), at most READY_EVENTS of them an hour; `outdated` is
+ * written when the machine's build stops being home's, not on every change
+ * of a build string that never was.
+ */
 function noteFacts(runner: RunnerRow, request: RemoteSyncRequest, news: SyncNews, now: number, address: string | null): RunnerRow {
   const patch: Parameters<typeof updateRunner>[1] = {}
   if (request.facts && JSON.stringify(request.facts) !== JSON.stringify(runner.facts)) {
@@ -353,17 +401,28 @@ function noteFacts(runner: RunnerRow, request: RemoteSyncRequest, news: SyncNews
   if (request.build !== runner.build) {
     patch.build = request.build
     // Of another build from now on: it finishes what it holds and is given nothing new (decision 5).
-    if (!remoteCompatible(homeRunnerBuild(), request.build)) remoteEvent(runner.id, 'outdated', { address, detail: request.facts?.version ?? runner.version ?? null }, now)
+    const home = homeRunnerBuild()
+    if (remoteCompatible(home, runner.build ?? '') && !remoteCompatible(home, request.build)) {
+      remoteEvent(runner.id, 'outdated', { address, detail: request.facts?.version ?? runner.version ?? null }, now)
+    }
   }
   // The cards' echo outlives a restart for the GPU door (heard.ts · remoteCardsSeen): what they are, not how busy.
   const shape = (cards: RemoteSyncRequest['cards']) => JSON.stringify(cards.map((card) => [card.device, card.name, card.memoryMb, card.perDevice]))
   if (shape(request.cards) !== shape(runner.cards)) patch.cards = request.cards
   const updated = Object.keys(patch).length > 0 ? (updateRunner(runner.id, patch) ?? runner) : runner
   // The machine's log names the address each change was heard from (§6 "Audit": addresses go to remote_events).
-  for (const id of news.revisions) remoteEvent(runner.id, 'image_ready', { address, detail: id }, now)
-  for (const manifest of [...news.data, ...news.sealed]) remoteEvent(runner.id, 'data_ready', { address, detail: manifest.slice(0, 12) }, now)
-  // A machine's problems are its own words: at most PROBLEM_EVENTS of them an hour reach its log, however often they change.
+  const asked = askedOf(runner.id)
+  const ready = [
+    ...news.revisions.filter((id) => asked.revisions.has(id)).map((id) => ['image_ready', id] as const),
+    ...[...news.data, ...news.sealed].filter((manifest) => asked.manifests.has(manifest)).map((manifest) => ['data_ready', manifest.slice(0, 12)] as const),
+  ]
+  for (const [kind, detail] of ready) {
+    if (tooOften(readyEvents, runner.id, 60 * 60_000, READY_EVENTS)) break
+    remoteEvent(runner.id, kind, { address, detail }, now)
+  }
+  // A machine's problems are its own words: at most PROBLEM_EVENTS of them an hour reach its log, however often they change, and one about a thing reaches it only if this server asked for that thing.
   for (const problem of news.problems) {
+    if ((problem.revisionId && !asked.revisions.has(problem.revisionId)) || (problem.manifest && !asked.manifests.has(problem.manifest)) || (problem.bundleId && !asked.bundles.has(problem.bundleId))) continue
     if (tooOften(problemEvents, runner.id, 60 * 60_000, PROBLEM_EVENTS)) break
     remoteEvent(runner.id, 'problem', { address, detail: `${problem.code}: ${homeWords(problem.detail)}` }, now)
   }
@@ -375,7 +434,10 @@ interface SyncAnswer {
   /** Something in it the machine must hear now, rather than at the end of the hold. */
   news: boolean
   digest: string
-  wanted: string[]
+  /** What heard.ts keeps of the reply once it goes out (noteSent). */
+  wanted: SentReply['wanted']
+  gone: string[]
+  asked: SentReply['asked']
 }
 
 /**
@@ -396,9 +458,10 @@ async function syncReply(runnerId: string, request: RemoteSyncRequest, leaving: 
   const fresh = getRunner(runnerId) ?? runner
   const leases = runner.state === 'left' ? [] : pendingOffers(runnerId, now)
   const { revoke, applied } = syncVerdicts(runnerId, request)
+  const held = liveLeases(runnerId)
   const want = runner.state === 'left'
-    ? { want: { revisions: [], data: [], bundles: [] }, forget: [...wantedBefore(runnerId)], wanted: [] }
-    : runnerWant({ stock, trusted: fresh.trusted, cards: request.cards.length > 0, sync: request, leases: liveLeases(runnerId), wantedBefore: wantedBefore(runnerId) })
+    ? { want: { revisions: [], data: [], bundles: [] }, forget: [...wantedBefore(runnerId).keys()].slice(0, REMOTE_MANIFESTS_MAX), wanted: [], gone: [] }
+    : runnerWant({ stock, trusted: fresh.trusted, cards: request.cards.length > 0, sync: request, leases: held, wantedBefore: wantedBefore(runnerId) })
   const body: RemoteSyncReply = {
     seq: fresh.offerSeq,
     leases,
@@ -416,7 +479,12 @@ async function syncReply(runnerId: string, request: RemoteSyncRequest, leaving: 
   const digest = newsDigest(body)
   // A leave is answered at once: `runner leave` waits on it, and nothing will come for a machine that is gone.
   const news = runner.state === 'left' || taken.length > 0 || leases.length > 0 || revoke.length > 0 || applied.length > 0 || digest !== sentDigest(runnerId)
-  return { body, news, digest, wanted: want.wanted }
+  const asked = {
+    revisions: [...body.want.revisions.map((revision) => revision.id), ...held.map((lease) => lease.manifest.revision.id)],
+    manifests: [...body.want.data.map((entry) => entry.manifest), ...held.flatMap((lease) => [lease.manifest.data.manifest, ...(lease.manifest.sealed ? [lease.manifest.sealed.manifest] : [])])],
+    bundles: [...body.want.bundles.map((bundle) => bundle.id), ...held.flatMap((lease) => (lease.manifest.bundle ? [lease.manifest.bundle.id] : []))],
+  }
+  return { body, news, digest, wanted: body.want.data.map((entry) => ({ competitionId: entry.competitionId, manifest: entry.manifest })), gone: want.gone, asked }
 }
 
 /** Everything of a reply but its per-call lists: what the machine has to hear again when it changes. */
@@ -443,20 +511,34 @@ function newsDigest(body: RemoteSyncReply): string {
  * before. A stopping agent passes whatever a reply hands it and never syncs
  * again, so each lease in it would sit unacked for its minute
  * (REMOTE_OFFER_MS), its row held for a machine that is gone.
+ *
+ * THE ATTEMPT REPORTED HERE GAVE ITS PLACE BACK. Its agent may still count it
+ * among what it holds in the `free` it sent (the outcome goes out before the
+ * attempt is let go), and the lease is over here: counted by neither, a
+ * machine at its places was given nothing in every completion reply — one
+ * more sync and round trip before each next run, the design's next lease in
+ * the reply never coming. So its place is added back to the places (only the
+ * places: whether the machine's memory, CPUs, disk and cards hold the next
+ * run is still judged by what it says it has, and the owner's cap still
+ * holds), which an agent that already left it out gains nothing from.
  */
 async function outcome(req: Request, res: Response): Promise<void> {
   const runner = (res.locals as RunnerLocals).runner
   const request = parseRemoteOutcomeRequest(req.body)
   callCounts.outcomes++
-  const answer = await applyOutcome(runner.id, String(req.params.attempt), request)
+  const attemptId = String(req.params.attempt)
+  const answer = await applyOutcome(runner.id, attemptId, request)
   if (!answer.ok) return refuse(res, answer.code)
   const now = Date.now()
   const fresh = getRunner(runner.id) ?? runner
   const sync = lastSync(runner.id)
   const compatible = remoteCompatible(homeRunnerBuild(), request.build)
   const stopping = request.kind === 'declined' && request.reason === 'draining'
+  const reported = getLease(attemptId)
+  const freed = reported !== null && reported.runnerId === runner.id && !LIVE_LEASE_STATES.includes(reported.state)
+  const free = freed ? { ...request.free, slots: request.free.slots + 1 } : request.free
   // Its last sync's list stands for what the outcome's `free` already accounts for: conservative, never over.
-  if (!stopping && compatible && fresh.state === 'active' && sync !== null && sync.state === 'active') takeForRunner(fresh, runnerOffer(fresh, request.free, sync), now)
+  if (!stopping && compatible && fresh.state === 'active' && sync !== null && sync.state === 'active') takeForRunner(fresh, runnerOffer(fresh, free, sync), now)
   const after = getRunner(runner.id) ?? fresh
   const body: RemoteOutcomeReply = { result: answer.result, seq: after.offerSeq, leases: stopping ? [] : pendingOffers(runner.id, now), trusted: after.trusted }
   res.json(body)

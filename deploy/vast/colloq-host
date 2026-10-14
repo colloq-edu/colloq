@@ -540,8 +540,9 @@ run_container() {
   # COLLOQ_SERVER_IMAGE: the panel's join commands for the machines that run
   # submissions name this very image (competitions/remote/commands.ts), so a
   # machine joined from the panel runs the build its home runs, as the
-  # commands `colloq-host runner-code` prints do. Without it the panel could
-  # only guess the published image of the release.
+  # commands `colloq-host runner-code` prints do. A container started without
+  # it (by a colloq-host from before it, or by hand) has its entry point ask
+  # the daemon instead (entrypoint.sh · locate_server_image).
   docker run -d --name "$NAME" \
     --restart unless-stopped \
     --network "$NET" \
@@ -1129,11 +1130,63 @@ home_version() {
     | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)".*/\1/p' | head -1
 }
 
-# The home's version as the agent last heard it in a sync (homeVersion), for
-# a home this host's own curl cannot reach although the agent can.
+# The home's version as the agent heard it in a sync (homeVersion), for a
+# home this host's own curl cannot reach although the agent can: only from a
+# sync made at or after SINCE (milliseconds, the moment the update began),
+# waited for up to COLLOQ_RUNNER_FRESH_SEC (60: a held sync answers within
+# 25 s, a backoff waits at most 30). Never the version the agent kept from
+# before. Right after its home moved to another release that is the release
+# it left: the home's container is replaced, its tunnel comes back seconds
+# later, and meanwhile the agent hears only relay pages and keeps its last
+# word. An update that followed it found the machine "already" on it and said
+# so, and from its next sync on the machine was «устарела» and took nothing
+# (review, 14 Oct 2026). Nothing when no such sync came: the update then asks
+# for the version in words rather than guess it.
 agent_home_version() {
-  docker exec "$RUNNER_NAME" colloq-vast runner status 2>/dev/null \
-    | sed -nE 's/.*"homeVersion"[[:space:]]*:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)".*/\1/p' | head -1 || true
+  local since="$1" bound s at
+  bound="$(setting COLLOQ_RUNNER_FRESH_SEC 60)"
+  case "$bound" in ''|*[!0-9]*) bound=60 ;; esac
+  # A stopped agent syncs with nobody: nothing to wait for.
+  [ "$(docker container inspect -f '{{.State.Running}}' "$RUNNER_NAME" 2>/dev/null || true)" = true ] || return 0
+  while :; do
+    s="$(docker exec "$RUNNER_NAME" colloq-vast runner status 2>/dev/null | grep '^{' | tail -1 || true)"
+    at="$(printf '%s' "$s" | sed -nE 's/.*"syncedAt"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -1)"
+    if [ -n "$at" ] && [ "$at" -ge "$since" ]; then
+      printf '%s' "$s" \
+        | sed -nE 's/.*"homeVersion"[[:space:]]*:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)".*/\1/p' | head -1
+      return 0
+    fi
+    [ "$bound" -ge 2 ] || return 0
+    sleep 2; bound=$((bound - 2))
+  done
+}
+
+# The runner build an image carries (dist/runner.sha256 beside the agent,
+# decision 5), read by a throwaway container that runs nothing of the
+# image's own: `cat` for its entry point, no network. Nothing when there is
+# none. An image from before the machines for submissions (0.22.0 and older)
+# has neither the file nor a `runner` mode: its entry point falls through to
+# `exec runner`, which exits 127, and under unless-stopped that is a crash
+# loop for as long as the machine is up, its image recorded for the reboots.
+# A home rolled back to 0.22 (`colloq-host restore --image`, the way back
+# `update` prints) names exactly such an image, and an update that followed
+# it drained a working agent first (review, 14 Oct 2026).
+runner_build_of() {
+  docker run --rm --network none --entrypoint cat "$1" /opt/colloq/server/dist/runner.sha256 2>/dev/null \
+    | sed -nE 's/^([a-f0-9]{64})([[:space:]].*)?$/\1/p' | head -1 || true
+}
+
+# Whether IMG has the agent in it: it is the very image the agent's container
+# runs already (started by a colloq-host that asked this, or by the panel's
+# join command, which names a release with machines for submissions), or its
+# runner build says so. The first spares the `runner up` of every boot a
+# throwaway container for an image nothing replaces.
+runner_mode_in() {
+  local img="$1" id cur
+  id="$(docker image inspect -f '{{.Id}}' "$img" 2>/dev/null || true)"
+  cur="$(docker container inspect -f '{{.Image}}' "$RUNNER_NAME" 2>/dev/null || true)"
+  if [ -n "$id" ] && [ "$id" = "$cur" ]; then return 0; fi
+  [ -n "$(runner_build_of "$img")" ]
 }
 
 # The repository of an image reference: no tag, no digest, a registry port kept.
@@ -1168,10 +1221,36 @@ runner_config_sum() {
     | sha256sum | cut -c1-16
 }
 
+# What the agent's container is given to see, into RUNNER_MOUNTS: the socket
+# (every submission runs in a container of its own on this Docker), the tree
+# at the same path on both sides (entrypoint.sh · require_same_path), the
+# registry credentials as for the instance (the agent's docker pulls the
+# kernels by digest, from a private registry too), and an internal CA bundle
+# at the path NODE_EXTRA_CA_CERTS names, which Node reads only at start.
+#
+# One list for the agent and for the one-off container a stopped machine
+# leaves from (runner_leave): that one was told NODE_EXTRA_CA_CERTS by the
+# settings file without the file itself, so Node started without the CA, and
+# a leave to a campus home behind that CA (or a TLS-inspecting proxy) failed
+# as "transient" for the one-off's ten minutes, ending with "revoke it on the
+# home" for a machine that only wanted to leave (review, 14 Oct 2026).
+RUNNER_MOUNTS=()
+runner_mounts() {
+  local ca
+  RUNNER_MOUNTS=(-v /var/run/docker.sock:/var/run/docker.sock -v "$RUNNER_STATE:$RUNNER_STATE")
+  if [ -s /root/.docker/config.json ]; then
+    RUNNER_MOUNTS+=(-v /root/.docker/config.json:/run/colloq/docker-config.json:ro)
+  fi
+  ca="$(env_value NODE_EXTRA_CA_CERTS)"
+  if [ -n "$ca" ]; then
+    if [ -f "$ca" ]; then RUNNER_MOUNTS+=(-v "$ca:$ca:ro")
+    else warn "NODE_EXTRA_CA_CERTS=$ca is not a file on this machine; the container gets the path as it is"
+    fi
+  fi
+}
+
 # The agent's container. No port: it only ever calls out (the home, the
-# registry, the package index). The socket: every submission runs in a
-# container of its own on this Docker. The tree at the same path on both sides
-# (entrypoint.sh · require_same_path).
+# registry, the package index). What it sees is runner_mounts' list.
 #
 # Its health is the image's own check, which knows the mode it was started in
 # (entrypoint.sh · health): the agent's answer to "joined and syncing" here,
@@ -1194,7 +1273,7 @@ runner_config_sum() {
 # out the agent's backoff, up to 30 s a try (REMOTE_BACKOFF_MAX_MS), and half
 # a minute was one try.
 run_runner() {
-  local img="$1" sum ca extra=()
+  local img="$1" sum
   sum="$(runner_config_sum "$img")"
   if docker container inspect "$RUNNER_NAME" >/dev/null 2>&1; then
     if [ "$(docker inspect -f '{{index .Config.Labels "colloq.config"}}' "$RUNNER_NAME")" = "$sum" ]; then
@@ -1207,25 +1286,13 @@ run_runner() {
     docker rm "$RUNNER_NAME" >/dev/null
   fi
   mkdir -p "$RUNNER_STATE"
-  # The registry credentials, as for the instance: the agent's docker pulls
-  # the kernels by digest, from a private registry too.
-  if [ -s /root/.docker/config.json ]; then
-    extra+=(-v /root/.docker/config.json:/run/colloq/docker-config.json:ro)
-  fi
-  ca="$(env_value NODE_EXTRA_CA_CERTS)"
-  if [ -n "$ca" ]; then
-    if [ -f "$ca" ]; then extra+=(-v "$ca:$ca:ro")
-    else warn "NODE_EXTRA_CA_CERTS=$ca is not a file on this machine; the container gets the path as it is"
-    fi
-  fi
+  runner_mounts
   docker run -d --name "$RUNNER_NAME" \
     --restart unless-stopped \
     --stop-timeout 90 \
     --log-opt max-size=50m --log-opt max-file=5 \
     --health-interval 30s --health-timeout 20s --health-start-period 120s --health-retries 3 \
-    -v /var/run/docker.sock:/var/run/docker.sock \
-    -v "$RUNNER_STATE:$RUNNER_STATE" \
-    ${extra[@]+"${extra[@]}"} \
+    "${RUNNER_MOUNTS[@]}" \
     --env-file "$ENV_FILE" \
     -e "COLLOQ_RUNNER_STATE=$RUNNER_STATE" \
     -e "COLLOQ_RUNNER_IMAGE=$img" \
@@ -1261,7 +1328,7 @@ wait_joined() {
 
 runner_up() {
   need_root
-  local url="${1:-}" code="${2:-}" named="${3:-}" img join
+  local url="${1:-}" code="${2:-}" named="${3:-}" img join from_home=0
   [ "$#" -le 3 ] || die "usage: colloq-host runner up https://<home> <code> [IMAGE]"
   [ -n "$url" ] && [ -n "$code" ] \
     || die "usage: colloq-host runner up https://<home> <code> [IMAGE]   (the code comes from the home's owner: the panel, Resources, machines for submissions, or colloq-host runner-code there)"
@@ -1287,9 +1354,21 @@ runner_up() {
   write_env
   set_env_value COLLOQ_RUNNER_JOIN "$join"
   ensure_gpu runner
+  # Whether the image comes from the home's version (runner_image), for the
+  # words of a refusal below.
+  [ -n "$named" ] || [ -s "$RUNNER_IMAGE_FILE" ] || from_home=1
   img="$(runner_image "$named" "$url")"
   registry_login "$img"
   fetch_image "$img"
+  # The agent must be in it before the image is recorded and anything is
+  # started or replaced (runner_build_of says why): a home rolled back to a
+  # release from before the machines names one without, and the Vast
+  # on-start would say this very `runner up` again on every boot.
+  if ! runner_mode_in "$img"; then
+    [ "$from_home" = 0 ] \
+      || die "$url runs ${img##*:}, a release from before machines for submissions: $img has no runner mode, and nothing was started. Join it once the home runs a release with them"
+    die "$img has no machines for submissions in it (no runner mode: a release from before them, or not a colloq-server image); nothing was started"
+  fi
   mkdir -p "$CONF_DIR"; printf '%s\n' "$img" > "$RUNNER_IMAGE_FILE"
   run_runner "$img"
   wait_joined "$url"
@@ -1415,6 +1494,9 @@ runner_status() {
 # still running.
 stop_runner() { docker stop -t 90 "$RUNNER_NAME" >/dev/null 2>&1 || true; }
 
+# Seconds as a person reads them: minutes from two of them on.
+span() { if [ "$1" -ge 120 ]; then printf '%s min' "$(( $1 / 60 ))"; else printf '%s s' "$1"; fi; }
+
 drain_runner() {
   local bound rc=0
   bound="$(setting COLLOQ_RUNNER_DRAIN_SEC 15720)"
@@ -1452,7 +1534,10 @@ runner_inputs_ready() {
 
 runner_update() {
   need_root
-  local want="" now=0 arg cur img version url new_id cur_id sum
+  local want="" now=0 arg cur img version url new_id cur_id sum since
+  # The agent's word on its home's version counts only from a sync made from
+  # now on (agent_home_version says why).
+  since="$(date +%s)000"
   for arg in "$@"; do
     case "$arg" in
       --now) now=1 ;;
@@ -1470,8 +1555,8 @@ runner_update() {
       # The home's version: what makes a machine «устарел» is the home moving on.
       url="$(runner_home)"; version=""
       [ -z "$url" ] || version="$(home_version "$url")"
-      [ -n "$version" ] || version="$(agent_home_version)"
-      [ -n "$version" ] || die "neither ${url:-the home} nor the agent says which version the home runs; name it: colloq-host runner update <version>"
+      [ -n "$version" ] || version="$(agent_home_version "$since")"
+      [ -n "$version" ] || die "neither ${url:-the home} nor the agent says which version the home runs (the agent's word counts from a sync since this update began, and none came: is the home up?); name it: colloq-host runner update <version>"
       img="$(image_repo "$cur"):$version" ;;
     */*|*:*|*@*) img="$want" ;;
     *) check_version "$want"; img="$(image_repo "$cur"):$want" ;;
@@ -1493,6 +1578,15 @@ runner_update() {
   # same way: a container is never swapped under a running agent undrained.
   [ "$cur_id" != "$new_id" ] || say "$RUNNER_NAME runs $img already, but not with these settings: it is replaced the same way"
   runner_inputs_ready "$img"
+  # The agent must be in the new image, and that too is known before the old
+  # one is drained (runner_build_of says why): the home's version after a
+  # rollback, or a VERSION= named by mistake, would otherwise leave the
+  # machine a crash loop where a working agent was.
+  if ! runner_mode_in "$img"; then
+    [ -n "$want" ] \
+      || die "the home runs $version, a release from before machines for submissions: $img has no runner mode. Nothing was changed: $RUNNER_NAME keeps running $cur, idle until the home runs a release with them again (then colloq-host runner update, should that release's runner build be another)"
+    die "$img has no machines for submissions in it (no runner mode: a release from before them, or not a colloq-server image); nothing was changed: $RUNNER_NAME keeps running $cur"
+  fi
   if [ "$(docker container inspect -f '{{.State.Running}}' "$RUNNER_NAME" 2>/dev/null || true)" = true ]; then
     if [ "$now" = 1 ]; then
       say "stopping $RUNNER_NAME now (--now): the runs it holds go back to the home's queue and run again, spending no participant's attempts"
@@ -1526,9 +1620,49 @@ retire_identity() {
   say "its revoked identity is put aside as $kept; a new join starts without it"
 }
 
+# The leave of a running agent, waited for within bounds. It ends with the
+# home's answer to the agent's `leaving` sync, once the runs it holds have
+# finished: hours at most for the runs (the drain's bound), and never while
+# the home does not answer. A home destroyed before its machines, or one cut
+# off (the data centre of 8 Oct), kept `make runners-down` waiting on every
+# machine for good, each billing by the hour, the ssh kept alive by its
+# keepalives and nothing on the screen saying what it waited for (review, 14
+# Oct 2026). So the wait gives up once the agent has heard nothing from its
+# home for SILENT seconds, counted from its last good sync or from the
+# leave's start, whichever is later, and in any case after BOUND seconds.
+# The agent's own status file in the tree says when it last heard its home
+# (what `runner status` prints); it is read every second, a file rather than
+# a docker exec, since a leave with nothing held is over in a round trip.
+# Giving up ends only the waiting: the agent goes on leaving (it takes no new
+# work, and revokes itself once its home answers). Returns the leave's own
+# exit code; 124 past BOUND, 125 for the silence.
+leave_running_agent() {
+  local bound="$1" silent="$2" began now heard at pid rc=0
+  began="$(date +%s)"
+  docker exec "$RUNNER_NAME" colloq-vast runner leave &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    now="$(date +%s)"
+    at="$(sed -nE 's/.*"syncedAt"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$RUNNER_STATE/status.json" 2>/dev/null | head -1 || true)"
+    heard="$began"
+    if [ -n "$at" ] && [ $((at / 1000)) -gt "$heard" ]; then heard=$((at / 1000)); fi
+    if [ $((now - heard)) -ge "$silent" ]; then rc=125
+    elif [ $((now - began)) -ge "$bound" ]; then rc=124
+    fi
+    if [ "$rc" != 0 ]; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return "$rc"
+    fi
+    sleep 1
+  done
+  wait "$pid" || rc=$?
+  return "$rc"
+}
+
 runner_leave() {
   need_root
-  local join img
+  local join img drain bound silent rc=0
   if ! docker container inspect "$RUNNER_NAME" >/dev/null 2>&1; then
     say "there is no $RUNNER_NAME on this machine: nothing to leave"
     return 0
@@ -1540,16 +1674,40 @@ runner_leave() {
   # machine its home no longer knows.
   docker update --restart=no "$RUNNER_NAME" >/dev/null
   if [ "$(docker container inspect -f '{{.State.Running}}' "$RUNNER_NAME" 2>/dev/null || true)" = true ]; then
+    # The runs it holds may take the drain's bound, the revoke after them a
+    # few minutes more; the home's silence ends the wait long before either
+    # (leave_running_agent). Ten minutes of it, as long as the one-off below
+    # tries (runner-agent/main.ts · ONE_OFF_LEAVE_MS).
+    drain="$(setting COLLOQ_RUNNER_DRAIN_SEC 15720)"
+    case "$drain" in ''|*[!0-9]*) die "COLLOQ_RUNNER_DRAIN_SEC=$drain is not a number of seconds" ;; esac
+    bound="$(setting COLLOQ_RUNNER_LEAVE_SEC $((drain + 600)))"
+    silent="$(setting COLLOQ_RUNNER_LEAVE_SILENT_SEC 600)"
+    case "$bound:$silent" in *[!0-9:]*) die "COLLOQ_RUNNER_LEAVE_SEC=$bound and COLLOQ_RUNNER_LEAVE_SILENT_SEC=$silent are numbers of seconds" ;; esac
     say "$RUNNER_NAME leaves its home: it finishes the runs it holds, takes no new ones, then revokes itself"
-    if ! docker exec "$RUNNER_NAME" colloq-vast runner leave; then
+    leave_running_agent "$bound" "$silent" || rc=$?
+    if [ "$rc" != 0 ]; then
       docker update --restart=unless-stopped "$RUNNER_NAME" >/dev/null 2>&1 || true
-      die "$RUNNER_NAME did not leave (its words are above) and keeps running; retry, or revoke it on the home (Resources, machines for submissions)"
+      case "$rc" in
+        125) die "$RUNNER_NAME has heard nothing from its home ($(runner_home)) for $(span "$silent") while leaving, and a leave ends with the home's answer. It keeps running and leaving: it takes no new work, and revokes itself as soon as the home answers. If the home is gone for good, revoke the machine there if you can, and remove it here (docker rm -f $RUNNER_NAME) or destroy it" ;;
+        124) die "$RUNNER_NAME has not left in $(span "$bound"): it still finishes its runs, or waits for its home (its words are above). It keeps running and leaving, taking no new work; retry later, or revoke it on the home (Resources, machines for submissions)" ;;
+        *) die "$RUNNER_NAME did not leave (its words are above) and keeps running; retry, or revoke it on the home (Resources, machines for submissions)" ;;
+      esac
     fi
   else
     img="$(docker container inspect -f '{{.Config.Image}}' "$RUNNER_NAME")"
     say "$RUNNER_NAME is stopped: it revokes itself from a one-off container of $img"
-    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$RUNNER_STATE:$RUNNER_STATE" \
-      --env-file "$ENV_FILE" -e "COLLOQ_RUNNER_STATE=$RUNNER_STATE" "$img" runner leave \
+    # What the agent's own container sees (runner_mounts: the CA bundle above
+    # all, without which Node trusts nothing the settings name), and its two
+    # words about itself: COLLOQ_RUNNER_IMAGE, the image it probes with, as
+    # its own container has it; COLLOQ_RUNNER_CONTAINER empty, since this
+    # one-off is not the machine's container, and an agent with none of its
+    # own docker-updates nothing by a name (§13c note 20). The machine's own
+    # restart policy was turned off above.
+    runner_mounts
+    docker run --rm "${RUNNER_MOUNTS[@]}" \
+      --env-file "$ENV_FILE" -e "COLLOQ_RUNNER_STATE=$RUNNER_STATE" \
+      -e "COLLOQ_RUNNER_IMAGE=$img" -e COLLOQ_RUNNER_CONTAINER= \
+      "$img" runner leave \
       || die "$RUNNER_NAME did not leave (its words are above) and stays stopped; revoke it on the home (Resources, machines for submissions), or start it and retry"
   fi
   docker rm -f "$RUNNER_NAME" >/dev/null 2>&1 || true
@@ -1666,7 +1824,12 @@ runner_code() {
   say "a code for ${granted:-$machines} machine(s), valid until $(expiry_text "$expires")$( [ "$trust" = true ] && printf '; trusted with the hidden test' || printf '; not given the hidden test')${slots:+; at most $slots places each}"
   say "it is shown once, below; it lets those machines take this instance's submissions: send it to whoever sets them up, never to a class chat"
   printf '\nDocker already installed (Linux amd64, Docker Engine 28+; GPU hosts also need nvidia-container-toolkit):\n\n'
-  printf '  docker run -d --name colloq-runner --restart unless-stopped \\\n'
+  # --stop-timeout 90, as run_runner gives it: an image cannot set its own,
+  # and with Docker's 10 s a stop or a reboot killed the agent before it had
+  # handed its runs back, so they counted as losses after the container
+  # started. The panel's copy (competitions/remote/commands.ts) is this one,
+  # byte for byte (tests/remote-runner-commands.test.mts).
+  printf '  docker run -d --name colloq-runner --restart unless-stopped --stop-timeout 90 \\\n'
   printf '    -v /var/run/docker.sock:/var/run/docker.sock \\\n'
   printf '    -v /var/lib/colloq-runner:/var/lib/colloq-runner \\\n'
   printf "    -e COLLOQ_RUNNER_JOIN='%s#%s' \\\\\n" "$url" "$code"

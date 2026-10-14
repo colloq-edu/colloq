@@ -184,7 +184,10 @@
         // durable cancel its next call carries (admin/runners.ts ·
         // stopRemoteRuns). Nothing stopped and something refused: the
         // refusal stays in the dialog; anything stopped is said below.
-        const tally = await stopRemoteRuns(current.ids, (id) => adminApi.killCompetitionRun(id))
+        // `onMachine`: the ids are the list's, up to fifteen seconds old, and
+        // a run whose notebook finished since — its answer on the way here,
+        // or waiting for its metric — is refused as ended, never cancelled.
+        const tally = await stopRemoteRuns(current.ids, (id) => adminApi.killCompetitionRun(id, { onMachine: true }))
         if (tally.stopped === 0 && tally.ended === 0 && tally.error !== null) throw tally.error
         await settle(remoteStopOutcome(current.name, tally))
       } else {

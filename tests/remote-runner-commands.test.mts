@@ -82,6 +82,17 @@ for (const one of CASES) {
   })
 }
 
+test('a machine joined with the plain docker run gets the stop timeout colloq-host gives its own agent', () => {
+  // On SIGTERM the agent hands back the runs it holds, through a relay's backoff; an image cannot set its own
+  // stop timeout, and Docker's 10 s killed the agent first, its runs coming back as losses.
+  const own = /^run_runner\(\) \{\n[\s\S]*?--stop-timeout (\d+) /m.exec(fs.readFileSync(HOST, 'utf8'))?.[1]
+  assert.equal(own, '90', 'colloq-host gives its agent a minute and a half')
+  const commands = runnerJoinCommands({ home: 'https://vsos.colloq.ru', code: CODE, image: 'ghcr.io/colloq-edu/colloq-server:0.24.0', published: true, machines: 1 })
+  assert.equal(commands.docker.split('\n')[0], `docker run -d --name colloq-runner --restart unless-stopped --stop-timeout ${own} \\`)
+  // And colloq-host runner-code's copy, on the instance's console.
+  assert.ok(colloqHost('ghcr.io/colloq-edu/colloq-vast:0.24.0', '0.24.0', 1, 'https://vsos.colloq.ru').includes(`  docker run -d --name colloq-runner --restart unless-stopped --stop-timeout ${own} \\\n`))
+})
+
 test('a server that knows no image of its own names the published one of its release', () => {
   assert.deepEqual(runnerImage(null, '0.24.0'), { image: 'ghcr.io/colloq-edu/colloq-server:0.24.0', published: true })
   const commands = runnerJoinCommands({ home: 'https://vsos.colloq.ru/', code: CODE, image: 'ghcr.io/colloq-edu/colloq-server:0.24.0', published: true, machines: 1 })

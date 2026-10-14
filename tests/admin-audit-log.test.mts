@@ -571,16 +571,19 @@ test('every kind of staff action is recorded somewhere', () => {
   const source = fs.readFileSync(path.join(import.meta.dirname, '../server/src/routes/admin-environments.ts'), 'utf8')
   assert.match(source, /action: 'environment\.made_default'/)
   /*
-   * The machines' three are driven through their own doors in
-   * tests/remote-runners-panel.test.mts, which reads each from this same log:
-   * a machine's join has to be a machine's, not this file's.
+   * The machines' five are driven through their own doors in
+   * tests/remote-runners-panel.test.mts and (the codes' mint and cancel)
+   * tests/remote-runners-review2.test.mts, which read each from this same
+   * log: a machine's join has to be a machine's, not this file's.
    */
   const runners = fs.readFileSync(path.join(import.meta.dirname, '../server/src/routes/admin-runners.ts'), 'utf8')
   const join = fs.readFileSync(path.join(import.meta.dirname, '../server/src/competitions/remote/routes.ts'), 'utf8')
   assert.match(join, /action: 'runner\.enrolled'/)
   assert.match(runners, /action: 'runner\.trusted'/)
   assert.match(runners, /action: 'runner\.revoked'/)
-  const notDriven = new Set(['environment.made_default', 'competition.entrant_deleted', 'runner.enrolled', 'runner.trusted', 'runner.revoked'])
+  assert.match(runners, /action: 'runner\.code_minted'/)
+  assert.match(runners, /action: 'runner\.code_ended'/)
+  const notDriven = new Set(['environment.made_default', 'competition.entrant_deleted', 'runner.enrolled', 'runner.trusted', 'runner.revoked', 'runner.code_minted', 'runner.code_ended'])
   const missing = ADMIN_AUDIT_ACTIONS.filter((action) => !notDriven.has(action) && !seen.has(action))
   assert.deepEqual(missing, [])
 })

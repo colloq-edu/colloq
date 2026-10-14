@@ -3230,6 +3230,38 @@ export const adminMessages: MessageCatalog = {
     "ru": "Считается в отдельном контейнере без сети, до 60 с. Посылки хранятся, поэтому после правки метрики всё пересчитывается без повторного исполнения тетрадей.",
     "en": "Computed in a separate container with no network, within 60 s. Submissions are kept, so after the metric is edited everything is rescored without running the notebooks again."
   },
+  "admin.competitions.metricImage.head": {
+    "ru": "Образ метрики",
+    "en": "Metric image"
+  },
+  "admin.competitions.metricImage.note": {
+    "ru": "Метрика соревнования с видеокартой считается не в GPU-образе посылок, а в лёгком kaggle-base, закреплённом за соревнованием: новый kaggle-base на сервере её не сдвигает, чтобы баллы одного рейтинга не пришли из двух образов. Пропал закреплённый образ с сервера — метрика падает у каждой посылки, пока её не переведут.",
+    "en": "The metric of a competition with a GPU runs not in the submissions' GPU image but in the light kaggle-base pinned to the competition: a newer kaggle-base on this server does not move it, so that one leaderboard never holds scores from two images. If the pinned image leaves the server, the metric fails for every submission until it is moved."
+  },
+  "admin.competitions.metricImage.move": {
+    "ru": "Перевести на текущий kaggle-base",
+    "en": "Move to the current kaggle-base"
+  },
+  "admin.competitions.metricImage.rowMove": {
+    "ru": "Перевести метрику на текущий kaggle-base",
+    "en": "Move the metric to the current kaggle-base"
+  },
+  "admin.competitions.metricImage.question": {
+    "ru": "Перевести метрику «{title}» на текущий kaggle-base? Все посылки соревнования пересчитаются в нём заново: баллы и места могут измениться. Тетради заново не выполняются.",
+    "en": "Move the metric of “{title}” to the current kaggle-base? Every submission of the competition is scored again in it: scores and places may change. No notebook runs again."
+  },
+  "admin.competitions.metricImage.moved": {
+    "ru": {
+      "one": "Метрика переведена на текущий kaggle-base: пересчитывается {count} посылка.",
+      "few": "Метрика переведена на текущий kaggle-base: пересчитываются {count} посылки.",
+      "many": "Метрика переведена на текущий kaggle-base: пересчитываются {count} посылок.",
+      "other": "Метрика переведена на текущий kaggle-base: пересчитываются {count} посылки."
+    },
+    "en": {
+      "one": "The metric now runs in the current kaggle-base: {count} submission is being rescored.",
+      "other": "The metric now runs in the current kaggle-base: {count} submissions are being rescored."
+    }
+  },
   "admin.competitions.presetColumns": {
     "ru": "Заготовка собрана по колонкам ответов: {id}, {target}.",
     "en": "The template is built from the answer columns: {id}, {target}."
@@ -4058,6 +4090,18 @@ export const adminMessages: MessageCatalog = {
   "admin.resourcesTab.brokerNote": {
     "ru": "Ядра на этом сервере запускает k3s: память и ядра комнат он берёт из своих настроек, и числа ниже на него не действуют.",
     "en": "On this server k3s runs the kernels: it sizes rooms from its own settings, and the numbers below do not apply to it."
+  },
+  "admin.resourcesTab.brokerNotebooksOff": {
+    "ru": "Тетради соревнований на этом сервере выключены («только метрики»), а под Kubernetes машин для посылок нет: ни одна посылка не посчитается, пока их не включить.",
+    "en": "Competition notebooks on this server are off (metrics only), and under Kubernetes there are no machines for submissions: no submission runs until they are back on."
+  },
+  "admin.resourcesTab.brokerNotebooksOn": {
+    "ru": "Включить тетради на этом сервере",
+    "en": "Turn notebooks on this server back on"
+  },
+  "admin.resourcesTab.brokerNotebooksPending": {
+    "ru": "Тетради включатся, когда вы сохраните изменения.",
+    "en": "Notebooks come back on once you save the changes."
   },
   "admin.resourcesTab.gpuMemory": {
     "ru": "На GPU-окружениях",
@@ -7428,16 +7472,16 @@ export const adminMessages: MessageCatalog = {
     "en": "Disconnect {name}?"
   },
   "admin.runners.revoke.body": {
-    "ru": "Её посылки вернутся в очередь без потери лимита, поздние ответы не примутся, скрытый тест удалится с машины. Подключить её снова можно только новым кодом.",
-    "en": "Its submissions go back to the queue without spending any quota, late answers are refused, and the hidden test is purged from the machine. It can only join again with a new code."
+    "ru": "Её посылки вернутся в очередь без потери лимита, поздние ответы не примутся, скрытый тест удалится с машины. Сама она обратно не подключится, но код, с которым она пришла, действует, пока не истечёт, не израсходуется или пока вы его не отмените в списке кодов.",
+    "en": "Its submissions go back to the queue without spending any quota, late answers are refused, and the hidden test is purged from the machine. It does not come back by itself, but the code it joined with stays valid until it expires, is used up, or you cancel it in the list of codes."
   },
   "admin.runners.revoke.confirm": {
     "ru": "Отключить",
     "en": "Disconnect"
   },
   "admin.runners.revokeAll.body": {
-    "ru": "Их посылки вернутся в очередь без потери лимита, поздние ответы не примутся, скрытый тест удалится с машин. Подключить их снова можно только новым кодом.",
-    "en": "Their submissions go back to the queue without spending any quota, late answers are refused, and the hidden test is purged from them. They can only join again with a new code."
+    "ru": "Их посылки вернутся в очередь без потери лимита, поздние ответы не примутся, скрытый тест удалится с машин. Все действующие коды подключения тоже отменятся: подключить машину снова можно будет только новым кодом.",
+    "en": "Their submissions go back to the queue without spending any quota, late answers are refused, and the hidden test is purged from them. Every join code still valid is cancelled too: a machine can join again only with a new code."
   },
   "admin.runners.revokeAll.title": {
     "ru": {
@@ -7450,6 +7494,74 @@ export const adminMessages: MessageCatalog = {
       "one": "Disconnect {count} machine?",
       "other": "Disconnect {count} machines?"
     }
+  },
+  "admin.runners.codes.title": {
+    "ru": "Коды подключения",
+    "en": "Join codes"
+  },
+  "admin.runners.codes.uses": {
+    "ru": {
+      "one": "на {count} машину, подключилось {used}",
+      "few": "на {count} машины, подключилось {used}",
+      "many": "на {count} машин, подключилось {used}",
+      "other": "на {count} машины, подключилось {used}"
+    },
+    "en": {
+      "one": "for {count} machine, {used} joined",
+      "other": "for {count} machines, {used} joined"
+    }
+  },
+  "admin.runners.codes.places": {
+    "ru": {
+      "one": "{count} место на машину",
+      "few": "{count} места на машину",
+      "many": "{count} мест на машину",
+      "other": "{count} места на машину"
+    },
+    "en": {
+      "one": "{count} place a machine",
+      "other": "{count} places a machine"
+    }
+  },
+  "admin.runners.codes.until": {
+    "ru": "действует до {time}",
+    "en": "valid until {time}"
+  },
+  "admin.runners.codes.by": {
+    "ru": "выпуск: {name}",
+    "en": "minted by {name}"
+  },
+  "admin.runners.codes.console": {
+    "ru": "выпущен на консоли сервера",
+    "en": "minted on the server's console"
+  },
+  "admin.runners.codes.note": {
+    "ru": "Код действует, пока не истечёт, не израсходуется или пока вы его не отмените — и тот, у кого он есть, может подключить по нему машину. Отмена не трогает машины, что уже подключились: их отключают отдельно.",
+    "en": "A code stays valid until it expires, is used up, or you cancel it, and anyone holding it can join a machine with it. Cancelling leaves the machines that already joined alone: disconnect those on their own."
+  },
+  "admin.runners.codes.cancel": {
+    "ru": "Отменить",
+    "en": "Cancel"
+  },
+  "admin.runners.codes.cancelLabel": {
+    "ru": "Отменить код {id}",
+    "en": "Cancel code {id}"
+  },
+  "admin.runners.codes.cancelTitle": {
+    "ru": "Отменить код {id}?",
+    "en": "Cancel code {id}?"
+  },
+  "admin.runners.codes.cancelBody": {
+    "ru": "По нему больше не подключится ни одна машина — даже та, на которой команда с ним уже вставлена. Машины, что уже подключились, продолжают работать.",
+    "en": "No machine can join with it any more, not even one that already has the command pasted. The machines that already joined keep working."
+  },
+  "admin.runners.codes.cancelConfirm": {
+    "ru": "Отменить код",
+    "en": "Cancel the code"
+  },
+  "admin.runners.codes.keep": {
+    "ru": "Оставить",
+    "en": "Keep it"
   },
   "admin.runners.ready.what.image": {
     "ru": "образ",
@@ -7554,6 +7666,30 @@ export const adminMessages: MessageCatalog = {
   "admin.runners.ready.resumeHint": {
     "ru": "вернуть в работу — в меню ⋯",
     "en": "resume it from the ⋯ menu"
+  },
+  "admin.runners.ready.stopping": {
+    "ru": "останавливается сама: досчитает начатые ({count}), новых не берёт",
+    "en": "stopping by itself: finishes the {count} it holds, takes nothing new"
+  },
+  "admin.runners.ready.stoppingIdle": {
+    "ru": "останавливается сама: новых посылок не берёт",
+    "en": "stopping by itself: takes no new submissions"
+  },
+  "admin.runners.ready.stoppingHint": {
+    "ru": "так делает обновление или остановка на самой машине: запустившись снова, она сама вернётся в работу; чтобы не вернулась — «Осушить» в меню ⋯",
+    "en": "an update or a stop on the machine itself does this: once it starts again it takes work by itself; to keep it out, Drain it from the ⋯ menu"
+  },
+  "admin.runners.ready.leaving": {
+    "ru": "уходит сама: досчитает начатые ({count}) и отключится",
+    "en": "leaving by itself: finishes the {count} it holds, then disconnects"
+  },
+  "admin.runners.ready.leavingIdle": {
+    "ru": "уходит сама: новых посылок не берёт",
+    "en": "leaving by itself: takes no new submissions"
+  },
+  "admin.runners.ready.leavingHint": {
+    "ru": "на машине выполнили leave: она отключится сама, и вернуть её можно, только подключив заново",
+    "en": "leave was run on the machine: it disconnects by itself, and only joining it again brings it back"
   },
   "admin.runners.ready.quarantined": {
     "ru": "на карантине: слишком много потерь или отказов подряд",
@@ -7716,12 +7852,16 @@ export const adminMessages: MessageCatalog = {
     "en": "Docker is installed"
   },
   "admin.runners.connect.bare": {
-    "ru": "Голая машина (Ubuntu) — поставит Docker и драйвер карт",
-    "en": "A bare machine (Ubuntu): installs Docker and the GPU toolkit"
+    "ru": "Голая машина (Ubuntu) — поставит Docker, а для карт NVIDIA — Container Toolkit, и проверит, что драйвер {min}+",
+    "en": "A bare machine (Ubuntu): installs Docker and, for NVIDIA GPUs, the Container Toolkit, and checks for driver {min}+"
   },
   "admin.runners.connect.vast": {
     "ru": "Арендовать на vast и подключить (из репозитория)",
     "en": "Rent on vast and connect (from the repository)"
+  },
+  "admin.runners.connect.vastLeftOut": {
+    "ru": "Команды make vast-runner здесь нет: машины из репозитория берут опубликованный образ colloq-server этого релиза, а этот сервер работает на своём образе.",
+    "en": "There is no make vast-runner command here: machines from the repository take the published colloq-server image of this release, and this server runs an image of its own."
   },
   "admin.runners.connect.copy": {
     "ru": "Копировать",
@@ -7808,8 +7948,8 @@ export const adminMessages: MessageCatalog = {
     "en": "The address in these commands is this server's own loopback (localhost): a machine anywhere else cannot reach it. Set PUBLIC_URL to the address the server is reachable at, then show the commands again."
   },
   "admin.runners.connect.closeConfirm": {
-    "ru": "Код показан только в этом окне: после закрытия его уже не увидеть, и для следующей машины понадобится новый код. Закрыть окно?",
-    "en": "The code is shown in this window only: once it is closed the code is gone, and the next machine needs a new code. Close the window?"
+    "ru": "Код показан только в этом окне: закрыв его, увидеть код снова не получится. Сам код продолжит действовать — пока не истечёт, не израсходуется или пока вы не отмените его в списке машин. Закрыть окно?",
+    "en": "The code is shown in this window only: once it is closed you cannot see the code again. The code itself stays valid until it expires, is used up, or you cancel it in the machines list. Close the window?"
   },
   "admin.runners.connect.invalid.machines": {
     "ru": "Машин — от 1 до {max}.",
@@ -8415,6 +8555,18 @@ export const adminMessages: MessageCatalog = {
     "ru": "среда есть только на сервере, а он считает только метрики",
     "en": "its environment is on this server only, and this server only scores"
   },
+  "admin.competitions.fleet.reason.home_only_envNoCard": {
+    "ru": "среда есть только на сервере, а карты для посылок здесь нет",
+    "en": "its environment is on this server only, and this server gives no GPU to submissions"
+  },
+  "admin.competitions.fleet.metricLane": {
+    "ru": "МЕТРИКИ · {busy} ИЗ {count}",
+    "en": "METRICS · {busy} OF {count}"
+  },
+  "admin.competitions.fleet.metricLaneBare": {
+    "ru": "МЕТРИКИ · {busy}",
+    "en": "METRICS · {busy}"
+  },
   "admin.competitions.fleet.reason.no_fit": {
     "ru": "не помещается ни на одну машину на связи",
     "en": "fits no machine online"
@@ -8731,6 +8883,14 @@ export const adminMessages: MessageCatalog = {
     "ru": "Эти посылки никто не посчитает: тетради на этом сервере выключены, а машины среду {environment} не получат. Включите «Тетради на этом сервере» во вкладке «Ресурсы» или выберите среду, образ которой есть в реестре.",
     "en": "Nobody will run these submissions: this server runs no notebooks, and machines will not get {environment}. Turn Notebooks on this server back on in Resources, or pick an environment with an image in the registry."
   },
+  "admin.competitions.where.homeOnlyNoCard": {
+    "ru": "Эти посылки никто не посчитает: на этом сервере нет карты для посылок, а машины среду {environment} не получат. Выберите среду из реестра — {list} — или отдайте посылкам карту этого сервера во вкладке «Ресурсы».",
+    "en": "Nobody will run these submissions: this server gives no GPU to submissions, and machines will not get {environment}. Pick an environment from the registry ({list}), or give submissions one of this server's GPUs in Resources."
+  },
+  "admin.competitions.where.homeOnlyNoCardBare": {
+    "ru": "Эти посылки никто не посчитает: на этом сервере нет карты для посылок, а машины среду {environment} не получат. Нужна среда, образ которой есть в реестре, или карта этого сервера, отданная посылкам во вкладке «Ресурсы».",
+    "en": "Nobody will run these submissions: this server gives no GPU to submissions, and machines will not get {environment}. Pick an environment with an image in the registry, or give submissions one of this server's GPUs in Resources."
+  },
   "admin.competitions.where.changeEnvironment": {
     "ru": "Сменить среду",
     "en": "Change the environment"
@@ -8754,6 +8914,10 @@ export const adminMessages: MessageCatalog = {
   "admin.competitions.where.sealedWaits": {
     "ru": "ни одна доверенная машина их не возьмёт, а сервер считает только метрики — посылки со скрытым тестом будут ждать",
     "en": "no trusted machine will take them, and this server only scores: submissions with the hidden test will wait"
+  },
+  "admin.competitions.where.sealedWaitsNoCard": {
+    "ru": "ни одна доверенная машина их не возьмёт, а карты для посылок на этом сервере нет — посылки со скрытым тестом будут ждать",
+    "en": "no trusted machine will take them, and this server gives no GPU to submissions: submissions with the hidden test will wait"
   },
   "admin.competitions.where.noCardsHint": {
     "ru": "карт нет ни на сервере, ни на машинах за последний час",
@@ -8790,5 +8954,13 @@ export const adminMessages: MessageCatalog = {
   "admin.audit.action.runner.revoked": {
     "ru": "Отключена машина для посылок",
     "en": "Submission machine disconnected"
+  },
+  "admin.audit.action.runner.code_minted": {
+    "ru": "Выпущен код подключения машин",
+    "en": "Machine enrollment code minted"
+  },
+  "admin.audit.action.runner.code_ended": {
+    "ru": "Отменён код подключения машин",
+    "en": "Machine enrollment code cancelled"
   },
 }

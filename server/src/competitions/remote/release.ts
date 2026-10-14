@@ -49,6 +49,7 @@ import {
   markRunnerLeft,
   openLeases,
   reasonText,
+  refusedDecline,
   remoteEvent,
   runnerStanding,
   submissionLeases,
@@ -61,9 +62,10 @@ import { wakeAllRunners, wakeRunner } from './wake.js'
 import { forgetHeard } from './heard.js'
 import { dropAttempt } from '../storage.js'
 import { dropStaging } from './upload.js'
+import { cutBlobStreams, starvedLease } from './blobs.js'
 
 /** Prometheus' counts of how leases ended (ops/metrics.ts): fixed labels only. */
-export const leaseEndings = { withdrawn: 0, lost: 0, declined: 0, revoked: 0, cancelled: 0, failed: 0 }
+export const leaseEndings = { withdrawn: 0, lost: 0, declined: 0, revoked: 0, cancelled: 0, failed: 0, orphaned: 0 }
 
 /** Why a run was lost: the teacher's note names it (server.runners.why.*). */
 export type LossCause = 'silent' | 'ceiling' | 'missing' | 'refused' | 'declined' | 'unapplied'
@@ -259,21 +261,34 @@ function causeText(cause: LossCause, detail: string | null): string {
  * Declined by REMOTE_DECLINE_LIMIT different machines, the submission ends
  * as our failure with their reasons. A refusal claimed after a container
  * started for a reason other than draining is a lost run, and counted as one.
+ *
+ * A drain after the container started is skipped by its machine for the
+ * decline's window all the same (store.ts · declinedBy): free to repeat, it
+ * let one machine hold a submission for as long as it liked.
+ *
+ * `data` for a lease this server's own blob streams kept waiting (blobs.ts ·
+ * starvedLease: its machine asked for the lease's notebook or a wheel and was
+ * told to come back, until its preparation ran out) is no refusal of the
+ * machine's: it is written down as `starved`, counts toward no quarantine and
+ * no limit, is not skipped, and the row waits again as after a drain.
  */
 export const declineLease = db.transaction((attemptId: string, now: number, reason: RemoteDeclineReason, detail: string): 'declined' | 'lost' | null => {
   const lease = getLease(attemptId)
   if (!lease || !OPEN_LEASE_STATES.includes(lease.state)) return null
   const said = reasonText(detail ? `${reason}: ${detail}` : reason)
   if (reason !== 'draining' && lease.startedAt !== null) return loseLease(attemptId, now, 'declined', said) ? 'lost' : null
-  updateLease(attemptId, { state: 'declined', endedAt: now, reason: reason === 'draining' ? 'draining' : said, cause: reason }, OPEN_LEASE_STATES)
+  const starved = reason === 'data' && starvedLease(attemptId)
+  const cause = starved ? 'starved' : reason
+  updateLease(attemptId, { state: 'declined', endedAt: now, reason: reason === 'draining' ? 'draining' : said, cause }, OPEN_LEASE_STATES)
+  const refusal = reason !== 'draining' && !starved
   const row = ownedRow(lease)
   if (row) {
     const machine = machineName(lease.runnerId)
     if (lease.startedAt === null) discardUnstartedRun(lease.runId, attemptId)
     else if (runOpen(lease)) finishRun(lease.runId, { finishedAt: now, verdict: 'unknown', cellsDone: 0, cellsTotal: 0, teacherError: tr('server.runners.givenBack', { machine }) })
-    const declinedBy = reason === 'draining'
+    const declinedBy = !refusal
       ? []
-      : submissionLeases(lease.submissionId, row.enqueuedAt).filter((one) => one.state === 'declined' && one.reason !== 'draining')
+      : submissionLeases(lease.submissionId, row.enqueuedAt).filter((one) => one.state === 'declined' && refusedDecline(one))
     const machines = [...new Set(declinedBy.map((one) => one.runnerId))]
     if (machines.length >= REMOTE_DECLINE_LIMIT) {
       const reasons = declinedBy.map((one) => `${machineName(one.runnerId)}: ${one.reason ?? ''}`).join('; ')
@@ -285,10 +300,10 @@ export const declineLease = db.transaction((attemptId: string, now: number, reas
         : { participant: tr('server.runners.returned'), teacher: tr('server.runners.givenBack', { machine }) })
     }
   }
-  remoteEvent(lease.runnerId, 'declined', { attemptId, detail: said }, now)
+  remoteEvent(lease.runnerId, 'declined', { attemptId, detail: starved ? `${said} (${tr('server.runners.why.starved')})` : said }, now)
   dropAttemptFiles(lease)
   leaseEndings.declined++
-  if (reason !== 'draining') quarantineIfDue(lease.runnerId, now)
+  if (refusal) quarantineIfDue(lease.runnerId, now)
   return 'declined'
 })
 
@@ -318,6 +333,46 @@ export const releaseLease = db.transaction((attemptId: string, now: number, why:
   remoteEvent(lease.runnerId, 'revoked', { attemptId, detail: why }, now)
   dropAttemptFiles(lease)
   leaseEndings.revoked++
+  return true
+})
+
+/**
+ * A LEASE WHOSE QUEUE ROW IT NO LONGER OWNS, ended with no penalty: the row
+ * is gone, waiting, or running under another attempt or another holder.
+ *
+ * No transaction of this release leaves one — every take and every end
+ * changes the lease and the row together — but a rollback does. Home rolled
+ * back to 0.22 (§13d note 30) took a machine's running row for its own
+ * orphan, ran it again under an attempt of its own, and kept the holder it
+ * does not know; forward again, the reclaim put the row back to waiting
+ * (store.ts · orphanedRuns) and nothing ended the leases. They stayed
+ * `running` on a machine that went on running them: their outcomes were
+ * answered `revoked` with the lease left as it was, the same submissions
+ * were leased to the same machine again beside them, and as the machine let
+ * each one go its next sync lost it as `missing` — a loss after a start, at
+ * three different moments, and a healthy machine was quarantined by this
+ * server's own rollback.
+ *
+ * So such a lease is revoked as a cancel is (the machine's next sync hears
+ * `cancelled`, kills the container and drops the attempt): no loss on the
+ * row (which is not its to touch), no quarantine, no decline, no skip. Its
+ * run row is finished as given back — or dropped, if its container never
+ * started — so the teacher's history has no run that never ends. At boot
+ * (liveness.ts · bootRemoteRunners), and whenever the machine says a word
+ * about one (lease.ts · noteAttempt, apply.ts · finish).
+ */
+export const orphanLease = db.transaction((attemptId: string, now: number): boolean => {
+  const lease = getLease(attemptId)
+  if (!lease || !OPEN_LEASE_STATES.includes(lease.state) || ownedRow(lease)) return false
+  updateLease(attemptId, { state: 'revoked', endedAt: now, reason: tr('server.runners.why.orphan'), cause: 'orphan' }, OPEN_LEASE_STATES)
+  if (lease.startedAt === null) discardUnstartedRun(lease.runId, attemptId)
+  else if (runOpen(lease)) {
+    finishRun(lease.runId, { finishedAt: now, verdict: 'unknown', cellsDone: 0, cellsTotal: 0, teacherError: tr('server.runners.orphanTeacher', { machine: machineName(lease.runnerId) }) })
+  }
+  remoteEvent(lease.runnerId, 'revoked', { attemptId, detail: 'orphan' }, now)
+  dropAttemptFiles(lease)
+  leaseEndings.orphaned++
+  wakeRunner(lease.runnerId)
   return true
 })
 
@@ -380,6 +435,12 @@ export function cancelRemote(row: QueueRow, by: 'entrant' | 'teacher', now = Dat
  * stop), its runs go back to the queue with no penalty, and its late results
  * are refused. A result already being applied is left to finish: it is this
  * server's work by then, not the machine's.
+ *
+ * And what is on its way to it stops now: every blob stream open to it is cut
+ * (blobs.ts · cutBlobStreams). The next call was refused, but a stream begun
+ * a second before went on to its last byte — rivals' notebooks, open data,
+ * and on a trusted machine up to 200 MiB of the hidden test — to exactly the
+ * machine these buttons exist for: one the owner no longer trusts.
  */
 export function revokeRunner(runnerId: string, now = Date.now()): boolean {
   const runner = getRunner(runnerId)
@@ -389,6 +450,7 @@ export function revokeRunner(runnerId: string, now = Date.now()): boolean {
     for (const lease of openLeases(runnerId)) releaseLease(lease.attemptId, now, 'revoked')
     remoteEvent(runnerId, 'revoked', {}, now)
   })()
+  cutBlobStreams(runnerId, 'all')
   forgetHeard(runnerId)
   wakeRunner(runnerId)
   wakeAllRunners()
@@ -418,6 +480,7 @@ export function leaveRunner(runnerId: string, now = Date.now()): boolean {
     }
     remoteEvent(runnerId, 'left', {}, now)
   })()
+  cutBlobStreams(runnerId, 'all')
   if (freed > 0) wakeAllRunners()
   return true
 }
@@ -427,7 +490,10 @@ export function leaveRunner(runnerId: string, now = Date.now()): boolean {
  * runs on it that read the hidden test go back to the queue — a trusted
  * machine may take them, or none, and they wait with that reason — and the
  * next sync tells the machine it is not trusted, which makes it purge what
- * it held of the hidden test. Its other runs go on.
+ * it held of the hidden test. Its other runs go on. A stream of the hidden
+ * test open to it now is cut on the spot (blobs.ts · cutBlobStreams): the
+ * rest of a 200 MiB file must not go on flowing to a machine for the minutes
+ * a slow «Скорость раздачи» takes, after the owner said it may not hold it.
  */
 export function untrustRunner(runnerId: string, now = Date.now()): number {
   let released = 0
@@ -438,6 +504,7 @@ export function untrustRunner(runnerId: string, now = Date.now()): number {
     }
     remoteEvent(runnerId, 'untrusted', {}, now)
   })()
+  cutBlobStreams(runnerId, 'sealed')
   wakeRunner(runnerId)
   if (released > 0) wakeAllRunners()
   return released
@@ -462,13 +529,18 @@ export function untrustRunner(runnerId: string, now = Date.now()): number {
  * lost at one moment are one loss, and only losses after a container
  * started count at all: one before it is refunded as if never taken, cost
  * nobody a minute, and says nothing about the machine's runs.
+ *
+ * THE WINDOW STARTS OVER WHEN THE OWNER RESUMES THE MACHINE (resumedAt): the
+ * losses that drained it are the ones the owner looked at and decided about.
+ * Counted again, the next single loss within the half hour — one agent
+ * restart — drained it at once, one event undoing the owner's decision.
  */
 export function quarantineIfDue(runnerId: string, now: number): boolean {
   const runner = getRunner(runnerId)
   if (!runner || runner.state !== 'active') return false
-  const since = now - REMOTE_QUARANTINE_WINDOW_MS
+  const since = Math.max(now - REMOTE_QUARANTINE_WINDOW_MS, runner.resumedAt ?? Number.NEGATIVE_INFINITY)
   const losses = new Set(endedLeases(runnerId, ['lost'], since).filter((lease) => lease.startedAt !== null && lease.cause !== 'unapplied').map((lease) => lease.endedAt)).size
-  const declines = endedLeases(runnerId, ['declined'], since).filter((lease) => lease.reason !== 'draining').length
+  const declines = endedLeases(runnerId, ['declined'], since).filter(refusedDecline).length
   if (losses < REMOTE_QUARANTINE_LOSSES && declines < REMOTE_QUARANTINE_DECLINES) return false
   updateRunner(runnerId, { state: 'draining', quarantinedAt: now, quarantineSeen: false })
   remoteEvent(runnerId, 'quarantined', { detail: losses >= REMOTE_QUARANTINE_LOSSES ? `lost ${losses}` : `declined ${declines}` }, now)

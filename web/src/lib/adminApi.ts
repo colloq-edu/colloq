@@ -402,11 +402,19 @@ export const adminApi = {
   pauseCompetitionQueue: (paused: boolean) =>
     request<QueueSnapshot>('/competitions/queue/pause', { method: 'POST', ...json({ paused }) }),
 
-  /** "Kill" — interrupt the run in progress. A refusal means nothing was running. */
-  killCompetitionRun: (submissionId: string) =>
+  /**
+   * "Kill" — interrupt the run in progress. A refusal means nothing was running.
+   *
+   * `onMachine`: the stop is aimed at a run on a machine («Работают сейчас»,
+   * a machine's page, a machine's cell in the console), and the door refuses
+   * it (409) once the run's notebook is no longer there — finished, its
+   * answer on its way here or waiting for its metric — instead of cancelling
+   * a finished result the press was never about.
+   */
+  killCompetitionRun: (submissionId: string, options: { onMachine?: boolean } = {}) =>
     request<{ killed: boolean }>('/competitions/queue/kill', {
       method: 'POST',
-      ...json({ submissionId }),
+      ...json(options.onMachine ? { submissionId, onMachine: true } : { submissionId }),
     }),
 
   /** The instance's competition settings: slots, uploads per minute, defaults for new competitions. */
@@ -532,6 +540,19 @@ export const adminApi = {
   /** "Check against the baseline" — the metric only, the notebook is not re-run. */
   checkCompetitionMetric: (id: string) =>
     request<{ submissionId: string }>(`/competitions/${encodeURIComponent(id)}/metric/check`, {
+      method: 'POST',
+    }),
+
+  /**
+   * Move the metric of a competition with a card to the current kaggle-base
+   * and rescore every submission in it (POST …/metric/image, runner.ts ·
+   * moveMetricToLightImage) — the one way that metric's image changes. 202
+   * with the revision it now runs in and how many submissions went back to
+   * the queue; 409 for a competition on the CPU, 503 with no kaggle-base
+   * here, each in the server's words.
+   */
+  moveCompetitionMetricImage: (id: string) =>
+    request<{ revisionId: string; queued: number }>(`/competitions/${encodeURIComponent(id)}/metric/image`, {
       method: 'POST',
     }),
 

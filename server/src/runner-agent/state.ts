@@ -135,6 +135,12 @@ export function fileTime(at = Date.now()): string {
 export interface Identity {
   home: string
   joinId: string
+  /**
+   * When the join id was minted, on this machine's clock: home honours a
+   * repeat of it for REMOTE_JOIN_REPEAT_MS only (sync.ts · joinWith). Absent
+   * in an identity an earlier build wrote: as old as that.
+   */
+  joinIdAt?: number
   /** The sha256 of the code it joined (or is joining) with: a new code in COLLOQ_RUNNER_JOIN is told apart by it. */
   codeSha256: string
   runnerId?: string
@@ -177,6 +183,7 @@ export function readIdentity(layout: StateLayout): Identity | null {
   return {
     home,
     joinId,
+    ...(time('joinIdAt') !== undefined ? { joinIdAt: time('joinIdAt') } : {}),
     codeSha256,
     ...(runnerId && secret ? { runnerId, secret } : {}),
     ...(typeof value.trusted === 'boolean' ? { trusted: value.trusted } : {}),
@@ -317,8 +324,11 @@ export type AgentState = 'joining' | 'active' | 'draining' | 'leaving' | 'left' 
 
 /**
  * How the way to home was at the last call: `ok`; `home_offline` — the relay
- * says home's tunnel is down; `home_silent` — the tunnel is up and home does
- * not answer; `home_unknown` — the relay serves no home by this name (the
+ * says home's tunnel is down; `home_silent` — home does not answer and the
+ * relay does not say its tunnel is down: a home that hangs, or a tunnel cut
+ * that the relay has not seen yet (its word that the tunnel is up lags a cut
+ * by its heartbeats), so whether the tunnel is up is unknown; `home_unknown` —
+ * the relay serves no home by this name (the
  * address in COLLOQ_RUNNER_JOIN, or a home whose name was given up), which no
  * waiting mends; `unreachable` — neither home nor its relay answered (this
  * machine's network, or no relay in front of home); `refused` — home answered

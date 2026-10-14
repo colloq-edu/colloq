@@ -12,7 +12,7 @@
  * `shared/competitions.ts` and is called from there. A second copy of such a
  * rule does not crash; it quietly shows the class a different place.
  */
-import { tr, formatDate, formatNumber } from '@shared/i18n'
+import { tr, formatDate, formatNumber, translate } from '@shared/i18n'
 import {
   boardOf,
   competitionPhase,
@@ -464,6 +464,54 @@ export function refusalText(refusal: OpenRefusal): string {
 export function metricWorkAvailable(capabilities: CompetitionCapabilities | null | undefined): boolean {
   const execution = capabilities?.execution
   return !execution || execution.available || execution.code === 'gpu_unavailable'
+}
+
+/* ------------------------------------------------- the metric's image */
+
+/** The server's texts for a metric whose pinned image left the server (runner.ts · gpuScoringImage). */
+const METRIC_IMAGE_GONE = ['competitions.answer.scoringImageGone', 'competitions.answer.ownScoringImageGone'] as const
+
+/** A message's sentence with any parameter in it, as a pattern; `null` — the dictionary does not have it. */
+function messagePattern(locale: 'ru' | 'en', key: string): RegExp | null {
+  const marker = '\u0000'
+  const text = translate(locale, key, { environment: marker, light: marker })
+  if (text === key) return null
+  const parts = text.split(marker).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  return new RegExp(`^${parts.join('\\S+')}$`)
+}
+
+/**
+ * Whether a metric failed because the image the competition's metric is
+ * pinned to is no longer on this server — `scoringImageGone`, or
+ * `ownScoringImageGone` for a metric pinned to each submission's own image
+ * (runner.ts · gpuScoringImage). That one failure a rescore cannot mend:
+ * every metric of the competition fails the same way until the image comes
+ * back or the metric moves to the current kaggle-base (POST …/metric/image,
+ * adminApi.moveCompetitionMetricImage), and the text itself tells the
+ * teacher to move it — advice nobody could take while no button did it.
+ *
+ * Recognised by the server's own sentence, in either language: the
+ * submission carries no code for it, and the server writes it in its own
+ * language, which need not be the panel's. A language whose dictionary this
+ * tab has not loaded is not recognised, and the row offers no move; the
+ * competition's metric section has it whatever the rows say.
+ */
+export function metricImageGone(teacherError: string | null | undefined): boolean {
+  const text = teacherError?.trim()
+  if (!text) return false
+  return METRIC_IMAGE_GONE.some((key) =>
+    (['ru', 'en'] as const).some((locale) => messagePattern(locale, key)?.test(text) === true),
+  )
+}
+
+/** The question before the move (window.confirm): every submission of the competition is scored again. */
+export function moveMetricQuestion(title: string): string {
+  return tr('admin.competitions.metricImage.question', { title })
+}
+
+/** What the move came to: how many submissions went back to the queue to be scored in the current kaggle-base. */
+export function moveMetricOutcome(answer: { queued: number }): string {
+  return tr('admin.competitions.metricImage.moved', { count: answer.queued })
 }
 
 /* ---------------------------------------------------- metric templates */

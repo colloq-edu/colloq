@@ -100,7 +100,7 @@ test('with machines, the cardless warning sends the owner to a machine with card
 const LIVE = flat(code(read('web/src/admin/screens/competitions/Live.svelte')))
 
 test('the console draws the waiting line and the warning by those rules', () => {
-  assert.match(LIVE, /\{@const line = waitingLine\(row, waitsForCard\(row, queue\)\)\}/)
+  assert.match(LIVE, /\{@const line = waitingLine\(row, waitsForCard\(row, queue\), homeWord\)\}/)
   assert.match(LIVE, /\{#if line\} <span class=\{cn\('text-micro', REASON_TONE\[line\.tone\]\)\}>\{line\.text\}<\/span> \{\/if\}/)
   assert.match(LIVE, /\{#if cardless\} <p class="text-2xs leading-snug text-warning">\{cardlessWarning\(machineGroups !== null\)\}<\/p> \{\/if\}/)
   assert.doesNotMatch(LIVE, /\{#if waitsForCard\(row, queue\)\}/, 'the card no longer goes before the reason')
@@ -275,8 +275,8 @@ test('«Где считается» recomputes when the form picks a registry en
   // The editor tells the row (and the hidden-test warning) when the environment is not saved yet.
   const editor = flat(code(read('web/src/admin/screens/competitions/Editor.svelte')))
   assert.match(editor, /const environmentUnsaved = \$derived\(environment !== c\.environment\)/)
-  assert.match(editor, /whereRow\(where, \{ gpu: gpuOn, draft: draftState, homeOnly, unsaved: environmentUnsaved \}\)/)
-  assert.match(editor, /sealedWarning\(where, \{ homeOnly, unsaved: environmentUnsaved, gpu: gpuOn \}\)/)
+  assert.match(editor, /whereRow\(where, \{ gpu: gpuOn, draft: draftState, homeOnly, unsaved: environmentUnsaved, homeCards \}\)/)
+  assert.match(editor, /sealedWarning\(where, \{ homeOnly, unsaved: environmentUnsaved, gpu: gpuOn, homeCards \}\)/)
 })
 
 test('the hidden test is said to go only to trusted machines that take the competition, and to this server when it runs notebooks', () => {
@@ -482,7 +482,7 @@ test('the join count is this code\'s own, and a code gone from the list is spent
   assert.equal(codeJoined({ ...minted, id: '' }, listed, NOW, true), null, 'a server that gives no id')
   const connect = flat(code(read('web/src/admin/ui/ConnectMachine.svelte')))
   assert.match(connect, /\$effect\(\(\) => \{ const id = minted\?\.id if \(id && codes\.some\(\(code\) => code\.id === id\)\) codeSeen = true \}\)/)
-  assert.match(connect, /joinProgress\(known, machines, minted\.machines, codeJoined\(minted, codes, Date\.now\(\), codeSeen\)\)/)
+  assert.match(connect, /connectProgress\(minted, known, machines, codes, Date\.now\(\), codeSeen\)/)
 })
 
 test('the dialog says when its commands carry this server\'s loopback, and takes as many machines as the server does', () => {
@@ -501,7 +501,7 @@ test('«Работают сейчас» stops a competition\'s runs on machines 
   const running = flat(code(read('web/src/admin/ui/RunningKernels.svelte')))
   assert.match(running, /\{#if !entry\.hidden && entry\.submissionIds\.length > 0\} <button type="button" class="rk-stop admin-icon-btn/)
   assert.match(running, /onclick=\{\(\) => open\(\{ kind: 'remote', name: entry\.competition, ids: \[\.\.\.entry\.submissionIds\] \}\)\}/)
-  assert.match(running, /const tally = await stopRemoteRuns\(current\.ids, \(id\) => adminApi\.killCompetitionRun\(id\)\)/)
+  assert.match(running, /const tally = await stopRemoteRuns\(current\.ids, \(id\) => adminApi\.killCompetitionRun\(id, \{ onMachine: true \}\)\)/)
   assert.match(running, /if \(tally\.stopped === 0 && tally\.ended === 0 && tally\.error !== null\) throw tally\.error await settle\(remoteStopOutcome\(current\.name, tally\)\)/)
   assert.match(running, /\{:else if dialog\.kind === 'remote'\} <h2 [^>]*>\s*\{tr\('admin\.resourcesTab\.running\.remote\.stopTitle', \{ name: shortName\(dialog\.name\) \}\)\}/)
   assert.match(running, /\{tr\('admin\.resourcesTab\.running\.remote\.stopBody', \{ count: dialog\.ids\.length \}\)\}/)

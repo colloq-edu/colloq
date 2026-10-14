@@ -143,61 +143,253 @@ export interface Eta {
  * order, and the caller numbers places by start (forecast.ts). `null` — a job
  * that needs a card where there are no shares at all: it does not start, and
  * nobody can say when it will.
+ *
+ * One lane over its places alone, with no memory to wait for: the one
+ * simulation of both lanes (laneEtas) asked about a single lane, so the rules
+ * above and the ones the forecast numbers places by cannot part.
  */
 export function queueEtas(input: EtaInput): Array<Eta | null> {
-  const slots = Math.max(1, Math.floor(input.slots))
-  const cards = input.gpuSlots === undefined ? null : Math.max(0, Math.floor(input.gpuSlots))
-  const needsCard = (job: { gpu?: boolean }): boolean => cards !== null && job.gpu === true
-  // When the jobs holding a slot end; those holding a card share apart, since they free both.
-  const slotEnds = new MinHeap()
-  const cardEnds = new MinHeap()
-  let freeSlots = slots - input.running.length
-  let freeCards = cards ?? 0
-  for (const job of input.running) {
-    const left = Math.max(job.expectedMs - job.elapsedMs, MIN_REMAINING_MS)
-    if (needsCard(job)) {
-      cardEnds.push(left)
-      freeCards--
-    } else slotEnds.push(left)
+  return laneEtas({
+    memoryMb: null,
+    notebook: {
+      slots: Math.max(1, Math.floor(input.slots)),
+      elsewhere: 0,
+      running: input.running.map((job) => ({ ...job, memoryMb: 0 })),
+      waiting: input.waiting.map((job, index) => ({ ...job, memoryMb: 0, enqueuedAt: 0, submissionId: String(index) })),
+      ...(input.gpuSlots === undefined ? {} : { gpuSlots: input.gpuSlots }),
+    },
+    metric: { slots: 1, running: [], waiting: [] },
+  }).notebook
+}
+
+/* ------------------------------------------- the two lanes over one memory */
+
+/** The pump's two lanes as the simulation names them (store.ts · QueueLane). */
+export type LaneName = 'notebook' | 'metric'
+
+/** A waiting job of one lane, as the simulation of both lanes takes it (laneEtas). */
+export interface LaneJob extends LaneHead {
+  expectedMs: number
+  /** What it reserves of this server's memory while it runs here (runner.ts · runReservationMb). */
+  memoryMb: number
+  /** Whether it needs a card share: a notebook of a competition whose card is on, never a metric. */
+  gpu?: boolean
+  /**
+   * `false` — this server's pump never takes it (remote/fit.ts · homeTakes: a
+   * GPU notebook where this server has no card), and only a machine's place
+   * starts it: it never holds one of this server's places or its memory.
+   */
+  home?: boolean
+}
+
+/** A job running now, as the simulation of both lanes counts it. */
+export interface LaneRun {
+  expectedMs: number
+  elapsedMs: number
+  gpu?: boolean
+  /** What it holds of this server's memory until it ends; 0 — nothing here (a machine's run). */
+  memoryMb: number
+  /** A machine's run: it holds one of the machines' places, not one of this server's. */
+  elsewhere?: boolean
+}
+
+export interface LanesInput {
+  /**
+   * What this server's queue may hold of its memory in all — what may be
+   * promised to competition work, less the containers still being removed
+   * and every reservation that is not a run of the queue's (runner.ts ·
+   * queueMemory). `null` — unknown, and no job waits for memory: the pump
+   * refuses none for a number it does not have.
+   */
+  memoryMb: number | null
+  notebook: {
+    /** This server's places for notebooks: its slots, none while it runs no notebooks. */
+    slots: number
+    /** The live machines' places together (remote/views.ts · remoteFleet): a run there takes none of this server's memory. */
+    elsewhere: number
+    running: readonly LaneRun[]
+    /** In the order the take walks them (fairOrder). */
+    waiting: readonly LaneJob[]
+    /** Runs that may hold a card share at once, this server's and the machines' together; absent — no card is counted, and GPU work is simulated like any other. */
+    gpuSlots?: number
   }
-  const etas: Array<Eta | null> = input.waiting.map(() => null)
-  const pending = input.waiting.map((_, index) => index)
+  metric: {
+    slots: number
+    running: readonly LaneRun[]
+    /** In the metric lane's own order (scoreOrder). */
+    waiting: readonly LaneJob[]
+  }
+}
+
+export interface LanesEtas {
+  /** Per waiting notebook, in its order: when it starts and when its result is expected; `null` — it does not start. */
+  notebook: Array<Eta | null>
+  metric: Array<Eta | null>
+  /** Every simulated start, in the order the pump makes them: the places on both screens. */
+  starts: Array<{ lane: LaneName; index: number }>
+}
+
+/** A run's end in the simulation, and everything it gives back. */
+interface LaneEnd {
+  at: number
+  lane: LaneName
+  elsewhere: boolean
+  card: boolean
+  memoryMb: number
+}
+
+/**
+ * Both lanes of the pump at once (runner.ts · takeLanes), over the one
+ * memory they share: what the forecast numbers the places by.
+ *
+ * Simulated apart, as they once were, each lane read its free places and
+ * nothing else, and a lane whose head the memory held back was promised a
+ * start "now" for as long as the other lane kept the memory: a notebook
+ * ahead of a bulk rescore read «первое место, начнётся сейчас» through the
+ * whole rescore. So the simulation takes work exactly as the pump does.
+ * Each lane has its own places and its own order; a notebook that needs a
+ * card share is passed over while none is free, and the work behind it
+ * takes the place (store.ts · selectNext); a notebook goes to a machine's
+ * place first, where it costs this server no memory; and of the two heads that
+ * would take this server's memory the one that waited longer goes first
+ * (laneHeadOrder). A head that does not fit what is free waits for what the
+ * queue's own runs will free, and the other lane's head waits behind it; a
+ * head that would not fit even with nothing of the queue running is waiting
+ * for no run of the queue at all, and its lane alone takes nothing here
+ * while it stays its head — the pump stops at a lane's head too.
+ *
+ * A running job frees what it holds after what it still has left, never
+ * sooner than five seconds (MIN_REMAINING_MS), and every job that ends at a
+ * moment gives back what it held before anything starts at it; the places
+ * are the order of the simulated starts.
+ */
+export function laneEtas(input: LanesInput): LanesEtas {
+  const notebook = input.notebook
+  const metric = input.metric
+  const cards = notebook.gpuSlots === undefined ? null : Math.max(0, Math.floor(notebook.gpuSlots))
+  const needsCard = (job: { gpu?: boolean }): boolean => cards !== null && job.gpu === true
+  const total = input.memoryMb === null ? Infinity : Math.max(0, input.memoryMb)
+  // More running than places (the owner lowered the number): the first of them to end free nothing for the queue.
+  let homeFree = Math.max(0, Math.floor(notebook.slots)) - notebook.running.filter((run) => !run.elsewhere).length
+  let awayFree = Math.max(0, Math.floor(notebook.elsewhere)) - notebook.running.filter((run) => run.elsewhere).length
+  let metricFree = Math.max(1, Math.floor(metric.slots)) - metric.running.length
+  let freeCards = cards ?? 0
+  let freeMb = total
+  const ends = new EndHeap()
+  const hold = (lane: LaneName, run: LaneRun): void => {
+    const card = lane === 'notebook' && needsCard(run)
+    if (card) freeCards--
+    freeMb -= run.memoryMb
+    ends.push({ at: Math.max(run.expectedMs - run.elapsedMs, MIN_REMAINING_MS), lane, elsewhere: !!run.elsewhere, card, memoryMb: run.memoryMb })
+  }
+  for (const run of notebook.running) hold('notebook', run)
+  for (const run of metric.running) hold('metric', run)
+  const etas: LanesEtas = { notebook: notebook.waiting.map(() => null), metric: metric.waiting.map(() => null), starts: [] }
+  const pending: Record<LaneName, number[]> = { notebook: notebook.waiting.map((_, index) => index), metric: metric.waiting.map((_, index) => index) }
   let now = 0
+  const start = (lane: LaneName, at: number, elsewhere: boolean): void => {
+    const index = pending[lane].splice(at, 1)[0]
+    const job = (lane === 'notebook' ? notebook : metric).waiting[index]
+    const card = lane === 'notebook' && needsCard(job)
+    const memoryMb = elsewhere ? 0 : job.memoryMb
+    if (lane === 'metric') metricFree--
+    else if (elsewhere) awayFree--
+    else homeFree--
+    if (card) freeCards--
+    freeMb -= memoryMb
+    const etaMs = now + Math.max(0, job.expectedMs)
+    etas[lane][index] = { startMs: now, etaMs }
+    etas.starts.push({ lane, index })
+    ends.push({ at: etaMs, lane, elsewhere, card, memoryMb })
+  }
   for (;;) {
-    // Everything that can start now starts, in queue order, the way one pass of the pump takes it.
-    for (let at = 0; at < pending.length && freeSlots > 0; ) {
-      const index = pending[at]
-      const job = input.waiting[index]
-      const card = needsCard(job)
-      if (card && freeCards <= 0) {
-        at++
+    // Everything that can start now starts, the way one pass of the pump takes it.
+    for (;;) {
+      // The notebook lane's head: the first in its order that no card holds back (store.ts · selectNext) — here, of the work this server takes at all.
+      const cardFree = (index: number): boolean => !needsCard(notebook.waiting[index]) || freeCards > 0
+      const away = awayFree > 0 ? pending.notebook.findIndex(cardFree) : -1
+      if (away >= 0) {
+        start('notebook', away, true)
         continue
       }
-      const etaMs = now + Math.max(0, job.expectedMs)
-      etas[index] = { startMs: now, etaMs }
-      freeSlots--
-      if (card) {
-        freeCards--
-        cardEnds.push(etaMs)
-      } else slotEnds.push(etaMs)
-      pending.splice(at, 1)
+      const nb = homeFree > 0 ? pending.notebook.findIndex((index) => notebook.waiting[index].home !== false && cardFree(index)) : -1
+      const heads: Array<{ lane: LaneName; at: number; job: LaneJob }> = []
+      if (nb >= 0) heads.push({ lane: 'notebook', at: nb, job: notebook.waiting[pending.notebook[nb]] })
+      if (metricFree > 0 && pending.metric.length > 0) heads.push({ lane: 'metric', at: 0, job: metric.waiting[pending.metric[0]] })
+      heads.sort((a, b) => laneHeadOrder(a.job, b.job))
+      let started = false
+      for (const head of heads) {
+        if (head.job.memoryMb <= freeMb) {
+          start(head.lane, head.at, false)
+          started = true
+          break
+        }
+        // It waits for what the queue's own runs will free, and the head that waited less waits behind it.
+        if (head.job.memoryMb <= total) break
+      }
+      if (!started) break
     }
-    if (pending.length === 0) break
-    // Then time moves to the next end; every job that ends at that moment frees its slot first.
-    const next = Math.min(slotEnds.size > 0 ? slotEnds.peek() : Infinity, cardEnds.size > 0 ? cardEnds.peek() : Infinity)
-    if (next === Infinity) break
-    now = next
-    while (slotEnds.size > 0 && slotEnds.peek() === now) {
-      slotEnds.pop()
-      freeSlots++
-    }
-    while (cardEnds.size > 0 && cardEnds.peek() === now) {
-      cardEnds.pop()
-      freeSlots++
-      freeCards++
+    if (pending.notebook.length === 0 && pending.metric.length === 0) break
+    // Then time moves to the next end; every job that ends at that moment gives back what it held first.
+    if (ends.size === 0) break
+    now = ends.peek().at
+    while (ends.size > 0 && ends.peek().at === now) {
+      const end = ends.pop()
+      if (end.lane === 'metric') metricFree++
+      else if (end.elsewhere) awayFree++
+      else homeFree++
+      if (end.card) freeCards++
+      freeMb += end.memoryMb
     }
   }
   return etas
+}
+
+/** The earliest end first. A few hundred entries at most. */
+class EndHeap {
+  private readonly items: LaneEnd[] = []
+
+  get size(): number {
+    return this.items.length
+  }
+
+  /** The earliest, left where it is; only for a heap that is not empty. */
+  peek(): LaneEnd {
+    return this.items[0]
+  }
+
+  push(value: LaneEnd): void {
+    const items = this.items
+    items.push(value)
+    let at = items.length - 1
+    while (at > 0) {
+      const parent = (at - 1) >> 1
+      if (items[parent].at <= items[at].at) break
+      ;[items[parent], items[at]] = [items[at], items[parent]]
+      at = parent
+    }
+  }
+
+  pop(): LaneEnd {
+    const items = this.items
+    const top = items[0]
+    const last = items.pop()!
+    if (items.length > 0) {
+      items[0] = last
+      let at = 0
+      for (;;) {
+        const left = at * 2 + 1
+        const right = left + 1
+        let least = at
+        if (left < items.length && items[left].at < items[least].at) least = left
+        if (right < items.length && items[right].at < items[least].at) least = right
+        if (least === at) break
+        ;[items[least], items[at]] = [items[at], items[least]]
+        at = least
+      }
+    }
+    return top
+  }
 }
 
 /**
@@ -217,57 +409,6 @@ export function expectedRunMs(input: {
 }): number {
   if (input.recent.length >= 3) return medianOf(input.recent) ?? 0
   return medianOf(input.instance) ?? Math.round((input.wallSeconds * 1000) / 2)
-}
-
-/** The smallest number first — the moments slots free up. A few dozen entries at most. */
-class MinHeap {
-  private readonly items: number[] = []
-
-  constructor(values: readonly number[] = []) {
-    for (const value of values) this.push(value)
-  }
-
-  get size(): number {
-    return this.items.length
-  }
-
-  /** The smallest, left where it is; only for a heap that is not empty. */
-  peek(): number {
-    return this.items[0]
-  }
-
-  push(value: number): void {
-    const items = this.items
-    items.push(value)
-    let at = items.length - 1
-    while (at > 0) {
-      const parent = (at - 1) >> 1
-      if (items[parent] <= items[at]) break
-      ;[items[parent], items[at]] = [items[at], items[parent]]
-      at = parent
-    }
-  }
-
-  pop(): number {
-    const items = this.items
-    const top = items[0]
-    const last = items.pop()!
-    if (items.length > 0) {
-      items[0] = last
-      let at = 0
-      for (;;) {
-        const left = at * 2 + 1
-        const right = left + 1
-        let least = at
-        if (left < items.length && items[left] < items[least]) least = left
-        if (right < items.length && items[right] < items[least]) least = right
-        if (least === at) break
-        ;[items[least], items[at]] = [items[at], items[least]]
-        at = least
-      }
-    }
-    return top
-  }
 }
 
 /* ------------------------------------------------------------ summaries */
@@ -646,6 +787,40 @@ export function scoreOrder<T extends QueueOrderRow>(
 ): T[] {
   const fair = fairOrder(waiting, running)
   return [...fair.filter(fresh), ...fair.filter((row) => !fresh(row))]
+}
+
+/** A lane's head as the two lanes are weighed against each other (laneHeadOrder). */
+export interface LaneHead {
+  submissionId: string
+  enqueuedAt: number
+  late?: boolean
+}
+
+/**
+ * Which of the two lanes' heads takes this server's memory first when it
+ * fits only one of them (runner.ts · takeLanes; laneEtas simulates the
+ * same): on-time work before late work, as everywhere in the queue, then the
+ * one that has waited longer.
+ *
+ * NEITHER LANE GOES FIRST BY RIGHT. The places are each lane's own, the
+ * memory is one, and whichever lane was asked first took what a run that
+ * ended had freed. Notebooks first, a server whose memory, not its places,
+ * was the limit gave every freed four gigabytes to the next notebook, and a
+ * rescore after a metric fix, the teacher's metric check and a machine's
+ * fresh result waited for the whole notebook backlog; metrics first, the
+ * memory each metric freed went to the next one, and a notebook ahead of a
+ * bulk rescore waited for all of it. By arrival neither waits for more than
+ * what came before it, which is what the one fair order of 0.22 promised.
+ * A machine's fresh result keeps its notebook's arrival (store.ts ·
+ * continueQueueAsMetric), so it goes ahead of everything sent after that
+ * notebook, as a run here would have; a rescore arrives when it is asked
+ * for.
+ */
+export function laneHeadOrder(a: LaneHead, b: LaneHead): number {
+  const late = Number(!!a.late) - Number(!!b.late)
+  if (late !== 0) return late
+  if (a.enqueuedAt !== b.enqueuedAt) return a.enqueuedAt - b.enqueuedAt
+  return a.submissionId < b.submissionId ? -1 : a.submissionId > b.submissionId ? 1 : 0
 }
 
 /** Delayed resource retries remain visible, but cannot claim a queue slot yet. */

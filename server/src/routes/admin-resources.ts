@@ -26,7 +26,9 @@ import {
 } from '../admin/resource-settings.js'
 import { slotsResolution } from '../competitions/capacity.js'
 import { runnerGpuDevices } from '../competitions/gpu.js'
-import { competitionDefaults } from '../competitions/settings.js'
+import { METRIC_MEMORY_MB } from '../competitions/runner-port.js'
+import { RUN_RESERVE_MB } from '../competitions/runner.js'
+import { competitionDefaults, homeNotebooksSetting, scoreSlotsSetting } from '../competitions/settings.js'
 import { listNames } from '../environments.js'
 import { idleSweepSettingsChanged } from '../kernel/index.js'
 import { gpuBusy, gpuDevices, reapplyInstanceDefaults, runningKernelLimits, submissionGpuCards, type RunningKernel } from '../kernel/pool.js'
@@ -71,11 +73,24 @@ function machineBounds(): MachineBounds {
  * leaves the segment out: a made-up number on a capacity bar is worse than a
  * missing one. The shape is the contract (shared/admin.ts ·
  * ResourceBudget.competitions).
+ *
+ * WITH «ТЕТРАДИ НА ЭТОМ СЕРВЕРЕ» OFF the queue runs only its metric lane here
+ * (runner.ts · pumpOnce): at most «Оценок одновременно» metrics, each its
+ * 256 MB cushion and the metric's memory (runner-port.ts · limitsFor, at most
+ * 2 GB), for seconds at a time. Promised as slots × a notebook's memory, the
+ * bar showed eight gigabytes taken by notebooks that never run here, and the
+ * class form warned «памяти не хватит» for a class that fits — on the very
+ * server the switch is turned off to keep for its class.
  */
 function competitionShare(): ResourceBudget['competitions'] {
   try {
-    const slots = slotsResolution().effective
     const { limits } = competitionDefaults()
+    if (!homeNotebooksSetting().value) {
+      const slots = scoreSlotsSetting().value
+      const metricMb = Math.min(METRIC_MEMORY_MB, Math.max(512, limits.memoryMb))
+      return { slots, memoryMb: slots * (RUN_RESERVE_MB + metricMb), cpus: slots * limits.cpus }
+    }
+    const slots = slotsResolution().effective
     return { slots, memoryMb: slots * limits.memoryMb, cpus: slots * limits.cpus }
   } catch (err) {
     const why = err instanceof Error ? err.message : err
