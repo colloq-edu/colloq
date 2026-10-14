@@ -923,3 +923,19 @@ The owner answered «Поехали» to these proposals; they override anything
 22. **Fleet commands are per home.** `make runners-update|runners-down URL=<home>` act only on that home's machines (read on each machine from COLLOQ_RUNNER_JOIN before the #); update skips machines already compatible unless FORCE=1 and runs detached on the machine; `make vast-runner DESTROY_UNJOINED=1` destroys rented machines that never joined; `make runner-dev` refuses without URL= (never the live :3000).
 23. **The state directory is dedicated.** colloq-host and the entrypoint refuse system roots (/, /var, /var/lib, /usr, /etc, /home/<user>, Docker's stores, the instance's own state) before any chown.
 24. **colloq-host adopts plain `docker run` machines** on their first update, leave, status or logs (image, env and mounts read from docker inspect).
+
+### 13d. After fix wave 1 (14 Oct, 06:00) — what changed from the text above
+
+25. **The reply marker** is `X-Colloq-Runner-Api: colloq-runners` (version-independent), with the protocol in `X-Colloq-Runner-Protocol`. Any `/api/runners/v<n>` other than home's answers a marked 426; a marked 426 is final for the agent. Agent-side parsers of home's replies ignore unknown keys; home's request parsers stay strict. `RemoteOutcomeReply` carries `trusted`; a repeated outcome gets its cached result with fresh leases (never the offers cached with the first reply), and a `draining` decline gets none.
+26. **`want.data`** has one entry per (competition, kind); byte-identical competitions may share a manifest.
+27. **The metric lane goes first** in each pump pass (bounded by scoreSlots and the metric wall).
+28. **Freshness is on the queue row** (`competition_queue.fresh`): set by continueQueueAsMetric, cleared by upsertQueue and pending kinds; reclaim keeps fresh rows at running/score; 'rescore all' leaves rows already waiting as metric alone.
+29. **The GPU metric is pinned per competition** (`competition_metric_revisions`): the first metric pins the current kaggle-base (or own-pin mode for competitions whose earlier metrics ran in their own image); a missing pinned image fails the metric with `scoringImageGone`; an unreadable probe defers it. The teacher re-pins with `POST /api/admin/competitions/:id/metric/image`, which rescores the whole competition. The metric-only doors check the image the metric will run in. kaggle-base is recorded on demand when its image is present.
+30. **Rollback safety**: a row with a holder and no live `remote_leases` row (or no such table) is this server's orphan at boot: requeued with no penalty, holder cleared. No DATA_SCHEMA bump.
+31. **Re-drive records** are written temp + fsync + rename + directory fsync; an unreadable record stops a re-drive instead of being read as "nothing moved".
+32. **Data digests** are keyed on (dev, ino, size, mtime) in their own cache; links and chmods no longer cause rereads.
+33. **Wheel URLs** live in `dependency_bundle_wheel_urls`, never in manifest.json (mounted at /deps) or packages_json (served by 0.22 after a rollback).
+34. **Quarantine counts events, not leases**: one agent restart losing N runs is one event; only losses after the container started count.
+35. **`RemoteWaitReason` gains `no_fit`**: no live machine can ever fit the row (memory, cpus, package set, limits); blockedBy and the take share one predicate.
+36. **Erase and delete** remove remote_leases and remote_events rows with the submission or competition.
+37. **The agent**: per-download part files with the hash verified before the CAS rename and before use; approvedSlots caps free.slots; REMOTE_ATTEMPTS_MAX held at most; the disk floor gates fetches and pulls, Docker's root dir measured too; one draining sync on SIGTERM; COLLOQ_RUNNER_CONTAINER unset = no container of its own; sealed purge spares held leases; ENOSPC on lease writes becomes a decline or a disk problem; smoke-test containers carry the tree's instance label.
