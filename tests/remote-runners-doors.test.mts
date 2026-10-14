@@ -483,12 +483,16 @@ test('an upload refused in the middle of its body is answered, marked: never a r
   send(c)
   const { m, lease } = await runningLease(c)
   /** A PUT whose body is megabytes of `chunk()`, sent as it is read: still on its way when home finds what is wrong with it. */
+  let pulled = 0
   const streamed = (headers: Record<string, string>, chunk: () => Uint8Array, chunks: number) => {
     let sent = 0
     const body = new ReadableStream<Uint8Array>({
       pull(controller) {
         if (sent++ >= chunks) controller.close()
-        else controller.enqueue(chunk())
+        else {
+          pulled++
+          controller.enqueue(chunk())
+        }
       },
     })
     return fetch(`${m.home}/api/runners/v1/attempts/${lease.attemptId}/files/submission.csv`, {
@@ -526,9 +530,13 @@ test('an upload refused in the middle of its body is answered, marked: never a r
   const { cancelRemote } = await import('../server/src/competitions/remote/release.js')
   assert.equal(cancelRemote(queueRow(lease.submissionId)!, 'teacher'), true)
   const started = Date.now()
+  pulled = 0
   const late = await streamed({ 'content-encoding': 'gzip', 'x-colloq-sha256': 'c'.repeat(64), 'x-colloq-bytes': '100' }, noise, 1024)
   assert.equal(late.status, 409)
-  assert.ok(Date.now() - started < 1_500, `answered before the sixty-four megabytes were sent (${Date.now() - started} ms)`)
+  // Counted in chunks, not milliseconds, which a loaded runner stretches: a body home does not read stops at what the
+  // sockets' buffers hold, a few megabytes, while one it drained would have been sent whole before the answer.
+  assert.ok(pulled < 512, `answered before the sixty-four megabytes were sent (${pulled} of 1024 chunks, ${Date.now() - started} ms)`)
+  assert.ok(Date.now() - started < 10_000, `answered at once, not after a timeout (${Date.now() - started} ms)`)
   assert.equal(parseRemoteErrorReply(await late.json()).error, 'revoked')
 })
 

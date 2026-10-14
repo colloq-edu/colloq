@@ -618,6 +618,8 @@ test('a drain lets a held hidden-test run finish: what it reads stays until it h
     return { json: syncReply({ seq: lease.seq, leases, trusted: true, want: { revisions: [{ id: REVISION.id, ref: REVISION.ref, layers: LAYERS, gpu: false }], data, bundles: [] } }), delayMs: leases.length > 0 ? 0 : 20 }
   }
   const { agent, seam, docker } = agentFor(home)
+  // The run waits for the read of its /data below: one that ended at once could have its tree removed under the read.
+  seam.next = 'wait'
   // The lease's image is checked once more right before its run (images.ts · verify), before it links the hidden test: held there, where a drain can come.
   let verifying = 0
   let release!: () => void
@@ -636,12 +638,14 @@ test('a drain lets a held hidden-test run finish: what it reads stays until it h
     await waitFor(() => seam.runs.length === 1, 'the hidden-test run, after the drain')
     assert.equal(seam.runs[0]!.sealedInputs, true)
     assert.equal(fs.readFileSync(path.join(seam.runs[0]!.dataDir, 'test.csv'), 'utf8'), 'id\n9\n')
+    seam.release()
     await waitFor(() => !fs.existsSync(path.join(layout.leasesDir, `${lease.attemptId}.json`)), 'the run settled')
     assert.ok(!home.calls.some((call) => call.path.endsWith(`/attempts/${lease.attemptId}/outcome`) && (call.body as { kind: string }).kind === 'declined'), 'the drain declined a run it was to finish')
     // Settled, it reads nothing more: a draining machine keeps none of the hidden test.
     await waitFor(() => fs.readdirSync(path.join(competitionsDir, '.sealed')).length === 0, 'the hidden test gone once the run is done')
   } finally {
     release()
+    seam.release()
     await agent.stop()
     await running
     await home.close()
