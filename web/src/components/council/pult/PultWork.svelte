@@ -62,6 +62,12 @@
     onreplyblur: () => void
     /** Remove the author from the class — the shared ban menu confirms it. */
     onremove: (attempt: CouncilAttempt, event: MouseEvent) => void
+    /**
+     * The room's line numbers (shared/rules.ts · lineNumbers): the teacher
+     * reads the attempt by the same numbers the author and the class see,
+     * and "line 7" means one line to all of them.
+     */
+    lineNumbers?: boolean
   }
 
   let {
@@ -91,6 +97,7 @@
     onreplyfocus,
     onreplyblur,
     onremove,
+    lineNumbers = false,
   }: Props = $props()
 
   const writing = $derived(attempt !== null && attempt.submittedAt === null)
@@ -111,6 +118,10 @@
    * the whole code of almost any attempt; the rest need one button, and it
    * unfolds the code in full into the same feed, without a second
    * scrollbar.
+   *
+   * The room's line numbers are sized for the whole attempt from the start:
+   * Code gets the full count, so unfolding does not move the code a digit to
+   * the right.
    */
   const CODE_LINES = 40
   let openCode = $state<string | null>(null)
@@ -286,7 +297,7 @@
         </div>
         <div class="work-code-surface">
           <div class="work-code-scroll">
-            <Code code={shownCode} class="pult-solution-code" />
+            <Code code={shownCode} class="pult-solution-code" {lineNumbers} lineCount={lines} />
           </div>
           {#if long && !allCode}
             <button type="button" class="pult-button work-code-all" data-pult-code-all

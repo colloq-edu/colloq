@@ -34,7 +34,7 @@ import {
   type LectureZoom,
   type SheetPaper,
 } from '@shared/lecture'
-import { readRules, type RoomRules } from '@shared/rules'
+import { changesWhatCanBeDone } from '@shared/rules'
 import {
   inkedPages,
   inkNeeded,
@@ -91,19 +91,6 @@ function wsBase(): string {
  * deliberately not reactive to its own inputs, because rebuilding it would drop
  * the local CRDT state and every unsynced keystroke with it.
  */
-/**
- * Whether these are the same rules — by meaning, not by bytes.
- *
- * The server and the page cache may hold the same thing with a different key
- * order or with a field the old string did not have yet: `readRules` brings
- * both sides to the full set with defaults, and those are what is compared.
- */
-function sameRules(a: unknown, b: unknown): boolean {
-  const left = readRules(a)
-  const right = readRules(b)
-  return (Object.keys(left) as (keyof RoomRules)[]).every((key) => left[key] === right[key])
-}
-
 /**
  * What is thrown away on a closed socket instead of being queued.
  *
@@ -949,10 +936,15 @@ export class SessionState {
          * every page reload said "the teacher changed what can be done",
          * although nobody changed anything. On top of that the comparison went
          * through JSON.stringify, which cares about key order.
+         *
+         * Line numbers do not count as a change here: they are how the
+         * notebook looks, the new frame shows them on every screen by itself,
+         * and nothing a person may do has changed (shared/rules.ts ·
+         * changesWhatCanBeDone).
          */
         const first = !this.#rulesArrived
         this.#rulesArrived = true
-        const changed = !sameRules(this.session.rules, message.rules)
+        const changed = changesWhatCanBeDone(this.session.rules, message.rules)
         this.session = { ...this.session, rules: message.rules }
         /*
          * And say it in words — once, not on the welcome batch.

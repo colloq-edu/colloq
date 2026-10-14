@@ -61,6 +61,7 @@ export interface ChoiceRow {
       | 'opens'
       | 'ownBooks'
       | 'danger'
+      | 'lineNumbers'
     )
   title: string
   note: string
@@ -185,6 +186,27 @@ export const RULE_ROWS: RuleRow[] = [
     options: [
       { value: 'block', get label() { return tr('room.rules.danger.block') } },
       { value: 'allow', get label() { return tr('room.rules.danger.allow') } },
+    ],
+  },
+  {
+    /*
+     * Right after the kernel rows and before the notebook's structure: the
+     * one row about how the code reads rather than who may touch it, and its
+     * place is next to the run that produces the traceback naming a line.
+     */
+    kind: 'choice',
+    key: 'lineNumbers',
+    get title() { return tr('room.rules.lineNumbers.title') },
+    /*
+     * The caption answers the two questions people come here with: who sees
+     * the numbers (everyone in the room, so this is not the teacher's own
+     * view) and what they are for (a line named aloud, and the line number in
+     * a Python error).
+     */
+    get note() { return tr('room.rules.lineNumbers.note') },
+    options: [
+      { value: 'off', get label() { return tr('room.rules.lineNumbers.off') } },
+      { value: 'on', get label() { return tr('room.rules.lineNumbers.on') } },
     ],
   },
   {
