@@ -11,6 +11,16 @@
  * machine and comes first. Work goes in two steps in two disposable
  * containers — the notebook, then the metric — and exactly one file moves
  * between them.
+ *
+ * TWO LANES. The pump takes notebooks (each keeping its metric under the same
+ * lease) under the slots, and metric-only work — rescores, and the metric of
+ * a notebook a machine that runs submissions ran — under places of its own
+ * (`scoreSlots`), so neither ever waits for the other. And the notebook step
+ * is two halves around the run (prepareNotebook, settleNotebook): a run here
+ * goes prepare → run → settle → metric without a pause, a machine's run is
+ * prepared when it is leased and settled when its outcome comes back, by the
+ * same code (docs/architecture/remote-runners.md §5.3–5.4).
+ *
  * Everything that knows about docker lives behind the `runner-port.ts` door:
  * here we decide WHOSE work goes next and what to write into the submission
  * row. And at process startup the queue picks up the orphans: a "running" row
@@ -29,7 +39,8 @@ import fs from 'node:fs'
 import { reserveWork, workBudgetSnapshot } from '../ops/work-budget.js'
 import { competitionCapabilities } from './capabilities.js'
 import { admitJob, MAX_SLOTS, slotsResolution } from './capacity.js'
-import { saveSlots } from './settings.js'
+import { laneHeadOrder } from './panel.js'
+import { homeNotebooksSetting, saveSlots, scoreSlotsSetting } from './settings.js'
 import { submissionUsesCurrentBase, type AttemptProvenance } from './provenance.js'
 import { gpuKillAboveMb, gpuSliceFor, noteClusterGpuSlots, runnerCardsHere, runnerGpuDevices, runnerGpuPerDevice, runnerGpuState } from './gpu.js'
 import { formatNumber, tr } from '@shared/i18n'
@@ -40,13 +51,27 @@ import { formatNumber, tr } from '@shared/i18n'
  */
 import '../admin/settings.js'
 import { db } from '../db.js'
-import { getBinding, lockOf, policyOf, type SubmissionBinding } from '../dependencies/store.js'
+import {
+  competitionRevision,
+  getBinding,
+  getRevision,
+  lockOf,
+  metricHistoryRevision,
+  metricPin,
+  moveMetricPin,
+  pinMetric,
+  policyOf,
+  revisions,
+  type SubmissionBinding,
+} from '../dependencies/store.js'
+import { captureRevision } from '../dependencies/revisions.js'
 import { verifyBundleFiles } from '../dependencies/files.js'
 import { dependencyMessage } from '../dependencies/messages.js'
-import { dependencySize, packagesFit, packagesRoomMb } from '@shared/dependencies'
+import { dependencySize, packagesFit, packagesRoomMb, type DependencyBundle, type EnvironmentRevision } from '@shared/dependencies'
 import {
   BOOT,
   cardWorkWaiting,
+  continueQueueAsMetric,
   enqueue,
   deferResourceAttempt,
   discardUnstartedRun,
@@ -68,6 +93,7 @@ import {
   queueRow,
   queueRows,
   reclaimQueue,
+  runningCount,
   runningRows,
   setQueuePaused,
   startRun,
@@ -75,15 +101,17 @@ import {
   updateSubmission,
   waitingCount,
   type QueueGpu,
+  type QueueLane,
   type QueueRow,
 } from './store.js'
 import {
+  attemptPromoted,
   competitionsFs,
   competitionsDir,
   composeRunInputs,
-  copyCompetitionFile,
   attemptDir,
   dropAttempt,
+  placeCompetitionFile,
   promoteAttempt,
   publishAttemptArtifacts,
   inputDir,
@@ -96,18 +124,29 @@ import {
 } from './storage.js'
 import { METRIC_NAME, VRAM_UNREAD_LIMIT, competitionDockerDiagnostics } from './docker-runner.js'
 import { startSubmissionSweep, stopSubmissionSweep } from './housekeeping.js'
+/*
+ * A machine's run is cancelled and woken through these two, and neither
+ * imports this module back: the cancel lives apart from the take for that
+ * reason (competitions/remote/release.ts).
+ */
+import { cancelRemote } from './remote/release.js'
+import { wakeAllRunners } from './remote/wake.js'
 import { CompetitionResourcePending } from './broker-runner.js'
 import {
   CLUSTER_GPU,
   competitionBackend,
   competitionRunner,
   limitsFor,
+  runCompetition,
+  scoreCompetition,
   type Capacity,
   type CompetitionBackend,
   type DependencyFailure,
   type RunOutcome,
+  type RunProgress,
   type RunRequest,
   type ScoreOutcome,
+  type StepLimits,
 } from './runner-port.js'
 import {
   LIMITS,
@@ -223,14 +262,24 @@ export function enoughMemory(availableMb: number | null, needMb: number): boolea
  * From here, not from storage.ts: the mode is changed for the isolated
  * executor (Docker locally or a Pod in k3s). The directory stays inside
  * DATA_DIR.
+ *
+ * A mode is set only where it is not that already: a chmod is a write of the
+ * inode even when it changes nothing. It moves ctime, which the content
+ * hasher no longer keys the competition's data by for that very reason
+ * (dependencies/files.ts · DigestIdentity) — this chmod, and the links a
+ * hidden-test run makes and drops, moved it on every run — but which other
+ * readers of a mounted file may still take for a change. `info` is the
+ * directory's own stat when the walk already has it. Exported for its test.
  */
-function letContainerRead(dir: string): void {
+export function letContainerRead(dir: string, info?: fs.Stats): void {
   try {
-    competitionsFs.chmodSync(dir, 0o755)
+    const own = info ?? competitionsFs.statSync(dir)
+    if ((own.mode & 0o7777) !== 0o755) competitionsFs.chmodSync(dir, 0o755)
     for (const name of competitionsFs.readdirSync(dir) as string[]) {
       const file = path.join(dir, name)
-      if (competitionsFs.statSync(file).isDirectory()) letContainerRead(file)
-      else competitionsFs.chmodSync(file, 0o644)
+      const entry = competitionsFs.statSync(file)
+      if (entry.isDirectory()) letContainerRead(file, entry)
+      else if ((entry.mode & 0o7777) !== 0o644) competitionsFs.chmodSync(file, 0o644)
     }
   } catch {
     // It did not work — let docker decide: it names a permission refusal out
@@ -269,98 +318,281 @@ let stopped = false
 let clusterGpuRestUntil = 0
 
 /**
+ * One lane of the pump (store.ts · QueueLane) and its places this pass.
+ *
+ * `notebook` — under the machine's slots, and only while this server runs
+ * notebooks at all («Тетради на этом сервере», settings.ts ·
+ * homeNotebooksSetting); a notebook taken here keeps its metric under the
+ * same lease, as it always has. `metric` — rescores and the metric of a
+ * notebook a machine ran, under places of their own (scoreSlotsSetting), on
+ * whatever the switch says: the answers are never anywhere else, so every
+ * metric is this server's.
+ *
+ * NEITHER LANE GOES FIRST BY RIGHT. The lanes share the machine's memory
+ * (one PumpPass), and whichever was asked first took what a run that ended
+ * had freed. Notebooks first, a server whose memory, not its places, was the
+ * limit — sixteen gigabytes and three notebooks of four, with a room open —
+ * gave every freed four gigabytes to the next waiting notebook, and a rescore
+ * after a metric fix, the teacher's metric check and a machine's fresh result
+ * waited until no notebook was waiting. Metrics first, it turned around: the
+ * memory each metric freed went to the next metric, and a notebook sent
+ * before a bulk rescore waited for the whole of it, while both screens told
+ * it «начнётся сейчас». So when this server's memory fits only one of the two
+ * heads, the one that has waited longer goes first (panel.ts ·
+ * laneHeadOrder), and while it waits for memory the queue's own runs will
+ * free, the other lane waits behind it (takeLanes) — each lane still within
+ * its own places, so a lane with none free holds nothing up. The forecast
+ * simulates exactly this (panel.ts · laneEtas).
+ *
+ * A pause holds new work, not work under way (pauseCompetitionQueue): under
+ * it only the metric lane runs, and only for a fresh result — the second
+ * half of a notebook that has already run, on a machine or here (store.ts ·
+ * selectNextScore), as a run here keeps its metric under its own lease
+ * whatever the pause.
+ */
+interface PumpLane {
+  lane: QueueLane
+  slots: number
+}
+
+function pumpLanes(paused: boolean): PumpLane[] {
+  const lanes: PumpLane[] = [{ lane: 'metric', slots: scoreSlotsSetting().value }]
+  if (!paused && homeNotebooksSetting().value) lanes.push({ lane: 'notebook', slots: queueSlots() })
+  return lanes
+}
+
+/** What one pass measured of the machine, and what it has admitted so far, shared by its lanes. */
+interface PumpPass {
+  capacity: Capacity
+  usableMb: number | null
+  heldMb: number
+  admittedMb: number
+  availableDiskBytes: number | null
+}
+
+/**
  * Take as much work as the machine and the setting allow, and do NOT wait for
  * it.
  *
  * Not waiting is essential: with two slots the second submission must start
  * while the first is running, not after it. Returns the number started —
  * `drainCompetitionQueue` uses it to tell that there is nothing more to take.
+ *
+ * Both lanes (PumpLane) over ONE measurement of the machine: they take from
+ * the same memory, and what one admitted this pass the other must see. Which
+ * of them takes next is takeLanes'. With no metric work waiting, this is the
+ * pass it always was.
  */
 export async function pumpOnce(): Promise<number> {
   if (pumping || stopped) return 0
   pumping = true
   let started = 0
   try {
-    if (queuePaused()) return 0
-    const slots = queueSlots()
-    if (runningRows().length >= slots) return 0
-    if (waitingCount() === 0) return 0
+    const paused = queuePaused()
+    /*
+     * Only a lane with a place free and its own work waiting — under a pause,
+     * work the pause does not hold (store.ts · waitingCount): with this
+     * server's notebooks off, the notebooks waiting for the machines must not
+     * cost it a probe of the runtime and the machine every second, nor a
+     * paused queue's rescores.
+     */
+    const lanes = pumpLanes(paused).filter((lane) => runningCount(lane.lane) < lane.slots && waitingCount(lane.lane, paused) > 0)
+    if (lanes.length === 0) return 0
     const capabilities = await competitionCapabilities()
     if (!capabilities.execution.available) return 0
     const capacity = await competitionRunner().capacity()
-    const usableMb = capacity.usableMb !== undefined ? capacity.usableMb : capacity.availableMb
-    const heldMb = capacity.heldMb ?? 0
     /*
-     * MemAvailable was measured once, before this loop, and a job started a
-     * millisecond ago has not taken its memory yet: what this loop admits is
+     * MemAvailable was measured once, before these loops, and a job started a
+     * millisecond ago has not taken its memory yet: what this pass admits is
      * subtracted from the measurement by hand — that, and only that. Jobs
      * already running took theirs out of MemAvailable themselves.
      */
-    let admittedMb = 0
-    let availableDiskBytes: number | null = null
-    try { const disk = fs.statfsSync(competitionsDir); availableDiskBytes = disk.bavail * disk.bsize } catch { /* unknown capacity */ }
-    /*
-     * The runner cards, once per pass: what each may hold is a census of the
-     * rooms' containers, and that is a docker call. Who holds them is not read
-     * here: the queue counts its own running rows at every take, so the
-     * second take of this pass already sees the card the first one took.
-     */
-    const gpu = await queueCards(capacity, noteClusterGpuSlots(capabilities.gpuSlots))
-    for (;;) {
-      if (runningRows().length >= slots) break
-      // The same filter as the take below: the work admitted is the work taken.
-      const candidate = nextQueueRow(Date.now(), gpu)
-      if (!candidate) break
-      const competition = getCompetition(candidate.competitionId)
-      const needMb = competition ? runReservationMb(competition, candidate.kind) : RUN_RESERVE_MB
-      const admission = admitJob({
-        needMb,
-        reservedMb: workBudgetSnapshot().memoryMb + heldMb,
-        usableMb,
-        memAvailableMb: capacity.memAvailableMb == null ? null : capacity.memAvailableMb - admittedMb,
-      })
-      if (!admission.ok) {
-        warnOnce(admission.reason === 'floor'
-          ? `[competitions] free memory is below the safety floor for ${candidate.submissionId}`
-          : `[competitions] resource reservations leave insufficient capacity for ${candidate.submissionId}`)
-        break
-      }
-      let secretBytes = 0
-      try { secretBytes = competitionsFs.statSync(path.join(secretDir(candidate.competitionId), SOLUTION_FILE)).size } catch { /* no solution */ }
-      // A run on a hidden test composes its own data folder: hard links cost
-      // nothing, but where the volume refuses them every file is copied.
-      const sealedBytes = candidate.kind === 'notebook' ? sealedFileBytes(candidate.competitionId) : 0
-      const inputsBytes = sealedBytes > 0 ? sealedBytes + openFileBytes(candidate.competitionId) : 0
-      const release = reserveWork({ id: `competition:${newToken()}`, kind: 'competition', memoryMb: needMb,
-        diskBytes: LIMITS.submissionBytes * 4 + secretBytes + inputsBytes },
-      { availableMemoryMb: usableMb === null ? null : Math.max(0, usableMb - heldMb), availableDiskBytes })
-      if (!release) {
-        warnOnce(`[competitions] resource reservations leave insufficient capacity for ${candidate.submissionId}`)
-        break
-      }
-      forgetWarning()
-      const row = takeNext({ boot: BOOT, slots, gpu })
-      if (!row) { release(); break }
-      admittedMb += needMb
-      started++
-      const attemptId = row.attemptId!
-      count('started')
-      aborters.set(attemptId, new AbortController())
-      const job = runJob(row).finally(() => {
-        release()
-        inFlight.delete(attemptId)
-        aborters.delete(attemptId)
-        count('completed')
-        // A freed slot is filled at once, not at the next tick: with eight
-        // slots and a queue of thirty, half a second per job adds up.
-        wakeCompetitionPump()
-      })
-      inFlight.set(attemptId, job)
+    const pass: PumpPass = {
+      capacity,
+      usableMb: capacity.usableMb !== undefined ? capacity.usableMb : capacity.availableMb,
+      heldMb: capacity.heldMb ?? 0,
+      admittedMb: 0,
+      availableDiskBytes: null,
     }
+    measured = { usableMb: pass.usableMb, heldMb: pass.heldMb }
+    try { const disk = fs.statfsSync(competitionsDir); pass.availableDiskBytes = disk.bavail * disk.bsize } catch { /* unknown capacity */ }
+    /*
+     * The runner cards, once per pass and only for the notebooks — a metric
+     * never gets one (scoreStep): what each may hold is a census of the
+     * rooms' containers, and that is a docker call. Who holds them is not read
+     * here: the queue counts its own running rows at every take, so the second
+     * take of this pass already sees the card the first one took.
+     */
+    const gpu = lanes.some((lane) => lane.lane === 'notebook') ? await queueCards(capacity, noteClusterGpuSlots(capabilities.gpuSlots)) : undefined
+    started = takeLanes(lanes, gpu, pass)
   } finally {
     pumping = false
   }
   return started
+}
+
+/**
+ * Take the lanes' work while they have places and the machine has room; the
+ * number started.
+ *
+ * Head against head, one take at a time (PumpLane): each lane with a place
+ * free names the work it would take next, and of the two the one that waited
+ * longer is admitted first (panel.ts · laneHeadOrder). A head refused for
+ * memory that its lane's or the other lane's runs here will free once they
+ * end (waitsForQueueMemory) ends the pass: the other head, which waited less,
+ * must not take that memory from under it, or the next run to end would free
+ * too little for it again. A head that no end of the queue's runs can make
+ * fit — its memory is the rooms', or another reservation's — and a head
+ * refused for anything else (the disk, a take that found nothing) stop only
+ * their own lane, as a lane that could not take always did: a notebook too
+ * big for what is left must not keep a two-gigabyte metric from starting.
+ */
+function takeLanes(lanes: readonly PumpLane[], gpu: QueueGpu | undefined, pass: PumpPass): number {
+  let started = 0
+  const open = new Set(lanes)
+  for (;;) {
+    const heads: Array<{ lane: PumpLane; row: QueueRow; gpu: QueueGpu | undefined }> = []
+    for (const lane of open) {
+      const cards = lane.lane === 'notebook' ? gpu : undefined
+      // The same filter as the take: the work admitted is the work taken.
+      const row = runningCount(lane.lane) < lane.slots ? nextQueueRow(Date.now(), cards, lane.lane) : null
+      if (row) heads.push({ lane, row, gpu: cards })
+      else open.delete(lane)
+    }
+    if (heads.length === 0) return started
+    heads.sort((a, b) => laneHeadOrder(a.row, b.row))
+    let took = false
+    for (const head of heads) {
+      const taken = takeHead(head.lane, head.row, head.gpu, pass)
+      if (taken === 'taken') {
+        started++
+        took = true
+        break
+      }
+      open.delete(head.lane)
+      if (taken !== 'other' && waitsForQueueMemory(taken.needMb, pass)) return started
+    }
+    if (!took) return started
+  }
+}
+
+/**
+ * Admit and take one lane's head: `taken`; refused for memory, with what it
+ * needs; `other` — the disk refused it, or the take found nothing.
+ */
+function takeHead(lane: PumpLane, candidate: QueueRow, gpu: QueueGpu | undefined, pass: PumpPass): 'taken' | 'other' | { needMb: number } {
+  const competition = getCompetition(candidate.competitionId)
+  // A metric row reserves 256 + the metric's memory; a notebook, the larger of its two steps (runReservationMb).
+  const needMb = competition ? runReservationMb(competition, candidate.kind) : RUN_RESERVE_MB
+  const admission = admitJob({
+    needMb,
+    reservedMb: workBudgetSnapshot().memoryMb + pass.heldMb,
+    usableMb: pass.usableMb,
+    memAvailableMb: pass.capacity.memAvailableMb == null ? null : pass.capacity.memAvailableMb - pass.admittedMb,
+  })
+  if (!admission.ok) {
+    warnOnce(lane.lane, admission.reason === 'floor'
+      ? `[competitions] free memory is below the safety floor for ${candidate.submissionId}`
+      : `[competitions] resource reservations leave insufficient capacity for ${candidate.submissionId}`)
+    return { needMb }
+  }
+  // The answer key's snapshot is a hard link and costs no disk, except
+  // where the volume refuses links and it is copied: reserved for that case.
+  let secretBytes = 0
+  try { secretBytes = competitionsFs.statSync(path.join(secretDir(candidate.competitionId), SOLUTION_FILE)).size } catch { /* no solution */ }
+  // A run on a hidden test composes its own data folder: hard links cost
+  // nothing, but where the volume refuses them every file is copied.
+  const sealedBytes = candidate.kind === 'notebook' ? sealedFileBytes(candidate.competitionId) : 0
+  const inputsBytes = sealedBytes > 0 ? sealedBytes + openFileBytes(candidate.competitionId) : 0
+  // Its memory was admitted a line above, against the same numbers: a refusal here is the disk's.
+  const release = reserveWork({ id: `competition:${newToken()}`, kind: 'competition', memoryMb: needMb,
+    diskBytes: LIMITS.submissionBytes * 4 + secretBytes + inputsBytes },
+  { availableMemoryMb: pass.usableMb === null ? null : Math.max(0, pass.usableMb - pass.heldMb), availableDiskBytes: pass.availableDiskBytes })
+  if (!release) {
+    warnOnce(lane.lane, `[competitions] resource reservations leave insufficient capacity for ${candidate.submissionId}`)
+    return 'other'
+  }
+  forgetWarning(lane.lane)
+  const row = takeNext({ boot: BOOT, slots: lane.slots, gpu, lane: lane.lane })
+  if (!row) {
+    release()
+    return 'other'
+  }
+  pass.admittedMb += needMb
+  const attemptId = row.attemptId!
+  reserved.set(attemptId, needMb)
+  count('started')
+  aborters.set(attemptId, new AbortController())
+  const job = runJob(row).finally(() => {
+    release()
+    reserved.delete(attemptId)
+    inFlight.delete(attemptId)
+    aborters.delete(attemptId)
+    count('completed')
+    // A freed slot is filled at once, not at the next tick: with eight
+    // slots and a queue of thirty, half a second per job adds up.
+    wakeCompetitionPump()
+  })
+  inFlight.set(attemptId, job)
+  return 'taken'
+}
+
+/*
+ * What the pump knows of this server's memory between its passes: the last
+ * measurement (usable, and what containers being removed still hold), and
+ * what each of its runs reserved, by attempt — released with the run.
+ */
+let measured: { usableMb: number | null; heldMb: number } | null = null
+const reserved = new Map<string, number>()
+
+/** What the runs of the queue here hold, together. */
+function reservedHere(): number {
+  let total = 0
+  for (const mb of reserved.values()) total += mb
+  return total
+}
+
+/**
+ * Whether a head refused for memory would fit once the queue's own runs here
+ * end (takeLanes): with every one of them gone, what is left is the usable
+ * memory less what is still being removed and every reservation that is not
+ * a run of the queue's (a set being prepared, a kernel starting). Nothing of
+ * the queue running here — the refusal is no run's to end, and with the
+ * usable memory unknown, a floor refusal ends with them.
+ */
+function waitsForQueueMemory(needMb: number, pass: PumpPass): boolean {
+  const own = reservedHere()
+  if (own === 0) return false
+  if (pass.usableMb === null) return true
+  const others = Math.max(0, workBudgetSnapshot().memoryMb - own)
+  return needMb + pass.heldMb + others <= pass.usableMb
+}
+
+/** This server's memory as the forecast simulates the pump over it (panel.ts · laneEtas). */
+export interface QueueMemory {
+  /**
+   * What the queue's own runs may hold in all — the usable memory the pump
+   * last measured, less what is still being removed and every reservation
+   * that is not a run of the queue's; `null` — never measured, or unknown,
+   * and the pump refuses nothing for it then.
+   */
+  totalMb: number | null
+  /** What each of this server's running jobs reserved, by attempt. */
+  jobs: ReadonlyMap<string, number>
+}
+
+/**
+ * The pump's memory for the screens (forecast.ts · forecastLanes): the last
+ * measurement, which the pump makes at every pass with work it could take —
+ * every second while anything waits for memory — and the reservations as
+ * they are now. Between passes the rooms may have moved; the next pass, a
+ * second away, measures again.
+ */
+export function queueMemory(): QueueMemory {
+  const jobs = new Map(reserved)
+  if (!measured || measured.usableMb === null) return { totalMb: null, jobs }
+  const others = Math.max(0, workBudgetSnapshot().memoryMb - reservedHere())
+  return { totalMb: Math.max(0, measured.usableMb - measured.heldMb - others), jobs }
 }
 
 /**
@@ -398,10 +630,11 @@ async function queueCards(capacity: Capacity, clusterSlots: number): Promise<Que
   if (!cardWorkWaiting()) return { cards: [] }
   try {
     const state = await runnerGpuState()
+    forgetWarning('cards')
     return { cards: state.cards, held: capacity.heldGpus ?? {} }
   } catch (error) {
     // No count, no card: the GPU work waits for the next pass, the rest goes on.
-    warnOnce(`[competitions] runner cards could not be counted: ${error instanceof Error ? error.message : String(error)}`)
+    warnOnce('cards', `[competitions] runner cards could not be counted: ${error instanceof Error ? error.message : String(error)}`)
     return { cards: [] }
   }
 }
@@ -423,14 +656,20 @@ export async function drainCompetitionQueue(rounds = 50): Promise<void> {
     const started = await pumpOnce()
     await settleCompetitionWork()
     if (started === 0 && inFlight.size === 0) {
-      // Work may have appeared while the previous work ran (rescoring, a retry).
-      if (waitingCount() === 0 || queuePaused()) return
+      // Work may have appeared while the previous work ran (rescoring, a retry); under a pause, only work it does not hold counts.
+      if (waitingCount(undefined, queuePaused()) === 0) return
     }
   }
 }
 
-/** Wake the pump — after an accepted submission, a lifted pause, a rescore. */
+/**
+ * Wake the pump — after an accepted submission, a lifted pause, a rescore —
+ * and the machines' held syncs with it (competitions/remote/wake.ts): new
+ * work is theirs to take as much as this server's, and an idle machine
+ * would otherwise wait up to twenty-five seconds to ask again.
+ */
 export function wakeCompetitionPump(): void {
+  wakeAllRunners()
   if (stopped || timer === null) return
   void pumpOnce()
 }
@@ -468,14 +707,19 @@ export async function stopCompetitionPump(): Promise<void> {
   await settleCompetitionWork()
 }
 
-let warned = ''
-function warnOnce(text: string): void {
-  if (warned === text) return
-  warned = text
+/*
+ * The last warning of each lane (and of the card count), said once until that
+ * lane admits work again: one lane's admissions must not make the other's
+ * unchanged warning print anew on every pass.
+ */
+const warned = new Map<QueueLane | 'cards', string>()
+function warnOnce(key: QueueLane | 'cards', text: string): void {
+  if (warned.get(key) === text) return
+  warned.set(key, text)
   console.warn(text)
 }
-function forgetWarning(): void {
-  warned = ''
+function forgetWarning(key: QueueLane | 'cards'): void {
+  warned.delete(key)
 }
 
 /* -------------------------------------------------------------- at startup */
@@ -508,9 +752,11 @@ export async function reclaimCompetitionQueue(): Promise<{
      * The submission row is still "running" — it knows nothing about the
      * restart. Without this edit the participant would, until the work is
      * picked up again, watch a timer that does not move and a stage bar stuck
-     * on "RUNNING NOTEBOOK".
+     * on "RUNNING NOTEBOOK". A fresh result's metric (QueueRow.fresh) waits
+     * as it waited before it was taken: its notebook has run, and «в очереди»
+     * would tell its participant otherwise.
      */
-    updateSubmission(row.submissionId, { state: 'queued', stage: 'queue' })
+    updateSubmission(row.submissionId, row.fresh ? { state: 'running', stage: 'score' } : { state: 'queued', stage: 'queue' })
   }
   const swept = await runner.sweep(orphans.flatMap((row) => row.container ? [row.container] : [])).catch(() => 0)
   for (const row of orphans) if (row.attemptId) {
@@ -537,18 +783,17 @@ async function runJob(row: QueueRow): Promise<void> {
     return
   }
   /*
-   * The answer key is snapshotted as of the moment the job starts, but copied
-   * in the background while the notebook runs: it only has to be in place by
+   * The answer key is snapshotted as of the moment the job starts: a hard
+   * link, in place at once. Where the volume refuses links it is copied in the
+   * background while the notebook runs instead: it only has to be in place by
    * the time the metric runs, and a two-hundred-megabyte copy in front of the
    * notebook would be two hundred megabytes of everyone's queue. Resolves to
-   * the copy's error, or null.
+   * the snapshot's error, or null.
    */
   let secrets: Promise<unknown> = Promise.resolve(null)
   try {
     if (!ownsQueueAttempt(row)) return
-    const provenance: AttemptProvenance = submissionUsesCurrentBase(competition, submission.id)
-      ? { inputRevision: competition.inputRevision ?? 0, notebookInputRevision: competition.notebookInputRevision ?? 0 }
-      : { inputRevision: null, notebookInputRevision: null }
+    const provenance = attemptProvenance(competition, submission)
     secrets = snapshotSecrets(competition, submission, row).then(() => null, (error: unknown) => error ?? new Error('Secret snapshot failed'))
     if (row.kind === 'metric') await scoreOnly(competition, submission, row, provenance, secrets)
     else await runNotebookThenScore(competition, submission, row, provenance, secrets)
@@ -559,7 +804,8 @@ async function runJob(row: QueueRow): Promise<void> {
       const reason=tr('competitions.runtime.resourcesWaiting')
       const after=deferResourceAttempt(row,reason,Date.now(),err.teacherReason,err.kind)
       if (after!==null) {
-        updateSubmission(submission.id,{cellsDone:submission.cellsDone,cellsTotal:submission.cellsTotal,durationMs:submission.durationMs})
+        // Put back as before the attempt — but a notebook that ran here, only its metric put off, keeps what it did (runNotebookThenScore).
+        if (!(row.kind === 'notebook' && err.kind === 'metric')) updateSubmission(submission.id,{cellsDone:submission.cellsDone,cellsTotal:submission.cellsTotal,durationMs:submission.durationMs})
         // The cluster has no unit now: no GPU notebook asks again until this one may (queueCards).
         if (err.resource === 'gpu' && !runnerCardsHere()) clusterGpuRestUntil = Math.max(clusterGpuRestUntil, after)
         return
@@ -585,18 +831,197 @@ async function runJob(row: QueueRow): Promise<void> {
   }
 }
 
-/** Step one and, if it succeeded, step two. */
+/**
+ * Step one and, if it succeeded, step two — both on this server, under the one
+ * lease the take made: prepare → run → settle → metric, without a pause.
+ *
+ * The two halves around the run are the ones a machine's run is prepared and
+ * settled by (prepareNotebook, settleNotebook); here they are called back to
+ * back, and what a run here writes is, write for write, what it wrote before
+ * they were split (tests/competition-notebook-split.test.mts). Whatever is
+ * added to a run here between the halves must keep that true, or say why not.
+ */
 async function runNotebookThenScore(competition: Competition, submission: Submission, row: QueueRow, provenance: AttemptProvenance, secrets: Promise<unknown>): Promise<void> {
   const runner = competitionRunner()
+  const prepared = prepareNotebook(row, 'here', { competition, submission, provenance })
+  const here = await placeHere(prepared)
+  // Hashing a large set yields to cancellation before any container exists.
+  if (!ownsQueueAttempt(row) || takeCancellation(submission.id, 0)) {
+    finishRun(prepared.runId, { finishedAt: Date.now(), verdict: 'exit', cellsDone: 0, cellsTotal: 0,
+      teacherError: 'Cancelled before container start' })
+    return
+  }
+  // After the cancellation, which outranks it: a cancelled run is not put back in the queue.
+  const withdrawn = takenBack(here.gpu)
+  if (withdrawn !== null) {
+    discardUnstartedRun(prepared.runId, row.attemptId!)
+    throw new CardWithdrawn(withdrawn)
+  }
+  let outcome: RunOutcome
+  try { outcome = here.refusal ?? await runner.run({
+    imageDigest: prepared.binding?.revision?.imageDigest,
+    dependenciesDir: here.dependenciesDir,
+    // The set's own room, sized for it; the runner mounts it only with a set.
+    packagesMb: here.dependenciesDir && prepared.bundle ? packagesRoomMb(prepared.bundle.installedBytes) : undefined,
+    // What the runner reads of the competition, not the row (runner-port.ts · RunCompetition).
+    competition: runCompetition(competition),
+    submissionId: submission.id,
+    attemptId: row.attemptId!,
+    signal: aborters.get(row.attemptId!)?.signal,
+    container: prepared.container,
+    dataDir: here.data,
+    ...(prepared.sealed ? { sealedInputs: true } : {}),
+    inputDir: prepared.input,
+    resultDir: prepared.result,
+    limits: prepared.limits,
+    ...(here.gpu ? { gpu: here.gpu } : {}),
+    onProgress: (progress) => noteNotebookProgress(prepared, progress),
+  }) } catch(error) {
+    if(error instanceof CompetitionResourcePending)discardUnstartedRun(prepared.runId,row.attemptId!)
+    throw error
+  }
+  const settled = await settleNotebook(prepared, { outcome, endedAt: Date.now(), gpu: here.gpu })
+  if (settled.next !== 'score') return
+  try {
+    await scoreStep(competition, submission, settled.answer, settled.outcome.wall, settled.outcome, row, provenance, secrets, prepared.sealed)
+  } catch (error) {
+    /*
+     * Only the metric was put off — its Pod not placed, its image unanswered
+     * (runJob · deferResourceAttempt): the notebook has run, and what it did
+     * stays on the submission for the metric that follows, which adds its own
+     * time to this wall (scoreOnly), as for a machine's result
+     * (continueAsMetric). runJob put back the numbers from before the
+     * attempt, and the score that came later read as a notebook of no cells
+     * that took no time.
+     */
+    if (error instanceof CompetitionResourcePending && error.kind === 'metric' && ownsQueueAttempt(row)) {
+      updateSubmission(submission.id, { durationMs: settled.outcome.wall, cellsDone: settled.outcome.cell + 1, cellsTotal: settled.outcome.cells })
+    }
+    throw error
+  }
+}
+
+/* -------------------------------------------- the notebook step, in halves */
+
+/**
+ * Where a notebook step runs: on this server (`here`), or on a machine that
+ * runs submissions for it (`remote`, docs/architecture/remote-runners.md §5.4).
+ *
+ * The two share everything that decides what the step MEANS — its run row,
+ * its limits, which hidden files it reads and how many cells its notebook
+ * has, whether its package set fits, what each reader is told about how it
+ * ended, whether its answer counts — and part only where its container is:
+ * here this server composes the data folder, verifies the package set and
+ * picks the card (placeHere); there the machine does all three from its own
+ * cache, and only its outcome comes back.
+ */
+export type NotebookPlacement = 'here' | 'remote'
+
+/** What a notebook step is prepared from: read by the job that took it (runJob), or from the row (notebookContext). */
+export interface NotebookContext {
+  competition: Competition
+  /** The submission as it was before the step began (PreparedNotebook.submission). */
+  submission: Submission
+  provenance: AttemptProvenance
+}
+
+/**
+ * A notebook step as prepareNotebook left it: everything settleNotebook
+ * reads, and nothing the run itself could have changed.
+ *
+ * Plain data on purpose. A machine's outcome comes back minutes or hours
+ * later, possibly to the next life of this server, and is settled from what
+ * its lease kept (remote_leases) — never by preparing again, which would
+ * start a second run row for one run.
+ */
+export interface PreparedNotebook {
+  placement: NotebookPlacement
+  competition: Competition
+  /**
+   * The submission as it was before the step began: a run given back to the
+   * queue by the neighbour retry puts these numbers back (settleNotebook), so
+   * it leaves no progress of its own on the participant's row.
+   */
+  submission: Submission
+  /** The queue row as the take made it: the attempt every write below is fenced on (ownsQueueAttempt). */
+  row: QueueRow
+  provenance: AttemptProvenance
+  binding: SubmissionBinding | null
+  limits: StepLimits
+  container: string
+  /** The step's run row (startRun). */
+  runId: string
+  /**
+   * The hidden test, by name, read off the rows when the step began: a file
+   * the teacher adds a second later belongs to the next run, never half to
+   * this one. Empty without a hidden test, and nothing below changes: the
+   * open data/ is mounted as it always was.
+   */
+  sealedFiles: string[]
+  sealed: boolean
+  /**
+   * On the hidden test every number the notebook reports about itself is
+   * clamped to the notebook that was sent (clampCells): run.json and
+   * progress.json live where the participant's code can write, and "cell
+   * 48213 of 99999" is a channel for whatever the code read. Null without a
+   * hidden test: the numbers stay exactly what they were.
+   */
+  codeCells: number | null
+  /** The submitted notebook's folder, and the attempt's own result folder (storage.ts). */
+  input: string
+  result: string
+  bundle: DependencyBundle | null
+  /**
+   * A set that cannot fit this submission's memory: refused before any
+   * container, whichever runner or machine it is (unfitOutcome). It was
+   * attached while it fit (dependencies/store.ts · assertUsableBundle), and
+   * the teacher has lowered the memory since; installing it would only fail
+   * inside the run.
+   */
+  unfit: Extract<DependencyFailure, { reason: 'memory' }> | null
+}
+
+/**
+ * Which inputs a run of this submission certifies: the competition's current
+ * ones only when it runs on the competition's selected base (provenance.ts).
+ */
+function attemptProvenance(competition: Competition, submission: Submission): AttemptProvenance {
+  return submissionUsesCurrentBase(competition, submission.id)
+    ? { inputRevision: competition.inputRevision ?? 0, notebookInputRevision: competition.notebookInputRevision ?? 0 }
+    : { inputRevision: null, notebookInputRevision: null }
+}
+
+/** The competition, the submission and the provenance of a taken row; `null` — either is gone. */
+function notebookContext(row: QueueRow): NotebookContext | null {
+  const submission = getSubmission(row.submissionId)
+  const competition = submission ? getCompetition(submission.competitionId) : null
+  if (!submission || !competition) return null
+  return { competition, submission, provenance: attemptProvenance(competition, submission) }
+}
+
+/**
+ * The first half of a notebook step, wherever it runs: the run row, the
+ * container's name in the queue row, the stage bar, and everything the run
+ * is held to (PreparedNotebook). Synchronous, and the same for both
+ * placements, so a machine's take can make it inside the very transaction
+ * that leases the row — by the code that made a run here before there were
+ * machines.
+ *
+ * DO NOT REORDER the three writes (startRun, noteQueueContainer,
+ * updateSubmission): a run here makes them in this order, and
+ * tests/competition-notebook-split.test.mts compares every write of a run
+ * with the sequence recorded before the split. The context is the one the
+ * job read when it took the row; without it, it is read from the row now
+ * (`null` — its submission or competition is gone).
+ */
+export function prepareNotebook(row: QueueRow, placement: NotebookPlacement, context: NotebookContext): PreparedNotebook
+export function prepareNotebook(row: QueueRow, placement: NotebookPlacement): PreparedNotebook | null
+export function prepareNotebook(row: QueueRow, placement: NotebookPlacement, context: NotebookContext | null = notebookContext(row)): PreparedNotebook | null {
+  if (!context) return null
+  const { competition, submission, provenance } = context
   const binding = getBinding(submission.id)
   const limits = limitsFor(competition, 'notebook')
   const container = containerName(submission.id, 'notebook', newToken())
-  /*
-   * The hidden test is read off the rows when the run starts: a file the
-   * teacher adds a second later belongs to the next run, never half to this
-   * one. Without hidden files nothing below changes: the open data/ is
-   * mounted as it always was.
-   */
   const sealedFiles = listFiles(competition.id, 'sealed').map((file) => file.name)
   const sealed = sealedFiles.length > 0
   const run = startRun({ submissionId: submission.id, kind: 'notebook', container, attemptId: row.attemptId!, inputRevision: provenance.inputRevision ?? undefined, sealedInputs: sealed })
@@ -613,8 +1038,55 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     briefError: null,
     errorType: null,
   })
-
   const input = inputDir(competition.id, submission.id)
+  const result = attemptDir(competition.id, submission.id, row.attemptId!)
+  const codeCells = sealed ? codeCellsIn(input) : null
+  const bundle = binding?.bundle ?? null
+  const unfit: PreparedNotebook['unfit'] = bundle && !packagesFit(bundle.installedBytes, competition.limits.memoryMb)
+    ? { reason: 'memory', bytes: packagesRoomMb(bundle.installedBytes) * MB, limitBytes: competition.limits.memoryMb * MB }
+    : null
+  return { placement, competition, submission, row, provenance, binding, limits, container, runId: run.id, sealedFiles, sealed, codeCells, input, result, bundle, unfit }
+}
+
+/**
+ * The outcome of a set that cannot fit (PreparedNotebook.unfit), settled like
+ * any other without a container ever starting — here, and for a machine's
+ * row, which is never leased with it; `null` — the set fits, or there is none.
+ */
+export function unfitOutcome(prepared: PreparedNotebook): RunOutcome | null {
+  const unfit = prepared.unfit
+  if (!unfit) return null
+  return {
+    status: 'dependency_error', cell: -1, cells: 0, wall: 0, submission: null,
+    detail: `Package set room of ${unfit.bytes / MB} MiB exceeds half of the submission's ${prepared.competition.limits.memoryMb} MiB memory`,
+    log: '', dependencyFailure: unfit,
+    diagnostics: { exit: null, oomKilled: false, backend: competitionRunner().backend },
+  }
+}
+
+/** What a run on this server adds to its preparation (placeHere). */
+interface HereRun {
+  /** The data folder the container mounts: the open data/, or the attempt's composed folder with the hidden test. */
+  data: string
+  /** The verified package set; absent — none, or it was refused. */
+  dependenciesDir: string | undefined
+  /** The outcome that refuses the run before any container: an unfit set, or no base or set ready to run. */
+  refusal: RunOutcome | null
+  /** The card the run is given (runGpu); `undefined` — the CPU. */
+  gpu: RunRequest['gpu']
+}
+
+/**
+ * The rest of preparing a run on THIS server: its data folder, readable by
+ * the container; its package set, hashed against its lock; its card. A
+ * machine does each of these itself, from its own cache
+ * (docs/architecture/remote-runners.md §4.2–4.3), and none of it is a write
+ * of the step's rows — except the card's share (noteQueueGpuShare), the one
+ * a run here has always made at this point.
+ */
+async function placeHere(prepared: PreparedNotebook): Promise<HereRun> {
+  const { competition, submission, row, binding, sealed, sealedFiles, input, unfit } = prepared
+  const runner = competitionRunner()
   /*
    * With a hidden test the run gets a data folder of its own, composed from
    * the open files with the hidden ones swapped in; it goes with the attempt
@@ -627,32 +1099,12 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
         sealed: sealedFiles,
       })
     : openDir(competition.id)
-  const result = attemptDir(competition.id, submission.id, row.attemptId!)
   if (runner.backend !== 'test') {
     letContainerRead(data)
     letContainerRead(input)
   }
-  /*
-   * On the hidden test every number the notebook reports about itself is
-   * clamped to the notebook that was sent: run.json and progress.json live
-   * where the participant's code can write, and "cell 48213 of 99999" is a
-   * channel for whatever the code read. Null without a hidden test: the
-   * numbers stay exactly what they were.
-   */
-  const codeCells = sealed ? codeCellsIn(input) : null
-
   let dependenciesDir: string | undefined
   let preflightError: unknown = null
-  /*
-   * A set that cannot fit this submission's memory is refused before any
-   * container, whichever runner it is: it was attached while it fit
-   * (dependencies/store.ts · assertUsableBundle), and the teacher has lowered
-   * the memory since. Installing it would only fail inside the run.
-   */
-  const bundle = binding?.bundle ?? null
-  const unfit: Extract<DependencyFailure, { reason: 'memory' }> | null = bundle && !packagesFit(bundle.installedBytes, competition.limits.memoryMb)
-    ? { reason: 'memory', bytes: packagesRoomMb(bundle.installedBytes) * MB, limitBytes: competition.limits.memoryMb * MB }
-    : null
   if (runner.backend !== 'test' && !unfit) {
     try {
       if (!binding?.revision) throw new Error('This legacy submission has no available pinned environment. Submit the notebook again.')
@@ -666,61 +1118,90 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
   // Read before the cancellation check, like the set's hash: a card nobody
   // has asked about yet takes a few seconds to say its size.
   const gpu = unfit || preflightError ? undefined : await runGpu(row, competition)
-  // Hashing a large set yields to cancellation before any container exists.
-  if (!ownsQueueAttempt(row) || takeCancellation(submission.id, 0)) {
-    finishRun(run.id, { finishedAt: Date.now(), verdict: 'exit', cellsDone: 0, cellsTotal: 0,
-      teacherError: 'Cancelled before container start' })
-    return
-  }
-  // After the cancellation, which outranks it: a cancelled run is not put back in the queue.
-  const withdrawn = takenBack(gpu)
-  if (withdrawn !== null) {
-    discardUnstartedRun(run.id, row.attemptId!)
-    throw new CardWithdrawn(withdrawn)
-  }
-  let outcome: RunOutcome
-  try { outcome = unfit ? {
-    status: 'dependency_error', cell: -1, cells: 0, wall: 0, submission: null,
-    detail: `Package set room of ${unfit.bytes / MB} MiB exceeds half of the submission's ${competition.limits.memoryMb} MiB memory`,
-    log: '', dependencyFailure: unfit,
-    diagnostics: { exit: null, oomKilled: false, backend: runner.backend },
-  } : preflightError ? {
+  const refused: RunOutcome | null = preflightError ? {
     status: 'dependency_error', cell: -1, cells: 0, wall: 0, submission: null,
     detail: preflightError instanceof Error ? preflightError.message : String(preflightError), log: '',
     diagnostics: { exit: null, oomKilled: false, backend: runner.backend },
-  } : await runner.run({
-    imageDigest: binding?.revision?.imageDigest,
-    dependenciesDir,
-    // The set's own room, sized for it; the runner mounts it only with a set.
-    packagesMb: dependenciesDir && bundle ? packagesRoomMb(bundle.installedBytes) : undefined,
-    competition,
-    submissionId: submission.id,
-    attemptId: row.attemptId!,
-    signal: aborters.get(row.attemptId!)?.signal,
-    container,
-    dataDir: data,
-    ...(sealed ? { sealedInputs: true } : {}),
-    inputDir: input,
-    resultDir: result,
-    limits,
-    ...(gpu ? { gpu } : {}),
-    onProgress: (progress) => {
-      if (!ownsQueueAttempt(row)) return
-      const seen = codeCells === null ? progress : clampCells(progress, codeCells)
-      updateSubmission(submission.id, {
-        stage: progress.phase === 'dependencies' ? 'dependencies' : 'notebook',
-        cellsDone: seen.cell + 1,
-        cellsTotal: seen.cells,
-      })
-    },
-  }) } catch(error) {
-    if(error instanceof CompetitionResourcePending)discardUnstartedRun(run.id,row.attemptId!)
-    throw error
-  }
-  const endedAt = Date.now()
-  // Said at once, before anything below waits: a neighbour on the card may be waiting to learn it (neighbourOverran).
+  } : null
+  return { data, dependenciesDir, refusal: unfitOutcome(prepared) ?? refused, gpu }
+}
+
+/**
+ * A running notebook's progress into its submission row: clamped to the
+ * notebook sent on the hidden test (PreparedNotebook.codeCells), and only
+ * while the attempt is still this run's. A run here reports it from its
+ * container; a machine's comes with its heartbeat.
+ */
+export function noteNotebookProgress(prepared: PreparedNotebook, progress: Pick<RunProgress, 'phase' | 'cell' | 'cells'>): void {
+  if (!ownsQueueAttempt(prepared.row)) return
+  const seen = prepared.codeCells === null ? progress : clampCells(progress, prepared.codeCells)
+  updateSubmission(prepared.submission.id, {
+    stage: progress.phase === 'dependencies' ? 'dependencies' : 'notebook',
+    cellsDone: seen.cell + 1,
+    cellsTotal: seen.cells,
+  })
+}
+
+/** How a notebook step ended, as settleNotebook takes it. */
+export interface NotebookEnd {
+  outcome: RunOutcome
+  /** When its container ended, on this server's clock. */
+  endedAt: number
+  /**
+   * The card it ran on, as the run itself was given it (RunRequest.gpu);
+   * absent — the CPU. A machine reports its own (RemoteRunOutcome.card).
+   */
+  gpu?: RunRequest['gpu']
+  /**
+   * A machine's own verdict on whether a neighbour's burst on its card
+   * crowded this run out (RemoteRunOutcome.crowded): the machine keeps its
+   * cards' window itself. Never read for a run here, which this server judges
+   * from its own window (neighbourOverran).
+   */
+  crowded?: boolean
+}
+
+/**
+ * What settleNotebook left to do. `none`: the attempt is over here — the
+ * notebook failed, its answer was refused, it was cancelled, or it went back
+ * to the queue. `score`: the answer is promoted to `answer`, and the metric
+ * comes next — at once for a run here (scoreStep), in the metric lane for a
+ * machine's (continueAsMetric); `outcome` is the run's as it was settled
+ * (clamped on the hidden test), which the metric step writes the cells from.
+ */
+export type NotebookSettled = { next: 'none' } | { next: 'score'; answer: string; outcome: RunOutcome }
+
+const SETTLED_NONE: NotebookSettled = { next: 'none' }
+
+/**
+ * The second half of a notebook step, wherever it ran: the clamps, the words
+ * for each reader, the run row, the neighbour retry, the artifacts, the
+ * answer check and the answer's promotion.
+ *
+ * Every write is fenced on the attempt, and a second call for the same
+ * attempt — a machine's outcome applied again after a crash — writes the
+ * same rows again and moves nothing twice: the artifacts and the answer are
+ * moved once per attempt (storage.ts · publishAttemptArtifacts,
+ * promoteAttempt), and an answer already promoted is not judged missing.
+ * Waits only on a card of this server (neighbourOverran); for a machine's
+ * run, whose verdict comes with it (`crowded`), it never waits.
+ *
+ * DO NOT REORDER: for a run here this is, write for write, the second half
+ * of the one function there was before the split
+ * (tests/competition-notebook-split.test.mts).
+ */
+export async function settleNotebook(prepared: PreparedNotebook, end: NotebookEnd): Promise<NotebookSettled> {
+  const { competition, submission, row, binding, sealed, codeCells, provenance } = prepared
+  const { endedAt, gpu } = end
+  let outcome = end.outcome
+  /*
+   * Said at once, before anything below waits: a neighbour on the card may be
+   * waiting to learn it (neighbourOverran). Only for a card of this server: a
+   * machine's cards are its own, named as its probe names them, and the
+   * machine keeps their window itself.
+   */
   const stoppedBy = outcome.diagnostics.killedBy
-  if ((stoppedBy === 'gpu' || stoppedBy === 'gpu-unread') && gpu?.device) noteShareKill(gpu.device, endedAt, stoppedBy)
+  if (prepared.placement === 'here' && (stoppedBy === 'gpu' || stoppedBy === 'gpu-unread') && gpu?.device) noteShareKill(gpu.device, endedAt, stoppedBy)
   if (codeCells !== null) outcome = { ...clampCells(outcome, codeCells), diagnostics: { ...outcome.diagnostics, peakBytes: null } }
   // One text for the run row and the submission row. Where packages come from
   // is read only for a failed cell: that is the one outcome a missing module
@@ -730,7 +1211,7 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
   const errorType = outcome.status === 'cell_error' && outcome.diagnostics.killedBy !== 'output' ? errorTypeOf(outcome.detail) : null
   const briefError = sealed ? briefNote(outcome, competition, errorType, gpu) : null
   const teacherError = teacherNote(outcome, gpu)
-  finishRun(run.id, {
+  finishRun(prepared.runId, {
     finishedAt: Date.now(),
     verdict: outcome.status,
     exitCode: outcome.diagnostics.exit,
@@ -741,7 +1222,7 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     teacherError,
   })
 
-  if (!ownsQueueAttempt(row) || takeCancellation(submission.id, outcome.wall)) return
+  if (!ownsQueueAttempt(row) || takeCancellation(submission.id, outcome.wall)) return SETTLED_NONE
   /*
    * Torch ran out of video memory on a shared card while the watchdog was
    * stopping a neighbour on the same card for going past its share: the
@@ -752,16 +1233,16 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
    * like any other), with our own words, and counts toward nothing.
    */
   if (gpu?.device && gpu.perDevice > 1 && errorType === 'OutOfMemoryError' && row.resourceRetries === 0
-    && await neighbourOverran(row, gpu.device, endedAt)) {
-    if (!ownsQueueAttempt(row) || takeCancellation(submission.id, outcome.wall)) return
+    && (prepared.placement === 'here' ? await neighbourOverran(row, gpu.device, endedAt) : end.crowded === true)) {
+    if (!ownsQueueAttempt(row) || takeCancellation(submission.id, outcome.wall)) return SETTLED_NONE
     const retried = deferResourceAttempt(row, tr('competitions.answer.gpuNeighbourRetry'), Date.now(),
       tr('competitions.answer.gpuNeighbourRetryTeacher', { device: gpu.device }))
     if (retried !== null) {
       updateSubmission(submission.id, { cellsDone: submission.cellsDone, cellsTotal: submission.cellsTotal, durationMs: submission.durationMs })
-      return
+      return SETTLED_NONE
     }
   }
-  publishAttemptArtifacts(competition.id, submission.id, result)
+  publishAttemptArtifacts(competition.id, submission.id, row.attemptId!)
   if (outcome.status !== 'ok') {
     updateSubmission(submission.id, {
       state: stateOfVerdict('notebook', outcome.status),
@@ -774,7 +1255,7 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
       errorType,
       teacherError,
     })
-    return
+    return SETTLED_NONE
   }
 
   /*
@@ -788,7 +1269,10 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     cellsDone: outcome.cell + 1,
     cellsTotal: outcome.cells,
   })
-  const answer = answerIn(result)
+  // An answer this attempt promoted already passed this check: its file is in out/ now, not missing.
+  const answer = attemptPromoted(competition.id, submission.id, row.attemptId!)
+    ? { file: path.join(resultDir(competition.id, submission.id), SUBMISSION_FILE) }
+    : answerIn(prepared.result)
   if (typeof answer === 'string') {
     updateSubmission(submission.id, {
       state: 'rejected',
@@ -798,11 +1282,30 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
       // Our own words about the file, nothing read from it: safe to show blind.
       briefError: sealed ? answer : null,
     })
-    return
+    return SETTLED_NONE
   }
   updateSubmission(submission.id, { notebookInputRevision: provenance.notebookInputRevision })
-  promoteAttempt(competition.id, submission.id, result)
-  await scoreStep(competition, submission, path.join(resultDir(competition.id, submission.id), SUBMISSION_FILE), outcome.wall, outcome, row, provenance, secrets, sealed)
+  return { next: 'score', answer: promoteAttempt(competition.id, submission.id, row.attemptId!), outcome }
+}
+
+/**
+ * A machine's notebook step, settled with its answer promoted
+ * (settleNotebook said `score`): the metric is this server's, and the row
+ * becomes metric work in the metric lane (store.ts · continueQueueAsMetric).
+ * The submission says how long its notebook took and how far it got; the
+ * metric adds its own time when it runs (scoreOnly → scoreStep), so the
+ * total reads as for a run here. `false` — the attempt is not this row's any
+ * more (cancelled, lost, or applied already), and nothing was written.
+ *
+ * A run here never comes this way: it keeps its metric under its own lease
+ * and scores at once (runNotebookThenScore), exactly as before the lanes.
+ */
+export function continueAsMetric(prepared: PreparedNotebook, settled: Extract<NotebookSettled, { next: 'score' }>): boolean {
+  const outcome = settled.outcome
+  const next = continueQueueAsMetric(prepared.row, { durationMs: outcome.wall, cellsDone: outcome.cell + 1, cellsTotal: outcome.cells })
+  if (next === null) return false
+  wakeCompetitionPump()
+  return true
 }
 
 /**
@@ -998,8 +1501,9 @@ export function clampCells<T extends { cell: number; cells: number }>(reported: 
  * place.
  *
  * Only looked at, never read: the answer moves to the submission by rename
- * and into the metric's directory by a streamed copy, so up to 64 MB of it
- * never sit in this process's memory or on its event loop.
+ * and into the metric's directory by a hard link (a streamed copy where the
+ * volume refuses one), so up to 64 MB of it never sit in this process's memory
+ * or on its event loop.
  */
 function answerIn(directory: string): { file: string } | string {
   const file = path.join(directory, SUBMISSION_FILE)
@@ -1048,6 +1552,273 @@ async function scoreOnly(competition: Competition, submission: Submission, row: 
   await scoreStep(competition, submission, answer.file, submission.durationMs ?? 0, null, row, provenance, secrets, !!submission.sealedInputs)
 }
 
+/**
+ * The environment the metric of a competition with a card runs in
+ * (decision 2 of docs/architecture/remote-runners.md §12): the light
+ * kaggle-base — numpy, pandas, scikit-learn, scipy — and not the
+ * competition's own GPU image. That image is ten to thirteen gigabytes a
+ * revision, and with machines running the notebooks this server would keep
+ * every one of them only to run a metric that needs none of it: pandas over
+ * two CSV files. The metric never gets a card either way (scoreStep).
+ *
+ * The price, accepted with the decision: a teacher's metric that imports
+ * torch fails here as metric code (metricFailed, rescorable once fixed),
+ * and a GPU competition's metric reads kaggle-base's versions of the data
+ * stack, not its own image's.
+ */
+export const LIGHT_METRIC_ENVIRONMENT = 'kaggle-base'
+
+/** The image a metric runs in, the revision that pins it (for its run row), and the environment that names it. */
+interface ScoringImage {
+  revision: EnvironmentRevision | null
+  imageDigest: string | undefined
+  environment: string
+}
+
+/** Why a metric has nowhere to run, in the teacher's words (scoreStep writes it as metricFailed, rescorable). */
+interface ScoringRefusal {
+  refused: string
+}
+
+/** The submission's own pin, under the competition's environment: how every metric ran before decision 2, and every CPU one still does. */
+function pinnedScoringImage(competition: Competition, submission: Submission): ScoringImage {
+  const revision = getBinding(submission.id)?.revision ?? null
+  return { revision, imageDigest: revision?.imageDigest, environment: competition.environment }
+}
+
+/**
+ * Whether a competition's metric scores where its metric is pinned
+ * (gpuScoringImage): a competition with a card, and one whose metric was
+ * pinned once — whatever its card says now. The pin outlives the switch.
+ * Read off the switch alone, a teacher who turned the card off for the
+ * waiting notebooks to go on the CPU (store.ts · NEEDS_CARD) moved every
+ * later metric and rescore off the pinned kaggle-base into each
+ * submission's own GPU image while the pin still named kaggle-base: one
+ * board of two images, a metric that imports torch failing or scoring with
+ * the switch, and the door that moves the pin refused while the card was
+ * off. Only that door moves it (moveMetricToLightImage); a competition never
+ * pinned, on the CPU, scores in its own pin as it always has.
+ */
+function scoresInPin(competition: Competition): boolean {
+  return competition.limits.gpu === true || metricPin(competition.id) !== null
+}
+
+/**
+ * Whether an image is on this server, by the probe a competition's own image
+ * is checked by (capabilities.ts · competitionCapabilities); without a digest,
+ * the image under the environment's name. `unknown` — docker (or the broker)
+ * did not answer, which says nothing about the image: a stall of the daemon
+ * read as the image gone sent a metric to score in another one.
+ */
+type ImagePresence = 'present' | 'absent' | 'unknown'
+
+async function imagePresence(environment: string, imageDigest: string | undefined): Promise<ImagePresence> {
+  const capabilities = await competitionCapabilities(environment, imageDigest).catch(() => null)
+  if (capabilities?.execution.available) return 'present'
+  return capabilities?.execution.code === 'image_unavailable' ? 'absent' : 'unknown'
+}
+
+/**
+ * A metric whose image docker could not be asked about: put off like a Pod
+ * the cluster could not place (runJob · deferResourceAttempt) — no metric
+ * container began, nothing counts, and the row waits for an answer — rather
+ * than scored in an image that happened to answer.
+ */
+class ScoringImageUnchecked extends CompetitionResourcePending {
+  constructor() {
+    super('other', 'metric')
+  }
+
+  override get teacherReason(): string {
+    return tr('competitions.answer.scoringImageUnchecked')
+  }
+}
+
+/** An image that answered `present`, or why the metric must not run in it: gone (`absent`), or unknown (thrown, ScoringImageUnchecked). */
+async function presentOrRefused(image: ScoringImage): Promise<ScoringImage | ScoringRefusal> {
+  const found = await imagePresence(image.environment, image.imageDigest)
+  if (found === 'unknown') throw new ScoringImageUnchecked()
+  if (found === 'absent') return { refused: tr('competitions.answer.scoringImageGone', { environment: image.environment, light: LIGHT_METRIC_ENVIRONMENT }) }
+  return image
+}
+
+/**
+ * Where the metric of a competition with a card runs — or of one pinned
+ * once, its card since turned off (scoresInPin): in the one image the
+ * competition's metric is pinned to (dependencies/store.ts ·
+ * competition_metric_revisions), every metric and every rescore of it alike —
+ * one revision per competition for its whole life (§4.4).
+ *
+ * The pin is taken when the competition's metric first runs
+ * (firstMetricPin): where its earlier metrics ran, if any did; otherwise the
+ * current kaggle-base (currentLightRevision); otherwise, with no kaggle-base
+ * on this server, each submission's own pinned image, as before decision 2.
+ * It moves only when the teacher moves it, with a rescore of the whole
+ * competition (moveMetricToLightImage). It used to be the newest kaggle-base
+ * recorded anywhere here, read at every metric: another competition's base
+ * refresh moved a live competition's scores to another image, and a metric
+ * that imported torch, checked in the competition's own image before
+ * kaggle-base was here, began failing for every new result once it was.
+ *
+ * The pinned image is used while it is here: gone, the metric fails in the
+ * teacher's words (metricFailed, rescorable), and is not sent to another
+ * image; docker silent, the metric waits (ScoringImageUnchecked).
+ */
+async function gpuScoringImage(competition: Competition, submission: Submission): Promise<ScoringImage | ScoringRefusal> {
+  let pin = metricPin(competition.id)
+  if (pin === null) {
+    const first = await firstMetricPin(competition, submission)
+    if ('refused' in first) return first
+    pin = pinMetric(competition.id, first.revisionId)
+  }
+  if (pin.revisionId === null) {
+    const own = pinnedScoringImage(competition, submission)
+    // A submission with no pin of its own: scoreStep says so, in the words it always had.
+    return own.imageDigest ? presentOrRefused(own) : own
+  }
+  const revision = getRevision(pin.revisionId)
+  if (!revision) return { refused: tr('competitions.answer.scoringImageGone', { environment: LIGHT_METRIC_ENVIRONMENT, light: LIGHT_METRIC_ENVIRONMENT }) }
+  return presentOrRefused({ revision, imageDigest: revision.imageDigest, environment: LIGHT_METRIC_ENVIRONMENT })
+}
+
+/**
+ * The pin a competition's first metric takes (gpuScoringImage). Where its
+ * earlier metrics ran, if any did (metricPinOfHistory): a competition scored
+ * before the pins keeps the image its scores came from. Otherwise the current
+ * kaggle-base. Otherwise, with none here at all, each submission's own pinned
+ * image, if this submission's is here: a competition checked in its own
+ * image keeps it, and kaggle-base built later does not move it. With neither,
+ * nothing is pinned and the metric fails with the advice that fixes it: build
+ * kaggle-base, rescore.
+ */
+async function firstMetricPin(competition: Competition, submission: Submission): Promise<{ revisionId: string | null } | ScoringRefusal> {
+  const history = metricPinOfHistory(competition.id)
+  if (history) return history
+  const light = await currentLightRevision(true)
+  if (light) return { revisionId: light.id }
+  const own = pinnedScoringImage(competition, submission)
+  if (!own.imageDigest) {
+    // The test stand-in scores without an image, as it always has (scoreStep).
+    if (competitionRunner().backend === 'test') return { revisionId: null }
+    return { refused: tr('competitions.answer.noScoringImage', { environment: LIGHT_METRIC_ENVIRONMENT }) }
+  }
+  const found = await imagePresence(own.environment, own.imageDigest)
+  if (found === 'unknown') throw new ScoringImageUnchecked()
+  return found === 'present' ? { revisionId: null } : { refused: tr('competitions.answer.ownScoringImageGone', { environment: LIGHT_METRIC_ENVIRONMENT }) }
+}
+
+/**
+ * The pin the metrics a competition has already run imply, or `null` when
+ * none of them ties its board to an image (dependencies/store.ts ·
+ * metricHistoryRevision): the kaggle-base revision the latest scored in, or
+ * (`null` revision) each submission's own image — where 0.22, which recorded
+ * no revision, scored it. A baseline checked on the CPU before the card was
+ * turned on, in the competition's own pin, implies nothing: such a
+ * competition's first metric with a card takes the current kaggle-base.
+ */
+function metricPinOfHistory(competitionId: string): { revisionId: string | null } | null {
+  return metricHistoryRevision(competitionId, LIGHT_METRIC_ENVIRONMENT)
+}
+
+/**
+ * The current kaggle-base on this server: the image under its name
+ * (`colloq-kernel:kaggle-base`, or the broker catalog's), recorded as a
+ * revision on demand when `record` (dependencies/revisions.ts ·
+ * captureRevision, which records an image once however many ask, and only
+ * finds the revision of one recorded already); without one, the newest
+ * recorded revision still here (lightMetricRevision). Recorded on demand
+ * because nothing else records kaggle-base on a server that runs only GPU
+ * competitions — building it under «Окружения» records nothing — and the
+ * advice to build it and rescore would otherwise change nothing. `null` —
+ * kaggle-base is not here at all; throws ScoringImageUnchecked when docker
+ * could not say. The test stand-in has no images to record. An image that
+ * cannot be recorded (its probe container failed) leaves the revisions
+ * recorded before to serve, and without one its error is the teacher's to
+ * read (runJob writes it as metricFailed); nothing is pinned either way.
+ */
+async function currentLightRevision(record: boolean): Promise<EnvironmentRevision | null> {
+  if (record && competitionRunner().backend !== 'test') {
+    const named = await imagePresence(LIGHT_METRIC_ENVIRONMENT, undefined)
+    if (named === 'unknown') throw new ScoringImageUnchecked()
+    if (named === 'present') {
+      try {
+        return await captureRevision(LIGHT_METRIC_ENVIRONMENT)
+      } catch (error) {
+        const recorded = await lightMetricRevision()
+        if (recorded) return recorded
+        throw error
+      }
+    }
+  }
+  return lightMetricRevision()
+}
+
+/**
+ * The newest kaggle-base revision ready on this server: recorded (captured
+ * from an image that was here, dependencies/revisions.ts) and runnable now —
+ * its image still here, by the same probe a competition's own is checked by
+ * (imagePresence). Newest by when it was recorded. `null` — none is; throws
+ * ScoringImageUnchecked when docker could not say about one newer than the
+ * first that answered, so an older one is never taken for a newer one gone.
+ */
+export async function lightMetricRevision(): Promise<EnvironmentRevision | null> {
+  const known = revisions()
+    .filter((revision) => revision.environmentName === LIGHT_METRIC_ENVIRONMENT)
+    .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
+  for (const revision of known) {
+    const found = await imagePresence(LIGHT_METRIC_ENVIRONMENT, revision.imageDigest)
+    if (found === 'present') return revision
+    if (found === 'unknown') throw new ScoringImageUnchecked()
+  }
+  return null
+}
+
+/**
+ * The image the next metric of a competition will run in, as the doors that
+ * run only the metric check it (routes/admin-competitions.ts: a rescore, all
+ * of them, the metric check): a competition with a card scores in its pinned
+ * kaggle-base, not in its own GPU image, and checked against that image a
+ * rescore was refused after the owner removed the GPU image to free the disk
+ * — the very thing decision 2 is for — though the metric would have run. Its
+ * pin for one whose card was turned off after its metric was pinned
+ * (scoresInPin). Its own pin for a competition on the CPU, and for one whose
+ * metric is pinned to each submission's own image. Nothing is pinned or
+ * recorded here: before the first metric, the kaggle-base the pin would
+ * take, named by the image under its name if no recorded one is here.
+ */
+export async function metricScoringImage(competition: Competition): Promise<{ environment: string; imageDigest: string | undefined }> {
+  const own = { environment: competition.environment, imageDigest: competitionRevision(competition.id)?.imageDigest }
+  if (!scoresInPin(competition)) return own
+  const pin = metricPin(competition.id) ?? metricPinOfHistory(competition.id)
+  if (pin) {
+    if (pin.revisionId === null) return own
+    return { environment: LIGHT_METRIC_ENVIRONMENT, imageDigest: getRevision(pin.revisionId)?.imageDigest }
+  }
+  const light = await lightMetricRevision().catch(() => null)
+  if (light) return { environment: LIGHT_METRIC_ENVIRONMENT, imageDigest: light.imageDigest }
+  if (await imagePresence(LIGHT_METRIC_ENVIRONMENT, undefined) === 'present') return { environment: LIGHT_METRIC_ENVIRONMENT, imageDigest: undefined }
+  return own
+}
+
+/**
+ * The teacher's move of a competition's metric to the current kaggle-base
+ * (currentLightRevision, recorded on demand), and a rescore of every
+ * submission in it: the one way the metric's image changes
+ * (gpuScoringImage), so that no leaderboard holds scores of two images.
+ * POST /api/admin/competitions/:id/metric/image. A competition whose card was
+ * turned off after its metric was pinned still scores in that pin
+ * (scoresInPin), and is moved like one with a card. `cpu` — the competition
+ * has no card and was never pinned, and its metric scores in its own pin
+ * (moved with its base); `none` — no kaggle-base is here.
+ */
+export async function moveMetricToLightImage(competition: Competition): Promise<{ revision: EnvironmentRevision; queued: number } | 'cpu' | 'none'> {
+  if (!scoresInPin(competition)) return 'cpu'
+  const light = await currentLightRevision(true)
+  if (!light) return 'none'
+  moveMetricPin(competition.id, light.id)
+  return { revision: light, queued: rescoreCompetition(competition.id) }
+}
+
 /** Step two: the teacher's metric in the second disposable container. */
 async function scoreStep(
   competition: Competition,
@@ -1063,15 +1834,18 @@ async function scoreStep(
 ): Promise<void> {
   const runner = competitionRunner()
   updateSubmission(submission.id, { stage: 'score' })
-  // The answer key's background copy must be whole before the metric may see it.
+  // The answer key's snapshot must be whole before the metric may see it: a
+  // link is at once, a copy where links are refused may still be streaming.
   const snapshotFailed = await snapshot
   if (snapshotFailed) throw snapshotFailed
 
-  const imageDigest = getBinding(submission.id)?.revision?.imageDigest
-  if (runner.backend !== 'test' && !imageDigest) {
+  // A competition on the CPU, never pinned, asks nothing more here and scores exactly as it always did (pinnedScoringImage).
+  const image = scoresInPin(competition) ? await gpuScoringImage(competition, submission) : pinnedScoringImage(competition, submission)
+  if ('refused' in image || (runner.backend !== 'test' && !image.imageDigest)) {
     updateSubmission(submission.id, {
       state: 'metricFailed', stage: 'score', durationMs: notebookWall,
-      teacherError: 'This legacy submission has no pinned environment. Submit the notebook again before scoring.',
+      // Without a refusal of its own: a submission with no pin, scored in its own image (on the CPU, or under a metric pinned so).
+      teacherError: 'refused' in image ? image.refused : 'This legacy submission has no pinned environment. Submit the notebook again before scoring.',
     })
     return
   }
@@ -1090,16 +1864,20 @@ async function scoreStep(
   }
 
   const container = containerName(submission.id, 'metric', newToken())
-  const run = startRun({ submissionId: submission.id, kind: 'metric', container, attemptId: row.attemptId!, inputRevision: provenance.inputRevision ?? undefined })
+  // The run row names the revision it scores in: a score is traced to the image that computed it.
+  const run = startRun({ submissionId: submission.id, kind: 'metric', container, attemptId: row.attemptId!, inputRevision: provenance.inputRevision ?? undefined, revisionId: image.revision?.id ?? null })
   noteQueueContainer(submission.id, container, row.attemptId!)
 
   // The answer moves into its own, NEW directory: the metric container must
   // see neither the participant's executed notebook nor its output. The
   // directory for the metric's answer is a separate, NEIGHBOURING one: one and
   // the same path mounted both read-only and writable would hand the answer's
-  // size to the watchdog as "the metric writes to disk".
+  // size to the watchdog as "the metric writes to disk". Linked, not copied
+  // (storage.ts · placeCompetitionFile): up to 64 MB per job read and written
+  // for a file the metric only reads, and a new answer promoted meanwhile
+  // renames a new inode over `out/` and leaves this one the bytes it scores.
   const scoreInput = attemptDir(competition.id, submission.id, row.attemptId!, 'score')
-  await copyCompetitionFile(answerFile, path.join(scoreInput, SUBMISSION_FILE))
+  await placeCompetitionFile(answerFile, path.join(scoreInput, SUBMISSION_FILE))
   const outDir = attemptDir(competition.id, submission.id, row.attemptId!, 'score-out')
   if (runner.backend !== 'test') {
     letContainerRead(secrets)
@@ -1109,8 +1887,10 @@ async function scoreStep(
   let outcome: ScoreOutcome
   try {
     outcome = await runner.score({
-      imageDigest,
-      competition,
+      imageDigest: image.imageDigest,
+      // What the metric reads of the competition, not the row (runner-port.ts · ScoreCompetition),
+      // under the environment of the image it runs in: the broker finds the image in its catalog by it.
+      competition: { ...scoreCompetition(competition), environment: image.environment },
       submissionId: submission.id,
       container,
       attemptId: row.attemptId!,
@@ -1125,11 +1905,11 @@ async function scoreStep(
     throw error
   } finally {
     /*
-     * The second copy of the answer and the metric's json live exactly for
-     * the duration of scoring. Keeping them longer means storing every answer
-     * twice: in a competition of three hundred submissions that is gigabytes
-     * nobody reads. Rescoring creates the directory anew — and it has to be a
-     * new one.
+     * The answer's link and the metric's json live exactly for the duration
+     * of scoring. Where links are refused the answer is a second copy, and
+     * keeping it longer means storing every answer twice: in a competition of
+     * three hundred submissions that is gigabytes nobody reads. Rescoring
+     * creates the directory anew — and it has to be a new one.
      */
     try {
       competitionsFs.rmSync(scoreInput, { recursive: true, force: true })
@@ -1176,16 +1956,20 @@ async function scoreStep(
  * safe (see the header of storage.ts about virtiofs).
  *
  * The directory and the metric are written right away, and a failure there
- * fails the job before its notebook runs; the answer key's copy is returned
- * as a promise. Its source is opened here, synchronously, so the snapshot is
+ * fails the job before its notebook runs; the answer key's snapshot is
+ * returned as a promise. It is a hard link to the answer key's inode, made
+ * here, synchronously (storage.ts · placeCompetitionFile), so the snapshot is
  * the file as it was when the job started — a new answer key replaces the
- * name, not these bytes (storage.ts · putSecretFile).
+ * name, not these bytes (storage.ts · putSecretFile). It used to be a copy:
+ * two hundred megabytes read and written per job, on the disk the class
+ * works from. A volume that refuses links still gets the copy, its source
+ * opened here just the same, streamed while the notebook runs.
  */
 function snapshotSecrets(competition: Competition, submission: Submission, row: QueueRow): Promise<void> {
   const directory = attemptDir(competition.id, submission.id, row.attemptId!, 'secret')
   competitionsFs.writeFileSync(path.join(directory, METRIC_NAME), Buffer.from(`${competition.metric.code}\n`), { mode: 0o600 })
   const solution = path.join(secretDir(competition.id), SOLUTION_FILE)
-  return competitionsFs.existsSync(solution) ? copyCompetitionFile(solution, path.join(directory, SOLUTION_FILE)) : Promise.resolve()
+  return competitionsFs.existsSync(solution) ? placeCompetitionFile(solution, path.join(directory, SOLUTION_FILE)) : Promise.resolve()
 }
 
 /**
@@ -1711,6 +2495,13 @@ export async function cancelSubmission(
 ): Promise<boolean> {
   const row = queueRow(submissionId)
   if (!row) return false
+  /*
+   * A machine's run is cancelled durably, in one transaction, whether or not
+   * this server's own runtime is up (competitions/remote/release.ts ·
+   * cancelRemote): its container is the machine's, and the machine's next
+   * sync carries the revoke that takes it down.
+   */
+  if (row.state === 'running' && row.holder !== null) return cancelRemote(row, by)
   if (row.state === 'waiting') {
     leaveQueue(submissionId)
     updateSubmission(submissionId, {
@@ -1784,15 +2575,27 @@ export async function settleSubmission(submissionId: string, timeoutMs: number):
  */
 export async function stopCompetitionRuns(competitionId: string, settleMs: number): Promise<boolean> {
   const rows = queueRows().filter((row) => row.competitionId === competitionId)
-  if (rows.some((row) => row.state === 'running' && !runningHere(row.submissionId))) return false
+  // A machine's run is no run of this process, and needs none: it is cancelled durably below.
+  if (rows.some((row) => row.state === 'running' && row.holder === null && !runningHere(row.submissionId))) return false
   // Before the first await: the pump must not start them while the running ones are taken down.
   for (const row of rows) {
     if (row.state !== 'waiting') continue
     leaveQueue(row.submissionId)
     updateSubmission(row.submissionId, { state: 'cancelled', stage: 'queue', teacherError: tr('competitions.answer.killedByTeacher') })
   }
+  /*
+   * A machine's run goes in one transaction, with nothing to wait for
+   * (competitions/remote/release.ts · cancelRemote): its row leaves the queue
+   * at once, its lease is revoked, and a late result is refused, so the
+   * deletion that follows finds no running row of it.
+   */
   for (const row of rows) {
-    if (row.state !== 'running') continue
+    if (row.state !== 'running' || row.holder === null || cancelRemote(row, 'teacher')) continue
+    // It ended meanwhile (applied, lost, given back): only a run still going holds the deletion up.
+    if (queueRow(row.submissionId)?.state === 'running') return false
+  }
+  for (const row of rows) {
+    if (row.state !== 'running' || row.holder !== null) continue
     await cancelSubmission(row.submissionId, 'teacher')
     if (!(await settleSubmission(row.submissionId, settleMs))) return false
   }
@@ -1839,12 +2642,23 @@ export function rerunSubmission(submissionId: string): boolean {
  * per attempt: executing a hundred notebooks would take an hour and give
  * exactly the same answers that already lie on disk. Those whose answer has
  * been kept are taken; a crashed notebook has nothing to rescore.
+ *
+ * Metric work already waiting is left as it is and counted: its job writes
+ * the metric code in force when it starts (snapshotSecrets), so it scores
+ * with the fix anyway. Enqueued again it lost its place — its arrival and
+ * its turn were set anew — and a machine's fresh result waiting for its
+ * metric was written «queued» and numbered among the rescores it was ahead of.
  */
 export function rescoreCompetition(competitionId: string): number {
   let queued = 0
   for (const submission of listSubmissions(competitionId)) {
     if (!hasStoredAnswer(competitionId, submission.id)) continue
-    if (queueRow(submission.id)?.state === 'running') {
+    const row = queueRow(submission.id)
+    if (row?.state === 'waiting' && row.kind === 'metric') {
+      queued++
+      continue
+    }
+    if (row?.state === 'running') {
       enqueue({ submissionId: submission.id, competitionId, entrantId: submission.entrantId, kind: 'metric' })
       queued++
       continue
@@ -1880,7 +2694,10 @@ export function hasStoredAnswer(competitionId: string, submissionId: string): bo
 
 /**
  * Pause the queue or let it go again. Running work is not touched — that is
- * what "Kill" is for.
+ * what "Kill" is for — and neither is the metric of a notebook that has run
+ * (pumpLanes): a machine's result is scored here under a pause as a run here
+ * is, and held, it read «оценивается» for the whole pause while its
+ * participant's next upload was refused as in flight.
  */
 export function pauseCompetitionQueue(paused: boolean, by: string | null = null): void {
   setQueuePaused(paused, by)

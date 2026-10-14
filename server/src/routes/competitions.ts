@@ -90,6 +90,7 @@ import {
 } from '../competitions/store.js'
 import { withoutBaseline } from '../competitions/panel.js'
 import { queueForecast } from '../competitions/forecast.js'
+import { blocking } from '../competitions/remote/views.js'
 import { holdUpload, privateBoardState } from '../competitions/results.js'
 import { uploadsPerMinute } from '../competitions/settings.js'
 import { cancelSubmission, queueSlots, wakeCompetitionPump } from '../competitions/runner.js'
@@ -346,17 +347,36 @@ function liveOf(competition: Competition, me: Entrant, now = Date.now()): Submis
       : [...forecast.running, ...forecast.eligible.slice(0, spot.place - 1)]
           .reverse()
           .find((row) => row.entrantId === me.id) ?? null
+    /*
+     * A machine's result whose metric runs here now: the notebook has run (on
+     * the machine) and the metric's row is this server's, started when the
+     * metric did. Read as the run's start, the participant's clock restarted
+     * at «0:01 / 10:00» while their notebook's time was already done, and the
+     * waiting line counted the whole machine run as «ожидание». So it reads as
+     * the metric waiting for its turn reads — «оценивается» — with the clock
+     * going on from the notebook's own time (durationMs, which the flip to
+     * the metric wrote: runner.ts · continueAsMetric), as a run here goes on
+     * from its notebook into its metric.
+     */
+    const running = forecast.running.find((row) => row.submissionId === submission.id)
+    const scoringHere = running?.kind === 'metric' && running.fresh && submission.state === 'running'
+    const startedAt = running?.startedAt == null
+      ? null
+      : scoringHere ? running.startedAt - Math.max(0, submission.durationMs ?? 0) : running.startedAt
     return {
       submissionId: submission.id,
       place: spot?.place ?? null,
       etaMs: spot?.etaMs ?? null,
       resourcePending: (waiting?.resourceRetries ?? 0) > 0,
-      startedAt: forecast.running.find((row) => row.submissionId === submission.id)?.startedAt ?? null,
+      startedAt,
       limitMs,
       aheadNumber: ahead ? (getSubmission(ahead.submissionId)?.number ?? null) : null,
       stage: submission.stage,
       cellsDone: submission.cellsDone,
       cellsTotal: submission.cellsTotal,
+      // The machines' reasons (remote/views.ts · waitReasons): a word for all of them, and never which one.
+      ...(blocking(forecast.reasons.get(submission.id)) ? { preparing: true } : {}),
+      ...((waiting?.kind === 'metric' || scoringHere) && submission.state === 'running' ? { scoring: true } : {}),
     }
   })
 }

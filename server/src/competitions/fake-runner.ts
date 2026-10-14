@@ -214,7 +214,7 @@ export class FakeCompetitionRunner implements CompetitionRunner {
     const cell = typeof asked.cell === 'number' ? asked.cell : Math.max(0, cells - 1)
 
     request.onProgress?.({ cell: 0, cells, outputBytes: 0 })
-    const held = await this.hold(request.container, asked)
+    const held = await this.hold(request.container, asked, request.signal)
     if (held === 'killed') {
       return this.outcome('timeout', { cell, cells, started, killedBy: 'wall' })
     }
@@ -310,7 +310,7 @@ export class FakeCompetitionRunner implements CompetitionRunner {
         /* garbage in the directive does not bring down the stand's queue */
       }
     }
-    const held = await this.hold(request.container, asked)
+    const held = await this.hold(request.container, asked, request.signal)
     const wall = Date.now() - started
     const diagnostics = { exit: 0, oomKilled: false, backend: this.backend }
     if (held === 'killed') {
@@ -405,22 +405,28 @@ export class FakeCompetitionRunner implements CompetitionRunner {
    * answers within a microsecond, and there is simply nobody in it to kill.
    * The directive `{"hold": 5000}` gives the work enough time to be taken
    * down, and `kill()` cuts the wait short at once, without waiting for the
-   * deadline.
+   * deadline. So does the request's abort signal, as docker-runner.ts · watch
+   * kills the container on it: a cancel that comes before the row names the
+   * container reaches the run only that way.
    */
-  private hold(container: string, asked: Record<string, unknown>): Promise<'done' | 'killed'> {
-    if (this.killed.has(container)) return Promise.resolve('killed')
+  private hold(container: string, asked: Record<string, unknown>, signal?: AbortSignal): Promise<'done' | 'killed'> {
+    if (this.killed.has(container) || signal?.aborted) return Promise.resolve('killed')
     const ms = typeof asked.hold === 'number' && asked.hold > 0 ? Math.min(asked.hold, 60_000) : 0
     if (ms === 0) return Promise.resolve('done')
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this.live.delete(container)
-        resolve('done')
-      }, ms)
-      this.live.set(container, () => {
+      const stop = (): void => {
         clearTimeout(timer)
         this.live.delete(container)
+        signal?.removeEventListener('abort', stop)
         resolve('killed')
-      })
+      }
+      const timer = setTimeout(() => {
+        this.live.delete(container)
+        signal?.removeEventListener('abort', stop)
+        resolve('done')
+      }, ms)
+      this.live.set(container, stop)
+      signal?.addEventListener('abort', stop, { once: true })
     })
   }
 

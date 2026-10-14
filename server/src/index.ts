@@ -29,6 +29,7 @@ import { WebSocketServer } from 'ws'
 import type { Duplex } from 'node:stream'
 import { originAllowed, setupBanner } from './admin/auth.js'
 import { verifyToken, type TokenPayload } from './auth.js'
+import { upgradeToken } from './socket-authorization.js'
 import { banFor, banRefusal, type BanInForce } from './bans.js'
 import { describeInboundPolicy, forwardedHost, inboundPolicy } from './net/inbound.js'
 import { describeSsoPolicy, socketCookieHeader, ssoPolicy } from './sso/identity.js'
@@ -52,10 +53,11 @@ import { roleFor } from './routes/sessions.js'
 import { app } from './app.js'
 import { COLLOQ_VERSION } from './version.js'
 import { startDependencyPump, stopDependencyPump } from './dependencies/service.js'
-import { pinLegacySubmissions } from './dependencies/revisions.js'
+import { backfillRevisionImages, pinLegacySubmissions } from './dependencies/revisions.js'
 import { competitionBackend } from './competitions/runner-port.js'
 import { assertCompetitionCapability } from './competitions/capabilities.js'
 import { createWorkerStartup } from './competitions/worker-startup.js'
+import { startRemoteRunners, stopRemoteRunners } from './competitions/remote/liveness.js'
 import { installOutboundProxy } from './outbound.js'
 import { migratePages } from './publish/migrate-pages.js'
 import { sweepPageFiles } from './publish/page-files.js'
@@ -270,7 +272,8 @@ server.on('upgrade', (req, socket, head) => {
 
   // The token is the whole authorization story: it names the session it was
   // minted for, so a valid token for seminar A cannot open seminar B.
-  const payload: TokenPayload | null = verifyToken(url.searchParams.get('token'))
+  // A machine's credential opens no socket (socket-authorization.ts · upgradeToken).
+  const payload: TokenPayload | null = verifyToken(upgradeToken(req.headers, url.searchParams.get('token')))
   if (!payload || payload.sessionId !== sessionId) return reject(socket)
   // A token outlives the room it names. Without this check a browser left open
   // on a deleted seminar reconnects, gets a freshly seeded document and writes
@@ -397,6 +400,9 @@ const workerStartup = createWorkerStartup({
     await reclaimCompetitionQueue()
     // Legacy pinning invokes image probes; the test backend has no containers.
     if (competitionBackend() !== 'test') await pinLegacySubmissions()
+    // What older revisions' images are beyond this machine, in the background:
+    // nothing here waits on it (dependencies/revisions.ts · backfillRevisionImages).
+    void backfillRevisionImages().catch((error: unknown) => console.warn('[dependencies] revision images were not inspected', error))
     startCompetitionPump()
   },
   startPreparation: startDependencyPump,
@@ -458,6 +464,16 @@ server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const))
   // The sockets are counted where they live; /metrics answers only with
   // METRICS_TOKEN set (ops/metrics.ts).
   startMetrics({ sockets: () => wss.clients.size })
+  /*
+   * The machines that run submissions (competitions/remote/liveness.ts):
+   * what the previous life left half done (offers withdrawn, outcomes left
+   * applying driven again), then the clock that decides when a silent
+   * machine's runs count as lost, and the probe of this server's own address
+   * that proves the road to the machines works. Not behind the execution
+   * worker: a machine's sync must be answered even while this server's own
+   * Docker is not up, and its results are kept for the metric to score.
+   */
+  startRemoteRunners()
   /*
    * Consistent copies of the database into the data volume, when
    * DB_SNAPSHOT_HOURS asks for them (db-snapshots.ts). Here rather than when
@@ -616,6 +632,7 @@ async function shutdown(signal: string): Promise<void> {
    * the server's next life will have to pick up.
    */
   try {
+    stopRemoteRunners()
     await workerStartup.stop()
     await stopDependencyPump()
     await stopCompetitionPump()

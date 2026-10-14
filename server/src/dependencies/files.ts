@@ -1,12 +1,13 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { config } from '../config.js'
+// The data root without config.ts: a machine that runs submissions keeps its package sets here too (data-dir.ts).
+import { dataDir } from '../data-dir.js'
 import type { DependencyBundle } from '@shared/dependencies'
 import type { PreparationResult } from './preparation-contract.js'
-import { DependencyPreparationError } from './preparation-contract.js'
+import { DependencyPreparationError, manifestPackages } from './preparation-contract.js'
 
-export const dependencyRoot = path.join(config.dataDir, 'dependencies')
+export const dependencyRoot = path.join(dataDir, 'dependencies')
 const checked = (key: string): string => {
   if (!/^[a-f0-9]{32}$/.test(key)) throw new Error('Invalid dependency identifier')
   return key
@@ -71,31 +72,103 @@ export async function publishBundle(key:string,result:PreparationResult):Promise
   }
   if(total!==result.downloadBytes)throw new Error('Dependency artifact sizes disagree')
   fs.writeFileSync(path.join(publishing,'requirements.lock'),result.lock,{mode:0o444})
-  fs.writeFileSync(path.join(publishing,'manifest.json'),JSON.stringify(result),{mode:0o444})
+  // Each wheel with its sha256 and size, and not the address it came from: this
+  // folder is the participant's /deps (preparation-contract.ts · manifestPackages).
+  // The same list the set's row keeps (store.ts · completeBundle).
+  fs.writeFileSync(path.join(publishing,'manifest.json'),JSON.stringify({...result,packages:manifestPackages(result.packages)}),{mode:0o444})
   fs.chmodSync(publishing,0o755)
   fs.renameSync(publishing,destination)
 }
 /*
- * Wheel digests by file identity, for the check before execution.
+ * File digests by file identity: first for the wheel check before execution,
+ * now for any file this server hands out by content hash.
  *
  * A bundle is immutable (0444, hard links into the CAS), yet every submission
  * used to hash every wheel again: up to half a gigabyte read per notebook,
  * and with eight slots eight times per wave. A file that kept its path,
  * size, mtime, ctime and inode kept its bytes as far as the kernel can tell
  * (the same stat cache git trusts); anything else is hashed again. Bounded:
- * the oldest entries go first.
+ * the entries asked about least recently go first.
+ *
+ * Exported for the competition data (competitions/storage.ts ·
+ * openFileSha256): rows uploaded before the hash had a column get theirs
+ * lazily, and a check of the same unchanged file must not read two hundred
+ * megabytes every time it is asked. One read per identity at a time, too: two
+ * callers asking about the same file at once (two machines asking for the same
+ * data in the same second) wait for the one read instead of making two.
+ *
+ * TWO KINDS OF FILE, TWO CACHES (DigestIdentity). A wheel is keyed by all of
+ * the above. A competition's data file (`renamed`) is keyed by its device,
+ * inode, size and mtime, and not by ctime: its bytes change only by a new
+ * inode renamed over its name (competitions/storage.ts · writeReplacing), and
+ * no mount of it is writable, while every run here moves its ctime with
+ * nothing changed — the hard link into a hidden-test run's data folder
+ * (composeRunInputs), the unlink when the attempt goes (dropAttempt), the
+ * mode a container needs (letContainerRead). Keyed by ctime, every run on a
+ * hidden test made the next hash of every data file read it whole again, up
+ * to two hundred megabytes each — the files the machines that run
+ * submissions fetch by hash. And apart, each with its own bound: a few
+ * hundred package sets of wheels must not push the data out.
  */
-const wheelDigests = new Map<string, string>()
-const WHEEL_DIGESTS_MAX = 4096
+export type DigestIdentity = 'inode' | 'renamed'
 
-async function wheelHash(file:string,stat:fs.Stats):Promise<string> {
-  const key=`${file}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`
-  const known=wheelDigests.get(key)
-  if(known)return known
-  const digest=await fileHash(file)
-  if(wheelDigests.size>=WHEEL_DIGESTS_MAX)wheelDigests.delete(wheelDigests.keys().next().value!)
-  wheelDigests.set(key,digest)
-  return digest
+interface DigestCache {
+  digests: Map<string, string>
+  reading: Map<string, Promise<string>>
+}
+
+const DIGESTS_MAX = 4096
+const caches: Record<DigestIdentity, DigestCache> = {
+  inode: { digests: new Map(), reading: new Map() },
+  renamed: { digests: new Map(), reading: new Map() },
+}
+
+function digestKey(file: string, stat: fs.Stats, identity: DigestIdentity): string {
+  return identity === 'renamed'
+    ? `${file}\0${stat.dev}\0${stat.ino}\0${stat.size}\0${stat.mtimeMs}`
+    : `${file}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`
+}
+
+/**
+ * The sha256 (hex) of `file`, whose identity `stat` describes. `read` gives
+ * its bytes when they have to be read; by default the file is opened by path.
+ * A caller that opened the file itself (through the anchored file system)
+ * passes the stat of that descriptor and a stream over it, so the identity and
+ * the bytes are of one and the same inode. `identity` — which stat says the
+ * bytes are the same (DigestIdentity): `renamed` only for a file whose content
+ * never changes in place.
+ */
+export async function cachedSha256(
+  file: string,
+  stat: fs.Stats,
+  read: () => AsyncIterable<Buffer | string> = () => fs.createReadStream(file),
+  identity: DigestIdentity = 'inode',
+): Promise<string> {
+  const { digests, reading } = caches[identity]
+  const key = digestKey(file, stat, identity)
+  const known = digests.get(key)
+  if (known) {
+    // Asked again: the last to be evicted (the Map keeps insertion order).
+    digests.delete(key)
+    digests.set(key, known)
+    return known
+  }
+  const running = reading.get(key)
+  if (running) return running
+  const pending = (async () => {
+    const hash = createHash('sha256')
+    for await (const chunk of read()) hash.update(chunk)
+    const digest = hash.digest('hex')
+    if (digests.size >= DIGESTS_MAX) digests.delete(digests.keys().next().value!)
+    digests.set(key, digest)
+    return digest
+  })()
+  reading.set(key, pending)
+  try {
+    return await pending
+  } finally {
+    reading.delete(key)
+  }
 }
 
 /** Hashes are rechecked before execution, not just when downloading. */
@@ -105,7 +178,7 @@ export async function verifyBundleFiles(bundle:DependencyBundle,expectedLock:str
   for(const pkg of bundle.packages){
     const file=path.join(dir,'wheels',pkg.fileName)
     const stat=regular(file)
-    if(stat.size!==pkg.bytes||await wheelHash(file,stat)!==pkg.sha256)throw new Error('Dependency wheel missing or corrupt')
+    if(stat.size!==pkg.bytes||await cachedSha256(file,stat)!==pkg.sha256)throw new Error('Dependency wheel missing or corrupt')
   }
   regular(path.join(dir,'requirements.lock'))
   if(fs.readFileSync(path.join(dir,'requirements.lock'),'utf8')!==expectedLock)throw new Error('Dependency lock missing or corrupt')

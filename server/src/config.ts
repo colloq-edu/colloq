@@ -1,9 +1,10 @@
 import 'dotenv/config'
+// Right after dotenv, and on purpose: DATA_DIR is read when data-dir.ts loads.
+import { dataDir, repoRoot } from './data-dir.js'
 import { readLeaseUrl } from './local/public-url-lease.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { fileURLToPath } from 'node:url'
 import { normalizeLocale } from '@shared/i18n'
 
 function env(name: string, fallback: string): string {
@@ -12,19 +13,10 @@ function env(name: string, fallback: string): string {
 }
 
 /*
- * Anchored to this file rather than to process.cwd(). These two defaults used
- * to be resolve(cwd, '../workspace') and '../data', which are only right when
- * the process was started from server/: launched from the repo root instead,
- * the server silently created a workspace directory *beside* the repo and then
- * listed that, while the kernel container kept writing into the real one — a
- * cell would report success and its file would never appear.
- *
- * src/config.ts and the bundled dist/server.js both sit two levels under the
- * root, so one expression covers dev and a local production build. The
- * container sets DATA_DIR and WORKSPACE_DIR explicitly and never gets here.
+ * Anchored to the repository root rather than to process.cwd(), for the reason
+ * data-dir.ts gives. DATA_DIR itself is read there: the machines that run
+ * submissions lay out their tree by it without loading this module.
  */
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
-const dataDir = path.resolve(env('DATA_DIR', path.join(repoRoot, 'data')))
 const workspaceDir = path.resolve(env('WORKSPACE_DIR', path.join(repoRoot, 'workspace')))
 
 /**

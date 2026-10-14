@@ -1,5 +1,6 @@
 import { DEPENDENCY_LOG_CODES } from '@shared/dependencies'
 import type { DependencyErrorParams, DependencyLogCode, DependencyLogEntry, DependencyLogLine, DependencyPackage, DependencyState, InstalledPackage } from '@shared/dependencies'
+import { dependencySource } from '@shared/dependency-source'
 
 export interface PreparationRequest {
   id: string
@@ -105,6 +106,92 @@ export function dependencyErrorParams(raw: unknown): DependencyErrorParams | und
     if (causes.length) params.causes = causes
   }
   return Object.keys(params).length ? params : undefined
+}
+
+/** The longest wheel address a manifest keeps; PyPI's are under 250 characters. */
+const WHEEL_URL_MAX = 2048
+
+/** The host:port pairs a wheel may come from under the settings in force; none when they cannot be read. */
+function wheelHosts(): string[] {
+  try {
+    return dependencySource(process.env).files
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Where a wheel was downloaded from, as the set's manifest keeps it, or
+ * undefined.
+ *
+ * The program reads it off pip's report (download_info.url), which the index
+ * wrote, so it is checked here once more the way the program checked it
+ * before downloading (preparation-python.ts · safe_url): https, no
+ * credentials and no fragment, a host the index's files may come from
+ * (`files`, shared/dependency-source.ts), and the wheel's own file name at the
+ * end of the path, which is where the program took that name from. A machine
+ * that runs submissions for this server fetches the wheel from this address
+ * and checks the sha256 and the size it arrives with, so wrong bytes cannot
+ * come of it; but the fetch itself happens from inside that machine's
+ * network, so an address that fails here is not kept at all. The set stays:
+ * without an address the machine takes the wheel from this server instead.
+ */
+export function wheelUrl(raw: unknown, fileName: string, files: readonly string[] = wheelHosts()): string | undefined {
+  if (typeof raw !== 'string' || raw.length > WHEEL_URL_MAX) return undefined
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    return undefined
+  }
+  if (url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.hash) return undefined
+  if (!files.includes(`${url.hostname}:${url.port || 443}`)) return undefined
+  let last: string
+  try {
+    last = decodeURIComponent(url.pathname.slice(url.pathname.lastIndexOf('/') + 1))
+  } catch {
+    return undefined
+  }
+  return last === fileName ? url.href : undefined
+}
+
+/**
+ * The wheels of a ready set as its manifest and its row keep them: the fields
+ * of a package and nothing else a program put next to them — and no download
+ * address. One function for both copies (files.ts · publishBundle, store.ts ·
+ * completeBundle), so the two always say the same.
+ *
+ * No address, because both are read where the class can read: the set's
+ * folder, manifest.json included, is mounted into the participant's own
+ * container at /deps, and 0.22 hands the row's list out as it finds it, to
+ * the participant's page and the teacher's overview. An institution's mirror
+ * is not named to the class (service.ts · sanitizedLog keeps it out of the
+ * log for the same reason). The addresses that pass wheelUrl are kept apart
+ * (wheelUrls, store.ts · dependency_bundle_wheel_urls), for the machines that
+ * run submissions alone.
+ */
+export function manifestPackages(packages: readonly DependencyPackage[]): DependencyPackage[] {
+  return packages.map((pkg) => ({
+    name: pkg.name,
+    version: pkg.version,
+    fileName: pkg.fileName,
+    sha256: pkg.sha256,
+    bytes: pkg.bytes,
+  }))
+}
+
+/**
+ * Where each wheel of a ready set was downloaded from, for those whose
+ * address passes wheelUrl, by the wheel's sha256: what a machine that runs
+ * submissions fetches from the index's CDN and checks by that sha256 and the
+ * size (store.ts · bundleWheels). A wheel without one is fetched from this
+ * server instead.
+ */
+export function wheelUrls(packages: readonly DependencyPackage[], files: readonly string[] = wheelHosts()): Array<{ sha256: string; url: string }> {
+  return packages.flatMap((pkg) => {
+    const url = wheelUrl(pkg.url, pkg.fileName, files)
+    return url ? [{ sha256: pkg.sha256, url }] : []
+  })
 }
 
 /** A step the program reported, if it is one of ours; its parameters are short scalars only. */

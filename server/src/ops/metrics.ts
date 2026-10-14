@@ -49,6 +49,14 @@ import {
 } from './counters.js'
 import { filesystemSpace } from './disk.js'
 import { queueCensus } from './status.js'
+import { listRunners, liveLeases } from '../competitions/remote/store.js'
+import { machineState } from '../competitions/remote/heard.js'
+import { leaseEndings } from '../competitions/remote/release.js'
+import { applyCounts } from '../competitions/remote/apply.js'
+import { uploadCounts } from '../competitions/remote/upload.js'
+import { blobCounts } from '../competitions/remote/blobs.js'
+import { callCounts } from '../competitions/remote/routes.js'
+import { heldSyncs } from '../competitions/remote/wake.js'
 
 /* ------------------------------------------------------------- exposition */
 
@@ -258,6 +266,7 @@ export function renderMetrics(): string {
     ...collect('notebooks', notebookFamilies),
     ...collect('oracle', oracleFamilies),
     ...collect('competitions', competitionFamilies),
+    ...collect('runners', runnerFamilies),
     ...collect('http', httpFamilies),
     ...collect('disk', diskFamilies),
     ...collect('snapshots', snapshotFamilies),
@@ -423,6 +432,48 @@ function competitionFamilies(): MetricFamily[] {
     counter('colloq_competition_attempts_completed_total', 'Competition run attempts that finished, whatever the verdict.', single(execution.completed)),
     counter('colloq_competition_attempt_retries_total', 'Competition runs put back in the queue after a server restart cut them short.', single(execution.retries)),
     counter('colloq_competition_cleanup_failures_total', 'Competition containers or jobs that could not be removed.', single(execution.cleanupFailures)),
+  ]
+}
+
+/*
+ * The machines that run submissions (competitions/remote/): how many in each
+ * state, what they hold, and how their leases end. Fixed label sets only —
+ * a machine's id or name would grow a series per machine ever joined.
+ */
+const MACHINE_STATES = ['online', 'silent', 'outdated', 'draining', 'quarantined', 'revoked', 'left'] as const
+
+function runnerFamilies(): MetricFamily[] {
+  const now = Date.now()
+  const states = new Map<string, number>(MACHINE_STATES.map((state) => [state, 0]))
+  for (const runner of listRunners()) {
+    const state = machineState(runner, now)
+    states.set(state, (states.get(state) ?? 0) + 1)
+  }
+  const endings = { ...leaseEndings, applied: applyCounts.applied, refused: applyCounts.refused }
+  return [
+    gauge('colloq_runner_machines', 'Machines that run submissions, by state on this server\'s clock.', [...states].map(([state, n]) => ({ labels: { state }, value: n }))),
+    gauge('colloq_runner_leases_live', 'Leases out to machines now: offered, accepted, running or being applied.', single(liveLeases().length)),
+    gauge('colloq_runner_syncs_held', 'Machines\' syncs held open now, waiting for news.', single(heldSyncs())),
+    counter('colloq_runner_syncs_total', 'Syncs answered.', single(callCounts.syncs)),
+    counter('colloq_runner_joins_total', 'Machines joined with a code, and joins refused.', [
+      { labels: { result: 'joined' }, value: callCounts.joins },
+      { labels: { result: 'refused' }, value: callCounts.joinsRefused },
+    ]),
+    counter('colloq_runner_unauthorized_total', 'Calls refused for a missing, wrong or revoked machine credential.', single(callCounts.unauthorized)),
+    counter('colloq_runner_lease_endings_total', 'How leases ended: applied, refused, withdrawn, lost, declined, revoked (taken back), cancelled, failed (the submission given up on), orphaned (its queue row was no longer its own, after a rollback).',
+      Object.entries(endings).map(([outcome, n]) => ({ labels: { outcome }, value: n }))),
+    counter('colloq_runner_uploads_total', 'Result files from machines: stored, repeated (already here), refused, busy (503), replaced (a new hash for a name already staged), stalled (a body that sent nothing for a minute).',
+      Object.entries(uploadCounts).map(([result, n]) => ({ labels: { result }, value: n }))),
+    counter('colloq_runner_blob_bytes_total', 'Bytes of data, wheels and notebooks served to machines.', single(blobCounts.bytes)),
+    counter('colloq_runner_blobs_total', 'Blob requests: served, refused (out of scope or too many streams), gone (replaced since).', [
+      { labels: { result: 'served' }, value: blobCounts.served },
+      { labels: { result: 'refused' }, value: blobCounts.refused },
+      { labels: { result: 'gone' }, value: blobCounts.gone },
+    ]),
+    counter('colloq_runner_blob_streams_cut_total', 'Blob streams this server ended: cut (a revoke, an untrust, a newer stream of the same machine, a lease taking a prefetch\'s place), stalled (nothing taken off it for 45 s).', [
+      { labels: { why: 'cut' }, value: blobCounts.cut },
+      { labels: { why: 'stalled' }, value: blobCounts.stalled },
+    ]),
   ]
 }
 

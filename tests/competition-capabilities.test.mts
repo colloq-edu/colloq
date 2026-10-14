@@ -46,7 +46,7 @@ test('image probes coalesce and expired negative results recover', async () => {
  let now=0, healthy=false
  const calls:string[][]=[]
  const read=module.createCapabilityReader({backend:()=> 'docker',clock:()=>now,storageAvailable:()=>true,
-  run:async(args:string[])=>{calls.push(args);if(args[0]==='version')return '28.3.0';if(!healthy)throw new Error('missing');return 'sha256:'+'a'.repeat(64)} })
+  run:async(args:string[])=>{calls.push(args);if(args[0]==='version')return '28.3.0';if(!healthy)throw new Error('Error: No such image: colloq-kernel:base');return 'sha256:'+'a'.repeat(64)} })
  const results=await Promise.all(Array.from({length:12},()=>read('base')))
  assert.ok(results.every((x:any)=>x.execution.code==='image_unavailable'))
  assert.equal(calls.filter(a=>a[0]==='image').length,1)
@@ -55,6 +55,29 @@ test('image probes coalesce and expired negative results recover', async () => {
  now=5001
  assert.equal((await read('base')).execution.available,true)
  assert.equal(calls.filter(a=>a[0]==='image').length,2)
+})
+
+/*
+ * An inspect that failed without saying the image is gone — the three-second
+ * timeout, a daemon that went away under it — is docker not answering, not a
+ * missing image: read as image_unavailable, it sent a GPU competition's metric
+ * to score in another image (runner.ts · gpuScoringImage). Only docker's own
+ * «No such image» (or «No such object») says the image is not there.
+ */
+test('an image probe that timed out says docker did not answer; only «No such image» says the image is gone', async () => {
+ const {createCapabilityReader}=await import('../server/src/competitions/capabilities.js')
+ let failure:Error=new Error('Error: No such image: sha256:'+'a'.repeat(64))
+ const read=()=>createCapabilityReader({backend:()=> 'docker',clock:()=>0,storageAvailable:()=>true,
+  run:async(args:string[])=>{if(args[0]==='version')return '28.3.0';throw failure}})
+ assert.equal((await read()('kaggle-base','sha256:'+'a'.repeat(64))).execution.code,'image_unavailable')
+ failure=Object.assign(new Error('Command failed: docker image inspect --format {{.Id}} colloq-kernel:kaggle-base'),{stderr:'Error: No such object: colloq-kernel:kaggle-base\n'})
+ assert.equal((await read()('kaggle-base')).execution.code,'image_unavailable','docker\'s words in stderr count too')
+ failure=Object.assign(new Error('Command failed: docker image inspect --format {{.Id}} colloq-kernel:kaggle-base'),{killed:true,signal:'SIGTERM',code:null})
+ const stalled=await read()('kaggle-base')
+ assert.equal(stalled.execution.available,false)
+ assert.equal(stalled.execution.code,'docker_unavailable')
+ failure=Object.assign(new Error('Command failed'),{stderr:'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n'})
+ assert.equal((await read()('kaggle-base','sha256:'+'a'.repeat(64))).execution.code,'docker_unavailable')
 })
 
 /*

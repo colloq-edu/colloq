@@ -68,6 +68,17 @@
  * And one rule, bought at a higher price than any other: we mount ONLY
  * directories, and only at paths that did not exist before this submission
  * (see the header of storage.ts).
+ *
+ * TWO KINDS OF PROCESS LOAD THIS MODULE: this server, and the agent of a
+ * machine that runs its submissions (docs/architecture/remote-runners.md,
+ * «машины для посылок»), which calls DockerCompetitionRunner.run() exactly as
+ * the queue here does, so that the argv, the harness, the export and the
+ * verdicts are home's by construction. So this module, and everything it
+ * imports, loads no database, no room pool, no settings and no .env, and does
+ * nothing when it loads but register the runner
+ * (tests/runner-import-graph.test.mts keeps it so). What only this server
+ * knows — how much memory the machine can still give, which depends on its
+ * rooms — is handed in (DockerRunnerOptions), never reached for.
  */
 import { spawn } from 'node:child_process'
 import path from 'node:path'
@@ -75,11 +86,10 @@ import { createHash, randomUUID } from 'node:crypto'
 import { Transform, type TransformCallback, type Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { tr } from '@shared/i18n'
-import { config } from '../config.js'
+import { dataDir } from '../data-dir.js'
 import { competitionsFs, hostPathOf, EXECUTED_BYTES, EXECUTED_FILE } from './storage.js'
 import { HARNESS_SITE, harnessDir } from './harness.js'
-import { competitionMemory } from './capacity.js'
-import { gpuAllocatorMb, gpuKillAboveMb } from './gpu.js'
+import { gpuAllocatorMb, gpuKillAboveMb } from './gpu-math.js'
 import {
   METRIC_WALL_SECONDS,
   registerCompetitionRunner,
@@ -98,7 +108,7 @@ import type { RunVerdict } from '@shared/competitions'
 /** Label on both containers: cleanup finds them by it, and only them. */
 export const RUN_LABEL = 'colloq.kind=competition-run'
 export const SCORE_LABEL = 'colloq.kind=competition-score'
-const HOST_DATA_ROOT = path.resolve(hostPathOf(config.dataDir))
+const HOST_DATA_ROOT = path.resolve(hostPathOf(dataDir))
 const INSTANCE_KEY = 'ru.colloq.competition-instance'
 const INSTANCE_SCOPE = createHash('sha256').update(HOST_DATA_ROOT).digest('hex').slice(0, 16)
 const INSTANCE_LABEL = `${INSTANCE_KEY}=${INSTANCE_SCOPE}`
@@ -438,6 +448,11 @@ export function runArgs(opts: {
   return [
     'run',
     '-d',
+    // The image is the revision the submission was pinned to, and it is here
+    // or the run is not ours to start: a missing image fails the launch at once
+    // with docker's "No such image", never a pull under the launch's 120 s
+    // that fetches whatever a registry holds under that name today.
+    '--pull=never',
     '--name',
     container,
     // No network at all: no DNS, no loopback, no bridge. A competition is
@@ -500,7 +515,7 @@ export function runArgs(opts: {
     '-e', `COMP_MAX_OUTPUT_KILL_BYTES=${limits.outputKillBytes}`,
     /*
      * A share of a card: torch's allocator is capped a little below it (the
-     * CUDA context lives outside the allocator, competitions/gpu.ts ·
+     * CUDA context lives outside the allocator, competitions/gpu-math.ts ·
      * gpuAllocatorMb) by the harness's sitecustomize, which Python finds on
      * PYTHONPATH in every process of the container, the kernel included.
      * CatBoost's GPU pool is a fraction of the card rather than a size, so
@@ -578,6 +593,9 @@ export function scoreArgs(opts: {
   return [
     'run',
     '-d',
+    // Never a pull, as for the notebook (runArgs): the metric runs in the image
+    // the submission was pinned to, beside the answers, or not at all.
+    '--pull=never',
     '--name',
     container,
     '--network',
@@ -701,10 +719,10 @@ export function parseGpuMemory(out: string): number | null {
  * oldest first (MiB; `null` — a sample that failed or did not parse).
  *
  * Over means the last two samples that answered are both above the share
- * plus its tolerance (competitions/gpu.ts · gpuKillAboveMb). Two, because one
- * reading may catch a moment — an allocator that grows and gives back within
- * a second — and a kill is final; two, three seconds apart, are a run that
- * stays where it should not be. A sample that did not answer decides
+ * plus its tolerance (competitions/gpu-math.ts · gpuKillAboveMb). Two,
+ * because one reading may catch a moment — an allocator that grows and gives
+ * back within a second — and a kill is final; two, three seconds apart, are a
+ * run that stays where it should not be. A sample that did not answer decides
  * nothing either way here: it neither counts toward this kill (a failure is
  * not a reading) nor resets one (a run that keeps the daemon from answering
  * must not buy itself the card that way). Failures in a row have a rule of
@@ -1198,8 +1216,40 @@ export function dependencyFailureOf(verdict: RunVerdict, report: Record<string, 
 
 /* ------------------------------------------------------------------- runner */
 
-class DockerCompetitionRunner implements CompetitionRunner {
+/**
+ * What the machine can still hand out, as capacity() reports it next to the
+ * containers awaiting removal (runner-port.ts · Capacity says what each
+ * number is for); `null` — honestly unknown.
+ */
+export interface MachineMemory {
+  availableMb: number | null
+  usableMb: number | null
+  memAvailableMb: number | null
+}
+
+/** Asked at every capacity() call; never rejects (an unknown number is `null`). */
+export type MachineMemorySource = () => Promise<MachineMemory>
+
+const UNKNOWN_MEMORY: MachineMemory = { availableMb: null, usableMb: null, memAvailableMb: null }
+
+export interface DockerRunnerOptions {
+  /**
+   * What the machine can still hand out. Home's is the room census, the
+   * host's reserve and MemAvailable (competitions/capacity.ts ·
+   * competitionMemory), which this module may not import; without it the
+   * memory is unknown, which is what a machine for submissions starts with —
+   * its agent sizes its offer to home by its own numbers and never asks this.
+   */
+  memory?: MachineMemorySource
+}
+
+export class DockerCompetitionRunner implements CompetitionRunner {
   readonly backend = 'docker' as const
+  private readonly memory: MachineMemorySource
+
+  constructor(options: DockerRunnerOptions = {}) {
+    this.memory = options.memory ?? (() => Promise.resolve(UNKNOWN_MEMORY))
+  }
 
   async run(request: RunRequest): Promise<RunOutcome> {
     const started = Date.now()
@@ -1434,13 +1484,14 @@ class DockerCompetitionRunner implements CompetitionRunner {
   /**
    * How much memory on the machine can still be handed out.
    *
-   * Asked of the same module as the seminar form (kernel/resources.ts, through
-   * capacity.ts): the ceiling is held by docker's VIRTUAL MACHINE, not the
-   * Mac, and on colima that is twelve gigabytes out of the machine's
-   * thirty-six. Counting by the host would mean taking on a submission that
-   * `docker run` will refuse in the middle of a class. Containers still
-   * awaiting removal keep their own memory out of reach, and nothing more —
-   * and their cards, a share each (`heldGpus`).
+   * At home the numbers are the seminar form's (kernel/resources.ts, through
+   * capacity.ts · competitionMemory, handed in as DockerRunnerOptions.memory):
+   * the ceiling is held by docker's VIRTUAL MACHINE, not the Mac, and on
+   * colima that is twelve gigabytes out of the machine's thirty-six. Counting
+   * by the host would mean taking on a submission that `docker run` will
+   * refuse in the middle of a class. Containers still awaiting removal keep
+   * their own memory out of reach, and nothing more — and their cards, a
+   * share each (`heldGpus`).
    */
   async capacity(): Promise<Capacity> {
     // Not awaited: the pump asks this with admission held, and a daemon that
@@ -1453,7 +1504,7 @@ class DockerCompetitionRunner implements CompetitionRunner {
       heldMb += held.memoryMb
       if (held.gpu) heldGpus[held.gpu] = (heldGpus[held.gpu] ?? 0) + 1
     }
-    const memory = await competitionMemory()
+    const memory = await this.memory()
     return {
       availableMb: memory.availableMb === null ? null : Math.max(0, memory.availableMb - heldMb),
       usableMb: memory.usableMb,
@@ -1508,4 +1559,38 @@ export const METRIC_NAME = 'metric.py'
  */
 export const DEFAULT_ID_COLUMN = 'id'
 
-registerCompetitionRunner('docker', () => new DockerCompetitionRunner())
+/* ---------------------------------------------- the runner this server uses */
+
+/**
+ * The machine's memory for the runner registered below: capacity.ts ·
+ * competitionMemory, which hands itself over when it loads
+ * (provideMachineMemory). It goes this way round because this module may not
+ * import capacity.ts — the room census and the database behind it are what a
+ * machine for submissions must not load — while capacity.ts may import this
+ * one, and the queue loads it for admitJob anyway (runner.ts).
+ *
+ * Asked at every capacity() call rather than once: the registration below is
+ * made when this module loads, which is before capacity.ts has, and the queue
+ * asks only later. A process that never loads capacity.ts (a script that runs
+ * one submission, a test of this module) gets an unknown picture, which
+ * admission never refuses (capacity.ts · admitJob), and one line in the log
+ * that says so rather than a queue that silently stops weighing memory.
+ */
+let machineMemory: MachineMemorySource | null = null
+let unwiredSaid = false
+
+/** Hand the registered runner its memory picture; `null` takes it back (tests). */
+export function provideMachineMemory(source: MachineMemorySource | null): void {
+  machineMemory = source
+}
+
+function homeMemory(): Promise<MachineMemory> {
+  if (machineMemory) return machineMemory()
+  if (!unwiredSaid) {
+    unwiredSaid = true
+    console.warn('[competitions] the Docker runner has no memory picture (competitions/capacity.ts is not loaded): memory admission is skipped')
+  }
+  return Promise.resolve(UNKNOWN_MEMORY)
+}
+
+registerCompetitionRunner('docker', () => new DockerCompetitionRunner({ memory: homeMemory }))

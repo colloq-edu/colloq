@@ -31,6 +31,7 @@ import { liveSince, onlineCount, peekSessionDoc } from '../collab/index.js'
 import { runReservationMb } from '../competitions/runner.js'
 import { limitsFor } from '../competitions/runner-port.js'
 import { canSeeCompetition } from '../competitions/scope.js'
+import { runningRemote } from '../competitions/remote/views.js'
 import { getCompetition, getSubmission, runningRows } from '../competitions/store.js'
 import { getParticipant, getSession, storedRules } from '../db.js'
 import { runningPreparations } from '../dependencies/service.js'
@@ -245,7 +246,19 @@ async function runningKernels(viewer: StaffLike): Promise<RunningKernels> {
     classes,
     runs: runRows(viewer),
     preparations: preparationRows(viewer),
+    /*
+     * The runs machines hold (Paper M5): they hold no memory here, so they are
+     * not in `runs`, and «0 МБ здесь» is the truth of them. Absent while no
+     * machine holds a run. Stopping one is the console's kill, a durable
+     * cancel (remote/release.ts · cancelRemote).
+     */
+    ...remoteOf(viewer),
   }
+}
+
+function remoteOf(viewer: StaffLike): Pick<RunningKernels, 'remote'> {
+  const remote = runningRemote(viewer)
+  return remote ? { remote } : {}
 }
 
 function reservedOf(row: RunningClass): number {

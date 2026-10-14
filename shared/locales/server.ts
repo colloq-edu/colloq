@@ -4205,5 +4205,115 @@ export const serverMessages: MessageCatalog = {
   "server.competitions.gpuCpuEnvironment": {
     "ru": "Видеокарта нужна только окружению с GPU, а «{environment}» считает на процессоре. Выберите окружение с GPU или выключите видеокарту.",
     "en": "Only an environment with a GPU can use a card, and “{environment}” runs on the CPU. Pick a GPU environment or turn the card off."
+  },
+  // The machines that run submissions (server/src/competitions/remote/): our own words about a run a machine
+  // lost or gave back. The participant's ones are safe to show a blind participant as they are (briefError).
+  "server.runners.returned": {
+    "ru": "Машина, на которой шла посылка, перестала её выполнять. Посылка вернулась на своё место в очереди и запустится снова; попытка не потрачена.",
+    "en": "The machine running this submission stopped running it. It is back in its place in the queue and will run again; no attempt was spent."
+  },
+  "server.runners.lostTeacher": {
+    "ru": "Потеряна на машине {machine}: {why}.",
+    "en": "Lost on machine {machine}: {why}."
+  },
+  "server.runners.givenBack": {
+    "ru": "Машина {machine} вернула посылку в очередь.",
+    "en": "Machine {machine} gave the submission back to the queue."
+  },
+  "server.runners.lostFailed": {
+    "ru": "Посылку не удалось выполнить: машины, на которых она шла, теряли её снова и снова. Это сбой сервера, а не вашей тетради; попытка не потрачена.",
+    "en": "The submission could not be run: the machines running it kept losing it. This is a failure of the server, not of your notebook; no attempt was spent."
+  },
+  "server.runners.lostFailedTeacher": {
+    "ru": "Терялась снова и снова, на машинах: {machines}. Посылку можно запустить снова.",
+    "en": "Lost again and again, on machines: {machines}. The submission can be run again."
+  },
+  "server.runners.declinedFailed": {
+    "ru": "Посылку не удалось выполнить: три машины отказались её запускать. Это сбой сервера, а не вашей тетради; попытка не потрачена.",
+    "en": "The submission could not be run: three machines refused to start it. This is a failure of the server, not of your notebook; no attempt was spent."
+  },
+  "server.runners.declinedFailedTeacher": {
+    "ru": "Отказались три машины — {reasons}.",
+    "en": "Three machines refused it — {reasons}."
+  },
+  "server.runners.why.silent": {
+    "ru": "машина замолчала",
+    "en": "the machine went silent"
+  },
+  "server.runners.why.ceiling": {
+    "ru": "прогон вышел за предельное время",
+    "en": "the run went past its time ceiling"
+  },
+  "server.runners.why.missing": {
+    "ru": "машина больше не держит этот прогон",
+    "en": "the machine no longer holds the run"
+  },
+  "server.runners.why.refused": {
+    "ru": "результат не сошёлся с выгруженными файлами",
+    "en": "the result did not match the uploaded files"
+  },
+  "server.runners.why.declined": {
+    "ru": "машина отказалась от уже начатого прогона",
+    "en": "the machine refused a run it had already started"
+  },
+  "server.runners.why.unapplied": {
+    "ru": "сервер не смог принять её результат до предельного времени",
+    "en": "this server could not take in its result before the time ceiling"
+  },
+  "server.runners.why.unacked": {
+    "ru": "машина не приняла предложение за минуту",
+    "en": "the machine did not take the offer within a minute"
+  },
+  "server.runners.why.unseen": {
+    "ru": "машина не получила предложение",
+    "en": "the machine never received the offer"
+  },
+  "server.runners.why.restart": {
+    "ru": "сервер перезапустился до ответа машины",
+    "en": "the server restarted before the machine answered"
+  },
+  "server.ownerAction.runners": {
+    "ru": "подключать машины для посылок и управлять ими",
+    "en": "connect and manage the machines that run submissions"
+  },
+  "server.runners.notFound": {
+    "ru": "Такой машины нет.",
+    "en": "There is no such machine."
+  },
+  "server.runners.gone": {
+    "ru": "Эта машина отключена: вместо неё подключите новую.",
+    "en": "This machine is disconnected: connect a new one instead."
+  },
+  "server.runners.nameInvalid": {
+    "ru": "Имя машины — от 1 до {max} знаков, без переводов строк.",
+    "en": "A machine's name is 1 to {max} characters, with no line breaks."
+  },
+  "server.runners.prefixInvalid": {
+    "ru": "Префикс имени — латинские буквы, цифры и дефисы, до 32 знаков.",
+    "en": "A name prefix is Latin letters, digits and hyphens, up to 32 characters."
+  },
+  "server.runners.trustedInvalid": {
+    "ru": "«Доверенная» — да или нет.",
+    "en": "“Trusted” is yes or no."
+  },
+  "server.runners.why.orphan": {
+    "ru": "сервер больше не ждал этого прогона: посылка уже шла иначе",
+    "en": "this server no longer waited for the run: the submission had gone another way"
+  },
+  "server.runners.orphanTeacher": {
+    "ru": "Прогон на машине {machine} снят без штрафа: сервер к тому времени запустил посылку иначе (откат версии сервера).",
+    "en": "The run on machine {machine} was taken back with no penalty: by then this server had run the submission another way (the server was rolled back)."
+  },
+  "server.runners.why.starved": {
+    "ru": "сервер не успел отдать машине данные прогона: это не отказ машины",
+    "en": "this server could not hand the machine the run's data in time: no refusal of the machine's"
+  },
+  "server.runners.codeNotFound": {
+    "ru": "Такого действующего кода нет: он уже израсходован, истёк или отменён.",
+    "en": "There is no such valid code: it is used up, expired or cancelled already."
+  },
+  "server.runners.codeAmbiguous": {
+    "ru": "Этот номер подходит к нескольким кодам: обновите список и отмените код из него.",
+    "en": "This id matches more than one code: reload the list and cancel the code from it."
   }
 }

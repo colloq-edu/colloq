@@ -159,6 +159,18 @@ CMD="${1:-}"
 # the unnamed deployment, that very first machine.
 LABEL_BASE="$(read_env VAST_LABEL)";    LABEL_BASE="${LABEL_BASE:-colloq}"
 
+# The label of the machines for submissions (scripts/vast-runner.sh ·
+# BASE_LABEL: make vast-runner rents them as colloq-runner and
+# colloq-runner-<NAME>). Such a machine is no deployment: no class, no
+# database, no backup, nothing here to deploy or to sync, and make
+# runners-update and runners-down own it, the leave of its home before the
+# destroy included. Read as one, a single such machine was "the one
+# deployment" to every command here given no name: vast-down destroyed it
+# without the leave, and vast-up deployed a class over it with this
+# checkout's .env, relay token and all (review, 14 Oct 2026). So none is
+# listed here, and no deployment may take that label.
+RUNNER_LABEL=colloq-runner
+
 # The deployment name. It is given in three ways, and all three are the same
 # word: NAME=demo, the second argument (scripts/vast.sh sync demo) or the first
 # part of the address (HOST=demo.colloq.ru). Requiring NAME where HOST is
@@ -176,6 +188,13 @@ case "$ENV_NAME" in
     die "deployment name \"${ENV_NAME}\" is not valid.
   It is also the subdomain of the address and the tail of the label on vast, so
   letters, digits and a hyphen inside are allowed: NAME=demo, NAME=hse-2026." ;;
+esac
+# Nor a name whose label is the machines' for submissions (RUNNER_LABEL):
+# such a deployment would be listed nowhere here, and rented again by every
+# vast-up, while runners-down would take it for a machine.
+case "$LABEL_BASE${ENV_NAME:+-$ENV_NAME}" in
+  "$RUNNER_LABEL"|"$RUNNER_LABEL"-*)
+    die "deployment name \"${ENV_NAME}\" would label its machine $LABEL_BASE${ENV_NAME:+-$ENV_NAME}, and $RUNNER_LABEL labels the machines for submissions (make vast-runner · runners-update · runners-down). Choose another name." ;;
 esac
 
 # The label and the backup directory derive from the name, so they are computed
@@ -371,13 +390,17 @@ INST_DPH=""; INST_GPU=""; INST_NGPU=""; INST_START=""; INST_MSG=""
 instances_tsv() {
   local raw out
   raw="$(api GET "instances/")" || die "could not ask vast about the instances."
-  out="$(printf '%s' "$raw" | WANT="${1:-}" BASE="$LABEL_BASE" py '
+  out="$(printf '%s' "$raw" | WANT="${1:-}" BASE="$LABEL_BASE" RUNNERS="$RUNNER_LABEL" py '
 import json, os, sys
 base = os.environ["BASE"]
 want = os.environ.get("WANT") or ""
+runners = os.environ["RUNNERS"]
 rows = []
 for i in (json.load(sys.stdin).get("instances") or []):
     label = i.get("label") or ""
+    # Machines for submissions are no deployment at all (RUNNER_LABEL says why).
+    if label == runners or label.startswith(runners + "-"):
+        continue
     # Other instances of this account are none of our business, and ours differ by
     # the tail of the label: "colloq" is the unnamed deployment, "colloq-hse" the
     # deployment hse.
@@ -414,6 +437,24 @@ print("\n".join(sorted(rows)))
 
 # How many lines the deployment table has. An empty string is zero, not one.
 env_count() { printf '%s\n' "$1" | grep -c . || true; }
+
+# A line about the machines for submissions this account rents, for status:
+# they are listed nowhere here (RUNNER_LABEL), yet they bill like any machine,
+# and "nothing is rented" must not be all a person reads while they run.
+# Nothing when there are none, or when vast cannot be asked.
+runner_note() {
+  local raw n
+  raw="$(api GET "instances/" 2>/dev/null)" || return 0
+  n="$(printf '%s' "$raw" | RUNNERS="$RUNNER_LABEL" py '
+import json, os, sys
+runners = os.environ["RUNNERS"]
+try: items = json.load(sys.stdin).get("instances") or []
+except Exception: items = []
+print(sum(1 for i in items if (i.get("label") or "") == runners or (i.get("label") or "").startswith(runners + "-")))
+' 2>/dev/null || true)"
+  case "$n" in ''|0) return 0 ;; esac
+  say "${DIM}machines for submissions rented too: $n (label ${RUNNER_LABEL}…), not deployments: make runners-update · make runners-down take care of them${OFF}"
+}
 
 # Finds the instance of the current deployment by label; returns 1 if there is none.
 load_instance() {
@@ -1461,6 +1502,7 @@ cmd_status() {
   if [ -z "$ENV_NAME" ]; then
     lines="$(instances_tsv)"
     n="$(env_count "$lines")"
+    runner_note
     if [ "$n" -gt 1 ]; then
       say "${BOLD}deployments rented: $n${OFF}"
       print_envs "$lines"

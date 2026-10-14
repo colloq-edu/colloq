@@ -23,13 +23,15 @@
  * has already started, which container it runs in and — most importantly —
  * which LIFE OF THE PROCESS started it (`boot`). A "running" row marked with
  * another life is an orphaned run: the container is gone, and nobody but
- * `orphanedRuns` will find out.
+ * `orphanedRuns` will find out. A running row a machine holds (`holder`) is
+ * no orphan of anyone here: the machine runs it, and this server counts it
+ * only in the fair order.
  */
 import { randomInt, randomUUID } from 'node:crypto'
 import { tr } from '@shared/i18n'
 import { db } from '../db.js'
 import { entrantKeyDigest, newEntrantKey, sealEntrantKey, unsealEntrantKey } from './key.js'
-import { removeCompetition as removeCompetitionFiles, pruneSubmissions } from './storage.js'
+import { removeCompetition as removeCompetitionFiles, openFileSha256, pruneSubmissions, sealedFileSha256 } from './storage.js'
 import { competitionDefaults } from './settings.js'
 /*
  * The rule by which a GPU run picks its card, called inside `takeNext`'s
@@ -37,6 +39,11 @@ import { competitionDefaults } from './settings.js'
  * module, so the import closes no cycle.
  */
 import { cardsInUse, pickRunnerGpu } from './gpu.js'
+/*
+ * A deleted competition's runs on machines go with it (deleteCompetition):
+ * the machines' store holds the rows, and reaches nothing of this module.
+ */
+import { deleteCompetitionLeases } from './remote/store.js'
 import { putSettingRow, settingRows } from '../admin/settings.js'
 import { instanceTimeZone } from '../time-zone.js'
 import {
@@ -125,7 +132,20 @@ const FILE_COLUMNS = `
     row_count      INTEGER,
     visibility     TEXT NOT NULL,
     uploaded_at    INTEGER NOT NULL,
+    sha256         TEXT,
     PRIMARY KEY (competition_id, visibility, name)`
+
+/*
+ * The columns that say WHAT a file is — every column of competition_files but
+ * its hash. An update of any of these is a change of the competition's inputs
+ * (the revision triggers below fire on them alone); an update of the hash
+ * alone is a fact learned about bytes that did not change, and must bump
+ * nothing: the lazy backfill (competitionFileHashes) would otherwise make
+ * every baseline check stale and send the teacher to run the sample notebook
+ * again for nothing. A column added to the table later belongs here unless it
+ * too only describes what is already there.
+ */
+const FILE_CONTENT_COLUMNS = 'competition_id, name, bytes, row_count, visibility, uploaded_at'
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS competitions (
@@ -382,6 +402,41 @@ ensureColumn('competition_queue', 'gpu', 'gpu TEXT')
  */
 ensureColumn('competition_queue', 'gpu_per_device', 'gpu_per_device INTEGER')
 ensureColumn('competition_queue', 'gpu_slice_mb', 'gpu_slice_mb INTEGER')
+/*
+ * Who holds a running row: NULL — this server, which is every row from
+ * before machines ran submissions and every row this server takes; otherwise
+ * the machine whose lease it is (docs/architecture/remote-runners.md §5.1).
+ * Whatever this server counts as ITS running work reads only its own rows —
+ * the slots it takes by, the card shares it hands out, the orphans of its
+ * previous life (selectRunning, selectCardLoad, countClusterGpuRuns,
+ * orphanedRuns) — because a machine's run holds none of this server's
+ * memory, cards or containers, and a restart here must not reclaim a run
+ * that is still going there. One thing counts every holder: the fair order
+ * (selectNext), so a person whose notebook runs on a machine lets the others
+ * go ahead exactly as one whose notebook runs here. A waiting row has no
+ * holder, whoever ran it last.
+ *
+ * `lost`: how many times a machine lost the row after its container had
+ * started; the third loss ends the submission as our failure, with no quota
+ * spent (decision 6). A new enqueue starts it over (upsertQueue): a rerun or
+ * a rescore is new work, not the same run lost again.
+ */
+ensureColumn('competition_queue', 'holder', 'holder TEXT')
+ensureColumn('competition_queue', 'lost', 'lost INTEGER NOT NULL DEFAULT 0')
+/*
+ * `fresh`: this metric row is the metric of a notebook that has already run
+ * — a machine's result turned into metric work (continueQueueAsMetric), or a
+ * notebook of ours whose metric could not start and was put off
+ * (deferResourceAttempt) — and not a rescore; it goes ahead of every rescore
+ * (selectNextScore). On the row, not read off the submission: the submission
+ * says «running» at its score stage for a fresh result and «queued» for a
+ * rescore, but a restart here (reclaimQueue) and a put-off metric both wrote
+ * «queued» over a fresh one, which then went behind every rescore of a bulk
+ * rescore it was ahead of. New work clears it (upsertQueue). 0.22 does not know
+ * the column and would leave it as it was on a row it enqueues again; the most
+ * that can come of that is one rescore taken first among rescores.
+ */
+ensureColumn('competition_queue', 'fresh', 'fresh INTEGER NOT NULL DEFAULT 0')
 
 // Revisions are durable database state, so direct runner/queue mutations cannot
 // bypass the live feed invalidation contract. Legacy scores have unknown inputs
@@ -435,6 +490,26 @@ ensureColumn('submissions', 'sealed_inputs', 'sealed_inputs INTEGER NOT NULL DEF
 ensureColumn('submissions', 'brief_error', 'brief_error TEXT')
 ensureColumn('submissions', 'error_type', 'error_type TEXT')
 ensureColumn('submission_runs', 'sealed_inputs', 'sealed_inputs INTEGER NOT NULL DEFAULT 0')
+/*
+ * The environment revision a METRIC run scored in (SubmissionRun.revisionId):
+ * the submission's pinned one, or, for a competition with a card, the light
+ * kaggle-base revision this server had ready (runner.ts · gpuScoringImage,
+ * decision 2) — so a score can always be traced to the image that computed
+ * it. NULL for every notebook run (its revision is the submission's own pin,
+ * submission_environments), for a metric under the stand-in runner without
+ * a pin, and for every row from before it.
+ */
+ensureColumn('submission_runs', 'revision_id', 'revision_id TEXT')
+/*
+ * The sha256 of an open or hidden-test file (the content address a machine
+ * that runs submissions asks for it by), written at upload from the bytes in
+ * hand (storage.ts · putOpenFile). NULL for every row uploaded before it and
+ * for the answers, which are never handed out by hash; the open and hidden
+ * rows get theirs lazily (competitionFileHashes). A new nullable column, which
+ * older code never reads; what an older server's re-upload would leave in it
+ * is cleared by a trigger (fileHashTriggers).
+ */
+ensureColumn('competition_files', 'sha256', 'sha256 TEXT')
 /*
  * The course a competition belongs to (Competition.courseId). Null for every
  * existing row: a competition made before courses had teachers belongs to no
@@ -530,7 +605,7 @@ export function rekeyCompetitionFiles(): boolean {
       ALTER TABLE competition_files_rekeyed RENAME TO competition_files;
       CREATE INDEX IF NOT EXISTS competition_files_of ON competition_files(competition_id, visibility);
     `)
-    revisionTriggers()
+    competitionTriggers()
   })()
   return true
 }
@@ -607,28 +682,70 @@ db.exec(`
  * either makes the sample notebook's check stale. The triggers carry new names
  * because `CREATE TRIGGER IF NOT EXISTS` cannot change an existing one, and the
  * old ones (open files only) are dropped wherever they still are.
+ *
+ * A file's UPDATE fires only on the columns that say what the file is
+ * (FILE_CONTENT_COLUMNS), not on its hash. Those two triggers keep their names
+ * and are replaced where an older start made them fire on any update: an
+ * older server rolled back to finds them under the names it knows and leaves
+ * them, and its upsert names `bytes`, so they fire for it as they always did.
  */
 function revisionTriggers(): void {
   const NOTEBOOK_FILE = "IN ('open', 'sealed')"
   for (const table of ['submissions', 'competition_queue', 'competition_entrants', 'competition_files']) {
     for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
       const row = operation === 'DELETE' ? 'OLD' : 'NEW'
+      const event = table === 'competition_files' && operation === 'UPDATE' ? `UPDATE OF ${FILE_CONTENT_COLUMNS}` : operation
       if (table === 'competition_files') {
+        const name = `competition_files_${operation.toLowerCase()}_notebook_inputs`
         db.exec(`DROP TRIGGER IF EXISTS competition_files_${operation.toLowerCase()}_notebook_revision`)
-        db.exec(`CREATE TRIGGER IF NOT EXISTS competition_files_${operation.toLowerCase()}_notebook_inputs
-        AFTER ${operation} ON competition_files
+        if (operation === 'UPDATE') dropUnlessColumnScoped(name)
+        db.exec(`CREATE TRIGGER IF NOT EXISTS ${name}
+        AFTER ${event} ON competition_files
         WHEN ${operation === 'UPDATE' ? `OLD.visibility ${NOTEBOOK_FILE} OR NEW.visibility ${NOTEBOOK_FILE}` : `${row}.visibility ${NOTEBOOK_FILE}`}
         BEGIN UPDATE competitions SET notebook_input_revision = notebook_input_revision + 1 WHERE id = ${row}.competition_id; END;`)
       }
+      if (table === 'competition_files' && operation === 'UPDATE') dropUnlessColumnScoped(`${table}_update_revision`)
       db.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_${operation.toLowerCase()}_revision
-        AFTER ${operation} ON ${table}
+        AFTER ${event} ON ${table}
         BEGIN UPDATE competitions SET revision = revision + 1
           ${table === 'competition_files' ? ', input_revision = input_revision + 1' : ''}
           WHERE id = ${row}.competition_id; END;`)
     }
   }
 }
-revisionTriggers()
+
+/** Drop a trigger of competition_files made by an older start, one that fires on any update. */
+function dropUnlessColumnScoped(name: string): void {
+  const found = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(name) as { sql: string } | undefined
+  if (found && !/\bUPDATE\s+OF\b/i.test(found.sql)) db.exec(`DROP TRIGGER ${name}`)
+}
+
+/*
+ * A file's hash belongs to the bytes of the upload that wrote it. A re-upload
+ * that does not set a new one (an older server's upsert, which knows nothing
+ * of the column, or ours before it writes the hash it took: putFile) leaves
+ * the old hash naming bytes that are gone, so it is forgotten, and the file
+ * gets its own from the disk lazily (competitionFileHashes). Only the hash is
+ * touched, so nothing above fires again.
+ */
+function fileHashTriggers(): void {
+  db.exec(`CREATE TRIGGER IF NOT EXISTS competition_files_hash_forgotten
+    AFTER UPDATE OF bytes, uploaded_at ON competition_files
+    WHEN NEW.sha256 IS OLD.sha256 AND NEW.sha256 IS NOT NULL
+    BEGIN UPDATE competition_files SET sha256 = NULL
+      WHERE competition_id = NEW.competition_id AND visibility = NEW.visibility AND name = NEW.name; END;`)
+}
+
+/**
+ * The triggers of the competition tables, made where missing and brought up
+ * to date where an older start made them: at startup, after the files table
+ * is rebuilt (rekeyCompetitionFiles), and by the migration test. Idempotent.
+ */
+export function competitionTriggers(): void {
+  revisionTriggers()
+  fileHashTriggers()
+}
+competitionTriggers()
 rekeyCompetitionFiles()
 
 /** Replacing an artifact without a competition_files row (the baseline). */
@@ -1059,6 +1176,8 @@ export function deleteCompetition(id: string): boolean | 'running' {
     // The participants themselves stay: a person lives on the instance, not
     // in a competition, and their key must still let them into the others.
     db.prepare('DELETE FROM competition_entrants WHERE competition_id = ?').run(competitionId)
+    // Its runs on machines with them, outputs and log lines (remote/store.ts · deleteCompetitionLeases).
+    deleteCompetitionLeases(competitionId)
     return deleteCompetitionRow.run(competitionId).changes
   })(id)
   if (rows === 'running') return 'running'
@@ -1081,6 +1200,7 @@ interface FileRow {
   row_count: number | null
   visibility: string
   uploaded_at: number
+  sha256: string | null
 }
 
 function toFile(row: FileRow): CompetitionFile {
@@ -1094,14 +1214,39 @@ function toFile(row: FileRow): CompetitionFile {
   }
 }
 
+/*
+ * The hash is not in the DO UPDATE: a re-upload forgets the old one by trigger
+ * (fileHashTriggers), whoever's upsert it is, and putFile then writes the new
+ * one, alone, which fires nothing.
+ */
 const upsertFile = db.prepare(`
-  INSERT INTO competition_files (competition_id, name, bytes, row_count, visibility, uploaded_at)
-  VALUES (@competition_id, @name, @bytes, @row_count, @visibility, @uploaded_at)
+  INSERT INTO competition_files (competition_id, name, bytes, row_count, visibility, uploaded_at, sha256)
+  VALUES (@competition_id, @name, @bytes, @row_count, @visibility, @uploaded_at, @sha256)
   ON CONFLICT(competition_id, visibility, name) DO UPDATE SET
     bytes = excluded.bytes,
     row_count = excluded.row_count,
     uploaded_at = excluded.uploaded_at
 `)
+const writeFileHash = db.prepare(
+  'UPDATE competition_files SET sha256 = @sha256 WHERE competition_id = @competition_id AND visibility = @visibility AND name = @name',
+)
+/*
+ * The backfill's write, for the upload it read and no other: a row re-uploaded
+ * while the file was being hashed has a new uploaded_at (and, from this door, a
+ * hash of its own already), and the hash taken is of bytes that are gone.
+ */
+const fillFileHash = db.prepare(`
+  UPDATE competition_files SET sha256 = @sha256
+  WHERE competition_id = @competition_id AND visibility = @visibility AND name = @name
+    AND sha256 IS NULL AND uploaded_at = @uploaded_at AND bytes = @bytes
+`)
+const SHA256 = /^[a-f0-9]{64}$/
+const writeFileRow = db.transaction((row: Record<string, unknown> & { sha256: string | null }) => {
+  upsertFile.run(row)
+  // After the upsert, alone: a re-upload of the same bytes forgot the hash it
+  // brings back (fileHashTriggers), and a write of the hash bumps no revision.
+  if (row.sha256) writeFileHash.run({ competition_id: row.competition_id, visibility: row.visibility, name: row.name, sha256: row.sha256 })
+})
 const selectFiles = db.prepare(
   'SELECT * FROM competition_files WHERE competition_id = ? ORDER BY name',
 )
@@ -1119,6 +1264,15 @@ const sumBytesOf = db.prepare(
    WHERE competition_id = ? AND visibility = ?`,
 )
 
+/**
+ * Record a file the disk now holds (storage.ts · putOpenFile and its kin).
+ *
+ * `sha256` is the hash the upload took of the bytes it wrote; without one the
+ * row has none, and an open or hidden-test file gets it from the disk when it
+ * is first asked for (competitionFileHashes). The answers never keep one, even
+ * if handed one: a row with a hash is a row that may be asked for by it, and
+ * no door hands the answers out.
+ */
 export function putFile(input: {
   competitionId: string
   name: string
@@ -1126,17 +1280,75 @@ export function putFile(input: {
   rows?: number | null
   visibility: FileVisibility
   at?: number
+  sha256?: string | null
 }): CompetitionFile {
   const name = clip(input.name, LIMITS.fileName)
-  upsertFile.run({
+  writeFileRow({
     competition_id: input.competitionId,
     name,
     bytes: input.bytes,
     row_count: input.rows ?? null,
     visibility: input.visibility,
     uploaded_at: input.at ?? Date.now(),
+    sha256: input.visibility !== 'hidden' && typeof input.sha256 === 'string' && SHA256.test(input.sha256) ? input.sha256 : null,
   })
   return toFile(selectFile.get(input.competitionId, input.visibility, name) as FileRow)
+}
+
+/** A data file as a machine that runs submissions asks for it: its name, size and content hash. */
+export interface HashedFile {
+  name: string
+  bytes: number
+  /** The sha256 of its bytes (hex); `null` — the file is not on disk as its row describes it. */
+  sha256: string | null
+}
+
+/**
+ * The competition's open files, or its hidden test, each with the sha256 of
+ * its bytes, filling in the hashes rows uploaded before 0.23 lack.
+ *
+ * Lazily, and once: the first ask reads such a file from the disk (storage.ts
+ * · openFileSha256, which a repeated ask about the same unchanged file costs
+ * one stat) and writes the hash into the row, so the next one reads only the
+ * row. The write is a fact about bytes that did not change: it bumps no
+ * revision (FILE_CONTENT_COLUMNS), and the sample notebook's check stays
+ * valid. A file whose size disagrees with its row, that is gone, or that
+ * cannot be read gets no hash: whatever is on disk is not what the row lists,
+ * and the next ask tries again. The answers are not asked for here: there is
+ * no door that hands them out by hash.
+ *
+ * Each row is read again right before its file is opened, in the same tick: an
+ * upload writes the disk and the row in one synchronous step
+ * (routes/admin-competitions.ts), so the pair is one upload's, and the guarded
+ * write (fillFileHash) refuses a hash whose upload has been replaced since. The
+ * answer is what the rows say once the pass is done.
+ */
+export async function competitionFileHashes(competitionId: string, visibility: 'open' | 'sealed'): Promise<HashedFile[]> {
+  const hashOf = visibility === 'open' ? openFileSha256 : sealedFileSha256
+  const out: HashedFile[] = []
+  for (const { name } of selectFilesOf.all(competitionId, visibility) as FileRow[]) {
+    let row = selectFile.get(competitionId, visibility, name) as FileRow | undefined
+    if (row && !row.sha256) {
+      const found = await hashOf(competitionId, name).catch(() => null)
+      if (found && found.bytes === row.bytes) {
+        fillFileHash.run({ competition_id: competitionId, visibility, name, sha256: found.sha256, uploaded_at: row.uploaded_at, bytes: row.bytes })
+      }
+      row = selectFile.get(competitionId, visibility, name) as FileRow | undefined
+    }
+    if (row) out.push({ name: row.name, bytes: row.bytes, sha256: row.sha256 ?? null })
+  }
+  return out
+}
+
+/**
+ * The same list as the rows say it NOW, without reading a byte: for the take
+ * of a machine that runs submissions (competitions/remote/lease.ts), which is
+ * one synchronous transaction and builds a lease's data manifest from these.
+ * A row still without its hash reads `null`, and its competition is not
+ * leased until competitionFileHashes has filled it in.
+ */
+export function fileHashesNow(competitionId: string, visibility: 'open' | 'sealed'): HashedFile[] {
+  return (selectFilesOf.all(competitionId, visibility) as FileRow[]).map((row) => ({ name: row.name, bytes: row.bytes, sha256: row.sha256 ?? null }))
 }
 
 export function listFiles(id: string, visibility?: FileVisibility): CompetitionFile[] {
@@ -2184,12 +2396,15 @@ interface RunRow {
   private_score: number | null
   participant_error: string | null
   teacher_error: string | null
+  revision_id?: string | null
 }
 
 function toRun(row: RunRow): SubmissionRun {
   return {
     attemptId: row.attempt_id,
     inputRevision: row.input_revision,
+    // Only where one is recorded (a metric run): every other run reads as it always did.
+    ...(row.revision_id ? { revisionId: row.revision_id } : {}),
     id: row.id,
     submissionId: row.submission_id,
     seq: row.seq,
@@ -2210,8 +2425,8 @@ function toRun(row: RunRow): SubmissionRun {
 }
 
 const insertRun = db.prepare(`
-  INSERT INTO submission_runs (id, submission_id, seq, kind, started_at, container, attempt_id, input_revision, sealed_inputs)
-  VALUES (@id, @submission_id, @seq, @kind, @at, @container, @attempt_id, @input_revision, @sealed_inputs)
+  INSERT INTO submission_runs (id, submission_id, seq, kind, started_at, container, attempt_id, input_revision, sealed_inputs, revision_id)
+  VALUES (@id, @submission_id, @seq, @kind, @at, @container, @attempt_id, @input_revision, @sealed_inputs, @revision_id)
 `)
 /* Sticky: once a run of the submission has read the hidden test, it stays blind (Submission.sealedInputs). */
 const markSealed = db.prepare('UPDATE submissions SET sealed_inputs = 1 WHERE id = ?')
@@ -2233,6 +2448,8 @@ export const startRun = db.transaction(
     at?: number
     /** The notebook reads the hidden test in this run. */
     sealedInputs?: boolean
+    /** The environment revision a metric run scores in (submission_runs.revision_id). */
+    revisionId?: string | null
   }): SubmissionRun => {
     const id = newId()
     if (input.sealedInputs) markSealed.run(input.submissionId)
@@ -2246,6 +2463,7 @@ export const startRun = db.transaction(
       attempt_id: input.attemptId ?? null,
       input_revision: input.inputRevision ?? null,
       sealed_inputs: input.sealedInputs ? 1 : 0,
+      revision_id: input.revisionId ?? null,
     })
     return toRun(selectRun.get(id) as RunRow)
   },
@@ -2362,6 +2580,18 @@ export interface QueueRow {
    * card has said its size (runner.ts · runGpu), or when it cannot.
    */
   gpuSliceMb: number | null
+  /**
+   * The machine whose lease this running row is (competition_queue.holder);
+   * `null` — this server's own run, and every waiting row.
+   */
+  holder: string | null
+  /** Losses on machines after the container started (competition_queue.lost). */
+  lost: number
+  /**
+   * A metric row that is the metric of a notebook which has already run, not
+   * a rescore (competition_queue.fresh): it goes ahead of every rescore.
+   */
+  fresh: boolean
 }
 
 interface QueueRowRaw {
@@ -2384,6 +2614,9 @@ interface QueueRowRaw {
   gpu: string | null
   gpu_per_device?: number | null
   gpu_slice_mb?: number | null
+  holder?: string | null
+  lost?: number
+  fresh?: number
   /** Only from `selectNext`: whether this work needs a card share (NEEDS_CARD). */
   needs_gpu?: number
 }
@@ -2409,13 +2642,17 @@ function toQueueRow(row: QueueRowRaw): QueueRow {
     gpu: row.gpu ?? null,
     gpuPerDevice: row.gpu_per_device ?? null,
     gpuSliceMb: row.gpu_slice_mb ?? null,
+    holder: row.holder ?? null,
+    lost: row.lost ?? 0,
+    fresh: row.fresh === 1,
   }
 }
 
 /** A row letting its card go: the card and what was promised on it go together. */
 const NO_CARD = 'gpu = NULL, gpu_per_device = NULL, gpu_slice_mb = NULL'
 
-// A waiting row never holds a card: a row put back into waiting lets its card go.
+// A waiting row never holds a card, nor has a holder: a row put back into waiting lets both go.
+// New work starts its losses over (competition_queue.lost), and is no fresh result (competition_queue.fresh).
 const upsertQueue = db.prepare(`
   INSERT INTO competition_queue
     (submission_id, competition_id, entrant_id, kind, state, enqueued_at, turn, late)
@@ -2434,6 +2671,9 @@ const upsertQueue = db.prepare(`
     container = NULL,
     attempt_id = NULL,
     pending_kind = NULL,
+    holder = NULL,
+    lost = 0,
+    fresh = 0,
     ${NO_CARD}
   WHERE competition_queue.state != 'running'
 `)
@@ -2443,21 +2683,38 @@ const selectQueue = db.prepare(`
   ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END, enqueued_at, submission_id
 `)
 const selectQueueRow = db.prepare('SELECT * FROM competition_queue WHERE submission_id = ?')
-const selectRunning = db.prepare(`SELECT * FROM competition_queue WHERE state = 'running'`)
+/*
+ * The rows THIS server runs (competition_queue.holder): what its slots, its
+ * cards, its neighbour checks and «Работают сейчас» count. A machine's running
+ * row stays in the queue — in queueRows, in the fair order — and takes none
+ * of this.
+ */
+const selectRunning = db.prepare(`SELECT * FROM competition_queue WHERE state = 'running' AND holder IS NULL`)
+/* How many of them, in one lane or all together (QueueLane): what a take compares with its places. */
+const countRunningHere = db.prepare(`
+  SELECT COUNT(*) AS n FROM competition_queue
+  WHERE state = 'running' AND holder IS NULL AND (@kind IS NULL OR kind = @kind)
+`)
 const deleteQueueRow = db.prepare('DELETE FROM competition_queue WHERE submission_id = ?')
 const countWaiting = db.prepare(
   `SELECT COUNT(*) AS n FROM competition_queue WHERE state = 'waiting'`,
+)
+const countWaitingOf = db.prepare(
+  `SELECT COUNT(*) AS n FROM competition_queue WHERE state = 'waiting' AND kind = ?`,
+)
+const countFreshWaiting = db.prepare(
+  `SELECT COUNT(*) AS n FROM competition_queue WHERE state = 'waiting' AND kind = 'metric' AND fresh = 1`,
 )
 const markRunning = db.prepare(`
   UPDATE competition_queue
   SET state = 'running', started_at = @at, attempts = attempts + 1, boot = @boot,
       container = @container, attempt_id = @attempt_id, gpu = @gpu,
-      gpu_per_device = @gpu_per_device, gpu_slice_mb = NULL
+      gpu_per_device = @gpu_per_device, gpu_slice_mb = NULL, holder = @holder
   WHERE submission_id = @submission_id
 `)
 const markWaiting = db.prepare(`
   UPDATE competition_queue
-  SET state = 'waiting', started_at = NULL, boot = NULL, container = NULL, attempt_id = NULL, not_before = 0, ${NO_CARD}
+  SET state = 'waiting', started_at = NULL, boot = NULL, container = NULL, attempt_id = NULL, not_before = 0, holder = NULL, ${NO_CARD}
   WHERE submission_id = ?
 `)
 const noteContainer = db.prepare(
@@ -2500,12 +2757,43 @@ export function queueRow(submissionId: string): QueueRow | null {
   return row ? toQueueRow(row) : null
 }
 
+/** This server's running rows (selectRunning); a machine's are not among them. */
 export function runningRows(): QueueRow[] {
   return (selectRunning.all() as QueueRowRaw[]).map(toQueueRow)
 }
 
-export function waitingCount(): number {
-  return (countWaiting.get() as { n: number }).n
+/**
+ * The two lanes of this server's pump (runner.ts · pumpOnce,
+ * docs/architecture/remote-runners.md §5.3).
+ *
+ * `notebook` — notebook runs; a notebook run here keeps its metric under the
+ * same lease, so the row stays `notebook` until both steps end, exactly as
+ * before the lanes. `metric` — metric-only work: a rescore, and the metric of
+ * a notebook a machine ran (runner.ts · continueAsMetric). Each lane takes
+ * only its own kind and counts only its own running rows against its own
+ * places, so a hundred rescores never hold a notebook's slot, and no notebook
+ * keeps a fresh result's metric waiting. The places are each lane's own, the
+ * memory is one: when it fits only one lane's next work, the one that has
+ * waited longer takes it (runner.ts · takeLanes, panel.ts · laneHeadOrder).
+ *
+ * No lane — any work, against every running row of this server: how the
+ * queue took work before the lanes, kept for the callers from before them.
+ */
+export type QueueLane = 'notebook' | 'metric'
+
+/** This server's running rows in one lane, or all of them: what a take compares with its places. */
+export function runningCount(lane?: QueueLane): number {
+  return (countRunningHere.get({ kind: lane ?? null }) as { n: number }).n
+}
+
+/**
+ * Waiting work, of one lane's kind or of any (QueueLane). `paused` — only the
+ * work a pause does not hold: a fresh result's metric (selectNextScore).
+ */
+export function waitingCount(lane?: QueueLane, paused = false): number {
+  if (paused) return lane === 'notebook' ? 0 : (countFreshWaiting.get() as { n: number }).n
+  if (!lane) return (countWaiting.get() as { n: number }).n
+  return (countWaitingOf.get(lane) as { n: number }).n
 }
 
 /*
@@ -2549,23 +2837,64 @@ const NEEDS_CARD = `(q.kind = 'notebook' AND EXISTS
  * a GPU notebook waiting for a card must not hold up the CPU work behind it,
  * and CPU work never makes a GPU notebook wait for anything but a general
  * slot — the moment a share frees, the GPU notebook is first again in the
- * place the keys give it. panel.ts · queueEtas simulates exactly this.
+ * place the keys give it. panel.ts · queueEtas and laneEtas simulate exactly
+ * this.
  *
  * Computed in SQL, not in memory, because the queue is database state, and
  * two processes (the server and, one day, a separate runner) must see one and
  * the same answer.
+ *
+ * "Something running" counts the person's running rows WHEREVER they run —
+ * here or on a machine that runs submissions (competition_queue.holder): a
+ * person whose notebook is on a machine occupies the executor just as much.
+ * panel.ts · fairOrder copies this count, and the two must not part.
+ *
+ * `@kind` keeps the selection to one lane's work (QueueLane); NULL — any.
  */
-const selectNext = db.prepare(`
-  SELECT q.*, ${NEEDS_CARD} AS needs_gpu FROM competition_queue q
-  WHERE q.state = 'waiting' AND q.not_before <= @at
-    AND (@card_free = 1 OR NOT ${NEEDS_CARD})
-  ORDER BY
+const FAIR_ORDER = `
     q.late ASC,
     (SELECT COUNT(*) FROM competition_queue r
       WHERE r.state = 'running' AND r.entrant_id = q.entrant_id) ASC,
     q.turn ASC,
     q.enqueued_at ASC,
-    q.submission_id ASC
+    q.submission_id ASC`
+const selectNext = db.prepare(`
+  SELECT q.*, ${NEEDS_CARD} AS needs_gpu FROM competition_queue q
+  WHERE q.state = 'waiting' AND q.not_before <= @at
+    AND (@card_free = 1 OR NOT ${NEEDS_CARD})
+    AND (@kind IS NULL OR q.kind = @kind)
+  ORDER BY ${FAIR_ORDER}
+  LIMIT 1
+`)
+
+/*
+ * The metric lane's order (QueueLane `metric`): a fresh result before a
+ * rescore, then the fair order above within each. A fresh result is the
+ * metric of a notebook that has already run — on a machine (runner.ts ·
+ * continueAsMetric), or here with its metric put off (deferResourceAttempt) —
+ * and the row says so itself (competition_queue.fresh). A rescore after a
+ * metric fix is a hundred rows at once, and behind them a participant who has
+ * just watched their notebook finish would wait minutes for a number the
+ * machine has already earned. It used to be read off the submission
+ * («running» at its score stage), which a restart here rewrote to «queued»:
+ * the result whose metric the restart cut off then went behind every rescore.
+ * panel.ts · scoreOrder is the same order for the screens. No card filter: a
+ * metric never gets a card (NEEDS_CARD is only ever a notebook's).
+ *
+ * `@paused` — the queue is paused, and only a fresh result is taken. Its
+ * notebook has run, and its metric is the second half of work under way,
+ * which a pause does not touch: a run here keeps its metric under its own
+ * lease whatever the pause, and a machine's result, held, stayed «оценивается»
+ * with no score for the whole pause while its participant's next upload was
+ * refused as in flight. A rescore is new work, and waits for the pause to end.
+ */
+const selectNextScore = db.prepare(`
+  SELECT q.*, 0 AS needs_gpu FROM competition_queue q
+  WHERE q.state = 'waiting' AND q.not_before <= @at AND q.kind = 'metric'
+    AND (@paused = 0 OR q.fresh = 1)
+  ORDER BY
+    q.fresh DESC,
+    ${FAIR_ORDER}
   LIMIT 1
 `)
 
@@ -2598,14 +2927,22 @@ export interface QueueGpu {
   cluster?: number
 }
 
+/*
+ * The shares of THIS server's cards its running rows hold, and under the
+ * cluster its own GPU notebooks — never a machine's (competition_queue.holder).
+ * A machine's cards are its own, and never enter competition_queue.gpu; but a
+ * machine's GPU notebook has no card here (gpu NULL) and needs one by
+ * NEEDS_CARD, so without the holder it would count as one of the cluster's
+ * places, and take one from this server.
+ */
 const selectCardLoad = db.prepare(`
   SELECT gpu, gpu_per_device FROM competition_queue
-  WHERE state = 'running' AND gpu IS NOT NULL
+  WHERE state = 'running' AND gpu IS NOT NULL AND holder IS NULL
 `)
 
 const countClusterGpuRuns = db.prepare(`
   SELECT COUNT(*) AS n FROM competition_queue q
-  WHERE q.state = 'running' AND q.gpu IS NULL AND ${NEEDS_CARD}
+  WHERE q.state = 'running' AND q.gpu IS NULL AND q.holder IS NULL AND ${NEEDS_CARD}
 `)
 
 /**
@@ -2633,15 +2970,31 @@ function cardFree(gpu: QueueGpu | undefined, share: unknown): 0 | 1 {
 }
 
 /**
- * The work the next take would start, without taking it — what the pump
- * admits for memory before it takes. `gpu` must be the one the take gets:
- * the same filter over the same rows names the same work, and an admission
- * for one job followed by the take of another is a reservation sized for
- * the wrong submission.
+ * The next work of a lane (QueueLane; any work without one), and the card
+ * share it would be given. The metric lane has its own order and no card: a
+ * metric never gets one, whatever is free; and under a pause it names only a
+ * fresh result (selectNextScore).
  */
-export function nextQueueRow(at = Date.now(), gpu?: QueueGpu): QueueRow | null {
-  const row = selectNext.get({ at, card_free: cardFree(gpu, gpu ? freeShare(gpu) : null) }) as QueueRowRaw | undefined
-  return row ? toQueueRow(row) : null
+function pickNext(at: number, gpu: QueueGpu | undefined, lane: QueueLane | undefined): { row: QueueRowRaw; share: ReturnType<typeof freeShare> } | null {
+  if (lane === 'metric') {
+    const row = selectNextScore.get({ at, paused: queuePaused() ? 1 : 0 }) as QueueRowRaw | undefined
+    return row ? { row, share: null } : null
+  }
+  const share = gpu ? freeShare(gpu) : null
+  const row = selectNext.get({ at, card_free: cardFree(gpu, share), kind: lane ?? null }) as QueueRowRaw | undefined
+  return row ? { row, share } : null
+}
+
+/**
+ * The work the next take would start, without taking it — what the pump
+ * admits for memory before it takes. `gpu` and `lane` must be the ones the
+ * take gets: the same filter over the same rows names the same work, and an
+ * admission for one job followed by the take of another is a reservation
+ * sized for the wrong submission.
+ */
+export function nextQueueRow(at = Date.now(), gpu?: QueueGpu, lane?: QueueLane): QueueRow | null {
+  const next = pickNext(at, gpu, lane)
+  return next ? toQueueRow(next.row) : null
 }
 
 const selectCardWork = db.prepare(`
@@ -2674,16 +3027,23 @@ export function cardWorkWaiting(at = Date.now()): boolean {
  * "one share left" on a card would otherwise both put a run on it. The card
  * goes only to work that needs one; any other work takes none, whatever is
  * free.
+ *
+ * `lane` — one lane of the pump (QueueLane): its own work against its own
+ * places (`slots`), counted over this server's running rows of that lane
+ * only. A row a machine holds is neither taken (it is running) nor counted
+ * (it holds nothing here); the row taken here has no holder. Under a pause
+ * the metric lane still takes a fresh result, the rest of work under way
+ * (selectNextScore); nothing else is taken.
  */
 export const takeNext = db.transaction(
-  (opts: { boot?: string; at?: number; slots?: number; gpu?: QueueGpu } = {}): QueueRow | null => {
-    if (queuePaused()) return null
+  (opts: { boot?: string; at?: number; slots?: number; gpu?: QueueGpu; lane?: QueueLane } = {}): QueueRow | null => {
+    if (queuePaused() && opts.lane !== 'metric') return null
     const slots = opts.slots ?? 1
-    if ((selectRunning.all() as QueueRowRaw[]).length >= slots) return null
+    if (runningCount(opts.lane) >= slots) return null
     const at = opts.at ?? Date.now()
-    const share = opts.gpu ? freeShare(opts.gpu) : null
-    const row = selectNext.get({ at, card_free: cardFree(opts.gpu, share) }) as QueueRowRaw | undefined
-    if (!row) return null
+    const next = pickNext(at, opts.gpu, opts.lane)
+    if (!next) return null
+    const { row, share } = next
     const card = opts.gpu && row.needs_gpu === 1 ? share : null
     markRunning.run({
       submission_id: row.submission_id,
@@ -2698,6 +3058,7 @@ export const takeNext = db.transaction(
       gpu: card?.device ?? null,
       // The share is pinned with the card: the run is built from it, whatever the owner sets next.
       gpu_per_device: card?.device ? card.perDevice : null,
+      holder: null,
     })
     return toQueueRow(selectQueueRow.get(row.submission_id) as QueueRowRaw)
   },
@@ -2728,18 +3089,27 @@ export function ownsQueueAttempt(row: QueueRow): boolean {
 
 /** A Pod denied by the scheduler has not executed user code. Keep the durable
  * queue row, postpone its next claim, and leave restart attempt accounting
- * unchanged. A newly requested pending kind starts immediately. */
+ * unchanged. A newly requested pending kind starts immediately.
+ *
+ * A metric put off this way is a fresh result's (competition_queue.fresh)
+ * when it was one already, or when the notebook before it has just run here
+ * and only its metric could not start: it keeps its place ahead of every
+ * rescore, and its submission keeps reading «running» at its score stage. A
+ * fresh result written «queued» here went behind a bulk rescore it was ahead
+ * of, and its participant read «в очереди» about a notebook that had run. */
 export const deferResourceAttempt=db.transaction((row:QueueRow,reason:string,at=Date.now(),teacherReason=reason,nextKind:RunKind=row.kind):number|null=>{
   if(!ownsQueueAttempt(row))return null
   const current=queueRow(row.submissionId)!
-  const fresh=!!current.pendingKind
-  const delay=fresh?0:Math.min(60_000,5_000*2**Math.min(4,current.resourceRetries))
+  const asked=!!current.pendingKind
+  const delay=asked?0:Math.min(60_000,5_000*2**Math.min(4,current.resourceRetries))
   const notBefore=at+delay
+  const fresh=!asked&&nextKind==='metric'&&(current.fresh||row.kind==='notebook')
+  // A waiting row has no holder: a machine's run crowded off its card (crowded) waits like one of ours.
   db.prepare(`UPDATE competition_queue SET kind=COALESCE(pending_kind,?),pending_kind=NULL,state='waiting',
-    started_at=NULL,boot=NULL,container=NULL,attempt_id=NULL,${NO_CARD},attempts=?,resource_retries=?,not_before=?
-    WHERE submission_id=? AND attempt_id=?`).run(nextKind,fresh?0:Math.max(0,current.attempts-1),fresh?0:current.resourceRetries+1,notBefore,row.submissionId,row.attemptId)
+    started_at=NULL,boot=NULL,container=NULL,attempt_id=NULL,holder=NULL,${NO_CARD},attempts=?,resource_retries=?,not_before=?,fresh=?
+    WHERE submission_id=? AND attempt_id=?`).run(nextKind,asked?0:Math.max(0,current.attempts-1),asked?0:current.resourceRetries+1,notBefore,fresh?1:0,row.submissionId,row.attemptId)
   // Our own words about the queue: safe to show a blind participant as they are.
-  updateSubmission(row.submissionId,{state:'queued',stage:'queue',participantError:reason,briefError:reason,teacherError:teacherReason})
+  updateSubmission(row.submissionId,{...(fresh?{state:'running',stage:'score'}:{state:'queued',stage:'queue'}),participantError:reason,briefError:reason,teacherError:teacherReason})
   return notBefore
 })
 
@@ -2747,21 +3117,206 @@ export const finishQueueAttempt = db.transaction((row: QueueRow): boolean => {
   if (!ownsQueueAttempt(row)) return false
   const current = queueRow(row.submissionId)!
   if (current.pendingKind) {
-    // Back to waiting for the work asked meanwhile: the card goes with the attempt that held it.
-    db.prepare(`UPDATE competition_queue SET kind = pending_kind, pending_kind = NULL, state = 'waiting', started_at = NULL, container = NULL, boot = NULL, attempt_id = NULL, ${NO_CARD}, attempts = 0,resource_retries=0,not_before=0 WHERE submission_id = ? AND attempt_id = ?`).run(row.submissionId, row.attemptId)
+    // Back to waiting for the work asked meanwhile: the card goes with the attempt that held it, and a rescore or a rerun is no fresh result.
+    db.prepare(`UPDATE competition_queue SET kind = pending_kind, pending_kind = NULL, state = 'waiting', started_at = NULL, container = NULL, boot = NULL, attempt_id = NULL, holder = NULL, ${NO_CARD}, attempts = 0,resource_retries=0,not_before=0,fresh=0 WHERE submission_id = ? AND attempt_id = ?`).run(row.submissionId, row.attemptId)
     updateSubmission(row.submissionId, { state: 'queued', stage: 'queue', publicScore: null, privateScore: null })
   } else db.prepare('DELETE FROM competition_queue WHERE submission_id = ? AND attempt_id = ?').run(row.submissionId, row.attemptId)
   return true
 })
+
+/**
+ * A notebook a machine ran is over, its answer promoted (runner.ts ·
+ * continueAsMetric): the row becomes this server's metric work, in the
+ * metric lane, and the submission says how long the notebook took. One
+ * transaction, fenced on the attempt and its holder, so a late or repeated
+ * outcome changes nothing; `null` — the attempt is not this row's any more.
+ *
+ * The row keeps its place: its turn, its arrival and its lateness are the
+ * submission's, not the machine's, and a result that comes back must not go
+ * behind every upload sent while its notebook ran. It starts over as new
+ * work of this server: no holder, no attempts, no retries — a metric lost to
+ * a restart here is this server's to reclaim (reclaimQueue), as any rescore.
+ * `durationMs` is the notebook's wall: the metric adds its own to it
+ * (runner.ts · scoreOnly → scoreStep), so the total reads as for a run here.
+ * The row is marked a fresh result (competition_queue.fresh), which is what
+ * puts it ahead of every rescore (selectNextScore), and the submission stays
+ * «running», at its score stage, which is what its participant reads.
+ *
+ * Work asked for meanwhile — a rerun, a rescore (`pending_kind`) — replaces
+ * the metric, exactly as finishQueueAttempt lets it replace the rest of a
+ * run here, and the submission waits for it as «queued»: no fresh result,
+ * work like any other of its kind. Returns the kind the row now waits for.
+ */
+export const continueQueueAsMetric = db.transaction(
+  (row: QueueRow, notebook: { durationMs: number; cellsDone: number; cellsTotal: number }): RunKind | null => {
+    if (!ownsQueueAttempt(row)) return null
+    const current = queueRow(row.submissionId)!
+    if (current.holder !== row.holder) return null
+    const next: RunKind = current.pendingKind ?? 'metric'
+    db.prepare(`UPDATE competition_queue SET kind = ?, pending_kind = NULL, state = 'waiting', started_at = NULL, container = NULL,
+      boot = NULL, attempt_id = NULL, holder = NULL, ${NO_CARD}, attempts = 0, resource_retries = 0, not_before = 0, fresh = ?
+      WHERE submission_id = ? AND attempt_id = ?`).run(next, current.pendingKind ? 0 : 1, row.submissionId, row.attemptId)
+    updateSubmission(row.submissionId, current.pendingKind
+      ? { state: 'queued', stage: 'queue', publicScore: null, privateScore: null, ...notebook }
+      : { stage: 'score', ...notebook })
+    return next
+  },
+)
 
 /** The work ended (in whatever way) — the row leaves the queue. */
 export function leaveQueue(submissionId: string): boolean {
   return deleteQueueRow.run(submissionId).changes > 0
 }
 
-/** Return work to waiting: cancelled by a pause, killed by hand, did not get through. */
-export function requeue(submissionId: string): boolean {
-  return markWaiting.run(submissionId).changes > 0
+/*
+ * A running row back to waiting, fenced on the attempt it ran under (and on
+ * its still running): a give-back that comes late — after the row was taken
+ * again, here or by a machine — finds another attempt and changes nothing.
+ * Unfenced it put the live run back to waiting, and the pump ran the notebook
+ * a second time. `started` — whether the attempt's container started: one
+ * that never did is refunded, as a Pod the scheduler refused is
+ * (deferResourceAttempt), because `attempts` counts this server's restarts
+ * toward giving a submission up (reclaimQueue), and a run that never began is
+ * none of them. The row keeps its arrival, its turn and its lateness. A
+ * machine's lease goes back through its own door, fenced on its holder too
+ * (requeueHeldRow).
+ */
+const requeueAttempt = db.prepare(`
+  UPDATE competition_queue
+  SET state = 'waiting', started_at = NULL, boot = NULL, container = NULL, attempt_id = NULL, not_before = 0, holder = NULL,
+      attempts = CASE WHEN @started = 1 THEN attempts ELSE MAX(0, attempts - 1) END, ${NO_CARD}
+  WHERE submission_id = @submission_id AND attempt_id = @attempt_id AND state = 'running'
+`)
+
+/** Return a run to waiting: cancelled by a pause, killed by hand, did not get through; `false` — the attempt is not the row's any more. */
+export function requeue(submissionId: string, attemptId: string, started: boolean): boolean {
+  return requeueAttempt.run({ submission_id: submissionId, attempt_id: attemptId, started: started ? 1 : 0 }).changes > 0
+}
+
+/* -------------------------------------------- rows a machine holds (holder) */
+
+/**
+ * The waiting notebook rows in the order `selectNext` takes them (FAIR_ORDER),
+ * each with whether it needs a card share (NEEDS_CARD): what the take for a
+ * machine that runs submissions walks (competitions/remote/lease.ts ·
+ * takeForRunner). One query, one order: the machine skips the rows it cannot
+ * run, but never reorders the rest, so a person's place is the same whoever
+ * takes their notebook.
+ */
+const selectWaitingNotebooks = db.prepare(`
+  SELECT q.*, ${NEEDS_CARD} AS needs_gpu FROM competition_queue q
+  WHERE q.state = 'waiting' AND q.not_before <= @at AND q.kind = 'notebook'
+  ORDER BY ${FAIR_ORDER}
+`)
+
+export function waitingNotebookOrder(at = Date.now()): Array<QueueRow & { needsGpu: boolean }> {
+  return (selectWaitingNotebooks.all({ at }) as QueueRowRaw[]).map((row) => ({ ...toQueueRow(row), needsGpu: row.needs_gpu === 1 }))
+}
+
+/*
+ * The take's own write for a machine (markRunning with a holder), fenced on
+ * the row still waiting: inside the take's transaction nothing else can have
+ * moved it, and the fence keeps it so should the take ever be called outside
+ * one. The card is never written: a machine's cards are its own and never
+ * enter competition_queue.gpu (§5.1), and `boot` is this server's life, which
+ * a machine's row never needs and reclaimQueue never reads for it.
+ *
+ * A MACHINE'S ROW IS TAKEN WITH NO started_at: its run starts when its
+ * container does (noteHeldStart, from the machine's sync), not at the take.
+ * Stamped at the take, the participant's stopwatch counted minutes of the
+ * machine's preparation — wheels from the index, a notebook fetched by hash —
+ * as their notebook's time, and jumped back once the container started
+ * (§2 step 5: pulls and downloads never eat the participant's timer). The
+ * forecast counts a running row with no start as just begun, and the live
+ * view shows no clock until there is one. A row this server takes for itself
+ * (`holder` null: a set settled with its refusal) starts at the take.
+ */
+const markHeld = db.prepare(`
+  UPDATE competition_queue
+  SET state = 'running', started_at = CASE WHEN @holder IS NULL THEN @at ELSE NULL END, attempts = attempts + 1, boot = @boot,
+      container = NULL, attempt_id = @attempt_id, gpu = NULL, gpu_per_device = NULL, gpu_slice_mb = NULL, holder = @holder
+  WHERE submission_id = @submission_id AND state = 'waiting' AND kind = 'notebook'
+`)
+
+/**
+ * Mark a waiting notebook row as the machine `holder`'s run, under a new
+ * attempt; `null` — it is not waiting any more. A `null` holder takes it as
+ * this server's own run of this life (BOOT), for one that never reaches a
+ * container: a package set that cannot fit, settled here when this server
+ * runs no notebooks (competitions/remote/liveness.ts · settleUnfit).
+ */
+export function holdQueueRow(submissionId: string, holder: string | null, at = Date.now()): QueueRow | null {
+  const attemptId = randomUUID().replaceAll('-', '')
+  const changed = markHeld.run({ submission_id: submissionId, at, boot: BOOT, attempt_id: attemptId, holder }).changes
+  return changed > 0 ? queueRow(submissionId) : null
+}
+
+/*
+ * A machine's run goes back to waiting (markWaiting), fenced on its attempt
+ * and holder: a loss, a withdrawn offer, a decline. The row keeps its
+ * arrival, its turn and its lateness — the machine's trouble is no reason to
+ * send a person to the end of the queue — and `lost` counts a loss after the
+ * container started (`lost` 1), toward the third that ends the submission as
+ * our failure (decision 6). The attempt is refunded either way: `attempts`
+ * counts this server's restarts (reclaimQueue), never a machine's losses.
+ */
+const requeueHeld = db.prepare(`
+  UPDATE competition_queue
+  SET state = 'waiting', started_at = NULL, boot = NULL, container = NULL, attempt_id = NULL, not_before = 0, holder = NULL,
+      attempts = MAX(0, attempts - 1), lost = lost + @lost, ${NO_CARD}
+  WHERE submission_id = @submission_id AND attempt_id = @attempt_id AND holder = @holder AND state = 'running'
+`)
+
+export function requeueHeldRow(row: Pick<QueueRow, 'submissionId' | 'attemptId' | 'holder'>, lost: boolean): boolean {
+  if (!row.attemptId || !row.holder) return false
+  return requeueHeld.run({ submission_id: row.submissionId, attempt_id: row.attemptId, holder: row.holder, lost: lost ? 1 : 0 }).changes > 0
+}
+
+/** The row of a machine's run leaves the queue, fenced on its attempt and holder: a cancel, a third loss. */
+export function leaveHeldRow(row: Pick<QueueRow, 'submissionId' | 'attemptId' | 'holder'>): boolean {
+  if (!row.attemptId || !row.holder) return false
+  return db.prepare("DELETE FROM competition_queue WHERE submission_id = ? AND attempt_id = ? AND holder = ? AND state = 'running'")
+    .run(row.submissionId, row.attemptId, row.holder).changes > 0
+}
+
+/**
+ * When a machine's container really started, on this server's clock (now
+ * less what the machine says it has run): the console's clock and the
+ * forecast's elapsed time count from here, so pulls and downloads never eat
+ * the participant's time (§2, step 5). Written once per attempt, and only
+ * while the attempt is still this row's.
+ */
+export function noteHeldStart(row: Pick<QueueRow, 'submissionId' | 'attemptId' | 'holder'>, startedAt: number): boolean {
+  if (!row.attemptId || !row.holder) return false
+  return db.prepare("UPDATE competition_queue SET started_at = ? WHERE submission_id = ? AND attempt_id = ? AND holder = ? AND state = 'running'")
+    .run(startedAt, row.submissionId, row.attemptId, row.holder).changes > 0
+}
+
+/**
+ * The same start for the machine's run row (submission_runs), which the take
+ * started with the take's own time (runner.ts · prepareNotebook): the
+ * teacher's history reads a run's time as its end less its start, and a run
+ * of four seconds read «2 мин» for the machine's preparation. Fenced on the
+ * attempt and on the run still open.
+ */
+export function noteHeldRunStart(runId: string, attemptId: string, startedAt: number): boolean {
+  return db.prepare('UPDATE submission_runs SET started_at = ? WHERE id = ? AND attempt_id = ? AND finished_at IS NULL').run(startedAt, runId, attemptId).changes > 0
+}
+
+/**
+ * A machine's settled run row, timed as its container ran: from its start to
+ * its start plus the wall it reported (the settle finishes the row at the
+ * moment the outcome is applied, which is the run, its export and its
+ * uploads). Fenced on the attempt.
+ */
+export function timeHeldRun(runId: string, attemptId: string, startedAt: number, finishedAt: number): boolean {
+  return db.prepare('UPDATE submission_runs SET started_at = ?, finished_at = ? WHERE id = ? AND attempt_id = ? AND finished_at IS NOT NULL')
+    .run(startedAt, Math.max(startedAt, finishedAt), runId, attemptId).changes > 0
+}
+
+/** Every running row a machine holds (holder NOT NULL), for the console and «Работают сейчас». */
+export function heldRows(): QueueRow[] {
+  return (db.prepare("SELECT * FROM competition_queue WHERE state = 'running' AND holder IS NOT NULL ORDER BY started_at, submission_id").all() as QueueRowRaw[]).map(toQueueRow)
 }
 
 /**
@@ -2773,14 +3328,61 @@ export function requeue(submissionId: string): boolean {
  * and whoever read this must kill it. Previously such work would have stayed
  * "running" forever, and the participant would have watched a timer that does
  * not move until the end of the competition.
+ *
+ * A row a machine holds (competition_queue.holder) only when no live lease of
+ * that machine is its attempt's. A machine's run outlives this process by
+ * design — its container is the machine's, and the machine keeps it going and
+ * reports it once the tunnel is back; reclaiming it here would requeue a run
+ * still in progress and run the notebook twice, and its fate is the lease's
+ * (remote_leases), not the boot's. But a holder with no live lease behind it
+ * has nobody left to settle it, and stayed «running» for the rest of the
+ * competition: written by a release that took it for a machine and then
+ * rolled back past the leases (a database without the table, or a release
+ * that cannot read it), or carried through 0.22, which runs such a row itself
+ * and keeps the holder it does not know, under an attempt no lease has. The
+ * data schema is not raised for any of it, so this is the way back. Such a
+ * row is this server's orphan, and reclaimQueue puts it back with no penalty.
  */
 export function orphanedRuns(boot = BOOT): QueueRow[] {
+  const held = leaseTableExists()
+    ? `q.holder IS NULL OR NOT EXISTS (SELECT 1 FROM remote_leases l
+         WHERE l.attempt_id = q.attempt_id AND l.runner_id = q.holder AND l.state IN ${HELD_LEASE_SQL})`
+    : '1'
   return (
     db
-      .prepare(`SELECT * FROM competition_queue WHERE state = 'running' AND (boot IS NULL OR boot != ?)`)
+      .prepare(`SELECT q.* FROM competition_queue q WHERE q.state = 'running' AND (q.boot IS NULL OR q.boot != ?) AND (${held})`)
       .all(boot) as QueueRowRaw[]
   ).map(toQueueRow)
 }
+
+/**
+ * The states in which a machine still holds its attempt: offered, accepted,
+ * running — and applying, whose outcome the boot drives again. The same list
+ * as remote/store.ts · LIVE_LEASE_STATES, which a test holds this one to,
+ * spelled here for the reclaim's SQL, which asks first whether the leases
+ * have a table at all (leaseTableExists): the reclaim must not depend on
+ * which module created the machines' tables before it runs.
+ */
+export const HELD_LEASE_STATES = ['offered', 'accepted', 'running', 'applying'] as const
+const HELD_LEASE_SQL = `(${HELD_LEASE_STATES.map((state) => `'${state}'`).join(', ')})`
+
+/** Whether this database keeps the machines' leases at all: one no release with machines has opened does not. */
+function leaseTableExists(): boolean {
+  return db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'remote_leases'`).get() !== undefined
+}
+
+/*
+ * A machine's row with no live lease, back to waiting (orphanedRuns), the
+ * take's attempt refunded: a machine's take counts no restart of this server
+ * (requeueHeldRow refunds it the same way), so the submission is never given
+ * up for it (MAX_ATTEMPTS), and `lost` counts nothing — nobody saw it lost.
+ */
+const markHeldOrphanWaiting = db.prepare(`
+  UPDATE competition_queue
+  SET state = 'waiting', started_at = NULL, boot = NULL, container = NULL, attempt_id = NULL, not_before = 0, holder = NULL,
+      attempts = MAX(0, attempts - 1), ${NO_CARD}
+  WHERE submission_id = ? AND state = 'running' AND holder IS NOT NULL
+`)
 
 /**
  * How many times a run is picked up again before it is declared cut off.
@@ -2800,12 +3402,22 @@ const MAX_ATTEMPTS = 2
  * do with it, and the word must name the culprit correctly — they will see
  * the sentence "the checking code crashed, the submission will be rescored",
  * and the teacher will read in their column that a restart cut the run off.
+ *
+ * A machine's row whose lease is gone (orphanedRuns) is never given up: no
+ * restart of this server cut it off, and it goes back with no penalty. The
+ * rows come back as they were before the reclaim, `fresh` included, so the
+ * caller can tell the submission what it waits for (runner.ts ·
+ * reclaimCompetitionQueue).
  */
 export const reclaimQueue = db.transaction(
   (boot = BOOT, at = Date.now()): { requeued: QueueRow[]; abandoned: QueueRow[] } => {
     const requeued: QueueRow[] = []
     const abandoned: QueueRow[] = []
     for (const row of orphanedRuns(boot)) {
+      if (row.holder !== null) {
+        if (markHeldOrphanWaiting.run(row.submissionId).changes > 0) requeued.push(row)
+        continue
+      }
       if (row.attempts < MAX_ATTEMPTS) {
         markWaiting.run(row.submissionId)
         requeued.push(row)
@@ -2849,7 +3461,9 @@ export function queuePause(): { paused: boolean; at: number | null; by: string |
  * The pause does not touch a running run: killing it is a separate action
  * with a separate button ("Kill"), and merging them would mean losing someone
  * else's minute of work to a click that only promised "do not start new
- * ones".
+ * ones". Nor the metric of a notebook that has run — a machine's result, or
+ * one of ours whose metric was put off (selectNextScore): it is the rest of
+ * that run, not a new one.
  */
 export function setQueuePaused(paused: boolean, by: string | null = null, at = Date.now()): void {
   updatePause.run(paused ? 1 : 0, paused ? at : null, paused ? by : null)

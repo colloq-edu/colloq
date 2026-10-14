@@ -371,6 +371,8 @@ export interface QueueNote {
   paused: boolean
   /** The phone says it shorter: "starts after submission #12", without "finishes". */
   short?: boolean
+  /** No executor that is up can take it yet (SubmissionLive.preparing): «готовится» stands where the place would. */
+  preparing?: boolean
 }
 
 /**
@@ -381,10 +383,17 @@ export interface QueueNote {
  * even send it): "after submission #7" about someone else's submission is a
  * number from someone else's list, which the person has nothing to match
  * against their own.
+ *
+ * A submission no executor can take yet — the machines that would run it are
+ * still downloading its image or data, or none is connected — has no place,
+ * and without a word for it the caption was empty: a queued row with no
+ * place, no estimate and no reason reads as one the queue forgot. It says
+ * «готовится» instead, and never which machine or why.
  */
 export function queueNote(note: QueueNote): string {
   const parts: string[] = []
-  if (note.place !== null) parts.push(tr('competitions.p.queueAt', { place: queueOrdinal(note.place) }))
+  if (note.preparing) parts.push(tr(note.short ? 'competitions.p.preparingShort' : 'competitions.p.preparing'))
+  else if (note.place !== null) parts.push(tr('competitions.p.queueAt', { place: queueOrdinal(note.place) }))
   if (note.aheadNumber !== null) {
     parts.push(
       tr(note.short ? 'competitions.p.afterMineShort' : 'competitions.p.afterMine', {
@@ -539,6 +548,22 @@ function outcomeWords(input: RowInput): RowWords {
       if ((live?.stage ?? submission.stage) === 'dependencies') {
         return { title: file, lines: [tr('dependencies.installing')] }
       }
+      /*
+       * Its notebook has run (on a machine that runs submissions, or here) and
+       * its metric waits on this server (SubmissionLive.scoring): no cell is
+       * moving and no clock runs, so «ячейка 14 из 14» alone read as a run
+       * stuck on its last cell.
+       */
+      if (live?.scoring) {
+        return {
+          title: file,
+          lines: [
+            input.phone
+              ? tr('competitions.p.scoringShort')
+              : `${tr('competitions.p.scoring')} · ${tr('competitions.p.sentAt', { time: clockOf(submission.acceptedAt) })}`,
+          ],
+        }
+      }
       if (input.phone) {
         lines.push(
           submission.cellsTotal > 0
@@ -578,6 +603,7 @@ function outcomeWords(input: RowInput): RowWords {
             aheadNumber: live?.aheadNumber ?? null,
             paused: input.paused,
             short: input.phone,
+            preparing: live?.preparing === true,
           }),
         ].filter(Boolean),
       }

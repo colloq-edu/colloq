@@ -13,6 +13,7 @@
   import Publish from '@/admin/screens/Publish.svelte'
   import Teachers from '@/admin/screens/Teachers.svelte'
   import ResourcesTab from '@/admin/screens/ResourcesTab.svelte'
+  import RemoteMachine from '@/admin/screens/RemoteMachine.svelte'
   import AuditLog from '@/admin/screens/AuditLog.svelte'
   import SignInScreen from '@/screens/SignInScreen.svelte'
   import { readEntryCredential, SPENT_PATH } from '@/admin/entry'
@@ -126,6 +127,8 @@
   )
   /* Publishing is an address too: it is the screen where a decision is made. */
   const publishing = $derived(/^\/admin\/publish\/([A-Za-z0-9_-]{1,64})/.exec(path)?.[1] ?? null)
+  /* A machine that runs submissions is a page under Resources (admin/runners.ts · machinePagePath). */
+  const openMachine = $derived(/^\/admin\/resources\/machines\/([A-Za-z0-9_-]{1,64})/.exec(path)?.[1] ?? null)
   /*
    * A new room started from a course row («Создать комнату») is an address:
    * /admin/new?course=<id>&row=<rowId> carries the row it will take. The
@@ -362,7 +365,11 @@
     {:else if tab === 'teachers'}
       <Teachers />
     {:else if tab === 'resources'}
-      <ResourcesTab />
+      {#if openMachine}
+        {#key openMachine}<RemoteMachine id={openMachine} {navigate} />{/key}
+      {:else}
+        <ResourcesTab {navigate} />
+      {/if}
     {:else if tab === 'audit'}
       <AuditLog />
     {:else if makingSeminar}

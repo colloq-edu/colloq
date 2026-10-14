@@ -115,6 +115,12 @@
     "description": "Rent a full VM and start the ready-made image on it with one command; the k3s path is still a preview."
   },
   {
+    "slug": "runners",
+    "group": "server",
+    "title": "Submission machines",
+    "description": "Other Docker machines, rented Vast VMs or university servers, take competition submissions from your queue and run the notebooks; the answers and the metric stay on your server."
+  },
+  {
     "slug": "development",
     "group": "server",
     "title": "Local development",

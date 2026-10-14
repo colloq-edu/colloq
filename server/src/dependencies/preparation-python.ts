@@ -611,7 +611,11 @@ def download_wheels(wheels, known, config, opener):
             too_big('installed_limit', config['maxInstalledBytes'], unpacked, error.partial or bool(rest))
         expanded += size
         unpacked[name] = size
-        packages.append(package)
+        # The address pip's report named (download_info.url), the one checked before the
+        # download, not where a redirect ended: the set's manifest keeps it next to the
+        # sha256, and a machine that runs submissions fetches the wheel there again
+        # (server: preparation-contract.ts · wheelUrl checks it once more).
+        packages.append(dict(package, url=url))
         emit({'state': 'downloading', 'downloadBytes': downloaded})
     return packages, downloaded
 

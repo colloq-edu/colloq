@@ -14,6 +14,7 @@ import { config, ensureDataDir } from '../config.js'
 import { countStaff, getTeacher, linkKeyOf } from './store.js'
 import { forwardedHost } from '../net/inbound.js'
 import { STAFF_COOKIE, type AdminErrorBody, type Teacher } from '@shared/admin'
+import { isRemoteCredential } from '@shared/remote-runner'
 
 const SETUP_TOKEN_FILE = path.join(config.dataDir, 'setup-token')
 /**
@@ -281,6 +282,14 @@ export function clearStaffCookie(res: Response): void {
 }
 
 export function currentStaff(req: Request): Teacher | null {
+  /*
+   * A call that presents a machine's credential (`Bearer cr1.…`) is a
+   * machine's, whatever cookie came along with it: only the machines' own
+   * router takes that credential (competitions/remote/routes.ts), and a
+   * staff door that let its call through on a cookie riding next to it
+   * would be one more place a leaked machine secret opens.
+   */
+  if (isRemoteCredential(req.headers.authorization)) return null
   /*
    * With a token the sign-in proxy verified (sso/identity.ts), the proxy
    * decides, and it decides for this very request: the cookie issued for a

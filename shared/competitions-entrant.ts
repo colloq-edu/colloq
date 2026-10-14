@@ -232,6 +232,21 @@ export interface SubmissionLive {
   stage: SubmissionStage
   cellsDone: number
   cellsTotal: number
+  /**
+   * No executor that is up can take it yet — the machines that run
+   * submissions are still downloading its image or data, none that could is
+   * connected, or none of those connected is big enough for it — so it has
+   * no place: the page says «готовится». Absent — it waits for its turn as
+   * before.
+   */
+  preparing?: boolean
+  /**
+   * Its notebook has run, and its metric waits or runs here («оценивается»).
+   * While a machine's result is scored here, `startedAt` reads so that the
+   * clock goes on from the notebook's own time rather than starting again at
+   * the metric's start. Absent — not that.
+   */
+  scoring?: boolean
 }
 
 /** "My submissions" (P2, P4) — and everything the submit area controls. */

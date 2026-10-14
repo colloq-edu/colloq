@@ -337,7 +337,8 @@ test('the guides describe the watchdog the runner has: as root, two readings ove
   // The deed (docker-runner.ts · VramWatch, watch): the sample is a root exec
   // on the status cycle, and VRAM_UNREAD_LIMIT failures in a row stop the run.
   const runner = read('server/src/competitions/docker-runner.ts')
-  const gpu = read('server/src/competitions/gpu.ts')
+  // The numbers live in gpu-math.ts, which gpu.ts re-exports (a machine for submissions imports them without the pool).
+  const gpu = read('server/src/competitions/gpu-math.ts')
   assert.match(runner, /\['exec', '--user', '0:0', this\.container, 'nvidia-smi'/, 'the watchdog no longer samples as root: the guides say the notebook cannot signal it')
   assert.match(runner, /vram\?\.unwatchable\(\)\) \{\s*await docker\(\['kill'/, 'a run whose card cannot be read is no longer stopped: the guides say it is')
   const cycle = constant(runner, 'STATUS_EVERY_MS') / 1000
@@ -396,10 +397,10 @@ test('the guides say what the cap inside holds: PyTorch and CatBoost\'s pool, no
 test('a change of runs per card mid-class is described as the queue does it: each run keeps its share', () => {
   // The deed: the take pins the runs per card on the queue row (store.ts),
   // the run's share is cut from that pin (runner.ts · runGpu), and a card is
-  // full when a new share no longer fits beside the old ones (gpu.ts · cardsInUse).
+  // full when a new share no longer fits beside the old ones (gpu-math.ts · cardsInUse, re-exported by gpu.ts).
   assert.match(read('server/src/competitions/store.ts'), /gpu_per_device/)
   assert.match(read('server/src/competitions/runner.ts'), /const perDevice = row\.gpuPerDevice \?\? runnerGpuPerDevice\(\)/)
-  assert.match(read('server/src/competitions/gpu.ts'), /export function cardsInUse\(/)
+  assert.match(read('server/src/competitions/gpu-math.ts'), /export function cardsInUse\(/)
   for (const lang of LANGS) {
     assert.match(shareParagraph(lang), lang === 'en' ? /keeps the share it started with/ : /сохраняет долю, с которой началась/,
       `${lang}/competitions.html#gpu does not say what a change of runs per card does to the running ones`)

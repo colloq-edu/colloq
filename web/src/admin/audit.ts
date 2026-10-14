@@ -70,14 +70,28 @@ export function auditDetail(event: AdminAuditEvent): string {
         .join('\n')
     case 'settings.instance_changed':
       return `${word(detail.previousLanguage ?? null)} → ${word(detail.language ?? null)}`
+    case 'runner.trusted':
+      // One action for both directions (routes/admin-runners.ts records
+      // `{ trusted }`): the label says the trust changed, and this line says
+      // which way. The label used to read «доверен» for a removal too, and a
+      // log that names the grant when trust was taken away is read the wrong
+      // way round exactly when someone asks who gave a rented VM the test.
+      return typeof detail.trusted === 'boolean'
+        ? tr(detail.trusted ? 'admin.audit.runnerTrusted' : 'admin.audit.runnerUntrusted')
+        : pairs(detail)
     case 'environment.created':
     case 'environment.edited':
       // A package list is a set of lines, and what it gained or lost is the
       // answer to "who added that index URL".
       return [...lines(detail.added).map((line) => `+ ${line}`), ...lines(detail.removed).map((line) => `− ${line}`)].join('\n')
     default:
-      return Object.entries(detail)
-        .map(([field, value]) => `${field}: ${word(value)}`)
-        .join(' · ')
+      return pairs(detail)
   }
+}
+
+/** `field: value` pairs, for a detail that is a setting's name and what it became. */
+function pairs(detail: NonNullable<AdminAuditEvent['detail']>): string {
+  return Object.entries(detail)
+    .map(([field, value]) => `${field}: ${word(value)}`)
+    .join(' · ')
 }

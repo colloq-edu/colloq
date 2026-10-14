@@ -18,7 +18,8 @@
  *     baseline/             the teacher's sample notebook
  *     s/<submissionId>/in/  the submitted notebook, one, and nothing else
  *     s/<submissionId>/out/ run.json, submission.csv, executed.ipynb
- *     s/<submissionId>/score/  a copy of the answer for the metric container
+ *     s/<submissionId>/score/  the answer for the metric container (a hard
+ *                           link; a copy where the volume refuses links)
  *     s/<submissionId>/attempts/<attemptId>/inputs/
  *                           with a hidden test: this run's data/, the open files
  *                           with the sealed ones swapped in; mounted as /data:ro
@@ -40,13 +41,16 @@
  */
 import path from 'node:path'
 import fs from 'node:fs'
+import { createHash } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
-import { config } from '../config.js'
+// The data root without config.ts: a machine that runs submissions keeps this layout too (data-dir.ts).
+import { dataDir } from '../data-dir.js'
 import { createAnchoredFilesystem, type HeldFile } from '../secure-files.js'
+import { cachedSha256 } from '../dependencies/files.js'
 import { EXECUTED_NOTEBOOK_FILE } from '@shared/competitions'
 
 /** The root of all competition belongings. */
-export const competitionsDir = path.join(config.dataDir, 'competitions')
+export const competitionsDir = path.join(dataDir, 'competitions')
 
 /**
  * No paths of our own are assembled by hand here: every operation goes
@@ -154,7 +158,8 @@ export function dropAttempt(id: string, submissionId: string, attemptId: string)
 }
 
 /**
- * Snapshot through anchored descriptors, streamed.
+ * Snapshot through anchored descriptors, streamed — where a hard link cannot
+ * be had (placeCompetitionFile).
  *
  * Asynchronous on purpose: the answer key may weigh two hundred megabytes, and
  * a synchronous copy per submission stops the event loop that serves the
@@ -173,34 +178,159 @@ export async function copyCompetitionFile(from: string, to: string): Promise<voi
 }
 
 /**
+ * What an attempt has done to its submission's `out/`, written down beside
+ * the attempt's own folders (never in them: `result/` is filled by exports
+ * from a container or a machine, and nothing they write may pass for this).
+ *
+ * The moves below are renames, so a second call for the same attempt finds
+ * its sources gone. That second call is real: a machine's outcome that
+ * crashed this server half applied is applied again from the start (its
+ * lease is re-driven, docs/architecture/remote-runners.md §3.6), and without
+ * the record the second publish read "no executed notebook" and removed the
+ * one the first had just put in place, and the second promote threw on an
+ * answer it had already promoted. Written BEFORE the first move: a record
+ * means its moves were decided, and only those that did not happen yet are
+ * made again. Gone with the attempt (dropAttempt).
+ *
+ * Durable before the first move (writeRecord), and read strictly
+ * (readRecord): a crash of the host, not just of the process, can keep the
+ * renames that follow a record — metadata, committed within seconds — and
+ * lose the record's bytes, which ext4 writes out up to half a minute later.
+ * Read as "no record", such an empty file made the second publish remove the
+ * executed notebook the first had moved into out/, and the second settle
+ * reject an answer it had promoted as missing. A record that is there but
+ * cannot be read now stops the re-drive with an error instead: the lease
+ * stays `applying`, for the owner to see, and nothing is removed.
+ */
+function attemptRecord(id: string, submissionId: string, attemptId: string, name: 'published' | 'promoted'): string {
+  return path.join(ensureDir(path.join(submissionDir(id, submissionId), 'attempts', checkId(attemptId))), `${name}.json`)
+}
+
+/**
+ * A record's value: `null` only when there is no record. Any other failure —
+ * an empty file, one cut short, not a JSON object, a read the disk refused —
+ * throws: it is a record whose moves may have been made, and guessing "none"
+ * is what removed a published file.
+ */
+function readRecord(file: string): Record<string, unknown> | null {
+  let body: Buffer
+  try {
+    body = competitionsFs.readFileSync(file) as Buffer
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+  let value: unknown
+  try {
+    value = JSON.parse(body.toString('utf8'))
+  } catch {
+    value = null
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Competition storage: the attempt record ${path.basename(file)} is damaged (${body.length} bytes)`)
+  }
+  return value as Record<string, unknown>
+}
+
+/**
+ * Write a record whole and durably before anything it records is moved: a
+ * temporary file beside it (a dot name, which no record and no file of the
+ * attempt has), its bytes flushed, renamed over the name, and the folder
+ * flushed so the rename itself outlives a power cut. A folder that cannot be
+ * flushed (not every filesystem lets one be) is no reason to fail: the bytes
+ * are on disk either way.
+ */
+function writeRecord(file: string, value: object): void {
+  const directory = path.dirname(file)
+  const temporary = path.join(directory, `.${path.basename(file)}-next`)
+  const fd = competitionsFs.openSync(temporary, 'w', 0o600)
+  try {
+    fs.writeFileSync(fd, JSON.stringify(value))
+    fs.fsyncSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
+  competitionsFs.renameSync(temporary, file)
+  let folder: number | null = null
+  try {
+    folder = competitionsFs.openSync(directory, 'r')
+    fs.fsyncSync(folder)
+  } catch {
+    /* not every filesystem flushes a folder; the rename has happened either way */
+  } finally {
+    if (folder !== null) fs.closeSync(folder)
+  }
+}
+
+/**
  * The attempt's answer becomes the submission's answer — by rename, not by
- * copy.
+ * copy. Returns where it is now.
  *
  * The attempt directory is dropped right after the run, so moving the file
  * costs one metadata operation instead of reading and writing up to 64 MB on
  * the event loop. The rename replaces `out/submission.csv` atomically:
  * readers see the last complete successful answer, never half of the next.
+ *
+ * Once per attempt, however many times it is called (attemptRecord): a
+ * second call finishes a rename the first did not get to and otherwise does
+ * nothing, and returns the same place. With no answer to promote and no
+ * record it throws, as the rename always did.
  */
-export function promoteAttempt(id: string, submissionId: string, from: string): void {
+export function promoteAttempt(id: string, submissionId: string, attemptId: string): string {
   const out = ensureDir(resultDir(id, submissionId))
-  competitionsFs.renameSync(path.join(from, SUBMISSION_FILE), path.join(out, SUBMISSION_FILE))
+  const target = path.join(out, SUBMISSION_FILE)
+  const source = path.join(attemptPath(id, submissionId, attemptId, 'result'), SUBMISSION_FILE)
+  const record = attemptRecord(id, submissionId, attemptId, 'promoted')
+  if (readRecord(record) !== null) {
+    if (competitionsFs.existsSync(source)) competitionsFs.renameSync(source, target)
+    return target
+  }
+  // There must be something to promote before the record says it was.
+  competitionsFs.statSync(source)
+  writeRecord(record, { promoted: true })
+  competitionsFs.renameSync(source, target)
+  return target
+}
+
+/** Whether this attempt's answer was promoted already: a second pass must not judge the moved file missing. */
+export function attemptPromoted(id: string, submissionId: string, attemptId: string): boolean {
+  return readRecord(attemptRecord(id, submissionId, attemptId, 'promoted')) !== null
+}
+
+/** Which of the attempt's artifacts went to `out/`; the others' names were cleared there. */
+export interface PublishedArtifacts {
+  executed: boolean
+  runJson: boolean
 }
 
 /**
  * A failed notebook still has useful current output; retain its execution
  * artifacts separately from the last successful CSV used by metric rescoring.
  *
- * Moved, not copied, for the same reason as the answer — and so called ONCE
- * per attempt: a second call finds nothing to move and removes what the first
- * one published.
+ * Moved, not copied, for the same reason as the answer. Decided once per
+ * attempt (attemptRecord): the first call reads which artifacts the attempt
+ * has and records it before it moves anything; a later one makes only the
+ * moves the first did not get to, and clears only what the first cleared —
+ * it never removes what the first one published. Returns the first call's
+ * answer.
  */
-export function publishAttemptArtifacts(id: string, submissionId: string, from: string): void {
+export function publishAttemptArtifacts(id: string, submissionId: string, attemptId: string): PublishedArtifacts {
   const out = ensureDir(resultDir(id, submissionId))
-  for (const name of [EXECUTED_FILE, 'run.json']) {
+  const from = attemptPath(id, submissionId, attemptId, 'result')
+  const record = attemptRecord(id, submissionId, attemptId, 'published')
+  // A record that cannot be read throws here, before anything in out/ is touched (readRecord).
+  const first = readRecord(record) as Partial<PublishedArtifacts> | null
+  const plan: PublishedArtifacts = first
+    ? { executed: first.executed === true, runJson: first.runJson === true }
+    : { executed: regularFileWithin(path.join(from, EXECUTED_FILE), EXECUTED_BYTES), runJson: regularFileWithin(path.join(from, 'run.json'), EXECUTED_BYTES) }
+  if (!first) writeRecord(record, plan)
+  for (const [name, kept] of [[EXECUTED_FILE, plan.executed], ['run.json', plan.runJson]] as const) {
     const source = path.join(from, name)
-    if (regularFileWithin(source, EXECUTED_BYTES)) competitionsFs.renameSync(source, path.join(out, name))
-    else competitionsFs.rmSync(path.join(out, name), { force: true })
+    if (!kept) competitionsFs.rmSync(path.join(out, name), { force: true })
+    // Already moved by the first call when it is not there any more.
+    else if (regularFileWithin(source, EXECUTED_BYTES)) competitionsFs.renameSync(source, path.join(out, name))
   }
+  return plan
 }
 
 /** A regular file no bigger than `limit`, looked at through O_NOFOLLOW: a link is not an artifact. */
@@ -269,7 +399,7 @@ export const SOLUTION_FILE = 'solution.csv'
 export function hostPathOf(inside: string): string {
   const root = (process.env.DATA_HOST_DIR ?? '').trim()
   if (!root) return inside
-  return path.join(root, path.relative(config.dataDir, inside))
+  return path.join(root, path.relative(dataDir, inside))
 }
 
 /* -------------------------------------------------------------- writing */
@@ -294,11 +424,13 @@ export function ensureCompetition(id: string): void {
 /**
  * Write next to the file and rename over it, never truncate in place.
  *
- * A run in progress holds the old file — a copy of the answer key in its
- * snapshot, a hard link in its composed data folder (composeRunInputs) — and
- * the rename leaves it the old bytes whole instead of half of each. The
- * temporary name starts with a dot, which no file name may (NAME_OK), so it
- * can never be mistaken for, or collide with, a real one.
+ * A run in progress holds the old file — a hard link to the answer key in its
+ * snapshot (a copy where the volume refuses links), a hard link in its
+ * composed data folder (composeRunInputs) — and the rename leaves it the old
+ * bytes whole instead of half of each. A link shares the inode, so a write in
+ * place would reach into every run holding it; the rename never touches that
+ * inode. The temporary name starts with a dot, which no file name may
+ * (NAME_OK), so it can never be mistaken for, or collide with, a real one.
  */
 function writeReplacing(directory: string, name: string, body: Uint8Array): void {
   const file = path.join(directory, checkName(name))
@@ -307,20 +439,39 @@ function writeReplacing(directory: string, name: string, body: Uint8Array): void
   competitionsFs.renameSync(temporary, file)
 }
 
-/** Put an open data file. Returns how many bytes were written. */
-export function putOpenFile(id: string, name: string, body: Uint8Array): number {
+/**
+ * What a put wrote: its size, and the sha256 of its bytes — the content
+ * address the file's row keeps (store.ts · putFile), by which a machine that
+ * runs submissions asks for it and checks what it got.
+ */
+export interface StoredFile {
+  bytes: number
+  sha256: string
+}
+
+/*
+ * Hashed from the buffer the upload already holds: a fraction of a second for
+ * two hundred megabytes in memory, against reading them back from the disk
+ * later. The rows uploaded before the hash existed get theirs from the disk,
+ * lazily (openFileSha256).
+ */
+const stored = (body: Uint8Array): StoredFile => ({ bytes: body.length, sha256: createHash('sha256').update(body).digest('hex') })
+
+/** Put an open data file. Returns its size and its sha256. */
+export function putOpenFile(id: string, name: string, body: Uint8Array): StoredFile {
   writeReplacing(ensureDir(openDir(id)), name, body)
-  return body.length
+  return stored(body)
 }
 
 /**
  * Put a hidden-test file under the name the notebook will read it by in
  * `data/`. A door of its own, like the answers': a hidden test written into
  * `data/` by a wrong parameter would be downloadable by the whole class.
+ * Returns its size and its sha256, like an open file.
  */
-export function putSealedFile(id: string, name: string, body: Uint8Array): number {
+export function putSealedFile(id: string, name: string, body: Uint8Array): StoredFile {
   writeReplacing(ensureDir(sealedDir(id)), name, body)
-  return body.length
+  return stored(body)
 }
 
 /**
@@ -332,10 +483,15 @@ export function putSealedFile(id: string, name: string, body: Uint8Array): numbe
  */
 export function putSecretFile(id: string, name: string, body: Uint8Array): number {
   /*
-   * A job that started a minute ago is still copying the old answer key into
-   * its snapshot (runner.ts · snapshotSecrets): writeReplacing leaves it the
-   * old bytes whole. This directory is never mounted itself, so the new inode
-   * surprises no container.
+   * A job that started a minute ago holds the old answer key in its snapshot
+   * (runner.ts · snapshotSecrets): a hard link to the old inode, or, where the
+   * volume refuses links, a copy still streaming from it. writeReplacing leaves
+   * it the old bytes whole either way. This directory is never mounted itself,
+   * so the new inode surprises no container.
+   *
+   * No hash is taken here, unlike the open data and the hidden test: the
+   * answers are never handed out by content address, and a row without a
+   * hash cannot be found by one (store.ts · putFile).
    */
   writeReplacing(ensureDir(secretDir(id)), name, body)
   return body.length
@@ -453,6 +609,48 @@ export function readSealedFile(id: string, name: string, limit = 512 * 1024 * 10
 
 export function readBaseline(id: string, limit = 64 * 1024 * 1024): Buffer | null {
   return readIfExists(path.join(baselineDir(id), NOTEBOOK_FILE), limit)
+}
+
+/**
+ * The sha256 of an open data file as it lies on disk now, with its size, or
+ * `null` when there is no such file: for a row uploaded before the hash had a
+ * column (store.ts · competitionFileHashes). Read once per file identity
+ * (dependencies/files.ts · cachedSha256): asking again about a file that has
+ * not changed costs a stat, not a read of two hundred megabytes.
+ */
+export function openFileSha256(id: string, name: string): Promise<StoredFile | null> {
+  return heldSha256(path.join(openDir(id), checkName(name)))
+}
+
+/** The same for a hidden-test file. There is no such door for the answers (putSecretFile). */
+export function sealedFileSha256(id: string, name: string): Promise<StoredFile | null> {
+  return heldSha256(path.join(sealedDir(id), checkName(name)))
+}
+
+/*
+ * One descriptor for the identity and the bytes: the stat the cache is keyed
+ * by and the stream it reads are of the same inode, even if the teacher
+ * replaces the file between the two (writeReplacing renames a new one over
+ * the name). Opened through the anchored file system, like every read here.
+ * Keyed without ctime (DigestIdentity `renamed`): the data changes only by
+ * that rename, and the links and modes every run gives it move ctime alone.
+ */
+async function heldSha256(file: string): Promise<StoredFile | null> {
+  let fd: number
+  try {
+    fd = competitionsFs.openSync(file, 'r')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+  try {
+    const stat = fs.fstatSync(fd)
+    if (!stat.isFile()) return null
+    const sha256 = await cachedSha256(file, stat, () => fs.createReadStream(file, { fd, autoClose: false, start: 0 }), 'renamed')
+    return { bytes: stat.size, sha256 }
+  } finally {
+    fs.closeSync(fd)
+  }
 }
 
 /**
@@ -576,9 +774,44 @@ export function dropSealedFile(id: string, name: string): boolean {
 /** Errors by which a hard link says "not here", and a copy has to do. */
 const NO_LINK = new Set(['EXDEV', 'EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EMLINK', 'ENOSYS'])
 
-/** How a run's data folder gets its files — swapped out by a test to make links fail. */
+/**
+ * How a run gets its files by link (placeCompetitionFile): its data folder,
+ * its snapshot of the answer key, the metric's answer. Swapped out by a test
+ * to make links fail.
+ */
 export const inputLinks = {
   link: (from: string, to: string): void => competitionsFs.linkSync(from, to),
+}
+
+/**
+ * Put `from` at `to` as a hard link, or as a streamed copy where the volume
+ * refuses links (another device, a CSI driver without them).
+ *
+ * For what a run holds while it runs: its composed data folder
+ * (composeRunInputs), its snapshot of the answer key and the metric's copy of
+ * the answer (runner.ts · snapshotSecrets, scoreStep). A link costs one
+ * metadata operation where a copy read and wrote up to two hundred megabytes
+ * per job, and it holds the bytes the job started with just as a copy did:
+ * every write here renames a new inode over the name (writeReplacing), the
+ * promoted answer included (promoteAttempt), and the link keeps the old one.
+ * Every mount of such a folder is read-only, so no container can write
+ * through a link into the original. What does reach it is the mode the runner
+ * gives a mounted file (runner.ts · letContainerRead, 0644): the inode is one,
+ * and inside DATA_DIR's 0700 that opens it to nobody new — the open data
+ * linked into a run's folder has always been so.
+ *
+ * Not `async`, on purpose: the link — or the copy's source, opened before the
+ * first await — is taken when this is called, so the snapshot is the file as
+ * it was at that moment, not a tick later.
+ */
+export function placeCompetitionFile(from: string, to: string): Promise<void> {
+  try {
+    inputLinks.link(from, to)
+    return Promise.resolve()
+  } catch (error) {
+    if (!NO_LINK.has((error as NodeJS.ErrnoException).code ?? '')) return Promise.reject(error)
+    return copyCompetitionFile(from, to)
+  }
 }
 
 /**
@@ -612,15 +845,7 @@ export async function composeRunInputs(
 ): Promise<string> {
   const dir = attemptDir(id, submissionId, attemptId, 'inputs')
   const sealed = new Set(files.sealed.map(checkName))
-  const place = async (from: string, name: string): Promise<void> => {
-    const to = path.join(dir, name)
-    try {
-      inputLinks.link(from, to)
-    } catch (error) {
-      if (!NO_LINK.has((error as NodeJS.ErrnoException).code ?? '')) throw error
-      await copyCompetitionFile(from, to)
-    }
-  }
+  const place = (from: string, name: string): Promise<void> => placeCompetitionFile(from, path.join(dir, name))
   for (const name of files.open.map(checkName)) {
     if (sealed.has(name)) continue
     const from = path.join(openDir(id), name)

@@ -13,6 +13,23 @@ export interface EnvironmentRevision {
   packages: InstalledPackage[]
   baseConstraintsHash: string
   createdAt: number
+  /**
+   * Where another machine can pull exactly this image: `repo@sha256:…`, from
+   * the image's RepoDigests, for an image that came from a registry (or went
+   * to one). `null` for an image built or loaded here and never pushed, and
+   * for a revision not inspected yet: such a revision runs on this server
+   * only. `imageDigest` cannot stand in for it: it is the local image id, and
+   * the classic and containerd image stores give the same image different ids.
+   */
+  registryRef: string | null
+  /**
+   * What the image is, the same on every machine and in both image stores:
+   * the sha256 of its platform and its uncompressed layers (RootFS.Layers),
+   * server/src/dependencies/image-identity.ts · layersFingerprint. A machine
+   * that pulled `registryRef` checks it before it runs anything there. `null`
+   * until the image was inspected.
+   */
+  layers: string | null
 }
 export interface DependencyPolicy {
   enabled: boolean
@@ -23,6 +40,16 @@ export interface DependencyPackage extends InstalledPackage {
   fileName: string
   sha256: string
   bytes: number
+  /**
+   * Where the wheel was downloaded from when the set was prepared (pip's
+   * report, download_info.url), kept in the set's manifest next to its sha256
+   * and size: a machine that runs submissions for this server fetches the
+   * wheel there, from the index's own CDN, and checks both. Absent on sets
+   * prepared before it was kept and where the address failed the check
+   * (preparation-contract.ts · wheelUrl). Never sent to a browser
+   * (dependencies/store.ts · toBundle).
+   */
+  url?: string
 }
 /** A package's share of a set that did not fit: the heaviest ones are named. */
 export interface DependencySize { name: string; bytes: number }

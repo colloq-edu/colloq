@@ -698,6 +698,121 @@ vast-image-run: ## Check the image locally: dind instead of a VM, a room, a cell
 vast-image-stop: ## Remove the make vast-image-run rig together with everything that was in it
 	@./deploy/vast/smoke.sh down
 
+## ---------------------------------------------- machines for submissions
+##
+## Docker machines that run another instance's submissions («машины для
+## посылок», docs/architecture/remote-runners.md): the same colloq-server image
+## in its `runner` mode, joined to a home with its owner's code. The home keeps
+## the queue, the hidden answers and the metric; a machine only runs notebooks.
+## On Vast they are rented, updated and destroyed as a fleet, found by their
+## label colloq-runner; anywhere else, colloq-host runner up does it by hand.
+##
+##   make vast-runner COUNT=3 CODE=<code> URL=https://vsos.colloq.ru
+##   make runners-update        ·   make runners-down        (URL=… only that home's machines)
+
+.PHONY: vast-runner runners-update runners-down runner-dev kernel-publish
+
+vast-runner: ## Rent Vast VMs that run another instance's submissions. COUNT=3 CODE=… URL=https://… GPU="RTX 4090" GPUS=2 DISK=150 MAX_PRICE=1.5 DESTROY_UNJOINED=1
+	@# COUNT copies of scripts/vast-vm.sh with ROLE=runner, rented one after
+	@# another (each takes the cheapest offer, and two at once would go for the
+	@# same machine) and booted together; each waits for `colloq-host runner
+	@# status` on its VM. The on-start carries the home's address and the code,
+	@# never the relay token. DISK defaults to 120 GB: every Vast VM has a card,
+	@# and a machine with cards is asked for the GPU kernels. A machine rented
+	@# but not joined bills all the same: the run ends with the command that
+	@# destroys it, and DESTROY_UNJOINED=1 destroys it there and then.
+	@COUNT="$(COUNT)" CODE="$(CODE)" URL="$(URL)" NAME="$(NAME)" GPU="$(GPU)" GPUS="$(GPUS)" GPU_RAM="$(GPU_RAM)" \
+	  CPU="$(CPU)" RAM="$(RAM)" DISK="$(DISK)" MAX_PRICE="$(MAX_PRICE)" DESTROY_UNJOINED="$(DESTROY_UNJOINED)" ./scripts/vast-runner.sh up
+
+runners-update: ## Every rented machine for submissions to its home's version, its runs finished first. URL=… VERSION=… NOW=1 FORCE=1
+	@# Over ssh, `colloq-host runner update` on every instance labelled
+	@# colloq-runner, at once, detached on each machine and polled from here:
+	@# a machine whose runner code differs from its home's gets no new work
+	@# (decision 5), so after updating the home this is the second half. Each
+	@# machine is asked its home first: URL= takes only that home's machines,
+	@# and one whose home says, in a sync made after it was asked (up to
+	@# RUNNER_SURVEY_SEC, 60 s), that its build is the home's own is left alone
+	@# (FORCE=1 updates it all the same). NOW=1 hands the runs back to the
+	@# home's queue instead of waiting for them; nobody's attempts are spent
+	@# either way.
+	@NAME="$(NAME)" URL="$(URL)" VERSION="$(VERSION)" NOW="$(NOW)" FORCE="$(FORCE)" ./scripts/vast-runner.sh update
+
+runners-down: ## Every rented machine for submissions leaves its home, then is destroyed. URL=… NOW=1 — without waiting for its runs
+	@# `colloq-host runner leave` over ssh (its runs finish, it revokes itself
+	@# on the home), then the VM is destroyed with its disk; a leave waits for
+	@# the home only while it answers (ten minutes of silence give it up, and
+	@# the VM goes all the same). The list asked about names each machine's
+	@# home, and URL= takes only that home's. NOW=1
+	@# destroys at once: the home loses the machine after three minutes of
+	@# silence and runs its submissions again elsewhere, and the owner revokes
+	@# it in the panel.
+	@NAME="$(NAME)" URL="$(URL)" NOW="$(NOW)" FORCE="$(FORCE)" ./scripts/vast-runner.sh down
+
+# The node runner-dev runs the agent with: Homebrew's node@22 when it is there,
+# the Node of the image and of CI. The agent talks to its home through fetch
+# (undici), whose behaviour moves between Node majors, and a Mac's own node is
+# usually newer.
+RUNNER_DEV_NODE22 := /opt/homebrew/opt/node@22/bin/node
+
+runner-dev: ## A machine for submissions on this computer, against a dev home. CODE=… URL=http://localhost:4000 (never the live one) DIST=1 STATE=dir
+	@# For working on the agent (server/src/runner-agent): it joins a home of
+	@# make dev's and takes its submissions on this Docker. The code comes from
+	@# that home's panel (Resources, machines for submissions).
+	@#
+	@# URL= is required, with no default. The one default there could be,
+	@# localhost:$(PORT), is the port of this checkout's own server, and on a
+	@# machine that serves a class that is the live instance: a machine joined
+	@# to it takes real participants' submissions. A dev home goes on another
+	@# port (PORT= in its checkout's .env, then make dev there).
+	@#
+	@# From the sources by default, and that is what makes it work: a machine
+	@# takes new work only while its build is its home's (decision 5), and make
+	@# dev's home has no bundle, so it reports `dev`, which only an agent
+	@# running from the sources matches. DIST=1 runs the built
+	@# server/dist/runner.js instead, for a home started with make run from
+	@# the same build (npm run build -w @colloq/server makes both).
+	@#
+	@# Its tree goes into a fresh directory under .colloq/ (removed when the
+	@# agent stops), not into the system's temp: the submissions' containers
+	@# mount it by its path, and Docker Desktop and colima share the home
+	@# directory with their VM, not /var/folders. STATE= keeps one across
+	@# runs, and with it the machine's identity on the home. DATA_DIR goes
+	@# with it, as the image's entry point gives it: unset, the agent would
+	@# take the checkout's own data/ (server/src/data-dir.ts), which is the
+	@# very tree of the home it serves, laid out by the same ids, and the
+	@# label its containers are swept by is a hash of that directory
+	@# (docker-runner.ts · INSTANCE_LABEL): each would remove the other's runs.
+	@# DATA_HOST_DIR and WORKSPACE_HOST_DIR go for the same reason the image's
+	@# entry point drops them: a shell set up for make up's compose translates
+	@# paths for a server in a container, and the agent hands the daemon its
+	@# own paths as they are.
+	@test -n "$(CODE)" || { printf '$(RED)Specify the code from the home'"'"'s panel: make runner-dev CODE=<32 hex digits>$(OFF)\n'; exit 1; }
+	@test -n "$(URL)" || { printf '$(RED)Specify the home: make runner-dev URL=http://localhost:<port> CODE=…, a dev home of your own on another port than this checkout'"'"'s server (PORT= in its .env, then make dev there), never the live instance$(OFF)\n'; exit 1; }
+	@$(if $(filter 1,$(DIST)),test -f server/dist/runner.js || { printf '$(RED)No server/dist/runner.js: npm run build -w @colloq/server$(OFF)\n'; exit 1; },:)
+	@# Ctrl+C reaches the agent, which hands back what it holds; this shell
+	@# waits for it (the INT trap is a no-op, not an ignore, which the agent
+	@# would inherit) and only then removes the tree.
+	@mkdir -p .colloq; \
+	 state="$(STATE)"; keep=1; \
+	 if [ -z "$$state" ]; then state="$$(mktemp -d "$$PWD/.colloq/runner-dev.XXXXXX")"; keep=; fi; \
+	 case "$$state" in /*) ;; *) state="$$PWD/$$state" ;; esac; \
+	 mkdir -p "$$state"; \
+	 if [ -z "$$keep" ]; then trap 'rm -rf "$$state"' EXIT; trap ':' INT TERM; fi; \
+	 printf '$(DIM)machine tree: %s$(OFF)\n' "$$state"; \
+	 env -u DATA_HOST_DIR -u WORKSPACE_HOST_DIR \
+	 COLLOQ_RUNNER_STATE="$$state" DATA_DIR="$$state/data" NODE_ENV=development KERNEL_BACKEND=docker COMPETITION_BACKEND=docker \
+	 COLLOQ_RUNNER_JOIN="$(URL)#$(CODE)" \
+	 $(or $(wildcard $(RUNNER_DEV_NODE22)),node) $(if $(filter 1,$(DIST)),server/dist/runner.js,--import tsx server/src/runner-agent/main.ts)
+
+kernel-publish: ## Build, check and push the GPU kernels of this release to GHCR (a builder with a card). ENV=base-gpu,kaggle-gpu OWNER=…
+	@# Release time, after publish.yml (RELEASING.md, "GPU kernels"): GitHub's
+	@# runners have 14 GB of disk and no card, kaggle-gpu is 12.7 GB, and torch
+	@# must see CUDA before the push. From a clean checkout of the tag, after
+	@# docker login ghcr.io. ENV only from the command line: an ENV in the
+	@# environment is the shell's startup file, not a list of kernels.
+	@ENVIRONMENTS="$(if $(filter command line,$(origin ENV)),$(ENV),base-gpu kaggle-gpu)" OWNER="$(OWNER)" REPO="$(REPO)" \
+	  ./scripts/kernel-publish.sh
+
 ## ---------------------------------------------------------- environments
 
 env-list: ## Which environments exist

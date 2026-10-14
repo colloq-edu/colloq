@@ -22,19 +22,24 @@
     ResourceSource,
     UpdateResourceSettingsRequest,
   } from '@shared/admin'
-  import type {
-    CompetitionGpuSettingsInput,
-    CompetitionSettings,
-    CompetitionSettingsInput,
+  import {
+    SETTINGS_LIMITS,
+    type CompetitionGpuSettingsInput,
+    type CompetitionRunnerSettingsInput,
+    type CompetitionSettings,
+    type CompetitionSettingsInput,
   } from '@shared/competitions-settings'
   import type { DiskSpace } from '@shared/disk'
+  import { metricMemoryMb } from '@shared/competitions'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Check from '@/admin/ui/Check.svelte'
   import Choice from '@/admin/ui/Choice.svelte'
+  import Runners from '@/admin/ui/Runners.svelte'
   import RunningKernels from '@/admin/ui/RunningKernels.svelte'
   import Section from '@/admin/ui/Section.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
+  import { notebooksOffQuestion } from '@/admin/runners'
   import { cardWord } from '@/admin/running-kernels'
   import {
     cardFacts,
@@ -54,13 +59,22 @@
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { cn } from '@/lib/utils'
 
+  interface Props {
+    /** The panel's router: the machines block opens a machine's page under this tab. */
+    navigate: (path: string) => void
+  }
+
+  let { navigate }: Props = $props()
+
   /* ------------------------------------------------------------- fields */
 
   /**
    * The competition half is prefixed so one record can hold the whole form.
    * `c.gpuDevices` is the one field that is not a number: the runner cards,
    * kept as a list beside the texts (`gpuChosen`) and saved through its own
-   * half of the door (CompetitionGpuSettingsInput).
+   * half of the door (CompetitionGpuSettingsInput). The machines' two
+   * (`c.homeNotebooks`, a switch kept in `homeChoice`, and `c.scoreSlots`)
+   * go through the same door as its third half (CompetitionRunnerSettingsInput).
    */
   type CompetitionKey =
     | 'c.slots'
@@ -71,6 +85,8 @@
     | 'c.uploadsPerMinute'
     | 'c.gpuPerDevice'
     | 'c.gpuDevices'
+    | 'c.homeNotebooks'
+    | 'c.scoreSlots'
   type FieldKey = ResourceSettingName | CompetitionKey
 
   /** The fields this page edits; the process ceilings stay env-and-API only. */
@@ -129,6 +145,23 @@
   let slotsMode = $state<'auto' | 'fixed'>('auto')
   /** The cards ticked for competition submissions, in KERNEL_GPUS order (`c.gpuDevices`). */
   let gpuChosen = $state<string[]>([])
+  /*
+   * The machines' two settings come from the settings door with the rest of
+   * the queue's half (CompetitionSettings.runners), each with where it came
+   * from — so they have the source line and «вернуть умолчание» every other
+   * field has, and a read of the machines list (every few seconds) can never
+   * put an old value back into a field after Save.
+   */
+  /** «Тетради на этом сервере» as the form now stands (`c.homeNotebooks`); `null` until the server said. */
+  let homeChoice = $state<boolean | null>(null)
+  /** Bumped after a save that sent the machines' settings: the block reads its list again. */
+  let runnersReload = $state(0)
+  /**
+   * Machines online, as the machines block last read them; `null` — it has
+   * not read yet, or could not. Turning this server's notebooks off with
+   * none online leaves nobody to run them (save · confirm).
+   */
+  let machinesOnline = $state<number | null>(null)
 
   let saving = $state(false)
   let saveErrorText = $state<(() => string | null) | null>(null)
@@ -166,7 +199,14 @@
 
   function blankTexts(): Record<FieldKey, string> {
     const record = {} as Record<FieldKey, string>
-    for (const key of [...RESOURCE_KEYS, ...COMPETITION_KEYS, 'c.slots' as const, 'c.gpuDevices' as const]) record[key] = ''
+    for (const key of [
+      ...RESOURCE_KEYS,
+      ...COMPETITION_KEYS,
+      'c.slots' as const,
+      'c.gpuDevices' as const,
+      'c.homeNotebooks' as const,
+      'c.scoreSlots' as const,
+    ]) record[key] = ''
     return record
   }
 
@@ -291,6 +331,7 @@
   /** What the server holds for a field right now: the number the form is measured against. */
   function savedOf(key: FieldKey): number | null {
     if (!key.startsWith('c.')) return loaded?.settings[key as ResourceSettingName].value ?? null
+    if (key === 'c.scoreSlots') return competitions?.runners?.scoreSlots.value ?? null
     const queue = competitions
     if (!queue) return null
     switch (key) {
@@ -315,6 +356,7 @@
   function boundsOf(key: FieldKey): { min: number; max: number } | null {
     if (!key.startsWith('c.')) return loaded?.bounds[key as ResourceSettingName] ?? null
     if (key === 'c.gpuPerDevice') return competitions?.gpu.bounds.perDevice ?? null
+    if (key === 'c.scoreSlots') return SETTINGS_LIMITS.scoreSlots
     const bounds = competitions?.bounds
     if (!bounds) return null
     const name = key.slice(2) as keyof CompetitionSettings['bounds']
@@ -345,6 +387,8 @@
     if (!key.startsWith('c.')) return loaded?.settings[key as ResourceSettingName].source ?? null
     const queue = competitions
     if (!queue) return null
+    if (key === 'c.scoreSlots') return queue.runners?.scoreSlots.source ?? null
+    if (key === 'c.homeNotebooks') return queue.runners?.homeNotebooks.source ?? null
     if (key === 'c.slots') return queue.slots.source
     if (key === 'c.uploadsPerMinute') return queue.uploadsPerMinute.source
     if (key === 'c.gpuDevices') return queue.gpu.source.devices
@@ -372,6 +416,10 @@
       return slotsMode === 'fixed' && valueOf('c.slots') !== queue.slots.value
     }
     if (key === 'c.gpuDevices') return competitions !== null && !sameCards(gpuChosen, competitions.gpu.devices)
+    if (key === 'c.homeNotebooks') {
+      const saved = competitions?.runners?.homeNotebooks.value
+      return saved !== undefined && homeChoice !== null && homeChoice !== saved
+    }
     return valueOf(key) !== savedOf(key)
   }
 
@@ -379,7 +427,9 @@
   const competitionDirty = $derived(
     competitions ? [...COMPETITION_KEYS, 'c.slots' as const, 'c.gpuDevices' as const].filter((key) => isDirty(key)) : [],
   )
-  const dirtyCount = $derived(resourceDirty.length + competitionDirty.length)
+  /** The machines' two: only when the server said them (a server from before machines has none to edit). */
+  const runnerDirty = $derived(competitions?.runners ? (['c.homeNotebooks', 'c.scoreSlots'] as const).filter((key) => isDirty(key)) : [])
+  const dirtyCount = $derived(resourceDirty.length + competitionDirty.length + runnerDirty.length)
   const dirty = $derived(dirtyCount > 0)
 
   /* --------------------------------------------------------- apply/save */
@@ -396,6 +446,12 @@
     texts['c.slots'] = String(settings.slots.mode === 'fixed' ? settings.slots.value : settings.slots.auto)
     for (const key of COMPETITION_KEYS) texts[key] = display(key, savedOf(key))
     gpuChosen = [...settings.gpu.devices]
+    // The machines' half of the same answer, read only here: on load, after
+    // Save and on Discard — never on the machines list's timer.
+    if (settings.runners) {
+      texts['c.scoreSlots'] = String(settings.runners.scoreSlots.value)
+      homeChoice = settings.runners.homeNotebooks.value
+    }
     forgotten = forgotten.filter((key) => !key.startsWith('c.'))
   }
 
@@ -438,6 +494,16 @@
     if (key === 'c.gpuPerDevice') {
       const fallback = perDeviceFallback(competitions?.gpu ?? null)
       texts[key] = fallback ? display(key, fallback.perDevice) : ''
+      return
+    }
+    // The machines' two have no variable behind them: what answers once the
+    // saved value is gone is the default, shown at once like a room field's.
+    if (key === 'c.scoreSlots') {
+      texts[key] = String(SETTINGS_LIMITS.scoreSlots.default)
+      return
+    }
+    if (key === 'c.homeNotebooks') {
+      homeChoice = SETTINGS_LIMITS.homeNotebooks.default
       return
     }
     if (key.startsWith('c.')) {
@@ -489,7 +555,22 @@
     for (const key of resourceDirty) {
       resourcePatch[key as EditedResource] = forgotten.includes(key) ? null : valueOf(key)
     }
-    const competitionPatch: CompetitionSettingsInput & CompetitionGpuSettingsInput = {}
+    const competitionPatch: CompetitionSettingsInput & CompetitionGpuSettingsInput & CompetitionRunnerSettingsInput = {}
+    // The machines' half of the same body: the switch as itself, the metric
+    // lane's places as a number from its field, `null` for either forgotten.
+    for (const key of runnerDirty) {
+      if (key === 'c.homeNotebooks' && homeChoice !== null) competitionPatch.homeNotebooks = forgotten.includes(key) ? null : homeChoice
+      if (key === 'c.scoreSlots') competitionPatch.scoreSlots = forgotten.includes(key) ? null : valueOf(key)
+    }
+    const runnerSent = runnerDirty.length > 0
+    /*
+     * «Только метрики» with no machine online leaves every submission
+     * waiting: nothing here runs notebooks, and nothing else is there to.
+     * Asked before it is saved, not found out from a queue that stopped
+     * moving (admin/runners.ts · notebooksOffQuestion).
+     */
+    const question = notebooksOffQuestion(competitionPatch.homeNotebooks, machinesOnline)
+    if (question !== null && !window.confirm(question)) return
     for (const key of competitionDirty) {
       if (key === 'c.slots') {
         competitionPatch.slots = forgotten.includes(key) ? null : slotsMode === 'auto' ? 'auto' : valueOf(key)
@@ -519,6 +600,9 @@
         askSizesLater()
         // The budget's competition segment is computed from these settings.
         void refreshBudget()
+        // The answer carried the machines' two with their sources (applied
+        // above); the block reads its list again for what follows from them.
+        if (runnerSent) runnersReload += 1
       }
       flashSaved()
     } catch (cause: unknown) {
@@ -543,6 +627,29 @@
     // defaults plus the container's cushion. While the defaults are being
     // edited, the same cushion over the typed numbers.
     const cushion = queue.slots.perSlot ? queue.slots.perSlot.memoryMb - queue.defaults.memoryMb : 256
+    /*
+     * With «Тетради на этом сервере» off (as the form now stands) the queue
+     * runs only its metric lane here, and the server's budget counts exactly
+     * that (routes/admin-resources.ts · competitionShare): «Оценок
+     * одновременно» metrics, each the run cushion and the metric's memory
+     * (at most 2 GB, at least 512 MB). Promised as slots × a notebook's
+     * memory, the bar showed seventy-six gigabytes taken by notebooks that
+     * never run on this server — seen on a rehearsal home on 14 Oct 2026.
+     */
+    const homeOn = homeChoice ?? queue.runners?.homeNotebooks.value ?? true
+    if (!homeOn) {
+      const scores = valueOf('c.scoreSlots') ?? queue.runners?.scoreSlots.value ?? SETTINGS_LIMITS.scoreSlots.default
+      const perScore = cushion + metricMemoryMb(memoryMb)
+      return {
+        slots: scores,
+        memoryMb: scores * perScore,
+        cpus: scores * cpus,
+        perSlotMb: perScore,
+        perSlotCpus: cpus,
+        autoSlotMb: memoryMb + cushion,
+        metricsOnly: true,
+      }
+    }
     return {
       slots,
       memoryMb: slots * memoryMb,
@@ -550,6 +657,7 @@
       perSlotMb: memoryMb,
       perSlotCpus: cpus,
       autoSlotMb: memoryMb + cushion,
+      metricsOnly: false,
     }
   })
 
@@ -858,6 +966,79 @@
   </div>
 {/snippet}
 
+<!--
+  The machines' two settings (Paper 16 · M1): whether this server runs
+  notebooks too or only scores what the machines send back, and how many
+  metrics it runs at once. Drawn by this form, inside the machines block,
+  read from the settings door with where each came from, and saved by its
+  Save with the queue's half of the body. Not drawn until that door answered:
+  a switch with no saved value behind it would be measured against nothing.
+-->
+{#snippet runnerSettings()}
+  {#if competitions?.runners}
+    {@const saved = competitions.runners}
+    {@const homeOn = homeChoice ?? saved.homeNotebooks.value}
+    <div class="flex flex-wrap items-start gap-x-4 gap-y-4">
+      <div class="min-w-0 flex-[1_1_320px]">
+        <p class="mb-1.5 flex items-baseline gap-2">
+          <span class="admin-label">{tr('admin.runners.homeNotebooks')}</span>
+          {#if isDirty('c.homeNotebooks') && !forgotten.includes('c.homeNotebooks')}
+            <span class="text-micro text-warning">
+              {tr('admin.resourcesTab.was', {
+                value: saved.homeNotebooks.value ? tr('admin.runners.homeNotebooks.on') : tr('admin.runners.homeNotebooks.off'),
+              })}
+            </span>
+          {/if}
+        </p>
+        <div>
+          <Choice
+            size="lg"
+            options={[
+              { value: 'on', label: tr('admin.runners.homeNotebooks.on') },
+              { value: 'off', label: tr('admin.runners.homeNotebooks.off') },
+            ]}
+            value={homeOn ? 'on' : 'off'}
+            onchange={(value) => {
+              homeChoice = value === 'on'
+              typed('c.homeNotebooks')
+            }}
+          />
+        </div>
+        <p class="admin-meta mt-1.5">{homeOn ? tr('admin.runners.homeNotebooks.onNote') : tr('admin.runners.homeNotebooks.offNote')}</p>
+        {@render sourceLine('c.homeNotebooks', sourceOf('c.homeNotebooks'))}
+      </div>
+      <div class="w-[220px] max-w-full">
+        {@render fieldLabel('c.scoreSlots', tr('admin.runners.scoreSlots'), fieldId('c.scoreSlots'))}
+        <div class={cn('admin-affix gap-2', isDirty('c.scoreSlots') && '!border-accent')}>
+          <input
+            id={fieldId('c.scoreSlots')}
+            bind:value={texts['c.scoreSlots']}
+            oninput={() => typed('c.scoreSlots')}
+            onblur={() => tidy('c.scoreSlots')}
+            inputmode="numeric"
+            autocomplete="off"
+          />
+          <span class="shrink-0 text-2xs text-muted">{tr('admin.runners.scoreSlots.unit')}</span>
+        </div>
+        <p class="admin-meta mt-1.5">
+          {tr('admin.runners.scoreSlots.note', { min: SETTINGS_LIMITS.scoreSlots.min, max: SETTINGS_LIMITS.scoreSlots.max })}
+        </p>
+        {@render sourceLine('c.scoreSlots', sourceOf('c.scoreSlots'))}
+      </div>
+    </div>
+    {#if !homeOn && machinesOnline === 0}
+      <!-- This server runs no notebooks — or will once this is saved — and
+           no machine answers: every submission waits, and the console says
+           so row by row. Said here, where the switch is, as soon as it is
+           turned, not after Save. -->
+      <p class="mt-3 flex items-start gap-2 text-2xs font-semibold text-warning" role="status">
+        <Icon name="alert" size={14} class="mt-0.5 shrink-0" />
+        <span>{tr('admin.runners.nobodyRuns')}</span>
+      </p>
+    {/if}
+  {/if}
+{/snippet}
+
 {#snippet actions()}
   {#if isOwner}
     {#if justSaved && !dirty}
@@ -934,7 +1115,7 @@
               {@render legend('bg-primary', tr('admin.resourcesTab.rooms'), tr('admin.resourcesTab.roomsDetail', { count: loaded.budget.rooms.count, memory: gb(memory.rooms) }))}
               {@render legend('bg-brand-2', tr('admin.resourcesTab.notebooks'), tr('admin.resourcesTab.notebooksDetail', { count: loaded.budget.own.count, memory: gb(memory.own) }))}
               {#if competitionShare}
-                {@render legend('bg-accent', tr('admin.resourcesTab.competitions'), tr('admin.resourcesTab.competitionsDetail', { count: competitionShare.slots, memory: gb(competitionShare.perSlotMb) }))}
+                {@render legend('bg-accent', tr('admin.resourcesTab.competitions'), tr(competitionShare.metricsOnly ? 'admin.resourcesTab.metricsDetail' : 'admin.resourcesTab.competitionsDetail', { count: competitionShare.slots, memory: gb(competitionShare.perSlotMb) }))}
               {/if}
               {@render legend('border border-dashed border-faint bg-surface', tr('admin.resourcesTab.free'), tr('admin.resourcesTab.freeDetail', { memory: gb(Math.max(memory.free, 0)), reserve: gb(memory.reserve) }))}
             </div>
@@ -1109,6 +1290,34 @@
           <p class="text-ui text-danger" role="alert">{competitionError}</p>
           <button type="button" class="btn-outline mt-3" onclick={() => void load()}>{tr('admin.try.again')}</button>
         {:else if competitions}
+          {#if dockerOnlyIgnored && competitions.runners?.homeNotebooks.value === false}
+            <!-- Kubernetes: the broker runs the submissions and no machine
+                 can (§1), so the machines block with the switch is not drawn
+                 here. Yet the setting can still be off — saved through the
+                 door, or carried over in a database from a VM home whose
+                 machines ran the notebooks — and with it off the pump takes
+                 no notebook at all and every submission waits. The way back
+                 is said here: the switch goes on in the form, and Save sends
+                 it with the rest. -->
+            <div class="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2.5 border-l-[3px] border-warning bg-warning/[0.07] px-3.5 py-3" role="status">
+              <Icon name="alert" size={15} class="shrink-0 text-warning" />
+              <p class="min-w-0 flex-1 basis-[240px] text-2xs text-ink">
+                {homeChoice === true ? tr('admin.resourcesTab.brokerNotebooksPending') : tr('admin.resourcesTab.brokerNotebooksOff')}
+              </p>
+              {#if homeChoice !== true}
+                <button
+                  type="button"
+                  class="btn-outline shrink-0 max-[640px]:w-full"
+                  onclick={() => {
+                    homeChoice = true
+                    typed('c.homeNotebooks')
+                  }}
+                >
+                  {tr('admin.resourcesTab.brokerNotebooksOn')}
+                </button>
+              {/if}
+            </div>
+          {/if}
           <p class="admin-label mb-1.5">{tr('admin.resourcesTab.slots')}</p>
           <div class="resources-slots">
             <Choice
@@ -1146,6 +1355,19 @@
           <p class="text-ui text-muted">{tr('common.loading')}</p>
         {/if}
       </Section>
+
+      <!-- The machines that run submissions (Paper 16 · M1): beside the
+           queue's settings, since they are where its notebooks run. The
+           owner's only: every door behind the block refuses a teacher. Not
+           under Kubernetes: the broker runs submissions there (§1 keeps its
+           path as it is), a machine needs this server's Docker to prepare
+           and score, and «только метрики» there stopped every notebook with
+           nothing left to run one. -->
+      {#if isOwner && !dockerOnlyIgnored}
+        <Section title={tr('admin.runners.title')} description={tr('admin.runners.note')}>
+          <Runners {navigate} settings={runnerSettings} onfleet={(fleet) => (machinesOnline = fleet.online)} reload={runnersReload} />
+        </Section>
+      {/if}
 
       <Section title={tr('admin.resourcesTab.filesTitle')} description={tr('admin.resourcesTab.filesNote')}>
         <div class="flex flex-wrap gap-4">

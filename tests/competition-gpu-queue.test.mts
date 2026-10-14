@@ -20,6 +20,7 @@
  */
 import './_env.mts'
 import http from 'node:http'
+import { db } from '../server/src/db.js'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Response as ExpressResponse } from 'express'
@@ -320,8 +321,8 @@ test('every way out of running lets the card go', () => {
   // A Pod the scheduler refused.
   assert.notEqual(deferResourceAttempt(rowB, 'later'), null)
   assert.deepEqual([queueRow(b.id)?.state, queueRow(b.id)?.gpu], ['waiting', null])
-  // Put back by hand.
-  assert.ok(requeue(c.id))
+  // Put back by hand, fenced on the attempt it ran under; its container had started.
+  assert.ok(requeue(c.id, rowC.attemptId!, true))
   assert.deepEqual([queueRow(c.id)?.state, queueRow(c.id)?.gpu], ['waiting', null])
 
   // A run of the previous life of the process, picked up again after a restart.
@@ -649,7 +650,7 @@ test('a card keeps the shares its runs were taken at: a raise of runs per card w
   assert.deepEqual([half.submissionId, half.gpuPerDevice], [sent[5].id, 2])
   // A row put back lets its pinned share go with its card.
   const back = runningRows().find((row) => row.gpuPerDevice === 2)!
-  assert.ok(requeue(back.submissionId))
+  assert.ok(requeue(back.submissionId, back.attemptId!, true))
   assert.deepEqual([queueRow(back.submissionId)?.gpu, queueRow(back.submissionId)?.gpuPerDevice, queueRow(back.submissionId)?.gpuSliceMb], [null, null, null])
   reset()
 })
@@ -779,7 +780,8 @@ test('a run that runs out of video memory while the watchdog stops its neighbour
       assert.equal(queueRow(victim.id)?.gpu, null, 'its card went with the attempt')
 
       // Once: the same error a second time is judged like any other, with the share it had.
-      assert.ok(requeue(victim.id))
+      // The retry's backoff waited out at once.
+      assert.equal(db.prepare('UPDATE competition_queue SET not_before = 0 WHERE submission_id = ? AND state = ?').run(victim.id, 'waiting').changes, 1)
       assert.equal(await pumpOnce(), 1)
       await until(() => queueRow(victim.id) === null)
       const judged = getSubmission(victim.id)!

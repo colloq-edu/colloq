@@ -66,6 +66,23 @@ COPY web/ web/
 RUN npm run build:optimized -w @colloq/web \
  && npm run build -w @colloq/server
 
+# The machines for submissions (docs/architecture/remote-runners.md): the
+# entry point's `runner` execs server/dist/runner.js and its `runner-code`
+# server/dist/runner-code.js, and a home gives new work only to a machine
+# whose build is the runner.sha256 next to its own server.js (decision 5).
+# The server's build writes all three, and server/dist goes into the image
+# whole (below). Without them the image would come up and refuse only when the
+# first machine joins; with a hash that is not the bundle's, every machine
+# would be «устарел» against a home of the very same image. So both are
+# checked where the image is made. The file holds the digest alone or as
+# sha256sum prints it, with the name after it (remote-runner.ts ·
+# parseRemoteBuildFile).
+RUN set -eu; \
+    for f in runner.js runner.sha256 runner-code.js; do \
+      test -s "server/dist/$f" || { echo "server/dist/$f is missing: the server build no longer writes it" >&2; exit 1; }; \
+    done; \
+    printf '%s  %s\n' "$(cut -d' ' -f1 server/dist/runner.sha256 | tr -d '[:space:]')" server/dist/runner.js | sha256sum -c -
+
 # -------------------------------------------------- server dependencies
 #
 # On the platform of the TARGET: better-sqlite3 and @resvg/resvg-js are native
@@ -183,7 +200,11 @@ COPY kernel/environments/ ./kernel/environments/
 COPY scripts/lib.sh scripts/backup-local.sh scripts/restore.sh ./scripts/
 
 COPY deploy/vast/entrypoint.sh /usr/local/bin/colloq-vast
-COPY deploy/vast/colloq-host deploy/vast/onstart.sh ./deploy/vast/
+# The two Vast on-starts travel with the image of their version, the
+# instance's and the one of a machine for submissions, next to the colloq-host
+# they call: `docker run --rm IMAGE cat /opt/colloq/deploy/vast/onstart-runner.sh`
+# gives a VM template the one that matches the image it will run.
+COPY deploy/vast/colloq-host deploy/vast/onstart.sh deploy/vast/onstart-runner.sh ./deploy/vast/
 
 # The image is a copy of the program, and MIT requires the license text to
 # travel with it. The licenses="MIT" label below is about the Colloq code; what
@@ -195,7 +216,7 @@ COPY LICENSE THIRD_PARTY_NOTICES.md ./
 # directory. The entry point (PUBLIC_URL) and the panel (KERNEL_ENV) write
 # there, the server re-reads them from there on the fly, and they survive an
 # image update.
-RUN chmod 0755 /usr/local/bin/colloq-vast ./deploy/vast/colloq-host ./deploy/vast/onstart.sh \
+RUN chmod 0755 /usr/local/bin/colloq-vast ./deploy/vast/colloq-host ./deploy/vast/onstart.sh ./deploy/vast/onstart-runner.sh \
  && ln -s /workspace/colloq/.env /opt/colloq/.env \
  && mkdir -p /workspace/colloq \
  && chown node:node /workspace/colloq
@@ -229,13 +250,18 @@ ENV COLLOQ_VERSION=${COLLOQ_VERSION} \
 # groups and umask.
 USER root
 EXPOSE 3000
-# livez, not health: health honestly answers 503 until the environment is
-# built, and the first build takes minutes. The container is alive meanwhile
-# and serves the panel; readiness for the class is shown by `colloq-vast status`
-# and /api/health. --noproxy: an http_proxy given for the internet
-# (HTTPS_PROXY and friends in colloq.env) must not catch our own loopback.
-HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=4 \
-  CMD curl -fsS --noproxy '*' "http://127.0.0.1:${PORT}/api/livez" >/dev/null || exit 1
+# One health check for the image's two modes, chosen by the mode the
+# container was started in (entrypoint.sh · health). In serve, the server's
+# /api/livez: livez, not health, since health honestly answers 503 until the
+# environment is built, and the first build takes minutes; the container is
+# alive meanwhile and serves the panel, and readiness for the class is shown
+# by `colloq-vast status` and /api/health. A machine for submissions has no
+# port to ask, and a curl of one kept the panel's plain `docker run` machine
+# (unhealthy) for good: there it is the agent's `runner status`. Ten seconds,
+# because that answer is a node process, not a curl; colloq-host gives a
+# machine's container a slower pace of its own.
+HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=4 \
+  CMD ["/usr/local/bin/colloq-vast", "health"]
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/colloq-vast"]
 CMD ["serve"]

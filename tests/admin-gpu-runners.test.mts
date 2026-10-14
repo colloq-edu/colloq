@@ -461,7 +461,8 @@ test('the editor marks a GPU environment and draws the card as a row under the t
   assert.match(EDITOR, /if \(picked && !picked\.gpu && limits\.gpu === true\) limits\.gpu = false/)
   const row = EDITOR.slice(EDITOR.indexOf("tr('admin.competitions.limit.gpu')") - 200, EDITOR.indexOf('{#if gpuNote}'))
   assert.match(row, /<span class=\{cn\(HEAD, 'w-\[110px\] shrink-0', gpuLook\.head\)\}>/, 'the panel\'s label voice, like the tiles')
-  assert.match(row, /<Choice size="lg" options=\{\[ \{ value: 'off', label: tr\('admin\.competitions\.gpuOff'\) \}, \{ value: 'on', label: gpuSwitchWord\(runnerCards\) \}, \]\}/)
+  // With machines that have cards, their share too (admin-runners-ui-review.test.mts).
+  assert.match(row, /<Choice size="lg" options=\{\[ \{ value: 'off', label: tr\('admin\.competitions\.gpuOff'\) \}, \{ value: 'on', label: gpuSwitchWord\(runnerCards, machineShare\) \}, \]\}/)
   assert.match(row, /disabled=\{gpuState === 'cpu' && !gpuOn\}/, 'a card left on a CPU environment can still be turned off')
   assert.match(row, /onchange=\{\(value\) => \(limits\.gpu = value === 'on'\)\}/)
   // No card for submissions: the owner gets the way to «Ресурсы», a teacher the name of who can.
@@ -546,14 +547,17 @@ test('the GPU mark beside the environment does not wait for the list to name the
 
 test('the console shows the card a run holds and what a waiting notebook waits for', () => {
   assert.match(LIVE, /\{#if run\.gpu\} <span class="inline-flex shrink-0" title=\{run\.gpu\.device \|\| undefined\}> <Badge word=\{cardWord\(run\.gpu\.device\)\} tone="accent" case="lower" class="font-mono" \/>/)
-  assert.match(LIVE, /tr\('admin\.competitions\.slotsHeadGpu', \{ busy: running\.length, count: slots, gpuBusy: queue\.gpu\.busy, gpuCount: queue\.gpu\.slots, \}\)/)
-  assert.match(LIVE, /\{#if waitsForCard\(row, queue\)\} <span class="text-micro text-accent-text">\{tr\('admin\.competitions\.waitsForCard'\)\}<\/span>/)
+  // The busy places are notebook runs on executors that give places (admin/runners.ts · consoleLoad, admin-runners-ui-r2.test.mts).
+  assert.match(LIVE, /tr\('admin\.competitions\.slotsHeadGpu', \{ busy: load\.busy, count: slots, gpuBusy: queue\.gpu\.busy, gpuCount: queue\.gpu\.slots, \}\)/)
+  // The card a waiting notebook waits for, after a machine's reason when it has one
+  // (admin/runners.ts · waitingLine, admin-runners-ui-review.test.mts).
+  assert.match(LIVE, /\{@const line = waitingLine\(row, waitsForCard\(row, queue\), homeWord\)\}/)
   assert.match(LIVE, /waitingWords\(queue\?\.waiting \?\? waiting\.length, onCards\)/)
   // With no share on any card, the list under «ЖДУТ» says why before its rows.
   assert.match(LIVE, /const cardless = \$derived\(noPlaceOnCards\(waiting, queue\)\)/)
   assert.match(
     LIVE,
-    /\{#if cardless\} <p class="text-2xs leading-snug text-warning">\{tr\('admin\.competitions\.gpuNoPlace'\)\}<\/p> \{\/if\} \{#each waiting as row \(row\.submissionId\)\}/,
+    /\{#if cardless\} <p class="text-2xs leading-snug text-warning">\{cardlessWarning\(machineGroups !== null\)\}<\/p> \{\/if\} \{#each waiting as row \(row\.submissionId\)\}/,
   )
   // The status line's last result has one «≈» (lastResultWords), not etaWords inside a sentence with its own.
   assert.match(LIVE, /lastEtaMs !== null \? lastResultWords\(lastEtaMs\) : null/)

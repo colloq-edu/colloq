@@ -395,6 +395,13 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'Прогон убить не вышло: исполнителя в этом процессе нет или контейнер уже закончился.',
     en: 'The run could not be killed: this process has no runner, or the container had already finished.',
   },
+  // A stop aimed at a run on a machine (POST …/queue/kill with onMachine)
+  // whose notebook has already run: its answer is on the way here, or waits
+  // for its metric — it is not cancelled for a press that was about the run.
+  'competitions.refusal.notOnMachine': {
+    ru: 'Эта посылка уже не на машине: её тетрадь выполнена, а ответ возвращается сюда или ждёт метрику. Снять её с машины больше нельзя.',
+    en: 'This submission is no longer on a machine: its notebook has run, and its answer is on its way here or waiting for its metric. It can no longer be stopped on a machine.',
+  },
   'competitions.refusal.notRescorable': {
     ru: 'Пересчитывать нечего: эта посылка не оставила ответа.',
     en: 'Nothing to rescore: this submission left no answer.',
@@ -718,6 +725,41 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.answer.noSolution': {
     ru: 'Файла ответов {file} нет на диске — посылку не по чему проверять.',
     en: 'The answer file {file} is not on disk — there is nothing to check the submission against.',
+  },
+  // The metric of a competition with a card runs in the light {environment}
+  // (kaggle-base), or in the submission's own pinned image when that is not
+  // ready here (runner.ts · gpuScoringImage); this is neither.
+  'competitions.answer.noScoringImage': {
+    ru: 'Метрику негде посчитать: на сервере нет готового образа {environment}, а у посылки нет закреплённого окружения. Соберите {environment} в разделе «Окружения» и пересчитайте посылку.',
+    en: 'There is nowhere to run the metric: no {environment} image is ready on this server, and the submission has no pinned environment. Build {environment} under Environments and rescore the submission.',
+  },
+  /*
+   * The metric of a competition with a card is pinned to one image for the
+   * competition's whole life (runner.ts · gpuScoringImage): the teacher's
+   * column when that image, or the submission's own on a first metric, is not
+   * on the server; while docker does not say; and the refusals of the door
+   * that moves the metric to the current {light} (POST …/metric/image,
+   * runner.ts · moveMetricToLightImage). {environment} — the image's.
+   */
+  'competitions.answer.ownScoringImageGone': {
+    ru: 'Метрику негде посчитать: на сервере нет готового образа {environment}, и образа, к которому привязана посылка, здесь тоже нет. Соберите {environment} в разделе «Окружения» и пересчитайте посылку.',
+    en: 'There is nowhere to run the metric: no {environment} image is ready on this server, and the image the submission is pinned to is not here either. Build {environment} under Environments and rescore the submission.',
+  },
+  'competitions.answer.scoringImageGone': {
+    ru: 'Образа {environment}, в котором считается метрика этого соревнования, больше нет на сервере. Верните его или переведите метрику на текущий {light}: тогда будут пересчитаны все посылки.',
+    en: 'The {environment} image this competition’s metric runs in is no longer on this server. Restore it, or move the metric to the current {light}: every submission is then rescored.',
+  },
+  'competitions.answer.scoringImageUnchecked': {
+    ru: 'Docker не ответил, есть ли на сервере образ метрики. Метрика ждёт в очереди и попробует снова.',
+    en: 'Docker did not answer whether the metric’s image is on this server. The metric waits in the queue and will try again.',
+  },
+  'competitions.refusal.metricImageCpu': {
+    ru: 'Метрика соревнования без видеокарты считается в его собственном окружении и переезжает вместе с базой соревнования.',
+    en: 'The metric of a competition without a video card runs in the competition’s own environment, and moves with the competition’s base.',
+  },
+  'competitions.refusal.noMetricImage': {
+    ru: 'На сервере нет готового образа {environment}. Соберите {environment} в разделе «Окружения» и переведите метрику ещё раз.',
+    en: 'No {environment} image is ready on this server. Build {environment} under Environments and move the metric again.',
   },
   'competitions.answer.gone': {
     ru: 'Пересчитать нечего: файл {file} этой посылки уже убран с диска.',
@@ -1144,6 +1186,23 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.p.sentAt': { ru: 'отправлена в {time}', en: 'sent at {time}' },
   'competitions.p.waited': { ru: 'ожидание {duration}', en: 'waited {duration}' },
   'competitions.p.queueAt': { ru: '{place} в очереди', en: '{place} in the queue' },
+  /*
+   * No executor that is up can take it yet — the machines that run
+   * submissions are still downloading what it needs, or none that could is
+   * connected — so it has no place to name (SubmissionLive.preparing). Never
+   * which machine or why: that is the teacher's console's business.
+   */
+  'competitions.p.preparing': {
+    ru: 'готовится: место в очереди появится, когда её будет где посчитать',
+    en: 'getting ready: it gets a place in the queue once there is somewhere to run it',
+  },
+  'competitions.p.preparingShort': { ru: 'готовится', en: 'getting ready' },
+  /* Its notebook has run, and its metric waits on this server (SubmissionLive.scoring). */
+  'competitions.p.scoring': {
+    ru: 'оценивается: тетрадь выполнена, осталось посчитать метрику',
+    en: 'being scored: the notebook has run, the metric is next',
+  },
+  'competitions.p.scoringShort': { ru: 'оценивается', en: 'being scored' },
   'competitions.p.afterMine': {
     ru: 'запуск после завершения посылки #{number}',
     en: 'starts once submission #{number} finishes',

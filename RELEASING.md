@@ -44,6 +44,7 @@ understands too (`0.3.0-rc.1` becomes the wheel version `0.3.0rc1`).
 | Derived | Images `…:vX.Y.Z` and `release.json` for k3s | `scripts/release-build.py` defaults to `v` + `package.json` at the source commit and rejects any other `--version` |
 | Derived | vast.ai image `ghcr.io/<owner>/colloq-vast:X.Y.Z` | `publish.yml` |
 | Derived | Kubernetes images `ghcr.io/<owner>/colloq-app:vX.Y.Z`, `colloq-runtime:vX.Y.Z` and the kernels `colloq-kernel:vX.Y.Z-<env>` | `publish.yml` (jobs `app-images` and `kernels`) |
+| Derived | GPU kernels `colloq-kernel:vX.Y.Z-base-gpu` and `-kaggle-gpu` | `make kernel-publish` on a machine with a card, at release time ([GPU kernels](#gpu-kernels-at-release-time)) |
 | Derived | Helm chart `oci://ghcr.io/<owner>/charts/colloq:X.Y.Z`: `version` and `appVersion` in its `Chart.yaml`, the digests and the kernel catalog in its `values.yaml` | `publish.yml` (job `chart`, `scripts/chart-values.py`) writes them into the packaged chart from the tag, whatever the source tree carries |
 
 `make version` prints the version and fails if anything disagrees; CI runs the
@@ -296,7 +297,7 @@ accident.
    | Package | Pushed by |
    | --- | --- |
    | `colloq-vast`, `colloq-server` | `image` |
-   | `colloq-kernel` | `kernels` |
+   | `colloq-kernel` | `kernels` (and `make kernel-publish` for the GPU kernels) |
    | `colloq-app`, `colloq-runtime` | `app-images` |
    | `charts/colloq` (the Helm chart) | `chart` |
 
@@ -364,7 +365,7 @@ it runs only when called from *Release Please*, or by hand for an existing tag.
 | `github-release` | Attaches every wheel and `python-SHA256SUMS` to the release that release-please created, once `smoke` has passed. Refuses if there is no release: it never creates one, because the notes are release-please's. Marks `-rc.N` versions as pre-releases. Keeps files that are already attached. | always |
 | `pypi` | Downloads the wheels **attached to the release**, checks that each one is listed in `python-SHA256SUMS` and matches it, and uploads them with the `pypi` environment secret `PYPI_API_TOKEN`. | `vars.PUBLISH_PYPI == 'true'`, plus approval in the `pypi` environment |
 | `image` | Builds `deploy/vast/Dockerfile` for linux/amd64, with provenance, an SBOM and OCI labels. Pushes `ghcr.io/<owner>/colloq-vast:X.Y.Z` and `colloq-server:X.Y.Z` (one build, one digest), and also `:latest` for non-pre-releases. Skips the build if that version already exists. | `vars.PUBLISH_IMAGES == 'true'` |
-| `kernels` | Builds the room kernels of `base` and `kaggle-base` (`kernel/Dockerfile`, parents first), runs each once without network, and pushes `ghcr.io/<owner>/colloq-kernel:vX.Y.Z-<env>`. Skips a tag that exists and takes its digest. Hands the digests to `chart` as a job output. | `vars.PUBLISH_IMAGES == 'true'` |
+| `kernels` | Builds the room kernels of `base` and `kaggle-base` (`kernel/Dockerfile`, parents first), runs each once without network, and pushes `ghcr.io/<owner>/colloq-kernel:vX.Y.Z-<env>`. Skips a tag that exists and takes its digest. Hands the digests to `chart` as a job output. The GPU kernels are not built here: [GPU kernels](#gpu-kernels-at-release-time). | `vars.PUBLISH_IMAGES == 'true'` |
 | `app-images` | Builds the root `Dockerfile`'s targets `production` and `broker` for linux/amd64 on one node base pinned by digest, with provenance, an SBOM and OCI labels, and pushes `ghcr.io/<owner>/colloq-app:vX.Y.Z` and `colloq-runtime:vX.Y.Z` (no `:latest`: the chart installs by digest). Skips a tag that exists and takes its digest. Hands the digests to `chart` as job outputs. | `vars.PUBLISH_IMAGES == 'true'` |
 | `chart` | After `app-images` and `kernels`: `scripts/chart-values.py` writes their digests and the kernel catalog (the same catalog code as `release.json`) into `deploy/helm/colloq/values.yaml`, and the version into `Chart.yaml`; then `helm lint`, `helm package`, and a check that the package renders every digest. Refuses if the tag has no release, before pushing anything. Pushes `oci://ghcr.io/<owner>/charts/colloq:X.Y.Z` unless that version exists (then it pulls the published package instead), and attaches `colloq-X.Y.Z.tgz` and `values-X.Y.Z.yaml` to the release, keeping files that are already there. | `vars.PUBLISH_IMAGES == 'true'` |
 
@@ -408,6 +409,85 @@ project on PyPI. PyPI limits a project to 10 GB by default; ask for more
 (<https://github.com/pypi/support>) before the releases add up, or delete the
 files of old versions.
 
+### GPU kernels, at release time
+
+`base-gpu` and `kaggle-gpu` are published with every release too, as
+`ghcr.io/<owner>/colloq-kernel:vX.Y.Z-base-gpu` and `-kaggle-gpu`, but not by
+`publish.yml`. A standard GitHub-hosted Linux runner is documented with 14 GB
+of SSD and has no GPU. `kaggle-gpu` alone is 12.7 GB unpacked (`base-gpu`
+9.9 GB); built, loaded for its check and pushed from the cache the way the
+`kernels` job does it, it needs about 30 GB at the peak. Clearing the runner's
+preinstalled toolchains frees space that GitHub does not document and that
+changes with every runner image. And the check that matters for these two,
+torch seeing CUDA on a card, cannot run without a card.
+
+So publishing them is one command on a machine with a card, after the release's
+**Publish** run has finished:
+
+```sh
+git clone --branch vX.Y.Z https://github.com/colloq-edu/colloq && cd colloq
+echo "$GHCR_TOKEN" | docker login ghcr.io -u <you> --password-stdin   # a token with write:packages
+make kernel-publish ENV=base-gpu,kaggle-gpu
+```
+
+The machine needs an NVIDIA card with driver 580 or newer (the CUDA 13 wheels
+`base-gpu` pins), nvidia-container-toolkit, Docker with buildx, git and make
+(`apt-get install -y git make` on a stock Ubuntu VM), and about 100 GB free for
+Docker. A Vast VM is the usual choice: `make vast-vm HOST=builder DISK=150`
+rents one with Docker, the toolkit and a card. Give it a name of its own, not
+a class's, since the idle instance it starts takes that name on the relay;
+`colloq-host stop` stops it. The build takes about nine minutes and pushes
+about 4 GB.
+
+`scripts/kernel-publish.sh` does what the `kernels` job does for the CPU lists:
+
+- the same tags and labels (`org.opencontainers.image.version`,
+  `colloq.environment`);
+- parents first, with `kaggle-gpu` built on the digest just pushed for
+  `base-gpu`;
+- a run before every push: the imports every kernel needs, the
+  `kernel/locks` check for the kaggle stack, and torch on a CUDA card;
+- provenance and an SBOM, through a docker-container builder of its own.
+
+A tag that is already published is never built again, so a rerun after a
+failed push picks up where it stopped. It refuses a checkout that is not the
+release tag, or that has changes under `kernel/`. Each image is loaded for its
+check under a name of the run's own (`colloq-kernel-publish:…`), removed when
+the run ends, and never as `colloq-kernel:<env>`: an instance on the same
+builder may build or pull that name at any moment, and a check must run the
+image that is about to be pushed.
+
+Until it has run for a release, a GPU instance of that version builds
+`base-gpu` itself on its first boot, as before. Once it has run, the instance
+pulls them (`KERNEL_PRELOAD=base,base-gpu,kaggle-gpu`). A pulled kernel is
+pinned by its registry digest, and only such a pin lets machines for
+submissions run a GPU competition; a kernel built on the instance runs at home
+only (`docs/architecture/remote-runners.md`).
+
+**An instance that built its GPU kernels itself keeps them.** The entry point
+takes any image already called `colloq-kernel:<env>` as ready and never pulls
+over it. So an instance that built `base-gpu` (or `kaggle-gpu`) before
+`make kernel-publish` ran for its version stays on its own build, with no
+registry digest, and its GPU competitions keep running at home only, however
+long the published kernels have existed. To move it onto them, between
+classes:
+
+```sh
+docker image tag colloq-kernel:base-gpu colloq-kernel:base-gpu-built-here   # the old build, kept under another name
+docker image rm colloq-kernel:base-gpu                                      # the name alone: rooms still on it keep their image
+colloq-host stop && colloq-host start                                       # the start pulls the published base-gpu
+```
+
+`kaggle-gpu` the same way, both names removed before the restart (its parent
+is pulled first), and both in `KERNEL_PRELOAD`: only the kernels listed there
+are prepared at start. An environment whose list the instance has edited is
+built there again instead, as it always was: the published image holds the
+shipped list. The log says `[kernels] pulling
+ghcr.io/<owner>/colloq-kernel:vX.Y.Z-base-gpu`, and afterwards
+`docker image inspect -f '{{.RepoDigests}}' colloq-kernel:base-gpu` names the
+registry digest. Once the published one is in use, `docker image rm
+colloq-kernel:base-gpu-built-here` frees the disk the old build took.
+
 ### Verify a release
 
 ```sh
@@ -415,6 +495,7 @@ gh release view v0.3.0                                  # notes and assets
 git log -1 --format='%an <%ae>%n%B' v0.3.0              # your name, no trailers
 pip install colloq==0.3.0 && colloq --version           # if PyPI is on
 docker buildx imagetools inspect ghcr.io/<owner>/colloq-vast:0.3.0   # if images are on
+docker buildx imagetools inspect ghcr.io/<owner>/colloq-kernel:v0.3.0-kaggle-gpu   # after make kernel-publish
 docker buildx imagetools inspect ghcr.io/<owner>/colloq-app:v0.3.0
 helm show chart oci://ghcr.io/<owner>/charts/colloq --version 0.3.0  # version and appVersion 0.3.0
 helm template colloq oci://ghcr.io/<owner>/charts/colloq --version 0.3.0 \

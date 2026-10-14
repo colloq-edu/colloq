@@ -4,6 +4,8 @@ import { staffFromCookieHeader } from './admin/auth.js'
 import { onStaffAuthorizationChanged, staffAuthorizationVersion } from './admin/store.js'
 import { TOKEN_MAX_AGE_MS, type TokenPayload } from './auth.js'
 import { roleFor } from './authorization.js'
+import { isRemoteCredential } from '@shared/remote-runner'
+import type { IncomingHttpHeaders } from 'node:http'
 
 export interface SocketCredentials {
   cookieHeader?: string
@@ -46,4 +48,18 @@ export function authorizeSocket(ws: WebSocket, credentials?: SocketCredentials):
         roleFor(cookieHeader, payload) !== payload.role) revoke()
     return valid
   }
+}
+
+/**
+ * The room token a WebSocket upgrade presents, or `null` when it presents a
+ * machine's credential (`cr1.…`, in its Authorization header or as its token)
+ * — in which case it opens nothing, whatever else it carries. Only the
+ * machines' router takes that credential (competitions/remote/routes.ts),
+ * and a socket door that tried it as a token of its own kind, or let a
+ * machine's call through on a cookie riding next to it, would be one more
+ * place a leaked machine secret opens. index.ts asks this before verifyToken.
+ */
+export function upgradeToken(headers: IncomingHttpHeaders, token: string | null): string | null {
+  if (isRemoteCredential(headers.authorization) || isRemoteCredential(token)) return null
+  return token
 }

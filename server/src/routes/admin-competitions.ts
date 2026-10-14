@@ -85,6 +85,7 @@ import {
   waitingCount,
   enqueue,
   cardWorkWaiting,
+  heldRows,
 } from '../competitions/store.js'
 import {
   EXECUTED_FILE,
@@ -107,6 +108,7 @@ import {
   readSealedFile,
   readSecretFile,
   resultDir,
+  type StoredFile,
 } from '../competitions/storage.js'
 import {
   executedToday,
@@ -120,16 +122,21 @@ import {
   type InputRefusal,
 } from '../competitions/panel.js'
 import { queueForecast, runnerGpuPicture } from '../competitions/forecast.js'
+import { competitionMix, competitionWhere, consoleGroups, heldRunView, placeMix, remoteFleet, type WaitReason } from '../competitions/remote/views.js'
+import { anyRunnerEver } from '../competitions/remote/store.js'
 import { DEADLINE_GRACE_MS, privateBoardState } from '../competitions/results.js'
 import { machineShape, slotsResolution } from '../competitions/capacity.js'
-import { competitionDefaults, parseSettingsInput, saveCompetitionSettings, uploadsPerMinute, type SettingsRefusal } from '../competitions/settings.js'
-import { competitionGpuSliceMb, environmentNeedsGpu, gpuSettingsView, placesTaken, runnerCardsHere } from '../competitions/gpu.js'
+import { competitionDefaults, homeNotebooksSetting, parseSettingsInput, runnerSettings, saveCompetitionSettings, uploadsPerMinute, type SettingsRefusal } from '../competitions/settings.js'
+import { competitionGpuSliceMb, environmentNeedsGpu, gpuSettingsView, placesTaken, runnerCardsHere, runnerGpuDevices, runnerGpuPerDevice } from '../competitions/gpu.js'
 import { gpuDevices } from '../kernel/pool.js'
 import { HOST_RESERVE_MB } from '../kernel/resources.js'
 import { baseName, csvShape, csvUsageSplit, intakeNotebook, notebookCells } from '../competitions/intake.js'
 import {
+  LIGHT_METRIC_ENVIRONMENT,
   cancelSubmission,
   hasStoredAnswer,
+  metricScoringImage,
+  moveMetricToLightImage,
   pauseCompetitionQueue,
   queueSlots,
   rerunSubmission,
@@ -419,7 +426,14 @@ async function viewOf(competition: Competition): Promise<CompetitionView> {
     ready: readinessOf(competition),
     dataBytes: openFileBytes(competition.id),
     privatePending: privateBoardState(competition).pending,
+    // «Где считается» (M6): only once a machine was ever connected (remote/views.ts · competitionWhere).
+    ...whereOf(competition),
   }
+}
+
+function whereOf(competition: Competition): Pick<CompetitionView, 'where'> {
+  const where = competitionWhere(competition, queueSlots())
+  return where ? { where } : {}
 }
 
 /* ----------------------------------------------------------------- queue */
@@ -438,6 +452,8 @@ async function viewOf(competition: Competition): Promise<CompetitionView> {
  * so a notebook's metric step still shows it.
  */
 function runningCard(row: QueueRow, competition: Competition): RunningNow['gpu'] {
+  // A machine's run: the card its machine gave it, as the machine reported it (remote_leases).
+  if (row.holder !== null) return heldRunView(row)?.card ?? null
   if (row.gpu !== null) return { device: row.gpu, sliceMb: row.gpuSliceMb }
   if (!runnerCardsHere() && row.kind === 'notebook' && competition.limits.gpu === true) return { device: '', sliceMb: null }
   return null
@@ -449,6 +465,13 @@ function runningNow(row: QueueRow, viewer: StaffLike | null): RunningNow | null 
   if (!submission || !competition) return null
   const limitSeconds =
     row.kind === 'metric' ? METRIC_WALL_SECONDS : competition.limits.wallSeconds
+  /*
+   * A machine's run says which machine and how far (Paper M4): its container
+   * may not have started yet. The machine is the instance's, not a course's,
+   * so another course's run keeps it too — the sums per machine must add up.
+   */
+  const held = heldRunView(row)
+  const remote: Pick<RunningNow, 'machine' | 'remotePhase'> = held ? { machine: held.machine, remotePhase: held.phase ?? 'accepted' } : {}
   if (!canSeeCompetition(viewer, competition)) {
     /*
      * Another course's run: the slot and its clock, nothing of whose. The
@@ -477,6 +500,7 @@ function runningNow(row: QueueRow, viewer: StaffLike | null): RunningNow | null 
       late: row.late,
       hidden: true,
       gpu: runningCard(row, competition),
+      ...remote,
     }
   }
   return {
@@ -496,6 +520,7 @@ function runningNow(row: QueueRow, viewer: StaffLike | null): RunningNow | null 
     baseline: row.entrantId === baselineEntrantOf(competition),
     late: row.late,
     gpu: runningCard(row, competition),
+    ...remote,
   }
 }
 
@@ -550,13 +575,18 @@ function todayStats(now: number): { done: number; averageMs: number | null } {
  * showed them as plain waiting, with no word of what for, while the queue
  * passed them over at every take.
  */
-function queueSnapshot(viewer: StaffLike | null, now = Date.now()): QueueSnapshot {
+function queueSnapshot(viewer: StaffLike | null, now = Date.now(), competition: Competition | null = null): QueueSnapshot {
   const pause = queuePause()
   const today = todayStats(now)
   const running = runningRows()
   const cards = runnerGpuPicture(now)
   const onCards = running.flatMap((row) => row.gpu === null ? [] : [{ device: row.gpu, perDevice: row.gpuPerDevice }])
-  return {
+  const homeGpu = cards
+    ? { slots: cards.slots, busy: placesTaken(cards.cards, onCards), sliceMb: cards.sliceMb }
+    : runnerCardsHere() && cardWorkWaiting(Number.MAX_SAFE_INTEGER)
+      ? { slots: 0, busy: placesTaken([], onCards), sliceMb: null }
+      : null
+  const snapshot: QueueSnapshot = {
     paused: pause.paused,
     pausedAt: pause.at,
     running: running
@@ -566,12 +596,48 @@ function queueSnapshot(viewer: StaffLike | null, now = Date.now()): QueueSnapsho
     slots: queueSlots(),
     doneToday: today.done,
     averageMs: today.averageMs,
-    gpu: cards
-      ? { slots: cards.slots, busy: placesTaken(cards.cards, onCards), sliceMb: cards.sliceMb }
-      : runnerCardsHere() && cardWorkWaiting(Number.MAX_SAFE_INTEGER)
-        ? { slots: 0, busy: placesTaken([], onCards), sliceMb: null }
-        : null,
+    gpu: homeGpu,
   }
+  if (!anyRunnerEver()) return snapshot
+  /*
+   * WITH MACHINES (§5.7, Paper M4): the runs they hold are in `running` too,
+   * the places are this server's (with its notebooks on) and every live
+   * machine's, the GPU block counts their card shares beside this server's,
+   * and `groups` says whose each is. Before any machine was ever connected
+   * none of this is here, and the console stays as it was.
+   *
+   * A machine's places are counted in runs of the competition the console is
+   * about (its own memory and CPUs, remote/views.ts · placesFor), or of the
+   * queue's work for a screen of no one competition: in the machine's own
+   * smallest runs a 61-vCPU machine showed «60 мест» for runs of two CPUs, and
+   * free cells the take would never fill. A machine's run whose container has
+   * not started yet has no clock: it starts at zero when it does (store.ts ·
+   * holdQueueRow), never at the moment the run was sent.
+   */
+  const fleet = remoteFleet(now, competition ? competitionMix(competition) : placeMix(queueRows(), now))
+  const held = heldRows()
+  const homeOn = homeNotebooksSetting().value
+  const heldGpu = held.filter((row) => getCompetition(row.competitionId)?.limits.gpu === true).length
+  snapshot.running.push(...held.map((row) => runningNow(row.startedAt === null ? { ...row, startedAt: now } : row, viewer)).filter((row): row is RunningNow => row !== null))
+  snapshot.slots = (homeOn ? queueSlots() : 0) + fleet.places
+  if (fleet.gpuShares > 0 || heldGpu > 0) {
+    const here = homeOn ? homeGpu : null
+    /*
+     * This server's share counts only where it gives GPU work places: with no
+     * card of its own (homeGpu's zero places, kept to say GPU work waits)
+     * its null is no unknown size, there is simply no share of its, and the
+     * machines' known one must not read as «срез неизвестен» for it.
+     */
+    const slices = [here && here.slots > 0 ? here.sliceMb : undefined, fleet.gpuShares > 0 ? fleet.sliceMb : undefined].filter((slice): slice is number | null => slice !== undefined)
+    snapshot.gpu = {
+      slots: (here?.slots ?? 0) + fleet.gpuShares,
+      busy: (here?.busy ?? 0) + heldGpu,
+      sliceMb: slices.length === 0 || slices.some((slice) => slice === null) ? null : Math.min(...(slices as number[])),
+    }
+  }
+  const devices = runnerGpuDevices()
+  snapshot.groups = consoleGroups(queueSlots(), devices.length ? { count: devices.length, perDevice: runnerGpuPerDevice() } : null, now, competition ? competitionMix(competition) : placeMix(queueRows(), now))
+  return snapshot
 }
 
 /**
@@ -583,8 +649,9 @@ function queueSnapshot(viewer: StaffLike | null, now = Date.now()): QueueSnapsho
  * competition's rows are returned. The estimate is the participant's own
  * (competitions/forecast.ts): the projector and the phone name one number.
  */
-function waitingRows(competitionId: string | null, snapshot: QueueSnapshot, now: number): WaitingRow[] {
-  const forecast = queueForecast(snapshot.slots, now)
+function waitingRows(competitionId: string | null, _snapshot: QueueSnapshot, now: number): WaitingRow[] {
+  // This server's own slots: the forecast adds the machines' places itself (forecast.ts · queueForecast).
+  const forecast = queueForecast(queueSlots(), now)
   const rows: WaitingRow[] = []
   for (const queued of [...forecast.eligible, ...forecast.deferred]) {
     if (competitionId && queued.competitionId !== competitionId) continue
@@ -606,13 +673,26 @@ function waitingRows(competitionId: string | null, snapshot: QueueSnapshot, now:
       late: queued.late,
       // The queue's own rule of who needs a card share (store.ts · selectNext, forecast.ts · cardNeeds).
       gpu: queued.kind === 'notebook' && competition.limits.gpu === true,
+      // A machine's reason it waits for (remote/views.ts · waitReasons), and a fresh result's metric («оценивается»).
+      ...waitReasonOf(forecast.reasons.get(queued.submissionId)),
+      ...(queued.kind === 'metric' && submission.state === 'running' ? { scoring: true } : {}),
     })
   }
   return rows
 }
 
+function waitReasonOf(reason: WaitReason | undefined): Pick<WaitingRow, 'reason' | 'returnedFrom' | 'returnedWhy'> {
+  if (!reason) return {}
+  return {
+    reason: reason.reason,
+    ...(reason.returnedFrom !== undefined ? { returnedFrom: reason.returnedFrom } : {}),
+    ...(reason.returnedWhy !== undefined ? { returnedWhy: reason.returnedWhy } : {}),
+  }
+}
+
 function liveOf(competition: Competition, viewer: StaffLike | null, now = Date.now()): CompetitionLive {
-  const snapshot = queueSnapshot(viewer, now)
+  // The machines' places in runs of this competition's own size (queueSnapshot).
+  const snapshot = queueSnapshot(viewer, now, competition)
   const spans = listSubmissions(competition.id)
     .map((submission) => submission.durationMs)
     .filter((ms): ms is number => typeof ms === 'number' && ms > 0)
@@ -660,6 +740,8 @@ async function settingsView(): Promise<CompetitionSettings> {
       perDay: { min: SETTINGS_LIMITS.perDay.min, max: SETTINGS_LIMITS.perDay.max },
     },
     gpu,
+    // The machines' half of the same box (competitions/settings.ts · runnerSettings): saved through the same PUT.
+    runners: runnerSettings(),
   }
 }
 
@@ -891,10 +973,30 @@ export function adminCompetitionRoutes(): Router {
    * door does not confirm that it exists.
    */
   router.post('/api/admin/competitions/queue/kill', requireStaff, async (req, res) => {
-    const id = String((req.body as { submissionId?: unknown } | undefined)?.submissionId ?? '')
+    const body = req.body as { submissionId?: unknown; onMachine?: unknown } | undefined
+    const id = String(body?.submissionId ?? '')
     const queued = queueRow(id)
     if (!queued || !canSeeCompetitionId(currentStaff(req), queued.competitionId)) {
       return fail(res, 409, 'invalid', tr('competitions.refusal.notRunning'))
+    }
+    /*
+     * A stop aimed at a run on a machine («Работают сейчас», a machine's
+     * page, a machine's cell in the console: `onMachine`) stops only a run
+     * whose notebook is still there — taken by a machine and not yet past
+     * its container (RemoteAttemptPhase accepted, preparing, running). The
+     * lists it was pressed from are seconds old: meanwhile the notebook may
+     * have finished, its answer travelling here (exporting, uploading) or
+     * applied and waiting for its metric as a `kind='metric'` row with no
+     * holder — and cancelSubmission took that row's `waiting` branch and
+     * threw the finished result away, counted as «снята на машине». Decided
+     * here, in the same turn as the cancel itself, so no outcome applied
+     * between the two can slip under it.
+     */
+    if (body?.onMachine === true) {
+      const held = queued.state === 'running' && queued.holder !== null ? heldRunView(queued) : null
+      if (!held || held.phase === 'exporting' || held.phase === 'uploading') {
+        return fail(res, 409, 'invalid', tr('competitions.refusal.notOnMachine'))
+      }
     }
     // The pump takes it down: a waiting one it removes from the queue itself,
     // for a running one it kills the container and writes the outcome when it
@@ -1158,19 +1260,23 @@ export function adminCompetitionRoutes(): Router {
     }
     for (const file of received.files) {
       const shape = file.name.toLowerCase().endsWith('.csv') ? csvShape(file.body) : null
+      let stored: StoredFile
       try {
         // First the disk, then the row: a file that did not make it into place
-        // must not be listed where the used space is counted.
-        putOpenFile(competition.id, file.name, file.body)
+        // must not be listed where the used space is counted. The two in one
+        // step, with nothing awaited between: a reader of the row then finds
+        // the bytes its hash names (store.ts · competitionFileHashes).
+        stored = putOpenFile(competition.id, file.name, file.body)
       } catch {
         return fail(res, 400, 'invalid', tr('competitions.refusal.badName', { name: file.name }))
       }
       putFile({
         competitionId: competition.id,
         name: file.name,
-        bytes: file.body.length,
+        bytes: stored.bytes,
         rows: shape?.rows ?? null,
         visibility: 'open',
+        sha256: stored.sha256,
       })
     }
     res.json(await viewOf(getCompetition(competition.id)!))
@@ -1304,13 +1410,14 @@ export function adminCompetitionRoutes(): Router {
     }
     for (const file of named) {
       const shape = file.name.toLowerCase().endsWith('.csv') ? csvShape(file.body) : null
+      let stored: StoredFile
       try {
-        // First the disk, then the row, as for the open data.
-        putSealedFile(competition.id, file.name, file.body)
+        // First the disk, then the row, in one step, as for the open data.
+        stored = putSealedFile(competition.id, file.name, file.body)
       } catch {
         return fail(res, 400, 'invalid', tr('competitions.refusal.badName', { name: file.name }))
       }
-      putFile({ competitionId: competition.id, name: file.name, bytes: file.body.length, rows: shape?.rows ?? null, visibility: 'sealed' })
+      putFile({ competitionId: competition.id, name: file.name, bytes: stored.bytes, rows: shape?.rows ?? null, visibility: 'sealed', sha256: stored.sha256 })
     }
     res.json(await viewOf(getCompetition(competition.id)!))
   })
@@ -1347,6 +1454,25 @@ export function adminCompetitionRoutes(): Router {
   async function executionAvailable(competition: Competition, res: Response, needs: CompetitionNeeds): Promise<boolean> {
     try {
       await assertCompetitionCapability('execution', competition.environment, competitionRevision(competition.id)?.imageDigest, needs)
+      return true
+    } catch (error) {
+      fail(res, 503, 'failed', error instanceof Error ? error.message : tr('runtime.brokerUnavailable'))
+      return false
+    }
+  }
+
+  /**
+   * The same for a door that runs only the metric (the metric check, a
+   * rescore, all of them), asked of the image that metric will run in
+   * (runner.ts · metricScoringImage): a competition with a card scores in its
+   * pinned kaggle-base, and asked about its own GPU image such a door was
+   * refused once the owner removed that image to free the disk — what
+   * decision 2 is for — though the metric would have run.
+   */
+  async function metricExecutionAvailable(competition: Competition, res: Response): Promise<boolean> {
+    try {
+      const image = await metricScoringImage(competition)
+      await assertCompetitionCapability('execution', image.environment, image.imageDigest, {})
       return true
     } catch (error) {
       fail(res, 503, 'failed', error instanceof Error ? error.message : tr('runtime.brokerUnavailable'))
@@ -1448,7 +1574,7 @@ export function adminCompetitionRoutes(): Router {
   router.post('/api/admin/competitions/:id/metric/check', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
-    if (!await executionAvailable(competition, res, {})) return
+    if (!await metricExecutionAvailable(competition, res)) return
     const baseline = competition.baselineSubmissionId
       ? getSubmission(competition.baselineSubmissionId)
       : null
@@ -1718,7 +1844,7 @@ export function adminCompetitionRoutes(): Router {
     async (req, res) => {
       const competition = competitionOf(req, res)
       if (!competition) return
-    if (!await executionAvailable(competition, res, {})) return
+    if (!await metricExecutionAvailable(competition, res)) return
       const submission = submissionOf(competition, req, res)
       if (!submission) return
       /*
@@ -1786,10 +1912,37 @@ export function adminCompetitionRoutes(): Router {
   router.post('/api/admin/competitions/:id/rescore', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
-    if (!await executionAvailable(competition, res, {})) return
+    if (!await metricExecutionAvailable(competition, res)) return
     // The pump counts: a submission qualifies if its answer IS ON DISK, and
     // that is a question for the files, not for the row's state.
     res.status(202).json({ queued: rescoreCompetition(competition.id) })
+  })
+
+  /**
+   * Move the metric of a competition with a card to the current kaggle-base
+   * and rescore every submission in it (runner.ts · moveMetricToLightImage):
+   * the one way that metric's image changes, so no leaderboard holds scores of
+   * two images. For a teacher whose pinned kaggle-base is gone from the
+   * server, who wants the rebuilt one, or whose competition scored in its own
+   * GPU image before kaggle-base was here — its card on, or turned off since
+   * its metric was pinned, which still scores in the pin. A competition on
+   * the CPU that was never pinned scores in its own pin, which moves with its
+   * base («обновить базу»).
+   */
+  router.post('/api/admin/competitions/:id/metric/image', requireStaff, async (req, res) => {
+    const competition = competitionOf(req, res)
+    if (!competition) return
+    let moved: Awaited<ReturnType<typeof moveMetricToLightImage>>
+    try {
+      moved = await moveMetricToLightImage(competition)
+    } catch (error) {
+      // Docker did not say whether kaggle-base is here, or it could not be recorded: nothing moved.
+      console.warn(`[competitions] ${competition.id}: the metric image could not be moved: ${error instanceof Error ? error.message.slice(0, 300) : String(error)}`)
+      return fail(res, 503, 'failed', tr('runtime.dockerUnavailable'))
+    }
+    if (moved === 'cpu') return fail(res, 409, 'invalid', tr('competitions.refusal.metricImageCpu'))
+    if (moved === 'none') return fail(res, 503, 'failed', tr('competitions.refusal.noMetricImage', { environment: LIGHT_METRIC_ENVIRONMENT }))
+    res.status(202).json({ revisionId: moved.revision.id, queued: moved.queued })
   })
 
   /**

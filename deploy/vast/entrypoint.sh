@@ -8,6 +8,11 @@
 #   colloq-vast backup         a class backup into <state>/backups/ (database + files)
 #   colloq-vast restore …      restore a backup; only while the server is STOPPED
 #   colloq-vast install-host D put the host-side manager (colloq-host) into directory D on the host
+#   colloq-vast runner [CMD …] a machine for another instance's submissions: no server, no tunnel, no
+#                              database (no CMD runs the agent, its join in COLLOQ_RUNNER_JOIN; join URL
+#                              CODE runs it with the join as words; status, drain, leave ask the agent)
+#   colloq-vast runner-code …  on an instance: an enrollment code for such machines (colloq-host runner-code)
+#   colloq-vast health         the image's health check, in whichever of the two modes it runs
 #   colloq-vast version
 #
 # WHAT HAPPENS HERE AND WHY IT IS DONE THIS WAY.
@@ -44,6 +49,22 @@
 # the same reason. NODE_ENV decides nothing else in the server: the unsafe file
 # bypass is enabled only together with COLLOQ_UNSAFE_DEV_FILES=1, and that is
 # not set here.
+#
+# THE SAME IMAGE AS A MACHINE FOR SUBMISSIONS («машина для посылок»,
+# docs/architecture/remote-runners.md). `runner` starts no server, no tunnel
+# and no database: it runs dist/runner.js, the agent that takes notebook steps
+# from a home instance and runs them with the very DockerCompetitionRunner the
+# home uses, so the sandbox's argv, the harness and the verdicts are the
+# home's by construction. Its tree lives in one directory, /var/lib/colloq-runner
+# by default, mounted from the host at the SAME path: a submission's container
+# is started by the host's daemon, which resolves `-v` on the host, and on a
+# machine nothing translates paths the way DATA_HOST_DIR does at home. The
+# agent runs as uid 1000 with the socket's group, like the server here, and
+# for the same reasons: the kernel user is uid 1000, and the socket is root on
+# the host anyway. `runner-code` is the other end, on an instance: the owner's
+# enrollment code minted into the database the running server holds open, as
+# the server's own user (a row written as root would leave a -wal file the
+# server cannot open).
 set -euo pipefail
 
 APP=/opt/colloq
@@ -54,10 +75,19 @@ APP_UID=1000
 APP_GID=1000
 SOCK="${DOCKER_SOCK:-/var/run/docker.sock}"
 VERSION="${COLLOQ_VERSION:-0.0.0-dev}"
+# The agent's tree in runner mode, the same path on the host (colloq-host
+# mounts it so; the agent reads it back from COLLOQ_RUNNER_STATE). Without a
+# trailing slash: the mounts it is matched against have none.
+RUNNER_STATE="${COLLOQ_RUNNER_STATE:-/var/lib/colloq-runner}"
+[ "$RUNNER_STATE" = / ] || RUNNER_STATE="${RUNNER_STATE%/}"
+# The command line of this container's first process (container_mode).
+PID1_CMDLINE=/proc/1/cmdline
 
 say()  { printf '[vast] %s\n' "$*"; }
 warn() { printf '[vast] WARNING: %s\n' "$*" >&2; }
-die()  { printf '[vast] ERROR: %s\n' "$*" >&2; exit "${2:-1}"; }
+# The message, and the exit code when it is not 1 (78, EX_CONFIG: a container
+# started without what it needs). The code is never part of the message.
+die()  { printf '[vast] ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 # ----------------------------------------------------------- root → node
 #
@@ -102,14 +132,83 @@ prepare_as_root() {
   if [ "$(readlink "$APP/.env" 2>/dev/null || true)" != "$STATE/.env" ]; then
     ln -sfn "$STATE/.env" "$APP/.env"
   fi
-  # The credentials of the private registry (colloq-host mounts them
-  # read-only): as a copy into the ~/.docker of the node user. A file mounted
-  # straight there would create ~/.docker as root, and buildx could not write
-  # its own directory next to it.
+  install_registry_config
+}
+
+# The credentials of the private registry (colloq-host mounts them read-only):
+# as a copy into the ~/.docker of the node user. A file mounted straight there
+# would create ~/.docker as root, and buildx could not write its own directory
+# next to it.
+install_registry_config() {
   if [ -s /run/colloq/docker-config.json ]; then
     install -d -o "$APP_UID" -g "$APP_GID" -m 0700 /home/node/.docker
     install -o "$APP_UID" -g "$APP_GID" -m 0600 /run/colloq/docker-config.json /home/node/.docker/config.json
   fi
+}
+
+# The runner's counterpart: only its own tree, never the instance's state
+# directory (a machine has none). `full` is the agent's own start: every file
+# back to uid 1000, the way serve does it, because a cache the agent cannot
+# evict or an attempt tree it cannot delete fills the disk in the middle of a
+# competition; and the registry credentials, which the agent's docker pulls
+# kernels with. Its other commands (status, drain, leave, and the health check
+# colloq-host gives the container every half minute) are a `docker exec` into
+# a running agent: the top directory is enough, and the credentials file the
+# agent's own pulls read is left alone rather than rewritten under them.
+#
+# The tree is checked before any of it: the walk hands every file under it to
+# uid 1000, and COLLOQ_RUNNER_STATE=/var with -v /var:/var would hand over the
+# host's /var. runner_state_problem says which directories are refused.
+prepare_runner_as_root() {
+  local walk="${1:-}" problem
+  problem="$(runner_state_problem "$RUNNER_STATE" "${STATE:-}")"
+  [ -z "$problem" ] || die "COLLOQ_RUNNER_STATE=$problem. Nothing under it was touched." 78
+  mkdir -p "$RUNNER_STATE"
+  if [ "$walk" = full ]; then
+    find "$RUNNER_STATE" -xdev \( ! -user "$APP_UID" -o ! -group "$APP_GID" \) \
+      -exec chown -h "$APP_UID:$APP_GID" {} + 2>/dev/null || true
+    install_registry_config
+  else
+    chown "$APP_UID:$APP_GID" "$RUNNER_STATE"
+  fi
+  # runner.json holds the machine's secret.
+  chmod 0700 "$RUNNER_STATE"
+}
+
+# Which trees the agent may be given: a copy of colloq-host's
+# runner_state_problem, word for word (tests/vast-runner-host.test.mts holds
+# the two the same), because this is where the chown happens and colloq-host is
+# not always the one that started the container. The tree is the agent's
+# alone, chowned whole and evicted from: never a system root, a directory
+# every Linux keeps its own files in, Docker's own store, a person's home
+# itself, the application here (/opt/colloq), or the instance's state
+# directory (the second argument). Prints what is wrong, nothing when the
+# path will do.
+runner_state_problem() {
+  local p="$1" home="${2:-}" own="a system directory: give the machine's tree a directory of its own, like /var/lib/colloq-runner, /srv/colloq-runner or /data/colloq-runner"
+  case "$p" in
+    /*) ;;
+    *) printf '%s is not an absolute path' "$p"; return 0 ;;
+  esac
+  case "$p" in
+    *:*|*[[:space:]]*) printf '%s: a path without colons or spaces, please' "$p"; return 0 ;;
+    *//*|*/./*|*/../*|*/.|*/..) printf '%s: a plain path, please, without . or .. or //' "$p"; return 0 ;;
+  esac
+  case "$p" in
+    /home/*/*|/root/?*) ;;
+    /|/bin|/boot|/data|/dev|/etc|/home|/home/*|/lib|/lib32|/lib64|/libx32|/lost+found|/media|/mnt|/opt|/proc \
+    |/root|/run|/sbin|/snap|/srv|/sys|/tmp|/usr|/var|/workspace \
+    |/var/backups|/var/cache|/var/lib|/var/local|/var/lock|/var/log|/var/mail|/var/opt|/var/run|/var/spool|/var/tmp \
+    |/bin/*|/boot/*|/dev/*|/etc/*|/lib/*|/lib32/*|/lib64/*|/libx32/*|/proc/*|/run/*|/sbin/*|/snap/*|/sys/*|/usr/* \
+    |/var/lock/*|/var/log/*|/var/run/*|/var/lib/docker|/var/lib/docker/*|/var/lib/containerd|/var/lib/containerd/* \
+    |/opt/colloq|/opt/colloq/*)
+      printf '%s is %s' "$p" "$own"; return 0 ;;
+  esac
+  [ -n "$home" ] || return 0
+  [ "$p" != "${home%/}" ] || { printf "%s is the instance's state directory" "$p"; return 0; }
+  case "$p/" in "${home%/}/"*) printf "%s is inside the instance's state directory %s" "$p" "$home"; return 0 ;; esac
+  case "${home%/}/" in "$p/"*) printf "%s holds the instance's state directory %s" "$p" "$home"; return 0 ;; esac
+  return 0
 }
 
 drop_to_app() {
@@ -128,6 +227,20 @@ drop_to_app() {
 # ------------------------------------------------------------- host docker
 require_docker() {
   if docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then return 0; fi
+  if [ "${1:-}" = runner ]; then
+    cat >&2 <<'MSG'
+[vast] ERROR: no Docker daemon is reachable at /var/run/docker.sock.
+
+  A machine for submissions runs every notebook in a container of its own,
+  started on the HOST's Docker daemon through the mounted socket:
+
+      docker run ... -v /var/run/docker.sock:/var/run/docker.sock \
+        -v /var/lib/colloq-runner:/var/lib/colloq-runner ... runner
+
+  colloq-host runner up does exactly that (deploy/vast/colloq-host).
+MSG
+    exit 78
+  fi
   cat >&2 <<'MSG'
 [vast] ERROR: no Docker daemon is reachable at /var/run/docker.sock.
 
@@ -151,6 +264,31 @@ locate_self() {
     || die "cannot inspect this container as \"$SELF\". Start it without --hostname, or set COLLOQ_CONTAINER=<its name>."
 }
 
+# The image this instance runs, for the panel's join commands of the machines
+# for submissions (competitions/remote/commands.ts · ownImage): a machine
+# joined from the panel must run the build its home runs. colloq-host passes
+# it as COLLOQ_SERVER_IMAGE, and what it passes wins; without it the daemon
+# says, for the container locate_self found, as the runner mode learns its
+# own image. Without it is no rare case: the first `colloq-host update` to a
+# release with machines for submissions is run by the colloq-host of the
+# release before, whose `docker run` knows no such variable, and the
+# settings' fingerprint does not count it either, so the container it
+# started was never made again with it (field notes, 14 Oct 2026). An
+# instance on an image of its own then printed the published image in the
+# panel, which a closed campus cannot pull and which is another build than
+# a fork's. A bare image id is no name a machine can pull: then nothing, and
+# the panel names the published image of its release, as before.
+locate_server_image() {
+  [ -z "${COLLOQ_SERVER_IMAGE:-}" ] || return 0
+  local named
+  named="$(docker inspect -f '{{.Config.Image}}' "$SELF" 2>/dev/null || true)"
+  case "$named" in
+    ''|sha256:*) return 0 ;;
+  esac
+  [[ "$named" =~ ^[a-f0-9]{12,64}$ ]] && return 0
+  export COLLOQ_SERVER_IMAGE="$named"
+}
+
 # The path of the state directory as the host sees it: the longest mount that
 # contains it. If none matches, the state lives in the container layer: the
 # daemon will mount an empty place into a room, the seminar files will diverge
@@ -159,17 +297,40 @@ locate_self() {
 HOST_STATE=""
 locate_host_state() {
   if [ -n "${COLLOQ_HOST_STATE:-}" ]; then HOST_STATE="$COLLOQ_HOST_STATE"; return; fi
-  local best="" source="" dest src
+  HOST_STATE="$(host_path_of "$STATE")"
+  [ -n "$HOST_STATE" ] || die "$STATE is not a mounted directory. Mount one from the host at the same path:
+      -v /workspace/colloq:/workspace/colloq
+  Room kernels are sibling containers; they can only see files that live on the host."
+}
+
+# A path of this container as the host sees it: through the longest of our
+# mounts that contains it. Nothing when none does, that is, when the path
+# lives in the container's own layer.
+host_path_of() {
+  local path="$1" best="" source="" dest src
   while IFS=$'\t' read -r dest src; do
     [ -n "$dest" ] || continue
-    if [ "$STATE" = "$dest" ] || [ "${STATE#"$dest"/}" != "$STATE" ]; then
+    if [ "$path" = "$dest" ] || [ "${path#"$dest"/}" != "$path" ]; then
       if [ "${#dest}" -gt "${#best}" ]; then best="$dest"; source="$src"; fi
     fi
   done < <(docker inspect -f '{{range .Mounts}}{{.Destination}}{{"\t"}}{{.Source}}{{"\n"}}{{end}}' "$SELF")
-  [ -n "$best" ] || die "$STATE is not a mounted directory. Mount one from the host at the same path:
-      -v /workspace/colloq:/workspace/colloq
-  Room kernels are sibling containers; they can only see files that live on the host."
-  HOST_STATE="${source}${STATE#"$best"}"
+  [ -z "$best" ] || printf '%s' "${source}${path#"$best"}"
+}
+
+# The runner's tree must be the host's own directory, at the same path. The
+# agent hard-links a lease's inputs into it and hands the daemon `-v <path>`
+# for the submission's container, as the home does with DATA_DIR, but with no
+# DATA_HOST_DIR to translate: in the container's layer, or mounted from
+# another host path, every notebook would get an empty /data, and every answer
+# it wrote would land where the agent never looks, without a single error. So
+# it is a refusal at start, like the state directory in serve.
+require_same_path() {
+  local want="$1" host
+  host="$(host_path_of "$want")"
+  [ -n "$host" ] || die "$want is not a mounted directory. Mount it from the host at the same path:
+      -v $want:$want
+  A submission runs in a sibling container started by the host's Docker; it sees only files that live on the host." 78
+  [ "$host" = "$want" ] || die "$want is mounted from $host on the host. Mount it at the same path, -v $want:$want: the agent hands the host's Docker its own paths, and nothing on a machine translates them." 78
 }
 
 NET=""
@@ -465,8 +626,9 @@ upload_relay_assets() {
 #      image does not touch the images, let alone a colloq-vast update; and an
 #      offline server gets its images from colloq-host load);
 #   2. the published image of this very version, <repo>:v<version>-<environment>
-#      (publish.yml pushes base and kaggle-base; scripts/release-build.py names
-#      the k3s ones the same way), named colloq-kernel:<environment>, as
+#      (publish.yml pushes base and kaggle-base, `make kernel-publish` base-gpu
+#      and kaggle-gpu at release time; scripts/release-build.py names the k3s
+#      ones the same way), named colloq-kernel:<environment>, as
 #      pool.ts expects. The repo is KERNEL_IMAGE_REPO, else the one this image
 #      was built with (COLLOQ_KERNEL_REPO, ghcr.io/colloq-edu/colloq-kernel);
 #   3. build from the context that lies in the image, with the same docker call
@@ -711,6 +873,7 @@ serve() {
   say "Colloq ${VERSION} (${COLLOQ_REVISION:-unknown}) — image colloq-vast"
   require_docker
   locate_self
+  locate_server_image
   locate_host_state
   ensure_network
   RUN_DIR="$(mktemp -d /tmp/colloq-vast.XXXXXX)"
@@ -827,6 +990,136 @@ install_host() {
   say "installed $into/colloq-host"
 }
 
+# ------------------------------------------------- a machine for submissions
+#
+# The agent (no command) or one of its commands against the agent already
+# running here (`status`, `drain`, `leave`, through `docker exec`). The agent
+# is the one that needs the daemon and the shared path, so only it is held to
+# them: a status question must still answer when the socket is gone, and say
+# so itself.
+#
+# The environment is the server's for the same reasons, and spelled out for
+# the agent: NODE_ENV=development because the server's code allows Docker
+# outside production only (runtime-client.ts · selectKernelBackend), and
+# COMPETITION_BACKEND=docker because a machine runs submissions on its own
+# Docker and nowhere else: an inherited KERNEL_RUNTIME_URL must not send them
+# to a broker (runner-port.ts · competitionBackend). DATA_DIR is the tree's
+# data root, the layout the home keeps in its own DATA_DIR (storage.ts), and
+# DATA_HOST_DIR is dropped: the paths are the host's own. The tunnel secrets
+# have no business here, and no instance hands them to a machine; dropped
+# all the same, as in start_server, should an operator's env file carry them.
+#
+# Two words about itself go to the agent when it starts, whoever started the
+# container: COLLOQ_RUNNER_CONTAINER, the container whose restart policy it
+# turns off before it stops for good on a 401 (or Docker's unless-stopped
+# would start a revoked machine again and again), and COLLOQ_RUNNER_IMAGE,
+# the image it probes the cards with (`--gpus all` puts nvidia-smi into any
+# container, and this image is on the machine for certain). colloq-host
+# passes both; for the panel's plain `docker run` they come from the daemon,
+# which knows this container by the name locate_self found it under.
+runner() {
+  local problem
+  # The main block has done this already, before the drop to uid 1000; a call
+  # that came another way gets the same.
+  if [ "${1:-}" = join ]; then runner_join_args "$@"; set --; fi
+  case "${1:-}" in
+    '')
+      say "Colloq ${VERSION} (${COLLOQ_REVISION:-unknown}): a machine for submissions"
+      problem="$(runner_state_problem "$RUNNER_STATE" "${STATE:-}")"
+      [ -z "$problem" ] || die "COLLOQ_RUNNER_STATE=$problem" 78
+      require_docker runner
+      locate_self
+      require_same_path "$RUNNER_STATE"
+      export COLLOQ_RUNNER_CONTAINER="${COLLOQ_RUNNER_CONTAINER:-$SELF}"
+      if [ -z "${COLLOQ_RUNNER_IMAGE:-}" ]; then
+        COLLOQ_RUNNER_IMAGE="$(docker inspect -f '{{.Config.Image}}' "$SELF" 2>/dev/null || true)"
+      fi
+      export COLLOQ_RUNNER_IMAGE
+      ;;
+  esac
+  cd "$APP"
+  exec env \
+    -u RELAY_TOKEN -u CLOUDFLARE_TUNNEL_TOKEN -u DATA_HOST_DIR -u WORKSPACE_HOST_DIR \
+    NODE_ENV=development \
+    KERNEL_BACKEND=docker \
+    COMPETITION_BACKEND=docker \
+    COLLOQ_RUNNER_STATE="$RUNNER_STATE" \
+    DATA_DIR="$RUNNER_STATE/data" \
+    node server/dist/runner.js "$@"
+}
+
+# `runner join URL CODE`: the agent's start, with the join given as words. The
+# code is a key, and a command line is public on the host (ps, /proc, docker
+# top). So the join moves into COLLOQ_RUNNER_JOIN, the agent's one way to be
+# told it, and the caller drops the words (`set --`) before anything is
+# started with them: the re-exec under uid 1000 and the agent's node never see
+# the code. What no process here can take back is the container's own command
+# (docker inspect, and tini's command line for the container's life): that is
+# why every command the panel and colloq-host print gives the join as
+# -e COLLOQ_RUNNER_JOIN.
+runner_join_args() {
+  [ "$#" -eq 3 ] && [ -n "$2" ] && [ -n "$3" ] \
+    || die "usage: colloq-vast runner join https://<home> <code>, or the join in the environment: -e COLLOQ_RUNNER_JOIN='https://<home>#<code>'" 64
+  export COLLOQ_RUNNER_JOIN="${2%/}#$3"
+}
+
+# The enrollment code, minted on the instance into the database the running
+# server holds open (colloq-host runner-code runs this through docker exec). As
+# uid 1000, which the main block below sees to: SQLite creates its -wal and
+# -shm files as whoever writes first, and the server could not open root's.
+# One JSON line on stdout, {"code","expiresAt","machines","trusted"}: the code
+# is the key to the instance's submissions for N machines within at most a
+# day, and colloq-host prints it once, inside the join commands.
+runner_code() {
+  cd "$APP"
+  exec env \
+    -u RELAY_TOKEN -u CLOUDFLARE_TUNNEL_TOKEN \
+    NODE_ENV=development \
+    KERNEL_BACKEND=docker \
+    DATA_DIR="$STATE/data" \
+    WORKSPACE_DIR="$STATE/workspace" \
+    node server/dist/runner-code.js "$@"
+}
+
+# ----------------------------------------------------------------- health
+#
+# The image's HEALTHCHECK (deploy/vast/Dockerfile) is this one command for
+# both modes, because the image cannot know when it is built which one it will
+# run. serve answers on its port: /api/livez, the process is alive (/api/health
+# says 503 for the minutes the first environment takes to build). A machine
+# for submissions has no port at all, only its agent, whose `runner status`
+# answers "joined and syncing" from the agent's own state; a curl of the port
+# kept a machine joined with the panel's plain `docker run` (unhealthy) for as
+# long as it ran. The mode is the word the container was started with, after
+# colloq-vast on its first process's command line (tini's, or docker's own
+# init's in front of tini under --init); no word is the image's CMD, serve.
+# Anything but 0 is 1 for Docker, which keeps 2 for itself.
+container_mode() {
+  local arg next=0
+  [ -r "$PID1_CMDLINE" ] || { printf serve; return 0; }
+  while IFS= read -r -d '' arg || [ -n "$arg" ]; do
+    if [ "$next" = 1 ]; then
+      case "$arg" in runner) printf runner ;; *) printf serve ;; esac
+      return 0
+    fi
+    case "$arg" in colloq-vast|*/colloq-vast) next=1 ;; esac
+  done < "$PID1_CMDLINE"
+  printf serve
+}
+
+health() {
+  case "$(container_mode)" in
+    # Through the entry point again, as `docker exec … colloq-vast runner
+    # status` goes: root's small preparation of the tree, then the agent's
+    # answer as uid 1000.
+    runner) "$0" runner status >/dev/null || exit 1 ;;
+    # --noproxy: an http_proxy given for the internet (HTTPS_PROXY and friends
+    # in colloq.env) must not catch our own loopback.
+    *) curl -fsS --noproxy '*' -o /dev/null --max-time 8 "http://127.0.0.1:${PORT}/api/livez" || exit 1 ;;
+  esac
+  exit 0
+}
+
 usage() {
   cat <<'USAGE'
 colloq-vast — Colloq on one machine with Docker: a rented VM or a server of your own
@@ -837,10 +1130,17 @@ colloq-vast — Colloq on one machine with Docker: a rented VM or a server of yo
   colloq-vast backup           a backup into <state>/backups/ (database + files)
   colloq-vast restore [FILES]  restore a backup; only while the server is stopped
   colloq-vast install-host DIR put the host-side manager (colloq-host) into DIR
+  colloq-vast runner           a machine for another instance's submissions (COLLOQ_RUNNER_JOIN=https://<home>#<code>)
+  colloq-vast runner status | drain | leave   ask the agent running here
+  colloq-vast runner join URL CODE   the agent, the join given as words (they stay in the container's
+                               own command: -e COLLOQ_RUNNER_JOIN keeps the code out of it)
+  colloq-vast runner-code --machines N --hours H [--trusted] [--slots S] [--prefix NAME]
+  colloq-vast health           the image's health check: the agent's status, or the server's /api/livez
   colloq-vast version
 
 Settings are environment variables; see deploy/vast/README.md and, for a server
-of your own, docs/pages/en/server.html.
+of your own, docs/pages/en/server.html. A machine for submissions: colloq-host
+runner up (deploy/vast/colloq-host).
 USAGE
 }
 
@@ -852,11 +1152,25 @@ case "$cmd" in
   version) printf '%s %s\n' "$VERSION" "${COLLOQ_REVISION:-unknown}"; exit 0 ;;
   help|-h|--help) usage; exit 0 ;;
   install-host) install_host "$@"; exit 0 ;;
+  health) health ;;
 esac
+
+# The join as words moves into the environment here, before the drop to uid
+# 1000 re-executes this script with the same words (runner_join_args).
+if [ "$cmd" = runner ] && [ "${1:-}" = join ]; then
+  runner_join_args "$@"
+  set --
+fi
 
 if [ "$(id -u)" = 0 ] && [ -z "${COLLOQ_VAST_DROPPED:-}" ]; then
   case "$cmd" in
     serve|restore) prepare_as_root full ;;
+    runner)
+      # The agent's own start walks its tree; its commands do not.
+      case "${1:-}" in
+        '') prepare_runner_as_root full ;;
+        *) prepare_runner_as_root ;;
+      esac ;;
     *) prepare_as_root ;;
   esac
   drop_to_app "$cmd" "$@"
@@ -868,5 +1182,7 @@ case "$cmd" in
   link) link ;;
   backup) backup ;;
   restore) restore "$@" ;;
+  runner) runner "$@" ;;
+  runner-code) runner_code "$@" ;;
   *) exec "$cmd" "$@" ;;
 esac
