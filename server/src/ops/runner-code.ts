@@ -25,7 +25,23 @@
  * entry point before this module loads. SQLite takes a second writer next to
  * the running server (WAL), and the server reads the code on the machine's
  * first join; it needs no restart and no message.
+ *
+ * AND THE SAME LINE IN THE AUDIT LOG: `runner.code_minted`, as the panel
+ * records it (routes/admin-runners.ts), with no actor — nobody signs in on
+ * the console, whoever holds its root shell mints — and `source:
+ * 'colloq-host'` in its detail, which the Audit log shows as the server's
+ * console (web/src/admin/audit.ts · auditActorless). The code itself never.
+ *
+ * WHAT THE LOG BRINGS ALONG. admin/audit-log.ts drops and makes again its
+ * two triggers and prunes what is past its year when it loads, so the script
+ * does that too, before its arguments are read and for a call it refuses as
+ * well; a running server did both at its own start, and only prepares its
+ * statements again after the triggers' DDL. Nothing of the panel comes with
+ * it: the log takes a request's address from net/inbound.ts, not bans.ts,
+ * which would load the sign-in (admin/auth.ts) and with it a setup token
+ * written into DATA_DIR when there is none.
  */
+import { recordAdminEvent } from '../admin/audit-log.js'
 import { mintRefusal, mintRemoteCode } from '../competitions/remote/store.js'
 
 interface Asked {
@@ -80,6 +96,13 @@ function main(argv: readonly string[]): number {
     return 2
   }
   const minted = mintRemoteCode(input)
+  // A code is a door for its machines and its hours, trusted ones too, whichever door minted it (§6 "Audit").
+  recordAdminEvent({
+    actor: null,
+    action: 'runner.code_minted',
+    target: { type: 'runner_code', id: minted.id, label: input.namePrefix || null },
+    detail: { machines: minted.machines, hours: input.hours, trusted: minted.trusted, approvedSlots: minted.approvedSlots, source: 'colloq-host' },
+  })
   process.stdout.write(`${JSON.stringify({ code: minted.code, expiresAt: minted.expiresAt, machines: minted.machines, trusted: minted.trusted })}\n`)
   return 0
 }

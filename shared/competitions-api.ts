@@ -302,6 +302,15 @@ export interface CompetitionView {
    * cluster that decides it). Never a number that is not enforced.
    */
   gpuSliceMb: number | null
+  /**
+   * Whether the metric scores in the kaggle-base pinned to the competition
+   * (server/src/competitions/runner.ts · scoresInPin): with a card, and with
+   * the card turned off after the metric was pinned — the pin outlives the
+   * switch. The editor's «Образ метрики» row, the one way to move that pin,
+   * stands while this is true; `false` — the metric scores in the
+   * competition's own pin, moved with its base.
+   */
+  metricScoresInPin: boolean
   openFiles: FileView[]
   /** Hidden answers: names, rows and columns — the contents are never handed out. */
   hiddenFiles: FileView[]

@@ -65,7 +65,7 @@ import {
   waitingLine,
   whereRow,
 } from '../web/src/admin/runners.js'
-import { metricImageGone, moveMetricOutcome, moveMetricQuestion } from '../web/src/admin/competitions.js'
+import { metricImageGone, metricImageNote, moveMetricOutcome, moveMetricQuestion } from '../web/src/admin/competitions.js'
 import { ANSWER, Machine, close, competition, finished, reset, send, serve, type TestCompetition } from './_remote.mts'
 
 useCompetitionRunner(new FakeCompetitionRunner())
@@ -577,13 +577,37 @@ test('#29 the console and the metric section call the move door, and the client 
   assert.match(LIVE, /\{#if metricImageGone\(s\.teacherError\)\} <button type="button" class="btn-primary max-w-full text-left" disabled=\{busy\} onclick=\{\(\) => void moveMetric\(\)\} > \{tr\('admin\.competitions\.metricImage\.rowMove'\)\} <\/button> \{\/if\}/)
   assert.match(LIVE, /if \(busy \|\| !window\.confirm\(moveMetricQuestion\(c\.title\)\)\) return const moved = await act\(\(\) => adminApi\.moveCompetitionMetricImage\(id\)\)/)
   assert.match(LIVE, /\{:else if metricMoved\} <p class="pt-4 text-ui text-positive" role="status">\{metricMoved\}<\/p>/)
-  // The editor's metric section, for a competition with a card, with the refusal said in place.
-  assert.match(EDITOR, /\{#if c\.limits\.gpu === true\} <div [^>]*> <span class=\{cn\(HEAD, 'w-\[110px\] shrink-0'\)\}>\{tr\('admin\.competitions\.metricImage\.head'\)\}<\/span>/)
+  // The editor's metric section, wherever the metric scores in its pin, with the refusal said in place.
+  assert.match(EDITOR, /\{#if metricImage !== null\} <div [^>]*> <span class=\{cn\(HEAD, 'w-\[110px\] shrink-0'\)\}>\{tr\('admin\.competitions\.metricImage\.head'\)\}<\/span> <p [^>]*>\{metricImage\}<\/p>/)
   assert.match(EDITOR, /onclick=\{\(\) => void moveMetric\(\)\}> \{tr\('admin\.competitions\.metricImage\.move'\)\}/)
   assert.match(EDITOR, /const moved = await act\(\(\) => adminApi\.moveCompetitionMetricImage\(id\), 'metric'\)/)
   assert.match(EDITOR, /\{#if error && errorAt === 'metric'\} <p class="text-ui text-danger" role="alert">\{error\}<\/p>/)
   const metricSection = EDITOR.slice(EDITOR.indexOf("tr('admin.competitions.section.metric')"), EDITOR.indexOf("tr('admin.competitions.section.run')"))
   assert.match(metricSection, /metricImage\.move/, 'in the metric section')
+})
+
+test('#29 the metric section keeps its row while the metric scores in its pin, and with the card turned off it says why', () => {
+  // The server's reading (runner.ts · scoresInPin, CompetitionView.metricScoresInPin): the row was drawn by the
+  // card switch, and a competition whose card was turned off after its metric was pinned had no way to move it.
+  const view = (gpu: boolean, metricScoresInPin: boolean): Pick<CompetitionView, 'competition' | 'metricScoresInPin'> => ({
+    competition: { limits: { wallSeconds: 600, memoryMb: 4096, cpus: 2, perDay: 5, gpu } } as unknown as CompetitionView['competition'],
+    metricScoresInPin,
+  })
+  for (const locale of ['ru', 'en'] as const) {
+    setLocaleResolver(() => locale)
+    assert.equal(metricImageNote(view(true, true)), translate(locale, 'admin.competitions.metricImage.note'), locale)
+    const off = metricImageNote(view(false, true))
+    assert.equal(off, translate(locale, 'admin.competitions.metricImage.noteCardOff'), locale)
+    assert.notEqual(off, 'admin.competitions.metricImage.noteCardOff', `${locale}: a word, not its key`)
+    assert.match(off!, /kaggle-base/, locale)
+    // Never pinned, on the CPU: its metric scores in its own pin, and the move door refuses it.
+    assert.equal(metricImageNote(view(false, false)), null, locale)
+  }
+  assert.doesNotMatch(translate('en', 'admin.competitions.metricImage.noteCardOff'), CYRILLIC)
+  // The editor asks the helper, by the view the server sent, and draws its words; the switch alone no longer decides.
+  assert.match(EDITOR, /const metricImage = \$derived\(metricImageNote\(view\)\)/)
+  assert.doesNotMatch(EDITOR, /\{#if c\.limits\.gpu === true\} <div [^>]*> <span class=\{cn\(HEAD, 'w-\[110px\] shrink-0'\)\}>\{tr\('admin\.competitions\.metricImage\.head'\)\}/)
+  assert.doesNotMatch(EDITOR, /tr\('admin\.competitions\.metricImage\.note'\)/, 'the note comes through the helper')
 })
 
 /* =================================== #0 — codes, as long as they are valid */

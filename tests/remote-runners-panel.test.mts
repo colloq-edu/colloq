@@ -24,7 +24,7 @@ import { listAdminEvents } from '../server/src/admin/audit-log.js'
 import { FakeCompetitionRunner } from '../server/src/competitions/fake-runner.js'
 import { useCompetitionRunner } from '../server/src/competitions/runner-port.js'
 import { createCapabilityReader } from '../server/src/competitions/capabilities.js'
-import { getLease, getRunner } from '../server/src/competitions/remote/store.js'
+import { getLease, getRunner, mintRemoteCode } from '../server/src/competitions/remote/store.js'
 import { loseLease } from '../server/src/competitions/remote/release.js'
 import { queueForecast } from '../server/src/competitions/forecast.js'
 import { getSubmission, queueRow } from '../server/src/competitions/store.js'
@@ -138,6 +138,26 @@ test('a code is minted inside the three join commands, with this server\'s addre
   for (const body of [{ machines: 0, hours: 1, trusted: false, approvedSlots: null }, { machines: 1, hours: 25, trusted: false, approvedSlots: null }, { machines: 1, hours: 1, trusted: false, approvedSlots: 99 }, { machines: 1, hours: 1, trusted: 'yes', approvedSlots: null }, { machines: 1, hours: 1, trusted: false, approvedSlots: null, namePrefix: 'a b' }]) {
     assert.equal((await admin('POST', '/api/admin/runners/codes', { body })).status, 400, JSON.stringify(body))
   }
+})
+
+test('a machine joined with a code minted on the console is enrolled by the console in the audit log, not by nobody', async () => {
+  reset()
+  // The row colloq-host runner-code writes (ops/runner-code.ts): the same minter, with the console as its maker.
+  const minted = mintRemoteCode({ machines: 1, hours: 1, trusted: false, approvedSlots: null, namePrefix: null, createdBy: 'colloq-host' })
+  const m = new Machine(await serve())
+  assert.equal((await m.join(minted.code)).status, 200)
+  const enrolled = listAdminEvents({ limit: 50 }).events.find((event) => event.action === 'runner.enrolled' && event.target?.id === m.runnerId)
+  assert.ok(enrolled)
+  assert.equal(enrolled.actor, null)
+  assert.equal(enrolled.detail?.source, 'colloq-host')
+  // A code from the panel names its owner and says nothing of a console.
+  const fromPanel = await admin<MintRemoteCodeResponse>('POST', '/api/admin/runners/codes', { body: { machines: 1, hours: 1, trusted: false, approvedSlots: null } })
+  assert.equal(fromPanel.status, 200)
+  const other = new Machine(await serve())
+  assert.equal((await other.join(fromPanel.body.code)).status, 200)
+  const owned = listAdminEvents({ limit: 50 }).events.find((event) => event.action === 'runner.enrolled' && event.target?.id === other.runnerId)
+  assert.equal(owned?.actor?.role, 'owner')
+  assert.equal(owned?.detail?.source, undefined)
 })
 
 test('the list and a machine\'s page show it as its last sync said, ready or not for each competition', async () => {

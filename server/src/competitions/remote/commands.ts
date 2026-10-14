@@ -30,17 +30,33 @@ const PUBLISHED = /^ghcr\.io\/colloq-edu\/colloq-server:[0-9]+\.[0-9]+\.[0-9]+(-
 const SERVER = 'ghcr.io/colloq-edu/colloq-server'
 
 /**
+ * An image only this host holds, whatever it is called: its id — `sha256:`
+ * and the hex, or the hex alone, whole or short (twelve digits and up, as
+ * `docker images` prints one) — or the local tag colloq-host keeps an image
+ * with neither a name nor a digest by across an update
+ * (`colloq-previous:<stamp>`, colloq-host · rollback_ref).
+ * `colloq-host update sha256:…` runs the instance by its id, and the
+ * rollback that update prints (`colloq-host restore --image …`) by that tag,
+ * or by the id where the tag could not be made; COLLOQ_SERVER_IMAGE then
+ * says just that, and a machine runs it only if it already holds that very
+ * image: it pulls none. The entry point drops a bare id from the daemon the
+ * same way (deploy/vast/entrypoint.sh · locate_server_image).
+ */
+const LOCAL_ONLY = /^((sha256:)?[a-f0-9]{12,64}|colloq-previous:[^/@]+)$/
+
+/**
  * The image machines are told to run, by colloq-host's rule: the instance's
  * own image `image` (null — not known here, which is the published one of
- * `version`); an official image by the release it was built as
- * (`version`, the image's org.opencontainers.image.version), or, without
- * one, by its own tag or digest under the colloq-server name; any other
- * image as it is. `published` — the very image `runner up` and `make
- * vast-runner` take by themselves.
+ * `version`, and so is an image only this host holds, LOCAL_ONLY: the same
+ * commands as with no image named); an official image by the release it
+ * was built as (`version`, the image's org.opencontainers.image.version),
+ * or, without one, by its own tag or digest under the colloq-server name;
+ * any other image as it is. `published` — the very image `runner up` and
+ * `make vast-runner` take by themselves.
  */
 export function runnerImage(image: string | null | undefined, version: string): { image: string; published: boolean } {
   let shown: string
-  if (!image) shown = `${SERVER}:${version}`
+  if (!image || LOCAL_ONLY.test(image)) shown = `${SERVER}:${version}`
   else if (OFFICIAL.test(image)) {
     if (RELEASE.test(version)) shown = `${SERVER}:${version}`
     else {

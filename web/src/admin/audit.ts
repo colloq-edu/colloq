@@ -19,6 +19,25 @@ export function auditActionLabel(action: string): string {
   return hasTranslation(key) ? tr(key) : action
 }
 
+/**
+ * Whether the server's console did it: nobody signed in, and the event says
+ * it came from there (`colloq-host runner-code` records its codes with
+ * `source: 'colloq-host'`, server/src/ops/runner-code.ts).
+ */
+function byConsole(event: AdminAuditEvent): boolean {
+  return !event.actor && event.detail?.source === 'colloq-host'
+}
+
+/**
+ * Who did it, for an event no signed-in person caused: the server's console,
+ * when the event says it came from there (byConsole); otherwise a dash — the
+ * server's own doing, a page republished at the end of a class, has nobody
+ * to name. Under a dash, a code read as one nobody minted.
+ */
+export function auditActorless(event: AdminAuditEvent): string {
+  return byConsole(event) ? tr('admin.audit.console') : '—'
+}
+
 /** What was acted on: its name as it read then, its id when it had none. */
 export function auditTarget(event: AdminAuditEvent): string {
   if (!event.target) return ''
@@ -78,20 +97,26 @@ export function auditDetail(event: AdminAuditEvent): string {
       // way round exactly when someone asks who gave a rented VM the test.
       return typeof detail.trusted === 'boolean'
         ? tr(detail.trusted ? 'admin.audit.runnerTrusted' : 'admin.audit.runnerUntrusted')
-        : pairs(detail)
+        : pairs(event)
     case 'environment.created':
     case 'environment.edited':
       // A package list is a set of lines, and what it gained or lost is the
       // answer to "who added that index URL".
       return [...lines(detail.added).map((line) => `+ ${line}`), ...lines(detail.removed).map((line) => `− ${line}`)].join('\n')
     default:
-      return pairs(detail)
+      return pairs(event)
   }
 }
 
-/** `field: value` pairs, for a detail that is a setting's name and what it became. */
-function pairs(detail: NonNullable<AdminAuditEvent['detail']>): string {
-  return Object.entries(detail)
+/**
+ * `field: value` pairs, for a detail that is a setting's name and what it
+ * became — all but the console's `source`, which the Who column has already
+ * read out (byConsole): a code minted there read «source: colloq-host» under
+ * «Консоль сервера», a pair the panel's own code never has.
+ */
+function pairs(event: AdminAuditEvent): string {
+  return Object.entries(event.detail ?? {})
+    .filter(([field]) => field !== 'source' || !byConsole(event))
     .map(([field, value]) => `${field}: ${word(value)}`)
     .join(' · ')
 }

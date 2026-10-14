@@ -259,13 +259,18 @@ export function remoteRunnerRoutes(): Router {
     noteCall(joined.runner.id, now, address)
     if (!joined.repeated) {
       remoteEvent(joined.runner.id, 'joined', { address, detail: `${request.facts.hostname} · ${request.facts.version}` }, now)
-      // The owner who minted the code is who enrolled the machine (§6 "Audit").
+      // The owner who minted the code is who enrolled the machine (§6 "Audit"); a code minted on the
+      // console has nobody to name, and says it came from there, as its mint does (ops/runner-code.ts).
       const owner = getTeacher(joined.runner.createdBy)
+      const fromConsole = !owner && joined.runner.createdBy === 'colloq-host'
       recordAdminEvent({
         actor: owner,
         action: 'runner.enrolled',
         target: { type: 'runner', id: joined.runner.id, label: joined.runner.name },
-        detail: { trusted: joined.runner.trusted, approvedSlots: joined.runner.approvedSlots, hostname: request.facts.hostname, version: request.facts.version },
+        detail: {
+          trusted: joined.runner.trusted, approvedSlots: joined.runner.approvedSlots, hostname: request.facts.hostname, version: request.facts.version,
+          ...(fromConsole ? { source: 'colloq-host' } : {}),
+        },
         req,
       })
     }

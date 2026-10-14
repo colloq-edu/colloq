@@ -1762,6 +1762,7 @@ runner_code() {
   local machines=1 hours=24 trusted=0 slots="" prefix="" url="" out line code expires granted trust img shown version suffix
   local args=() prefix_re='^[A-Za-z0-9][A-Za-z0-9-]{0,31}$' official_re='^ghcr\.io/colloq-edu/colloq-(vast|server)(:[^/@]+|@sha256:[a-f0-9]{64})$'
   local release_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' published_re='^ghcr\.io/colloq-edu/colloq-server:[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+  local local_only_re='^((sha256:)?[a-f0-9]{12,64}|colloq-previous:[^/@]+)$'
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --machines|--hours|--slots|--prefix|--url)
@@ -1819,6 +1820,15 @@ runner_code() {
       suffix="${img#ghcr.io/colloq-edu/colloq-vast}"
       [ "$suffix" != "$img" ] || suffix="${img#ghcr.io/colloq-edu/colloq-server}"
       shown="ghcr.io/colloq-edu/colloq-server$suffix"
+    fi
+  elif [[ "$img" =~ $local_only_re ]]; then
+    # An image only this host holds: its id (update sha256:…), or the tag
+    # rollback_ref keeps one with no name and no digest by. No other machine
+    # can pull it, so they run the published image of the release it was
+    # built as, as the panel names it (commands.ts · runnerImage, LOCAL_ONLY).
+    version="$(image_label "$img" org.opencontainers.image.version)"
+    if [[ "$version" =~ $release_re ]]; then
+      shown="ghcr.io/colloq-edu/colloq-server:$version"
     fi
   fi
   say "a code for ${granted:-$machines} machine(s), valid until $(expiry_text "$expires")$( [ "$trust" = true ] && printf '; trusted with the hidden test' || printf '; not given the hidden test')${slots:+; at most $slots places each}"
