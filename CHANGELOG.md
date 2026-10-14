@@ -13,6 +13,18 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.23.0](https://github.com/colloq-edu/colloq/compare/v0.22.0...v0.23.0) (2026-10-14)
+
+
+### Features
+
+* **runners:** machines that run a home's competition submissions ([#46](https://github.com/colloq-edu/colloq/issues/46)) ([089ec7e](https://github.com/colloq-edu/colloq/commit/089ec7e72d1d3126fd40b74de2b462c155abbe6c))
+
+
+### Documentation
+
+* **vast:** record the GPU runner check on the released 0.22.0 ([#44](https://github.com/colloq-edu/colloq/issues/44)) ([653b436](https://github.com/colloq-edu/colloq/commit/653b436f4c9bb4176d6d6409c7cfb1994802a94c))
+
 ## [0.22.0](https://github.com/colloq-edu/colloq/compare/v0.21.0...v0.22.0) (2026-10-13)
 
 
