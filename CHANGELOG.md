@@ -13,6 +13,18 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.24.0](https://github.com/colloq-edu/colloq/compare/v0.23.0...v0.24.0) (2026-10-14)
+
+
+### Features
+
+* **rooms:** line numbers in code cells, turned on for the whole room in its rules ([#50](https://github.com/colloq-edu/colloq/issues/50)) ([cfaaa73](https://github.com/colloq-edu/colloq/commit/cfaaa730ba3b63ab49aed85f42190dec54882798))
+
+
+### Bug Fixes
+
+* **runners:** console codes in the audit log, local images out of join commands, the metric pin keeps its row ([#48](https://github.com/colloq-edu/colloq/issues/48)) ([1d19fa0](https://github.com/colloq-edu/colloq/commit/1d19fa0c88c679d9abd50d8a04fd7895e74e30e6))
+
 ## [0.23.0](https://github.com/colloq-edu/colloq/compare/v0.22.0...v0.23.0) (2026-10-14)
 
 
