@@ -50,6 +50,7 @@
     type Outcome,
     type Tone,
   } from '@/admin/running-kernels'
+  import { remoteRow } from '@/admin/runners'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { cn } from '@/lib/utils'
 
@@ -84,8 +85,18 @@
   const sum = $derived(data ? totals(data) : null)
   const idle = $derived(data ? idleClasses(data) : [])
   const idleFreedMb = $derived(idle.reduce((total, row) => total + freedMb(row, 'class'), 0))
+  /**
+   * Competitions whose submissions run on machines (Paper 16 · M5). They hold
+   * none of this server's memory, so they are rows of their own, not runs;
+   * their metrics here are runs like any other, with their own stop.
+   */
+  const remote = $derived(data?.remote ?? [])
   const empty = $derived(
-    data !== null && data.classes.length === 0 && data.runs.length === 0 && data.preparations.length === 0,
+    data !== null &&
+      data.classes.length === 0 &&
+      data.runs.length === 0 &&
+      data.preparations.length === 0 &&
+      remote.length === 0,
   )
 
   onMount(() => {
@@ -547,6 +558,54 @@
           </div>
         {/each}
 
+        {#each remote as entry, index (entry.competitionId ?? `remote-${index}`)}
+          {@const row = remoteRow(entry)}
+          <!-- A competition whose notebooks run on machines: a line per
+               machine under it, each "0 MB here", because the point of the
+               row is that none of it is this server's memory. -->
+          <div class="border-b border-line">
+            <div class="rk-row rk-row-end">
+              <div class="rk-lead flex min-w-0 items-start">
+                <span class={cn('rk-square shrink-0', entry.hidden ? 'bg-faint' : 'bg-accent')} aria-hidden="true"></span>
+                <div class="min-w-0 flex-1">
+                  {#if entry.hidden}
+                    <p class="text-ui font-semibold text-muted">{tr('admin.resourcesTab.running.remote.hidden')}</p>
+                  {:else}
+                    <p class="admin-row-title font-bold">{entry.competition ?? tr('admin.resourcesTab.running.unnamed')}</p>
+                    <p class="admin-meta">{tr('admin.resourcesTab.running.remote.meta')}</p>
+                  {/if}
+                </div>
+              </div>
+              <div class="rk-act"></div>
+              <div class="rk-now min-w-0 text-2xs">
+                <p class={entry.hidden ? 'text-muted' : 'font-semibold text-accent-text'}>{row.lead}</p>
+                <p class="text-muted">{row.detail}</p>
+              </div>
+              <div class="rk-mem whitespace-nowrap">
+                <span class="admin-num font-bold">{tr('admin.resourcesTab.running.remote.zero')}</span>
+                <span class="text-2xs text-muted">{tr('admin.resourcesTab.running.remote.here')}</span>
+              </div>
+              <div class="rk-meta rk-meta-quiet">
+                <span class="rk-cores font-mono text-2xs text-faint">—</span>
+                <span class="rk-books font-mono text-2xs text-faint">—</span>
+              </div>
+            </div>
+            {#if row.lines.length > 0}
+              <div class="rk-remote bg-surface py-1.5">
+                {#each row.lines as line, lineIndex (lineIndex)}
+                  <div class="rk-remote-line">
+                    <span class="rk-remote-name min-w-0 truncate font-mono text-micro text-ink">{line.name}</span>
+                    <span class="rk-remote-what flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                      <Badge word={line.chip} tone="accent" />
+                      <span class="text-2xs text-muted">{line.text}</span>
+                    </span>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/each}
+
         {#each data.preparations as prep (prep.id)}
           {@const elapsed = since(prep.startedAt, now)}
           <div class="border-b border-line">
@@ -588,6 +647,9 @@
             : tr('admin.resourcesTab.running.footnoteNeverRead')}
         {/if}
       </p>
+      {#if remote.length > 0}
+        <p class="pt-1.5 text-2xs text-muted">{tr('admin.resourcesTab.running.remote.footnote')}</p>
+      {/if}
     {/if}
   </div>
 </div>
@@ -854,6 +916,25 @@
     flex: 1 1 100%;
   }
 
+  /* The machines a competition's runs are on, under its row, as the open
+     notebook list sits under a class's. */
+  .rk-remote {
+    margin: 0 0 14px var(--rk-indent);
+  }
+
+  .rk-remote-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 12px;
+    row-gap: 4px;
+    padding: 8px 12px;
+  }
+
+  .rk-remote-name {
+    flex: 1 1 100%;
+  }
+
   @container (min-width: 780px) {
     .rk-body {
       --rk-indent: 22px;
@@ -952,6 +1033,24 @@
 
     .rk-book-state {
       grid-column: 2;
+    }
+
+    /* The row's own columns, right-aligned with it: the chip and its words
+       stand under «now» whatever the indent takes from the name. */
+    .rk-remote-line {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 232px 72px 120px 120px 36px;
+      column-gap: 12px;
+      min-height: 34px;
+      padding: 5px 0 5px 12px;
+    }
+
+    .rk-remote-name {
+      grid-column: 1;
+    }
+
+    .rk-remote-what {
+      grid-column: 2 / -1;
     }
   }
 </style>

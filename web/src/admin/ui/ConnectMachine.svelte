@@ -1,0 +1,242 @@
+<script lang="ts">
+  /**
+   * "Connect a machine" (Paper 16 · M2): how many machines, how long the code
+   * lives, their places, and whether they get the hidden test (off unless the
+   * owner says so, decision 1). Then the code, shown this once, inside the
+   * three commands the server filled in with its own address and release
+   * (MintRemoteCodeResponse.commands): the owner copies a command, never a
+   * bare code, and a command copied is a machine joined.
+   *
+   * Under the commands a live line names the machines as they join, read
+   * from the list the Resources block keeps polling (every three seconds
+   * while this is open). A machine counts as joined when the list has it and
+   * did not when the code was shown: the code itself is never kept to match
+   * it by, and closing the window forgets it for good.
+   */
+  import { onMount } from 'svelte'
+  import { tr } from '@shared/i18n'
+  import type { MintRemoteCodeResponse, RemoteMachine } from '@shared/remote-admin'
+  import Check from '@/admin/ui/Check.svelte'
+  import Icon from '@/components/ui/Icon.svelte'
+  import { adminAuth } from '@/admin/auth.svelte'
+  import { HOURS_BOUNDS, MACHINES_BOUNDS, connectDefaults, joinProgress, mintRequest, runnersApi, type ConnectForm } from '@/admin/runners'
+  import { AdminApiError } from '@/lib/adminApi'
+  import { copyText } from '@/lib/clipboard'
+  import { cn } from '@/lib/utils'
+
+  interface Props {
+    /** The list as the Resources block last read it. */
+    machines: RemoteMachine[]
+    onclose: () => void
+  }
+
+  let { machines, onclose }: Props = $props()
+
+  let form = $state<ConnectForm>(connectDefaults())
+  let minted = $state<MintRemoteCodeResponse | null>(null)
+  /** The machines the list had when the code was shown: everything else joined with it. */
+  let known = $state<ReadonlySet<string>>(new Set())
+  let busy = $state(false)
+  let errorText = $state<(() => string) | null>(null)
+  const error = $derived(errorText?.() ?? null)
+  let copied = $state<string | null>(null)
+  let copyFailed = $state(false)
+
+  const progress = $derived(minted ? joinProgress(known, machines, minted.machines) : null)
+
+  onMount(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !busy) onclose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
+  async function mint(): Promise<void> {
+    if (busy || minted) return
+    const asked = mintRequest(form)
+    if ('error' in asked) {
+      errorText = () => asked.error
+      return
+    }
+    busy = true
+    errorText = null
+    try {
+      known = new Set(machines.map((machine) => machine.id))
+      minted = await runnersApi.mintCode(asked.request)
+    } catch (cause: unknown) {
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      errorText = () => (cause instanceof Error && cause.message ? cause.message : tr('admin.the.server.did.not.answer'))
+    } finally {
+      busy = false
+    }
+  }
+
+  async function copy(text: string, key: string): Promise<void> {
+    try {
+      await copyText(text)
+    } catch {
+      // The command is on screen and selectable: say so rather than pretend.
+      copyFailed = true
+      return
+    }
+    copyFailed = false
+    copied = key
+    setTimeout(() => (copied = copied === key ? null : copied), 1600)
+  }
+
+  /** Focus lands where the typing goes. */
+  function takeFocus(node: HTMLElement): void {
+    node.focus()
+  }
+
+  const COMMANDS = $derived(
+    minted
+      ? [
+          { key: 'docker', label: tr('admin.runners.connect.docker'), text: minted.commands.docker },
+          { key: 'bare', label: tr('admin.runners.connect.bare'), text: minted.commands.bare },
+          { key: 'vast', label: tr('admin.runners.connect.vast'), text: minted.commands.vast },
+        ]
+      : [],
+  )
+</script>
+
+<div
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="connect-machine-title"
+  class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6 max-[640px]:p-3"
+>
+  <div class="dialog-card flex max-h-full w-full max-w-[760px] flex-col border border-line bg-canvas shadow-pop">
+    <div class="flex shrink-0 items-start gap-4 border-b border-line px-6 pb-4 pt-5 max-[640px]:px-4">
+      <div class="min-w-0 flex-1">
+        <h2 id="connect-machine-title" class="text-head font-black text-ink">{tr('admin.runners.connect')}</h2>
+        <p class="mt-1 text-2xs text-muted">{tr('admin.runners.connect.lede')}</p>
+      </div>
+      <button type="button" class="admin-icon-btn -mr-2 -mt-1" aria-label={tr('admin.close')} disabled={busy} onclick={onclose}>
+        <Icon name="x" size={15} />
+      </button>
+    </div>
+
+    <div class="min-h-0 flex-1 overflow-y-auto px-6 py-5 max-[640px]:px-4">
+      <form
+        class="flex flex-wrap items-start gap-x-4 gap-y-4"
+        onsubmit={(event) => {
+          event.preventDefault()
+          void mint()
+        }}
+      >
+        <label class="w-[160px] max-[640px]:w-[calc(50%-8px)]">
+          <span class="admin-label mb-1.5 block">{tr('admin.runners.connect.machines')}</span>
+          <span class="admin-affix gap-2">
+            <input
+              use:takeFocus
+              bind:value={form.machines}
+              disabled={minted !== null}
+              inputmode="numeric"
+              autocomplete="off"
+              aria-describedby="connect-machines-unit"
+            />
+            <span id="connect-machines-unit" class="shrink-0 text-2xs text-muted">{tr('admin.runners.connect.machinesUnit')}</span>
+          </span>
+        </label>
+        <label class="w-[160px] max-[640px]:w-[calc(50%-8px)]">
+          <span class="admin-label mb-1.5 block">{tr('admin.runners.connect.hours')}</span>
+          <span class="admin-affix gap-2">
+            <input bind:value={form.hours} disabled={minted !== null} inputmode="numeric" autocomplete="off" />
+            <span class="shrink-0 text-2xs text-muted">{tr('admin.runners.connect.hoursUnit', { count: Number(form.hours) || HOURS_BOUNDS.max })}</span>
+          </span>
+        </label>
+        <label class="w-[160px] max-[640px]:w-[calc(50%-8px)]">
+          <span class="admin-label mb-1.5 block">{tr('admin.runners.connect.places')}</span>
+          <span class="admin-affix gap-2">
+            <input
+              bind:value={form.places}
+              disabled={minted !== null}
+              class="placeholder:font-sans placeholder:text-ink"
+              inputmode="numeric"
+              autocomplete="off"
+              placeholder={tr('admin.runners.auto')}
+            />
+            <span class="shrink-0 text-2xs text-muted">
+              {form.places.trim() === '' ? tr('admin.runners.connect.placesAuto') : tr('admin.runners.connect.placesFixed')}
+            </span>
+          </span>
+        </label>
+        <div class="min-w-[220px] flex-1 max-[640px]:w-[calc(50%-8px)] max-[640px]:min-w-0 max-[640px]:flex-none">
+          <span class="admin-label mb-1.5 block">{tr('admin.runners.connect.sealed')}</span>
+          <label class={cn('flex min-h-10 items-center gap-2.5 max-[640px]:min-h-11', minted === null && 'cursor-pointer')}>
+            <Check bind:checked={form.trusted} disabled={minted !== null} />
+            <span class="text-ui text-ink">{tr('admin.runners.connect.trust')}</span>
+          </label>
+        </div>
+        {#if !minted}
+          <p class="w-full text-2xs text-muted">
+            {form.trusted ? tr('admin.runners.connect.trustNote') : tr('admin.runners.connect.untrustedNote')}
+          </p>
+        {/if}
+      </form>
+
+      {#if error}
+        <p class="mt-4 text-ui text-danger" role="alert">{error}</p>
+      {/if}
+
+      {#if minted}
+        <div class="mt-5 flex flex-col gap-3">
+          <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <p class="text-ui font-semibold text-ink">{tr('admin.runners.connect.run')}</p>
+            <p class="text-2xs font-semibold text-warning">
+              {tr('admin.runners.connect.once', { count: minted.machines, hours: Math.max(1, Math.round((minted.expiresAt - Date.now()) / 3_600_000)) })}
+            </p>
+          </div>
+          {#each COMMANDS as command (command.key)}
+            <div class="flex flex-col gap-1.5">
+              <p class="admin-label">{command.label}</p>
+              <!-- Dark in both themes, like the build log on Environments: a
+                   terminal is where this text goes. Lines wrap rather than
+                   scroll: a box with its own sideways scroll on a phone shows
+                   in no way that it scrolls, and Copy takes the exact text. -->
+              <div class="flex items-start gap-2.5 bg-[#0A1330] px-3 py-2.5">
+                <pre class="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-micro leading-5 text-[#E6E7E8]">{command.text}</pre>
+                <button
+                  type="button"
+                  class="min-h-8 shrink-0 border border-[#16244B] px-2.5 text-2xs text-[#9BA6BE] transition-colors duration-quick hover:border-[#5E6B85] hover:text-white max-[640px]:min-h-11"
+                  onclick={() => void copy(command.text, command.key)}
+                >
+                  {copied === command.key ? tr('admin.copied') : tr('admin.runners.connect.copy')}
+                </button>
+              </div>
+            </div>
+          {/each}
+          {#if copyFailed}
+            <p class="text-2xs text-danger" role="alert">{tr('admin.runners.connect.copyFailed')}</p>
+          {/if}
+        </div>
+      {/if}
+    </div>
+
+    <div class="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-3 border-t border-line bg-surface px-6 py-3.5 max-[640px]:px-4">
+      {#if progress}
+        <span class={cn('size-2.5 shrink-0', progress.joined > 0 ? 'bg-positive' : 'bg-accent')} aria-hidden="true"></span>
+        <div class="min-w-0 flex-1 basis-[240px]" role="status" aria-live="polite">
+          <p class="text-ui font-semibold text-ink">{progress.title}</p>
+          <p class="mt-0.5 text-2xs text-muted">{progress.text}</p>
+        </div>
+        <button type="button" class="btn-outline shrink-0 max-[640px]:w-full" onclick={onclose}>{tr('admin.runners.connect.done')}</button>
+      {:else}
+        <p class="min-w-0 flex-1 basis-[240px] text-2xs text-muted">
+          {tr('admin.runners.connect.bounds', { machines: MACHINES_BOUNDS.max, hours: HOURS_BOUNDS.max })}
+        </p>
+        <div class="flex shrink-0 flex-wrap gap-2 max-[640px]:w-full">
+          <button type="button" class="btn-ghost max-[640px]:flex-1" disabled={busy} onclick={onclose}>{tr('admin.cancel')}</button>
+          <button type="button" class="btn-primary max-[640px]:flex-1" disabled={busy} onclick={() => void mint()}>
+            {#if busy}
+              <Icon name="spinner" size={15} class="animate-spin" />
+            {/if}
+            {tr('admin.runners.connect.mint')}
+          </button>
+        </div>
+      {/if}
+    </div>
+  </div>
+</div>

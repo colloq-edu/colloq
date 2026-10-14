@@ -280,6 +280,13 @@ async function request<T>(path: string, init?: RequestInit, base = BASE): Promis
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
 
 /**
+ * The same door for a screen that keeps its own client beside its words
+ * (admin/runners.ts, the machines that run submissions): one copy of the
+ * cookie, the refusal parsing and the network's words, as `base` above says.
+ */
+export { request as adminRequest }
+
+/**
  * File uploads — with the same refusal parsing as the other doors.
  *
  * A function of its own rather than `request` with a `FormData` body: that

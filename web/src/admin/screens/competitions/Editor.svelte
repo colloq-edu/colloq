@@ -44,6 +44,7 @@
   import type { CompetitionInput, CompetitionView, FileView } from '@shared/competitions-api'
   import type { CompetitionGpuSettings } from '@shared/competitions-settings'
   import { gpuPlacesNote, gpuRowState, gpuSwitchWord } from '@/admin/runner-cards'
+  import { homeOnlyBox, machinesListPath, noCardsBox, sealedWarning, whereHomeOnly, whereRow } from '@/admin/runners'
   import {
     answerColumns,
     applyPreset,
@@ -519,16 +520,36 @@
   const gpuOn = $derived(limits.gpu === true)
   /** The cards are the cluster's (RUNTIME_COMPETITION_GPU_RESOURCE): the panel neither lists nor gives them. */
   const gpuCluster = $derived(runnerCards ? runnerCards.managed : !gpuCapacityKnown)
+
+  /*
+   * "Runs on" (Paper 16 · M6): this server and the machines that can
+   * run this competition's notebooks, as the server counted them for the
+   * saved competition (CompetitionView.where). Absent — no machine was ever
+   * connected, and the editor stays as it was. Never under the cluster,
+   * whose broker path has no machines.
+   */
+  const where = $derived(view.where && !gpuCluster ? view.where : null)
+  /** This server's cards given to submissions; `null` while nothing has said. */
+  const homeCards = $derived(runnerCards?.devices.length ?? environmentGpus?.runners ?? null)
+  /** A machine with cards heard within the hour opens the GPU door as home's own cards do (decision 8). */
+  const machineCards = $derived(where !== null && where.cards.recent > 0)
+  /** The environment the form now names runs only here: machines will never get it (warning 1). */
+  const homeOnly = $derived(where ? whereHomeOnly(where, environment, c.environment) : false)
+  const whereLine = $derived(where ? whereRow(where, { gpu: gpuOn, draft: draftState, homeOnly }) : null)
+  /** A hidden test goes to trusted machines only (decision 1): which, or why it then runs here or waits (warning 2). */
+  const sealedNote = $derived(where && (view.sealedFiles?.length ?? 0) > 0 ? sealedWarning(where) : null)
+
   /**
    * Nobody gave submissions a card: a run with the switch on would be refused
    * at the door («runtime.gpuUnavailable»). Here, the owner's list of cards;
    * under the cluster only the executor knows, and it says so through the
-   * saved competition's capability.
+   * saved competition's capability. A machine with cards heard within the
+   * hour is a card too: the door takes GPU uploads while there is one.
    */
   const gpuNoCards = $derived(
     gpuCluster
       ? c.limits.gpu === true && view.capabilities?.execution.code === 'gpu_unavailable'
-      : (runnerCards?.devices.length ?? environmentGpus?.runners ?? null) === 0,
+      : homeCards === 0 && !machineCards,
   )
   const gpuState = $derived(gpuRowState({ environmentGpu, on: gpuOn, noCards: gpuNoCards }))
 
@@ -545,12 +566,21 @@
       case 'off':
         return { frame: 'border-line', head: '', hint: tr('admin.competitions.gpuOffHint'), hintTone: 'text-warning' }
       case 'noCards':
-        return { frame: 'border-danger', head: 'text-danger', hint: tr('admin.competitions.gpuNoCards'), hintTone: 'font-semibold text-danger' }
+        return {
+          frame: 'border-danger',
+          head: 'text-danger',
+          // With machines connected, «no card» means none here AND none on a
+          // machine heard within the hour (warning 3).
+          hint: where ? tr('admin.competitions.where.noCardsHint') : tr('admin.competitions.gpuNoCards'),
+          hintTone: 'font-semibold text-danger',
+        }
       case 'on':
         return {
           frame: 'border-accent',
           head: 'text-accent-text',
-          hint: tr(gpuCluster ? 'admin.competitions.gpuOnHintCluster' : 'admin.competitions.gpuOnHint'),
+          hint: machineCards
+            ? tr('admin.competitions.where.gpuOnHint')
+            : tr(gpuCluster ? 'admin.competitions.gpuOnHintCluster' : 'admin.competitions.gpuOnHint'),
           hintTone: 'text-muted',
         }
       default:
@@ -568,6 +598,13 @@
   function environmentPicked(name: string): void {
     const picked = environments.find((one) => one.name === name)
     if (picked && !picked.gpu && limits.gpu === true) limits.gpu = false
+  }
+
+  /** Warning 1's way out: the environment select, a screen up the same section. */
+  function changeEnvironment(): void {
+    const select = document.getElementById('competition-environment')
+    select?.scrollIntoView({ block: 'center' })
+    select?.focus()
   }
 
   /* --------------------------------------------------------------- metric */
@@ -1406,6 +1443,7 @@
       <div class="flex flex-wrap items-center gap-2.5 border border-line px-3.5 py-2.5">
         <span class="h-2 w-2 shrink-0 bg-accent" aria-hidden="true"></span>
         <select
+          id="competition-environment"
           class="field w-auto min-w-0 font-mono"
           aria-label={tr('admin.competitions.environmentLabel')}
           bind:value={environment}
@@ -1539,35 +1577,123 @@
           {/if}
         </div>
         {#if gpuState === 'noCards'}
-          <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 bg-danger/[0.06] px-3.5 py-3">
-            <p class="min-w-0 flex-1 basis-[280px] text-2xs text-ink">
-              <!-- Under the cluster the owner reads which setting gives
-                   submissions a GPU; a teacher reads the words a participant
-                   reads, which name no setting. -->
-              {#if gpuCluster && adminAuth.isOwner}
-                {tr('admin.competitions.gpuNoCardsClusterOwner')}
-              {:else if gpuCluster}
-                {view.capabilities?.execution.reason ?? tr('runtime.gpuUnavailableCluster')}
-              {:else if adminAuth.isOwner}
-                {tr('admin.competitions.gpuNoCardsOwner')}
-              {:else}
-                {tr('admin.competitions.gpuNoCardsTeacher')}
+          {#if where}
+            <!-- No card here and none on a machine heard within the hour
+                 (Paper 16 · M6, warning 3): the way out is a machine with
+                 cards, connected from Resources in a new tab, so the form
+                 keeps its unsaved fields. -->
+            <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 bg-danger/[0.06] px-3.5 py-3">
+              <p class="min-w-0 flex-1 basis-[280px] text-2xs text-ink">{noCardsBox(where, now, adminAuth.isOwner)}</p>
+              {#if adminAuth.isOwner}
+                <a class="btn-outline shrink-0" href={machinesListPath(true)} target="_blank" rel="noreferrer">
+                  {tr('admin.runners.connect')}
+                </a>
               {/if}
-            </p>
-            {#if adminAuth.isOwner && !gpuCluster}
-              <!-- A new tab, not this one: the form's unsaved fields live only
-                   in this screen, and leaving it dropped them all — the switch
-                   just turned on included. The row reads the cards again when
-                   this tab is back in view (rereadCards). -->
-              <a class="btn-outline shrink-0" href="/admin/resources" target="_blank" rel="noreferrer">
-                {tr('admin.competitions.openResources')}
-              </a>
-            {/if}
-          </div>
+            </div>
+          {:else}
+            <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 bg-danger/[0.06] px-3.5 py-3">
+              <p class="min-w-0 flex-1 basis-[280px] text-2xs text-ink">
+                <!-- Under the cluster the owner reads which setting gives
+                     submissions a GPU; a teacher reads the words a participant
+                     reads, which name no setting. -->
+                {#if gpuCluster && adminAuth.isOwner}
+                  {tr('admin.competitions.gpuNoCardsClusterOwner')}
+                {:else if gpuCluster}
+                  {view.capabilities?.execution.reason ?? tr('runtime.gpuUnavailableCluster')}
+                {:else if adminAuth.isOwner}
+                  {tr('admin.competitions.gpuNoCardsOwner')}
+                {:else}
+                  {tr('admin.competitions.gpuNoCardsTeacher')}
+                {/if}
+              </p>
+              {#if adminAuth.isOwner && !gpuCluster}
+                <!-- A new tab, not this one: the form's unsaved fields live only
+                     in this screen, and leaving it dropped them all — the switch
+                     just turned on included. The row reads the cards again when
+                     this tab is back in view (rereadCards). -->
+                <a class="btn-outline shrink-0" href="/admin/resources" target="_blank" rel="noreferrer">
+                  {tr('admin.competitions.openResources')}
+                </a>
+              {/if}
+            </div>
+          {/if}
         {/if}
       </div>
       {#if gpuNote}
         <p class="text-micro leading-snug text-muted">{gpuNote}</p>
+      {/if}
+
+      {#if where && whereLine}
+        <!--
+          "Runs on" (Paper 16 · M6): this server's chip, the machines that
+          take this competition, and the rest in one sentence. When the
+          environment the form names runs only here, the row itself is
+          warning 1, with the way to a registry environment under it.
+        -->
+        <div class="flex flex-col">
+          <div class={cn('flex flex-wrap items-center gap-x-4 gap-y-2 border px-3.5 py-3', whereLine.homeOnly ? 'border-warning' : 'border-line')}>
+            <span class={cn(HEAD, 'w-[110px] shrink-0', whereLine.homeOnly ? 'text-warning' : 'text-ink')}>
+              {tr('admin.competitions.where.head')}
+            </span>
+            <span class="flex min-w-0 flex-wrap items-center gap-1.5">
+              <span class="border border-line bg-surface px-2 py-0.5 text-micro text-muted">{whereLine.home}</span>
+              {#each whereLine.machines as name (name)}
+                <span class="bg-accent/15 px-2 py-0.5 font-mono text-micro text-accent-text">{name}</span>
+              {/each}
+            </span>
+            <span class={cn('min-w-0 flex-1 basis-[240px] text-2xs', whereLine.homeOnly ? 'font-semibold text-warning' : 'text-muted')}>
+              {whereLine.homeOnly ? tr('admin.competitions.where.homeOnlyLead', { environment }) : whereLine.text}
+            </span>
+          </div>
+          {#if whereLine.homeOnly}
+            <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 bg-warning/[0.07] px-3.5 py-3">
+              <p class="min-w-0 flex-1 basis-[280px] text-2xs text-ink">{homeOnlyBox(where, environment)}</p>
+              <button type="button" class="btn-outline shrink-0" onclick={changeEnvironment}>
+                {tr('admin.competitions.where.changeEnvironment')}
+              </button>
+            </div>
+          {/if}
+        </div>
+        {#if gpuOn && machineCards && !whereLine.homeOnly}
+          <p class="text-micro leading-snug text-muted">
+            {tr('admin.competitions.where.gpuNote')}
+            {#if homeCards === 0}{tr('admin.competitions.where.gpuNoHomeCards')}{/if}
+          </p>
+        {/if}
+        {#if sealedNote}
+          <!-- Warning 2: the hidden test goes to trusted machines only. -->
+          <div
+            class={cn(
+              'flex flex-wrap items-center gap-x-4 gap-y-2 border px-3.5 py-3',
+              sealedNote.tone === 'danger' ? 'border-danger' : sealedNote.tone === 'warning' ? 'border-warning' : 'border-accent',
+            )}
+          >
+            <span
+              class={cn(
+                HEAD,
+                'w-[110px] shrink-0',
+                sealedNote.tone === 'danger' ? 'text-danger' : sealedNote.tone === 'warning' ? 'text-warning' : 'text-accent-text',
+              )}
+            >
+              {tr('admin.competitions.where.sealedHead')}
+            </span>
+            {#if sealedNote.trusted.length > 0}
+              <span class="flex min-w-0 flex-wrap items-center gap-1.5">
+                {#each sealedNote.trusted as name (name)}
+                  <span class="border border-accent-text px-2 py-0.5 font-mono text-micro text-accent-text">{name}</span>
+                {/each}
+              </span>
+            {/if}
+            <span
+              class={cn(
+                'min-w-0 flex-1 basis-[240px] text-2xs',
+                sealedNote.tone === 'danger' ? 'font-semibold text-danger' : sealedNote.tone === 'warning' ? 'font-semibold text-warning' : 'text-muted',
+              )}
+            >
+              {sealedNote.text}
+            </span>
+          </div>
+        {/if}
       {/if}
 
       {#if resources?.memory.availableMb != null}

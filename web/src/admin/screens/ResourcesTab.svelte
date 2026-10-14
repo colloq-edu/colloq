@@ -22,15 +22,18 @@
     ResourceSource,
     UpdateResourceSettingsRequest,
   } from '@shared/admin'
-  import type {
-    CompetitionGpuSettingsInput,
-    CompetitionSettings,
-    CompetitionSettingsInput,
+  import {
+    SETTINGS_LIMITS,
+    type CompetitionGpuSettingsInput,
+    type CompetitionRunnerSettingsInput,
+    type CompetitionSettings,
+    type CompetitionSettingsInput,
   } from '@shared/competitions-settings'
   import type { DiskSpace } from '@shared/disk'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Check from '@/admin/ui/Check.svelte'
   import Choice from '@/admin/ui/Choice.svelte'
+  import Runners from '@/admin/ui/Runners.svelte'
   import RunningKernels from '@/admin/ui/RunningKernels.svelte'
   import Section from '@/admin/ui/Section.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -54,13 +57,22 @@
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { cn } from '@/lib/utils'
 
+  interface Props {
+    /** The panel's router: the machines block opens a machine's page under this tab. */
+    navigate: (path: string) => void
+  }
+
+  let { navigate }: Props = $props()
+
   /* ------------------------------------------------------------- fields */
 
   /**
    * The competition half is prefixed so one record can hold the whole form.
    * `c.gpuDevices` is the one field that is not a number: the runner cards,
    * kept as a list beside the texts (`gpuChosen`) and saved through its own
-   * half of the door (CompetitionGpuSettingsInput).
+   * half of the door (CompetitionGpuSettingsInput). The machines' two
+   * (`c.homeNotebooks`, a switch kept in `homeChoice`, and `c.scoreSlots`)
+   * go through the same door as its third half (CompetitionRunnerSettingsInput).
    */
   type CompetitionKey =
     | 'c.slots'
@@ -71,6 +83,8 @@
     | 'c.uploadsPerMinute'
     | 'c.gpuPerDevice'
     | 'c.gpuDevices'
+    | 'c.homeNotebooks'
+    | 'c.scoreSlots'
   type FieldKey = ResourceSettingName | CompetitionKey
 
   /** The fields this page edits; the process ceilings stay env-and-API only. */
@@ -129,6 +143,17 @@
   let slotsMode = $state<'auto' | 'fixed'>('auto')
   /** The cards ticked for competition submissions, in KERNEL_GPUS order (`c.gpuDevices`). */
   let gpuChosen = $state<string[]>([])
+  /**
+   * The machines' two settings as the server holds them, from the machines
+   * block's every read (GET /api/admin/runners); `null` until it has read.
+   * The settings door does not return them yet (docs/architecture/
+   * remote-runners.md §13 note 15), and the block reads that list anyway.
+   */
+  let runnerSaved = $state<{ homeNotebooks: boolean; scoreSlots: number } | null>(null)
+  /** «Тетради на этом сервере» as the form now stands (`c.homeNotebooks`); `null` until the server said. */
+  let homeChoice = $state<boolean | null>(null)
+  /** Bumped after a save that sent the machines' settings: the block reads its list again. */
+  let runnersReload = $state(0)
 
   let saving = $state(false)
   let saveErrorText = $state<(() => string | null) | null>(null)
@@ -166,7 +191,14 @@
 
   function blankTexts(): Record<FieldKey, string> {
     const record = {} as Record<FieldKey, string>
-    for (const key of [...RESOURCE_KEYS, ...COMPETITION_KEYS, 'c.slots' as const, 'c.gpuDevices' as const]) record[key] = ''
+    for (const key of [
+      ...RESOURCE_KEYS,
+      ...COMPETITION_KEYS,
+      'c.slots' as const,
+      'c.gpuDevices' as const,
+      'c.homeNotebooks' as const,
+      'c.scoreSlots' as const,
+    ]) record[key] = ''
     return record
   }
 
@@ -291,6 +323,7 @@
   /** What the server holds for a field right now: the number the form is measured against. */
   function savedOf(key: FieldKey): number | null {
     if (!key.startsWith('c.')) return loaded?.settings[key as ResourceSettingName].value ?? null
+    if (key === 'c.scoreSlots') return runnerSaved?.scoreSlots ?? null
     const queue = competitions
     if (!queue) return null
     switch (key) {
@@ -315,6 +348,7 @@
   function boundsOf(key: FieldKey): { min: number; max: number } | null {
     if (!key.startsWith('c.')) return loaded?.bounds[key as ResourceSettingName] ?? null
     if (key === 'c.gpuPerDevice') return competitions?.gpu.bounds.perDevice ?? null
+    if (key === 'c.scoreSlots') return SETTINGS_LIMITS.scoreSlots
     const bounds = competitions?.bounds
     if (!bounds) return null
     const name = key.slice(2) as keyof CompetitionSettings['bounds']
@@ -343,6 +377,8 @@
 
   function sourceOf(key: FieldKey): ResourceSource | null {
     if (!key.startsWith('c.')) return loaded?.settings[key as ResourceSettingName].source ?? null
+    // The machines' list says the value, not where it came from.
+    if (key === 'c.scoreSlots' || key === 'c.homeNotebooks') return null
     const queue = competitions
     if (!queue) return null
     if (key === 'c.slots') return queue.slots.source
@@ -372,6 +408,7 @@
       return slotsMode === 'fixed' && valueOf('c.slots') !== queue.slots.value
     }
     if (key === 'c.gpuDevices') return competitions !== null && !sameCards(gpuChosen, competitions.gpu.devices)
+    if (key === 'c.homeNotebooks') return runnerSaved !== null && homeChoice !== null && homeChoice !== runnerSaved.homeNotebooks
     return valueOf(key) !== savedOf(key)
   }
 
@@ -379,7 +416,9 @@
   const competitionDirty = $derived(
     competitions ? [...COMPETITION_KEYS, 'c.slots' as const, 'c.gpuDevices' as const].filter((key) => isDirty(key)) : [],
   )
-  const dirtyCount = $derived(resourceDirty.length + competitionDirty.length)
+  /** The machines' two, measured against the machines' list rather than the settings door (see runnerSaved). */
+  const runnerDirty = $derived(runnerSaved ? (['c.homeNotebooks', 'c.scoreSlots'] as const).filter((key) => isDirty(key)) : [])
+  const dirtyCount = $derived(resourceDirty.length + competitionDirty.length + runnerDirty.length)
   const dirty = $derived(dirtyCount > 0)
 
   /* --------------------------------------------------------- apply/save */
@@ -397,6 +436,20 @@
     for (const key of COMPETITION_KEYS) texts[key] = display(key, savedOf(key))
     gpuChosen = [...settings.gpu.devices]
     forgotten = forgotten.filter((key) => !key.startsWith('c.'))
+  }
+
+  /**
+   * The machines block read its list: what the server holds for the two
+   * machine settings now. A field the owner is editing keeps what they typed —
+   * the block reads every few seconds, and a read must not wipe an unsaved
+   * choice — and an untouched one follows the server.
+   */
+  function applyRunner(saved: { homeNotebooks: boolean; scoreSlots: number }): void {
+    const scoreEdited = runnerSaved !== null && isDirty('c.scoreSlots')
+    const homeEdited = runnerSaved !== null && isDirty('c.homeNotebooks')
+    runnerSaved = saved
+    if (!scoreEdited) texts['c.scoreSlots'] = String(saved.scoreSlots)
+    if (!homeEdited) homeChoice = saved.homeNotebooks
   }
 
   /**
@@ -474,6 +527,10 @@
     forgotten = []
     if (loaded) applyResources(loaded)
     if (competitions) applyCompetitions(competitions)
+    if (runnerSaved) {
+      texts['c.scoreSlots'] = String(runnerSaved.scoreSlots)
+      homeChoice = runnerSaved.homeNotebooks
+    }
     saveErrorText = null
   }
 
@@ -489,7 +546,14 @@
     for (const key of resourceDirty) {
       resourcePatch[key as EditedResource] = forgotten.includes(key) ? null : valueOf(key)
     }
-    const competitionPatch: CompetitionSettingsInput & CompetitionGpuSettingsInput = {}
+    const competitionPatch: CompetitionSettingsInput & CompetitionGpuSettingsInput & CompetitionRunnerSettingsInput = {}
+    // The machines' half of the same body: the switch as itself, the metric
+    // lane's places as a number from its field.
+    for (const key of runnerDirty) {
+      if (key === 'c.homeNotebooks' && homeChoice !== null) competitionPatch.homeNotebooks = homeChoice
+      if (key === 'c.scoreSlots') competitionPatch.scoreSlots = valueOf(key)
+    }
+    const runnerSent = runnerDirty.length > 0
     for (const key of competitionDirty) {
       if (key === 'c.slots') {
         competitionPatch.slots = forgotten.includes(key) ? null : slotsMode === 'auto' ? 'auto' : valueOf(key)
@@ -519,6 +583,15 @@
         askSizesLater()
         // The budget's competition segment is computed from these settings.
         void refreshBudget()
+        if (runnerSent && runnerSaved) {
+          // The door took them; the answer does not carry them, so they are
+          // what was sent until the block's next read says otherwise.
+          runnerSaved = {
+            homeNotebooks: competitionPatch.homeNotebooks ?? runnerSaved.homeNotebooks,
+            scoreSlots: competitionPatch.scoreSlots ?? runnerSaved.scoreSlots,
+          }
+          runnersReload += 1
+        }
       }
       flashSaved()
     } catch (cause: unknown) {
@@ -858,6 +931,59 @@
   </div>
 {/snippet}
 
+<!--
+  The machines' two settings (Paper 16 · M1): whether this server runs
+  notebooks too or only scores what the machines send back, and how many
+  metrics it runs at once. Drawn by this form, inside the machines block,
+  and saved by its Save with the queue's half of the body.
+-->
+{#snippet runnerSettings()}
+  {@const homeOn = homeChoice ?? runnerSaved?.homeNotebooks ?? true}
+  <div class="flex flex-wrap items-start gap-x-4 gap-y-4">
+    <div class="min-w-0 flex-[1_1_320px]">
+      <p class="mb-1.5 flex items-baseline gap-2">
+        <span class="admin-label">{tr('admin.runners.homeNotebooks')}</span>
+        {#if isDirty('c.homeNotebooks')}
+          <span class="text-micro text-warning">
+            {tr('admin.resourcesTab.was', {
+              value: runnerSaved?.homeNotebooks ? tr('admin.runners.homeNotebooks.on') : tr('admin.runners.homeNotebooks.off'),
+            })}
+          </span>
+        {/if}
+      </p>
+      <div>
+        <Choice
+          size="lg"
+          options={[
+            { value: 'on', label: tr('admin.runners.homeNotebooks.on') },
+            { value: 'off', label: tr('admin.runners.homeNotebooks.off') },
+          ]}
+          value={homeOn ? 'on' : 'off'}
+          onchange={(value) => (homeChoice = value === 'on')}
+        />
+      </div>
+      <p class="admin-meta mt-1.5">{homeOn ? tr('admin.runners.homeNotebooks.onNote') : tr('admin.runners.homeNotebooks.offNote')}</p>
+    </div>
+    <div class="w-[220px] max-w-full">
+      {@render fieldLabel('c.scoreSlots', tr('admin.runners.scoreSlots'), fieldId('c.scoreSlots'))}
+      <div class={cn('admin-affix gap-2', isDirty('c.scoreSlots') && '!border-accent')}>
+        <input
+          id={fieldId('c.scoreSlots')}
+          bind:value={texts['c.scoreSlots']}
+          oninput={() => typed('c.scoreSlots')}
+          onblur={() => tidy('c.scoreSlots')}
+          inputmode="numeric"
+          autocomplete="off"
+        />
+        <span class="shrink-0 text-2xs text-muted">{tr('admin.runners.scoreSlots.unit')}</span>
+      </div>
+      <p class="admin-meta mt-1.5">
+        {tr('admin.runners.scoreSlots.note', { min: SETTINGS_LIMITS.scoreSlots.min, max: SETTINGS_LIMITS.scoreSlots.max })}
+      </p>
+    </div>
+  </div>
+{/snippet}
+
 {#snippet actions()}
   {#if isOwner}
     {#if justSaved && !dirty}
@@ -1146,6 +1272,15 @@
           <p class="text-ui text-muted">{tr('common.loading')}</p>
         {/if}
       </Section>
+
+      <!-- The machines that run submissions (Paper 16 · M1): beside the
+           queue's settings, since they are where its notebooks run. The
+           owner's only: every door behind the block refuses a teacher. -->
+      {#if isOwner}
+        <Section title={tr('admin.runners.title')} description={tr('admin.runners.note')}>
+          <Runners {navigate} settings={runnerSettings} onsettings={applyRunner} reload={runnersReload} />
+        </Section>
+      {/if}
 
       <Section title={tr('admin.resourcesTab.filesTitle')} description={tr('admin.resourcesTab.filesNote')}>
         <div class="flex flex-wrap gap-4">
