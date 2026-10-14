@@ -533,11 +533,21 @@
   const homeCards = $derived(runnerCards?.devices.length ?? environmentGpus?.runners ?? null)
   /** A machine with cards heard within the hour opens the GPU door as home's own cards do (decision 8). */
   const machineCards = $derived(where !== null && where.cards.recent > 0)
+  /** Their cards, for the switch's «срез ≈ 3 ГБ» (admin/runner-cards.ts · gpuSwitchWord); `null` — none heard within the hour. */
+  const machineShare = $derived(where !== null && where.cards.recent > 0 ? where.cards : null)
   /** The environment the form now names runs only here: machines will never get it (warning 1). */
   const homeOnly = $derived(where ? whereHomeOnly(where, environment, c.environment) : false)
-  const whereLine = $derived(where ? whereRow(where, { gpu: gpuOn, draft: draftState, homeOnly }) : null)
+  /**
+   * The form names another environment than the saved one: the machines'
+   * verdicts are for the saved image, so whatever depends on it waits for
+   * Save (admin/runners.ts · whereRow).
+   */
+  const environmentUnsaved = $derived(environment !== c.environment)
+  const whereLine = $derived(where ? whereRow(where, { gpu: gpuOn, draft: draftState, homeOnly, unsaved: environmentUnsaved }) : null)
   /** A hidden test goes to trusted machines only (decision 1): which, or why it then runs here or waits (warning 2). */
-  const sealedNote = $derived(where && (view.sealedFiles?.length ?? 0) > 0 ? sealedWarning(where) : null)
+  const sealedNote = $derived(
+    where && (view.sealedFiles?.length ?? 0) > 0 ? sealedWarning(where, { homeOnly, unsaved: environmentUnsaved, gpu: gpuOn }) : null,
+  )
 
   /**
    * Nobody gave submissions a card: a run with the switch on would be refused
@@ -1565,7 +1575,7 @@
               size="lg"
               options={[
                 { value: 'off', label: tr('admin.competitions.gpuOff') },
-                { value: 'on', label: gpuSwitchWord(runnerCards) },
+                { value: 'on', label: gpuSwitchWord(runnerCards, machineShare) },
               ]}
               value={gpuOn ? 'on' : 'off'}
               disabled={gpuState === 'cpu' && !gpuOn}

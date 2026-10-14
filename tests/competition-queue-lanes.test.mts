@@ -27,9 +27,12 @@ import { SETTINGS_LIMITS } from '../shared/competitions-settings.js'
 import { REMOTE_BLOB_MBPS, REMOTE_UPLOADS } from '../shared/remote-runner.js'
 import {
   BOOT,
+  HELD_LEASE_STATES,
   acceptSubmission,
+  continueQueueAsMetric,
   createCompetition,
   createEntrant,
+  deferResourceAttempt,
   enqueue,
   getSubmission,
   leaveQueue,
@@ -47,9 +50,11 @@ import {
   updateSubmission,
   type QueueRow,
 } from '../server/src/competitions/store.js'
+import { LIVE_LEASE_STATES } from '../server/src/competitions/remote/store.js'
 import { competitionsFs, putOpenFile, putSecretFile, putSubmissionNotebook, resultDir, SUBMISSION_FILE } from '../server/src/competitions/storage.js'
 import { SOLUTION_NAME } from '../server/src/competitions/docker-runner.js'
 import { FakeCompetitionRunner } from '../server/src/competitions/fake-runner.js'
+import { CompetitionResourcePending } from '../server/src/competitions/broker-runner.js'
 import { useCompetitionRunner, type ScoreRequest } from '../server/src/competitions/runner-port.js'
 import {
   cancelSubmission,
@@ -76,8 +81,11 @@ import { fairOrder, runningCounts, scoreOrder } from '../server/src/competitions
 /** The stand-in runner, which also remembers the metric runs asked of it. */
 class Runner extends FakeCompetitionRunner {
   readonly scored: string[] = []
+  /** Submissions whose next metric Pod the cluster cannot place (CompetitionResourcePending), once each. */
+  readonly unplaced = new Set<string>()
 
   override async score(request: ScoreRequest) {
+    if (this.unplaced.delete(request.submissionId)) throw new CompetitionResourcePending('memory', 'metric')
     this.scored.push(request.submissionId)
     return super.score(request)
   }
@@ -156,6 +164,37 @@ function holdOnMachine(submissionId: string, options: { boot?: string; gpu?: str
   return queueRow(submissionId)!
 }
 
+/**
+ * The machine's lease behind a row it holds (remote_leases), in `state`, as
+ * the take for a machine writes it: what tells a restart here that the run is
+ * still the machine's (store.ts · orphanedRuns).
+ */
+function leaseFor(row: QueueRow, state: string): void {
+  db.prepare(`INSERT INTO remote_leases (attempt_id, runner_id, competition_id, submission_id, run_id, state, seq, sealed, provenance, manifest, container, offered_at, deadline_at)
+    VALUES (?, ?, ?, ?, ?, ?, 1, 0, '{}', '{}', 'colloq-comp-lease-run', ?, ?)`)
+    .run(row.attemptId, row.holder, row.competitionId, row.submissionId, randomUUID(), state, Date.now(), Date.now() + 3_600_000)
+}
+
+/**
+ * A notebook a machine ran, turned into this server's metric work the way an
+ * applied outcome turns it (store.ts · continueQueueAsMetric): a fresh result.
+ */
+function freshFromMachine(s: Submission): QueueRow {
+  enqueue({ submissionId: s.id, competitionId: s.competitionId, entrantId: s.entrantId, kind: 'notebook' })
+  assert.equal(continueQueueAsMetric(holdOnMachine(s.id), { durationMs: 4200, cellsDone: 1, cellsTotal: 1 }), 'metric')
+  const row = queueRow(s.id)!
+  assert.deepEqual([row.state, row.kind, row.fresh], ['waiting', 'metric', true])
+  return row
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+/** Stop a notebook this server runs, and wait until its memory is free. */
+async function stop(s: Submission): Promise<void> {
+  assert.equal(await cancelSubmission(s.id, 'teacher'), true)
+  assert.equal(await settleSubmission(s.id, 10_000), true)
+}
+
 /** A submission scored once, whose stored answer the stand-in's metric then holds on for `holdMs` (its directive travels in the answer). */
 async function scoredWithSlowAnswer(c: Competition, holdMs: number): Promise<Submission> {
   const sent = send(c, person('Пересчёт'))
@@ -221,10 +260,11 @@ test("a restart here reclaims its own orphans and leaves a machine's run running
   const c = competition()
   const there = send(c, person('ТамРестарт'))
   const here = send(c, person('ЗдесьРестарт'))
-  // Both taken by the previous life of this server; one of them by a machine.
+  // Both taken by the previous life of this server; one of them by a machine, whose lease is live.
   const previousLife = randomUUID()
   const thisLife = randomUUID()
   const held = holdOnMachine(there.id, { boot: previousLife })
+  leaseFor(held, 'running')
   assert.equal(takeNext({ boot: previousLife, slots: 8 })?.submissionId, here.id)
   updateSubmission(here.id, { state: 'running', stage: 'notebook' })
   assert.deepEqual(orphanedRuns(thisLife).map((row) => row.submissionId), [here.id], 'the machine\'s run is no orphan of this server')
@@ -248,16 +288,93 @@ test("a row a machine gives back waits with no holder, and new work starts its l
   await reset()
   const c = competition()
   const sent = send(c, person('Потеря'))
-  holdOnMachine(sent.id)
+  const held = holdOnMachine(sent.id)
   db.prepare('UPDATE competition_queue SET lost = 2 WHERE submission_id = ?').run(sent.id)
   // Lost by the machine: back to waiting, holder gone, the losses kept for the next loss.
-  assert.equal(requeue(sent.id), true)
+  assert.equal(requeue(sent.id, held.attemptId!, true), true)
   assert.equal(queueRow(sent.id)?.holder, null)
   assert.equal(queueRow(sent.id)?.lost, 2)
   // A rerun or a rescore is new work: its losses start at zero.
   enqueue({ submissionId: sent.id, competitionId: c.id, entrantId: sent.entrantId, kind: 'notebook' })
   assert.equal(queueRow(sent.id)?.lost, 0)
   await reset()
+})
+
+test('a give-back is fenced on its attempt: one that comes late changes nothing, and a run that never started is refunded', async () => {
+  await reset()
+  const c = competition()
+  const sent = send(c, person('Поздно'))
+  const offered = holdOnMachine(sent.id)
+  assert.equal(queueRow(sent.id)?.attempts, 1)
+  // Withdrawn before any container started: back to waiting, the take refunded.
+  assert.equal(requeue(sent.id, offered.attemptId!, false), true)
+  assert.deepEqual([queueRow(sent.id)?.state, queueRow(sent.id)?.attempts, queueRow(sent.id)?.holder], ['waiting', 0, null])
+  // Taken again here; the machine's give-back of its old attempt arrives after that.
+  const again = takeNext({ boot: BOOT, slots: 8, lane: 'notebook' })!
+  assert.equal(again.submissionId, sent.id)
+  assert.equal(requeue(sent.id, offered.attemptId!, false), false, 'another attempt runs now: nothing changes')
+  assert.deepEqual([queueRow(sent.id)?.state, queueRow(sent.id)?.attemptId, queueRow(sent.id)?.attempts], ['running', again.attemptId, 1])
+  // Given back after its container started: the attempt stays counted toward the restarts.
+  assert.equal(requeue(sent.id, again.attemptId!, true), true)
+  assert.deepEqual([queueRow(sent.id)?.state, queueRow(sent.id)?.attempts], ['waiting', 1])
+  // A waiting row is no run to give back.
+  assert.equal(requeue(sent.id, again.attemptId!, true), false)
+  await reset()
+})
+
+test("a machine's row with no live lease is this server's orphan at a restart, and goes back with no penalty", async () => {
+  await reset()
+  const c = competition()
+  const previousLife = randomUUID()
+  const thisLife = randomUUID()
+  // Its lease is over, yet the row still names the machine: a rollback past the leases, or a hand in the database.
+  const over = send(c, person('ЛизЗакончен'))
+  leaseFor(holdOnMachine(over.id, { boot: previousLife }), 'lost')
+  // Carried through 0.22, which ran it itself under an attempt no lease has and kept the holder it does not know.
+  const carried = send(c, person('Через022'))
+  holdOnMachine(carried.id, { boot: previousLife })
+  db.prepare('UPDATE competition_queue SET attempts = 2, attempt_id = ? WHERE submission_id = ?').run(randomUUID().replaceAll('-', ''), carried.id)
+  // A lease that is live, in any of its live states, keeps its row the machine's.
+  const live = LIVE_LEASE_STATES.map((state) => {
+    const sent = send(c, person(`Лиз ${state}`))
+    leaseFor(holdOnMachine(sent.id, { boot: previousLife }), state)
+    return sent
+  })
+  assert.deepEqual(orphanedRuns(thisLife).map((row) => row.submissionId).sort(), [over.id, carried.id].sort())
+  const { requeued, abandoned } = reclaimQueue(thisLife)
+  assert.deepEqual(requeued.map((row) => row.submissionId).sort(), [over.id, carried.id].sort())
+  assert.deepEqual(abandoned, [], 'never given up: no restart of this server cut them off, whatever their attempts')
+  for (const id of [over.id, carried.id]) {
+    const row = queueRow(id)!
+    assert.deepEqual([row.state, row.holder, row.attemptId, row.lost], ['waiting', null, null, 0], id)
+  }
+  assert.equal(queueRow(over.id)?.attempts, 0, "the machine's take is refunded")
+  assert.equal(queueRow(carried.id)?.attempts, 1)
+  for (const sent of live) assert.deepEqual([queueRow(sent.id)?.state, queueRow(sent.id)?.holder], ['running', MACHINE])
+  for (const sent of live) leaveQueue(sent.id)
+  await reset()
+})
+
+test('on a database without the leases every row a machine holds is an orphan of a restart', async () => {
+  await reset()
+  const c = competition()
+  const sent = send(c, person('БезТаблицы'))
+  leaseFor(holdOnMachine(sent.id, { boot: randomUUID() }), 'running')
+  assert.deepEqual(orphanedRuns(randomUUID()), [], 'a live lease: the machine\'s')
+  // As a release without the machines' tables reads it: the leases are not there to ask.
+  db.exec('ALTER TABLE remote_leases RENAME TO remote_leases_away')
+  try {
+    assert.deepEqual(orphanedRuns(randomUUID()).map((row) => row.submissionId), [sent.id])
+  } finally {
+    db.exec('ALTER TABLE remote_leases_away RENAME TO remote_leases')
+  }
+  assert.deepEqual(orphanedRuns(randomUUID()), [])
+  leaveQueue(sent.id)
+  await reset()
+})
+
+test('the queue\'s live lease states are the machines\' own', () => {
+  assert.deepEqual([...HELD_LEASE_STATES], [...LIVE_LEASE_STATES])
 })
 
 /* ----------------------------------------------------------- the fair order */
@@ -403,12 +520,16 @@ test('the metric lane takes a fresh result before every rescore, and the screens
     updateSubmission(s.id, { state: 'queued', stage: 'score' })
     enqueue({ submissionId: s.id, competitionId: c.id, entrantId: s.entrantId, kind: 'metric' })
   }
-  // A notebook a machine just ran, its metric enqueued after the rescores: its submission still reads «running».
-  updateSubmission(fresh.id, { state: 'running', stage: 'score' })
-  enqueue({ submissionId: fresh.id, competitionId: c.id, entrantId: fresh.entrantId, kind: 'metric' })
+  // A submission that merely reads «running» is no fresh result: the queue row says what it is.
+  updateSubmission(rescores[0].id, { state: 'running', stage: 'score' })
+  await sleep(5)
+  // A notebook a machine just ran, its metric enqueued after the rescores.
+  freshFromMachine(fresh)
   assert.equal(nextQueueRow(Date.now(), undefined, 'metric')?.submissionId, fresh.id)
   const waiting = queueRows().filter((row) => row.state === 'waiting')
-  assert.deepEqual(scoreOrder(waiting, new Map(), (row) => row.submissionId === fresh.id)[0].submissionId, fresh.id)
+  const order = scoreOrder(waiting, new Map(), (row) => row.fresh).map((row) => row.submissionId)
+  assert.equal(order[0], fresh.id)
+  assert.deepEqual(order.slice(1).sort(), rescores.map((s) => s.id).sort())
   const forecast = queueForecast(1, Date.now(), null, { homeNotebooks: true, scoreSlots: 1 })
   assert.equal(forecast.at.get(fresh.id)?.place, 1)
   assert.equal(forecast.at.get(fresh.id)?.startMs, 0)
@@ -433,6 +554,147 @@ test('the forecast runs a metric in its own lane: a rescore starts now beside a 
   assert.equal(forecast.at.get(rescore.id)?.startMs, 0, 'the metric lane is free')
   assert.ok((forecast.at.get(next.id)?.startMs ?? 0) > 0, 'the notebook waits for the one slot')
   assert.deepEqual(forecast.eligible.map((row) => row.submissionId), [rescore.id, next.id])
+  await reset()
+})
+
+/* ------------------------------------------- one memory for both lanes */
+
+test('memory a notebook frees goes to waiting metric work first: a rescore does not wait for the notebook backlog', async () => {
+  await reset()
+  setQueueSlots(2)
+  // A notebook here reserves 256 + 4096 MB; a metric 256 + 2048.
+  const c = competition()
+  const rescore = await scoredWithSlowAnswer(c, 60_000)
+  // Two notebooks fit, with no metric beside both: memory is the limit, not the places.
+  runner.availableMb = 9000
+  const first = send(c, person('Н1'), HOLD)
+  const second = send(c, person('Н2'), HOLD)
+  assert.equal(await pumpOnce(), 2)
+  assert.equal(rescoreCompetition(c.id), 1)
+  await sleep(5)
+  const backlog = send(c, person('Н3'), HOLD)
+  assert.equal(await pumpOnce(), 0, 'no room for either')
+  // A notebook ends: room for the metric or for the next notebook, not both.
+  await stop(first)
+  assert.equal(await pumpOnce(), 1)
+  assert.equal(queueRow(rescore.id)?.state, 'running', 'the rescore took the freed memory')
+  assert.equal(queueRow(backlog.id)?.state, 'waiting', 'the next notebook waits for the next one to end')
+  // Bounded: the metric lane holds no more than its own places, and the notebook takes the next notebook's memory.
+  await stop(second)
+  assert.equal(await pumpOnce(), 1)
+  assert.equal(queueRow(backlog.id)?.state, 'running')
+  await reset()
+})
+
+test('the screens number a metric and a notebook that start at one moment as a pass takes them: the metric first', async () => {
+  await reset()
+  const c = competition()
+  const rescore = await scoredWithSlowAnswer(c, 60_000)
+  const notebook = send(c, person('Вместе'), HOLD)
+  assert.equal(rescoreCompetition(c.id), 1)
+  const forecast = queueForecast(1, Date.now(), null, { homeNotebooks: true, scoreSlots: 1 })
+  assert.deepEqual([forecast.at.get(rescore.id)?.startMs, forecast.at.get(notebook.id)?.startMs], [0, 0])
+  assert.deepEqual([forecast.at.get(rescore.id)?.place, forecast.at.get(notebook.id)?.place], [1, 2])
+  await reset()
+})
+
+/* -------------------------------------------- a fresh result stays fresh */
+
+test('a fresh result whose metric a restart here cut off stays ahead of the rescores, and its participant still reads it running', async () => {
+  await reset()
+  const c = competition()
+  const rescores = [await scoredWithSlowAnswer(c, 60_000), await scoredWithSlowAnswer(c, 60_000)]
+  const fresh = await scoredWithSlowAnswer(c, 60_000)
+  assert.equal(rescoreCompetition(c.id), 3)
+  await sleep(5)
+  freshFromMachine(fresh)
+  // The metric lane takes it first, and the previous life of this server runs it when it goes down.
+  const taken = takeNext({ boot: randomUUID(), slots: 2, lane: 'metric' })!
+  assert.equal(taken.submissionId, fresh.id)
+  updateSubmission(fresh.id, { state: 'running', stage: 'score' })
+  assert.equal((await reclaimCompetitionQueue()).requeued, 1)
+  assert.deepEqual([queueRow(fresh.id)?.state, queueRow(fresh.id)?.fresh], ['waiting', true])
+  assert.deepEqual([getSubmission(fresh.id)?.state, getSubmission(fresh.id)?.stage], ['running', 'score'])
+  assert.equal(nextQueueRow(Date.now(), undefined, 'metric')?.submissionId, fresh.id)
+  const forecast = queueForecast(1, Date.now(), null, { homeNotebooks: true, scoreSlots: 1 })
+  assert.equal(forecast.at.get(fresh.id)?.place, 1)
+  assert.ok(rescores.every((s) => (forecast.at.get(s.id)?.place ?? 0) > 1))
+  await reset()
+})
+
+test('a fresh result whose metric is put off keeps its place and its «running»; a rescore put off waits as queued', async () => {
+  await reset()
+  const c = competition()
+  const rescore = await scoredWithSlowAnswer(c, 60_000)
+  const fresh = await scoredWithSlowAnswer(c, 60_000)
+  assert.equal(rescoreCompetition(c.id), 2)
+  freshFromMachine(fresh)
+  // The cluster could not place either metric's Pod.
+  for (const id of [fresh.id, rescore.id]) {
+    const taken = takeNext({ boot: BOOT, slots: 2, lane: 'metric' })!
+    assert.equal(taken.submissionId, id)
+    updateSubmission(id, { state: 'running', stage: 'score' })
+    assert.notEqual(deferResourceAttempt(taken, 'later'), null)
+  }
+  assert.deepEqual([queueRow(fresh.id)?.state, queueRow(fresh.id)?.kind, queueRow(fresh.id)?.fresh], ['waiting', 'metric', true])
+  assert.deepEqual([getSubmission(fresh.id)?.state, getSubmission(fresh.id)?.stage], ['running', 'score'])
+  assert.deepEqual([queueRow(rescore.id)?.fresh, getSubmission(rescore.id)?.state, getSubmission(rescore.id)?.stage], [false, 'queued', 'queue'])
+  // A notebook of ours that ran, whose metric could not start: its result is as fresh as a machine's.
+  const ours = send(c, person('НашМетрика'))
+  const run = takeNext({ boot: BOOT, slots: 8, lane: 'notebook' })!
+  assert.equal(run.submissionId, ours.id)
+  updateSubmission(ours.id, { state: 'running', stage: 'score' })
+  assert.notEqual(deferResourceAttempt(run, 'later', Date.now(), 'later', 'metric'), null)
+  assert.deepEqual([queueRow(ours.id)?.kind, queueRow(ours.id)?.fresh, getSubmission(ours.id)?.state], ['metric', true, 'running'])
+  // The same notebook put off before its metric is no result at all.
+  enqueue({ submissionId: ours.id, competitionId: c.id, entrantId: ours.entrantId, kind: 'notebook' })
+  assert.equal(queueRow(ours.id)?.fresh, false, 'new work is no fresh result')
+  const again = takeNext({ boot: BOOT, slots: 8, lane: 'notebook' })!
+  assert.notEqual(deferResourceAttempt(again, 'later'), null)
+  assert.deepEqual([queueRow(ours.id)?.kind, queueRow(ours.id)?.fresh, getSubmission(ours.id)?.state], ['notebook', false, 'queued'])
+  await reset()
+})
+
+test("a notebook that ran here, only its metric put off, keeps what it did, and its score counts the notebook's time", async () => {
+  await reset()
+  const c = competition()
+  const sent = send(c, person('ОтложенаМетрика'), '# colloq-test: {"hold": 30}\nx = 1')
+  runner.unplaced.add(sent.id)
+  assert.equal(await pumpOnce(), 1)
+  await settleCompetitionWork()
+  assert.deepEqual([queueRow(sent.id)?.state, queueRow(sent.id)?.kind, queueRow(sent.id)?.fresh], ['waiting', 'metric', true])
+  const waiting = getSubmission(sent.id)!
+  assert.deepEqual([waiting.state, waiting.stage, waiting.cellsDone, waiting.cellsTotal], ['running', 'score', 1, 1])
+  const wall = waiting.durationMs ?? 0
+  assert.ok(wall >= 30, `the notebook's wall stays: ${wall}`)
+  // The cluster places the metric now.
+  db.prepare('UPDATE competition_queue SET not_before = 0 WHERE submission_id = ?').run(sent.id)
+  await drainCompetitionQueue()
+  const scored = getSubmission(sent.id)!
+  assert.equal(scored.state, 'scored')
+  assert.deepEqual([scored.cellsDone, scored.cellsTotal], [1, 1])
+  assert.ok((scored.durationMs ?? 0) >= wall, 'the notebook and the metric together')
+  await reset()
+})
+
+test("'rescore all' leaves metric work already waiting where it is: a fresh result keeps its place and its «running»", async () => {
+  await reset()
+  const c = competition()
+  const old = await scoredWithSlowAnswer(c, 60_000)
+  const fresh = await scoredWithSlowAnswer(c, 60_000)
+  freshFromMachine(fresh)
+  const before = queueRow(fresh.id)!
+  await sleep(5)
+  assert.equal(rescoreCompetition(c.id), 2, 'both count as queued')
+  const after = queueRow(fresh.id)!
+  assert.deepEqual([after.enqueuedAt, after.turn, after.kind, after.fresh], [before.enqueuedAt, before.turn, 'metric', true])
+  assert.deepEqual([getSubmission(fresh.id)?.state, getSubmission(fresh.id)?.stage], ['running', 'score'])
+  assert.equal(nextQueueRow(Date.now(), undefined, 'metric')?.submissionId, fresh.id)
+  // A rescore waiting already is left where it is too: it will score with the metric in force when it starts.
+  const waiting = queueRow(old.id)!
+  await sleep(5)
+  assert.equal(rescoreCompetition(c.id), 2)
+  assert.equal(queueRow(old.id)?.enqueuedAt, waiting.enqueuedAt)
   await reset()
 })
 

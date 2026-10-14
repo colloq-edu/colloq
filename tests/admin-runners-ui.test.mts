@@ -39,7 +39,6 @@ import {
   connectDefaults,
   consoleGroups,
   eventLine,
-  fleetPlaces,
   fleetWords,
   focusCompetition,
   groupChip,
@@ -499,7 +498,7 @@ test('the connect dialog starts on one machine, a day, auto places, and no hidde
   assert.deepEqual(mintRequest({ machines: '3', hours: '6', places: '8', trusted: true }), {
     request: { machines: 3, hours: 6, trusted: true, approvedSlots: 8 },
   })
-  assert.deepEqual(mintRequest({ ...connectDefaults(), machines: '0' }), { error: 'Машин — от 1 до 50.' })
+  assert.deepEqual(mintRequest({ ...connectDefaults(), machines: '0' }), { error: 'Машин — от 1 до 100.' })
   assert.deepEqual(mintRequest({ ...connectDefaults(), hours: '25' }), { error: 'Код действует от 1 до 24 часов.' })
   assert.deepEqual(mintRequest({ ...connectDefaults(), places: '100' }), { error: 'Мест — от 1 до 64, или пусто: авто.' })
 })
@@ -587,7 +586,7 @@ function run(id: string, fields: Partial<RunningNow> = {}): RunningNow {
   }
 }
 
-const HOME: RemoteConsoleGroup = { machineId: null, name: null, state: null, places: 2, busy: 1, cards: null, metricsOnly: true }
+const HOME: RemoteConsoleGroup = { machineId: null, name: null, state: null, places: 0, busy: 0, cards: null, metricsOnly: true, metric: { places: 2, busy: 1 } }
 const VAST: RemoteConsoleGroup = { machineId: 'vastroaa', name: 'vast-4090-ro', state: 'online', places: 16, busy: 2, cards: { count: 2, perDevice: 8 } }
 
 test('the console groups runs by where they are, and never drops a run whose machine the groups do not name', () => {
@@ -610,7 +609,6 @@ test('the console groups runs by where they are, and never drops a run whose mac
   // This server's run with no server group: it still leads the grid.
   const homeless = consoleGroups([VAST], [run('h2')])
   assert.deepEqual(homeless.map((entry) => entry.key), ['home', 'vastroaa'])
-  assert.deepEqual(fleetPlaces([HOME, VAST], [run('a'), run('b'), run('c')]), { busy: 3, count: 18 })
 })
 
 test('the console\'s header and group lines: where the fleet is, and what each part of it does', () => {
@@ -618,7 +616,7 @@ test('the console\'s header and group lines: where the fleet is, and what each p
   assert.equal(fleetWords([{ ...HOME, metricsOnly: false }, VAST, { ...VAST, machineId: 'm2' }]), 'на сервере и 2 машинах')
   assert.equal(fleetWords([HOME]), null)
   assert.equal(groupLine(HOME, 0, '0.24.0'), 'только метрики · 1 из 2')
-  assert.equal(groupLine({ ...HOME, metricsOnly: false }, 0, '0.24.0'), '1 из 2')
+  assert.equal(groupLine({ ...HOME, metricsOnly: false, places: 2, busy: 1 }, 0, '0.24.0'), '1 из 2')
   assert.equal(groupLine(VAST, 0, '0.24.0'), '2 из 16 · 2 карты по 8')
   assert.equal(
     groupLine({ ...VAST, state: 'outdated', version: '0.23.0' }, 0, '0.24.0'),
@@ -821,27 +819,26 @@ test('the new screens speak no Russian of their own, and every screen they touch
 test('the machines block stands in «Ресурсы» for the owner, and its two settings are the form\'s', () => {
   assert.match(
     RESOURCES,
-    /\{#if isOwner\} <Section title=\{tr\('admin\.runners\.title'\)\} description=\{tr\('admin\.runners\.note'\)\}> <Runners \{navigate\} settings=\{runnerSettings\} onsettings=\{applyRunner\} reload=\{runnersReload\} \/> <\/Section> \{\/if\}/,
+    /\{#if isOwner && !dockerOnlyIgnored\} <Section title=\{tr\('admin\.runners\.title'\)\} description=\{tr\('admin\.runners\.note'\)\}> <Runners \{navigate\} settings=\{runnerSettings\} onfleet=\{\(fleet\) => \(machinesOnline = fleet\.online\)\} reload=\{runnersReload\} \/> <\/Section> \{\/if\}/,
   )
   // Beside the queue's settings, after the competitions section and before files.
   const machines = RESOURCES.indexOf('<Runners ')
   assert.ok(RESOURCES.indexOf("tr('admin.resourcesTab.competitionsTitle')") < machines && machines < RESOURCES.indexOf("tr('admin.resourcesTab.filesTitle')"))
   // Saved by the page's Save, through the competitions door, as the third half of its body.
-  assert.match(RESOURCES, /if \(key === 'c\.homeNotebooks' && homeChoice !== null\) competitionPatch\.homeNotebooks = homeChoice/)
-  assert.match(RESOURCES, /if \(key === 'c\.scoreSlots'\) competitionPatch\.scoreSlots = valueOf\(key\)/)
+  assert.match(RESOURCES, /if \(key === 'c\.homeNotebooks' && homeChoice !== null\) competitionPatch\.homeNotebooks = forgotten\.includes\(key\) \? null : homeChoice/)
+  assert.match(RESOURCES, /if \(key === 'c\.scoreSlots'\) competitionPatch\.scoreSlots = forgotten\.includes\(key\) \? null : valueOf\(key\)/)
   assert.match(RESOURCES, /const dirtyCount = \$derived\(resourceDirty\.length \+ competitionDirty\.length \+ runnerDirty\.length\)/)
   assert.match(RESOURCES, /if \(key === 'c\.scoreSlots'\) return SETTINGS_LIMITS\.scoreSlots/)
-  // A read of the list never wipes what the owner is typing.
-  const apply = RESOURCES.slice(RESOURCES.indexOf('function applyRunner('), RESOURCES.indexOf('function pickCard('))
-  assert.match(apply, /const scoreEdited = runnerSaved !== null && isDirty\('c\.scoreSlots'\)/)
-  assert.match(apply, /if \(!scoreEdited\) texts\['c\.scoreSlots'\] = String\(saved\.scoreSlots\) if \(!homeEdited\) homeChoice = saved\.homeNotebooks/)
-  // And the block reports the server's values on every read.
-  assert.match(RUNNERS, /onsettings\?\.\(\{ homeNotebooks: fresh\.homeNotebooks, scoreSlots: fresh\.scoreSlots \}\)/)
+  // Read with the rest of the queue's half, never from the machines list on its timer.
+  const apply = RESOURCES.slice(RESOURCES.indexOf('function applyCompetitions('), RESOURCES.indexOf('function pickCard('))
+  assert.match(apply, /if \(settings\.runners\) \{ texts\['c\.scoreSlots'\] = String\(settings\.runners\.scoreSlots\.value\) homeChoice = settings\.runners\.homeNotebooks\.value \}/)
+  // And the block reports how many machines answer on every read it shows.
+  assert.match(RUNNERS, /onfleet\?\.\(\{ online: answer\.summary\.online \}\)/)
   assert.match(RUNNERS, /\{#if settings\} \{@render settings\(\)\} \{\/if\}/)
   // Notebooks off here and no machine online: every submission waits, said where the switch is.
   assert.match(
-    RUNNERS,
-    /\{#if !data\.homeNotebooks && data\.summary\.online === 0\} <p [^>]*role="status"> <Icon name="alert" size=\{14\} class="mt-0\.5 shrink-0" \/> <span>\{tr\('admin\.runners\.nobodyRuns'\)\}<\/span>/,
+    RESOURCES,
+    /\{#if !homeOn && machinesOnline === 0\} <p [^>]*role="status"> <Icon name="alert" size=\{14\} class="mt-0\.5 shrink-0" \/> <span>\{tr\('admin\.runners\.nobodyRuns'\)\}<\/span>/,
   )
   // No machine at all: the empty state carries the button, and no row of zeros stands above it.
   assert.match(RUNNERS, /\{#if machines\.length > 0\} <div class="mb-5 flex flex-wrap items-center gap-x-7 gap-y-3"> \{#each gauges as gauge, index \(index\)\}/)
@@ -851,9 +848,10 @@ test('the list is read again while it is on screen, faster while a machine is ex
   assert.match(RUNNERS, /if \(Date\.now\(\) - loadedAt >= \(connecting \? 3_000 : 10_000\)\) void load\(\)/)
   assert.match(RUNNERS, /if \(document\.visibilityState !== 'visible'\) return/)
   // The connect dialog sees the same list and counts from the ids known when the code was shown.
-  assert.match(RUNNERS, /<ConnectMachine machines=\{data\.machines\} onclose=\{\(\) => \(connecting = false\)\} \/>/)
+  assert.match(RUNNERS, /<ConnectMachine machines=\{data\.machines\} codes=\{data\.codes\} onclose=\{\(\) => \(connecting = false\)\} \/>/)
   assert.match(CONNECT, /known = new Set\(machines\.map\(\(machine\) => machine\.id\)\) minted = await runnersApi\.mintCode\(asked\.request\)/)
-  assert.match(CONNECT, /const progress = \$derived\(minted \? joinProgress\(known, machines, minted\.machines\) : null\)/)
+  // Counted by this code's own joins (admin-runners-ui-review.test.mts).
+  assert.match(CONNECT, /const progress = \$derived\( minted \? joinProgress\(known, machines, minted\.machines, codeJoined\(minted, codes, Date\.now\(\), codeSeen\)\) : null, \)/)
   for (const kind of ['docker', 'bare', 'vast']) assert.match(CONNECT, new RegExp(`text: minted\\.commands\\.${kind}`))
   // On a phone the commands wrap instead of scrolling sideways, and Copy is a finger's size.
   assert.match(CONNECT, /<pre class="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono/)
@@ -888,16 +886,16 @@ test('a machine\'s page saves each setting as it is committed, and stops a run t
 test('the console groups its grid by machine only when there are machines, with one copy of a cell', () => {
   assert.match(LIVE, /const machineGroups = \$derived\(queue\?\.groups && queue\.groups\.length > 0 \? queue\.groups : null\)/)
   assert.match(LIVE, /const grouped = \$derived\(machineGroups \? consoleGroups\(machineGroups, running\) : null\)/)
-  assert.match(LIVE, /const slots = \$derived\(fleet\?\.count \?\? queue\?\.slots \?\? running\.length\)/)
+  assert.match(LIVE, /const slots = \$derived\(queue\?\.slots \?\? running\.length\)/)
   assert.equal([...LIVE.matchAll(/\{@render runCell\(run\)\}/g)].length, 2, 'the grouped grid and the plain one draw the same cell')
   assert.equal([...LIVE.matchAll(/\{#snippet runCell\(run: RunningNow\)\}/g)].length, 1)
   assert.match(LIVE, /\{#if grouped\}/)
   // Free places: this server's as outlines, a machine's as one count.
   assert.match(LIVE, /tr\('admin\.competitions\.fleet\.free', \{ count: free \}\)/)
   assert.match(LIVE, /\{#if !home && entry\.runs\.length > GROUP_CELLS\}/)
-  // The waiting rows say the machines' reasons after the card's.
-  assert.match(LIVE, /\{#each waiting as row \(row\.submissionId\)\} \{@const reason = waitReason\(row\)\}/)
-  assert.match(LIVE, /\{:else if reason\} <span class=\{cn\('text-micro', REASON_TONE\[reason\.tone\]\)\}>\{reason\.text\}<\/span> \{\/if\}/)
+  // The waiting rows say the machines' reasons before the card's (admin-runners-ui-review.test.mts).
+  assert.match(LIVE, /\{#each waiting as row \(row\.submissionId\)\} \{@const line = waitingLine\(row, waitsForCard\(row, queue\)\)\}/)
+  assert.match(LIVE, /\{#if line\} <span class=\{cn\('text-micro', REASON_TONE\[line\.tone\]\)\}>\{line\.text\}<\/span> \{\/if\}/)
   assert.match(LIVE, /machineGroups \? fleetWords\(machineGroups\) : null,/)
   // Under the waiting list: the queue is the fleet's, and a return from a machine goes first.
   assert.match(LIVE, /\{tr\('admin\.competitions\.fairQueueSlots', \{ count: slots \}\)\} \{#if machineGroups\}\{tr\('admin\.competitions\.fleet\.queueNote'\)\}\{\/if\}/)
@@ -921,7 +919,10 @@ test('the editor counts a machine with cards as a card, and draws «Где сч�
   assert.match(EDITOR, /const homeOnly = \$derived\(where \? whereHomeOnly\(where, environment, c\.environment\) : false\)/)
   assert.match(EDITOR, /\{#if where && whereLine\}/)
   assert.match(EDITOR, /<p class="min-w-0 flex-1 basis-\[280px\] text-2xs text-ink">\{homeOnlyBox\(where, environment\)\}<\/p> <button type="button" class="btn-outline shrink-0" onclick=\{changeEnvironment\}>/)
-  assert.match(EDITOR, /const sealedNote = \$derived\(where && \(view\.sealedFiles\?\.length \?\? 0\) > 0 \? sealedWarning\(where\) : null\)/)
+  assert.match(
+    EDITOR,
+    /const sealedNote = \$derived\( where && \(view\.sealedFiles\?\.length \?\? 0\) > 0 \? sealedWarning\(where, \{ homeOnly, unsaved: environmentUnsaved, gpu: gpuOn \}\) : null, \)/,
+  )
   // No card anywhere: the owner connects a machine in a new tab, the form keeps its fields.
   assert.match(
     EDITOR,

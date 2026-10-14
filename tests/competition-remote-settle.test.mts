@@ -345,6 +345,59 @@ test('publish and promote are once per attempt, however many times and wherever 
   reset()
 })
 
+test('a record is on disk, bytes and name, before anything it records moves', () => {
+  reset()
+  const c = competition()
+  const sent = send(c)
+  const attempt = randomUUID().replaceAll('-', '')
+  const dir = attemptDir(c.id, sent.id, attempt)
+  competitionsFs.writeFileSync(path.join(dir, EXECUTED_FILE), enc('E'), { mode: 0o600 })
+  competitionsFs.writeFileSync(path.join(dir, SUBMISSION_FILE), enc(ANSWER), { mode: 0o600 })
+  const events: string[] = []
+  const fsync = fs.fsyncSync
+  const rename = competitionsFs.renameSync
+  fs.fsyncSync = (fd: number) => { events.push('flush'); return fsync(fd) }
+  competitionsFs.renameSync = (from: fs.PathLike, to: fs.PathLike) => { events.push(`rename ${path.basename(String(to))}`); return rename(from, to) }
+  try {
+    publishAttemptArtifacts(c.id, sent.id, attempt)
+    promoteAttempt(c.id, sent.id, attempt)
+  } finally {
+    fs.fsyncSync = fsync
+    competitionsFs.renameSync = rename
+  }
+  // The record's bytes, its name in the folder, the folder — and only then the move it records.
+  assert.deepEqual(events, [
+    'flush', 'rename published.json', 'flush', `rename ${EXECUTED_FILE}`,
+    'flush', 'rename promoted.json', 'flush', `rename ${SUBMISSION_FILE}`,
+  ])
+  reset()
+})
+
+test('a record a crash of the host left empty stops the second publish and the second settle, and nothing published is removed', async () => {
+  reset()
+  const c = competition()
+  const sent = send(c)
+  const prepared = leaseAndPrepare(sent.id)
+  machineResults(prepared)
+  const end = { outcome: finished(prepared), endedAt: Date.now(), crowded: false }
+  assert.equal((await settleNotebook(prepared, end)).next, 'score')
+  const out = resultDir(c.id, sent.id)
+  // The renames kept, the records' bytes lost: ext4 writes data out long after the metadata.
+  const records = path.dirname(attemptPath(c.id, sent.id, prepared.row.attemptId!, 'result'))
+  for (const name of ['published.json', 'promoted.json']) competitionsFs.writeFileSync(path.join(records, name), enc(''), { mode: 0o600 })
+  assert.throws(() => publishAttemptArtifacts(c.id, sent.id, prepared.row.attemptId!), /published\.json is damaged/)
+  assert.equal(read(path.join(out, EXECUTED_FILE))?.includes('executed on the machine'), true, 'the published notebook stays')
+  // The re-drive of the outcome stops with an error, rather than judge the promoted answer missing.
+  await assert.rejects(settleNotebook(prepared, end), /is damaged/)
+  assert.notEqual(getSubmission(sent.id)?.state, 'rejected')
+  assert.equal(read(path.join(out, SUBMISSION_FILE)), ANSWER)
+  assert.equal(read(path.join(out, EXECUTED_FILE))?.includes('executed on the machine'), true)
+  // A record that is not an object is no record either.
+  competitionsFs.writeFileSync(path.join(records, 'promoted.json'), enc('"yes"'), { mode: 0o600 })
+  assert.throws(() => promoteAttempt(c.id, sent.id, prepared.row.attemptId!), /promoted\.json is damaged/)
+  reset()
+})
+
 test("work asked for during a machine's run replaces its metric, as it replaces the rest of a run here", async () => {
   reset()
   const c = competition()

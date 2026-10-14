@@ -280,10 +280,11 @@ test('a participant erased while a machine runs their notebook is erased at once
   const erased = await fetch(`${home}/api/admin/competitions/${c.id}/entrants/${sent.entrantId}`, { method: 'DELETE', headers: { cookie: ownerCookie() } })
   assert.equal(erased.status, 200, await erased.clone().text())
   assert.equal(getSubmission(sent.id), null)
-  assert.equal(getLease(lease.attemptId)?.state, 'revoked')
+  // The lease went with them, in the same transaction: nothing of their run waits for the week's prune.
+  assert.equal(getLease(lease.attemptId), null)
   const told = await m.sync({ seq: lease.seq, ready, attempts: [{ id: lease.attemptId, phase: 'running', runningMs: 50 }] })
-  assert.deepEqual(told.body.revoke, [{ id: lease.attemptId, reason: 'cancelled' }])
-  assert.equal((await m.put(lease.attemptId, 'submission.csv', ANSWER)).status, 409)
+  assert.deepEqual(told.body.revoke, [{ id: lease.attemptId, reason: 'unknown' }], 'home knows no such lease: the agent drops it')
+  assert.equal((await m.put(lease.attemptId, 'submission.csv', ANSWER)).status, 404)
   assert.equal(competitionsFs.existsSync(submissionDir(c.id, sent.id)), false)
 })
 
@@ -297,12 +298,55 @@ test('a competition deleted while a machine runs one of its notebooks is deleted
   const deleted = await fetch(`${home}/api/admin/competitions/${c.id}`, { method: 'DELETE', headers: { cookie: ownerCookie(), origin: home } })
   assert.equal(deleted.status, 204, await deleted.clone().text())
   assert.equal(getCompetition(c.id), null)
-  assert.equal(getLease(lease.attemptId)?.state, 'revoked')
+  assert.equal(getLease(lease.attemptId), null, 'its runs\' leases went with it')
   // The picture of what machines hold is at most two seconds old (want.ts · homeStock): past that, the deletion is in it.
   forgetStock()
   const told = await m.sync({ seq: lease.seq, ready, attempts: [{ id: lease.attemptId, phase: 'running', runningMs: 50 }] })
-  assert.deepEqual(told.body.revoke, [{ id: lease.attemptId, reason: 'cancelled' }])
+  assert.deepEqual(told.body.revoke, [{ id: lease.attemptId, reason: 'unknown' }])
   assert.ok(told.body.forget.includes(c.id), 'and its data is to be forgotten')
+})
+
+test('erasing a participant, and deleting a competition, take their runs on machines along: the outputs a lease kept and its log lines', async () => {
+  reset()
+  const leaseRows = (column: 'submission_id' | 'competition_id', id: string) =>
+    (db.prepare(`SELECT COUNT(*) AS n FROM remote_leases WHERE ${column} = ?`).get(id) as { n: number }).n
+  const eventRows = (attemptId: string) => (db.prepare('SELECT COUNT(*) AS n FROM remote_events WHERE attempt_id = ?').get(attemptId) as { n: number }).n
+  const outputs = () => (db.prepare("SELECT COUNT(*) AS n FROM remote_leases WHERE outcome LIKE '%TRACEBACK-OF-A-PERSON%'").get() as { n: number }).n
+  /** A run of `sent` that failed on the machine and was settled: its lease keeps the traceback and the log. */
+  async function failedOnMachine(c: TestCompetition, sent: { id: string }) {
+    const { m, lease, ready } = await leased(c)
+    assert.equal(lease.submissionId, sent.id)
+    await m.sync({ seq: lease.seq, ready, attempts: [{ id: lease.attemptId, phase: 'running', runningMs: 100 }] })
+    assert.equal((await m.put(lease.attemptId, 'executed.ipynb', '{"cells":[]}')).status, 200)
+    const request = finished(lease.attemptId, [{ name: 'executed.ipynb', body: '{"cells":[]}' }], {
+      status: 'cell_error', cell: 0, cells: 1, produced: false, detail: 'TRACEBACK-OF-A-PERSON: their own words', log: 'TRACEBACK-OF-A-PERSON printed',
+      diagnostics: { exit: 1, oomKilled: false, backend: 'docker' },
+    })
+    assert.equal(((await m.outcome(lease.attemptId, request)).body as { result: string }).result, 'applied')
+    return lease
+  }
+  // A participant with a run settled on a machine: erased.
+  const c = competition()
+  const person = send(c)
+  const ran = await failedOnMachine(c, person)
+  assert.equal(outputs(), 1, 'the lease kept the traceback')
+  assert.ok(eventRows(ran.attemptId) > 0)
+  const home = await serve()
+  const erased = await fetch(`${home}/api/admin/competitions/${c.id}/entrants/${person.entrantId}`, { method: 'DELETE', headers: { cookie: ownerCookie() } })
+  assert.equal(erased.status, 200, await erased.clone().text())
+  assert.equal(leaseRows('submission_id', person.id), 0)
+  assert.equal(eventRows(ran.attemptId), 0, 'and the machine\'s lines about it')
+  assert.equal(outputs(), 0)
+  // A competition with a run settled on a machine: deleted.
+  const other = competition()
+  const someone = send(other)
+  const there = await failedOnMachine(other, someone)
+  assert.equal(outputs(), 1)
+  const deleted = await fetch(`${home}/api/admin/competitions/${other.id}`, { method: 'DELETE', headers: { cookie: ownerCookie(), origin: home } })
+  assert.equal(deleted.status, 204, await deleted.clone().text())
+  assert.equal(leaseRows('competition_id', other.id), 0)
+  assert.equal(eventRows(there.attemptId), 0)
+  assert.equal(outputs(), 0)
 })
 
 test('the participant reads «готовится» for a notebook no executor can take yet, and nothing about which machine', async () => {
@@ -324,4 +368,266 @@ test('the participant reads «готовится» for a notebook no executor ca
   await m.sync({ ready: { revisions: [c.revisionId], data: [data.manifest], sealed: [], bundles: [] }, free: { slots: 0, memoryMb: 32_768, cpus: 16, gpuShares: 0, diskMb: 100_000 } })
   live = (await mine()).live.find((one) => one.submissionId === sent.id)!
   assert.equal(live.preparing, undefined)
+})
+
+/* ------------------------------------------------ a cancel while applying */
+
+import { cancelRemote } from '../server/src/competitions/remote/release.js'
+import { remoteTick } from '../server/src/competitions/remote/liveness.js'
+import { getRunner, driveInFlight } from '../server/src/competitions/remote/store.js'
+
+/** A run on a machine with its answer uploaded, and the outcome that reports it. */
+async function uploaded(c: TestCompetition) {
+  const { m, lease, ready } = await leased(c)
+  await m.sync({ seq: lease.seq, ready, attempts: [{ id: lease.attemptId, phase: 'running', runningMs: 100 }] })
+  assert.equal((await m.put(lease.attemptId, 'submission.csv', ANSWER)).status, 200)
+  return { m, lease, ready, request: finished(lease.attemptId, [{ name: 'submission.csv', body: ANSWER }]) }
+}
+
+/** The first move into the result folder fails (a folder where the answer goes): the drive throws and leaves the lease `applying`. */
+function blockAnswer(c: TestCompetition, submissionId: string, attemptId: string): () => void {
+  const blocker = path.join(attemptPath(c.id, submissionId, attemptId, 'result'), SUBMISSION_FILE, 'in-the-way')
+  competitionsFs.mkdirSync(blocker, { recursive: true })
+  return () => competitionsFs.rmSync(path.join(attemptPath(c.id, submissionId, attemptId, 'result'), SUBMISSION_FILE), { recursive: true, force: true })
+}
+
+test('a cancel that comes while the result is being applied is too late: the drive settles it, once, and the machine is told the truth', async () => {
+  reset()
+  const c = competition()
+  const sent = send(c)
+  const { m, lease, request } = await uploaded(c)
+  // The cancel lands in the middle of the drive: while its staged answer is being moved into place.
+  const rename = competitionsFs.renameSync
+  let cancelled: boolean | null = null
+  competitionsFs.renameSync = ((from: string, to: string) => {
+    if (cancelled === null) {
+      assert.equal(driveInFlight(lease.attemptId), true)
+      cancelled = cancelRemote(queueRow(sent.id)!, 'teacher')
+    }
+    return rename.call(competitionsFs, from, to)
+  }) as typeof competitionsFs.renameSync
+  let result: string
+  try {
+    result = ((await m.outcome(lease.attemptId, request)).body as { result: string }).result
+  } finally {
+    competitionsFs.renameSync = rename
+  }
+  assert.equal(cancelled, false, 'its result had come: the cancel is too late, as for a run that has just ended here')
+  assert.equal(result, 'applied')
+  assert.equal(getLease(lease.attemptId)?.state, 'applied')
+  assert.notEqual(getSubmission(sent.id)?.state, 'cancelled')
+  assert.equal(queueRow(sent.id)?.kind, 'metric', 'its metric is this server\'s next')
+  assert.deepEqual(listRuns(sent.id).map((run) => [run.kind, run.verdict]), [['notebook', 'ok']], 'one verdict, the run\'s own')
+})
+
+test('a cancel of a result left applying by a failed drive cancels it for good: nothing settles it afterwards', async () => {
+  reset()
+  const c = competition()
+  const sent = send(c)
+  const { m, lease, request } = await uploaded(c)
+  const unblock = blockAnswer(c, sent.id, lease.attemptId)
+  await assert.rejects(applyOutcome(m.runnerId, lease.attemptId, request))
+  assert.equal(getLease(lease.attemptId)?.state, 'applying')
+  assert.equal(driveInFlight(lease.attemptId), false)
+  unblock()
+  assert.equal(cancelRemote(queueRow(sent.id)!, 'teacher'), true, 'no drive is under way: the cancel takes it')
+  assert.equal(getLease(lease.attemptId)?.state, 'revoked')
+  assert.equal(getSubmission(sent.id)?.state, 'cancelled')
+  // The machine posts its result again: refused as revoked, and the cancel's words stay the run's.
+  assert.equal(((await m.outcome(lease.attemptId, request)).body as { result: string }).result, 'revoked')
+  const run = listRuns(sent.id).find((one) => one.id === getLease(lease.attemptId)!.runId)!
+  assert.equal(run.verdict, 'exit')
+  assert.equal(run.teacherError, tr('competitions.answer.killedByTeacher'))
+  assert.equal(getSubmission(sent.id)?.state, 'cancelled')
+  assert.equal(queueRow(sent.id), null)
+})
+
+test('a result this server cannot apply by its lease\'s ceiling goes back to the queue, and is no loss of the machine\'s', async () => {
+  reset()
+  const c = competition({ wallSeconds: 60 })
+  const sent = send(c)
+  const m = new Machine(await serve())
+  assert.equal((await m.join(code())).status, 200)
+  const want = (await m.sync()).body.want
+  const ready = { revisions: [c.revisionId], data: [want.data.find((entry) => entry.competitionId === c.id)!.manifest], sealed: [], bundles: [] }
+  const one = { slots: 1, memoryMb: 32_768, cpus: 16, gpuShares: 0, diskMb: 100_000 }
+  // Three times over, on one machine: leased, run, uploaded, and the result cannot be applied here (the drive throws every time).
+  for (let round = 0; round < 3; round++) {
+    const lease = (await m.sync({ ready, free: one })).body.leases[0]
+    assert.equal(lease?.submissionId, sent.id, `round ${round}: leased`)
+    await m.sync({ seq: lease.seq, ready, free: { ...one, slots: 0 }, attempts: [{ id: lease.attemptId, phase: 'running', runningMs: 100 }] })
+    assert.equal((await m.put(lease.attemptId, 'submission.csv', ANSWER)).status, 200)
+    const unblock = blockAnswer(c, sent.id, lease.attemptId)
+    await assert.rejects(applyOutcome(m.runnerId, lease.attemptId, finished(lease.attemptId, [{ name: 'submission.csv', body: ANSWER }])))
+    unblock()
+    assert.equal(getLease(lease.attemptId)?.state, 'applying')
+    // Before its ceiling it waits for the machine's next post; past it, nothing holds the row any more.
+    const deadline = getLease(lease.attemptId)!.deadlineAt
+    assert.equal(remoteTick(deadline - 1000).lost, 0)
+    assert.equal(remoteTick(deadline + 1000).lost, 1)
+    const ended = getLease(lease.attemptId)!
+    assert.equal(ended.state, 'lost')
+    assert.equal(ended.cause, 'unapplied')
+    const row = queueRow(sent.id)!
+    assert.equal(row.state, 'waiting', 'back in the queue, in its place')
+    assert.equal(row.lost, round + 1, 'a loss counted on the row: its limits bound how often a result nobody can apply runs again')
+    assert.equal(getSubmission(sent.id)?.participantError, tr('server.runners.returned'))
+    assert.equal(getRunner(m.runnerId)?.state, 'active', 'the machine delivered its result: no quarantine for this server\'s failure')
+    // The machine's repeated post of the old result is over for good.
+    assert.equal(((await m.outcome(lease.attemptId, finished(lease.attemptId, [{ name: 'submission.csv', body: ANSWER }]))).body as { result: string }).result, 'revoked')
+  }
+})
+
+/* ------------------------------------------ what the outcome is settled against */
+
+import { notebookNote } from '../server/src/competitions/runner.js'
+import { updateCompetition } from '../server/src/competitions/store.js'
+
+test('a machine\'s outcome is worded by the competition its take read, as a run here is by its job\'s: a teacher\'s edit mid-run changes no numbers in it', async () => {
+  reset()
+  const c = competition({ wallSeconds: 600 })
+  const sent = send(c)
+  const { m, lease, ready } = await leased(c)
+  const atTake = getCompetition(c.id)!
+  await m.sync({ seq: lease.seq, ready, attempts: [{ id: lease.attemptId, phase: 'running', runningMs: 100 }] })
+  // During the run the teacher gives the competition half an hour instead of ten minutes.
+  updateCompetition(c.id, { limits: { ...atTake.limits, wallSeconds: 1800 } })
+  const edited = getCompetition(c.id)!
+  assert.equal(edited.limits.wallSeconds, 1800)
+  const timedOut = { status: 'timeout' as const, cell: 0, cells: 1, wall: 600_000, produced: false, detail: '', log: '', diagnostics: { exit: 137, oomKilled: false, backend: 'docker' as const, killedBy: 'wall' as const } }
+  assert.equal(((await m.outcome(lease.attemptId, finished(lease.attemptId, [], timedOut))).body as { result: string }).result, 'applied')
+  const settled = getSubmission(sent.id)!
+  const said = (competitionRead: typeof atTake) => notebookNote({ ...timedOut, submission: null }, competitionRead)
+  assert.notEqual(said(atTake), said(edited), 'the two readings differ in their numbers')
+  assert.equal(settled.participantError, said(atTake), 'the take\'s ten minutes, which the run was held to')
+})
+
+/* ----------------------------------------- the cases of §10.1 a machine adds */
+
+import fs from 'node:fs'
+import { createHash } from 'node:crypto'
+import { packagesRoomMb } from '../shared/dependencies.js'
+import { bindSubmission, completeBundle, createBundle, setPolicy } from '../server/src/dependencies/store.js'
+import { dependencyRoot } from '../server/src/dependencies/files.js'
+import { saveCompetitionSettings } from '../server/src/competitions/settings.js'
+
+test('a lease with a package set names it, the set is described with its wheels, and a wheel is fetchable by hash only by a machine that holds the set', async () => {
+  reset()
+  const MiB = 1024 * 1024
+  const c = competition({ memoryMb: 4096 })
+  setPolicy(c.id, { enabled: true })
+  const sent = send(c, { revisionId: null })
+  const wheel = Buffer.from(`a wheel as pip downloaded it, for ${c.id}`)
+  const sha = createHash('sha256').update(wheel).digest('hex')
+  const fileName = 'catboost-1.2.10-py3-none-any.whl'
+  const set = createBundle(c.id, sent.entrantId, c.revisionId, 'catboost')
+  assert.equal(completeBundle(set.id, {
+    normalizedRequirements: ['catboost'], downloadBytes: wheel.length, installedBytes: 100 * MiB, contentHash: '3'.repeat(64),
+    packages: [{ name: 'catboost', version: '1.2.10', fileName, sha256: sha, bytes: wheel.length, url: `https://files.pythonhosted.org/packages/ab/cd/${fileName}` }],
+    lock: `catboost==1.2.10 --hash=sha256:${sha}\n`,
+  }), true)
+  fs.mkdirSync(path.join(dependencyRoot, 'artifacts'), { recursive: true })
+  fs.writeFileSync(path.join(dependencyRoot, 'artifacts', sha), wheel)
+  bindSubmission(sent.id, c.revisionId, set.id)
+  forgetStock()
+  const home = await serve()
+  const m = new Machine(home)
+  assert.equal((await m.join(code())).status, 200)
+  // Asked to hold the set, described in full: its lock and its wheel, by hash.
+  const first = await m.sync()
+  const wanted = first.body.want.bundles.find((one) => one.id === set.id)
+  assert.ok(wanted, 'the set is wanted')
+  assert.equal(wanted.packagesMb, packagesRoomMb(100 * MiB))
+  assert.match(wanted.lock ?? '', /catboost==1\.2\.10/)
+  assert.deepEqual(wanted.wheels?.map((one) => [one.fileName, one.sha256, one.bytes]), [[fileName, sha, wheel.length]])
+  // Ready (a set gates no lease): the lease names the set and its room.
+  const data = first.body.want.data.find((entry) => entry.competitionId === c.id)!
+  const leased = await m.sync({ ready: { revisions: [c.revisionId], data: [data.manifest], sealed: [], bundles: [] } })
+  const lease = leased.body.leases.find((one) => one.submissionId === sent.id)
+  assert.ok(lease, 'leased')
+  assert.deepEqual(lease.bundle, { id: set.id, packagesMb: packagesRoomMb(100 * MiB) })
+  // The wheel by its hash, to the machine that holds the set — and to no machine that does not.
+  const fetched = await m.call('GET', `blobs/${sha}`)
+  assert.equal(fetched.status, 200)
+  assert.deepEqual(Buffer.from(await fetched.arrayBuffer()), wheel)
+  const stranger = new Machine(home)
+  assert.equal((await stranger.join(code())).status, 200)
+  assert.equal((await stranger.call('GET', `blobs/${sha}`)).status, 404, 'a machine never told of the set')
+})
+
+test('on the hidden test a machine\'s run is clamped and worded for a blind participant exactly as a run here is', async () => {
+  // The same forged report from both: a cell far past the notebook's, and a traceback the hidden rows were in memory for.
+  const detail = 'Traceback (most recent call last):\n  Cell In[2], line 1\nValueError: the secret row is 42'
+  const cells = [`# colloq-test: ${JSON.stringify({ status: 'cell_error', cell: 48_213, detail })}\nx = 1`, 'y = 2', 'z = 3']
+  // Here: this server's notebooks on, and its stand-in runner reports it.
+  reset({ homeNotebooks: true })
+  const c = competition({ sealed: true })
+  const here = send(c, { cells })
+  await drainCompetitionQueue()
+  const local = getSubmission(here.id)!
+  assert.equal(local.state, 'notebookFailed')
+  const localRun = listRuns(here.id).find((run) => run.kind === 'notebook')!
+  // On a trusted machine, with the very same report.
+  reset()
+  const remote = send(c, { cells })
+  const m = new Machine(await serve())
+  assert.equal((await m.join(code({ trusted: true }))).status, 200)
+  const first = await m.sync()
+  const ready = {
+    revisions: [c.revisionId],
+    data: [...new Set(first.body.want.data.filter((entry) => entry.competitionId === c.id && !entry.sealed).map((entry) => entry.manifest))],
+    sealed: [...new Set(first.body.want.data.filter((entry) => entry.competitionId === c.id && entry.sealed).map((entry) => entry.manifest))],
+    bundles: [],
+  }
+  const lease = (await m.sync({ ready })).body.leases.find((one) => one.submissionId === remote.id)!
+  assert.ok(lease?.sealed, 'a hidden-test lease, on a trusted machine')
+  await m.sync({ seq: lease.seq, ready, attempts: [{ id: lease.attemptId, phase: 'running', runningMs: 10 }] })
+  assert.equal((await m.put(lease.attemptId, 'executed.ipynb', '{"cells":[]}')).status, 200)
+  const reported = finished(lease.attemptId, [{ name: 'executed.ipynb', body: '{"cells":[]}' }], {
+    status: 'cell_error', cell: 48_213, cells: 3, produced: false, detail, diagnostics: { exit: 1, oomKilled: false, backend: 'docker' },
+  })
+  assert.equal(((await m.outcome(lease.attemptId, reported)).body as { result: string }).result, 'applied')
+  const machine = getSubmission(remote.id)!
+  const machineRun = listRuns(remote.id).find((run) => run.kind === 'notebook')!
+  for (const key of ['state', 'stage', 'cellsDone', 'cellsTotal', 'participantError', 'briefError', 'errorType'] as const) {
+    assert.deepEqual(machine[key], local[key], `${key}: the same as a run here`)
+  }
+  assert.ok(machine.cellsDone <= 3, 'clamped to the notebook that was sent')
+  assert.ok(!(machine.briefError ?? '').includes('42'), 'the blind participant reads none of the traceback')
+  assert.deepEqual([machineRun.verdict, machineRun.cellsDone, machineRun.cellsTotal], [localRun.verdict, localRun.cellsDone, localRun.cellsTotal])
+})
+
+test('a machine\'s run crowded off its card by a neighbour\'s burst goes back once, with our words, and is judged the second time', async () => {
+  reset()
+  const c = competition({ gpu: true })
+  const sent = send(c)
+  const m = new Machine(await serve())
+  assert.equal((await m.join(code())).status, 200)
+  const card = { device: '0', name: 'NVIDIA GeForce RTX 4090', memoryMb: 24_564, perDevice: 2, busyShares: 0 }
+  const first = await m.sync({ cards: [card] })
+  const ready = { revisions: [c.revisionId], data: [first.body.want.data.find((entry) => entry.competitionId === c.id)!.manifest], sealed: [], bundles: [] }
+  const free = { slots: 1, memoryMb: 32_768, cpus: 16, gpuShares: 2, diskMb: 100_000 }
+  const oom = 'Traceback (most recent call last):\n  Cell In[3], line 4\ntorch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB'
+  const crowdedRun = (attemptId: string) => finished(attemptId, [{ name: 'executed.ipynb', body: '{"cells":[]}' }], {
+    status: 'cell_error', cell: 2, cells: 4, produced: false, detail: oom, crowded: true,
+    card: { device: '0', perDevice: 2, sliceMb: 12_282 }, diagnostics: { exit: 1, oomKilled: false, backend: 'docker' },
+  })
+  const run = async () => {
+    const lease = (await m.sync({ ready, cards: [card], free })).body.leases.find((one) => one.submissionId === sent.id)!
+    assert.ok(lease?.gpu, 'a lease on the card')
+    await m.sync({ seq: lease.seq, ready, cards: [card], free: { ...free, slots: 0, gpuShares: 1 }, attempts: [{ id: lease.attemptId, phase: 'running', runningMs: 10, card: { device: '0', sliceMb: 12_282 } }] })
+    assert.equal((await m.put(lease.attemptId, 'executed.ipynb', '{"cells":[]}')).status, 200)
+    assert.equal(((await m.outcome(lease.attemptId, crowdedRun(lease.attemptId))).body as { result: string }).result, 'applied')
+  }
+  await run()
+  const row = queueRow(sent.id)!
+  assert.equal(row.state, 'waiting', 'back to the queue, on the machine\'s word that a neighbour crowded it out')
+  assert.equal(row.resourceRetries, 1)
+  assert.equal(getSubmission(sent.id)?.participantError, tr('competitions.answer.gpuNeighbourRetry'))
+  assert.notEqual(getSubmission(sent.id)?.state, 'notebookFailed', 'not the participant\'s failure')
+  // The second time it is judged as any run is: once, not for ever.
+  db.prepare('UPDATE competition_queue SET not_before = 0 WHERE submission_id = ?').run(sent.id)
+  await run()
+  assert.equal(getSubmission(sent.id)?.state, 'notebookFailed')
+  assert.equal(queueRow(sent.id), null)
 })

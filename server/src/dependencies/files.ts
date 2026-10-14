@@ -72,9 +72,9 @@ export async function publishBundle(key:string,result:PreparationResult):Promise
   }
   if(total!==result.downloadBytes)throw new Error('Dependency artifact sizes disagree')
   fs.writeFileSync(path.join(publishing,'requirements.lock'),result.lock,{mode:0o444})
-  // Each wheel with its sha256, size and, where it passes the check, the address
-  // it came from (preparation-contract.ts · manifestPackages): the same list the
-  // set's row keeps (store.ts · completeBundle).
+  // Each wheel with its sha256 and size, and not the address it came from: this
+  // folder is the participant's /deps (preparation-contract.ts · manifestPackages).
+  // The same list the set's row keeps (store.ts · completeBundle).
   fs.writeFileSync(path.join(publishing,'manifest.json'),JSON.stringify({...result,packages:manifestPackages(result.packages)}),{mode:0o444})
   fs.chmodSync(publishing,0o755)
   fs.renameSync(publishing,destination)
@@ -88,7 +88,7 @@ export async function publishBundle(key:string,result:PreparationResult):Promise
  * and with eight slots eight times per wave. A file that kept its path,
  * size, mtime, ctime and inode kept its bytes as far as the kernel can tell
  * (the same stat cache git trusts); anything else is hashed again. Bounded:
- * the oldest entries go first.
+ * the entries asked about least recently go first.
  *
  * Exported for the competition data (competitions/storage.ts ·
  * openFileSha256): rows uploaded before the hash had a column get theirs
@@ -96,26 +96,63 @@ export async function publishBundle(key:string,result:PreparationResult):Promise
  * megabytes every time it is asked. One read per identity at a time, too: two
  * callers asking about the same file at once (two machines asking for the same
  * data in the same second) wait for the one read instead of making two.
+ *
+ * TWO KINDS OF FILE, TWO CACHES (DigestIdentity). A wheel is keyed by all of
+ * the above. A competition's data file (`renamed`) is keyed by its device,
+ * inode, size and mtime, and not by ctime: its bytes change only by a new
+ * inode renamed over its name (competitions/storage.ts · writeReplacing), and
+ * no mount of it is writable, while every run here moves its ctime with
+ * nothing changed — the hard link into a hidden-test run's data folder
+ * (composeRunInputs), the unlink when the attempt goes (dropAttempt), the
+ * mode a container needs (letContainerRead). Keyed by ctime, every run on a
+ * hidden test made the next hash of every data file read it whole again, up
+ * to two hundred megabytes each — the files the machines that run
+ * submissions fetch by hash. And apart, each with its own bound: a few
+ * hundred package sets of wheels must not push the data out.
  */
-const digests = new Map<string, string>()
+export type DigestIdentity = 'inode' | 'renamed'
+
+interface DigestCache {
+  digests: Map<string, string>
+  reading: Map<string, Promise<string>>
+}
+
 const DIGESTS_MAX = 4096
-const reading = new Map<string, Promise<string>>()
+const caches: Record<DigestIdentity, DigestCache> = {
+  inode: { digests: new Map(), reading: new Map() },
+  renamed: { digests: new Map(), reading: new Map() },
+}
+
+function digestKey(file: string, stat: fs.Stats, identity: DigestIdentity): string {
+  return identity === 'renamed'
+    ? `${file}\0${stat.dev}\0${stat.ino}\0${stat.size}\0${stat.mtimeMs}`
+    : `${file}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`
+}
 
 /**
  * The sha256 (hex) of `file`, whose identity `stat` describes. `read` gives
  * its bytes when they have to be read; by default the file is opened by path.
  * A caller that opened the file itself (through the anchored file system)
  * passes the stat of that descriptor and a stream over it, so the identity and
- * the bytes are of one and the same inode.
+ * the bytes are of one and the same inode. `identity` — which stat says the
+ * bytes are the same (DigestIdentity): `renamed` only for a file whose content
+ * never changes in place.
  */
 export async function cachedSha256(
   file: string,
   stat: fs.Stats,
   read: () => AsyncIterable<Buffer | string> = () => fs.createReadStream(file),
+  identity: DigestIdentity = 'inode',
 ): Promise<string> {
-  const key = `${file}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`
+  const { digests, reading } = caches[identity]
+  const key = digestKey(file, stat, identity)
   const known = digests.get(key)
-  if (known) return known
+  if (known) {
+    // Asked again: the last to be evicted (the Map keeps insertion order).
+    digests.delete(key)
+    digests.set(key, known)
+    return known
+  }
   const running = reading.get(key)
   if (running) return running
   const pending = (async () => {

@@ -635,9 +635,9 @@ function runningOf(running: RunningCounts, entrantId: string): number {
 
 /**
  * The metric lane's order — A COPY OF store.ts · selectNextScore, for the same
- * reason fairOrder copies selectNext: a fresh result (`fresh` — its
- * submission still running at its score stage, the metric of a notebook a
- * machine ran) before every rescore, and the fair order within each.
+ * reason fairOrder copies selectNext: a fresh result (`fresh` — the metric of
+ * a notebook that has already run, as its queue row says, QueueRow.fresh)
+ * before every rescore, and the fair order within each.
  */
 export function scoreOrder<T extends QueueOrderRow>(
   waiting: readonly T[],

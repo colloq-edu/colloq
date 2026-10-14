@@ -25,12 +25,10 @@ import {
   REMOTE_ATTEMPTS_MAX,
   REMOTE_ATTEMPT_DISK_MB,
   REMOTE_CONTAINER,
-  REMOTE_CONTAINER_CUSHION_MB,
   REMOTE_DECLINE_SKIP_MS,
   REMOTE_HARNESS,
   REMOTE_INLINE_BYTES,
   REMOTE_INLINE_TOTAL_BYTES,
-  REMOTE_NOTEBOOK_BYTES,
   REMOTE_PER_DEVICE_MAX,
   REMOTE_RUN_MS_MAX,
   remoteCeilingMs,
@@ -38,21 +36,16 @@ import {
   type RemoteHeldAttempt,
   type RemoteLease,
   type RemoteRevoke,
-  type RemoteStepLimits,
   type RemoteSyncRequest,
 } from '@shared/remote-runner'
-import { packagesFit, packagesRoomMb } from '@shared/dependencies'
 import type { Competition } from '@shared/competitions'
 import { db } from '../../db.js'
-import { getBinding } from '../../dependencies/store.js'
 import { HARNESS_REVISION } from '../harness.js'
-import { limitsFor } from '../runner-port.js'
 import { clampCells, prepareNotebook } from '../runner.js'
 import { gpuPerDeviceSetting } from '../settings.js'
 import { competitionsFs, inputDir, NOTEBOOK_FILE } from '../storage.js'
 import {
   finishQueueAttempt,
-  getCompetition,
   getSubmission,
   holdQueueRow,
   noteHeldStart,
@@ -62,7 +55,7 @@ import {
   waitingNotebookOrder,
   type QueueRow,
 } from '../store.js'
-import { dataNow, portableRevision, type DataSet } from './want.js'
+import { fitCache, machineFit, rowNeeds, stepClaim, type FitCache, type MachineRefusal, type RowRefusal } from './fit.js'
 import {
   boundedPerDevice,
   declinedBy,
@@ -96,13 +89,15 @@ export interface RunnerOffer {
   room: RunnerRoom
   ready: { revisions: ReadonlySet<string>; data: ReadonlySet<string>; sealed: ReadonlySet<string> }
   trusted: boolean
+  /** It has cards at all (its sync listed any): a GPU kernel is pulled only where there are. */
+  cards: boolean
   /** Runs per card a GPU lease is pinned at (§5.5): the machine's own setting, or the instance's. */
   perDevice: number
 }
 
-/** A lease's claim on its machine: the memory docker gives the container and its cushion, its CPUs, a place, a share. */
-function claimOf(manifest: Pick<LeaseManifest, 'limits' | 'gpu'>): { memoryMb: number; cpus: number } {
-  return { memoryMb: manifest.limits.memoryMb + REMOTE_CONTAINER_CUSHION_MB, cpus: manifest.limits.cpus }
+/** A lease's claim on its machine: the memory docker gives the container and its cushion, its CPUs (fit.ts · stepClaim). */
+function claimOf(manifest: Pick<LeaseManifest, 'limits'>): { memoryMb: number; cpus: number } {
+  return stepClaim(manifest.limits)
 }
 
 /**
@@ -147,7 +142,7 @@ export function listedOf(sync: Pick<RemoteSyncRequest, 'attempts'> | null): Map<
 }
 
 /** The take's view of a machine from its sync (or, after an outcome, its last sync and the outcome's `free`). */
-export function runnerOffer(runner: RunnerRow, free: RemoteFree, sync: Pick<RemoteSyncRequest, 'attempts' | 'ready'> | null): RunnerOffer {
+export function runnerOffer(runner: RunnerRow, free: RemoteFree, sync: Pick<RemoteSyncRequest, 'attempts' | 'ready'> & Partial<Pick<RemoteSyncRequest, 'cards'>> | null): RunnerOffer {
   return {
     room: runnerRoom(runner, free, listedOf(sync)),
     ready: {
@@ -156,118 +151,43 @@ export function runnerOffer(runner: RunnerRow, free: RemoteFree, sync: Pick<Remo
       sealed: new Set(runner.trusted ? (sync?.ready.sealed ?? []) : []),
     },
     trusted: runner.trusted,
+    cards: (sync?.cards?.length ?? 0) > 0 || free.gpuShares > 0,
     perDevice: boundedPerDevice(runner.perDevice ?? gpuPerDeviceSetting().value),
   }
 }
 
 /* ------------------------------------------------------------- the take */
 
-/** The step's limits as the contract bounds them (shared/remote-runner.ts · limitsOf); anything else stays here. */
-function contractLimits(limits: RemoteStepLimits): boolean {
-  const within = (value: number, min: number, max: number) => Number.isSafeInteger(value) && value >= min && value <= max
-  return within(limits.wallSeconds, 1, 4 * 60 * 60) && within(limits.memoryMb, 128, 65536) && within(limits.cpus, 1, 32) && within(limits.pids, 16, 2048)
-    && within(limits.fsizeBytes, 1, 1024 ** 3) && within(limits.tmpfsMb, 16, 4096) && within(limits.targetBytes, 1, 64 * 1024 * 1024)
-    && within(limits.outputBytes, 0, 1024 ** 3) && within(limits.outputKillBytes, 0, 1024 ** 3)
-}
-
-/** A submitted notebook's sha256 and size, read once: a submission's notebook is written at upload and never again. */
-const notebooks = new Map<string, { sha256: string; bytes: number } | null>()
-
-export function notebookOf(competitionId: string, submissionId: string): { sha256: string; bytes: number } | null {
-  if (notebooks.has(submissionId)) return notebooks.get(submissionId)!
-  let found: { sha256: string; bytes: number } | null = null
-  try {
-    const body = competitionsFs.readFileSync(path.join(inputDir(competitionId, submissionId), NOTEBOOK_FILE)) as Buffer
-    if (body.length >= 1 && body.length <= REMOTE_NOTEBOOK_BYTES) found = { sha256: sha256(body), bytes: body.length }
-  } catch {
-    found = null
-  }
-  if (notebooks.size >= 4096) notebooks.delete(notebooks.keys().next().value!)
-  notebooks.set(submissionId, found)
-  return found
-}
-
 /** What a waiting row would be leased with, or why it cannot be (the reason only the tests read). */
-type Fit = { ok: true; competition: Competition; manifest: LeaseManifest } | { ok: false; why: string }
+type Fit = { ok: true; competition: Competition; manifest: LeaseManifest } | { ok: false; why: RowRefusal | MachineRefusal | 'declined' }
 
 /**
  * Whether this machine can run this row now, and if so its lease's
- * manifest: §5.2's skip rules, in the order they are cheapest to ask. Never
- * a write: the take writes only for the row it picks.
+ * manifest: §5.2's skip rules, asked by the one predicate the wait reasons
+ * ask too (fit.ts) — the row's own needs, read once per competition and pin
+ * in a take, then the machine against them with the room it has LEFT.
+ * Never a write: the take writes only for the row it picks.
  */
-/**
- * What one competition is for this machine during one take, worked out once
- * for all its waiting rows: the static half of the skip rules — the
- * competition is there, its limits are ones the contract carries, its open
- * data is in place on the machine, and its hidden test, when it has one,
- * may go there and is in place too. A queue of two hundred notebooks of a
- * competition the machine has no data for is then two hundred map lookups,
- * not two hundred times the same handful of queries — which matters, since
- * every upload wakes every held sync to take again.
- */
-type CompetitionFit =
-  | { ok: true; competition: Competition; limits: RemoteStepLimits; claim: { memoryMb: number; cpus: number }; gpu: boolean; open: DataSet; sealed: DataSet | null }
-  | { ok: false; why: string }
-
-function competitionFit(competitionId: string, offer: RunnerOffer): CompetitionFit {
-  const competition = getCompetition(competitionId)
-  if (!competition) return { ok: false, why: 'gone' }
-  const limits = limitsFor(competition, 'notebook')
-  if (!contractLimits(limits)) return { ok: false, why: 'limits' }
-  const sets = dataNow(competition.id)
-  if (!sets.open || !offer.ready.data.has(sets.open.manifest)) return { ok: false, why: 'data' }
-  let sealed: DataSet | null = null
-  if (sets.hasSealed) {
-    // The hidden test reaches trusted machines only (decision 1), and only once its manifest is in place there.
-    if (!offer.trusted) return { ok: false, why: 'trusted' }
-    if (!sets.sealed || !offer.ready.sealed.has(sets.sealed.manifest)) return { ok: false, why: 'sealed' }
-    sealed = sets.sealed
-  }
-  return { ok: true, competition, limits, claim: claimOf({ limits, gpu: false }), gpu: competition.limits.gpu === true, open: sets.open, sealed }
-}
-
-/**
- * Whether this machine can run this row now, and if so its lease's
- * manifest: §5.2's skip rules — the competition's once per take
- * (competitionFit), then the room left, the row's own pin and set. Never a
- * write: the take writes only for the row it picks.
- */
-function fitFor(row: QueueRow & { needsGpu: boolean }, offer: RunnerOffer, room: RunnerRoom, skipped: ReadonlySet<string>, competitions: Map<string, CompetitionFit>): Fit {
+function fitFor(row: QueueRow & { needsGpu: boolean }, offer: RunnerOffer, room: RunnerRoom, skipped: ReadonlySet<string>, cache: FitCache): Fit {
   if (skipped.has(row.submissionId)) return { ok: false, why: 'declined' }
-  let fit = competitions.get(row.competitionId)
-  if (!fit) {
-    fit = competitionFit(row.competitionId, offer)
-    competitions.set(row.competitionId, fit)
-  }
-  if (!fit.ok) return fit
-  const { competition, limits, claim, gpu } = fit
-  if (claim.memoryMb > room.memoryMb || claim.cpus > room.cpus || room.diskMb < REMOTE_ATTEMPT_DISK_MB) return { ok: false, why: 'room' }
-  if (gpu && room.gpuShares < 1) return { ok: false, why: 'card' }
-  const binding = getBinding(row.submissionId)
-  const revision = binding?.revision ?? null
-  // Built or edited on this server, or a legacy submission with no pin: only this server runs it.
-  if (!portableRevision(revision)) return { ok: false, why: 'home_only' }
-  if (!offer.ready.revisions.has(revision.id)) return { ok: false, why: 'image' }
-  const bundle = binding?.bundle ?? null
-  // A set that cannot fit is refused before any container, by this server (liveness.ts · settleUnfit); one whose room the contract cannot carry runs here.
-  if (bundle && (bundle.state !== 'ready' || !packagesFit(bundle.installedBytes, competition.limits.memoryMb))) return { ok: false, why: 'unfit' }
-  const packagesMb = bundle ? packagesRoomMb(bundle.installedBytes) : 0
-  if (bundle && (packagesMb < 16 || packagesMb > 4096)) return { ok: false, why: 'bundle' }
-  const notebook = notebookOf(competition.id, row.submissionId)
-  if (!notebook) return { ok: false, why: 'notebook' }
+  const read = rowNeeds(row, cache)
+  if (!read.ok) return read
+  const needs = read.needs
+  const refusal = machineFit(needs, { ready: offer.ready, trusted: offer.trusted, cards: offer.cards, room })
+  if (refusal) return { ok: false, why: refusal }
   return {
     ok: true,
-    competition,
+    competition: needs.competition,
     manifest: {
-      revision: { id: revision.id, ref: revision.registryRef, layers: revision.layers },
+      revision: { id: needs.revision.id, ref: needs.revision.registryRef, layers: needs.revision.layers },
       harness: HARNESS_REVISION,
-      limits,
-      gpu,
-      perDevice: gpu ? Math.min(REMOTE_PER_DEVICE_MAX, offer.perDevice) : null,
-      data: fit.open,
-      sealed: fit.sealed,
-      notebook,
-      bundle: bundle ? { id: bundle.id, packagesMb } : null,
+      limits: needs.limits,
+      gpu: needs.gpu,
+      perDevice: needs.gpu ? Math.min(REMOTE_PER_DEVICE_MAX, offer.perDevice) : null,
+      data: needs.open!,
+      sealed: needs.hasSealed ? needs.sealed : null,
+      notebook: needs.notebook,
+      bundle: needs.bundle,
     },
   }
 }
@@ -296,7 +216,8 @@ export const takeForRunner = db.transaction((runner: RunnerRow, offer: RunnerOff
   const taken: LeaseRow[] = []
   const room: RunnerRoom = { ...offer.room }
   const skipped = declinedBy(runner.id, now - REMOTE_DECLINE_SKIP_MS)
-  const competitions = new Map<string, CompetitionFit>()
+  // Each competition, revision and set read once for all its waiting rows: every upload wakes every held sync to take again.
+  const cache = fitCache()
   const unfit = new Set<string>()
   for (;;) {
     if (room.slots <= 0) break
@@ -306,7 +227,7 @@ export const takeForRunner = db.transaction((runner: RunnerRow, offer: RunnerOff
     for (const wantGpu of room.gpuShares > 0 ? [true, false] : [false]) {
       for (const row of rows) {
         if (row.needsGpu !== wantGpu) continue
-        const fit = fitFor(row, offer, room, skipped, competitions)
+        const fit = fitFor(row, offer, room, skipped, cache)
         if (fit.ok) {
           pick = { row, fit }
           break
@@ -359,6 +280,7 @@ function leaseRow(runner: RunnerRow, submissionId: string, fit: Extract<Fit, { o
     prepared: {
       sealedFiles: prepared.sealedFiles,
       before: { cellsDone: prepared.submission.cellsDone, cellsTotal: prepared.submission.cellsTotal, durationMs: prepared.submission.durationMs },
+      competition: prepared.competition,
     },
     container: prepared.container,
     perDevice: fit.manifest.perDevice,

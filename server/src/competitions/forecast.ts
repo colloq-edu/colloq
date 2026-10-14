@@ -33,11 +33,11 @@
  */
 import { expectedRunMs, fairOrder, queueEtas, runningCounts, scoreOrder, type Eta } from './panel.js'
 import { METRIC_WALL_SECONDS } from './runner-port.js'
-import { getCompetition, getSubmission, queueRows, recentDurations, recentMetricRuns, type QueueRow } from './store.js'
+import { getCompetition, queueRows, recentDurations, recentMetricRuns, type QueueRow } from './store.js'
 import { homeNotebooksSetting, scoreSlotsSetting } from './settings.js'
 import { clusterGpuSlots, runnerCardsHere, runnerGpuDevices, runnerGpuPerDevice, runnerGpuState, sliceOverCards } from './gpu.js'
 import { gpuCards } from '../kernel/resources.js'
-import { blocking, remoteFleet, waitReasons, type WaitReason } from './remote/views.js'
+import { blocking, remoteFleet, waitReasons, type RemoteFleet, type WaitReason } from './remote/views.js'
 
 /** A competition's "recent" runs: a competition lives for weeks, and its first runs solved a different task. */
 const RECENT_RUNS = 20
@@ -86,7 +86,7 @@ export function forecastLanes(): ForecastLanes {
  * (forecastGpuSlots). `lanes` — by default the settings in force
  * (forecastLanes).
  */
-export function queueForecast(slots: number, now = Date.now(), gpuSlots: number | null = forecastGpuSlots(now), lanes: ForecastLanes = forecastLanes()): Forecast {
+export function queueForecast(slots: number, now = Date.now(), gpuSlots?: number | null, lanes: ForecastLanes = forecastLanes()): Forecast {
   const rows = queueRows()
   const running = rows.filter((row) => row.state === 'running')
   const waiting = rows.filter((row) => row.state === 'waiting')
@@ -110,10 +110,12 @@ export function queueForecast(slots: number, now = Date.now(), gpuSlots: number 
    * no live machine has its image, its data, a card, the trust it needs —
    * gets no place at all (`reasons`), and the participant reads «готовится».
    */
+  // Read once for the whole forecast — the places, the card shares, the wait reasons: it is recomputed every second on every participant's page.
   const fleet = remoteFleet(now)
+  const cardSlots = gpuSlots === undefined ? forecastGpuSlots(now, fleet) : gpuSlots
   const onMachines = running.filter((row) => row.holder !== null && fleet.runners.has(row.holder))
   // This server takes GPU work on its own cards, or under the cluster on the cluster's.
-  const reasons = waitReasons(ready, { homeCards: cluster || runnerGpuDevices().length > 0, now })
+  const reasons = waitReasons(ready, { homeCards: cluster || runnerGpuDevices().length > 0, now, fleet })
   const notebooks = fairOrder(ready.filter((row) => row.kind === 'notebook'), busy)
   const placeable = notebooks.filter((row) => !blocking(reasons.get(row.submissionId)))
   const metrics = scoreOrder(ready.filter((row) => row.kind === 'metric'), busy, freshResult)
@@ -128,7 +130,7 @@ export function queueForecast(slots: number, now = Date.now(), gpuSlots: number 
           gpu: row.holder !== null ? needsCard(row) : row.gpu !== null || (cluster && needsCard(row)),
         })),
         waiting: placeable.map((row) => ({ expectedMs: expected(row), gpu: needsCard(row) })),
-        ...(gpuSlots === null ? {} : { gpuSlots }),
+        ...(cardSlots === null ? {} : { gpuSlots: cardSlots }),
       })
     : placeable.map(() => null)
   const etaOf = new Map(placeable.map((row, index) => [row.submissionId, placeableEtas[index]] as const))
@@ -142,10 +144,10 @@ export function queueForecast(slots: number, now = Date.now(), gpuSlots: number 
     })),
     waiting: metrics.map((row) => ({ expectedMs: expected(row) })),
   })
-  // Places by start; among jobs starting at one moment, the notebooks first (a pass takes their lane first), then the queue's order.
+  // Places by start; among jobs starting at one moment, the metrics first (a pass takes their lane first, runner.ts · pumpLanes), then the queue's order.
   const starting = [
-    ...notebooks.map((row, index) => ({ row, lane: 0, index, eta: notebookEtas[index] })),
-    ...metrics.map((row, index) => ({ row, lane: 1, index, eta: metricEtas[index] })),
+    ...metrics.map((row, index) => ({ row, lane: 0, index, eta: metricEtas[index] })),
+    ...notebooks.map((row, index) => ({ row, lane: 1, index, eta: notebookEtas[index] })),
   ]
     .filter((entry): entry is { row: QueueRow; lane: number; index: number; eta: Eta } => entry.eta !== null)
     .sort((a, b) => a.eta.startMs - b.eta.startMs || a.lane - b.lane || a.index - b.index)
@@ -155,11 +157,11 @@ export function queueForecast(slots: number, now = Date.now(), gpuSlots: number 
 }
 
 /**
- * Whether a metric row is a fresh result's — its submission still running, at
- * its score stage — rather than a rescore's (store.ts · selectNextScore).
+ * Whether a metric row is a fresh result's rather than a rescore's, as the
+ * row itself says (QueueRow.fresh, store.ts · selectNextScore).
  */
 function freshResult(row: QueueRow): boolean {
-  return getSubmission(row.submissionId)?.state === 'running'
+  return row.fresh
 }
 
 /**
@@ -274,11 +276,11 @@ export function runnerGpuPicture(now = Date.now()): RunnerGpuPicture | null {
  * GPU notebooks read "≈ 2 min" for a wait of an hour, and the CPU work behind
  * them read the same lie the other way.
  */
-export function forecastGpuSlots(now = Date.now()): number | null {
+export function forecastGpuSlots(now = Date.now(), fleet: Pick<RemoteFleet, 'gpuShares'> | null = null): number | null {
   if (!runnerCardsHere()) return clusterGpuSlots()
   // This server's cards take notebooks only while it runs notebooks; the live machines' shares count either way (§5.7).
   const here = homeNotebooksSetting().value ? (runnerGpuPicture(now)?.slots ?? 0) : 0
-  return here + remoteFleet(now).gpuShares
+  return here + (fleet ?? remoteFleet(now)).gpuShares
 }
 
 /**

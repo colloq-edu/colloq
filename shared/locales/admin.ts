@@ -7263,6 +7263,14 @@ export const adminMessages: MessageCatalog = {
     "ru": "Тетради считают машины; здесь — только оценка готовых ответов. Ядра сервера остаются занятию.",
     "en": "The machines run the notebooks; this server only scores finished answers. Its cores stay with the class."
   },
+  "admin.runners.homeNotebooks.offConfirm": {
+    "ru": "Ни одной машины на связи нет. С выключенными тетрадями на этом сервере посылки никто не посчитает — они будут ждать, пока не подключится машина. Выключить тетради на этом сервере?",
+    "en": "No machine is online. With notebooks off on this server nobody runs the submissions: they wait until a machine connects. Turn notebooks on this server off?"
+  },
+  "admin.runners.homeNotebooks.offConfirmUnknown": {
+    "ru": "Список машин не загрузился, и не видно, есть ли машины на связи. Если их нет, с выключенными тетрадями на этом сервере посылки будут ждать. Выключить тетради на этом сервере?",
+    "en": "The machines list did not load, so it is not known whether any machine is online. If none is, with notebooks off on this server submissions wait. Turn notebooks on this server off?"
+  },
   "admin.runners.scoreSlots": {
     "ru": "Оценок одновременно",
     "en": "Scores at once"
@@ -7755,6 +7763,18 @@ export const adminMessages: MessageCatalog = {
       "other": "{count} of {total} joined: {names}, {status}. You can close this window; the machines appear in the list by themselves."
     }
   },
+  "admin.runners.connect.joinedCount": {
+    "ru": {
+      "one": "Подключилась {count} из {total}. Окно можно закрыть: машины появятся в списке сами.",
+      "few": "Подключились {count} из {total}. Окно можно закрыть: машины появятся в списке сами.",
+      "many": "Подключились {count} из {total}. Окно можно закрыть: машины появятся в списке сами.",
+      "other": "Подключились {count} из {total}. Окно можно закрыть: машины появятся в списке сами."
+    },
+    "en": {
+      "one": "{count} of {total} joined. You can close this window; the machines appear in the list by themselves.",
+      "other": "{count} of {total} joined. You can close this window; the machines appear in the list by themselves."
+    }
+  },
   "admin.runners.connect.status.quiet": {
     "ru": "ещё не вышла на связь",
     "en": "not heard from yet"
@@ -7782,6 +7802,14 @@ export const adminMessages: MessageCatalog = {
   "admin.runners.connect.done": {
     "ru": "Готово",
     "en": "Done"
+  },
+  "admin.runners.connect.loopback": {
+    "ru": "Адрес в командах — loopback этого сервера (localhost): машина в другом месте до него не дойдёт. Задайте PUBLIC_URL — адрес, по которому сервер виден снаружи, — и покажите команды заново.",
+    "en": "The address in these commands is this server's own loopback (localhost): a machine anywhere else cannot reach it. Set PUBLIC_URL to the address the server is reachable at, then show the commands again."
+  },
+  "admin.runners.connect.closeConfirm": {
+    "ru": "Код показан только в этом окне: после закрытия его уже не увидеть, и для следующей машины понадобится новый код. Закрыть окно?",
+    "en": "The code is shown in this window only: once it is closed the code is gone, and the next machine needs a new code. Close the window?"
   },
   "admin.runners.connect.invalid.machines": {
     "ru": "Машин — от 1 до {max}.",
@@ -8243,6 +8271,10 @@ export const adminMessages: MessageCatalog = {
     "ru": "только метрики · {busy} из {count}",
     "en": "metrics only · {busy} of {count}"
   },
+  "admin.competitions.fleet.homeMetricsBare": {
+    "ru": "только метрики",
+    "en": "metrics only"
+  },
   "admin.competitions.fleet.places": {
     "ru": "{busy} из {count}",
     "en": "{busy} of {count}"
@@ -8383,9 +8415,17 @@ export const adminMessages: MessageCatalog = {
     "ru": "среда есть только на сервере, а он считает только метрики",
     "en": "its environment is on this server only, and this server only scores"
   },
+  "admin.competitions.fleet.reason.no_fit": {
+    "ru": "не помещается ни на одну машину на связи",
+    "en": "fits no machine online"
+  },
   "admin.competitions.fleet.reason.scoring": {
     "ru": "оценивается",
     "en": "being scored"
+  },
+  "admin.competitions.fleet.gpuNoPlace": {
+    "ru": "Посылкам с видеокартой сейчас негде считать: ни на этом сервере, ни на машинах на связи нет свободной карты для посылок. Машину с картами подключает владелец во вкладке «Ресурсы».",
+    "en": "GPU submissions have nowhere to run right now: no card is free for submissions on this server or on any machine online. The owner connects a machine with GPUs on the Resources tab."
   },
   "admin.resourcesTab.running.remote.onMachines": {
     "ru": {
@@ -8470,6 +8510,50 @@ export const adminMessages: MessageCatalog = {
   "admin.resourcesTab.running.remote.zeroHere": {
     "ru": "здесь 0 МБ",
     "en": "0 MB here"
+  },
+  "admin.resourcesTab.running.remote.stop": {
+    "ru": "Остановить посылки на машинах",
+    "en": "Stop the submissions on machines"
+  },
+  "admin.resourcesTab.running.remote.stopTitle": {
+    "ru": "Остановить посылки «{name}» на машинах?",
+    "en": "Stop the submissions of “{name}” on machines?"
+  },
+  "admin.resourcesTab.running.remote.stopBody": {
+    "ru": {
+      "one": "{count} посылка будет снята: на машине она остановится со следующим откликом машины, до 15 с. Попытку дня участник не потратит.",
+      "few": "{count} посылки будут сняты: на машинах они остановятся со следующим откликом машины, до 15 с. Попытку дня участники не потратят.",
+      "many": "{count} посылок будут сняты: на машинах они остановятся со следующим откликом машины, до 15 с. Попытку дня участники не потратят.",
+      "other": "{count} посылки будут сняты: на машинах они остановятся со следующим откликом машины, до 15 с. Попытку дня участники не потратят."
+    },
+    "en": {
+      "one": "{count} submission is cancelled: it stops on its machine with the machine's next call, within 15 s. Its participant does not spend the day's attempt.",
+      "other": "{count} submissions are cancelled: they stop on their machines with each machine's next call, within 15 s. Their participants do not spend the day's attempts."
+    }
+  },
+  "admin.resourcesTab.running.remote.stopped": {
+    "ru": {
+      "one": "В «{name}» снята {count} посылка на машинах.",
+      "few": "В «{name}» сняты {count} посылки на машинах.",
+      "many": "В «{name}» снято {count} посылок на машинах.",
+      "other": "В «{name}» сняты {count} посылки на машинах."
+    },
+    "en": {
+      "one": "{count} submission of “{name}” on machines cancelled.",
+      "other": "{count} submissions of “{name}” on machines cancelled."
+    }
+  },
+  "admin.resourcesTab.running.remote.stoppedEnded": {
+    "ru": "Уже закончились сами: {count}.",
+    "en": "Already over: {count}."
+  },
+  "admin.resourcesTab.running.remote.allEnded": {
+    "ru": "Посылки «{name}» на машинах уже закончились.",
+    "en": "The submissions of “{name}” on machines had already ended."
+  },
+  "admin.resourcesTab.running.remote.stoppedPartly": {
+    "ru": "Не все ответили — нажмите «Остановить» ещё раз.",
+    "en": "Not all of them answered: press Stop again."
   },
   "admin.resourcesTab.running.remote.footnote": {
     "ru": "Посылки на машинах память сервера не занимают: здесь остаются только их строки в очереди и метрика на пришедшие ответы. Остановка посылки на машине доходит со следующим её откликом, до 15 с.",
@@ -8567,6 +8651,18 @@ export const adminMessages: MessageCatalog = {
       "other": "{names} prepare once it opens"
     }
   },
+  "admin.competitions.where.preparingUnsaved": {
+    "ru": {
+      "one": "{names} подготовится после сохранения",
+      "few": "{names} подготовятся после сохранения",
+      "many": "{names} подготовятся после сохранения",
+      "other": "{names} подготовятся после сохранения"
+    },
+    "en": {
+      "one": "{names} prepares once this is saved",
+      "other": "{names} prepare once this is saved"
+    }
+  },
   "admin.competitions.where.unfit": {
     "ru": "{name} не подходит — {why}",
     "en": "{name} does not fit: {why}"
@@ -8647,13 +8743,17 @@ export const adminMessages: MessageCatalog = {
     "ru": "посылки этого соревнования считают только доверенные машины: скрытый тест на другие не уезжает",
     "en": "only trusted machines run this competition's submissions: the hidden test goes nowhere else"
   },
+  "admin.competitions.where.sealedTrustedHome": {
+    "ru": "посылки этого соревнования считают сервер и доверенные машины: скрытый тест на другие не уезжает",
+    "en": "this server and trusted machines run this competition's submissions: the hidden test goes nowhere else"
+  },
   "admin.competitions.where.sealedHomeOnly": {
-    "ru": "доверенных машин нет — посылки со скрытым тестом посчитает только сервер",
-    "en": "no machine is trusted: only this server runs submissions with the hidden test"
+    "ru": "ни одна доверенная машина их не возьмёт — посылки со скрытым тестом посчитает только сервер",
+    "en": "no trusted machine will take them: only this server runs submissions with the hidden test"
   },
   "admin.competitions.where.sealedWaits": {
-    "ru": "доверенных машин нет, а сервер считает только метрики — посылки со скрытым тестом будут ждать",
-    "en": "no machine is trusted and this server only scores: submissions with the hidden test will wait"
+    "ru": "ни одна доверенная машина их не возьмёт, а сервер считает только метрики — посылки со скрытым тестом будут ждать",
+    "en": "no trusted machine will take them, and this server only scores: submissions with the hidden test will wait"
   },
   "admin.competitions.where.noCardsHint": {
     "ru": "карт нет ни на сервере, ни на машинах за последний час",
@@ -8676,8 +8776,16 @@ export const adminMessages: MessageCatalog = {
     "en": "Submission machine connected"
   },
   "admin.audit.action.runner.trusted": {
-    "ru": "Машине доверен скрытый тест",
-    "en": "Machine trusted with the hidden test"
+    "ru": "Изменено доверие машине: скрытый тест",
+    "en": "Machine's hidden-test trust changed"
+  },
+  "admin.audit.runnerTrusted": {
+    "ru": "доверен скрытый тест",
+    "en": "trusted with the hidden test"
+  },
+  "admin.audit.runnerUntrusted": {
+    "ru": "доверие снято: скрытый тест машине больше не уходит, и она его удалит",
+    "en": "trust removed: the hidden test no longer goes to the machine, and it deletes its copy"
   },
   "admin.audit.action.runner.revoked": {
     "ru": "Отключена машина для посылок",

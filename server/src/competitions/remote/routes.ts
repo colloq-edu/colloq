@@ -37,6 +37,8 @@ import {
   REMOTE_MARKER,
   REMOTE_MARKER_HEADER,
   REMOTE_OUTCOME_BYTES,
+  REMOTE_PROTOCOL,
+  REMOTE_PROTOCOL_HEADER,
   REMOTE_REASON_CHARS,
   REMOTE_SYNC_BYTES,
   RemoteProtocolError,
@@ -86,12 +88,57 @@ export const callCounts = { joins: 0, joinsRefused: 0, syncs: 0, outcomes: 0, un
 
 /* ----------------------------------------------------------------- replies */
 
-/** A refusal in the contract's words: its code, its status, and a reason of one line. */
+/** How long, and how much of the rest of a refused body, is read and thrown away after the answer before the connection is closed. */
+const LINGER_MS = 2_000
+const LINGER_BYTES = 4 * 1024 * 1024
+
+/**
+ * A REFUSED BODY IS ANSWERED FIRST, THEN LET GO OF (a lingering close).
+ * The answer goes out before the rest of the body is read — an upload of 64
+ * MiB refused for the disk, for its attempt cancelled, or halfway through for
+ * a length it lied about (upload.ts · store) — and then at most LINGER_BYTES
+ * more of it are read and thrown away, for at most LINGER_MS, before the
+ * connection is destroyed.
+ *
+ * Both halves were measured with the agent's own client (undici, Node 22).
+ * Destroying the request at the refusal reset the connection before any
+ * answer: the machine saw a reset, took it for the path's hiccup and sent the
+ * same upload again for ever. Closing it right after the answer
+ * (`Connection: close`) while the body still arrives raced the same reset
+ * against the answer, and lost it often (EPIPE before the reply was read).
+ * Draining the whole body to keep the connection, Node's own default, read up
+ * to 64 MiB nobody keeps over the relay the class's rooms share. Answered and
+ * lingered, the machine reads the refusal within milliseconds, and a body
+ * that ends within the window leaves the connection fit for reuse.
+ */
+function lingerAfter(res: Response): void {
+  const req = res.req
+  if (req.complete) return
+  res.once('finish', () => {
+    if (req.complete) return
+    let read = 0
+    const close = (): void => {
+      clearTimeout(timer)
+      req.socket?.destroy()
+    }
+    const timer = setTimeout(close, LINGER_MS)
+    timer.unref?.()
+    req.on('data', (chunk: Buffer) => {
+      read += chunk.length
+      if (read > LINGER_BYTES) close()
+    })
+    req.once('end', () => clearTimeout(timer))
+    req.resume()
+  })
+}
+
+/** A refusal in the contract's words: its code, its status, and a reason of one line. A body it leaves unread is let go of after it (lingerAfter). */
 function refuse(res: Response, code: RemoteErrorCode, detail?: string, retryAfterS?: number): void {
   if (res.headersSent) {
     res.destroy()
     return
   }
+  lingerAfter(res)
   if (retryAfterS !== undefined) res.setHeader('Retry-After', String(retryAfterS))
   const body: RemoteErrorReply = { error: code, ...(detail ? { detail: remoteText(detail, REMOTE_REASON_CHARS, 'start') } : {}) }
   res.status(REMOTE_ERRORS[code]).json(body)
@@ -109,6 +156,40 @@ function routerErrors(error: unknown, _req: Request, res: Response, _next: NextF
   }
   console.error('[runners] a call failed:', error instanceof Error ? (error.stack ?? error.message) : error)
   refuse(res, 'failed')
+}
+
+/** What every answer of a router of the machines' carries, whatever its version: the marker, the protocol this home speaks, no caching. */
+function marked(res: Response): void {
+  res.setHeader(REMOTE_MARKER_HEADER, REMOTE_MARKER)
+  res.setHeader(REMOTE_PROTOCOL_HEADER, String(REMOTE_PROTOCOL))
+  res.setHeader('Cache-Control', 'no-store')
+}
+
+/**
+ * EVERY OTHER VERSION OF THE ROUTER: /api/runners/v<n> for any n but
+ * REMOTE_PROTOCOL, mounted at REMOTE_API_ROOT next to this version's router
+ * (app.ts). An agent of another release calls its own version's path; without
+ * this it met whatever the rest of the app answers there — no marker, which
+ * the agent rightly takes for the relay's page and retries for ever, running
+ * notebooks home requeued long ago and keeping the hidden test it would purge
+ * on a word it could never hear. So every such call gets the one answer that
+ * means "update": a marked 426 `protocol`, with the protocol this home speaks
+ * beside the marker (REMOTE_PROTOCOL_HEADER), and the body left unread is let
+ * go of after the answer (lingerAfter) — an upload of 64 MiB in a protocol
+ * nobody here reads is not drained to be thrown away. The agent takes a
+ * marked 426 as final (remoteTransient).
+ */
+export function remoteOtherVersions(): Router {
+  const router = Router()
+  router.use((req, res, next) => {
+    const version = /^\/v([0-9]{1,6})(?:\/|$)/.exec(req.path)
+    if (!version || Number(version[1]) === REMOTE_PROTOCOL) return next()
+    marked(res)
+    lingerAfter(res)
+    const body: RemoteErrorReply = { error: 'protocol', detail: `This home speaks protocol ${REMOTE_PROTOCOL} of the machines' router; the machine needs the release home runs` }
+    res.status(REMOTE_ERRORS.protocol).json(body)
+  })
+  return router
 }
 
 /* ------------------------------------------------------------- the machine */
@@ -150,8 +231,7 @@ export function remoteRunnerRoutes(): Router {
 
   // Before any handler, so that every answer carries it — a refusal of the body's size as much as a reply.
   router.use((_req, res, next) => {
-    res.setHeader(REMOTE_MARKER_HEADER, REMOTE_MARKER)
-    res.setHeader('Cache-Control', 'no-store')
+    marked(res)
     next()
   })
 
@@ -351,6 +431,18 @@ function newsDigest(body: RemoteSyncReply): string {
  * An attempt's outcome (§3.6): applied once by its digest, and the reply
  * carries the machine's next work at once, from the room the outcome says
  * it has now — the stale-capacity rule judged against its last sync.
+ *
+ * The reply is made NOW, also for a repeated post (the same digest, its first
+ * reply lost): the result is the one the first post got (apply.ts), but the
+ * leases and the trust are what they are at this moment, never what the
+ * first reply carried — an offer made then may have been withdrawn since, or
+ * read the hidden test of a machine the owner has stopped trusting.
+ *
+ * A `draining` decline is the machine stopping (colloq-host runner update
+ * --now, a leave, docker stop): its reply carries no work, new or offered
+ * before. A stopping agent passes whatever a reply hands it and never syncs
+ * again, so each lease in it would sit unacked for its minute
+ * (REMOTE_OFFER_MS), its row held for a machine that is gone.
  */
 async function outcome(req: Request, res: Response): Promise<void> {
   const runner = (res.locals as RunnerLocals).runner
@@ -362,8 +454,10 @@ async function outcome(req: Request, res: Response): Promise<void> {
   const fresh = getRunner(runner.id) ?? runner
   const sync = lastSync(runner.id)
   const compatible = remoteCompatible(homeRunnerBuild(), request.build)
+  const stopping = request.kind === 'declined' && request.reason === 'draining'
   // Its last sync's list stands for what the outcome's `free` already accounts for: conservative, never over.
-  if (compatible && fresh.state === 'active' && sync !== null && sync.state === 'active') takeForRunner(fresh, runnerOffer(fresh, request.free, sync), now)
-  const body: RemoteOutcomeReply = { result: answer.result, seq: (getRunner(runner.id) ?? fresh).offerSeq, leases: pendingOffers(runner.id, now) }
+  if (!stopping && compatible && fresh.state === 'active' && sync !== null && sync.state === 'active') takeForRunner(fresh, runnerOffer(fresh, request.free, sync), now)
+  const after = getRunner(runner.id) ?? fresh
+  const body: RemoteOutcomeReply = { result: answer.result, seq: after.offerSeq, leases: stopping ? [] : pendingOffers(runner.id, now), trusted: after.trusted }
   res.json(body)
 }

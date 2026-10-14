@@ -153,7 +153,7 @@ test('the metric of a competition with a card runs in the newest kaggle-base rea
   reset()
 })
 
-test('a kaggle-base whose image is gone is passed over; with none ready the metric runs in the submission\'s own pin', async () => {
+test('a kaggle-base whose image is gone is passed over at the first metric; with none here the metric is pinned to the submission\'s own image', async () => {
   reset()
   const g = competition(true)
   const gpuImage = revision('kaggle-gpu', 'd', 4_000)
@@ -178,16 +178,24 @@ test('a kaggle-base whose image is gone is passed over; with none ready the metr
   assert.equal(runner.scores.find((one) => one.submissionId === first.id)?.imageDigest, kept.imageDigest)
   assert.equal(metricRun(first.id)?.revisionId, kept.id)
 
-  // No kaggle-base here at all: the competition's own image, as before the decision.
+  // The pinned kaggle-base gone too: the metric fails in the teacher's words, and is not sent to another image.
   useCompetitionCapabilities(dockerWith([gpuImage.imageDigest]))
   assert.equal(await lightMetricRevision(), null)
   runner.scores.length = 0
   const second = answered(g, gpuImage)
   await rescore(g)
-  const request = runner.scores.find((one) => one.submissionId === second.id)!
+  assert.equal(runner.scores.length, 0, 'no metric container anywhere')
+  assert.equal(getSubmission(second.id)?.state, 'metricFailed')
+  assert.equal(getSubmission(second.id)?.teacherError, tr('competitions.answer.scoringImageGone', { environment: LIGHT_METRIC_ENVIRONMENT, light: LIGHT_METRIC_ENVIRONMENT }))
+
+  // A competition whose first metric finds no kaggle-base here: its own image, as before the decision.
+  const h = competition(true)
+  const third = answered(h, gpuImage)
+  await rescore(h)
+  const request = runner.scores.find((one) => one.submissionId === third.id)!
   assert.equal(request.imageDigest, gpuImage.imageDigest)
   assert.equal(request.competition.environment, 'kaggle-gpu')
-  assert.equal(metricRun(second.id)?.revisionId, gpuImage.id)
+  assert.equal(metricRun(third.id)?.revisionId, gpuImage.id)
   reset()
 })
 

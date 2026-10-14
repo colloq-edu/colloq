@@ -19,10 +19,12 @@ import path from 'node:path'
 import { REMOTE_CONTAINER_CUSHION_MB, REMOTE_HOST_RESERVE_MB, type RemoteHeldAttempt, type RemoteLease, type RemoteSyncRequest } from '../shared/remote-runner.ts'
 import { Agent, type AgentOptions } from '../server/src/runner-agent/sync.ts'
 import { readIdentity, stateLayout } from '../server/src/runner-agent/state.ts'
+import { INSTANCE_LABEL } from '../server/src/runner-agent/images.ts'
+import { status } from '../server/src/runner-agent/main.ts'
 import { competitionsDir } from '../server/src/competitions/storage.ts'
 import { TEST_ROOT } from './_env.mts'
 import {
-  DIFF_IDS, FakeSeam, LAYERS, REVISION, RUNNER_ID, SECRET, dataSet, fakeAgentDocker, fakeHome, makeLease, sha256, syncReply, waitFor,
+  DIFF_IDS, FakeSeam, LAYERS, REVISION, RUNNER_ID, SECRET, dataSet, fakeAgentDocker, fakeHome, makeLease, outcomeReply, sha256, syncReply, waitFor,
   type FakeHome,
 } from './_runner-agent-home.mts'
 
@@ -270,7 +272,7 @@ test('an upload through a relay hiccup is asked again, the attempt held and list
   home.onOutcome = () => {
     outcomes++
     // The first outcome reply is lost as well.
-    return outcomes === 1 ? { status: 404, text: 'Not Found', marker: false } : { json: { result: 'applied', seq: lease.seq, leases: [] } }
+    return outcomes === 1 ? { status: 404, text: 'Not Found', marker: false } : { json: outcomeReply({ seq: lease.seq }) }
   }
   offerWhenReady(home, set, lease)
   const running = agent.run()
@@ -447,6 +449,135 @@ test('a disk smaller than a machine of its kind needs is said to the owner', asy
   try {
     const sync = await waitFor(() => home.syncs().find((found) => found.problems.some((problem) => problem.code === 'disk')), 'the disk size problem')
     assert.match(sync.problems.find((problem) => problem.code === 'disk')!.detail, /30 GB, less than the 40 GB/)
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('home\'s cap on the places (approvedSlots) caps what the machine offers, is written down with the identity, and is in the status', async () => {
+  const home = await fakeHome()
+  const { agent } = agentFor(home)
+  home.onSync = () => ({ json: syncReply({ approvedSlots: 2 }), delayMs: 20 })
+  const out: string[] = []
+  const running = agent.run()
+  try {
+    // The machine could run 15 at once (16 CPUs less one); home allows it 2.
+    const capped = await waitFor(() => home.syncs().find((sync) => sync.free.slots === 2), 'a sync offering home\'s two places')
+    assert.equal(capped.free.cpus, PICTURE.cpus - 1)
+    assert.equal(readIdentity(layout)!.approvedSlots, 2)
+    await waitFor(() => JSON.parse(fs.readFileSync(layout.statusFile, 'utf8')).approvedSlots === 2, 'the status saying it')
+    status(layout, { out: (text) => out.push(text), err: () => undefined })
+    assert.equal(JSON.parse(out.pop()!).approvedSlots, 2)
+    // Lifted: the machine offers what it can.
+    home.onSync = () => ({ json: syncReply({ approvedSlots: null }), delayMs: 20 })
+    await waitFor(() => home.syncs().slice(-1)[0]!.free.slots === PICTURE.cpus - 1, 'the cap lifted')
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('an offer past the most attempts a sync may list is declined at once, never written down, held or listed', async () => {
+  const home = await fakeHome()
+  // At most one held, as a home that over-leased would meet REMOTE_ATTEMPTS_MAX.
+  const { agent, seam } = agentFor(home, { attemptsMax: 1 })
+  const set = dataSet({ 'train.csv': 'id\n1\n' })
+  for (const [sha, body] of set.bodies) home.blobs.set(sha, body)
+  const first = makeLease({ data: set.manifest })
+  const second = makeLease({ data: set.manifest, submissionId: 'subsecnd' })
+  seam.next = 'wait'
+  const posted = (lease: RemoteLease): boolean => home.calls.some((call) => call.path.endsWith(`/attempts/${lease.attemptId}/outcome`))
+  home.onSync = (body) => {
+    const ready = body.ready.revisions.includes(REVISION.id) && body.ready.data.includes(set.manifest)
+    const holdsFirst = !!attemptOf(body, first.attemptId)
+    const leases = !ready ? [] : !holdsFirst && body.seq < first.seq ? [first] : holdsFirst && !posted(second) ? [second] : []
+    return { json: syncReply({ seq: second.seq, leases, want: want(set) }), delayMs: leases.length > 0 ? 0 : 20 }
+  }
+  const running = agent.run()
+  try {
+    const call = await waitFor(() => home.calls.find((found) => found.path.endsWith(`/attempts/${second.attemptId}/outcome`)), 'the excess offer declined')
+    const body = call.body as { kind: string; reason: string; detail: string }
+    assert.deepEqual({ kind: body.kind, reason: body.reason }, { kind: 'declined', reason: 'memory' })
+    assert.match(body.detail, /already holds 1 attempts/)
+    const syncsAfter = home.syncs().length
+    await waitFor(() => home.syncs().length > syncsAfter + 2, 'more syncs')
+    assert.ok(home.syncs().every((sync) => !attemptOf(sync, second.attemptId) && sync.attempts.length <= 1), 'the excess offer was listed')
+    assert.ok(!fs.existsSync(path.join(layout.leasesDir, `${second.attemptId}.json`)))
+    assert.equal(seam.runs.length, 1)
+    seam.release()
+    await settled(home, first)
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('a disk that refuses the identity and a lease (ENOSPC) is said as a `disk` problem and lived with: the offer is declined, the trust kept in memory, and the agent does not crash', async (t) => {
+  const home = await fakeHome()
+  const { agent } = agentFor(home)
+  const set = dataSet({ 'train.csv': 'id\n1\n' })
+  for (const [sha, body] of set.bodies) home.blobs.set(sha, body)
+  const lease = makeLease({ data: set.manifest })
+  let full = false
+  // Offered, and trusted, only once the disk is full.
+  home.onSync = (body) => {
+    const ready = body.ready.revisions.includes(REVISION.id) && body.ready.data.includes(set.manifest)
+    const leases = full && ready && !attemptOf(body, lease.attemptId) && body.seq < lease.seq ? [lease] : []
+    return { json: syncReply({ seq: lease.seq, leases, want: want(set), trusted: full }), delayMs: leases.length > 0 ? 0 : 20 }
+  }
+  const open = fs.openSync
+  t.mock.method(fs, 'openSync', (file: fs.PathLike, ...rest: unknown[]) => {
+    const at = String(file)
+    if (full && (at.startsWith(layout.leasesDir) || path.basename(at).startsWith('.runner.json.'))) throw Object.assign(new Error(`ENOSPC: no space left on device, open '${at}'`), { code: 'ENOSPC' })
+    return (open as (...args: unknown[]) => number)(file, ...rest)
+  })
+  let crashed: unknown = null
+  const running = agent.run().catch((error: unknown) => {
+    crashed = error
+    return null
+  })
+  try {
+    await waitFor(() => home.syncs().some((sync) => sync.ready.revisions.length > 0 && sync.ready.data.length > 0), 'the machine ready')
+    // The disk fills; home now trusts the machine and offers it a lease.
+    full = true
+    const call = await waitFor(() => home.calls.find((found) => found.path.endsWith(`/attempts/${lease.attemptId}/outcome`)), 'the offer declined')
+    assert.deepEqual({ kind: (call.body as { kind: string }).kind, reason: (call.body as { reason: string }).reason }, { kind: 'declined', reason: 'disk' })
+    const said = await waitFor(() => home.syncs().find((sync) => sync.problems.some((problem) => problem.code === 'disk')), 'the disk problem')
+    assert.match(said.problems.find((problem) => problem.code === 'disk')!.detail, /could not be written down: ENOSPC/)
+    assert.equal(crashed, null, `the agent crashed: ${String(crashed)}`)
+    assert.ok(home.syncs().every((sync) => !attemptOf(sync, lease.attemptId)), 'a lease not written down was listed')
+    assert.equal(JSON.parse(fs.readFileSync(layout.statusFile, 'utf8')).trusted, true)
+    assert.equal(readIdentity(layout)!.trusted, false)
+  } finally {
+    full = false
+    t.mock.restoreAll()
+    await agent.stop()
+    await running
+    await home.close()
+  }
+  assert.equal(crashed, null)
+})
+
+test('Docker\'s own disk, where it is a filesystem of its own, gates the pulls and is said when below its floor', async () => {
+  const home = await fakeHome()
+  const { agent, docker } = agentFor(home)
+  // The store at /var/lib/docker (docker info) on its own filesystem with 1000 MB free; the tree on another with plenty.
+  docker.statfs = 'aaaa 4096 256000 2621440\nbbbb 4096 125000000 250000000\n'
+  home.onSync = () => ({ json: syncReply({ want: { revisions: [{ id: REVISION.id, ref: REVISION.ref, layers: LAYERS, gpu: false }], data: [], bundles: [] } }), delayMs: 20 })
+  const running = agent.run()
+  try {
+    const said = await waitFor(() => home.syncs().find((sync) => sync.problems.some((problem) => problem.code === 'disk')), 'the disk problem')
+    assert.match(said.problems.find((problem) => problem.code === 'disk')!.detail, /1000 MB on Docker's own disk \(\/var\/lib\/docker\) is below the 8192 MB floor/)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    assert.ok(!docker.calls.some((args) => args[0] === 'pull'), 'a pull started onto a Docker disk below its floor')
+    // Measured from a throwaway container of the agent's own image, given the store and the tree read-only and labelled for this tree.
+    const measure = docker.calls.find((args) => args[0] === 'run' && args.includes('stat'))!
+    assert.ok(measure.includes('/var/lib/docker:/docker-root:ro') && measure.includes(`${TEST_ROOT}:/tree:ro`) && measure.includes('--read-only'), measure.join(' '))
+    assert.ok(measure.includes(INSTANCE_LABEL))
   } finally {
     await agent.stop()
     await running

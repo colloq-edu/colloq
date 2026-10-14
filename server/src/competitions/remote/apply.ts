@@ -24,8 +24,10 @@
  * THE PREPARATION IS REBUILT FROM THE LEASE, never prepared again (§13b note
  * 11): preparing again would start a second run row for one run. The lease
  * keeps what the take read — the run row, the container, the hidden files
- * by name, the code cells, the provenance, the limits, and the submission's
- * numbers from before the run, which the neighbour retry puts back.
+ * by name, the code cells, the provenance, the limits, the competition
+ * itself (its limits and texts word the outcome, as the job's own read does
+ * for a run here), and the submission's numbers from before the run, which
+ * the neighbour retry puts back.
  *
  * EVERY TEXT FROM THE MACHINE IS RENDERED HERE, in this server's language:
  * the machine's bundle carries no translations, and its core's sentences
@@ -50,7 +52,7 @@ import { continueAsMetric, settleNotebook, type PreparedNotebook } from '../runn
 import { attemptDir, attemptPromoted, competitionsFs, dropAttempt, inputDir, SUBMISSION_FILE } from '../storage.js'
 import { finishQueueAttempt, getCompetition, getSubmission, listRuns, queueRow, type QueueRow } from '../store.js'
 import { declineLease, loseLease } from './release.js'
-import { getLease, leasesInState, remoteEvent, sha256, updateLease, type LeaseRow } from './store.js'
+import { getLease, leasesInState, noteDrive, remoteEvent, sha256, updateLease, type LeaseRow } from './store.js'
 import { dropStaging, stagedPath, stagedWhole } from './upload.js'
 import { homeWords } from './words.js'
 
@@ -145,11 +147,20 @@ async function finish(lease: LeaseRow, request: RemoteFinishedRequest, digest: s
   return drive(lease.attemptId, now)
 }
 
-/** The steps from the moves to the commit, for a lease in `applying`: from a post, or again after a crash. */
+/**
+ * The steps from the moves to the commit, for a lease in `applying`: from a
+ * post, or again after a crash. While it runs the lease is marked in flight
+ * (store.ts · noteDrive), and neither a cancel nor the ceiling ends it under
+ * the drive.
+ */
 function drive(attemptId: string, now: number): Promise<ApplyResult> {
   const inFlight = applying.get(attemptId)
   if (inFlight) return inFlight
-  const once = driveOnce(attemptId, now).finally(() => applying.delete(attemptId))
+  noteDrive(attemptId, true)
+  const once = driveOnce(attemptId, now).finally(() => {
+    applying.delete(attemptId)
+    noteDrive(attemptId, false)
+  })
   applying.set(attemptId, once)
   return once
 }
@@ -170,7 +181,8 @@ async function driveOnce(attemptId: string, now: number): Promise<ApplyResult> {
      * retry put the row back itself: its run row is finished, and the result
      * did take effect.
      */
-    const settled = listRuns(lease.submissionId).some((run) => run.id === lease.runId && run.finishedAt !== null)
+    // A cancelled submission's run is finished too, by the cancel: that run did not take effect.
+    const settled = submission?.state !== 'cancelled' && listRuns(lease.submissionId).some((run) => run.id === lease.runId && run.finishedAt !== null)
     const result: ApplyResult = settled && stored?.kind === 'finished' ? 'applied' : 'revoked'
     updateLease(attemptId, { state: result === 'applied' ? 'applied' : 'revoked', reply: { result }, ...(result === 'revoked' ? { reason: 'cancelled', cause: 'cancelled' as const } : {}) }, ['applying'])
     cleanUp(lease)
@@ -187,12 +199,12 @@ async function driveOnce(attemptId: string, now: number): Promise<ApplyResult> {
   const report = runJsonOf(stored.runJson, attemptId)
   if (report && !competitionsFs.existsSync(path.join(result, 'run.json'))) competitionsFs.writeFileSync(path.join(result, 'run.json'), report, { mode: 0o600 })
 
-  // 4. Settled by the code a run here is settled by, from what the lease kept.
+  // 4. Settled by the code a run here is settled by, from what the lease kept: the competition among it, as the take read it.
   const binding = getBinding(lease.submissionId)
   const before = lease.prepared.before
   const prepared: PreparedNotebook = {
     placement: 'remote',
-    competition,
+    competition: lease.prepared.competition ?? competition,
     submission: { ...submission, cellsDone: before.cellsDone, cellsTotal: before.cellsTotal, durationMs: before.durationMs },
     row,
     provenance: lease.provenance,
@@ -213,14 +225,26 @@ async function driveOnce(attemptId: string, now: number): Promise<ApplyResult> {
   const gpu: RunRequest['gpu'] = card ? { device: card.device, sliceMb: card.sliceMb, perDevice: card.perDevice } : undefined
   const settled = await settleNotebook(prepared, { outcome, endedAt: now, ...(gpu ? { gpu } : {}), crowded: stored.outcome.crowded })
 
-  // 5 and 6 in one transaction: a crash leaves either both or neither.
-  db.transaction(() => {
+  /*
+   * 5 and 6 in one transaction: a crash leaves either both or neither. Fenced
+   * on the lease still being `applying`: whatever ended it meanwhile (nothing
+   * of this life can while the drive is in flight, store.ts · noteDrive, but
+   * a hand in the database can) keeps the row as it left it, and the machine
+   * is told what that was — never `applied` for a run that did not take
+   * effect.
+   */
+  const committed = db.transaction((): boolean => {
+    if (!updateLease(attemptId, { state: 'applied', reply: { result: 'applied' } }, ['applying'])) return false
     if (settled.next === 'score') continueAsMetric(prepared, settled)
     else finishQueueAttempt(row)
-    updateLease(attemptId, { state: 'applied', reply: { result: 'applied' } }, ['applying'])
+    return true
   })()
-  remoteEvent(lease.runnerId, 'applied', { attemptId, detail: outcome.status }, now)
   cleanUp(lease)
+  if (!committed) {
+    applyCounts.revoked++
+    return getLease(attemptId)?.reply?.result ?? 'revoked'
+  }
+  remoteEvent(lease.runnerId, 'applied', { attemptId, detail: outcome.status }, now)
   applyCounts.applied++
   return 'applied'
 }

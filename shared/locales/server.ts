@@ -4256,6 +4256,10 @@ export const serverMessages: MessageCatalog = {
     "ru": "машина отказалась от уже начатого прогона",
     "en": "the machine refused a run it had already started"
   },
+  "server.runners.why.unapplied": {
+    "ru": "сервер не смог принять её результат до предельного времени",
+    "en": "this server could not take in its result before the time ceiling"
+  },
   "server.runners.why.unacked": {
     "ru": "машина не приняла предложение за минуту",
     "en": "the machine did not take the offer within a minute"

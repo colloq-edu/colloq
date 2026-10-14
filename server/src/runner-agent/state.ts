@@ -270,9 +270,9 @@ export function readLeases(layout: StateLayout): Array<StoredLease & { outcome: 
     const stored = readJson(path.join(layout.leasesDir, name)) as StoredLease | null
     let lease: RemoteLease | null = null
     try {
-      // The lease parser is the outcome reply's: one lease, at its own seq.
+      // The lease parser is the outcome reply's: one lease, at its own seq, trusted (a hidden-test lease was taken only while the machine was; home revokes it if that changed).
       if (stored && Number.isSafeInteger(stored.receivedAt) && stored.lease?.attemptId === attemptId) {
-        lease = parseRemoteOutcomeReply({ result: 'applied', seq: stored.lease.seq, leases: [stored.lease] }).leases[0] ?? null
+        lease = parseRemoteOutcomeReply({ result: 'applied', seq: stored.lease.seq, leases: [stored.lease], trusted: true }).leases[0] ?? null
       }
     } catch {
       lease = null
@@ -318,11 +318,13 @@ export type AgentState = 'joining' | 'active' | 'draining' | 'leaving' | 'left' 
 /**
  * How the way to home was at the last call: `ok`; `home_offline` — the relay
  * says home's tunnel is down; `home_silent` — the tunnel is up and home does
- * not answer; `unreachable` — neither home nor its relay answered (this
+ * not answer; `home_unknown` — the relay serves no home by this name (the
+ * address in COLLOQ_RUNNER_JOIN, or a home whose name was given up), which no
+ * waiting mends; `unreachable` — neither home nor its relay answered (this
  * machine's network, or no relay in front of home); `refused` — home answered
  * with a refusal.
  */
-export type HomePath = 'ok' | 'home_offline' | 'home_silent' | 'unreachable' | 'refused'
+export type HomePath = 'ok' | 'home_offline' | 'home_silent' | 'home_unknown' | 'unreachable' | 'refused'
 
 export interface AgentStatus {
   joined: boolean
@@ -337,6 +339,8 @@ export interface AgentStatus {
   /** Whether home takes this build (remoteCompatible); null — not heard yet. */
   compatible: boolean | null
   trusted: boolean | null
+  /** The places home allows this machine at once (the owner's «Места»); null — no cap of home's, or not joined. */
+  approvedSlots: number | null
   path: HomePath | null
   /** One line about what keeps it from working, for the owner; null — nothing. */
   problem: string | null

@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { REMOTE_DRIVER_MIN, REMOTE_EVICT_AFTER_MS } from '../shared/remote-runner.ts'
-import { Images, revisionImage } from '../server/src/runner-agent/images.ts'
+import { CHECK_LABEL, INSTANCE_LABEL, Images, revisionImage } from '../server/src/runner-agent/images.ts'
 import { TEST_ROOT } from './_env.mts'
 import { DIFF_IDS, LAYERS, REVISION, fakeAgentDocker, waitFor } from './_runner-agent-home.mts'
 
@@ -191,4 +191,52 @@ test('a revision ready in an earlier life is ready again only with its tag in pl
   assert.equal(await fourth.evict(new Set(), () => free, 1000), 0)
   fourth.stop()
   await waitFor(() => true, 'nothing')
+})
+
+test('no pull starts while the disk Docker keeps images on is below its floor; a pull that runs out of disk is the machine\'s disk, not the image\'s', async () => {
+  const docker = fakeAgentDocker()
+  docker.registry.set(REVISION.ref, { diffIds: DIFF_IDS })
+  let room = false
+  let clock = Date.now()
+  const fulls: string[] = []
+  const images = new Images({ docker, dir: DIR, cards: () => ({ count: 0, driver: null }), now: () => clock, diskGate: async () => room, onDiskFull: (detail) => fulls.push(detail), log: () => undefined })
+  try {
+    images.want(want())
+    await images.idle()
+    assert.ok(!docker.calls.some((args) => args[0] === 'pull'), 'a pull started below the floor')
+    assert.deepEqual(images.problemList(), [], 'a disk below its floor was said as a problem of the image')
+    assert.deepEqual(images.readyIds(), [])
+    // Room, but the pull runs out of it midway: the daemon's words, said as the disk's.
+    room = true
+    docker.intercept = (args) => (args[0] === 'pull' ? { code: 1, out: 'failed to register layer: write /var/lib/docker/overlay2/x/diff/usr/lib/libtorch.so: no space left on device' } : undefined)
+    clock += 61_000
+    images.want(want())
+    await images.idle()
+    assert.equal(fulls.length, 1)
+    assert.match(fulls[0]!, /no space left on device/)
+    assert.deepEqual(images.problemList(), [], 'a pull that ran out of disk was said as a bad image')
+    // A minute later, with room again: pulled, checked, ready.
+    docker.intercept = null
+    clock += 61_000
+    images.want(want())
+    await images.idle()
+    assert.deepEqual(images.readyIds(), [REVISION.id])
+  } finally {
+    images.stop()
+  }
+})
+
+test('the smoke test is labelled for this tree as well as for its kind, and named for it: another agent on the daemon sweeps none of it', async () => {
+  const docker = fakeAgentDocker()
+  docker.registry.set(REVISION.ref, { diffIds: DIFF_IDS })
+  const images = imagesFor(docker, { count: 1, driver: '580.65.06' })
+  images.want(want(true))
+  await images.idle()
+  images.stop()
+  const smoke = docker.calls.find((args) => args[0] === 'run' && args.includes('python'))!
+  const labels = smoke.flatMap((arg, index) => (smoke[index - 1] === '--label' ? [arg] : []))
+  assert.deepEqual(labels.sort(), [CHECK_LABEL, INSTANCE_LABEL].sort())
+  assert.match(INSTANCE_LABEL, /^ru\.colloq\.competition-instance=[a-f0-9]{16}$/)
+  const name = smoke[smoke.indexOf('--name') + 1]!
+  assert.ok(name.includes(INSTANCE_LABEL.split('=')[1]!.slice(0, 8)), name)
 })

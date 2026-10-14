@@ -10,10 +10,12 @@
  * Written down it would be a write per heartbeat for state that is stale in
  * a minute, and after a restart of this server it is of no use anyway — the
  * machines are heard again within one round trip, which is exactly what the
- * boot grace waits for (REMOTE_BOOT_GRACE_MS). Two facts outlive the process,
- * each for a reason of its own: last_seen_at (the panel's «был на связи»,
- * flushed at most once a minute) and the machine's cards (the GPU door asks
- * about the last hour, decision 8).
+ * boot grace waits for (REMOTE_BOOT_GRACE_MS). Three facts outlive the
+ * process, each for a reason of its own: last_seen_at (the panel's «был на
+ * связи», flushed at most once a minute), the machine's cards (the GPU door
+ * asks about the last hour, decision 8), and the competitions it was asked to
+ * hold (what `forget` is computed against: a competition closed or deleted
+ * after a restart must still be forgotten).
  *
  * A module that imports only the remote store, on purpose: the door
  * (capabilities.ts), the forecast and the cards' share read it, and none of
@@ -30,7 +32,7 @@ import {
   type RemoteSyncRequest,
 } from '@shared/remote-runner'
 import type { RemoteMachineState } from '@shared/remote-admin'
-import { homeRunnerBuild, listRunners, type RunnerRow } from './store.js'
+import { homeRunnerBuild, listRunners, saveWantedCompetitions, wantedCompetitions, type RunnerRow } from './store.js'
 
 interface Heard {
   /** The last call of any kind that authenticated, on this server's clock. */
@@ -43,7 +45,12 @@ interface Heard {
   syncAt: number | null
   /** The digest of what the last sync reply said beyond its leases (routes.ts · newsDigest). */
   sentDigest: string | null
-  /** Competitions the replies have named in `want`: what `forget` is computed against. */
+  /**
+   * Competitions the replies have named in `want` and not forgotten since:
+   * what `forget` is computed against. Read from the machine's row when this
+   * life first hears of it (store.ts · wantedCompetitions) and written back
+   * whenever it changes, so a restart forgets nothing it should forget.
+   */
   wanted: Set<string>
 }
 
@@ -58,7 +65,7 @@ let probeOkAt: number | null = null
 function entry(runnerId: string, now: number): Heard {
   let found = heard.get(runnerId)
   if (!found) {
-    found = { at: now, address: null, flushedAt: 0, sync: null, syncAt: null, sentDigest: null, wanted: new Set() }
+    found = { at: now, address: null, flushedAt: 0, sync: null, syncAt: null, sentDigest: null, wanted: new Set(wantedCompetitions(runnerId)) }
     heard.set(runnerId, found)
   }
   return found
@@ -124,19 +131,28 @@ export function sentDigest(runnerId: string): string | null {
 export function noteSent(runnerId: string, digest: string, wanted: Iterable<string>, forgotten: Iterable<string>, now = Date.now()): void {
   const found = entry(runnerId, now)
   found.sentDigest = digest
+  const size = found.wanted.size
   for (const id of wanted) found.wanted.add(id)
-  for (const id of forgotten) found.wanted.delete(id)
+  let changed = found.wanted.size !== size
+  for (const id of forgotten) changed = found.wanted.delete(id) || changed
+  // Written only when the set moved: competitions open and close, syncs do not.
+  if (changed) saveWantedCompetitions(runnerId, found.wanted)
 }
 
-/** Competitions named in this machine's `want` so far: those no longer wanted are what `forget` names. */
+/** Competitions named in this machine's `want` so far, across restarts: those no longer wanted are what `forget` names. */
 export function wantedBefore(runnerId: string): ReadonlySet<string> {
-  return heard.get(runnerId)?.wanted ?? new Set()
+  return heard.get(runnerId)?.wanted ?? new Set(wantedCompetitions(runnerId))
 }
 
-/** Whether last_seen_at is due for this machine (at most once a minute), and marks it written. */
+/**
+ * Whether last_seen_at is due for this machine (at most once a minute), and
+ * marks it written. Only once it has synced in this life: «был на связи» is
+ * a machine that reported in, and one that joined and never synced keeps
+ * last_seen_at empty, as RemoteMachine.lastSeenAt promises.
+ */
 export function seenDue(runnerId: string, now: number, everyMs: number): { at: number; address: string | null } | null {
   const found = heard.get(runnerId)
-  if (!found || now - found.flushedAt < everyMs || found.at <= found.flushedAt) return null
+  if (!found || found.syncAt === null || now - found.flushedAt < everyMs || found.at <= found.flushedAt) return null
   found.flushedAt = now
   return { at: found.at, address: found.address }
 }
@@ -218,11 +234,6 @@ export function machineState(runner: RunnerRow, now: number): RemoteMachineState
  */
 export function liveRunner(runner: RunnerRow, now: number): boolean {
   return machineState(runner, now) === 'online' && lastSync(runner.id) !== null
-}
-
-/** Every live machine now. */
-export function liveRunners(now = Date.now()): RunnerRow[] {
-  return listRunners().filter((runner) => liveRunner(runner, now))
 }
 
 /** A machine's cards as it last said them: from memory, or the row's echo after a restart. */

@@ -21,11 +21,12 @@ import { remoteOutcome, type RemoteLease, type RemoteSyncRequest } from '../shar
 import { Agent, type AgentOptions } from '../server/src/runner-agent/sync.ts'
 import { readIdentity, stateLayout, writeIdentity, writeLease, writeOutcome, type Identity } from '../server/src/runner-agent/state.ts'
 import { askAgent, serveControl, type ControlMessage } from '../server/src/runner-agent/control.ts'
+import { INSTANCE_LABEL, revisionImage } from '../server/src/runner-agent/images.ts'
 import { main, status } from '../server/src/runner-agent/main.ts'
 import { attemptPath, competitionsDir } from '../server/src/competitions/storage.ts'
 import { TEST_ROOT } from './_env.mts'
 import {
-  DIFF_IDS, FakeSeam, LAYERS, REVISION, RUNNER_ID, SECRET, dataSet, fakeAgentDocker, fakeHome, hex, makeLease, sha256, syncReply, waitFor,
+  DIFF_IDS, FakeSeam, LAYERS, REVISION, RUNNER_ID, SECRET, dataSet, fakeAgentDocker, fakeHome, hex, makeLease, outcomeReply, sha256, syncReply, waitFor,
   type FakeHome,
 } from './_runner-agent-home.mts'
 
@@ -109,7 +110,9 @@ test('after a restart: its containers removed, the outcomes it wrote down upload
     await waitFor(() => home.calls.some((call) => call.path.endsWith(`/attempts/${finished.attemptId}/outcome`)), 'the written-down outcome posted')
     // Swept before anything else: the runs by the runner's labels, the checks by the agent's.
     assert.equal(seam.sweeps, 1)
-    assert.ok(docker.calls.some((args) => args[0] === 'ps' && args.includes('label=colloq.kind=runner-check')))
+    // The checks of this tree only: another agent's on the same daemon are its own (images.ts · INSTANCE_LABEL).
+    assert.ok(docker.calls.some((args) => args[0] === 'ps' && args.includes('label=colloq.kind=runner-check') && args.includes(`label=${INSTANCE_LABEL}`)))
+    assert.ok(!docker.calls.some((args) => args[0] === 'ps' && !args.includes(`label=${INSTANCE_LABEL}`)), 'a sweep looked past this tree')
     assert.ok(!fs.existsSync(path.join(layout.leasesDir, `${unfinished.attemptId}.json`)), 'a lease without its outcome survived the restart')
     assert.ok(!fs.existsSync(path.join(competitionsDir, 'compabcd', 's', unfinished.submissionId)))
     assert.ok(!fs.existsSync(path.join(competitionsDir, 'compabcd', 's', 'substray')))
@@ -371,8 +374,8 @@ test('`runner status` reads the running agent\'s status: 0 while joined and sync
     await waitFor(() => fs.existsSync(layout.statusFile) && JSON.parse(fs.readFileSync(layout.statusFile, 'utf8')).homeVersion, 'a status after a sync')
     assert.equal(status(layout, io), 0)
     const said = JSON.parse(out.pop()!)
-    assert.deepEqual({ joined: said.joined, home: said.home, state: said.state, held: said.held, version: said.version, homeVersion: said.homeVersion },
-      { joined: true, home: home.url, state: 'active', held: 0, version: '0.24.0', homeVersion: '0.24.0' })
+    assert.deepEqual({ joined: said.joined, home: said.home, state: said.state, held: said.held, version: said.version, homeVersion: said.homeVersion, compatible: said.compatible, approvedSlots: said.approvedSlots },
+      { joined: true, home: home.url, state: 'active', held: 0, version: '0.24.0', homeVersion: '0.24.0', compatible: true, approvedSlots: null })
     // A status a minute and a half old is no running agent's.
     assert.equal(status(layout, io, Date.now() + 120_000), 1)
   } finally {
@@ -430,7 +433,7 @@ test('`runner leave` with no agent running revokes the machine with the identity
   // The one-off container: the same tree and environment, the agent's container stopped.
   const docker = fakeAgentDocker()
   const seam = new FakeSeam()
-  const code = await main(['leave'], { ...process.env, COLLOQ_RUNNER_STATE: TEST_ROOT, COLLOQ_RUNNER_JOIN: `${home.url}#${NEW_CODE}`, COLLOQ_RUNNER_IMAGE: 'ghcr.io/colloq-edu/colloq-server:0.24.0' }, { out: () => undefined, err: (text) => errors.push(text) }, { docker, runner: seam })
+  const code = await main(['leave'], { ...process.env, COLLOQ_RUNNER_STATE: TEST_ROOT, COLLOQ_RUNNER_JOIN: `${home.url}#${NEW_CODE}`, COLLOQ_RUNNER_IMAGE: 'ghcr.io/colloq-edu/colloq-server:0.24.0', COLLOQ_RUNNER_CONTAINER: '' }, { out: () => undefined, err: (text) => errors.push(text) }, { docker, runner: seam })
   try {
     assert.equal(code, 0, errors.join(''))
     // The written-down decline went first, then the leaving sync with nothing held; never a join with the new code.
@@ -438,9 +441,10 @@ test('`runner leave` with no agent running revokes the machine with the identity
     assert.ok(order.indexOf('outcome') >= 0 && order.indexOf('outcome') < order.indexOf('sync:leaving'), order.join(' '))
     assert.ok(!order.includes('join'))
     assert.ok(readIdentity(layout)!.leftAt !== undefined)
-    // Its containers swept first, and its restart policy turned off on the way out.
+    // Its containers swept first. No COLLOQ_RUNNER_CONTAINER here (colloq-host turns the machine's restart policy off itself before
+    // a one-off leave): no container of its own, so nothing is updated or inspected by a name that could be anyone's (§13c note 20).
     assert.ok(seam.sweeps >= 1)
-    assert.ok(docker.calls.some((args) => args.join(' ') === 'update --restart=no colloq-runner'))
+    assert.ok(!docker.calls.some((args) => args[0] === 'update' || args[0] === 'inspect'), docker.calls.map((args) => args.join(' ')).join('\n'))
     // Gone already: a second leave has nothing to do.
     assert.equal(await main(['leave'], { ...process.env, COLLOQ_RUNNER_STATE: TEST_ROOT }, { out: () => undefined, err: () => undefined }), 0)
   } finally {
@@ -511,6 +515,174 @@ test('without COLLOQ_RUNNER_IMAGE the cards are probed with the image the agent\
     assert.equal(probe[probe.indexOf('--gpus') + 1], 'all')
     assert.ok(probe.includes('ghcr.io/colloq-edu/colloq-server:0.24.0'))
   } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('a stop tells home in one sync, held for no time, that the machine drains, listing what it holds, before it hands anything back', async () => {
+  const home = await fakeHome()
+  const set = dataSet({ 'train.csv': 'id\n1\n' })
+  for (const [sha, body] of set.bodies) home.blobs.set(sha, body)
+  const lease = makeLease({ data: set.manifest })
+  offerWhenReady(home, set, lease)
+  const { agent, seam } = agentFor(home)
+  seam.next = 'wait'
+  const running = agent.run()
+  try {
+    await waitFor(() => seam.runs.length === 1, 'the run')
+    await agent.stop()
+    await running
+    const said = home.calls.filter((call) => call.path.endsWith('/sync') || call.path.endsWith(`/attempts/${lease.attemptId}/outcome`))
+    const draining = said.findIndex((call) => call.path.endsWith('/sync') && (call.body as RemoteSyncRequest).state === 'draining')
+    const handBack = said.findIndex((call) => call.path.endsWith('/outcome'))
+    assert.ok(draining >= 0, 'no sync told home the machine drains')
+    assert.ok(handBack > draining, 'the run was handed back before home heard the machine drains')
+    const sync = said[draining]!.body as RemoteSyncRequest
+    assert.equal(sync.holdMs, 0)
+    // Level-triggered: the run is listed as it is, or home would count it lost at once.
+    assert.equal(attemptOf(sync, lease.attemptId)?.phase, 'running')
+    const posted = said[handBack]!.body as { kind: string; reason: string }
+    assert.deepEqual({ kind: posted.kind, reason: posted.reason }, { kind: 'declined', reason: 'draining' })
+  } finally {
+    await home.close()
+  }
+})
+
+test('revoked by its owner while it drains for a leave, the machine has left: `runner leave` hears that it left and was revoked, and no new code joins it again', async () => {
+  const home = await fakeHome()
+  joinedBefore(home)
+  const set = dataSet({ 'train.csv': 'id\n1\n' })
+  for (const [sha, body] of set.bodies) home.blobs.set(sha, body)
+  const lease = makeLease({ data: set.manifest })
+  offerWhenReady(home, set, lease)
+  let revoked = false
+  const answer = home.onSync
+  home.onSync = (body, call) => (revoked ? { status: 401, json: { error: 'unauthorized' } } : answer(body, call))
+  // A new code waits in COLLOQ_RUNNER_JOIN: a revoked machine that is not leaving would join with it.
+  const { agent, seam } = agentFor(home, { join: { home: home.url, code: NEW_CODE } })
+  seam.next = 'wait'
+  const server = await serveControl(agent, layout.socket)
+  const running = agent.run()
+  try {
+    await waitFor(() => seam.runs.length === 1, 'the run')
+    const said: ControlMessage[] = []
+    const leave = askAgent(layout.socket, 'leave', (message) => said.push(message))
+    await waitFor(() => home.syncs().some((sync) => sync.state === 'draining'), 'the leave draining the machine')
+    // The owner disconnects it meanwhile.
+    revoked = true
+    assert.equal(await leave, 'answered')
+    assert.ok(said.some((message) => 'left' in message && message.revoked === true), JSON.stringify(said))
+    const exit = await running
+    assert.equal(exit.reason, 'revoked')
+    assert.ok(!home.calls.some((call) => call.path.endsWith('/join')), 'a machine asked to leave joined again')
+    assert.ok(readIdentity(layout)!.revokedAt !== undefined)
+    assert.ok(seam.runs[0]!.signal?.aborted, 'the run of a revoked machine was not stopped')
+  } finally {
+    server.close()
+    await home.close()
+  }
+})
+
+test('with no container of its own (COLLOQ_RUNNER_CONTAINER unset), a revoked machine updates and inspects no container by name', async () => {
+  const home = await fakeHome()
+  joinedBefore(home)
+  home.onSync = () => ({ status: 401, json: { error: 'unauthorized' } })
+  const { agent, docker } = agentFor(home, { container: null, image: null })
+  try {
+    const exit = await agent.run()
+    assert.equal(exit.reason, 'revoked')
+    assert.ok(!docker.calls.some((args) => args[0] === 'update' || args[0] === 'inspect'), docker.calls.map((args) => args.join(' ')).join('\n'))
+    // No image to start a check container from either: no card probe, no measure of Docker's disk.
+    assert.ok(!docker.calls.some((args) => args[0] === 'run'))
+  } finally {
+    await home.close()
+  }
+})
+
+test('a drain lets a held hidden-test run finish: what it reads stays until it has linked it, and the run is not declined', async () => {
+  const home = await fakeHome()
+  joinedBefore(home)
+  const open = dataSet({ 'train.csv': 'id,y\n1,0\n' })
+  const hidden = dataSet({ 'test.csv': 'id\n9\n' })
+  for (const [sha, body] of [...open.bodies, ...hidden.bodies]) home.blobs.set(sha, body)
+  const lease = makeLease({ data: open.manifest, sealed: true, sealedData: hidden.manifest })
+  home.onSync = (body) => {
+    const ready = body.ready.revisions.includes(REVISION.id) && body.ready.data.includes(open.manifest) && body.ready.sealed.includes(hidden.manifest)
+    const leases = ready && !attemptOf(body, lease.attemptId) && body.seq < lease.seq ? [lease] : []
+    const data = [{ competitionId: 'compabcd', manifest: open.manifest, sealed: false, files: open.files }, { competitionId: 'compabcd', manifest: hidden.manifest, sealed: true, files: hidden.files }]
+    return { json: syncReply({ seq: lease.seq, leases, trusted: true, want: { revisions: [{ id: REVISION.id, ref: REVISION.ref, layers: LAYERS, gpu: false }], data, bundles: [] } }), delayMs: leases.length > 0 ? 0 : 20 }
+  }
+  const { agent, seam, docker } = agentFor(home)
+  // The lease's image is checked once more right before its run (images.ts · verify), before it links the hidden test: held there, where a drain can come.
+  let verifying = 0
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  docker.intercept = async (args) => {
+    if (args[0] === 'image' && args[1] === 'inspect' && args[2] === revisionImage(REVISION.id)) {
+      verifying++
+      await held
+    }
+  }
+  const running = agent.run()
+  try {
+    await waitFor(() => verifying === 1, 'the lease checking its image')
+    agent.requestDrain()
+    release()
+    await waitFor(() => seam.runs.length === 1, 'the hidden-test run, after the drain')
+    assert.equal(seam.runs[0]!.sealedInputs, true)
+    assert.equal(fs.readFileSync(path.join(seam.runs[0]!.dataDir, 'test.csv'), 'utf8'), 'id\n9\n')
+    await waitFor(() => !fs.existsSync(path.join(layout.leasesDir, `${lease.attemptId}.json`)), 'the run settled')
+    assert.ok(!home.calls.some((call) => call.path.endsWith(`/attempts/${lease.attemptId}/outcome`) && (call.body as { kind: string }).kind === 'declined'), 'the drain declined a run it was to finish')
+    // Settled, it reads nothing more: a draining machine keeps none of the hidden test.
+    await waitFor(() => fs.readdirSync(path.join(competitionsDir, '.sealed')).length === 0, 'the hidden test gone once the run is done')
+  } finally {
+    release()
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('an outcome\'s reply that says the machine is no longer trusted purges the hidden test there and then, before any sync', async () => {
+  const home = await fakeHome()
+  joinedBefore(home)
+  const open = dataSet({ 'train.csv': 'id,y\n1,0\n' })
+  const hidden = dataSet({ 'test.csv': 'id\n4\n' })
+  for (const [sha, body] of [...open.bodies, ...hidden.bodies]) home.blobs.set(sha, body)
+  const lease = makeLease({ data: open.manifest })
+  let trusted = true
+  let hold: Promise<void> | null = null
+  let releaseSyncs!: () => void
+  home.onSync = async (body) => {
+    // Once the run is listed, home's syncs wait: only the outcome's reply can say anything.
+    if (attemptOf(body, lease.attemptId) && !hold) hold = new Promise<void>((resolve) => (releaseSyncs = resolve))
+    if (hold) await hold
+    const ready = body.ready.revisions.includes(REVISION.id) && body.ready.data.includes(open.manifest) && body.ready.sealed.includes(hidden.manifest)
+    const leases = ready && !attemptOf(body, lease.attemptId) && body.seq < lease.seq ? [lease] : []
+    const data = [{ competitionId: 'compabcd', manifest: open.manifest, sealed: false, files: open.files }, ...(trusted ? [{ competitionId: 'compabcd', manifest: hidden.manifest, sealed: true, files: hidden.files }] : [])]
+    return { json: syncReply({ seq: lease.seq, leases, trusted, want: { revisions: [{ id: REVISION.id, ref: REVISION.ref, layers: LAYERS, gpu: false }], data, bundles: [] } }), delayMs: leases.length > 0 ? 0 : 20 }
+  }
+  let posted = false
+  home.onOutcome = () => {
+    posted = true
+    trusted = false
+    return { json: outcomeReply({ seq: lease.seq, trusted: false }) }
+  }
+  const { agent, seam } = agentFor(home)
+  seam.next = 'wait'
+  const running = agent.run()
+  try {
+    await waitFor(() => seam.runs.length === 1, 'the run')
+    await waitFor(() => hold !== null, 'home holding its syncs')
+    assert.ok(fs.readdirSync(path.join(competitionsDir, '.sealed')).length > 0)
+    seam.release()
+    await waitFor(() => posted, 'the outcome posted')
+    await waitFor(() => fs.readdirSync(path.join(competitionsDir, '.sealed')).length === 0, 'the hidden test purged on the outcome\'s word')
+    assert.equal(readIdentity(layout)!.trusted, false)
+  } finally {
+    releaseSyncs?.()
     await agent.stop()
     await running
     await home.close()

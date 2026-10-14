@@ -7,7 +7,11 @@
  *   began, nothing is counted;
  * - a lease past its ceiling (offer + prepare + wall + grace + upload) is
  *   revoked and counted lost, even while the machine keeps syncing: a run
- *   that long is a machine that is stuck, not slow;
+ *   that long is a machine that is stuck, not slow — and so is a result left
+ *   `applying` past it with no drive in flight, which this server could not
+ *   apply however often the machine posted it (a full disk here): the row
+ *   goes back to the queue rather than holding its place and its machine's
+ *   for good (release.ts · loseLease, `unapplied`);
  * - a machine silent for REMOTE_SILENCE_MS loses its runs — but only while
  *   this server has PATH EVIDENCE (heard.ts · pathEvidence) that the road to
  *   the machines works, so that a dead tunnel is not taken for a dead fleet;
@@ -45,9 +49,10 @@ import {
   waitingNotebookOrder,
 } from '../store.js'
 import { redriveApplying } from './apply.js'
+import { loopbackAddress } from './origin.js'
 import { heardAt, inBootGrace, noteProbe, pathEvidence, remoteBootAt, seenDue } from './heard.js'
 import { loseLease, withdrawLease } from './release.js'
-import { LIVE_LEASE_STATES, flushRunnerSeen, getLease, leasesInState, listRunners, openLeases, pruneRemoteRows, runnerStanding } from './store.js'
+import { LIVE_LEASE_STATES, driveInFlight, flushRunnerSeen, getLease, leasesInState, listRunners, openLeases, pruneRemoteRows, runnerStanding } from './store.js'
 import { dropStaging, stagedAttempts } from './upload.js'
 import { wakeAllRunners } from './wake.js'
 
@@ -87,6 +92,13 @@ export function remoteTick(now = Date.now()): { withdrawn: number; lost: number 
     if (silent <= REMOTE_SILENCE_MS) continue
     if (!pathEvidence(now, lease.runnerId) && silent <= REMOTE_BLIND_MS) continue
     if (loseLease(lease.attemptId, now, 'silent')) lost++
+  }
+  // The ceiling holds for a result being applied too: one that cannot be, by then, goes back to the queue (never one whose drive is under way).
+  if (!grace) {
+    for (const lease of leasesInState('applying')) {
+      if (lease.deadlineAt > now || driveInFlight(lease.attemptId)) continue
+      if (loseLease(lease.attemptId, now, 'unapplied')) lost++
+    }
   }
   for (const runner of listRunners()) {
     const due = seenDue(runner.id, now, REMOTE_SEEN_FLUSH_MS)
@@ -154,12 +166,37 @@ export function settleUnfit(now = Date.now()): number {
   return settled
 }
 
-/** The probe of this server's own address through the relay: path evidence (heard.ts · pathEvidence). */
-export async function probeOwnPath(now = Date.now(), fetcher: typeof fetch = fetch): Promise<boolean> {
+/**
+ * The probe of this server's own address through the relay: path evidence
+ * (heard.ts · pathEvidence).
+ *
+ * ONLY AN ADDRESS THE MACHINES COME THROUGH IS EVIDENCE. PUBLIC_URL falls
+ * back to http://localhost:PORT (config.ts) on an instance nobody gave an
+ * address, and a probe of the loopback answers from this very process
+ * whatever the relay and the tunnel are doing: it passed every time, and
+ * a machine silent behind a dead tunnel lost its runs after three minutes —
+ * the one thing path evidence exists to prevent. So a loopback PUBLIC_URL is
+ * never probed, and without another machine heard nothing expires before
+ * REMOTE_BLIND_MS. One redirect is followed, from http to https on the same
+ * host (a relay that sends plain http to https, as Caddy does): taken for a
+ * refusal, a public http PUBLIC_URL was never evidence at all. Any other
+ * redirect is not followed — it leads somewhere that is not this server.
+ */
+export async function probeOwnPath(now = Date.now(), fetcher: typeof fetch = fetch, publicUrl: string = config.publicUrl): Promise<boolean> {
   if (!listRunners().some((runner) => runnerStanding(runner))) return false
+  if (loopbackAddress(publicUrl)) return false
   let ok = false
   try {
-    const answer = await fetcher(new URL('/api/readyz', config.publicUrl), { signal: AbortSignal.timeout(10_000), redirect: 'manual' })
+    const target = new URL('/api/readyz', publicUrl)
+    let answer = await fetcher(target, { signal: AbortSignal.timeout(10_000), redirect: 'manual' })
+    const location = answer.status >= 300 && answer.status < 400 ? answer.headers.get('location') : null
+    if (location !== null) {
+      await answer.body?.cancel().catch(() => undefined)
+      const next = new URL(location, target)
+      if (target.protocol === 'http:' && next.protocol === 'https:' && next.hostname === target.hostname && next.pathname === target.pathname) {
+        answer = await fetcher(next, { signal: AbortSignal.timeout(10_000), redirect: 'manual' })
+      }
+    }
     ok = answer.status === 200
     await answer.body?.cancel().catch(() => undefined)
   } catch {

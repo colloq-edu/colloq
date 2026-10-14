@@ -140,7 +140,11 @@ export interface RemoteMachine {
   /** Runs per card set for this machine; null — the instance setting «Посылок на карту». */
   perDevice: number | null
   readiness: RemoteReadiness[]
-  /** Since it joined. `requeued`: runs it gave back without a loss (a drain, a decline). */
+  /**
+   * Since it joined. `scored`: runs whose submission it ran to a score (a
+   * notebook that failed on it is no score); `requeued`: runs it gave back
+   * without a loss (a drain, a decline).
+   */
   counts: { scored: number; lost: number; declined: number; requeued: number }
   /** The last decline's or loss's words, for the counter's caption; null — none. */
   lastTrouble: string | null
@@ -240,7 +244,7 @@ export interface RemoteMachineDetail extends RemoteMachine {
 
 /** POST /api/admin/runners/codes — mint a code for the dialog (M2). */
 export interface MintRemoteCodeRequest {
-  /** How many machines may join with it: 1–50. */
+  /** How many machines may join with it: 1–100, the bound `colloq-host runner-code --machines` has too. */
   machines: number
   /** How long it stays valid: 1–24 h (REMOTE_CODE_TTL_MAX_MS). */
   hours: number
@@ -258,11 +262,23 @@ export interface MintRemoteCodeRequest {
  * copies a command, never a bare code).
  */
 export interface MintRemoteCodeResponse {
+  /**
+   * The code's own id in the list (RemoteCodeView.id): the dialog's «ждём
+   * первую машину…» counts the machines that joined with THIS code, never one
+   * that joined with another meanwhile.
+   */
+  id: string
   code: string
   expiresAt: number
   machines: number
   trusted: boolean
   commands: { docker: string; bare: string; vast: string }
+  /**
+   * The address in the commands is this server's own loopback (a PUBLIC_URL
+   * of localhost or 127.x, colloq-host runner-code warns the same): a machine
+   * anywhere else cannot reach it, and the dialog says so.
+   */
+  loopback: boolean
 }
 
 /** PATCH /api/admin/runners/:id — the M3 settings. A field left out is left as it is. */
@@ -299,11 +315,16 @@ export type RemoteMachineAction = 'drain' | 'resume' | 'revoke'
  * take it — it runs no notebooks, or the notebook needs a card and this
  * server has none. The same holds for the machines' other reasons: with this
  * server's notebooks on, a GPU notebook on a server without cards waits for
- * the machines alone, and for their reasons. `returned`: it came back to the
+ * the machines alone, and for their reasons. `no_fit`: no machine that takes
+ * work can ever run it as it is — its memory and the container's cushion
+ * over a machine's usable memory, its CPUs over a machine's, a package set
+ * too big for a lease, limits outside what the machines' contract carries,
+ * or its notebook gone from disk — so it waits for this server or for a
+ * bigger machine, whatever frees up. `returned`: it came back to the
  * queue from a machine (`from` names it), first in line and with no quota
  * spent.
  */
-export type RemoteWaitReason = 'no_runners' | 'no_gpu_runner' | 'preparing_image' | 'preparing_data' | 'needs_trusted' | 'home_only_env' | 'returned'
+export type RemoteWaitReason = 'no_runners' | 'no_gpu_runner' | 'preparing_image' | 'preparing_data' | 'needs_trusted' | 'home_only_env' | 'no_fit' | 'returned'
 
 /**
  * Why a `returned` row came back, when home knows (WaitingRow.returnedWhy):
@@ -327,9 +348,21 @@ export interface RemoteConsoleGroup {
   cards: { count: number; perDevice: number } | null
   /** This server only: «только метрики» when it runs no notebooks. */
   metricsOnly?: boolean
+  /**
+   * This server only, with `metricsOnly`: the metric lane's places
+   * («Оценок одновременно», scoreSlots) and the metrics it runs now, for
+   * «только метрики · 1 из 2». `places` and `busy` above stay the notebook
+   * lane's (0 then), and a metric is never drawn in a notebook's cell.
+   */
+  metric?: { places: number; busy: number }
   /** A `silent` machine: since when, ms, for «молчит 4 мин» (RemoteMachine.silentSince). Absent — the chip says «молчит» alone. */
   silentSince?: number | null
-  /** The machine's colloq version, for an `outdated` one's «на ней 0.23.0, на сервере 0.24.0». Absent — the versions are not named. */
+  /**
+   * The colloq version it runs: a machine's for an `outdated` one's «на ней
+   * 0.23.0, на сервере 0.24.0», and this server's own on this server's group
+   * (the other half of that line, read off the server rather than the panel's
+   * bundle). Absent — the versions are not named.
+   */
   version?: string | null
 }
 
@@ -377,10 +410,13 @@ export interface RemoteCompetitionWhere {
   /**
    * Cards on machines for a GPU competition (decision 8): how many machines
    * with cards were heard within REMOTE_GPU_SEEN_MS (the door accepts GPU
-   * uploads while there is one), and the last machine with cards ever heard,
-   * for warning 3's «была на связи 2 ч назад».
+   * uploads while there is one), the last machine with cards ever heard, for
+   * warning 3's «была на связи 2 ч назад», and the share a run is promised on
+   * them — the smallest card's memory over its machine's runs per card among
+   * those machines (§5.8), for the GPU switch's «срез ≈ 3 ГБ»; `sliceMb`
+   * null — no such card said its size.
    */
-  cards: { recent: number; last: { name: string; at: number } | null }
+  cards: { recent: number; last: { name: string; at: number } | null; sliceMb: number | null }
 }
 
 /**
@@ -394,4 +430,11 @@ export interface RunningRemote {
   hidden: boolean
   machines: { id: string; name: string; runs: number; devices: string[] }[]
   scoring: number
+  /**
+   * The submissions running on machines, for «Остановить все» through the
+   * console's kill door (POST /api/admin/competitions/queue/kill, one each),
+   * which cancels a machine's run durably. Empty for another course's
+   * competition: its runs are a number here, not ids to act on.
+   */
+  submissionIds: string[]
 }

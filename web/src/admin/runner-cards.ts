@@ -262,13 +262,30 @@ export function gpuRowState(input: { environmentGpu: boolean | null; on: boolean
  * The switch's second word: "срез ≈ 6 ГБ", "вся карта" at one run per card,
  * or a bare "срез" while nothing is known — no card given, a size nobody
  * said, or the cluster's card.
+ *
+ * With machines that have cards (`machines`: RemoteCompetitionWhere.cards,
+ * passed while one was heard within the hour) a run may land on one of
+ * theirs too, so the word is the smallest share it could get anywhere: the
+ * machines' alone on a server that gives submissions no card, where a bare
+ * «срез» said nothing although they promise one (§5.8), and the smaller of
+ * the two beside this server's own cards — «вся карта» here is not what a
+ * run on a machine gets. A size either side did not say leaves the bare
+ * word: no promise is made from half of the picture.
  */
-export function gpuSwitchWord(cards: CompetitionGpuSettings | null): string {
-  if (!cards || cards.managed || cards.devices.length === 0) return tr('admin.competitions.gpuSliceBare')
-  if (cards.perDevice <= 1) return tr('admin.competitions.gpuWhole')
-  return cards.sliceMb === null
+export function gpuSwitchWord(cards: CompetitionGpuSettings | null, machines: { sliceMb: number | null } | null = null): string {
+  const here = cards && !cards.managed && cards.devices.length > 0 ? cards : null
+  if (machines) {
+    const slices = here ? [machines.sliceMb, here.sliceMb] : [machines.sliceMb]
+    const known = slices.filter((slice): slice is number => slice !== null)
+    return known.length < slices.length
+      ? tr('admin.competitions.gpuSliceBare')
+      : tr('admin.competitions.gpuSlice', { value: shareGb(Math.min(...known)) })
+  }
+  if (!here) return tr('admin.competitions.gpuSliceBare')
+  if (here.perDevice <= 1) return tr('admin.competitions.gpuWhole')
+  return here.sliceMb === null
     ? tr('admin.competitions.gpuSliceBare')
-    : tr('admin.competitions.gpuSlice', { value: shareGb(cards.sliceMb) })
+    : tr('admin.competitions.gpuSlice', { value: shareGb(here.sliceMb) })
 }
 
 /**

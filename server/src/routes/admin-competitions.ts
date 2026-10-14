@@ -132,8 +132,11 @@ import { gpuDevices } from '../kernel/pool.js'
 import { HOST_RESERVE_MB } from '../kernel/resources.js'
 import { baseName, csvShape, csvUsageSplit, intakeNotebook, notebookCells } from '../competitions/intake.js'
 import {
+  LIGHT_METRIC_ENVIRONMENT,
   cancelSubmission,
   hasStoredAnswer,
+  metricScoringImage,
+  moveMetricToLightImage,
   pauseCompetitionQueue,
   queueSlots,
   rerunSubmission,
@@ -611,7 +614,13 @@ function queueSnapshot(viewer: StaffLike | null, now = Date.now()): QueueSnapsho
   snapshot.slots = (homeOn ? queueSlots() : 0) + fleet.places
   if (fleet.gpuShares > 0 || heldGpu > 0) {
     const here = homeOn ? homeGpu : null
-    const slices = [here?.sliceMb, fleet.gpuShares > 0 ? fleet.sliceMb : undefined].filter((slice): slice is number | null => slice !== undefined)
+    /*
+     * This server's share counts only where it gives GPU work places: with no
+     * card of its own (homeGpu's zero places, kept to say GPU work waits)
+     * its null is no unknown size, there is simply no share of its, and the
+     * machines' known one must not read as «срез неизвестен» for it.
+     */
+    const slices = [here && here.slots > 0 ? here.sliceMb : undefined, fleet.gpuShares > 0 ? fleet.sliceMb : undefined].filter((slice): slice is number | null => slice !== undefined)
     snapshot.gpu = {
       slots: (here?.slots ?? 0) + fleet.gpuShares,
       busy: (here?.busy ?? 0) + heldGpu,
@@ -1423,6 +1432,25 @@ export function adminCompetitionRoutes(): Router {
     }
   }
 
+  /**
+   * The same for a door that runs only the metric (the metric check, a
+   * rescore, all of them), asked of the image that metric will run in
+   * (runner.ts · metricScoringImage): a competition with a card scores in its
+   * pinned kaggle-base, and asked about its own GPU image such a door was
+   * refused once the owner removed that image to free the disk — what
+   * decision 2 is for — though the metric would have run.
+   */
+  async function metricExecutionAvailable(competition: Competition, res: Response): Promise<boolean> {
+    try {
+      const image = await metricScoringImage(competition)
+      await assertCompetitionCapability('execution', image.environment, image.imageDigest, {})
+      return true
+    } catch (error) {
+      fail(res, 503, 'failed', error instanceof Error ? error.message : tr('runtime.brokerUnavailable'))
+      return false
+    }
+  }
+
   /* ------------------------------------------------------ sample notebook */
 
   router.post('/api/admin/competitions/:id/baseline', requireStaff, async (req, res) => {
@@ -1517,7 +1545,7 @@ export function adminCompetitionRoutes(): Router {
   router.post('/api/admin/competitions/:id/metric/check', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
-    if (!await executionAvailable(competition, res, {})) return
+    if (!await metricExecutionAvailable(competition, res)) return
     const baseline = competition.baselineSubmissionId
       ? getSubmission(competition.baselineSubmissionId)
       : null
@@ -1787,7 +1815,7 @@ export function adminCompetitionRoutes(): Router {
     async (req, res) => {
       const competition = competitionOf(req, res)
       if (!competition) return
-    if (!await executionAvailable(competition, res, {})) return
+    if (!await metricExecutionAvailable(competition, res)) return
       const submission = submissionOf(competition, req, res)
       if (!submission) return
       /*
@@ -1855,10 +1883,35 @@ export function adminCompetitionRoutes(): Router {
   router.post('/api/admin/competitions/:id/rescore', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
-    if (!await executionAvailable(competition, res, {})) return
+    if (!await metricExecutionAvailable(competition, res)) return
     // The pump counts: a submission qualifies if its answer IS ON DISK, and
     // that is a question for the files, not for the row's state.
     res.status(202).json({ queued: rescoreCompetition(competition.id) })
+  })
+
+  /**
+   * Move the metric of a competition with a card to the current kaggle-base
+   * and rescore every submission in it (runner.ts · moveMetricToLightImage):
+   * the one way that metric's image changes, so no leaderboard holds scores of
+   * two images. For a teacher whose pinned kaggle-base is gone from the
+   * server, who wants the rebuilt one, or whose competition scored in its own
+   * GPU image before kaggle-base was here. A competition on the CPU scores in
+   * its own pin, which moves with its base («обновить базу»).
+   */
+  router.post('/api/admin/competitions/:id/metric/image', requireStaff, async (req, res) => {
+    const competition = competitionOf(req, res)
+    if (!competition) return
+    let moved: Awaited<ReturnType<typeof moveMetricToLightImage>>
+    try {
+      moved = await moveMetricToLightImage(competition)
+    } catch (error) {
+      // Docker did not say whether kaggle-base is here, or it could not be recorded: nothing moved.
+      console.warn(`[competitions] ${competition.id}: the metric image could not be moved: ${error instanceof Error ? error.message.slice(0, 300) : String(error)}`)
+      return fail(res, 503, 'failed', tr('runtime.dockerUnavailable'))
+    }
+    if (moved === 'cpu') return fail(res, 409, 'invalid', tr('competitions.refusal.metricImageCpu'))
+    if (moved === 'none') return fail(res, 503, 'failed', tr('competitions.refusal.noMetricImage', { environment: LIGHT_METRIC_ENVIRONMENT }))
+    res.status(202).json({ revisionId: moved.revision.id, queued: moved.queued })
   })
 
   /**

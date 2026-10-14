@@ -31,7 +31,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { Transform, Writable, type TransformCallback } from 'node:stream'
+import { PassThrough, Transform, Writable, type TransformCallback } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import zlib from 'node:zlib'
 import type { Request } from 'express'
@@ -201,13 +201,33 @@ async function store(req: Request, attemptId: string, meta: RemoteUploadReply): 
       fs.fsync(fd, (error) => done(error ?? null))
     },
   })
+  /*
+   * The body is read through a stream of its own, never the request itself:
+   * pipeline destroys every stream it was given once one of them fails, and
+   * a request destroyed halfway through its body resets the connection. Then
+   * a refusal found in the middle of the body — past its declared length, not
+   * gzip at all, longer compressed than its file could be — never reached
+   * the machine: it saw a reset, took it for the path's hiccup, and sent the
+   * same upload again for ever. Now the request is only unpiped and left
+   * paused; the router answers the refusal, marked, and lets go of the rest
+   * of the body after the answer (routes.ts · lingerAfter).
+   */
+  const body = new PassThrough()
+  // A connection cut halfway ends the read as the request itself would have: pipe() passes on no error, and an upload slot must never wait for a body that is not coming.
+  req.once('error', (error) => body.destroy(error))
+  req.once('close', () => {
+    if (!req.complete) body.destroy(Object.assign(new Error('The upload was cut short'), { code: 'ERR_STREAM_PREMATURE_CLOSE' }))
+  })
+  req.pipe(body)
   try {
-    await pipeline(req, counted, zlib.createGunzip({ chunkSize: 64 * 1024 }), unzipped, sink)
+    await pipeline(body, counted, zlib.createGunzip({ chunkSize: 64 * 1024 }), unzipped, sink)
     fs.closeSync(fd)
     closed = true
     if (plain !== meta.bytes || hash.digest('hex') !== meta.sha256) throw new UploadRefusal('mismatch', 'The file is not what its headers said')
     competitionsFs.renameSync(part, stagedPath(attemptId, meta.name, meta.sha256))
   } catch (error) {
+    req.unpipe(body)
+    req.pause()
     if (!closed) {
       try { fs.closeSync(fd) } catch { /* already closed by the failing stream */ }
     }

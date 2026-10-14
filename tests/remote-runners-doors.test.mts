@@ -23,7 +23,7 @@ import { createHash } from 'node:crypto'
 import type { Response as ExpressResponse } from 'express'
 import { STAFF_COOKIE } from '../shared/admin.js'
 import { ENTRANT_COOKIE } from '../shared/competitions.js'
-import { REMOTE_MARKER, REMOTE_MARKER_HEADER, REMOTE_SYNC_BYTES, remoteCredential, type RemoteLease } from '../shared/remote-runner.js'
+import { REMOTE_API_ROOT, REMOTE_MARKER, REMOTE_MARKER_HEADER, REMOTE_PROTOCOL, REMOTE_PROTOCOL_HEADER, REMOTE_SYNC_BYTES, parseRemoteErrorReply, remoteCredential, remoteProtocolOf, remoteTransient, type RemoteLease } from '../shared/remote-runner.js'
 import { createTeacher, rotateLinkKey } from '../server/src/admin/store.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { verifyToken } from '../server/src/auth.js'
@@ -93,6 +93,32 @@ test('every reply of the router carries the marker, refusals included', async ()
   assert.equal(big.status, 413)
   assert.equal(big.headers.get(REMOTE_MARKER_HEADER), REMOTE_MARKER)
   assert.equal(((await big.json()) as { error: string }).error, 'too_large')
+})
+
+test('a machine of another protocol is told so, with the marker: never the app\'s unmarked page it would retry for ever', async () => {
+  reset()
+  const home = await serve()
+  const m = await joined()
+  // This version's replies say which protocol home speaks, beside the marker.
+  const own = await m.call('POST', 'sync', { body: {} })
+  assert.equal(own.headers.get(REMOTE_PROTOCOL_HEADER), String(REMOTE_PROTOCOL))
+  // An agent of another release calls its own version's path, credential and all.
+  for (const [method, path] of [['POST', 'v2/sync'], ['PUT', `v2/attempts/${'c'.repeat(32)}/files/submission.csv`], ['POST', 'v0/join'], ['GET', 'v17/blobs/x']] as const) {
+    const answer = await fetch(`${home}${REMOTE_API_ROOT}/${path}`, {
+      method,
+      headers: { authorization: `Bearer ${m.credential}`, 'content-type': 'application/json', 'x-forwarded-for': m.address },
+      body: method === 'GET' ? undefined : '{"protocol":2}',
+    })
+    assert.equal(answer.status, 426, path)
+    assert.equal(answer.headers.get(REMOTE_MARKER_HEADER), REMOTE_MARKER, `${path}: marked`)
+    assert.equal(remoteProtocolOf(answer.headers.get(REMOTE_PROTOCOL_HEADER)), REMOTE_PROTOCOL, `${path}: names the protocol home speaks`)
+    assert.equal(remoteTransient(answer.status, answer.headers.get(REMOTE_MARKER_HEADER)), false, `${path}: final, not a hiccup`)
+    assert.equal(parseRemoteErrorReply(await answer.json()).error, 'protocol')
+  }
+  // Not a version at all: none of the machines' business, left to the rest of the app.
+  const other = await fetch(`${home}${REMOTE_API_ROOT}/status`)
+  assert.equal(other.headers.get(REMOTE_MARKER_HEADER), null)
+  await other.arrayBuffer()
 })
 
 /* --------------------------------------------------------- the credential */
@@ -253,6 +279,10 @@ test('the code is kept only by its sha256', () => {
 test('blobs by hash: in scope only, the hidden test to trusted machines only, Range, and 410 once replaced', async () => {
   reset()
   const c = competition({ sealed: true })
+  // A train.csv of its own: every competition of these tests has the same one, and a hash another competition still holds is no gone file.
+  const own = putOpenFile(c.id, 'train.csv', new TextEncoder().encode(`id,feature\n1,${c.id}\n2,0.7\n`))
+  putFile({ competitionId: c.id, name: 'train.csv', bytes: own.bytes, visibility: 'open', sha256: own.sha256 })
+  forgetStock()
   send(c)
   const untrusted = await joined()
   const trusted = await joined({ trusted: true })
@@ -285,6 +315,34 @@ test('blobs by hash: in scope only, the hidden test to trusted machines only, Ra
   const stored = putOpenFile(c.id, 'train.csv', new TextEncoder().encode('id,feature\n1,9\n'))
   putFile({ competitionId: c.id, name: 'train.csv', bytes: stored.bytes, visibility: 'open', sha256: stored.sha256 })
   assert.equal((await untrusted.call('GET', `blobs/${train.sha256}`)).status, 410)
+})
+
+test('a file two competitions share, replaced in one of them, is still served from the other: never 410 for a hash a machine still needs', async () => {
+  reset()
+  const first = competition()
+  const second = competition()
+  const bytes = new TextEncoder().encode(`id,feature\n1,shared-${first.id}\n`)
+  for (const c of [first, second]) {
+    const stored = putOpenFile(c.id, 'shared.csv', bytes)
+    putFile({ competitionId: c.id, name: 'shared.csv', bytes: stored.bytes, visibility: 'open', sha256: stored.sha256 })
+    send(c)
+  }
+  forgetStock()
+  const m = await joined()
+  const want = (await m.sync()).body.want
+  const shared = want.data.find((entry) => entry.competitionId === first.id)!.files.find((file) => file.name === 'shared.csv')!
+  assert.ok(want.data.find((entry) => entry.competitionId === second.id)!.files.some((file) => file.sha256 === shared.sha256))
+  // The second competition replaces its copy; the first keeps the very same bytes, which the machine still needs for it.
+  for (const c of [second, first]) {
+    const replaced = putOpenFile(c.id, 'shared.csv', new TextEncoder().encode(`id,feature\n1,new-${c.id}\n`))
+    putFile({ competitionId: c.id, name: 'shared.csv', bytes: replaced.bytes, visibility: 'open', sha256: replaced.sha256 })
+    const answer = await m.call('GET', `blobs/${shared.sha256}`)
+    const body = Buffer.from(await answer.arrayBuffer())
+    if (c === second) {
+      assert.equal(answer.status, 200, 'served from the competition that still has it')
+      assert.equal(createHash('sha256').update(body).digest('hex'), shared.sha256)
+    } else assert.equal(answer.status, 410, 'once neither has it, it is gone')
+  }
 })
 
 test('one blob stream per machine: a second request while one is open is told to come back', async () => {
@@ -381,6 +439,61 @@ test('an upload is kept only when it is what its headers said, bounded after dec
   assert.equal((ok.body as { sha256: string }).sha256, createHash('sha256').update(ANSWER).digest('hex'))
   assert.equal((await m.put(lease.attemptId, 'submission.csv', ANSWER)).status, 200, 'the same again: a no-op')
   assert.equal(staged().filter((name) => name.startsWith('submission.csv.')).length, 1)
+})
+
+test('an upload refused in the middle of its body is answered, marked: never a reset the machine retries for ever', async () => {
+  reset()
+  const c = competition()
+  send(c)
+  const { m, lease } = await runningLease(c)
+  /** A PUT whose body is megabytes of `chunk()`, sent as it is read: still on its way when home finds what is wrong with it. */
+  const streamed = (headers: Record<string, string>, chunk: () => Uint8Array, chunks: number) => {
+    let sent = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent++ >= chunks) controller.close()
+        else controller.enqueue(chunk())
+      },
+    })
+    return fetch(`${m.home}/api/runners/v1/attempts/${lease.attemptId}/files/submission.csv`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${m.credential}`, 'x-forwarded-for': m.address, ...headers },
+      body,
+      duplex: 'half',
+    } as RequestInit)
+  }
+  const random = () => new Uint8Array(createHash('sha256').update(String(Math.random())).digest().buffer.slice(0)).subarray(0, 32)
+  const noise = () => {
+    const out = new Uint8Array(64 * 1024)
+    for (let i = 0; i < out.length; i += 32) out.set(random(), i)
+    return out
+  }
+  // Not gzip at all: gunzip refuses its first bytes, with sixteen megabytes still to come.
+  const notGzip = await streamed({ 'content-encoding': 'gzip', 'x-colloq-sha256': 'a'.repeat(64), 'x-colloq-bytes': String(16 * 1024 * 1024) }, noise, 256)
+  assert.equal(notGzip.status, 422)
+  assert.equal(notGzip.headers.get(REMOTE_MARKER_HEADER), REMOTE_MARKER)
+  assert.equal(parseRemoteErrorReply(await notGzip.json()).error, 'mismatch')
+  // Gzip that inflates past what it declared, found after its first chunk of many.
+  const big = zlib.gzipSync(Buffer.concat(Array.from({ length: 48 }, () => Buffer.from(noise()))))
+  let at = 0
+  const slices = () => {
+    const part = big.subarray(at, at + 64 * 1024)
+    at += part.length
+    return new Uint8Array(part)
+  }
+  const longer = await streamed({ 'content-encoding': 'gzip', 'x-colloq-sha256': 'b'.repeat(64), 'x-colloq-bytes': '1000' }, slices, Math.ceil(big.length / (64 * 1024)))
+  assert.equal(longer.status, 413)
+  assert.equal(longer.headers.get(REMOTE_MARKER_HEADER), REMOTE_MARKER)
+  assert.equal(parseRemoteErrorReply(await longer.json()).error, 'too_large')
+  assert.equal(activeUploads(), 0, 'and its place among the uploads is free again')
+  // A refusal before a byte of the body is read (an attempt cancelled meanwhile): answered at once, the body let go of rather than drained.
+  const { cancelRemote } = await import('../server/src/competitions/remote/release.js')
+  assert.equal(cancelRemote(queueRow(lease.submissionId)!, 'teacher'), true)
+  const started = Date.now()
+  const late = await streamed({ 'content-encoding': 'gzip', 'x-colloq-sha256': 'c'.repeat(64), 'x-colloq-bytes': '100' }, noise, 1024)
+  assert.equal(late.status, 409)
+  assert.ok(Date.now() - started < 1_500, `answered before the sixty-four megabytes were sent (${Date.now() - started} ms)`)
+  assert.equal(parseRemoteErrorReply(await late.json()).error, 'revoked')
 })
 
 test('two uploads of one file at once write a file each: what is kept is one whole write, never two halves', async () => {

@@ -31,6 +31,8 @@ import {
   putFile,
 } from '../server/src/competitions/store.js'
 import {
+  composeRunInputs,
+  dropAttempt,
   openDir,
   openFileSha256,
   putOpenFile,
@@ -38,6 +40,8 @@ import {
   putSecretFile,
   sealedFileSha256,
 } from '../server/src/competitions/storage.js'
+import { letContainerRead } from '../server/src/competitions/runner.js'
+import { cachedSha256 } from '../server/src/dependencies/files.js'
 import type { Competition } from '../shared/competitions.js'
 
 const sha = (text: string) => createHash('sha256').update(text).digest('hex')
@@ -96,6 +100,49 @@ test('an upload keeps the sha256 of the bytes it wrote, for the open data and th
   assert.equal(row(c, 'hidden', 'solution.csv')?.sha256, null, 'the answers are never addressed by hash')
   // The stored file is the one hashed.
   assert.equal(sha(fs.readFileSync(path.join(openDir(c.id), 'train.csv'), 'utf8')), row(c, 'open', 'train.csv')?.sha256)
+})
+
+/*
+ * The data changes only by a new inode renamed over its name, and every run
+ * here moves its ctime with nothing changed: the hard links a hidden-test run
+ * makes and drops, the mode a container needs. Keyed by ctime, each such run
+ * made the next hash of every data file read it whole again — up to two
+ * hundred megabytes each, the files the machines fetch by hash.
+ */
+test('a data file that only gained links and a mode is not read again; one renamed over is, and wheels never push the data out', async () => {
+  const c = competition()
+  putOpenFile(c.id, 'train.csv', enc('id,target\n1,0\n'))
+  putSealedFile(c.id, 'test.csv', enc('id\n101\n'))
+  let reads = 0
+  const createReadStream = fs.createReadStream
+  fs.createReadStream = ((...args: Parameters<typeof fs.createReadStream>) => { reads++; return createReadStream(...args) }) as typeof fs.createReadStream
+  try {
+    assert.equal((await openFileSha256(c.id, 'train.csv'))?.sha256, sha('id,target\n1,0\n'))
+    assert.equal((await sealedFileSha256(c.id, 'test.csv'))?.sha256, sha('id\n101\n'))
+    assert.equal(reads, 2)
+    // Runs on the hidden test here: both files linked into each run's data folder, given a mode, unlinked when it goes.
+    for (let run = 0; run < 3; run++) {
+      const inputs = await composeRunInputs(c.id, `s${run}`, `a${run}`, { open: ['train.csv'], sealed: ['test.csv'] })
+      letContainerRead(inputs)
+      letContainerRead(openDir(c.id))
+      dropAttempt(c.id, `s${run}`, `a${run}`)
+      assert.equal((await openFileSha256(c.id, 'train.csv'))?.sha256, sha('id,target\n1,0\n'))
+      assert.equal((await sealedFileSha256(c.id, 'test.csv'))?.sha256, sha('id\n101\n'))
+    }
+    assert.equal(reads, 2, 'the bytes did not change, and no file was read again')
+    // A few thousand wheels hashed meanwhile keep to a cache of their own.
+    for (let i = 0; i < 4100; i++) {
+      await cachedSha256(`/wheels/w-${i}.whl`, { size: i, mtimeMs: 1, ctimeMs: 1, ino: i, dev: 1 } as unknown as fs.Stats, async function* () { yield 'w' })
+    }
+    await openFileSha256(c.id, 'train.csv')
+    assert.equal(reads, 2, 'the data\'s digests were not pushed out')
+    // New bytes are a new inode renamed over the name: read again.
+    putOpenFile(c.id, 'train.csv', enc('id,target\n1,1\n'))
+    assert.equal((await openFileSha256(c.id, 'train.csv'))?.sha256, sha('id,target\n1,1\n'))
+    assert.equal(reads, 3)
+  } finally {
+    fs.createReadStream = createReadStream
+  }
 })
 
 test('a put returns the size and the hash of what it wrote', () => {

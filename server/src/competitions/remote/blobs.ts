@@ -46,9 +46,16 @@ import { liveLeases, remoteEvent, type RunnerRow } from './store.js'
 
 /* ------------------------------------------------------------------ scope */
 
-/** What a machine's last sync reply asked it to hold: the data files by hash, and the package sets by id. */
+/**
+ * What a machine's last sync reply asked it to hold: the data files by hash —
+ * EVERY file that has the hash, not one of them: two competitions may hold
+ * the very same file (one task for two groups, a hidden-test copy), and one
+ * of them replacing its copy must not make the other's 410, which the machine
+ * would ask about again at every want, for a file it still needs — and the
+ * package sets by id.
+ */
 interface WantScope {
-  files: Map<string, { competitionId: string; name: string; sealed: boolean }>
+  files: Map<string, Array<{ competitionId: string; name: string; sealed: boolean }>>
   bundles: Set<string>
 }
 
@@ -56,9 +63,13 @@ const wantScopes = new Map<string, WantScope>()
 
 /** Called with every sync reply (routes.ts): the blobs its `want` names become fetchable for that machine. */
 export function noteWantScope(runnerId: string, want: RemoteWant): void {
-  const files = new Map<string, { competitionId: string; name: string; sealed: boolean }>()
+  const files = new Map<string, Array<{ competitionId: string; name: string; sealed: boolean }>>()
   for (const entry of want.data) {
-    for (const file of entry.files) files.set(file.sha256, { competitionId: entry.competitionId, name: file.name, sealed: entry.sealed })
+    for (const file of entry.files) {
+      const sources = files.get(file.sha256) ?? []
+      sources.push({ competitionId: entry.competitionId, name: file.name, sealed: entry.sealed })
+      files.set(file.sha256, sources)
+    }
   }
   wantScopes.set(runnerId, { files, bundles: new Set(want.bundles.map((bundle) => bundle.id)) })
 }
@@ -74,29 +85,34 @@ type BlobSource =
   | { kind: 'wheel' }
 
 /**
- * The source of `hash` for `runner`, if the hash is in its scope; `null` —
- * it is not (404). Leases first: what a run needs now outranks what is
- * prefetched. The hidden test only while the machine is trusted.
+ * Where `hash` may be read from for `runner`, in order, if the hash is in its
+ * scope; empty — it is not (404). Leases first: what a run needs now outranks
+ * what is prefetched. The hidden test only while the machine is trusted.
+ * Every source, not the first: the same bytes may be several competitions'
+ * files, and the one replaced since is not the only one there is.
  */
-function scopedSource(runner: RunnerRow, hash: string): BlobSource | null {
+function scopedSources(runner: RunnerRow, hash: string): BlobSource[] {
+  const out: BlobSource[] = []
   const leases = liveLeases(runner.id)
   for (const lease of leases) {
     const m = lease.manifest
     const open = m.data.files.find((file) => file.sha256 === hash)
-    if (open) return { kind: 'open', competitionId: lease.competitionId, name: open.name }
+    if (open) out.push({ kind: 'open', competitionId: lease.competitionId, name: open.name })
     const sealed = runner.trusted && lease.sealed ? m.sealed?.files.find((file) => file.sha256 === hash) : undefined
-    if (sealed) return { kind: 'sealed', competitionId: lease.competitionId, name: sealed.name }
-    if (m.notebook.sha256 === hash) return { kind: 'notebook', competitionId: lease.competitionId, submissionId: lease.submissionId }
+    if (sealed) out.push({ kind: 'sealed', competitionId: lease.competitionId, name: sealed.name })
+    if (m.notebook.sha256 === hash) out.push({ kind: 'notebook', competitionId: lease.competitionId, submissionId: lease.submissionId })
   }
   const want = wantScopes.get(runner.id)
-  const file = want?.files.get(hash)
-  if (file && (!file.sealed || runner.trusted)) return { kind: file.sealed ? 'sealed' : 'open', competitionId: file.competitionId, name: file.name }
+  for (const file of want?.files.get(hash) ?? []) {
+    if (!file.sealed || runner.trusted) out.push({ kind: file.sealed ? 'sealed' : 'open', competitionId: file.competitionId, name: file.name })
+  }
+  if (out.length > 0) return out
   const bundles = new Set([...(want?.bundles ?? []), ...leases.flatMap((lease) => (lease.manifest.bundle ? [lease.manifest.bundle.id] : []))])
   if (bundles.size > 0) {
     const sets = db.prepare('SELECT bundle_id FROM dependency_bundle_artifacts WHERE sha256 = ?').all(hash) as { bundle_id: string }[]
-    if (sets.some((set) => bundles.has(set.bundle_id))) return { kind: 'wheel' }
+    if (sets.some((set) => bundles.has(set.bundle_id))) return [{ kind: 'wheel' }]
   }
-  return null
+  return []
 }
 
 /** A source resolved to an open file of the expected length; `null` — it has been replaced or is gone (410). */
@@ -197,8 +213,8 @@ function rangeOf(header: string | undefined, size: number): { start: number; end
  */
 export async function serveBlob(req: Request, res: Response, runner: RunnerRow, hash: string): Promise<void> {
   if (!REMOTE_SHA256.test(hash)) throw new BlobRefusal('invalid')
-  const source = scopedSource(runner, hash)
-  if (!source) {
+  const sources = scopedSources(runner, hash)
+  if (sources.length === 0) {
     blobCounts.refused++
     throw new BlobRefusal('not_found')
   }
@@ -206,8 +222,16 @@ export async function serveBlob(req: Request, res: Response, runner: RunnerRow, 
     blobCounts.refused++
     throw new BlobRefusal('too_often', 5)
   }
-  const file = openSource(source, hash)
-  if (!file) {
+  let source: BlobSource | null = null
+  let file: { fd: number; bytes: number } | null = null
+  for (const candidate of sources) {
+    file = openSource(candidate, hash)
+    if (file) {
+      source = candidate
+      break
+    }
+  }
+  if (!file || !source) {
     blobCounts.gone++
     throw new BlobRefusal('gone')
   }

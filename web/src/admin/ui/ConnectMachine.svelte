@@ -9,17 +9,27 @@
    *
    * Under the commands a live line names the machines as they join, read
    * from the list the Resources block keeps polling (every three seconds
-   * while this is open). A machine counts as joined when the list has it and
-   * did not when the code was shown: the code itself is never kept to match
-   * it by, and closing the window forgets it for good.
+   * while this is open). How many joined is this code's own count (its id in
+   * the list's codes): a machine new since the code was shown may have come
+   * with another code. The code itself is never kept, and closing the window
+   * forgets it for good.
    */
   import { onMount } from 'svelte'
   import { tr } from '@shared/i18n'
-  import type { MintRemoteCodeResponse, RemoteMachine } from '@shared/remote-admin'
+  import type { MintRemoteCodeResponse, RemoteCodeView, RemoteMachine } from '@shared/remote-admin'
   import Check from '@/admin/ui/Check.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
-  import { HOURS_BOUNDS, MACHINES_BOUNDS, connectDefaults, joinProgress, mintRequest, runnersApi, type ConnectForm } from '@/admin/runners'
+  import {
+    HOURS_BOUNDS,
+    MACHINES_BOUNDS,
+    codeJoined,
+    connectDefaults,
+    joinProgress,
+    mintRequest,
+    runnersApi,
+    type ConnectForm,
+  } from '@/admin/runners'
   import { AdminApiError } from '@/lib/adminApi'
   import { copyText } from '@/lib/clipboard'
   import { cn } from '@/lib/utils'
@@ -27,30 +37,54 @@
   interface Props {
     /** The list as the Resources block last read it. */
     machines: RemoteMachine[]
+    /** The codes still valid, from the same read: this code's own count of joins. */
+    codes: RemoteCodeView[]
     onclose: () => void
   }
 
-  let { machines, onclose }: Props = $props()
+  let { machines, codes, onclose }: Props = $props()
 
   let form = $state<ConnectForm>(connectDefaults())
   let minted = $state<MintRemoteCodeResponse | null>(null)
-  /** The machines the list had when the code was shown: everything else joined with it. */
+  /** The machines the list had when the code was shown: the newcomers since are named when the code's count says they are all its own. */
   let known = $state<ReadonlySet<string>>(new Set())
+  /** The list has shown this code at least once: from then on its absence before expiry means it is spent (admin/runners.ts · codeJoined). */
+  let codeSeen = $state(false)
   let busy = $state(false)
   let errorText = $state<(() => string) | null>(null)
   const error = $derived(errorText?.() ?? null)
   let copied = $state<string | null>(null)
   let copyFailed = $state(false)
 
-  const progress = $derived(minted ? joinProgress(known, machines, minted.machines) : null)
+  $effect(() => {
+    const id = minted?.id
+    if (id && codes.some((code) => code.id === id)) codeSeen = true
+  })
+
+  const progress = $derived(
+    minted ? joinProgress(known, machines, minted.machines, codeJoined(minted, codes, Date.now(), codeSeen)) : null,
+  )
 
   onMount(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy) onclose()
+      if (event.key === 'Escape' && !busy) requestClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
+
+  /**
+   * Escape and the cross close the window, and once the code is shown that
+   * loses it: it is shown this once and kept nowhere, so a reflex Escape
+   * between copying the first command and pasting it on the third VM meant
+   * minting a new code. So they ask first, while machines are still
+   * expected; "Done" is the owner saying they have what they need, and asks
+   * nothing.
+   */
+  function requestClose(): void {
+    if (minted && (progress?.joined ?? 0) < minted.machines && !window.confirm(tr('admin.runners.connect.closeConfirm'))) return
+    onclose()
+  }
 
   async function mint(): Promise<void> {
     if (busy || minted) return
@@ -113,7 +147,7 @@
         <h2 id="connect-machine-title" class="text-head font-black text-ink">{tr('admin.runners.connect')}</h2>
         <p class="mt-1 text-2xs text-muted">{tr('admin.runners.connect.lede')}</p>
       </div>
-      <button type="button" class="admin-icon-btn -mr-2 -mt-1" aria-label={tr('admin.close')} disabled={busy} onclick={onclose}>
+      <button type="button" class="admin-icon-btn -mr-2 -mt-1" aria-label={tr('admin.close')} disabled={busy} onclick={requestClose}>
         <Icon name="x" size={15} />
       </button>
     </div>
@@ -189,6 +223,15 @@
               {tr('admin.runners.connect.once', { count: minted.machines, hours: Math.max(1, Math.round((minted.expiresAt - Date.now()) / 3_600_000)) })}
             </p>
           </div>
+          {#if minted.loopback}
+            <!-- The commands carry this server's own loopback (PUBLIC_URL of
+                 localhost or 127.x), as colloq-host runner-code warns too: a
+                 machine anywhere else would dial itself and never join. -->
+            <p class="flex items-start gap-2 border-l-[3px] border-danger bg-danger/[0.06] px-3 py-2.5 text-2xs font-semibold text-danger" role="alert">
+              <Icon name="alert" size={14} class="mt-0.5 shrink-0" />
+              <span>{tr('admin.runners.connect.loopback')}</span>
+            </p>
+          {/if}
           {#each COMMANDS as command (command.key)}
             <div class="flex flex-col gap-1.5">
               <p class="admin-label">{command.label}</p>

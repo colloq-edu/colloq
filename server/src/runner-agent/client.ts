@@ -33,6 +33,8 @@ import {
   REMOTE_BYTES_HEADER,
   REMOTE_ERRORS,
   REMOTE_MARKER_HEADER,
+  REMOTE_PROTOCOL,
+  REMOTE_PROTOCOL_HEADER,
   REMOTE_RELAY_STATE_PATH,
   REMOTE_REPLY_BYTES,
   REMOTE_SHA256_HEADER,
@@ -42,6 +44,7 @@ import {
   parseRemoteSyncReply,
   parseRemoteUploadReply,
   remotePaths,
+  remoteProtocolOf,
   remoteText,
   remoteTransient,
   REMOTE_REASON_CHARS,
@@ -166,7 +169,10 @@ export class RemoteClient {
   /**
    * What the relay in front of home says about it (REMOTE_RELAY_STATE_PATH):
    * `home_offline` — the relay knows home and its tunnel is down,
-   * `home_silent` — the tunnel is up and home did not answer, `unreachable` —
+   * `home_silent` — the tunnel is up and home did not answer, `home_unknown` —
+   * the relay serves no home by this name at all (`known: false`: a wrong
+   * address, or a name given up; no tunnel will ever come up for it, and
+   * telling the owner "offline" would have them wait for it), `unreachable` —
    * no relay answered (this machine's own network, or a home with no relay in
    * front). Unsigned: the relay's own page, not home's.
    */
@@ -180,6 +186,7 @@ export class RemoteClient {
       const text = response.ok ? await capped(response, 4096) : null
       const value = text === null ? null : (JSON.parse(text) as { known?: unknown; tunnel?: unknown })
       if (!value || typeof value.known !== 'boolean' || typeof value.tunnel !== 'boolean') return 'unreachable'
+      if (!value.known) return 'home_unknown'
       return value.tunnel ? 'home_silent' : 'home_offline'
     } catch {
       return 'unreachable'
@@ -266,16 +273,27 @@ export class RemoteClient {
     }
   }
 
-  /** Home's refusal by its code; a body that does not say is named by its status, as REMOTE_ERRORS lists them. */
+  /**
+   * Home's refusal by its code; a body that does not say is named by its
+   * status, as REMOTE_ERRORS lists them. A `protocol` refusal (426, from a
+   * home of another version) says which protocol home speaks
+   * (REMOTE_PROTOCOL_HEADER) in its detail: what the machine must be updated
+   * to, for the owner and the fleet's update.
+   */
   private async refusal(response: Response): Promise<Exclude<CallResult<never>, { kind: 'ok' | 'transient' }>> {
     const text = await capped(response, 64 * 1024).catch(() => null)
+    let refused: Exclude<CallResult<never>, { kind: 'ok' | 'transient' }>
     try {
       const reply = parseRemoteErrorReply(JSON.parse(text ?? ''))
-      return { kind: 'refused', status: response.status, error: reply.error, detail: reply.detail ?? '' }
+      refused = { kind: 'refused', status: response.status, error: reply.error, detail: reply.detail ?? '' }
     } catch {
       const error = (Object.keys(REMOTE_ERRORS) as RemoteErrorCode[]).find((code) => REMOTE_ERRORS[code] === response.status) ?? 'invalid'
-      return { kind: 'refused', status: response.status, error, detail: remoteText((text ?? '').trim(), REMOTE_REASON_CHARS, 'start') }
+      refused = { kind: 'refused', status: response.status, error, detail: remoteText((text ?? '').trim(), REMOTE_REASON_CHARS, 'start') }
     }
+    if (refused.error !== 'protocol') return refused
+    const spoken = remoteProtocolOf(response.headers.get(REMOTE_PROTOCOL_HEADER))
+    const said = `home speaks protocol ${spoken ?? 'unknown'}, this machine ${REMOTE_PROTOCOL}`
+    return { ...refused, detail: remoteText(refused.detail ? `${said}: ${refused.detail}` : said, REMOTE_REASON_CHARS, 'start') }
   }
 }
 

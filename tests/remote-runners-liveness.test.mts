@@ -21,7 +21,7 @@ import { countsTowardDailyQuota, countsTowardFailedAttempts } from '../shared/co
 import { REMOTE_BLIND_MS, REMOTE_BOOT_GRACE_MS, REMOTE_EVIDENCE_MS, REMOTE_OFFER_MS, REMOTE_SILENCE_MS } from '../shared/remote-runner.js'
 import { FakeCompetitionRunner } from '../server/src/competitions/fake-runner.js'
 import { useCompetitionRunner } from '../server/src/competitions/runner-port.js'
-import { getSubmission, listRuns, queueRow } from '../server/src/competitions/store.js'
+import { getSubmission, listRuns, queueRow, updateSubmission } from '../server/src/competitions/store.js'
 import { getLease, getRunner, joinRunner, updateLease, type RunnerRow } from '../server/src/competitions/remote/store.js'
 import { runnerOffer, reconcileSync, takeForRunner, type RunnerOffer } from '../server/src/competitions/remote/lease.js'
 import { dataNow } from '../server/src/competitions/remote/want.js'
@@ -167,9 +167,44 @@ test('this server\'s probe of its own address through the relay is path evidence
   const lease = running(m, c, now)
   const passing = (async () => new Response('{"ok":true}', { status: 200 })) as unknown as typeof fetch
   const later = now + REMOTE_SILENCE_MS + 5000
-  assert.equal(await probeOwnPath(later - 1000, passing), true)
+  assert.equal(await probeOwnPath(later - 1000, passing, 'https://vsos.colloq.ru'), true)
   assert.equal(remoteTick(later).lost, 1)
   assert.equal(getLease(lease.attemptId)?.state, 'lost')
+  reset()
+})
+
+test('a probe of the loopback is no evidence of the relay: a silent machine keeps its runs while nothing else proves the path', async () => {
+  reset()
+  const c = competition()
+  send(c)
+  const m = machine()
+  const now = Date.now()
+  const lease = running(m, c, now)
+  const asked: string[] = []
+  const passing = (async (url: URL) => {
+    asked.push(String(url))
+    return new Response('{"ok":true}', { status: 200 })
+  }) as unknown as typeof fetch
+  const later = now + REMOTE_SILENCE_MS + 5000
+  // The default PUBLIC_URL of an instance with no address: it answers from this very process, through no relay at all.
+  for (const home of ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://[::1]:3000']) {
+    assert.equal(await probeOwnPath(later - 1000, passing, home), false, home)
+  }
+  assert.deepEqual(asked, [], 'not even asked')
+  assert.equal(remoteTick(later).lost, 0, 'no evidence: the silence may be the tunnel\'s')
+  assert.equal(getLease(lease.attemptId)?.state, 'running')
+  reset()
+})
+
+test('the probe follows one redirect from http to https on its own host, and no other', async () => {
+  reset()
+  machine()
+  const redirecting = (to: string) => (async (url: URL) => String(url).startsWith('http://')
+    ? new Response(null, { status: 308, headers: { location: to } })
+    : new Response('{"ok":true}', { status: 200 })) as unknown as typeof fetch
+  assert.equal(await probeOwnPath(Date.now(), redirecting('https://vsos.colloq.ru/api/readyz'), 'http://vsos.colloq.ru'), true, 'Caddy\'s http to https')
+  assert.equal(await probeOwnPath(Date.now(), redirecting('https://elsewhere.example/api/readyz'), 'http://vsos.colloq.ru'), false, 'another host is not this server')
+  assert.equal(await probeOwnPath(Date.now(), redirecting('http://vsos.colloq.ru/login'), 'http://vsos.colloq.ru'), false)
   reset()
 })
 
@@ -329,5 +364,55 @@ test('five declines within half an hour quarantine a machine too; its drains are
   const quarantined = getRunner(m.id)!
   assert.equal(quarantined.state, 'draining')
   assert.ok(quarantined.quarantinedAt !== null)
+  reset()
+})
+
+test('an agent restart that loses every run at once is one loss, and losses before a container started are none: the machine keeps serving', () => {
+  reset()
+  const c = competition()
+  const m = machine()
+  const now = Date.now()
+  // Four runs going, then the agent restarts: its first sync lists none of them.
+  const held = Array.from({ length: 4 }, (_, i) => {
+    send(c, { at: now + i })
+    return running(m, c, now + i)
+  })
+  reconcileSync(getRunner(m.id)!, syncRequest({ seq: Math.max(...held.map((lease) => lease.seq)) }), now + 100)
+  for (const lease of held) assert.equal(getLease(lease.attemptId)?.state, 'lost')
+  assert.equal(getRunner(m.id)?.state, 'active', 'one restart is one loss, not four')
+  // Three more, each lost before its container started (an image that would not pull): refunded, and no loss at all.
+  for (let i = 0; i < 3; i++) {
+    send(c, { at: now + 10 + i })
+    const lease = running(m, c, now + 10 + i, null)
+    assert.equal(loseLease(lease.attemptId, now + 200 + i, 'missing'), true)
+  }
+  assert.equal(getRunner(m.id)?.state, 'active', 'losses that cost no run count for nothing')
+  // Two more restarts of the agent with runs going: three losses in all, and now the machine is drained.
+  for (let i = 0; i < 2; i++) {
+    send(c, { at: now + 20 + i })
+    const lease = running(m, c, now + 20 + i)
+    assert.equal(loseLease(lease.attemptId, now + 300 + i, 'missing'), true)
+    assert.equal(getRunner(m.id)?.state, i === 0 ? 'active' : 'draining')
+  }
+  assert.ok(getRunner(m.id)?.quarantinedAt !== null)
+  reset()
+})
+
+test('a submission given up on as our failure keeps no progress of the run that was lost', () => {
+  reset()
+  const c = competition()
+  const sent = send(c)
+  const machines = [machine(), machine(), machine()]
+  const now = Date.now()
+  for (const [i, m] of machines.entries()) {
+    const lease = running(m, c, now + i)
+    // The run reported its third cell of five before its machine went.
+    updateSubmission(sent.id, { stage: 'notebook', cellsDone: 3, cellsTotal: 5 })
+    assert.equal(loseLease(lease.attemptId, now + i + 1, 'silent'), true)
+  }
+  const done = getSubmission(sent.id)!
+  assert.equal(done.state, 'metricFailed')
+  assert.equal(done.stage, 'queue', 'no stage of a run that was lost')
+  assert.deepEqual([done.cellsDone, done.cellsTotal], [0, 0], 'and none of its cells')
   reset()
 })

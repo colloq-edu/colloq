@@ -10,6 +10,18 @@
  * any call itself by setting the handler for it; the defaults answer as a
  * home with nothing to give would.
  *
+ * AND IT READS EVERY REQUEST AS HOME DOES, with the contract's strict
+ * parsers (parseRemoteJoinRequest, parseRemoteSyncRequest,
+ * parseRemoteOutcomeRequest, parseRemoteUploadMeta) before any handler sees
+ * it. One they refuse is answered as home's router answers it (400, or 426
+ * for another protocol) and written down in `violations`, and close() fails
+ * the test that made it. A conformance regression of the agent — a sync held
+ * too long while busy, progress outside `running`, a card on an accepted
+ * attempt, a decline over its cap — would turn every sync at a real home
+ * into a 400 and lose every lease on the machine; here it fails the agent's
+ * own tests. A test that sends a bad request on purpose takes the
+ * violations it expects out of the list.
+ *
  * THE DOCKER answers what the agent asks of its own (docker.ts): `info`, the
  * card probe, pulls, inspects and tags of revisions, the sweep of its check
  * containers and `update --restart=no`. The runs themselves never reach it:
@@ -26,6 +38,12 @@ import {
   REMOTE_MARKER,
   REMOTE_MARKER_HEADER,
   REMOTE_PROTOCOL,
+  REMOTE_PROTOCOL_HEADER,
+  RemoteProtocolError,
+  parseRemoteJoinRequest,
+  parseRemoteOutcomeRequest,
+  parseRemoteSyncRequest,
+  parseRemoteUploadMeta,
   remoteManifest,
   type RemoteLease,
   type RemoteOutcomeReply,
@@ -79,6 +97,8 @@ export interface FakeHome {
   onUpload: Handler<{ attemptId: string; name: string; sha256: string; bytes: number; file: Buffer }> | null
   onBlob: Handler<{ sha: string; range: string | undefined }> | null
   relay: { known: boolean; tunnel: boolean } | null
+  /** Requests the contract's parsers refused, as `METHOD path: why`; close() fails while any is left here. */
+  violations: string[]
   /** Sync requests, newest last. */
   syncs(): RemoteSyncRequest[]
   close(): Promise<void>
@@ -106,6 +126,11 @@ export function syncReply(partial: Partial<RemoteSyncReply> = {}): RemoteSyncRep
   }
 }
 
+/** An outcome's reply with nothing in it but what a test puts there: applied, no next work, trusted as the default machine is not. */
+export function outcomeReply(partial: Partial<RemoteOutcomeReply> = {}): RemoteOutcomeReply {
+  return { result: 'applied', seq: 0, leases: [], trusted: false, ...partial }
+}
+
 export async function fakeHome(): Promise<FakeHome> {
   const calls: Call[] = []
   const home: FakeHome = {
@@ -116,13 +141,15 @@ export async function fakeHome(): Promise<FakeHome> {
     onJoin: () => ({ json: { runnerId: RUNNER_ID, secret: SECRET, trusted: false, approvedSlots: null } }),
     // Held a little, as home holds a long-poll: an agent answered at once would spin.
     onSync: () => ({ json: syncReply(), delayMs: 20 }),
-    onOutcome: ({ body }) => ({ json: { result: 'applied', seq: 0, leases: [] } satisfies RemoteOutcomeReply, ...(body ? {} : {}) }),
+    onOutcome: () => ({ json: outcomeReply() }),
     onUpload: null,
     onBlob: null,
     relay: null,
+    violations: [],
     syncs: () => calls.filter((call) => call.path.endsWith('/sync')).map((call) => call.body as RemoteSyncRequest),
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()))
+      if (home.violations.length > 0) throw new Error(`the agent sent requests home's parsers refuse:\n${home.violations.join('\n')}`)
     },
   }
   const server = http.createServer(async (req, res) => {
@@ -145,7 +172,10 @@ export async function fakeHome(): Promise<FakeHome> {
     if (reply.delayMs) await new Promise((resolve) => setTimeout(resolve, reply.delayMs))
     if (res.destroyed) return
     const headers: Record<string, string> = { ...(reply.headers ?? {}) }
-    if (reply.marker !== false) headers[REMOTE_MARKER_HEADER] = REMOTE_MARKER
+    if (reply.marker !== false) {
+      headers[REMOTE_MARKER_HEADER] = REMOTE_MARKER
+      headers[REMOTE_PROTOCOL_HEADER] ??= String(REMOTE_PROTOCOL)
+    }
     if (reply.json !== undefined) headers['Content-Type'] = 'application/json'
     res.writeHead(reply.status ?? 200, headers)
     if (reply.slow) {
@@ -165,6 +195,23 @@ export async function fakeHome(): Promise<FakeHome> {
   return home
 }
 
+/**
+ * A request through the contract's parser, as home's router reads it: null
+ * when it parses; otherwise the refusal home's router would answer, and the
+ * violation written down for close() to fail the test with.
+ */
+function conforming(home: FakeHome, call: Call, parse: () => unknown): Reply | null {
+  try {
+    parse()
+    return null
+  } catch (error) {
+    if (!(error instanceof RemoteProtocolError)) throw error
+    home.violations.push(`${call.method} ${call.path}: ${error.message}`)
+    const status = error.code === 'protocol' ? 426 : error.code === 'too_large' ? 413 : 400
+    return { status, json: { error: error.code, detail: error.message.slice(0, 300) } }
+  }
+}
+
 async function route(home: FakeHome, call: Call, url: URL, req: http.IncomingMessage): Promise<Reply> {
   const at = url.pathname
   if (at === '/.relay/state') {
@@ -173,8 +220,8 @@ async function route(home: FakeHome, call: Call, url: URL, req: http.IncomingMes
   const api = '/api/runners/v1/'
   if (!at.startsWith(api)) return { status: 404, text: 'not here', marker: false }
   const rest = at.slice(api.length)
-  if (rest === 'join' && call.method === 'POST') return home.onJoin(call.body, call)
-  if (rest === 'sync' && call.method === 'POST') return home.onSync(call.body as RemoteSyncRequest, call)
+  if (rest === 'join' && call.method === 'POST') return conforming(home, call, () => parseRemoteJoinRequest(call.body)) ?? home.onJoin(call.body, call)
+  if (rest === 'sync' && call.method === 'POST') return conforming(home, call, () => parseRemoteSyncRequest(call.body)) ?? home.onSync(call.body as RemoteSyncRequest, call)
   const blob = /^blobs\/([a-f0-9]{64})$/.exec(rest)
   if (blob && call.method === 'GET') {
     const range = req.headers.range
@@ -183,9 +230,12 @@ async function route(home: FakeHome, call: Call, url: URL, req: http.IncomingMes
   }
   const file = /^attempts\/([a-f0-9]{32})\/files\/(submission\.csv|executed\.ipynb)$/.exec(rest)
   if (file && call.method === 'PUT') {
+    // The upload's headers, as home's router checks them before a byte of the body (upload.ts · parseRemoteUploadMeta).
+    const meta = { name: file[2], encoding: req.headers['content-encoding'], sha256: req.headers['x-colloq-sha256'], bytes: req.headers['x-colloq-bytes'] }
+    const refused = conforming(home, call, () => parseRemoteUploadMeta(meta))
+    if (refused) return refused
     const gunzipped = zlib.gunzipSync(call.raw)
     const declared = { sha256: String(req.headers['x-colloq-sha256'] ?? ''), bytes: Number(req.headers['x-colloq-bytes'] ?? -1) }
-    if (req.headers['content-encoding'] !== 'gzip') return { status: 400, json: { error: 'invalid', detail: 'not gzip' } }
     if (sha256(gunzipped) !== declared.sha256 || gunzipped.length !== declared.bytes) return { status: 422, json: { error: 'mismatch' } }
     if (home.onUpload) {
       const answer = await home.onUpload({ attemptId: file[1]!, name: file[2]!, ...declared, file: gunzipped }, call)
@@ -197,7 +247,7 @@ async function route(home: FakeHome, call: Call, url: URL, req: http.IncomingMes
     return { json: { name: file[2], sha256: declared.sha256, bytes: declared.bytes } }
   }
   const outcome = /^attempts\/([a-f0-9]{32})\/outcome$/.exec(rest)
-  if (outcome && call.method === 'POST') return home.onOutcome({ attemptId: outcome[1]!, body: call.body }, call)
+  if (outcome && call.method === 'POST') return conforming(home, call, () => parseRemoteOutcomeRequest(call.body)) ?? home.onOutcome({ attemptId: outcome[1]!, body: call.body }, call)
   return { status: 404, json: { error: 'not_found' } }
 }
 
@@ -266,19 +316,26 @@ export interface FakeAgentDocker {
   driver: string
   /** The GPU smoke test's answer. */
   smoke: DockerResult
-  /** Answer any call first; nothing — go on. */
-  intercept: ((args: string[]) => DockerResult | void) | null
+  /**
+   * What `stat -f` says in the throwaway container that measures Docker's own
+   * disk (machine.ts · measureDockerDisk): one `fsid block free total` line for
+   * the store, one for the tree; null — the measure fails (no such answer).
+   */
+  statfs: string | null
+  /** Answer any call first (a promise holds it until the test says); nothing — go on. */
+  intercept: ((args: string[]) => DockerResult | void | Promise<DockerResult | void>) | null
 }
 
 export function fakeAgentDocker(): FakeAgentDocker {
   const docker = (async (args: string[], options: DockerOptions = {}) => {
     docker.calls.push(args)
-    const caught = docker.intercept?.(args)
+    const caught = await docker.intercept?.(args)
     if (caught) return caught
     const [command] = args
     if (command === 'info') {
-      return { code: 0, out: JSON.stringify({ ServerVersion: '28.3.1', Driver: 'overlay2', Name: 'vast-4090-host', NCPU: 32, MemTotal: 64 * 1024 ** 3, OSType: 'linux', Architecture: 'x86_64' }) }
+      return { code: 0, out: JSON.stringify({ ServerVersion: '28.3.1', Driver: 'overlay2', Name: 'vast-4090-host', NCPU: 32, MemTotal: 64 * 1024 ** 3, OSType: 'linux', Architecture: 'x86_64', DockerRootDir: '/var/lib/docker' }) }
     }
+    if (command === 'run' && args.includes('stat')) return docker.statfs === null ? { code: 125, out: 'docker: stat is not in this fake' } : { code: 0, out: docker.statfs }
     if (command === 'ps') return { code: 0, out: '' }
     if (command === 'update' || command === 'tag' || command === 'rmi' || command === 'rm') {
       if (command === 'tag') docker.images.set(args[2]!, docker.images.get(args[1]!) ?? { diffIds: DIFF_IDS })
@@ -312,6 +369,7 @@ export function fakeAgentDocker(): FakeAgentDocker {
   docker.cards = null
   docker.driver = '580.65.06'
   docker.smoke = { code: 0, out: 'cuda-ok 13.0' }
+  docker.statfs = null
   docker.intercept = null
   return docker
 }

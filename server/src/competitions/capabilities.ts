@@ -75,6 +75,20 @@ export function notebookNeeds(competition: { limits: { gpu?: boolean } }): Compe
 
 type Command = (args: string[]) => Promise<string>
 interface Probe<T> { until: number; value: Promise<T> }
+/**
+ * Whether a failed `docker image inspect` said the image is not there —
+ * docker's «No such image» (or «No such object») — rather than that docker
+ * could not say: the three-second timeout, a daemon that went away. The two
+ * meant one verdict, `image_unavailable`, and the metric of a competition with
+ * a card read a stall of the daemon as its pinned image gone, and scored in
+ * another one (runner.ts · gpuScoringImage). Now a failure that says nothing
+ * about the image is docker not answering (`docker_unavailable`), and the
+ * metric waits for an answer instead.
+ */
+function imageAbsent(error: unknown): boolean {
+  const said = error instanceof Error ? `${error.message}\n${String((error as { stderr?: unknown }).stderr ?? '')}` : String(error)
+  return /no such (image|object)/i.test(said)
+}
 interface CapabilityReaderOptions {
   backend?: () => Backend
   run?: Command
@@ -124,7 +138,8 @@ export function createCapabilityReader(options: CapabilityReaderOptions = {}) {
   })
   let daemon: Probe<string | null> | null = null
   let broker: Probe<CompetitionCapabilities|null>|null=null
-  const images = new Map<string, Probe<boolean>>()
+  // `null` — the inspect failed without saying the image is not there (imageAbsent).
+  const images = new Map<string, Probe<boolean | null>>()
   const probe = <T>(work: () => Promise<T>): Probe<T> => {
     const entry: Probe<T> = { until: Infinity, value: Promise.resolve().then(work) }
     entry.value.finally(() => { entry.until = clock() + 5000 }).catch(() => undefined)
@@ -148,11 +163,14 @@ export function createCapabilityReader(options: CapabilityReaderOptions = {}) {
       const image = imageDigest ?? `colloq-kernel:${environmentName}`
       let cached = images.get(image)
       if (!cached || cached.until <= clock()) {
-        cached = probe(() => run(['image', 'inspect', '--format', '{{.Id}}', image]).then(() => true, () => false))
+        cached = probe(() => run(['image', 'inspect', '--format', '{{.Id}}', image]).then(() => true, (error: unknown) => imageAbsent(error) ? false : null))
         if (images.size >= 64 && !images.has(image)) images.delete(images.keys().next().value!)
         images.set(image, cached)
       }
-      imageAvailable = await cached.value
+      const present = await cached.value
+      // Docker did not answer about the image: said as a daemon that does not answer, never as an image that is gone.
+      if (present === null) return evaluateCapabilities({ backend, dockerVersion: null })
+      imageAvailable = present
     }
     return evaluateCapabilities({ backend, dockerVersion: version, imageAvailable, storageAvailable: storageAvailable(), gpu, runnerGpus: gpu && runnerGpus() })
   }

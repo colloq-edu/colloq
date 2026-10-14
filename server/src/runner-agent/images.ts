@@ -28,10 +28,15 @@
  *
  * One pull at a time, in the order `want` lists them, and a failed one waits a
  * while before it is tried again. When the disk runs low, revisions nobody
- * wanted for REMOTE_EVICT_AFTER_MS go first (evict).
+ * wanted for REMOTE_EVICT_AFTER_MS go first (evict). And no pull starts while
+ * the disk Docker keeps images on is below the floor (ImagesOptions.diskGate:
+ * Docker's own disk where it has one, measured by sync.ts), nor is one that
+ * failed for want of room taken for a bad image: that is the machine's `disk`
+ * problem, and the revision waits for eviction instead.
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import {
   REMOTE_DRIVER_MIN,
   REMOTE_EVICT_AFTER_MS,
@@ -47,6 +52,8 @@ import {
   type RemoteProblemCode,
   type RemoteWantRevision,
 } from '@shared/remote-runner'
+import { dataDir } from '../data-dir.js'
+import { hostPathOf } from '../competitions/storage.js'
 import { imageIdentity } from '../dependencies/image-identity.js'
 import { dockerMissing, dockerWords, type Docker } from './docker.js'
 import { driverMajor } from './machine.js'
@@ -57,10 +64,33 @@ export const REVISION_TAG = 'colloq-revision'
 export const revisionImage = (id: string): string => `${REVISION_TAG}:${id}`
 
 /**
- * The label of the agent's own throwaway containers (the smoke test): swept
- * at every start like the runs are, should a life end in the middle of one.
+ * The label of the agent's own throwaway containers (the smoke test, the
+ * measure of Docker's disk): swept at every start like the runs are, should a
+ * life end in the middle of one.
  */
 export const CHECK_LABEL = 'colloq.kind=runner-check'
+
+/**
+ * This tree's instance label: the very one the Docker runner puts on every
+ * container it starts for this data root (docker-runner.ts · INSTANCE_LABEL, a
+ * hash of the root as the daemon sees it). Every check container carries it
+ * beside CHECK_LABEL, and the sweep takes only containers with both: two
+ * agents on one daemon (make runner-dev beside a machine's own, two trees on a
+ * university server) each sweep their own, and neither kills the other's
+ * smoke test mid-run. Made here the way the runner makes it, which does not
+ * export it; tests/runner-agent-argv.test.mts holds the two equal.
+ */
+const INSTANCE_SCOPE = createHash('sha256').update(path.resolve(hostPathOf(dataDir))).digest('hex').slice(0, 16)
+export const INSTANCE_LABEL = `ru.colloq.competition-instance=${INSTANCE_SCOPE}`
+
+/** The labels of a check container, as `docker run` arguments. */
+export const CHECK_LABELS: readonly string[] = ['--label', CHECK_LABEL, '--label', INSTANCE_LABEL]
+
+/** A pull that failed for want of room, in docker's words: the machine's disk, not the image. */
+const NO_SPACE = /no space left on device|disk quota exceeded/i
+
+/** How long a revision waits for room on the disk before its pull is tried again. */
+const DISK_WAIT_MS = 60_000
 
 /** A pull of four gigabytes over a slow link; past it, the pull is a problem and tried again later. */
 const PULL_TIMEOUT_MS = 60 * 60_000
@@ -90,6 +120,14 @@ export interface ImagesOptions {
   cards: () => { count: number; driver: string | null }
   /** Something a sync reports has changed (a revision became ready, a problem, a pull's progress). */
   onChange?: () => void
+  /**
+   * Whether a pull may start now: the disk Docker keeps images on is above
+   * the floor (sync.ts · mayPull, which asks for eviction when it is not).
+   * Absent: always.
+   */
+  diskGate?: () => Promise<boolean>
+  /** A pull that failed for want of room: the agent says it as a `disk` problem. */
+  onDiskFull?: (detail: string) => void
   log?: (line: string) => void
 }
 
@@ -116,6 +154,8 @@ export class Images {
   private readonly percent = new Map<string, number>()
   /** A failed revision is not tried again before this, and the next failure waits twice as long. */
   private readonly retry = new Map<string, { at: number; waitMs: number }>()
+  /** Revisions whose pull waits for room on the disk (waitForDisk). */
+  private readonly waitingForDisk = new Set<string>()
   private wanted: RemoteWantRevision[] = []
   private working: Promise<void> | null = null
   private timer: NodeJS.Timeout | null = null
@@ -213,9 +253,11 @@ export class Images {
    * Below the disk's floor: revisions nobody wanted for REMOTE_EVICT_AFTER_MS
    * and no lease holds go, the longest unwanted first, until the floor holds
    * again. The tag goes, and the image by its ref unless another revision kept
-   * here is the same image. Returns how many went.
+   * here is the same image. Returns how many went. `freeMb` is the free disk
+   * where Docker keeps its images, asked again after each removal (a measure
+   * of Docker's own disk, sync.ts, is a container's run: hence a promise).
    */
-  async evict(inUse: ReadonlySet<string>, freeMb: () => number | null, floorMb: number): Promise<number> {
+  async evict(inUse: ReadonlySet<string>, freeMb: () => number | null | Promise<number | null>, floorMb: number): Promise<number> {
     const now = this.now()
     const wanted = new Set(this.wanted.map((revision) => revision.id))
     const candidates = [...this.books.values()]
@@ -223,7 +265,7 @@ export class Images {
       .sort((a, b) => a.wantedAt - b.wantedAt)
     let removed = 0
     for (const book of candidates) {
-      const free = freeMb()
+      const free = await freeMb()
       if (free === null || free >= floorMb) break
       const untagged = await this.docker(['rmi', revisionImage(book.id)], { timeoutMs: 120_000 })
       if (untagged.code !== 0 && !dockerMissing(untagged)) continue
@@ -303,8 +345,16 @@ export class Images {
       // Already here: pulled by an earlier life, or the same image as another revision.
       let pinned = await this.layersOf(ref)
       if (pinned === undefined) {
+        // Gigabytes onto a disk below its floor fail midway, or fill it under the runs: not begun until eviction has made room.
+        if (this.options.diskGate && !(await this.options.diskGate())) return this.waitForDisk(revision, 'the disk Docker keeps images on is below its floor')
+        this.waitingForDisk.delete(id)
         const layerState = new Map<string, boolean>()
         const pulled = await this.docker(['pull', ref], { timeoutMs: PULL_TIMEOUT_MS, onLine: (line) => this.pullLine(id, line, layerState) })
+        if (pulled.code !== 0 && NO_SPACE.test(pulled.out)) {
+          const detail = `docker pull ${ref} ran out of disk: ${dockerWords(pulled)}`
+          this.options.onDiskFull?.(detail)
+          return this.waitForDisk(revision, detail)
+        }
         if (pulled.code !== 0) return this.fail(revision, 'image', `docker pull ${ref} failed: ${dockerWords(pulled)}`)
         pinned = await this.layersOf(ref)
         if (pinned === undefined) return this.fail(revision, 'image', `the pulled ${ref} cannot be inspected`)
@@ -335,9 +385,24 @@ export class Images {
     for (const other of ['image', 'layers', 'smoke'] as const) this.problems.delete(`${other}:${revision.id}`)
     this.problems.set(`${code}:${revision.id}`, { code, revisionId: revision.id, detail: remoteText(detail, REMOTE_REASON_CHARS, 'start') })
     const before = this.retry.get(revision.id)
-    const waitMs = before ? Math.min(RETRY_MS.last, before.waitMs * 2) : RETRY_MS.first
+    const waitMs = before && before.waitMs > 0 ? Math.min(RETRY_MS.last, before.waitMs * 2) : RETRY_MS.first
     this.retry.set(revision.id, { at: this.now() + waitMs, waitMs })
     this.options.log?.(`[runner] revision ${revision.id.slice(0, 12)} is not ready (${code}): ${detail}; tried again in ${Math.round(waitMs / 60_000)} min`)
+  }
+
+  /**
+   * A pull with no room for it: no problem of the revision's (the image is
+   * not to blame; the agent says `disk`), and no growing wait either: the pull
+   * is tried again as soon as eviction may have made room. A failure's wait
+   * so far is kept for the failures to come.
+   */
+  private waitForDisk(revision: RemoteWantRevision, detail: string): void {
+    const before = this.retry.get(revision.id)
+    this.retry.set(revision.id, { at: this.now() + DISK_WAIT_MS, waitMs: before?.waitMs ?? 0 })
+    // Said once a wait, not once a minute.
+    if (this.waitingForDisk.has(revision.id)) return
+    this.waitingForDisk.add(revision.id)
+    this.options.log?.(`[runner] revision ${revision.id.slice(0, 12)} waits for disk: ${detail}`)
   }
 
   /**
@@ -360,10 +425,11 @@ export class Images {
 
   /** The smoke test (see the header); null — torch used card 0, otherwise what went wrong. */
   private async smoke(id: string, ref: string): Promise<string | null> {
-    const name = `colloq-runner-check-${id.slice(0, 12)}`
+    // Named for this tree as well as the revision: another agent on the daemon smoke-testing the same one has a name of its own.
+    const name = `colloq-runner-check-${INSTANCE_SCOPE.slice(0, 8)}-${id.slice(0, 12)}`
     await this.docker(['rm', '-f', name], { timeoutMs: 30_000 })
     const ran = await this.docker([
-      'run', '--rm', '--pull=never', '--name', name, '--label', CHECK_LABEL,
+      'run', '--rm', '--pull=never', '--name', name, ...CHECK_LABELS,
       '--network', 'none', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--read-only',
       '--tmpfs=/tmp:rw,nosuid,nodev,size=256m', '-e', 'HOME=/tmp', '--user=1000:1000',
       '--gpus', 'device=0', '--entrypoint', 'python', ref, '-I', '-c', SMOKE_SCRIPT,

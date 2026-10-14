@@ -25,6 +25,7 @@ import { recordAdminEvent } from '../admin/audit-log.js'
 import { config } from '../config.js'
 import { COLLOQ_VERSION } from '../version.js'
 import { ownImage, runnerImage, runnerJoinCommands } from '../competitions/remote/commands.js'
+import { loopbackAddress } from '../competitions/remote/origin.js'
 import { revokeRunner, untrustRunner } from '../competitions/remote/release.js'
 import {
   REMOTE_CODE_MACHINES_MAX,
@@ -89,13 +90,23 @@ export function adminRunnerRoutes(): Router {
     const input = { machines, hours, trusted: body.trusted === true, approvedSlots, namePrefix, createdBy: currentStaff(req)!.id }
     if (mintRefusal(input) === 'prefix') return fail(res, 400, 'invalid', tr('server.runners.prefixInvalid'))
     const minted = mintRemoteCode(input)
+    /*
+     * The image this very server runs, as colloq-host names it to the
+     * container (COLLOQ_SERVER_IMAGE): a machine joined from the panel runs
+     * this instance's build, as one joined from `colloq-host runner-code`
+     * does. Without the variable (a checkout, an old host script), the
+     * published image of this release.
+     */
     const image = runnerImage(ownImage(), COLLOQ_VERSION)
     const answer: MintRemoteCodeResponse = {
+      id: minted.id,
       code: minted.code,
       expiresAt: minted.expiresAt,
       machines: minted.machines,
       trusted: minted.trusted,
       commands: runnerJoinCommands({ home: config.publicUrl, code: minted.code, image: image.image, published: image.published, machines: minted.machines }),
+      // An address only this machine reaches (the default PUBLIC_URL): no machine anywhere else can join with it, and the dialog says so.
+      loopback: loopbackAddress(config.publicUrl),
     }
     res.set('Cache-Control', 'no-store').json(answer)
   })

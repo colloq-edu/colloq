@@ -50,7 +50,7 @@
     type Outcome,
     type Tone,
   } from '@/admin/running-kernels'
-  import { remoteRow } from '@/admin/runners'
+  import { remoteRow, remoteStopOutcome, stopRemoteRuns } from '@/admin/runners'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { cn } from '@/lib/utils'
 
@@ -67,6 +67,8 @@
     | { kind: 'stop'; row: RunningClass; what: 'class' | 'own'; busy: RunningBusy | null }
     | { kind: 'bulk'; rows: RunningClass[] }
     | { kind: 'run'; run: RunningRun }
+    /** A competition's submissions on machines (M5): exactly the ids the row named when it was pressed. */
+    | { kind: 'remote'; name: string | null; ids: string[] }
 
   let data = $state<RunningKernels | null>(null)
   let loadErrorText = $state<(() => string) | null>(null)
@@ -177,6 +179,14 @@
         const confirmed = current.rows.flatMap((row) => (row.id ? [row] : []))
         const names = new Map(confirmed.map((row) => [row.id!, row.name] as const))
         await settle(bulkOutcome(await adminApi.stopIdleKernels([...names.keys()]), names))
+      } else if (current.kind === 'remote') {
+        // The console's kill, once per submission: on a machine it is the
+        // durable cancel its next call carries (admin/runners.ts ·
+        // stopRemoteRuns). Nothing stopped and something refused: the
+        // refusal stays in the dialog; anything stopped is said below.
+        const tally = await stopRemoteRuns(current.ids, (id) => adminApi.killCompetitionRun(id))
+        if (tally.stopped === 0 && tally.ended === 0 && tally.error !== null) throw tally.error
+        await settle(remoteStopOutcome(current.name, tally))
       } else {
         const id = current.run.submissionId
         if (!id) return
@@ -576,7 +586,23 @@
                   {/if}
                 </div>
               </div>
-              <div class="rk-act"></div>
+              <div class="rk-act flex justify-end">
+                <!-- Stop is a durable cancel that reaches each machine with its
+                     next call (§3.5), asked first: it takes every run of the
+                     competition on every machine. Another course's row carries
+                     no ids, and no stop. -->
+                {#if !entry.hidden && entry.submissionIds.length > 0}
+                  <button
+                    type="button"
+                    class="rk-stop admin-icon-btn hover:bg-danger/10 hover:text-danger"
+                    title={tr('admin.resourcesTab.running.remote.stop')}
+                    aria-label={`${tr('admin.resourcesTab.running.remote.stop')} · ${shortName(entry.competition)}`}
+                    onclick={() => open({ kind: 'remote', name: entry.competition, ids: [...entry.submissionIds] })}
+                  >
+                    {@render stopGlyph()}
+                  </button>
+                {/if}
+              </div>
               <div class="rk-now min-w-0 text-2xs">
                 <p class={entry.hidden ? 'text-muted' : 'font-semibold text-accent-text'}>{row.lead}</p>
                 <p class="text-muted">{row.detail}</p>
@@ -721,6 +747,16 @@
             </span>
           </div>
         </div>
+      {:else if dialog.kind === 'remote'}
+        <!-- Every run of one competition on every machine: how many, that
+             each stops with its machine's next call, and that no participant
+             spends the day's attempt on it. -->
+        <h2 id="running-dialog-title" class="break-words text-title font-semibold text-ink">
+          {tr('admin.resourcesTab.running.remote.stopTitle', { name: shortName(dialog.name) })}
+        </h2>
+        <p class="mt-2 text-ui leading-relaxed text-muted">
+          {tr('admin.resourcesTab.running.remote.stopBody', { count: dialog.ids.length })}
+        </p>
       {:else}
         <h2 id="running-dialog-title" class="break-words text-title font-semibold text-ink">
           {tr('admin.resourcesTab.running.run.title', { name: shortName(dialog.run.competition) })}

@@ -27,26 +27,38 @@
  * a reply) finishes what is held and takes nothing more: offers that still
  * arrive are not written down, and the next sync's seq covers them, which
  * withdraws them at once with no penalty. A leave drains, then tells home it
- * is leaving and is revoked by it. SIGTERM (docker stop -t 90, `runner update
- * --now`) hands back every run not yet finished as a `draining` decline,
- * which home requeues with no loss counted and no quota spent (§13 note 3),
- * removes its containers and exits. A 401 is the owner's revocation: the
- * hidden test is purged, Docker's restart policy for this container is turned
- * off (or unless-stopped would start a revoked machine forever) and the agent
- * exits — unless COLLOQ_RUNNER_JOIN carries a new code, in which case the dead
- * identity is put aside and the machine joins anew.
+ * is leaving and is revoked by it; revoked by its owner while it drains, it
+ * has left all the same. SIGTERM (docker stop -t 90, `runner update --now`)
+ * first tells home in one sync that it is draining, so that home leases it
+ * nothing more, then hands back every run not yet finished as a `draining`
+ * decline, which home requeues with no loss counted and no quota spent (§13
+ * note 3), removes its containers and exits. A 401 is the owner's revocation:
+ * the hidden test is purged, Docker's restart policy for this container is
+ * turned off (or unless-stopped would start a revoked machine forever) and the
+ * agent exits — unless COLLOQ_RUNNER_JOIN carries a new code, in which case the
+ * dead identity is put aside and the machine joins anew.
+ *
+ * NEVER MORE THAN ONE SYNC CAN LIST, AND NO CRASH OVER A FULL DISK. An offer
+ * past REMOTE_ATTEMPTS_MAX held (home's parser refuses a sync listing more,
+ * and every lease of the machine would be lost with it), and an offer whose
+ * lease cannot be written down, are declined at once and never held. A disk
+ * that refuses the identity, a lease or an outcome is said as a `disk` problem
+ * and lived with; a restart would only meet the same disk.
  */
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import {
+  REMOTE_ATTEMPTS_MAX,
   REMOTE_BACKOFF_MAX_MS,
   REMOTE_BACKOFF_MIN_MS,
   REMOTE_DISK_MIN_GB,
+  REMOTE_DISK_RESERVE_MB,
   REMOTE_FETCHING_MAX,
   REMOTE_HOLD_BUSY_MS,
   REMOTE_HOLD_IDLE_MS,
+  REMOTE_OFFER_MS,
   REMOTE_PROBLEMS_MAX,
   REMOTE_PROTOCOL,
   REMOTE_REASON_CHARS,
@@ -57,10 +69,12 @@ import {
   remoteProgress,
   remoteText,
   type RemoteAttemptPhase,
+  type RemoteDeclineReason,
   type RemoteFacts,
   type RemoteFree,
   type RemoteHeldAttempt,
   type RemoteLease,
+  type RemoteOutcomeReply,
   type RemoteProblem,
   type RemoteProgress,
   type RemoteRevokeReason,
@@ -72,18 +86,20 @@ import { DockerCompetitionRunner } from '../competitions/docker-runner.js'
 import { competitionsDir, dropAttempt, removeSubmission, attemptPath } from '../competitions/storage.js'
 import type { Capacity, RunOutcome } from '../competitions/runner-port.js'
 import { Backoff, RemoteClient, type CallResult } from './client.js'
-import { Cache, type Keep } from './cache.js'
+import { Cache, diskRefused, type Keep } from './cache.js'
 import { realDocker, type Docker } from './docker.js'
 import { brokenOutcome, NeighbourWindow, prepareRun, runPrepared, type Decline, type RunCard, type RunSeam } from './execute.js'
-import { CHECK_LABEL, Images } from './images.js'
+import { CHECK_LABEL, CHECK_LABELS, INSTANCE_LABEL, Images } from './images.js'
 import {
   cardReport,
   dockerInfo,
   freeCapacity,
   machineFacts,
+  measureDockerDisk,
   pickCard,
   probeCards,
   readMachine,
+  type DiskSpace,
   type MachinePicture,
   type ProbedCard,
 } from './machine.js'
@@ -128,6 +144,14 @@ const STOP_MS = 75_000
 const LEAVE_ACK_MS = 10_000
 /** Attempts settled lately, whose repeats in a late reply are not taken for new offers. */
 const SETTLED_KEEP = 512
+/** The stop's last sync, the one that says `draining` (finalSync): a home that does not answer within this must not eat the hand-backs' time. */
+const FINAL_SYNC_MS = 10_000
+/** A decline of an offer never held is posted for this long at most: past REMOTE_OFFER_MS home withdraws the offer by itself. */
+const OFFER_DECLINE_MS = REMOTE_OFFER_MS + 60_000
+/** A join id that cannot be written down is tried again after this, and no join goes out meanwhile. */
+const IDENTITY_RETRY_MS = 30_000
+/** A write the disk refused stays said this long after the last one (a disk that refuses writes does not say when it stops). */
+const DISK_FULL_KEEP_MS = 10 * 60_000
 
 export interface AgentOptions {
   layout: StateLayout
@@ -135,9 +159,14 @@ export interface AgentOptions {
   join: { home: string; code: string } | null
   build: string
   version: string
-  /** COLLOQ_RUNNER_CONTAINER: this agent's container, whose restart policy goes off when the machine is revoked or left. */
-  container: string
-  /** COLLOQ_RUNNER_IMAGE: the image the cards are probed with; null — the image of `container`, as docker says. */
+  /**
+   * COLLOQ_RUNNER_CONTAINER: this agent's container, whose restart policy goes
+   * off when the machine is revoked or left; null — none of its own (make
+   * runner-dev, §13c note 20), and then nothing is `docker update`d or
+   * inspected by a name that could be anyone's container on that daemon.
+   */
+  container: string | null
+  /** COLLOQ_RUNNER_IMAGE: the image the cards (and Docker's disk) are probed with; null — the image of `container`, as docker says. */
   image: string | null
   docker?: Docker
   runner?: RunSeam
@@ -152,6 +181,8 @@ export interface AgentOptions {
   stopMs?: number
   /** Tests: the hold the agent asks home for; by default the contract's. */
   holdMs?: { idle: number; busy: number }
+  /** Tests: the most attempts held at once, below REMOTE_ATTEMPTS_MAX (never above it). */
+  attemptsMax?: number
   log?: (line: string) => void
 }
 
@@ -220,10 +251,18 @@ export class Agent extends EventEmitter {
   private leaving = false
   private stopping = false
   private trusted = false
+  /** Home's cap on this machine's places, from the join and then every sync reply; null — none. */
+  private approvedSlots: number | null = null
   private compatible: boolean | null = null
   private perDevice = 1
   private homeVersion: string | null = null
   private probe: { info: Awaited<ReturnType<typeof dockerInfo>>['info']; cards: ProbedCard[]; driver: string | null } = { info: null, cards: [], driver: null }
+  /** The image check containers start from (COLLOQ_RUNNER_IMAGE, or this container's own), once asked. */
+  private checkImage: Promise<string | null> | null = null
+  /** Docker's own store, where pulls land: `same` as the tree's filesystem, its room when another, null — not measured (machine.ts · measureDockerDisk). */
+  private dockerDisk: DiskSpace | 'same' | null = null
+  /** When a write last met a full disk (ENOSPC): said as a `disk` problem for DISK_FULL_KEEP_MS after. */
+  private diskFullAt = 0
   private factsSent: string | null = null
   private runnerHeld: Pick<Capacity, 'heldMb' | 'heldGpus'> = { heldMb: 0, heldGpus: {} }
   private syncAbort: AbortController | null = null
@@ -256,6 +295,8 @@ export class Agent extends EventEmitter {
       onChange: () => this.changed(),
       onUnauthorized: () => this.poke(true),
       inUse: () => this.inUse(),
+      diskGate: (bytes, forLease) => this.mayFetch(bytes, forLease),
+      onDiskFull: (detail) => this.diskFull(detail),
       log: this.log,
       backoff: this.newBackoff(),
     })
@@ -265,6 +306,8 @@ export class Agent extends EventEmitter {
       now: this.now,
       cards: () => ({ count: this.probe.cards.length, driver: this.probe.driver }),
       onChange: () => this.changed(),
+      diskGate: () => this.mayPull(),
+      onDiskFull: (detail) => this.diskFull(detail),
       log: this.log,
     })
   }
@@ -303,7 +346,8 @@ export class Agent extends EventEmitter {
     if (this.localDrain) return
     this.localDrain = true
     this.log('[runner] draining: the runs held finish, nothing new is taken')
-    this.cache.purgeSealed('drain')
+    // The runs held are to finish, the hidden-test ones too: what they read stays until they settle (cache.ts · purgeSealed).
+    this.cache.purgeSealed('drain', this.inUse().manifests)
     this.changed(true)
     this.poke(true)
   }
@@ -313,7 +357,7 @@ export class Agent extends EventEmitter {
     if (!this.leaving) {
       this.leaving = true
       this.log('[runner] leaving: the runs held finish, then this machine revokes itself')
-      this.cache.purgeSealed('leave')
+      this.cache.purgeSealed('leave', this.inUse().manifests)
       this.changed(true)
       this.poke(true)
     }
@@ -326,9 +370,12 @@ export class Agent extends EventEmitter {
   }
 
   /**
-   * SIGTERM: everything not yet finished is handed back as a `draining`
-   * decline, a finished run keeps uploading until the stop's time is up (its
-   * outcome is written down: the next life sends it), the containers go.
+   * SIGTERM: home hears first that the machine is draining (finalSync), then
+   * everything not yet finished is handed back as a `draining` decline, a
+   * finished run keeps uploading until the stop's time is up (its outcome is
+   * written down: the next life sends it), the containers go. The last sync's
+   * time is the stop's own: docker stop kills at ninety seconds whatever is
+   * still under way.
    */
   stop(): Promise<void> {
     if (this.stopDone) return this.stopDone
@@ -337,13 +384,15 @@ export class Agent extends EventEmitter {
     this.stopAbort.abort()
     this.leaveDone.resolve('stopped')
     this.stopDone = (async () => {
+      const began = Date.now()
+      await this.finalSync()
       for (const held of this.held.values()) {
         if (held.stored || held.ended) continue
         held.handBack = true
         held.run.abort()
       }
       this.changed(true)
-      const limit = this.options.stopMs ?? STOP_MS
+      const limit = Math.max(1_000, (this.options.stopMs ?? STOP_MS) - (Date.now() - began))
       const deadline = setTimeout(() => {
         for (const held of this.held.values()) held.send.abort()
       }, limit)
@@ -360,6 +409,38 @@ export class Agent extends EventEmitter {
     return this.stopDone
   }
 
+  /**
+   * The stop's word to home before anything is handed back: one sync that
+   * says `draining`, listing every attempt still held as it is (a sync is
+   * level-triggered: one it leaves out, home counts lost at once). Home leases
+   * a draining machine nothing more, neither in this reply nor in the replies
+   * to the hand-backs after it (routes.ts takes work for an `active` sync and
+   * for an outcome after one): without it each decline's reply could carry a
+   * fresh offer from the head of the queue, which a stopping machine passes
+   * and never syncs again to refuse, and which waits REMOTE_OFFER_MS before
+   * anyone else may run it. Held for no time (holdMs 0) and for at most
+   * FINAL_SYNC_MS. What the reply revokes or applied is taken in, so that a run
+   * home has already given up is not handed back; its offers are passed.
+   */
+  private async finalSync(): Promise<void> {
+    const identity = this.identity
+    if (!this.client || !identity || !joined(identity) || retired(identity)) return
+    const request: RemoteSyncRequest = { ...this.syncRequest(), holdMs: 0 }
+    const answer = await this.client.sync(request, AbortSignal.timeout(FINAL_SYNC_MS))
+    if (answer.kind !== 'ok') {
+      this.log(`[runner] home did not hear the stop (${answer.kind === 'refused' ? answer.error : answer.reason}); the runs go back as they are handed back`)
+      return
+    }
+    try {
+      for (const revoke of answer.value.revoke) this.revoke(revoke.id, revoke.reason)
+      for (const id of answer.value.applied) this.applied(id)
+      this.trust(answer.value.trusted)
+      this.acceptLeases(answer.value.leases, answer.value.seq)
+    } catch (error) {
+      this.log(`[runner] the stop's last reply could not be taken in: ${String(error)}`)
+    }
+  }
+
   status(): AgentStatus {
     const identity = this.identity
     return {
@@ -373,6 +454,7 @@ export class Agent extends EventEmitter {
       ...(this.homeVersion ? { homeVersion: this.homeVersion } : {}),
       compatible: this.compatible,
       trusted: joined(identity) ? this.trusted : null,
+      approvedSlots: joined(identity) ? this.approvedSlots : null,
       path: this.path,
       problem: this.problemLine,
       pid: process.pid,
@@ -399,7 +481,8 @@ export class Agent extends EventEmitter {
    */
   private async sweep(why = 'left by an earlier life'): Promise<void> {
     const swept = await this.runner.sweep().catch(() => 0)
-    const found = await this.docker(['ps', '-aq', '--filter', `label=${CHECK_LABEL}`], { timeoutMs: 20_000 })
+    // Both labels: a check container of another tree on this daemon is that agent's, mid-run (images.ts · INSTANCE_LABEL).
+    const found = await this.docker(['ps', '-aq', '--filter', `label=${CHECK_LABEL}`, '--filter', `label=${INSTANCE_LABEL}`], { timeoutMs: 20_000 })
     const checks = found.code === 0 ? found.out.split('\n').map((line) => line.trim()).filter((line) => /^[a-f0-9]{12,64}$/.test(line)) : []
     if (checks.length > 0) await this.docker(['rm', '-f', ...checks], { timeoutMs: 60_000 })
     if (swept + checks.length > 0) this.log(`[runner] removed ${swept + checks.length} container(s) ${why}`)
@@ -495,7 +578,7 @@ export class Agent extends EventEmitter {
     const code = target ? sha256(target.code) : null
     let identity = readIdentity(this.layout)
     if (identity && target && identity.home !== target.home) {
-      const kept = retireIdentity(this.layout, 'moved')
+      const kept = this.putAside('moved')
       this.log(`[runner] this machine belonged to ${identity.home}; that identity is put aside (${kept}) to join ${target.home}`)
       this.forgetHeld()
       identity = null
@@ -509,7 +592,7 @@ export class Agent extends EventEmitter {
           ? 'this machine left its home with this code; a new code from the home\'s owner joins it again'
           : 'this machine was revoked by its home\'s owner; a new code joins it again')
       }
-      const kept = retireIdentity(this.layout, why)
+      const kept = this.putAside(why)
       this.log(`[runner] the ${why} identity is put aside (${kept}); joining ${target.home} with the new code`)
       this.forgetHeld()
       identity = null
@@ -518,7 +601,8 @@ export class Agent extends EventEmitter {
     if (!identity || identity.codeSha256 !== code) {
       // Written down before the first try: a join whose reply is lost is the same join next time.
       identity = { home: target.home, joinId: randomBytes(16).toString('hex'), codeSha256: code! }
-      writeIdentity(this.layout, identity)
+      const stopped = await this.writeJoinId(identity)
+      if (stopped) return stopped
     }
     return this.joinWith(identity, target.code)
   }
@@ -534,7 +618,8 @@ export class Agent extends EventEmitter {
       if (this.stopping) return { reason: 'stopped', code: 0 }
       if (answer.kind === 'ok') {
         const done: Joined = { ...identity, runnerId: answer.value.runnerId, secret: answer.value.secret, trusted: answer.value.trusted, approvedSlots: answer.value.approvedSlots, joinedAt: this.now() }
-        writeIdentity(this.layout, done)
+        // Not written down, the secret lives for this life: the next one joins with the same id, which home answers with a new secret.
+        this.keepIdentity(done)
         this.log(`[runner] joined ${identity.home} as ${done.runnerId}${done.trusted ? ', trusted with the hidden test' : ''}`)
         this.syncedAt = this.now()
         return this.adopt(done)
@@ -557,6 +642,7 @@ export class Agent extends EventEmitter {
   private adopt(identity: Joined): Joined {
     this.identity = identity
     this.trusted = identity.trusted === true
+    this.approvedSlots = identity.approvedSlots ?? null
     this.state = this.wireState()
     this.problemLine = null
     this.client = new RemoteClient({
@@ -580,8 +666,66 @@ export class Agent extends EventEmitter {
   }
 
   private async noRestart(): Promise<void> {
+    // No container of its own (make runner-dev): nothing restarts it, and a container that happens to bear the usual name is somebody else's.
+    if (this.options.container === null) return
     const updated = await this.docker(['update', '--restart=no', this.options.container], { timeoutMs: 30_000 })
     if (updated.code !== 0) this.log(`[runner] could not turn off the restart policy of ${this.options.container} (not in that container?): ${updated.out.split('\n')[0] ?? ''}`)
+  }
+
+  /**
+   * The identity written down, or the failure said and lived with: a disk
+   * that refuses it (ENOSPC) costs the next life this one's word (a trust, a
+   * revocation, a join's secret, which a join with the same id gets anew),
+   * where a crash would cost every run held and meet the same disk at the next
+   * start, a restart loop with the hidden test still on the disk.
+   */
+  private keepIdentity(identity: Identity): boolean {
+    try {
+      writeIdentity(this.layout, identity)
+      return true
+    } catch (error) {
+      this.writeFailed('the identity', error)
+      return false
+    }
+  }
+
+  /** The identity put aside; one that cannot be renamed is overwritten by the next instead (nothing ever reads one put aside). */
+  private putAside(why: 'revoked' | 'left' | 'moved'): string | null {
+    try {
+      return retireIdentity(this.layout, why)
+    } catch (error) {
+      this.log(`[runner] the ${why} identity could not be put aside: ${error instanceof Error ? error.message : String(error)}`)
+      return null
+    }
+  }
+
+  /**
+   * A join's id written down before its first try, however long the disk
+   * takes to allow it: a join whose id is not on the disk would, were its
+   * reply lost and the agent restarted, be a second machine against the
+   * owner's code. Null once written; an exit when the agent stops first.
+   */
+  private async writeJoinId(identity: Identity): Promise<AgentExit | null> {
+    for (;;) {
+      if (this.stopping) return { reason: 'stopped', code: 0 }
+      try {
+        writeIdentity(this.layout, identity)
+        this.problemLine = null
+        return null
+      } catch (error) {
+        this.writeFailed('the join', error)
+        this.problemLine = `the join cannot be written down (${error instanceof Error ? error.message : String(error)}); it is tried again in ${Math.round(IDENTITY_RETRY_MS / 1000)} s`
+        this.writeStatus()
+        await this.sleep(IDENTITY_RETRY_MS)
+      }
+    }
+  }
+
+  /** A file of the machine's own that could not be written: logged, and a `disk` problem when the disk had no room for it. */
+  private writeFailed(what: string, error: unknown): void {
+    const said = `${what} could not be written down: ${error instanceof Error ? error.message : String(error)}`
+    this.log(`[runner] ${said}`)
+    if (diskRefused(error)) this.diskFull(said)
   }
 
   /* ---------------------------------------------------------------- loop */
@@ -605,7 +749,12 @@ export class Agent extends EventEmitter {
         this.problemLine = answer.value.compatible ? null : 'this machine\'s build is not its home\'s: it finishes what it holds and takes nothing new (colloq-host runner update)'
         this.syncedAt = this.now()
         if (request.facts) this.factsSent = JSON.stringify(request.facts)
-        this.handleReply(answer.value)
+        try {
+          this.handleReply(answer.value)
+        } catch (error) {
+          // A reply is the whole answer, said again by the next one: a failure taking it in (a disk, a bug) is a delay, never the agent's end.
+          this.log(`[runner] a sync reply could not be taken in whole: ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
+        }
         if (request.state === 'leaving') return this.left()
         this.writeStatus()
         continue
@@ -619,7 +768,11 @@ export class Agent extends EventEmitter {
           continue
         }
         this.path = 'refused'
-        this.problemLine = `home refused the sync: ${answer.error}${answer.detail ? ` (${answer.detail})` : ''}`
+        // Another version of the contract: no lease is taken here until the machine runs home's release, which `compatible: false` tells the fleet's update.
+        if (answer.error === 'protocol') this.compatible = false
+        this.problemLine = answer.error === 'protocol'
+          ? `home runs another version of this machine's protocol (${answer.detail}): it needs the release home runs (colloq-host runner update)`
+          : `home refused the sync: ${answer.error}${answer.detail ? ` (${answer.detail})` : ''}`
         this.log(`[runner] ${this.problemLine}`)
         this.writeStatus()
         // Another protocol, or our own bug: no quick retry changes it.
@@ -638,6 +791,7 @@ export class Agent extends EventEmitter {
       const words: Record<string, string> = {
         home_offline: 'home is offline (its relay has no tunnel to it)',
         home_silent: 'home does not answer (its relay\'s tunnel is up)',
+        home_unknown: 'the relay serves no home by this name (is the address in COLLOQ_RUNNER_JOIN right?)',
         unreachable: 'neither home nor its relay answers',
       }
       this.log(`[runner] ${answer.reason}: ${words[this.path ?? ''] ?? 'home did not answer'}; trying again`)
@@ -651,6 +805,13 @@ export class Agent extends EventEmitter {
    * asked. With a new code in COLLOQ_RUNNER_JOIN, the dead identity goes aside
    * and the machine joins anew (null: go on syncing). Otherwise the owner
    * revoked it (the header): an exit.
+   *
+   * A machine asked to leave that the owner revokes while it still drains has
+   * got where the leave was going: it is gone from its home, and `runner
+   * leave` hears that it left, and that it was revoked (control.ts), rather
+   * than a dropped connection colloq-host would read as "did not leave" and
+   * answer by turning the restart policy back on. And it joins nothing anew,
+   * whatever code waits: it was asked to go.
    */
   private async unauthorized(leaving: boolean): Promise<AgentExit | null> {
     if (leaving) return this.left()
@@ -658,26 +819,32 @@ export class Agent extends EventEmitter {
     await this.discardAll('the machine was revoked')
     this.cache.purgeSealed('revoked')
     const target = this.options.join
-    if (target && target.home === identity.home && sha256(target.code) !== identity.codeSha256) {
-      writeIdentity(this.layout, { ...identity, revokedAt: this.now() })
-      const kept = retireIdentity(this.layout, 'revoked')
+    if (!this.leaving && target && target.home === identity.home && sha256(target.code) !== identity.codeSha256) {
+      this.keepIdentity({ ...identity, revokedAt: this.now() })
+      const kept = this.putAside('revoked')
       this.log(`[runner] home revoked this machine; its identity is put aside (${kept}) and it joins again with the new code`)
       this.forgetHeld()
       const next: Identity = { home: target.home, joinId: randomBytes(16).toString('hex'), codeSha256: sha256(target.code) }
-      writeIdentity(this.layout, next)
+      const stopped = await this.writeJoinId(next)
+      if (stopped) return stopped
       const done = await this.joinWith(next, target.code)
       return 'reason' in done ? done : null
     }
     this.identity = { ...identity, revokedAt: this.now() }
-    writeIdentity(this.layout, this.identity)
-    return this.gone('revoked', 'home revoked this machine (its owner disconnected it); a new code joins it again')
+    this.keepIdentity(this.identity)
+    const exit = await this.gone('revoked', 'home revoked this machine (its owner disconnected it); a new code joins it again')
+    if (this.leaving) {
+      this.leaveDone.resolve('revoked')
+      await Promise.race([this.leaveAck.promise, wait(LEAVE_ACK_MS)])
+    }
+    return exit
   }
 
   /** The leaving sync was answered (or the machine was revoked by it): written down, said, and the process may go. */
   private async left(): Promise<AgentExit> {
     if (this.identity) {
       this.identity = { ...this.identity, leftAt: this.now() }
-      writeIdentity(this.layout, this.identity)
+      this.keepIdentity(this.identity)
     }
     const exit = await this.gone('left', 'this machine has left its home; a new code from the home\'s owner joins it again')
     this.leaveDone.resolve('left')
@@ -688,8 +855,9 @@ export class Agent extends EventEmitter {
 
   /* ------------------------------------------------------------- the sync */
 
-  /** The state a sync says: leaving only once nothing is held (a leave drains first). */
+  /** The state a sync says: leaving only once nothing is held (a leave drains first); a stopping machine drains (finalSync). */
   private wireState(): RemoteRunnerState {
+    if (this.stopping) return 'draining'
     if (this.leaving) return this.held.size === 0 ? 'leaving' : 'draining'
     return this.localDrain ? 'draining' : 'active'
   }
@@ -720,9 +888,33 @@ export class Agent extends EventEmitter {
       },
       fetching: [...this.images.fetchingList(), ...this.cache.fetchingList()].slice(0, REMOTE_FETCHING_MAX),
       attempts,
-      problems: [...this.problems.values(), ...this.sizeProblem(), ...this.images.problemList(), ...this.cache.problemList()].slice(0, REMOTE_PROBLEMS_MAX),
+      problems: this.problemsNow(),
       ...(changedFacts ? { facts } : {}),
     }
+  }
+
+  /**
+   * The problems a sync says, one of each code about each subject: the disk
+   * can be short of its floor, have refused a write and be smaller than a
+   * machine of its kind needs all at once, and the owner reads one line about
+   * it, the first of those (the floor's: it says what nothing more frees).
+   */
+  private problemsNow(): RemoteProblem[] {
+    if (this.diskFullAt > 0 && this.now() - this.diskFullAt > DISK_FULL_KEEP_MS) {
+      this.problems.delete('disk-full')
+      this.diskFullAt = 0
+    }
+    const seen = new Set<string>()
+    const said: RemoteProblem[] = []
+    // The machine's own in this order, whenever each was found: the floor's `disk` before a refused write's.
+    const own = (['docker', 'cards', 'disk', 'disk-full'] as const).flatMap((key) => this.problems.get(key) ?? [])
+    for (const problem of [...own, ...this.sizeProblem(), ...this.images.problemList(), ...this.cache.problemList()]) {
+      const key = `${problem.code}:${problem.revisionId ?? problem.manifest ?? problem.bundleId ?? ''}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      said.push(problem)
+    }
+    return said.slice(0, REMOTE_PROBLEMS_MAX)
   }
 
   /** Every attempt held and not ended, as the contract carries it. */
@@ -747,17 +939,18 @@ export class Agent extends EventEmitter {
     this.perDevice = reply.perDevice
     this.compatible = reply.compatible
     this.homeVersion = reply.homeVersion
-    if (reply.trusted !== this.trusted && this.identity && joined(this.identity)) {
-      this.identity = { ...this.identity, trusted: reply.trusted }
-      writeIdentity(this.layout, this.identity)
-      this.log(`[runner] home ${reply.trusted ? 'trusts this machine with the hidden test now' : 'no longer trusts this machine with the hidden test'}`)
+    this.trust(reply.trusted)
+    // The owner's «Места»: what `free` offers from now on, and what a restart starts from before the first reply.
+    if (reply.approvedSlots !== this.approvedSlots && this.identity && joined(this.identity)) {
+      this.identity = { ...this.identity, approvedSlots: reply.approvedSlots }
+      this.keepIdentity(this.identity)
+      this.log(`[runner] home allows this machine ${reply.approvedSlots === null ? 'as many places as it offers' : `${reply.approvedSlots} place(s) at once`}`)
     }
-    this.trusted = reply.trusted
-    if (!reply.trusted && this.cache.holdsSealed()) this.cache.purgeSealed('untrusted')
+    this.approvedSlots = reply.approvedSlots
     // A machine on its way out is drained by home as well (its leaving sync's reply): nothing to say about that.
     if (reply.drain && !this.homeDrain) {
       if (!this.leaving) this.log('[runner] home drains this machine: the runs held finish, nothing new is taken')
-      this.cache.purgeSealed('drain')
+      this.cache.purgeSealed('drain', this.inUse().manifests)
     }
     if (!reply.drain && this.homeDrain) this.log('[runner] home takes this machine back into work')
     this.homeDrain = reply.drain
@@ -782,17 +975,36 @@ export class Agent extends EventEmitter {
    * before anything else happens to it, and its run starts. Not taking work
    * (a drain, a leave, a stop, an outdated build), the offers are not written
    * down and the seq is moved past them: home withdraws them at once.
+   *
+   * Two offers are declined at once instead, before anything is done for
+   * them (declineOffer): one past the most attempts a sync may list
+   * (REMOTE_ATTEMPTS_MAX: home's parser refuses a sync with more, and a
+   * machine whose every sync is refused loses every lease it holds, its
+   * neighbours' runs with the offer), which only a home that over-leased can
+   * send; and one whose lease the disk will not take, which held unwritten
+   * would be a run the next life knows nothing of.
    */
   private acceptLeases(leases: readonly RemoteLease[], replySeq: number): void {
     let passed = false
+    const most = Math.min(REMOTE_ATTEMPTS_MAX, this.options.attemptsMax ?? REMOTE_ATTEMPTS_MAX)
     for (const lease of leases) {
       if (this.held.has(lease.attemptId) || this.settled.has(lease.attemptId)) continue
       if (!this.takesWork()) {
         passed = true
         continue
       }
+      if (this.listed().length >= most) {
+        this.declineOffer(lease, 'memory', `this machine already holds ${most} attempts, the most one sync can list; home offered more`)
+        continue
+      }
       const receivedAt = this.now()
-      writeLease(this.layout, { lease, receivedAt })
+      try {
+        writeLease(this.layout, { lease, receivedAt })
+      } catch (error) {
+        this.writeFailed(`the lease of ${lease.attemptId.slice(0, 8)}`, error)
+        this.declineOffer(lease, 'disk', `the lease could not be written down: ${error instanceof Error ? error.message : String(error)}`)
+        continue
+      }
       this.seq = Math.max(this.seq, lease.seq)
       const held = this.fresh(lease, receivedAt)
       this.held.set(lease.attemptId, held)
@@ -801,6 +1013,68 @@ export class Agent extends EventEmitter {
     }
     if (passed) this.seq = Math.max(this.seq, replySeq)
     this.changed(true)
+  }
+
+  /**
+   * An offer declined without being held: never written down, never listed,
+   * never run; its decline is posted like any outcome (home declines an offer
+   * it has not seen acked as well as an accepted one, and does not offer this
+   * machine the submission again for a while). The seq is not moved past it:
+   * a sync that left it out at or above its seq would withdraw it first and
+   * the decline would find it gone, with nothing said about why. Posted for
+   * OFFER_DECLINE_MS at most, through every hiccup: past that home has
+   * withdrawn the offer by itself. Remembered as settled, so that a repeat of
+   * the offer in a later reply is not taken for a new one.
+   */
+  private declineOffer(lease: RemoteLease, reason: RemoteDeclineReason, detail: string): void {
+    this.remember(lease.attemptId)
+    this.log(`[runner] declined ${lease.attemptId.slice(0, 8)} without taking it (${reason}): ${detail}`)
+    void deliver({
+      client: this.client!,
+      build: this.options.build,
+      attemptId: lease.attemptId,
+      stored: { kind: 'declined', reason, detail: remoteText(detail, REMOTE_REASON_CHARS, 'start'), startedAt: null },
+      uploads: [],
+      free: () => this.free(),
+      signal: AbortSignal.any([this.stopAbort.signal, AbortSignal.timeout(OFFER_DECLINE_MS)]),
+      onReply: (reply) => this.outcomeReply(reply),
+      backoff: () => this.newBackoff(),
+      sleep: (ms, signal) => wait(ms, signal),
+      log: this.log,
+    }).then((how) => {
+      if (how === 'unauthorized') this.poke(true)
+    }, (error: unknown) => this.log(`[runner] the decline of ${lease.attemptId.slice(0, 8)} failed: ${String(error)}`))
+  }
+
+  /**
+   * Home's reply to an outcome: its word on the hidden test, as a sync's
+   * (an untrust between two syncs purges it here, before the next work is
+   * taken), and the next work it carries, taken as a sync's offers are.
+   */
+  private outcomeReply(reply: RemoteOutcomeReply): void {
+    this.trust(reply.trusted)
+    this.acceptLeases(reply.leases, reply.seq)
+  }
+
+  /**
+   * Home's word on whether this machine may hold the hidden test, from any
+   * reply that says it: written down when it changes (a restart starts from
+   * it), and the hidden test purged at once when it is no (decision 1).
+   */
+  private trust(trusted: boolean): void {
+    if (trusted !== this.trusted && this.identity && joined(this.identity)) {
+      this.identity = { ...this.identity, trusted }
+      this.keepIdentity(this.identity)
+      this.log(`[runner] home ${trusted ? 'trusts this machine with the hidden test now' : 'no longer trusts this machine with the hidden test'}`)
+    }
+    this.trusted = trusted
+    if (!trusted && this.cache.holdsSealed()) this.cache.purgeSealed('untrusted')
+  }
+
+  /** An attempt this machine is done with, whose repeats in a late reply are not new offers. */
+  private remember(attemptId: string): void {
+    this.settled.add(attemptId)
+    if (this.settled.size > SETTLED_KEEP) this.settled.delete(this.settled.values().next().value!)
   }
 
   private fresh(lease: RemoteLease, receivedAt: number): Held {
@@ -933,7 +1207,7 @@ export class Agent extends EventEmitter {
         stored = await assembleOutcome({ outcome: brokenOutcome(error, outcome.wall), resultDir: this.nowhere(), card: held.card, crowded: false, startedAt: held.startedAt, endedAt })
       }
       if (held.ended) return
-      writeOutcome(this.layout, lease.attemptId, stored)
+      this.keepOutcome(held, stored)
       held.stored = stored
       held.phase = 'uploading'
       this.changed(true)
@@ -951,11 +1225,26 @@ export class Agent extends EventEmitter {
     }
   }
 
+  /**
+   * What a run came to, written down before a byte of it goes out (a restart
+   * sends it again). A disk that will not take it costs exactly that: the
+   * outcome goes up from memory all the same, and only a restart before home
+   * answered would lose it, where a throw here lost it at once (the attempt
+   * left unreported, a finished run counted lost).
+   */
+  private keepOutcome(held: Held, stored: StoredOutcome): void {
+    try {
+      writeOutcome(this.layout, held.lease.attemptId, stored)
+    } catch (error) {
+      this.writeFailed(`the outcome of ${held.lease.attemptId.slice(0, 8)}`, error)
+    }
+  }
+
   /** Declined before any container (or handed back): written down, then posted like an outcome. */
   private async decline(held: Held, decline: Decline): Promise<void> {
     held.holds = false
     const stored: StoredOutcome = { kind: 'declined', reason: decline.reason, detail: remoteText(decline.detail, REMOTE_REASON_CHARS, 'start'), startedAt: held.startedAt }
-    writeOutcome(this.layout, held.lease.attemptId, stored)
+    this.keepOutcome(held, stored)
     held.stored = stored
     if (held.startedAt !== null) held.phase = 'uploading'
     if (decline.reason !== 'draining') this.log(`[runner] declined ${held.lease.attemptId.slice(0, 8)} (${decline.reason}): ${decline.detail}`)
@@ -984,7 +1273,7 @@ export class Agent extends EventEmitter {
       uploads,
       free: () => this.free(),
       signal: held.send.signal,
-      onReply: (reply) => this.acceptLeases(reply.leases, reply.seq),
+      onReply: (reply) => this.outcomeReply(reply),
       backoff: () => this.newBackoff(),
       sleep: (ms, signal) => wait(ms, signal),
       log: this.log,
@@ -1010,8 +1299,7 @@ export class Agent extends EventEmitter {
     if (!held.ended && held.stored && this.stopping) return
     const { lease } = held
     this.held.delete(lease.attemptId)
-    this.settled.add(lease.attemptId)
-    if (this.settled.size > SETTLED_KEEP) this.settled.delete(this.settled.values().next().value!)
+    this.remember(lease.attemptId)
     dropLease(this.layout, lease.attemptId)
     try {
       dropAttempt(lease.competitionId, lease.submissionId, lease.attemptId)
@@ -1069,6 +1357,7 @@ export class Agent extends EventEmitter {
       heldMb: this.runnerHeld.heldMb ?? 0,
       attempts: this.held.size,
       gpuShares: this.cardsNow().freeShares,
+      approvedSlots: this.approvedSlots,
     })
   }
 
@@ -1093,7 +1382,9 @@ export class Agent extends EventEmitter {
       if (asked.info) this.probe.info = asked.info
       this.setProblem('docker', asked.problem)
       failed ||= asked.problem !== null
-      const image = this.options.image ?? (await this.ownImage())
+      // Where pulls land, measured anew with every probe (and before every pull, and after the evictions that free it); one filesystem with the tree stays one.
+      if (this.dockerDisk !== 'same') this.dockerDisk = (await this.measureDocker()) ?? this.dockerDisk
+      const image = await this.probeImage()
       const cards = await probeCards(this.docker, image)
       if (cards.problem === null) {
         this.probe.cards = cards.cards
@@ -1111,8 +1402,26 @@ export class Agent extends EventEmitter {
     void once()
   }
 
+  /**
+   * The image the check containers start from (the card probe, the measure
+   * of Docker's disk): COLLOQ_RUNNER_IMAGE, or the image this container runs,
+   * as docker says; null — neither (no container of its own and no image
+   * named: make runner-dev), and then no check container is started at all.
+   * A probe that found none asks again; one found is kept.
+   */
+  private probeImage(): Promise<string | null> {
+    if (this.options.image) return Promise.resolve(this.options.image)
+    if (this.options.container === null) return Promise.resolve(null)
+    this.checkImage ??= this.ownImage().then((image) => {
+      if (image === null) this.checkImage = null
+      return image
+    })
+    return this.checkImage
+  }
+
   /** The image this container runs, when COLLOQ_RUNNER_IMAGE did not say: what `--gpus all` probes the cards with. */
   private async ownImage(): Promise<string | null> {
+    if (this.options.container === null) return null
     const asked = await this.docker(['inspect', '-f', '{{.Config.Image}}', this.options.container], { timeoutMs: 20_000 })
     const image = asked.code === 0 ? asked.out.trim().split('\n')[0]?.trim() ?? '' : ''
     return image || null
@@ -1121,6 +1430,82 @@ export class Agent extends EventEmitter {
   private setProblem(code: 'docker' | 'cards' | 'disk', detail: string | null): void {
     if (detail === null) this.problems.delete(code)
     else this.problems.set(code, { code, detail: remoteText(detail, REMOTE_REASON_CHARS, 'start') })
+  }
+
+  /**
+   * A write the disk refused for want of room, from wherever it came (a
+   * blob, a pull, the identity, a lease, an outcome): a `disk` problem for
+   * DISK_FULL_KEEP_MS after the last one, kept apart from the floor's own
+   * (which a statfs above the floor clears: a disk out of inodes refuses
+   * writes with room to spare), and eviction asked for.
+   */
+  private diskFull(detail: string): void {
+    this.diskFullAt = this.now()
+    this.problems.set('disk-full', { code: 'disk', detail: remoteText(detail, REMOTE_REASON_CHARS, 'start') })
+    void this.keepDiskFloor()
+    this.changed()
+  }
+
+  /** The floor of free disk: below it eviction begins, and nothing is prefetched or pulled. */
+  private floorMb(): number {
+    return this.options.diskFloorMb ?? DISK_FLOOR_MB
+  }
+
+  /**
+   * Whether a fetch of `bytes` into the tree may start (cache.ts · diskGate).
+   * A prefetch only while the disk is at or above the floor, the line
+   * eviction keeps: below it, fetching what nobody waits for would only be
+   * evicted again, or fill the disk under the runs. A lease's own blob may
+   * take the disk lower, down to what the machine promised home it always
+   * keeps (REMOTE_DISK_RESERVE_MB, the reserve in `free.diskMb`): home leased
+   * it on that promise. Refused, eviction is asked for, and the floor's
+   * `disk` problem says when nothing more can go.
+   */
+  private mayFetch(bytes: number, forLease: boolean): boolean {
+    const free = this.machine().diskFreeMb
+    if (free === null) return true
+    if (forLease ? free - Math.ceil(bytes / (1024 * 1024)) >= REMOTE_DISK_RESERVE_MB : free >= this.floorMb()) return true
+    void this.keepDiskFloor()
+    return false
+  }
+
+  /** Whether a pull may start (images.ts · diskGate): Docker's disk, measured now, at or above the floor. */
+  private async mayPull(): Promise<boolean> {
+    const free = await this.pullFreeMb(true)
+    if (free === null || free >= this.floorMb()) return true
+    void this.keepDiskFloor()
+    return false
+  }
+
+  /**
+   * Docker's own store, measured (machine.ts · measureDockerDisk), with the
+   * check containers' labels: what `docker info` says it is, against the
+   * tree. Null when it cannot be told, which no pull is refused for.
+   */
+  private async measureDocker(): Promise<DiskSpace | 'same' | null> {
+    return measureDockerDisk({
+      docker: this.docker,
+      rootDir: this.probe.info?.rootDir ?? null,
+      tree: this.layout.root,
+      image: await this.probeImage(),
+      contained: this.options.container !== null,
+      labels: CHECK_LABELS,
+    })
+  }
+
+  /**
+   * The free disk where pulls land: Docker's own store when it is a
+   * filesystem of its own (measured anew when `fresh`: a pull's few
+   * gigabytes or an eviction change it), the tree's otherwise, and the tree's
+   * too when Docker's could not be measured: no worse a guess than before.
+   */
+  private async pullFreeMb(fresh: boolean): Promise<number | null> {
+    if (fresh && this.dockerDisk !== 'same') {
+      // The first pull may come before the first probe has asked the daemon where its store is.
+      if (!this.probe.info) await this.facts()
+      this.dockerDisk = (await this.measureDocker()) ?? this.dockerDisk
+    }
+    return this.dockerDisk !== null && this.dockerDisk !== 'same' ? this.dockerDisk.freeMb : this.machine().diskFreeMb
   }
 
   /**
@@ -1152,15 +1537,23 @@ export class Agent extends EventEmitter {
    * Below the disk's floor: revisions not wanted for a day, then the caches'
    * least recently used, until it holds; a `disk` problem when nothing more
    * can go.
+   *
+   * Each by the disk it frees. On a host whose Docker store is a filesystem
+   * of its own, revisions go while that disk is below the floor, measured
+   * again after each (dockerDisk), and the caches while the tree's is: a
+   * revision evicted for the tree's sake frees nothing there, and a full store
+   * the tree's statfs never sees would fail every pull.
    */
   private async keepDiskFloor(): Promise<void> {
     if (this.evicting) return
     this.evicting = true
     try {
-      const floor = this.options.diskFloorMb ?? DISK_FLOOR_MB
+      const floor = this.floorMb()
       const freeMb = (): number | null => this.machine().diskFreeMb
+      const separate = this.dockerDisk !== null && this.dockerDisk !== 'same'
       const free = freeMb()
-      if (free === null || free >= floor) {
+      const store = separate ? (this.dockerDisk as DiskSpace).freeMb : free
+      if ((free === null || free >= floor) && (store === null || store >= floor)) {
         this.setProblem('disk', null)
         return
       }
@@ -1175,9 +1568,22 @@ export class Agent extends EventEmitter {
           ...[...this.held.values()].map((held) => held.lease.notebook.sha256),
         ]),
       }
-      await this.images.evict(new Set([...this.held.values()].map((held) => held.lease.revision.id)), freeMb, floor)
-      const holds = this.cache.evict(keep, freeMb, floor)
-      this.setProblem('disk', holds ? null : `free disk ${freeMb()} MB is below the ${floor} MB floor, and nothing more can be evicted`)
+      const running = new Set([...this.held.values()].map((held) => held.lease.revision.id))
+      if (!separate) {
+        await this.images.evict(running, freeMb, floor)
+        const holds = this.cache.evict(keep, freeMb, floor)
+        this.setProblem('disk', holds ? null : `free disk ${freeMb()} MB is below the ${floor} MB floor, and nothing more can be evicted`)
+        return
+      }
+      if (store !== null && store < floor) await this.images.evict(running, () => this.pullFreeMb(true), floor)
+      const treeHolds = this.cache.evict(keep, freeMb, floor)
+      const after = await this.pullFreeMb(false)
+      const storeHolds = after === null || after >= floor
+      this.setProblem('disk', !treeHolds
+        ? `free disk ${freeMb()} MB is below the ${floor} MB floor, and nothing more can be evicted`
+        : !storeHolds
+          ? `free disk ${after} MB on Docker's own disk (${this.probe.info?.rootDir ?? 'its store'}) is below the ${floor} MB floor, and no revision can be evicted`
+          : null)
     } catch (error) {
       this.log(`[runner] eviction failed: ${String(error)}`)
     } finally {

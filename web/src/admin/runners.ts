@@ -23,6 +23,7 @@ import type { RemoteProblemCode } from '@shared/remote-runner'
 import type {
   MintRemoteCodeRequest,
   MintRemoteCodeResponse,
+  RemoteCodeView,
   RemoteCompetitionWhere,
   RemoteConsoleGroup,
   RemoteEvent,
@@ -37,12 +38,13 @@ import type {
   RemoteReadiness,
   RemoteReadinessItem,
   RemoteReadinessVerdict,
+  RemoteWhereMachine,
   RunningRemote,
   UpdateRemoteMachineRequest,
 } from '@shared/remote-admin'
 import type { RunningNow, WaitingRow } from '@shared/competitions-api'
-import { adminRequest } from '@/lib/adminApi'
-import { cardWord } from './running-kernels'
+import { AdminApiError, adminRequest } from '@/lib/adminApi'
+import { cardWord, type Outcome } from './running-kernels'
 
 /* ------------------------------------------------------------------ client */
 
@@ -81,6 +83,49 @@ export const runnersApi = {
 
   /** POST /api/admin/runners/revoke-all — «Отключить все». */
   revokeAll: (): Promise<void> => adminRequest<unknown>('/runners/revoke-all', { method: 'POST' }).then(() => undefined),
+}
+
+/**
+ * The order of overlapping reads of one list (the machines block, M1).
+ *
+ * Reads overlap — the timer's, the one after a menu action, the one after
+ * the Resources form's Save — and their answers come back in any order: a
+ * timed read that left before a Save and landed after it put the old state
+ * back on screen until the next tick. So every read takes a ticket
+ * (`ask`), and an answer is shown only when it is newer than the last one
+ * shown (`accept`). A read asked for after a write (`ask(true)`) also
+ * retires every read that left before it: those carry the state from before
+ * the write, whichever lands first.
+ */
+export function readOrder(): { ask: (afterWrite?: boolean) => number; accept: (ticket: number) => boolean } {
+  let asked = 0
+  let floor = 0
+  return {
+    ask(afterWrite = false) {
+      asked += 1
+      if (afterWrite) floor = Math.max(floor, asked - 1)
+      return asked
+    },
+    accept(ticket) {
+      if (ticket <= floor) return false
+      floor = ticket
+      return true
+    },
+  }
+}
+
+/**
+ * What to ask before the Resources form saves «только метрики»
+ * (homeNotebooks off): with no machine online nothing runs a notebook and
+ * every submission waits, so the owner is asked first — and told plainly when
+ * the machines list could not be read rather than told there are none.
+ * `null` — nothing to ask: notebooks stay on (or are forgotten back to the
+ * default, which is on), or a machine is online.
+ */
+export function notebooksOffQuestion(homeNotebooks: boolean | null | undefined, machinesOnline: number | null): string | null {
+  if (homeNotebooks !== false) return null
+  if (machinesOnline !== null && machinesOnline > 0) return null
+  return tr(machinesOnline === null ? 'admin.runners.homeNotebooks.offConfirmUnknown' : 'admin.runners.homeNotebooks.offConfirm')
 }
 
 /* ------------------------------------------------------------------- tones */
@@ -774,8 +819,13 @@ export function wholeOrAuto(text: string, min: number, max: number): { value: nu
 export const PLACES_BOUNDS = { min: 1, max: REMOTE_ATTEMPTS_MAX } as const
 /** Runs per card: shared/remote-runner.ts · REMOTE_PER_DEVICE_MAX. */
 export const PER_DEVICE_BOUNDS = { min: 1, max: REMOTE_PER_DEVICE_MAX } as const
-/** A code joins 1–50 machines (MintRemoteCodeRequest.machines). */
-export const MACHINES_BOUNDS = { min: 1, max: 50 } as const
+/**
+ * A code joins 1–100 machines (MintRemoteCodeRequest.machines): the door's
+ * bound and `colloq-host runner-code --machines`'s (server/src/competitions/
+ * remote/store.ts · REMOTE_CODE_MACHINES_MAX). A stricter one here refused
+ * in the dialog what the shell on the same server allows.
+ */
+export const MACHINES_BOUNDS = { min: 1, max: 100 } as const
 /** A code lives 1 h to a day (REMOTE_CODE_TTL_MAX_MS). */
 export const HOURS_BOUNDS = { min: 1, max: Math.floor(REMOTE_CODE_TTL_MAX_MS / HOUR) } as const
 
@@ -804,6 +854,31 @@ export function mintRequest(form: ConnectForm): { request: MintRemoteCodeRequest
 }
 
 /* ---------------------------------------------------- «ждём первую машину» */
+
+/**
+ * How many machines joined with the code the dialog minted, by the code's
+ * own count (RemoteCodeView.used, matched on MintRemoteCodeResponse.id).
+ *
+ * The list keeps only codes with uses left, so a code still valid that has
+ * left it is spent: every machine it was minted for joined. But only once
+ * the list has shown it (`seen`): the list read before the code was minted
+ * does not have it either, and «все подключились» the moment the commands
+ * appeared would be the dialog's first word. Before that, nothing joined
+ * that the list knows of. `null` — the server gave no id, or the code
+ * expired and left the list: then the newcomers count (joinProgress).
+ */
+export function codeJoined(
+  minted: Pick<MintRemoteCodeResponse, 'id' | 'machines' | 'expiresAt'>,
+  codes: readonly Pick<RemoteCodeView, 'id' | 'used'>[],
+  now: number,
+  seen: boolean,
+): number | null {
+  if (!minted.id) return null
+  const code = codes.find((one) => one.id === minted.id)
+  if (code) return code.used
+  if (now >= minted.expiresAt) return null
+  return seen ? minted.machines : 0
+}
 
 export interface JoinProgress {
   title: string
@@ -834,26 +909,34 @@ function joinStatus(machine: RemoteMachine): string {
 
 /**
  * The dialog's live line under the commands (M2): nothing yet, then which
- * machines joined and what the latest is doing. A machine counts as joined
- * when the list has it and it was not there when the code was shown — the
- * code itself is never kept to match it by.
+ * machines joined and what the latest is doing.
+ *
+ * How many joined is the code's own count when the server tells it
+ * (`joined`, codeJoined): the list's machines that are new since the code was
+ * shown also take in one that joined with ANOTHER code meanwhile, and «1 из
+ * 3» over a machine from yesterday's code is the dialog lying about the
+ * command the owner just pasted. Which machines they are is known only when
+ * the newcomers are exactly that many; otherwise the line gives the count
+ * alone, never a name it cannot vouch for. Without the code's count
+ * (`null`), every newcomer counts, as before.
  */
-export function joinProgress(known: ReadonlySet<string>, machines: readonly RemoteMachine[], expected: number): JoinProgress {
-  const joined = machines.filter((machine) => !known.has(machine.id)).sort((a, b) => a.createdAt - b.createdAt)
-  if (joined.length === 0) {
+export function joinProgress(known: ReadonlySet<string>, machines: readonly RemoteMachine[], expected: number, joined: number | null = null): JoinProgress {
+  const newcomers = machines.filter((machine) => !known.has(machine.id)).sort((a, b) => a.createdAt - b.createdAt)
+  const count = joined ?? newcomers.length
+  if (count === 0) {
     return { title: tr('admin.runners.connect.waiting'), text: tr('admin.runners.connect.waitingNote'), joined: 0 }
   }
-  const shown = joined.slice(-3).map((machine) => machine.name)
-  const names = joined.length > shown.length ? `${shown.join(', ')} ${tr('admin.runners.connect.andMore', { count: joined.length - shown.length })}` : shown.join(', ')
+  const title = count >= expected ? tr('admin.runners.connect.allJoined') : tr('admin.runners.connect.waitingMore')
+  const total = Math.max(expected, count)
+  if (joined !== null && newcomers.length !== joined) {
+    return { title, text: tr('admin.runners.connect.joinedCount', { count, total }), joined: count }
+  }
+  const shown = newcomers.slice(-3).map((machine) => machine.name)
+  const names = newcomers.length > shown.length ? `${shown.join(', ')} ${tr('admin.runners.connect.andMore', { count: newcomers.length - shown.length })}` : shown.join(', ')
   return {
-    title: joined.length >= expected ? tr('admin.runners.connect.allJoined') : tr('admin.runners.connect.waitingMore'),
-    text: tr('admin.runners.connect.joined', {
-      count: joined.length,
-      total: Math.max(expected, joined.length),
-      names,
-      status: joinStatus(joined[joined.length - 1]),
-    }),
-    joined: joined.length,
+    title,
+    text: tr('admin.runners.connect.joined', { count, total, names, status: joinStatus(newcomers[newcomers.length - 1]) }),
+    joined: count,
   }
 }
 
@@ -1014,10 +1097,22 @@ export function consoleGroups(groups: readonly RemoteConsoleGroup[], running: re
   return out
 }
 
-/** The fleet in the console's header: every run drawn, of every place the groups give. */
-export function fleetPlaces(groups: readonly RemoteConsoleGroup[], running: readonly RunningNow[]): { busy: number; count: number } {
-  const count = groups.reduce((sum, group) => sum + group.places, 0)
-  return { busy: running.length, count: Math.max(count, running.length) }
+/**
+ * The free places a group draws: its places for notebooks less the
+ * notebooks drawn under it. A metric run here is the metric lane's
+ * (scoreSlots), not one of this server's notebook places — counted against
+ * them, two rescores left two free cells under «Сервер · 0 из 4», while all
+ * four could take a notebook. A server that runs no notebooks has none to
+ * give.
+ *
+ * The console's header counts the queue's own number (QueueSnapshot.slots),
+ * not a sum over these groups: it is the one the forecast and the
+ * participant's estimate are counted by, and the groups also list machines
+ * that only finish what they hold.
+ */
+export function freePlaces(group: Pick<RemoteConsoleGroup, 'places' | 'metricsOnly'>, runs: readonly Pick<RunningNow, 'kind'>[]): number {
+  if (group.metricsOnly) return 0
+  return Math.max(0, group.places - runs.filter((run) => run.kind !== 'metric').length)
 }
 
 /** «на сервере и 2 машинах», «на 3 машинах»; `null` with no machine in the groups. */
@@ -1042,13 +1137,22 @@ export function groupChip(group: RemoteConsoleGroup, now: number): { word: strin
  * for one that does not, why — «досчитывает 2 · новых не берёт», or for a
  * silent one what became of its runs. `returned` is how many of THIS
  * competition's waiting rows came back from it (the console sees only its
- * own); `homeVersion` is the panel's own release, which is the server's.
+ * own); `homeVersion` is the server's release as this server's own group
+ * says it (RemoteConsoleGroup.version) — never the panel bundle's, which a
+ * browser holding an old panel would name.
  */
 export function groupLine(group: RemoteConsoleGroup, returned: number, homeVersion: string | null): string {
   if (group.machineId === null) {
-    return group.metricsOnly
-      ? tr('admin.competitions.fleet.homeMetrics', { busy: group.busy, count: group.places })
-      : tr('admin.competitions.fleet.places', { busy: group.busy, count: group.places })
+    // With notebooks off, `places` and `busy` are the notebook lane's — zero
+    // — and «только метрики · 0 из 0» over two metrics running said the
+    // opposite of what this server does. The metric lane's own numbers
+    // (`metric`) when the server sends them; no number at all when not.
+    if (group.metricsOnly) {
+      return group.metric
+        ? tr('admin.competitions.fleet.homeMetrics', { busy: group.metric.busy, count: group.metric.places })
+        : tr('admin.competitions.fleet.homeMetricsBare')
+    }
+    return tr('admin.competitions.fleet.places', { busy: group.busy, count: group.places })
   }
   const finishing = group.busy > 0 ? tr('admin.competitions.fleet.finishing', { count: group.busy }) : tr('admin.competitions.fleet.noNew')
   switch (group.state) {
@@ -1111,9 +1215,46 @@ export function waitReason(row: Pick<WaitingRow, 'reason' | 'returnedFrom' | 're
       return { text: tr('admin.competitions.fleet.reason.needs_trusted'), tone: 'warning' }
     case 'home_only_env':
       return { text: tr('admin.competitions.fleet.reason.home_only_env'), tone: 'warning' }
+    case 'no_fit':
+      // No machine that takes work can run it as it is — its memory or CPUs
+      // over a machine's, a package set too big for a lease (RemoteWaitReason)
+      // — so it waits for this server or a bigger machine, and its turn
+      // alone will not bring it.
+      return { text: tr('admin.competitions.fleet.reason.no_fit'), tone: 'warning' }
     default:
       return row.scoring ? { text: tr('admin.competitions.fleet.reason.scoring'), tone: 'accent' } : null
   }
+}
+
+/**
+ * The one line under a waiting submission in the console: a machine's
+ * reason (waitReason) when there is one, the card it waits for when that is
+ * all (`onCard`, admin/competitions.ts · waitsForCard), nothing for a plain
+ * turn.
+ *
+ * The reason comes first. «ждёт место на видеокарте» says a share will free
+ * by itself; a reason says what has to change instead. With the card's words
+ * first, a GPU notebook on a server without cards whose machines had gone
+ * read «ждёт место на видеокарте» while nothing anywhere could take it, and
+ * a row back from a silent machine lost its «вернулась: … замолчала» the
+ * moment every share was busy. Without machines a reason appears only when
+ * this server runs no notebooks, and then no card frees anything either.
+ */
+export function waitingLine(row: Pick<WaitingRow, 'reason' | 'returnedFrom' | 'returnedWhy' | 'scoring'>, onCard: boolean): Line | null {
+  const reason = waitReason(row)
+  if (reason) return reason
+  return onCard ? { text: tr('admin.competitions.waitsForCard'), tone: 'accent' } : null
+}
+
+/**
+ * The warning over the waiting list when GPU work has no share on any card
+ * to start on (admin/competitions.ts · noPlaceOnCards). Without machines it
+ * is this server's card, given on «Ресурсы»; with machines (`fleet`) it is
+ * also every machine on the line, and a server like vsos has no card of its
+ * own to give — sending its owner to give one was advice nobody could take.
+ */
+export function cardlessWarning(fleet: boolean): string {
+  return tr(fleet ? 'admin.competitions.fleet.gpuNoPlace' : 'admin.competitions.gpuNoPlace')
 }
 
 /** The stage word of a running cell on a machine whose container has not started yet, or has ended. */
@@ -1201,6 +1342,50 @@ export function remoteRow(remote: RunningRemote): RemoteRow {
   }
 }
 
+/** What stopping a competition's submissions on machines came to (stopRemoteRuns). */
+export interface RemoteStopTally {
+  /** Cancelled now: on a machine a durable cancel its next call carries (§3.5). */
+  stopped: number
+  /** Answered 409: the run ended between the list and the press. */
+  ended: number
+  /** The first other refusal (a dropped connection, a signed-out panel); `null` — none. */
+  error: unknown
+}
+
+/**
+ * Stop a competition's submissions on machines (M5) through the console's
+ * own kill door, one request per submission: there is no door that stops a
+ * competition's machine runs at once, and the kill already is the durable
+ * cancel for a run a machine holds (competitions/runner.ts · cancelSubmission
+ * → cancelRemote). Every request is let finish: one that fails does not keep
+ * the others from stopping, and the tally says which were which.
+ */
+export async function stopRemoteRuns(ids: readonly string[], kill: (id: string) => Promise<unknown>): Promise<RemoteStopTally> {
+  const results = await Promise.allSettled(ids.map((id) => kill(id)))
+  const tally: RemoteStopTally = { stopped: 0, ended: 0, error: null }
+  for (const result of results) {
+    if (result.status === 'fulfilled') tally.stopped += 1
+    else if (result.reason instanceof AdminApiError && result.reason.status === 409) tally.ended += 1
+    else if (tally.error === null) tally.error = result.reason
+  }
+  return tally
+}
+
+/**
+ * The line after that stop: how many were cancelled, how many had already
+ * ended — never «all stopped» over runs that were over before the press — and,
+ * when some did not answer, that pressing again stops the rest.
+ */
+export function remoteStopOutcome(name: string | null, tally: RemoteStopTally): Outcome {
+  const title = name ?? tr('admin.resourcesTab.running.unnamed')
+  const parts: string[] = []
+  if (tally.stopped > 0) parts.push(tr('admin.resourcesTab.running.remote.stopped', { name: title, count: tally.stopped }))
+  else if (tally.error === null) parts.push(tr('admin.resourcesTab.running.remote.allEnded', { name: title }))
+  if (tally.stopped > 0 && tally.ended > 0) parts.push(tr('admin.resourcesTab.running.remote.stoppedEnded', { count: tally.ended }))
+  if (tally.error !== null) parts.push(tr('admin.resourcesTab.running.remote.stoppedPartly'))
+  return { tone: tally.error === null ? 'positive' : 'warning', text: parts.join(' ') }
+}
+
 /* --------------------------------------------------------- the editor (M6) */
 
 /** The «Где считается» row: this server's chip, the machines that take it, and the sentence beside them. */
@@ -1232,14 +1417,43 @@ function unfitWhy(verdict: RemoteReadinessVerdict): string | null {
   }
 }
 
+/** A verdict that depends on the competition's image: another environment picked in the form leaves it unknown until Save. */
+function imageVerdict(verdict: RemoteReadinessVerdict): boolean {
+  return verdict === 'taking' || verdict === 'preparing' || verdict === 'home_only'
+}
+
+/**
+ * A machine's verdict for the competition as the FORM stands, where the form
+ * makes it certain: with the card switched on, a machine without cards
+ * cannot take it whatever the saved verdict says (the server's own rule
+ * after outdated code, remote/views.ts · readinessFor), and the row read «2
+ * машины с картами» over a machine that has none until Save. The other way
+ * round is not certain — a GPU image needs a card with the switch off too —
+ * so it is left to the saved verdict.
+ */
+function formVerdict(machine: RemoteWhereMachine, gpu: boolean): RemoteReadinessVerdict {
+  if (machine.verdict === 'outdated') return 'outdated'
+  return gpu && machine.cards === 0 ? 'needs_card' : machine.verdict
+}
+
 /**
  * «Где считается» (M6): this server and the machines that take this
  * competition, and in one sentence the rest — how many machines and places,
  * which is still preparing, which does not fit and why. Only the first
  * machine that does not fit is named: the row is a line, and the owner fixes
  * one machine at a time anyway.
+ *
+ * The verdicts are the server's for the competition AS SAVED. With another
+ * environment named in the form (`unsaved`) whatever depends on the image —
+ * taking it, still preparing it, an environment only this server had — is
+ * not known until Save, when the machines fetch the new image: those
+ * machines read «подготовятся после сохранения». Kept as they were, a switch
+ * from an environment built here to one in the registry read «ни одна машина
+ * пока не берёт» over a choice that is exactly what lets them. The reasons
+ * that do not depend on the image (no card, not trusted, outdated code, a
+ * failed preparation) stay.
  */
-export function whereRow(where: RemoteCompetitionWhere, ctx: { gpu: boolean; draft: boolean; homeOnly: boolean }): WhereRow {
+export function whereRow(where: RemoteCompetitionWhere, ctx: { gpu: boolean; draft: boolean; homeOnly: boolean; unsaved?: boolean }): WhereRow {
   const home = ctx.homeOnly
     ? tr('admin.competitions.where.homeOnly')
     : where.home.notebooks
@@ -1248,25 +1462,29 @@ export function whereRow(where: RemoteCompetitionWhere, ctx: { gpu: boolean; dra
   if (ctx.homeOnly) {
     return { home, homeOnly: true, machines: [], text: tr('admin.competitions.where.homeOnlyLine') }
   }
-  const taking = where.machines.filter((machine) => machine.verdict === 'taking')
-  const preparing = where.machines.filter((machine) => machine.verdict === 'preparing')
-  const unfit = where.machines.filter((machine) => unfitWhy(machine.verdict) !== null)
+  const unsaved = ctx.unsaved === true
+  const machines = where.machines.map((machine) => ({ ...machine, verdict: formVerdict(machine, ctx.gpu) }))
+  const taking = unsaved ? [] : machines.filter((machine) => machine.verdict === 'taking')
+  const preparing = machines.filter((machine) => (unsaved ? imageVerdict(machine.verdict) : machine.verdict === 'preparing'))
+  const unfit = machines.filter((machine) => unfitWhy(machine.verdict) !== null)
   const parts: string[] = []
   if (taking.length > 0) {
     const places = taking.reduce((sum, machine) => sum + machine.places, 0)
     parts.push(
       `${tr(ctx.gpu ? 'admin.competitions.where.machinesCards' : 'admin.competitions.where.machines', { count: taking.length })}, ${tr('admin.competitions.where.places', { count: places })}`,
     )
-  } else if (where.machines.length > 0 && preparing.length === 0) {
+  } else if (machines.length > 0 && preparing.length === 0) {
     parts.push(tr('admin.competitions.where.noneTaking'))
   }
   if (preparing.length > 0) {
-    parts.push(
-      tr(ctx.draft ? 'admin.competitions.where.preparingDraft' : 'admin.competitions.where.preparing', {
-        names: listWords(preparing.map((machine) => machine.name)),
-        count: preparing.length,
-      }),
-    )
+    // A draft is prefetched only once it opens, whatever the form names; a
+    // live competition's new environment, once it is saved.
+    const key = ctx.draft
+      ? 'admin.competitions.where.preparingDraft'
+      : unsaved
+        ? 'admin.competitions.where.preparingUnsaved'
+        : 'admin.competitions.where.preparing'
+    parts.push(tr(key, { names: listWords(preparing.map((machine) => machine.name)), count: preparing.length }))
   }
   if (unfit.length > 0) {
     const first = unfit[0]
@@ -1298,13 +1516,34 @@ export function homeOnlyBox(where: RemoteCompetitionWhere, environment: string):
 
 /**
  * Warning 2: a hidden test goes to trusted machines only (decision 1). With
- * trusted machines it is information — which ones; with none it is the
- * reason the hidden-test submissions run only here, or, on a server that
- * runs no notebooks, wait.
+ * trusted machines that take this competition it is information — which
+ * ones, and that this server runs these submissions too when its notebooks
+ * are on; with none it is the reason the hidden-test submissions run only
+ * here, or, on a server that runs no notebooks, wait.
+ *
+ * Named are the trusted machines that take this competition (or prepare
+ * for it): a trusted machine without the card a GPU competition needs, with
+ * outdated code or a failed preparation runs none of these, and listing it
+ * as where the hidden test goes sent the owner to the wrong machine when
+ * they waited. The same `homeOnly`, `unsaved` and `gpu` as the row's
+ * (whereRow): an environment only this server has goes to no machine at all.
  */
-export function sealedWarning(where: RemoteCompetitionWhere): { trusted: string[]; text: string; tone: LineTone } {
-  const trusted = where.machines.filter((machine) => machine.trusted).map((machine) => machine.name)
-  if (trusted.length > 0) return { trusted, text: tr('admin.competitions.where.sealedTrusted'), tone: 'muted' }
+export function sealedWarning(
+  where: RemoteCompetitionWhere,
+  ctx: { homeOnly?: boolean; unsaved?: boolean; gpu?: boolean } = {},
+): { trusted: string[]; text: string; tone: LineTone } {
+  const takes = (verdict: RemoteReadinessVerdict): boolean =>
+    ctx.unsaved ? imageVerdict(verdict) : verdict === 'taking' || verdict === 'preparing'
+  const trusted = ctx.homeOnly
+    ? []
+    : where.machines.filter((machine) => machine.trusted && takes(formVerdict(machine, ctx.gpu === true))).map((machine) => machine.name)
+  if (trusted.length > 0) {
+    return {
+      trusted,
+      text: tr(where.home.notebooks ? 'admin.competitions.where.sealedTrustedHome' : 'admin.competitions.where.sealedTrusted'),
+      tone: 'muted',
+    }
+  }
   return where.home.notebooks
     ? { trusted, text: tr('admin.competitions.where.sealedHomeOnly'), tone: 'warning' }
     : { trusted, text: tr('admin.competitions.where.sealedWaits'), tone: 'danger' }

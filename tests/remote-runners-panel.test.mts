@@ -27,10 +27,14 @@ import { createCapabilityReader } from '../server/src/competitions/capabilities.
 import { getLease, getRunner } from '../server/src/competitions/remote/store.js'
 import { loseLease } from '../server/src/competitions/remote/release.js'
 import { queueForecast } from '../server/src/competitions/forecast.js'
-import { queueRow } from '../server/src/competitions/store.js'
+import { getSubmission, queueRow } from '../server/src/competitions/store.js'
+import { tr } from '../shared/i18n.js'
 import { COLLOQ_VERSION } from '../server/src/version.js'
 import { config } from '../server/src/config.js'
-import { Machine, close, competition, reset, send, serve, type TestCompetition } from './_remote.mts'
+import { ANSWER, FACTS, Machine, close, competition, finished, reset, send, serve, type TestCompetition } from './_remote.mts'
+
+const FACTS_FOR_PANEL = FACTS
+const getSubmissionState = (id: string) => getSubmission(id)?.state
 
 useCompetitionRunner(new FakeCompetitionRunner())
 
@@ -72,8 +76,9 @@ async function syncReady(m: Machine, competitions: TestCompetition[], options: {
   const ids = new Set(competitions.map((c) => c.id))
   const ready = {
     revisions: competitions.map((c) => c.revisionId),
-    data: first.body.want.data.filter((entry) => ids.has(entry.competitionId) && !entry.sealed).map((entry) => entry.manifest),
-    sealed: first.body.want.data.filter((entry) => ids.has(entry.competitionId) && entry.sealed).map((entry) => entry.manifest),
+    // Per manifest, as an agent reports it: competitions with the same files share one.
+    data: [...new Set(first.body.want.data.filter((entry) => ids.has(entry.competitionId) && !entry.sealed).map((entry) => entry.manifest))],
+    sealed: [...new Set(first.body.want.data.filter((entry) => ids.has(entry.competitionId) && entry.sealed).map((entry) => entry.manifest))],
     bundles: [],
   }
   return m.sync({ ready, cards: cardsOf(options.cards ?? 0), free: { slots: options.slots ?? 4, memoryMb: 32_768, cpus: 16, gpuShares: (options.cards ?? 0) * 2, diskMb: 100_000 }, attempts: options.attempts ?? [] })
@@ -347,10 +352,236 @@ test('«Работают сейчас» lists a machine\'s runs under their mach
   assert.equal(running.runs.some((run) => run.submissionId === sent.id), false, 'not among the runs that hold memory here')
 })
 
-test('the settings door returns the machines\' half of its box', async () => {
+test('the settings door returns the machines\' half of its box, each value with its source', async () => {
   reset()
   const settings = (await admin<CompetitionSettings>('GET', '/api/admin/competitions/settings')).body
   assert.ok(settings.runners)
-  assert.equal(settings.runners!.homeNotebooks.value, false)
+  assert.deepEqual(settings.runners!.homeNotebooks, { value: false, source: 'saved' }, 'saved by the owner (here, by the tests)')
   assert.equal(typeof settings.runners!.scoreSlots.value, 'number')
+  assert.equal(settings.runners!.scoreSlots.source, 'default', 'never saved: the default answers, and the form offers no «вернуть умолчание»')
+  for (const key of ['runnerBlobMBps', 'runnerUploads'] as const) assert.ok(['saved', 'default'].includes(settings.runners![key].source), key)
+})
+
+test('a notebook no live machine can ever fit waits as no_fit, with no place, by the take\'s own rules', async () => {
+  reset()
+  const big = competition({ memoryMb: 32_768 })
+  const wide = competition({ cpus: 8 })
+  const fits = competition()
+  const tooBig = send(big, { at: Date.now() - 4000 })
+  const tooWide = send(wide, { at: Date.now() - 3000 })
+  const gone = send(fits, { at: Date.now() - 2000 })
+  const ok = send(fits, { at: Date.now() - 1000 })
+  // A notebook gone from disk before anything read it: no lease could carry it.
+  const { competitionsFs, inputDir, NOTEBOOK_FILE } = await import('../server/src/competitions/storage.js')
+  const path = await import('node:path')
+  competitionsFs.rmSync(path.join(inputDir(fits.id, gone.id), NOTEBOOK_FILE), { force: true })
+  const minted = await admin<MintRemoteCodeResponse>('POST', '/api/admin/runners/codes', { body: { machines: 1, hours: 1, trusted: false, approvedSlots: null } })
+  const m = new Machine(await serve())
+  assert.equal((await m.join(minted.body.code)).status, 200)
+  const first = await m.sync()
+  const ids = new Set([big.id, wide.id, fits.id])
+  const ready = {
+    revisions: [big.revisionId, wide.revisionId, fits.revisionId],
+    // What is ready is per manifest, and these three competitions share theirs: one report of it.
+    data: [...new Set(first.body.want.data.filter((entry) => ids.has(entry.competitionId) && !entry.sealed).map((entry) => entry.manifest))],
+    sealed: [], bundles: [],
+  }
+  // Sixteen gigabytes and four CPUs, everything in place, no place free yet: nothing taken while the reasons are read.
+  const small = { slots: 0, memoryMb: 16_000, cpus: 4, gpuShares: 0, diskMb: 100_000 }
+  assert.equal((await m.sync({ ready, free: small })).status, 200)
+  const waiting = async (c: TestCompetition, id: string) =>
+    (await admin<CompetitionLive>('GET', `/api/admin/competitions/${c.id}/live`)).body.waiting.find((one) => one.submissionId === id)!
+  for (const [c, sent] of [[big, tooBig], [wide, tooWide], [fits, gone]] as const) {
+    assert.equal((await waiting(c, sent.id)).reason, 'no_fit', `${c.slug}: no machine can ever run it as it is`)
+  }
+  assert.equal((await waiting(fits, ok.id)).reason, undefined, 'the one that fits waits for its turn')
+  // The take passes over exactly those: given places, the machine is leased the one that fits and no other.
+  const leased = await m.sync({ ready, free: { ...small, slots: 4 } })
+  assert.deepEqual(leased.body.leases.map((lease) => lease.submissionId), [ok.id])
+  // Places free on the machine, and still none of them promised to a row it will never take.
+  const held = leased.body.leases[0]
+  assert.deepEqual((await m.sync({ ready, seq: held.seq, free: { ...small, slots: 3 }, attempts: [{ id: held.attemptId, phase: 'accepted' }] })).body.leases, [])
+  for (const [c, sent] of [[big, tooBig], [wide, tooWide], [fits, gone]] as const) {
+    const row = await waiting(c, sent.id)
+    assert.equal(row.reason, 'no_fit')
+    assert.equal(row.place, null, `${c.slug}: no place and no ETA from places it can never have`)
+  }
+  // A bigger machine that is still pulling the images: the reason is the nearest machine's, not the smallest one's.
+  const bigger = new Machine(await serve())
+  const again = await admin<MintRemoteCodeResponse>('POST', '/api/admin/runners/codes', { body: { machines: 1, hours: 1, trusted: false, approvedSlots: null } })
+  assert.equal((await bigger.join(again.body.code)).status, 200)
+  await bigger.sync({ ready: { ...ready, revisions: [] }, free: { slots: 0, memoryMb: 128_000, cpus: 32, gpuShares: 0, diskMb: 100_000 } })
+  assert.equal((await waiting(big, tooBig.id)).reason, 'preparing_image')
+  assert.equal((await waiting(wide, tooWide.id)).reason, 'preparing_image')
+  assert.equal((await waiting(fits, gone.id)).reason, 'no_fit', 'a notebook gone from disk fits no machine, however big')
+})
+
+test('with no card of its own, this server\'s missing share never hides the machines\' known one in the console', async () => {
+  reset({ homeNotebooks: true })
+  try {
+    const gpu = competition({ gpu: true })
+    // A GPU notebook waits: this server, with no card, says so with zero GPU places of its own.
+    send(gpu)
+    const m = await machineFor([], { cards: 1 })
+    assert.equal((await admin('PATCH', `/api/admin/runners/${m.runnerId}`, { body: { perDevice: 2 } })).status, 200)
+    await syncReady(m, [], { cards: 1, slots: 0 })
+    const queue = (await admin<QueueSnapshot>('GET', '/api/admin/competitions/queue')).body
+    assert.ok(queue.gpu)
+    assert.equal(queue.gpu!.slots, 2, 'the machine\'s two shares, none of this server\'s')
+    assert.equal(queue.gpu!.sliceMb, 12_282, 'a 24 GB card over two runs, known')
+  } finally {
+    reset()
+  }
+})
+
+test('a competition whose environment is this server\'s alone reads «только на этом сервере» on every machine', async () => {
+  reset()
+  const local = competition({ local: true })
+  send(local)
+  const m = await machineFor([])
+  const list = (await admin<RemoteMachinesResponse>('GET', '/api/admin/runners')).body
+  const readiness = list.machines.find((one) => one.id === m.runnerId)!.readiness.find((one) => one.competitionId === local.id)
+  assert.ok(readiness, 'it is on the machine\'s list')
+  assert.equal(readiness.verdict, 'home_only')
+  assert.equal(readiness.image.state, 'not_needed')
+  // And the machine is asked for nothing of it.
+  assert.equal(m.last!.want.data.some((entry) => entry.competitionId === local.id), false)
+})
+
+test('a minted code says which code it is, warns of a loopback address, names this server\'s own image, and takes up to a hundred machines', async () => {
+  reset()
+  const minted = await admin<MintRemoteCodeResponse>('POST', '/api/admin/runners/codes', { body: { machines: 100, hours: 2, trusted: false, approvedSlots: null } })
+  assert.equal(minted.status, 200, 'a hundred machines, as colloq-host runner-code --machines allows')
+  assert.equal((await admin('POST', '/api/admin/runners/codes', { body: { machines: 101, hours: 2, trusted: false, approvedSlots: null } })).status, 400)
+  // Its id is the list's id of that code: the dialog counts only the machines that joined with it.
+  const list = (await admin<RemoteMachinesResponse>('GET', '/api/admin/runners')).body
+  const view = list.codes.find((one) => one.id === minted.body.id)
+  assert.ok(view, 'the same id in the list')
+  assert.equal(view.machines, 100)
+  assert.equal(view.used, 0)
+  const m = new Machine(await serve())
+  assert.equal((await m.join(minted.body.code)).status, 200)
+  assert.equal((await admin<RemoteMachinesResponse>('GET', '/api/admin/runners')).body.codes.find((one) => one.id === minted.body.id)?.used, 1)
+  // The tests' PUBLIC_URL is this machine's loopback: no machine anywhere else can reach it, and the answer says so.
+  assert.equal(minted.body.loopback, true)
+  const { loopbackAddress } = await import('../server/src/competitions/remote/origin.js')
+  assert.equal(loopbackAddress('https://vsos.colloq.ru'), false)
+  // An instance on an image of its own (colloq-host passes it as COLLOQ_SERVER_IMAGE) names that very image, and no Vast command.
+  const before = process.env.COLLOQ_SERVER_IMAGE
+  process.env.COLLOQ_SERVER_IMAGE = 'registry.example.org/colloq/colloq-vast:0.24.0-campus'
+  try {
+    const own = (await admin<MintRemoteCodeResponse>('POST', '/api/admin/runners/codes', { body: { machines: 1, hours: 1, trusted: false, approvedSlots: null } })).body
+    assert.ok(own.commands.docker.includes('  registry.example.org/colloq/colloq-vast:0.24.0-campus runner'))
+    assert.equal(own.commands.vast, '')
+  } finally {
+    if (before === undefined) delete process.env.COLLOQ_SERVER_IMAGE
+    else process.env.COLLOQ_SERVER_IMAGE = before
+  }
+})
+
+test('a machine that joined and never synced was never «на связи»; it counts as scored only what got a score; its log is in this server\'s words', async () => {
+  reset()
+  const c = competition()
+  const scored = send(c, { at: Date.now() - 2000 })
+  const failed = send(c, { at: Date.now() - 1000 })
+  const minted = await admin<MintRemoteCodeResponse>('POST', '/api/admin/runners/codes', { body: { machines: 1, hours: 1, trusted: false, approvedSlots: null } })
+  const m = new Machine(await serve())
+  // A hostname with a marker in it: what a machine says is shown as this server says it, never raw.
+  const { remoteTextMarker, REMOTE_TEXT_OPEN } = await import('../shared/remote-runner.js')
+  assert.equal((await m.join(minted.body.code, { ...FACTS_FOR_PANEL, hostname: `vast ${remoteTextMarker('server.runners.why.silent')}` })).status, 200)
+  const joined = (await admin<RemoteMachineDetail>('GET', `/api/admin/runners/${m.runnerId}`)).body
+  assert.equal(joined.lastSeenAt, null, 'joined and never synced')
+  const line = joined.events.find((event) => event.kind === 'joined')!
+  assert.ok(!(line.detail ?? '').includes(REMOTE_TEXT_OPEN), 'no raw marker reaches the panel')
+  assert.ok((line.detail ?? '').includes(tr('server.runners.why.silent')))
+  // Synced: heard now; then two runs, one scored and one whose notebook failed.
+  await syncReady(m, [c], { slots: 2 })
+  assert.ok((await admin<RemoteMachineDetail>('GET', `/api/admin/runners/${m.runnerId}`)).body.lastSeenAt !== null)
+  const leases = m.last!.leases
+  const ready = { revisions: [c.revisionId], data: [...new Set(m.last!.want.data.filter((entry) => entry.competitionId === c.id).map((entry) => entry.manifest))], sealed: [], bundles: [] }
+  await m.sync({ seq: Math.max(...leases.map((one) => one.seq)), ready, free: { slots: 0, memoryMb: 30_000, cpus: 12, gpuShares: 0, diskMb: 100_000 }, attempts: leases.map((one) => ({ id: one.attemptId, phase: 'running' as const, runningMs: 10 })) })
+  for (const lease of leases) {
+    if (lease.submissionId === scored.id) {
+      assert.equal((await m.put(lease.attemptId, 'submission.csv', ANSWER)).status, 200)
+      await m.outcome(lease.attemptId, finished(lease.attemptId, [{ name: 'submission.csv', body: ANSWER }]))
+    } else {
+      assert.equal(lease.submissionId, failed.id)
+      await m.outcome(lease.attemptId, finished(lease.attemptId, [], { status: 'cell_error', produced: false, detail: 'Traceback\nValueError', diagnostics: { exit: 1, oomKilled: false, backend: 'docker' } }))
+    }
+  }
+  const { drainCompetitionQueue } = await import('../server/src/competitions/runner.js')
+  await drainCompetitionQueue()
+  assert.equal(getSubmissionState(scored.id), 'scored')
+  assert.equal(getSubmissionState(failed.id), 'notebookFailed')
+  const counted = (await admin<RemoteMachineDetail>('GET', `/api/admin/runners/${m.runnerId}`)).body.counts
+  assert.equal(counted.scored, 1, 'the failed notebook was applied, and is no score')
+})
+
+test('the console\'s group of this server names its version, and with no notebooks here its metric lane\'s places; «Работают сейчас» lists the machines\' runs to stop; «Где считается» knows the machines\' share', async () => {
+  reset()
+  const c = competition()
+  const sent = send(c)
+  const m = await machineFor([c], { slots: 1 })
+  const lease = m.last!.leases[0]
+  assert.equal(lease.submissionId, sent.id)
+  await syncReady(m, [c], { slots: 0, attempts: [{ id: lease.attemptId, phase: 'running', runningMs: 0 }] })
+  const { homeVersion } = await import('../server/src/competitions/remote/store.js')
+  const { scoreSlotsSetting } = await import('../server/src/competitions/settings.js')
+  let queue = (await admin<QueueSnapshot>('GET', '/api/admin/competitions/queue')).body
+  const home = queue.groups![0]
+  assert.equal(home.machineId, null)
+  assert.equal(home.version, homeVersion(), 'the other half of «на ней 0.23.0, на сервере 0.24.0»')
+  assert.equal(home.metricsOnly, true)
+  assert.deepEqual(home.metric, { places: scoreSlotsSetting().value, busy: 0 }, '«только метрики · 0 из 2»: the metric lane\'s')
+  assert.deepEqual([home.places, home.busy], [0, 0], 'no notebook places here, and none taken')
+  // «Работают сейчас»: the run on the machine, by submission, for a stop through the console's kill door.
+  const running = (await admin<RunningKernels>('GET', '/api/admin/resources/running')).body
+  const entry = running.remote!.find((one) => one.competitionId === c.id)!
+  assert.deepEqual(entry.submissionIds, [sent.id])
+  const killed = await admin<{ killed: boolean }>('POST', '/api/admin/competitions/queue/kill', { body: { submissionId: sent.id } })
+  assert.equal(killed.status, 200)
+  assert.equal(getLease(lease.attemptId)?.state, 'revoked', 'a durable cancel of the machine\'s run')
+  assert.deepEqual((await m.sync({ seq: lease.seq, attempts: [{ id: lease.attemptId, phase: 'running', runningMs: 50 }] })).body.revoke, [{ id: lease.attemptId, reason: 'cancelled' }])
+  // With this server's notebooks on, its group is notebook places, and a metric is no notebook's.
+  const { saveCompetitionSettings } = await import('../server/src/competitions/settings.js')
+  saveCompetitionSettings({ homeNotebooks: true })
+  try {
+    queue = (await admin<QueueSnapshot>('GET', '/api/admin/competitions/queue')).body
+    assert.equal(queue.groups![0].metricsOnly, undefined)
+    assert.equal(queue.groups![0].metric, undefined)
+  } finally {
+    saveCompetitionSettings({ homeNotebooks: false })
+  }
+  // A GPU competition: the share a run gets on the machines' smallest card, for the editor's «срез ≈ 12 ГБ».
+  const gpu = competition({ gpu: true })
+  const carded = await machineFor([gpu], { cards: 1 })
+  assert.equal((await admin('PATCH', `/api/admin/runners/${carded.runnerId}`, { body: { perDevice: 2 } })).status, 200)
+  const view = (await admin<CompetitionView>('GET', `/api/admin/competitions/${gpu.id}`)).body
+  assert.equal(view.where!.cards.sliceMb, 12_282)
+})
+
+test('a forecast reads the machines\' leases a fixed number of times, however many rows wait and machines take work', async () => {
+  reset()
+  const c = competition()
+  const machines = [await machineFor([c], { slots: 0 }), await machineFor([c], { slots: 0 }), await machineFor([c], { slots: 0 })]
+  // Rows that came back from a machine, and rows that never went to one: the wait reasons ask about every one.
+  const rows = Array.from({ length: 24 }, (_, i) => send(c, { at: Date.now() - 10_000 + i }))
+  void rows
+  void machines
+  const { db } = await import('../server/src/db.js')
+  const { queueSlots } = await import('../server/src/competitions/runner.js')
+  const prepare = db.prepare.bind(db)
+  let reads = 0
+  ;(db as { prepare: typeof db.prepare }).prepare = ((sql: string) => {
+    if (sql.includes('remote_leases')) reads++
+    return prepare(sql)
+  }) as typeof db.prepare
+  let forecast: ReturnType<typeof queueForecast>
+  try {
+    forecast = queueForecast(queueSlots())
+  } finally {
+    ;(db as { prepare: typeof db.prepare }).prepare = prepare
+  }
+  assert.equal(forecast.eligible.filter((row) => row.competitionId === c.id).length, 24)
+  assert.ok(reads <= 3, `one read of the live leases, one of the waiting rows' last leases: ${reads} reads for 24 rows and 3 machines`)
 })

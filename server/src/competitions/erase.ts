@@ -10,8 +10,10 @@
  *
  * WHAT GOES. Everything the person left in THIS competition: submissions with
  * their runs and queue rows, the enrollment, prepared package sets and
- * drafts, and on disk the notebooks as sent, the executed copies with their
- * outputs, the answers, the attempts' leftovers, the sets' directories. The
+ * drafts, the leases of their runs on machines with the outcomes they kept
+ * and their lines in the machines' logs, and on disk the notebooks as sent,
+ * the executed copies with their outputs, the answers, the attempts'
+ * leftovers, the sets' directories. The
  * person themselves (their identity and key) goes too, unless they take part
  * in another competition: there their key must keep working, and their other
  * results are not this teacher's to remove.
@@ -48,6 +50,7 @@ import {
   type EntrantRemoval,
 } from './store.js'
 import { competitionsFs, removeSubmission, submissionDir } from './storage.js'
+import { deleteSubmissionLeases } from './remote/store.js'
 import { tr } from '@shared/i18n'
 
 /** How long the removal waits for a killed run to finish writing. */
@@ -134,6 +137,8 @@ export async function deleteEntrantFromCompetition(
       const bundles = removeEntrantDependencies(entrantId, competitionId)
       const removed = removeEntrantRows(competitionId, entrantId)
       if (removed === 'running') throw new RunStarted()
+      // Their runs on machines too: a lease keeps the traceback, the output and the harness's report of a run (remote/store.ts · deleteSubmissionLeases).
+      deleteSubmissionLeases(removed.submissionIds)
       return { ...removed, bundles }
     })()
   } catch (error) {

@@ -29,7 +29,7 @@ import { gpuSliceMb } from '../server/src/competitions/gpu-math.ts'
 import { Cache } from '../server/src/runner-agent/cache.ts'
 import { prepareRun, runPrepared } from '../server/src/runner-agent/execute.ts'
 import { pickCard } from '../server/src/runner-agent/machine.ts'
-import { revisionImage } from '../server/src/runner-agent/images.ts'
+import { INSTANCE_LABEL, revisionImage } from '../server/src/runner-agent/images.ts'
 import type { Competition } from '../shared/competitions.ts'
 import { TEST_ROOT } from './_env.mts'
 import { REVISION, dataSet, hex, makeLease, sha256 } from './_runner-agent-home.mts'
@@ -135,6 +135,9 @@ test('a CPU notebook: the machine\'s argv is home\'s, the image and the open dat
   assert.ok(machine.args.includes(`${path.join(competitionsDir, 'compabcd', 'inputs', set.manifest.slice(0, 12))}:/data:ro`))
   for (const flag of ['--pull=never', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--restart=no']) assert.ok(machine.args.includes(flag), flag)
   assert.equal(machine.args[machine.args.indexOf('--network') + 1], 'none')
+  // The tree's instance label, as the runner itself puts it on its runs, is the one the agent's own check containers carry (images.ts · INSTANCE_LABEL).
+  const labels = machine.args.flatMap((arg, index) => (machine.args[index - 1] === '--label' ? [arg] : []))
+  assert.ok(labels.includes(INSTANCE_LABEL), `${INSTANCE_LABEL} is not among ${labels.join(', ')}`)
 })
 
 test('a GPU notebook with a package set: the card\'s share, its caps and the set\'s room are home\'s', async () => {

@@ -6,8 +6,11 @@
  * from the index's CDN by these addresses and check them by hash, instead of
  * pulling half a gigabyte through the server's tunnel. So an address must come
  * from pip's report as the program checked it, pass the same check once more
- * on this side, and stay out of every page a participant reads: an
- * institution's mirror is not named to the class.
+ * on this side, and stay out of everything the class can read: an
+ * institution's mirror is not named to the class. That is more than the
+ * pages: the set's folder, manifest.json included, is the participant's own
+ * /deps, and the set's row is what 0.22 hands the participant's page as it
+ * finds it after a rollback. So the addresses live in a table of their own.
  */
 import './_env.mts'
 import { test } from 'node:test'
@@ -17,9 +20,10 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { PREPARATION_PYTHON } from '../server/src/dependencies/preparation-python.ts'
-import { manifestPackages, wheelUrl } from '../server/src/dependencies/preparation-contract.ts'
+import { manifestPackages, wheelUrl, wheelUrls } from '../server/src/dependencies/preparation-contract.ts'
 import { bundleDir, cachedSha256, freshStaging, publishBundle } from '../server/src/dependencies/files.ts'
-import { bundleWheels, completeBundle, createBundle, getBundle, listBundles, putRevision, selectRevision, setPolicy } from '../server/src/dependencies/store.ts'
+import { bundleWheels, completeBundle, createBundle, getBundle, listBundles, moveWheelUrlsApart, putRevision, selectRevision, setPolicy } from '../server/src/dependencies/store.ts'
+import { db } from '../server/src/db.ts'
 import { createCompetition, createEntrant, setCompetitionState } from '../server/src/competitions/store.ts'
 import type { DependencyPackage } from '../shared/dependencies.ts'
 
@@ -100,18 +104,19 @@ test("an address passes only as the program's own check passed it: https, the in
   assert.equal(wheelUrl(mirror, WHEEL, PYPI), undefined)
 })
 
-test('the manifest keeps the fields of a package and a checked address, nothing a program put beside them', () => {
+test('the manifest keeps the fields of a package, nothing a program put beside them and no address; the checked addresses come apart', () => {
   const reported = [
     { name: 'numpy', version: '2.1.0', fileName: WHEEL, sha256: 'a'.repeat(64), bytes: 10, url: URL_OF(WHEEL), extra: 'dropped' },
     { name: 'pandas', version: '2.2.0', fileName: 'pandas-2.2.0-py3-none-any.whl', sha256: 'b'.repeat(64), bytes: 20, url: 'https://evil.example/pandas-2.2.0-py3-none-any.whl' },
     { name: 'scipy', version: '1.14.0', fileName: 'scipy-1.14.0-py3-none-any.whl', sha256: 'c'.repeat(64), bytes: 30 },
   ] as unknown as DependencyPackage[]
-  assert.deepEqual(manifestPackages(reported, PYPI), [
-    { name: 'numpy', version: '2.1.0', fileName: WHEEL, sha256: 'a'.repeat(64), bytes: 10, url: URL_OF(WHEEL) },
-    // An address that fails the check is dropped, not the wheel: the machine takes it from the server.
+  assert.deepEqual(manifestPackages(reported), [
+    { name: 'numpy', version: '2.1.0', fileName: WHEEL, sha256: 'a'.repeat(64), bytes: 10 },
     { name: 'pandas', version: '2.2.0', fileName: 'pandas-2.2.0-py3-none-any.whl', sha256: 'b'.repeat(64), bytes: 20 },
     { name: 'scipy', version: '1.14.0', fileName: 'scipy-1.14.0-py3-none-any.whl', sha256: 'c'.repeat(64), bytes: 30 },
   ])
+  // An address that fails the check is dropped, not the wheel: the machine takes it from the server.
+  assert.deepEqual(wheelUrls(reported, PYPI), [{ sha256: 'a'.repeat(64), url: URL_OF(WHEEL) }])
 })
 
 let seq = 0
@@ -136,18 +141,38 @@ function readySet(url?: string) {
   return { c, e, bundle, pkg, result }
 }
 
-test("a published set keeps each wheel's address in its manifest and its row, and the pages never see it", async () => {
+test("a published set keeps each wheel's address for the machines alone: not in the participant's /deps, not in the row older code serves", async () => {
   const { c, e, bundle, pkg, result } = readySet()
   await publishBundle(bundle.id, result)
-  const manifest = JSON.parse(fs.readFileSync(path.join(bundleDir(bundle.id), 'manifest.json'), 'utf8')) as { packages: DependencyPackage[] }
-  assert.deepEqual(manifest.packages, [pkg], 'the manifest on disk names the address next to the sha256 and size')
-  assert.equal(completeBundle(bundle.id, result), true)
-  assert.deepEqual(bundleWheels(bundle.id), [pkg], 'the machines that run submissions read it from the row')
-  // What the participant's and the teacher's pages are built from.
   const { url: _url, ...shown } = pkg
+  // The set's folder is mounted into the participant's container at /deps: its manifest names no address.
+  const manifest = fs.readFileSync(path.join(bundleDir(bundle.id), 'manifest.json'), 'utf8')
+  assert.deepEqual((JSON.parse(manifest) as { packages: DependencyPackage[] }).packages, [shown])
+  assert.ok(!manifest.includes('pythonhosted'))
+  assert.equal(completeBundle(bundle.id, result), true)
+  // The row as 0.22 reads it, and hands it to the participant's page as it finds it.
+  const row = db.prepare('SELECT packages_json FROM dependency_bundles WHERE id = ?').get(bundle.id) as { packages_json: string }
+  assert.deepEqual(JSON.parse(row.packages_json), [shown])
+  assert.deepEqual(bundleWheels(bundle.id), [pkg], 'the machines that run submissions get the address, kept apart')
+  // What the participant's and the teacher's pages are built from.
   assert.deepEqual(getBundle(bundle.id)?.packages, [shown])
   assert.deepEqual(listBundles(c.id, e.id)[0]?.packages, [shown])
   assert.ok(!JSON.stringify(listBundles(c.id)).includes('pythonhosted'), 'no address reaches an overview')
+})
+
+test('a set completed with its addresses in its row has them moved apart, and keeps them for the machines', async () => {
+  const { bundle, pkg, result } = readySet()
+  await publishBundle(bundle.id, result)
+  assert.equal(completeBundle(bundle.id, result), true)
+  // As this release wrote a row before the addresses had a table of their own.
+  db.prepare('DELETE FROM dependency_bundle_wheel_urls WHERE bundle_id = ?').run(bundle.id)
+  db.prepare('UPDATE dependency_bundles SET packages_json = ? WHERE id = ?').run(JSON.stringify([pkg]), bundle.id)
+  assert.ok(moveWheelUrlsApart() >= 1)
+  const { url: _url, ...shown } = pkg
+  const row = db.prepare('SELECT packages_json FROM dependency_bundles WHERE id = ?').get(bundle.id) as { packages_json: string }
+  assert.deepEqual(JSON.parse(row.packages_json), [shown])
+  assert.deepEqual(bundleWheels(bundle.id), [pkg])
+  assert.equal(moveWheelUrlsApart(), 0, 'once')
 })
 
 test('an address that fails the check stays out of the manifest and the row, and the set is ready without it', async () => {

@@ -42,6 +42,7 @@ import {
 } from '../store.js'
 import {
   OPEN_LEASE_STATES,
+  driveInFlight,
   endedLeases,
   getLease,
   getRunner,
@@ -65,7 +66,7 @@ import { dropStaging } from './upload.js'
 export const leaseEndings = { withdrawn: 0, lost: 0, declined: 0, revoked: 0, cancelled: 0, failed: 0 }
 
 /** Why a run was lost: the teacher's note names it (server.runners.why.*). */
-export type LossCause = 'silent' | 'ceiling' | 'missing' | 'refused' | 'declined'
+export type LossCause = 'silent' | 'ceiling' | 'missing' | 'refused' | 'declined' | 'unapplied'
 
 const machineName = (runnerId: string): string => getRunner(runnerId)?.name ?? runnerId
 
@@ -115,12 +116,37 @@ function backInQueue(lease: LeaseRow, said: { participant: string | null; teache
   })
 }
 
-/** The submission given up on as our failure (decision 6): metricFailed, which spends no quota. */
+/**
+ * A row this module just put back in the queue is work any other machine can
+ * take NOW: their held syncs are woken (wake.ts), as an upload wakes them. A
+ * row given back by a machine's own sync (an offer it never received, a run
+ * it no longer holds) or by its outcome (a decline, a result that did not
+ * match its files) otherwise waited for an idle machine to ask again, up to
+ * twenty-five seconds, or for the clock's next pass. Waking inside a
+ * transaction is safe: a woken sync recomputes its reply only after this
+ * synchronous turn, so after the commit.
+ */
+function backForOthers(): void {
+  wakeAllRunners()
+}
+
+/**
+ * The submission given up on as our failure (decision 6): metricFailed, which
+ * spends no quota. Its numbers are put back as they were before the take, as
+ * a run given back to the queue has them (backInQueue): the stage bar and
+ * «ячейка 3 из 5» of the run that was lost are no progress of the
+ * submission's, and a failure of ours must not read as a notebook that
+ * stopped in its third cell.
+ */
 function serverFailure(lease: LeaseRow, row: QueueRow, participant: string, teacher: string): void {
   leaveHeldRow(row)
+  const before = lease.prepared.before
   updateSubmission(lease.submissionId, {
     state: 'metricFailed',
-    durationMs: lease.prepared.before.durationMs,
+    stage: 'queue',
+    cellsDone: before.cellsDone,
+    cellsTotal: before.cellsTotal,
+    durationMs: before.durationMs,
     participantError: participant,
     briefError: participant,
     teacherError: teacher,
@@ -143,7 +169,7 @@ export const withdrawLease = db.transaction((attemptId: string, now: number, cau
   updateLease(attemptId, { state: 'withdrawn', endedAt: now, reason: why, cause }, ['offered'])
   const row = ownedRow(lease)
   if (row) {
-    requeueHeldRow(row, false)
+    if (requeueHeldRow(row, false)) backForOthers()
     discardUnstartedRun(lease.runId, attemptId)
     backInQueue(lease, { participant: null, teacher: null })
   }
@@ -169,29 +195,38 @@ export const withdrawLease = db.transaction((attemptId: string, now: number, cau
  * 6); twice that many losses on any machines end it too, so that a notebook
  * that keeps killing one machine cannot keep a place for ever once the
  * owner resumes that machine after its quarantine.
+ *
+ * `unapplied` ends a lease whose result came and could not be applied by its
+ * ceiling — the drive kept failing (a full disk here) and no drive is in
+ * flight (store.ts · driveInFlight). Its container ran, so the loss counts
+ * on the row like any after a start, and the row's limits bound how often an
+ * unusable result is run again; but it is this server's failure, not the
+ * machine's: it is no quarantine of a machine that delivered its result.
  */
 export const loseLease = db.transaction((attemptId: string, now: number, cause: LossCause, detail: string | null = null): boolean => {
   const lease = getLease(attemptId)
-  if (!lease || !OPEN_LEASE_STATES.includes(lease.state)) return false
+  const applying = lease?.state === 'applying' && cause === 'unapplied' && !driveInFlight(attemptId)
+  if (!lease || !(OPEN_LEASE_STATES.includes(lease.state) || applying)) return false
   if (lease.state === 'offered') return withdrawLease(attemptId, now, cause)
   const machine = machineName(lease.runnerId)
   const why = causeText(cause, detail)
   const teacher = tr('server.runners.lostTeacher', { machine, why })
-  updateLease(attemptId, { state: 'lost', endedAt: now, reason: why, cause }, ['accepted', 'running'])
+  updateLease(attemptId, { state: 'lost', endedAt: now, reason: why, cause }, applying ? ['applying'] : ['accepted', 'running'])
   const row = ownedRow(lease)
   if (row) {
-    if (lease.startedAt === null) {
-      requeueHeldRow(row, false)
+    // A result that came had a container behind it, whether or not a sync ever said it started.
+    if (lease.startedAt === null && !applying) {
+      if (requeueHeldRow(row, false)) backForOthers()
       discardUnstartedRun(lease.runId, attemptId)
       backInQueue(lease, { participant: null, teacher })
     } else {
       if (runOpen(lease)) finishRun(lease.runId, { finishedAt: now, verdict: 'unknown', cellsDone: 0, cellsTotal: 0, teacherError: teacher })
-      const lostOn = submissionLeases(lease.submissionId, row.enqueuedAt).filter((one) => one.state === 'lost' && one.startedAt !== null)
+      const lostOn = submissionLeases(lease.submissionId, row.enqueuedAt).filter((one) => one.state === 'lost' && (one.startedAt !== null || one.cause === 'unapplied'))
       const machines = [...new Set(lostOn.map((one) => one.runnerId))]
       if (machines.length >= REMOTE_LOSS_LIMIT || row.lost + 1 >= 2 * REMOTE_LOSS_LIMIT) {
         serverFailure(lease, row, tr('server.runners.lostFailed'), tr('server.runners.lostFailedTeacher', { machines: machines.map(machineName).join(', ') }))
       } else {
-        requeueHeldRow(row, true)
+        if (requeueHeldRow(row, true)) backForOthers()
         backInQueue(lease, { participant: tr('server.runners.returned'), teacher })
       }
     }
@@ -199,7 +234,7 @@ export const loseLease = db.transaction((attemptId: string, now: number, cause: 
   remoteEvent(lease.runnerId, 'lost', { attemptId, detail: why }, now)
   dropAttemptFiles(lease)
   leaseEndings.lost++
-  quarantineIfDue(lease.runnerId, now)
+  if (cause !== 'unapplied') quarantineIfDue(lease.runnerId, now)
   return true
 })
 
@@ -244,7 +279,7 @@ export const declineLease = db.transaction((attemptId: string, now: number, reas
       const reasons = declinedBy.map((one) => `${machineName(one.runnerId)}: ${one.reason ?? ''}`).join('; ')
       serverFailure(lease, row, tr('server.runners.declinedFailed'), tr('server.runners.declinedFailedTeacher', { reasons }))
     } else {
-      requeueHeldRow(row, false)
+      if (requeueHeldRow(row, false)) backForOthers()
       backInQueue(lease, lease.startedAt === null
         ? { participant: null, teacher: null }
         : { participant: tr('server.runners.returned'), teacher: tr('server.runners.givenBack', { machine }) })
@@ -305,6 +340,16 @@ export function cancelRemote(row: QueueRow, by: 'entrant' | 'teacher', now = Dat
   const done = db.transaction((): boolean => {
     const lease = row.attemptId ? getLease(row.attemptId) : null
     if (!lease || lease.runnerId !== row.holder || !(['offered', 'accepted', 'running', 'applying'] as LeaseState[]).includes(lease.state)) return false
+    /*
+     * Its result is being applied this very moment (apply.ts · drive): the
+     * run is over, and the cancel is too late, as a cancel of a run that has
+     * just ended here is. Cancelled under the drive, the run row took the
+     * cancel's words and the submission went `cancelled`, and then the
+     * settle wrote its own verdict over them and the machine was told
+     * `applied` for a cancelled run. A lease `applying` with no drive in
+     * flight (one that threw, one a crash left) is the cancel's to end.
+     */
+    if (lease.state === 'applying' && driveInFlight(lease.attemptId)) return false
     const current = ownedRow(lease)
     if (!current) return false
     leaveHeldRow(current)
@@ -406,12 +451,23 @@ export function untrustRunner(runnerId: string, now = Date.now()): number {
  * machine that loses or refuses run after run is broken, and every lease it
  * takes meanwhile is a participant waiting behind it for nothing. Drains
  * given by the machine itself are not refusals and do not count.
+ *
+ * LOSSES COUNT AS EVENTS, NOT AS LEASES. One restart of the agent (a docker
+ * restart, the agent's own OOM, a reboot of the host) loses every run it
+ * held in one sync — reconcileSync loses each lease the sync no longer lists,
+ * at one `now` — and one silence loses them in one pass of the clock. Counted
+ * lease by lease, a machine holding three runs was drained for one restart:
+ * with one GPU machine, every GPU notebook of a class stopped, while §10.2
+ * expects `docker kill colloq-runner` only to requeue the runs. So the leases
+ * lost at one moment are one loss, and only losses after a container
+ * started count at all: one before it is refunded as if never taken, cost
+ * nobody a minute, and says nothing about the machine's runs.
  */
 export function quarantineIfDue(runnerId: string, now: number): boolean {
   const runner = getRunner(runnerId)
   if (!runner || runner.state !== 'active') return false
   const since = now - REMOTE_QUARANTINE_WINDOW_MS
-  const losses = endedLeases(runnerId, ['lost'], since).length
+  const losses = new Set(endedLeases(runnerId, ['lost'], since).filter((lease) => lease.startedAt !== null && lease.cause !== 'unapplied').map((lease) => lease.endedAt)).size
   const declines = endedLeases(runnerId, ['declined'], since).filter((lease) => lease.reason !== 'draining').length
   if (losses < REMOTE_QUARANTINE_LOSSES && declines < REMOTE_QUARANTINE_DECLINES) return false
   updateRunner(runnerId, { state: 'draining', quarantinedAt: now, quarantineSeen: false })

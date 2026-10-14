@@ -234,9 +234,10 @@ export interface SubmissionLive {
   cellsTotal: number
   /**
    * No executor that is up can take it yet — the machines that run
-   * submissions are still downloading its image or data, or none that could
-   * is connected — so it has no place: the page says «готовится». Absent —
-   * it waits for its turn as before.
+   * submissions are still downloading its image or data, none that could is
+   * connected, or none of those connected is big enough for it — so it has
+   * no place: the page says «готовится». Absent — it waits for its turn as
+   * before.
    */
   preparing?: boolean
   /** Its notebook has run, and its metric waits here («оценивается»). Absent — not that. */

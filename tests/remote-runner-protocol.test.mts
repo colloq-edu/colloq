@@ -48,6 +48,7 @@ import {
   REMOTE_LOCK_CHARS,
   REMOTE_LOG_CHARS,
   REMOTE_MANIFESTS_MAX,
+  REMOTE_API_ROOT,
   REMOTE_MARKER,
   REMOTE_MARKER_HEADER,
   REMOTE_MEMORY_MB_MAX,
@@ -58,6 +59,7 @@ import {
   REMOTE_PROBE_MS,
   REMOTE_PROBLEMS_MAX,
   REMOTE_PROTOCOL,
+  REMOTE_PROTOCOL_HEADER,
   REMOTE_REASON_CHARS,
   REMOTE_REPLY_BYTES,
   REMOTE_REVISIONS_MAX,
@@ -100,6 +102,7 @@ import {
   remoteOutcomeDigest,
   remotePaths,
   remoteProgress,
+  remoteProtocolOf,
   remoteRenderTexts,
   remoteText,
   remoteTextMarker,
@@ -222,21 +225,29 @@ const declined = { protocol: 1, build: BUILD, free, kind: 'declined', reason: 'd
 
 /* ---------------------------------------------------------------- the wire */
 
-test('one version, one path, and a marker that tells home from the relay in front of it', () => {
+test('one version, one path, and a marker that tells home from the relay in front of it, whatever home\'s version', () => {
   assert.equal(REMOTE_PROTOCOL, 1)
+  assert.equal(REMOTE_API_ROOT, '/api/runners')
   assert.equal(REMOTE_API_BASE, '/api/runners/v1')
   assert.equal(REMOTE_MARKER_HEADER, 'X-Colloq-Runner-Api')
-  assert.equal(REMOTE_MARKER, '1')
+  // The marker says "home", not which version of it: the protocol travels beside it.
+  assert.equal(REMOTE_MARKER, 'colloq-runners')
+  assert.equal(REMOTE_PROTOCOL_HEADER, 'X-Colloq-Runner-Protocol')
   // The relay's HTML 404 and 502, frps's 504, its EOF turned 404: no marker, a hiccup whatever the status.
-  for (const status of [200, 401, 404, 409, 502, 504]) {
+  for (const status of [200, 401, 404, 409, 426, 502, 504]) {
     assert.equal(remoteTransient(status, null), true, `unmarked ${status}`)
     assert.equal(remoteTransient(status, undefined), true)
-    assert.equal(remoteTransient(status, '2'), true, 'another version of the router is not this one')
+    assert.equal(remoteTransient(status, 'colloq'), true, 'a header of the same name and another value is not home\'s')
   }
   // Home saying "not now".
-  for (const status of [429, 500, 503, 507]) assert.equal(remoteTransient(status, '1'), true, `marked ${status}`)
+  for (const status of [429, 500, 503, 507]) assert.equal(remoteTransient(status, REMOTE_MARKER), true, `marked ${status}`)
   // Home's answers, refusals included: acted on, never retried blindly.
-  for (const status of [200, 400, 401, 403, 404, 409, 410, 413, 422, 426]) assert.equal(remoteTransient(status, ' 1 '), false, `marked ${status}`)
+  for (const status of [200, 400, 401, 403, 404, 409, 410, 413, 422, 426]) assert.equal(remoteTransient(status, ` ${REMOTE_MARKER} `), false, `marked ${status}`)
+  // A home of ANOTHER version marks its 426 the same way, and an agent of this one takes it as final: it needs that home's release.
+  assert.equal(remoteTransient(426, REMOTE_MARKER), false)
+  assert.equal(remoteProtocolOf('2'), 2)
+  assert.equal(remoteProtocolOf(' 1 '), 1)
+  for (const bad of [null, undefined, '', 'v2', '0', '1.0', '01', '1234567']) assert.equal(remoteProtocolOf(bad), null, String(bad))
 })
 
 test('a path is built only from ids in their patterns', () => {
@@ -388,9 +399,11 @@ test('join reply: an id, a secret, the trust and the cap', () => {
   assert.doesNotThrow(() => parseRemoteJoinReply({ ...answer, trusted: true, approvedSlots: 12 }))
   for (const bad of [
     { ...answer, runnerId: 'K7M2P9QA' }, { ...answer, secret: 'f'.repeat(32) }, { ...answer, trusted: 'yes' },
-    { ...answer, approvedSlots: REMOTE_ATTEMPTS_MAX + 1 }, { ...answer, approvedSlots: 1.5 }, { ...answer, name: 'vast-1' },
+    { ...answer, approvedSlots: REMOTE_ATTEMPTS_MAX + 1 }, { ...answer, approvedSlots: 1.5 },
     { runnerId: answer.runnerId, secret: answer.secret, trusted: false },
   ]) refused(() => parseRemoteJoinReply(bad))
+  // A field a newer home added: dropped, not refused, and not kept.
+  assert.deepEqual(parseRemoteJoinReply({ ...answer, name: 'vast-1' }), answer)
 })
 
 /* ------------------------------------------------------------- sync request */
@@ -476,21 +489,19 @@ test('a lease: ids, pins and limits, and no name, email or score of anyone', () 
 test('a lease is refused for every field outside its shape', () => {
   const big = Buffer.alloc(REMOTE_INLINE_BYTES + 1, 7)
   for (const [path, value] of [
-    // Nothing that names a person, and nothing home holds back.
-    [['entrantName'], 'Иванов'], [['email'], 'a@b.c'], [['score'], 0.93], [['metric'], 'def score(...)'], [['solution'], 'x'],
     [['attemptId'], 'c'.repeat(31)], [['seq'], 0], [['competitionId'], '../x'], [['submissionId'], 'AB2CD3EF'],
     // A container named for another submission: a kill by its name would reach someone else's run.
     [['container'], containerOf('zz22zz22')], [['container'], `colloq-comp-${SUBMISSION}-0a1b2c3d-score`], [['container'], 'colloq-runner'],
     [['deadlineMs'], 0], [['deadlineMs'], REMOTE_RUN_MS_MAX + 1], [['harness'], '0123456789abc'], [['data'], undefined],
     [['revision', 'ref'], 'ghcr.io/colloq-edu/colloq-kernel:v0.24.0-kaggle-base'], [['revision', 'ref'], `GHCR.io/Colloq/X@sha256:${'3'.repeat(64)}`],
-    [['revision', 'ref'], `${'a/'.repeat(300)}x@sha256:${'3'.repeat(64)}`], [['revision', 'layers'], `sha256:${'4'.repeat(64)}`], [['revision', 'gpu'], true],
-    [['limits', 'gpu'], 1], [['limits', 'wallSeconds'], REMOTE_WALL_SECONDS_MAX + 1], [['limits', 'memoryMb'], 65_537], [['limits', 'cpus'], 33],
+    [['revision', 'ref'], `${'a/'.repeat(300)}x@sha256:${'3'.repeat(64)}`], [['revision', 'layers'], `sha256:${'4'.repeat(64)}`],
+    [['limits', 'wallSeconds'], REMOTE_WALL_SECONDS_MAX + 1], [['limits', 'memoryMb'], 65_537], [['limits', 'cpus'], 33],
     [['limits', 'targetBytes'], REMOTE_FILE_BYTES + 1], [['limits', 'outputKillBytes'], undefined],
     [['sealedData'], SEALED_MANIFEST], [['perDevice'], 4], [['sealed'], 'false'], [['gpu'], 1],
     [['notebook', 'bytes'], REMOTE_NOTEBOOK_BYTES + 1], [['notebook', 'bytes'], 0], [['notebook', 'inline'], 'not base64!'],
     [['notebook', 'inline'], Buffer.from('other length').toString('base64')], [['notebook'], { sha256: '5'.repeat(64), bytes: big.length, inline: big.toString('base64') }],
-    [['notebook', 'path'], '/var/lib/colloq'], [['bundle'], { id: BUNDLE }], [['bundle'], { id: BUNDLE, packagesMb: 4097 }],
-    [['bundle'], { id: BUNDLE, packagesMb: 15 }], [['bundle'], { id: '../wheels', packagesMb: 379 }], [['bundle'], { id: BUNDLE, packagesMb: 379, lock: '' }],
+    [['bundle'], { id: BUNDLE }], [['bundle'], { id: BUNDLE, packagesMb: 4097 }],
+    [['bundle'], { id: BUNDLE, packagesMb: 15 }], [['bundle'], { id: '../wheels', packagesMb: 379 }],
   ] as const) refused(() => parseRemoteSyncReply(edit(reply, ['leases', 0, ...path], value)), /Invalid|Unexpected/)
   const sealed = { ...reply, trusted: true }
   refused(() => parseRemoteSyncReply(edit(sealed, ['leases', 0, 'sealed'], true)), /hidden/)
@@ -509,7 +520,6 @@ test('sync reply: offers, revokes and applied outcomes never contradict each oth
   refused(() => parseRemoteSyncReply({ ...reply, revoke: [{ id: 'a'.repeat(32), reason: 'cancelled' }, { id: 'a'.repeat(32), reason: 'lost' }] }))
   for (const reason of ['cancelled', 'withdrawn', 'lost', 'unknown']) assert.doesNotThrow(() => parseRemoteSyncReply(edit(reply, ['revoke', 0, 'reason'], reason)))
   refused(() => parseRemoteSyncReply(edit(reply, ['revoke', 0, 'reason'], 'because')))
-  refused(() => parseRemoteSyncReply(edit(reply, ['revoke', 0, 'note'], 'x')))
   // Data of a competition being forgotten is not wanted in the same breath.
   refused(() => parseRemoteSyncReply({ ...reply, forget: [COMPETITION] }), /Contradictory/)
   // Seventeen inline notebooks of 64 KiB are past the reply's budget: the rest go as blobs.
@@ -522,7 +532,7 @@ test('sync reply: offers, revokes and applied outcomes never contradict each oth
   for (const [path, value] of [
     [['seq'], -1], [['drain'], 0], [['trusted'], undefined], [['compatible'], 'true'], [['approvedSlots'], -1], [['perDevice'], 0],
     [['perDevice'], REMOTE_PER_DEVICE_MAX + 1], [['homeVersion'], 'latest'], [['homeVersion'], undefined], [['forget'], ['../x']],
-    [['want', 'wheels'], []], [['want', 'bundles'], undefined], [['score'], 1],
+    [['want', 'bundles'], undefined],
   ] as const) refused(() => parseRemoteSyncReply(edit(reply, path, value)), /Invalid|Unexpected/)
 })
 
@@ -540,7 +550,7 @@ test('sync reply: what home wants fetched is bounded, named safely and described
     [['data', 1], reply.want.data[0]], [['data', 0, 'competitionId'], undefined], [['data', 0, 'sealed'], 'no'],
     [['data', 0, 'files', 0, 'name'], '../secret/solution.csv'], [['data', 0, 'files', 0, 'name'], 'score/solution.csv'],
     [['data', 0, 'files', 1], reply.want.data[0].files[0]], [['data', 0, 'files', 0, 'bytes'], REMOTE_DATA_BYTES + 1],
-    [['data', 0, 'files', 0, 'sha256'], 'abc'], [['data', 0, 'files', 0, 'url'], 'https://x'],
+    [['data', 0, 'files', 0, 'sha256'], 'abc'],
     [['bundles', 2], reply.want.bundles[0]], [['bundles', 0, 'packagesMb'], 15],
     // Half a set installs nothing: a lock comes with its wheels.
     [['bundles', 1, 'wheels'], undefined], [['bundles', 1, 'lock'], undefined], [['bundles', 1, 'lock'], 'pkg==1\u0000'],
@@ -572,6 +582,73 @@ test('sync reply: what home wants fetched is bounded, named safely and described
   const mirrored = `https://mirror.example/simple/catboost/${WHEEL}?download=1`
   assert.equal(remoteWheelUrl(mirrored), mirrored)
   assert.doesNotThrow(() => parseRemoteSyncReply(at(['bundles', 1, 'wheels', 0, 'url'], mirrored)))
+})
+
+test('a reply\'s keys the agent does not know are dropped at every depth and never kept; a request\'s are refused', () => {
+  // A newer home within protocol 1 adds fields everywhere: the agent of this release reads the reply all the same.
+  const newer = structuredClone(reply) as Record<string, unknown> & typeof reply
+  Object.assign(newer, { notice: 'maintenance at 22:00' })
+  Object.assign(newer.leases[0], { entrantName: 'Иванов', email: 'a@b.c', score: 0.93, metric: 'def score(...)', solution: 'x' })
+  Object.assign(newer.leases[0].revision, { gpu: true })
+  Object.assign(newer.leases[0].limits, { gpu: 1 })
+  Object.assign(newer.leases[0].notebook, { path: '/var/lib/colloq' })
+  Object.assign(newer.revoke[0], { note: 'x' })
+  Object.assign(newer.want, { wheels: [] })
+  Object.assign(newer.want.revisions[0], { size: 237_000_000 })
+  Object.assign(newer.want.data[0], { priority: 1 })
+  Object.assign(newer.want.data[0].files[0], { url: 'https://x' })
+  Object.assign(newer.want.bundles[1], { python: '3.12' })
+  Object.assign(newer.want.bundles[1].wheels![0], { mirror: 'https://mirror' })
+  // JSON.parse makes `__proto__` an own key like any other: it is no key of the contract's either.
+  const text = JSON.stringify(newer).replace(/^\{/, '{"__proto__":{"polluted":true},')
+  const read = parseRemoteSyncReply(JSON.parse(text))
+  assert.deepEqual(read, reply, 'what the parser returns is the contract\'s reply, exactly')
+  assert.equal(JSON.stringify(read).includes('Иванов'), false, 'no name reaches what the agent writes down')
+  assert.equal(Object.hasOwn(read, '__proto__'), false)
+  assert.equal((read as unknown as Record<string, unknown>).polluted, undefined)
+  assert.equal(({} as Record<string, unknown>).polluted, undefined)
+  const bundled = parseRemoteSyncReply({ ...reply, trusted: true, leases: [{ ...gpuLease, bundle: { ...gpuLease.bundle, lock: '' } }] })
+  assert.deepEqual(bundled.leases[0].bundle, gpuLease.bundle)
+  // Whatever it drops, it still checks what it knows: a known key out of its shape is refused as before.
+  refused(() => parseRemoteSyncReply({ ...newer, perDevice: 0 }))
+  refused(() => parseRemoteSyncReply(edit(newer, ['leases', 0, 'limits', 'cpus'], 33)))
+  // Home's parsers of a machine's requests stay strict: a key it does not know is a bug or a forgery, never a newer agent.
+  refused(() => parseRemoteSyncRequest({ ...sync, notice: 'x' }), /Unexpected key "notice"/)
+  refused(() => parseRemoteOutcomeRequest({ ...finished, next: true }), /Unexpected key/)
+  refused(() => parseRemoteJoinRequest({ protocol: 1, build: BUILD, code: 'a'.repeat(32), joinId: 'b'.repeat(32), facts, extra: 1 }), /Unexpected key/)
+})
+
+test('two competitions with the very same files, and a hidden-test copy, are wanted side by side', () => {
+  const files = [{ name: 'train.csv', sha256: '1'.repeat(64) }, { name: 'test.csv', sha256: '2'.repeat(64) }]
+  const shared = remoteManifest(files, sha256)
+  assert.equal(shared, remoteManifest([...files].reverse(), sha256), 'one manifest, whichever competition it is')
+  const listed = files.map((file) => ({ ...file, bytes: 1000 }))
+  const hidden = [{ name: 'test.csv', sha256: '3'.repeat(64), bytes: 10 }]
+  const wanting = (data: unknown[], trusted = true) => ({ ...reply, leases: [], revoke: [], applied: [], forget: [], trusted, want: { ...reply.want, data } })
+  // One task set for two groups: two competitions, one manifest, one entry each.
+  const groups = wanting([
+    { competitionId: 'x77h25nx', manifest: shared, sealed: false, files: listed },
+    { competitionId: 'y88k36py', manifest: shared, sealed: false, files: listed },
+  ], false)
+  assert.deepEqual(parseRemoteSyncReply(groups).want.data.map((entry) => entry.competitionId), ['x77h25nx', 'y88k36py'])
+  // A hidden-test copy of the first: the same open files, and its own hidden test.
+  const copy = wanting([
+    { competitionId: 'x77h25nx', manifest: shared, sealed: false, files: listed },
+    { competitionId: 'y88k36py', manifest: shared, sealed: false, files: listed },
+    { competitionId: 'y88k36py', manifest: remoteManifest(hidden, sha256), sealed: true, files: hidden },
+  ])
+  assert.equal(parseRemoteSyncReply(copy).want.data.length, 3)
+  // One competition whose hidden test is its open files: the same manifest as both kinds.
+  const both = wanting([
+    { competitionId: 'x77h25nx', manifest: shared, sealed: false, files: listed },
+    { competitionId: 'x77h25nx', manifest: shared, sealed: true, files: listed },
+  ])
+  assert.equal(parseRemoteSyncReply(both).want.data.length, 2)
+  // The same competition, kind and manifest twice is a reply home could not mean.
+  refused(() => parseRemoteSyncReply(wanting([
+    { competitionId: 'x77h25nx', manifest: shared, sealed: false, files: listed },
+    { competitionId: 'x77h25nx', manifest: shared, sealed: false, files: listed },
+  ])), /Invalid wanted data/)
 })
 
 test('every address the set\'s manifest keeps (preparation-contract.ts · wheelUrl) is one the reply may carry', async () => {
@@ -610,8 +687,9 @@ test('an upload: two names, gzip, and a declared size within its own cap', () =>
   assert.doesNotThrow(() => parseRemoteUploadMeta({ ...headers, name: 'executed.ipynb', bytes: '2048' }, 1024))
   const stored = { name: 'executed.ipynb', sha256: '9'.repeat(64), bytes: 81_920 }
   assert.deepEqual(parseRemoteUploadReply(stored), stored)
-  for (const bad of [{ ...stored, name: 'run.json' }, { ...stored, bytes: -1 }, { ...stored, path: '/x' }, { ...stored, sha256: 'x' }])
+  for (const bad of [{ ...stored, name: 'run.json' }, { ...stored, bytes: -1 }, { ...stored, sha256: 'x' }])
     refused(() => parseRemoteUploadReply(bad))
+  assert.deepEqual(parseRemoteUploadReply({ ...stored, path: '/x' }), stored, 'a key it does not know is dropped')
 })
 
 /* ----------------------------------------------------------------- outcome */
@@ -674,16 +752,22 @@ test('outcome: refused for every field outside its shape, and when its files dis
   refused(() => parseRemoteOutcomeRequest({ ...declined, protocol: 2 }), /protocol/, 'protocol')
 })
 
-test('outcome reply: applied, refused or revoked, and perhaps the next lease', () => {
+test('outcome reply: applied, refused or revoked, perhaps the next lease, and the trust as it is now', () => {
   for (const result of ['applied', 'refused', 'revoked']) {
-    const answer = { result, seq: 7, leases: [lease] }
+    const answer = { result, seq: 7, leases: [lease], trusted: false }
     assert.deepEqual(parseRemoteOutcomeReply(answer), answer)
   }
-  assert.doesNotThrow(() => parseRemoteOutcomeReply({ result: 'applied', seq: 0, leases: [] }))
+  assert.doesNotThrow(() => parseRemoteOutcomeReply({ result: 'applied', seq: 0, leases: [], trusted: true }))
   for (const bad of [
-    { result: 'ok', seq: 7, leases: [] }, { result: 'applied', seq: 6, leases: [lease] }, { result: 'applied', seq: 7 },
-    { result: 'applied', seq: 7, leases: [], next: lease }, { result: 'applied', seq: 7, leases: [{ ...lease, email: 'a@b.c' }] },
+    { result: 'ok', seq: 7, leases: [], trusted: false }, { result: 'applied', seq: 6, leases: [lease], trusted: false }, { result: 'applied', seq: 7, trusted: false },
+    { result: 'applied', seq: 7, leases: [] }, { result: 'applied', seq: 7, leases: [], trusted: 'no' },
   ]) refused(() => parseRemoteOutcomeReply(bad))
+  // The next lease of an outcome's reply obeys the sync reply's rule: the hidden test reaches a trusted machine only, whatever home says.
+  assert.doesNotThrow(() => parseRemoteOutcomeReply({ result: 'applied', seq: 7, leases: [gpuLease], trusted: true }))
+  refused(() => parseRemoteOutcomeReply({ result: 'applied', seq: 7, leases: [gpuLease], trusted: false }), /untrusted/)
+  // A field a newer home added, at the top or inside a lease: dropped, never kept.
+  const added = parseRemoteOutcomeReply({ result: 'applied', seq: 7, leases: [{ ...lease, email: 'a@b.c' }], trusted: false, next: lease })
+  assert.deepEqual(added, { result: 'applied', seq: 7, leases: [lease], trusted: false })
 })
 
 test('error replies: one code per refusal, and its status', () => {
@@ -697,8 +781,9 @@ test('error replies: one code per refusal, and its status', () => {
     // Only home's own "not now" is retried; every other answer is acted on.
     assert.equal(remoteTransient(status, REMOTE_MARKER), status === 429 || status >= 500, error)
   }
-  for (const bad of [{ error: 'teapot' }, { error: 'toString' }, { error: 'invalid', detail: 'x'.repeat(REMOTE_REASON_CHARS + 1) }, { error: 'invalid', stack: 'at …' }, {}, '<html>502</html>'])
+  for (const bad of [{ error: 'teapot' }, { error: 'toString' }, { error: 'invalid', detail: 'x'.repeat(REMOTE_REASON_CHARS + 1) }, {}, '<html>502</html>'])
     refused(() => parseRemoteErrorReply(bad))
+  assert.deepEqual(parseRemoteErrorReply({ error: 'invalid', stack: 'at …' }), { error: 'invalid' }, 'a key it does not know is dropped')
 })
 
 /* ----------------------------------------------------- made safe on the agent */

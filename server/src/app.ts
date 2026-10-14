@@ -45,8 +45,8 @@ import { adminInstanceRoutes } from './routes/admin-instance.js'
 import { adminResourceRoutes } from './routes/admin-resources.js'
 import { adminRunningRoutes } from './routes/admin-running.js'
 import { adminRunnerRoutes } from './routes/admin-runners.js'
-import { remoteRunnerRoutes } from './competitions/remote/routes.js'
-import { REMOTE_API_BASE } from '@shared/remote-runner'
+import { remoteOtherVersions, remoteRunnerRoutes } from './competitions/remote/routes.js'
+import { REMOTE_API_BASE, REMOTE_API_ROOT } from '@shared/remote-runner'
 import { aiRoutes } from './routes/ai.js'
 import { banRoutes } from './routes/bans.js'
 import { competitionRoutes } from './routes/competitions.js'
@@ -287,9 +287,11 @@ app.use((req, res, next) => {
  * the sign-in proxy's identity, express.json and the same-origin gate. The
  * router has its own body caps and its own credential, and answers every
  * path under it itself, refusals included, so nothing below ever sees a
- * machine's call.
+ * machine's call. Every other version's path under the same root is told
+ * so (a marked 426), never left to the app below to answer unmarked.
  */
 app.use(REMOTE_API_BASE, remoteRunnerRoutes())
+app.use(REMOTE_API_ROOT, remoteOtherVersions())
 
 app.use(compression)
 

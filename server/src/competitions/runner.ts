@@ -50,7 +50,20 @@ import { formatNumber, tr } from '@shared/i18n'
  */
 import '../admin/settings.js'
 import { db } from '../db.js'
-import { getBinding, lockOf, policyOf, revisions, type SubmissionBinding } from '../dependencies/store.js'
+import {
+  competitionRevision,
+  getBinding,
+  getRevision,
+  lastMetricRevision,
+  lockOf,
+  metricPin,
+  moveMetricPin,
+  pinMetric,
+  policyOf,
+  revisions,
+  type SubmissionBinding,
+} from '../dependencies/store.js'
+import { captureRevision } from '../dependencies/revisions.js'
 import { verifyBundleFiles } from '../dependencies/files.js'
 import { dependencyMessage } from '../dependencies/messages.js'
 import { dependencySize, packagesFit, packagesRoomMb, type DependencyBundle, type EnvironmentRevision } from '@shared/dependencies'
@@ -249,13 +262,13 @@ export function enoughMemory(availableMb: number | null, needMb: number): boolea
  * executor (Docker locally or a Pod in k3s). The directory stays inside
  * DATA_DIR.
  *
- * A mode is set only where it is not that already. A chmod moves a file's
- * ctime even when it changes nothing, and ctime is part of the key the
- * content hasher caches a digest by (dependencies/files.ts · cachedSha256):
- * a chmod of the open data on every run made the next hash of each file —
- * the one a machine that runs submissions fetches it by — read up to two
- * hundred megabytes again after every run here. `info` is the directory's
- * own stat when the walk already has it. Exported for its test.
+ * A mode is set only where it is not that already: a chmod is a write of the
+ * inode even when it changes nothing. It moves ctime, which the content
+ * hasher no longer keys the competition's data by for that very reason
+ * (dependencies/files.ts · DigestIdentity) — this chmod, and the links a
+ * hidden-test run makes and drops, moved it on every run — but which other
+ * readers of a mounted file may still take for a change. `info` is the
+ * directory's own stat when the walk already has it. Exported for its test.
  */
 export function letContainerRead(dir: string, info?: fs.Stats): void {
   try {
@@ -313,6 +326,20 @@ let clusterGpuRestUntil = 0
  * notebook a machine ran, under places of their own (scoreSlotsSetting), on
  * whatever the switch says: the answers are never anywhere else, so every
  * metric is this server's.
+ *
+ * The metric lane comes first. The lanes share the machine's memory (one
+ * PumpPass), and the one asked first takes what a run that ended has freed.
+ * With the notebooks first, a server whose memory, not its places, was the
+ * limit — sixteen gigabytes and three notebooks of four, with a room open —
+ * gave every freed four gigabytes to the next waiting notebook, and the
+ * metric's two never fitted beside them: a rescore after a metric fix, the
+ * teacher's metric check and a machine's fresh result all waited until no
+ * notebook was waiting, though the one fair order of 0.22 had taken them at
+ * their turn. The metric lane's own bounds keep this from turning around: at
+ * most scoreSlots places of 256 MB and the metric's memory, each held for at
+ * most METRIC_WALL_SECONDS, so a notebook waits at most for one metric per
+ * place. The forecast numbers same-moment starts in the same order
+ * (forecast.ts · queueForecast).
  */
 interface PumpLane {
   lane: QueueLane
@@ -320,9 +347,8 @@ interface PumpLane {
 }
 
 function pumpLanes(): PumpLane[] {
-  const lanes: PumpLane[] = []
+  const lanes: PumpLane[] = [{ lane: 'metric', slots: scoreSlotsSetting().value }]
   if (homeNotebooksSetting().value) lanes.push({ lane: 'notebook', slots: queueSlots() })
-  lanes.push({ lane: 'metric', slots: scoreSlotsSetting().value })
   return lanes
 }
 
@@ -343,12 +369,13 @@ interface PumpPass {
  * while the first is running, not after it. Returns the number started —
  * `drainCompetitionQueue` uses it to tell that there is nothing more to take.
  *
- * Lane by lane (PumpLane), the notebooks first, over ONE measurement of the
+ * Lane by lane (PumpLane), the metric lane first, over ONE measurement of the
  * machine: both lanes take from the same memory, and what one admitted this
  * pass the other must see. A lane that is full or out of memory stops only
  * itself — a notebook too big for what is left must not keep a two-gigabyte
- * metric from starting, nor a hundred rescores a notebook. With no metric
- * work waiting, this is the pass it always was.
+ * metric from starting, nor a hundred rescores a notebook, which the metric
+ * lane's own places see to. With no metric work waiting, this is the pass it
+ * always was.
  */
 export async function pumpOnce(): Promise<number> {
   if (pumping || stopped) return 0
@@ -614,9 +641,11 @@ export async function reclaimCompetitionQueue(): Promise<{
      * The submission row is still "running" — it knows nothing about the
      * restart. Without this edit the participant would, until the work is
      * picked up again, watch a timer that does not move and a stage bar stuck
-     * on "RUNNING NOTEBOOK".
+     * on "RUNNING NOTEBOOK". A fresh result's metric (QueueRow.fresh) waits
+     * as it waited before it was taken: its notebook has run, and «в очереди»
+     * would tell its participant otherwise.
      */
-    updateSubmission(row.submissionId, { state: 'queued', stage: 'queue' })
+    updateSubmission(row.submissionId, row.fresh ? { state: 'running', stage: 'score' } : { state: 'queued', stage: 'queue' })
   }
   const swept = await runner.sweep(orphans.flatMap((row) => row.container ? [row.container] : [])).catch(() => 0)
   for (const row of orphans) if (row.attemptId) {
@@ -664,7 +693,8 @@ async function runJob(row: QueueRow): Promise<void> {
       const reason=tr('competitions.runtime.resourcesWaiting')
       const after=deferResourceAttempt(row,reason,Date.now(),err.teacherReason,err.kind)
       if (after!==null) {
-        updateSubmission(submission.id,{cellsDone:submission.cellsDone,cellsTotal:submission.cellsTotal,durationMs:submission.durationMs})
+        // Put back as before the attempt — but a notebook that ran here, only its metric put off, keeps what it did (runNotebookThenScore).
+        if (!(row.kind === 'notebook' && err.kind === 'metric')) updateSubmission(submission.id,{cellsDone:submission.cellsDone,cellsTotal:submission.cellsTotal,durationMs:submission.durationMs})
         // The cluster has no unit now: no GPU notebook asks again until this one may (queueCards).
         if (err.resource === 'gpu' && !runnerCardsHere()) clusterGpuRestUntil = Math.max(clusterGpuRestUntil, after)
         return
@@ -741,7 +771,23 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
   }
   const settled = await settleNotebook(prepared, { outcome, endedAt: Date.now(), gpu: here.gpu })
   if (settled.next !== 'score') return
-  await scoreStep(competition, submission, settled.answer, settled.outcome.wall, settled.outcome, row, provenance, secrets, prepared.sealed)
+  try {
+    await scoreStep(competition, submission, settled.answer, settled.outcome.wall, settled.outcome, row, provenance, secrets, prepared.sealed)
+  } catch (error) {
+    /*
+     * Only the metric was put off — its Pod not placed, its image unanswered
+     * (runJob · deferResourceAttempt): the notebook has run, and what it did
+     * stays on the submission for the metric that follows, which adds its own
+     * time to this wall (scoreOnly), as for a machine's result
+     * (continueAsMetric). runJob put back the numbers from before the
+     * attempt, and the score that came later read as a notebook of no cells
+     * that took no time.
+     */
+    if (error instanceof CompetitionResourcePending && error.kind === 'metric' && ownsQueueAttempt(row)) {
+      updateSubmission(submission.id, { durationMs: settled.outcome.wall, cellsDone: settled.outcome.cell + 1, cellsTotal: settled.outcome.cells })
+    }
+    throw error
+  }
 }
 
 /* -------------------------------------------- the notebook step, in halves */
@@ -1418,6 +1464,11 @@ interface ScoringImage {
   environment: string
 }
 
+/** Why a metric has nowhere to run, in the teacher's words (scoreStep writes it as metricFailed, rescorable). */
+interface ScoringRefusal {
+  refused: string
+}
+
 /** The submission's own pin, under the competition's environment: how every metric ran before decision 2, and every CPU one still does. */
 function pinnedScoringImage(competition: Competition, submission: Submission): ScoringImage {
   const revision = getBinding(submission.id)?.revision ?? null
@@ -1425,36 +1476,215 @@ function pinnedScoringImage(competition: Competition, submission: Submission): S
 }
 
 /**
- * Where the metric of a competition with a card runs: the newest kaggle-base
- * revision this server can run (lightMetricRevision); without one, the
- * submission's own pinned image, as before the decision — slower to keep,
- * but a metric that runs; without that either, nowhere, and scoreStep says
- * so in the teacher's words.
+ * Whether an image is on this server, by the probe a competition's own image
+ * is checked by (capabilities.ts · competitionCapabilities); without a digest,
+ * the image under the environment's name. `unknown` — docker (or the broker)
+ * did not answer, which says nothing about the image: a stall of the daemon
+ * read as the image gone sent a metric to score in another one.
  */
-async function gpuScoringImage(competition: Competition, submission: Submission): Promise<ScoringImage> {
-  const light = await lightMetricRevision()
-  return light
-    ? { revision: light, imageDigest: light.imageDigest, environment: LIGHT_METRIC_ENVIRONMENT }
-    : pinnedScoringImage(competition, submission)
+type ImagePresence = 'present' | 'absent' | 'unknown'
+
+async function imagePresence(environment: string, imageDigest: string | undefined): Promise<ImagePresence> {
+  const capabilities = await competitionCapabilities(environment, imageDigest).catch(() => null)
+  if (capabilities?.execution.available) return 'present'
+  return capabilities?.execution.code === 'image_unavailable' ? 'absent' : 'unknown'
+}
+
+/**
+ * A metric whose image docker could not be asked about: put off like a Pod
+ * the cluster could not place (runJob · deferResourceAttempt) — no metric
+ * container began, nothing counts, and the row waits for an answer — rather
+ * than scored in an image that happened to answer.
+ */
+class ScoringImageUnchecked extends CompetitionResourcePending {
+  constructor() {
+    super('other', 'metric')
+  }
+
+  override get teacherReason(): string {
+    return tr('competitions.answer.scoringImageUnchecked')
+  }
+}
+
+/** An image that answered `present`, or why the metric must not run in it: gone (`absent`), or unknown (thrown, ScoringImageUnchecked). */
+async function presentOrRefused(image: ScoringImage): Promise<ScoringImage | ScoringRefusal> {
+  const found = await imagePresence(image.environment, image.imageDigest)
+  if (found === 'unknown') throw new ScoringImageUnchecked()
+  if (found === 'absent') return { refused: tr('competitions.answer.scoringImageGone', { environment: image.environment, light: LIGHT_METRIC_ENVIRONMENT }) }
+  return image
+}
+
+/**
+ * Where the metric of a competition with a card runs: in the one image the
+ * competition's metric is pinned to (dependencies/store.ts ·
+ * competition_metric_revisions), every metric and every rescore of it alike —
+ * one revision per competition for its whole life (§4.4).
+ *
+ * The pin is taken when the competition's metric first runs
+ * (firstMetricPin): where its earlier metrics ran, if any did; otherwise the
+ * current kaggle-base (currentLightRevision); otherwise, with no kaggle-base
+ * on this server, each submission's own pinned image, as before decision 2.
+ * It moves only when the teacher moves it, with a rescore of the whole
+ * competition (moveMetricToLightImage). It used to be the newest kaggle-base
+ * recorded anywhere here, read at every metric: another competition's base
+ * refresh moved a live competition's scores to another image, and a metric
+ * that imported torch, checked in the competition's own image before
+ * kaggle-base was here, began failing for every new result once it was.
+ *
+ * The pinned image is used while it is here: gone, the metric fails in the
+ * teacher's words (metricFailed, rescorable), and is not sent to another
+ * image; docker silent, the metric waits (ScoringImageUnchecked).
+ */
+async function gpuScoringImage(competition: Competition, submission: Submission): Promise<ScoringImage | ScoringRefusal> {
+  let pin = metricPin(competition.id)
+  if (pin === null) {
+    const first = await firstMetricPin(competition, submission)
+    if ('refused' in first) return first
+    pin = pinMetric(competition.id, first.revisionId)
+  }
+  if (pin.revisionId === null) {
+    const own = pinnedScoringImage(competition, submission)
+    // A submission with no pin of its own: scoreStep says so, in the words it always had.
+    return own.imageDigest ? presentOrRefused(own) : own
+  }
+  const revision = getRevision(pin.revisionId)
+  if (!revision) return { refused: tr('competitions.answer.scoringImageGone', { environment: LIGHT_METRIC_ENVIRONMENT, light: LIGHT_METRIC_ENVIRONMENT }) }
+  return presentOrRefused({ revision, imageDigest: revision.imageDigest, environment: LIGHT_METRIC_ENVIRONMENT })
+}
+
+/**
+ * The pin a competition's first metric takes (gpuScoringImage). Where its
+ * earlier metrics ran, if any did (metricPinOfHistory): a competition scored
+ * before the pins keeps the image its scores came from. Otherwise the current
+ * kaggle-base. Otherwise, with none here at all, each submission's own pinned
+ * image, if this submission's is here: a competition checked in its own
+ * image keeps it, and kaggle-base built later does not move it. With neither,
+ * nothing is pinned and the metric fails with the advice that fixes it: build
+ * kaggle-base, rescore.
+ */
+async function firstMetricPin(competition: Competition, submission: Submission): Promise<{ revisionId: string | null } | ScoringRefusal> {
+  const history = metricPinOfHistory(competition.id)
+  if (history) return history
+  const light = await currentLightRevision(true)
+  if (light) return { revisionId: light.id }
+  const own = pinnedScoringImage(competition, submission)
+  if (!own.imageDigest) {
+    // The test stand-in scores without an image, as it always has (scoreStep).
+    if (competitionRunner().backend === 'test') return { revisionId: null }
+    return { refused: tr('competitions.answer.noScoringImage', { environment: LIGHT_METRIC_ENVIRONMENT }) }
+  }
+  const found = await imagePresence(own.environment, own.imageDigest)
+  if (found === 'unknown') throw new ScoringImageUnchecked()
+  return found === 'present' ? { revisionId: null } : { refused: tr('competitions.answer.ownScoringImageGone', { environment: LIGHT_METRIC_ENVIRONMENT }) }
+}
+
+/**
+ * The pin the metrics a competition has already run imply, or `null` when
+ * none has run: the kaggle-base revision the latest scored in, or (`null`
+ * revision) each submission's own image — every metric before 0.23, which
+ * recorded no revision, and every one that ran in its submission's pin.
+ */
+function metricPinOfHistory(competitionId: string): { revisionId: string | null } | null {
+  const last = lastMetricRevision(competitionId)
+  if (!last) return null
+  const revision = last.revisionId === null ? null : getRevision(last.revisionId)
+  return { revisionId: revision?.environmentName === LIGHT_METRIC_ENVIRONMENT ? revision.id : null }
+}
+
+/**
+ * The current kaggle-base on this server: the image under its name
+ * (`colloq-kernel:kaggle-base`, or the broker catalog's), recorded as a
+ * revision on demand when `record` (dependencies/revisions.ts ·
+ * captureRevision, which records an image once however many ask, and only
+ * finds the revision of one recorded already); without one, the newest
+ * recorded revision still here (lightMetricRevision). Recorded on demand
+ * because nothing else records kaggle-base on a server that runs only GPU
+ * competitions — building it under «Окружения» records nothing — and the
+ * advice to build it and rescore would otherwise change nothing. `null` —
+ * kaggle-base is not here at all; throws ScoringImageUnchecked when docker
+ * could not say. The test stand-in has no images to record. An image that
+ * cannot be recorded (its probe container failed) leaves the revisions
+ * recorded before to serve, and without one its error is the teacher's to
+ * read (runJob writes it as metricFailed); nothing is pinned either way.
+ */
+async function currentLightRevision(record: boolean): Promise<EnvironmentRevision | null> {
+  if (record && competitionRunner().backend !== 'test') {
+    const named = await imagePresence(LIGHT_METRIC_ENVIRONMENT, undefined)
+    if (named === 'unknown') throw new ScoringImageUnchecked()
+    if (named === 'present') {
+      try {
+        return await captureRevision(LIGHT_METRIC_ENVIRONMENT)
+      } catch (error) {
+        const recorded = await lightMetricRevision()
+        if (recorded) return recorded
+        throw error
+      }
+    }
+  }
+  return lightMetricRevision()
 }
 
 /**
  * The newest kaggle-base revision ready on this server: recorded (captured
  * from an image that was here, dependencies/revisions.ts) and runnable now —
  * its image still here, by the same probe a competition's own is checked by
- * (capabilities.ts · competitionCapabilities). Newest by when it was
- * recorded: a rebuilt kaggle-base is recorded when it is first captured, and
- * from then on scores. `null` — none is.
+ * (imagePresence). Newest by when it was recorded. `null` — none is; throws
+ * ScoringImageUnchecked when docker could not say about one newer than the
+ * first that answered, so an older one is never taken for a newer one gone.
  */
 export async function lightMetricRevision(): Promise<EnvironmentRevision | null> {
   const known = revisions()
     .filter((revision) => revision.environmentName === LIGHT_METRIC_ENVIRONMENT)
     .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
   for (const revision of known) {
-    const capabilities = await competitionCapabilities(LIGHT_METRIC_ENVIRONMENT, revision.imageDigest).catch(() => null)
-    if (capabilities?.execution.available) return revision
+    const found = await imagePresence(LIGHT_METRIC_ENVIRONMENT, revision.imageDigest)
+    if (found === 'present') return revision
+    if (found === 'unknown') throw new ScoringImageUnchecked()
   }
   return null
+}
+
+/**
+ * The image the next metric of a competition will run in, as the doors that
+ * run only the metric check it (routes/admin-competitions.ts: a rescore, all
+ * of them, the metric check): a competition with a card scores in its pinned
+ * kaggle-base, not in its own GPU image, and checked against that image a
+ * rescore was refused after the owner removed the GPU image to free the disk
+ * — the very thing decision 2 is for — though the metric would have run. Its
+ * own pin for a competition on the CPU, and for one whose metric is pinned to
+ * each submission's own image. Nothing is pinned or recorded here: before the
+ * first metric, the kaggle-base the pin would take, named by the image under
+ * its name if no recorded one is here.
+ */
+export async function metricScoringImage(competition: Competition): Promise<{ environment: string; imageDigest: string | undefined }> {
+  const own = { environment: competition.environment, imageDigest: competitionRevision(competition.id)?.imageDigest }
+  if (competition.limits.gpu !== true) return own
+  const pin = metricPin(competition.id) ?? metricPinOfHistory(competition.id)
+  if (pin) {
+    if (pin.revisionId === null) return own
+    return { environment: LIGHT_METRIC_ENVIRONMENT, imageDigest: getRevision(pin.revisionId)?.imageDigest }
+  }
+  const light = await lightMetricRevision().catch(() => null)
+  if (light) return { environment: LIGHT_METRIC_ENVIRONMENT, imageDigest: light.imageDigest }
+  if (await imagePresence(LIGHT_METRIC_ENVIRONMENT, undefined) === 'present') return { environment: LIGHT_METRIC_ENVIRONMENT, imageDigest: undefined }
+  return own
+}
+
+/**
+ * The teacher's move of a competition's metric to the current kaggle-base
+ * (currentLightRevision, recorded on demand), and a rescore of every
+ * submission in it: the one way the metric's image changes
+ * (gpuScoringImage), so that no leaderboard holds scores of two images.
+ * POST /api/admin/competitions/:id/metric/image. `cpu` — the competition has
+ * no card, and its metric scores in its own pin (moved with its base);
+ * `none` — no kaggle-base is here.
+ */
+export async function moveMetricToLightImage(competition: Competition): Promise<{ revision: EnvironmentRevision; queued: number } | 'cpu' | 'none'> {
+  if (competition.limits.gpu !== true) return 'cpu'
+  const light = await currentLightRevision(true)
+  if (!light) return 'none'
+  moveMetricPin(competition.id, light.id)
+  return { revision: light, queued: rescoreCompetition(competition.id) }
 }
 
 /** Step two: the teacher's metric in the second disposable container. */
@@ -1479,12 +1709,11 @@ async function scoreStep(
 
   // A competition on the CPU asks nothing more here and scores exactly as it always did (pinnedScoringImage).
   const image = competition.limits.gpu === true ? await gpuScoringImage(competition, submission) : pinnedScoringImage(competition, submission)
-  if (runner.backend !== 'test' && !image.imageDigest) {
+  if ('refused' in image || (runner.backend !== 'test' && !image.imageDigest)) {
     updateSubmission(submission.id, {
       state: 'metricFailed', stage: 'score', durationMs: notebookWall,
-      teacherError: competition.limits.gpu === true
-        ? tr('competitions.answer.noScoringImage', { environment: LIGHT_METRIC_ENVIRONMENT })
-        : 'This legacy submission has no pinned environment. Submit the notebook again before scoring.',
+      // Without a refusal of its own: a submission with no pin, scored in its own image (on the CPU, or under a metric pinned so).
+      teacherError: 'refused' in image ? image.refused : 'This legacy submission has no pinned environment. Submit the notebook again before scoring.',
     })
     return
   }
@@ -2281,12 +2510,23 @@ export function rerunSubmission(submissionId: string): boolean {
  * per attempt: executing a hundred notebooks would take an hour and give
  * exactly the same answers that already lie on disk. Those whose answer has
  * been kept are taken; a crashed notebook has nothing to rescore.
+ *
+ * Metric work already waiting is left as it is and counted: its job writes
+ * the metric code in force when it starts (snapshotSecrets), so it scores
+ * with the fix anyway. Enqueued again it lost its place — its arrival and
+ * its turn were set anew — and a machine's fresh result waiting for its
+ * metric was written «queued» and numbered among the rescores it was ahead of.
  */
 export function rescoreCompetition(competitionId: string): number {
   let queued = 0
   for (const submission of listSubmissions(competitionId)) {
     if (!hasStoredAnswer(competitionId, submission.id)) continue
-    if (queueRow(submission.id)?.state === 'running') {
+    const row = queueRow(submission.id)
+    if (row?.state === 'waiting' && row.kind === 'metric') {
+      queued++
+      continue
+    }
+    if (row?.state === 'running') {
       enqueue({ submissionId: submission.id, competitionId, entrantId: submission.entrantId, kind: 'metric' })
       queued++
       continue

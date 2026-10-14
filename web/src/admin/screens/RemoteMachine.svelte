@@ -62,6 +62,13 @@
   let machine = $state<RemoteMachineDetail | null>(null)
   /** The server answered 404: no such machine, or it was removed. */
   let missing = $state(false)
+  /**
+   * The server answered 404 or 403: no such machine, or not this person's
+   * to see. Reading again every five seconds would only repeat it — and
+   * fill the server's log with one teacher's open tab — so the timer stops;
+   * "Try again" still asks, and an answer resumes it.
+   */
+  let stopped = false
   let loadErrorText = $state<(() => string) | null>(null)
   const loadError = $derived(loadErrorText?.() ?? null)
   let now = $state(Date.now())
@@ -114,6 +121,7 @@
       if (disposed || asked !== id) return
       machine = fresh
       missing = false
+      stopped = false
       loadErrorText = null
       now = Date.now()
     } catch (cause: unknown) {
@@ -122,6 +130,14 @@
       if (cause instanceof AdminApiError && cause.status === 404) {
         missing = true
         machine = null
+        stopped = true
+        return
+      }
+      if (cause instanceof AdminApiError && cause.status === 403) {
+        // The owner's page only: the refusal in the server's words, once.
+        machine = null
+        stopped = true
+        loadErrorText = () => messageFor(cause)
         return
       }
       if (!machine) loadErrorText = () => messageFor(cause)
@@ -131,7 +147,7 @@
   onMount(() => {
     void load()
     const refresh = setInterval(() => {
-      if (document.visibilityState === 'visible') void load()
+      if (!stopped && document.visibilityState === 'visible') void load()
     }, 5_000)
     const tick = setInterval(() => (now = Date.now()), 1_000)
     const onKey = (event: KeyboardEvent) => {
@@ -426,7 +442,10 @@
 
           <div class="min-w-[240px] flex-1 basis-[260px]">
             <span class="admin-label mb-1.5 block">{tr('admin.runners.connect.sealed')}</span>
-            <div class="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-1 max-[640px]:min-h-11">
+            <!-- The whole row is the switch's label, as on the editor's late
+                 intake: the track itself is 22 x 40 px, and on a phone a
+                 finger needs the 44 px row (M7). -->
+            <label class={cn('flex min-h-10 flex-wrap items-center gap-x-3 gap-y-1 max-[640px]:min-h-11', !busy && 'cursor-pointer')}>
               <button
                 type="button"
                 role="switch"
@@ -445,7 +464,7 @@
               <span class="text-ui text-ink">
                 {machine.trusted ? tr('admin.runners.page.trustedOn') : tr('admin.runners.page.trustedOff')}
               </span>
-            </div>
+            </label>
             <p class="mt-1.5 text-micro text-muted">{tr('admin.runners.page.trustNote')}</p>
           </div>
         </div>

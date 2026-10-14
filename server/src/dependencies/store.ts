@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { db } from '../db.js'
 import { getCompetition, invalidateCompetitionInputs } from '../competitions/store.js'
 import { DEPENDENCY_LIMITS, normalizeRequirements, quotaWaitMinutes, requirementLineCount, requirementWithoutComment, unsupportedRequirementLine, dependencyActive, packagesFit, packagesMemoryParams, type DependencyBundle, type DependencyDraft, type DependencyErrorParams, type DependencyPackage, type DependencyPolicy, type DependencyQuota, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
-import { manifestPackages, type PreparationProgress, type PreparationResult } from './preparation-contract.js'
+import { manifestPackages, wheelUrls, type PreparationProgress, type PreparationResult } from './preparation-contract.js'
 import type { ImageIdentity } from './image-identity.js'
 import { dependencyMessage, type DependencyRefusalDetail } from './messages.js'
 import { acceptsUploads, submissionsOpen, type CompetitionState } from '@shared/competitions'
@@ -85,6 +85,68 @@ CREATE TABLE IF NOT EXISTS environment_revision_images (
  registry_ref TEXT, layers TEXT, inspected_at INTEGER NOT NULL
 );
 `)
+/*
+ * Where the metric of a competition with a card scores (decision 2 of
+ * docs/architecture/remote-runners.md §12): the light kaggle-base revision it
+ * was pinned to when its metric first ran (competitions/runner.ts ·
+ * gpuScoringImage), or, with `revision_id` NULL, each submission's own pinned
+ * image, the way every metric ran before the decision — kept by a competition
+ * whose metrics had run there already, and by one whose first metric found no
+ * kaggle-base on this server. Without a pin every metric took the newest
+ * kaggle-base recorded anywhere here: another competition's base refresh, or
+ * the first upload of a new one, moved a live competition's scores and
+ * rescores to another image, and a metric that imported torch, checked in the
+ * competition's own image, began failing in the middle of the competition.
+ * Moved only by the teacher, together with a rescore of every submission
+ * (runner.ts · moveMetricToLightImage).
+ *
+ * A table of its own: older code never reads it, and a row goes with its
+ * competition.
+ */
+db.exec(`
+CREATE TABLE IF NOT EXISTS competition_metric_revisions (
+ competition_id TEXT PRIMARY KEY REFERENCES competitions(id) ON DELETE CASCADE,
+ revision_id TEXT REFERENCES environment_revisions(id),
+ pinned_at INTEGER NOT NULL
+);
+`)
+/*
+ * Where each wheel of a ready set was downloaded from (DependencyPackage.url,
+ * preparation-contract.ts · wheelUrls): what the machines that run
+ * submissions fetch from the index's CDN (bundleWheels). Apart from the set's
+ * row and its manifest, which keep no address (manifestPackages): the row's
+ * package list is what 0.22 hands the participant's page as it finds it, and
+ * an institution's mirror is not named to the class. Older code never reads
+ * this table, and its rows go with their set.
+ */
+db.exec(`
+CREATE TABLE IF NOT EXISTS dependency_bundle_wheel_urls (
+ bundle_id TEXT NOT NULL REFERENCES dependency_bundles(id) ON DELETE CASCADE,
+ sha256 TEXT NOT NULL,
+ url TEXT NOT NULL,
+ PRIMARY KEY(bundle_id,sha256)
+);
+`)
+/**
+ * A set completed by this release before the addresses had a table of their
+ * own kept them in its row: moved here, so that no row older code can read
+ * names a mirror. At every start, and a no-op once done. A row that does not
+ * parse is left as it is (its pages fail on it either way). Returns how many
+ * rows it moved.
+ */
+export const moveWheelUrlsApart = db.transaction((): number => {
+ const rows=db.prepare(`SELECT id,packages_json FROM dependency_bundles WHERE packages_json LIKE '%"url"%'`).all() as {id:string;packages_json:string}[]
+ let moved=0
+ for(const row of rows){
+  let packages:DependencyPackage[]
+  try{packages=JSON.parse(row.packages_json) as DependencyPackage[];if(!Array.isArray(packages))continue}catch{continue}
+  for(const pkg of packages)if(typeof pkg?.url==='string'&&typeof pkg.sha256==='string')db.prepare('INSERT OR IGNORE INTO dependency_bundle_wheel_urls(bundle_id,sha256,url) VALUES(?,?,?)').run(row.id,pkg.sha256,pkg.url)
+  db.prepare('UPDATE dependency_bundles SET packages_json=? WHERE id=?').run(JSON.stringify(packages.map(({url:_url,...pkg})=>pkg)),row.id)
+  moved++
+ }
+ return moved
+})
+moveWheelUrlsApart()
 
 type Row = Record<string, string | number | null>
 const json = <T>(value: Row[string], fallback: T): T => value ? JSON.parse(String(value)) as T : fallback
@@ -152,6 +214,50 @@ export const selectRevision = db.transaction((competitionId: string, revisionId:
  db.prepare('UPDATE competition_dependency_policies SET revision_id=? WHERE competition_id=?').run(revisionId,competitionId)
  if(before.revision_id && before.revision_id!==revisionId)invalidateCompetitionInputs(competitionId)
 })
+/**
+ * The metric pin of a competition with a card (competition_metric_revisions):
+ * `null` — none yet, its metric has not run since there were pins;
+ * `{ revisionId: null }` — each submission's own pinned image; otherwise the
+ * light revision its every metric runs in.
+ */
+export function metricPin(competitionId: string): { revisionId: string | null } | null {
+ const row=db.prepare('SELECT revision_id FROM competition_metric_revisions WHERE competition_id=?').get(competitionId) as Row|undefined
+ return row?{revisionId:row.revision_id===null?null:String(row.revision_id)}:null
+}
+/**
+ * Pin a competition's metric the first time it runs; returns the pin in
+ * force. Two metrics that start at once pin one: the second finds the first's
+ * pin and keeps it, whatever it would have chosen itself.
+ */
+export function pinMetric(competitionId: string, revisionId: string | null, at = Date.now()): { revisionId: string | null } {
+ db.prepare('INSERT OR IGNORE INTO competition_metric_revisions (competition_id,revision_id,pinned_at) VALUES (?,?,?)').run(competitionId,revisionId,at)
+ return metricPin(competitionId)!
+}
+/**
+ * The teacher's move of a competition's metric to another light revision
+ * (runner.ts · moveMetricToLightImage, which rescores every submission). The
+ * scores from before were computed elsewhere, so the inputs they certify move
+ * on too (input_revision), as when a competition is moved to another base
+ * (selectRevision); its notebooks' results stand.
+ */
+export const moveMetricPin = db.transaction((competitionId: string, revisionId: string, at = Date.now()): void => {
+ if(!getRevision(revisionId))throw new DependencyStoreError('dependency_revision',404)
+ const before=metricPin(competitionId)
+ db.prepare(`INSERT INTO competition_metric_revisions (competition_id,revision_id,pinned_at) VALUES (?,?,?)
+  ON CONFLICT(competition_id) DO UPDATE SET revision_id=excluded.revision_id,pinned_at=excluded.pinned_at`).run(competitionId,revisionId,at)
+ if(before?.revisionId!==revisionId)invalidateCompetitionInputs(competitionId,false)
+})
+/**
+ * The revision the latest metric run of a competition was recorded under
+ * (submission_runs.revision_id): `null` — no metric of it has run;
+ * `{ revisionId: null }` — one ran with none recorded, as every metric before
+ * 0.23 did, in its submission's own image.
+ */
+export function lastMetricRevision(competitionId: string): { revisionId: string | null } | null {
+ const row=db.prepare(`SELECT r.revision_id FROM submission_runs r JOIN submissions s ON s.id=r.submission_id
+  WHERE s.competition_id=? AND r.kind='metric' ORDER BY r.started_at DESC,r.seq DESC LIMIT 1`).get(competitionId) as Row|undefined
+ return row?{revisionId:row.revision_id===null||row.revision_id===undefined?null:String(row.revision_id)}:null
+}
 export function setPolicy(competitionId: string, change: Partial<DependencyPolicy>): DependencyPolicy {
  const value={...policyOf(competitionId),...change}
  if(typeof value.enabled!=='boolean'||!Number.isInteger(value.maxDownloadBytes)||value.maxDownloadBytes<1024*1024||value.maxDownloadBytes>DEPENDENCY_LIMITS.downloadBytes||value.maxInstalledBytes!==DEPENDENCY_LIMITS.installedBytes) throw new DependencyStoreError('dependency_limits',400)
@@ -248,14 +354,16 @@ export function getBundle(key: string): DependencyBundle|null {
  const r=db.prepare('SELECT * FROM dependency_bundles WHERE id=?').get(key) as Row|undefined;return r?toBundle(r):null
 }
 /**
- * The wheels of a ready set as its manifest keeps them, download addresses
- * included (DependencyPackage.url): what a machine that runs submissions
- * fetches from the index's CDN and checks by sha256 and size. `null` — no such
- * set, or not ready.
+ * The wheels of a ready set as its manifest keeps them, with the download
+ * addresses kept apart (DependencyPackage.url, dependency_bundle_wheel_urls):
+ * what a machine that runs submissions fetches from the index's CDN and
+ * checks by sha256 and size. `null` — no such set, or not ready.
  */
 export function bundleWheels(key: string): DependencyPackage[]|null {
  const r=db.prepare("SELECT packages_json FROM dependency_bundles WHERE id=? AND state='ready'").get(key) as Row|undefined
- return r?json<DependencyPackage[]>(r.packages_json,[]):null
+ if(!r)return null
+ const urls=new Map((db.prepare('SELECT sha256,url FROM dependency_bundle_wheel_urls WHERE bundle_id=?').all(key) as {sha256:string;url:string}[]).map(row=>[row.sha256,row.url]))
+ return json<DependencyPackage[]>(r.packages_json,[]).map(({url:_url,...pkg})=>{const url=urls.get(pkg.sha256);return url?{...pkg,url}:pkg})
 }
 export function bundleLimits(key:string): Pick<DependencyPolicy,'maxDownloadBytes'|'maxInstalledBytes'> {
  const r=db.prepare('SELECT max_download_bytes,max_installed_bytes FROM dependency_bundles WHERE id=?').get(key) as Row
@@ -300,12 +408,13 @@ export function updateProgress(key:string,progress:PreparationProgress):void{
 }
 export const completeBundle=db.transaction((key:string,result:PreparationResult):boolean=>{
  const b=getBundle(key);if(!b||!dependencyActive(b.state))return false
- // The same list the manifest on disk keeps (files.ts · publishBundle), download addresses checked.
+ // The same list the manifest on disk keeps (files.ts · publishBundle), without the addresses, which go apart.
  const packages=manifestPackages(result.packages)
  for(const p of packages){
   db.prepare('INSERT OR IGNORE INTO dependency_artifacts VALUES(?,?,?,?,?,?)').run(p.sha256,p.fileName,p.name,p.version,p.bytes,Date.now())
   db.prepare('INSERT INTO dependency_bundle_artifacts VALUES(?,?)').run(key,p.sha256)
  }
+ for(const {sha256,url} of wheelUrls(result.packages))db.prepare('INSERT OR REPLACE INTO dependency_bundle_wheel_urls(bundle_id,sha256,url) VALUES(?,?,?)').run(key,sha256,url)
  db.prepare("UPDATE dependency_bundles SET state='ready',normalized_json=?,packages_json=?,download_bytes=?,installed_bytes=?,content_hash=?,lock_text=?,error_json=NULL,ready_at=? WHERE id=?").run(JSON.stringify(result.normalizedRequirements),JSON.stringify(packages),result.downloadBytes,result.installedBytes,result.contentHash,result.lock,Date.now(),key)
  return true
 })
@@ -380,6 +489,8 @@ export const removeEntrantDependencies = db.transaction((entrantId: string, comp
    (SELECT id FROM submissions WHERE entrant_id = @e AND competition_id = @c)
    OR bundle_id IN (SELECT id FROM dependency_bundles WHERE entrant_id = @e AND competition_id = @c)`).run(scope)
  db.prepare(`DELETE FROM dependency_bundle_artifacts WHERE bundle_id IN
+   (SELECT id FROM dependency_bundles WHERE entrant_id = @e AND competition_id = @c)`).run(scope)
+ db.prepare(`DELETE FROM dependency_bundle_wheel_urls WHERE bundle_id IN
    (SELECT id FROM dependency_bundles WHERE entrant_id = @e AND competition_id = @c)`).run(scope)
  db.prepare('DELETE FROM dependency_bundles WHERE entrant_id = @e AND competition_id = @c').run(scope)
  db.prepare('DELETE FROM dependency_drafts WHERE entrant_id = @e AND competition_id = @c').run(scope)

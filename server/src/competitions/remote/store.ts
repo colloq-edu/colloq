@@ -54,6 +54,7 @@ import {
   type RemoteStepLimits,
 } from '@shared/remote-runner'
 import type { RemoteEventKind } from '@shared/remote-admin'
+import type { Competition } from '@shared/competitions'
 
 /* ----------------------------------------------------------------- schema */
 
@@ -190,6 +191,16 @@ ensureColumn('remote_leases', 'outcome', 'outcome TEXT')
  * sentence in whatever language was in force then is no word to match on.
  */
 ensureColumn('remote_leases', 'cause', 'cause TEXT')
+/*
+ * remote_runners.wanted — the competitions a machine has been asked to hold
+ * (named in a reply's `want`) and not told to forget since, as a JSON list:
+ * what its `forget` is computed against (heard.ts · wantedBefore). In memory
+ * alone it was lost with every restart of this server, and a competition
+ * closed or deleted after one was never forgotten — its data, and a trusted
+ * machine's hidden test of it, kept until the machine's own eviction. Written
+ * only when the set changes: competitions open and close, syncs do not.
+ */
+ensureColumn('remote_runners', 'wanted', 'wanted TEXT')
 
 /* ----------------------------------------------------------------- hashes */
 
@@ -458,6 +469,8 @@ export interface MintCode {
 }
 
 export interface MintedCode {
+  /** The code's id in the owner's list (RemoteCodeView.id, codeIdOf): what the dialog tells its own machines by. */
+  id: string
   /** 128 random bits in hex (REMOTE_JOIN_CODE): shown once, inside the join commands, and never stored. */
   code: string
   expiresAt: number
@@ -495,7 +508,12 @@ export function mintRemoteCode(input: MintCode, now = Date.now()): MintedCode {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     sha256(code), input.createdBy, now, expiresAt, input.machines, input.trusted ? 1 : 0, input.approvedSlots, input.namePrefix ?? '', input.machines,
   )
-  return { code, expiresAt, machines: input.machines, trusted: input.trusted, approvedSlots: input.approvedSlots }
+  return { id: codeIdOf(sha256(code)), code, expiresAt, machines: input.machines, trusted: input.trusted, approvedSlots: input.approvedSlots }
+}
+
+/** A code's id in the owner's list: the first eight hex digits of its sha256 — enough to tell two codes apart, useless to join with. */
+export function codeIdOf(codeSha256: string): string {
+  return codeSha256.slice(0, 8)
 }
 
 export interface CodeRow {
@@ -599,8 +617,8 @@ export const joinRunner = db.transaction((input: { code: string; joinId: string;
     const runner = toRunner(earlier)
     const same = earlier.code_sha256 !== null && sameDigest(earlier.code_sha256, codeSha)
     if (!same || now - earlier.created_at > REMOTE_JOIN_REPEAT_MS || !runnerStanding(runner)) return { ok: false, why: 'code' }
-    db.prepare('UPDATE remote_runners SET secret_sha256 = ?, build = ?, version = ?, facts = ?, last_seen_at = ?, last_address = COALESCE(?, last_address) WHERE id = ?')
-      .run(sha256(secret), input.build, input.facts.version, JSON.stringify(input.facts), now, input.address, runner.id)
+    db.prepare('UPDATE remote_runners SET secret_sha256 = ?, build = ?, version = ?, facts = ?, last_address = COALESCE(?, last_address) WHERE id = ?')
+      .run(sha256(secret), input.build, input.facts.version, JSON.stringify(input.facts), input.address, runner.id)
     return { ok: true, runner: getRunner(runner.id)!, secret, repeated: true }
   }
   const code = db.prepare('SELECT * FROM remote_runner_codes WHERE code_sha256 = ?').get(codeSha) as CodeRaw | undefined
@@ -610,17 +628,38 @@ export const joinRunner = db.transaction((input: { code: string; joinId: string;
   for (let tries = 0; tries < 8; tries++) {
     const id = newRunnerId()
     if (selectRunner.get(id)) continue
+    // No last_seen_at yet: «был на связи» is a sync's, and until the first one the panel says the machine joined and never synced.
     db.prepare(`INSERT INTO remote_runners
         (id, name, secret_sha256, join_id, code_sha256, trusted, approved_slots, state, build, version, facts,
-         created_by, created_at, last_seen_at, last_address)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`).run(
+         created_by, created_at, last_address)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`).run(
       id, name, sha256(secret), input.joinId, codeSha, code.trusted, code.approved_slots, input.build, input.facts.version,
-      JSON.stringify(input.facts), code.created_by, now, now, input.address,
+      JSON.stringify(input.facts), code.created_by, now, input.address,
     )
     return { ok: true, runner: getRunner(id)!, secret, repeated: false }
   }
   throw new Error('Could not mint a unique machine id')
 })
+
+/**
+ * The competitions a machine may hold data of, from what outlives a restart:
+ * those its replies named in `want` since it was last told to forget them
+ * (remote_runners.wanted), and those it was leased a run of in the leases'
+ * week — a lease's data is the machine's to hold whether or not a want ever
+ * named it. Read once per life of this server (heard.ts), and `forget` names
+ * those no longer wanted (want.ts · runnerWant).
+ */
+export function wantedCompetitions(runnerId: string): string[] {
+  const row = db.prepare('SELECT wanted FROM remote_runners WHERE id = ?').get(runnerId) as { wanted: string | null } | undefined
+  const saved = parsed<unknown>(row?.wanted, [])
+  const leased = db.prepare('SELECT DISTINCT competition_id FROM remote_leases WHERE runner_id = ?').all(runnerId) as { competition_id: string }[]
+  const ids = [...(Array.isArray(saved) ? saved : []), ...leased.map((one) => one.competition_id)]
+  return [...new Set(ids.filter((id): id is string => typeof id === 'string'))]
+}
+
+export function saveWantedCompetitions(runnerId: string, ids: Iterable<string>): void {
+  db.prepare('UPDATE remote_runners SET wanted = ? WHERE id = ?').run(JSON.stringify([...ids].sort()), runnerId)
+}
 
 /** The machine revoked itself (colloq-host runner leave): its secret is refused from now on. */
 export function markRunnerLeft(id: string, now = Date.now()): void {
@@ -659,6 +698,14 @@ export interface LeaseManifest {
 export interface LeasePrepared {
   sealedFiles: string[]
   before: { cellsDone: number; cellsTotal: number; durationMs: number | null }
+  /**
+   * The competition as the take read it: the outcome is settled against it
+   * (apply.ts), as a run here is settled against the competition its job read
+   * when it took the row — a teacher's edit of the limits or the texts during
+   * a four-hour run must not word its outcome by numbers it never ran under.
+   * Absent on a lease written before it was kept: the competition as it is.
+   */
+  competition?: Competition
 }
 
 export interface LeaseProvenance {
@@ -699,13 +746,15 @@ export interface LeaseRow {
 
 /**
  * Why a lease ended without its outcome. Losses: `silent`, `ceiling`,
- * `missing`, `refused`, `declined` (a refusal after its container started).
+ * `missing`, `refused`, `declined` (a refusal after its container started),
+ * `unapplied` (its result came, and this server could not apply it by the
+ * lease's ceiling: this server's failure, not the machine's).
  * Withdrawals: `unacked`, `unseen`, `restart`. A decline: its reason
  * (RemoteDeclineReason). Taken back: `revoked` (the machine disconnected),
  * `untrusted`, `cancelled`.
  */
 export type LeaseCause =
-  | 'silent' | 'ceiling' | 'missing' | 'refused' | 'declined'
+  | 'silent' | 'ceiling' | 'missing' | 'refused' | 'declined' | 'unapplied'
   | 'unacked' | 'unseen' | 'restart'
   | 'image' | 'data' | 'wheels' | 'disk' | 'memory' | 'card' | 'draining' | 'version'
   | 'revoked' | 'untrusted' | 'cancelled'
@@ -807,10 +856,26 @@ export function submissionLeases(submissionId: string, since: number): LeaseRow[
   return (db.prepare('SELECT * FROM remote_leases WHERE submission_id = ? AND offered_at >= ? ORDER BY offered_at, attempt_id').all(submissionId, since) as LeaseRaw[]).map(toLease)
 }
 
-/** The last lease of a submission whatever its state: where a returned row came back from. */
-export function lastLeaseOf(submissionId: string): LeaseRow | null {
-  const row = db.prepare('SELECT * FROM remote_leases WHERE submission_id = ? ORDER BY offered_at DESC, attempt_id DESC LIMIT 1').get(submissionId) as LeaseRaw | undefined
-  return row ? toLease(row) : null
+/**
+ * The last lease of each of these submissions whatever its state — where a
+ * returned row came back from — in one query per five hundred of them: the
+ * wait reasons ask it of every waiting notebook on every participant's poll
+ * (views.ts · waitReasons), and a query per row per poll was the forecast's
+ * cost growing with the queue. The window function picks each submission's
+ * newest lease in SQLite itself, so a submission leased many times reads one
+ * row, not all of them.
+ */
+export function lastLeasesOf(submissionIds: readonly string[]): Map<string, LeaseRow> {
+  const out = new Map<string, LeaseRow>()
+  for (let at = 0; at < submissionIds.length; at += 500) {
+    const chunk = submissionIds.slice(at, at + 500)
+    const rows = db.prepare(`SELECT * FROM (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY submission_id ORDER BY offered_at DESC, attempt_id DESC) AS newest
+        FROM remote_leases WHERE submission_id IN (${chunk.map(() => '?').join(', ')})
+      ) WHERE newest = 1`).all(...chunk) as LeaseRaw[]
+    for (const row of rows) out.set(row.submission_id, toLease(row))
+  }
+  return out
 }
 
 /** A machine's leases that ended in `states` since `since`: what the quarantine counts. */
@@ -837,12 +902,20 @@ export function declinedBy(runnerId: string, since: number): Set<string> {
   return new Set(rows.map((row) => row.submission_id))
 }
 
-/** A machine's leases, newest first, for its page (M3) and its counters. */
-export function runnerLeaseCounts(runnerId: string): { applied: number; lost: number; declined: number; requeued: number } {
+/**
+ * A machine's counters for its page (M3) and its row (M1). `scored` — the
+ * submissions it ran that got a score: an applied lease is only the run
+ * having ended (a notebook that failed on the machine is applied too), and
+ * «оценено 40» for forty tracebacks would send the owner to the wrong
+ * conclusion about the machine.
+ */
+export function runnerLeaseCounts(runnerId: string): { scored: number; lost: number; declined: number; requeued: number } {
   const rows = db.prepare(`SELECT state, reason, COUNT(*) AS n FROM remote_leases WHERE runner_id = ? GROUP BY state, reason`).all(runnerId) as { state: string; reason: string | null; n: number }[]
-  const out = { applied: 0, lost: 0, declined: 0, requeued: 0 }
+  const scored = (db.prepare(`SELECT COUNT(DISTINCT l.submission_id) AS n FROM remote_leases l JOIN submissions s ON s.id = l.submission_id
+    WHERE l.runner_id = ? AND l.state = 'applied' AND s.state = 'scored'`).get(runnerId) as { n: number }).n
+  const out = { scored, lost: 0, declined: 0, requeued: 0 }
   for (const row of rows) {
-    if (row.state === 'applied') out.applied += row.n
+    if (row.state === 'applied') continue
     else if (row.state === 'lost') out.lost += row.n
     else if (row.state === 'declined' && row.reason !== 'draining') out.declined += row.n
     // Given back with no loss counted: a drain, a withdrawn offer, a revoked machine's runs, an untrust.
@@ -936,6 +1009,32 @@ export function updateLease(attemptId: string, patch: LeasePatch, from?: readonl
   return db.prepare(`UPDATE remote_leases SET ${sets.join(', ')} WHERE attempt_id = @attempt${fence}`).run(params).changes > 0
 }
 
+/*
+ * OUTCOMES BEING APPLIED BY THIS PROCESS RIGHT NOW (apply.ts · drive), by
+ * attempt. Not a state of the lease: a crash ends every drive, and a lease
+ * it left `applying` is driven again at boot (or by the machine's repeated
+ * post). What it fences is this life's own work. A cancel that came while a
+ * result was being settled finished the run row and cancelled the
+ * submission under it, and the settle then wrote its own verdict over the
+ * cancel's and answered the machine `applied` for a run that was cancelled;
+ * and the ceiling would give up on a result that is being applied that very
+ * moment. Both leave a lease in flight to its drive (release.ts ·
+ * cancelRemote, liveness.ts · remoteTick): its result has come, and the
+ * cancel is too late in the way a cancel of a run that has just ended here is.
+ * A lease `applying` with no drive in flight — one that threw, one a crash
+ * left — is theirs to end.
+ */
+const drives = new Set<string>()
+
+export function noteDrive(attemptId: string, inFlight: boolean): void {
+  if (inFlight) drives.add(attemptId)
+  else drives.delete(attemptId)
+}
+
+export function driveInFlight(attemptId: string): boolean {
+  return drives.has(attemptId)
+}
+
 /** A reason as the panel shows it: one line, REMOTE_REASON_CHARS at most. */
 export function reasonText(text: string): string {
   return remoteText(text.replace(/[\r\n\t]+/g, ' ').trim(), REMOTE_REASON_CHARS, 'start')
@@ -973,6 +1072,45 @@ export function runnerEvents(runnerId: string, limit = 50): EventRow[] {
     id: number; at: number; runner_id: string; attempt_id: string | null; kind: string; address: string | null; detail: string | null
   }[]
   return rows.map((row) => ({ id: row.id, at: row.at, runnerId: row.runner_id, attemptId: row.attempt_id, kind: row.kind as RemoteEventKind, address: row.address, detail: row.detail }))
+}
+
+/**
+ * THE LEASES OF ERASED WORK GO WITH IT, in the transaction that erases it.
+ * A lease row is a participant's run: its outcome keeps the traceback their
+ * notebook printed (detail), the container's output (log) and the harness's
+ * raw report (runJson), and its log lines on the machine's page name their
+ * submission. Participant erase promises that every row and output of their
+ * work goes (competitions/erase.ts), and a competition deleted takes its
+ * participants' runs along (store.ts · deleteCompetition) — neither may
+ * leave them to the week's prune. A machine that still reports such an
+ * attempt is told home knows no such lease (`unknown`), and its late upload
+ * or outcome is not found (404): the agent drops the attempt on either.
+ * Only the lines of a run are erased; the machine's own (its joins, its
+ * problems, the hidden-test fetches its audit keeps) name no one's work.
+ */
+function deleteLeaseRows(where: string, ...params: unknown[]): { leases: number; events: number } {
+  const events = db.prepare(`DELETE FROM remote_events WHERE attempt_id IN (SELECT attempt_id FROM remote_leases WHERE ${where})`).run(...params).changes
+  const leases = db.prepare(`DELETE FROM remote_leases WHERE ${where}`).run(...params).changes
+  return { leases, events }
+}
+
+/** Every lease of these submissions and its log lines: a participant erased (erase.ts), inside its transaction. */
+export function deleteSubmissionLeases(submissionIds: readonly string[]): { leases: number; events: number } {
+  let leases = 0
+  let events = 0
+  // In chunks well under SQLite's limit of bound parameters: a person may have sent hundreds.
+  for (let at = 0; at < submissionIds.length; at += 500) {
+    const chunk = submissionIds.slice(at, at + 500)
+    const removed = deleteLeaseRows(`submission_id IN (${chunk.map(() => '?').join(', ')})`, ...chunk)
+    leases += removed.leases
+    events += removed.events
+  }
+  return { leases, events }
+}
+
+/** Every lease of a competition and its log lines: the competition deleted (store.ts · deleteCompetition), inside its transaction. */
+export function deleteCompetitionLeases(competitionId: string): { leases: number; events: number } {
+  return deleteLeaseRows('competition_id = ?', competitionId)
 }
 
 /**

@@ -86,16 +86,17 @@
   import { cardWord } from '@/admin/running-kernels'
   import {
     GROUP_CELLS,
+    cardlessWarning,
     cellPhaseWord,
     consoleGroups,
-    fleetPlaces,
     fleetWords,
+    freePlaces,
     groupChip,
     groupLine,
     machinePagePath,
     machinesListPath,
     returnedFrom,
-    waitReason,
+    waitingLine,
     type LineTone,
   } from '@/admin/runners'
 
@@ -551,16 +552,24 @@
    */
   const machineGroups = $derived(queue?.groups && queue.groups.length > 0 ? queue.groups : null)
   const grouped = $derived(machineGroups ? consoleGroups(machineGroups, running) : null)
-  /** The fleet's places in the header: this server's and every machine's that takes work. */
-  const fleet = $derived(machineGroups ? fleetPlaces(machineGroups, running) : null)
+  /**
+   * The server's own release for an outdated machine's «на ней 0.23.0, на
+   * сервере 0.24.0»: what the server's group says, never this bundle's
+   * __COLLOQ_VERSION__, which a browser holding an old panel would name.
+   * `null` — not said, and the line names no versions.
+   */
+  const homeVersion = $derived(machineGroups?.find((group) => group.machineId === null)?.version ?? null)
   /** Machine groups opened past their first cells («ещё N на этой машине»), by key. */
   let expandedGroups = $state<Record<string, boolean>>({})
   /**
    * How many submissions the queue takes at once — the Resources tab's
-   * setting in effect, and with machines the places of the whole fleet. The
-   * console's executors are these places (decision 9), wherever they are.
+   * setting in effect, and with machines this server's notebook places plus
+   * every live machine's. The console's executors are these places
+   * (decision 9), wherever they are. The queue's own number, not a sum over
+   * the groups: the forecast and the participant's estimate are counted by
+   * it, and the groups also list machines that only finish what they hold.
    */
-  const slots = $derived(fleet?.count ?? queue?.slots ?? running.length)
+  const slots = $derived(queue?.slots ?? running.length)
   /** How a wait reason's line is painted (admin/runners.ts · LineTone). */
   const REASON_TONE: Record<LineTone, string> = {
     positive: 'text-positive',
@@ -1182,12 +1191,12 @@
                 {@const chip = groupChip(group, now)}
                 {@const opened = expandedGroups[entry.key] === true}
                 {@const shown = home || opened ? entry.runs : entry.runs.slice(0, GROUP_CELLS)}
-                {@const free = Math.max(0, group.places - entry.runs.length)}
+                {@const free = freePlaces(group, entry.runs)}
                 <div class="flex min-w-0 flex-col gap-2.5">
                   <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-line pb-2">
                     {#if home}
                       <span class="admin-label text-ink">{tr('admin.competitions.fleet.home')}</span>
-                      <span class="min-w-0 flex-1 text-micro text-muted">{groupLine(group, 0, __COLLOQ_VERSION__)}</span>
+                      <span class="min-w-0 flex-1 text-micro text-muted">{groupLine(group, 0, homeVersion)}</span>
                       {#if grouped.length > 1}
                         <span class="text-micro text-muted">{tr('admin.competitions.fleet.homeScores')}</span>
                       {/if}
@@ -1197,7 +1206,7 @@
                         <Badge word={chip.word} tone={chip.tone} />
                       {/if}
                       <span class="min-w-0 flex-1 basis-[200px] text-micro text-muted">
-                        {groupLine(group, returnedFrom(waiting, group.name), __COLLOQ_VERSION__)}
+                        {groupLine(group, returnedFrom(waiting, group.name), homeVersion)}
                       </span>
                       {#if group.state === 'outdated'}
                         <span class="font-mono text-micro text-muted">{tr('admin.runners.updateCommand')}</span>
@@ -1282,25 +1291,27 @@
             </div>
             {#if cardless}
               <!-- No share on any card: the rows below will not move however
-                   many executors stand free, and the reason is not on this tab. -->
-              <p class="text-2xs leading-snug text-warning">{tr('admin.competitions.gpuNoPlace')}</p>
+                   many executors stand free, and the reason is not on this tab.
+                   With machines the way out is a machine with cards, not a
+                   card this server may not have (admin/runners.ts ·
+                   cardlessWarning). -->
+              <p class="text-2xs leading-snug text-warning">{cardlessWarning(machineGroups !== null)}</p>
             {/if}
             {#each waiting as row (row.submissionId)}
-              {@const reason = waitReason(row)}
+              {@const line = waitingLine(row, waitsForCard(row, queue))}
               <div class="flex items-center gap-2.5">
                 <span class="w-4 shrink-0 font-mono text-micro text-muted">{row.place ?? '—'}</span>
                 <span class="flex min-w-0 flex-1 flex-col">
                   <span class="truncate text-2xs text-ink">
                     {row.baseline ? tr('competitions.baselineEntrant') : row.entrantName} · #{row.number}
                   </span>
-                  {#if waitsForCard(row, queue)}
-                    <!-- Passed over for a card while CPU work goes by: said, so
-                         the order of the list does not read as unfair. -->
-                    <span class="text-micro text-accent-text">{tr('admin.competitions.waitsForCard')}</span>
-                  {:else if reason}
+                  {#if line}
                     <!-- Why a machine has not taken it, or that it came back
-                         from one (admin/runners.ts · waitReason). -->
-                    <span class={cn('text-micro', REASON_TONE[reason.tone])}>{reason.text}</span>
+                         from one, before the card it waits for: passed over for
+                         a card while CPU work goes by is said too, so the order
+                         of the list does not read as unfair (admin/runners.ts ·
+                         waitingLine). -->
+                    <span class={cn('text-micro', REASON_TONE[line.tone])}>{line.text}</span>
                   {/if}
                 </span>
                 {#if row.late}

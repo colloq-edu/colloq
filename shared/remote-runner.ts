@@ -17,11 +17,23 @@
  * layersFingerprint, written pure for the machines to import as it is, and a
  * second copy of it here could only ever disagree with the first.
  *
- * STRICT, LIKE THE BROKER'S CONTRACT (competition-runtime.ts). Every parser
- * refuses unknown keys, ids and hashes outside their patterns, numbers out of
- * range and texts over their caps, and throws RemoteProtocolError. One
- * version is spoken at a time (REMOTE_PROTOCOL): an extra key is not a newer
- * agent to be humoured but a bug or a forgery.
+ * HOME IS STRICT, THE AGENT DROPS WHAT IT DOES NOT KNOW. Home's parsers of
+ * the machines' requests (parseRemoteJoinRequest, parseRemoteSyncRequest,
+ * parseRemoteOutcomeRequest, parseRemoteUploadMeta) refuse unknown keys, ids
+ * and hashes outside their patterns, numbers out of range and texts over
+ * their caps, like the broker's contract (competition-runtime.ts): a key home
+ * does not know in a request is not a newer agent to be humoured — home goes
+ * first (REMOTE_PROTOCOL) — but a bug or a forgery. The agent's parsers of
+ * home's replies (parseRemoteJoinReply, parseRemoteSyncReply,
+ * parseRemoteUploadReply, parseRemoteOutcomeReply, parseRemoteErrorReply)
+ * check every key they know exactly as strictly, and DROP every key they do
+ * not, at any depth: what they return holds the contract's keys and nothing
+ * else, so an unknown one never reaches the machine's disk or its logic. A
+ * reply is the newer side's message: home is updated before its machines,
+ * and an agent that refused a field home added within the version would
+ * refuse every reply of its home for the whole update — no revoke, no
+ * `applied`, no `trusted: false`, no drain — while it finishes the runs it
+ * holds (decision 5). Every parser throws RemoteProtocolError.
  *
  * BUT A HEARTBEAT CARRIES WHAT A NOTEBOOK WROTE. progress.json and run.json
  * lie where the participant's code can write (runner.ts · clampCells), and the
@@ -50,13 +62,26 @@ import type { RunVerdict } from './competitions.js'
  * with it: home never parses two versions side by side, and leases already
  * out under the old one are requeued with no penalty.
  *
- * Within one version a message only ever gains optional fields, and only the
- * newer side ever writes them. Home goes first: a machine with another build
- * gets no new leases (remoteCompatible), and an agent is updated by draining
- * it. So a machine never runs ahead of its home, and home's strict parsers
- * never meet a field they do not know.
+ * Within one version a message only ever gains optional fields. Home goes
+ * first: a machine with another build gets no new leases (remoteCompatible),
+ * and an agent is updated by draining it, so a machine never runs ahead of
+ * its home. A reply may therefore carry a field an agent does not know yet,
+ * which its parser drops (HOME IS STRICT, above), and it keeps finishing its
+ * runs. A request gains a field only once home has learned it, and home's
+ * parsers stay strict: rolling home back below a field its machines already
+ * send would refuse their every post, so such a rollback is a change of
+ * protocol, never a quiet one.
  */
 export const REMOTE_PROTOCOL = 1
+
+/**
+ * Where every version of the router lives. Home mounts its own version at
+ * REMOTE_API_BASE and answers any other one under this root with a marked
+ * 426 `protocol` (server/src/competitions/remote/routes.ts ·
+ * remoteOtherVersions): an agent of another release is told it needs home's
+ * release, rather than meeting an unmarked 404 it would retry for ever.
+ */
+export const REMOTE_API_ROOT = '/api/runners'
 
 /**
  * Where home mounts the router: in app.ts right after the security headers,
@@ -64,7 +89,7 @@ export const REMOTE_PROTOCOL = 1
  * identity, express.json and the same-origin gate. It has parsers and caps of
  * its own.
  */
-export const REMOTE_API_BASE = `/api/runners/v${REMOTE_PROTOCOL}`
+export const REMOTE_API_BASE = `${REMOTE_API_ROOT}/v${REMOTE_PROTOCOL}`
 
 /**
  * The calls under REMOTE_API_BASE. A path is built only from ids a parser has
@@ -89,16 +114,35 @@ export const remotePaths = {
  * reused POST connection. Taken for home's answer, a relay restart would make
  * the agent drop leases home still counts on; taken for a hiccup, it costs one
  * retry.
+ *
+ * THE SAME VALUE IN EVERY VERSION. It says "this is home", not which home: a
+ * marker that named the protocol made every reply of a home of another
+ * version look like the relay's, so the one refusal meant for that case — 426
+ * `protocol` — could never reach the agent it was for, and an old machine
+ * retried for ever, running notebooks home had requeued. The version travels
+ * beside it, in REMOTE_PROTOCOL_HEADER.
  */
 export const REMOTE_MARKER_HEADER = 'X-Colloq-Runner-Api'
-export const REMOTE_MARKER = String(REMOTE_PROTOCOL)
+export const REMOTE_MARKER = 'colloq-runners'
+
+/** The protocol home speaks, on every reply of the router beside the marker: what a 426 `protocol` asks the machine to update to. */
+export const REMOTE_PROTOCOL_HEADER = 'X-Colloq-Runner-Protocol'
+
+/** The protocol a marked reply says home speaks; `null` — it did not say, or not as a version. */
+export function remoteProtocolOf(header: string | null | undefined): number | null {
+  const value = header?.trim() ?? ''
+  return /^[1-9][0-9]{0,5}$/.test(value) ? Number(value) : null
+}
 
 /**
  * Whether a reply is a hiccup of the path rather than home's answer: no
  * marker, or home itself saying "not now" (429, any 5xx). The agent backs off
  * with jitter between REMOTE_BACKOFF_MIN_MS and REMOTE_BACKOFF_MAX_MS, asks
  * the relay's REMOTE_RELAY_STATE_PATH whether home is offline, and never
- * drops a lease over one.
+ * drops a lease over one. Every other marked reply is home's word and final,
+ * a 426 `protocol` from a home of another version among them: the machine
+ * needs the release home runs (REMOTE_PROTOCOL_HEADER), and no retry gives
+ * it that.
  */
 export function remoteTransient(status: number, marker: string | null | undefined): boolean {
   return marker?.trim() !== REMOTE_MARKER || status === 429 || status >= 500
@@ -886,12 +930,24 @@ export type RemoteOutcomeRequest = RemoteFinishedRequest | RemoteDeclinedRequest
  * not use the result (its files missing or not as listed), and the lease is
  * lost. `revoked`: the lease had been revoked before the outcome came. In all
  * three the machine deletes the attempt and never posts it again.
+ *
+ * A REPEATED OUTCOME (the same digest, its first reply lost) is answered
+ * with the result it got the first time and with the leases and the trust AS
+ * THEY ARE NOW, never the ones the first reply carried: an offer made then
+ * may have been withdrawn since, or read the hidden test of a machine the
+ * owner has stopped trusting meanwhile.
  */
 export interface RemoteOutcomeReply {
   result: 'applied' | 'refused' | 'revoked'
   seq: number
   /** The next work, at once, without waiting for a sync. */
   leases: RemoteLease[]
+  /**
+   * Whether the machine may hold the hidden test now, as in the sync reply:
+   * false purges it, and a reply with a hidden-test lease for an untrusted
+   * machine is refused whatever home says (decision 1).
+   */
+  trusted: boolean
 }
 
 /** What home answers a stored upload: the file as it now holds it. */
@@ -952,7 +1008,9 @@ export interface RemoteErrorReply {
  * (REMOTE_ERRORS): `protocol` for a request in another version of this
  * contract, `too_large` for an upload declared over its cap, `invalid` for
  * everything else. The agent takes a reply it cannot parse for a transient
- * one: a proxy that mangled one reply is no reason to drop a lease.
+ * one: a proxy that mangled one reply is no reason to drop a lease. A reply
+ * is refused only for what a key it knows holds, never for a key it does not
+ * (HOME IS STRICT, THE AGENT DROPS WHAT IT DOES NOT KNOW, above).
  */
 export class RemoteProtocolError extends Error {
   override name = 'RemoteProtocolError'
@@ -969,7 +1027,7 @@ export function parseRemoteJoinRequest(value: unknown): RemoteJoinRequest {
 }
 
 export function parseRemoteJoinReply(value: unknown): RemoteJoinReply {
-  const v = fields(value, 'join reply', ['runnerId', 'secret', 'trusted', 'approvedSlots'])
+  const v = known(value, 'join reply', ['runnerId', 'secret', 'trusted', 'approvedSlots'])
   if (!matching(v.runnerId, REMOTE_RUNNER_ID) || !matching(v.secret, REMOTE_SECRET) || !flag(v.trusted) || !slots(v.approvedSlots)) refuse('Invalid join reply')
   return v as unknown as RemoteJoinReply
 }
@@ -994,15 +1052,17 @@ export function parseRemoteSyncRequest(value: unknown): RemoteSyncRequest {
 const REVOKE_REASONS: ReadonlySet<string> = new Set<RemoteRevokeReason>(['cancelled', 'withdrawn', 'lost', 'unknown'])
 
 export function parseRemoteSyncReply(value: unknown): RemoteSyncReply {
-  const v = fields(value, 'sync reply', ['seq', 'leases', 'revoke', 'applied', 'want', 'forget', 'drain', 'trusted', 'approvedSlots', 'perDevice', 'compatible', 'homeVersion'])
+  const v = known(value, 'sync reply', ['seq', 'leases', 'revoke', 'applied', 'want', 'forget', 'drain', 'trusted', 'approvedSlots', 'perDevice', 'compatible', 'homeVersion'])
   if (!integer(v.seq, 0, Number.MAX_SAFE_INTEGER) || !flag(v.drain) || !flag(v.trusted) || !flag(v.compatible) || !slots(v.approvedSlots)
     || !integer(v.perDevice, 1, REMOTE_PER_DEVICE_MAX) || !matching(v.homeVersion, REMOTE_VERSION)) refuse('Invalid sync reply')
   const leases = leasesOf(v.leases, v.seq as number)
   const revoked = new Set<string>()
+  const revoke: RemoteRevoke[] = []
   for (const item of items(v.revoke, 'revokes', REMOTE_ATTEMPTS_MAX)) {
-    const r = fields(item, 'revoke', ['id', 'reason'])
+    const r = known(item, 'revoke', ['id', 'reason'])
     if (!matching(r.id, COMPETITION_ATTEMPT_ID) || revoked.has(r.id) || !word(r.reason, REVOKE_REASONS)) refuse('Invalid revoke')
     revoked.add(r.id)
+    revoke.push(r as unknown as RemoteRevoke)
   }
   const applied = distinct(v.applied, 'applied attempts', COMPETITION_ATTEMPT_ID, REMOTE_ATTEMPTS_MAX)
   // An attempt is offered, revoked or applied, never two of them in one breath.
@@ -1012,7 +1072,7 @@ export function parseRemoteSyncReply(value: unknown): RemoteSyncReply {
   if (want.data.some((entry) => forget.includes(entry.competitionId))) refuse('Contradictory sync reply')
   // The hidden test reaches trusted machines only (decision 1): an untrusted one keeps none of it, whatever a reply says.
   if (!v.trusted && (want.data.some((entry) => entry.sealed) || leases.some((lease) => lease.sealed))) refuse('Hidden test for an untrusted machine')
-  return v as unknown as RemoteSyncReply
+  return { ...v, leases, revoke, applied: [...applied], want, forget: [...forget] } as unknown as RemoteSyncReply
 }
 
 /**
@@ -1034,7 +1094,7 @@ export function parseRemoteUploadMeta(
 }
 
 export function parseRemoteUploadReply(value: unknown): RemoteUploadReply {
-  const v = fields(value, 'upload reply', ['name', 'sha256', 'bytes'])
+  const v = known(value, 'upload reply', ['name', 'sha256', 'bytes'])
   if (!matching(v.name, REMOTE_FILE_NAME) || !matching(v.sha256, REMOTE_SHA256) || !integer(v.bytes, 0, REMOTE_FILE_BYTES)) refuse('Invalid upload reply')
   return v as unknown as RemoteUploadReply
 }
@@ -1070,14 +1130,16 @@ export function parseRemoteOutcomeRequest(value: unknown): RemoteOutcomeRequest 
 const OUTCOME_RESULTS: ReadonlySet<string> = new Set<RemoteOutcomeReply['result']>(['applied', 'refused', 'revoked'])
 
 export function parseRemoteOutcomeReply(value: unknown): RemoteOutcomeReply {
-  const v = fields(value, 'outcome reply', ['result', 'seq', 'leases'])
-  if (!word(v.result, OUTCOME_RESULTS) || !integer(v.seq, 0, Number.MAX_SAFE_INTEGER)) refuse('Invalid outcome reply')
-  leasesOf(v.leases, v.seq as number)
-  return v as unknown as RemoteOutcomeReply
+  const v = known(value, 'outcome reply', ['result', 'seq', 'leases', 'trusted'])
+  if (!word(v.result, OUTCOME_RESULTS) || !integer(v.seq, 0, Number.MAX_SAFE_INTEGER) || !flag(v.trusted)) refuse('Invalid outcome reply')
+  const leases = leasesOf(v.leases, v.seq as number)
+  // The rule of the sync reply, for the work an outcome's reply hands out: the hidden test reaches trusted machines only (decision 1).
+  if (!v.trusted && leases.some((lease) => lease.sealed)) refuse('Hidden test for an untrusted machine')
+  return { ...v, leases } as unknown as RemoteOutcomeReply
 }
 
 export function parseRemoteErrorReply(value: unknown): RemoteErrorReply {
-  const v = fields(value, 'error reply', ['error', 'detail'])
+  const v = known(value, 'error reply', ['error', 'detail'])
   if (typeof v.error !== 'string' || !Object.hasOwn(REMOTE_ERRORS, v.error) || (v.detail !== undefined && !within(v.detail, REMOTE_REASON_CHARS))) refuse('Invalid error reply')
   return v as unknown as RemoteErrorReply
 }
@@ -1189,107 +1251,142 @@ function problemsOf(value: unknown): RemoteProblem[] {
 
 function leasesOf(value: unknown, seq: number): RemoteLease[] {
   const seen = new Set<string>()
+  const leases: RemoteLease[] = []
   let inline = 0
   for (const item of items(value, 'leases', REMOTE_ATTEMPTS_MAX)) {
     const lease = leaseOf(item)
     if (seen.has(lease.attemptId) || lease.seq > seq) refuse('Invalid lease')
     seen.add(lease.attemptId)
     if (lease.notebook.inline !== undefined) inline += lease.notebook.bytes
+    leases.push(lease)
   }
   if (inline > REMOTE_INLINE_TOTAL_BYTES) refuse('Inline notebooks over their budget')
-  return value as RemoteLease[]
+  return leases
 }
 
+/** A lease of a reply, as the agent writes it down: the contract's keys and nothing else, whatever else home sent with it. */
 function leaseOf(value: unknown): RemoteLease {
-  const v = fields(value, 'lease', ['attemptId', 'seq', 'competitionId', 'submissionId', 'container', 'deadlineMs', 'revision', 'harness',
+  const v = known(value, 'lease', ['attemptId', 'seq', 'competitionId', 'submissionId', 'container', 'deadlineMs', 'revision', 'harness',
     'limits', 'sealed', 'gpu', 'perDevice', 'data', 'sealedData', 'notebook', 'bundle'])
   if (!matching(v.attemptId, COMPETITION_ATTEMPT_ID) || !integer(v.seq, 1, Number.MAX_SAFE_INTEGER) || !matching(v.competitionId, COMPETITION_ROW_ID)
     || !matching(v.submissionId, COMPETITION_ROW_ID) || !integer(v.deadlineMs, 1, REMOTE_RUN_MS_MAX) || !matching(v.harness, REMOTE_HARNESS)
     || !matching(v.data, REMOTE_SHA256) || !flag(v.sealed) || !flag(v.gpu)) refuse('Invalid lease')
   // The container is named after its own submission (runner.ts · containerName), so a kill by name can only reach this run.
   if (!matching(v.container, REMOTE_CONTAINER) || !v.container.startsWith(`colloq-comp-${v.submissionId}-`)) refuse('Invalid lease container')
-  imageOf(v.revision, 'lease revision', ['id', 'ref', 'layers'])
-  limitsOf(v.limits)
+  const revision = imageOf(v.revision, 'lease revision', ['id', 'ref', 'layers'])
+  const limits = limitsOf(v.limits)
   // The hidden test's manifest comes with a sealed lease and with nothing else.
   if (v.sealed ? !matching(v.sealedData, REMOTE_SHA256) : v.sealedData !== undefined) refuse('Unexpected hidden data')
   if (v.gpu ? !integer(v.perDevice, 1, REMOTE_PER_DEVICE_MAX) : v.perDevice !== undefined) refuse('Unexpected card share')
-  const n = fields(v.notebook, 'lease notebook', ['sha256', 'bytes', 'inline'])
-  if (!matching(n.sha256, REMOTE_SHA256) || !integer(n.bytes, 1, REMOTE_NOTEBOOK_BYTES)) refuse('Invalid lease notebook')
-  if (n.inline !== undefined && (n.bytes > REMOTE_INLINE_BYTES || base64Bytes(n.inline) !== n.bytes)) refuse('Invalid inline notebook')
+  const notebook = known(v.notebook, 'lease notebook', ['sha256', 'bytes', 'inline'])
+  if (!matching(notebook.sha256, REMOTE_SHA256) || !integer(notebook.bytes, 1, REMOTE_NOTEBOOK_BYTES)) refuse('Invalid lease notebook')
+  if (notebook.inline !== undefined && (notebook.bytes > REMOTE_INLINE_BYTES || base64Bytes(notebook.inline) !== notebook.bytes)) refuse('Invalid inline notebook')
+  const lease: Record<string, unknown> = { ...v, revision, limits, notebook }
   if (v.bundle !== undefined) {
-    const b = fields(v.bundle, 'lease package set', ['id', 'packagesMb'])
-    if (!matching(b.id, REMOTE_BUNDLE_ID) || !packagesMb(b.packagesMb)) refuse('Invalid lease package set')
+    const bundle = known(v.bundle, 'lease package set', ['id', 'packagesMb'])
+    if (!matching(bundle.id, REMOTE_BUNDLE_ID) || !packagesMb(bundle.packagesMb)) refuse('Invalid lease package set')
+    lease.bundle = bundle
   }
-  return v as unknown as RemoteLease
+  return lease as unknown as RemoteLease
 }
 
 function imageOf(value: unknown, what: string, keys: readonly string[]): Record<string, unknown> {
-  const v = fields(value, what, keys)
+  const v = known(value, what, keys)
   if (!matching(v.id, REMOTE_REVISION_ID) || typeof v.ref !== 'string' || v.ref.length > REF_CHARS || !REMOTE_IMAGE_REF.test(v.ref) || !matching(v.layers, REMOTE_SHA256)) refuse(`Invalid ${what}`)
   return v
 }
 
 /** The broker's own bounds for a notebook's limits (competition-runtime.ts · parseCompetitionJobIntent), and the caps limitsFor sets. */
 function limitsOf(value: unknown): RemoteStepLimits {
-  const v = fields(value, 'lease limits', ['wallSeconds', 'memoryMb', 'cpus', 'pids', 'fsizeBytes', 'tmpfsMb', 'targetBytes', 'outputBytes', 'outputKillBytes'])
+  const v = known(value, 'lease limits', ['wallSeconds', 'memoryMb', 'cpus', 'pids', 'fsizeBytes', 'tmpfsMb', 'targetBytes', 'outputBytes', 'outputKillBytes'])
   if (!integer(v.wallSeconds, 1, REMOTE_WALL_SECONDS_MAX) || !integer(v.memoryMb, 128, 65536) || !integer(v.cpus, 1, 32) || !integer(v.pids, 16, 2048)
     || !integer(v.fsizeBytes, 1, 1024 ** 3) || !integer(v.tmpfsMb, 16, 4096) || !integer(v.targetBytes, 1, REMOTE_FILE_BYTES)
     || !integer(v.outputBytes, 0, 1024 ** 3) || !integer(v.outputKillBytes, 0, 1024 ** 3)) refuse('Invalid lease limits')
   return v as unknown as RemoteStepLimits
 }
 
+/**
+ * What home wants a machine to hold, the contract's keys only.
+ *
+ * ONE DATA ENTRY PER COMPETITION AND KIND, not per manifest. A manifest names
+ * a set of files by their names and hashes and by nothing else
+ * (remoteManifest), so two competitions with the very same files — one task
+ * set for two groups, a hidden-test copy of an open one — share it, and so
+ * may one competition's open files and its hidden test. Each entry is a
+ * competition's, though: the machine keeps data per competition
+ * (inputs/<manifest12>/ under it) and forgets it per competition, while what
+ * it reports ready is per manifest. So only the same (competition, kind,
+ * manifest) twice is a reply home could not mean; refusing the second
+ * competition of a shared manifest refused every reply to every machine for
+ * as long as both were open — no revoke, no `applied`, no drain, and every
+ * offer withdrawn and taken again a minute later.
+ */
 function wantOf(value: unknown): RemoteWant {
-  const v = fields(value, 'want', ['revisions', 'data', 'bundles'])
-  const revisions = new Set<string>()
+  const v = known(value, 'want', ['revisions', 'data', 'bundles'])
+  const ids = new Set<string>()
+  const revisions: RemoteWantRevision[] = []
   for (const item of items(v.revisions, 'wanted revisions', REMOTE_REVISIONS_MAX)) {
     const r = imageOf(item, 'wanted revision', ['id', 'ref', 'layers', 'gpu'])
-    if (revisions.has(r.id as string) || !flag(r.gpu)) refuse('Invalid wanted revision')
-    revisions.add(r.id as string)
+    if (ids.has(r.id as string) || !flag(r.gpu)) refuse('Invalid wanted revision')
+    ids.add(r.id as string)
+    revisions.push(r as unknown as RemoteWantRevision)
   }
-  const manifests = new Set<string>()
+  const entries = new Set<string>()
+  const data: RemoteWantData[] = []
   for (const item of items(v.data, 'wanted data', REMOTE_MANIFESTS_MAX)) {
-    const d = fields(item, 'wanted data', ['competitionId', 'manifest', 'sealed', 'files'])
-    if (!matching(d.competitionId, COMPETITION_ROW_ID) || !matching(d.manifest, REMOTE_SHA256) || manifests.has(d.manifest) || !flag(d.sealed)) refuse('Invalid wanted data')
-    manifests.add(d.manifest)
-    filesOf(d.files)
+    const d = known(item, 'wanted data', ['competitionId', 'manifest', 'sealed', 'files'])
+    const key = `${String(d.competitionId)}:${String(d.sealed)}:${String(d.manifest)}`
+    if (!matching(d.competitionId, COMPETITION_ROW_ID) || !matching(d.manifest, REMOTE_SHA256) || !flag(d.sealed) || entries.has(key)) refuse('Invalid wanted data')
+    entries.add(key)
+    data.push({ ...d, files: filesOf(d.files) } as unknown as RemoteWantData)
   }
-  const bundles = new Set<string>()
+  const sets = new Set<string>()
+  const bundles: RemoteWantBundle[] = []
   let described = 0
   for (const item of items(v.bundles, 'wanted package sets', REMOTE_BUNDLES_MAX)) {
-    const b = fields(item, 'wanted package set', ['id', 'packagesMb', 'lock', 'wheels'])
-    if (!matching(b.id, REMOTE_BUNDLE_ID) || bundles.has(b.id) || !packagesMb(b.packagesMb)) refuse('Invalid wanted package set')
-    bundles.add(b.id)
-    if (b.lock === undefined && b.wheels === undefined) continue
+    const b = known(item, 'wanted package set', ['id', 'packagesMb', 'lock', 'wheels'])
+    if (!matching(b.id, REMOTE_BUNDLE_ID) || sets.has(b.id) || !packagesMb(b.packagesMb)) refuse('Invalid wanted package set')
+    sets.add(b.id)
+    if (b.lock === undefined && b.wheels === undefined) {
+      bundles.push(b as unknown as RemoteWantBundle)
+      continue
+    }
     // A lock and its wheels come together, or neither does: half a set installs nothing.
     if (!within(b.lock, REMOTE_LOCK_CHARS) || !/^[\x20-\x7E\n]*$/.test(b.lock) || ++described > REMOTE_BUNDLE_DETAILS_MAX) refuse('Invalid wanted package set')
-    wheelsOf(b.wheels)
+    bundles.push({ ...b, wheels: wheelsOf(b.wheels) } as unknown as RemoteWantBundle)
   }
-  return v as unknown as RemoteWant
+  return { revisions, data, bundles }
 }
 
-function filesOf(value: unknown): void {
+function filesOf(value: unknown): RemoteDataFile[] {
   const names = new Set<string>()
+  const files: RemoteDataFile[] = []
   let bytes = 0
   for (const item of items(value, 'data files', REMOTE_DATA_FILES_MAX)) {
-    const f = fields(item, 'data file', ['name', 'sha256', 'bytes'])
+    const f = known(item, 'data file', ['name', 'sha256', 'bytes'])
     if (!dataName(f.name) || names.has(f.name) || !matching(f.sha256, REMOTE_SHA256) || !integer(f.bytes, 0, REMOTE_DATA_BYTES)) refuse('Invalid data file')
     names.add(f.name)
     bytes += f.bytes
+    files.push(f as unknown as RemoteDataFile)
   }
   if (bytes > REMOTE_DATA_BYTES) refuse('Data over its cap')
+  return files
 }
 
-function wheelsOf(value: unknown): void {
+function wheelsOf(value: unknown): RemoteWheel[] {
   const names = new Set<string>()
+  const wheels: RemoteWheel[] = []
   let bytes = 0
   for (const item of items(value, 'wheels', REMOTE_WHEELS_MAX)) {
-    const w = fields(item, 'wheel', ['fileName', 'sha256', 'bytes', 'url'])
+    const w = known(item, 'wheel', ['fileName', 'sha256', 'bytes', 'url'])
     if (!matching(w.fileName, REMOTE_WHEEL_NAME) || names.has(w.fileName) || !matching(w.sha256, REMOTE_SHA256) || !integer(w.bytes, 0, REMOTE_WHEELS_BYTES)
       || (w.url !== undefined && remoteWheelUrl(w.url) !== w.url)) refuse('Invalid wheel')
     names.add(w.fileName)
     bytes += w.bytes
+    wheels.push(w as unknown as RemoteWheel)
   }
   if (bytes > REMOTE_WHEELS_BYTES) refuse('Wheels over their cap')
+  return wheels
 }
 
 /**
@@ -1682,9 +1779,10 @@ const packagesMb = (v: unknown): boolean => integer(v, 16, 4096)
 const dataName = (v: unknown): v is string => matching(v, REMOTE_DATA_NAME) && !v.includes('..')
 
 /**
- * A plain object with no key outside `keys`; which of them must be there is
- * the caller's to check. The refusal names the key (quoted and cut short):
- * a key one side does not know is what a version skew looks like in a log.
+ * A plain object with no key outside `keys`, for home's parsers of a
+ * machine's requests; which of them must be there is the caller's to check.
+ * The refusal names the key (quoted and cut short): a key one side does not
+ * know is what a version skew looks like in a log.
  */
 function fields(value: unknown, what: string, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) refuse(`Invalid ${what}`)
@@ -1692,6 +1790,24 @@ function fields(value: unknown, what: string, keys: readonly string[]): Record<s
   const stray = Object.keys(v).find((key) => !keys.includes(key))
   if (stray !== undefined) refuse(`Unexpected key ${JSON.stringify(stray.slice(0, 40))} in ${what}`)
   return v
+}
+
+/**
+ * A plain object of home's reply as the agent keeps it: a copy holding the
+ * keys of `keys` that are there and nothing else, for the agent's parsers of
+ * home's replies (HOME IS STRICT, THE AGENT DROPS WHAT IT DOES NOT KNOW,
+ * above). Which of them must be there is the caller's to check, as with
+ * `fields`. A copy, never the object itself: the caller puts the cleaned
+ * parts of it back in, so what a parser returns holds no unknown key at any
+ * depth — not in a lease written to the machine's disk, not in a want. A
+ * key named `__proto__` is no key of the contract's, and goes with the rest.
+ */
+function known(value: unknown, what: string, keys: readonly string[]): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) refuse(`Invalid ${what}`)
+  const v = value as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const key of keys) if (Object.hasOwn(v, key)) out[key] = v[key]
+  return out
 }
 
 /**

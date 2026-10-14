@@ -52,9 +52,11 @@ test('a reply without the marker is a hiccup of the path, whatever its status; w
       // A refusal whose body does not say is named by its status.
       { reply: { status: 401, text: 'nope' }, kind: 'refused:unauthorized' },
       // A reply the contract's parser refuses: a proxy that mangled it, never a reason to drop anything.
-      { reply: { status: 200, json: { ...syncReply(), surprise: 1 } }, kind: 'transient' },
+      { reply: { status: 200, json: { ...syncReply(), seq: -1 } }, kind: 'transient' },
       { reply: { status: 200, text: '{"seq":' }, kind: 'transient' },
       { reply: { status: 200, json: syncReply({ seq: 4 }) }, kind: 'ok' },
+      // A key the contract does not know is a newer home's, and is dropped: refused, it would cost a whole update's replies.
+      { reply: { status: 200, json: { ...syncReply(), surprise: 1 } }, kind: 'ok' },
     ]
     for (const { reply, kind } of cases) {
       home.onSync = () => reply
@@ -62,7 +64,13 @@ test('a reply without the marker is a hiccup of the path, whatever its status; w
       const said = answer.kind === 'refused' ? `refused:${answer.error}` : answer.kind
       assert.equal(said, kind, JSON.stringify(reply).slice(0, 120))
       if (reply.headers?.['Retry-After']) assert.equal(answer.kind === 'transient' && answer.retryAfterMs, 7000)
+      if (answer.kind === 'ok') assert.ok(!('surprise' in answer.value), 'a key home sent and the contract does not know reached the agent')
     }
+    // A home of another version says which it speaks: the machine needs that release, and the detail says so.
+    home.onSync = () => ({ status: 426, json: { error: 'protocol' }, headers: { 'X-Colloq-Runner-Protocol': '2' } })
+    const other = await client.sync(syncBody())
+    assert.equal(other.kind, 'refused')
+    assert.match(other.kind === 'refused' ? other.detail : '', /home speaks protocol 2, this machine 1/)
     // A connection that fails is a hiccup as well.
     const nowhere = new RemoteClient({ home: 'http://127.0.0.1:1', build: 'dev', credential: () => credential })
     assert.equal((await nowhere.sync(syncBody())).kind, 'transient')
@@ -99,7 +107,7 @@ test('the secret goes in the Authorization header and nowhere else; the join, th
   }
 })
 
-test('the relay tells home offline from home silent, and a missing relay from both', async () => {
+test('the relay tells home offline from home silent, a name it serves no home by from both, and a missing relay from all three', async () => {
   const home = await fakeHome()
   const client = new RemoteClient({ home: home.url, build: 'dev', credential: () => credential })
   try {
@@ -107,6 +115,9 @@ test('the relay tells home offline from home silent, and a missing relay from bo
     assert.equal(await client.relayState(), 'home_offline')
     home.relay = { known: true, tunnel: true }
     assert.equal(await client.relayState(), 'home_silent')
+    // known: false is no home at all behind this name (a wrong address in COLLOQ_RUNNER_JOIN), which no waiting brings online.
+    home.relay = { known: false, tunnel: false }
+    assert.equal(await client.relayState(), 'home_unknown')
     home.relay = null
     assert.equal(await client.relayState(), 'unreachable')
     assert.equal(await new RemoteClient({ home: 'http://127.0.0.1:1', build: 'dev', credential: () => null }).relayState(), 'unreachable')
@@ -181,4 +192,21 @@ test('the backoff stays between one second and thirty, grows with each failure i
   assert.equal(retryAfter(null), null)
   // The marker header is the contract's name.
   assert.equal(REMOTE_MARKER_HEADER, 'X-Colloq-Runner-Api')
+})
+
+test('the fake home reads every request as home does: one the contract\'s parsers refuse is answered as home answers it, and fails the test that sent it', async () => {
+  const home = await fakeHome()
+  const client = new RemoteClient({ home: home.url, build: 'dev', credential: () => credential })
+  // A machine that holds an attempt asking to be held past REMOTE_HOLD_BUSY_MS: at a real home every such sync is a 400, and the machine's leases are lost.
+  const busy: RemoteSyncRequest = { ...syncBody(), holdMs: 20_000, attempts: [{ id: 'a'.repeat(32), phase: 'accepted' }] }
+  const answer = await client.sync(busy)
+  assert.equal(answer.kind === 'refused' && answer.error, 'invalid')
+  assert.equal(home.violations.length, 1)
+  assert.match(home.violations[0]!, /^POST \/api\/runners\/v1\/sync: Sync held too long for a busy machine$/)
+  // An upload whose headers home refuses before a byte of its body: the same.
+  const gz = path.join(TEST_ROOT, 'bad.csv.gz')
+  fs.writeFileSync(gz, zlib.gzipSync('x'))
+  const upload = await client.upload('d'.repeat(32), 'submission.csv', gz, { sha256: 'not-a-hash', bytes: 1 })
+  assert.equal(upload.kind === 'refused' && upload.error, 'invalid')
+  await assert.rejects(home.close(), /requests home's parsers refuse/)
 })

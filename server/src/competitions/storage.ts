@@ -191,17 +191,74 @@ export async function copyCompetitionFile(from: string, to: string): Promise<voi
  * answer it had already promoted. Written BEFORE the first move: a record
  * means its moves were decided, and only those that did not happen yet are
  * made again. Gone with the attempt (dropAttempt).
+ *
+ * Durable before the first move (writeRecord), and read strictly
+ * (readRecord): a crash of the host, not just of the process, can keep the
+ * renames that follow a record — metadata, committed within seconds — and
+ * lose the record's bytes, which ext4 writes out up to half a minute later.
+ * Read as "no record", such an empty file made the second publish remove the
+ * executed notebook the first had moved into out/, and the second settle
+ * reject an answer it had promoted as missing. A record that is there but
+ * cannot be read now stops the re-drive with an error instead: the lease
+ * stays `applying`, for the owner to see, and nothing is removed.
  */
 function attemptRecord(id: string, submissionId: string, attemptId: string, name: 'published' | 'promoted'): string {
   return path.join(ensureDir(path.join(submissionDir(id, submissionId), 'attempts', checkId(attemptId))), `${name}.json`)
 }
 
-function readRecord(file: string): unknown {
+/**
+ * A record's value: `null` only when there is no record. Any other failure —
+ * an empty file, one cut short, not a JSON object, a read the disk refused —
+ * throws: it is a record whose moves may have been made, and guessing "none"
+ * is what removed a published file.
+ */
+function readRecord(file: string): Record<string, unknown> | null {
+  let body: Buffer
   try {
-    return JSON.parse((competitionsFs.readFileSync(file) as Buffer).toString('utf8'))
+    body = competitionsFs.readFileSync(file) as Buffer
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+  let value: unknown
+  try {
+    value = JSON.parse(body.toString('utf8'))
   } catch {
-    // None, or cut short by a crash while it was written: no move had been made yet.
-    return null
+    value = null
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Competition storage: the attempt record ${path.basename(file)} is damaged (${body.length} bytes)`)
+  }
+  return value as Record<string, unknown>
+}
+
+/**
+ * Write a record whole and durably before anything it records is moved: a
+ * temporary file beside it (a dot name, which no record and no file of the
+ * attempt has), its bytes flushed, renamed over the name, and the folder
+ * flushed so the rename itself outlives a power cut. A folder that cannot be
+ * flushed (not every filesystem lets one be) is no reason to fail: the bytes
+ * are on disk either way.
+ */
+function writeRecord(file: string, value: object): void {
+  const directory = path.dirname(file)
+  const temporary = path.join(directory, `.${path.basename(file)}-next`)
+  const fd = competitionsFs.openSync(temporary, 'w', 0o600)
+  try {
+    fs.writeFileSync(fd, JSON.stringify(value))
+    fs.fsyncSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
+  competitionsFs.renameSync(temporary, file)
+  let folder: number | null = null
+  try {
+    folder = competitionsFs.openSync(directory, 'r')
+    fs.fsyncSync(folder)
+  } catch {
+    /* not every filesystem flushes a folder; the rename has happened either way */
+  } finally {
+    if (folder !== null) fs.closeSync(folder)
   }
 }
 
@@ -230,7 +287,7 @@ export function promoteAttempt(id: string, submissionId: string, attemptId: stri
   }
   // There must be something to promote before the record says it was.
   competitionsFs.statSync(source)
-  competitionsFs.writeFileSync(record, JSON.stringify({ promoted: true }), { mode: 0o600 })
+  writeRecord(record, { promoted: true })
   competitionsFs.renameSync(source, target)
   return target
 }
@@ -261,12 +318,12 @@ export function publishAttemptArtifacts(id: string, submissionId: string, attemp
   const out = ensureDir(resultDir(id, submissionId))
   const from = attemptPath(id, submissionId, attemptId, 'result')
   const record = attemptRecord(id, submissionId, attemptId, 'published')
-  const recorded = readRecord(record)
-  const first = recorded !== null && typeof recorded === 'object' ? recorded as Partial<PublishedArtifacts> : null
+  // A record that cannot be read throws here, before anything in out/ is touched (readRecord).
+  const first = readRecord(record) as Partial<PublishedArtifacts> | null
   const plan: PublishedArtifacts = first
     ? { executed: first.executed === true, runJson: first.runJson === true }
     : { executed: regularFileWithin(path.join(from, EXECUTED_FILE), EXECUTED_BYTES), runJson: regularFileWithin(path.join(from, 'run.json'), EXECUTED_BYTES) }
-  if (!first) competitionsFs.writeFileSync(record, JSON.stringify(plan), { mode: 0o600 })
+  if (!first) writeRecord(record, plan)
   for (const [name, kept] of [[EXECUTED_FILE, plan.executed], ['run.json', plan.runJson]] as const) {
     const source = path.join(from, name)
     if (!kept) competitionsFs.rmSync(path.join(out, name), { force: true })
@@ -575,6 +632,8 @@ export function sealedFileSha256(id: string, name: string): Promise<StoredFile |
  * by and the stream it reads are of the same inode, even if the teacher
  * replaces the file between the two (writeReplacing renames a new one over
  * the name). Opened through the anchored file system, like every read here.
+ * Keyed without ctime (DigestIdentity `renamed`): the data changes only by
+ * that rename, and the links and modes every run gives it move ctime alone.
  */
 async function heldSha256(file: string): Promise<StoredFile | null> {
   let fd: number
@@ -587,7 +646,7 @@ async function heldSha256(file: string): Promise<StoredFile | null> {
   try {
     const stat = fs.fstatSync(fd)
     if (!stat.isFile()) return null
-    const sha256 = await cachedSha256(file, stat, () => fs.createReadStream(file, { fd, autoClose: false, start: 0 }))
+    const sha256 = await cachedSha256(file, stat, () => fs.createReadStream(file, { fd, autoClose: false, start: 0 }), 'renamed')
     return { bytes: stat.size, sha256 }
   } finally {
     fs.closeSync(fd)

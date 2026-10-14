@@ -16,7 +16,13 @@
  * subtracting their reservations again made every run cost the machine twice
  * (capacity.ts says how that was found). CPUs: nproc less one for the agent
  * and the daemon, less each attempt's. Disk: what the tree's filesystem has
- * free, less REMOTE_DISK_RESERVE_MB and REMOTE_ATTEMPT_DISK_MB per attempt.
+ * free, less REMOTE_DISK_RESERVE_MB and REMOTE_ATTEMPT_DISK_MB per attempt
+ * (a run is read-only but for its folders in the tree). Places: those, and
+ * never more than home's own cap allows (approvedSlots, the owner's «Места»).
+ *
+ * Docker's own store is another matter: pulls land there, and on a host where
+ * it is a partition of its own, a disk the tree's statfs never sees fills
+ * (measureDockerDisk, for the pulls' gate and the eviction of revisions).
  *
  * WHAT IS SUBTRACTED IS EVERY ATTEMPT THAT WILL HOLD SOMETHING, accepted ones
  * included. Home recomputes the machine's room as the free it offers plus what
@@ -31,6 +37,7 @@
  */
 import fs from 'node:fs'
 import os from 'node:os'
+import path from 'node:path'
 import {
   REMOTE_ATTEMPTS_MAX,
   REMOTE_ATTEMPT_DISK_MB,
@@ -114,7 +121,12 @@ export interface Holding {
  * What the machine can still take (see the header). `heldMb` is what the
  * Docker runner still holds for containers it failed to remove
  * (DockerCompetitionRunner.capacity · heldMb); `attempts` counts every held
- * attempt, each with its share of disk; `gpuShares` comes from cardReport.
+ * attempt, each with its share of disk and a place; `gpuShares` comes from
+ * cardReport; `approvedSlots` is the places home allows this machine at once
+ * (its sync reply's, null — no cap of home's), of which the attempts take
+ * theirs. Home applies its cap too (lease.ts · runnerRoom), so this only keeps
+ * the machine from offering what it may not have: what home reads, the
+ * panel's «места» and the forecast among it, is what the machine will take.
  */
 export function freeCapacity(input: {
   picture: MachinePicture
@@ -122,6 +134,7 @@ export function freeCapacity(input: {
   heldMb: number
   attempts: number
   gpuShares: number
+  approvedSlots?: number | null
 }): RemoteFree {
   const { picture } = input
   const reservedMb = input.holding.reduce((sum, hold) => sum + hold.memoryMb + REMOTE_CONTAINER_CUSHION_MB, 0) + Math.max(0, input.heldMb)
@@ -131,9 +144,11 @@ export function freeCapacity(input: {
   const memoryMb = remoteCount(bounds.length > 0 ? Math.min(...bounds) : 0, 0, REMOTE_MEMORY_MB_MAX)
   const cpus = remoteCount(picture.cpus - 1 - input.holding.reduce((sum, hold) => sum + hold.cpus, 0), 0, REMOTE_CPUS_MAX)
   const diskMb = remoteCount(picture.diskFreeMb === null ? 0 : picture.diskFreeMb - REMOTE_DISK_RESERVE_MB - REMOTE_ATTEMPT_DISK_MB * input.attempts, 0, REMOTE_DISK_MB_MAX)
-  // How many more of the smallest run a lease may be: the places offered before home's own cap.
+  // How many more of the smallest run a lease may be, within home's cap on the places.
+  const approved = input.approvedSlots ?? null
   const slots = Math.max(0, Math.min(
     REMOTE_ATTEMPTS_MAX - input.attempts,
+    approved === null ? REMOTE_ATTEMPTS_MAX : approved - input.attempts,
     cpus,
     Math.floor(memoryMb / SMALLEST_RUN_MB),
     Math.floor(diskMb / REMOTE_ATTEMPT_DISK_MB),
@@ -265,7 +280,7 @@ export function driverMajor(driver: string | null): number | null {
 
 /* ----------------------------------------------------------------- facts */
 
-/** What `docker info` says that the facts need. */
+/** What `docker info` says that the facts need, and where the daemon keeps its images (DockerRootDir, a path on the host). */
 interface DockerInfo {
   version: string
   storage: string
@@ -273,6 +288,7 @@ interface DockerInfo {
   platform: string
   cpus: number | null
   memoryMb: number | null
+  rootDir: string | null
 }
 
 /** Docker's architecture as the kernels are published for it (`linux/amd64`): uname's words to Go's. */
@@ -300,12 +316,71 @@ export async function dockerInfo(docker: Docker): Promise<{ info: DockerInfo | n
         platform: `${(text('OSType') || 'linux').toLowerCase()}/${architecture || 'amd64'}`,
         cpus: Number.isSafeInteger(value.NCPU) ? (value.NCPU as number) : null,
         memoryMb: Number.isFinite(value.MemTotal) ? Math.floor((value.MemTotal as number) / MB) : null,
+        rootDir: path.isAbsolute(text('DockerRootDir')) ? path.normalize(text('DockerRootDir')) : null,
       },
       problem: null,
     }
   } catch {
     return { info: null, problem: 'docker info answered something that is not JSON' }
   }
+}
+
+/* ------------------------------------------------------- Docker's disk */
+
+/** A filesystem's room, in MB. */
+export interface DiskSpace {
+  freeMb: number
+  totalMb: number
+}
+
+/**
+ * The room on Docker's own store (DockerRootDir), where pulls land and what
+ * evicting a revision frees, when it is a filesystem other than the tree's:
+ * `same` — it is the tree's (whose statfs, readMachine, says it all); `null` —
+ * it could not be measured (a daemon in a VM of its own, as on a Mac; no
+ * image to measure with), which no pull is refused for.
+ *
+ * Inside the agent's container the store is not mounted, and its path is the
+ * host's: a throwaway container of the agent's own image (`image`, on the
+ * machine for certain) is given the store and the tree, read-only, and stat
+ * says which filesystem each is on and how much of the store's is free —
+ * two filesystems with one id are one. Outside a container (make runner-dev,
+ * no container of its own) both are this process's to ask, by their device.
+ */
+export async function measureDockerDisk(input: {
+  docker: Docker
+  rootDir: string | null
+  tree: string
+  image: string | null
+  /** Whether the agent runs in a container of its own (COLLOQ_RUNNER_CONTAINER). */
+  contained: boolean
+  /** The check container's labels (images.ts · CHECK_LABELS): swept like the smoke test should a life end mid-measure. */
+  labels: readonly string[]
+}): Promise<DiskSpace | 'same' | null> {
+  const { rootDir, tree } = input
+  if (!rootDir) return null
+  if (!input.contained) {
+    try {
+      if (fs.statSync(rootDir).dev === fs.statSync(tree).dev) return 'same'
+      const stat = fs.statfsSync(rootDir)
+      return { freeMb: Math.floor((Number(stat.bavail) * Number(stat.bsize)) / MB), totalMb: Math.floor((Number(stat.blocks) * Number(stat.bsize)) / MB) }
+    } catch {
+      return null
+    }
+  }
+  if (!input.image) return null
+  const asked = await input.docker([
+    'run', '--rm', '--pull=never', '--network', 'none', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--read-only', '--user=1000:1000',
+    ...input.labels, '-v', `${rootDir}:/docker-root:ro`, '-v', `${tree}:/tree:ro`,
+    '--entrypoint', 'stat', input.image, '-f', '-c', '%i %S %a %b', '/docker-root', '/tree',
+  ], { timeoutMs: 30_000 })
+  if (asked.code !== 0) return null
+  const rows = asked.out.split('\n').map((line) => /^([0-9a-f]+) (\d+) (\d+) (\d+)$/.exec(line.trim())).filter((row): row is RegExpExecArray => row !== null)
+  if (rows.length !== 2) return null
+  const [store, own] = rows as [RegExpExecArray, RegExpExecArray]
+  if (store[1] === own[1]) return 'same'
+  const block = Number(store[2])
+  return { freeMb: Math.floor((Number(store[3]) * block) / MB), totalMb: Math.floor((Number(store[4]) * block) / MB) }
 }
 
 /**

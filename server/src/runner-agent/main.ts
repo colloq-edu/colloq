@@ -24,7 +24,12 @@
  * `https://<home>#<code>`, the code after the `#` so that it never travels in
  * a request line (the entry point moves `join URL CODE` there too).
  * COLLOQ_RUNNER_CONTAINER and COLLOQ_RUNNER_IMAGE name the agent's own
- * container and image (sync.ts says what for). HTTPS_PROXY, NO_PROXY and
+ * container and image (sync.ts says what for); always set inside a container
+ * (colloq-host passes them, the entry point derives them for a plain docker
+ * run), and unset under make runner-dev, which means no container of its own:
+ * never a guess at one, since a container that happens to be called
+ * colloq-runner on a developer's daemon is not this agent's to update or
+ * inspect (§13c note 20). HTTPS_PROXY, NO_PROXY and
  * NODE_EXTRA_CA_CERTS are honoured as the server honours them
  * (outbound.ts · installOutboundProxy).
  *
@@ -158,7 +163,7 @@ async function runAgent(layout: StateLayout, joinText: string | undefined, env: 
     join: target,
     build,
     version,
-    container: env.COLLOQ_RUNNER_CONTAINER?.trim() || 'colloq-runner',
+    container: env.COLLOQ_RUNNER_CONTAINER?.trim() || null,
     image: env.COLLOQ_RUNNER_IMAGE?.trim() || null,
   })
   let server: Awaited<ReturnType<typeof serveControl>>
@@ -211,9 +216,10 @@ const WORKING = new Set(['active', 'draining', 'leaving'])
 
 /**
  * The status the running agent keeps (status.json), never home's: the health
- * check runs it every half minute. Healthy is joined, working, written by a
- * live agent lately, and heard by home within REMOTE_SILENCE_MS — the
- * silence after which home starts to count the machine's leases lost.
+ * check runs it every half minute, so it reads two files of the tree and asks
+ * nobody (no call to home, no docker, no socket). Healthy is joined, working,
+ * written by a live agent lately, and heard by home within REMOTE_SILENCE_MS —
+ * the silence after which home starts to count the machine's leases lost.
  */
 export function status(layout: StateLayout, io: Io, now = Date.now()): number {
   const kept = readStatus(layout)
@@ -230,6 +236,8 @@ export function status(layout: StateLayout, io: Io, now = Date.now()): number {
     ...(kept?.homeVersion ? { homeVersion: kept.homeVersion } : {}),
     compatible: kept?.compatible ?? null,
     trusted: kept?.trusted ?? null,
+    // The owner's «Места» as home last said it: the running agent's word, or else the one written down with the identity.
+    approvedSlots: kept && 'approvedSlots' in kept ? kept.approvedSlots : identity?.approvedSlots ?? null,
     path: live ? kept!.path : null,
     problem: kept?.problem ?? null,
     syncedAt: kept?.syncedAt ?? null,
@@ -281,13 +289,18 @@ async function drain(layout: StateLayout, io: Io): Promise<number> {
 
 async function leave(layout: StateLayout, env: NodeJS.ProcessEnv, io: Io, seams: Seams): Promise<number> {
   let left = false
+  let revoked = false
   const said = progress(io)
   const how = await askAgent(layout.socket, 'leave', (message) => {
-    if ('left' in message) left = true
+    if ('left' in message) {
+      left = true
+      revoked = message.revoked === true
+    }
     said(message)
   })
   if (how !== 'no-agent') {
-    if (left) io.err('colloq-runner: left: the home no longer counts on this machine.\n')
+    // Revoked by its owner while it drained: gone from its home all the same, which is what a leave is for.
+    if (left) io.err(`colloq-runner: left: the home no longer counts on this machine${revoked ? ' (its owner revoked it while it finished its runs)' : ''}.\n`)
     return left ? 0 : 1
   }
   // No agent runs here (the machine's container is stopped): this process revokes the machine itself.
@@ -309,7 +322,7 @@ async function leave(layout: StateLayout, env: NodeJS.ProcessEnv, io: Io, seams:
     join: null,
     build: runnerBuild(),
     version: runnerVersion({ env }),
-    container: env.COLLOQ_RUNNER_CONTAINER?.trim() || 'colloq-runner',
+    container: env.COLLOQ_RUNNER_CONTAINER?.trim() || null,
     image: env.COLLOQ_RUNNER_IMAGE?.trim() || null,
   })
   void agent.requestLeave()

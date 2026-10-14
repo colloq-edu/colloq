@@ -12,11 +12,12 @@
    * admin/runners.ts; the component only lays it out.
    *
    * The two settings above the list (notebooks on this server, scores at
-   * once) are the Resources form's own fields: its Save sends them with the
-   * queue's half of the form. The form draws them into the `settings`
-   * snippet, and this block reports what the server holds for them on every
-   * read (`onsettings`), so the form measures its unsaved edits against the
-   * server and not against a value from when the page opened.
+   * once) are the Resources form's own fields: the form reads them from the
+   * settings door with where each came from, draws them into the `settings`
+   * snippet, and its Save sends them with the queue's half of the form. This
+   * block only tells the form how many machines answer (`onfleet`): turning
+   * this server's notebooks off with none online leaves nobody to run them,
+   * and the form says so before it saves that.
    *
    * Owner-only, like every door behind it: a machine sees rivals' notebooks,
    * and who may connect one is the instance's business.
@@ -42,6 +43,7 @@
     machinePagePath,
     machinePlaces,
     placesWords,
+    readOrder,
     readinessLine,
     resourcesLine,
     runnersApi,
@@ -57,13 +59,13 @@
     navigate: (path: string) => void
     /** The form's two fields, drawn between the numbers and the list. */
     settings?: Snippet
-    /** What the server holds for those two fields, after every read. */
-    onsettings?: (saved: { homeNotebooks: boolean; scoreSlots: number }) => void
+    /** How many machines are online (RemoteMachinesResponse.summary.online), after every read the block shows. */
+    onfleet?: (fleet: { online: number }) => void
     /** Bumped by the form after its Save: read the list again now. */
     reload?: number
   }
 
-  let { navigate, settings, onsettings, reload = 0 }: Props = $props()
+  let { navigate, settings, onfleet, reload = 0 }: Props = $props()
 
   /** One member per kind, so a branch on `kind` narrows to its own fields. */
   type Dialog =
@@ -118,17 +120,25 @@
 
   let loadedAt = 0
   let disposed = false
+  /**
+   * Overlapping reads land in any order; an answer older than one already
+   * shown is dropped, and a read after a write retires the reads that left
+   * before it (admin/runners.ts · readOrder).
+   */
+  const reads = readOrder()
 
-  async function load(): Promise<void> {
+  async function load(afterWrite = false): Promise<void> {
+    const ticket = reads.ask(afterWrite)
     loadedAt = Date.now()
     try {
-      const fresh = await runnersApi.list()
-      if (disposed) return
-      data = fresh
+      const answer = await runnersApi.list()
+      if (disposed || !reads.accept(ticket)) return
+      data = answer
       now = Date.now()
       loadErrorText = null
-      onsettings?.({ homeNotebooks: fresh.homeNotebooks, scoreSlots: fresh.scoreSlots })
+      onfleet?.({ online: answer.summary.online })
     } catch (cause: unknown) {
+      if (disposed) return
       reauthenticate(cause)
       // A list already on screen stays: one missed read is not worth an
       // error in its place, and the next tick reads again.
@@ -138,7 +148,7 @@
 
   $effect(() => {
     // After the form's Save: what it sent is now the server's.
-    if (reload > 0) void load()
+    if (reload > 0) void load(true)
   })
 
   onMount(() => {
@@ -215,7 +225,7 @@
     actionErrorText = null
     try {
       await what()
-      await load()
+      await load(true)
     } catch (cause: unknown) {
       reauthenticate(cause)
       actionErrorText = () => messageFor(cause)
@@ -259,7 +269,7 @@
     try {
       await patch()
       dialog = null
-      await load()
+      await load(true)
     } catch (cause: unknown) {
       reauthenticate(cause)
       dialogErrorText = () => messageFor(cause)
@@ -326,16 +336,6 @@
 
     {#if settings}
       {@render settings()}
-    {/if}
-
-    {#if !data.homeNotebooks && data.summary.online === 0}
-      <!-- This server runs no notebooks and no machine answers: every
-           submission waits, and the console says so row by row. Said here,
-           where the switch is. -->
-      <p class="mt-3 flex items-start gap-2 text-2xs font-semibold text-warning" role="status">
-        <Icon name="alert" size={14} class="mt-0.5 shrink-0" />
-        <span>{tr('admin.runners.nobodyRuns')}</span>
-      </p>
     {/if}
 
     {#if actionError}
@@ -438,7 +438,7 @@
                   <div
                     role="menu"
                     tabindex="-1"
-                    class="row-menu admin-menu absolute right-0 top-full z-20 mt-1 w-[260px]"
+                    class="rn-menu row-menu admin-menu absolute right-0 top-full z-20 mt-1 w-[260px]"
                     onclick={(event) => event.stopPropagation()}
                   >
                     <a
@@ -525,7 +525,7 @@
 </div>
 
 {#if connecting && data}
-  <ConnectMachine machines={data.machines} onclose={() => (connecting = false)} />
+  <ConnectMachine machines={data.machines} codes={data.codes} onclose={() => (connecting = false)} />
 {/if}
 
 {#if dialog}
@@ -692,6 +692,21 @@
   /* On a card the menu is a framed 44 px square (M7). */
   .rn-more {
     border: 1px solid rgb(var(--line));
+  }
+
+  /*
+   * And what it opens is a finger's size too: the panel's menu item is about
+   * 36 px tall, which a thumb on a phone hits one row off, and "Disconnect"
+   * sits right under "Drain". A viewport query, as the panel's other touch
+   * targets are (max-[640px]:h-11): a finger is the phone's, whatever width
+   * the list has.
+   */
+  @media (max-width: 640px) {
+    .rn-menu .admin-menu-item {
+      display: flex;
+      align-items: center;
+      min-height: 44px;
+    }
   }
 
   .rn-row-only {

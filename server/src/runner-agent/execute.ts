@@ -44,7 +44,7 @@ import { attemptDir } from '../competitions/storage.js'
 import { HARNESS_REVISION } from '../competitions/harness.js'
 import { gpuSliceFor } from '../competitions/gpu-math.js'
 import type { Capacity, CompetitionRunner, RunOutcome, RunProgress, RunRequest } from '../competitions/runner-port.js'
-import { CacheError, type Cache } from './cache.js'
+import { CacheError, diskRefused, type Cache } from './cache.js'
 import type { Images } from './images.js'
 import { diskFits, memoryFits, type Holding, type MachinePicture, type ProbedCard } from './machine.js'
 
@@ -97,6 +97,16 @@ export type Prepared = { ok: true; run: PreparedRun } | { ok: false; decline: De
 const decline = (reason: RemoteDeclineReason, detail: string): Prepared => ({ ok: false, decline: { reason, detail: remoteText(detail, REMOTE_REASON_CHARS, 'start') } })
 
 /**
+ * The reason for what failed: `disk` when it was the disk that had no room
+ * (a fetch below its floor, a write refused), whatever the lease was getting
+ * at the time; `otherwise` for anything else. A wheel that would not fit is
+ * the machine's want of room, not the package set's fault, and home reads the
+ * two differently (the panel, the owner's eviction).
+ */
+const roomOr = (error: unknown, otherwise: RemoteDeclineReason): RemoteDeclineReason =>
+  (error instanceof CacheError && error.kind === 'disk') || diskRefused(error) ? 'disk' : otherwise
+
+/**
  * Everything a lease needs, from this machine's own cache, or the reason it
  * cannot run here — in the order that fails cheapest first, and with the card
  * last, after the slow parts (a card held while wheels download is a share a
@@ -127,20 +137,20 @@ export async function prepareRun(input: PrepareInput): Promise<Prepared> {
       if (!cache.complete(lease.data)) return decline('data', `the data ${lease.data.slice(0, 12)} is not complete here`)
       if (lease.sealed) {
         if (!input.trusted) return decline('data', 'this machine is not trusted with the hidden test')
-        if (!lease.sealedData || !cache.complete(lease.sealedData)) return decline('data', `the hidden test ${(lease.sealedData ?? '').slice(0, 12)} is not complete here`)
+        if (!lease.sealedData || !cache.complete(lease.sealedData, true)) return decline('data', `the hidden test ${(lease.sealedData ?? '').slice(0, 12)} is not complete here`)
         dataDir = cache.composeSealed(lease)
       } else {
-        dataDir = cache.dataDir(lease.data)
+        dataDir = cache.dataDir(lease.data, lease.competitionId)
       }
     } catch (error) {
-      return decline('data', `the data could not be laid out: ${message(error)}`)
+      return decline(roomOr(error, 'data'), `the data could not be laid out: ${message(error)}`)
     }
 
     let inputDir: string
     try {
       inputDir = await cache.placeNotebook(lease, signal)
     } catch (error) {
-      return decline('data', `the notebook could not be had: ${message(error)}`)
+      return decline(roomOr(error, 'data'), `the notebook could not be had: ${message(error)}`)
     }
 
     let dependenciesDir: string | undefined
@@ -153,7 +163,7 @@ export async function prepareRun(input: PrepareInput): Promise<Prepared> {
         }
         dependenciesDir = dir
       } catch (error) {
-        return decline('wheels', `the package set ${lease.bundle.id.slice(0, 12)} could not be had: ${message(error)}`)
+        return decline(roomOr(error, 'wheels'), `the package set ${lease.bundle.id.slice(0, 12)} could not be had: ${message(error)}`)
       }
     }
 

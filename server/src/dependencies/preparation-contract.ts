@@ -157,22 +157,40 @@ export function wheelUrl(raw: unknown, fileName: string, files: readonly string[
 
 /**
  * The wheels of a ready set as its manifest and its row keep them: the fields
- * of a package and nothing else a program put next to them, and the download
- * address only where it passes wheelUrl. One function for both copies
- * (files.ts · publishBundle, store.ts · completeBundle), so the two always
- * say the same.
+ * of a package and nothing else a program put next to them — and no download
+ * address. One function for both copies (files.ts · publishBundle, store.ts ·
+ * completeBundle), so the two always say the same.
+ *
+ * No address, because both are read where the class can read: the set's
+ * folder, manifest.json included, is mounted into the participant's own
+ * container at /deps, and 0.22 hands the row's list out as it finds it, to
+ * the participant's page and the teacher's overview. An institution's mirror
+ * is not named to the class (service.ts · sanitizedLog keeps it out of the
+ * log for the same reason). The addresses that pass wheelUrl are kept apart
+ * (wheelUrls, store.ts · dependency_bundle_wheel_urls), for the machines that
+ * run submissions alone.
  */
-export function manifestPackages(packages: readonly DependencyPackage[], files: readonly string[] = wheelHosts()): DependencyPackage[] {
-  return packages.map((pkg) => {
+export function manifestPackages(packages: readonly DependencyPackage[]): DependencyPackage[] {
+  return packages.map((pkg) => ({
+    name: pkg.name,
+    version: pkg.version,
+    fileName: pkg.fileName,
+    sha256: pkg.sha256,
+    bytes: pkg.bytes,
+  }))
+}
+
+/**
+ * Where each wheel of a ready set was downloaded from, for those whose
+ * address passes wheelUrl, by the wheel's sha256: what a machine that runs
+ * submissions fetches from the index's CDN and checks by that sha256 and the
+ * size (store.ts · bundleWheels). A wheel without one is fetched from this
+ * server instead.
+ */
+export function wheelUrls(packages: readonly DependencyPackage[], files: readonly string[] = wheelHosts()): Array<{ sha256: string; url: string }> {
+  return packages.flatMap((pkg) => {
     const url = wheelUrl(pkg.url, pkg.fileName, files)
-    return {
-      name: pkg.name,
-      version: pkg.version,
-      fileName: pkg.fileName,
-      sha256: pkg.sha256,
-      bytes: pkg.bytes,
-      ...(url ? { url } : {}),
-    }
+    return url ? [{ sha256: pkg.sha256, url }] : []
   })
 }
 

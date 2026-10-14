@@ -190,7 +190,15 @@ async function buildStock(now: number): Promise<Map<string, CompetitionStock>> {
       if (portableRevision(binding?.revision)) pinned.set(binding.revision.id, binding.revision)
       if (binding?.bundle?.state === 'ready') bound.add(binding.bundle.id)
     }
-    if (pinned.size === 0) continue
+    /*
+     * A competition no machine can run (its environment is this server's
+     * alone, and nothing waiting is pinned to a registry image) stays in the
+     * stock, with no revision: no machine is asked for anything of it
+     * (runnerWant names data only beside a revision the machine pulls), but
+     * each machine's readiness says «только на этом сервере» for it — the
+     * owner's one hint that the environment must be published before the
+     * machines can help (views.ts · readinessFor, `home_only`).
+     */
     // Backfill the hashes of rows uploaded before them; the rows are then read as they are.
     await competitionFileHashes(competition.id, 'open').catch(() => [])
     await competitionFileHashes(competition.id, 'sealed').catch(() => [])
@@ -263,11 +271,21 @@ export function runnerWant(input: {
     revisions.push({ id: revision.id, ref: revision.ref, layers: revision.layers, gpu })
   }
   const data: RemoteWantData[] = []
-  const manifests = new Set<string>()
+  /*
+   * One entry per competition and kind, never one per manifest: two
+   * competitions with the very same files (one task for two groups, a
+   * hidden-test copy of an open one) share a manifest, and each needs its
+   * own entry — the machine keeps and forgets data per competition, and
+   * a competition left out here would be forgotten under a lease of it.
+   * The contract refuses only the same (competition, kind, manifest) twice
+   * (shared/remote-runner.ts · wantOf).
+   */
+  const entries = new Set<string>()
   const addData = (competitionId: string, set: DataSet | null, sealed: boolean): void => {
-    if (!set || manifests.has(set.manifest) || data.length >= REMOTE_MANIFESTS_MAX) return
+    const key = set ? `${competitionId}:${sealed}:${set.manifest}` : ''
+    if (!set || entries.has(key) || data.length >= REMOTE_MANIFESTS_MAX) return
     if (sealed && !trusted) return
-    manifests.add(set.manifest)
+    entries.add(key)
     data.push({ competitionId, manifest: set.manifest, sealed, files: set.files })
   }
   const bundleIds: string[] = []
