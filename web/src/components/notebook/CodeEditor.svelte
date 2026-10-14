@@ -78,8 +78,10 @@
             Decoration,
             EditorView,
             highlightActiveLine,
+            highlightActiveLineGutter,
             hoverTooltip,
             keymap,
+            lineNumbers,
             placeholder,
             showTooltip,
             ViewPlugin,
@@ -88,15 +90,17 @@
             Decoration,
             EditorView,
             highlightActiveLine,
+            highlightActiveLineGutter,
             hoverTooltip,
             keymap,
+            lineNumbers,
             placeholder,
             showTooltip,
             ViewPlugin,
           }),
         ),
         import('y-codemirror.next').then(({ yCollab }) => ({ yCollab })),
-        import('./cm-theme').then(({ colloqTheme }) => ({ colloqTheme })),
+        import('./cm-theme').then(({ cellNumbers, colloqTheme }) => ({ cellNumbers, colloqTheme })),
       ],
     )
     return { autocomplete, commands, md, py, language, state, view, collab, theme }
@@ -311,6 +315,19 @@
      * "edit text, multiline" thirty times with nothing to tell the cells apart.
      */
     label?: string
+    /**
+     * Line numbers to the left of the code: the room's rule
+     * (shared/rules.ts · lineNumbers), the same for everyone in the room.
+     *
+     * Code only, whatever is passed: a note is prose, and numbering its lines
+     * would number paragraphs nobody refers to by line. Passed in rather than
+     * read from the room here, by the argument of `complete`: the same
+     * component draws the council sheet and the draft, and only the cell
+     * knows by which notebook's rules it lives. The teacher turns it on in
+     * the middle of a class, so it switches in place, like `readOnly` (see
+     * the effect at the bottom).
+     */
+    lineNumbers?: boolean
   }
 
   let {
@@ -339,7 +356,11 @@
     mark = null,
     placeholder = '',
     label = '',
+    lineNumbers = false,
   }: Props = $props()
+
+  /** Numbers are drawn beside code and never beside a note — see `lineNumbers`. */
+  const numbered = $derived(lineNumbers && language === 'python')
 
   let host = $state<HTMLDivElement | null>(null)
 
@@ -441,6 +462,10 @@
     hintSlot: Compartment
     localeSlot: Compartment
     writable: Compartment
+    /** Whether the line numbers are on when the editor is built. */
+    numbersOn: boolean
+    /** Compartment to show or hide the line numbers without rebuilding the editor. */
+    numbers: Compartment
     /** The "you landed here" highlight field and the effect that sets it. */
     landing: ReturnType<typeof makeLanding>
   }
@@ -1131,6 +1156,16 @@
   }
 
   /**
+   * The line numbers and everything that comes with them, in one piece: the
+   * gutter, the darker number on the caret's line and their dressing
+   * (cm-theme.ts · cellNumbers). One compartment holds all three, so the rule
+   * turned off takes the column away whole.
+   */
+  function numberExtensions(cm: CodeMirror, on: boolean) {
+    return on ? [cm.view.lineNumbers(), cm.view.highlightActiveLineGutter(), cm.theme.cellNumbers] : []
+  }
+
+  /**
    * The highlight of the line a jump led to: a state field and an effect for
    * it.
    *
@@ -1183,7 +1218,7 @@
     const { bracketMatching, indentOnInput, indentUnit } = cm.language
     const { EditorState, Prec } = cm.state
     const { Decoration, highlightActiveLine, keymap, placeholder: placeholderExt, ViewPlugin } = cm.view
-    const { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling, hintSlot, localeSlot, landing } = options
+    const { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling, hintSlot, localeSlot, landing, numbersOn, numbers } = options
 
     /**
      * Completion through the eyes of the room's kernel.
@@ -1756,6 +1791,12 @@
           landing.field,
           cm.view.EditorView.lineWrapping,
           writable.of(writableExtensions(cm, editable)),
+          /*
+           * The numbers stand above the theme in this list on purpose: an
+           * extension listed earlier wins at equal specificity, so whatever
+           * the cells' gutter dressing says outranks the shared theme.
+           */
+          numbers.of(numberExtensions(cm, numbersOn)),
           hintSlot.of(hint ? placeholderExt(hint) : []),
           localeSlot.of(EditorState.phrases.of(editorPhrases())),
           cm.theme.colloqTheme,
@@ -1870,6 +1911,9 @@
   let setWritable = $state.raw<((editable: boolean) => void) | null>(null)
   /** What is in the live editor now — so as not to reconfigure for nothing. */
   let writableNow = true
+  /** Show or hide the live editor's line numbers — the same pair as `setWritable`. */
+  let setNumbers = $state.raw<((on: boolean) => void) | null>(null)
+  let numbersNow = false
   let setLabels = $state.raw<((hint: string) => void) | null>(null)
   /**
    * Show in the live editor where a jump led — or null while there is no
@@ -1929,6 +1973,12 @@
      * lives in a compartment and changes in place — see the effect below.
      */
     const editable = untrack(() => !readOnly)
+    /*
+     * Nor are the line numbers, by the same argument: the teacher turns them
+     * on mid-class, and a rebuilt editor would lose the focus and the cursor
+     * of everyone typing at that second. They switch in place too.
+     */
+    const numbersOn = untrack(() => numbered)
 
     let view: EditorView | null = null
     let disposed = false
@@ -1943,8 +1993,9 @@
       const writable = new cm.state.Compartment()
       const hintSlot = new cm.state.Compartment()
       const localeSlot = new cm.state.Compartment()
+      const numbers = new cm.state.Compartment()
       const landing = makeLanding(cm)
-      view = createView(cm, { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling, hintSlot, localeSlot, landing })
+      view = createView(cm, { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling, hintSlot, localeSlot, landing, numbersOn, numbers })
       /*
        * Order matters, and nothing paints between these three statements. The
        * editor goes in first so focus can move straight from the shim into it:
@@ -1962,6 +2013,8 @@
       writableNow = editable
       setWritable = (next) =>
         built.dispatch({ effects: writable.reconfigure(writableExtensions(cm, next)) })
+      numbersNow = numbersOn
+      setNumbers = (on) => built.dispatch({ effects: numbers.reconfigure(numberExtensions(cm, on)) })
       /**
        * Show where we were taken: highlight the line and — if typing is allowed
        * here — put the caret in it.
@@ -2007,6 +2060,7 @@
     return () => {
       disposed = true
       setWritable = null
+      setNumbers = null
       setLabels = null
       setLanding = null
       if (fading !== null) clearTimeout(fading)
@@ -2057,6 +2111,20 @@
   })
 
   /*
+   * The room's line numbers come and go in the live editor, by the edit rule's
+   * technique: one compartment changes, and the focus, the cursor and an open
+   * completion of whoever is typing stay where they were. The code steps
+   * sideways by the width of the column, once, as the teacher meant.
+   */
+  $effect(() => {
+    const apply = setNumbers
+    const on = numbered
+    if (!apply || on === numbersNow) return
+    numbersNow = on
+    apply(on)
+  })
+
+  /*
    * A jump has arrived — show it in the LIVE editor, without tearing it down.
    *
    * The same technique as for the edit rule and the label language above: the
@@ -2092,9 +2160,16 @@
       selection or delete the cell. Read-only on purpose: replaying keystrokes
       into a CRDT after the fact is a good way to lose one, so focus follows the
       user into the real editor instead.
+
+      With the room's line numbers on, it draws the same column CodeMirror
+      will: a parked cell coming back on screen remounts through here, and
+      code that jumped sideways by a column on every scroll would read as the
+      notebook twitching. The numbers are hidden from screen readers, as
+      CodeMirror's gutter is.
     -->
     <div
       class="cm-shim cm-editor cm-content"
+      class:cm-shim-numbered={numbered}
       role="textbox"
       tabindex="0"
       aria-multiline="true"
@@ -2104,6 +2179,9 @@
       onpointerdown={(event) => event.currentTarget.focus()}
     >
       {#each shimLines as line, index}
+        {#if numbered}
+          <span class="cm-shim-number" aria-hidden="true">{index + 1}</span>
+        {/if}
         <span class="cm-shim-line"
           >{line}{#if index === 0 && placeholder && shimText === ''}<span class="cm-placeholder"
               >{placeholder}</span
@@ -2151,6 +2229,14 @@
     /* CodeMirror's base theme pads .cm-content by 4px and outranks index.css's
        rule for the real editor, so 4px is what the swap has to land on. */
     padding: 4px 0;
+    /*
+     * The editor's line box (cm-theme.ts · LINE_HEIGHT), taken at the code's
+     * size and inherited as a length: a line of code and the smaller number
+     * beside it share one 23 px row, exactly as the gutter does. Left to
+     * index.css's 1.6 for .cm-editor, every wrapped line here came out
+     * shorter than its twin in CodeMirror.
+     */
+    line-height: 1.65em;
     outline: none;
   }
   .cm-shim-line {
@@ -2160,5 +2246,30 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     tab-size: 4;
+  }
+  /*
+   * The number column — cm-theme.ts · cellNumbers, number for number.
+   *
+   * The width rule is the one CodeMirror follows, so the swap moves nothing
+   * sideways: a floor of two digits, and otherwise as wide as the longest
+   * number. CodeMirror measures a hidden "99", "999" for its line count;
+   * here the `auto` column takes the widest number actually drawn, which has
+   * exactly as many digits, and digits in a monospace are all one width.
+   * Both are measured at the same 13px, so `ch` means the same thing on
+   * either side of the swap. Text-align and nowrap are CodeMirror's base
+   * theme, restated because the shim does not have it.
+   */
+  .cm-shim-numbered {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .cm-shim-number {
+    box-sizing: border-box;
+    min-width: calc(2ch + 8px);
+    padding: 0 8px 0 0;
+    font-size: 13px;
+    text-align: right;
+    white-space: nowrap;
+    color: rgb(var(--faint));
+    user-select: none;
   }
 </style>

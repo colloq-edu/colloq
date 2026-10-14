@@ -230,6 +230,14 @@
     }),
   )
   /*
+   * Line numbers, by the room's rule as THIS notebook reads it
+   * (shared/rules.ts · lineNumbers): a personal notebook shows them exactly
+   * when the room does, and so does a finished class. A code cell numbers
+   * every piece of code it draws — the shared editor, one's own council sheet
+   * and its draft, the attempt on screen; a note numbers nothing, it is prose.
+   */
+  const numbered = $derived(isCode && may.rules.lineNumbers === 'on')
+  /*
    * The lock on this cell, and the three derivatives the whole component
    * lives on.
    *
@@ -3005,6 +3013,7 @@
                   awareness={sheet.awareness}
                   undoManager={sheet.undo}
                   language={isCode ? 'python' : 'markdown'}
+                  lineNumbers={numbered}
                   label={tr('room.extra.132', { p0: ordinal })}
                   readOnly={!mayAttempt || submittedAt !== null}
                   placeholder={tr('room.ui.354')}
@@ -3137,7 +3146,7 @@
                 <div
                   transition:slide={{ duration: prefersReducedMotion() ? 0 : 200, easing: quintOut }}
                 >
-                  <CouncilOnScreen shown={onScreen} />
+                  <CouncilOnScreen shown={onScreen} lineNumbers={numbered} />
                 </div>
               {/if}
               <!--
@@ -3503,6 +3512,7 @@
                 cellId={id}
                 undoManager={session.undoManager}
                 language={isCode ? 'python' : 'markdown'}
+                lineNumbers={numbered}
                 label={tr('room.cell.label', { type: isCode ? tr('room.extra.139') : tr('room.extra.140'), count: ordinal })}
                 readOnly={!mayEdit}
                 autoFocus={!isCode && focusOnEdit}
@@ -3654,6 +3664,7 @@
             <div transition:slide={{ duration: prefersReducedMotion() ? 0 : 200, easing: quintOut }}>
               <CouncilOnScreen
                 shown={onScreen}
+                lineNumbers={numbered}
                 mayClear
                 onclear={() => session.council.clearShown(id)}
                 adopted={session.council.adopted[id] ?? null}
@@ -3699,6 +3710,7 @@
                     awareness={sheet.awareness}
                     undoManager={sheet.undo}
                     language={isCode ? 'python' : 'markdown'}
+                    lineNumbers={numbered}
                     label={tr('room.extra.143', { p0: ordinal })}
                     readOnly={true}
                   />

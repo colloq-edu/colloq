@@ -31,10 +31,12 @@ const surface = EditorView.theme({
   /*
    * The line-number gutter is set off by a line, not by air.
    *
-   * A cell has no numbers at all: its code is a screen long, and a line
-   * number has nothing to help with. In a three-hundred-line file the number
-   * is how people point each other to a spot out loud in the middle of a
-   * seminar, and it must be readable without pretending to be code.
+   * A cell shows numbers only when the room turns them on, and then lighter
+   * and set off by air alone (cm-theme.ts · cellNumbers): its code is a
+   * screen long, and the cell's own ordinal stands next to it. In a
+   * three-hundred-line file the number is how people point each other to a
+   * spot out loud in the middle of a seminar, and it must be readable
+   * without pretending to be code.
    */
   '.cm-gutters': {
     backgroundColor: 'transparent',

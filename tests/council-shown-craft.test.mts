@@ -57,7 +57,8 @@ test('the badge is signed: a chip, the author, who showed it and when', () => {
 
 test('the code of the shown attempt uses the same slab as everywhere else, read-only', () => {
   assert.match(BLOCK, /import Code from '@\/components\/ui\/Code\.svelte'/)
-  assert.match(BLOCK, /<Code code=\{shown\.text\} \/>/)
+  // With the room's line numbers when the cell under it shows them.
+  assert.match(BLOCK, /<Code code=\{shown\.text\} \{lineNumbers\} \/>/)
   // There is no editor here and there cannot be: someone else's attempt is
   // not edited.
   assert.doesNotMatch(BLOCK, /CodeEditor/)
@@ -97,7 +98,7 @@ test('the badge stands under its cell — for both the student and the teacher',
   assert.match(CELL, /import CouncilOnScreen from '@\/components\/council\/CouncilOnScreen\.svelte'/)
   // For the student — inside their own sheet, AFTER the teacher's letters
   // and before the footer.
-  assert.match(SHEET, /<CouncilOnScreen shown=\{onScreen\} \/>/)
+  assert.match(SHEET, /<CouncilOnScreen shown=\{onScreen\} lineNumbers=\{numbered\} \/>/)
   assert.ok(
     SHEET.indexOf('councilLetters') < SHEET.indexOf('<CouncilOnScreen') ||
       SHEET.indexOf('letters as letter') < SHEET.indexOf('<CouncilOnScreen'),

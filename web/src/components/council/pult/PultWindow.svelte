@@ -1074,6 +1074,7 @@
             shownAt={shown?.shownAt ?? null}
             {disabled}
             limit={settings.runLimitSec}
+            lineNumbers={session.session.rules.lineNumbers === 'on'}
             onrules={openRules}
             {reply}
             {replyFromOracle}

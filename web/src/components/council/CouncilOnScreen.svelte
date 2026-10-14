@@ -48,6 +48,12 @@
     /** The host's "Put in cell" / "…and run"; without it there are no buttons. */
     onadopt?: (participantId: string, run: boolean) => void
     onundo?: () => void
+    /**
+     * The room's line numbers (shared/rules.ts · lineNumbers), as the cell
+     * under which this stands draws them: the class reads the shown code
+     * against the same numbers as its own.
+     */
+    lineNumbers?: boolean
   }
 
   let {
@@ -59,6 +65,7 @@
     later = false,
     onadopt,
     onundo,
+    lineNumbers = false,
   }: Props = $props()
 
   const done = $derived(adopted !== null && adopted.participantId === shown.participantId)
@@ -159,7 +166,7 @@
   </div>
 
   <div class="bg-surface px-4 py-1">
-    <Code code={shown.text} />
+    <Code code={shown.text} {lineNumbers} />
   </div>
 
   <!--

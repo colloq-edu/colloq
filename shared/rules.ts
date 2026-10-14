@@ -571,6 +571,36 @@ export interface RoomRules {
    * and the protection stays what it was.
    */
   danger: 'block' | 'allow'
+
+  /**
+   * Whether the code cells of the room's notebooks show line numbers.
+   *
+   * The default is `off`, for new classes and for all existing ones: that is
+   * how every notebook has looked so far, and a rollout must not shift
+   * anyone's code a column to the right in the middle of a class. The teacher
+   * turns it on, and for everyone at once, because a number helps only when
+   * the whole room sees the same one: "look at line seven" said aloud and a
+   * traceback that names `line 7` both point at a place nobody has to count
+   * down to.
+   *
+   * Not a right but a property of the room, like `opens` and `cellLimitSec`:
+   * it forbids nothing and divides nobody into roles, and the teacher sees
+   * the same numbers the class does. There is nothing for the server to
+   * enforce here either: the browser draws the numbers, and the server only
+   * keeps the choice and carries it to the room in the `rules` frame.
+   *
+   * One value for all the room's notebooks, personal ones included:
+   * `rulesForBook` recomputes rights only, so a student's own notebook shows
+   * the numbers exactly when the lecture next to it does.
+   *
+   * A change is not announced to the room in words: it is how the notebook
+   * looks, not what can be done in it (`changesWhatCanBeDone`).
+   *
+   * `rulesAfterClass` leaves it alone: the end of a class is about rights,
+   * and the notebook people come back to read after the bell keeps the
+   * numbers the walkthrough referred to.
+   */
+  lineNumbers: 'off' | 'on'
 }
 
 /**
@@ -643,6 +673,9 @@ export const OPEN_ROOM: RoomRules = {
    * incomparably smaller.
    */
   danger: 'block',
+  // Line numbers are hidden, which is how every notebook has looked so far;
+  // the teacher shows them to the whole room at once (see the field).
+  lineNumbers: 'off',
   /*
    * Oracle ceilings are "as on the instance", and that is exactly today's
    * behaviour of every room: until now there was nowhere to take them from
@@ -708,6 +741,8 @@ export const LECTURE_ROOM: RoomRules = {
   // The preset leaves dangerous commands alone: they concern the kernel shared
   // by all, not who types. A lecture is protected just like an open room.
   danger: OPEN_ROOM.danger,
+  // And line numbers: how the code looks to the room is not about who types it.
+  lineNumbers: OPEN_ROOM.lineNumbers,
 }
 
 /**
@@ -884,6 +919,13 @@ export function readRules(raw: unknown): RoomRules {
      * measured, and it equals a lost class (see the field).
      */
     danger: source.danger === 'allow' ? 'allow' : OPEN_ROOM.danger,
+    /*
+     * Line numbers are shown on an exact `on` and on nothing else: an old row
+     * has no such field, and garbage reads as hidden, the look every room
+     * had before this line. A mistake either way costs a class nothing, so
+     * the old side wins.
+     */
+    lineNumbers: source.lineNumbers === 'on' ? 'on' : OPEN_ROOM.lineNumbers,
   }
 }
 
@@ -936,6 +978,73 @@ export function isOpenRoom(rules: RoomRules): boolean {
   return (Object.keys(OPEN_ROOM) as (keyof RoomRules)[]).every(
     (key) => rules[key] === OPEN_ROOM[key],
   )
+}
+
+/**
+ * Rules about how the notebook looks rather than what can be done in it.
+ *
+ * A list rather than a record over all keys, unlike `IS_A_RIGHT` below, and
+ * on purpose: the safe side here is the other one. A rule left off this list
+ * is announced, and a needless announcement costs one line that people read
+ * and close, while a missing one costs twenty editors that went read-only
+ * without a word.
+ */
+const LOOKS_ONLY = new Set<keyof RoomRules>(['lineNumbers'])
+
+/**
+ * Whether new rules change what can be done in the room: exactly what the
+ * room is then told in words, "The teacher changed what can be done in this
+ * room" (web/src/lib/session.svelte.ts).
+ *
+ * By meaning, not by bytes. Both sides go through `readRules` first: the
+ * server and the page cache may hold the same rules with a different key
+ * order, or one of them without a field the other already has, and the
+ * missing field means its default. The notebook map is compared by its
+ * records, not by reference: two reads of one map are two objects, and the
+ * comparison by reference called every frame of a room with a personal
+ * notebook a change, the welcome frame of each reconnect included.
+ *
+ * Line numbers do not count (`LOOKS_ONLY`): every screen in the room shows
+ * that change by itself, and a line about "what can be done" sends twenty
+ * people looking for the button that stopped working, when there is none.
+ */
+export function changesWhatCanBeDone(before: unknown, after: unknown): boolean {
+  const left = readRules(before)
+  const right = readRules(after)
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)] as (keyof RoomRules)[])
+  for (const key of keys) {
+    if (LOOKS_ONLY.has(key)) continue
+    const same = key === 'books' ? sameBookRules(left.books, right.books) : left[key] === right[key]
+    if (!same) return true
+  }
+  return false
+}
+
+/**
+ * The same notebook records: in each root both sides know, the same access,
+ * author and name.
+ *
+ * A record on one side only is a change too, except a student's own notebook
+ * (access `owner` with an author: collab/books.ts · rememberAuthor writes it
+ * when the notebook is made, and the cleaning drops it when it is gone). That
+ * is a student making or removing a draft, not the teacher, and the line
+ * "the teacher changed what can be done" went to the whole room each time.
+ */
+function sameBookRules(a: RoomRules['books'], b: RoomRules['books']): boolean {
+  const left = a ?? {}
+  const right = b ?? {}
+  const roots = new Set([...Object.keys(left), ...Object.keys(right)])
+  for (const root of roots) {
+    const one = Object.hasOwn(left, root) ? left[root] : undefined
+    const other = Object.hasOwn(right, root) ? right[root] : undefined
+    if (one && other) {
+      if (one.access !== other.access || one.owner !== other.owner || one.ownerName !== other.ownerName) return false
+      continue
+    }
+    const only = one ?? other
+    if (!only || !(only.access === 'owner' && only.owner !== null)) return false
+  }
+  return true
 }
 
 /**
@@ -1004,6 +1113,12 @@ const IS_A_RIGHT: Record<keyof RoomRules, boolean> = {
    * `os._exit` does not stop being a lecture.
    */
   danger: false,
+  /*
+   * Line numbers are not a right at all, only how the notebook looks: a
+   * lecture where the teacher showed them to the class is the same lecture,
+   * and its banner stays.
+   */
+  lineNumbers: false,
 }
 
 const RIGHTS = (Object.keys(IS_A_RIGHT) as (keyof RoomRules)[]).filter((key) => IS_A_RIGHT[key])
@@ -1158,8 +1273,8 @@ function bookRuleFor(rules: RoomRules, root: string | null): BookRule | null {
  *
  * `run`, `edit` and `structure` change, and, only for ONE'S OWN personal
  * notebook, `restart` with `wipe`. Everything else (terminal, board, files,
- * history, oracle, ceilings) is shared by the room and has no "which
- * notebook" dimension.
+ * history, oracle, ceilings, line numbers) is shared by the room and has no
+ * "which notebook" dimension.
  *
  * `restart`/`wipe` deserve a separate word, because they used to be absent
  * here altogether. A personal notebook has its own kernel and its own
@@ -1570,6 +1685,13 @@ export function rulesAfterClass(rules: RoomRules): RoomRules {
      * the same variables it costs the class.
      */
     danger: rules.danger,
+    /*
+     * Line numbers stay as the teacher set them, in both directions: they are
+     * how the notebook looks, not who may act in it, and after the bell the
+     * room is exactly where people come back to reread the walkthrough by the
+     * numbers it was explained with.
+     */
+    lineNumbers: rules.lineNumbers,
   }
 }
 

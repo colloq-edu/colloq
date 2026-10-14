@@ -102,6 +102,15 @@ const highlight = HighlightStyle.define([
   { tag: [t.list, t.quote, t.contentSeparator], color: syn('comment') },
 ])
 
+/**
+ * The code's line box, as a multiple of its size.
+ *
+ * One number for the lines and for the line numbers beside them (see
+ * `cellNumbers`), and the shim in CodeEditor.svelte stands in at the same
+ * 1.65 until CodeMirror arrives.
+ */
+const LINE_HEIGHT = 1.65
+
 /*
  * Theme switching. index.css resolves three states — bare :root is light, the
  * prefers-color-scheme block is dark, and [data-theme] overrides either — and
@@ -132,7 +141,7 @@ const theme = EditorView.theme({
     caretColor: 'rgb(var(--ink))',
   },
   '.cm-scroller': {
-    lineHeight: '1.65',
+    lineHeight: String(LINE_HEIGHT),
   },
   '.cm-line': {
     padding: '0 8px 0 4px',
@@ -593,6 +602,67 @@ const theme = EditorView.theme({
 })
 
 export const colloqTheme: Extension = [theme, syntaxHighlighting(highlight)]
+
+/**
+ * Line numbers in a cell, drawn only where the room turned them on
+ * (shared/rules.ts · lineNumbers).
+ *
+ * A theme of its own rather than more rules in the one above, and that is
+ * load-bearing. The file editor builds on `colloqTheme` and lists its own
+ * gutter after it (editor-theme.ts), and at equal specificity the extension
+ * listed first wins: gutter rules up there would quietly redraw the file's
+ * number column. This one travels in the same compartment as the gutter
+ * itself (CodeEditor.svelte · numberExtensions), so only a numbered cell
+ * ever carries it.
+ *
+ * The column is the design's (Paper, page 17): faint numbers a step smaller
+ * than the code, right-aligned, with no line and no ground of their own, so
+ * the cell's big ordinal to the left stays the only heavy number in the row.
+ * Colour comes from the tokens, which index.css flips for the dark theme in
+ * all three of its states, so nothing here needs a light-dark() pair. The
+ * shim in CodeEditor.svelte draws the same column before CodeMirror arrives,
+ * and every number below has its twin there.
+ */
+export const cellNumbers: Extension = EditorView.theme({
+  /*
+   * The numbers share the code's line box. The gutter still has the code's
+   * size at this level, so the em here is the same 23 px as a line of code,
+   * and the smaller numbers inherit it as a length: each stands centred on
+   * its line. A bare 1.65 would be counted again at the numbers' own size and
+   * set every one of them a pixel high.
+   */
+  '.cm-gutters': {
+    lineHeight: `${LINE_HEIGHT}em`,
+  },
+  /*
+   * At least two digits wide, and as wide as the longest number: CodeMirror
+   * sizes the column by a hidden "99", "999" for the line count, so the width
+   * depends on the number of digits alone. Two as the floor keep the code of
+   * a cell from stepping sideways when it grows its tenth line, and keep it
+   * level with its neighbours'. 8 px after the digits plus the line's own
+   * 4 px are the design's 12 before the code.
+   */
+  '.cm-lineNumbers .cm-gutterElement': {
+    minWidth: 'calc(2ch + 8px)',
+    padding: '0 8px 0 0',
+    fontSize: '13px',
+  },
+  /*
+   * The caret's line: its number darker and semibold, under the same wash as
+   * the line itself, so the band runs under the number too rather than
+   * starting between the number and the code.
+   *
+   * Only in the cell being typed in, as with `.cm-activeLine` above: every
+   * cell keeps a selection after the caret has left it, and a notebook of
+   * bold "1"s would mark nothing. `!important` against the transparent one in
+   * index.css, which stays the rule for every other gutter.
+   */
+  '&.cm-focused .cm-activeLineGutter': {
+    color: 'rgb(var(--muted))',
+    fontWeight: '600',
+    backgroundColor: 'var(--edit-line) !important',
+  },
+})
 
 /*
  * Exported so code that is NOT in an editor can be painted by the same rules —
