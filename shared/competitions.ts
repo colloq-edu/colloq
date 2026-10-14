@@ -1643,6 +1643,18 @@ export function planSplit(
  * The numbers guard both the form in the panel and the server: a field
  * refused only on the client is a field without a limit.
  */
+/**
+ * Memory for the metric: no more than two gigabytes (it holds one pandas and
+ * two calls), and never below 512 MB, whatever the notebook's own limit says.
+ * One definition for the server's step limits (runner-port.ts · limitsFor), the
+ * server's memory budget and the panel's preview of it, so that the bar the
+ * owner reads and the reservation the pump makes cannot drift apart.
+ */
+export const METRIC_MEMORY_MB = 2048
+export function metricMemoryMb(notebookMemoryMb: number): number {
+  return Math.min(METRIC_MEMORY_MB, Math.max(512, notebookMemoryMb))
+}
+
 export const LIMITS = {
   title: 120,
   slug: 64,

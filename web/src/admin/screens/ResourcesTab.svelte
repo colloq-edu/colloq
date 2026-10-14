@@ -30,6 +30,7 @@
     type CompetitionSettingsInput,
   } from '@shared/competitions-settings'
   import type { DiskSpace } from '@shared/disk'
+  import { metricMemoryMb } from '@shared/competitions'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Check from '@/admin/ui/Check.svelte'
   import Choice from '@/admin/ui/Choice.svelte'
@@ -626,6 +627,29 @@
     // defaults plus the container's cushion. While the defaults are being
     // edited, the same cushion over the typed numbers.
     const cushion = queue.slots.perSlot ? queue.slots.perSlot.memoryMb - queue.defaults.memoryMb : 256
+    /*
+     * With «Тетради на этом сервере» off (as the form now stands) the queue
+     * runs only its metric lane here, and the server's budget counts exactly
+     * that (routes/admin-resources.ts · competitionShare): «Оценок
+     * одновременно» metrics, each the run cushion and the metric's memory
+     * (at most 2 GB, at least 512 MB). Promised as slots × a notebook's
+     * memory, the bar showed seventy-six gigabytes taken by notebooks that
+     * never run on this server — seen on a rehearsal home on 14 Oct 2026.
+     */
+    const homeOn = homeChoice ?? queue.runners?.homeNotebooks.value ?? true
+    if (!homeOn) {
+      const scores = valueOf('c.scoreSlots') ?? queue.runners?.scoreSlots.value ?? SETTINGS_LIMITS.scoreSlots.default
+      const perScore = cushion + metricMemoryMb(memoryMb)
+      return {
+        slots: scores,
+        memoryMb: scores * perScore,
+        cpus: scores * cpus,
+        perSlotMb: perScore,
+        perSlotCpus: cpus,
+        autoSlotMb: memoryMb + cushion,
+        metricsOnly: true,
+      }
+    }
     return {
       slots,
       memoryMb: slots * memoryMb,
@@ -633,6 +657,7 @@
       perSlotMb: memoryMb,
       perSlotCpus: cpus,
       autoSlotMb: memoryMb + cushion,
+      metricsOnly: false,
     }
   })
 
@@ -1090,7 +1115,7 @@
               {@render legend('bg-primary', tr('admin.resourcesTab.rooms'), tr('admin.resourcesTab.roomsDetail', { count: loaded.budget.rooms.count, memory: gb(memory.rooms) }))}
               {@render legend('bg-brand-2', tr('admin.resourcesTab.notebooks'), tr('admin.resourcesTab.notebooksDetail', { count: loaded.budget.own.count, memory: gb(memory.own) }))}
               {#if competitionShare}
-                {@render legend('bg-accent', tr('admin.resourcesTab.competitions'), tr('admin.resourcesTab.competitionsDetail', { count: competitionShare.slots, memory: gb(competitionShare.perSlotMb) }))}
+                {@render legend('bg-accent', tr('admin.resourcesTab.competitions'), tr(competitionShare.metricsOnly ? 'admin.resourcesTab.metricsDetail' : 'admin.resourcesTab.competitionsDetail', { count: competitionShare.slots, memory: gb(competitionShare.perSlotMb) }))}
               {/if}
               {@render legend('border border-dashed border-faint bg-surface', tr('admin.resourcesTab.free'), tr('admin.resourcesTab.freeDetail', { memory: gb(Math.max(memory.free, 0)), reserve: gb(memory.reserve) }))}
             </div>

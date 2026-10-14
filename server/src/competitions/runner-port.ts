@@ -23,7 +23,7 @@
  * holds the answer to their question. Along with the answer it holds lines of
  * someone else's solution.csv.
  */
-import type { Competition, RunVerdict } from '@shared/competitions'
+import { metricMemoryMb, type Competition, type RunVerdict } from '@shared/competitions'
 
 /** Which path executes a submission. Read from the environment, like KERNEL_BACKEND. */
 export type CompetitionBackend = 'docker' | 'broker' | 'test'
@@ -425,11 +425,8 @@ function brokerRunner(): CompetitionRunner {
  */
 export const METRIC_WALL_SECONDS = 120
 
-/**
- * Memory for the metric — no more than two gigabytes: it holds one pandas and
- * two calls.
- */
-export const METRIC_MEMORY_MB = 2048
+/** Memory for the metric: shared/competitions.ts · METRIC_MEMORY_MB (re-exported for the server's imports). */
+export { METRIC_MEMORY_MB } from '@shared/competitions'
 
 /** The metric writes one json; it needs nothing more. */
 export const METRIC_FSIZE_BYTES = 1024 * 1024
@@ -448,7 +445,7 @@ export function limitsFor(competition: Competition, step: 'notebook' | 'metric')
   if (step === 'metric') {
     return {
       wallSeconds: METRIC_WALL_SECONDS,
-      memoryMb: Math.min(METRIC_MEMORY_MB, Math.max(512, limits.memoryMb)),
+      memoryMb: metricMemoryMb(limits.memoryMb),
       cpus: limits.cpus,
       pids: 64,
       fsizeBytes: METRIC_FSIZE_BYTES,

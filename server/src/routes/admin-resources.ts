@@ -26,7 +26,7 @@ import {
 } from '../admin/resource-settings.js'
 import { slotsResolution } from '../competitions/capacity.js'
 import { runnerGpuDevices } from '../competitions/gpu.js'
-import { METRIC_MEMORY_MB } from '../competitions/runner-port.js'
+import { metricMemoryMb } from '@shared/competitions'
 import { RUN_RESERVE_MB } from '../competitions/runner.js'
 import { competitionDefaults, homeNotebooksSetting, scoreSlotsSetting } from '../competitions/settings.js'
 import { listNames } from '../environments.js'
@@ -87,7 +87,7 @@ function competitionShare(): ResourceBudget['competitions'] {
     const { limits } = competitionDefaults()
     if (!homeNotebooksSetting().value) {
       const slots = scoreSlotsSetting().value
-      const metricMb = Math.min(METRIC_MEMORY_MB, Math.max(512, limits.memoryMb))
+      const metricMb = metricMemoryMb(limits.memoryMb)
       return { slots, memoryMb: slots * (RUN_RESERVE_MB + metricMb), cpus: slots * limits.cpus }
     }
     const slots = slotsResolution().effective

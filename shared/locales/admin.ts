@@ -3947,6 +3947,18 @@ export const adminMessages: MessageCatalog = {
       "other": "{count} executors × {memory} GB"
     }
   },
+  "admin.resourcesTab.metricsDetail": {
+    "ru": {
+      "one": "{count} оценка × {memory} ГБ",
+      "few": "{count} оценки × {memory} ГБ",
+      "many": "{count} оценок × {memory} ГБ",
+      "other": "{count} оценки × {memory} ГБ"
+    },
+    "en": {
+      "one": "{count} metric × {memory} GB",
+      "other": "{count} metrics × {memory} GB"
+    }
+  },
   "admin.resourcesTab.free": {
     "ru": "Свободно",
     "en": "Free"
