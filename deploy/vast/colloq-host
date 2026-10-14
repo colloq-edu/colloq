@@ -537,6 +537,11 @@ run_container() {
     fi
   fi
   [ -z "$trusted" ] || extra+=(-e "TRUSTED_PROXIES=$trusted")
+  # COLLOQ_SERVER_IMAGE: the panel's join commands for the machines that run
+  # submissions name this very image (competitions/remote/commands.ts), so a
+  # machine joined from the panel runs the build its home runs, as the
+  # commands `colloq-host runner-code` prints do. Without it the panel could
+  # only guess the published image of the release.
   docker run -d --name "$NAME" \
     --restart unless-stopped \
     --network "$NET" \
@@ -548,6 +553,7 @@ run_container() {
     ${extra[@]+"${extra[@]}"} \
     --env-file "$ENV_FILE" \
     -e "COLLOQ_HOME=$STATE" -e "PORT=$LISTEN_PORT" -e "KERNEL_NETWORK=$NET" \
+    -e "COLLOQ_SERVER_IMAGE=$img" \
     --label colloq.kind=app --label "colloq.config=$sum" \
     "$img" >/dev/null
   say "started $NAME from $img"
