@@ -627,13 +627,13 @@ docker run -d --name colloq-runner --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /var/lib/colloq-runner:/var/lib/colloq-runner \
   -e COLLOQ_RUNNER_JOIN='https://vsos.colloq.ru#<code>' \
-  ghcr.io/colloq-edu/colloq-server:0.24.0 runner
+  ghcr.io/colloq-edu/colloq-server:0.23.0 runner
 ```
 
 **A bare machine** (adds the toolkit, checks for driver 580+ and freezes updates on Vast):
 ```sh
 command -v docker || curl -fsSL https://get.docker.com | sh
-docker run --rm -v /usr/local/sbin:/host ghcr.io/colloq-edu/colloq-server:0.24.0 install-host /host
+docker run --rm -v /usr/local/sbin:/host ghcr.io/colloq-edu/colloq-server:0.23.0 install-host /host
 colloq-host runner up https://vsos.colloq.ru <code>
 ```
 
@@ -710,7 +710,7 @@ Update home between competitions. If that is not possible, run `make runners-upd
 
 **Review.** The double review goes to P3 (the `runner.ts` split) and to P5's auth and upload code.
 
-**Releases.** Ship P1–P3 as 0.23.0: low risk, and the single-VM path gets faster. Ship P4–P9 as 0.24.0, the version the commands in §8 name.
+**Releases.** Planned as P1–P3 in 0.23.0 and P4–P9 in 0.24.0; shipped as one release, 0.23.0, the version the commands in §8 name. A release with the split queue but no machines gains nothing on its own (vsos updates only through Teleport anyway), and a rollback onto it would leave the submissions a machine held «считаются» for good: it knows rows can have another holder, but not machines, so it would not take them back.
 
 **vsos.** vsos must be updated to that release. It is still on 0.20.0, and updates need Teleport.
 
