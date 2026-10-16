@@ -147,7 +147,7 @@ export interface RuntimeRoom {
  * reason to show it to people.
  */
 export type RuntimeUnschedulable = 'memory' | 'cpu' | 'gpu' | 'other'
-const RUNTIME_UNSCHEDULABLE: readonly RuntimeUnschedulable[] = ['memory', 'cpu', 'gpu', 'other']
+export const RUNTIME_UNSCHEDULABLE: readonly RuntimeUnschedulable[] = ['memory', 'cpu', 'gpu', 'other']
 /**
  * A start failure that can be explained to a person: fields of the broker's
  * error body next to `error`. The numbers are what the Pod requested, not
@@ -234,6 +234,80 @@ export function parseRuntimeEnsureRequest(value: unknown): RuntimeEnsureRequest 
     ...(typeof row.cpus === 'number' ? { cpus: row.cpus } : {}),
     ...(typeof row.memoryMb === 'number' ? { memoryMb: row.memoryMb } : {}),
   }
+}
+/**
+ * What an answer to ensure must echo before Jupyter is used: the room the
+ * runtime was asked for, and on a machine the placement it was asked for.
+ *
+ * `revision` is the digest asked for; absent, whatever the runtime runs is
+ * taken, as long as it is a digest. `gen` is a machine placement's generation
+ * (docs/architecture/remote-classes.md §6.9): an answer about an older one is
+ * an older container, whatever its address. The broker has no gens, and
+ * RuntimeClient asks for none.
+ */
+export interface RuntimeEndpointAsk {
+  environment: string
+  revision?: string
+  gen?: number
+}
+/**
+ * Which echo was wrong: `endpoint`, the endpoint itself (address, token,
+ * instance) or its environment; `gen`, another placement's generation;
+ * `revision`, another image than the one asked for; `url`, an address that
+ * is no Jupyter origin. The caller says each in its own words.
+ */
+export type RuntimeEndpointRefusal = 'endpoint' | 'gen' | 'revision' | 'url'
+export class RuntimeEndpointError extends Error {
+  override name = 'RuntimeEndpointError'
+  constructor(readonly refusal: RuntimeEndpointRefusal) {
+    super(`Runtime endpoint refused: ${refusal}`)
+  }
+}
+/**
+ * The echo check of an answer to ensure, one for both clients: the broker's
+ * (server/src/kernel/runtime-client.ts · RuntimeClient.ensure) and a machine
+ * placement's (kernel/remote/placement.ts, from the agent's `ready` report).
+ *
+ * The checks run in this order, and a client says the first that fails: an
+ * endpoint that is not one, then a stale gen, then a substituted image, then
+ * an address with a path, a query or credentials in it. A Jupyter endpoint
+ * is an origin: the kernel client builds every path itself, and pools its
+ * connections per origin. Fields the answer carries besides these are not
+ * read, as the broker's answer has always been read.
+ */
+export function checkRuntimeEndpoint(value: unknown, asked: RuntimeEndpointAsk): RuntimeEndpoint {
+  const row = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+  if (
+    row === null ||
+    typeof row.url !== 'string' ||
+    typeof row.token !== 'string' ||
+    row.token.length < 16 ||
+    /[\r\n]/.test(row.token) ||
+    typeof row.instanceId !== 'string' ||
+    !row.instanceId ||
+    row.environment !== asked.environment ||
+    typeof row.revision !== 'string' ||
+    !RUNTIME_REVISION.test(row.revision)
+  )
+    throw new RuntimeEndpointError('endpoint')
+  if (asked.gen !== undefined && row.gen !== asked.gen) throw new RuntimeEndpointError('gen')
+  if (asked.revision !== undefined && row.revision !== asked.revision) throw new RuntimeEndpointError('revision')
+  let target: URL
+  try {
+    target = new URL(row.url)
+  } catch {
+    throw new RuntimeEndpointError('url')
+  }
+  if (
+    !['http:', 'https:'].includes(target.protocol) ||
+    target.username ||
+    target.password ||
+    target.search ||
+    target.hash ||
+    !['', '/'].includes(target.pathname)
+  )
+    throw new RuntimeEndpointError('url')
+  return { url: row.url, token: row.token, instanceId: row.instanceId, environment: asked.environment, revision: row.revision }
 }
 export function parseRuntimeResizeRequest(value: unknown): RuntimeResizeRequest {
   const row = object(value)

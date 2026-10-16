@@ -51,9 +51,19 @@
  * accepts fits its body cap even with every free text JSON-escaped at its
  * worst, six bytes a character: a conforming agent is never refused for size
  * (tests/remote-runner-protocol.test.mts builds each worst case).
+ *
+ * CLASSES RIDE THE SAME SYNC. A machine that runs classes («занятия на
+ * машинах», docs/architecture/remote-classes.md) carries one more block each
+ * way, `kernels`, optional in both directions within this protocol. Its
+ * shapes, its numbers and its two parsers are shared/remote-kernels.ts's; the
+ * rules that span both blocks of one sync are here, in parseRemoteSyncRequest
+ * and parseRemoteSyncReply. The two modules import each other, and neither
+ * reads anything of the other's while it loads (see there): nothing at the
+ * top level of this file may use an import from that one either.
  */
 import { COMPETITION_ATTEMPT_ID, COMPETITION_ROW_ID } from './competition-runtime.js'
 import type { RunVerdict } from './competitions.js'
+import { parseRemoteKernelsReply, parseRemoteKernelsRequest, type RemoteKernelsReply, type RemoteKernelsRequest } from './remote-kernels.js'
 
 /* ------------------------------------------------------------------ the wire */
 
@@ -290,7 +300,7 @@ export const REMOTE_IMAGE_REF = new RegExp(`^(?:${REF_HOST}/)?${REF_COMPONENT}(?
  * any RepoDigests entry home keeps (512, image-identity.ts) with the
  * `docker.io/library/` it may put in front.
  */
-const REF_CHARS = 600
+export const REMOTE_REF_CHARS = 600
 
 /** A release as the root package.json names it: what «устарел — обновить» updates a machine to. */
 export const REMOTE_VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,6}(?:-[0-9A-Za-z.-]{1,40})?(?:\+[0-9A-Za-z.-]{1,40})?$/
@@ -305,14 +315,25 @@ const REMOTE_FILE_NAME = /^(?:submission\.csv|executed\.ipynb)$/
 
 /** join: a code, an id and the machine's facts; anything bigger is not a machine introducing itself. */
 export const REMOTE_JOIN_BYTES = 8 * 1024
-/** sync: the machine's whole state, level-triggered; the caps below add up to well under it. */
-export const REMOTE_SYNC_BYTES = 256 * 1024
+/**
+ * sync: the machine's whole state, level-triggered. The caps below add up to
+ * well under 256 KiB; the rest is the kernels block of a machine with classes
+ * (shared/remote-kernels.ts), whose file reports take most of it at their
+ * worst: a thousand paths of four hundred characters.
+ */
+export const REMOTE_SYNC_BYTES = 4 * 1024 * 1024
 /** outcome: the verdict, its two texts and the raw harness report; the caps below add up to just under it. */
 export const REMOTE_OUTCOME_BYTES = 192 * 1024
 /** One uploaded file, uncompressed: the answer's cap (LIMITS.submissionBytes) and the executed notebook's (storage.ts · EXECUTED_BYTES). */
 export const REMOTE_FILE_BYTES = 64 * 1024 * 1024
-/** Any reply of home's; the agent stops reading past it. Home stays under it by its inline budget and by describing few package sets at a time. */
-export const REMOTE_REPLY_BYTES = 16 * 1024 * 1024
+/**
+ * Any reply of home's; the agent stops reading past it. Home stays under it
+ * by its inline budgets and by describing few package sets at a time: the
+ * 0.23 fields at their worst take under 16 MiB, and a machine with classes
+ * gets as much again for its kernels block (a full push of the largest class
+ * folder, verdicts, pulls and epochs, shared/remote-kernels.ts).
+ */
+export const REMOTE_REPLY_BYTES = 32 * 1024 * 1024
 
 /** The longest wall an editor allows (LIMITS.wallSeconds.max): the longest run any lease can carry. */
 export const REMOTE_WALL_SECONDS_MAX = 4 * 60 * 60
@@ -697,6 +718,12 @@ export interface RemoteSyncRequest {
   attempts: RemoteHeldAttempt[]
   problems: RemoteProblem[]
   facts?: RemoteFacts
+  /**
+   * A machine with classes: its placements, file reports, epochs and
+   * readings (shared/remote-kernels.ts). Sent only after a reply that carried
+   * a block of home's, so a home from before classes never meets it.
+   */
+  kernels?: RemoteKernelsRequest
 }
 
 export interface RemoteJoinRequest {
@@ -715,6 +742,13 @@ export interface RemoteJoinReply {
   trusted: boolean
   /** The owner's cap on its places; null — what the machine offers. */
   approvedSlots: number | null
+  /**
+   * May run classes («Принимает занятия», remote-classes.md D2): off unless
+   * the code said so, and never together with `trusted`, since a machine
+   * that runs classes holds no hidden test (D3). Absent from a home from
+   * before classes, which is off.
+   */
+  classes?: boolean
 }
 
 /** StepLimits of runner-port.ts, field for field: the notebook step's limits in the numbers docker speaks (limitsFor). */
@@ -842,6 +876,12 @@ export interface RemoteSyncReply {
   /** Whether the machine's build is home's: false is «устарел» (remoteCompatible). */
   compatible: boolean
   homeVersion: string
+  /**
+   * To a machine with classes, an outdated build included: the placements it
+   * is to hold, pushes, verdicts, pulls and the rest (shared/remote-kernels.ts).
+   * Absent for every other machine; an agent from before classes drops it.
+   */
+  kernels?: RemoteKernelsReply
 }
 
 /**
@@ -1037,15 +1077,18 @@ export function parseRemoteJoinRequest(value: unknown): RemoteJoinRequest {
 }
 
 export function parseRemoteJoinReply(value: unknown): RemoteJoinReply {
-  const v = known(value, 'join reply', ['runnerId', 'secret', 'trusted', 'approvedSlots'])
-  if (!matching(v.runnerId, REMOTE_RUNNER_ID) || !matching(v.secret, REMOTE_SECRET) || !flag(v.trusted) || !slots(v.approvedSlots)) refuse('Invalid join reply')
+  const v = known(value, 'join reply', ['runnerId', 'secret', 'trusted', 'approvedSlots', 'classes'])
+  if (!matching(v.runnerId, REMOTE_RUNNER_ID) || !matching(v.secret, REMOTE_SECRET) || !flag(v.trusted) || !slots(v.approvedSlots)
+    || (v.classes !== undefined && !flag(v.classes))) refuse('Invalid join reply')
+  // No hidden test beside classes (remote-classes.md D3): no code carries both, whatever a reply says.
+  if (v.trusted && v.classes === true) refuse('Contradictory join reply')
   return v as unknown as RemoteJoinReply
 }
 
 const STATES: ReadonlySet<string> = new Set<RemoteRunnerState>(['active', 'draining', 'leaving'])
 
 export function parseRemoteSyncRequest(value: unknown): RemoteSyncRequest {
-  const v = spoken(value, 'sync request', ['protocol', 'build', 'seq', 'holdMs', 'state', 'free', 'cards', 'ready', 'fetching', 'attempts', 'problems', 'facts'])
+  const v = spoken(value, 'sync request', ['protocol', 'build', 'seq', 'holdMs', 'state', 'free', 'cards', 'ready', 'fetching', 'attempts', 'problems', 'facts', 'kernels'])
   if (!integer(v.seq, 0, Number.MAX_SAFE_INTEGER) || !integer(v.holdMs, 0, REMOTE_HOLD_IDLE_MS) || !word(v.state, STATES)) refuse('Invalid sync request')
   freeOf(v.free)
   cardsOf(v.cards)
@@ -1054,15 +1097,18 @@ export function parseRemoteSyncRequest(value: unknown): RemoteSyncRequest {
   const held = attemptsOf(v.attempts)
   problemsOf(v.problems)
   if (v.facts !== undefined) factsOf(v.facts)
-  // While anything is held, progress (and the silence rule) must not wait longer than this.
-  if (held.length > 0 && (v.holdMs as number) > REMOTE_HOLD_BUSY_MS) refuse('Sync held too long for a busy machine')
+  const kernels = v.kernels === undefined ? undefined : parseRemoteKernelsRequest(v.kernels)
+  // While anything is held, progress (and the silence rule) must not wait longer than this: a placement as much as an attempt.
+  if ((held.length > 0 || (kernels?.placements.length ?? 0) > 0) && (v.holdMs as number) > REMOTE_HOLD_BUSY_MS) refuse('Sync held too long for a busy machine')
+  // A bye is the last sync of a machine that stops (remote-classes.md §7.3): one still taking work has none to say.
+  if (kernels?.bye !== undefined && v.state === 'active') refuse('Unexpected bye in an active sync')
   return v as unknown as RemoteSyncRequest
 }
 
 const REVOKE_REASONS: ReadonlySet<string> = new Set<RemoteRevokeReason>(['cancelled', 'withdrawn', 'lost', 'unknown'])
 
 export function parseRemoteSyncReply(value: unknown): RemoteSyncReply {
-  const v = known(value, 'sync reply', ['seq', 'leases', 'revoke', 'applied', 'want', 'forget', 'drain', 'trusted', 'approvedSlots', 'perDevice', 'compatible', 'homeVersion'])
+  const v = known(value, 'sync reply', ['seq', 'leases', 'revoke', 'applied', 'want', 'forget', 'drain', 'trusted', 'approvedSlots', 'perDevice', 'compatible', 'homeVersion', 'kernels'])
   if (!integer(v.seq, 0, Number.MAX_SAFE_INTEGER) || !flag(v.drain) || !flag(v.trusted) || !flag(v.compatible) || !slots(v.approvedSlots)
     || !integer(v.perDevice, 1, REMOTE_PER_DEVICE_MAX) || !matching(v.homeVersion, REMOTE_VERSION)) refuse('Invalid sync reply')
   const leases = leasesOf(v.leases, v.seq as number)
@@ -1081,8 +1127,12 @@ export function parseRemoteSyncReply(value: unknown): RemoteSyncReply {
   const forget = distinct(v.forget, 'forgotten competitions', COMPETITION_ROW_ID, REMOTE_MANIFESTS_MAX)
   if (want.data.some((entry) => forget.includes(entry.competitionId))) refuse('Contradictory sync reply')
   // The hidden test reaches trusted machines only (decision 1): an untrusted one keeps none of it, whatever a reply says.
-  if (!v.trusted && (want.data.some((entry) => entry.sealed) || leases.some((lease) => lease.sealed))) refuse('Hidden test for an untrusted machine')
-  return { ...v, leases, revoke, applied: [...applied], want, forget: [...forget] } as unknown as RemoteSyncReply
+  const sealed = want.data.some((entry) => entry.sealed) || leases.some((lease) => lease.sealed)
+  if (!v.trusted && sealed) refuse('Hidden test for an untrusted machine')
+  const kernels = v.kernels === undefined ? undefined : parseRemoteKernelsReply(v.kernels)
+  // Nor does it ever lie beside a class (remote-classes.md D3): a machine holding placements keeps none of it, whatever a reply says.
+  if (sealed && (kernels?.placements.length ?? 0) > 0) refuse('Hidden test for a class machine')
+  return { ...v, leases, revoke, applied: [...applied], want, forget: [...forget], ...(kernels !== undefined ? { kernels } : {}) } as unknown as RemoteSyncReply
 }
 
 /**
@@ -1300,9 +1350,10 @@ function leaseOf(value: unknown): RemoteLease {
   return lease as unknown as RemoteLease
 }
 
-function imageOf(value: unknown, what: string, keys: readonly string[]): Record<string, unknown> {
+/** A pinned image as a reply carries it (a lease's, a wanted revision's, a placement's): its id, its digest ref and its layers. */
+export function imageOf(value: unknown, what: string, keys: readonly string[]): Record<string, unknown> {
   const v = known(value, what, keys)
-  if (!matching(v.id, REMOTE_REVISION_ID) || typeof v.ref !== 'string' || v.ref.length > REF_CHARS || !REMOTE_IMAGE_REF.test(v.ref) || !matching(v.layers, REMOTE_SHA256)) refuse(`Invalid ${what}`)
+  if (!matching(v.id, REMOTE_REVISION_ID) || typeof v.ref !== 'string' || v.ref.length > REMOTE_REF_CHARS || !REMOTE_IMAGE_REF.test(v.ref) || !matching(v.layers, REMOTE_SHA256)) refuse(`Invalid ${what}`)
   return v
 }
 
@@ -1773,16 +1824,23 @@ function textMarkerSaid(key: string, params: TextParam[], render: Parameters<typ
 
 /* ---------------------------------------------------------------- helpers */
 
-function refuse(what: string, code: RemoteProtocolError['code'] = 'invalid'): never {
+/*
+ * The helpers below are exported for the two contracts that extend this one,
+ * shared/remote-kernels.ts and shared/remote-tunnel.ts: one set of rules and
+ * one error for every message a machine and its home exchange. They are no
+ * one else's to call.
+ */
+
+export function refuse(what: string, code: RemoteProtocolError['code'] = 'invalid'): never {
   throw new RemoteProtocolError(what, code)
 }
 
-const integer = (v: unknown, min: number, max: number): v is number => Number.isSafeInteger(v) && (v as number) >= min && (v as number) <= max
-const matching = (v: unknown, pattern: RegExp): v is string => typeof v === 'string' && pattern.test(v)
-const within = (v: unknown, max: number): v is string => typeof v === 'string' && v.length <= max
-const label = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max
-const flag = (v: unknown): v is boolean => typeof v === 'boolean'
-const word = (v: unknown, words: ReadonlySet<string>): v is string => typeof v === 'string' && words.has(v)
+export const integer = (v: unknown, min: number, max: number): v is number => Number.isSafeInteger(v) && (v as number) >= min && (v as number) <= max
+export const matching = (v: unknown, pattern: RegExp): v is string => typeof v === 'string' && pattern.test(v)
+export const within = (v: unknown, max: number): v is string => typeof v === 'string' && v.length <= max
+export const label = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max
+export const flag = (v: unknown): v is boolean => typeof v === 'boolean'
+export const word = (v: unknown, words: ReadonlySet<string>): v is string => typeof v === 'string' && words.has(v)
 const slots = (v: unknown): boolean => v === null || integer(v, 0, REMOTE_ATTEMPTS_MAX)
 /** A set's own room in MiB (packagesRoomMb), within the broker's bounds for it. */
 const packagesMb = (v: unknown): boolean => integer(v, 16, 4096)
@@ -1794,7 +1852,7 @@ const dataName = (v: unknown): v is string => matching(v, REMOTE_DATA_NAME) && !
  * The refusal names the key (quoted and cut short): a key one side does not
  * know is what a version skew looks like in a log.
  */
-function fields(value: unknown, what: string, keys: readonly string[]): Record<string, unknown> {
+export function fields(value: unknown, what: string, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) refuse(`Invalid ${what}`)
   const v = value as Record<string, unknown>
   const stray = Object.keys(v).find((key) => !keys.includes(key))
@@ -1812,7 +1870,7 @@ function fields(value: unknown, what: string, keys: readonly string[]): Record<s
  * depth — not in a lease written to the machine's disk, not in a want. A
  * key named `__proto__` is no key of the contract's, and goes with the rest.
  */
-function known(value: unknown, what: string, keys: readonly string[]): Record<string, unknown> {
+export function known(value: unknown, what: string, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) refuse(`Invalid ${what}`)
   const v = value as Record<string, unknown>
   const out: Record<string, unknown> = {}
@@ -1832,13 +1890,13 @@ function spoken(value: unknown, what: string, keys: readonly string[]): Record<s
   return v
 }
 
-function items(value: unknown, what: string, max: number): unknown[] {
+export function items(value: unknown, what: string, max: number): unknown[] {
   if (!Array.isArray(value) || value.length > max) refuse(`Invalid ${what}`)
   return value
 }
 
 /** Distinct strings, each in its pattern: lists of ids and hashes. */
-function distinct(value: unknown, what: string, pattern: RegExp, max: number): string[] {
+export function distinct(value: unknown, what: string, pattern: RegExp, max: number): string[] {
   const seen = new Set<string>()
   for (const item of items(value, what, max)) {
     if (!matching(item, pattern) || seen.has(item)) refuse(`Invalid ${what}`)
@@ -1848,7 +1906,7 @@ function distinct(value: unknown, what: string, pattern: RegExp, max: number): s
 }
 
 /** The bytes a base64 text decodes to, or -1 when it is not base64 with its padding. */
-function base64Bytes(value: unknown): number {
+export function base64Bytes(value: unknown): number {
   if (typeof value !== 'string' || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return -1
   return (value.length / 4) * 3 - (value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0)
 }

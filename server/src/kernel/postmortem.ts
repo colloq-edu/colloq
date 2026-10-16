@@ -29,27 +29,23 @@
 
 import { formatNumber, tr } from '@shared/i18n'
 import { dockerRead, roomContainer, type KernelRole } from './pool.js'
+import {
+  killedByMemory,
+  parseCgroup,
+  parseReading,
+  readingArgs,
+  type CgroupReading,
+  type MemoryReading,
+} from './postmortem-core.js'
 import { kernelBackend } from './runtime-client.js'
 
-/** What docker and the cgroup told us about the room's container. */
-export interface MemoryReading {
-  /** The container's memory limit in bytes; `null` if it could not be read. */
-  limit: number | null
-  /** Peak usage over the container's life. */
-  peak: number | null
-  /** How much is in use now, already after the kernel restart, hence small. */
-  current: number | null
-  /** How many times the cgroup has killed a process in this container since its birth. */
-  kills: number | null
-  /** The docker flag: the whole container went down on memory, not a process inside. */
-  containerOomKilled: boolean
-  /** The container status: `running`, `exited`, … */
-  status: string
-  /** The exit code; meaningful only for a stopped container. */
-  exit: number | null
-  /** The tail of the container's log, without Jupyter's chatter about encryption. */
-  tail: string[]
-}
+/*
+ * What a reading is made of, how it is parsed and whether memory killed the
+ * container moved to postmortem-core.ts, pure, so that a machine's agent reads
+ * its class kernels exactly as home reads its own; they are exported from
+ * here as they always were.
+ */
+export { killedByMemory, type MemoryReading }
 
 /** The cause analysis: what happened and what to say about it. */
 export interface Postmortem {
@@ -132,71 +128,10 @@ export async function sampleKills(sessionId: string, role: KernelRole = 'room'):
   }
 }
 
-const NUMBER = /^\d+$/
-
-/** `max` in cgroup v2 means "no limit", not a number. */
-function bytes(raw: string | undefined): number | null {
-  if (raw === undefined) return null
-  const value = raw.trim()
-  if (value === '' || value === 'max') return null
-  if (!NUMBER.test(value)) return null
-  const parsed = Number(value)
-  // Docker without `--memory` writes a gigantic number into cgroup v1 instead
-  // of "no limit": treating it as a limit means saying "2 GB used of 8 exabytes".
-  if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= Number.MAX_SAFE_INTEGER) return null
-  return parsed
+/** The cgroup's numbers of a container (postmortem-core.ts · CGROUP_SCRIPT, parseCgroup). */
+async function readCgroup(container: string): Promise<CgroupReading> {
+  return parseCgroup(await docker(readingArgs(container).cgroup))
 }
-
-/*
- * One command for all four numbers, and both cgroup versions at once.
- *
- * v2 (everything newer than Ubuntu 22.04) keeps them at the root of the
- * container's namespace, v1 in the `memory/` subdirectory and under other
- * names. Asking for the version in a separate request means paying for a
- * second `docker exec` with knowledge that arrives anyway: the file is simply
- * missing, and `cat` stays silent.
- *
- * `memory.peak` appeared in kernel 5.19; where it is missing, current usage
- * counts as the peak, which is surely too low but not made up.
- */
-const CGROUP_SCRIPT = [
-  'r=/sys/fs/cgroup',
-  'v1=$r/memory',
-  'p() { printf "%s %s\\n" "$1" "$(cat "$2" 2>/dev/null)"; }',
-  'p limit $r/memory.max; p limit $v1/memory.limit_in_bytes',
-  'p peak $r/memory.peak; p peak $v1/memory.max_usage_in_bytes',
-  'p current $r/memory.current; p current $v1/memory.usage_in_bytes',
-  'cat $r/memory.events 2>/dev/null | sed -n "s/^oom_kill /kills /p"',
-  'p kills $v1/memory.failcnt',
-].join('; ')
-
-async function readCgroup(container: string): Promise<Pick<MemoryReading, 'limit' | 'peak' | 'current' | 'kills'>> {
-  const res = await docker(['exec', container, 'sh', '-c', CGROUP_SCRIPT])
-  const found: Record<string, number | null> = { limit: null, peak: null, current: null, kills: null }
-  if (res.code !== 0) return found as Pick<MemoryReading, 'limit' | 'peak' | 'current' | 'kills'>
-  for (const line of res.out.split('\n')) {
-    const [key, raw] = line.trim().split(/\s+/, 2)
-    if (!(key in found)) continue
-    // The first non-empty answer wins: v1 and v2 never coexist in one container.
-    if (found[key] === null) found[key] = bytes(raw)
-  }
-  return found as Pick<MemoryReading, 'limit' | 'peak' | 'current' | 'kills'>
-}
-
-/** Lines Jupyter always prints that explain nothing. */
-const NOISE = /running over TCP without encryption|Jupyter Server .* is running|http:\/\/127\.0\.0\.1/i
-
-async function readTail(container: string): Promise<string[]> {
-  const res = await docker(['logs', '--tail', '40', container])
-  if (res.code !== 0) return []
-  return res.out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line !== '' && !NOISE.test(line))
-    .slice(-3)
-}
-
-const INSPECT = '{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}} {{.HostConfig.Memory}}'
 
 /**
  * Ask docker and the cgroup about everything at once.
@@ -208,43 +143,9 @@ const INSPECT = '{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}} {{.H
  * stopped one, and there may be no log at all.
  */
 export async function readContainer(sessionId: string, role: KernelRole = 'room'): Promise<MemoryReading> {
-  const container = roomContainer(sessionId, role)
-  const [state, cgroup, tail] = await Promise.all([
-    docker(['inspect', container, '--format', INSPECT]),
-    readCgroup(container),
-    readTail(container),
-  ])
-  const [status = '', exit = '', oomKilled = '', hostMemory = ''] = state.code === 0 ? state.out.trim().split(/\s+/) : []
-  return {
-    limit: cgroup.limit ?? bytes(hostMemory),
-    peak: cgroup.peak,
-    current: cgroup.current,
-    kills: cgroup.kills,
-    containerOomKilled: oomKilled === 'true',
-    status,
-    exit: NUMBER.test(exit) ? Number(exit) : null,
-    tail,
-  }
-}
-
-/**
- * Whether memory killed it, in light of what we already knew about this room.
- *
- * If the counter grew since the last reading, yes, and there is nothing to
- * argue about. If there was no reading (the server was restarted, the room
- * was adopted from elsewhere), we judge by the peak: it is within three
- * percent of the limit for one that was just killed, and noticeably lower for
- * one that died of any other cause. Three percent rather than "equal": the
- * cgroup manages to add part of the last allocation to `memory.peak`, and the
- * peak can be slightly ABOVE the limit.
- */
-export function killedByMemory(reading: MemoryReading, seen: number | undefined): boolean {
-  if (reading.kills !== null && seen !== undefined) return reading.kills > seen
-  if (reading.containerOomKilled) return true
-  if (reading.kills !== null && reading.kills > 0 && reading.limit !== null && reading.peak !== null) {
-    return reading.peak >= reading.limit * 0.97
-  }
-  return false
+  const asked = readingArgs(roomContainer(sessionId, role))
+  const [inspect, cgroup, logs] = await Promise.all([docker(asked.inspect), docker(asked.cgroup), docker(asked.logs)])
+  return parseReading({ inspect, cgroup, logs })
 }
 
 function humanBytes(value: number | null): string {

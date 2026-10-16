@@ -2830,6 +2830,7 @@ export function kernelMetrics(): {
   const kernels: Record<KernelRole, Record<'idle' | 'busy' | 'starting' | 'dead', number>> = {
     room: { idle: 0, busy: 0, starting: 0, dead: 0 },
     own: { idle: 0, busy: 0, starting: 0, dead: 0 },
+    council: { idle: 0, busy: 0, starting: 0, dead: 0 },
   }
   let queued = 0
   let running = 0

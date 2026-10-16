@@ -31,11 +31,12 @@ import {
   ROOM_PROFILE,
   ensureRoomPerimeter,
   perimeterStale,
-  roomHardeningArgs,
+  roomHardening,
   roomProfile,
   warmPerimeter,
   type RoomNetworkTarget,
 } from './perimeter.js'
+import { ROOM_SHM, classHashSeed, memSpec, roomRunArgs, type RoomRole } from './room-spec.js'
 
 const IMAGE_PREFIX = 'colloq-kernel'
 const ROOM_PREFIX = 'colloq-room'
@@ -64,21 +65,25 @@ function run(args: string[], timeoutMs = 20_000): Promise<RunResult> {
 }
 
 /**
- * Whose container this is: the class's, or that of its students' personal
- * notebooks.
+ * Whose container this is: the class's, that of its students' personal
+ * notebooks, or its council's.
  *
- * A room has two containers, and the second is created lazily, on the first
- * run in a personal notebook. Why it has to be separate rather than a second
- * process inside the first is explained in shared/rules.ts · bookHasOwnKernel:
- * a GPU is given to a container as a whole, and the OOM killer under a shared
- * limit picks the heaviest process, that is, the lecture's kernel rather than
- * the greedy student.
+ * A room has two containers here, and the second is created lazily, on the
+ * first run in a personal notebook. Why it has to be separate rather than a
+ * second process inside the first is explained in shared/rules.ts ·
+ * bookHasOwnKernel: a GPU is given to a container as a whole, and the OOM
+ * killer under a shared limit picks the heaviest process, that is, the
+ * lecture's kernel rather than the greedy student.
+ *
+ * The third, the council's pool of workers (docs/architecture/remote-classes.md
+ * §6.1), lives only on machines: this server's Docker branch refuses it
+ * (`endpointForSession`), and its slot is `<id>#council` (`slotFor`).
  *
  * A live container without the `colloq.role` label reads as `room`: that is
  * how ALL containers started before this change look, and they must survive a
  * rollout without being recreated.
  */
-export type KernelRole = 'room' | 'own'
+export type KernelRole = RoomRole
 
 /**
  * This instance cannot give a personal notebook a kernel of its own, and that
@@ -119,16 +124,18 @@ export class OwnKernelUnavailable extends Error {
  * `execute`, with exactly the token that sits in its environment. The old
  * string (`jupyter:<id>`) stays with the room so that live containers answer
  * to their own token after a rollout instead of all being recreated at once.
+ * The council's container would hold strangers' attempts, and gets a string
+ * of its own as well.
  */
 function roomToken(sessionId: string, role: KernelRole = 'room'): string {
   return createHmac('sha256', config.sessionSecret)
-    .update(role === 'own' ? `jupyter:own:${sessionId}` : `jupyter:${sessionId}`)
+    .update(role === 'room' ? `jupyter:${sessionId}` : `jupyter:${role}:${sessionId}`)
     .digest('hex')
     .slice(0, 40)
 }
 
 const containerFor = (sessionId: string, role: KernelRole = 'room') =>
-  role === 'own' ? `${ROOM_PREFIX}-${sessionId}-own` : `${ROOM_PREFIX}-${sessionId}`
+  role === 'room' ? `${ROOM_PREFIX}-${sessionId}` : `${ROOM_PREFIX}-${sessionId}-${role}`
 
 /**
  * The key under which the pool remembers one container: its address, a start
@@ -137,17 +144,25 @@ const containerFor = (sessionId: string, role: KernelRole = 'room') =>
  * For the room container it is the class id itself, letter for letter as
  * before: the `endpoints`/`starting` maps have survived a dozen changes with
  * this key, and changing it would mean rewriting each of them for the sake of
- * one suffix. For the personal-notebook container it is `<id>#own`; a class id
- * never contains `#` (shared/runtime.ts · RUNTIME_SESSION_ID), so the key can
- * be parsed back exactly.
+ * one suffix. For the personal-notebook container it is `<id>#own`, and for
+ * the council's `<id>#council`; a class id never contains `#`
+ * (shared/runtime.ts · RUNTIME_SESSION_ID), so the key can be parsed back
+ * exactly.
  */
 const slotFor = (sessionId: string, role: KernelRole): string =>
-  role === 'own' ? `${sessionId}#own` : sessionId
+  role === 'room' ? sessionId : `${sessionId}#${role}`
 
 /** The class the slot belongs to. */
 const sessionOfSlot = (slot: string): string => {
   const cut = slot.indexOf('#')
   return cut < 0 ? slot : slot.slice(0, cut)
+}
+
+/** The role of the slot's container, read back from its key. */
+const roleOfSlot = (slot: string): KernelRole => {
+  const cut = slot.indexOf('#')
+  const suffix = cut < 0 ? '' : slot.slice(cut + 1)
+  return suffix === 'own' || suffix === 'council' ? suffix : 'room'
 }
 
 /**
@@ -1052,21 +1067,6 @@ async function sameGpu(container: string, gpu: string | null): Promise<boolean> 
 }
 
 /**
- * How many threads to allow numeric libraries.
- *
- * `os.cpu_count()` inside a container shows the HOST's cores, not the ones
- * given by `--cpus`: numpy and torch start thirty threads each on two allotted
- * cores and fight over them, computing slower than with one. Docker
- * understands fractional `--cpus`, but a thread count is an integer, rounded
- * down, not up: asking for more threads than there are cores is exactly the
- * trouble this is set to prevent.
- */
-function threadLimit(cpus: number): string {
-  if (!Number.isFinite(cpus) || cpus <= 0) return '2'
-  return String(Math.max(1, Math.floor(cpus)))
-}
-
-/**
  * How many CPUs a room gets when nothing was set for it, as a number.
  *
  * The instance default (admin/resource-settings.ts · `roomCpus`, then
@@ -1079,14 +1079,12 @@ export function defaultCpus(): number {
 }
 
 /**
- * Megabytes in the language `--memory` is set in. The way back, a docker
- * string in megabytes, is `parseMemMb`: it moved to admin/resource-settings.ts,
- * which reads KERNEL_MEM with it, and is re-exported here where it always was.
+ * Megabytes in the language `--memory` is set in: room-spec.ts · memSpec,
+ * which lays out `docker run` with it. The way back, a docker string in
+ * megabytes, is `parseMemMb`: it moved to admin/resource-settings.ts, which
+ * reads KERNEL_MEM with it. Both are re-exported here where they always were.
  */
-export function memSpec(mb: number): string {
-  return `${Math.floor(mb)}m`
-}
-export { parseMemMb }
+export { memSpec, parseMemMb }
 
 /**
  * What environments fall back to: the general default and the default for a
@@ -1124,6 +1122,17 @@ export function memoryLimitMb(env: string): number {
 }
 
 /**
+ * A GPU room's `--shm-size`: KERNEL_SHM, else room-spec.ts · ROOM_SHM. Only
+ * the class's own container with a card takes it (`runArgs`). It is part of
+ * that container's memory, not of this machine, so a class placed on a
+ * machine carries this very value in its intent: its card gets the same
+ * /dev/shm wherever it is (docs/architecture/remote-classes.md §7.1).
+ */
+export function roomShm(env: NodeJS.ProcessEnv = process.env): string {
+  return env.KERNEL_SHM ?? ROOM_SHM
+}
+
+/**
  * Call docker on someone else's behalf: for postmortem.ts, which finds out why
  * a kernel died.
  *
@@ -1141,20 +1150,26 @@ export function roomContainer(sessionId: string, role: KernelRole = 'room'): str
 }
 
 /**
- * The `docker run` arguments for the room's container.
+ * The `docker run` arguments for the room's container: the inputs read from
+ * this server, laid out by room-spec.ts · roomRunArgs.
  *
- * A separate function, because there is no real docker in the tests, and
- * building this line correctly matters more than calling it: an extra space
- * or a lost flag here means a seminar without a GPU or without isolation, and
- * that can only be noticed during the lesson. There are no quotes on purpose:
- * `run()` calls spawn with an array, without a shell.
+ * A thin wrapper, and only that: the argv itself lives in room-spec.ts, pure,
+ * so that a machine's agent lays out the same one for classes on machines
+ * (docs/architecture/remote-classes.md §7.1), and
+ * tests/room-spec-argv.test.mts holds the two equal flag for flag. What is
+ * this server's is decided here: the container's name and token, the image of
+ * the environment's name, the defaults of memory and CPUs (instance settings),
+ * the process ceiling and the network mode (perimeter.ts · roomHardening), the
+ * class's hash seed, a GPU room's shared memory (`roomShm`).
  */
 export function runArgs(opts: {
   sessionId: string
   env: string
   mount: string
   /**
-   * The class's container or the container of its personal notebooks.
+   * The class's container or the container of its personal notebooks (the
+   * council's exists only on machines, and is laid out here only for the
+   * argv's parity test).
    *
    * The second has no `--gpus`, no slice label and no `--shm-size`, and
    * cannot have them: the class's card is not given to personal notebooks,
@@ -1188,140 +1203,34 @@ export function runArgs(opts: {
    *
    * By the same rule as memory: `null` means the instance default
    * (`roomCpus`, then KERNEL_CPUS). The number here decides not only
-   * `--cpus` but also the numeric libraries' threads below: `os.cpu_count()`
+   * `--cpus` but also the numeric libraries' threads: `os.cpu_count()`
    * inside a container sees the HOST's cores, and a room with two allotted
-   * cores would start thirty threads on them, exactly what these variables
+   * cores would start thirty threads on them, exactly what those variables
    * are there to prevent.
    */
   cpus?: number | null
 }): string[] {
   const { sessionId, env, mount, network, publish } = opts
   const role = opts.role ?? 'room'
-  // Only the class's container gets a slice. Not "if one was passed" but "if
-  // allowed": a caller's mistake must not be able to give the card to personal
-  // notebooks.
-  const gpu = role === 'own' ? null : opts.gpu
-  const memory = memSpec(opts.memoryMb && opts.memoryMb > 0 ? opts.memoryMb : memoryLimitMb(env))
-  const cpus = opts.cpus && opts.cpus > 0 ? opts.cpus : defaultCpus()
-  const threads = threadLimit(cpus)
-  return [
-    'run',
-    '-d',
-    '--name',
-    containerFor(sessionId, role),
-    /*
-     * Our own room network (on the host) or the shared compose network (the
-     * server itself in a container), and in either of them the ban on local
-     * addresses applies (perimeter.ts).
-     */
-    ...(network ? ['--network', network] : []),
-    /*
-     * A port on the host loopback, only when the server is on the host. The
-     * loopback is not decoration here: without it the room's Jupyter is open
-     * on every interface, and the lecture hall's Wi-Fi is one of them. In the
-     * container form the port is not published at all.
-     */
-    ...(publish ? ['-p', '127.0.0.1:0:8888'] : []),
-    /*
-     * The hardened profile, always, not only when the class is open to the
-     * outside: uid 1000, no capabilities, no-new-privileges, a process cap, no
-     * IPv6, a profile version label (perimeter.ts · roomHardeningArgs).
-     */
-    ...roomHardeningArgs(process.env, role),
-    // One slice, named the way docker calls it. A room on an ordinary
-    // environment does not get here and takes no device.
-    ...(gpu ? ['--gpus', `device=${gpu}`] : []),
-    '-e',
-    `JUPYTER_TOKEN=${roomToken(sessionId, role)}`,
-    // The room has as many CPUs as it was given, and as many threads. But only
-    // as of `docker run`: `docker update --cpus` changes a live container's
-    // quota, not its environment variables (see applyCpuLimit).
-    '-e',
-    `OMP_NUM_THREADS=${threads}`,
-    '-e',
-    `MKL_NUM_THREADS=${threads}`,
-    '-e',
-    `OPENBLAS_NUM_THREADS=${threads}`,
-    // numexpr counts its number from the HOST's cores just like the other
-    // three, and grumbles quietly into the kernel log when its variable is
-    // missing.
-    '-e',
-    `NUMEXPR_NUM_THREADS=${threads}`,
-    /*
-     * Which representation plotly emits a figure in, and why that is decided
-     * here rather than in the image.
-     *
-     * Without the variable plotly picks the renderer itself, from the
-     * environment, and picks differently in different versions: 7.x under
-     * ipykernel emits a single `application/vnd.plotly.v1+json` (which is what
-     * we need), while 5.x also emits `text/html`, and in its first frame sends
-     * the WHOLE plotly.js bundle, five megabytes of script we do not execute
-     * anyway. The difference is not ours and changes from image to image.
-     *
-     * A variable of the kernel process is the least intrusive way to bring
-     * order here: it acts on SOMEONE ELSE'S environment, built by anyone at any
-     * time, without requiring an image rebuild, a plotly import or a single
-     * line executed in the kernel before the student's code. And the student
-     * can override it with one line (`pio.renderers.default = …`), so it is a
-     * default, not a prohibition.
-     *
-     * It is set in the image (kernel/Dockerfile) too: this code is not the
-     * only thing that starts the container; there are also compose and rented
-     * machines.
-     */
-    '-e',
-    'PLOTLY_RENDERER=plotly_mimetype',
-    '-v',
-    `${mount}:/workspace/${sessionId}`,
-    // Student code is arbitrary, exactly as in compose. A runaway cell in
-    // one room must not be able to take the host down either.
-    `--memory=${memory}`,
-    /*
-     * Swap exactly equal to memory, for the same reason it is set in
-     * `docker update` below: without this flag docker gives the container as
-     * much swap again on top, and a kernel that hits the limit does not die
-     * but goes to disk; the room stalls for minutes where it would be more
-     * honest to say "out of memory" right away.
-     */
-    `--memory-swap=${memory}`,
-    `--cpus=${cpus}`,
-    /*
-     * Shared memory is needed only where there is a GPU: docker's default is
-     * 64 MB, and `DataLoader(num_workers=4)` fails on it with "bus error"
-     * without naming the cause. Ordinary rooms do not need it, and extra
-     * memory given to everyone is memory taken from neighboring seminars.
-     */
-    ...(gpu ? [`--shm-size=${process.env.KERNEL_SHM ?? '1g'}`] : []),
-    /*
-     * `no`, not `unless-stopped`: there is now one container per seminar, and
-     * a machine reboot would bring up the whole past semester at once. While
-     * the server is alive, it restarts a fallen container itself the next time
-     * the room is opened.
-     */
-    '--restart=no',
-    '--label',
-    'colloq.kind=room-kernel',
-    '--label',
-    `colloq.session=${sessionId}`,
-    '--label',
-    `colloq.environment=${env}`,
-    /*
-     * Whose container this is: the class's or its personal notebooks'.
-     *
-     * Set on BOTH, including the room one, where the value would be implied
-     * anyway: the label is needed by the sweep, the slice allocation and
-     * `colloq status`, and they read `docker ps`, that is, also yesterday's
-     * containers started by a process that no longer exists. A missing label
-     * reads as `room` (see `KernelRole`), so live containers survive a
-     * rollout without being recreated.
-     */
-    '--label',
-    `colloq.role=${role}`,
-    // The label is the source of truth about who holds a slice: it survives
-    // a server restart, and the in-memory map does not.
-    ...(gpu ? ['--label', `colloq.gpu=${gpu}`] : []),
-    `${IMAGE_PREFIX}:${env}`,
-  ]
+  return roomRunArgs({
+    name: containerFor(sessionId, role),
+    role,
+    sessionId,
+    environment: env,
+    image: `${IMAGE_PREFIX}:${env}`,
+    mount,
+    extraMounts: [],
+    network,
+    publish,
+    gpu: opts.gpu,
+    memoryMb: opts.memoryMb && opts.memoryMb > 0 ? opts.memoryMb : memoryLimitMb(env),
+    cpus: opts.cpus && opts.cpus > 0 ? opts.cpus : defaultCpus(),
+    ...roomHardening(process.env, role),
+    token: roomToken(sessionId, role),
+    hashSeed: classHashSeed(sessionId),
+    shm: roomShm(),
+    labels: [],
+  })
 }
 
 /* -------------------------------------------------- memory limit on a live room */
@@ -1617,7 +1526,8 @@ async function bothContainers(
 async function resizeBrokerPod(
   sessionId: string,
   change: RuntimeResizeRequest,
-  role: KernelRole = 'room',
+  /** The broker's two Pods; a council has none there. */
+  role: 'room' | 'own' = 'room',
 ): Promise<LimitOutcome> {
   const parts = [
     ...('memoryMb' in change ? [change.memoryMb === null ? 'the broker default memory' : `${change.memoryMb} MB of memory`] : []),
@@ -1881,9 +1791,10 @@ async function startContainer(
    * The personal-notebook container neither asks for nor takes slices: the
    * class's card is not given to its students (shared/rules.ts ·
    * bookHasOwnKernel), and it starts a GPU environment just like an ordinary
-   * one, on the CPU.
+   * one, on the CPU. Only the class's own container takes one, the rule
+   * room-spec.ts lays the argv out by.
    */
-  const gpu = role !== 'own' && needsGpu(env) ? await takeGpu(sessionId, env) : null
+  const gpu = role === 'room' && needsGpu(env) ? await takeGpu(sessionId, env) : null
   const state = await stateOf(container)
   assertLocalRoomRunning(sessionId)
 
@@ -2097,6 +2008,9 @@ const abandoned = new Set<string>()
 /** Broker ensures in flight, per slot: a DELETE waits for the ones it would otherwise race. */
 const brokerStarts = new Map<string, Set<Promise<KernelEndpoint>>>()
 
+/** A council's start that reached this server's backends: a caller's mistake, said in the log's words. */
+const COUNCIL_ON_MACHINES_ONLY = 'A council worker pool runs only on machines: this server starts no council container'
+
 /**
  * The broker cannot give this class's personal notebooks a Pod: the refusal
  * `OwnKernelUnavailable` stands for, told apart from a start that failed.
@@ -2139,10 +2053,16 @@ export async function endpointForSession(
   // The owner is stopping this container's kernels to free memory
   // (retirement.ts · pauseKernelStarts): a start now would be removed a second
   // later. Only the role being stopped: the personal notebooks' stop leaves
-  // the lecture and the shell free to start.
-  if (kernelStartsPaused(sessionId, role)) throw new Error(tr('server.kernel.startsPaused'))
+  // the lecture and the shell free to start. Nothing pauses a council's
+  // starts yet: retirement.ts knows the two roles this server runs.
+  if (role !== 'council' && kernelStartsPaused(sessionId, role)) throw new Error(tr('server.kernel.startsPaused'))
   const backend = kernelBackend()
   if (backend === 'test') return defaultEndpoint()
+  // The council's pool of workers runs only on machines (remote-classes.md
+  // §6.1), and its placement answers before this line once it exists. Neither
+  // backend of this server starts one: there is no container for it here and
+  // no Pod for it on the broker.
+  if (role === 'council') throw new Error(COUNCIL_ON_MACHINES_ONLY)
   if (backend === 'broker') {
     if (!sessionRowExists(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarDoesNotExist.4f72c5"))
     sessionDir(sessionId)
@@ -2238,8 +2158,7 @@ async function discardSlot(slot: string): Promise<void> {
 }
 
 /** The container name for a slot, in one line, so the key parsing lives in one place. */
-const containerOfSlot = (slot: string): string =>
-  containerFor(sessionOfSlot(slot), slot.endsWith('#own') ? 'own' : 'room')
+const containerOfSlot = (slot: string): string => containerFor(sessionOfSlot(slot), roleOfSlot(slot))
 
 /** Both slots of a room, in "class first" order: the order shows in the log. */
 const slotsOf = (sessionId: string): string[] => [

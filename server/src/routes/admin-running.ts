@@ -97,7 +97,8 @@ function busyView(sessionId: string, busy: ClassBusy | null, visible: boolean): 
 }
 
 function containerView(reading: ContainerReading | undefined): RunningContainer | null {
-  if (!reading) return null
+  // A council's pool lives only on machines (remote-classes.md §6.1); this panel's rows have the two roles of home.
+  if (!reading || reading.role === 'council') return null
   return {
     role: reading.role,
     state: reading.state,
@@ -128,6 +129,7 @@ interface Held {
 function heldBy(census: ContainerCensus): Map<string, Held> {
   const out = new Map<string, Held>()
   for (const container of census.containers) {
+    if (container.role === 'council') continue
     const held = out.get(container.session) ?? {}
     held[container.role] = container
     out.set(container.session, held)
@@ -168,14 +170,14 @@ function classRow(sessionId: string, held: Held, activity: ClassActivity, viewer
   }
   const path = pathsOf(sessionId)
   const owner = ownersOf(sessionId)
-  const books: RunningBook[] = activity.scopes.map((scope) => ({
+  const books: RunningBook[] = activity.scopes.flatMap((scope) => scope.role === 'council' ? [] : [{
     root: scope.root,
     path: path(scope.root),
     role: scope.role,
     phase: scope.phase,
     owner: scope.role === 'own' ? owner(scope.root) : null,
     lastWorkAt: iso(scope.lastWorkAt),
-  }))
+  }])
   return {
     id: sessionId,
     hidden: false,

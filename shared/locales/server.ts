@@ -4315,5 +4315,197 @@ export const serverMessages: MessageCatalog = {
   "server.runners.codeAmbiguous": {
     "ru": "Этот номер подходит к нескольким кодам: обновите список и отмените код из него.",
     "en": "This id matches more than one code: reload the list and cancel the code from it."
+  },
+  "server.noConnectionToMachineTheKernelAnd.df78c8": {
+    "ru": "Нет связи с машиной «{machine}» · {elapsed}. Ядро и переменные на ней целы — ждём связь. Новые запуски подождут.",
+    "en": "No connection to machine {machine} · {elapsed}. The kernel and its variables there are intact — waiting for the connection. New runs will wait."
+  },
+  "server.machineHasNotAnsweredSinceWaitingUntil.3d926e": {
+    "ru": "Машина «{machine}» не отвечает с {since}. Ждём до {until}, потом поднимем ядро на этом сервере (переменные пропадут).",
+    "en": "Machine {machine} has not answered since {since}. Waiting until {until}, then the kernel starts again on this server (the variables will be lost)."
+  },
+  "server.theConnectionToMachineCameBackAfter.28f7cf": {
+    "ru": "Связь с машиной «{machine}» вернулась через {seconds} с.",
+    "en": "The connection to machine {machine} came back after {seconds} s."
+  },
+  "server.theConnectionToTheMachineBrokeThe.5504d1": {
+    "ru": "Связь с машиной прервалась — результат ячейки потерян. Ядро и переменные целы; запустите ячейку снова.",
+    "en": "The connection to the machine broke — the cell’s result is lost. The kernel and its variables are intact; run the cell again."
+  },
+  "server.machineHasNotAnsweredSinceTheKernel.05bf4e": {
+    "ru": "Машина «{machine}» не отвечает с {since}. Ядро поднято заново на этом сервере: переменные пропали, файлы — по {filesAt}. Запустите ячейки снова.",
+    "en": "Machine {machine} has not answered since {since}. The kernel was started again on this server: the variables are gone, the files are as of {filesAt}. Run the cells again."
+  },
+  "server.thisCellWasRunningOnMachineWhen.cbb534": {
+    "ru": "Эта ячейка выполнялась на машине «{machine}», когда та пропала. Неизвестно, успела ли она закончиться; на новом ядре её нет.",
+    "en": "This cell was running on machine {machine} when the machine was lost. Whether it finished is unknown; the new kernel has none of it."
+  },
+  "server.theQueueWasClearedItsCellsCounted.c77303": {
+    "ru": "Очередь сброшена: ячейки рассчитывали на переменные, которых больше нет.",
+    "en": "The queue was cleared: its cells counted on variables that no longer exist."
+  },
+  "server.noConnectionToMachineARestartWould.406486": {
+    "ru": "Нет связи с машиной «{machine}» — перезапуск сейчас не дойдёт. Нажмите, когда связь вернётся.",
+    "en": "No connection to machine {machine} — a restart would not reach it now. Press it once the connection is back."
+  },
+  "server.theRestartWasSentButNoAnswer.17cbbc": {
+    "ru": "Перезапуск отправлен, но ответа нет: связь с машиной прервалась. Узнаем, когда она вернётся.",
+    "en": "The restart was sent, but no answer came: the connection to the machine broke. We will know once it is back."
+  },
+  "server.theRestartWentThroughTheVariablesWere.96b635": {
+    "ru": "Перезапуск прошёл: переменные сброшены.",
+    "en": "The restart went through: the variables were reset."
+  },
+  "server.theRestartDidNotGetThroughThe.92177b": {
+    "ru": "Перезапуск не дошёл — переменные на месте.",
+    "en": "The restart did not get through — the variables are still there."
+  },
+  "server.noConnectionToTheMachineTheCell.b76132": {
+    "ru": "Нет связи с машиной — остановить ячейку сейчас нельзя. Предел времени сработает, когда связь вернётся.",
+    "en": "No connection to the machine — the cell cannot be stopped now. The time limit will apply once the connection is back."
+  },
+  "server.theOwnerDisconnectedMachine.1a3061": {
+    "ru": "Владелец отключил машину «{machine}».",
+    "en": "The owner disconnected machine {machine}."
+  },
+  "server.machineIsNoLongerTrustedToRun.8962f2": {
+    "ru": "Машине «{machine}» больше не доверено вести занятия.",
+    "en": "Machine {machine} is no longer trusted to run classes."
+  },
+  "server.machineIsBeingDisconnected.6aa752": {
+    "ru": "Машину «{machine}» отключают.",
+    "en": "Machine {machine} is being disconnected."
+  },
+  "server.theKernelWasStartedOnThisServer.497a79": {
+    "ru": "Ядро поднято на этом сервере, переменные пропали.",
+    "en": "The kernel was started on this server; the variables are gone."
+  },
+  "server.theNetworkOnMachineGotOutOf.6b309d": {
+    "ru": "Сеть на машине «{machine}» вышла из-под контроля: ядро остановлено ради безопасности и поднято на этом сервере.",
+    "en": "The network on machine {machine} got out of control: the kernel was stopped for safety and started on this server."
+  },
+  "server.thisServerHasNoRoomForThis.25c35f": {
+    "ru": "На сервере нет места для ядра этого занятия: занято {used} из {total}. Освободите память или подключите машину.",
+    "en": "This server has no room for this class’s kernel: {used} of {total} are taken. Free some memory or connect a machine."
+  },
+  "server.machineCameBackAfterTheMoveIts.aacc24": {
+    "ru": "Машина «{machine}» вернулась после переезда; её изменения в файлах после {since} не приняты: {files}.",
+    "en": "Machine {machine} came back after the move; its file changes after {since} were not accepted: {files}."
+  },
+  "server.wasChangedHereAndOnTheMachine.107a60": {
+    "ru": "{file} изменили одновременно здесь и на машине. Оставлена версия сервера, версия с машины — «{copy}».",
+    "en": "{file} was changed here and on the machine at the same time. The server’s version was kept; the machine’s is “{copy}”."
+  },
+  "server.fromTheMachine.3b540b": {
+    "ru": "{name} (с машины {time})",
+    "en": "{name} (from the machine {time})"
+  },
+  "server.wasDeletedOnTheServerTheChanges.6230f9": {
+    "ru": "{file} удалён на сервере; изменения, сделанные в нём на машине, отброшены.",
+    "en": "{file} was deleted on the server; the changes made to it on the machine were dropped."
+  },
+  "server.isOverTheLimitAndStaysOn.bf3362": {
+    "ru": "{file} ({size}) больше предела {limit} и остаётся на машине. Если машина пропадёт, файл пропадёт тоже.",
+    "en": "{file} ({size}) is over the {limit} limit and stays on the machine. If the machine is lost, the file is lost too."
+  },
+  "server.filesAreOnTheirWayToThe.1bb29d": {
+    "ru": "Файлы едут на машину: {done} из {total}…",
+    "en": "Files are on their way to the machine: {done} of {total}…"
+  },
+  "server.theFilesDidNotReachTheMachine.20cf87": {
+    "ru": "Файлы не дошли до машины: {seconds} с без движения — ячейка не запущена.",
+    "en": "The files did not reach the machine: {seconds} s without progress — the cell was not run."
+  },
+  "server.startingTheKernelOnMachineImage.1f4cdc": {
+    "ru": "Запускаем ядро на машине «{machine}»… образ ↓ {percent} %",
+    "en": "Starting the kernel on machine {machine}… image ↓ {percent}%"
+  },
+  "server.startingTheKernelOnMachine.c2d7a3": {
+    "ru": "Запускаем ядро на машине «{machine}»…",
+    "en": "Starting the kernel on machine {machine}…"
+  },
+  "server.theAgentOnMachineIsUpdatingThe.88b188": {
+    "ru": "Агент на машине «{machine}» обновляется. Ядро и переменные на ней целы — новые запуски подождут.",
+    "en": "The agent on machine {machine} is updating. The kernel and its variables there are intact — new runs will wait."
+  },
+  "server.theCouncilPoolRunsOnlyOnMachines.ef5702": {
+    "ru": "Пул консилиума бывает только на машинах.",
+    "en": "The council pool runs only on machines."
+  },
+  "server.thePoolIsStillStartingThisAttempt.bf84be": {
+    "ru": "Пул ещё поднимается — эта попытка посчитана в общем ядре.",
+    "en": "The pool is still starting — this attempt was run in the shared kernel."
+  },
+  "server.notCarriedOver.00ad4e": {
+    "ru": "Не переносится: {names}.",
+    "en": "Not carried over: {names}."
+  },
+  "server.databaseConnection.cdf70c": {
+    "ru": "соединение с базой",
+    "en": "database connection"
+  },
+  "server.openFile.3a6aca": {
+    "ru": "открытый файл",
+    "en": "open file"
+  },
+  "server.networkSocket.34c443": {
+    "ru": "сетевое соединение",
+    "en": "network socket"
+  },
+  "server.generator.c33340": {
+    "ru": "генератор",
+    "en": "generator"
+  },
+  "server.thread.49e10b": {
+    "ru": "поток",
+    "en": "thread"
+  },
+  "server.lock.1f0e8d": {
+    "ru": "блокировка",
+    "en": "lock"
+  },
+  "server.dataOnTheGpu.605180": {
+    "ru": "данные на видеокарте",
+    "en": "data on the GPU"
+  },
+  "server.tooBigForTheSnapshot.1a48a4": {
+    "ru": "не помещается в снимок",
+    "en": "too big for the snapshot"
+  },
+  "server.cannotBeCopied.e6521a": {
+    "ru": "не копируется",
+    "en": "cannot be copied"
+  },
+  "server.runInTheSharedKernelItUses.eaf141": {
+    "ru": "Посчитано в общем ядре: использует {name} — её нельзя перенести.",
+    "en": "Run in the shared kernel: it uses {name}, which cannot be carried over."
+  },
+  "server.stateAsOfWithoutCell.30d8e4": {
+    "ru": "Состояние {time} — без ячейки {cells}.",
+    "en": "State as of {time}, without cell {cells}."
+  },
+  "server.stateAsOfWithoutCells.44aa0a": {
+    "ru": "Состояние {time} — без ячеек {cells}.",
+    "en": "State as of {time}, without cells {cells}."
+  },
+  "server.theKernelHasRunCellsSinceThe.e29733": {
+    "ru": {
+      "one": "Ядро ушло вперёд на {count} ячейку после снимка — результат в тетради может отличаться.",
+      "few": "Ядро ушло вперёд на {count} ячейки после снимка — результат в тетради может отличаться.",
+      "many": "Ядро ушло вперёд на {count} ячеек после снимка — результат в тетради может отличаться.",
+      "other": "Ядро ушло вперёд на {count} ячейки после снимка — результат в тетради может отличаться."
+    },
+    "en": {
+      "one": "The kernel has run {count} cell since the snapshot — the result in the notebook may differ.",
+      "other": "The kernel has run {count} cells since the snapshot — the result in the notebook may differ."
+    }
+  },
+  "server.theMachineWasLostInTheMiddle.b5f5c5": {
+    "ru": "Машина пропала посреди попытки — пересчитано в общем ядре. Пауза между запусками не засчитана.",
+    "en": "The machine was lost in the middle of the attempt — it was run again in the shared kernel. The pause between runs was not counted."
+  },
+  "server.theOrderOfSetsInAttemptsMay.b87dc7": {
+    "ru": "Порядок множеств в попытках может отличаться от тетради: её ядро запущено до обновления.",
+    "en": "The order of sets in attempts may differ from the notebook’s: its kernel was started before the update."
   }
 }
