@@ -43,7 +43,16 @@
  *      agent's word on its home's version counts only from a fresh sync;
  *  12. a running agent's leave is waited for only while its home answers,
  *      and a stopped one's one-off sees the agent's mounts, CA bundle above
- *      all; an instance started without COLLOQ_SERVER_IMAGE learns its own.
+ *      all; an instance started without COLLOQ_SERVER_IMAGE learns its own;
+ *  13. classes on machines (docs/architecture/remote-classes.md §14): the
+ *      agent runs on the host's network and finds its own container there,
+ *      one an older colloq-host started is moved onto it; a machine joined
+ *      with --classes is checked first; an update is a restart its home
+ *      holds the classes for, and never onto a tunnel the home refuses; a
+ *      leave with classes asks first, and the fleet's down answers for it;
+ *      the status names the tunnel and the classes; the classes counted are
+ *      this tree's agent's; the first update from 0.24, which the old
+ *      colloq-host runs, is followed by one that moves the agent.
  */
 import './_env.mts'
 import test from 'node:test'
@@ -56,6 +65,9 @@ import { spawnSync } from 'node:child_process'
 import { selectKernelBackend } from '../server/src/kernel/runtime-client.ts'
 import { competitionBackend } from '../server/src/competitions/runner-port.ts'
 import { REMOTE_BUILD_FILE, REMOTE_RUN_MS_MAX, REMOTE_DRIVER_MIN, parseRemoteJoinTarget } from '../shared/remote-runner.ts'
+import { TUNNEL_PROTOCOL } from '../shared/remote-tunnel.ts'
+import { INSTANCE_LABEL } from '../server/src/runner-agent/images.ts'
+import { dataDir } from '../server/src/data-dir.ts'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const HOST = path.join(ROOT, 'deploy/vast/colloq-host')
@@ -77,6 +89,8 @@ const SERVER = (v: string) => `ghcr.io/colloq-edu/colloq-server:${v}`
  * one that waits for a home that never answers, until its client is killed.
  * A throwaway `--entrypoint cat` of an image's runner.sha256 prints the
  * image's runnerBuild, and fails for an image without one (0.22 and older).
+ * A container's network is the one its --network named, Docker's bridge
+ * without one; the daemon's networks (`network ls`) are the state's.
  */
 const FAKE_DOCKER = `#!${process.execPath}
 const fs = require('node:fs')
@@ -92,7 +106,24 @@ const findImage = (ref) => st.images[ref] ?? Object.values(st.images).find((i) =
 const [cmd, ...rest] = args
 if (st.down) fail('Cannot connect to the Docker daemon')
 if (cmd === 'version') { out(st.version + '\\n'); process.exit(0) }
-if (cmd === 'info') { out('Runtimes: ' + (st.nvidia ? 'nvidia ' : '') + 'runc\\n'); process.exit(0) }
+if (cmd === 'info') {
+  const [f] = fmtOf(rest)
+  // The daemon's security options (a rootless one says so there) and its cgroup version, as templates ask.
+  if (f && f.includes('SecurityOptions')) { out(JSON.stringify(['name=seccomp,profile=builtin', ...(st.rootless ? ['name=rootless'] : ['name=apparmor']), 'name=cgroupns']) + '\\n'); process.exit(0) }
+  if (f && f.includes('CgroupVersion')) { out((st.cgroup ?? '2') + '\\n'); process.exit(0) }
+  out('Runtimes: ' + (st.nvidia ? 'nvidia ' : '') + 'runc\\n'); process.exit(0)
+}
+if (cmd === 'ps') {
+  // By label (k=v, or k alone), all of them as -a; a name per line, or the label a {{.Label}} format asks for.
+  const filters = []; let format = null
+  for (let i = 0; i < rest.length; i++) { if (rest[i] === '--filter') filters.push(rest[++i]); else if (rest[i] === '--format') format = rest[++i] }
+  const has = (c, kv) => { const [k, ...v] = kv.split('='); return v.length ? (c.labels ?? {})[k] === v.join('=') : k in (c.labels ?? {}) }
+  const label = /\\{\\{\\.Label "([^"]+)"\\}\\}/.exec(format ?? '')
+  for (const [name, c] of Object.entries(st.containers)) {
+    if (filters.every((f) => !f.startsWith('label=') || has(c, f.slice('label='.length)))) out((label ? (c.labels ?? {})[label[1]] ?? '' : name) + '\\n')
+  }
+  process.exit(0)
+}
 if (cmd === 'login') { st.logins = (st.logins ?? []).concat([rest]); save(); process.exit(0) }
 if (cmd === 'image' && rest[0] === 'inspect') {
   const [f, a] = fmtOf(rest.slice(1)); const img = findImage(a[0])
@@ -119,7 +150,16 @@ if (cmd === 'container' && rest[0] === 'inspect' || cmd === 'inspect') {
   else if (f.includes('.Mounts')) out(c.mounts.map((m) => { const [src, dst] = m.split(':'); return dst + '\\t' + src + '\\n' }).join('') + '\\n')
   else if (f === '{{.Image}}') out(c.imageId + '\\n')
   else if (f === '{{.Config.Image}}') out(c.image + '\\n')
+  // Its network: the one --network named, else Docker's default bridge.
+  else if (f.includes('NetworkMode')) out((c.flags.includes('--network') ? c.flags[c.flags.indexOf('--network') + 1] : 'bridge') + '\\n')
   else out('\\n')
+  process.exit(0)
+}
+if (cmd === 'network' && rest[0] === 'ls') {
+  // By label (k=v), a name per line where -q prints an id.
+  const filters = []; for (let i = 1; i < rest.length; i++) if (rest[i] === '--filter') filters.push(rest[++i])
+  const has = (n, kv) => { const [k, ...v] = kv.split('='); return (n.labels ?? {})[k] === v.join('=') }
+  for (const [name, n] of Object.entries(st.networks ?? {})) if (filters.every((f) => !f.startsWith('label=') || has(n, f.slice('label='.length)))) out(name + '\\n')
   process.exit(0)
 }
 if (cmd === 'run') {
@@ -150,13 +190,22 @@ if (cmd === 'run') {
   if (c.flags.includes('--rm') && c.flags[c.flags.indexOf('--entrypoint') + 1] === 'cat') {
     st.peeks = (st.peeks ?? []).concat([[c.image, ...c.command]]); save()
     if (c.command.join(' ') === '/opt/colloq/server/dist/runner.sha256' && img.runnerBuild) { out(img.runnerBuild + '\\n'); process.exit(0) }
+    // The image's entry point, which states the tunnel protocol of its agent from 0.25 on.
+    if (c.command.join(' ') === '/usr/local/bin/colloq-vast') { out('#!/usr/bin/env bash\\n' + (img.tunnelProtocol ? 'TUNNEL_PROTOCOL=' + img.tunnelProtocol + '\\n' : '')); process.exit(0) }
     fail('cat: ' + c.command.join(' ') + ': No such file or directory')
   }
   if (c.flags.includes('--rm')) { st.oneOffs = (st.oneOffs ?? []).concat([c]); save(); process.exit(st.oneOffFails ? 1 : 0) }
   c.running = true; st.containers[c.name] = c; save(); out('0123456789ab\\n'); process.exit(0)
 }
 if (cmd === 'start') { const c = st.containers[rest[rest.length - 1]]; if (!c) fail('No such container'); c.running = true; save(); process.exit(0) }
-if (cmd === 'stop') { const c = st.containers[rest[rest.length - 1]]; if (c) { c.running = false; c.stoppedWith = rest.slice(0, -1); save() } process.exit(c ? 0 : 1) }
+if (cmd === 'stop') {
+  const c = st.containers[rest[rest.length - 1]]
+  // Whether the agent's tree held the restart marker when its container was stopped (its last sync would say bye: restart).
+  const marker = process.env.FAKE_TREE ? process.env.FAKE_TREE + '/restart.marker' : null
+  st.stops = (st.stops ?? []).concat([{ name: rest[rest.length - 1], running: !!c?.running, marker: !!marker && fs.existsSync(marker) }])
+  if (c) { c.running = false; c.stoppedWith = rest.slice(0, -1) }
+  save(); process.exit(c ? 0 : 1)
+}
 if (cmd === 'rm') { const n = rest[rest.length - 1]; delete st.containers[n]; save(); process.exit(0) }
 if (cmd === 'update') {
   const c = st.containers[rest[rest.length - 1]]; if (!c) fail('No such container')
@@ -177,7 +226,9 @@ if (cmd === 'exec') {
       st.statusAsks = (st.statusAsks ?? 0) + 1; save()
       const at = agent.syncedAt === 'now' || (agent.syncedAt === 'later' && st.statusAsks > 2) ? Date.now() : agent.syncedAt === 'later' ? 0 : agent.syncedAt
       const synced = agent.syncedAt === undefined ? {} : { syncedAt: at }
-      out(JSON.stringify({ joined: !!agent.joined, ...(agent.homeVersion ? { homeVersion: agent.homeVersion } : {}), ...synced }) + '\\n')
+      // An agent of 0.25 on: its tunnel to the home and the class containers it holds by role.
+      const classes = { ...(agent.tunnel !== undefined ? { tunnel: agent.tunnel } : {}), ...(agent.classes !== undefined ? { classes: agent.classes } : {}) }
+      out(JSON.stringify({ joined: !!agent.joined, ...(agent.homeVersion ? { homeVersion: agent.homeVersion } : {}), ...synced, ...classes }) + '\\n')
       process.exit(agent.joined ? 0 : 1)
     }
     if (what[2] === 'drain') process.exit(agent.drain ?? 0)
@@ -199,7 +250,7 @@ function write(file: string, text: string, mode = 0o755): void {
   fs.writeFileSync(file, text, { mode })
 }
 
-type Image = { id: string; labels?: Record<string, string>; runnerBuild?: string }
+type Image = { id: string; labels?: Record<string, string>; runnerBuild?: string; tunnelProtocol?: number }
 type Container = {
   image: string; imageId: string; running: boolean; flags: string[]; env: Record<string, string>; labels: Record<string, string>
   mounts: string[]; publish?: string; command: string[]; restart: string; health?: string; envFile?: string; stoppedWith?: string[]
@@ -209,13 +260,23 @@ type State = {
   images: Record<string, Image>
   registry: Record<string, Image>
   containers: Record<string, Container>
-  agent?: { joined?: boolean; drain?: number; leave?: number | 'hang'; homeVersion?: string; syncedAt?: number | 'now' | 'later' }
+  agent?: {
+    joined?: boolean; drain?: number; leave?: number | 'hang'; homeVersion?: string; syncedAt?: number | 'now' | 'later'
+    tunnel?: unknown; classes?: { room: number; own: number; council: number }
+  }
   statusAsks?: number
   execs?: { name: string; what: string[]; files?: { env: boolean; image: boolean } | null }[]
   oneOffs?: Container[]
   /** The throwaway `cat`s: image, then the file asked for. */
   peeks?: string[][]
+  /** Every `docker stop`, and whether the agent's tree held the restart marker then. */
+  stops?: { name: string; running: boolean; marker: boolean }[]
   minted?: Record<string, unknown>
+  /** The daemon runs rootless; its cgroup version ('2' unless said). */
+  rootless?: boolean
+  cgroup?: string
+  /** Its networks by name, with their labels (`docker network ls --filter label=…`). */
+  networks?: Record<string, { labels?: Record<string, string> }>
   [key: string]: unknown
 }
 
@@ -244,6 +305,9 @@ function machine(given: Partial<State> = {}, opts: { gpu?: boolean } = {}) {
   write(path.join(bin, 'dpkg-query'), '#!/bin/sh\nprintf "installed nvidia-driver-580\\ninstalled libnvidia-compute-580\\n"\n')
   write(path.join(bin, 'id'), '#!/bin/sh\nif [ "$1" = -u ]; then echo "${FAKE_UID:-0}"; else exec /usr/bin/id "$@"; fi\n')
   write(path.join(bin, 'fuser'), '#!/bin/sh\nexit 1\n')
+  // The host's iptables, with Docker's DOCKER-USER chain unless FAKE_NO_DOCKER_USER; its disk, FAKE_DISK_GB (200) in all.
+  recorder('iptables', '[ -z "$FAKE_NO_DOCKER_USER" ] || { echo "iptables: No chain/target/match by that name." >&2; exit 1; }\nexit 0')
+  write(path.join(bin, 'df'), '#!/bin/sh\nkb=$(( ${FAKE_DISK_GB:-200} * 1048576 ))\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/vda1 %s 1048576 %s 1%% /\\n" "$kb" "$kb"\n')
   const stateFile = path.join(dir, 'docker.json')
   const initial: State = { version: '28.3.1', images: {}, registry: {}, containers: {}, nvidia: true, agent: { joined: true }, ...given }
   fs.writeFileSync(stateFile, JSON.stringify(initial))
@@ -263,6 +327,7 @@ function machine(given: Partial<State> = {}, opts: { gpu?: boolean } = {}) {
     // An agent's word on its home is taken from a sync already made or not at all, not waited a minute for.
     COLLOQ_RUNNER_FRESH_SEC: '0',
     FAKE_CONF: conf,
+    FAKE_TREE: tree,
   }
   const run = (args: string[], env: Record<string, string> = {}) => {
     // stdin from /dev/null: on macOS node's pipes are sockets, and bash on a
@@ -322,9 +387,13 @@ test('runner up on a bare machine: the home picks the image, and the container g
     }
     // A minute and a half to hand its runs back on a stop, through a relay's backoff.
     assert.equal(c.flags[c.flags.indexOf('--stop-timeout') + 1], '90')
-    // Its own image, to probe the cards with, and its own container, to stop Docker restarting it after a 401.
+    // On the host's network (D19), where a class kernel's Jupyter is published on 127.0.0.1 alone.
+    assert.equal(c.flags[c.flags.indexOf('--network') + 1], 'host')
+    // Its own image, to probe the cards with, and its own container, to stop Docker restarting it after a 401;
+    // the entry point finds that container by name (under host networking the hostname is the host's).
     assert.equal(c.env.COLLOQ_RUNNER_IMAGE, SERVER('0.24.0'))
     assert.equal(c.env.COLLOQ_RUNNER_CONTAINER, 'colloq-runner')
+    assert.equal(c.env.COLLOQ_CONTAINER, 'colloq-runner')
     // Its settings: the join (no trailing slash, the code after #) and the way out, nothing of the instance's.
     const env = m.runnerEnv()
     assert.match(env, new RegExp(`^COLLOQ_RUNNER_JOIN=https://vsos\\.colloq\\.ru#${CODE}$`, 'm'))
@@ -923,8 +992,9 @@ test('the one-off a stopped machine leaves from sees what the agent saw: the CA 
     const oneOff = m.state().oneOffs!.find((o) => o.command.join(' ') === 'runner leave')!
     assert.equal(oneOff.env.NODE_EXTRA_CA_CERTS, ca, 'told to trust it')
     assert.ok(oneOff.mounts.includes(`${ca}:${ca}:ro`), `and given it: ${oneOff.mounts.join(' ')}`)
-    // The very mounts the agent had, the same list.
+    // The very mounts the agent had, the same list, and its network: the host's, its way to the home.
     assert.deepEqual(oneOff.mounts, agent.mounts)
+    assert.equal(oneOff.flags[oneOff.flags.indexOf('--network') + 1], 'host')
     // Its image to probe with, and no container of its own: this one-off is not the machine's.
     assert.equal(oneOff.env.COLLOQ_RUNNER_IMAGE, SERVER('0.24.0'))
     assert.equal(oneOff.env.COLLOQ_RUNNER_CONTAINER, '')
@@ -1014,7 +1084,7 @@ test('runner-code mints on the instance and prints the code once, inside the thr
     assert.match(r.out, /a code for 3 machine\(s\), valid until 2025-10-14 12:00 UTC; trusted with the hidden test; at most 4 places each/)
     // The three commands of the design, filled in: the image the instance runs, under its colloq-server name.
     assert.ok(r.out.includes([
-      '  docker run -d --name colloq-runner --restart unless-stopped --stop-timeout 90 \\',
+      '  docker run -d --name colloq-runner --restart unless-stopped --network host --stop-timeout 90 \\',
       '    -v /var/run/docker.sock:/var/run/docker.sock \\',
       '    -v /var/lib/colloq-runner:/var/lib/colloq-runner \\',
       `    -e COLLOQ_RUNNER_JOIN='https://vsos.colloq.ru#${CODE}' \\`,
@@ -1131,7 +1201,7 @@ exit 0
   return { dir, run, done: () => fs.rmSync(dir, { recursive: true, force: true }) }
 }
 
-const RUNNER_FUNCTIONS = ['require_docker', 'locate_self', 'host_path_of', 'require_same_path', 'runner_state_problem', 'runner_join_args', 'runner']
+const RUNNER_FUNCTIONS = ['require_docker', 'locate_self', 'own_container_id', 'host_path_of', 'require_same_path', 'runner_state_problem', 'runner_join_args', 'runner']
 
 test('the agent starts only with the daemon and its tree at the same host path, with the backend the server accepts', () => {
   const rig = entrypointRig()
@@ -1472,5 +1542,488 @@ test('the runner on-start takes the home\'s version from the repository COLLOQ_R
     assert.ok(r.calls.includes(`docker run --rm -v ${sbin}:/host ${fork}:0.24.0 install-host /host\n`), r.calls)
     assert.ok(r.calls.includes(`colloq-host runner up https://vsos.colloq.ru ${CODE} ${fork}:0.24.0 REPO=${fork}\n`), r.calls)
     assert.doesNotMatch(r.calls, /ghcr\.io\/colloq-edu/)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ------------------------------------------------- classes on machines (0.25)
+
+/**
+ * The label the agent of a tree puts on its containers (runner-agent/images.ts · INSTANCE_LABEL: the hash of
+ * its data root, `<tree>/data`), as `key=value`; one test below holds it equal to images.ts's own.
+ */
+const instanceOf = (tree: string): string => `ru.colloq.competition-instance=${createHash('sha256').update(path.resolve(tree, 'data')).digest('hex').slice(0, 16)}`
+
+/** A class kernel's container as the agent of `tree` starts one (room-spec.ts · machineRoomRunArgs): its kind, its placement, its agent's label. */
+function classKernel(tree: string, sessionId: string, role: 'room' | 'own' | 'council', gen = 1): Container {
+  const [key, value] = instanceOf(tree).split('=') as [string, string]
+  return {
+    image: `ghcr.io/colloq-edu/colloq-kernel@sha256:${'d'.repeat(64)}`, imageId: 'sha256:kernel', running: true, flags: [], env: {},
+    labels: { 'colloq.kind': 'class-kernel', 'colloq.placement': `${sessionId}:${role}:${gen}`, [key]: value }, mounts: [], command: [], restart: 'no',
+  }
+}
+
+/** A release of 0.25 or later: its entry point states the tunnel protocol its agent speaks. */
+const tunnelRelease = (id: string, version: string, protocol: number): Image => ({ ...release(id, version), tunnelProtocol: protocol })
+
+test('an agent an older colloq-host started on Docker\'s bridge is moved onto the host\'s network by the next runner up, as a restart', () => {
+  const m = machine({ registry: { [SERVER('0.25.0')]: tunnelRelease('sha256:r25', '0.25.0', 1) } })
+  try {
+    assert.equal(m.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.25.0' }).status, 0)
+    // What the colloq-host of 0.24 left: the same image and settings, no --network, and its fingerprint, which knew no network.
+    const sorted = m.runnerEnv().split('\n').filter(Boolean).sort().map((line) => `${line}\n`).join('')
+    const before = createHash('sha256').update(`${SERVER('0.25.0')}\nsha256:r25\n${sorted}state ${m.tree}\n`).digest('hex').slice(0, 16)
+    m.setState((s) => {
+      const c = s.containers['colloq-runner']!
+      c.flags = c.flags.filter((flag, i, all) => flag !== '--network' && all[i - 1] !== '--network')
+      c.labels['colloq.config'] = before
+      s.containers['colloq-class-a1b2c3-c1-room'] = classKernel(m.tree, 'c1', 'room')
+    })
+    m.clearCalls()
+    const r = m.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.25.0' })
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /replacing colloq-runner \(new image or settings\); class kernels keep running/)
+    const c = m.state().containers['colloq-runner']!
+    assert.equal(c.flags[c.flags.indexOf('--network') + 1], 'host')
+    // A restart, not an end: the agent's last sync says so (the marker in its tree), and the marker does not outlive the stop.
+    assert.deepEqual(m.state().stops!.map((stop) => [stop.name, stop.running, stop.marker]), [['colloq-runner', true, true]])
+    assert.equal(fs.existsSync(path.join(m.tree, 'restart.marker')), false)
+    // The class kernels are not colloq-host's to stop: they wait for the new agent to adopt them.
+    assert.equal(m.state().containers['colloq-class-a1b2c3-c1-room']!.running, true)
+    // From then on the fingerprint is this colloq-host's own: a reboot's runner up leaves the agent alone.
+    assert.match(m.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.25.0' }).out, /colloq-runner is already running with these settings/)
+  } finally { m.done() }
+})
+
+test('runner up --classes checks first that the machine can take classes, and refuses before anything is written, pulled or started', () => {
+  const registry = { [SERVER('0.25.0')]: tunnelRelease('sha256:r25', '0.25.0', 1) }
+  const app = (labels: Record<string, string> = {}): Container => ({ image: 'ghcr.io/colloq-edu/colloq-vast:0.25.0', imageId: 'sha256:app', running: true, flags: [], env: {}, labels, mounts: [], command: [], restart: 'unless-stopped' })
+  const fine = machine({ registry, nvidia: false }, { gpu: false })
+  try {
+    // 57 GB of a 60 GB floor passes: a disk shows a few percent less than it was rented at.
+    const r = fine.run(['runner', 'up', '--classes', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.25.0', FAKE_DISK_GB: '57' })
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /this machine can take classes: Docker run by root with its iptables, cgroup v2, no Colloq server on this Docker, disk enough for the class folders/)
+    assert.equal(fine.state().containers['colloq-runner']!.image, SERVER('0.25.0'))
+    assert.match(fine.hostCalls(), /^iptables -w -n -L DOCKER-USER$/m, 'the chain was asked of the host\'s own iptables')
+  } finally { fine.done() }
+  const cases: Array<[string, Partial<State>, Record<string, string>, RegExp, boolean]> = [
+    ['a rootless daemon', { rootless: true }, {}, /ERROR: Docker here runs rootless: classes need the daemon run by root, whose iptables rules fence the network of every class/, false],
+    ['no DOCKER-USER chain', {}, { FAKE_NO_DOCKER_USER: '1' }, /ERROR: Docker here does not manage iptables \(no DOCKER-USER chain: "iptables": false in \/etc\/docker\/daemon\.json, its nftables backend, or no iptables at all\)/, false],
+    ['cgroup v1', { cgroup: '1' }, {}, /ERROR: this machine runs cgroup 1, and classes need cgroup v2/, false],
+    ['an instance beside it', { containers: { colloq: app() } }, {}, /ERROR: a Colloq server runs on this Docker \(its container, its rooms, or its rooms' network\): a machine that takes classes needs a Docker of its own/, false],
+    ['an instance under another name', { containers: { 'campus-colloq': app({ 'colloq.kind': 'app' }) } }, {}, /ERROR: a Colloq server runs on this Docker/, false],
+    ['a pip home\'s rooms', { containers: { 'colloq-room-abc': { ...app({ 'colloq.kind': 'room-kernel' }), image: 'colloq-kernel:base' } } }, {}, /ERROR: a Colloq server runs on this Docker/, false],
+    // Every room of it idle, so their containers gone: the network they live on stays, and the agent counts it (D20).
+    ['a pip home\'s rooms\' network alone', { networks: { 'colloq-rooms': { labels: { 'colloq.kind': 'room-network' } } } }, {}, /ERROR: a Colloq server runs on this Docker/, false],
+    ['a small disk', {}, { FAKE_DISK_GB: '50' }, /ERROR: the disk of \S+ holds 50 GB, and a machine without cards that takes classes needs 60 GB: the 40 GB any machine without cards needs, and 20 GB for the class folders/, false],
+    ['a small disk with cards', {}, { FAKE_DISK_GB: '130' }, /ERROR: the disk of \S+ holds 130 GB, and a machine with cards that takes classes needs 140 GB: the 120 GB any machine with cards needs, and 20 GB for the class folders/, true],
+  ]
+  for (const [what, given, env, said, gpu] of cases) {
+    const m = machine({ registry, nvidia: gpu, ...given }, { gpu })
+    try {
+      const r = m.run(['runner', 'up', 'https://vsos.colloq.ru', CODE, '--classes'], { FAKE_HOME_VERSION: '0.25.0', ...env })
+      assert.notEqual(r.status, 0, what)
+      assert.match(r.out, said, what)
+      assert.match(r.out, /this machine cannot take classes \(above\), and nothing was pulled or started: fix what is said and run this again, or join it for submissions only with a code that takes no classes/, what)
+      assert.deepEqual(m.dockerCalls().filter((c) => c[0] === 'pull' || c[0] === 'run'), [], `${what}: nothing pulled or started`)
+      assert.equal(fs.existsSync(path.join(m.conf, 'runner.env')), false, `${what}: nothing written`)
+    } finally { m.done() }
+  }
+  // Every problem at once, for the person who fixes them.
+  const all = machine({ registry, rootless: true, cgroup: '1', nvidia: false }, { gpu: false })
+  try {
+    const r = all.run(['runner', 'up', 'https://vsos.colloq.ru', CODE, '--classes'], { FAKE_HOME_VERSION: '0.25.0', FAKE_NO_DOCKER_USER: '1', FAKE_DISK_GB: '20' })
+    assert.notEqual(r.status, 0)
+    assert.equal(r.out.match(/\[colloq-host\] ERROR: /g)!.length, 5, r.out)
+  } finally { all.done() }
+  // Without --classes the same machine joins for what its code says, and an instance beside it is only said.
+  const plain = machine({ registry, rootless: true, cgroup: '1', containers: { colloq: app() } })
+  try {
+    const r = plain.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.25.0', FAKE_NO_DOCKER_USER: '1' })
+    assert.equal(r.status, 0, r.out)
+    assert.doesNotMatch(r.out, /take classes/)
+    assert.match(r.out, /WARNING: this machine runs an instance too \(colloq\)/)
+    // A word that is no option is refused before anything.
+    const odd = plain.run(['runner', 'up', 'https://vsos.colloq.ru', CODE, '--class'])
+    assert.notEqual(odd.status, 0)
+    assert.match(odd.out, /usage: colloq-host runner up https:\/\/<home> <code> \[IMAGE\] \[--classes\]/)
+  } finally { plain.done() }
+})
+
+test('runner update stops the agent as a restart: the marker is in its tree for its last sync, and gone after', () => {
+  const m = machine({ registry: {
+    [SERVER('0.25.0')]: tunnelRelease('sha256:r25', '0.25.0', 1), [SERVER('0.25.1')]: tunnelRelease('sha256:r251', '0.25.1', 1),
+    [SERVER('0.25.2')]: tunnelRelease('sha256:r252', '0.25.2', 1), [SERVER('0.25.3')]: tunnelRelease('sha256:r253', '0.25.3', 1),
+  } })
+  try {
+    assert.equal(m.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.25.0' }).status, 0)
+    const marker = path.join(m.tree, 'restart.marker')
+    // The stops of one update: whether each found the agent running, and the marker in its tree.
+    const stopsOf = (run: () => { status: number | null; out: string }) => {
+      const before = (m.state().stops ?? []).length
+      const r = run()
+      assert.equal(r.status, 0, r.out)
+      return m.state().stops!.slice(before).map((stop) => [stop.running, stop.marker])
+    }
+    // Drained, then stopped with the marker there: its goodbye says restart, and its home holds the classes for it.
+    // (The replacement after it finds the agent stopped already, and writes none.)
+    assert.deepEqual(stopsOf(() => m.run(['runner', 'update'], { FAKE_HOME_VERSION: '0.25.1' })), [[true, true], [false, false]])
+    assert.equal(fs.existsSync(marker), false, 'no marker outlives the stop')
+    // --now, the same.
+    assert.deepEqual(stopsOf(() => m.run(['runner', 'update', '--now', '0.25.2'])), [[true, true], [false, false]])
+    assert.equal(fs.existsSync(marker), false)
+    // A stopped agent says nothing more: none is written for it.
+    m.setState((s) => { s.containers['colloq-runner']!.running = false })
+    assert.deepEqual(stopsOf(() => m.run(['runner', 'update', '0.25.3'])), [[false, false]])
+    assert.equal(fs.existsSync(marker), false)
+    // A leave is an end, never a restart.
+    const stops = m.state().stops!.length
+    assert.equal(m.run(['runner', 'leave']).status, 0)
+    assert.equal(m.state().stops!.length, stops, 'the agent stops itself on a leave')
+    assert.equal(fs.existsSync(marker), false)
+  } finally { m.done() }
+})
+
+test('runner update keeps classes running, and refuses an agent whose tunnel its home would refuse while they run', () => {
+  const registry = {
+    [SERVER('0.25.0')]: tunnelRelease('sha256:r25', '0.25.0', 1), [SERVER('0.25.1')]: tunnelRelease('sha256:r251', '0.25.1', 1),
+    [SERVER('0.26.0')]: tunnelRelease('sha256:r26', '0.26.0', 2),
+  }
+  const m = machine({ registry })
+  try {
+    assert.equal(m.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.25.0' }).status, 0)
+    // Two classes: one with its room and personal kernels, one with its council.
+    m.setState((s) => {
+      s.containers['colloq-class-a1b2c3-c1-room'] = classKernel(m.tree, 'c1', 'room')
+      s.containers['colloq-class-a1b2c3-c1-own'] = classKernel(m.tree, 'c1', 'own')
+      s.containers['colloq-class-a1b2c3-c2-council'] = classKernel(m.tree, 'c2', 'council', 4)
+    })
+    const touched = (calls: string[][]) => calls.filter((c) => c[0] === 'stop' || c[0] === 'rm' || (c[0] === 'run' && c[1] === '-d') || (c[0] === 'exec' && c.includes('drain')))
+    // Another protocol, named while the home runs 0.25.0: refused before anything is drained or stopped.
+    m.clearCalls()
+    let r = m.run(['runner', 'update', '0.26.0'], { FAKE_HOME_VERSION: '0.25.0' })
+    assert.notEqual(r.status, 0, r.out)
+    assert.match(r.out, /this machine holds 2 class\(es\), reached through its agent's tunnel in protocol 1, its home's, and the agent of ghcr\.io\/colloq-edu\/colloq-server:0\.26\.0 speaks 2: its home would refuse that tunnel, and the classes would move to the server, their variables lost\. Nothing was changed: update to the release the home runs \(0\.25\.0: colloq-host runner update\), or once the classes are over/)
+    assert.deepEqual(touched(m.dockerCalls()), [])
+    assert.equal(m.state().containers['colloq-runner']!.image, SERVER('0.25.0'))
+    assert.equal(m.runnerImage(), SERVER('0.25.0'))
+    // The protocols of both images were read from their entry points, by throwaway containers that run nothing of them.
+    assert.deepEqual(m.state().peeks!.filter((p) => p[1] === '/usr/local/bin/colloq-vast').map((p) => p[0]), [SERVER('0.26.0'), 'sha256:r25'])
+    // The same protocol: updated, and the classes keep running for the new agent to adopt.
+    r = m.run(['runner', 'update', '0.25.1'], { FAKE_HOME_VERSION: '0.25.0' })
+    assert.equal(r.status, 0, r.out)
+    assert.equal(m.state().containers['colloq-runner']!.image, SERVER('0.25.1'))
+    for (const name of ['colloq-class-a1b2c3-c1-room', 'colloq-class-a1b2c3-c1-own', 'colloq-class-a1b2c3-c2-council']) assert.equal(m.state().containers[name]!.running, true, name)
+    // The home went first, as the order goes: following it is the update that brings the agent back to its protocol.
+    r = m.run(['runner', 'update'], { FAKE_HOME_VERSION: '0.26.0' })
+    assert.equal(r.status, 0, r.out)
+    assert.equal(m.state().containers['colloq-runner']!.image, SERVER('0.26.0'))
+  } finally { m.done() }
+  // Without classes on it a machine's tunnel is nobody's yet: it updates as before.
+  const idle = machine({ registry })
+  try {
+    assert.equal(idle.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.25.0' }).status, 0)
+    const r = idle.run(['runner', 'update', '0.26.0'], { FAKE_HOME_VERSION: '0.25.0' })
+    assert.equal(r.status, 0, r.out)
+    assert.equal(idle.state().containers['colloq-runner']!.image, SERVER('0.26.0'))
+    assert.deepEqual((idle.state().peeks ?? []).filter((p) => p[1] === '/usr/local/bin/colloq-vast'), [], 'and nothing is read for it')
+  } finally { idle.done() }
+})
+
+test('runner leave on a machine with classes asks first, changes nothing without --force, and moves them with it', () => {
+  const m = machine({ registry: { [SERVER('0.25.0')]: tunnelRelease('sha256:r25', '0.25.0', 1) } })
+  try {
+    assert.equal(m.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.25.0' }).status, 0)
+    m.setState((s) => {
+      s.containers['colloq-class-a1b2c3-c1-room'] = classKernel(m.tree, 'c1', 'room')
+      s.containers['colloq-class-a1b2c3-c1-own'] = classKernel(m.tree, 'c1', 'own')
+      s.containers['colloq-class-a1b2c3-c2-room'] = { ...classKernel(m.tree, 'c2', 'room', 7), running: false }
+    })
+    m.clearCalls()
+    let r = m.run(['runner', 'leave'])
+    // Its own exit, which the fleet's runners-down reads (scripts/vast-runner.sh · down_one).
+    assert.equal(r.status, 3, r.out)
+    assert.match(r.out, /ERROR: this machine holds 2 class\(es\) of its home: leaving moves them to the home's server, and their variables are lost \(colloq-host runner leave --force leaves all the same\)/)
+    assert.deepEqual(m.dockerCalls().filter((c) => c[0] === 'update' || c[0] === 'exec' || c[0] === 'stop' || c[0] === 'rm'), [], 'nothing was changed')
+    const c = m.state().containers['colloq-runner']!
+    assert.deepEqual([c.running, c.restart], [true, 'unless-stopped'])
+    assert.match(m.runnerEnv(), /^COLLOQ_RUNNER_JOIN=/m)
+    // --force: it leaves, and says what becomes of its classes.
+    r = m.run(['runner', 'leave', '--force'])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /--force: the 2 class\(es\) on this machine move to its home's server as it leaves, and their variables are lost/)
+    assert.equal(m.state().containers['colloq-runner'], undefined)
+    // What is no option is refused.
+    const odd = m.run(['runner', 'leave', '--now'])
+    assert.notEqual(odd.status, 0)
+    assert.match(odd.out, /usage: colloq-host runner leave \[--force\]/)
+  } finally { m.done() }
+})
+
+test('runner status names the tunnel and the classes on stderr, and leaves stdout the agent\'s line alone', () => {
+  const m = machine({ registry: { [SERVER('0.25.0')]: tunnelRelease('sha256:r25', '0.25.0', 1) } })
+  try {
+    assert.equal(m.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.25.0' }).status, 0)
+    m.setState((s) => { s.agent = { joined: true, tunnel: { up: true, rttMs: 48, since: 1_760_000_000_000 }, classes: { room: 1, own: 2, council: 0 } } })
+    let r = m.run(['runner', 'status'])
+    assert.equal(r.status, 0, r.out)
+    assert.equal(r.stdout, '{"joined":true,"tunnel":{"up":true,"rttMs":48,"since":1760000000000},"classes":{"room":1,"own":2,"council":0}}\n')
+    assert.match(r.out, /^\[colloq-host\] tunnel: up · RTT 48 ms$/m)
+    assert.match(r.out, /^\[colloq-host\] classes: room 1 · own 2 · council 0$/m)
+    // Down, with no round trip to tell; a word for a tunnel reads the same; the agent's exit is the command's.
+    m.setState((s) => { s.agent = { joined: false, tunnel: { up: false, rttMs: null }, classes: { room: 0, own: 0, council: 0 } } })
+    r = m.run(['runner', 'status'])
+    assert.equal(r.status, 1, r.out)
+    assert.match(r.out, /^\[colloq-host\] tunnel: down$/m)
+    assert.match(r.out, /^\[colloq-host\] classes: room 0 · own 0 · council 0$/m)
+    m.setState((s) => { s.agent = { joined: true, tunnel: 'up' } })
+    assert.match(m.run(['runner', 'status']).out, /^\[colloq-host\] tunnel: up$/m)
+    // A machine that takes no classes (no tunnel asked for, none held), and an agent from before classes: nothing is added.
+    for (const agent of [{ joined: true, tunnel: null, classes: { room: 0, own: 0, council: 0 } }, { joined: true }]) {
+      m.setState((s) => { s.agent = agent })
+      r = m.run(['runner', 'status'])
+      assert.equal(r.stdout, `${JSON.stringify(agent)}\n`)
+      assert.doesNotMatch(r.out, /tunnel:|classes:/)
+    }
+    // Classes held while the tunnel is not asked for (between two syncs): the classes are said all the same.
+    m.setState((s) => { s.agent = { joined: true, tunnel: null, classes: { room: 0, own: 0, council: 1 } } })
+    assert.match(m.run(['runner', 'status']).out, /^\[colloq-host\] classes: room 0 · own 0 · council 1$/m)
+  } finally { m.done() }
+})
+
+test('runner-code --classes mints a code that takes classes, whose bare machine checks first; never with --trusted', () => {
+  const appImage = 'ghcr.io/colloq-edu/colloq-vast:0.25.0'
+  const m = machine({ images: { [appImage]: release('sha256:app25', '0.25.0') }, minted: { code: CODE, expiresAt: Date.UTC(2025, 9, 14, 12, 0), machines: 2, trusted: false, classes: true } })
+  try {
+    m.setState((s) => { s.containers.colloq = { image: appImage, imageId: 'sha256:app25', running: true, flags: [], env: {}, labels: {}, mounts: [], command: [], restart: 'unless-stopped' } })
+    fs.mkdirSync(m.home, { recursive: true })
+    fs.writeFileSync(path.join(m.home, '.env'), 'PUBLIC_URL=https://vsos.colloq.ru\n')
+    let r = m.run(['runner-code', '--machines', '2', '--classes'])
+    assert.equal(r.status, 0, r.out)
+    assert.deepEqual(m.state().execs!.at(-1)!.what, ['colloq-vast', 'runner-code', '--machines', '2', '--hours', '24', '--classes'])
+    assert.match(r.out, /a code for 2 machine\(s\), valid until 2025-10-14 12:00 UTC; takes classes, and is never given the hidden test/)
+    assert.match(r.out, /it lets those machines take this instance's submissions and its classes, whose code, files and personal notebooks they see/)
+    assert.ok(r.out.includes(`  docker run -d --name colloq-runner --restart unless-stopped --network host --stop-timeout 90 \\\n`), r.out)
+    assert.ok(r.out.includes(`  colloq-host runner up https://vsos.colloq.ru ${CODE} --classes\n`), r.out)
+    assert.ok(r.out.includes(`  make vast-runner COUNT=2 CODE=${CODE} URL=https://vsos.colloq.ru\n`), r.out)
+    // Both flags at once: refused before anything is minted (D3).
+    const execs = m.state().execs!.length
+    r = m.run(['runner-code', '--classes', '--trusted'])
+    assert.notEqual(r.status, 0)
+    assert.match(r.out, /--classes and --trusted do not go together: a machine that takes classes is never given the hidden test/)
+    assert.equal(m.state().execs!.length, execs, 'nothing was minted')
+  } finally { m.done() }
+})
+
+test('the entry point states its agent\'s tunnel protocol as shared/remote-tunnel.ts has it, and colloq-host reads it from an image', () => {
+  assert.equal(/^TUNNEL_PROTOCOL=(\d+)$/m.exec(ENTRYPOINT)?.[1], String(TUNNEL_PROTOCOL))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-runner-tunnel-'))
+  try {
+    // A docker whose throwaway `cat` of the image's entry point prints this checkout's.
+    const entry = path.join(ROOT, 'deploy/vast/entrypoint.sh')
+    write(path.join(dir, 'bin', 'docker'), `#!/bin/sh\ncase "$*" in\n  "run --rm --network none --entrypoint cat img:new /usr/local/bin/colloq-vast") cat '${entry}' ;;\n  "run --rm --network none --entrypoint cat img:old /usr/local/bin/colloq-vast") echo '#!/usr/bin/env bash' ;;\n  *) exit 1 ;;\nesac\n`)
+    const reader = shellFunction(read('deploy/vast/colloq-host'), 'tunnel_protocol_of')
+    const protocolOf = (img: string) => spawnSync('bash', ['-c', `set -euo pipefail\n${reader}printf '[%s]' "$(tunnel_protocol_of ${img})"`],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: `${path.join(dir, 'bin')}:${process.env.PATH}` } })
+    assert.equal(protocolOf('img:new').stdout, `[${TUNNEL_PROTOCOL}]`)
+    // An image from before classes, and one that cannot be read: no protocol.
+    assert.equal(protocolOf('img:old').stdout, '[]')
+    assert.equal(protocolOf('img:gone').stdout, '[]')
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the agent finds its own container on the host\'s network, where its hostname is the host\'s', () => {
+  const rig = entrypointRig()
+  try {
+    // Under --network host Docker gives the container the host's name, and no container is called that.
+    write(path.join(rig.dir, 'bin', 'hostname'), '#!/bin/sh\necho vast-host-17\n')
+    const id = 'c0ffee'.padEnd(64, '0')
+    const mountinfo = path.join(rig.dir, 'mountinfo')
+    fs.writeFileSync(mountinfo, [
+      '1001 999 0:52 / / rw,relatime master:1 - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/ABC',
+      `1012 1001 254:1 /var/lib/docker/containers/${id}/resolv.conf /etc/resolv.conf rw,relatime - ext4 /dev/vda1 rw`,
+      `1013 1001 254:1 /var/lib/docker/containers/${id}/hostname /etc/hostname rw,relatime - ext4 /dev/vda1 rw`,
+      '',
+    ].join('\n'))
+    const start = (env: Record<string, string>, mounts = mountinfo) => rig.run(RUNNER_FUNCTIONS,
+      `APP='${rig.dir}'; RUNNER_STATE=/var/lib/colloq-runner; VERSION=0.25.0; SELF=""; MOUNTINFO='${mounts}'\nrunner\n`,
+      { FAKE_MOUNTS: '/var/lib/colloq-runner\\t/var/lib/colloq-runner\\n', FAKE_IMAGE: SERVER('0.25.0'), COLLOQ_CONTAINER: '', ...env })
+    // The panel's plain docker run: by the id Docker's own mounts name.
+    let r = start({ FAKE_SELF: id })
+    assert.equal(r.status, 0, r.out)
+    assert.equal(r.env.COLLOQ_RUNNER_CONTAINER, id)
+    assert.equal(r.env.COLLOQ_CONTAINER, id, 'the server\'s own code finds the container by it too (perimeter.ts · helperImage)')
+    assert.equal(r.env.COLLOQ_RUNNER_IMAGE, SERVER('0.25.0'))
+    // colloq-host names it: that name.
+    r = start({ FAKE_SELF: 'colloq-runner', COLLOQ_CONTAINER: 'colloq-runner' })
+    assert.equal(r.status, 0, r.out)
+    assert.equal(r.env.COLLOQ_RUNNER_CONTAINER, 'colloq-runner')
+    // Another runtime, no such mounts: the hostname, as before host networking.
+    const bare = path.join(rig.dir, 'mountinfo-bare')
+    fs.writeFileSync(bare, '1001 999 0:52 / / rw,relatime - overlay overlay rw\n')
+    r = start({ FAKE_SELF: 'vast-host-17' }, bare)
+    assert.equal(r.status, 0, r.out)
+    assert.equal(r.env.COLLOQ_RUNNER_CONTAINER, 'vast-host-17')
+    // Found by none: refused in words.
+    r = start({ FAKE_SELF: 'someone-else' }, bare)
+    assert.equal(r.status, 1, r.out)
+    assert.match(r.out, /cannot inspect this container as "vast-host-17"\. Start it without --hostname, or set COLLOQ_CONTAINER=<its name>\./)
+  } finally { rig.done() }
+})
+
+test('runners-down answers for its machines: one with classes is asked to leave again with --force, the code of colloq-host\'s refusal', () => {
+  const fleet = read('scripts/vast-runner.sh')
+  const holds = /^LEAVE_HOLDS_CLASSES=(\d+)$/m.exec(fleet)?.[1]
+  assert.equal(holds, /^LEAVE_HOLDS_CLASSES=(\d+)$/m.exec(read('deploy/vast/colloq-host'))?.[1], 'the code colloq-host exits with')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-runner-down-'))
+  try {
+    const calls = path.join(dir, 'calls')
+    const down = (plain: number, forced: number) => {
+      fs.rmSync(calls, { force: true })
+      const script = [
+        'set -euo pipefail',
+        `LEAVE_HOLDS_CLASSES=${holds}`,
+        `say() { printf '%s\\n' "$*"; }`,
+        `ssh_to() { shift 2; printf 'ssh %s\\n' "$*" >> '${calls}'; case "$*" in *--force) return ${forced} ;; *) return ${plain} ;; esac; }`,
+        `api() { printf 'api %s\\n' "$*" >> '${calls}'; }`,
+        shellFunction(fleet, 'down_one'),
+        'down_one 11 198.51.100.11 40011 running',
+      ].join('\n')
+      const r = spawnSync('bash', ['-c', script], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      return { status: r.status, out: r.stdout + r.stderr, calls: fs.readFileSync(calls, 'utf8') }
+    }
+    // Classes on it: the second leave says yes, and the machine is destroyed having left.
+    let r = down(Number(holds), 0)
+    assert.equal(r.status, 0, r.out)
+    assert.equal(r.calls, 'ssh colloq-host runner leave\nssh colloq-host runner leave --force\napi DELETE instances/11/\n')
+    assert.match(r.out, /its classes move to their home's server \(their variables are lost\), and it leaves/)
+    assert.doesNotMatch(r.out, /did not leave/)
+    // None: one leave, as before.
+    r = down(0, 0)
+    assert.equal(r.status, 0, r.out)
+    assert.equal(r.calls, 'ssh colloq-host runner leave\napi DELETE instances/11/\n')
+    // Any other refusal is no question to answer: destroyed all the same, and said so.
+    r = down(1, 0)
+    assert.equal(r.status, 1, r.out)
+    assert.equal(r.calls, 'ssh colloq-host runner leave\napi DELETE instances/11/\n')
+    assert.match(r.out, /it did not leave its home \(above\)/)
+    r = down(Number(holds), 1)
+    assert.equal(r.status, 1, r.out)
+    assert.match(r.out, /it did not leave its home \(above\)/)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the classes a leave or an update asks about are this tree\'s agent\'s, by the label images.ts gives it', () => {
+  // colloq-host's label for a tree is the agent's own for it: images.ts reads DATA_DIR, which the test env makes <root>/data.
+  const tree = path.dirname(dataDir)
+  const label = spawnSync('bash', ['-c', `set -euo pipefail\nRUNNER_STATE='${tree}'\n${shellFunction(read('deploy/vast/colloq-host'), 'instance_label')}instance_label`],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  assert.equal(label.stdout, INSTANCE_LABEL, label.stderr)
+  assert.equal(instanceOf(tree), INSTANCE_LABEL, 'and so are the class kernels made up below')
+  // Another agent's classes on this Docker (a second tree's): this machine's update and leave are no question about them.
+  const m = machine({ registry: { [SERVER('0.25.0')]: tunnelRelease('sha256:r25', '0.25.0', 1), [SERVER('0.26.0')]: tunnelRelease('sha256:r26', '0.26.0', 2) } })
+  try {
+    assert.equal(m.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.25.0' }).status, 0)
+    m.setState((s) => { s.containers['colloq-class-0f0f0f-c9-room'] = classKernel(path.join(m.dir, 'another-tree'), 'c9', 'room') })
+    let r = m.run(['runner', 'update', '0.26.0'], { FAKE_HOME_VERSION: '0.25.0' })
+    assert.equal(r.status, 0, r.out)
+    assert.equal(m.state().containers['colloq-runner']!.image, SERVER('0.26.0'))
+    r = m.run(['runner', 'leave'])
+    assert.equal(r.status, 0, r.out)
+    assert.doesNotMatch(r.out, /class\(es\)/)
+    assert.equal(m.state().containers['colloq-class-0f0f0f-c9-room']!.running, true, 'nobody stops another agent\'s class')
+  } finally { m.done() }
+})
+
+test('the first update from 0.24 leaves the agent on Docker\'s bridge: status says so, the next update moves it, and the fleet runs that one at once', () => {
+  // What the colloq-host of 0.24 leaves once it has updated a machine to 0.25 (its run_runner, its fingerprint)
+  // and installed this one at its end.
+  const m = machine({ registry: { [SERVER('0.25.0')]: tunnelRelease('sha256:r25', '0.25.0', 1) } })
+  try {
+    assert.equal(m.run(['runner', 'up', 'https://vsos.colloq.ru', CODE], { FAKE_HOME_VERSION: '0.25.0' }).status, 0)
+    const sorted = m.runnerEnv().split('\n').filter(Boolean).sort().map((line) => `${line}\n`).join('')
+    m.setState((s) => {
+      const c = s.containers['colloq-runner']!
+      c.flags = c.flags.filter((flag, i, all) => flag !== '--network' && all[i - 1] !== '--network')
+      c.labels['colloq.config'] = createHash('sha256').update(`${SERVER('0.25.0')}\nsha256:r25\n${sorted}state ${m.tree}\n`).digest('hex').slice(0, 16)
+      s.agent = { joined: true, tunnel: null, classes: { room: 0, own: 0, council: 0 } }
+    })
+    let r = m.run(['runner', 'status'])
+    assert.equal(r.status, 0, r.out)
+    assert.equal(r.stdout, '{"joined":true,"tunnel":null,"classes":{"room":0,"own":0,"council":0}}\n', 'stdout stays the agent\'s line alone')
+    assert.match(r.out, /WARNING: colloq-runner runs on Docker's network \(bridge\), not the host's, as a colloq-host from before 0\.25 starts it: it takes submissions, and no classes until colloq-host runner update moves it onto the host's network/)
+    // An agent from before classes is told nothing of them.
+    m.setState((s) => { s.agent = { joined: true } })
+    assert.doesNotMatch(m.run(['runner', 'status']).out, /not the host's/)
+    r = m.run(['runner', 'update'], { FAKE_HOME_VERSION: '0.25.0' })
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /colloq-runner runs ghcr\.io\/colloq-edu\/colloq-server:0\.25\.0 already, but not with these settings: it is replaced the same way/)
+    const c = m.state().containers['colloq-runner']!
+    assert.equal(c.flags[c.flags.indexOf('--network') + 1], 'host')
+  } finally { m.done() }
+  const fleet = read('scripts/vast-runner.sh')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-runner-twice-'))
+  try {
+    // The survey reads the agent's network, and an agent that could hold classes off the host's network is no
+    // `current`, whatever its build; one from before classes holds none anywhere.
+    const bin = path.join(dir, 'bin')
+    write(path.join(bin, 'colloq-host'), `#!/bin/sh\nprintf '{"joined":true,"state":"active","compatible":true,"syncedAt":%s%s}\\n' "$(date +%s)999" "$FAKE_CLASSES"\n`)
+    write(path.join(bin, 'docker'), '#!/bin/sh\ncase "$*" in "inspect -f {{.HostConfig.NetworkMode}} colloq-runner") echo "$FAKE_NETWORK" ;; *) exit 1 ;; esac\n')
+    const survey = /\nSURVEY_SCRIPT='([\s\S]*?)'\n/.exec(fleet)![1]!.replaceAll('/etc/colloq/runner.env', path.join(dir, 'runner.env'))
+    fs.writeFileSync(path.join(dir, 'runner.env'), `COLLOQ_RUNNER_JOIN=https://vsos.colloq.ru#${CODE}\n`)
+    const answers = path.join(dir, 'answers')
+    fs.mkdirSync(answers)
+    const verdictOn = (network: string, classes = ',"classes":{"room":0,"own":0,"council":0}') => {
+      const said = spawnSync('bash', ['-c', survey, 'survey', '0'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: `${bin}:${process.env.PATH}`, FAKE_NETWORK: network, FAKE_CLASSES: classes } })
+      fs.writeFileSync(path.join(answers, '11'), said.stdout)
+      const py = spawnSync('python3', ['-c', /\nFLEET_PY='([\s\S]*?)'\n/.exec(fleet)![1]!], { input: ['11', '198.51.100.11', '40011', 'running', 'colloq-runner'].join('\x1f') + '\n',
+        encoding: 'utf8', env: { ...process.env, SURVEY: answers, WANT: '' } })
+      assert.equal(py.status, 0, py.stderr)
+      return py.stdout.trim().split('\x1f').pop()
+    }
+    assert.equal(verdictOn('bridge'), 'off_host')
+    assert.equal(verdictOn('host'), 'current')
+    assert.equal(verdictOn(''), 'current', 'a machine whose Docker did not say')
+    assert.equal(verdictOn('bridge', ''), 'current', 'an agent from before classes')
+    // What update_one asks on the machine after an update: the network of an agent that could hold classes, and only of one.
+    const networkScript = /\nNETWORK_SCRIPT='([\s\S]*?)'\n/.exec(fleet)![1]!
+    const askedOf = (classes: string) => spawnSync('bash', ['-c', networkScript], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: `${bin}:${process.env.PATH}`, FAKE_NETWORK: 'bridge', FAKE_CLASSES: classes } }).stdout
+    assert.equal(askedOf(',"classes":{"room":0,"own":0,"council":0}'), 'bridge\n')
+    assert.equal(askedOf(''), '')
+    // The update of one machine: once more when it leaves the agent off the host's network, and only once more.
+    const calls = path.join(dir, 'calls')
+    const update = (networks: string[]) => {
+      fs.rmSync(calls, { force: true })
+      fs.writeFileSync(path.join(dir, 'networks'), networks.map((n) => `${n}\n`).join(''))
+      fs.writeFileSync(path.join(dir, 'asked'), '0')
+      const script = [
+        'set -euo pipefail',
+        `say() { printf '%s\\n' "$*"; }`,
+        // The machine over ssh: an update started, or the network its agent is on (one answer a question).
+        `ssh_to() { shift 2; printf 'ssh %s\\n' "$*" >> '${calls}'; grep -q 'colloq-runner-fleet: the network of its agent' || return 0; local i; i=$(( $(cat '${dir}/asked') + 1 )); echo "$i" > '${dir}/asked'; sed -n "\${i}p" '${dir}/networks'; }`,
+        `follow_update() { printf 'followed\\n' >> '${calls}'; }`,
+        'NOW_FLAG=""; UPDATE_START="(the start)"',
+        `NETWORK_SCRIPT='${networkScript}'`,
+        shellFunction(fleet, 'agent_network'),
+        shellFunction(fleet, 'update_one'),
+        'update_one 11 198.51.100.11 40011 running colloq-runner https://vsos.colloq.ru off_host',
+      ].join('\n')
+      const r = spawnSync('bash', ['-c', script], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      return { status: r.status, out: r.stdout + r.stderr, starts: fs.readFileSync(calls, 'utf8').split('\n').filter((line) => line === 'ssh bash -s --').length }
+    }
+    let r = update(['bridge', 'host'])
+    assert.equal(r.status, 0, r.out)
+    assert.equal(r.starts, 2)
+    assert.match(r.out, /its agent runs on Docker's network \(bridge\), not the host's, as the colloq-host of its old release starts it, and takes no classes there: updated once more, by the colloq-host this update brought/)
+    for (const network of ['host', '']) {
+      r = update([network])
+      assert.equal(r.status, 0, r.out)
+      assert.equal(r.starts, 1, `${network || 'no answer'}: one update`)
+    }
+    // Still off it: the colloq-host there could not be replaced (the update's own lines say why), and that is said.
+    r = update(['bridge', 'bridge'])
+    assert.equal(r.status, 1, r.out)
+    assert.equal(r.starts, 2)
+    assert.match(r.out, /its agent still runs on Docker's network \(bridge\): the colloq-host there is still one from before 0\.25/)
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })

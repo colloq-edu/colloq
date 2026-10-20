@@ -8,16 +8,18 @@
  *
  * THE CONTRACT, which the entry point and colloq-host already speak:
  *
- *   node dist/runner-code.js --machines N --hours H [--trusted] [--slots S] [--prefix NAME]
+ *   node dist/runner-code.js --machines N --hours H [--trusted | --classes] [--slots S] [--prefix NAME]
  *
- * prints exactly one JSON line on stdout, {"code","expiresAt","machines","trusted"}:
+ * prints exactly one JSON line on stdout, {"code","expiresAt","machines","trusted","classes"}:
  * a code good for N machines within H hours (at most a day), which may receive
- * the hidden test only with --trusted, offers at most S places per machine
- * with --slots, and names the machines it enrolls after NAME. The code is
- * shown once, inside the join commands colloq-host prints around it; home
- * keeps only its sha256. Anything else — a refusal included — goes to stderr
- * with a non-zero exit (64 for a call that does not parse, 2 for one the
- * minter refuses), and nothing to stdout.
+ * the hidden test only with --trusted, hold class kernels only with --classes
+ * («Принимать занятия», docs/architecture/remote-classes.md D2; never both,
+ * D3), offers at most S places per machine with --slots, and names the
+ * machines it enrolls after NAME. The code is shown once, inside the join
+ * commands colloq-host prints around it; home keeps only its sha256.
+ * Anything else — a refusal included — goes to stderr with a non-zero exit
+ * (64 for a call that does not parse, 2 for one the minter refuses), and
+ * nothing to stdout.
  *
  * THE SAME ROW AS THE PANEL'S. The code is written by the one function the
  * owner's dialog uses (competitions/remote/store.ts · mintRemoteCode), with
@@ -48,17 +50,18 @@ interface Asked {
   machines: number
   hours: number
   trusted: boolean
+  classes: boolean
   slots: number | null
   prefix: string | null
 }
 
 /** The arguments, or the line of stderr that says what is wrong with them. */
 function parseRunnerCodeArgs(argv: readonly string[]): Asked | string {
-  const asked: Asked = { machines: 1, hours: 24, trusted: false, slots: null, prefix: null }
+  const asked: Asked = { machines: 1, hours: 24, trusted: false, classes: false, slots: null, prefix: null }
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]
-    if (flag === '--trusted') {
-      asked.trusted = true
+    if (flag === '--trusted' || flag === '--classes') {
+      asked[flag === '--trusted' ? 'trusted' : 'classes'] = true
       continue
     }
     if (flag !== '--machines' && flag !== '--hours' && flag !== '--slots' && flag !== '--prefix') return `unknown option ${flag}`
@@ -80,10 +83,13 @@ function parseRunnerCodeArgs(argv: readonly string[]): Asked | string {
 function main(argv: readonly string[]): number {
   const asked = parseRunnerCodeArgs(argv)
   if (typeof asked === 'string') {
-    process.stderr.write(`colloq runner-code: ${asked} (usage: --machines N --hours H [--trusted] [--slots S] [--prefix NAME])\n`)
+    process.stderr.write(`colloq runner-code: ${asked} (usage: --machines N --hours H [--trusted | --classes] [--slots S] [--prefix NAME])\n`)
     return 64
   }
-  const input = { machines: asked.machines, hours: asked.hours, trusted: asked.trusted, approvedSlots: asked.slots, namePrefix: asked.prefix, createdBy: 'colloq-host' }
+  const input = {
+    machines: asked.machines, hours: asked.hours, trusted: asked.trusted, classes: asked.classes, approvedSlots: asked.slots, namePrefix: asked.prefix,
+    createdBy: 'colloq-host',
+  }
   const refusal = mintRefusal(input)
   if (refusal) {
     const why = {
@@ -91,19 +97,20 @@ function main(argv: readonly string[]): number {
       hours: '--hours is how long the code stays valid: 1 to 24',
       slots: '--slots caps the places on each machine: 1 to 64',
       prefix: '--prefix is a short name: letters, digits and hyphens, up to 32',
+      classes: '--classes and --trusted do not go together: a machine that takes classes is never given the hidden test',
     }[refusal]
     process.stderr.write(`colloq runner-code: ${why}\n`)
     return 2
   }
   const minted = mintRemoteCode(input)
-  // A code is a door for its machines and its hours, trusted ones too, whichever door minted it (§6 "Audit").
+  // A code is a door for its machines and its hours, trusted ones and class ones too, whichever door minted it (§6 "Audit").
   recordAdminEvent({
     actor: null,
     action: 'runner.code_minted',
     target: { type: 'runner_code', id: minted.id, label: input.namePrefix || null },
-    detail: { machines: minted.machines, hours: input.hours, trusted: minted.trusted, approvedSlots: minted.approvedSlots, source: 'colloq-host' },
+    detail: { machines: minted.machines, hours: input.hours, trusted: minted.trusted, classes: minted.classes, approvedSlots: minted.approvedSlots, source: 'colloq-host' },
   })
-  process.stdout.write(`${JSON.stringify({ code: minted.code, expiresAt: minted.expiresAt, machines: minted.machines, trusted: minted.trusted })}\n`)
+  process.stdout.write(`${JSON.stringify({ code: minted.code, expiresAt: minted.expiresAt, machines: minted.machines, trusted: minted.trusted, classes: minted.classes })}\n`)
   return 0
 }
 

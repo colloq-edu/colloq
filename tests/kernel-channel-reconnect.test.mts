@@ -24,6 +24,7 @@ import { createServer, type Server } from 'node:http'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { WebSocketServer, type WebSocket } from 'ws'
+import { startFakeLink } from './_fake-jupyter.mjs'
 
 let http: Server
 let wss: WebSocketServer
@@ -34,6 +35,12 @@ const kernels = new Set<string>()
 const open = new Map<string, Set<WebSocket>>()
 /** Handshake delay: it opens the "reconnect in flight" window. */
 let upgradeDelayMs = 0
+/** Handshakes the delay is holding right now. */
+let handshaking = 0
+/** Handshakes asked for, by kernel id: each is a channel the client meant to open. */
+const handshakes = new Map<string, number>()
+/** What answers to input() reached the kernel, in order. */
+const answers: string[] = []
 
 const liveSockets = (id: string) =>
   [...(open.get(id) ?? [])].filter((ws) => ws.readyState === ws.OPEN)
@@ -72,6 +79,7 @@ before(async () => {
   http.on('upgrade', (req, socket, head) => {
     const id = /^\/api\/kernels\/([^/]+)\/channels/.exec(req.url ?? '')?.[1]
     if (!id || !kernels.has(id)) return socket.destroy()
+    handshakes.set(id, (handshakes.get(id) ?? 0) + 1)
     const accept = () =>
       wss.handleUpgrade(req, socket, head, (ws) => {
         const set = open.get(id) ?? new Set<WebSocket>()
@@ -81,7 +89,11 @@ before(async () => {
         ws.on('message', (raw) => {
           const msg = JSON.parse(String(raw)) as {
             header: { msg_type: string }
-            content: { code: string }
+            content: { code: string; value?: string }
+          }
+          if (msg.header.msg_type === 'input_reply') {
+            answers.push(String(msg.content.value))
+            return
           }
           if (msg.header.msg_type !== 'execute_request') return
           // A cell stopped at input(): we wait for an answer and send no reply.
@@ -99,8 +111,12 @@ before(async () => {
           send(ws, msg.header, 'execute_reply', { status: 'ok', execution_count: 1 })
         })
       })
-    if (upgradeDelayMs > 0) setTimeout(accept, upgradeDelayMs)
-    else accept()
+    if (upgradeDelayMs <= 0) return accept()
+    handshaking++
+    setTimeout(() => {
+      handshaking--
+      if (!socket.destroyed) accept()
+    }, upgradeDelayMs)
   })
 
   await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve))
@@ -110,10 +126,20 @@ before(async () => {
 after(async () => {
   for (const set of open.values()) for (const ws of set) ws.terminate()
   wss?.close()
+  http.closeAllConnections()
   await new Promise<void>((resolve) => http.close(() => resolve()))
 })
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Poll until `what` holds, counting polls rather than reading the clock. */
+async function until(what: () => boolean, polls = 400): Promise<boolean> {
+  for (let poll = 0; poll < polls; poll++) {
+    if (what()) return true
+    await wait(25)
+  }
+  return what()
+}
 
 const handlers = (seen: string[]) => ({
   onExecuteInput: () => {},
@@ -204,4 +230,91 @@ test('an answer to input() over a dropped channel does not clear the wait', asyn
     true,
     'the input wait was cleared although the answer was never sent — the form will stay up for the whole room',
   )
+})
+
+/*
+ * The same two properties for a kernel on a machine, whose channel rides a
+ * road that closes and opens (remote-classes.md §5.1). There the reconnect
+ * and every wait for the channel wait for the road itself, and a road that
+ * closes in the middle of a handshake is one more way to start a second one.
+ * The road is a relay in front of this fake (tests/_fake-jupyter.mjs ·
+ * startFakeLink) with the link that reports on it.
+ */
+
+test('a road that closes in the middle of a reconnect leaves one channel, and the output once', async (t) => {
+  const { JupyterKernel } = await import('../server/src/kernel/jupyter.js')
+  const road = await startFakeLink({ target: port })
+  const kernel = await JupyterKernel.connect('link-reconnect-room', {
+    url: road.url,
+    token: 'fake',
+    link: road.link,
+    identity: 'machine:r1:reconnect:1',
+  })
+  t.after(async () => {
+    upgradeDelayMs = 0
+    kernel.detach()
+    await road.close()
+  })
+  const id = [...kernels][kernels.size - 1]
+  assert.equal(liveSockets(id).length, 1)
+
+  // The channel drops with the road up: a reconnect starts its slow handshake.
+  upgradeDelayMs = 300
+  for (const ws of liveSockets(id)) ws.terminate()
+  assert.ok(await until(() => handshaking === 1), 'no reconnect started')
+  // Someone presses Run meanwhile, and the road closes under the handshake.
+  const first: string[] = []
+  const run = kernel.execute('hello', handlers(first))
+  road.down()
+  assert.ok(await until(() => road.waiting === 2), 'the reconnect and the run did not both wait for the road')
+  const asked = handshakes.get(id) ?? 0
+  road.up()
+  assert.equal(await run, 'ok')
+  assert.deepEqual(first, ['hello\n'])
+
+  /*
+   * One handshake once the road opened, for both of its waiters. A second
+   * would have been asked for at that same moment, so it would have reached
+   * the fake long before the first one's slow handshake let the run through.
+   */
+  assert.equal((handshakes.get(id) ?? 0) - asked, 1, 'more than one channel asked for once the road opened')
+  // Every handshake that went out has landed: only then is the count the truth.
+  assert.ok(await until(() => handshaking === 0))
+  assert.equal(liveSockets(id).length, 1, `channels open to one kernel: ${liveSockets(id).length}`)
+  const second: string[] = []
+  assert.equal(await kernel.execute('second', handlers(second)), 'ok')
+  assert.deepEqual(second, ['second\n'], `the output arrived ${second.length} time(s)`)
+})
+
+test('an answer to input() waits for a closed road instead of failing, and arrives once it opens', async (t) => {
+  const { JupyterKernel } = await import('../server/src/kernel/jupyter.js')
+  const road = await startFakeLink({ target: port })
+  const kernel = await JupyterKernel.connect('link-input-room', {
+    url: road.url,
+    token: 'fake',
+    link: road.link,
+    identity: 'machine:r1:input:1',
+  })
+  t.after(async () => {
+    kernel.detach()
+    await road.close()
+  })
+  void kernel.execute('INPUT', handlers([])).catch(() => {})
+  assert.ok(await until(() => kernel.waitingForInput), 'the fake did not ask for input')
+
+  road.down()
+  let answered: boolean | Error | null = null
+  void kernel.answerInput('42').then(
+    (sent) => (answered = sent),
+    (err: Error) => (answered = err),
+  )
+  assert.ok(await until(() => road.waiting === 2), 'the answer did not wait for the road')
+  assert.equal(answered, null, 'the answer gave up on a road that is only closed')
+  assert.equal(kernel.waitingForInput, true)
+
+  road.up()
+  assert.ok(await until(() => answered !== null))
+  assert.equal(answered, true)
+  assert.equal(kernel.waitingForInput, false)
+  assert.ok(await until(() => answers.includes('42')), `the kernel heard: ${JSON.stringify(answers)}`)
 })

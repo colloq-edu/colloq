@@ -14,6 +14,12 @@
  *   leases/<attempt>.outcome.json   what the run came to, before a byte is uploaded
  *   books/                   what the caches know about themselves (cache.ts, images.ts)
  *   data/                    DATA_DIR: home's layout (competitions/storage.ts), §4.2
+ *   placements/<id>-<role>.json   a class container (kernels.ts), written down before
+ *                            `docker run`: what an agent restarted under a class adopts
+ *   rooms/<id>/              a class folder's copy, mounted into the class's containers
+ *                            (uid 1000, folders 2775, files 0664, as home's sessionDir)
+ *   restart.marker           left by `colloq-host runner update` before it stops the
+ *                            agent: the last sync then says `bye: restart`
  *
  * EVERY WRITE IS WHOLE OR NOT AT ALL: a temporary file next to the target,
  * flushed, then renamed over it. A machine dies the way rented VMs die,
@@ -27,6 +33,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import {
+  REMOTE_DEVICE,
   REMOTE_JOIN_ID,
   REMOTE_RUNNER_ID,
   REMOTE_SECRET,
@@ -40,6 +47,14 @@ import {
   type RemoteResultFile,
   type RemoteRunOutcome,
 } from '@shared/remote-runner'
+import {
+  REMOTE_CLASS_CONTAINER,
+  REMOTE_ROOM_CPUS_MAX,
+  parseRemoteKernelsReply,
+  parseRemotePlacementKey,
+  type RemotePlacementIntent,
+} from '@shared/remote-kernels'
+import { RUNTIME_MEMORY_MAX_MB, RUNTIME_MEMORY_MIN_MB } from '@shared/runtime'
 import { COMPETITION_ATTEMPT_ID } from '@shared/competition-runtime'
 
 /** Where the tree lives when COLLOQ_RUNNER_STATE names none: the path deploy/vast/colloq-host mounts. */
@@ -54,6 +69,12 @@ export interface StateLayout {
   booksDir: string
   /** DATA_DIR as the agent requires it to be: home's layout lives under it. */
   dataDir: string
+  /** The class containers' records (kernels.ts). */
+  placementsDir: string
+  /** The class folders' copies: one per class, shared by its containers on this machine (§8.1). */
+  roomsDir: string
+  /** Written by `colloq-host runner update` before it stops the agent (§14). */
+  restartMarker: string
 }
 
 export function stateLayout(root: string): StateLayout {
@@ -66,6 +87,9 @@ export function stateLayout(root: string): StateLayout {
     leasesDir: path.join(at, 'leases'),
     booksDir: path.join(at, 'books'),
     dataDir: path.join(at, 'data'),
+    placementsDir: path.join(at, 'placements'),
+    roomsDir: path.join(at, 'rooms'),
+    restartMarker: path.join(at, 'restart.marker'),
   }
 }
 
@@ -311,6 +335,147 @@ function readOutcome(layout: StateLayout, attemptId: string): StoredOutcome | nu
   return null
 }
 
+/* -------------------------------------------------------------- placements */
+
+/**
+ * A class container as the machine wrote it down (remote-classes.md §7.2):
+ * the intent it was started for, whole, and what docker made of it. Written
+ * before `docker run` and again once docker said the container's id, so that
+ * an agent restarted at any moment finds every class container it started
+ * (kernels.ts · adopt): by its id, or by the label that names its slot and gen.
+ */
+export interface StoredPlacement {
+  intent: RemotePlacementIntent
+  /** The container's full id; null — written before the run that makes it. */
+  container: string | null
+  /** The image it runs: the revision's tag (images.ts · revisionImage). */
+  image: string
+  /** The digest of what only a new container changes (kernels.ts · specDigest): an exited one is started again only for the same. */
+  spec: string
+  /** The memory and CPUs docker holds it to: a resize docker refused leaves the old ones here. */
+  limits: { memoryMb: number; cpus: number }
+  /** The whole card a GPU room holds while this record lives; null — none. */
+  card: string | null
+}
+
+const PLACEMENT_FILE = /^([A-Za-z0-9_-]{1,64})-(room|own|council)\.json$/
+const REVISION_TAG_IMAGE = /^colloq-revision:[a-f0-9]{32}$/
+
+/** `<id>-<role>.json`, from a key the contract's pattern took: the role is the name's last part, whatever the id holds. */
+function placementFile(layout: StateLayout, key: string): string {
+  const slot = parseRemotePlacementKey(key)
+  if (!slot) throw new Error('Invalid placement key')
+  return path.join(layout.placementsDir, `${slot.sessionId}-${slot.role}.json`)
+}
+
+/** Written whole and flushed before it is relied on (0600: the intent holds the container's token). */
+export function writePlacement(layout: StateLayout, stored: StoredPlacement): void {
+  writeWhole(placementFile(layout, stored.intent.key), JSON.stringify(stored), { mode: 0o600, durable: true })
+}
+
+/**
+ * A record gone. With `gen`, only a record of that very generation (or one
+ * that names none): the late end of an older placement's start never takes
+ * the record a newer one of the same slot has written since.
+ */
+export function dropPlacement(layout: StateLayout, key: string, gen?: number): void {
+  const file = placementFile(layout, key)
+  if (gen !== undefined) {
+    const written = readJson(file, 256 * 1024) as { intent?: { gen?: unknown } } | null
+    if (written && typeof written === 'object' && written.intent?.gen !== undefined && written.intent.gen !== gen) return
+  }
+  fs.rmSync(file, { force: true })
+}
+
+/**
+ * The placements written down by an earlier life, each checked again with
+ * the contract's own parser (the intent as the agent takes it from a reply)
+ * and against its file's name. A record this build cannot read whole is not
+ * one of them, and is not deleted either (unreadPlacements): written by an
+ * older or a newer build, its container may hold a class's variables.
+ */
+export function readPlacements(layout: StateLayout): StoredPlacement[] {
+  return placementFiles(layout).flatMap(({ stored }) => (stored ? [stored] : []))
+}
+
+/**
+ * A record this build cannot read whole: one of an older or a newer shape
+ * (a field a later release requires, a bound it tightened), or one edited
+ * by hand. What it still says of its slot, as far as it says it: its gen and
+ * the limits its container was held to (kernels.ts keeps that container, not
+ * ready, until home names its slot again).
+ */
+export interface UnreadPlacement {
+  key: string
+  gen: number | null
+  limits: { memoryMb: number; cpus: number } | null
+}
+
+export function unreadPlacements(layout: StateLayout): UnreadPlacement[] {
+  return placementFiles(layout).flatMap(({ key, raw, stored }) => {
+    if (stored) return []
+    const v = (raw && typeof raw === 'object' ? raw : {}) as { intent?: { gen?: unknown }; limits?: { memoryMb?: unknown; cpus?: unknown } }
+    const gen = v.intent?.gen
+    const memoryMb = v.limits?.memoryMb
+    const cpus = v.limits?.cpus
+    const whole = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n > 0
+    return [{
+      key,
+      gen: typeof gen === 'number' && Number.isSafeInteger(gen) && gen >= 0 ? gen : null,
+      limits: whole(memoryMb) && whole(cpus) ? { memoryMb, cpus } : null,
+    }]
+  })
+}
+
+/** Every record file by the name this code gives it, read and checked: `stored` when it parses whole, the raw value either way. */
+function placementFiles(layout: StateLayout): Array<{ key: string; raw: unknown; stored: StoredPlacement | null }> {
+  let names: string[]
+  try {
+    names = fs.readdirSync(layout.placementsDir)
+  } catch {
+    return []
+  }
+  const found: Array<{ key: string; raw: unknown; stored: StoredPlacement | null }> = []
+  for (const name of names.sort()) {
+    const match = PLACEMENT_FILE.exec(name)
+    if (!match) continue
+    const key = `${match[1]}:${match[2]}`
+    const raw = readJson(path.join(layout.placementsDir, name), 256 * 1024)
+    found.push({ key, raw, stored: placementOf(raw, key) })
+  }
+  return found
+}
+
+/** A record as written, or null. */
+function placementOf(value: unknown, key: string): StoredPlacement | null {
+  const v = value as Partial<StoredPlacement> | null
+  if (!v || typeof v !== 'object') return null
+  let intent: RemotePlacementIntent | undefined
+  try {
+    const block = { placements: [v.intent], pushes: [], verdicts: [], pulls: [], scan: [], epochs: [], collect: [], postmortem: [], rates: { classBulkMBps: 8, machinePaceMBps: 6 }, tunnel: 'closed' }
+    intent = parseRemoteKernelsReply(block).placements[0]
+  } catch {
+    return null
+  }
+  const limits = v.limits as StoredPlacement['limits'] | undefined
+  if (!intent || intent.key !== key
+    || !(v.container === null || (typeof v.container === 'string' && REMOTE_CLASS_CONTAINER.test(v.container)))
+    || typeof v.image !== 'string' || !REVISION_TAG_IMAGE.test(v.image) || typeof v.spec !== 'string' || !REMOTE_SHA256.test(v.spec)
+    || !limits || !Number.isSafeInteger(limits.memoryMb) || limits.memoryMb < RUNTIME_MEMORY_MIN_MB || limits.memoryMb > RUNTIME_MEMORY_MAX_MB
+    || !Number.isSafeInteger(limits.cpus) || limits.cpus < 1 || limits.cpus > REMOTE_ROOM_CPUS_MAX
+    || !(v.card === null || (typeof v.card === 'string' && REMOTE_DEVICE.test(v.card)))) return null
+  return { intent, container: v.container, image: v.image, spec: v.spec, limits: { memoryMb: limits.memoryMb, cpus: limits.cpus }, card: v.card }
+}
+
+/** `colloq-host runner update` left the marker: this stop is a restart (bye `restart`). */
+export function restartMarked(layout: StateLayout): boolean {
+  return fs.existsSync(layout.restartMarker)
+}
+
+export function clearRestartMarker(layout: StateLayout): void {
+  fs.rmSync(layout.restartMarker, { force: true })
+}
+
 /* ------------------------------------------------------------------ status */
 
 /**
@@ -360,6 +525,14 @@ export interface AgentStatus {
   updatedAt: number
   /** When home last answered a sync (or the join). */
   syncedAt: number | null
+  /**
+   * The class tunnel (remote-classes.md §4.6): whether it is up, and its
+   * round trip as the tunnel last measured it; null — none, since home asked
+   * for none (no class here, or a home without classes).
+   */
+  tunnel?: { up: boolean; rttMs: number | null } | null
+  /** The class containers held, by slot (§6.1): what `colloq-host runner status` shows beside the runs. */
+  classes?: { room: number; own: number; council: number }
 }
 
 export function writeStatus(layout: StateLayout, status: AgentStatus): void {

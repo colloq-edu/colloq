@@ -318,6 +318,24 @@ export class Images {
     return null
   }
 
+  /**
+   * Whether a revision is ready here by its book (pulled, checked, tagged),
+   * without asking docker: what a class placement waits on before it starts
+   * (kernels.ts), which then checks the image once more by `verify`.
+   */
+  isReady(id: string): boolean {
+    return (this.books.get(id)?.readyAt ?? null) !== null
+  }
+
+  /** What was last said against a revision (its `image`, `layers` or `smoke` problem), in the agent's words; null — nothing. */
+  problemWith(id: string): string | null {
+    for (const code of ['image', 'layers', 'smoke'] as const) {
+      const problem = this.problems.get(`${code}:${id}`)
+      if (problem) return problem.detail
+    }
+    return null
+  }
+
   problemList(): RemoteProblem[] {
     return [...this.problems.values()]
   }

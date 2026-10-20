@@ -358,7 +358,7 @@ test('one tunnel protocol and its header, and the numbers of §15', () => {
   assert.equal(TUNNEL_FRAME_MAX, 16 * 1024)
   assert.equal(TUNNEL_JSON_MAX, 4 * 1024)
   assert.equal(TUNNEL_HEADER_BYTES, 16)
-  assert.deepEqual(TUNNEL_WINDOW, { interactive: 1024 * 1024, council: 512 * 1024, machine: 16 * 1024 * 1024 })
+  assert.deepEqual(TUNNEL_WINDOW, { interactive: 4 * 1024 * 1024, council: 1024 * 1024, machine: 16 * 1024 * 1024 })
   assert.equal(TUNNEL_SEND_LOWAT, 64 * 1024)
   assert.equal(TUNNEL_ACK_MS, 50)
   assert.equal(TUNNEL_ACK_BYTES, 64 * 1024)
@@ -376,9 +376,9 @@ test('the clocks and sizes agree with each other and with the relay', () => {
   // The largest frame fits the WebSocket's maxPayload, and the send buffer holds a few of them.
   assert.ok(TUNNEL_HEADER_BYTES + TUNNEL_FRAME_MAX <= TUNNEL_MESSAGE_MAX)
   assert.ok(TUNNEL_SEND_LOWAT >= TUNNEL_HEADER_BYTES + TUNNEL_FRAME_MAX)
-  // A window holds whole frames, and a machine's holds every stream's of either lane several times over.
+  // A window holds whole frames, and a machine's holds an interactive stream's window several times over (K0 raised it to 4 MiB).
   assert.ok(TUNNEL_WINDOW.council >= 4 * TUNNEL_FRAME_MAX && TUNNEL_WINDOW.council <= TUNNEL_WINDOW.interactive)
-  assert.ok(TUNNEL_WINDOW.machine >= 8 * TUNNEL_WINDOW.interactive)
+  assert.ok(TUNNEL_WINDOW.machine >= 4 * TUNNEL_WINDOW.interactive)
   // An ACK comes before a window runs out.
   assert.ok(TUNNEL_ACK_BYTES < TUNNEL_WINDOW.council)
   assert.ok(TUNNEL_STREAMS_MAX < TUNNEL_STREAM_MAX)

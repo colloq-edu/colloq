@@ -16,18 +16,26 @@
  * drain has forgotten it (draining does not survive a restart), and the
  * command says so and fails, which colloq-host reads as "stop it; its runs go
  * back to the queue".
+ *
+ * `status` answers the running agent's own status, as it is this moment, in
+ * one line: what the status file says, the class tunnel and the class
+ * containers among it (remote-classes.md §14: `runner status` shows `tunnel:
+ * up / down · RTT` and `classes: {room, own, council}`), for a caller that
+ * wants it live rather than as last written.
  */
 import fs from 'node:fs'
 import net from 'node:net'
+import type { AgentStatus } from './state.js'
 import type { Agent } from './sync.js'
 
-export type ControlCommand = 'drain' | 'leave'
+export type ControlCommand = 'drain' | 'leave' | 'status'
 
 /** What the agent says back, one JSON object a line. */
 export type ControlMessage =
   | { held: number; state: string }
   | { drained: true }
   | { left: true; revoked?: true }
+  | { status: AgentStatus }
   | { error: string }
 
 /**
@@ -102,6 +110,7 @@ function handle(agent: Agent, connection: net.Socket): void {
     }
     if (command === 'drain') return drain(agent, connection, say, done)
     if (command === 'leave') return leave(agent, connection, say, done)
+    if (command === 'status') return done({ status: agent.status() })
     done({ error: 'unknown command' })
   })
 }
@@ -177,7 +186,7 @@ export function askAgent(socket: string, command: ControlCommand, onMessage: (me
         buffer = buffer.slice(line + 1)
         try {
           const message = JSON.parse(text) as ControlMessage
-          if ('drained' in message || 'left' in message || 'error' in message) answered = true
+          if ('drained' in message || 'left' in message || 'status' in message || 'error' in message) answered = true
           onMessage(message)
         } catch { /* not ours */ }
       }

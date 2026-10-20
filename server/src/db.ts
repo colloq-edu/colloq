@@ -771,7 +771,7 @@ export function renameSession(id: string, name: string): void {
  *
  * A per-room cache, like `rulesCache` below and `liveBans` in bans.ts, and it
  * exists for the same storm: "is the seminar the token named still alive" is
- * the only thing the socket handshake asks (index.ts), a tab has two sockets,
+ * the only thing the socket handshake asks (upgrade.ts), a tab has two sockets,
  * and after a server restart or a relay blink five hundred tabs come back
  * within a second or two. A thousand primary-key SELECTs cost microseconds
  * each and are paid exactly where the event loop is fully busy and everyone

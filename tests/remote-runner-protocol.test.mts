@@ -245,7 +245,7 @@ const kernelsAsked = {
 const kernelsAnswer = {
   placements: [{
     key: 'seminar_1:room', gen: 3, environment: 'base', revision: { id: REVISION, ref: REF, layers: '4'.repeat(64) },
-    memoryMb: 4096, cpus: 2, pids: 512, gpu: false, network: 'blocked', blockedCidrs: [], token: 'e'.repeat(40), hashSeed: 7,
+    memoryMb: 4096, cpus: 2, pids: 512, gpu: false, shm: '1g', network: 'blocked', blockedCidrs: [], token: 'e'.repeat(40), hashSeed: 7,
   }],
   pushes: [], verdicts: [{ sessionId: 'seminar_1', seq: 1, accepted: ['out.csv'], refused: [] }], pulls: [], scan: [], epochs: [], collect: [], postmortem: [],
   rates: { classBulkMBps: 4, machinePaceMBps: 6 }, tunnel: 'open',
@@ -1305,7 +1305,7 @@ function worstKernelsReply() {
   return {
     placements: sessions.map((sessionId) => ({
       key: `${sessionId}:council`, gen: Number.MAX_SAFE_INTEGER, environment: 'e'.repeat(32), revision: { id: 'd'.repeat(32), ref: longRef, layers: '4'.repeat(64) },
-      memoryMb: 262_144, cpus: 64, pids: 32_768, gpu: false, network: 'blocked',
+      memoryMb: 262_144, cpus: 64, pids: 32_768, gpu: false, shm: '999999999999.999999 TiB', network: 'blocked',
       blockedCidrs: Array.from({ length: REMOTE_BLOCKED_CIDRS_MAX }, (_, i) => `255.255.${i}.255/32`), token: 'e'.repeat(40), hashSeed: 4_294_967_295, workers: COUNCIL_WORKERS.max,
     })),
     pushes, verdicts, pulls,

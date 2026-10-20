@@ -1,5 +1,5 @@
 import { tr } from '@shared/i18n'
-import { endpointIdentity } from './jupyter.js'
+import { endpointIdentity, type KernelLink } from './jupyter.js'
 import { kernelBackend } from './runtime-client.js'
 import { createHash } from 'node:crypto'
 import { WebSocket, type RawData } from 'ws'
@@ -63,6 +63,10 @@ const CONNECT_TIMEOUT_MS = 20_000
 const REQUEST_TIMEOUT_MS = 15_000
 /** Six, on the same backoff: ~20s. A shell is cheaper to reopen than a kernel. */
 const MAX_RECONNECT_ATTEMPTS = 6
+/** One round of waiting on a machine's road, as in jupyter.ts: the road answers when it changes. */
+const LINK_WAIT_MS = 5000
+/** The most a jittery road to a machine adds to the silence that ends a command. */
+const LINK_QUIET_PAD_MAX_MS = 600
 
 /** A document everyone syncs cannot grow without bound. */
 const MAX_TRANSCRIPT_LINES = 800
@@ -204,6 +208,8 @@ interface Term {
   quietTimer: NodeJS.Timeout | null
   primeTimer: NodeJS.Timeout | null
   reconnectTimer: NodeJS.Timeout | null
+  /** The generation waiting for a machine's road to open, the way a timer waits; see awaitLink. */
+  linkWait: number | null
   /** Raw pty text not yet parsed (may end mid-escape). */
   raw: string
   /** The line being drawn: \r and cursor moves rewrite it in place. */
@@ -269,6 +275,7 @@ function getTerm(sessionId: string): Term {
       quietTimer: null,
       primeTimer: null,
       reconnectTimer: null,
+      linkWait: null,
       raw: '',
       partial: '',
       col: 0,
@@ -981,13 +988,75 @@ function promptLike(tail: string): boolean {
 function onQuiet(term: Term): void {
   term.quietTimer = null
   flush(term)
+  /*
+   * A machine's road that is down is silence nobody chose: the command may
+   * still be printing into it. Its end is judged once the road is back
+   * (remote-classes.md §5.7), on a full quiet from then (requiet).
+   */
+  const link = term.endpoint.link
+  if (link && !link.up) {
+    requiet(term, link)
+    return
+  }
   if (!promptLike(term.partial)) return
   finishCommand(term)
 }
 
+/**
+ * Judge a silence again once a machine's road is back up.
+ *
+ * A road that stalls with its socket kept (a resumable tunnel rides a cut
+ * that way) brings nothing new when it opens if the prompt was in before
+ * the stall: without a second look, the command it ended would stay
+ * running, and every command after it would wait behind it for good. A
+ * socket the road closed instead is greeted anew, and its greeting asks the
+ * shell (see the socket's close).
+ */
+function requiet(term: Term, link: KernelLink): void {
+  const generation = term.generation
+  void (async () => {
+    for (;;) {
+      const word = await link.next(LINK_WAIT_MS)
+      if (!currentAttempt(term, generation) || term.phase === 'dead' || word === 'lost') return
+      if (link.up) break
+    }
+    // Output since then has armed it already; a socket being greeted judges for itself.
+    if (term.primed && !term.quietTimer) armQuiet(term)
+  })()
+}
+
 function armQuiet(term: Term): void {
   if (term.quietTimer) clearTimeout(term.quietTimer)
-  term.quietTimer = setTimeout(() => onQuiet(term), QUIET_MS)
+  term.quietTimer = setTimeout(() => onQuiet(term), QUIET_MS + quietPadMs(term.endpoint))
+}
+
+/**
+ * Where the jitter of a machine's road is read: the link's round trip until
+ * something better is measured. §5.7 asks for the p95 of the jitter, and the
+ * round trip is a bound on it from above. Replaceable (useLinkJitter) by
+ * whoever measures it, and by a test.
+ */
+const roundTrip = (endpoint: KernelEndpoint): number | null => endpoint.link?.rttMs ?? null
+let linkJitter: (endpoint: KernelEndpoint) => number | null = roundTrip
+
+export function useLinkJitter(source: ((endpoint: KernelEndpoint) => number | null) | null): void {
+  linkJitter = source ?? roundTrip
+}
+
+/**
+ * How much longer a command on a machine must stay silent before it counts as
+ * finished (remote-classes.md §5.7): twice the road's jitter, at most
+ * LINK_QUIET_PAD_MAX_MS.
+ *
+ * The end of a command is a guess (promptLike), and a jittery road splits one
+ * burst of output into two with a gap between them. Without the pad, a
+ * command whose output paused on a `>` would be called finished in the gap,
+ * and the rest of its output would land under the next person's command.
+ * Zero at home and under the broker, where there is no road.
+ */
+export function quietPadMs(endpoint: KernelEndpoint, jitterMs: number | null = linkJitter(endpoint)): number {
+  if (!endpoint.link || jitterMs === null || !Number.isFinite(jitterMs) || jitterMs <= 0) return 0
+  return Math.min(LINK_QUIET_PAD_MAX_MS, Math.round(2 * jitterMs))
 }
 
 function finishCommand(term: Term): void {
@@ -1299,7 +1368,41 @@ function connect(term: Term, generation: number): Promise<void> {
       // breed a third one.
       if (!ours) return
       if (!currentAttempt(term, generation) || term.phase === 'closed' || term.phase === 'dead') return
+      const greeted = term.primed
       term.primed = false
+      /*
+       * A machine's road cut the socket, and every silence from here on is
+       * the road's. A prime under way belonged to the socket that is gone:
+       * finished in the outage, it would let what people typed meanwhile go
+       * into no socket at all, which fails the shell. And the end of a running
+       * command is judged when the shell speaks again (onQuiet).
+       */
+      const link = term.endpoint.link
+      if (link) {
+        for (const key of ['primeTimer', 'quietTimer'] as const) {
+          const timer = term[key]
+          if (timer) clearTimeout(timer)
+          term[key] = null
+        }
+        /*
+         * Closed by the road before its greeting was over: the road's
+         * failure, and the try that opened it is given back, as in
+         * reconnect's catch. Only a greeting resets the count, so a road that
+         * keeps closing on greetings would otherwise spend the shell's tries.
+         */
+        if (!greeted && !link.up) term.reconnectAttempts = Math.max(0, term.reconnectAttempts - 1)
+        /*
+         * A command that was out may end, or have ended, where nobody sees
+         * it: its prompt goes into the scrollback that the next greeting
+         * throws away, and the quiet that would have ended it is gone with
+         * the socket. So the shell is asked once it is back, the way a
+         * reopen after a restart asks it (probeShell): a free shell answers
+         * with a prompt, which ends the command, a busy one with silence.
+         * Not for a command still waiting to be sent: it starts after the
+         * greeting anyway.
+         */
+        if (term.commandLine && term.queued.length === 0) term.probe = true
+      }
       scheduleReconnect(term)
     })
   })
@@ -1433,7 +1536,17 @@ function probeShell(term: Term): void {
 }
 
 function scheduleReconnect(term: Term): void {
-  if (term.reconnectTimer || term.closing) return
+  if (term.reconnectTimer || term.closing || term.linkWait === term.generation) return
+  /*
+   * A machine's road that is down is waited out, not knocked on: no timer and
+   * no try spent, however long it stays down (remote-classes.md §5.1). The
+   * pty keeps running in the container all the while.
+   */
+  const link = term.endpoint.link
+  if (link && !link.up) {
+    awaitLink(term, link)
+    return
+  }
   if (term.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
     fail(term, tr("server.theConnectionToTheSharedShellWas.94c77c"))
     return
@@ -1445,6 +1558,55 @@ function scheduleReconnect(term: Term): void {
     term.reconnectTimer = null
     void reconnect(term)
   }, wait)
+}
+
+/**
+ * Wait for a machine's road to open, then reconnect as after any drop.
+ *
+ * The attempt made once the road opens is counted like any other, so that
+ * one the road cuts off again can be given back (reconnect). A road declared
+ * lost is a failover: the class's kernel is being replaced, and its shell
+ * with it.
+ */
+function awaitLink(term: Term, link: KernelLink): void {
+  const generation = term.generation
+  term.linkWait = generation
+  setPhase(term, 'starting')
+  void (async () => {
+    try {
+      for (;;) {
+        const word = await link.next(LINK_WAIT_MS)
+        // Closed, reopened or failed meanwhile: this wait is nobody's now.
+        if (!currentAttempt(term, generation) || term.phase === 'dead') return
+        if (word === 'lost') {
+          shellReplaced(term)
+          return
+        }
+        if (link.up) break
+      }
+    } finally {
+      if (term.linkWait === generation) term.linkWait = null
+    }
+    term.reconnectAttempts++
+    void reconnect(term)
+  })()
+}
+
+/** Wait while a machine's road is down. Throws once it is lost, or once this attempt is nobody's. */
+async function roadOpen(term: Term, endpoint: KernelEndpoint, generation: number): Promise<void> {
+  const link = endpoint.link
+  while (link && !link.up) {
+    const word = await link.next(LINK_WAIT_MS)
+    checkAttempt(term, generation)
+    if (word === 'lost') throw new Error(tr("server.lostTheConnectionToThePythonKernel.c46ec2"))
+  }
+}
+
+/** The class's kernel is another one now: its pty is gone with the old one, and the room is told. */
+function shellReplaced(term: Term): void {
+  term.name = null
+  rememberPty(term)
+  fail(term, tr("server.theSeminarKernelWasReplacedThePrevious.bacb22"))
 }
 
 /**
@@ -1469,14 +1631,18 @@ function reconnect(term: Term): Promise<void> {
    */
   const run = (async () => {
     try {
-      if (kernelBackend() === 'broker') {
+      /*
+       * The address is asked again where it can change under the shell: the
+       * broker's Pod, and a machine's placement, whose gen a failover moves
+       * and whose port a restart of this server changes (remote-classes.md
+       * §5.7). A new identity is a new kernel, and its pty is not ours.
+       */
+      if (kernelBackend() === 'broker' || term.endpoint.link) {
         const current = await endpointForSession(term.sessionId, sessionEnvironment(term.sessionId))
         checkAttempt(term, generation)
         if (endpointIdentity(current) !== endpointIdentity(term.endpoint)) {
-          term.name = null
           term.endpoint = current
-          rememberPty(term)
-          fail(term, tr("server.theSeminarKernelWasReplacedThePrevious.bacb22"))
+          shellReplaced(term)
           return
         }
         term.endpoint = current
@@ -1488,6 +1654,9 @@ function reconnect(term: Term): Promise<void> {
     } catch (err) {
       if (!currentAttempt(term, generation)) return
       console.error(`[terminal] reconnect failed for ${term.sessionId}:`, errText(err))
+      // Cut off by a machine's road closing mid-attempt: the road's failure, and the try is given back.
+      const link = term.endpoint.link
+      if (link && !link.up) term.reconnectAttempts = Math.max(0, term.reconnectAttempts - 1)
       scheduleReconnect(term)
     } finally {
       if (term.generation === generation) term.opening = null
@@ -1505,7 +1674,7 @@ export function openTerminal(sessionId: string): Promise<void> {
   const term = getTerm(sessionId)
   if (term.opening) return term.opening
   if (term.socket && term.socket.readyState === WebSocket.OPEN) return Promise.resolve()
-  if (term.reconnectTimer) return waitFor(term)
+  if (term.reconnectTimer || term.linkWait === term.generation) return waitFor(term)
   const generation = ++term.generation
 
   term.opening = (async () => {
@@ -1524,6 +1693,14 @@ export function openTerminal(sessionId: string): Promise<void> {
        */
       const endpoint = await endpointForSession(sessionId, sessionEnvironment(sessionId))
       checkAttempt(term, generation)
+      /*
+       * A machine's road that is down is waited for, not knocked on, as a
+       * reconnect does (remote-classes.md §5.1): the requests below would fail
+       * at the closed door, and a room opened in the seconds after this server
+       * restarts, while its machines dial back in, would read a failure where
+       * there is only a wait. Lost is a failover, and fails the open.
+       */
+      await roadOpen(term, endpoint, generation)
       /*
        * A changed address invalidates the remembered name: a pty with that
        * name lives in another container, and trying to connect to it will at
@@ -1567,7 +1744,9 @@ export function openTerminal(sessionId: string): Promise<void> {
       // We are back in the same shell, so a command marked "running" may
       // really be running. We revive it and ask the shell (see probeShell).
       const resumed = !fresh && restored !== null && resumeCommand(term)
-      if (resumed) term.probe = true
+      // Set or cleared, never left over: a road's cut may have asked for one
+      // (see the socket's close) about a command this open no longer holds.
+      term.probe = resumed
       sendSize(term)
       /*
        * The greeting goes only into a free shell.

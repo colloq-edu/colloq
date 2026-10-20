@@ -81,6 +81,7 @@ import {
   REMOTE_REPORT_PATHS_MAX,
   REMOTE_ROOT_CHARS,
   REMOTE_SESSION_ID,
+  REMOTE_SHM,
   isRemoteRoot,
   parseRemoteKernelsReply,
   parseRemoteKernelsRequest,
@@ -167,7 +168,7 @@ const request: RemoteKernelsRequest = {
 const intent = {
   key: 'seminar_1:room', gen: 3, environment: 'base-gpu', revision: { id: 'd'.repeat(32), ref: REF, layers: '4'.repeat(64) },
   memoryMb: 8192, cpus: 4, pids: 512, gpu: true, network: 'blocked' as const, blockedCidrs: ['203.0.113.0/24', '198.51.100.7/32'],
-  token: 'e'.repeat(40), hashSeed: 2_947_120_311,
+  token: 'e'.repeat(40), hashSeed: 2_947_120_311, shm: '1g',
 }
 
 const reply: RemoteKernelsReply = {
@@ -454,6 +455,20 @@ test('an intent is a whole placement, and says nothing a slot of its role cannot
   ] as const) refused(() => parseRemoteKernelsReply(edit(reply, ['placements', 0, ...at], value)), /Invalid|Unexpected/)
   assert.doesNotThrow(() => parseRemoteKernelsReply(edit(reply, ['placements', 0, 'hashSeed'], 4_294_967_295)))
   refused(() => parseRemoteKernelsReply({ ...reply, placements: Array.from({ length: REMOTE_PLACEMENTS_MAX + 1 }, (_, i) => ({ ...intent, key: `s${i}:room` })) }))
+})
+
+test('an intent carries the shared memory home\'s own GPU rooms run with, in a size docker reads', () => {
+  // What KERNEL_SHM may say at home (pool.ts · roomShm, docker's go-units), and room-spec.ts · ROOM_SHM.
+  for (const shm of ['1g', '4g', '512m', '512M', '2gb', '512MiB', '1.5g', '0.5g', '1 g', '1073741824', '64k']) {
+    assert.ok(REMOTE_SHM.test(shm), shm)
+    assert.equal(parseRemoteKernelsReply(edit(reply, ['placements', 0, 'shm'], shm)).placements[0]!.shm, shm)
+  }
+  // Nothing at all is docker's 64 MB, the "bus error" the flag is there to prevent; a word, a sign or a shell is no size.
+  for (const shm of [undefined, '', '0', '0g', '0.0g', '-1g', 'big', '1g;rm', '1g ', ' 1g', '1x', '1.2.3g', 'g', '1gbb', '1'.repeat(13), 1024, null]) {
+    refused(() => parseRemoteKernelsReply(edit(reply, ['placements', 0, 'shm'], shm)), /placement intent/)
+  }
+  // Every slot carries it, the ones without a card too: the argv is home's flag for flag whatever the role.
+  for (const slot of [1, 2]) refused(() => parseRemoteKernelsReply(edit(reply, ['placements', slot, 'shm'], undefined)), /placement intent/)
 })
 
 test('a push applies in its order without contradicting itself, within its caps', () => {

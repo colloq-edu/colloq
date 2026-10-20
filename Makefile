@@ -734,7 +734,10 @@ runners-update: ## Every rented machine for submissions to its home's version, i
 	@# RUNNER_SURVEY_SEC, 60 s), that its build is the home's own is left alone
 	@# (FORCE=1 updates it all the same). NOW=1 hands the runs back to the
 	@# home's queue instead of waiting for them; nobody's attempts are spent
-	@# either way.
+	@# either way. Classes on a machine keep running: its new agent adopts
+	@# their kernels. A machine's first update to 0.25 goes twice: its old
+	@# colloq-host leaves the agent off the host's network, where it takes no
+	@# classes, and the one that update brought moves it.
 	@NAME="$(NAME)" URL="$(URL)" VERSION="$(VERSION)" NOW="$(NOW)" FORCE="$(FORCE)" ./scripts/vast-runner.sh update
 
 runners-down: ## Every rented machine for submissions leaves its home, then is destroyed. URL=… NOW=1 — without waiting for its runs
@@ -745,7 +748,9 @@ runners-down: ## Every rented machine for submissions leaves its home, then is d
 	@# home, and URL= takes only that home's. NOW=1
 	@# destroys at once: the home loses the machine after three minutes of
 	@# silence and runs its submissions again elsewhere, and the owner revokes
-	@# it in the panel.
+	@# it in the panel. Classes on a machine move to their home's server with
+	@# its leave (with NOW=1, a minute after it falls silent), their variables
+	@# lost either way.
 	@NAME="$(NAME)" URL="$(URL)" NOW="$(NOW)" FORCE="$(FORCE)" ./scripts/vast-runner.sh down
 
 # The node runner-dev runs the agent with: Homebrew's node@22 when it is there,

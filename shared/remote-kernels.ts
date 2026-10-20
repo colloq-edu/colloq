@@ -306,6 +306,17 @@ export const REMOTE_PIDS = { min: 64, max: 32768 } as const
 export const REMOTE_ROOM_CPUS_MAX = 64
 /** PYTHONHASHSEED (D28): 1 + sha256 mod 4294967295, so one of 1…4294967295 (room-spec.ts · classHashSeed). */
 export const REMOTE_HASH_SEED_MAX = 4_294_967_295
+/**
+ * A GPU room's `--shm-size` as docker reads a size (go-units · RAMInBytes:
+ * a number, a unit, an `i` and a `b` as it likes them, `1g`, `512MiB`,
+ * `2gb`), above nothing: docker's 64 MB default is what breaks
+ * `DataLoader(num_workers=4)` with "bus error", and `0` is that default. Home
+ * sends what its own GPU rooms run with (pool.ts · roomShm: KERNEL_SHM, else
+ * room-spec.ts · ROOM_SHM) and checks it by this same pattern first: the
+ * agent refuses the whole reply over an intent outside it, leases and
+ * revokes with it.
+ */
+export const REMOTE_SHM = /^(?=[^1-9]*[1-9])\d{1,12}(?:\.\d{1,6})? ?[kKmMgGtTpP]?[iI]?[bB]?$/
 
 /* ---------------------------------------------------------------- the doors */
 
@@ -371,6 +382,13 @@ export interface RemotePlacementIntent {
   token: string
   /** The class's PYTHONHASHSEED, the same for its three containers (D28). */
   hashSeed: number
+  /**
+   * `--shm-size` of a GPU room (REMOTE_SHM): home's own (pool.ts · roomShm),
+   * so that the argv on a machine is home's flag for flag
+   * (tests/room-spec-argv.test.mts). Every slot carries it; only a room with a
+   * card gets the flag (room-spec.ts).
+   */
+  shm: string
   /** The pool's planned size: `council` only, and always there. */
   workers?: number
 }
@@ -546,14 +564,20 @@ export type RemotePerimeterState = 'ok' | 'no-dockerd' | 'no-iptables' | 'refuse
 
 /** What makes a machine eligible for classes, measured on it (§6.3, §7.5, §7.6). */
 export interface RemoteClassFacts {
-  /** The agent runs with `--network host` (D19). */
+  /** The agent runs with `--network host` (D19); false while it does not know yet. */
   hostNetwork: boolean
+  /** Only `failing` (the perimeter failed closed, §7.6) moves classes away; any other word but `ok` keeps the machine from new ones. */
   perimeter: RemotePerimeterState
-  /** The network mode its perimeter holds; `open` is never eligible (D21). */
+  /**
+   * The machine's own floor (its COLLOQ_ROOM_NETWORK): every class there runs
+   * at least this strict. Home's mode rides each intent and the stricter of
+   * the two is what runs, so home never needs this to reach its own floor
+   * for a machine to be eligible. `open` is never said (D21).
+   */
   mode: 'blocked' | 'none' | 'open'
   /** The admission canary: `ok`, or what failed, in the agent's words. */
   canary: string
-  /** A Colloq home's containers are on the same daemon (D20). */
+  /** A Colloq home's containers are on the same daemon (D20); true while the agent does not know yet. */
   sameDaemon: boolean
 }
 
@@ -812,11 +836,12 @@ function intentsOf(value: unknown): RemotePlacementIntent[] {
   const keys = new Set<string>()
   const intents: RemotePlacementIntent[] = []
   for (const item of items(value, 'placement intents', REMOTE_PLACEMENTS_MAX)) {
-    const v = known(item, 'placement intent', ['key', 'gen', 'environment', 'revision', 'memoryMb', 'cpus', 'pids', 'gpu', 'network', 'blockedCidrs', 'token', 'hashSeed', 'workers'])
+    const v = known(item, 'placement intent', ['key', 'gen', 'environment', 'revision', 'memoryMb', 'cpus', 'pids', 'gpu', 'network', 'blockedCidrs', 'token', 'hashSeed', 'shm', 'workers'])
     const slot = parseRemotePlacementKey(v.key)
     if (slot === null || keys.has(v.key as string) || !gen(v.gen) || !matching(v.environment, ENVIRONMENT_NAME)
       || !integer(v.memoryMb, RUNTIME_MEMORY_MIN_MB, RUNTIME_MEMORY_MAX_MB) || !integer(v.cpus, 1, REMOTE_ROOM_CPUS_MAX) || !integer(v.pids, REMOTE_PIDS.min, REMOTE_PIDS.max)
-      || !flag(v.gpu) || !word(v.network, NETWORKS) || !matching(v.token, REMOTE_PLACEMENT_TOKEN) || !integer(v.hashSeed, 1, REMOTE_HASH_SEED_MAX)) refuse('Invalid placement intent')
+      || !flag(v.gpu) || !word(v.network, NETWORKS) || !matching(v.token, REMOTE_PLACEMENT_TOKEN) || !integer(v.hashSeed, 1, REMOTE_HASH_SEED_MAX)
+      || !matching(v.shm, REMOTE_SHM)) refuse('Invalid placement intent')
     keys.add(v.key as string)
     const revision = imageOf(v.revision, 'placement revision', ['id', 'ref', 'layers'])
     const blockedCidrs = [...distinct(v.blockedCidrs, 'blocked ranges', REMOTE_CIDR, REMOTE_BLOCKED_CIDRS_MAX)]

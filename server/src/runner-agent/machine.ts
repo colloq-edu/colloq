@@ -198,24 +198,49 @@ export interface CardRun {
  * a run taken at one per card holds the whole card, whatever home says now.
  * `busyShares` is the runs on the card by head, which stays above perDevice
  * for a while after home lowers it, while those runs finish.
+ *
+ * A card a class's room holds whole (`whole`: remote-classes.md §6.5, among
+ * `runs` as a run at one per card) is reported with every share of it busy,
+ * whatever runs per card home says: home's take (lease.ts · cardRoom) counts
+ * the heads it does not know as shares held, and finds no share there.
  */
-export function cardReport(cards: readonly ProbedCard[], perDevice: number, runs: readonly CardRun[], held: Readonly<Record<string, number>> = {}): { cards: RemoteCard[]; freeShares: number } {
+export function cardReport(
+  cards: readonly ProbedCard[],
+  perDevice: number,
+  runs: readonly CardRun[],
+  held: Readonly<Record<string, number>> = {},
+  whole: ReadonlySet<string> = new Set(),
+): { cards: RemoteCard[]; freeShares: number } {
   const per = remoteCount(perDevice, 1, REMOTE_PER_DEVICE_MAX)
   const capacity = cards.map((card) => ({ id: card.device, capacity: per }))
   const used = cardsInUse(capacity, runs, held)
   let freeShares = 0
   const reported: RemoteCard[] = cards.slice(0, REMOTE_CARDS_MAX).map((card) => {
     const heads = runs.filter((run) => run.device === card.device).length + Math.max(0, Math.floor(held[card.device] ?? 0))
-    freeShares += Math.max(0, per - (used.get(card.device) ?? 0))
+    if (!whole.has(card.device)) freeShares += Math.max(0, per - (used.get(card.device) ?? 0))
     return {
       device: card.device,
       name: card.name === null ? null : remoteText(card.name, REMOTE_LABEL_CHARS, 'start') || null,
       memoryMb: card.memoryMb === null ? null : remoteCount(card.memoryMb, 1, REMOTE_CARD_MB_MAX),
       perDevice: per,
-      busyShares: remoteCount(heads, 0, REMOTE_PER_DEVICE_MAX),
+      busyShares: remoteCount(whole.has(card.device) ? Math.max(heads, per) : heads, 0, REMOTE_PER_DEVICE_MAX),
     }
   })
   return { cards: reported, freeShares }
+}
+
+/**
+ * The card a GPU class room takes whole (remote-classes.md §6.5): the first
+ * card with no share in use at all — no run of a submission, no smoke test,
+ * no container awaiting removal, no other class — by pickRunnerGpu, the rule
+ * every card here is picked by; `null` — none is free, and the room does not
+ * start (`gpu`). The room then holds it as a run at one per card would, so
+ * nothing else is placed on it until its container is gone.
+ */
+export function pickWholeCard(cards: readonly ProbedCard[], runs: readonly CardRun[], held: Readonly<Record<string, number>> = {}): string | null {
+  const capacity = cards.map((card) => ({ id: card.device, capacity: 1 }))
+  const used = cardsInUse(capacity, runs, held)
+  return pickRunnerGpu(capacity.filter((card) => (used.get(card.id) ?? 0) === 0), used)
 }
 
 /**

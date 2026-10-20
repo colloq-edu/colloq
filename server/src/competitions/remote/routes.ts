@@ -274,7 +274,10 @@ export function remoteRunnerRoutes(): Router {
         req,
       })
     }
-    const body: RemoteJoinReply = { runnerId: joined.runner.id, secret: joined.secret, trusted: joined.runner.trusted, approvedSlots: joined.runner.approvedSlots }
+    // classes: the code's «Принимать занятия», now the machine's (D2); never beside trusted (D3, store.ts · toRunner).
+    const body: RemoteJoinReply = {
+      runnerId: joined.runner.id, secret: joined.secret, trusted: joined.runner.trusted, approvedSlots: joined.runner.approvedSlots, classes: joined.runner.classes,
+    }
     res.json(body)
   })
 

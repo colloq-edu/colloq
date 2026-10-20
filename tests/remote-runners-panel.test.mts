@@ -106,7 +106,7 @@ test('a code is minted inside the three join commands, with this server\'s addre
   // This server's own address, as PUBLIC_URL (or the checkout's .env) names it.
   const home = new URL(config.publicUrl).origin
   assert.equal(commands.docker, [
-    'docker run -d --name colloq-runner --restart unless-stopped --stop-timeout 90 \\',
+    'docker run -d --name colloq-runner --restart unless-stopped --network host --stop-timeout 90 \\',
     '  -v /var/run/docker.sock:/var/run/docker.sock \\',
     '  -v /var/lib/colloq-runner:/var/lib/colloq-runner \\',
     `  -e COLLOQ_RUNNER_JOIN='${home}#${code}' \\`,

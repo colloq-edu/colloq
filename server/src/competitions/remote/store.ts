@@ -210,6 +210,22 @@ ensureColumn('remote_runners', 'wanted', 'wanted TEXT')
  * undoing the owner's decision instead of three.
  */
 ensureColumn('remote_runners', 'resumed_at', 'resumed_at INTEGER')
+/*
+ * CLASSES ON MACHINES (docs/architecture/remote-classes.md §6.7, D2, D32).
+ * remote_runners.classes — «Принимает занятия»: the owner's, off by default,
+ * carried from the code the machine joined with like `trusted` and never
+ * together with it (D3). classes_quarantined_at — two silence failovers
+ * within half an hour stopped it taking classes (§11.6), its submissions
+ * untouched; classes_resumed_at — the owner's «Вернуть» of that, where the
+ * next window starts at the earliest. Both apart from the 0.23 quarantine,
+ * which drains a machine for its submissions' losses: one does not lift the
+ * other. remote_runner_codes.classes — the code's flag, copied onto every
+ * machine it enrolls.
+ */
+ensureColumn('remote_runners', 'classes', 'classes INTEGER NOT NULL DEFAULT 0')
+ensureColumn('remote_runners', 'classes_quarantined_at', 'classes_quarantined_at INTEGER')
+ensureColumn('remote_runners', 'classes_resumed_at', 'classes_resumed_at INTEGER')
+ensureColumn('remote_runner_codes', 'classes', 'classes INTEGER NOT NULL DEFAULT 0')
 
 /* ----------------------------------------------------------------- hashes */
 
@@ -297,6 +313,12 @@ export interface RunnerRow {
   quarantineSeen: boolean
   /** When the owner last resumed it (remote_runners.resumed_at): its quarantine window starts there at the earliest. */
   resumedAt: number | null
+  /** «Принимает занятия» (D2): it may hold class kernels. Never together with `trusted` (D3). */
+  classes: boolean
+  /** When two silence failovers within half an hour stopped it taking classes (§11.6); null — it was not, or the owner resumed it. */
+  classesQuarantinedAt: number | null
+  /** When the owner last resumed it for classes («Вернуть»): the class quarantine counts only what came after. */
+  classesResumedAt: number | null
 }
 
 interface RunnerRaw {
@@ -322,6 +344,9 @@ interface RunnerRaw {
   quarantined_at: number | null
   quarantine_seen: number
   resumed_at: number | null
+  classes: number
+  classes_quarantined_at: number | null
+  classes_resumed_at: number | null
 }
 
 function parsed<T>(text: string | null | undefined, fallback: T): T {
@@ -357,6 +382,13 @@ function toRunner(row: RunnerRaw): RunnerRow {
     quarantinedAt: row.quarantined_at,
     quarantineSeen: row.quarantine_seen === 1,
     resumedAt: row.resumed_at ?? null,
+    // A row with both flags is no row any writer here leaves (updateRunner, mintRefusal, setRunnerClasses
+    // refuse it), only a hand-edited one; it reads as the machine it was before classes, the hidden
+    // test's, rather than as a join reply its own agent refuses as contradictory (remote-runner.ts ·
+    // parseRemoteJoinReply) on every repeated join.
+    classes: row.classes === 1 && row.trusted !== 1,
+    classesQuarantinedAt: row.classes_quarantined_at ?? null,
+    classesResumedAt: row.classes_resumed_at ?? null,
   }
 }
 
@@ -425,6 +457,9 @@ export interface RunnerPatch {
   quarantinedAt?: number | null
   quarantineSeen?: boolean
   resumedAt?: number | null
+  classes?: boolean
+  classesQuarantinedAt?: number | null
+  classesResumedAt?: number | null
 }
 
 const RUNNER_COLUMN: Record<keyof RunnerPatch, string> = {
@@ -441,9 +476,33 @@ const RUNNER_COLUMN: Record<keyof RunnerPatch, string> = {
   quarantinedAt: 'quarantined_at',
   quarantineSeen: 'quarantine_seen',
   resumedAt: 'resumed_at',
+  classes: 'classes',
+  classesQuarantinedAt: 'classes_quarantined_at',
+  classesResumedAt: 'classes_resumed_at',
+}
+
+/**
+ * NO HIDDEN TEST BESIDE CLASSES (D3), held here for every writer. A machine
+ * that holds class kernels holds its students' code, files and memory, and a
+ * container escape there is the whole host: the competition's hidden test
+ * must not be on it. The panel refuses both flags in its own words
+ * (setRunnerClasses for the one, the trust toggle for the other); a write
+ * that would still make the pair is a bug of its caller's, refused here
+ * before it reaches the row, where the join reply would carry it to an agent
+ * that refuses the contradiction (remote-runner.ts · parseRemoteJoinReply).
+ */
+export class RunnerFlagsError extends Error {
+  constructor() {
+    super('A machine that takes classes is never trusted with the hidden test (remote-classes.md D3)')
+    this.name = 'RunnerFlagsError'
+  }
 }
 
 export function updateRunner(id: string, patch: RunnerPatch): RunnerRow | null {
+  if (patch.trusted === true || patch.classes === true) {
+    const row = selectRunner.get(id) as RunnerRaw | undefined
+    if (row && (patch.trusted ?? row.trusted === 1) && (patch.classes ?? row.classes === 1)) throw new RunnerFlagsError()
+  }
   const sets: string[] = []
   const params: Record<string, unknown> = { id }
   for (const [key, value] of Object.entries(patch)) {
@@ -471,6 +530,45 @@ export function nextOfferSeq(id: string): number {
   return (db.prepare('SELECT offer_seq FROM remote_runners WHERE id = ?').get(id) as { offer_seq: number } | undefined)?.offer_seq ?? 0
 }
 
+/* ----------------------------------------------------------------- classes */
+
+/** Why «Принимает занятия» cannot be set as asked: no such machine, one revoked or gone, or one trusted with the hidden test (D3). */
+export type ClassesRefusal = 'unknown' | 'gone' | 'trusted'
+
+/**
+ * «Принимает занятия» on or off (D2), the owner's toggle on the machine's
+ * menu: the row alone, and whether this call changed it. What turning it off
+ * means for the classes on the machine is not the row's: their placements
+ * fail over first, the machine's class streams are cut, and the log says
+ * `unclassed` (release.ts · unclassRunner, remote-classes.md §11.5), which
+ * calls this last. Turning it on is refused for a trusted machine: trust and
+ * classes never go together (D3), and the owner untrusts it first.
+ */
+export function setRunnerClasses(id: string, on: boolean): { runner: RunnerRow; changed: boolean } | { refused: ClassesRefusal } {
+  const runner = getRunner(id)
+  if (!runner) return { refused: 'unknown' }
+  if (!runnerStanding(runner)) return { refused: 'gone' }
+  if (on && runner.trusted) return { refused: 'trusted' }
+  if (runner.classes === on) return { runner, changed: false }
+  return { runner: updateRunner(id, { classes: on })!, changed: true }
+}
+
+/**
+ * The owner's «Вернуть» under the class quarantine banner (§11.6, D32): the
+ * machine takes classes again, and the next quarantine counts only the
+ * failovers after `now` (classes_resumed_at), so the two that set this one
+ * do not set it again on the next. The row alone: the `classes_resumed`
+ * line in the log and the wake are the caller's, as the 0.23 resume's are
+ * the route's. Nothing changes for a machine not under it.
+ */
+export function resumeRunnerClasses(id: string, now = Date.now()): { runner: RunnerRow; changed: boolean } | { refused: Exclude<ClassesRefusal, 'trusted'> } {
+  const runner = getRunner(id)
+  if (!runner) return { refused: 'unknown' }
+  if (!runnerStanding(runner)) return { refused: 'gone' }
+  if (runner.classesQuarantinedAt === null) return { runner, changed: false }
+  return { runner: updateRunner(id, { classesQuarantinedAt: null, classesResumedAt: now })!, changed: true }
+}
+
 /* ------------------------------------------------------- enrollment codes */
 
 /**
@@ -491,6 +589,8 @@ export interface MintCode {
   trusted: boolean
   approvedSlots: number | null
   namePrefix?: string | null
+  /** Its machines take classes («Принимать занятия», D2); never together with `trusted` (D3). Off unless asked. */
+  classes?: boolean
   /** The staff member, or `colloq-host` for a code minted on the instance's console (ops/runner-code.ts). */
   createdBy: string
 }
@@ -504,38 +604,43 @@ export interface MintedCode {
   machines: number
   trusted: boolean
   approvedSlots: number | null
+  classes: boolean
 }
 
-export type MintRefusal = 'machines' | 'hours' | 'slots' | 'prefix'
+/** `classes` — asked together with `trusted`: no machine is both (D3). */
+export type MintRefusal = 'machines' | 'hours' | 'slots' | 'prefix' | 'classes'
 
 /** Why a code cannot be minted as asked; `null` — it can. The same bounds for the panel and the console. */
-export function mintRefusal(input: Pick<MintCode, 'machines' | 'hours' | 'approvedSlots' | 'namePrefix'>): MintRefusal | null {
+export function mintRefusal(input: Pick<MintCode, 'machines' | 'hours' | 'approvedSlots' | 'namePrefix'> & Partial<Pick<MintCode, 'trusted' | 'classes'>>): MintRefusal | null {
   if (!Number.isSafeInteger(input.machines) || input.machines < 1 || input.machines > REMOTE_CODE_MACHINES_MAX) return 'machines'
   if (!Number.isSafeInteger(input.hours) || input.hours < 1 || input.hours * 60 * 60_000 > REMOTE_CODE_TTL_MAX_MS) return 'hours'
   if (input.approvedSlots !== null && (!Number.isSafeInteger(input.approvedSlots) || input.approvedSlots < 1 || input.approvedSlots > REMOTE_ATTEMPTS_MAX)) return 'slots'
   if (input.namePrefix && !RUNNER_PREFIX.test(input.namePrefix)) return 'prefix'
+  if (input.trusted === true && input.classes === true) return 'classes'
   return null
 }
 
 /**
  * Mint an enrollment code: good for `machines` joins within `hours` (at most
  * a day: a code is a door, and a door left open is found), carrying the
- * trusted flag and the slot cap to every machine it enrolls. The ONE way a
- * code is made — the owner's dialog (routes/admin-runners.ts) and the
- * instance's console (ops/runner-code.ts) both call it — and the code itself
- * leaves only in its return value; the row keeps its sha256.
+ * trusted flag, the classes flag and the slot cap to every machine it
+ * enrolls. The ONE way a code is made — the owner's dialog
+ * (routes/admin-runners.ts) and the instance's console (ops/runner-code.ts)
+ * both call it — and the code itself leaves only in its return value; the
+ * row keeps its sha256.
  */
 export function mintRemoteCode(input: MintCode, now = Date.now()): MintedCode {
   const refusal = mintRefusal(input)
   if (refusal) throw new Error(`Invalid enrollment code request: ${refusal}`)
   const code = randomBytes(16).toString('hex')
   const expiresAt = now + input.hours * 60 * 60_000
+  const classes = input.classes === true
   db.prepare(`INSERT INTO remote_runner_codes
-      (code_sha256, created_by, created_at, expires_at, uses_left, trusted, approved_slots, name_prefix, machines)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-    sha256(code), input.createdBy, now, expiresAt, input.machines, input.trusted ? 1 : 0, input.approvedSlots, input.namePrefix ?? '', input.machines,
+      (code_sha256, created_by, created_at, expires_at, uses_left, trusted, approved_slots, name_prefix, machines, classes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    sha256(code), input.createdBy, now, expiresAt, input.machines, input.trusted ? 1 : 0, input.approvedSlots, input.namePrefix ?? '', input.machines, classes ? 1 : 0,
   )
-  return { id: codeIdOf(sha256(code)), code, expiresAt, machines: input.machines, trusted: input.trusted, approvedSlots: input.approvedSlots }
+  return { id: codeIdOf(sha256(code)), code, expiresAt, machines: input.machines, trusted: input.trusted, approvedSlots: input.approvedSlots, classes }
 }
 
 /**
@@ -560,6 +665,8 @@ export interface CodeRow {
   trusted: boolean
   approvedSlots: number | null
   namePrefix: string
+  /** Its machines take classes (D2). */
+  classes: boolean
 }
 
 interface CodeRaw {
@@ -572,6 +679,7 @@ interface CodeRaw {
   trusted: number
   approved_slots: number | null
   name_prefix: string
+  classes: number
 }
 
 const toCode = (row: CodeRaw): CodeRow => ({
@@ -584,6 +692,8 @@ const toCode = (row: CodeRaw): CodeRow => ({
   trusted: row.trusted === 1,
   approvedSlots: row.approved_slots,
   namePrefix: row.name_prefix,
+  // As a machine's row reads (toRunner): a hand-edited code with both flags enrolls the 0.23 machine it was.
+  classes: row.classes === 1 && row.trusted !== 1,
 })
 
 /** Codes still good (not expired, not used up), newest first: the dialog's «ждём первую машину…». */
@@ -673,6 +783,10 @@ function runnerName(prefix: string, facts: RemoteFacts): string {
  * so a copy of it read on the way opens nothing) without spending another
  * use of the code, even one used up by that very join. Anything else needs a
  * code that is known, not expired and not used up.
+ *
+ * The machine takes the code's flags: trusted, classes (D2) and the slot
+ * cap. A code holds at most one of the first two (mintRefusal), and so does
+ * the machine it enrolls.
  */
 export const joinRunner = db.transaction((input: { code: string; joinId: string; build: string; facts: RemoteFacts; address: string | null }, now: number): JoinOutcome => {
   const codeSha = sha256(input.code)
@@ -695,10 +809,10 @@ export const joinRunner = db.transaction((input: { code: string; joinId: string;
     if (selectRunner.get(id)) continue
     // No last_seen_at yet: «был на связи» is a sync's, and until the first one the panel says the machine joined and never synced.
     db.prepare(`INSERT INTO remote_runners
-        (id, name, secret_sha256, join_id, code_sha256, trusted, approved_slots, state, build, version, facts,
+        (id, name, secret_sha256, join_id, code_sha256, trusted, classes, approved_slots, state, build, version, facts,
          created_by, created_at, last_address)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`).run(
-      id, name, sha256(secret), input.joinId, codeSha, code.trusted, code.approved_slots, input.build, input.facts.version,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`).run(
+      id, name, sha256(secret), input.joinId, codeSha, code.trusted, toCode(code).classes ? 1 : 0, code.approved_slots, input.build, input.facts.version,
       JSON.stringify(input.facts), code.created_by, now, input.address,
     )
     return { ok: true, runner: getRunner(id)!, secret, repeated: false }
@@ -1209,6 +1323,26 @@ export function reasonText(text: string): string {
 
 /* ------------------------------------------------------------------ events */
 
+/**
+ * The lines classes on machines add to a machine's log (remote-classes.md
+ * §11): its tunnel taken over by a newer one (both addresses), a class moved
+ * off it (the detail says why), the class quarantine set and resumed,
+ * «Принимает занятия» turned off, and its perimeter failing closed. Written
+ * from this release on; the panel's RemoteEventKind (shared/remote-admin.ts)
+ * learns them with the panel, and until then a line of one shows by its kind,
+ * as a kind the panel cannot name does (web/src/admin/runners.ts · eventLine).
+ */
+export const REMOTE_CLASS_EVENT_KINDS = ['tunnel_replaced', 'class_failover', 'classes_quarantined', 'classes_resumed', 'unclassed', 'perimeter_failing'] as const
+export type RemoteClassEventKind = (typeof REMOTE_CLASS_EVENT_KINDS)[number]
+/** Every kind a machine's log may hold. */
+export type RemoteRunnerEventKind = RemoteEventKind | RemoteClassEventKind
+
+/**
+ * A line of the log as the panel's page reads it (views.ts · machineDetail).
+ * Its kind is typed as the panel's, as it always was: a row written by a
+ * newer release, or one of the class kinds above, comes through as it is,
+ * and the panel shows it by its kind.
+ */
 export interface EventRow {
   id: number
   at: number
@@ -1219,12 +1353,15 @@ export interface EventRow {
   detail: string | null
 }
 
+/** A line of the log with its kind as written: what the counters of the class rules read (runnerEventsOf). */
+export type RunnerEventRow = Omit<EventRow, 'kind'> & { kind: RemoteRunnerEventKind }
+
 /**
  * One line of a machine's log. Never throws: an event is a record of what
  * already happened, and failing a sync or an outcome because the log could
  * not be written would lie about that.
  */
-export function remoteEvent(runnerId: string, kind: RemoteEventKind, extra: { attemptId?: string | null; address?: string | null; detail?: string | null } = {}, at = Date.now()): void {
+export function remoteEvent(runnerId: string, kind: RemoteRunnerEventKind, extra: { attemptId?: string | null; address?: string | null; detail?: string | null } = {}, at = Date.now()): void {
   try {
     db.prepare('INSERT INTO remote_events (at, runner_id, attempt_id, kind, address, detail) VALUES (?, ?, ?, ?, ?, ?)').run(
       at, runnerId, extra.attemptId ?? null, kind, extra.address ?? null, extra.detail ? reasonText(extra.detail) : null,
@@ -1234,11 +1371,33 @@ export function remoteEvent(runnerId: string, kind: RemoteEventKind, extra: { at
   }
 }
 
+interface EventRaw {
+  id: number
+  at: number
+  runner_id: string
+  attempt_id: string | null
+  kind: string
+  address: string | null
+  detail: string | null
+}
+
 export function runnerEvents(runnerId: string, limit = 50): EventRow[] {
-  const rows = db.prepare('SELECT * FROM remote_events WHERE runner_id = ? ORDER BY at DESC, id DESC LIMIT ?').all(runnerId, limit) as {
-    id: number; at: number; runner_id: string; attempt_id: string | null; kind: string; address: string | null; detail: string | null
-  }[]
+  const rows = db.prepare('SELECT * FROM remote_events WHERE runner_id = ? ORDER BY at DESC, id DESC LIMIT ?').all(runnerId, limit) as EventRaw[]
   return rows.map((row) => ({ id: row.id, at: row.at, runnerId: row.runner_id, attemptId: row.attempt_id, kind: row.kind as RemoteEventKind, address: row.address, detail: row.detail }))
+}
+
+/**
+ * A machine's lines of these kinds at or after `since`, oldest first: what
+ * the class rules count from the log rather than from memory, so that a
+ * restart of this server forgets none of it — two silence failovers within
+ * half an hour (§11.6, `class_failover`), more than three tunnel takeovers
+ * from other addresses within ten minutes (§11.7, `tunnel_replaced`).
+ */
+export function runnerEventsOf(runnerId: string, kinds: readonly RemoteRunnerEventKind[], since: number): RunnerEventRow[] {
+  if (kinds.length === 0) return []
+  const rows = db.prepare(`SELECT * FROM remote_events WHERE runner_id = ? AND at >= ? AND kind IN (${kinds.map(() => '?').join(', ')}) ORDER BY at, id`)
+    .all(runnerId, since, ...kinds) as EventRaw[]
+  return rows.map((row) => ({ id: row.id, at: row.at, runnerId: row.runner_id, attemptId: row.attempt_id, kind: row.kind as RemoteRunnerEventKind, address: row.address, detail: row.detail }))
 }
 
 /**

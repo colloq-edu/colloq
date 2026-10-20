@@ -20,7 +20,7 @@ export interface SocketCredentials {
  */
 export function authorizeSocket(ws: WebSocket, credentials?: SocketCredentials): () => boolean {
   // Internal/trusted callers may supply a role directly. Network sockets always
-  // carry credentials from the verified upgrade in index.ts.
+  // carry credentials from the verified upgrade in upgrade.ts.
   if (!credentials) return () => true
   const { cookieHeader, payload } = credentials
   const staff = staffFromCookieHeader(cookieHeader)
@@ -57,7 +57,7 @@ export function authorizeSocket(ws: WebSocket, credentials?: SocketCredentials):
  * machines' router takes that credential (competitions/remote/routes.ts),
  * and a socket door that tried it as a token of its own kind, or let a
  * machine's call through on a cookie riding next to it, would be one more
- * place a leaked machine secret opens. index.ts asks this before verifyToken.
+ * place a leaked machine secret opens. upgrade.ts asks this before verifyToken.
  */
 export function upgradeToken(headers: IncomingHttpHeaders, token: string | null): string | null {
   if (isRemoteCredential(headers.authorization) || isRemoteCredential(token)) return null
