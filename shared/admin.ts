@@ -520,6 +520,17 @@ export interface AdminSeminar {
   memoryMb?: number | null
   /** How many cores were set for this room, or null — the instance default. */
   cpus?: number | null
+  /**
+   * Where this class computes («Где считается», remote-classes.md §6.2): its
+   * own setting, every field resolved. Optional: an older server build does
+   * not send it, and the section then says nothing.
+   */
+  placement?: ClassPlacement
+  /**
+   * Whether the viewer may change `placement`: the owner always, a teacher
+   * while the owner's «Учителя отправляют занятия на машины» is on (D4).
+   */
+  placementEditable?: boolean
 }
 
 export interface CreateSeminarRequest {
@@ -616,6 +627,205 @@ export interface UpdateSeminarRequest {
    * form says so.
    */
   cpus?: number | null
+  /**
+   * Where the class computes, laid over its current setting (§6.2): a
+   * preset's three fields, or any of them. A slot that runs now keeps
+   * running where it is until it stops; the setting decides where it starts
+   * next. A teacher's change is refused while the owner's switch is off.
+   */
+  placement?: Partial<ClassPlacement>
+}
+
+/* ----------------------------------- where a class computes (classes on machines) */
+
+/**
+ * Where one of a class's containers computes (docs/architecture/
+ * remote-classes.md §6.2): here, on this server, or on the machines the owner
+ * opened to classes. The council's pool has no home of its own: `shared` is
+ * today's notebook kernel, one attempt after another.
+ */
+export type ClassSlotPlace = 'home' | 'machines'
+export type ClassCouncilPlace = 'shared' | 'machines'
+
+/** One class's «Где считается», stored in its sessions row (`placement`). */
+export interface ClassPlacement {
+  /** «Тетради класса»: the class notebooks' kernels and the shared terminal. */
+  room: ClassSlotPlace
+  /** «Личные тетради»: every personal kernel of the class, one container on one machine (D5, D6). */
+  own: ClassSlotPlace
+  /** «Консилиум»: the attempts' pool of workers on a machine, or the shared kernel. */
+  council: ClassCouncilPlace
+  /** «Если машин нет — здесь»: with no eligible machine a slot starts here, through this server's own admission. */
+  fallback: boolean
+  /** «Если машина пропала»: move after `failoverSec` of proven silence, or wait for the machine («ждать машину»). */
+  failover: 'auto' | 'wait'
+  /** Seconds of proven silence before the move, within CLASS_PLACEMENT_BOUNDS. */
+  failoverSec: number
+  /** «Попыток одновременно»: the pool sizes itself, or exactly this many workers. */
+  workers: 'auto' | number
+  /** «Память на попытку» (D33), in megabytes: each worker's ceiling. */
+  attemptMb: number
+}
+
+/**
+ * The four tiles above the form. `gpu` puts the slots where `machines` does:
+ * the card follows from the class's environment (§6.5), and the tile is the
+ * name the form gives a GPU class (D31). Personal notebooks never get a card,
+ * council workers none in v1 (D11).
+ */
+export type ClassPlacementPreset = 'home' | 'personal' | 'machines' | 'gpu'
+export const CLASS_PLACEMENT_PRESETS: Readonly<Record<ClassPlacementPreset, Readonly<Pick<ClassPlacement, 'room' | 'own' | 'council'>>>> = {
+  /** «Всё здесь». */
+  home: { room: 'home', own: 'home', council: 'shared' },
+  /** «Консилиум и личные тетради — на машинах» (D31, vsos's): the lecture keeps its latency here. */
+  personal: { room: 'home', own: 'machines', council: 'machines' },
+  /** «Всё на машинах». */
+  machines: { room: 'machines', own: 'machines', council: 'machines' },
+  /** «Всё на машине с картой». */
+  gpu: { room: 'machines', own: 'machines', council: 'machines' },
+}
+export const CLASS_PLACEMENT_PRESET_NAMES = Object.keys(CLASS_PLACEMENT_PRESETS) as ClassPlacementPreset[]
+
+/**
+ * What each number may be. The same as shared/remote-kernels.ts says them
+ * (CLASS_FAILOVER_SEC, COUNCIL_WORKERS.max), repeated rather than imported:
+ * that module imports this one, and the panel's bundle needs no contract
+ * parser for three numbers (tests/class-placement.test.mts holds them equal).
+ */
+export const CLASS_PLACEMENT_BOUNDS = {
+  failoverSec: { min: 30, max: 300 },
+  workers: { min: 1, max: 32 },
+  attemptMb: { min: 256, max: 32768 },
+} as const
+
+/**
+ * Every field as a class that never chose one has it: everything here, so
+ * nothing changes for anyone who does nothing (§6.2). The failover delay is
+ * the instance's «Переезд через» where the server knows it.
+ */
+export const CLASS_PLACEMENT_DEFAULT: Readonly<ClassPlacement> = {
+  room: 'home',
+  own: 'home',
+  council: 'shared',
+  fallback: true,
+  failover: 'auto',
+  failoverSec: 60,
+  workers: 'auto',
+  attemptMb: 1024,
+}
+
+const CLASS_PLACEMENT_FIELDS: readonly (keyof ClassPlacement)[] = ['room', 'own', 'council', 'fallback', 'failover', 'failoverSec', 'workers', 'attemptMb']
+
+const wholeWithin = (value: unknown, bounds: { min: number; max: number }): value is number =>
+  typeof value === 'number' && Number.isInteger(value) && value >= bounds.min && value <= bounds.max
+
+/** Whether one field's value is one the setting may hold. */
+function classPlacementValue(field: keyof ClassPlacement, value: unknown): boolean {
+  switch (field) {
+    case 'room':
+    case 'own':
+      return value === 'home' || value === 'machines'
+    case 'council':
+      return value === 'shared' || value === 'machines'
+    case 'fallback':
+      return typeof value === 'boolean'
+    case 'failover':
+      return value === 'auto' || value === 'wait'
+    case 'failoverSec':
+      return wholeWithin(value, CLASS_PLACEMENT_BOUNDS.failoverSec)
+    case 'workers':
+      return value === 'auto' || wholeWithin(value, CLASS_PLACEMENT_BOUNDS.workers)
+    case 'attemptMb':
+      return wholeWithin(value, CLASS_PLACEMENT_BOUNDS.attemptMb)
+  }
+}
+
+/**
+ * A patch from an untrusted body laid over `base`: every field it names
+ * checked, and an unknown one refused rather than ignored, as the resource
+ * settings refuse one (a typo that silently changes nothing is how a teacher
+ * ends up believing a class is on a machine). `field` names the first that
+ * did not pass.
+ */
+export function readClassPlacement(
+  value: unknown,
+  base: Readonly<ClassPlacement>,
+): { ok: true; placement: ClassPlacement } | { ok: false; field: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { ok: false, field: 'placement' }
+  const placement: ClassPlacement = { ...base }
+  for (const [field, given] of Object.entries(value as Record<string, unknown>)) {
+    if (!(CLASS_PLACEMENT_FIELDS as readonly string[]).includes(field)) return { ok: false, field }
+    const key = field as keyof ClassPlacement
+    if (!classPlacementValue(key, given)) return { ok: false, field }
+    ;(placement as unknown as Record<string, unknown>)[key] = given
+  }
+  return { ok: true, placement }
+}
+
+/**
+ * A stored setting read back: each field that is one the setting may hold,
+ * and `base`'s for any other (a hand-edited row, a field a later release
+ * added). Never throws: a class whose row cannot be read computes here.
+ */
+export function storedClassPlacement(value: unknown, base: Readonly<ClassPlacement>): ClassPlacement {
+  const placement: ClassPlacement = { ...base }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return placement
+  const stored = value as Record<string, unknown>
+  for (const field of CLASS_PLACEMENT_FIELDS) {
+    if (classPlacementValue(field, stored[field])) (placement as unknown as Record<string, unknown>)[field] = stored[field]
+  }
+  return placement
+}
+
+/** The tile a setting matches, or null for a mix of its own; `gpu` names the machines' tile for a GPU class. */
+export function classPlacementPreset(placement: Pick<ClassPlacement, 'room' | 'own' | 'council'>, gpu: boolean): ClassPlacementPreset | null {
+  for (const name of CLASS_PLACEMENT_PRESET_NAMES) {
+    if (name === (gpu ? 'machines' : 'gpu')) continue
+    const preset = CLASS_PLACEMENT_PRESETS[name]
+    if (preset.room === placement.room && preset.own === placement.own && preset.council === placement.council) return name
+  }
+  return null
+}
+
+/**
+ * The owner's «Занятия на машинах» (Paper page 18, Z1), instance-wide: who
+ * decides where classes compute, what a new class starts with, and the
+ * numbers the machines' traffic of classes keeps to.
+ */
+export interface ClassMachineSettings {
+  /** «Учителя отправляют занятия на машины» (D4): teachers set where their classes compute; off — the owner alone. */
+  teachers: boolean
+  /** «Новые занятия по умолчанию»: the tile a new class starts with. */
+  newClasses: ClassPlacementPreset
+  /** «Переезд через», seconds: the failover delay a class starts with. */
+  failoverSec: number
+  /** «Файл с машины — до», MB (D17): a kernel's file larger than this stays «на машине». */
+  machineFileMb: number
+  /** «Файлы занятий», MB/s (D18): class bulk both ways while a class is live on a machine. */
+  classBulkMBps: number
+  /** «Раздача посылок во время занятий», MB/s (D18): competition blobs to machines while classes run there. */
+  competitionMBps: number
+}
+
+/** Only the fields being changed; `null` forgets the saved value and hands the setting back to its default. */
+export type UpdateClassMachineSettingsRequest = { [K in keyof ClassMachineSettings]?: ClassMachineSettings[K] | null }
+
+/** The numbers' bounds; the rates are the contract's (remote-runner.ts · REMOTE_BLOB_MBPS). */
+export const CLASS_MACHINE_SETTING_BOUNDS = {
+  failoverSec: CLASS_PLACEMENT_BOUNDS.failoverSec,
+  machineFileMb: { min: 1, max: 65536 },
+  classBulkMBps: { min: 1, max: 1000 },
+  competitionMBps: { min: 1, max: 1000 },
+} as const
+
+/** The owner's settings as a class machine that nobody configured has them. */
+export const CLASS_MACHINE_SETTING_DEFAULTS: Readonly<ClassMachineSettings> = {
+  teachers: true,
+  newClasses: 'home',
+  failoverSec: 60,
+  machineFileMb: 200,
+  classBulkMBps: 4,
+  competitionMBps: 2,
 }
 
 /* --------------------------------------------------------- resources */

@@ -27,7 +27,7 @@ import { runnerOffer, reconcileSync, takeForRunner, type RunnerOffer } from '../
 import { dataNow } from '../server/src/competitions/remote/want.js'
 import { declineLease, loseLease } from '../server/src/competitions/remote/release.js'
 import { bootRemoteRunners, probeOwnPath, remoteTick, settleUnfit } from '../server/src/competitions/remote/liveness.js'
-import { noteCall, resetHeard } from '../server/src/competitions/remote/heard.js'
+import { classProvenSilence, noteCall, provenSilence, resetHeard, useClassPort, type ClassPort } from '../server/src/competitions/remote/heard.js'
 import { machineDetail, machinesResponse } from '../server/src/competitions/remote/views.js'
 import { holdQueueRow } from '../server/src/competitions/store.js'
 import { bindSubmission, completeBundle, createBundle, setPolicy } from '../server/src/dependencies/store.js'
@@ -419,6 +419,66 @@ test('an agent restart that loses every run at once is one loss, and losses befo
     assert.equal(getRunner(m.id)?.state, i === 0 ? 'active' : 'draining')
   }
   assert.ok(getRunner(m.id)?.quarantinedAt !== null)
+  reset()
+})
+
+/** The class placements (heard.ts · ClassPort) holding nothing, but for what a test puts in. */
+function placementsWith(over: Partial<ClassPort>): ClassPort {
+  return {
+    wantedPlacements: () => [],
+    noteKernelsReport: () => undefined,
+    hasLivePlacements: () => false,
+    anyLivePlacements: () => false,
+    classTick: () => undefined,
+    failoverRunner: () => 0,
+    postmortemWanted: () => [],
+    classRevisionsWanted: () => [],
+    tunnelWanted: () => 'closed',
+    placementOf: () => ({ where: 'home' }),
+    ...over,
+  }
+}
+
+test('the clock runs the classes\' pass on its own `now`, and a class pass that fails stops none of the leases\' clock', () => {
+  reset()
+  const ticks: number[] = []
+  useClassPort(placementsWith({ classTick: (now) => void ticks.push(now) }))
+  const errors = console.error
+  try {
+    const now = Date.now()
+    remoteTick(now)
+    remoteTick(now + 5000)
+    assert.deepEqual(ticks, [now, now + 5000], 'the classes\' clock is this one, driven by hand in the tests')
+    const c = competition()
+    send(c)
+    const m = machine()
+    const [lease] = takeForRunner(m, offerFor(m, c), now)
+    useClassPort(placementsWith({ classTick: () => { throw new Error('a class pass that fails') } }))
+    console.error = () => undefined
+    assert.equal(remoteTick(now + REMOTE_OFFER_MS + 1000).withdrawn, 1, 'an offer nobody acked is withdrawn all the same')
+    assert.equal(getLease(lease.attemptId)?.state, 'withdrawn')
+  } finally {
+    console.error = errors
+    useClassPort(null)
+  }
+  reset()
+})
+
+test('a class\'s silence is proven from the last pass without class evidence, which runs out after fifteen seconds rather than a lease\'s minute', () => {
+  reset()
+  const m = machine()
+  const witness = machine()
+  const t0 = Date.now()
+  noteCall(m.id, t0, null)
+  noteCall(witness.id, t0 + 30_000, null)
+  // Twenty seconds after the witness was last heard: evidence for a lease still, none for a class.
+  remoteTick(t0 + 50_000)
+  assert.equal(provenSilence(m.id, t0 + 80_000), 80_000, 'the leases\' rule had evidence all along')
+  assert.equal(classProvenSilence(m.id, t0 + 80_000), 30_000, 'the class\'s counts from the pass that had none')
+  // The witness heard again: no pass is blind, and the class's silence grows from that pass on.
+  noteCall(witness.id, t0 + 85_000, null)
+  remoteTick(t0 + 90_000)
+  assert.equal(classProvenSilence(m.id, t0 + 120_000), 70_000)
   reset()
 })
 

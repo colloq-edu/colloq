@@ -19,12 +19,18 @@
  * is lost at once — the machine says it no longer has it (an agent restart,
  * §3.4 "Agent restart"). Nothing is decided on a lost reply: the next sync
  * says the same, whole.
+ *
+ * CLASSES GO FIRST on a machine that takes them (remote-classes.md D24, §6.4),
+ * by ordering and never by preemption: the placements the same reply asks
+ * for take their share of the machine's room before any lease is taken
+ * (runnerOffer), and a running submission is never stopped for a class.
  */
 import path from 'node:path'
 import {
   REMOTE_ATTEMPTS_MAX,
   REMOTE_ATTEMPT_DISK_MB,
   REMOTE_CONTAINER,
+  REMOTE_CONTAINER_CUSHION_MB,
   REMOTE_DECLINE_SKIP_MS,
   REMOTE_HARNESS,
   REMOTE_INLINE_BYTES,
@@ -39,6 +45,7 @@ import {
   type RemoteRevoke,
   type RemoteSyncRequest,
 } from '@shared/remote-runner'
+import type { RemotePlacementIntent } from '@shared/remote-kernels'
 import type { Competition } from '@shared/competitions'
 import { db } from '../../db.js'
 import { cardsInUse } from '../gpu-math.js'
@@ -59,6 +66,7 @@ import {
   type QueueRow,
 } from '../store.js'
 import { fitCache, machineFit, rowNeeds, stepClaim, type FitCache, type MachineRefusal, type RowRefusal } from './fit.js'
+import { classPort, classesBeside, intentsSent } from './heard.js'
 import {
   boundedPerDevice,
   declinedBy,
@@ -68,6 +76,7 @@ import {
   nextOfferSeq,
   openLeases,
   remoteEvent,
+  runnerStanding,
   sha256,
   updateLease,
   type LeaseManifest,
@@ -96,6 +105,8 @@ export interface RunnerOffer {
   cards: boolean
   /** Runs per card a GPU lease is pinned at (§5.5): the machine's own setting, or the instance's. */
   perDevice: number
+  /** Classes are beside it (heard.ts · classesBeside): no hidden-test lease, whatever its trust (D3). */
+  classes: boolean
 }
 
 /** A lease's claim on its machine: the memory docker gives the container and its cushion, its CPUs (fit.ts · stepClaim). */
@@ -199,20 +210,104 @@ export function listedOf(sync: Pick<RemoteSyncRequest, 'attempts'> | null): Map<
   return sync ? new Map(sync.attempts.map((attempt) => [attempt.id, attempt.card ? { device: attempt.card.device } : null])) : null
 }
 
-/** The take's view of a machine from its sync (or, after an outcome, its last sync and the outcome's `free`). */
-export function runnerOffer(runner: RunnerRow, free: RemoteFree, sync: Pick<RemoteSyncRequest, 'attempts' | 'ready'> & Partial<Pick<RemoteSyncRequest, 'cards'>> | null): RunnerOffer {
+/**
+ * The take's view of a machine from its sync (or, after an outcome, its last
+ * sync and the outcome's `free`), with the class placements it is to hold
+ * already out of its room (classShare, spareWholeCards): `intents`, the
+ * wanted set of the reply being built (routes.ts · syncReply), or else the
+ * one it was last sent (heard.ts · intentsSent).
+ */
+export function runnerOffer(
+  runner: RunnerRow,
+  free: RemoteFree,
+  sync: Pick<RemoteSyncRequest, 'attempts' | 'ready'> & Partial<Pick<RemoteSyncRequest, 'cards' | 'kernels'>> | null,
+  intents: readonly RemotePlacementIntent[] = intentsSent(runner.id),
+): RunnerOffer {
   const perDevice = boundedPerDevice(runner.perDevice ?? gpuPerDeviceSetting().value)
+  const listed = listedOf(sync)
+  const room = runnerRoom(runner, free, listed, sync?.cards ?? null, perDevice)
+  const share = classShare(intents, sync)
+  const classes = classesBeside(runner)
+  let gpuShares = room.gpuShares
+  if (share.cards > 0) {
+    // GPU leases not on a card yet: the agent places them on whole cards first, as it would the next ones.
+    const placing = liveLeases(runner.id).filter((lease) => lease.manifest.gpu && !listed?.get(lease.attemptId)).length
+    gpuShares = Math.min(gpuShares, spareWholeCards(sync?.cards ?? null, placing, share.cards))
+  }
   return {
-    room: runnerRoom(runner, free, listedOf(sync), sync?.cards ?? null, perDevice),
+    room: { ...room, memoryMb: room.memoryMb - share.memoryMb, cpus: room.cpus - share.cpus, gpuShares },
     ready: {
       revisions: new Set(sync?.ready.revisions ?? []),
       data: new Set(sync?.ready.data ?? []),
-      sealed: new Set(runner.trusted ? (sync?.ready.sealed ?? []) : []),
+      sealed: new Set(runner.trusted && !classes ? (sync?.ready.sealed ?? []) : []),
     },
     trusted: runner.trusted,
     cards: (sync?.cards?.length ?? 0) > 0 || free.gpuShares > 0,
     perDevice,
+    classes,
   }
+}
+
+/**
+ * The placements home wants a machine to hold now, for the reply being built
+ * (ClassPort · wantedPlacements, asked once per reply): none for one that
+ * takes no classes, or may no longer call.
+ */
+export function classIntentsOf(runner: Pick<RunnerRow, 'id' | 'classes' | 'state'>): RemotePlacementIntent[] {
+  return runner.classes && runnerStanding(runner) ? classPort().wantedPlacements(runner.id) : []
+}
+
+/**
+ * WHAT THE CLASSES TAKE OF A MACHINE BEFORE ANY LEASE (D24): the stale-capacity
+ * rule for placements. The agent counts a placement in what it holds from the
+ * reply that names it (runner-agent/kernels.ts · holding), so a sync that
+ * lists it at its gen has its memory out of `free` already; one it does not
+ * list yet — a placement asked for since that sync was sent, or a new gen of
+ * one — or lists as `failed` (out of its holding while its container is
+ * down) is not, and its memory and cushion and its CPUs come off the room
+ * here. Without it a machine idle when a class started was leased its whole
+ * room in the very reply that asked for the class, and the class's start
+ * failed for memory the submissions had taken. A sync with no kernels block
+ * accounts for none: conservative, never over.
+ *
+ * A GPU room's card is another matter (§6.5): its start takes one whole, but
+ * only once its image is ready — minutes after the reply, the chooser placing
+ * a room whose image is soon there — and until then the machine reports the
+ * card free. So `cards` counts the GPU rooms whose entry at their gen carries
+ * no card yet, listed or not, and the take leaves them whole cards
+ * (spareWholeCards).
+ */
+export function classShare(
+  intents: readonly RemotePlacementIntent[],
+  sync: Partial<Pick<RemoteSyncRequest, 'kernels'>> | null,
+): { memoryMb: number; cpus: number; cards: number } {
+  const listed = sync?.kernels?.placements ?? []
+  const at = (placement: { key: string; gen: number }): string => `${placement.key}@${placement.gen}`
+  const held = new Set(listed.filter((placement) => placement.phase !== 'failed').map(at))
+  const carded = new Set(listed.filter((placement) => placement.card !== undefined).map(at))
+  const share = { memoryMb: 0, cpus: 0, cards: 0 }
+  for (const intent of intents) {
+    if (intent.gpu && !carded.has(at(intent))) share.cards++
+    if (held.has(at(intent))) continue
+    share.memoryMb += intent.memoryMb + REMOTE_CONTAINER_CUSHION_MB
+    share.cpus += intent.cpus
+  }
+  return share
+}
+
+/**
+ * THE GPU LEASES A MACHINE MAY TAKE WHILE `rooms` GPU CLASS ROOMS WAIT FOR A
+ * CARD (§6.5, D24): the whole free cards beyond theirs. The agent puts a GPU
+ * run on the least loaded card with room (runner-agent/machine.ts · pickCard),
+ * a wholly free one before any other, so every GPU run placed while a whole
+ * card is left takes one — the free shares of a card already in use go
+ * unused meanwhile, or the run would land on the card a room needs. The GPU
+ * leases not on a card yet (`placing`) come first, as they will on the
+ * machine. Cards not known: none.
+ */
+function spareWholeCards(cards: readonly RemoteCard[] | null, placing: number, rooms: number): number {
+  const whole = (cards ?? []).filter((card) => card.busyShares === 0).length
+  return Math.max(0, whole - placing - rooms)
 }
 
 /* ------------------------------------------------------------- the take */
@@ -232,7 +327,7 @@ function fitFor(row: QueueRow & { needsGpu: boolean }, offer: RunnerOffer, room:
   const read = rowNeeds(row, cache)
   if (!read.ok) return read
   const needs = read.needs
-  const refusal = machineFit(needs, { ready: offer.ready, trusted: offer.trusted, cards: offer.cards, room })
+  const refusal = machineFit(needs, { ready: offer.ready, trusted: offer.trusted, cards: offer.cards, room, classes: offer.classes })
   if (refusal) return { ok: false, why: refusal }
   return {
     ok: true,

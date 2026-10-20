@@ -38,6 +38,7 @@ import {
   type MemoryReading,
 } from './postmortem-core.js'
 import { kernelBackend } from './runtime-client.js'
+import { hasLivePlacement } from './remote/placement-store.js'
 
 /*
  * What a reading is made of, how it is parsed and whether memory killed the
@@ -105,9 +106,9 @@ const killsSeen = new Map<string, number>()
  */
 const seenKey = (sessionId: string, role: KernelRole) => `${role}:${sessionId}`
 
-/** Forget the counters of BOTH of the class's containers: they are removed together. */
+/** Forget the counters of every container of the class: they are removed together. */
 export function forgetKills(sessionId: string): void {
-  for (const role of ['room', 'own'] as const) killsSeen.delete(seenKey(sessionId, role))
+  for (const role of ['room', 'own', 'council'] as const) killsSeen.delete(seenKey(sessionId, role))
 }
 
 /**
@@ -119,6 +120,17 @@ export function forgetKills(sessionId: string): void {
  * a kernel start because of it would be a bad trade.
  */
 export async function sampleKills(sessionId: string, role: KernelRole = 'room'): Promise<void> {
+  /*
+   * A slot on a machine: its baseline is the counter the machine's census
+   * last said (§7.4), with no question asked. The container lives there, and
+   * this server's docker knows nothing of it.
+   */
+  if (hasLivePlacement(sessionId, role)) {
+    const { machineKernels } = await import('./remote/placement.js')
+    const kills = machineKernels.kills(sessionId, role)
+    if (kills !== null) killsSeen.set(seenKey(sessionId, role), kills)
+    return
+  }
   if (!available()) return
   try {
     const reading = await readCgroup(roomContainer(sessionId, role))
@@ -195,12 +207,24 @@ export async function explain(
   /** Where the dead kernel lived: in the class's container or its personal notebooks'. */
   role: KernelRole = 'room',
 ): Promise<Postmortem | null> {
-  if (!available()) return null
   let reading: MemoryReading
-  try {
-    reading = await readContainer(sessionId, role)
-  } catch {
-    return null
+  if (hasLivePlacement(sessionId, role)) {
+    /*
+     * A slot on a machine: the machine reads its container the same three
+     * ways (postmortem-core.ts) when asked through its sync (§7.4,
+     * `kernels.postmortem`), and the words are this server's, as here.
+     */
+    const { machineKernels } = await import('./remote/placement.js')
+    const read = await machineKernels.reading(sessionId, role)
+    if (!read) return null
+    reading = read
+  } else {
+    if (!available()) return null
+    try {
+      reading = await readContainer(sessionId, role)
+    } catch {
+      return null
+    }
   }
   const key = seenKey(sessionId, role)
   const oom = killedByMemory(reading, killsSeen.get(key))

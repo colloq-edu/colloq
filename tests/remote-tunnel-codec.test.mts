@@ -7,7 +7,9 @@
  * shares. A decoder that took an OPEN from the agent would let a machine open
  * streams into home; one that took a lane it does not know would queue bytes
  * nowhere; one that read past a payload's cap would let one peer make the
- * other hold megabytes per frame. And an encoder that wrote a frame its peer
+ * other hold megabytes per frame. A greeting's list of streams to resume read
+ * loosely (a stream twice, a count that is no count) would send a stream
+ * again from bytes it never had. And an encoder that wrote a frame its peer
  * refuses closes the tunnel of every class on the machine.
  */
 import { test } from 'node:test'
@@ -19,6 +21,7 @@ import {
   TUNNEL_DEAD_MS,
   TUNNEL_FIN,
   TUNNEL_FRAME_MAX,
+  TUNNEL_GREETING_MAX,
   TUNNEL_HEADER_BYTES,
   TUNNEL_JSON_MAX,
   TUNNEL_KINDS,
@@ -28,6 +31,9 @@ import {
   TUNNEL_PING_MS,
   TUNNEL_PROTOCOL,
   TUNNEL_PROTOCOL_HEADER,
+  TUNNEL_RESUME_LIST_MAX,
+  TUNNEL_RESUME_MS,
+  TUNNEL_RETAIN_BYTES,
   TUNNEL_SEND_LOWAT,
   TUNNEL_SENDERS,
   TUNNEL_STREAMS_MAX,
@@ -44,6 +50,7 @@ import {
   type TunnelSide,
 } from '../shared/remote-tunnel.js'
 import { REMOTE_PROTOCOL, RemoteProtocolError } from '../shared/remote-runner.js'
+import { CLASS_TUNNEL_STUCK_MS } from '../shared/remote-kernels.js'
 
 /* ---------------------------------------------------------------- fixtures */
 
@@ -76,7 +83,11 @@ const byte = (kind: TunnelKind): number => tunnelKindByte(kind)
 /** Every kind once, as its sender sends it. */
 const FRAMES: Array<{ frame: TunnelFrame; from: TunnelSide }> = [
   { frame: { kind: 'HELLO', hello: { protocol: 1, build: BUILD, session: SESSION } }, from: 'agent' },
+  // After a cut: the streams the agent kept, and home's answer of those it resumes.
+  { frame: { kind: 'HELLO', hello: { protocol: 1, build: BUILD, session: SESSION, resume: [{ stream: 1, rx: 0 }, { stream: TUNNEL_STREAM_MAX, rx: Number.MAX_SAFE_INTEGER, fin: true }] } }, from: 'agent' },
   { frame: { kind: 'WELCOME', welcome: { protocol: 1, build: 'dev', session: 'f'.repeat(32) } }, from: 'home' },
+  { frame: { kind: 'WELCOME', welcome: { protocol: 1, build: 'dev', session: 'f'.repeat(32), resumed: true, streams: [{ stream: 7, rx: 12_345, fin: true }] } }, from: 'home' },
+  { frame: { kind: 'WELCOME', welcome: { protocol: 1, build: 'dev', session: 'f'.repeat(32), resumed: true, streams: [] } }, from: 'home' },
   { frame: { kind: 'OPEN', stream: 1, lane: 1, open: { key: KEY, gen: 3 } }, from: 'home' },
   { frame: { kind: 'OPEN', stream: TUNNEL_STREAM_MAX, lane: 2, open: { key: 'seminar_1:council', gen: Number.MAX_SAFE_INTEGER } }, from: 'home' },
   { frame: { kind: 'OPENED', stream: 1, lane: 1 }, from: 'agent' },
@@ -90,6 +101,8 @@ const FRAMES: Array<{ frame: TunnelFrame; from: TunnelSide }> = [
   { frame: { kind: 'DATA', stream: 9, lane: 2, offset: 12, payload: new Uint8Array(0), fin: true }, from: 'home' },
   { frame: { kind: 'ACK', stream: 1, lane: 1, offset: 65_536 }, from: 'home' },
   { frame: { kind: 'ACK', stream: 1, lane: 1, offset: 0 }, from: 'agent' },
+  // The last ACK of a stream: every byte, and the end after them.
+  { frame: { kind: 'ACK', stream: 3, lane: 2, offset: 4096, fin: true }, from: 'agent' },
   { frame: { kind: 'END', stream: 1, lane: 1, offset: 1_234_567 }, from: 'agent' },
   { frame: { kind: 'RESET', stream: 5, lane: 2 }, from: 'home' },
   { frame: { kind: 'RESET', stream: 5, lane: 1 }, from: 'agent' },
@@ -162,10 +175,17 @@ test('oversized payloads are refused as too large, whichever end finds them', ()
   refused(() => decodeTunnelFrame(raw(byte('DATA'), 0, 1, 1, 0, big), 'home'), /over its cap/, 'too_large')
   // Anything past the largest frame is refused before its header is read.
   refused(() => decodeTunnelFrame(new Uint8Array(TUNNEL_HEADER_BYTES + TUNNEL_FRAME_MAX + 1), 'home'), /over its cap/, 'too_large')
-  // A JSON payload over its own, far smaller cap.
-  const padded = json({ protocol: 1, build: BUILD, session: SESSION, pad: 'x'.repeat(TUNNEL_JSON_MAX) })
+  // A greeting has a whole frame, for its list of streams to resume; an OPEN its own, far smaller cap.
+  assert.equal(TUNNEL_GREETING_MAX, TUNNEL_FRAME_MAX)
+  const padded = json({ protocol: 1, build: BUILD, session: SESSION, pad: 'x'.repeat(TUNNEL_GREETING_MAX) })
   refused(() => decodeTunnelFrame(raw(byte('HELLO'), 0, 0, 0, 0, padded), 'agent'), /over its cap/, 'too_large')
   refused(() => decodeTunnelFrame(raw(byte('OPEN'), 0, 1, 1, 0, json({ key: KEY, gen: 1, pad: 'x'.repeat(TUNNEL_JSON_MAX) })), 'home'), /over its cap/, 'too_large')
+  refused(() => decodeTunnelFrame(raw(byte('REFUSED'), 0, 1, 1, 0, json({ code: 'gone', pad: 'x'.repeat(TUNNEL_JSON_MAX) })), 'agent'), /over its cap/, 'too_large')
+  // A greeting past an OPEN's cap is still a greeting: the list of a machine with many streams.
+  const resume = Array.from({ length: TUNNEL_RESUME_LIST_MAX }, (_, i) => ({ stream: TUNNEL_STREAM_MAX - i, rx: Number.MAX_SAFE_INTEGER - i, fin: true as const }))
+  const long = json({ protocol: 1, build: BUILD, session: SESSION, resume })
+  assert.ok(long.byteLength > TUNNEL_JSON_MAX && long.byteLength <= TUNNEL_GREETING_MAX, `${long.byteLength} B`)
+  assert.equal((decodeTunnelFrame(raw(byte('HELLO'), 0, 0, 0, 0, long), 'agent') as Extract<TunnelFrame, { kind: 'HELLO' }>).hello.resume?.length, TUNNEL_RESUME_LIST_MAX)
   // At its caps a payload is still a frame.
   assert.doesNotThrow(() => decodeTunnelFrame(raw(byte('DATA'), 0, 1, 1, 0, new Uint8Array(TUNNEL_FRAME_MAX)), 'home'))
   const atCap = json({ key: KEY, gen: 1, pad: '' })
@@ -219,10 +239,15 @@ test('an OPEN rides the lane of its placement\'s role, whichever end checks it',
 })
 
 test('flags, the reserved byte and the offset hold only what they may', () => {
-  // FIN belongs to DATA; every other bit is unused.
-  refused(() => decodeTunnelFrame(raw(byte('ACK'), TUNNEL_FIN, 1, 1, 0), 'home'), /flags/)
+  // FIN belongs to DATA (its last bytes) and to ACK (the end came too); every other bit is unused.
+  assert.deepEqual(decodeTunnelFrame(raw(byte('ACK'), TUNNEL_FIN, 1, 1, 10), 'home'), { kind: 'ACK', stream: 1, lane: 1, offset: 10, fin: true })
   refused(() => decodeTunnelFrame(raw(byte('END'), TUNNEL_FIN, 1, 1, 10), 'home'), /flags/)
-  for (const flags of [0x02, 0x80, 0x03, 0xff]) refused(() => decodeTunnelFrame(raw(byte('DATA'), flags, 1, 1, 0, new Uint8Array([1])), 'home'), /flags/)
+  for (const kind of ['OPENED', 'RESET'] as const) refused(() => decodeTunnelFrame(raw(byte(kind), TUNNEL_FIN, 1, 1, 0), 'agent'), /flags/)
+  for (const flags of [0x02, 0x80, 0x03, 0xff]) {
+    refused(() => decodeTunnelFrame(raw(byte('DATA'), flags, 1, 1, 0, new Uint8Array([1])), 'home'), /flags/)
+    refused(() => decodeTunnelFrame(raw(byte('ACK'), flags, 1, 1, 0), 'home'), /flags/)
+  }
+  refused(() => encodeTunnelFrame({ kind: 'ACK', stream: 1, lane: 1, offset: 0, fin: false as unknown as true }), /ACK/)
   refused(() => decodeTunnelFrame(raw(byte('DATA'), 0, 1, 1, 0, new Uint8Array([1]), 1), 'home'), /reserved/)
   // An empty DATA without FIN says nothing at all.
   refused(() => decodeTunnelFrame(raw(byte('DATA'), 0, 1, 1, 0), 'home'), /Empty tunnel data/)
@@ -273,12 +298,30 @@ test('each side sends only its own kinds: an OPEN from the agent is refused', ()
 
 test('JSON payloads: strict where home reads the agent, tolerant where the agent reads home, the protocol first', () => {
   const hello = { protocol: 1, build: BUILD, session: SESSION }
-  // Home refuses a key it does not know in the agent's HELLO and REFUSED.
-  refused(() => decodeTunnelFrame(raw(byte('HELLO'), 0, 0, 0, 0, json({ ...hello, resume: [] })), 'agent'), /Unexpected key "resume" in HELLO/)
+  // Home refuses a key it does not know in the agent's HELLO, its resume list and its REFUSED.
+  refused(() => decodeTunnelFrame(raw(byte('HELLO'), 0, 0, 0, 0, json({ ...hello, resumed: true })), 'agent'), /Unexpected key "resumed" in HELLO/)
+  refused(() => decodeTunnelFrame(raw(byte('HELLO'), 0, 0, 0, 0, json({ ...hello, resume: [{ stream: 1, rx: 0, lane: 1 }] })), 'agent'), /Unexpected key "lane" in HELLO resume/)
   refused(() => decodeTunnelFrame(raw(byte('REFUSED'), 0, 1, 1, 0, json({ code: 'gone', why: 'x' })), 'agent'), /Unexpected key "why" in REFUSED/)
+  // A resume list holds each stream once, by its number, with what was received of it and FIN only as true, and no more than one greeting carries.
+  const resumeEntry = (entry: unknown) => decodeTunnelFrame(raw(byte('HELLO'), 0, 0, 0, 0, json({ ...hello, resume: [entry] })), 'agent')
+  for (const bad of [{ stream: 0, rx: 0 }, { stream: 2 ** 32, rx: 0 }, { stream: 1, rx: -1 }, { stream: 1, rx: 0.5 }, { stream: 1 }, { stream: 1, rx: 0, fin: false }, { stream: 1, rx: 0, fin: 1 }, 7]) {
+    refused(() => resumeEntry(bad), /Invalid HELLO resume/)
+  }
+  refused(() => decodeTunnelFrame(raw(byte('HELLO'), 0, 0, 0, 0, json({ ...hello, resume: [{ stream: 3, rx: 0 }, { stream: 3, rx: 9 }] })), 'agent'), /Invalid HELLO resume/)
+  refused(() => decodeTunnelFrame(raw(byte('HELLO'), 0, 0, 0, 0, json({ ...hello, resume: { stream: 3, rx: 0 } })), 'agent'), /Invalid HELLO resume list/)
+  const many = Array.from({ length: TUNNEL_RESUME_LIST_MAX + 1 }, (_, i) => ({ stream: i + 1, rx: 0 }))
+  refused(() => decodeTunnelFrame(raw(byte('HELLO'), 0, 0, 0, 0, json({ ...hello, resume: many })), 'agent'), /Invalid HELLO resume list/)
+  refused(() => encodeTunnelFrame({ kind: 'HELLO', hello: { ...hello, protocol: 1, resume: many } }), /Invalid HELLO resume list/)
   // The agent drops what it does not know in home's WELCOME and OPEN, and keeps nothing of it.
-  const welcome = decodeTunnelFrame(raw(byte('WELCOME'), 0, 0, 0, 0, json({ ...hello, resumed: true, __proto__: { polluted: true } })), 'home')
+  const welcome = decodeTunnelFrame(raw(byte('WELCOME'), 0, 0, 0, 0, json({ ...hello, sealed: true, __proto__: { polluted: true } })), 'home')
   assert.deepEqual(welcome, { kind: 'WELCOME', welcome: hello })
+  const resumed = decodeTunnelFrame(raw(byte('WELCOME'), 0, 0, 0, 0, json({ ...hello, resumed: true, streams: [{ stream: 2, rx: 10, fin: false, lane: 2 }] })), 'home')
+  assert.deepEqual(resumed, { kind: 'WELCOME', welcome: { ...hello, resumed: true, streams: [{ stream: 2, rx: 10 }] } }, 'a false FIN says none, an unknown key goes')
+  // Tolerant both ways round: `resumed: false` is no resume, a list without `resumed` is no list, `resumed` without a list resumes none.
+  assert.deepEqual(decodeTunnelFrame(raw(byte('WELCOME'), 0, 0, 0, 0, json({ ...hello, resumed: false, streams: [{ stream: 2, rx: 10 }] })), 'home'), { kind: 'WELCOME', welcome: hello })
+  assert.deepEqual(decodeTunnelFrame(raw(byte('WELCOME'), 0, 0, 0, 0, json({ ...hello, resumed: true })), 'home'), { kind: 'WELCOME', welcome: { ...hello, resumed: true, streams: [] } })
+  refused(() => decodeTunnelFrame(raw(byte('WELCOME'), 0, 0, 0, 0, json({ ...hello, resumed: 'yes' })), 'home'), /Invalid WELCOME/)
+  refused(() => decodeTunnelFrame(raw(byte('WELCOME'), 0, 0, 0, 0, json({ ...hello, resumed: true, streams: [{ stream: 1, rx: 'x' }] })), 'home'), /Invalid WELCOME resume/)
   const open = decodeTunnelFrame(raw(byte('OPEN'), 0, 2, 4, 0, json({ key: 'seminar_1:council', gen: 2, host: '10.0.0.1', port: 22 })), 'home')
   assert.deepEqual(open, { kind: 'OPEN', stream: 4, lane: 2, open: { key: 'seminar_1:council', gen: 2 } })
   assert.equal(JSON.stringify(open).includes('10.0.0.1'), false, 'home never names a host or a port')
@@ -301,8 +344,11 @@ test('JSON payloads: strict where home reads the agent, tolerant where the agent
   for (const payload of [new Uint8Array([0xff, 0xfe]), new TextEncoder().encode('{"key":'), json([KEY, 1]), json('x'), json(null)]) {
     refused(() => decodeTunnelFrame(raw(byte('OPEN'), 0, 1, 1, 0, payload), 'home'), /OPEN|JSON/)
   }
-  // The encoder sends the contract's keys and no other, checked as strictly as home checks a HELLO.
-  refused(() => encodeTunnelFrame({ kind: 'WELCOME', welcome: { ...hello, resumed: true } as never }), /Unexpected key "resumed" in WELCOME/)
+  // The encoder sends the contract's keys and no other, checked as strictly as home checks a HELLO: both of `resumed` and its list, or neither.
+  refused(() => encodeTunnelFrame({ kind: 'WELCOME', welcome: { ...hello, sealed: true } as never }), /Unexpected key "sealed" in WELCOME/)
+  refused(() => encodeTunnelFrame({ kind: 'WELCOME', welcome: { ...hello, resumed: true } as never }), /Invalid WELCOME resume list/)
+  refused(() => encodeTunnelFrame({ kind: 'WELCOME', welcome: { ...hello, streams: [] } as never }), /Invalid WELCOME: resumed/)
+  refused(() => encodeTunnelFrame({ kind: 'WELCOME', welcome: { ...hello, resumed: false, streams: [] } as never }), /Invalid WELCOME: resumed/)
   refused(() => encodeTunnelFrame({ kind: 'OPEN', stream: 1, lane: 1, open: { key: KEY, gen: 1, port: 22 } as never }), /Unexpected key "port" in OPEN/)
   refused(() => encodeTunnelFrame({ kind: 'REFUSED', stream: 1, lane: 1, refused: { code: 'busy' as 'gone' } }), /Invalid REFUSED/)
 })
@@ -364,6 +410,10 @@ test('one tunnel protocol and its header, and the numbers of §15', () => {
   assert.equal(TUNNEL_ACK_BYTES, 64 * 1024)
   assert.equal(TUNNEL_STREAMS_MAX, 512)
   assert.deepEqual(TUNNEL_UPGRADES, { count: 12, windowMs: 60_000 })
+  // §4.8 and §15: what is kept across a cut, and for how long.
+  assert.equal(TUNNEL_RESUME_MS, 120_000)
+  assert.equal(TUNNEL_RETAIN_BYTES, 4 * 1024 * 1024)
+  assert.equal(TUNNEL_RESUME_LIST_MAX, 256)
   assert.equal(TUNNEL_CLOSE.replaced, 4409)
   assert.equal(new Set(Object.values(TUNNEL_CLOSE)).size, Object.values(TUNNEL_CLOSE).length, 'one code, one meaning')
   for (const code of Object.values(TUNNEL_CLOSE)) assert.ok(code >= 4000 && code <= 4999, 'an application close code')
@@ -382,4 +432,17 @@ test('the clocks and sizes agree with each other and with the relay', () => {
   // An ACK comes before a window runs out.
   assert.ok(TUNNEL_ACK_BYTES < TUNNEL_WINDOW.council)
   assert.ok(TUNNEL_STREAMS_MAX < TUNNEL_STREAM_MAX)
+  // Every byte a window lets out is kept until it is ACKed: no stream sends what a cut would make it unable to send again.
+  assert.ok(TUNNEL_WINDOW.interactive <= TUNNEL_RETAIN_BYTES && TUNNEL_WINDOW.council <= TUNNEL_RETAIN_BYTES)
+  // A resume outlives the dead timer and the agent's slowest retry, and waits no longer than a stuck tunnel does before its classes fail over (§11.1).
+  assert.ok(TUNNEL_RESUME_MS > TUNNEL_DEAD_MS + 30_000 && TUNNEL_RESUME_MS <= CLASS_TUNNEL_STUCK_MS)
+  // The longest list one greeting may carry, of the widest entries, fits in a frame.
+  const widest = encodeTunnelFrame({
+    kind: 'WELCOME',
+    welcome: {
+      protocol: 1, build: 'b'.repeat(64), session: 'a'.repeat(32), resumed: true,
+      streams: Array.from({ length: TUNNEL_RESUME_LIST_MAX }, (_, i) => ({ stream: TUNNEL_STREAM_MAX - i, rx: Number.MAX_SAFE_INTEGER - i, fin: true as const })),
+    },
+  })
+  assert.ok(widest.byteLength <= TUNNEL_HEADER_BYTES + TUNNEL_GREETING_MAX && TUNNEL_GREETING_MAX <= TUNNEL_FRAME_MAX, `${widest.byteLength} B`)
 })

@@ -19,10 +19,18 @@
  * - in the first REMOTE_BOOT_GRACE_MS of this life nothing expires at all:
  *   every machine needs a round trip to be heard again;
  * - last_seen_at is written for the machines heard since, at most once a
- *   minute each.
+ *   minute each;
+ * - the classes' clock runs (remote-classes.md §11.1: kernel/remote/
+ *   placement.ts · classTick, through heard.ts · ClassPort), on the
+ *   same `now`, after a pass without class evidence is written down
+ *   (noteClassBlind): a class's silence is proven by the classes' shorter
+ *   rule, CLASS_EVIDENCE_MS.
  * EVERY THIRTY SECONDS, while any machine is connected, this server probes
  * its own PUBLIC_URL/api/readyz — through the relay, the way the machines
- * reach it — and a pass is path evidence for a minute.
+ * reach it — and a pass is path evidence for a minute; EVERY FIVE SECONDS
+ * (CLASS_PROBE_MS) while any class placement lives, since a class fails over
+ * after a minute of silence and its evidence counts for fifteen seconds
+ * (probeTick).
  * EVERY HOUR, old leases and events go, and staging folders nothing needs.
  *
  * AT BOOT (startRemoteRunners): offers made by the previous life are
@@ -35,6 +43,7 @@ import dns from 'node:dns'
 import os from 'node:os'
 import { isIP } from 'node:net'
 import { REMOTE_BLIND_MS, REMOTE_OFFER_MS, REMOTE_PROBE_MS, REMOTE_SEEN_FLUSH_MS, REMOTE_SILENCE_MS } from '@shared/remote-runner'
+import { CLASS_PROBE_MS } from '@shared/remote-kernels'
 import { config } from '../../config.js'
 import { getBinding } from '../../dependencies/store.js'
 import { runnerCardsHere, runnerGpuDevices } from '../gpu.js'
@@ -54,7 +63,21 @@ import {
 import { redriveApplying } from './apply.js'
 import { fitCache, homeTakes, rowNeedsCard, setUnfit } from './fit.js'
 import { loopbackAddress } from './origin.js'
-import { heardAt, inBootGrace, noteBlind, noteProbe, pathEvidence, provenSilence, remoteBootAt, seenDue } from './heard.js'
+import {
+  classPathEvidence,
+  classPort,
+  classPlacementsLive,
+  heardAt,
+  inBootGrace,
+  loadClassPort,
+  noteBlind,
+  noteClassBlind,
+  noteProbe,
+  pathEvidence,
+  provenSilence,
+  remoteBootAt,
+  seenDue,
+} from './heard.js'
 import { loseLease, orphanLease, withdrawLease } from './release.js'
 import { LIVE_LEASE_STATES, driveInFlight, flushRunnerSeen, getLease, leasesInState, listStandingRunners, openLeases, pruneRemoteRows } from './store.js'
 import { dropStaging, stagedAttempts } from './upload.js'
@@ -77,6 +100,14 @@ export function remoteTick(now = Date.now()): { withdrawn: number; lost: number 
   const grace = inBootGrace(now)
   // No path evidence at all at this pass: a silence is proven only from the next pass that has some (heard.ts · provenSilence).
   if (!pathEvidence(now)) noteBlind(now)
+  // The same by the classes' rule, which counts evidence for a quarter of the time (heard.ts · classProvenSilence).
+  if (!classPathEvidence(now)) noteClassBlind(now)
+  // The classes' clock, on the same `now` (the tests drive both by hand), and apart: neither's failure stops the other's pass.
+  try {
+    classPort().classTick(now)
+  } catch (error) {
+    console.error('[runners] the classes\' clock pass failed', error)
+  }
   const silentSince = new Map<string, number>()
   for (const lease of openLeases()) {
     if (lease.state === 'offered' && now - lease.offeredAt > REMOTE_OFFER_MS) {
@@ -237,6 +268,42 @@ export async function probeOwnPath(now = Date.now(), fetcher: typeof fetch = fet
   return ok
 }
 
+/** When the last probe started on the probe's clock, and whether one is in flight (probeTick). */
+let probedAt = Number.NEGATIVE_INFINITY
+let probing = false
+
+/**
+ * One beat of the probe's clock, every CLASS_PROBE_MS: a probe of this
+ * server's own path (probeOwnPath) when one is due — every CLASS_PROBE_MS
+ * while any class placement lives (heard.ts · classPlacementsLive), every
+ * REMOTE_PROBE_MS otherwise — and never two at once: a probe through a dead
+ * relay waits out its timeout, and a beat meanwhile starts none. Returns
+ * whether it started one. `probe` is for the tests, which count them.
+ *
+ * Due half a beat early: the interval's beats are on the event loop's clock,
+ * and by Date.now() one comes a millisecond before its time now and then. A
+ * beat skipped for that put the next probe a whole beat later, ten seconds
+ * of a class's fifteen of evidence.
+ */
+export function probeTick(now = Date.now(), probe: (now: number) => Promise<boolean> = (at) => probeOwnPath(at)): boolean {
+  if (probing) return false
+  if (now - probedAt < (classPlacementsLive() ? CLASS_PROBE_MS : REMOTE_PROBE_MS) - CLASS_PROBE_MS / 2) return false
+  probedAt = now
+  probing = true
+  void probe(now)
+    .catch(() => false)
+    .finally(() => {
+      probing = false
+    })
+  return true
+}
+
+/** For tests: the probe's clock as at a start, nothing probed and nothing in flight. */
+export function resetProbeTick(): void {
+  probedAt = Number.NEGATIVE_INFINITY
+  probing = false
+}
+
 /** An address that never leaves this host whatever the network does: loopback, unspecified, link-local. */
 function localOnly(address: string): boolean {
   const ip = address.toLowerCase().replace(/^\[|\]$/g, '').replace(/^::ffff:(?=\d+\.)/, '')
@@ -307,10 +374,13 @@ export async function bootRemoteRunners(now = Date.now()): Promise<{ withdrawn: 
   return { withdrawn, redriven, orphans, strays }
 }
 
-/** Start the clock and the probe: once, after the server listens (index.ts). */
-export function startRemoteRunners(): void {
+/** Start the clock and the probe: once, after the server listens (index.ts). `probe` stands in for probeOwnPath in the tests, which count its calls. */
+export function startRemoteRunners(options: { probe?: (now: number) => Promise<boolean> } = {}): void {
   if (tick) return
+  const probeNow = options.probe ?? ((at: number) => probeOwnPath(at))
   void bootRemoteRunners().catch((error: unknown) => console.error('[runners] the boot pass failed', error))
+  // The classes' clock runs from the start, not from a class machine's first sync (heard.ts · loadClassPort).
+  void loadClassPort().catch((error: unknown) => console.error('[runners] the class placements could not be loaded', error))
   tick = setInterval(() => {
     try {
       remoteTick()
@@ -319,9 +389,10 @@ export function startRemoteRunners(): void {
     }
   }, TICK_MS)
   tick.unref?.()
-  probe = setInterval(() => void probeOwnPath(), REMOTE_PROBE_MS)
+  // Beats at the classes' cadence; a probe is due at each only while a class placement lives (probeTick).
+  probe = setInterval(() => probeTick(Date.now(), probeNow), CLASS_PROBE_MS)
   probe.unref?.()
-  void probeOwnPath()
+  probeTick(Date.now(), probeNow)
 }
 
 export function stopRemoteRunners(): void {

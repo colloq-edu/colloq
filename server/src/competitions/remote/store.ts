@@ -221,10 +221,19 @@ ensureColumn('remote_runners', 'resumed_at', 'resumed_at INTEGER')
  * which drains a machine for its submissions' losses: one does not lift the
  * other. remote_runner_codes.classes — the code's flag, copied onto every
  * machine it enrolls.
+ *
+ * remote_runners.classes_winding_down — its classes were turned off, and no
+ * sync of its has said since that it holds no class container: every reply
+ * tells it to hold none (routes.ts · windDownBlock), and it takes no hidden
+ * test (heard.ts · classesBeside). On the row, not in memory: the agent sends
+ * its block only after a reply that carried one, so an agent restarted after
+ * a restart of this server says nothing of the containers it adopted, and
+ * waits for a word from home that only this flag still gives.
  */
 ensureColumn('remote_runners', 'classes', 'classes INTEGER NOT NULL DEFAULT 0')
 ensureColumn('remote_runners', 'classes_quarantined_at', 'classes_quarantined_at INTEGER')
 ensureColumn('remote_runners', 'classes_resumed_at', 'classes_resumed_at INTEGER')
+ensureColumn('remote_runners', 'classes_winding_down', 'classes_winding_down INTEGER NOT NULL DEFAULT 0')
 ensureColumn('remote_runner_codes', 'classes', 'classes INTEGER NOT NULL DEFAULT 0')
 
 /* ----------------------------------------------------------------- hashes */
@@ -319,6 +328,8 @@ export interface RunnerRow {
   classesQuarantinedAt: number | null
   /** When the owner last resumed it for classes («Вернуть»): the class quarantine counts only what came after. */
   classesResumedAt: number | null
+  /** Its classes were turned off and it may still hold class containers: told to hold none until a sync of its lists none (remote_runners.classes_winding_down). */
+  classesWindingDown: boolean
 }
 
 interface RunnerRaw {
@@ -347,6 +358,7 @@ interface RunnerRaw {
   classes: number
   classes_quarantined_at: number | null
   classes_resumed_at: number | null
+  classes_winding_down: number
 }
 
 function parsed<T>(text: string | null | undefined, fallback: T): T {
@@ -389,6 +401,7 @@ function toRunner(row: RunnerRaw): RunnerRow {
     classes: row.classes === 1 && row.trusted !== 1,
     classesQuarantinedAt: row.classes_quarantined_at ?? null,
     classesResumedAt: row.classes_resumed_at ?? null,
+    classesWindingDown: row.classes_winding_down === 1,
   }
 }
 
@@ -460,6 +473,7 @@ export interface RunnerPatch {
   classes?: boolean
   classesQuarantinedAt?: number | null
   classesResumedAt?: number | null
+  classesWindingDown?: boolean
 }
 
 const RUNNER_COLUMN: Record<keyof RunnerPatch, string> = {
@@ -479,6 +493,7 @@ const RUNNER_COLUMN: Record<keyof RunnerPatch, string> = {
   classes: 'classes',
   classesQuarantinedAt: 'classes_quarantined_at',
   classesResumedAt: 'classes_resumed_at',
+  classesWindingDown: 'classes_winding_down',
 }
 
 /**
@@ -543,6 +558,10 @@ export type ClassesRefusal = 'unknown' | 'gone' | 'trusted'
  * `unclassed` (release.ts · unclassRunner, remote-classes.md §11.5), which
  * calls this last. Turning it on is refused for a trusted machine: trust and
  * classes never go together (D3), and the owner untrusts it first.
+ *
+ * Off starts the wind-down in the same write (classesWindingDown): whatever
+ * class containers the machine still has, every reply tells it to hold none.
+ * On ends it: the containers are the class placements' business again.
  */
 export function setRunnerClasses(id: string, on: boolean): { runner: RunnerRow; changed: boolean } | { refused: ClassesRefusal } {
   const runner = getRunner(id)
@@ -550,7 +569,7 @@ export function setRunnerClasses(id: string, on: boolean): { runner: RunnerRow; 
   if (!runnerStanding(runner)) return { refused: 'gone' }
   if (on && runner.trusted) return { refused: 'trusted' }
   if (runner.classes === on) return { runner, changed: false }
-  return { runner: updateRunner(id, { classes: on })!, changed: true }
+  return { runner: updateRunner(id, { classes: on, classesWindingDown: !on })!, changed: true }
 }
 
 /**

@@ -353,6 +353,14 @@ export type ControlClientMessage =
    * tabs opened before there were several kernels are read.
    */
   | { t: 'restart'; book?: string }
+  /**
+   * «Перенести сейчас»: move a kernel off its machine now instead of waiting
+   * out the failover (remote-classes.md §11.1, §15). Staff only. `root` names
+   * the notebook whose slot moves (the class notebooks', or the personal
+   * notebooks' for a personal one); without it, every slot of the class that
+   * is on a machine. The variables of what moves are lost, as at a failover.
+   */
+  | { t: 'kernel:move'; root?: string }
   | { t: 'clearOutputs'; cellId?: string; book?: string }
   /**
    * Put every code cell through black. A cell the formatter refuses — a magic,
@@ -1026,6 +1034,25 @@ export type InspectMiss =
   | 'unknown'
   | 'refused'
 
+/**
+ * One kernel slot of a class on a machine, as staff see it (the
+ * `kernel:machine` frame): the chip «Ядро · vast-3 · 52 мс», the amber «Нет
+ * связи с машиной · 0:23» and the banner with «Перенести сейчас».
+ */
+export interface KernelMachine {
+  /** The machine's name, as the owner named it in «Машины». */
+  name: string
+  state: 'starting' | 'ready' | 'unreachable' | 'stopping'
+  /** Since when the slot is in this state, on the server's clock. */
+  since: number
+  /** The link's round trip in ms, an average of its pings; null before the first. */
+  rttMs: number | null
+  /** «Если машина пропала»: move it after the class's seconds, or wait for the machine. */
+  failover: 'auto' | 'wait'
+  /** When the kernel moves to this server if the machine stays silent; null when it will not by itself. */
+  failoverAt: number | null
+}
+
 export type TerminalStatus = 'closed' | 'starting' | 'idle' | 'busy' | 'dead'
 
 /**
@@ -1111,6 +1138,21 @@ export type ControlServerMessage =
   | { t: 'terminal'; status: TerminalStatus }
   /** @param book whose news this is; without the field — the room's notebook. */
   | { t: 'kernel'; status: KernelStatus; book?: string }
+  /**
+   * Where one of the class's kernel slots computes: on which machine, and how
+   * that machine answers (remote-classes.md §13.1). To STAFF only: the
+   * document says «на машине» to the whole room (notebook.ts ·
+   * KERNEL_WHERE_FIELD), and the machine's name goes no further than the
+   * people who run the class. Sent when staff connect and whenever the
+   * slot's placement changes.
+   *
+   * @param role the class notebooks' kernels ('room'), the personal
+   * notebooks' ('own'), or the council's pool
+   * @param machine null: the slot computes on this server
+   * @param note what just happened, in staff's words (they name the
+   * machine): the room's own notes say the same without the name
+   */
+  | { t: 'kernel:machine'; role: 'room' | 'own' | 'council'; machine: KernelMachine | null; note?: string }
   /**
    * The room's tree. `truncated` — the list is incomplete: the walk hit the
    * ceiling, and some folders stayed unexpanded.
@@ -1541,6 +1583,14 @@ export type ControlServerMessage =
       reason?: InspectMiss
       /** The answer to `brief`: the value's type and size. See `BriefValue`. */
       brief?: BriefValue
+      /**
+       * The notebook's kernel is on a machine that does not answer right now
+       * (remote-classes.md §5.6): the hover says the machine does not answer.
+       * `reason` is then 'busy', what a tab that does not know this field
+       * acts on correctly: it asks again in a moment, and the help comes once
+       * the link is back.
+       */
+      unreachable?: true
     }
   /**
    * The answer to `define`: where to go — or why there is nowhere.

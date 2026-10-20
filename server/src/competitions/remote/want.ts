@@ -20,6 +20,11 @@
  * to a machine that reported its revision and its data manifests ready; a
  * package set never gates one, since a wheel the machine lacks comes from
  * the index's CDN in seconds, before the participant's clock starts.
+ *
+ * AND THE CLASSES' IMAGES (remote-classes.md §6.6). A machine that takes
+ * classes is asked for the revisions of the classes set to machines too, so
+ * that the image is there before the bell: a kernel's start waits on its
+ * pull, and a class waits on its kernel.
  */
 import {
   REMOTE_BUNDLES_MAX,
@@ -58,9 +63,10 @@ import { sha256, type LeaseRow } from './store.js'
  * Whether machines can run a revision: its image is in a registry by digest
  * (REMOTE_IMAGE_REF — what the contract's parser takes, which is narrower
  * than what docker writes into RepoDigests) and its layers are fingerprinted.
- * Anything else is this server's alone (§4.4, decision 3).
+ * Anything else is this server's alone (§4.4, decision 3), a class's
+ * environment as much as a competition's (remote-classes.md D22).
  */
-export function portableRevision(revision: EnvironmentRevision | null | undefined): revision is EnvironmentRevision & { registryRef: string; layers: string } {
+export function portableRevision<T extends Pick<EnvironmentRevision, 'registryRef' | 'layers'>>(revision: T | null | undefined): revision is T & { registryRef: string; layers: string } {
   return !!revision && typeof revision.registryRef === 'string' && revision.registryRef.length <= 600 && REMOTE_IMAGE_REF.test(revision.registryRef)
     && typeof revision.layers === 'string' && REMOTE_SHA256.test(revision.layers)
 }
@@ -304,6 +310,13 @@ export interface RunnerWant {
  * need, whatever the stock says. A set it has not reported ready comes with
  * its lock and wheels, at most REMOTE_BUNDLE_DETAILS_MAX of them, its
  * leases' first; one it has comes by id.
+ *
+ * The revisions of classes set to machines (`classes`, for a machine that
+ * takes them) come right after its leases' and before the stock's: a class
+ * starting on the machine waits on its image with a teacher at the board,
+ * while a waiting notebook has this server and the other machines. Only the
+ * portable ones (D22), and a GPU kernel only where there are cards, as for
+ * a competition's.
  */
 export function runnerWant(input: {
   stock: ReadonlyMap<string, CompetitionStock>
@@ -313,6 +326,8 @@ export function runnerWant(input: {
   leases: readonly LeaseRow[]
   /** Competitions named in its want before, each with its manifests (heard.ts · wantedBefore). */
   wantedBefore: ReadonlyMap<string, ReadonlySet<string>>
+  /** The class revisions for the machine to pull (heard.ts · ClassPort.classRevisionsWanted); none for a machine without classes. */
+  classes?: readonly RemoteWantRevision[]
 }): RunnerWant {
   const { trusted, cards, sync, leases } = input
   const ordered = [...input.stock.values()].sort((a, b) => a.rank - b.rank || a.competition.createdAt - b.competition.createdAt || (a.competition.id < b.competition.id ? -1 : 1))
@@ -363,6 +378,10 @@ export function runnerWant(input: {
       addBundle(lease.manifest.bundle.id)
       leaseRooms.set(lease.manifest.bundle.id, lease.manifest.bundle.packagesMb)
     }
+  }
+  // Portable ones only, whatever the class placements hand over: one the contract does not take is a reply the agent refuses whole.
+  for (const revision of input.classes ?? []) {
+    if (portableRevision({ registryRef: revision.ref, layers: revision.layers })) addRevision(revision, revision.gpu)
   }
   for (const entry of ordered) {
     for (const revision of entry.revisions) addRevision({ id: revision.id, ref: revision.registryRef, layers: revision.layers }, gpuRevision(revision))

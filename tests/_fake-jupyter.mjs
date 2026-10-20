@@ -15,6 +15,21 @@
  * fake `docker run` (tests/_remote-e2e-docker.mjs) can stand one behind a
  * class container's loopback port. Plain JavaScript on purpose, as that file
  * is: no TypeScript loader in a process that starts with every container.
+ * The fake docker adds what a container's life is made of:
+ *
+ *     --container-file F --container-id ID   ends once F (the container's
+ *                                            state) no longer names this
+ *                                            process: `docker rm`, `kill`
+ *     --owner PID                            ends once that process (the
+ *                                            test's) is gone, however it went
+ *     --read-only                            the folder is mounted `:ro` (the
+ *                                            council's view of the class folder)
+ *     --oom-file F                           a line in F for each kernel the
+ *                                            OOM killer took (the cgroup's
+ *                                            oom_kill counter)
+ *
+ * A container's process outlives the agent that started it, as a container
+ * does, and never the test.
  *
  * TWO KINDS OF CELL. By default a cell prints its own source, apart from the
  * markers kernel.test.mts has always used: HOLD and `swallowExecutes` hold
@@ -55,17 +70,34 @@
  * TERMINALS, as terminado has them: POST /api/terminals names a pty, a socket
  * to /terminals/websocket/<name> gets `setup` and the tail of what the pty
  * printed, and stdin is echoed and run line by line. The shell knows echo,
- * printf, pwd, cd (`/workspace/<id>` is the kernels' folder), ls, cat, clear,
+ * printf, pwd, cd (`/workspace/<id>` is the kernels' folder, `<id>`'s own
+ * with `perSession`), ls, cat, clear,
  * sleep (Ctrl-C stops it), true, false and exit; `&&` chains them, and a line
  * typed while a command runs waits for it.
+ *
+ * SERVICE RUNS ARE ANSWERED BY THEIR MODULE. A silent execute reports through
+ * `user_expressions`, and three hidden modules share its `colloq` key: the
+ * guard's report (`<guard module>.report`) is what this process's guard
+ * said, or a KeyError in a fresh one; the help's static parse
+ * (`_colloq_inspect`) and the council's entry, export and load
+ * (`_colloq_council`) get canned reports told apart by their code. The
+ * council's export and load (remote-classes.md §9.3, 0.26) are placeholders
+ * of the shape a worker's seeding reads, until that code exists.
  *
  * WHAT A TEST SEES. `calls` logs every request: HTTP by method and path,
  * channel upgrades, shell requests by type, terminal input and size, COUNT by
  * value, LOSE. The process serves it at GET /_fake/calls, the kernels at
- * GET /_fake/kernels, with POST /_fake/release/<name> and
- * POST /_fake/restarts/<normal|unanswered|ignored|held> beside them.
+ * GET /_fake/kernels and what was asked to run at GET /_fake/requests, with
+ * POST /_fake/release/<name>, POST /_fake/restarts/<normal|unanswered|ignored|held>
+ * and POST /_fake/knobs (a JSON body of holdKernelInfo, slowRevival,
+ * upgradeDelayMs, refuseUpgrades, holdInterrupts, restarts; a knob turned off
+ * lets go of what it held) beside them, and GET /_fake/life for what a
+ * container's process knows of its container (named yet or not). Kernel ids are the process's own, as
+ * jupyter_server's uuids are: a container started again knows none of its
+ * earlier life's.
  */
 import { createServer } from 'node:http'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
@@ -100,8 +132,17 @@ export function guardAnswerFor(module = GUARD_MODULE) {
   }
 }
 
-/** The guard's report expression, whatever its module: `__import__('sys').modules['…'].report`. */
-const REPORT_EXPR = /modules\[(['"])[^'"]+\1\]\.report\s*$/
+/** A hidden module's report expression: `__import__('sys').modules['<module>'].report`. */
+function reportOf(module) {
+  const name = module.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`modules\\[(['"])${name}\\1\\]\\.report\\s*$`)
+}
+
+/** The council's hidden module (server/src/kernel/council-isolation.ts · COUNCIL_MODULE): its entry, exit, export and load. */
+const COUNCIL_MODULE = '_colloq_council'
+
+/** A call of one of the council module's functions, the way the entry calls `enter`: `modules["_colloq_council"].<name>(`. */
+const COUNCIL_CALL = (name) => new RegExp(`modules\\[(['"])${COUNCIL_MODULE}\\1\\]\\.${name}\\(`)
 
 /* ------------------------------------------------------------ interpreter */
 
@@ -193,12 +234,24 @@ const SCROLLBACK_CHARS = 4096
  * @param {boolean} [options.keepAlive] false: every HTTP answer closes its connection, so no idle connection
  *   outlives the request (see the HTTP handler)
  * @param {(code: string) => object | null} [options.guardAnswer] how the guard's install is answered
+ * @param {string} [options.guardModule] the guard's hidden module, whose `.report` this process answers (GUARD_MODULE)
+ * @param {boolean} [options.perSession] each kernel's folder is its session path's own under `cwd`
+ *   (`<id>/session.ipynb` → `cwd/<id>`), as a home's Jupyter rooted at the workspace has it; off, every
+ *   kernel works in `cwd` itself, as a class container's does, which sees its one class folder
+ * @param {boolean} [options.readOnly] the folder is mounted read-only: WRITE fails as a write there would
+ * @param {string} [options.oomFile] a line is added to this file for every kernel killed for memory
+ * @param {(line: string) => void} [options.log] what jupyter_server would log (a kernel restarted): the process
+ *   mode's stdout, the container's log
+ * @param {() => object} [options.life] what GET /_fake/life answers: the process mode's watch of its container
  */
 export async function startFakeJupyter(options = {}) {
   const guardAnswer = options.guardAnswer ?? guardAnswerFor()
+  const guardReport = reportOf(options.guardModule ?? GUARD_MODULE)
   const madeCwd = !options.cwd
   const home = options.cwd ? path.resolve(options.cwd) : fs.mkdtempSync(path.join(os.tmpdir(), 'fake-jupyter-'))
   const root = options.root ?? '/workspace'
+  // Kernel ids are this process's own, as jupyter_server's uuids are: a container started again knows none of its earlier life's.
+  const life = Math.random().toString(16).slice(2, 8)
   let minted = 0
   let ptyMinted = 0
   /** Which session a channel socket belongs to. */
@@ -407,10 +460,20 @@ export async function startFakeJupyter(options = {}) {
   /** Handshakes held back by `upgradeDelayMs`. */
   const slowUpgrades = new Set()
 
+  /** Where a session's kernel works: its path's folder under the root when each session has its own (`perSession`), else the one folder. */
+  function folderOf(sessionPath) {
+    const dir = path.posix.dirname(String(sessionPath).replace(/\\/g, '/'))
+    if (!options.perSession || dir === '.' || dir === '/') return home
+    const target = path.resolve(home, dir)
+    return target === home || target.startsWith(home + path.sep) ? target : home
+  }
+
   function newKernel(id, sessionPath) {
     return {
       id,
       path: sessionPath,
+      /** The kernel's working folder: what WRITE and READ resolve against. */
+      dir: folderOf(sessionPath),
       alive: true,
       busy: false,
       /** The process incarnation: a restart makes a new one, and work queued for the old one is lost with it. */
@@ -521,7 +584,7 @@ export async function startFakeJupyter(options = {}) {
    * must NOT start the attempt — so a fake without this branch would check
    * only the refusal.
    */
-  function councilExpressions(asked, code = '') {
+  function councilExpressions(asked, code = '', kernel = null) {
     if (!asked) return {}
     /*
      * Installing the guard against dangerous commands comes by the same road
@@ -553,7 +616,11 @@ export async function startFakeJupyter(options = {}) {
         })
       : code.includes('_colloq_inspect')
         ? JSON.stringify({ found: true, text: 'Signature:\nsns.lmplot(data)\nType: function' })
-        : JSON.stringify({ ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1 })
+        : COUNCIL_CALL('export').test(code)
+          ? JSON.stringify(epochExport(kernel))
+          : COUNCIL_CALL('load').test(code)
+            ? JSON.stringify(epochLoad(kernel))
+            : JSON.stringify({ ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1 })
     return {
       user_expressions: {
         colloq: { status: 'ok', data: { 'text/plain': text }, metadata: {} },
@@ -562,13 +629,32 @@ export async function startFakeJupyter(options = {}) {
   }
 
   /**
+   * The council's export of an epoch (remote-classes.md §9.3), a placeholder
+   * of its report's shape: the kernel's bindings carried, nothing left
+   * behind, no buffer worth shipping. The real one comes with the pool.
+   */
+  function epochExport(kernel) {
+    const carried = kernel ? [...kernel.ns.keys()].sort() : []
+    const digest = (what) => createHash('sha256').update(`${what}:${carried.join(',')}`).digest('hex')
+    return { ok: true, manifest: digest('manifest'), body: digest('body'), bytes: 0, shipBytes: 0, carried, imported: {}, left: [], buffers: [], ms: 1 }
+  }
+
+  /** A worker's load of an epoch, the placeholder beside epochExport: everything carried came in, the OOM score is written. */
+  function epochLoad(kernel) {
+    return { ok: true, loaded: kernel ? kernel.ns.size : 0, left: [], oomScoreAdj: 1000, ms: 1 }
+  }
+
+  /**
    * An interpreted kernel's answer to `user_expressions`, key by key.
    *
    * The guard's install answers with its report, as above. The guard's report
-   * on its own is what a process that has the guard can evaluate and a fresh
-   * one cannot (KeyError): how the server tells the two apart after a restart
-   * whose answer was lost (jupyter.ts · settleRestart). A bare name is the
-   * kernel's binding. Anything else gets the council's canned report.
+   * on its own (its module's `.report`, and only its module's) is what a
+   * process that has the guard can evaluate and a fresh one cannot
+   * (KeyError). A bare name is the kernel's binding. Anything else — the
+   * help's report, the council's entry, exit, export or load — gets the
+   * canned report its code asks for (councilExpressions): the three modules
+   * share the expression's form, and a guard's report given to a help parse
+   * or a council entry would be read as their own.
    */
   function expressionAnswers(kernel, code, expressions) {
     const answers = {}
@@ -576,7 +662,7 @@ export async function startFakeJupyter(options = {}) {
     for (const [key, expression] of Object.entries(expressions ?? {})) {
       const text = String(expression)
       if (installed) answers[key] = { status: 'ok', data: { 'text/plain': JSON.stringify(installed) }, metadata: {} }
-      else if (REPORT_EXPR.test(text)) {
+      else if (guardReport.test(text)) {
         answers[key] = kernel.guarded
           ? { status: 'ok', data: { 'text/plain': JSON.stringify(kernel.guarded) }, metadata: {} }
           : { status: 'error', ename: 'KeyError', evalue: `'${GUARD_MODULE}'`, traceback: [] }
@@ -585,7 +671,7 @@ export async function startFakeJupyter(options = {}) {
           ? { status: 'ok', data: { 'text/plain': repr(kernel.ns.get(text)) }, metadata: {} }
           : { status: 'error', ename: 'NameError', evalue: `name '${text}' is not defined`, traceback: [] }
       } else {
-        answers[key] = councilExpressions(true, code).user_expressions.colloq
+        answers[key] = councilExpressions(true, code, kernel).user_expressions.colloq
       }
     }
     return answers
@@ -627,7 +713,7 @@ export async function startFakeJupyter(options = {}) {
         const sessionPath = JSON.parse(body || '{}').path ?? ''
         let id = fake.byPath.get(sessionPath)
         if (!id || !fake.kernels.get(id)?.alive) {
-          id = `k_${++minted}`
+          id = `k_${life}_${++minted}`
           fake.byPath.set(sessionPath, id)
           fake.kernels.set(id, newKernel(id, sessionPath))
         }
@@ -762,7 +848,64 @@ export async function startFakeJupyter(options = {}) {
       res.writeHead(204).end()
       return
     }
+    if (req.method === 'GET' && what === 'life') {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(options.life?.() ?? null))
+      return
+    }
+    if (req.method === 'GET' && what === 'requests') {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(fake.requests))
+      return
+    }
+    if (req.method === 'POST' && what === 'knobs') {
+      let body = ''
+      req.on('data', (chunk) => (body += chunk))
+      req.on('end', () => {
+        let asked
+        try {
+          asked = JSON.parse(body || '{}')
+        } catch {
+          res.writeHead(400, { 'content-type': 'application/json' }).end('{"error":"not JSON"}')
+          return
+        }
+        knobs(asked && typeof asked === 'object' ? asked : {})
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+          holdKernelInfo: fake.holdKernelInfo, slowRevival: fake.slowRevival, upgradeDelayMs: fake.upgradeDelayMs,
+          refuseUpgrades: fake.refuseUpgrades, holdInterrupts: fake.holdInterrupts, restarts: fake.restarts,
+        }))
+      })
+      return
+    }
     res.writeHead(404).end('{}')
+  }
+
+  /**
+   * The knobs a test in another process turns (POST /_fake/knobs): each one
+   * named is set, and one turned off lets go of what it held — the
+   * kernel_info requests, a slow comeback, the handshakes in their delay, the
+   * interrupts, the restarts' answers.
+   */
+  function knobs(asked) {
+    if (typeof asked.holdKernelInfo === 'boolean') {
+      if (asked.holdKernelInfo) fake.holdKernelInfo = true
+      else fake.releaseKernelInfo()
+    }
+    if (typeof asked.slowRevival === 'boolean') {
+      fake.slowRevival = asked.slowRevival
+      if (!asked.slowRevival) fake.revive()
+    }
+    if (Number.isFinite(asked.upgradeDelayMs) && asked.upgradeDelayMs >= 0) {
+      fake.upgradeDelayMs = asked.upgradeDelayMs
+      if (asked.upgradeDelayMs === 0) fake.releaseUpgrades()
+    }
+    if (Number.isSafeInteger(asked.refuseUpgrades) && asked.refuseUpgrades >= 0) fake.refuseUpgrades = asked.refuseUpgrades
+    if (typeof asked.holdInterrupts === 'boolean') {
+      fake.holdInterrupts = asked.holdInterrupts
+      if (!asked.holdInterrupts) for (const finish of fake.pendingInterrupts.splice(0)) finish()
+    }
+    if (['normal', 'unanswered', 'ignored', 'held'].includes(asked.restarts)) {
+      fake.restarts = asked.restarts
+      if (asked.restarts !== 'held') fake.answerRestarts()
+    }
   }
 
   /* ---------------------------------------------------------- channels */
@@ -1080,6 +1223,9 @@ export async function startFakeJupyter(options = {}) {
       failure = err
     }
     if (failure instanceof Oom) {
+      // The cgroup counts the kill (memory.events · oom_kill), which a post-mortem reads through `docker exec`.
+      if (options.oomFile) fs.appendFileSync(options.oomFile, `${kernel.id}\n`)
+      options.log?.(`[I ${new Date().toISOString()} ServerApp] AsyncIOLoopKernelRestarter: restarting kernel (1/5), new random ports`)
       // No answer at all, as for real: the process is gone and another comes
       // up, and only jupyter_server says so, to whoever is connected now.
       notice(kernel, 'restarting')
@@ -1152,7 +1298,7 @@ export async function startFakeJupyter(options = {}) {
           say('input_request', { prompt, password: false })
         }),
       file: (relative) => {
-        const target = path.resolve(home, relative ?? '')
+        const target = path.resolve(kernel.dir, relative ?? '')
         if (target !== home && !target.startsWith(home + path.sep)) throw new PyError('PermissionError', `${relative}: outside the folder`)
         return target
       },
@@ -1207,6 +1353,8 @@ export async function startFakeJupyter(options = {}) {
         case 'WRITE': {
           const [, relative, text] = /^WRITE\s+(\S+)\s?(.*)$/.exec(line) ?? []
           const target = io.file(relative)
+          // The council's view of the class folder (`-v …:ro`): the write fails as Python's open() does there.
+          if (options.readOnly) throw new PyError('OSError', `[Errno 30] Read-only file system: '${relative}'`)
           fs.mkdirSync(path.dirname(target), { recursive: true })
           fs.writeFileSync(target, (text ?? '').replace(/\\n/g, '\n'))
           continue
@@ -1366,8 +1514,11 @@ export async function startFakeJupyter(options = {}) {
         out(pty, `${pty.cwd}\r\n`)
         return true
       case 'cd': {
-        const target = !text ? home : text.startsWith(`${root}/`) || text === root
-          ? path.join(home, ...text.slice(root.length).split('/').filter(Boolean).slice(1))
+        // `/workspace/<id>/…` is the kernels' folder: the one class folder itself in a class container, `<id>`'s own
+        // under a home's Jupyter rooted at the workspace (`perSession`), where terminal.ts's greeting lands as a kernel does.
+        const inside = text === root || text.startsWith(`${root}/`) ? text.slice(root.length).split('/').filter(Boolean) : null
+        const target = !text ? home : inside
+          ? path.join(home, ...(options.perSession ? inside : inside.slice(1)))
           : path.resolve(pty.cwd, text)
         if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) {
           out(pty, `sh: 1: cd: can't cd to ${text}\r\n`)
@@ -1569,6 +1720,42 @@ export async function startFakeLink({ target, rttMs = 40 }) {
 
 /* --------------------------------------------------------- the process */
 
+/** How often a container's process looks at its container's state and its owner (see the header). */
+const WATCH_MS = 250
+
+/** A process its container's state never named (the `docker run` that started it died first) ends after this. */
+const UNNAMED_MS = 30_000
+
+/**
+ * The life of a container's process (the header's flags): it ends once its
+ * container's state no longer names it — removed, killed, or started again
+ * as another process — and once the test whose run started it is gone, by a
+ * crash or a kill as much as by its end.
+ */
+function watchContainer(values, end, life) {
+  const file = values['container-file']
+  const id = values['container-id']
+  const owner = Number(values.owner)
+  const startedAt = Date.now()
+  const timer = setInterval(() => {
+    if (Number.isSafeInteger(owner) && owner > 0) {
+      try {
+        process.kill(owner, 0)
+      } catch (error) {
+        if (error.code === 'ESRCH') return end()
+      }
+    }
+    if (!file || !id) return
+    let state = null
+    try {
+      state = JSON.parse(fs.readFileSync(file, 'utf8'))
+    } catch { /* not written yet, or removed */ }
+    if (state !== null && state.id === id && state.pid === process.pid && state.status === 'running') life.named = true
+    else if (life.named || Date.now() - startedAt > UNNAMED_MS) end()
+  }, WATCH_MS)
+  timer.unref()
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({
     options: {
@@ -1577,8 +1764,16 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       token: { type: 'string' },
       'guard-module': { type: 'string' },
       'replay-after-ms': { type: 'string' },
+      'read-only': { type: 'boolean' },
+      'oom-file': { type: 'string' },
+      'container-file': { type: 'string' },
+      'container-id': { type: 'string' },
+      owner: { type: 'string' },
     },
   })
+  const guardModule = values['guard-module'] ?? GUARD_MODULE
+  // What the watch knows of its container (GET /_fake/life): named once its state named this process.
+  const life = { named: false, container: values['container-id'] ?? null, owner: values.owner ? Number(values.owner) : null }
   const fake = await startFakeJupyter({
     port: Number(values.port),
     cwd: values.cwd ?? process.cwd(),
@@ -1587,12 +1782,22 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     buffer: true,
     deletes: true,
     replayAfterMs: values['replay-after-ms'] !== undefined ? Number(values['replay-after-ms']) : null,
-    guardAnswer: guardAnswerFor(values['guard-module'] ?? GUARD_MODULE),
+    guardAnswer: guardAnswerFor(guardModule),
+    guardModule,
+    readOnly: values['read-only'] === true,
+    oomFile: values['oom-file'],
+    log: (line) => process.stdout.write(`${line}\n`),
+    life: () => life,
   })
   process.stdout.write(`${fake.port}\n`)
-  for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.once(signal, () => {
-      void fake.close().finally(() => process.exit(0))
-    })
+  // What a Jupyter's log says first: never a line a post-mortem's tail keeps (postmortem-core.ts · NOISE).
+  process.stdout.write(`[I ${new Date().toISOString()} ServerApp] Jupyter Server fake is running at: http://127.0.0.1:${fake.port}/\n`)
+  let ending = false
+  const end = () => {
+    if (ending) return
+    ending = true
+    void fake.close().finally(() => process.exit(0))
   }
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, end)
+  watchContainer(values, end, life)
 }

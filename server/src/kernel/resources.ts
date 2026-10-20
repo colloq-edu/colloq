@@ -621,6 +621,14 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
   for (const room of allocations) {
     // By Pod, not by class: a class whose only live Pod is its personal
     // notebooks' holds that Pod's memory, not the room's as well.
+    //
+    // And by this server's containers only: a slot on a machine holds none
+    // of its memory (docs/architecture/remote-classes.md §6.10, «0 МБ здесь»).
+    // It never reaches the census above by construction: a machine's class
+    // containers carry `colloq.kind=class-kernel` on the machine's own daemon,
+    // and a machine on this daemon takes no classes (D20). A class with its
+    // room on a machine and a container of it still running here holds this
+    // server's memory with that container, and is counted for it.
     if (runningRoom.has(room.id)) {
       takenMb += room.memoryMb
       takenCpus += room.cpus

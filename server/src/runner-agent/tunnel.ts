@@ -27,6 +27,14 @@
  * whether home is offline (client.ts · relayState), for the log only. A
  * tunnel that stayed up TUNNEL_PING_MS starts the count again.
  *
+ * THE STREAMS OUTLAST THE DIALS (§4.8). One end (TunnelEnd) per agent life
+ * carries every dial's socket in turn. When a tunnel drops, the end keeps its
+ * streams and their connections to the placements' Jupyters open for
+ * TUNNEL_RESUME_MS; the next dial's HELLO lists them, and home goes on with
+ * those it kept too. A home of another life (it restarted) resets them, as
+ * does `closed` (home holds no placement here), the agent's own stop, and a
+ * close of home's that says its end is over (HOME_ENDS).
+ *
  * THE PROXY IS THE PROCESS'S: HTTPS_PROXY, HTTP_PROXY and NO_PROXY as the
  * agent's other calls read them (outbound.ts). ws knows nothing of undici's
  * dispatcher that installOutboundProxy sets for fetch, so the tunnel CONNECTs
@@ -49,6 +57,7 @@ import { REMOTE_BACKOFF_MAX_MS, REMOTE_BACKOFF_MIN_MS, REMOTE_MARKER, REMOTE_MAR
 import { MACHINE_PACE_BURST_BYTES, MACHINE_PACE_MBPS, type RemoteKernelsReply } from '@shared/remote-kernels'
 import {
   TUNNEL_CLOSE,
+  TUNNEL_INTERNAL_CLOSE,
   TUNNEL_MESSAGE_MAX,
   TUNNEL_PING_MS,
   TUNNEL_PROTOCOL,
@@ -63,6 +72,7 @@ import {
   type TunnelClock,
   type TunnelOpen,
   type TunnelRefusal,
+  type TunnelResumed,
   type TunnelStream,
 } from '@shared/remote-tunnel'
 import { bypassesProxy, parseNoProxy, proxySettings } from '../outbound.js'
@@ -123,6 +133,7 @@ type Failure =
 /** One dial, from the WebSocket to its close. */
 interface Dial {
   readonly ws: WebSocket
+  /** The life's end, once the socket opened and was attached to it. */
   end: TunnelEnd | null
   /** When home's WELCOME came; null — it never did. */
   upAt: number | null
@@ -140,8 +151,21 @@ const REFUSING_CLOSES: ReadonlyMap<number, string> = new Map([
 ])
 
 /**
+ * The closes that say home will not go on with this life's streams: its own
+ * failure and the tunnel's codes. Home sends one once its end is over, its
+ * side of every stream dropped; or to refuse a HELLO it would refuse again;
+ * or to a tunnel another agent life took the place of, whose HELLO reset
+ * this life's streams at home. Nothing waits for a resume, then. 1001 is not
+ * among them: home says it as it stops, and its next life's WELCOME resets
+ * the streams anyway, but a proxy in front of home says it too as it reloads
+ * (Caddy on the relay), and the streams must outlive that as any cut.
+ */
+const HOME_ENDS: ReadonlySet<number> = new Set([TUNNEL_INTERNAL_CLOSE, ...Object.values(TUNNEL_CLOSE)])
+
+/**
  * The agent's tunnel to home. One per agent life: its session, in every
- * HELLO, tells home a reconnect of this agent from a new one.
+ * HELLO, tells home a reconnect of this agent from a new one, and its end
+ * keeps the streams across the dials of that life.
  */
 export class AgentTunnel {
   private readonly options: AgentTunnelOptions
@@ -154,6 +178,8 @@ export class AgentTunnel {
   private readonly pace: TunnelPace
   private readonly rtt = new TunnelRtt()
   private readonly session = randomBytes(16).toString('hex')
+  /** The streams, across the dials (§4.8); made anew once a hang-up or a peer's fault closed it. */
+  private end: TunnelEnd
   private wanted: 'open' | 'closed' = 'closed'
   private current: Dial | null = null
   /** A dial whose WebSocket is still being made (its module loading, the proxy's CONNECT). */
@@ -181,6 +207,7 @@ export class AgentTunnel {
     this.quick = new Backoff(random, QUICK_MIN_MS, QUICK_MAX_MS)
     this.slow = new Backoff(random, REMOTE_BACKOFF_MIN_MS, REMOTE_BACKOFF_MAX_MS)
     this.pace = new TunnelPace(this.clock, () => paceBytes(options.paceMBps?.()), MACHINE_PACE_BURST_BYTES)
+    this.end = this.makeEnd()
   }
 
   /** Home's reply's word (RemoteKernelsReply.tunnel). */
@@ -188,6 +215,8 @@ export class AgentTunnel {
     if (mode === 'closed') {
       this.wanted = 'closed'
       this.cancelRetry()
+      // Home holds no placement here: nothing is kept for a next tunnel.
+      this.end.close()
       if (this.current) this.hangUp(this.current, 1000, 'Home holds no placement here')
       return
     }
@@ -196,7 +225,8 @@ export class AgentTunnel {
     // Home sees no tunnel of this machine's, while this one has been up long enough to have reached it: dropped on the way without a word.
     if (mode === 'reconnect' && dial?.upAt != null && this.clock.now() - dial.upAt >= TUNNEL_PING_MS) {
       this.options.log('tunnel-stale', { upMs: this.clock.now() - dial.upAt })
-      dial.end?.close()
+      // A cut: the streams wait for the next dial.
+      dial.end?.cut()
       dial.ws.terminate()
       return
     }
@@ -212,6 +242,7 @@ export class AgentTunnel {
   async close(): Promise<void> {
     this.wanted = 'closed'
     this.cancelRetry()
+    this.end.close()
     const dial = this.current
     if (!dial) return
     await new Promise<void>((resolve) => {
@@ -263,7 +294,10 @@ export class AgentTunnel {
     })
     ws.on('unexpected-response', (_request, response) => this.unexpected(dial, response))
     ws.on('open', () => this.opened(dial))
-    ws.on('message', (data, binary) => dial.end?.receive(data, binary))
+    // A dial no longer the current one says nothing to the end: its frames are lost as in a cut, and the resume sends them again.
+    ws.on('message', (data, binary) => {
+      if (this.current === dial) dial.end?.receive(data, binary)
+    })
     ws.on('error', (error) => {
       // 'close' follows; a failure known before it says more.
       dial.failure ??= { kind: 'transient', reason: error.message, retryAfterMs: null }
@@ -297,42 +331,56 @@ export class AgentTunnel {
     response.on('error', done)
   }
 
+  /** The socket is open: it goes to the life's end, which greets home with a HELLO of the streams it kept. */
   private opened(dial: Dial): void {
     if (this.current !== dial || this.wanted !== 'open') return this.hangUp(dial, 1000, 'Not wanted any more')
+    if (this.end.closed) this.end = this.makeEnd()
+    dial.end = this.end
+    this.end.attach(tunnelSocketOf(dial.ws))
+  }
+
+  /** The life's end: its streams, each reaching only its placement's Jupyter, across the dials of this agent life. */
+  private makeEnd(): TunnelEnd {
     const end: TunnelEnd = new TunnelEnd({
       side: 'agent',
-      socket: tunnelSocketOf(dial.ws),
       clock: this.clock,
       build: this.options.build,
       session: this.session,
       pace: this.pace,
       hooks: {
-        up: () => this.welcomed(dial),
+        up: (_peer, resumed) => this.tunnelUp(resumed),
         open: (stream, open) => this.connect(end, stream, open),
         rtt: (ms) => this.rtt.add(ms, this.clock.now()),
+        overflow: (stream) => this.options.log('tunnel-overflow', { key: stream.key, gen: stream.gen }),
         end: (code, reason) => {
+          const dial = this.current
+          if (!dial || dial.end !== end) return
           dial.failure ??= code === null ? { kind: 'transient', reason, retryAfterMs: null } : closed(code, reason)
           if (code === null) dial.ws.terminate()
           else dial.ws.close(code, closeReason(reason))
         },
       },
     })
-    dial.end = end
-    end.start()
+    return end
   }
 
-  private welcomed(dial: Dial): void {
-    dial.upAt = this.clock.now()
+  private tunnelUp(resumed: TunnelResumed): void {
+    const dial = this.current
+    if (dial) dial.upAt = this.clock.now()
     this.transients = 0
     this.refusalSaid = this.relaySaid = null
     this.set(true)
-    this.options.log('tunnel-up', { tries: this.failures + 1 })
+    this.options.log('tunnel-up', { tries: this.failures + 1, ...(resumed.resumed ? { resumed: resumed.streams } : {}), ...(resumed.reset > 0 ? { reset: resumed.reset } : {}) })
   }
 
   private dropped(dial: Dial, code: number, reason: string): void {
-    dial.end?.close()
     if (this.current !== dial) return
     this.current = null
+    // Home ended its end (HOME_ENDS): the connections to the Jupyters go at once, so that jupyter_server buffers what the
+    // kernels say for the replay home's kernel client asks for as it reconnects, rather than writing it into connections a
+    // later greeting would reset. Anything else is a cut: the streams wait for the next dial with what they keep (§4.8).
+    if (HOME_ENDS.has(code)) dial.end?.close()
+    else dial.end?.cut()
     this.set(false)
     const upMs = dial.upAt === null ? null : this.clock.now() - dial.upAt
     if (upMs !== null) {
@@ -376,8 +424,9 @@ export class AgentTunnel {
     this.retry = null
   }
 
+  /** The socket closed on purpose; whether its streams are kept is the caller's to have said (want, close). */
   private hangUp(dial: Dial, code: number, reason: string): void {
-    dial.end?.close()
+    dial.end?.cut()
     if (dial.ws.readyState === WS_OPEN) dial.ws.close(code, reason)
     else dial.ws.terminate()
   }

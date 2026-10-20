@@ -19,6 +19,20 @@
  *
  * A module that does not import the queue's pump (runner.ts): the pump's own
  * cancel calls cancelRemote, and an import back would close a cycle.
+ *
+ * AND THE OWNER'S ACTIONS ON A MACHINE THAT TAKES CLASSES (remote-classes.md
+ * §11.5): a revoke, «Не принимает занятия» (unclassRunner) and a leave move
+ * every class placement of the machine FIRST — each class comes back on
+ * this server or on another machine, without its variables, in the owner's
+ * words — and only then touch the machine, so that nothing of a class is
+ * still placed on a machine that may no longer hold it. The tunnel closes
+ * with them. A quarantine never closes it: the class quarantine keeps new
+ * placements away and nothing more (§11.6), and the one here drains the
+ * machine's submissions alone.
+ *
+ * Imports the machines' tunnels (kernel/remote/tunnel.ts), which import the
+ * router (routes.ts), which imports this: a cycle, safe because none of the
+ * three reads another while it loads.
  */
 import { tr } from '@shared/i18n'
 import {
@@ -29,7 +43,9 @@ import {
   REMOTE_QUARANTINE_WINDOW_MS,
   type RemoteDeclineReason,
 } from '@shared/remote-runner'
+import { TUNNEL_CLOSE } from '@shared/remote-tunnel'
 import { db } from '../../db.js'
+import { machineTunnels } from '../../kernel/remote/tunnel.js'
 import {
   discardUnstartedRun,
   finishRun,
@@ -52,14 +68,16 @@ import {
   refusedDecline,
   remoteEvent,
   runnerStanding,
+  setRunnerClasses,
   submissionLeases,
   updateLease,
   updateRunner,
   type LeaseRow,
   type LeaseState,
+  type RunnerRow,
 } from './store.js'
 import { wakeAllRunners, wakeRunner } from './wake.js'
-import { forgetHeard } from './heard.js'
+import { classPort, forgetHeard, type ClassFailoverCause } from './heard.js'
 import { dropAttempt } from '../storage.js'
 import { dropStaging } from './upload.js'
 import { cutBlobStreams, starvedLease } from './blobs.js'
@@ -430,6 +448,23 @@ export function cancelRemote(row: QueueRow, by: 'entrant' | 'teacher', now = Dat
 /* ----------------------------------------------------------------- machines */
 
 /**
+ * Every class placement of a machine failed over, FIRST (§11.5): before the
+ * action that asks it changes anything of the machine, its classes are
+ * fenced (their gen is over, their listeners closed, their links lost) and
+ * come back elsewhere with the owner's reason (kernel/remote/placement.ts ·
+ * failoverRunner). A failure there is written to the log and the action goes
+ * on: the owner's revoke never waits on a class. How many moved.
+ */
+function failClassesOver(runnerId: string, cause: ClassFailoverCause, now: number): number {
+  try {
+    return classPort().failoverRunner(runnerId, cause, now)
+  } catch (error) {
+    console.error(`[runners] the classes of machine ${runnerId} could not be moved (${cause}):`, error instanceof Error ? (error.stack ?? error.message) : error)
+    return 0
+  }
+}
+
+/**
  * The owner disconnects a machine («Отключить»): its secret is refused from
  * the next call on (401, which makes the agent purge the hidden test and
  * stop), its runs go back to the queue with no penalty, and its late results
@@ -441,20 +476,62 @@ export function cancelRemote(row: QueueRow, by: 'entrant' | 'teacher', now = Dat
  * a second before went on to its last byte — rivals' notebooks, open data,
  * and on a trusted machine up to 200 MiB of the hidden test — to exactly the
  * machine these buttons exist for: one the owner no longer trusts.
+ *
+ * Its classes move first (failClassesOver), and its tunnel closes with
+ * TUNNEL_CLOSE.unauthorized at once, not at its next re-check: the kernels
+ * there are reached through it, and every byte to them now is one more to a
+ * machine the owner disconnected. The agent's 401 path removes the class
+ * containers and their folders (§11.5).
  */
 export function revokeRunner(runnerId: string, now = Date.now()): boolean {
   const runner = getRunner(runnerId)
   if (!runner || runner.state === 'revoked' || runner.state === 'left') return false
+  failClassesOver(runnerId, 'revoked', now)
   db.transaction(() => {
     updateRunner(runnerId, { state: 'revoked', revokedAt: now })
     for (const lease of openLeases(runnerId)) releaseLease(lease.attemptId, now, 'revoked')
     remoteEvent(runnerId, 'revoked', {}, now)
   })()
   cutBlobStreams(runnerId, 'all')
+  machineTunnels().close(runnerId, TUNNEL_CLOSE.unauthorized, 'The machine was disconnected by its owner')
   forgetHeard(runnerId)
   wakeRunner(runnerId)
   wakeAllRunners()
   return true
+}
+
+/**
+ * «Не принимает занятия» (§11.5, D2): the owner turns a machine's classes
+ * off. Its placements fail over FIRST, then the row takes no classes
+ * (store.ts · setRunnerClasses), the log says `unclassed` with how many
+ * moved, and its tunnel closes with TUNNEL_CLOSE.forbidden now rather than
+ * at its next re-check. Its held sync is answered at once, and every reply
+ * until a sync of its lists no class container tells it to hold none
+ * (store.ts · classesWindingDown, written with the flag; routes.ts ·
+ * windDownBlock): the containers go now, not by the orphan rule two hours
+ * later. Its submissions and its trust are untouched. (The class folders' and
+ * the epochs' blob streams are cut here too once the blobs serve them, §8.2,
+ * §9.2.)
+ *
+ * `unknown` or `gone` — no such machine, or one that may no longer call.
+ */
+export function unclassRunner(runnerId: string, now = Date.now()): { runner: RunnerRow; changed: boolean; moved: number } | { refused: 'unknown' | 'gone' } {
+  const before = getRunner(runnerId)
+  if (!before) return { refused: 'unknown' }
+  if (!runnerStanding(before)) return { refused: 'gone' }
+  const moved = failClassesOver(runnerId, 'unclassed', now)
+  const set = setRunnerClasses(runnerId, false)
+  // Off is never refused for trust (that is the turning on); a machine revoked in between is one that went.
+  if ('refused' in set) return { refused: set.refused === 'unknown' ? 'unknown' : 'gone' }
+  let runner = set.runner
+  if (set.changed || moved > 0) {
+    // Off already, and placements still moved: their containers go the same way.
+    if (!runner.classesWindingDown) runner = updateRunner(runnerId, { classesWindingDown: true }) ?? runner
+    remoteEvent(runnerId, 'unclassed', { detail: moved > 0 ? `moved ${moved}` : null }, now)
+  }
+  machineTunnels().close(runnerId, TUNNEL_CLOSE.forbidden, 'The machine no longer takes classes')
+  wakeRunner(runnerId)
+  return { runner, changed: set.changed, moved }
 }
 
 /**
@@ -468,10 +545,15 @@ export function revokeRunner(runnerId: string, now = Date.now()): boolean {
  * than holding its row for the offer's minute (REMOTE_OFFER_MS) for a
  * machine that is gone. Anything else still open — no path here leaves one —
  * goes back the way a revoke sends it.
+ *
+ * Its classes move first, as for a revoke (`runner leave` asked before it
+ * left them: «уход перенесёт их на сервер», §11.5), and its tunnel closes:
+ * the agent removes its class containers on its way out.
  */
 export function leaveRunner(runnerId: string, now = Date.now()): boolean {
   const runner = getRunner(runnerId)
   if (!runner || !runnerStanding(runner)) return false
+  failClassesOver(runnerId, 'leaving', now)
   let freed = 0
   db.transaction(() => {
     markRunnerLeft(runnerId, now)
@@ -481,6 +563,7 @@ export function leaveRunner(runnerId: string, now = Date.now()): boolean {
     remoteEvent(runnerId, 'left', {}, now)
   })()
   cutBlobStreams(runnerId, 'all')
+  machineTunnels().close(runnerId, TUNNEL_CLOSE.unauthorized, 'The machine left its home')
   if (freed > 0) wakeAllRunners()
   return true
 }

@@ -358,6 +358,36 @@ export const KERNEL_STATUS_FIELD = 'status'
 export const KERNEL_RUNNING_FIELD = 'runningCell'
 export const KERNEL_QUEUE_FIELD = 'queue'
 
+/**
+ * Where a notebook's kernel computes, and whether it can be reached
+ * (docs/architecture/remote-classes.md §13.1 «Data path»).
+ *
+ * Three more fields of the same entry, written by the server only for a
+ * kernel that is or was on a machine: a room that never computed on one
+ * carries none of them, and a tab that does not know them ignores them.
+ *
+ * - `where`: 'machine' while the kernel lives on a machine; null once it left
+ *   one (a failover, a move); absent, it never did.
+ * - `link`: on a machine, whether it answers ('ok'), does not ('lost': the
+ *   kernel and its variables are still there, and new runs wait for it), or
+ *   the kernel is being moved ('moving').
+ * - `linkSince`: when `link` last changed, on the server's clock; with `where`
+ *   null, when the kernel left its machine.
+ *
+ * The machine's NAME is never here. The document is the whole room's, and
+ * students read «на машине»; the name reaches staff over the control socket
+ * only (protocol.ts · `kernel:machine`). `KernelStatus` stays what it is: a
+ * kernel on an unreachable machine is still `idle` or `busy`, and the link is
+ * said beside it.
+ */
+export const KERNEL_WHERE_FIELD = 'where'
+export const KERNEL_LINK_FIELD = 'link'
+export const KERNEL_LINK_SINCE_FIELD = 'linkSince'
+export type KernelWhere = 'machine' | null
+export type KernelLinkState = 'ok' | 'lost' | 'moving'
+
+const KERNEL_LINK_STATES: readonly KernelLinkState[] = ['ok', 'lost', 'moving']
+
 /** The kernel map, if the document has one. For readers — without creating it. */
 export function kernelsMap(doc: Y.Doc): Y.Map<any> | null {
   const raw = getMeta(doc).get(KERNELS_KEY)
@@ -391,6 +421,24 @@ export interface BookKernel {
   status: KernelStatus
   runningCell: string | null
   queue: string[]
+  /** On a machine, or back from one; null for a kernel that never left this server. See KERNEL_WHERE_FIELD. */
+  where: KernelWhere
+  /** Whether its machine answers; null at home. */
+  link: KernelLinkState | null
+  linkSince: number | null
+}
+
+/**
+ * The placement fields of an entry, read as untrusted: only the server writes
+ * `meta` (collab/gate.ts), but an entry from an old snapshot, or a value that
+ * is not one of the words, must read as "this server", never as a machine.
+ */
+function placementFields(entry: Y.Map<any>): Pick<BookKernel, 'where' | 'link' | 'linkSince'> {
+  const where = entry.get(KERNEL_WHERE_FIELD) === 'machine' ? 'machine' : null
+  const raw = entry.get(KERNEL_LINK_FIELD)
+  const link = where === 'machine' && KERNEL_LINK_STATES.includes(raw) ? (raw as KernelLinkState) : null
+  const since = entry.get(KERNEL_LINK_SINCE_FIELD)
+  return { where, link, linkSince: typeof since === 'number' && Number.isFinite(since) ? since : null }
 }
 
 /**
@@ -410,16 +458,20 @@ export function bookKernel(doc: Y.Doc, root: string): BookKernel {
       status: (entry.get(KERNEL_STATUS_FIELD) as KernelStatus) ?? 'off',
       runningCell: (entry.get(KERNEL_RUNNING_FIELD) as string | null) ?? null,
       queue: queue instanceof Y.Array ? (queue.toArray() as string[]) : [],
+      ...placementFields(entry),
     }
   }
+  // The old keys never knew machines: whatever they describe ran on this server.
+  const home = { where: null, link: null, linkSince: null }
   // No entry at all — this notebook's kernel was never brought up: `off`, not "starting".
-  if (root !== CELLS_KEY) return { status: 'off', runningCell: null, queue: [] }
+  if (root !== CELLS_KEY) return { status: 'off', runningCell: null, queue: [], ...home }
   const meta = getMeta(doc)
   const queue = meta.get('queue')
   return {
     status: (meta.get('kernelStatus') as KernelStatus) ?? 'off',
     runningCell: (meta.get('runningCell') as string | null) ?? null,
     queue: queue instanceof Y.Array ? (queue.toArray() as string[]) : [],
+    ...home,
   }
 }
 
@@ -1707,6 +1759,14 @@ export function clearStaleWork(doc: Y.Doc): StaleWork {
         const state = entry.get(KERNEL_STATUS_FIELD)
         if (state !== undefined && state !== 'dead')
           entry.set(KERNEL_STATUS_FIELD, 'off' as KernelStatus)
+        /*
+         * A machine's link as the process that wrote it last saw it. "No
+         * connection" or "moving" from before is nobody's news now: the
+         * kernel that attaches again says what its link is (kernel/index.ts ·
+         * markWhere). `where` stays: a placement outlives this server.
+         */
+        const link = entry.get(KERNEL_LINK_FIELD)
+        if (link === 'lost' || link === 'moving') entry.delete(KERNEL_LINK_FIELD)
       }
     }
 

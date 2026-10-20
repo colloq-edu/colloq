@@ -44,6 +44,7 @@ import {
   TUNNEL_COUNCIL_SHARE,
   TUNNEL_DEAD_MS,
   TUNNEL_FRAME_MAX,
+  TUNNEL_GREETING_MS,
   TUNNEL_HEADER_BYTES,
   TUNNEL_PING_MS,
   TUNNEL_PROTOCOL_HEADER,
@@ -460,14 +461,20 @@ test('an OPEN from the agent closes the tunnel: only home opens streams', () => 
   assert.ok(p.home.closed)
 })
 
-test('a HELLO of another tunnel protocol is refused with 4426, a text message and frames before the greeting with 4400', () => {
-  const ended: Array<number | null> = []
-  const end = () => new TunnelEnd({ side: 'home', socket: new Wire(), clock: new Clock(), build: 'dev', session: 'a'.repeat(32), hooks: { end: (code) => ended.push(code) } })
+/** A HELLO of tunnel protocol 2, as no encoder of this build writes one. */
+function otherProtocolHello(): Uint8Array {
   const json = new TextEncoder().encode(JSON.stringify({ protocol: 2, build: 'dev', session: 'b'.repeat(32) }))
   const hello = new Uint8Array(TUNNEL_HEADER_BYTES + json.byteLength)
   hello[0] = tunnelKindByte('HELLO')
   hello.set(json, TUNNEL_HEADER_BYTES)
-  end().receive(hello, true)
+  return hello
+}
+
+test('a HELLO of another tunnel protocol is refused with 4426, a text message and frames before the greeting with 4400', () => {
+  // The engine's own greeting, for an end that reads its first frame itself; home's door reads it before any end (below).
+  const ended: Array<number | null> = []
+  const end = () => new TunnelEnd({ side: 'home', socket: new Wire(), clock: new Clock(), build: 'dev', session: 'a'.repeat(32), hooks: { end: (code) => ended.push(code) } })
+  end().receive(otherProtocolHello(), true)
   end().receive(new TextEncoder().encode('hello'), false)
   end().receive(encodeTunnelFrame({ kind: 'PING', id: 1 }), true)
   assert.deepEqual(ended, [TUNNEL_CLOSE.protocol, TUNNEL_CLOSE.violation, TUNNEL_CLOSE.violation])
@@ -578,14 +585,19 @@ test('PING every 10 s from each side, an RTT from each PONG, and the end after 2
   for (const frame of sent) p.agent.receive(frame, true)
   for (const frame of p.agentWire.take()) p.home.receive(frame, true)
   assert.ok(p.rtts.includes(120), `an RTT of 120 ms: ${p.rtts.join(', ')}`)
-  // From now on the agent says nothing: home ends the tunnel with no handshake once 25 s pass without a frame.
+  // From now on the agent says nothing: home ends the socket with no handshake once 25 s pass without a frame.
   p.agentWire.take()
   p.clock.advance(TUNNEL_DEAD_MS - 1)
   assert.equal(p.ended.filter((end) => end.side === 'home').length, 0)
   p.clock.advance(1)
   const ended = p.ended.find((end) => end.side === 'home')
   assert.equal(ended?.code, null, 'terminated, no close frame on a dead link')
-  assert.ok(p.home.closed)
+  // A cut, not the end: the end waits for the next socket with what it kept (§4.8), and pings no more meanwhile.
+  assert.ok(!p.home.up && !p.home.attached && !p.home.closed)
+  p.homeWire.take()
+  p.clock.advance(3 * TUNNEL_PING_MS)
+  assert.equal(pings(p.homeWire, 'home'), 0)
+  assert.equal(p.ended.filter((end) => end.side === 'home').length, 1)
 })
 
 test('the machine\'s pace: a 2 MiB burst, then 6 MiB/s refilled smoothly on its clock, never a second\'s worth at once', () => {
@@ -943,6 +955,24 @@ test('a frame of the agent\'s that only home may send closes the tunnel with 440
   await until(() => !tunnels.isUp(m.id), 'down after the violation')
 })
 
+test('the door reads a socket\'s first frame itself: another protocol\'s HELLO closes it with 4426, a text message or another frame with 4400', async () => {
+  const tunnels = new MachineTunnels({ log: quiet })
+  const port = await tunnelsServer(tunnels)
+  const m = machine()
+  const firsts: Array<[string, Uint8Array | string, number]> = [
+    ['a HELLO of protocol 2', otherProtocolHello(), TUNNEL_CLOSE.protocol],
+    ['a text message', 'hello', TUNNEL_CLOSE.violation],
+    ['a PING before the HELLO', encodeTunnelFrame({ kind: 'PING', id: 1 }), TUNNEL_CLOSE.violation],
+  ]
+  for (const [what, first, code] of firsts) {
+    const agent = await rawAgent(port, m)
+    agent.ws.send(first)
+    assert.equal(await closedCode(agent, `${what} refused`), code, what)
+    assert.equal(agent.frames.length, 0, `${what}: no WELCOME`)
+  }
+  assert.equal(tunnels.isUp(m.id), false, 'no tunnel came up')
+})
+
 test('the HELLO reads the machine again: revoked since its upgrade 4401, classes off 4403, a quarantine or another build WELCOMEd; close() ends a tunnel still greeting', async () => {
   const tunnels = new MachineTunnels({ log: quiet })
   const port = await tunnelsServer(tunnels)
@@ -969,6 +999,81 @@ test('the HELLO reads the machine again: revoked since its upgrade 4401, classes
   assert.equal(await closedCode(d, 'the greeting tunnel closed'), TUNNEL_CLOSE.forbidden)
 })
 
+test('a socket that never says HELLO is terminated after TUNNEL_GREETING_MS, and takes no tunnel\'s place', async () => {
+  const clock = new Clock()
+  clock.t = Date.now()
+  const tunnels = new MachineTunnels({ clock, log: quiet })
+  const port = await tunnelsServer(tunnels)
+  const m = machine()
+  const working = await rawAgent(port, m)
+  working.ws.send(helloFrame())
+  await until(() => working.frames.some((frame) => frame.kind === 'WELCOME'), 'WELCOME')
+  // The door reads the HELLO before the socket goes to the machine's end: one that never says it is not the machine's tunnel.
+  const silent = await rawAgent(port, m)
+  let closed: number | null = null
+  void silent.closed.then((close) => (closed = close.code))
+  clock.advance(TUNNEL_GREETING_MS - 1)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(closed, null, 'not before its time')
+  clock.advance(1)
+  assert.equal(await closedCode(silent, 'the silent socket terminated'), 1006)
+  assert.ok(tunnels.isUp(m.id) && working.ws.readyState === WebSocket.OPEN, 'the working tunnel is untouched')
+  working.ws.terminate()
+})
+
+/** A TCP relay in front of a door whose agent-to-home direction can be held back, then let go of: frames that arrive late, in order. */
+async function lateRelay(port: number): Promise<{ port: number; hold(): void; release(): void }> {
+  const pairs: Array<{ down: net.Socket; up: net.Socket }> = []
+  let held = false
+  const waiting: Buffer[] = []
+  const server = net.createServer((down) => {
+    const up = net.connect(port, '127.0.0.1')
+    const pair = { down, up }
+    pairs.push(pair)
+    for (const socket of [down, up]) socket.on('error', () => undefined)
+    down.on('data', (chunk: Buffer) => (held ? waiting.push(chunk) : up.write(chunk)))
+    up.pipe(down)
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  open.add({ close: () => new Promise<void>((resolve) => {
+    for (const { down, up } of pairs) {
+      down.destroy()
+      up.destroy()
+    }
+    server.close(() => resolve())
+  }) })
+  return {
+    port: (server.address() as net.AddressInfo).port,
+    hold: () => (held = true),
+    release: () => {
+      held = false
+      for (const chunk of waiting.splice(0)) pairs[0].up.write(chunk)
+    },
+  }
+}
+
+test('the frames a replaced socket still sends are lost as in a cut, never taken for the newer socket\'s', async () => {
+  const tunnels = new MachineTunnels({ log: quiet })
+  const port = await tunnelsServer(tunnels)
+  const relay = await lateRelay(port)
+  const m = machine()
+  const older = await rawAgent(relay.port, m)
+  older.ws.send(helloFrame())
+  await until(() => older.frames.some((frame) => frame.kind === 'WELCOME'), 'the older WELCOME')
+  // The older socket's next frame is on its way, and late: a newer tunnel takes its place meanwhile.
+  relay.hold()
+  older.ws.send(encodeTunnelFrame({ kind: 'PING', id: 777 }))
+  const newer = await rawAgent(port, m)
+  newer.ws.send(helloFrame())
+  await until(() => newer.frames.some((frame) => frame.kind === 'WELCOME'), 'the newer WELCOME')
+  relay.release()
+  newer.ws.send(encodeTunnelFrame({ kind: 'PING', id: 778 }))
+  await until(() => newer.frames.some((frame) => frame.kind === 'PONG' && frame.id === 778), 'the newer socket\'s own PONG')
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(newer.frames.filter((frame) => frame.kind === 'PONG').map((frame) => (frame as { id: number }).id), [778], 'no answer to the older socket\'s frame')
+  newer.ws.terminate()
+})
+
 test('an open tunnel whose machine was revoked or unclassed without a word closes at its first frame ten seconds on; a quarantine leaves it open', async () => {
   const clock = new Clock()
   clock.t = Date.now()
@@ -986,12 +1091,29 @@ test('an open tunnel whose machine was revoked or unclassed without a word close
   const a = await up(revoked)
   const b = await up(unclassed)
   const c = await up(quarantined)
+  // A stream on the revoked machine's tunnel, open at home: the raw agent answers its OPEN and sends it a byte or two.
+  const listener = await tunnels.listen(revoked.id, ROOM, 1)
+  open.add(listener)
+  const kernel = net.connect({ host: '127.0.0.1', port: listener.port })
+  const seen = { got: 0, error: null as string | null, closed: false }
+  kernel.on('data', (chunk: Buffer) => (seen.got += chunk.byteLength))
+  kernel.on('error', (error: NodeJS.ErrnoException) => (seen.error ??= error.code ?? error.message))
+  kernel.on('close', () => (seen.closed = true))
+  open.add({ close: () => kernel.destroy() })
+  await until(() => a.frames.some((frame) => frame.kind === 'OPEN'), 'the OPEN of the stream')
+  const opening = a.frames.find((frame) => frame.kind === 'OPEN') as Extract<TunnelFrame, { kind: 'OPEN' }>
+  a.ws.send(encodeTunnelFrame({ kind: 'OPENED', stream: opening.stream, lane: opening.lane }))
+  a.ws.send(encodeTunnelFrame({ kind: 'DATA', stream: opening.stream, lane: opening.lane, offset: 0, payload: filled(10), fin: false }))
+  await until(() => seen.got === 10, 'the stream open at home')
   updateRunner(revoked.id, { state: 'revoked' })
   assert.ok('runner' in setRunnerClasses(unclassed.id, false))
   updateRunner(quarantined.id, { classesQuarantinedAt: Date.now() })
   clock.advance(TUNNEL_PING_MS)
   for (const agent of [a, b, c]) agent.ws.send(encodeTunnelFrame({ kind: 'PING', id: 1 }))
   assert.equal(await closedCode(a, 'the revoked machine\'s tunnel closed'), TUNNEL_CLOSE.unauthorized)
+  // Its streams go with it, not kept for a resume: a machine no longer allowed is not waited for.
+  await until(() => seen.closed, 'the revoked machine\'s stream dropped at home')
+  assert.equal(seen.error, 'ECONNRESET')
   assert.equal(await closedCode(b, 'the unclassed machine\'s tunnel closed'), TUNNEL_CLOSE.forbidden)
   await until(() => c.frames.some((frame) => frame.kind === 'PONG'), 'the quarantined machine\'s PONG')
   assert.ok(tunnels.isUp(quarantined.id), 'a quarantine holds back new placements only')
@@ -1240,20 +1362,32 @@ test('the agent honours HTTPS_PROXY and HTTP_PROXY with a CONNECT, and dials a l
   await direct.close()
 })
 
-test('reconnect: a tunnel home does not see after ten seconds up is dialled again; one younger than that is kept', async () => {
+test('reconnect: a tunnel home does not see after ten seconds up is dialled again, its streams going on; one younger than that is kept', async () => {
   const tunnels = new MachineTunnels({ log: quiet })
   const port = await tunnelsServer(tunnels)
+  const target = await echo()
   const m = machine()
   const clock = new Clock()
   clock.t = Date.now()
   const events: string[] = []
   const agent = new AgentTunnel({
     url: tunnelUrl(`http://127.0.0.1:${port}`), authorization: m.credential, build: 'dev',
-    resolve: () => ({ refused: 'gone' }), log: (event) => events.push(event), clock,
+    resolve: () => ({ port: target.port }), log: (event) => events.push(event), clock,
   })
   open.add(agent)
   agent.want('open')
-  await until(() => agent.state().up, 'up')
+  await until(() => agent.state().up && tunnels.isUp(m.id), 'up')
+  // A stream open across the word: a dial again is a cut, and its connections outlive it (§4.8).
+  const listener = await tunnels.listen(m.id, ROOM, 1)
+  open.add(listener)
+  const kernel = net.connect({ host: '127.0.0.1', port: listener.port })
+  const seen = { got: 0, closed: false }
+  kernel.on('data', (chunk: Buffer) => (seen.got += chunk.byteLength))
+  kernel.on('error', () => undefined)
+  kernel.on('close', () => (seen.closed = true))
+  open.add({ close: () => kernel.destroy() })
+  kernel.write(filled(10 * KiB))
+  await until(() => seen.got === 10 * KiB, 'echoed before the word')
   const since = agent.state().since
   agent.want('reconnect')
   assert.equal(agent.state().up, true, 'a tunnel up for less than ten seconds may be newer than home\'s word')
@@ -1262,8 +1396,11 @@ test('reconnect: a tunnel home does not see after ten seconds up is dialled agai
   await until(() => !agent.state().up, 'the stale tunnel ended')
   assert.ok(events.includes('tunnel-stale'))
   clock.advance(5_000)
-  await until(() => agent.state().up, 'dialled again')
+  await until(() => agent.state().up && tunnels.isUp(m.id), 'dialled again')
   assert.ok(agent.state().since > since)
+  kernel.write(filled(10 * KiB))
+  await until(() => seen.got === 20 * KiB, 'echoed after it')
+  assert.ok(!seen.closed && target.connections() === 1, 'over the same connections, never reset')
   agent.want('closed')
   await until(() => !tunnels.isUp(m.id), 'closed when home holds nothing here')
   clock.advance(60_000)
@@ -1292,16 +1429,20 @@ test('the agent\'s own failure is tried again quickly; home\'s word slowly', asy
   const clock = new Clock()
   clock.t = Date.now()
   let throwing = true
+  let threw = 0
   const agent = new AgentTunnel({
     url: tunnelUrl(`http://127.0.0.1:${port}`), authorization: m.credential, build: 'dev', resolve: () => ({ refused: 'gone' }), clock, random: () => 0.5,
     // A log that fails as the tunnel comes up: the agent's end closes it with its own code (TUNNEL_CLOSE.internal).
     log: (event) => {
-      if (event === 'tunnel-up' && throwing) throw new Error('the log is full')
+      if (event !== 'tunnel-up' || !throwing) return
+      threw++
+      throw new Error('the log is full')
     },
   })
   open.add(agent)
   agent.want('open')
-  await until(() => clock.waits().length === 1, 'the retry after the agent\'s own failure')
+  // After the failure: before it, the one timer waiting may be the greeting's own (TUNNEL_GREETING_MS), not a retry.
+  await until(() => threw === 1 && clock.waits().length === 1, 'the retry after the agent\'s own failure')
   assert.deepEqual(clock.waits(), [750], 'the first quick try (0.5 to 5 s), not the slow one')
   throwing = false
   clock.advance(750)

@@ -4507,5 +4507,123 @@ export const serverMessages: MessageCatalog = {
   "server.theOrderOfSetsInAttemptsMay.b87dc7": {
     "ru": "Порядок множеств в попытках может отличаться от тетради: её ядро запущено до обновления.",
     "en": "The order of sets in attempts may differ from the notebook’s: its kernel was started before the update."
+  },
+  // The same rows as the room reads them (server/src/kernel/index.ts): whatever lands in the room's document never
+  // names the machine; the named rows above go to staff over the control socket and to the owner.
+  "server.noConnectionToTheMachineTheKernel.71d94f": {
+    "ru": "Нет связи с машиной · {elapsed}. Ядро и переменные на ней целы — ждём связь. Новые запуски подождут.",
+    "en": "No connection to the machine · {elapsed}. The kernel and its variables there are intact — waiting for the connection. New runs will wait."
+  },
+  "server.theConnectionToTheMachineCameBack.d517ba": {
+    "ru": "Связь с машиной вернулась через {seconds} с.",
+    "en": "The connection to the machine came back after {seconds} s."
+  },
+  "server.theMachineHasNotAnsweredSinceThe.aa7fbb": {
+    "ru": "Машина не отвечает с {since}. Ядро поднято заново на этом сервере: переменные пропали, файлы — по {filesAt}. Запустите ячейки снова.",
+    "en": "The machine has not answered since {since}. The kernel was started again on this server: the variables are gone, the files are as of {filesAt}. Run the cells again."
+  },
+  "server.theMachineHasNotAnsweredSinceThe.ee52e1": {
+    "ru": "Машина не отвечает с {since}. Ядро поднято заново на этом сервере: переменные пропали. Запустите ячейки снова.",
+    "en": "The machine has not answered since {since}. The kernel was started again on this server: the variables are gone. Run the cells again."
+  },
+  "server.thisCellWasRunningOnTheMachine.8d1959": {
+    "ru": "Эта ячейка выполнялась на машине, когда та пропала. Неизвестно, успела ли она закончиться; на новом ядре её нет.",
+    "en": "This cell was running on the machine when the machine was lost. Whether it finished is unknown; the new kernel has none of it."
+  },
+  "server.noConnectionToTheMachineARestart.f05d30": {
+    "ru": "Нет связи с машиной — перезапуск сейчас не дойдёт. Нажмите, когда связь вернётся.",
+    "en": "No connection to the machine — a restart would not reach it now. Press it once the connection is back."
+  },
+  "server.theOwnerDisconnectedTheMachine.0660fa": {
+    "ru": "Владелец отключил машину.",
+    "en": "The owner disconnected the machine."
+  },
+  "server.theMachineIsNoLongerTrustedTo.7919d7": {
+    "ru": "Машине больше не доверено вести занятия.",
+    "en": "The machine is no longer trusted to run classes."
+  },
+  "server.theMachineIsBeingDisconnected.126fbe": {
+    "ru": "Машину отключают.",
+    "en": "The machine is being disconnected."
+  },
+  "server.theNetworkOnTheMachineGotOut.10829b": {
+    "ru": "Сеть на машине вышла из-под контроля: ядро остановлено ради безопасности и поднято на этом сервере.",
+    "en": "The network on the machine got out of control: the kernel was stopped for safety and started on this server."
+  },
+  "server.startingTheKernelOnAMachine.eca55f": {
+    "ru": "Запускаем ядро на машине…",
+    "en": "Starting the kernel on a machine…"
+  },
+  "server.startingTheKernelOnAMachineImage.9a5892": {
+    "ru": "Запускаем ядро на машине… образ ↓ {percent} %",
+    "en": "Starting the kernel on a machine… image ↓ {percent}%"
+  },
+  "server.theAgentOnTheMachineIsUpdating.d5b483": {
+    "ru": "Агент на машине обновляется. Ядро и переменные на ней целы — новые запуски подождут.",
+    "en": "The agent on the machine is updating. The kernel and its variables there are intact — new runs will wait."
+  },
+  // The same rows for a class whose personal notebooks alone compute on the machine (§10, D31): the class
+  // notebooks' kernel is here, and their runs neither wait nor lose anything.
+  "server.noConnectionToThePersonalNotebooksMachine.d2ae75": {
+    "ru": "Нет связи с машиной личных тетрадей · {elapsed}. Их ядра и переменные на ней целы — ждём связь. Запуски в личных тетрадях подождут.",
+    "en": "No connection to the personal notebooks' machine · {elapsed}. Their kernels and variables there are intact — waiting for the connection. Runs in personal notebooks will wait."
+  },
+  "server.theAgentOnThePersonalNotebooksMachine.5176d2": {
+    "ru": "Агент на машине личных тетрадей обновляется. Их ядра и переменные на ней целы — запуски в личных тетрадях подождут.",
+    "en": "The agent on the personal notebooks' machine is updating. Their kernels and variables there are intact — runs in personal notebooks will wait."
+  },
+  "server.thePersonalNotebooksMachineHasNotAnswered.69b338": {
+    "ru": "Машина личных тетрадей не отвечает с {since}. Их ядра поднимутся заново на этом сервере: переменные пропали. Запустите ячейки снова.",
+    "en": "The personal notebooks' machine has not answered since {since}. Their kernels start again on this server: the variables are gone. Run the cells again."
+  },
+  "server.thePersonalNotebooksMachineHasNotAnswered.ae4676": {
+    "ru": "Машина личных тетрадей не отвечает с {since}. Их ядра поднимутся заново на этом сервере: переменные пропали, файлы — по {filesAt}. Запустите ячейки снова.",
+    "en": "The personal notebooks' machine has not answered since {since}. Their kernels start again on this server: the variables are gone, the files are as of {filesAt}. Run the cells again."
+  },
+  "server.thePersonalNotebooksKernelsStartOnThis.f1d3d4": {
+    "ru": "Ядра личных тетрадей поднимутся на этом сервере, их переменные пропали.",
+    "en": "The personal notebooks' kernels start on this server; their variables are gone."
+  },
+  "server.theNetworkOnThePersonalNotebooksMachine.b18ca6": {
+    "ru": "Сеть на машине личных тетрадей вышла из-под контроля: их ядра остановлены ради безопасности и поднимутся на этом сервере.",
+    "en": "The network on the personal notebooks' machine got out of control: their kernels were stopped for safety and start on this server."
+  },
+  // A kernel start asked for while the slot's machine does not answer (the join's warm-up, a hover, Format): refused
+  // before anything is touched; the pump waits at its gate instead.
+  "server.noConnectionToTheMachineTheKernel.67a40e": {
+    "ru": "Нет связи с машиной — ядро запустится, когда она ответит.",
+    "en": "No connection to the machine: the kernel starts once it answers."
+  },
+  // A start on a machine that failed in words naming the machine: the room reads this, staff the words themselves.
+  "server.theKernelDidNotStartOnThe.8ad0fb": {
+    "ru": "Ядро не запустилось на машине — подробности у преподавателя.",
+    "en": "The kernel did not start on the machine; the teacher has the details."
+  },
+  // §6.2 «если машин нет — здесь»: the slot starts on this server, through its admission.
+  "server.noMachineCanTakeTheKernelNow.53437e": {
+    "ru": "Ни одна машина сейчас не может взять ядро — оно поднимается на этом сервере.",
+    "en": "No machine can take the kernel now: it starts on this server."
+  },
+  // Staff's rows beside the table: the failover before files come home (wave 3), and the banner under «ждать машину».
+  "server.machineHasNotAnsweredSinceTheKernel.ceaa1d": {
+    "ru": "Машина «{machine}» не отвечает с {since}. Ядро поднято заново на этом сервере: переменные пропали. Запустите ячейки снова.",
+    "en": "Machine {machine} has not answered since {since}. The kernel was started again on this server: the variables are gone. Run the cells again."
+  },
+  "server.machineHasNotAnsweredSinceWaitingFor.378191": {
+    "ru": "Машина «{machine}» не отвечает с {since}. Ждём её: ядро переедет на этот сервер только по «Перенести сейчас».",
+    "en": "Machine {machine} has not answered since {since}. Waiting for it: the kernel moves to this server only on “Move now”."
+  },
+  // «Перенести сейчас» on the control socket (server/src/control.ts · kernel:move).
+  "server.onlyTheTeacherCanMoveTheKernel.9a2c10": {
+    "ru": "Перенести ядро может только преподаватель.",
+    "en": "Only the teacher can move the kernel."
+  },
+  "server.thisClassSKernelsRunOnThis.d5eaa3": {
+    "ru": "Ядра этого занятия считаются на этом сервере — переносить нечего.",
+    "en": "This class’s kernels run on this server: there is nothing to move."
+  },
+  "server.couldNotMoveTheKernel.9435d3": {
+    "ru": "Не удалось перенести ядро.",
+    "en": "Could not move the kernel."
   }
 }

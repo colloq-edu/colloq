@@ -20,10 +20,12 @@
  * census; real use is not something the broker may read (no metrics API in
  * its Role), so it is reported as unknown rather than guessed.
  */
+import type { RemoteFilesLag } from '@shared/remote-kernels'
 import { activeName } from '../environments.js'
 import { sessionEnvironment } from '../db.js'
 import { brokerLimits, dockerRead, kernelLimits, roomContainer, roomContainers, type KernelRole } from './pool.js'
 import { kernelBackend, kernelRuntimeClient } from './runtime-client.js'
+import { anyLivePlacement, livePlacementRows } from './remote/placement-store.js'
 
 /** One class container as the census and the sample saw it. */
 export interface ContainerReading {
@@ -39,6 +41,28 @@ export interface ContainerReading {
   usedMb: number | null
   cpuPercent: number | null
   startedAt: number | null
+  /**
+   * A slot on a machine («занятия на машинах», §6.10): it holds nothing of
+   * this server, so every number above is 0 here («0 МБ здесь», Z7), and the
+   * machine's own are these, as its census last said them.
+   */
+  machine?: MachineReading
+}
+
+/** A slot's container on its machine: its numbers there, its machine, its link and its files' lag (§8.7). */
+export interface MachineReading {
+  runnerId: string
+  /** The machine's name: the owner's panel only. */
+  name: string
+  memoryMb: number
+  usedMb: number | null
+  cpus: number
+  cpuPercent: number | null
+  /** The card it holds whole, a GPU room's. */
+  card: string | null
+  link: 'ok' | 'lost'
+  rttP95Ms: number | null
+  files: RemoteFilesLag | null
 }
 
 export interface ContainerCensus {
@@ -231,7 +255,50 @@ async function brokerCensus(): Promise<ContainerCensus> {
 /** Every running class container with its limits and, on docker, its real use. Read-only. */
 export async function containerCensus(): Promise<ContainerCensus> {
   const backend = kernelBackend()
-  if (backend === 'docker') return dockerCensus()
-  if (backend === 'broker') return brokerCensus()
-  return { complete: true, usage: 'unknown', containers: [] }
+  const census: ContainerCensus = backend === 'docker'
+    ? await dockerCensus()
+    : backend === 'broker'
+      ? await brokerCensus()
+      : { complete: true, usage: 'unknown', containers: [] }
+  if (!anyLivePlacement()) return census
+  return { ...census, containers: [...census.containers, ...(await machineReadings())] }
+}
+
+/**
+ * The class slots on machines, from the placements and the machines' own
+ * census (§7.4), without a docker call: 0 MB here, their numbers there.
+ */
+async function machineReadings(): Promise<ContainerReading[]> {
+  const { classPlacements } = await import('./remote/placement.js')
+  const placements = classPlacements()
+  return livePlacementRows()
+    .filter((row) => row.state !== 'stopping')
+    .map((row) => {
+      const seen = placements.usage(row)
+      const usage = seen.held?.usage
+      return {
+        session: row.sessionId,
+        role: row.role,
+        state: row.state === 'starting' ? 'starting' : 'running',
+        gpu: null,
+        environment: row.environment,
+        memoryMb: 0,
+        cpus: 0,
+        usedMb: 0,
+        cpuPercent: null,
+        startedAt: usage?.startedAt ?? row.readyAt,
+        machine: {
+          runnerId: row.runnerId,
+          name: seen.name,
+          memoryMb: usage?.limitMb || row.memoryMb,
+          usedMb: usage?.usedMb ?? null,
+          cpus: usage?.cpus || row.cpus,
+          cpuPercent: usage?.cpuPercent ?? null,
+          card: seen.held?.card?.device ?? null,
+          link: seen.up ? 'ok' : 'lost',
+          rttP95Ms: seen.rttP95Ms,
+          files: seen.held?.files ?? null,
+        },
+      }
+    })
 }

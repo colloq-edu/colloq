@@ -1,4 +1,4 @@
-import { tr } from '@shared/i18n'
+import { formatNumber, tr } from '@shared/i18n'
 import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, runtimeEnvironment, imageRevision, RuntimeRequestError } from './runtime-client.js'
 import type { RuntimeResizeRequest, RuntimeRoom } from '@shared/runtime'
 import { db, sessionCpus, sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, repinSessionKernelRevision, sessionMemoryMb, sessionRowExists, storedRules } from '../db.js'
@@ -37,6 +37,15 @@ import {
   type RoomNetworkTarget,
 } from './perimeter.js'
 import { ROOM_SHM, classHashSeed, memSpec, roomRunArgs, type RoomRole } from './room-spec.js'
+/*
+ * Where each slot of a class runs (kernel/remote/placement-store.ts): two
+ * indexed reads that answer "nothing on a machine" for every class that put
+ * nothing there. The placement itself (kernel/remote/placement.ts) reaches
+ * the machines' router and the tunnel, which import this pool, and is
+ * imported only inside the machine branches below, for a class that has
+ * something on a machine (§6.10).
+ */
+import { anyLivePlacement, classHasLivePlacement, hasLivePlacement, livePlacementRows, machinePlaced } from './remote/placement-store.js'
 
 const IMAGE_PREFIX = 'colloq-kernel'
 const ROOM_PREFIX = 'colloq-room'
@@ -599,6 +608,22 @@ export async function warmRoomPerimeter(): Promise<void> {
  * label is set by `docker run` below, and it outlives us.
  */
 export async function listRoomKernels(): Promise<Array<{ session: string; running: boolean; own: boolean }>> {
+  const here = await roomKernelsHere()
+  // Classes with slots on machines are swept like those here: their idle kernels stop after roomIdleMin too (D25).
+  if (!anyLivePlacement()) return here
+  const { machineKernels } = await import('./remote/placement.js')
+  const rooms = new Map(here.map((room) => [room.session, { running: room.running, own: room.own }]))
+  for (const room of machineKernels.list()) {
+    const seen = rooms.get(room.session) ?? { running: false, own: false }
+    seen.running ||= room.running
+    seen.own ||= room.own
+    rooms.set(room.session, seen)
+  }
+  return [...rooms].map(([session, seen]) => ({ session, ...seen }))
+}
+
+/** listRoomKernels of this server's own containers and Pods. */
+async function roomKernelsHere(): Promise<Array<{ session: string; running: boolean; own: boolean }>> {
   if (kernelBackend() === 'test') return []
   /*
    * By CLASSES, not by containers: a room has two of them.
@@ -1274,8 +1299,12 @@ export type LimitOutcome = 'applied' | 'pending' | 'failed'
  */
 export class KernelMemoryRefusal extends Error {
   readonly code = 'kernel_memory'
-  constructor(readonly reason: 'full' | 'unverified') {
-    super(tr(reason === 'full' ? 'server.kernel.memoryFull' : 'server.kernel.memoryUnverified'))
+  constructor(
+    readonly reason: 'full' | 'unverified',
+    /** Other words for the same refusal: a slot back from a lost machine says «На сервере нет места…» (§13.2). */
+    message?: string,
+  ) {
+    super(message ?? tr(reason === 'full' ? 'server.kernel.memoryFull' : 'server.kernel.memoryUnverified'))
     this.name = 'KernelMemoryRefusal'
   }
 }
@@ -1396,6 +1425,14 @@ async function updateWithMemory(
  * while they have no number of their own, the room's number is theirs too.
  */
 export async function applyMemoryLimit(sessionId: string, mb: number | null): Promise<LimitOutcome> {
+  // On a machine too (§6.10), by the same rule; a reset waits for the slot's next start there as well.
+  const own = ownLimits(sessionId).memoryMb
+  const machine = mb === null ? null : await onMachines(sessionId, [{ role: 'room', memoryMb: mb }, { role: 'own', memoryMb: own ?? mb }])
+  return merged(machine, await memoryLimitHere(sessionId, mb))
+}
+
+/** applyMemoryLimit for the containers and Pods of this server. */
+async function memoryLimitHere(sessionId: string, mb: number | null): Promise<LimitOutcome> {
   if (!limitsInjected && kernelBackend() === 'broker') {
     return brokerBoth(sessionId, { memoryMb: mb }, ownLimits(sessionId).memoryMb === null)
   }
@@ -1445,6 +1482,14 @@ export async function applyMemoryLimit(sessionId: string, mb: number | null): Pr
  * takes the numbers.
  */
 export async function applyOwnLimits(sessionId: string): Promise<LimitOutcome> {
+  const machine = hasLivePlacement(sessionId, 'own')
+    ? await onMachines(sessionId, [{ role: 'own', ...kernelLimits(sessionId, sessionEnvironment(sessionId) ?? activeName(), 'own') }])
+    : null
+  return merged(machine, await ownLimitsHere(sessionId))
+}
+
+/** applyOwnLimits for the personal notebooks' container or Pod of this server. */
+async function ownLimitsHere(sessionId: string): Promise<LimitOutcome> {
   if (!limitsInjected && kernelBackend() === 'broker') {
     const own = brokerLimits(sessionId, 'own')
     return resizeBrokerPod(sessionId, { memoryMb: own.memoryMb, cpus: own.cpus }, 'own')
@@ -1594,6 +1639,16 @@ async function brokerBoth(sessionId: string, change: RuntimeResizeRequest, ownFo
  * pair of flags here: `--cpus` is self-sufficient.
  */
 export async function applyCpuLimit(sessionId: string, own: number | null): Promise<LimitOutcome> {
+  let machine: LimitOutcome | null = null
+  if (hasLivePlacement(sessionId, 'room') || hasLivePlacement(sessionId, 'own')) {
+    const cpus = own ?? defaultCpus()
+    machine = await onMachines(sessionId, [{ role: 'room', cpus }, { role: 'own', cpus: ownLimits(sessionId).cpus ?? cpus }])
+  }
+  return merged(machine, await cpuLimitHere(sessionId, own))
+}
+
+/** applyCpuLimit for the containers and Pods of this server. */
+async function cpuLimitHere(sessionId: string, own: number | null): Promise<LimitOutcome> {
   // The personal notebooks' Pod follows while they have no cores of their own.
   if (!limitsInjected && kernelBackend() === 'broker') return brokerBoth(sessionId, { cpus: own }, ownLimits(sessionId).cpus === null)
   const cpus = own ?? defaultCpus()
@@ -1606,6 +1661,29 @@ export async function applyCpuLimit(sessionId: string, own: number | null): Prom
   return bothContainers(sessionId, `${cpus} CPUs`, (container, role) =>
     limitsDocker(['update', `--cpus=${role === 'own' ? ownCores : cpus}`, container], 30_000),
   )
+}
+
+/**
+ * The class's slots on machines get their numbers as durable intents
+ * (§6.10): the row changes, the machine runs `docker update` and answers.
+ * Null — none of these slots is on a machine.
+ */
+async function onMachines(
+  sessionId: string,
+  targets: Array<{ role: KernelRole; memoryMb?: number; cpus?: number }>,
+): Promise<LimitOutcome | null> {
+  const placed = targets.filter((target) => hasLivePlacement(sessionId, target.role))
+  if (placed.length === 0) return null
+  const { machineKernels } = await import('./remote/placement.js')
+  const outcomes = await Promise.all(placed.map((target) => machineKernels.resize(sessionId, target.role, { memoryMb: target.memoryMb, cpus: target.cpus })))
+  return outcomes.includes('applied') ? 'applied' : outcomes.includes('failed') ? 'failed' : 'pending'
+}
+
+/** One outcome for a class with slots here and on machines, counted as `bothContainers` counts it. */
+function merged(machine: LimitOutcome | null, here: LimitOutcome): LimitOutcome {
+  if (machine === null) return here
+  if (machine === 'applied' || here === 'applied') return 'applied'
+  return machine === 'failed' || here === 'failed' ? 'failed' : 'pending'
 }
 
 /**
@@ -1644,6 +1722,8 @@ export interface RunningKernel {
   role: KernelRole
   memoryMb: number | null
   cpus: number | null
+  /** A slot on a machine: it holds nothing of this server, so 0 MB and 0 cores here (§6.10, Z7 «0 МБ здесь»). */
+  where?: 'machine'
 }
 
 /**
@@ -1658,6 +1738,15 @@ export interface RunningKernel {
  * and the caller says so instead of drawing a free bar.
  */
 export async function runningKernelLimits(): Promise<RunningKernel[]> {
+  const here = await kernelLimitsHere()
+  const onMachines: RunningKernel[] = livePlacementRows()
+    .filter((row) => row.state !== 'stopping')
+    .map((row) => ({ session: row.sessionId, role: row.role, memoryMb: 0, cpus: 0, where: 'machine' as const }))
+  return onMachines.length > 0 ? [...here, ...onMachines] : here
+}
+
+/** runningKernelLimits of this server's own containers and Pods. */
+async function kernelLimitsHere(): Promise<RunningKernel[]> {
   const backend = kernelBackend()
   if (backend === 'broker') {
     // Both Pods of a class since 0.10: the personal notebooks' one is `own`.
@@ -1705,6 +1794,8 @@ export async function reapplyInstanceDefaults(changed: ReadonlySet<string>): Pro
   const roomCpus = changed.has('roomCpus')
   const ownCpus = changed.has('ownCpus')
   const ownMemory = changed.has('ownMemoryMb')
+  // Classes on machines follow the defaults as containers here do, by the same rule (§6.10).
+  if (roomCpus || ownCpus || ownMemory) await reapplyOnMachines(roomCpus, ownCpus, ownMemory)
   if (kernelBackend() === 'broker') {
     if (ownCpus || ownMemory) await reapplyOwnOnBroker(ownCpus, ownMemory)
     return
@@ -1740,6 +1831,37 @@ export async function reapplyInstanceDefaults(changed: ReadonlySet<string>): Pro
       console.error(`[kernel] instance defaults did not reach ${sessionId}:`, why)
     }
   }
+}
+
+/** The slots on machines that follow a changed instance default, from the placements, every class at once. */
+async function reapplyOnMachines(roomCpus: boolean, ownCpus: boolean, ownMemory: boolean): Promise<void> {
+  const placed = new Map<string, Set<KernelRole>>()
+  for (const row of livePlacementRows()) {
+    if (row.state === 'stopping') continue
+    placed.set(row.sessionId, (placed.get(row.sessionId) ?? new Set<KernelRole>()).add(row.role))
+  }
+  if (placed.size === 0) return
+  const { machineKernels } = await import('./remote/placement.js')
+  await Promise.all([...placed].map(async ([sessionId, roles]) => {
+    let rules: ReturnType<typeof storedRules> | null = null
+    try {
+      rules = storedRules(sessionId)
+    } catch {
+      /* no row: nothing of its own is set, it follows every default */
+    }
+    try {
+      if ((roomCpus && sessionCpus(sessionId) === null) || (ownCpus && rules?.ownCpus == null)) {
+        const cpus = sessionCpus(sessionId) ?? defaultCpus()
+        if (roles.has('room')) await machineKernels.resize(sessionId, 'room', { cpus })
+        if (roles.has('own')) await machineKernels.resize(sessionId, 'own', { cpus: ownLimits(sessionId).cpus ?? cpus })
+      }
+      if (ownMemory && roles.has('own') && rules?.ownMemoryMb == null) {
+        await machineKernels.resize(sessionId, 'own', { memoryMb: kernelLimits(sessionId, sessionEnvironment(sessionId) ?? activeName(), 'own').memoryMb })
+      }
+    } catch (err) {
+      console.error(`[kernel] instance defaults did not reach ${sessionId} on its machine:`, err instanceof Error ? err.message : err)
+    }
+  }))
 }
 
 /** The personal notebooks' Pods that follow a changed instance default, from the broker's census. */
@@ -2053,15 +2175,37 @@ export async function endpointForSession(
   // The owner is stopping this container's kernels to free memory
   // (retirement.ts · pauseKernelStarts): a start now would be removed a second
   // later. Only the role being stopped: the personal notebooks' stop leaves
-  // the lecture and the shell free to start. Nothing pauses a council's
-  // starts yet: retirement.ts knows the two roles this server runs.
-  if (role !== 'council' && kernelStartsPaused(sessionId, role)) throw new Error(tr('server.kernel.startsPaused'))
+  // the lecture and the shell free to start; a council's pool is paused when
+  // the stop names its role.
+  if (kernelStartsPaused(sessionId, role)) throw new Error(tr('server.kernel.startsPaused'))
   const backend = kernelBackend()
+  /*
+   * THE MACHINE BRANCH (docs/architecture/remote-classes.md §6.10): a slot
+   * that runs on a machine now, or that its class puts on machines, is the
+   * placement's to answer (kernel/remote/placement.ts) before either backend
+   * of this server. A broker home keeps its Pods (D26). For every class with
+   * nothing on machines this is two indexed reads and no await.
+   */
+  if (backend !== 'broker' && machinePlaced(sessionId, role)) {
+    const placed = await machineEndpoint(sessionId, env, role)
+    if (placed) {
+      // The class closed, or its kernels stopped by the owner, while the machine started it: as after the broker's await.
+      if (kernelRetirementInProgress(sessionId) || !sessionRowExists(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarIsStopping.9820e1"))
+      if (kernelStartsPaused(sessionId, role)) throw new Error(tr('server.kernel.startsPaused'))
+      return placed
+    }
+    return settleHere(sessionId, role, homeEndpoint(sessionId, env, role, backend))
+  }
+  return homeEndpoint(sessionId, env, role, backend)
+}
+
+/** This server's slots: those of the test backend, the broker's Pods and the docker containers, as before machines. */
+async function homeEndpoint(sessionId: string, env: string | null, role: KernelRole, backend: ReturnType<typeof kernelBackend>): Promise<KernelEndpoint> {
   if (backend === 'test') return defaultEndpoint()
   // The council's pool of workers runs only on machines (remote-classes.md
-  // §6.1), and its placement answers before this line once it exists. Neither
-  // backend of this server starts one: there is no container for it here and
-  // no Pod for it on the broker.
+  // §6.1), and its placement answered above for a class that has one.
+  // Neither backend of this server starts one: there is no container for it
+  // here and no Pod for it on the broker.
   if (role === 'council') throw new Error(COUNCIL_ON_MACHINES_ONLY)
   if (backend === 'broker') {
     if (!sessionRowExists(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarDoesNotExist.4f72c5"))
@@ -2143,8 +2287,70 @@ export async function endpointForSession(
   return attempt
 }
 
+/**
+ * Slots of classes set to machines that started here instead (their
+ * `fallback`), so that the next notebook of the class finds the slot here
+ * too rather than on a machine: one slot never runs in two places. The
+ * docker branch also finds them by their container; the test backend has
+ * none. Dropped with the slot.
+ */
+const homeSlots = new Set<string>()
+
+/**
+ * The slot's endpoint on its machine, or null when it runs here: it already
+ * does (a class is never moved under a live kernel, §6.7), or no machine can
+ * take it and its class falls back here, through the admission below.
+ */
+async function machineEndpoint(sessionId: string, env: string | null, role: KernelRole): Promise<KernelEndpoint | null> {
+  const slot = slotFor(sessionId, role)
+  if (!hasLivePlacement(sessionId, role) && (await runsHere(sessionId, role))) return null
+  const { machineKernels } = await import('./remote/placement.js')
+  const name = (env ?? '').trim() || activeName()
+  // The numbers its container here would get; a council's pool is sized by the placement itself (§9.5).
+  const limits = kernelLimits(sessionId, name, role)
+  const endpoint = await machineKernels.ensure(sessionId, name, undefined, limits.cpus, limits.memoryMb, role)
+  if (endpoint === null) homeSlots.add(slot)
+  return endpoint
+}
+
+/** Whether the slot runs on this server now: started here in this process, or a live container of it found here. */
+async function runsHere(sessionId: string, role: KernelRole): Promise<boolean> {
+  const slot = slotFor(sessionId, role)
+  if (homeSlots.has(slot) || endpoints.has(slot) || starting.has(slot)) return true
+  if (kernelBackend() !== 'docker' || role === 'council') return false
+  return (await stateOf(containerFor(sessionId, role))) === 'running'
+}
+
+/**
+ * A slot of a class set to machines, started here: once it runs, a slot
+ * that moved off a lost machine says so (`moved`); refused for memory, it
+ * says the failover's own words with the numbers (§13.2 «No room at
+ * failover»), since the room just lost its variables to the move.
+ */
+async function settleHere(sessionId: string, role: KernelRole, start: Promise<KernelEndpoint>): Promise<KernelEndpoint> {
+  const { machineKernels } = await import('./remote/placement.js')
+  try {
+    const endpoint = await start
+    machineKernels.settledHome(sessionId, role)
+    return endpoint
+  } catch (err) {
+    if (machineMemoryFull(err) && machineKernels.lostRecently(sessionId, role)) throw new KernelMemoryRefusal('full', await noRoomWords())
+    throw err
+  }
+}
+
+/** «На сервере нет места для ядра этого занятия: занято 14 из 15 ГБ…», by this server's own numbers. */
+async function noRoomWords(): Promise<string> {
+  const { machineResources } = await import('./resources.js')
+  const machine = await machineResources()
+  const gigabytes = (mb: number) => tr('common.gigabytes', { size: formatNumber(Math.round((Math.max(0, mb) / 1024) * 10) / 10) })
+  const total = machine.memory.totalMb
+  return tr('server.thisServerHasNoRoomForThis.25c35f', { used: gigabytes(total - (machine.memory.availableMb ?? 0)), total: gigabytes(total) })
+}
+
 async function discardSlot(slot: string): Promise<void> {
   endpoints.delete(slot)
+  homeSlots.delete(slot)
   const container = containerOfSlot(slot)
   try {
     const result = await run(['rm', '-f', container], 60_000)
@@ -2218,6 +2424,12 @@ const ISOLATION_UNAVAILABLE = 'Room isolation is unavailable. Execution is disab
  * `owner`: the owner's stop from the panel (see `OwnerStop`).
  */
 export async function dropRoomKernel(sessionId: string, permanent = false, options: OwnerStop = {}): Promise<void> {
+  // The class's slots on machines stop there, as durable stops (§6.10); the owner's waits for the machine to say so.
+  if (classHasLivePlacement(sessionId)) {
+    const { machineKernels } = await import('./remote/placement.js')
+    await machineKernels.drop(sessionId, ['room', 'own', 'council'], options)
+  }
+  for (const slot of [...slotsOf(sessionId), slotFor(sessionId, 'council')]) homeSlots.delete(slot)
   if (kernelBackend() === 'broker') {
     // The owner's stop already refuses starts of both roles, and its gate,
     // unlike this one, keeps the room open while the Pods terminate.
@@ -2258,6 +2470,12 @@ export async function dropRoomKernel(sessionId: string, permanent = false, optio
  * `owner`: the owner's stop from the panel (see `OwnerStop`).
  */
 export async function dropOwnKernel(sessionId: string, options: OwnerStop = {}): Promise<void> {
+  // The personal notebooks' container on a machine stops there (§10: dropOwnIfEmpty becomes a durable stop).
+  if (hasLivePlacement(sessionId, 'own')) {
+    const { machineKernels } = await import('./remote/placement.js')
+    await machineKernels.drop(sessionId, ['own'], options)
+  }
+  homeSlots.delete(slotFor(sessionId, 'own'))
   if (kernelBackend() === 'broker') {
     const starts = brokerStarts.get(slotFor(sessionId, 'own'))
     if (options.owner) {
@@ -2295,9 +2513,11 @@ export async function dropOwnKernel(sessionId: string, options: OwnerStop = {}):
   if (options.owner && !removed.gone) throw notRemoved([{ slot, out: removed.out }])
 }
 
-/** Forget the resolved address so the next open re-checks the container. */
+/** Forget the resolved address so the next open re-checks the container, here or on its machine. */
 export function forgetSessionKernel(sessionId: string, role: KernelRole = 'room'): void {
   endpoints.delete(slotFor(sessionId, role))
+  homeSlots.delete(slotFor(sessionId, role))
+  if (hasLivePlacement(sessionId, role)) void import('./remote/placement.js').then(({ machineKernels }) => machineKernels.forget(sessionId, role))
 }
 
 /**
@@ -2320,6 +2540,7 @@ export async function dropLocalRoomKernel(sessionId: string): Promise<void> {
     await Promise.allSettled(slotsOf(sessionId).map((slot) => starting.get(slot)))
     for (const slot of slotsOf(sessionId)) {
       endpoints.delete(slot)
+      homeSlots.delete(slot)
       const result = await run(['rm', '-f', containerOfSlot(slot)], 60_000)
       if (result.code !== 0 && !/No such container/i.test(result.out)) throw new Error(result.out)
       releaseWorkAllocation(slot)

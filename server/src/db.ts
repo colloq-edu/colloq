@@ -7,6 +7,7 @@ import { config, ensureDataDir } from './config.js'
 import { ALLOW_SCHEMA_DOWNGRADE, DATA_SCHEMA_VERSION } from './data-schema.js'
 import { snapshotBeforeSchemaRaise } from './db-snapshots.js'
 import { colorForId, type Participant, type SessionInfo } from '@shared/protocol'
+import type { ClassPlacement } from '@shared/admin'
 import { OPEN_ROOM, readRules, rulesAfterClass, type RoomRules } from '@shared/rules'
 import { MAX_NOTE_CHARS } from '@shared/lecture'
 
@@ -487,6 +488,18 @@ ensureColumn('sessions', 'memory_mb', 'memory_mb INTEGER')
  */
 ensureColumn('sessions', 'cpus', 'cpus INTEGER')
 /*
+ * Where this class computes: here or on machines, slot by slot
+ * (docs/architecture/remote-classes.md §6.2), as JSON of ClassPlacement.
+ *
+ * NULL means everything here, and so is every class from before machines:
+ * nothing changes for anyone who does nothing. A new class starts with the
+ * owner's «Новые занятия по умолчанию» (`useNewClassPlacement`). Read
+ * through kernel/remote/placement-store.ts · classPlacement, which fills
+ * what a stored row lacks; where a slot runs NOW is remote_placements', and
+ * a change here moves nothing that runs.
+ */
+ensureColumn('sessions', 'placement', 'placement TEXT')
+/*
  * Which version a rollback brought back.
  *
  * `summary` used to hold "restored the version from 15:04", and the server
@@ -623,6 +636,7 @@ export function createSession(id: string, name: string, environment?: string | n
   const createdAt = Date.now()
   const pinned = usingRuntimeBroker() ? runtimeEnvironment(environment) : null
   insertSession.run(id, name, createdAt, pinned?.name ?? environment ?? null, pinned ? imageRevision(pinned.image) : null)
+  startPlacement(id, pinned?.name ?? environment ?? null)
   // Someone may have asked about this id before it existed: "no such room"
   // lies in the cache next to the found ones and would outlive its birth.
   forgetRoom(id)
@@ -724,6 +738,74 @@ export function sessionCpus(id: string): number | null {
 /** Set the room's core count; null returns it to the instance default. */
 export function setSessionCpus(id: string, cpus: number | null): void {
   updateCpus.run(cpus === null ? null : Math.floor(cpus), id)
+}
+
+const selectPlacement = db.prepare('SELECT placement FROM sessions WHERE id = ?')
+const updatePlacement = db.prepare('UPDATE sessions SET placement = ? WHERE id = ?')
+
+/**
+ * The class's «Где считается» as stored: the parsed JSON, or null for a row
+ * that never chose (everything here) or one that does not parse. Not
+ * checked field by field: kernel/remote/placement-store.ts · classPlacement
+ * does, and fills what is missing. Read at every placement, like memory.
+ */
+export function sessionPlacement(id: string): unknown {
+  const row = selectPlacement.get(id) as { placement: string | null } | undefined
+  if (!row?.placement) return null
+  try {
+    return JSON.parse(row.placement) as unknown
+  } catch {
+    return null
+  }
+}
+
+/** Store the class's setting whole; null returns it to everything here. */
+export function setSessionPlacement(id: string, placement: ClassPlacement | null): void {
+  updatePlacement.run(placement === null ? null : JSON.stringify(placement), id)
+}
+
+const selectPlaced = db.prepare('SELECT id, environment, placement FROM sessions WHERE placement IS NOT NULL')
+
+/**
+ * Every class that ever chose where it computes, with its environment and
+ * its stored setting (parsed, unchecked): what the machines' prefetch reads,
+ * so that a class sent to machines has its image there before the bell
+ * (§6.6). Classes that never chose are not read at all.
+ */
+export function placedSessions(): Array<{ id: string; environment: string | null; placement: unknown }> {
+  return (selectPlaced.all() as Array<{ id: string; environment: string | null; placement: string }>).flatMap((row) => {
+    try {
+      return [{ id: row.id, environment: row.environment, placement: JSON.parse(row.placement) as unknown }]
+    } catch {
+      return []
+    }
+  })
+}
+
+/**
+ * What a new class starts with: the owner's «Новые занятия по умолчанию»,
+ * resolved for its environment (a GPU class's tile is its own, D31).
+ *
+ * A source the placement installs rather than an import: it reads the
+ * instance settings, which import this module, and a module this one loaded
+ * while it loads itself would find `db` not made yet. Without a source (a
+ * test of this module alone) a class starts with NULL, everything here.
+ */
+let newClassPlacement: ((environment: string | null) => ClassPlacement | null) | null = null
+
+export function useNewClassPlacement(source: ((environment: string | null) => ClassPlacement | null) | null): void {
+  newClassPlacement = source
+}
+
+/** A new class's first setting; a source that throws costs the class nothing but its default. */
+function startPlacement(id: string, environment: string | null): void {
+  let placement: ClassPlacement | null = null
+  try {
+    placement = newClassPlacement?.(environment) ?? null
+  } catch (err) {
+    console.warn(`[rooms] ${id} starts with everything here: the default placement could not be read (${err instanceof Error ? err.message : String(err)})`)
+  }
+  if (placement) setSessionPlacement(id, placement)
 }
 
 const selectByEnvironment = db.prepare(

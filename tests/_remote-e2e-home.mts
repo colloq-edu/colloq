@@ -24,10 +24,31 @@
  * (/api/k/…, signed in by the cookie the join door gives), what the owner sees
  * through the owner's (/api/admin/…, a staff cookie minted as the panel's
  * tests mint one), and the rest from the database by the store's own reads.
+ *
+ * THE UPGRADES ARE THE PROCESS'S TOO (classes on machines,
+ * remote-classes.md §17.2): the server's `upgrade` event goes to the very
+ * handler index.ts attaches (upgrade.ts · handleUpgrade), so the machines'
+ * tunnel door answers here as it does in production, before the browsers'
+ * doors, which answer too. Each life of the home has tunnels of its own
+ * (MachineTunnels, a new session in every WELCOME) and class placements of
+ * its own (ClassPlacements: what the placements hold in memory — links,
+ * usage, gates — starts empty, the rows stay in the database) on the home's
+ * clock (HomeClock), handed to the kernel hooks as the server's boot hands
+ * them the placement module (kernel/index.ts · useClassPlacements), so the
+ * pump's gate, the room's notes and the refusals hear that life's news on
+ * that clock. A class's image is the one the test noted (kernelRevision),
+ * never a daemon's: this process has no docker (useDockerForRevisions). A
+ * crash cuts every upgraded socket without a close frame, as a process that
+ * dies does, and closes the placements' listeners with it.
+ * With `liveness: 'manual'` the machines' clock passes (liveness.ts ·
+ * remoteTick, and the class tick it calls) run only when a test asks
+ * (`tick`, `probe`), on that clock.
  */
 import './_env.mts'
+import fs from 'node:fs'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import type { Duplex } from 'node:stream'
 import { createHash, randomBytes } from 'node:crypto'
 import type { Response as ExpressResponse } from 'express'
 import { STAFF_COOKIE } from '../shared/admin.js'
@@ -43,12 +64,23 @@ import { reclaimCompetitionQueue, startCompetitionPump, stopCompetitionPump, wak
 import { createCompetition, putFile, queueRows, leaveQueue, setCompetitionState, setQueuePaused } from '../server/src/competitions/store.js'
 import { putOpenFile, putSealedFile, putSecretFile } from '../server/src/competitions/storage.js'
 import { saveCompetitionSettings } from '../server/src/competitions/settings.js'
-import { noteRevisionImage, putRevision, selectRevision } from '../server/src/dependencies/store.js'
-import { startRemoteRunners, stopRemoteRunners } from '../server/src/competitions/remote/liveness.js'
-import { resetHeard } from '../server/src/competitions/remote/heard.js'
+import { noteRevisionImage, putRevision, revisions, selectRevision } from '../server/src/dependencies/store.js'
+import { useDockerForRevisions } from '../server/src/dependencies/revisions.js'
+import type { EnvironmentRevision } from '../shared/dependencies.js'
+import { bootRemoteRunners, probeOwnPath, remoteTick, startRemoteRunners, stopRemoteRunners } from '../server/src/competitions/remote/liveness.js'
+import { loadClassPort, resetHeard } from '../server/src/competitions/remote/heard.js'
 import { forgetWantScope, resetBlobBucket } from '../server/src/competitions/remote/blobs.js'
-import { listRunners } from '../server/src/competitions/remote/store.js'
+import { listRunners, mintRemoteCode } from '../server/src/competitions/remote/store.js'
 import { forgetStock } from '../server/src/competitions/remote/want.js'
+import { handleUpgrade } from '../server/src/upgrade.js'
+import { MachineTunnels, useMachineTunnels } from '../server/src/kernel/remote/tunnel.js'
+import * as placementModule from '../server/src/kernel/remote/placement.js'
+import { ClassPlacements, usePlacements } from '../server/src/kernel/remote/placement.js'
+import { useClassPlacements } from '../server/src/kernel/index.js'
+import { useDefaultEndpointForTest } from '../server/src/kernel/jupyter.js'
+import type { TunnelClock } from '../shared/remote-tunnel.js'
+import { startFakeJupyter } from './_fake-jupyter.mjs'
+import { guardAnswer } from './_guard.mts'
 import { publishKernel, type Fleet } from './_remote-e2e-agent.mts'
 
 /*
@@ -58,6 +90,24 @@ import { publishKernel, type Fleet } from './_remote-e2e-agent.mts'
  * people share, as an operator names a campus NAT (net/inbound.ts).
  */
 useInboundPolicy(parseInboundPolicy({ ...process.env, SHARED_ADDRESSES: '127.0.0.1' }))
+
+/** What revisions.ts's docker says in this process: there is none, and never the developer's (Colima, Docker Desktop) instead. */
+export const NO_DOCKER = 'there is no docker daemon in the e2e'
+
+useDockerForRevisions(async () => {
+  throw new Error(NO_DOCKER)
+})
+
+/**
+ * The e2e's stand-in for this server's own image of an environment
+ * (revisions.ts · captureRevision, which asks the daemon): the newest
+ * revision of it noted with an image machines can pull, as kernelRevision()
+ * notes one. Null — none is noted.
+ */
+export async function notedRevision(environment: string): Promise<EnvironmentRevision | null> {
+  const noted = revisions().filter((revision) => revision.environmentName === environment && revision.registryRef !== null && revision.layers !== null)
+  return noted.sort((a, b) => b.createdAt - a.createdAt)[0] ?? null
+}
 
 /** This server's own runner: the notebooks it runs itself (when it does) and every metric. */
 export const homeRunner = new FakeCompetitionRunner()
@@ -74,24 +124,197 @@ export interface LoggedRequest {
   path: string
   /** The machine whose credential the request carried; null — none. */
   runnerId: string | null
+  /** The status home answered with: an upgrade's 101 or its refusal, read off the first line it wrote. */
   status: number | null
+  /** A WebSocket upgrade (the tunnel's door, a browser's socket), not a plain request. */
+  upgrade?: boolean
 }
+
+/**
+ * Home's clock in the e2e: the wall clock, and a hand that moves it on.
+ *
+ * What runs on it: the home's tunnels (MachineTunnels — their liveness, the
+ * links, the replacement alert), its class placements and the kernel hooks'
+ * timers, and, with `liveness: 'manual'`, the machines' clock passes.
+ * `advance(ms)` moves it on: every timer due by then runs, the earliest
+ * first, each reading its own due time on the clock — so one that sets itself
+ * again (a ping, a liveness check) runs once a period, as it would have — and
+ * every timer still to come is due as much sooner on the wall. A scenario
+ * lives through a tunnel's dead timer, or a class's failover minute, without
+ * waiting for it. What a timer sets off asynchronously runs after the move,
+ * on the clock as the move left it. Time moved on is this clock's alone:
+ * home's routes read the wall clock (routes.ts · noteCall), so a test moves
+ * only what reads this clock.
+ */
+export class HomeClock implements TunnelClock {
+  private offset = 0
+  /** While a move runs its timers: the due time of the one running, which is what the clock reads meanwhile. */
+  private frozen: number | null = null
+  private seq = 0
+  private readonly timers = new Map<number, { due: number; run: () => void; handle: NodeJS.Timeout | null }>()
+
+  now(): number {
+    return this.frozen ?? Date.now() + this.offset
+  }
+
+  setTimeout(run: () => void, ms: number): unknown {
+    const id = ++this.seq
+    this.timers.set(id, { due: this.now() + Math.max(0, ms), run, handle: null })
+    this.arm(id)
+    return id
+  }
+
+  clearTimeout(handle: unknown): void {
+    const timer = this.timers.get(handle as number)
+    if (!timer) return
+    if (timer.handle) clearTimeout(timer.handle)
+    this.timers.delete(handle as number)
+  }
+
+  /** Move the clock on by `ms`: what falls due by then runs now, the earliest first, each at its own time. */
+  advance(ms: number): void {
+    const end = this.now() + Math.max(0, ms)
+    this.frozen = this.now()
+    let still = 0
+    try {
+      for (;;) {
+        let next: [number, { due: number }] | null = null
+        for (const entry of this.timers) if (entry[1].due <= end && (next === null || entry[1].due < next[1].due)) next = entry
+        if (next === null) break
+        const at = Math.max(this.frozen, next[1].due)
+        // A timer that keeps setting itself at no delay would never let a moved clock rest: past this many, it is a bug of its own.
+        still = at === this.frozen ? still + 1 : 0
+        if (still > 10_000) throw new Error('the home clock was moved on, and a timer keeps setting itself again at no delay')
+        this.frozen = at
+        this.fire(next[0])
+      }
+    } finally {
+      this.frozen = null
+      this.offset += Math.max(0, ms)
+      // What is still to come is due as much sooner on the wall as the clock moved.
+      for (const id of this.timers.keys()) this.arm(id)
+    }
+  }
+
+  /** The wall's timer of one of this clock's, for the time left until it is due. */
+  private arm(id: number): void {
+    const timer = this.timers.get(id)
+    if (!timer) return
+    if (timer.handle) clearTimeout(timer.handle)
+    // Unref'd, as the process's clock is (shared/remote-tunnel.ts · processClock): a tunnel's ping keeps no test alive.
+    timer.handle = setTimeout(() => this.fire(id), Math.max(0, timer.due - this.now()))
+    timer.handle.unref()
+  }
+
+  private fire(id: number): void {
+    const timer = this.timers.get(id)
+    if (!timer) return
+    this.timers.delete(id)
+    if (timer.handle) clearTimeout(timer.handle)
+    timer.run()
+  }
+}
+
+/** The status line home answered an upgrade with, read off the first bytes it writes on the socket: a 101, or the refusal it ended it with. */
+function noteStatus(socket: Duplex, entry: LoggedRequest): void {
+  const write = socket.write
+  const end = socket.end
+  const seen = (chunk: unknown): void => {
+    socket.write = write
+    socket.end = end
+    const text = typeof chunk === 'string' ? chunk.slice(0, 16) : chunk instanceof Uint8Array ? Buffer.from(chunk.subarray(0, 16)).toString('latin1') : ''
+    const line = /^HTTP\/1\.1 (\d{3})/.exec(text)
+    if (line) entry.status = Number(line[1])
+  }
+  socket.write = function (this: Duplex, ...rest: unknown[]): boolean {
+    seen(rest[0])
+    return (write as (...args: unknown[]) => boolean).apply(this, rest)
+  } as typeof socket.write
+  socket.end = function (this: Duplex, ...rest: unknown[]): Duplex {
+    if (rest[0] !== undefined && typeof rest[0] !== 'function') seen(rest[0])
+    return (end as (...args: unknown[]) => Duplex).apply(this, rest)
+  } as typeof socket.end
+}
+
+export interface HomeOptions {
+  /** The home's clock (a fresh one, at the wall's time, by default). */
+  clock?: HomeClock
+  /**
+   * `auto`: the machines' clock and probe run as index.ts starts them
+   * (liveness.ts · startRemoteRunners, on the wall clock). `manual`: only the
+   * boot pass runs at each start, and a test runs the clock's passes itself
+   * (`tick`, `probe`), on the home's clock.
+   */
+  liveness?: 'auto' | 'manual'
+  /**
+   * A class environment's revision as this server's own image of it, which
+   * the class placements place on machines (ClassPlacements · revisionOf):
+   * the one the test noted (notedRevision) by default.
+   */
+  revisionOf?: (environment: string) => Promise<EnvironmentRevision | null>
+}
+
+/** The token of home's own fake Jupyter (`homeJupyter`), the one the test backend's rooms reach. */
+export const HOME_JUPYTER_TOKEN = 'home-fake-jupyter'
+
+/**
+ * The public name the home's probe goes by (liveness.ts · probeOwnPath),
+ * reserved never to resolve (RFC 2606): no loopback, which the probe refuses,
+ * and never a real instance's. Its requests go where `probe` sends them.
+ */
+const PROBE_URL = 'http://home.e2e.invalid'
 
 export class Home {
   port = 0
   url = ''
   readonly requests: LoggedRequest[] = []
-  /** Requests to keep from the app: `true` — never handed to it (a path that swallows them), a number — handed to it after that many ms. */
+  readonly clock: HomeClock
+  /** What this home's tunnels said (MachineTunnels' log), oldest first: for a red test's message, never printed. */
+  readonly tunnelLines: string[] = []
+  /** What this home's class placements said (ClassPlacements' log), the same way. */
+  readonly classLines: string[] = []
+  /** Requests to keep from the app: `true` — never handed to it (a path that swallows them), a number — handed to it after that many ms. Upgrades too. */
   stall: ((req: http.IncomingMessage) => boolean | number) | null = null
   private server: http.Server | null = null
   private ownerCookie: string | null = null
+  private readonly liveness: 'auto' | 'manual'
+  private readonly revisionOf: (environment: string) => Promise<EnvironmentRevision | null>
+  /** The sockets upgraded in this life (tunnels, browsers' sockets): the server no longer tracks them, and a crash cuts them. */
+  private readonly upgraded = new Set<Duplex>()
+  private life: MachineTunnels | null = null
+  private classes: ClassPlacements | null = null
+  private jupyter: Awaited<ReturnType<typeof startFakeJupyter>> | null = null
+
+  constructor(options: HomeOptions = {}) {
+    this.clock = options.clock ?? new HomeClock()
+    this.liveness = options.liveness ?? 'auto'
+    this.revisionOf = options.revisionOf ?? notedRevision
+  }
 
   /** Whether it listens: a scenario that crashed it and failed before the restart leaves it down. */
   get up(): boolean {
     return this.server !== null
   }
 
+  /** This life's tunnels (the door, the placements' listeners and links); null while the home is down. */
+  get tunnels(): MachineTunnels | null {
+    return this.life
+  }
+
+  /** This life's class placements (kernel/remote/placement.ts), on the home's clock; null while the home is down. */
+  get placements(): ClassPlacements | null {
+    return this.classes
+  }
+
   async start(port = 0): Promise<void> {
+    // A life's own tunnels and placements: a session of their own in every WELCOME, the home's clock, nothing of an earlier life's in memory.
+    this.life = new MachineTunnels({ clock: this.clock, log: (line) => this.tunnelLines.push(line) })
+    useMachineTunnels(this.life)
+    this.classes = new ClassPlacements({ clock: this.clock, revisionOf: this.revisionOf, log: (line) => this.classLines.push(line) })
+    usePlacements(this.classes)
+    // The kernel hooks get the placement module, on the home's clock, as the server's boot hands it to them: anew in every
+    // life, since what they subscribe to is the placements of the moment (placement.ts · onPlacementChange).
+    useClassPlacements(placementModule, this.clock)
     const server = http.createServer((req, res) => {
       const entry: LoggedRequest = {
         at: Date.now(),
@@ -116,35 +339,87 @@ export class Home {
     // index.ts's own timeouts: the machines' connections are reused as they are against the real server.
     server.keepAliveTimeout = 130_000
     server.headersTimeout = 135_000
+    // index.ts · server.on('upgrade'): the machines' tunnel first, then the browsers' three doors.
+    server.on('upgrade', (req: http.IncomingMessage, socket: Duplex, head: Buffer) => this.upgrade(req, socket, head))
     this.server = server
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
       server.listen(port, '127.0.0.1', () => {
         server.off('error', reject)
         // index.ts, in the listen callback: the machines' boot pass and clock first.
-        startRemoteRunners()
+        if (this.liveness === 'auto') startRemoteRunners()
         resolve()
       })
     })
     this.port = (server.address() as AddressInfo).port
     this.url = `http://127.0.0.1:${this.port}`
+    if (this.liveness === 'manual') {
+      // The boot pass alone, on the home's clock: the clock's passes are the test's (`tick`, `probe`).
+      await bootRemoteRunners(this.clock.now())
+      // And the class placements behind the classes' clock from the start, as startRemoteRunners loads them: not at a class machine's first sync.
+      await loadClassPort()
+    }
     // Then the queue (index.ts · workerStartup.startExecution): what a previous life cut short, then the pump.
     await reclaimCompetitionQueue()
     startCompetitionPump()
   }
 
+  /** An upgrade, written down as a request is, and held back by `stall` as one is; then the process's own handler. */
+  private upgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
+    const entry: LoggedRequest = {
+      at: Date.now(),
+      method: req.method ?? '',
+      path: (req.url ?? '').split('?')[0]!,
+      runnerId: parseRemoteAuthorization(req.headers.authorization)?.runnerId ?? null,
+      status: null,
+      upgrade: true,
+    }
+    this.requests.push(entry)
+    this.upgraded.add(socket)
+    socket.once('close', () => this.upgraded.delete(socket))
+    noteStatus(socket, entry)
+    const stalled = this.stall?.(req) ?? false
+    if (stalled === true) return
+    if (typeof stalled === 'number' && stalled > 0) {
+      setTimeout(() => {
+        if (!socket.destroyed && this.server) handleUpgrade(req, socket, head)
+      }, stalled)
+      return
+    }
+    handleUpgrade(req, socket, head)
+  }
+
   /**
    * The process dies, as far as the machines can tell: nothing listens on the
-   * port, every open connection — a held sync, an upload — is cut, the clock
-   * and the pump stop. Synchronous up to the pump, so it can be called from
-   * inside a request this very moment (the crash in the middle of an apply).
+   * port, every open connection — a held sync, an upload, a tunnel — is cut,
+   * the placements' listeners go, the clock and the pump stop. Synchronous up
+   * to the pump, so it can be called from inside a request this very moment
+   * (the crash in the middle of an apply).
+   *
+   * NOT YET THE ROOMS' SIDE OF IT: the runtimes of kernel/index.ts (their
+   * kernel clients, pumps, queues and gates) and the documents collab/
+   * holds in memory live on into the next life, since neither module has a
+   * way to forget them as a dead process would (no Yjs write, no DELETE, no
+   * flush). A machine sees a crash; a room does not, so a scenario of a home
+   * crash mid-cell (§17.2 D20) waits for those two.
    */
   crash(): Promise<void> {
     const server = this.server
     this.server = null
     server?.close()
     server?.closeAllConnections()
-    stopRemoteRunners()
+    // Cut, not closed: no close frame leaves a process that died, and the machines' ends hear the socket go.
+    for (const socket of this.upgraded) socket.destroy()
+    this.upgraded.clear()
+    this.life?.shutdown()
+    this.life = null
+    useMachineTunnels(null)
+    // What the placements held in memory dies with the process (its gates and waits let go); their rows stay. The hooks
+    // hear nothing of a dead life's placements.
+    useClassPlacements(null)
+    usePlacements(null)
+    this.classes = null
+    if (this.liveness === 'auto') stopRemoteRunners()
     return stopCompetitionPump()
   }
 
@@ -153,11 +428,12 @@ export class Home {
    * keeps in memory, and only that, is what a new process starts without: what
    * was heard of each machine (heard.ts, the boot grace counted from now), the
    * blobs each machine's last reply put in its scope (blobs.ts), the bucket,
-   * the stock. What is on disk is as the crash left it.
+   * the stock, the tunnels (a new session: the agents' ends see another home
+   * life). What is on disk is as the crash left it.
    */
   async restart(): Promise<void> {
     if (this.server) await this.crash()
-    resetHeard(Date.now())
+    resetHeard(this.clock.now())
     for (const runner of listRunners()) forgetWantScope(runner.id)
     resetBlobBucket()
     forgetStock()
@@ -166,6 +442,53 @@ export class Home {
 
   async close(): Promise<void> {
     await this.crash()
+    if (this.jupyter) {
+      useDefaultEndpointForTest(null)
+      await this.jupyter.close()
+      this.jupyter = null
+    }
+  }
+
+  /** One pass of the machines' clock (liveness.ts · remoteTick, the class tick within it), on the home's clock. */
+  tick(): ReturnType<typeof remoteTick> {
+    return remoteTick(this.clock.now())
+  }
+
+  /**
+   * The home's probe of its own path through the relay (liveness.ts ·
+   * probeOwnPath), on the home's clock, as the relay would carry it: by a
+   * public name that leaves the host (PROBE_URL), its requests sent to
+   * `through` — a TunnelFault before the home, where relay2 stands, so a
+   * scenario cuts or black-holes the path the probe proves — or straight to
+   * the home's port. Never the address config.ts would give it, the
+   * PUBLIC_URL of a developer's .env, which outranks the test's and names a
+   * real instance. Whether the path answered, which is what the classes'
+   * liveness then counts as evidence.
+   */
+  probe(through?: { port: number }): Promise<boolean> {
+    const port = through?.port ?? this.port
+    const relayed = ((input: string | URL | Request, init?: RequestInit) => {
+      const asked = new URL(input instanceof Request ? input.url : String(input))
+      return fetch(`http://127.0.0.1:${port}${asked.pathname}${asked.search}`, init)
+    }) as typeof fetch
+    return probeOwnPath(this.clock.now(), relayed, PROBE_URL, async () => true)
+  }
+
+  /**
+   * This server's own kernels: a fake Jupyter in this process (interpreted
+   * cells, buffering, sessions by path, each in its room's folder under the
+   * workspace), made the endpoint of every room the test backend runs at
+   * home (KERNEL_BACKEND=test · defaultEndpoint): a class whose slots stay
+   * here, or come back here at a failover. Started once; closed with the home.
+   */
+  async homeJupyter(): Promise<Awaited<ReturnType<typeof startFakeJupyter>>> {
+    if (this.jupyter) return this.jupyter
+    const workspace = process.env.WORKSPACE_DIR!
+    fs.mkdirSync(workspace, { recursive: true })
+    const jupyter = await startFakeJupyter({ interpreter: true, buffer: true, deletes: true, perSession: true, cwd: workspace, token: HOME_JUPYTER_TOKEN, guardAnswer })
+    this.jupyter = jupyter
+    useDefaultEndpointForTest({ url: jupyter.url, token: HOME_JUPYTER_TOKEN })
+    return jupyter
   }
 
   /** The machine join target for a code: COLLOQ_RUNNER_JOIN. */
@@ -196,8 +519,19 @@ export class Home {
     return { status: answer.status, body: (text ? JSON.parse(text) : null) as T }
   }
 
-  /** A code minted by the owner in «Подключить машину» (POST /api/admin/runners/codes). */
-  async mintCode(options: { trusted?: boolean; approvedSlots?: number | null; machines?: number } = {}): Promise<string> {
+  /**
+   * A code minted by the owner in «Подключить машину» (POST
+   * /api/admin/runners/codes). One for class machines («Принимать занятия»,
+   * D2) is minted as the instance's console mints it (`colloq-host
+   * runner-code --classes`, ops/runner-code.ts · mintRemoteCode), until the
+   * panel's door takes `classes`.
+   */
+  async mintCode(options: { trusted?: boolean; approvedSlots?: number | null; machines?: number; classes?: boolean } = {}): Promise<string> {
+    if (options.classes) {
+      return mintRemoteCode({
+        machines: options.machines ?? 1, hours: 1, trusted: false, approvedSlots: options.approvedSlots ?? null, classes: true, createdBy: 'colloq-host',
+      }).code
+    }
     const minted = await this.admin<{ code: string }>('POST', '/api/admin/runners/codes', {
       machines: options.machines ?? 1, hours: 1, trusted: options.trusted ?? false, approvedSlots: options.approvedSlots ?? null,
     })
@@ -266,16 +600,27 @@ export function competition(fleet: Fleet, options: { sealed?: boolean; wallSecon
     putFile({ competitionId: created.id, name: 'test.csv', bytes: hidden.bytes, visibility: 'sealed', sha256: hidden.sha256 })
     sealed['test.csv'] = hidden.sha256
   }
+  const kernel = kernelRevision(fleet, 'base', tag)
+  selectRevision(created.id, kernel.revisionId)
+  forgetStock()
+  return { id: created.id, slug: created.slug, revisionId: kernel.revisionId, registryRef: kernel.registryRef, open, sealed, solutionSha: sha256(solution) }
+}
+
+/**
+ * A kernel revision machines can run: its image in the fleet's registry
+ * (what a pull of its ref brings, its layers), noted at home with that pin —
+ * a portable revision (want.ts · portableRevision), as a competition's
+ * notebooks and a class's kernels on machines start from one.
+ */
+export function kernelRevision(fleet: Fleet, environment = 'base', tag = `${process.pid}-${randomBytes(4).toString('hex')}`): { revisionId: string; registryRef: string; layers: string } {
   const diffIds = [`sha256:${sha256(`layer one ${tag}`)}`, `sha256:${sha256(`layer two ${tag}`)}`]
   const kernel = publishKernel(fleet, `ghcr.io/colloq-edu/colloq-kernel@sha256:${sha256(`kernel ${tag}`)}`, diffIds)
   const revision = putRevision({
-    environmentName: 'base', imageDigest: `sha256:${sha256(`image ${tag}`)}`, pythonVersion: '3.11.16', pythonAbi: 'cp311',
+    environmentName: environment, imageDigest: `sha256:${sha256(`image ${tag}`)}`, pythonVersion: '3.11.16', pythonAbi: 'cp311',
     platform: 'linux/amd64', packages: [{ name: 'numpy', version: '2.4.6' }], baseConstraintsHash: 'hash',
   })
   if (!noteRevisionImage(revision.id, { registryRef: kernel.ref, layers: kernel.layers })) throw new Error('the revision\'s image could not be noted')
-  selectRevision(created.id, revision.id)
-  forgetStock()
-  return { id: created.id, slug: created.slug, revisionId: revision.id, registryRef: kernel.ref, open, sealed, solutionSha: sha256(solution) }
+  return { revisionId: revision.id, registryRef: kernel.ref, layers: kernel.layers }
 }
 
 /** A notebook of `cells` code cells, the first one carrying the runners' directive (fake-runner.ts · DIRECTIVE). */

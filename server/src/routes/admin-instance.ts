@@ -62,8 +62,12 @@ import {
   setRules,
   setSessionCpus,
   setSessionMemoryMb,
+  setSessionPlacement,
   storedRules,
 } from '../db.js'
+import { classMachineSettings } from '../admin/resource-settings.js'
+import { classPlacement } from '../kernel/remote/placement-store.js'
+import { classPlacementChanged } from '../kernel/remote/placement.js'
 import { forgetCache } from '../collab/history.js'
 import { deleteRoomBlobs } from '../blobs.js'
 import {
@@ -91,7 +95,9 @@ import type { Course } from '@shared/publish'
 import {
   ENVIRONMENT_NAME,
   LIMITS,
+  readClassPlacement,
   type AdminAuditValue,
+  type ClassPlacement,
   type AdminErrorBody,
   type AdminSeminar,
   type MemberTeachersResponse,
@@ -271,10 +277,12 @@ interface SeminarView {
   viewer: Teacher | null
   courses: Course[]
   rooms: Map<string, TeacherRef[]>
+  /** Whether the viewer may say where classes compute (mayPlaceClasses), read once for the whole list. */
+  places: boolean
 }
 
 function seminarView(viewer: Teacher | null): SeminarView {
-  return { viewer, courses: listCourses(), rooms: membershipDirectory().rooms }
+  return { viewer, courses: listCourses(), rooms: membershipDirectory().rooms, places: mayPlaceClasses(viewer) }
 }
 
 function toSeminar(row: SeminarRow, view: SeminarView): AdminSeminar {
@@ -330,6 +338,14 @@ function toSeminar(row: SeminarRow, view: SeminarView): AdminSeminar {
     memoryMb: sessionMemoryMb(row.id),
     /** And CPUs by the same rule: the room's own number, not the effective one. */
     cpus: sessionCpus(row.id),
+    /*
+     * Where the class computes («Где считается», remote-classes.md §6.2): its
+     * setting with every field filled, and whether this viewer may change it.
+     * Where a slot runs NOW is the room's to show (the kernels map), not the
+     * setting's: a change moves nothing that runs.
+     */
+    placement: classPlacement(row.id),
+    placementEditable: view.places,
     finishedAt: finishedAt(row.id),
     publication: publication
       ? {
@@ -425,6 +441,17 @@ function memoryRefusal(why: 'type' | 'range'): string {
 }
 
 /** The same as for memory: the bounds are named in numbers, not as "invalid". */
+/**
+ * Who may say where a class computes (D4): the owner always, a teacher of the
+ * room while the owner's «Учителя отправляют занятия на машины» is on.
+ */
+function mayPlaceClasses(viewer: Teacher | null): boolean {
+  return viewer !== null && (isOwner(viewer) || classMachineSettings().teachers)
+}
+
+const samePlacement = (a: ClassPlacement, b: ClassPlacement): boolean =>
+  (Object.keys(a) as Array<keyof ClassPlacement>).every((field) => a[field] === b[field])
+
 function cpuRefusal(why: 'type' | 'range'): string {
   const { min, max } = cpuBounds()
   return why === 'type'
@@ -626,8 +653,29 @@ export function adminInstanceRoutes(): Router {
           rules?: unknown
           memoryMb?: unknown
           cpus?: unknown
+          placement?: unknown
         }
       | undefined
+    /*
+     * Where the class computes, first: a refusal leaves everything of the
+     * request unapplied. The panel sends the whole form, so a teacher whose
+     * switch is off and who changed something else sends the placement as it
+     * is, and that is no change to refuse.
+     */
+    if (body?.placement !== undefined) {
+      const before = classPlacement(row.id)
+      const read = readClassPlacement(body.placement, before)
+      // A script's mistake: the panel offers nothing else. Its author reads English.
+      if (!read.ok) return invalid(res, `placement.${read.field} is not a value a class's placement takes`)
+      if (!samePlacement(read.placement, before)) {
+        if (!mayPlaceClasses(currentStaff(req))) {
+          return forbidden(res, 'Only the owner decides where classes compute on this instance: sending them to machines is off for teachers')
+        }
+        setSessionPlacement(row.id, read.placement)
+        // Its image is looked for now, so that the machines fetch it before anyone presses Run (§6.6).
+        classPlacementChanged(row.id, sessionEnvironment(row.id))
+      }
+    }
     if (body?.name !== undefined) {
       const name = normalize(body.name)
       if (!name) return invalid(res, tr("server.aSeminarNameIsRequired.f10426"))

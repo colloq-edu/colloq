@@ -43,10 +43,21 @@
  * (tunnelReplacementAlert, counted from the log).
  *
  * WHILE A MACHINE'S TUNNEL IS DOWN its placements' listeners stay, and every
- * connection to them is reset at once: a fast ECONNRESET, never a hang, for
- * the kernel client's liveness question (jupyter.ts · confirmAlive) and its
- * reconnects, which wait on the link (KernelLink.next) instead of spending
- * their attempts.
+ * new connection to them is reset at once: a fast ECONNRESET, never a hang,
+ * for the kernel client's liveness question (jupyter.ts · confirmAlive) and
+ * its reconnects, which wait on the link (KernelLink.next) instead of
+ * spending their attempts.
+ *
+ * THE CONNECTIONS ALREADY OPEN OUTLAST A CUT (§4.8). Each machine has one end
+ * (TunnelEnd) across its tunnels: when a tunnel drops, the end keeps its
+ * streams, and the kernel client's connections stay open and quiet, their
+ * link down; when the machine's next tunnel says HELLO, the end takes it up
+ * and the streams go on, every byte once and in order, the link up again. A
+ * HELLO of another agent life (the agent restarted), or one after
+ * TUNNEL_RESUME_MS, resets what was kept, and the kernel client reconnects
+ * and settles what the reset ate (jupyter.ts · reconcileAfterReset). Which
+ * end a socket belongs to is its HELLO's to say, so the door reads the HELLO
+ * itself (tunnelHelloOf) before the socket is given to the machine's end.
  */
 import http, { type IncomingMessage } from 'node:http'
 import net from 'node:net'
@@ -66,6 +77,7 @@ import {
 import { parseRemotePlacementKey } from '@shared/remote-kernels'
 import {
   TUNNEL_CLOSE,
+  TUNNEL_GREETING_MS,
   TUNNEL_MESSAGE_MAX,
   TUNNEL_PATH,
   TUNNEL_PING_MS,
@@ -80,11 +92,13 @@ import {
   pipeTcp,
   processClock,
   resetTcp,
+  tunnelHelloOf,
   tunnelLocalOf,
   tunnelSocketOf,
   type TunnelClock,
   type TunnelDoorRefusal,
-  type TunnelHello,
+  type TunnelResumed,
+  type TunnelSocket,
 } from '@shared/remote-tunnel'
 import type { KernelLink } from '../jupyter.js'
 import { clientAddress } from '../../net/inbound.js'
@@ -145,13 +159,17 @@ const closeReason = (reason: string): string => Buffer.from(reason, 'utf8').suba
 
 /* ----------------------------------------------------------------- tunnels */
 
-/** One machine's tunnel at home. */
+/** One machine's tunnel at home: one socket, greeting or given to the machine's end. */
 interface HomeTunnel {
   readonly runnerId: string
   /** Where it came from, as the replacement's log line names it (net/inbound.ts · clientAddress). */
   readonly address: string | null
   readonly ws: WebSocket
-  readonly end: TunnelEnd
+  readonly socket: TunnelSocket
+  /** The machine's end, once the HELLO gave the socket to it; null — still greeting, or refused. */
+  end: TunnelEnd | null
+  /** The HELLO's clock (TUNNEL_GREETING_MS), until it comes. */
+  greeting: unknown
   /** The agent's session, from its HELLO: one per agent life (§4.3). */
   session: string | null
   /** When its machine's row was last read for it: at the door, at the HELLO, then as its frames come (recheck). */
@@ -208,6 +226,8 @@ export class MachineTunnels {
   private readonly current = new Map<string, HomeTunnel>()
   /** Tunnels upgraded and not yet greeted. */
   private readonly pending = new Set<HomeTunnel>()
+  /** Each machine's end: its streams, across its tunnels and the cuts between them (§4.8). */
+  private readonly ends = new Map<string, TunnelEnd>()
   private readonly listeners = new Map<string, Listener>()
   private readonly links = new Map<string, PlacementLink>()
   private readonly lostAt = new Map<string, number>()
@@ -278,49 +298,80 @@ export class MachineTunnels {
   }
 
   private adopt(ws: WebSocket, runnerId: string, address: string | null): void {
-    const end: TunnelEnd = new TunnelEnd({
-      side: 'home',
-      socket: tunnelSocketOf(ws),
-      clock: this.clock,
-      build: homeRunnerBuild(),
-      session: this.session,
-      hooks: {
-        hello: (hello) => this.greet(tunnel, hello),
-        up: () => this.opened(tunnel),
-        // Every frame is the machine heard, and the path to it working (§4.7).
-        heard: () => noteCall(runnerId, this.clock.now(), address),
-        rtt: (ms) => this.rttOf(runnerId).add(ms, this.clock.now()),
-        end: (code, reason) => (code === null ? ws.terminate() : ws.close(code, closeReason(reason))),
-      },
-    })
-    const tunnel: HomeTunnel = { runnerId, address, ws, end, session: null, checkedAt: this.clock.now() }
+    const tunnel: HomeTunnel = { runnerId, address, ws, socket: tunnelSocketOf(ws), end: null, greeting: null, session: null, checkedAt: this.clock.now() }
     this.pending.add(tunnel)
+    // The HELLO comes within TUNNEL_GREETING_MS, or the socket is terminated: one that never greets takes no tunnel's place.
+    tunnel.greeting = this.clock.setTimeout(() => {
+      tunnel.greeting = null
+      if (!this.pending.delete(tunnel)) return
+      this.log(`[tunnel] machine ${runnerId}: no HELLO in ${TUNNEL_GREETING_MS / 1000} s from ${address ?? 'an unknown address'}`)
+      ws.terminate()
+    }, TUNNEL_GREETING_MS)
     ws.on('message', (data, binary) => {
+      if (tunnel.end === null) return this.greet(tunnel, data, binary)
+      // A socket a newer one took the place of: its last frames are lost as in a cut, and the resume sends them again.
+      if (this.current.get(runnerId) !== tunnel) return
       this.recheck(tunnel)
-      end.receive(data, binary)
+      tunnel.end.receive(data, binary)
     })
     // 'close' follows every error.
     ws.on('error', () => undefined)
     ws.on('close', (code) => this.dropped(tunnel, code))
-    end.start()
   }
 
   /**
-   * The agent's HELLO: the machine as it is now, then the tunnel takes its
-   * machine's place. The build it names is not refused, whatever it is
-   * (NOT THE DOOR'S, above); the frames it may send are TUNNEL_PROTOCOL's,
-   * which its HELLO's codec has checked.
+   * The socket's first frame, which must be the agent's HELLO: the machine
+   * read as it is now, then the socket goes to the machine's end, in the
+   * place of the tunnel it had. The end answers the HELLO, resuming what it
+   * kept when the HELLO is of the life it kept it for. The build the HELLO
+   * names is not refused, whatever it is (NOT THE DOOR'S, above); the frames
+   * the agent may send are TUNNEL_PROTOCOL's, which the codec checks.
    */
-  private greet(tunnel: HomeTunnel, hello: TunnelHello): { code: number; reason: string } | null {
+  private greet(tunnel: HomeTunnel, data: unknown, binary: boolean): void {
+    if (!this.pending.delete(tunnel)) return
+    if (tunnel.greeting !== null) this.clock.clearTimeout(tunnel.greeting)
+    tunnel.greeting = null
+    // Every frame is the machine heard, and the path to it working (§4.7).
+    noteCall(tunnel.runnerId, this.clock.now(), tunnel.address)
+    const read = tunnelHelloOf(data, binary)
+    if (!('hello' in read)) return tunnel.ws.close(read.code, closeReason(read.reason))
     const refused = standingRefusal(tunnel.runnerId)
-    if (refused) return refused
+    if (refused) return tunnel.ws.close(refused.code, closeReason(refused.reason))
     tunnel.checkedAt = this.clock.now()
-    tunnel.session = hello.session
-    this.pending.delete(tunnel)
+    tunnel.session = read.hello.session
+    const end = this.endOf(tunnel.runnerId)
+    tunnel.end = end
     const older = this.current.get(tunnel.runnerId)
     this.current.set(tunnel.runnerId, tunnel)
     if (older) this.replace(older, tunnel)
-    return null
+    end.attach(tunnel.socket, read.hello)
+  }
+
+  /** A machine's end, made at its first HELLO and again after one was closed; it outlives the machine's tunnels. */
+  private endOf(runnerId: string): TunnelEnd {
+    const kept = this.ends.get(runnerId)
+    if (kept && !kept.closed) return kept
+    const end: TunnelEnd = new TunnelEnd({
+      side: 'home',
+      clock: this.clock,
+      build: homeRunnerBuild(),
+      session: this.session,
+      hooks: {
+        up: (_peer, resumed) => this.opened(runnerId, resumed),
+        // Every frame is the machine heard, and the path to it working (§4.7).
+        heard: () => noteCall(runnerId, this.clock.now(), this.current.get(runnerId)?.address ?? null),
+        rtt: (ms) => this.rttOf(runnerId).add(ms, this.clock.now()),
+        overflow: (stream) => this.log(`[tunnel] machine ${runnerId}: a connection to ${stream.key} would not stop writing, and its stream was reset`),
+        end: (code, reason) => {
+          const tunnel = this.current.get(runnerId)
+          if (!tunnel || tunnel.end !== end) return
+          if (code === null) tunnel.ws.terminate()
+          else tunnel.ws.close(code, closeReason(reason))
+        },
+      },
+    })
+    this.ends.set(runnerId, end)
+    return end
   }
 
   /**
@@ -334,15 +385,17 @@ export class MachineTunnels {
    */
   private recheck(tunnel: HomeTunnel): void {
     const now = this.clock.now()
-    if (now - tunnel.checkedAt < TUNNEL_PING_MS || tunnel.end.closed) return
+    if (now - tunnel.checkedAt < TUNNEL_PING_MS || tunnel.end === null || tunnel.end.closed) return
     tunnel.checkedAt = now
     const refused = standingRefusal(tunnel.runnerId)
     if (!refused) return
     this.log(`[tunnel] machine ${tunnel.runnerId}: ${refused.reason}; its tunnel is closed`)
+    // Its streams go with it: a machine no longer allowed is not waited for.
     tunnel.end.close()
     tunnel.ws.close(refused.code, closeReason(refused.reason))
   }
 
+  /** A newer tunnel of the machine took the older one's place: the older socket is closed, and the end goes on over the newer. */
   private replace(older: HomeTunnel, newer: HomeTunnel): void {
     const now = this.clock.now()
     // Every takeover from another address is written: it is the evidence the alert counts. A machine replacing itself from
@@ -354,21 +407,25 @@ export class MachineTunnels {
       const same = newer.session === older.session ? 'the same agent' : 'another agent life'
       this.log(`[tunnel] machine ${newer.runnerId}: a newer tunnel from ${newer.address ?? 'an unknown address'} (${same}) replaces the one from ${older.address ?? 'an unknown address'}`)
     }
-    older.end.close()
     older.ws.close(TUNNEL_CLOSE.replaced, 'Replaced by a newer tunnel of this machine')
   }
 
-  private opened(tunnel: HomeTunnel): void {
-    if (this.current.get(tunnel.runnerId) !== tunnel) return
-    if (this.states.get(tunnel.runnerId)?.up !== true) this.log(`[tunnel] machine ${tunnel.runnerId} up from ${tunnel.address ?? 'an unknown address'}`)
-    this.changed(tunnel.runnerId, true)
+  private opened(runnerId: string, resumed: TunnelResumed): void {
+    const tunnel = this.current.get(runnerId)
+    const kept = resumed.resumed ? `, ${resumed.streams} streams resumed` : ''
+    const reset = resumed.reset > 0 ? `, ${resumed.reset} reset` : ''
+    if (this.states.get(runnerId)?.up !== true || kept || reset) this.log(`[tunnel] machine ${runnerId} up from ${tunnel?.address ?? 'an unknown address'}${kept}${reset}`)
+    this.changed(runnerId, true)
   }
 
   private dropped(tunnel: HomeTunnel, code: number): void {
-    tunnel.end.close()
+    if (tunnel.greeting !== null) this.clock.clearTimeout(tunnel.greeting)
+    tunnel.greeting = null
     this.pending.delete(tunnel)
     if (this.current.get(tunnel.runnerId) !== tunnel) return
     this.current.delete(tunnel.runnerId)
+    // The streams wait for the machine's next tunnel with what they keep (§4.8); the end says when they no longer can.
+    tunnel.end?.cut()
     this.log(`[tunnel] machine ${tunnel.runnerId} down (${code})`)
     this.changed(tunnel.runnerId, false)
   }
@@ -392,7 +449,7 @@ export class MachineTunnels {
 
   /** Whether a machine's tunnel is open now. */
   isUp(runnerId: string): boolean {
-    return this.current.get(runnerId)?.end.up === true
+    return this.ends.get(runnerId)?.up === true
   }
 
   /** When a machine's tunnel last went up or down; this home life's start, if never. */
@@ -421,13 +478,21 @@ export class MachineTunnels {
     return () => this.changes.delete(listener)
   }
 
-  /** Close a machine's tunnel, open or greeting, with `code`: a revoke (TUNNEL_CLOSE.unauthorized), its classes turned off (forbidden). */
+  /**
+   * Close a machine's tunnel, open or greeting, with `code`: a revoke
+   * (TUNNEL_CLOSE.unauthorized), its classes turned off (forbidden). Its
+   * streams reset with it, kept or not: nothing waits for a machine shut out.
+   */
   close(runnerId: string, code: number, reason: string): void {
+    this.ends.get(runnerId)?.close()
+    this.ends.delete(runnerId)
     const tunnels = [...this.pending].filter((tunnel) => tunnel.runnerId === runnerId)
     const current = this.current.get(runnerId)
     if (current) tunnels.push(current)
     for (const tunnel of tunnels) {
-      tunnel.end.close()
+      this.pending.delete(tunnel)
+      if (tunnel.greeting !== null) this.clock.clearTimeout(tunnel.greeting)
+      tunnel.greeting = null
       tunnel.ws.close(code, closeReason(reason))
     }
   }
@@ -491,17 +556,21 @@ export class MachineTunnels {
     listener.sockets.clear()
   }
 
-  /** A connection to a placement's listener: a stream on its machine's tunnel, or a reset at once while there is none. */
+  /**
+   * A connection to a placement's listener: a stream on its machine's end,
+   * or a reset at once while its tunnel is down. The stream is the end's,
+   * not a socket's: a cut leaves the connection open and quiet (§4.8).
+   */
   private accept(listener: Listener, socket: net.Socket): void {
     socket.on('error', () => undefined)
     socket.setNoDelay(true)
-    const tunnel = this.current.get(listener.runnerId)
-    const open = !listener.closed && !this.lostAt.has(listener.id) && tunnel?.end.up === true
-    const stream = open ? tunnel.end.open(listener.key, listener.gen, tunnelLocalOf(socket)) : null
-    if (!tunnel || !stream) return resetTcp(socket)
+    const end = this.ends.get(listener.runnerId)
+    const open = !listener.closed && !this.lostAt.has(listener.id) && end?.up === true
+    const stream = open ? end.open(listener.key, listener.gen, tunnelLocalOf(socket)) : null
+    if (!end || !stream) return resetTcp(socket)
     listener.sockets.add(socket)
     socket.on('close', () => listener.sockets.delete(socket))
-    pipeTcp(tunnel.end, stream, socket)
+    pipeTcp(end, stream, socket)
   }
 
   /* -------------------------------------------------------------- links */
@@ -555,13 +624,17 @@ export class MachineTunnels {
     })
   }
 
-  /** This home stops: every tunnel closes as a server going away, and every listener with it. */
+  /** This home stops: every tunnel closes as a server going away, and every listener and stream with it. */
   shutdown(): void {
     for (const listener of [...this.listeners.values()]) this.unlisten(listener)
+    for (const end of this.ends.values()) end.close()
+    this.ends.clear()
     for (const tunnel of [...this.pending, ...this.current.values()]) {
-      tunnel.end.close()
+      if (tunnel.greeting !== null) this.clock.clearTimeout(tunnel.greeting)
+      tunnel.greeting = null
       tunnel.ws.close(1001, 'Home is shutting down')
     }
+    this.pending.clear()
   }
 }
 

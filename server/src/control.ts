@@ -140,12 +140,17 @@ import {
   purgeCouncilRunsOf,
   councilQueuePosition,
   councilQueuePositions,
+  kernelMachineOf,
   kernelWorkOf,
+  MachineUnreachable,
+  moveKernelNow,
+  onKernelMachineChange,
   onKernelQueueChanged,
   queueIsOnly,
   requestCouncilRun,
   retimeCouncilRun,
   startedTheRunningCell,
+  warmClassKernels,
 } from './kernel/index.js'
 import {
   attemptFor,
@@ -2450,6 +2455,21 @@ onCouncilOracle((sessionId, cellId, oracle) => {
 // down this channel the same way kernel status does.
 onTerminalPhase((sessionId, status) => broadcast(sessionId, { t: 'terminal', status }))
 
+/*
+ * Where the class's kernels compute and how their machines answer — to staff
+ * only, because the frame names the machine (kernel/index.ts ·
+ * kernelMachineOf). The room reads «на машине» and the link from the
+ * document; `note` is staff's sentence about what just happened.
+ */
+onKernelMachineChange((sessionId, role, note) => {
+  const room = rooms.get(sessionId)
+  if (!room || room.hosts.size === 0) return
+  const text = frameOf({ t: 'kernel:machine', role, machine: kernelMachineOf(sessionId, role), ...(note ? { note } : {}) })
+  if (text === null) return
+  const frame = Buffer.from(text, 'utf8')
+  for (const ws of room.hosts) sendFrame(ws, frame)
+})
+
 /* ----------------------------------------------------------------- doc */
 
 /**
@@ -3439,6 +3459,7 @@ function askKernel(
         found: result.found,
         ...(result.text === null ? {} : { text: result.text }),
         ...(result.reason === null ? {} : { reason: result.reason }),
+        ...(result.unreachable ? { unreachable: true as const } : {}),
       })
     })
     .catch(() => send(ws, empty))
@@ -3766,7 +3787,7 @@ export function dispatch(
       }).catch((err: unknown) => {
         send(ws, {
           t: 'error',
-          message: reason(err, tr("server.couldNotInterruptTheKernel.ef82bf")),
+          message: kernelRefusal(err, payload, tr("server.couldNotInterruptTheKernel.ef82bf")),
         })
       })
       return
@@ -3816,10 +3837,39 @@ export function dispatch(
         (err: unknown) => {
           send(ws, {
             t: 'error',
-            message: reason(err, tr("server.couldNotRestartTheKernel.fc63d0")),
+            message: kernelRefusal(err, payload, tr("server.couldNotRestartTheKernel.fc63d0")),
           })
         },
       )
+      return
+    }
+
+    /*
+     * «Перенести сейчас» (remote-classes.md §11.1, §15): staff move a kernel
+     * off its machine now rather than wait out the failover. Staff's alone:
+     * it costs the room its variables, and the machine's name it is about
+     * reaches staff only. A named notebook must be in the room, by the same
+     * rule as every frame that names one; without it, every slot of the class
+     * on a machine moves. The refusals are the placement module's words, to
+     * the person who pressed; the room hears of the move from the failover.
+     */
+    case 'kernel:move': {
+      if (payload.role !== 'host') {
+        refuse(ws, sessionId, payload, tr('server.onlyTheTeacherCanMoveTheKernel.9a2c10'))
+        return
+      }
+      const root = typeof message.root === 'string' && message.root.length > 0 ? message.root : null
+      if (root !== null && root !== CELLS_KEY && !bookList(getSessionDoc(sessionId).doc).some((book) => book.root === root)) {
+        send(ws, { t: 'error', message: NO_SUCH_BOOK() })
+        return
+      }
+      void moveKernelNow(sessionId, root, displayName(sessionId, payload.participantId))
+        .then((answer) => {
+          if ('refused' in answer) send(ws, { t: 'error', message: answer.refused })
+        })
+        .catch((err: unknown) => {
+          send(ws, { t: 'error', message: reason(err, tr('server.couldNotMoveTheKernel.9435d3')) })
+        })
       return
     }
 
@@ -6243,6 +6293,16 @@ function reason(err: unknown, fallback: string): string {
 }
 
 /**
+ * A refused restart or interrupt in the presser's words: staff read which
+ * machine does not answer, everyone else «нет связи с машиной» (the name
+ * reaches staff only, remote-classes.md §13.1).
+ */
+function kernelRefusal(err: unknown, payload: TokenPayload, fallback: string): string {
+  if (err instanceof MachineUnreachable && payload.role === 'host') return err.named
+  return reason(err, fallback)
+}
+
+/**
  * The ink of the page being shown — and one collection for everyone who came
  * in between two strokes.
  *
@@ -6285,6 +6345,8 @@ function inkFrame(sessionId: string, page: number): Buffer | null {
 export function handleControlSocket(ws: WebSocket, sessionId: string, payload: TokenPayload, credentials?: SocketCredentials): void {
   const authorized = authorizeSocket(ws, credentials)
   let room = rooms.get(sessionId)
+  // The first participant to open the room: what warms its machine slots up (see the end).
+  const first = !room
   if (!room) {
     room = {
       sockets: new Set<WebSocket>(),
@@ -6525,6 +6587,13 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
     ownKernels: true,
   })
   send(ws, { t: 'terminal', status: terminalPhase(sessionId) })
+  // Staff see which machine their class computes on; nobody else is told its name.
+  if (payload.role === 'host') {
+    for (const role of ['room', 'own', 'council'] as const) {
+      const machine = kernelMachineOf(sessionId, role)
+      if (machine) send(ws, { t: 'kernel:machine', role, machine })
+    }
+  }
   /*
    * The tree comes from the room's shared cache: after a server restart five
    * hundred tabs come here within two seconds, and a folder walk for each is
@@ -6549,4 +6618,12 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
    */
   const files = filesFrame(sessionId)
   if (files !== null) sendFrame(ws, files)
+  /*
+   * A class whose personal notebooks compute on a machine has their
+   * container started there when its first participant comes in, so that
+   * the first personal Run costs a round trip rather than a container start
+   * (remote-classes.md §6.8). Only on a machine: nothing starts on this
+   * server for opening a room (kernel/index.ts · warmClassKernels).
+   */
+  if (first) void warmClassKernels(sessionId)
 }

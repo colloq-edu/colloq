@@ -27,13 +27,28 @@
  * EVERY CHILD DIES WITH THE TEST. Each one started is remembered; killAgents()
  * (the test's `after`) and the process's exit — a failed test, --test-force-exit
  * — SIGKILL whatever is still running. Only these pids are ever signalled.
+ *
+ * A CLASS MACHINE (remote-classes.md §7, §17.2) is the same agent with what a
+ * class kernel host needs of its daemon: an image of its own for the
+ * perimeter's helper (COLLOQ_RUNNER_IMAGE, the form `make runner-dev` has, or
+ * its own container seeded with a network mode), the machine's own settings in
+ * its environment, and the fake docker's class containers — each a fake
+ * Jupyter process (tests/_fake-jupyter.mjs) that outlives the agent, as a
+ * container does, so that an agent killed and started again adopts it. Those
+ * processes are the fake docker's children, not the test's: they end with
+ * their container (`docker rm`, `kill`), once the test's process is gone
+ * (FAKE_DOCKER_OWNER), and at removeClassContainers() (the test's `after`)
+ * and the process's exit, which signal each by the pid its container's state
+ * names, after its command line says it is that container's.
  */
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { createHash, randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { layersFingerprint } from '../server/src/dependencies/image-identity.ts'
+import { remoteCredential } from '../shared/remote-runner.ts'
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const ENTRY = path.join(REPO, 'server/src/runner-agent/main.ts')
@@ -51,10 +66,47 @@ function killLive(): void {
   }
 }
 
-process.on('exit', killLive)
+/** Every machine made in this process: whose fake docker's class containers the teardown ends. */
+const machines = new Set<Agent>()
+
+/** A process's command line by its pid; null — no such process (or none this process may read). */
+function commandLine(pid: number): string | null {
+  try {
+    return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' ')
+  } catch { /* no /proc: macOS */ }
+  const asked = spawnSync('ps', ['-ww', '-o', 'command=', '-p', String(pid)], { encoding: 'utf8' })
+  return asked.status === 0 ? asked.stdout : null
+}
+
+/** The pids of the class containers' processes of every machine, each checked to be its container's (pids come round). */
+function classProcesses(): number[] {
+  const pids: number[] = []
+  for (const machine of machines) {
+    for (const c of machine.classContainers()) {
+      if (c.pid !== null && (commandLine(c.pid) ?? '').includes(`--container-id ${c.id}`)) pids.push(c.pid)
+    }
+  }
+  return pids
+}
+
+function killClassProcesses(): number[] {
+  const pids = classProcesses()
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch { /* gone already */ }
+  }
+  return pids
+}
+
+process.on('exit', () => {
+  killLive()
+  killClassProcesses()
+})
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
     killLive()
+    killClassProcesses()
     process.exit(signal === 'SIGINT' ? 130 : 143)
   })
 }
@@ -67,6 +119,26 @@ export async function killAgents(): Promise<void> {
   }))
   killLive()
   await Promise.all(waits)
+}
+
+/**
+ * Every class container's process of every machine ended, and waited for:
+ * the teardown of a suite whose machines ran classes (the containers outlive
+ * the agents, as on a real machine). A process is not this test's child, so
+ * its end is seen by asking for it until it is gone.
+ */
+export async function removeClassContainers(): Promise<void> {
+  const pids = killClassProcesses()
+  for (const pid of pids) {
+    for (let i = 0; i < 250; i++) {
+      try {
+        process.kill(pid, 0)
+      } catch {
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+  }
 }
 
 /* --------------------------------------------------------------- the fleet */
@@ -162,12 +234,76 @@ export interface FakeContainer {
   killedAt: number | null
 }
 
+/** A class container as the fake docker keeps it (tests/_remote-e2e-docker.mjs · classRun). */
+export interface FakeClassContainer {
+  kind: 'class'
+  id: string
+  name: string
+  image: string
+  labels: string[]
+  env: Record<string, string>
+  mounts: Array<{ source: string; target: string; readOnly: boolean }>
+  network: string
+  memoryMb: number
+  cpus: number
+  token: string
+  /** The class folder on the machine: the fake Jupyter's folder. */
+  folder: string
+  status: 'created' | 'running' | 'exited'
+  /** Its Jupyter's process while it runs. */
+  pid: number | null
+  /** Its Jupyter's port on 127.0.0.1: `docker port … 8888/tcp`. */
+  port: number | null
+  startedAt: number | null
+  exitCode: number
+  oomKilled: boolean
+  /** How many times `docker start` gave it a fresh process. */
+  restarts: number
+  /** What the census reads of it (`stats`, the cgroup's counters); an idle kernel's when unset. */
+  stats?: { usedMb?: number; cpuPercent?: number; peakMb?: number; cardMb?: number }
+}
+
+/** How the fake daemon misbehaves (tests/_remote-e2e-docker.mjs, KNOBS). */
+export interface DockerKnobs {
+  perimeter: 'ok' | 'fail' | 'no-iptables' | 'no-dockerd'
+  canary: 'ok' | 'fail'
+  classRun: { failure: 'memory' | 'cpu' | 'gpu' | 'other'; times: number } | null
+  update: 'ok' | 'refuse'
+  networkOverlap: boolean
+}
+
+/** A class container's fake Jupyter, through its own doors (tests/_fake-jupyter.mjs · the header). */
+export interface FakeJupyterDoor {
+  url: string
+  token: string
+  calls(): Promise<Array<{ kind: string; [field: string]: unknown }>>
+  kernels(): Promise<Array<{ id: string; path: string; alive: boolean; busy: boolean; count: number; guarded: boolean; online: number }>>
+  requests(): Promise<Array<{ code: string; store_history?: boolean; silent?: boolean }>>
+  /** Let cells waiting at `HOLD name` go on: how many did. */
+  release(name?: string): Promise<number>
+  knobs(asked: { holdKernelInfo?: boolean; slowRevival?: boolean; upgradeDelayMs?: number; refuseUpgrades?: number; holdInterrupts?: boolean; restarts?: 'normal' | 'unanswered' | 'ignored' | 'held' }): Promise<Record<string, unknown>>
+}
+
 export interface AgentOptions {
   /** COLLOQ_RUNNER_JOIN: `http://127.0.0.1:<port>#<code>`. */
   join: string
   /** Another build than the sources' `dev` (a 64-hex digest). */
   build?: string
+  /**
+   * A class machine's agent: an image of its own in its fake docker,
+   * RUNNER_IMAGE, named by COLLOQ_RUNNER_IMAGE — what the perimeter's helper
+   * runs from (kernels.ts · helperImage) when the agent has no container of
+   * its own. The 0.23 scenarios start agents without it, as before.
+   */
+  classes?: boolean
+  /** The agent's own container (COLLOQ_RUNNER_CONTAINER), seeded running in its fake docker with this network mode (`host`, as colloq-host starts it). */
+  container?: { network: string }
+  /** The machine's own settings (COLLOQ_ROOM_NETWORK, KERNEL_BLOCKED_CIDRS, KERNEL_ROOM_SUBNET, …), added to the agent's environment. */
+  env?: Record<string, string>
 }
+
+/** The image a class machine's agent runs as, in its fake docker: the perimeter's helper runs from it. */
+export const RUNNER_IMAGE = 'colloq-runner:e2e'
 
 /** One machine: its tree, its fake Docker, and the agent process when it runs. */
 export class Agent {
@@ -192,12 +328,38 @@ export class Agent {
     fs.mkdirSync(this.dockerState, { recursive: true })
     fs.mkdirSync(path.join(this.dir, 'home'), { recursive: true })
     this.entry = options.build ? entryWithBuild(fleet, options.build) : ENTRY
+    if (options.classes || options.container) this.seedRunner()
+    machines.add(this)
   }
 
-  /** Start the agent (again, after a kill: the same tree, the same identity). */
-  start(): void {
-    if (this.running) throw new Error(`${this.name} is running already`)
-    const env: NodeJS.ProcessEnv = {
+  /**
+   * The agent's own image (RUNNER_IMAGE) in the fake docker, and its own
+   * container when it has one: what a machine's daemon holds before its agent
+   * starts, as colloq-host leaves it.
+   */
+  private seedRunner(): void {
+    const images = path.join(this.dockerState, 'images')
+    const containers = path.join(this.dockerState, 'containers')
+    fs.mkdirSync(images, { recursive: true })
+    fs.mkdirSync(containers, { recursive: true })
+    const id = `sha256:${createHash('sha256').update(`${RUNNER_IMAGE} of ${this.name}`).digest('hex')}`
+    fs.writeFileSync(path.join(images, `${encodeURIComponent(RUNNER_IMAGE)}.json`), JSON.stringify({ id, diffIds: [], repoDigests: [], tags: [RUNNER_IMAGE] }))
+    if (!this.options.container) return
+    fs.writeFileSync(path.join(containers, `${encodeURIComponent(this.ownContainer)}.json`), JSON.stringify({
+      kind: 'seed', id: randomBytes(32).toString('hex'), name: this.ownContainer, image: RUNNER_IMAGE, imageId: id, labels: [],
+      network: this.options.container.network, status: 'running', startedAt: Date.now(), memoryMb: 0, cpus: 0,
+    }))
+  }
+
+  /** The agent's own container's name, when it has one (COLLOQ_RUNNER_CONTAINER). */
+  get ownContainer(): string {
+    return `colloq-runner-${this.name}`
+  }
+
+  /** The environment of the agent and of its fake docker: built from nothing (see the header). */
+  private environment(): NodeJS.ProcessEnv {
+    return {
+      ...this.options.env,
       PATH: `${this.fleet.bin}:/usr/bin:/bin`,
       HOME: path.join(this.dir, 'home'),
       TMPDIR: os.tmpdir(),
@@ -206,11 +368,20 @@ export class Agent {
       COLLOQ_RUNNER_JOIN: this.options.join,
       COLLOQ_RUNNER_STATE: this.root,
       DATA_DIR: path.join(this.root, 'data'),
+      ...(this.options.container ? { COLLOQ_RUNNER_CONTAINER: this.ownContainer } : this.options.classes ? { COLLOQ_RUNNER_IMAGE: RUNNER_IMAGE } : {}),
       FAKE_DOCKER_STATE: this.dockerState,
       FAKE_DOCKER_REGISTRY: this.fleet.registry,
       FAKE_DOCKER_GATES: this.fleet.gates,
       FAKE_DOCKER_HOST: this.name,
+      // The class containers' processes end once the test's is gone, however it went.
+      FAKE_DOCKER_OWNER: String(process.pid),
     }
+  }
+
+  /** Start the agent (again, after a kill: the same tree, the same identity). */
+  start(): void {
+    if (this.running) throw new Error(`${this.name} is running already`)
+    const env = this.environment()
     const child = spawn(process.execPath, ['--import', 'tsx', this.entry], { cwd: REPO, env, stdio: ['ignore', 'pipe', 'pipe'] })
     this.child = child
     live.add(child)
@@ -270,6 +441,18 @@ export class Agent {
     return id
   }
 
+  /** The machine's credential as its tunnel sends it, `Bearer cr1.<id>.<secret>` (sync.ts · tunnelWant), from runner.json. */
+  authorization(): string {
+    const identity = this.identity() as { runnerId?: string; secret?: string } | null
+    if (!identity?.runnerId || !identity.secret) throw new Error(`${this.name} has not joined:\n${this.log()}`)
+    return `Bearer ${remoteCredential(identity.runnerId, identity.secret)}`
+  }
+
+  /** The agent's INSTANCE_LABEL, as images.ts derives it from its DATA_DIR: the label its class containers carry. */
+  get instanceLabel(): string {
+    return `ru.colloq.competition-instance=${createHash('sha256').update(path.resolve(path.join(this.root, 'data'))).digest('hex').slice(0, 16)}`
+  }
+
   /** status.json, as `runner status` reads it. */
   status(): Record<string, unknown> | null {
     try {
@@ -316,19 +499,100 @@ export class Agent {
     }
   }
 
-  /** The submission containers its fake Docker holds now. */
-  containers(): FakeContainer[] {
+  /** Every container its fake Docker holds now: submissions', class ones, the agent's own. */
+  private allContainers(): Array<{ kind?: string }> {
     const dir = path.join(this.dockerState, 'containers')
     try {
       return fs.readdirSync(dir).filter((name) => name.endsWith('.json')).flatMap((name) => {
         try {
-          return [JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')) as FakeContainer]
+          return [JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')) as { kind?: string }]
         } catch {
           return []
         }
       })
     } catch {
       return []
+    }
+  }
+
+  /** The submission containers its fake Docker holds now. */
+  containers(): FakeContainer[] {
+    return this.allContainers().filter((c) => c.kind === undefined) as unknown as FakeContainer[]
+  }
+
+  /** The class containers its fake Docker holds now, whatever their state. */
+  classContainers(): FakeClassContainer[] {
+    return this.allContainers().filter((c) => c.kind === 'class') as FakeClassContainer[]
+  }
+
+  /** The class container of one slot, by its labels (colloq.session, colloq.role); null — none. */
+  classContainer(sessionId: string, role: 'room' | 'own' | 'council'): FakeClassContainer | null {
+    return this.classContainers().find((c) => c.labels.includes(`colloq.session=${sessionId}`) && c.labels.includes(`colloq.role=${role}`)) ?? null
+  }
+
+  /** A docker call on this machine's daemon, as its agent makes one (runner-agent/docker.ts · realDocker): the exit code and all it printed. */
+  docker(argv: string[]): Promise<{ code: number; out: string }> {
+    return new Promise((resolve) => {
+      const child = spawn(path.join(this.fleet.bin, 'docker'), argv, { env: this.environment(), stdio: ['ignore', 'pipe', 'pipe'] })
+      let out = ''
+      child.stdout!.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')))
+      child.stderr!.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')))
+      child.once('error', (error) => resolve({ code: -1, out: String(error) }))
+      child.once('close', (code) => resolve({ code: code ?? -1, out: out.trim() }))
+    })
+  }
+
+  /** How this machine's daemon misbehaves from now on (the fake docker's KNOBS): the fields given, the others as they were. */
+  dockerKnobs(asked: Partial<DockerKnobs>): void {
+    const file = path.join(this.dockerState, 'knobs.json')
+    let knobs: Partial<DockerKnobs> = {}
+    try {
+      knobs = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<DockerKnobs>
+    } catch { /* none yet */ }
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify({ ...knobs, ...asked }))
+    fs.renameSync(`${file}.tmp`, file)
+  }
+
+  /** What the census reads of a class container from now on (`docker stats`, the cgroup's counters). */
+  classStats(name: string, stats: NonNullable<FakeClassContainer['stats']>): void {
+    const file = path.join(this.dockerState, 'containers', `${encodeURIComponent(name)}.json`)
+    const c = JSON.parse(fs.readFileSync(file, 'utf8')) as FakeClassContainer
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify({ ...c, stats: { ...c.stats, ...stats } }))
+    fs.renameSync(`${file}.tmp`, file)
+  }
+
+  /**
+   * A class container dies under its kernels (`docker kill`, as a crash or
+   * the host's OOM killer leaves it), docker's OOMKilled set when `oom`: what
+   * the census then finds, reads for home's post-mortem and starts again.
+   */
+  async killClassContainer(name: string, options: { oom?: boolean } = {}): Promise<void> {
+    const killed = await this.docker(['kill', name])
+    if (killed.code !== 0) throw new Error(`${this.name}: docker kill ${name}: ${killed.out}`)
+    if (!options.oom) return
+    const file = path.join(this.dockerState, 'containers', `${encodeURIComponent(name)}.json`)
+    const c = JSON.parse(fs.readFileSync(file, 'utf8')) as FakeClassContainer
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify({ ...c, oomKilled: true }))
+    fs.renameSync(`${file}.tmp`, file)
+  }
+
+  /** A class container's fake Jupyter, through its own doors, where docker publishes it. */
+  jupyterOf(c: FakeClassContainer): FakeJupyterDoor {
+    if (c.port === null) throw new Error(`${c.name} publishes no port: it does not run`)
+    const url = `http://127.0.0.1:${c.port}`
+    const json = async <T,>(method: string, at: string, body?: unknown): Promise<T> => {
+      const answer = await fetch(`${url}/_fake/${at}`, { method, body: body === undefined ? undefined : JSON.stringify(body) })
+      if (!answer.ok) throw new Error(`${c.name}: ${method} /_fake/${at}: ${answer.status}`)
+      return (await answer.json()) as T
+    }
+    return {
+      url,
+      token: c.token,
+      calls: () => json('GET', 'calls'),
+      kernels: () => json('GET', 'kernels'),
+      requests: () => json('GET', 'requests'),
+      release: async (name = '') => (await json<{ released: number }>('POST', `release/${encodeURIComponent(name)}`)).released,
+      knobs: (asked) => json('POST', 'knobs', asked),
     }
   }
 

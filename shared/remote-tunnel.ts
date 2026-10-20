@@ -15,14 +15,15 @@
  * and then the payload:
  *
  *   u8  kind      TUNNEL_KINDS, from 1: a zeroed header is no frame
- *   u8  flags     bit 0 FIN, on DATA only; every other bit zero
+ *   u8  flags     bit 0 FIN, on DATA and ACK only; every other bit zero
  *   u8  lane      0 control (the tunnel's own frames), 1 interactive (room, own), 2 council
  *   u8  reserved  zero
  *   u32 stream    0 is the tunnel itself; streams are numbered from 1 by home
  *   u64 offset    DATA: where its payload starts in the stream; ACK: bytes delivered;
  *                 END: the stream's whole length; PING, PONG: the ping's id; else 0
- *   payload       DATA up to TUNNEL_FRAME_MAX bytes; JSON up to TUNNEL_JSON_MAX for
- *                 HELLO, WELCOME, OPEN and REFUSED; nothing for the rest
+ *   payload       DATA up to TUNNEL_FRAME_MAX bytes; JSON up to TUNNEL_GREETING_MAX
+ *                 for HELLO and WELCOME, TUNNEL_JSON_MAX for OPEN and REFUSED;
+ *                 nothing for the rest
  *
  * A frame of a stream carries the stream's lane, the one its OPEN named, and
  * its ACK, END and RESET as well: how a sender orders its frames is its own
@@ -55,10 +56,24 @@
  * on the machine. Two copies of the rules would drift apart on the one socket
  * every class of a machine shares.
  *
+ * STREAMS OUTLIVE SOCKETS (§4.8). A relay restart cuts every tunnel at once,
+ * and a cut of a minute lost the bytes in flight both ways (K0, 16 Oct 2026),
+ * so an end is not its socket: it keeps its streams across a cut, each with
+ * the bytes it sent and its peer has not ACKed, for TUNNEL_RESUME_MS. After a
+ * reconnect the agent's HELLO lists the streams it kept with what it received
+ * of each, home's WELCOME answers with its own, and each side sends again
+ * from what the other received: every byte arrives once and in order, and the
+ * connections inside (home's kernel client on a placement's listener, the
+ * agent's to the placement's Jupyter) never see the cut. A peer of another
+ * life (its session differs: an agent restarted, a home restarted), a cut
+ * past TUNNEL_RESUME_MS, or a connection that will not stop writing
+ * (TUNNEL_RETAIN_BYTES) resets the stream, as a cut did before, and the
+ * kernel client settles what it ate (remote-classes.md §5.5).
+ *
  * PURE, FOR BOTH ENDS. Uint8Array and DataView only, no node: module and
  * nothing done at import time: the agent's bundle carries it whole.
  */
-import { REMOTE_API_BASE, REMOTE_BUILD, RemoteProtocolError, fields, integer, known, matching, refuse } from './remote-runner.js'
+import { REMOTE_API_BASE, REMOTE_BUILD, RemoteProtocolError, fields, integer, items, known, matching, refuse } from './remote-runner.js'
 import { parseRemotePlacementKey, type RemoteKernelRole } from './remote-kernels.js'
 
 /* ------------------------------------------------------------------ the door */
@@ -133,8 +148,30 @@ export const TUNNEL_DEAD_MS = 25_000
 export const TUNNEL_HEADER_BYTES = 16
 /** A DATA frame's payload at most: one deficit round-robin turn, so a 6 MiB figure interleaves with another kernel's print (§4.4). */
 export const TUNNEL_FRAME_MAX = 16 * 1024
-/** A JSON payload at most (HELLO, WELCOME, OPEN, REFUSED). */
+/** A JSON payload at most of an OPEN or a REFUSED. */
 export const TUNNEL_JSON_MAX = 4 * 1024
+/** A HELLO's or a WELCOME's payload at most: a whole frame, the room for TUNNEL_RESUME_LIST_MAX streams to resume. */
+export const TUNNEL_GREETING_MAX = TUNNEL_FRAME_MAX
+/**
+ * How long an end keeps its streams once its socket is gone, for the next
+ * socket to resume them (§4.8): a relay restart, or a cut the dead timer
+ * ended, is over in seconds to a minute (K0: back 13 s after a heal), while a
+ * machine gone for longer is the failover's (§11.1).
+ */
+export const TUNNEL_RESUME_MS = 120_000
+/**
+ * The bytes a stream's end holds for its peer at most. Every byte a window
+ * lets out stays until the peer ACKs it (no window is larger than this), and
+ * a local connection told to pause that writes this much more regardless
+ * overflows: its stream is reset rather than held (§4.8).
+ */
+export const TUNNEL_RETAIN_BYTES = 4 * 1024 * 1024
+/**
+ * Streams one greeting lists to resume at most: each takes up to 55 bytes of
+ * JSON, and they fit in one frame. A machine holds tens of streams, a few per
+ * kernel; past this the newest are reset at the reconnect.
+ */
+export const TUNNEL_RESUME_LIST_MAX = 256
 /** The WebSocket's maxPayload at both ends: well over the largest frame (§4.2). */
 export const TUNNEL_MESSAGE_MAX = 64 * 1024
 /**
@@ -220,7 +257,7 @@ export function tunnelWindow(lane: TunnelStreamLane): number {
   return lane === TUNNEL_LANE.council ? TUNNEL_WINDOW.council : TUNNEL_WINDOW.interactive
 }
 
-/** FIN, flags bit 0: a DATA frame that is its stream's last. */
+/** FIN, flags bit 0: a DATA frame that is its stream's last; an ACK that says the end came too. */
 export const TUNNEL_FIN = 0x01
 
 /** Who dialled and who was dialled: the agent dials, home answers. */
@@ -232,11 +269,38 @@ export const TUNNEL_SENDERS: Readonly<Record<TunnelKind, TunnelSide | 'both'>> =
   DATA: 'both', ACK: 'both', END: 'both', RESET: 'both', PING: 'both', PONG: 'both',
 }
 
-/** What opens a tunnel session: HELLO the agent's, WELCOME home's, each with its own build and session. */
-export interface TunnelHello {
+/** What opens a tunnel session: HELLO the agent's, WELCOME home's, each with its own build and session (one per life of that side). */
+export interface TunnelGreeting {
   protocol: typeof TUNNEL_PROTOCOL
   build: string
   session: string
+}
+
+/**
+ * One stream to resume, as the side that lists it holds it (§4.8): `rx`,
+ * the bytes of the stream it has received from the other side, and `fin`
+ * when the other side's end came with them. The other side sends again from
+ * `rx`, and its end again unless `fin` says it came.
+ */
+export interface TunnelResume {
+  stream: number
+  rx: number
+  fin?: true
+}
+
+/** The agent's HELLO: after a cut, the streams it kept, to resume over this socket. */
+export interface TunnelHello extends TunnelGreeting {
+  resume?: TunnelResume[]
+}
+
+/**
+ * Home's WELCOME: `resumed` when home took the HELLO for the agent's life it
+ * kept since the cut, with `streams`, those of the offered ones it resumes.
+ * Without it the agent is greeted as a new life of its own, and keeps nothing.
+ */
+export interface TunnelWelcome extends TunnelGreeting {
+  resumed?: true
+  streams?: TunnelResume[]
 }
 
 /** A stream home opens: to the placement of this key at this gen, never another. */
@@ -255,15 +319,20 @@ export interface TunnelRefused {
   code: TunnelRefusal
 }
 
-/** One frame, as the codec reads and writes it. A DATA frame's payload is a view of the message it came in, not a copy. */
+/**
+ * One frame, as the codec reads and writes it. A DATA frame's payload is a
+ * view of the message it came in, not a copy. An ACK with `fin` says the
+ * peer's end came too, after every byte it ACKs: the last word a stream
+ * waits for before it is let go of (§4.8).
+ */
 export type TunnelFrame =
   | { kind: 'HELLO'; hello: TunnelHello }
-  | { kind: 'WELCOME'; welcome: TunnelHello }
+  | { kind: 'WELCOME'; welcome: TunnelWelcome }
   | { kind: 'OPEN'; stream: number; lane: TunnelStreamLane; open: TunnelOpen }
   | { kind: 'OPENED'; stream: number; lane: TunnelStreamLane }
   | { kind: 'REFUSED'; stream: number; lane: TunnelStreamLane; refused: TunnelRefused }
   | { kind: 'DATA'; stream: number; lane: TunnelStreamLane; offset: number; payload: Uint8Array; fin: boolean }
-  | { kind: 'ACK'; stream: number; lane: TunnelStreamLane; offset: number }
+  | { kind: 'ACK'; stream: number; lane: TunnelStreamLane; offset: number; fin?: true }
   | { kind: 'END'; stream: number; lane: TunnelStreamLane; offset: number }
   | { kind: 'RESET'; stream: number; lane: TunnelStreamLane }
   | { kind: 'PING'; id: number }
@@ -284,10 +353,10 @@ export function encodeTunnelFrame(frame: TunnelFrame): Uint8Array {
   if (!frame || typeof frame !== 'object' || !(TUNNEL_KINDS as readonly string[]).includes(frame.kind)) refuse('Unknown tunnel frame kind')
   let payload: Uint8Array = EMPTY
   // A payload goes out with the contract's keys and no other, each checked as its reader will check it.
-  if (frame.kind === 'HELLO') payload = jsonOf(helloOf(frame.hello, 'strict', frame.kind))
-  else if (frame.kind === 'WELCOME') payload = jsonOf(helloOf(frame.welcome, 'strict', frame.kind))
-  else if (frame.kind === 'OPEN') payload = jsonOf(openOf(frame.open, 'strict', frame.lane))
-  else if (frame.kind === 'REFUSED') payload = jsonOf(refusedOf(frame.refused, 'strict'))
+  if (frame.kind === 'HELLO') payload = jsonOf(helloOf(frame.hello, 'strict'), TUNNEL_GREETING_MAX)
+  else if (frame.kind === 'WELCOME') payload = jsonOf(welcomeOf(frame.welcome, 'strict'), TUNNEL_GREETING_MAX)
+  else if (frame.kind === 'OPEN') payload = jsonOf(openOf(frame.open, 'strict', frame.lane), TUNNEL_JSON_MAX)
+  else if (frame.kind === 'REFUSED') payload = jsonOf(refusedOf(frame.refused, 'strict'), TUNNEL_JSON_MAX)
   else if (frame.kind === 'DATA') {
     if (!(frame.payload instanceof Uint8Array)) refuse('Invalid tunnel data')
     payload = frame.payload
@@ -296,8 +365,9 @@ export function encodeTunnelFrame(frame: TunnelFrame): Uint8Array {
   const stream = own ? 0 : (frame as { stream: unknown }).stream
   const lane = own ? TUNNEL_LANE.control : (frame as { lane: unknown }).lane
   const offset = frame.kind === 'PING' || frame.kind === 'PONG' ? frame.id : COUNTED.has(frame.kind) ? (frame as { offset: unknown }).offset : 0
-  const fin = frame.kind === 'DATA' && frame.fin === true
+  const fin = (frame.kind === 'DATA' || frame.kind === 'ACK') && frame.fin === true
   if (frame.kind === 'DATA' && typeof frame.fin !== 'boolean') refuse('Invalid tunnel data')
+  if (frame.kind === 'ACK' && frame.fin !== undefined && frame.fin !== true) refuse('Invalid ACK')
   header(frame.kind, fin ? TUNNEL_FIN : 0, lane, stream, offset, payload.byteLength)
   const bytes = new Uint8Array(TUNNEL_HEADER_BYTES + payload.byteLength)
   const view = new DataView(bytes.buffer)
@@ -342,9 +412,9 @@ export function decodeTunnelFrame(message: Uint8Array | ArrayBuffer, from: Tunne
   const mode = from === 'agent' ? 'strict' : 'tolerant'
   switch (kind) {
     case 'HELLO':
-      return { kind, hello: helloOf(jsonIn(payload), mode, kind) }
+      return { kind, hello: helloOf(jsonIn(payload), mode) }
     case 'WELCOME':
-      return { kind, welcome: helloOf(jsonIn(payload), mode, kind) }
+      return { kind, welcome: welcomeOf(jsonIn(payload), mode) }
     case 'OPEN':
       return { kind, stream, lane: lane as TunnelStreamLane, open: openOf(jsonIn(payload), mode, lane) }
     case 'OPENED':
@@ -354,6 +424,7 @@ export function decodeTunnelFrame(message: Uint8Array | ArrayBuffer, from: Tunne
     case 'DATA':
       return { kind, stream, lane: lane as TunnelStreamLane, offset, payload, fin: (flags & TUNNEL_FIN) !== 0 }
     case 'ACK':
+      return (flags & TUNNEL_FIN) !== 0 ? { kind, stream, lane: lane as TunnelStreamLane, offset, fin: true } : { kind, stream, lane: lane as TunnelStreamLane, offset }
     case 'END':
       return { kind, stream, lane: lane as TunnelStreamLane, offset }
     case 'RESET':
@@ -367,21 +438,21 @@ export function decodeTunnelFrame(message: Uint8Array | ArrayBuffer, from: Tunne
 /**
  * The header's rules, the same for both directions: the tunnel's own frames
  * on stream 0 and the control lane, a stream's on its own number and lane,
- * FIN on DATA alone, an offset only where one says something, and each
- * payload within its cap.
+ * FIN on DATA and ACK alone, an offset only where one says something, and
+ * each payload within its cap.
  */
 function header(kind: TunnelKind, flags: unknown, lane: unknown, stream: unknown, offset: unknown, size: number): void {
   if (OWN.has(kind) ? stream !== 0 || lane !== TUNNEL_LANE.control : !integer(stream, 1, TUNNEL_STREAM_MAX) || (lane !== TUNNEL_LANE.interactive && lane !== TUNNEL_LANE.council)) {
     refuse(`Invalid ${kind} frame: lane or stream`)
   }
-  if (flags !== 0 && !(kind === 'DATA' && flags === TUNNEL_FIN)) refuse(`Invalid ${kind} frame: flags`)
+  if (flags !== 0 && !((kind === 'DATA' || kind === 'ACK') && flags === TUNNEL_FIN)) refuse(`Invalid ${kind} frame: flags`)
   if (COUNTED.has(kind) ? !integer(offset, 0, Number.MAX_SAFE_INTEGER) : offset !== 0) refuse(`Invalid ${kind} frame: offset`)
   if (kind === 'DATA') {
     if (size > TUNNEL_FRAME_MAX) refuse('Tunnel data over its cap', 'too_large')
     // An empty DATA says nothing unless it ends its stream.
     if (size === 0 && flags !== TUNNEL_FIN) refuse('Empty tunnel data')
   } else if (JSON_KINDS.has(kind)) {
-    if (size > TUNNEL_JSON_MAX) refuse(`${kind} payload over its cap`, 'too_large')
+    if (size > (OWN.has(kind) ? TUNNEL_GREETING_MAX : TUNNEL_JSON_MAX)) refuse(`${kind} payload over its cap`, 'too_large')
     if (size === 0) refuse(`${kind} without its payload`)
   } else if (size !== 0) refuse(`Unexpected payload of a ${kind} frame`)
 }
@@ -396,12 +467,50 @@ const keysOf = (value: unknown, what: string, keys: readonly string[], mode: Rea
   mode === 'strict' ? fields(value, what, keys) : known(value, what, keys)
 
 /** HELLO or WELCOME: its protocol is read before its keys, as a request's is (remote-runner.ts · spoken). */
-function helloOf(value: unknown, mode: Reading, kind: 'HELLO' | 'WELCOME'): TunnelHello {
+function greetingOf(value: unknown, mode: Reading, kind: 'HELLO' | 'WELCOME', more: readonly string[]): Record<string, unknown> & TunnelGreeting {
   if (!value || typeof value !== 'object' || Array.isArray(value)) refuse(`Invalid ${kind}`)
   if ((value as Record<string, unknown>).protocol !== TUNNEL_PROTOCOL) refuse(`Unexpected protocol in ${kind}`, 'protocol')
-  const v = keysOf(value, kind, ['protocol', 'build', 'session'], mode)
+  const v = keysOf(value, kind, ['protocol', 'build', 'session', ...more], mode)
   if (!matching(v.build, REMOTE_BUILD) || !matching(v.session, TUNNEL_SESSION)) refuse(`Invalid ${kind}`)
-  return { protocol: TUNNEL_PROTOCOL, build: v.build, session: v.session }
+  return v as Record<string, unknown> & TunnelGreeting
+}
+
+/** HELLO: the agent's greeting, and after a cut the streams it kept. */
+function helloOf(value: unknown, mode: Reading): TunnelHello {
+  const v = greetingOf(value, mode, 'HELLO', ['resume'])
+  const hello: TunnelHello = { protocol: TUNNEL_PROTOCOL, build: v.build, session: v.session }
+  if (v.resume !== undefined) hello.resume = resumesOf(v.resume, mode, 'HELLO')
+  return hello
+}
+
+/**
+ * WELCOME: home's greeting, and `resumed` with the streams it goes on with,
+ * both or neither. Read tolerantly, `resumed: false` is no resume, and a
+ * list without `resumed` is no list.
+ */
+function welcomeOf(value: unknown, mode: Reading): TunnelWelcome {
+  const v = greetingOf(value, mode, 'WELCOME', ['resumed', 'streams'])
+  const welcome: TunnelWelcome = { protocol: TUNNEL_PROTOCOL, build: v.build, session: v.session }
+  if (v.resumed === true) {
+    welcome.resumed = true
+    welcome.streams = v.streams === undefined && mode === 'tolerant' ? [] : resumesOf(v.streams, mode, 'WELCOME')
+  } else if (mode === 'strict' ? v.resumed !== undefined || v.streams !== undefined : v.resumed !== undefined && v.resumed !== false) {
+    refuse('Invalid WELCOME: resumed')
+  }
+  return welcome
+}
+
+/** A list of streams to resume: each stream once, at most TUNNEL_RESUME_LIST_MAX, `fin` only when true. */
+function resumesOf(value: unknown, mode: Reading, kind: 'HELLO' | 'WELCOME'): TunnelResume[] {
+  const seen = new Set<number>()
+  return items(value, `${kind} resume list`, TUNNEL_RESUME_LIST_MAX).map((item) => {
+    const v = keysOf(item, `${kind} resume`, ['stream', 'rx', 'fin'], mode)
+    // Written, `fin` is there only when true; read tolerantly, a false one says the same as none.
+    const finOk = v.fin === undefined || v.fin === true || (mode === 'tolerant' && v.fin === false)
+    if (!integer(v.stream, 1, TUNNEL_STREAM_MAX) || !integer(v.rx, 0, Number.MAX_SAFE_INTEGER) || !finOk || seen.has(v.stream)) refuse(`Invalid ${kind} resume`)
+    seen.add(v.stream)
+    return v.fin === true ? { stream: v.stream, rx: v.rx, fin: true } : { stream: v.stream, rx: v.rx }
+  })
 }
 
 /** OPEN: a placement's key and its gen, on the lane of the placement's role. */
@@ -424,9 +533,9 @@ const EMPTY = new Uint8Array(0)
 const encoder = new TextEncoder()
 const decoder = new TextDecoder('utf-8', { fatal: true })
 
-function jsonOf(value: unknown): Uint8Array {
+function jsonOf(value: unknown, max: number): Uint8Array {
   const bytes = encoder.encode(JSON.stringify(value))
-  if (bytes.byteLength > TUNNEL_JSON_MAX) refuse('Tunnel JSON over its cap', 'too_large')
+  if (bytes.byteLength > max) refuse('Tunnel JSON over its cap', 'too_large')
   return bytes
 }
 
@@ -487,8 +596,8 @@ export type TunnelStreamState = 'opening' | 'open' | 'closed'
 /**
  * One stream: one TCP connection's bytes both ways, numbered by home. The
  * counters are the end's and read-only to everyone else, each kept on its
- * own so that resumable streams (§4.8) can keep `sent - acked` for a while
- * and send again from the peer's `received`:
+ * own, so that across a cut (§4.8) a stream keeps `sent - acked` and sends
+ * again from the peer's `received`:
  * - towards the peer, `sent` (the next DATA's offset), `acked` (the peer's
  *   cumulative ACK) and `queued`, the bytes still waiting in its queue;
  * - from the peer, `received` (the next DATA's offset), `delivered` (what the
@@ -506,12 +615,21 @@ export class TunnelStream {
   /** The local connection ended: END goes once the queue is out. */
   ending = false
   endSent = false
+  /** The peer said it has the end: an ACK with FIN, or a resume with `fin`. */
+  endAcked = false
   peerEnded = false
+  /** An ACK of this end's said the peer's end came (FIN): the last word the peer waits for. */
+  finAckedOut = false
   /** The local connection is paused: out of window, or its queue full. */
   paused = false
+  /** Bytes the local connection wrote since it was told to pause: past TUNNEL_RETAIN_BYTES the stream overflows. */
+  unheeded = 0
   /** The end's own: the bytes waiting, and where in the first of them the next frame starts. */
   queue: Uint8Array[] = []
   head = 0
+  /** The end's own: the bytes sent and not yet ACKed (`sent - acked` of them), kept to send again after a cut, and where in the first of them they start. */
+  retained: Uint8Array[] = []
+  retainedHead = 0
   /** The end's own, deficit round robin: what this turn may still send, whether the stream is in its turn, whether it is in its lane's ring. */
   deficit = 0
   turn = false
@@ -606,12 +724,28 @@ export class TunnelPace {
   }
 }
 
+/** What came of the streams an end kept across a cut, once its next socket is greeted (TunnelHooks.up). */
+export interface TunnelResumed {
+  /** The peer is the life the streams were kept for, and they go on; false — a new life of the peer's, or none kept. */
+  resumed: boolean
+  /** Streams that go on over this socket. */
+  streams: number
+  /**
+   * Streams the cut cost since the last open socket, each reset: still
+   * opening when it went, past what one greeting lists, kept past
+   * TUNNEL_RESUME_MS, or not taken up again by the peer. One let go of
+   * quietly, its connection done both ways, cost nothing and is not counted,
+   * nor is one whose own connection broke or overflowed meanwhile.
+   */
+  reset: number
+}
+
 /** What an end tells its owner, and asks it. */
 export interface TunnelHooks {
   /** Home: the agent's HELLO. `null` WELCOMEs it; a code and a reason refuse it, and the tunnel closes with them. */
   hello?(hello: TunnelHello): { code: number; reason: string } | null
-  /** The tunnel is open: home has sent its WELCOME, or the agent has read it. */
-  up?(peer: TunnelHello): void
+  /** The tunnel is open: home has sent its WELCOME, or the agent has read it; and what came of the streams kept across a cut. */
+  up?(peer: TunnelGreeting, resumed: TunnelResumed): void
   /** The agent: home OPENs a stream. It is answered with `accept` and `opened`, or with `refuse`, now or later. */
   open?(stream: TunnelStream, open: TunnelOpen): void
   /** Home: the agent's answer to an OPEN, `null` for OPENED. */
@@ -620,15 +754,23 @@ export interface TunnelHooks {
   heard?(): void
   /** A PING of this end's came back after `ms`. */
   rtt?(ms: number): void
-  /** The tunnel is over: close the socket with `code`, or terminate it with no handshake when `code` is null (a dead link reads none). */
+  /** A stream was reset because its local connection, told to pause, went on writing (TUNNEL_RETAIN_BYTES). */
+  overflow?(stream: TunnelStream): void
+  /**
+   * The socket is over: close it with `code`, or terminate it with no
+   * handshake when `code` is null (a dead link reads none). After a null
+   * code the end waits for its next socket with what it kept, as after a
+   * cut; after any other the end itself is over.
+   */
   end(code: number | null, reason: string): void
 }
 
 export interface TunnelEndOptions {
   side: TunnelSide
-  socket: TunnelSocket
+  /** The end's first socket, greeted once `start` is called; or none yet, and the first comes by `attach`. */
+  socket?: TunnelSocket
   clock: TunnelClock
-  /** What this end says of itself in its HELLO or WELCOME. */
+  /** What this end says of itself in its HELLO or WELCOME: its build, and its life's session. */
   build: string
   session: string
   hooks: TunnelHooks
@@ -638,8 +780,23 @@ export interface TunnelEndOptions {
 
 const LANES: readonly TunnelStreamLane[] = [TUNNEL_LANE.interactive, TUNNEL_LANE.council]
 
+/** What a greeting made of the streams kept: the WELCOME's list (home), the streams that go on, and the RESETs the peer must hear. */
+interface Resumption {
+  answer: TunnelResume[]
+  streams: TunnelStream[]
+  resets: Array<{ id: number; lane: TunnelStreamLane }>
+}
+
+/** What a stream says it received, in a greeting's list. */
+const resumeOf = (stream: TunnelStream): TunnelResume =>
+  stream.peerEnded ? { stream: stream.id, rx: stream.received, fin: true } : { stream: stream.id, rx: stream.received }
+
+/** A stream whose local connection is done both ways: it ended, everything it wrote is out, and it has taken the peer's every byte and end. */
+const doneHere = (stream: TunnelStream): boolean =>
+  stream.ending && stream.queued === 0 && stream.peerEnded && stream.delivered === stream.received
+
 /**
- * One end of a tunnel, the same at home and on the agent (§4.3–4.7): the
+ * One end of a tunnel, the same at home and on the agent (§4.3–4.8): the
  * greeting, the streams, the sender, the ACKs and the pings. Its owner wires
  * it to a WebSocket (TunnelSocket) and to TCP connections (TunnelLocal);
  * nothing here knows of either.
@@ -662,45 +819,96 @@ const LANES: readonly TunnelStreamLane[] = [TUNNEL_LANE.interactive, TUNNEL_LANE
  * THE RECEIVER writes each DATA into its stream's local connection, and ACKs
  * what the connection has taken, every TUNNEL_ACK_BYTES at once or after
  * TUNNEL_ACK_MS: as that connection drains, not as bytes arrive, so the
- * window holds back a sender whose reader is slow. A peer past a window, out
- * of order, past its END, or with a stream it never opened, is a violation
- * and the tunnel closes (TUNNEL_CLOSE.violation): the codec has checked each
- * frame's shape, this checks what the frames say together.
+ * window holds back a sender whose reader is slow. An ACK says what was
+ * taken when it goes, and FIN with it once the peer's end came and every
+ * byte before it was taken. A peer past a window, out of order, past its
+ * END, or with a stream it never opened, is a violation and the tunnel
+ * closes (TUNNEL_CLOSE.violation): the codec has checked each frame's shape,
+ * this checks what the frames say together.
  *
  * LIVENESS. Each end PINGs every TUNNEL_PING_MS once open, and ends the
- * tunnel with no close handshake after TUNNEL_DEAD_MS without a frame, or
- * after TUNNEL_GREETING_MS without its greeting.
+ * socket with no close handshake after TUNNEL_DEAD_MS without a frame, or
+ * after TUNNEL_GREETING_MS without its greeting: a cut, not the end of the
+ * streams.
+ *
+ * ACROSS SOCKETS (§4.8). An end is one life of its side, the agent's
+ * AgentTunnel's or one machine's at home, and it outlives the sockets its
+ * owner attaches one after the other. When one goes (`cut`: closed,
+ * terminated, or a newer one attached in its place) nothing more is sent.
+ * The streams answered both ways keep their counters, their local
+ * connections (paused once their queue is full: the kernel looks quiet), and
+ * every byte sent and not ACKed, which no window lets exceed
+ * TUNNEL_RETAIN_BYTES; a stream still opening resets, since its OPEN or its
+ * answer may be lost and nobody can tell which. The next socket's greeting
+ * says on each side what it received of each stream it kept (the HELLO's
+ * `resume`, the WELCOME's `streams`), and each side sends again from there:
+ * its unACKed bytes, its END unless the peer has it, and an ACK of all it has
+ * taken. A stream the other side does not list is gone there: let go of
+ * quietly when its connection here is done both ways, reset otherwise. The
+ * peer's life is its session. Another one is an agent or a home started
+ * again with nothing: every stream resets, and they are numbered from 1
+ * again as the new peer numbers them. What is kept is kept TUNNEL_RESUME_MS
+ * from the cut and no longer; then it resets, and the next greeting is a new
+ * life's.
+ *
+ * LET GO OF ONLY WHEN THE PEER KNOWS. A stream ended both ways is forgotten
+ * once the peer ACKed its every byte and its END and its own last ACK, with
+ * FIN, is out: never before, or a cut in between would lose a tail it no
+ * longer holds. When that last ACK is lost with its socket, the peer, which
+ * still waits for it, finds the stream unlisted at the next greeting, and
+ * lets it go quietly, its connection being done both ways.
  */
 export class TunnelEnd {
   readonly side: TunnelSide
   private readonly from: TunnelSide
-  private readonly socket: TunnelSocket
   private readonly clock: TunnelClock
   private readonly hooks: TunnelHooks
   private readonly pace: TunnelPace | null
   private readonly build: string
   private readonly session: string
-  private phase: 'greeting' | 'open' | 'closed' = 'greeting'
+  /** Greeting or open on a socket, detached between two (or before the first), or over for good. */
+  private phase: 'greeting' | 'open' | 'detached' | 'closed'
+  /* The socket's own, made anew with each one. */
+  private socket: TunnelSocket | null
+  /** Its greeting is under way: the agent's HELLO went, and the clocks run. */
+  private started = false
+  /** The tunnel's own frames, before any DATA; a stream stands for its ACK, read when it goes. */
+  private readonly control: Array<TunnelFrame | TunnelStream> = []
+  private pumping = false
+  private timer: unknown = null
+  private startedAt: number
+  private heardAt: number
+  private nextPingAt = 0
+  private pingId = 0
+  private readonly pings = new Map<number, number>()
+  /** The agent: the streams its HELLO offered to resume, with their lanes, until home answers. */
+  private offered: Map<number, TunnelStreamLane> | null = null
+  /* The life's, across sockets. */
+  /** The peer's session: the life the streams are of (home's: once the agent answered from it); null — none kept. */
+  private peerSession: string | null = null
+  /**
+   * Home: the session of a HELLO it greeted as a new life, until the agent
+   * shows it took that WELCOME (any frame after it). Until then the agent may
+   * still hold the streams of before, numbered as they were, and its next
+   * HELLO is greeted as a new life again; its streams numbered anew are all
+   * still opening, and a cut resets them anyway.
+   */
+  private unconfirmed: string | null = null
   private readonly streams = new Map<number, TunnelStream>()
   /** Home: the number of the next stream it opens. The agent: one past the last home opened. */
   private nextStream = 1
-  /** The tunnel's own frames, before any DATA; a stream stands for its ACK, read when it goes. */
-  private readonly control: Array<TunnelFrame | TunnelStream> = []
   private readonly rings: Record<TunnelStreamLane, TunnelStream[]> = { 1: [], 2: [] }
   private readonly cursor: Record<TunnelStreamLane, number> = { 1: 0, 2: 0 }
   /** Bytes sent and not yet ACKed, every stream's: against the machine's window. */
   private outbound = 0
   /** Bytes received and not yet ACKed, every stream's: what the peer may have in flight. */
   private inbound = 0
-  private pumping = false
   private wake: unknown = null
   private wakeAt = 0
-  private timer: unknown = null
-  private readonly startedAt: number
-  private heardAt: number
-  private nextPingAt = 0
-  private pingId = 0
-  private readonly pings = new Map<number, number>()
+  /** Runs from the cut of an open socket: when it runs out, what was kept resets (TUNNEL_RESUME_MS). */
+  private keep: unknown = null
+  /** The streams the cut has cost since the socket was last open, said at the next `up` (TunnelResumed.reset). */
+  private cutResets = 0
   private readonly afterSend = (error?: Error): void => {
     if (!error) this.pump()
   }
@@ -708,16 +916,17 @@ export class TunnelEnd {
   constructor(options: TunnelEndOptions) {
     this.side = options.side
     this.from = options.side === 'home' ? 'agent' : 'home'
-    this.socket = options.socket
     this.clock = options.clock
     this.hooks = options.hooks
     this.pace = options.pace ?? null
     this.build = options.build
     this.session = options.session
     this.startedAt = this.heardAt = this.clock.now()
+    this.socket = options.socket ?? null
+    this.phase = this.socket === null ? 'detached' : 'greeting'
   }
 
-  /** Open: greeted both ways and not over. */
+  /** Open: greeted both ways on a socket, and not over. */
   get up(): boolean {
     return this.phase === 'open'
   }
@@ -726,21 +935,56 @@ export class TunnelEnd {
     return this.phase === 'closed'
   }
 
-  /** The streams it holds now. */
+  /** On a socket now, greeting or open. */
+  get attached(): boolean {
+    return this.socket !== null
+  }
+
+  /** The streams it holds now, kept across a cut or not. */
   get count(): number {
     return this.streams.size
   }
 
   /** The socket is open: the agent says HELLO, and both start their clocks. */
   start(): void {
-    if (this.phase !== 'greeting') return
-    if (this.side === 'agent') this.queueControl({ kind: 'HELLO', hello: { protocol: TUNNEL_PROTOCOL, build: this.build, session: this.session } })
+    if (this.phase !== 'greeting' || this.started) return
+    this.started = true
+    if (this.side === 'agent') this.queueControl({ kind: 'HELLO', hello: this.hello() })
     this.reschedule()
+  }
+
+  /**
+   * The next socket: after a cut, or in the place of the one the end has
+   * (home: a newer tunnel of the same machine, whose older socket the owner
+   * closes). The agent greets on it at once. Home is handed the HELLO its
+   * owner read off the socket already (tunnelHelloOf), and answers it now.
+   */
+  attach(socket: TunnelSocket, hello?: TunnelHello): void {
+    if (this.phase === 'closed') return
+    if (this.socket !== null) this.detach()
+    this.socket = socket
+    this.phase = 'greeting'
+    this.startedAt = this.heardAt = this.clock.now()
+    if (hello === undefined || this.side === 'agent') return this.start()
+    this.started = true
+    this.reschedule()
+    try {
+      this.greeted(hello)
+    } catch (error) {
+      // An owner's hook that threw costs this tunnel, never the process.
+      this.fail(TUNNEL_INTERNAL_CLOSE, messageOf(error))
+    }
+  }
+
+  /** The owner's socket is gone, closed or terminated: the streams wait for the next one with what they keep (§4.8). */
+  cut(): void {
+    if (this.socket === null || this.phase === 'closed') return
+    this.detach()
   }
 
   /** A message of the socket's, as ws gives it. */
   receive(message: unknown, binary: boolean): void {
-    if (this.phase === 'closed') return
+    if (this.socket === null || this.phase === 'closed') return
     this.heardAt = this.clock.now()
     try {
       this.hooks.heard?.()
@@ -750,8 +994,7 @@ export class TunnelEnd {
       try {
         frame = decodeTunnelFrame(bytes, this.from)
       } catch (error) {
-        const protocol = error instanceof RemoteProtocolError && error.code === 'protocol'
-        return this.fail(protocol ? TUNNEL_CLOSE.protocol : TUNNEL_CLOSE.violation, messageOf(error))
+        return this.fail(closeOf(error), messageOf(error))
       }
       this.read(frame)
     } catch (error) {
@@ -792,13 +1035,26 @@ export class TunnelEnd {
   /** The agent: no stream for this OPEN, and why. */
   refuse(stream: TunnelStream, code: TunnelRefusal): void {
     if (this.side !== 'agent' || stream.state !== 'opening') return
-    this.queueControl({ kind: 'REFUSED', stream: stream.id, lane: stream.lane, refused: { code } })
+    if (this.phase === 'open') this.queueControl({ kind: 'REFUSED', stream: stream.id, lane: stream.lane, refused: { code } })
     this.forget(stream, true)
   }
 
-  /** Bytes the local connection sent. */
+  /**
+   * Bytes the local connection sent. One told to pause may send a little
+   * more as it stops; one that goes on regardless, TUNNEL_RETAIN_BYTES past
+   * the word, is held back no longer: its stream overflows and resets, and
+   * the end's memory stays its own.
+   */
   write(stream: TunnelStream, chunk: Uint8Array): void {
     if (stream.state === 'closed' || stream.ending || chunk.byteLength === 0) return
+    if (stream.paused) {
+      stream.unheeded += chunk.byteLength
+      if (stream.unheeded > TUNNEL_RETAIN_BYTES) {
+        this.reset(stream)
+        this.hooks.overflow?.(stream)
+        return
+      }
+    }
     stream.queue.push(chunk)
     stream.queued += chunk.byteLength
     this.flow(stream)
@@ -815,22 +1071,23 @@ export class TunnelEnd {
     this.maybeEnd(stream)
   }
 
-  /** The local connection broke: RESET, and the stream is over. */
+  /** The local connection broke: RESET (when there is a socket to say it on), and the stream is over. */
   reset(stream: TunnelStream): void {
     if (stream.state === 'closed') return
-    this.queueControl({ kind: 'RESET', stream: stream.id, lane: stream.lane })
+    if (this.phase === 'open') this.queueControl({ kind: 'RESET', stream: stream.id, lane: stream.lane })
     this.forget(stream, true)
   }
 
-  /** The socket is gone, or going: every stream is dropped with it, and nothing more is sent. */
+  /** The end is over for good (a revocation, the agent stopping, a peer that broke the rules): every stream is dropped, and nothing more is sent. */
   close(): void {
     if (this.phase === 'closed') return
     this.phase = 'closed'
-    if (this.timer !== null) this.clock.clearTimeout(this.timer)
-    if (this.wake !== null) this.clock.clearTimeout(this.wake)
-    this.timer = this.wake = null
-    for (const stream of [...this.streams.values()]) this.forget(stream, true)
+    this.socket = null
+    for (const timer of [this.timer, this.wake, this.keep]) if (timer !== null) this.clock.clearTimeout(timer)
+    this.timer = this.wake = this.keep = null
     this.control.length = 0
+    this.offered = null
+    for (const stream of [...this.streams.values()]) this.forget(stream, true)
   }
 
   /* ----------------------------------------------------------- reading */
@@ -839,6 +1096,10 @@ export class TunnelEnd {
     if (this.phase === 'greeting') {
       const first = this.side === 'home' ? 'HELLO' : 'WELCOME'
       if (frame.kind !== first) return this.fail(TUNNEL_CLOSE.violation, `${frame.kind} before ${first}`)
+    } else if (this.unconfirmed !== null) {
+      // The agent answers from the life home greeted it into: it is that life's now, and its next HELLO resumes it.
+      this.peerSession = this.unconfirmed
+      this.unconfirmed = null
     }
     switch (frame.kind) {
       case 'HELLO':
@@ -854,7 +1115,7 @@ export class TunnelEnd {
       case 'DATA':
         return this.data(frame.stream, frame.offset, frame.payload, frame.fin)
       case 'ACK':
-        return this.ack(frame.stream, frame.offset)
+        return this.ack(frame.stream, frame.offset, frame.fin === true)
       case 'END':
         return this.ended(frame.stream, frame.offset)
       case 'RESET':
@@ -864,28 +1125,6 @@ export class TunnelEnd {
       case 'PONG':
         return this.pong(frame.id)
     }
-  }
-
-  private greeted(hello: TunnelHello): void {
-    if (this.phase !== 'greeting') return this.fail(TUNNEL_CLOSE.violation, 'A second HELLO')
-    const refusal = this.hooks.hello?.(hello) ?? null
-    if (refusal) return this.fail(refusal.code, refusal.reason)
-    if (this.phase !== 'greeting') return
-    this.queueControl({ kind: 'WELCOME', welcome: { protocol: TUNNEL_PROTOCOL, build: this.build, session: this.session } })
-    this.becomeOpen(hello)
-  }
-
-  private welcomed(welcome: TunnelHello): void {
-    if (this.phase !== 'greeting') return this.fail(TUNNEL_CLOSE.violation, 'A second WELCOME')
-    this.becomeOpen(welcome)
-  }
-
-  private becomeOpen(peer: TunnelHello): void {
-    this.phase = 'open'
-    // The first PING goes now: the chooser and the help pads want a round trip before the first ten seconds are out.
-    this.nextPingAt = this.clock.now()
-    this.reschedule()
-    this.hooks.up?.(peer)
   }
 
   /** The agent: home OPENs a stream, numbered upwards. */
@@ -928,15 +1167,21 @@ export class TunnelEnd {
     if (fin) this.peerEnd(stream)
   }
 
-  private ack(id: number, offset: number): void {
+  /** The peer's cumulative ACK, and with FIN its word that this end's END came: what it covers is no longer kept. */
+  private ack(id: number, offset: number, fin: boolean): void {
     const stream = this.known(id)
     if (!stream) return
     if (offset > stream.sent) return this.fail(TUNNEL_CLOSE.violation, `ACK of stream ${id} past the ${stream.sent} bytes sent`)
-    if (offset <= stream.acked) return
-    this.outbound -= offset - stream.acked
-    stream.acked = offset
+    if (fin && (!stream.endSent || offset !== stream.sent)) return this.fail(TUNNEL_CLOSE.violation, `ACK of stream ${id}'s end before it was sent`)
+    if (offset > stream.acked) {
+      this.outbound -= offset - stream.acked
+      this.release(stream, offset - stream.acked)
+      stream.acked = offset
+    }
+    if (fin) stream.endAcked = true
     this.flow(stream)
     this.ring(stream)
+    this.settle(stream)
     this.pump()
   }
 
@@ -976,55 +1221,303 @@ export class TunnelEnd {
   private peerEnd(stream: TunnelStream): void {
     stream.peerEnded = true
     stream.local?.end()
-    // The last ACK goes as soon as the connection has everything, not TUNNEL_ACK_MS later.
-    if (stream.delivered === stream.received) this.ackNow(stream)
-    if (stream.endSent) this.forget(stream, false)
+    // The ACK that says the end came goes as soon as the connection has everything, not TUNNEL_ACK_MS later.
+    if (stream.delivered === stream.received) this.queueAck(stream)
+    this.settle(stream)
   }
 
   private delivered(stream: TunnelStream, bytes: number): void {
     if (stream.state === 'closed') return
     stream.delivered += bytes
-    if (stream.delivered - stream.ackedOut >= TUNNEL_ACK_BYTES || (stream.peerEnded && stream.delivered === stream.received)) this.ackNow(stream)
-    else if (stream.ackTimer === null) {
+    // Between sockets it is said once the next one is open (restart).
+    if (this.phase !== 'open') return
+    if (stream.delivered - stream.ackedOut >= TUNNEL_ACK_BYTES || (stream.peerEnded && stream.delivered === stream.received)) this.queueAck(stream)
+    else if (stream.ackTimer === null && !stream.ackQueued) {
       stream.ackTimer = this.clock.setTimeout(() => {
         stream.ackTimer = null
-        this.ackNow(stream)
+        this.queueAck(stream)
       }, TUNNEL_ACK_MS)
     }
   }
 
-  private ackNow(stream: TunnelStream): void {
+  /**
+   * A stream's ACK among the control frames, one at most: what its
+   * connection has taken, read when it goes (nextControl). `again` sends it
+   * though nothing changed since the last: after a cut, the peer may not
+   * have heard that one.
+   */
+  private queueAck(stream: TunnelStream, again = false): void {
     if (stream.ackTimer !== null) {
       this.clock.clearTimeout(stream.ackTimer)
       stream.ackTimer = null
     }
-    if (stream.state === 'closed' || stream.delivered === stream.ackedOut) return
-    this.inbound -= stream.delivered - stream.ackedOut
-    stream.ackedOut = stream.delivered
-    // One ACK per stream waits at most; it says the offset as of when it goes.
-    if (stream.ackQueued) return
+    if (stream.state === 'closed' || this.phase !== 'open' || stream.ackQueued) return
+    const due = stream.delivered > stream.ackedOut || (stream.peerEnded && stream.delivered === stream.received && !stream.finAckedOut)
+    if (!due && !again) return
     stream.ackQueued = true
     this.queueControl(stream)
+  }
+
+  /* ---------------------------------------------------------- greeting */
+
+  /** The agent's HELLO: after a cut, the streams it kept with what it received of each, the oldest TUNNEL_RESUME_LIST_MAX of them. */
+  private hello(): TunnelHello {
+    const hello: TunnelHello = { protocol: TUNNEL_PROTOCOL, build: this.build, session: this.session }
+    if (this.streams.size === 0) return hello
+    const offered = new Map<number, TunnelStreamLane>()
+    const resume: TunnelResume[] = []
+    for (const stream of [...this.streams.values()].sort((a, b) => a.id - b.id)) {
+      // More than one greeting holds: the newest reset, as they would without a resume.
+      if (resume.length >= TUNNEL_RESUME_LIST_MAX) {
+        this.cutResets++
+        this.forget(stream, true)
+        continue
+      }
+      offered.set(stream.id, stream.lane)
+      resume.push(resumeOf(stream))
+    }
+    this.offered = offered
+    hello.resume = resume
+    return hello
+  }
+
+  /** Home: the agent's HELLO. The life the streams were kept for resumes them; any other starts anew. */
+  private greeted(hello: TunnelHello): void {
+    if (this.phase !== 'greeting') return this.fail(TUNNEL_CLOSE.violation, 'A second HELLO')
+    const refusal = this.hooks.hello?.(hello) ?? null
+    if (refusal) return this.fail(refusal.code, refusal.reason)
+    if (this.phase !== 'greeting') return
+    const resuming = this.peerSession !== null && hello.session === this.peerSession
+    const outcome = resuming ? this.resumeWith(hello.resume ?? [], null) : this.fresh([], null)
+    if (outcome === null || this.phase !== 'greeting') return
+    // A new life is the agent's once it answers from it (unconfirmed); a resumed one already was.
+    if (!resuming) this.unconfirmed = hello.session
+    const welcome: TunnelWelcome = { protocol: TUNNEL_PROTOCOL, build: this.build, session: this.session }
+    if (resuming) {
+      welcome.resumed = true
+      welcome.streams = outcome.answer
+    }
+    this.queueControl({ kind: 'WELCOME', welcome })
+    this.becomeOpen(hello, outcome, resuming)
+  }
+
+  /** The agent: home's WELCOME. Home of the same life, saying it resumed, goes on with the streams it lists; anything else starts anew. */
+  private welcomed(welcome: TunnelWelcome): void {
+    if (this.phase !== 'greeting') return this.fail(TUNNEL_CLOSE.violation, 'A second WELCOME')
+    const offered = this.offered ?? new Map<number, TunnelStreamLane>()
+    this.offered = null
+    const resuming = this.peerSession !== null && welcome.session === this.peerSession && welcome.resumed === true
+    // A home that resumed a life this end has let go of meanwhile (TUNNEL_RESUME_MS ran out while it greeted) hears a RESET of each stream it goes on with.
+    const outcome = resuming ? this.resumeWith(welcome.streams ?? [], offered) : this.fresh(welcome.resumed === true ? (welcome.streams ?? []) : [], offered)
+    if (outcome === null || this.phase !== 'greeting') return
+    this.peerSession = welcome.session
+    this.becomeOpen(welcome, outcome, resuming)
+  }
+
+  /**
+   * The streams kept, set against the peer's list of what it received of
+   * each: home reads the agent's HELLO (`offered` null), the agent home's
+   * WELCOME (`offered`, what its HELLO listed). A listed stream winds its
+   * sending back to what the peer received (rewind) and goes on. One the
+   * peer does not list is gone there. One home lists that the agent has let
+   * go of since its HELLO is RESET to home. Null — the list names a stream of
+   * no life of this end's, and the tunnel closes.
+   */
+  private resumeWith(entries: readonly TunnelResume[], offered: ReadonlyMap<number, TunnelStreamLane> | null): Resumption | null {
+    const listed = new Map<number, TunnelResume>()
+    for (const entry of entries) {
+      // Home numbered every stream of this life below nextStream; home lists back only streams the agent offered.
+      if (offered === null ? entry.stream >= this.nextStream : !offered.has(entry.stream)) {
+        this.fail(TUNNEL_CLOSE.violation, `A resume of stream ${entry.stream}, of no life of this end's`)
+        return null
+      }
+      listed.set(entry.stream, entry)
+    }
+    const held = new Set(this.streams.keys())
+    const outcome: Resumption = { answer: [], streams: [], resets: [] }
+    for (const stream of [...this.streams.values()]) {
+      const entry = listed.get(stream.id)
+      if (entry === undefined) {
+        const quiet = doneHere(stream)
+        if (!quiet) this.cutResets++
+        this.forget(stream, !quiet)
+      } else if (!this.rewind(stream, entry)) {
+        this.cutResets++
+        outcome.resets.push({ id: stream.id, lane: stream.lane })
+        this.forget(stream, true)
+      } else {
+        outcome.streams.push(stream)
+        if (offered === null) outcome.answer.push(resumeOf(stream))
+      }
+    }
+    if (offered !== null) {
+      for (const entry of entries) if (!held.has(entry.stream)) outcome.resets.push({ id: entry.stream, lane: offered.get(entry.stream)! })
+    }
+    return outcome
+  }
+
+  /**
+   * A new life of the peer's, or none kept: every stream resets (renew). The
+   * agent RESETs the streams of `entries`, those a home that kept the life
+   * goes on with, by the lanes its HELLO offered them on, and counts their
+   * numbers as used: their tails on the wire are dropped, not refused.
+   */
+  private fresh(entries: readonly TunnelResume[], offered: ReadonlyMap<number, TunnelStreamLane> | null): Resumption | null {
+    this.cutResets += this.renew()
+    const outcome: Resumption = { answer: [], streams: [], resets: [] }
+    for (const entry of entries) {
+      const lane = offered?.get(entry.stream)
+      if (lane === undefined) {
+        this.fail(TUNNEL_CLOSE.violation, `A resume of stream ${entry.stream}, never offered`)
+        return null
+      }
+      outcome.resets.push({ id: entry.stream, lane })
+      this.nextStream = Math.max(this.nextStream, entry.stream + 1)
+    }
+    return outcome
+  }
+
+  /**
+   * A stream's sending wound back to what the peer received (`entry.rx`):
+   * the bytes after it go back to the head of its queue, from what it kept,
+   * and its END goes again unless the peer has it. False — the peer's word
+   * is one this stream cannot have earned (below what it ACKed, past what was
+   * sent, an end before it was sent or after it was ACKed), and it resets.
+   */
+  private rewind(stream: TunnelStream, entry: TunnelResume): boolean {
+    if (stream.state !== 'open' || entry.rx < stream.acked || entry.rx > stream.sent) return false
+    if (entry.fin ? !stream.endSent || entry.rx !== stream.sent : stream.endAcked) return false
+    const back = stream.sent - entry.rx
+    if (back > 0) {
+      if (stream.head > 0) {
+        stream.queue[0] = stream.queue[0].subarray(stream.head)
+        stream.head = 0
+      }
+      const moved: Uint8Array[] = []
+      for (let left = back; left > 0;) {
+        const last = stream.retained.length - 1
+        const chunk = stream.retained[last]
+        const from = last === 0 ? stream.retainedHead : 0
+        if (chunk.byteLength - from <= left) {
+          moved.unshift(chunk.subarray(from))
+          left -= chunk.byteLength - from
+          stream.retained.pop()
+          if (stream.retained.length === 0) stream.retainedHead = 0
+        } else {
+          moved.unshift(chunk.subarray(chunk.byteLength - left))
+          stream.retained[last] = chunk.subarray(0, chunk.byteLength - left)
+          left = 0
+        }
+      }
+      stream.queue.unshift(...moved)
+      stream.queued += back
+      stream.sent = entry.rx
+      this.outbound -= back
+    }
+    if (entry.fin) stream.endAcked = true
+    else stream.endSent = false
+    stream.finAckedOut = false
+    return true
+  }
+
+  private becomeOpen(peer: TunnelGreeting, outcome: Resumption, resumed: boolean): void {
+    this.phase = 'open'
+    if (this.keep !== null) {
+      this.clock.clearTimeout(this.keep)
+      this.keep = null
+    }
+    // The first PING goes now: the chooser and the help pads want a round trip before the first ten seconds are out.
+    this.nextPingAt = this.clock.now()
+    this.reschedule()
+    for (const { id, lane } of outcome.resets) this.queueControl({ kind: 'RESET', stream: id, lane })
+    for (const stream of outcome.streams) this.restart(stream)
+    const reset = this.cutResets
+    this.cutResets = 0
+    this.hooks.up?.(peer, { resumed, streams: outcome.streams.length, reset })
+    this.pump()
+  }
+
+  /** A stream that goes on over a new socket: its ACK said again, then its bytes and its end from where the peer stands. */
+  private restart(stream: TunnelStream): void {
+    if (stream.state === 'closed') return
+    this.queueAck(stream, true)
+    this.flow(stream)
+    this.ring(stream)
+    this.maybeEnd(stream)
+    this.settle(stream)
+  }
+
+  /**
+   * The socket is gone. Nothing more is sent; the frames waiting for it go
+   * with it (what they said is said again by the next greeting), and so does
+   * every stream still opening. The rest are kept TUNNEL_RESUME_MS from the
+   * cut of an open socket, however many greetings fail in between.
+   */
+  private detach(): void {
+    const wasOpen = this.phase === 'open'
+    this.socket = null
+    this.phase = 'detached'
+    this.started = false
+    for (const timer of [this.timer, this.wake]) if (timer !== null) this.clock.clearTimeout(timer)
+    this.timer = this.wake = null
+    this.control.length = 0
+    this.pings.clear()
+    this.offered = null
+    for (const stream of [...this.streams.values()]) {
+      // An OPEN not answered both ways: the OPEN, or its answer, may be lost with the socket, and nobody can tell which.
+      if (stream.state !== 'open') {
+        this.cutResets++
+        this.forget(stream, true)
+        continue
+      }
+      stream.ackQueued = false
+      if (stream.ackTimer !== null) {
+        this.clock.clearTimeout(stream.ackTimer)
+        stream.ackTimer = null
+      }
+    }
+    if (wasOpen && this.keep === null) this.keep = this.clock.setTimeout(() => this.expire(), TUNNEL_RESUME_MS)
+  }
+
+  /** TUNNEL_RESUME_MS since the cut and no socket open: what was kept resets, and the next greeting is a new life's. */
+  private expire(): void {
+    this.keep = null
+    if (this.phase === 'detached' || this.phase === 'greeting') this.cutResets += this.renew()
+  }
+
+  /** Every stream reset, and the peer's life forgotten: streams are numbered from 1 again, as a new peer numbers them. Returns how many it reset. */
+  private renew(): number {
+    const count = this.streams.size
+    for (const stream of [...this.streams.values()]) this.forget(stream, true)
+    this.nextStream = 1
+    this.peerSession = this.unconfirmed = null
+    if (this.keep !== null) {
+      this.clock.clearTimeout(this.keep)
+      this.keep = null
+    }
+    return count
   }
 
   /* ----------------------------------------------------------- sending */
 
   private queueControl(frame: TunnelFrame | TunnelStream): void {
-    if (this.phase === 'closed') return
+    if (this.socket === null || this.phase === 'closed') return
     if (this.control.length >= TUNNEL_CONTROL_MAX) return this.fail(TUNNEL_CLOSE.violation, `Over ${TUNNEL_CONTROL_MAX} frames waiting to go`)
     this.control.push(frame)
     this.pump()
   }
 
   private pump(): void {
-    if (this.pumping || this.phase === 'closed') return
+    if (this.pumping) return
     this.pumping = true
     try {
-      // A send may end the tunnel under the loop (a socket that fails at once): `closed` is read again each time.
-      while (!this.closed && this.socket.bufferedAmount <= TUNNEL_SEND_LOWAT) {
+      // A send may end the socket under the loop (one that fails at once): it is read again each time.
+      for (;;) {
+        const socket = this.socket
+        if (socket === null || socket.bufferedAmount > TUNNEL_SEND_LOWAT) break
         const frame = this.nextControl() ?? (this.up ? this.nextData() : null)
         if (frame === null) break
-        this.socket.send(frame, this.afterSend)
+        socket.send(frame, this.afterSend)
       }
     } catch (error) {
       this.pumping = false
@@ -1038,7 +1531,21 @@ export class TunnelEnd {
       const item = this.control.shift()!
       if (!(item instanceof TunnelStream)) return encodeTunnelFrame(item)
       item.ackQueued = false
-      if (item.state !== 'closed') return encodeTunnelFrame({ kind: 'ACK', stream: item.id, lane: item.lane, offset: item.ackedOut })
+      if (item.state === 'closed') continue
+      if (item.ackTimer !== null) {
+        this.clock.clearTimeout(item.ackTimer)
+        item.ackTimer = null
+      }
+      // What the connection has taken as the ACK goes, and FIN once that is everything up to the peer's end.
+      this.inbound -= item.delivered - item.ackedOut
+      item.ackedOut = item.delivered
+      const fin = item.peerEnded && item.ackedOut === item.received
+      if (fin) item.finAckedOut = true
+      const frame = encodeTunnelFrame(fin
+        ? { kind: 'ACK', stream: item.id, lane: item.lane, offset: item.ackedOut, fin: true }
+        : { kind: 'ACK', stream: item.id, lane: item.lane, offset: item.ackedOut })
+      this.settle(item)
+      return frame
     }
     return null
   }
@@ -1131,22 +1638,31 @@ export class TunnelEnd {
     // The last bytes of a stream whose connection already ended carry FIN, and no END follows.
     const fin = stream.ending && stream.queued === 0
     const frame = encodeTunnelFrame({ kind: 'DATA', stream: stream.id, lane: stream.lane, offset: stream.sent, payload, fin })
+    // Kept until the peer ACKs them: a cut before that sends them again (rewind).
+    stream.retained.push(payload)
     stream.sent += size
     this.outbound += size
     this.flow(stream)
     if (fin) {
       stream.endSent = true
-      if (stream.peerEnded) this.forget(stream, false)
+      this.settle(stream)
     }
     return frame
   }
 
-  /** END, once the connection ended and its bytes are out; a stream ended both ways is over. */
+  /** END, once the connection ended and its bytes are out. */
   private maybeEnd(stream: TunnelStream): void {
-    if (!stream.ending || stream.endSent || stream.queued > 0 || stream.state !== 'open') return
+    if (!stream.ending || stream.endSent || stream.queued > 0 || stream.state !== 'open' || this.phase !== 'open') return
     stream.endSent = true
     this.queueControl({ kind: 'END', stream: stream.id, lane: stream.lane, offset: stream.sent })
-    if (stream.peerEnded) this.forget(stream, false)
+    this.settle(stream)
+  }
+
+  /** A stream ended both ways and known so on both sides (LET GO OF ONLY WHEN THE PEER KNOWS, above) is over, its connection left to finish. */
+  private settle(stream: TunnelStream): void {
+    if (stream.state === 'closed' || !stream.endSent || !stream.endAcked || stream.acked !== stream.sent) return
+    if (!stream.peerEnded || stream.delivered !== stream.received || !stream.finAckedOut) return
+    this.forget(stream, false)
   }
 
   /** Pause or resume a stream's local connection: paused while its queue is full or its window spent. */
@@ -1156,7 +1672,10 @@ export class TunnelEnd {
     if (full === stream.paused) return
     stream.paused = full
     if (full) stream.local.pause()
-    else stream.local.resume()
+    else {
+      stream.unheeded = 0
+      stream.local.resume()
+    }
   }
 
   private ring(stream: TunnelStream): void {
@@ -1177,6 +1696,22 @@ export class TunnelEnd {
     if (at < this.cursor[stream.lane]) this.cursor[stream.lane]--
   }
 
+  /** The bytes the peer has just ACKed, no longer kept. */
+  private release(stream: TunnelStream, bytes: number): void {
+    for (let left = bytes; left > 0 && stream.retained.length > 0;) {
+      const first = stream.retained[0]
+      const size = first.byteLength - stream.retainedHead
+      if (size <= left) {
+        stream.retained.shift()
+        stream.retainedHead = 0
+        left -= size
+      } else {
+        stream.retainedHead += left
+        left = 0
+      }
+    }
+  }
+
   /** A stream is over: `destroy` drops its local connection; one that ended both ways is left to finish writing. */
   private forget(stream: TunnelStream, destroy: boolean): void {
     if (stream.state === 'closed') return
@@ -1190,6 +1725,8 @@ export class TunnelEnd {
     stream.queue = []
     stream.queued = 0
     stream.head = 0
+    stream.retained = []
+    stream.retainedHead = 0
     const local = stream.local
     stream.local = null
     if (destroy) local?.destroy()
@@ -1223,7 +1760,7 @@ export class TunnelEnd {
 
   private tick(): void {
     this.timer = null
-    if (this.phase === 'closed') return
+    if (this.socket === null || this.phase === 'closed') return
     const now = this.clock.now()
     if (now - this.heardAt >= TUNNEL_DEAD_MS) return this.fail(null, `No frame for ${TUNNEL_DEAD_MS / 1000} s`)
     if (this.phase === 'greeting' && now - this.startedAt >= TUNNEL_GREETING_MS) {
@@ -1238,15 +1775,18 @@ export class TunnelEnd {
 
   /** The clock's next look: the dead line, and the greeting's or the next PING's. */
   private reschedule(): void {
-    if (this.phase === 'closed') return
+    if (this.socket === null || this.phase === 'closed') return
     if (this.timer !== null) this.clock.clearTimeout(this.timer)
     const at = Math.min(this.heardAt + TUNNEL_DEAD_MS, this.phase === 'greeting' ? this.startedAt + TUNNEL_GREETING_MS : this.nextPingAt)
     this.timer = this.clock.setTimeout(() => this.tick(), Math.max(0, at - this.clock.now()))
   }
 
+  /** The socket fails: a dead link or a greeting that never came is a cut, and the streams wait for the next socket; anything else ends the end. */
   private fail(code: number | null, reason: string): void {
     if (this.phase === 'closed') return
-    this.close()
+    if (code !== null) this.close()
+    else if (this.socket !== null) this.detach()
+    else return
     this.hooks.end(code, reason)
   }
 }
@@ -1329,13 +1869,17 @@ interface TcpEvents extends TcpLike {
 /**
  * A TCP connection's bytes, end and break into its stream, the same at both
  * ends. Its bytes are the stream's; its orderly end (FIN) is the stream's
- * END once the bytes queued before it are out; its close is a RESET only
- * when it broke, or closed without an end. A connection half-open as TCP
- * allows closes once both of its sides are done, and that is often before
- * its stream has sent everything it read: the pace or the window still hold
- * the tail of an answer whose Jupyter has already hung up, and a RESET then
- * would drop exactly that tail. `broke` is what a break does, a RESET by
- * default.
+ * END once the bytes queued before it are out; its close is a RESET unless
+ * both of its sides were done in order: its own end read, and the peer's
+ * written after every byte before it. A connection half-open as TCP allows
+ * closes once both of its sides are done, and that is often before its
+ * stream has sent everything it read: the pace or the window still hold the
+ * tail of an answer whose Jupyter has already hung up, and a RESET then
+ * would drop exactly that tail. One dropped from outside (its listener
+ * closed under it: a stop, a failover) closes with no error, its own end
+ * often read already; kept, its stream would wait for ever for bytes the
+ * connection can no longer take, and hold its window and what it kept at
+ * both ends (§4.8). `broke` is what a break does, a RESET by default.
  */
 export function pipeTcp(end: TunnelEnd, stream: TunnelStream, socket: TcpEvents, broke: () => void = () => end.reset(stream)): void {
   let ended = false
@@ -1345,7 +1889,7 @@ export function pipeTcp(end: TunnelEnd, stream: TunnelStream, socket: TcpEvents,
     end.finish(stream)
   })
   socket.on('close', (hadError) => {
-    if (hadError || !ended) broke()
+    if (hadError || !ended || !stream.peerEnded || stream.delivered !== stream.received) broke()
   })
 }
 
@@ -1362,6 +1906,27 @@ export function resetTcp(socket: TcpLike): void {
     socket.destroy()
   }
 }
+
+/**
+ * The first message on a socket home was dialled on, read as the end that
+ * greets it would read it: a HELLO, or the close that refuses it. Home's door
+ * reads it before it gives the socket to an end (MachineTunnels), because
+ * the HELLO says which one, and a socket that never says it takes no tunnel's
+ * place.
+ */
+export function tunnelHelloOf(message: unknown, binary: boolean): { hello: TunnelHello } | { code: number; reason: string } {
+  const bytes = bytesOf(message)
+  if (!binary || bytes === null) return { code: TUNNEL_CLOSE.violation, reason: 'A text message on the tunnel' }
+  try {
+    const frame = decodeTunnelFrame(bytes, 'agent')
+    return frame.kind === 'HELLO' ? { hello: frame.hello } : { code: TUNNEL_CLOSE.violation, reason: `${frame.kind} before HELLO` }
+  } catch (error) {
+    return { code: closeOf(error), reason: messageOf(error) }
+  }
+}
+
+/** The close a frame the codec refused earns: 4426 for another tunnel protocol, 4400 for anything else. */
+const closeOf = (error: unknown): number => (error instanceof RemoteProtocolError && error.code === 'protocol' ? TUNNEL_CLOSE.protocol : TUNNEL_CLOSE.violation)
 
 /** A WebSocket message as bytes: ws gives a Buffer, an ArrayBuffer or, in fragments, a list of them. */
 function bytesOf(message: unknown): Uint8Array | null {
