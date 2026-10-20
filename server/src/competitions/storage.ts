@@ -13,8 +13,9 @@
  *     data/                 open files; mounted into a submission as /data:ro
  *     secret/               solution.csv and everything that never leaves the
  *                           server; mounted ONLY into the metric container
- *     sealed/               the hidden test: never mounted itself, never served;
- *                           linked into each run's own data folder
+ *     sealed/               the hidden test: never mounted itself, linked into
+ *                           each run's own data folder; served only to the
+ *                           competition's teachers, each GET in the audit log
  *     baseline/             the teacher's sample notebook
  *     s/<submissionId>/in/  the submitted notebook, one, and nothing else
  *     s/<submissionId>/out/ run.json, submission.csv, executed.ipynb
@@ -109,9 +110,12 @@ export function secretDir(id: string): string {
  *
  * Next to `data/` and `secret/`, never inside either: `data/` travels into
  * every notebook container whole and is downloaded file by file, `secret/`
- * goes only to the metric. This one is seen by the notebook and nobody else,
- * and only through a run's own composed folder (composeRunInputs) — so it is
- * never mounted itself, and no door reads from it.
+ * goes only to the metric. Of the entrants this one is seen by the notebook
+ * alone, and only through a run's own composed folder (composeRunInputs) — so
+ * it is never mounted itself. The teachers who may open the competition read
+ * it too, at its own door and in the materials archive, each download a row
+ * in the audit log (routes/admin-competitions.ts); no entrant's door reads
+ * from it.
  */
 export function sealedDir(id: string): string {
   return path.join(competitionDir(id), 'sealed')
@@ -599,9 +603,11 @@ export function readSecretFile(id: string, name: string, limit = 512 * 1024 * 10
 }
 
 /**
- * The bytes of a hidden-test file — for the teacher's header preview only
- * (its columns in the editor). Like the answers, it has no door that hands
- * them out, and no `hold` function to build one with.
+ * The bytes of a hidden-test file, whole and capped: the teacher's header
+ * preview (its columns in the editor). Its downloads do not read it into
+ * memory — the teacher's door streams the file it holds open, the materials
+ * archive streams it from disk (routes/admin-competitions.ts) — and no
+ * entrant's door reads it at all, unlike the open data.
  */
 export function readSealedFile(id: string, name: string, limit = 512 * 1024 * 1024): Buffer | null {
   return readIfExists(path.join(sealedDir(id), checkName(name)), limit)

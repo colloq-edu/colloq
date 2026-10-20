@@ -88,7 +88,18 @@
        scrolls in one axis only is the reason a form narrower than its content
        was unreachable rather than scrollable — the shell's <main> clips, so if
        this box does not scroll sideways, nothing does. -->
-  <div class="min-h-0 min-w-0 flex-1 overflow-auto px-7 pb-10">
+  <!--
+    relative: this box is the containing block of whatever is absolutely
+    placed inside the page without a positioned parent of its own — a
+    visually hidden file input (`sr-only`), a status line for screen readers.
+    Without it such an element took the whole document as its box and sat at
+    its place in the content, far below the window: the document grew to
+    reach it, and the wheel over the rail (which scrolls nothing itself)
+    scrolled the whole panel up past its bottom. The competition's settings
+    grew the document to 1555 px in a 900 px window that way (the owner,
+    20 Oct 2026: the page scrolls on below its footer).
+  -->
+  <div class="relative min-h-0 min-w-0 flex-1 overflow-auto px-7 pb-10">
     {@render children()}
   </div>
 </div>

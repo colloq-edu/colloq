@@ -629,9 +629,43 @@ export const serverMessages: MessageCatalog = {
     "ru": "Окружение {p0} приехало вместе с colloq — удалить его нельзя. Правьте список пакетов: ваша копия ляжет рядом с настройками и переживёт обновление.",
     "en": "{p0} ships with colloq and cannot be deleted here. Edit its package list instead: your copy is saved beside your settings and survives an update."
   },
-  "server.thisEnvironmentCannotBeDeletedWhileLinked.8047b8": {
-    "ru": "Это окружение нельзя удалить, пока есть связанные занятия, в том числе архивные.",
-    "en": "This environment cannot be deleted while linked classes exist, including archived classes."
+  // An environment classes still stand on, refused deletion: who, and where they are moved (routes/admin-environments.ts).
+  "server.environmentInUse.named": {
+    "ru": {
+      "one": "Окружением {name} пользуется {count} занятие: {list}.",
+      "few": "Окружением {name} пользуются {count} занятия: {list}.",
+      "many": "Окружением {name} пользуются {count} занятий: {list}.",
+      "other": "Окружением {name} пользуются {count} занятия: {list}."
+    },
+    "en": {
+      "one": "{count} class uses {name}: {list}.",
+      "other": "{count} classes use {name}: {list}."
+    }
+  },
+  "server.environmentInUse.unnamed": {
+    "ru": {
+      "one": "Окружением {name} пользуется {count} занятие.",
+      "few": "Окружением {name} пользуются {count} занятия.",
+      "many": "Окружением {name} пользуются {count} занятий.",
+      "other": "Окружением {name} пользуются {count} занятия."
+    },
+    "en": {
+      "one": "{count} class uses {name}.",
+      "other": "{count} classes use {name}."
+    }
+  },
+  "server.environmentInUse.more": {
+    "ru": "и ещё {count}",
+    "en": "and {count} more"
+  },
+  // One class of the list, in quotes: a class's name has commas, colons and full stops of its own.
+  "server.environmentInUse.item": {
+    "ru": "«{name}»",
+    "en": "“{name}”"
+  },
+  "server.environmentInUse.move": {
+    "ru": "Удалить его нельзя, пока к нему привязаны занятия, в том числе архивные. Сначала переведите их на другое окружение: «Занятия» → меню занятия → «Настройки», раздел «Окружение»; сменить окружение можно, пока ядро занятия не запущено.",
+    "en": "It cannot be deleted while classes are linked to it, archived ones included. Move them to another environment first: Classes → the class's menu → Settings, the Environment section; the environment can be changed while the class's kernel is not running."
   },
   "server.dockerIsUnavailable.6292c5": {
     "ru": "Docker недоступен",
@@ -692,6 +726,46 @@ export const serverMessages: MessageCatalog = {
   "server.archivedMustBeTrueOrFalse.db6c12": {
     "ru": "Значение archived должно быть true или false",
     "en": "archived must be true or false"
+  },
+  /*
+   * A class moved to another environment from the classes list, and a class
+   * put into a course from it (routes/admin-instance.ts · PATCH).
+   */
+  "server.seminar.environmentName": {
+    "ru": "Окружение указывается названием.",
+    "en": "The environment is given by its name."
+  },
+  "server.seminar.environmentNotBuilt": {
+    "ru": "Окружение «{p0}» не собрано, и ядро занятия на нём не запустится. Соберите его во вкладке «Окружения» или выберите другое.",
+    "en": "Environment “{p0}” has not been built, and the class's kernel cannot start on it. Build it on the Environments tab or choose another."
+  },
+  "server.seminar.environmentNotBuiltAsk": {
+    "ru": "Окружение «{p0}» не собрано, и ядро занятия на нём не запустится. Выберите другое или попросите владельца собрать его.",
+    "en": "Environment “{p0}” has not been built, and the class's kernel cannot start on it. Choose another, or ask the owner to build it."
+  },
+  "server.seminar.environmentBuilding": {
+    "ru": "Окружение «{p0}» сейчас собирается. Выберите его, когда сборка закончится.",
+    "en": "Environment “{p0}” is being built right now. Choose it once the build finishes."
+  },
+  "server.seminar.environmentKernelRunning": {
+    "ru": "Ядро занятия сейчас работает, а новое окружение — это новый контейнер: работающий пропал бы вместе со всеми переменными занятия. Смените окружение, когда ядро остановится: после простоя занятия или после остановки во вкладке «Ресурсы».",
+    "en": "The class's kernel is running, and a new environment is a new container: the running one would go, with every variable of the class. Change the environment once the kernel stops: after the class stands idle, or after a stop on the Resources tab."
+  },
+  "server.seminar.environmentKernelRunningAsk": {
+    "ru": "Ядро занятия сейчас работает, а новое окружение — это новый контейнер: работающий пропал бы вместе со всеми переменными занятия. Смените окружение, когда ядро остановится: после простоя занятия или когда владелец остановит его во вкладке «Ресурсы».",
+    "en": "The class's kernel is running, and a new environment is a new container: the running one would go, with every variable of the class. Change the environment once the kernel stops: after the class stands idle, or when the owner stops it on the Resources tab."
+  },
+  "server.seminar.environmentKernelUnknown": {
+    "ru": "Не удалось узнать, работает ли ядро занятия, и окружение не сменено. Попробуйте ещё раз через минуту.",
+    "en": "Could not tell whether the class's kernel is running, so the environment was not changed. Try again in a minute."
+  },
+  "server.seat.alreadyInCourse": {
+    "ru": "Занятие уже в курсе «{p0}». Перенести его в другой курс можно на странице курса.",
+    "en": "The class is already in the course “{p0}”. It can be moved to another course on the course page."
+  },
+  "server.seat.notSeated": {
+    "ru": "Занятие не удалось поставить в курс: курс тем временем изменился. Обновите список и попробуйте ещё раз.",
+    "en": "The class could not be put into the course: the course changed in the meantime. Reload the list and try again."
   },
   "server.finishedMustBeTrueOrFalse.f9f3c0": {
     "ru": "Значение finished должно быть true или false",
@@ -4201,6 +4275,62 @@ export const serverMessages: MessageCatalog = {
   "server.competitions.gpuManaged": {
     "ru": "На Kubernetes видеокарты для посылок соревнований задаёт кластер (RUNTIME_COMPETITION_GPU_RESOURCE), а не эта форма.",
     "en": "On Kubernetes the cluster sets the cards for competition submissions (RUNTIME_COMPETITION_GPU_RESOURCE), not this form."
+  },
+  // A notebook this server ran with fewer cores than it asked: none of the machines could take it (runner.ts · homeLimits).
+  "server.competitions.coresHere": {
+    "ru": {
+      "one": "Запущена на этом сервере с {count} ядром вместо {asked}: больше у него нет, а машины для посылок, которой хватило бы ядер, не нашлось.",
+      "other": "Запущена на этом сервере с {count} ядрами вместо {asked}: больше у него нет, а машины для посылок, которой хватило бы ядер, не нашлось."
+    },
+    "en": {
+      "one": "Ran on this server with {count} core instead of {asked}: it has no more, and no machine that runs submissions could take it.",
+      "other": "Ran on this server with {count} cores instead of {asked}: it has no more, and no machine that runs submissions could take it."
+    }
+  },
+  // The README of a competition's materials archive (competitions/materials-zip.ts).
+  "server.competitions.materials.page": {
+    "ru": "Страница соревнования: {url}",
+    "en": "The competition’s page: {url}"
+  },
+  "server.competitions.materials.course": {
+    "ru": "Курс: {name}",
+    "en": "Course: {name}"
+  },
+  "server.competitions.materials.inside": {
+    "ru": "Что в архиве",
+    "en": "What is inside"
+  },
+  "server.competitions.materials.task": {
+    "ru": "условие задачи в Markdown, как в редакторе",
+    "en": "the task, in Markdown, as the editor holds it"
+  },
+  "server.competitions.materials.settings": {
+    "ru": "настройки: сроки, лимиты посылки, окружение, метрика, таблицы и файлы",
+    "en": "the settings: the dates, a submission’s limits, the environment, the metric, the boards and the files"
+  },
+  "server.competitions.materials.metric": {
+    "ru": "код метрики, функция score(solution, submission)",
+    "en": "the metric’s code, score(solution, submission)"
+  },
+  "server.competitions.materials.packages": {
+    "ru": "пакеты окружения, в котором выполняются тетради",
+    "en": "the packages of the environment the notebooks run in"
+  },
+  "server.competitions.materials.baseline": {
+    "ru": "базовое решение, тетрадь преподавателя",
+    "en": "the baseline, the teacher’s sample notebook"
+  },
+  "server.competitions.materials.data": {
+    "ru": "открытые данные: то, что скачивают участники",
+    "en": "the open data, what participants download"
+  },
+  "server.competitions.materials.hidden": {
+    "ru": "скрытый тест: во время проверки тетрадь читает его из data/, участникам он не отдаётся",
+    "en": "the hidden test: during the check the notebook reads it from data/; it is never given to participants"
+  },
+  "server.competitions.materials.notInside": {
+    "ru": "Ответов (solution.csv) в архиве нет: их видит только метрика, а competition.json называет их именем, числом строк и столбцами. Нет в нём и ничего об участниках — ни ключей, ни посылок.",
+    "en": "The answers (solution.csv) are not in the archive: only the metric sees them, and competition.json names them by their name, rows and columns. Nothing about the participants is in it either: no keys, no submissions."
   },
   "server.competitions.gpuCpuEnvironment": {
     "ru": "Видеокарта нужна только окружению с GPU, а «{environment}» считает на процессоре. Выберите окружение с GPU или выключите видеокарту.",

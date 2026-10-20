@@ -332,31 +332,28 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
       // rest are counted. Today this door is an owner's, who sees every room,
       // but the refusal is the kind of sentence that leaks once the door moves.
       const actor = currentStaff(req)
-      const names = attached
-        .filter((s) => canSeeRoom(actor, s.id))
-        .slice(0, 3)
-        .map((s) => s.name)
-        .join(', ')
-      const named = Math.min(3, attached.filter((s) => canSeeRoom(actor, s.id)).length)
-      const more = attached.length > named ? `${named > 0 ? ', and ' : ''}${attached.length - named} more` : ''
+      // Each in quotes: class names have commas, colons and full stops of their own, and two of them joined bare read as three.
+      const names = attached.filter((s) => canSeeRoom(actor, s.id)).slice(0, 3).map((s) => tr('server.environmentInUse.item', { name: s.name }))
+      const more = attached.length - names.length
+      const list = more > 0 ? `${names.join(', ')} ${tr('server.environmentInUse.more', { count: more })}` : names.join(', ')
       /*
        * The instruction has to be doable.
        *
-       * This used to say "Move them to another environment first", yet there
-       * is no way to move a seminar to another environment: the name is
-       * chosen at creation and never changes afterwards, neither in the panel
-       * nor through PATCH. Archived seminars count the same as live ones (they
-       * will open just the same and need their image), so they are mentioned
-       * too: otherwise last semester's archived seminar holds the name
-       * forever, and the person looks for a button that does not exist.
+       * Until 0.25 there was no way to move a seminar to another environment
+       * — the name was chosen at creation and never changed afterwards — and
+       * the refusal could only say so. Now it changes in the class's settings
+       * while no kernel of the class runs (admin-instance.ts ·
+       * environmentMove), and the refusal says where. Archived seminars count
+       * the same as live ones (they will open just the same and need their
+       * image) and move the same way, so they are mentioned too: otherwise
+       * last semester's archived seminar holds the name forever. Every word
+       * is the locales': the count and the list were English in either
+       * language.
        */
-      return fail(
-        res,
-        409,
-        'in_use',
-        `${attached.length === 1 ? 'One seminar uses' : `${attached.length} seminars use`} ${name} (${names}${more}). ` +
-          tr('server.thisEnvironmentCannotBeDeletedWhileLinked.8047b8'),
-      )
+      const who = names.length > 0
+        ? tr('server.environmentInUse.named', { name, count: attached.length, list })
+        : tr('server.environmentInUse.unnamed', { name, count: attached.length })
+      return fail(res, 409, 'in_use', `${who} ${tr('server.environmentInUse.move')}`)
     }
     removeEnvironment(name)
     recordAdminEvent({ actor: currentStaff(req), action: 'environment.deleted', target: { type: 'environment', id: name, label: name }, req })

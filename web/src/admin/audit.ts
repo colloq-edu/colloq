@@ -98,6 +98,16 @@ export function auditDetail(event: AdminAuditEvent): string {
       return typeof detail.trusted === 'boolean'
         ? tr(detail.trusted ? 'admin.audit.runnerTrusted' : 'admin.audit.runnerUntrusted')
         : pairs(event)
+    case 'competition.hidden_test_downloaded': {
+      // Which files left, and by which door (routes/admin-competitions.ts ·
+      // recordHiddenTestDownload): the materials archive or the file's own
+      // link. «files: test.csv · via: archive» read as the server's field
+      // names in either language; a door this build does not know still
+      // reads as written.
+      const files = lines(detail.files)
+      if (files.length === 0 || (detail.via !== 'archive' && detail.via !== 'file')) return pairs(event)
+      return tr(detail.via === 'archive' ? 'admin.audit.hiddenTestViaArchive' : 'admin.audit.hiddenTestViaFile', { files: files.join(', ') })
+    }
     case 'environment.created':
     case 'environment.edited':
       // A package list is a set of lines, and what it gained or lost is the

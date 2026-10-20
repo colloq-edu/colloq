@@ -34,6 +34,7 @@
   import RowsSkeleton from '@/components/ui/RowsSkeleton.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
+  import { materialsUrl } from '@/admin/competition-materials'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { copyText } from '@/lib/clipboard'
   import { cn, formatBytes } from '@/lib/utils'
@@ -844,6 +845,20 @@
       rel="noreferrer"
     >
       {tr('admin.competitions.boardOnScreen')}
+    </a>
+    <!-- The whole competition for a colleague, from every tab, «Настройки»
+         among them: the draft editor's header has the same link, as it is
+         there — a short word beside the icon, and on a phone the icon alone,
+         last, beside the buttons rather than a row of its own. -->
+    <a
+      class="btn-outline max-[640px]:order-last"
+      href={materialsUrl(c.id)}
+      download
+      aria-label={tr('admin.competitions.materials.download')}
+      title={tr('admin.competitions.materials.title')}
+    >
+      <Icon name="download" size={14} />
+      <span class="max-[640px]:hidden">{tr('admin.competitions.materials.button')}</span>
     </a>
     {#if phase !== 'over' && c.state === 'live' && adminAuth.isOwner}
       <button
@@ -1745,7 +1760,15 @@
                 </span>
               </div>
               {#if run.teacherError}
-                <pre class="mt-2 overflow-x-auto whitespace-pre-wrap font-mono text-micro leading-5 text-danger">{run.teacherError}</pre>
+                <!-- A run that went through has no error to show: what its
+                     teacher's line says then is a note — this server ran it
+                     on fewer cores than asked (runner.ts · coresNote) — and
+                     reads as one, not in the failure's red. -->
+                <pre
+                  class={cn(
+                    'mt-2 overflow-x-auto whitespace-pre-wrap font-mono text-micro leading-5',
+                    run.verdict === 'ok' ? 'text-muted' : 'text-danger',
+                  )}>{run.teacherError}</pre>
               {/if}
               {#if run.participantError}
                 <p class="mt-2 text-micro text-warning">{run.participantError}</p>

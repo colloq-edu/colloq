@@ -440,12 +440,15 @@ export function widenMaterialKinds(): boolean {
 widenMaterialKinds()
 
 /**
- * The environment a seminar was created with.
+ * The environment a seminar runs on.
  *
- * Chosen once, at creation, and then it is that room's Python for good: a
- * seminar whose packages changed under it mid-class is worse than one that
- * never had the newest ones. Null means "whatever the instance runs", which is
- * what every seminar made before environments existed has.
+ * Chosen at creation, and then it is that room's Python until someone moves
+ * the class in its settings — which is refused while any kernel of the class
+ * runs (routes/admin-instance.ts · environmentMove): a seminar whose packages
+ * changed under it mid-class is worse than one that never had the newest
+ * ones, and a container is never kept on another image than its row's. A new
+ * default changes no room's choice. Null means "whatever the instance runs",
+ * which is what every seminar made before environments existed has.
  *
  * Guarded by table_info rather than a migration framework — one ALTER, and
  * SQLite has no ADD COLUMN IF NOT EXISTS.
@@ -646,10 +649,17 @@ export function createSession(id: string, name: string, environment?: string | n
 
 /**
  * Which environment this room asked for, or null for "whatever the instance
- * runs". Read on every kernel start rather than cached: an operator can change
- * the row, and the answer decides which container the room talks to.
+ * runs". Read on every kernel start rather than cached: the class's settings
+ * (or an operator) can change the row, and the answer decides which container
+ * the room talks to.
  */
-/** Immutable image choice. Legacy rooms resolve once on their first broker launch. */
+/**
+ * The room's image revision under the runtime broker: set at creation (legacy
+ * rooms resolve it once, on their first broker launch), and replaced only by
+ * a move to another environment (routes/admin-instance.ts ·
+ * setRoomEnvironment) or by the repin below, once an upgrade took the pinned
+ * image out of the catalog. A new release alone moves no room.
+ */
 export function sessionKernelRevision(id: string): string | null {
   const row = db.prepare('SELECT kernel_revision FROM sessions WHERE id = ?').get(id) as {kernel_revision:string|null}|undefined
   return row?.kernel_revision ?? null

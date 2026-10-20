@@ -525,7 +525,8 @@ test('the owner\'s card list paints a card a submission is finishing on in amber
 test('back from «Ресурсы» in the other tab, the editor reads the cards again and keeps the form', () => {
   const reread = EDITOR.slice(EDITOR.indexOf('const rereadCards'), EDITOR.indexOf("window.addEventListener('focus', rereadCards)"))
   assert.match(reread, /if \(document\.visibilityState !== 'visible' \|\| Date\.now\(\) - readAt < 2_000\) return/)
-  assert.match(reread, /void adminApi \.competitionSettings\(\) \.then\(\(settings\) => \(runnerCards = settings\.gpu\)\)/)
+  // The cards, and the same answer whole for the cores line (queueSettings).
+  assert.match(reread, /void adminApi \.competitionSettings\(\) \.then\(\(settings\) => \{ runnerCards = settings\.gpu queueSettings = settings \}\)/)
   // Only the cards: the drafts are keyed to the competition and stay as typed.
   assert.doesNotMatch(reread, /onview|limits\s*=|drafted/)
   assert.match(EDITOR, /window\.addEventListener\('focus', rereadCards\) document\.addEventListener\('visibilitychange', rereadCards\)/)

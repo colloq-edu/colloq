@@ -53,6 +53,12 @@ test('the details read as sentences where they are one, and as settings where th
     )
     assert.equal(auditDetail(event({ action: 'settings.instance_changed', detail: { language: 'en', previousLanguage: 'ru' } })), 'Russian → English')
     assert.equal(auditDetail(event({ action: 'room.deleted' })), '')
+    // Which of the hidden test's files left, and by which door.
+    assert.equal(
+      auditDetail(event({ action: 'competition.hidden_test_downloaded', detail: { files: ['extra.parquet', 'test.csv'], via: 'archive' } })),
+      'extra.parquet, test.csv — in the materials archive',
+    )
+    assert.equal(auditDetail(event({ action: 'competition.hidden_test_downloaded', detail: { files: ['test.csv'], via: 'file' } })), "test.csv — by the file's own link")
   } finally {
     setLocaleResolver(() => 'ru')
   }
@@ -60,6 +66,13 @@ test('the details read as sentences where they are one, and as settings where th
     auditDetail(event({ action: 'settings.oracle_changed', detail: { apiKey: 'cleared', sendNames: true } })),
     'apiKey: удалён · sendNames: да',
   )
+  assert.equal(
+    auditDetail(event({ action: 'competition.hidden_test_downloaded', detail: { files: ['extra.parquet', 'test.csv'], via: 'archive' } })),
+    'extra.parquet, test.csv — в архиве материалов',
+  )
+  assert.equal(auditDetail(event({ action: 'competition.hidden_test_downloaded', detail: { files: ['test.csv'], via: 'file' } })), 'test.csv — по ссылке на файл')
+  // A door this build does not know reads as written, never as one of the two.
+  assert.equal(auditDetail(event({ action: 'competition.hidden_test_downloaded', detail: { files: ['test.csv'], via: 'mirror' } })), 'files: test.csv · via: mirror')
 })
 
 test('an event nobody signed in for names the server\'s console when it came from there, and a dash otherwise', () => {

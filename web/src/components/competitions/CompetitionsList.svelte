@@ -12,9 +12,15 @@
    * «Завершить», as it is on its own page. One that still takes late
    * submissions stays a card — it can still be solved — with the late mark
    * over its title, so the list says what the page says.
+   *
+   * «Участвовать» on a card leads to the competition's own join step, the
+   * first step of its «Посылки» tab (JoinStep): the name used to be asked for
+   * in a form unfolding under the card, and the same form was where every
+   * «Участвовать» on a competition's pages sent the visitor — to the top of
+   * this list, with the form below the fold.
    */
   import { tr } from '@shared/i18n'
-  import { LIMITS, competitionPhase, nameForJoin, submissionsOpen } from '@shared/competitions'
+  import { competitionPhase, submissionsOpen } from '@shared/competitions'
   import type { EntrantCompetitionRow } from '@shared/competitions-entrant'
   import {
     dateOf,
@@ -30,27 +36,12 @@
   interface Props {
     rows: EntrantCompetitionRow[]
     now: number
-    /** Who is being asked for a name right now: the competition's slug or null. */
-    joining: string | null
-    joinBusy: boolean
-    joinRefusal: string | null
-    defaultName: string
     onopen: (slug: string) => void
-    onjoin: (slug: string, name: string) => void
-    onjoinstart: (slug: string | null) => void
+    /** «Участвовать»: to the competition's join step. */
+    onjoin: (slug: string) => void
   }
 
-  const {
-    rows,
-    now,
-    joining,
-    joinBusy,
-    joinRefusal,
-    defaultName,
-    onopen,
-    onjoin,
-    onjoinstart,
-  }: Props = $props()
+  const { rows, now, onopen, onjoin }: Props = $props()
 
   /** On-time intake first, then those still waiting for their start. */
   const running = $derived(
@@ -97,42 +88,6 @@
     }
     return mine.place === null ? '—' : placeWithScore(mine.place, mine.score)
   }
-
-  let name = $state('')
-  /*
-   * The name is filled in with the one the person already joined under: a
-   * second competition should not ask for it again. Exactly once, and only
-   * while the field is untouched — otherwise the effect would overwrite what
-   * is being typed in it.
-   */
-  let typed = false
-  $effect(() => {
-    if (joining && !typed && defaultName) name = defaultName
-  })
-
-  /*
-   * The name is checked here by the same function the door uses
-   * (shared/competitions.ts · nameForJoin): a Telegram username or an email,
-   * or the name the person already carries sent back untouched — so someone
-   * who joined as "Anna Kim" before the rule is not stopped at the second
-   * competition by the name the form itself filled in. A name that will not
-   * pass never leaves the browser: the refusal is the same sentence the door
-   * would answer with, only without the round trip.
-   */
-  const invalid = $derived(name.trim() !== '' && nameForJoin(name, defaultName || null) === null)
-  /*
-   * While the person is still typing, the rule is a hint in grey; once they
-   * leave the field or press JOIN with a name that will not do, it is a
-   * refusal in red. Red from the first keystroke would scold "@i" for not yet
-   * being "@ivan". JOIN itself stays pressable: a dim button would swallow
-   * Enter without a word, and pressing it is exactly when the person wants
-   * to hear why.
-   */
-  let touched = $state(false)
-  $effect(() => {
-    void joining
-    touched = false
-  })
 </script>
 
 {#snippet sectionHead(label: string, count: number)}
@@ -184,82 +139,13 @@
       <button
         class="min-h-11 w-full whitespace-nowrap bg-brand px-5 py-2 text-micro font-bold uppercase tracking-caps text-white hover:bg-brand-2"
         type="button"
-        onclick={() => onjoinstart(row.competition.slug)}
+        onclick={() => onjoin(row.competition.slug)}
       >
         {tr('competitions.p.join')}
       </button>
     {/if}
   </div>
 {/snippet}
-
-{#snippet joinForm(row: EntrantCompetitionRow)}
-  <!-- The name is asked for right under the card: the mockup has one
-       button, but without a name there is nothing to call the person
-       on the leaderboard, and sending them to a separate screen for
-       it means losing those who came just to look. -->
-  <form
-    class="flex flex-col gap-2 border-b border-line bg-surface p-4"
-    onsubmit={(event) => {
-      event.preventDefault()
-      if (!name.trim()) return
-      if (invalid) {
-        touched = true
-        return
-      }
-      onjoin(row.competition.slug, name.trim())
-    }}
-  >
-    <label class="text-ui font-bold text-ink" for="competition-join-name">
-      {tr('competitions.handle.label')}
-    </label>
-    <p id="competition-join-hint" class="text-micro text-muted">{tr('competitions.p.joinHint')}</p>
-    <div class="flex flex-wrap gap-2">
-      <!-- `inputmode="email"` puts "@" on a phone's first keyboard
-           page, which both kinds of name start or hinge on; `type`
-           stays text, since "@ivan_petrov" is no address to a browser. -->
-      <input
-        id="competition-join-name"
-        class="h-9 min-w-0 grow border border-line bg-canvas px-3 text-2xs text-ink placeholder:text-faint focus:border-accent focus:outline-none"
-        placeholder={tr('competitions.handle.placeholder')}
-        aria-describedby={invalid ? 'competition-join-hint competition-join-rule' : 'competition-join-hint'}
-        aria-invalid={invalid && touched}
-        bind:value={name}
-        oninput={() => (typed = true)}
-        onblur={() => (touched = invalid)}
-        maxlength={LIMITS.entrantName}
-        inputmode="email"
-        autocapitalize="none"
-        autocorrect="off"
-        spellcheck="false"
-      />
-      <button
-        class="h-9 shrink-0 bg-brand px-4 text-micro font-black uppercase tracking-label text-white disabled:bg-faint"
-        type="submit"
-        disabled={!name.trim() || joinBusy}
-      >
-        {tr('competitions.p.join')}
-      </button>
-      <button
-        class="h-9 shrink-0 px-2 text-2xs text-muted"
-        type="button"
-        onclick={() => onjoinstart(null)}
-      >
-        {tr('competitions.p.cancel')}
-      </button>
-    </div>
-    {#if invalid}
-      <p
-        id="competition-join-rule"
-        class="text-micro leading-[18px] {touched ? 'text-danger' : 'text-muted'}"
-      >
-        {tr('competitions.refusal.nameNotHandle')}
-      </p>
-    {:else if joinRefusal}
-      <p class="text-micro leading-[18px] text-danger">{joinRefusal}</p>
-    {/if}
-  </form>
-{/snippet}
-
 <div class="flex flex-col gap-9">
   <div class="flex flex-col gap-3">
     <h1 class="break-words text-[36px] font-black leading-[40px] tracking-[-0.03em] text-ink sm:text-[48px] sm:leading-[52px]">
@@ -346,10 +232,6 @@
             {@render action(row)}
           </div>
         </article>
-
-        {#if joining === row.competition.slug}
-          {@render joinForm(row)}
-        {/if}
       {/each}
     </section>
 
@@ -389,10 +271,6 @@
               {@render action(row)}
             </div>
           </article>
-
-          {#if joining === row.competition.slug}
-            {@render joinForm(row)}
-          {/if}
         {:else}
           <article class="flex flex-wrap items-center gap-x-8 gap-y-3 border-b border-line py-4">
             <div class="flex min-w-0 flex-[1_1_280px] flex-col gap-1">

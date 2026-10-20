@@ -131,6 +131,15 @@ import { startSubmissionSweep, stopSubmissionSweep } from './housekeeping.js'
  */
 import { cancelRemote } from './remote/release.js'
 import { wakeAllRunners } from './remote/wake.js'
+/*
+ * Which notebooks this server leaves to the machines (leftToMachines): by the
+ * take's own predicate and the fleet the forecast reads. Neither imports this
+ * module back.
+ */
+import { fitCache, machineFit, rowNeeds } from './remote/fit.js'
+import { remoteFleet, type RemoteFleet } from './remote/views.js'
+import { anyRunnerEver } from './remote/store.js'
+import { homeRunRoom, RUN_RESERVE_MB, type RunRoom } from './executors.js'
 import { CompetitionResourcePending } from './broker-runner.js'
 import {
   CLUSTER_GPU,
@@ -214,16 +223,12 @@ export function setQueueSlots(slots: number | 'auto'): number {
   return value
 }
 
-/**
- * Memory headroom on top of what a submission asks for.
- *
- * A container costs more than its `--memory`: on top of it there is the
- * docker layer, the python process itself before the notebook's first line,
- * and the tmpfs, which counts toward the limit but is not taken up at once.
- * Two hundred and fifty-six megabytes is the cushion at which `docker run`
- * does not refuse at the boundary.
+/*
+ * The memory headroom on top of what a submission asks for, kept where what
+ * one run can be given is worked out (executors.ts · RUN_RESERVE_MB): the
+ * defaults' bound leaves it as the reservation below adds it, from one number.
  */
-export const RUN_RESERVE_MB = 256
+export { RUN_RESERVE_MB }
 
 /**
  * What the pump reserves for one queue row: the larger of its step's and the
@@ -424,7 +429,9 @@ export async function pumpOnce(): Promise<number> {
      * take of this pass already sees the card the first one took.
      */
     const gpu = lanes.some((lane) => lane.lane === 'notebook') ? await queueCards(capacity, noteClusterGpuSlots(capabilities.gpuSlots)) : undefined
-    started = takeLanes(lanes, gpu, pass)
+    // The notebooks too big for this server, left to the machines (leftToMachines): passed over here, read once per pass.
+    const skip = lanes.some((lane) => lane.lane === 'notebook') ? leftToMachines() : []
+    started = takeLanes(lanes, gpu, pass, skip)
   } finally {
     pumping = false
   }
@@ -446,8 +453,11 @@ export async function pumpOnce(): Promise<number> {
  * refused for anything else (the disk, a take that found nothing) stop only
  * their own lane, as a lane that could not take always did: a notebook too
  * big for what is left must not keep a two-gigabyte metric from starting.
+ *
+ * `skip` — the notebooks this server leaves to the machines
+ * (leftToMachines): passed over by the notebook lane's head and take alike.
  */
-function takeLanes(lanes: readonly PumpLane[], gpu: QueueGpu | undefined, pass: PumpPass): number {
+function takeLanes(lanes: readonly PumpLane[], gpu: QueueGpu | undefined, pass: PumpPass, skip: readonly string[] = []): number {
   let started = 0
   const open = new Set(lanes)
   for (;;) {
@@ -455,7 +465,7 @@ function takeLanes(lanes: readonly PumpLane[], gpu: QueueGpu | undefined, pass: 
     for (const lane of open) {
       const cards = lane.lane === 'notebook' ? gpu : undefined
       // The same filter as the take: the work admitted is the work taken.
-      const row = runningCount(lane.lane) < lane.slots ? nextQueueRow(Date.now(), cards, lane.lane) : null
+      const row = runningCount(lane.lane) < lane.slots ? nextQueueRow(Date.now(), cards, lane.lane, lane.lane === 'notebook' ? skip : []) : null
       if (row) heads.push({ lane, row, gpu: cards })
       else open.delete(lane)
     }
@@ -463,7 +473,7 @@ function takeLanes(lanes: readonly PumpLane[], gpu: QueueGpu | undefined, pass: 
     heads.sort((a, b) => laneHeadOrder(a.row, b.row))
     let took = false
     for (const head of heads) {
-      const taken = takeHead(head.lane, head.row, head.gpu, pass)
+      const taken = takeHead(head.lane, head.row, head.gpu, pass, head.lane.lane === 'notebook' ? skip : [])
       if (taken === 'taken') {
         started++
         took = true
@@ -480,7 +490,7 @@ function takeLanes(lanes: readonly PumpLane[], gpu: QueueGpu | undefined, pass: 
  * Admit and take one lane's head: `taken`; refused for memory, with what it
  * needs; `other` — the disk refused it, or the take found nothing.
  */
-function takeHead(lane: PumpLane, candidate: QueueRow, gpu: QueueGpu | undefined, pass: PumpPass): 'taken' | 'other' | { needMb: number } {
+function takeHead(lane: PumpLane, candidate: QueueRow, gpu: QueueGpu | undefined, pass: PumpPass, skip: readonly string[] = []): 'taken' | 'other' | { needMb: number } {
   const competition = getCompetition(candidate.competitionId)
   // A metric row reserves 256 + the metric's memory; a notebook, the larger of its two steps (runReservationMb).
   const needMb = competition ? runReservationMb(competition, candidate.kind) : RUN_RESERVE_MB
@@ -513,7 +523,7 @@ function takeHead(lane: PumpLane, candidate: QueueRow, gpu: QueueGpu | undefined
     return 'other'
   }
   forgetWarning(lane.lane)
-  const row = takeNext({ boot: BOOT, slots: lane.slots, gpu, lane: lane.lane })
+  const row = takeNext({ boot: BOOT, slots: lane.slots, gpu, lane: lane.lane, skip })
   if (!row) {
     release()
     return 'other'
@@ -637,6 +647,107 @@ async function queueCards(capacity: Capacity, clusterSlots: number): Promise<Que
     warnOnce('cards', `[competitions] runner cards could not be counted: ${error instanceof Error ? error.message : String(error)}`)
     return { cards: [] }
   }
+}
+
+/* ----------------------------------------- what this server can give a run */
+
+/**
+ * The waiting notebooks this server passes over and leaves to the machines
+ * that run submissions — of two kinds, for two reasons.
+ *
+ * MORE MEMORY THAN IT COULD EVER RESERVE (runReservationMb against its
+ * memory less the host's reserve, executors.ts · homeRunRoom): always. Its
+ * admission refuses such a notebook at every pass whatever ends (takeHead),
+ * and as the notebook lane's head it held the lane for good: every
+ * competition's notebooks behind it waited for one that would never start
+ * here, with a machine on line or not. Passed over, it waits for a machine
+ * with that much memory (remote/lease.ts · takeForRunner), and the rest of
+ * the queue goes on here.
+ *
+ * MORE CPUS THAN IT HAS: while a machine will take it. Taken here, such a
+ * notebook failed at docker before its first cell: `docker run --cpus=16` on
+ * an eight-core server answers «Range of CPUs is from 0.01 to 8.00», and the
+ * machines with thirty-two cores stood idle beside it (vsos, October 2026).
+ * "Will take" is what the machine's own take asks (remote/lease.ts ·
+ * takeForRunner): a live machine (remote/views.ts · remoteFleet) that offers
+ * places at all — one with none takes nothing — and is not skipping this
+ * submission for a decline (REMOTE_DECLINE_SKIP_MS), by the take's own
+ * predicate (remote/fit.ts · machineFit) against all it has, its runs ended:
+ * a card share for a GPU notebook, the trust for a hidden test, the room. An
+ * image or a data set it is still fetching does not count against it: a
+ * machine fetches them for the competitions that take uploads
+ * (remote/want.ts). With no machine that will, this server takes the
+ * notebook after all and runs it on the CPUs it has (homeLimits): slower
+ * beats never, and a notebook the only fitting machine declined is taken
+ * here at once, as the decline's own rule says (remote/release.ts).
+ *
+ * Never under the cluster, which has no machines and sizes its own Pods;
+ * nothing of the machines is read until one was ever connected, or while no
+ * waiting notebook asks more CPUs than this server has. `home` — this
+ * server's room (executors.ts); `fleet` — the machines, when the caller has
+ * read them already (remote/views.ts · remoteFleet), as a forecast does once
+ * per pass.
+ */
+export function leftToMachines(
+  rows: readonly QueueRow[] = queueRows(),
+  options: { now?: number; home?: RunRoom; fleet?: RemoteFleet } = {},
+): string[] {
+  if (competitionRunner().backend === 'broker') return []
+  const home = options.home ?? homeRunRoom()
+  // Each competition read once: a class's rows are mostly of one.
+  const sizes = new Map<string, 'memory' | 'cpus' | null>()
+  const sizeOf = (competitionId: string): 'memory' | 'cpus' | null => {
+    if (!sizes.has(competitionId)) {
+      const competition = getCompetition(competitionId)
+      sizes.set(competitionId, competition === null
+        ? null
+        : runReservationMb(competition, 'notebook') > home.memoryMb ? 'memory' : competition.limits.cpus > home.cpus ? 'cpus' : null)
+    }
+    return sizes.get(competitionId)!
+  }
+  const left: string[] = []
+  const wide: QueueRow[] = []
+  for (const row of rows) {
+    if (row.state !== 'waiting' || row.kind !== 'notebook') continue
+    const size = sizeOf(row.competitionId)
+    if (size === 'memory') left.push(row.submissionId)
+    else if (size === 'cpus') wide.push(row)
+  }
+  if (wide.length === 0 || !anyRunnerEver()) return left
+  const machines = (options.fleet ?? remoteFleet(options.now ?? Date.now())).machines.filter((machine) => machine.cap > 0)
+  if (machines.length === 0) return left
+  const cache = fitCache()
+  for (const row of wide) {
+    const read = rowNeeds(row, cache)
+    if (!read.ok) continue
+    const taken = machines.some((machine) => {
+      if (machine.declined.has(row.submissionId)) return false
+      const refusal = machineFit(read.needs, machine.fit)
+      return refusal === null || refusal === 'image' || refusal === 'data'
+    })
+    if (taken) left.push(row.submissionId)
+  }
+  return left
+}
+
+/**
+ * A step's limits as this server can run them: never more CPUs than it has.
+ *
+ * A notebook with more CPUs than this server reaches here only when no
+ * machine will take it (leftToMachines), and a metric always runs here, for
+ * a competition whose notebooks ask sixteen cores of a machine as much as for
+ * any other: `docker run --cpus` above the daemon's count is refused
+ * outright, so the run gets this server's count instead, and a notebook's
+ * run row says so (settleNotebook). Memory is never cut this way — a smaller
+ * memory is a different verdict, not a slower run — and a notebook asking
+ * more than this server could ever reserve never reaches here: the pump
+ * passes it over (leftToMachines). Under the cluster the Pod's size is the
+ * cluster's to refuse or place, as it always was.
+ */
+function homeLimits(limits: StepLimits): StepLimits {
+  if (competitionRunner().backend === 'broker') return limits
+  const cpus = homeRunRoom().cpus
+  return limits.cpus > cpus ? { ...limits, cpus } : limits
 }
 
 /** Wait for everything running in this process. */
@@ -1020,7 +1131,8 @@ export function prepareNotebook(row: QueueRow, placement: NotebookPlacement, con
   if (!context) return null
   const { competition, submission, provenance } = context
   const binding = getBinding(submission.id)
-  const limits = limitsFor(competition, 'notebook')
+  // Here, never more CPUs than this server has (homeLimits); a machine's lease fits its machine already (remote/fit.ts).
+  const limits = placement === 'here' ? homeLimits(limitsFor(competition, 'notebook')) : limitsFor(competition, 'notebook')
   const container = containerName(submission.id, 'notebook', newToken())
   const sealedFiles = listFiles(competition.id, 'sealed').map((file) => file.name)
   const sealed = sealedFiles.length > 0
@@ -1210,7 +1322,8 @@ export async function settleNotebook(prepared: PreparedNotebook, end: NotebookEn
     outcome.status === 'cell_error' ? packageSources(competition, submission, binding) : null, gpu)
   const errorType = outcome.status === 'cell_error' && outcome.diagnostics.killedBy !== 'output' ? errorTypeOf(outcome.detail) : null
   const briefError = sealed ? briefNote(outcome, competition, errorType, gpu) : null
-  const teacherError = teacherNote(outcome, gpu)
+  // A run this server gave fewer cores than it asked says so first (coresNote).
+  const teacherError = [coresNote(prepared), teacherNote(outcome, gpu)].filter(Boolean).join('\n') || null
   finishRun(prepared.runId, {
     finishedAt: Date.now(),
     verdict: outcome.status,
@@ -1902,7 +2015,8 @@ async function scoreStep(
       secretDir: secrets,
       submissionDir: scoreInput,
       outDir,
-      limits: limitsFor(competition, 'metric'),
+      // Always on this server, so never more CPUs than it has (homeLimits).
+      limits: homeLimits(limitsFor(competition, 'metric')),
     })
   } catch(error) {
     if(error instanceof CompetitionResourcePending)discardUnstartedRun(run.id,row.attemptId!)
@@ -2285,6 +2399,17 @@ export function teacherNote(outcome: RunOutcome, gpu: RunRequest['gpu'] | null =
   }${outcome.diagnostics.killedBy ? ` · killed by ${outcome.diagnostics.killedBy}` : ''}`
   const detail = outcome.status === 'dependency_error' ? outcome.detail : ''
   return [head, detail, cardNote(outcome, gpu), outcome.log].filter(Boolean).join('\n')
+}
+
+/**
+ * The teacher's line on a notebook's run row when this server ran it with
+ * fewer cores than its competition asks (homeLimits: none of the machines
+ * could take it): why it ran slower than its limits say, and how many it
+ * had. `null` — the run had what it asked, or ran on a machine.
+ */
+function coresNote(prepared: Pick<PreparedNotebook, 'placement' | 'limits' | 'competition'>): string | null {
+  if (prepared.placement !== 'here' || prepared.limits.cpus >= prepared.competition.limits.cpus) return null
+  return tr('server.competitions.coresHere', { count: prepared.limits.cpus, asked: prepared.competition.limits.cpus })
 }
 
 /**

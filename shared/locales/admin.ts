@@ -26,8 +26,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Settings"
   },
   "admin.seminar.settingsSubtitle": {
-    "ru": "права участников и ресурсы",
-    "en": "participant permissions and resources"
+    "ru": "права участников, окружение и ресурсы",
+    "en": "participant permissions, environment and resources"
   },
   "admin.resources.notSaved": {
     "ru": "Память не сохранилась.",
@@ -144,6 +144,111 @@ export const adminMessages: MessageCatalog = {
   "admin.seminars.lede": {
     "ru": "Комнаты ваших курсов и занятия без курса: ссылка для входа, правила и страница после занятия.",
     "en": "Rooms of your courses and classes outside them: the join link, the rules and the page after class."
+  },
+  /*
+   * A class's environment in its row and in its settings window, and a class
+   * outside courses put into one from its row (Seminars.svelte). The audit
+   * label of the move lives here too, beside the words it is made with.
+   */
+  "admin.audit.action.room.environment_changed": {
+    "ru": "Сменено окружение занятия",
+    "en": "Class environment changed"
+  },
+  "admin.seminars.list.row.environment": {
+    "ru": "Окружение занятия: нажмите, чтобы сменить",
+    "en": "The class's environment: press to change it"
+  },
+  "admin.seminars.list.seat.action": {
+    "ru": "Добавить в курс…",
+    "en": "Add to a course…"
+  },
+  "admin.seminars.list.seat.title": {
+    "ru": "В какой курс",
+    "en": "Into which course"
+  },
+  "admin.seminars.list.seat.back": {
+    "ru": "← Назад",
+    "en": "← Back"
+  },
+  "admin.seminars.list.seat.none": {
+    "ru": "Вы пока не ведёте ни одного курса.",
+    "en": "You do not teach any course yet."
+  },
+  "admin.seminars.list.seat.noneOwner": {
+    "ru": "У вас нет своих курсов. Все курсы инстанса — во «Все».",
+    "en": "You have no courses of your own. Every course of the instance is under «All»."
+  },
+  "admin.seminars.list.seat.failed": {
+    "ru": "Не добавлено в курс: {reason}",
+    "en": "Not added to the course: {reason}"
+  },
+  "admin.seminars.env.hint": {
+    "ru": "Окружение Python этого занятия. Сменить его можно, пока ядро занятия не запущено: следующий запуск поднимет ядро уже на новом.",
+    "en": "The Python environment of this class. It can be changed while the class's kernel is not running: the next start brings the kernel up on the new one."
+  },
+  "admin.seminars.env.running": {
+    "ru": "Ядро занятия сейчас работает, и под ним окружение не сменить: пропали бы все переменные занятия. Сменить можно, когда ядро остановится — после простоя занятия или после остановки во вкладке «Ресурсы».",
+    "en": "The class's kernel is running now, and the environment cannot change under it: every variable of the class would be lost. It can be changed once the kernel stops — after the class stands idle, or after a stop on the Resources tab."
+  },
+  "admin.seminars.env.runningAsk": {
+    "ru": "Ядро занятия сейчас работает, и под ним окружение не сменить: пропали бы все переменные занятия. Сменить можно, когда ядро остановится — после простоя занятия или когда владелец остановит его во вкладке «Ресурсы».",
+    "en": "The class's kernel is running now, and the environment cannot change under it: every variable of the class would be lost. It can be changed once the kernel stops — after the class stands idle, or when the owner stops it on the Resources tab."
+  },
+  "admin.seminars.env.runningTitle": {
+    "ru": "Ядро занятия работает: окружение можно сменить, когда оно остановится",
+    "en": "The class's kernel is running: the environment can be changed once it stops"
+  },
+  "admin.seminars.env.openResources": {
+    "ru": "Открыть «Ресурсы»",
+    "en": "Open Resources"
+  },
+  "admin.seminars.env.noGpu": {
+    "ru": "нет GPU",
+    "en": "no GPU"
+  },
+  "admin.seminars.env.noGpuTitle": {
+    "ru": "Окружению {p0} нужен GPU, а занятиям на этой машине видеокарта не выделена",
+    "en": "{p0} needs a GPU, and this machine gives classes none"
+  },
+  "admin.seminars.env.gpuToSubmissionsTitle": {
+    "ru": "Окружению {p0} нужен GPU, а все видеокарты машины отданы посылкам соревнований",
+    "en": "{p0} needs a GPU, and every card on this machine is given to competition submissions"
+  },
+  "admin.seminars.env.chosenNoGpu": {
+    "ru": "Окружению нужен GPU, а занятиям на этой машине видеокарта не выделена: ядро не запустится. Выберите окружение без GPU или попросите владельца выделить видеокарту занятиям.",
+    "en": "This environment needs a GPU, and this machine gives classes none: the kernel will not start. Choose an environment without a GPU, or ask the owner to give classes a card."
+  },
+  "admin.seminars.env.chosenNoGpuOwner": {
+    "ru": "Окружению нужен GPU, а занятиям на этой машине видеокарта не выделена: ядро не запустится. Выберите окружение без GPU или назовите видеокарты в KERNEL_GPUS в .env и перезапустите сервер.",
+    "en": "This environment needs a GPU, and this machine gives classes none: the kernel will not start. Choose an environment without a GPU, or name the cards in KERNEL_GPUS in .env and restart the server."
+  },
+  "admin.seminars.env.chosenGpuToSubmissions": {
+    "ru": "Окружению нужен GPU, а все видеокарты машины отданы посылкам соревнований: ядро не запустится, пока владелец не вернёт карту занятиям во вкладке «Ресурсы».",
+    "en": "This environment needs a GPU, and every card on this machine is given to competition submissions: the kernel will not start until the owner gives a card back to classes on the Resources tab."
+  },
+  "admin.seminars.env.chosenGpuToSubmissionsOwner": {
+    "ru": "Окружению нужен GPU, а все видеокарты машины отданы посылкам соревнований: ядро не запустится, пока вы не вернёте карту занятиям во вкладке «Ресурсы».",
+    "en": "This environment needs a GPU, and every card on this machine is given to competition submissions: the kernel will not start until you give a card back to classes on the Resources tab."
+  },
+  "admin.seminars.env.chosenUnbuilt": {
+    "ru": "Окружение занятия не собрано: ядро не запустится. Соберите его во вкладке «Окружения» или выберите другое.",
+    "en": "The class's environment has not been built: its kernel will not start. Build it on the Environments tab or choose another."
+  },
+  "admin.seminars.env.chosenUnbuiltAsk": {
+    "ru": "Окружение занятия не собрано: ядро не запустится. Выберите другое или попросите владельца собрать его.",
+    "en": "The class's environment has not been built: its kernel will not start. Choose another, or ask the owner to build it."
+  },
+  "admin.seminars.env.chosenBuilding": {
+    "ru": "Окружение занятия собирается: ядро запустится, когда сборка закончится.",
+    "en": "The class's environment is being built: its kernel starts once the build finishes."
+  },
+  "admin.seminars.env.chosenStale": {
+    "ru": "Окружению нужна пересборка: пока его не соберут заново, ядро занятия запускается на прежней сборке.",
+    "en": "The environment needs a rebuild: until it is built again, the class's kernel starts on the earlier build."
+  },
+  "admin.seminars.env.failed": {
+    "ru": "Окружение не сменилось: {reason}",
+    "en": "The environment was not changed: {reason}"
   },
   "admin.courses": {
     "ru": "Курсы",
@@ -702,8 +807,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Rooms run on the base image: numpy, pandas, matplotlib, scikit-learn. Make one to add your course's own packages on top."
   },
   "admin.an.environment.is.a.container.image.each.seminar.runs.in.its.own": {
-    "ru": "Окружение — это образ контейнера. Каждое занятие работает в своём контейнере с окружением, выбранным при создании. Изменение окружения по умолчанию применяется к",
-    "en": "An environment is a container image. Each class runs in its own container using the environment selected at creation. Changing the default applies to"
+    "ru": "Окружение — это образ контейнера. Каждое занятие работает в своём контейнере с выбранным для него окружением. Изменение окружения по умолчанию применяется к",
+    "en": "An environment is a container image. Each class runs in its own container using the environment chosen for it. Changing the default applies to"
   },
   "admin.new": {
     "ru": "новым",
@@ -909,9 +1014,9 @@ export const adminMessages: MessageCatalog = {
     "ru": "Окружение",
     "en": "Environment"
   },
-  "admin.the.python.environment.for.this.seminar.it.is.selected.when.the.s": {
-    "ru": "Окружение Python для этого занятия. Выбирается при создании занятия.",
-    "en": "The Python environment for this class. It is selected when the class is created."
+  "admin.the.python.environment.for.this.class.it.can.be.changed.later.in.its.settings": {
+    "ru": "Окружение Python для этого занятия. Потом его можно сменить в настройках занятия, пока ядро занятия не запущено.",
+    "en": "The Python environment for this class. It can be changed later in the class settings while the class's kernel is not running."
   },
   "admin.built": {
     "ru": "собрано",
@@ -5200,8 +5305,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Hidden test"
   },
   "admin.competitions.sealedHeadNote": {
-    "ru": "не скачивается · подставляется при проверке",
-    "en": "never downloaded · swapped in during the check"
+    "ru": "участникам не отдаётся · подставляется при проверке",
+    "en": "never given to participants · swapped in during the check"
   },
   "admin.competitions.sealedReplaces": {
     "ru": "заменяет пример",
@@ -5299,13 +5404,149 @@ export const adminMessages: MessageCatalog = {
     "ru": "скачивается",
     "en": "downloadable"
   },
+  // The competition's materials for another teacher (routes/admin-competitions.ts · materials.zip, files, sealed, baseline).
+  "admin.competitions.materials.download": {
+    "ru": "Скачать материалы",
+    "en": "Download materials"
+  },
+  "admin.competitions.materials.button": {
+    "ru": "Материалы",
+    "en": "Materials"
+  },
+  "admin.competitions.materials.title": {
+    "ru": "Скачать материалы: условие, настройки, метрику, данные, скрытый тест и базовое решение — одним архивом. Ответов в нём нет; скачивание скрытого теста записывается в журнал действий.",
+    "en": "Download the materials: the task, the settings, the metric, the data, the hidden test and the baseline in one archive. The answers are not in it; downloading the hidden test is recorded in the audit log."
+  },
+  "admin.competitions.download": {
+    "ru": "Скачать",
+    "en": "Download"
+  },
+  "admin.competitions.downloadFile": {
+    "ru": "Скачать {name}",
+    "en": "Download {name}"
+  },
+  "admin.competitions.sealedDownloadNote": {
+    "ru": "Скачивание скрытого теста записывается в журнал действий",
+    "en": "Downloading the hidden test is recorded in the audit log"
+  },
+  "admin.audit.action.competition.hidden_test_downloaded": {
+    "ru": "Скачан скрытый тест",
+    "en": "Hidden test downloaded"
+  },
+  // Which of its files, and by which door: the materials archive or the file's own link (web/src/admin/audit.ts).
+  "admin.audit.hiddenTestViaArchive": {
+    "ru": "{files} — в архиве материалов",
+    "en": "{files} — in the materials archive"
+  },
+  "admin.audit.hiddenTestViaFile": {
+    "ru": "{files} — по ссылке на файл",
+    "en": "{files} — by the file's own link"
+  },
+  // A submission's cores and memory against what its executors can give (competitions/settings.ts · submissionCeiling).
+  "admin.competitions.coresOverHome": {
+    "ru": {
+      "one": "Ядер больше, чем у этого сервера ({count}): такие посылки возьмёт машина для посылок, а если подходящей нет на связи — их выполнит этот сервер на своём {count} ядре.",
+      "other": "Ядер больше, чем у этого сервера ({count}): такие посылки возьмёт машина для посылок, а если подходящей нет на связи — их выполнит этот сервер на своих {count} ядрах."
+    },
+    "en": {
+      "one": "More cores than this server has ({count}): a machine that runs submissions will take them, and if none that fits is online, this server runs them on its own {count} core.",
+      "other": "More cores than this server has ({count}): a machine that runs submissions will take them, and if none that fits is online, this server runs them on its own {count} cores."
+    }
+  },
+  "admin.competitions.coresOverCeiling": {
+    "ru": {
+      "one": "Столько ядер не даёт ни этот сервер, ни машины для посылок (самое большее {max} — {where}): такие посылки выполнит этот сервер на своём {count} ядре, медленнее, чем рассчитано.",
+      "other": "Столько ядер не даёт ни этот сервер, ни машины для посылок (самое большее {max} — {where}): такие посылки выполнит этот сервер на своих {count} ядрах, медленнее, чем рассчитано."
+    },
+    "en": {
+      "one": "Neither this server nor any machine that runs submissions gives that many cores (at most {max}, {where}): this server runs them on its own {count} core, slower than planned.",
+      "other": "Neither this server nor any machine that runs submissions gives that many cores (at most {max}, {where}): this server runs them on its own {count} cores, slower than planned."
+    }
+  },
+  "admin.competitions.coresOverMachines": {
+    "ru": "Столько ядер не даёт ни одна машина для посылок (самое большее {max} — {where}): такие посылки не запустятся, пока не подключится машина побольше.",
+    "en": "No machine that runs submissions gives that many cores (at most {max}, {where}): such submissions will not start until a bigger machine joins."
+  },
+  "admin.competitions.memoryOverHome": {
+    "ru": "Столько памяти этот сервер посылке не даст (самое большее {gb} ГБ): такие посылки он не выполнит — их возьмёт машина для посылок, которой хватит памяти, а пока такой нет на связи, они ждут в очереди.",
+    "en": "This server cannot give a submission that much memory (at most {gb} GB), so it never runs them: a machine that runs submissions and has enough memory takes them, and until one is online they wait in the queue."
+  },
+  "admin.competitions.memoryOverMachines": {
+    "ru": "Столько памяти не даёт ни одна машина для посылок (самое большее {gb} ГБ — {where}): такие посылки не запустятся, пока не подключится машина побольше.",
+    "en": "No machine that runs submissions gives that much memory (at most {gb} GB, {where}): such submissions will not start until a bigger machine joins."
+  },
+  "admin.resourcesTab.ceilingHome": {
+    "ru": "На посылку — не больше {cores} и {memory}: столько есть у этого сервера.",
+    "en": "Per submission: at most {cores} and {memory}, as much as this server has."
+  },
+  "admin.resourcesTab.ceilingMachine": {
+    "ru": "На посылку — не больше {cores} и {memory}: столько даёт машина {name}, самая большая из машин для посылок.",
+    "en": "Per submission: at most {cores} and {memory}, what {name} gives, the biggest of the machines that run submissions."
+  },
+  "admin.resourcesTab.ceilingSomeMachine": {
+    "ru": "На посылку — не больше {cores} и {memory}: столько даёт самая большая из машин для посылок.",
+    "en": "Per submission: at most {cores} and {memory}, what the biggest of the machines that run submissions gives."
+  },
+  "admin.resourcesTab.ceilingSplit": {
+    "ru": "На посылку — не больше {cores} ({coresFrom}) и {memory} ({memoryFrom}).",
+    "en": "Per submission: at most {cores} ({coresFrom}) and {memory} ({memoryFrom})."
+  },
+  "admin.resourcesTab.ceilingCores": {
+    "ru": {
+      "one": "{count} ядра",
+      "few": "{count} ядер",
+      "many": "{count} ядер",
+      "other": "{count} ядер"
+    },
+    "en": {
+      "one": "{count} core",
+      "other": "{count} cores"
+    }
+  },
+  "admin.resourcesTab.ceilingMemory": {
+    "ru": "{gb} ГБ памяти",
+    "en": "{gb} GB of memory"
+  },
+  "admin.resourcesTab.ceilingWhereHome": {
+    "ru": "этот сервер",
+    "en": "this server"
+  },
+  "admin.resourcesTab.ceilingWhereMachine": {
+    "ru": "машина {name}",
+    "en": "machine {name}"
+  },
+  "admin.resourcesTab.ceilingWhereSomeMachine": {
+    "ru": "самая большая машина для посылок",
+    "en": "the biggest machine"
+  },
+  // A default stored past its bound, under the defaults (web/src/admin/competition-materials.ts · pastBoundNote).
+  "admin.resourcesTab.pastBound": {
+    "ru": "Сохранено {saved} — больше, чем посылке можно дать сейчас; пока так, новое соревнование получает то, что в полях.",
+    "en": "Saved: {saved}, more than a submission can be given now; until that changes, a new competition gets what the fields show."
+  },
+  "admin.resourcesTab.pastBoundBoth": {
+    "ru": "{cores} и {memory}",
+    "en": "{cores} and {memory}"
+  },
+  "admin.resourcesTab.pastBoundCores": {
+    "ru": {
+      "one": "{count} ядро",
+      "few": "{count} ядра",
+      "many": "{count} ядер",
+      "other": "{count} ядра"
+    },
+    "en": {
+      "one": "{count} core",
+      "other": "{count} cores"
+    }
+  },
   "admin.competitions.sealedNotGiven": {
     "ru": "не отдаётся",
     "en": "never handed out"
   },
   "admin.competitions.sealedNote": {
-    "ru": "Участники видят только пример; при проверке тетрадь читает скрытый файл по тому же пути. Имя и число строк скрытого теста видны им на странице соревнования, содержимое — никому.",
-    "en": "Participants see only the example; during the check the notebook reads the hidden file at the same path. Its name and row count are shown on the competition page; its contents to no one."
+    "ru": "Участники видят только пример; при проверке тетрадь читает скрытый файл по тому же пути. Имя и число строк скрытого теста видны им на странице соревнования, содержимое — никому из них.",
+    "en": "Participants see only the example; during the check the notebook reads the hidden file at the same path. Its name and row count are shown on the competition page; its contents to none of them."
   },
   "admin.competitions.policyHead": {
     "ru": "Что показывать участнику при проверке",
@@ -8551,6 +8792,10 @@ export const adminMessages: MessageCatalog = {
     "ru": "некому считать: сервер считает только метрики, а машины работу не берут",
     "en": "nobody to run it: this server only scores, and no machine takes work"
   },
+  "admin.competitions.fleet.reason.no_runnersTooBig": {
+    "ru": "некому считать: для этого сервера посылка велика, а машины работу не берут",
+    "en": "nobody to run it: too big for this server, and no machine takes work"
+  },
   "admin.competitions.fleet.reason.no_gpu_runner": {
     "ru": "ждёт карту: её нет ни здесь, ни на машинах",
     "en": "waiting for a GPU: none here or on the machines"
@@ -8575,6 +8820,10 @@ export const adminMessages: MessageCatalog = {
     "ru": "среда есть только на сервере, а карты для посылок здесь нет",
     "en": "its environment is on this server only, and this server gives no GPU to submissions"
   },
+  "admin.competitions.fleet.reason.home_only_envTooBig": {
+    "ru": "среда есть только на сервере, а для него посылка велика",
+    "en": "its environment is on this server only, and the submission is too big for this server"
+  },
   "admin.competitions.fleet.metricLane": {
     "ru": "МЕТРИКИ · {busy} ИЗ {count}",
     "en": "METRICS · {busy} OF {count}"
@@ -8586,6 +8835,10 @@ export const adminMessages: MessageCatalog = {
   "admin.competitions.fleet.reason.no_fit": {
     "ru": "не помещается ни на одну машину на связи",
     "en": "fits no machine online"
+  },
+  "admin.competitions.fleet.reason.no_fitTooBig": {
+    "ru": "не помещается ни на этот сервер, ни на одну машину на связи",
+    "en": "fits neither this server nor any machine online"
   },
   "admin.competitions.fleet.reason.scoring": {
     "ru": "оценивается",

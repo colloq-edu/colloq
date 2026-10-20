@@ -59,6 +59,13 @@ export const SETTINGS_LIMITS = {
 export type SettingSource = 'saved' | 'env' | 'default'
 
 /**
+ * Which executor a ceiling of the form is: this server, or a machine that
+ * runs submissions — by its name for the owner, whose list the machines are,
+ * and `null` for a teacher.
+ */
+export type CeilingSource = { from: 'home' } | { from: 'machine'; name: string | null }
+
+/**
  * How many submissions the queue runs at once.
  *
  * `value` is what the setting names (the fixed number, or what `auto` works
@@ -167,7 +174,11 @@ export interface CompetitionSettings {
   defaultSources: Record<keyof CompetitionDefaults, Exclude<SettingSource, 'env'>>
   /** The machine the numbers are checked against: `docker info` or the host. */
   machine: { cpus: number; memoryMb: number }
-  /** What the form may send; memory and CPUs are capped by the machine. */
+  /**
+   * What the form may send: the CPUs capped by the biggest executor of
+   * submissions, the memory by this server while it runs notebooks and by
+   * the biggest machine otherwise (`ceiling` says which).
+   */
   bounds: {
     slots: { min: number; max: number }
     uploadsPerMinute: { min: number; max: number }
@@ -176,6 +187,14 @@ export interface CompetitionSettings {
     cpus: { min: number; max: number }
     perDay: { min: number; max: number }
   }
+  /**
+   * Where the ceilings of `bounds.cpus` and `bounds.memoryMb` come from: this
+   * server, or the biggest machine that runs submissions for it — for the
+   * memory, this server whenever it runs notebooks
+   * (competitions/settings.ts · submissionCeiling). Absent from servers
+   * before the machines counted.
+   */
+  ceiling?: { cpus: CeilingSource; memoryMb: CeilingSource }
   /** The cards given to competition submissions. */
   gpu: CompetitionGpuSettings
   /**

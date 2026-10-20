@@ -32,7 +32,13 @@ import { tr } from '@shared/i18n'
 import { db } from '../db.js'
 import { entrantKeyDigest, newEntrantKey, sealEntrantKey, unsealEntrantKey } from './key.js'
 import { removeCompetition as removeCompetitionFiles, openFileSha256, pruneSubmissions, sealedFileSha256 } from './storage.js'
-import { competitionDefaults } from './settings.js'
+/*
+ * What a new competition starts with (createCompetition): the instance's
+ * defaults held to what one submission can be given now. executors.ts
+ * reaches nothing of this module: the machine's shape, the settings and the
+ * machines' store.
+ */
+import { newCompetitionDefaults } from './executors.js'
 /*
  * The rule by which a GPU run picks its card, called inside `takeNext`'s
  * transaction with the counts read there. gpu.ts reaches nothing of this
@@ -913,8 +919,11 @@ export function createCompetition(input: NewCompetition): Competition | null {
   const at = Date.now()
   const id = newId()
   // The instance's defaults, not the editor's constants: the owner sets them
-  // once for the machine (settings.ts), and every new competition starts there.
-  const defaults = competitionDefaults().limits
+  // once for the machine (settings.ts), and every new competition starts
+  // there — no more cores and memory than one submission can be given now
+  // (executors.ts · newCompetitionDefaults). A limit the request gives is the
+  // teacher's own, and the editor says what it means past this server.
+  const defaults = newCompetitionDefaults()
   try {
     insertCompetition.run({
       id,
@@ -2850,6 +2859,9 @@ const NEEDS_CARD = `(q.kind = 'notebook' AND EXISTS
  * panel.ts · fairOrder copies this count, and the two must not part.
  *
  * `@kind` keeps the selection to one lane's work (QueueLane); NULL — any.
+ * `@skip` — the submissions this server leaves to the machines that run
+ * submissions, as a JSON array (runner.ts · leftToMachines): passed over,
+ * like a GPU notebook with no share free, and the next work is taken.
  */
 const FAIR_ORDER = `
     q.late ASC,
@@ -2863,6 +2875,7 @@ const selectNext = db.prepare(`
   WHERE q.state = 'waiting' AND q.not_before <= @at
     AND (@card_free = 1 OR NOT ${NEEDS_CARD})
     AND (@kind IS NULL OR q.kind = @kind)
+    AND q.submission_id NOT IN (SELECT value FROM json_each(@skip))
   ORDER BY ${FAIR_ORDER}
   LIMIT 1
 `)
@@ -2973,27 +2986,28 @@ function cardFree(gpu: QueueGpu | undefined, share: unknown): 0 | 1 {
  * The next work of a lane (QueueLane; any work without one), and the card
  * share it would be given. The metric lane has its own order and no card: a
  * metric never gets one, whatever is free; and under a pause it names only a
- * fresh result (selectNextScore).
+ * fresh result (selectNextScore). `skip` — submissions this server leaves to
+ * the machines (selectNext's `@skip`); a metric is never one of them.
  */
-function pickNext(at: number, gpu: QueueGpu | undefined, lane: QueueLane | undefined): { row: QueueRowRaw; share: ReturnType<typeof freeShare> } | null {
+function pickNext(at: number, gpu: QueueGpu | undefined, lane: QueueLane | undefined, skip: readonly string[] = []): { row: QueueRowRaw; share: ReturnType<typeof freeShare> } | null {
   if (lane === 'metric') {
     const row = selectNextScore.get({ at, paused: queuePaused() ? 1 : 0 }) as QueueRowRaw | undefined
     return row ? { row, share: null } : null
   }
   const share = gpu ? freeShare(gpu) : null
-  const row = selectNext.get({ at, card_free: cardFree(gpu, share), kind: lane ?? null }) as QueueRowRaw | undefined
+  const row = selectNext.get({ at, card_free: cardFree(gpu, share), kind: lane ?? null, skip: JSON.stringify(skip) }) as QueueRowRaw | undefined
   return row ? { row, share } : null
 }
 
 /**
  * The work the next take would start, without taking it — what the pump
- * admits for memory before it takes. `gpu` and `lane` must be the ones the
- * take gets: the same filter over the same rows names the same work, and an
- * admission for one job followed by the take of another is a reservation
- * sized for the wrong submission.
+ * admits for memory before it takes. `gpu`, `lane` and `skip` must be the
+ * ones the take gets: the same filter over the same rows names the same
+ * work, and an admission for one job followed by the take of another is a
+ * reservation sized for the wrong submission.
  */
-export function nextQueueRow(at = Date.now(), gpu?: QueueGpu, lane?: QueueLane): QueueRow | null {
-  const next = pickNext(at, gpu, lane)
+export function nextQueueRow(at = Date.now(), gpu?: QueueGpu, lane?: QueueLane, skip: readonly string[] = []): QueueRow | null {
+  const next = pickNext(at, gpu, lane, skip)
   return next ? toQueueRow(next.row) : null
 }
 
@@ -3033,15 +3047,16 @@ export function cardWorkWaiting(at = Date.now()): boolean {
  * only. A row a machine holds is neither taken (it is running) nor counted
  * (it holds nothing here); the row taken here has no holder. Under a pause
  * the metric lane still takes a fresh result, the rest of work under way
- * (selectNextScore); nothing else is taken.
+ * (selectNextScore); nothing else is taken. `skip` — the submissions this
+ * server leaves to the machines (runner.ts · leftToMachines), passed over.
  */
 export const takeNext = db.transaction(
-  (opts: { boot?: string; at?: number; slots?: number; gpu?: QueueGpu; lane?: QueueLane } = {}): QueueRow | null => {
+  (opts: { boot?: string; at?: number; slots?: number; gpu?: QueueGpu; lane?: QueueLane; skip?: readonly string[] } = {}): QueueRow | null => {
     if (queuePaused() && opts.lane !== 'metric') return null
     const slots = opts.slots ?? 1
     if (runningCount(opts.lane) >= slots) return null
     const at = opts.at ?? Date.now()
-    const next = pickNext(at, opts.gpu, opts.lane)
+    const next = pickNext(at, opts.gpu, opts.lane, opts.skip)
     if (!next) return null
     const { row, share } = next
     const card = opts.gpu && row.needs_gpu === 1 ? share : null

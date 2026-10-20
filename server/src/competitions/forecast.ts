@@ -37,7 +37,7 @@
  */
 import { expectedRunMs, fairOrder, laneEtas, runningCounts, scoreOrder } from './panel.js'
 import { METRIC_WALL_SECONDS } from './runner-port.js'
-import { queueMemory, runReservationMb, RUN_RESERVE_MB, type QueueMemory } from './runner.js'
+import { leftToMachines, queueMemory, runReservationMb, RUN_RESERVE_MB, type QueueMemory } from './runner.js'
 import { getCompetition, queueRows, recentDurations, recentMetricRuns, type QueueRow } from './store.js'
 import { homeNotebooksSetting, scoreSlotsSetting } from './settings.js'
 import { clusterGpuSlots, runnerCardsHere, runnerGpuDevices, runnerGpuPerDevice, runnerGpuState, sliceOverCards } from './gpu.js'
@@ -127,7 +127,15 @@ export function queueForecast(slots: number, now = Date.now(), gpuSlots?: number
   const onMachines = running.filter((row) => row.holder !== null && fleet.runners.has(row.holder))
   // This server takes GPU work on its own cards, or under the cluster on the cluster's.
   const homeCards = cluster || runnerGpuDevices().length > 0
-  const reasons = waitReasons(ready, { homeCards, now, fleet })
+  /*
+   * The notebooks too big for this server, which its pump passes over
+   * (runner.ts · leftToMachines), asked of the same machines: no place of
+   * this server's for them, and the machines' reasons — «готовится» while
+   * the image comes, `no_runners` with no machine on line — never «начнётся
+   * сейчас» from a free slot here that will never take them.
+   */
+  const left = new Set(leftToMachines(ready, { now, fleet }))
+  const reasons = waitReasons(ready, { homeCards, now, fleet, left })
   unfitReasons(ready, reasons, needsCard, { homeNotebooks: lanes.homeNotebooks, homeCards })
   const notebooks = fairOrder(ready.filter((row) => row.kind === 'notebook'), busy)
   const placeable = notebooks.filter((row) => !blocking(reasons.get(row.submissionId)))
@@ -155,8 +163,12 @@ export function queueForecast(slots: number, now = Date.now(), gpuSlots?: number
         ...here.filter((row) => row.kind === 'notebook').map((row) => ({ expectedMs: expected(row), elapsedMs: elapsed(row), gpu: row.gpu !== null || (cluster && needsCard(row)), memoryMb: held(row) })),
         ...onMachines.map((row) => ({ expectedMs: expected(row), elapsedMs: elapsed(row), gpu: needsCard(row), memoryMb: 0, elsewhere: true })),
       ],
-      // A notebook this server's pump never takes (a GPU one where it has no card) starts only on a machine's place, at no memory here.
-      waiting: placeable.map((row) => ({ ...job(row), gpu: needsCard(row), home: homeTakes({ gpu: needsCard(row), homeNotebooks: lanes.homeNotebooks, homeCards }) })),
+      // A notebook this server's pump never takes (a GPU one where it has no card, one too big for it) starts only on a machine's place, at no memory here.
+      waiting: placeable.map((row) => ({
+        ...job(row),
+        gpu: needsCard(row),
+        home: !left.has(row.submissionId) && homeTakes({ gpu: needsCard(row), homeNotebooks: lanes.homeNotebooks, homeCards }),
+      })),
       ...(cardSlots === null ? {} : { gpuSlots: cardSlots }),
     },
     metric: {

@@ -1394,9 +1394,15 @@ export function returnedFrom(waiting: readonly Pick<WaitingRow, 'reason' | 'retu
  * none. «…а он считает только метрики» over a server whose notebooks are on
  * sent the owner to a switch that was already on; with them on, the cause is
  * the card.
+ *
+ * A notebook too big for this server (WaitingRow.tooBig: it leaves it to the
+ * machines, runner.ts · leftToMachines) has a third cause for three of the
+ * reasons, the server's size, and says it: on a server that never had a
+ * machine there is no group to tell the switch by, and «сервер считает
+ * только метрики» was said of one that runs notebooks.
  */
 export function waitReason(
-  row: Pick<WaitingRow, 'reason' | 'returnedFrom' | 'returnedWhy' | 'scoring'>,
+  row: Pick<WaitingRow, 'reason' | 'returnedFrom' | 'returnedWhy' | 'scoring' | 'tooBig'>,
   home: { notebooks: boolean } | null = null,
 ): Line | null {
   switch (row.reason) {
@@ -1415,7 +1421,7 @@ export function waitReason(
       }
     }
     case 'no_runners':
-      return { text: tr('admin.competitions.fleet.reason.no_runners'), tone: 'warning' }
+      return { text: tr(row.tooBig ? 'admin.competitions.fleet.reason.no_runnersTooBig' : 'admin.competitions.fleet.reason.no_runners'), tone: 'warning' }
     case 'no_gpu_runner':
       return { text: tr('admin.competitions.fleet.reason.no_gpu_runner'), tone: 'warning' }
     case 'preparing_image':
@@ -1426,15 +1432,22 @@ export function waitReason(
       return { text: tr('admin.competitions.fleet.reason.needs_trusted'), tone: 'warning' }
     case 'home_only_env':
       return {
-        text: tr(home?.notebooks ? 'admin.competitions.fleet.reason.home_only_envNoCard' : 'admin.competitions.fleet.reason.home_only_env'),
+        text: tr(
+          row.tooBig
+            ? 'admin.competitions.fleet.reason.home_only_envTooBig'
+            : home?.notebooks
+              ? 'admin.competitions.fleet.reason.home_only_envNoCard'
+              : 'admin.competitions.fleet.reason.home_only_env',
+        ),
         tone: 'warning',
       }
     case 'no_fit':
       // No machine that takes work can run it as it is — its memory or CPUs
       // over a machine's, a package set too big for a lease (RemoteWaitReason)
       // — so it waits for this server or a bigger machine, and its turn
-      // alone will not bring it.
-      return { text: tr('admin.competitions.fleet.reason.no_fit'), tone: 'warning' }
+      // alone will not bring it. Too big for this server as well, it waits
+      // for a bigger machine alone.
+      return { text: tr(row.tooBig ? 'admin.competitions.fleet.reason.no_fitTooBig' : 'admin.competitions.fleet.reason.no_fit'), tone: 'warning' }
     default:
       return row.scoring ? { text: tr('admin.competitions.fleet.reason.scoring'), tone: 'accent' } : null
   }
@@ -1452,10 +1465,11 @@ export function waitReason(
  * read «ждёт место на видеокарте» while nothing anywhere could take it, and
  * a row back from a silent machine lost its «вернулась: … замолчала» the
  * moment every share was busy. Without machines a reason appears only when
- * this server runs no notebooks, and then no card frees anything either.
+ * this server runs no notebooks, or the notebook is too big for it, and then
+ * no card frees anything either.
  */
 export function waitingLine(
-  row: Pick<WaitingRow, 'reason' | 'returnedFrom' | 'returnedWhy' | 'scoring'>,
+  row: Pick<WaitingRow, 'reason' | 'returnedFrom' | 'returnedWhy' | 'scoring' | 'tooBig'>,
   onCard: boolean,
   home: { notebooks: boolean } | null = null,
 ): Line | null {

@@ -203,6 +203,49 @@ export function railCourses(
   return out
 }
 
+/* -------------------------------------------------------- into a course */
+
+/**
+ * Whether a row offers «Добавить в курс…»: a room in no course the viewer
+ * can see. Not an archived one: the archive's rows are put back on the list
+ * before anything else is done with them, as the group headers there offer
+ * no «+ Занятие» either. A class already in a course is moved between
+ * courses on the course screen, which shows both plans.
+ */
+export function canSeat(seminar: Pick<AdminSeminar, 'courses' | 'archivedAt'>): boolean {
+  return seminar.courses.length === 0 && seminar.archivedAt === null
+}
+
+/**
+ * Whether the row itself carries «Добавить в курс…» as a link: only when
+ * there is a course to choose. A teacher who teaches none would otherwise
+ * read the same dead end on every row; the row menu keeps the item, and its
+ * page says why there is nothing to choose and offers «+ Новый курс».
+ */
+export function seatLinkShown(
+  seminar: Pick<AdminSeminar, 'courses' | 'archivedAt'>,
+  choices: readonly unknown[],
+): boolean {
+  return canSeat(seminar) && choices.length > 0
+}
+
+/**
+ * The courses «Добавить в курс…» offers, in the server's order.
+ *
+ * Every course the list brought is one the viewer may put a class into: a
+ * teacher's list is the courses they teach, and an owner may seat into any.
+ * Which of them are shown follows the screen's «Мои»/«Все», as the rail and
+ * the courses screen do: on «Мои» an owner is offered the courses they teach.
+ */
+export function seatChoices(
+  courses: readonly Pick<Course, 'id' | 'name' | 'mine'>[],
+  scope: 'mine' | 'all',
+): { id: string; name: string }[] {
+  return courses
+    .filter((course) => scope === 'all' || course.mine !== false)
+    .map((course) => ({ id: course.id, name: course.name }))
+}
+
 /* -------------------------------------------------------------- search */
 
 /** Name or address: a teacher reads out «/s/k2mx…» as often as the title. */
