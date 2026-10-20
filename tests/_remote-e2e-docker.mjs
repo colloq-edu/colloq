@@ -26,7 +26,9 @@
  * ref brings (its layers). FAKE_DOCKER_GATES is a folder shared with the test:
  * a notebook whose directive names a gate finishes once a file of that name
  * is there. FAKE_DOCKER_OWNER is the test's pid: a class container's process
- * ends once it is gone.
+ * ends once it is gone. FAKE_DOCKER_CALLS, when set, is a folder where each
+ * class container's Jupyter writes down every call it takes
+ * (<container id>.jsonl), which no `rm` removes.
  *
  * THE SANDBOX IS THE HARNESS'S SHAPE, NOT ITS CODE. `run` of a submission's
  * container reads the notebook it mounts at /submission for the directive the
@@ -91,6 +93,8 @@ const STATE = process.env.FAKE_DOCKER_STATE
 const REGISTRY = process.env.FAKE_DOCKER_REGISTRY
 const GATES = process.env.FAKE_DOCKER_GATES
 const OWNER = process.env.FAKE_DOCKER_OWNER
+/** Where class containers' Jupyters write down their calls, when the test keeps them (FAKE_DOCKER_CALLS: a folder). */
+const CALLS = process.env.FAKE_DOCKER_CALLS
 const DIRECTIVE = /^\s*#\s*colloq-test:\s*(\{.*\})\s*$/m
 const FAKE_JUPYTER = path.join(path.dirname(fileURLToPath(import.meta.url)), '_fake-jupyter.mjs')
 
@@ -621,6 +625,11 @@ async function startJupyter(c) {
   if (c.token) argv.push('--token', c.token)
   if (c.readOnly) argv.push('--read-only')
   if (OWNER) argv.push('--owner', OWNER)
+  // Its calls written down where `rm` leaves them (FAKE_DOCKER_CALLS, the agent's keepCalls): one file per container, every life of it.
+  if (CALLS) {
+    fs.mkdirSync(CALLS, { recursive: true })
+    argv.push('--calls-file', path.join(CALLS, `${c.id}.jsonl`))
+  }
   const out = fs.openSync(log, 'a')
   let child
   try {

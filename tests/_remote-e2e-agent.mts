@@ -48,6 +48,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { layersFingerprint } from '../server/src/dependencies/image-identity.ts'
+import type { KernelTimings } from '../server/src/runner-agent/kernels.ts'
 import { remoteCredential } from '../shared/remote-runner.ts'
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -300,7 +301,33 @@ export interface AgentOptions {
   container?: { network: string }
   /** The machine's own settings (COLLOQ_ROOM_NETWORK, KERNEL_BLOCKED_CIDRS, KERNEL_ROOM_SUBNET, …), added to the agent's environment. */
   env?: Record<string, string>
+  /**
+   * The agent's own timings, shortened for a scenario that cannot wait them
+   * out (remote-classes.md §17.2: the agents' "timings shortened by
+   * environment"). Given, the agent is started through this module (its end,
+   * AGENT_TIMINGS), which hands them to main.ts's own main() as the seams its
+   * Agent is made of; not given, main.ts is the entry, as always.
+   */
+  timings?: AgentTimings
+  /** Each class container's Jupyter writes down every call it takes, where docker's `rm` leaves it (jupyterCalls). */
+  keepCalls?: boolean
 }
+
+/** What an agent's timings may be shortened to (runner-agent/sync.ts · AgentOptions: holdMs, backoffMs, stopMs, classes). */
+export interface AgentTimings {
+  /** The hold its syncs ask home for: a sync this often while nothing comes. */
+  holdMs?: { idle: number; busy: number }
+  /** Its sync's backoff after a failure. */
+  backoffMs?: { min: number; max: number }
+  /** How long a stop has to hand everything back. */
+  stopMs?: number
+  /** Its kernel host's (runner-agent/kernels.ts · KernelTimings): the census's beat, the perimeter's re-check, … */
+  classes?: Partial<KernelTimings>
+}
+
+/** The environment variable that carries an agent's shortened timings to this module run as its entry. */
+const AGENT_TIMINGS = 'COLLOQ_E2E_AGENT_TIMINGS'
+const HERE = fileURLToPath(import.meta.url)
 
 /** The image a class machine's agent runs as, in its fake docker: the perimeter's helper runs from it. */
 export const RUNNER_IMAGE = 'colloq-runner:e2e'
@@ -375,14 +402,23 @@ export class Agent {
       FAKE_DOCKER_HOST: this.name,
       // The class containers' processes end once the test's is gone, however it went.
       FAKE_DOCKER_OWNER: String(process.pid),
+      ...(this.options.keepCalls ? { FAKE_DOCKER_CALLS: this.callsDir } : {}),
+      ...(this.options.timings ? { [AGENT_TIMINGS]: JSON.stringify(this.options.timings) } : {}),
     }
+  }
+
+  /** Where the class containers' Jupyters write their calls down (keepCalls): one file per container id. */
+  private get callsDir(): string {
+    return path.join(this.dockerState, 'jupyter-calls')
   }
 
   /** Start the agent (again, after a kill: the same tree, the same identity). */
   start(): void {
     if (this.running) throw new Error(`${this.name} is running already`)
     const env = this.environment()
-    const child = spawn(process.execPath, ['--import', 'tsx', this.entry], { cwd: REPO, env, stdio: ['ignore', 'pipe', 'pipe'] })
+    // Shortened timings go in through this module, which hands them to main.ts's main() (its end); otherwise main.ts runs as it is.
+    if (this.options.timings && this.options.build) throw new Error(`${this.name}: shortened timings run the sources' main.ts, not another build's copy`)
+    const child = spawn(process.execPath, ['--import', 'tsx', this.options.timings ? HERE : this.entry], { cwd: REPO, env, stdio: ['ignore', 'pipe', 'pipe'] })
     this.child = child
     live.add(child)
     const keep = (chunk: Buffer): void => {
@@ -408,6 +444,39 @@ export class Agent {
     if (!this.running) return
     process.kill(this.child!.pid!, 'SIGKILL')
     await this.exited
+  }
+
+  /**
+   * SIGTERM, as `docker stop` sends it (colloq-host runner update, docker
+   * stop -t 90): the agent's own stop — its last sync, the runs handed back,
+   * the class containers left running (§7.3) — and its exit, waited for.
+   */
+  async terminate(timeoutMs = 30_000): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+    if (!this.running) throw new Error(`${this.name} does not run`)
+    process.kill(this.child!.pid!, 'SIGTERM')
+    return this.exit(timeoutMs)
+  }
+
+  /**
+   * One of the agent's own commands beside the running one (main.ts:
+   * `leave`, `drain`, `status`), as colloq-host runs it in the machine's
+   * container: the same tree and environment, the running agent reached
+   * through its control socket. Its exit code and everything it printed.
+   */
+  command(argv: string[], timeoutMs = 30_000): Promise<{ code: number | null; out: string }> {
+    return new Promise((resolve) => {
+      const child = spawn(process.execPath, ['--import', 'tsx', ENTRY, ...argv], { cwd: REPO, env: this.environment(), stdio: ['ignore', 'pipe', 'pipe'] })
+      live.add(child)
+      let out = ''
+      child.stdout!.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')))
+      child.stderr!.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')))
+      const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
+      child.once('exit', (code) => {
+        clearTimeout(timer)
+        live.delete(child)
+        resolve({ code, out: out.trim() })
+      })
+    })
   }
 
   /** The exit of a process that ends by itself (a revoked machine): its code, or a kill after `timeoutMs`. */
@@ -596,6 +665,21 @@ export class Agent {
     }
   }
 
+  /**
+   * Every call a class container's Jupyter took, in every life of it, as it
+   * wrote them down (keepCalls): what a test reads of a container that docker
+   * has removed since — a lost placement the machine let go of on its return.
+   * None — the container's Jupyter never ran, or the machine keeps no calls.
+   */
+  jupyterCalls(containerId: string): Array<{ kind: string; [field: string]: unknown }> {
+    if (!this.options.keepCalls) throw new Error(`${this.name} keeps no calls of its class containers (keepCalls)`)
+    try {
+      return fs.readFileSync(path.join(this.callsDir, `${containerId}.jsonl`), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as { kind: string })
+    } catch {
+      return []
+    }
+  }
+
   /** The submission containers ever started here (`docker run` of a notebook). */
   sandboxRuns(): DockerCall[] {
     return this.dockerCalls().filter((call) => call.args[0] === 'run' && call.args.includes('/harness/run_notebook.py'))
@@ -609,4 +693,25 @@ export class Agent {
   hasImage(name: string): boolean {
     return fs.existsSync(path.join(this.dockerState, 'images', `${encodeURIComponent(name)}.json`))
   }
+}
+
+/* ------------------------------------------- an agent with shortened timings */
+
+/*
+ * This module run as a machine's entry (Agent.start with `timings`): main.ts's
+ * own main(), `run`, with the timings as the seams it makes its Agent of
+ * (main.ts · runAgent spreads them into AgentOptions). Everything else is the
+ * agent's as it runs from main.ts: its checks, its control socket, its
+ * signals. This module's own teardown above is the test process's: in the
+ * agent's it has nothing to end, and its signal handlers go, so that a
+ * SIGTERM is the agent's stop (its last sync, `bye`) rather than an exit.
+ */
+if (process.env[AGENT_TIMINGS] && process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(HERE)) {
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.removeAllListeners(signal)
+  const timings = JSON.parse(process.env[AGENT_TIMINGS]) as AgentTimings
+  const { main } = await import('../server/src/runner-agent/main.ts')
+  const seams = { ...timings, ...(timings.classes ? { classes: { timings: timings.classes } } : {}) }
+  const io = { out: (text: string) => void process.stdout.write(text), err: (text: string) => void process.stderr.write(text) }
+  process.stderr.write(`colloq-runner e2e: shortened timings ${JSON.stringify(timings)}\n`)
+  process.exit(await main(['run'], process.env, io, seams as unknown as Parameters<typeof main>[3]))
 }

@@ -48,6 +48,12 @@
  * its reconnects, which wait on the link (KernelLink.next) instead of
  * spending their attempts.
  *
+ * A QUIET TUNNEL IS DOWN FOR ITS PLACEMENTS (§11.7, «Relay blip under 25 s»):
+ * once its pings stop (TUNNEL_QUIET_MS without a frame) `isUp` is false from
+ * its last frame on, so the chip turns amber and new runs wait at the gate,
+ * while its socket waits out the dead timer and its streams carry on at the
+ * next frame, which lifts it: a stall of the relay heals with nothing reset.
+ *
  * THE CONNECTIONS ALREADY OPEN OUTLAST A CUT (§4.8). Each machine has one end
  * (TunnelEnd) across its tunnels: when a tunnel drops, the end keeps its
  * streams, and the kernel client's connections stay open and quiet, their
@@ -83,6 +89,7 @@ import {
   TUNNEL_PING_MS,
   TUNNEL_PROTOCOL,
   TUNNEL_PROTOCOL_HEADER,
+  TUNNEL_QUIET_MS,
   TUNNEL_REFUSALS,
   TUNNEL_REPLACEMENTS_ALERT,
   TUNNEL_SELF_REPLACEMENTS_LOGGED,
@@ -361,6 +368,12 @@ export class MachineTunnels {
         // Every frame is the machine heard, and the path to it working (§4.7).
         heard: () => noteCall(runnerId, this.clock.now(), this.current.get(runnerId)?.address ?? null),
         rtt: (ms) => this.rttOf(runnerId).add(ms, this.clock.now()),
+        // Its pings stopped: down for the placements from its last frame, the socket left to the dead timer; a frame lifts it.
+        quiet: (quiet, since) => {
+          if (this.ends.get(runnerId) !== end) return
+          this.log(quiet ? `[tunnel] machine ${runnerId} quiet: no frame for ${TUNNEL_QUIET_MS / 1000} s` : `[tunnel] machine ${runnerId} heard again`)
+          this.changed(runnerId, !quiet, since)
+        },
         overflow: (stream) => this.log(`[tunnel] machine ${runnerId}: a connection to ${stream.key} would not stop writing, and its stream was reset`),
         end: (code, reason) => {
           const tunnel = this.current.get(runnerId)
@@ -430,9 +443,9 @@ export class MachineTunnels {
     this.changed(tunnel.runnerId, false)
   }
 
-  private changed(runnerId: string, up: boolean): void {
+  private changed(runnerId: string, up: boolean, since = this.clock.now()): void {
     if (this.states.get(runnerId)?.up === up) return
-    this.states.set(runnerId, { up, since: this.clock.now() })
+    this.states.set(runnerId, { up, since })
     for (const listener of [...this.changes]) {
       try {
         listener(runnerId, up)
@@ -447,12 +460,17 @@ export class MachineTunnels {
     }
   }
 
-  /** Whether a machine's tunnel is open now. */
+  /**
+   * Whether a machine's tunnel is open now and carrying: a quiet one (its
+   * pings stopped, TUNNEL_QUIET_MS) is down for its placements until its next
+   * frame, while its socket waits out the dead timer and its streams stay.
+   */
   isUp(runnerId: string): boolean {
-    return this.ends.get(runnerId)?.up === true
+    const end = this.ends.get(runnerId)
+    return end?.up === true && !end.quiet
   }
 
-  /** When a machine's tunnel last went up or down; this home life's start, if never. */
+  /** When a machine's tunnel last went up or down (a quiet one: at its last frame); this home life's start, if never. */
   since(runnerId: string): number {
     return this.states.get(runnerId)?.since ?? this.startedAt
   }
@@ -591,6 +609,9 @@ export class MachineTunnels {
     const id = placementId(runnerId, key, gen)
     if (this.lostAt.has(id)) return
     this.lostAt.set(id, this.clock.now())
+    // A link taken for a gen that never got a listener goes now, as a listener's goes with it (unlisten): a holder keeps its
+    // object, and the loss is remembered apart (lostAt). Kept, the map grew by every such gen for good.
+    if (!this.listeners.has(id)) this.links.delete(id)
     for (const old of this.lostAt.keys()) {
       if (this.lostAt.size <= LOST_KEPT) break
       this.lostAt.delete(old)

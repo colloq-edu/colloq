@@ -1329,3 +1329,64 @@ test('a kernel killed for memory while the road was cut is the unexpected restar
   assert.ok(await until(() => room.cell(1).state() === 'ok'))
   assert.ok(guards() > guarded, 'the replaced process ran a cell without the guard')
 })
+
+/* ------------------------------------------------- wiring the hooks (2b) */
+
+test('the whole class’s stop pauses its council pool’s starts with the rest; stopping the personal notebooks pauses theirs alone', async (t) => {
+  const { kernelStartsPaused } = await import('../server/src/kernel/retirement.js')
+  jupyter.useDefaultEndpointForTest({ url: fake.url, token: 'fake' })
+  const room = await seminar()
+  t.after(() => kernel.shutdownSession(room.id).catch(() => {}))
+  const own = kernel.stopKernelsByOwner(room.id, 'own', { force: true })
+  // The same tick the gate went up in.
+  assert.deepEqual([kernelStartsPaused(room.id, 'own'), kernelStartsPaused(room.id, 'council')], [true, false])
+  await own
+  const whole = kernel.stopKernelsByOwner(room.id, 'class', { force: true })
+  assert.deepEqual(
+    (['room', 'own', 'council'] as const).map((role) => kernelStartsPaused(room.id, role)),
+    [true, true, true],
+    'a pool started in the gap would be removed under it (pool.ts · dropRoomKernel drops the council slot too)',
+  )
+  await whole
+  assert.equal(kernelStartsPaused(room.id, 'council'), false)
+})
+
+test('a dead process’s scopes, abandoned for a home that crashes: no DELETE, the computing cell left as it was, and the next run attaches by its path with the variables', async (t) => {
+  jupyter.useDefaultEndpointForTest({ url: fake.url, token: 'fake' })
+  const room = await seminar(['HOLD crash', 'print(x)'])
+  t.after(() => kernel.shutdownSession(room.id).catch(() => {}))
+  room.cell(0).type('x = 5')
+  room.run(0)
+  assert.ok(await until(() => room.cell(0).state() === 'ok'))
+  room.run(1)
+  assert.ok(await until(() => fake.holding('crash') === 1))
+  const deletes = http('DELETE', /./)
+  const before = { state: room.cell(1).state(), doc: JSON.stringify(room.doc.toJSON()) }
+  kernel.abandonKernelsForTest()
+  await turns()
+  assert.equal(http('DELETE', /./), deletes, 'nothing is deleted: the kernel is the next life’s')
+  assert.equal(room.cell(1).state(), before.state, 'the cell is left computing, as a crash leaves it')
+  assert.equal(JSON.stringify(room.doc.toJSON()), before.doc, 'nothing is written to the document')
+  // The next life: the same kernel by the session's path, its orphaned work let go, its variables kept.
+  room.run(2)
+  assert.ok(await until(() => room.cell(2).said() === '5\n'), `the run said ${JSON.stringify(room.cell(2).said())}`)
+  assert.ok(room.notes().includes(tr('server.reconnectedToTheExistingKernelTheRunning.a20941')))
+  assert.equal(http('DELETE', /./), deletes)
+})
+
+test('the hooks follow the placement module from the moment it loads, unless a suite handed them others first', async () => {
+  const { offerPlacementHooks } = await import('../server/src/kernel/remote/placement-store.js')
+  const placement = await import('../server/src/kernel/remote/placement.js')
+  const places = fakePlacements()
+  kernel.useClassPlacements(places.impl, handClock().clock)
+  const room = await seminar()
+  places.set(room.id, 'room', { where: 'machine', runnerId: 'r1', name: NAME, gen: 1, state: 'ready', link: null, since: Date.now(), failover: 'auto', failoverAt: null })
+  // The module handing itself over again (a second load): the suite's choice stands.
+  offerPlacementHooks({
+    placements: { ...placement, PlacementLost: placement.PlacementLost },
+    clock: placement.placementClock,
+  })
+  assert.equal(kernel.kernelMachineOf(room.id, 'room')?.name, NAME, 'the fake still answers')
+  kernel.useClassPlacements(null)
+  assert.equal(kernel.kernelMachineOf(room.id, 'room'), null, 'and null puts every slot here')
+})

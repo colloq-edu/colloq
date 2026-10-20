@@ -2313,8 +2313,12 @@ async function machineEndpoint(sessionId: string, env: string | null, role: Kern
   return endpoint
 }
 
-/** Whether the slot runs on this server now: started here in this process, or a live container of it found here. */
-async function runsHere(sessionId: string, role: KernelRole): Promise<boolean> {
+/**
+ * Whether the slot runs on this server now: started here in this process, or
+ * a live container of it found here. The placement asks it too before a warm
+ * start puts the slot on a machine (placement.ts · warmSlot).
+ */
+export async function runsHere(sessionId: string, role: KernelRole): Promise<boolean> {
   const slot = slotFor(sessionId, role)
   if (homeSlots.has(slot) || endpoints.has(slot) || starting.has(slot)) return true
   if (kernelBackend() !== 'docker' || role === 'council') return false

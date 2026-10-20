@@ -65,6 +65,7 @@ import {
   pathEvidence,
   resetHeard,
   useClassPort,
+  useRemoteClock,
   type ClassFailoverCause,
   type ClassPort,
   type ClassSlotWhere,
@@ -374,6 +375,22 @@ test('what a class machine says of its classes reaches the class placements once
   assert.deepEqual(report.kernels.readings.map((entry) => `${entry.key}@${entry.gen}`), ['class-a:room@3'])
   assert.deepEqual(report.kernels.placements, sent.placements, 'the held placements go through whatever their gen')
   assert.deepEqual([report.kernels.bye, report.kernels.tunnel, report.kernels.classes], [sent.bye, sent.tunnel, sent.classes])
+})
+
+test('a machine is heard on the machines’ clock, the one the class clock runs on: its call, its sync and its kernels block', async () => {
+  const m = await classMachine()
+  // An hour ahead of the wall, as an end-to-end home's clock is once moved on: a machine that keeps syncing is not an hour silent.
+  const at = Date.now() + 3_600_000
+  useRemoteClock({ now: () => at })
+  try {
+    assert.equal((await m.sync({ kernels: block() })).status, 200)
+    assert.equal(heardAt(m.runnerId), at, 'heard when it called, on that clock')
+    assert.equal(placements.reports.at(-1)?.now, at, 'and its block taken in on it')
+  } finally {
+    useRemoteClock(null)
+  }
+  assert.equal((await m.sync({ kernels: block() })).status, 200)
+  assert.ok(Math.abs(placements.reports.at(-1)!.now - Date.now()) < 60_000, 'the wall’s again')
 })
 
 test('an agent from before classes on a class machine still syncs: no block of its own, and its leases flow', async () => {

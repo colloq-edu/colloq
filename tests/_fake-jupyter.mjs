@@ -27,6 +27,9 @@
  *     --oom-file F                           a line in F for each kernel the
  *                                            OOM killer took (the cgroup's
  *                                            oom_kill counter)
+ *     --calls-file F                         every call (`calls`, below) also
+ *                                            a JSON line in F, which outlives
+ *                                            the process
  *
  * A container's process outlives the agent that started it, as a container
  * does, and never the test.
@@ -72,8 +75,9 @@
  * printed, and stdin is echoed and run line by line. The shell knows echo,
  * printf, pwd, cd (`/workspace/<id>` is the kernels' folder, `<id>`'s own
  * with `perSession`), ls, cat, clear,
- * sleep (Ctrl-C stops it), true, false and exit; `&&` chains them, and a line
- * typed while a command runs waits for it.
+ * sleep (Ctrl-C stops it), true, false and exit, and `python [-u] FILE` (the
+ * file's lines through the interpreter below, as a room's run of a .py sends
+ * it); `&&` chains them, and a line typed while a command runs waits for it.
  *
  * SERVICE RUNS ARE ANSWERED BY THEIR MODULE. A silent execute reports through
  * `user_expressions`, and three hidden modules share its `colloq` key: the
@@ -1560,6 +1564,33 @@ export async function startFakeJupyter(options = {}) {
         })
         return !stopped
       }
+      case 'python': {
+        // `python [-u] FILE`, as the room's run of a .py sends it (control.ts · file:run): the file's lines run by this
+        // fake's interpreter in a namespace of their own, their prints on the pty; a failure ends it as Python ends a script.
+        const file = args.filter((arg) => arg !== '-u').join(' ').replace(/^(['"])(.*)\1$/, '$2')
+        const target = path.resolve(pty.cwd, file)
+        if (!file || !fs.existsSync(target)) {
+          out(pty, `python: can't open file '${target}': [Errno 2] No such file or directory\r\n`)
+          return false
+        }
+        const script = { id: `python-${pty.name}`, ns: new Map(), count: 0, dir: pty.cwd, running: null }
+        const io = {
+          lost: false,
+          stdout: (printed) => out(pty, printed.replace(/\r?\n/g, '\r\n')),
+          result: () => {},
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          hold: () => Promise.reject(new PyError('RuntimeError', 'HOLD waits in a cell, not in a script')),
+          input: () => Promise.reject(new PyError('EOFError', 'EOF when reading a line')),
+          file: (relative) => path.resolve(pty.cwd, relative ?? ''),
+        }
+        try {
+          await run(script, fs.readFileSync(target, 'utf8'), io)
+          return true
+        } catch (err) {
+          out(pty, `Traceback (most recent call last):\r\n${err instanceof PyError ? `${err.ename}: ${err.evalue}` : String(err)}\r\n`)
+          return false
+        }
+      }
       case 'exit':
         endPty(pty)
         return false
@@ -1769,6 +1800,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       'container-file': { type: 'string' },
       'container-id': { type: 'string' },
       owner: { type: 'string' },
+      'calls-file': { type: 'string' },
     },
   })
   const guardModule = values['guard-module'] ?? GUARD_MODULE
@@ -1789,6 +1821,19 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     log: (line) => process.stdout.write(`${line}\n`),
     life: () => life,
   })
+  if (values['calls-file']) {
+    // Each call also written down as it is logged, one JSON line: what a test reads once docker has removed the container.
+    const file = values['calls-file']
+    const push = fake.calls.push.bind(fake.calls)
+    fake.calls.push = (...entries) => {
+      for (const entry of entries) {
+        try {
+          fs.appendFileSync(file, `${JSON.stringify(entry)}\n`)
+        } catch { /* a folder gone with the test: the call is still logged in memory */ }
+      }
+      return push(...entries)
+    }
+  }
   process.stdout.write(`${fake.port}\n`)
   // What a Jupyter's log says first: never a line a post-mortem's tail keeps (postmortem-core.ts · NOISE).
   process.stdout.write(`[I ${new Date().toISOString()} ServerApp] Jupyter Server fake is running at: http://127.0.0.1:${fake.port}/\n`)

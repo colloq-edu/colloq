@@ -76,6 +76,7 @@ import {
   pathEvidence,
   provenSilence,
   remoteBootAt,
+  remoteNow,
   seenDue,
 } from './heard.js'
 import { loseLease, orphanLease, withdrawLease } from './release.js'
@@ -92,9 +93,10 @@ let prunedAt = 0
 
 /**
  * One pass of the clock. `now` is passed in by the tests, which drive the
- * clock by hand; the timer passes the wall clock.
+ * clock by hand; the timer's is the machines' clock (heard.ts · remoteNow:
+ * the wall's, unless a test moves one of its own).
  */
-export function remoteTick(now = Date.now()): { withdrawn: number; lost: number } {
+export function remoteTick(now = remoteNow()): { withdrawn: number; lost: number } {
   let withdrawn = 0
   let lost = 0
   const grace = inBootGrace(now)
@@ -188,7 +190,7 @@ export function sweepStaging(): number {
  * the row go, all in one turn: no container, no machine, the participant told
  * how big their set is against the memory, exactly as a run here tells them.
  */
-export function settleUnfit(now = Date.now()): number {
+export function settleUnfit(now = remoteNow()): number {
   if (queuePaused()) return 0
   let settled = 0
   const homeNotebooks = homeNotebooksSetting().value
@@ -243,7 +245,7 @@ export function settleUnfit(now = Date.now()): number {
  * first (leavesHost), and a probe of an address that is loopback, unspecified
  * or link-local, or one of this host's own interfaces, is no evidence.
  */
-export async function probeOwnPath(now = Date.now(), fetcher: typeof fetch = fetch, publicUrl: string = config.publicUrl, leaves: (url: string) => Promise<boolean> = leavesHost): Promise<boolean> {
+export async function probeOwnPath(now = remoteNow(), fetcher: typeof fetch = fetch, publicUrl: string = config.publicUrl, leaves: (url: string) => Promise<boolean> = leavesHost): Promise<boolean> {
   if (listStandingRunners().length === 0) return false
   if (loopbackAddress(publicUrl)) return false
   if (!(await leaves(publicUrl).catch(() => false))) return false
@@ -285,7 +287,7 @@ let probing = false
  * beat skipped for that put the next probe a whole beat later, ten seconds
  * of a class's fifteen of evidence.
  */
-export function probeTick(now = Date.now(), probe: (now: number) => Promise<boolean> = (at) => probeOwnPath(at)): boolean {
+export function probeTick(now = remoteNow(), probe: (now: number) => Promise<boolean> = (at) => probeOwnPath(at)): boolean {
   if (probing) return false
   if (now - probedAt < (classPlacementsLive() ? CLASS_PROBE_MS : REMOTE_PROBE_MS) - CLASS_PROBE_MS / 2) return false
   probedAt = now
@@ -352,7 +354,7 @@ export async function leavesHost(
  * the row itself (release.ts · orphanLease) — is ended with no penalty, so
  * that the machine's next sync hears it and drops the run.
  */
-export async function bootRemoteRunners(now = Date.now()): Promise<{ withdrawn: number; redriven: number; orphans: number; strays: number }> {
+export async function bootRemoteRunners(now = remoteNow()): Promise<{ withdrawn: number; redriven: number; orphans: number; strays: number }> {
   let withdrawn = 0
   for (const lease of leasesInState('offered')) if (withdrawLease(lease.attemptId, now, 'restart')) withdrawn++
   const redriven = await redriveApplying(now)
@@ -390,9 +392,9 @@ export function startRemoteRunners(options: { probe?: (now: number) => Promise<b
   }, TICK_MS)
   tick.unref?.()
   // Beats at the classes' cadence; a probe is due at each only while a class placement lives (probeTick).
-  probe = setInterval(() => probeTick(Date.now(), probeNow), CLASS_PROBE_MS)
+  probe = setInterval(() => probeTick(remoteNow(), probeNow), CLASS_PROBE_MS)
   probe.unref?.()
-  probeTick(Date.now(), probeNow)
+  probeTick(remoteNow(), probeNow)
 }
 
 export function stopRemoteRunners(): void {
@@ -405,6 +407,6 @@ export function stopRemoteRunners(): void {
 }
 
 /** For tests: the silence a machine has on the clock now. */
-export function silenceOf(runnerId: string, now = Date.now()): number {
+export function silenceOf(runnerId: string, now = remoteNow()): number {
   return now - Math.max(heardAt(runnerId) ?? remoteBootAt(), remoteBootAt())
 }

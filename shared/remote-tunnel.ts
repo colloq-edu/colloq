@@ -144,6 +144,24 @@ export function tunnelUrl(home: string): string {
 export const TUNNEL_PING_MS = 10_000
 /** A side that heard no frame for this long terminates the socket, with no close handshake on a dead link. */
 export const TUNNEL_DEAD_MS = 25_000
+/**
+ * An open tunnel that heard no frame for this long is quiet: its pings
+ * stopped (§11.7, «Relay blip under 25 s»), and home holds the machine
+ * unreachable (the chip amber, new runs waiting at the gate) while the socket
+ * itself waits out TUNNEL_DEAD_MS, as a relay's stall heals by itself (K0: a
+ * 10 s cut was a 10.6 s stall). The next frame ends it. The outage counts
+ * from the last frame, so the room's note, due ten seconds into it, goes out
+ * as the line is crossed («Нет связи … · 0:12», §13.2), and a stall shorter
+ * than this says nothing at all.
+ */
+export const TUNNEL_QUIET_MS = 12_000
+/**
+ * An end that heard nothing for this long, and sent no PING since, PINGs at
+ * once: a working tunnel answers within one round trip, so it is never
+ * quiet however the two sides' ten seconds of PINGs fall against each other,
+ * and only a path that stopped carrying is.
+ */
+export const TUNNEL_PROBE_MS = TUNNEL_QUIET_MS / 2
 /** A frame's header. */
 export const TUNNEL_HEADER_BYTES = 16
 /** A DATA frame's payload at most: one deficit round-robin turn, so a 6 MiB figure interleaves with another kernel's print (§4.4). */
@@ -754,6 +772,13 @@ export interface TunnelHooks {
   heard?(): void
   /** A PING of this end's came back after `ms`. */
   rtt?(ms: number): void
+  /**
+   * The open tunnel went quiet (TUNNEL_QUIET_MS without a frame: its pings
+   * stopped), `since` its last frame; or a frame came again, and it is quiet
+   * no more. Never said of a socket that is gone: `end` and the owner's own
+   * close say that.
+   */
+  quiet?(quiet: boolean, since: number): void
   /** A stream was reset because its local connection, told to pause, went on writing (TUNNEL_RETAIN_BYTES). */
   overflow?(stream: TunnelStream): void
   /**
@@ -826,10 +851,12 @@ const doneHere = (stream: TunnelStream): boolean =>
  * closes (TUNNEL_CLOSE.violation): the codec has checked each frame's shape,
  * this checks what the frames say together.
  *
- * LIVENESS. Each end PINGs every TUNNEL_PING_MS once open, and ends the
- * socket with no close handshake after TUNNEL_DEAD_MS without a frame, or
- * after TUNNEL_GREETING_MS without its greeting: a cut, not the end of the
- * streams.
+ * LIVENESS. Each end PINGs every TUNNEL_PING_MS once open, and at once when
+ * it heard nothing for TUNNEL_PROBE_MS and sent no PING since; it is quiet
+ * after TUNNEL_QUIET_MS without a frame (`quiet`, the owner told), until the
+ * next one; and it ends the socket with no close handshake after
+ * TUNNEL_DEAD_MS without a frame, or after TUNNEL_GREETING_MS without its
+ * greeting: a cut, not the end of the streams.
  *
  * ACROSS SOCKETS (§4.8). An end is one life of its side, the agent's
  * AgentTunnel's or one machine's at home, and it outlives the sockets its
@@ -879,6 +906,10 @@ export class TunnelEnd {
   private startedAt: number
   private heardAt: number
   private nextPingAt = 0
+  /** When this end last sent a PING: a frame heard after it, then none for TUNNEL_PROBE_MS, sends the next one at once. */
+  private pingedAt = Number.NEGATIVE_INFINITY
+  /** Open and heard nothing for TUNNEL_QUIET_MS: said to the owner once, and again when a frame ends it. */
+  private silent = false
   private pingId = 0
   private readonly pings = new Map<number, number>()
   /** The agent: the streams its HELLO offered to resume, with their lanes, until home answers. */
@@ -931,6 +962,16 @@ export class TunnelEnd {
     return this.phase === 'open'
   }
 
+  /** Open, and no frame for TUNNEL_QUIET_MS: its pings stopped, and the socket is not given up yet (TUNNEL_DEAD_MS). */
+  get quiet(): boolean {
+    return this.phase === 'open' && this.silent
+  }
+
+  /** When the peer's last frame came, on this end's clock (its socket's opening, if none since). */
+  get lastHeard(): number {
+    return this.heardAt
+  }
+
   get closed(): boolean {
     return this.phase === 'closed'
   }
@@ -964,6 +1005,7 @@ export class TunnelEnd {
     if (this.socket !== null) this.detach()
     this.socket = socket
     this.phase = 'greeting'
+    this.silent = false
     this.startedAt = this.heardAt = this.clock.now()
     if (hello === undefined || this.side === 'agent') return this.start()
     this.started = true
@@ -985,9 +1027,16 @@ export class TunnelEnd {
   /** A message of the socket's, as ws gives it. */
   receive(message: unknown, binary: boolean): void {
     if (this.socket === null || this.phase === 'closed') return
+    const before = this.heardAt
     this.heardAt = this.clock.now()
     try {
       this.hooks.heard?.()
+      if (this.silent) {
+        this.silent = false
+        this.hooks.quiet?.(false, this.heardAt)
+      }
+      // The first frame after a PING of this end's: the probe's moment is due from it (TUNNEL_PROBE_MS), sooner than the clock looks.
+      if (this.phase === 'open' && this.pingedAt >= before) this.reschedule()
       const bytes = bytesOf(message)
       if (!binary || bytes === null) return this.fail(TUNNEL_CLOSE.violation, 'A text message on the tunnel')
       let frame: TunnelFrame
@@ -1083,6 +1132,7 @@ export class TunnelEnd {
     if (this.phase === 'closed') return
     this.phase = 'closed'
     this.socket = null
+    this.silent = false
     for (const timer of [this.timer, this.wake, this.keep]) if (timer !== null) this.clock.clearTimeout(timer)
     this.timer = this.wake = this.keep = null
     this.control.length = 0
@@ -1458,6 +1508,8 @@ export class TunnelEnd {
     this.socket = null
     this.phase = 'detached'
     this.started = false
+    // Quiet is a word about an open socket: the owner hears its cut, and the next socket starts heard.
+    this.silent = false
     for (const timer of [this.timer, this.wake]) if (timer !== null) this.clock.clearTimeout(timer)
     this.timer = this.wake = null
     this.control.length = 0
@@ -1749,6 +1801,7 @@ export class TunnelEnd {
 
   private ping(): void {
     const id = ++this.pingId
+    this.pingedAt = this.clock.now()
     this.pings.set(id, this.clock.now())
     // A PONG that never came is not waited for past a few more PINGs.
     for (const old of this.pings.keys()) {
@@ -1766,18 +1819,35 @@ export class TunnelEnd {
     if (this.phase === 'greeting' && now - this.startedAt >= TUNNEL_GREETING_MS) {
       return this.fail(null, `No ${this.side === 'home' ? 'HELLO' : 'WELCOME'} in ${TUNNEL_GREETING_MS / 1000} s`)
     }
-    if (this.phase === 'open' && now >= this.nextPingAt) {
-      this.nextPingAt = now + TUNNEL_PING_MS
-      this.ping()
+    if (this.phase === 'open') {
+      if (now >= this.nextPingAt) {
+        this.nextPingAt = now + TUNNEL_PING_MS
+        this.ping()
+      } else if (this.pingedAt < this.heardAt && now - this.heardAt >= TUNNEL_PROBE_MS) {
+        // Heard nothing since the last frame's half a quiet ago: a round trip now, before the quiet line.
+        this.ping()
+      }
+      if (!this.silent && now - this.heardAt >= TUNNEL_QUIET_MS) {
+        this.silent = true
+        try {
+          this.hooks.quiet?.(true, this.heardAt)
+        } catch (error) {
+          // An owner's hook that threw costs this tunnel, never the process.
+          return this.fail(TUNNEL_INTERNAL_CLOSE, messageOf(error))
+        }
+      }
     }
     this.reschedule()
   }
 
-  /** The clock's next look: the dead line, and the greeting's or the next PING's. */
+  /** The clock's next look: the dead line, the greeting's, and while open the next PING's, the probe's and the quiet line. */
   private reschedule(): void {
     if (this.socket === null || this.phase === 'closed') return
     if (this.timer !== null) this.clock.clearTimeout(this.timer)
-    const at = Math.min(this.heardAt + TUNNEL_DEAD_MS, this.phase === 'greeting' ? this.startedAt + TUNNEL_GREETING_MS : this.nextPingAt)
+    const open = this.phase === 'open'
+    const probeAt = open && this.pingedAt < this.heardAt ? this.heardAt + TUNNEL_PROBE_MS : Number.POSITIVE_INFINITY
+    const quietAt = open && !this.silent ? this.heardAt + TUNNEL_QUIET_MS : Number.POSITIVE_INFINITY
+    const at = Math.min(this.heardAt + TUNNEL_DEAD_MS, open ? this.nextPingAt : this.startedAt + TUNNEL_GREETING_MS, probeAt, quietAt)
     this.timer = this.clock.setTimeout(() => this.tick(), Math.max(0, at - this.clock.now()))
   }
 

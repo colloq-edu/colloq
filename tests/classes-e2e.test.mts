@@ -7,10 +7,10 @@
  * (tests/_fake-jupyter.mjs), and a fault proxy between them
  * (tests/_tunnel-fault.mts) where relay2 stands.
  *
- * THE HARNESS FIRST. The scenarios of §17.2 run once placement, the kernel
- * hooks and the class sync exist (the next wave); until then they are listed
- * below as todos with their numbers. What runs now proves the pieces those
- * scenarios stand on, each against the real thing it stands in for: the
+ * THE HARNESS. The scenarios of §17.2 run in files of their own on it:
+ * classes-e2e-a (A.1–A.3), classes-e2e-b (B.4–B.8) and classes-e2e-d
+ * (D.14–D.24). What runs here proves the pieces those scenarios stand on,
+ * each against the real thing it stands in for: the
  * proxy's faults on plain sockets and on the agent's own requests, the fake
  * docker's class containers under home's argv and under the agent's real
  * kernel host (kernels.ts) — every docker question it asks, answered — the
@@ -1144,27 +1144,3 @@ test('the home\'s class placements find a class\'s image as the test noted it, a
   // What would have asked the developer's daemon (Colima, Docker Desktop) for the home's own image hears there is none.
   await assert.rejects(captureRevision('base'), new RegExp(NO_DOCKER))
 })
-
-/* --------------------------------------------- the scenarios (§17.2, next) */
-
-// Placement, the kernel hooks and the class sync come next wave; each scenario then runs on the harness above.
-test.todo('A1 · warm start on join; Run → output in Yjs; completion, inspect and brief through the tunnel; interrupt, restart, input(), file:run, the terminal')
-test.todo('A2 · two class notebooks in one room container; ten personal kernels on a machine with the room at home')
-test.todo('A3 · a home build differing from the agent\'s: classes keep running, a new placement goes home with the words, «устарел»')
-test.todo('B4 · a 20 s black hole mid-STREAM: no failover, no reconnect attempt counted, the chip amber after 10 s, the "back" note, all output delivered')
-test.todo('B5 · a cut without resume: inner reconnect, replay, and reconcileAfterReset settles the reply the fake dropped on purpose; COUNT unchanged')
-test.todo('B6 · (K3b) a 60 s cut with resume: zero output lost, no inner reconnect')
-test.todo('B7 · restart pressed while unreachable is refused; a restart whose answer is cut reads «ответа нет», then is settled one way, and in a second run the other')
-test.todo('B8 · a run limit firing during a cut lands when the link returns, on the same cell, never the next')
-test.todo('D14 · a partition with a second machine as evidence: failover at the class\'s failoverSec on the clock; words; the queue dropped; files as of the last sync; the stale gen\'s PUT gets 409; the returning machine reports late changes and removes its container')
-test.todo('D15 · home\'s own path blackholed (both machines silent, the probe failing): no failover, and everything resumes')
-test.todo('D16 · tunnel down with syncs flowing past CLASS_TUNNEL_STUCK_MS: failover with the tunnel words')
-test.todo('D17 · «ждать машину»: no failover until «Перенести сейчас», which moves at once')
-test.todo('D18 · agent SIGKILL: adoption; x = 5 survives print(x); the pty is kept')
-test.todo('D19 · bye{restart}: no failover within its 120 s grace, even in silence')
-// D20 needs the rooms' side of a crash too: kernel/index.ts and collab/ forgetting a dead life's rooms (Home.crash).
-test.todo('D20 · home crash and restart mid-cell: re-attach by session path, releaseOrphanedWork, full reports reconcile, nothing fails over in the boot grace')
-test.todo('D21 · revoke, «Не принимает занятия» and leave: immediate failover with the owner\'s words; submissions keep flowing after unclass')
-test.todo('D22 · the perimeter helper fails three times: class containers stopped, failover, the banner')
-test.todo('D23 · two silence failovers inside the window: quarantine; no new placements until resume')
-test.todo('D24 · four tunnel replacements from two addresses: events and the banner')

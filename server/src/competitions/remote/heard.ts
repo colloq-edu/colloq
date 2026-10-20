@@ -78,6 +78,29 @@ interface Heard {
 
 const heard = new Map<string, Heard>()
 
+/**
+ * THE CLOCK THE MACHINES ARE HEARD ON: the wall's, unless a test moves one of
+ * its own (useRemoteClock). What the machines' side counts liveness by reads
+ * it — when a call or a sync came (routes.ts), the clock's passes and the
+ * probe (liveness.ts), the owner's buttons (release.ts) — the same clock the
+ * classes' clock and the tunnels run on in a home that moves its own (an
+ * end-to-end home): read off the wall, a machine that keeps syncing while
+ * that clock moves on a minute was a minute silent, and its classes failed
+ * over. A held sync's wait stays the wall's: it is a real connection's.
+ */
+const WALL: { now(): number } = { now: () => Date.now() }
+let clock = WALL
+
+/** Now, on the machines' clock. */
+export function remoteNow(): number {
+  return clock.now()
+}
+
+/** For tests: the machines are heard on this clock (an end-to-end home's), or on the wall's again (null). */
+export function useRemoteClock(next: { now(): number } | null): void {
+  clock = next ?? WALL
+}
+
 /** When this life of the server began counting: nothing expires for REMOTE_BOOT_GRACE_MS after it. */
 let bootAt = Date.now()
 
@@ -177,7 +200,7 @@ export interface SentReply {
   intents: readonly RemotePlacementIntent[]
 }
 
-export function noteSent(runnerId: string, sent: SentReply, now = Date.now()): void {
+export function noteSent(runnerId: string, sent: SentReply, now = remoteNow()): void {
   const found = entry(runnerId, now)
   found.sentDigest = sent.digest
   found.intents = sent.intents
@@ -349,7 +372,7 @@ function silenceFrom(runnerId: string, now: number, blind: number | null): numbe
 }
 
 /** For the tests: a new life of the server, with nothing heard and its boot at `at`. */
-export function resetHeard(at = Date.now()): void {
+export function resetHeard(at = remoteNow()): void {
   heard.clear()
   bootAt = at
   probeOkAt = null
@@ -400,7 +423,7 @@ export function runnerCards(runner: RunnerRow): RemoteCard[] {
  * an update or a quarter of an hour of a dead tunnel, and its notebooks wait
  * for the machine in the queue rather than being refused at the door.
  */
-export function remoteCardsSeen(now = Date.now()): { recent: number; last: { name: string; at: number } | null; runners: RunnerRow[] } {
+export function remoteCardsSeen(now = remoteNow()): { recent: number; last: { name: string; at: number } | null; runners: RunnerRow[] } {
   let recent = 0
   let last: { name: string; at: number } | null = null
   const runners: RunnerRow[] = []

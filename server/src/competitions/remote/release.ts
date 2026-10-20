@@ -77,7 +77,7 @@ import {
   type RunnerRow,
 } from './store.js'
 import { wakeAllRunners, wakeRunner } from './wake.js'
-import { classPort, forgetHeard, type ClassFailoverCause } from './heard.js'
+import { classPort, forgetHeard, remoteNow, type ClassFailoverCause } from './heard.js'
 import { dropAttempt } from '../storage.js'
 import { dropStaging } from './upload.js'
 import { cutBlobStreams, starvedLease } from './blobs.js'
@@ -483,7 +483,7 @@ function failClassesOver(runnerId: string, cause: ClassFailoverCause, now: numbe
  * machine the owner disconnected. The agent's 401 path removes the class
  * containers and their folders (§11.5).
  */
-export function revokeRunner(runnerId: string, now = Date.now()): boolean {
+export function revokeRunner(runnerId: string, now = remoteNow()): boolean {
   const runner = getRunner(runnerId)
   if (!runner || runner.state === 'revoked' || runner.state === 'left') return false
   failClassesOver(runnerId, 'revoked', now)
@@ -515,7 +515,7 @@ export function revokeRunner(runnerId: string, now = Date.now()): boolean {
  *
  * `unknown` or `gone` — no such machine, or one that may no longer call.
  */
-export function unclassRunner(runnerId: string, now = Date.now()): { runner: RunnerRow; changed: boolean; moved: number } | { refused: 'unknown' | 'gone' } {
+export function unclassRunner(runnerId: string, now = remoteNow()): { runner: RunnerRow; changed: boolean; moved: number } | { refused: 'unknown' | 'gone' } {
   const before = getRunner(runnerId)
   if (!before) return { refused: 'unknown' }
   if (!runnerStanding(before)) return { refused: 'gone' }
@@ -550,7 +550,7 @@ export function unclassRunner(runnerId: string, now = Date.now()): { runner: Run
  * left them: «уход перенесёт их на сервер», §11.5), and its tunnel closes:
  * the agent removes its class containers on its way out.
  */
-export function leaveRunner(runnerId: string, now = Date.now()): boolean {
+export function leaveRunner(runnerId: string, now = remoteNow()): boolean {
   const runner = getRunner(runnerId)
   if (!runner || !runnerStanding(runner)) return false
   failClassesOver(runnerId, 'leaving', now)
@@ -578,7 +578,7 @@ export function leaveRunner(runnerId: string, now = Date.now()): boolean {
  * rest of a 200 MiB file must not go on flowing to a machine for the minutes
  * a slow «Скорость раздачи» takes, after the owner said it may not hold it.
  */
-export function untrustRunner(runnerId: string, now = Date.now()): number {
+export function untrustRunner(runnerId: string, now = remoteNow()): number {
   let released = 0
   db.transaction(() => {
     updateRunner(runnerId, { trusted: false })

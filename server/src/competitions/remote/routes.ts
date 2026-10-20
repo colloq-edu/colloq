@@ -94,6 +94,7 @@ import {
   noteCall,
   noteSent,
   noteSync,
+  remoteNow,
   sentDigest,
   wantedBefore,
   type SentReply,
@@ -256,7 +257,7 @@ function machine(kind: keyof typeof PER_MINUTE) {
       return refuse(res, 'unauthorized')
     }
     if (tooOften(buckets[kind], runner.id, 60_000, PER_MINUTE[kind])) return refuse(res, 'too_often', undefined, 5)
-    noteCall(runner.id, Date.now(), clientAddress(req))
+    noteCall(runner.id, remoteNow(), clientAddress(req))
     ;(res.locals as RunnerLocals).runner = runner
     next()
   }
@@ -282,7 +283,7 @@ export function remoteRunnerRoutes(): Router {
     next()
   }, json(REMOTE_JOIN_BYTES), (req, res) => {
     const request = parseRemoteJoinRequest(req.body)
-    const now = Date.now()
+    const now = remoteNow()
     const address = clientAddress(req)
     const joined = joinRunner({ code: request.code, joinId: request.joinId, build: request.build, facts: request.facts, address }, now)
     if (!joined.ok) {
@@ -409,7 +410,7 @@ async function sync(req: Request, res: Response): Promise<void> {
     if (!listing && !runner.classesWindingDown) return refuse(res, 'invalid', 'This machine does not take classes')
     if (listing !== runner.classesWindingDown) runner = updateRunner(runner.id, { classesWindingDown: listing }) ?? runner
   }
-  const now = Date.now()
+  const now = remoteNow()
   callCounts.syncs++
   const address = clientAddress(req)
   const news = noteSync(runner.id, request, now, address)
@@ -420,7 +421,8 @@ async function sync(req: Request, res: Response): Promise<void> {
   // A machine leaving with nothing held revokes itself: its next call is refused, and it stops (colloq-host runner leave).
   if (request.state === 'leaving' && request.attempts.length === 0) leaveRunner(current.id, now)
   const hold = syncHold(request, current)
-  const ends = now + hold
+  // The hold is a real connection's wait, on the wall's clock whatever clock the machines are heard on.
+  const ends = Date.now() + hold
   const hungUp = new AbortController()
   res.on('close', () => hungUp.abort())
   // This sync is the machine's newest: the one it held before answers now.
@@ -565,7 +567,7 @@ interface SyncAnswer {
  */
 async function syncReply(runnerId: string, request: RemoteSyncRequest, leaving: boolean): Promise<SyncAnswer | null> {
   const stock = await homeStock()
-  const now = Date.now()
+  const now = remoteNow()
   const runner = getRunner(runnerId)
   if (!runner || (!runnerStanding(runner) && !(leaving && runner.state === 'left'))) return null
   const compatible = remoteCompatible(homeRunnerBuild(), request.build)
@@ -727,7 +729,7 @@ async function outcome(req: Request, res: Response): Promise<void> {
   const attemptId = String(req.params.attempt)
   const answer = await applyOutcome(runner.id, attemptId, request)
   if (!answer.ok) return refuse(res, answer.code)
-  const now = Date.now()
+  const now = remoteNow()
   const fresh = getRunner(runner.id) ?? runner
   const sync = lastSync(runner.id)
   const compatible = remoteCompatible(homeRunnerBuild(), request.build)

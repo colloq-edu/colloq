@@ -69,6 +69,8 @@ import { noteCall, noteProbe, noteSync, resetHeard } from '../server/src/competi
 import {
   ClassPlacements,
   PlacementLost,
+  onPlacementChange,
+  placementClock,
   placementCurrent,
   placementToken,
   usePlacements,
@@ -411,9 +413,10 @@ test('no portable image, a broken blocklist or no machine: the fallback here, a 
   assert.equal(await placements.ensure(home, 'base', undefined, 2, 4096, 'room'), null, 'an environment built here stays here (D22)')
   assert.deepEqual(events, ['fallback'])
   const strict = rig.room({ fallback: false })
-  await assert.rejects(placements.ensure(strict, 'base', undefined, 2, 4096, 'room'), /No machine can take this class/)
+  // In words, and without the machines and their refusals, which are for the log: the room reads it as it is.
+  await assert.rejects(placements.ensure(strict, 'base', undefined, 2, 4096, 'room'), (error: Error) => error.message === tr('server.noMachineCanTakeThisClassNow.07c43f'))
   const pool = rig.room({ council: 'machines' })
-  await assert.rejects(placements.ensure(pool, 'base', undefined, 2, 4096, 'council'), (error: Error) => error.message.length > 0 && !/No machine/.test(error.message))
+  await assert.rejects(placements.ensure(pool, 'base', undefined, 2, 4096, 'council'), (error: Error) => error.message === tr('server.theCouncilPoolRunsOnlyOnMachines.ef5702'))
 
   usePlacements(rig.placements)
   process.env.KERNEL_BLOCKED_CIDRS = '10.0.0.0/8, not-a-range'
@@ -565,6 +568,15 @@ test('a GPU room gets a whole card no share of is in use; personal notebooks nev
   createSession(second, 'GPU 2', 'base-gpu')
   setSessionPlacement(second, { ...CLASS_PLACEMENT_DEFAULT, room: 'machines', own: 'machines' })
   assert.equal(await (await rig.place(second)).ensuring, null)
+  // Nor once the machine holds the room at its gen while its image comes: it names no card until it picks one, reporting the card
+  // free meanwhile, and the card is the room's all the same (the take counts it so too, lease.ts · classShare).
+  rig.report(free, { placements: [rig.held(busy, 'room', row.gen, 'pulling')] })
+  const third = `gpu${randomUUID().slice(0, 8)}`
+  createSession(third, 'GPU 3', 'base-gpu')
+  setSessionPlacement(third, { ...CLASS_PLACEMENT_DEFAULT, room: 'machines', own: 'machines' })
+  const { ensuring: placingThird } = await rig.place(third)
+  assert.equal(livePlacement(third, 'room'), null, 'one whole card, one room')
+  assert.equal(await placingThird, null)
   // The personal notebooks of a GPU class take no card.
   void rig.place(second, 'own')
   await flush()
@@ -615,7 +627,8 @@ test('a start fails in the machine’s words; a ready echo of another image is r
   const id = rig.room()
   const { ensuring: failing } = await rig.place(id)
   rig.report(m, { placements: [rig.held(id, 'room', 1, 'failed')] })
-  await assert.rejects(failing, (error: Error & { failure?: { unschedulable: string } }) => /did not start/.test(error.message) && error.failure?.unschedulable === 'memory')
+  await assert.rejects(failing, (error: Error & { failure?: { unschedulable: string } }) =>
+    error.message === tr('server.theKernelDidNotStartOnMachine.f6b08f', { machine: m.name, detail: 'docker run: out of memory' }) && error.failure?.unschedulable === 'memory')
   assert.equal(livePlacement(id, 'room')?.state, 'starting', 'the machine retries while home keeps the intent')
   // The next Run waits for the retry, not for the old failure.
   const next = rig.placements.ensure(id, 'base', undefined, 2, 4096, 'room')
@@ -628,7 +641,7 @@ test('a start fails in the machine’s words; a ready echo of another image is r
 
 test('the start waits CLASS_START_MS and no longer', async () => {
   const rig = new Rig()
-  rig.machine()
+  const m = rig.machine()
   const id = rig.room()
   const { ensuring } = await rig.place(id)
   rig.clock.advance(179_000)
@@ -638,7 +651,7 @@ test('the start waits CLASS_START_MS and no longer', async () => {
   await flush()
   assert.equal(settled, false)
   rig.clock.advance(1_000)
-  await assert.rejects(ensuring, /within 180 s/)
+  await assert.rejects(ensuring, (error: Error) => error.message === tr('server.theKernelDidNotStartOnMachine.5db0fa', { machine: m.name, seconds: 180 }))
 })
 
 test('a start the machine keeps failing is given up CLASS_START_MS after its first failure: stopped there, and the class goes elsewhere', async () => {
@@ -648,7 +661,8 @@ test('a start the machine keeps failing is given up CLASS_START_MS after its fir
   const failed = (): void => rig.report(m, { placements: [rig.held(id, 'room', 1, 'failed')] })
   const { ensuring } = await rig.place(id)
   failed()
-  await assert.rejects(ensuring, /did not start/)
+  const words = tr('server.theKernelDidNotStartOnMachine.f6b08f', { machine: m.name, detail: 'docker run: out of memory' })
+  await assert.rejects(ensuring, (error: Error) => error.message === words)
   // The machine retries and fails again; the next Run waits for it, but not for ever.
   const waiting = rig.placements.ensure(id, 'base', undefined, 2, 4096, 'room')
   waiting.catch(() => undefined)
@@ -662,7 +676,7 @@ test('a start the machine keeps failing is given up CLASS_START_MS after its fir
   failed()
   rig.tick()
   assert.equal(livePlacement(id, 'room')?.state, 'stopping', 'given up there: the reply omits it')
-  await assert.rejects(waiting, (error: Error & { failure?: { unschedulable: string } }) => /did not start/.test(error.message) && error.failure?.unschedulable === 'memory')
+  await assert.rejects(waiting, (error: Error & { failure?: { unschedulable: string } }) => error.message === words && error.failure?.unschedulable === 'memory')
   assert.equal(await rig.placements.ensure(id, 'base', undefined, 2, 4096, 'room'), null, 'that machine is avoided: the fallback here')
   assert.equal(runnerEventsOf(m.id, ['class_failover'], 0).length, 0, 'no failover: there were no variables to lose')
 })
@@ -1053,7 +1067,7 @@ test('nothing moves in the boot grace, nor within a bye{restart}’s 120 s, nor 
       // «Перенести сейчас» is what moves it.
       assert.deepEqual(await rig.placements.moveNow(id, null, 'teacher'), { ok: true })
       assert.equal(placementRow(id, 'room')?.reason, 'moved')
-      assert.deepEqual(await rig.placements.moveNow(id, null, 'teacher'), { refused: 'Nothing of this class runs on a machine now' })
+      assert.deepEqual(await rig.placements.moveNow(id, null, 'teacher'), { refused: tr('server.thisClassSKernelsRunOnThis.d5eaa3') })
       continue
     }
     for (let i = 0; i < 3; i++) {
@@ -1413,6 +1427,89 @@ test('the fallback here: no machine fits, the slot starts on this server and sta
   assert.ok(livePlacement(id, 'room'))
 })
 
+test('a warm start puts the slot on a machine, never here: one gen however many ask, and nothing for a slot placed, kept here or computing here', async () => {
+  const rig = new Rig()
+  const m = rig.machine()
+  // Personal notebooks on machines, the class notebook here, and no fallback: a warm start must not need one.
+  const id = rig.room({ room: 'home', own: 'machines', fallback: false })
+  rig.placements.warmSlot(id, 'own')
+  rig.placements.warmSlot(id, 'own')
+  // A Run arriving meanwhile waits for the warm start's placement rather than writing a second gen.
+  const { ensuring } = await rig.place(id, 'own')
+  await flush()
+  assert.equal(livePlacement(id, 'own')?.runnerId, m.id, 'warmed on the machine')
+  assert.equal(livePlacement(id, 'own')?.gen, 1)
+  assert.deepEqual(rig.kinds(id), ['starting'], 'one placement')
+  rig.report(m, { placements: [rig.held(id, 'own', 1)] })
+  assert.ok(await ensuring, 'the Run gets the warmed kernel')
+  rig.placements.warmSlot(id, 'own')
+  rig.placements.warmSlot(id, 'room')
+  await flush()
+  assert.equal(livePlacement(id, 'own')?.gen, 1, 'placed already: nothing')
+  assert.equal(livePlacement(id, 'room'), null, 'its class keeps it here: nothing')
+
+  // A Run that comes once the warm start is already placing (looking its image up) waits for that placement: one gen still.
+  let looked!: () => void
+  const lookup = new Promise<void>((resolve) => (looked = resolve))
+  const slow = new ClassPlacements({ clock: rig.clock, tunnels: rig.tunnels, revisionOf: async () => (await lookup, rig.revision), log: () => undefined })
+  usePlacements(slow)
+  slow.noteKernelsReport(m.id, { placements: [], reports: [], epochs: [], readings: [], tunnel: 'up', classes: GOOD }, rig.clock.now())
+  const late = rig.room({ own: 'machines', fallback: false })
+  slow.warmSlot(late, 'own')
+  await flush()
+  const running = slow.ensure(late, 'base', undefined, 2, 4096, 'own')
+  running.catch(() => undefined)
+  looked()
+  await flush()
+  await flush()
+  assert.equal(livePlacement(late, 'own')?.gen, 1, 'the Run took the warm start’s placement')
+  usePlacements(rig.placements)
+
+  // No machine can take it now: nothing here, no fallback said, no refusal, with the fallback on.
+  rig.tunnels.set(m.id, false)
+  const lone = rig.room({ own: 'machines', fallback: true })
+  rig.placements.warmSlot(lone, 'own')
+  await flush()
+  await flush()
+  assert.equal(livePlacement(lone, 'own'), null)
+  assert.deepEqual(rig.kinds(lone), [], 'a warm start starts nothing here and says nothing')
+  // A slot that computes here already (its fallback) is never started on a machine as well.
+  await endpointForSession(lone, 'base', 'own')
+  assert.deepEqual(rig.kinds(lone), ['fallback'])
+  rig.tunnels.set(m.id, true)
+  rig.placements.warmSlot(lone, 'own')
+  await flush()
+  await flush()
+  assert.equal(livePlacement(lone, 'own'), null, 'one slot never computes in two places')
+})
+
+test('the process’s listeners and clock follow its placements across a swap: the kernel hooks subscribe once', async () => {
+  const heard: string[] = []
+  const stop = onPlacementChange((event) => heard.push(event.kind))
+  try {
+    const first = new Rig()
+    assert.equal(placementClock.now(), first.clock.now(), 'the clock of the placements of the moment')
+    let fired = 0
+    const timer = placementClock.setTimeout(() => fired++, 1_000)
+    first.machine()
+    await first.place(first.room())
+    assert.deepEqual(heard, ['starting'])
+    // A harness's next life: other placements, on another clock.
+    const second = new Rig()
+    second.clock.t = first.clock.t + 3_600_000
+    assert.equal(placementClock.now(), second.clock.now())
+    // A timer stays with the clock it was set on.
+    placementClock.clearTimeout(timer)
+    first.clock.advance(5_000)
+    assert.equal(fired, 0)
+    second.machine()
+    await second.place(second.room())
+    assert.deepEqual(heard, ['starting', 'starting'], 'the news of the placements swapped in reaches the listener subscribed before')
+  } finally {
+    stop()
+  }
+})
+
 test('a class with nothing on machines takes none of the machine branches', async () => {
   new Rig()
   const id = `plain${randomUUID().slice(0, 8)}`
@@ -1460,6 +1557,7 @@ test('the seminar view says where the class computes; its PATCH is the class sta
   updateClassMachineSettings({ teachers: false })
   answer = await patch(asTeacher, { placement: { room: 'machines' } })
   assert.equal(answer.status, 403)
+  assert.equal(((await answer.json()) as { error: string }).error, tr('server.onlyTheOwnerDecidesWhereClassesCompute.5ef976'), 'in the teacher’s words')
   assert.equal(classPlacement(id).room, 'home', 'nothing applied')
   // The whole form sent back unchanged is no change to refuse, and the rest of it applies.
   answer = await patch(asTeacher, { name: 'Renamed', placement: classPlacement(id) })

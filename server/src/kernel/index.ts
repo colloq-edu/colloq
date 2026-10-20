@@ -104,6 +104,7 @@ import { isKernelMemoryOutput, KERNEL_MEMORY_ENAME, KERNEL_PROBLEM_KEY, type Ker
 import { explain as explainDeath, forgetKills, sampleKills } from './postmortem.js'
 import { getSessionDoc, holdRoom, onlineCount, peekSessionDoc } from '../collab/index.js'
 import { kernelRetirementInProgress, pauseKernelStarts } from './retirement.js'
+import { takePlacementHooks } from './remote/placement-store.js'
 import { seldom } from '../log.js'
 import { countKernelStart } from '../ops/counters.js'
 import { projectBooks } from '../collab/books.js'
@@ -1563,7 +1564,10 @@ export type PlacementView =
       /** Since when the slot is in `state`. */
       since: number
       failover: 'auto' | 'wait'
+      /** When it moves by itself if nothing changes; null — it will not, or no time can be promised yet. */
       failoverAt: number | null
+      /** Since when the machine has not answered, as the rule behind `failoverAt` counts (staff's «не отвечает с»); `since` without one. */
+      quietSince?: number | null
     }
 
 type MachineView = Extract<PlacementView, { where: 'machine' }>
@@ -1590,9 +1594,12 @@ export interface PlacementEvent {
 /**
  * What this file asks of kernel/remote/placement.ts: the names that module
  * exports (the shared interface of wave 2), plus `machinePlaced` from pool.ts's
- * early branches and `warmSlot`, which only the warm start needs. Injected
- * (`useClassPlacements`) rather than imported: a class with nothing on a
- * machine runs exactly the old code, and a suite stands a fake module in.
+ * early branches and `warmSlot`, which only the warm start needs. Handed in
+ * rather than imported: the module reaches the machines' router and the
+ * competitions' queue, which a process of the kernel alone never loads, and
+ * a suite stands a fake module in. The module hands itself over as it loads
+ * (placement-store.ts · takePlacementHooks, below); a class with nothing on a
+ * machine runs exactly the old code either way.
  */
 export interface ClassPlacements {
   placementOf(sessionId: string, role: KernelRole): PlacementView
@@ -1652,32 +1659,51 @@ const HOME_PLACEMENTS: ClassPlacements = {
 let placements: ClassPlacements = HOME_PLACEMENTS
 let classClock: ClassClock = PROCESS_CLOCK
 let unlisten: () => void = () => {}
+/** A suite or a harness handed these hooks their placements (useClassPlacements): the process's own, loaded after, replace nothing. */
+let chosen = false
 
 /** The last machine view of each slot: a 'lost' event may carry the view after the loss, which names no machine. */
 const lastMachine = new Map<string, MachineView>()
 
+/**
+ * Slots whose room was told their machine was lost, by the machine they
+ * left, until their next start says where the kernel went: here the
+ * fallback's note, on another machine `sayWhereItCameBack`.
+ */
+const movedOff = new Map<string, string | null>()
+
 const slotKey = (sessionId: string, role: KernelRole): string => `${sessionId}\0${role}`
 
 /**
- * Hand these hooks the placement module, and optionally a clock for their
+ * Hand these hooks a placement module, and optionally a clock for their
  * timers; null puts every slot back on this server and the process's clock
  * back. A second call replaces the first: its events stop reaching here, and
  * what was known of its outages is forgotten.
  *
- * The module's news is subscribed to once, here. A module that puts another
- * instance behind its functions afterwards (placement.ts · usePlacements, in
- * a suite or a harness) must be handed in again after that, or its news no
- * longer arrives. And the clock must be the module's own: its views' `since`
- * are read against this clock's `now` (the ten seconds of an outage's note).
+ * THE SERVER CALLS NOTHING: the hooks take the process's own module, on the
+ * clock of the process's placements, the moment that module is loaded (at
+ * boot, by the app's routes; `takePlacementHooks` below). This is for a suite
+ * that stands a fake in, or a harness on a clock of its own, and once called
+ * the process's module replaces nothing. The module's news is subscribed to
+ * once, here, and keeps arriving whatever instance it puts behind its
+ * functions (placement.ts · usePlacements, onPlacementChange). The clock must
+ * be the module's own: its views' `since` are read against this clock's `now`
+ * (the ten seconds of an outage's note).
  */
 export function useClassPlacements(next: ClassPlacements | null, clock: ClassClock | null = null): void {
+  chosen = true
+  installPlacements(next ?? HOME_PLACEMENTS, clock ?? PROCESS_CLOCK)
+}
+
+function installPlacements(next: ClassPlacements, clock: ClassClock): void {
   unlisten()
   for (const outage of outages.values()) if (outage.timer !== null) classClock.clearTimeout(outage.timer)
   outages.clear()
   lastMachine.clear()
+  movedOff.clear()
   terminalSlots.clear()
-  placements = next ?? HOME_PLACEMENTS
-  classClock = clock ?? PROCESS_CLOCK
+  placements = next
+  classClock = clock
   unlisten = placements.onPlacementChange(onPlacementEvent)
 }
 
@@ -1834,6 +1860,8 @@ interface Outage {
   timer: unknown
   /** Staff were told, and so hear its end. */
   told: boolean
+  /** What staff's sentence promised of the move (`promiseOf`): a different promise is told again. */
+  promised: string | null
   /** The room's kernel log was told too (not for the council's pool alone), and so hears the return. */
   toldRoom: boolean
   /** Its agent restarts for an update (`bye: 'restart'`): a different sentence, the same wait. */
@@ -1862,9 +1890,12 @@ function beginOutage(sessionId: string, role: KernelRole, view: MachineView, upd
     outage.updating ||= updating
     // Its moment passed with nobody here to tell (`tellOutage`): told now that there is.
     if (!outage.told && outage.timer === null) armOutage(key, outage)
+    // Told, and the move is known by now or changed (a young outage promises no time, a stuck tunnel's syncs may stop): staff
+    // hear when it moves now. The room's note said nothing of when, and is not said again.
+    else if (outage.told && promiseOf(view, outage.updating) !== outage.promised) tellStaff(outage)
     return
   }
-  outage = { sessionId, view, since: view.since, roles: new Map([[role, view.gen]]), timer: null, told: false, toldRoom: false, updating }
+  outage = { sessionId, view, since: view.since, roles: new Map([[role, view.gen]]), timer: null, told: false, promised: null, toldRoom: false, updating }
   outages.set(key, outage)
   armOutage(key, outage)
 }
@@ -1886,14 +1917,31 @@ function tellOutage(key: string, outage: Outage): void {
   // The record stays untold: the first notebook of the class to wait for the machine tells it (`beginOutage`).
   if (scopesOf(outage.sessionId).length === 0) return
   outage.told = true
-  const elapsed = clockOf(classClock.now() - outage.since)
-  const words = outageWords(outage, elapsed)
+  const words = outageWords(outage, clockOf(classClock.now() - outage.since))
   if (words !== null) {
     outage.toldRoom = true
     kernelNote(outage.sessionId, words)
   }
-  const named = waitingWords(outage.view, outage.updating, elapsed)
+  tellStaff(outage)
+}
+
+/** Staff's sentence about the outage (`waitingWords`), to the watchers of each of its slots: what it promises is remembered. */
+function tellStaff(outage: Outage): void {
+  outage.promised = promiseOf(outage.view, outage.updating)
+  const named = waitingWords(outage.view, outage.updating, clockOf(classClock.now() - outage.since))
   for (const role of outage.roles.keys()) tellMachineWatchers(outage.sessionId, role, named)
+}
+
+/**
+ * What staff's sentence promises of the move, as a key: another promise is
+ * told again, the clock moving on is not. A time is promised only once the
+ * placement knows what moves the slot (placement.ts · outageRule): from
+ * when, then, says which rule it is.
+ */
+function promiseOf(view: MachineView, updating: boolean): string {
+  if (updating) return 'updating'
+  if (view.failover === 'wait') return 'wait'
+  return view.failoverAt === null ? 'none' : `from ${view.quietSince ?? view.since}`
 }
 
 /**
@@ -1933,10 +1981,16 @@ function leaveOutage(sessionId: string, role: KernelRole, runnerId: string | nul
   }
 }
 
-/** Staff's sentence about a machine that does not answer (§13.2 «Waiting (staff)»): what happens next, and when. */
+/**
+ * Staff's sentence about a machine that does not answer (§13.2 «Waiting
+ * (staff)»): what happens next, and when. Quiet since when the rule that
+ * moves it counts (`quietSince`: a silence from the machine's last word), so
+ * that «с 14:32:05 … до 14:33:05» is the class's own failoverSec; with no
+ * time to promise yet, how long it has been out.
+ */
 function waitingWords(view: MachineView, updating: boolean, elapsed: string): string {
   if (updating) return tr('server.theAgentOnMachineIsUpdatingThe.88b188', { machine: view.name })
-  const since = clockTime(view.since)
+  const since = clockTime(view.quietSince ?? view.since)
   if (view.failover === 'wait') return tr('server.machineHasNotAnsweredSinceWaitingFor.378191', { machine: view.name, since })
   if (view.failoverAt !== null) {
     return tr('server.machineHasNotAnsweredSinceWaitingUntil.3d926e', { machine: view.name, since, until: clockTime(view.failoverAt) })
@@ -1999,9 +2053,13 @@ function placementNews(event: PlacementEvent): void {
       break
     case 'stopping':
     case 'stopped':
-    case 'moved':
-      // The slot went on without its machine answering (a stop, a placement after a loss): it waits for nothing now.
+      // The slot went on without its machine answering: it waits for nothing now.
       leaveOutage(sessionId, role, null)
+      break
+    case 'moved':
+      // Running again after a loss: it waits for nothing now, and the room hears where it came back.
+      leaveOutage(sessionId, role, null)
+      sayWhereItCameBack(sessionId, role, view)
       break
     case 'lost':
       // Staff hear it from there: the module's own words when it has them (they name the machine).
@@ -2023,11 +2081,31 @@ function placementNews(event: PlacementEvent): void {
       if (scopesOf(sessionId).some((scope) => scope.role === role && !scope.retired)) {
         kernelNote(sessionId, tr('server.noMachineCanTakeTheKernelNow.53437e'))
       }
+      // After a loss, too: this is where it went.
+      movedOff.delete(slotKey(sessionId, role))
       break
     default:
       break
   }
   tellMachineWatchers(sessionId, role, null)
+}
+
+/**
+ * A slot whose loss the room was told of runs again (§11.2 step 4): on
+ * another machine, the room hears so, as it hears the fallback's «здесь»
+ * when the slot comes back on this server. The failover's own note could
+ * not say where: nothing ran anywhere then. Back on the machine it left
+ * (once that is allowed again), nothing more is said. The council's pool is
+ * the console's news, not the room's.
+ */
+function sayWhereItCameBack(sessionId: string, role: KernelRole, view: PlacementView): void {
+  const key = slotKey(sessionId, role)
+  if (!movedOff.has(key)) return
+  const left = movedOff.get(key)
+  movedOff.delete(key)
+  if (view.where !== 'machine' || view.runnerId === left || role === 'council') return
+  if (!scopesOf(sessionId).some((scope) => scope.role === role && !scope.retired)) return
+  kernelNote(sessionId, tr(role === 'own' ? 'server.thePersonalNotebooksKernelsWereStartedOn.3d0553' : 'server.theKernelWasStartedOnAnotherMachine.28c860'))
 }
 
 /** Say a slot's link in the entry of every notebook computing in it, or waiting for it at the gate. */
@@ -2083,6 +2161,8 @@ function loseSlot(sessionId: string, role: KernelRole, loss: Loss): void {
   )
   kernelNote(sessionId, words.room)
   if (hadWork) kernelNote(sessionId, tr(QUEUE_DROPPED))
+  // Told that the kernel goes: its next start tells where (`sayWhereItCameBack`, the fallback's note).
+  movedOff.set(slotKey(sessionId, role), loss.view?.runnerId ?? null)
   for (const scope of scopes) endOnLostMachine(scope, words.room, loss.at)
   tellMachineWatchers(sessionId, role, loss.staffWords ?? words.staff)
 }
@@ -2147,14 +2227,17 @@ const QUEUE_DROPPED = 'server.theQueueWasClearedItsCellsCounted.c77303'
  * What the room and staff read about a lost machine (remote-classes.md
  * §13.2), by its cause. The room's sentence never names the machine, and it
  * says whose variables are gone: the personal notebooks' slot alone (§10,
- * D31) costs the class notebook nothing.
+ * D31) costs the class notebook nothing. Nor does a silence's or a
+ * perimeter's say where the kernel comes back: nothing runs anywhere yet,
+ * and the next start may place it on another machine as much as here — it
+ * says which as it does (`placementNews` · 'fallback', 'moved').
  */
 function lossWords(loss: Loss, role: KernelRole): { room: string; staff: string } {
   const name = loss.view?.name ?? null
   const named = (key: string, unnamed: string): string => (name === null ? tr(unnamed) : tr(key, { machine: name }))
   const own = role === 'own'
   const moved = tr('server.theKernelWasStartedOnThisServer.497a79')
-  const roomMoved = own ? tr('server.thePersonalNotebooksKernelsStartOnThis.f1d3d4') : moved
+  const roomMoved = own ? tr('server.thePersonalNotebooksKernelsWillStartAgain.7cdaa6') : moved
   switch (loss.cause) {
     case 'revoked':
       return {
@@ -2174,7 +2257,7 @@ function lossWords(loss: Loss, role: KernelRole): { room: string; staff: string 
     case 'perimeter':
       return {
         room: tr(own ? 'server.theNetworkOnThePersonalNotebooksMachine.b18ca6' : 'server.theNetworkOnTheMachineGotOut.10829b'),
-        staff: named('server.theNetworkOnMachineGotOutOf.6b309d', 'server.theNetworkOnTheMachineGotOut.10829b'),
+        staff: named('server.theNetworkOnMachineGotOutOf.c73666', 'server.theNetworkOnTheMachineGotOut.10829b'),
       }
     default:
       break
@@ -2182,14 +2265,15 @@ function lossWords(loss: Loss, role: KernelRole): { room: string; staff: string 
   // Moved off a machine that answered («Перенести на сервер»): nothing to say about silence.
   const view = loss.view
   if (!view || view.state !== 'unreachable') return { room: roomMoved, staff: moved }
-  const since = clockTime(view.since)
+  // Quiet since when the rule that moved it counted, as staff were told while it waited (`waitingWords`).
+  const since = clockTime(view.quietSince ?? view.since)
   if (loss.filesAt !== null) {
     const filesAt = clockTime(loss.filesAt)
     return {
       room: own
         ? tr('server.thePersonalNotebooksMachineHasNotAnswered.ae4676', { since, filesAt })
         : tr('server.theMachineHasNotAnsweredSinceThe.aa7fbb', { since, filesAt }),
-      staff: tr('server.machineHasNotAnsweredSinceTheKernel.05bf4e', { machine: view.name, since, filesAt }),
+      staff: tr('server.machineHasNotAnsweredSinceTheKernel.6c488a', { machine: view.name, since, filesAt }),
     }
   }
   return {
@@ -2447,6 +2531,7 @@ function forgetClassMachines(sessionId: string): void {
     outages.delete(key)
   }
   for (const key of [...lastMachine.keys()]) if (key.startsWith(`${sessionId}\0`)) lastMachine.delete(key)
+  for (const key of [...movedOff.keys()]) if (key.startsWith(`${sessionId}\0`)) movedOff.delete(key)
   for (const [identity, owner] of terminalSlots) if (owner === sessionId) terminalSlots.delete(identity)
 }
 
@@ -2475,6 +2560,16 @@ function clockOf(ms: number): string {
  * the same identity, and this is how it finds its class (§5.7).
  */
 const terminalSlots = new Map<string, string>()
+
+/*
+ * The process's placements, from the moment their module is loaded (at boot,
+ * by the app's routes): the pump's gate, the notes and the refusals hear them
+ * from then on, unless a suite or a harness handed the hooks others
+ * (useClassPlacements). Here, below every record installing clears.
+ */
+takePlacementHooks(({ placements: loaded, clock }) => {
+  if (!chosen) installPlacements(loaded, clock)
+})
 
 let jitterWired = false
 
@@ -2637,8 +2732,10 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
         // The seminar was closed while the kernel was coming up. There is
         // nothing to connect to now: without this branch the socket and the
         // live-kernel watchdog would hang on a runtime that is no longer in
-        // the map until the server restarts.
-        await kernel.dispose().catch(() => {})
+        // the map until the server restarts. A dead process's scope sends
+        // nothing at all: its kernel is the next life's (abandonKernelsForTest).
+        if (abandoned.has(runtime)) kernel.detach()
+        else await kernel.dispose().catch(() => {})
         return
       }
       // Its machine was lost in the last moments of the start: what came up leads to a placement that is gone.
@@ -3888,7 +3985,8 @@ export async function stopKernelsByOwner(
   const blocker = stopBlocker(sessionId, what)
   if (blocker && !options.force) throw new KernelStopRefusal('busy', blocker)
   // From here to the gate below, nothing awaits: the checks above hold when it goes up.
-  const release = pauseKernelStarts(sessionId, what === 'class' ? ['room', 'own'] : ['own'])
+  // The whole class's stop removes its council pool too (pool.ts · dropRoomKernel): its starts wait with the rest.
+  const release = pauseKernelStarts(sessionId, what === 'class' ? ['room', 'own', 'council'] : ['own'])
   const ours = (scope: Runtime): boolean => what === 'class' || scope.role === 'own'
   const stop = (async () => {
     /*
@@ -3973,6 +4071,48 @@ export async function shutdownKernels(): Promise<void> {
     dropWriter(runtime)
     runtime.kernel?.detach()
   }
+}
+
+/** Scopes forgotten as a dead process forgets them (abandonKernelsForTest): what they still had under way sends and writes nothing. */
+const abandoned = new WeakSet<Runtime>()
+
+/**
+ * For an end-to-end home that crashes (tests/_remote-e2e-home.mts · crash,
+ * remote-classes.md §17.2 D20): forget every scope as a process that died
+ * would, and nothing more. No kernel is asked anything and no DELETE leaves:
+ * each kernel client is let go of (`detach`), a wait at a placement gate is
+ * given up, queues, limits and writers are dropped where they stand (their
+ * rooms' holds with them), and the class machines' records with their
+ * timers. A cell that was computing stays as the document has it, as a crash
+ * leaves it, for the next life to find (releaseOrphanedWork, ghost runs);
+ * so does a council attempt (council.ts · settleGhostRun): nothing more of
+ * it is reported, nor is its isolation left in the kernel. A start under way
+ * lets its kernel go unasked. Not a writer's flush already timed (outputs.ts
+ * cannot drop one unwritten): output printed in the crash's last
+ * `config.outputFlushMs` may still be written.
+ */
+export function abandonKernelsForTest(): void {
+  const all = allScopes()
+  runtimes.clear()
+  orphanSweeps.clear()
+  for (const runtime of all) {
+    abandoned.add(runtime)
+    runtime.retired = true
+    runtime.queue.length = 0
+    runtime.gateWait?.controller.abort()
+    if (runtime.limit?.timer) clearTimeout(runtime.limit.timer)
+    // An attempt's next output frame (touchJob) is never sent.
+    if (runtime.job?.timer) clearTimeout(runtime.job.timer)
+    runtime.writer = null
+    runtime.writerHold?.()
+    runtime.writerHold = null
+    runtime.kernel?.detach()
+  }
+  for (const outage of outages.values()) if (outage.timer !== null) classClock.clearTimeout(outage.timer)
+  outages.clear()
+  lastMachine.clear()
+  movedOff.clear()
+  terminalSlots.clear()
 }
 
 /**
@@ -4669,6 +4809,8 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
         }
       },
     })
+    // Its process is gone, as far as this scope knows (abandonKernelsForTest): the document keeps the cell as the crash left it.
+    if (abandoned.has(runtime)) return
     state = status === 'ok' ? 'ok' : status === 'error' ? 'error' : 'idle'
     if (status === 'abort') {
       const phase = runtime.kernel?.phase
@@ -4693,6 +4835,7 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
       }
     }
   } catch (err) {
+    if (abandoned.has(runtime)) return
     // A run cut off by a failover on its way to the machine (or to its fresh kernel there) reads as one cut off there.
     if (runtime.kernel?.endedBy || err instanceof StartLost) writer.error('', lostMidRun(), [])
     else writer.error('KernelError', startWords(runtime.sessionId, runtime.role, errText(err)), [])
@@ -5860,16 +6003,22 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
      * The end of the attempt is assembled right here, after the exit, not after
      * the `try`: the "entry not confirmed" branch leaves the block early, and
      * otherwise the card would stay "computing" forever.
+     *
+     * Except for a process that is gone, as far as this scope knows
+     * (abandonKernelsForTest): it sends the kernel nothing and reports
+     * nothing, and the next life finds the attempt as a crash leaves it.
      */
-    const leftovers = await leaveCouncilIsolation(runtime)
-    // Notes at the tail of the output: why memory ran short and what was left
-    // running. Both come after the attempt's code, because both are about its
-    // consequences.
-    if (starved) buffer.stream('stderr', councilMemoryNote(report?.memory ?? null))
-    for (const note of councilLeftoverNotes(leftovers)) buffer.stream('stderr', note)
-    finishCouncil(runtime, active, state)
-    // The attempt may have written a file: the files panel cares about that too.
-    notifyWorkspaceChanged(runtime.sessionId)
+    if (!abandoned.has(runtime)) {
+      const leftovers = await leaveCouncilIsolation(runtime)
+      // Notes at the tail of the output: why memory ran short and what was left
+      // running. Both come after the attempt's code, because both are about its
+      // consequences.
+      if (starved) buffer.stream('stderr', councilMemoryNote(report?.memory ?? null))
+      for (const note of councilLeftoverNotes(leftovers)) buffer.stream('stderr', note)
+      finishCouncil(runtime, active, state)
+      // The attempt may have written a file: the files panel cares about that too.
+      notifyWorkspaceChanged(runtime.sessionId)
+    }
   }
 }
 
@@ -6317,15 +6466,22 @@ export async function completeIn(
   root: string = CELLS_KEY,
   opts: { mayWake?: boolean } = {},
 ): Promise<CompleteResult | null> {
+  const kernel = liveKernel(sessionId, root)
   /*
    * The test backend has no kernel at all (KERNEL_BACKEND=test, JUPYTER_URL
    * points at a dead port), yet the whole path has to be checked, from the
    * console frame to the frame back. The prepared answer is this backend's
    * "kernel": the same set pandas gives on `df.`, so that the test speaks about
    * the real case rather than an empty list.
+   *
+   * And only in place of the kernel it lacks, as for help (`inspectIn`): a
+   * live kernel of this backend (the fake Jupyter a suite stands in, a
+   * class's kernel on a machine) answers itself, by the real road and with
+   * that road's pad (remote-classes.md §5.6). Otherwise no test of the
+   * console's `complete` frame could see it reach a kernel, here or on a
+   * machine.
    */
-  if (kernelBackend() === 'test') return cannedComplete(code, cursor)
-  const kernel = liveKernel(sessionId, root)
+  if (kernelBackend() === 'test' && !kernel) return cannedComplete(code, cursor)
   if (!kernel) {
     // The very first dot typed brings up a Python for this notebook; see
     // `wakeKernel`. This question has nothing to answer with, but the next one

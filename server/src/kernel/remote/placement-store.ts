@@ -34,6 +34,7 @@ import { db, sessionPlacement, useNewClassPlacement } from '../../db.js'
 import { classMachineSettings } from '../../admin/resource-settings.js'
 import { needsGpu } from '../../environments.js'
 import type { RoomRole } from '../room-spec.js'
+import type { ClassClock, ClassPlacements as KernelPlacements } from '../index.js'
 
 /* ----------------------------------------------------------------- schema */
 
@@ -160,6 +161,7 @@ const selectRunner = db.prepare(`SELECT * FROM remote_placements WHERE runner_id
 const selectLive = db.prepare(`SELECT * FROM remote_placements WHERE state IN ${LIVE_SQL} ORDER BY session_id, role`)
 const selectLiveSlot = db.prepare(`SELECT 1 FROM remote_placements WHERE session_id = ? AND role = ? AND state IN ${LIVE_SQL}`)
 const selectLiveClass = db.prepare(`SELECT 1 FROM remote_placements WHERE session_id = ? AND state IN ${LIVE_SQL} LIMIT 1`)
+const selectLiveRunner = db.prepare(`SELECT 1 FROM remote_placements WHERE runner_id = ? AND state IN ${LIVE_SQL} LIMIT 1`)
 const selectAnyLive = db.prepare(`SELECT 1 FROM remote_placements WHERE state IN ${LIVE_SQL} LIMIT 1`)
 
 /** The slot's row in whatever state: the live placement, or the last one's history. */
@@ -182,6 +184,11 @@ export function hasLivePlacement(sessionId: string, role: RoomRole): boolean {
 /** Whether any slot of the class is the machine's now. */
 export function classHasLivePlacement(sessionId: string): boolean {
   return selectLiveClass.get(sessionId) !== undefined
+}
+
+/** Whether anything of a class lives on the machine, a stop in flight included: one indexed lookup, for its every sync and take. */
+export function runnerHasLivePlacement(runnerId: string): boolean {
+  return selectLiveRunner.get(runnerId) !== undefined
 }
 
 /** Whether any class has anything live on any machine: what decides the classes' faster clock. */
@@ -334,3 +341,37 @@ export function newClassPlacement(environment: string | null): ClassPlacement | 
 }
 
 useNewClassPlacement(newClassPlacement)
+
+/* -------------------------------------------- what the kernel hooks run on */
+
+/**
+ * THE PLACEMENT MODULE AS THE KERNEL HOOKS CALL IT (kernel/index.ts ·
+ * ClassPlacements), and the clock of the process's placements, handed in
+ * here by placement.ts as it loads. The hooks never import that module: it
+ * reaches the machines' router, the take and the competitions' queue, which
+ * a process of the kernel alone (a suite, a script) has no reason to load,
+ * and this light module is the one both sides import. Whichever of the two
+ * loads second makes the connection. In the server the app's routes load
+ * placement.ts at boot (routes/admin-instance.ts), so from its first request
+ * the pump's gate, the room's notes and the refusals hear the real
+ * placements; a process that never loads it computes every slot here.
+ */
+export interface PlacementHooks {
+  placements: KernelPlacements
+  clock: ClassClock
+}
+
+let hooks: PlacementHooks | null = null
+let taker: ((hooks: PlacementHooks) => void) | null = null
+
+/** placement.ts, as it loads: its functions and its clock, for the hooks. */
+export function offerPlacementHooks(next: PlacementHooks): void {
+  hooks = next
+  taker?.(next)
+}
+
+/** kernel/index.ts, as it loads: wire the hooks to the placement module, now if it is loaded already, else when it is. */
+export function takePlacementHooks(take: (hooks: PlacementHooks) => void): void {
+  taker = take
+  if (hooks) take(hooks)
+}

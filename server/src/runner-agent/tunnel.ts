@@ -7,7 +7,8 @@
  * DIALLED WHILE HOME WANTS IT. The sync loop hands every reply's
  * `kernels.tunnel` to `want`: `open` dials and keeps the tunnel up,
  * `reconnect` is home seeing no tunnel of this machine's (a socket the path
- * dropped without a word is ended and dialled again), `closed` hangs up. The
+ * dropped without a word is ended and dialled again; one that still hears
+ * home is kept, home's word being of a stall), `closed` hangs up. The
  * loop says `state().up` back as `kernels.tunnel`. Control stays on the sync
  * (D1): no verb rides here, only bytes.
  *
@@ -222,9 +223,18 @@ export class AgentTunnel {
     }
     this.wanted = 'open'
     const dial = this.current
-    // Home sees no tunnel of this machine's, while this one has been up long enough to have reached it: dropped on the way without a word.
-    if (mode === 'reconnect' && dial?.upAt != null && this.clock.now() - dial.upAt >= TUNNEL_PING_MS) {
-      this.options.log('tunnel-stale', { upMs: this.clock.now() - dial.upAt })
+    /*
+     * Home sees no tunnel of this machine's, while this one has been up long
+     * enough to have reached it and has heard nothing of home's for as long
+     * (a working tunnel hears home's PINGs and PONGs well within it):
+     * dropped on the way without a word. One that hears home is carrying,
+     * whatever a reply says: home also answers so while the tunnel is only
+     * quiet (TUNNEL_QUIET_MS, a relay's stall), and that reply may arrive
+     * after the stall is over.
+     */
+    const now = this.clock.now()
+    if (mode === 'reconnect' && dial?.upAt != null && now - dial.upAt >= TUNNEL_PING_MS && (dial.end === null || now - dial.end.lastHeard >= TUNNEL_PING_MS)) {
+      this.options.log('tunnel-stale', { upMs: now - dial.upAt })
       // A cut: the streams wait for the next dial.
       dial.end?.cut()
       dial.ws.terminate()

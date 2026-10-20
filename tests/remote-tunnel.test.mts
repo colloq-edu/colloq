@@ -1181,6 +1181,29 @@ test('one listener per placement, and a fast ECONNRESET there while its machine\
   next.close()
 })
 
+test('a link taken for a gen that never got a listener goes with its loss; a listener\'s link goes when the listener closes', async () => {
+  const tunnels = new MachineTunnels({ log: quiet })
+  const m = machine()
+  // A placement read while it ran (its view takes the link), and lost before anything reached it.
+  const unheard = tunnels.link(m.id, ROOM, 3)
+  assert.equal(tunnels.link(m.id, ROOM, 3), unheard, 'one link per placement while it lives')
+  tunnels.lost(m.id, ROOM, 3)
+  assert.equal(unheard.up, false, 'its holder reads it lost')
+  assert.equal(await unheard.next(10), 'lost')
+  const after = tunnels.link(m.id, ROOM, 3)
+  assert.notEqual(after, unheard, 'the map kept nothing of it')
+  assert.equal(await after.next(10), 'lost', 'the loss is remembered apart from the link')
+  // One with its listener open keeps its link while the listener lives: the kernel client reaches it through both.
+  const listener = await tunnels.listen(m.id, ROOM, 4)
+  open.add(listener)
+  const reached = tunnels.link(m.id, ROOM, 4)
+  tunnels.lost(m.id, ROOM, 4)
+  assert.equal(tunnels.link(m.id, ROOM, 4), reached)
+  listener.close()
+  assert.notEqual(tunnels.link(m.id, ROOM, 4), reached, 'and goes with it')
+  tunnels.shutdown()
+})
+
 test('bytes both ways through a real tunnel: many streams at once on both lanes, each exactly what it sent', async () => {
   const tunnels = new MachineTunnels({ log: quiet })
   const port = await tunnelsServer(tunnels)

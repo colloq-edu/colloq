@@ -36,6 +36,12 @@
  * WHAT NEVER LEAVES HOME: SESSION_SECRET. A placement's Jupyter token is
  * derived from it per slot, machine and gen (placementToken), so a restart
  * re-derives it with nothing stored, and no event, view or log carries it.
+ *
+ * THE KERNEL HOOKS RUN ON THIS MODULE (kernel/index.ts): it hands them its
+ * functions and the clock of the process's placements as it loads
+ * (placement-store.ts · offerPlacementHooks), and its news and its clock
+ * follow whatever instance stands behind its functions (usePlacements,
+ * onPlacementChange, placementClock), so the hooks subscribe once.
  */
 import { createHmac } from 'node:crypto'
 import { getLocale, tr } from '@shared/i18n'
@@ -86,7 +92,18 @@ import { activeName } from '../../environments.js'
 import { instanceTimeZone } from '../../time-zone.js'
 import { captureRevision } from '../../dependencies/revisions.js'
 import { getRevision } from '../../dependencies/store.js'
-import { heardAt, inBootGrace, lastSync, listedAttempts, liveRunner, probePassedAt, remoteBootAt, runnerCards } from '../../competitions/remote/heard.js'
+import {
+  classPathEvidence,
+  classProvenSilence,
+  heardAt,
+  inBootGrace,
+  lastSync,
+  listedAttempts,
+  liveRunner,
+  noteClassBlind,
+  remoteBootAt,
+  runnerCards,
+} from '../../competitions/remote/heard.js'
 import {
   getRunner,
   homeRunnerBuild,
@@ -103,7 +120,7 @@ import { gpuRevision, portableRevision } from '../../competitions/remote/want.js
 import { stepClaim } from '../../competitions/remote/fit.js'
 import { RuntimeRequestError } from '../runtime-client.js'
 import type { KernelEndpoint, KernelLink } from '../jupyter.js'
-import { kernelLimits, roomShm, type LimitOutcome } from '../pool.js'
+import { kernelLimits, roomShm, runsHere, type LimitOutcome } from '../pool.js'
 import { blockedCidrsSetting, roomHardening } from '../perimeter.js'
 import { ROOM_SHM, classHashSeed, type RoomRole } from '../room-spec.js'
 import { machineTunnels, type MachineTunnels } from './tunnel.js'
@@ -113,7 +130,9 @@ import {
   livePlacement,
   livePlacementRows,
   machinePlaced,
+  offerPlacementHooks,
   placementRow,
+  runnerHasLivePlacement,
   runnerPlacementRows,
   updatePlacement,
   wantsMachines,
@@ -164,6 +183,9 @@ const COUNCIL_EXTRA_MB = 512
 
 const HOME = { where: 'home' } as const
 
+/** A start whose placement changed under it (replaced, lost, its container gone): the next Run starts it again. */
+const CHANGED_WHILE_STARTING = 'server.theClassKernelOnTheMachineChanged.8155da'
+
 /* -------------------------------------------------------------------- types */
 
 /** Where one slot of a class runs, as the kernel hooks and the panel read it. */
@@ -181,8 +203,19 @@ export type PlacementView =
       /** When it entered its state, on this server's clock. */
       since: number
       failover: 'auto' | 'wait'
-      /** When it moves by itself if nothing changes; null — it is reachable, or waits for the machine. */
+      /**
+       * When it moves by itself if nothing changes; null — it is reachable,
+       * waits for the machine, or its outage is too young to tell which rule
+       * moves it (outageRule): no time is promised that may not hold.
+       */
       failoverAt: number | null
+      /**
+       * Since when the machine has not answered, as the rule that moves it
+       * counts (staff's «не отвечает с 14:32:05», failoverAt beside it): its
+       * last word for a silence, its tunnel's going down for a tunnel stuck
+       * while its syncs come. Null with failoverAt.
+       */
+      quietSince: number | null
     }
 
 /** Why a slot left its machine (§11.1): the reason is the row's, the words the room's. */
@@ -322,6 +355,12 @@ interface MachineReport {
   bye: RemoteBye | null
   /** When the machine first said `bye: 'restart'` in this run of them: the grace counts from it. */
   restartAt: number | null
+  /**
+   * When this run of its reports began: the first one after more than
+   * SYNCS_COMING_MS without any (or the first of this life). A stuck tunnel
+   * is counted from here at the earliest (tunnelStuckSince).
+   */
+  streakAt: number
 }
 
 interface ReadyWaiter {
@@ -349,8 +388,12 @@ interface ReadingWaiter {
 interface Slot {
   gen: number
   unreachableSince: number | null
+  /** When this life saw the outage begin (reach): a call heard after it is a machine alive with its tunnel down (outageRule). */
+  downSeenAt: number | null
   /** The unreachable note went out for this outage. */
   noted: boolean
+  /** What the outage's news since the note said the move counts from (PlacementView.quietSince): a change is news again. */
+  quietTold: number | null
   /** When the row entered its state, as far as this life saw it. */
   stateSince: number | null
   gates: Set<{ resolve(): void; reject(error: unknown): void }>
@@ -446,7 +489,8 @@ function homeRanges(): { cidrs: string[]; placeable: boolean; keepable: boolean 
  * usePlacements.
  */
 export class ClassPlacements {
-  private readonly clock: TunnelClock
+  /** The class clock (ClassPlacementsOptions.clock): the process's placements' is the kernel hooks' too (placementClock). */
+  readonly clock: TunnelClock
   private readonly log: (line: string) => void
   private readonly revisionOf: (environment: string) => Promise<EnvironmentRevision | null>
   private readonly injected: PlacementTunnels | null
@@ -458,11 +502,11 @@ export class ClassPlacements {
   /** Post-mortem questions not yet answered, by machine: key → gen. */
   private readonly asked = new Map<string, Map<string, number>>()
   private readonly ensuring = new Map<string, Promise<KernelEndpoint | null>>()
+  /** Warm starts placing a slot now (warmSlot): an ensure waits for one rather than placing the slot twice. */
+  private readonly warming = new Map<string, Promise<void>>()
   private readonly listeners = new Set<(event: PlacementEvent) => void>()
   /** Each class environment's revision as last found, and whether a class set to machines uses it. */
   private readonly revisions = new Map<string, { revision: EnvironmentRevision | null; at: number; pending: Promise<EnvironmentRevision | null> | null; wanted: boolean }>()
-  /** The last pass of the class clock with no class path evidence: a silence is proven only from there on. */
-  private blindAt: number | null = null
   /** Machines whose fail-closed perimeter was written to their log in this episode. */
   private readonly failing = new Set<string>()
   private prefetchedAt = Number.NEGATIVE_INFINITY
@@ -493,7 +537,8 @@ export class ClassPlacements {
     this.subscribed = null
     for (const slot of this.slots.values()) {
       for (const gate of slot.gates) gate.resolve()
-      for (const waiter of slot.ready) waiter.reject(new Error('Class placements closed'))
+      // Only when this server stops (or a suite swaps its placements): a start still waiting reads as the server going.
+      for (const waiter of slot.ready) waiter.reject(new RuntimeRequestError(tr('server.serverShuttingDown.0df697'), 503))
       for (const waiter of slot.resizes) waiter.resolve('pending')
       for (const stop of slot.stops) stop()
       for (const waiter of slot.readings) waiter.resolve(null)
@@ -507,8 +552,9 @@ export class ClassPlacements {
     let slot = this.slots.get(key)
     if (!slot) {
       slot = {
-        gen, unreachableSince: null, noted: false, stateSince: null, gates: new Set(), ready: new Set(), resizes: new Set(), stops: new Set(),
-        readings: new Set(), listener: null, endpoint: null, endpointOf: null, movedFrom: null, avoid: null, failingSince: null,
+        gen, unreachableSince: null, downSeenAt: null, noted: false, quietTold: null, stateSince: null, gates: new Set(), ready: new Set(),
+        resizes: new Set(), stops: new Set(), readings: new Set(), listener: null, endpoint: null, endpointOf: null, movedFrom: null, avoid: null,
+        failingSince: null,
       }
       this.slots.set(key, slot)
     }
@@ -516,7 +562,9 @@ export class ClassPlacements {
       // Another placement of the slot: what memory held of the previous one is over (its waiters were settled with it).
       slot.gen = gen
       slot.unreachableSince = null
+      slot.downSeenAt = null
       slot.noted = false
+      slot.quietTold = null
       slot.stateSince = null
       slot.failingSince = null
       slot.listener?.close()
@@ -536,7 +584,8 @@ export class ClassPlacements {
 
   private emit(event: Omit<PlacementEvent, 'at'>, at: number): void {
     const full: PlacementEvent = { ...event, at }
-    for (const listener of [...this.listeners]) {
+    // And the process's listeners while these are the process's placements (onPlacementChange, the kernel hooks').
+    for (const listener of current === this ? [...this.listeners, ...processListeners] : [...this.listeners]) {
       try {
         listener(full)
       } catch (error) {
@@ -567,25 +616,34 @@ export class ClassPlacements {
       link: state === 'stopping' || state === 'starting' ? null : this.tunnels().link(row.runnerId, keyOf(row), row.gen),
       since: (slot?.gen === row.gen ? (state === 'unreachable' ? slot.unreachableSince : slot.stateSince) : null) ?? (state === 'ready' ? row.readyAt : null) ?? row.createdAt,
       failover: setting.failover,
-      failoverAt: this.failoverAt(row, setting, now),
+      ...this.promiseOf(row, setting, now),
     }
   }
 
-  /** When an unreachable slot moves by itself, if nothing changes: the earlier of its two rules, after every grace. */
-  private failoverAt(row: PlacementRow, setting: ClassPlacement, now: number): number | null {
-    if (setting.failover === 'wait' || row.state === 'stopping' || this.tunnels().isUp(row.runnerId)) return null
-    const slot = this.slots.get(keyOf(row))
-    const downSince = slot?.gen === row.gen && slot.unreachableSince !== null ? slot.unreachableSince : this.tunnels().since(row.runnerId)
-    const heard = Math.max(heardAt(row.runnerId) ?? remoteBootAt(), remoteBootAt())
-    const failoverMs = setting.failoverSec * 1000
-    // The rule dueFailover would apply: the stuck tunnel's while the machine's syncs still come, the silence's once they stopped.
-    let at = now - heard <= SYNCS_COMING_MS
-      ? downSince + CLASS_TUNNEL_STUCK_MS
-      : Math.max(heard, this.blindAt ?? Number.NEGATIVE_INFINITY) + failoverMs
+  /**
+   * When an unreachable slot moves by itself if nothing changes, after every
+   * grace, and since when its rule counts the machine quiet: by the rule
+   * dueFailover applies (outageRule). Nothing promised for a slot reachable,
+   * stopping or waiting for its machine, nor while the outage is too young
+   * to tell its rule.
+   */
+  private promiseOf(row: PlacementRow, setting: ClassPlacement, now: number): { failoverAt: number | null; quietSince: number | null } {
+    const none = { failoverAt: null, quietSince: null }
+    if (setting.failover === 'wait' || row.state === 'stopping' || this.tunnels().isUp(row.runnerId)) return none
+    const rule = this.outageRule(row, now)
+    if (rule === null) return none
+    let at = rule === 'tunnel'
+      ? this.tunnelStuckSince(row) + CLASS_TUNNEL_STUCK_MS
+      : now - classProvenSilence(row.runnerId, now) + setting.failoverSec * 1000
     at = Math.max(at, remoteBootAt() + REMOTE_BOOT_GRACE_MS)
     const restartAt = this.machines.get(row.runnerId)?.restartAt ?? null
     if (restartAt !== null) at = Math.max(at, restartAt + CLASS_BYE_GRACE_MS)
-    return Math.max(at, now)
+    return { failoverAt: Math.max(at, now), quietSince: rule === 'tunnel' ? this.downSince(row) : this.lastHeard(row.runnerId) }
+  }
+
+  /** The machine's last word on this server's clock (a call or a tunnel frame); this life's start, if none since. */
+  private lastHeard(runnerId: string): number {
+    return Math.max(heardAt(runnerId) ?? remoteBootAt(), remoteBootAt())
   }
 
   /** For a waiting cell's or the slow start's words: «Запускаем ядро на машине «vast-3»… образ ↓ 45 %». Null — the slot is not starting on a machine. */
@@ -684,6 +742,10 @@ export class ClassPlacements {
     memoryMb: number | null,
     role: RoomRole,
   ): Promise<KernelEndpoint | null> {
+    // A warm start placing the slot this moment: its placement is the one to wait for, never a second gen of it. (Only then
+    // an await: an ensure of a placed slot is waiting for its machine's next report from this very turn.)
+    const warming = this.warming.get(slotKey(sessionId, role))
+    if (warming) await warming
     let row = livePlacement(sessionId, role)
     // A slot being stopped is replaced: the next gen's intent supersedes the removal (the agent removes the old one first).
     if (row?.state === 'stopping') row = null
@@ -695,7 +757,11 @@ export class ClassPlacements {
     return this.endpointOf(ready)
   }
 
-  /** Choose a machine and write the placement; null — the class falls back here. Throws the refusal when it may not. */
+  /**
+   * Choose a machine and write the placement; null — the class falls back
+   * here. Throws the refusal when it may not. A warm start (`warm`) places on
+   * a machine or not at all: no fallback, no refusal, nothing for the room.
+   */
   private async place(
     sessionId: string,
     role: RoomRole,
@@ -703,6 +769,7 @@ export class ClassPlacements {
     revisionId: string | undefined,
     cpus: number | null,
     memoryMb: number | null,
+    warm = false,
   ): Promise<PlacementRow | null> {
     const setting = classPlacement(sessionId)
     // The setting moved back here since the pool asked: the slot starts here.
@@ -720,13 +787,19 @@ export class ClassPlacements {
       why = this.candidates(need, now).map((candidate) => `${candidate.runner.name}: ${candidate.refusal}`).join(', ') || 'no machine takes classes'
     }
     if (!need || !chosen) {
+      if (warm) {
+        this.log(`[classes] ${sessionId}/${role}: no machine can take it now (${why}); nothing is warmed`)
+        return null
+      }
       if (role === 'council') throw new RuntimeRequestError(tr('server.theCouncilPoolRunsOnlyOnMachines.ef5702'), 503)
       if (setting.fallback) {
         this.log(`[classes] ${sessionId}/${role}: no machine can take it (${why}); it starts on this server`)
         this.emit({ sessionId, role, kind: 'fallback', view: HOME }, now)
         return null
       }
-      throw new RuntimeRequestError(`No machine can take this class now, and it may not run on this server (${why})`, 503)
+      // The machines and why each refused are for the log (and staff's live line, placementOutlook): the room reads the plain words.
+      this.log(`[classes] ${sessionId}/${role}: no machine can take it (${why}), and its class may not compute on this server`)
+      throw new RuntimeRequestError(tr('server.noMachineCanTakeThisClassNow.07c43f'), 503)
     }
     const row = writePlacement({
       sessionId,
@@ -751,6 +824,37 @@ export class ClassPlacements {
     this.emit({ sessionId, role, kind: 'starting', view: this.viewOf(row, now) }, now)
     wakeRunner(chosen.id)
     return row
+  }
+
+  /**
+   * Warm the slot up on a machine ahead of its first Run (§6.8, the kernel
+   * hooks' warm start): placed in the background on a machine that takes it
+   * now, never here whatever the class's fallback, and nothing for a slot
+   * that is placed already, that runs here already (pool.ts · runsHere: one
+   * slot never computes in two places), or whose class keeps it here. The
+   * machine starts its container meanwhile, and the first Run's ensure finds
+   * the placement and waits only for what is left of the start.
+   */
+  warmSlot(sessionId: string, role: RoomRole): void {
+    const key = slotKey(sessionId, role)
+    if (this.closed || this.ensuring.has(key) || this.warming.has(key) || livePlacement(sessionId, role)) return
+    if (!wantsMachines(classPlacement(sessionId), role)) return
+    const warming: Promise<void> = this.warm(sessionId, role)
+      .catch((error: unknown) => this.log(`[classes] ${sessionId}/${role}: the warm start failed: ${error instanceof Error ? error.message : String(error)}`))
+      .finally(() => {
+        if (this.warming.get(key) === warming) this.warming.delete(key)
+      })
+    this.warming.set(key, warming)
+  }
+
+  private async warm(sessionId: string, role: RoomRole): Promise<void> {
+    if (await runsHere(sessionId, role)) return
+    // Placed meanwhile, by a Run that came first.
+    if (livePlacement(sessionId, role) || this.ensuring.has(slotKey(sessionId, role))) return
+    const environment = sessionEnvironment(sessionId) ?? activeName()
+    // The numbers its container here would get, as the pool asks an ensure for them (pool.ts · machineEndpoint).
+    const limits = kernelLimits(sessionId, environment, role)
+    await this.place(sessionId, role, environment, undefined, limits.cpus, limits.memoryMb, true)
   }
 
   /**
@@ -994,7 +1098,7 @@ export class ClassPlacements {
   /** The placement once the machine reports it ready (its echoes passed); rejected with the machine's failure, a loss, a stop or CLASS_START_MS. */
   private whenReady(row: PlacementRow): Promise<PlacementRow> {
     const current = livePlacement(row.sessionId, row.role)
-    if (!current || current.gen !== row.gen) return Promise.reject(new RuntimeRequestError('The class kernel on the machine was replaced while it started', 503))
+    if (!current || current.gen !== row.gen) return Promise.reject(new RuntimeRequestError(tr(CHANGED_WHILE_STARTING), 503))
     if (current.state === 'ready' || current.state === 'unreachable') return Promise.resolve(current)
     if (current.state === 'stopping') return Promise.reject(new RuntimeRequestError(tr('server.kernel.startsPaused'), 503))
     const slot = this.slot(row.sessionId, row.role, row.gen)
@@ -1018,7 +1122,7 @@ export class ClassPlacements {
       }
       slot.ready.add(waiter)
       timer = this.clock.setTimeout(
-        () => waiter.reject(new RuntimeRequestError(`The kernel did not start on machine ${machine} within ${Math.round(CLASS_START_MS / 1000)} s`, 503)),
+        () => waiter.reject(new RuntimeRequestError(tr('server.theKernelDidNotStartOnMachine.5db0fa', { machine, seconds: Math.round(CLASS_START_MS / 1000) }), 503)),
         CLASS_START_MS,
       )
     })
@@ -1043,13 +1147,13 @@ export class ClassPlacements {
       // Lost, stopped or replaced while the port was being opened: nothing may reach it through this one.
       listener.close()
       if (slot.listener === listener) slot.listener = null
-      throw new RuntimeRequestError(now?.state === 'stopping' ? tr('server.kernel.startsPaused') : 'The class kernel on the machine went away while it was being reached', 503)
+      throw new RuntimeRequestError(tr(now?.state === 'stopping' ? 'server.kernel.startsPaused' : CHANGED_WHILE_STARTING), 503)
     }
     // The gen's own: whatever its container now, the port leads to the placement.
     slot.listener = listener
     if (now.state !== 'ready' && now.state !== 'unreachable') {
       // Its container stopped running meanwhile, and the machine starts it again: the next ensure waits for that.
-      throw new RuntimeRequestError('The class kernel on the machine went away while it was being reached', 503)
+      throw new RuntimeRequestError(tr(CHANGED_WHILE_STARTING), 503)
     }
     // A recreate at the same gen may have landed meanwhile: the endpoint is the container's that runs now.
     const container = now.container ?? ''
@@ -1109,6 +1213,8 @@ export class ClassPlacements {
       tunnel: kernels.tunnel,
       bye: kernels.bye ?? null,
       restartAt,
+      // Its syncs came on without a gap: the same run of them; after one (home's own path gone a while), a new run begins here.
+      streakAt: before && now - before.at <= SYNCS_COMING_MS ? before.streakAt : now,
     }
     this.machines.set(runnerId, report)
     if (restartAt !== null && before?.restartAt == null) this.log(`[classes] machine ${runnerId} is restarting its agent: its classes wait up to ${CLASS_BYE_GRACE_MS / 1000} s`)
@@ -1198,7 +1304,10 @@ export class ClassPlacements {
     slot.failingSince = null
     slot.endpoint = null
     slot.endpointOf = null
-    if (state === 'unreachable') slot.unreachableSince ??= now
+    if (state === 'unreachable' && slot.unreachableSince === null) {
+      slot.unreachableSince = now
+      slot.downSeenAt = now
+    }
     if (anew) {
       this.log(`[classes] ${row.sessionId}/${row.role} gen ${row.gen}: machine ${row.runnerId} runs it in a new container now`)
       this.emit({ sessionId: row.sessionId, role: row.role, kind: 'restarting', view: this.viewOf(ready, now) }, now)
@@ -1255,7 +1364,12 @@ export class ClassPlacements {
   private failureOf(row: PlacementRow, entry: RemotePlacementHeld | undefined): { words: string; failure: RuntimeStartFailure } {
     const machine = getRunner(row.runnerId)?.name ?? row.runnerId
     const failure: RuntimeStartFailure = { unschedulable: entry?.failure?.unschedulable ?? 'other', ...(entry?.failure?.memoryMb !== undefined ? { memoryMb: entry.failure.memoryMb } : {}), ...(entry?.failure?.cpus !== undefined ? { cpus: entry.failure.cpus } : {}) }
-    return { words: `The kernel did not start on machine ${machine}${entry?.failure?.detail ? `: ${entry.failure.detail}` : ''}`, failure }
+    const detail = entry?.failure?.detail
+    // The machine's own detail is docker's, in docker's words: staff read it whole (the room reads the unnamed sentence, kernel/index.ts · startWords).
+    const words = detail
+      ? tr('server.theKernelDidNotStartOnMachine.f6b08f', { machine, detail })
+      : tr('server.theKernelDidNotStartOnMachine.8d78b5', { machine })
+    return { words, failure }
   }
 
   /**
@@ -1331,7 +1445,7 @@ export class ClassPlacements {
 
   /** Whether the machine holds anything of a class now (a stop in flight included): its syncs are held at most REMOTE_HOLD_BUSY_MS. */
   hasLivePlacements(runnerId: string): boolean {
-    return runnerPlacementRows(runnerId).length > 0
+    return runnerHasLivePlacement(runnerId)
   }
 
   /**
@@ -1411,7 +1525,8 @@ export class ClassPlacements {
    * pruning of history.
    */
   classTick(now: number): void {
-    if (!this.evidence(now, null)) this.blindAt = Math.max(this.blindAt ?? now, now)
+    // A pass without class evidence, as remoteTick notes it before this one: a pass driven by itself notes it too.
+    if (!classPathEvidence(now)) noteClassBlind(now)
     const grace = inBootGrace(now)
     const ranges = homeRanges()
     const moved = new Map<string, FailoverCause>()
@@ -1472,28 +1587,6 @@ export class ClassPlacements {
     }
   }
 
-  /**
-   * PATH EVIDENCE BY THE CLASSES' RULE (§11.1): another machine heard, a
-   * tunnel frame among its calls, or this server's own probe passed, within
-   * CLASS_EVIDENCE_MS.
-   */
-  private evidence(now: number, except: string | null): boolean {
-    const probe = probePassedAt()
-    if (probe !== null && now - probe <= CLASS_EVIDENCE_MS) return true
-    for (const runner of listStandingRunners()) {
-      if (runner.id === except) continue
-      const at = heardAt(runner.id)
-      if (at !== null && now - at <= CLASS_EVIDENCE_MS) return true
-    }
-    return false
-  }
-
-  /** A machine's silence as far as the path was proven for it: since its last call, this life's start, and the last pass without evidence. */
-  private silence(runnerId: string, now: number): number {
-    const since = Math.max(heardAt(runnerId) ?? remoteBootAt(), remoteBootAt(), this.blindAt ?? Number.NEGATIVE_INFINITY)
-    return Math.max(0, now - since)
-  }
-
   /** Which failover rule a slot meets now, or null: never in a grace, never under «ждать машину», never while its tunnel is up. */
   private dueFailover(row: PlacementRow, now: number, grace: boolean): FailoverCause | null {
     if (grace || this.tunnels().isUp(row.runnerId)) return null
@@ -1501,17 +1594,65 @@ export class ClassPlacements {
     if (setting.failover === 'wait') return null
     const restartAt = this.machines.get(row.runnerId)?.restartAt ?? null
     if (restartAt !== null && now - restartAt < CLASS_BYE_GRACE_MS) return null
-    const failoverMs = setting.failoverSec * 1000
-    // Its syncs still come (heard within SYNCS_COMING_MS): alive, but its classes cannot compute. They move once the tunnel has
-    // been stuck long enough. A machine heard longer ago is silent on both channels, whatever the class's own delay.
-    const lastHeard = Math.max(heardAt(row.runnerId) ?? remoteBootAt(), remoteBootAt())
-    if (now - lastHeard <= SYNCS_COMING_MS) {
-      const slot = this.slots.get(keyOf(row))
-      const downSince = slot?.gen === row.gen && slot.unreachableSince !== null ? slot.unreachableSince : this.tunnels().since(row.runnerId)
-      return now - downSince >= CLASS_TUNNEL_STUCK_MS ? 'tunnel' : null
+    switch (this.outageRule(row, now)) {
+      case 'tunnel':
+        // Its syncs still come: alive, but its classes cannot compute. They move once the tunnel has been stuck long enough.
+        return now - this.tunnelStuckSince(row) >= CLASS_TUNNEL_STUCK_MS ? 'tunnel' : null
+      case 'silence':
+        // Silent on both channels: proven only with evidence of the path, and only for as long as it was proven.
+        // (heard.ts: another machine heard, a tunnel frame among its calls, or this server's probe, within CLASS_EVIDENCE_MS;
+        // the silence counted from the last pass without that.)
+        return classPathEvidence(now, row.runnerId) && classProvenSilence(row.runnerId, now) >= setting.failoverSec * 1000 ? 'silence' : null
+      default:
+        // Too young to tell: a silence this short is under any class's failoverSec, and a tunnel seen down this lately under
+        // CLASS_TUNNEL_STUCK_MS.
+        return null
     }
-    // Silent on both channels: proven only with evidence of the path, and only for as long as it was proven.
-    return this.evidence(now, row.runnerId) && this.silence(row.runnerId, now) >= failoverMs ? 'silence' : null
+  }
+
+  /**
+   * WHICH RULE MOVES A SLOT WHOSE TUNNEL IS DOWN (§11.1), as far as this
+   * server can tell yet. 'tunnel': its syncs still come — the machine was
+   * heard after this life saw its tunnel go, and within SYNCS_COMING_MS — so
+   * it is alive and its classes cannot compute. 'silence': it said nothing
+   * for longer than a sync is held, or it said goodbye (`bye`: its agent
+   * stops or restarts, and says nothing until it is back). Null: neither
+   * shows yet.
+   *
+   * Heard within SYNCS_COMING_MS alone does not tell them apart: a quiet
+   * tunnel is seen down TUNNEL_QUIET_MS after its last frame, and a machine
+   * gone silent with it was heard about as long ago, so every silence began
+   * as a stuck tunnel, and staff were promised the tunnel's two minutes for
+   * a class that moved at its own sixty seconds.
+   */
+  private outageRule(row: PlacementRow, now: number): 'tunnel' | 'silence' | null {
+    const heard = this.lastHeard(row.runnerId)
+    if (this.machines.get(row.runnerId)?.bye || now - heard > SYNCS_COMING_MS) return 'silence'
+    const slot = this.slots.get(keyOf(row))
+    const seen = slot?.gen === row.gen ? slot.downSeenAt : null
+    return seen !== null && heard > seen ? 'tunnel' : null
+  }
+
+  /** When the slot's tunnel went down: as this life first saw it go (reach), or as the tunnel says. */
+  private downSince(row: PlacementRow): number {
+    const slot = this.slots.get(keyOf(row))
+    return slot?.gen === row.gen && slot.unreachableSince !== null ? slot.unreachableSince : this.tunnels().since(row.runnerId)
+  }
+
+  /**
+   * Since when a slot's tunnel has been down WHILE ITS MACHINE'S SYNCS CAME
+   * (§11.1 «Tunnel down, syncs arriving»): from the tunnel's going down, or
+   * from the start of the current run of the machine's reports when that is
+   * later. Counted from the tunnel alone, an outage of this server's own path
+   * — every machine silent, nothing failing over, as it must — left each class
+   * a tunnel "stuck" for the whole outage: the moment the machine's first sync
+   * came back, a beat before its tunnel did (the agent dials it again only
+   * once it hears the old one is gone), the class failed over, variables and
+   * all. As a silence is proven only from the end of a blind stretch, a tunnel
+   * is stuck only for as long as the syncs show the machine alive.
+   */
+  private tunnelStuckSince(row: PlacementRow): number {
+    return Math.max(this.downSince(row), this.machines.get(row.runnerId)?.streakAt ?? Number.NEGATIVE_INFINITY)
   }
 
   /** A machine's tunnel went up or down: its placements' reachability, now rather than at the next pass. */
@@ -1549,29 +1690,50 @@ export class ClassPlacements {
       const seconds = Math.max(1, Math.round((now - slot.unreachableSince) / 1000))
       const noted = slot.noted
       slot.unreachableSince = null
+      slot.downSeenAt = null
       slot.noted = false
+      slot.quietTold = null
       if (!announced) return
       const view = this.viewOf(livePlacement(row.sessionId, row.role) ?? row, now)
       this.emit({ sessionId: row.sessionId, role: row.role, kind: 'back', view, ...(noted ? { words: tr('server.theConnectionToMachineCameBackAfter.28f7cf', { machine, seconds }) } : {}) }, now)
       return
     }
+    // Its agent restarting for an update (`bye: 'restart'`): said with the first news of the outage, which is what the room's
+    // note ten seconds on is made of (kernel/index.ts · beginOutage), as well as with that note's own.
+    const restarting = this.machines.get(row.runnerId)?.restartAt != null
+    const updating = restarting ? { cause: 'updating' as const } : {}
     if (slot.unreachableSince === null) {
       slot.unreachableSince = Math.min(now, this.tunnels().since(row.runnerId))
+      slot.downSeenAt = now
       if (row.state === 'ready' && updatePlacement(row.sessionId, row.role, row.gen, { state: 'unreachable' }, ['ready'])) slot.stateSince = slot.unreachableSince
-      if (announced) this.emit({ sessionId: row.sessionId, role: row.role, kind: 'unreachable', view: this.viewOf(livePlacement(row.sessionId, row.role) ?? row, now) }, now)
+      if (announced) this.emit({ sessionId: row.sessionId, role: row.role, kind: 'unreachable', view: this.viewOf(livePlacement(row.sessionId, row.role) ?? row, now), ...updating }, now)
     } else if (row.state === 'ready') {
       updatePlacement(row.sessionId, row.role, row.gen, { state: 'unreachable' }, ['ready'])
     }
-    if (!announced || slot.noted || now - slot.unreachableSince < CLASS_UNREACHABLE_NOTE_MS) return
+    if (!announced) return
+    const view = this.viewOf(livePlacement(row.sessionId, row.role) ?? row, now)
+    const quietSince = view.where === 'machine' ? view.quietSince : null
+    if (slot.noted) {
+      // Said once already: news again only when what moves the slot is known by now, or changed (an outage's first seconds tell
+      // no rule, a stuck tunnel's syncs may stop), never for the clock moving on. Staff hear when it moves now.
+      if (quietSince === slot.quietTold) return
+      slot.quietTold = quietSince
+      this.emit({ sessionId: row.sessionId, role: row.role, kind: 'unreachable', view, ...this.waitingWords(view, machine), ...updating }, now)
+      return
+    }
+    if (now - slot.unreachableSince < CLASS_UNREACHABLE_NOTE_MS) return
     slot.noted = true
-    const current = livePlacement(row.sessionId, row.role) ?? row
-    const restarting = this.machines.get(row.runnerId)?.restartAt != null
+    slot.quietTold = quietSince
     const words = restarting
       ? tr('server.theAgentOnMachineIsUpdatingThe.88b188', { machine })
       : tr('server.noConnectionToMachineTheKernelAnd.df78c8', { machine, elapsed: elapsedOf(now - slot.unreachableSince) })
-    const until = this.failoverAt(current, classPlacement(row.sessionId), now)
-    const staffWords = until === null ? undefined : tr('server.machineHasNotAnsweredSinceWaitingUntil.3d926e', { machine, since: clockOf(slot.unreachableSince), until: clockOf(until) })
-    this.emit({ sessionId: row.sessionId, role: row.role, kind: 'unreachable', view: this.viewOf(current, now), words, ...(staffWords ? { staffWords } : {}), ...(restarting ? { cause: 'updating' as const } : {}) }, now)
+    this.emit({ sessionId: row.sessionId, role: row.role, kind: 'unreachable', view, words, ...this.waitingWords(view, machine), ...updating }, now)
+  }
+
+  /** Staff's «…не отвечает с 14:32:05. Ждём до 14:33:05…» for a slot whose move is known (§13.2 «Waiting (staff)»), as news carries it. */
+  private waitingWords(view: PlacementView, machine: string): { staffWords?: string } {
+    if (view.where !== 'machine' || view.failoverAt === null || view.quietSince === null) return {}
+    return { staffWords: tr('server.machineHasNotAnsweredSinceWaitingUntil.3d926e', { machine, since: clockOf(view.quietSince), until: clockOf(view.failoverAt) }) }
   }
 
   /* ------------------------------------------------------------- failover */
@@ -1606,7 +1768,7 @@ export class ClassPlacements {
       const row = livePlacement(sessionId, one)
       return row && row.state !== 'stopping' ? [row] : []
     })
-    if (rows.length === 0) return { refused: 'Nothing of this class runs on a machine now' }
+    if (rows.length === 0) return { refused: tr('server.thisClassSKernelsRunOnThis.d5eaa3') }
     const now = this.clock.now()
     const runners = new Set<string>()
     for (const row of rows) {
@@ -1646,7 +1808,9 @@ export class ClassPlacements {
     slot.movedFrom = { runnerId: row.runnerId, at: now }
     slot.avoid = { runnerId: row.runnerId, until: now + AVOID_MS }
     slot.unreachableSince = null
+    slot.downSeenAt = null
     slot.noted = false
+    slot.quietTold = null
     this.log(`[classes] ${row.sessionId}/${row.role} gen ${row.gen} lost machine ${row.runnerId} (${cause})`)
     const filesAt = this.machines.get(row.runnerId)?.at
     this.emit({ sessionId: row.sessionId, role: row.role, kind: 'lost', view: HOME, words, cause, ...(filesAt !== undefined ? { filesAt } : {}) }, now)
@@ -1654,14 +1818,20 @@ export class ClassPlacements {
     return true
   }
 
-  /** The room's failover note for a cause (§13.2), naming the machine. */
+  /**
+   * The room's failover note for a cause (§13.2), naming the machine. A
+   * silence's and a perimeter's never say where the kernel comes back: the
+   * next start places it, on another machine or here (the hooks say which
+   * once it does), and the words would hold for one of the two at best.
+   */
   private failoverWords(row: PlacementRow, runner: RunnerRow | null, cause: FailoverCause, slot: Slot, now: number): string {
     const machine = runner?.name ?? row.runnerId
     const started = tr('server.theKernelWasStartedOnThisServer.497a79')
     const quiet = (): string => {
-      const since = slot.unreachableSince ?? heardAt(row.runnerId) ?? now
+      // Quiet since when its rule counts it so, as staff were told while it waited (promiseOf): its last word for a silence.
+      const since = this.promiseOf(row, classPlacement(row.sessionId), now).quietSince ?? slot.unreachableSince ?? heardAt(row.runnerId) ?? now
       const filesAt = this.machines.get(row.runnerId)?.at ?? since
-      return tr('server.machineHasNotAnsweredSinceTheKernel.05bf4e', { machine, since: clockOf(since), filesAt: clockOf(Math.min(filesAt, now)) })
+      return tr('server.machineHasNotAnsweredSinceTheKernel.6c488a', { machine, since: clockOf(since), filesAt: clockOf(Math.min(filesAt, now)) })
     }
     switch (cause) {
       case 'silence':
@@ -1674,7 +1844,7 @@ export class ClassPlacements {
       case 'leaving':
         return `${tr('server.machineIsBeingDisconnected.6aa752', { machine })} ${started}`
       case 'perimeter':
-        return tr('server.theNetworkOnMachineGotOutOf.6b309d', { machine })
+        return tr('server.theNetworkOnMachineGotOutOf.c73666', { machine })
       case 'moved':
         return this.tunnels().isUp(row.runnerId) ? started : quiet()
       case 'blocked':
@@ -1948,6 +2118,13 @@ export class ClassPlacements {
 
 let current: ClassPlacements | null = null
 
+/**
+ * Who listens to the process's placements, whichever they are now: the
+ * kernel hooks subscribe once (onPlacementChange), and a suite or a harness
+ * that swaps the placements (usePlacements) leaves them subscribed.
+ */
+const processListeners = new Set<(event: PlacementEvent) => void>()
+
 /** This process's placements. */
 export function classPlacements(): ClassPlacements {
   current ??= new ClassPlacements()
@@ -1960,14 +2137,37 @@ export function usePlacements(next: ClassPlacements | null): void {
   current = next
 }
 
+/**
+ * The clock of the process's placements, whichever they are now: what the
+ * kernel hooks time their notes by and read the views' `since` against
+ * (kernel/index.ts · useClassPlacements). A timer stays with the clock it
+ * was set on.
+ */
+export const placementClock: TunnelClock = {
+  now: () => classPlacements().clock.now(),
+  setTimeout: (run, ms) => {
+    const clock = classPlacements().clock
+    return { clock, handle: clock.setTimeout(run, ms) }
+  },
+  clearTimeout: (timer) => {
+    const set = timer as { clock: TunnelClock; handle: unknown } | null | undefined
+    set?.clock.clearTimeout(set.handle)
+  },
+}
+
 /* The shared interface of this wave (wave2-phases.md), as functions of the process's placements. */
 
 export const placementOf = (sessionId: string, role: RoomRole): PlacementView => classPlacements().placementOf(sessionId, role)
 export const placementGate = (sessionId: string, role: RoomRole, signal?: AbortSignal): Promise<void> => classPlacements().placementGate(sessionId, role, signal)
-export const onPlacementChange = (listener: (event: PlacementEvent) => void): (() => void) => classPlacements().onPlacementChange(listener)
+/** News of the process's placements, whichever they are now and later (usePlacements): one instance's own is its onPlacementChange. */
+export function onPlacementChange(listener: (event: PlacementEvent) => void): () => void {
+  processListeners.add(listener)
+  return () => processListeners.delete(listener)
+}
 export const moveNow = (sessionId: string, role: RoomRole | null, by: string): Promise<{ ok: true } | { refused: string }> => classPlacements().moveNow(sessionId, role, by)
 export const helpPadMs = (sessionId: string, role: RoomRole): number => classPlacements().helpPadMs(sessionId, role)
 export const startingWords = (sessionId: string, role: RoomRole): string | null => classPlacements().startingWords(sessionId, role)
+export const warmSlot = (sessionId: string, role: RoomRole): void => classPlacements().warmSlot(sessionId, role)
 export const wantedPlacements = (runnerId: string): RemotePlacementIntent[] => classPlacements().wantedPlacements(runnerId)
 export const noteKernelsReport = (runnerId: string, kernels: RemoteKernelsRequest, now: number): void => classPlacements().noteKernelsReport(runnerId, kernels, now)
 export const hasLivePlacements = (runnerId: string): boolean => classPlacements().hasLivePlacements(runnerId)
@@ -2020,3 +2220,13 @@ export const placementOutlook = (sessionId: string) => classPlacements().outlook
 
 /** A class's setting changed: its image is looked for at once. */
 export const classPlacementChanged = (sessionId: string, environment: string | null): void => classPlacements().classPlacementChanged(sessionId, environment)
+
+/*
+ * The kernel hooks run on these (kernel/index.ts · ClassPlacements), on the
+ * process's placements' clock: handed over as this module loads
+ * (placement-store.ts · offerPlacementHooks), since the hooks never import it.
+ */
+offerPlacementHooks({
+  placements: { placementOf, placementGate, onPlacementChange, moveNow, helpPadMs, PlacementLost, machinePlaced, startingWords, warmSlot },
+  clock: placementClock,
+})

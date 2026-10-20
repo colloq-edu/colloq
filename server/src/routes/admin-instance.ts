@@ -668,9 +668,7 @@ export function adminInstanceRoutes(): Router {
       // A script's mistake: the panel offers nothing else. Its author reads English.
       if (!read.ok) return invalid(res, `placement.${read.field} is not a value a class's placement takes`)
       if (!samePlacement(read.placement, before)) {
-        if (!mayPlaceClasses(currentStaff(req))) {
-          return forbidden(res, 'Only the owner decides where classes compute on this instance: sending them to machines is off for teachers')
-        }
+        if (!mayPlaceClasses(currentStaff(req))) return forbidden(res, tr('server.onlyTheOwnerDecidesWhereClassesCompute.5ef976'))
         setSessionPlacement(row.id, read.placement)
         // Its image is looked for now, so that the machines fetch it before anyone presses Run (§6.6).
         classPlacementChanged(row.id, sessionEnvironment(row.id))
