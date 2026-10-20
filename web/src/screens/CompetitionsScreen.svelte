@@ -20,6 +20,7 @@
    * with its own connection, are thirty connections for a page where nothing
    * changes.
    */
+  import { untrack } from 'svelte'
   import { tr } from '@shared/i18n'
   import { isTerminal, placeShift } from '@shared/competitions'
   import type {
@@ -35,13 +36,16 @@
   import DependenciesView from '@/components/competitions/DependenciesView.svelte'
   import BoardView from '@/components/competitions/BoardView.svelte'
   import CompetitionsList from '@/components/competitions/CompetitionsList.svelte'
+  import Conditions from '@/components/competitions/Conditions.svelte'
+  import JoinStep from '@/components/competitions/JoinStep.svelte'
   import KeyPanel from '@/components/competitions/KeyPanel.svelte'
   import PageHeader from '@/components/competitions/PageHeader.svelte'
   import SubmissionsView from '@/components/competitions/SubmissionsView.svelte'
   import TaskView from '@/components/competitions/TaskView.svelte'
   import TopBar from '@/components/competitions/TopBar.svelte'
+  import { joinedMe, joinStepPath, markJoined, takesPartHere, visitKey } from '@/components/competitions/join-step'
   import { firstScreenReady } from '@/lib/boot'
-  import { acceptsUploads, boardPlaces, clockStep, standingsClosed } from '@/lib/competition-words'
+  import { acceptsUploads, boardPlaces, clockStep, gpuCondition, standingsClosed } from '@/lib/competition-words'
   import { entrantApi, EntrantApiError } from '@/lib/entrantApi'
   import { COMPETITIONS_LANDING, type CompetitionRoute, type CompetitionView } from '@/lib/routes'
 
@@ -89,7 +93,20 @@
   let failure = $state<string | null>(null)
   let ready = $state(false)
 
-  let joining = $state<string | null>(null)
+  /**
+   * «Участвовать» was pressed for this competition (its slug): its join step
+   * takes the focus once it is on screen, and says so (JoinStep · onfocused).
+   */
+  let joinAsk = $state<string | null>(null)
+  /**
+   * The visit that has just joined — the competition and the person
+   * (join-step.ts · visitKey): its «Посылки» tab shows the key above the send
+   * box, where the person lands right after joining. It goes with the visit:
+   * another page outside this competition, another person signing in, a
+   * sign-out. Only the key card reads it; whether the send box stands there
+   * at all is the server's word (takesPartHere).
+   */
+  let joinedHere = $state<string | null>(null)
   let joinBusy = $state(false)
   let joinRefusal = $state<string | null>(null)
   let signInBusy = $state(false)
@@ -281,7 +298,7 @@
     const slug = route.slug
     const view = route.view
     const person = me?.entrant?.id ?? null
-    const key = `${slug ?? ''}:${person ?? ''}`
+    const key = visitKey(slug, person)
     if (carried !== key) {
       generation += 1
       carried = key
@@ -297,6 +314,12 @@
       busy = false
       sending = false
       streamLost = false
+      joinRefusal = null
+      // A focus request belongs to the competition it was made for, and the
+      // join's mark to the visit that made it. Untracked: either coming and
+      // going must not load the page again.
+      if (untrack(() => joinAsk) !== slug) joinAsk = null
+      if (untrack(() => joinedHere) !== key) joinedHere = null
     }
     if (claiming || route.signInKey) return
     if (me === null) {
@@ -402,6 +425,23 @@
 
   /* ---------------------------------------------------------- actions */
 
+  /*
+   * A refusal answers the form it was typed into. On another page or tab the
+   * form is a new one with an empty field, and the old red line under it
+   * answered a question nobody had asked there: a key refused on the list
+   * stood under the join step of a competition where nothing was typed. The
+   * key link's own refusal stays, and not by luck: `/k/t/…` is the list too,
+   * the same place the link drops the person on.
+   */
+  let formsAt: string | null = null
+  function forgetRefusals(at: string): void {
+    if (formsAt === at) return
+    formsAt = at
+    joinRefusal = null
+    signInRefusal = null
+  }
+  $effect(() => forgetRefusals(`${route.slug ?? ''}/${route.view}`))
+
   async function join(slug: string, wanted: string): Promise<void> {
     if (joinBusy) return
     const request = ++identityRequest
@@ -411,8 +451,17 @@
     try {
       const answer = await entrantApi.join(slug, wanted)
       if (request !== identityRequest) return
-      me = answer
-      joining = null
+      me = joinedMe(me, answer)
+      joinedHere = visitKey(slug, answer.entrant?.id)
+      joinAsk = null
+      // The door said yes: the page's copies of this competition learn it now,
+      // not a round trip later (join-step.ts · markJoined). Only while it is
+      // still this competition on screen: an answer that comes back after the
+      // person has moved on must not mark another one joined.
+      if (route.slug === slug) {
+        mine = markJoined(mine)
+        if (page?.mine) page = { ...page, mine: markJoined(page.mine) }
+      }
     } catch (error: unknown) {
       if (request === identityRequest) joinRefusal = say(error)
     } finally {
@@ -443,6 +492,20 @@
     if (request !== identityRequest) return
     me = { entrant: null, key: null, link: null }
     mine = null
+    joinedHere = null
+  }
+
+  /**
+   * «Участвовать» — on a competition's tab or on its card in the list: to the
+   * competition's join step, the first step of its «Посылки» tab, which takes
+   * the focus once it is on screen. Not to the list any more, where the name
+   * was asked for under the card, below the fold (join-step.ts).
+   */
+  function startJoin(slug: string): void {
+    joinRefusal = null
+    signInRefusal = null
+    joinAsk = slug
+    if (route.slug !== slug || route.view !== 'submissions') onnavigate(joinStepPath(slug))
   }
 
   /** The server's answer once the notebook is in, and only after "My submissions" has caught up with it. */
@@ -523,11 +586,13 @@
   }
 
   function showKey(): void {
-    if (route.slug !== null) {
+    // Right after joining, the key stands on the competition's own page.
+    const card = document.querySelector('[data-key-card]')
+    if (route.slug !== null && !card) {
       onnavigate(COMPETITIONS_LANDING)
       return
     }
-    document.querySelector('[data-key-card]')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    card?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
 
   /* --------------------------------------------------- header numbers */
@@ -559,7 +624,8 @@
 {#snippet closedBoard()}
   <!-- A board open to entrants only, seen by someone who is not one: why, and
        the way in — the key for a stranger, JOIN for a signed-in person while
-       the competition still takes people. -->
+       the competition still takes people. Both lead to the join step, which
+       holds the name and the key side by side. -->
   <div class="flex max-w-[640px] flex-col items-start gap-3 border-t-2 border-ink pt-5">
     <p class="text-title font-bold leading-6 text-ink">{tr('competitions.p.boardClosedTitle')}</p>
     <p class="text-ui leading-5 text-muted">
@@ -574,10 +640,7 @@
       <button
         class="h-[38px] bg-brand px-4 text-micro font-black uppercase tracking-label text-white"
         type="button"
-        onclick={() => {
-          onnavigate(COMPETITIONS_LANDING)
-          if (joinable && page) joining = page.competition.slug
-        }}
+        onclick={() => page && startJoin(page.competition.slug)}
       >
         {joinable ? tr('competitions.p.join') : tr('competitions.p.signIn')}
       </button>
@@ -626,16 +689,8 @@
           <CompetitionsList
             rows={list?.competitions ?? []}
             {now}
-            {joining}
-            {joinBusy}
-            {joinRefusal}
-            defaultName={name ?? ''}
             onopen={(slug) => onnavigate(`/k/${slug}/submissions`)}
-            onjoin={join}
-            onjoinstart={(slug) => {
-              joining = slug
-              joinRefusal = null
-            }}
+            onjoin={startJoin}
           />
         </div>
         <aside class="w-full shrink-0 self-start border border-line bg-surface p-5 xl:w-[360px]">
@@ -671,13 +726,35 @@
           />
         {:else if tab === 'dependencies'}
           {#key `${page.competition.slug}:${me?.entrant?.id ?? ''}`}
-            <DependenciesView slug={page.competition.slug} signedIn={!!me?.entrant} onjoin={() => {
-              onnavigate(COMPETITIONS_LANDING)
-              joining = page!.competition.slug
-            }} />
+            <DependenciesView slug={page.competition.slug} signedIn={!!me?.entrant} onjoin={() => startJoin(page!.competition.slug)} />
           {/key}
         {:else if tab === 'submissions'}
-          {#if mine}
+          {#if !takesPartHere(page, mine)}
+            <!-- Not in this competition (yet), by the server's word: the join
+                 step stands where the send box stands for those who are, with
+                 the conditions of the check beside it, as on the tab the
+                 person is about to use. -->
+            <div class="flex flex-col gap-6 xl:flex-row xl:gap-12">
+              <div class="flex min-w-0 grow flex-col">
+                <JoinStep
+                  accepting={page.accepting}
+                  defaultName={name ?? ''}
+                  signedIn={!!me?.entrant}
+                  busy={joinBusy}
+                  refusal={joinRefusal}
+                  {signInBusy}
+                  {signInRefusal}
+                  focus={joinAsk === page.competition.slug}
+                  onfocused={() => (joinAsk = null)}
+                  onjoin={(wanted) => void join(page!.competition.slug, wanted)}
+                  onsignin={signIn}
+                />
+              </div>
+              <aside class="flex w-full shrink-0 flex-col gap-6 xl:w-[300px]">
+                <Conditions competition={page.competition} sealedFiles={page.sealedFiles ?? []} gpu={gpuCondition(page)} />
+              </aside>
+            </div>
+          {:else if mine}
             {#key `${page.competition.slug}:${me?.entrant?.id ?? ''}`}
             <SubmissionsView
               view={page}
@@ -695,26 +772,16 @@
               oncancel={cancel}
               onchoose={choose}
               onboard={() => goTab('leaderboard')}
-              onjoin={() => {
-                onnavigate(COMPETITIONS_LANDING)
-                joining = page!.competition.slug
-              }}
-            />
+            >
+              {#snippet lead()}
+                <!-- Where the person lands right after joining: the key they
+                     will need on another device, above the box they send with. -->
+                {#if joinedHere === visitKey(page!.competition.slug, me?.entrant?.id)}
+                  <KeyPanel {me} keyOnly />
+                {/if}
+              {/snippet}
+            </SubmissionsView>
             {/key}
-          {:else}
-            <div class="flex flex-col items-start gap-3">
-              <p class="text-ui text-muted">{tr('competitions.refusal.signIn')}</p>
-              <button
-                class="h-[38px] bg-brand px-4 text-micro font-black uppercase tracking-label text-white"
-                type="button"
-                onclick={() => {
-                  onnavigate(COMPETITIONS_LANDING)
-                  joining = page!.competition.slug
-                }}
-              >
-                {tr('competitions.p.join')}
-              </button>
-            </div>
           {/if}
         {:else if board}
           <BoardView

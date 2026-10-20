@@ -84,7 +84,8 @@ export interface EntrantFile {
 
 /**
  * The hidden test as a participant may know it: its name, how many rows,
- * which example it stands in for. Never its bytes, and no door serves them.
+ * which example it stands in for. Never its bytes: no entrant's door serves
+ * them (only the competition's teachers download them, in the panel).
  */
 export interface EntrantSealedFile {
   /** The name the notebook reads during the check: `data/<name>` and `/data/<name>`. */

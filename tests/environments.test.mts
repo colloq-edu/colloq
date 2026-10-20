@@ -46,7 +46,9 @@ import {
 import { adminEnvironmentRoutes } from '../server/src/routes/admin-environments.js'
 import { createTeacher } from '../server/src/admin/store.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
+import { createSession, db } from '../server/src/db.js'
 import { ENVIRONMENT_NAME, STAFF_COOKIE } from '../shared/admin.js'
+import { setLocaleResolver, translate } from '../shared/i18n.js'
 
 /* ------------------------------------------------ what counts as a package */
 
@@ -804,5 +806,48 @@ test('the panel refuses to delete a shipped environment and deletes one\'s own c
     assert.equal(removed.status, 204)
     assert.equal(readSource('kaggle-base'), shipped)
     assert.equal(existsSync(path.join(home, 'environments', 'kaggle-base.txt')), false)
+  })
+})
+
+test('an environment classes stand on is refused in the instance language, with who uses it and where they move', async () => {
+  await withHome(async (home) => {
+    writeFileSync(path.join(home, '.env'), 'KERNEL_ENV=base\n')
+    writeSource('own-cv', 'opencv-python\n')
+    // Named the way classes are: commas, colons and full stops of their own.
+    const rooms = ['Last term: polars', 'Week 3. Boosting, random forest', 'Lab 1, part 2', 'Lab 4'].map((title, index) => createSession(`envuse${index}x`, title, 'own-cv'))
+    const remove = () => fetch(`${base}/api/admin/environments/own-cv`, { method: 'DELETE', headers: { cookie: staffCookie() } })
+    try {
+      for (const lang of ['ru', 'en'] as const) {
+        setLocaleResolver(() => lang)
+        const refused = await remove()
+        assert.equal(refused.status, 409)
+        const body = (await refused.json()) as { reason?: string; error?: string }
+        assert.equal(body.reason, 'in_use')
+        const said = body.error ?? ''
+        // Three by name, each in the language's quotes — a comma of its own must not split a class in two — the rest
+        // counted, and then what to do: every word in the instance's language.
+        const quoted = (name: string) => (lang === 'ru' ? `«${name}»` : `“${name}”`)
+        const named = rooms.filter((room) => said.includes(quoted(room.name)))
+        assert.equal(named.length, 3, said)
+        named.sort((a, b) => said.indexOf(quoted(a.name)) - said.indexOf(quoted(b.name)))
+        const list = named.map((room) => quoted(room.name)).join(', ')
+        assert.equal(
+          said,
+          `${translate(lang, 'server.environmentInUse.named', { name: 'own-cv', count: 4, list: `${list} ${translate(lang, 'server.environmentInUse.more', { count: 1 })}` })} ${translate(lang, 'server.environmentInUse.move')}`,
+        )
+        assert.match(said, lang === 'ru' ? /пользуются 4 занятия: «.*» и ещё 1\. / : /^4 classes use own-cv: “.*” and 1 more\. /)
+        // Where the move is made: the class's settings, while its kernel is not running.
+        assert.match(said, lang === 'ru' ? /«Настройки», раздел «Окружение».*пока ядро занятия не запущено/ : /Settings, the Environment section.*while the class's kernel is not running/)
+        if (lang === 'en') assert.doesNotMatch(said, /[а-яё]/i)
+        else assert.doesNotMatch(said, /seminar|uses|more/i)
+        assert.equal(readSource('own-cv'), 'opencv-python\n', 'nothing was deleted')
+      }
+      // Moved elsewhere in their settings, the classes free it.
+      db.prepare("UPDATE sessions SET environment = 'base' WHERE environment = 'own-cv'").run()
+      assert.equal((await remove()).status, 204)
+    } finally {
+      setLocaleResolver(() => 'ru')
+      db.prepare("DELETE FROM sessions WHERE id LIKE 'envuse%'").run()
+    }
   })
 })

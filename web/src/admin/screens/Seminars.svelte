@@ -1,7 +1,8 @@
 <script lang="ts">
   import RowsSkeleton from '@/components/ui/RowsSkeleton.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import { tr, getLocale } from '@shared/i18n'
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Check from '@/admin/ui/Check.svelte'
   import EmptyState from '@/admin/ui/EmptyState.svelte'
@@ -11,12 +12,13 @@
   import { adminAuth } from '@/admin/auth.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
-  import { AdminApiError, adminApi } from '@/lib/adminApi'
+  import { AdminApiError, adminApi, adminRequest } from '@/lib/adminApi'
   import { people, ruleRefusal, runningLine } from '@/admin/panel'
   import { localDay, twoDigits } from '@/admin/course-plan'
   import { courseColor } from '@/admin/course-color'
   import {
     SCOPE_KEY,
+    canSeat,
     folderCounts,
     groupRows,
     inFolder,
@@ -24,20 +26,25 @@
     phaseForTabs,
     railCourses,
     readScope,
+    seatChoices,
+    seatLinkShown,
     seatsOf,
     tabCounts,
     type Folder,
     type ListRow,
     type StatusTab,
   } from '@/admin/seminar-list'
+  import { chosenEnvironment, chosenNote, environmentBar, gpuBar } from '@/admin/seminar-environment'
   import { seminarLink } from '@/lib/seminar-link'
-  import { cn } from '@/lib/utils'
+  import { builtAgo, cn, imageSize } from '@/lib/utils'
   import {
     LIMITS,
     type AdminSeminar,
+    type EnvironmentsState,
     type InstanceResources,
     type ListScope,
     type MemberTeacher,
+    type SeminarKernelState,
     type TeacherRef,
     type TeacherWithCourses,
   } from '@shared/admin'
@@ -170,6 +177,8 @@
     railCourses(scope === 'all' ? courses : courses.filter((c) => c.mine !== false), seminars),
   )
   const courseById = $derived(new Map(courses.map((course) => [course.id, course])))
+  /** What «Добавить в курс…» offers: the courses the viewer may seat into, scoped as the rail. */
+  const seatable = $derived(seatChoices(courses, owner ? scope : 'mine'))
   /** «Мои N»: rooms the viewer teaches, whichever scope is loaded. */
   const mineCount = $derived(seminars.filter((s) => s.mine && !s.archivedAt).length)
 
@@ -387,16 +396,37 @@
    * `position: fixed` from the button's rectangle knows nothing of clipping.
    */
   let menuStyle = $state('')
+  /**
+   * What the open menu shows: the row's actions, or the courses
+   * «Добавить в курс…» offers. One menu either way — the same panel, the
+   * same place and the same ways to close it — so the courses are a second
+   * page of it rather than a second popup over the first.
+   */
+  let menuView = $state<'actions' | 'seat'>('actions')
+  /** The menu's width, `w-[272px]` below: what it needs to the left of a button. */
+  const MENU_WIDTH = 272
 
-  function openMenu(seminar: AdminSeminar, button: HTMLElement): void {
-    if (openMenuId === seminar.id) {
+  function openMenu(seminar: AdminSeminar, button: HTMLElement, view: 'actions' | 'seat' = 'actions'): void {
+    if (openMenuId === seminar.id && menuView === view) {
       openMenuId = null
       menuStyle = ''
       return
     }
+    menuView = view
     const box = button.getBoundingClientRect()
-    // right, not left: the menu aligns to the button's right edge, as before.
-    const right = Math.round(window.innerWidth - box.right)
+    /*
+     * right, not left: the «⋯» menu aligns to the button's right edge, as
+     * before. A button in the window's left half — «Добавить в курс…» at the
+     * start of a row's meta line — gets the menu hanging from its left edge
+     * instead: aligned to its right edge the menu covered the rail beside it,
+     * and on a phone 272px to the left of it is off the screen. Either way
+     * the menu stays 8px inside the window.
+     */
+    const flush = box.left + box.width / 2 > window.innerWidth / 2 && box.right - MENU_WIDTH >= 8
+    const side = flush
+      ? `right: ${Math.round(window.innerWidth - box.right)}px`
+      : `left: ${Math.round(Math.max(8, Math.min(box.left, window.innerWidth - MENU_WIDTH - 8)))}px`
+    const corner = flush ? 'right' : 'left'
     const below = window.innerHeight - box.bottom - 8
     const above = box.top - 8
     /*
@@ -416,9 +446,27 @@
      */
     menuStyle =
       below >= above
-        ? `top: ${Math.round(box.bottom + 4)}px; right: ${right}px; max-height: ${Math.round(below)}px; transform-origin: top right`
-        : `bottom: ${Math.round(window.innerHeight - box.top + 4)}px; right: ${right}px; max-height: ${Math.round(above)}px; transform-origin: bottom right`
+        ? `top: ${Math.round(box.bottom + 4)}px; ${side}; max-height: ${Math.round(below)}px; transform-origin: top ${corner}`
+        : `bottom: ${Math.round(window.innerHeight - box.top + 4)}px; ${side}; max-height: ${Math.round(above)}px; transform-origin: bottom ${corner}`
     openMenuId = seminar.id
+  }
+
+  /** The cursor onto an item of the open menu, once the menu has drawn its page. */
+  async function focusMenuItem(selector = '[role=menuitem]'): Promise<void> {
+    await tick()
+    document.querySelector<HTMLElement>(`[data-row-menu] ${selector}`)?.focus()
+  }
+
+  /**
+   * Turn the open menu to its other page. The press took its own item away
+   * with the page, and the cursor fell to the page's body, where a keyboard
+   * or a screen reader has nothing to stand on: it goes to the new page's
+   * first item instead, and on the way back to «Добавить в курс…», where it
+   * left from.
+   */
+  function turnMenu(view: 'actions' | 'seat'): void {
+    menuView = view
+    void focusMenuItem(view === 'actions' ? '[data-seat-item]' : '[role=menuitem]')
   }
 
   let doomed = $state<AdminSeminar | null>(null)
@@ -565,9 +613,12 @@
 
     // "8 in the room" is a claim about this second, so it is re-asked. A hidden
     // tab is not looking at the claim and does not need to spend the request.
-    const tick = window.setInterval(() => {
+    const poll = window.setInterval(() => {
       now = Date.now()
-      if (document.visibilityState === 'visible') void load(true)
+      if (document.visibilityState !== 'visible') return
+      void load(true)
+      // An open settings window's environment lock follows the class's kernel.
+      if (ruling) readKernel(ruling.id)
     }, 20_000)
 
     const onKey = (event: KeyboardEvent) => {
@@ -608,8 +659,9 @@
     window.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', onScroll)
     return () => {
-      window.clearInterval(tick)
+      window.clearInterval(poll)
       window.clearTimeout(copyTimer)
+      window.clearTimeout(moveTimer)
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('click', onClick)
       window.removeEventListener('scroll', onScroll, true)
@@ -852,6 +904,85 @@
     }
   }
 
+  /* --------------------------------------------------------- environment */
+
+  /**
+   * The environments, for the settings window's choice — the same list and
+   * the same card as the new class form. Asked for when the window opens,
+   * like the machine's numbers: a build may have finished since.
+   */
+  let environments = $state<EnvironmentsState | null>(null)
+  let environmentsLoading = $state(true)
+  let environmentBusy = $state(false)
+  let environmentErrorText = $state<(() => string) | null>(null)
+  const environmentError = $derived(environmentErrorText?.() ?? null)
+
+  function readEnvironments(): void {
+    environmentsLoading = environments === null
+    void adminApi
+      .listEnvironments()
+      .then((state: EnvironmentsState) => (environments = state))
+      .catch((cause: unknown) => {
+        noteDeadCookie(cause)
+        // Without the list the section names the class's environment and
+        // offers nothing: a choice made blind is not one.
+        environments = null
+      })
+      .finally(() => (environmentsLoading = false))
+  }
+
+  /**
+   * Whether a kernel of the class runs now: then the choice is locked, and
+   * the section says until when. The server's census (the PATCH asks the
+   * same one), read when the window opens and again with the list's poll
+   * while it stays open, so the lock lifts by itself once the class stops.
+   * `null` is "not known": the choice stays open, and the server decides.
+   */
+  let kernelRunning = $state<boolean | null>(null)
+  let kernelLoading = $state(true)
+
+  function readKernel(id: string): void {
+    void adminRequest<SeminarKernelState>(`/seminars/${encodeURIComponent(id)}/kernel`)
+      .then((state) => {
+        // A window closed or opened on another class meanwhile: not its answer.
+        if (ruling?.id === id) kernelRunning = state.running
+      })
+      .catch((cause: unknown) => {
+        noteDeadCookie(cause)
+        if (ruling?.id === id) kernelRunning = null
+      })
+      .finally(() => {
+        if (ruling?.id === id) kernelLoading = false
+      })
+  }
+
+  /**
+   * Move the class to another environment: one press, and its next kernel
+   * start comes up on the new one. Offered only while no kernel of the class
+   * runs (a running container is not kept on another image). Nothing is
+   * painted ahead: the server checks the image, the GPU and the kernel
+   * first, and says its refusal in the section — a kernel that came up since
+   * the window looked locks the choice instead.
+   */
+  async function setEnvironment(seminar: AdminSeminar, name: string): Promise<void> {
+    if (environmentBusy) return
+    environmentBusy = true
+    environmentErrorText = null
+    try {
+      const updated = await adminApi.updateSeminar(seminar.id, { environment: name })
+      replace(updated)
+      if (ruling?.id === updated.id) ruling = updated
+      // The memory default below is the environment's: a GPU one gets more.
+      readResources()
+    } catch (cause: unknown) {
+      noteDeadCookie(cause)
+      if (cause instanceof AdminApiError && cause.reason === 'kernel_running') kernelRunning = true
+      else environmentErrorText = () => tr('admin.seminars.env.failed', { reason: explain(cause) })
+    } finally {
+      environmentBusy = false
+    }
+  }
+
   async function setRule(seminar: AdminSeminar, patchRules: Partial<RoomRules>): Promise<void> {
     rulesBusy = true
     rulesErrorText = null
@@ -951,6 +1082,69 @@
     }
   }
 
+  /* -------------------------------------------------------------- course */
+
+  /** The row being put into a course while its request is out: one at a time. */
+  let seatingId = $state<string | null>(null)
+  /**
+   * The row that has just moved into a course, lit for a moment where it
+   * landed: the eye follows it out of «Без курса» into its course's group.
+   */
+  let movedId = $state<string | null>(null)
+  let moveTimer: number | undefined
+  /** The moved row the cursor has been put on; the effect's memory, like `focused` below. */
+  let landed: string | null = null
+
+  /**
+   * «Добавить в курс…»: the room goes into the course in one request, the
+   * way creation seats a new one (the PATCH's `seat`; admin/seat.ts on the
+   * server) — at the end of the course, where the course screen's «добавить
+   * занятие» puts it. The answer is the room with its course, so the row
+   * moves to the course's group at once; the courses are read again for its
+   * number in the plan.
+   */
+  async function seat(seminar: AdminSeminar, course: { id: string; name: string }): Promise<void> {
+    if (seatingId) return
+    openMenuId = null
+    menuStyle = ''
+    seatingId = seminar.id
+    if (rowError?.id === seminar.id) rowError = null
+    try {
+      const updated = await adminApi.updateSeminar(seminar.id, { seat: { courseId: course.id } })
+      replace(updated)
+      // «Без курса» is no place to watch a class leave: the list opens on all
+      // classes, where it is seen arriving in its course.
+      if (!inFolder(updated, folder)) folder = 'all'
+      landed = null
+      movedId = updated.id
+      window.clearTimeout(moveTimer)
+      moveTimer = window.setTimeout(() => (movedId = null), 2400)
+      void load(true)
+    } catch (cause: unknown) {
+      noteDeadCookie(cause)
+      rowError = { id: seminar.id, message: () => tr('admin.seminars.list.seat.failed', { reason: explain(cause) }) }
+    } finally {
+      seatingId = null
+    }
+  }
+
+  /*
+   * The moved row is brought into view and its «⋯» given the cursor, once,
+   * when it is drawn under its course. The groups are read on purpose, as
+   * `seminars` is for a created row below: the row is drawn a tick after the
+   * answer lands.
+   */
+  $effect(() => {
+    const id = movedId
+    void groups.length
+    if (!id || id === landed) return
+    const row = document.querySelector<HTMLElement>(`tr[data-room="${id}"]`)
+    if (!row) return
+    landed = id
+    row.scrollIntoView({ block: 'nearest' })
+    row.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')?.focus({ preventScroll: true })
+  })
+
   /* -------------------------------------------------------------- delete */
 
   /**
@@ -1004,7 +1198,12 @@
 
   /* ------------------------------------------------------------- settings */
 
-  function openSettings(seminar: AdminSeminar): void {
+  /**
+   * The settings window. `section` 'environment' opens it scrolled to the
+   * environment: the press on a row's environment is a request to change it,
+   * and the choice sits under nine rules.
+   */
+  async function openSettings(seminar: AdminSeminar, section: 'environment' | null = null): Promise<void> {
     ruling = seminar
     memoryErrorText = null
     // Numbers from the last opening are numbers from the last minute: since
@@ -1012,11 +1211,23 @@
     // opens with placeholders and waits for a fresh answer.
     resources = null
     readResources()
+    environments = null
+    environmentErrorText = null
+    readEnvironments()
+    kernelRunning = null
+    kernelLoading = true
+    readKernel(seminar.id)
     hosts = null
     hostsErrorText = null
     pickerOpen = false
     pickerQuery = ''
     readHosts(seminar.id)
+    if (section === 'environment') {
+      // The window is drawn on the next tick; its section is there at once,
+      // with placeholders until the list arrives.
+      await tick()
+      document.querySelector('[data-env-choice]')?.scrollIntoView({ block: 'start' })
+    }
   }
 
   /* ---------------------------------------------------------------- hosts */
@@ -1671,6 +1882,7 @@
         {@const fresh = seminar.id === justCreatedId}
         {@const author = authorOf(seminar)}
         {@const others = coTeachersOf(seminar)}
+        {@const environment = chosenEnvironment(seminar)}
         <!--
           Below 640 a row is a card: `order` gathers it into two lines, and
           the `basis` of the first hands out exactly 100% (the title + 44px
@@ -1678,10 +1890,11 @@
           single letter.
         -->
         <tr
+          data-room={seminar.id}
           class={cn(
-            'group border-b border-line',
+            'group border-b border-line transition-colors duration-500',
             'max-[640px]:flex max-[640px]:flex-wrap max-[640px]:items-center max-[640px]:py-1',
-            fresh && 'bg-accent/10',
+            (fresh || seminar.id === movedId) && 'bg-accent/10',
           )}
         >
           <!--
@@ -1786,6 +1999,28 @@
                 <span class="admin-meta whitespace-nowrap">{tr("admin.archived")}</span>
               {/if}
               <!--
+                The class's environment, by the name the new class form gives
+                it, and the form's GPU mark: the one the class is set to,
+                which its next kernel start comes up on. A press opens the
+                settings window at the environment, where it is changed.
+              -->
+              {#if environment}
+                <!-- The finger's 44px are the button's; the grey is the name's
+                     own, so a phone card does not grow a tall grey block. -->
+                <button
+                  type="button"
+                  class="admin-meta inline-flex items-center gap-1.5 whitespace-nowrap transition-colors duration-100
+                         hover:text-ink max-[640px]:min-h-[44px]"
+                  title={tr('admin.seminars.list.row.environment')}
+                  onclick={() => void openSettings(seminar, 'environment')}
+                >
+                  <span class="bg-raised px-1.5 font-mono">{environment}</span>
+                  {#if seminar.chosenEnvironmentGpu}
+                    <Badge word="GPU" tone="accent" />
+                  {/if}
+                </button>
+              {/if}
+              <!--
                 Who set up the room, and who else runs it. The list used to
                 say "by Maria" and stop: on a shared instance that was the
                 only hint whose room it was. Now the room's own teachers are
@@ -1825,6 +2060,31 @@
                 </span>
               {:else if seminar.publication}
                 <span class="admin-meta whitespace-nowrap">{tr("admin.page.taken.down")}</span>
+              {/if}
+              <!--
+                A class in no course says so by the group it is drawn under,
+                and offers the way out right on its row: the courses open in
+                the row's own menu (a second page of it), anchored here, with
+                the cursor on the first — the menu is drawn at the row's end,
+                far from this link in the order a keyboard walks. Only with a
+                course to choose: with none, the row menu's item says why.
+              -->
+              {#if seatLinkShown(seminar, seatable)}
+                <button
+                  type="button"
+                  data-seat
+                  aria-haspopup="menu"
+                  aria-expanded={openMenuId === seminar.id && menuView === 'seat'}
+                  disabled={seatingId !== null}
+                  class="admin-link text-micro max-[640px]:min-h-[44px]"
+                  onclick={(event) => {
+                    event.stopPropagation()
+                    openMenu(seminar, event.currentTarget as HTMLElement, 'seat')
+                    if (openMenuId === seminar.id) void focusMenuItem()
+                  }}
+                >
+                  {tr('admin.seminars.list.seat.action')}
+                </button>
               {/if}
             </div>
 
@@ -1976,9 +2236,63 @@
                 <div
                   role="menu"
                   tabindex="-1"
+                  data-row-menu
                   class="row-menu admin-menu fixed z-50 w-[272px] overflow-y-auto"
                   style={menuStyle}
                 >
+                  {#if menuView === 'seat'}
+                    <!--
+                      «Добавить в курс…»: the courses the viewer may put the
+                      class into, by the scope the rail shows, each with its
+                      folder's square. Choosing one is the whole action.
+                      With none, the page says why and offers the rail's
+                      «+ Новый курс» — a way on, not a dead end.
+                    -->
+                    <p class="admin-label px-3 pb-1 pt-2">{tr('admin.seminars.list.seat.title')}</p>
+                    {#each seatable as course (course.id)}
+                      <button
+                        role="menuitem"
+                        type="button"
+                        class="admin-menu-item flex items-center gap-2.5"
+                        disabled={seatingId !== null}
+                        onclick={() => void seat(seminar, course)}
+                      >
+                        <span class="h-2 w-2 shrink-0" style:background={courseColor(course.id)}></span>
+                        <span class="min-w-0 flex-1 truncate">{course.name}</span>
+                      </button>
+                    {:else}
+                      <p class="px-3 py-2 text-2xs text-muted">
+                        {owner && courses.length > 0
+                          ? tr('admin.seminars.list.seat.noneOwner')
+                          : tr('admin.seminars.list.seat.none')}
+                      </p>
+                      <button
+                        role="menuitem"
+                        type="button"
+                        class="admin-menu-item text-accent-text"
+                        onclick={() => {
+                          openMenuId = null
+                          menuStyle = ''
+                          openNewCourse()
+                        }}
+                      >
+                        {tr('admin.seminars.list.folder.newCourse')}
+                      </button>
+                    {/each}
+                    <div class="admin-menu-sep"></div>
+                    <button
+                      role="menuitem"
+                      type="button"
+                      data-seat-back
+                      class="admin-menu-item text-muted"
+                      onclick={(event) => {
+                        event.stopPropagation()
+                        turnMenu('actions')
+                      }}
+                    >
+                      {tr('admin.seminars.list.seat.back')}
+                    </button>
+                  {:else}
                   <button role="menuitem" type="button" class="admin-menu-item" onclick={() => copy(seminar)}>
                     {tr("admin.copy.link")}
                   </button>
@@ -1998,7 +2312,7 @@
                     role="menuitem"
                     type="button"
                     class="admin-menu-item"
-                    onclick={() => openSettings(seminar)}
+                    onclick={() => void openSettings(seminar)}
                   >
                     {tr('admin.seminar.settingsMenu')}
                   </button>
@@ -2011,6 +2325,23 @@
                     {seminar.finishedAt ? tr("admin.reopen.the.class") : tr("admin.end.the.class")}
                   </button>
                   <div class="admin-menu-sep"></div>
+                  {#if canSeat(seminar)}
+                    <!-- The menu's second page; the press must not reach the
+                         window, whose click closes the menu. -->
+                    <button
+                      role="menuitem"
+                      type="button"
+                      data-seat-item
+                      class="admin-menu-item"
+                      disabled={seatingId !== null}
+                      onclick={(event) => {
+                        event.stopPropagation()
+                        turnMenu('seat')
+                      }}
+                    >
+                      {tr('admin.seminars.list.seat.action')}
+                    </button>
+                  {/if}
                   <button
                     role="menuitem"
                     type="button"
@@ -2064,6 +2395,7 @@
                     >
                       {tr("admin.delete")}
                     </button>
+                  {/if}
                   {/if}
                 </div>
               {/if}
@@ -2132,6 +2464,8 @@
 </AdminPage>
 
 {#if ruling}
+  <!-- The class's environment, for its section and the resources under it. -->
+  {@const chosenName = chosenEnvironment(ruling)}
   <!--
     The same list, in the same words, as in the room itself: a setting that is
     named differently in two places is two settings.
@@ -2159,8 +2493,12 @@
          column a few words wide. -->
     <div class="dialog-card flex max-h-full w-full max-w-[640px] flex-col border border-line bg-canvas shadow-pop">
       <div class="flex flex-col gap-1.5 border-b border-line px-5 py-3.5">
-        <div class="flex items-baseline gap-3">
-          <h2 id="seminar-rules-title" class="min-w-0 truncate text-title font-semibold text-ink">
+        <!-- The class's name keeps the line as far as it goes, and the
+             subtitle wraps under it: held beside it, the subtitle that names
+             the environment too squeezed a long name to a few letters on a
+             phone. -->
+        <div class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+          <h2 id="seminar-rules-title" class="min-w-0 max-w-full truncate text-title font-semibold text-ink">
             {ruling.name}
           </h2>
           <span class="shrink-0 text-2xs text-muted">{tr('admin.seminar.settingsSubtitle')}</span>
@@ -2309,6 +2647,207 @@
         />
 
         <!--
+          The environment: the new class form's card and choice, for a class
+          that already exists. Right above the resources, as in the form: the
+          memory default below is the chosen environment's.
+
+          A move is one press and nothing is painted ahead of it — the server
+          checks the image, the GPU and the class's kernel first. While a
+          kernel of the class runs, the choice is locked and the section says
+          why and until when: a container is not kept on another image, and
+          the move would cost the class its variables at the next start.
+          What is the matter with the class's own environment (no image, a
+          build under way or due, no card for it) is said under the card.
+        -->
+        <div class="border-t border-line-soft py-4" data-env-choice>
+          <h3 class="text-ui font-semibold text-ink">{tr('admin.environment.464')}</h3>
+          <p class="mb-3 mt-1.5 text-2xs text-muted">{tr('admin.seminars.env.hint')}</p>
+          {#if environmentsLoading || kernelLoading}
+            <!-- The form's placeholder: the chosen card's frame and the row
+                 of choices it stands on, at their own heights. -->
+            <div role="status" aria-busy="true" aria-label={tr("admin.python.environment")} class="flex flex-col gap-2.5">
+              <div class="flex h-[45px] items-center gap-3 border border-line px-3.5">
+                <Skeleton width="0.5rem" height="0.5rem" radius="0" />
+                <Skeleton width="9rem" height="0.85rem" />
+                <Skeleton width="7rem" height="0.7rem" class="ml-auto" />
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="admin-label">{tr("admin.or.choose")}</span>
+                {#each ['6.5rem', '8rem'] as width (width)}
+                  <Skeleton {width} height="40px" radius="0" />
+                {/each}
+              </div>
+            </div>
+          {:else if environments && environments.environments.length > 0}
+            {@const listed = environments}
+            {@const chosen = listed.environments.find((env) => env.name === chosenName) ?? null}
+            {@const note = chosen ? chosenNote(chosen) : null}
+            {@const chosenGpu = chosen ? gpuBar(chosen, listed) : null}
+            {@const locked = kernelRunning === true}
+            <div class="flex flex-col gap-2.5">
+              <div class="flex flex-col border border-line" data-env-chosen>
+                <!-- A floor, not a lid: on a phone the facts wrap under the name. -->
+                <div class="flex min-h-[45px] flex-wrap items-center gap-x-3 gap-y-1 px-3.5 py-2.5">
+                  <span class="h-2 w-2 shrink-0 bg-accent"></span>
+                  <span class="font-mono text-ui font-medium text-ink">{chosen?.name ?? chosenName ?? ''}</span>
+                  {#if chosen?.state === 'ready'}
+                    <Badge word={tr("admin.built")} tone="positive" />
+                  {/if}
+                  {#if chosen?.gpu}
+                    <Badge word="GPU" tone="accent" />
+                  {/if}
+                  {#if environmentBusy}
+                    <Icon name="spinner" size={13} class="animate-spin text-muted" />
+                  {/if}
+                  {#if chosen}
+                    <span class="ml-auto text-2xs text-muted">
+                      {[
+                        chosen.pythonBuilt || chosen.python ? `Python ${chosen.pythonBuilt ?? chosen.python}` : null,
+                        chosen.imageBytes ? imageSize(chosen.imageBytes) : null,
+                        chosen.builtAt ? builtAgo(chosen.builtAt) : null,
+                        chosen.revision ? chosen.revision.slice(0, 19) + '…' : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </span>
+                  {/if}
+                </div>
+                {#if chosen && chosen.packages.length > 0}
+                  <div class="flex flex-wrap items-center gap-1.5 px-3.5 pb-3 pl-[34px]">
+                    {#each chosen.packages.slice(0, 5) as pkg (pkg)}
+                      <span class="chip bg-surface font-mono text-muted">{pkg}</span>
+                    {/each}
+                    {#if chosen.packages.length > 5}
+                      <span class="text-2xs text-muted">+ {chosen.packages.length - 5} {tr("admin.more")}</span>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+
+              <!-- The others, as the form's chips: one that cannot be chosen
+                   here says why, on the chip and in its title. -->
+              {#if listed.environments.some((env) => env.name !== chosenName)}
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="admin-label">{tr("admin.or.choose")}</span>
+                  {#each listed.environments.filter((env) => env.name !== chosenName) as env (env.name)}
+                    {@const bar = environmentBar(env, listed)}
+                    <button
+                      type="button"
+                      data-env={env.name}
+                      disabled={bar !== null || environmentBusy || locked}
+                      title={bar === 'unbuilt'
+                        ? tr("admin.has.not.been.built.a.room.cannot.open.on.it", { p0: env.name })
+                        : bar === 'noGpu'
+                          ? tr('admin.seminars.env.noGpuTitle', { p0: env.name })
+                          : bar === 'gpuToSubmissions'
+                            ? tr('admin.seminars.env.gpuToSubmissionsTitle', { p0: env.name })
+                            : locked
+                              ? tr('admin.seminars.env.runningTitle')
+                              : tr("admin.use", { p0: env.name })}
+                      onclick={() => void setEnvironment(ruling as AdminSeminar, env.name)}
+                      class={cn(
+                        // The panel's option chip (admin/ui/Choice · sm): 40px, 44 on a phone.
+                        'inline-flex min-h-10 items-center gap-1.5 px-3 font-mono text-2xs',
+                        'transition-colors duration-100 max-[640px]:min-h-11',
+                        bar === null
+                          ? 'border border-line bg-surface text-ink hover:border-faint hover:bg-raised disabled:opacity-60'
+                          : 'cursor-not-allowed border border-dashed border-line text-muted',
+                      )}
+                    >
+                      {#if bar !== null}
+                        <span class="h-1 w-1 shrink-0 bg-warning"></span>
+                      {/if}
+                      {env.name}
+                      {#if bar === 'unbuilt'}
+                        <span class="font-sans text-2xs text-warning">{tr("admin.not.built.483")}</span>
+                      {:else if bar !== null}
+                        <span class="font-sans text-2xs text-warning">{tr('admin.seminars.env.noGpu')}</span>
+                      {/if}
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+
+            <!-- A kernel of the class runs: the choice waits for it to stop.
+                 The form's note frame, in the accent: a fact about timing,
+                 not a warning. The owner, who can stop it, gets the way there. -->
+            {#if locked}
+              <div
+                class="mt-2.5 flex items-start gap-2.5 border-l-2 border-accent bg-accent/[0.06] px-3.5 py-2.5"
+                data-env-locked
+                role="status"
+              >
+                <Icon name="lock" size={13} class="mt-0.5 shrink-0 text-accent-text" />
+                <p class="min-w-0 text-2xs leading-snug text-muted">
+                  {owner ? tr('admin.seminars.env.running') : tr('admin.seminars.env.runningAsk')}
+                  {#if owner}
+                    <a
+                      href="/admin/resources"
+                      class="admin-link whitespace-nowrap"
+                      onclick={(event) => {
+                        if (!navigate) return
+                        event.preventDefault()
+                        // Closed as «Готово» closes it, then on to the tab.
+                        ruling = null
+                        rulesErrorText = null
+                        navigate('/admin/resources')
+                      }}
+                    >
+                      {tr('admin.seminars.env.openResources')}
+                    </a>
+                  {/if}
+                </p>
+              </div>
+            {/if}
+
+            <!-- The class's own environment cannot bring its kernel up as it
+                 is: no image yet, or a GPU this machine does not give
+                 classes — both at once when it is so, said before the class
+                 finds out from its first cell. A build that is merely due is
+                 a quieter fact: the kernel starts on the earlier one. -->
+            {#if note === 'missing' || note === 'building' || chosenGpu}
+              <div
+                class="mt-2.5 flex items-start gap-2.5 border-l-2 border-warning bg-warning/[0.07] px-3.5 py-2.5"
+                data-env-warning
+              >
+                <Icon name="alert" size={13} class="mt-0.5 shrink-0 text-warning" />
+                <div class="flex min-w-0 flex-col gap-1 text-2xs leading-snug text-muted">
+                  {#if note === 'missing'}
+                    <p>{owner ? tr('admin.seminars.env.chosenUnbuilt') : tr('admin.seminars.env.chosenUnbuiltAsk')}</p>
+                  {:else if note === 'building'}
+                    <p>{tr('admin.seminars.env.chosenBuilding')}</p>
+                  {/if}
+                  {#if chosenGpu === 'noGpu'}
+                    <p>{owner ? tr('admin.seminars.env.chosenNoGpuOwner') : tr('admin.seminars.env.chosenNoGpu')}</p>
+                  {:else if chosenGpu === 'gpuToSubmissions'}
+                    <p>
+                      {owner
+                        ? tr('admin.seminars.env.chosenGpuToSubmissionsOwner')
+                        : tr('admin.seminars.env.chosenGpuToSubmissions')}
+                    </p>
+                  {/if}
+                </div>
+              </div>
+            {/if}
+            {#if note === 'stale'}
+              <div class="mt-2.5 flex items-start gap-2.5 border-l-2 border-line bg-raised px-3.5 py-2.5" data-env-stale>
+                <Icon name="info" size={13} class="mt-0.5 shrink-0 text-muted" />
+                <p class="min-w-0 text-2xs leading-snug text-muted">{tr('admin.seminars.env.chosenStale')}</p>
+              </div>
+            {/if}
+          {:else}
+            <!-- No list (no answer, or a server without environments): the
+                 class's environment by name, and nothing offered blind. -->
+            <p class="font-mono text-ui text-ink" data-env-chosen>{chosenName ?? tr("admin.whatever.this.instance.runs")}</p>
+          {/if}
+
+          {#if environmentError}
+            <p class="mt-2.5 text-2xs text-danger" role="alert">{environmentError}</p>
+          {/if}
+        </div>
+
+        <!--
           The same section and the same component as in the new class form.
 
           A setting that is named differently and computed differently in two
@@ -2323,7 +2862,7 @@
           <Resources
             {resources}
             loading={resourcesLoading}
-            environment={ruling.environment ?? ''}
+            environment={chosenName ?? ''}
             memoryMb={ruling.memoryMb ?? null}
             cpus={ruling.cpus ?? null}
             busy={memoryBusy}

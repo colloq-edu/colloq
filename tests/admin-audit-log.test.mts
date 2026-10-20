@@ -583,7 +583,21 @@ test('every kind of staff action is recorded somewhere', () => {
   assert.match(runners, /action: 'runner\.revoked'/)
   assert.match(runners, /action: 'runner\.code_minted'/)
   assert.match(runners, /action: 'runner\.code_ended'/)
-  const notDriven = new Set(['environment.made_default', 'competition.entrant_deleted', 'runner.enrolled', 'runner.trusted', 'runner.revoked', 'runner.code_minted', 'runner.code_ended'])
+  /*
+   * The hidden test's download is driven through both of its doors (its own
+   * and the materials archive) in tests/competition-materials.test.mts, which
+   * reads it from this same log: it needs a competition with files on disk.
+   */
+  const competitions = fs.readFileSync(path.join(import.meta.dirname, '../server/src/routes/admin-competitions.ts'), 'utf8')
+  assert.match(competitions, /action: 'competition\.hidden_test_downloaded'/)
+  /*
+   * A class's move to another environment is driven through its PATCH in
+   * tests/seminars-list-environment.test.mts, which reads it from this same
+   * log: the move needs a built image, and that is docker's to say.
+   */
+  const instance = fs.readFileSync(path.join(import.meta.dirname, '../server/src/routes/admin-instance.ts'), 'utf8')
+  assert.match(instance, /action: 'room\.environment_changed'/)
+  const notDriven = new Set(['environment.made_default', 'competition.entrant_deleted', 'competition.hidden_test_downloaded', 'room.environment_changed', 'runner.enrolled', 'runner.trusted', 'runner.revoked', 'runner.code_minted', 'runner.code_ended'])
   const missing = ADMIN_AUDIT_ACTIONS.filter((action) => !notDriven.has(action) && !seen.has(action))
   assert.deepEqual(missing, [])
 })

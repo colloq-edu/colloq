@@ -194,6 +194,14 @@ export interface WaitingRow {
   returnedFrom?: string
   /** With `returned`: why it came back, when home knows (RemoteReturnReason); absent — the console names only the machine. */
   returnedWhy?: RemoteReturnReason
+  /**
+   * With a reason: this server runs notebooks like it and leaves this one to
+   * the machines for its size — more memory than it could ever reserve, or
+   * more cores than it has while a machine will take it
+   * (server/src/competitions/runner.ts · leftToMachines). `no_runners` then
+   * means no machine on line, not a server that only scores.
+   */
+  tooBig?: boolean
   /** A fresh result waiting for its metric here («оценивается»): its notebook already ran, on a machine or here. */
   scoring?: boolean
 }
@@ -253,7 +261,9 @@ export interface FileView extends CompetitionFile {
 /**
  * A hidden-test file as the teacher sees it: its name in `data/`, rows,
  * columns, and the open example of the same name it replaces during the
- * check. Its bytes have no door, the teacher's included.
+ * check. Its bytes go only to the teachers who may open the competition —
+ * its own link on the row and the materials archive, each download a row in
+ * the audit log — and never to an entrant.
  */
 export interface SealedFileView extends FileView {
   /** The open file of the same name the check swaps out; null — none, the name is new to `data/`. */
@@ -314,7 +324,7 @@ export interface CompetitionView {
   openFiles: FileView[]
   /** Hidden answers: names, rows and columns — the contents are never handed out. */
   hiddenFiles: FileView[]
-  /** The hidden test (sealed inputs): read by the notebook during the check, never downloaded. */
+  /** The hidden test (sealed inputs): read by the notebook during the check; downloaded by the competition's teachers only, each time into the audit log. */
   sealedFiles?: SealedFileView[]
   /** How much the hidden test weighs against the `LIMITS.sealedBytes` ceiling. */
   sealedBytes?: number

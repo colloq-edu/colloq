@@ -142,13 +142,8 @@ function list(rows: EntrantCompetitionRow[]): string {
     props: {
       rows,
       now: NOW,
-      joining: null,
-      joinBusy: false,
-      joinRefusal: null,
-      defaultName: '',
       onopen: () => {},
       onjoin: () => {},
-      onjoinstart: () => {},
     },
   }).body
 }

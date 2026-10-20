@@ -1,8 +1,8 @@
 /**
- * Sending an archive: the class page's «Скачать всё», a folder of it, and a
- * competition's open data. One door for all of them, because all of them read
- * the same disk on the class's process and stand in the same line
- * (zip.ts · waitForZip).
+ * Sending an archive: the class page's «Скачать всё», a folder of it, a
+ * competition's open data and, for its teachers, its materials. One door for
+ * all of them, because all of them read the same disk on the class's process
+ * and stand in the same line (zip.ts · waitForZip).
  */
 import { pipeline } from 'node:stream/promises'
 import type { NextFunction, Response } from 'express'
@@ -32,6 +32,12 @@ export function disposition(kind: 'attachment' | 'inline', name: string): string
  * `plan` is asked after the wait, against things as they are then: a page
  * may have been rebuilt or withdrawn, a competition's files replaced, while
  * the download waited. An `error` from it is a 404 in those words.
+ *
+ * `cacheControl` — what the archive says about caching: `no-cache` by
+ * default, as fits a page's or a competition's open files, which anyone with
+ * the link may read again. A door behind a staff cookie whose archive holds
+ * what no cache may keep — a competition's materials carry its hidden test —
+ * passes its own (`private, no-store`).
  */
 export function sendArchive(
   res: Response,
@@ -39,6 +45,7 @@ export function sendArchive(
   key: string,
   plan: () => Promise<{ plan: ZipPlan } | { error: string }> | { plan: ZipPlan } | { error: string },
   label = 'pages',
+  options: { cacheControl?: string } = {},
 ): void {
   const gone = new AbortController()
   let entered = false
@@ -76,7 +83,7 @@ export function sendArchive(
       res.setHeader('content-disposition', disposition('attachment', `${archive.top}.zip`))
       res.setHeader('x-content-type-options', 'nosniff')
       res.setHeader('x-robots-tag', ROBOTS_TAG)
-      res.setHeader('cache-control', 'no-cache')
+      res.setHeader('cache-control', options.cacheControl ?? 'no-cache')
       /*
        * The socket's idle timer: it fires when no bytes have moved for the
        * whole span, which is exactly a reader that stopped reading

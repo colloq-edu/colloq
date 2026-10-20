@@ -1,7 +1,9 @@
 /**
  * The hidden test (sealed inputs): the notebook reads it in `data/` during the
- * check, in place of the open example of the same name, and nobody else ever
- * gets its bytes.
+ * check, in place of the open example of the same name, and no participant
+ * ever gets its bytes — only the staff who may open the competition, at the
+ * hidden test's own door and in the materials archive, each time with a row
+ * in the audit log.
  *
  * A canary row sits in the hidden file, and every way it could leave is
  * walked: the competition page, every file door, "my submissions" and its live
@@ -428,7 +430,7 @@ async function upload(name: string, body: string) {
   await drainCompetitionQueue()
 }
 
-test('the teacher uploads the hidden test through its own door, under a target name, and gets no download', async () => {
+test('the teacher uploads the hidden test through its own door, under a target name, and downloads it only there', async () => {
   doors = competition(SLUG)
   const form = new FormData()
   form.append('name', 'test.csv')
@@ -453,11 +455,20 @@ test('the teacher uploads the hidden test through its own door, under a target n
   const listedText = await listed.text()
   assert.match(listedText, /extra\.csv/)
   assert.doesNotMatch(listedText, new RegExp(CANARY))
-  // Neither the open-file door nor any made-up one hands out the hidden bytes.
-  for (const route of [`/api/admin/competitions/${doors.id}/files/test.csv`, `/api/admin/competitions/${doors.id}/files/extra.csv`, `/api/admin/competitions/${doors.id}/sealed/test.csv`]) {
+  // The open-file door never hands out the hidden bytes: by the example's name it is the example, by a name of its own nothing.
+  for (const route of [`/api/admin/competitions/${doors.id}/files/test.csv`, `/api/admin/competitions/${doors.id}/files/extra.csv`]) {
     const body = await (await call(route, { cookie: staffCookie })).text()
     assert.doesNotMatch(body, new RegExp(CANARY), route)
   }
+  /*
+   * The hidden test's own door does, to the staff who may open the
+   * competition and to nobody without the panel; each download is a row in
+   * the audit log (tests/competition-materials.test.mts drives that).
+   */
+  const own = await call(`/api/admin/competitions/${doors.id}/sealed/test.csv`, { cookie: staffCookie })
+  assert.equal(own.status, 200)
+  assert.equal(await own.text(), HIDDEN)
+  assert.equal((await call(`/api/admin/competitions/${doors.id}/sealed/test.csv`)).status, 401)
   assert.doesNotMatch(JSON.stringify(view), new RegExp(CANARY))
 })
 

@@ -40,6 +40,7 @@
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import { notebooksOffQuestion } from '@/admin/runners'
+  import { ceilingNote, defaultsNow, pastBoundNote } from '@/admin/competition-materials'
   import { cardWord } from '@/admin/running-kernels'
   import {
     cardFacts,
@@ -179,6 +180,18 @@
 
   const isOwner = $derived(adminAuth.isOwner)
   const ready = $derived(loaded !== null)
+  /**
+   * The most one submission may be given, and by whom: the bounds the
+   * defaults' cores and memory are kept to, this server's or the biggest
+   * machine's that runs submissions (competitions/settings.ts ·
+   * submissionCeiling). Read with the rest of the queue's half.
+   */
+  const competitionCeiling = $derived(competitions ? ceilingNote(competitions) : null)
+  /**
+   * A default stored past its bound, said rather than drawn as a change: the
+   * two fields show what a new competition gets (savedOf · defaultsNow).
+   */
+  const competitionPastBound = $derived(competitions ? pastBoundNote(competitions) : null)
 
   /* ------------------------------------------------------------ plumbing */
 
@@ -341,10 +354,11 @@
         return queue.uploadsPerMinute.value
       case 'c.wallSeconds':
         return queue.defaults.wallSeconds
+      // Held to their bounds as a new competition gets them (competition-materials.ts · defaultsNow).
       case 'c.memoryMb':
-        return queue.defaults.memoryMb
+        return defaultsNow(queue).memoryMb
       case 'c.cpus':
-        return queue.defaults.cpus
+        return defaultsNow(queue).cpus
       case 'c.perDay':
         return queue.defaults.perDay
       case 'c.gpuPerDevice':
@@ -1343,6 +1357,12 @@
             {@render field('c.perDay', tr('admin.resourcesTab.perDay'), '', 'w-[176px]')}
           </div>
           <p class="mt-2 text-2xs text-muted">{tr('admin.resourcesTab.defaultsNote')}</p>
+          {#if competitionCeiling}
+            <p class="mt-1 text-2xs text-muted">{competitionCeiling}</p>
+          {/if}
+          {#if competitionPastBound}
+            <p class="mt-1 text-2xs text-muted">{competitionPastBound}</p>
+          {/if}
 
           <div class="mt-4 flex flex-wrap items-start gap-4">
             {@render field('c.uploadsPerMinute', tr('admin.resourcesTab.uploads'), tr('admin.resourcesTab.unitPerMinute'), 'w-[376px] max-w-full')}

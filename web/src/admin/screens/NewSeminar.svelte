@@ -1159,7 +1159,7 @@
 
   <Section
     title={tr("admin.environment.464")}
-    description={tr("admin.the.python.environment.for.this.seminar.it.is.selected.when.the.s")}
+    description={tr("admin.the.python.environment.for.this.class.it.can.be.changed.later.in.its.settings")}
   >
     <!--
       Not a line with a dropdown, but a card with contents.

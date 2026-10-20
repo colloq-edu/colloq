@@ -1016,7 +1016,21 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'Имя видно в лидерборде — по нему вас узнают одногруппники.',
     en: 'The name shows on the leaderboard — it is how classmates recognise you.',
   },
-  'competitions.p.cancel': { ru: 'Отмена', en: 'Cancel' },
+  /*
+   * The join step (JoinStep): the first step of a competition's «Посылки» tab
+   * for a visitor who has not joined, where every «Участвовать» leads. The key
+   * beside the name is for someone who joined from another device.
+   */
+  'competitions.p.joinTitle': { ru: 'Вступите в соревнование', en: 'Join the competition' },
+  'competitions.p.joinHaveKey': {
+    ru: 'Уже участвуете с другого устройства? Ключ вернёт ваши посылки и место.',
+    en: 'Already taking part from another device? The key brings back your submissions and place.',
+  },
+  // In place of joinHint once the deadline has passed and late intake is on: the name never reaches the board then.
+  'competitions.p.joinLateHint': {
+    ru: 'Дедлайн прошёл: решение проверят как обычно, но вне зачёта — оценку увидите только вы, в лидерборд и места поздние посылки не попадают.',
+    en: 'The deadline has passed: the solution is checked as usual but does not count — only you see the score, and late submissions never reach the leaderboard or the places.',
+  },
 
   /*
    * The name field wherever an entrant's name is typed: the join form here and
@@ -1171,10 +1185,6 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.p.noSubmissions': {
     ru: 'Посылок пока нет. Отправьте тетрадь — результат появится здесь.',
     en: 'No submissions yet. Send a notebook and the result shows up here.',
-  },
-  'competitions.p.joinFirst': {
-    ru: 'Вы ещё не вступили в это соревнование.',
-    en: 'You have not joined this competition yet.',
   },
 
   /* Что написано под именем файла у идущей и у законченной посылки */
