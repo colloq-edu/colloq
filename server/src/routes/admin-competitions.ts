@@ -14,9 +14,12 @@
  * `solution.csv`. The answers lie in the competition's DATA_DIR, outside the
  * class working folders (see SECURITY.md), and they have exactly one way out:
  * the metric container the runner brings up. The teacher sees the names and
- * columns of the answers (that is how A2 is drawn); nobody sees the bytes.
- * The hidden test is held the same way: uploaded, listed and removed here,
- * read by the notebook during the check, downloaded by no one.
+ * columns of the answers (that is how A2 is drawn); nobody sees the bytes,
+ * and the materials archive (competitions/materials-zip.ts) names them the
+ * same way. The hidden test is uploaded, listed and removed here and read by
+ * the notebook during the check; no entrant ever downloads it, and the
+ * teachers who may open the competition do — a file at a time or in the
+ * materials archive — each time with a row in the audit log.
  *
  * Running submissions does not live here. These routes put work into the
  * queue (`store.ts`) and wake the pump (`runner.ts`), and "run again", "kill"
@@ -31,7 +34,7 @@ import { tr } from '@shared/i18n'
 import { acceptPinnedSubmission, executionRevision, publicExecution } from '../dependencies/service.js'
 import { assertCompetitionCapability, competitionCapabilities, notebookNeeds, type CompetitionNeeds } from '../competitions/capabilities.js'
 import { submissionUsesCurrentBase } from '../competitions/provenance.js'
-import { competitionRevision } from '../dependencies/store.js'
+import { competitionRevision, policyOf } from '../dependencies/store.js'
 import { DependencyStoreError } from '../dependencies/store.js'
 import { dependencyMessage } from '../dependencies/messages.js'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
@@ -97,6 +100,7 @@ import {
   dropSealedFile,
   dropSecretFile,
   ensureCompetition,
+  holdOpenFile,
   putBaseline,
   putOpenFile,
   putSealedFile,
@@ -108,8 +112,13 @@ import {
   readSealedFile,
   readSecretFile,
   resultDir,
+  sealedDir,
   type StoredFile,
 } from '../competitions/storage.js'
+import type { HeldFile } from '../secure-files.js'
+import { disposition, sendArchive } from '../publish/zip-send.js'
+import { materialsTop, materialsZipPlan, type MaterialsInput } from '../competitions/materials-zip.js'
+import { submissionCeilingNow } from '../competitions/executors.js'
 import {
   executedToday,
   gpuEnvironmentRefusal,
@@ -126,7 +135,7 @@ import { competitionMix, competitionWhere, consoleGroups, heldRunView, placeMix,
 import { anyRunnerEver } from '../competitions/remote/store.js'
 import { DEADLINE_GRACE_MS, privateBoardState } from '../competitions/results.js'
 import { machineShape, slotsResolution } from '../competitions/capacity.js'
-import { competitionDefaults, homeNotebooksSetting, parseSettingsInput, runnerSettings, saveCompetitionSettings, uploadsPerMinute, type SettingsRefusal } from '../competitions/settings.js'
+import { competitionDefaults, homeNotebooksAfter, homeNotebooksSetting, parseSettingsInput, runnerSettings, saveCompetitionSettings, uploadsPerMinute, type SettingsRefusal } from '../competitions/settings.js'
 import { competitionGpuSliceMb, environmentNeedsGpu, gpuSettingsView, placesTaken, runnerCardsHere, runnerGpuDevices, runnerGpuPerDevice } from '../competitions/gpu.js'
 import { gpuDevices } from '../kernel/pool.js'
 import { HOST_RESERVE_MB } from '../kernel/resources.js'
@@ -148,7 +157,7 @@ import {
 import type { QueueRow } from '../competitions/store.js'
 import { METRIC_WALL_SECONDS } from '../competitions/runner-port.js'
 import type { AdminErrorBody, AdminErrorReason } from '@shared/admin'
-import { SETTINGS_LIMITS, type CompetitionSettings } from '@shared/competitions-settings'
+import { SETTINGS_LIMITS, type CeilingSource, type CompetitionSettings } from '@shared/competitions-settings'
 import {
   LIMITS,
   competitionPhase,
@@ -224,6 +233,70 @@ function courseAllowed(staff: StaffLike | null, courseId: string | null | undefi
     return false
   }
   return true
+}
+
+/**
+ * What a teacher's download of a competition's file says about caching: kept
+ * nowhere. These doors stand behind a staff cookie, and the hidden test or a
+ * sample notebook kept by a shared proxy or by a classroom PC's disk cache
+ * is one that left the server past its audit row.
+ */
+const STAFF_FILE_CACHE = 'private, no-store'
+
+/**
+ * A competition's file to a teacher, held and streamed with byte ranges, as
+ * `attachment` under `name` — as the entrant's door hands out the open data
+ * (secure-files.ts · downloadHeldFile), but stored nowhere and validated by
+ * nothing: STAFF_FILE_CACHE, no ETag, no Last-Modified. With no validator
+ * there is no 304 either, so a GET always sends bytes, which is what the
+ * hidden test's audit row says. A file its row names but the disk no longer
+ * has is the same 404 as one never listed. `false` — it was refused, and
+ * nothing went out.
+ */
+function sendFile(res: Response, hold: () => HeldFile, name: string): boolean {
+  let file: HeldFile
+  try {
+    file = hold()
+  } catch {
+    fail(res, 404, 'not_found', tr('competitions.refusal.fileMissing'))
+    return false
+  }
+  res.type(name)
+  try {
+    res.download(
+      file.path,
+      name,
+      { dotfiles: 'allow', etag: false, lastModified: false, cacheControl: false, headers: { 'Cache-Control': STAFF_FILE_CACHE } },
+      (error) => {
+        file.close()
+        if (error && !res.headersSent) fail(res, 404, 'not_found', tr('competitions.refusal.fileMissing'))
+      },
+    )
+  } catch (error) {
+    file.close()
+    throw error
+  }
+  return true
+}
+
+/**
+ * The hidden test left the server for a teacher (the audit log): who, when,
+ * which of its files, and by which door — its own (`file`) or the materials
+ * archive. Its bytes have no other way out of the competition's folder.
+ *
+ * Only a GET: a HEAD sends no bytes, and download managers and link checkers
+ * send one before (or instead of) the download. Every GET is a row, a byte
+ * range too: `Range: bytes=1-` is the whole file but its first byte.
+ */
+function recordHiddenTestDownload(req: Request, competition: Competition, files: string[], via: 'file' | 'archive'): void {
+  if (req.method !== 'GET') return
+  recordAdminEvent({
+    actor: currentStaff(req),
+    action: 'competition.hidden_test_downloaded',
+    target: { type: 'competition', id: competition.id, label: competition.title },
+    detail: { files, via },
+    req,
+  })
 }
 
 function submissionOf(competition: Competition, req: Request, res: Response): Submission | null {
@@ -437,6 +510,29 @@ async function viewOf(competition: Competition): Promise<CompetitionView> {
 function whereOf(competition: Competition): Pick<CompetitionView, 'where'> {
   const where = competitionWhere(competition, queueSlots())
   return where ? { where } : {}
+}
+
+/**
+ * What the materials archive is made of (competitions/materials-zip.ts): the
+ * editor's own view of the competition — its files with their rows and
+ * columns, the split, the sample notebook's card — so the archive says what
+ * the screen says, and the base and the package policy the editor's
+ * dependencies section shows. The course by name, as the viewer's list row
+ * names it (courseRefOf).
+ */
+async function materialsOf(competition: Competition, viewer: StaffLike | null): Promise<MaterialsInput> {
+  const view = await viewOf(competition)
+  return {
+    competition: view.competition,
+    openFiles: view.openFiles,
+    hiddenFiles: view.hiddenFiles,
+    sealedFiles: view.sealedFiles ?? [],
+    split: view.split,
+    baseline: view.baseline,
+    course: courseRefOf(view.competition.courseId, viewer)?.name ?? null,
+    revision: competitionRevision(competition.id),
+    dependencies: policyOf(competition.id),
+  }
 }
 
 /* ----------------------------------------------------------------- queue */
@@ -684,12 +780,14 @@ function waitingRows(competitionId: string | null, _snapshot: QueueSnapshot, now
   return rows
 }
 
-function waitReasonOf(reason: WaitReason | undefined): Pick<WaitingRow, 'reason' | 'returnedFrom' | 'returnedWhy'> {
+function waitReasonOf(reason: WaitReason | undefined): Pick<WaitingRow, 'reason' | 'returnedFrom' | 'returnedWhy' | 'tooBig'> {
   if (!reason) return {}
   return {
     reason: reason.reason,
     ...(reason.returnedFrom !== undefined ? { returnedFrom: reason.returnedFrom } : {}),
     ...(reason.returnedWhy !== undefined ? { returnedWhy: reason.returnedWhy } : {}),
+    // Left to the machines for its size (runner.ts · leftToMachines): the console's words say this server is too small.
+    ...(reason.tooBig ? { tooBig: true } : {}),
   }
 }
 
@@ -715,16 +813,24 @@ function liveOf(competition: Competition, viewer: StaffLike | null, now = Date.n
  * The owner's competition settings, as the form reads them.
  *
  * The machine goes along with the numbers: "8 slots" means nothing without
- * "on 16 CPUs and 64 GB", and the bounds for memory and CPUs are the
- * machine's, not the editor's. So do its cards: which of KERNEL_GPUS went to
+ * "on 16 CPUs and 64 GB". So do its cards: which of KERNEL_GPUS went to
  * submissions, what each one is and how big a run's share comes out — read
  * from the cards themselves, which may take a few seconds on a cold server
  * (kernel/resources.ts · gpuCards), hence asynchronous.
+ *
+ * The bounds for memory and CPUs are not the editor's but the executors'
+ * (competitions/settings.ts · submissionCeiling): the CPUs the biggest of
+ * this server and the machines that run its submissions, the memory this
+ * server's while it runs notebooks — and `ceiling` says which, the machine
+ * by name for an owner, whose list the machines are.
  */
-async function settingsView(): Promise<CompetitionSettings> {
+async function settingsView(viewer: StaffLike | null): Promise<CompetitionSettings> {
   const machine = machineShape()
   const { limits, sources } = competitionDefaults()
+  const ceiling = submissionCeilingNow()
   const gpu = await gpuSettingsView()
+  const sourceOf = (one: { machine: string | null }): CeilingSource =>
+    one.machine === null ? { from: 'home' } : { from: 'machine', name: isOwner(viewer) ? one.machine : null }
   return {
     slots: slotsResolution(),
     uploadsPerMinute: uploadsPerMinute(),
@@ -735,13 +841,11 @@ async function settingsView(): Promise<CompetitionSettings> {
       slots: { min: SETTINGS_LIMITS.slots.min, max: SETTINGS_LIMITS.slots.max },
       uploadsPerMinute: { min: SETTINGS_LIMITS.uploadsPerMinute.min, max: SETTINGS_LIMITS.uploadsPerMinute.max },
       wallSeconds: { min: SETTINGS_LIMITS.wallSeconds.min, max: SETTINGS_LIMITS.wallSeconds.max },
-      memoryMb: {
-        min: SETTINGS_LIMITS.memoryMb.min,
-        max: Math.max(SETTINGS_LIMITS.memoryMb.min, Math.min(SETTINGS_LIMITS.memoryMb.max, machine.memoryMb - HOST_RESERVE_MB)),
-      },
-      cpus: { min: SETTINGS_LIMITS.cpus.min, max: Math.max(1, Math.min(SETTINGS_LIMITS.cpus.max, machine.cpus)) },
+      memoryMb: { min: SETTINGS_LIMITS.memoryMb.min, max: ceiling.memoryMb.max },
+      cpus: { min: SETTINGS_LIMITS.cpus.min, max: ceiling.cpus.max },
       perDay: { min: SETTINGS_LIMITS.perDay.min, max: SETTINGS_LIMITS.perDay.max },
     },
+    ceiling: { cpus: sourceOf(ceiling.cpus), memoryMb: sourceOf(ceiling.memoryMb) },
     gpu,
     // The machines' half of the same box (competitions/settings.ts · runnerSettings): saved through the same PUT.
     runners: runnerSettings(),
@@ -917,8 +1021,8 @@ export function adminCompetitionRoutes(): Router {
 
   /* ---------------------------------------------------------- settings */
 
-  router.get('/api/admin/competitions/settings', requireStaff, (_req, res, next) => {
-    settingsView()
+  router.get('/api/admin/competitions/settings', requireStaff, (req, res, next) => {
+    settingsView(currentStaff(req))
       .then((body) => res.json(body))
       .catch(next)
   })
@@ -934,11 +1038,16 @@ export function adminCompetitionRoutes(): Router {
    */
   router.put('/api/admin/competitions/settings', ownerOnly('competitions.owner.settings'), (req, res, next) => {
     const machine = machineShape()
+    // Cores and memory by the executors (submissionCeiling), the form's own
+    // bounds (settingsView) — of «Тетради на этом сервере» as this save leaves
+    // it, which the same body may turn (settings.ts · homeNotebooksAfter).
+    const ceiling = submissionCeilingNow(homeNotebooksAfter(req.body, homeNotebooksSetting().value))
     const parsed = parseSettingsInput(req.body, {
       ...machine,
       reserveMb: HOST_RESERVE_MB,
       gpus: gpuDevices(),
       gpuManaged: !runnerCardsHere(),
+      ceiling: { cpus: ceiling.cpus.max, memoryMb: ceiling.memoryMb.max },
     })
     if ('refusal' in parsed) return refuseSetting(res, parsed.refusal)
     saveCompetitionSettings(parsed.patch)
@@ -946,7 +1055,7 @@ export function adminCompetitionRoutes(): Router {
     recordAdminEvent({ actor: currentStaff(req), action: 'settings.competitions_changed', target: { type: 'settings', id: 'competitions' }, detail: { changed: Object.keys(parsed.patch) }, req })
     // More slots (or a card) may mean work can start right now.
     wakeCompetitionPump()
-    settingsView()
+    settingsView(currentStaff(req))
       .then((body) => res.json(body))
       .catch(next)
   })
@@ -1215,6 +1324,55 @@ export function adminCompetitionRoutes(): Router {
     res.json(await viewOf(saved))
   })
 
+  /* ------------------------------------------------------- materials */
+
+  /**
+   * «Скачать материалы»: the competition as one archive, for another teacher
+   * of the course to read through or build again
+   * (competitions/materials-zip.ts): the task, the settings, the metric, the
+   * base's packages, the sample notebook, the open data and the hidden test —
+   * never the answers, never anything of a person.
+   *
+   * Whoever may open the competition in the editor (competitionOf), and the
+   * same line as every archive (publish/zip-send.ts · sendArchive): up to
+   * four hundred megabytes read on the class's process. The plan is read
+   * after the wait, against the competition as it is then and with the scope
+   * asked again; the hidden-test files it holds are recorded in the audit
+   * log, as at their own door.
+   *
+   * A HEAD is answered from the competition alone: what a GET would be called
+   * and what it is, with no plan, no line and no row in the audit log —
+   * a link checker's HEAD read every file of the archive from disk into a
+   * body nobody receives, and wrote a download that never happened.
+   */
+  router.get('/api/admin/competitions/:id/materials.zip', requireStaff, (req, res, next) => {
+    const competition = competitionOf(req, res)
+    if (!competition) return
+    if (req.method === 'HEAD') {
+      res.setHeader('content-type', 'application/zip')
+      res.setHeader('content-disposition', disposition('attachment', `${materialsTop(competition)}.zip`))
+      res.setHeader('cache-control', STAFF_FILE_CACHE)
+      res.status(200).end()
+      return
+    }
+    sendArchive(
+      res,
+      next,
+      `km:${competition.id}`,
+      async () => {
+        const viewer = currentStaff(req)
+        const fresh = getCompetition(competition.id)
+        if (!fresh || !canSeeCompetition(viewer, fresh)) return { error: tr('competitions.refusal.notFound') }
+        const archive = await materialsZipPlan(await materialsOf(fresh, viewer))
+        if (archive.sealed.length > 0) recordHiddenTestDownload(req, fresh, archive.sealed, 'archive')
+        return { plan: archive.plan }
+      },
+      'competitions',
+      // It carries the hidden test: kept in no cache, as at the file's own door.
+      { cacheControl: STAFF_FILE_CACHE },
+    )
+  })
+
   /* ------------------------------------------------------------ data */
 
   router.post('/api/admin/competitions/:id/files', requireStaff, async (req, res) => {
@@ -1285,7 +1443,15 @@ export function adminCompetitionRoutes(): Router {
     res.json(await viewOf(getCompetition(competition.id)!))
   })
 
-  /** Download an open file, the same one an entrant sees. The answers do not come here. */
+  /**
+   * Download an open file, the same one an entrant sees — the editor's link
+   * on its row. The answers do not come here.
+   *
+   * Streamed from a held descriptor, byte ranges and all (holdOpenFile), the
+   * way the entrant's own door hands it out: a two-hundred-megabyte table
+   * read into the class's process for one teacher's click is two hundred
+   * megabytes taken from the rooms running beside it.
+   */
   router.get('/api/admin/competitions/:id/files/:name', requireStaff, (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
@@ -1300,11 +1466,7 @@ export function adminCompetitionRoutes(): Router {
      */
     const listed = listFiles(competition.id, 'open').find((file) => file.name === name)
     if (!listed) return fail(res, 404, 'not_found', tr('competitions.refusal.fileMissing'))
-    const bytes = readOpenFile(competition.id, name)
-    if (!bytes) return fail(res, 404, 'not_found', tr('competitions.refusal.fileMissing'))
-    res.setHeader('content-type', 'application/octet-stream')
-    res.setHeader('content-disposition', `attachment; filename="${encodeURIComponent(name)}"`)
-    res.end(bytes)
+    sendFile(res, () => holdOpenFile(competition.id, name), name)
   })
 
   router.delete('/api/admin/competitions/:id/files/:name', requireStaff, async (req, res) => {
@@ -1385,7 +1547,9 @@ export function adminCompetitionRoutes(): Router {
    * test_full.csv as data/test.csv" — and a name may be given for one file
    * only. Staff, like the open data: it is part of building the task.
    *
-   * No GET for the bytes, here or anywhere: the list travels in the view.
+   * The list travels in the view. The bytes go back only to the teachers
+   * who may open the competition — one file at its own door below, or in the
+   * materials archive — and each time with a row in the audit log.
    */
   router.post('/api/admin/competitions/:id/sealed', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
@@ -1430,6 +1594,25 @@ export function adminCompetitionRoutes(): Router {
     const competition = competitionOf(req, res)
     if (!competition) return
     res.json({ sealedFiles: (await viewOf(competition)).sealedFiles ?? [] })
+  })
+
+  /**
+   * One hidden-test file, the editor's link on its row: for the teachers who
+   * may open the competition (competitionOf), so that a colleague can read
+   * what the check reads. Each GET is recorded in the audit log — who, when,
+   * which file (recordHiddenTestDownload) — since its bytes leave no other
+   * way but the materials archive, and kept in no cache (sendFile). An
+   * entrant never gets here: their notebook reads it only inside the check.
+   */
+  router.get('/api/admin/competitions/:id/sealed/:name', requireStaff, (req, res) => {
+    const competition = competitionOf(req, res)
+    if (!competition) return
+    const name = String(req.params.name)
+    // By the row, as for the open data: only a file listed as the hidden test goes out here.
+    const listed = listFiles(competition.id, 'sealed').find((file) => file.name === name)
+    if (!listed) return fail(res, 404, 'not_found', tr('competitions.refusal.fileMissing'))
+    if (!sendFile(res, () => competitionsFs.openRead(path.join(sealedDir(competition.id), name)), name)) return
+    recordHiddenTestDownload(req, competition, [name], 'file')
   })
 
   /** Remove a hidden-test file; the open example of the same name is the check's again from the next run. */
@@ -1484,6 +1667,17 @@ export function adminCompetitionRoutes(): Router {
   }
 
   /* ------------------------------------------------------ sample notebook */
+
+  /**
+   * The sample notebook as it was uploaded (the bytes the check read): the
+   * link on its card in the editor. Named after the competition, so that a
+   * few of them downloaded side by side are not all `notebook.ipynb`.
+   */
+  router.get('/api/admin/competitions/:id/baseline', requireStaff, (req, res) => {
+    const competition = competitionOf(req, res)
+    if (!competition) return
+    sendFile(res, () => competitionsFs.openRead(path.join(baselineDir(competition.id), NOTEBOOK_FILE)), `${competition.slug}-baseline.ipynb`)
+  })
 
   router.post('/api/admin/competitions/:id/baseline', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)

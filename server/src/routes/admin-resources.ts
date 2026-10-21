@@ -38,7 +38,8 @@ import { slotsResolution } from '../competitions/capacity.js'
 import { runnerGpuDevices } from '../competitions/gpu.js'
 import { metricMemoryMb } from '@shared/competitions'
 import { RUN_RESERVE_MB } from '../competitions/runner.js'
-import { competitionDefaults, homeNotebooksSetting, scoreSlotsSetting } from '../competitions/settings.js'
+import { newCompetitionDefaults } from '../competitions/executors.js'
+import { homeNotebooksSetting, scoreSlotsSetting } from '../competitions/settings.js'
 import { listNames } from '../environments.js'
 import { idleSweepSettingsChanged } from '../kernel/index.js'
 import { gpuBusy, gpuDevices, reapplyInstanceDefaults, runningKernelLimits, submissionGpuCards, type RunningKernel } from '../kernel/pool.js'
@@ -94,10 +95,15 @@ function machineBounds(): MachineBounds {
  * bar showed eight gigabytes taken by notebooks that never run here, and the
  * class form warned «памяти не хватит» for a class that fits — on the very
  * server the switch is turned off to keep for its class.
+ *
+ * A slot is promised what a new competition gets (executors.ts ·
+ * newCompetitionDefaults), not a default stored past the bound: a 32 GB
+ * default saved while only the machines ran notebooks, promised on a server
+ * of sixteen once its notebooks were back on, filled the bar the same way.
  */
 function competitionShare(): ResourceBudget['competitions'] {
   try {
-    const { limits } = competitionDefaults()
+    const limits = newCompetitionDefaults()
     if (!homeNotebooksSetting().value) {
       const slots = scoreSlotsSetting().value
       const metricMb = metricMemoryMb(limits.memoryMb)

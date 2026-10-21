@@ -627,7 +627,8 @@ export type RemoteClassAction = 'resume' | 'move'
  * not simply its turn (§5.7). The participant sees «готовится» instead of a
  * place for all of these except `returned`.
  *
- * `no_runners`: this server runs no notebooks and no machine takes work.
+ * `no_runners`: this server runs no notebooks, or the notebook is too big
+ * for it (WaitingRow.tooBig), and no machine takes work.
  * `no_gpu_runner`: a GPU competition and no card anywhere. `preparing_image`
  * / `preparing_data`: the machines that could take it are still downloading.
  * `needs_trusted`: it reads the hidden test and no trusted machine is free.

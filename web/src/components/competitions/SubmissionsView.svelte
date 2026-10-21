@@ -8,7 +8,11 @@
    * submission — while the list refreshes every few seconds; swap them and a
    * person would be scrolling past an unchanging table to look at their
    * timer.
+   *
+   * Only for those who take part here: a visitor who has not joined gets the
+   * join step in this place (CompetitionsScreen · JoinStep).
    */
+  import type { Snippet } from 'svelte'
   import { tr } from '@shared/i18n'
   import { countedSubmission, compareScores, type EntrantSubmission } from '@shared/competitions'
   import type {
@@ -53,7 +57,8 @@
     oncancel: (id: string) => void
     onchoose: (id: string) => void
     onboard: () => void
-    onjoin: () => void
+    /** Above the send box: the key card right after joining. */
+    lead?: Snippet
   }
 
   const {
@@ -72,7 +77,7 @@
     oncancel,
     onchoose,
     onboard,
-    onjoin,
+    lead,
   }: Props = $props()
 
   /** The first page is seven rows, as in the mockup; the rest behind a button. */
@@ -178,20 +183,8 @@
 -->
 <div class="flex flex-col gap-6 xl:flex-row xl:gap-12">
   <div class="flex min-w-0 grow flex-col gap-4 sm:gap-7">
-    {#if mine.joined || mine.submissions.length > 0}
-      <SendBox {view} {mine} {phone} {now} busy={sending} {refusal} {onsend} {onrefuse} />
-    {:else}
-      <div class="flex flex-col items-start gap-3 border border-line bg-surface p-4">
-        <p class="text-ui text-muted">{tr('competitions.p.joinFirst')}</p>
-        <button
-          class="h-[38px] bg-brand px-4 text-micro font-black uppercase tracking-label text-white"
-          type="button"
-          onclick={onjoin}
-        >
-          {tr('competitions.p.join')}
-        </button>
-      </div>
-    {/if}
+    {@render lead?.()}
+    <SendBox {view} {mine} {phone} {now} busy={sending} {refusal} {onsend} {onrefuse} />
 
     {#if mine.paused && mine.inFlight > 0}
       <p class="text-2xs text-warning">{tr('competitions.p.queuePaused')}</p>

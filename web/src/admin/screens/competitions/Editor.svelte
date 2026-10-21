@@ -12,7 +12,10 @@
   The screen's main rule is the answers. `solution.csv` goes through a door of
   its own, lives outside the classes' working directories and is handed back
   to NOBODY: the panel shows the name, the row count and the columns, and
-  never shows the bytes (see SECURITY.md).
+  never shows the bytes (see SECURITY.md). Every other file it lists has a
+  download on its row, and «Скачать материалы» takes the whole competition
+  for a colleague — all but the answers; the hidden test's downloads are
+  recorded in the audit log.
 -->
 <script lang="ts">
   import { tr, formatNumber } from '@shared/i18n'
@@ -42,8 +45,9 @@
   import type { AdminEnvironment, EnvironmentsState, InstanceResources } from '@shared/admin'
   import type { Course } from '@shared/publish'
   import type { CompetitionInput, CompetitionView, FileView } from '@shared/competitions-api'
-  import type { CompetitionGpuSettings } from '@shared/competitions-settings'
+  import type { CompetitionGpuSettings, CompetitionSettings } from '@shared/competitions-settings'
   import { gpuPlacesNote, gpuRowState, gpuSwitchWord } from '@/admin/runner-cards'
+  import { baselineUrl, coresNote, materialsUrl, memoryNote, openFileUrl, sealedFileUrl } from '@/admin/competition-materials'
   import { homeOnlyBox, machinesListPath, noCardsBox, sealedWarning, whereHomeOnly, whereRow } from '@/admin/runners'
   import {
     answerColumns,
@@ -455,6 +459,12 @@
    * take a few seconds on a cold server, while the cards are asked their size.
    */
   let runnerCards = $state<CompetitionGpuSettings | null>(null)
+  /**
+   * The same answer whole: how many cores this server has, whether it runs
+   * notebooks, and the most any executor gives one submission — what the
+   * line under the CPU tile weighs the typed cores against (coresNote).
+   */
+  let queueSettings = $state<CompetitionSettings | null>(null)
   let resources = $state<InstanceResources | null>(null)
   /**
    * The courses the «Курс» select offers: the ones this person teaches, or
@@ -476,7 +486,10 @@
       .catch(() => (environments = []))
     void adminApi
       .competitionSettings()
-      .then((settings) => (runnerCards = settings.gpu))
+      .then((settings) => {
+        runnerCards = settings.gpu
+        queueSettings = settings
+      })
       .catch(() => (runnerCards = null))
     void adminApi
       .resources()
@@ -504,7 +517,10 @@
       readAt = Date.now()
       void adminApi
         .competitionSettings()
-        .then((settings) => (runnerCards = settings.gpu))
+        .then((settings) => {
+          runnerCards = settings.gpu
+          queueSettings = settings
+        })
         .catch(() => undefined)
     }
     window.addEventListener('focus', rereadCards)
@@ -637,6 +653,17 @@
 
   /** Under the row with the card on: the places and the share, and that the memory tile is the machine's. */
   const gpuNote = $derived(gpuState === 'on' ? gpuPlacesNote(runnerCards, Number(limits.memoryMb)) : null)
+
+  /**
+   * Under the tiles: cores and memory beyond this server's, and where such a
+   * submission goes (admin/competition-materials.ts · coresNote, memoryNote)
+   * — with the card on, by whether this server takes such notebooks at all.
+   */
+  const sizeLines = $derived(
+    [coresNote(Number(limits.cpus), queueSettings, gpuOn), memoryNote(Number(limits.memoryMb), queueSettings, gpuOn)].filter(
+      (line) => line !== null,
+    ),
+  )
 
   /**
    * Another environment picked: a CPU one takes the card away with it, in the
@@ -849,6 +876,17 @@
             <span class="w-[64px] shrink-0 text-right font-mono text-micro text-muted">
               {formatBytes(file.bytes)}
             </span>
+            <!-- The file as an entrant downloads it: a colleague reads the data
+                 the task was built on without asking its author. -->
+            <a
+              class="shrink-0 text-muted transition-colors duration-100 hover:text-accent-text"
+              href={openFileUrl(c.id, file.name)}
+              download
+              aria-label={tr('admin.competitions.downloadFile', { name: file.name })}
+              title={tr('admin.competitions.downloadFile', { name: file.name })}
+            >
+              <Icon name="download" size={13} />
+            </a>
             <button
               type="button"
               class="shrink-0 text-muted transition-colors duration-100 hover:text-danger disabled:text-faint"
@@ -1039,6 +1077,17 @@
               </div>
             </div>
             <div class="flex shrink-0 items-center gap-4 max-[640px]:pl-[29px]">
+              <!-- For the teachers who may open the competition, never the
+                   class; the server records each download in the audit log. -->
+              <a
+                class="admin-link no-underline"
+                href={sealedFileUrl(c.id, file.name)}
+                download
+                aria-label={tr('admin.competitions.downloadFile', { name: file.name })}
+                title={tr('admin.competitions.sealedDownloadNote')}
+              >
+                {tr('admin.competitions.download')}
+              </a>
               <label class="admin-link cursor-pointer no-underline">
                 <input
                   type="file"
@@ -1272,19 +1321,32 @@
                 .join(' · ')}
             </p>
           </div>
-          <label class="shrink-0 cursor-pointer text-2xs text-accent-text hover:brightness-110">
-            <input
-              type="file"
-              accept=".ipynb"
-              class="sr-only"
-              disabled={busy}
-              onchange={(event) => {
-                void upload(event.currentTarget.files, 'baseline')
-                event.currentTarget.value = ''
-              }}
-            />
-            {tr('admin.competitions.replace')}
-          </label>
+          <!-- On a phone the two links take a line of their own under the
+               name, as the hidden test's row does: beside it they left the
+               name «noteboo…» and its line of facts four lines tall. -->
+          <div class="flex shrink-0 items-center gap-3.5 max-[640px]:w-full max-[640px]:pl-[30px]">
+            <a
+              class="text-2xs text-accent-text hover:brightness-110"
+              href={baselineUrl(c.id)}
+              download
+              aria-label={tr('admin.competitions.downloadFile', { name: b.fileName })}
+            >
+              {tr('admin.competitions.download')}
+            </a>
+            <label class="cursor-pointer text-2xs text-accent-text hover:brightness-110">
+              <input
+                type="file"
+                accept=".ipynb"
+                class="sr-only"
+                disabled={busy}
+                onchange={(event) => {
+                  void upload(event.currentTarget.files, 'baseline')
+                  event.currentTarget.value = ''
+                }}
+              />
+              {tr('admin.competitions.replace')}
+            </label>
+          </div>
         </div>
 
         <!--
@@ -1615,6 +1677,12 @@
           </span>
         </label>
       </div>
+      <!-- Cores or memory past this server's: where such a submission goes,
+           said before Save rather than read off a run that went slower or
+           never started. -->
+      {#each sizeLines as line (line.text)}
+        <p class={cn('text-micro leading-snug', line.tone === 'warning' ? 'text-warning' : 'text-muted')}>{line.text}</p>
+      {/each}
 
       <!--
         «ВИДЕОКАРТА» (Paper 15 · G2): a row under the tiles, not a fifth tile —
@@ -2010,6 +2078,22 @@
     {/snippet}
 
     {#snippet actions()}
+      <!-- The whole competition for a colleague (routes/admin-competitions.ts ·
+           materials.zip); a live one has the same link in its console header.
+           A short word beside the icon, and on a phone the icon alone, last:
+           the header stays put above the form, and «Скачать материалы» in full
+           beside the author's three actions folded the title onto two lines.
+           Its full name is its aria-label. -->
+      <a
+        class="btn-outline max-[640px]:order-last"
+        href={materialsUrl(c.id)}
+        download
+        aria-label={tr('admin.competitions.materials.download')}
+        title={tr('admin.competitions.materials.title')}
+      >
+        <Icon name="download" size={14} />
+        <span class="max-[640px]:hidden">{tr('admin.competitions.materials.button')}</span>
+      </a>
       <button
         type="button"
         class="btn-ghost"

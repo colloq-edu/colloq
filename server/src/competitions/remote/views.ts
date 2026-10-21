@@ -834,6 +834,14 @@ export interface WaitReason {
    * place to start in for now.
    */
   skipped?: boolean
+  /**
+   * This server's pump would take it, and leaves it to the machines for its
+   * size instead (runner.ts · leftToMachines): more memory than this server
+   * could ever reserve, or more CPUs than it has while a machine will take
+   * it. Its reason is the machines' — `no_runners` with none on line — and
+   * the words say this server is too small, not that it runs no notebooks.
+   */
+  tooBig?: true
 }
 
 /** Whether a reason keeps a row out of every executor's reach now: no place, «готовится» for the participant. */
@@ -849,17 +857,34 @@ export function blocking(reason: WaitReason | undefined): boolean {
  * of every row in one query. Nothing for a row this server's own notebooks
  * can take; `returned` for a row that came back from a machine (its place
  * kept, no quota spent).
+ *
+ * `left` — the notebooks this server leaves to the machines for their size
+ * (runner.ts · leftToMachines, which the forecast asks once per pass): its
+ * own pump passes them over, so they wait for the machines' reasons like a
+ * notebook this server never takes (`tooBig`). Without a machine ever
+ * connected the queue has no word of machines, except for these: nothing
+ * here will run them.
  */
-export function waitReasons(rows: readonly QueueRow[], options: { homeCards: boolean; now?: number; fleet?: RemoteFleet } = { homeCards: false }): Map<string, WaitReason> {
+export function waitReasons(
+  rows: readonly QueueRow[],
+  options: { homeCards: boolean; now?: number; fleet?: RemoteFleet; left?: ReadonlySet<string> } = { homeCards: false },
+): Map<string, WaitReason> {
   const now = options.now ?? Date.now()
   const out = new Map<string, WaitReason>()
-  const notebooks = rows.filter((row) => row.state === 'waiting' && row.kind === 'notebook')
-  if (notebooks.length === 0) return out
+  const waiting = rows.filter((row) => row.state === 'waiting' && row.kind === 'notebook')
+  if (waiting.length === 0) return out
   const homeOn = homeNotebooksSetting().value
-  // No machine ever, and this server runs notebooks: the queue as it was before machines, with no word of them.
-  if (homeOn && !anyRunnerEver()) return out
-  const fleet = options.fleet ?? remoteFleet(now)
   const cache = fitCache()
+  // Left for its size by a server whose pump would take it otherwise; a notebook it never takes (a card it has not) waits as it did.
+  const big = new Set(
+    waiting
+      .filter((row) => options.left?.has(row.submissionId) && homeTakes({ gpu: rowNeedsCard(row, cache), homeNotebooks: homeOn, homeCards: options.homeCards }))
+      .map((row) => row.submissionId),
+  )
+  // No machine ever, and this server runs notebooks: the queue as it was before machines, but for the notebooks too big for it.
+  const notebooks = homeOn && !anyRunnerEver() ? waiting.filter((row) => big.has(row.submissionId)) : waiting
+  if (notebooks.length === 0) return out
+  const fleet = options.fleet ?? remoteFleet(now)
   const last = lastLeasesOf(notebooks.map((row) => row.submissionId))
   let names: Map<string, string> | null = null
   const nameOf = (runnerId: string): string => {
@@ -867,15 +892,17 @@ export function waitReasons(rows: readonly QueueRow[], options: { homeCards: boo
     return names.get(runnerId) ?? runnerId
   }
   for (const row of notebooks) {
-    const blocked = blockedBy(row, homeOn, options.homeCards, fleet.machines, cache)
+    const tooBig = big.has(row.submissionId)
+    const size = tooBig ? { tooBig: true as const } : {}
+    const blocked = blockedBy(row, homeOn, options.homeCards, fleet.machines, cache, tooBig)
     if (blocked && blocked !== 'skipped') {
-      out.set(row.submissionId, { reason: blocked })
+      out.set(row.submissionId, { reason: blocked, ...size })
       continue
     }
     const returned = returnedOf(row, last.get(row.submissionId) ?? null, nameOf)
     // Skipped by every live machine for a decline: back from one of them, and no place until the skip ends or another machine comes.
-    if (blocked === 'skipped') out.set(row.submissionId, { ...(returned ?? { reason: 'returned' as const }), skipped: true })
-    else if (returned) out.set(row.submissionId, returned)
+    if (blocked === 'skipped') out.set(row.submissionId, { ...(returned ?? { reason: 'returned' as const }), skipped: true, ...size })
+    else if (returned) out.set(row.submissionId, { ...returned, ...size })
   }
   return out
 }
@@ -919,10 +946,13 @@ const REFUSAL_ORDER: readonly MachineRefusal[] = ['card', 'trusted', 'room', 'im
  * (fit.ts · homeTakes): on a server that runs its notebooks itself the row's
  * needs of a machine change nothing, and reading them — the revision, the
  * set, the notebook, whether the image is a GPU kernel — for every waiting row
- * on every participant's poll was the forecast's whole cost.
+ * on every participant's poll was the forecast's whole cost. Unless it is too
+ * big for this server (`tooBig`, runner.ts · leftToMachines): then only a
+ * machine runs it, and with none on line nobody does (`no_runners` — not
+ * `no_gpu_runner`, which is a card's).
  */
-function blockedBy(row: QueueRow, homeOn: boolean, homeCards: boolean, live: readonly FleetMachine[], cache: FitCache): RemoteWaitReason | 'skipped' | null {
-  if (homeTakes({ gpu: rowNeedsCard(row, cache), homeNotebooks: homeOn, homeCards })) return null
+function blockedBy(row: QueueRow, homeOn: boolean, homeCards: boolean, live: readonly FleetMachine[], cache: FitCache, tooBig = false): RemoteWaitReason | 'skipped' | null {
+  if (!tooBig && homeTakes({ gpu: rowNeedsCard(row, cache), homeNotebooks: homeOn, homeCards })) return null
   const read = rowNeeds(row, cache)
   // A competition gone is a row on its way out.
   if (!read.ok && read.why === 'gone') return null
@@ -940,7 +970,8 @@ function blockedBy(row: QueueRow, homeOn: boolean, homeCards: boolean, live: rea
    * has, the trust, the room, the image, the data.
    */
   if (!read.ok) return read.why === 'home_only' ? 'home_only_env' : 'no_fit'
-  if (live.length === 0) return homeOn ? 'no_gpu_runner' : 'no_runners'
+  // With this server's notebooks on, a row it does not take is a GPU one it has no card for — unless it is too big for it.
+  if (live.length === 0) return homeOn && !tooBig ? 'no_gpu_runner' : 'no_runners'
   let furthest = -1
   let skipping = false
   for (const machine of live) {

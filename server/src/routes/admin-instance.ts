@@ -66,7 +66,7 @@ import {
   storedRules,
 } from '../db.js'
 import { classMachineSettings } from '../admin/resource-settings.js'
-import { classPlacement } from '../kernel/remote/placement-store.js'
+import { classHasLivePlacement, classPlacement } from '../kernel/remote/placement-store.js'
 import { classPlacementChanged, placementOutlook } from '../kernel/remote/placement.js'
 import { machineState } from '../competitions/remote/heard.js'
 import { getRunner } from '../competitions/remote/store.js'
@@ -81,10 +81,16 @@ import {
   materialCount,
   publicationOf,
 } from '../publish/store.js'
-import { environmentOf, kernelMachinesChanged, kernelNote, shutdownSession, syncBookKernels, syncDangerGuard } from '../kernel/index.js'
-import { kernelBackend } from '../kernel/runtime-client.js'
+import { environmentOf, kernelClasses, kernelMachinesChanged, kernelNote, shutdownSession, syncBookKernels, syncDangerGuard } from '../kernel/index.js'
 import { applyOwnLimits } from '../kernel/pool.js'
-import { applyCpuLimit, applyMemoryLimit } from '../kernel/pool.js'
+import { applyCpuLimit, applyMemoryLimit, gpuDevices, gpuRefusal, roomContainers, roomGpuDevices } from '../kernel/pool.js'
+import {
+  imageRevision,
+  kernelBackend,
+  kernelRuntimeClient,
+  runtimeEnvironment,
+  usingRuntimeBroker,
+} from '../kernel/runtime-client.js'
 import {
   cpuBounds,
   forgetResources,
@@ -93,7 +99,7 @@ import {
   readMemoryInput,
 } from '../kernel/resources.js'
 import { blockKernelStarts, kernelRetirementInProgress } from '../kernel/retirement.js'
-import { activeName, exists as environmentExists } from '../environments.js'
+import { activeName, exists as environmentExists, listEnvironments, needsGpu } from '../environments.js'
 import { forgetTree, listFiles, sessionDir, workspaceFs } from '../workspace.js'
 import type { Course } from '@shared/publish'
 import {
@@ -103,9 +109,13 @@ import {
   type AdminAuditValue,
   type ClassPlacement,
   type AdminErrorBody,
+  type AdminErrorReason,
   type AdminSeminar,
   type MemberTeachersResponse,
   type OracleSettings,
+  type SeatRequest,
+  type SeatResult,
+  type SeminarKernelState,
   type Teacher,
   type TeacherRef,
   type OracleTestResult,
@@ -283,10 +293,48 @@ interface SeminarView {
   rooms: Map<string, TeacherRef[]>
   /** Whether the viewer may say where classes compute (mayPlaceClasses), read once for the whole list. */
   places: boolean
+  /**
+   * What a room with no environment of its own starts on: the instance's
+   * default. Asked at most once per list, and only when a row needs it — on
+   * a catalog install it reads the catalog, and a list must not fail on it.
+   */
+  fallbackEnvironment: () => string | null
+  /** Whether an environment asks for a GPU: one read of its files per name per list. */
+  needsGpu: (name: string) => boolean
 }
 
 function seminarView(viewer: Teacher | null): SeminarView {
-  return { viewer, courses: listCourses(), rooms: membershipDirectory().rooms, places: mayPlaceClasses(viewer) }
+  let fallback: string | null | undefined
+  const gpu = new Map<string, boolean>()
+  return {
+    viewer,
+    places: mayPlaceClasses(viewer),
+    courses: listCourses(),
+    rooms: membershipDirectory().rooms,
+    fallbackEnvironment: () => {
+      if (fallback === undefined) {
+        try {
+          fallback = activeName()
+        } catch {
+          fallback = null
+        }
+      }
+      return fallback
+    },
+    needsGpu: (name) => {
+      let asks = gpu.get(name)
+      if (asks === undefined) {
+        try {
+          asks = needsGpu(name)
+        } catch {
+          // A name the catalog no longer has: no GPU mark is the lesser lie.
+          asks = false
+        }
+        gpu.set(name, asks)
+      }
+      return asks
+    },
+  }
 }
 
 function toSeminar(row: SeminarRow, view: SeminarView): AdminSeminar {
@@ -295,6 +343,12 @@ function toSeminar(row: SeminarRow, view: SeminarView): AdminSeminar {
   // socket keeps no per-session tally to cross-check against.
   const liveCount = onlineCount(row.id)
   const publication = publicationOf(row.id)
+  /*
+   * What the room is set to, which is what its next kernel start reads
+   * (kernel/index.ts · ensureKernel: the row, else the instance's default).
+   */
+  const configured = sessionEnvironment(row.id)
+  const chosen = configured ?? view.fallbackEnvironment()
   return {
     id: row.id,
     name: row.name,
@@ -318,7 +372,12 @@ function toSeminar(row: SeminarRow, view: SeminarView): AdminSeminar {
      * matters: a seminar that survived a switch keeps working on the old
      * image.
      */
-    environment: environmentOf(row.id) ?? sessionEnvironment(row.id),
+    environment: environmentOf(row.id) ?? configured,
+    /*
+     * And what the room is set to, for the list row and the settings window,
+     * which name the class by it: what its next kernel start comes up on.
+     */
+    ...(chosen ? { chosenEnvironment: chosen, chosenEnvironmentGpu: view.needsGpu(chosen) } : {}),
     createdBy: row.created_by,
     archivedAt: row.archived_at,
     /*
@@ -463,6 +522,179 @@ function cpuRefusal(why: 'type' | 'range'): string {
     : tr('server.cpusOutOfRange', { p0: min, p1: max })
 }
 
+/** A PATCH of a seminar as it arrives: every field optional, each checked where it is applied. */
+interface SeminarPatch {
+  name?: unknown
+  archived?: unknown
+  finished?: unknown
+  rules?: unknown
+  memoryMb?: unknown
+  cpus?: unknown
+  environment?: unknown
+  seat?: unknown
+  placement?: unknown
+}
+
+/* ------------------------------------------------------------ environment */
+
+/** A move of a room to another environment, once it has been allowed. */
+interface EnvironmentMove {
+  from: string
+  to: string
+}
+
+type EnvironmentCheck =
+  | { ok: true; move: EnvironmentMove | null }
+  | { ok: false; status: 400 | 409 | 503; reason: AdminErrorReason; error: string }
+
+/**
+ * Whether a kernel of the class is up or coming up: in this process, or in a
+ * container of either of its two roles (a pod under the runtime broker).
+ *
+ * By what runs, not only by what this process remembers. A server restart
+ * (`make run`, a Helm upgrade) leaves the class's containers and their
+ * kernels running for the class to re-attach (kernel/index.ts ·
+ * shutdownKernels), and the new process holds no scope for them; a kernel
+ * whose start failed keeps a scope and runs nothing. So the scopes are asked
+ * first, for a start in flight, and then the census: the `docker ps` the idle
+ * sweep reads (kernel/pool.ts · roomContainers), or the broker's rooms.
+ * `null` when the runtime did not answer, which is not a «no».
+ */
+async function classKernelUp(sessionId: string): Promise<boolean | null> {
+  if (kernelClasses().includes(sessionId)) return true
+  // A container on a class machine (placed, starting, unreachable or stopping) is the class's too: its next start would replace it.
+  if (classHasLivePlacement(sessionId)) return true
+  try {
+    const backend = kernelBackend()
+    if (backend === 'docker') {
+      const containers = await roomContainers({ strict: true })
+      return containers.some((container) => container.session === sessionId && container.running)
+    }
+    if (backend === 'broker') {
+      const pods = await kernelRuntimeClient().rooms()
+      return pods.some((pod) => pod.sessionId === sessionId && (pod.phase === 'ready' || pod.phase === 'pending'))
+    }
+    // The test backend has no containers: its kernels are this process's scopes.
+    return false
+  } catch {
+    return null
+  }
+}
+
+/** The refusal of a move while the class's kernel runs; stopping one is the owner's (routes/admin-running.ts). */
+function kernelRunningRefusal(staff: Teacher | null): string {
+  return tr(isOwner(staff) ? 'server.seminar.environmentKernelRunning' : 'server.seminar.environmentKernelRunningAsk')
+}
+
+/**
+ * Whether a room may move to the environment named in a PATCH.
+ *
+ * Creation's check first (POST above: a real name of an environment that
+ * exists), then two the creation form makes by itself and a moved room has
+ * to be told: the image is built — the form offers only built environments,
+ * and a room set to an unbuilt one has no kernel at all — and a GPU
+ * environment has a card to take on this machine. A machine that gives
+ * classes no card at all (none in KERNEL_GPUS, or every one given to
+ * submissions) refuses at every start, in these same words
+ * (kernel/pool.ts · gpuRefusal); slices that are merely busy now may free up
+ * by the class, so they are not a refusal, the same as at creation.
+ *
+ * And only while no kernel of the class runs (`classKernelUp`). The image
+ * belongs to the class's container, and the pool keeps no running container
+ * on an image other than its row's: the next time it resolves the class's
+ * address — after a server restart, a failed start of any notebook, a failed
+ * shell — it removes the container and every notebook's variables with it,
+ * as for an image rebuilt (kernel/pool.ts · startContainer). Under the broker
+ * a new revision is a new pod, and the next start replaces the running one
+ * just the same (runtime/src/controller.ts). So the move waits until the
+ * class's kernels stop — it stands idle, or the owner stops it on the
+ * Resources tab — and the class's next start comes up on the new image, with
+ * nothing on the old one to lose. The words name who can do what: a teacher
+ * can neither stop a class's kernels nor build an image.
+ *
+ * The same name again is not a move: the settings window sends what it
+ * shows, and an environment unbuilt since must not refuse a room its own.
+ */
+async function environmentMove(sessionId: string, raw: unknown, staff: Teacher | null): Promise<EnvironmentCheck> {
+  const refuse = (status: 400 | 409 | 503, error: string, reason: AdminErrorReason = 'invalid'): EnvironmentCheck => ({
+    ok: false,
+    status,
+    reason,
+    error,
+  })
+  if (typeof raw !== 'string' || !raw.trim()) return refuse(400, tr('server.seminar.environmentName'))
+  const wanted = raw.trim()
+  const current = sessionEnvironment(sessionId) ?? activeName()
+  if (wanted === current) return { ok: true, move: null }
+  if (!ENVIRONMENT_NAME.test(wanted) || !environmentExists(wanted)) {
+    return refuse(400, tr('server.thereIsNoEnvironmentCalled.a8903e', { p0: wanted }))
+  }
+  const listed = (await listEnvironments()).find((environment) => environment.name === wanted)
+  if (listed?.state === 'building') return refuse(409, tr('server.seminar.environmentBuilding', { p0: wanted }))
+  if (!listed || listed.state !== 'ready') {
+    const words = isOwner(staff) ? 'server.seminar.environmentNotBuilt' : 'server.seminar.environmentNotBuiltAsk'
+    return refuse(409, tr(words, { p0: wanted }))
+  }
+  if (listed.gpu && !usingRuntimeBroker() && roomGpuDevices().length === 0) {
+    return refuse(409, gpuRefusal(wanted, [], gpuDevices().length))
+  }
+  const up = await classKernelUp(sessionId)
+  if (up === null) return refuse(503, tr('server.seminar.environmentKernelUnknown'))
+  if (up) return refuse(409, kernelRunningRefusal(staff), 'kernel_running')
+  return { ok: true, move: { from: current, to: wanted } }
+}
+
+/*
+ * The room's environment, written anew. The pin goes with it: under the
+ * runtime broker a room keeps the image revision it first started on
+ * (db.ts · sessionKernelRevision), and a revision of the old environment
+ * means nothing for the new one, so the new pin is the new environment's
+ * current revision, as creation pins it (db.ts · createSession). Elsewhere
+ * there is no pin, and the column stays empty.
+ */
+const updateEnvironment = db.prepare('UPDATE sessions SET environment = ?, kernel_revision = ? WHERE id = ?')
+
+function setRoomEnvironment(sessionId: string, name: string): void {
+  if (!usingRuntimeBroker()) {
+    updateEnvironment.run(name, null, sessionId)
+    return
+  }
+  const pinned = runtimeEnvironment(name)
+  updateEnvironment.run(pinned.name, imageRevision(pinned.image), sessionId)
+}
+
+/* ----------------------------------------------------------------- course */
+
+type SeatCheck = { ok: true; seat: SeatRequest } | { ok: false; status: 400 | 404 | 409; error: string }
+
+/**
+ * A room outside courses put into one, from the list («Добавить в курс…»):
+ * whether it may go where the PATCH asks.
+ *
+ * The same check, and then the same write (`seatRoom`), as a creation that
+ * asked for a seat (admin/seat.ts): a course the caller cannot see is the 404
+ * of a course that does not exist, and the room lands as the course screen's
+ * «добавить занятие» puts it — at the end of the course, or in place of an
+ * open plan row. One request, compared and swapped on the server, rather than
+ * the whole course list written back from a browser that may hold an old one.
+ *
+ * Only for a room in no course the caller can see. Moving a class from one
+ * course to another is the course screen's (it shows both plans); here it
+ * would be a second door that quietly puts a class into two courses. A room
+ * seated only in someone else's course reads «Без курса» to its own teacher,
+ * and putting it into theirs is what the course screen allows too.
+ */
+function seatCheck(sessionId: string, raw: unknown, staff: Teacher | null): SeatCheck {
+  const check = readSeat(raw, staff)
+  if (!check.ok) return check
+  if (!check.seat) return { ok: false, status: 400, error: tr('server.seat.bad') }
+  const seated = coursesWith(sessionId, listCourses()).filter((course) => canSeeCourse(staff, course.id))
+  if (seated.length > 0) {
+    return { ok: false, status: 409, error: tr('server.seat.alreadyInCourse', { p0: seated[0].name }) }
+  }
+  return { ok: true, seat: check.seat }
+}
+
 function notFound(res: Response): Response {
   const body: AdminErrorBody = { error: tr("server.thatSeminarNoLongerExists.b346fe"), reason: 'invalid' }
   return res.status(404).json(body)
@@ -561,10 +793,11 @@ export function adminInstanceRoutes(): Router {
      *
      * There used to be a third state — null meaning "whatever the instance is
      * set to" — and it quietly contradicted the promise this feature makes: a
-     * seminar's Python is decided once, so that a room's packages cannot change
-     * under it mid-class. A room left on "follow" would have moved the next
-     * time somebody changed the default. Resolving the default HERE, at
-     * creation, keeps one rule instead of two.
+     * seminar's Python is decided by a person, here or later in its settings
+     * (the PATCH below), so that a room's packages cannot change under it
+     * mid-class. A room left on "follow" would have moved the next time
+     * somebody changed the default. Resolving the default HERE, at creation,
+     * keeps one rule instead of two.
      */
     const environment = wanted || activeName()
 
@@ -645,24 +878,82 @@ export function adminInstanceRoutes(): Router {
     res.status(201).json(seated ? { ...created, seat: seated } : created)
   })
 
-  router.patch('/api/admin/seminars/:id', requireStaff, (req, res) => {
+  router.patch('/api/admin/seminars/:id', requireStaff, (req, res, next) => {
     const row = visibleSeminarOr404(req, res)
     if (!row) return
-
-    const body = req.body as
-      | {
-          name?: unknown
-          archived?: unknown
-          finished?: unknown
-          rules?: unknown
-          memoryMb?: unknown
-          cpus?: unknown
-          placement?: unknown
-        }
-      | undefined
+    const body = req.body as SeminarPatch | undefined
     /*
-     * Where the class computes, first: a refusal leaves everything of the
-     * request unapplied. The panel sends the whole form, so a teacher whose
+     * The environment is checked before anything is written: its check reads
+     * the built images and the class's containers (docker or broker round
+     * trips), and a refusal must leave the room as it was, the name in the
+     * same request included. Without it the request stays synchronous,
+     * exactly as it always was.
+     */
+    if (body?.environment === undefined) return patchSeminar(req, res, row, body, null)
+    environmentMove(row.id, body.environment, currentStaff(req))
+      .then((checked) => {
+        if (!checked.ok) {
+          res.status(checked.status).json({ error: checked.error, reason: checked.reason } satisfies AdminErrorBody)
+          return
+        }
+        // Deleted while the images were being read: the 404 of a missing room.
+        if (!selectSeminar.get(row.id)) return void notFound(res)
+        /*
+         * A kernel start may have begun while the census was being read. It
+         * has read the row as it still is, the old environment, and the move
+         * would wait on a container of the old image after all. Asked again
+         * here, in the same turn as the write, where nothing can start in
+         * between: a start marks its scope before its first await
+         * (kernel/index.ts · ensureKernel).
+         */
+        if (checked.move && kernelClasses().includes(row.id)) {
+          const refusal: AdminErrorBody = { error: kernelRunningRefusal(currentStaff(req)), reason: 'kernel_running' }
+          res.status(409).json(refusal)
+          return
+        }
+        patchSeminar(req, res, row, body, checked.move)
+      })
+      .catch(next)
+  })
+
+  /*
+   * Whether a kernel of the class runs now, for its settings window: another
+   * environment is offered only while none does (environmentMove), and the
+   * window says so before the press rather than after it. The PATCH's own
+   * census, asked when the window opens and as it stays open.
+   */
+  router.get('/api/admin/seminars/:id/kernel', requireStaff, (req, res, next) => {
+    const row = visibleSeminarOr404(req, res)
+    if (!row) return
+    classKernelUp(row.id)
+      .then((running) => void res.json({ running } satisfies SeminarKernelState))
+      .catch(next)
+  })
+
+  /** The PATCH itself, once the environment (if one was asked for) has been allowed. */
+  function patchSeminar(
+    req: Request,
+    res: Response,
+    row: SeminarRow,
+    body: SeminarPatch | undefined,
+    environment: EnvironmentMove | null,
+  ) {
+    /*
+     * A seat is checked before anything is written too, like the
+     * environment: a refused one leaves the room as it was, a rename or an
+     * archive in the same request included. It is written last, under the
+     * name the room has by then.
+     */
+    let seat: SeatRequest | null = null
+    if (body?.seat !== undefined) {
+      const checked = seatCheck(row.id, body.seat, currentStaff(req))
+      if (!checked.ok) return res.status(checked.status).json({ error: checked.error, reason: 'invalid' } satisfies AdminErrorBody)
+      seat = checked.seat
+    }
+
+    /*
+     * Where the class computes, before the other fields are written: a refusal
+     * leaves everything of the request unapplied. The panel sends the whole form, so a teacher whose
      * switch is off and who changed something else sends the placement as it
      * is, and that is no change to refuse.
      */
@@ -682,6 +973,7 @@ export function adminInstanceRoutes(): Router {
         kernelMachinesChanged(row.id)
       }
     }
+
     if (body?.name !== undefined) {
       const name = normalize(body.name)
       if (!name) return invalid(res, tr("server.aSeminarNameIsRequired.f10426"))
@@ -832,9 +1124,44 @@ export function adminInstanceRoutes(): Router {
       })
     }
 
+    if (environment) {
+      /*
+       * Into the row, and nothing else: no kernel of the class runs
+       * (environmentMove), and its next start reads the row (kernel/index.ts
+       * · ensureKernel). A stopped container of the old image is the pool's
+       * to replace then, with nothing alive in it to lose.
+       */
+      setRoomEnvironment(row.id, environment.to)
+      // A class computing on machines has them fetch the new image before anyone presses Run (§6.6).
+      classPlacementChanged(row.id, environment.to)
+      // The room's memory default is its environment's (a GPU one gets more),
+      // and the Resources census counted it by the old one.
+      forgetResources()
+      recordAdminEvent({
+        actor: currentStaff(req),
+        action: 'room.environment_changed',
+        target: { type: 'room', id: row.id, label: (selectSeminar.get(row.id) as SeminarRow).name },
+        detail: { from: environment.from, to: environment.to },
+        req,
+      })
+    }
+
+    let seated: SeatResult | null = null
+    if (seat) {
+      /*
+       * In the same turn as its check above: the course cannot have changed
+       * in between, and `seatRoom`'s compare-and-swap takes at once. Its null
+       * (the course gone, or no longer the caller's) stays a refusal anyway,
+       * never a room said to be seated.
+       */
+      const named = (selectSeminar.get(row.id) as SeminarRow).name
+      seated = seatRoom(seat, { id: row.id, name: named }, currentStaff(req))
+      if (!seated) return res.status(409).json({ error: tr('server.seat.notSeated'), reason: 'invalid' } satisfies AdminErrorBody)
+    }
+
     const seminar = toSeminar(selectSeminar.get(row.id) as SeminarRow, seminarView(currentStaff(req)))
-    res.json(afterClass ? { ...seminar, afterClass } : seminar)
-  })
+    res.json({ ...seminar, ...(afterClass ? { afterClass } : {}), ...(seated ? { seat: seated } : {}) })
+  }
 
   /* ------------------------------------------- where the class computes */
 

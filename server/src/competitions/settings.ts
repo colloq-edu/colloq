@@ -277,6 +277,76 @@ export function runnerSettings(): CompetitionRunnerSettings {
   }
 }
 
+/* ---------------------------------------------------------- the ceiling */
+
+/**
+ * The most cores and memory ONE submission may be given, and by whom: the
+ * bounds of the defaults in «Ресурсы».
+ *
+ * They were this server's own, min(32, its CPUs), and on a server of eight
+ * cores no default could ask for more, though the machines that run its
+ * submissions had thirty-two (vsos, October 2026). A number no executor can
+ * give is still refused; one the biggest of them can give is not. So the
+ * CPUs' ceiling is the largest of the executors: this server while it runs
+ * notebooks («Тетради на этом сервере»), and every machine that runs
+ * submissions for it and is not revoked — by what one run can be given
+ * there, which the caller works out (a machine keeps a core and the host's
+ * reserve for itself). Past this server's own CPUs a default is still one it
+ * can run: a notebook no machine takes runs here on the CPUs it has, slower
+ * (runner.ts · homeLimits).
+ *
+ * THE MEMORY IS NOT THE SAME. A notebook asking more memory than this server
+ * has is one it can never run — a smaller `--memory` is another verdict, not
+ * a slower run — and a default is what every new competition starts from:
+ * past this server, every notebook of them would be the machines' alone,
+ * this server's automatic slots and its memory budget sized by a number it
+ * never runs (capacity.ts · autoSlots, routes/admin-resources.ts), the
+ * class form warning «не хватит» for a class that fits. So while this
+ * server runs notebooks the memory's ceiling stays its own, as it always
+ * was; with its notebooks off only the machines run them, and the ceiling
+ * is the biggest machine's. A competition's own limit may still ask more in
+ * its editor, which says what that means (web/src/admin/competition-materials.ts
+ * · memoryNote), and the pump leaves such a notebook to the machines
+ * (runner.ts · leftToMachines).
+ *
+ * With this server's notebooks off and no machine at all nothing runs a
+ * notebook, and the ceilings stay this server's, as they were. Never above
+ * the editor's own bounds (SETTINGS_LIMITS), and each executor is held to
+ * them before they are compared: two executors past the bound give the same
+ * ceiling, and a tie goes to this server, which is named first. Pure: the
+ * executors come in as numbers.
+ */
+export interface SubmissionCeiling {
+  /** `machine` — the machine the ceiling is, by name; `null` — this server. */
+  cpus: { max: number; machine: string | null }
+  memoryMb: { max: number; machine: string | null }
+}
+
+export function submissionCeiling(input: {
+  /**
+   * What one run's limits may ask here: the machine's CPUs, its memory less
+   * the host's reserve and the headroom the pump reserves on top of a run
+   * (executors.ts · homeLimitRoom) — as a machine's numbers leave its own.
+   */
+  home: { cpus: number; memoryMb: number }
+  homeNotebooks: boolean
+  /** What one run can be given on each machine that runs submissions. */
+  machines: readonly { name: string; cpus: number; memoryMb: number }[]
+}): SubmissionCeiling {
+  const home = { machine: null as string | null, cpus: input.home.cpus, memoryMb: input.home.memoryMb }
+  const machines = input.machines.map((one) => ({ machine: one.name as string | null, cpus: one.cpus, memoryMb: one.memoryMb }))
+  // Held to the editor's bounds first, then the biggest: a tie under the bound goes to the one named first.
+  const within = (value: number, range: { min: number; max: number }) => Math.max(range.min, Math.min(range.max, Math.floor(value)))
+  const biggest = (executors: readonly (typeof home)[], field: 'cpus' | 'memoryMb') => {
+    const held = (executors.length > 0 ? executors : [home]).map((one) => ({ max: within(one[field], SETTINGS_LIMITS[field]), machine: one.machine }))
+    return held.reduce((best, one) => (one.max > best.max ? one : best))
+  }
+  return {
+    cpus: biggest(input.homeNotebooks ? [home, ...machines] : machines, 'cpus'),
+    memoryMb: biggest(input.homeNotebooks ? [home] : machines, 'memoryMb'),
+  }
+}
+
 /* ------------------------------------------------------------ the form */
 
 /** A checked form: a value to store, or `null` to forget the stored one. */
@@ -299,10 +369,22 @@ export type SettingsRefusal =
  * Pure: the machine comes in as numbers (capacity.ts · machineShape), so the
  * rules are checked without one. Its cards come in the same way: `gpus` is
  * KERNEL_GPUS (none when absent), and `gpuManaged` says the cluster has them.
+ * `ceiling` — the most one run may be given (submissionCeiling): with it the
+ * CPUs are bounded by the biggest executor of submissions rather than by this
+ * machine alone — past this machine's CPUs a notebook runs on a machine, or
+ * here on the CPUs it has, never a `docker run` refused — and the memory by
+ * this machine while it runs notebooks, for the reason above.
  */
 export function parseSettingsInput(
   body: unknown,
-  machine: { cpus: number; memoryMb: number; reserveMb: number; gpus?: readonly string[]; gpuManaged?: boolean },
+  machine: {
+    cpus: number
+    memoryMb: number
+    reserveMb: number
+    gpus?: readonly string[]
+    gpuManaged?: boolean
+    ceiling?: { cpus: number; memoryMb: number }
+  },
 ): { patch: SettingsPatch } | { refusal: SettingsRefusal } {
   const raw = (body ?? {}) as Record<string, unknown>
   const has = (key: string) => Object.prototype.hasOwnProperty.call(raw, key)
@@ -327,9 +409,10 @@ export function parseSettingsInput(
     wallSeconds: SETTINGS_LIMITS.wallSeconds,
     memoryMb: {
       min: SETTINGS_LIMITS.memoryMb.min,
-      max: Math.max(SETTINGS_LIMITS.memoryMb.min, Math.min(SETTINGS_LIMITS.memoryMb.max, machine.memoryMb - machine.reserveMb)),
+      max: machine.ceiling?.memoryMb
+        ?? Math.max(SETTINGS_LIMITS.memoryMb.min, Math.min(SETTINGS_LIMITS.memoryMb.max, machine.memoryMb - machine.reserveMb)),
     },
-    cpus: { min: SETTINGS_LIMITS.cpus.min, max: Math.max(1, Math.min(SETTINGS_LIMITS.cpus.max, machine.cpus)) },
+    cpus: { min: SETTINGS_LIMITS.cpus.min, max: machine.ceiling?.cpus ?? Math.max(1, Math.min(SETTINGS_LIMITS.cpus.max, machine.cpus)) },
     perDay: SETTINGS_LIMITS.perDay,
   }
   for (const field of ['uploadsPerMinute', ...DEFAULT_FIELDS] as const) {
@@ -415,6 +498,24 @@ export function parseSettingsInput(
     patch[field] = value
   }
   return { patch }
+}
+
+/**
+ * «Тетради на этом сервере» as a save of `body` leaves it: the body's own
+ * switch, the default for one it forgets (`null`, ''), the stored one when
+ * it does not name it — or names it wrongly, which parseSettingsInput
+ * refuses anyway. The bounds a save is checked against are this switch's
+ * (submissionCeiling), not the stored one's: the panel's Save sends the
+ * switch and the defaults in one body, and one that turned this server's
+ * notebooks on was checked against the machines' memory and took a default
+ * this server never gives a run — while one that turned them off was
+ * refused a default only the machines would run.
+ */
+export function homeNotebooksAfter(body: unknown, stored: boolean): boolean {
+  const raw = (body ?? {}) as Record<string, unknown>
+  if (!Object.prototype.hasOwnProperty.call(raw, 'homeNotebooks')) return stored
+  if (raw.homeNotebooks === null || raw.homeNotebooks === '') return SETTINGS_LIMITS.homeNotebooks.default
+  return typeof raw.homeNotebooks === 'boolean' ? raw.homeNotebooks : stored
 }
 
 /** The editor's measure (panel.ts · number): a number or a numeric string, rounded. */

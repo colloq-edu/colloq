@@ -7,32 +7,31 @@
    * exactly why it is shown large and every time, not once after joining: a
    * person who loses it loses their submissions and their place, and the
    * only one who can give them back is the teacher.
+   *
+   * `keyOnly` is the card alone, without the sign-in under it: the one a
+   * competition's «Посылки» tab shows right after joining, above the send
+   * box, so the key is in front of the person at the moment it is born
+   * (CompetitionsScreen · joinedHere).
    */
   import { tr } from '@shared/i18n'
   import { copyText } from '@/lib/clipboard'
-  import { normalizeEntrantKey } from '@shared/competitions'
   import type { EntrantMe } from '@shared/competitions-entrant'
+  import KeySignIn from './KeySignIn.svelte'
 
   interface Props {
     me: EntrantMe | null
-    busy: boolean
+    busy?: boolean
     /** A sign-in refusal, in the server's words: "no such key", "key turned off". */
-    refusal: string | null
-    onsignin: (key: string) => void
-    onsignout: () => void
+    refusal?: string | null
+    onsignin?: (key: string) => void
+    onsignout?: () => void
+    keyOnly?: boolean
   }
 
-  const { me, busy, refusal, onsignin, onsignout }: Props = $props()
+  const { me, busy = false, refusal = null, onsignin, onsignout, keyOnly = false }: Props = $props()
 
-  let typed = $state('')
   let copied = $state<'key' | 'link' | null>(null)
   let copyFailed = $state(false)
-
-  // The key is dictated out loud and copied from the board: lowercase letters,
-  // spaces instead of dashes and extra dashes are normalised by the same
-  // parsing as on the server.
-  const clean = $derived(normalizeEntrantKey(typed))
-  const canSignIn = $derived(clean !== null)
 
   async function copy(what: 'key' | 'link', text: string): Promise<void> {
     copyFailed = false
@@ -48,7 +47,7 @@
   }
 </script>
 
-<div class="flex w-full flex-col gap-5">
+<div class="flex w-full flex-col gap-5 {keyOnly ? 'max-w-[560px]' : ''}">
   {#if me?.entrant && me.key}
     <section class="flex flex-col border border-brand" data-key-card>
       <header class="bg-brand px-3.5 py-2.5">
@@ -85,50 +84,22 @@
           <p class="text-micro leading-[18px] text-danger">{tr('common.networkError')}</p>
         {/if}
         <p class="text-micro leading-[18px] text-muted">{tr('competitions.p.keyFootnote')}</p>
-        <button
-          class="self-start border-b border-dashed border-accent-text text-micro text-accent-text"
-          type="button"
-          onclick={onsignout}
-        >
-          {tr('competitions.p.signOut')}
-        </button>
+        {#if onsignout}
+          <button
+            class="self-start border-b border-dashed border-accent-text text-micro text-accent-text"
+            type="button"
+            onclick={onsignout}
+          >
+            {tr('competitions.p.signOut')}
+          </button>
+        {/if}
       </div>
     </section>
-  {:else}
+  {:else if !keyOnly}
     <p class="text-2xs leading-[19px] text-muted">{tr('competitions.p.noKey')}</p>
   {/if}
 
-  <form
-    class="flex flex-col gap-2"
-    onsubmit={(event) => {
-      event.preventDefault()
-      if (canSignIn && clean) onsignin(clean)
-    }}
-  >
-    <h2 id="competition-signin-title" class="text-ui font-bold text-ink">
-      {tr('competitions.p.signInTitle')}
-    </h2>
-    <div class="flex gap-2">
-      <input
-        class="h-11 min-w-0 w-full grow border border-line bg-canvas px-3 font-mono text-ui uppercase text-ink placeholder:font-sans placeholder:normal-case placeholder:text-muted focus:border-accent focus:outline-none"
-        aria-labelledby="competition-signin-title"
-        placeholder={tr('competitions.p.keyPlaceholder')}
-        bind:value={typed}
-        autocomplete="off"
-        spellcheck="false"
-      />
-      <button
-        class="h-11 shrink-0 bg-primary px-3.5 text-ui font-semibold text-primary-ink hover:brightness-110 disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted"
-        type="submit"
-        disabled={!canSignIn || busy}
-      >
-        {tr('competitions.p.signIn')}
-      </button>
-    </div>
-    {#if refusal}
-      <p class="text-micro leading-[18px] text-danger">{refusal}</p>
-    {:else if typed.trim() && !canSignIn}
-      <p class="text-micro leading-[18px] text-muted">{tr('competitions.p.keyShape')}</p>
-    {/if}
-  </form>
+  {#if !keyOnly && onsignin}
+    <KeySignIn {busy} {refusal} {onsignin} />
+  {/if}
 </div>

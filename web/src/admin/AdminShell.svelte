@@ -231,7 +231,11 @@
     {#each items as item (item.id)}
       {@const active = item.id === tab}
       <!-- The rail is 3px of the row's own left edge in both states, so the
-           label lane does not shift by three pixels as you navigate. -->
+           label lane does not shift by three pixels as you navigate. The
+           focus ring is drawn inside the row, as the logo's and the language
+           trigger's are: the rail scrolls within itself, and a scrolling box
+           clips whatever is drawn past its edge — the ring's outer half fell
+           on the page beside the rail, and the clip took it. -->
       <a
         href={item.href}
         aria-current={active ? 'page' : undefined}
@@ -239,7 +243,7 @@
         onclick={(event) => open(event, item.href)}
         class={cn(
           'flex h-[38px] items-center gap-3 border-l-[3px] pl-[17px] pr-5 transition-colors duration-100',
-          'focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/30',
+          'focus:outline-none focus-visible:ring-4 focus-visible:ring-inset focus-visible:ring-accent/30',
           active
             ? 'border-accent bg-brand-2/40 text-white'
             : 'border-transparent text-white/80 hover:bg-white/5 hover:text-white',
@@ -274,7 +278,13 @@
     are and where else you can go — as icons, and hands the width back. The
     labels come with the room to draw them.
   -->
-  <nav class="flex w-14 shrink-0 flex-col bg-brand md:w-[236px]">
+  <!--
+    A rail taller than the window scrolls within itself: on a laptop with a
+    short window, or a phone held sideways, its rows and the teacher at the
+    bottom ran past the window, the document grew by the difference, and the
+    wheel over the rail scrolled the whole panel up past its bottom.
+  -->
+  <nav class="flex w-14 shrink-0 flex-col overflow-y-auto overscroll-contain bg-brand md:w-[236px]">
     <div
       class="flex h-16 shrink-0 items-center justify-center border-b border-white/10
              md:justify-start md:px-5"

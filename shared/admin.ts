@@ -281,6 +281,12 @@ export type AdminAuditAction =
   | 'competition.opened'
   | 'competition.closed'
   | 'competition.entrant_deleted'
+  /**
+   * A competition's hidden test left the server for a teacher, with `files`
+   * and `via`: its own door in the editor (`file`) or the materials archive
+   * (`archive`) — routes/admin-competitions.ts.
+   */
+  | 'competition.hidden_test_downloaded'
   | 'environment.created'
   | 'environment.edited'
   | 'environment.deleted'
@@ -292,6 +298,12 @@ export type AdminAuditAction =
   | 'settings.instance_changed'
   /** The owner stopped a class's kernels from the Resources tab to free memory. */
   | 'room.kernel_stopped'
+  /**
+   * A class moved to another environment from its settings in the list, with
+   * `from` and `to`: the image its container comes up on from its next start
+   * (routes/admin-instance.ts · PATCH).
+   */
+  | 'room.environment_changed'
   /**
    * The machines that run submissions (docs/architecture/remote-runners.md
    * §6 "Audit"): a machine joined with the owner's code (the actor is whoever
@@ -347,6 +359,7 @@ export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
   'competition.opened',
   'competition.closed',
   'competition.entrant_deleted',
+  'competition.hidden_test_downloaded',
   'environment.created',
   'environment.edited',
   'environment.deleted',
@@ -357,6 +370,7 @@ export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
   'settings.competitions_changed',
   'settings.instance_changed',
   'room.kernel_stopped',
+  'room.environment_changed',
   'runner.enrolled',
   'runner.trusted',
   'runner.revoked',
@@ -464,6 +478,22 @@ export interface AdminSeminar {
    * through a switch keeps the image it came up on until its kernel restarts.
    */
   environment: string | null
+  /**
+   * The environment the room is set to: what its container comes up on at
+   * its next start. The room's own choice, made at creation or since in its
+   * settings; for a room made before environments existed, the instance's
+   * default, which is what such a room starts on.
+   *
+   * What the list row and the settings window name. Beside `environment`,
+   * which is the kernel's side and may lag: a room with no environment of
+   * its own follows the instance's default, and a kernel that came up before
+   * the default changed keeps its image. A move in the settings is made only
+   * while no kernel of the class runs (UpdateSeminarRequest.environment), so
+   * it opens no such gap. Optional: an older server build does not send it.
+   */
+  chosenEnvironment?: string
+  /** Whether `chosenEnvironment` asks for a GPU, by its own file or the one it is built on. */
+  chosenEnvironmentGpu?: boolean
   archivedAt: number | null
   /**
    * What the room allows. The list needs it so that the rules of an existing
@@ -503,7 +533,10 @@ export interface AdminSeminar {
    * the owner sees by role alone.
    */
   mine: boolean
-  /** Only in the answer to a creation that asked for `seat`: where the room landed. */
+  /**
+   * Only in the answer to a request that asked for `seat` (a creation, or a
+   * PATCH putting a room outside courses into one): where the room landed.
+   */
   seat?: SeatResult
   /**
    * When the teacher finished the class — or null while it is going on.
@@ -552,8 +585,10 @@ export interface CreateSeminarRequest {
   /**
    * Which environment this room's Python should be. Omitted or null means
    * whatever the instance runs, which is what every seminar got before this
-   * existed. Chosen once and then fixed: a room whose packages change under it
-   * mid-class is worse than one that never had the newest ones.
+   * existed. Chosen here, and changed since only in the class's settings
+   * (UpdateSeminarRequest.environment), for the class's next start: a room
+   * whose packages change under it mid-class is worse than one that never had
+   * the newest ones.
    */
   environment?: string | null
   /**
@@ -648,6 +683,41 @@ export interface UpdateSeminarRequest {
    * next. A teacher's change is refused while the owner's switch is off.
    */
   placement?: Partial<ClassPlacement>
+  /**
+   * Move the class to another environment, by its name.
+   *
+   * Checked as at creation and then some: the environment exists, its image
+   * is built (an unbuilt one is a room that never starts), and one that asks
+   * for a GPU needs a card this machine gives classes. And only while no
+   * kernel of the class runs, in either of its containers (its pods under
+   * the runtime broker): a container is not kept on another image, and the
+   * next start would replace a running one with every notebook's variables
+   * (409 `kernel_running`; the settings window asks
+   * GET /api/admin/seminars/:id/kernel first and says so before the press).
+   * The class's next start comes up on the new environment.
+   */
+  environment?: string
+  /**
+   * Put a class that is in no course into one, the way creation seats a new
+   * room (SeatRequest): at the end of the course, or in place of an open plan
+   * row. A class already in a course the caller can see is refused (409):
+   * moving between courses is the course screen's.
+   */
+  seat?: SeatRequest
+}
+
+/**
+ * GET /api/admin/seminars/:id/kernel: whether a kernel of the class runs
+ * now, for its settings window, which offers another environment only while
+ * none does (UpdateSeminarRequest.environment).
+ */
+export interface SeminarKernelState {
+  /**
+   * Up or coming up, in either of the class's containers (its pods under the
+   * runtime broker) or in this server process; null when the runtime did not
+   * answer, which the PATCH refuses rather than guesses.
+   */
+  running: boolean | null
 }
 
 /* ----------------------------------- where a class computes (classes on machines) */
@@ -1610,6 +1680,12 @@ export type AdminErrorReason =
    * it anyway.
    */
   | 'busy'
+  /**
+   * A class's move to another environment refused because a kernel of the
+   * class runs now (routes/admin-instance.ts · PATCH): the settings window
+   * locks its choice on it until the kernel stops.
+   */
+  | 'kernel_running'
 
 export interface AdminErrorBody {
   error: string
