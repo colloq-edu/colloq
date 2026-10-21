@@ -1093,6 +1093,47 @@
     .pl-fields {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+
+    /*
+     * Fields side by side stand on one line (the panel's rule,
+     * admin/ui/field-rows.ts), here in CSS because these columns are fixed:
+     * each field takes three of the grid's rows, caption, control and note,
+     * and shares them with its neighbour (subgrid). The fallback's box has
+     * no caption over it, its words stand beside the box, and it still
+     * stands on the failover's line rather than on its caption's. The
+     * subgrid's own row gap is none: a field keeps its caption's 6 px and
+     * its note's 4 px, and the grid's 16 px stays between fields.
+     *
+     * A grid item stretches to its cell, and a control must not: the
+     * failover's segmented control hugs its two buttons (.pl-seg-wide) and
+     * is 34 px high, where stretched it ran its frame to the column's edge
+     * and its buttons to the fallback box's 40 px. Each control keeps its
+     * own height at the row's top; the segmented ones their own width too,
+     * while the fallback's words keep the column's width to be pressed on.
+     */
+    .pl-fields > div {
+      display: grid;
+      grid-row: span 3;
+      grid-template-rows: subgrid;
+      row-gap: 0;
+    }
+
+    .pl-fields > div > :not(.admin-label):not(.admin-meta) {
+      grid-row: 2;
+      align-self: start;
+    }
+
+    .pl-fields > div > .pl-seg {
+      justify-self: start;
+    }
+
+    .pl-fields > div > .admin-label {
+      grid-row: 1;
+    }
+
+    .pl-fields > div > .admin-meta {
+      grid-row: 3;
+    }
   }
 </style>
 

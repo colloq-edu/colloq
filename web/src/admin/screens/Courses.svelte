@@ -15,6 +15,7 @@
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Check from '@/admin/ui/Check.svelte'
   import EmptyState from '@/admin/ui/EmptyState.svelte'
+  import { levelFields } from '@/admin/ui/field-rows'
   import Badge from '@/admin/screens/competitions/Badge.svelte'
   import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
@@ -1216,7 +1217,10 @@
   cancel: () => void,
 )}
   <div class="row-form flex flex-col gap-[18px] border-b border-t border-dashed border-b-line border-t-line bg-surface [border-bottom-style:solid]">
-    <div class="flex flex-wrap items-start gap-4">
+    <!-- The two boxes stand on one line: the title's Russian caption is
+         wider than the 200 px the title keeps beside the day, and takes two
+         lines there (admin/ui/field-rows.ts). -->
+    <div class="flex flex-wrap items-start gap-4" use:levelFields>
       <label class="flex min-w-[200px] flex-1 flex-col gap-1.5">
         <span class="admin-label">{planned ? tr('admin.course.field.topic') : tr('admin.course.field.title')}</span>
         <input
@@ -1546,16 +1550,22 @@
            name was given. Otherwise the id went into the chat, and the class
            ended up with two different addresses for the same course. -->
       <span class="font-mono text-2xs text-ink">{location.host}/c/{addressOf(shown)}</span>
-      <a class="admin-link" href={`/c/${addressOf(shown)}`} target="_blank" rel="noreferrer">
-        {tr('admin.course.openPage')}
-      </a>
-      <button
-        type="button"
-        class="admin-link"
-        onclick={() => void copy(`${location.origin}/c/${addressOf(shown)}`, 'link')}
-      >
-        {copied === 'link' ? tr('admin.copied') : tr('admin.course.copyLink')}
-      </button>
+      <!-- «открыть» and «скопировать» are one pair: where the line wraps
+           (a phone, a long address) they move on together, never one of
+           them left behind. A competition's console draws the same pair
+           (competitions/Live.svelte · lede). -->
+      <span class="inline-flex items-baseline gap-x-4 whitespace-nowrap">
+        <a class="admin-link" href={`/c/${addressOf(shown)}`} target="_blank" rel="noreferrer">
+          {tr('admin.course.openPage')}
+        </a>
+        <button
+          type="button"
+          class="admin-link"
+          onclick={() => void copy(`${location.origin}/c/${addressOf(shown)}`, 'link')}
+        >
+          {copied === 'link' ? tr('admin.copied') : tr('admin.course.copyLink')}
+        </button>
+      </span>
       <span class="h-3.5 w-px self-center bg-line" aria-hidden="true"></span>
       <span class="text-2xs text-muted">{tallyText(shown.items)}</span>
     {/snippet}

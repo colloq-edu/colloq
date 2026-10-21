@@ -139,6 +139,7 @@
     renaming = null
     removing = null
     lateFilter = 'all'
+    copyRefusal = null
   })
   let entrants = $state<EntrantRow[] | null>(null)
   /** The feed's late switch: all, the standings only, or the late ones only (`?late=`). */
@@ -147,6 +148,17 @@
   let busy = $state(false)
   let errorText = $state<(() => string) | null>(null)
   const error = $derived(errorText?.() ?? null)
+  /**
+   * A copy the clipboard refused, with the link or key in words — kept apart
+   * from `error`. That slot is cleared by every successful reload of the
+   * feed, that is by every push of the stream (every 5 s when polling), and
+   * its one button reloads the feed, which copies nothing: the link a
+   * teacher was told to copy by hand went away as soon as anything happened
+   * in the competition. This one stays until the next press of a "copy", as
+   * a course's refusal stays until the next thing done there.
+   */
+  let copyRefusal = $state<(() => string) | null>(null)
+  const copyRefused = $derived(copyRefusal?.() ?? null)
   let openMenu = $state<string | null>(null)
   let copied = $state<string | null>(null)
   let finishing = $state(false)
@@ -561,15 +573,32 @@
     }
   }
 
-  async function copy(text: string, key: string): Promise<void> {
+  async function copy(
+    text: string,
+    key: string,
+    refusal: () => string = () => tr('admin.competitions.copyFailed', { link: text }),
+  ): Promise<void> {
+    const id = c.id
+    copyRefusal = null
     try {
       await copyText(text)
     } catch {
-      errorText = () => tr('admin.competitions.copyFailed', { link: text })
+      if (id === c.id) copyRefusal = refusal
       return
     }
     copied = key
     setTimeout(() => (copied = copied === key ? null : copied), 1600)
+  }
+
+  /**
+   * The header's "copy": the participants' whole address. Where the
+   * clipboard is closed (the panel over http on another host) the link is
+   * said in the course screen's own words, so both headers fail alike
+   * (Courses.svelte · copy).
+   */
+  function copyAddress(): void {
+    const link = `${location.origin}${competitionPath(c.slug)}`
+    void copy(link, 'link', () => tr('admin.could.not.copy.the.link.copy.it.manually', { p0: link }))
   }
 
   /* ----------------------------------------------------------------- output */
@@ -808,15 +837,33 @@
     >
       {tr('competitions.title')}
     </button>
+    <!-- The section only, as on a course's screen: the address is said once,
+         under the title, where it can be opened and copied. -->
     <span aria-hidden="true">/</span>
-    <span class="truncate font-mono">/k/{c.slug}</span>
   {/snippet}
 
-  <!-- The state under the title, not beside it: a long title with a badge, a
-       late mark and the deadline in one line wrapped into a column of words
-       (D3). The badge leads the line, so it still reads as the title's own. -->
+  <!--
+    Under the title, two lines.
+
+    The state first: the phase, the late mark and the deadline, under the
+    title rather than beside it — a long title with a badge, a late mark and
+    the deadline in one line wrapped into a column of words (D3). The badge
+    leads the line, so it still reads as the title's own, as the draft's
+    badge beside its title does (Editor.svelte). The line is a whole one
+    (basis-full): nothing is drawn after the state.
+
+    Then the participants' address, drawn exactly as a course's is
+    (Courses.svelte · lede): the host and /k/<name> in mono, "open" in a new
+    tab and "copy" the whole link, the two kept together. It is the last line,
+    beside the actions, as on a course's screen. It replaced a framed "Link
+    for participants" button among the actions, which looked like nothing
+    else in the panel and was not needed (the owner, 21 Oct 2026). A course
+    goes on after a rule with its tally; the state there instead did not fit
+    beside the address at 1280–1440 px, dropped to a line of its own and left
+    the rule hanging at the end of the address's line.
+  -->
   {#snippet lede()}
-    <div class="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5">
+    <div class="flex min-w-0 basis-full flex-wrap items-center gap-x-2.5 gap-y-1.5">
       <Badge word={phaseWord(phase)} tone={phaseTone(phase)} />
       {#if accepting === 'late'}
         <!-- Intake is over for the standings, not for uploads: said in the
@@ -828,16 +875,18 @@
       {/if}
       <span class="text-2xs text-muted">{statusNote(c, now, privatePending)}</span>
     </div>
+    <span class="font-mono text-2xs text-ink">{location.host}{competitionPath(c.slug)}</span>
+    <span class="inline-flex items-baseline gap-x-4 whitespace-nowrap">
+      <a class="admin-link" href={competitionPath(c.slug)} target="_blank" rel="noreferrer">
+        {tr('admin.course.openPage')}
+      </a>
+      <button type="button" class="admin-link" onclick={copyAddress}>
+        {copied === 'link' ? tr('admin.copied') : tr('admin.course.copyLink')}
+      </button>
+    </span>
   {/snippet}
 
   {#snippet actions()}
-    <button
-      type="button"
-      class="btn-outline"
-      onclick={() => void copy(`${location.origin}${competitionPath(c.slug)}`, 'link')}
-    >
-      {copied === 'link' ? tr('admin.copied') : tr('admin.competitions.entrantLink')}
-    </button>
     <a
       class="btn-outline"
       href={`${competitionPath(c.slug)}/leaderboard/screen`}
@@ -904,6 +953,11 @@
     {/each}
   </div>
 
+  <!-- A refused copy on its own line, as on a course's screen: without the
+       "try again" below, which reloads the feed and copies nothing. -->
+  {#if copyRefused}
+    <p class="pt-4 text-ui text-danger" role="alert">{copyRefused}</p>
+  {/if}
   {#if error}
     <div class="flex flex-wrap items-center gap-3 pt-4">
       <p class="min-w-0 flex-1 text-ui text-danger" role="alert">{error}</p>

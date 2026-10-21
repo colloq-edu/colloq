@@ -272,3 +272,21 @@ test('the lists carry the counted standings once the results are open, and the l
   assert.equal(teacherRow.late, 1)
   assert.equal(teacherRow.bestPublic, 0.9)
 })
+
+test("a draft's address answers nobody, its teacher included, until it is opened", async () => {
+  // What the draft editor's header rests on: it names the address but offers
+  // neither «открыть» nor «скопировать» (Editor.svelte · lede), because both
+  // would lead to «Такого соревнования нет» — for a visitor and for the
+  // teacher's own browser alike. Opened, the console offers both.
+  const draft = createCompetition({ slug: 'phase-draft', title: 'Phase draft' })
+  assert.ok(draft)
+  for (const cookie of [null, staffCookie]) {
+    const res = await fetch(`${base}/api/k/competitions/phase-draft`, { headers: cookie ? { cookie } : {} })
+    assert.equal(res.status, 404, cookie ? 'the teacher' : 'a visitor')
+  }
+  setCompetitionState(draft.id, 'live')
+  for (const cookie of [null, staffCookie]) {
+    const res = await fetch(`${base}/api/k/competitions/phase-draft`, { headers: cookie ? { cookie } : {} })
+    assert.equal(res.status, 200, cookie ? 'the teacher' : 'a visitor')
+  }
+})

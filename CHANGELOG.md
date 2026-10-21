@@ -13,6 +13,30 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.25.1](https://github.com/colloq-edu/colloq/compare/v0.25.0...v0.25.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* **admin:** a competition's page shows its address with «открыть» and «скопировать», as a course's does ([#54](https://github.com/colloq-edu/colloq/issues/54)) ([2df4abb](https://github.com/colloq-edu/colloq/commit/2df4abb1ce1aeb02d9def25210c69951ca01abda))
+
+## [0.25.0](https://github.com/colloq-edu/colloq/compare/v0.24.0...v0.25.0) (2026-10-21)
+
+
+### Features
+
+* **admin:** «Добавить в курс…» for a class without a course, from the classes list ([ce4f7ec](https://github.com/colloq-edu/colloq/commit/ce4f7ec59f980c3c2978cfb428a69e19041f9e9f))
+* **admin:** the classes list shows each class's environment, changed in the class settings while no kernel runs ([ce4f7ec](https://github.com/colloq-edu/colloq/commit/ce4f7ec59f980c3c2978cfb428a69e19041f9e9f))
+* **classes:** classes on machines: class notebooks and personal notebooks compute on the machines the owner opens to classes, with files both ways and failover ([f943007](https://github.com/colloq-edu/colloq/commit/f943007984cdc7021b72648465d78bfee64f5973))
+* **competitions:** a submission may get the cores of the biggest machine that runs submissions, not only this server's ([ce4f7ec](https://github.com/colloq-edu/colloq/commit/ce4f7ec59f980c3c2978cfb428a69e19041f9e9f))
+* **competitions:** download a competition's materials from its settings, for colleagues to look at ([ce4f7ec](https://github.com/colloq-edu/colloq/commit/ce4f7ec59f980c3c2978cfb428a69e19041f9e9f))
+
+
+### Bug Fixes
+
+* **admin:** the panel no longer scrolls past its bottom over the left menu or a competition's settings ([ce4f7ec](https://github.com/colloq-edu/colloq/commit/ce4f7ec59f980c3c2978cfb428a69e19041f9e9f))
+* **competitions:** every «Участвовать» leads straight to the join step, in view and focused ([ce4f7ec](https://github.com/colloq-edu/colloq/commit/ce4f7ec59f980c3c2978cfb428a69e19041f9e9f))
+
 ## [0.24.0](https://github.com/colloq-edu/colloq/compare/v0.23.0...v0.24.0) (2026-10-14)
 
 

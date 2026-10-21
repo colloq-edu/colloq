@@ -24,6 +24,7 @@
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Section from '@/admin/ui/Section.svelte'
   import Choice from '@/admin/ui/Choice.svelte'
+  import { levelFields } from '@/admin/ui/field-rows'
   import Badge from '@/admin/screens/competitions/Badge.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
@@ -31,6 +32,7 @@
   import { cn, formatBytes } from '@/lib/utils'
   import { loadRenderers, renderers } from '@/lib/render.svelte'
   import {
+    competitionPath,
     failedAttemptsCeiling,
     LIMITS,
     parseSlug,
@@ -1168,7 +1170,7 @@
         </div>
       </div>
 
-      <div class="flex flex-wrap items-start gap-x-7 gap-y-4">
+      <div class="flex flex-wrap items-start gap-x-7 gap-y-4" use:levelFields>
         <label class="flex min-w-0 flex-[1_1_240px] flex-col gap-2">
           <span class={HEAD}>{tr('admin.competitions.sealedPathHead')}</span>
           <span class="admin-affix">
@@ -1609,7 +1611,13 @@
         </span>
       </div>
 
-      <div class="flex flex-wrap gap-2.5">
+      <!-- The numbers stand on one line in their frames however the
+           captions wrap: «Submissions a day» takes two lines in its tile
+           from 1180 to 1320 px (177 px wide at 1280), its Russian from 1180
+           to 1260, and both again in narrower bands where the tiles wrap
+           (admin/ui/field-rows.ts, framed: the frames keep their line and
+           what stands under the shorter captions comes down). -->
+      <div class="flex flex-wrap gap-2.5" use:levelFields={{ framed: true }}>
         <label class="{TILE} min-w-0 flex-1 basis-[150px]">
           <span class={HEAD}>{tr('admin.competitions.limit.time')}</span>
           <span class="flex items-baseline gap-1.5">
@@ -1894,7 +1902,7 @@
   <!-- 6 · Dates and standings -->
   <Section title={tr('admin.competitions.section.terms')} description={tr('admin.competitions.termsHint')}>
     <div class="flex flex-col gap-3.5">
-      <div class="flex flex-wrap gap-2.5">
+      <div class="flex flex-wrap gap-2.5" use:levelFields>
         <label class="min-w-0 flex-1 basis-[220px]">
           <span class="mb-1.5 block {HEAD}">{tr('admin.competitions.startsAt')}</span>
           <input
@@ -2068,13 +2076,30 @@
         {tr('competitions.title')}
       </button>
       <span aria-hidden="true">/</span>
-      <span class="truncate font-mono">
-        {draftState ? tr('admin.competitions.crumbDraft') : `/k/${c.slug}`}
-      </span>
+      <!-- The address is not repeated here: it is under the title. -->
+      {#if draftState}
+        <span class="truncate font-mono">{tr('admin.competitions.crumbDraft')}</span>
+      {/if}
     {/snippet}
 
     {#snippet beside()}
       <Badge word={stateWord(c.state)} tone={stateTone(c.state)} />
+    {/snippet}
+
+    <!--
+      The address the class will be given, in the mono face of the console's
+      and a course's header (Courses.svelte · lede), but with neither "open"
+      nor "copy" yet: /k serves a draft to nobody, staff included
+      (routes/competitions.ts · visible), so "open" would land on "No such
+      competition", and a link copied now would hand the class that same page
+      — under an address the form can still change. A muted line says when it
+      starts to work instead; the console gets both links once it is open.
+    -->
+    {#snippet lede()}
+      <span class="font-mono text-2xs text-ink">{location.host}{competitionPath(c.slug)}</span>
+      {#if draftState}
+        <span class="text-2xs text-muted">{tr('admin.competitions.addressWhenOpen')}</span>
+      {/if}
     {/snippet}
 
     {#snippet actions()}
