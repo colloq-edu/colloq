@@ -38,7 +38,7 @@ import {
 import { REMOTE_MARKER, REMOTE_MARKER_HEADER } from '../shared/remote-runner.ts'
 import { Cache, Pacer } from '../server/src/runner-agent/cache.ts'
 import { RemoteClient, Backoff } from '../server/src/runner-agent/client.ts'
-import { RoomFiles, ROOM_FILE_TIMINGS, packagePaths, roomBaselineFile, roomFolder, type RoomFileTimings, type RoomUpload, type RoomUploadAnswer } from '../server/src/runner-agent/room-files.ts'
+import { RoomFiles, ROOM_FILE_TIMINGS, homeUploader, packagePaths, roomBaselineFile, roomFolder, type RoomFileTimings, type RoomUpload, type RoomUploadAnswer } from '../server/src/runner-agent/room-files.ts'
 import { Agent } from '../server/src/runner-agent/sync.ts'
 import { stateLayout, type StateLayout } from '../server/src/runner-agent/state.ts'
 import { TEST_ROOT } from './_env.mts'
@@ -262,6 +262,26 @@ test('both sides changed a file: home\'s version is written and the machine\'s g
   // Home kept the machine's u.py as its copy, and took w.py.
   await answer(r, block({ verdicts: [{ sessionId: 's1', seq: report!.seq, accepted: ['w.py'], refused: [{ path: 'u.py', why: 'base', copy: 'u (с машины 14-32).py' }] }], scan: [{ sessionId: 's1' }] }))
   assert.deepEqual(say(r), [])
+  assert.deepEqual(r.files.lag('s1'), { pushSeq: 2, pending: 0, pendingBytes: 0, heldOnly: 0, heldOnlyBytes: 0 })
+})
+
+test('a file left on the machine that home removes (staff deleted its row) goes with no conflict said, and is said released', async () => {
+  const r = rig()
+  // A class folder capped at 1 MB: a 2 MB file a kernel writes stays here, said as such.
+  const caps = { machineFileMb: 200, roomMb: 1 }
+  await answer(r, block({ caps, pushes: [push(1, { full: true, put: [put('notes.txt', 'n')] })] }))
+  fs.writeFileSync(path.join(r.dir(), 'big.bin'), randomBytes(2 * MIB))
+  await answer(r, block({ caps, scan: [{ sessionId: 's1' }] }))
+  const [left] = say(r)
+  assert.deepEqual(left!.skipped, [{ path: 'big.bin', bytes: 2 * MIB, why: 'room' }])
+  // Home's push removes it: gone here, and nothing of it is said as a change home would take for a new file.
+  await answer(r, block({ caps, pushes: [push(2, { remove: ['big.bin'] })] }))
+  assert.equal(fs.existsSync(path.join(r.dir(), 'big.bin')), false)
+  assert.equal(r.files.lag('s1')?.pushSeq, 2)
+  await answer(r, block({ caps, scan: [{ sessionId: 's1' }] }))
+  const [after] = say(r)
+  assert.deepEqual(changedOf(after), [], 'no conflict of a file home knew stays here')
+  assert.deepEqual(after!.released, ['big.bin'])
   assert.deepEqual(r.files.lag('s1'), { pushSeq: 2, pending: 0, pendingBytes: 0, heldOnly: 0, heldOnlyBytes: 0 })
 })
 
@@ -718,6 +738,52 @@ test('a pull through a hiccup is sent again after its wait; a refusal is home\'s
   r.clock.now += 30_000
   await beat(r)
   assert.equal(r.uploads.length, 3)
+})
+
+test('home\'s upload door reads a 413 without home\'s marker as a proxy\'s refusal, never a hiccup to send the whole file again', async () => {
+  const answering = (status: number, marked: boolean): typeof fetch => (async () => new Response('{"error":"too_large"}', { status, headers: marked ? { [REMOTE_MARKER_HEADER]: REMOTE_MARKER } : {} })) as typeof fetch
+  const upload = (door: typeof fetch) => homeUploader({ home: 'http://home.test', credential: () => 'cr1.x.y', fetch: door })({
+    sessionId: 's1', gen: 1, path: 'big.bin', sha256: sha('x'), bytes: 1, body: new ReadableStream({ start: (controller) => controller.close() }), signal: new AbortController().signal,
+  })
+  const proxied = await upload(answering(413, false))
+  assert.equal(proxied.kind, 'refused')
+  assert.equal(proxied.kind === 'refused' && proxied.proxy, true, 'the proxy\'s, and said so')
+  const home = await upload(answering(413, true))
+  assert.equal(home.kind === 'refused' && home.proxy, undefined, 'home\'s own 413 is home\'s word')
+  assert.equal((await upload(answering(502, false))).kind, 'transient', 'a relay\'s page is a hiccup as before')
+})
+
+test('a version a proxy in front of home refused stays here, said as left here (`proxy`), and goes again only once it changes', async () => {
+  const r = rig()
+  await answer(r, block({ pushes: [begin()] }))
+  const body = randomBytes(CLASS_INLINE_BYTES + 1)
+  fs.writeFileSync(path.join(r.dir(), 'big.bin'), body)
+  await answer(r, block({ scan: [{ sessionId: 's1' }] }))
+  const [report] = say(r)
+  r.answer = () => ({ kind: 'refused', status: 413, error: 'too_large', detail: 'a proxy in front of home refused a body this large', proxy: true })
+  const pull = { sessionId: 's1', gen: 1, paths: [{ path: 'big.bin', sha256: report!.changed[0]!.sha256 }] }
+  await answer(r, block({ pulls: [pull] }))
+  assert.equal(r.uploads.length, 1)
+  // Not sent again through its waits, nor when home asks again before it heard.
+  for (let i = 0; i < 3; i++) {
+    r.clock.now += 70_000
+    await answer(r, block({ pulls: [pull] }))
+    await beat(r)
+  }
+  assert.equal(r.uploads.length, 1, 'the same bytes are not sent to the same proxy again')
+  // The next scan says it left here, which lets home's pull go; nothing of it is pending.
+  await answer(r, block({ scan: [{ sessionId: 's1' }] }))
+  const [left] = say(r)
+  assert.deepEqual(left!.skipped, [{ path: 'big.bin', bytes: body.length, why: 'proxy' }])
+  assert.deepEqual(changedOf(left), [])
+  assert.deepEqual(r.files.lag('s1'), { pushSeq: 1, pending: 0, pendingBytes: 0, heldOnly: 1, heldOnlyBytes: body.length })
+  // Rewritten, it is a change again, and may go.
+  fs.writeFileSync(path.join(r.dir(), 'big.bin'), Buffer.concat([body, Buffer.from('!')]))
+  r.clock.now += 10_000
+  await answer(r, block({ scan: [{ sessionId: 's1' }] }))
+  const [again] = say(r)
+  assert.deepEqual(changedOf(again).map((entry) => entry.path), ['big.bin'])
+  assert.deepEqual(again!.released, ['big.bin'])
 })
 
 test('a link is never followed and never travels — one planted to the agent\'s own files, a linked folder, a push over a link — and a hard link travels as its content', async () => {

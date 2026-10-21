@@ -494,6 +494,12 @@ export interface ClassPort {
   classTick(now: number): void
   /** Every placement of the machine failed over, before anything else of the action that asks it is done; how many. */
   failoverRunner(runnerId: string, cause: ClassFailoverCause, now: number): number
+  /**
+   * Before an owner's unclass moves them (§11.5): the files of the machine's
+   * classes here first, while it still answers, within the move's settle.
+   * Whether they all came. A port without it settles nothing.
+   */
+  settleRunner?(runnerId: string): Promise<boolean>
   /** The keys of the placements whose container home wants read (§7.4, RemoteKernelsReply.postmortem). */
   postmortemWanted(runnerId: string): string[]
   /**

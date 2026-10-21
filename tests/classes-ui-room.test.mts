@@ -173,7 +173,8 @@ test('while the machine does not answer the chip is amber with its timer, and th
 
 test('a kernel being moved spins, and one back from a machine is calm with the move\'s time for the rest of the class', () => {
   assert.equal(chipOf(room({ where: 'machine', link: 'moving', linkSince: NOW })), 'moving')
-  assert.match(text(room({ where: 'machine', link: 'moving', linkSince: NOW })), /Переносим на сервер…/)
+  // The next start decides where it lands (another machine, or this server): the chip names neither.
+  assert.match(text(room({ where: 'machine', link: 'moving', linkSince: NOW })), /Переносим ядро…/)
   const at = new Date(NOW - 20 * 60_000)
   const back = room({ where: null, linkSince: at.getTime() })
   assert.equal(chipOf(back), 'calm')
@@ -211,6 +212,17 @@ test('without the server\'s word the banner promises nothing, and «Ждать �
   // One that moves by itself, known from the frame: both.
   const auto = room({ role: 'host', where: 'machine', link: 'lost', linkSince: NOW - 30_000, frame: { machine: { ...machine, failover: 'auto', failoverAt: NOW + 30_000 }, at: NOW } })
   assert.match(text(auto), /Перенести сейчас Ждать машину/)
+})
+
+test('staff read the slow start in the server\'s own sentence while the slot starts on its machine; nobody else does', () => {
+  const machine: KernelMachine = { name: 'vast-3', state: 'starting', since: NOW - 9_000, rttMs: null, failover: 'auto', failoverAt: null }
+  const note = 'Запускаем ядро на машине «vast-3»… образ ↓ 45 %'
+  const host = room({ role: 'host', frame: { machine, note, at: NOW } })
+  assert.match(host, /data-machine-starting/)
+  assert.ok(text(host).includes(note))
+  assert.doesNotMatch(room({ frame: { machine, note, at: NOW } }), /data-machine-starting|vast-3/, 'a student reads the kernel log\'s unnamed one')
+  // Up: the next frame (another state) carries no sentence, and the line goes.
+  assert.doesNotMatch(room({ role: 'host', where: 'machine', link: 'ok', linkSince: NOW, frame: { machine: { ...machine, state: 'ready', rttMs: 52 }, at: NOW } }), /data-machine-starting/)
 })
 
 test('the timer and the banner\'s ten seconds count on the server\'s clock, whatever this browser\'s says', () => {

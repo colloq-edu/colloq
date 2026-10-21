@@ -70,7 +70,7 @@
 # where nothing from outside does. `runner up --classes` checks first that
 # the machine can host classes, `runner update` keeps them running (the new
 # agent adopts their containers), and `runner leave` asks before it moves
-# them to the home's server.
+# them off the machine.
 #
 # NOTHING ON THE HOST CHANGES UNASKED. Automatic updates are switched off and
 # the NVIDIA packages held only under COLLOQ_FREEZE_UPDATES=1, which the Vast
@@ -1013,11 +1013,11 @@ colloq-host runner: this machine runs another Colloq instance's submissions
   colloq-host runner status                joined and syncing (exit 0), as JSON; its tunnel and classes
   colloq-host runner logs                  follow the agent's log (Ctrl+C to leave)
   colloq-host runner leave [--force]       finish its runs, revoke itself on the home, remove the container;
-                                           a machine with classes asks first (--force moves them to the
-                                           home's server, their variables lost)
+                                           a machine with classes asks first (--force moves them off it,
+                                           their variables lost)
 
-The code comes from the home's owner: the panel (Resources, machines for
-submissions) or colloq-host runner-code on the home. Settings:
+The code comes from the home's owner: the panel (Resources → Machines →
+Connect a machine) or colloq-host runner-code on the home. Settings:
 /etc/colloq/runner.env; the image: /etc/colloq/runner-image; the tree:
 /var/lib/colloq-runner (COLLOQ_RUNNER_STATE: a directory of its own). A
 machine joined with the panel's plain `docker run` is taken over by the first
@@ -1104,7 +1104,7 @@ check_home() {
 # 32 hex digits. Never repeated back: it is a key.
 check_code() {
   local re='^[a-f0-9]{32}$'
-  [[ "$1" =~ $re ]] || die "that is not an enrollment code (32 hex digits): take one from the home's owner, from the panel (Resources, machines for submissions) or colloq-host runner-code there"
+  [[ "$1" =~ $re ]] || die "that is not an enrollment code (32 hex digits): take one from the home's owner, from the panel (Resources → Machines → Connect a machine) or colloq-host runner-code there"
 }
 
 check_version() {
@@ -1456,7 +1456,7 @@ runner_up() {
     esac
   done
   [ -n "$url" ] && [ -n "$code" ] \
-    || die "usage: colloq-host runner up https://<home> <code> [IMAGE] [--classes]   (the code comes from the home's owner: the panel, Resources, machines for submissions, or colloq-host runner-code there)"
+    || die "usage: colloq-host runner up https://<home> <code> [IMAGE] [--classes]   (the code comes from the home's owner: the panel, Resources → Machines → Connect a machine, or colloq-host runner-code there)"
   url="${url%/}"
   check_home "$url"
   check_code "$code"
@@ -1584,7 +1584,7 @@ adopt_runner() {
   fi
   if [ -n "$problem" ]; then
     if [ "$how" = strict ]; then
-      die "$RUNNER_NAME was not started by colloq-host, and cannot be taken over: $problem. Nothing was changed; revoke it on the home (Resources, machines for submissions) and remove it (docker rm -f $RUNNER_NAME), or join again with colloq-host runner up"
+      die "$RUNNER_NAME was not started by colloq-host, and cannot be taken over: $problem. Nothing was changed; revoke it on the home (Resources → Machines) and remove it (docker rm -f $RUNNER_NAME), or join again with colloq-host runner up"
     fi
     warn "$RUNNER_NAME was not started by colloq-host, and is not taken over: $problem"
     return 0
@@ -1926,17 +1926,18 @@ runner_leave() {
     return 0
   fi
   adopt_runner strict
-  # Classes here move to the home's server on a leave, at once and without
-  # their variables (remote-classes.md §11.5): asked first, before anything
+  # Classes here move off this machine on a leave, at once and without
+  # their variables (remote-classes.md §11.5): each comes back at its next
+  # run, on the home's server or another machine. Asked first, before anything
   # of the agent's is changed, and --force says yes. Asked of the agent's
   # own tree, which a machine joined with a plain docker run names only once
   # it is taken over (adopt_runner: the classes are counted by its label).
   classes="$(class_count)"
   if [ "$classes" != 0 ] && [ "$force" = 0 ]; then
-    printf '[colloq-host] ERROR: %s\n' "this machine holds $classes class(es) of its home: leaving moves them to the home's server, and their variables are lost (colloq-host runner leave --force leaves all the same)" >&2
+    printf '[colloq-host] ERROR: %s\n' "this machine holds $classes class(es) of its home: leaving moves them off it, and their variables are lost (colloq-host runner leave --force leaves all the same)" >&2
     exit "$LEAVE_HOLDS_CLASSES"
   fi
-  [ "$classes" = 0 ] || say "--force: the $classes class(es) on this machine move to its home's server as it leaves, and their variables are lost"
+  [ "$classes" = 0 ] || say "--force: the $classes class(es) on this machine move off it as it leaves, and their variables are lost"
   join="$(env_value COLLOQ_RUNNER_JOIN)"
   # Gone for good once it has revoked itself: the agent stops when the home
   # answers 401, and Docker's unless-stopped would start it again, into a
@@ -1958,8 +1959,8 @@ runner_leave() {
       docker update --restart=unless-stopped "$RUNNER_NAME" >/dev/null 2>&1 || true
       case "$rc" in
         125) die "$RUNNER_NAME has heard nothing from its home ($(runner_home)) for $(span "$silent") while leaving, and a leave ends with the home's answer. It keeps running and leaving: it takes no new work, and revokes itself as soon as the home answers. If the home is gone for good, revoke the machine there if you can, and remove it here (docker rm -f $RUNNER_NAME) or destroy it" ;;
-        124) die "$RUNNER_NAME has not left in $(span "$bound"): it still finishes its runs, or waits for its home (its words are above). It keeps running and leaving, taking no new work; retry later, or revoke it on the home (Resources, machines for submissions)" ;;
-        *) die "$RUNNER_NAME did not leave (its words are above) and keeps running; retry, or revoke it on the home (Resources, machines for submissions)" ;;
+        124) die "$RUNNER_NAME has not left in $(span "$bound"): it still finishes its runs, or waits for its home (its words are above). It keeps running and leaving, taking no new work; retry later, or revoke it on the home (Resources → Machines)" ;;
+        *) die "$RUNNER_NAME did not leave (its words are above) and keeps running; retry, or revoke it on the home (Resources → Machines)" ;;
       esac
     fi
   else
@@ -1978,7 +1979,7 @@ runner_leave() {
       --env-file "$ENV_FILE" -e "COLLOQ_RUNNER_STATE=$RUNNER_STATE" \
       -e "COLLOQ_RUNNER_IMAGE=$img" -e COLLOQ_RUNNER_CONTAINER= \
       "$img" runner leave \
-      || die "$RUNNER_NAME did not leave (its words are above) and stays stopped; revoke it on the home (Resources, machines for submissions), or start it and retry"
+      || die "$RUNNER_NAME did not leave (its words are above) and stays stopped; revoke it on the home (Resources → Machines), or start it and retry"
   fi
   docker rm -f "$RUNNER_NAME" >/dev/null 2>&1 || true
   retire_identity
@@ -2083,7 +2084,7 @@ runner_code() {
   trust="$(printf '%s' "$line" | sed -nE 's/.*"trusted"[[:space:]]*:[[:space:]]*(true|false).*/\1/p')"
   takes="$(printf '%s' "$line" | sed -nE 's/.*"classes"[[:space:]]*:[[:space:]]*(true|false).*/\1/p')"
   [ -n "$code" ] && [ -n "$expires" ] \
-    || die "$NAME answered without a code this script can read; mint one in the panel (Resources, machines for submissions)"
+    || die "$NAME answered without a code this script can read; mint one in the panel (Resources → Machines → Connect a machine)"
   # The machines run the very build the instance runs: its own image, under
   # the name that says what it is off Vast when it is the published one (one
   # digest, two names), and by the release it was built as, not a moving tag.

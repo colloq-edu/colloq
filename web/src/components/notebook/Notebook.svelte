@@ -266,6 +266,15 @@
     return { text, wait: !waiting && failover === 'auto' && (classSetting?.editable ?? true) }
   })
 
+  /**
+   * The slow start, for staff (§13.2 «Slow start»): while the slot starts on
+   * its machine, the server's own sentence, which names the machine and the
+   * image's progress («Запускаем ядро на машине «vast-3»… образ ↓ 45 %»); the
+   * room reads its unnamed twin in the kernel log. It goes with the next
+   * frame of another state (lib/kernel-machines.ts · noteKernelMachine).
+   */
+  const staffStarting = $derived(isHost && !staffBanner && frame?.machine?.state === 'starting' && frame.note ? frame.note : null)
+
   /** Move now: every slot of this notebook's kind moves now (control.ts · kernel:move). */
   function moveNow(): void {
     session.send({ t: 'kernel:move', root })
@@ -1810,6 +1819,13 @@
       <Icon name="lock" size={13} class="shrink-0 text-warning" />
       <span class="text-ui font-semibold text-ink">{tr('room.ui.444')}</span>
       <span class="text-ui text-muted"> {tr('room.ui.445')} </span>
+    </div>
+  {/if}
+  {#if staffStarting}
+    <!-- The slow start, for staff: calm, nothing to decide, the server's sentence alone. -->
+    <div class="flex items-center gap-2.5 border-b border-line bg-raised px-4 py-2" role="status" data-machine-starting>
+      <span class="h-2 w-2 shrink-0 animate-pulse rounded-full bg-accent" aria-hidden="true"></span>
+      <p class="min-w-0 flex-1 text-ui text-ink">{staffStarting}</p>
     </div>
   {/if}
   {#if staffBanner}

@@ -868,6 +868,8 @@ const WORDS: ReadonlyArray<readonly [key: string, params: Record<string, string 
   ['server.fromTheMachine.3b540b', { name: 'data', time: '14-32' }, 'data (с машины 14-32)'],
   ['server.wasDeletedOnTheServerTheChanges.6230f9', { file: 'old.csv' }, 'old.csv удалён на сервере; изменения, сделанные в нём на машине, отброшены.'],
   ['server.isOverTheLimitAndStaysOn.bf3362', { file: 'model.pt', size: '2,1 ГБ', limit: '200 МБ' }, 'model.pt (2,1 ГБ) больше предела 200 МБ и остаётся на машине. Если машина пропадёт, файл пропадёт тоже.'],
+  ['server.staysOnTheMachineTheProxyIn.8cfa12', { file: 'model.pt', size: '150 МБ' }, 'model.pt (150 МБ) остаётся на машине: прокси перед этим сервером не принял файл такого размера. Если машина пропадёт, файл пропадёт тоже.'],
+  ['server.theKernelOnTheMachineWasStopped.7de430', {}, 'Ядро на машине остановлено: следующий запуск поднимет его заново, переменные пропали.'],
   ['server.filesAreOnTheirWayToThe.1bb29d', { done: '12', total: '150 МБ' }, 'Файлы едут на машину: 12 из 150 МБ…'],
   ['server.theFilesDidNotReachTheMachine.20cf87', { seconds: 30 }, 'Файлы не дошли до машины: 30 с без движения — ячейка не запущена.'],
   ['server.startingTheKernelOnMachineImage.1f4cdc', { machine: MACHINE, percent: 45 }, 'Запускаем ядро на машине «vast-3»… образ ↓ 45 %'],
@@ -883,6 +885,7 @@ const BESIDE = [
   'server.startingTheKernelOnMachine.c2d7a3', 'server.theAgentOnMachineIsUpdatingThe.88b188', 'server.theCouncilPoolRunsOnlyOnMachines.ef5702', 'server.stateAsOfWithoutCell.30d8e4',
   'server.notCarriedOver.00ad4e', 'server.databaseConnection.cdf70c', 'server.openFile.3a6aca', 'server.networkSocket.34c443', 'server.generator.c33340',
   'server.thread.49e10b', 'server.lock.1f0e8d', 'server.dataOnTheGpu.605180', 'server.tooBigForTheSnapshot.1a48a4', 'server.cannotBeCopied.e6521a',
+  'server.thePersonalNotebooksKernelsOnTheMachine.160525', 'server.cannotBeBroughtHereTheProxyIn.fc1eca',
 ]
 
 test('the server\'s words read as the design\'s table, in Russian word for word, and in English', () => {

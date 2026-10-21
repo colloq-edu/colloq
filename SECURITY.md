@@ -101,6 +101,26 @@ at <https://colloq.ru/docs/en/security.html> (Russian original:
 - **The production runtime broker.** Examples: accepting pod templates, images
   or host paths outside its fixed template and trusted catalog, or leaking its
   Kubernetes credentials.
+- **A class machine reaching past its own classes.** A machine the owner
+  opened to classes (**Takes classes**, see [classes on
+  machines](https://colloq.ru/docs/en/runners.html#classes)) sees its classes
+  whole, by design (below). In scope: its credential reaching a class not
+  placed on it, or one of its classes at a generation that moved away; any
+  instance secret reaching it (`SESSION_SECRET`, staff cookies, the AI key,
+  the relay token) or the hidden test of a competition; a stream it can open
+  through its tunnel, which carries only connections the server opens to the
+  agent's own placements; a file report or upload from it that writes outside
+  its class's folder on the server, writes over a file changed on the server
+  since both sides last agreed on it (the machine's version belongs in a
+  conflict copy), writes a notebook file of the class, or leaves a link there.
+  So is a class kernel on a machine that holds Linux capabilities, can regain
+  privileges, sees the Docker socket or the agent's files, or opens a
+  connection to a local address (RFC 1918, CGNAT, link-local and cloud
+  metadata, loopback, the machine itself, another class): `open` never applies
+  on a machine, and the agent runs class kernels with the server's own
+  hardening, behind the server's network rules
+  (`server/src/kernel/perimeter-core.ts`), failing closed when it cannot
+  install them. DNS on port 53 stays open there too, by design.
 - **Release and install tooling** that accepts tampered release manifests,
   images or deployment bundles.
 - **A single unauthenticated request that crashes the server** or takes it down
@@ -139,6 +159,16 @@ at <https://colloq.ru/docs/en/security.html> (Russian original:
   That is the same boundary rooms get, and it is a boundary against accidents
   and ordinary code, not against an attacker who has a Docker or kernel escape.
   Submitted code is code the teacher chose to execute.
+- **What a class machine sees.** A machine that takes classes sees everything
+  of the classes placed on it: every cell and output of the class notebooks
+  and personal notebooks, the class folder, the terminal and the kernels'
+  memory, a token pasted into a cell included. So does anyone who controls it,
+  holds its stolen secret or runs its rented host, and they can forge those
+  classes' outputs and files at their current generation. Classes on
+  machines are protected by the owner's choice (off by default, machine by
+  machine, never together with the hidden test), not by cryptography. There is
+  no TLS inside the tunnel: whoever controls the reverse proxy or relay where
+  TLS ends sees the kernels' traffic, as they see students' traffic today.
 - **Local classes are "my class, my computer."** `colloq start`, `make dev` and
   `make up` use the Docker development backend, which has access to the Docker
   socket. It is meant for a trusted workstation, not as a boundary against its

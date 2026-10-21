@@ -85,6 +85,7 @@ import { getTeacher } from '../../admin/store.js'
 import { recordAdminEvent } from '../../admin/audit-log.js'
 import { addressForLimits, clientAddress } from '../../net/inbound.js'
 import { tooOften } from '../../net/too-often.js'
+import { allowLongBody } from '../../net/long-body.js'
 import { gpuPerDeviceSetting } from '../settings.js'
 import { applyOutcome } from './apply.js'
 import { homeWords } from './words.js'
@@ -356,6 +357,8 @@ export function remoteRunnerRoutes(): Router {
 
   router.put('/attempts/:attempt/files/:name', machine('file'), (req, res, next) => {
     const runner = (res.locals as RunnerLocals).runner
+    // Its body under the door's own stall timer, not Node's request timeout (net/long-body.ts).
+    allowLongBody(req)
     void receiveUpload(req, runner, String(req.params.attempt), String(req.params.name))
       .then((stored) => res.json(stored))
       .catch(next)
@@ -371,6 +374,8 @@ export function remoteRunnerRoutes(): Router {
     const runner = (res.locals as RunnerLocals).runner
     const sessionId = String(req.params.sessionId)
     if (!REMOTE_SESSION_ID.test(sessionId)) return refuse(res, 'invalid', 'Invalid class')
+    // Read at the classes' shared pace (blobs.ts · classUploadPace): a 1 GiB «Привезти» outlasts Node's 300 s (net/long-body.ts).
+    allowLongBody(req)
     void receiveRoomFile(req, runner, sessionId, { path: req.query.path, gen: req.query.gen })
       .then((stored) => res.json(stored))
       .catch(next)

@@ -1743,7 +1743,7 @@ test('runner leave on a machine with classes asks first, changes nothing without
     let r = m.run(['runner', 'leave'])
     // Its own exit, which the fleet's runners-down reads (scripts/vast-runner.sh · down_one).
     assert.equal(r.status, 3, r.out)
-    assert.match(r.out, /ERROR: this machine holds 2 class\(es\) of its home: leaving moves them to the home's server, and their variables are lost \(colloq-host runner leave --force leaves all the same\)/)
+    assert.match(r.out, /ERROR: this machine holds 2 class\(es\) of its home: leaving moves them off it, and their variables are lost \(colloq-host runner leave --force leaves all the same\)/)
     assert.deepEqual(m.dockerCalls().filter((c) => c[0] === 'update' || c[0] === 'exec' || c[0] === 'stop' || c[0] === 'rm'), [], 'nothing was changed')
     const c = m.state().containers['colloq-runner']!
     assert.deepEqual([c.running, c.restart], [true, 'unless-stopped'])
@@ -1751,7 +1751,7 @@ test('runner leave on a machine with classes asks first, changes nothing without
     // --force: it leaves, and says what becomes of its classes.
     r = m.run(['runner', 'leave', '--force'])
     assert.equal(r.status, 0, r.out)
-    assert.match(r.out, /--force: the 2 class\(es\) on this machine move to its home's server as it leaves, and their variables are lost/)
+    assert.match(r.out, /--force: the 2 class\(es\) on this machine move off it as it leaves, and their variables are lost/)
     assert.equal(m.state().containers['colloq-runner'], undefined)
     // What is no option is refused.
     const odd = m.run(['runner', 'leave', '--now'])
@@ -1896,7 +1896,7 @@ test('runners-down answers for its machines: one with classes is asked to leave 
     let r = down(Number(holds), 0)
     assert.equal(r.status, 0, r.out)
     assert.equal(r.calls, 'ssh colloq-host runner leave\nssh colloq-host runner leave --force\napi DELETE instances/11/\n')
-    assert.match(r.out, /its classes move to their home's server \(their variables are lost\), and it leaves/)
+    assert.match(r.out, /its classes move off it \(their variables are lost\), and it leaves/)
     assert.doesNotMatch(r.out, /did not leave/)
     // None: one leave, as before.
     r = down(0, 0)

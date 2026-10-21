@@ -52,7 +52,6 @@ import { livePlacement, placementRow } from '../server/src/kernel/remote/placeme
 import { tunnelReplacementAlert } from '../server/src/kernel/remote/tunnel.js'
 import { classPathEvidence, heardAt, lastSync, useRemoteClock } from '../server/src/competitions/remote/heard.js'
 import { remoteTick } from '../server/src/competitions/remote/liveness.js'
-import { unclassRunner } from '../server/src/competitions/remote/release.js'
 import { getRunner, remoteEvent, resumeRunnerClasses, runnerEventsOf, setRunnerClasses } from '../server/src/competitions/remote/store.js'
 import { wakeRunner } from '../server/src/competitions/remote/wake.js'
 import { setCompetitionState } from '../server/src/competitions/store.js'
@@ -1036,8 +1035,16 @@ scenario('D21 · revoke, «Не принимает занятия» and leave: e
   const entrant = await new Entrant(home, c).join()
   const during = await entrant.submit(notebook({ gate: `d21-${u.id}` }, 2))
   await until('the submission to run on the machine', async () => (await entrant.submission(during.id)).state === 'running', 30_000, () => unclassed.agent.log())
-  const off = unclassRunner(unclassed.runnerId, home.clock.now())
-  assert.ok(!('refused' in off) && off.moved === 1, JSON.stringify(off))
+  // A cell still running there has just written a file no scan has brought yet: the owner's unclass brings it first (§11.5),
+  // as «Перенести сейчас» does, the files as of the unclass and not of the last scan.
+  const uWriting = u.cell('WRITE out/u.csv перед отключением\nHOLD d21u')
+  u.run(uWriting)
+  const uDoor = unclassed.agent.jupyterOf(uContainer)
+  await until('the cell holding on the machine, its file written', async () => (await uDoor.kernels()).some((kernel) => kernel.busy) && fs.existsSync(path.join(unclassed.agent.roomCopy(u.id), 'out', 'u.csv')))
+  assert.equal(fileHere(u.id, 'out/u.csv'), null, 'not here before the unclass')
+  // By the owner's door («Не принимает занятия»): the files first, then the class moves.
+  assert.equal((await home.admin('PATCH', `/api/admin/runners/${unclassed.runnerId}`, { classes: false })).status, 200)
+  assert.equal(fileHere(u.id, 'out/u.csv'), 'перед отключением', 'the machine\'s last file came before the class left it')
   assert.deepEqual(runnerEventsOf(unclassed.runnerId, ['unclassed'], 0).map((line) => line.detail), ['moved 1'])
   assert.deepEqual([placementRow(u.id, 'room')!.state, placementRow(u.id, 'room')!.reason], ['lost', 'unclassed'])
   await movedHere(u, `${tr('server.theMachineIsNoLongerTrustedTo.7919d7')} ${started}`)
@@ -1058,8 +1065,15 @@ scenario('D21 · revoke, «Не принимает занятия» and leave: e
   await classOn(leaving, l)
   const lContainer = leaving.agent.classContainer(l.id, 'room')!
   assert.ok(fs.existsSync(path.join(stateLayout(leaving.agent.root).roomsDir, l.id)))
+  // The same for a leave: a file a running cell wrote a moment before goes home before the leaving sync moves the class.
+  const lWriting = l.cell('WRITE out/l.csv перед уходом\nHOLD d21l')
+  l.run(lWriting)
+  const lDoor = leaving.agent.jupyterOf(lContainer)
+  await until('the cell holding on the leaving machine, its file written', async () => (await lDoor.kernels()).some((kernel) => kernel.busy) && fs.existsSync(path.join(leaving.agent.roomCopy(l.id), 'out', 'l.csv')))
+  assert.equal(fileHere(l.id, 'out/l.csv'), null, 'not here before the leave')
   const left = await leaving.agent.command(['leave'])
   assert.equal(left.code, 0, left.out)
+  assert.equal(fileHere(l.id, 'out/l.csv'), 'перед уходом', 'the leaving machine\'s last file came before its leaving sync')
   assert.deepEqual([placementRow(l.id, 'room')!.state, placementRow(l.id, 'room')!.reason], ['lost', 'leaving'])
   await movedHere(l, `${tr('server.theMachineIsBeingDisconnected.126fbe')} ${started}`)
   assert.equal((await leaving.agent.exit(20_000)).code, 0, leaving.agent.log())

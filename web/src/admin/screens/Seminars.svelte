@@ -39,6 +39,7 @@
   import { builtAgo, cn, imageSize } from '@/lib/utils'
   import {
     LIMITS,
+    ownNumberMax,
     type AdminSeminar,
     type ClassPlacement,
     type EnvironmentsState,
@@ -2708,8 +2709,9 @@
           own={{
             roomMemoryMb: ruling.memoryMb ?? resources?.kernel.defaultMemoryMb ?? null,
             roomCpus: ruling.cpus ?? resources?.kernel.defaultCpus ?? null,
-            maxMemoryMb: resources?.limits.max ?? null,
-            maxCpus: resources?.limits.cpus.max ?? null,
+            // Where the class's personal notebooks compute bounds them: the biggest machine's while they are on machines.
+            maxMemoryMb: resources ? ownNumberMax(resources.limits, ruling.placement?.own).memoryMb : null,
+            maxCpus: resources ? ownNumberMax(resources.limits, ruling.placement?.own).cpus : null,
           }}
           onchange={(patch) => void setRule(ruling as AdminSeminar, patch)}
         />
@@ -2936,6 +2938,7 @@
             busy={memoryBusy}
             refusal={memoryError}
             roomId={ruling.id}
+            bounds={ruling.bounds ?? null}
             onmemory={(mb) => void setMemory(ruling as AdminSeminar, mb)}
             oncpus={(cores) => void setCpus(ruling as AdminSeminar, cores)}
             placement={machinesHere ? (ruling.placement ?? null) : null}

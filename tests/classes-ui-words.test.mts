@@ -163,7 +163,7 @@ test('a quarantined machine and a silent one with classes say when, and a silent
     silentSince: NOW - 41 * SEC,
     classes: classes({ held: { classes: 2, slots: 2, memoryMb: 8 * GB, card: null }, block: block('silent'), moveAt: new Date(2026, 9, 20, 14, 41, 19).getTime() }),
   })
-  assert.equal(plain(classLine(silent, NOW)?.text), '2 класса · нет связи 0:41 · перенесём на сервер в 14:41:19')
+  assert.equal(plain(classLine(silent, NOW)?.text), '2 класса · нет связи 0:41 · перенесём в 14:41:19')
   // «Ждать машину», or a rule too young to promise a time: no time is promised.
   const waiting = machine({ ...silent, classes: { ...silent.classes!, moveAt: null } })
   assert.equal(plain(classLine(waiting, NOW)?.text), '2 класса · нет связи 0:41')
@@ -180,7 +180,7 @@ test('classes whose tunnel is down say so with their move\'s time long before th
       moveAt: new Date(2026, 9, 20, 14, 41, 19).getTime(),
     }),
   })
-  assert.equal(plain(classLine(down, NOW)?.text), '2 класса · нет связи 1:10 · перенесём на сервер в 14:41:19')
+  assert.equal(plain(classLine(down, NOW)?.text), '2 класса · нет связи 1:10 · перенесём в 14:41:19')
   assert.equal(classLine(down, NOW)?.tone, 'warning')
   // With no class on it, the tunnel's own words: new classes wait for it.
   const empty = machine({ classes: classes({ held: { classes: 0, slots: 0, memoryMb: 0, card: null }, block: block('tunnel'), link: { up: false, since: NOW - 70 * SEC, rttMs: null, p95Ms: null } }) })
@@ -216,7 +216,7 @@ test('the owner\'s banners say what §13.2 says, the takeover\'s addresses named
   assert.deepEqual(banners.map(classBannerText), [
     'Машина «lab-7» дважды пропадала за 30 минут — занятия на неё больше не отправляются.',
     'Связь машины «vast-3» за 10 минут 4 раза перехватывали с разных адресов: 5.6.7.8, 9.10.11.12. Проверьте, не утёк ли её ключ.',
-    'Сеть на машине «lab-5» вышла из-под контроля: ядро остановлено ради безопасности и поднято на этом сервере.',
+    'Сеть на машине «lab-5» вышла из-под контроля: ядро остановлено ради безопасности и поднимется заново.',
   ])
   setLocaleResolver(() => 'en')
   for (const banner of banners) assert.doesNotMatch(classBannerText(banner), CYRILLIC)
@@ -377,7 +377,7 @@ test('a class whose machine does not answer says since when and when it moves; i
   })
   const status = machineStatus(lost, NOW)
   assert.equal(status?.first, 'нет связи с vast-3 · 0:41')
-  assert.equal(status?.second, 'перенесём на сервер в 14:41:19')
+  assert.equal(status?.second, 'перенесём в 14:41:19')
   assert.equal(status?.tone, 'warning')
   assert.equal(stopsLater(lost), true)
   assert.equal(machineStatus(row({ machines: [slot({ link: 'lost', lostSince: NOW - 5 * SEC })] }), NOW)?.second, 'ждём машину')

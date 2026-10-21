@@ -498,8 +498,13 @@ export interface RemoteFilesPush {
   move: { from: string; to: string }[]
 }
 
-/** Why a path is left on the machine: over machineFileMb, over the room limit, past the walk's ceiling, or inside a package tree (§8.5). */
-export type RemoteSkipReason = 'size' | 'room' | 'count' | 'package'
+/**
+ * Why a path is left on the machine: over machineFileMb, over the room limit,
+ * past the walk's ceiling, inside a package tree (§8.5), or refused on its
+ * way home by a proxy in front of home (`proxy`: its 413, which carries no
+ * marker of home's — the same bytes would meet it again; until it changes).
+ */
+export type RemoteSkipReason = 'size' | 'room' | 'count' | 'package' | 'proxy'
 
 /**
  * What a class's kernels wrote, as a scan of the machine's copy found it
@@ -700,7 +705,7 @@ const TUNNEL_SIDES: ReadonlySet<string> = new Set<RemoteKernelsRequest['tunnel']
 const BYES: ReadonlySet<string> = new Set<RemoteBye>(['restart', 'stopping', 'leaving'])
 const PERIMETERS: ReadonlySet<string> = new Set<RemotePerimeterState>(['ok', 'no-dockerd', 'no-iptables', 'refused', 'failing'])
 const MODES: ReadonlySet<string> = new Set<RemoteClassFacts['mode']>(['blocked', 'none', 'open'])
-const SKIPS: ReadonlySet<string> = new Set<RemoteSkipReason>(['size', 'room', 'count', 'package'])
+const SKIPS: ReadonlySet<string> = new Set<RemoteSkipReason>(['size', 'room', 'count', 'package', 'proxy'])
 
 /**
  * Home's parser of the machine's block: strict, like every parser of a

@@ -745,7 +745,7 @@ const RUN_SWITCHES = new Set(['-d', '--detach', '--rm', '--privileged', '--read-
  * new one in the agent's argv shows here rather than as a misread image.
  */
 function runSpec(list) {
-  const spec = { name: null, network: null, publish: [], labels: [], env: {}, volumes: [], gpus: null, entrypoint: null, memoryMb: 0, cpus: 0, detach: false, rm: false, image: null, command: [] }
+  const spec = { name: null, network: null, publish: [], labels: [], env: {}, volumes: [], gpus: null, entrypoint: null, memoryMb: 0, cpus: 0, pids: null, detach: false, rm: false, image: null, command: [] }
   for (let i = 0; i < list.length; i++) {
     const arg = list[i]
     if (!arg.startsWith('-')) {
@@ -775,6 +775,7 @@ function runSpec(list) {
     else if (flag === '--entrypoint') spec.entrypoint = value
     else if (flag === '--memory' || flag === '-m') spec.memoryMb = megabytes(value)
     else if (flag === '--cpus') spec.cpus = Number(value)
+    else if (flag === '--pids-limit') spec.pids = Number(value)
   }
   return 'docker run needs an image'
 }
@@ -924,7 +925,7 @@ async function classRun(spec) {
   fs.mkdirSync(folder.source, { recursive: true })
   const made = {
     kind: 'class', id: hex(32), name: spec.name, image: spec.image, imageId: known.id, labels: spec.labels, env: spec.env,
-    mounts: spec.volumes, network: spec.network ?? 'bridge', publish: spec.publish, memoryMb: spec.memoryMb, cpus: spec.cpus, gpus: spec.gpus,
+    mounts: spec.volumes, network: spec.network ?? 'bridge', publish: spec.publish, memoryMb: spec.memoryMb, cpus: spec.cpus, gpus: spec.gpus, pids: spec.pids,
     token: spec.env.JUPYTER_TOKEN ?? '', folder: folder.source, readOnly: folder.readOnly,
     createdAt: Date.now(), status: 'created', pid: null, port: null, startedAt: null, finishedAt: null, exitCode: 0, oomKilled: false, restarts: 0,
   }

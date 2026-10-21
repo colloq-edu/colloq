@@ -213,6 +213,7 @@ import {
 import {
   FilesStalled,
   fetchFromMachine,
+  removeOnMachine,
   filesPendingUnder,
   filesSettled,
   slotFilesBarrier,
@@ -4999,6 +5000,11 @@ export function dispatch(
       // because after it there is nothing left to ask the tree about.
       const inside = pathsInside(sessionId, wanted)
       if (!deleteFile(sessionId, wanted)) {
+        // A row only a machine of the class has («на машине»): it goes there, and its row once the machine has removed it (§8.5).
+        if (removeOnMachine(sessionId, wanted)) {
+          broadcastFiles(sessionId)
+          return
+        }
         send(ws, { t: 'error', message: tr("server.thisFileIsNoLongerInThe.b66e1e") })
         return
       }
@@ -5087,22 +5093,29 @@ export function dispatch(
      * «Привезти» (remote-classes.md §8.5): one file that stays on a machine
      * of the class, brought here — over «Файл с машины — до» if it must,
      * within the room's limit. Staff's alone: it spends the shared leg of the
-     * relay. The room learns of it from the tree when it lands; a refusal
-     * goes to the person who pressed.
+     * relay. The room learns of it from the tree when it lands; the person
+     * who pressed hears the answer itself (`files:fetched`): taken, here
+     * already, or refused in words — their panel lets the press go on it.
      */
     case 'files:fetch': {
+      const asked = typeof message.path === 'string' ? message.path : ''
       if (payload.role !== 'host') {
         refuse(ws, sessionId, payload, tr('server.onlyTheTeacherCanBringAFile.031ac7'))
+        send(ws, { t: 'files:fetched', path: asked, outcome: 'refused' })
         return
       }
-      const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
+      const wanted = normalizePath(asked)
       if (!wanted) {
-        send(ws, { t: 'error', message: refusedPath(message.path) })
+        send(ws, { t: 'files:fetched', path: asked, outcome: 'refused', message: refusedPath(message.path) })
         return
       }
       const fetched = fetchFromMachine(sessionId, wanted)
-      if ('refused' in fetched) send(ws, { t: 'error', message: fetched.refused })
-      else broadcastFiles(sessionId)
+      if ('refused' in fetched) {
+        send(ws, { t: 'files:fetched', path: wanted, outcome: 'refused', message: fetched.refused })
+        return
+      }
+      send(ws, { t: 'files:fetched', path: wanted, outcome: 'brought' in fetched ? 'brought' : 'accepted' })
+      if ('ok' in fetched) broadcastFiles(sessionId)
       return
     }
 

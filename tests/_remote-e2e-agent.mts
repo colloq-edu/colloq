@@ -248,6 +248,8 @@ export interface FakeClassContainer {
   network: string
   memoryMb: number
   cpus: number
+  /** `--pids-limit` as the run asked it: the container's process ceiling. */
+  pids?: number | null
   token: string
   /** The class folder on the machine: the fake Jupyter's folder. */
   folder: string

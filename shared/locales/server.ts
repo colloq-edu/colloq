@@ -4840,5 +4840,64 @@ export const serverMessages: MessageCatalog = {
   "server.onlyTheOwnerDecidesWhereClassesCompute.5ef976": {
     "ru": "Где считаются занятия, решает владелец: отправлять их на машины учителям сейчас нельзя.",
     "en": "Only the owner decides where classes compute: teachers cannot send them to machines now."
+  },
+  // A class's memory or cores past the bound of where its slots compute (server/src/routes/admin-instance.ts ·
+  // memoryRefusal, cpuRefusal; kernel/resources.ts · placedBounds): the machines' names the biggest of them; this
+  // server's is said as this server's once part of the class computes on machines. A class all here keeps its old words.
+  "server.onTheMachinesThisClassComputesOn.8a0084": {
+    "ru": "На машинах, где считается это занятие, памяти можно выдать от {min} до {max} МБ: больше не даст самая большая из них, «{machine}».",
+    "en": "On the machines this class computes on it may be given between {min} and {max} MB of memory: the biggest of them, {machine}, gives no more."
+  },
+  "server.onTheMachinesThisClassComputesOn.dc2f4b": {
+    "ru": "На машинах, где считается это занятие, ядер можно выдать от {min} до {max}: больше нет у самой большой из них, «{machine}».",
+    "en": "On the machines this class computes on it may be given between {min} and {max} cores: the biggest of them, {machine}, has no more."
+  },
+  "server.onThisServerTheClassMayBe.93fb13": {
+    "ru": "На этом сервере занятию можно выдать от {min} до {max} МБ памяти: больше не останется самому серверу.",
+    "en": "On this server the class may be given between {min} and {max} MB of memory: more and nothing is left for the server itself."
+  },
+  "server.onThisServerTheClassMayBe.e52ca3": {
+    "ru": "На этом сервере ядер занятию можно выдать от {min} до {max}: больше у него нет.",
+    "en": "On this server the class may be given between {min} and {max} cores: it has no more."
+  },
+  // A move of where a class computes refused before anything is written (server/src/routes/admin-instance.ts ·
+  // numbersPastMove): its own number is past the bound of the new place, said next to it (the words above).
+  "server.theClassHasMbOfMemoryLower.e34f97": {
+    "ru": "Памяти у занятия — {mb} МБ: уменьшите её, прежде чем менять, где оно считается.",
+    "en": "The class has {mb} MB of memory: lower it before changing where it computes."
+  },
+  "server.theClassHasCoresLowerThemBefore.1f3d8b": {
+    "ru": "Ядер у занятия — {cpus}: уменьшите их число, прежде чем менять, где оно считается.",
+    "en": "The class has {cpus} cores: lower them before changing where it computes."
+  },
+  // A slot set to machines that none can take, refused its fallback here (server/src/kernel/remote/placement.ts ·
+  // pastThisServer): its class's number is past this server's bound. The room reads it: no machine is named.
+  "server.noMachineCanTakeTheKernelNow.f1fc7d": {
+    "ru": "Ни одна машина сейчас не может взять ядро, а этот сервер даст не больше {max} МБ памяти — у занятия {mb} МБ. Уменьшите память занятия или дождитесь машины.",
+    "en": "No machine can take the kernel now, and this server gives at most {max} MB of memory: the class has {mb} MB. Lower the class’s memory or wait for a machine."
+  },
+  "server.noMachineCanTakeTheKernelNow.81688a": {
+    "ru": "Ни одна машина сейчас не может взять ядро, а ядер этот сервер даст не больше {max} — у занятия {cpus}. Уменьшите число ядер занятия или дождитесь машины.",
+    "en": "No machine can take the kernel now, and this server gives at most {max} cores: the class has {cpus}. Lower the class’s cores or wait for a machine."
+  },
+  // A file the proxy in front of this server refused on its way here (its 413, server/src/kernel/remote/files.ts · apply,
+  // fetch): it stays on the machine, as one over a cap does; the room's kernel log says so once, and «Привезти» is refused.
+  "server.staysOnTheMachineTheProxyIn.8cfa12": {
+    "ru": "{file} ({size}) остаётся на машине: прокси перед этим сервером не принял файл такого размера. Если машина пропадёт, файл пропадёт тоже.",
+    "en": "{file} ({size}) stays on the machine: the proxy in front of this server refused a file this large. If the machine is lost, the file is lost too."
+  },
+  "server.cannotBeBroughtHereTheProxyIn.fc1eca": {
+    "ru": "{file} не привезти: прокси перед этим сервером не принимает файлы такого размера. Предел поднимает его администратор.",
+    "en": "{file} cannot be brought here: the proxy in front of this server takes no file this large. Its administrator can raise the limit."
+  },
+  // A slot's placement stopped under its kernels, which nobody here asked for (a container whose echo was refused, a start
+  // the machine kept failing: server/src/kernel/index.ts · endUnderStop): the room's kernel log, no machine named.
+  "server.theKernelOnTheMachineWasStopped.7de430": {
+    "ru": "Ядро на машине остановлено: следующий запуск поднимет его заново, переменные пропали.",
+    "en": "The kernel on the machine was stopped: the next run starts it again, and the variables are gone."
+  },
+  "server.thePersonalNotebooksKernelsOnTheMachine.160525": {
+    "ru": "Ядра личных тетрадей на машине остановлены: следующий запуск поднимет их заново, переменные пропали.",
+    "en": "The personal notebooks’ kernels on the machine were stopped: the next run starts them again, and their variables are gone."
   }
 }

@@ -1621,6 +1621,14 @@ export interface ClassPlacements {
    * Without it the warm start warms nothing (`warmClassKernels`).
    */
   warmSlot?(sessionId: string, role: KernelRole): void
+  /**
+   * The durable stop of the slot's placement at this gen (§6.10, §10): the
+   * personal notebooks' container once its last kernel retired
+   * (`dropOwnIfEmpty`). Nothing for another gen, or a placement no longer
+   * live; synchronous. Without it the pool's own stop goes (pool.ts ·
+   * dropOwnKernel).
+   */
+  stopSlot?(sessionId: string, role: KernelRole, gen: number): boolean
 }
 
 /** The clock of these hooks' own timers: the process's, unless a suite brings one it moves by hand. */
@@ -1703,6 +1711,7 @@ function installPlacements(next: ClassPlacements, clock: ClassClock): void {
   lastMachine.clear()
   movedOff.clear()
   terminalSlots.clear()
+  ownPlacementsUsed.clear()
   placements = next
   classClock = clock
   unlisten = placements.onPlacementChange(onPlacementEvent)
@@ -2088,6 +2097,8 @@ function placementNews(event: PlacementEvent): void {
     case 'stopped':
       // The slot went on without its machine answering: it waits for nothing now.
       leaveOutage(sessionId, role, null)
+      // And kernels computing on that very placement went with its container: a stop nobody here asked for (endUnderStop).
+      if (view.where === 'machine') endUnderStop(sessionId, role, view)
       break
     case 'moved':
       // Running again after a loss: it waits for nothing now, and the room hears where it came back.
@@ -2198,6 +2209,47 @@ function loseSlot(sessionId: string, role: KernelRole, loss: Loss): void {
   movedOff.set(slotKey(sessionId, role), loss.view?.runnerId ?? null)
   for (const scope of scopes) endOnLostMachine(scope, words.room, loss.at)
   tellMachineWatchers(sessionId, role, loss.staffWords ?? words.staff)
+}
+
+/**
+ * A SLOT'S PLACEMENT STOPPED UNDER KERNELS THAT COMPUTE ON IT
+ * (remote-classes.md §6.10, §10): a stop nobody here asked for — a container
+ * whose ready echo this server refused, a start its machine kept failing
+ * after the container died — takes their Python with the container, and
+ * nothing else would tell them: their runs failed on a road to nowhere until
+ * the idle sweep retired them, a personal one holding its place under the
+ * ceiling meanwhile. Each is ended from outside now, as a loss ends one, with
+ * no DELETE (jupyter.ts · endFromOutside): the room hears it once for the
+ * slot, and its next Run starts a kernel wherever the slot is then, the chip
+ * saying nothing of a move that never was. A stop this server asked for (the
+ * owner's, the class end, the idle sweeps, dropOwnIfEmpty) finds no such
+ * kernel: its scopes were retired first, or held none there.
+ */
+function endUnderStop(sessionId: string, role: KernelRole, view: MachineView): void {
+  const key = `${view.runnerId}:${view.gen}`
+  const scopes = scopesOf(sessionId).filter((scope) => {
+    const kernel = scope.kernel
+    return scope.role === role && !scope.retired && scope.lostKey !== key && kernel?.endpoint.link !== undefined && !kernel.endedBy && samePlacement(kernel.endpoint, view)
+  })
+  if (scopes.length === 0) return
+  const words = tr(role === 'own' ? 'server.thePersonalNotebooksKernelsOnTheMachine.160525' : 'server.theKernelOnTheMachineWasStopped.7de430')
+  const hadWork = scopes.some((scope) => scope.currentCell !== null || scope.queue.length > 0)
+  // Said here once for the slot; the kernels' own `dead` says nothing more (onPhase reads lostKey).
+  for (const scope of scopes) scope.lostKey = key
+  console.warn(`[kernel ${sessionId}] the ${role} slot's placement on ${view.runnerId} (gen ${view.gen}) stopped under ${scopes.length} kernel(s): ended`)
+  kernelNote(sessionId, words)
+  if (hadWork) kernelNote(sessionId, tr(QUEUE_DROPPED))
+  for (const scope of scopes) {
+    const kernel = scope.kernel!
+    const alive = kernel.phase !== 'dead'
+    kernel.endFromOutside('fenced', words)
+    // A kernel dead already hears no `dead` again: what it left queued goes from here.
+    if (!alive) {
+      dropQueue(scope)
+      setStatus(scope, 'off')
+    }
+    writePlacement(scope, null, null, null)
+  }
 }
 
 function endOnLostMachine(scope: Runtime, words: string, at: number): void {
@@ -2517,13 +2569,16 @@ function tellMachineWatchers(sessionId: string, role: KernelRole, note: string |
  * wherever the class computes (routes/sessions.ts · warmsKernel).
  *
  * Nothing for a class nobody will compute in now (finished, archived, being
- * stopped: the join's rule for its warm-up), and nothing under the broker,
- * whose classes never go to machines (D26).
+ * stopped: the join's rule for its warm-up), nothing for a class whose rules
+ * give no notebook a personal kernel (`mayHaveOwnKernel`: a lecture pays for
+ * no container it cannot use, §10), and nothing under the broker, whose
+ * classes never go to machines (D26).
  */
 export async function warmClassKernels(sessionId: string): Promise<void> {
   if (!placements.warmSlot || kernelBackend() === 'broker') return
   try {
     if (!machineSlot(sessionId, 'own') || isFinished(sessionId) || kernelStopInProgress(sessionId)) return
+    if (!mayHaveOwnKernel(sessionId)) return
     // Read where it is kept, lazily: that module reaches this one while it loads.
     const { isArchived } = await import('../routes/admin-instance.js')
     if (isArchived(sessionId)) return
@@ -2532,6 +2587,17 @@ export async function warmClassKernels(sessionId: string): Promise<void> {
     // No class row (a test, a room being deleted), or a placement that cannot be read: nothing is warmed.
     if (seldom(`warm:${sessionId}`)) console.warn(`[kernel ${sessionId}] the warm start was skipped:`, errText(err))
   }
+}
+
+/**
+ * Whether a notebook of the class can have a personal kernel by its rules as
+ * they stand: students may make their own (`ownBooks`), or a notebook is
+ * given to its owner (shared/rules.ts · bookHasOwnKernel). Rules changed
+ * later bring the container up at the first personal Run, cold.
+ */
+function mayHaveOwnKernel(sessionId: string): boolean {
+  const rules = storedRules(sessionId)
+  return rules.ownBooks === 'on' || Object.keys(rules.books ?? {}).some((root) => bookHasOwnKernel(rules, root))
 }
 
 /** Whether a slot of this class goes to machines (pool.ts · machinePlaced), or is on one already. */
@@ -2568,6 +2634,7 @@ function forgetClassMachines(sessionId: string): void {
   for (const key of [...lastMachine.keys()]) if (key.startsWith(`${sessionId}\0`)) lastMachine.delete(key)
   for (const key of [...movedOff.keys()]) if (key.startsWith(`${sessionId}\0`)) movedOff.delete(key)
   for (const [identity, owner] of terminalSlots) if (owner === sessionId) terminalSlots.delete(identity)
+  ownPlacementsUsed.delete(sessionId)
 }
 
 /** "14:32:05": a moment as the room's clock on the wall says it, in the instance's time zone. */
@@ -2595,6 +2662,14 @@ function clockOf(ms: number): string {
  * the same identity, and this is how it finds its class (§5.7).
  */
 const terminalSlots = new Map<string, string>()
+
+/**
+ * The machine placements of each class's personal notebooks slot that a
+ * personal kernel came up on in this process, as `runner:gen` (`placedOn`):
+ * the only ones `dropOwnIfEmpty` stops. Gens only grow; a stop forgets its
+ * own, and the class's end or another placement module forgets the rest.
+ */
+const ownPlacementsUsed = new Map<string, Set<string>>()
 
 /*
  * The process's placements, from the moment their module is loaded (at boot,
@@ -2673,13 +2748,18 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
    * Our own scope does not count: its kernel either already exists (and we did
    * not get here) or died and is being brought up again; refusing it would lock
    * the notebook for good after the very first OOM.
+   *
+   * Wherever the class's personal notebooks compute (§10), here or on their
+   * machine, and the kernels coming up count as much as the ones up
+   * (`holdsOwnPlace`): forty students pressing Run at once all start before
+   * any of them is up, and counting the live ones alone let every one of them
+   * through. The look and the mark of this start (`runtime.starting`, below)
+   * are one synchronous stretch, so the sixty-first is refused whatever
+   * order they come in.
    */
   if (runtime.role === 'own') {
     const limit = ownKernelMax()
-    const live = scopesOf(sessionId).filter(
-      (scope) =>
-        scope !== runtime && scope.role === 'own' && scope.kernel && scope.kernel.phase !== 'dead',
-    ).length
+    const live = scopesOf(sessionId).filter((scope) => scope !== runtime && holdsOwnPlace(scope)).length
     if (live >= limit) {
       const refusal = new Error(tr('server.kernel.ownFull', { p0: limit }))
       setStatus(runtime, 'dead')
@@ -2781,6 +2861,8 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
       }
       runtime.kernel = kernel
       runtime.lostKey = null
+      // A placement a personal kernel came up on: its container may be stopped once the last of them goes (`dropOwnIfEmpty`).
+      if (runtime.role === 'own') noteOwnPlacement(sessionId, kernel)
       setKernelProblem(runtime, null)
       clearMemoryNotices(runtime)
       markWhere(runtime, kernel)
@@ -3297,7 +3379,16 @@ async function retireScope(
   runtime.retired = true
   runtime.gateWait?.controller.abort()
   try {
-    await runtime.kernel?.dispose()
+    const kernel = runtime.kernel
+    /*
+     * A personal kernel whose placement was taken back under it (a stop it
+     * did not ask for: a container whose echo home refused, a start given
+     * up) is let go of, as an ended one is (remote-classes.md §5.2): its
+     * machine removes the container with it, and a DELETE would go to a road
+     * that leads nowhere, or to another placement by now.
+     */
+    if (kernel && runtime.role === 'own' && fencedUnder(runtime, kernel)) kernel.detach()
+    else await kernel?.dispose()
   } catch (err) {
     console.error(`[kernel] could not stop ${sessionId}/${root}:`, errText(err))
   }
@@ -3404,8 +3495,118 @@ function clearScopeMirror(sessionId: string, root: string): void {
   }, ORIGIN)
 }
 
-/** No personal kernels left: the personal notebooks container has no reason to stay. */
+/**
+ * Whether this scope takes one of its class's places under the personal
+ * kernel ceiling (`ownKernelMax`): its kernel is up, wherever it computes —
+ * on a machine that does not answer right now too, since its Python is there
+ * all the same and comes back with the road (§10) — or it is coming up. A
+ * kernel ended from outside takes none: its placement was lost or taken
+ * back, and whatever the student runs next starts a kernel of its own,
+ * counted then, once (§11.2 step 4).
+ */
+function holdsOwnPlace(scope: Runtime): boolean {
+  if (scope.role !== 'own' || scope.retired) return false
+  if (scope.starting !== null) return true
+  const kernel = scope.kernel
+  return kernel !== null && kernel.phase !== 'dead' && !kernel.endedBy
+}
+
+/** The machine placement a kernel computes on, by its endpoint's identity (`machine:<runner>:<container>:<gen>`); null — here, or unreadable. */
+function placedOn(kernel: JupyterKernel | null): { runnerId: string; gen: number } | null {
+  const parts = kernel?.endpoint.link ? kernel.endpoint.identity?.split(':') : undefined
+  if (!parts || parts.length < 4 || parts[0] !== 'machine') return null
+  const gen = Number(parts[parts.length - 1])
+  return Number.isSafeInteger(gen) ? { runnerId: parts[1]!, gen } : null
+}
+
+/** Whether the slot's view is still the placement a kernel computes on (`placedOn`): that machine, that gen, and not being stopped. */
+function stillPlacedOn(view: PlacementView, on: { runnerId: string; gen: number }): boolean {
+  return view.where === 'machine' && view.runnerId === on.runnerId && view.gen === on.gen && view.state !== 'stopping'
+}
+
+/**
+ * A personal kernel on a machine placement that is no longer its slot's
+ * live one, and that nothing ended: the placement was stopped under it
+ * (placement.ts · stopRow, which tells the kernel nothing), and its Python
+ * goes with that container. A kernel ended from outside is let go of anyway.
+ */
+function fencedUnder(runtime: Runtime, kernel: JupyterKernel): boolean {
+  const on = placedOn(kernel)
+  return on !== null && !kernel.endedBy && !stillPlacedOn(viewOf(runtime.sessionId, runtime.role), on)
+}
+
+/**
+ * A personal kernel on a machine that does not answer right now, on the
+ * placement it computes on: still the slot's live one (`stillPlacedOn`), its
+ * road down. Not one ended from outside, nor one whose placement is gone: that
+ * one waits for nothing (`fencedUnder`).
+ */
+function awayOnItsPlacement(runtime: Runtime, kernel: JupyterKernel): boolean {
+  const link = kernel.endpoint.link
+  if (!link || link.up || kernel.endedBy) return false
+  const on = placedOn(kernel)
+  // An identity this server cannot read: its road alone says, as before machines had gens.
+  return on === null || stillPlacedOn(viewOf(runtime.sessionId, runtime.role), on)
+}
+
+/** A personal kernel came up on a machine placement: one `dropOwnIfEmpty` may stop (`ownPlacementsUsed`). */
+function noteOwnPlacement(sessionId: string, kernel: JupyterKernel): void {
+  const on = placedOn(kernel)
+  if (on === null) return
+  let used = ownPlacementsUsed.get(sessionId)
+  if (!used) ownPlacementsUsed.set(sessionId, (used = new Set()))
+  used.add(`${on.runnerId}:${on.gen}`)
+}
+
+/**
+ * Whether this scope keeps its class's personal notebooks' container on its
+ * machine (`dropOwnIfEmpty`): its kernel is coming up, or attached and not
+ * ended — up, away with its machine, or dead in the container (its own idle
+ * pass retires it) — or work waits for a kernel there (a queue, the gate, a
+ * cell, a council job). A notebook whose start was refused, or whose kernel
+ * ended with its machine, keeps nothing: its next Run starts a kernel
+ * wherever the slot is then.
+ */
+function keepsOwnContainer(scope: Runtime): boolean {
+  if (scope.role !== 'own' || scope.retired) return false
+  if (scope.starting !== null || (scope.kernel !== null && !scope.kernel.endedBy)) return true
+  return scope.queue.length > 0 || scope.gateWait !== null || scope.currentCell !== null || scope.job !== null
+}
+
+/**
+ * No personal kernels left: the personal notebooks container has no reason to stay.
+ *
+ * On a machine (remote-classes.md §10) it goes as a durable stop of the
+ * slot's placement at its gen: the row says stopping, the next reply leaves
+ * the slot out and the machine removes the container, whether or not it
+ * answers at this moment. Only a scope with a Python there, coming, or work
+ * waiting for one keeps it (`keepsOwnContainer`): a notebook whose start was
+ * refused, or whose kernel ended with a lost machine, holds nothing in it.
+ * And only a placement some personal kernel of the class came up on is
+ * stopped (`ownPlacementsUsed`), whichever scope happens to retire last: a
+ * warm start nobody used yet stays for the Run it was made for, and the
+ * room's own sweep takes it with the room. Nothing goes to a placement that
+ * was lost: it is no longer the slot's, its machine removes what it holds
+ * once it hears the fence (§11.3), and nothing here sends it anything, a
+ * DELETE least of all. The look at the scopes and the stop are one turn, so
+ * no personal kernel starts in between.
+ *
+ * Here, as always: any personal notebook scope keeps the container.
+ */
 async function dropOwnIfEmpty(sessionId: string): Promise<void> {
+  const view = viewOf(sessionId, 'own')
+  if (view.where === 'machine' && placements.stopSlot) {
+    if (scopesOf(sessionId).some(keepsOwnContainer)) return
+    const used = ownPlacementsUsed.get(sessionId)
+    const key = `${view.runnerId}:${view.gen}`
+    if (!used?.has(key)) return
+    try {
+      if (placements.stopSlot(sessionId, 'own', view.gen)) used.delete(key)
+    } catch (err) {
+      console.error(`[kernel] could not stop the personal-notebook container of ${sessionId} on its machine:`, errText(err))
+    }
+    return
+  }
   if (scopesOf(sessionId).some((scope) => scope.role === 'own')) return
   try {
     await dropOwnKernel(sessionId)
@@ -3613,6 +3814,19 @@ async function sweepIdleOwnScopes(now: number): Promise<void> {
     if (runtime.role !== 'own' || runtime.retired) continue
     // No kernel yet, so nothing to put out; a scope without a kernel takes no room.
     if (!runtime.kernel) continue
+    /*
+     * On a machine that does not answer now (§10: as here, but only as here):
+     * the kernel is over there, on the slot's live placement, and cannot be
+     * told to stop, and retiring its scope would leave it running with its
+     * variables under a note that says it stopped — the next Run of the
+     * notebook attaching to it again by its path. It waits for the road, and
+     * a later pass retires it; a failover ends it from outside meanwhile, and
+     * then it goes with no word to the machine (`dispose` of an ended kernel
+     * only lets go of it). A kernel whose placement was stopped under it
+     * waits for nothing: its container goes with that placement, and it is
+     * retired as idle here, let go of without a DELETE (`retireScope`).
+     */
+    if (awayOnItsPlacement(runtime, runtime.kernel)) continue
     if (runtime.currentCell !== null || runtime.queue.length > 0 || runtime.job) continue
     const since = runtime.lastWorkAt
     if (since === null || now - since < limit) continue

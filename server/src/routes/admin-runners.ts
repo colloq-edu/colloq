@@ -239,8 +239,15 @@ export function adminRunnerRoutes(): Router {
     // Turning classes off moves them first, by the class placements (loaded with the machines' clock at boot): sure to be there before a write.
     const placements = body.classes === false && runner.classes ? loadClassPort() : Promise.resolve(null)
     void placements
+      /*
+       * And their files come here before they move, while the machine still
+       * answers (§11.5, placement.ts · settleRunner), as «Перенести сейчас»
+       * waits for them: what a cell wrote there a moment ago is the class's.
+       */
+      .then((port) => port?.settleRunner?.(runner.id))
       .then(() => {
-        applyPatch(req, res, runner, body, patch)
+        // The row as it stands after the wait: a revoke meanwhile is a machine gone (unclassRunner refuses it).
+        applyPatch(req, res, getRunner(runner.id) ?? runner, body, patch)
         return machineDetail(runner.id)
       })
       .then((detail) => {

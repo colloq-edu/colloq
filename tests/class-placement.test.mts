@@ -428,7 +428,7 @@ test('no portable image, a broken blocklist or no machine: the fallback here, a 
   }
 })
 
-test('the preferences: another slot of the class, then its last host, then the image in place, the shorter link, more memory, the name', async () => {
+test('the preferences: another slot of the class, then the image in place, the shorter link, more memory, the name; the last host has no rank', async () => {
   const rig = new Rig()
   const near = rig.machine({ rtt: 20, name: 'near' })
   const far = rig.machine({ rtt: 200, name: 'far' })
@@ -440,13 +440,14 @@ test('the preferences: another slot of the class, then its last host, then the i
   rig.tunnels.rtts.set(far.id, 5)
   await rig.place(a, 'own')
   assert.equal(livePlacement(a, 'own')?.runnerId, near.id)
-  // The class's last host within a week wins over the link.
+  // The class's host of a few days ago is no reason over the link: no copy of its folder waits there (the agent removed it
+  // with its last slot), and the shorter link wins.
   const b = rig.room()
   db.prepare(`INSERT INTO remote_placements (session_id, role, gen, runner_id, state, environment, revision_id, revision_ref, revision_layers, memory_mb, cpus, created_at, ended_at)
     VALUES (?, 'room', 3, ?, 'stopped', 'base', 'r', 'ref', 'l', 512, 1, ?, ?)`).run(b, near.id, rig.clock.now(), rig.clock.now() - 6 * 24 * 3_600_000)
   void rig.place(b)
   await flush()
-  assert.equal(livePlacement(b, 'room')?.runnerId, near.id, 'the warm copy')
+  assert.equal(livePlacement(b, 'room')?.runnerId, far.id, 'the shorter link, not the last host')
   assert.equal(livePlacement(b, 'room')?.gen, 4, 'the next gen after the history')
   // Ready over fetching, before the link.
   const fetching = rig.machine({ rtt: 1, ready: [], fetching: [{ revisionId: rig.revision.id, percent: 50 }] })
@@ -818,7 +819,7 @@ test('a token per gen and per machine; every input of an older gen is ignored', 
   assert.equal(placementRow(again, 'room')?.state, 'stopped')
   const { ensuring: replacing } = await rig.place(again)
   assert.equal(livePlacement(again, 'room')?.gen, 2)
-  assert.equal(livePlacement(again, 'room')?.runnerId, n.id, 'its last host')
+  assert.equal(livePlacement(again, 'room')?.runnerId, n.id, 'the one machine that answers, where it was')
   rig.report(n, { placements: [rig.held(id, 'room', next.gen, 'starting', C2), rig.held(again, 'room', 1, 'ready', C1)] })
   assert.equal(livePlacement(again, 'room')?.state, 'starting', 'gen 1 ready says nothing of gen 2')
   rig.report(n, { placements: [rig.held(id, 'room', next.gen, 'starting', C2), rig.held(again, 'room', 2, 'ready', C1)] })

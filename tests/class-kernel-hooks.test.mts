@@ -1135,6 +1135,8 @@ test('help is not asked of a machine that does not answer: the hover says so', a
 test('the first participant has the placement module warm the personal notebooks’ slot on a machine; opening a room starts nothing here', async (t) => {
   const { hand, places, room } = await machineClass(t)
   const [over, plain] = [await seminar(), await seminar()]
+  // Classes whose students may make their own notebooks: one whose rules give none a personal kernel warms nothing (§10).
+  for (const id of [room.id, over.id]) db.setRules(id, { ...db.storedRules(id), ownBooks: 'on' })
   db.setFinished(over.id, Date.now())
   t.after(async () => {
     for (const one of [over, plain]) {

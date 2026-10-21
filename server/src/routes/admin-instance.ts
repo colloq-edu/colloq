@@ -65,9 +65,9 @@ import {
   setSessionPlacement,
   storedRules,
 } from '../db.js'
-import { classMachineSettings } from '../admin/resource-settings.js'
-import { classHasLivePlacement, classPlacement } from '../kernel/remote/placement-store.js'
-import { classPlacementChanged, placementOutlook } from '../kernel/remote/placement.js'
+import { classMachineSettings, resourceValue } from '../admin/resource-settings.js'
+import { classHasLivePlacement, classPlacement, newClassPlacement } from '../kernel/remote/placement-store.js'
+import { classMachineBounds, classPlacementChanged, placementOutlook } from '../kernel/remote/placement.js'
 import { machineState } from '../competitions/remote/heard.js'
 import { getRunner } from '../competitions/remote/store.js'
 import type { ClassPlacementOutlook } from '@shared/remote-admin'
@@ -92,11 +92,16 @@ import {
   usingRuntimeBroker,
 } from '../kernel/runtime-client.js'
 import {
+  classCpuBounds,
+  classMemoryBounds,
   cpuBounds,
   forgetResources,
   memoryBounds,
+  numberPlaces,
+  placedBounds,
   readCpuInput,
   readMemoryInput,
+  type PlacedBounds,
 } from '../kernel/resources.js'
 import { blockKernelStarts, kernelRetirementInProgress } from '../kernel/retirement.js'
 import { activeName, exists as environmentExists, listEnvironments, needsGpu } from '../environments.js'
@@ -111,6 +116,8 @@ import {
   type AdminErrorBody,
   type AdminErrorReason,
   type AdminSeminar,
+  type ClassMachineBounds,
+  type ClassNumberBounds,
   type MemberTeachersResponse,
   type OracleSettings,
   type SeatRequest,
@@ -301,13 +308,20 @@ interface SeminarView {
   fallbackEnvironment: () => string | null
   /** Whether an environment asks for a GPU: one read of its files per name per list. */
   needsGpu: (name: string) => boolean
+  /** The machines' bound of a class slot, of the machines with cards or of all (placement.ts · machineBounds): each asked once per list. */
+  machines: (card: boolean) => ClassMachineBounds | null
 }
 
 function seminarView(viewer: Teacher | null): SeminarView {
   let fallback: string | null | undefined
   const gpu = new Map<string, boolean>()
+  const machines = new Map<boolean, ClassMachineBounds | null>()
   return {
     viewer,
+    machines: (card) => {
+      if (!machines.has(card)) machines.set(card, machinesBound(card))
+      return machines.get(card) ?? null
+    },
     places: mayPlaceClasses(viewer),
     courses: listCourses(),
     rooms: membershipDirectory().rooms,
@@ -335,6 +349,18 @@ function seminarView(viewer: Teacher | null): SeminarView {
       return asks
     },
   }
+}
+
+/**
+ * Where the class computes («Где считается», remote-classes.md §6.2): its
+ * setting with every field filled, whether this viewer may change it, and
+ * the bounds its own memory and cores are held to by it (`classBounds`), so
+ * that the form draws what its PATCH refuses rather than a copy of the rule.
+ */
+function seminarPlacement(sessionId: string, environment: string | null, view: SeminarView): Pick<AdminSeminar, 'placement' | 'placementEditable' | 'bounds'> {
+  const placement = classPlacement(sessionId)
+  const gpu = environment !== null && view.needsGpu(environment)
+  return { placement, placementEditable: view.places, bounds: classBounds(sessionId, { placement, gpu, machines: view.machines }) }
 }
 
 function toSeminar(row: SeminarRow, view: SeminarView): AdminSeminar {
@@ -408,7 +434,7 @@ function toSeminar(row: SeminarRow, view: SeminarView): AdminSeminar {
      * setting's: a change moves nothing that runs. Under the broker no class
      * goes to a machine (D26), and the seminar says nothing of where.
      */
-    ...(kernelBackend() === 'broker' ? {} : { placement: classPlacement(row.id), placementEditable: view.places }),
+    ...(kernelBackend() === 'broker' ? {} : seminarPlacement(row.id, chosen, view)),
     finishedAt: finishedAt(row.id),
     publication: publication
       ? {
@@ -496,14 +522,106 @@ function oracleChanges(
  * sends megabytes to tells nothing to someone who sent gigabytes, while "from
  * 512 to 71 680 MB" tells everything at once.
  */
-function memoryRefusal(why: 'type' | 'range'): string {
-  const { min, max } = memoryBounds()
-  return why === 'type'
-    ? tr('server.memoryMustBeWholeMegabytes')
-    : tr('server.memoryOutOfRange', { p0: min, p1: max })
+function memoryRefusal(why: 'type' | 'range', bounds: PlacedBounds = { ...memoryBounds(), machine: null, here: true, machines: false }): string {
+  const { min, max } = bounds
+  if (why === 'type') return tr('server.memoryMustBeWholeMegabytes')
+  /*
+   * Named by the place whose bound it is (remote-classes.md §6.2): the
+   * machines', by the biggest of them; this server's, as this server's, once
+   * a slot the number reaches is set to machines; a class all here hears
+   * what it always heard.
+   */
+  if (bounds.machine !== null) return tr('server.onTheMachinesThisClassComputesOn.8a0084', { min, max, machine: bounds.machine })
+  if (bounds.machines) return tr('server.onThisServerTheClassMayBe.93fb13', { min, max })
+  return tr('server.memoryOutOfRange', { p0: min, p1: max })
 }
 
-/** The same as for memory: the bounds are named in numbers, not as "invalid". */
+/** What one class's bounds are asked with; a list asks each part once for all its rows. */
+interface BoundsOf {
+  /** Where the class would compute; where it does now when left out. */
+  placement?: ClassPlacement
+  /** Whether its environment asks for a card. */
+  gpu?: boolean
+  /** The machines' bound, of the machines with cards or of all (placement.ts · machineBounds). */
+  machines?: (card: boolean) => ClassMachineBounds | null
+}
+
+const machinesBound = (card: boolean): ClassMachineBounds | null => classMachineBounds({ card })
+
+/** Whether the class's environment asks for a card; one that cannot be read asks for none. */
+function classNeedsGpu(sessionId: string): boolean {
+  try {
+    return needsGpu(sessionEnvironment(sessionId) ?? activeName())
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The bounds of a class's memory and cores by where its slots compute
+ * (kernel/resources.ts · placedBounds), the machines' numbers asked once for
+ * both. A class whose notebooks are set to machines and need a card is held
+ * to the machines with cards: their slot takes one there whole
+ * (placement.ts · needOf), and no other machine can take it.
+ */
+function classBounds(sessionId: string, of: BoundsOf = {}): ClassNumberBounds {
+  const placement = of.placement ?? classPlacement(sessionId)
+  const card = placement.room === 'machines' && (of.gpu ?? classNeedsGpu(sessionId))
+  const machines = kernelBackend() === 'broker' ? null : (of.machines ?? machinesBound)(card)
+  return {
+    memory: classMemoryBounds(sessionId, machines?.memoryMb ?? null, placement),
+    cpus: classCpuBounds(sessionId, machines?.cpus ?? null, placement),
+  }
+}
+
+/**
+ * The same for a class about to be made: where its owner's default for new
+ * classes puts its slots (placement-store.ts · newClassPlacement), and
+ * whether its personal notebooks take its numbers by the rules it is made
+ * with and the instance's defaults (pool.ts · ownLimits).
+ */
+function newClassBounds(environment: string, rules: { ownMemoryMb: number | null; ownCpus: number | null }): ClassNumberBounds {
+  const placement = kernelBackend() === 'broker' ? null : newClassPlacement(environment)
+  const here = { here: true, machines: false }
+  if (placement === null) {
+    return { memory: placedBounds(memoryBounds(), null, here), cpus: placedBounds(cpuBounds(), null, here) }
+  }
+  let gpu = false
+  try {
+    gpu = needsGpu(environment)
+  } catch {
+    // An environment that cannot be read asks for no card, as at its start.
+  }
+  const machines = classMachineBounds({ card: placement.room === 'machines' && gpu })
+  const own = { memoryMb: rules.ownMemoryMb ?? resourceValue('ownMemoryMb'), cpus: rules.ownCpus ?? resourceValue('ownCpus') }
+  return {
+    memory: placedBounds(memoryBounds(), machines?.memoryMb ?? null, numberPlaces(placement, own.memoryMb === null)),
+    cpus: placedBounds(cpuBounds(), machines?.cpus ?? null, numberPlaces(placement, own.cpus === null)),
+  }
+}
+
+/**
+ * A class's own numbers against where `placement` would have it compute
+ * (remote-classes.md §6.2), held as a PATCH of them would be: the refusal of
+ * the move in words, or null. A class never comes to hold a number its own
+ * form could not save — one set to machines with more than this server can
+ * give, moved here; one with more than any machine can give, moved there. A
+ * number this same request sets is held to the new place where it is
+ * applied, and the default (null) fits anywhere.
+ */
+function numbersPastMove(sessionId: string, placement: ClassPlacement, body: SeminarPatch | undefined): string | null {
+  const bounds = classBounds(sessionId, { placement })
+  const memory = body?.memoryMb === undefined ? sessionMemoryMb(sessionId) : null
+  if (memory !== null && memory > bounds.memory.max) {
+    return `${tr('server.theClassHasMbOfMemoryLower.e34f97', { mb: memory })} ${memoryRefusal('range', bounds.memory)}`
+  }
+  const cpus = body?.cpus === undefined ? sessionCpus(sessionId) : null
+  if (cpus !== null && cpus > bounds.cpus.max) {
+    return `${tr('server.theClassHasCoresLowerThemBefore.1f3d8b', { cpus })} ${cpuRefusal('range', bounds.cpus)}`
+  }
+  return null
+}
+
 /**
  * Who may say where a class computes (D4): the owner always, a teacher of the
  * room while the owner's «Учителя отправляют занятия на машины» is on.
@@ -515,11 +633,14 @@ function mayPlaceClasses(viewer: Teacher | null): boolean {
 const samePlacement = (a: ClassPlacement, b: ClassPlacement): boolean =>
   (Object.keys(a) as Array<keyof ClassPlacement>).every((field) => a[field] === b[field])
 
-function cpuRefusal(why: 'type' | 'range'): string {
-  const { min, max } = cpuBounds()
-  return why === 'type'
-    ? tr('server.cpusMustBeWholeCores')
-    : tr('server.cpusOutOfRange', { p0: min, p1: max })
+/** The same as for memory: the bounds are named in numbers, not as "invalid". */
+function cpuRefusal(why: 'type' | 'range', bounds: PlacedBounds = { ...cpuBounds(), machine: null, here: true, machines: false }): string {
+  const { min, max } = bounds
+  if (why === 'type') return tr('server.cpusMustBeWholeCores')
+  // Named by its place, as memory's (memoryRefusal).
+  if (bounds.machine !== null) return tr('server.onTheMachinesThisClassComputesOn.dc2f4b', { min, max, machine: bounds.machine })
+  if (bounds.machines) return tr('server.onThisServerTheClassMayBe.e52ca3', { min, max })
+  return tr('server.cpusOutOfRange', { p0: min, p1: max })
 }
 
 /** A PATCH of a seminar as it arrives: every field optional, each checked where it is applied. */
@@ -804,12 +925,17 @@ export function adminInstanceRoutes(): Router {
     /*
      * The memory limit is checked by the same measure as on change: the
      * machine has one boundary, and the creation form is not the place where
-     * a room can be promised more than there is.
+     * a room can be promised more than there is. The machine is the one each
+     * slot of the new class computes on (§6.2): the owner's default for new
+     * classes may put its personal notebooks on machines (D31), and their
+     * container takes this number too unless the rules give them one.
      */
-    const memory = readMemoryInput(req.body?.memoryMb)
-    if (!memory.ok) return invalid(res, memoryRefusal(memory.error))
-    const cpu = readCpuInput(req.body?.cpus)
-    if (!cpu.ok) return invalid(res, cpuRefusal(cpu.error))
+    const made = readRules(req.body?.rules && typeof req.body.rules === 'object' ? (req.body.rules as object) : {})
+    const bounds = newClassBounds(environment, made)
+    const memory = readMemoryInput(req.body?.memoryMb, bounds.memory)
+    if (!memory.ok) return invalid(res, memoryRefusal(memory.error, bounds.memory))
+    const cpu = readCpuInput(req.body?.cpus, bounds.cpus)
+    if (!cpu.ok) return invalid(res, cpuRefusal(cpu.error, bounds.cpus))
 
     const id = newSessionId()
     createSession(id, name, environment)
@@ -966,6 +1092,9 @@ export function adminInstanceRoutes(): Router {
         // Under the broker the panel draws no «Где считается» (D26): the server takes no such change either.
         if (kernelBackend() === 'broker') return invalid(res, 'placement: classes do not compute on machines under the broker')
         if (!mayPlaceClasses(currentStaff(req))) return forbidden(res, tr('server.onlyTheOwnerDecidesWhereClassesCompute.5ef976'))
+        // The class's own numbers must fit where it would compute, as a PATCH of them would (§6.2): before anything is written.
+        const misfit = numbersPastMove(row.id, read.placement, body)
+        if (misfit !== null) return invalid(res, misfit)
         setSessionPlacement(row.id, read.placement)
         // Its image is looked for now, so that the machines fetch it before anyone presses Run (§6.6).
         classPlacementChanged(row.id, sessionEnvironment(row.id))
@@ -1069,9 +1198,17 @@ export function adminInstanceRoutes(): Router {
       broadcast(row.id, { t: 'rules', rules: storedRules(row.id) })
     }
 
+    /*
+     * Memory and cores are held to the place of every slot they reach
+     * (remote-classes.md §6.2): this server's bound for a slot here, the
+     * biggest machine's for a slot set to machines, as the class is placed by
+     * now (a placement or rules this request changed above count).
+     */
+    const bounds = body?.memoryMb !== undefined || body?.cpus !== undefined ? classBounds(row.id) : null
+
     if (body?.memoryMb !== undefined) {
-      const memory = readMemoryInput(body.memoryMb)
-      if (!memory.ok) return invalid(res, memoryRefusal(memory.error))
+      const memory = readMemoryInput(body.memoryMb, bounds!.memory)
+      if (!memory.ok) return invalid(res, memoryRefusal(memory.error, bounds!.memory))
       setSessionMemoryMb(row.id, memory.mb)
       forgetResources()
       /*
@@ -1104,8 +1241,8 @@ export function adminInstanceRoutes(): Router {
     }
 
     if (body?.cpus !== undefined) {
-      const cpu = readCpuInput(body.cpus)
-      if (!cpu.ok) return invalid(res, cpuRefusal(cpu.error))
+      const cpu = readCpuInput(body.cpus, bounds!.cpus)
+      if (!cpu.ok) return invalid(res, cpuRefusal(cpu.error, bounds!.cpus))
       setSessionCpus(row.id, cpu.cpus)
       forgetResources()
       /*

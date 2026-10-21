@@ -54,6 +54,7 @@ import { installOutboundProxy } from './outbound.js'
 import { migratePages } from './publish/migrate-pages.js'
 import { sweepPageFiles } from './publish/page-files.js'
 import { repairFolderFiles } from './publish/materials.js'
+import { answerClientError } from './net/long-body.js'
 
 /*
  * The institution's proxy (HTTPS_PROXY, HTTP_PROXY, NO_PROXY) is in place
@@ -77,6 +78,12 @@ const server = http.createServer(app)
  */
 server.keepAliveTimeout = 130_000
 server.headersTimeout = 135_000
+/*
+ * Node's request timeout (300 s) spares a machine's upload whose body this
+ * server itself reads at its own pace, while its door's stall timer stands
+ * (net/long-body.ts); every other client error is answered as Node does.
+ */
+server.on('clientError', answerClientError)
 
 server.on('upgrade', handleUpgrade)
 

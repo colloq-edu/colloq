@@ -125,20 +125,23 @@ export interface FileEntry {
    */
   /**
    * The file exists only on the machine: over «Файл с машины — до» (`size`),
-   * over the room's limit (`room`), past the walk's ceiling (`count`), or
-   * inside a package tree (`package`). Nothing of it is on this server's
-   * disk: it is fetched with «Привезти» (`files:fetch`), not downloaded.
+   * over the room's limit (`room`), past the walk's ceiling (`count`),
+   * inside a package tree (`package`), or refused on its way here by the
+   * proxy in front of this server (`proxy`). Nothing of it is on this
+   * server's disk: it is fetched with «Привезти» (`files:fetch`), not
+   * downloaded.
    */
-  onMachine?: { bytes: number; why: 'size' | 'room' | 'count' | 'package' }
+  onMachine?: { bytes: number; why: 'size' | 'room' | 'count' | 'package' | 'proxy' }
   /** A newer version is on its way from the machine: until it lands, the file serves the one this server has. */
   pending?: true
   /**
    * Another version of this file, one this server has, stays on the machine:
    * the kernel's rewrite over «Файл с машины — до» (`size`) or the room's
-   * limit (`room`). The row is this server's file as before; «Привезти»
+   * limit (`room`), or one the proxy in front of this server refused
+   * (`proxy`). The row is this server's file as before; «Привезти»
    * (`files:fetch`) brings the machine's, replacing it.
    */
-  newer?: { bytes: number; why: 'size' | 'room' }
+  newer?: { bytes: number; why: 'size' | 'room' | 'proxy' }
   /** A conflict copy, «data (с машины 14-32).csv»: the machine's version of `of`, kept at `at` when this server's won. */
   conflict?: { of: string; at: number }
   /**
@@ -1217,6 +1220,15 @@ export type ControlServerMessage =
    * there.
    */
   | ({ t: 'files:delta'; from: number; rev: number } & FilesDelta)
+  /**
+   * The answer to `files:fetch` («Привезти», remote-classes.md §8.5), to the
+   * tab that pressed and to it alone: `accepted` — the pull started, or was on
+   * its way already (the tree says `pending` until the file lands);
+   * `brought` — the file is here already, nothing to bring; `refused` —
+   * `message` says why, in the room's words. The panel lets the press go on
+   * it, rather than on a timer.
+   */
+  | { t: 'files:fetched'; path: string; outcome: 'accepted' | 'brought' | 'refused'; message?: string }
   /*
    * The room's rules changed. They can be edited after a seminar is made, and
    * the server reads them fresh on every request — so a room told nothing

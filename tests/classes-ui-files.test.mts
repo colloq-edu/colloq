@@ -141,6 +141,24 @@ test('«Привезти» waits as long as the tree says the file is on its way
   for (const [button] of still) assert.doesNotMatch(button, /\sdisabled(=""|\s|>)/)
 })
 
+test('a file the proxy in front of the server refused is «на машине» with its own note, naming no cap of the class', () => {
+  const host = panel('host', [entry('big.ckpt', 0, { onMachine: { bytes: 150 * 1024 * 1024, why: 'proxy' } })])
+  assert.match(text(host), /big\.ckpt \(150 МБ\) остаётся на машине: прокси перед сервером не принимает файлы такого размера\./)
+  assert.doesNotMatch(text(host), /больше предела/)
+})
+
+test('«Привезти»\'s press is let go on the server\'s own answer (or a closed socket), never on a timer', () => {
+  const strip = (source: string): string => source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '').replace(/\s+/g, ' ')
+  const source = strip(readFileSync(new URL('../web/src/components/panels/FilesPanel.svelte', import.meta.url), 'utf8'))
+  const asked = source.slice(source.indexOf('let asked = $state'), source.indexOf('function fetchFromMachine('))
+  assert.doesNotMatch(asked, /setTimeout|FETCH_ANSWER_MS|lastError/, 'no fallback that guesses at an answer')
+  assert.match(asked, /const answer = session\.fetched if \(!answer \|\| !asked\.has\(answer\.path\)\) return asked = new Map\(\[\.\.\.asked\]\.filter\(\(\[path\]\) => path !== answer\.path\)\)/)
+  assert.match(asked, /if \(asked\.size > 0 && !session\.connected\) asked = new Map\(\)/)
+  // The session keeps the answer, and a refusal is the room's toast as well.
+  const session = strip(readFileSync(new URL('../web/src/lib/session.svelte.ts', import.meta.url), 'utf8'))
+  assert.match(session, /else if \(message\.t === 'files:fetched'\) \{ this\.fetched = \{ path: message\.path, outcome: message\.outcome, at: Date\.now\(\) \} if \(message\.outcome === 'refused' && message\.message\) this\.lastError = message\.message \}/)
+})
+
 test('a file only on the machine has nothing here to open, give, copy or rename: its menu says so, and offers staff «Привезти»', () => {
   const source = (readFileSync(new URL('../web/src/components/panels/FilesPanel.svelte', import.meta.url), 'utf8')).replace(/\s+/g, ' ')
   assert.match(source, /function fileItems\(entry: FileEntry\): ContextMenuItem\[\] \{ \/\/ [^/]*? if \(machineSide\(entry\)\.onMachine\) return machineItems\(entry\)/)

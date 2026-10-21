@@ -126,6 +126,7 @@ import {
   REMOTE_API_BASE,
   REMOTE_BYTES_HEADER,
   REMOTE_ERRORS,
+  REMOTE_MARKER,
   REMOTE_MARKER_HEADER,
   REMOTE_REASON_CHARS,
   REMOTE_SHA256,
@@ -615,7 +616,8 @@ export interface RoomUpload {
 /** Home's answer, as the agent's client reads every answer (client.ts · CallResult). */
 export type RoomUploadAnswer =
   | { kind: 'ok' }
-  | { kind: 'refused'; status: number; error: RemoteErrorCode; detail: string }
+  /** `proxy` — the refusal is a proxy's in front of home (its 413, without home's marker): the same bytes would meet it again. */
+  | { kind: 'refused'; status: number; error: RemoteErrorCode; detail: string; proxy?: true }
   | { kind: 'transient'; reason: string; retryAfterMs: number | null }
 
 export type RoomUploader = (upload: RoomUpload) => Promise<RoomUploadAnswer>
@@ -627,6 +629,11 @@ export type RoomUploader = (upload: RoomUpload) => Promise<RoomUploadAnswer>
  * or a 5xx transient, any other refusal home's by its code. The body streams
  * as it is paced (`duplex: 'half'`): its length is said by X-Colloq-Bytes of
  * the file uncompressed, as for a run's results.
+ *
+ * But a 413 without the marker is a proxy's in front of home refusing a body
+ * this large (nginx's client_max_body_size, Caddy's request_body): no hiccup,
+ * and no retry gets the same bytes past it — sent again and again it cost the
+ * relay the whole file each time. A refusal, said as the proxy's.
  */
 export function homeUploader(input: { home: string; credential: () => string | null; fetch?: typeof fetch }): RoomUploader {
   const fetchImpl = input.fetch ?? globalThis.fetch.bind(globalThis)
@@ -654,7 +661,12 @@ export function homeUploader(input: { home: string; credential: () => string | n
       return { kind: 'transient', reason: upload.signal.aborted ? 'cancelled' : error instanceof Error ? error.message : String(error), retryAfterMs: null }
     }
     try {
-      if (remoteTransient(response.status, response.headers.get(REMOTE_MARKER_HEADER))) {
+      const marker = response.headers.get(REMOTE_MARKER_HEADER)
+      if (response.status === 413 && marker?.trim() !== REMOTE_MARKER) {
+        await response.body?.cancel().catch(() => undefined)
+        return { kind: 'refused', status: 413, error: 'too_large', detail: 'a proxy in front of home refused a body this large', proxy: true }
+      }
+      if (remoteTransient(response.status, marker)) {
         await response.body?.cancel().catch(() => undefined)
         return { kind: 'transient', reason: `home answered ${response.status}`, retryAfterMs: retryAfter(response.headers.get('Retry-After')) }
       }
@@ -806,6 +818,12 @@ interface Room {
   skipped: Map<string, { bytes: number; why: RemoteSkipReason }>
   /** Skipped paths as last said (`bytes:why`). */
   skippedSaid: Map<string, string>
+  /**
+   * Versions a proxy in front of home refused on their way there (its 413,
+   * send), by path: each stays here, said as left here (`proxy`), until the
+   * file changes — the same bytes would meet the same proxy.
+   */
+  tooLarge: Map<string, string>
   queue: RemoteFilesPush[]
   applying: Applying | null
   lastPush: string | null
@@ -1159,6 +1177,42 @@ export class RoomFiles {
     }
   }
 
+  /** Whether a copy of a class home names here is kept: one a leave settles first (sync.ts · settleForLeave). */
+  holdsCopies(): boolean {
+    return [...this.rooms.values()].some((room) => !room.fence && genOf(room.wanted) !== null)
+  }
+
+  /**
+   * Every copy scanned now, its quiet rule skipped, as when home asks for a
+   * scan — a leave's last word on its classes (sync.ts · settleForLeave).
+   * Resolved once those scans ran, or the copies stopped meanwhile.
+   */
+  async scanAll(): Promise<void> {
+    const rooms = [...this.rooms.values()].filter((room) => !room.fence && genOf(room.wanted) !== null)
+    for (const room of rooms) room.asked = true
+    // A copy busy with a push scans at the beat after it: a few rounds, never a spin.
+    for (let round = 0; round < 50 && rooms.some((room) => room.asked && !room.fence) && !this.stopped && !this.cleared; round++) {
+      await this.tick()
+      await this.idle()
+    }
+  }
+
+  /**
+   * Whether every copy's files are home's word by now (sync.ts ·
+   * settleForLeave): each scanned since `since` and done, nothing it found
+   * still waiting for home's verdict (the lag's `pending`), no push of
+   * home's to apply, and no upload home asked for still to go.
+   */
+  settledSince(since: number): boolean {
+    for (const room of this.rooms.values()) {
+      if (room.fence || genOf(room.wanted) === null) continue
+      if (room.work !== null || room.asked || room.scannedAt < since || room.queue.length > 0) return false
+      if ((this.lag(room.sessionId)?.pending ?? 0) > 0) return false
+    }
+    for (const upload of this.uploads.values()) if (!upload.room.fence && upload.doneAt === null) return false
+    return true
+  }
+
   /** Settled once nothing is under way: no scan, push, fence or upload. */
   async idle(): Promise<void> {
     for (;;) {
@@ -1233,6 +1287,7 @@ export class RoomFiles {
       fetched: new Map(),
       skipped: new Map(),
       skippedSaid: new Map(),
+      tooLarge: new Map(),
       queue: [],
       applying: null,
       lastPush: null,
@@ -1473,13 +1528,20 @@ export class RoomFiles {
     }
   }
 
-  /** A path removed at home: removed here, whatever the machine made of it (the delete holds, §8.4), a change home never saw kept aside for its note. */
+  /**
+   * A path removed at home: removed here, whatever the machine made of it
+   * (the delete holds, §8.4), a change home never saw kept aside for its
+   * note. Not one home knew stays here — said left here (`skippedSaid`), or
+   * turned away for a cap — which staff deleted from its row («на машине»):
+   * reported as a change with no base, it would come home as a new file.
+   */
   private async remove(room: Room, afs: Anchored, at: string): Promise<void> {
     const stat = lstatOf(afs, this.abs(room, at))
-    if (stat?.isFile()) await this.keepAside(room, afs, at, stat, this.book.known(stat), false)
+    const known = room.skippedSaid.has(at) || room.refused.get(at)?.why === 'cap'
+    if (stat?.isFile() && !known) await this.keepAside(room, afs, at, stat, this.book.known(stat), false)
     if (stat) afs.rmSync(this.abs(room, at), { recursive: true, force: true })
     for (const [entry] of under(room.base.files, at)) room.base.files.delete(entry)
-    for (const map of [room.seen, room.changes, room.refused, room.retract, room.fetched] as Array<Map<string, unknown>>) for (const entry of [...map.keys()]) if (isInside(entry, at)) map.delete(entry)
+    for (const map of [room.seen, room.changes, room.refused, room.retract, room.fetched, room.tooLarge] as Array<Map<string, unknown>>) for (const entry of [...map.keys()]) if (isInside(entry, at)) map.delete(entry)
   }
 
   /**
@@ -1844,6 +1906,13 @@ export class RoomFiles {
       entry.sha = read.sha
       this.book.noteStat(read.stat, read.sha)
     }
+    // What a proxy in front of home refused stays here as that version (send): said as left here, never as a change, until
+    // it changes; a file gone or changed forgets it.
+    for (const [at, refused] of [...room.tooLarge]) {
+      const entry = seen.get(at)
+      if (entry?.sha === refused) skipped.set(at, { bytes: entry.bytes, why: 'proxy' })
+      else if (!entry || entry.sha !== null) room.tooLarge.delete(at)
+    }
     // The room limit: what both sides agreed first, then the changes in the walk's order.
     const roomCap = this.caps.roomMb * MIB
     let total = 0
@@ -2183,6 +2252,8 @@ export class RoomFiles {
     const kept = room.kept.get(entry.path)
     if (kept && kept.sha === sha) kept.until = now + this.timings.verdictMs
     if (known && known.sha === sha && (known.doneAt === null || now - known.doneAt < this.timings.verdictMs)) return
+    // A version a proxy in front of home refused meets it again: it stays here, said so, until it changes.
+    if (sha !== null && room.tooLarge.get(entry.path) === sha) return
     known?.abort.abort()
     this.uploads.set(key, { room, gen, path: entry.path, sha, tries: 0, notBefore: 0, task: null, doneAt: null, abort: new AbortController() })
   }
@@ -2308,6 +2379,19 @@ export class RoomFiles {
         if (answer.error === 'unauthorized') this.options.onUnauthorized?.()
         else if (from) this.dropKept(room, upload.path, from)
         if (upload.sha === null) room.fetched.delete(upload.path)
+        if (answer.proxy) {
+          /*
+           * A proxy in front of home takes no body this large: the version
+           * stays here, and the next scan says it left here (`proxy`), which
+           * lets home's pull of it go — never the whole file again, and again.
+           */
+          room.tooLarge.set(upload.path, sha)
+          const flight = room.inflight.get(upload.path)
+          if (flight?.state === sha) room.inflight.delete(upload.path)
+          room.scannedAt = 0
+          this.options.log(`[runner] class ${room.sessionId}: a proxy in front of home refused ${upload.path} (${bytes} bytes, 413): it stays on this machine until its proxy takes bodies this large (server.html#proxy)`)
+          return done()
+        }
         this.options.log(`[runner] class ${room.sessionId}: home refused ${upload.path} (${answer.error}${answer.detail ? `: ${answer.detail}` : ''})`)
         return done()
       }

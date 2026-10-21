@@ -146,7 +146,7 @@
    * before classes has none of them, and every row reads as it always did.
    */
   interface MachineSide {
-    onMachine: { bytes: number; why: 'size' | 'room' | 'count' | 'package' } | null
+    onMachine: { bytes: number; why: 'size' | 'room' | 'count' | 'package' | 'proxy' } | null
     pending: boolean
     conflict: { of: string; at: number } | null
     packages: { bytes: number; count: number } | null
@@ -190,21 +190,27 @@
 
   /**
    * Fetch pressed and not answered yet, by path, with when (control.ts ·
-   * `files:fetch`). The tree answers a pull it starts: the row is `pending`
-   * from then on, here or in any tab, until the file lands. A refusal comes
-   * as an error to the one who pressed (the room's toast) — a file over the
-   * class's limit, say — and lets the press go, as does no answer within
-   * FETCH_ANSWER_MS: the button is never stuck on a press the server did not
-   * take.
+   * `files:fetch`). The server answers the press itself (`files:fetched`,
+   * session.svelte.ts · fetched): taken — the row is `pending` from then on,
+   * here or in any tab, until the file lands — the file here already, or
+   * refused in words, which come as the room's toast too (a file over the
+   * class's limit, say). Either answer lets the press go, and so does a
+   * socket that closed under it, which no answer crosses: the button is
+   * never stuck on a press the server did not take.
    */
-  const FETCH_ANSWER_MS = 10_000
   let asked = $state<ReadonlyMap<string, number>>(new Map())
   /** Whether a file's Fetch waits: the pull is on its way (the tree says so), or the press is not answered yet. */
   function fetchingOf(entry: FileEntry): boolean {
     const there = machineSide(entry)
     return (there.onMachine !== null && there.pending) || asked.has(entry.path)
   }
-  // Answered by the tree: the pull started (`pending`), the file is here, or the row is gone.
+  // Answered: whatever the answer, the press is let go (a pull taken shows as the row's `pending` from the tree).
+  $effect(() => {
+    const answer = session.fetched
+    if (!answer || !asked.has(answer.path)) return
+    asked = new Map([...asked].filter(([path]) => path !== answer.path))
+  })
+  // Answered by the tree before its own word came: the pull started (`pending`), the file is here, or the row is gone.
   $effect(() => {
     if (asked.size === 0) return
     const files = session.files
@@ -214,15 +220,9 @@
     })
     if (answered.length > 0) asked = new Map([...asked].filter(([path]) => !answered.includes(path)))
   })
-  // Refused (an error came after the press), or not answered at all: the presses are let go.
+  // The socket closed under the press: no answer comes for it.
   $effect(() => {
-    if (asked.size === 0) return
-    if (session.lastError !== null) {
-      asked = new Map()
-      return
-    }
-    const timer = setTimeout(() => (asked = new Map()), FETCH_ANSWER_MS)
-    return () => clearTimeout(timer)
+    if (asked.size > 0 && !session.connected) asked = new Map()
   })
 
   /**
@@ -238,10 +238,12 @@
   }
 
   /** The note of a file the machine keeps (§13.2 «Over a cap»), by why it stays there. */
-  function keptNote(item: { entry: FileEntry; bytes: number; why: 'size' | 'room' | 'count' | 'package' }): string {
+  function keptNote(item: { entry: FileEntry; bytes: number; why: 'size' | 'room' | 'count' | 'package' | 'proxy' }): string {
     const words = { name: item.entry.name, size: machineBytes(item.bytes) }
     if (item.why === 'room') return tr('room.files.machine.overRoom', words)
     if (item.why === 'count') return tr('room.files.machine.overCount', words)
+    // The proxy in front of the server refused it on its way here: no cap of the class's (remote-classes.md §8.5).
+    if (item.why === 'proxy') return tr('room.files.machine.overProxy', words)
     return tr('room.files.machine.overCap', words)
   }
 

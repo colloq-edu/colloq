@@ -15,8 +15,8 @@
 #
 #   scripts/vast-runner.sh up | update | down
 #
-# CODE is the home owner's enrollment code (Resources, machines for
-# submissions, «Подключить машину»; or colloq-host runner-code on the home),
+# CODE is the home owner's enrollment code (Resources → Machines →
+# «Подключить машину»; or colloq-host runner-code on the home),
 # for at least COUNT machines. URL is the home; VAST_RUNNER_URL in .env names a
 # usual one for `up` (the fleet commands take URL= from the command line only:
 # a default there would quietly narrow, or widen, what is destroyed). GPU=,
@@ -101,7 +101,7 @@
 # home answers: after ten minutes without a word from it (a home destroyed
 # before its machines, a tunnel down) the leave is given up, said so, and the
 # VM destroyed all the same, rather than billing while this waits for good.
-# Classes on a machine move to their home's server with its leave, at once
+# Classes on a machine move off it with its leave, at once
 # (down_one says how the leave is told so); with NOW=1 a minute after the
 # machine falls silent. Their variables are lost either way.
 #
@@ -227,7 +227,7 @@ up() {
   local code_re='^[a-f0-9]{32}$'
   case "$count" in ''|*[!0-9]*) die "COUNT= is how many machines to rent, 1 to 16, not \"$count\"." ;; esac
   [ "$count" -ge 1 ] && [ "$count" -le 16 ] || die "COUNT= is how many machines to rent, 1 to 16, not \"$count\"."
-  [ -n "$code" ] || die "CODE= is the enrollment code from the home's owner (its panel: Resources, machines for submissions; or colloq-host runner-code there)."
+  [ -n "$code" ] || die "CODE= is the enrollment code from the home's owner (its panel: Resources → Machines → Connect a machine; or colloq-host runner-code there)."
   [[ "$code" =~ $code_re ]] || die "CODE= is not an enrollment code: 32 hex digits from the home's owner."
   [ -n "$url" ] || url="$(read_env VAST_RUNNER_URL)"
   [ -n "$url" ] || die "URL= names the home these machines join (https://vsos.colloq.ru), or VAST_RUNNER_URL in .env."
@@ -706,9 +706,9 @@ update() {
 # A machine with classes on it asks before it leaves (colloq-host · runner_leave,
 # its exit LEAVE_HOLDS_CLASSES), and nobody is at its terminal to answer: the
 # answer is the one given here already, that these machines go. So it is
-# asked again with --force, which moves its classes to their home's server at
-# once rather than a minute after the machine falls silent, their variables
-# lost either way.
+# asked again with --force, which moves its classes off it at once rather
+# than a minute after the machine falls silent, their variables lost either
+# way.
 LEAVE_HOLDS_CLASSES=3
 down_one() {
   local id="$1" host="$2" port="$3" status="$4" left=0 rc=0
@@ -719,7 +719,7 @@ down_one() {
   else
     ssh_to "$host" "$port" 'colloq-host runner leave' || rc=$?
     if [ "$rc" = "$LEAVE_HOLDS_CLASSES" ]; then
-      say "its classes move to their home's server (their variables are lost), and it leaves"
+      say "its classes move off it (their variables are lost), and it leaves"
       rc=0
       ssh_to "$host" "$port" 'colloq-host runner leave --force' || rc=$?
     fi
@@ -728,14 +728,14 @@ down_one() {
   api DELETE "instances/$id/" >/dev/null
   say "instance $id destroyed"
   [ "$left" != 1 ] || return 0
-  say "its home still lists it: revoke it there (Resources, machines for submissions); until then it shows as silent, and its runs went back to the queue after 3 minutes"
+  say "its home still lists it: revoke it there (Resources → Machines); until then it shows as silent, and its runs went back to the queue after 3 minutes"
   [ "${NOW:-}" = 1 ]
 }
 
 down() {
   local answer
   load_fleet
-  say "${BOLD}these machines leave their home and are destroyed, with their disks (classes on them move to their home's server):${OFF}"
+  say "${BOLD}these machines leave their home and are destroyed, with their disks (classes on them move off them):${OFF}"
   show_fleet
   if [ "${FORCE:-}" != 1 ]; then
     [ -t 0 ] || die "no terminal to ask in. FORCE=1 destroys without asking."

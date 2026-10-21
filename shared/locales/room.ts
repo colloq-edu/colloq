@@ -6501,8 +6501,8 @@ export const roomMessages: MessageCatalog = {
     "en": "No link to the machine · {elapsed}. The kernel and its variables on the machine are intact — waiting for the link. New runs will wait."
   },
   "room.machine.chip.moving": {
-    "ru": "Переносим на сервер…",
-    "en": "Moving to this server…"
+    "ru": "Переносим ядро…",
+    "en": "Moving the kernel…"
   },
   "room.machine.chip.moved": {
     "ru": "На сервере · переехало в {time}",
@@ -6595,6 +6595,10 @@ export const roomMessages: MessageCatalog = {
   "room.files.machine.overRoom": {
     "ru": "{name} ({size}) не помещается в предел занятия и остаётся на машине. Если машина пропадёт, файл пропадёт тоже.",
     "en": "{name} ({size}) does not fit the class limit and stays on the machine. If the machine disappears, so does the file."
+  },
+  "room.files.machine.overProxy": {
+    "ru": "{name} ({size}) остаётся на машине: прокси перед сервером не принимает файлы такого размера. Если машина пропадёт, файл пропадёт тоже.",
+    "en": "{name} ({size}) stays on the machine: the proxy in front of the server takes no file this large. If the machine disappears, so does the file."
   },
   "room.files.machine.overCount": {
     "ru": "{name} остаётся на машине: файлов там больше, чем сервер сверяет за раз. Если машина пропадёт, файл пропадёт тоже.",

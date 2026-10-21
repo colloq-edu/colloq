@@ -363,6 +363,13 @@ interface Copy {
   eager: unknown
   /** What the copy holds differs from this server's in a way no write here will tell (a refusal, an eager push skipped): push once the one in flight is acked. */
   dirty: boolean
+  /**
+   * Rows only the machine has that staff deleted («на машине», Z6), by path:
+   * a remove of each rides every push until one carrying it is acked, and
+   * the row goes then — the machine has removed it — or when the machine
+   * reports it gone first (`released`).
+   */
+  drops: Set<string>
 }
 
 /** What this module asks of the rest of the server: given as it loads (control.ts), a test's own otherwise. */
@@ -654,6 +661,7 @@ export class ClassFiles {
       syncedAt: null,
       eager: null,
       dirty: false,
+      drops: new Set(),
     }
     this.copies.set(key, copy)
     const served = this.served.get(runnerId) ?? new Set<string>()
@@ -921,6 +929,15 @@ export class ClassFiles {
     copy.walk = walk
     const newest = copy.pushes.at(-1)
     if (newest && newest.digest === walk.digest && !dirty) {
+      /*
+       * A run waits for no push that carries only the room's notebook files
+       * (§8.2: they are off the run path), which a class whose students type
+       * plans every few seconds: it goes now, the push on in the background.
+       */
+      if (promoted && copy.pushes.every((one) => this.booksOnly(copy, one))) {
+        this.releaseNext(copy)
+        return null
+      }
       if (promoted && !newest.promoted) {
         newest.promoted = true
         this.wake(copy.runnerId)
@@ -932,7 +949,14 @@ export class ClassFiles {
     if (!push) {
       // A run's barrier left a notebook's projection behind: it follows in the background.
       if (copy.dirty) this.scheduleEager(copy)
-      this.waitersOn(copy)
+      /*
+       * Nothing a run reads is missing there, whatever the pushes in flight
+       * do: a run's plan puts again every path they touch but the notebooks
+       * (plan), so one with nothing to push means they carry notebooks
+       * alone. The run goes now rather than wait for their ack.
+       */
+      if (promoted) this.releaseNext(copy)
+      else this.waitersOn(copy)
       return null
     }
     this.counts.pushes++
@@ -963,6 +987,17 @@ export class ClassFiles {
     const newest = copy.pushes.at(-1)!
     const flying = copy.pushes.find((one) => one !== newest && one.sent)
     copy.pushes = flying ? [flying, newest] : [newest]
+  }
+
+  /** Whether a push carries only the room's notebook files, which no run waits for (§8.2): no folder, no move, nothing left for a next one. */
+  private booksOnly(copy: Copy, push: Push): boolean {
+    if (push.full || push.rest !== null || push.move.length > 0) return false
+    return push.put.every((entry) => !('dir' in entry && entry.dir) && this.hooks.isBook(copy.sessionId, entry.path)) && push.remove.every((where) => this.hooks.isBook(copy.sessionId, where))
+  }
+
+  /** The runs waiting for the push planned next go now: nothing they read is missing on the machine. */
+  private releaseNext(copy: Copy): void {
+    for (const waiter of [...copy.waiters]) if (waiter.seq === NEXT_PUSH) this.release(copy, waiter)
   }
 
   /** Runs waiting for the push planned next: now it is the newest, or there is none to wait for (the copy is in step). */
@@ -1038,11 +1073,34 @@ export class ClassFiles {
       effects.push({ kind: 'put', path: where, sha: REMOTE_DIR_BASE })
       put.push({ path: where, dir: true })
     }
+    /*
+     * Rows only the machine has that staff deleted (removeOnMachine): removed
+     * there by every push until one carrying them is acked — a full one too,
+     * which by itself takes away only what both sides agreed. One this server
+     * has something at again is this server's to put, and needs no remove.
+     */
+    const dropRemoves = (): void => {
+      for (const where of [...copy.drops]) {
+        if (walk.entries.has(where)) {
+          copy.drops.delete(where)
+          continue
+        }
+        if (remove.some((one) => isInside(where, one))) continue
+        if (paths + 1 > REMOTE_PUSH_PATHS_MAX) {
+          later(0)
+          continue
+        }
+        paths++
+        remove.push(where)
+        effects.push({ kind: 'remove', path: where })
+      }
+    }
     const ordered = [...walk.entries].sort((a, b) => depthOf(a[0]) - depthOf(b[0]) || (a[0] < b[0] ? -1 : 1))
     const full = copy.fresh
     if (full) {
       // The whole folder: the copy becomes exactly this (the agent removes what it does not name), what waits for the next
       // push of the chain put by that one.
+      dropRemoves()
       for (const [where, seen] of ordered) {
         if (seen.sha === REMOTE_DIR_BASE) putDir(where)
         else putFile(where, seen)
@@ -1137,6 +1195,7 @@ export class ClassFiles {
         remove.push(where)
         effects.push({ kind: 'remove', path: where })
       }
+      dropRemoves()
       for (const [where, seen] of added) {
         if (moved.has(where)) continue
         /*
@@ -1185,6 +1244,7 @@ export class ClassFiles {
     copy.machineSeq = seq
     copy.seq = Math.max(copy.seq, seq)
     let last: Push | null = null
+    let rowsGone = false
     while (copy.pushes.length > 0 && copy.pushes[0]!.seq <= seq) {
       const push = copy.pushes.shift()!
       last = push
@@ -1195,7 +1255,22 @@ export class ClassFiles {
       if (copy.acked) for (const effect of push.effects) applyEffect(copy.acked, effect)
       // A path this server pushed is one the machine's record has from now on: a version brought with «Привезти» is no longer a guess.
       for (const effect of push.effects) for (const where of [...copy.fetched.keys()]) if (isInside(where, effect.path)) copy.fetched.delete(where)
+      /*
+       * The machine removed these, and whatever was under them: a row staff
+       * deleted there is done, and what stayed only there under a removed
+       * folder is gone with it. The room's tree says so now.
+       */
+      for (const effect of push.effects) {
+        if (effect.kind !== 'remove') continue
+        copy.drops.delete(effect.path)
+        for (const where of [...copy.onMachine.keys()]) {
+          if (!isInside(where, effect.path)) continue
+          copy.onMachine.delete(where)
+          rowsGone = true
+        }
+      }
     }
+    if (rowsGone) this.landed(copy.sessionId)
     if (!last) return
     const now = this.clock.now()
     for (const settle of copy.settles) if (settle.behind !== null && settle.appliedAt === null && seq >= settle.behind) settle.appliedAt = now
@@ -1537,17 +1612,26 @@ export class ClassFiles {
     const verdict: Verdict = { sessionId: copy.sessionId, seq, accepted: [], refused: [] }
     const room = { bytes: null as number | null }
     let landed = false
+    // The rows the room's tree has of the machine changed (one more left there, one gone from it): the room hears it now.
+    let rows = false
     // No longer left on the machine: gone from it, or on their way here now (then in `changed` too).
     const changing = new Set(report.changed.map((entry) => entry.path))
     for (const where of report.released ?? []) {
-      copy.onMachine.delete(where)
+      if (copy.onMachine.delete(where)) rows = true
       // Gone, not on its way: a «Привезти» of it waits for no bytes that come (its row, and the lag's «↑ 1 файл», with it).
       if (!changing.has(where) && copy.pulls.get(where)?.fetch) this.dropPull(copy, where)
     }
     for (const entry of report.skipped) {
       if (copy.onMachine.size >= ON_MACHINE_MAX && !copy.onMachine.has(entry.path)) break
+      const known = copy.onMachine.get(entry.path)
+      if (!known || known.bytes !== entry.bytes || known.why !== entry.why) rows = true
       copy.onMachine.set(entry.path, { bytes: entry.bytes, why: entry.why, sha256: null, base: null, seq, at: now })
+      // Left there, it is not on its way: a pull of what a kernel wrote there waits for no bytes («Привезти» does: staff asked).
+      const pull = copy.pulls.get(entry.path)
+      if (pull && !pull.fetch && pull.target === pull.path) this.dropPull(copy, entry.path)
       if (entry.why === 'size' || entry.why === 'room') this.sayOverCap(copy, entry.path, entry.bytes, entry.why)
+      // The proxy in front of this server refused its upload (the agent heard its 413): no cap of ours, and none to name.
+      else if (entry.why === 'proxy') this.say(copy.sessionId, `proxy:${entry.bytes}`, entry.path, tr('server.staysOnTheMachineTheProxyIn.8cfa12', { file: entry.path, size: sizeWords(entry.bytes) }))
     }
     // Renames: a removed file and an added one of the same content, in one report.
     const adds = new Map<string, string[]>()
@@ -1586,7 +1670,7 @@ export class ClassFiles {
       } else verdict.refused.push(outcome)
     }
     this.queueVerdict(copy, verdict)
-    if (landed) this.landed(copy.sessionId)
+    if (landed || rows) this.landed(copy.sessionId)
     // A refused path is this server's version again on the machine: the next push puts it back (now, or once the one in
     // flight is acked).
     if (verdict.refused.some((entry) => entry.why !== 'cap')) {
@@ -2446,9 +2530,11 @@ export class ClassFiles {
   /**
    * «Привезти» (§8.5): pull one file that stays on a machine of the class,
    * over «Файл с машины — до» if it must, within the room's limit. The room
-   * hears of it from the tree once it lands. Words when it cannot be.
+   * hears of it from the tree once it lands. `brought` — no machine keeps it
+   * aside any more and the file is here (it landed before the press was
+   * read). Words when it cannot be.
    */
-  fetch(sessionId: string, where: string): { ok: true } | { refused: string } {
+  fetch(sessionId: string, where: string): { ok: true } | { brought: true } | { refused: string } {
     this.live()
     const normal = normalizePath(where)
     if (!normal) return { refused: tr('server.thisFileIsNotOnTheClassMachines.0fd59f') }
@@ -2458,6 +2544,8 @@ export class ClassFiles {
       if (!copy || !held) continue
       // A package tree's file comes with its tree or not at all; any other is brought as it is (by its hash, when it was told one).
       if (held.why === 'package') return { refused: tr('server.thisFileCannotBeBroughtFromThe.148a43') }
+      // One the proxy in front of this server refused would meet the same refusal: its administrator raises the limit first.
+      if (held.why === 'proxy') return { refused: tr('server.cannotBeBroughtHereTheProxyIn.fc1eca', { file: normal }) }
       if (copy.pulls.has(normal)) return { ok: true }
       let fits = true
       try {
@@ -2481,7 +2569,36 @@ export class ClassFiles {
       this.wake(runnerId)
       return { ok: true }
     }
+    if (isFileHere(sessionId, normal)) return { brought: true }
     return { refused: tr('server.thisFileIsNotOnTheClassMachines.0fd59f') }
+  }
+
+  /**
+   * Delete of a row only a machine of the class has («на машине», Z6): the
+   * file, or a folder made up of such rows, goes on that machine. A remove of
+   * the path rides the copy's next push, planned now, and the row goes once
+   * that push is acked or the machine reports the path gone first (noteAck,
+   * `released`). Whether any copy keeps something at or under the path:
+   * false — no such row here, and the caller's own refusal stands. Rights are
+   * the caller's: this server's delete doors (control.ts · tree:remove,
+   * routes/files.ts) refuse students here as they do for any file.
+   */
+  removeOnMachine(sessionId: string, where: string): boolean {
+    this.live()
+    const normal = normalizePath(where)
+    if (!normal) return false
+    let any = false
+    for (const copy of this.liveCopies(sessionId)) {
+      if (![...copy.onMachine.keys()].some((held) => isInside(held, normal))) continue
+      any = true
+      copy.drops.add(normal)
+      // What was on its way from under it is not wanted any more: the delete holds (§8.4).
+      for (const pull of [...copy.pulls.values()]) if (isInside(pull.path, normal)) this.dropPull(copy, pull.path)
+      copy.dirty = true
+      this.log(`[files] ${sessionId}: ${normal} deleted by staff on machine ${copy.runnerId}, where alone it was`)
+      this.scheduleEager(copy, 0)
+    }
+    return any
   }
 
   /* ---------------------------------------------------------------- views */
@@ -2614,6 +2731,17 @@ function applyEffect(acked: Map<string, string>, effect: Effect): void {
 /** The bytes a push carries inline. */
 function inlineBytes(push: Pick<Push, 'put'>): number {
   return push.put.reduce((sum, entry) => sum + (entry.inline !== undefined ? (entry.bytes ?? 0) : 0), 0)
+}
+
+/** Whether a path of the class folder is a file here, through the anchored file system (a link is none). */
+function isFileHere(sessionId: string, where: string): boolean {
+  const full = resolveInSession(sessionId, where)
+  if (!full) return false
+  try {
+    return workspaceFs.lstatSync(full).isFile()
+  } catch {
+    return false
+  }
 }
 
 /** A file's length through the anchored file system (a link's own), 0 for nothing there. */
@@ -2784,7 +2912,9 @@ export function askSlotScan(sessionId: string, role: RoomRole): void {
 export const filesSettled = (sessionId: string, timeoutMs: number): Promise<boolean> => classFiles().filesSettled(sessionId, timeoutMs)
 export const askFilesScan = (sessionId: string, runnerId: string): void => classFiles().askScan(sessionId, runnerId)
 export const filesPendingUnder = (sessionId: string, where: string): boolean => classFiles().pendingUnder(sessionId, where)
-export const fetchFromMachine = (sessionId: string, where: string): { ok: true } | { refused: string } => classFiles().fetch(sessionId, where)
+export const fetchFromMachine = (sessionId: string, where: string): { ok: true } | { brought: true } | { refused: string } => classFiles().fetch(sessionId, where)
+/** Delete of a row only a machine has: removed there (ClassFiles#removeOnMachine); false — no such row. */
+export const removeOnMachine = (sessionId: string, where: string): boolean => current?.removeOnMachine(sessionId, where) ?? false
 export const filesLag = (sessionId: string, runnerId: string): RemoteFilesLag | null => classFiles().filesLag(sessionId, runnerId)
 export const filesSyncedAt = (sessionId: string, runnerId: string): number | null => classFiles().filesSyncedAt(sessionId, runnerId)
 /** Whether a move off the machine has anything to wait for from it (placement.ts · moveNow): its copy of the class was heard from. */

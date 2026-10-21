@@ -107,6 +107,14 @@ test('a teacher whom the owner\'s switch keeps out reads where the class runs, g
   assert.ok(parts(kept).length > 0 && parts(kept).every(Boolean), 'the parts stay, greyed')
 })
 
+test('the block promises nothing of the council\'s pool before it is there: no council part, none of its numbers, a preset named for what moves', () => {
+  // A class whose stored council is on machines (the presets set it): its attempts run in the class notebook's kernel all the same.
+  const html = text(block({ editable: true, owner: true, placement: { ...CLASS_PLACEMENT_DEFAULT, own: 'machines', council: 'machines' } }))
+  assert.doesNotMatch(html, /Консилиум|Попыток одновременно|Память на попытку|параллельно/)
+  assert.match(html, /Личные тетради — на машинах/)
+  assert.match(html, /Тетради класса .*Личные тетради/, 'the two parts that move are drawn')
+})
+
 /* ----------------------------------------------------------- the forms */
 
 const read = (rel: string): string => fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
@@ -117,6 +125,8 @@ const flat = (source: string): string => source.replace(/\s+/g, ' ')
 test('the forms hand the block the viewer\'s right as the right and their own saves as busy', () => {
   const seminars = flat(code(read('web/src/admin/screens/Seminars.svelte')))
   assert.match(seminars, /placementEditable=\{ruling\.placementEditable === true\} \{placementBusy\}/)
+  // And the bounds the server holds the class's numbers to (§6.2): the machines' line is drawn from them, never from a copy of the rule.
+  assert.match(seminars, /<Resources [^>]*bounds=\{ruling\.bounds \?\? null\}/)
   const created = flat(code(read('web/src/admin/screens/NewSeminar.svelte')))
   assert.match(created, /placementEditable=\{placementMay\} placementBusy=\{created !== null \|\| busy\}/)
 })

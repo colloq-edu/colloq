@@ -20,7 +20,7 @@ import {
   statPath,
   sweepStaleUploads,
 } from '../workspace.js'
-import { filesPendingUnder, filesSettled } from '../kernel/remote/files.js'
+import { filesPendingUnder, filesSettled, removeOnMachine } from '../kernel/remote/files.js'
 import { broadcastFiles, forgetMissingBoard } from '../control.js'
 import { signDownloadToken, verifyDownloadToken } from '../auth.js'
 import { canSeeRoom } from '../admin/access.js'
@@ -711,7 +711,11 @@ export function fileRoutes(): Router {
       return res.status(403).json({ error: tr("server.onlyTheTeacherCanRemoveAFile.289f45") })
     }
     if (!deleteFile(sessionId, wanted)) {
-      return res.status(404).json({ error: tr("server.fileNotFound.3e2256") })
+      // A row only a machine of the class has («на машине»): it goes there, as at the socket door (control.ts · tree:remove).
+      if (!removeOnMachine(sessionId, wanted)) return res.status(404).json({ error: tr("server.fileNotFound.3e2256") })
+      const tree = roomTree(sessionId)
+      broadcastFiles(sessionId, tree)
+      return res.json(tree)
     }
     // The removal did not go through our counter, and how much was there
     // cannot be asked afterwards: count afresh. A teacher deletes a dataset

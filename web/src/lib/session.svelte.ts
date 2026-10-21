@@ -419,6 +419,12 @@ export class SessionState {
    */
   filesTruncated = $state(false)
   /**
+   * The server's last answer to this tab's «Привезти» (control.ts ·
+   * `files:fetch`): the files panel lets that press go when it comes. A
+   * refusal is the room's toast as well (`lastError`).
+   */
+  fetched = $state<{ path: string; outcome: 'accepted' | 'brought' | 'refused'; at: number } | null>(null)
+  /**
    * The number of the file list we have on hand. Zero — no list at all.
    *
    * A change in the tree travels as a delta (`files:delta`), and a delta lands
@@ -1391,6 +1397,10 @@ export class SessionState {
         laserArrived(this, message.at)
       } else if (message.t === 'terminal') this.terminalStatus = message.status
       else if (message.t === 'kernel:machine') this.kernelMachines = noteKernelMachine(this.kernelMachines, message, Date.now())
+      else if (message.t === 'files:fetched') {
+        this.fetched = { path: message.path, outcome: message.outcome, at: Date.now() }
+        if (message.outcome === 'refused' && message.message) this.lastError = message.message
+      }
       else if (message.t === 'error') this.lastError = message.message
       /*
        * Whether this instance can give a personal notebook its own kernel.

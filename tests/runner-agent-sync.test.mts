@@ -1004,6 +1004,44 @@ test('a leave says leaving in its last sync, and removes the class containers an
   }
 })
 
+test('a leave settles its classes\' files first: a file a cell wrote a moment before is reported and answered, and only then does a sync say leaving', async () => {
+  const home = await fakeHome()
+  const { agent, docker, logs } = agentFor(home, { classes: CLASSES })
+  leftRunning(docker)
+  fs.mkdirSync(path.join(layout.roomsDir, 's1'), { recursive: true })
+  // Home answers what the copy reports: the file the cell wrote is taken (accepted), in the reply to the sync that said it.
+  let verdict: RemoteKernelsReply['verdicts'][number] | null = null
+  let saidAt = -1
+  home.onSync = (body) => {
+    const report = body.kernels?.reports.find((one) => one.changed.some((entry) => entry.path === 'last.csv'))
+    if (report && verdict === null) {
+      verdict = { sessionId: 's1', seq: report.seq, accepted: ['last.csv'], refused: [] }
+      saidAt = home.syncs().length
+    }
+    const placements = body.state === 'leaving' ? [] : [classIntent()]
+    return { json: syncReply({ kernels: kernelsReply(placements, { verdicts: verdict ? [verdict] : [] }) }), delayMs: 20 }
+  }
+  const running = agent.run()
+  try {
+    await waitFor(() => home.syncs().some((sync) => sync.kernels), 'the block')
+    // The cell wrote it a moment ago, and no scan of the copy's own has seen it yet.
+    fs.writeFileSync(path.join(layout.roomsDir, 's1', 'last.csv'), 'id\n1\n')
+    const left = agent.requestLeave()
+    agent.leaveAcknowledged()
+    assert.equal(await left, 'left')
+    await running
+    const syncs = home.syncs()
+    const leaving = syncs.findIndex((sync) => sync.state === 'leaving')
+    assert.ok(saidAt > 0 && leaving >= saidAt, `the file was said (sync ${saidAt}) before the leaving sync (${leaving})\n${logs.join('\n')}`)
+    const said = syncs[saidAt - 1]!.kernels!.reports.flatMap((report) => report.changed).find((entry) => entry.path === 'last.csv')!
+    assert.equal(Buffer.from(said.inline ?? '', 'base64').toString(), 'id\n1\n', 'its bytes with it, inline')
+    assert.ok(syncs.slice(saidAt - 1, leaving).every((sync) => sync.state === 'draining'), 'draining while its files go home')
+    assert.ok(!docker.classes.size, 'and then its class containers went')
+  } finally {
+    await home.close()
+  }
+})
+
 test('class containers join what the machine holds: free counts them out from their intent until their container is gone', async () => {
   const home = await fakeHome()
   const { agent, docker } = agentFor(home, { classes: CLASSES })

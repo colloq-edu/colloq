@@ -7369,12 +7369,12 @@ export const adminMessages: MessageCatalog = {
     "en": "Machines"
   },
   "admin.runners.note": {
-    "ru": "Подключённые машины берут посылки соревнований из общей очереди. Машина, которой вы открыли занятия, ещё и держит ядра классов: тетради, личные тетради и консилиум. Тетради, файлы и ответы по-прежнему хранит этот сервер — кроме файлов крупнее предела и пакетов pip -t: они остаются на машине.",
-    "en": "Connected machines take competition submissions from the shared queue. A machine you opened to classes also holds class kernels: class notebooks, personal notebooks and the council. This server still keeps the notebooks, files and answers — except files over the cap and pip -t packages, which stay on the machine."
+    "ru": "Подключённые машины берут посылки соревнований из общей очереди. Машина, которой вы открыли занятия, ещё и держит ядра классов: тетрадей класса и личных тетрадей. Тетради, файлы и ответы по-прежнему хранит этот сервер — кроме файлов крупнее предела и пакетов pip -t: они остаются на машине.",
+    "en": "Connected machines take competition submissions from the shared queue. A machine you opened to classes also holds class kernels: of class notebooks and personal notebooks. This server still keeps the notebooks, files and answers — except files over the cap and pip -t packages, which stay on the machine."
   },
   "admin.runners.ownerOnly": {
-    "ru": "Машины для посылок подключает и видит только владелец сервера.",
-    "en": "Only the server's owner connects and sees the machines for submissions."
+    "ru": "Машины для посылок и занятий подключает и видит только владелец сервера.",
+    "en": "Only the server's owner connects and sees the machines for submissions and classes."
   },
   "admin.runners.loading": {
     "ru": "Загружаем машины…",
@@ -9353,8 +9353,8 @@ export const adminMessages: MessageCatalog = {
     "en": "quarantined since {time} — went silent twice in 30 minutes; it still takes submissions. Resume from the ⋯ menu"
   },
   "admin.runners.classes.silent": {
-    "ru": "{classes} · нет связи {elapsed} · перенесём на сервер в {time}",
-    "en": "{classes} · no link for {elapsed} · moving to this server at {time}"
+    "ru": "{classes} · нет связи {elapsed} · перенесём в {time}",
+    "en": "{classes} · no link for {elapsed} · moving at {time}"
   },
   "admin.runners.classes.silentWait": {
     "ru": "{classes} · нет связи {elapsed}",
@@ -9473,8 +9473,8 @@ export const adminMessages: MessageCatalog = {
     }
   },
   "admin.runners.classBanner.perimeter": {
-    "ru": "Сеть на машине «{name}» вышла из-под контроля: ядро остановлено ради безопасности и поднято на этом сервере.",
-    "en": "The network on machine “{name}” got out of control: the kernel was stopped for safety and started on this server."
+    "ru": "Сеть на машине «{name}» вышла из-под контроля: ядро остановлено ради безопасности и поднимется заново.",
+    "en": "The network on machine “{name}” got out of control: the kernel was stopped for safety and will start again."
   },
   "admin.runners.classes.trustRefused": {
     "ru": "Машине с занятиями скрытый тест не доверяют: сначала выключите «Принимает занятия».",
@@ -9573,8 +9573,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Classes on the machine · {count}"
   },
   "admin.runners.page.classesSectionNote": {
-    "ru": "Ядра классов: тетрадь класса, личные тетради, консилиум. Файлы ядро пишет здесь, на машине, и они едут на сервер после каждого запуска. «Перенести» поднимет ядро на сервере или другой машине — переменные пропадут, файлы останутся.",
-    "en": "Class kernels: the class notebook, personal notebooks, the council. The kernel writes files here, on the machine, and they travel to the server after every run. “Move” starts the kernel on the server or another machine: variables are lost, files stay."
+    "ru": "Ядра классов: тетради класса и личных тетрадей. Файлы ядро пишет здесь, на машине, и они едут на сервер после каждого запуска. «Перенести» поднимет ядро на сервере или другой машине — переменные пропадут, файлы останутся.",
+    "en": "Class kernels: of the class notebooks and the personal notebooks. The kernel writes files here, on the machine, and they travel to the server after every run. “Move” starts the kernel on the server or another machine: variables are lost, files stay."
   },
   "admin.runners.page.noClasses": {
     "ru": "Сейчас на машине нет занятий.",
@@ -9753,8 +9753,8 @@ export const adminMessages: MessageCatalog = {
     }
   },
   "admin.runners.event.perimeter_failing": {
-    "ru": "Сеть машины вышла из-под контроля — занятия перенесены на сервер",
-    "en": "The machine's network got out of control — classes moved to this server"
+    "ru": "Сеть машины вышла из-под контроля — занятия перенесены с машины",
+    "en": "The machine's network got out of control — classes moved off the machine"
   },
   "admin.classes.title": {
     "ru": "Занятия на машинах",
@@ -9817,8 +9817,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Submission downloads during classes"
   },
   "admin.classes.ratesNote": {
-    "ru": "Файл крупнее предела остаётся на машине — преподаватель может его «Привезти». Скорости — на каждую машину, пока на ней идут занятия: связь сначала нужна запуску ячейки, потом файлам, потом данным посылок.",
-    "en": "A file over the cap stays on the machine, and a teacher can “Fetch” it. Speeds apply per machine while it holds classes: the link serves cell runs first, then files, then submission data."
+    "ru": "Файл крупнее предела остаётся на машине — преподаватель может его «Привезти». Скорости — на все машины вместе, пока на них идут занятия: связь сначала нужна запуску ячейки, потом файлам, потом данным посылок.",
+    "en": "A file over the cap stays on the machine, and a teacher can “Fetch” it. Speeds are for all machines together while classes run on them: the link serves cell runs first, then files, then submission data."
   },
   "admin.classes.bounds": {
     "ru": "От {min} до {max}",
@@ -9837,8 +9837,8 @@ export const adminMessages: MessageCatalog = {
     "en": "as before: nothing leaves"
   },
   "admin.classes.preset.personal": {
-    "ru": "Консилиум и личные тетради — на машинах",
-    "en": "Council and personal notebooks on machines"
+    "ru": "Личные тетради — на машинах",
+    "en": "Personal notebooks on machines"
   },
   "admin.classes.preset.personalNote": {
     "ru": "лекция здесь, нагрузка студентов — на машине",
@@ -10200,8 +10200,8 @@ export const adminMessages: MessageCatalog = {
     "en": "no link to the machine · {elapsed}"
   },
   "admin.resourcesTab.running.machine.moveAt": {
-    "ru": "перенесём на сервер в {time}",
-    "en": "moving to this server at {time}"
+    "ru": "перенесём в {time}",
+    "en": "moving at {time}"
   },
   "admin.resourcesTab.running.machine.waits": {
     "ru": "ждём машину",
@@ -10258,5 +10258,24 @@ export const adminMessages: MessageCatalog = {
       "one": "{count} container · 0 MB here",
       "other": "{count} containers · 0 MB here"
     }
+  },
+  // The class form's bound for a slot set to machines (web/src/admin/ui/Resources.svelte · machineBound): the biggest
+  // machine that takes classes, by name; two names when memory and cores are each another machine's biggest; one number
+  // alone when the other is held to this server (a class notebook here, personal notebooks on machines).
+  "admin.resources.machinesBound": {
+    "ru": "На машинах — память до {p0} ГБ, ядер до {p1}: больше не даст самая большая из них, «{p2}».",
+    "en": "On machines: memory up to {p0} GB, cores up to {p1}; the biggest of them, {p2}, gives no more."
+  },
+  "admin.resources.machinesBoundTwo": {
+    "ru": "На машинах — память до {p0} ГБ («{p1}»), ядер до {p2} («{p3}»): больше не даёт ни одна из них.",
+    "en": "On machines: memory up to {p0} GB ({p1}), cores up to {p2} ({p3}); none of them gives more."
+  },
+  "admin.resources.machinesBoundMemory": {
+    "ru": "На машинах — память до {p0} ГБ: больше не даст самая большая из них, «{p1}».",
+    "en": "On machines: memory up to {p0} GB; the biggest of them, {p1}, gives no more."
+  },
+  "admin.resources.machinesBoundCores": {
+    "ru": "На машинах — ядер до {p0}: больше нет у самой большой из них, «{p1}».",
+    "en": "On machines: cores up to {p0}; the biggest of them, {p1}, has no more."
   },
 }

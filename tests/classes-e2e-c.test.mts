@@ -757,6 +757,26 @@ test('C12 · a 300 MB write stays «на машине» with a line in the kerne
     return lag?.heldOnlyBytes === bytes
   }, 20_000, () => `${JSON.stringify(lastLag)}\n${machine.log()}`)
 
+  // Staff delete a checkpoint that is only there («на машине», Z6): it goes on the machine, and its row once it has; a student
+  // is refused as for any file, and nothing of it comes here.
+  const third = lead.notebook.add(`TRUNCATE third.pt ${big}`)
+  lead.control.send({ t: 'run', cellId: third })
+  await lead.notebook.ok(third)
+  await until('the third checkpoint\'s row', async () => (await tree(id, student.token)).rows.get('third.pt')?.onMachine, 20_000, () => fileLines.slice(-8).join('\n'))
+  const fromStudent = student.control.heard.length
+  student.control.send({ t: 'tree:remove', path: 'third.pt' })
+  await until('the student\'s refusal', () => student.control.errors(fromStudent).length > 0)
+  assert.deepEqual(student.control.errors(fromStudent), [tr('server.onlyTheTeacherMayRemoveAFile.77a4ef')])
+  assert.ok(fs.existsSync(path.join(machine.roomCopy(id), 'third.pt')), 'still there')
+  const fromDelete = lead.control.heard.length
+  lead.control.send({ t: 'tree:remove', path: 'third.pt' })
+  await until('the checkpoint removed on the machine', () => !fs.existsSync(path.join(machine.roomCopy(id), 'third.pt')), 20_000, () => machine.log())
+  await until('its row gone', async () => !(await tree(id, student.token)).rows.has('third.pt'), 20_000, () => fileLines.slice(-8).join('\n'))
+  assert.deepEqual(lead.control.errors(fromDelete), [], 'no «уже нет в комнате» for a row of the machine')
+  assert.ok(await files.filesSettled(id, 15_000))
+  assert.equal(homeFile(id, 'third.pt'), null, 'nothing of it came here')
+  assert.equal(uploadsOf(machine, id), 1, 'no upload for it')
+
   // The class ends with another checkpoint left only on the machine: it goes with the copy there. The machine moved nowhere,
   // so the room is never told it came back after a move (§8.8 is a failover's).
   const second = lead.notebook.add(`TRUNCATE second.pt ${big}`)

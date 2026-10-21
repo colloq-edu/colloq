@@ -35,7 +35,7 @@
   import Icon from '@/components/ui/Icon.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { cn } from '@/lib/utils'
-  import { CLASS_PLACEMENT_BOUNDS, CLASS_PLACEMENT_PRESETS, type ClassPlacement, type InstanceResources } from '@shared/admin'
+  import { CLASS_PLACEMENT_BOUNDS, CLASS_PLACEMENT_PRESETS, COUNCIL_POOL, type ClassNumberBounds, type ClassPlacement, type InstanceResources } from '@shared/admin'
   import type { ClassPlacementOutlook } from '@shared/remote-admin'
   import { outlookLine, placementRefusal, presetOf, presetWords, presetsFor, refusalLocks } from '@/admin/runners'
 
@@ -69,6 +69,15 @@
     refusal?: string | null
     /** Whose form this is; absent — a new class that has no kernel yet. */
     roomId?: string | null
+    /**
+     * The bounds the server holds this class's memory and cores to now, by
+     * where its slots compute (the seminar's `bounds`, remote-classes.md
+     * §6.2): the machines' line under the numbers, and whether this server's
+     * free memory is the class's concern at all, come from them, never from a
+     * copy of the rule here. Absent — a new class, or a server that does not
+     * say: no machines' line, and the free-memory warning as before machines.
+     */
+    bounds?: ClassNumberBounds | null
     /**
      * The personal notebooks are set right below this component (the creation
      * form's OwnNotebooks), so the hint that sends the teacher to the rules
@@ -117,6 +126,7 @@
     busy = false,
     refusal = null,
     roomId = null,
+    bounds = null,
     ownBelow = false,
     placement = null,
     placementEditable = false,
@@ -309,8 +319,15 @@
   const heldMb = $derived(
     !row?.alive ? 0 : row.memoryMb + (ownRoom?.memoryMb ?? 0),
   )
+  /*
+   * Not for a class none of whose slots this number reaches can compute here,
+   * as the server says (`bounds.memory.here`): what this server has free says
+   * nothing of a kernel over there, and the bound that holds it is the
+   * machines' line below.
+   */
   const tight = $derived(
     resources !== null &&
+      bounds?.memory.here !== false &&
       resources.memory.availableMb !== null &&
       effectiveMb - heldMb > resources.memory.availableMb &&
       effectiveMb > 0,
@@ -325,6 +342,28 @@
     const value = mb / MB_IN_GB
     return Number.isInteger(value) ? String(value) : value.toFixed(1)
   }
+
+  /*
+   * The machines' bound (remote-classes.md §6.2), as the server holds the
+   * class's numbers: a slot set to machines is held to the biggest machine
+   * that can take it, not to this server, and the server refuses past it by
+   * name. Said under the numbers for each number whose bound is a machine's;
+   * nothing when both are this server's (the tighter of the two for a class
+   * notebook here), or when the server did not say.
+   */
+  const machineBound = $derived.by((): string | null => {
+    if (!bounds) return null
+    const { memory, cpus: cores } = bounds
+    const gb = asGb(memory.max)
+    if (memory.machine !== null && cores.machine !== null) {
+      return memory.machine === cores.machine
+        ? tr('admin.resources.machinesBound', { p0: gb, p1: String(cores.max), p2: memory.machine })
+        : tr('admin.resources.machinesBoundTwo', { p0: gb, p1: memory.machine, p2: String(cores.max), p3: cores.machine })
+    }
+    if (memory.machine !== null) return tr('admin.resources.machinesBoundMemory', { p0: gb, p1: memory.machine })
+    if (cores.machine !== null) return tr('admin.resources.machinesBoundCores', { p0: String(cores.max), p1: cores.machine })
+    return null
+  })
 
   /**
    * Asked — and did not find out.
@@ -578,6 +617,10 @@
             })}
           {/if}
         </p>
+        {#if machineBound}
+          <!-- The numbers above are this server's; a slot on machines is held to theirs. -->
+          <p class="admin-meta">{machineBound}</p>
+        {/if}
       </div>
 
       <!-- The GPU as a line, because that is what it is: there is nothing to
@@ -631,6 +674,9 @@
   numbers while it is on machines, and the live line — or the refusal that
   takes its place and greys On machines. Tiles in a row from 720 px of its
   own width, a radio list below (the 640 px class dialog and the phone, Z10).
+  The council's part and its numbers wait for its pool (COUNCIL_POOL, 0.26):
+  until then its attempts run in the class notebook's kernel, wherever that
+  is, and a choice here would change nothing.
 -->
 {#snippet whereItRuns(current: ClassPlacement)}
   <section
@@ -674,7 +720,7 @@
         { key: 'room' as const, title: tr('admin.placement.room'), note: tr('admin.placement.roomNote'), here: tr('admin.placement.here') },
         { key: 'own' as const, title: tr('admin.placement.own'), note: tr('admin.placement.ownNote'), here: tr('admin.placement.here') },
         { key: 'council' as const, title: tr('admin.placement.council'), note: tr('admin.placement.councilNote'), here: tr('admin.placement.shared') },
-      ] as part (part.key)}
+      ].filter((one) => COUNCIL_POOL || one.key !== 'council') as part (part.key)}
         {@const onMachines = current[part.key] === 'machines'}
         <div class="pl-part border-b border-line-soft px-3.5 py-3 last:border-b-0">
           <div class="min-w-0">
@@ -742,8 +788,8 @@
         <p class="admin-meta mt-1">{tr('admin.placement.failoverNote')}</p>
       </div>
 
-      {#if current.council === 'machines'}
-        <!-- The council's two numbers (Z4: only while it is on machines). -->
+      {#if COUNCIL_POOL && current.council === 'machines'}
+        <!-- The council's two numbers (Z4: only while it is on machines, and only once its pool is there). -->
         <div class="min-w-0">
           <p class="admin-label mb-1.5">{tr('admin.placement.workers')}</p>
           <div class="pl-seg pl-seg-wide text-2xs" role="group" aria-label={tr('admin.placement.workers')}>
@@ -975,7 +1021,7 @@
     border-bottom: 1px dashed currentColor;
     background: transparent;
     color: inherit;
-    font-family: var(--font-mono, monospace);
+    font-family: var(--font-mono);
     text-align: center;
   }
 

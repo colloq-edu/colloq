@@ -578,6 +578,34 @@ export interface AdminSeminar {
    * while the owner's «Учителя отправляют занятия на машины» is on (D4).
    */
   placementEditable?: boolean
+  /**
+   * The bounds its own memory and cores are held to now, by where each slot
+   * they reach computes (docs/architecture/remote-classes.md §6.2): what its
+   * PATCH refuses past, so that the form draws the server's rule rather than
+   * a copy of it. Absent under the broker and on a server before it.
+   */
+  bounds?: ClassNumberBounds
+}
+
+/**
+ * A class's memory or cores bound as its PATCH holds the number
+ * (server/src/kernel/resources.ts · placedBounds): `machine` — the machine
+ * whose room it is, by name (staff read it); null — this server's. `here` —
+ * a slot the number reaches may compute on this server (set here, or set to
+ * machines while none can take it); `machines` — one is set to machines.
+ */
+export interface ClassNumberBound {
+  min: number
+  max: number
+  machine: string | null
+  here: boolean
+  machines: boolean
+}
+
+/** Both numbers of a class, each by its own rule. */
+export interface ClassNumberBounds {
+  memory: ClassNumberBound
+  cpus: ClassNumberBound
 }
 
 export interface CreateSeminarRequest {
@@ -761,7 +789,11 @@ export type ClassPlacementPreset = 'home' | 'personal' | 'machines' | 'gpu'
 export const CLASS_PLACEMENT_PRESETS: Readonly<Record<ClassPlacementPreset, Readonly<Pick<ClassPlacement, 'room' | 'own' | 'council'>>>> = {
   /** «Всё здесь». */
   home: { room: 'home', own: 'home', council: 'shared' },
-  /** «Консилиум и личные тетради — на машинах» (D31, vsos's): the lecture keeps its latency here. */
+  /**
+   * «Личные тетради — на машинах» (D31, vsos's): the lecture keeps its
+   * latency here. Its council goes to machines with the pool (COUNCIL_POOL),
+   * which is why the tile was named «Консилиум и личные тетради» in the plan.
+   */
   personal: { room: 'home', own: 'machines', council: 'machines' },
   /** «Всё на машинах». */
   machines: { room: 'machines', own: 'machines', council: 'machines' },
@@ -769,6 +801,17 @@ export const CLASS_PLACEMENT_PRESETS: Readonly<Record<ClassPlacementPreset, Read
   gpu: { room: 'machines', own: 'machines', council: 'machines' },
 }
 export const CLASS_PLACEMENT_PRESET_NAMES = Object.keys(CLASS_PLACEMENT_PRESETS) as ClassPlacementPreset[]
+
+/**
+ * Whether the council's own placement is built (docs/architecture/remote-
+ * classes.md §9, D29): its pool of workers on machines is 0.26.0's. Until it
+ * is, every attempt runs in the class notebook's kernel, wherever that
+ * computes, so the class form draws no «Консилиум» part and neither of its
+ * two numbers — a choice there would change nothing — and no word promises
+ * the pool. The setting's field is stored all the same (the presets set it),
+ * for the release that reads it.
+ */
+export const COUNCIL_POOL = false
 
 /**
  * What each number may be. The same as shared/remote-kernels.ts says them
@@ -993,8 +1036,39 @@ export interface InstanceResources {
    * the field, cores for their own. The server computes them, not the form: a
    * second copy of the rule in the browser would drift from the server's at
    * its first change.
+   *
+   * `min`/`max` and `cpus` are this server's. `machines` — the bound of a
+   * class slot set to machines (remote-classes.md §6.2): each number by the
+   * biggest machine that takes classes, named; null — no machine takes
+   * classes (or a broker home, D26), and a slot set to machines starts here.
+   * Absent on a server from before classes on machines. A class's number is
+   * held to the place of every slot it reaches: its class notebooks', and its
+   * personal notebooks' while they take the same number.
    */
-  limits: { min: number; max: number; cpus: { min: number; max: number } }
+  limits: { min: number; max: number; cpus: { min: number; max: number }; machines?: ClassMachineBounds | null }
+}
+
+/**
+ * The most one slot of a class may be given on the machines that take
+ * classes (server/src/kernel/remote/placement.ts · classMachineBounds): what
+ * the biggest of them offers one container with nothing else there, for
+ * memory and for cores each, by the machine's name — staff read it.
+ */
+export interface ClassMachineBounds {
+  memoryMb: { max: number; machine: string }
+  cpus: { max: number; machine: string }
+}
+
+/**
+ * The most a class's personal notebooks may be given together (their rules'
+ * ownMemoryMb and ownCpus, docs/architecture/remote-classes.md §6.2, §10), by
+ * where that one slot computes: the biggest machine's while it is set to
+ * machines and one takes classes, this server's otherwise — as the server
+ * holds the numbers (server/src/kernel/resources.ts · ownNumberBounds).
+ */
+export function ownNumberMax(limits: InstanceResources['limits'], own: ClassPlacement['own'] | null | undefined): { memoryMb: number; cpus: number } {
+  const machines = own === 'machines' ? (limits.machines ?? null) : null
+  return machines ? { memoryMb: machines.memoryMb.max, cpus: machines.cpus.max } : { memoryMb: limits.max, cpus: limits.cpus.max }
 }
 
 /* ------------------------------------------- instance resource settings */

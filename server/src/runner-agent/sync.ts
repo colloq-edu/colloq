@@ -174,6 +174,12 @@ export const DISK_FLOOR_MB = 8 * 1024
 const STOP_MS = 75_000
 /** How long a left machine waits for `runner leave` to hear it before the process, and its container, go. */
 const LEAVE_ACK_MS = 10_000
+/**
+ * How long a leave waits for its classes' files to go home before it says
+ * `leaving` (settleForLeave): as long as home waits for a class's files before
+ * «Перенести сейчас» (kernel/remote/placement.ts · MOVE_SETTLE_MS).
+ */
+export const LEAVE_SETTLE_MS = 10_000
 /** Attempts settled lately, whose repeats in a late reply are not taken for new offers. */
 const SETTLED_KEEP = 512
 /** The stop's last sync, the one that says `draining` (finalSync): a home that does not answer within this must not eat the hand-backs' time. */
@@ -360,6 +366,8 @@ export class Agent extends EventEmitter {
   private stopDone: Promise<void> | null = null
   private readonly leaveDone = deferred<'left' | 'revoked' | 'stopped'>()
   private readonly leaveAck = deferred<void>()
+  /** A leave's settle of its classes' files (settleForLeave): since when, whether it is over, and its bound's timer. */
+  private leaveSettle: { since: number; done: boolean; timer: NodeJS.Timeout | null } | null = null
   /** The class containers (kernels.ts). */
   private readonly kernels: KernelHost
   /** The class folders' copies and their files on the way to and from home (room-files.ts). */
@@ -660,8 +668,9 @@ export class Agent extends EventEmitter {
   }
 
   private finish(): void {
-    for (const timer of [this.statusTimer, this.probeTimer, this.pokeTimer, this.statusSoon]) if (timer) clearTimeout(timer)
+    for (const timer of [this.statusTimer, this.probeTimer, this.pokeTimer, this.statusSoon, this.leaveSettle?.timer ?? null]) if (timer) clearTimeout(timer)
     this.statusTimer = this.probeTimer = this.pokeTimer = this.statusSoon = null
+    if (this.leaveSettle) this.leaveSettle.timer = null
     this.images.stop()
     this.cache.stop()
     this.kernels.stop()
@@ -1075,6 +1084,7 @@ export class Agent extends EventEmitter {
       if (this.stopping) return { reason: 'stopped', code: 0 }
       this.runnerHeld = await this.runner.capacity().catch(() => ({ heldMb: 0, heldGpus: {} }))
       this.expire()
+      this.settleForLeave()
       const request = this.syncRequest()
       const abort = new AbortController()
       this.syncAbort = abort
@@ -1267,11 +1277,55 @@ export class Agent extends EventEmitter {
 
   /* ------------------------------------------------------------- the sync */
 
-  /** The state a sync says: leaving only once nothing is held (a leave drains first); a stopping machine drains (finalSync). */
+  /**
+   * The state a sync says: leaving only once nothing is held (a leave drains
+   * first) and its classes' files went home (settleForLeave); a stopping
+   * machine drains (finalSync).
+   */
   private wireState(): RemoteRunnerState {
     if (this.stopping) return 'draining'
-    if (this.leaving) return this.held.size === 0 ? 'leaving' : 'draining'
+    if (this.leaving) return this.held.size === 0 && this.leaveSettle?.done === true ? 'leaving' : 'draining'
     return this.localDrain ? 'draining' : 'active'
+  }
+
+  /**
+   * A LEAVE SETTLES ITS CLASSES' FILES FIRST (remote-classes.md §11.5, §8.7):
+   * once its runs are done, every copy of a class here is scanned now, what
+   * the scan found is said and answered, and what home pulls of it is
+   * uploaded — within LEAVE_SETTLE_MS, as home waits before «Перенести
+   * сейчас» — and only then does a sync say `leaving`, whose answer fails the
+   * classes over and lets this machine remove their copies. A cell's file
+   * written a moment before the leave is the class's; a home that does not
+   * answer meanwhile has the machine leave at the bound all the same.
+   */
+  private settleForLeave(): void {
+    if (!this.leaving || this.held.size > 0 || this.leaveSettle?.done) return
+    const now = this.now()
+    if (!this.leaveSettle) {
+      if (!this.kernelsHeard || !this.files.holdsCopies()) {
+        this.leaveSettle = { since: now, done: true, timer: null }
+        return
+      }
+      // The bound's own beat: a held sync is cut then, whatever home says meanwhile.
+      const timer = setTimeout(() => this.poke(true), LEAVE_SETTLE_MS)
+      timer.unref?.()
+      this.leaveSettle = { since: now, done: false, timer }
+      this.log(`[runner] leaving: the class files go home first (${LEAVE_SETTLE_MS / 1000} s at most)`)
+      /*
+       * Scanned now. A scan that found something cuts the held sync itself, for its report (room-files.ts · onChange); one that
+       * found nothing says nothing, and the held sync is cut here then, for the leaving sync — never one that may carry a report.
+       */
+      const since = now
+      void this.files.scanAll().then(() => {
+        if (this.files.settledSince(since)) this.poke(true)
+      })
+      return
+    }
+    const settled = this.files.settledSince(this.leaveSettle.since)
+    if (!settled && now - this.leaveSettle.since < LEAVE_SETTLE_MS) return
+    if (this.leaveSettle.timer) clearTimeout(this.leaveSettle.timer)
+    this.leaveSettle = { ...this.leaveSettle, done: true, timer: null }
+    this.log(settled ? '[runner] leaving: the class files are home' : `[runner] leaving: the class files did not all go home within ${LEAVE_SETTLE_MS / 1000} s; leaving all the same`)
   }
 
   /** Whether an offer is written down: not while draining (for whichever reason), leaving, stopping, or outdated. */

@@ -73,6 +73,7 @@ import {
 import {
   REMOTE_BOOT_GRACE_MS,
   REMOTE_CONTAINER_CUSHION_MB,
+  REMOTE_HOST_RESERVE_MB,
   remoteCompatible,
   type RemoteWantRevision,
 } from '@shared/remote-runner'
@@ -84,10 +85,10 @@ import {
   type RuntimeStartFailure,
 } from '@shared/runtime'
 import { processClock, type TunnelClock } from '@shared/remote-tunnel'
-import { CLASS_PLACEMENT_DEFAULT, storedClassPlacement, type ClassPlacement } from '@shared/admin'
+import { CLASS_PLACEMENT_DEFAULT, storedClassPlacement, type ClassMachineBounds, type ClassPlacement } from '@shared/admin'
 import type { EnvironmentRevision } from '@shared/dependencies'
 import { config } from '../../config.js'
-import { placedSessions, sessionEnvironment } from '../../db.js'
+import { placedSessions, sessionCpus, sessionEnvironment, sessionMemoryMb } from '../../db.js'
 import { activeName } from '../../environments.js'
 import { instanceTimeZone } from '../../time-zone.js'
 import { captureRevision } from '../../dependencies/revisions.js'
@@ -121,6 +122,7 @@ import { stepClaim } from '../../competitions/remote/fit.js'
 import { RuntimeRequestError } from '../runtime-client.js'
 import type { KernelEndpoint, KernelLink } from '../jupyter.js'
 import { kernelLimits, roomShm, runsHere, type LimitOutcome } from '../pool.js'
+import { cpuBounds, memoryBounds } from '../resources.js'
 import { blockedCidrsSetting, roomHardening } from '../perimeter.js'
 import { ROOM_SHM, classHashSeed, type RoomRole } from '../room-spec.js'
 import { machineTunnels, type MachineTunnels } from './tunnel.js'
@@ -148,8 +150,6 @@ export { machinePlaced }
 
 /** On top of a placement's memory, the free memory a machine must still have: the stale-capacity rule's cushion (lease.ts · runnerRoom). */
 const PLACEMENT_CUSHION_MB = REMOTE_CONTAINER_CUSHION_MB
-/** A machine that hosted the class this recently keeps its folder copy warm, and is preferred (§6.3). */
-const LAST_HOST_MS = 7 * 24 * 60 * 60_000
 /** Above this p95 the form says «далеко: +N мс на ячейку» (§6.3). */
 const FAR_RTT_MS = 150
 /**
@@ -458,6 +458,36 @@ const clampMemory = (mb: number): number => Math.min(RUNTIME_MEMORY_MAX_MB, Math
 /** Cores as the contract carries them: whole, one to REMOTE_ROOM_CPUS_MAX; a fractional instance default is rounded up. */
 const clampCpus = (cpus: number): number => Math.min(REMOTE_ROOM_CPUS_MAX, Math.max(1, Math.ceil(cpus)))
 const clampPids = (pids: number): number => Math.min(REMOTE_PIDS.max, Math.max(REMOTE_PIDS.min, Math.floor(pids)))
+
+/**
+ * The first class fact that keeps a machine from every new placement, or
+ * null: host networking, the perimeter and the canary passing, not on this
+ * server's daemon (D20). Its own network floor is not one of them (D21).
+ */
+function factsRefusal(facts: RemoteClassFacts): MachineRefusal | null {
+  if (!facts.hostNetwork) return 'host-network'
+  if (facts.perimeter !== 'ok') return 'perimeter'
+  if (facts.canary !== 'ok') return 'canary'
+  if (facts.sameDaemon) return 'same-daemon'
+  return null
+}
+
+/**
+ * The room's words for a slot that takes its class's own number, and that
+ * number is past what this server may give a class (kernel/resources.ts ·
+ * memoryBounds, cpuBounds): one the machines' bound let the class hold
+ * (placedBounds). Null — the slot may start here: a default is this server's
+ * to give, as for a class set here. They name no machine.
+ */
+function pastThisServer(sessionId: string, memoryMb: number | null, cpus: number | null): string | null {
+  const memory = memoryBounds()
+  const classMb = sessionMemoryMb(sessionId)
+  if (classMb !== null && memoryMb === classMb && classMb > memory.max) return tr('server.noMachineCanTakeTheKernelNow.f1fc7d', { max: memory.max, mb: classMb })
+  const cores = cpuBounds()
+  const classCpus = sessionCpus(sessionId)
+  if (classCpus !== null && cpus === classCpus && classCpus > cores.max) return tr('server.noMachineCanTakeTheKernelNow.81688a', { max: cores.max, cpus: classCpus })
+  return null
+}
 
 let shmWarned = false
 
@@ -796,6 +826,19 @@ export class ClassPlacements {
       }
       if (role === 'council') throw new RuntimeRequestError(tr('server.theCouncilPoolRunsOnlyOnMachines.ef5702'), 503)
       if (setting.fallback) {
+        /*
+         * Not with numbers this server cannot give (§6.2): the class's memory
+         * or cores were set past this server's bound for the machines it
+         * computes on, and none of them can take it now. Started here, the
+         * docker admission would refuse it in words that blame other classes,
+         * or, where free memory is unknown, give its container a limit past
+         * this server's memory.
+         */
+        const past = pastThisServer(sessionId, memoryMb, cpus)
+        if (past !== null) {
+          this.log(`[classes] ${sessionId}/${role}: no machine can take it (${why}), and its numbers are past this server's`)
+          throw new RuntimeRequestError(past, 503)
+        }
         this.log(`[classes] ${sessionId}/${role}: no machine can take it (${why}); it starts on this server`)
         this.emit({ sessionId, role, kind: 'fallback', view: HOME }, now)
         return null
@@ -949,14 +992,16 @@ export class ClassPlacements {
   /**
    * chooseMachine (§6.3): every eligible machine, by the preferences — the
    * one holding another slot of the class (the council's: the notebook's
-   * kernel's first), the last host of the class within a week, the image in
-   * place, the shorter link, the most free memory, the name. Null — none.
+   * kernel's first), the image in place, the shorter link, the most free
+   * memory, the name. Null — none. The class's last host has no rank of its
+   * own: its folder copy goes once no slot of the class is left there
+   * (runner-agent/room-files.ts · reconcile), so a week's preference for it
+   * bought nothing and could cost the class a far link.
    */
   private choose(need: Need, now: number): RunnerRow | null {
     const ranked = this.candidates(need, now).filter((candidate) => candidate.refusal === null)
     ranked.sort((a, b) =>
       b.sameClass - a.sameClass ||
-      Number(b.lastHost) - Number(a.lastHost) ||
       Number(b.ready) - Number(a.ready) ||
       (a.rtt ?? Number.POSITIVE_INFINITY) - (b.rtt ?? Number.POSITIVE_INFINITY) ||
       b.freeMb - a.freeMb ||
@@ -965,7 +1010,7 @@ export class ClassPlacements {
     return ranked[0]?.runner ?? null
   }
 
-  private candidates(need: Need, now: number): Array<{ runner: RunnerRow; refusal: MachineRefusal | null; sameClass: number; lastHost: boolean; ready: boolean; rtt: number | null; freeMb: number; cards: number }> {
+  private candidates(need: Need, now: number): Array<{ runner: RunnerRow; refusal: MachineRefusal | null; sameClass: number; ready: boolean; rtt: number | null; freeMb: number; cards: number }> {
     const rows = classPlacementRows(need.sessionId)
     const avoid = this.slots.get(slotKey(need.sessionId, need.role))?.avoid ?? null
     return listStandingRunners().filter((runner) => runner.classes).map((runner) => {
@@ -973,13 +1018,11 @@ export class ClassPlacements {
       const refusal = avoid && avoid.runnerId === runner.id && now < avoid.until ? 'avoided' : this.eligibility(runner, need, room, now)
       const live = rows.filter((row) => row.runnerId === runner.id && row.role !== need.role && ['starting', 'ready', 'unreachable'].includes(row.state))
       const sameClass = need.role === 'council' && live.some((row) => row.role === 'room') ? 2 : live.length > 0 ? 1 : 0
-      const lastHost = rows.some((row) => row.runnerId === runner.id && row.state === 'stopped' && now - (row.endedAt ?? row.createdAt) <= LAST_HOST_MS)
       const sync = lastSync(runner.id)
       return {
         runner,
         refusal,
         sameClass,
-        lastHost,
         ready: sync?.ready.revisions.includes(need.revision.id) ?? false,
         rtt: this.tunnels().rtt(runner.id).p95Ms,
         freeMb: room?.memoryMb ?? 0,
@@ -1049,10 +1092,8 @@ export class ClassPlacements {
     if (!this.tunnels().isUp(runner.id)) return 'tunnel'
     const facts = this.machines.get(runner.id)?.facts
     if (!facts) return 'facts'
-    if (!facts.hostNetwork) return 'host-network'
-    if (facts.perimeter !== 'ok') return 'perimeter'
-    if (facts.canary !== 'ok') return 'canary'
-    if (facts.sameDaemon) return 'same-daemon'
+    const unfit = factsRefusal(facts)
+    if (unfit) return unfit
     const sync = lastSync(runner.id)
     const id = need.revision.id
     const imaged = (sync?.ready.revisions.includes(id) ?? false) || (sync?.fetching.some((fetch) => fetch.revisionId === id) ?? false)
@@ -1094,6 +1135,46 @@ export class ClassPlacements {
       far: candidate.rtt !== null && candidate.rtt > FAR_RTT_MS,
     }))
     return { refusal: machines.length === 0 ? 'no-machines' : null, machines }
+  }
+
+  /**
+   * THE MOST ONE SLOT OF A CLASS MAY BE GIVEN ON MACHINES (§6.4): the bound
+   * of a class's memory and cores for a slot set to machines, in its form and
+   * its PATCH (kernel/resources.ts · placedBounds). Each number by the
+   * biggest machine that takes classes, named, as its ledger offers one
+   * container with nothing else held there — its memory less the host's
+   * reserve (runner-agent/machine.ts · freeCapacity) and the cushion a
+   * placement needs beside it (`eligibility`), its cores less the one the
+   * agent keeps — within the contract's numbers: more than that no machine
+   * can give, and the chooser would refuse every one of them for it.
+   *
+   * Counted from what each machine said it is, online or not, quarantined,
+   * drained or not, as the submissions' ceiling counts
+   * (competitions/executors.ts · submissionCeilingNow): a bound that fell
+   * whenever a machine missed a sync, or went through an update, would
+   * refuse a form that was fine a minute before. But not a machine whose
+   * class facts, as this life heard them, keep it from every placement
+   * (`factsRefusal`: off the host's network, its perimeter or canary not
+   * passing, on this server's daemon): it gives a class nothing until that
+   * is fixed. `card` — for a slot that needs a whole card (a GPU class's
+   * room, `needOf`): machines with cards alone. Null — no machine qualifies:
+   * a slot set to machines starts here (its fallback) or nowhere, and this
+   * server's bounds are the ones there are.
+   */
+  machineBounds(options: { card?: boolean } = {}): ClassMachineBounds | null {
+    let memoryMb: ClassMachineBounds['memoryMb'] | null = null
+    let cpus: ClassMachineBounds['cpus'] | null = null
+    for (const runner of listStandingRunners()) {
+      if (!runner.classes || runner.trusted || !runner.facts) continue
+      const facts = this.machines.get(runner.id)?.facts
+      if (facts && factsRefusal(facts) !== null) continue
+      if (options.card && runnerCards(runner).length === 0) continue
+      const mb = clampMemory(runner.facts.memoryMb - REMOTE_HOST_RESERVE_MB - PLACEMENT_CUSHION_MB)
+      const cores = clampCpus(runner.facts.cpus - 1)
+      if (memoryMb === null || mb > memoryMb.max) memoryMb = { max: mb, machine: runner.name }
+      if (cpus === null || cores > cpus.max) cpus = { max: cores, machine: runner.name }
+    }
+    return memoryMb && cpus ? { memoryMb, cpus } : null
   }
 
   /* ----------------------------------------------------- ready and endpoint */
@@ -1798,6 +1879,27 @@ export class ClassPlacements {
   }
 
   /**
+   * THE FILES FIRST, FOR A WHOLE MACHINE (§8.7, §11.5): before the owner's
+   * «Не принимает занятия» fails the machine's classes over, what their
+   * kernels wrote there since its last scan comes here — within
+   * MOVE_SETTLE_MS, each class at once, as «Перенести сейчас» waits for its
+   * own — while the machine still answers: its tunnel up, and the class's
+   * copy there heard from in this life. One that does not answer has
+   * nothing to say now, and its classes' files are as of its last sync.
+   * Whether every class settled; the caller moves them all the same.
+   */
+  async settleRunner(runnerId: string): Promise<boolean> {
+    if (!this.tunnels().isUp(runnerId)) return false
+    const classes = [...new Set(runnerPlacementRows(runnerId).filter((row) => row.state !== 'stopping').map((row) => row.sessionId))]
+      .filter((sessionId) => filesHeardFrom(sessionId, runnerId))
+    if (classes.length === 0) return true
+    const settled = await Promise.all(classes.map((sessionId) => filesSettled(sessionId, MOVE_SETTLE_MS).catch(() => false)))
+    const all = settled.every(Boolean)
+    if (!all) this.log(`[classes] machine ${runnerId}: its classes' files did not all come within ${MOVE_SETTLE_MS / 1000} s; they move all the same`)
+    return all
+  }
+
+  /**
    * One slot leaves its machine (§11.2): one transaction marks it lost with
    * its cause; then its link answers `lost` (the kernel client never sends
    * that machine a DELETE), its listener closes, every gate and start
@@ -1917,6 +2019,23 @@ export class ClassPlacements {
     for (const row of rows) if (row.state !== 'stopping') this.stopRow(row, 'stopped', now)
     if (!options.owner) return
     await Promise.all(rows.map((row) => this.whenStopped(row)))
+  }
+
+  /**
+   * The durable stop of ONE placement, at its gen (§6.10, §10): what the
+   * kernel hooks ask once the last personal kernel of a class retired
+   * (kernel/index.ts · dropOwnIfEmpty), for the slot's placement a personal
+   * kernel came up on. Nothing for another gen — the slot placed again since
+   * the caller looked is not the one it asked about — nor for a placement
+   * lost (its machine removes it when it hears the fence, §11.3) or already
+   * stopping. Synchronous: the caller's look at its kernels and this stop
+   * are one turn, and no kernel starts in between. Whether it stopped.
+   */
+  stopAt(sessionId: string, role: RoomRole, gen: number): boolean {
+    const row = livePlacement(sessionId, role)
+    if (!row || row.gen !== gen || row.state === 'stopping') return false
+    this.stopRow(row, 'stopped', this.clock.now())
+    return true
   }
 
   private stopRow(row: PlacementRow, reason: string, now: number): void {
@@ -2186,12 +2305,16 @@ export const moveNow = (sessionId: string, role: RoomRole | null, by: string): P
 export const helpPadMs = (sessionId: string, role: RoomRole): number => classPlacements().helpPadMs(sessionId, role)
 export const startingWords = (sessionId: string, role: RoomRole): string | null => classPlacements().startingWords(sessionId, role)
 export const warmSlot = (sessionId: string, role: RoomRole): void => classPlacements().warmSlot(sessionId, role)
+/** The durable stop of a slot's placement at this gen, nothing for any other (ClassPlacements#stopAt). */
+export const stopSlot = (sessionId: string, role: RoomRole, gen: number): boolean => classPlacements().stopAt(sessionId, role, gen)
 export const wantedPlacements = (runnerId: string): RemotePlacementIntent[] => classPlacements().wantedPlacements(runnerId)
 export const noteKernelsReport = (runnerId: string, kernels: RemoteKernelsRequest, now: number): void => classPlacements().noteKernelsReport(runnerId, kernels, now)
 export const hasLivePlacements = (runnerId: string): boolean => classPlacements().hasLivePlacements(runnerId)
 export const classTick = (now: number): void => classPlacements().classTick(now)
 export const failoverRunner = (runnerId: string, cause: 'revoked' | 'unclassed' | 'leaving' | 'perimeter', now: number): number =>
   classPlacements().failoverRunner(runnerId, cause, now)
+/** The files of a machine's classes here before its classes go (ClassPlacements#settleRunner): whether they all came. */
+export const settleRunner = (runnerId: string): Promise<boolean> => classPlacements().settleRunner(runnerId)
 export const postmortemWanted = (runnerId: string): string[] => classPlacements().postmortemWanted(runnerId)
 export const classRevisionsWanted = (runnerId: string): RemoteWantRevision[] => classPlacements().classRevisionsWanted(runnerId)
 export const tunnelWanted = (runnerId: string): 'open' | 'reconnect' | 'closed' => classPlacements().tunnelWanted(runnerId)
@@ -2239,12 +2362,15 @@ export const placementOutlook = (sessionId: string) => classPlacements().outlook
 /** A class's setting changed: its image is looked for at once. */
 export const classPlacementChanged = (sessionId: string, environment: string | null): void => classPlacements().classPlacementChanged(sessionId, environment)
 
+/** The most one slot of a class may be given on machines, a card's slot on machines with cards (ClassPlacements#machineBounds). */
+export const classMachineBounds = (options: { card?: boolean } = {}): ClassMachineBounds | null => classPlacements().machineBounds(options)
+
 /*
  * The kernel hooks run on these (kernel/index.ts · ClassPlacements), on the
  * process's placements' clock: handed over as this module loads
  * (placement-store.ts · offerPlacementHooks), since the hooks never import it.
  */
 offerPlacementHooks({
-  placements: { placementOf, placementGate, onPlacementChange, moveNow, helpPadMs, PlacementLost, machinePlaced, startingWords, warmSlot },
+  placements: { placementOf, placementGate, onPlacementChange, moveNow, helpPadMs, PlacementLost, machinePlaced, startingWords, warmSlot, stopSlot },
   clock: placementClock,
 })

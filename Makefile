@@ -522,6 +522,62 @@ competition-load: ## A competition at the deadline: N entrants send at once. SLU
 	 LOAD_ENTRANTS="$${N:-15}" LOAD_TIMEOUT_SEC="$${TIMEOUT:-1800}" \
 	 npx tsx scripts/competition-load.mts
 
+.PHONY: class-probe class-load
+
+class-probe: ## What the relay does to a class machine's tunnel (K0). MODE=home|machine|watch|selftest HOST=… OUT=… ARGS="--steps 3 --bulk-dir up"
+	@# scripts/class-probe.mts as K0 ran it (docs/architecture/remote-classes.md
+	@# §17.5, «Before the build»): MODE=home on the lab home behind its own
+	@# frpc, MODE=machine (the plan, steps 1-4, 6, 9) and MODE=watch (cuts,
+	@# resets per hour, frpc's pool) on each rented machine, MODE=selftest
+	@# here. PROBE_TOKEN goes in the environment, the same at both ends
+	@# (openssl rand -hex 24), never on the command line. ARGS passes any
+	@# other flag of the probe as it is: --minutes, --steps, --bulk-dir, --pace,
+	@# --tunnels, --sockets… (node scripts/class-probe.mts --help). Never
+	@# against vsos and never during a class: relay2 is shared, and step 3
+	@# alone moves a gigabyte. On a bare VM the file runs with node alone
+	@# (its header says how); here tsx runs it. HOST only from the command
+	@# line: zsh keeps the computer's own name in HOST.
+	@test -n "$(MODE)" || { printf '$(RED)Specify the mode: make class-probe MODE=machine HOST=probe-lab.colloq.ru OUT=k0-C.json$(OFF)\n'; exit 1; }
+	@node --import tsx scripts/class-probe.mts $(MODE) $(if $(filter command line,$(origin HOST)),--host "$(HOST)",) $(if $(OUT),--out "$(OUT)",) $(ARGS)
+
+class-load: ## A class on machines under load: N students for MIN minutes. URL=… N=30 MIN=60 CLASS=machines|personal|gpu|home OWN=0.5 BIG=150 OUT=…
+	@# scripts/class-load.mts (remote-classes.md §17.5, «Load»): the rig
+	@# makes a seminar of its own on the home URL names, sets «Где считается»
+	@# to CLASS, brings in two staff tabs and N students (both sockets each,
+	@# as the web app opens them) and holds a class: cells on a schedule
+	@# (print(1), a 2 MB figure, a 10 KB edit read back, tqdm at 10 Hz, a long
+	@# cell, interrupts, a cell past the room's run limit), completions,
+	@# uploads, personal notebooks for OWN of the class, council attempts in
+	@# the shared kernel; once a class the CSVs of CSV= (MB, 1,50 by default)
+	@# to the files panel and an upload of BIG= MB read back (none by
+	@# default; R1 sets 150, and the home's upload limit must take it). It
+	@# prints click → visible and the rest with p50 and p95, what staff saw of
+	@# the machine and «Работают сейчас» of its containers, the bytes it
+	@# moved, and the line to run on the relay before and after for its
+	@# counters. It deletes its seminar at the end and on Ctrl+C. CLASS=gpu
+	@# runs on a GPU environment: ENV= when it asks for a card, base-gpu when
+	@# ENV= is not given. BASELINE= is a CLASS=home run's OUT of the same N,
+	@# OWN and cells: CLASS=home OUT=home.json first, then CLASS=machines
+	@# BASELINE=home.json.
+	@#
+	@# URL= is required, with no default, and only from the command line: the
+	@# rig never guesses which home to load, nor takes one a shell happens to
+	@# export, and this checkout's own port is the live instance on a machine
+	@# that serves a class. An owner's credential goes in the environment,
+	@# LOAD_SETUP_TOKEN (the home's setup token) or LOAD_STAFF_COOKIE, never
+	@# on the command line, and the rig never prints it. Never vsos and never
+	@# during a class: thirty synthetic students cost what thirty real ones do.
+	@# node runs it, not npx: npm and tsx would hand one Ctrl+C to it twice;
+	@# and in the shell's place (exec), so that a kill of make reaches it too.
+	@#   RAMP=<sec> UPLOAD=<KB> CSV=<MB,MB|0> BIG=<MB> ENV=<environment> BASELINE=<a CLASS=home run's OUT>
+	@test -n "$(if $(filter command line,$(origin URL)),$(URL))" || { printf '$(RED)Specify the home: make class-load URL=https://lab.example N=30 MIN=60 CLASS=machines, with LOAD_SETUP_TOKEN exported$(OFF)\n'; exit 1; }
+	@ulimit -n 8192 2>/dev/null || true; \
+	 LOAD_BASE_URL="$(if $(filter command line,$(origin URL)),$(URL))" LOAD_STUDENTS="$${N:-30}" LOAD_MINUTES="$${MIN:-60}" LOAD_CLASS="$${CLASS:-machines}" \
+	 $(if $(OWN),LOAD_OWN="$(OWN)",) $(if $(RAMP),LOAD_RAMP_SEC="$(RAMP)",) $(if $(UPLOAD),LOAD_UPLOAD_KB="$(UPLOAD)",) \
+	 $(if $(CSV),LOAD_CSV_MB="$(CSV)",) $(if $(BIG),LOAD_BIG_MB="$(BIG)",) \
+	 $(if $(filter command line,$(origin ENV)),LOAD_ENVIRONMENT="$(ENV)",) $(if $(BASELINE),LOAD_BASELINE="$(BASELINE)",) $(if $(OUT),LOAD_OUT="$(OUT)",) \
+	 exec node --import tsx scripts/class-load.mts
+
 mirror: ## Update the colloq.cc mirror (the same site for those who can reach Cloudflare). DRY=1 — only tell
 	@# A second name, not a second site: the content is the same, from site/,
 	@# and it has one origin, colloq.ru on GitHub Pages. Pages serves a site

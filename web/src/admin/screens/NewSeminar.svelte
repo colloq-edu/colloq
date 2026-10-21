@@ -52,6 +52,7 @@
     CLASS_PLACEMENT_DEFAULT,
     CLASS_PLACEMENT_PRESETS,
     LIMITS,
+    ownNumberMax,
     type AdminEnvironment,
     type ClassPlacement,
     type EnvironmentsState,
@@ -638,6 +639,8 @@
     return { ...CLASS_PLACEMENT_DEFAULT, failoverSec: settings.failoverSec, ...tile }
   })
   const placementMay = $derived(adminAuth.isOwner || (classSettings?.settings.teachers ?? false))
+  /** The most the personal notebooks may be given: where the new class puts them computes them (shared/admin.ts · ownNumberMax). */
+  const ownMax = $derived(resources ? ownNumberMax(resources.limits, placementShown?.own) : null)
   const placementOutlook = $derived<ClassPlacementOutlook | null>(
     classSettings ? { refusal: classSettings.machines === 0 ? 'no-machines' : null, environment, machines: [], at: Date.now() } : null,
   )
@@ -1422,8 +1425,8 @@
         roomCpus={roomCpusEffective}
         instanceMemoryMb={resourceSettings?.settings.ownMemoryMb.value ?? null}
         instanceCpus={resourceSettings?.settings.ownCpus.value ?? null}
-        maxMemoryMb={resources?.limits.max ?? null}
-        maxCpus={resources?.limits.cpus.max ?? null}
+        maxMemoryMb={ownMax?.memoryMb ?? null}
+        maxCpus={ownMax?.cpus ?? null}
       />
       {#if roomMemoryEffective !== null && roomCpusEffective !== null}
         <Footprint
@@ -1659,8 +1662,8 @@
         own={{
           roomMemoryMb: memoryMb ?? resources?.kernel.defaultMemoryMb ?? null,
           roomCpus: cpus ?? resources?.kernel.defaultCpus ?? null,
-          maxMemoryMb: resources?.limits.max ?? null,
-          maxCpus: resources?.limits.cpus.max ?? null,
+          maxMemoryMb: ownMax?.memoryMb ?? null,
+          maxCpus: ownMax?.cpus ?? null,
         }}
         onchange={(patch) => (rules = { ...rules, ...patch })}
       />

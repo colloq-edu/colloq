@@ -354,6 +354,46 @@ test('a run never waits for the room\'s notebook files: they follow its push in 
   assert.deepEqual(pushOf(machine, klass.id)!.put.map((entry) => entry.path), ['lesson.ipynb'])
 })
 
+test('a run while students type waits for no notebook push in flight: one of notebooks alone, the walk\'s own or an older one, lets it go at once', async () => {
+  const machine = `m-${randomUUID().slice(0, 6)}`
+  const klass = classOn(machine)
+  put(klass.dir, 'lesson.ipynb', '{"cells":[]}')
+  put(klass.dir, 'a.py', 'x = 1\n')
+  await inStep(machine, klass)
+  rigged.books.add('lesson.ipynb')
+  // A student types: the notebook's projection is written, and its eager push goes out — unacked, the machine busy applying it.
+  assert.ok(writeText(klass.id, 'lesson.ipynb', '{"cells":[{"source":"x"}]}'))
+  await eager()
+  const typed = pushOf(machine, klass.id)!
+  assert.deepEqual(typed.put.map((entry) => entry.path), ['lesson.ipynb'])
+  rigged.files.replySent(machine, rigged.files.replyBlock(machine))
+  let passed = 0
+  const run = (): void => void rigged.files.filesBarrier(klass.id, machine).then(() => passed++)
+  // A run whose walk is that push's own.
+  run()
+  await rigged.files.whenIdle()
+  await turn()
+  assert.equal(passed, 1, 'not behind the notebook push\'s ack')
+  // A run after the next keystroke: its walk differs from the push in flight, which still carries only the notebook.
+  assert.ok(writeText(klass.id, 'lesson.ipynb', '{"cells":[{"source":"xy"}]}'))
+  run()
+  await rigged.files.whenIdle()
+  await turn()
+  assert.equal(passed, 2, 'nor behind a newer notebook version')
+  assert.equal(pushOf(machine, klass.id)!.seq, typed.seq, 'and no push of its own: nothing it reads is missing there')
+  // A file the run reads, written meanwhile: that one it waits for, as always.
+  assert.ok(writeText(klass.id, 'a.py', 'x = 2\n'))
+  run()
+  await rigged.files.whenIdle()
+  await turn()
+  assert.equal(passed, 2, 'a.py is a push away')
+  const mine = pushOf(machine, klass.id)!
+  assert.deepEqual(mine.put.map((entry) => entry.path), ['a.py'])
+  await ack(machine, klass, mine.seq)
+  await turn()
+  assert.equal(passed, 3)
+})
+
 test('moves: a rename here is a rename there, a folder\'s too, with nothing uploaded; a delete is a remove', async () => {
   const machine = `m-${randomUUID().slice(0, 6)}`
   const klass = classOn(machine)
@@ -783,6 +823,119 @@ test('«Привезти» on the control socket is staff\'s, and a move of a fi
   await rigged.files.whenIdle()
   for (let i = 0; i < 50 && read(klass.dir, 'moved.csv') === null; i++) await new Promise((resolve) => setTimeout(resolve, 10))
   assert.equal(read(klass.dir, 'moved.csv')?.length, v1.length, 'the move went on with the version that landed')
+})
+
+test('a row only the machine has, deleted by staff, is removed there: a remove in the next push, the row gone once it is acked; a student is refused', async () => {
+  const machine = `m-${randomUUID().slice(0, 6)}`
+  const klass = classOn(machine)
+  await inStep(machine, klass)
+  updateClassMachineSettings({ machineFileMb: 1 })
+  // One left unhashed over the cap, one a refused change over it, and one in a folder this server does not have.
+  await says(machine, report(klass, {
+    skipped: [{ path: 'model.pt', bytes: 300 * 1024 * 1024, why: 'size' }, { path: 'runs/a/ckpt.bin', bytes: 2 * 1024 * 1024, why: 'size' }],
+    changed: [{ path: 'refused.bin', sha256: sha('r'), bytes: 2 * 1024 * 1024, base: null }],
+  }))
+  const rows = () => new Set(roomTree(klass.id).files.filter((entry) => entry.onMachine).map((entry) => entry.path))
+  assert.deepEqual(rows(), new Set(['model.pt', 'refused.bin', 'runs', 'runs/a', 'runs/a/ckpt.bin']))
+  const changed = rigged.changed.length
+  // A student is refused as for any file, and nothing goes to the machine.
+  const student = fakeSocket()
+  dispatch(student.ws, klass.id, { sessionId: klass.id, participantId: 'p_student', role: 'participant' }, { t: 'tree:remove', path: 'model.pt' })
+  assert.deepEqual(student.heard.filter((one) => one.t === 'error').map((one) => (one as { message: string }).message), [tr('server.onlyTheTeacherMayRemoveAFile.77a4ef')])
+  await eager()
+  assert.equal(pushOf(machine, klass.id), null)
+  // Staff delete the file, the refused one and the made-up folder: each is a remove of the next push.
+  const teacher = fakeSocket()
+  for (const where of ['model.pt', 'refused.bin', 'runs']) {
+    dispatch(teacher.ws, klass.id, { sessionId: klass.id, participantId: 'p_teacher', role: 'host' }, { t: 'tree:remove', path: where })
+  }
+  assert.equal(teacher.heard.filter((one) => one.t === 'error').length, 0, 'no «уже нет в комнате» for a row of the machine')
+  await eager()
+  const push = pushOf(machine, klass.id)!
+  assert.deepEqual([...push.remove].sort(), ['model.pt', 'refused.bin', 'runs'])
+  assert.deepEqual(push.put, [])
+  assert.deepEqual(rows(), new Set(['model.pt', 'refused.bin', 'runs', 'runs/a', 'runs/a/ckpt.bin']), 'the rows stay until the machine has removed them')
+  // A run's push planned before the ack carries the removes again (a newer one supersedes the one in flight whole).
+  rigged.files.replySent(machine, rigged.files.replyBlock(machine))
+  writeText(klass.id, 'notes.txt', 'x')
+  const barrier = rigged.files.filesBarrier(klass.id, machine)
+  await rigged.files.whenIdle()
+  await turn()
+  const again = pushOf(machine, klass.id)!
+  assert.notEqual(again.seq, push.seq)
+  assert.deepEqual([...again.remove].sort(), ['model.pt', 'refused.bin', 'runs'])
+  await ack(machine, klass, again.seq)
+  await barrier
+  assert.deepEqual(rows(), new Set(), 'gone once the machine applied the push that removed them')
+  assert.ok(rigged.changed.length > changed, 'and the room heard its tree changed')
+  // Nothing more to remove: the next push carries none of them.
+  writeText(klass.id, 'notes.txt', 'y')
+  await eager()
+  assert.deepEqual(pushOf(machine, klass.id)?.remove ?? [], [])
+  // A row this server never had, nor any machine: the usual refusal.
+  dispatch(teacher.ws, klass.id, { sessionId: klass.id, participantId: 'p_teacher', role: 'host' }, { t: 'tree:remove', path: 'nowhere.csv' })
+  assert.deepEqual(teacher.heard.filter((one) => one.t === 'error').map((one) => (one as { message: string }).message), [tr('server.thisFileIsNoLongerInThe.b66e1e')])
+})
+
+test('a file the proxy in front of this server refused stays «на машине» with its own words; its pull goes, and «Привезти» is refused', async () => {
+  const machine = `m-${randomUUID().slice(0, 6)}`
+  const klass = classOn(machine)
+  await inStep(machine, klass)
+  const bytes = 150 * 1024 * 1024
+  // The kernel wrote it, the machine said it as a change, and this server pulled it.
+  await says(machine, report(klass, { changed: [{ path: 'model.pt', sha256: sha('m'), bytes, base: null }] }))
+  assert.deepEqual(rigged.files.replyBlock(machine).pulls[0]?.paths, [{ path: 'model.pt', sha256: sha('m') }])
+  // Its PUT met the proxy's 413: the machine says it stays there, and why.
+  await says(machine, report(klass, { skipped: [{ path: 'model.pt', bytes, why: 'proxy' }] }))
+  assert.deepEqual(rigged.files.replyBlock(machine).pulls, [], 'no pull waits for bytes the proxy turns away')
+  assert.deepEqual(roomTree(klass.id).files.find((entry) => entry.path === 'model.pt')?.onMachine, { bytes, why: 'proxy' })
+  const said = tr('server.staysOnTheMachineTheProxyIn.8cfa12', { file: 'model.pt', size: '150 МБ' })
+  assert.deepEqual(rigged.notes.filter((note) => note.startsWith('model.pt')), [said], 'said once, naming no cap of ours')
+  assert.deepEqual(rigged.files.fetch(klass.id, 'model.pt'), { refused: tr('server.cannotBeBroughtHereTheProxyIn.fc1eca', { file: 'model.pt' }) })
+})
+
+test('a row of the machine comes and goes in the room\'s tree as reports say it: the room hears it at once', async () => {
+  const machine = `m-${randomUUID().slice(0, 6)}`
+  const klass = classOn(machine)
+  await inStep(machine, klass)
+  const before = rigged.changed.length
+  await says(machine, report(klass, { skipped: [{ path: 'model.pt', bytes: 300 * 1024 * 1024, why: 'size' }] }))
+  rigged.clock.advance(1_000)
+  assert.equal(rigged.changed.length, before + 1, 'a new row: the workspace hooks run (the files frame goes out)')
+  await says(machine, report(klass, { skipped: [{ path: 'model.pt', bytes: 300 * 1024 * 1024, why: 'size' }] }))
+  rigged.clock.advance(1_000)
+  assert.equal(rigged.changed.length, before + 1, 'the same row said again changes nothing')
+  await says(machine, report(klass, { released: ['model.pt'] }))
+  rigged.clock.advance(1_000)
+  assert.equal(rigged.changed.length, before + 2, 'gone from the machine: the room hears that too')
+})
+
+test('«Привезти» answers the press itself: taken, here already, or refused in words, so the panel waits on no timer', async () => {
+  const machine = `m-${randomUUID().slice(0, 6)}`
+  const klass = classOn(machine)
+  await inStep(machine, klass)
+  await says(machine, report(klass, { skipped: [{ path: 'model.pt', bytes: 300 * 1024 * 1024, why: 'size' }, { path: 'torch/x.py', bytes: 1, why: 'package' }] }))
+  const teacher = fakeSocket()
+  const press = (where: string) => {
+    teacher.heard.length = 0
+    dispatch(teacher.ws, klass.id, { sessionId: klass.id, participantId: 'p_teacher', role: 'host' }, { t: 'files:fetch', path: where })
+    return teacher.heard.filter((one) => one.t === 'files:fetched')
+  }
+  assert.deepEqual(press('model.pt'), [{ t: 'files:fetched', path: 'model.pt', outcome: 'accepted' }])
+  assert.deepEqual(press('model.pt'), [{ t: 'files:fetched', path: 'model.pt', outcome: 'accepted' }], 'pressed again while it comes: still taken')
+  assert.deepEqual(press('torch/x.py'), [{ t: 'files:fetched', path: 'torch/x.py', outcome: 'refused', message: tr('server.thisFileCannotBeBroughtFromThe.148a43') }])
+  assert.deepEqual(press('nothing.csv'), [{ t: 'files:fetched', path: 'nothing.csv', outcome: 'refused', message: tr('server.thisFileIsNotOnTheClassMachines.0fd59f') }])
+  assert.equal(teacher.heard.some((one) => one.t === 'error'), false, 'a refusal travels in the answer, not as a stray error')
+  // The bytes landed before a second tab's press was read: here already, nothing asked of the machine.
+  const body = Buffer.from('the model')
+  const tmp = path.join(klass.dir, '.colloq.uploading-test-fetched')
+  fs.writeFileSync(tmp, body)
+  assert.deepEqual(await rigged.files.landPulled(machine, klass.id, klass.gen, 'model.pt', sha(body), tmp), { accepted: true })
+  assert.deepEqual(press('model.pt'), [{ t: 'files:fetched', path: 'model.pt', outcome: 'brought' }])
+  // A student is refused as before, and the press hears its answer too.
+  const student = fakeSocket()
+  dispatch(student.ws, klass.id, { sessionId: klass.id, participantId: 'p_student', role: 'participant' }, { t: 'files:fetch', path: 'model.pt' })
+  assert.deepEqual(student.heard.filter((one) => one.t === 'files:fetched'), [{ t: 'files:fetched', path: 'model.pt', outcome: 'refused' }])
 })
 
 /* ---------------------------------------------------------- the rebuild */
