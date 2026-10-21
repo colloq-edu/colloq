@@ -5,7 +5,8 @@
   import type { CouncilSettings } from '@shared/notebook'
   import ContextMenu, { type ContextMenuItem } from '@/components/ui/ContextMenu.svelte'
   import Icon from '@/components/ui/Icon.svelte'
-  import { kernelIsBusy, pultClock, pultDuration, queuedInBook, requestReason, timedOutAttempts, timedOutLimit, type KernelView } from '@/lib/council-pult'
+  import { kernelIsBusy, pultClock, pultDuration, pultRanFor, queuedInBook, requestReason, timedOutAttempts, timedOutLimit, type KernelView } from '@/lib/council-pult'
+  import { getSessionState } from '@/lib/session.svelte'
   import { spell } from '@/lib/utils'
 
   interface Props {
@@ -64,6 +65,40 @@
   /** Past the limit and still running: SIGINT did not take; from here, by hand only. */
   const overLimit = $derived(limitMs !== null && elapsed >= limitMs)
   const stopped = $derived(timedOutAttempts(attempts))
+
+  /*
+   * THE POOL (docs/architecture/remote-classes.md §9, Paper 18 · Z8b). With
+   * the class's council on machines this tab is the notebook's queue and
+   * nothing else: the cell's attempts compute on the pool's workers, which
+   * the strip under the header counts, and only those that fall back to the
+   * shared kernel wait here (council-pult.ts · kernelView). The caption says
+   * so, and the one thing of the pool this queue does run is drawn as such:
+   * the snapshot of the notebook's kernel, a service run between the
+   * teacher's cells, "taking a snapshot".
+   */
+  const pooled = $derived(kernel.pool !== null && settings.lane === 'pool')
+  /** A snapshot is being taken (`CouncilPool.refreezing`). */
+  const snapshot = $derived(kernel.pool?.refreezing === true)
+  /**
+   * How long it has been taken: from when the server asked it, by its clock
+   * (`CouncilPool.snapshot.since`), against the browser's with the session's
+   * skew — never from this tab's opening, which a return to the tab would
+   * start at 0 s again.
+   */
+  const session = getSessionState()
+  const snapshotFor = $derived.by(() => {
+    const since = kernel.pool?.snapshot?.since
+    return since === undefined ? null : Math.max(0, now - session.clockSkewMs - since)
+  })
+  /** «после вашей ячейки 9»: the teacher's last cell it takes in (`CouncilPool.snapshot.after`). */
+  const snapshotAfter = $derived(kernel.pool?.snapshot?.after ?? null)
+  /**
+   * The next attempts wait for it (D8) only while the cell follows the
+   * kernel and the snapshot they have is behind the teacher's runs: a
+   * cell on "Refresh only", or an unchanged state, does not hold them.
+   */
+  const snapshotHolds = $derived(settings.refresh === 'auto' && (kernel.pool?.epoch?.behind ?? 0) > 0)
+
   const who = (attempt: CouncilAttempt): string => names ? attempt.name : tr('room.pult.v2.queue.anonymous')
   /** A name from the kernel frame — under the same names switch as the pile rows. */
   const whoBusy = (name: string): string => names ? name : tr('room.pult.v2.queue.anonymous')
@@ -134,19 +169,21 @@
         <h2>{tr('room.pult.v2.queue.title')}</h2>
         <!-- The queue belongs to the NOTEBOOK, not the cell, and the caption
              has to say so: otherwise "3 in the queue" reads as three minutes
-             of waiting when a dozen other cells stand ahead. -->
-        <p>{tr(kernel.book ? 'room.pult.v3.queue.scopeBook' : 'room.pult.v2.queue.scope')}</p>
+             of waiting when a dozen other cells stand ahead. With the pool,
+             it also says whose attempts are here: the shared kernel's. -->
+        <p data-pult-queue-scope>{tr(pooled ? 'room.pult.pool.queue.scope' : kernel.book ? 'room.pult.v3.queue.scopeBook' : 'room.pult.v2.queue.scope')}</p>
       </div>
       <p class="queue-counts">
+        <!-- The snapshot is the notebook's one run while the card below says so (Z8b: «1 выполняется» over it). -->
         {#if kernel.book}
-          {tr('room.pult.v3.queue.countsBook', { running: busy ? 1 : 0, queued: queuedInBook(kernel) })}
+          {tr('room.pult.v3.queue.countsBook', { running: busy || snapshot ? 1 : 0, queued: queuedInBook(kernel) })}
         {:else}
           {tr('room.pult.v2.queue.counts', { running: running ? 1 : 0, queued: kernel.queued.length })}
         {/if}
       </p>
     </header>
 
-    <section class="running-card" class:is-running={busy} class:is-stuck={stuck} aria-label={tr('room.pult.v2.queue.current')}>
+    <section class="running-card" class:is-running={busy || snapshot} class:is-stuck={stuck} aria-label={tr('room.pult.v2.queue.current')}>
       {#if busy}
         <span class="running-icon" aria-hidden="true">▶</span>
         <div class="running-copy">
@@ -218,7 +255,7 @@
           {#if stuck}
             <div class="running-stuck" data-pult-stuck>
               <p class="stuck-title">{tr('room.pult.v3.queue.stuck')}</p>
-              <p class="stuck-why">{tr('room.pult.v3.queue.stuckWhy')} {tr('room.pult.v3.queue.restartCost')}</p>
+              <p class="stuck-why">{tr('room.pult.v3.queue.stuckWhy')} {tr('room.pult.v3.queue.restartCost')}{pooled ? ` ${tr('room.pult.pool.queue.restartKeeps')}` : ''}</p>
             </div>
           {/if}
         </div>
@@ -240,6 +277,23 @@
             is removed from the row menu, next to the proportionate "take the
             run out of the queue".
           -->
+        </div>
+      {:else if snapshot}
+        <!--
+          The snapshot of the notebook's kernel for the pool (Z8b, the queue
+          tab while a snapshot is taken). The server counts it with no
+          one's work — it cannot be interrupted, and a stop of the room never
+          reaches it (council-pool.ts) — so no button stands beside it.
+        -->
+        <span class="running-icon" aria-hidden="true">▶</span>
+        <div class="running-copy" data-pult-queue-snapshot>
+          <span class="running-label">{tr('room.pult.v2.queue.current')}</span>
+          <div class="running-author">
+            <strong>{snapshotFor === null ? tr('room.pult.pool.snapshot') : tr('room.pult.pool.queue.snapshotFor', { duration: pultRanFor(snapshotFor) })}</strong>
+          </div>
+          {#if snapshotHolds}
+            <p class="running-hold">{snapshotAfter === null ? tr('room.pult.pool.queue.snapshotWaits') : `${tr('room.pult.pool.queue.after', { cell: snapshotAfter })} · ${tr('room.pult.pool.queue.snapshotWaits')}`}</p>
+          {/if}
         </div>
       {:else}
         <span class="running-icon" aria-hidden="true">○</span>

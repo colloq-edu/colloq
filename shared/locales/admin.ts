@@ -9864,8 +9864,8 @@ export const adminMessages: MessageCatalog = {
     "en": "as before: nothing leaves"
   },
   "admin.classes.preset.personal": {
-    "ru": "Личные тетради — на машинах",
-    "en": "Personal notebooks on machines"
+    "ru": "Консилиум и личные тетради — на машинах",
+    "en": "Council and personal notebooks on machines"
   },
   "admin.classes.preset.personalNote": {
     "ru": "лекция здесь, нагрузка студентов — на машине",

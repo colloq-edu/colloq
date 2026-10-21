@@ -21,9 +21,13 @@
  * the whole lower half is skipped, while the upper one, about building the
  * source and parsing the report, stays: it is pure.
  */
-import { test } from 'node:test'
+import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { setLocaleResolver } from '../shared/i18n.js'
 import {
   councilEnterRefusal,
@@ -39,7 +43,9 @@ import {
   COUNCIL_REPORT_EXPR,
   MAX_SKIP_NOTES,
   SIZE_UNKNOWN,
+  parseExitReport,
   type CouncilIsolationReport,
+  type CouncilIsolationSettings,
 } from '../server/src/kernel/council-isolation.js'
 import { guardPolicySource, GUARD_MODULE } from '../server/src/kernel/danger.js'
 
@@ -163,7 +169,7 @@ test('the report is read from the mimebundle, and anything unclear means "not co
 
 test('what stayed shared is told in human words, in at most three lines and in two languages', () => {
   const report = (skipped: { name: string; bytes: number }[]): CouncilIsolationReport => ({
-    ok: true, copied: 0, skipped, failed: [], bytes: 0, ms: 1, error: null,
+    ok: true, copied: 0, skipped, failed: [], bytes: 0, memory: null, ms: 1, error: null, needs: [], scratch: null,
   })
   setLocaleResolver(() => 'ru')
   assert.deepEqual(councilSkipNotes(report([])), [])
@@ -188,7 +194,7 @@ test('what stayed shared is told in human words, in at most three lines and in t
   // thing: the data is shared. But the second one has no size, and making one
   // up is not allowed.
   const failed = councilSkipNotes({
-    ok: true, copied: 0, skipped: [], bytes: 0, ms: 1, error: null,
+    ok: true, copied: 0, skipped: [], bytes: 0, memory: null, ms: 1, error: null, needs: [], scratch: null,
     failed: [{ name: 'conn', error: 'TypeError: cannot pickle' }],
   })
   assert.equal(failed.length, 1)
@@ -256,6 +262,14 @@ interface Drive {
    * Nothing said means the guard's own default, that is, "Blocked".
    */
   policy?: boolean
+  /** A pool worker's inputs of the entry (§9.5): its run id, its cap, its source. */
+  entry?: CouncilIsolationSettings
+  /**
+   * Python run once the hidden module is installed and before the entry
+   * goes in, with `m` the module: a test's stand-ins for what only Linux
+   * has (the cgroup, smaps_rollup) or for a worker's seed.
+   */
+  prep?: string
 }
 
 /**
@@ -278,16 +292,25 @@ interface Drove {
 function drive(what: Drive): Drove {
   const enterOnce = "exec(compile(ENTER, '<enter>', 'exec'), ns)"
   const module = JSON.stringify(COUNCIL_MODULE)
+  const enter = councilEnterSource(what.budget ?? 512 * 1024 * 1024, what.entry ?? {})
+  const lines = enter.split('\n')
+  const first = what.prep === undefined
+    ? [enterOnce]
+    : [
+      `exec(compile(${JSON.stringify(lines.slice(0, 2).join('\n'))}, '<install>', 'exec'), ns)`,
+      `exec(compile(${JSON.stringify(what.prep)}, '<prep>', 'exec'), {'m': sys.modules[${module}], 'ns': ns})`,
+      `exec(compile(${JSON.stringify(lines[2])}, '<enter>', 'exec'), ns)`,
+    ]
   const script = [
     'import json, sys',
-    `ENTER = ${JSON.stringify(councilEnterSource(what.budget ?? 512 * 1024 * 1024))}`,
+    `ENTER = ${JSON.stringify(enter)}`,
     `EXIT = ${JSON.stringify(COUNCIL_EXIT_SOURCE)}`,
     "ns = {'__builtins__': __builtins__, '__name__': '__main__'}",
     `exec(compile(${JSON.stringify(what.setup)}, '<setup>', 'exec'), ns)`,
     ...(what.policy === undefined
       ? []
       : [`exec(compile(${JSON.stringify(guardPolicySource(what.policy))}, '<rule>', 'exec'), ns)`]),
-    enterOnce,
+    ...first,
     `report = json.loads(repr(sys.modules[${module}].report))`,
     'failure = None',
     'try:',
@@ -800,4 +823,232 @@ test('a sparse matrix is copied and weighed by its own arrays', { skip: hasScipy
   const skipped = out.report.skipped.find((row: { name: string }) => row.name === 'big')
   assert.ok(skipped, JSON.stringify(out.report.skipped))
   assert.ok(skipped.bytes > 300 * 300 * 0.5 * 4, `sparse matrix weight: ${skipped.bytes}`)
+})
+
+/* ------------------------------------- a pool worker's entry and exit */
+
+const roots: string[] = []
+after(() => {
+  for (const root of roots) rmSync(root, { recursive: true, force: true })
+})
+
+function folder(): string {
+  const root = mkdtempSync(path.join(tmpdir(), 'colloq-council-'))
+  roots.push(root)
+  return root
+}
+
+/** One python3 run with the hidden module installed as `m`; its answer is the JSON line starting with @@. A run past `timeoutMs` fails rather than hangs. */
+function withModule(lines: string[], timeoutMs?: number): any {
+  const install = councilEnterSource(1024).split('\n').slice(0, 2).join('\n')
+  const script = [
+    'import json, sys',
+    `exec(compile(${JSON.stringify(install)}, '<install>', 'exec'), {})`,
+    `m = sys.modules[${JSON.stringify(COUNCIL_MODULE)}]`,
+    ...lines,
+  ].join('\n')
+  const run = spawnSync(python!, ['-'], { input: script, encoding: 'utf8', ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}) })
+  assert.equal(run.status, 0, `python3 crashed or hung: ${run.signal ?? ''} ${run.stderr}`)
+  const line = run.stdout.split('\n').find((l) => l.startsWith('@@'))
+  assert.ok(line, `no answer: ${run.stdout} ${run.stderr}`)
+  return JSON.parse(line.slice(2))
+}
+
+const MB = 1024 * 1024
+
+/** A Linux container as the module reads it: the cgroup's numbers, and a card nearby. */
+function linux(limit: number, used: number): string {
+  return [
+    'm._linux = lambda: True',
+    `m._cgroup = lambda *names: {'memory.max': ${limit}, 'memory.current': ${used}}.get(names[0])`,
+    'm._reclaimable = lambda: 0',
+    'm._gpu_near = lambda: True',
+  ].join('\n')
+}
+
+test('a worker\'s ceiling is never above its cap, and a card nearby does not lift it', { skip: noPython }, () => {
+  const floor = 512 * MB
+  const headroom = 256 * MB
+  const out = withModule([
+    linux(8192 * MB, 1024 * MB),
+    `roomy = m._memory_cap(${floor}, ${headroom}, ${1024 * MB})`,
+    // The notebook's kernel with a card nearby has no ceiling at all (CUDA's address space).
+    `shared = m._memory_cap(${floor}, ${headroom})`,
+    linux(8192 * MB, 8092 * MB),
+    `tight = m._memory_cap(${floor}, ${headroom}, ${1024 * MB})`,
+    `small = m._memory_cap(${floor}, ${headroom}, ${256 * MB})`,
+    "print('@@' + json.dumps([roomy, shared, tight, small]))",
+  ])
+  /*
+   * N workers share one cgroup: the remainder of the container (6.75 GB here)
+   * would be promised to every one of them, so a worker gets its cap. When
+   * the container is nearly full, the floor still holds, but never above the
+   * cap itself.
+   */
+  assert.deepEqual(out, [1024 * MB, null, 512 * MB, 256 * MB])
+})
+
+test('a worker\'s entry refuses when Linux will not take its ceiling, and the exit gives everything back', { skip: noPython }, () => {
+  const out = drive({
+    setup: 'lst = [1, 2]',
+    attempt: 'lst.append(3)',
+    probe: 'lst',
+    entry: { capMb: 1024 },
+    prep: 'm._linux = lambda: True\nm._arm_memory = lambda *args: None',
+  })
+  assert.equal(out.report.ok, false)
+  assert.match(out.report.error, /memory ceiling unavailable/)
+  assert.deepEqual(out.after, [1, 2], 'the refused entry left its copies in place')
+})
+
+test('on Linux a worker\'s attempt meets a MemoryError at its cap', { skip: !python ? 'no python3' : process.platform !== 'linux' ? 'RLIMIT_AS holds on Linux only' : false }, () => {
+  const out = drive({
+    setup: 'x = 1',
+    attempt: 'blob = bytearray(1024 * 1024 * 1024)',
+    probe: 'x',
+    entry: { capMb: 256 },
+  })
+  assert.equal(out.report.ok, true, out.report.error)
+  assert.ok(out.report.memory > 0 && out.report.memory <= 256 * MB, `ceiling ${out.report.memory}`)
+  assert.match(out.failure ?? '', /^MemoryError/, `instead of a MemoryError: ${out.failure}`)
+})
+
+test('a worker\'s exit asks for a recycle when its own memory grew past the cap, or a thread was left', { skip: noPython }, () => {
+  const root = folder()
+  const smaps = path.join(root, 'smaps_rollup')
+  const seeded = () => writeFileSync(smaps, 'Rss: 9 kB\nPrivate_Dirty: 1000 kB\nAnonymous: 1000 kB\n')
+  // A worker as its seed leaves it: an epoch with a baseline of 1000 kB of its own.
+  const prep = [
+    `m._SMAPS = ${JSON.stringify(smaps)}`,
+    "m.epoch = {'dirty': 1000 * 1024, 'left': {}}",
+    // No ceiling here: the cap is the recycle's measure in this test, not the attempt's.
+    'm._linux = lambda: False',
+  ].join('\n')
+  // What the attempt leaves smaps_rollup saying.
+  const grow = (lines: string) => `open(${JSON.stringify(smaps)}, 'w').write(${JSON.stringify(lines)})`
+  // A seeded worker's entry carries its inputs, or it does not go in.
+  const inputs = (attempt: string, capMb: number, runId: string): CouncilIsolationSettings => ({ source: attempt, capMb, runId, scratchRoot: root })
+  seeded()
+  // 2048 kB more of its own: anonymous pages, shared memory and swap alike.
+  const more = grow('Rss: 9 kB\nPrivate_Dirty: 3048 kB\nAnonymous: 2024 kB\nPss_Shmem: 512 kB\nSwap: 512 kB\n')
+  const grew = drive({ setup: 'x = 1', attempt: more, probe: 'x', entry: inputs(more, 1, 'grew'), prep })
+  const exit = parseExitReport(JSON.stringify(grew.left))!
+  assert.equal(exit.dirty, (1000 + 2048) * 1024)
+  assert.equal(exit.grown, 2048 * 1024)
+  assert.equal(exit.recycle, true)
+  seeded()
+  // A fresh epoch's frame read whole: 390 MB more Private_Dirty, all of it the page cache's pages not yet written back,
+  // which it alone maps; and 4 MB freed lazily. Of its own, 512 kB.
+  const read = grow('Rss: 400009 kB\nPrivate_Dirty: 400000 kB\nAnonymous: 5608 kB\nLazyFree: 4096 kB\n')
+  const kept = parseExitReport(JSON.stringify(drive({ setup: 'x = 1', attempt: read, probe: 'x', entry: inputs(read, 1, 'kept'), prep }).left))!
+  assert.deepEqual([kept.grown, kept.recycle], [512 * 1024, false])
+  seeded()
+  const leftThread = 'import threading\nev = threading.Event()\nthreading.Thread(target=lambda: ev.wait(20), daemon=True).start()'
+  const thread = drive({ setup: 'x = 1', attempt: leftThread, probe: 'x', entry: inputs(leftThread, 1024, 'thread'), prep })
+  assert.equal(parseExitReport(JSON.stringify(thread.left))!.recycle, true)
+  // The notebook's own kernel is never told to recycle: it is no worker.
+  const plain = drive({ setup: 'x = 1', attempt: 'y = 2', probe: 'x' })
+  assert.equal(parseExitReport(JSON.stringify(plain.left))!.recycle, false)
+})
+
+test('the exit lists an attempt\'s new files, with hashes only within the artifacts\' caps', { skip: noPython }, () => {
+  const area = folder()
+  const out = drive({
+    setup: 'x = 1',
+    attempt: [
+      'for i in range(22):',
+      "    open('f%02d.txt' % i, 'w').write('n%d' % i)",
+      "open('big.bin', 'wb').write(b'0' * (2 * 1024 * 1024))",
+    ].join('\n'),
+    probe: 'x',
+    entry: { runId: 'files1', scratchRoot: area },
+  })
+  assert.equal(out.report.ok, true, out.report.error)
+  const exit = parseExitReport(JSON.stringify(out.left))!
+  assert.equal(exit.files.length, 23)
+  // Over 1 MB: named with its size, not brought.
+  assert.deepEqual(exit.files[0], { name: 'big.bin', bytes: 2 * 1024 * 1024, sha256: null })
+  const hashed = exit.files.filter((file) => file.sha256 !== null)
+  assert.equal(hashed.length, 20, 'more than 20 files would be brought')
+  assert.equal(hashed[0].sha256, createHash('sha256').update('n0').digest('hex'))
+  assert.deepEqual(exit.files.slice(-2).map((file) => file.sha256), [null, null])
+
+  const total = drive({
+    setup: 'x = 1',
+    attempt: "for i in range(6):\n    open('m%d.bin' % i, 'wb').write(b'1' * (1024 * 1024))",
+    probe: 'x',
+    entry: { runId: 'files2', scratchRoot: area },
+  })
+  const capped = parseExitReport(JSON.stringify(total.left))!
+  // Five megabytes in all, and not a byte more.
+  assert.equal(capped.files.filter((file) => file.sha256 !== null).length, 5)
+})
+
+test('the artifacts\' places go to names home can carry; the others are counted, never listed', { skip: noPython }, () => {
+  const out = drive({
+    setup: 'x = 1',
+    attempt: "open('.cache.json', 'w').write('{}')\nfor i in range(20):\n    open('f%02d.csv' % i, 'w').write('n%d' % i)",
+    probe: 'x',
+    entry: { runId: 'canon1', scratchRoot: folder() },
+  })
+  assert.equal(out.report.ok, true, out.report.error)
+  const exit = parseExitReport(JSON.stringify(out.left))!
+  assert.equal(exit.files.length, 20)
+  // A hidden name sorts first, and would take the place of the twentieth file the card can bring.
+  assert.equal(exit.files.filter((file) => file.sha256 !== null).length, 20)
+  assert.equal(exit.more, 1)
+})
+
+test('a worker\'s copies count against its cap: at most half of it, and the ceiling is what they leave', { skip: noPython }, () => {
+  const GB = 1024 * MB
+  const out = drive({
+    setup: 'a = bytearray(30 * 1024 * 1024)\nb = bytearray(30 * 1024 * 1024)',
+    attempt: 'pass',
+    probe: "__import__('sys').modules['_colloq_council']._colloq_calls",
+    entry: { capMb: 100 },
+    prep: [
+      'import sys, types',
+      'm._linux = lambda: True',
+      'm._gpu_near = lambda: False',
+      `m._cgroup = lambda *names: {'memory.max': ${64 * GB}, 'memory.current': ${GB}}.get(names[0])`,
+      'm._reclaimable = lambda: 0',
+      `m._vmsize = lambda: ${1000 * MB}`,
+      'calls = []',
+      "fake = types.ModuleType('resource')",
+      'fake.RLIMIT_AS = 9',
+      'fake.RLIM_INFINITY = -1',
+      'fake.getrlimit = lambda what: (-1, -1)',
+      'fake.setrlimit = lambda what, pair: calls.append(list(pair))',
+      "sys.modules['resource'] = fake",
+      'm._colloq_calls = calls',
+    ].join('\n'),
+  })
+  assert.equal(out.report.ok, true, out.report.error)
+  // Fifty megabytes of copies for a 100 MB attempt: `a` fits, `b` stays shared and is named.
+  assert.equal(out.report.copied, 1)
+  assert.deepEqual(out.report.skipped.map((row: { name: string }) => row.name), ['b'])
+  // The ceiling is what the copy of `a` left of the cap, on top of the address space with it in it.
+  const left = 100 * MB - out.report.bytes
+  assert.equal(out.report.memory, left)
+  assert.deepEqual(out.after[0], [1000 * MB + left, -1])
+})
+
+test('the exit\'s walk counts folders too, and a FIFO in a file\'s place does not hold it', { skip: noPython }, () => {
+  const out = drive({
+    setup: 'x = 1',
+    attempt: "import os\nos.makedirs('d0/d1/d2/d3/d4/d5')\nopen('d0/d1/d2/d3/d4/d5/deep.txt', 'w').write('x')\nopen('top.txt', 'w').write('t')",
+    probe: 'x',
+    entry: { runId: 'walk1', scratchRoot: folder() },
+    prep: 'm._WALK = 5',
+  })
+  assert.equal(out.report.ok, true, out.report.error)
+  // Six folders deep and a walk of five: the exit stops on the way down.
+  assert.deepEqual(parseExitReport(JSON.stringify(out.left))!.files.map((file) => file.name), ['top.txt'])
+  const fifo = path.join(folder(), 'out.csv')
+  const sha = withModule([
+    'import os',
+    `os.mkfifo(${JSON.stringify(fifo)})`,
+    `print('@@' + json.dumps(m._file_sha(${JSON.stringify(fifo)}, 0)))`,
+  ], 20_000)
+  assert.equal(sha, null)
 })

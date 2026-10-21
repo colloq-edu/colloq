@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tr } from '@shared/i18n'
+  import { formatNumber, tr } from '@shared/i18n'
   /**
    * The council rules — all of a cell's rules on one sheet.
    *
@@ -17,17 +17,28 @@
    * Buttons apply at once, there is no "Save": a rule is not a form but the
    * position of a switch, and an extra step between "set 1 min" and "it is
    * 1 min" would mean the screen says something other than what is in force.
+   *
+   * A class whose council computes on machines has two rules more (Paper
+   * 18 · Z8b, remote-classes.md §9.6, D8): "Attempts run" — apart, on the
+   * pool's workers, or in the shared kernel as before — and "State for
+   * attempts" — following the kernel, or changed by "Refresh" alone.
+   * They travel in the same frame as the four (`cell:lock`), and the pool
+   * strip above the sheet names both and opens it on their rows.
    */
   import { COUNCIL_SHARED_KERNEL_NOTE, type CouncilSettings } from '@shared/notebook'
+  import type { CouncilPool } from '@shared/protocol'
   import {
+    POOL_RULES,
     PULT_RULES,
     limitOptions,
     pauseOptions,
+    pultClock,
     pultDuration,
+    pultRanFor,
     type PultRule,
     type RunStats,
   } from '@/lib/council-pult'
-  import { elapsed } from '@/lib/utils'
+  import { elapsed, formatBytes } from '@/lib/utils'
 
   interface Props {
     settings: CouncilSettings
@@ -53,13 +64,25 @@
     disabled: boolean
     /** The bottom of the header: the sheet starts here, with the dimming below it. */
     top: number
+    /**
+     * The class's pool for this cell's notebook, from its kernel frame
+     * (`CouncilKernel.pool`); null — the class's council is not on machines,
+     * and the sheet has its four rules alone.
+     */
+    pool?: CouncilPool | null
     onchange: (patch: Partial<CouncilSettings>) => void
     onclose: () => void
   }
 
-  let { settings, rule, pending, stats, cellLimit, disabled, top, onchange, onclose }: Props = $props()
+  let { settings, rule, pending, stats, cellLimit, disabled, top, pool = null, onchange, onclose }: Props = $props()
 
   let sheet = $state<HTMLElement | null>(null)
+  /**
+   * The cell's attempts go to the pool: they compute at once, each on a
+   * worker, and see a snapshot rather than the shared kernel — what the
+   * "who runs" row and the sheet's last line say instead (Z8b).
+   */
+  const pooled = $derived(pool !== null && settings.lane === 'pool')
 
   interface Segment { label: string; on: boolean; off: boolean; pick: () => void }
   interface Row { rule: PultRule; title: string; why: string; note: string; segments: Segment[] }
@@ -82,7 +105,7 @@
       settings.studentRun === false
         ? 'room.pult.v2.rules.whyTeacher'
         : settings.studentRun === true
-          ? 'room.pult.v2.rules.whyEveryone'
+          ? (pooled ? 'room.pult.pool.rules.whyEveryone' : 'room.pult.v2.rules.whyEveryone')
           : 'room.pult.v2.rules.whyRequest',
     ),
   )
@@ -96,10 +119,20 @@
    * here is the only thing telling 0.4 s from 4 s.
    */
   const statLine = $derived(
-    stats === null
+    stats === null || stats.count === 0
       ? ''
       : tr('room.pult.v2.rules.limitStats', { median: elapsed(0, stats.median), max: elapsed(0, stats.max) }),
   )
+
+  /** "Today: 31 attempts apart · 2 in the shared kernel (conn)" — where this cell's runs computed (§9.8). */
+  const placedLine = $derived.by(() => {
+    const placed = stats?.placed
+    if (!placed) return ''
+    const apart = tr('room.pult.pool.rules.attempts', { count: placed.apart })
+    return placed.names.length > 0
+      ? tr('room.pult.pool.rules.todayNames', { apart, shared: placed.shared, names: placed.names.join(', ') })
+      : tr('room.pult.pool.rules.today', { apart, shared: placed.shared })
+  })
 
   const rows = $derived<Row[]>(
     PULT_RULES.map((each) => {
@@ -184,6 +217,71 @@
   )
 
   /**
+   * "Now: state as of 14:05 · snapshot 1.2 GB, retaken in 0.4 s" (Z8b): the
+   * snapshot the attempts compute on, its size and how long the last one
+   * took — as much of it as the pool says (a notebook with no kernel gives
+   * an empty one, with no size to say).
+   */
+  function refreshNow(of: CouncilPool): string {
+    if (!of.epoch) return ''
+    const time = pultClock(of.epoch.at)
+    if (of.epoch.bytes <= 0) return tr('room.pult.pool.rules.refreshNow', { time })
+    // In gigabytes past one, as the files panel says a machine's sizes: «снимок 1,2 ГБ».
+    const size = of.epoch.bytes >= 1024 ** 3
+      ? tr('room.files.machine.gb', { value: formatNumber(of.epoch.bytes / 1024 ** 3, { maximumFractionDigits: 1 }) })
+      : formatBytes(of.epoch.bytes)
+    return of.tookMs === undefined
+      ? tr('room.pult.pool.rules.refreshNowSize', { time, size })
+      : tr('room.pult.pool.rules.refreshNowTook', { time, size, took: pultRanFor(of.tookMs) })
+  }
+
+  /**
+   * The pool's two rows (Z8b), after the four and only with a pool: where
+   * the class's council does not compute on machines, "apart" would
+   * promise workers nobody starts.
+   */
+  const poolRows = $derived.by<Row[]>(() => {
+    const of = pool
+    if (of === null) return []
+    return POOL_RULES.map((each) =>
+      each === 'lane'
+        ? {
+            rule: each,
+            title: tr('room.pult.pool.rules.laneTitle'),
+            // How many at once and where, while the pool says: its workers up and its machine.
+            why: of.workers > 0 && of.machine
+              ? tr('room.pult.pool.rules.laneWhy', { count: of.workers, machine: of.machine })
+              : tr('room.pult.pool.rules.laneWhyPlain'),
+            note: placedLine,
+            segments: ([
+              ['pool', 'room.pult.pool.rules.lanePool'],
+              ['shared', 'room.pult.pool.rules.laneShared'],
+            ] as [CouncilSettings['lane'], string][]).map(([value, key]) => ({
+              label: tr(key),
+              on: settings.lane === value,
+              off: disabled,
+              pick: () => onchange({ lane: value }),
+            })),
+          }
+        : {
+            rule: each,
+            title: tr('room.pult.pool.rules.refreshTitle'),
+            why: tr('room.pult.pool.rules.refreshWhy'),
+            note: refreshNow(of),
+            segments: ([
+              ['auto', 'room.pult.pool.rules.refreshAuto'],
+              ['manual', 'room.pult.pool.rules.refreshManual'],
+            ] as [CouncilSettings['refresh'], string][]).map(([value, key]) => ({
+              label: tr(key),
+              on: settings.refresh === value,
+              off: disabled,
+              pick: () => onchange({ refresh: value }),
+            })),
+          },
+    )
+  })
+
+  /**
    * Focus lands on the button the sheet was opened for.
    *
    * Not on the heading and not on "Done": people came to change a rule, and
@@ -237,7 +335,7 @@
       </button>
     </header>
 
-    {#each rows as row (row.rule)}
+    {#each [...rows, ...poolRows] as row (row.rule)}
       <div class="rules-row" class:here={row.rule === rule} data-pult-rules-row={row.rule}>
         <span class="rules-label">{row.title}</span>
         <div class="rules-options">
@@ -266,12 +364,20 @@
       guards only the attempts. The line stands under the rules, not as a row
       among them: it cannot be changed from here, it lives in the class rules.
     -->
-    <p class="rules-kernel" class:rules-warn={cellLimit === null} data-pult-cell-limit>
-      {cellLimit === null
-        ? tr('room.pult.v3.rules.cellLimitOff')
-        : tr('room.pult.v3.rules.cellLimitOn', { duration: pultDuration(cellLimit) })}
-    </p>
-    <p class="rules-kernel">{tr(COUNCIL_SHARED_KERNEL_NOTE)}</p>
+    {#if pooled}
+      <!--
+        Attempts on the pool's workers: no queue of the notebook's holds them,
+        and they never change its state — what they see and write instead.
+      -->
+      <p class="rules-kernel" data-pult-pool-sees>{tr('room.pult.pool.rules.sees')}</p>
+    {:else}
+      <p class="rules-kernel" class:rules-warn={cellLimit === null} data-pult-cell-limit>
+        {cellLimit === null
+          ? tr('room.pult.v3.rules.cellLimitOff')
+          : tr('room.pult.v3.rules.cellLimitOn', { duration: pultDuration(cellLimit) })}
+      </p>
+      <p class="rules-kernel">{tr(COUNCIL_SHARED_KERNEL_NOTE)}</p>
+    {/if}
   </div>
 </div>
 

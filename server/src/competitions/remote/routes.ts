@@ -123,7 +123,8 @@ import {
   updateRunner,
   type RunnerRow,
 } from './store.js'
-import { UploadRefusal, receiveRoomFile, receiveUpload } from './upload.js'
+import { UploadRefusal, receiveArtifact, receiveEpochFile, receiveRoomFile, receiveUpload } from './upload.js'
+import { collectFor, epochBlobFor, epochIntentsFor, noteCollected, noteEpochStates } from '../../kernel/remote/epochs.js'
 import { homeStock, runnerWant } from './want.js'
 import { waitForNews } from './wake.js'
 
@@ -347,9 +348,10 @@ export function remoteRunnerRoutes(): Router {
     void sync(req, res).catch(next)
   })
 
-  // A class's file its copy's push names counts in the classes' bucket (kernel/remote/files.ts · blobFor), any other blob in the submissions'.
+  // A class's file its copy's push names, or an epoch's, counts in the classes' bucket (kernel/remote/files.ts · blobFor,
+  // epochs.ts · epochBlobFor), any other blob in the submissions'.
   const blobKind = (req: Request, runner: RunnerRow): CallKind =>
-    runner.classes && classFiles().blobFor(runner.id, String(req.params.sha256)) !== null ? 'roomBlob' : 'blob'
+    runner.classes && (classFiles().blobFor(runner.id, String(req.params.sha256)) !== null || epochBlobFor(runner.id, String(req.params.sha256)) !== null) ? 'roomBlob' : 'blob'
   router.get('/blobs/:sha256', machine(blobKind), (req, res, next) => {
     const runner = (res.locals as RunnerLocals).runner
     void serveBlob(req, res, runner, String(req.params.sha256)).catch(next)
@@ -377,6 +379,30 @@ export function remoteRunnerRoutes(): Router {
     // Read at the classes' shared pace (blobs.ts · classUploadPace): a 1 GiB «Привезти» outlasts Node's 300 s (net/long-body.ts).
     allowLongBody(req)
     void receiveRoomFile(req, runner, sessionId, { path: req.query.path, gen: req.query.gen })
+      .then((stored) => res.json(stored))
+      .catch(next)
+  })
+
+  /*
+   * The council's files coming home (remote-classes.md §9.2, §9.7, §15): a
+   * file of an epoch whose export lies on this machine, for a pool elsewhere
+   * (raw, `ship`); and a file of an attempt the pool ran here (gzip,
+   * `collect`). Only what this server asked of this machine, at the gen of
+   * the placement it named; through the classes' own bucket and upload
+   * slots, spared Node's request timeout while their bytes move.
+   */
+  router.put('/epochs/:sha256', machine('roomFile'), (req, res, next) => {
+    const runner = (res.locals as RunnerLocals).runner
+    allowLongBody(req)
+    void receiveEpochFile(req, runner, String(req.params.sha256), { session: req.query.session, gen: req.query.gen })
+      .then((stored) => res.json(stored))
+      .catch(next)
+  })
+
+  router.put('/council/:sessionId/runs/:runId/files/:name', machine('roomFile'), (req, res, next) => {
+    const runner = (res.locals as RunnerLocals).runner
+    allowLongBody(req)
+    void receiveArtifact(req, runner, String(req.params.sessionId), String(req.params.runId), String(req.params.name), { gen: req.query.gen })
       .then((stored) => res.json(stored))
       .catch(next)
   })
@@ -472,6 +498,9 @@ async function sync(req: Request, res: Response): Promise<void> {
     // Its folder copies: the acks of pushes, then the reports, each fenced by its class's gen (§8.4). A page of a full report
     // is answered at once: the next one comes only with the next sync.
     urgent = classFiles().noteKernelsBlock(current.id, request.kernels)
+    // The council's epochs it holds or fetches (the whole list, §9.2), and the attempts whose files it has sent (§9.7).
+    noteEpochStates(current.id, request.kernels.epochs)
+    if (request.kernels.collected) noteCollected(current.id, request.kernels.collected)
   }
   // A machine leaving with nothing held revokes itself: its next call is refused, and it stops (colloq-host runner leave).
   if (request.state === 'leaving' && request.attempts.length === 0) leaveRunner(current.id, now)
@@ -722,8 +751,9 @@ function classesBlock(runnerId: string, intents: readonly RemotePlacementIntent[
     verdicts: files.verdicts,
     pulls: files.pulls,
     scan: files.scan,
-    epochs: [],
-    collect: [],
+    // The council's epochs it is to hold or ship home, and the attempts whose files it is to send (kernel/remote/epochs.ts).
+    epochs: epochIntentsFor(runnerId),
+    collect: collectFor(runnerId),
     // A question asked twice is a block the agent refuses; the rest are asked by the next replies.
     postmortem: [...new Set(placements.postmortemWanted(runnerId))].filter((key) => REMOTE_PLACEMENT_KEY.test(key)).slice(0, REMOTE_READINGS_MAX),
     rates: classRates(),

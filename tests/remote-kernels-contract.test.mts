@@ -64,8 +64,11 @@ import {
   COUNCIL_EPOCH_SHIP_MB,
   COUNCIL_EPOCH_STORE_MB,
   COUNCIL_EPOCH_WAIT_MS,
+  COUNCIL_EPOCHS_MOUNT,
   COUNCIL_POOL_LINGER_MS,
   COUNCIL_POOL_READY_MS,
+  COUNCIL_SCRATCH_ENTRIES,
+  COUNCIL_SCRATCH_MOUNT,
   COUNCIL_WORKERS,
   COUNCIL_WORKER_REUSE,
   MACHINE_PACE_BURST_BYTES,
@@ -73,6 +76,8 @@ import {
   PERIMETER_FAILURES_MAX,
   PERIMETER_RECHECK_MS,
   REMOTE_CLASS_UPLOADS,
+  REMOTE_COLLECTED_MAX,
+  REMOTE_COLLECTS_MAX,
   REMOTE_EPOCHS_MAX,
   REMOTE_EPOCH_FILES_MAX,
   REMOTE_FILE_CAP_MB_MAX,
@@ -85,6 +90,8 @@ import {
   REMOTE_ROOT_CHARS,
   REMOTE_SESSION_ID,
   REMOTE_SHM,
+  councilEpochPath,
+  councilScratchPath,
   isRemoteRoot,
   parseRemoteKernelsReply,
   parseRemoteKernelsRequest,
@@ -646,6 +653,47 @@ test('epochs: home names those not ready yet, and a machine says all it holds, t
   refused(() => parseRemoteKernelsReply({ ...reply, epochs: [...largest, pending(2, 1)] }), /Epoch files over their budget/)
 })
 
+test('council (0.26): an epoch not had says why in a word, an attempt\'s collection over is said by its ids, and nothing else of either', () => {
+  const failed = edit(request, ['epochs', 1, 'failed'], 'files')
+  assert.deepEqual(parseRemoteKernelsRequest(failed).epochs[1], { ...request.epochs[1], failed: 'files' })
+  for (const why of ['source', 'files', 'disk']) assert.doesNotThrow(() => parseRemoteKernelsRequest(edit(request, ['epochs', 1, 'failed'], why)), why)
+  // A ready epoch has no failure; a failure is one of the words, never the agent's text.
+  refused(() => parseRemoteKernelsRequest(edit(request, ['epochs', 0, 'failed'], 'disk')), /epoch failure/)
+  for (const bad of ['docker cp: no such file', '', null, 1]) refused(() => parseRemoteKernelsRequest(edit(request, ['epochs', 1, 'failed'], bad)), /epoch failure/)
+  const collected = { ...request, collected: [{ sessionId: SESSION, runId: 'r_1792000000' }, { sessionId: OTHER, runId: 'r_1792000000' }] }
+  assert.deepEqual(parseRemoteKernelsRequest(collected), collected)
+  refused(() => parseRemoteKernelsRequest({ ...request, collected: [collected.collected[0], collected.collected[0]] }), /collected attempt/)
+  refused(() => parseRemoteKernelsRequest(edit(collected, ['collected', 0, 'runId'], '../r')), /collected attempt/)
+  refused(() => parseRemoteKernelsRequest(edit(collected, ['collected', 0, 'files'], [])), /Unexpected key/)
+  const many = Array.from({ length: REMOTE_COLLECTED_MAX + 1 }, (_, i) => ({ sessionId: SESSION, runId: `r_${i}` }))
+  assert.doesNotThrow(() => parseRemoteKernelsRequest({ ...request, collected: many.slice(0, REMOTE_COLLECTED_MAX) }))
+  refused(() => parseRemoteKernelsRequest({ ...request, collected: many }), /collected attempts/)
+  // A machine finishes as many collections between two syncs as home asked for in several replies.
+  assert.ok(REMOTE_COLLECTED_MAX >= REMOTE_COLLECTS_MAX)
+})
+
+test('council (0.26): home asks an export read on its machine to come home, of its own files only, and never one the machine fetched from home', () => {
+  const shipped = edit(reply, ['epochs', 1, 'ship'], [sha(14)])
+  assert.deepEqual(parseRemoteKernelsReply(shipped).epochs[1]!.ship, [sha(14)])
+  // Not one of the epoch's own files; the same twice; from home (nothing to send back).
+  refused(() => parseRemoteKernelsReply(edit(reply, ['epochs', 1, 'ship'], [sha(99)])), /epoch files to send/)
+  refused(() => parseRemoteKernelsReply(edit(reply, ['epochs', 1, 'ship'], [sha(14), sha(14)])), /epoch files to send/)
+  refused(() => parseRemoteKernelsReply(edit(reply, ['epochs', 0, 'ship'], [sha(12)])), /epoch files to send/)
+  // No `ship`, no key: an older reply's epochs read as they always did.
+  assert.equal('ship' in parseRemoteKernelsReply(reply).epochs[1]!, false)
+})
+
+test('council (0.26): a worker finds an epoch\'s files and an attempt\'s folder by the contract\'s own paths', () => {
+  assert.equal(COUNCIL_EPOCHS_MOUNT, '/colloq/epochs')
+  assert.equal(COUNCIL_SCRATCH_MOUNT, '/colloq/scratch')
+  assert.equal(COUNCIL_SCRATCH_ENTRIES, 2000)
+  assert.equal(councilEpochPath(sha(7)), `/colloq/epochs/${sha(7)}`)
+  assert.equal(councilScratchPath('r_1792000000'), '/colloq/scratch/r_1792000000')
+  // Neither under the class folder's mount: the class folder is read-only to the pool, and the epoch dir is the notebook kernel's own.
+  for (const mount of [COUNCIL_EPOCHS_MOUNT, COUNCIL_SCRATCH_MOUNT]) assert.ok(!mount.startsWith('/workspace') && !mount.startsWith(COUNCIL_EPOCH_DIR))
+  for (const run of [() => councilEpochPath('../x'), () => councilEpochPath('A'.repeat(64)), () => councilScratchPath('r/1'), () => councilScratchPath('..'), () => councilScratchPath('')]) refused(run, /path part/)
+})
+
 /* ----------------------------------------------------------- keys and doors */
 
 test('a key names one slot of one class, and the doors are built only from what their patterns take', () => {
@@ -879,13 +927,32 @@ const WORDS: ReadonlyArray<readonly [key: string, params: Record<string, string 
   ['server.theKernelHasRunCellsSinceThe.e29733', { count: 3 }, 'Ядро ушло вперёд на 3 ячейки после снимка — результат в тетради может отличаться.'],
   ['server.theMachineWasLostInTheMiddle.b5f5c5', {}, 'Машина пропала посреди попытки — пересчитано в общем ядре. Пауза между запусками не засчитана.'],
   ['server.theOrderOfSetsInAttemptsMay.b87dc7', {}, 'Порядок множеств в попытках может отличаться от тетради: её ядро запущено до обновления.'],
+  // The 0.26.0 rows the build added (§13.2 «As built»), and F6's.
+  ['server.thePoolSMachineDoesNotAnswer.16922d', {}, 'Машина пула не отвечает — эта попытка посчитана в общем ядре.'],
+  ['server.thePoolSMachineWasLostThe.8aff4c', {}, 'Машина пула пропала — попытка посчитана в общем ядре.'],
+  ['server.aPoolWorkerDidNotStartThe.4ecf00', {}, 'Исполнитель пула не поднялся — попытка посчитана в общем ядре.'],
+  ['server.theNotebookSStateHoldsDataOn.2ac2bc', {}, 'В состоянии тетради есть данные на видеокарте — попытки считаются в общем ядре.'],
+  ['server.theNotebookSStateDoesNotFit.c67b68', {}, 'Состояние тетради не помещается — попытки считаются в общем ядре.'],
+  ['server.theNotebookSStateCouldNotBe.9e7101', {}, 'Состояние тетради не собралось — попытки считаются в общем ядре.'],
+  ['server.theNewStateDoesNotFit.1c7533', { time: '14:05' }, 'Новое состояние не помещается — попытки на состоянии 14:05.'],
+  ['server.theNewStateCouldNotBeTaken.01b6b1', { time: '14:05' }, 'Новое состояние не собралось — попытки на состоянии 14:05.'],
+  ['server.thePoolDidNotStart.80644c', { why: 'Пул консилиума бывает только на машинах.' }, 'Пул не поднялся: Пул консилиума бывает только на машинах.'],
+  ['server.theWorkersCouldNotLoadThe.69de42', {}, 'исполнители не загрузили состояние тетради'],
+  ['server.itsWorkersDidNotStart.f8a286', {}, 'исполнители не запустились'],
+  ['server.noMachineHasTakenThePoolYet.9a460b', {}, 'ни одна машина ещё не взяла пул'],
+  ['server.theNotebookSStateHasNotReached.461833', {}, 'состояние тетради ещё не дошло до машины'],
+  ['server.thePoolSMachineDoesNotAnswer.5890e3', {}, 'машина пула не отвечает'],
+  ['server.theWorkersHaveNotLoadedTheNotebook.e2c616', {}, 'исполнители ещё не загрузили состояние тетради'],
+  ['server.thisCellSAttemptsDoNotGo.7d2837', {}, 'Попытки этой ячейки не идут в пул.'],
+  ['server.onlyTheTeacherRefreshesTheAttempts.3cdeb6', {}, 'Обновить состояние для попыток может преподаватель.'],
+  ['server.onlyTheAttemptSAuthorAndThe.94ba37', {}, 'Файлы попытки берут её автор и преподаватели.'],
 ]
 /** Rows beside the table: the slow start before an image, an update's note (§11.7), the Docker branch's refusal (§6.1), an older epoch of one cell, and the reasons of left names (§9.4). */
 const BESIDE = [
   'server.startingTheKernelOnMachine.c2d7a3', 'server.theAgentOnMachineIsUpdatingThe.88b188', 'server.theCouncilPoolRunsOnlyOnMachines.ef5702', 'server.stateAsOfWithoutCell.30d8e4',
   'server.notCarriedOver.00ad4e', 'server.databaseConnection.cdf70c', 'server.openFile.3a6aca', 'server.networkSocket.34c443', 'server.generator.c33340',
   'server.thread.49e10b', 'server.lock.1f0e8d', 'server.dataOnTheGpu.605180', 'server.tooBigForTheSnapshot.1a48a4', 'server.cannotBeCopied.e6521a',
-  'server.thePersonalNotebooksKernelsOnTheMachine.160525', 'server.cannotBeBroughtHereTheProxyIn.fc1eca',
+  'server.thePersonalNotebooksKernelsOnTheMachine.160525', 'server.cannotBeBroughtHereTheProxyIn.fc1eca', 'server.itsModuleIsOnlyInTheNotebook.49d81a',
 ]
 
 test('the server\'s words read as the design\'s table, in Russian word for word, and in English', () => {
@@ -895,6 +962,12 @@ test('the server\'s words read as the design\'s table, in Russian word for word,
     const en = translate('en', key, params)
     assert.notEqual(en, key)
   }
+  // The sentinel (§9.4): named by its own key, its two names and its reason as the Python fills them; it promises no rerun.
+  const sentinel = translate('ru', 'server.council.notCarried', { name: 'conn', why: translate('ru', 'server.databaseConnection.cdf70c') })
+  assert.equal(sentinel, 'Переменная conn не перенесена на машину консилиума (соединение с базой), а эта попытка добралась до неё не напрямую. Попытки, в тексте которых есть conn, считаются в общем ядре.')
+  assert.doesNotMatch(translate('en', 'server.council.notCarried'), /[А-Яа-яЁё]/)
+  // A name a worker's load leaves for a module its machine lacks, and the console's line with it.
+  assert.equal(translate('ru', 'server.itsModuleIsOnlyInTheNotebook.49d81a'), 'модуль есть только в ядре тетради')
   // The left names of an epoch, said with their reasons, as the console's row in the table says them.
   const left = translate('ru', 'server.notCarriedOver.00ad4e', {
     names: `conn (${translate('ru', 'server.databaseConnection.cdf70c')}), batches (${translate('ru', 'server.generator.c33340')})`,

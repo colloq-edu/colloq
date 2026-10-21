@@ -674,9 +674,9 @@
   numbers while it is on machines, and the live line — or the refusal that
   takes its place and greys On machines. Tiles in a row from 720 px of its
   own width, a radio list below (the 640 px class dialog and the phone, Z10).
-  The council's part and its numbers wait for its pool (COUNCIL_POOL, 0.26):
-  until then its attempts run in the class notebook's kernel, wherever that
-  is, and a choice here would change nothing.
+  The council's part and its numbers come with its pool (COUNCIL_POOL, 0.26):
+  "In the shared kernel" is the notebook's kernel, one attempt after
+  another, "On machines" the class's pool of workers on a machine.
 -->
 {#snippet whereItRuns(current: ClassPlacement)}
   <section
@@ -789,7 +789,7 @@
       </div>
 
       {#if COUNCIL_POOL && current.council === 'machines'}
-        <!-- The council's two numbers (Z4: only while it is on machines, and only once its pool is there). -->
+        <!-- The council's two numbers (Z4): only while it is on machines, where its pool's workers take them. -->
         <div class="min-w-0">
           <p class="admin-label mb-1.5">{tr('admin.placement.workers')}</p>
           <div class="pl-seg pl-seg-wide text-2xs" role="group" aria-label={tr('admin.placement.workers')}>

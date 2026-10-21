@@ -790,9 +790,10 @@ export const CLASS_PLACEMENT_PRESETS: Readonly<Record<ClassPlacementPreset, Read
   /** «Всё здесь». */
   home: { room: 'home', own: 'home', council: 'shared' },
   /**
-   * «Личные тетради — на машинах» (D31, vsos's): the lecture keeps its
-   * latency here. Its council goes to machines with the pool (COUNCIL_POOL),
-   * which is why the tile was named «Консилиум и личные тетради» in the plan.
+   * «Консилиум и личные тетради — на машинах» (D31, vsos's): the lecture
+   * keeps its latency here, the students' kernels and the council's pool go
+   * to machines. Named «Личные тетради — на машинах» in 0.25, while its
+   * council still computed in the class notebook's kernel (COUNCIL_POOL).
    */
   personal: { room: 'home', own: 'machines', council: 'machines' },
   /** «Всё на машинах». */
@@ -804,14 +805,16 @@ export const CLASS_PLACEMENT_PRESET_NAMES = Object.keys(CLASS_PLACEMENT_PRESETS)
 
 /**
  * Whether the council's own placement is built (docs/architecture/remote-
- * classes.md §9, D29): its pool of workers on machines is 0.26.0's. Until it
- * is, every attempt runs in the class notebook's kernel, wherever that
- * computes, so the class form draws no «Консилиум» part and neither of its
- * two numbers — a choice there would change nothing — and no word promises
- * the pool. The setting's field is stored all the same (the presets set it),
- * for the release that reads it.
+ * classes.md §9, D29): its pool of workers on machines, 0.26.0's. With it
+ * the class form draws its «Консилиум» part («В общем ядре / На машинах»)
+ * and, while that is on machines, «Попыток одновременно» and «Память на
+ * попытку» (Paper 18 · Z4). Off, as in 0.25, every attempt ran in the class
+ * notebook's kernel wherever that computed, and the form drew none of them:
+ * a choice there would have changed nothing. The setting's field was stored
+ * all the same, so a class made in 0.25 from a preset that sets it gets its
+ * pool now.
  */
-export const COUNCIL_POOL = false
+export const COUNCIL_POOL = true
 
 /**
  * What each number may be. The same as shared/remote-kernels.ts says them

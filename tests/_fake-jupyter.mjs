@@ -30,6 +30,16 @@
  *     --calls-file F                         every call (`calls`, below) also
  *                                            a JSON line in F, which outlives
  *                                            the process
+ *     --epoch-dir D                          where a kernel's exports go: D/<seq>
+ *                                            (the container's own
+ *                                            COUNCIL_EPOCH_DIR, which `docker
+ *                                            cp` copies out)
+ *     --epochs-dir D --scratch-dir D         a council container's two mounts
+ *                                            (/colloq/epochs, /colloq/scratch): a
+ *                                            worker loads its epoch from D's
+ *                                            files by their sha256, and an
+ *                                            attempt works in a folder of its
+ *                                            own in the second
  *
  * A container's process outlives the agent that started it, as a container
  * does, and never the test.
@@ -44,6 +54,7 @@
  *     print(x, s)            stdout, values separated by spaces
  *     x                      a bare expression on the last line is the cell's result
  *     HOLD [name]            wait until RELEASE [name] runs in any kernel here, or release(name)
+ *     DEAF [name]            the same wait, deaf to interrupts: Python inside C code (a restart still ends it)
  *     SLEEP ms               wait
  *     STREAM n ms            print 0 … n-1, a line every ms
  *     RAISE [text] · OOM     a ValueError; the kernel killed for memory
@@ -89,8 +100,27 @@
  * said, or a KeyError in a fresh one; the help's static parse
  * (`_colloq_inspect`) and the council's entry, export and load
  * (`_colloq_council`) get canned reports told apart by their code. The
- * council's export and load (remote-classes.md §9.3, 0.26) are placeholders
- * of the shape a worker's seeding reads, until that code exists.
+ * council's export, load, and a pool worker's entry and exit
+ * (remote-classes.md §9.3–9.7) answer in the shapes of
+ * kernel/council-isolation.ts, as `fake.council` says (POST /_fake/knobs
+ * `council` in another process): the export writes its files into
+ * `epochFolder(seq)` (the kernel's COUNCIL_EPOCH_DIR/<seq>), each named by
+ * its sha256, and a load of that manifest by any fake of this process
+ * brings the carried bindings into the worker; the kernel's silent removal
+ * of an export nobody collects (exportDropExpression) removes that folder; a
+ * worker's entry refuses an attempt whose text reads a name its epoch left
+ * behind (`needs`), or fails as `enterError` says once its folder is made,
+ * and its exit lists the files `fake.council.files` names.
+ * `fake.councilRuns` counts each, and `holdPeak(name)` the most cells that
+ * waited at one HOLD at once
+ * (GET /_fake/holds, GET /_fake/council). A council container's fake
+ * (`epochsDir`, `scratchDir`) does what the hidden module does with the
+ * agent's files instead: its load reads the epoch's manifest, stream and
+ * buffers from the epochs folder by their sha256 (none there, or one that
+ * does not hash to its name, and the load fails), and an attempt's entry
+ * makes its folder /colloq/scratch/<runId> — the class folder's top level as
+ * links into it — the cell's folder until its exit, which lists the regular
+ * files the attempt wrote there besides the canned ones.
  *
  * WHAT A TEST SEES. `calls` logs every request: HTTP by method and path,
  * channel upgrades, shell requests by type, terminal input and size, COUNT by
@@ -98,8 +128,8 @@
  * GET /_fake/kernels and what was asked to run at GET /_fake/requests, with
  * POST /_fake/release/<name>, POST /_fake/restarts/<normal|unanswered|ignored|held>
  * and POST /_fake/knobs (a JSON body of holdKernelInfo, slowRevival,
- * upgradeDelayMs, refuseUpgrades, holdInterrupts, restarts; a knob turned off
- * lets go of what it held) beside them, and GET /_fake/life for what a
+ * upgradeDelayMs, refuseUpgrades, holdInterrupts, restarts, council,
+ * holdSilent; a knob turned off lets go of what it held) beside them, and GET /_fake/life for what a
  * container's process knows of its container (named yet or not). Kernel ids are the process's own, as
  * jupyter_server's uuids are: a container started again knows none of its
  * earlier life's.
@@ -146,11 +176,51 @@ function reportOf(module) {
   return new RegExp(`modules\\[(['"])${name}\\1\\]\\.report\\s*$`)
 }
 
+/** A notebook kernel's removal of one of its export folders (council-isolation.ts · exportDropExpression), its epoch's number caught. */
+const EXPORT_DROP = /^__import__\('shutil'\)\.rmtree\("\/tmp\/colloq-epoch\/(\d+)", ignore_errors=True\)$/
+
 /** The council's hidden module (server/src/kernel/council-isolation.ts · COUNCIL_MODULE): its entry, exit, export and load. */
 const COUNCIL_MODULE = '_colloq_council'
 
 /** A call of one of the council module's functions, the way the entry calls `enter`: `modules["_colloq_council"].<name>(`. */
 const COUNCIL_CALL = (name) => new RegExp(`modules\\[(['"])${COUNCIL_MODULE}\\1\\]\\.${name}\\(`)
+
+/**
+ * The epochs the fakes of this process exported, by their manifest's sha256:
+ * what a load of it brings into a worker, whichever fake the worker is on
+ * (a machine's fake loads what home's exported: the files travel between
+ * them in the product, and a test's machines are fakes of this process).
+ */
+const EPOCHS = new Map()
+
+/** The council's knobs at rest: an export that carries every binding, a load that holds, an attempt that leaves nothing. */
+function councilAtRest() {
+  return {
+    /** Names the export leaves behind, and why (CouncilLeftWhy): `cuda` makes the whole state the GPU's (D11). */
+    left: /** @type {Array<{ name: string, why: string }>} */ ([]),
+    /** The export fails with these words (null: it holds). */
+    exportError: /** @type {string | null} */ (null),
+    /** No answer of the export at all (its report missing): what a kernel without the module says. */
+    exportSilent: false,
+    /** The sizes of the buffers the export writes beside its stream, each its own file (none by default). */
+    buffers: /** @type {number[]} */ ([]),
+    /** The load fails with these words (null: it holds). */
+    loadError: /** @type {string | null} */ (null),
+    /** A pool worker's entry fails with these words once its scratch folder is made, as one that cannot set its ceiling does (null: it holds). */
+    enterError: /** @type {string | null} */ (null),
+    /** What an attempt writes into its scratch folder: `text` is hashed (one to bring home), `bytes` alone is named with its size. */
+    files: /** @type {Array<{ name: string, text?: string, bytes?: number }>} */ ([]),
+    /** Threads and processes a worker's exit finds left behind. */
+    threads: 0,
+    processes: 0,
+    /** What the attempts left the worker holding beyond its seed, bytes (null: the exit cannot tell). */
+    grown: /** @type {number | null} */ (null),
+    /** The kernel's PYTHONHASHSEED its export reports (a string, null for none); undefined — the report does not say, as before 0.26. */
+    hashSeed: /** @type {string | null | undefined} */ (undefined),
+    /** Names a worker's load leaves behind besides the export's, as one lacking their module does (CouncilLeftWhy `module`). */
+    loadLeft: /** @type {Array<{ name: string, why: string }>} */ ([]),
+  }
+}
 
 /* ------------------------------------------------------------ interpreter */
 
@@ -251,6 +321,9 @@ const SCROLLBACK_CHARS = 4096
  * @param {(line: string) => void} [options.log] what jupyter_server would log (a kernel restarted): the process
  *   mode's stdout, the container's log
  * @param {() => object} [options.life] what GET /_fake/life answers: the process mode's watch of its container
+ * @param {string} [options.epochDir] where exports go, `<epochDir>/<seq>` (a temporary folder of the fake's by default)
+ * @param {string} [options.epochsDir] a council container's epochs folder: loads read the epoch's files from it
+ * @param {string} [options.scratchDir] a council container's scratch space: an attempt works in `<scratchDir>/<runId>`
  */
 export async function startFakeJupyter(options = {}) {
   const guardAnswer = options.guardAnswer ?? guardAnswerFor()
@@ -268,6 +341,20 @@ export async function startFakeJupyter(options = {}) {
   const kernelOf = new WeakMap()
   /** Interpreted cells waiting at HOLD, by name. */
   const holds = new Map()
+  /** The most that waited at each HOLD at once (holdPeak). */
+  const holdPeaks = new Map()
+  /** Where the exports' files go, made on the first one (epochFolder): the given folder, or a temporary one of the fake's own, removed at close. */
+  let epochDir = null
+  let madeEpochDir = false
+  const epochRoot = () => {
+    if (epochDir) return epochDir
+    if (options.epochDir) fs.mkdirSync((epochDir = options.epochDir), { recursive: true })
+    else {
+      epochDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-epoch-'))
+      madeEpochDir = true
+    }
+    return epochDir
+  }
   const ptys = new Map()
   const started = new Date().toISOString()
 
@@ -278,8 +365,8 @@ export async function startFakeJupyter(options = {}) {
     byPath: new Map(),
     /** Every channel socket ever opened, for the teardown. */
     sockets: /** @type {import('ws').WebSocket[]} */ ([]),
-    /** What was asked to run and how: `store_history` is whether IPython puts the source into In/_ih. */
-    requests: /** @type {Array<{ code: string, store_history?: boolean, silent?: boolean }>} */ ([]),
+    /** What was asked to run and how: `store_history` is whether IPython puts the source into In/_ih; `kernel` which one ran it (interpreted kernels). */
+    requests: /** @type {Array<{ code: string, store_history?: boolean, silent?: boolean, kernel?: string }>} */ ([]),
     /** The legacy cells' execution counter, In [n]. */
     executions: 0,
     /** Set to hang instead of answering, the way a kernel that is thinking does (legacy cells). */
@@ -301,6 +388,14 @@ export async function startFakeJupyter(options = {}) {
     restarts: 'normal',
     /** Hold kernel_info requests until releaseKernelInfo(): a question stuck behind other work. */
     holdKernelInfo: false,
+    /**
+     * Silent runs (service runs: the guard, the council's export) that wait at
+     * `HOLD name` before they answer, each whose code contains `match` (in the
+     * one kernel `kernel` names, any when absent): the window a service run
+     * takes on a kernel. An interrupt meanwhile ends one with a
+     * KeyboardInterrupt, as it would end the real one.
+     */
+    holdSilent: /** @type {Array<{ match: string, name: string, kernel?: string }>} */ ([]),
     /** Hold the answers to GET /api/kernels/:id until releaseKernelGets(): Jupyter's word on a kernel, a long way off. */
     holdKernelGets: false,
     /** A kernel killed for memory stays `starting` until revive(): a slow comeback. */
@@ -318,6 +413,30 @@ export async function startFakeJupyter(options = {}) {
 
     reply,
     councilExpressions,
+
+    /** The council's canned reports, as a test sets them (councilAtRest; `reset()` puts them back). */
+    council: councilAtRest(),
+    /** How many of each the council's module was asked for: exports, loads, a pool worker's entries and exits. */
+    councilRuns: { export: 0, load: 0, enter: 0, leave: 0, drop: 0 },
+
+    /** The folder the export of epoch `seq` wrote its files into: the kernel container's COUNCIL_EPOCH_DIR/<seq>. */
+    epochFolder(seq) {
+      return path.join(epochRoot(), String(seq))
+    },
+
+    /** The most interpreted cells that waited at `HOLD name` at the same time (any one name's most when omitted). */
+    holdPeak(name) {
+      if (name !== undefined) return holdPeaks.get(name) ?? 0
+      let most = 0
+      for (const peak of holdPeaks.values()) most = Math.max(most, peak)
+      return most
+    },
+
+    /** Forget the peaks: the next count starts from what waits now. */
+    resetHoldPeak() {
+      holdPeaks.clear()
+      for (const [name, waiting] of holds) if (waiting.size > 0) holdPeaks.set(name, waiting.size)
+    },
 
     /** Push one stdout chunk into whatever legacy request the fake is sitting on. */
     say(text) {
@@ -368,6 +487,8 @@ export async function startFakeJupyter(options = {}) {
       fake.revive()
       fake.upgradeDelayMs = 0
       fake.refuseUpgrades = 0
+      fake.council = councilAtRest()
+      fake.holdSilent = []
     },
 
     /** Let interpreted cells waiting at `HOLD name` go on. Returns how many did. */
@@ -404,6 +525,20 @@ export async function startFakeJupyter(options = {}) {
     releaseKernelGets() {
       fake.holdKernelGets = false
       for (const answer of heldGets.splice(0)) answer()
+    },
+
+    /**
+     * Kill one kernel's process for memory while it computes nothing, as a
+     * cgroup's OOM killer picks it: a new process behind the same id, and
+     * jupyter_server says `restarting` to whoever is connected (the `OOM`
+     * statement's path, for a kernel at rest).
+     */
+    oomKill(kernelId) {
+      const kernel = fake.kernels.get(kernelId)
+      if (!kernel) throw new Error(`no fake kernel ${kernelId}`)
+      notice(kernel, 'restarting')
+      freshProcess(kernel)
+      kernel.reviving = fake.slowRevival
     },
 
     /** Let kernels killed for memory come back (see `slowRevival`). */
@@ -470,6 +605,8 @@ export async function startFakeJupyter(options = {}) {
       http.closeAllConnections()
       await new Promise((resolve) => http.close(() => resolve()))
       if (madeCwd) fs.rmSync(home, { recursive: true, force: true })
+      // A container's own folder outlives its process (a `docker start` finds it), and goes with `docker rm`.
+      if (epochDir && madeEpochDir) fs.rmSync(epochDir, { recursive: true, force: true })
     },
   }
 
@@ -505,6 +642,8 @@ export async function startFakeJupyter(options = {}) {
       executions: 0,
       /** The guard's last report, or null while this process has no guard. */
       guarded: null,
+      /** A pool worker's: the epoch it loaded (its manifest and what it left behind) and the attempt in it now (its run id). */
+      council: null,
       reviving: false,
       /** The shell: one request at a time. */
       shell: Promise.resolve(),
@@ -520,6 +659,9 @@ export async function startFakeJupyter(options = {}) {
     kernel.ns = new Map()
     kernel.count = 0
     kernel.guarded = null
+    kernel.council = null
+    // A worker recycled in the middle of an attempt starts again in its own folder, not the attempt's.
+    kernel.dir = folderOf(kernel.path)
     kernel.running?.abort()
   }
 
@@ -639,10 +781,15 @@ export async function startFakeJupyter(options = {}) {
       : code.includes('_colloq_inspect')
         ? JSON.stringify({ found: true, text: 'Signature:\nsns.lmplot(data)\nType: function' })
         : COUNCIL_CALL('export').test(code)
-          ? JSON.stringify(epochExport(kernel))
+          ? epochExport(kernel, code)
           : COUNCIL_CALL('load').test(code)
-            ? JSON.stringify(epochLoad(kernel))
-            : JSON.stringify({ ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1 })
+            ? JSON.stringify(epochLoad(kernel, code))
+            : COUNCIL_CALL('enter').test(code) && /'runId': "/.test(code)
+              ? JSON.stringify(workerEntry(kernel, code))
+              : COUNCIL_CALL('leave').test(code) && kernel?.council?.run
+                ? JSON.stringify(workerExit(kernel))
+                : JSON.stringify({ ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1 })
+    if (text === null) return { user_expressions: { colloq: { status: 'error', ename: 'AttributeError', evalue: 'exported', traceback: [] } } }
     return {
       user_expressions: {
         colloq: { status: 'ok', data: { 'text/plain': text }, metadata: {} },
@@ -651,19 +798,233 @@ export async function startFakeJupyter(options = {}) {
   }
 
   /**
-   * The council's export of an epoch (remote-classes.md §9.3), a placeholder
-   * of its report's shape: the kernel's bindings carried, nothing left
-   * behind, no buffer worth shipping. The real one comes with the pool.
+   * The council's export of an epoch (remote-classes.md §9.3), in the report's
+   * shape (council-isolation.ts · parseExportReport): the kernel's bindings
+   * carried but those `fake.council.left` names, its files written into
+   * `epochFolder(seq)` by their sha256 — the manifest, the stream (the
+   * carried values as JSON) and a buffer for each of `fake.council.buffers`,
+   * the same bytes for the same sizes, so an unchanged refreeze names the
+   * same files. Data on the GPU writes nothing (D11). The JSON text of the
+   * report, or null for no report at all.
    */
-  function epochExport(kernel) {
-    const carried = kernel ? [...kernel.ns.keys()].sort() : []
-    const digest = (what) => createHash('sha256').update(`${what}:${carried.join(',')}`).digest('hex')
-    return { ok: true, manifest: digest('manifest'), body: digest('body'), bytes: 0, shipBytes: 0, carried, imported: {}, left: [], buffers: [], ms: 1 }
+  function epochExport(kernel, code) {
+    fake.councilRuns.export += 1
+    const knobs = fake.council
+    const seq = Number(/'seq': (\d+)/.exec(code)?.[1] ?? 0) || null
+    const mainRuns = Number(/'mainRuns': (\d+)/.exec(code)?.[1] ?? 0)
+    if (knobs.exportSilent) return null
+    if (knobs.exportError) return JSON.stringify({ ok: false, seq, mainRuns, error: knobs.exportError, ms: 1 })
+    const leftBehind = new Map(knobs.left.map((row) => [row.name, row.why]))
+    const names = kernel ? [...kernel.ns.keys()].sort() : []
+    const carried = names.filter((name) => !leftBehind.has(name))
+    const left = knobs.left.map((row) => ({ name: row.name, why: row.why }))
+    const cuda = left.some((row) => row.why === 'cuda')
+    const base = { ok: true, seq, reused: 0, carried, left, imported: {}, local: [], cuda, mainRuns, ms: 1, ...(knobs.hashSeed !== undefined ? { hashSeed: knobs.hashSeed } : {}) }
+    if (cuda) {
+      return JSON.stringify({ ...base, manifest: null, manifestBytes: 0, body: null, bodyBytes: 0, buffers: [], written: [], bytes: 0 })
+    }
+    const sha = (bytes) => createHash('sha256').update(bytes).digest('hex')
+    const values = carried.map((name) => [name, kernel.ns.get(name)])
+    const stream = Buffer.from(JSON.stringify({ seq, values }))
+    const buffers = knobs.buffers.map((size, index) => {
+      const bytes = Buffer.alloc(size, 97 + (index % 26))
+      bytes.write(`buffer ${index} `.slice(0, size))
+      return bytes
+    })
+    const shas = buffers.map(sha)
+    const manifest = Buffer.from(JSON.stringify({ format: 1, seq, mainRuns, stream: sha(stream), buffers: shas, left }))
+    const out = path.join(epochRoot(), String(seq ?? 0))
+    fs.rmSync(out, { recursive: true, force: true })
+    fs.mkdirSync(out, { recursive: true })
+    const written = []
+    for (const bytes of [manifest, stream, ...buffers]) {
+      const digest = sha(bytes)
+      if (written.includes(digest)) continue
+      fs.writeFileSync(path.join(out, digest), bytes)
+      written.push(digest)
+    }
+    EPOCHS.set(sha(manifest), { seq, values, left })
+    const unique = [...new Map(buffers.map((bytes, index) => [shas[index], bytes.length])).entries()]
+    return JSON.stringify({
+      ...base,
+      manifest: sha(manifest),
+      manifestBytes: manifest.length,
+      body: sha(stream),
+      bodyBytes: stream.length,
+      buffers: unique.map(([sha256, bytes]) => ({ sha256, bytes })),
+      written,
+      bytes: manifest.length + stream.length + unique.reduce((sum, [, bytes]) => sum + bytes, 0),
+    })
   }
 
-  /** A worker's load of an epoch, the placeholder beside epochExport: everything carried came in, the OOM score is written. */
-  function epochLoad(kernel) {
-    return { ok: true, loaded: kernel ? kernel.ns.size : 0, left: [], oomScoreAdj: 1000, ms: 1 }
+  /**
+   * A worker's load of an epoch (council-isolation.ts · parseSeedReport): the
+   * bindings the export carried come into its namespace, and it remembers
+   * what the epoch left behind, for its entries. An epoch no fake of this
+   * process exported loads nothing, and holds all the same.
+   */
+  function epochLoad(kernel, code) {
+    fake.councilRuns.load += 1
+    const [, manifest = null] = /\.load\(globals\(\), "([0-9a-f]{64})"/.exec(code) ?? []
+    if (fake.council.loadError) return { ok: false, seq: null, manifest, loaded: 0, imported: 0, left: [], ms: 1, error: fake.council.loadError }
+    let epoch = manifest ? EPOCHS.get(manifest) : undefined
+    if (options.epochsDir) {
+      // A council container's worker: the epoch is what the agent put in its epochs folder, or none at all.
+      try {
+        if (!manifest) throw new Error('no manifest named')
+        epoch = epochFromFiles(manifest)
+      } catch (error) {
+        return { ok: false, seq: null, manifest, loaded: 0, imported: 0, left: [], ms: 1, error: `FileNotFoundError: the epoch's files: ${error.message}` }
+      }
+    }
+    // A name whose module the worker lacks stays behind here alone, as the export never knew (K7a #16).
+    const lacking = fake.council.loadLeft.filter((row) => !(epoch?.left ?? []).some((one) => one.name === row.name))
+    const left = [...(epoch?.left ?? []), ...lacking]
+    if (kernel) {
+      for (const [name, value] of epoch?.values ?? []) if (!lacking.some((row) => row.name === name)) kernel.ns.set(name, value)
+      kernel.council = { manifest, left, run: null }
+    }
+    return { ok: true, seq: epoch?.seq ?? null, manifest, loaded: epoch?.values.length ?? 0, imported: 0, left, oomScoreAdj: 1000, threads: 1, mapped: 0, ms: 1 }
+  }
+
+  /**
+   * An epoch read off a council container's epochs folder (`epochsDir`), as
+   * the hidden module's load opens it: the manifest by its sha256, every
+   * buffer it names and the stream, each file checked against its name.
+   * Throws for one missing or not what its name says.
+   */
+  function epochFromFiles(manifest) {
+    const read = (sha) => {
+      if (!/^[0-9a-f]{64}$/.test(String(sha))) throw new Error(`${String(sha)} is no sha256`)
+      const bytes = fs.readFileSync(path.join(options.epochsDir, sha))
+      if (createHash('sha256').update(bytes).digest('hex') !== sha) throw new Error(`${sha.slice(0, 12)} does not hash to its name`)
+      return bytes
+    }
+    const head = JSON.parse(read(manifest).toString('utf8'))
+    for (const sha of head.buffers ?? []) read(sha)
+    const body = JSON.parse(read(head.stream).toString('utf8'))
+    return { seq: head.seq ?? null, values: Array.isArray(body.values) ? body.values : [], left: Array.isArray(head.left) ? head.left : [] }
+  }
+
+  /**
+   * An attempt's own folder in a council container's scratch space
+   * (`scratchDir`), as its worker's entry makes it (§9.7): the class folder's
+   * top level as links into it, so that the attempt reads the class's files
+   * where it works and writes its own beside them.
+   */
+  function scratchFolder(runId) {
+    const dir = path.join(options.scratchDir, runId)
+    fs.mkdirSync(dir, { recursive: true })
+    for (const name of fs.readdirSync(home)) {
+      const link = path.join(dir, name)
+      if (!fs.existsSync(link)) fs.symlinkSync(path.join(home, name), link)
+    }
+    return dir
+  }
+
+  /** The regular files an attempt wrote into its folder, by their names in it, each hashed (the links to the class folder are none of them). */
+  function scratchFiles(dir) {
+    const out = []
+    const walk = (at, prefix) => {
+      let names = []
+      try {
+        names = fs.readdirSync(at).sort()
+      } catch {
+        return
+      }
+      for (const name of names) {
+        const file = path.join(at, name)
+        const stat = fs.lstatSync(file)
+        if (stat.isDirectory()) walk(file, `${prefix}${name}/`)
+        else if (stat.isFile()) out.push({ name: `${prefix}${name}`, bytes: stat.size, sha256: createHash('sha256').update(fs.readFileSync(file)).digest('hex') })
+      }
+    }
+    walk(dir, '')
+    return out
+  }
+
+  /**
+   * Whether a write to `target` would land in the class folder of a
+   * container that mounts it read-only (`readOnly`, the council's view): by
+   * where it resolves, so that a write through an attempt's link to a class
+   * file fails as one into the class folder does.
+   */
+  function readOnlyAt(target) {
+    if (!options.readOnly) return false
+    let at = target
+    let rest = ''
+    while (!fs.existsSync(at) && path.dirname(at) !== at) {
+      rest = path.join(path.basename(at), rest)
+      at = path.dirname(at)
+    }
+    let real = at
+    try {
+      real = path.join(fs.realpathSync(at), rest)
+    } catch { /* unresolvable: as it is written */ }
+    const root = fs.realpathSync(home)
+    return real === root || real.startsWith(root + path.sep)
+  }
+
+  /**
+   * A pool worker's entry (§9.4, §9.7: the attempt's text and run id in its
+   * settings): refused, naming them, when the attempt reads a name its epoch
+   * left behind; else the copies are made and its scratch folder named.
+   */
+  function workerEntry(kernel, code) {
+    fake.councilRuns.enter += 1
+    const runId = /'runId': "([^"]+)"/.exec(code)?.[1] ?? null
+    let source = ''
+    const literal = /'source': ("(?:[^"\\]|\\.)*")/.exec(code)?.[1]
+    if (literal) {
+      try {
+        source = JSON.parse(literal)
+      } catch {
+        source = ''
+      }
+    }
+    const left = kernel?.council?.left ?? []
+    const needs = left.filter((row) => new RegExp(`(^|[^A-Za-z0-9_])${row.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9_]|$)`).test(source))
+    if (needs.length > 0) {
+      return { ok: false, copied: 0, skipped: [], failed: [], bytes: 0, ms: 1, error: 'the attempt reads a name its epoch left behind', needs }
+    }
+    if (fake.council.enterError) {
+      // Its folder made first, as the hidden module makes it before it arms the ceiling.
+      if (options.scratchDir && runId && /^[0-9a-f]{32}$/.test(runId)) scratchFolder(runId)
+      return { ok: false, copied: 0, skipped: [], failed: [], bytes: 0, ms: 1, error: fake.council.enterError }
+    }
+    if (kernel) {
+      kernel.council = { ...(kernel.council ?? { manifest: null, left: [] }), run: runId }
+      // The attempt works in its own folder of the council's scratch space until its exit (§9.7).
+      if (options.scratchDir && runId && /^[0-9a-f]{32}$/.test(runId)) kernel.dir = scratchFolder(runId)
+    }
+    return { ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1, scratch: runId ? `/colloq/scratch/${runId}` : null }
+  }
+
+  /** A pool worker's exit (council-isolation.ts · parseExitReport): what was left behind, its files, its growth. */
+  function workerExit(kernel) {
+    fake.councilRuns.leave += 1
+    const knobs = fake.council
+    const run = kernel.council.run
+    kernel.council = { ...kernel.council, run: null }
+    const files = knobs.files.map((file) => {
+      if (typeof file.text !== 'string') return { name: file.name, bytes: file.bytes ?? 0 }
+      const bytes = Buffer.from(file.text)
+      return { name: file.name, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }
+    })
+    // And what the attempt wrote into its own folder, which it leaves now.
+    if (options.scratchDir && /^[0-9a-f]{32}$/.test(String(run))) {
+      files.push(...scratchFiles(path.join(options.scratchDir, run)))
+      kernel.dir = folderOf(kernel.path)
+    }
+    return {
+      threads: knobs.threads,
+      processes: knobs.processes,
+      files,
+      more: 0,
+      dirty: knobs.grown,
+      grown: knobs.grown,
+      recycle: knobs.threads > 0 || knobs.processes > 0,
+    }
   }
 
   /**
@@ -798,7 +1159,8 @@ export async function startFakeJupyter(options = {}) {
       const finish = () => {
         const id = /^\/api\/kernels\/([^/]+)\/interrupt$/.exec(url.pathname)?.[1]
         const kernel = id ? fake.kernels.get(id) : undefined
-        if (kernel) kernel.busy = false
+        // A cell deaf to the signal keeps its kernel busy (DEAF).
+        if (kernel && !kernel.running?.deaf) kernel.busy = false
         for (const { socket, parent } of fake.held.splice(0)) {
           reply(socket, parent, 'error', { ename: 'KeyboardInterrupt', evalue: '', traceback: [] })
           reply(socket, parent, 'execute_reply', { status: 'error', execution_count: 1 })
@@ -882,6 +1244,15 @@ export async function startFakeJupyter(options = {}) {
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(fake.requests))
       return
     }
+    if (req.method === 'GET' && what === 'holds') {
+      const holding = Object.fromEntries([...holds].map(([name, waiting]) => [name, waiting.size]))
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ holding, peak: Object.fromEntries(holdPeaks) }))
+      return
+    }
+    if (req.method === 'GET' && what === 'council') {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ runs: fake.councilRuns, knobs: fake.council }))
+      return
+    }
     if (req.method === 'POST' && what === 'knobs') {
       let body = ''
       req.on('data', (chunk) => (body += chunk))
@@ -932,6 +1303,20 @@ export async function startFakeJupyter(options = {}) {
       fake.restarts = asked.restarts
       if (asked.restarts !== 'held') fake.answerRestarts()
     }
+    if (Array.isArray(asked.holdSilent)) {
+      // The service runs to hold at a HOLD of their own, as `fake.holdSilent` has them: each a `match` and a `name`.
+      fake.holdSilent = asked.holdSilent.filter((one) => typeof one?.match === 'string' && one.match !== '' && typeof one?.name === 'string')
+        .map((one) => ({ match: one.match, name: one.name, ...(typeof one.kernel === 'string' ? { kernel: one.kernel } : {}) }))
+    }
+    if (asked.council && typeof asked.council === 'object') {
+      // Only the knobs councilAtRest has, each of its kind; `null` puts them all back.
+      const rest = councilAtRest()
+      for (const [knob, value] of Object.entries(asked.council)) {
+        if (!Object.hasOwn(rest, knob)) continue
+        const kind = Array.isArray(rest[knob]) ? 'array' : rest[knob] === null ? 'nullable' : typeof rest[knob]
+        if (kind === 'array' ? Array.isArray(value) : kind === 'nullable' ? true : typeof value === kind) fake.council[knob] = value
+      }
+    } else if (asked.council === null) fake.council = councilAtRest()
   }
 
   /* ---------------------------------------------------------- channels */
@@ -1227,13 +1612,32 @@ export async function startFakeJupyter(options = {}) {
     }
     const content = msg.content ?? {}
     const code = String(content.code ?? '')
-    fake.requests.push({ code, store_history: content.store_history, silent: content.silent })
+    fake.requests.push({ code, store_history: content.store_history, silent: content.silent, kernel: kernel.id })
     kernel.busy = true
     say('status', { execution_state: 'busy' })
     // A service run: nothing is interpreted, only the expressions are answered.
     if (content.silent === true) {
+      const held = fake.holdSilent.find((one) => code.includes(one.match) && (one.kernel === undefined || one.kernel === kernel.id))
+      if (held) {
+        try {
+          await cellIo(kernel, say, kernel.executions).hold(held.name)
+        } catch {
+          // Interrupted (or its process gone) while it waited: it ends as the real one would.
+          if (incarnation !== kernel.process) return
+          say('execute_reply', { status: 'error', execution_count: kernel.executions, ename: 'KeyboardInterrupt', evalue: '', traceback: [] })
+          say('status', { execution_state: 'idle' })
+          kernel.busy = false
+          return
+        }
+      }
       const guard = guardAnswer(code)
       if (guard) kernel.guarded = guard
+      // The removal of one of its exports nobody will collect (council-isolation.ts · exportDropExpression): its folder goes.
+      const dropped = EXPORT_DROP.exec(code)
+      if (dropped) {
+        fake.councilRuns.drop += 1
+        fs.rmSync(fake.epochFolder(Number(dropped[1])), { recursive: true, force: true })
+      }
       say('execute_reply', { status: 'ok', execution_count: kernel.executions, user_expressions: expressionAnswers(kernel, code, content.user_expressions) })
       say('status', { execution_state: 'idle' })
       kernel.busy = false
@@ -1285,7 +1689,7 @@ export async function startFakeJupyter(options = {}) {
   /** What a running cell reaches the room and the folder through. */
   function cellIo(kernel, say, count) {
     /** A wait an interrupt, a restart or the end of the wait itself can end. */
-    const wait = (arm) =>
+    const wait = (arm, deaf = false) =>
       new Promise((resolve, reject) => {
         let disarm = () => {}
         const end = (settle) => {
@@ -1295,9 +1699,12 @@ export async function startFakeJupyter(options = {}) {
           settle()
         }
         const running = {
-          interrupt: () => end(() => reject(new PyError('KeyboardInterrupt', ''))),
+          interrupt: () => {
+            if (!deaf) end(() => reject(new PyError('KeyboardInterrupt', '')))
+          },
           abort: () => end(() => reject(new Aborted())),
           answer: null,
+          deaf,
         }
         kernel.running = running
         disarm = arm((value) => end(() => resolve(value)), running) ?? (() => {})
@@ -1311,13 +1718,14 @@ export async function startFakeJupyter(options = {}) {
           const timer = setTimeout(done, ms)
           return () => clearTimeout(timer)
         }),
-      hold: (name) =>
+      hold: (name, deaf = false) =>
         wait((done) => {
           const waiting = holds.get(name) ?? new Set()
           waiting.add(done)
           holds.set(name, waiting)
+          holdPeaks.set(name, Math.max(holdPeaks.get(name) ?? 0, waiting.size))
           return () => waiting.delete(done)
-        }),
+        }, deaf),
       input: (prompt) =>
         wait((done, running) => {
           running.answer = done
@@ -1325,7 +1733,10 @@ export async function startFakeJupyter(options = {}) {
         }),
       file: (relative) => {
         const target = path.resolve(kernel.dir, relative ?? '')
-        if (target !== home && !target.startsWith(home + path.sep)) throw new PyError('PermissionError', `${relative}: outside the folder`)
+        const within = (root) => target === root || target.startsWith(root + path.sep)
+        // A pool worker's attempt works in its own folder of the council's scratch space (scratchFolder), and nowhere beside it.
+        const attempt = options.scratchDir !== undefined && kernel.dir !== home && within(kernel.dir)
+        if (!within(home) && !attempt) throw new PyError('PermissionError', `${relative}: outside the folder`)
         return target
       },
     }
@@ -1357,6 +1768,9 @@ export async function startFakeJupyter(options = {}) {
         case 'HOLD':
           await io.hold(rest[0] ?? '')
           continue
+        case 'DEAF':
+          await io.hold(rest[0] ?? '', true)
+          continue
         case 'RELEASE':
           fake.release(rest[0] ?? '')
           continue
@@ -1380,7 +1794,7 @@ export async function startFakeJupyter(options = {}) {
           const [, relative, text] = /^WRITE\s+(\S+)\s?(.*)$/.exec(line) ?? []
           const target = io.file(relative)
           // The council's view of the class folder (`-v …:ro`): the write fails as Python's open() does there.
-          if (options.readOnly) throw new PyError('OSError', `[Errno 30] Read-only file system: '${relative}'`)
+          if (readOnlyAt(target)) throw new PyError('OSError', `[Errno 30] Read-only file system: '${relative}'`)
           fs.mkdirSync(path.dirname(target), { recursive: true })
           fs.writeFileSync(target, (text ?? '').replace(/\\n/g, '\n'))
           continue
@@ -1390,7 +1804,7 @@ export async function startFakeJupyter(options = {}) {
           const [, relative, count, text] = /^FILL\s+(\S+)\s+(\d{1,10})\s?(.*)$/.exec(line) ?? []
           if (relative === undefined) throw new PyError('SyntaxError', 'FILL path bytes [text]')
           const target = io.file(relative)
-          if (options.readOnly) throw new PyError('OSError', `[Errno 30] Read-only file system: '${relative}'`)
+          if (readOnlyAt(target)) throw new PyError('OSError', `[Errno 30] Read-only file system: '${relative}'`)
           fs.mkdirSync(path.dirname(target), { recursive: true })
           fs.writeFileSync(target, Buffer.alloc(Number(count), Buffer.from((text || 'x').replace(/\\n/g, '\n'))))
           continue
@@ -1400,7 +1814,7 @@ export async function startFakeJupyter(options = {}) {
           const size = Number(rest[1])
           if (rest[0] === undefined || !Number.isSafeInteger(size) || size < 0) throw new PyError('SyntaxError', 'TRUNCATE path bytes')
           const target = io.file(rest[0])
-          if (options.readOnly) throw new PyError('OSError', `[Errno 30] Read-only file system: '${rest[0]}'`)
+          if (readOnlyAt(target)) throw new PyError('OSError', `[Errno 30] Read-only file system: '${rest[0]}'`)
           fs.mkdirSync(path.dirname(target), { recursive: true })
           fs.writeFileSync(target, '')
           fs.truncateSync(target, size)
@@ -1410,7 +1824,7 @@ export async function startFakeJupyter(options = {}) {
           // os.rename: a file or a folder, the target's folders made first (os.renames).
           const from = io.file(rest[0])
           const to = io.file(rest[1])
-          if (options.readOnly) throw new PyError('OSError', `[Errno 30] Read-only file system: '${rest[0]}'`)
+          if (readOnlyAt(from) || readOnlyAt(to)) throw new PyError('OSError', `[Errno 30] Read-only file system: '${rest[0]}'`)
           if (!fs.existsSync(from)) throw new PyError('FileNotFoundError', `No such file or directory: '${rest[0]}'`)
           fs.mkdirSync(path.dirname(to), { recursive: true })
           fs.renameSync(from, to)
@@ -1419,7 +1833,7 @@ export async function startFakeJupyter(options = {}) {
         case 'REMOVE': {
           // os.remove, or shutil.rmtree for a folder.
           const target = io.file(rest[0])
-          if (options.readOnly) throw new PyError('OSError', `[Errno 30] Read-only file system: '${rest[0]}'`)
+          if (readOnlyAt(target)) throw new PyError('OSError', `[Errno 30] Read-only file system: '${rest[0]}'`)
           if (!fs.existsSync(target)) throw new PyError('FileNotFoundError', `No such file or directory: '${rest[0]}'`)
           fs.rmSync(target, { recursive: true, force: true })
           continue
@@ -1862,6 +2276,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       'container-id': { type: 'string' },
       owner: { type: 'string' },
       'calls-file': { type: 'string' },
+      'epoch-dir': { type: 'string' },
+      'epochs-dir': { type: 'string' },
+      'scratch-dir': { type: 'string' },
     },
   })
   const guardModule = values['guard-module'] ?? GUARD_MODULE
@@ -1881,6 +2298,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     oomFile: values['oom-file'],
     log: (line) => process.stdout.write(`${line}\n`),
     life: () => life,
+    epochDir: values['epoch-dir'],
+    epochsDir: values['epochs-dir'],
+    scratchDir: values['scratch-dir'],
   })
   if (values['calls-file']) {
     // Each call also written down as it is logged, one JSON line: what a test reads once docker has removed the container.

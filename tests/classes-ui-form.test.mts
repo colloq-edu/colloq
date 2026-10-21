@@ -7,9 +7,9 @@
  *
  * What these guard: the owner's-switch line («решает владелец») only where
  * the switch really keeps the viewer out, never while the viewer's own change
- * is on its way, and the presets hidden from such a viewer; and no «Где
- * считается» at all on a server where no class can go to a machine (the
- * broker, D26).
+ * is on its way, and the presets hidden from such a viewer; the council's
+ * part with the pool (0.26.0); and no «Где считается» at all on a server
+ * where no class can go to a machine (the broker, D26).
  */
 import fs from 'node:fs'
 import { after, before, test } from 'node:test'
@@ -107,12 +107,14 @@ test('a teacher whom the owner\'s switch keeps out reads where the class runs, g
   assert.ok(parts(kept).length > 0 && parts(kept).every(Boolean), 'the parts stay, greyed')
 })
 
-test('the block promises nothing of the council\'s pool before it is there: no council part, none of its numbers, a preset named for what moves', () => {
-  // A class whose stored council is on machines (the presets set it): its attempts run in the class notebook's kernel all the same.
+test('the block draws the council\'s pool now that it is there (0.26.0): its part, its two numbers while it is on machines, the preset named for both', () => {
+  // A class whose stored council is on machines (the presets set it): its attempts go to the pool.
   const html = text(block({ editable: true, owner: true, placement: { ...CLASS_PLACEMENT_DEFAULT, own: 'machines', council: 'machines' } }))
-  assert.doesNotMatch(html, /Консилиум|Попыток одновременно|Память на попытку|параллельно/)
-  assert.match(html, /Личные тетради — на машинах/)
-  assert.match(html, /Тетради класса .*Личные тетради/, 'the two parts that move are drawn')
+  assert.match(html, /Попыток одновременно/)
+  assert.match(html, /Память на попытку/)
+  assert.match(html, /Консилиум и личные тетради — на машинах/)
+  assert.doesNotMatch(html, /Личные тетради — на машинах/, 'the 0.25.0 name of the preset')
+  assert.match(html, /Тетради класса .*Личные тетради .*Консилиум/, 'the three parts that move are drawn')
 })
 
 /* ----------------------------------------------------------- the forms */

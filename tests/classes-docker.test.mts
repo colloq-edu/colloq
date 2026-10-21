@@ -9,7 +9,8 @@
  * (tests/_remote-e2e-home.mts) on KERNEL_BACKEND=test: it starts no room of its
  * own, so its daemon holds no Colloq home (D20) and no chains beside the
  * agent's. The machine is the agent from the checkout
- * (server/src/runner-agent/main.ts, unmodified, its own timings) in a
+ * (server/src/runner-agent/main.ts, unmodified, its own timings: main.ts's
+ * own main(), told only that the host has AGENT_CPUS cores, AGENT_ENTRY) in a
  * container of its own as colloq-host runs one: on the host's network
  * (D19, read from its own HostConfig), as uid 1000 with the docker socket's
  * group (deploy/vast/entrypoint.sh · drop_to_app), its tree at the same path
@@ -53,6 +54,23 @@
  *     travel), a kernel's 16 TiB of holes kept «на машине» unread (ext4),
  *     and 520 more whose lengths add up past Number.MAX_SAFE_INTEGER, said
  *     clamped (room-files.ts · clampBytes) with no sync refused for them.
+ *   - the council on the machine (§9, 0.26): an epoch of real pandas, numpy,
+ *     a fitted model and a notebook function exported by the class
+ *     notebook's kernel there, copied out by the agent and loaded into four
+ *     workers; copy-on-write isolation (each attempt's array and frame in a
+ *     mapping of the epoch's files, never a copy of them; a worker's
+ *     in-place writes reach neither its neighbours nor its own next attempt
+ *     nor the epoch's files, and reading the whole frame writes nothing of a
+ *     worker's own); a worker recycled once its attempts left it more than
+ *     «Память на попытку» over its seed, as smaps_rollup says it, and not
+ *     before; oom_score_adj 1000 in the workers and not in jupyter_server;
+ *     each attempt's own RLIMIT_AS; a greedy attempt's MemoryError its
+ *     author's alone; the council container held to what §9.5 says; the
+ *     artifacts, the read-only class folder and the scratch root as uid
+ *     1000's workers find it (1733, unlistable, and not theirs to change);
+ *     the drop run on a real kernel. The workers' memory (smaps_rollup),
+ *     their limits and the container's cgroup are recorded for §17.5's R2
+ *     rows (COUNCIL_WORKER_BASE_MB is an estimate).
  *
  * WAITS ARE FOR EVENTS, each with its bound, and a scenario out of time stops
  * at its next wait (scenario): afterEach lets it stop before it heals the
@@ -89,9 +107,9 @@ import * as syncProtocol from 'y-protocols/sync'
 import type { Response as ExpressResponse } from 'express'
 import { tr } from '../shared/i18n.js'
 import { STAFF_COOKIE, type ClassPlacement, type RunningClass, type RunningKernels } from '../shared/admin.js'
-import type { ControlClientMessage, ControlServerMessage, FileEntry, JoinResponse } from '../shared/protocol.js'
+import type { ControlClientMessage, ControlServerMessage, CouncilMine, CouncilPool, CouncilRun, CouncilSettings, FileEntry, JoinResponse } from '../shared/protocol.js'
 import type { RunningClassMachines } from '../shared/remote-admin.js'
-import { CLASS_PROBE_MS, type RemoteFilesLag } from '../shared/remote-kernels.js'
+import { CLASS_PROBE_MS, COUNCIL_EPOCH_DIR, COUNCIL_EPOCHS_MOUNT, COUNCIL_SCRATCH_MOUNT, COUNCIL_WORKER_BASE_MB, type RemoteFilesLag } from '../shared/remote-kernels.js'
 import { REMOTE_API_BASE, REMOTE_BOOT_GRACE_MS } from '../shared/remote-runner.js'
 import { TUNNEL_DEAD_MS, TUNNEL_RESUME_MS } from '../shared/remote-tunnel.js'
 import { CELLS_KEY, bookCells, bookKernel, cellId, createCell, getTerminal, readCell, readTerminalLine, type YCell } from '../shared/notebook.js'
@@ -105,6 +123,8 @@ import { noteRevisionImage, putRevision } from '../server/src/dependencies/store
 import { jupyterSessionPath } from '../server/src/kernel/jupyter.js'
 import { BLOCKED_V4, helperArgs, machinePerimeter, perimeterRemovalScript, type MachinePerimeter } from '../server/src/kernel/perimeter-core.js'
 import { CLASS_KERNEL_LABEL, PLACEMENT_LABEL, classHashSeed, machineRoomContainer } from '../server/src/kernel/room-spec.js'
+import { exportDropExpression } from '../server/src/kernel/council-isolation.js'
+import { artifactPath, epochFileList, epochsOf } from '../server/src/kernel/remote/epochs.js'
 import { placementOutlook } from '../server/src/kernel/remote/placement.js'
 import { classPlacement, livePlacement, placementRow } from '../server/src/kernel/remote/placement-store.js'
 import { ClassFiles, useClassFiles } from '../server/src/kernel/remote/files.js'
@@ -122,6 +142,23 @@ const enabled = process.env.COLLOQ_CLASSES_DOCKER_TEST === '1'
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const ENTRY = path.join(REPO, 'server/src/runner-agent/main.ts')
+/*
+ * The cores the agent is told its host has. A hosted runner has four, and a
+ * machine keeps one for itself (machine.ts · freeCapacity): a class's room
+ * (a core) and its council's pool of four workers (a core each, §9.5) would
+ * not fit beside each other, though docker gives each container the quota
+ * it asks whatever the agent counts (`--cpus` up to the host's four). Only
+ * the agent's arithmetic changes; the sandbox, the limits and the timings are
+ * its own.
+ */
+const AGENT_CPUS = 8
+/** The agent's entry: main.ts's own main(), run as `node --import tsx` runs it, with the machine's picture its seam (sync.ts · AgentOptions.machine). */
+const AGENT_ENTRY = [
+  `const { main } = await import(${JSON.stringify(ENTRY)})`,
+  `const { readMachine } = await import(${JSON.stringify(path.join(REPO, 'server/src/runner-agent/machine.ts'))})`,
+  `const machine = () => ({ ...readMachine(process.env.COLLOQ_RUNNER_STATE), cpus: ${AGENT_CPUS} })`,
+  "process.exit(await main(['run'], process.env, undefined, { machine }))",
+].join('\n')
 /** The class environment's image, built as runtime-smoke.yml builds it. */
 const KERNEL_IMAGE = 'colloq-kernel:base'
 /** The repository a local build's digest is listed under (the containerd store): the one this run prefers, as KERNEL_IMAGE_REPO would. */
@@ -292,6 +329,27 @@ const seconds = (ms: number): string => (ms / 1000).toFixed(1)
 
 /* --------------------------------------------------------------- the machine */
 
+/** statfs(2)'s f_type of a tmpfs, where a file's pages are shared memory rather than a disk's page cache. */
+const TMPFS_MAGIC = 0x01021994
+
+/**
+ * Where the machine's tree goes: on a disk filesystem, as the agent's
+ * /var/lib/colloq-runner is, since the council's measure of a worker's own
+ * memory assumes its epoch store is on one (council-isolation.ts · _dirty).
+ * os.tmpdir() unless that is a tmpfs, as Debian 13, Fedora and Arch mount
+ * /tmp, else /var/tmp.
+ */
+function machineBase(): string {
+  for (const base of [os.tmpdir(), '/var/tmp']) {
+    try {
+      if (fs.statfsSync(base).type !== TMPFS_MAGIC) return base
+    } catch {
+      /* not there: the next one */
+    }
+  }
+  return os.tmpdir()
+}
+
 /**
  * The class machine: its tree on the host, and its agent's container. A new
  * container on the same tree, under the same name, is the same machine's
@@ -339,7 +397,7 @@ class Machine {
       '-e', `COLLOQ_RUNNER_JOIN=${this.join}`, '-e', `COLLOQ_RUNNER_STATE=${this.tree}`, '-e', `DATA_DIR=${path.join(this.tree, 'data')}`,
       '-e', `COLLOQ_RUNNER_CONTAINER=${this.name}`, '-e', `COLLOQ_CONTAINER=${this.name}`, '-e', `COLLOQ_RUNNER_IMAGE=${AGENT_IMAGE}`,
       '-e', 'NODE_ENV=development', '-e', 'KERNEL_BACKEND=docker', '-e', 'COMPETITION_BACKEND=docker',
-      '--entrypoint', 'node', AGENT_IMAGE, '--import', 'tsx', ENTRY,
+      '--entrypoint', 'node', AGENT_IMAGE, '--import', 'tsx', '--input-type=module', '-e', AGENT_ENTRY,
     ])
     // What `run -d` prints last is the container's id.
     this.id = ran.stdout.trim().split('\n').at(-1)?.trim() ?? ''
@@ -386,6 +444,11 @@ class Machine {
   /** A class's room container on this machine (room-spec.ts · machineRoomContainer). */
   room(sessionId: string): string {
     return machineRoomContainer(this.instanceLabel, sessionId, 'room')
+  }
+
+  /** A class's council container on this machine: its pool's workers. */
+  council(sessionId: string): string {
+    return machineRoomContainer(this.instanceLabel, sessionId, 'council')
   }
 
   /**
@@ -543,7 +606,7 @@ before(async () => {
     logTimer = setInterval(keepHomeLogs, LOG_FLUSH_MS)
     logTimer.unref()
   }
-  machine = new Machine(os.tmpdir())
+  machine = new Machine(machineBase())
   await machine.prepare()
   machine.join = relay.joinTarget(mintRemoteCode({ machines: 1, hours: 1, trusted: false, approvedSlots: null, classes: true, namePrefix: 'parity', createdBy: 'colloq-host' }).code)
   await machine.start()
@@ -661,9 +724,10 @@ async function makeClass(by: Staff, name: string, placement: Partial<ClassPlacem
  */
 async function endClass(by: Staff, sessionId: string): Promise<void> {
   keepLog(`room-${sessionId}.log`, textOf(await logsOf(theMachine().room(sessionId))))
+  keepLog(`council-${sessionId}.log`, textOf(await logsOf(theMachine().council(sessionId))))
   const stopped = await call<{ error?: string }>('POST', `/api/admin/resources/running/${sessionId}/stop`, { what: 'class', force: true }, by.cookie)
   assert.ok(stopped.status === 200 || stopped.status === 404, `${stopped.status} ${JSON.stringify(stopped.body)}`)
-  await waitFor(`class ${sessionId} off the machine`, () => livePlacement(sessionId, 'room') === null, 90_000, () => home.classLines.slice(-5).join('\n'))
+  await waitFor(`class ${sessionId} off the machine`, () => (['room', 'own', 'council'] as const).every((role) => livePlacement(sessionId, role) === null), 90_000, () => home.classLines.slice(-5).join('\n'))
 }
 
 afterEach(async () => {
@@ -846,13 +910,14 @@ async function takes(sessionId: string): Promise<void> {
 }
 
 /**
- * A class of its own with its room on the machine, its notebook's kernel
- * brought up there by the teacher's join (the warm start, §6.8), and a
- * student in it: what every scenario but the first starts from.
+ * A class of its own with its room on the machine (and the rest of its
+ * «Где считается» as `placement` says), its notebook's kernel brought up
+ * there by the teacher's join (the warm start, §6.8), and a student in it:
+ * what every scenario but the first starts from.
  */
-async function classOn(name: string): Promise<{ id: string; by: Staff; lead: Tab; student: Tab; container: string }> {
+async function classOn(name: string, placement?: Partial<ClassPlacement>): Promise<{ id: string; by: Staff; lead: Tab; student: Tab; container: string }> {
   const by = staff()
-  const id = await makeClass(by, name)
+  const id = await makeClass(by, name, placement)
   await takes(id)
   const lead = await tab(id, 'Преподавательница', by)
   await waitFor(`class ${id}'s room on the machine, its kernel up`, () => {
@@ -1592,4 +1657,414 @@ scenario('a cut longer than jupyter_server\'s kernel WebSocket ping timeout: the
   assert.equal(placementRow(id, 'room')?.gen, placed.gen, 'no failover: without evidence of the path a silence proves nothing')
   assert.deepEqual(runnerEventsOf(runnerId, ['class_failover'], cutAt), [])
   closeTabs(lead, student)
+})
+
+/* ------------------------------------------------------------------ the council */
+
+/** A student in the room: the control socket is all a council needs of them (their sheet is not in the document). */
+interface Pupil {
+  name: string
+  control: Control
+}
+
+async function pupil(sessionId: string, name: string): Promise<Pupil> {
+  return { name, control: await Control.open(sessionId, await join(sessionId, name)) }
+}
+
+/** The council as these attempts need it (§9.6): students run their own, on the pool, the epoch kept until asked for, no limit. */
+const COUNCIL_RULES: Partial<CouncilSettings> = { studentRun: true, runLimitSec: null, rerunPauseSec: 0, lane: 'pool', refresh: 'manual' }
+
+/** The pupil writes an attempt on their sheet and presses «Запустить»: how many frames their socket had heard, for `runFrom`. */
+function attempt(who: Pupil, cell: string, text: string): number {
+  const from = who.control.heard.length
+  who.control.send({ t: 'council:draft', cellId: cell, text })
+  who.control.send({ t: 'council:run', cellId: cell })
+  return from
+}
+
+/** The run their sheet tells of since `from` (`council:mine`), as it stands: from its first frame said queued or running on. */
+function runFrom(who: Pupil, cell: string, from: number): CouncilRun | null {
+  const runs = who.control.heard.slice(from).flatMap((frame) => (frame.t === 'council:mine' && frame.cellId === cell && frame.state.run ? [frame.state.run] : []))
+  return runs.some((run) => run.state === 'queued' || run.state === 'running') ? runs.at(-1)! : null
+}
+
+/** Until that run has ended (ok or error): it. */
+async function ended(who: Pupil, cell: string, from: number, timeoutMs = 180_000): Promise<CouncilRun> {
+  return waitFor(`${who.name}'s attempt to end`, () => {
+    const run = runFrom(who, cell, from)
+    return run && (run.state === 'ok' || run.state === 'error') ? run : null
+  }, timeoutMs, () => JSON.stringify(runFrom(who, cell, from)), 100)
+}
+
+/** What a run printed: the last line it printed as JSON (every attempt here ends by saying what it found), and its errors as `name: words`. */
+function said(run: CouncilRun): { json: Record<string, any> | null; errors: string[] } {
+  const text = run.outputs.map((output) => (output.kind === 'stream' ? output.text : '')).join('')
+  let json: Record<string, any> | null = null
+  try {
+    json = JSON.parse(lastLine(text)) as Record<string, any>
+  } catch { /* it printed no JSON last */ }
+  return { json, errors: run.outputs.flatMap((output) => (output.kind === 'error' ? [`${output.ename}: ${output.evalue}`] : [])) }
+}
+
+/** What the teacher's console last heard of the notebook's pool (`council:kernel`). */
+function poolOf(lead: Tab, cell: string): CouncilPool | null {
+  for (let i = lead.control.heard.length - 1; i >= 0; i--) {
+    const frame = lead.control.heard[i]!
+    if (frame.t === 'council:kernel' && frame.cellId === cell) return frame.kernel.pool ?? null
+  }
+  return null
+}
+
+/** Whether the console ever saw the notebook's own kernel compute an attempt of this cell. */
+const mainComputedAnAttempt = (lead: Tab, cell: string): boolean =>
+  lead.control.heard.some((frame) => frame.t === 'council:kernel' && frame.cellId === cell && frame.kernel.busy?.kind === 'attempt')
+
+/**
+ * Every attempt's first lines here, Python in a worker: its process's memory
+ * as Linux says it (smaps_rollup, MB), a wait for a flag the test lays in the
+ * council container's /tmp, what its process is — its id, its
+ * oom_score_adj, its address-space ceiling — and what jupyter_server's is,
+ * and whether an array's memory lies in a mapping of one of the epoch's
+ * files (/proc/self/maps names the file a mapping holds): the attempt's
+ * `base` and its frame's block (`_maps`, before anything writes them).
+ */
+const COUNCIL_PROLOGUE = [
+  'import json, os, resource, time',
+  'def _mem():',
+  '    out = {}',
+  "    with open('/proc/self/smaps_rollup') as handle:",
+  '        for line in handle:',
+  "            key, _, rest = line.partition(':')",
+  "            if rest.strip().endswith('kB'):",
+  '                out[key.strip()] = int(rest.split()[0]) // 1024',
+  '    return out',
+  'def _wait(name):',
+  "    while not os.path.exists('/tmp/' + name):",
+  '        time.sleep(0.05)',
+  'def _server():',
+  "    for pid in os.listdir('/proc'):",
+  '        try:',
+  "            cmd = open(f'/proc/{pid}/cmdline').read().replace('\\0', ' ')",
+  "            if pid.isdigit() and 'jupyter' in cmd and 'ipykernel' not in cmd:",
+  "                return {'cmd': cmd[:120], 'oom': int(open(f'/proc/{pid}/oom_score_adj').read())}",
+  '        except OSError:',
+  '            pass',
+  '    return None',
+  'def _self():',
+  "    return {'pid': os.getpid(), 'oom': int(open('/proc/self/oom_score_adj').read()), 'as': resource.getrlimit(resource.RLIMIT_AS)[0], 'server': _server()}",
+  'def _mapped(arr):',
+  "    at = arr.__array_interface__['data'][0]",
+  "    with open('/proc/self/maps') as handle:",
+  '        for line in handle:',
+  '            fields = line.split(None, 5)',
+  "            low, high = (int(edge, 16) for edge in fields[0].split('-'))",
+  '            if low <= at < high:',
+  `                return len(fields) == 6 and fields[5].strip().startswith('${COUNCIL_EPOCHS_MOUNT}/')`,
+  '    return False',
+  'def _maps():',
+  "    return {'base': _mapped(base), 'frame': _mapped(df._mgr.blocks[0].values)}",
+].join('\n')
+
+const megabytesOf = (bytes: number): number => Math.round(bytes / (1024 * 1024))
+const median = (values: readonly number[]): number => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] ?? NaN
+/**
+ * What a worker wrote for itself, in MB of a `_mem()` reading, as the recycle
+ * rule reads it (council-isolation.ts · _dirty): its anonymous pages less
+ * those freed lazily, its shared memory and its swap. Never Private_Dirty,
+ * which counts a page of the page cache too while the page is dirty and one
+ * process alone maps it: the agent's copy of a fresh epoch is such pages
+ * until it is written back, half a minute by default.
+ */
+const ownOf = (seen: Record<string, number>): number => (seen.Anonymous ?? NaN) - (seen.LazyFree ?? 0) + (seen.Pss_Shmem ?? 0) + (seen.Swap ?? 0)
+
+scenario('the council on the machine: real pandas exported by the class notebook\'s kernel there and loaded into four workers; each attempt on the epoch\'s mapped pages, its writes its own, the epoch\'s files untouched; a worker recycled past its memory per attempt by smaps_rollup; oom_score_adj 1000 and a ceiling of each attempt\'s own; a greedy attempt\'s MemoryError its author\'s alone; artifacts, the read-only class folder and the scratch root; the drop run on a real kernel', 600_000, async (t) => {
+  const one = theMachine()
+  // «Всё на машине», the council's pool there: four workers of 512 MB, a core each (AGENT_CPUS).
+  const { id, by, lead, student, container } = await classOn('Паритет · консилиум', { room: 'machines', council: 'machines', workers: 4, attemptMb: 512 })
+  const box = one.council(id)
+  const flag = `parity-council-${RUN}`
+  // A class file the attempts read where they work (§9.7): uploaded here, on the machine by the barrier.
+  const data = csv(4 * 1024, 'class')
+  assert.equal(await upload(id, by, 'data.csv', data), 200)
+
+  // The teacher's state: a frame of 128 MB in one numeric block, an array of 32 MB, a fitted model and a function of the notebook's.
+  const setup = lead.notebook.add([
+    'import json',
+    'import numpy as np, pandas as pd',
+    'from sklearn.linear_model import LogisticRegression',
+    'rng = np.random.default_rng(7)',
+    'df = pd.DataFrame(rng.standard_normal((1_000_000, 16)), columns=[f"f{i}" for i in range(16)])',
+    'base = np.arange(4_000_000, dtype=np.float64)',
+    'model = LogisticRegression(max_iter=200).fit(df.iloc[:5000].to_numpy(), (df["f0"].iloc[:5000] > 0).to_numpy())',
+    'def score(frame):',
+    '    return round(float(frame["f1"].mean()), 9)',
+    'first = float(df.iloc[0, 0])',
+    "print(json.dumps({'first': first, 'score': score(df), 'model': int(model.predict(df.iloc[:1].to_numpy())[0])}))",
+  ].join('\n'))
+  lead.control.send({ t: 'run', cellId: setup })
+  const teacher = JSON.parse(lastLine(await lead.notebook.ok(setup, 180_000))) as { first: number; score: number; model: number }
+
+  /*
+   * The council opens (§9.2, §9.5): its pool starts four workers in the
+   * class's council container on the machine, and the class notebook's
+   * kernel there exports its state into its own container's
+   * /tmp/colloq-epoch, which the agent copies out (docker cp), takes into its
+   * store by content and links into the epochs folder the workers map.
+   */
+  const council = lead.notebook.add('# решение')
+  const openedAt = Date.now()
+  lead.control.send({ t: 'cell:lock', cellId: council, state: 'council', settings: COUNCIL_RULES })
+  const ready = await waitFor('the pool ready with four workers', () => {
+    const pool = poolOf(lead, council)
+    return pool?.state === 'ready' && pool.workers === 4 && pool.busy === 0 && !pool.refreezing && pool.epoch !== null ? pool : null
+  }, 300_000, async () => `${JSON.stringify(poolOf(lead, council))}\n${home.classLines.slice(-10).join('\n')}\n${await one.tail(30)}`, 250)
+  const readyIn = Date.now() - openedAt
+  const epoch = epochsOf(id, CELLS_KEY)[0]!
+  assert.deepEqual([epoch.seq, epoch.trouble, ready.epoch!.left], [ready.epoch!.seq, null, []], 'nothing left behind: pandas, numpy, the model and the function all travel')
+  for (const name of ['df', 'base', 'model', 'score', 'first']) assert.ok(epoch.carried.includes(name), `${name} carried: ${JSON.stringify(epoch.carried)}`)
+  assert.ok(epoch.source !== 'home' && epoch.source.runnerId === runnerId && epoch.source.role === 'room', `exported on the machine: ${JSON.stringify(epoch.source)}`)
+  const files = epochFileList(epoch.files)
+  record(t, `council: epoch ${epoch.seq}, ${megabytesOf(epoch.bytes)} MB in ${files.length} files (${files.map((file) => megabytesOf(file.bytes)).join(', ')} MB), exported by the class notebook's kernel on the machine; the pool ready with 4 workers ${seconds(readyIn)} s after the open`)
+  // The frame's block and the array out of band, each a file of its own named by its content (§9.3).
+  assert.ok(epoch.bytes >= 160_000_000 && files.some((file) => file.bytes >= 32_000_000), `the numeric data out of band: ${JSON.stringify(files)}`)
+  // Taken out of the class notebook's container by the agent, and its folder there removed.
+  await waitFor('the export\'s folder gone from the room container', async () => (await docker(['exec', container, 'test', '-e', `${COUNCIL_EPOCH_DIR}/${epoch.seq}`])).code === 1, 60_000)
+  // The council container held to what its pool holds (§9.5): a worker's 512 MB, its baseline and the epoch's stream it
+  // unpickles, four times, the epoch's files once and 512 MB; a core a worker. Grown live, by docker update, once the epoch came.
+  const streamMb = Math.ceil((files.find((file) => file.sha256 === epoch.files!.body)?.bytes ?? 0) / (1024 * 1024))
+  const sized = 4 * (512 + COUNCIL_WORKER_BASE_MB + streamMb) + Math.ceil(epoch.bytes / (1024 * 1024)) + 512
+  await waitFor('the council container held to its epoch', async () => {
+    const held = await inspectOf<{ HostConfig: { Memory: number; NanoCpus: number } }>(box)
+    return livePlacement(id, 'council')?.memoryMb === sized && held?.HostConfig.Memory === sized * 1024 * 1024 && held.HostConfig.NanoCpus === 4e9
+  }, 120_000, async () => `${sized} MB asked: ${JSON.stringify(livePlacement(id, 'council'))} ${JSON.stringify((await inspectOf<{ HostConfig: unknown }>(box))?.HostConfig)}`, 1_000)
+
+  /*
+   * COPY-ON-WRITE (§9.3 detail 3): four attempts at once, one a worker. The
+   * writer writes in place into the array and the frame and keeps computing;
+   * the three beside it read both whole meanwhile and see the teacher's
+   * state, none of the writes, and reading writes nothing of a worker's own
+   * (ownOf), however much of the epoch's files the page cache has yet to
+   * write back: the pages are those files', mapped copy-on-write. Each attempt
+   * says, at its first line, that its array and its frame's block lie in a
+   * mapping of an epoch file — the array in a fresh mapping of its own
+   * (`_remap`), the block in its worker's — where an entry that copied them
+   * instead would have spent the epoch's size on every attempt before its
+   * first line, which nothing else here would see.
+   */
+  const pupils = await Promise.all(['Студентка 1', 'Студент 2', 'Студентка 3', 'Студент 4'].map((name) => pupil(id, name)))
+  const reader = (go: string, afterWriter: boolean): string => [
+    COUNCIL_PROLOGUE,
+    'mapped = _maps()',
+    ...(afterWriter ? [`_wait('${flag}-written')`] : []),
+    'before = _mem()',
+    'total = float(df.to_numpy().sum()) + float(base.sum())',
+    'read = _mem()',
+    `_wait('${flag}-${go}')`,
+    "print(json.dumps({'role': 'reader', **_self(), 'mapped': mapped, 'before': before, 'read': read, 'after': _mem(), 'base': base[:3].tolist(), 'first': float(df.iloc[0, 0]), 'score': score(df), 'model': int(model.predict(df.iloc[:1].to_numpy())[0]), 'total': total}))",
+  ].join('\n')
+  // Its write into the array measured alone: 32 MB into a clean mapping are as much of its own, where a copy made at the entry was its own already.
+  const writer = [
+    COUNCIL_PROLOGUE,
+    'mapped = _maps()',
+    'before = _mem()',
+    'total = float(df.to_numpy().sum()) + float(base.sum())',
+    'read = _mem()',
+    'base[:] = -1.0',
+    'dirtied = _mem()',
+    'df.iloc[0, 0] = -1.0',
+    `open('/tmp/${flag}-written', 'w').close()`,
+    `_wait('${flag}-go1')`,
+    "print(json.dumps({'role': 'writer', **_self(), 'mapped': mapped, 'before': before, 'read': read, 'dirtied': dirtied, 'after': _mem(), 'base': base[:3].tolist(), 'first': float(df.iloc[0, 0]), 'total': total}))",
+  ].join('\n')
+  const atOnce = async (texts: readonly string[], go: string): Promise<Array<Record<string, any>>> => {
+    const marks = pupils.map((who, i) => attempt(who, council, texts[i]!))
+    await waitFor(`four attempts computing at once before ${go}`, () => pupils.every((who, i) => runFrom(who, council, marks[i]!)?.state === 'running') && poolOf(lead, council)?.busy === 4, 120_000,
+      () => JSON.stringify({ pool: poolOf(lead, council), runs: pupils.map((who, i) => runFrom(who, council, marks[i]!)) }), 250)
+    await dockerOk(['exec', box, 'touch', `/tmp/${flag}-${go}`])
+    const runs = await Promise.all(pupils.map((who, i) => ended(who, council, marks[i]!)))
+    return runs.map((run, i) => {
+      const { json, errors } = said(run)
+      assert.deepEqual([run.state, run.placed, errors], ['ok', 'pool', []], `${pupils[i]!.name}'s attempt: ${JSON.stringify(run)}`)
+      assert.ok(json, `${pupils[i]!.name}'s attempt said nothing it found: ${JSON.stringify(run.outputs)}`)
+      return json
+    })
+  }
+  const round1 = await atOnce([writer, reader('go1', true), reader('go1', true), reader('go1', true)], 'go1')
+  const [wrote, ...beside] = round1
+  const megabytesFact = (values: number[]): string => `${median(values)} MB (${Math.min(...values)}–${Math.max(...values)})`
+  record(t, `council: a worker before its attempt read anything: its own ${megabytesFact(round1.map((seen) => ownOf(seen.before)))}, Private_Dirty ${megabytesFact(round1.map((seen) => seen.before.Private_Dirty))}, Rss ${megabytesFact(round1.map((seen) => seen.before.Rss))}, Pss ${megabytesFact(round1.map((seen) => seen.before.Pss))} (COUNCIL_WORKER_BASE_MB ${COUNCIL_WORKER_BASE_MB})`)
+  record(t, `council: reading the whole frame and array: its own +${megabytesFact(round1.map((seen) => ownOf(seen.read) - ownOf(seen.before)))}, Private_Dirty +${megabytesFact(round1.map((seen) => seen.read.Private_Dirty - seen.before.Private_Dirty))} (the page cache's pages not yet written back, while one worker alone maps them); the writer's 32 MB into its array +${ownOf(wrote!.dirtied) - ownOf(wrote!.read)} MB of its own, then one value of its frame +${ownOf(wrote!.after) - ownOf(wrote!.dirtied)} MB (pandas copies the column it writes)`)
+  record(t, `council: an attempt's RLIMIT_AS ${megabytesOf(median(round1.map((seen) => seen.as)))} MB; oom_score_adj ${round1.map((seen) => seen.oom).join(', ')} in the workers, ${JSON.stringify(round1[0]!.server)} for jupyter_server`)
+  assert.equal(new Set(round1.map((seen) => seen.pid)).size, 4, 'four workers, each its own Python')
+  for (const seen of round1) assert.deepEqual(seen.mapped, { base: true, frame: true }, `${seen.role}: its array and its frame's block in a mapping of an epoch file, never a copy made at its entry`)
+  for (const seen of beside) {
+    assert.deepEqual([seen.base, seen.first, seen.score, seen.model], [[0, 1, 2], teacher.first, teacher.score, teacher.model], 'the teacher\'s state, none of the writer\'s writes beside it')
+    assert.equal(seen.total, wrote!.total, 'the same frame and array, read whole')
+  }
+  assert.deepEqual([wrote!.base, wrote!.first], [[-1, -1, -1], -1], 'the writer sees its own writes')
+  assert.ok(ownOf(wrote!.dirtied) - ownOf(wrote!.read) >= 24, `the writer's 32 MB into its array made ${ownOf(wrote!.dirtied) - ownOf(wrote!.read)} MB of its own: its pages were not a clean mapping`)
+  for (const seen of round1) assert.ok(ownOf(seen.read) - ownOf(seen.before) < 32, `${seen.role}: reading 160 MB of the epoch wrote ${ownOf(seen.read) - ownOf(seen.before)} MB of the worker's own`)
+
+  // The next attempt of each worker, the writer's included, at once again: the same four Pythons, none recycled, and the
+  // writer's pages went with its attempt (a fresh mapping each, dropped at leave).
+  const round2 = await atOnce(pupils.map(() => reader('go2', false)), 'go2')
+  record(t, `council: four readers at once: Shared_Clean ${megabytesFact(round2.map((seen) => seen.after.Shared_Clean ?? 0))}, Pss ${megabytesFact(round2.map((seen) => seen.after.Pss))}, Rss ${megabytesFact(round2.map((seen) => seen.after.Rss))}`)
+  assert.deepEqual(round2.map((seen) => seen.pid).sort(), round1.map((seen) => seen.pid).sort(), 'the same four workers')
+  for (const seen of round2) assert.deepEqual([seen.base, seen.first, seen.score, seen.mapped], [[0, 1, 2], teacher.first, teacher.score, { base: true, frame: true }], 'the epoch as the teacher left it, in every worker, mapped')
+  // Nor did the writes reach the epoch's files: each still hashes to its name (MAP_PRIVATE never writes back).
+  for (const file of files) {
+    const hashed = await one.exec(['sha256sum', path.join(one.tree, 'council', id, 'epochs', file.sha256)])
+    assert.equal(hashed.stdout.split(' ')[0], file.sha256, `${file.sha256.slice(0, 12)} as it was: ${hashed.stderr}`)
+  }
+
+  // oom_score_adj (§9.3 detail 5): every worker 1000, jupyter_server not, so the cgroup's OOM killer takes an attempt, never the
+  // server and every session with it; and each attempt computes under an address-space ceiling of its own (the mandatory cap).
+  for (const seen of [...round1, ...round2]) {
+    assert.equal(seen.oom, 1000, `a worker's oom_score_adj: ${seen.oom}`)
+    assert.ok(seen.server && seen.server.oom < 1000, `jupyter_server's oom_score_adj: ${JSON.stringify(seen.server)}`)
+    assert.ok(seen.as > 0, `an attempt's RLIMIT_AS: ${seen.as}`)
+  }
+
+  /*
+   * RECYCLED ON ITS MEMORY (§9.3 detail 4, §9.5): a worker whose attempts
+   * left it holding more than «Память на попытку» since its seed restarts
+   * and loads again before it serves on. The exit reads what it wrote for
+   * itself from smaps_rollup (council-isolation.ts · _dirty, ownOf here)
+   * against the seed's own reading, a path only Linux has. Two rounds of
+   * four at once, each attempt keeping 280 MB past its exit where the exit
+   * restores nothing (a module's dict), leave each worker 280 MB over its
+   * seed, under the 512 MB of «Память на попытку», and then 560, over it:
+   * the same four Pythons serve the second round, and four new ones, loaded
+   * with the same epoch, the third.
+   */
+  const keeper = (go: string): string => [
+    COUNCIL_PROLOGUE,
+    "kept = json.__dict__.setdefault('_parity_kept', [])",
+    'kept.append(bytearray(280 << 20))',
+    `_wait('${flag}-${go}')`,
+    "print(json.dumps({'role': 'keeper', **_self(), 'kept': 280 * len(kept), 'after': _mem()}))",
+  ].join('\n')
+  const workersOf = (seen: Array<Record<string, any>>): number[] => seen.map((one) => one.pid as number).sort((a, b) => a - b)
+  const kept1 = await atOnce(pupils.map(() => keeper('keep1')), 'keep1')
+  assert.deepEqual([workersOf(kept1), kept1.map((seen) => seen.kept)], [workersOf(round1), [280, 280, 280, 280]], 'the same four workers, each keeping one block')
+  const kept2 = await atOnce(pupils.map(() => keeper('keep2')), 'keep2')
+  assert.deepEqual([workersOf(kept2), kept2.map((seen) => seen.kept)], [workersOf(round1), [560, 560, 560, 560]], 'the same four again, under «Память на попытку» since their seed after one block each')
+  const fresh = await atOnce(pupils.map(() => reader('reseeded', false)), 'reseeded')
+  const keepers = new Set(workersOf(kept2))
+  assert.ok(fresh.every((seen) => !keepers.has(seen.pid)), `four new Pythons once each held 560 MB: ${JSON.stringify(workersOf(fresh))} after ${JSON.stringify(workersOf(kept2))}`)
+  for (const seen of fresh) assert.deepEqual([seen.base, seen.first, seen.score, seen.mapped, seen.oom], [[0, 1, 2], teacher.first, teacher.score, { base: true, frame: true }, 1000], 'loaded again with the epoch')
+  record(t, `council: keeping 280 MB past each attempt: its own ${megabytesFact(kept1.map((seen) => ownOf(seen.after)))} with one block, the same four workers; ${megabytesFact(kept2.map((seen) => ownOf(seen.after)))} with two, then recycled (over «Память на попытку», 512 MB since the seed): four new Pythons at ${megabytesFact(fresh.map((seen) => ownOf(seen.before)))}`)
+
+  /*
+   * A GREEDY ATTEMPT (§9.7): one asks for 2 GB, four times its ceiling, while
+   * another computes on the worker beside it. The MemoryError is its
+   * author's; the neighbour ends as it would have, and the notebook's own
+   * kernel computes the teacher's next cell at once, on its own state.
+   */
+  const [greedy, neighbour] = pupils as [Pupil, Pupil, Pupil, Pupil]
+  const n3 = attempt(neighbour, council, [COUNCIL_PROLOGUE, `_wait('${flag}-go3')`, "print(json.dumps({'role': 'neighbour', **_self(), 'score': score(df)}))"].join('\n'))
+  await waitFor('the neighbour computing', () => runFrom(neighbour, council, n3)?.state === 'running', 60_000, () => JSON.stringify(runFrom(neighbour, council, n3)))
+  const g3 = attempt(greedy, council, [COUNCIL_PROLOGUE, "print(json.dumps({'role': 'greedy', **_self()}), flush=True)", 'big = bytearray(2 * 1024 ** 3)', 'print(len(big))'].join('\n'))
+  const failed = await ended(greedy, council, g3)
+  assert.deepEqual([failed.state, failed.placed], ['error', 'pool'], JSON.stringify(failed))
+  assert.ok(said(failed).errors.some((error) => error.startsWith('MemoryError')), `the greedy attempt's own error: ${JSON.stringify(said(failed).errors)}`)
+  await dockerOk(['exec', box, 'touch', `/tmp/${flag}-go3`])
+  const fine = await ended(neighbour, council, n3)
+  assert.deepEqual([fine.state, said(fine).json?.score], ['ok', teacher.score], JSON.stringify(fine))
+  const meanwhile = lead.notebook.add("print(json.dumps({'first': first}))")
+  lead.control.send({ t: 'run', cellId: meanwhile })
+  assert.equal(JSON.parse(lastLine(await lead.notebook.ok(meanwhile, 60_000))).first, teacher.first, 'the notebook\'s kernel computes on, its state its own')
+  assert.ok(!mainComputedAnAttempt(lead, council), 'the console never saw the notebook\'s kernel compute an attempt')
+
+  // The class container's cgroup as the kernel holds it: what the pool's processes take together, against its ceiling.
+  const cgroup = (await docker(['exec', box, 'sh', '-c', 'cat /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max 2>/dev/null'])).stdout.trim().split('\n')
+  record(t, `council: the container's cgroup memory.current ${cgroup[0] ? megabytesOf(Number(cgroup[0])) : '?'} MB of memory.max ${cgroup[1] ? (cgroup[1] === 'max' ? 'max' : megabytesOf(Number(cgroup[1]))) : '?'} MB, its placement ${sized} MB; the greedy attempt: ${said(failed).errors.join(' | ')}`)
+
+  /*
+   * WHAT AN ATTEMPT SEES AND WRITES (§9.7, D10): it works in a folder of its
+   * own under the scratch root, reads the class's file through it, cannot
+   * write the class folder, and the file it writes comes home on its card.
+   */
+  const scribe = pupils[2]!
+  const s4 = attempt(scribe, council, [
+    'import json, os, stat',
+    "with open('out.csv', 'w') as handle:",
+    "    handle.write('id,v\\n1,2\\n')",
+    `root = os.stat('${COUNCIL_SCRATCH_MOUNT}')`,
+    'try:',
+    `    os.listdir('${COUNCIL_SCRATCH_MOUNT}')`,
+    "    listing = 'listed'",
+    'except PermissionError:',
+    "    listing = 'refused'",
+    // A mode holds against the folder's owner only as long as the owner will not change it: chmod asks ownership, no permission bit.
+    'try:',
+    `    os.chmod('${COUNCIL_SCRATCH_MOUNT}', 0o1777)`,
+    "    chmod = 'changed'",
+    `    os.chmod('${COUNCIL_SCRATCH_MOUNT}', stat.S_IMODE(root.st_mode))`,
+    'except PermissionError:',
+    "    chmod = 'refused'",
+    'try:',
+    `    open('/workspace/${id}/spoiled.txt', 'w').close()`,
+    '    spoiled = 0',
+    'except OSError as error:',
+    '    spoiled = error.errno',
+    "print(json.dumps({'cwd': os.getcwd(), 'listing': listing, 'chmod': chmod, 'spoiled': spoiled, 'mode': oct(stat.S_IMODE(root.st_mode)), 'owner': root.st_uid, 'uid': os.getuid(), 'data': open('data.csv').read()}))",
+  ].join('\n'))
+  const wrote4 = await ended(scribe, council, s4)
+  assert.deepEqual([wrote4.state, wrote4.placed], ['ok', 'pool'], JSON.stringify(wrote4))
+  const found = said(wrote4).json
+  assert.ok(found, `the scribe's attempt said nothing it found: ${JSON.stringify(wrote4.outputs)}`)
+  record(t, `council: the scratch root ${found.mode}, owned by uid ${found.owner}; a worker (uid ${found.uid}) listing it: ${found.listing}, changing its mode: ${found.chmod}`)
+  assert.match(found.cwd, /^\/colloq\/scratch\/[0-9a-f]{32}$/, 'its own folder, named by its run')
+  assert.deepEqual([found.data, found.spoiled, found.uid], [data, 30, KERNEL_UID], 'the class file read through its folder; the class folder read-only (EROFS); the kernels\' uid')
+  const body = 'id,v\n1,2\n'
+  const kept = await waitFor('out.csv kept on the card', () => {
+    const run = runFrom(scribe, council, s4)
+    return run?.files?.some((file) => file.name === 'out.csv' && file.kept) ? run : null
+  }, 120_000, () => JSON.stringify(runFrom(scribe, council, s4)?.files ?? null))
+  assert.equal(fs.readFileSync(artifactPath(id, kept.runId!, sha256(body)), 'utf8'), body, 'here, by its content')
+  assert.equal(homeFile(id, 'spoiled.txt'), null)
+
+  /*
+   * THE DROP RUN on a real kernel (council-pool.ts · dropMachineExport): the
+   * silent execute that has a notebook's own kernel remove an export of its
+   * container nobody will collect, sent as the pool sends it, to a kernel of
+   * the class's image beside the class's; and nothing of the class's own
+   * export is left in that container.
+   */
+  const roomDoor = await doorOf(container)
+  const made = await rest<{ id: string }>(roomDoor, 'POST', '/api/kernels', { name: 'python3' })
+  assert.equal(made.status, 201, JSON.stringify(made.body))
+  const dropSeq = 999_999
+  const dropped = `${COUNCIL_EPOCH_DIR}/${dropSeq}`
+  try {
+    await dockerOk(['exec', container, 'sh', '-c', `mkdir -p ${dropped} && echo x > ${dropped}/left.bin`])
+    const channel = await Channel.open(roomDoor, made.body.id, `parity-drop-${RUN}`)
+    const drop = exportDropExpression(dropSeq)
+    const asked = channel.send('shell', 'execute_request', { code: drop.code, silent: true, store_history: false, user_expressions: drop.userExpressions, allow_stdin: false, stop_on_error: true })
+    assert.equal((await channel.answer(asked, 'execute_reply')).message.content.status, 'ok')
+    channel.terminate()
+    assert.equal((await docker(['exec', container, 'test', '-e', dropped])).code, 1, `${dropped} is still in the room container`)
+  } finally {
+    await rest(roomDoor, 'DELETE', `/api/kernels/${made.body.id}`)
+  }
+  assert.equal((await docker(['exec', container, 'sh', '-c', `ls -A ${COUNCIL_EPOCH_DIR} 2>/dev/null || true`])).stdout.trim(), '', 'no export left in the class notebook\'s container')
+  for (const who of pupils) who.control.close()
+  closeTabs(lead, student)
+
+  /*
+   * THE SCRATCH ROOT (runner-agent/council.ts · SCRATCH_MODE, K7a #17): a
+   * folder of 1733 that a worker may enter and make its run's folder in but
+   * never list, so that no attempt finds another's — and not the workers'
+   * own: its owner may give it any mode (chmod asks ownership, no bit),
+   * list it then, and take any run's folder out of it whatever the sticky
+   * bit says. So the cause is pinned with the symptom: another owner than
+   * the workers' uid, a mode they cannot change, a listing they cannot make.
+   * Last: the agent and the kernels are both uid 1000 on a machine, and the
+   * agent owns the folder.
+   */
+  assert.equal(found.mode, '0o1733')
+  assert.notEqual(found.owner, found.uid, `the scratch root is owned by uid ${found.owner}, the workers' own: any attempt may change its mode, list it and take another's folder out of it`)
+  assert.equal(found.chmod, 'refused', `a worker of uid ${found.uid} changed the scratch root's mode (${found.mode}, owned by uid ${found.owner})`)
+  assert.equal(found.listing, 'refused', `a worker of uid ${found.uid} lists the scratch root (${found.mode}, owned by uid ${found.owner}): every attempt's folder can be found from another`)
 })

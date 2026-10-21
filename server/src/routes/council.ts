@@ -1,6 +1,7 @@
 import { tr } from '@shared/i18n'
 /**
- * The council's only REST door: asking the Oracle about the solutions.
+ * The council's REST doors: asking the Oracle about the solutions, and an
+ * attempt's own files (the last below).
  *
  * Everything else in the council goes over the control socket (control.ts ·
  * council:*): attempts, showing, answers, marks. The Oracle is here because
@@ -15,6 +16,9 @@ import { tr } from '@shared/i18n'
  *          (state: 'reading') or a refusal in words: 403 disabled / 503 no key
  *          / 429 limit / 409 already reading
  *   DELETE /api/sessions/:id/council/:cellId/oracle  — "Stop"
+ *   GET    /api/sessions/:id/council/:cellId/files[/ticket]  — a pool
+ *          attempt's own files, kept here from its machine: its author's and
+ *          the teachers' (remote-classes.md §9.7)
  *
  * POST has one kind: a question about the class. The body
  * `{ question?: string }` is the teacher's own words, and an empty body means
@@ -40,10 +44,12 @@ import { tr } from '@shared/i18n'
  * table, which belongs to another module and changes separately from this
  * one.
  */
+import fs from 'node:fs'
+import path from 'node:path'
 import { json, Router, type Request, type Response } from 'express'
 import { cellSource, findCell } from '@shared/notebook'
 import { mayLeadCouncil, oracleLimitsIn, oracleModeIn } from '@shared/rules'
-import { MAX_ORACLE_QUESTION, SESSION_MISSING, type CouncilOracle } from '@shared/protocol'
+import { MAX_ORACLE_QUESTION, SESSION_MISSING, type CouncilOracle, type CouncilRun } from '@shared/protocol'
 import { effortRank, isReasoningEffort, type ReasoningEffort } from '@shared/admin'
 import { getOracleSettings } from '../admin/settings.js'
 import { countRoomQuestions, recordQuestion } from '../admin/usage.js'
@@ -57,7 +63,9 @@ import {
 } from '../ai/council.js'
 import { aiReady } from '../ai/index.js'
 import { visitSessionDoc } from './doc-visit.js'
-import { attemptsOf, oracleOf, setOracle } from '../council.js'
+import { attemptOf, attemptsOf, oracleOf, setOracle } from '../council.js'
+import { signDownloadToken, verifyDownloadToken } from '../auth.js'
+import { artifactPath } from '../kernel/remote/epochs.js'
 import { getParticipant, getRules, getSession } from '../db.js'
 /*
  * The room ceiling is the very same one, not an equal number.
@@ -77,6 +85,8 @@ const HOUR_MS = 3_600_000
 /** Where the route gets attempts and where it puts the Oracle. council.ts by default. */
 export interface CouncilOracleDeps extends OracleStore {
   attemptsOf(sessionId: string, cellId: string): OracleAttempt[]
+  /** An author's run of a cell, for its files' door; council.ts's stored attempt when absent. */
+  runOf?(sessionId: string, cellId: string, participantId: string): CouncilRun | null
 }
 
 /**
@@ -303,5 +313,79 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
     res.json({ ok: true })
   })
 
+  /*
+   * AN ATTEMPT'S OWN FILES (remote-classes.md §9.7, D10): what a pool's
+   * attempt wrote into its folder on the machine, brought here and named on
+   * its card. They are the attempt's, not the class folder's: its author and
+   * the teachers take them, nobody else — not the class from the screen.
+   *
+   *   GET /api/sessions/:id/council/:cellId/files/ticket?participant=&name=
+   *       — a ticket for the anchor, asked with the header (as for the class
+   *         folder's files: routes/files.ts · file/ticket)
+   *   GET /api/sessions/:id/council/:cellId/files?participant=&name=&token=
+   *       — the file, by the header or the ticket
+   *
+   * The file is found by its card: the run's own name and the file's sha256
+   * there, for one the card says is here (`kept: true`); anything else is a
+   * 404, a file on its way included.
+   */
+  const keptFile = (req: Request, res: Response, ticket: boolean): { sessionId: string; path: string; name: string } | null => {
+    const sessionId = req.params.id
+    const cellId = req.params.cellId
+    if (!getSession(sessionId)) {
+      res.status(404).json({ error: SESSION_MISSING })
+      return null
+    }
+    const participant = typeof req.query.participant === 'string' ? req.query.participant : ''
+    const name = typeof req.query.name === 'string' ? req.query.name : ''
+    const auth = sessionAuth(req)
+    const subject = attemptFileSubject(cellId, participant, name)
+    const token = typeof req.query.token === 'string' ? req.query.token : ''
+    const allowed = auth !== null
+      ? auth.participantId === participant || mayLeadCouncil(auth.role)
+      : ticket && verifyDownloadToken(sessionId, subject, token)
+    if (!allowed) {
+      res.status(auth ? 403 : 401).json({ error: auth ? tr('server.onlyTheAttemptSAuthorAndThe.94ba37') : tr("server.joinTheSessionFirst.442dd6") })
+      return null
+    }
+    const run = deps.runOf?.(sessionId, cellId, participant) ?? attemptOf(sessionId, cellId, participant)?.run ?? null
+    const file = run?.files?.find((one) => one.name === name && one.kept === true && typeof one.sha256 === 'string')
+    let at: string | null = null
+    try {
+      at = file && run?.runId ? artifactPath(sessionId, run.runId, file.sha256!) : null
+    } catch {
+      at = null
+    }
+    if (!at || !fs.existsSync(at)) {
+      res.status(404).json({ error: tr("server.fileNotFound.3e2256") })
+      return null
+    }
+    return { sessionId, path: at, name }
+  }
+
+  router.get('/api/sessions/:id/council/:cellId/files/ticket', (req, res) => {
+    // Asked with the header alone: a ticket never buys another.
+    const found = keptFile(req, res, false)
+    if (!found) return
+    const participant = String(req.query.participant)
+    res.json({ token: signDownloadToken(found.sessionId, attemptFileSubject(req.params.cellId, participant, found.name)) })
+  })
+
+  router.get('/api/sessions/:id/council/:cellId/files', (req, res) => {
+    const found = keptFile(req, res, true)
+    if (!found) return
+    // By its own name, the folders of it aside: «out.csv» of «results/out.csv».
+    const base = path.posix.basename(found.name)
+    res.type(base)
+    res.download(found.path, base, { dotfiles: 'allow' }, (error) => {
+      if (error && !res.headersSent) res.status(404).json({ error: tr("server.fileNotFound.3e2256") })
+    })
+  })
+
   return router
+}
+
+/** What a ticket for one attempt's file names: the cell, the author and the file, never the class folder's path. */
+function attemptFileSubject(cellId: string, participantId: string, name: string): string {
+  return `council-file\u0000${cellId}\u0000${participantId}\u0000${name}`
 }

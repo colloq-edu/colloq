@@ -378,8 +378,14 @@ export type ControlClientMessage =
    * removed. And a nameless press remains the only way to clear a piled-up
    * queue when nothing is running. The right is checked against the execution
    * environment on the server; the target's name permits nothing.
+   *
+   * `participantId` beside a council cell names ONE attempt of it: the one of
+   * that author the class's pool of workers computes now
+   * (docs/architecture/remote-classes.md §9.6), each in a kernel of its own,
+   * so a press stops that worker and nothing else. The teacher's, or the
+   * author's own; an attempt in the notebook's kernel is stopped as before.
    */
-  | { t: 'interrupt'; cellId?: string; book?: string }
+  | { t: 'interrupt'; cellId?: string; book?: string; participantId?: string }
   /**
    * Restart the kernel of ONE notebook — the one named.
    *
@@ -550,6 +556,14 @@ export type ControlClientMessage =
    */
   | { t: 'council:adopt'; cellId: string; participantId: string; run: boolean }
   | { t: 'council:adopt:undo'; cellId: string }
+  /**
+   * «Обновить состояние» (docs/architecture/remote-classes.md §9.2): a fresh
+   * snapshot of the notebook's kernel for the pool's attempts, now, whatever
+   * the cell's `refresh`. Teacher only, and only for a council cell whose
+   * attempts the pool computes; the answer is the console's next
+   * `council:kernel` frame (its `pool.epoch`).
+   */
+  | { t: 'council:epoch'; cellId: string }
   | { t: 'council:run'; cellId: string; participantId?: string }
   /** A request is separate from submission; its ID names a specific saved version. */
   | { t: 'council:run:request'; cellId: string }
@@ -1524,6 +1538,13 @@ export type ControlServerMessage =
       run: boolean
       at: number
       undoable: true
+      /**
+       * The attempt ran in the pool on a snapshot the notebook's kernel has
+       * moved on from since (remote-classes.md §9.8): «Ядро ушло вперёд на 3
+       * ячейки после снимка — результат в тетради может отличаться». Absent
+       * when it has not, or when the attempt ran in the notebook's kernel.
+       */
+      warning?: string
     }
   /** Council: the adopted code left the cell again — the text before it is back. */
   | { t: 'council:adopt:undone'; cellId: string }
@@ -1706,6 +1727,64 @@ export interface CouncilRun {
    * never present in `council:mine` or in the on-request delta.
    */
   outputsOmitted?: boolean
+  /**
+   * Where it ran (docs/architecture/remote-classes.md §9.8): `pool` — on one
+   * of the class's workers, apart from everyone, on the notebook's snapshot
+   * (`epoch`); `shared` — in the notebook's own kernel, after the queue, as
+   * always. Absent from a server without the pool, and for a class whose
+   * council is not on machines: the notebook's kernel then, too.
+   */
+  placed?: 'pool' | 'shared'
+  /**
+   * The card's footnote, in the server's words: why an attempt of a class
+   * whose council is on machines ran in the shared kernel («Пул ещё
+   * поднимается — эта попытка посчитана в общем ядре.», «Посчитано в общем
+   * ядре: использует conn — её нельзя перенести.»), or how old the snapshot
+   * a pool's attempt ran on was («Состояние 14:05 — без ячеек 8–9.»).
+   */
+  note?: string
+  /**
+   * The snapshot a pool's attempt ran on: its number, when it was taken, and
+   * how many of the teacher's runs it lacked when the attempt went (0 — it
+   * was the kernel's state then).
+   */
+  epoch?: CouncilRunEpoch
+  /**
+   * The files the attempt wrote into its own folder (§9.7, D10), as its
+   * worker listed them once it ended, each with where it is (`kept`): those
+   * within COUNCIL_ARTIFACTS (up to 20, 1 MB each and 5 MB in all, in the
+   * listed order) on their way here from the machine at first, then here
+   * as each lands — a sync or more after the run's end; the rest named with
+   * their size and left behind.
+   */
+  files?: CouncilRunFile[]
+  /** A pool run's own name, which its folder on the machine and its kept files here are named by. */
+  runId?: string
+}
+
+/** The snapshot a pool's attempt ran on (CouncilRun.epoch). */
+export interface CouncilRunEpoch {
+  seq: number
+  /** When the notebook's kernel was snapshotted, by the server's clock. */
+  at: number
+  /** The teacher's runs in the notebook since that snapshot, when the attempt went. */
+  behind: number
+}
+
+/** One file of an attempt's own folder (CouncilRun.files). */
+export interface CouncilRunFile {
+  name: string
+  bytes: number
+  /**
+   * `true` — here, on the server, and on the card for the author and the
+   * teachers to take (GET …/council/:cellId/files); `null` — within the caps
+   * and on its way from the machine, until its collection is over; `false`
+   * — left behind: past the caps, or it never came (the machine went, its
+   * agent refused it, the collection ended without it).
+   */
+  kept: boolean | null
+  /** Its content's sha256, which names it here (kernel/remote/epochs.ts · artifactPath): one within the caps has it. */
+  sha256?: string
 }
 
 /** The teacher's answer to the author or to a group. Always signed by the teacher. */
@@ -2015,6 +2094,79 @@ export interface CouncilKernel {
   } | null
   /** The NOTEBOOK's whole queue: both cells and attempts of any of its council cells. */
   queued: number
+  /**
+   * The class's pool of workers for this notebook's attempts
+   * (docs/architecture/remote-classes.md §9.5, §9.8), when the class's
+   * council computes on machines and the cell's attempts go to the pool
+   * (`CouncilSettings.lane`). Absent otherwise: the attempts are the
+   * notebook kernel's, as `busy` and `queued` above say.
+   */
+  pool?: CouncilPool
+}
+
+/** The pool of a notebook's attempts, as the console reads it (CouncilKernel.pool). */
+export interface CouncilPool {
+  /**
+   * `starting` — no worker holds the notebook's snapshot yet (its first
+   * seconds, or a restart of its machine): attempts run in the notebook's
+   * kernel meanwhile; `ready` — attempts go to the workers; `shared` — the
+   * pool cannot take them now, and `note` says why (no machine, the snapshot
+   * holds data on the GPU, it did not come together, its machine is lost).
+   */
+  state: 'starting' | 'ready' | 'shared'
+  /** The machine the workers are on, its name as the owner gave it; null while none is. */
+  machine: string | null
+  /** Workers up, of them busy with an attempt, and attempts waiting for one. */
+  workers: number
+  busy: number
+  queued: number
+  /** How many workers the pool is to have now («готовы 2 из 4» while it starts): «Попыток одновременно», or what `auto` makes of it. */
+  size: number
+  /** A snapshot of the notebook's kernel is being taken now («снимок состояния»). */
+  refreezing: boolean
+  /**
+   * While one is taken: when it was asked, by the server's clock («снимок
+   * состояния · 0,4 с»), and the notebook's number of the teacher's last
+   * cell it takes in («после вашей ячейки 9»; null — none in this life).
+   */
+  snapshot?: { since: number; after: number | null }
+  /** How long the last snapshot this pool took took, export and all, ms («переснимается за 0,4 с»); absent before one. */
+  tookMs?: number
+  /**
+   * A worker was restarted in the last minute for what an attempt left it
+   * in (§9.5: it would not stop, it left threads or processes, or more
+   * memory than «Память на попытку»; its Python killed): «исполнитель
+   * перезапущен». The routine reloads (a new snapshot, twenty attempts) are
+   * not this.
+   */
+  recycled?: boolean
+  /** The snapshot the workers compute on; null before the first. */
+  epoch: {
+    seq: number
+    /** When it was taken, by the server's clock: «состояние 14:05». */
+    at: number
+    /** Its files together, bytes («снимок 1,2 ГБ»); 0 for a notebook with no kernel. */
+    bytes: number
+    /** Names carried into it. */
+    carried: number
+    /**
+     * Names it could not carry, with why in the server's words: «conn
+     * (соединение с базой)» — the export's, and those a worker's load left
+     * for a module its machine lacks.
+     */
+    left: Array<{ name: string; why: string }>
+    /** The teacher's runs in the notebook since it was taken. */
+    behind: number
+    /**
+     * The notebook's kernel hashes strings with another seed than the
+     * workers (it was started before 0.25.0, which gave every class container
+     * the class's PYTHONHASHSEED): sets may come out in another order in an
+     * attempt than in the notebook (server.theOrderOfSetsInAttemptsMay.b87dc7).
+     */
+    seedDiffers?: boolean
+  } | null
+  /** The server's sentence about the pool, when there is one to say: why attempts run in the shared kernel, «пул не поднялся: …». */
+  note?: string
 }
 
 /**

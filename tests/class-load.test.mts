@@ -17,11 +17,25 @@
  *
  * WHAT IS ASSERTED is what the rig promises: it refuses to start without an
  * explicit address and an owner's credential, a GPU class without a GPU
- * environment and a baseline of another class, before any room exists, and
+ * environment, data for an epoch in the fake's cells or more than an epoch
+ * may hold or ship, and a baseline of another class, before any room
+ * exists, and
  * `make class-load` takes the address from its command line only; it makes
  * its own seminar, holds a class in it on the machine and reports the §17.5
  * quantities (its LOAD_OUT), measuring a click that waits in its kernel's
- * queue in full and timing only completions that came with matches; it
+ * queue in full and timing only completions that came with matches; its
+ * council's attempts compute on the class's pool of workers on the machine
+ * in two bursts — the first after a cell the teacher ran since the epoch,
+ * on the one fresher epoch it waits for (the notebook's kernel asked a
+ * question meanwhile, never made to run), any attempt the notebook's kernel
+ * took instead counted with the reason its card gave, and a worker's seed
+ * timed from it; the second beside the teacher's long cell, which the run
+ * limit leaves to run its time, every one on the pool, on the older epoch
+ * and saying so, the teacher's run ahead of the class's — with «Обновить
+ * состояние» and the pool's start timed, a keystroke between tabs timed
+ * during them as well as quietly, and those keystrokes' own writes of the
+ * notebook named among the bytes, every one; an R2 row it cannot judge
+ * names what it would need; it
  * types in the terminal at the prompt, never behind its own last command;
  * its tabs come back after a relay cut and after the server closes the staff's
  * sockets for an authorization change, as the web app's do; it deletes the
@@ -300,7 +314,7 @@ const seminarIn = (text: string): string | null => /\bseminar\s+([A-Za-z0-9_-]{4
 
 /** Until the class is gone from the machine: no live placement row, no class container of it in its docker. */
 async function goneFromMachine(sessionId: string): Promise<void> {
-  await until(`class ${sessionId} off the machine`, () => livePlacement(sessionId, 'room') === null && livePlacement(sessionId, 'own') === null &&
+  await until(`class ${sessionId} off the machine`, () => livePlacement(sessionId, 'room') === null && livePlacement(sessionId, 'own') === null && livePlacement(sessionId, 'council') === null &&
     !machine.classContainers().some((c) => c.labels.includes(`colloq.session=${sessionId}`) && c.status !== 'exited'), 30_000, () => home.classLines.slice(-6).join('\n'))
 }
 
@@ -321,7 +335,9 @@ before(async () => {
   ownerId = owner.id
   ownerToken = readSetupToken()
   const code = mintRemoteCode({ machines: 1, hours: 1, trusted: false, approvedSlots: null, classes: true, namePrefix: 'vast', createdBy: 'colloq-host' }).code
-  machine = new Agent(fleet, `load-${randomBytes(2).toString('hex')}`, { join: home.joinTarget(code), classes: true })
+  // It reads its host to have twelve cores (AgentOptions.cpus), so that the class's room and personal containers and its council's
+  // pool, a core a worker, fit beside each other on a CI runner of four.
+  machine = new Agent(fleet, `load-${randomBytes(2).toString('hex')}`, { join: home.joinTarget(code), classes: true, cpus: 12 })
   machine.start()
   const runnerId = await until('the machine to join', () => machine.identity()?.runnerId, 30_000, () => machine.log())
   await until('its tunnel up at home', () => home.tunnels?.isUp(runnerId), 30_000, () => `${machine.log()}\n${home.tunnelLines.join('\n')}`)
@@ -345,7 +361,7 @@ after(async () => {
 
 /* ------------------------------------------------------------------ tests */
 
-test('it refuses to start without an explicit home and an owner\'s credential, a GPU class without a GPU environment, a baseline of another class, before any room exists', { timeout: 60_000 }, async () => {
+test('it refuses to start without an explicit home and an owner\'s credential, a GPU class without a GPU environment, data for an epoch in the fake\'s cells or past what an epoch may hold, a baseline of another class, before any room exists', { timeout: 60_000 }, async () => {
   const seminarsBefore = seminarPosts()
 
   const nowhere = rig({ LOAD_SETUP_TOKEN: ownerToken })
@@ -368,6 +384,19 @@ test('it refuses to start without an explicit home and an owner\'s credential, a
   assert.equal(await exitOf(gpu, 20_000), 2)
   assert.match(printed(gpu), /CLASS=gpu needs a GPU environment/)
 
+  // The epoch's data is a Python cell's: the fake's small language makes no frame, and a run that asked for one would measure none.
+  const data = rig({ LOAD_BASE_URL: relay.url, LOAD_SETUP_TOKEN: ownerToken, LOAD_CELLS: 'fake', LOAD_EPOCH_MB: '50' })
+  assert.equal(await exitOf(data, 20_000), 2)
+  assert.match(printed(data), /LOAD_EPOCH_MB: the data is a Python cell/)
+  // Data that cannot be the pool's epoch: past the export's budget the frame stays behind, and a class notebook computing here
+  // sends its first epoch whole, which past the ship cap keeps the council shared — either would measure the shared kernel.
+  const budget = rig({ LOAD_BASE_URL: relay.url, LOAD_SETUP_TOKEN: ownerToken, LOAD_EPOCH_MB: '2048' })
+  assert.equal(await exitOf(budget, 20_000), 2)
+  assert.match(printed(budget), /LOAD_EPOCH_MB: at most 2032, not 2048/)
+  const ships = rig({ LOAD_BASE_URL: relay.url, LOAD_SETUP_TOKEN: ownerToken, LOAD_CLASS: 'personal', LOAD_EPOCH_MB: '250' })
+  assert.equal(await exitOf(ships, 20_000), 2)
+  assert.match(printed(ships), /LOAD_EPOCH_MB: at most 240 with CLASS=personal, not 250/)
+
   // A baseline is a CLASS=home run of the same class: a machines run's numbers make a delta of nothing.
   const wrong = path.join(outDir, 'machines-baseline.json')
   fs.writeFileSync(wrong, JSON.stringify({ classLoad: 1, class: 'machines', cells: 'fake', students: 3, own: 0.5 }))
@@ -385,11 +414,12 @@ test('it refuses to start without an explicit home and an owner\'s credential, a
   assert.equal(seminarPosts(), seminarsBefore, 'no seminar was asked for')
 })
 
-test('a short class on the machine: its own seminar made, the class held and the numbers reported, its tabs back after a cut and an authorization change, the seminar deleted', { timeout: 120_000 }, async () => {
+test('a short class on the machine: its own seminar made, the class held and the numbers reported, its council on the class\'s pool, its tabs back after a cut and an authorization change, the seminar deleted', { timeout: 180_000 }, async () => {
   const out = path.join(outDir, 'machines.json')
   const name = getRunner(machine.runnerId)!.name
   const wireBefore = relay.stats().bytes
-  const run = rig(classVars({ LOAD_CLASS: 'machines', LOAD_STUDENTS: '3', LOAD_OWN: '0.34', LOAD_MINUTES: '0.25', LOAD_CSV_MB: '0.1', LOAD_BIG_MB: '1', LOAD_OUT: out }))
+  // Its council on a pool of two workers of 512 MB: four students' bursts queue for them, and the teacher's run goes ahead.
+  const run = rig(classVars({ LOAD_CLASS: 'machines', LOAD_STUDENTS: '4', LOAD_OWN: '0.25', LOAD_MINUTES: '0.25', LOAD_CSV_MB: '0.1', LOAD_BIG_MB: '1', LOAD_WORKERS: '2', LOAD_ATTEMPT_MB: '512', LOAD_OUT: out }))
 
   // The class has begun: the server closes the staff's sockets for a change of their rights (socket-authorization.ts,
   // 4401 «reconnect»), then the relay restarts under it, and every tab's sockets are reset at once.
@@ -400,7 +430,7 @@ test('a short class on the machine: its own seminar made, the class held and the
   await new Promise((resolve) => setTimeout(resolve, 300))
   relay.heal()
 
-  assert.equal(await exitOf(run, 100_000), 0, printed(run).slice(-4000))
+  assert.equal(await exitOf(run, 160_000), 0, printed(run).slice(-4000))
   const text = printed(run)
   printsNoSecret(text)
   const sum = JSON.parse(fs.readFileSync(out, 'utf8'))
@@ -418,9 +448,10 @@ test('a short class on the machine: its own seminar made, the class held and the
   assert.deepEqual([sum.machine.where.room, sum.machine.where.own], [name, name], JSON.stringify(sum.machine))
   assert.ok(sum.machine.frames > 0)
   assert.deepEqual([sum.machine.failovers, sum.machine.unreachable.n], [0, 0], 'nothing failed over: the cut was the students\' path, not the machine\'s')
-  assert.deepEqual([sum.joined, sum.synced, sum.personal], [3, 3, 1])
-  // «Работают сейчас» named both of its slots there.
-  assert.deepEqual(sum.machine.containers.map((slot: { role: string; where: string }) => `${slot.role}@${slot.where}`).sort(), [`own@${name}`, `room@${name}`], JSON.stringify(sum.machine.containers))
+  assert.deepEqual([sum.joined, sum.synced, sum.personal], [4, 4, 1])
+  // «Работают сейчас» named its three slots there, the council's with its two workers.
+  assert.deepEqual(sum.machine.containers.map((slot: { role: string; where: string }) => `${slot.role}@${slot.where}`).sort(), [`council@${name}`, `own@${name}`, `room@${name}`], JSON.stringify(sum.machine.containers))
+  assert.equal(sum.machine.containers.find((slot: { role: string }) => slot.role === 'council').workers, 2)
 
   // The numbers of §17.5, each with its p50 and p95.
   const n = sum.numbers
@@ -452,7 +483,57 @@ test('a short class on the machine: its own seminar made, the class held and the
   present('a 10 KB edit → readable', n.edit.readable)
   present('the big upload → readable', n.big.readable)
   assert.deepEqual(n.csv.map((csv: { mb: number; toPanel: { n: number } }) => [csv.mb, csv.toPanel.n]), [[0.1, 1]], JSON.stringify(n.csv))
-  present('council attempts', n.council)
+  // The council (§17.5's R2 rows): two bursts of four on the machine's pool.
+  const k = n.council
+  assert.deepEqual([k.lane, k.workers, k.attemptMb, k.pool.workers, k.presses, k.beside.presses], ['pool', 2, 512, 2, 4, 4], JSON.stringify(k))
+  /*
+   * The first burst computed on one epoch, the refreeze of the teacher's cell
+   * since the open that it waited for: the teacher's editor asked the
+   * notebook's kernel a question meanwhile, never a run, which would have
+   * made that epoch stale under the burst and its workers reload again.
+   */
+  assert.equal(k.burstEpochs, 1, JSON.stringify(k))
+  present('a completion asked of the notebook\'s kernel during the burst', k.main.completionDuringBurst)
+  // And from the console naming that epoch to its first attempt computing: a worker's seed.
+  present('a worker\'s seed', k.pool.seed)
+  // The long cell the second burst ran beside ran its own time: the room's run limit is past it.
+  assert.equal(k.beside.stopped, 0, JSON.stringify(k.beside))
+  // Two workers, four at once: the R2 burst row is not judged, and says what it would need.
+  assert.match(text, /\(R2\) 30 attempts of 2 s on 8 workers ≤ 20 s not judged: «Попыток одновременно» was 2, not 8 \(LOAD_WORKERS=8\)/)
+  present('council attempts', k, 8)
+  assert.deepEqual([k.unanswered, k.errors, k.placed.pool + k.placed.shared], [0, 0, k.n], JSON.stringify(k))
+  // Beside the teacher's long cell every attempt computed on the pool, the notebook's kernel never one of them, whose own cell held it.
+  assert.deepEqual([k.beside.placed.pool, k.beside.placed.shared, k.beside.busyWithAttempt], [4, 0, 0], JSON.stringify(k.beside))
+  /*
+   * Every attempt of both bursts computed on the pool: a press that lands
+   * while both workers load the epoch the teacher's cell made them take
+   * waits in the pool's queue for the reload (council-pool.ts · ready,
+   * Worker.reloading) — it went to the shared kernel before, reading «Пул ещё
+   * поднимается» of a pool that was up.
+   */
+  assert.deepEqual([k.placed.pool, k.placed.shared], [k.n, 0], JSON.stringify(k.placed))
+  assert.deepEqual(k.placed.why, {}, JSON.stringify(k.placed.why))
+  present('an attempt\'s wait to compute', k.wait)
+  present('an attempt\'s overhead past its two seconds', k.overhead)
+  present('the burst', k.burst)
+  present('the first burst\'s first start', k.firstStart)
+  present('the burst beside the teacher\'s long cell', k.beside.burst)
+  present('the teacher\'s run of a student\'s attempt', k.host)
+  // Pressed once the class had, beside the long cell, it left the pool's queue ahead of the attempts waiting there for a fresher epoch (D12).
+  assert.deepEqual([k.host.judged, k.host.overtaken], [1, 0], JSON.stringify(k.host))
+  present('the pool\'s epoch, cold', k.pool.epochFirst)
+  present('the pool\'s first start', k.pool.readyFirst)
+  present('«Обновить состояние» with nothing run since', k.pool.refresh)
+  // The teacher's cell after the epoch: the first burst waited for a fresher one; beside the long cell, the second ran on the
+  // older one, each card saying which cells it lacks.
+  assert.ok(k.epochs.fresh >= 1 && k.epochs.noted >= 4 && k.epochs.silent === 0, JSON.stringify(k.epochs))
+  present('a keystroke between tabs', n.collab.quiet)
+  present('a keystroke between tabs during a burst', n.collab.burst)
+  // Each keystroke is an edit of the class notebook, written to its file and pushed to the machine: section 6 names them, every one.
+  const probe = sum.bytes.probe
+  assert.equal(probe.edits, n.collab.quiet.n + n.collab.burst.n + n.collab.big.n + n.collab.unanswered, JSON.stringify({ probe, collab: n.collab }))
+  assert.ok(probe.notebookBytes > 0, JSON.stringify(probe))
+  assert.match(text, new RegExp(`less the rig's own keystrokes between tabs \\(collaboration RTT\\): ${probe.edits} edits of the class notebook`))
   present('the control ping', n.controlRtt)
   present('the rig\'s own loop', sum.rig.loopLag)
   assert.deepEqual([n.interrupt.lost, n.echo.shellBusy], [0, 0])
@@ -464,9 +545,9 @@ test('a short class on the machine: its own seminar made, the class held and the
 
   // The authorization change closed the staff's sockets, and they came back as the web app's do: the chip was watched to the end.
   assert.ok((sum.sockets.closes['4401'] ?? 0) >= 2, JSON.stringify(sum.sockets))
-  assert.deepEqual(sum.tabsUp, { staff: 2, students: 3 }, JSON.stringify(sum.sockets))
-  // The cut reset every socket of the five tabs, and each came back by itself.
-  assert.ok(sum.sockets.reconnects.collab >= 5 && sum.sockets.reconnects.control >= 5, JSON.stringify(sum.sockets))
+  assert.deepEqual(sum.tabsUp, { staff: 2, students: 4 }, JSON.stringify(sum.sockets))
+  // The cut reset every socket of the six tabs, and each came back by itself.
+  assert.ok(sum.sockets.reconnects.collab >= 6 && sum.sockets.reconnects.control >= 6, JSON.stringify(sum.sockets))
 
   // Its bytes are the wire's: what the relay carried for it, less the request headers it cannot see.
   const wire = relay.stats().bytes

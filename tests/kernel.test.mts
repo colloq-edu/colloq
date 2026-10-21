@@ -2349,7 +2349,8 @@ test('two notebooks — two kernels: their variables and queues are separate', a
     'both notebooks ended up in one kernel',
   )
 
-  assert.equal(finishHeld(/HOLD/), 1)
+  // The run may be marked running a beat before its execute reaches the kernel (a slow CI runner): release it once it is there.
+  assert.ok(await until(() => finishHeld(/HOLD/) === 1), 'the held cell never reached the kernel')
   assert.ok(await until(() => room.state() === 'ok'))
 })
 
@@ -2414,7 +2415,8 @@ test('kernel state is kept per notebook, and the room notebook is also mirrored 
   assert.equal(meta.get('kernelStatus'), bookKernel(room.doc, CELLS_KEY).status)
   assert.equal(bookKernel(room.doc, other.root).status, 'busy')
 
-  assert.equal(finishHeld(/HOLD/), 1)
+  // The run may be marked running a beat before its execute reaches the kernel (a slow CI runner): release it once it is there.
+  assert.ok(await until(() => finishHeld(/HOLD/) === 1), 'the held cell never reached the kernel')
   assert.ok(await until(() => other.state() === 'ok'))
 
   /*
@@ -2726,7 +2728,8 @@ test('the idle sweep does not touch a personal kernel that is computing and wait
   await sweepIdleKernels(LATER(120))
   assert.equal(mine.state(), 'running', 'the idle sweep took away a cell that was computing')
   assert.equal(bookKernel(room.doc, mine.root).status, 'busy')
-  assert.equal(finishHeld(/HOLD/), 1)
+  // The run may be marked running a beat before its execute reaches the kernel (a slow CI runner): release it once it is there.
+  assert.ok(await until(() => finishHeld(/HOLD/) === 1), 'the held cell never reached the kernel')
   assert.ok(await until(() => mine.state() === 'ok'))
 })
 

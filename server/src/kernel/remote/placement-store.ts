@@ -97,7 +97,7 @@ export interface PlacementRow {
   cpus: number
   /** null — no card; '' — a whole card asked, not named yet; otherwise the card the machine holds for the slot. */
   gpu: string | null
-  /** The council's planned pool size; null for the other roles. */
+  /** The council's pool size, every notebook's workers together, as its pools last sized the container (resize); null for the other roles. */
   workers: number | null
   /** The container's id, from the machine's ready report. */
   container: string | null
@@ -254,13 +254,14 @@ export const writePlacement = db.transaction((row: Omit<PlacementRow, 'gen'>): P
   return { ...row, gen }
 })
 
-export type PlacementPatch = Partial<Pick<PlacementRow, 'state' | 'memoryMb' | 'cpus' | 'gpu' | 'container' | 'readyAt' | 'endedAt' | 'reason'>>
+export type PlacementPatch = Partial<Pick<PlacementRow, 'state' | 'memoryMb' | 'cpus' | 'gpu' | 'workers' | 'container' | 'readyAt' | 'endedAt' | 'reason'>>
 
 const COLUMN: Record<keyof PlacementPatch, string> = {
   state: 'state',
   memoryMb: 'memory_mb',
   cpus: 'cpus',
   gpu: 'gpu',
+  workers: 'workers',
   container: 'container',
   readyAt: 'ready_at',
   endedAt: 'ended_at',

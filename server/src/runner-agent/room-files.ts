@@ -887,6 +887,14 @@ export interface RoomFilesOptions {
   /** The uid what the agent makes is given; null — none (an agent not root). By default KERNEL_UID when the agent is root. */
   uid?: number | null
   random?: () => number
+  /**
+   * The bucket the class files going home are paced through, at the class's
+   * rate: sync.ts gives this one and the council's attempts' and exports'
+   * files (council.ts · CouncilHostOptions.pacer) the same, so that all of
+   * a class's bytes towards home keep to one rate together. One of its own
+   * by default.
+   */
+  pacer?: Pacer
 }
 
 /** The gen a class's reports carry: one of its placements here, the room's first. */
@@ -911,7 +919,7 @@ export class RoomFiles {
   private readonly uid: number | null
   /** The class folders' own book of hashes, by stats and the ctime among them (cache.ts · HashBook). */
   private readonly book: HashBook
-  /** The bucket of the class files going home, one for the machine's two upload slots together (a pushed blob's is the Cache's). */
+  /** The bucket of the class files going home, one for the machine's two upload slots together and the council's (a pushed blob's is the Cache's). */
   private readonly upPacer: Pacer
   private readonly rooms = new Map<string, Room>()
   private readonly uploads = new Map<string, Upload>()
@@ -936,7 +944,7 @@ export class RoomFiles {
     this.timings = { ...ROOM_FILE_TIMINGS, ...options.timings }
     this.uid = options.uid !== undefined ? options.uid : process.getuid?.() === 0 ? KERNEL_UID : null
     this.book = new HashBook(path.join(this.layout.booksDir, 'room-hashes.json'), options.log, { ctime: true })
-    this.upPacer = new Pacer(this.now, CLASS_PACE_BURST_BYTES)
+    this.upPacer = options.pacer ?? new Pacer(this.now, CLASS_PACE_BURST_BYTES)
   }
 
   /* ----------------------------------------------------------- the agent's */

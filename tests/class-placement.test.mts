@@ -38,6 +38,7 @@ import {
   CLASS_TUNNEL_STUCK_MS,
   CLASS_UNREACHABLE_NOTE_MS,
   COUNCIL_WORKERS,
+  COUNCIL_WORKER_BASE_MB,
   REMOTE_PLACEMENTS_MAX,
   parseRemoteKernelsReply,
   remoteRevisionDigest,
@@ -477,11 +478,22 @@ test('the council’s pool prefers the machine of the notebook’s kernel, and i
   const pool = livePlacement(id, 'council')!
   assert.equal(pool.runnerId, main.id)
   assert.equal(pool.workers, 6)
-  assert.equal(pool.memoryMb, 6 * 512 + 512, 'its workers’ ceilings and a margin (§9.5)')
+  assert.equal(pool.memoryMb, 6 * (512 + COUNCIL_WORKER_BASE_MB) + 512, 'its workers’ ceilings, what each holds before an attempt, and a margin (§9.5)')
   assert.equal(pool.cpus, 6)
   const [intent] = agentReads(rig.placements.wantedPlacements(main.id)).filter((one) => one.key.endsWith(':council'))
   assert.equal(intent.workers, 6)
   assert.equal(intent.gpu, false)
+  // The pool grown by its pools (kernel/council-pool.ts): the row and the intent say how many workers it holds now, as the
+  // panel names them, the numbers with it; a new count alone is written too, docker having nothing to apply of it.
+  await rig.placements.resize(id, 'council', { memoryMb: 8 * (512 + COUNCIL_WORKER_BASE_MB) + 512, cpus: 8, workers: 8 })
+  assert.deepEqual([livePlacement(id, 'council')!.workers, livePlacement(id, 'council')!.cpus], [8, 8])
+  await rig.placements.resize(id, 'council', { memoryMb: 8 * (512 + COUNCIL_WORKER_BASE_MB) + 512, cpus: 8, workers: 7 })
+  assert.equal(livePlacement(id, 'council')!.workers, 7)
+  const [grown] = agentReads(rig.placements.wantedPlacements(main.id)).filter((one) => one.key.endsWith(':council'))
+  assert.equal(grown.workers, 7)
+  // The other slots have no workers to say.
+  await rig.placements.resize(id, 'room', { cpus: 2, workers: 9 })
+  assert.equal(livePlacement(id, 'room')!.workers, null)
 })
 
 test('stale capacity: intents the machine has not acknowledged and leases it did not list come off what it says is free', async () => {

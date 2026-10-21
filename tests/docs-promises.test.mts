@@ -96,11 +96,15 @@ test('deployment documentation describes mandatory broker isolation and explicit
   assert.match(readme, /\/proc\/self\/fd/)
 })
 
-test('the README about the council says the same as the room: one kernel', () => {
+test('the README about the council says the same as the room: one kernel, and the pool on machines', () => {
   const bullet = readme.slice(readme.indexOf('* **council** —'))
   const said = bullet.slice(0, bullet.indexOf('\n\n'))
   assert.match(said, /one kernel/i, 'the README does not say that attempts run in the room\'s shared kernel')
   assert.match(said, /one after another|in turn|queue/i, 'it is not said that it goes in turn')
+  // And since 0.26.0 where it does not: a class whose council computes on machines runs its attempts at once on a pool, each
+  // on a snapshot of the notebook, and what the snapshot cannot carry still goes to that one kernel (remote-classes.md §9).
+  assert.match(said, /on machines[\s\S]*at the same time on a pool of workers[\s\S]*snapshot of the notebook's kernel/i, 'the README does not say what the pool on machines changes')
+  assert.match(said, /council\.html#machines/)
   // Three halves of the truth: personal copies, removed names, the shared
   // remainder.
   assert.match(said, /personal cop/i, 'the README does not mention personal copies of data')

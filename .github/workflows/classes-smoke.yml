@@ -10,7 +10,11 @@
 # group, its tree at the same path on the host), the real docker CLI and
 # daemon, and colloq-kernel:base with the real jupyter_server and ipykernel.
 # Home is the test process itself, on KERNEL_BACKEND=test: it starts no rooms
-# of its own and installs no chains beside the agent's.
+# of its own and installs no chains beside the agent's. Since 0.26 a class's
+# council computes there too: an epoch of real pandas loaded into a pool of
+# four workers in a council container of its own (the agent is told the host
+# has eight cores, so that the pool fits beside the class on a runner of
+# four).
 #
 # Before a merge it runs on the pull request: GitHub takes workflow_dispatch
 # only for a workflow on the default branch or one that has run on the branch
@@ -28,6 +32,7 @@ on:
       - 'kernel/**'
       - 'server/src/runner-agent/**'
       - 'server/src/kernel/**'
+      - 'server/src/council.ts'
       - 'server/src/competitions/remote/**'
       - 'shared/remote-*.ts'
   workflow_dispatch:
@@ -45,7 +50,7 @@ concurrency:
 jobs:
   classes-docker:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 105
     steps:
       - uses: actions/checkout@v4
         with:
@@ -97,13 +102,13 @@ jobs:
           RUN command -v nsenter && docker --version
           EOF
       # Its own bound, under the job's. The file's own bounds (its hooks and
-      # each scenario's timeout) add up to an hour; a scenario out of time
+      # each scenario's timeout) add up to seventy minutes; a scenario out of time
       # stops at its next wait, and the file's logs are written as it goes, so
       # even a step killed here leaves them, and the next step reads the
       # containers' own.
       - name: A class on a machine with real Docker and jupyter_server
         id: parity
-        timeout-minutes: 70
+        timeout-minutes: 85
         env:
           COLLOQ_CLASSES_DOCKER_TEST: '1'
           COLLOQ_CLASSES_DOCKER_LOGS: ${{ runner.temp }}/classes-docker-logs

@@ -64,6 +64,7 @@ import {
 import { HARNESS_REVISION } from '../server/src/competitions/harness.ts'
 import { layersFingerprint } from '../server/src/dependencies/image-identity.ts'
 import type { DockerOptions, DockerResult } from '../server/src/runner-agent/docker.ts'
+import { SCRATCH_HELPER_LABEL } from '../server/src/runner-agent/council.ts'
 import type { RunSeam } from '../server/src/runner-agent/execute.ts'
 import type { Capacity, RunOutcome, RunRequest } from '../server/src/competitions/runner-port.ts'
 
@@ -362,6 +363,14 @@ export interface FakeAgentDocker {
   /** The class perimeter's helper (`run --privileged … sh -c`): its answer; the scripts it was given. */
   perimeter: DockerResult
   helperScripts: string[]
+  /**
+   * The council scratch space's helper (council.ts · scratchHelperArgs): the
+   * folder it was given and its line, each run; its answer instead of doing
+   * it — null, it does it, as root would: the entries go, the mode is 1733
+   * (the owner stays this process's: no chown here), a list is the folder's.
+   */
+  scratchRuns: Array<{ folder: string; script: string }>
+  scratchFails: DockerResult | null
   /** The admission canary's answer; null — every check held. */
   canary: DockerResult | null
   /** Networks by name, with their subnet. */
@@ -436,6 +445,12 @@ function classAnswer(docker: FakeAgentDocker, args: string[]): DockerResult | nu
   if (command === 'run' && args.includes('--privileged') && args.includes('--entrypoint=sh')) {
     docker.helperScripts.push(args[args.length - 1]!)
     return docker.perimeter
+  }
+  if (command === 'run' && args.includes(SCRATCH_HELPER_LABEL)) {
+    const folder = flagValue('-v')!.split(':')[0]!
+    const script = args[args.length - 1]!
+    docker.scratchRuns.push({ folder, script })
+    return docker.scratchFails ?? scratchHelperDoes(folder, script)
   }
   if (command === 'run' && args.some((arg) => arg.startsWith('colloq-runner-canary-'))) {
     if (docker.canary) return docker.canary
@@ -578,6 +593,25 @@ function classAnswer(docker: FakeAgentDocker, args: string[]): DockerResult | nu
   return null
 }
 
+/**
+ * What the scratch helper's line does, as root would do it to the folder:
+ * root reads a folder whatever its mode, so a test that took the listing
+ * away from this process (as root's owning it takes it from the agent) gets
+ * it back for the helper's while.
+ */
+function scratchHelperDoes(folder: string, script: string): DockerResult {
+  const mode = fs.statSync(folder).mode & 0o7777
+  fs.chmodSync(folder, mode | 0o700)
+  try {
+    const names = fs.readdirSync(folder)
+    if (/-exec rm -rf/.test(script)) for (const name of names) fs.rmSync(path.join(folder, name), { recursive: true, force: true })
+    const listed = /-print0/.test(script) ? `${names.map((name) => `/s/${name}\0`).join('')}\n` : ''
+    return { code: 0, out: `${listed}colloq-scratch: ok` }
+  } finally {
+    fs.chmodSync(folder, /chmod 1733/.test(script) ? 0o1733 : mode)
+  }
+}
+
 export function fakeAgentDocker(): FakeAgentDocker {
   const docker = (async (args: string[], options: DockerOptions = {}) => {
     docker.calls.push(args)
@@ -628,6 +662,8 @@ export function fakeAgentDocker(): FakeAgentDocker {
   docker.classes = new Map()
   docker.perimeter = { code: 0, out: 'colloq-perimeter: ok' }
   docker.helperScripts = []
+  docker.scratchRuns = []
+  docker.scratchFails = null
   docker.canary = null
   docker.networks = new Map()
   docker.selfNetwork = 'host'

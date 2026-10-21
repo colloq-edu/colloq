@@ -69,10 +69,17 @@
  * `.Label`; a field the object lacks, a function docker does not define and
  * what this fake does not read are refused, exit 1, as a filter other than by
  * label is), `ps` with and without `-a` by any labels, `stats`, `update`,
- * `exec` of the cgroup's script, `logs`, `cp`, `port`, `start`, `rm`. Besides
+ * `exec` of the cgroup's script and of `rm -rf` in its own filesystem, `logs`,
+ * `cp`, `port`, `start`, `rm`. Its kernels' exports of a council epoch go to
+ * that filesystem's /tmp/colloq-epoch/<seq>, and a council container's
+ * Jupyter loads epochs from its /colloq/epochs and runs attempts in its
+ * /colloq/scratch (tests/_fake-jupyter.mjs · --epoch-dir, --epochs-dir,
+ * --scratch-dir). Besides
  * them: the class bridge (`network create`, `inspect`, `ls` by label), the
  * perimeter's helper (`run --privileged … sh -c`, which says
- * `colloq-perimeter: ok`), the admission canary (its checks read off its own
+ * `colloq-perimeter: ok`), the council scratch space's helper (its line done
+ * as root would do it to the folder: emptied, 1733 — the owner stays this
+ * process's — or listed), the admission canary (its checks read off its own
  * script, every one held, its folder round-tripped), and a card probe
  * (`--gpus`), answered as a daemon without cards answers it.
  *
@@ -105,6 +112,14 @@ if (!STATE) {
   process.stderr.write('fake docker: FAKE_DOCKER_STATE is not set\n')
   process.exit(125)
 }
+/*
+ * A machine's tree goes with the test (tests/_remote-e2e-agent.mts · createFleet), and a call its agent spawned a moment
+ * before it was killed may still run after that: it finds no daemon, as on a machine that is gone, and leaves nothing behind.
+ */
+if (!fs.existsSync(STATE)) {
+  process.stderr.write('fake docker: the daemon\'s state is gone (its machine with it)\n')
+  process.exit(125)
+}
 
 const args = process.argv.slice(2)
 const IMAGES = path.join(STATE, 'images')
@@ -118,6 +133,8 @@ fs.appendFileSync(path.join(STATE, 'calls.log'), `${JSON.stringify({ at: Date.no
 /** The class kernels' kind label (room-spec.ts · CLASS_KERNEL_LABEL) and the perimeter helper's (perimeter-core.ts · helperArgs). */
 const CLASS_KIND = 'colloq.kind=class-kernel'
 const PERIMETER_KIND = 'colloq.kind=room-perimeter'
+/** The council scratch space's helper (runner-agent/council.ts · SCRATCH_HELPER_LABEL). */
+const SCRATCH_KIND = 'colloq.kind=council-scratch'
 /** The networks every daemon has. */
 const BUILTIN_NETWORKS = new Set(['bridge', 'host', 'none', 'default'])
 const MIB = 1024 * 1024
@@ -624,6 +641,13 @@ async function startJupyter(c) {
   const argv = [FAKE_JUPYTER, '--port', '0', '--cwd', c.folder, '--container-file', file, '--container-id', c.id, '--oom-file', oomFile(c.name)]
   if (c.token) argv.push('--token', c.token)
   if (c.readOnly) argv.push('--read-only')
+  // Its kernels' exports go to the container's own /tmp (COUNCIL_EPOCH_DIR), which `cp` copies out and `exec … rm` removes.
+  argv.push('--epoch-dir', path.join(privateRoot(c.name), 'tmp', 'colloq-epoch'))
+  // A council container's two folders of its own (council.ts · councilMounts): its workers load epochs from the one, attempts work in the other.
+  const epochs = (c.mounts ?? []).find((mount) => mount.target === '/colloq/epochs')
+  const scratch = (c.mounts ?? []).find((mount) => mount.target === '/colloq/scratch')
+  if (epochs) argv.push('--epochs-dir', epochs.source)
+  if (scratch) argv.push('--scratch-dir', scratch.source)
   if (OWNER) argv.push('--owner', OWNER)
   // Its calls written down where `rm` leaves them (FAKE_DOCKER_CALLS, the agent's keepCalls): one file per container, every life of it.
   if (CALLS) {
@@ -851,6 +875,7 @@ async function run() {
   if (typeof spec === 'string') return finish(125, '', `docker: ${spec}`)
   if (spec.labels.includes(CLASS_KIND)) return classRun(spec)
   if (spec.labels.includes(PERIMETER_KIND)) return perimeterRun(spec)
+  if (spec.labels.includes(SCRATCH_KIND)) return scratchRun(spec)
   if (spec.name?.startsWith('colloq-runner-canary-')) return canaryRun(spec)
   // The card probe and the GPU smoke test, on a daemon with no card: what docker says there.
   if (spec.gpus !== null) return finish(125, '', 'docker: Error response from daemon: could not select device driver "" with capabilities: [[gpu]].')
@@ -946,6 +971,31 @@ function perimeterRun(spec) {
   if (said === 'no-iptables') return finish(21, 'colloq-perimeter: no iptables in the host\'s namespace')
   if (said === 'fail') return finish(1, 'iptables: No chain/target/match by that name.\ncolloq-perimeter: failed')
   finish(0, 'colloq-perimeter: ok')
+}
+
+/**
+ * The council scratch space's helper (runner-agent/council.ts ·
+ * scratchHelperArgs): its one line done to the folder mounted at /s, as root
+ * would — every entry removed, the mode 1733 (no chown here: the owner stays
+ * this process's), or the entries listed — and its word said.
+ */
+function scratchRun(spec) {
+  if (!image(spec.image)) return finish(125, '', `docker: Error response from daemon: No such image: ${spec.image}.`)
+  const folder = spec.volumes.find((mount) => mount.target === '/s')?.source
+  if (!folder) return finish(125, '', 'docker: fake docker: the scratch helper mounts its folder at /s')
+  const script = spec.command[spec.command.indexOf('-c') + 1] ?? ''
+  fs.mkdirSync(folder, { recursive: true })
+  const mode = fs.statSync(folder).mode & 0o7777
+  fs.chmodSync(folder, mode | 0o700)
+  let listed = ''
+  try {
+    const names = fs.readdirSync(folder)
+    if (/-exec rm -rf/.test(script)) for (const name of names) fs.rmSync(path.join(folder, name), { recursive: true, force: true })
+    if (/-print0/.test(script)) listed = `${names.map((name) => `/s/${name}\0`).join('')}\n`
+  } finally {
+    fs.chmodSync(folder, /chmod 1733/.test(script) ? 0o1733 : mode)
+  }
+  finish(0, `${listed}colloq-scratch: ok`)
 }
 
 /**
@@ -1137,6 +1187,8 @@ function exec() {
  * kernel), what is in use, the kills.
  */
 function classExec(c, command) {
+  // `rm -rf [--] PATH` of the container's own filesystem: the agent removes an epoch's export folder once it read it (council.ts · dropExport).
+  if (command[0] === 'rm' && command[1] === '-rf') return classRemove(c, command.slice(command[2] === '--' ? 3 : 2))
   const script = command[0] === 'sh' && command[1] === '-c' ? command[2] ?? '' : ''
   if (!/memory\.max|memory\.events/.test(script)) return finish(126, '', `fake docker: exec ${command.join(' ')} is not in this fake`)
   const limit = (c.memoryMb ?? 0) * MIB
@@ -1145,6 +1197,23 @@ function classExec(c, command) {
   const peak = kills > 0 ? limit : Math.max(current, Math.round((c.stats?.peakMb ?? 0) * MIB))
   const card = /nvidia-smi/.test(script) ? `\ncard ${c.stats?.cardMb ?? 0}` : ''
   finish(0, `limit ${limit}\npeak ${peak}\ncurrent ${current}\nkills ${kills}${card}`)
+}
+
+/**
+ * `exec <c> rm -rf [--] PATH…` in a class container: each absolute path of
+ * its own filesystem (`cp` reads it there too) removed, a missing one no
+ * error, as rm -f has it. A path inside one of its mounts is not this fake's
+ * to remove (the agent never asks it), and is refused as an exec it does not
+ * know.
+ */
+function classRemove(c, paths) {
+  if (paths.length === 0) return finish(1, '', 'rm: missing operand')
+  for (const inside of paths.map((one) => path.posix.normalize(one))) {
+    const mounted = (c.mounts ?? []).some((mount) => inside === mount.target || inside.startsWith(`${mount.target}/`))
+    if (!inside.startsWith('/') || inside === '/' || mounted) return finish(126, '', `fake docker: exec rm -rf ${inside} is not in this fake`)
+    fs.rmSync(path.join(privateRoot(c.name), inside), { recursive: true, force: true })
+  }
+  finish(0)
 }
 
 function logs() {

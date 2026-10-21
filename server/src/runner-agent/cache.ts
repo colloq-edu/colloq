@@ -48,6 +48,13 @@
  * push, behind it otherwise, ahead of the prefetch always (rankOf); and they
  * leave the CAS once they are copied into their folder (release).
  *
+ * THE COUNCIL'S EPOCHS LIVE HERE TOO (council.ts, remote-classes.md §9.2):
+ * fetched down the same stream at the class's rate and never ahead of a run
+ * waiting on its push, or read from a class container's export by the agent
+ * and taken in already checked (adopt); hard-linked into the class's epochs
+ * folder, which its council container mounts read-only (place); and pinned —
+ * never released nor evicted while an epoch held here names them (pinned).
+ *
  * THE HIDDEN TEST IS KEPT ONLY WHILE IT MUST BE (decision 1): in a directory
  * of its own, purged on forget, untrust, revoke, drain and 401, and its blobs
  * dropped as soon as no wanted manifest or held lease names them. A run that
@@ -193,6 +200,14 @@ export interface CacheOptions {
   diskGate?: (bytes: number, forLease: boolean) => boolean
   /** A write the disk refused for want of room (ENOSPC): the agent says it as a `disk` problem. */
   onDiskFull?: (detail: string) => void
+  /**
+   * Blobs held by something besides the manifests and the package sets: the
+   * files of the council's epochs (council.ts), which a worker maps from the
+   * class's epochs folder by a hard link and a pool on another machine may be
+   * sent. Never released, never evicted while named here (§17.1: epochs
+   * pinned against LRU).
+   */
+  pinned?: () => ReadonlySet<string>
   log?: (line: string) => void
   /** Tests: the wait without a byte, the backoff's bounds, and the wait for room on the disk (DISK_WAIT_MS). */
   idleMs?: number
@@ -735,10 +750,11 @@ export class Cache {
       this.installed.delete(id)
     }
     const candidates: Array<{ file: string; key: string; at: number }> = []
+    const pinned = this.options.pinned?.() ?? new Set<string>()
     for (const key of this.present) {
       if (!key.startsWith('o:')) continue
       const sha = key.slice(2)
-      if (keep.blobs.has(sha)) continue
+      if (keep.blobs.has(sha) || pinned.has(sha)) continue
       const file = this.blobPath(sha, false)
       try {
         candidates.push({ file, key, at: fs.statSync(file).mtimeMs })
@@ -805,11 +821,69 @@ export class Cache {
   release(sha: string): void {
     if (!REMOTE_SHA256.test(sha)) return
     const key = blobKey(sha, false)
-    if (this.jobs.has(key) || !this.present.has(key)) return
+    if (this.jobs.has(key) || !this.present.has(key) || this.options.pinned?.().has(sha)) return
     for (const record of this.records.values()) if (!record.sealed && record.files.some((file) => file.sha256 === sha)) return
     for (const record of this.bundles.values()) if (record.wheels.some((wheel) => wheel.sha256 === sha)) return
     this.present.delete(key)
     fs.rmSync(this.blobPath(sha, false), { force: true })
+  }
+
+  /** Whether a verified blob of the open kind is here, by its hash. */
+  has(sha: string): boolean {
+    return REMOTE_SHA256.test(sha) && this.present.has(blobKey(sha, false))
+  }
+
+  /**
+   * A file whose bytes the agent itself checked against `sha` (an epoch's
+   * export, council.ts, read from the agent's own staging, which no container
+   * reaches), taken into the CAS under its hash: renamed there — copied when
+   * the CAS is on another filesystem — or dropped when the CAS holds the
+   * blob already; booked with its hash, so that no later load reads it again.
+   * The blob's path.
+   */
+  adopt(file: string, sha: string): string {
+    const final = this.blobPath(sha, false)
+    const key = blobKey(sha, false)
+    if (this.present.has(key) && this.hashes.sha(final) === sha) {
+      fs.rmSync(file, { force: true })
+      this.touch(final)
+      return final
+    }
+    fs.mkdirSync(this.blobsDir, { recursive: true, mode: 0o700 })
+    try {
+      fs.renameSync(file, final)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw this.diskOr(error, sha.slice(0, 12))
+      const part = path.join(this.blobsDir, `.${sha}.${randomBytes(4).toString('hex')}.adopt.part`)
+      try {
+        fs.copyFileSync(file, part)
+        fs.renameSync(part, final)
+      } catch (copied) {
+        fs.rmSync(part, { force: true })
+        throw this.diskOr(copied, sha.slice(0, 12))
+      }
+      fs.rmSync(file, { force: true })
+    }
+    fs.chmodSync(final, 0o644)
+    this.hashes.note(final, sha)
+    this.present.add(key)
+    this.refusedUntil.delete(key)
+    return final
+  }
+
+  /**
+   * A verified blob's bytes at `to` as well: a hard link (a copy where the
+   * filesystem refuses links), the blob marked used. For a folder no
+   * container writes (the council's epochs, mounted read-only): a link shares
+   * the blob's inode, so a write through it would be a write into the CAS.
+   */
+  place(sha: string, to: string): 'linked' | 'copied' {
+    if (!this.has(sha)) throw new CacheError(`${sha.slice(0, 12)} is not here`, 'refused')
+    const from = this.blobPath(sha, false)
+    const how = linkOrCopy(from, to)
+    if (how === 'copied') this.hashes.note(to, sha)
+    this.touch(from)
+    return how
   }
 
   /* ----------------------------------------------------------- the stream */

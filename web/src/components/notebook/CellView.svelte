@@ -84,6 +84,9 @@
     watchCellLock,
   } from '@/lib/council.svelte'
   import { pauseClock, pauseLeftMs } from '@/lib/council-pause'
+  // The footnote's own small module, not the console's: this view is in the room's chunk (lib/council-footnote.ts).
+  import { attemptFiles, attemptFootnote } from '@/lib/council-footnote'
+  import { takeAttemptFile } from '@/lib/council-files'
   import { clock } from '@/lib/history'
   import CouncilOnScreen from '@/components/council/CouncilOnScreen.svelte'
   import {
@@ -713,6 +716,19 @@
   const attemptRun = $derived(
     mine?.run && mine.run.startedAt !== clearedRunAt ? mine.run : null,
   )
+  /**
+   * Where the attempt computed and on what state (Paper 18 · Z9), and the
+   * files it wrote into its own folder — a class whose council is on
+   * machines (docs/architecture/remote-classes.md §9.7, §9.8). The same
+   * words the teacher's console reads under the run (council-pult.ts).
+   */
+  const attemptNote = $derived(attemptFootnote(attemptRun))
+  const attemptFileList = $derived(attemptFiles(attemptRun))
+  /** One of the attempt's files, kept here: its author takes it (lib/council-files.ts); the refusal's words, if any. */
+  let attemptFileError = $state<string | null>(null)
+  async function takeFile(name: string): Promise<void> {
+    attemptFileError = await takeAttemptFile(session.session.id, session.token, id, session.me.id, name)
+  }
 
   /**
    * "Restore": bring the sheet back to the starter.
@@ -3075,6 +3091,69 @@
                   {#if attemptRun.outputs.length > 0}
                     <div class="px-2 py-1.5">
                       <CellOutputs outputs={attemptRun.outputs} />
+                    </div>
+                  {/if}
+                  <!--
+                    Where it computed (Paper 18 · Z9): right under the output,
+                    and its files under that. Short, with the server's whole
+                    sentence in the hover; on a narrow sheet — a phone has no
+                    hover — the whole sentence itself, for what needs
+                    attention. The files are the attempt's own, not the
+                    class's: they live here, on its card.
+                  -->
+                  {#if attemptNote}
+                    <p
+                      class={cn(
+                        'flex items-start gap-1.5 px-4 pt-0.5 text-2xs',
+                        attemptNote.tone === 'warning' ? 'text-warning' : 'text-muted',
+                      )}
+                      title={attemptNote.full}
+                      data-council-footnote
+                    >
+                      {#if attemptRun.placed === 'pool'}
+                        <svg class="mt-px shrink-0" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                          <rect x="1.5" y="1.5" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1.2" />
+                          <rect x="6.5" y="1.5" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1.2" />
+                          <rect x="1.5" y="6.5" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1.2" />
+                          <rect x="6.5" y="6.5" width="4" height="4" fill="currentColor" />
+                        </svg>
+                      {/if}
+                      <span>{attemptNote.tone === 'warning' && tightFooter ? attemptNote.full : attemptNote.short}</span>
+                    </p>
+                  {/if}
+                  {#if attemptFileList}
+                    <div class="flex flex-wrap items-center gap-1.5 px-4 pt-1 text-2xs" data-council-files>
+                      <span class="text-muted">{tr('room.council.pool.files')}</span>
+                      <!-- One still on its way from the machine: the same chip, dashed and quiet, until it lands. -->
+                      {#each attemptFileList.brought as file (file.name)}
+                        {#if file.sha256}
+                          <!-- Here: the author takes it, as the class folder's files are taken (a ticket, then the anchor). -->
+                          <button
+                            type="button"
+                            class="inline-flex h-6 items-center gap-1.5 border border-line px-2 hover:bg-raised"
+                            title={tr('room.council.pool.take', { name: file.name })}
+                            data-council-file-take={file.name}
+                            onclick={() => void takeFile(file.name)}
+                          >
+                            <span class="font-mono text-ink">{file.name}</span>
+                            <span class="font-mono text-muted">{file.size}</span>
+                            <span class="text-accent-text" aria-hidden="true">↓</span>
+                          </button>
+                        {:else}
+                          <span
+                            class={cn('inline-flex h-6 items-center gap-1.5 border border-line px-2', file.coming && 'border-dashed')}
+                            data-coming={file.coming ? 'yes' : undefined}
+                          >
+                            <span class={cn('font-mono', file.coming ? 'text-muted' : 'text-ink')}>{file.name}</span>
+                            <span class="font-mono text-muted">{file.size}</span>
+                            {#if file.coming}<span class="text-muted">{tr('room.council.pool.coming')}</span>{/if}
+                          </span>
+                        {/if}
+                      {/each}
+                      {#if attemptFileList.dropped}
+                        <span class="text-muted" title={attemptFileList.droppedNames}>{attemptFileList.dropped}</span>
+                      {/if}
+                      {#if attemptFileError}<span class="text-danger" role="alert">{attemptFileError}</span>{/if}
                     </div>
                   {/if}
                   <div class="px-4 pb-1.5 pt-0.5 text-2xs text-muted">

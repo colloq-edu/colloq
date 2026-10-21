@@ -64,6 +64,9 @@
  * copies ride the same block (room-files.ts, §8): home's pushes and pulls in
  * the reply, the ack in every held placement's `files` and the kernels'
  * writes in `reports`, each said once the sync that carried it was answered.
+ * So do the councils (council.ts, §9): the epochs home wants here and the
+ * attempts whose files to collect in the reply, every epoch held and the
+ * collections over in the sync.
  */
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
@@ -104,13 +107,14 @@ import {
   type RemoteSyncRequest,
   type RemoteWantRevision,
 } from '@shared/remote-runner'
-import { MACHINE_PACE_MBPS, parseRemoteKernelsRequest, type RemoteBye, type RemoteKernelsReply, type RemoteKernelsRequest } from '@shared/remote-kernels'
+import { CLASS_PACE_BURST_BYTES, MACHINE_PACE_MBPS, parseRemoteKernelsRequest, type RemoteBye, type RemoteKernelsReply, type RemoteKernelsRequest } from '@shared/remote-kernels'
 import { tunnelUrl } from '@shared/remote-tunnel'
 import { DockerCompetitionRunner, RUN_LABEL } from '../competitions/docker-runner.js'
 import { competitionsDir, dropAttempt, removeSubmission, attemptPath } from '../competitions/storage.js'
 import type { Capacity, RunOutcome } from '../competitions/runner-port.js'
 import { Backoff, RemoteClient, type CallResult, type HomeWord } from './client.js'
-import { Cache, diskRefused, type Keep } from './cache.js'
+import { Cache, Pacer, diskRefused, type Keep } from './cache.js'
+import { CouncilHost, councilUploader, type CouncilPut, type CouncilTimings } from './council.js'
 import { realDocker, type Docker } from './docker.js'
 import { brokenOutcome, NeighbourWindow, prepareRun, runPrepared, type Decline, type RunCard, type RunSeam } from './execute.js'
 import { CHECK_LABEL, CHECK_LABELS, INSTANCE_LABEL, Images, type SmokeCard } from './images.js'
@@ -192,6 +196,8 @@ const IDENTITY_RETRY_MS = 30_000
 const DISK_FULL_KEEP_MS = 10 * 60_000
 /** The status's line for a machine whose build home does not take. */
 const OUTDATED = 'this machine\'s build is not its home\'s: it finishes what it holds and takes nothing new (colloq-host runner update)'
+/** What the CAS keeps for the councils before their host is built (Cache · pinned). */
+const NOTHING_PINNED: ReadonlySet<string> = new Set()
 
 /** What the agent asks of its end of the class tunnel (runner-agent/tunnel.ts · AgentTunnel, remote-classes.md §4.6). */
 export interface TunnelPort {
@@ -260,6 +266,8 @@ export interface AgentOptions {
   classes?: Pick<KernelHostOptions, 'probe' | 'sleep' | 'timings' | 'instanceLabel'>
   /** Tests: the class folders' timings (room-files.ts): their scans, the quiet rule, the waits. */
   files?: Partial<RoomFileTimings>
+  /** Tests: the council's timings (council.ts): its beat, its retries, the grace of an older epoch, the scratch sweep. */
+  council?: Partial<CouncilTimings>
   log?: (line: string) => void
 }
 
@@ -372,6 +380,8 @@ export class Agent extends EventEmitter {
   private readonly kernels: KernelHost
   /** The class folders' copies and their files on the way to and from home (room-files.ts). */
   private readonly files: RoomFiles
+  /** The councils' epochs, scratch space and artifacts (council.ts). */
+  private readonly council: CouncilHost
   /** Whether the last reply carried a `kernels` block: only then does a sync carry one (§15). */
   private kernelsHeard = false
   /**
@@ -415,6 +425,8 @@ export class Agent extends EventEmitter {
       inUse: () => this.inUse(),
       diskGate: (bytes, forLease) => this.mayFetch(bytes, forLease),
       onDiskFull: (detail) => this.diskFull(detail),
+      // The councils' epochs, built after the cache: until then nothing is pinned, and nothing is released or evicted either.
+      pinned: () => this.council?.pinned() ?? NOTHING_PINNED,
       log: this.log,
       backoff: this.newBackoff(),
     })
@@ -457,6 +469,8 @@ export class Agent extends EventEmitter {
       now: this.now,
       ...options.classes,
     })
+    // One bucket for every byte of the classes on its way home, the class folders' and the council's alike: they share the class's rate.
+    const uploads = new Pacer(this.now, CLASS_PACE_BURST_BYTES)
     this.files = new RoomFiles({
       layout: this.layout,
       // The agent's one blob stream (home cuts a second), at the class's pace: ahead of a lease's while a run waits on the push.
@@ -475,6 +489,38 @@ export class Agent extends EventEmitter {
       now: this.now,
       random: options.random,
       timings: options.files,
+      pacer: uploads,
+    })
+    this.council = new CouncilHost({
+      layout: this.layout,
+      docker: this.docker,
+      cas: {
+        // The agent's one blob stream, at the class's rate, behind a run waiting on its push and a lease's blob, ahead of prefetch.
+        blob: (sha, bytes, { signal, pace, urgent }) => this.cache.blob(sha, bytes, { signal, pace, urgent }),
+        has: (sha) => this.cache.has(sha),
+        adopt: (file, sha) => this.cache.adopt(file, sha),
+        place: (sha, to) => this.cache.place(sha, to),
+        path: (sha) => this.cache.blobPath(sha, false),
+        release: (sha) => this.cache.release(sha),
+      },
+      upload: (put) => this.uploadCouncilFile(put),
+      held: (sessionId) => this.kernels.heldGens(sessionId),
+      containerOf: (container) => this.kernels.containerOf(container),
+      // Root's scratch space, which the agent cannot list or empty itself: its helper does (council.ts · scratchHelperArgs).
+      scratch: (sessionId, action) => this.kernels.councilScratch(sessionId, action),
+      diskFreeMb: () => this.machine().diskFreeMb,
+      diskFloorMb: this.floorMb(),
+      onDiskLow: () => void this.keepDiskFloor(),
+      onChange: (urgent) => {
+        this.changed(urgent)
+        if (urgent && this.kernelsHeard) this.poke(true)
+      },
+      onUnauthorized: () => this.poke(true),
+      log: this.log,
+      now: this.now,
+      random: options.random,
+      timings: options.council,
+      pacer: uploads,
     })
   }
 
@@ -500,6 +546,8 @@ export class Agent extends EventEmitter {
       if (stored.some((entry) => entry.outcome === null) && !(await this.sweptForGood())) return { reason: 'stopped', code: 0 }
       this.recover(stored)
       this.cache.load()
+      // The councils' epochs an earlier life held, checked against the CAS that holds their files (and pins them from now on).
+      this.council.load()
       // The class folders' copies an earlier life left, each with what both sides last agreed (§8.1): home's first block says whose they are.
       this.files.load()
       await this.images.load()
@@ -569,6 +617,7 @@ export class Agent extends EventEmitter {
       // The class containers run on, written down for the next life (§7.3): only the host's own timers and the tunnel go.
       this.kernels.stop()
       this.files.stop()
+      this.council.stop()
       await this.closeTunnel()
       for (const held of this.held.values()) {
         if (held.stored || held.ended) continue
@@ -675,6 +724,7 @@ export class Agent extends EventEmitter {
     this.cache.stop()
     this.kernels.stop()
     this.files.stop()
+    this.council.stop()
     void this.closeTunnel()
     this.writeStatus()
   }
@@ -752,8 +802,9 @@ export class Agent extends EventEmitter {
   private async removeClasses(why: string): Promise<void> {
     const backoff = this.newBackoff()
     let said: string | null = null
-    // Nothing of the class folders is under way, or written again, while they go.
+    // Nothing of the class folders, nor of the councils' epochs and scratch space, is under way, or written again, while they go.
     await this.files.clear()
+    await this.council.clear()
     for (;;) {
       const left = await this.kernels.removeAll(why)
       if (left === 0) {
@@ -1099,10 +1150,11 @@ export class Agent extends EventEmitter {
         this.syncedAt = this.now()
         this.firstSync = false
         if (request.facts) this.factsSent = JSON.stringify(request.facts)
-        // Home has the readings and the file reports this sync carried: neither is said again, and this reply's verdicts find them.
+        // Home has the readings, the file reports and the collections over this sync carried: none is said again, and this reply's verdicts find them.
         if (request.kernels) {
           this.kernels.readingsSaid(request.kernels.readings)
           this.files.reportsSaid(request.kernels.reports)
+          this.council.said(request.kernels)
         }
         try {
           this.handleReply(answer.value)
@@ -1117,7 +1169,10 @@ export class Agent extends EventEmitter {
       // Cut short for news: ask again at once. Home took the block in as the sync arrived and only then held its answer: the file
       // reports it carried count as said (room-files.ts · reportsCut), never sent again as new.
       if (abort.signal.aborted) {
-        if (request.kernels) this.files.reportsCut(request.kernels.reports)
+        if (request.kernels) {
+          this.files.reportsCut(request.kernels.reports)
+          this.council.said(request.kernels)
+        }
         continue
       }
       if (answer.kind === 'refused') {
@@ -1371,31 +1426,36 @@ export class Agent extends EventEmitter {
    * The machine's `kernels` block (§15): every class container held, each
    * with how far its class folder's copy is from home (`files`: the last push
    * applied whole is the ack, room-files.ts); what the kernels wrote
-   * (`reports`); the post-mortem readings home asked for, the tunnel, the
-   * facts home's eligibility reads, and, in the last sync of this life, why it
-   * is the last. The council's epochs come with their own phase.
+   * (`reports`); the councils' epochs, held or on their way, and the
+   * attempts whose files are home (`epochs`, `collected`); the post-mortem
+   * readings home asked for, the tunnel, the facts home's eligibility reads,
+   * and, in the last sync of this life, why it is the last.
    */
   private kernelsBlock(state: RemoteRunnerState): RemoteKernelsRequest {
     const bye: RemoteBye | undefined = state === 'leaving' ? 'leaving' : this.stopping ? (restartMarked(this.layout) ? 'restart' : 'stopping') : undefined
+    const collected = this.council.collectedNow()
     const block: RemoteKernelsRequest = {
       placements: this.kernels.held().map((held) => {
         const lag = this.files.lag(held.key.slice(0, held.key.lastIndexOf(':')))
         return lag ? { ...held, files: lag } : held
       }),
       reports: this.files.reportsNow(),
-      epochs: [],
+      epochs: this.council.epochsNow(),
       readings: this.kernels.readingsNow(),
       tunnel: this.tunnel?.state().up ? 'up' : 'down',
       ...(bye ? { bye } : {}),
       classes: this.kernels.facts(),
       ...(this.replyHeard !== null ? { heard: this.replyHeard } : {}),
+      // Only of attempts home named, so a home without the key never meets it (§15).
+      ...(collected.length > 0 ? { collected } : {}),
     }
     /*
      * Read first as home's strict parser reads it: what a kernel wrote is
      * participant data, and a report or a lag home would refuse costs the
      * machine its whole block (blockRefused) — every class on it, its tunnel
      * closed. What the class folders say goes without them this time (their
-     * reports are built again for the next sync), and the log says why once.
+     * reports are built again for the next sync), and the log says why once;
+     * and so do the councils' parts, last, should they be what home refuses.
      */
     try {
       parseRemoteKernelsRequest(block)
@@ -1403,16 +1463,22 @@ export class Agent extends EventEmitter {
       return block
     } catch (error) {
       const bare: RemoteKernelsRequest = { ...block, placements: block.placements.map(({ files: _files, ...held }) => held), reports: [] }
-      try {
-        parseRemoteKernelsRequest(bare)
-      } catch {
-        // Not the class folders': home's refusal says what it is (blockRefused), as before.
-        return block
+      const bareOf = (candidate: RemoteKernelsRequest): boolean => {
+        try {
+          parseRemoteKernelsRequest(candidate)
+          return true
+        } catch {
+          return false
+        }
       }
+      const { collected: _collected, ...barest } = { ...bare, epochs: [] }
+      const sent = bareOf(bare) ? bare : bareOf(barest) ? barest : null
+      // Not the class folders' nor the councils': home's refusal says what it is (blockRefused), as before.
+      if (sent === null) return block
       const why = error instanceof Error ? error.message : String(error)
-      if (this.filesRefused !== why) this.log(`[runner] the class folders' reports would not pass home's parser (${why}); the sync goes without them`)
+      if (this.filesRefused !== why) this.log(`[runner] the class folders' reports${sent === barest ? ' and the councils\' epochs' : ''} would not pass home's parser (${why}); the sync goes without them`)
       this.filesRefused = why
-      return bare
+      return sent
     }
   }
 
@@ -1488,6 +1554,8 @@ export class Agent extends EventEmitter {
       this.kernels.reconcile(reply.kernels)
       // The class folders after the containers: a copy home no longer names waits for its containers to go (room-files.ts).
       this.files.reconcile(reply.kernels)
+      // The councils' epochs and the attempts' files, the same way: a class's council folder goes once nothing of it runs here.
+      this.council.reconcile(reply.kernels)
       // Taken in, its verdicts among it: the next block says so.
       this.replyHeard = reply.kernels.replySeq ?? null
       this.tunnelWant(reply.kernels.tunnel)
@@ -2213,6 +2281,13 @@ export class Agent extends EventEmitter {
     const identity = this.identity
     if (!joined(identity) || retired(identity)) return Promise.resolve({ kind: 'transient', reason: 'this machine has no identity to send it with', retryAfterMs: null })
     return homeUploader({ home: identity.home, credential: () => remoteCredential(identity.runnerId, identity.secret), fetch: this.options.fetch })(upload)
+  }
+
+  /** A council's file home (PUT epochs/:sha256, PUT council/:sessionId/runs/:runId/files/:name), as this machine, as the class files go. */
+  private uploadCouncilFile(put: CouncilPut): Promise<RoomUploadAnswer> {
+    const identity = this.identity
+    if (!joined(identity) || retired(identity)) return Promise.resolve({ kind: 'transient', reason: 'this machine has no identity to send it with', retryAfterMs: null })
+    return councilUploader({ home: identity.home, credential: () => remoteCredential(identity.runnerId, identity.secret), fetch: this.options.fetch })(put)
   }
 
   /* --------------------------------------------------------- the tunnel */

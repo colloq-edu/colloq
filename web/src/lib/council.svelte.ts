@@ -70,6 +70,13 @@ export interface CouncilAdopted {
   run: boolean
   /** The server clock of the adoption. */
   at: number
+  /**
+   * The attempt ran in the class's pool on a snapshot the notebook's kernel
+   * has moved on from since (remote-classes.md §9.8): the server's own count,
+   * «Ядро ушло вперёд на 3 ячейки после снимка — …», said beside the success
+   * line — what the cell computes now may differ from the card.
+   */
+  warning?: string
 }
 
 export type CouncilPatch = Extract<CouncilMessage, { t: 'council:patch' }>
@@ -548,6 +555,7 @@ export class CouncilState {
         participantId: message.participantId,
         run: message.run,
         at: message.at,
+        ...(message.warning ? { warning: message.warning } : {}),
       })
       return
     }

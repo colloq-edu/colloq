@@ -623,6 +623,21 @@ export type CellLock = 'closed' | 'open' | 'council'
  *                      hundred, a queue of people pressing "Run" after every
  *                      edit never ends. The pause does not apply to the
  *                      teacher.
+ *   lane             — «Попытки считаются» (docs/architecture/remote-
+ *                      classes.md §6.2, §9.6): `pool` — apart and in
+ *                      parallel, by the class's pool of workers on a machine,
+ *                      each on the notebook's state as of its last snapshot;
+ *                      `shared` — in the notebook's own kernel, one after
+ *                      another, as always. `pool` by default, and it means
+ *                      something only where the class's council computes on
+ *                      machines (ClassPlacement.council): anywhere else, and
+ *                      whenever the pool cannot take an attempt (§9.9), the
+ *                      attempt runs in the notebook's kernel.
+ *   refresh          — «Состояние для попыток» (D8): `auto` follows the
+ *                      kernel (after a teacher's cell the next attempt waits
+ *                      up to five seconds for a fresh snapshot), `manual`
+ *                      changes it by «Обновить состояние» alone. `auto` by
+ *                      default.
  */
 export interface CouncilSettings {
   /** false: teacher only; true: direct student runs; request: teacher approval. */
@@ -633,6 +648,10 @@ export interface CouncilSettings {
   runLimitSec: number | null
   /** The pause between one student's runs, s; 0 — none. See the note above. */
   rerunPauseSec: number
+  /** The pool's workers or the notebook's kernel. See the note above. */
+  lane: 'pool' | 'shared'
+  /** Whether the attempts' snapshot follows the kernel by itself. See the note above. */
+  refresh: 'auto' | 'manual'
 }
 
 export const DEFAULT_COUNCIL: CouncilSettings = {
@@ -640,6 +659,8 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   namesOnProjector: true,
   runLimitSec: 30,
   rerunPauseSec: 0,
+  lane: 'pool',
+  refresh: 'auto',
 }
 
 /**
@@ -1434,6 +1455,9 @@ export function readCouncilSettings(raw: unknown): CouncilSettings {
     namesOnProjector: from.namesOnProjector !== false,
     runLimitSec,
     rerunPauseSec,
+    // Only the other word of each is a choice: a cell from before the pool, and garbage, read as the defaults.
+    lane: from.lane === 'shared' ? 'shared' : 'pool',
+    refresh: from.refresh === 'manual' ? 'manual' : 'auto',
   }
 }
 

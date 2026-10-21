@@ -19,8 +19,11 @@
  *               fifth of the round, a long cell for a tenth with the next
  *               cell pressed behind it (Shift+Enter down the notebook),
  *               interrupts of a cell that would sleep two minutes, and a
- *               council on a fresh cell: every student writes, submits and
- *               runs an attempt in the shared kernel. Once a class, in its
+ *               council on a fresh cell (see THE COUNCIL below): the class
+ *               writes, then presses its attempts at once, twice — after a
+ *               cell the teacher ran since the epoch, and again while the
+ *               teacher's long cell runs — one student's run pressed by the
+ *               teacher, then «Обновить состояние». Once a class, in its
  *               first round: the CSVs of LOAD_CSV_MB written by cells, to the
  *               files panel, and the upload of LOAD_BIG_MB read back.
  *               Meanwhile each student types a line and runs their own
@@ -39,8 +42,15 @@
  *               fetched, every viewer's), the edit and the big upload read
  *               back (the files barrier), the CSVs to the panel, tqdm's
  *               longest gap, the long cell past its own time, the run limit's
- *               stop past the limit, upload → readable, council attempts: p50
- *               and p95 of each
+ *               stop past the limit, upload → readable, council attempts
+ *               (press → result, the wait for a worker, each one's time past
+ *               its two seconds, the burst and the epochs it computed on, the
+ *               one beside the long cell, the teacher's run), the pool's
+ *               start, a later open's epoch and «Обновить состояние» as the
+ *               console saw them, a worker's seed, the workers' memory as
+ *               each attempt read it, a keystroke from one tab to another
+ *               (quiet, during a burst, during the big upload): p50 and p95
+ *               of each
  *   5 MACHINE   the chip as staff hear it (`kernel:machine`, to both staff tabs:
  *               where each slot computes, its states, the link's round trip,
  *               staff's sentences), the room's own view (the document's
@@ -49,7 +59,9 @@
  *               used, a GPU room's card), and a timeline of what changed: the
  *               failover events a class sees
  *   6 BYTES     what the rig sent and received: TCP bytes of every socket,
- *               bodies of every request, per tab and class-hour
+ *               bodies of every request, per tab and class-hour; and what of
+ *               the relay's count is the rig's own measuring (its keystrokes'
+ *               writes of the class notebook, pushed to the machine)
  *   7 TARGETS   the §17.5 rows the client side can judge
  *
  * A TAB IS THE WEB APP'S, wire for wire (web/src/lib/session.svelte.ts): the
@@ -88,8 +100,35 @@
  * its own seminar, the environments and resource settings, the class's
  * placement outlook, «Работают сейчас», the doors its students use.
  *
- * The council runs in the shared kernel («Попытки считаются: в общем ядре»):
- * the pool of workers on machines is 0.26's, and R2 measures it.
+ * THE COUNCIL is the class's own (§9): on machines its attempts go to the
+ * class's pool of workers (LOAD_COUNCIL=pool, what the machines presets say;
+ * LOAD_WORKERS and LOAD_ATTEMPT_MB are its «Попыток одновременно» and
+ * «Память на попытку»), on CLASS=home to the shared kernel as before the
+ * pool, so that the baseline is the same class pressing the same attempts.
+ * Each attempt computes for ATTEMPT_SEC; a burst is the whole class pressing
+ * within a second of the teacher's word, as a class does. What is measured
+ * are §17.5's R2 rows the client side can see: thirty attempts of two
+ * seconds on eight workers within twenty seconds (the first burst, after
+ * the one cell the teacher ran since the open: one refreeze, waited for),
+ * the overhead past the two seconds within one at p95 (home's own count of
+ * the attempt's time, ranMs), the notebook's kernel untouched by them (a
+ * completion asked of it meanwhile, never a run, which would make the epoch
+ * stale under the burst), the burst beside the teacher's long cell waiting
+ * at most five seconds for a fresher epoch and saying «без ячеек N» after
+ * (D8), the teacher's run ahead of the class's (D12), a greedy attempt's
+ * MemoryError its author's alone, where the pool computed it, and a
+ * keystroke between tabs during the burst within 50 ms of a quiet one. With
+ * LOAD_EPOCH_MB a cell gives the notebook's kernel a DataFrame of that size
+ * and a fitted model before the class, the epoch row's data. What the
+ * client sees of it, each number with what is in it: the pool's cold start
+ * (its epoch taken: the export; ready: the epoch's way to the machine, the
+ * workers' start and a seed — the transfer H → C is in it when the class
+ * notebook computes here, CLASS=personal, which the ship cap bounds), a
+ * later open's epoch on the machine and an unchanged refreeze (the export
+ * and its way there, no worker's reload), the seed (the epoch the first
+ * burst waited for named by the console → its first attempt computing: a
+ * worker's restart and load), each worker's memory as its attempts read it,
+ * and the council container in «Работают сейчас».
  *
  * SAFETY. It refuses to start without an explicit LOAD_BASE_URL and an
  * owner's credential in the environment (only an owner deletes a seminar,
@@ -118,6 +157,13 @@
  *   LOAD_UPLOAD_KB     each student's upload (0: none)               default 256
  *   LOAD_CSV_MB        the CSVs the cells write once, in MB (0: none) default 1,50
  *   LOAD_BIG_MB        one upload read back once, in MB (0: none)    default 0; R1: 150
+ *   LOAD_COUNCIL       pool or shared: where the attempts run         default the preset's
+ *                      (machines, personal, gpu: the pool; home: shared)
+ *   LOAD_WORKERS       «Попыток одновременно»: auto or 1–32           default auto; R2: 8
+ *   LOAD_ATTEMPT_MB    «Память на попытку», MB                        default 1024
+ *   LOAD_EPOCH_MB      the data a cell gives the class notebook's kernel for the epoch, MB
+ *                      (a DataFrame and a fitted model; python cells) default 0; R2: 500
+ *                      (at most 2032; 240 where the class notebook computes here)
  *   LOAD_ENVIRONMENT   the class's environment                       default the instance's
  *   LOAD_CPUS          the class's cores                             default the instance's
  *   LOAD_MEMORY_MB     the class's memory                            default the instance's
@@ -142,6 +188,8 @@ import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import WS, { type RawData } from 'ws'
 import {
+  CLASS_PLACEMENT_BOUNDS,
+  CLASS_PLACEMENT_DEFAULT,
   CLASS_PLACEMENT_PRESETS,
   CLASS_PLACEMENT_PRESET_NAMES,
   type AdminMe,
@@ -153,12 +201,15 @@ import {
   type RunningKernels,
 } from '@shared/admin'
 import type { ClassPlacementOutlook, RunningClassMachines } from '@shared/remote-admin'
+import { CLASS_BULK_MBPS, COUNCIL_EPOCH_MB, COUNCIL_EPOCH_SHIP_MB, COUNCIL_EPOCH_WAIT_MS, COUNCIL_POOL_READY_MS } from '@shared/remote-kernels'
 import {
   SESSION_MISSING,
   type AwarenessUser,
   type ControlClientMessage,
   type ControlServerMessage,
   type CouncilMine,
+  type CouncilPool,
+  type CouncilRun,
   type FileEntry,
   type JoinResponse,
   type KernelMachine,
@@ -169,6 +220,7 @@ import {
   bookAt,
   bookCells,
   bookKernel,
+  bookList,
   cellId,
   cellLock,
   cellOutputs,
@@ -240,6 +292,11 @@ interface Settings {
   environment: string | null
   cpus: number | null
   memoryMb: number | null
+  /** Where the attempts run: the class's pool of workers on a machine, or the notebook's shared kernel. */
+  council: 'pool' | 'shared'
+  workers: ClassPlacement['workers']
+  attemptMb: number
+  epochMb: number
   baseline: Baseline | null
   out: string | null
   cells: 'python' | 'fake'
@@ -276,6 +333,9 @@ function readBaseline(path: string, against: { students: number; ownShare: numbe
   return { path, numbers: body.numbers as Baseline['numbers'] }
 }
 
+/** What an epoch holds beside the data cell's frame (LOAD_EPOCH_MB): the fitted model, the class's small names, the stream and the manifest. */
+const EPOCH_ROOM_MB = 16
+
 function readSettings(): Settings {
   const base = text('LOAD_BASE_URL').replace(/\/+$/, '')
   if (!base) throw new Usage('LOAD_BASE_URL is not set: the rig never guesses which home to load')
@@ -299,6 +359,23 @@ function readSettings(): Settings {
   if (environment !== null && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(environment)) throw new Usage(`LOAD_ENVIRONMENT: an environment's name, not "${environment}"`)
   const students = number('LOAD_STUDENTS', 30, 1, 500, true)
   const ownShare = number('LOAD_OWN', 0.5, 0, 1)
+  const council = text('LOAD_COUNCIL') || (CLASS_PLACEMENT_PRESETS[preset].council === 'machines' ? 'pool' : 'shared')
+  if (council !== 'pool' && council !== 'shared') throw new Usage(`LOAD_COUNCIL: pool or shared, not "${council}"`)
+  const workers = text('LOAD_WORKERS') === '' || text('LOAD_WORKERS') === 'auto' ? 'auto' : number('LOAD_WORKERS', 0, CLASS_PLACEMENT_BOUNDS.workers.min, CLASS_PLACEMENT_BOUNDS.workers.max, true)
+  const epochMb = number('LOAD_EPOCH_MB', 0, 0, COUNCIL_EPOCH_MB, true)
+  // The data is a Python cell's: the fake Jupyter's small language makes no frame.
+  if (epochMb > 0 && cells === 'fake') throw new Usage('LOAD_EPOCH_MB: the data is a Python cell, and LOAD_CELLS=fake has none')
+  /*
+   * Data that cannot be the pool's epoch would measure the shared kernel under
+   * the pool's name: past the export's budget the frame stays behind, and
+   * every attempt that reads it computes in the notebook's kernel (§9.4); and
+   * a class notebook that computes here sends its first epoch to the pool's
+   * machine whole, which past the ship cap keeps the council shared (§9.2).
+   * Room is left beside the frame for the model, the stream and the manifest.
+   */
+  if (epochMb > COUNCIL_EPOCH_MB - EPOCH_ROOM_MB) throw new Usage(`LOAD_EPOCH_MB: at most ${COUNCIL_EPOCH_MB - EPOCH_ROOM_MB}, not ${epochMb}: an epoch holds ${COUNCIL_EPOCH_MB} MB in all (COUNCIL_EPOCH_MB), the model, the stream and the manifest beside the frame, and a frame past it stays behind`)
+  const shipsWhole = council === 'pool' && CLASS_PLACEMENT_PRESETS[preset].room === 'home'
+  if (shipsWhole && epochMb > COUNCIL_EPOCH_SHIP_MB - EPOCH_ROOM_MB) throw new Usage(`LOAD_EPOCH_MB: at most ${COUNCIL_EPOCH_SHIP_MB - EPOCH_ROOM_MB} with CLASS=${preset}, not ${epochMb}: its class notebook computes here, so its first epoch goes to the pool's machine whole, and one past ${COUNCIL_EPOCH_SHIP_MB} MB (COUNCIL_EPOCH_SHIP_MB) keeps the council in the shared kernel`)
   const baseline = text('LOAD_BASELINE')
   return {
     base,
@@ -315,6 +392,10 @@ function readSettings(): Settings {
     environment,
     cpus: optionalWhole('LOAD_CPUS', 1, 256),
     memoryMb: optionalWhole('LOAD_MEMORY_MB', 64, 1024 * 1024),
+    council,
+    workers,
+    attemptMb: number('LOAD_ATTEMPT_MB', CLASS_PLACEMENT_DEFAULT.attemptMb, CLASS_PLACEMENT_BOUNDS.attemptMb.min, CLASS_PLACEMENT_BOUNDS.attemptMb.max, true),
+    epochMb,
     baseline: baseline ? readBaseline(baseline, { students, ownShare, cells }) : null,
     out: text('LOAD_OUT') || null,
     cells,
@@ -350,17 +431,48 @@ const TQDM_SEC = Math.max(2, Math.round(ROUND_MS / 5_000))
 const LONG_SEC = Math.max(1, Math.round(ROUND_MS / 10_000))
 /** What the cell to interrupt would sleep: an interrupt that never lands costs the class two minutes. */
 const HANG_SEC = 120
+/** How long a council takes the class: half of it writing, the rest its two bursts and the teacher's long cell beside the second. */
+const COUNCIL_MS = Math.max(2_000, ROUND_MS / 5)
+/** The council's share of a round's time, where every other act has one (teacherRound). */
+const COUNCIL_SHARES = 3
+/** What an attempt computes for (§17.5 «30 attempts of 2 s»): what it costs past this is overhead. */
+const ATTEMPT_SEC = 2
+/** A class pressing at the teacher's word: every press within this of the first. */
+const BURST_SPREAD_MS = 1_000
+/*
+ * How long the first council waits for its pool to hold an epoch: the pool's
+ * own «пул не поднялся» bound (§9.9), and, for a class notebook that computes
+ * here, the first epoch's way to the pool's machine at the classes' pace on
+ * top of it — that one goes there whole (§9.2).
+ */
+const POOL_WAIT_MS = COUNCIL_POOL_READY_MS + (S.council === 'pool' && CLASS_PLACEMENT_PRESETS[S.preset].room === 'home' ? Math.ceil(S.epochMb / CLASS_BULK_MBPS) * 1000 : 0)
+/*
+ * The teacher's cell the second burst runs beside (§17.5 «a 30-attempt burst
+ * while the teacher runs a 60 s cell»): the long cell's minute in an hour's
+ * round, and in any class long enough to outlast the five seconds an attempt
+ * waits for a fresher epoch (D8) and a few attempts after them.
+ */
+const BESIDE_SEC = Math.max(LONG_SEC, Math.ceil(COUNCIL_EPOCH_WAIT_MS / 1000) + 3 * ATTEMPT_SEC + 2)
 /*
  * THE ROOM'S RUN LIMIT (rules.ts · cellLimitSec): set on the rig's room, past
- * the longest cell the class runs on purpose, so that it stops one cell
- * only — the one made to outlive it. A teacher's cell is stopped by it too,
- * and the class's tqdm must not be.
+ * the longest cell the class runs on purpose — tqdm, the long cell and the
+ * one the second burst runs beside — so that it stops one cell only, the one
+ * made to outlive it. A teacher's cell is stopped by it too.
  */
-const LIMIT_SEC = TQDM_SEC + 10
+const LIMIT_SEC = Math.max(TQDM_SEC, LONG_SEC, BESIDE_SEC) + 10
 /** How long the cell made to outlive the limit would run if nothing stopped it. */
 const RUNAWAY_SEC = LIMIT_SEC + Math.max(10, Math.round(LIMIT_SEC / 2))
-/** How long the class writes its council attempts. */
-const COUNCIL_MS = Math.max(2_000, ROUND_MS / 5)
+/** How often a keystroke goes from one tab to another while the class does something heavy: a council's burst, the big upload (§17.5 «Collaboration RTT»). */
+const COLLAB_EVERY_MS = 2_000
+/*
+ * And while it does nothing heavy, for the baseline the heavy ones are judged
+ * against: every twentieth of a round, half a minute in an hour's (120
+ * samples). Each keystroke is an edit of the class notebook, which the
+ * server writes to its file a moment later and pushes to the class's
+ * machine (books.ts · WRITE_AFTER_MS, §8): bytes on the relay that are the
+ * rig's own, kept to what the measure needs and counted in section 6.
+ */
+const COLLAB_QUIET_MS = Math.max(COLLAB_EVERY_MS, Math.round(ROUND_MS / 20))
 /** A student's turn: a line typed, a probe, every other turn a completion too. */
 const TURN_MS = Math.min(60_000, Math.max(1_500, ROUND_MS / 10))
 /*
@@ -377,12 +489,16 @@ const MB = 1024 * 1024
 const BIG_BYTES = Math.round(S.bigMb * MB)
 const CSV_BYTES = S.csvMb.map((mb) => Math.round(mb * MB))
 const STUDENTS_OWN = Math.round(S.students * S.ownShare)
-const PLACEMENT: Pick<ClassPlacement, 'room' | 'own' | 'council'> = {
+/** Whether the attempts go to the class's pool of workers on a machine (§9), not the notebook's shared kernel. */
+const POOL = S.council === 'pool'
+const PLACEMENT: Pick<ClassPlacement, 'room' | 'own' | 'council'> & Partial<Pick<ClassPlacement, 'workers' | 'attemptMb'>> = {
   ...CLASS_PLACEMENT_PRESETS[S.preset],
-  // The pool is 0.26's: in 0.25 attempts run in the notebook's shared kernel whatever the class says.
-  council: 'shared',
+  council: POOL ? 'machines' : 'shared',
+  ...(POOL ? { workers: S.workers, attemptMb: S.attemptMb } : {}),
 }
-const ON_MACHINES = PLACEMENT.room === 'machines' || (PLACEMENT.own === 'machines' && STUDENTS_OWN > 0)
+const ON_MACHINES = PLACEMENT.room === 'machines' || (PLACEMENT.own === 'machines' && STUDENTS_OWN > 0) || POOL
+/** The greedy attempt's ask (§17.5 «a greedy attempt»): twice «Память на попытку» and a little, past any ceiling it is given. */
+const GREEDY_MB = 2 * S.attemptMb + 256
 
 /**
  * How long the server may take to show it took a click (its cell queued or
@@ -710,10 +826,32 @@ interface Cells {
   csv(name: string, bytes: number): { source: string; shows: string }
   /** torch's card, asked of a GPU class's kernel; null — not askable in these cells. */
   cuda: { source: string; shows: string } | null
-  attempt(n: number, draft: number): string
+  /** The teacher's cell after the epoch (§17.5): a run that stores history, binding a name; it says `after`. */
+  after: string
+  /** The data an epoch carries (LOAD_EPOCH_MB): `df` of `mb` and a `model` fitted on it; null — not in these cells. */
+  data: ((mb: number) => { source: string; shows: string }) | null
+  /**
+   * An attempt computing for ATTEMPT_SEC on the class's `x` (and the data,
+   * `withData`); in Python it says its worker's memory as it reads it at its
+   * end (smaps_rollup, kB): Anonymous − LazyFree + Pss_Shmem + Swap, all the
+   * worker wrote for itself — the epoch's objects it unpickled included, so
+   * not the growth since its seed that the pool recycles it by (§9.3 detail
+   * 4); never Private_Dirty, which also charges a reader the page cache's
+   * still-dirty pages of a freshly copied epoch — its Pss and its Rss.
+   */
+  attempt(n: number, draft: number, withData: boolean): string
+  /** An attempt asking `mb` at once, more than «Память на попытку» gives it; null — not in these cells. */
+  greedy: ((mb: number, draft: number) => string) | null
   task: string
 }
 
+/*
+ * The cells leave nothing big in the notebook's namespace that a class's
+ * would not: every name there rides the council's epoch, underscored ones
+ * too, and a worker unpickles what is not an array into memory of its own
+ * (§9.3). A 2 MB pixel buffer or a 50 MB CSV string left behind would be the
+ * rig's own weight in the epoch's stream, the seed and each worker's memory.
+ */
 const PNG = [
   'import os, struct, zlib',
   'from IPython.display import Image, display',
@@ -722,6 +860,7 @@ const PNG = [
   '_w = _h = 816',
   String.raw`_raw = b"".join(b"\x00" + os.urandom(_w * 3) for _ in range(_h))`,
   String.raw`display(Image(data=b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", struct.pack(">IIBBBBB", _w, _h, 8, 2, 0, 0, 0)) + _chunk(b"IDAT", zlib.compress(_raw, 1)) + _chunk(b"IEND", b"")))`,
+  'del _raw',
 ].join('\n')
 
 const FIGURE_FILE = 'load-figure.txt'
@@ -758,13 +897,46 @@ const PYTHON: Cells = {
   read: (name, bytes) => ({ source: `print(len(open(${JSON.stringify(name)}, "rb").read()))`, shows: String(bytes) }),
   edit: `print(open(${JSON.stringify(EDIT_FILE)}).readline().strip())`,
   big: (bytes) => ({ source: `import os\nprint(os.path.getsize(${JSON.stringify(BIG_FILE)}))`, shows: String(bytes), marker: false }),
-  // Exactly `bytes` of ASCII, written as a cell writes its results.
+  // Exactly `bytes` of ASCII, written as a cell writes its results; the text and the file go with the cell.
   csv: (name, bytes) => ({
-    source: [`_n = ${bytes}`, '_s = "id,value\\n" + "17,0.5\\n" * (_n // 7 + 1)', `with open(${JSON.stringify(name)}, "w") as _f:`, '    _f.write(_s[:_n])', 'print("written")'].join('\n'),
+    source: [`_n = ${bytes}`, `with open(${JSON.stringify(name)}, "w") as _f:`, '    _f.write(("id,value\\n" + "17,0.5\\n" * (_n // 7 + 1))[:_n])', 'del _f', 'print("written")'].join('\n'),
     shows: 'written',
   }),
   cuda: { source: 'import torch\nprint("cuda", torch.cuda.is_available(), torch.cuda.device_count())', shows: 'cuda True' },
-  attempt: (n, draft) => `def solve(xs):\n    return sum(x * x for x in xs)\n\nprint(solve(range(${n})))  # draft ${draft}`,
+  after: 'y = 1\nprint("after")',
+  // Sixteen float columns, numeric blocks that travel out of band and are shared by the workers (§9.3), and a model fitted on them.
+  data: (mb) => ({
+    source: [
+      'import numpy as np, pandas as pd',
+      'from sklearn.linear_model import LogisticRegression',
+      `_rows = max(1000, ${Math.round(mb * MB)} // (8 * 16))`,
+      'df = pd.DataFrame(np.random.default_rng(17).standard_normal((_rows, 16)), columns=[f"f{i}" for i in range(16)])',
+      'model = LogisticRegression(max_iter=200).fit(df.iloc[:20000].to_numpy(), (df["f0"].iloc[:20000] > 0).to_numpy())',
+      'print("data", len(df))',
+    ].join('\n'),
+    shows: 'data',
+  }),
+  // Computing for its whole two seconds, as a student's attempt does, not sleeping through them: the worker's core is busy.
+  attempt: (n, draft, withData) => [
+    'import time',
+    '_t0 = time.perf_counter()',
+    'def solve(xs):',
+    '    return sum(v * v for v in xs)',
+    `answer = solve(x) + ${n}${withData ? ' + len(df) + int(model.predict(df.iloc[:1].to_numpy())[0])' : ''}`,
+    `while time.perf_counter() - _t0 < ${ATTEMPT_SEC}:`,
+    '    solve(range(1000))',
+    'try:',
+    '    _m = {}',
+    '    for _line in open("/proc/self/smaps_rollup"):',
+    '        _k, _, _v = _line.partition(":")',
+    '        if _v.strip().endswith("kB"):',
+    '            _m[_k.strip()] = int(_v.split()[0])',
+    '    print(answer, "mem", _m.get("Anonymous", 0) - _m.get("LazyFree", 0) + _m.get("Pss_Shmem", 0) + _m.get("Swap", 0), _m.get("Pss", 0), _m.get("Rss", 0))',
+    'except OSError:',
+    '    print(answer)',
+    `# draft ${draft}`,
+  ].join('\n'),
+  greedy: (mb, draft) => `big = bytearray(${mb} * 1024 * 1024)\nprint(len(big))  # draft ${draft}`,
   task: '# Write solve(xs): the sum of the squares of xs\n',
 }
 
@@ -783,7 +955,10 @@ const FAKE: Cells = {
   big: (_bytes, marker) => ({ source: `READ ${BIG_MARK}`, shows: marker, marker: true }),
   csv: (name, bytes) => ({ source: `FILL ${name} ${bytes} 17,0.5\\n\nprint("written")`, shows: 'written' }),
   cuda: null,
-  attempt: (n, draft) => `print("attempt", ${n}, ${draft})`,
+  after: 'y = 1\nprint("after")',
+  data: null,
+  attempt: (n, draft) => `SLEEP ${ATTEMPT_SEC * 1000}\nprint("attempt", ${n}, ${draft})`,
+  greedy: null,
   task: 'print("task")',
 }
 
@@ -835,6 +1010,8 @@ class Tab {
   watchesTree = false
   /** Each council cell's own sheet as the server last sent it (`council:mine`). */
   readonly sheets = new Map<string, CouncilMine>()
+  /** The run each council cell's last press is waiting for on this sheet, by cell. */
+  readonly runs = new Map<string, RunWatch>()
   /** When the notebook socket last heard anything (y-websocket · wsLastMessageReceived). */
   collabHeard = 0
   /** The messages' bytes both ways, after decompression. */
@@ -1137,10 +1314,14 @@ class Tab {
       this.pingAt = 0
     }
     if (frame.t === 'terminal') this.terminal = frame.status
-    if (frame.t === 'council:mine') this.sheets.set(frame.cellId, frame.state)
+    if (frame.t === 'council:mine') {
+      this.sheets.set(frame.cellId, frame.state)
+      this.runs.get(frame.cellId)?.saw(frame.state.run, now())
+    }
     if (this.watchesTree && (frame.t === 'files' || frame.t === 'files:delta')) this.onTree(frame)
     if (frame.t === 'error' || frame.t === 'refused') refusals.set(frame.message, (refusals.get(frame.message) ?? 0) + 1)
-    for (const listener of this.listeners) listener(frame)
+    // A copy: a listener may go while the frame is told.
+    for (const listener of [...this.listeners]) listener(frame)
     const at = now()
     for (const entry of [...this.frameChecks]) {
       if (!entry.pick(frame)) continue
@@ -1209,8 +1390,13 @@ class Tab {
     })
   }
 
-  onFrame(listener: (frame: ControlServerMessage) => void): void {
+  /** Every frame this tab's control socket hears, until the returned function is called. */
+  onFrame(listener: (frame: ControlServerMessage) => void): () => void {
     this.listeners.push(listener)
+    return () => {
+      const at = this.listeners.indexOf(listener)
+      if (at >= 0) this.listeners.splice(at, 1)
+    }
   }
 
   /** Run after every frame this tab's document applies, before its checks. */
@@ -1406,19 +1592,27 @@ async function probe(tab: Tab, id: string, root: string, personal: boolean): Pro
 async function completion(tab: Tab, id: string, root: string): Promise<void> {
   const away = machineAway(tab, root)
   const free = idle(tab, root)
+  const got = await askCompletion(tab, id)
+  if (got === 'offline') return void count('completion offline')
+  count('completion asked')
+  if (got === 'unanswered') return void count('completion unanswered')
+  if (got === 'empty') return void count('completion empty')
+  sample(away ? 'completion away' : free ? 'completion' : 'completion busy', got)
+}
+
+/** One completion as the editor asks it: its time when it came with matches; not asked (the socket away), never answered, or answered empty. */
+async function askCompletion(tab: Tab, id: string): Promise<number | 'offline' | 'unanswered' | 'empty'> {
   const ask = tab.nextId()
   let matches = 0
   const t0 = now()
-  if (!tab.ask({ t: 'complete', id: ask, code: CELLS.completion.code, cursor: CELLS.completion.cursor, cellId: id })) return void count('completion offline')
-  count('completion asked')
+  if (!tab.ask({ t: 'complete', id: ask, code: CELLS.completion.code, cursor: CELLS.completion.cursor, cellId: id })) return 'offline'
   const at = await tab.frame((frame) => {
     if (frame.t !== 'complete:reply' || frame.id !== ask) return false
     matches = frame.matches.length
     return true
   }, ASK_MS)
-  if (at === null) return void count('completion unanswered')
-  if (matches === 0) return void count('completion empty')
-  sample(away ? 'completion away' : free ? 'completion' : 'completion busy', at - t0)
+  if (at === null) return 'unanswered'
+  return matches === 0 ? 'empty' : at - t0
 }
 
 /** The value line: the hover's one line about a value lying in the kernel. Answered — it named a type. Judged on asks to a free kernel. */
@@ -1670,11 +1864,17 @@ async function bigUpload(lead: Tab, id: string): Promise<void> {
   const marker = `load-big-${process.pid}`
   const read = CELLS.big(BIG_BYTES, marker)
   const body = new Uint8Array(BIG_BYTES).fill(0x61)
-  if (!(await upload(lead, BIG_FILE, body, 'big upload http'))) return void count('big upload failed')
-  if (read.marker && !(await upload(lead, BIG_MARK, Buffer.from(marker), null))) return void count('big upload failed')
-  const took = await run(lead, id, read.shows, ANSWER_MS + 120_000)
-  if (took === null) return void count('big upload never readable')
-  sample('big readable', took)
+  // The keystrokes between tabs meanwhile are the class's collaboration during the big sync (§17.5).
+  heavy = 'big'
+  try {
+    if (!(await upload(lead, BIG_FILE, body, 'big upload http'))) return void count('big upload failed')
+    if (read.marker && !(await upload(lead, BIG_MARK, Buffer.from(marker), null))) return void count('big upload failed')
+    const took = await run(lead, id, read.shows, ANSWER_MS + 120_000)
+    if (took === null) return void count('big upload never readable')
+    sample('big readable', took)
+  } finally {
+    heavy = null
+  }
 }
 
 const csvName = (bytes: number) => `load-csv-${bytes}.csv`
@@ -1737,64 +1937,437 @@ async function runLimit(): Promise<void> {
 /* ----------------------------------------------------------- the council */
 
 let councilOpen = false
-
-/** The author's own attempt on a council cell as its sheet says it: queued, running, ok, error, or nothing yet. */
-const attemptOf = (tab: Tab, id: string) => tab.sheets.get(id)?.run?.state
+/** What the class is doing as a keystroke goes between tabs (watchCollab): a council's burst, the big upload, or nothing heavy. */
+let heavy: 'burst' | 'big' | null = null
+/** The councils held so far: the first one's pool starts cold. */
+let councilsHeld = 0
+/** The most workers the console counted up at once. */
+let poolWorkers = 0
+/** The most attempts a council's first burst pressed at once, and its second beside the teacher's long cell. */
+let burstPresses = 0
+let besidePresses = 0
+/** The most epochs one burst's attempts on the pool computed on, of the first bursts and of those beside the long cell. */
+const burstEpochs = { first: 0, beside: 0 }
+/** §17.5 R2's burst: thirty attempts pressed at once (on eight workers, LOAD_WORKERS=8). */
+const R2_BURST = 30
+/** The epoch the console last named for the class notebook's pool: what a council's open is to take a newer one than. */
+let poolSeq: number | null = null
+/** Why attempts of a class whose council is on machines ran in the shared kernel, as their cards said it, with how often. */
+const sharedWhy = new Map<string, number>()
 
 /**
- * A council on a fresh cell of the class notebook, in shared mode: the
- * teacher opens it with student runs on, every student writes (a snapshot on
- * every pause in typing), submits and runs their attempt, the teacher closes
- * it. What is measured is each run's press → the result on the author's
- * sheet (`council:mine`), and the whole burst, first press to last result.
- * An attempt waiting in the shared kernel's queue, or running, is on its way.
+ * One press's run as its author's sheet tells it (`council:mine`): when the
+ * server took it, when it began to compute, and how it ended, by the rig's
+ * clock and by the server's (a run's `startedAt`: its queueing in its first
+ * frame, its start once computing, kernel/index.ts · queuedRun and
+ * runCouncilOne). A sheet still telling of the run before the press is not
+ * this press's: its run is the first the sheet says queued or running after
+ * the press, and its end the first end after that.
+ */
+class RunWatch {
+  queuedAt: number | null = null
+  runningAt: number | null = null
+  endedAt: number | null = null
+  /** The server's clock when it queued the run; null — its `queued` frame was not seen. */
+  queuedServerAt: number | null = null
+  run: CouncilRun | null = null
+  private fresh = false
+
+  constructor(readonly pressedAt: number) {}
+
+  saw(run: CouncilRun | null, at: number): void {
+    if (!run || this.endedAt !== null) return
+    if (run.state === 'queued' || run.state === 'running') this.fresh = true
+    if (!this.fresh) return
+    if (run.state === 'queued') {
+      this.queuedAt ??= at
+      this.queuedServerAt ??= run.startedAt
+    } else if (run.state === 'running') this.runningAt ??= at
+    else {
+      this.endedAt = at
+      this.run = run
+    }
+  }
+
+  /** The server took the press, and its run has not ended: a wait on it goes on. */
+  get onItsWay(): boolean {
+    return this.fresh && this.endedAt === null
+  }
+}
+
+/**
+ * What the teacher's console hears of the notebook's kernel and its pool
+ * while a council is open (`council:kernel`, to staff only): when the pool
+ * holds an epoch and a worker loaded with it, when it names one newer than
+ * the pool held before the open (the open's own, §9.2: before the pool has
+ * any, the newest taken; after, the newest on the pool's machine — the
+ * console shows the epoch the workers may run, `usableEpoch`, which a worker
+ * loads only after that), when it first named each epoch, its sentence and
+ * the names an epoch left behind, and, during a burst, every frame in which
+ * the notebook's own kernel computes an attempt — what the pool is there to
+ * spare it.
+ */
+class ConsoleWatch {
+  readyAt: number | null = null
+  epochAt: number | null = null
+  pool: CouncilPool | null = null
+  /** When the console first named each epoch as the pool's, by its number. */
+  readonly named = new Map<number, number>()
+  /** The burst on now (its tag: '' or ' beside'): frames of the notebook's kernel busy with an attempt are counted under it; null — none. */
+  burst: string | null = null
+  private readonly stop: () => void
+
+  constructor(tab: Tab, cellId: string, before: number | null) {
+    this.stop = tab.onFrame((frame) => {
+      if (frame.t !== 'council:kernel' || frame.cellId !== cellId) return
+      const at = now()
+      if (this.burst !== null && frame.kernel.busy?.kind === 'attempt') {
+        count('main busy with an attempt')
+        if (this.burst) count(`main busy with an attempt${this.burst}`)
+      }
+      const pool = frame.kernel.pool ?? null
+      this.pool = pool
+      if (!pool) return
+      poolWorkers = Math.max(poolWorkers, pool.workers)
+      if (pool.state === 'ready' && pool.epoch !== null) this.readyAt ??= at
+      if (pool.epoch !== null) {
+        if (before === null || pool.epoch.seq > before) this.epochAt ??= at
+        if (!this.named.has(pool.epoch.seq)) this.named.set(pool.epoch.seq, at)
+        poolSeq = pool.epoch.seq
+      }
+      if (pool.note) noted('staff', pool.note)
+      const left = pool.epoch?.left ?? []
+      if (left.length > 0) noted('staff', `epoch ${pool.epoch!.seq} left behind: ${left.map((one) => `${one.name} (${one.why})`).join(', ')}`)
+    })
+  }
+
+  close(): void {
+    this.stop()
+  }
+}
+
+/** The class's one greedy student (§17.5 «a greedy attempt»): the last of a class of three or more, on the pool, in Python. */
+const greedyOf = (s: Student): boolean => POOL && CELLS.greedy !== null && students.length >= 3 && s === students[students.length - 1]
+
+/** What a student writes on their sheet: the class's attempt, or the greedy one's. */
+function attemptText(s: Student, draft: number): string {
+  if (greedyOf(s) && CELLS.greedy) return CELLS.greedy(GREEDY_MB, draft)
+  return CELLS.attempt(s.tab.n, draft, lesson?.data != null)
+}
+
+/**
+ * A council on a fresh cell of the class notebook (the header's THE
+ * COUNCIL): the teacher opens it with student runs on, on the class's lane,
+ * its snapshot following the kernel. The class writes for half the
+ * council's time — a snapshot on every pause in typing — while the pool
+ * starts and, once it holds an epoch, the teacher runs a cell after it; the
+ * first burst; the class runs its changed attempts again while the
+ * teacher's long cell runs beside them, one of them run by the teacher;
+ * then «Обновить состояние» with nothing run since, and the teacher closes
+ * it. An attempt waiting for a worker or in the shared kernel's queue, or
+ * running, is on its way.
  */
 async function council(lead: Tab, round: number): Promise<void> {
   councilOpen = true
+  const first = councilsHeld++ === 0
+  let watch: ConsoleWatch | null = null
   try {
     const writers = students.filter((s) => s.tab.connected && s.tab.synced)
     const id = addCell(lead, CELLS_KEY, CELLS.task)
     const arrived = await Promise.all(writers.map((s) => s.tab.until(() => findCell(s.tab.doc, id) !== null, 30_000)))
     if (arrived.some((at) => at === null)) count('council cell missing')
-    lead.send({ t: 'cell:lock', cellId: id, state: 'council', settings: { studentRun: true, runLimitSec: 30, rerunPauseSec: 0 } })
+    const watching = new ConsoleWatch(lead, id, poolSeq)
+    watch = watching
+    const openedAt = now()
+    lead.send({ t: 'cell:lock', cellId: id, state: 'council', settings: { studentRun: true, runLimitSec: 30, rerunPauseSec: 0, lane: POOL ? 'pool' : 'shared', refresh: 'auto' } })
     const opened = await Promise.all(writers.map((s) => s.tab.until(() => {
       const found = findCell(s.tab.doc, id)
       return found !== null && cellLock(found.cell) === 'council'
     }, 30_000)))
     if (opened.some((at) => at === null)) count('council never opened')
     const ready = writers.filter((_, i) => opened[i] !== null)
-    say(dim(`    ${clock(Date.now())}  council · ${ready.length} writing for ${Math.round(COUNCIL_MS / 1000)}s`))
+    const writeMs = COUNCIL_MS / 2
+    say(dim(`    ${clock(Date.now())}  council · ${ready.length} writing for ${Math.round(writeMs / 1000)}s${POOL ? ' · its pool starting' : ' · the shared kernel'}`))
     // A snapshot on every pause in typing, as the sheet sends one: every two seconds or so (load.mts · COUNCIL_EVERY).
-    const drafts = Math.max(1, Math.round(COUNCIL_MS / Math.min(2_000, Math.max(500, COUNCIL_MS / 5))))
-    let first = Infinity
-    let last = 0
-    await Promise.all(ready.map(async (s) => {
+    const drafts = Math.max(1, Math.round(writeMs / Math.min(2_000, Math.max(500, writeMs / 5))))
+    const writing = Promise.all(ready.map(async (s) => {
       for (let draft = 1; draft <= drafts && !stopping; draft++) {
-        await pause(jitter(COUNCIL_MS / drafts))
-        s.tab.send({ t: 'council:draft', cellId: id, text: CELLS.attempt(s.tab.n, draft + round * 100) })
+        await pause(jitter(writeMs / drafts))
+        s.tab.send({ t: 'council:draft', cellId: id, text: attemptText(s, draft + round * 100) })
         count('council drafts')
       }
-      if (stopping || !(await online(s.tab))) return
-      s.tab.send({ t: 'council:submit', cellId: id })
-      const t0 = now()
-      first = Math.min(first, t0)
-      s.tab.send({ t: 'council:run', cellId: id })
-      const at = await s.tab.until(() => {
-        const state = attemptOf(s.tab, id)
-        return state === 'ok' || state === 'error'
-      }, ANSWER_MS * 2, () => {
-        const state = attemptOf(s.tab, id)
-        return !s.tab.connected || state === 'queued' || state === 'running'
-      })
-      if (at === null) return void count('council unanswered')
-      last = Math.max(last, at)
-      sample('council', at - t0)
     }))
-    if (last > 0 && Number.isFinite(first)) sample('council burst', last - first)
+    /*
+     * The pool takes an epoch as the council opens (§9.2, §9.5); once its
+     * workers hold the open's, the teacher runs a cell after it. The first
+     * council's pool starts cold: its epoch is named once taken, and it is
+     * ready once a worker has loaded it on the machine; a later one's names
+     * the open's epoch once it is on the machine.
+     */
+    if (POOL) {
+      if ((await lead.until(() => watching.readyAt !== null && watching.epochAt !== null, POOL_WAIT_MS)) === null) count('pool not ready in time')
+      else if (first) {
+        sample('pool epoch first', watching.epochAt! - openedAt)
+        sample('pool ready first', watching.readyAt! - openedAt)
+      } else sample('pool epoch', watching.epochAt! - openedAt)
+    }
+    if (await online(lead)) {
+      const took = await run(lead, lesson!.after, 'after')
+      if (took === null) count('after cell unanswered')
+    }
+    await writing
+    if (stopping) return
+    await burst(lead, id, ready, round, watching, false)
+    // Again, the attempts changed, while the teacher's long cell runs: the epoch it makes stale cannot be taken before it ends (§9.2).
+    const beside = lesson!.beside
+    if (stopping || !(await online(lead))) return
+    lead.focus(beside)
+    lead.send({ t: 'run', cellId: beside })
+    if ((await lead.until(() => stateOf(lead, beside) === 'running', ANSWER_MS, () => onItsWay(lead, beside))) === null) count('beside cell never ran')
+    await burst(lead, id, ready, round, watching, true)
+    if ((await lead.until(() => settled(lead, beside), (BESIDE_SEC + 30) * 1000, () => onItsWay(lead, beside))) === null) count('beside cell never ended')
+    // It ran its own time: the room's run limit is past it (LIMIT_SEC), and the burst it held was beside a cell that ran on.
+    else if (stateOf(lead, beside) !== 'ok') count('beside cell stopped')
+    if (POOL) await refresh(lead, id, watching)
     lead.send({ t: 'cell:lock', cellId: id, state: 'closed' })
   } finally {
+    watch?.close()
     councilOpen = false
   }
+}
+
+/**
+ * One burst: the class presses «Запустить» at the teacher's word, each
+ * within BURST_SPREAD_MS of the first. The first burst: the teacher's editor
+ * asks the notebook's kernel for a completion meanwhile — its kernel is not
+ * the attempts' — a question, never a run: every run of the notebook makes
+ * the epoch stale (§9.2), and the burst would wait for a second refreeze and
+ * its workers reload once more. The second, `beside` the teacher's long cell
+ * (§17.5 «a 30-attempt burst while the teacher runs a 60 s cell»): one
+ * student only submits, and once the class has pressed the teacher runs
+ * their attempt from the console — the last pressed, the first of those
+ * waiting to leave the pool's queue (D12), which the wait for a fresher
+ * epoch holds whole. Each attempt is timed on its author's sheet; its
+ * overhead is home's own count of its time (ranMs) past its ATTEMPT_SEC. The
+ * lane is judged by the server's clock (each run's `startedAt`): no attempt
+ * still waiting when the teacher's was queued may start before it.
+ *
+ * The epochs a burst's attempts computed on are counted. The first burst's
+ * is one, the refreeze of the teacher's cell since the open, which it waited
+ * for: from the console naming it on the pool's machine to the first attempt
+ * computing on it is a worker's seed, its restart and load, and the dispatch
+ * — the seed as the client sees it (§17.5 R2's epoch row).
+ */
+async function burst(lead: Tab, id: string, writers: readonly Student[], round: number, watching: ConsoleWatch, beside: boolean): Promise<void> {
+  const tag = beside ? ' beside' : ''
+  const hostPick = beside && writers.length > 1 ? writers[0]! : null
+  const pressed: Array<{ s: Student; watch: RunWatch; host: boolean; greedy: boolean }> = []
+  let firstPress = Infinity
+  heavy = 'burst'
+  watching.burst = tag
+  try {
+    say(dim(`    ${clock(Date.now())}  council · ${writers.length} attempts at once${beside ? ', the teacher\'s long cell beside them' : ''}`))
+    const press = (s: Student, host: boolean): void => {
+      const watch = new RunWatch(now())
+      s.tab.runs.set(id, watch)
+      firstPress = Math.min(firstPress, watch.pressedAt)
+      if (host) lead.send({ t: 'council:run', cellId: id, participantId: s.tab.participant.id })
+      else {
+        s.tab.send({ t: 'council:submit', cellId: id })
+        s.tab.send({ t: 'council:run', cellId: id })
+      }
+      pressed.push({ s, watch, host, greedy: !host && greedyOf(s) })
+    }
+    await Promise.all([
+      ...writers.map(async (s) => {
+        // Changed before the second burst, as a class fixes its attempts and runs them again.
+        if (beside) s.tab.send({ t: 'council:draft', cellId: id, text: attemptText(s, round * 100 + 99) })
+        if (s === hostPick) return void s.tab.send({ t: 'council:submit', cellId: id })
+        await pause(Math.random() * BURST_SPREAD_MS)
+        if (stopping) return
+        if (!s.tab.connected) return void count('council offline')
+        press(s, false)
+      }),
+      (async () => {
+        if (!hostPick) return
+        await pause(BURST_SPREAD_MS + 200)
+        if (!stopping && lead.connected) press(hostPick, true)
+      })(),
+    ])
+    if (beside) besidePresses = Math.max(besidePresses, pressed.length)
+    else burstPresses = Math.max(burstPresses, pressed.length)
+    await Promise.all([
+      ...pressed.map(async (one) => {
+        const at = await one.s.tab.until(() => one.watch.endedAt !== null, ANSWER_MS * 2, () => !one.s.tab.connected || one.watch.onItsWay)
+        if (at === null) count('council unanswered')
+      }),
+      (async () => {
+        // The notebook's kernel during the first burst: free on the pool, busy with every attempt in the shared kernel (an empty answer).
+        if (beside || stopping) return
+        const got = await askCompletion(lead, lesson!.probe)
+        if (typeof got === 'number') sample('completion during the burst', got)
+        else count(`completion during the burst ${got}`)
+      })(),
+    ])
+  } finally {
+    heavy = null
+    watching.burst = null
+  }
+  let last = 0
+  let started = Infinity
+  // The epochs the burst's attempts on the pool computed on, each with when the first of them began computing there.
+  const epochs = new Map<number, number>()
+  for (const one of pressed) {
+    const { watch } = one
+    const done = watch.run
+    if (watch.endedAt === null || !done) continue
+    last = Math.max(last, watch.endedAt)
+    sample('council', watch.endedAt - watch.pressedAt)
+    if (watch.runningAt !== null) {
+      started = Math.min(started, watch.runningAt)
+      sample(one.host ? 'council host wait' : 'council wait', watch.runningAt - watch.pressedAt)
+    }
+    const placed = done.placed ?? 'shared'
+    count(`council ${placed}`)
+    if (beside) count(`council ${placed} beside`)
+    // On a class whose council is on machines, the shared kernel took it for a reason its card says (§9.9).
+    if (POOL && placed === 'shared') {
+      const why = done.note ?? '(no reason on the card)'
+      sharedWhy.set(why, (sharedWhy.get(why) ?? 0) + 1)
+    }
+    if (done.epoch) count(done.epoch.behind === 0 ? 'council fresh epoch' : done.note ? 'council older noted' : 'council older silent')
+    if (placed === 'pool' && done.epoch) epochs.set(done.epoch.seq, Math.min(epochs.get(done.epoch.seq) ?? Infinity, watch.runningAt ?? Infinity))
+    if (one.greedy) {
+      // Judged where the pool computed it, under «Память на попытку»: in the shared kernel the class's own memory decides, and its card said why it went there.
+      if (placed !== 'pool') {
+        count('greedy shared')
+        continue
+      }
+      count('greedy asked')
+      count(done.state === 'error' && done.outputs.some((output) => output.kind === 'error' && output.ename === 'MemoryError') ? 'greedy memory error' : 'greedy other')
+      continue
+    }
+    if (done.state !== 'ok') {
+      count('council errors')
+      continue
+    }
+    if (done.ranMs !== null) sample('council overhead', Math.max(0, done.ranMs - ATTEMPT_SEC * 1000))
+    // Its worker's memory as it read it at its end (smaps_rollup, kB): a pool's worker only, the shared kernel's is the class's.
+    const mem = placed === 'pool' ? /\bmem (\d+) (\d+) (\d+)/.exec(textOf(done.outputs)) : null
+    if (mem) {
+      sample('worker private', Number(mem[1]) / 1024)
+      sample('worker pss', Number(mem[2]) / 1024)
+      sample('worker rss', Number(mem[3]) / 1024)
+    }
+  }
+  if (beside) burstEpochs.beside = Math.max(burstEpochs.beside, epochs.size)
+  else burstEpochs.first = Math.max(burstEpochs.first, epochs.size)
+  if (last > 0 && Number.isFinite(firstPress)) {
+    sample(`council burst${tag}`, last - firstPress)
+    // §17.5 R2's burst: thirty or more pressed at once after the teacher's cell, on the one epoch it waited for — not one refrozen again under it.
+    if (!beside && pressed.length >= R2_BURST) {
+      if (epochs.size === 1) sample('council burst r2', last - firstPress)
+      else if (epochs.size > 1) count('council burst r2 refrozen')
+    }
+  }
+  if (Number.isFinite(started) && Number.isFinite(firstPress)) sample(`council first start${tag}`, started - firstPress)
+  /*
+   * The seed, on the first burst's one epoch, which the console named after
+   * the first press: the workers held the one before it, so the first
+   * attempt on it began once a worker had restarted and loaded it. The
+   * console's frames ride a window of their own (control.ts · nudgeKernel,
+   * 250 ms) where an attempt's start is told at once: the seed is said up to
+   * that much short, and one quicker than the window as 0.
+   */
+  if (!beside && epochs.size === 1) {
+    const [seq, first] = [...epochs][0]!
+    const named = watching.named.get(seq)
+    if (named !== undefined && named > firstPress && Number.isFinite(first)) sample('pool seed', Math.max(0, first - named))
+  }
+  // The teacher's lane (D12), by the server's clock: the class's attempts still waiting when the teacher's was queued, and those of them that started first.
+  const host = pressed.find((one) => one.host)
+  const queuedAt = host?.watch.queuedServerAt ?? null
+  const hostStart = host?.watch.run?.startedAt ?? null
+  // Judged where the pool took it: the shared kernel's queue has no lane of the teacher's.
+  if (queuedAt !== null && hostStart !== null && host?.watch.run?.placed === 'pool') {
+    const waiting = pressed.filter((one) => !one.host && one.watch.run !== null && one.watch.run.startedAt > queuedAt)
+    if (waiting.length > 0) {
+      count('lane judged')
+      // A few milliseconds apart are one dispatch: each worker's pump starts its attempt in a turn of its own.
+      count('lane overtaken', waiting.filter((one) => one.watch.run!.startedAt < hostStart - 50).length)
+    }
+  }
+}
+
+/**
+ * «Обновить состояние» with nothing run since the last epoch (§17.5 «an
+ * unchanged refreeze»): once the refreeze the long cell held back has come,
+ * the teacher presses it, and the press is timed to the console naming the
+ * next epoch as the one the pool computes on — its export, and its way to
+ * the pool's machine (H → C when the class notebook computes here), not the
+ * workers' reload of it, which follows in the background (the seed is the
+ * first burst's).
+ */
+async function refresh(lead: Tab, id: string, watching: ConsoleWatch): Promise<void> {
+  const current = (): CouncilPool['epoch'] | null => (watching.pool?.state === 'ready' && !watching.pool.refreezing ? watching.pool.epoch : null)
+  if ((await lead.until(() => current()?.behind === 0, ANSWER_MS * 2)) === null) return void count('refresh: the epoch never caught up')
+  const seq = current()!.seq
+  const t0 = now()
+  lead.send({ t: 'council:epoch', cellId: id })
+  const at = await lead.until(() => (watching.pool?.epoch?.seq ?? 0) > seq, ANSWER_MS * 2, () => watching.pool?.refreezing === true)
+  if (at === null) return void count('refresh unanswered')
+  sample('council refresh', at - t0)
+}
+
+/* ---------------------------------------------------------- collaboration */
+
+let collabTimer: NodeJS.Timeout | null = null
+/** The keystrokes the rig wrote into the class notebook to time them: each one an edit the server writes to the notebook's file. */
+let collabEdits = 0
+
+/**
+ * A keystroke from one tab to another (§17.5 «Collaboration RTT»): the
+ * teacher's tab writes a fresh word into a cell of its own, and the time
+ * until the assistant's document holds it is the class's collaboration round
+ * trip, through the server and back out — a document's edit, which no
+ * presence frame stands in for (the server drops presence behind a slow
+ * socket, collab/index.ts). Sorted by what the class does meanwhile
+ * (`heavy`): a council's burst or the big upload, every COLLAB_EVERY_MS, or
+ * nothing heavy, every COLLAB_QUIET_MS — the baseline the other two are
+ * judged against.
+ */
+function watchCollab(): void {
+  let busy = false
+  let seq = 0
+  let quietAt = -Infinity
+  collabTimer = setInterval(() => {
+    const cell = lesson?.collab
+    const lead = teacher
+    const watcher = assistant
+    if (busy || stopping || !cell || !lead?.connected || !watcher?.connected) return
+    const during = heavy
+    if (during === null && now() - quietAt < COLLAB_QUIET_MS - COLLAB_EVERY_MS / 2) return
+    const mine = findCell(lead.doc, cell)
+    const theirs = findCell(watcher.doc, cell)
+    if (!mine || !theirs) return
+    busy = true
+    if (during === null) quietAt = now()
+    collabEdits++
+    const word = `collab-${process.pid}-${++seq}`
+    const t0 = now()
+    lead.doc.transact(() => {
+      const source = cellSource(mine.cell)
+      source.delete(0, source.length)
+      source.insert(0, word)
+    })
+    void watcher.until(() => cellSource(theirs.cell).toString() === word, 10_000)
+      .then((at) => {
+        if (at === null) count('collab unanswered')
+        else sample(during ? `collab ${during}` : 'collab', at - t0)
+      })
+      .finally(() => (busy = false))
+  }, COLLAB_EVERY_MS)
+  collabTimer.unref()
 }
 
 /* ------------------------------------------------------- the machine watch */
@@ -1901,19 +2474,22 @@ interface SlotReading {
   usedMb: number[]
   cpuPercent: number[]
   card: string | null
+  /** The council container's planned workers, as «Работают сейчас» says them; null for the other roles. */
+  workers: number | null
 }
 
 /** The class's containers as «Работают сейчас» read them, by role and place: the memory each holds and uses, a GPU room's card. */
 const slots = new Map<string, SlotReading>()
 let runningTimer: NodeJS.Timeout | null = null
 
-function slotRead(role: string, place: string, heldMb: number | null, usedMb: number | null, cpuPercent: number | null, card: string | null): void {
+function slotRead(role: string, place: string, heldMb: number | null, usedMb: number | null, cpuPercent: number | null, card: string | null, workers: number | null = null): void {
   const key = `${role}@${place}`
-  const reading = slots.get(key) ?? { role, where: place, heldMb, usedMb: [], cpuPercent: [], card: null }
+  const reading = slots.get(key) ?? { role, where: place, heldMb, usedMb: [], cpuPercent: [], card: null, workers: null }
   reading.heldMb = heldMb ?? reading.heldMb
   if (usedMb !== null) reading.usedMb.push(usedMb)
   if (cpuPercent !== null) reading.cpuPercent.push(cpuPercent)
   reading.card = card ?? reading.card
+  reading.workers = workers ?? reading.workers
   slots.set(key, reading)
 }
 
@@ -1926,7 +2502,7 @@ async function readRunning(): Promise<void> {
   for (const container of [mine.room, mine.own]) {
     if (container) slotRead(container.role, 'here', container.reservedMb, container.usedMb, container.cpuPercent, container.role === 'room' ? mine.gpu : null)
   }
-  for (const slot of mine.machines ?? []) slotRead(slot.role, slot.machine ?? 'a machine', slot.memoryMb, slot.usedMb, slot.cpuPercent, slot.card)
+  for (const slot of mine.machines ?? []) slotRead(slot.role, slot.machine ?? 'a machine', slot.memoryMb, slot.usedMb, slot.cpuPercent, slot.card, slot.workers)
 }
 
 function watchRunning(): void {
@@ -2145,6 +2721,13 @@ interface Lesson {
   edit: string
   big: string | null
   csvs: Array<{ id: string; bytes: number }>
+  /** The teacher's cell after a council's epoch, and the long one its second burst runs beside. */
+  after: string
+  beside: string
+  /** The cell the teacher's tab types into for the keystrokes between tabs (watchCollab): markdown, never run. */
+  collab: string
+  /** The cell that gives the class notebook's kernel the epoch's data (LOAD_EPOCH_MB); null — none. */
+  data: string | null
 }
 
 let lesson: Lesson | null = null
@@ -2180,6 +2763,14 @@ async function prepare(): Promise<void> {
     edit: addCell(lead, CELLS_KEY, CELLS.edit),
     big: BIG_BYTES > 0 ? addCell(lead, CELLS_KEY, CELLS.big(BIG_BYTES, '').source) : null,
     csvs: CSV_BYTES.map((bytes) => ({ id: addCell(lead, CELLS_KEY, CELLS.csv(csvName(bytes), bytes).source), bytes })),
+    after: addCell(lead, CELLS_KEY, CELLS.after),
+    beside: addCell(lead, CELLS_KEY, CELLS.long(BESIDE_SEC)),
+    collab: (() => {
+      const cell = createCell('markdown', '…')
+      lead.doc.transact(() => bookCells(lead.doc, CELLS_KEY).push([cell]))
+      return cellId(cell)
+    })(),
+    data: S.epochMb > 0 && CELLS.data ? addCell(lead, CELLS_KEY, CELLS.data(S.epochMb).source) : null,
   }
   if (CELLS.figure.upload && !(await upload(lead, CELLS.figure.upload.name, CELLS.figure.upload.body, null))) count('figure file not uploaded')
   const cudaCell = gpuClass && CELLS.cuda ? addCell(lead, CELLS_KEY, CELLS.cuda.source) : null
@@ -2217,7 +2808,7 @@ async function prepare(): Promise<void> {
   if (students.length < synced.length) count('students not prepared', synced.length - students.length)
 
   // The server has what everyone typed once the assistant's document holds it: it sends one frame to the whole room.
-  const typed = [lesson.probe, lesson.value, lesson.figure, lesson.tqdm, lesson.long, lesson.hang, lesson.edit, ...(lesson.big ? [lesson.big] : []), ...lesson.csvs.map((csv) => csv.id), ...students.flatMap((s) => [s.probe, s.read.id, s.scratch]), ...(limitCell ? [limitCell.id] : [])]
+  const typed = [lesson.probe, lesson.value, lesson.figure, lesson.tqdm, lesson.long, lesson.hang, lesson.edit, lesson.after, lesson.beside, lesson.collab, ...(lesson.data ? [lesson.data] : []), ...(lesson.big ? [lesson.big] : []), ...lesson.csvs.map((csv) => csv.id), ...students.flatMap((s) => [s.probe, s.read.id, s.scratch]), ...(limitCell ? [limitCell.id] : [])]
   if ((await assistant!.until(() => typed.every((id) => findCell(assistant!.doc, id) !== null), 30_000)) === null) count('cells the server never had')
 
   // First runs, apart from the class's numbers: the class notebook's kernel (warm since the teacher came in) and each personal one's.
@@ -2227,6 +2818,12 @@ async function prepare(): Promise<void> {
   // The value line's binding: a cell that prints nothing, so its end is its state.
   lead.send({ t: 'run', cellId: lesson.value })
   if ((await lead.until(() => settled(lead, lesson!.value), 60_000, () => onItsWay(lead, lesson!.value))) === null) count('value cell never ran')
+  // The epoch's data, made once before the class (LOAD_EPOCH_MB): every council's export carries it.
+  if (lesson.data && CELLS.data) {
+    const took = await run(lead, lesson.data, CELLS.data(S.epochMb).shows, 600_000)
+    if (took === null) count('data cell unanswered')
+    else sample('data cell', took)
+  }
   await Promise.all([
     ...students.map(async (s) => {
       const took = await run(s.tab, s.probe, CELLS.print.shows, 180_000)
@@ -2306,11 +2903,20 @@ async function teacherRound(r: number): Promise<void> {
     },
     () => council(lead, r),
   ]
+  /*
+   * Each act starts at its share of the round, the council taking three: its
+   * writing, two bursts and the long cell beside the second are two and a
+   * half minutes of an hour's round, where every other act is one.
+   */
+  const shares = acts.map((_, i) => (i === acts.length - 1 ? COUNCIL_SHARES : 1))
+  const whole = shares.reduce((sum, one) => sum + one, 0)
   const start = now()
+  let before = 0
   for (let i = 0; i < acts.length && !stopping; i++) {
     // Only the first round is always whole: later ones end with the class.
     if (r > 1 && now() >= classStartedAt + CLASS_MS) return
-    await pause(start + (i * ROUND_MS) / acts.length - now())
+    await pause(start + (before * ROUND_MS) / whole - now())
+    before += shares[i]!
     await acts[i]!()
   }
 }
@@ -2355,6 +2961,7 @@ async function holdClass(): Promise<void> {
   classStartedAt = now()
   const end = classStartedAt + CLASS_MS
   watchRunning()
+  watchCollab()
   // A turn that throws is the rig's fault, never the class's: it is counted, and the others go on.
   const failed = (what: string) => (error: unknown) => {
     count('turns failed')
@@ -2394,6 +3001,14 @@ function bytesTotals() {
     for (const key of Object.keys(payload) as Array<keyof typeof payload>) payload[key] += tab.payload[key]
   }
   return { sent: tcpOut + http.sent, received: tcpIn + http.received, sockets: { in: tcpIn, out: tcpOut }, http: { sent: http.sent, received: http.received, requests: http.requests, failed: http.failed }, payload }
+}
+
+/** The class notebook's file as the assistant's files panel last listed it, in bytes: what one of the probe's edits has the server write and push; null — not listed. */
+function notebookFileBytes(): number | null {
+  const tab = assistant
+  const path = tab ? bookList(tab.doc).find((book) => book.root === CELLS_KEY)?.path : undefined
+  const entry = path ? tab!.tree.get(path) : undefined
+  return entry && !entry.dir ? entry.size : null
 }
 
 const sentences = (heard: Map<string, number>) => [...heard].map(([sentence, times]) => ({ text: sentence, count: times }))
@@ -2454,7 +3069,63 @@ function summary(interrupted: boolean) {
       edit: { kb: EDIT_BYTES / 1024, readable: spread(taken('edit readable')), notUploaded: counted('edit not uploaded'), neverReadable: counted('edit never readable') },
       big: { mb: S.bigMb, http: spread(taken('big upload http')), readable: spread(taken('big readable')), failed: counted('big upload failed'), neverReadable: counted('big upload never readable') },
       csv: CSV_BYTES.map((bytes) => ({ bytes, mb: Number((bytes / MB).toFixed(3)), toPanel: spread(taken(`csv ${bytes}`)), unanswered: counted(`csv ${bytes} unanswered`), neverListed: counted(`csv ${bytes} never listed`) })),
-      council: { ...spread(taken('council')), burst: spread(taken('council burst')), drafts: counted('council drafts'), unanswered: counted('council unanswered') },
+      council: {
+        lane: POOL ? 'pool' : 'shared',
+        workers: PLACEMENT.workers ?? null,
+        attemptMb: PLACEMENT.attemptMb ?? null,
+        attemptSec: ATTEMPT_SEC,
+        councils: councilsHeld,
+        ...spread(taken('council')),
+        wait: spread(taken('council wait')),
+        overhead: spread(taken('council overhead')),
+        burst: spread(taken('council burst')),
+        firstStart: spread(taken('council first start')),
+        /** The most attempts a first burst pressed at once, and the most epochs a first burst's attempts on the pool computed on (one: the refreeze it waited for). */
+        presses: burstPresses,
+        burstEpochs: burstEpochs.first,
+        /** §17.5 R2's: the first bursts of R2_BURST or more pressed at once that computed on one epoch, and those refrozen again under them. */
+        r2: { size: R2_BURST, burst: spread(taken('council burst r2')), refrozen: counted('council burst r2 refrozen') },
+        beside: {
+          sec: BESIDE_SEC,
+          burst: spread(taken('council burst beside')),
+          firstStart: spread(taken('council first start beside')),
+          presses: besidePresses,
+          burstEpochs: burstEpochs.beside,
+          placed: { pool: counted('council pool beside'), shared: counted('council shared beside') },
+          busyWithAttempt: counted('main busy with an attempt beside'),
+          /** The long cell ended otherwise than by itself: the run limit or a stop under the burst it held. */
+          stopped: counted('beside cell stopped'),
+        },
+        host: { ...spread(taken('council host wait')), judged: counted('lane judged'), overtaken: counted('lane overtaken') },
+        placed: { pool: counted('council pool'), shared: counted('council shared'), why: Object.fromEntries(sharedWhy) },
+        epochs: { fresh: counted('council fresh epoch'), noted: counted('council older noted'), silent: counted('council older silent') },
+        pool: {
+          workers: poolWorkers,
+          epochFirst: spread(taken('pool epoch first')),
+          readyFirst: spread(taken('pool ready first')),
+          waitMs: POOL_WAIT_MS,
+          epoch: spread(taken('pool epoch')),
+          notReady: counted('pool not ready in time'),
+          refresh: spread(taken('council refresh')),
+          refreshUnanswered: counted('refresh unanswered') + counted('refresh: the epoch never caught up'),
+          /** The console naming the epoch a first burst waited for → its first attempt computing on it: a worker's restart and load, and the dispatch. */
+          seed: spread(taken('pool seed')),
+        },
+        data: { mb: S.epochMb, cell: spread(taken('data cell')), unanswered: counted('data cell unanswered') },
+        memory: { privateMb: spread(taken('worker private')), pssMb: spread(taken('worker pss')), rssMb: spread(taken('worker rss')) },
+        /** The greedy attempts the pool computed (`asked`), and those the shared kernel took, whose reasons are with every shared card's (`placed.why`). */
+        greedy: { mb: GREEDY_MB, asked: counted('greedy asked'), memoryError: counted('greedy memory error'), other: counted('greedy other'), shared: counted('greedy shared') },
+        errors: counted('council errors'),
+        main: {
+          completionDuringBurst: spread(taken('completion during the burst')),
+          completionEmpty: counted('completion during the burst empty'),
+          completionUnanswered: counted('completion during the burst unanswered') + counted('completion during the burst offline'),
+          busyWithAttempt: counted('main busy with an attempt'),
+        },
+        drafts: counted('council drafts'),
+        unanswered: counted('council unanswered'),
+      },
+      collab: { quiet: spread(taken('collab')), burst: spread(taken('collab burst')), big: spread(taken('collab big')), unanswered: counted('collab unanswered') },
       controlRtt: spread(pongs),
     },
     machine: {
@@ -2463,7 +3134,7 @@ function summary(interrupted: boolean) {
       rtt: spread(chipRtt),
       unreachable: spread(unreachableMs),
       failovers: failoversSeen,
-      containers: [...slots.values()].map((slot) => ({ role: slot.role, where: slot.where, heldMb: slot.heldMb, usedMb: spread(slot.usedMb), cpuPercent: spread(slot.cpuPercent), card: slot.card })),
+      containers: [...slots.values()].map((slot) => ({ role: slot.role, where: slot.where, heldMb: slot.heldMb, usedMb: spread(slot.usedMb), cpuPercent: spread(slot.cpuPercent), card: slot.card, workers: slot.workers })),
       gpu: { card: roomCard(), cuda },
       staffNotes: sentences(notes.staff),
       roomNotes: sentences(notes.room),
@@ -2475,6 +3146,8 @@ function summary(interrupted: boolean) {
       ...bytes,
       perTabHour: minutes > 0 && tabs.length > 0 ? Math.round(((bytes.sent + bytes.received) / Math.max(1, tabs.length)) * (60 / minutes)) : null,
       datasets: CSV_BYTES.reduce((sum, one) => sum + one, 0) + BIG_BYTES,
+      /** The rig's own keystrokes between tabs (watchCollab): each an edit of the class notebook, written to its file and pushed to the class's machine. */
+      probe: { edits: collabEdits, notebookBytes: notebookFileBytes() },
     },
     sockets: { reconnects, closes: Object.fromEntries(closes), errors: counted('socket errors'), badFrames, silent: counted('collab silent 30s'), editsRefused: counted('edits refused') },
     refusals: Object.fromEntries(refusals),
@@ -2524,9 +3197,31 @@ function report(sum: Summary): void {
   row(`edit (${n.edit.kb} KB) → readable`, spreadText(n.edit.readable), `the barrier carries a change at home first${n.edit.neverReadable ? red(` · ${n.edit.neverReadable} never readable`) : ''}`)
   if (n.big.mb > 0) row(`upload of ${megabytes(n.big.mb)}`, spreadText(n.big.http), `→ readable ${spreadText(n.big.readable)}${n.big.failed ? red(` · ${n.big.failed} failed`) : ''}`)
   for (const csv of n.csv) row(`CSV of ${megabytes(csv.mb)} → panel`, spreadText(csv.toPanel), `from the cell's end to its row${csv.neverListed ? red(' · never listed') : ''}${csv.unanswered ? red(' · its cell never answered') : ''}`)
-  row('council attempt', spreadText(n.council), `n=${n.council.n} in the shared kernel · ${n.council.drafts} drafts${n.council.unanswered ? red(` · ${n.council.unanswered} unanswered`) : ''}`)
-  row('  the burst', spreadText(n.council.burst), 'first run → last result')
+  const k = n.council
+  const lane = k.lane === 'pool' ? `the pool of ${k.workers === 'auto' ? 'auto' : k.workers} workers (${megabytes(k.attemptMb ?? 0)} each)` : 'the shared kernel'
+  row('council attempt', spreadText(k), `n=${k.n} press → result, ${k.councils} ${k.councils === 1 ? 'council' : 'councils'} on ${lane} · ${k.placed.pool} on the pool, ${k.placed.shared} in the shared kernel${k.unanswered ? red(` · ${k.unanswered} unanswered`) : ''}${k.errors ? red(` · ${k.errors} failed`) : ''}`)
+  if (k.lane === 'pool') for (const [why, times] of Object.entries(k.placed.why)) say(red(`      in the shared kernel ${times}×: ${why}`))
+  row('  waited to compute', spreadText(k.wait), 'press → computing: a free worker, or the shared kernel\'s queue, and a fresher epoch first (D8)')
+  row('  overhead', spreadText(k.overhead), `its time computing (home's ranMs) past its ${ATTEMPT_SEC} s: the entry, the exit, the barrier, the road`)
+  row('  the burst', spreadText(k.burst), `up to ${k.presses} at once, first press → last result · the first computing ${ms(k.firstStart.p50)} after the first press${k.burstEpochs > 1 ? red(` · on ${k.burstEpochs} epochs: refrozen again under it`) : ''}`)
+  row(`  beside a ${k.beside.sec}s cell`, spreadText(k.beside.burst), `the teacher's long cell running · the first computing ${ms(k.beside.firstStart.p50)} after the first press · ${k.beside.placed.pool} on the pool, ${k.beside.placed.shared} in the shared kernel${k.beside.stopped ? red(` · the long cell stopped under it ${k.beside.stopped}×`) : ''}`)
+  if (k.host.n) row('  the teacher\'s run', spreadText(k.host), `beside the long cell, pressed once the class had, press → computing · ${k.host.overtaken} of the attempts waiting then started before it (the teacher's lane, D12)`)
+  if (k.epochs.fresh + k.epochs.noted + k.epochs.silent > 0) row('  epochs', `${k.epochs.fresh} on the newest · ${k.epochs.noted + k.epochs.silent} on an older one`, `${k.epochs.noted} of those said «без ячеек N»${k.epochs.silent ? red(` · ${k.epochs.silent} said nothing`) : ''}`)
+  if (k.lane === 'pool') {
+    row('  the pool, cold', `epoch ${ms(k.pool.epochFirst.p50)} · ready ${ms(k.pool.readyFirst.p50)}`, `after the first open: its epoch taken (the export), then on the machine and loaded by a worker (its way there, the workers' start and a seed) · up to ${k.pool.workers} workers up${k.pool.notReady ? red(` · ${k.pool.notReady} not ready within ${Math.round(k.pool.waitMs / 1000)}s`) : ''}`)
+    row('  a later open', spreadText(k.pool.epoch), 'its epoch on the pool\'s machine after the open: the export and its way there, no worker\'s reload')
+    row('  «Обновить состояние»', spreadText(k.pool.refresh), `nothing run since: the same, an unchanged refreeze${k.pool.refreshUnanswered ? red(` · ${k.pool.refreshUnanswered} unanswered`) : ''}`)
+    row('  a worker\'s seed', spreadText(k.pool.seed), 'the console naming the epoch a first burst waited for → its first attempt computing on it: a worker\'s restart and load, and the dispatch (the console\'s frames up to 250 ms late)')
+    if (k.memory.privateMb.n) row('  a worker\'s memory', `own ${megabytes(k.memory.privateMb.p50 ?? 0)} · Pss ${megabytes(k.memory.pssMb.p50 ?? 0)} at p50`, `all it wrote for itself (Anonymous − LazyFree + Pss_Shmem + Swap, the epoch's objects it unpickled with it: the pool recycles on the growth since the seed past «Память на попытку», not this) up to ${megabytes(k.memory.privateMb.max ?? 0)} · Rss ${megabytes(k.memory.rssMb.p50 ?? 0)}: smaps_rollup as each attempt read it at its end`)
+    if (k.greedy.asked || k.greedy.shared) row('  a greedy attempt', k.greedy.asked ? `${k.greedy.memoryError} of ${k.greedy.asked} MemoryError on the pool` : 'none on the pool', `asking ${megabytes(k.greedy.mb)}${k.greedy.other ? red(` · ${k.greedy.other} ended otherwise`) : ''}${k.greedy.shared ? red(` · ${k.greedy.shared} computed in the shared kernel, under the class's memory: not judged`) : ''}`)
+  }
+  if (k.data.mb > 0) row(`  the data (${megabytes(k.data.mb)})`, spreadText(k.data.cell), `a DataFrame and a fitted model in the class notebook's kernel, before the class${k.data.unanswered ? red(' · never made') : ''}`)
+  row('  the notebook\'s kernel', spreadText(k.main.completionDuringBurst), `a completion asked of it during the first burst (a question, not a run: a run would make the epoch stale)${k.main.completionEmpty ? ` · ${k.main.completionEmpty} empty: it was busy` : ''}${k.main.completionUnanswered ? red(` · ${k.main.completionUnanswered} unanswered`) : ''} · ${k.main.busyWithAttempt} console frames of it computing an attempt during a burst`)
   row('control ping', spreadText(n.controlRtt), 'the tabs\' own round trip to the home: the floor of everything above')
+  const co = n.collab
+  row('collaboration', spreadText(co.quiet), `a keystroke from one tab to another, nothing heavy on${co.unanswered ? red(` · ${co.unanswered} never arrived`) : ''}`)
+  row('  during a burst', spreadText(co.burst), `n=${co.burst.n}`)
+  if (co.big.n) row('  during the big upload', spreadText(co.big), `n=${co.big.n}`)
   if ((sum.rig.loopLag.p95 ?? 0) > 50) say(red(`    the rig waited for ITS OWN loop p95 ${ms(sum.rig.loopLag.p95)} — every latency above holds up to that much of the rig's own`))
   say()
 
@@ -2536,7 +3231,7 @@ function report(sum: Summary): void {
   row('unreachable', sum.machine.unreachable.n === 0 ? green('never') : red(`${sum.machine.unreachable.n}× · longest ${ms(sum.machine.unreachable.max)}`), '')
   row('failovers seen', sum.machine.failovers === 0 ? green('0') : red(String(sum.machine.failovers)), 'a slot left its machine')
   for (const slot of sum.machine.containers) {
-    row(`  ${slot.role} ${slot.where === 'here' ? 'here' : `on ${slot.where}`}`, `used ${slot.usedMb.max === null ? '—' : `${Math.round(slot.usedMb.max)} MB at most`}${slot.heldMb !== null ? ` of ${megabytes(slot.heldMb)}` : ''}`, `«Работают сейчас», ${slot.usedMb.n} ${slot.usedMb.n === 1 ? 'look' : 'looks'}${slot.cpuPercent.max !== null ? ` · CPU up to ${Math.round(slot.cpuPercent.max)} %` : ''}${slot.card ? ` · card ${slot.card}` : ''}`)
+    row(`  ${slot.role} ${slot.where === 'here' ? 'here' : `on ${slot.where}`}`, `used ${slot.usedMb.max === null ? '—' : `${Math.round(slot.usedMb.max)} MB at most`}${slot.heldMb !== null ? ` of ${megabytes(slot.heldMb)}` : ''}`, `«Работают сейчас», ${slot.usedMb.n} ${slot.usedMb.n === 1 ? 'look' : 'looks'}${slot.cpuPercent.max !== null ? ` · CPU up to ${Math.round(slot.cpuPercent.max)} %` : ''}${slot.card ? ` · card ${slot.card}` : ''}${slot.workers !== null ? ` · ${slot.workers} workers` : ''}`)
   }
   firstOf(sum.machine.staffNotes, 8, (heard) => say(dim(`      staff: ${heard.text}${heard.count > 1 ? `  (×${heard.count})` : ''}`)))
   firstOf(sum.machine.roomNotes, 8, (heard) => say(dim(`      room: ${heard.text}${heard.count > 1 ? `  (×${heard.count})` : ''}`)))
@@ -2562,6 +3257,11 @@ function report(sum: Summary): void {
   say(dim(`      ${RELAY_LINE}`))
   say(dim(`    then (Δrx + Δtx) × 60 / ${sum.minutes || S.minutes} — the tunnel's bytes are in it, the rig's are above`))
   if (sum.bytes.datasets > 0) say(dim(`    less the datasets: the class wrote and uploaded ${size(sum.bytes.datasets)} once (the CSVs, the big upload), each crossing the relay about twice`))
+  const probe = sum.bytes.probe
+  if (probe.edits > 0 && ON_MACHINES) {
+    // The class notebook's file is source only, and one edit has the server write it whole and push it to the class's machine (books.ts, §8).
+    say(dim(`    less the rig's own keystrokes between tabs (collaboration RTT): ${probe.edits} edits of the class notebook, each one write of its file${probe.notebookBytes !== null ? ` (${size(probe.notebookBytes)} at the end)` : ''} pushed to the class's machine: up to ${probe.notebookBytes !== null ? size(probe.edits * probe.notebookBytes) : 'that many files'}, crossing the relay about twice`))
+  }
   say(dim('    the home\'s CPU while it pipes (§17.5: < 5 % of a core) is the home\'s too: `ps -o cputime= -p <its server\'s pid>` before and after'))
   say()
 
@@ -2595,6 +3295,32 @@ function report(sum: Summary): void {
   const own = sum.machine.containers.filter((slot) => slot.role === 'own')
   check(null, `${sum.personal} personal ${sum.personal === 1 ? 'notebook' : 'notebooks'}: first-run p95 ${ms(n.print.firstOwn.p95)}, the own container ${own.length ? own.map((slot) => `${slot.usedMb.max === null ? '—' : `${Math.round(slot.usedMb.max)} MB`} at most ${slot.where === 'here' ? 'here' : `on ${slot.where}`}`).join(', ') : 'not seen'}`)
   if (gpuClass) check(sum.machine.gpu.card !== null && cuda !== false, `a GPU room: the card held ${sum.machine.gpu.card ?? red('— none seen')}${cuda === null ? '' : `, torch.cuda ${cuda ? 'works' : red('does not work')}`}`)
+  // The council's R2 rows, judged where its attempts go to a pool; in the shared kernel its numbers above are the baseline's.
+  if (k.lane === 'pool') {
+    /*
+     * The burst row is judged on the shape it names, as it was asked: eight
+     * workers (LOAD_WORKERS=8) and a first burst of thirty pressed at once.
+     * Asked so, it holds only for bursts on one epoch, all eight up: a pool
+     * that never had its eight, never took the burst or refroze under it
+     * fails it.
+     */
+    if (k.workers === 8 && k.presses >= k.r2.size) {
+      const held = k.r2.burst.n > 0 && (k.r2.burst.p95 ?? Infinity) <= 20_000 && k.pool.workers === 8 && k.r2.refrozen === 0
+      check(held, `(R2) ${k.presses} attempts at once on 8 workers: the burst ${k.r2.burst.n ? `${ms(k.r2.burst.p95)} at p95` : red('never computed on the pool')} (≤ 20 s)${k.pool.workers === 8 ? '' : red(`, only ${k.pool.workers} of the 8 workers ever up at once`)}${k.r2.refrozen ? red(`, ${k.r2.refrozen} refrozen under it`) : ''}`)
+    } else {
+      const why = k.workers !== 8 ? `«Попыток одновременно» was ${k.workers ?? '—'}, not 8 (LOAD_WORKERS=8)` : `the most pressed at once was ${k.presses}, not ${k.r2.size} (LOAD_STUDENTS=${k.r2.size})`
+      check(null, `(R2) ${k.r2.size} attempts of ${ATTEMPT_SEC} s on 8 workers ≤ 20 s not judged: ${why}; the first burst here ${ms(k.burst.p95)} at p95 on ${k.pool.workers} workers up`)
+    }
+    check(k.overhead.n > 0 ? (k.overhead.p95 ?? Infinity) <= 1000 : null, `(R2) each attempt past its ${ATTEMPT_SEC} s ≤ 1 s at p95: ${ms(k.overhead.p95)}`)
+    check(k.n > 0 ? k.placed.shared === 0 && k.main.busyWithAttempt === 0 : null, `(R2) the notebook's kernel untouched: ${k.placed.shared} attempts in it, ${k.main.busyWithAttempt} console frames of it computing one; a completion asked of it during the burst ${ms(k.main.completionDuringBurst.p50)} at p50${k.main.completionEmpty ? `, ${k.main.completionEmpty} empty` : ''}`)
+    check(k.beside.firstStart.n > 0 ? (k.beside.firstStart.p95 ?? Infinity) <= COUNCIL_EPOCH_WAIT_MS + 1000 && k.epochs.silent === 0 : null, `(R2) beside the teacher's long cell: the first attempt computing ${ms(k.beside.firstStart.p95)} after the first press at p95 (≤ ${COUNCIL_EPOCH_WAIT_MS / 1000} s waiting for a fresher epoch, and a second of the road), ${k.epochs.noted} on an older epoch saying «без ячеек N»${k.epochs.silent ? red(`, ${k.epochs.silent} saying nothing`) : ''}`)
+    check(k.host.judged > 0 ? k.host.overtaken === 0 : null, `(R2) the teacher's lane first: ${k.host.judged ? `${k.host.overtaken} of the class's waiting attempts started before the teacher's run, ${ms(k.host.p50)} from its press to computing` : 'not judged: no attempt of the class still waited when the teacher pressed'}`)
+    check(k.greedy.asked > 0 ? k.greedy.memoryError === k.greedy.asked && k.errors === 0 : null, k.greedy.asked > 0 ? `(R2) a greedy attempt on the pool: ${k.greedy.memoryError} of ${k.greedy.asked} a MemoryError, ${k.errors} other attempts failed${k.greedy.shared ? `; ${k.greedy.shared} more in the shared kernel, not judged` : ''}` : k.greedy.shared ? `(R2) a greedy attempt: not judged, the shared kernel computed it ${k.greedy.shared}× (its reason with the shared cards' in section 4)` : '(R2) a greedy attempt: not asked (Python cells and a class of three or more)')
+    check(null, `(R2) the epoch${k.data.mb ? ` of ${megabytes(k.data.mb)} of data` : ''}: taken ${ms(k.pool.epochFirst.p50)} after the first open, the pool ready ${ms(k.pool.readyFirst.p50)} (the H → C transfer in it when the class notebook computes here), a later open's on the machine ${ms(k.pool.epoch.p50)}, an unchanged refreeze ${ms(k.pool.refresh.p50)}, a seed ${ms(k.pool.seed.p50)}, a worker's own memory ${k.memory.privateMb.n ? megabytes(k.memory.privateMb.p50 ?? 0) : '—'}; the council container in section 5`)
+  }
+  const within = (during: Spread): boolean | null => (during.n > 0 && co.quiet.p95 !== null ? (during.p95 ?? Infinity) - co.quiet.p95 <= 50 : null)
+  check(within(co.burst), `collaboration during the council's bursts within 50 ms of a quiet one at p95: ${ms(co.burst.p95)} against ${ms(co.quiet.p95)}`)
+  if (co.big.n) check(within(co.big), `collaboration during the big upload within 50 ms of a quiet one at p95: ${ms(co.big.p95)} against ${ms(co.quiet.p95)}`)
   check(sum.machine.failovers === 0 && sum.machine.unreachable.n === 0 ? true : null, sum.machine.failovers === 0 ? 'no failover and no amber chip seen' : `${sum.machine.failovers} failovers seen: compare the timeline with what was injected`)
   say()
 }
@@ -2660,7 +3386,7 @@ function cleanup(): Promise<void> {
   cleaning ??= (async () => {
     stopping = true
     for (const done of [...stopWaiters]) done()
-    for (const timer of [healthTimer, runningTimer, silenceTimer, selfTimer]) if (timer) clearInterval(timer)
+    for (const timer of [healthTimer, runningTimer, silenceTimer, selfTimer, collabTimer]) if (timer) clearInterval(timer)
     for (const tab of tabs) tab.close()
     if (creation === 'pending') await Promise.race([creating ?? Promise.resolve(), sleep(CREATE_WAIT_MS)])
     const ids = new Set<string>(SID ? [SID] : [])
@@ -2747,7 +3473,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
 async function main(): Promise<number> {
   say()
   say(bold('  colloq class-load') + dim(`  ${new Date().toISOString()}  ·  ${S.base}`))
-  say(dim(`  ${S.students} students (${STUDENTS_OWN} in personal notebooks) · ${S.minutes} min in ${ROUNDS} ${ROUNDS === 1 ? 'round' : 'rounds'} of ${Math.round(ROUND_MS / 1000)}s · CLASS=${S.preset} (room ${PLACEMENT.room}, own ${PLACEMENT.own}, council shared)${S.cells === 'fake' ? ' · fake cells' : ''}`))
+  say(dim(`  ${S.students} students (${STUDENTS_OWN} in personal notebooks) · ${S.minutes} min in ${ROUNDS} ${ROUNDS === 1 ? 'round' : 'rounds'} of ${Math.round(ROUND_MS / 1000)}s · CLASS=${S.preset} (room ${PLACEMENT.room}, own ${PLACEMENT.own}, council ${POOL ? `on a pool of ${S.workers} workers, ${S.attemptMb} MB each` : 'in the shared kernel'})${S.epochMb ? ` · ${S.epochMb} MB of data for the epoch` : ''}${S.cells === 'fake' ? ' · fake cells' : ''}`))
   if (S.baseline) say(dim(`  baseline: ${S.baseline.path}`))
   say(dim('  relay2\'s counters before the run, on the relay:'))
   say(dim(`    ${RELAY_LINE}`))
@@ -2795,7 +3521,7 @@ async function main(): Promise<number> {
   if (cuda === false) say(red('    torch sees no card in the class\'s kernel'))
   say()
 
-  say(bold('  3. CLASS') + dim(`  — ${ROUNDS} ${ROUNDS === 1 ? 'round' : 'rounds'} of ${Math.round(ROUND_MS / 1000)}s: echo, completion, print(1), the figure, an edit, tqdm ${TQDM_SEC}s, a ${LONG_SEC}s cell, interrupts, a council; the run limit ${LIMIT_SEC}s`))
+  say(bold('  3. CLASS') + dim(`  — ${ROUNDS} ${ROUNDS === 1 ? 'round' : 'rounds'} of ${Math.round(ROUND_MS / 1000)}s: echo, completion, print(1), the figure, an edit, tqdm ${TQDM_SEC}s, a ${LONG_SEC}s cell, interrupts, a council of two bursts of ${ATTEMPT_SEC}s attempts, the second beside a ${BESIDE_SEC}s cell; the run limit ${LIMIT_SEC}s`))
   await holdClass()
   return 0
 }

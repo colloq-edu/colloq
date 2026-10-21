@@ -285,7 +285,22 @@ export interface FakeJupyterDoor {
   requests(): Promise<Array<{ code: string; store_history?: boolean; silent?: boolean }>>
   /** Let cells waiting at `HOLD name` go on: how many did. */
   release(name?: string): Promise<number>
-  knobs(asked: { holdKernelInfo?: boolean; slowRevival?: boolean; upgradeDelayMs?: number; refuseUpgrades?: number; holdInterrupts?: boolean; restarts?: 'normal' | 'unanswered' | 'ignored' | 'held' }): Promise<Record<string, unknown>>
+  knobs(asked: {
+    holdKernelInfo?: boolean
+    slowRevival?: boolean
+    upgradeDelayMs?: number
+    refuseUpgrades?: number
+    holdInterrupts?: boolean
+    restarts?: 'normal' | 'unanswered' | 'ignored' | 'held'
+    /** The council's canned reports (the fake's councilAtRest knobs), the given ones set; null — all back at rest. */
+    council?: Record<string, unknown> | null
+    /** Service runs held at a HOLD of their own: each whose code contains `match`, at `HOLD name` (a kernel's only, with `kernel`). */
+    holdSilent?: Array<{ match: string; name: string; kernel?: string }>
+  }): Promise<Record<string, unknown>>
+  /** How many cells wait at each HOLD now, and the most that ever waited at each at once. */
+  holds(): Promise<{ holding: Record<string, number>; peak: Record<string, number> }>
+  /** What the council's hidden module was asked for so far (exports, loads, a pool worker's entries and exits), and its knobs. */
+  council(): Promise<{ runs: { export: number; load: number; enter: number; leave: number }; knobs: Record<string, unknown> }>
 }
 
 export interface AgentOptions {
@@ -314,6 +329,15 @@ export interface AgentOptions {
   timings?: AgentTimings
   /** Each class container's Jupyter writes down every call it takes, where docker's `rm` leaves it (jupyterCalls). */
   keepCalls?: boolean
+  /**
+   * The CPUs the agent reads its host to have (machine.ts · readMachine, the
+   * rest of its picture as it is): what it offers home is these less one. A
+   * council's container takes a core a worker (§9.5), and a scenario's pool
+   * of four with the class beside it fits no CI runner of four cores
+   * otherwise; its containers are fake Jupyters, which compute nothing. Given,
+   * the agent starts through this module's end, as with `timings`.
+   */
+  cpus?: number
 }
 
 /** What an agent's timings may be shortened to (runner-agent/sync.ts · AgentOptions: holdMs, backoffMs, stopMs, classes, files). */
@@ -332,6 +356,8 @@ export interface AgentTimings {
 
 /** The environment variable that carries an agent's shortened timings to this module run as its entry. */
 const AGENT_TIMINGS = 'COLLOQ_E2E_AGENT_TIMINGS'
+/** The one that carries the CPUs it reads its host to have (AgentOptions.cpus). */
+const AGENT_CPUS = 'COLLOQ_E2E_AGENT_CPUS'
 const HERE = fileURLToPath(import.meta.url)
 
 /** The image a class machine's agent runs as, in its fake docker: the perimeter's helper runs from it. */
@@ -409,6 +435,7 @@ export class Agent {
       FAKE_DOCKER_OWNER: String(process.pid),
       ...(this.options.keepCalls ? { FAKE_DOCKER_CALLS: this.callsDir } : {}),
       ...(this.options.timings ? { [AGENT_TIMINGS]: JSON.stringify(this.options.timings) } : {}),
+      ...(this.options.cpus ? { [AGENT_CPUS]: String(this.options.cpus) } : {}),
     }
   }
 
@@ -421,9 +448,10 @@ export class Agent {
   start(): void {
     if (this.running) throw new Error(`${this.name} is running already`)
     const env = this.environment()
-    // Shortened timings go in through this module, which hands them to main.ts's main() (its end); otherwise main.ts runs as it is.
-    if (this.options.timings && this.options.build) throw new Error(`${this.name}: shortened timings run the sources' main.ts, not another build's copy`)
-    const child = spawn(process.execPath, ['--import', 'tsx', this.options.timings ? HERE : this.entry], { cwd: REPO, env, stdio: ['ignore', 'pipe', 'pipe'] })
+    // Shortened timings (and a host's CPUs) go in through this module, which hands them to main.ts's main() (its end); otherwise main.ts runs as it is.
+    const seamed = this.options.timings !== undefined || this.options.cpus !== undefined
+    if (seamed && this.options.build) throw new Error(`${this.name}: shortened timings run the sources' main.ts, not another build's copy`)
+    const child = spawn(process.execPath, ['--import', 'tsx', seamed ? HERE : this.entry], { cwd: REPO, env, stdio: ['ignore', 'pipe', 'pipe'] })
     this.child = child
     live.add(child)
     const keep = (chunk: Buffer): void => {
@@ -687,6 +715,8 @@ export class Agent {
       requests: () => json('GET', 'requests'),
       release: async (name = '') => (await json<{ released: number }>('POST', `release/${encodeURIComponent(name)}`)).released,
       knobs: (asked) => json('POST', 'knobs', asked),
+      holds: () => json('GET', 'holds'),
+      council: () => json('GET', 'council'),
     }
   }
 
@@ -731,12 +761,19 @@ export class Agent {
  * agent's it has nothing to end, and its signal handlers go, so that a
  * SIGTERM is the agent's stop (its last sync, `bye`) rather than an exit.
  */
-if (process.env[AGENT_TIMINGS] && process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(HERE)) {
+if ((process.env[AGENT_TIMINGS] || process.env[AGENT_CPUS]) && process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(HERE)) {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.removeAllListeners(signal)
-  const timings = JSON.parse(process.env[AGENT_TIMINGS]) as AgentTimings
+  const timings = JSON.parse(process.env[AGENT_TIMINGS] ?? '{}') as AgentTimings
+  const cpus = Number(process.env[AGENT_CPUS] ?? 0)
   const { main } = await import('../server/src/runner-agent/main.ts')
-  const seams = { ...timings, ...(timings.classes ? { classes: { timings: timings.classes } } : {}) }
+  const { readMachine } = await import('../server/src/runner-agent/machine.ts')
+  const seams = {
+    ...timings,
+    ...(timings.classes ? { classes: { timings: timings.classes } } : {}),
+    // The host's CPUs as the test said them (AgentOptions.cpus), the rest of the picture as the agent reads it (sync.ts · machine).
+    ...(cpus > 0 ? { machine: () => ({ ...readMachine(process.env.COLLOQ_RUNNER_STATE!), cpus }) } : {}),
+  }
   const io = { out: (text: string) => void process.stdout.write(text), err: (text: string) => void process.stderr.write(text) }
-  process.stderr.write(`colloq-runner e2e: shortened timings ${JSON.stringify(timings)}\n`)
+  process.stderr.write(`colloq-runner e2e: shortened timings ${JSON.stringify(timings)}${cpus > 0 ? `, the host's CPUs ${cpus}` : ''}\n`)
   process.exit(await main(['run'], process.env, io, seams as unknown as Parameters<typeof main>[3]))
 }

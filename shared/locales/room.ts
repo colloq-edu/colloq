@@ -6619,5 +6619,289 @@ export const roomMessages: MessageCatalog = {
   "room.files.machine.gb": {
     "ru": "{value} ГБ",
     "en": "{value} GB"
+  },
+  // The council's pool in the console (docs/architecture/remote-classes.md §9, Paper 18 · Z8, Z8b): the strip under
+  // the header, the left names of a snapshot, the queue tab while one is taken, and the two rules of the sheet.
+  "room.pult.pool.label": {
+    "ru": "Пул консилиума",
+    "en": "Council pool"
+  },
+  "room.pult.pool.ready": {
+    "ru": {
+      "one": "{count} готов",
+      "few": "{count} готовы",
+      "many": "{count} готовы",
+      "other": "{count} готовы"
+    },
+    "en": {
+      "one": "{count} ready",
+      "other": "{count} ready"
+    }
+  },
+  "room.pult.pool.busy": {
+    "ru": {
+      "one": "{count} считает",
+      "few": "{count} считают",
+      "many": "{count} считают",
+      "other": "{count} считают"
+    },
+    "en": {
+      "one": "{count} computing",
+      "other": "{count} computing"
+    }
+  },
+  "room.pult.pool.queued": {
+    "ru": {
+      "one": "{count} ждёт",
+      "few": "{count} ждут",
+      "many": "{count} ждут",
+      "other": "{count} ждут"
+    },
+    "en": {
+      "one": "{count} waiting",
+      "other": "{count} waiting"
+    }
+  },
+  "room.pult.pool.state": {
+    "ru": "состояние {time}",
+    "en": "state as of {time}"
+  },
+  "room.pult.pool.snapshot": {
+    "ru": "снимок состояния",
+    "en": "taking a snapshot"
+  },
+  "room.pult.pool.refreshAuto": {
+    "ru": "следует за ядром",
+    "en": "follows the kernel"
+  },
+  "room.pult.pool.refreshManual": {
+    "ru": "по кнопке",
+    "en": "on Refresh only"
+  },
+  "room.pult.pool.refresh": {
+    "ru": "Обновить",
+    "en": "Refresh"
+  },
+  "room.pult.pool.refreshTitle": {
+    "ru": "Снять состояние тетради для попыток заново",
+    "en": "Take the notebook’s state for the attempts anew"
+  },
+  "room.pult.pool.starting": {
+    "ru": "Пул поднимается",
+    "en": "The pool is starting"
+  },
+  "room.pult.pool.readyOf": {
+    "ru": {
+      "one": "готов {count} из {size}",
+      "few": "готовы {count} из {size}",
+      "many": "готовы {count} из {size}",
+      "other": "готовы {count} из {size}"
+    },
+    "en": {
+      "one": "{count} of {size} ready",
+      "other": "{count} of {size} ready"
+    }
+  },
+  "room.pult.pool.recycled": {
+    "ru": "исполнитель перезапущен",
+    "en": "worker restarted"
+  },
+  "room.pult.pool.recycledTitle": {
+    "ru": "Попытка оставила исполнителя в негодном виде — не остановилась, оставила потоки или память, или его Python упал, — и пул его перезапустил. Следующие попытки идут на чистом.",
+    "en": "An attempt left a worker unfit — it would not stop, it left threads or memory behind, or its Python died — and the pool restarted it. The next attempts get a clean one."
+  },
+  "room.pult.pool.seedHide": {
+    "ru": "Скрыть",
+    "en": "Hide"
+  },
+  "room.pult.pool.meanwhile": {
+    "ru": "пока попытки — в общем ядре",
+    "en": "attempts run in the shared kernel meanwhile"
+  },
+  "room.pult.pool.inShared": {
+    "ru": "попытки — в общем ядре",
+    "en": "attempts run in the shared kernel"
+  },
+  "room.pult.pool.laneLead": {
+    "ru": "Попытки —",
+    "en": "Attempts:"
+  },
+  "room.pult.pool.laneValue": {
+    "ru": "в общем ядре, по очереди",
+    "en": "in the shared kernel, in turn"
+  },
+  "room.pult.pool.laneNote": {
+    "ru": "вместе с вашими ячейками, по одной",
+    "en": "together with your cells, one at a time"
+  },
+  "room.pult.pool.left": {
+    "ru": "Не переносится: {names}.",
+    "en": "Not carried over: {names}."
+  },
+  "room.pult.pool.leftNote": {
+    "ru": "такие попытки — в общем ядре",
+    "en": "such attempts run in the shared kernel"
+  },
+  "room.pult.pool.leftHide": {
+    "ru": "Скрыть, пока в списке не появится новое",
+    "en": "Hide until something new is on the list"
+  },
+  "room.pult.pool.queue.scope": {
+    "ru": "Очередь тетради · ячейки и попытки в общем ядре — по одной",
+    "en": "The notebook’s queue · cells and shared-kernel attempts, one at a time"
+  },
+  "room.pult.pool.queue.snapshotWaits": {
+    "ru": "следующие попытки ждут его, до 5 с",
+    "en": "the next attempts wait for it, up to 5 s"
+  },
+  "room.pult.pool.queue.snapshotFor": {
+    "ru": "снимок состояния · {duration}",
+    "en": "taking a snapshot · {duration}"
+  },
+  "room.pult.pool.queue.after": {
+    "ru": "после вашей ячейки {cell}",
+    "en": "after your cell {cell}"
+  },
+  "room.pult.pool.queue.restartKeeps": {
+    "ru": "Пул консилиума это не трогает: попытки считаются на прежнем снимке, пока вы снова не выполните ячейки.",
+    "en": "The council’s pool is left alone: attempts compute on the snapshot they have until you run the cells again."
+  },
+  "room.pult.pool.rules.whyEveryone": {
+    "ru": "Студент запускает свою попытку сам; в пуле попытки считаются одновременно, каждая в своём исполнителе.",
+    "en": "A student runs their own attempt; in the pool attempts run at the same time, each in a worker of its own."
+  },
+  "room.pult.pool.rules.laneTitle": {
+    "ru": "Попытки считаются",
+    "en": "Attempts run"
+  },
+  "room.pult.pool.rules.lanePool": {
+    "ru": "Отдельно, параллельно",
+    "en": "Apart, in parallel"
+  },
+  "room.pult.pool.rules.laneShared": {
+    "ru": "В общем ядре по очереди",
+    "en": "In the shared kernel, in turn"
+  },
+  "room.pult.pool.rules.laneWhy": {
+    "ru": "Каждая попытка — в своём исполнителе на снимке тетради: {count} одновременно на {machine}, ваши ячейки их не держат. «В общем ядре» — как раньше: по одной, в очереди тетради.",
+    "en": "Each attempt runs in a worker of its own, on the notebook’s snapshot: {count} at once on {machine}, and your cells do not hold them up. “In the shared kernel” is the old way: one at a time, in the notebook’s queue."
+  },
+  "room.pult.pool.rules.laneWhyPlain": {
+    "ru": "Каждая попытка — в своём исполнителе на снимке тетради, ваши ячейки их не держат. «В общем ядре» — как раньше: по одной, в очереди тетради.",
+    "en": "Each attempt runs in a worker of its own, on the notebook’s snapshot, and your cells do not hold them up. “In the shared kernel” is the old way: one at a time, in the notebook’s queue."
+  },
+  "room.pult.pool.rules.attempts": {
+    "ru": {
+      "one": "{count} попытка",
+      "few": "{count} попытки",
+      "many": "{count} попыток",
+      "other": "{count} попытки"
+    },
+    "en": {
+      "one": "{count} attempt",
+      "other": "{count} attempts"
+    }
+  },
+  "room.pult.pool.rules.today": {
+    "ru": "Сегодня: {apart} отдельно · {shared} в общем ядре",
+    "en": "Today: {apart} apart · {shared} in the shared kernel"
+  },
+  "room.pult.pool.rules.todayNames": {
+    "ru": "Сегодня: {apart} отдельно · {shared} в общем ядре ({names})",
+    "en": "Today: {apart} apart · {shared} in the shared kernel ({names})"
+  },
+  "room.pult.pool.rules.refreshTitle": {
+    "ru": "Состояние для попыток",
+    "en": "State for attempts"
+  },
+  "room.pult.pool.rules.refreshAuto": {
+    "ru": "Следует за ядром",
+    "en": "Follows the kernel"
+  },
+  "room.pult.pool.rules.refreshManual": {
+    "ru": "По кнопке",
+    "en": "On Refresh only"
+  },
+  "room.pult.pool.rules.refreshWhy": {
+    "ru": "Вы выполнили ячейку — следующая попытка сначала ждёт новый снимок, до 5 с. «По кнопке» — ваши ячейки снимок не меняют: его меняют «Обновить», открытие консилиума и другие ячейки тетради, которые следуют за ядром.",
+    "en": "You run a cell, and the next attempt first waits for a new snapshot, up to 5 s. With “On Refresh only” your cells leave the snapshot as it is: Refresh changes it, and so do opening a council and the notebook’s other council cells that follow the kernel."
+  },
+  "room.pult.pool.rules.refreshNow": {
+    "ru": "Сейчас: состояние {time}",
+    "en": "Now: state as of {time}"
+  },
+  "room.pult.pool.rules.refreshNowSize": {
+    "ru": "Сейчас: состояние {time} · снимок {size}",
+    "en": "Now: state as of {time} · snapshot {size}"
+  },
+  "room.pult.pool.rules.refreshNowTook": {
+    "ru": "Сейчас: состояние {time} · снимок {size}, переснимается за {took}",
+    "en": "Now: state as of {time} · snapshot {size}, retaken in {took}"
+  },
+  "room.pult.pool.rules.sees": {
+    "ru": "Попытка видит переменные снимка и файлы занятия только для чтения; свои файлы она пишет в личную папку. Общее состояние меняет только «В ячейку и запустить».",
+    "en": "An attempt sees the snapshot’s variables and the class files, the files read-only; it writes its own files into a folder of its own. Only “Put in cell and run” changes the shared state."
+  },
+  // A council card's footnote (Paper 18 · Z9): where and on what state the attempt computed, the same on the student's
+  // sheet and in the console's work; the server's whole sentence stays for a hover and the phone.
+  "room.council.pool.apart": {
+    "ru": "посчитано отдельно · состояние {time}",
+    "en": "computed apart · state as of {time}"
+  },
+  "room.council.pool.apartFull": {
+    "ru": "Посчитано отдельно от тетради, на её состоянии в {time}.",
+    "en": "Computed apart from the notebook, on its state as of {time}."
+  },
+  "room.council.pool.uses": {
+    "ru": "в общем ядре: использует {name}",
+    "en": "in the shared kernel: uses {name}"
+  },
+  "room.council.pool.lost": {
+    "ru": "пересчитано в общем ядре: машина пропала",
+    "en": "run again in the shared kernel: the machine was lost"
+  },
+  "room.council.pool.starting": {
+    "ru": "в общем ядре: пул поднимается",
+    "en": "in the shared kernel: the pool was starting"
+  },
+  "room.council.pool.files": {
+    "ru": "файлы попытки:",
+    "en": "attempt files:"
+  },
+  "room.council.pool.coming": {
+    "ru": "в пути",
+    "en": "on its way"
+  },
+  "room.council.pool.take": {
+    "ru": "Скачать {name}",
+    "en": "Download {name}"
+  },
+  "room.council.pool.dropped": {
+    "ru": {
+      "one": "{count} файл не сохранён",
+      "few": "{count} файла не сохранены",
+      "many": "{count} файлов не сохранены",
+      "other": "{count} файла не сохранены"
+    },
+    "en": {
+      "one": "{count} file not kept",
+      "other": "{count} files not kept"
+    }
+  },
+  "room.council.pool.droppedMore": {
+    "ru": {
+      "one": "ещё {count} файл не сохранён",
+      "few": "ещё {count} файла не сохранены",
+      "many": "ещё {count} файлов не сохранены",
+      "other": "ещё {count} файла не сохранены"
+    },
+    "en": {
+      "one": "{count} more file not kept",
+      "other": "{count} more files not kept"
+    }
+  },
+  "room.council.pool.droppedBig": {
+    "ru": "{line}: больше 1 МБ",
+    "en": "{line}: over 1 MB"
   }
 }

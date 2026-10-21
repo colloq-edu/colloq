@@ -55,6 +55,7 @@ import {
   CLASS_TUNNEL_STUCK_MS,
   CLASS_UNREACHABLE_NOTE_MS,
   COUNCIL_WORKERS,
+  COUNCIL_WORKER_BASE_MB,
   REMOTE_BLOCKED_CIDRS_MAX,
   REMOTE_PIDS,
   REMOTE_PLACEMENTS_MAX,
@@ -88,7 +89,7 @@ import { processClock, type TunnelClock } from '@shared/remote-tunnel'
 import { CLASS_PLACEMENT_DEFAULT, storedClassPlacement, type ClassMachineBounds, type ClassPlacement } from '@shared/admin'
 import type { EnvironmentRevision } from '@shared/dependencies'
 import { config } from '../../config.js'
-import { placedSessions, sessionCpus, sessionEnvironment, sessionMemoryMb } from '../../db.js'
+import { councilEpochsOfClass, placedSessions, sessionCpus, sessionEnvironment, sessionMemoryMb } from '../../db.js'
 import { activeName } from '../../environments.js'
 import { instanceTimeZone } from '../../time-zone.js'
 import { captureRevision } from '../../dependencies/revisions.js'
@@ -505,6 +506,32 @@ function intentShm(): string {
     console.warn(`[classes] KERNEL_SHM=${shm} is not a size docker reads; classes on machines get ${ROOM_SHM}`)
   }
   return ROOM_SHM
+}
+
+/**
+ * What a class's council container holds of its epochs in memory (§9.5): its
+ * notebooks' newest epochs together, in MB — each notebook's pool loads its
+ * own into the one container. The out-of-band buffers are mapped once and
+ * shared by a pool's workers, and the cgroup charges them to the container,
+ * not to any worker's ceiling; the stream each worker unpickles into memory
+ * of its own (`streamMb`, the largest of them: what a worker takes beyond
+ * its baseline, whichever notebook's it serves).
+ */
+function epochMemory(sessionId: string): { buffersMb: number; streamMb: number } {
+  let bytes = 0
+  let stream = 0
+  const seen = new Set<string>()
+  for (const epoch of councilEpochsOfClass(sessionId)) {
+    // Newest first within each notebook: one of each, of those a pool may run (one that did not come together holds nothing).
+    const record = epoch.report as { trouble?: unknown; files?: { body?: unknown; buffers?: unknown } | null } | null
+    if (seen.has(epoch.root) || record?.trouble) continue
+    seen.add(epoch.root)
+    bytes += epoch.bytes
+    const buffers = Array.isArray(record?.files?.buffers) ? (record.files.buffers as Array<{ sha256?: unknown; bytes?: unknown }>) : []
+    const body = buffers.find((file) => file.sha256 === record?.files?.body)?.bytes
+    if (typeof body === 'number' && body > stream) stream = body
+  }
+  return { buffersMb: Math.ceil(bytes / (1024 * 1024)), streamMb: Math.ceil(stream / (1024 * 1024)) }
 }
 
 /** This server's blocked ranges as a machine may be told them: valid, and few enough for one intent (§7.6, REMOTE_BLOCKED_CIDRS_MAX). */
@@ -969,9 +996,17 @@ export class ClassPlacements {
     let mb = memoryMb ?? 0
     let cores = cpus ?? 0
     if (role === 'council') {
-      // The pool's container: its workers' ceilings and a margin, a core each (§9.5); its sizing beyond that is the pool's.
+      /*
+       * The pool's container (§9.5): each worker's ceiling, with what it
+       * holds before an attempt (its baseline, and the epoch's stream it
+       * unpickled), the epoch's buffers (mapped once and shared by every
+       * worker, charged to the container), a margin, a core each. Its sizing
+       * beyond its start is the pool's (kernel/council-pool.ts asks it of
+       * `resize` whenever its pools or their epochs change).
+       */
+      const epochs = epochMemory(sessionId)
       workers = setting.workers === 'auto' ? COUNCIL_START_WORKERS : setting.workers
-      mb = workers * setting.attemptMb + COUNCIL_EXTRA_MB
+      mb = workers * (setting.attemptMb + COUNCIL_WORKER_BASE_MB + epochs.streamMb) + epochs.buffersMb + COUNCIL_EXTRA_MB
       cores = workers
     }
     return {
@@ -2102,14 +2137,21 @@ export class ClassPlacements {
    * (pool.ts · updateWithMemory): the machine runs `docker update` with no
    * such check, and its OOM killer would choose among the runs there, a
    * submission among them (D24). The row keeps its numbers.
+   *
+   * `workers`, the council's alone: its pools' size together, which the
+   * intent carries and the panel names («N исполнителей»); docker has
+   * nothing to apply of it, so a new count with the same numbers is written
+   * and answered as they are.
    */
-  async resize(sessionId: string, role: RoomRole, change: { memoryMb?: number | null; cpus?: number | null }): Promise<LimitOutcome> {
+  async resize(sessionId: string, role: RoomRole, change: { memoryMb?: number | null; cpus?: number | null; workers?: number | null }): Promise<LimitOutcome> {
     const row = livePlacement(sessionId, role)
     if (!row || row.state === 'stopping') return 'pending'
     const memoryMb = change.memoryMb == null ? row.memoryMb : clampMemory(change.memoryMb)
     const cpus = change.cpus == null ? row.cpus : clampCpus(change.cpus)
+    const workers = role !== 'council' || change.workers == null ? row.workers : Math.min(COUNCIL_WORKERS.max, Math.max(1, Math.floor(change.workers)))
     const slot = this.slot(sessionId, role, row.gen)
     if (memoryMb === row.memoryMb && cpus === row.cpus) {
+      if (workers !== row.workers) updatePlacement(sessionId, role, row.gen, { workers }, ['starting', 'ready', 'unreachable'])
       const held = this.machines.get(row.runnerId)?.held.get(keyOf(row))
       return row.state === 'ready' && held?.gen === row.gen && held.resized === 'applied' ? 'applied' : 'pending'
     }
@@ -2121,7 +2163,7 @@ export class ClassPlacements {
         return 'failed'
       }
     }
-    if (!updatePlacement(sessionId, role, row.gen, { memoryMb, cpus }, ['starting', 'ready', 'unreachable'])) return 'pending'
+    if (!updatePlacement(sessionId, role, row.gen, { memoryMb, cpus, ...(workers !== row.workers ? { workers } : {}) }, ['starting', 'ready', 'unreachable'])) return 'pending'
     wakeRunner(row.runnerId)
     if (row.state !== 'ready') return 'pending'
     return new Promise<LimitOutcome>((resolve) => {
@@ -2187,6 +2229,22 @@ export class ClassPlacements {
     if (!row) return null
     const held = this.machines.get(row.runnerId)?.held.get(keyOf(row))
     return held?.gen === row.gen ? (held.usage?.oomKills ?? null) : null
+  }
+
+  /**
+   * The class's council container on its machine, for its pool's sizing
+   * (§9.5: `fit` is what the machine could hold at what a worker takes,
+   * council-pool.ts · workerMb): its memory now, and what the machine has free beside it by the
+   * stale-capacity rule, less the cushion a raise must leave (`resize`).
+   * Null — the council slot is on no machine, or nothing is heard of it.
+   */
+  poolRoom(sessionId: string): { memoryMb: number; freeMb: number } | null {
+    const row = livePlacement(sessionId, 'council')
+    if (!row || row.state === 'stopping') return null
+    const runner = getRunner(row.runnerId)
+    const room = runner ? this.roomOf(runner) : null
+    if (!room) return null
+    return { memoryMb: row.memoryMb, freeMb: Math.max(0, room.memoryMb - PLACEMENT_CUSHION_MB) }
   }
 
   /** What the census of «Работают сейчас» shows of a slot on its machine (usage.ts): the machine's numbers, its name, its link. */
@@ -2336,7 +2394,7 @@ export const machineKernels = {
   ensure: (sessionId: string, environment: string, revisionId?: string, cpus?: number | null, memoryMb?: number | null, role: RoomRole = 'room') =>
     classPlacements().ensure(sessionId, environment, revisionId, cpus, memoryMb, role),
   drop: (sessionId: string, roles: readonly RoomRole[], options: { owner?: boolean } = {}) => classPlacements().drop(sessionId, roles, options),
-  resize: (sessionId: string, role: RoomRole, change: { memoryMb?: number | null; cpus?: number | null }) => classPlacements().resize(sessionId, role, change),
+  resize: (sessionId: string, role: RoomRole, change: { memoryMb?: number | null; cpus?: number | null; workers?: number | null }) => classPlacements().resize(sessionId, role, change),
   /** The classes with something live on a machine, as the idle sweep counts them (pool.ts · listRoomKernels). */
   list: (): Array<{ session: string; running: boolean; own: boolean }> => {
     const out = new Map<string, { running: boolean; own: boolean }>()
@@ -2358,6 +2416,9 @@ export const machineKernels = {
 
 /** The form's live line for a class (§13.1 Z4), staff only. */
 export const placementOutlook = (sessionId: string) => classPlacements().outlook(sessionId)
+
+/** The council container's room on its machine, for its pool's sizing (ClassPlacements#poolRoom). */
+export const poolRoom = (sessionId: string): { memoryMb: number; freeMb: number } | null => classPlacements().poolRoom(sessionId)
 
 /** A class's setting changed: its image is looked for at once. */
 export const classPlacementChanged = (sessionId: string, environment: string | null): void => classPlacements().classPlacementChanged(sessionId, environment)

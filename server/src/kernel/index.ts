@@ -68,6 +68,7 @@ import {
   legacyKernelStatus,
   KERNEL_STATUS_FIELD,
   type CellState,
+  type CouncilSettings,
   type KernelLinkState,
   type KernelStatus,
   type KernelWhere,
@@ -105,6 +106,7 @@ import { explain as explainDeath, forgetKills, sampleKills } from './postmortem.
 import { getSessionDoc, holdRoom, onlineCount, peekSessionDoc } from '../collab/index.js'
 import { kernelRetirementInProgress, pauseKernelStarts } from './retirement.js'
 import { takePlacementHooks } from './remote/placement-store.js'
+import { attemptCardFiles } from './remote/epochs.js'
 import { FilesStalled, askSlotScan, filesPlacementChanged, slotFilesBarrier, slotOnMachine } from './remote/files.js'
 import { seldom } from '../log.js'
 import { countKernelStart } from '../ops/counters.js'
@@ -158,7 +160,7 @@ import {
   GUARD_REPORT_KEY,
 } from './danger.js'
 import { durationWords } from '@shared/text'
-import type { BriefValue, CouncilRun, InspectMiss, KernelMachine } from '@shared/protocol'
+import type { BriefValue, CouncilPool, CouncilRun, CouncilRunEpoch, InspectMiss, KernelMachine } from '@shared/protocol'
 import { closeTerminal, codedLineStands, terminalPhase, useLinkJitter } from './terminal.js'
 
 /**
@@ -208,7 +210,51 @@ interface QueueItem {
    * kernel's.
    */
   council?: CouncilJob
+  /**
+   * The council cell's knobs at the press that matter to the pool
+   * (remote-classes.md §6.2): whether its attempts go to the class's pool of
+   * workers, and whether their epoch follows the kernel. Absent for a cell.
+   */
+  councilCell?: Pick<CouncilSettings, 'lane' | 'refresh'>
+  /**
+   * Where an attempt runs and on what (§9.8), for its card: the pool (with
+   * the epoch it was given and its run's own name) or the shared kernel
+   * (with why). Absent for an attempt of a class whose council is not on
+   * machines: nothing is said of it then.
+   */
+  placed?: AttemptPlacement
+  /** A pool attempt already run once and lost with its machine (§9.10, D15): it is not run again a second time. */
+  rerun?: boolean
+  /**
+   * A service run in the notebook's kernel, not a cell: the export of its
+   * epoch for the council's pool (§9.2). It stands in the queue, at its
+   * head, so that it runs between the teacher's cells and never under one;
+   * its `cellId` (`epoch:<seq>`) is no cell's, and nothing of it goes into
+   * the document. It never starts a kernel: with none live it is answered
+   * at once (`no-kernel`).
+   */
+  service?: ServiceJob
 }
+
+/** Where a council attempt runs (QueueItem.placed): what its run frames carry for the card (CouncilRun.placed, note, epoch, runId). */
+export interface AttemptPlacement {
+  placed: 'pool' | 'shared'
+  note?: string
+  epoch?: CouncilRunEpoch
+  runId?: string
+}
+
+/** The export of a notebook's epoch as its kernel's queue runs it (QueueItem.service): one silent execute, answered once. */
+export interface ServiceJob {
+  kind: 'epoch'
+  source: string
+  expressions: Record<string, string>
+  /** The kernel's `user_expressions`; or why there were none: no live kernel, dropped from the queue, or a failed run. */
+  done(answer: { values: Record<string, unknown> } | { refused: 'no-kernel' | 'dropped' | 'failed'; detail?: string }): void
+}
+
+/** The queue entry of a cell, an attempt or a service run, for kernel/council-pool.ts, which holds attempts of its own. */
+export type KernelQueueItem = QueueItem
 
 function executionActivity(runtime: Runtime, item: QueueItem, kind: ActivityKind, details: ActivityDetails = {}): number | null {
   return appendActivity(runtime.sessionId, item.runById, kind, {
@@ -477,7 +523,28 @@ interface Runtime {
    * not come up. Cleared when the next start begins.
    */
   startLost: string | null
+  /**
+   * A worker of the council's pool (remote-classes.md §9.5), not a
+   * notebook's scope: its kernel is a session of the class's council
+   * container, its queue holds one attempt at most, given to it by
+   * kernel/council-pool.ts, and its root (`<root>~w<n>`) is no notebook's.
+   * A HIDDEN RUNTIME WRITES NOTHING TO THE ROOM'S DOCUMENT: no status, no
+   * queue mirror, no notes, no placement, no cell states (`hidden`).
+   */
+  pool?: WorkerTie
 }
+
+/** What a worker's runtime knows of its pool: the council notebook whose epoch it loads, and its number there. */
+export interface WorkerTie {
+  readonly root: string
+  readonly n: number
+}
+
+/** A worker of the council's pool: nothing of it reaches the room's document. */
+const hidden = (runtime: Runtime): boolean => runtime.pool !== undefined
+
+/** Workers whose Python restarted by itself and has not answered since: their pool loads them once it does (`onPhase`). */
+const comingBack = new WeakSet<Runtime>()
 
 /**
  * Execution scopes: class → notebook root → its kernel with a queue.
@@ -709,7 +776,8 @@ function dropWriter(runtime: Runtime): void {
  * the seminar the next, depending on who pressed last.
  */
 function setStatus(runtime: Runtime, status: KernelStatus): void {
-  if (runtime.retired) return
+  // A pool's worker has no notebook entry: its state is the console's (CouncilKernel.pool), never the room's.
+  if (runtime.retired || hidden(runtime)) return
   const { doc } = getSessionDoc(runtime.sessionId)
   const meta = getMeta(doc)
   const mirrored = runtime.root === CELLS_KEY
@@ -736,7 +804,7 @@ function setStatus(runtime: Runtime, status: KernelStatus): void {
  * a room that Jupyter does not answer would be untrue.
  */
 function setKernelProblem(runtime: Runtime, problem: KernelProblem | null): void {
-  if (runtime.retired) return
+  if (runtime.retired || hidden(runtime)) return
   const { doc } = getSessionDoc(runtime.sessionId)
   const meta = getMeta(doc)
   const mirrored = runtime.root === CELLS_KEY
@@ -828,13 +896,15 @@ function tellQueueWatchers(runtime: Runtime): void {
 function syncQueue(runtime: Runtime): void {
   if (runtime.retired) return
   tellQueueWatchers(runtime)
+  // A pool's worker computes attempts only, and has no mirror: the console hears of it through the watchers above.
+  if (hidden(runtime)) return
   const { doc } = getSessionDoc(runtime.sessionId)
   const meta = getMeta(doc)
   const mirrored = runtime.root === CELLS_KEY
   // Council attempts do not go into the mirror: they have no cell the room
   // could highlight, and the "2 queued" chip is honest anyway: it is about the
-  // sheet.
-  const ids = runtime.queue.filter((item) => !item.council).map((item) => item.cellId)
+  // sheet. Nor does the export of the council's epoch (§9.2): no cell runs.
+  const ids = runtime.queue.filter((item) => !item.council && !item.service).map((item) => item.cellId)
   const running = runtime.job ? null : (runtime.currentCell ?? null)
 
   const entry = kernelsMap(doc)?.get(runtime.root)
@@ -923,6 +993,12 @@ async function runOnKernel(
      * kernel without the variables it was written against.
      */
     if (runtime.kernel?.endedBy) throw err
+    /*
+     * Nor for a worker of the council's pool: a fresh kernel there holds no
+     * epoch, and an attempt run quietly on it would compute on nothing. Its
+     * death is the attempt's, and the pool recycles the worker (§9.5).
+     */
+    if (hidden(runtime)) throw err
     kernelNote(
       runtime.sessionId,
       tr("server.theKernelHadStoppedStartingAFresh.65e2e2"),
@@ -1171,6 +1247,22 @@ function releaseCouncil(runtime: Runtime, dropped: QueueItem[]): void {
   for (const item of dropped) {
     finishExecution(runtime, item, 'cancelled')
     if (item.council) tellJob(item.council, null)
+    // An epoch's export dropped with the queue (a restart, a death, a stop): the pool hears there was none.
+    if (item.service) answerService(item.service, { refused: 'dropped' })
+  }
+}
+
+/** Service runs already answered: each is answered once, whichever end reaches it first. */
+const answered = new WeakSet<ServiceJob>()
+
+/** A service run is answered once, and its listener never brings the pump down. */
+function answerService(job: ServiceJob, answer: Parameters<ServiceJob['done']>[0]): void {
+  if (answered.has(job)) return
+  answered.add(job)
+  try {
+    job.done(answer)
+  } catch (err) {
+    console.error(`[kernel] a service listener failed (${job.kind}):`, errText(err))
   }
 }
 
@@ -1355,7 +1447,8 @@ export function forgetDeaths(sessionId: string): void {
 function tellWhyItDied(runtime: Runtime, cellId: string | null): void {
   // A closed room gets silence: both the note and the cell lookup itself would
   // create its document anew, and there is nobody left to tell the cause to.
-  if (runtime.retired) return
+  // So does a pool's worker: its death costs one attempt, never the room's log (§9.7).
+  if (runtime.retired || hidden(runtime)) return
   const doc = (() => {
     try {
       return getSessionDoc(runtime.sessionId).doc
@@ -1392,6 +1485,40 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
    * and the next thirty cells would go into it as they are.
    */
   if (phase === 'restarting' || phase === 'dead') runtime.guard = null
+  /*
+   * A worker of the council's pool (remote-classes.md §9.5, §9.7): its
+   * Python restarting by itself or dying costs the attempt it ran (which
+   * reads so from its aborted execute) and never the room anything — no
+   * status, no note, no post-mortem in the room's log. An attempt given to
+   * it that had not started goes back to the notebook's queue, and the pool
+   * recycles the worker.
+   */
+  if (hidden(runtime)) {
+    const handle = handleOf(runtime)!
+    if ((phase === 'restarting' && !expected) || phase === 'dead') {
+      // Ended from outside, it went with its machine (or its placement): no fault of the worker's.
+      giveBackQueue(runtime, phase === 'dead' ? 'its kernel died' : 'its kernel restarted by itself', runtime.kernel?.endedBy != null)
+      console.warn(`[kernel ${runtime.sessionId}/${runtime.root}] council worker ${phase === 'dead' ? 'died' : 'restarted itself'}${runtime.job ? ' mid-attempt' : ''}`)
+      // Its epoch went with its Python — an OOM kill of an idle worker included: loaded again before it serves (§9.5).
+      poolSays('restarted', undefined, () => councilPool.restarted(handle, runtime.kernel?.endedBy != null))
+      if (phase === 'restarting') comingBack.add(runtime)
+    } else if (phase !== 'restarting' && comingBack.delete(runtime)) {
+      // Its new process answers: the pool loads it now, not at the next attempt.
+      poolSays('idle', undefined, () => councilPool.idle(handle))
+    }
+    return
+  }
+  /*
+   * The notebook's kernel lost its Python: its council pool's epoch is behind
+   * none of the teacher's runs before this moment (remote-classes.md §9.2: a
+   * restart alone does not mark the epoch stale, the first history run after
+   * it does). A cell found dead before it was sent runs on the fresh kernel
+   * now, and keeps its run.
+   */
+  if (phase === 'restarting' || phase === 'dead') {
+    const keep = phase === 'dead' && expected ? runtime.currentCell : null
+    poolSays('mainReset', undefined, () => councilPool.mainReset(runtime.sessionId, runtime.root, keep))
+  }
   /*
    * Jupyter restarting the kernel by itself — the container's OOM killer,
    * almost always. The process is gone and coming back under the same id, so
@@ -2203,8 +2330,11 @@ function loseSlot(sessionId: string, role: KernelRole, loss: Loss): void {
     `[kernel ${sessionId}] the ${role} slot was lost with its machine` +
       `${loss.view ? ` ${loss.view.runnerId} (gen ${loss.view.gen})` : ''}${loss.cause ? `: ${loss.cause}` : ''}`,
   )
-  kernelNote(sessionId, words.room)
-  if (hadWork) kernelNote(sessionId, tr(QUEUE_DROPPED))
+  // The council's pool is the console's news (§9.10): its attempts run again in the notebook's kernel, and the room's log hears nothing.
+  if (role !== 'council') {
+    kernelNote(sessionId, words.room)
+    if (hadWork) kernelNote(sessionId, tr(QUEUE_DROPPED))
+  }
   // Told that the kernel goes: its next start tells where (`sayWhereItCameBack`, the fallback's note).
   movedOff.set(slotKey(sessionId, role), loss.view?.runnerId ?? null)
   for (const scope of scopes) endOnLostMachine(scope, words.room, loss.at)
@@ -2237,15 +2367,17 @@ function endUnderStop(sessionId: string, role: KernelRole, view: MachineView): v
   // Said here once for the slot; the kernels' own `dead` says nothing more (onPhase reads lostKey).
   for (const scope of scopes) scope.lostKey = key
   console.warn(`[kernel ${sessionId}] the ${role} slot's placement on ${view.runnerId} (gen ${view.gen}) stopped under ${scopes.length} kernel(s): ended`)
-  kernelNote(sessionId, words)
-  if (hadWork) kernelNote(sessionId, tr(QUEUE_DROPPED))
+  if (role !== 'council') {
+    kernelNote(sessionId, words)
+    if (hadWork) kernelNote(sessionId, tr(QUEUE_DROPPED))
+  }
   for (const scope of scopes) {
     const kernel = scope.kernel!
     const alive = kernel.phase !== 'dead'
     kernel.endFromOutside('fenced', words)
     // A kernel dead already hears no `dead` again: what it left queued goes from here.
     if (!alive) {
-      dropQueue(scope)
+      dropOrGiveBack(scope, 'its placement was stopped')
       setStatus(scope, 'off')
     }
     writePlacement(scope, null, null, null)
@@ -2260,19 +2392,29 @@ function endOnLostMachine(scope: Runtime, words: string, at: number): void {
     kernel.endFromOutside('lost', words)
     // A kernel dead already hears no `dead` again: what it left queued goes from here.
     if (!alive) {
-      dropQueue(scope)
+      dropOrGiveBack(scope, 'its machine was lost')
       setStatus(scope, 'off')
     }
   } else if (comingUp(scope)) {
     // Its start fails by itself a moment later, and reads as this loss (`StartLost`) rather than as its own error.
     scope.startLost = words
-    dropQueue(scope)
+    dropOrGiveBack(scope, 'its machine was lost')
   } else {
     // Waiting at the gate, with no kernel there yet: only the queue to drop.
-    dropQueue(scope)
+    dropOrGiveBack(scope, 'its machine was lost')
     if (!kernel || kernel.phase === 'dead') setStatus(scope, 'off')
   }
   writePlacement(scope, null, null, at)
+}
+
+/**
+ * A notebook's queue goes with its kernel; a pool's worker gives back the
+ * attempt it was given and had not started (§9.10): it runs in the
+ * notebook's kernel, keeping its place.
+ */
+function dropOrGiveBack(scope: Runtime, why: string, lost = true): void {
+  if (hidden(scope)) giveBackQueue(scope, why, lost)
+  else dropQueue(scope)
 }
 
 /** Whether this scope computed on that placement, was coming up on it, or waited for it at the gate. */
@@ -2410,6 +2552,31 @@ function startWords(sessionId: string, role: KernelRole, text: string): string {
   return name && text.includes(name) ? tr('server.theKernelDidNotStartOnThe.8ad0fb') : text
 }
 
+/**
+ * Why a council worker's kernel did not start, as the console and the cards
+ * read it (kernel/council-pool.ts · poolWhy, §9.9 «with the machine's
+ * words»): the placement's own sentence — one that names the machine is
+ * staff's, and the room reads the plain one, as for any start
+ * (startWords) — or null for an error of this server's, whose detail is for
+ * its log alone.
+ */
+export function councilStartWords(sessionId: string, err: unknown): string | null {
+  if (err instanceof MachineUnreachable || err instanceof StartLost) return err.message
+  if (err instanceof RuntimeRequestError) return startWords(sessionId, 'council', err.message)
+  return null
+}
+
+/**
+ * The class's council container still starting on its machine, in staff's
+ * words («Запускаем ядро на машине «vast-3»… образ ↓ 45 %»): what «Пул не
+ * поднялся: …» says after a minute of it (council-pool.ts · view, the
+ * console's alone); null — it is not starting.
+ */
+export function councilStartingWords(sessionId: string): string | null {
+  const view = viewOf(sessionId, 'council')
+  return view.where === 'machine' && view.state === 'starting' ? startingWordsOf(sessionId, 'council', view) : null
+}
+
 /** Staff's slow-start sentence: the placement module's, with the image's progress, or the plain one. */
 function startingWordsOf(sessionId: string, role: KernelRole, view: MachineView): string {
   let words: string | null = null
@@ -2476,7 +2643,7 @@ async function settleUnknownRestart(runtime: Runtime, kernel: JupyterKernel): Pr
 
 /** The kernel's placement in its notebook's entry (notebook.ts · KERNEL_WHERE_FIELD), written only when it changes. */
 function writePlacement(runtime: Runtime, where: KernelWhere, link: KernelLinkState | null, since: number | null): void {
-  if (runtime.retired) return
+  if (runtime.retired || hidden(runtime)) return
   const { doc } = getSessionDoc(runtime.sessionId)
   const entry = kernelsMap(doc)?.get(runtime.root)
   if (
@@ -2504,6 +2671,8 @@ function writePlacement(runtime: Runtime, where: KernelWhere, link: KernelLinkSt
  * that never left writes nothing at all.
  */
 function markWhere(runtime: Runtime, kernel: JupyterKernel): void {
+  // A pool's worker is no notebook: the room is told nothing of where it computes.
+  if (hidden(runtime)) return
   const link = kernel.endpoint.link
   if (link) {
     writePlacement(runtime, 'machine', link.up ? 'ok' : 'lost', link.since)
@@ -2798,10 +2967,12 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
     if (view.where === 'machine') {
       // Not while it does not answer: the start waits for the road, and the outage has its own note.
       if (view.state === 'unreachable') return
-      kernelNote(sessionId, tr('server.startingTheKernelOnAMachine.eca55f'))
+      // A pool's worker starting is staff's news alone: the room's log says nothing of the council's pool.
+      if (!hidden(runtime)) kernelNote(sessionId, tr('server.startingTheKernelOnAMachine.eca55f'))
       tellMachineWatchers(sessionId, runtime.role, startingWordsOf(sessionId, runtime.role, view))
       return
     }
+    if (hidden(runtime)) return
     kernelNote(
       sessionId,
       envName
@@ -2870,7 +3041,8 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
       // Before anything of ours is sent: a kernel that is already busy is
       // finishing a cell for a server that no longer exists, and it would make
       // every Run in this room wait behind output nobody will ever see.
-      if ((await kernel.releaseOrphanedWork()) && !runtime.retired) {
+      // (A pool's worker re-attached mid-attempt after a restart of this server is recycled by its pool, §9.10: no note.)
+      if ((await kernel.releaseOrphanedWork()) && !runtime.retired && !hidden(runtime)) {
         kernelNote(
           sessionId,
           tr("server.reconnectedToTheExistingKernelTheRunning.a20941"),
@@ -2908,9 +3080,10 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
        * a server restart. If we do not remember it now, at the very first death
        * we cannot tell "killed by this cell" from "killed this morning in the
        * previous class". We do not wait: a room's start must not stand still
-       * for diagnostics needed an hour later.
+       * for diagnostics needed an hour later. (A pool's worker has no
+       * post-mortem: its death costs one attempt, §9.7.)
        */
-      void sampleKills(sessionId, runtime.role)
+      if (!hidden(runtime)) void sampleKills(sessionId, runtime.role)
     } catch (err) {
       /*
        * Ended by its slot's failover while it came up (`loseSlot`): not a
@@ -2959,7 +3132,8 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
       // Into the shared record too: the person who presses Run sees the message
       // on their cell, and everyone else sees a notebook that stopped.
       // A closed room gets silence: a note would create its document anew.
-      if (!runtime.retired) {
+      // A pool's worker that did not come up is the console's (CouncilKernel.pool), never the room's log.
+      if (!runtime.retired && !hidden(runtime)) {
         const said = startWords(sessionId, runtime.role, errText(err))
         kernelNote(sessionId, said, full ? 'kernel_memory' : undefined)
         // Words that name the machine are staff's (§13.1): they hear them as they were.
@@ -3161,7 +3335,17 @@ export async function interruptSession(
   sessionId: string,
   cellId?: string,
   root: string = CELLS_KEY,
+  /**
+   * The author of an attempt of the council cell `cellId` in the class's pool
+   * (remote-classes.md §9.6): computing on a worker, that worker alone is
+   * stopped — each attempt there has a kernel of its own; given to one and
+   * not begun, or waiting in the pool's queue, it goes with no run, as a
+   * cancel takes it. Never the notebook's kernel for one of the pool's. One
+   * in the notebook's kernel, or none, is stopped as before.
+   */
+  participantId?: string,
 ): Promise<void> {
+  if (cellId !== undefined && participantId !== undefined && stopInPool(sessionId, cellId, participantId)) return
   const runtime = getRuntime(
     sessionId,
     cellId === undefined ? root : scopeOfCell(sessionId, cellId, root),
@@ -3180,6 +3364,60 @@ export async function interruptSession(
     throw new MachineUnreachable(words, words)
   }
   await interruptScope(runtime, cellId)
+}
+
+/** The worker of the class's pool computing this author's attempt of this council cell, if one does (§9.6). */
+function workerComputing(sessionId: string, cellId: string, participantId: string): Runtime | undefined {
+  return scopesOf(sessionId).find((scope) => hidden(scope) && !scope.retired && scope.job?.job.cellId === cellId && scope.job.job.participantId === participantId)
+}
+
+/** Whether a worker of the class's pool computes this author's attempt of this cell now: an interrupt naming it reaches that worker (control.ts). */
+export function attemptOnWorker(sessionId: string, cellId: string, participantId: string): boolean {
+  return workerComputing(sessionId, cellId, participantId) !== undefined
+}
+
+/**
+ * Whether this author's attempt of this cell is the class's pool's: computing
+ * on a worker, given to one and not begun, or waiting in the pool's queue.
+ * An interrupt naming it goes there and nowhere else (control.ts).
+ */
+export function attemptInPool(sessionId: string, cellId: string, participantId: string): boolean {
+  const id = councilQueueId(cellId, participantId)
+  if (scopesOf(sessionId).some((scope) => hidden(scope) && !scope.retired && (scope.job?.item.cellId === id || scope.queue.some((item) => item.cellId === id)))) return true
+  return poolSays('position', null, () => councilPool.position(sessionId, cellId, participantId)) !== null
+}
+
+/** A stop of one attempt of the class's pool (interruptSession): whether it was the pool's. */
+function stopInPool(sessionId: string, cellId: string, participantId: string): boolean {
+  const worker = workerComputing(sessionId, cellId, participantId)
+  if (worker?.job) {
+    if (machineAway(worker)) {
+      const words = tr('server.noConnectionToTheMachineTheCell.b76132')
+      throw new MachineUnreachable(words, words)
+    }
+    stopRunningItem(worker, worker.job.item)
+    return true
+  }
+  // Given to a worker that has not begun it (its gate, its load): it goes with no run, and the worker's pump finds nothing.
+  if (takeOffWorker(sessionId, councilQueueId(cellId, participantId))) return true
+  const dropped = poolSays('cancel', null, () => councilPool.cancel(sessionId, cellId, participantId))
+  if (!dropped) return false
+  releaseCouncilItem(sessionId, dropped)
+  return true
+}
+
+/** An attempt given to a worker of the class's pool and not begun, taken back with no run; whether one was. */
+function takeOffWorker(sessionId: string, id: string): boolean {
+  for (const scope of scopesOf(sessionId)) {
+    if (!hidden(scope) || scope.retired) continue
+    const index = scope.queue.findIndex((item) => item.cellId === id)
+    if (index < 0) continue
+    const [dropped] = scope.queue.splice(index, 1)
+    releaseCouncil(scope, [dropped!])
+    syncQueue(scope)
+    return true
+  }
+  return false
 }
 
 /**
@@ -3247,6 +3485,14 @@ async function interruptScope(runtime: Runtime, cellId?: string): Promise<Interr
   }
   const kernel = runtime.kernel
   if (!kernel || kernel.phase === 'dead') return 'none'
+  /*
+   * The export of the council's epoch computing now (remote-classes.md §9.2)
+   * is this server's own, and over in a moment: a stop of the room's cells
+   * never reaches it — SIGINT would end the snapshot, not a cell, and the
+   * pool would go to the shared kernel for an export that did not come
+   * together. What the press dropped of the queue above stays dropped.
+   */
+  if (servicing.has(runtime)) return 'none'
   if (runtime.activityItem) runtime.activityItem.activityCancelled = true
   // A machine whose road is down is not even asked: the request would only
   // fail at the closed door (§5.8). Home's kernels have no road.
@@ -3274,7 +3520,8 @@ async function interruptScope(runtime: Runtime, cellId?: string): Promise<Interr
 export async function shutdownSession(sessionId: string, permanent = false): Promise<void> {
   // ALL of the class's scopes: it has as many kernels as notebooks, and leaving
   // even one would leave a process writing into the document of a room that no
-  // longer exists.
+  // longer exists. Its council pool's workers among them; the pool itself goes first, its waiting attempts with no run.
+  poolSays('closed', undefined, () => councilPool.closed(sessionId))
   const scopes = scopesOf(sessionId)
   runtimes.delete(sessionId)
   for (const runtime of scopes) {
@@ -3404,8 +3651,11 @@ async function retireScope(
    */
   await settled(runtime)
   runtime.currentCell = null
-  restCells(sessionId, root, touched)
-  clearScopeMirror(sessionId, root)
+  // A pool's worker has no cells and no entry: `bookCells` of its root would make an array of that name in the document.
+  if (!hidden(runtime)) {
+    restCells(sessionId, root, touched)
+    clearScopeMirror(sessionId, root)
+  }
   if (note) kernelNote(sessionId, note)
   // The personal notebooks container is kept while it has at least one kernel.
   if (runtime.role === 'own' && !options.keepContainer) await dropOwnIfEmpty(sessionId)
@@ -3643,7 +3893,8 @@ export function syncBookKernels(sessionId: string): void {
   const named = (root: string): string =>
     books.find((book) => book.root === root)?.path ?? root
   for (const scope of scopes) {
-    if (scope.retired) continue
+    // A pool's worker belongs to no notebook by its root: its pool decides when it goes.
+    if (scope.retired || hidden(scope)) continue
     const gone = roots !== null && !roots.has(scope.root)
     if (!gone && roleOfBook(sessionId, scope.root) === scope.role) continue
     void retireScope(
@@ -3930,9 +4181,11 @@ async function sweepIdleKernelsOnce(now: number): Promise<void> {
     // Across ALL of the class's scopes: a computing lecture holds the room just
     // as the single old pump would have held it, and the cleanup removes the
     // class's containers as a whole, both at once.
+    // (The class's pool's workers are among its scopes, and an attempt waiting in the pool is the class's work too, §9.6.)
     const busy =
       onlineCount(sessionId) > 0 ||
       scopes.some((scope) => scope.currentCell !== null || scope.queue.length > 0) ||
+      poolSays('waiting', [] as QueueItem[], () => councilPool.waiting(sessionId)).length > 0 ||
       terminalPhase(sessionId) === 'busy'
     const verdict = idleVerdict({ running, busy, since: emptySince.get(sessionId), now, limitMs })
     if (verdict === 'busy') {
@@ -4054,18 +4307,23 @@ export interface ClassActivity {
  * the stop and lets go of its kernel itself (`ensureKernel` checks
  * `retired`), so it only keeps a class off the idle list.
  */
+/** The notebook a scope computes for: its own root, or a pool's worker's notebook (§9.5), never the worker's hidden root. */
+function notebookRootOf(scope: Runtime): string {
+  return scope.pool?.root ?? scope.root
+}
+
 function busyOf(
   sessionId: string,
   scopes: Runtime[],
   options: { terminal: boolean; starts: boolean },
 ): ClassBusy | null {
   for (const scope of scopes) {
-    if (scope.restarting) return { kind: 'restarting', participantId: null, root: scope.root, since: null }
+    if (scope.restarting) return { kind: 'restarting', participantId: null, root: notebookRootOf(scope), since: null }
   }
   for (const scope of scopes) {
     const active = scope.job
     if (active) {
-      return { kind: 'attempt', participantId: active.job.participantId, root: scope.root, since: active.run.startedAt }
+      return { kind: 'attempt', participantId: active.job.participantId, root: notebookRootOf(scope), since: active.run.startedAt }
     }
   }
   for (const scope of scopes) {
@@ -4073,7 +4331,7 @@ function busyOf(
       return {
         kind: 'cell',
         participantId: scope.currentRunById,
-        root: scope.root,
+        root: notebookRootOf(scope),
         since: scope.started?.cellId === scope.currentCell ? scope.started.at : null,
       }
     }
@@ -4081,7 +4339,19 @@ function busyOf(
   for (const scope of scopes) {
     if (scope.queue.length > 0) {
       const people = new Set(scope.queue.map((item) => item.council?.participantId ?? item.runById))
-      return { kind: 'queue', participantId: people.size === 1 ? [...people][0]! : null, root: scope.root, since: null }
+      return { kind: 'queue', participantId: people.size === 1 ? [...people][0]! : null, root: notebookRootOf(scope), since: null }
+    }
+  }
+  /*
+   * The attempts waiting in the class's pool (§9.6): a class's work as much as
+   * a notebook's queue, whenever its scopes are asked about (the workers
+   * computing are scopes, above).
+   */
+  if (scopes.some((scope) => hidden(scope)) || options.terminal) {
+    const waiting = poolSays('waiting', [] as QueueItem[], () => councilPool.waiting(sessionId))
+    if (waiting.length > 0) {
+      const people = new Set(waiting.map((item) => item.council?.participantId ?? item.runById))
+      return { kind: 'queue', participantId: people.size === 1 ? [...people][0]! : null, root: waiting[0]!.council ? rootOf(sessionId, waiting[0]!.council.cellId) : null, since: null }
     }
   }
   if (options.terminal && terminalPhase(sessionId) === 'busy') {
@@ -4089,7 +4359,7 @@ function busyOf(
   }
   if (options.starts) {
     for (const scope of scopes) {
-      if (scope.starting && !scope.kernel) return { kind: 'starting', participantId: null, root: scope.root, since: null }
+      if (scope.starting && !scope.kernel) return { kind: 'starting', participantId: null, root: notebookRootOf(scope), since: null }
     }
   }
   return null
@@ -4149,7 +4419,8 @@ export function classActivity(sessionId: string, now: number = Date.now()): Clas
     if (scope.lastWorkAt !== null && (lastWorkAt === null || scope.lastWorkAt > lastWorkAt)) lastWorkAt = scope.lastWorkAt
   }
   return {
-    scopes: scopes.map((scope) => ({ root: scope.root, role: scope.role, phase: phaseOf(scope), lastWorkAt: scope.lastWorkAt })),
+    // Notebooks' kernels: a pool's workers are none of them (their work counts in `busy`).
+    scopes: scopes.filter((scope) => !hidden(scope)).map((scope) => ({ root: scope.root, role: scope.role, phase: phaseOf(scope), lastWorkAt: scope.lastWorkAt })),
     busy,
     lastWorkAt,
     idleSince: since,
@@ -4249,6 +4520,8 @@ export async function stopKernelsByOwner(
   // The whole class's stop removes its council pool too (pool.ts · dropRoomKernel): its starts wait with the rest.
   const release = pauseKernelStarts(sessionId, what === 'class' ? ['room', 'own', 'council'] : ['own'])
   const ours = (scope: Runtime): boolean => what === 'class' || scope.role === 'own'
+  // The class's council pool goes with the class's kernels: its waiting attempts with no run, and no worker started again behind the stop.
+  if (what === 'class') poolSays('closed', undefined, () => councilPool.closed(sessionId))
   const stop = (async () => {
     /*
      * A restart in flight is let finish first, for a bounded while: retiring
@@ -4320,6 +4593,7 @@ export async function stopKernelsByOwner(
  * running; a room's kernel is ended when the room is (shutdownSession).
  */
 export async function shutdownKernels(): Promise<void> {
+  poolSays('shutdown', undefined, () => councilPool.shutdown())
   const all = allScopes()
   runtimes.clear()
   // The sweep marks go along with the runtimes: the next process starts from a
@@ -4353,6 +4627,8 @@ const abandoned = new WeakSet<Runtime>()
  * `config.outputFlushMs` may still be written.
  */
 export function abandonKernelsForTest(): void {
+  // The council pools die with the process too: nothing of theirs is said, nor any attempt released.
+  poolSays('abandon', undefined, () => councilPool.abandon())
   const all = allScopes()
   runtimes.clear()
   orphanSweeps.clear()
@@ -4467,6 +4743,13 @@ export function startedTheRunningCell(
 }
 
 function startedIn(runtime: Runtime, participantId: string): boolean {
+  /*
+   * A pool's worker grants nothing here: "stop" stops a NOTEBOOK's kernel,
+   * and an attempt of one's own on a worker is stopped by naming it
+   * (interruptSession · participantId), never by holding the right to
+   * interrupt whatever the notebook's kernel computes.
+   */
+  if (hidden(runtime)) return false
   if (runtime.currentCell) return runtime.currentRunById === participantId
   /*
    * Between two cells the owner of the work is the one whose cell stands first.
@@ -4494,9 +4777,10 @@ function startedIn(runtime: Runtime, participantId: string): boolean {
  * of the class's queues, as it was when there was one queue.
  */
 export function queueIsOnly(sessionId: string, participantId: string, root?: string): boolean {
-  const scopes = root === undefined ? scopesOf(sessionId) : [peekRuntime(sessionId, root)]
+  // The notebooks' queues: a pool's worker's one attempt is no queue a nameless stop clears.
+  const scopes = root === undefined ? scopesOf(sessionId).filter((scope) => !hidden(scope)) : [peekRuntime(sessionId, root)]
   return scopes.every(
-    (scope) => scope === undefined || scope.queue.every((item) => item.runById === participantId),
+    (scope) => scope === undefined || scope.queue.every((item) => item.runById === participantId || item.service !== undefined),
   )
 }
 
@@ -4790,6 +5074,17 @@ async function pump(runtime: Runtime): Promise<void> {
           break
         }
       }
+      /*
+       * The export of the council's epoch never starts a kernel (§9.2): with
+       * none live by its turn, the epoch is empty by construction, and it is
+       * answered so at once.
+       */
+      const head = runtime.queue[0]
+      if (head?.service && (!runtime.kernel || runtime.kernel.phase === 'dead' || runtime.kernel.endedBy)) {
+        runtime.queue.shift()
+        answerService(head.service, { refused: 'no-kernel' })
+        continue
+      }
       try {
         await ensureKernel(runtime.sessionId, runtime.root)
       } catch (err) {
@@ -4804,17 +5099,44 @@ async function pump(runtime: Runtime): Promise<void> {
           down = 'off'
           continue
         }
+        // A pool's worker that did not come up gives its attempt back: it runs in the notebook's kernel (§9.9).
+        if (hidden(runtime)) {
+          giveBackQueue(runtime, errText(err), false)
+          return
+        }
         const full = machineMemoryFull(err)
         down = full ? 'off' : 'dead'
         reportDeadKernel(runtime, startWords(runtime.sessionId, runtime.role, errText(err)), full)
         return
       }
+      /*
+       * A pool's worker loads its notebook's epoch before the attempt, beside
+       * the guard ensureKernel installed (§9.5 «Seeding»): the epoch its
+       * attempt was given, once. One that will not load gives the attempt
+       * back, to the notebook's kernel.
+       */
+      const handle = handleOf(runtime)
+      const next = runtime.queue[0]
+      if (handle && next?.council) {
+        const seeded = await councilPool.seed(handle, next).catch((err: unknown) => {
+          console.warn(`[kernel ${runtime.sessionId}/${runtime.root}] the council worker could not load its epoch:`, errText(err))
+          return false
+        })
+        if (!seeded) {
+          giveBackQueue(runtime, 'its epoch did not load', false)
+          continue
+        }
+      }
       const item = runtime.queue.shift()
       if (!item) break
+      if (item.service) {
+        await runService(runtime, item, item.service)
+        continue
+      }
       if (item.council) await runCouncilOne(runtime, item, item.council)
       else await runOne(runtime, item)
       if (runtime.kernel && runtime.kernel.phase === 'dead') {
-        dropQueue(runtime)
+        dropOrGiveBack(runtime, 'its kernel died', runtime.kernel.endedBy != null)
         return
       }
       if (failed(runtime, item.cellId)) stopBatch(runtime, item)
@@ -4832,6 +5154,9 @@ async function pump(runtime: Runtime): Promise<void> {
     const phase = runtime.kernel?.phase ?? down
     // A kernel ended from outside is not a death: see `onPhase`.
     setStatus(runtime, runtime.kernel?.endedBy ? 'off' : phase === 'busy' ? 'idle' : (phase as KernelStatus))
+    // A pool's worker is free again: its pool recycles it if it must, and gives it the next attempt (§9.5, §9.6).
+    const handle = handleOf(runtime)
+    if (handle) poolSays('idle', undefined, () => councilPool.idle(handle))
   }
 }
 
@@ -4933,6 +5258,18 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
     finishExecution(runtime, item, 'completed', Math.max(0, Date.now() - startedAt))
     return
   }
+
+  /*
+   * A history run of the notebook (remote-classes.md §9.2): an execute that
+   * stores history, whoever pressed (the teacher, an open cell, an adopted
+   * attempt, the oracle's run_cell). The council's pool counts them against
+   * its epoch; attempts and service runs never come here. Counted as the
+   * pump takes the cell, before anything is awaited: an export asked from
+   * here on waits behind it in the queue and holds it, and its epoch must
+   * count it too (a run the guard or the barrier then refuses costs one
+   * needless refreeze, never a stale epoch taken for a current one).
+   */
+  poolSays('historyRun', undefined, () => councilPool.historyRun(runtime.sessionId, runtime.root, item.cellId))
 
   /*
    * The guard against dangerous commands, before the first line goes to the
@@ -5199,6 +5536,38 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   askSlotScan(runtime.sessionId, runtime.role)
 }
 
+/**
+ * A service run of a notebook's kernel (QueueItem.service): the export of the
+ * council's epoch (remote-classes.md §9.2), one silent execute between the
+ * teacher's cells, reported through `user_expressions`. Nothing of it reaches
+ * the document — no cell runs, no state changes, no history is stored — and
+ * the room's kernel indicator does not blink at it (`quiet`).
+ */
+async function runService(runtime: Runtime, _item: QueueItem, job: ServiceJob): Promise<void> {
+  const kernel = runtime.kernel
+  if (!kernel || kernel.phase === 'dead' || kernel.endedBy) {
+    answerService(job, { refused: 'no-kernel' })
+    return
+  }
+  let values: Record<string, unknown> = {}
+  servicing.add(runtime)
+  try {
+    const status = await kernel.execute(
+      job.source,
+      { ...SILENT_HANDLERS, onUserExpressions: (answered) => (values = answered) },
+      { silent: true, storeHistory: false, quiet: true, userExpressions: job.expressions },
+    )
+    answerService(job, status === 'ok' ? { values } : { refused: 'failed', detail: status })
+  } catch (err) {
+    answerService(job, { refused: 'failed', detail: errText(err) })
+  } finally {
+    servicing.delete(runtime)
+  }
+}
+
+/** Notebooks' kernels computing a service run now (runService): a room's stop does not reach it (interruptScope). */
+const servicing = new WeakSet<Runtime>()
+
 /** The runs of each scope waiting at the files barrier now: a stop pressed meanwhile ends the wait (interruptScope). */
 const barrierWaits = new WeakMap<Runtime, AbortController>()
 
@@ -5319,6 +5688,18 @@ function councilEnterSourceNow(): string {
   })
 }
 
+/**
+ * The entry of one attempt in its scope: a notebook's own, as above; a pool's
+ * worker's from its pool (§9.4, §9.7), with the three inputs only a worker's
+ * entry takes — the attempt's text (for the check of the names it reads),
+ * its run's scratch folder and its ceiling («Память на попытку»).
+ */
+function entrySourceFor(runtime: Runtime, item: QueueItem): string {
+  const handle = handleOf(runtime)
+  if (!handle) return councilEnterSourceNow()
+  return poolSays('entry', councilEnterSourceNow(), () => councilPool.entry(handle, item, { budgetBytes: config.councilCopyBytes, memoryGuard: config.councilMemoryGuard }))
+}
+
 /** Handlers for a service request that has neither output nor audience. */
 const SILENT_HANDLERS: Parameters<JupyterKernel['execute']>[1] = {
   onExecuteInput: () => {},
@@ -5423,13 +5804,14 @@ async function quietly(runtime: Runtime, source: string): Promise<void> {
  */
 async function enterCouncilIsolation(
   runtime: Runtime,
-): Promise<{ report: CouncilIsolationReport | null; reason: string | null }> {
+  item: QueueItem,
+): Promise<{ report: CouncilIsolationReport | null; reason: string | null; raw: unknown }> {
   let raw: unknown = null
   let reason: string | null = null
   try {
     const status = await runOnKernel(
       runtime,
-      councilEnterSourceNow(),
+      entrySourceFor(runtime, item),
       {
         ...SILENT_HANDLERS,
         onError: (ename, evalue) => {
@@ -5454,7 +5836,7 @@ async function enterCouncilIsolation(
     reason = errText(err)
   }
   const report = parseCouncilReport(raw)
-  return { report, reason: report?.error ?? reason }
+  return { report, reason: report?.error ?? reason, raw }
 }
 
 /**
@@ -5464,7 +5846,7 @@ async function enterCouncilIsolation(
  * the report is needed for one note in the attempt's output. Hence the
  * `quietly` logic: the kernel did not answer, and so be it.
  */
-async function leaveCouncilIsolation(runtime: Runtime): Promise<CouncilLeftovers | null> {
+async function leaveCouncilIsolation(runtime: Runtime): Promise<{ leftovers: CouncilLeftovers | null; raw: unknown }> {
   let raw: unknown = null
   try {
     await runtime.kernel?.execute(
@@ -5484,18 +5866,435 @@ async function leaveCouncilIsolation(runtime: Runtime): Promise<CouncilLeftovers
   } catch {
     /* the kernel no longer answers: nothing to return, and nobody to return it to */
   }
-  return parseCouncilLeftovers(raw)
+  return { leftovers: parseCouncilLeftovers(raw), raw }
+}
+
+/** What an attempt's frames say of where it ran (CouncilRun.placed, note, epoch, runId): nothing for a class whose council is not on machines. */
+function placedOf(item: QueueItem | null): Partial<CouncilRun> {
+  const placed = item?.placed
+  if (!placed) return {}
+  return {
+    placed: placed.placed,
+    ...(placed.note ? { note: placed.note } : {}),
+    ...(placed.epoch ? { epoch: { ...placed.epoch } } : {}),
+    ...(placed.runId ? { runId: placed.runId } : {}),
+  }
 }
 
 /** A run's first frame: it is also the request, and its text is the job's. */
-const queuedRun = (job: CouncilJob): CouncilRun => ({
+const queuedRun = (job: CouncilJob, item: QueueItem | null = null): CouncilRun => ({
   state: 'queued',
   outputs: [],
   execCount: null,
   ranMs: null,
   startedAt: Date.now(),
   by: job.by,
+  ...placedOf(item),
 })
+
+/* ------------------------------------------------- the council's pool */
+
+/*
+ * THE COUNCIL'S POOL OF WORKERS (docs/architecture/remote-classes.md §9.5,
+ * §9.6) is kernel/council-pool.ts's: a router in front of unchanged pumps. It
+ * hands its functions in here as it loads (`useCouncilPool`), as the
+ * placement module does, and this file asks it at the few places an attempt
+ * may go elsewhere than the notebook's queue: its route at the press, its
+ * place in the queue, a cancel, a ban, a retime, the console's view, the
+ * idle sweep and an owner's stop. Its workers are hidden runtimes of this
+ * file (`Runtime.pool`), pumped by the same pump and computing through the
+ * same runCouncilOne; the pool drives them by the functions below. A
+ * process without it, and a class whose council is not on machines, run
+ * exactly the old code.
+ */
+
+/** A worker of a council pool as kernel/council-pool.ts holds it: its class, its council notebook and its number. */
+export interface WorkerHandle {
+  readonly sessionId: string
+  /** The council notebook whose epoch it loads. */
+  readonly root: string
+  readonly n: number
+}
+
+/** How a worker stands, by this file's own record. */
+export interface WorkerState {
+  /** Its kernel is up (not dead, not ended from outside). */
+  up: boolean
+  /** Coming up. */
+  starting: boolean
+  /** An attempt is given to it or computing on it. */
+  computing: boolean
+  restarting: boolean
+}
+
+/** How a worker's attempt ended, for its pool's recycling (§9.5) and the attempt's files (§9.7). */
+export interface AttemptEnd {
+  /**
+   * `ran`: through the exit; `stopped`: stopped at the files barrier, no run;
+   * `rerouted`: handed to the notebook's kernel before it ran (a name it reads
+   * stayed out of the epoch, §9.4); `lost`: its machine went with it, and it
+   * runs again there once (§9.10).
+   */
+  kind: 'ran' | 'stopped' | 'rerouted' | 'lost'
+  /** The entry held (its personal copies were made); false is a worker recycled. */
+  entered: boolean
+  /**
+   * Its entry was sent, which makes the run's scratch folder on the machine
+   * (§9.7) — before a ceiling it could not set, say, as much as on the way
+   * to an attempt that ran: the folder is to be collected and removed, an
+   * empty one, or one never made, included.
+   */
+  scratch: boolean
+  /** What the exit left behind (council-isolation.ts · CouncilLeftovers). */
+  threads: number
+  processes: number
+  /** It was still computing after the second SIGINT. */
+  stuck: boolean
+  /** Its kernel after: up, restarted by itself, or dead. */
+  kernel: 'up' | 'restarted' | 'dead'
+  /** What the attempts added to its own memory since the seed, MB (`grown`: what it wrote for itself, §9.3 detail 4), when the exit could tell. */
+  dirtyMb: number | null
+  /** The files the attempt wrote into its own folder (§9.7), as its exit listed them: a sha256 for those to bring home. */
+  files: Array<{ name: string; sha256: string | null; bytes: number }>
+  /** The finished run, as its card has it. */
+  run: CouncilRun | null
+}
+
+/** What this file asks of kernel/council-pool.ts (§9.6): each answers as if there were no pool until it is given. */
+export interface CouncilPoolHooks {
+  /** The route at the press (§9.6 «Which queue»): the pool took it; the notebook's queue keeps it with this footnote; null — nothing to say. */
+  take(sessionId: string, root: string, item: QueueItem): 'pool' | { shared: string } | null
+  /** This person's attempt for this cell waiting in a pool: its place among the pool's waiting attempts, from 1. */
+  position(sessionId: string, cellId: string, participantId: string): number | null
+  /** Any attempt of this person waiting in the notebook's pool: its place. */
+  personAt(sessionId: string, root: string, participantId: string): number | null
+  /** Replace this attempt waiting in a pool by `next(old)` in its place (the author edited the text); whether it was there. */
+  replace(sessionId: string, cellId: string, participantId: string, next: (old: QueueItem) => QueueItem | null): boolean
+  /** Take this attempt off a pool's queue; the entry taken, released here. */
+  cancel(sessionId: string, cellId: string, participantId: string): QueueItem | null
+  /** Take every attempt of this person off the class's pools' queues; the entries taken, released here. */
+  purge(sessionId: string, participantId: string): QueueItem[]
+  retime(sessionId: string, cellId: string, limitSec: number | null): void
+  positions(sessionId: string): Array<{ cellId: string; participantId: string; position: number }>
+  /** Attempts waiting in the class's pools now. */
+  waiting(sessionId: string): QueueItem[]
+  view(sessionId: string, root: string): CouncilPool | null
+  /** Before a worker's attempt: the epoch it was given loaded (the pump, beside the guard). */
+  seed(worker: WorkerHandle, item: QueueItem): Promise<boolean>
+  /** A worker's entry for this attempt, with its three inputs (§9.4, §9.7): the attempt's text, its run's folder, its ceiling. */
+  entry(worker: WorkerHandle, item: QueueItem, base: { budgetBytes: number; memoryGuard: boolean }): string
+  /** Of a worker's entry report: a name the attempt reads that its epoch left behind, and why; null — none. */
+  needs(raw: unknown): { name: string; why: string } | null
+  /** Of a worker's exit report: the files of its folder (§9.7) and its private memory after (§9.3). */
+  left(raw: unknown): { files: AttemptEnd['files']; dirtyMb: number | null }
+  /**
+   * A worker gives back an attempt it never ran: it runs in the notebook's
+   * kernel. `lost` — its machine went (or its placement was stopped), not the
+   * worker: the card says so, and the worker is not held against.
+   */
+  givenBack(worker: WorkerHandle, item: QueueItem, why: string, lost: boolean): void
+  ended(worker: WorkerHandle, item: QueueItem, end: AttemptEnd): void
+  /** A worker's attempt does not take its interrupts (the second SIGINT went for nothing). */
+  stuck(worker: WorkerHandle): void
+  /** A worker's pump went idle, or its kernel answers again after a restart of its own: nothing of its queue computes or waits. */
+  idle(worker: WorkerHandle): void
+  /**
+   * A worker's Python restarted by itself or died: what it had loaded is gone
+   * with it (§9.5). `outside` — it was ended from outside, with its machine or
+   * its placement: no fault of an attempt's.
+   */
+  restarted(worker: WorkerHandle, outside: boolean): void
+  /** A history run of a notebook (§9.2): a cell's execute that stores history. */
+  historyRun(sessionId: string, root: string, cellId: string): void
+  /**
+   * A notebook's kernel lost its Python — a restart, by the button or by
+   * itself, a death, its machine's loss: the teacher's runs before it no
+   * longer make an epoch stale (§9.2). `keep` — a cell about to run on the
+   * fresh kernel (a death found by asking before it was sent) keeps its run.
+   */
+  mainReset(sessionId: string, root: string, keep: string | null): void
+  /** The class's kernels are gone (its end, an owner's stop): its pools go. */
+  closed(sessionId: string): void
+  /** This server stops. */
+  shutdown(): void
+  /** A test's crash: everything forgotten, nothing said. */
+  abandon(): void
+}
+
+/** No pool: every attempt is the notebook's, as before 0.26. */
+const NO_POOL: CouncilPoolHooks = {
+  take: () => null,
+  position: () => null,
+  personAt: () => null,
+  replace: () => false,
+  cancel: () => null,
+  purge: () => [],
+  retime: () => {},
+  positions: () => [],
+  waiting: () => [],
+  view: () => null,
+  seed: async () => false,
+  entry: () => councilEnterSourceNow(),
+  needs: () => null,
+  left: () => ({ files: [], dirtyMb: null }),
+  givenBack: () => {},
+  ended: () => {},
+  stuck: () => {},
+  idle: () => {},
+  restarted: () => {},
+  historyRun: () => {},
+  mainReset: () => {},
+  closed: () => {},
+  shutdown: () => {},
+  abandon: () => {},
+}
+
+let councilPool: CouncilPoolHooks = NO_POOL
+
+/** kernel/council-pool.ts, as it loads (null puts every attempt back in the notebooks' queues). */
+export function useCouncilPool(hooks: CouncilPoolHooks | null): void {
+  councilPool = hooks ?? NO_POOL
+}
+
+/** A pool's call that throws must not bring an attempt, a pump or a press down. */
+function poolSays<T>(what: string, fallback: T, ask: () => T): T {
+  try {
+    return ask()
+  } catch (err) {
+    console.error(`[kernel] the council pool failed (${what}):`, errText(err))
+    return fallback
+  }
+}
+
+/** A worker's root: no notebook's (a root is `cells` or `nb:…`), and its Jupyter session's path says which worker it is. */
+export function councilWorkerRoot(root: string, n: number): string {
+  return `${root}~w${n}`
+}
+
+const handleOf = (runtime: Runtime): WorkerHandle | null =>
+  runtime.pool ? { sessionId: runtime.sessionId, root: runtime.pool.root, n: runtime.pool.n } : null
+
+/** A worker's runtime, made now if it has none: role `council`, a kernel of its own in the class's council container. */
+export function councilWorker(sessionId: string, root: string, n: number): WorkerHandle {
+  const scope = councilWorkerRoot(root, n)
+  if (!peekRuntime(sessionId, scope)?.pool) {
+    const runtime = getRuntime(sessionId, scope)
+    runtime.role = 'council'
+    runtime.pool = { root, n }
+  }
+  return { sessionId, root, n }
+}
+
+function workerRuntime(handle: WorkerHandle): Runtime | undefined {
+  const runtime = peekRuntime(handle.sessionId, councilWorkerRoot(handle.root, handle.n))
+  return runtime && runtime.pool && !runtime.retired ? runtime : undefined
+}
+
+export function workerState(handle: WorkerHandle): WorkerState {
+  const runtime = workerRuntime(handle)
+  const kernel = runtime?.kernel ?? null
+  return {
+    up: kernel !== null && kernel.phase !== 'dead' && !kernel.endedBy,
+    starting: runtime?.starting != null,
+    computing: runtime !== undefined && (runtime.queue.length > 0 || runtime.job !== null || runtime.pumping),
+    // Its recycle, or its Python coming back by itself: given nothing until it answers.
+    restarting: runtime?.restarting != null || kernel?.phase === 'restarting',
+  }
+}
+
+/**
+ * Bring a worker's kernel up (its first start places the class's council
+ * slot, pool.ts · endpointForSession), the guard in it. A worker whose
+ * runtime went behind its pool's back (an owner's stop retires every scope
+ * of the class, the pool's workers among them) gets one anew: its pool still
+ * wants it.
+ */
+export async function startCouncilWorker(handle: WorkerHandle): Promise<void> {
+  if (!workerRuntime(handle)) councilWorker(handle.sessionId, handle.root, handle.n)
+  const runtime = workerRuntime(handle)
+  if (!runtime) throw new Error('the worker is gone')
+  await ensureKernel(handle.sessionId, councilWorkerRoot(handle.root, handle.n))
+  if (!(await ensureGuard(runtime))) throw new Error('the guard was not confirmed')
+}
+
+/** One attempt into a worker's own queue, and its pump; false when it cannot take one now (busy, gone). */
+export function giveCouncilWorker(handle: WorkerHandle, item: QueueItem): boolean {
+  const runtime = workerRuntime(handle)
+  if (!runtime || runtime.queue.length > 0 || runtime.job !== null || runtime.pumping || runtime.restarting || runtime.kernel?.phase === 'restarting') return false
+  runtime.queue.push(item)
+  void pump(runtime)
+  return true
+}
+
+/**
+ * Recycle a worker (§9.5): its kernel restarted with its session kept, the
+ * guard into the new process. Whether it came back. The pump waits for it
+ * as for any restart (`runtime.restarting`).
+ */
+export async function recycleCouncilWorker(handle: WorkerHandle): Promise<boolean> {
+  const runtime = workerRuntime(handle)
+  const kernel = runtime?.kernel ?? null
+  if (!runtime || !kernel || kernel.phase === 'dead' || kernel.endedBy) return false
+  if (runtime.restarting) {
+    await runtime.restarting.catch(() => {})
+    return runtime.kernel !== null && runtime.kernel.phase !== 'dead'
+  }
+  let back = false
+  runtime.restarting = (async () => {
+    await kernel.restart()
+    runtime.guard = null
+    back = await ensureGuard(runtime).catch(() => false)
+  })()
+  try {
+    await runtime.restarting
+  } catch (err) {
+    console.warn(`[kernel ${handle.sessionId}] council worker ${handle.n} did not come back from its recycle:`, errText(err))
+    back = false
+  } finally {
+    runtime.restarting = null
+    void pump(runtime)
+  }
+  return back
+}
+
+/** A worker goes: its kernel's session is deleted in the council container (a shrink, the pool's end). */
+export async function retireCouncilWorker(handle: WorkerHandle): Promise<void> {
+  const runtime = workerRuntime(handle)
+  if (runtime) await retireScope(runtime, null)
+}
+
+/**
+ * A silent service run on a worker (its epoch's load, §9.3): the answers of
+ * its `user_expressions`. Outside the pump: the pool calls it only on a
+ * worker it gives nothing meanwhile.
+ */
+export async function councilWorkerExecute(handle: WorkerHandle, source: string, expressions: Record<string, string>): Promise<{ status: ExecuteStatus | 'gone'; values: Record<string, unknown> }> {
+  const kernel = workerRuntime(handle)?.kernel
+  if (!kernel || kernel.phase === 'dead' || kernel.endedBy) return { status: 'gone', values: {} }
+  let values: Record<string, unknown> = {}
+  const status = await kernel.execute(
+    source,
+    { ...SILENT_HANDLERS, onUserExpressions: (answered) => (values = answered) },
+    { silent: true, storeHistory: false, userExpressions: expressions },
+  )
+  return { status, values }
+}
+
+/** A frame of an attempt to its card, from the pool (its files landing, §9.7). */
+export function tellCouncilItem(item: QueueItem, run: CouncilRun): void {
+  if (item.council) tellJob(item.council, run)
+}
+
+/** An attempt the pool takes off its queue: there was no run, and its author's card says so (null frame). */
+export function releaseCouncilItem(sessionId: string, item: QueueItem): void {
+  const runtime = peekRuntime(sessionId, rootOf(sessionId, item.council?.cellId ?? item.cellId))
+  if (runtime) releaseCouncil(runtime, [item])
+  else {
+    item.activityFinished = true
+    if (item.council) tellJob(item.council, null)
+  }
+}
+
+/**
+ * An attempt of the pool goes to the notebook's own queue (§9.9): never run
+ * yet (the pool could not take it after all, a worker gave it back, its
+ * machine was lost), or run once and lost with its machine (D15). It keeps
+ * its place: before the first entry pressed after it (its batch is its
+ * press), so the cells and attempts pressed later still wait behind it. Its
+ * card hears it is queued again, with why.
+ */
+export function requeueCouncilShared(sessionId: string, root: string, item: QueueItem, note: string | null): void {
+  const runtime = getRuntime(sessionId, root)
+  if (runtime.retired || !item.council) {
+    releaseCouncilItem(sessionId, item)
+    return
+  }
+  item.placed = { placed: 'shared', ...(note ? { note } : {}) }
+  const at = runtime.queue.findIndex((one) => one.batch > item.batch && !one.service)
+  if (at < 0) runtime.queue.push(item)
+  else runtime.queue.splice(at, 0, item)
+  tellJob(item.council, queuedRun(item.council, item))
+  syncQueue(runtime)
+  void pump(runtime)
+}
+
+/**
+ * What a worker gives back when it cannot run what it was given: its pool
+ * sends it to the notebook's kernel. `lost` — the machine (or the placement)
+ * went, not the worker.
+ */
+function giveBackQueue(runtime: Runtime, why: string, lost: boolean): void {
+  const handle = handleOf(runtime)
+  if (!handle) return
+  for (const item of runtime.queue.splice(0, runtime.queue.length)) {
+    poolSays('given back', undefined, () => councilPool.givenBack(handle, item, why, lost))
+  }
+  syncQueue(runtime)
+}
+
+/**
+ * The export of a notebook's epoch (§9.2), as a service item at the head of
+ * its kernel's queue: it runs between the teacher's cells and never under
+ * one. False — the notebook has no live kernel (none is started for it):
+ * the epoch is empty by construction.
+ */
+export function requestEpochExport(sessionId: string, root: string, job: ServiceJob): boolean {
+  const runtime = peekRuntime(sessionId, root)
+  const kernel = runtime?.kernel ?? null
+  if (!runtime || runtime.retired || hidden(runtime) || !kernel || kernel.phase === 'dead' || kernel.endedBy) return false
+  const item: QueueItem = { cellId: `epoch:${runtime.sessionId}`, runBy: '', runById: '', batch: ++batchCounter, service: job, activityFinished: true }
+  // At the head, behind only what computes now: the attempts that wait for it wait for the running cell alone.
+  runtime.queue.unshift(item)
+  void pump(runtime)
+  return true
+}
+
+/**
+ * The notebook's kernel, as an epoch's export needs it: whether it is live,
+ * and where it computes — this server, or a placement on a machine (its
+ * container there, for the agent's `docker cp`). `gone`: this life of the
+ * server saw that kernel end (dead, or ended from outside), so a kernel
+ * started now would hold nothing; a kernel not live and not gone may run
+ * still, unknown to this life (a restart of this server re-attaches it on
+ * its first need).
+ */
+export function mainKernelOf(sessionId: string, root: string): { live: boolean; gone: boolean; where: 'home' | { runnerId: string; role: KernelRole; container: string; gen: number } | null; role: KernelRole | null } {
+  const runtime = peekRuntime(sessionId, root)
+  const kernel = runtime?.kernel ?? null
+  if (!runtime || hidden(runtime) || !kernel || kernel.phase === 'dead' || kernel.endedBy) {
+    const gone = runtime !== undefined && !hidden(runtime) && kernel !== null
+    return { live: false, gone, where: null, role: runtime?.role ?? null }
+  }
+  if (!kernel.endpoint.link) return { live: true, gone: false, where: 'home', role: runtime.role }
+  const parts = kernel.endpoint.identity?.split(':')
+  const gen = Number(parts?.[parts.length - 1])
+  if (!parts || parts.length < 4 || parts[0] !== 'machine' || !Number.isSafeInteger(gen)) return { live: true, gone: false, where: null, role: runtime.role }
+  return { live: true, gone: false, where: { runnerId: parts[1]!, role: runtime.role, container: parts.slice(2, -1).join(':'), gen }, role: runtime.role }
+}
+
+/** A slot's placement as these hooks read it (viewOf): the pool's machine and its road. */
+export function slotViewOf(sessionId: string, role: KernelRole): PlacementView {
+  return viewOf(sessionId, role)
+}
+
+/**
+ * The class's council container on its machine stopped, its pools gone (§9.5:
+ * the pool stops COUNCIL_POOL_LINGER_MS after the last council closes, and
+ * the machine's ledger holds nothing for it after): at the gen it is placed
+ * at, and only while no worker of the class has a kernel there. Whether it
+ * stopped; the next pool places it again.
+ */
+export function stopCouncilSlot(sessionId: string): boolean {
+  const view = viewOf(sessionId, 'council')
+  if (view.where !== 'machine' || !placements.stopSlot) return false
+  if (scopesOf(sessionId).some((scope) => hidden(scope) && !scope.retired && (scope.starting !== null || (scope.kernel !== null && scope.kernel.phase !== 'dead' && !scope.kernel.endedBy)))) return false
+  try {
+    return placements.stopSlot(sessionId, 'council', view.gen)
+  } catch (err) {
+    console.error(`[kernel] could not stop the council container of ${sessionId} on its machine:`, errText(err))
+    return false
+  }
+}
 
 /**
  * Put a council attempt into the kernel's queue.
@@ -5528,6 +6327,13 @@ export function requestCouncilRun(
   job: CouncilJob,
   runBy: string,
   runById: string,
+  /**
+   * The council cell's knobs at the press that the pool reads (§6.2): its
+   * lane and its refresh. Without them, the defaults (the pool's lane, the
+   * refresh following the kernel): what a class whose council is not on
+   * machines never meets.
+   */
+  cell?: Pick<CouncilSettings, 'lane' | 'refresh'>,
 ): { queued: boolean; position: number } {
   /*
    * An attempt computes in the kernel of THE notebook where its cell is.
@@ -5541,21 +6347,44 @@ export function requestCouncilRun(
    */
   const runtime = getRuntime(sessionId, rootOf(sessionId, job.cellId))
   sweepOrphanRuns(sessionId)
+  const knobs = cell ? { councilCell: { lane: cell.lane, refresh: cell.refresh } } : {}
   const already = councilQueuePosition(sessionId, job.cellId, job.participantId)
   if (already !== null) {
     const id = councilQueueId(job.cellId, job.participantId)
     const index = runtime.queue.findIndex((item) => item.cellId === id)
     const waiting = index < 0 ? null : runtime.queue[index]
-    if (!waiting || waiting.council?.source === job.source) {
+    if (!waiting) {
+      /*
+       * Not in the notebook's queue: computing now (on a worker of the
+       * class's pool, or in the kernel), or waiting in the pool's queue,
+       * where an edited text replaces the old one in place just the same.
+       */
+      if (already === 0) return { queued: false, position: already }
+      const swapped: { item: QueueItem | null } = { item: null }
+      const replaced = poolSays('replace', false, () =>
+        councilPool.replace(sessionId, job.cellId, job.participantId, (old) => {
+          if (old.council?.source === job.source) return null
+          finishExecution(runtime, old, 'cancelled')
+          const next: QueueItem = { ...old, runBy, runById, council: job, ...knobs, activityFinished: false, activityCancelled: false, activitySeq: null }
+          next.activitySeq = executionActivity(runtime, next, 'execution.queued', { count: 1 })
+          swapped.item = next
+          return next
+        }),
+      )
+      if (!replaced || swapped.item === null) return { queued: false, position: already }
+      tellJob(job, queuedRun(job, swapped.item))
+      return { queued: true, position: already }
+    }
+    if (waiting.council?.source === job.source) {
       return { queued: false, position: already }
     }
     // The "queued" frame goes out for the NEW job: it also moves the text
     // fingerprint by which recordRun decides whose output counts as its own.
     finishExecution(runtime, waiting, 'cancelled')
-    const replacement: QueueItem = { ...waiting, runBy, runById, council: job, activityFinished: false, activityCancelled: false, activitySeq: null }
+    const replacement: QueueItem = { ...waiting, runBy, runById, council: job, ...knobs, activityFinished: false, activityCancelled: false, activitySeq: null }
     replacement.activitySeq = executionActivity(runtime, replacement, 'execution.queued', { count: 1 })
     runtime.queue[index] = replacement
-    tellJob(job, queuedRun(job))
+    tellJob(job, queuedRun(job, replacement))
     return { queued: true, position: already }
   }
   /*
@@ -5582,11 +6411,26 @@ export function requestCouncilRun(
     runById,
     batch: ++batchCounter,
     council: job,
+    ...knobs,
   }
   item.activitySeq = executionActivity(runtime, item, 'execution.queued', { count: 1 })
+  /*
+   * THE ROUTE (remote-classes.md §9.6 «Which queue»): the class's pool of
+   * workers takes the attempt when it can, and gives it to a worker in a
+   * turn of its own, after this frame; otherwise the notebook's queue, as
+   * always, and the card says why it is not the pool's (§9.9). A class whose
+   * council is not on machines hears nothing of either.
+   */
+  const route = poolSays('take', null, () => councilPool.take(sessionId, runtime.root, item))
+  if (route === 'pool') {
+    item.placed = { placed: 'pool' }
+    tellJob(job, queuedRun(job, item))
+    return { queued: true, position: councilQueuePosition(sessionId, job.cellId, job.participantId) ?? 1 }
+  }
+  if (route !== null) item.placed = { placed: 'shared', ...(route.shared ? { note: route.shared } : {}) }
   runtime.queue.push(item)
   const position = councilQueuePosition(sessionId, job.cellId, job.participantId) ?? 1
-  tellJob(job, queuedRun(job))
+  tellJob(job, queuedRun(job, item))
   syncQueue(runtime)
   void pump(runtime)
   return { queued: true, position }
@@ -5606,8 +6450,21 @@ function councilQueuePositionsOf(runtime: Runtime, participantId: string): numbe
   const running = runtime.job
   if (running?.job.participantId === participantId) return 0
   const index = runtime.queue.findIndex((item) => item.council?.participantId === participantId)
-  if (index < 0) return null
-  return index + 1 + (runtime.currentCell ? 1 : 0)
+  if (index >= 0) return index + 1 + (runtime.currentCell ? 1 : 0)
+  // And the notebook's pool (§9.6): given to a worker or computing on one, or waiting for one.
+  if (workersOf(runtime.sessionId, runtime.root).some((worker) => holdsAttemptOf(worker, (job) => job.participantId === participantId))) return 0
+  return poolSays('personAt', null, () => councilPool.personAt(runtime.sessionId, runtime.root, participantId))
+}
+
+/** The workers of a notebook's pool in this process: hidden runtimes of its class whose pool is that notebook's. */
+function workersOf(sessionId: string, root: string): Runtime[] {
+  return scopesOf(sessionId).filter((scope) => scope.pool?.root === root && !scope.retired)
+}
+
+/** Whether a worker computes, or was given, an attempt this test picks. */
+function holdsAttemptOf(worker: Runtime, picks: (job: CouncilJob) => boolean): boolean {
+  if (worker.job && picks(worker.job.job)) return true
+  return worker.queue.some((item) => item.council !== undefined && picks(item.council))
 }
 
 /**
@@ -5630,14 +6487,22 @@ export function cancelCouncilRun(
   participantId: string,
 ): boolean {
   const runtime = councilScope(sessionId, cellId)
-  if (!runtime) return false
   const id = councilQueueId(cellId, participantId)
-  if (runtime.currentCell === id) return false
-  const index = runtime.queue.findIndex((item) => item.cellId === id)
-  if (index < 0) return false
-  const [dropped] = runtime.queue.splice(index, 1)
-  releaseCouncil(runtime, [dropped])
-  syncQueue(runtime)
+  if (runtime) {
+    if (runtime.currentCell === id) return false
+    const index = runtime.queue.findIndex((item) => item.cellId === id)
+    if (index >= 0) {
+      const [dropped] = runtime.queue.splice(index, 1)
+      releaseCouncil(runtime, [dropped])
+      syncQueue(runtime)
+      return true
+    }
+  }
+  // Given to a worker of the class's pool and not begun, or waiting in the pool (§9.6): taken off the same way; one computing on a worker is not.
+  if (takeOffWorker(sessionId, id)) return true
+  const dropped = poolSays('cancel', null, () => councilPool.cancel(sessionId, cellId, participantId))
+  if (!dropped) return false
+  releaseCouncilItem(sessionId, dropped)
   return true
 }
 
@@ -5661,6 +6526,7 @@ export function purgeCouncilRunsOf(
   // from the room.
   let running = false
   let queued = 0
+  // (The class's pool's workers are among the scopes: a worker computing the banned person's attempt is interrupted, §9.6.)
   for (const runtime of scopesOf(sessionId)) {
     const dropped = runtime.queue.filter((item) => item.council?.participantId === participantId)
     if (dropped.length > 0) {
@@ -5675,6 +6541,11 @@ export function purgeCouncilRunsOf(
       running = true
       stopRunningItem(runtime, active.item)
     }
+  }
+  // And what waits in the pool's queue.
+  for (const item of poolSays('purge', [] as QueueItem[], () => councilPool.purge(sessionId, participantId))) {
+    releaseCouncilItem(sessionId, item)
+    queued += 1
   }
   return { running, queued }
 }
@@ -5775,12 +6646,21 @@ export function councilQueuePosition(
   participantId: string,
 ): number | null {
   const runtime = councilScope(sessionId, cellId)
-  if (!runtime) return null
   const id = councilQueueId(cellId, participantId)
-  if (runtime.currentCell === id) return 0
-  const index = runtime.queue.findIndex((item) => item.cellId === id)
-  if (index < 0) return null
-  return index + 1 + (runtime.currentCell ? 1 : 0)
+  if (runtime) {
+    if (runtime.currentCell === id) return 0
+    const index = runtime.queue.findIndex((item) => item.cellId === id)
+    if (index >= 0) return index + 1 + (runtime.currentCell ? 1 : 0)
+  }
+  /*
+   * The class's pool (§9.6): on a worker, computing now; waiting for one,
+   * its place among the pool's waiting attempts alone — no teacher's cell
+   * stands in that queue, and the workers compute side by side.
+   */
+  for (const scope of scopesOf(sessionId)) {
+    if (hidden(scope) && holdsAttemptOf(scope, (job) => job.cellId === cellId && job.participantId === participantId)) return 0
+  }
+  return poolSays('position', null, () => councilPool.position(sessionId, cellId, participantId))
 }
 
 /**
@@ -5799,6 +6679,8 @@ export function councilQueuePositions(
   // many queues, and "third" in the seminar says nothing about the lecture.
   const out: { cellId: string; participantId: string; position: number }[] = []
   for (const runtime of scopesOf(sessionId)) {
+    // A worker's queue holds the one attempt it was given: computing, not waiting.
+    if (hidden(runtime)) continue
     const ahead = runtime.currentCell ? 1 : 0
     runtime.queue.forEach((item, index) => {
       if (!item.council) return
@@ -5809,6 +6691,8 @@ export function councilQueuePositions(
       })
     })
   }
+  // And the class's pools' waiting attempts, each numbered in its own pool's queue.
+  out.push(...poolSays('positions', [] as ReturnType<CouncilPoolHooks['positions']>, () => councilPool.positions(sessionId)))
   return out
 }
 
@@ -5849,9 +6733,13 @@ export interface KernelBusy {
 export function kernelWorkOf(
   sessionId: string,
   cellId: string,
-): { busy: KernelBusy | null; queued: number } | null {
+): { busy: KernelBusy | null; queued: number; pool?: CouncilPool } | null {
+  const root = rootOf(sessionId, cellId)
+  // The class's pool of workers for this notebook's attempts (§9.8): what the console reads beside the kernel.
+  const view = poolSays('view', null, () => councilPool.view(sessionId, root))
+  const pool = view ? { pool: view } : {}
   const runtime = councilScope(sessionId, cellId)
-  if (!runtime) return null
+  if (!runtime) return view ? { busy: null, queued: 0, ...pool } : null
   // The queue length is ALL of it: both cells and attempts of any cells of this
   // notebook. There is one queue, and the student will have to wait for
   // everyone in it.
@@ -5861,6 +6749,7 @@ export function kernelWorkOf(
   if (active) {
     return {
       queued,
+      ...pool,
       busy: {
         kind: 'attempt',
         cellId: active.job.cellId,
@@ -5873,9 +6762,10 @@ export function kernelWorkOf(
     }
   }
   const current = runtime.currentCell
-  if (!current) return { busy: null, queued }
+  if (!current) return { busy: null, queued, ...pool }
   return {
     queued,
+    ...pool,
     busy: {
       kind: 'cell',
       cellId: current,
@@ -5892,10 +6782,15 @@ export function kernelWorkOf(
 export function councilQueued(sessionId: string): { cellId: string; participantId: string }[] {
   const out: { cellId: string; participantId: string }[] = []
   for (const runtime of scopesOf(sessionId)) {
+    // A worker's one attempt computes: it waits for nothing.
+    if (hidden(runtime)) continue
     for (const item of runtime.queue) {
       if (item.council)
         out.push({ cellId: item.council.cellId, participantId: item.council.participantId })
     }
+  }
+  for (const item of poolSays('waiting', [] as QueueItem[], () => councilPool.waiting(sessionId))) {
+    if (item.council) out.push({ cellId: item.council.cellId, participantId: item.council.participantId })
   }
   return out
 }
@@ -5907,9 +6802,10 @@ export function councilQueued(sessionId: string): { cellId: string; participantI
  * cells queued before the bell keep running after it.
  */
 export function sessionComputing(sessionId: string): boolean {
+  // The class's pool's workers are scopes too, and what waits for them is the pool's queue.
   return scopesOf(sessionId).some(
     (runtime) => runtime.queue.length > 0 || runtime.currentCell !== null || runtime.job !== null,
-  )
+  ) || poolSays('waiting', [] as QueueItem[], () => councilPool.waiting(sessionId)).length > 0
 }
 
 /** One output frame per window, not per print: the stack travels to the host whole. */
@@ -6069,7 +6965,10 @@ function checkDeafLater(runtime: Runtime, limit: RunLimit): void {
     }
     limit.stuck = true
     tellQueueWatchers(runtime)
-    kernelNote(runtime.sessionId, tr('server.kernel.deafToInterrupt'))
+    // A pool's worker is recycled, never the notebook's kernel (§9.6): the room's log hears nothing of it.
+    const handle = handleOf(runtime)
+    if (handle) poolSays('stuck', undefined, () => councilPool.stuck(handle))
+    else kernelNote(runtime.sessionId, tr('server.kernel.deafToInterrupt'))
   }, LIMIT_RETRY_TICKS * limitTickMs)
   check.unref?.()
 }
@@ -6085,7 +6984,18 @@ function checkDeafLater(runtime: Runtime, limit: RunLimit): void {
  */
 export function retimeCouncilRun(sessionId: string, cellId: string, limitSec: number | null): void {
   const runtime = councilScope(sessionId, cellId)
-  if (!runtime) return
+  if (runtime) retimeIn(runtime, cellId, limitSec)
+  /*
+   * And the class's pool (§9.6): every worker computing an attempt of this
+   * cell re-arms its own alarm, counted from that attempt's start, and the
+   * attempts waiting in the pool's queue take the new number with them.
+   */
+  for (const worker of workersOf(sessionId, rootOf(sessionId, cellId))) retimeIn(worker, cellId, limitSec)
+  poolSays('retime', undefined, () => councilPool.retime(sessionId, cellId, limitSec))
+}
+
+/** The new limit for one scope's attempts of this cell: the waiting ones and the one computing (retimeCouncilRun). */
+function retimeIn(runtime: Runtime, cellId: string, limitSec: number | null): void {
   /*
    * The waiting ones first: the limit is written into the job itself at
    * queueing time (the kernel does not read the document), and without this
@@ -6185,7 +7095,7 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
     item,
     job,
     buffer: new CouncilOutputBuffer(),
-    run: { state: 'running', outputs: [], execCount: null, ranMs: null, startedAt, by: job.by },
+    run: { state: 'running', outputs: [], execCount: null, ranMs: null, startedAt, by: job.by, ...placedOf(item) },
     timer: null,
   }
   runtime.currentCell = item.cellId
@@ -6198,9 +7108,12 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
   syncQueue(runtime)
   setStatus(runtime, 'busy')
   tellJob(job, { ...active.run })
+  // A pool's worker (§9.5): its pool hears how each attempt ended, for its recycling and the attempt's files.
+  const handle = handleOf(runtime)
 
   if (job.source.trim().length === 0) {
     finishCouncil(runtime, active, 'ok')
+    if (handle) attemptEnded(handle, item, { ...QUIET_END, run: active.run })
     return
   }
 
@@ -6216,24 +7129,16 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
   if (moving) active.buffer.clear()
   if (barred === STOPPED) {
     // Stopped before it reached the kernel: no run at all, as an attempt the same press dropped from the queue (releaseCouncil).
-    if (active.timer) {
-      clearTimeout(active.timer)
-      active.timer = null
-    }
-    if (runtime.started?.cellId === item.cellId) runtime.started = null
-    runtime.job = null
-    runtime.currentCell = null
-    runtime.currentBatch = null
-    runtime.currentRunById = null
-    runtime.lastFinished = { cellId: item.cellId, batch: item.batch }
-    runtime.lastWorkAt = Date.now()
+    letGoOfAttempt(runtime, active)
     releaseCouncil(runtime, [item])
     syncQueue(runtime)
+    if (handle) attemptEnded(handle, item, { ...QUIET_END, kind: 'stopped' })
     return
   }
   if (barred !== null) {
     active.buffer.error('', barred, [])
     finishCouncil(runtime, active, 'error')
+    if (handle) attemptEnded(handle, item, { ...QUIET_END, run: active.run })
     return
   }
   const unwatch = stopIfDeleted(runtime, doc, item.cellId, job.cellId)
@@ -6251,11 +7156,32 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
   beginLimit(runtime, item, job.limitSec, startedAt)
   const { buffer } = active
   let state: 'ok' | 'error' = 'ok'
-  // The attempt's personal data copies. See councilEnterSourceNow.
-  const { report, reason } = await enterCouncilIsolation(runtime)
+  /*
+   * A pool's attempt that goes to the notebook's kernel after all (§9.4,
+   * §9.10): it reads a name its epoch left behind (the worker's entry says
+   * so), or its machine went with it, once (D15). It is not an attempt that
+   * failed: no frame of an end goes out, and it runs again there, keeping
+   * its place, its card saying why.
+   */
+  let handback: { kind: 'rerouted' | 'lost'; note: string } | null = null
+  const lostOnce = (): boolean => handle !== null && !item.rerun && runtime.kernel?.endedBy?.cause === 'lost'
+  let entered = false
+  let restartedItself = false
+  // The attempt's personal data copies. See councilEnterSourceNow (and entrySourceFor for a pool's worker).
+  const { report, reason, raw } = await enterCouncilIsolation(runtime, item)
   let starved = false
   try {
+    const needs = handle ? poolSays('needs', null, () => councilPool.needs(raw)) : null
+    if (needs) {
+      handback = { kind: 'rerouted', note: tr('server.runInTheSharedKernelItUses.eaf141', { name: needs.name }) }
+      entered = true
+      return
+    }
     if (!report?.ok) {
+      if (lostOnce()) {
+        handback = { kind: 'lost', note: tr('server.theMachineWasLostInTheMiddle.b5f5c5') }
+        return
+      }
       /*
        * The entry was not confirmed: the attempt does NOT run.
        *
@@ -6273,6 +7199,7 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
       state = 'error'
       return
     }
+    entered = true
     // What stayed shared goes first in the output, before the attempt's first line.
     for (const note of councilSkipNotes(report)) buffer.stream('stderr', note)
     /*
@@ -6341,18 +7268,27 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
       { storeHistory: false },
     )
     state = status === 'ok' ? 'ok' : 'error'
+    if (status === 'abort' && lostOnce()) {
+      handback = { kind: 'lost', note: tr('server.theMachineWasLostInTheMiddle.b5f5c5') }
+      return
+    }
     if (status === 'abort' && !buffer.hasError) {
       const phase = runtime.kernel?.phase
       if (runtime.kernel?.endedBy) buffer.error('', lostMidRun(), [])
       else if (phase === 'dead') buffer.error('KernelDied', deadMessage(), [])
       else if (phase === 'restarting' && runtime.kernel?.phaseExpected === false) {
+        restartedItself = true
         buffer.error('KernelDied', killedMessage(), [])
       } else buffer.error('Interrupted', tr("server.theAttemptWasInterrupted.4f4edf"), [])
     }
   } catch (err) {
-    if (runtime.kernel?.endedBy || err instanceof StartLost) buffer.error('', lostMidRun(), [])
-    else buffer.error('KernelError', startWords(runtime.sessionId, runtime.role, errText(err)), [])
-    state = 'error'
+    if (lostOnce() || (handle !== null && !item.rerun && err instanceof StartLost)) {
+      handback = { kind: 'lost', note: tr('server.theMachineWasLostInTheMiddle.b5f5c5') }
+    } else {
+      if (runtime.kernel?.endedBy || err instanceof StartLost) buffer.error('', lostMidRun(), [])
+      else buffer.error('KernelError', startWords(runtime.sessionId, runtime.role, errText(err)), [])
+      state = 'error'
+    }
   } finally {
     unwatch()
     /*
@@ -6369,19 +7305,82 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
      * nothing, and the next life finds the attempt as a crash leaves it.
      */
     if (!abandoned.has(runtime)) {
-      const leftovers = await leaveCouncilIsolation(runtime)
+      const stuck = runtime.limit?.item === item && runtime.limit.stuck
+      /*
+       * A worker being recycled under its attempt (it was stuck, §9.5) has no
+       * namespace left to give back: the process goes, and an exit sent to it
+       * now would be lost with it, the attempt never ending.
+       */
+      const recycling = handle !== null && (runtime.restarting !== null || runtime.kernel?.phase === 'restarting')
+      const { leftovers, raw: leftRaw } = recycling ? { leftovers: null, raw: null } : await leaveCouncilIsolation(runtime)
+      if (handback !== null && handle !== null) {
+        // To the notebook's kernel, keeping its place: a loss is run there once (D15), and its pause is not charged (it never ended as a run).
+        letGoOfAttempt(runtime, active)
+        if (handback.kind === 'lost') item.rerun = true
+        requeueCouncilShared(runtime.sessionId, handle.root, item, handback.note)
+        syncQueue(runtime)
+        attemptEnded(handle, item, { ...QUIET_END, kind: handback.kind, entered, scratch: true, threads: leftovers?.threads ?? 0, processes: leftovers?.processes ?? 0, stuck })
+        return
+      }
       // Notes at the tail of the output: why memory ran short and what was left
       // running. Both come after the attempt's code, because both are about its
       // consequences.
       if (starved) buffer.stream('stderr', councilMemoryNote(report?.memory ?? null))
       for (const note of councilLeftoverNotes(leftovers)) buffer.stream('stderr', note)
+      const left = handle ? poolSays('left', { files: [], dirtyMb: null }, () => councilPool.left(leftRaw)) : null
+      // The pool's attempt's own files (§9.7): named on its card as its worker listed them, those it brings on their way; each brought as it lands.
+      if (left && left.files.length > 0) active.run = { ...active.run, files: attemptCardFiles(left.files) }
       finishCouncil(runtime, active, state)
+      if (handle && left) {
+        const kernel = runtime.kernel
+        attemptEnded(handle, item, {
+          kind: 'ran',
+          entered,
+          scratch: true,
+          threads: leftovers?.threads ?? 0,
+          processes: leftovers?.processes ?? 0,
+          stuck,
+          kernel: !kernel || kernel.phase === 'dead' || kernel.endedBy ? 'dead' : restartedItself ? 'restarted' : 'up',
+          dirtyMb: left.dirtyMb,
+          files: left.files,
+          run: active.run,
+        })
+      }
       // The attempt may have written a file: the files panel cares about that too.
       notifyWorkspaceChanged(runtime.sessionId)
       // And a machine's scan reports it now (§8.3).
       askSlotScan(runtime.sessionId, runtime.role)
     }
   }
+}
+
+/** An attempt that ended with nothing for its worker's pool to mend. */
+const QUIET_END: AttemptEnd = { kind: 'ran', entered: true, scratch: false, threads: 0, processes: 0, stuck: false, kernel: 'up', dirtyMb: null, files: [], run: null }
+
+/** A worker's attempt ended: its pool hears it, and its throw never brings the pump down. */
+function attemptEnded(handle: WorkerHandle, item: QueueItem, end: AttemptEnd): void {
+  poolSays('ended', undefined, () => councilPool.ended(handle, item, end))
+}
+
+/**
+ * An attempt leaves its scope without an end of its own (stopped at the
+ * barrier, or handed to the notebook's kernel): its frame timer, its alarm
+ * and the scope's record of it go, and nothing is told its card here.
+ */
+function letGoOfAttempt(runtime: Runtime, active: ActiveJob): void {
+  const { item } = active
+  if (active.timer) {
+    clearTimeout(active.timer)
+    active.timer = null
+  }
+  clearLimit(runtime, item)
+  if (runtime.started?.cellId === item.cellId) runtime.started = null
+  runtime.job = null
+  runtime.currentCell = null
+  runtime.currentBatch = null
+  runtime.currentRunById = null
+  runtime.lastFinished = { cellId: item.cellId, batch: item.batch }
+  runtime.lastWorkAt = Date.now()
 }
 
 /**
@@ -6395,6 +7394,8 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
  */
 function reportDeadKernel(runtime: Runtime, message: string, full = false): void {
   const down: KernelStatus = full ? 'off' : 'dead'
+  // An epoch's export at the head has no cell to say it on: it is answered as failed, and goes.
+  while (runtime.queue[0]?.service) answerService(runtime.queue.shift()!.service!, { refused: 'failed', detail: message })
   if (runtime.activityItem && !runtime.job) {
     finishExecution(runtime, runtime.activityItem, 'error',
       Math.max(0, Date.now() - (runtime.started?.at ?? Date.now())))
@@ -6502,6 +7503,7 @@ function dropMemoryRefusals(doc: Y.Doc, cellId: string): void {
  * Read without creating anything: a cell without outputs stays without the key.
  */
 function clearMemoryNotices(runtime: Runtime): void {
+  if (hidden(runtime)) return
   const doc = peekSessionDoc(runtime.sessionId)?.doc
   if (!doc) return
   const stale: Array<{ outputs: Y.Array<YOutput>; index: number }> = []
@@ -6554,10 +7556,13 @@ function stopIfDeleted(
     if (runtime.currentCell !== cellId || findCell(doc, watched)) return
     fired = true
     if (runtime.activityItem) runtime.activityItem.activityCancelled = true
-    kernelNote(
-      runtime.sessionId,
-      tr("server.theCellThatWasRunningWasDeleted.ec6ea8"),
-    )
+    // (A pool's worker stops its attempt as quietly: the council cell's removal is the room's own news.)
+    if (!hidden(runtime)) {
+      kernelNote(
+        runtime.sessionId,
+        tr("server.theCellThatWasRunningWasDeleted.ec6ea8"),
+      )
+    }
     void runtime.kernel?.interrupt().catch(() => {})
   }
   doc.on('update', onUpdate)
@@ -7439,6 +8444,8 @@ export function clearOutputs(sessionId: string, cellId?: string, book?: string):
  * running.
  */
 function resetAllCells(runtime: Runtime, except: string | null = null): void {
+  // A pool's worker has no cells (and `bookCells` of its root would make an array of that name in the document).
+  if (hidden(runtime)) return
   const { doc } = getSessionDoc(runtime.sessionId)
   /*
    * The cells of ONE notebook, the one whose kernel was restarted.
