@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.25.1](https://github.com/colloq-edu/colloq/compare/v0.25.0...v0.25.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* **admin:** a competition's page shows its address with «открыть» and «скопировать», as a course's does ([#54](https://github.com/colloq-edu/colloq/issues/54)) ([2df4abb](https://github.com/colloq-edu/colloq/commit/2df4abb1ce1aeb02d9def25210c69951ca01abda))
+
 ## [0.25.0](https://github.com/colloq-edu/colloq/compare/v0.24.0...v0.25.0) (2026-10-21)
 
 
