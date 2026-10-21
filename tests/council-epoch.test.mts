@@ -1221,7 +1221,8 @@ test('a seed maps its stream rather than reading it, and measures its baseline o
     attempts: [
       { source: "import sys, tracemalloc\nsys.modules['_probe'].seen.append(tracemalloc.get_traced_memory()[1])", bare: true },
       // An attempt that leaves 30 MB behind for good, in a worker whose «Память на попытку» is 20 MB.
-      { source: "import sys\nsys.modules['_probe'].keep = bytearray(30 * 1024 * 1024)", entry: { capMb: 20 } },
+      // Written, not zero-filled: Linux counts a zeroed allocation nobody touched as no dirty memory at all.
+      { source: "import sys\nsys.modules['_probe'].keep = bytearray(b'\\x01') * (30 * 1024 * 1024)", entry: { capMb: 20 } },
     ],
   })
   assert.equal(out.seed.ok, true, out.seed.error)
