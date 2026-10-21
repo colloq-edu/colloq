@@ -530,7 +530,7 @@
   /*
    * `order-1` below 640 is the card's second line.
    *
-   * An environment row is one non-wrapping row: the name is `flex-1`,
+   * An environment row was one non-wrapping row: the name was `flex-1`,
    * everything else `shrink-0`. At 390px the name shrank to zero (it was not
    * visible at all, and the GPU badge printed over the neighbouring state),
    * and the unshrinkable tail still ran off the edge: the Russian "Default"
@@ -544,6 +544,10 @@
    * pills across five branches, and they can only drift apart all at once.
    * The pills themselves are the panel's state badge (competitions/Badge), so
    * "Needs rebuild" here reads like "Draft" on a competition.
+   *
+   * Above 640 the row wraps too, but in one piece: the states and the actions
+   * stand in a tail of their own that goes under the name whole when the two
+   * do not fit side by side (the tail's comment in the markup says why).
    */
   const PILL = 'max-[640px]:order-1'
   /*
@@ -668,7 +672,7 @@
             the name.
           -->
           <div
-            class="flex items-center gap-3 px-3.5 py-3 max-[640px]:flex-wrap max-[640px]:items-start
+            class="flex flex-wrap items-center gap-3 px-3.5 py-3 max-[640px]:items-start
                    max-[640px]:gap-x-2 max-[640px]:gap-y-2.5"
           >
             <span
@@ -677,7 +681,18 @@
               aria-hidden="true"
             ></span>
 
-            <div class="flex min-w-0 flex-1 flex-col gap-0.5 max-[640px]:basis-[calc(100%_-_70px)]">
+            <!--
+              Above 640 the name is never squeezed: the column's least width is
+              its first line, the name and its GPU badge whole (the facts line
+              under it counts for nothing, `w-0 min-w-full`, and only cuts
+              itself short), and at most the row less the square and its gap,
+              so a long name still stands beside the square. Below, the
+              measured `100% - 70px` holds, as before.
+            -->
+            <div
+              class="flex flex-1 flex-col gap-0.5 max-[640px]:min-w-0 max-[640px]:basis-[calc(100%_-_70px)]
+                     min-[641px]:max-w-[calc(100%_-_22px)]"
+            >
               <!-- `flex-wrap` and `min-w-0` are the fix for the overlapping GPU
                    badge: the badge is `shrink-0`, and in a row squeezed to
                    zero it printed over the neighbouring state. -->
@@ -689,7 +704,23 @@
                   class="font-mono text-ui font-semibold text-ink max-[640px]:min-w-0
                          max-[640px]:line-clamp-2 min-[641px]:truncate"
                 >
-                  <EnvironmentLink name={env.name} endpoint={`/api/admin/environments/${encodeURIComponent(env.name)}/inventory`} />
+                  <!--
+                    The window's pip freeze is the image's, read by the
+                    server from the image the rooms run now: a row with no
+                    image (never built) has nothing to give, and a catalog's
+                    image is not on this server to run. The window says both
+                    beside a greyed button rather than handing over a file
+                    that is not a freeze.
+                  -->
+                  <EnvironmentLink
+                    name={env.name}
+                    endpoint={`/api/admin/environments/${encodeURIComponent(env.name)}/inventory`}
+                    freeze={{
+                      endpoint: `/api/admin/environments/${encodeURIComponent(env.name)}/freeze`,
+                      built: env.builtAt !== null,
+                      catalogImage: env.managed ? (env.image ?? null) : null,
+                    }}
+                  />
                 </span>
                 <!-- By the name, not among the states on the right: this is
                      about what the environment is, not about what is
@@ -727,7 +758,7 @@
               -->
               <!-- On a phone the facts line wraps: cut at 178px, it showed
                    "Python 3.11 · 2…" and nothing more. -->
-              <p class="admin-meta truncate max-[640px]:whitespace-normal">
+              <p class="admin-meta truncate max-[640px]:whitespace-normal min-[641px]:w-0 min-[641px]:min-w-full">
                 {[
                   pythonLabel(env),
                   env.imageBytes === null ? null : imageSize(env.imageBytes),
@@ -740,174 +771,188 @@
               </p>
             </div>
 
-            {#if env.state === 'building'}
-              <span class="{PILL} inline-flex shrink-0 items-center gap-1.5">
-                <span class="h-[5px] w-[5px] animate-blink rounded-full bg-accent" aria-hidden="true"
-                ></span>
-                <Badge word={tr("admin.building")} tone="accent" />
-              </span>
-              <button
-                class="btn-outline shrink-0 max-[640px]:order-1"
-                onclick={() => cancel(env)}
-                disabled={!isOwner || busy === env.name}
-              >
-                {tr("admin.cancel")}
-              </button>
-            {:else}
-              <!--
-                `.enter` and not a keyframe of this screen's own: index.css
-                names this exact case in the comment over `colloq-enter` — "a
-                status settling" — and the panel gains nothing from a second
-                vocabulary for it. It is also opacity plus 3px, which is why
-                there is no reduced-motion branch here: index.css already swaps
-                that keyframe for its travel-free twin.
-              -->
-              {#if env.state === 'ready'}
-                <Badge
-                  word={tr("admin.ready")}
-                  tone="positive"
-                  class={cn(PILL, justFinished === env.name && 'enter')}
-                />
-              {:else if env.state === 'failed'}
-                <!-- The same mark on the failure. A wait ending badly is still
-                     the wait ending, and a build that fails unannounced is the
-                     worse of the two to miss. -->
-                <Badge
-                  word={tr("admin.build.failed.297")}
-                  tone="danger"
-                  form="strong"
-                  class={cn(PILL, justFinished === env.name && 'enter')}
-                />
-              {:else if env.builtAt !== null}
-                <!--
-                  BUILT, BUT STALE — and that is not the same as "not built".
-                  The image exists, rooms are running it right now; what changed
-                  is the package list, saved after the build. Calling that "Not
-                  built" beside "216 MB · built 5 days ago" is how the panel
-                  contradicts itself in one line, and the reader is left unable
-                  to tell whether anything is there at all.
-
-                  It can go stale without an edit of its own, too: for an
-                  environment on top of another image, the parent may have
-                  been rebuilt later. The badge is the same — it is the same
-                  matter — but the tooltip names the reason, otherwise "Needs
-                  rebuild" shows up on a file nobody has touched.
-                -->
-                <span
-                  class="{PILL} inline-flex shrink-0"
-                  title={pythonStale(env)
-                    ? tr('admin.env.pythonNeedsRebuild', {
-                        version: env.python,
-                        built: env.pythonBuilt ?? '',
-                      })
-                    : env.parent
-                      ? tr("admin.the.package.list.changed.or.the.parent.image.was.rebuilt", { p0: env.parent })
-                      : tr("admin.the.package.list.changed.after.the.build")}
-                >
-                  <Badge word={tr("admin.needs.rebuild")} tone="warning" />
+            <!--
+              The tail: the states and the actions, one piece. On an iPad in
+              portrait, in Russian, a row with two long pills and an action
+              ("Needs rebuild", "Default" and "Build") left the name 0px:
+              it was not there to see or to press, and the name is the
+              only way into the environment's window and its pip freeze. Now
+              the tail goes under the name, to the right, when both do not fit
+              on one line; when they do, nothing has moved. Below 640 the tail
+              is no box at all (`contents`): its pills and buttons are the
+              row's own again, and the phone's two lines above stand as
+              measured.
+            -->
+            <div class="ml-auto flex flex-wrap items-center justify-end gap-3 max-[640px]:contents">
+              {#if env.state === 'building'}
+                <span class="{PILL} inline-flex shrink-0 items-center gap-1.5">
+                  <span class="h-[5px] w-[5px] animate-blink rounded-full bg-accent" aria-hidden="true"
+                  ></span>
+                  <Badge word={tr("admin.building")} tone="accent" />
                 </span>
+                <button
+                  class="btn-outline shrink-0 max-[640px]:order-1"
+                  onclick={() => cancel(env)}
+                  disabled={!isOwner || busy === env.name}
+                >
+                  {tr("admin.cancel")}
+                </button>
               {:else}
-                <!-- Warning, as the competition editor and the new class form
-                     mark an unbuilt environment: one word, one tone. -->
-                <Badge word={tr("admin.not.built")} tone="warning" class={PILL} />
-              {/if}
-
-              {#if env.active}
                 <!--
-                  "Default", not "in use": with an environment per seminar,
-                  several can be in use at once, a container for each. This
-                  environment is what the next room created will get.
+                  `.enter` and not a keyframe of this screen's own: index.css
+                  names this exact case in the comment over `colloq-enter` — "a
+                  status settling" — and the panel gains nothing from a second
+                  vocabulary for it. It is also opacity plus 3px, which is why
+                  there is no reduced-motion branch here: index.css already swaps
+                  that keyframe for its travel-free twin.
                 -->
-                <Badge word={tr("admin.default")} tone="accent" class={PILL} />
-              {/if}
+                {#if env.state === 'ready'}
+                  <Badge
+                    word={tr("admin.ready")}
+                    tone="positive"
+                    class={cn(PILL, justFinished === env.name && 'enter')}
+                  />
+                {:else if env.state === 'failed'}
+                  <!-- The same mark on the failure. A wait ending badly is still
+                       the wait ending, and a build that fails unannounced is the
+                       worse of the two to miss. -->
+                  <Badge
+                    word={tr("admin.build.failed.297")}
+                    tone="danger"
+                    form="strong"
+                    class={cn(PILL, justFinished === env.name && 'enter')}
+                  />
+                {:else if env.builtAt !== null}
+                  <!--
+                    BUILT, BUT STALE — and that is not the same as "not built".
+                    The image exists, rooms are running it right now; what changed
+                    is the package list, saved after the build. Calling that "Not
+                    built" beside "216 MB · built 5 days ago" is how the panel
+                    contradicts itself in one line, and the reader is left unable
+                    to tell whether anything is there at all.
 
-              <!--
-                One action, then a menu. Five buttons of equal weight in a row
-                make the reader choose before they have read anything; the
-                artboard draws two, and the seminars table already uses this
-                exact pattern for the rest.
-              -->
-              {#if !env.active && env.state === 'ready'}
-                <button
-                  class={ROW_ACTION}
-                  onclick={() => (switching = env.name)}
-                  disabled={!isOwner || !canSetDefault || busy === env.name}
-                  title={envs.cannotSetDefaultReason ??
-                    tr("admin.new.seminars.will.be.created.on.this.environment")}
-                >
-                  {tr("admin.make.default")}
-                </button>
-              {:else if env.state !== 'ready'}
-                <button
-                  class={ROW_ACTION}
-                  onclick={() => build(env)}
-                  disabled={!isOwner || !canBuild || busy === env.name}
-                >
-                  {tr("admin.build")}
-                </button>
-              {/if}
-
-              <div class="relative max-[640px]:shrink-0">
-                <button
-                  type="button"
-                  aria-haspopup="menu"
-                  aria-expanded={openMenu === env.name}
-                  aria-label="{tr("admin.actions.for")} {env.name}"
-                  class="admin-icon-btn max-[640px]:h-11 max-[640px]:w-11"
-                  onclick={(event) => {
-                    event.stopPropagation()
-                    openMenu = openMenu === env.name ? null : env.name
-                  }}
-                >
-                  <Icon name="more" size={15} />
-                </button>
-                {#if openMenu === env.name}
-                  <div
-                    role="menu"
-                    tabindex="-1"
-                    class="row-menu admin-menu absolute right-0 top-full z-30 mt-1 w-[240px]"
+                    It can go stale without an edit of its own, too: for an
+                    environment on top of another image, the parent may have
+                    been rebuilt later. The badge is the same — it is the same
+                    matter — but the tooltip names the reason, otherwise "Needs
+                    rebuild" shows up on a file nobody has touched.
+                  -->
+                  <span
+                    class="{PILL} inline-flex shrink-0"
+                    title={pythonStale(env)
+                      ? tr('admin.env.pythonNeedsRebuild', {
+                          version: env.python,
+                          built: env.pythonBuilt ?? '',
+                        })
+                      : env.parent
+                        ? tr("admin.the.package.list.changed.or.the.parent.image.was.rebuilt", { p0: env.parent })
+                        : tr("admin.the.package.list.changed.after.the.build")}
                   >
-                    <button
-                      role="menuitem"
-                      class="admin-menu-item"
-                      disabled={!mayWrite}
-                      onclick={() => openEditor(env.name)}
+                    <Badge word={tr("admin.needs.rebuild")} tone="warning" />
+                  </span>
+                {:else}
+                  <!-- Warning, as the competition editor and the new class form
+                       mark an unbuilt environment: one word, one tone. -->
+                  <Badge word={tr("admin.not.built")} tone="warning" class={PILL} />
+                {/if}
+
+                {#if env.active}
+                  <!--
+                    "Default", not "in use": with an environment per seminar,
+                    several can be in use at once, a container for each. This
+                    environment is what the next room created will get.
+                  -->
+                  <Badge word={tr("admin.default")} tone="accent" class={PILL} />
+                {/if}
+
+                <!--
+                  One action, then a menu. Five buttons of equal weight in a row
+                  make the reader choose before they have read anything; the
+                  artboard draws two, and the seminars table already uses this
+                  exact pattern for the rest.
+                -->
+                {#if !env.active && env.state === 'ready'}
+                  <button
+                    class={ROW_ACTION}
+                    onclick={() => (switching = env.name)}
+                    disabled={!isOwner || !canSetDefault || busy === env.name}
+                    title={envs.cannotSetDefaultReason ??
+                      tr("admin.new.seminars.will.be.created.on.this.environment")}
+                  >
+                    {tr("admin.make.default")}
+                  </button>
+                {:else if env.state !== 'ready'}
+                  <button
+                    class={ROW_ACTION}
+                    onclick={() => build(env)}
+                    disabled={!isOwner || !canBuild || busy === env.name}
+                  >
+                    {tr("admin.build")}
+                  </button>
+                {/if}
+
+                <div class="relative max-[640px]:shrink-0">
+                  <button
+                    type="button"
+                    aria-haspopup="menu"
+                    aria-expanded={openMenu === env.name}
+                    aria-label="{tr("admin.actions.for")} {env.name}"
+                    class="admin-icon-btn max-[640px]:h-11 max-[640px]:w-11"
+                    onclick={(event) => {
+                      event.stopPropagation()
+                      openMenu = openMenu === env.name ? null : env.name
+                    }}
+                  >
+                    <Icon name="more" size={15} />
+                  </button>
+                  {#if openMenu === env.name}
+                    <div
+                      role="menu"
+                      tabindex="-1"
+                      class="row-menu admin-menu absolute right-0 top-full z-30 mt-1 w-[240px]"
                     >
-                      {tr("admin.edit.packages")}
-                    </button>
-                    <button
-                      role="menuitem"
-                      class="admin-menu-item"
-                      disabled={!mayWrite}
-                      onclick={() => duplicate(env)}
-                    >
-                      {tr("admin.duplicate")}
-                    </button>
-                    <button
-                      role="menuitem"
-                      class="admin-menu-item"
-                      onclick={() => build(env)}
-                      disabled={!isOwner || !canBuild}
-                    >
-                      {env.state === 'ready' ? tr("admin.rebuild") : tr("admin.build")}
-                    </button>
-                    <button role="menuitem" class="admin-menu-item" onclick={() => watch(env.name)}>
-                      {tr("admin.build.log")}
-                    </button>
-                    {#if !managed && env.name !== 'base' && !env.active}
                       <button
                         role="menuitem"
-                        class="admin-menu-item text-danger"
-                        onclick={() => (doomed = env.name)}
-                        disabled={!isOwner}
+                        class="admin-menu-item"
+                        disabled={!mayWrite}
+                        onclick={() => openEditor(env.name)}
                       >
-                        {tr("admin.delete")}
+                        {tr("admin.edit.packages")}
                       </button>
-                    {/if}
-                  </div>
-                {/if}
-              </div>
-            {/if}
+                      <button
+                        role="menuitem"
+                        class="admin-menu-item"
+                        disabled={!mayWrite}
+                        onclick={() => duplicate(env)}
+                      >
+                        {tr("admin.duplicate")}
+                      </button>
+                      <button
+                        role="menuitem"
+                        class="admin-menu-item"
+                        onclick={() => build(env)}
+                        disabled={!isOwner || !canBuild}
+                      >
+                        {env.state === 'ready' ? tr("admin.rebuild") : tr("admin.build")}
+                      </button>
+                      <button role="menuitem" class="admin-menu-item" onclick={() => watch(env.name)}>
+                        {tr("admin.build.log")}
+                      </button>
+                      {#if !managed && env.name !== 'base' && !env.active}
+                        <button
+                          role="menuitem"
+                          class="admin-menu-item text-danger"
+                          onclick={() => (doomed = env.name)}
+                          disabled={!isOwner}
+                        >
+                          {tr("admin.delete")}
+                        </button>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            </div>
           </div>
 
           {#if env.packages.length > 0 && env.state !== 'building' && logFor !== env.name}

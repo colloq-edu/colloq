@@ -1727,6 +1727,13 @@ export type AdminErrorReason =
   | 'building'
   | 'failed'
   /**
+   * The environment has no image yet, so there is nothing to read its
+   * `pip freeze` from (routes/admin-environments.ts · freeze). The window
+   * disables the download with the same reason beforehand; only a direct
+   * request, or a list gone stale, meets this.
+   */
+  | 'not_built'
+  /**
    * Not a refusal but "too early": a competition without answers, without
    * data or with an unchecked baseline solution cannot be opened. Separate
    * from 'invalid', because it is fixed not in this request but on the form,

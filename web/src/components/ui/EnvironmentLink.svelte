@@ -1,9 +1,11 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
   import EnvironmentDetails from './EnvironmentDetails.svelte'
+  import type { EnvironmentFreeze } from './EnvironmentDetails.svelte'
 
-  interface Props { name: string; endpoint: string }
-  const { name, endpoint }: Props = $props()
+  /** `freeze`: the panel's pip freeze download for the window; the competition pages leave it out. */
+  interface Props { name: string; endpoint: string; freeze?: EnvironmentFreeze }
+  const { name, endpoint, freeze }: Props = $props()
   let open = $state(false)
 </script>
 
@@ -16,5 +18,5 @@
 >{name}</button>
 
 {#if open}
-  <EnvironmentDetails {name} {endpoint} onclose={() => (open = false)} />
+  <EnvironmentDetails {name} {endpoint} {freeze} onclose={() => (open = false)} />
 {/if}
