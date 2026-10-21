@@ -44,7 +44,7 @@
  * ONE MACHINE SERVES THE FILE. Each scenario makes a class of its own on it.
  */
 import './_remote-e2e-home.mts'
-import { after, before, test } from 'node:test'
+import { after, afterEach, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import { WebSocket, type RawData } from 'ws'
@@ -67,7 +67,7 @@ import { revokeRunner } from '../server/src/competitions/remote/release.js'
 import { useRemoteClock } from '../server/src/competitions/remote/heard.js'
 import { jupyterSessionPath } from '../server/src/kernel/jupyter.js'
 import { placementOutlook, tunnelWanted } from '../server/src/kernel/remote/placement.js'
-import { placementRow } from '../server/src/kernel/remote/placement-store.js'
+import { livePlacement, placementRow } from '../server/src/kernel/remote/placement-store.js'
 import { setCouncilLimitTick, shutdownKernels } from '../server/src/kernel/index.js'
 import { shutdownCollab } from '../server/src/collab/index.js'
 import { AgentTunnel } from '../server/src/runner-agent/tunnel.js'
@@ -135,12 +135,29 @@ async function call<T>(method: string, at: string, body?: unknown, cookie?: stri
 
 /** A class made in the panel on the base environment, with these rules, and its placement set in its «Ресурсы». */
 async function makeClass(by: Staff, name: string, placement: Partial<ClassPlacement>, rules: Record<string, unknown> = {}): Promise<string> {
-  const made = await call<{ id: string }>('POST', '/api/admin/seminars', { name, environment: 'base', rules }, by.cookie)
+  // One core and a gigabyte: the machine offers the host's cores less one, and a 4-core CI runner holds one such class at a time.
+  const made = await call<{ id: string }>('POST', '/api/admin/seminars', { name, environment: 'base', rules, cpus: 1, memoryMb: 1024 }, by.cookie)
   assert.equal(made.status, 201, JSON.stringify(made.body))
+  classes.push({ by, id: made.body.id })
   const set = await call('PATCH', `/api/admin/seminars/${made.body.id}`, { placement }, by.cookie)
   assert.equal(set.status, 200, JSON.stringify(set.body))
   return made.body.id
 }
+
+/** Every class a scenario made: ended after it (classes-e2e-a.test.mts · endClass), so its cores are free for the next scenario's. */
+const classes: { by: Staff; id: string }[] = []
+
+/** The owner's stop of the whole class («Остановить», POST …/running/:id/stop): its slot on the machine stops there, and the row leaves. */
+async function endClass(by: Staff, sessionId: string): Promise<void> {
+  const stopped = await call<{ error?: string }>('POST', `/api/admin/resources/running/${sessionId}/stop`, { what: 'class', force: true }, by.cookie)
+  // Nothing to stop is an ended class too (a slot that never started, or one already moved here).
+  assert.ok(stopped.status === 200 || stopped.status === 404, `${stopped.status} ${JSON.stringify(stopped.body)}`)
+  await until(`class ${sessionId} off the machine`, () => livePlacement(sessionId, 'room') === null, 30_000, () => home.classLines.slice(-5).join('\n'))
+}
+
+afterEach(async () => {
+  for (const { by, id } of classes.splice(0)) await endClass(by, id)
+})
 
 /** «Войти» on the room's page: the token its sockets open with. */
 async function join(sessionId: string, name: string, by?: Staff): Promise<JoinResponse> {

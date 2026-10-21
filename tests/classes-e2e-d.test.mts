@@ -206,7 +206,9 @@ class Scene {
   /** A class made by the staff's own door, its placement set by the same (the class's «Где считается», §6.2). */
   async room(placement: Partial<ClassPlacement>): Promise<Room> {
     this.rooms += 1
-    const made = await home.admin<{ id: string }>('POST', '/api/admin/seminars', { name: `Занятие D ${this.rooms} ${randomBytes(2).toString('hex')}` })
+    // One core and a gigabyte, as the other scenario files make theirs: the machine offers the host's cores less one, and
+    // a scenario of two classes on one machine must fit a 4-core CI runner, or the second quietly computes here.
+    const made = await home.admin<{ id: string }>('POST', '/api/admin/seminars', { name: `Занятие D ${this.rooms} ${randomBytes(2).toString('hex')}`, cpus: 1, memoryMb: 1024 })
     assert.equal(made.status, 201, JSON.stringify(made.body))
     const set = await home.admin('PATCH', `/api/admin/seminars/${made.body.id}`, { placement: { ...CLASS_PLACEMENT_DEFAULT, ...placement } })
     assert.equal(set.status, 200, JSON.stringify(set.body))
@@ -800,7 +802,10 @@ scenario('D19 · bye{restart}: no failover within its 120 s grace however silent
   fs.writeFileSync(stateLayout(a.agent.root).restartMarker, '')
   assert.equal((await a.agent.terminate()).code, 0, a.agent.log())
   assert.ok(home.classLines.some((line) => line.includes(`machine ${a.runnerId} is restarting its agent`)), home.classLines.join('\n'))
-  assert.ok(a.agent.classContainer(moving.id, 'room')?.status === 'running' && a.agent.classContainer(kept.id, 'room')?.status === 'running', 'the containers run on')
+  assert.ok(
+    a.agent.classContainer(moving.id, 'room')?.status === 'running' && a.agent.classContainer(kept.id, 'room')?.status === 'running',
+    `the containers run on: ${JSON.stringify([a.agent.classContainer(moving.id, 'room'), a.agent.classContainer(kept.id, 'room')])}\n${a.agent.log()}`,
+  )
   const byeAt = heardAt(a.runnerId)!
   await until('the slots unreachable', () => livePlacement(moving.id, 'room')?.state === 'unreachable')
   const due = kernelMachineOf(moving.id, 'room')!.failoverAt!

@@ -1775,7 +1775,7 @@ tunnel_follows_home() {
 
 runner_update() {
   need_root
-  local want="" now=0 arg cur img version url new_id cur_id sum since classes
+  local want="" now=0 arg cur img version="" url="" new_id cur_id sum since classes
   # The agent's word on its home's version counts only from a sync made from
   # now on (agent_home_version says why).
   since="$(date +%s)000"
