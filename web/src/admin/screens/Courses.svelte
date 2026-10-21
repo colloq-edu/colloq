@@ -1546,16 +1546,22 @@
            name was given. Otherwise the id went into the chat, and the class
            ended up with two different addresses for the same course. -->
       <span class="font-mono text-2xs text-ink">{location.host}/c/{addressOf(shown)}</span>
-      <a class="admin-link" href={`/c/${addressOf(shown)}`} target="_blank" rel="noreferrer">
-        {tr('admin.course.openPage')}
-      </a>
-      <button
-        type="button"
-        class="admin-link"
-        onclick={() => void copy(`${location.origin}/c/${addressOf(shown)}`, 'link')}
-      >
-        {copied === 'link' ? tr('admin.copied') : tr('admin.course.copyLink')}
-      </button>
+      <!-- «открыть» and «скопировать» are one pair: where the line wraps
+           (a phone, a long address) they move on together, never one of
+           them left behind. A competition's console draws the same pair
+           (competitions/Live.svelte · lede). -->
+      <span class="inline-flex items-baseline gap-x-4 whitespace-nowrap">
+        <a class="admin-link" href={`/c/${addressOf(shown)}`} target="_blank" rel="noreferrer">
+          {tr('admin.course.openPage')}
+        </a>
+        <button
+          type="button"
+          class="admin-link"
+          onclick={() => void copy(`${location.origin}/c/${addressOf(shown)}`, 'link')}
+        >
+          {copied === 'link' ? tr('admin.copied') : tr('admin.course.copyLink')}
+        </button>
+      </span>
       <span class="h-3.5 w-px self-center bg-line" aria-hidden="true"></span>
       <span class="text-2xs text-muted">{tallyText(shown.items)}</span>
     {/snippet}
