@@ -24,7 +24,8 @@ import { startFakeJupyter, startFakeLink } from './_fake-jupyter.mjs'
 import type { ClassClock, ClassPlacements, PlacementEvent, PlacementView } from '../server/src/kernel/index.js'
 import type { TokenPayload } from '../server/src/auth.js'
 import type { ControlServerMessage, CouncilRun } from '../shared/protocol.js'
-import { COUNCIL_EPOCH_MB, COUNCIL_WORKER_BASE_MB } from '../shared/remote-kernels.js'
+import { COUNCIL_EPOCH_MB, COUNCIL_POOL_READY_MS, COUNCIL_WORKER_BASE_MB } from '../shared/remote-kernels.js'
+import { classHashSeed } from '../server/src/kernel/room-spec.js'
 
 process.env.KERNEL_QUIET_MS = '150'
 process.env.KERNEL_WATCHDOG_MS = '50'
@@ -1361,17 +1362,21 @@ test('refreezes taken faster than the machine heard of them: an export no reply 
 
 /* ----------------------------------------------------- the attempt's files */
 
-test('an attempt\'s files are named on its card, those within the caps asked of its machine and marked kept as they land, the rest named with their size', async (t) => {
+test('an attempt\'s files are named on its card, those within the caps on their way and asked of its machine, marked kept as they land, the rest named with their size', async (t) => {
   const room = await readyPool(t, { workers: 1, refresh: 'manual' })
   fake.council.files = [{ name: 'out.csv', text: 'a,b\n1,2\n' }, { name: 'big.bin', bytes: 50 * 1024 * 1024 }]
   const attempt = room.attempt('p_s1', 'print(x)')
   assert.ok(await until(() => attempt.last()?.state === 'ok'))
   const runId = attempt.last()!.runId!
-  assert.deepEqual(attempt.last()?.files, [{ name: 'out.csv', bytes: 8, kept: false }, { name: 'big.bin', bytes: 50 * 1024 * 1024, kept: false }])
+  const sha = createHash('sha256').update('a,b\n1,2\n').digest('hex')
+  // The run's end: the one within the caps on its way (null, never «not kept»), the one past them left behind.
+  const ended = attempt.frames.find((frame) => frame?.state === 'ok')!
+  assert.deepEqual(ended.files, [{ name: 'out.csv', bytes: 8, kept: null, sha256: sha }, { name: 'big.bin', bytes: 50 * 1024 * 1024, kept: false }])
+  assert.deepEqual(attempt.last()?.files, ended.files)
   // The machine is asked for the one with a hash, within the caps, under the council placement's gen.
   const [collect] = epochs.collectFor('r1')
   assert.equal(collect?.runId, runId)
-  assert.deepEqual(collect?.files, [{ name: 'out.csv', sha256: createHash('sha256').update('a,b\n1,2\n').digest('hex'), bytes: 8 }])
+  assert.deepEqual(collect?.files, [{ name: 'out.csv', sha256: sha, bytes: 8 }])
   // It lands: the card says so.
   const frames = attempt.frames.length
   const staged = path.join(fake.epochFolder(0), 'out.part')
@@ -1380,11 +1385,38 @@ test('an attempt\'s files are named on its card, those within the caps asked of 
   const target = epochs.artifactPath(room.id, runId, collect!.files[0]!.sha256)
   epochs.landArtifact(room.id, runId, 'out.csv', staged, target)
   assert.equal(attempt.frames.length, frames + 1)
-  assert.deepEqual(attempt.last()?.files, [{ name: 'out.csv', bytes: 8, kept: true }, { name: 'big.bin', bytes: 50 * 1024 * 1024, kept: false }])
+  assert.deepEqual(attempt.last()?.files, [{ name: 'out.csv', bytes: 8, kept: true, sha256: sha }, { name: 'big.bin', bytes: 50 * 1024 * 1024, kept: false }])
   assert.equal(fs.readFileSync(target, 'utf8'), 'a,b\n1,2\n')
-  // The machine says the collection is over: nothing more is asked.
+  // The machine says the collection is over: nothing more is asked, and the card, whole, hears nothing more.
   epochs.noteCollected('r1', [{ sessionId: room.id, runId }])
   assert.deepEqual(epochs.collectFor('r1'), [])
+  assert.equal(attempt.frames.length, frames + 1)
+  fake.council.files = []
+})
+
+test('a file on its way whose collection ends without it is said left behind, once: the machine refused it, or went', async (t) => {
+  const room = await readyPool(t, { workers: 1, refresh: 'manual' })
+  fake.council.files = [{ name: 'a.csv', text: 'a\n' }, { name: 'b.csv', text: 'b\n' }]
+  const attempt = room.attempt('p_s1', 'print(x)')
+  assert.ok(await until(() => attempt.last()?.state === 'ok'))
+  const runId = attempt.last()!.runId!
+  assert.deepEqual(attempt.last()?.files?.map((file) => [file.name, file.kept]), [['a.csv', null], ['b.csv', null]])
+  // One lands; then the machine says the collection is over without the other (its agent would not send it).
+  const [collect] = epochs.collectFor('r1')
+  const staged = path.join(fake.epochFolder(0), 'a.part')
+  fs.mkdirSync(path.dirname(staged), { recursive: true })
+  fs.writeFileSync(staged, 'a\n')
+  epochs.landArtifact(room.id, runId, 'a.csv', staged, epochs.artifactPath(room.id, runId, collect!.files[0]!.sha256))
+  const frames = attempt.frames.length
+  epochs.noteCollected('r1', [{ sessionId: room.id, runId }])
+  assert.equal(attempt.frames.length, frames + 1, 'the card heard nothing of the end')
+  assert.deepEqual(attempt.last()?.files?.map((file) => [file.name, file.kept]), [['a.csv', true], ['b.csv', false]])
+  // A collection the machine's going ends: the same.
+  const second = room.attempt('p_s2', 'print(x)')
+  assert.ok(await until(() => second.last()?.state === 'ok'))
+  assert.deepEqual(second.last()?.files?.map((file) => file.kept), [null, null])
+  epochs.dropCollects(room.id, 'r1')
+  assert.deepEqual(second.last()?.files?.map((file) => file.kept), [false, false])
   fake.council.files = []
 })
 
@@ -2285,4 +2317,135 @@ test('attempts waiting in the pool when its machine stops answering go to the no
   assert.deepEqual(ranIn(room.mainKernel()).filter((code) => code.startsWith('print("')), ['print("first")', 'print("second")'])
   fake.release('worker')
   void busy
+})
+
+/* -------------------------------------------- what the console reads (F6) */
+
+/** «14:05» of an epoch, as the server's sentences say it: the instance's time zone. */
+async function serverClock(at: number): Promise<string> {
+  const zone = (await import('../server/src/time-zone.js')).instanceTimeZone()
+  return new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(at)
+}
+
+test('a press while every worker loads a fresh epoch waits in the pool\'s queue for them, never in the notebook\'s kernel', async (t) => {
+  const room = await readyPool(t, { workers: 2, refresh: 'manual', sources: ['x = 5', '', 'x = 6'] })
+  // Every worker between its recycle and its load of the next epoch: the moment a burst caught (K12b, handoff 1).
+  fake.holdSilent = [{ match: '.load(globals()', name: 'reload' }]
+  room.run(2)
+  assert.ok(await until(() => room.cell(2).state() === 'ok'))
+  assert.ok(pool.councilRefresh(room.id, notebook.CELLS_KEY))
+  assert.ok(await until(() => fake.councilRuns.export === 2 && room.pool()?.refreezing === false))
+  room.holdWanted()
+  assert.ok(await until(() => fake.holding('reload') === 2), JSON.stringify(room.pool()))
+  assert.deepEqual(room.pool()!.workers.map((worker) => worker.seeded), [null, null])
+  assert.equal(room.console()?.state, 'ready', 'a pool reloading its workers read as one still starting')
+  const attempt = room.attempt('p_s1', 'print(x)')
+  await turns()
+  assert.deepEqual([attempt.frames[0]?.state, attempt.frames[0]?.placed, attempt.frames[0]?.note], ['queued', 'pool', undefined], JSON.stringify(attempt.frames))
+  fake.holdSilent = []
+  fake.release('reload')
+  assert.ok(await until(() => attempt.last()?.state === 'ok'), JSON.stringify(attempt.last()))
+  assert.equal(attempt.said(), '6\n')
+  assert.deepEqual([attempt.last()?.placed, attempt.last()?.epoch?.seq], ['pool', 2])
+  assert.ok(!ranIn(room.mainKernel()).includes('print(x)'), 'the attempt ran in the notebook\'s kernel')
+})
+
+test('a pool not up a minute after the first attempt says what it waits for, never the card\'s sentence after a colon of its own', async (t) => {
+  const room = await poolClass(t)
+  room.run(0)
+  assert.ok(await until(() => room.cell(0).state() === 'ok'))
+  pool.councilOpened(room.id, notebook.CELLS_KEY, room.councilCellId)
+  assert.ok(await until(() => fake.councilRuns.export === 1 && room.pool()?.refreezing === false))
+  // Its machine never says it holds the epoch.
+  const attempt = room.attempt('p_s1', 'print(x)')
+  assert.ok(await until(() => doneStates.has(attempt.last()?.state ?? '')))
+  assert.equal(attempt.frames[0]?.note, tr('server.thePoolIsStillStartingThisAttempt.bf84be'))
+  assert.equal(room.console()?.note, undefined, 'the console said the pool did not start before a minute')
+  room.hand.advance(COUNCIL_POOL_READY_MS)
+  await turns()
+  assert.equal(room.console()?.note, tr('server.thePoolDidNotStart.80644c', { why: tr('server.theNotebookSStateHasNotReached.461833') }))
+  assert.equal(room.console()?.state, 'starting')
+})
+
+test('the console hears the pool\'s size, a snapshot\'s start and the teacher\'s cell it takes in, how long the last one took, and the epoch\'s size', async (t) => {
+  const room = await readyPool(t, { workers: 2, refresh: 'manual', sources: ['x = 5', '', 'x = 6'] })
+  fake.council.buffers = [4096]
+  const before = room.console()!
+  assert.equal(before.size, 2)
+  assert.equal(before.snapshot, undefined)
+  assert.equal(typeof before.tookMs, 'number')
+  room.run(2)
+  assert.ok(await until(() => room.cell(2).state() === 'ok'))
+  fake.holdSilent = [{ match: '.export(globals()', name: 'export', kernel: room.mainKernel()! }]
+  const asked = room.hand.now
+  assert.ok(pool.councilRefresh(room.id, notebook.CELLS_KEY))
+  assert.ok(await until(() => fake.holding('export') === 1))
+  // «снимок состояния · 0,4 с», «после вашей ячейки 3»: since when, by the server's clock, and which of the teacher's cells.
+  assert.deepEqual(room.console()?.snapshot, { since: asked, after: notebook.findCell(room.doc, room.cell(2).id)!.index + 1 })
+  room.hand.advance(400)
+  fake.holdSilent = []
+  fake.release('export')
+  assert.ok(await until(() => room.pool()?.refreezing === false))
+  room.holdWanted()
+  assert.ok(await until(() => room.console()?.epoch?.seq === 2), JSON.stringify(room.console()))
+  const after = room.console()!
+  assert.equal(after.snapshot, undefined)
+  assert.equal(after.tookMs, 400, '«переснимается за 0,4 с»')
+  const epoch = epochs.epochOf(room.id, notebook.CELLS_KEY, 2)!
+  assert.ok(epoch.bytes > 4096)
+  assert.equal(after.epoch?.bytes, epoch.bytes, '«снимок 1,2 ГБ»')
+})
+
+test('a worker restarted for what an attempt left it in is the console\'s for a minute; a routine reload is not', async (t) => {
+  const room = await readyPool(t, { workers: 1, refresh: 'manual' })
+  // A new epoch reloads the worker: routine, said nowhere.
+  assert.ok(pool.councilRefresh(room.id, notebook.CELLS_KEY))
+  assert.ok(await until(() => fake.councilRuns.export === 2 && room.pool()?.refreezing === false))
+  room.holdWanted()
+  assert.ok(await until(() => room.pool()!.workers.every((worker) => worker.seeded === 2)), JSON.stringify(room.pool()))
+  assert.equal(room.console()?.recycled, undefined)
+  // An attempt leaves a thread behind: the worker is recycled before it serves again, and the console says so.
+  fake.council.threads = 1
+  const attempt = room.attempt('p_s1', 'print(x)')
+  assert.ok(await until(() => attempt.last()?.state === 'ok'))
+  assert.ok(await until(() => room.console()?.recycled === true), JSON.stringify(room.console()))
+  fake.council.threads = 0
+  room.hand.advance(60_000)
+  await turns()
+  assert.equal(room.console()?.recycled, undefined, 'the restart was said past its minute')
+})
+
+test('a refresh that does not come together leaves the attempts on the previous state, and the console says so with its time', async (t) => {
+  const room = await readyPool(t, { workers: 1, refresh: 'manual' })
+  const first = epochs.epochOf(room.id, notebook.CELLS_KEY, 1)!
+  fake.council.exportError = 'MemoryError'
+  assert.ok(pool.councilRefresh(room.id, notebook.CELLS_KEY))
+  assert.ok(await until(() => fake.councilRuns.export === 2 && room.pool()?.refreezing === false))
+  assert.equal(epochs.epochsOf(room.id, notebook.CELLS_KEY)[0]?.trouble, 'failed')
+  assert.deepEqual([room.console()?.state, room.console()?.epoch?.seq], ['ready', 1])
+  assert.equal(room.console()?.note, tr('server.theNewStateCouldNotBeTaken.01b6b1', { time: await serverClock(first.at) }))
+  fake.council.exportError = null
+})
+
+test('names a worker\'s load leaves for a module its machine lacks join the console\'s «Не переносится», and an attempt reading one runs in the notebook\'s kernel', async (t) => {
+  fake.council.loadLeft = [{ name: 'model', why: 'module' }]
+  const room = await readyPool(t, { workers: 1, refresh: 'manual', sources: ['x = 5\nmodel = 7', ''] })
+  assert.deepEqual(epochs.epochOf(room.id, notebook.CELLS_KEY, 1)?.left, [], 'the export carried it')
+  assert.deepEqual(room.console()?.epoch?.left, [{ name: 'model', why: tr('server.itsModuleIsOnlyInTheNotebook.49d81a') }])
+  const attempt = room.attempt('p_s1', 'print(model)')
+  assert.ok(await until(() => attempt.last()?.state === 'ok'), JSON.stringify(attempt.last()))
+  assert.equal(attempt.said(), '7\n')
+  assert.deepEqual([attempt.last()?.placed, attempt.last()?.note], ['shared', tr('server.runInTheSharedKernelItUses.eaf141', { name: 'model' })])
+})
+
+test('a notebook kernel whose container has no PYTHONHASHSEED of the class has the console say sets may come out in another order; one that has it, nothing', async (t) => {
+  fake.council.hashSeed = null
+  const room = await readyPool(t, { workers: 1, refresh: 'manual' })
+  assert.equal(room.console()?.epoch?.seedDiffers, true)
+  fake.council.hashSeed = String(classHashSeed(room.id))
+  assert.ok(pool.councilRefresh(room.id, notebook.CELLS_KEY))
+  assert.ok(await until(() => fake.councilRuns.export === 2 && room.pool()?.refreezing === false))
+  room.holdWanted()
+  assert.ok(await until(() => room.console()?.epoch?.seq === 2), JSON.stringify(room.console()))
+  assert.equal(room.console()?.epoch?.seedDiffers, undefined)
 })

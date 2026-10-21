@@ -108,7 +108,7 @@ import {
   type PerimeterPolicy,
 } from '../kernel/perimeter-core.js'
 import { parseCgroup, parseReading, readingArgs } from '../kernel/postmortem-core.js'
-import { councilMounts, councilRoot } from './council.js'
+import { councilMounts, councilRoot, councilScratchDir, scratchHelperArgs, scratchHelperDone, type ScratchAction } from './council.js'
 import { dockerMissing, dockerWords, type Docker, type DockerResult } from './docker.js'
 import { CHECK_LABELS, INSTANCE_LABEL, revisionImage } from './images.js'
 import { pickWholeCard, type CardRun, type ProbedCard } from './machine.js'
@@ -629,8 +629,14 @@ function removeTree(root: string): number {
     try {
       names = fs.readdirSync(top.at)
     } catch {
+      // Unreadable — a council's scratch space, root's, which its helper emptied (removeAll): an empty folder goes by its
+      // parent's leave all the same, whoever owns it.
       stack.pop()
-      stayed++
+      try {
+        fs.rmdirSync(top.at)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') stayed++
+      }
       continue
     }
     for (const name of names) stack.push({ at: path.join(top.at, name), open: false })
@@ -1019,6 +1025,19 @@ export class KernelHost {
     }
     if (stayed === 0) stayed += removeTree(this.layout.roomsDir)
     // The councils' epochs and scratch space, the classes' as much as their folders are (council.ts has let go of them first: sync.ts · removeClasses).
+    // A scratch space root's (its helper's making, council.ts · scratchHelperArgs) is emptied by the helper: the agent cannot list it.
+    let councils: string[] = []
+    try {
+      councils = fs.readdirSync(councilRoot(this.layout)).filter((name) => REMOTE_SESSION_ID.test(name))
+    } catch { /* none */ }
+    for (const sessionId of councils) {
+      try {
+        fs.readdirSync(councilScratchDir(this.layout, sessionId))
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code === 'EACCES' || code === 'EPERM') await this.councilScratch(sessionId, 'remove')
+      }
+    }
     stayed += removeTree(councilRoot(this.layout))
     stayed += removeTree(this.layout.placementsDir)
     const left = cleared.left === null ? null : cleared.left.length
@@ -1375,10 +1394,13 @@ export class KernelHost {
       // kernel back with the rights of a build since mended. A council's comes back with its folders there and its scratch empty.
       if (placement.role === 'council') {
         try {
-          councilMounts(this.layout, placement.sessionId, { fresh: true })
+          councilMounts(this.layout, placement.sessionId)
         } catch (error) {
           return this.fail(placement, made, { unschedulable: 'other', detail: `the council's folders could not be made: ${error instanceof Error ? error.message : String(error)}` })
         }
+        const scratch = await this.councilScratch(placement.sessionId, 'fresh')
+        if (ended()) return this.abandon(placement, made)
+        if (!scratch.ok) return this.fail(placement, made, { unschedulable: 'other', detail: `the council's scratch space: ${scratch.why}` })
       }
       const started = await this.docker(['start', found.id], { timeoutMs: 120_000 })
       if (started.code === 0) {
@@ -1411,10 +1433,14 @@ export class KernelHost {
       let extraMounts: ReturnType<typeof councilMounts> = []
       if (placement.role === 'council') {
         try {
-          extraMounts = councilMounts(this.layout, placement.sessionId, { fresh: true })
+          extraMounts = councilMounts(this.layout, placement.sessionId)
         } catch (error) {
           return this.fail(placement, made, { unschedulable: 'other', detail: `the council's folders could not be made: ${error instanceof Error ? error.message : String(error)}` })
         }
+        // Root's at 1733, emptied of the attempts before it: never a council container on a space its workers could list (K7a #17).
+        const scratch = await this.councilScratch(placement.sessionId, 'fresh')
+        if (ended()) return this.abandon(placement, made)
+        if (!scratch.ok) return this.fail(placement, made, { unschedulable: 'other', detail: `the council's scratch space: ${scratch.why}` })
       }
       let argv: string[]
       try {
@@ -1809,6 +1835,22 @@ export class KernelHost {
     const { cidrs, invalid } = blockedCidrsSetting(env)
     if (invalid.length > 0) return `KERNEL_BLOCKED_CIDRS on this machine: not an IPv4 address or range: ${invalid.join(', ').slice(0, 200)}`
     return { mode: roomNetworkMode(env) === 'none' ? 'none' : 'blocked', blockedCidrs: cidrs }
+  }
+
+  /**
+   * The council's scratch space through the helper (council.ts ·
+   * scratchHelperArgs, §9.7, K7a #17): made root's at 1733 and emptied of
+   * the attempts before a container of the council starts (`fresh`), listed
+   * for the sweep, emptied for good when the class goes. The agent has no
+   * root of its own, and the workers share its uid: a folder of its making
+   * would be theirs to list and to change. The helper's output, or why not.
+   */
+  async councilScratch(sessionId: string, action: ScratchAction): Promise<{ ok: true; out: string } | { ok: false; why: string }> {
+    const helper = await this.helperImage()
+    if (helper === null) return { ok: false, why: 'no image of the agent\'s own to run the scratch helper from (COLLOQ_RUNNER_CONTAINER or COLLOQ_RUNNER_IMAGE)' }
+    const ran = await this.docker(scratchHelperArgs(helper, councilScratchDir(this.layout, sessionId), action), { timeoutMs: 120_000 })
+    if (ran.code === 0 && scratchHelperDone(ran.out)) return { ok: true, out: ran.out }
+    return { ok: false, why: remoteText(dockerWords(ran), REMOTE_REASON_CHARS, 'start') }
   }
 
   /**

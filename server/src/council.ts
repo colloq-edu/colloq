@@ -254,6 +254,15 @@ function parseJson<T>(raw: string | null): T | null {
 function settleGhostRun(run: CouncilRun | null): CouncilRun | null {
   if (!run) return null
   if (run.state === 'queued') return null
+  /*
+   * A pool's run whose files were on their way here (`kept: null`, remote-
+   * classes.md §9.7) when the process went: their collection went with it,
+   * and the machine's PUT of them is refused from now on — they will not
+   * come, and the card says so rather than «в пути» for good.
+   */
+  if (run.files?.some((file) => file.kept === null)) {
+    run = { ...run, files: run.files.map((file) => (file.kept === null ? { ...file, kept: false } : file)) }
+  }
   if (run.state === 'running') {
     return {
       ...run,

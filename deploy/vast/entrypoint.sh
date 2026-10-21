@@ -170,13 +170,20 @@ install_registry_config() {
 # The tree is checked before any of it: the walk hands every file under it to
 # uid 1000, and COLLOQ_RUNNER_STATE=/var with -v /var:/var would hand over the
 # host's /var. runner_state_problem says which directories are refused.
+#
+# Save one kind of folder: a council's scratch space (council/<id>/scratch),
+# root's on purpose — the agent's helper makes it so before every start of a
+# council container (runner-agent/council.ts · scratchHelperArgs), because
+# the workers share uid 1000 with the agent, and a folder of uid 1000 would
+# be theirs to list and to change the mode of. What is inside is theirs
+# already: the walk passes it by whole.
 prepare_runner_as_root() {
   local walk="${1:-}" problem
   problem="$(runner_state_problem "$RUNNER_STATE" "${STATE:-}")"
   [ -z "$problem" ] || die "COLLOQ_RUNNER_STATE=$problem. Nothing under it was touched." 78
   mkdir -p "$RUNNER_STATE"
   if [ "$walk" = full ]; then
-    find "$RUNNER_STATE" -xdev \( ! -user "$APP_UID" -o ! -group "$APP_GID" \) \
+    find "$RUNNER_STATE" -xdev -path "$RUNNER_STATE/council/*/scratch" -prune -o \( ! -user "$APP_UID" -o ! -group "$APP_GID" \) \
       -exec chown -h "$APP_UID:$APP_GID" {} + 2>/dev/null || true
     install_registry_config
   else

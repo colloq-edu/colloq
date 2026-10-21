@@ -41,7 +41,7 @@ import { REMOTE_API_BASE, REMOTE_BYTES_HEADER, REMOTE_MARKER, REMOTE_MARKER_HEAD
 import { CLASS_KERNEL_LABEL, machineRoomContainer, machineRoomRunArgs } from '../server/src/kernel/room-spec.ts'
 import { Cache, Pacer } from '../server/src/runner-agent/cache.ts'
 import { Backoff, RemoteClient } from '../server/src/runner-agent/client.ts'
-import { COUNCIL_TIMINGS, CouncilHost, councilDir, councilMounts, councilUploader, type CouncilPut, type CouncilTimings } from '../server/src/runner-agent/council.ts'
+import { COUNCIL_TIMINGS, CouncilHost, councilDir, councilMounts, councilUploader, scratchHelperArgs, scratchHelperNames, type CouncilPut, type CouncilTimings } from '../server/src/runner-agent/council.ts'
 import type { Docker } from '../server/src/runner-agent/docker.ts'
 import { INSTANCE_LABEL, revisionImage } from '../server/src/runner-agent/images.ts'
 import { KernelHost } from '../server/src/runner-agent/kernels.ts'
@@ -116,6 +116,8 @@ interface Rig {
   logs: string[]
   /** The bucket the host's uploads are paced through, as sync.ts shares it with the class folders' (RoomFilesOptions.pacer). */
   pacer: Pacer
+  /** What the scratch space's helper was asked (kernels.ts · councilScratch): each class and action, in order. */
+  scratchRuns: Array<{ sessionId: string; action: string }>
   close(): Promise<void>
 }
 
@@ -131,7 +133,7 @@ async function rig(timings: Partial<CouncilTimings> = {}, shared?: Pick<Rig, 'la
   const containers = shared?.containers ?? new Map()
   const r = {
     layout, home, containers, clock: { now: 1_800_000_000_000 }, uploads: [], asked: [], fetching: null, copying: new Map(), sleeps: [], urgent: 0, logs: [],
-    answer: () => ({ kind: 'ok' }),
+    answer: () => ({ kind: 'ok' }), scratchRuns: [],
   } as unknown as Rig
   const docker = (async (args: string[]) => {
     docker.calls.push(args)
@@ -202,6 +204,20 @@ async function rig(timings: Partial<CouncilTimings> = {}, shared?: Pick<Rig, 'la
     random: () => 0,
     timings: { beatMs: 0, ...timings },
     pacer: r.pacer,
+    // The helper as root does it: it reads the folder whatever its mode (a test takes the listing away from this process).
+    scratch: async (sessionId, action) => {
+      r.scratchRuns.push({ sessionId, action })
+      const folder = scratchOf(layout, sessionId)
+      const mode = fs.statSync(folder).mode & 0o7777
+      fs.chmodSync(folder, mode | 0o700)
+      try {
+        const names = fs.readdirSync(folder)
+        if (action === 'remove') for (const name of names) fs.rmSync(path.join(folder, name), { recursive: true, force: true })
+        return { ok: true, out: `${action === 'list' ? names.map((name) => `/s/${name}\0`).join('') + '\n' : ''}colloq-scratch: ok` }
+      } finally {
+        fs.chmodSync(folder, mode)
+      }
+    },
   })
   r.council = council
   r.close = async () => {
@@ -295,9 +311,17 @@ test('a council container sees the class folder and its epochs read-only and its
   assert.deepEqual(container.mounts, [`${path.join(layout.roomsDir, 's1')}:/workspace/s1:ro`, `${epochsOf(layout)}:/colloq/epochs:ro`, `${scratchOf(layout)}:/colloq/scratch`])
   assert.ok(!container.args.some((arg) => /--gpus|docker\.sock|--privileged/.test(arg)))
   assert.ok(!container.mounts.some((mount) => mount.startsWith(`${layout.root}:`) || mount.includes(layout.placementsDir) || mount.includes(path.join(layout.root, 'data'))))
-  // The scratch space was there before docker could make it as root: the agent's own, the kernels' to make a run's folder in,
-  // never to list or to empty of another's (K7a #17).
-  assert.ok(scratchAtRun && scratchAtRun.isDirectory() && (scratchAtRun.mode & 0o7777) === 0o1733 && scratchAtRun.uid === process.getuid!(), `mode ${scratchAtRun?.mode.toString(8)}`)
+  // The scratch space was there before docker could make it, and its helper made it root's at 1733 before the container ran:
+  // the kernels' to make a run's folder in, never to list, to empty of another's, nor to change the mode of — which its owner
+  // could, and the agent shares the kernels' uid (K7a #17, K12b). The agent's own image, as root, the folder alone mounted.
+  assert.ok(scratchAtRun && scratchAtRun.isDirectory() && (scratchAtRun.mode & 0o7777) === 0o1733, `mode ${scratchAtRun?.mode.toString(8)}`)
+  assert.deepEqual(docker.scratchRuns.map((run) => run.folder), [scratchOf(layout)])
+  const helped = docker.calls.findIndex((args) => args.includes('colloq.kind=council-scratch'))
+  assert.deepEqual(docker.calls[helped], scratchHelperArgs(docker.selfImage, scratchOf(layout), 'fresh'))
+  assert.ok(helped >= 0 && helped < docker.calls.findIndex((args) => args[0] === 'run' && args.includes(CLASS_KERNEL_LABEL)), 'the container ran on a space its workers could list')
+  assert.match(docker.scratchRuns[0]!.script, /chown 0:0 \/s; chmod 1733 \/s/)
+  for (const flag of ['--network=none', '--user=0:0', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pull=never']) assert.ok(docker.calls[helped]!.includes(flag), flag)
+  assert.ok(!docker.calls[helped]!.some((arg) => /--privileged|docker\.sock|--pid=host/.test(arg)))
   // A bigger pool: home's numbers for six workers, applied to the running container by docker update, never a new one.
   host.reconcile(block({}, [placement({ memoryMb: 9216, cpus: 6, workers: 6 })]))
   await host.idle()
@@ -329,16 +353,27 @@ test('a new council container finds no attempt of the one before it; one taken a
   assert.deepEqual(fs.readdirSync(scratchOf(layout, 's2')), ['r_live'])
 })
 
-test('a scratch space an earlier build left open to the kernels\' listing is the agent\'s own again, at 1733, its attempts\' folders kept', () => {
-  const layout = stateLayout(fs.mkdtempSync(path.join(TEST_ROOT, 'council-')))
-  // As 0.26's first builds made it: setgid and listable by the kernels.
-  fs.mkdirSync(path.join(scratchOf(layout), 'r_kept'), { recursive: true })
+test('a scratch space the helper cannot make root\'s keeps the council\'s container from starting, in words; one an earlier build left open is mended at the next start', async () => {
+  const { layout, docker, host } = await kernelHost()
+  // As 0.26's first builds made it: setgid and listable by the kernels, and the agent's own.
+  fs.mkdirSync(path.join(scratchOf(layout), 'r_old'), { recursive: true })
   fs.chmodSync(scratchOf(layout), 0o2775)
-  councilMounts(layout, 's1')
-  const stat = fs.statSync(scratchOf(layout))
-  assert.equal((stat.mode & 0o7777).toString(8), '1733')
-  assert.equal(stat.uid, process.getuid!())
-  assert.deepEqual(fs.readdirSync(scratchOf(layout)), ['r_kept'])
+  docker.scratchFails = { code: 125, out: 'docker: Error response from daemon: No such image: sha256:5555.' }
+  host.reconcile(block())
+  await host.idle()
+  const [held] = host.held()
+  assert.match(held?.failure?.detail ?? '', /^the council's scratch space: docker: Error response from daemon: No such image/, JSON.stringify(held))
+  assert.ok(!docker.calls.some((args) => args[0] === 'run' && args.includes(CLASS_KERNEL_LABEL)), 'a council container ran on a space its workers could list')
+  // The helper back: the start goes on, on a space root's again and empty of the attempts before.
+  docker.scratchFails = null
+  host.reconcile(block({}, [placement({ gen: 3 })]))
+  await host.idle()
+  assert.ok(docker.calls.some((args) => args[0] === 'run' && args.includes(CLASS_KERNEL_LABEL)))
+  assert.equal((fs.statSync(scratchOf(layout)).mode & 0o7777).toString(8), '1733')
+  assert.deepEqual(fs.readdirSync(scratchOf(layout)), [])
+  // What the helper lists is read by name, the folder's path off it, nothing docker said beside it.
+  assert.deepEqual(scratchHelperNames('/s/aa\0/s/b c\0/s/x/y\0WARNING: something\n/s/zz\0\ncolloq-scratch: ok\n'), ['aa', 'b c', 'zz'])
+  assert.deepEqual(scratchHelperNames('colloq-scratch: ok'), [])
 })
 
 /* ------------------------------------------------------------------ epochs */
@@ -818,6 +853,60 @@ test('a scratch folder no collection names goes once it is old, and a class no l
     r.containers.clear()
     await r.council.tick()
     assert.ok(!fs.existsSync(councilDir(r.layout, 's1')))
+  } finally {
+    await r.close()
+  }
+})
+
+test('a scratch space root\'s, which the agent cannot list: a collection reaches its run\'s folder by name, the sweep lists it through the helper now and then while its council runs, the class\'s going empties it through the helper', async () => {
+  const r = await rig()
+  try {
+    hold(r, COUNCIL_CONTAINER, 's1', 'council', 2)
+    councilMounts(r.layout, 's1')
+    const run = path.join(scratchOf(r.layout), 'r_1')
+    fs.mkdirSync(run)
+    const out = Buffer.from('a,b\n1,2\n')
+    fs.writeFileSync(path.join(run, 'out.csv'), out)
+    fs.mkdirSync(path.join(scratchOf(r.layout), 'r_lost', 'deep'), { recursive: true })
+    // As root's 1733 is to the agent: no listing, a folder reached and removed by its name (here: the owner's bits taken away).
+    fs.chmodSync(scratchOf(r.layout), 0o1333)
+    assert.throws(() => fs.readdirSync(scratchOf(r.layout)), /EACCES/)
+    r.council.reconcile(block({ collect: [{ sessionId: 's1', runId: 'r_1', files: [{ name: 'out.csv', sha256: sha(out), bytes: out.length }] }] }))
+    await r.council.idle()
+    assert.deepEqual(r.uploads.map((upload) => upload.put.door), ['council/s1/runs/r_1/files/out.csv?gen=2'])
+    assert.ok(!fs.existsSync(run), 'the run\'s folder stayed')
+    assert.deepEqual(said(r.council).collected, [{ sessionId: 's1', runId: 'r_1' }])
+    // The sweep: the helper lists it, the stray is first seen…
+    await r.council.tick()
+    await r.council.idle()
+    assert.deepEqual(r.scratchRuns, [{ sessionId: 's1', action: 'list' }])
+    assert.ok(fs.existsSync(path.join(scratchOf(r.layout), 'r_lost')))
+    // …not again within its quarter of an hour, however many beats…
+    r.clock.now += 60_000
+    await r.council.tick()
+    await r.council.idle()
+    assert.equal(r.scratchRuns.length, 1)
+    // …and once it is old, gone by its name.
+    r.clock.now += COUNCIL_TIMINGS.scratchKeepMs
+    await r.council.tick()
+    await r.council.idle()
+    assert.equal(r.scratchRuns.length, 2)
+    assert.ok(!fs.existsSync(path.join(scratchOf(r.layout), 'r_lost')))
+    // No council container here: nothing is listed (nothing writes there; the next one's start empties it).
+    r.containers.clear()
+    hold(r, ROOM_CONTAINER, 's1', 'room', 3)
+    r.clock.now += 60 * 60_000
+    await r.council.tick()
+    await r.council.idle()
+    assert.equal(r.scratchRuns.length, 2)
+    // The class gone from the machine: the helper empties the space, and the class's folder goes whole.
+    fs.mkdirSync(path.join(scratchOf(r.layout), 'r_late'))
+    r.containers.clear()
+    r.council.reconcile(block({}, []))
+    await r.council.tick()
+    await r.council.idle()
+    assert.deepEqual(r.scratchRuns.at(-1), { sessionId: 's1', action: 'remove' })
+    assert.ok(!fs.existsSync(councilDir(r.layout, 's1')), r.logs.join('\n'))
   } finally {
     await r.close()
   }

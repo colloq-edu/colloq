@@ -99,6 +99,14 @@
     </button>
   </div>
 </div>
+{#if done && adopted?.warning}
+  <!--
+    The attempt computed on a snapshot the notebook's kernel has moved on
+    from (remote-classes.md §9.8): the server's own count, amber, right under
+    the success line — the cell may print something else than the card did.
+  -->
+  <p class="projection-warning" role="status" data-pult-adopt-warning>{adopted.warning}</p>
+{/if}
 
 <style>
   /*
@@ -125,6 +133,8 @@
   .projection-adopted-short { display: none; }
   .projection-undo { flex-shrink: 0; color: rgb(var(--accent-text)); font-size: 13px; line-height: 18px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
   .projection-undo:disabled { opacity: .48; cursor: default; }
+  /* Under the line, its own row: the banner stays one line at any width, and the warning is read whole. */
+  .projection-warning { flex-shrink: 0; margin: 0; padding: 6px 16px 6px 15px; border-bottom: 1px solid rgb(var(--line)); border-left: 3px solid rgb(var(--warning)); background: rgb(var(--warning) / .08); color: rgb(var(--ink)); font-size: 13px; line-height: 18px; }
   .projection-actions { display: flex; flex-shrink: 0; gap: 6px; margin-left: auto; }
   .projection-actions :global(.pult-button) { min-height: 30px; padding: 5px 10px; font-size: 13px; }
   .projection-clear-short { display: none; }

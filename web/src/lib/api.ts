@@ -314,6 +314,20 @@ export const api = {
     `/api/sessions/${id}/file?path=${encodeURIComponent(path)}&token=${encodeURIComponent(ticket)}`,
 
   /**
+   * One of a pool attempt's own files (remote-classes.md §9.7): kept here
+   * from its machine, its author's and the teachers' to take. The same two
+   * steps as a class file's: a ticket asked with the header, then the anchor.
+   */
+  councilFileTicket: (id: string, cellId: string, participantId: string, name: string, token: string) =>
+    request<{ token: string }>(
+      `/api/sessions/${id}/council/${encodeURIComponent(cellId)}/files/ticket?participant=${encodeURIComponent(participantId)}&name=${encodeURIComponent(name)}`,
+      { headers: { authorization: `Bearer ${token}` } },
+    ),
+
+  councilFileUrl: (id: string, cellId: string, participantId: string, name: string, ticket: string) =>
+    `/api/sessions/${id}/council/${encodeURIComponent(cellId)}/files?participant=${encodeURIComponent(participantId)}&name=${encodeURIComponent(name)}&token=${encodeURIComponent(ticket)}`,
+
+  /**
    * A key for this room's output images — one for all of them.
    *
    * The same as for a file, and for the same reason: the address goes into the

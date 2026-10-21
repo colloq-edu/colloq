@@ -506,6 +506,8 @@ export class Agent extends EventEmitter {
       upload: (put) => this.uploadCouncilFile(put),
       held: (sessionId) => this.kernels.heldGens(sessionId),
       containerOf: (container) => this.kernels.containerOf(container),
+      // Root's scratch space, which the agent cannot list or empty itself: its helper does (council.ts · scratchHelperArgs).
+      scratch: (sessionId, action) => this.kernels.councilScratch(sessionId, action),
       diskFreeMb: () => this.machine().diskFreeMb,
       diskFloorMb: this.floorMb(),
       onDiskLow: () => void this.keepDiskFloor(),

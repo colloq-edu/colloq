@@ -1182,12 +1182,13 @@ test('a carried object whose module a worker cannot import leaves its names behi
     attempts: [{ source: "import sys\nsys.modules['_probe'].seen.append([k + 1, rows])" }, { source: 'print(model.w)' }],
   })
   assert.equal(out.seed.ok, true, out.seed.error)
+  // Said as such, a module the worker lacks (the console's «модуль есть только в ядре тетради»), not as a value that does not copy.
   assert.deepEqual(out.seed.left, [
-    { name: 'bundle', why: 'unpicklable' }, { name: 'extrapkg', why: 'unpicklable' }, { name: 'model', why: 'unpicklable' },
+    { name: 'bundle', why: 'module' }, { name: 'extrapkg', why: 'module' }, { name: 'model', why: 'module' },
   ])
   assert.deepEqual(out.seen, [[42, [1, 2, 3]]])
   // An attempt that needs one goes to the shared kernel, where the module is.
-  assert.deepEqual(parseCouncilReport(JSON.stringify(out.results[1].report))!.needs, [{ name: 'model', why: 'unpicklable' }])
+  assert.deepEqual(parseCouncilReport(JSON.stringify(out.results[1].report))!.needs, [{ name: 'model', why: 'module' }])
 })
 
 test('a seeded worker refuses an entry without its inputs, and a seed that failed refuses every entry', { skip: noPython }, () => {

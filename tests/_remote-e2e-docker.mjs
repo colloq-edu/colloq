@@ -77,7 +77,9 @@
  * --scratch-dir). Besides
  * them: the class bridge (`network create`, `inspect`, `ls` by label), the
  * perimeter's helper (`run --privileged … sh -c`, which says
- * `colloq-perimeter: ok`), the admission canary (its checks read off its own
+ * `colloq-perimeter: ok`), the council scratch space's helper (its line done
+ * as root would do it to the folder: emptied, 1733 — the owner stays this
+ * process's — or listed), the admission canary (its checks read off its own
  * script, every one held, its folder round-tripped), and a card probe
  * (`--gpus`), answered as a daemon without cards answers it.
  *
@@ -131,6 +133,8 @@ fs.appendFileSync(path.join(STATE, 'calls.log'), `${JSON.stringify({ at: Date.no
 /** The class kernels' kind label (room-spec.ts · CLASS_KERNEL_LABEL) and the perimeter helper's (perimeter-core.ts · helperArgs). */
 const CLASS_KIND = 'colloq.kind=class-kernel'
 const PERIMETER_KIND = 'colloq.kind=room-perimeter'
+/** The council scratch space's helper (runner-agent/council.ts · SCRATCH_HELPER_LABEL). */
+const SCRATCH_KIND = 'colloq.kind=council-scratch'
 /** The networks every daemon has. */
 const BUILTIN_NETWORKS = new Set(['bridge', 'host', 'none', 'default'])
 const MIB = 1024 * 1024
@@ -871,6 +875,7 @@ async function run() {
   if (typeof spec === 'string') return finish(125, '', `docker: ${spec}`)
   if (spec.labels.includes(CLASS_KIND)) return classRun(spec)
   if (spec.labels.includes(PERIMETER_KIND)) return perimeterRun(spec)
+  if (spec.labels.includes(SCRATCH_KIND)) return scratchRun(spec)
   if (spec.name?.startsWith('colloq-runner-canary-')) return canaryRun(spec)
   // The card probe and the GPU smoke test, on a daemon with no card: what docker says there.
   if (spec.gpus !== null) return finish(125, '', 'docker: Error response from daemon: could not select device driver "" with capabilities: [[gpu]].')
@@ -966,6 +971,31 @@ function perimeterRun(spec) {
   if (said === 'no-iptables') return finish(21, 'colloq-perimeter: no iptables in the host\'s namespace')
   if (said === 'fail') return finish(1, 'iptables: No chain/target/match by that name.\ncolloq-perimeter: failed')
   finish(0, 'colloq-perimeter: ok')
+}
+
+/**
+ * The council scratch space's helper (runner-agent/council.ts ·
+ * scratchHelperArgs): its one line done to the folder mounted at /s, as root
+ * would — every entry removed, the mode 1733 (no chown here: the owner stays
+ * this process's), or the entries listed — and its word said.
+ */
+function scratchRun(spec) {
+  if (!image(spec.image)) return finish(125, '', `docker: Error response from daemon: No such image: ${spec.image}.`)
+  const folder = spec.volumes.find((mount) => mount.target === '/s')?.source
+  if (!folder) return finish(125, '', 'docker: fake docker: the scratch helper mounts its folder at /s')
+  const script = spec.command[spec.command.indexOf('-c') + 1] ?? ''
+  fs.mkdirSync(folder, { recursive: true })
+  const mode = fs.statSync(folder).mode & 0o7777
+  fs.chmodSync(folder, mode | 0o700)
+  let listed = ''
+  try {
+    const names = fs.readdirSync(folder)
+    if (/-exec rm -rf/.test(script)) for (const name of names) fs.rmSync(path.join(folder, name), { recursive: true, force: true })
+    if (/-print0/.test(script)) listed = `${names.map((name) => `/s/${name}\0`).join('')}\n`
+  } finally {
+    fs.chmodSync(folder, /chmod 1733/.test(script) ? 0o1733 : mode)
+  }
+  finish(0, `${listed}colloq-scratch: ok`)
 }
 
 /**

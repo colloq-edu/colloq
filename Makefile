@@ -540,7 +540,7 @@ class-probe: ## What the relay does to a class machine's tunnel (K0). MODE=home|
 	@test -n "$(MODE)" || { printf '$(RED)Specify the mode: make class-probe MODE=machine HOST=probe-lab.colloq.ru OUT=k0-C.json$(OFF)\n'; exit 1; }
 	@node --import tsx scripts/class-probe.mts $(MODE) $(if $(filter command line,$(origin HOST)),--host "$(HOST)",) $(if $(OUT),--out "$(OUT)",) $(ARGS)
 
-class-load: ## A class on machines under load: N students for MIN minutes. URL=… N=30 MIN=60 CLASS=machines|personal|gpu|home OWN=0.5 BIG=150 OUT=…
+class-load: ## A class on machines under load: N students for MIN minutes. URL=… N=30 MIN=60 CLASS=machines|personal|gpu|home OWN=0.5 BIG=150 WORKERS=8 EPOCH=500 OUT=…
 	@# scripts/class-load.mts (remote-classes.md §17.5, «Load»): the rig
 	@# makes a seminar of its own on the home URL names, sets «Где считается»
 	@# to CLASS, brings in two staff tabs and N students (both sockets each,
@@ -548,7 +548,12 @@ class-load: ## A class on machines under load: N students for MIN minutes. URL=�
 	@# (print(1), a 2 MB figure, a 10 KB edit read back, tqdm at 10 Hz, a long
 	@# cell, interrupts, a cell past the room's run limit), completions,
 	@# uploads, personal notebooks for OWN of the class, council attempts in
-	@# the shared kernel; once a class the CSVs of CSV= (MB, 1,50 by default)
+	@# bursts — on the class's pool of workers where its preset puts the
+	@# council on machines (COUNCIL=pool|shared says otherwise; WORKERS=
+	@# auto|1-32 and ATTEMPT=<MB> are «Попыток одновременно» and «Память на
+	@# попытку», EPOCH=<MB> a frame and a model in the notebook's kernel for
+	@# the snapshot, MEMORY=<MB> the class's memory: R2 runs CLASS=machines
+	@# N=30 WORKERS=8 EPOCH=500 MEMORY=4096); once a class the CSVs of CSV= (MB, 1,50 by default)
 	@# to the files panel and an upload of BIG= MB read back (none by
 	@# default; R1 sets 150, and the home's upload limit must take it). It
 	@# prints click → visible and the rest with p50 and p95, what staff saw of
@@ -570,11 +575,14 @@ class-load: ## A class on machines under load: N students for MIN minutes. URL=�
 	@# node runs it, not npx: npm and tsx would hand one Ctrl+C to it twice;
 	@# and in the shell's place (exec), so that a kill of make reaches it too.
 	@#   RAMP=<sec> UPLOAD=<KB> CSV=<MB,MB|0> BIG=<MB> ENV=<environment> BASELINE=<a CLASS=home run's OUT>
+	@#   COUNCIL=<pool|shared> WORKERS=<auto|N> ATTEMPT=<MB> EPOCH=<MB> MEMORY=<MB>
 	@test -n "$(if $(filter command line,$(origin URL)),$(URL))" || { printf '$(RED)Specify the home: make class-load URL=https://lab.example N=30 MIN=60 CLASS=machines, with LOAD_SETUP_TOKEN exported$(OFF)\n'; exit 1; }
 	@ulimit -n 8192 2>/dev/null || true; \
 	 LOAD_BASE_URL="$(if $(filter command line,$(origin URL)),$(URL))" LOAD_STUDENTS="$${N:-30}" LOAD_MINUTES="$${MIN:-60}" LOAD_CLASS="$${CLASS:-machines}" \
 	 $(if $(OWN),LOAD_OWN="$(OWN)",) $(if $(RAMP),LOAD_RAMP_SEC="$(RAMP)",) $(if $(UPLOAD),LOAD_UPLOAD_KB="$(UPLOAD)",) \
 	 $(if $(CSV),LOAD_CSV_MB="$(CSV)",) $(if $(BIG),LOAD_BIG_MB="$(BIG)",) \
+	 $(if $(COUNCIL),LOAD_COUNCIL="$(COUNCIL)",) $(if $(WORKERS),LOAD_WORKERS="$(WORKERS)",) $(if $(ATTEMPT),LOAD_ATTEMPT_MB="$(ATTEMPT)",) \
+	 $(if $(EPOCH),LOAD_EPOCH_MB="$(EPOCH)",) $(if $(MEMORY),LOAD_MEMORY_MB="$(MEMORY)",) \
 	 $(if $(filter command line,$(origin ENV)),LOAD_ENVIRONMENT="$(ENV)",) $(if $(BASELINE),LOAD_BASELINE="$(BASELINE)",) $(if $(OUT),LOAD_OUT="$(OUT)",) \
 	 exec node --import tsx scripts/class-load.mts
 

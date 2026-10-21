@@ -1751,9 +1751,11 @@ export interface CouncilRun {
   epoch?: CouncilRunEpoch
   /**
    * The files the attempt wrote into its own folder (§9.7, D10), as its
-   * worker listed them once it ended: `kept` once one is here (up to 20 of
-   * them, 1 MB each and 5 MB in all, COUNCIL_ARTIFACTS), `false` for one
-   * named with its size and left behind (larger, or past the count).
+   * worker listed them once it ended, each with where it is (`kept`): those
+   * within COUNCIL_ARTIFACTS (up to 20, 1 MB each and 5 MB in all, in the
+   * listed order) on their way here from the machine at first, then here
+   * as each lands — a sync or more after the run's end; the rest named with
+   * their size and left behind.
    */
   files?: CouncilRunFile[]
   /** A pool run's own name, which its folder on the machine and its kept files here are named by. */
@@ -1773,8 +1775,16 @@ export interface CouncilRunEpoch {
 export interface CouncilRunFile {
   name: string
   bytes: number
-  /** Here, on the server, and on the card for the author and the teachers; false — named and left behind. */
-  kept: boolean
+  /**
+   * `true` — here, on the server, and on the card for the author and the
+   * teachers to take (GET …/council/:cellId/files); `null` — within the caps
+   * and on its way from the machine, until its collection is over; `false`
+   * — left behind: past the caps, or it never came (the machine went, its
+   * agent refused it, the collection ended without it).
+   */
+  kept: boolean | null
+  /** Its content's sha256, which names it here (kernel/remote/epochs.ts · artifactPath): one within the caps has it. */
+  sha256?: string
 }
 
 /** The teacher's answer to the author or to a group. Always signed by the teacher. */
@@ -2110,19 +2120,50 @@ export interface CouncilPool {
   workers: number
   busy: number
   queued: number
+  /** How many workers the pool is to have now («готовы 2 из 4» while it starts): «Попыток одновременно», or what `auto` makes of it. */
+  size: number
   /** A snapshot of the notebook's kernel is being taken now («снимок состояния»). */
   refreezing: boolean
+  /**
+   * While one is taken: when it was asked, by the server's clock («снимок
+   * состояния · 0,4 с»), and the notebook's number of the teacher's last
+   * cell it takes in («после вашей ячейки 9»; null — none in this life).
+   */
+  snapshot?: { since: number; after: number | null }
+  /** How long the last snapshot this pool took took, export and all, ms («переснимается за 0,4 с»); absent before one. */
+  tookMs?: number
+  /**
+   * A worker was restarted in the last minute for what an attempt left it
+   * in (§9.5: it would not stop, it left threads or processes, or more
+   * memory than «Память на попытку»; its Python killed): «исполнитель
+   * перезапущен». The routine reloads (a new snapshot, twenty attempts) are
+   * not this.
+   */
+  recycled?: boolean
   /** The snapshot the workers compute on; null before the first. */
   epoch: {
     seq: number
     /** When it was taken, by the server's clock: «состояние 14:05». */
     at: number
+    /** Its files together, bytes («снимок 1,2 ГБ»); 0 for a notebook with no kernel. */
+    bytes: number
     /** Names carried into it. */
     carried: number
-    /** Names it could not carry, with why in the server's words: «conn (соединение с базой)». */
+    /**
+     * Names it could not carry, with why in the server's words: «conn
+     * (соединение с базой)» — the export's, and those a worker's load left
+     * for a module its machine lacks.
+     */
     left: Array<{ name: string; why: string }>
     /** The teacher's runs in the notebook since it was taken. */
     behind: number
+    /**
+     * The notebook's kernel hashes strings with another seed than the
+     * workers (it was started before 0.25.0, which gave every class container
+     * the class's PYTHONHASHSEED): sets may come out in another order in an
+     * attempt than in the notebook (server.theOrderOfSetsInAttemptsMay.b87dc7).
+     */
+    seedDiffers?: boolean
   } | null
   /** The server's sentence about the pool, when there is one to say: why attempts run in the shared kernel, «пул не поднялся: …». */
   note?: string

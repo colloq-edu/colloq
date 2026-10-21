@@ -4623,6 +4623,23 @@ export const serverMessages: MessageCatalog = {
     "ru": "исполнители не запустились",
     "en": "its workers did not start"
   },
+  // Its {why} for the console after a minute with nothing broken (council-pool.ts · ready): what the pool still waits for.
+  "server.noMachineHasTakenThePoolYet.9a460b": {
+    "ru": "ни одна машина ещё не взяла пул",
+    "en": "no machine has taken the pool yet"
+  },
+  "server.theNotebookSStateHasNotReached.461833": {
+    "ru": "состояние тетради ещё не дошло до машины",
+    "en": "the notebook's state has not reached its machine yet"
+  },
+  "server.thePoolSMachineDoesNotAnswer.5890e3": {
+    "ru": "машина пула не отвечает",
+    "en": "the pool's machine does not answer"
+  },
+  "server.theWorkersHaveNotLoadedTheNotebook.e2c616": {
+    "ru": "исполнители ещё не загрузили состояние тетради",
+    "en": "the workers have not loaded the notebook's state yet"
+  },
   "server.thePoolSMachineWasLostThe.8aff4c": {
     "ru": "Машина пула пропала — попытка посчитана в общем ядре.",
     "en": "The pool's machine was lost — the attempt was run in the shared kernel."
@@ -4639,6 +4656,10 @@ export const serverMessages: MessageCatalog = {
     "ru": "Новое состояние не помещается — попытки на состоянии {time}.",
     "en": "The new state does not fit — attempts run on the state as of {time}."
   },
+  "server.theNewStateCouldNotBeTaken.01b6b1": {
+    "ru": "Новое состояние не собралось — попытки на состоянии {time}.",
+    "en": "The new state could not be taken — attempts run on the state as of {time}."
+  },
   // «Обновить состояние» (control.ts · council:epoch, §9.2): its two refusals.
   "server.thisCellSAttemptsDoNotGo.7d2837": {
     "ru": "Попытки этой ячейки не идут в пул.",
@@ -4648,13 +4669,20 @@ export const serverMessages: MessageCatalog = {
     "ru": "Обновить состояние для попыток может преподаватель.",
     "en": "Only the teacher refreshes the attempts' state."
   },
+  // An attempt's own files (routes/council.ts · files, §9.7): its author's and the teachers'.
+  "server.onlyTheAttemptSAuthorAndThe.94ba37": {
+    "ru": "Файлы попытки берут её автор и преподаватели.",
+    "en": "Only the attempt's author and the teachers take its files."
+  },
   "server.notCarriedOver.00ad4e": {
     "ru": "Не переносится: {names}.",
     "en": "Not carried over: {names}."
   },
+  // The sentinel (§9.4): an attempt that names the variable in its text goes to the shared kernel before it runs, so
+  // the one that meets this reached it some other way (a notebook function, globals()), and is not run again there.
   "server.council.notCarried": {
-    "ru": "Переменная {name} не перенесена на машину консилиума ({why}); попытки, которые её используют, считаются в общем ядре.",
-    "en": "The variable {name} was not carried over to the council machine ({why}); attempts that use it run in the shared kernel."
+    "ru": "Переменная {name} не перенесена на машину консилиума ({why}), а эта попытка добралась до неё не напрямую. Попытки, в тексте которых есть {name}, считаются в общем ядре.",
+    "en": "The variable {name} was not carried over to the council machine ({why}), and this attempt reached it indirectly. Attempts whose text names {name} run in the shared kernel."
   },
   "server.databaseConnection.cdf70c": {
     "ru": "соединение с базой",
@@ -4691,6 +4719,10 @@ export const serverMessages: MessageCatalog = {
   "server.cannotBeCopied.e6521a": {
     "ru": "не копируется",
     "en": "cannot be copied"
+  },
+  "server.itsModuleIsOnlyInTheNotebook.49d81a": {
+    "ru": "модуль есть только в ядре тетради",
+    "en": "its module is only in the notebook's kernel"
   },
   "server.runInTheSharedKernelItUses.eaf141": {
     "ru": "Посчитано в общем ядре: использует {name} — её нельзя перенести.",

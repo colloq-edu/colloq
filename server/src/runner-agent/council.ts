@@ -8,8 +8,9 @@
  *                                          link into the CAS: mounted read-only at /colloq/epochs
  *   <state>/council/<id>/scratch/<runId>/  an attempt's working folder, made by its worker's
  *                                          `enter`: mounted read-write at /colloq/scratch
- *                                          (the agent's, 1733: a worker makes its own run's
- *                                          folder there and lists none)
+ *                                          (root's, 1733: a worker makes its own run's
+ *                                          folder there and lists none; the agent's helper
+ *                                          makes it so, scratchHelperArgs)
  *   <state>/council/<id>/epochs.json       the epochs held, written whole: what a restart keeps
  *   <state>/council/<id>/.staging/         the agent's own: an export as `docker cp` copied it,
  *                                          a file of an attempt on its way home; never mounted
@@ -149,6 +150,8 @@ const FAILED_KEPT = 2
 const EXPORT_SLACK = 64
 /** How often the scratch folders are looked at for what nobody collects. */
 const SCRATCH_LOOK_MS = 60_000
+/** How often a scratch space the agent cannot list itself (root's) is listed by its helper: a container's start each time. */
+const SCRATCH_HELPER_LOOK_MS = 15 * 60_000
 
 /* ------------------------------------------------------------------- paths */
 
@@ -165,67 +168,185 @@ export function councilDir(layout: StateLayout, sessionId: string): string {
 
 const epochsDir = (dir: string): string => path.join(dir, 'epochs')
 const scratchDir = (dir: string): string => path.join(dir, 'scratch')
+
+/** One class's scratch space, the attempts' folders (the layout above). */
+export function councilScratchDir(layout: StateLayout, sessionId: string): string {
+  return scratchDir(councilDir(layout, sessionId))
+}
 const stagingDir = (dir: string): string => path.join(dir, '.staging')
 const recordFile = (dir: string): string => path.join(dir, 'epochs.json')
 
 /**
- * The attempts' scratch space: the agent's own folder, which the workers
- * (another uid, the kernels') may enter and make an entry in, but never
- * list, and the sticky bit keeps them from removing or renaming what is not
- * theirs. All workers of a class share a uid, so what keeps one attempt out
- * of another's folder is that it cannot find it: its name is the run's id,
- * 32 random hex digits, and the listing is shut (K7a #17; a sibling's
- * /proc/<pid>/cwd still shows it, one uid for all).
+ * The attempts' scratch space: root's folder at 1733, which the workers may
+ * enter and make an entry in, but never list, and the sticky bit keeps them
+ * from removing or renaming what is not theirs. All workers of a class share
+ * a uid, so what keeps one attempt out of another's folder is that it cannot
+ * find it: its name is the run's id, 32 random hex digits, and the listing is
+ * shut (K7a #17; a sibling's /proc/<pid>/cwd still shows it, one uid for
+ * all).
+ *
+ * Root's, not the agent's: the agent is uid 1000 on every machine
+ * (entrypoint · drop_to_app), the kernels' own uid, and a folder's owner may
+ * give it any mode — chmod asks ownership, no permission bit — list it then,
+ * and take any run's folder out of it whatever the sticky bit says (K12b).
+ * The agent has no root of its own, so its helper makes it so: the agent's
+ * own image run by docker as root for one shell line (scratchHelperArgs), at
+ * every start of a council container. The agent itself, as other, may still
+ * reach a folder by its name, and remove one its uid made: a collection names
+ * its run, and the sweep's names come from the helper.
  */
 const SCRATCH_MODE = 0o1733
+
+/** The kind label of the scratch space's helper runs: the perimeter's helper has its own (perimeter-core.ts · helperArgs). */
+export const SCRATCH_HELPER_LABEL = 'colloq.kind=council-scratch'
+
+/** What the helper does to a class's scratch space: make it root's for a new container, list it, or empty it for good. */
+export type ScratchAction = 'fresh' | 'list' | 'remove'
+
+/** The scratch space inside the helper's container. */
+const SCRATCH_IN_HELPER = '/s'
+
+/** The helper's line for each, ending in its word, as the perimeter's ends in its own (`colloq-perimeter: ok`). */
+const SCRATCH_SCRIPTS: Readonly<Record<ScratchAction, string>> = Object.freeze({
+  // A new council container's start: what the attempts before it left goes, their workers gone, and the root is root's, 1733.
+  fresh: `set -e; find ${SCRATCH_IN_HELPER} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; chown 0:0 ${SCRATCH_IN_HELPER}; chmod 1733 ${SCRATCH_IN_HELPER}; echo 'colloq-scratch: ok'`,
+  // The sweep's look: every entry by its path, NUL after each, then the word on a line of its own.
+  list: `set -e; find ${SCRATCH_IN_HELPER} -mindepth 1 -maxdepth 1 -print0; printf '\\ncolloq-scratch: ok\\n'`,
+  // The class gone from this machine: every entry, the root left for the agent to remove from its own folder.
+  remove: `set -e; find ${SCRATCH_IN_HELPER} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; echo 'colloq-scratch: ok'`,
+})
+
+/**
+ * The helper's `docker run` (§9.7, K7a #17): the agent's own image by its id
+ * (kernels.ts · helperImage, as the perimeter's helper runs), as root with
+ * the three capabilities its line needs — to give the root to root, to
+ * remove the workers' folders in a sticky folder not its own — and nothing
+ * else: no network, no host namespace, no new privileges, the one folder
+ * mounted, gone after (`--rm`). Never a kernel image: a teacher's package list
+ * must not run as root on the host.
+ */
+export function scratchHelperArgs(image: string, scratch: string, action: ScratchAction): string[] {
+  return [
+    'run',
+    '--rm',
+    '--network=none',
+    '--user=0:0',
+    '--cap-drop=ALL',
+    '--cap-add=CHOWN',
+    '--cap-add=FOWNER',
+    '--cap-add=DAC_OVERRIDE',
+    '--security-opt=no-new-privileges',
+    '--pull=never',
+    '--no-healthcheck',
+    '--label',
+    SCRATCH_HELPER_LABEL,
+    '-v',
+    `${scratch}:${SCRATCH_IN_HELPER}`,
+    '--entrypoint=sh',
+    image,
+    '-c',
+    SCRATCH_SCRIPTS[action],
+  ]
+}
+
+/** Whether the helper's run said it did what it was asked. */
+export function scratchHelperDone(out: string): boolean {
+  return /(^|\n)colloq-scratch: ok\s*$/.test(out)
+}
+
+/** The entries the helper's `list` named: each by its name, the folder's path off it, nothing docker said beside them. */
+export function scratchHelperNames(out: string): string[] {
+  const listing = out.slice(0, Math.max(0, out.lastIndexOf('colloq-scratch: ok')))
+  return listing
+    .split('\0')
+    // A line docker wrote on its own (a warning before the container's output) ends where the next path starts.
+    .map((chunk) => {
+      const at = chunk.lastIndexOf(`\n${SCRATCH_IN_HELPER}/`)
+      return at >= 0 ? chunk.slice(at + 1) : chunk
+    })
+    .filter((chunk) => chunk.startsWith(`${SCRATCH_IN_HELPER}/`) && !chunk.slice(SCRATCH_IN_HELPER.length + 1).includes('/'))
+    .map((chunk) => chunk.slice(SCRATCH_IN_HELPER.length + 1))
+    .filter((name) => name !== '' && name !== '.' && name !== '..')
+}
 
 /**
  * The council container's own two folders (§9.7), for its `docker run`:
  * the class's epochs read-only at COUNCIL_EPOCHS_MOUNT and the attempts'
  * scratch space read-write at COUNCIL_SCRATCH_MOUNT, made before docker would
- * make them as root — both the agent's own, the scratch space at
- * SCRATCH_MODE whatever an earlier build left it at. With `fresh`, a new
- * container's start (a run, or a start of one that exited), the scratch
- * folders of the attempts before it go: their workers are gone. Nothing else
- * of the agent's is mounted: no state, no socket, no card.
+ * make them as root. The scratch space is root's at SCRATCH_MODE, emptied of
+ * the attempts before, only once the helper has run on it (kernels.ts ·
+ * councilScratch, before every start of the container); made here, it is
+ * the agent's, at that mode, until then. Nothing else of the agent's is
+ * mounted: no state, no socket, no card.
  */
-export function councilMounts(layout: StateLayout, sessionId: string, options: { fresh?: boolean } = {}): RoomMount[] {
+export function councilMounts(layout: StateLayout, sessionId: string): RoomMount[] {
   const dir = councilDir(layout, sessionId)
   fs.mkdirSync(epochsDir(dir), { recursive: true, mode: 0o755 })
   const scratch = scratchDir(dir)
-  if (!fs.existsSync(scratch)) fs.mkdirSync(scratch, { mode: SCRATCH_MODE })
-  if (process.platform !== 'win32') {
-    // A folder an earlier build handed to the kernels' uid comes back to the agent: a chown first, then the mode it clears.
-    const uid = process.getuid?.()
-    const gid = process.getgid?.()
-    if (uid !== undefined && gid !== undefined && fs.lstatSync(scratch).uid !== uid) fs.chownSync(scratch, uid, gid)
-    fs.chmodSync(scratch, SCRATCH_MODE)
+  if (!fs.existsSync(scratch)) {
+    fs.mkdirSync(scratch, { mode: SCRATCH_MODE })
+    if (process.platform !== 'win32') fs.chmodSync(scratch, SCRATCH_MODE)
   }
-  if (options.fresh) emptyScratch(scratch)
   return [
     { source: epochsDir(dir), target: COUNCIL_EPOCHS_MOUNT, readOnly: true },
     { source: scratch, target: COUNCIL_SCRATCH_MOUNT, readOnly: false },
   ]
 }
 
-/** Every entry of a scratch folder gone, through the anchored filesystem: nothing a worker left there is followed. How many would not go. */
-function emptyScratch(scratch: string): number {
-  let stayed = 0
-  const afs = createAnchoredFilesystem(scratch)
+/**
+ * One entry of a scratch space gone by its name, without listing the space
+ * (root's, which the agent cannot list) and without following anything in
+ * it: a folder an attempt's worker made — its uid is the agent's — through
+ * the anchored filesystem from that folder, then the folder itself; anything
+ * else, a link included, unlinked. Whether it went (or was not there).
+ */
+function removeEntry(scratch: string, name: string): boolean {
+  const at = path.join(scratch, name)
+  if (path.dirname(at) !== scratch) return false
+  let stat: fs.Stats
   try {
-    for (const name of afs.readdirSync(scratch) as string[]) {
-      try {
-        afs.rmSync(path.join(scratch, name), { recursive: true, force: true })
-      } catch {
-        stayed++
-      }
-    }
-  } catch {
-    stayed++
-  } finally {
-    afs.close()
+    stat = fs.lstatSync(at)
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT'
   }
-  return stayed
+  try {
+    if (!stat.isDirectory()) {
+      fs.unlinkSync(at)
+      return true
+    }
+    const afs = createAnchoredFilesystem(at)
+    try {
+      for (const entry of afs.readdirSync(at) as string[]) afs.rmSync(path.join(at, entry), { recursive: true, force: true })
+    } finally {
+      afs.close()
+    }
+    try {
+      fs.rmdirSync(at)
+    } catch (error) {
+      // Swapped for a link meanwhile: the link goes, never what it points at.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOTDIR') throw error
+      fs.unlinkSync(at)
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Every entry of a scratch folder gone, by its name (removeEntry): nothing a
+ * worker left there is followed. How many would not go; null — the agent
+ * cannot list it (root's, as its helper makes it), and the helper must.
+ */
+function emptyScratch(scratch: string): number | null {
+  let names: string[]
+  try {
+    names = fs.readdirSync(scratch)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return code === 'EACCES' || code === 'EPERM' ? null : 1
+  }
+  return names.filter((name) => !removeEntry(scratch, name)).length
 }
 
 /**
@@ -273,8 +394,14 @@ function removeTree(root: string): number {
     try {
       names = fs.readdirSync(top.at)
     } catch {
+      // Unreadable — a scratch space root's, which the helper emptied (CouncilHost · removeHelped): an empty folder goes by its
+      // parent's leave all the same, whoever owns it.
       stack.pop()
-      stayed++
+      try {
+        fs.rmdirSync(top.at)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') stayed++
+      }
       continue
     }
     for (const name of names) stack.push({ at: path.join(top.at, name), open: false })
@@ -441,6 +568,13 @@ export interface CouncilHostOptions {
   diskFloorMb: number
   /** Below the floor: the agent's eviction is asked for (sync.ts · keepDiskFloor). */
   onDiskLow?: () => void
+  /**
+   * The scratch space's helper (kernels.ts · councilScratch): what the agent
+   * cannot do to root's folder itself — list it for the sweep, empty it when
+   * the class goes. Its output, or why it would not run; none — the agent
+   * lists its own folder, as before any helper.
+   */
+  scratch?: (sessionId: string, action: Exclude<ScratchAction, 'fresh'>) => Promise<{ ok: true; out: string } | { ok: false; why: string }>
   /** Something a sync reports changed; `urgent` — an epoch ready or failed: the held sync is cut short for it (a dispatch waits on it, D8). */
   onChange: (urgent: boolean) => void
   /** Home answered 401: the machine is revoked (sync.ts finds out by its own sync). */
@@ -567,6 +701,11 @@ export class CouncilHost {
   private timer: NodeJS.Timeout | null = null
   private ticking = false
   private scratchLookedAt = 0
+  /** When the helper last listed each class's scratch space for the sweep; and the classes whose space it is emptying, the class gone. */
+  private readonly helperLookedAt = new Map<string, number>()
+  private readonly helperGoing = new Set<string>()
+  /** The helper's runs under way, for idle(). */
+  private readonly helperWork = new Set<Promise<void>>()
   private readonly logged = new Set<string>()
 
   constructor(options: CouncilHostOptions) {
@@ -757,6 +896,7 @@ export class CouncilHost {
         ...[...this.classes.values()].map((klass) => klass.work),
         ...[...this.collections.values()].map((collection) => collection.task),
         ...[...this.ships.values()].map((ship) => ship.task),
+        ...this.helperWork,
       ].filter((task): task is Promise<void> => task !== null)
       if (busy.length === 0) return
       await Promise.allSettled(busy)
@@ -1205,6 +1345,13 @@ export class CouncilHost {
     }
   }
 
+  /** A line for the log once per what it says (the `logged` set): a helper failing at every look would fill it. */
+  private say(key: string, line: string): void {
+    if (this.logged.has(key)) return
+    this.logged.add(key)
+    this.options.log(line)
+  }
+
   private backoff(tries: number): number {
     const wait = new Backoff(this.options.random ?? Math.random, this.timings.retryMs.first, this.timings.retryMs.last)
     let ms = 0
@@ -1250,10 +1397,41 @@ export class CouncilHost {
       }
       for (const ship of this.ships.values()) if (ship.sessionId === sessionId) ship.abort.abort()
       const dir = councilDir(this.layout, sessionId)
-      if (!fs.existsSync(dir)) continue
-      const stayed = (fs.existsSync(scratchDir(dir)) ? emptyScratch(scratchDir(dir)) : 0) + removeTree(dir)
+      if (!fs.existsSync(dir) || this.helperGoing.has(sessionId)) continue
+      const emptied = fs.existsSync(scratchDir(dir)) ? emptyScratch(scratchDir(dir)) : 0
+      if (emptied === null) {
+        // Root's: the helper empties it, and the folder goes after.
+        this.helped(this.removeHelped(sessionId, dir))
+        continue
+      }
+      const stayed = emptied + removeTree(dir)
       this.options.log(`[runner] the council of class ${sessionId}: home no longer names the class here; its epochs and scratch space are removed${stayed > 0 ? ` (${stayed} entr(ies) would not go)` : ''}`)
       this.pins = null
+    }
+  }
+
+  /** A run of the helper, kept until it settles: idle() waits for it, and its throw is never the beat's. */
+  private helped(work: Promise<void>): void {
+    const settled = work.catch((error: unknown) => {
+      this.options.log(`[runner] the council's scratch helper failed: ${error instanceof Error ? error.message : String(error)}`)
+    }).finally(() => this.helperWork.delete(settled))
+    this.helperWork.add(settled)
+  }
+
+  /** A gone class's council folder whose scratch space is root's: emptied by the helper, then the rest the agent's own. */
+  private async removeHelped(sessionId: string, dir: string): Promise<void> {
+    this.helperGoing.add(sessionId)
+    try {
+      const done = this.options.scratch ? await this.options.scratch(sessionId, 'remove') : { ok: false as const, why: 'no helper' }
+      if (!done.ok) {
+        this.say(`scratch-remove:${sessionId}`, `[runner] the council of class ${sessionId}: its scratch space would not go (${done.why}); tried again at the next look`)
+        return
+      }
+      const stayed = removeTree(dir)
+      this.options.log(`[runner] the council of class ${sessionId}: home no longer names the class here; its epochs and scratch space are removed${stayed > 0 ? ` (${stayed} entr(ies) would not go)` : ''}`)
+      this.pins = null
+    } finally {
+      this.helperGoing.delete(sessionId)
     }
   }
 
@@ -1273,28 +1451,48 @@ export class CouncilHost {
     for (const sessionId of ids) {
       const scratch = scratchDir(councilDir(this.layout, sessionId))
       if (!fs.existsSync(scratch)) continue
-      const strays = this.strays.get(sessionId) ?? new Map<string, number>()
-      this.strays.set(sessionId, strays)
-      const afs = createAnchoredFilesystem(scratch)
+      let names: string[]
       try {
-        const names = afs.readdirSync(scratch) as string[]
-        const asked = new Set([...this.collections.values()].filter((collection) => collection.sessionId === sessionId && collection.doneAt === null).map((collection) => collection.runId))
-        for (const seen of [...strays.keys()]) if (!names.includes(seen)) strays.delete(seen)
-        for (const name of names) {
-          if (asked.has(name)) continue
-          const first = strays.get(name) ?? now
-          strays.set(name, first)
-          if (now - first < this.timings.scratchKeepMs) continue
-          try {
-            afs.rmSync(path.join(scratch, name), { recursive: true, force: true })
-            strays.delete(name)
-          } catch (error) {
-            this.options.log(`[runner] the council of class ${sessionId}: an old scratch folder would not go (${error instanceof Error ? error.message : String(error)})`)
-          }
-        }
-      } catch { /* gone meanwhile */ } finally {
-        afs.close()
+        names = fs.readdirSync(scratch)
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        // Root's, as the helper makes it: listed by the helper now and then, while a council container of the class holds it.
+        if ((code === 'EACCES' || code === 'EPERM') && this.options.scratch) this.helped(this.sweepHelped(sessionId, scratch))
+        continue
       }
+      this.sweepNames(sessionId, scratch, names)
+    }
+  }
+
+  /** The sweep of a scratch space the agent cannot list: the helper names its entries, at most every SCRATCH_HELPER_LOOK_MS. */
+  private async sweepHelped(sessionId: string, scratch: string): Promise<void> {
+    const now = this.now()
+    if (now - (this.helperLookedAt.get(sessionId) ?? -Infinity) < SCRATCH_HELPER_LOOK_MS) return
+    // No container of its council here: nothing writes there, and the next one's start empties it (kernels.ts · councilScratch).
+    if (!this.options.held(sessionId).some((held) => held.role === 'council')) return
+    this.helperLookedAt.set(sessionId, now)
+    const listed = await this.options.scratch!(sessionId, 'list')
+    if (!listed.ok) {
+      this.say(`scratch-list:${sessionId}`, `[runner] the council of class ${sessionId}: its scratch space could not be looked at (${listed.why})`)
+      return
+    }
+    this.sweepNames(sessionId, scratch, scratchHelperNames(listed.out))
+  }
+
+  /** Strays of one scratch space by their names: first seen by this life, gone scratchKeepMs after, unless a collection names one. */
+  private sweepNames(sessionId: string, scratch: string, names: readonly string[]): void {
+    const now = this.now()
+    const strays = this.strays.get(sessionId) ?? new Map<string, number>()
+    this.strays.set(sessionId, strays)
+    const asked = new Set([...this.collections.values()].filter((collection) => collection.sessionId === sessionId && collection.doneAt === null).map((collection) => collection.runId))
+    for (const seen of [...strays.keys()]) if (!names.includes(seen)) strays.delete(seen)
+    for (const name of names) {
+      if (asked.has(name)) continue
+      const first = strays.get(name) ?? now
+      strays.set(name, first)
+      if (now - first < this.timings.scratchKeepMs) continue
+      if (removeEntry(scratch, name)) strays.delete(name)
+      else this.options.log(`[runner] the council of class ${sessionId}: an old scratch folder would not go (${name})`)
     }
   }
 
@@ -1359,9 +1557,18 @@ export class CouncilHost {
     const signal = collection.abort.signal
     const dir = councilDir(this.layout, collection.sessionId)
     const scratch = scratchDir(dir)
-    if (!fs.existsSync(scratch)) return this.over(collection)
+    // The run's own folder, reached by its name: the scratch space is root's, which the agent cannot list, nor open to anchor.
+    const folder = path.join(scratch, collection.runId)
+    let found: fs.Stats | null = null
+    try {
+      found = fs.lstatSync(folder)
+    } catch { /* never made, or gone */ }
+    if (!found?.isDirectory()) {
+      if (found) removeEntry(scratch, collection.runId)
+      return this.over(collection)
+    }
     const gen = this.options.held(collection.sessionId).find((held) => held.role === 'council')?.gen ?? null
-    const afs = createAnchoredFilesystem(scratch)
+    const afs = createAnchoredFilesystem(folder)
     try {
       let sent = 0
       let total = 0
@@ -1374,7 +1581,7 @@ export class CouncilHost {
         }
         if (known !== undefined) continue
         if (sent >= COUNCIL_ARTIFACTS.files || total + file.bytes > COUNCIL_ARTIFACTS.totalBytes || file.bytes > COUNCIL_ARTIFACTS.fileBytes) continue
-        const outcome = await this.artifact(collection, afs, path.join(scratch, collection.runId, file.name), file, gen!, signal)
+        const outcome = await this.artifact(collection, afs, path.join(folder, file.name), file, gen!, signal)
         if (signal.aborted) return
         if (outcome === 'stop') break
         if (outcome === 'later') {
@@ -1389,14 +1596,10 @@ export class CouncilHost {
         }
       }
       if (signal.aborted) return
-      try {
-        afs.rmSync(path.join(scratch, collection.runId), { recursive: true, force: true })
-      } catch (error) {
-        this.options.log(`[runner] the council of class ${collection.sessionId}: the scratch folder of attempt ${collection.runId} would not go (${error instanceof Error ? error.message : String(error)})`)
-      }
     } finally {
       afs.close()
     }
+    if (!removeEntry(scratch, collection.runId)) this.options.log(`[runner] the council of class ${collection.sessionId}: the scratch folder of attempt ${collection.runId} would not go`)
     this.over(collection)
   }
 

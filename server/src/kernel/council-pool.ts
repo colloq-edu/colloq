@@ -103,10 +103,12 @@ import {
   parseSeedReport,
 } from './council-isolation.js'
 import { kernelBackend } from './runtime-client.js'
+import { classHashSeed } from './room-spec.js'
 import { classPlacement, livePlacement } from './remote/placement-store.js'
 import {
   artifactsWithinCaps,
   askCollect,
+  attemptCardFiles,
   bytesMissingOn,
   dropCollects,
   dropHomeExport,
@@ -134,6 +136,7 @@ import {
   type EpochTrouble,
 } from './remote/epochs.js'
 import {
+  councilStartingWords,
   councilStartWords,
   councilWorker,
   councilWorkerExecute,
@@ -199,8 +202,8 @@ export interface EpochPython {
   dropRun(seq: number): { source: string; expressions: Record<string, string> }
   /** A worker's load of an epoch (`/colloq/epochs/<sha>`), within its ceiling. */
   loadRun(input: { manifest: string; body: string; capMb: number; threads: number; workspace: string }): { source: string; expressions: Record<string, string>; key: string }
-  /** Whether the load held. */
-  loadReport(raw: unknown): { ok: boolean; error: string | null } | null
+  /** Whether the load held, and the names it left behind (the export's, and those whose module this worker lacks). */
+  loadReport(raw: unknown): { ok: boolean; error: string | null; left?: Array<{ name: string; why: string }> } | null
   /**
    * A worker's entry for one attempt: today's, with the three inputs only a
    * worker's takes (§9.4, §9.7) — the attempt's text (`_colloq_needs`), its
@@ -226,6 +229,12 @@ export interface ExportReport {
   files: EpochFiles | null
   carried: string[]
   left: Array<{ name: string; why: string }>
+  /**
+   * The notebook kernel's PYTHONHASHSEED as its environment has it: null —
+   * none (a container started before 0.25.0); absent — the report did not
+   * say, and nothing is known.
+   */
+  hashSeed?: string | null
 }
 
 /** The hidden module's own export, load, entry and exit (kernel/council-isolation.ts, §9.3–9.7): the pool's, unless a suite brings its own. */
@@ -241,7 +250,7 @@ export const KERNEL_PYTHON: EpochPython = {
     const files = report.manifest !== null && report.body !== null
       ? { manifest: { sha256: report.manifest, bytes: report.manifestBytes }, body: report.body, buffers: epochFiles(report) }
       : null
-    return { ok: report.ok, error: report.error, files, carried: report.carried, left: report.left }
+    return { ok: report.ok, error: report.error, files, carried: report.carried, left: report.left, ...(report.hashSeed !== undefined ? { hashSeed: report.hashSeed } : {}) }
   },
   dropRun: (seq) => {
     const run = exportDropExpression(seq)
@@ -253,7 +262,7 @@ export const KERNEL_PYTHON: EpochPython = {
   },
   loadReport: (raw) => {
     const report = parseSeedReport(raw)
-    return report ? { ok: report.ok, error: report.error } : null
+    return report ? { ok: report.ok, error: report.error, left: report.left } : null
   },
   entrySource: ({ budgetBytes, memoryGuard, source, runId, capMb, workspace }) =>
     councilEnterSource(budgetBytes, { memoryGuard, source, runId, capMb, workspace }),
@@ -390,6 +399,15 @@ interface Worker {
   inherited: boolean
   /** It was started in this life already: a later start is a new kernel (its machine went, it died), never a previous life's. */
   startedOnce: boolean
+  /**
+   * It held an epoch and is being loaded again — with a fresh one, or with
+   * the same after a recycle (seed): `seeded` is null meanwhile, yet the
+   * pool is up, and ready() counts it as loaded. A fresh epoch reloads every
+   * idle worker at once (prepareIdle rolls two, a dispatch the others),
+   * and a press in that moment read «Пул ещё поднимается» and went to the
+   * notebook's kernel; now it waits in the pool's queue for the reload.
+   */
+  reloading: boolean
 }
 
 interface Pool {
@@ -404,8 +422,16 @@ interface Pool {
   size: number
   /** The size a growth is asking its container for, until the machine answers: another pool of the class sizing meanwhile counts it. */
   sizing: number | null
-  /** A refreeze in flight (one at a time, D8), the epoch number it will be, and when it was asked. */
-  refreezing: { seq: number; since: number; done: Promise<void> } | null
+  /** A refreeze in flight (one at a time, D8), the epoch number it will be, when it was asked, and the count of the teacher's runs it takes in. */
+  refreezing: { seq: number; since: number; mainRuns: number; done: Promise<void> } | null
+  /** How long the last refreeze that gave an epoch took, ms (the console's «переснимается за 0,4 с»); null before one. */
+  tookMs: number | null
+  /** When a worker was last restarted for what an attempt left it in, or its Python died (the console's «исполнитель перезапущен»). */
+  recycledAt: number | null
+  /** Names the workers' loads left behind beyond each epoch's export (noteWorkerLeft), by epoch. */
+  workerLeft: Map<number, Map<string, string>>
+  /** Whether the notebook's kernel hashed with another seed than the class's when each epoch was taken (accept): the console's b87dc7. */
+  seedDiffers: Map<number, boolean>
   /**
    * «Обновить состояние» (or an opening) pressed while a refreeze was in
    * flight: once it is done, another is taken if the teacher ran cells after
@@ -592,6 +618,10 @@ function ensurePool(sessionId: string, root: string): Pool {
     size: 0,
     sizing: null,
     refreezing: null,
+    tookMs: null,
+    recycledAt: null,
+    workerLeft: new Map(),
+    seedDiffers: new Map(),
     again: false,
     wait: null,
     tooBig: new Map(),
@@ -1029,10 +1059,13 @@ function refreeze(pool: Pool, pressed = false): void {
   const done = new Promise<void>((resolve) => {
     settle = resolve
   })
-  pool.refreezing = { seq, since, done }
+  pool.refreezing = { seq, since, mainRuns, done }
   const finish = (): void => {
     if (pool.refreezing?.seq === seq) pool.refreezing = null
     settle()
+    // An export that gave an epoch with files: how long a snapshot takes now, as the console's sheet says it.
+    const made = epochOf(sessionId, root, seq)
+    if (made?.files && made.trouble === null) pool.tookMs = Math.max(0, clock.now() - since)
     if (pool.stopped) return
     // A press while it was in flight, and the teacher's cells ran since it was asked: once more, for them.
     if (pool.again) {
@@ -1240,6 +1273,18 @@ async function accept(
   const shipBytes = files && runner && !sameMachine(source, runner) ? bytesMissingOn(runner, files) : 0
   recordEpoch({ ...base, bytes, shipBytes, carried: report.carried, left: report.left, files, source, trouble })
   if (trouble !== null) console.warn(`[council ${sessionId}/${root}] epoch ${seq} cannot be the pool's: ${trouble}`)
+  /*
+   * The workers hash strings with the class's seed (D28: every container of
+   * the class is started with it since 0.25.0); a notebook kernel whose
+   * container is older has none, and a set may come out in another order in
+   * an attempt than in the notebook. Said by the console once (b87dc7); not
+   * known when the report did not say.
+   */
+  if (report.hashSeed !== undefined) {
+    pool.seedDiffers.set(seq, report.hashSeed !== String(classHashSeed(sessionId)))
+    const kept = new Set(epochsOf(sessionId, root).map((one) => one.seq))
+    for (const one of [...pool.seedDiffers.keys()]) if (!kept.has(one)) pool.seedDiffers.delete(one)
+  }
 }
 
 /**
@@ -1278,7 +1323,7 @@ function startWorkers(pool: Pool): void {
         continue
       }
     }
-    const worker: Worker = known ?? { n, handle: councilWorker(pool.sessionId, pool.root, n), seeded: null, served: 0, preparing: null, broken: null, recycle: false, inherited: false, startedOnce: false }
+    const worker: Worker = known ?? { n, handle: councilWorker(pool.sessionId, pool.root, n), seeded: null, served: 0, preparing: null, broken: null, recycle: false, inherited: false, startedOnce: false, reloading: false }
     worker.broken = null
     pool.workers.set(n, worker)
     prepare(pool, worker)
@@ -1337,29 +1382,56 @@ function prepare(pool: Pool, worker: Worker): void {
  */
 async function seed(pool: Pool, worker: Worker, epoch: Epoch): Promise<boolean> {
   if (worker.seeded === epoch.seq && !worker.recycle && !worker.inherited) return true
-  if (worker.seeded !== null || worker.recycle || worker.inherited) await recycleNow(worker)
-  if (!epoch.files) {
+  // One that held an epoch is as good as loaded while it loads again (Worker.reloading): a press meanwhile waits for it.
+  worker.reloading = worker.seeded !== null
+  try {
+    if (worker.seeded !== null || worker.recycle || worker.inherited) await recycleNow(worker)
+    if (!epoch.files) {
+      worker.seeded = epoch.seq
+      return true
+    }
+    const run = python.loadRun({
+      manifest: epoch.files.manifest.sha256,
+      body: epoch.files.body,
+      capMb: attemptMbOf(pool),
+      threads: 1,
+      workspace: workspaceOf(pool.sessionId),
+    })
+    const answer = await councilWorkerExecute(worker.handle, run.source, run.expressions)
+    const report = python.loadReport(answer.values[run.key])
+    if (!report?.ok) {
+      throw new WorkerTrouble(
+        `the epoch did not load${report?.error ? `: ${report.error}` : answer.status !== 'ok' ? ` (${answer.status})` : ''}`,
+        tr('server.theWorkersCouldNotLoadThe.69de42'),
+      )
+    }
+    noteWorkerLeft(pool, epoch, report.left ?? [])
     worker.seeded = epoch.seq
+    worker.served = 0
     return true
+  } finally {
+    worker.reloading = false
   }
-  const run = python.loadRun({
-    manifest: epoch.files.manifest.sha256,
-    body: epoch.files.body,
-    capMb: attemptMbOf(pool),
-    threads: 1,
-    workspace: workspaceOf(pool.sessionId),
-  })
-  const answer = await councilWorkerExecute(worker.handle, run.source, run.expressions)
-  const report = python.loadReport(answer.values[run.key])
-  if (!report?.ok) {
-    throw new WorkerTrouble(
-      `the epoch did not load${report?.error ? `: ${report.error}` : answer.status !== 'ok' ? ` (${answer.status})` : ''}`,
-      tr('server.theWorkersCouldNotLoadThe.69de42'),
-    )
-  }
-  worker.seeded = epoch.seq
-  worker.served = 0
-  return true
+}
+
+/**
+ * Names a worker's load left behind beyond the export's own (§9.4, K7a #16):
+ * those whose module the machine's environment lacks — a package the teacher
+ * installed into the notebook's own container. The console names them with
+ * the export's (view), once per epoch, as the workers say them.
+ */
+function noteWorkerLeft(pool: Pool, epoch: Epoch, left: ReadonlyArray<{ name: string; why: string }>): void {
+  const own = new Set(epoch.left.map((one) => one.name))
+  const extra = left.filter((one) => !own.has(one.name))
+  if (extra.length === 0) return
+  const known = pool.workerLeft.get(epoch.seq) ?? new Map<string, string>()
+  const before = known.size
+  for (const one of extra) if (!known.has(one.name)) known.set(one.name, one.why)
+  pool.workerLeft.set(epoch.seq, known)
+  // Of the epochs the notebook still keeps alone.
+  const kept = new Set(epochsOf(pool.sessionId, pool.root).map((one) => one.seq))
+  for (const seq of [...pool.workerLeft.keys()]) if (!kept.has(seq)) pool.workerLeft.delete(seq)
+  if (known.size !== before) changed(pool)
 }
 
 /** A worker's kernel restarted with its session kept (kernel/index.ts · recycleCouncilWorker): it holds nothing after. */
@@ -1405,22 +1477,36 @@ function idleWorkers(pool: Pool): Worker[] {
 
 /* ------------------------------------------------------------ routing */
 
-/** Whether the pool may take an attempt now (§9.6), or why not, in the card's words. */
-function ready(pool: Pool): { ok: true; epoch: Epoch } | { ok: false; note: string } {
-  if (pool.trouble) return { ok: false, note: pool.trouble }
-  if (pool.machine === null && slotViewOf(pool.sessionId, 'council').where !== 'machine') return { ok: false, note: tr('server.thePoolIsStillStartingThisAttempt.bf84be') }
+/**
+ * Whether the pool may take an attempt now (§9.6), or why not: in the card's
+ * words (`note`), and in the console's after a minute of it, «Пул не
+ * поднялся: …» (`stall`, view) — what it waits for, never the card's
+ * sentence after a colon of its own.
+ */
+function ready(pool: Pool): { ok: true; epoch: Epoch } | { ok: false; note: string; stall: string } {
+  const starting = tr('server.thePoolIsStillStartingThisAttempt.bf84be')
+  if (pool.trouble) return { ok: false, note: pool.trouble, stall: pool.trouble }
+  const view = slotViewOf(pool.sessionId, 'council')
+  // The council container on its way up on its machine (an image to pull): the placement's own words, for staff.
+  const coming = (): string | null => councilStartingWords(pool.sessionId)
+  if (pool.machine === null && view.where !== 'machine') return { ok: false, note: starting, stall: tr('server.noMachineHasTakenThePoolYet.9a460b') }
   const newest = epochsOf(pool.sessionId, pool.root)[0] ?? null
   const epoch = usableEpoch(pool)
   // The notebook's state cannot be the pool's: data on the GPU (D11), or no epoch at all that may reach the machine.
-  if (newest?.trouble === 'cuda') return { ok: false, note: troubleWords('cuda') }
+  if (newest?.trouble === 'cuda') return { ok: false, note: troubleWords('cuda'), stall: troubleWords('cuda') }
   if (!epoch) {
     const blocked = blockedBy(pool, newest)
-    if (blocked && !pool.refreezing) return { ok: false, note: troubleWords(blocked) }
-    return { ok: false, note: tr('server.thePoolIsStillStartingThisAttempt.bf84be') }
+    if (blocked && !pool.refreezing) return { ok: false, note: troubleWords(blocked), stall: troubleWords(blocked) }
+    return { ok: false, note: starting, stall: coming() ?? tr('server.theNotebookSStateHasNotReached.461833') }
   }
-  if (!machineReady(pool)) return { ok: false, note: tr('server.thePoolSMachineDoesNotAnswer.16922d') }
-  const seeded = [...pool.workers.values()].some((worker) => worker.seeded !== null && worker.broken === null && workerState(worker.handle).up)
-  if (!seeded) return { ok: false, note: tr('server.thePoolIsStillStartingThisAttempt.bf84be') }
+  if (!machineReady(pool)) {
+    // Still starting is the pool's first seconds, not a machine away.
+    if (view.where === 'machine' && view.state === 'starting') return { ok: false, note: starting, stall: coming() ?? tr('server.theWorkersHaveNotLoadedTheNotebook.e2c616') }
+    return { ok: false, note: tr('server.thePoolSMachineDoesNotAnswer.16922d'), stall: tr('server.thePoolSMachineDoesNotAnswer.5890e3') }
+  }
+  // A worker on its way back to an epoch (Worker.reloading) counts: the pool is up, and a press waits in its queue for it.
+  const seeded = [...pool.workers.values()].some((worker) => worker.broken === null && ((worker.seeded !== null && workerState(worker.handle).up) || worker.reloading))
+  if (!seeded) return { ok: false, note: starting, stall: tr('server.theWorkersHaveNotLoadedTheNotebook.e2c616') }
   return { ok: true, epoch }
 }
 
@@ -1622,13 +1708,15 @@ function ended(handle: WorkerHandle, item: KernelQueueItem, end: AttemptEnd): vo
      * one (an OOM kill): nothing to recycle — it starts again wherever the
      * slot is, or loads once it answers (restarted).
      */
+    // (Its Python dying under the attempt is the console's «исполнитель перезапущен» already: `restarted` hears it, and knows a machine's end from it.)
     worker.seeded = null
-  } else if (
+  } else {
     // (One stuck after its second SIGINT was recycled under it already: `stuck`.)
-    !end.entered || end.threads > 0 || end.processes > 0 || end.kernel !== 'up'
-    || (end.dirtyMb !== null && end.dirtyMb > attemptMbOf(pool)) || worker.served >= COUNCIL_WORKER_REUSE
-  ) {
-    worker.recycle = true
+    const spoiled = !end.entered || end.threads > 0 || end.processes > 0 || end.kernel !== 'up'
+      || (end.dirtyMb !== null && end.dirtyMb > attemptMbOf(pool))
+    if (spoiled || worker.served >= COUNCIL_WORKER_REUSE) worker.recycle = true
+    // What an attempt left it in, not its twentieth attempt: the console's «исполнитель перезапущен».
+    if (spoiled) pool.recycledAt = clock.now()
   }
   // Its folder on the machine: the files on their way to the card, and then the folder goes (an empty listing included).
   if (end.scratch && end.kind !== 'lost') collectFiles(pool, item, end.run, end.files)
@@ -1641,17 +1729,29 @@ function ended(handle: WorkerHandle, item: KernelQueueItem, end: AttemptEnd): vo
 
 /**
  * The files an attempt wrote into its folder (§9.7): those within
- * COUNCIL_ARTIFACTS are asked of its machine, and the card names each as it
- * lands; the rest are named with their size. The folder goes once the
- * machine says the collection is over (an empty one included).
+ * COUNCIL_ARTIFACTS are asked of its machine, on their way on the card
+ * (`kept: null`, epochs.ts · attemptCardFiles) until each lands; the rest are
+ * named with their size. The folder goes once the machine says the
+ * collection is over (an empty one included), and a file that did not land
+ * by then never will: the card says so (`false`) — the machine refused it,
+ * or went, or the collection could not even be asked.
  */
 function collectFiles(pool: Pool, item: KernelQueueItem, run: CouncilRun | null, listed: AttemptEnd['files']): void {
   const machine = pool.machine
   const runId = item.placed?.runId
-  if (!machine || !runId) return
+  let card: CouncilRun | null = run && runId ? { ...run, runId, files: attemptCardFiles(listed) } : null
+  /** Whatever is still on its way will not come: the card hears it once. */
+  const settle = (): void => {
+    if (!card || !(card.files ?? []).some((file) => file.kept === null)) return
+    card = { ...card, files: (card.files ?? []).map((file) => (file.kept === null ? { ...file, kept: false } : file)) }
+    tellCouncilItem(item, card)
+  }
+  if (!machine || !runId) {
+    settle()
+    return
+  }
   // The exit hashed those within COUNCIL_ARTIFACTS, and those alone are brought: the caps once more, should a report claim more.
   const { taken } = artifactsWithinCaps(listed.flatMap((file) => (file.sha256 !== null ? [{ ...file, sha256: file.sha256 }] : [])))
-  let card: CouncilRun | null = run ? { ...run, runId, files: listed.map((file) => ({ name: file.name, bytes: file.bytes, kept: false })) } : null
   askCollect({
     sessionId: pool.sessionId,
     runId,
@@ -1663,7 +1763,7 @@ function collectFiles(pool: Pool, item: KernelQueueItem, run: CouncilRun | null,
       card = { ...card, files: (card.files ?? []).map((file) => (file.name === name ? { ...file, kept: true } : file)) }
       tellCouncilItem(item, card)
     },
-    over: () => {},
+    over: settle,
   })
 }
 
@@ -1675,6 +1775,7 @@ function stuck(handle: WorkerHandle): void {
   console.warn(`[council ${pool.sessionId}/${pool.root}] worker ${worker.n} does not take its interrupts: recycled`)
   worker.recycle = true
   worker.seeded = null
+  pool.recycledAt = clock.now()
   void recycleCouncilWorker(worker.handle).finally(() => {
     worker.recycle = false
     schedule(pool)
@@ -1710,7 +1811,7 @@ function idle(handle: WorkerHandle): void {
  * restarted or died»): it is loaded again before it serves, once its new
  * Python answers, or started again when none comes.
  */
-function restarted(handle: WorkerHandle): void {
+function restarted(handle: WorkerHandle, outside = false): void {
   const pool = poolOf(handle.sessionId, handle.root)
   const worker = pool?.workers.get(handle.n)
   if (!pool || !worker) return
@@ -1718,6 +1819,8 @@ function restarted(handle: WorkerHandle): void {
   worker.served = 0
   worker.recycle = false
   worker.inherited = false
+  // Its Python killed or restarted by itself (an OOM kill above all): the console says so; a machine gone is said otherwise.
+  if (!outside) pool.recycledAt = clock.now()
   changed(pool)
 }
 
@@ -1806,6 +1909,9 @@ function waiting(sessionId: string): KernelQueueItem[] {
 
 /* --------------------------------------------------------------- the view */
 
+/** How long the console says «исполнитель перезапущен» after a worker was restarted for what an attempt left it in. */
+const RECYCLED_SHOWN_MS = 60_000
+
 /** The pool of a notebook as the console reads it (CouncilKernel.pool); null — the class's council is not on machines. */
 function view(sessionId: string, root: string): CouncilPool | null {
   if (!poolClass(sessionId)) return null
@@ -1815,35 +1921,82 @@ function view(sessionId: string, root: string): CouncilPool | null {
   const shown = epoch ?? (newest && newest.trouble !== 'failed' ? newest : null)
   const workers = pool ? [...pool.workers.values()].filter((worker) => workerState(worker.handle).up) : []
   const busy = workers.filter((worker) => workerState(worker.handle).computing).length
-  const now = pool ? ready(pool) : { ok: false as const, note: tr('server.thePoolIsStillStartingThisAttempt.bf84be') }
+  const now = pool ? ready(pool) : { ok: false as const, note: tr('server.thePoolIsStillStartingThisAttempt.bf84be'), stall: tr('server.theWorkersHaveNotLoadedTheNotebook.e2c616') }
   const stalled = pool?.waitingSince != null && clock.now() - pool.waitingSince >= COUNCIL_POOL_READY_MS
   // The newest cannot be the pool's — its trouble, or its size on the pool's machine — and nothing older stands in: the attempts are the shared kernel's.
   const blocked = pool ? blockedBy(pool, newest) : (newest?.trouble ?? null)
   const trouble = pool?.trouble ?? (blocked && !epoch && !pool?.refreezing ? troubleWords(blocked) : null)
   const state: CouncilPool['state'] = now.ok ? 'ready' : trouble ? 'shared' : 'starting'
+  // After a minute: what the pool waits for, a worker's failure first (§9.9).
+  const why = (): string => (pool ? [...pool.workers.values()].find((one) => one.broken)?.broken?.why : undefined) || (now.ok ? '' : now.stall)
   const note = now.ok
-    ? (epoch && newest && newest.seq !== epoch.seq && pool && tooBig(pool, newest)
-        ? tr('server.theNewStateDoesNotFit.1c7533', { time: clockTime(epoch.at) })
-        : undefined)
-    : trouble ?? (stalled ? tr('server.thePoolDidNotStart.80644c', { why: pool && [...pool.workers.values()].find((one) => one.broken)?.broken?.why || now.note }) : undefined)
+    ? newerWords(pool!, epoch!, newest)
+    : trouble ?? (stalled ? tr('server.thePoolDidNotStart.80644c', { why: why() }) : undefined)
+  const left = shown
+    ? [
+        ...shown.left.map((one) => ({ name: one.name, why: councilLeftWords(one.why) })),
+        ...[...(pool?.workerLeft.get(shown.seq) ?? new Map<string, string>())].map(([name, why]) => ({ name, why: councilLeftWords(why) })),
+      ]
+    : []
+  const recycled = pool?.recycledAt != null && clock.now() - pool.recycledAt < RECYCLED_SHOWN_MS
   return {
     state,
     machine: pool?.machine?.name ?? null,
     workers: workers.length,
     busy,
     queued: pool?.queue.length ?? 0,
+    size: pool?.size ?? 0,
     refreezing: pool?.refreezing != null,
+    ...(pool?.refreezing ? { snapshot: { since: pool.refreezing.since, after: lastRunCell(pool, pool.refreezing.mainRuns) } } : {}),
+    ...(pool?.tookMs != null ? { tookMs: pool.tookMs } : {}),
+    ...(recycled ? { recycled: true } : {}),
     epoch: shown
       ? {
           seq: shown.seq,
           at: shown.at,
+          bytes: shown.bytes,
           carried: shown.carried.length,
-          left: shown.left.map((one) => ({ name: one.name, why: councilLeftWords(one.why) })),
+          left,
           behind: behindOf(shown),
+          ...(pool?.seedDiffers.get(shown.seq) === true ? { seedDiffers: true } : {}),
         }
       : null,
     ...(note ? { note } : {}),
   }
+}
+
+/**
+ * The console's word on a newer epoch than the one the workers compute on
+ * (§9.2 «A refresh over them keeps the previous epoch»): too big to ship to
+ * the pool's machine, past what an epoch may hold, or not come together —
+ * the attempts go on, on the state as of 14:05.
+ */
+function newerWords(pool: Pool, epoch: Epoch, newest: Epoch | null): string | undefined {
+  if (!newest || newest.seq === epoch.seq) return undefined
+  const time = clockTime(epoch.at)
+  if (tooBig(pool, newest) || newest.trouble === 'over') return tr('server.theNewStateDoesNotFit.1c7533', { time })
+  if (newest.trouble === 'failed') return tr('server.theNewStateCouldNotBeTaken.01b6b1', { time })
+  return undefined
+}
+
+/**
+ * The notebook's number of the teacher's last cell a refreeze takes in
+ * (the queue's «после вашей ячейки 9»): the newest run of the log within the
+ * count it was asked at; null — none in this life, or the cell is gone.
+ */
+function lastRunCell(pool: Pool, mainRuns: number): number | null {
+  const log = runsOf(pool.sessionId, pool.root).log
+  let last: { n: number; cellId: string } | undefined
+  for (let at = log.length - 1; at >= 0; at--) {
+    if (log[at]!.n <= mainRuns) {
+      last = log[at]
+      break
+    }
+  }
+  if (!last) return null
+  const doc = peekSessionDoc(pool.sessionId)?.doc
+  const found = doc ? findCell(doc, last.cellId) : null
+  return found ? found.index + 1 : null
 }
 
 /* ----------------------------------------------------------------- tick */

@@ -918,10 +918,14 @@ test('E30 · an attempt writes out.csv into its scratch folder: listed on the ca
     const files = cardOf(writer, council)?.run?.files
     return files?.length === 2 && files.find((file) => file.name === 'out.csv')?.kept ? files : null
   }, 20_000, () => `${JSON.stringify(runsOf(writer, council).map((one) => one.files))}\n${machine.log()}`)
-  assert.deepEqual(kept, [{ name: 'big.bin', bytes: 1_100_000, kept: false }, { name: 'out.csv', bytes: Buffer.byteLength(body), kept: true }])
+  const sha = createHash('sha256').update(body).digest('hex')
+  assert.deepEqual(kept, [{ name: 'big.bin', bytes: 1_100_000, kept: false }, { name: 'out.csv', bytes: Buffer.byteLength(body), kept: true, sha256: sha }])
+  // Before it landed the card said it was on its way (null), never that it was not kept; the big one left behind from the end on.
+  const first = runsOf(writer, council).find((one) => (one.files?.length ?? 0) > 0)
+  assert.deepEqual(first?.files, [{ name: 'big.bin', bytes: 1_100_000, kept: false }, { name: 'out.csv', bytes: Buffer.byteLength(body), kept: null, sha256: sha }])
   const runId = cardOf(writer, council)!.run!.runId!
   assert.match(runId, /^[0-9a-f]{32}$/)
-  assert.equal(fs.readFileSync(artifactPath(id, runId, createHash('sha256').update(body).digest('hex')), 'utf8'), body, 'here, by its content')
+  assert.equal(fs.readFileSync(artifactPath(id, runId, sha), 'utf8'), body, 'here, by its content')
   await until('the file on the teacher\'s pile', () => lead.control.frames('council:patch', council).some((frame) => frame.attempts.some((one) => one.participantId === writer.id && one.run?.files?.some((file) => file.name === 'out.csv' && file.kept) === true)))
   // The class folder untouched, here and in the machine's copy; and the attempt's folder on the machine gone once its file came.
   assert.equal(fs.existsSync(path.join(sessionDir(id), 'out.csv')), false, 'no out.csv in the class folder here')

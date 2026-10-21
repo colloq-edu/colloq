@@ -2824,7 +2824,18 @@ process.exit(failed === 0 ? 0 : 1)
  * part is switched and switched back (Z4); a student and the teacher run a
  * cell, and the room's chip says «Ядро на машине» (Z5); «Работают сейчас»
  * lists the class at 0 MB here with its slot on the machine (Z7), and the
- * machine's page its class (Z3); the relay goes dark: amber with its timer,
+ * machine's page its class (Z3); a second class's council computes on the
+ * machine's pool: the console's strip with its workers, machine, snapshot
+ * and «Обновить», the line of what the snapshot could not carry, hidden,
+ * still hidden after a refresh that leaves the same names and back with a
+ * new one, the strip's value opening the rules on «Состояние для попыток»
+ * and «По кнопке» saved and back, the queue tab named the notebook's, and
+ * two students' attempts — one apart on the snapshot that writes a file,
+ * its chip never read as not kept, then taken (↓) by its author from her
+ * sheet and by the teacher from the console's work through the files' door
+ * and a ticket for it alone, one in the shared kernel for a name that
+ * cannot travel — with their footnotes on the student's sheet and in the
+ * console's work (Z8, Z9); the relay goes dark: amber with its timer,
  * the waiting cell, the restart refused under the button, the staff banner,
  * whose «Ждать машину» saves the class's wait and whose «Перенести сейчас»
  * then moves the kernel here (Z5); every screen at 390 px with nothing of it
@@ -2840,12 +2851,13 @@ async function classesCheck(): Promise<number> {
   const { TunnelFault } = await import('../tests/_tunnel-fault.mts')
   const { translate } = await import('../shared/i18n.js')
   const { STAFF_COOKIE: COOKIE } = await import('../shared/admin.js')
-  const { createCell, getCells } = await import('../shared/notebook.js')
+  const { CELLS_KEY, cellId: idOfCell, createCell, getCells, readCell } = await import('../shared/notebook.js')
   const { createTeacher, rotateLinkKey } = await import('../server/src/admin/store.js')
   const { issueStaffCookie } = await import('../server/src/admin/auth.js')
   const { getRunner } = await import('../server/src/competitions/remote/store.js')
   const { placementOutlook } = await import('../server/src/kernel/remote/placement.js')
   const { classPlacement } = await import('../server/src/kernel/remote/placement-store.js')
+  const { epochsOf } = await import('../server/src/kernel/remote/epochs.js')
   const { getSessionDoc, shutdownCollab } = await import('../server/src/collab/index.js')
   const { shutdownKernels } = await import('../server/src/kernel/index.js')
 
@@ -2866,13 +2878,16 @@ async function classesCheck(): Promise<number> {
   let relay: Awaited<ReturnType<typeof TunnelFault.start>> | null = null
   let vite: ReturnType<typeof spawn> | null = null
   let chrome: ReturnType<typeof spawn> | null = null
+  /** The teacher's control socket the council class is opened through (Z8): closed with the stand. */
+  let poolSocket: InstanceType<typeof WS> | null = null
   const pages: Array<{ who: string; page: ClassTab }> = []
 
   /* ------------------------------------------------------------ the stand */
 
   try {
     await home.start()
-    await home.homeJupyter()
+    // This server's own Jupyter: a class notebook kept here, whose council's pool is on the machine (Z8), exports from it.
+    const here = await home.homeJupyter()
     const fleet = createFleet()
     kernelRevision(fleet)
     relay = await TunnelFault.start({ target: home.port })
@@ -2996,6 +3011,20 @@ async function classesCheck(): Promise<number> {
     await teacher.js(`${ownRow}.querySelectorAll('button')[1].click(); return 1`)
     const toMachines = await teacher.until(`${ownRow}.querySelectorAll('button')[1].getAttribute('aria-pressed')==='true'`, 10_000)
     note(toHere && toMachines, 'Z4 · a part switched here and back, saved each time', `${toHere}/${toMachines}`)
+    // The council's part, with its pool (COUNCIL_POOL): on machines it brings its two numbers, saved; in the shared kernel, none.
+    const councilRow = `[...document.querySelectorAll('.pl-part')].find(r=>r.textContent.includes(${JSON.stringify(ru('admin.placement.councilNote'))}))`
+    const numbers = `[...document.querySelectorAll('.pl .admin-label')].some(l=>l.textContent.trim()===${JSON.stringify(ru('admin.placement.workers'))})`
+    await teacher.js(`${councilRow}.querySelectorAll('button')[1].click(); return 1`)
+    const councilOn = await teacher.until(`${councilRow}.querySelectorAll('button')[1].getAttribute('aria-pressed')==='true' && ${numbers}`, 10_000)
+    const councilSaved = (await waitValue(() => (classPlacement(classId).council === 'machines' ? true : null), 10_000)) === true
+    if (shots) {
+      // The dialog scrolls inside itself: the council's part in view for the shot.
+      await teacher.js(`${councilRow}?.scrollIntoView({ block: 'center' }); return 1`)
+      await shot(teacher, 'class settings council-wide')
+    }
+    await teacher.js(`${councilRow}.querySelectorAll('button')[0].click(); return 1`)
+    const councilOff = await teacher.until(`${councilRow}.querySelectorAll('button')[0].getAttribute('aria-pressed')==='true' && !${numbers}`, 10_000)
+    note(councilOn && councilSaved && councilOff && classPlacement(classId).council === 'shared', 'Z4 · «Консилиум» on machines with «Попыток одновременно» and «Память на попытку», and back', `${councilOn}/${councilSaved}/${councilOff}`)
     await screens(teacher, 'class settings', `[...document.querySelectorAll('.pl')]`, '.pl')
 
     /* ------------------------------------------------------- Z5 · the room */
@@ -3034,6 +3063,164 @@ async function classesCheck(): Promise<number> {
     const z3 = await owner2.until(`[...document.querySelectorAll('.rm-class-row')].some(r=>r.textContent.includes(${JSON.stringify(className)}))`, 30_000)
     note(z3, 'Z3 · the machine\'s page lists the class on it', z3)
     await screens(owner2, 'machine page', `[...document.querySelectorAll('main')]`, '.rm-table')
+
+    /* ---------------------------------------- Z8 · Z9 · the council's pool */
+
+    // A second class: its notebook here, its council's pool on the machine — two workers of half a gigabyte.
+    const poolName = `Консилиум на машине ${process.pid}`
+    const poolMade = await ownerCall<{ id: string }>('POST', '/api/admin/seminars', { name: poolName, environment: 'base', cpus: 1, memoryMb: 1024 })
+    if (poolMade.status !== 201) throw new Error(`the council's class was not made: ${poolMade.status} ${JSON.stringify(poolMade.body)}`)
+    const poolId = poolMade.body.id
+    await ownerCall('PATCH', `/api/admin/seminars/${poolId}`, { placement: { room: 'home', own: 'home', council: 'machines', workers: 2, attemptMb: 512 } })
+    // The notebook's state holds two names that cannot travel: the console names them once.
+    here.council.left = [{ name: 'conn', why: 'connection' }, { name: 'batches', why: 'generator' }]
+    let councilCell = ''
+    const { doc: poolDoc } = getSessionDoc(poolId)
+    poolDoc.transact(() => {
+      const cells = getCells(poolDoc)
+      cells.delete(0, cells.length)
+      const task = createCell('code', '')
+      cells.push([createCell('code', 'x = 41'), task])
+      councilCell = idOfCell(task)
+    })
+    const lead = await openTab('about:blank')
+    pages.push({ who: 'owner, council console', page: lead })
+    await lead.go(`${site}/s/${poolId}`)
+    await joinRoom(lead, 'Ада')
+    await lead.clickText('button', ru('room.ui.446'))
+    const setUp = await waitValue(() => (readCell(getCells(poolDoc).get(0)).state === 'ok' ? true : null), 30_000)
+    note(!!setUp, 'Z8 · the teacher\'s cell ran in the notebook\'s kernel here', setUp)
+    // The council opens on the second cell (the lock's «Консилиум», cell:lock), students running their own attempts.
+    const joined = await ownerCall<{ token: string }>('POST', `/api/sessions/${poolId}/join`, { name: 'Ада' })
+    poolSocket = new WS(`${home.url.replace('http:', 'ws:')}/control/${poolId}?token=${encodeURIComponent(joined.body.token)}`, { headers: { cookie: `${COOKIE}=${cookie}` } })
+    const socket = poolSocket
+    await new Promise<void>((resolve, reject) => {
+      socket.once('message', () => resolve())
+      socket.once('error', reject)
+    })
+    socket.send(JSON.stringify({ t: 'cell:lock', cellId: councilCell, state: 'council', settings: { studentRun: true, runLimitSec: 30, rerunPauseSec: 0, lane: 'pool', refresh: 'auto' } }))
+    await lead.go(`${site}/s/${poolId}/council/${councilCell}`)
+    const poolText = `(()=>{const s=document.querySelector('[data-pult-pool]'); return s ? s.textContent.replace(/[\\u00a0\\u202f\\s]+/g,' ').trim() : ''})()`
+    const ready = await lead.until(`!!document.querySelector('[data-pult-pool="ready"]')`, 120_000)
+    const strip = (await lead.js(`return ${poolText}`)) as string
+    note(
+      ready && strip.includes(ru('room.pult.pool.ready', { count: 2 })) && strip.includes(machineName) && !!(await lead.js(`return !!document.querySelector('[data-pult-pool-time]')`)) &&
+        strip.includes(ru('room.pult.pool.refreshAuto')) && strip.includes(ru('room.pult.pool.refresh')),
+      'Z8 · the pool strip: two workers ready on the machine, its snapshot, following the kernel, «Обновить»',
+      strip || 'no strip',
+    )
+    const leftWords = ru('room.pult.pool.left', { names: `conn (${ru('server.databaseConnection.cdf70c')}), batches (${ru('server.generator.c33340')})` })
+    const leftLine = `(()=>{const l=document.querySelector('[data-pult-pool-left] .pool-left-line'); return l ? l.textContent.trim() : ''})()`
+    const named = await lead.until(`${leftLine} === ${JSON.stringify(leftWords)}`, 15_000)
+    note(named, 'Z8 · «Не переносится: …» under the strip', (await lead.js(`return ${leftLine}`)) || 'no line')
+    await lead.js(`document.querySelector('[data-pult-pool-left] button').click(); return 1`)
+    const leftHidden = await lead.until(`!document.querySelector('[data-pult-pool-left]')`, 5_000)
+    note(leftHidden, 'Z8 · the line hides', leftHidden)
+
+    // The strip's value opens the rules on its row; «По кнопке» is saved with the cell's rules, the strip says so, and back.
+    await lead.js(`document.querySelector('[data-pult-pool-value="refresh"]').click(); return 1`)
+    const onRow = await lead.until(`!!document.querySelector('[data-pult-rules-row="refresh"].here') && !!document.querySelector('[data-pult-rules-row="lane"]')`, 5_000)
+    note(onRow, 'Z8b · the strip\'s value opens the rules on «Состояние для попыток», «Попытки считаются» beside it', onRow)
+    if (shots) await wideShots(lead, 'council rules')
+    const pick = (row: string, label: string) =>
+      lead.js(`const b=[...document.querySelectorAll('[data-pult-rules-row="${row}"] button')].find(x=>x.textContent.trim().startsWith(${JSON.stringify(label)})); b&&b.click(); return !!b`)
+    await pick('refresh', ru('room.pult.pool.rules.refreshManual'))
+    const byButton = await lead.until(`(${poolText}).includes(${JSON.stringify(ru('room.pult.pool.refreshManual'))})`, 10_000)
+    await pick('refresh', ru('room.pult.pool.rules.refreshAuto'))
+    const following = await lead.until(`(${poolText}).includes(${JSON.stringify(ru('room.pult.pool.refreshAuto'))})`, 10_000)
+    note(byButton && following, 'Z8b · «По кнопке» and back, saved with the cell\'s rules', `${byButton}/${following}`)
+    await lead.js(`document.querySelector('[data-pult-rules-done]').click(); return 1`)
+    await lead.until(`!document.querySelector('[data-pult-rules]')`, 5_000)
+
+    // «Обновить»: a new snapshot of the notebook's kernel. It leaves the same two names behind, and the hidden line stays hidden.
+    const refresh = async (): Promise<{ seq: number; seen: boolean }> => {
+      const before = epochsOf(poolId, CELLS_KEY)[0]?.seq ?? 0
+      await lead.js(`document.querySelector('[data-pult-pool-refresh]').click(); return 1`)
+      const seq = (await waitValue(() => {
+        const newest = epochsOf(poolId, CELLS_KEY)[0]?.seq ?? 0
+        return newest > before ? newest : null
+      }, 30_000)) ?? before
+      // The console draws the snapshot once the strip names it: then the line would stand, were it to.
+      const seen = await lead.until(`document.querySelector('[data-pult-pool]')?.getAttribute('data-pult-pool-epoch') === ${JSON.stringify(String(seq))}`, 60_000)
+      return { seq, seen }
+    }
+    const same = await refresh()
+    await pause(500)
+    const stillHidden = !(await lead.js(`return !!document.querySelector('[data-pult-pool-left]')`))
+    note(same.seen && stillHidden, 'Z8 · «Обновить» took a new snapshot with the same names, and the hidden line stays hidden', `${same.seq} / ${same.seen} / ${stillHidden}`)
+    // A third name the next snapshot leaves behind brings the line back, naming it.
+    here.council.left = [...here.council.left, { name: 'log', why: 'file' }]
+    const third = await refresh()
+    const leftWords3 = ru('room.pult.pool.left', { names: `conn (${ru('server.databaseConnection.cdf70c')}), batches (${ru('server.generator.c33340')}), log (${ru('server.openFile.3a6aca')})` })
+    const leftBack = await lead.until(`${leftLine} === ${JSON.stringify(leftWords3)}`, 30_000)
+    note(third.seen && leftBack, 'Z8 · a name new since the hide brings the line back', `${third.seq} / ${(await lead.js(`return ${leftLine}`)) || 'no line'}`)
+
+    // Two students: one attempt computes apart on the snapshot, one reads a name that cannot travel — the shared kernel's.
+    const nina = await openTab('about:blank', await newContext())
+    pages.push({ who: 'student, council', page: nina })
+    await nina.go(`${site}/s/${poolId}`)
+    await joinRoom(nina, 'Нина')
+    const oleg = await openTab('about:blank', await newContext())
+    pages.push({ who: 'student, council 2', page: oleg })
+    await oleg.go(`${site}/s/${poolId}`)
+    await joinRoom(oleg, 'Олег')
+    // Every look of Нина's files line, from the run's end until her file lands: one that said it was not kept would be caught here.
+    await nina.js(`window.__filesLines=[]; new MutationObserver(()=>{const n=document.querySelector('[data-council-files]'); if(n) window.__filesLines.push(n.textContent.replace(/[\\u00a0\\u202f\\s]+/g,' ').trim())}).observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true}); return 1`)
+    const ninaRan = await attemptIn(nina, councilCell, 'WRITE out.csv id,pred\\n1,0.7\nprint(x)')
+    const olegRan = await attemptIn(oleg, councilCell, 'print(conn)')
+    const footnote = `(()=>{const n=document.querySelector('[data-council-footnote]'); return n ? n.textContent.replace(/[\\u00a0\\u202f\\s]+/g,' ').trim() : ''})()`
+    const apartLead = ru('room.council.pool.apart', { time: '\u0000' }).split('\u0000')[0]!
+    const ninaNote = (await nina.untilValue<string>(`${footnote} || null`, 60_000)) ?? ''
+    note(ninaRan && ninaNote.startsWith(apartLead), 'Z9 · the student\'s sheet: «посчитано отдельно · состояние …» under the output', ninaNote || 'no footnote')
+    // Her file: on its card once it lands, and never read as left behind meanwhile.
+    const landed = await nina.until(`(()=>{const n=document.querySelector('[data-council-files]'); return !!n && n.textContent.includes('out.csv') && !n.querySelector('[data-coming]')})()`, 60_000)
+    const filesLines = ((await nina.js(`return window.__filesLines`)) as string[] | null) ?? []
+    // One file written: read as left behind, its line would say «1 файл не сохранён».
+    const dropped = ru('room.council.pool.dropped', { count: 1 })
+    note(
+      landed && filesLines.length > 0 && !filesLines.some((line) => line.includes(dropped)),
+      'Z9 · the attempt\'s file on its card: on its way, then kept — never «не сохранён»',
+      [...new Set(filesLines)].join(' → ').slice(0, 150) || 'no files line',
+    )
+    // Here, it is hers to take (↓): the press asks a ticket with her token and hands the anchor the ticket alone, which the page
+    // keeps here instead of following it, and the anchor's address gives the file back as it was written.
+    const take = async (tab: typeof nina, selector: string): Promise<string> => {
+      if (!(await tab.until(`!!document.querySelector(${JSON.stringify(selector)})`, 20_000))) return 'no chip to take'
+      await tab.js(`window.__took=[]; window.__click=HTMLAnchorElement.prototype.click; HTMLAnchorElement.prototype.click=function(){ window.__took.push(this.href) }; return 1`)
+      await tab.js(`document.querySelector(${JSON.stringify(selector)}).click(); return 1`)
+      const href = await tab.untilValue<string>(`(window.__took||[])[0] || null`, 10_000)
+      await tab.js(`HTMLAnchorElement.prototype.click=window.__click; return 1`)
+      if (!href) return 'no anchor'
+      return String(await tab.js(`return fetch(${JSON.stringify(href)}).then(async (r) => r.status + ' ' + (await r.text()))`))
+    }
+    const ninaTook = await take(nina, '[data-council-file-take="out.csv"]')
+    note(ninaTook === '200 id,pred\n1,0.7', 'Z9 · the author takes her attempt\'s file from its chip (↓), by a ticket for it alone', JSON.stringify(ninaTook).slice(0, 80))
+    const olegNote = (await oleg.untilValue<string>(`${footnote} || null`, 60_000)) ?? ''
+    note(olegRan && olegNote === ru('room.council.pool.uses', { name: 'conn' }), 'Z9 · a name that cannot travel: «в общем ядре: использует conn»', olegNote || 'no footnote')
+
+    // The console's work of each: the run line's second line, amber for the shared kernel.
+    await lead.js(`document.querySelector('[data-pult-tab="all"]')?.click(); return 1`)
+    const workNote = async (name: string): Promise<string> => {
+      await lead.until(`[...document.querySelectorAll('[data-pult-row]')].some(r=>r.textContent.includes(${JSON.stringify(name)}))`, 15_000)
+      await lead.js(`[...document.querySelectorAll('[data-pult-row]')].find(r=>r.textContent.includes(${JSON.stringify(name)}))?.querySelector('[data-pult-select]')?.click(); return 1`)
+      return (await lead.untilValue<string>(`(()=>{const n=document.querySelector('[data-pult-work] [data-pult-footnote]'); return n && document.querySelector('[data-pult-work] .work-name')?.textContent.includes(${JSON.stringify(name)}) ? n.getAttribute('data-tone') + ': ' + n.querySelector('.work-footnote-short').textContent.trim() : null})()`, 15_000)) ?? ''
+    }
+    const ninaWork = await workNote('Нина')
+    note(ninaWork.startsWith(`muted: ${apartLead}`), 'Z9 · the console\'s work: computed apart, in grey', ninaWork || 'no footnote')
+    const leadTook = await take(lead, '[data-pult-work] [data-pult-file-take="out.csv"]')
+    note(leadTook === '200 id,pred\n1,0.7', 'Z9 · the teacher takes the attempt\'s file from the console\'s work (↓)', JSON.stringify(leadTook).slice(0, 80))
+    const olegWork = await workNote('Олег')
+    note(olegWork === `warning: ${ru('room.council.pool.uses', { name: 'conn' })}`, 'Z9 · the console\'s work: the shared kernel, in amber', olegWork || 'no footnote')
+    if (shots) await wideShots(lead, 'council console')
+    await screens(nina, 'council sheet', `[...document.querySelectorAll('[data-council-footnote], [data-council-files]')]`)
+
+    // The queue tab is the notebook's queue, by name.
+    await lead.js(`[...document.querySelectorAll('[data-pult-nav] button')].find(b=>b.textContent.trim().startsWith(${JSON.stringify(ru('room.pult.v2.queueTab'))}))?.click(); return 1`)
+    const scope = await lead.untilValue<string>(`document.querySelector('[data-pult-queue-scope]')?.textContent.trim() || null`, 10_000)
+    note(scope === ru('room.pult.pool.queue.scope'), 'Z8b · the queue tab names itself the notebook\'s', scope ?? 'no caption')
+    if (shots) await shot(lead, 'council queue-wide')
+    await lead.js(`document.querySelector('[data-pult-nav] button')?.click(); return 1`)
+    await screens(lead, 'council console', `[...document.querySelectorAll('.pult-head, [data-pult-nav]')]`)
 
     /* -------------------------------------------- the relay goes dark (Z5) */
 
@@ -3075,6 +3262,7 @@ async function classesCheck(): Promise<number> {
     note(false, 'the classes pass ran to its end', error instanceof Error ? error.message : error)
   } finally {
     for (const { page } of pages) page.close()
+    poolSocket?.terminate()
     if (chrome?.pid) chrome.kill('SIGKILL')
     if (vite?.pid) vite.kill('SIGTERM')
     await shutdownKernels().catch(() => undefined)
@@ -3232,6 +3420,21 @@ async function classesCheck(): Promise<number> {
   }
 
   /**
+   * A student's attempt in a council cell, as a person writes one: the sheet
+   * focused, the text typed (CDP's Input.insertText, as a keyboard types),
+   * «Запустить» pressed. Whether the button was there to press.
+   */
+  async function attemptIn(page: ClassTab, cell: string, source: string): Promise<boolean> {
+    const sheet = `document.querySelector('[data-cell-id=${JSON.stringify(cell)}] .cm-content')`
+    if (!(await page.until(`!!${sheet}`, 30_000))) return false
+    await page.js(`${sheet}.focus(); return 1`)
+    await page.send('Input.insertText', { text: source })
+    const run = `[...document.querySelectorAll('[data-cell-id=${JSON.stringify(cell)}] button')].find(b=>b.textContent.trim().startsWith(${JSON.stringify(ru('room.ui.73'))}) && !b.disabled)`
+    if (!(await page.until(`!!${run}`, 10_000))) return false
+    return (await page.js(`${run}.click(); return true`)) === true
+  }
+
+  /**
    * One screen at 390 px (Z10) and in the dark theme: nothing of it past the
    * screen's edge or cut sideways, a dark ground under the dark theme, and a
    * shot of each when asked (UI_CHECK_SHOTS). Back to the desktop and the
@@ -3285,6 +3488,18 @@ async function classesCheck(): Promise<number> {
     await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] })
     await page.js(`const r=document.documentElement; r.dataset.theme='light'; r.classList.remove('dark'); r.style.colorScheme='light'; return 1`)
     await page.send('Emulation.clearDeviceMetricsOverride')
+    await pause(300)
+  }
+
+  /** The screen as it stands, wide, in the light theme and the dark one (UI_CHECK_SHOTS): Z8 is drawn in both. */
+  async function wideShots(page: ClassTab, name: string): Promise<void> {
+    await shot(page, `${name}-wide`)
+    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] })
+    await page.js(`const r=document.documentElement; r.dataset.theme='dark'; r.classList.add('dark'); r.style.colorScheme='dark'; return 1`)
+    await pause(400)
+    await shot(page, `${name}-wide-dark`)
+    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] })
+    await page.js(`const r=document.documentElement; r.dataset.theme='light'; r.classList.remove('dark'); r.style.colorScheme='light'; return 1`)
     await pause(300)
   }
 

@@ -190,7 +190,9 @@ export const COUNCIL_NOT_CARRIED = 'NotCarried'
  * Why a name stays behind (§9.4), as the export and the load report it: a
  * database connection, an open file, a network socket, a generator, a
  * thread, a lock, data on the GPU (D11), a name over the snapshot's budget,
- * and anything else that does not pickle. Each has its words
+ * and anything else that does not pickle; and, said by a worker's load
+ * alone, a name whose module its environment lacks (a package installed
+ * into the notebook's own container, K7a #16). Each has its words
  * (councilLeftWords).
  */
 export type CouncilLeftWhy =
@@ -203,9 +205,10 @@ export type CouncilLeftWhy =
   | 'cuda'
   | 'budget'
   | 'unpicklable'
+  | 'module'
 
 export const COUNCIL_LEFT_WHYS: readonly CouncilLeftWhy[] = [
-  'connection', 'file', 'socket', 'generator', 'thread', 'lock', 'cuda', 'budget', 'unpicklable',
+  'connection', 'file', 'socket', 'generator', 'thread', 'lock', 'cuda', 'budget', 'unpicklable', 'module',
 ]
 
 /** A name an epoch could not carry, and why. */
@@ -400,6 +403,11 @@ export interface CouncilExportReport {
   ms: number
   /** Filled only when `ok` is false. */
   error: string | null
+  /**
+   * The kernel's PYTHONHASHSEED as its environment has it (D28): null — none
+   * (a container started before 0.25.0); absent — the report did not say.
+   */
+  hashSeed?: string | null
 }
 
 /** A worker's seed report (§9.5), from `user_expressions`. */
@@ -3705,6 +3713,8 @@ def export(ns, out, budget, settings=None):
             'local': local,
             'cuda': cuda,
             'mainRuns': runs,
+            # The kernel's seed for str hashes, as its container set it (D28): the workers have the class's.
+            'hashSeed': os.environ.get('PYTHONHASHSEED'),
             'ms': int((time.time() - started) * 1000),
         }, separators=(',', ':')))
     except BaseException as err:
@@ -4156,7 +4166,7 @@ def load(ns, manifest, body_sha, settings=None):
                 ns[alias] = importlib.import_module(name)
                 imported += 1
             except Exception:
-                left[alias] = 'unpicklable'
+                left[alias] = 'module'
         for name in book.get('submodules') or []:
             try:
                 importlib.import_module(name)
@@ -4177,7 +4187,7 @@ def load(ns, manifest, body_sha, settings=None):
         names = payload.get('names') or {}
         tainted = _tainted(book, missing)
         for name in tainted:
-            left[name] = 'unpicklable'
+            left[name] = 'module'
         for key in names:
             if key not in tainted:
                 ns[key] = names[key]
@@ -4493,6 +4503,7 @@ const LEFT_WORDS: Record<CouncilLeftWhy, string> = {
   cuda: 'server.dataOnTheGpu.605180',
   budget: 'server.tooBigForTheSnapshot.1a48a4',
   unpicklable: 'server.cannotBeCopied.e6521a',
+  module: 'server.itsModuleIsOnlyInTheNotebook.49d81a',
 }
 
 /** Why a name stayed behind, in the instance's words: «соединение с базой». */
@@ -4515,7 +4526,7 @@ export function councilLeftLine(left: readonly CouncilLeftName[]): string | null
 function notCarriedWords(): string {
   const sentence = hasTranslation(NOT_CARRIED_KEY)
     ? tr(NOT_CARRIED_KEY)
-    : 'The variable {name} was not carried over to the council machine ({why}); attempts that use it run in the shared kernel.'
+    : 'The variable {name} was not carried over to the council machine ({why}), and this attempt reached it indirectly. Attempts whose text names {name} run in the shared kernel.'
   const reasons = COUNCIL_LEFT_WHYS.map((why) => `${JSON.stringify(why)}: ${JSON.stringify(councilLeftWords(why))}`)
   return `{'text': ${JSON.stringify(sentence)}, 'why': {${reasons.join(', ')}}}`
 }
@@ -4695,6 +4706,7 @@ export function parseExportReport(raw: unknown): CouncilExportReport | null {
     local: Array.isArray(row.local) ? row.local.filter((name): name is string => typeof name === 'string') : [],
     cuda,
     error: null,
+    ...('hashSeed' in row ? { hashSeed: typeof row.hashSeed === 'string' ? row.hashSeed.slice(0, 32) : null } : {}),
   }
 }
 

@@ -1418,6 +1418,8 @@ test('the main block drops to uid 1000 before either command, and walks the tree
       return fs.readFileSync(path.join(dir, 'calls'), 'utf8')
     }
     assert.match(prepare('full'), new RegExp(`^find ${tree} -xdev .* -exec chown -h 1000:1000 \\{\\} \\+$`, 'm'))
+    // Save a council's scratch space: root's on purpose (runner-agent/council.ts · scratchHelperArgs), never handed to uid 1000.
+    assert.match(prepare('full'), new RegExp(`^find ${tree} -xdev -path ${tree}/council/\\*/scratch -prune -o `, 'm'))
     assert.equal(prepare(''), `chown 1000:1000 ${tree}\n`)
     assert.equal(fs.statSync(tree).mode & 0o777, 0o700)
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }

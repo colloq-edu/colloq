@@ -1062,6 +1062,7 @@
           {/if}
           <PultWork
             attempt={current}
+            {cellId}
             phone={phone && phonePane === 'work'}
             presence={current ? pultPresence(presenceKnown, session.peersById, current.participantId) : 'unknown'}
             index={place}
@@ -1123,6 +1124,7 @@
         cellLimit={session.session.rules.cellLimitSec}
         {disabled}
         top={headHeight}
+        pool={kernel.pool}
         onchange={setRule}
         onclose={closeRules}
       />

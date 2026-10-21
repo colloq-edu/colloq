@@ -38,7 +38,7 @@
  * in the class and half of them are still writing: "who is stuck" is not "who
  * edited last".
  */
-import { formatNumber, tr } from '@shared/i18n'
+import { formatNumber, tr, translate } from '@shared/i18n'
 import {
   COUNCIL_RERUN_PAUSES,
   COUNCIL_RUN_LIMITS,
@@ -50,8 +50,25 @@ import type {
   CouncilAttempt,
   CouncilBoard,
   CouncilKernel,
+  CouncilPool,
+  CouncilRun,
   CouncilStatus,
 } from '@shared/protocol'
+import { NOTE_LOCALES, inConsoleClock, pultClock, usedName } from '@/lib/council-footnote'
+
+/*
+ * A card's footnote and files, and the console's clock, live in
+ * council-footnote.ts: the author's sheet reads them in the room's chunk,
+ * which must not carry the console's helpers. Here for the console as before.
+ */
+export {
+  ATTEMPT_FILE_CAPS,
+  attemptFiles,
+  attemptFootnote,
+  pultClock,
+  type AttemptFiles,
+  type AttemptFootnote,
+} from '@/lib/council-footnote'
 
 export type PultPresence = 'online' | 'offline' | 'unknown'
 
@@ -129,24 +146,6 @@ export function attemptExecution(attempt: {
 }
 
 /* ------------------------------------------------------------ run time */
-
-/**
- * Hour and minute — and seconds where things are matched by them.
- *
- * Our own, not `clock()` from lib/history: for two lines that module drags in
- * `./api` with the network and tokens, and this file is also read by tests
- * without a browser. The formatting rule is the same, to the character.
- *
- * Seconds are needed in the open work and in the queue: "started at 17:24:05"
- * is how the teacher matches their own run against someone else's when there
- * are three in a minute, and "17:24" for all three answers no question.
- */
-export function pultClock(at: number, seconds = false): string {
-  const date = new Date(at)
-  const two = (value: number): string => String(value).padStart(2, '0')
-  const hhmm = `${two(date.getHours())}:${two(date.getMinutes())}`
-  return seconds ? `${hhmm}:${two(date.getSeconds())}` : hhmm
-}
 
 /**
  * How long a finished run computed.
@@ -1215,10 +1214,22 @@ export function requestReason(attempt: CouncilAttempt): string | null {
   return name ? tr('room.ui.1302', { p0: name }) : null
 }
 
-/** Who is in the kernel for this cell right now and who is waiting — from the same stack. */
+/**
+ * Who is in the kernel for this cell right now and who is waiting — from the same stack.
+ *
+ * The NOTEBOOK's kernel, and only it: an attempt the class's pool of workers
+ * took (`CouncilRun.placed === 'pool'`, docs/architecture/remote-classes.md
+ * §9.6) computes or waits beside the notebook's queue, not in it, and the
+ * pool strip under the header counts those (`pool` below, Paper 18 · Z8).
+ * Drawn here, one of them would read as the notebook's current run while a
+ * teacher's cell holds the kernel, and the queue tab — the notebook's queue,
+ * "cells and shared-kernel attempts, one at a time" (Z8b) — would list what
+ * never waits in it.
+ */
 export interface KernelView {
-  /** The attempt of THIS cell that the kernel is computing now. */
+  /** The attempt of THIS cell that the notebook's kernel is computing now. */
   running: CouncilAttempt | null
+  /** This cell's attempts waiting in the notebook's queue, by the time they were queued. */
   queued: CouncilAttempt[]
   pending: CouncilAttempt[]
   /**
@@ -1236,15 +1247,24 @@ export interface KernelView {
    * opened). Then everything reads as before, from the stack alone.
    */
   book: CouncilKernel | null
+  /**
+   * The class's pool of workers for this notebook's attempts, as the kernel
+   * frame carries it (`CouncilKernel.pool`); `null` — the class's council is
+   * not on machines, or no frame yet.
+   */
+  pool: CouncilPool | null
 }
+
+/** A run the notebook's kernel computes or queues: anything but the pool's (an old server's runs say nothing, and are). */
+const inBook = (attempt: CouncilAttempt): boolean => attempt.run?.placed !== 'pool'
 
 export function kernelView(
   attempts: readonly CouncilAttempt[],
   book: CouncilKernel | null = null,
 ): KernelView {
-  const running = attempts.find((attempt) => attempt.run?.state === 'running') ?? null
+  const running = attempts.find((attempt) => attempt.run?.state === 'running' && inBook(attempt)) ?? null
   const queued = attempts
-    .filter((attempt) => attempt.run?.state === 'queued')
+    .filter((attempt) => attempt.run?.state === 'queued' && inBook(attempt))
     .sort((a, b) => (a.run?.startedAt ?? 0) - (b.run?.startedAt ?? 0))
   const pending = attempts
     .filter((attempt) => attempt.runRequest?.status === 'pending')
@@ -1253,7 +1273,7 @@ export function kernelView(
         (a.runRequest?.requestedAt ?? 0) - (b.runRequest?.requestedAt ?? 0) ||
         a.participantId.localeCompare(b.participantId),
     )
-  return { running, queued, pending, book }
+  return { running, queued, pending, book, pool: book?.pool ?? null }
 }
 
 /**
@@ -1294,9 +1314,16 @@ export function kernelIsBusy(kernel: KernelView): boolean {
  * in the header, the sheet's rows and the highlight of "the rule the sheet was
  * opened for" read it from here: if they diverged, they would start showing
  * different things for one press.
+ *
+ * The pool's two rules come after them (`POOL_RULES`): where the attempts
+ * compute and when their snapshot changes (remote-classes.md §9.6, D8). The
+ * sentence in the header does not name them — six pieces do not fit it at
+ * any width (Paper 18 · Z8c) — the pool strip under it does, and only a
+ * class whose council computes on machines has either.
  */
-export type PultRule = 'studentRun' | 'runLimit' | 'rerunPause' | 'names'
+export type PultRule = 'studentRun' | 'runLimit' | 'rerunPause' | 'names' | 'lane' | 'refresh'
 export const PULT_RULES: readonly PultRule[] = ['studentRun', 'runLimit', 'rerunPause', 'names']
+export const POOL_RULES: readonly PultRule[] = ['lane', 'refresh']
 
 /**
  * A rules duration in words: "30 s", "1 min", "1 min 30 s".
@@ -1423,8 +1450,25 @@ export function pauseOptions(current: number): number[] {
   return [...COUNCIL_RERUN_PAUSES, current].sort((a, b) => a - b)
 }
 
-/** How long this cell's runs really take: the median, the longest and over how many. */
-export interface RunStats { median: number; max: number; count: number }
+/**
+ * How long this cell's runs really take: the median, the longest and over how
+ * many (`count`, finished runs alone; 0 — none has finished yet).
+ */
+export interface RunStats {
+  median: number
+  max: number
+  count: number
+  /**
+   * Where the runs computed, for a class whose council is on machines
+   * (remote-classes.md §9.8): `apart` on the pool's workers, `shared` in the
+   * notebook's kernel, and `names` — the variables that sent some there
+   * because they cannot travel ("2 in the shared kernel (conn)"). Absent
+   * while no run of the cell says where it computed: the rules sheet's
+   * "Today: 31 attempts apart · 2 in the shared kernel (conn)" under
+   * "Attempts run".
+   */
+  placed?: { apart: number; shared: number; names: string[] }
+}
 
 /**
  * The numbers under the limit picker — so it is set by the class, not by fear.
@@ -1434,21 +1478,35 @@ export interface RunStats { median: number; max: number; count: number }
  * itself, and the median would creep up from exactly the rule that is chosen
  * by it (set 5 s — "typically 5 s" — set 15 s). Runs interrupted by hand give
  * `ranMs: null` and do not get here either.
+ *
+ * Where they computed is counted over every run that says (`placed`), a
+ * running one too: "31 attempts apart" is about where, not how long.
  */
 export function runStats(attempts: readonly CouncilAttempt[]): RunStats | null {
-  const spans = attempts
+  const runs = attempts
     .map((attempt) => attempt.run)
-    .filter((run): run is NonNullable<CouncilAttempt['run']> =>
-      run !== null && run !== undefined && run.ranMs !== null && timedOutLimit({ run }) === null)
+    .filter((run): run is NonNullable<CouncilAttempt['run']> => run !== null && run !== undefined)
+  const spans = runs
+    .filter((run) => run.ranMs !== null && timedOutLimit({ run }) === null)
     .map((run) => run.ranMs as number)
     .sort((a, b) => a - b)
-  if (spans.length === 0) return null
+  const placed = runs.filter((run) => run.placed !== undefined)
+  if (spans.length === 0 && placed.length === 0) return null
   const middle = Math.floor(spans.length / 2)
-  return {
-    median: spans.length % 2 === 1 ? spans[middle] : Math.round((spans[middle - 1] + spans[middle]) / 2),
-    max: spans[spans.length - 1],
-    count: spans.length,
-  }
+  const stats: RunStats = spans.length === 0
+    ? { median: 0, max: 0, count: 0 }
+    : {
+        median: spans.length % 2 === 1 ? spans[middle] : Math.round((spans[middle - 1] + spans[middle]) / 2),
+        max: spans[spans.length - 1],
+        count: spans.length,
+      }
+  if (placed.length === 0) return stats
+  const shared = placed.filter((run) => run.placed === 'shared')
+  const names = [...new Set(shared.flatMap((run) => {
+    const name = run.note ? usedName(run.note) : null
+    return name === null ? [] : [name]
+  }))]
+  return { ...stats, placed: { apart: placed.length - shared.length, shared: shared.length, names } }
 }
 
 /**
@@ -1512,4 +1570,189 @@ export function classBar(
     else bar[attempt.status] += 1
   }
   return bar
+}
+
+/* ------------------------------------------------------------- the pool */
+
+/*
+ * THE COUNCIL'S POOL in the console (docs/architecture/remote-classes.md §9,
+ * Paper 18 · Z8, Z8b, Z9). A class whose council computes on machines runs
+ * its attempts on a pool of workers, each on a snapshot of the notebook's
+ * kernel (the epoch), and the console says three things of it: what the
+ * pool does now (the strip under the header), what of the notebook's state
+ * could not travel (one line, until the teacher hides it), and, on every
+ * card, where and on what state the attempt computed (its footnote and its
+ * files).
+ *
+ * Everything here reads the server's data into words: the pool's view
+ * (`CouncilKernel.pool`) and a run's place, epoch, note and files
+ * (`CouncilRun.placed|epoch|note|files`). A card's footnote and files are
+ * council-footnote.ts's, which the author's sheet reads too, in the room's
+ * chunk (re-exported here for the console). Nothing here is guessed: a
+ * number the data does not carry is not said.
+ */
+
+/** "The pool did not start: …" as its lead and the machine's words after it (Z8b), by the server's own sentence (80644c). */
+function stalledParts(note: string): { lead: string; why: string } {
+  for (const locale of NOTE_LOCALES) {
+    const lead = translate(locale, 'server.thePoolDidNotStart.80644c', { why: '' }).trim()
+    if (lead !== '' && note.length > lead.length && note.startsWith(lead)) return { lead, why: note.slice(lead.length).trim() }
+  }
+  return { lead: '', why: note }
+}
+
+/** One worker as the strip draws it (Z8b): computing an attempt, free for one, or still coming up. */
+export type PoolBar = 'busy' | 'ready' | 'pending'
+
+/**
+ * What the pool strip under the header says (Paper 18 · Z8b, the strip's
+ * states), one of five:
+ *
+ *   lane      the teacher sent this cell's attempts to the shared kernel
+ *             ("In the shared kernel, in turn"): the strip says only that;
+ *   ready     the pool takes attempts: its workers, its machine, the
+ *             snapshot they compute on and how it changes, "Refresh";
+ *   starting  its first seconds: attempts run in the shared kernel meanwhile;
+ *   stalled   "The pool did not start:" in the machine's words, attempts
+ *             stay in the shared kernel — not up a minute after the first
+ *             attempt (the server's `starting`), or every worker failed to
+ *             come up (its `shared`, until the retry 30 s on): one strip for
+ *             one sentence, and no "Refresh", which no snapshot would mend;
+ *   shared    it cannot take attempts now, and the server says why (data on
+ *             the GPU, a snapshot that does not fit or did not come
+ *             together).
+ *
+ * `note` of a ready pool is the server's sentence about its newest snapshot
+ * ("The new state does not fit — attempts run on the state as of 14:05."),
+ * its time on the console's clock (inConsoleClock), as the strip's own is.
+ */
+export type PoolStrip =
+  | { kind: 'lane' }
+  | {
+      kind: 'ready'
+      bars: PoolBar[]
+      ready: number
+      busy: number
+      queued: number
+      machine: string | null
+      /** When the snapshot the workers compute on was taken; null before the first. */
+      at: number | null
+      refresh: CouncilSettings['refresh']
+      refreezing: boolean
+      note: string | null
+      /** A worker was restarted in the last minute for what an attempt left it in (CouncilPool.recycled): «исполнитель перезапущен». */
+      recycled: boolean
+    }
+  | {
+      kind: 'starting'
+      bars: PoolBar[]
+      machine: string | null
+      /** «готовы 2 из 4»: workers up of those the pool is to have; `size` 0 — not known yet, and not said. */
+      up: number
+      size: number
+    }
+  | { kind: 'stalled'; lead: string; why: string }
+  | { kind: 'shared'; note: string; refreezing: boolean }
+
+/**
+ * At most this many bars: "Attempts at once" goes up to 32
+ * (CLASS_PLACEMENT_BOUNDS.workers), and each bar is six pixels of the strip.
+ */
+const POOL_BARS_MAX = 32
+
+/**
+ * The strip of a cell's pool, or null: the class's council is not on
+ * machines (no `pool` in the kernel frame), and the console looks as before.
+ */
+export function poolStrip(
+  pool: CouncilPool | null | undefined,
+  settings: Pick<CouncilSettings, 'lane' | 'refresh'>,
+): PoolStrip | null {
+  if (!pool) return null
+  if (settings.lane === 'shared') return { kind: 'lane' }
+  const shown = Math.max(0, Math.min(pool.workers, POOL_BARS_MAX))
+  const busy = Math.max(0, Math.min(pool.busy, shown))
+  if (pool.state === 'ready') {
+    return {
+      kind: 'ready',
+      // Free ones first, as Z8b draws them: the green end is what an attempt pressed now gets.
+      bars: [...Array<PoolBar>(shown - busy).fill('ready'), ...Array<PoolBar>(busy).fill('busy')],
+      ready: Math.max(0, pool.workers - pool.busy),
+      busy: pool.busy,
+      queued: pool.queued,
+      machine: pool.machine,
+      at: pool.epoch?.at ?? null,
+      refresh: settings.refresh,
+      refreezing: pool.refreezing,
+      note: pool.note ? inConsoleClock(pool.note, pool.epoch?.at) : null,
+      recycled: pool.recycled === true,
+    }
+  }
+  /*
+   * «Пул не поднялся: …» (80644c) comes in either other state: a pool still
+   * trying a minute after the first attempt says it `starting`, and one whose
+   * every worker failed says it `shared` (council-pool.ts · prepare, view).
+   */
+  const stalled = pool.note ? stalledParts(pool.note) : null
+  if (stalled && stalled.lead !== '') return { kind: 'stalled', ...stalled }
+  if (pool.state === 'shared') return { kind: 'shared', note: pool.note ?? tr('room.pult.pool.inShared'), refreezing: pool.refreezing }
+  // A starting pool carries a note only once it has not come up in a minute (council-pool.ts · view).
+  if (stalled) return { kind: 'stalled', ...stalled }
+  // Those up, green, of the pool's size, the rest grey (Z8b «готовы 2 из 4»); its size not known yet, every one up comes up grey.
+  const size = Math.max(0, Math.min(pool.size ?? 0, POOL_BARS_MAX))
+  const up = Math.max(0, Math.min(pool.workers, size))
+  const bars: PoolBar[] = size > 0
+    ? [...Array<PoolBar>(up).fill('ready'), ...Array<PoolBar>(size - up).fill('pending')]
+    : Array<PoolBar>(shown).fill('pending')
+  return { kind: 'starting', bars, machine: pool.machine, up: Math.max(0, pool.workers), size: Math.max(0, pool.size ?? 0) }
+}
+
+/** Left names drawn on the line; the rest are in its hover, so that a notebook full of open handles does not fill the console. */
+const LEFT_NAMES_SHOWN = 12
+
+/**
+ * "Not carried over: conn (database connection), batches (generator)." (§9.4,
+ * Z8): the names a snapshot could not carry, with why in the server's
+ * words; null with none. `all` names every one, for the line's hover.
+ */
+export function poolLeftLine(left: ReadonlyArray<{ name: string; why: string }>, all = false): string | null {
+  if (left.length === 0) return null
+  const cut = !all && left.length > LEFT_NAMES_SHOWN
+  const names = (cut ? left.slice(0, LEFT_NAMES_SHOWN) : left).map((one) => `${one.name} (${one.why})`).join(', ')
+  return tr('room.pult.pool.left', { names: cut ? `${names}, …` : names })
+}
+
+/** The left names as a hide of the line remembers them: each name with why it stayed (PultHeader). */
+export function poolLeftKeys(left: ReadonlyArray<{ name: string; why: string }>): string[] {
+  return left.map((one) => `${one.name}\u0000${one.why}`)
+}
+
+/**
+ * Whether the "Not carried over" line has something the teacher has not
+ * hidden yet: a name, or a reason, new since they hid it. Not one per
+ * snapshot: a cell that follows the kernel takes a snapshot after each of
+ * the teacher's cells, and the same `conn` would come back with every one —
+ * the console names them once (§9.0).
+ */
+export function poolLeftNew(left: ReadonlyArray<{ name: string; why: string }>, hidden: ReadonlySet<string>): boolean {
+  return poolLeftKeys(left).some((key) => !hidden.has(key))
+}
+
+/**
+ * How many of the teacher's runs the notebook's kernel is past the snapshot
+ * a pool's attempt computed on (§9.8): "The kernel has run 3 cells since
+ * the snapshot — the result in the notebook may differ" before "Put in cell
+ * and run". Said only when the console knows it to the cell — the pool
+ * still computes on that very snapshot, whose `behind` the kernel frame
+ * counts — and null otherwise: an attempt on an older snapshot hears the
+ * server's own count with the adoption (`council:adopted.warning`).
+ */
+export function kernelAhead(
+  run: Pick<CouncilRun, 'state' | 'placed' | 'epoch'> | null | undefined,
+  pool: CouncilPool | null | undefined,
+): number | null {
+  // A result to differ from comes with the run's end.
+  if (run?.state !== 'ok' && run?.state !== 'error') return null
+  if (run.placed !== 'pool' || !run.epoch || !pool?.epoch || pool.epoch.seq !== run.epoch.seq) return null
+  return pool.epoch.behind > 0 ? pool.epoch.behind : null
 }

@@ -106,6 +106,7 @@ import { explain as explainDeath, forgetKills, sampleKills } from './postmortem.
 import { getSessionDoc, holdRoom, onlineCount, peekSessionDoc } from '../collab/index.js'
 import { kernelRetirementInProgress, pauseKernelStarts } from './retirement.js'
 import { takePlacementHooks } from './remote/placement-store.js'
+import { attemptCardFiles } from './remote/epochs.js'
 import { FilesStalled, askSlotScan, filesPlacementChanged, slotFilesBarrier, slotOnMachine } from './remote/files.js'
 import { seldom } from '../log.js'
 import { countKernelStart } from '../ops/counters.js'
@@ -1499,7 +1500,7 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
       giveBackQueue(runtime, phase === 'dead' ? 'its kernel died' : 'its kernel restarted by itself', runtime.kernel?.endedBy != null)
       console.warn(`[kernel ${runtime.sessionId}/${runtime.root}] council worker ${phase === 'dead' ? 'died' : 'restarted itself'}${runtime.job ? ' mid-attempt' : ''}`)
       // Its epoch went with its Python — an OOM kill of an idle worker included: loaded again before it serves (§9.5).
-      poolSays('restarted', undefined, () => councilPool.restarted(handle))
+      poolSays('restarted', undefined, () => councilPool.restarted(handle, runtime.kernel?.endedBy != null))
       if (phase === 'restarting') comingBack.add(runtime)
     } else if (phase !== 'restarting' && comingBack.delete(runtime)) {
       // Its new process answers: the pool loads it now, not at the next attempt.
@@ -2563,6 +2564,17 @@ export function councilStartWords(sessionId: string, err: unknown): string | nul
   if (err instanceof MachineUnreachable || err instanceof StartLost) return err.message
   if (err instanceof RuntimeRequestError) return startWords(sessionId, 'council', err.message)
   return null
+}
+
+/**
+ * The class's council container still starting on its machine, in staff's
+ * words («Запускаем ядро на машине «vast-3»… образ ↓ 45 %»): what «Пул не
+ * поднялся: …» says after a minute of it (council-pool.ts · view, the
+ * console's alone); null — it is not starting.
+ */
+export function councilStartingWords(sessionId: string): string | null {
+  const view = viewOf(sessionId, 'council')
+  return view.where === 'machine' && view.state === 'starting' ? startingWordsOf(sessionId, 'council', view) : null
 }
 
 /** Staff's slow-start sentence: the placement module's, with the image's progress, or the plain one. */
@@ -5986,8 +5998,12 @@ export interface CouncilPoolHooks {
   stuck(worker: WorkerHandle): void
   /** A worker's pump went idle, or its kernel answers again after a restart of its own: nothing of its queue computes or waits. */
   idle(worker: WorkerHandle): void
-  /** A worker's Python restarted by itself or died: what it had loaded is gone with it (§9.5). */
-  restarted(worker: WorkerHandle): void
+  /**
+   * A worker's Python restarted by itself or died: what it had loaded is gone
+   * with it (§9.5). `outside` — it was ended from outside, with its machine or
+   * its placement: no fault of an attempt's.
+   */
+  restarted(worker: WorkerHandle, outside: boolean): void
   /** A history run of a notebook (§9.2): a cell's execute that stores history. */
   historyRun(sessionId: string, root: string, cellId: string): void
   /**
@@ -7312,8 +7328,8 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
       if (starved) buffer.stream('stderr', councilMemoryNote(report?.memory ?? null))
       for (const note of councilLeftoverNotes(leftovers)) buffer.stream('stderr', note)
       const left = handle ? poolSays('left', { files: [], dirtyMb: null }, () => councilPool.left(leftRaw)) : null
-      // The pool's attempt's own files (§9.7): named on its card as its worker listed them; each brought as it lands.
-      if (left && left.files.length > 0) active.run = { ...active.run, files: left.files.map((file) => ({ name: file.name, bytes: file.bytes, kept: false })) }
+      // The pool's attempt's own files (§9.7): named on its card as its worker listed them, those it brings on their way; each brought as it lands.
+      if (left && left.files.length > 0) active.run = { ...active.run, files: attemptCardFiles(left.files) }
       finishCouncil(runtime, active, state)
       if (handle && left) {
         const kernel = runtime.kernel

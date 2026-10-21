@@ -79,6 +79,7 @@ import {
   type RemoteEpochState,
   type RemoteKernelsReply,
 } from '@shared/remote-kernels'
+import type { CouncilRunFile } from '@shared/protocol'
 import { config } from '../../config.js'
 import {
   allCouncilEpochs,
@@ -970,6 +971,22 @@ export function artifactsWithinCaps<T extends { bytes: number }>(listed: readonl
     } else left.push(file)
   }
   return { taken, left }
+}
+
+/**
+ * An attempt's files as its card names them (§9.7, CouncilRun.files), from
+ * its exit's listing: those this server brings — hashed by the exit, within
+ * COUNCIL_ARTIFACTS in the listed order — on their way (`kept: null`) with
+ * their sha256, each turned `true` as it lands and `false` if its collection
+ * ends without it; the rest left behind (`false`) from the start.
+ */
+export function attemptCardFiles(listed: ReadonlyArray<{ name: string; sha256: string | null; bytes: number }>): CouncilRunFile[] {
+  const hashed = listed.flatMap((file) => (file.sha256 !== null ? [{ ...file, sha256: file.sha256 }] : []))
+  const taken = new Map(artifactsWithinCaps(hashed).taken.map((file) => [file.name, file.sha256]))
+  return listed.map((file) => {
+    const sha256 = taken.get(file.name)
+    return sha256 !== undefined ? { name: file.name, bytes: file.bytes, kept: null, sha256 } : { name: file.name, bytes: file.bytes, kept: false }
+  })
 }
 
 /** An attempt is over: its machine is to send what this server wants of its folder, and then remove the folder. */

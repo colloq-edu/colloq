@@ -399,6 +399,19 @@ test('the client sends no text and keeps the success line exactly as long as the
   }
 })
 
+test('the server\'s warning with an adoption — the pool\'s attempt on a snapshot the kernel has moved on from — stays with the success line', async () => {
+  const { CouncilState } = await import('../web/src/lib/council.svelte.js')
+  const council = new CouncilState(() => undefined)
+  const warning = 'Ядро ушло вперёд на 3 ячейки после снимка — результат в тетради может отличаться.'
+  council.receive({ t: 'council:shown', cellId: 'c1', shown: shownOf('p_2') })
+  council.receive({ t: 'council:adopted', cellId: 'c1', participantId: 'p_2', run: true, at: 1, undoable: true, warning })
+  assert.deepEqual(council.adopted.c1, { participantId: 'p_2', run: true, at: 1, warning })
+  // One with no warning has none: a line never inherits the last one's.
+  council.receive({ t: 'council:adopted', cellId: 'c1', participantId: 'p_2', run: false, at: 2, undoable: true })
+  assert.deepEqual(council.adopted.c1, { participantId: 'p_2', run: false, at: 2 })
+  council.destroy()
+})
+
 test('"4" in the console puts what is on screen into the cell and runs it — only where keys are the console\'s', async () => {
   const { pultKeyAction, pultShortcutAllowed } = await import('../web/src/lib/council-pult.js')
   assert.equal(pultKeyAction({ key: '4' }, 'list'), 'adoptRun')

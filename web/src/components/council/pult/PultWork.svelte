@@ -4,7 +4,22 @@
   import { councilLetters, type CouncilAttempt } from '@shared/protocol'
   import CellOutputs from '@/components/notebook/CellOutputs.svelte'
   import Code from '@/components/ui/Code.svelte'
-  import { attemptReview, attemptExecution, pultClock, pultDuration, pultIdle, pultRanFor, timedOutLimit, type PultPresence, type PultRule } from '@/lib/council-pult'
+  import {
+    attemptExecution,
+    attemptFiles,
+    attemptFootnote,
+    attemptReview,
+    kernelAhead,
+    pultClock,
+    pultDuration,
+    pultIdle,
+    pultRanFor,
+    timedOutLimit,
+    type PultPresence,
+    type PultRule,
+  } from '@/lib/council-pult'
+  import { getSessionState } from '@/lib/session.svelte'
+  import { takeAttemptFile } from '@/lib/council-files'
   import PultActions from './PultActions.svelte'
   import PultLetters from './PultLetters.svelte'
   import PultReply from './PultReply.svelte'
@@ -68,6 +83,12 @@
      * and "line 7" means one line to all of them.
      */
     lineNumbers?: boolean
+    /**
+     * The council cell of the work, as the window has it: a pool's attempt
+     * is stopped by its cell and author, the cell's kernel frame carries its
+     * pool, and its files are taken by the cell.
+     */
+    cellId: string
   }
 
   let {
@@ -97,6 +118,7 @@
     onreplyfocus,
     onreplyblur,
     onremove,
+    cellId,
     lineNumbers = false,
   }: Props = $props()
 
@@ -108,6 +130,64 @@
   const execution = $derived(attempt ? attemptExecution(attempt) : null)
   /** The limit that cut off THIS run: the rules may have changed since. */
   const stoppedAt = $derived(attempt ? timedOutLimit(attempt) : null)
+
+  /*
+   * WHERE IT COMPUTED (docs/architecture/remote-classes.md §9.8, Paper 18 ·
+   * Z9). In a class whose council is on machines an attempt runs on one of
+   * the pool's workers, on a snapshot of the notebook's kernel, or in the
+   * shared kernel for a reason the server names; the run line gets a second
+   * line that says which, and its files come under the output. The same
+   * footnote stands on the author's sheet (CellView), only in its own place.
+   */
+  const footnote = $derived(attemptFootnote(run))
+  const files = $derived(attemptFiles(run))
+  const session = getSessionState()
+  /** The class's pool for this cell's notebook, from its kernel frame (`CouncilKernel.pool`). */
+  const pool = $derived(session.council.kernels[cellId]?.pool ?? null)
+  /**
+   * "The kernel has run 3 cells since the snapshot — …" (§9.8, Z8): the
+   * notebook kernel's state is past the snapshot this attempt saw, so "Put
+   * in cell and run" may print something else than its card. Said where the
+   * console knows the count (council-pult.ts · kernelAhead).
+   */
+  const ahead = $derived(kernelAhead(run, pool))
+
+  /**
+   * A pool's attempt is stopped on its own worker, by name: a stop that
+   * names the cell alone goes to the notebook's kernel (protocol.ts ·
+   * interrupt) — the teacher's cell computing there, never this attempt.
+   */
+  function stop(): void {
+    if (attempt && run?.placed === 'pool') {
+      if (!disabled) session.send({ t: 'interrupt', cellId, participantId: attempt.participantId })
+      return
+    }
+    oninterrupt()
+  }
+
+  /**
+   * "Take the run out of the queue" (control.ts · council:run:drop, which
+   * looks in the pool's queue too). The queue tab lists the notebook's queue
+   * alone (council-pult.ts · kernelView), so an attempt waiting for one of
+   * the pool's workers is taken off from its work.
+   */
+  function dropRun(): void {
+    if (disabled || !attempt || run?.state !== 'queued') return
+    session.council.dropRun(cellId, attempt.participantId)
+  }
+
+  /** "Put in cell and run" beside the warning, for the work on the class's screen: the server adopts nothing else. */
+  function adoptRun(): void {
+    if (disabled || !attempt || !onScreen) return
+    session.council.adopt(cellId, attempt.participantId, true)
+  }
+
+  /** One of the attempt's files, kept here: the browser takes it (lib/council-files.ts · takeAttemptFile). */
+  let fileError = $state<string | null>(null)
+  async function take(name: string): Promise<void> {
+    if (!attempt) return
+    fileError = await takeAttemptFile(session.session.id, session.token, cellId, attempt.participantId, name)
+  }
 
   /**
    * Long code — as its first forty lines.
@@ -282,6 +362,11 @@
           aria-label={tr('room.pult.v3.more')} onclick={() => (menuOpen = !menuOpen)}><span aria-hidden="true">⋯</span></button>
         {#if menuOpen}
           <div class="work-menu-sheet" role="menu">
+            <!-- A waiting run off the queue, the person and their text untouched: the queue row's own item, here because a run waiting for the pool's worker is in no row of the queue tab. -->
+            {#if run?.state === 'queued'}
+              <button type="button" role="menuitem" class="work-drop" disabled={disabled}
+                data-pult-drop onclick={() => { menuOpen = false; dropRun() }}>{tr('room.pult.v3.queue.drop')}</button>
+            {/if}
             <button type="button" role="menuitem" class="work-remove" disabled={disabled}
               data-pult-remove onclick={(event) => { menuOpen = false; onremove(attempt, event) }}>{tr('room.ui.78')}</button>
           </div>
@@ -329,6 +414,26 @@
             </button>
           {/if}
         </div>
+        {#if footnote}
+          <!--
+            The run line's second line (Z9): where and on what state it
+            computed. Short here, the server's whole sentence in its hover —
+            and, for what needs attention, on a phone, which has no hover.
+          -->
+          <p class="work-footnote" data-tone={footnote.tone} title={footnote.full} data-pult-footnote>
+            {#if run?.placed === 'pool'}
+              <!-- A pool's worker: a cell of the grid, filled. -->
+              <svg class="work-footnote-icon" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                <rect x="1.5" y="1.5" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1.2" />
+                <rect x="6.5" y="1.5" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1.2" />
+                <rect x="1.5" y="6.5" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1.2" />
+                <rect x="6.5" y="6.5" width="4" height="4" fill="currentColor" />
+              </svg>
+            {/if}
+            <span class="work-footnote-short">{footnote.short}</span>
+            {#if footnote.tone === 'warning'}<span class="work-footnote-full">{footnote.full}</span>{/if}
+          </p>
+        {/if}
         {#if run}
           {#if run.outputs.length > 0}
             <!--
@@ -344,6 +449,29 @@
             <p class="pult-meta">{tr('room.pult.v2.workLoadingOutput')}</p>
           {/if}
         {/if}
+        {#if files}
+          <!--
+            What the attempt wrote into its own folder (§9.7): not in the
+            class's files — here, on its card. One still on its way from the
+            machine is drawn as such, dashed; those left behind are counted,
+            their names in the hover.
+          -->
+          <div class="work-files" data-pult-files>
+            <span class="work-files-label">{tr('room.council.pool.files')}</span>
+            {#each files.brought as file (file.name)}
+              {#if file.sha256}
+                <!-- Here: the teacher takes it, as the author does from their sheet. -->
+                <button type="button" class="work-file work-file-take" data-pult-file-take={file.name}
+                  title={tr('room.council.pool.take', { name: file.name })} onclick={() => void take(file.name)}
+                ><span class="work-file-name">{file.name}</span><span class="work-file-size">{file.size}</span><span class="work-file-arrow" aria-hidden="true">↓</span></button>
+              {:else}
+                <span class="work-file" data-coming={file.coming ? 'yes' : null}><span class="work-file-name">{file.name}</span><span class="work-file-size">{file.size}</span>{#if file.coming}<span class="work-file-coming">{tr('room.council.pool.coming')}</span>{/if}</span>
+              {/if}
+            {/each}
+            {#if files.dropped}<span class="work-files-dropped" title={files.droppedNames}>{files.dropped}</span>{/if}
+            {#if fileError}<span class="work-files-error" role="alert">{fileError}</span>{/if}
+          </div>
+        {/if}
       </section>
     </div>
 
@@ -357,11 +485,25 @@
       <PultReply text={reply} fromOracle={replyFromOracle} {disabled}
         onchange={onreplychange} onsend={onreplysend}
         onfocus={onreplyfocus} onblur={onreplyblur} />
+      {#if ahead !== null}
+        <!--
+          Before "Put in cell and run" (Z8): the cell would compute on the
+          notebook kernel's state, which is past this attempt's snapshot. The
+          button stands here only for the work on the class's screen — the
+          only one the server puts in the cell.
+        -->
+        <div class="work-ahead" role="status" data-pult-ahead>
+          <span class="work-ahead-words">{tr('server.theKernelHasRunCellsSinceThe.e29733', { count: ahead })}</span>
+          {#if onScreen}
+            <button type="button" class="pult-button work-ahead-run" {disabled} onclick={adoptRun}>{tr('room.council.adoptRun')}</button>
+          {/if}
+        </div>
+      {/if}
       <PultActions {onScreen} running={run?.state === 'running'} queued={run?.state === 'queued'}
         elapsed={run ? Math.max(now - run.startedAt, 0) : 0}
         inFrame={shownAt === null ? 0 : Math.max(now - shownAt, 0)} ran={run !== null}
         correct={attempt.correct} {writing} {disabled}
-        {onshow} {onclear} {onrun} {oninterrupt} {onmark} />
+        {onshow} {onclear} {onrun} oninterrupt={stop} {onmark} />
     </div>
   </div>
 {/if}
@@ -402,6 +544,11 @@
   .work-remove { display: block; width: 100%; padding: 10px 12px; text-align: left; color: rgb(var(--danger)); font-size: 14px; line-height: 20px; cursor: pointer; }
   .work-remove:hover:not(:disabled) { background: rgb(var(--danger) / .1); }
   .work-remove:disabled { opacity: .48; cursor: default; }
+  .work-drop { display: block; width: 100%; padding: 10px 12px; text-align: left; color: rgb(var(--ink)); font-size: 14px; line-height: 20px; cursor: pointer; }
+  .work-drop:hover:not(:disabled) { background: rgb(var(--raised)); }
+  .work-drop:disabled { opacity: .48; cursor: default; }
+  /* The proportionate item first, the person's removal after a rule (the queue row's menu has the same gap). */
+  .work-drop + .work-remove { margin-top: 4px; border-top: 1px solid rgb(var(--line)); }
   /* The panel's only scroll. There is no second one over the code or the output. */
   .work-content { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 10px 16px 14px; display: flex; flex-direction: column; gap: 12px; }
   .work-content > * { flex-shrink: 0; }
@@ -420,6 +567,33 @@
   .work-execution-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
   .work-execution-title { min-width: 0; color: rgb(var(--run-tone)); font-size: 13px; line-height: 19px; font-weight: 600; }
   .work-output { overflow-x: auto; }
+  /*
+   * Where it computed (Paper 18 · Z9): the run line's second line, 12/16 and
+   * quiet; amber only for what needs attention. The whole sentence is the
+   * hover's here and the line's own on a phone (below).
+   */
+  .work-footnote { display: flex; align-items: center; gap: 6px; margin: 0; color: rgb(var(--muted)); font-size: 12px; line-height: 16px; }
+  .work-footnote[data-tone='warning'] { color: rgb(var(--warning)); }
+  .work-footnote-icon { flex-shrink: 0; }
+  .work-footnote-full { display: none; }
+  .work-files { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 4px; font-size: 12px; line-height: 16px; }
+  .work-files-label, .work-files-dropped { color: rgb(var(--muted)); }
+  .work-file { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 0 8px; border: 1px solid rgb(var(--line)); background: rgb(var(--canvas)); }
+  .work-file-name { color: rgb(var(--ink)); font-family: var(--font-mono); }
+  .work-file-size { color: rgb(var(--muted)); font-family: var(--font-mono); font-size: 11px; line-height: 14px; }
+  /* Here, to take: the same chip, pressable, its arrow in the accent. */
+  .work-file-take { cursor: pointer; }
+  .work-file-take:hover { background: rgb(var(--raised)); }
+  .work-file-arrow { color: rgb(var(--accent-text)); font-size: 12px; line-height: 14px; }
+  .work-files-error { color: rgb(var(--danger)); }
+  /* On its way: the same chip, dashed and quiet, until it lands. */
+  .work-file[data-coming] { border-style: dashed; background: transparent; }
+  .work-file[data-coming] .work-file-name { color: rgb(var(--muted)); }
+  .work-file-coming { color: rgb(var(--muted)); font-size: 11px; line-height: 14px; }
+  /* Before "Put in cell and run" (Z8): amber, the button framed in its tone. */
+  .work-ahead { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid rgb(var(--warning) / .35); background: rgb(var(--warning) / .08); }
+  .work-ahead-words { flex: 1; min-width: 0; color: rgb(var(--ink)); font-size: 13px; line-height: 18px; }
+  .work-ahead .work-ahead-run { min-height: 32px; padding: 4px 10px; border-color: rgb(var(--warning)); color: rgb(var(--warning)); font-size: 13px; }
   .work-output :global(.output-stream), .work-output :global(.text-code) { font-size: 13px; line-height: 20px; }
   .work-output :global(button) { min-height: 36px; font-size: 13px; }
   .work-dock { display: flex; flex-shrink: 0; flex-direction: column; gap: 8px; padding: 8px 16px 10px; border-top: 1px solid rgb(var(--line)); background: rgb(var(--surface)); }
@@ -460,5 +634,13 @@
     .work-avatar { --face-dot: 11px; width: 32px; height: 32px; }
     .work-dock { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
     .work-more { width: 40px; height: 40px; }
+    /* A phone has no hover: what needs attention reads whole (Z10), the rest stays short. */
+    .work-footnote { align-items: flex-start; font-size: 13px; line-height: 18px; }
+    .work-footnote-icon { margin-top: 3px; }
+    .work-footnote[data-tone='warning'] .work-footnote-short { display: none; }
+    .work-footnote[data-tone='warning'] .work-footnote-full { display: inline; }
+    .work-file { min-height: 36px; padding: 0 10px; font-size: 13px; }
+    .work-ahead { flex-wrap: wrap; }
+    .work-ahead .work-ahead-run { min-height: 40px; }
   }
 </style>

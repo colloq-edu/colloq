@@ -215,6 +215,10 @@ function councilAtRest() {
     processes: 0,
     /** What the attempts left the worker holding beyond its seed, bytes (null: the exit cannot tell). */
     grown: /** @type {number | null} */ (null),
+    /** The kernel's PYTHONHASHSEED its export reports (a string, null for none); undefined — the report does not say, as before 0.26. */
+    hashSeed: /** @type {string | null | undefined} */ (undefined),
+    /** Names a worker's load leaves behind besides the export's, as one lacking their module does (CouncilLeftWhy `module`). */
+    loadLeft: /** @type {Array<{ name: string, why: string }>} */ ([]),
   }
 }
 
@@ -815,7 +819,7 @@ export async function startFakeJupyter(options = {}) {
     const carried = names.filter((name) => !leftBehind.has(name))
     const left = knobs.left.map((row) => ({ name: row.name, why: row.why }))
     const cuda = left.some((row) => row.why === 'cuda')
-    const base = { ok: true, seq, reused: 0, carried, left, imported: {}, local: [], cuda, mainRuns, ms: 1 }
+    const base = { ok: true, seq, reused: 0, carried, left, imported: {}, local: [], cuda, mainRuns, ms: 1, ...(knobs.hashSeed !== undefined ? { hashSeed: knobs.hashSeed } : {}) }
     if (cuda) {
       return JSON.stringify({ ...base, manifest: null, manifestBytes: 0, body: null, bodyBytes: 0, buffers: [], written: [], bytes: 0 })
     }
@@ -873,11 +877,14 @@ export async function startFakeJupyter(options = {}) {
         return { ok: false, seq: null, manifest, loaded: 0, imported: 0, left: [], ms: 1, error: `FileNotFoundError: the epoch's files: ${error.message}` }
       }
     }
+    // A name whose module the worker lacks stays behind here alone, as the export never knew (K7a #16).
+    const lacking = fake.council.loadLeft.filter((row) => !(epoch?.left ?? []).some((one) => one.name === row.name))
+    const left = [...(epoch?.left ?? []), ...lacking]
     if (kernel) {
-      for (const [name, value] of epoch?.values ?? []) kernel.ns.set(name, value)
-      kernel.council = { manifest, left: epoch?.left ?? [], run: null }
+      for (const [name, value] of epoch?.values ?? []) if (!lacking.some((row) => row.name === name)) kernel.ns.set(name, value)
+      kernel.council = { manifest, left, run: null }
     }
-    return { ok: true, seq: epoch?.seq ?? null, manifest, loaded: epoch?.values.length ?? 0, imported: 0, left: epoch?.left ?? [], oomScoreAdj: 1000, threads: 1, mapped: 0, ms: 1 }
+    return { ok: true, seq: epoch?.seq ?? null, manifest, loaded: epoch?.values.length ?? 0, imported: 0, left, oomScoreAdj: 1000, threads: 1, mapped: 0, ms: 1 }
   }
 
   /**
