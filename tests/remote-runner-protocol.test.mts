@@ -121,6 +121,7 @@ import {
   COUNCIL_EPOCH_MB,
   COUNCIL_WORKERS,
   REMOTE_BLOCKED_CIDRS_MAX,
+  REMOTE_COLLECTED_MAX,
   REMOTE_COLLECTS_MAX,
   REMOTE_EPOCHS_MAX,
   REMOTE_EPOCH_FILES_MAX,
@@ -1265,8 +1266,9 @@ function worstKernelsRequest() {
       resized: 'pending',
     })),
     reports,
+    // Every epoch not ready and given up, with the longest of the failures' words.
     epochs: Array.from({ length: REMOTE_EPOCHS_MAX }, (_, e) => ({
-      sessionId: worstSession(e), root: worstRoot(e), seq: Number.MAX_SAFE_INTEGER, ready: false,
+      sessionId: worstSession(e), root: worstRoot(e), seq: Number.MAX_SAFE_INTEGER, ready: false, failed: 'source',
       missing: Array.from({ length: COUNCIL_EPOCH_BUFFERS_MAX / REMOTE_EPOCHS_MAX }, (_, i) => nth(e * COUNCIL_EPOCH_BUFFERS_MAX + i, 64)),
     })),
     readings: Array.from({ length: REMOTE_READINGS_MAX }, (_, i) => ({
@@ -1278,6 +1280,9 @@ function worstKernelsRequest() {
     })),
     tunnel: 'down', bye: 'restart',
     classes: { hostNetwork: false, perimeter: 'no-iptables', mode: 'blocked', canary: worst(REMOTE_REASON_CHARS), sameDaemon: false },
+    heard: Number.MAX_SAFE_INTEGER,
+    // The attempts whose collection is over, as many as one sync says, each run id at its longest.
+    collected: Array.from({ length: REMOTE_COLLECTED_MAX }, (_, c) => ({ sessionId: worstSession(c % REMOTE_PLACEMENTS_MAX), runId: nth(c, 64) })),
   }
 }
 

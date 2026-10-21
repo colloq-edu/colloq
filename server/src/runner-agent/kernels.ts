@@ -39,6 +39,17 @@
  * checks the sandbox from the inside before anything starts, and its word is
  * what home reads to make the machine eligible.
  *
+ * THE COUNCIL'S CONTAINER (§6.1, §9.5, §9.7) is made by the same argv with two
+ * folders of its own beside the class folder, which it sees read-only: the
+ * class's epochs, read-only, and the attempts' scratch space (council.ts ·
+ * councilMounts), emptied whenever a new container of the slot starts. No
+ * card, ever (room-spec.ts gives one to the class's own container alone), and
+ * no folder of the agent's but those two. Its memory and CPUs are home's
+ * numbers for the pool (for each worker its «Память на попытку», what it
+ * holds before an attempt and the epoch's stream it unpickled; the epochs'
+ * files once; 512 MB; a CPU a worker), grown or shrunk live with `docker
+ * update` as any slot's are.
+ *
  * NEVER A SUBMISSION'S, AND ONE LEDGER WITH THEM. Class containers carry a
  * kind of their own (`colloq.kind=class-kernel`), so neither the Docker
  * runner's sweep nor the agent's (sync.ts · sweep) ever touches them; their
@@ -97,6 +108,7 @@ import {
   type PerimeterPolicy,
 } from '../kernel/perimeter-core.js'
 import { parseCgroup, parseReading, readingArgs } from '../kernel/postmortem-core.js'
+import { councilMounts, councilRoot } from './council.js'
 import { dockerMissing, dockerWords, type Docker, type DockerResult } from './docker.js'
 import { CHECK_LABELS, INSTANCE_LABEL, revisionImage } from './images.js'
 import { pickWholeCard, type CardRun, type ProbedCard } from './machine.js'
@@ -923,6 +935,18 @@ export class KernelHost {
     return at
   }
 
+  /**
+   * The placement a running class container of this machine is, by its full
+   * id: an epoch's export is read only from a container the host holds for
+   * that very class (council.ts), and sent home under its placement's gen.
+   */
+  containerOf(container: string): { sessionId: string; role: RemoteKernelRole; gen: number } | null {
+    for (const placement of this.placements.values()) {
+      if (placement.container === container && placement.running) return { sessionId: placement.sessionId, role: placement.role, gen: placement.gen }
+    }
+    return null
+  }
+
   /** The gens of the class whose containers are held (a record this build cannot read included): a fenced copy waits for them to go. */
   heldGens(sessionId: string): Array<{ role: RemoteKernelRole; gen: number }> {
     const held = [...this.placements.values()].filter((placement) => placement.sessionId === sessionId).map((placement) => ({ role: placement.role, gen: placement.gen }))
@@ -994,6 +1018,8 @@ export class KernelHost {
       stayed += left
     }
     if (stayed === 0) stayed += removeTree(this.layout.roomsDir)
+    // The councils' epochs and scratch space, the classes' as much as their folders are (council.ts has let go of them first: sync.ts · removeClasses).
+    stayed += removeTree(councilRoot(this.layout))
     stayed += removeTree(this.layout.placementsDir)
     const left = cleared.left === null ? null : cleared.left.length
     if (cleared.found + folders > 0 || left !== 0 || stayed > 0) {
@@ -1346,7 +1372,14 @@ export class KernelHost {
     } else if (ours && placement.spec === spec && found.profile === profileFor(mode)) {
       // This very placement's container, exited, made with this hardening: started again as home starts a stopped room, the
       // packages installed in it kept. One of another profile is made anew, as home's pool does: a `docker start` would bring a
-      // kernel back with the rights of a build since mended.
+      // kernel back with the rights of a build since mended. A council's comes back with its folders there and its scratch empty.
+      if (placement.role === 'council') {
+        try {
+          councilMounts(this.layout, placement.sessionId, { fresh: true })
+        } catch (error) {
+          return this.fail(placement, made, { unschedulable: 'other', detail: `the council's folders could not be made: ${error instanceof Error ? error.message : String(error)}` })
+        }
+      }
       const started = await this.docker(['start', found.id], { timeoutMs: 120_000 })
       if (started.code === 0) {
         container = found.id
@@ -1373,6 +1406,16 @@ export class KernelHost {
       placement.resizedFor = null
       // Written down before docker runs anything: a life that ends between the two finds the container by its label.
       if (!this.record(placement, image)) return this.fail(placement, made, { unschedulable: 'other', detail: 'the placement could not be written down: the disk refused it' })
+      // The council's two folders (epochs read-only, scratch read-write) exist before docker would make them as root, and a new
+      // container finds no attempt of the one before it.
+      let extraMounts: ReturnType<typeof councilMounts> = []
+      if (placement.role === 'council') {
+        try {
+          extraMounts = councilMounts(this.layout, placement.sessionId, { fresh: true })
+        } catch (error) {
+          return this.fail(placement, made, { unschedulable: 'other', detail: `the council's folders could not be made: ${error instanceof Error ? error.message : String(error)}` })
+        }
+      }
       let argv: string[]
       try {
         argv = machineRoomRunArgs({
@@ -1381,7 +1424,7 @@ export class KernelHost {
           environment: intent.environment,
           image,
           mount: path.join(this.layout.roomsDir, placement.sessionId),
-          extraMounts: [],
+          extraMounts,
           gpu: placement.role === 'room' ? placement.card : null,
           memoryMb: intent.memoryMb,
           cpus: intent.cpus,

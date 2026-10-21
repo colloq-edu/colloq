@@ -78,6 +78,7 @@ import * as placementModule from '../server/src/kernel/remote/placement.js'
 import { ClassPlacements, usePlacements } from '../server/src/kernel/remote/placement.js'
 import { useClassPlacements } from '../server/src/kernel/index.js'
 import { useDefaultEndpointForTest } from '../server/src/kernel/jupyter.js'
+import { useEpochCollector } from '../server/src/kernel/remote/epochs.js'
 import type { TunnelClock } from '../shared/remote-tunnel.js'
 import { startFakeJupyter } from './_fake-jupyter.mjs'
 import { guardAnswer } from './_guard.mts'
@@ -457,6 +458,7 @@ export class Home {
     useRemoteClock(null)
     if (this.jupyter) {
       useDefaultEndpointForTest(null)
+      useEpochCollector(null)
       await this.jupyter.close()
       this.jupyter = null
     }
@@ -493,6 +495,10 @@ export class Home {
    * workspace), made the endpoint of every room the test backend runs at
    * home (KERNEL_BACKEND=test · defaultEndpoint): a class whose slots stay
    * here, or come back here at a failover. Started once; closed with the home.
+   * A council epoch's export of a kernel here (§9.2) comes out of this
+   * fake's own export folder as `docker cp` copies it out of a room
+   * container's /tmp (kernel/remote/epochs.ts · EpochCollector), the folder
+   * removed after whatever became of the copy.
    */
   async homeJupyter(): Promise<Awaited<ReturnType<typeof startFakeJupyter>>> {
     if (this.jupyter) return this.jupyter
@@ -501,6 +507,14 @@ export class Home {
     const jupyter = await startFakeJupyter({ interpreter: true, buffer: true, deletes: true, perSession: true, cwd: workspace, token: HOME_JUPYTER_TOKEN, guardAnswer })
     this.jupyter = jupyter
     useDefaultEndpointForTest({ url: jupyter.url, token: HOME_JUPYTER_TOKEN })
+    useEpochCollector(async (_sessionId, _role, seq, into) => {
+      const from = jupyter.epochFolder(seq)
+      try {
+        if (into !== null) for (const name of fs.readdirSync(from)) fs.copyFileSync(`${from}/${name}`, `${into}/${name}`)
+      } finally {
+        fs.rmSync(from, { recursive: true, force: true })
+      }
+    })
     return jupyter
   }
 

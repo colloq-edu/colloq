@@ -246,6 +246,15 @@ export const CLASS_PACE_BURST_BYTES = 256 * 1024
 
 /** «Память на попытку» (D33): each worker's ceiling by default, mandatory for workers. */
 export const COUNCIL_ATTEMPT_MB = 1024
+/**
+ * What a worker holds before any attempt, beside «Память на попытку»: its
+ * interpreter and the imports its epoch names (K7a measured some 150 MB with
+ * sklearn; §9.11 says 250–350). An attempt's ceiling counts from where the
+ * worker stands (RLIMIT_AS over its VmSize, §9.3 detail 4), so the council
+ * container holds this, and the epoch's stream unpickled into each worker's
+ * own memory, for every worker on top of its ceiling (§9.5).
+ */
+export const COUNCIL_WORKER_BASE_MB = 256
 /** Workers of one pool: at least `min` once it runs, at most `auto` sized by itself, at most `max` set by hand (§9.5). */
 export const COUNCIL_WORKERS = { min: 2, auto: 16, max: 32 } as const
 /** A worker restarts and reseeds after serving this many attempts: leaked modules and `pip` drift stay bounded. */
@@ -269,6 +278,41 @@ export const COUNCIL_EPOCH_DIR = '/tmp/colloq-epoch'
 export const COUNCIL_EPOCH_BUFFERS_MAX = 4096
 /** An epoch's manifest: modules, left names, buffer shas in order, process-state keys. */
 export const COUNCIL_EPOCH_MANIFEST_BYTES = 4 * 1024 * 1024
+
+/**
+ * The council container's own two folders (§9.7, D10), beside the class
+ * folder it sees read-only at `/workspace/<id>`: every file of the class's
+ * epochs this machine holds, named by its sha256 alone (manifest, stream and
+ * buffers alike), read-only, so that a worker's `load` opens
+ * `${COUNCIL_EPOCHS_MOUNT}/<sha256>` for each file its manifest names; and the
+ * attempts' working folders, read-write, one an attempt
+ * (`${COUNCIL_SCRATCH_MOUNT}/<runId>`, councilScratchPath). On the machine
+ * they are `<state>/council/<id>/epochs/` (hard links into the agent's CAS)
+ * and `<state>/council/<id>/scratch/` (runner-agent/council.ts). No other
+ * folder of the agent's is ever mounted, and no card or docker socket.
+ */
+export const COUNCIL_EPOCHS_MOUNT = '/colloq/epochs'
+export const COUNCIL_SCRATCH_MOUNT = '/colloq/scratch'
+
+/**
+ * An attempt's scratch folder starts as a skeleton of the class tree, made by
+ * the worker's `enter` from the read-only class folder: real folders, its
+ * files as symlinks into `/workspace/<id>`, at most this many entries (else
+ * its top level only). `open('data.csv')` reads the class's file;
+ * `to_csv('out.csv')` writes the attempt's own, and overwriting a class file
+ * fails with `Read-only file system`.
+ */
+export const COUNCIL_SCRATCH_ENTRIES = 2000
+
+/** Where a worker finds one file of an epoch: `/colloq/epochs/<sha256>`. */
+export function councilEpochPath(sha256: string): string {
+  return `${COUNCIL_EPOCHS_MOUNT}/${part(sha256, REMOTE_SHA256)}`
+}
+
+/** An attempt's working folder inside the council container: `/colloq/scratch/<runId>`. */
+export function councilScratchPath(runId: string): string {
+  return `${COUNCIL_SCRATCH_MOUNT}/${part(runId, REMOTE_RUN_ID)}`
+}
 
 /* ----------------------------------------------------------- the counts */
 
@@ -304,6 +348,8 @@ export const REMOTE_READING_LINES_MAX = 3
 export const REMOTE_READING_LINE_CHARS = 500
 /** Attempts whose artifacts one reply asks for. */
 export const REMOTE_COLLECTS_MAX = 16
+/** Attempts whose collection one sync says is over (RemoteKernelsRequest.collected): the rest wait for the next sync. */
+export const REMOTE_COLLECTED_MAX = 4 * REMOTE_COLLECTS_MAX
 /**
  * Ranges of KERNEL_BLOCKED_CIDRS one intent carries. Home caps nothing of the
  * setting (perimeter-core.ts · blockedCidrsSetting) and may not cut the list
@@ -403,7 +449,7 @@ export interface RemotePlacementIntent {
    * card gets the flag (room-spec.ts).
    */
   shm: string
-  /** The pool's planned size: `council` only, and always there. */
+  /** The pool's size, every notebook's workers of the class together, as its pools last sized the container: `council` only, and always there. */
   workers?: number
 }
 
@@ -557,8 +603,17 @@ export interface RemoteFilesReport {
  * An epoch home wants the machine to hold (§9.2): its manifest and every file
  * it names, by hash, fetched as blobs or copied from the export on this very
  * machine. Home names it in every reply until the machine's sync reports it
- * `ready`, a lost reply being a delay, and then no more: leaving an epoch out
- * of a reply never asks for its removal (RemoteKernelsReply.epochs).
+ * `ready` (and, with `ship`, until home holds every file it named there), a
+ * lost reply being a delay, and then no more: leaving an epoch out of a reply
+ * never asks for its removal (RemoteKernelsReply.epochs).
+ *
+ * WHERE ITS FILES COME FROM, on the agent (runner-agent/council.ts): the CAS
+ * first (an unchanged buffer of the notebook's previous epoch, the same data
+ * in another class), then the export when `from` names one, then home by
+ * `GET blobs/<sha256>` — which home serves (BlobSource `epoch`) only to a
+ * machine it named the epoch to. A file every one of them lacks keeps the
+ * epoch from being ready: still `missing` for one of home's, and `failed:
+ * 'files'` for one exported here, which home does not have either.
  */
 export interface RemoteEpochIntent {
   sessionId: string
@@ -567,9 +622,40 @@ export interface RemoteEpochIntent {
   manifest: { sha256: string; bytes: number }
   /** The stream and the out-of-band buffers. */
   buffers: { sha256: string; bytes: number }[]
-  /** `home`: fetched as blobs. Otherwise the export lies in a class container on this very machine, at `${COUNCIL_EPOCH_DIR}/<seq>`, for `docker cp`. */
+  /**
+   * `home`: fetched as blobs. Otherwise the export lies in a class container
+   * on this very machine, at `${COUNCIL_EPOCH_DIR}/<seq>`, for `docker cp`:
+   * the container of a placement of the same class the machine holds (the
+   * notebook's kernel, never the council's), or the epoch fails as `source`.
+   * The agent takes what the folder holds by content, never by name (an
+   * export writes only the buffers that changed since the notebook's last
+   * one: the rest are in the CAS already), and removes the folder from the
+   * container once it is read.
+   */
   from: 'home' | { container: string; dir: string }
+  /**
+   * The files home lacks, of an export read here (`from` a container): each
+   * sent home once the machine holds it, by `PUT epochs/<sha256>?session=&gen=`
+   * (remoteClassPaths.epoch), the gen of the placement whose container `from`
+   * names, raw, with X-Colloq-Sha256 and X-Colloq-Bytes, at the class rate.
+   * The pool on another machine then fetches them from home (§9.2: «Main
+   * kernel on another machine»). Level-triggered: the latest reply naming the
+   * epoch says what is still to send, and a reply that no longer names it
+   * asks for nothing more of it.
+   */
+  ship?: string[]
 }
+
+/**
+ * Why an epoch cannot be had on this machine as things stand
+ * (RemoteEpochState.failed), so that home stops waiting for it: `source` —
+ * the export is not where `from` says (no container of the class holds that
+ * id here, the folder is gone, docker would not copy it); `files` — what the
+ * export held did not hash to what its report said, or a file it did not hold
+ * is neither here nor at home; `disk` — the disk has no room for it, which
+ * may clear once eviction frees some (the agent tries again).
+ */
+export type RemoteEpochFailure = 'source' | 'files' | 'disk'
 
 /** An epoch as the machine holds it: whole, or the hashes it still lacks (COUNCIL_EPOCH_BUFFERS_MAX of them over one sync at most, so a list may be cut). */
 export interface RemoteEpochState {
@@ -578,6 +664,8 @@ export interface RemoteEpochState {
   seq: number
   ready: boolean
   missing?: string[]
+  /** Not ready, and not coming: why (RemoteEpochFailure). Said only of an epoch home named, so a home without the field never meets it. */
+  failed?: RemoteEpochFailure
 }
 
 /**
@@ -641,6 +729,17 @@ export interface RemoteKernelsRequest {
    * this sync's answer (kernel/remote/files.ts · heardReply).
    */
   heard?: number
+  /**
+   * Attempts whose collection (RemoteKernelsReply.collect) is over: every file
+   * named that could be sent went home by its own PUT, and the attempt's
+   * scratch folder is gone. What home did not receive was not sent (gone,
+   * changed since `leave` listed it, not a regular file, past a cap, refused
+   * at home's door), never for home being out of reach.
+   * Said until a sync that carried it is answered, again whenever home names
+   * the attempt again, and only of attempts home named: a home without the
+   * field never meets the key. At most REMOTE_COLLECTED_MAX a sync.
+   */
+  collected?: { sessionId: string; runId: string }[]
 }
 
 /** Why home refused a reported change (§8.4): another base, a notebook file, a cap, or a path it does not take. */
@@ -672,13 +771,31 @@ export interface RemoteKernelsReply {
    * REMOTE_EPOCHS_MAX of them naming REMOTE_EPOCH_FILES_MAX files together:
    * the rest wait for a later reply. Not the whole held set, as `placements`
    * is: a whole set would carry every buffer's hash in every reply. The
-   * machine drops an epoch by the rule home's store keeps (§9.2): it holds the
-   * two newest of each notebook by seq (the live one and the one being
-   * refreshed) while a placement of its class lives there, REMOTE_EPOCHS_MAX
-   * in all, the oldest going first.
+   * machine drops an epoch by the rule home's store keeps (§9.2): while a
+   * placement of its class lives there it holds, of each notebook, the newest
+   * ready one (the live one), the newest one newer than that which may still
+   * come (the one being refreshed), and those newer than the live one that
+   * failed, two at most, said so until a newer one is ready — a failed one
+   * never shadows an older one home names after it; an older ready one a
+   * minute more, for loads home sent before it heard of the newer
+   * (runner-agent/council.ts · COUNCIL_TIMINGS.graceMs); and an older export
+   * not read yet that holds files the coming one lacks, read first, since a
+   * refreeze writes only what changed. REMOTE_EPOCHS_MAX said in all.
    */
   epochs: RemoteEpochIntent[]
-  /** Artifacts of finished attempts to upload (PUT council/…/files). */
+  /**
+   * Attempts the pool ran that are over (§9.7), each with the files its
+   * `leave` listed that home wants on the card (within COUNCIL_ARTIFACTS),
+   * an empty list included: the agent sends each from the attempt's scratch
+   * folder — a regular file of the named length and hash, read through no
+   * link — by `PUT council/<id>/runs/<runId>/files/<name>?gen=`
+   * (remoteClassPaths.artifact, the gen of the class's council placement
+   * here), gzipped, with X-Colloq-Sha256 and X-Colloq-Bytes, at the class
+   * rate; then removes the folder and says the attempt `collected`. Home
+   * names an attempt until it hears that. While home does not answer the PUTs
+   * (restarting, the relay cut), the folder stays and the files not yet sent
+   * go later: an attempt is never said `collected` for want of a road.
+   */
   collect: { sessionId: string; runId: string; files: { name: string; sha256: string; bytes: number }[] }[]
   /** Placements whose container home wants read (§7.4), by key. */
   postmortem: string[]
@@ -706,13 +823,14 @@ const BYES: ReadonlySet<string> = new Set<RemoteBye>(['restart', 'stopping', 'le
 const PERIMETERS: ReadonlySet<string> = new Set<RemotePerimeterState>(['ok', 'no-dockerd', 'no-iptables', 'refused', 'failing'])
 const MODES: ReadonlySet<string> = new Set<RemoteClassFacts['mode']>(['blocked', 'none', 'open'])
 const SKIPS: ReadonlySet<string> = new Set<RemoteSkipReason>(['size', 'room', 'count', 'package', 'proxy'])
+const EPOCH_FAILURES: ReadonlySet<string> = new Set<RemoteEpochFailure>(['source', 'files', 'disk'])
 
 /**
  * Home's parser of the machine's block: strict, like every parser of a
  * machine's request. It returns the block itself, checked.
  */
 export function parseRemoteKernelsRequest(value: unknown): RemoteKernelsRequest {
-  const v = fields(value, 'kernels block', ['placements', 'reports', 'epochs', 'readings', 'tunnel', 'bye', 'classes', 'heard'])
+  const v = fields(value, 'kernels block', ['placements', 'reports', 'epochs', 'readings', 'tunnel', 'bye', 'classes', 'heard', 'collected'])
   if (!word(v.tunnel, TUNNEL_SIDES) || (v.bye !== undefined && !word(v.bye, BYES))) refuse('Invalid kernels block')
   if (v.heard !== undefined && !integer(v.heard, 0, Number.MAX_SAFE_INTEGER)) refuse('Invalid kernels block')
   heldOf(v.placements)
@@ -720,6 +838,7 @@ export function parseRemoteKernelsRequest(value: unknown): RemoteKernelsRequest 
   epochStatesOf(v.epochs)
   readingsOf(v.readings)
   classFactsOf(v.classes)
+  if (v.collected !== undefined) collectedOf(v.collected)
   return v as unknown as RemoteKernelsRequest
 }
 
@@ -839,16 +958,28 @@ function epochStatesOf(value: unknown): void {
   const seen = new Set<string>()
   let missing = 0
   for (const item of items(value, 'epochs', REMOTE_EPOCHS_MAX)) {
-    const v = fields(item, 'epoch', ['sessionId', 'root', 'seq', 'ready', 'missing'])
+    const v = fields(item, 'epoch', ['sessionId', 'root', 'seq', 'ready', 'missing', 'failed'])
     const id = `${String(v.sessionId)} ${String(v.root)} ${String(v.seq)}`
     if (!matching(v.sessionId, REMOTE_SESSION_ID) || !isRemoteRoot(v.root) || !integer(v.seq, 1, Number.MAX_SAFE_INTEGER) || !flag(v.ready) || seen.has(id)) refuse('Invalid epoch')
     seen.add(id)
+    // A failure is why an epoch is not ready: a ready one has none.
+    if (v.failed !== undefined && (!word(v.failed, EPOCH_FAILURES) || v.ready)) refuse('Invalid epoch failure')
     if (v.missing === undefined) continue
     const shas = distinct(v.missing, 'missing epoch files', REMOTE_SHA256, COUNCIL_EPOCH_BUFFERS_MAX)
     if (v.ready && shas.length > 0) refuse('A ready epoch with missing files')
     missing += shas.length
   }
   if (missing > COUNCIL_EPOCH_BUFFERS_MAX) refuse('Missing epoch files over their budget')
+}
+
+function collectedOf(value: unknown): void {
+  const seen = new Set<string>()
+  for (const item of items(value, 'collected attempts', REMOTE_COLLECTED_MAX)) {
+    const v = fields(item, 'collected attempt', ['sessionId', 'runId'])
+    const id = `${String(v.sessionId)} ${String(v.runId)}`
+    if (!matching(v.sessionId, REMOTE_SESSION_ID) || !matching(v.runId, REMOTE_RUN_ID) || seen.has(id)) refuse('Invalid collected attempt')
+    seen.add(id)
+  }
 }
 
 const STATUS = /^[a-z]{0,16}$/
@@ -1050,7 +1181,7 @@ function epochIntentsOf(value: unknown): RemoteEpochIntent[] {
   const epochs: RemoteEpochIntent[] = []
   let files = 0
   for (const item of items(value, 'epoch intents', REMOTE_EPOCHS_MAX)) {
-    const v = known(item, 'epoch intent', ['sessionId', 'root', 'seq', 'manifest', 'buffers', 'from'])
+    const v = known(item, 'epoch intent', ['sessionId', 'root', 'seq', 'manifest', 'buffers', 'from', 'ship'])
     const id = `${String(v.sessionId)} ${String(v.root)} ${String(v.seq)}`
     if (!matching(v.sessionId, REMOTE_SESSION_ID) || !isRemoteRoot(v.root) || !integer(v.seq, 1, Number.MAX_SAFE_INTEGER) || seen.has(id)) refuse('Invalid epoch intent')
     seen.add(id)
@@ -1076,7 +1207,13 @@ function epochIntentsOf(value: unknown): RemoteEpochIntent[] {
       if (!matching(f.container, REMOTE_CLASS_CONTAINER) || f.dir !== `${COUNCIL_EPOCH_DIR}/${v.seq as number}`) refuse('Invalid epoch source')
       from = { container: f.container, dir: f.dir }
     }
-    epochs.push({ sessionId: v.sessionId, root: v.root, seq: v.seq as number, manifest: { sha256: m.sha256, bytes: m.bytes as number }, buffers, from })
+    let ship: string[] | undefined
+    if (v.ship !== undefined) {
+      // Sent home from an export read here, and only files of this epoch: a machine that fetched it from home has nothing to send back.
+      ship = [...distinct(v.ship, 'epoch files to send', REMOTE_SHA256, COUNCIL_EPOCH_BUFFERS_MAX + 1)]
+      if (from === 'home' || ship.some((sha256) => !shas.has(sha256))) refuse('Invalid epoch files to send')
+    }
+    epochs.push({ sessionId: v.sessionId, root: v.root, seq: v.seq as number, manifest: { sha256: m.sha256, bytes: m.bytes as number }, buffers, from, ...(ship ? { ship } : {}) })
   }
   if (files > REMOTE_EPOCH_FILES_MAX) refuse('Epoch files over their budget')
   return epochs

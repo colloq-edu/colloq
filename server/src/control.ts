@@ -152,7 +152,15 @@ import {
   retimeCouncilRun,
   startedTheRunningCell,
   warmClassKernels,
+  attemptInPool,
 } from './kernel/index.js'
+/*
+ * The council's pool of workers (docs/architecture/remote-classes.md §9): the
+ * lock opens and closes it, the teacher refreshes its epoch, a console coming
+ * back warms it. Loaded here, with this module: its hooks into the kernel
+ * module are installed as it loads (kernel/index.ts · useCouncilPool).
+ */
+import { adoptWarning, councilClosed, councilDiscarded, councilOpened, councilRefresh, councilWarm, onPoolChange } from './kernel/council-pool.js'
 import {
   attemptFor,
   attemptOf,
@@ -619,8 +627,10 @@ export function closeControlRoom(sessionId: string): void {
   forgetLecture(sessionId)
   // And the council attempts: they are in the database, not in the document,
   // and tearing down the document will not touch them — and there is no
-  // reason for them to lie under the key of a torn-down room.
+  // reason for them to lie under the key of a torn-down room. Their pool's
+  // epochs and the attempts' kept files go too (kernel/council-pool.ts).
   discardCouncil(sessionId)
+  councilDiscarded(sessionId)
   forgetAdoption(sessionId)
   forgetBoards(sessionId)
   forgetQueue(sessionId)
@@ -1390,6 +1400,17 @@ onBookRulesChanged((sessionId) => broadcast(sessionId, { t: 'rules', rules: stor
  */
 onKernelQueueChanged((sessionId) => nudgeKernel(sessionId))
 
+/*
+ * And the council's pool (kernel/council-pool.ts): its workers, its queue and
+ * its epoch move without the document knowing — the console's kernel frame
+ * carries the pool, and those waiting in its queue read their numbers from
+ * the same window as everyone's.
+ */
+onPoolChange((sessionId) => {
+  nudgeKernel(sessionId)
+  nudgeQueue(sessionId)
+})
+
 /** The room's folder changed past the tree's own verbs: a cell wrote to it, or a machine's kernel did and its files landed here. */
 function workspaceChanged(sessionId: string): void {
   // The notebook's file may have been removed bypassing the tree — `os.remove`
@@ -2156,13 +2177,16 @@ function kernelMessage(sessionId: string, cellId: string): ControlServerMessage 
   const work = kernelWorkOf(sessionId, cellId)
   // The scope has not been created yet — nothing has ever been run in this notebook.
   if (!work) return { t: 'council:kernel', cellId, kernel: { busy: null, queued: 0 } }
+  // The class's pool of workers beside the kernel (§9.8): absent where the class's council is not on machines.
+  const pool = work.pool ? { pool: work.pool } : {}
   const busy = work.busy
-  if (!busy) return { t: 'council:kernel', cellId, kernel: { busy: null, queued: work.queued } }
+  if (!busy) return { t: 'council:kernel', cellId, kernel: { busy: null, queued: work.queued, ...pool } }
   const found = findCell(getSessionDoc(sessionId).doc, busy.cellId)
   return {
     t: 'council:kernel',
     cellId,
     kernel: {
+      ...pool,
       queued: work.queued,
       busy: {
         kind: busy.kind,
@@ -2323,6 +2347,13 @@ function councilWelcome(ws: WebSocket, sessionId: string, payload: TokenPayload)
   const open = councilCells(sessionId)
   const cells = new Set<string>([...open, ...cellsWithAttempts(sessionId)])
   if (payload.role === 'host') {
+    /*
+     * An open council's pool comes back with its console (remote-classes.md
+     * §9.10): after a restart of this server, its workers are re-attached on
+     * their machine and recycled, ready before the first attempt rather than
+     * after it. Nothing for a class whose council is not on machines.
+     */
+    for (const id of open) councilWarm(sessionId, rootOf(sessionId, id) ?? CELLS_KEY, id)
     for (const id of cells) {
       send(ws, {
         t: 'council:board',
@@ -2440,6 +2471,9 @@ function pickSettings(raw: unknown): Partial<CouncilSettings> {
   }
   const pause = whole(from.rerunPauseSec, 0, COUNCIL_RERUN_PAUSE_MAX)
   if (pause !== null) out.rerunPauseSec = pause
+  // «Попытки считаются» and «Состояние для попыток» (§6.2): each its two words, anything else left as it was.
+  if (from.lane === 'pool' || from.lane === 'shared') out.lane = from.lane
+  if (from.refresh === 'auto' || from.refresh === 'manual') out.refresh = from.refresh
   return out
 }
 
@@ -3795,6 +3829,29 @@ export function dispatch(
         return
       }
       const here = stopRoot ?? CELLS_KEY
+      /*
+       * One attempt of a council cell in the class's pool (remote-classes.md
+       * §9.6), named by its author: computing on a worker, that worker alone
+       * is stopped; given to one and not begun, or waiting for one, it goes
+       * with no run — never a signal to the notebook's kernel, whatever it
+       * computes meanwhile. The teacher's to press for anyone, the author's
+       * for their own; an attempt in the notebook's kernel goes the way
+       * below, as before.
+       */
+      const author = optionalId(message.participantId)
+      const cellOfAttempt = optionalId(message.cellId)
+      if (author !== undefined && cellOfAttempt !== undefined && attemptInPool(sessionId, cellOfAttempt, author)) {
+        if (payload.role !== 'host' && author !== payload.participantId) {
+          refuse(ws, sessionId, payload, tr("server.onlyTheHostOrWhoeverStartedThe.835184"))
+          return
+        }
+        void interruptSession(sessionId, cellOfAttempt, here, author).then(() => {
+          appendActivity(sessionId, payload.participantId, 'execution.interrupted', { cellId: cellOfAttempt, subjectId: author }, payload.role)
+        }).catch((err: unknown) => {
+          send(ws, { t: 'error', message: kernelRefusal(err, payload, tr("server.couldNotInterruptTheKernel.ef82bf")) })
+        })
+        return
+      }
       /*
        * The host can always stop the kernel. So can whoever started the cell
        * that is running: they are stopping their own work, only one cell runs
@@ -5270,7 +5327,9 @@ export function dispatch(
         (next.studentRun === prior.studentRun &&
           next.namesOnProjector === prior.namesOnProjector &&
           next.runLimitSec === prior.runLimitSec &&
-          next.rerunPauseSec === prior.rerunPauseSec)
+          next.rerunPauseSec === prior.rerunPauseSec &&
+          next.lane === prior.lane &&
+          next.refresh === prior.refresh)
       if (was === state && sameKnobs) return
       if (was !== state || next?.studentRun !== prior.studentRun) {
         clearRunRequests(sessionId, id)
@@ -5319,6 +5378,16 @@ export function dispatch(
       if (next !== null && next.runLimitSec !== prior.runLimitSec) {
         retimeCouncilRun(sessionId, id, next.runLimitSec)
       }
+      /*
+       * The class's pool of workers (remote-classes.md §9.2, §9.5): the
+       * council opening is when its notebook's epoch is taken and its workers
+       * start, beside each other; the last council of the notebook closing
+       * starts the pool's linger. A class whose council is not on machines
+       * hears nothing of it (council-pool.ts reads the class's setting).
+       */
+      const bookRoot = rootOf(sessionId, id) ?? CELLS_KEY
+      if (was !== 'council' && state === 'council') councilOpened(sessionId, bookRoot, id)
+      else if (was === 'council' && state !== 'council') councilClosed(sessionId, bookRoot, id)
       /*
        * The council was opened, switched or closed — the room has to be told
        * over the control wire: attempts are not in the document, and a
@@ -5539,7 +5608,13 @@ export function dispatch(
       })
       applyOnBehalf(sessionId, payload.participantId, () => replaceText(source, attempt.text))
       if (run) queue(ws, sessionId, payload, [id], root ?? CELLS_KEY)
-      send(ws, { t: 'council:adopted', cellId: id, participantId: target, run, at: now, undoable: true })
+      /*
+       * An attempt the pool ran on an epoch the notebook's kernel has moved on
+       * from since (§9.8): its result in the notebook may differ, and the
+       * console says by how many of the teacher's runs.
+       */
+      const warning = adoptWarning(sessionId, attempt.run)
+      send(ws, { t: 'council:adopted', cellId: id, participantId: target, run, at: now, undoable: true, ...(warning ? { warning } : {}) })
       // Into the class events, like a showing: the actor is the teacher,
       // `subjectId` the author. A press that changed no text is not an event.
       if (before !== attempt.text) {
@@ -5588,6 +5663,28 @@ export function dispatch(
       applyOnBehalf(sessionId, payload.participantId, () => replaceText(source, kept.previous))
       forgetAdoption(sessionId, id)
       send(ws, { t: 'council:adopt:undone', cellId: id })
+      return
+    }
+
+    /*
+     * «Обновить состояние» (remote-classes.md §9.2): a fresh epoch of the
+     * notebook's kernel for the pool's attempts, now, whatever the cell's
+     * `refresh`. The teacher's, for a council cell whose attempts go to the
+     * class's pool; the console reads the outcome in its next kernel frame.
+     */
+    case 'council:epoch': {
+      if (!mayLeadCouncil(payload.role)) {
+        refuse(ws, sessionId, payload, tr('server.onlyTheTeacherRefreshesTheAttempts.3cdeb6'))
+        return
+      }
+      const id = optionalId(message.cellId)
+      if (!id) return
+      const { lock, settings } = councilCellOf(sessionId, id)
+      if (lock !== 'council' || settings.lane !== 'pool' || !councilRefresh(sessionId, rootOf(sessionId, id) ?? CELLS_KEY)) {
+        send(ws, { t: 'error', message: tr('server.thisCellSAttemptsDoNotGo.7d2837') })
+        return
+      }
+      nudgeKernel(sessionId)
       return
     }
 
@@ -5743,12 +5840,14 @@ export function dispatch(
           return
         }
       }
+      // The text this press computes, whatever the author types while it waits.
+      const text = attempt.text
       const outcome = requestCouncilRun(
         sessionId,
         {
           cellId: id,
           participantId: target,
-          source: attempt.text,
+          source: text,
           by: payload.role === 'host' ? 'host' : 'author',
           /*
            * The limit is taken from the cell at the second of the press and
@@ -5775,7 +5874,8 @@ export function dispatch(
              * three per attempt. The queue did move for real, though — that
              * has to be told.
              */
-            const landed = recordRun(sessionId, id, target, run)
+            // With the text it computes: a run handed on after the author edited theirs is no longer theirs to show (council.ts · recordRun).
+            const landed = recordRun(sessionId, id, target, run, text)
             const over = run === null || run.state === 'ok' || run.state === 'error'
             if (!landed) {
               if (over) tellQueued(sessionId)
@@ -5793,6 +5893,8 @@ export function dispatch(
         },
         displayName(sessionId, payload.participantId),
         payload.participantId,
+        // Where the cell's attempts go and whether their epoch follows the kernel (§6.2): read at the press, as the limit is.
+        { lane: settings.lane, refresh: settings.refresh },
       )
       if (!outcome.queued) {
         /*

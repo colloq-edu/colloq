@@ -69,7 +69,12 @@
  * `.Label`; a field the object lacks, a function docker does not define and
  * what this fake does not read are refused, exit 1, as a filter other than by
  * label is), `ps` with and without `-a` by any labels, `stats`, `update`,
- * `exec` of the cgroup's script, `logs`, `cp`, `port`, `start`, `rm`. Besides
+ * `exec` of the cgroup's script and of `rm -rf` in its own filesystem, `logs`,
+ * `cp`, `port`, `start`, `rm`. Its kernels' exports of a council epoch go to
+ * that filesystem's /tmp/colloq-epoch/<seq>, and a council container's
+ * Jupyter loads epochs from its /colloq/epochs and runs attempts in its
+ * /colloq/scratch (tests/_fake-jupyter.mjs · --epoch-dir, --epochs-dir,
+ * --scratch-dir). Besides
  * them: the class bridge (`network create`, `inspect`, `ls` by label), the
  * perimeter's helper (`run --privileged … sh -c`, which says
  * `colloq-perimeter: ok`), the admission canary (its checks read off its own
@@ -103,6 +108,14 @@ for (const stream of [process.stdout, process.stderr]) stream._handle?.setBlocki
 
 if (!STATE) {
   process.stderr.write('fake docker: FAKE_DOCKER_STATE is not set\n')
+  process.exit(125)
+}
+/*
+ * A machine's tree goes with the test (tests/_remote-e2e-agent.mts · createFleet), and a call its agent spawned a moment
+ * before it was killed may still run after that: it finds no daemon, as on a machine that is gone, and leaves nothing behind.
+ */
+if (!fs.existsSync(STATE)) {
+  process.stderr.write('fake docker: the daemon\'s state is gone (its machine with it)\n')
   process.exit(125)
 }
 
@@ -624,6 +637,13 @@ async function startJupyter(c) {
   const argv = [FAKE_JUPYTER, '--port', '0', '--cwd', c.folder, '--container-file', file, '--container-id', c.id, '--oom-file', oomFile(c.name)]
   if (c.token) argv.push('--token', c.token)
   if (c.readOnly) argv.push('--read-only')
+  // Its kernels' exports go to the container's own /tmp (COUNCIL_EPOCH_DIR), which `cp` copies out and `exec … rm` removes.
+  argv.push('--epoch-dir', path.join(privateRoot(c.name), 'tmp', 'colloq-epoch'))
+  // A council container's two folders of its own (council.ts · councilMounts): its workers load epochs from the one, attempts work in the other.
+  const epochs = (c.mounts ?? []).find((mount) => mount.target === '/colloq/epochs')
+  const scratch = (c.mounts ?? []).find((mount) => mount.target === '/colloq/scratch')
+  if (epochs) argv.push('--epochs-dir', epochs.source)
+  if (scratch) argv.push('--scratch-dir', scratch.source)
   if (OWNER) argv.push('--owner', OWNER)
   // Its calls written down where `rm` leaves them (FAKE_DOCKER_CALLS, the agent's keepCalls): one file per container, every life of it.
   if (CALLS) {
@@ -1137,6 +1157,8 @@ function exec() {
  * kernel), what is in use, the kills.
  */
 function classExec(c, command) {
+  // `rm -rf [--] PATH` of the container's own filesystem: the agent removes an epoch's export folder once it read it (council.ts · dropExport).
+  if (command[0] === 'rm' && command[1] === '-rf') return classRemove(c, command.slice(command[2] === '--' ? 3 : 2))
   const script = command[0] === 'sh' && command[1] === '-c' ? command[2] ?? '' : ''
   if (!/memory\.max|memory\.events/.test(script)) return finish(126, '', `fake docker: exec ${command.join(' ')} is not in this fake`)
   const limit = (c.memoryMb ?? 0) * MIB
@@ -1145,6 +1167,23 @@ function classExec(c, command) {
   const peak = kills > 0 ? limit : Math.max(current, Math.round((c.stats?.peakMb ?? 0) * MIB))
   const card = /nvidia-smi/.test(script) ? `\ncard ${c.stats?.cardMb ?? 0}` : ''
   finish(0, `limit ${limit}\npeak ${peak}\ncurrent ${current}\nkills ${kills}${card}`)
+}
+
+/**
+ * `exec <c> rm -rf [--] PATH…` in a class container: each absolute path of
+ * its own filesystem (`cp` reads it there too) removed, a missing one no
+ * error, as rm -f has it. A path inside one of its mounts is not this fake's
+ * to remove (the agent never asks it), and is refused as an exec it does not
+ * know.
+ */
+function classRemove(c, paths) {
+  if (paths.length === 0) return finish(1, '', 'rm: missing operand')
+  for (const inside of paths.map((one) => path.posix.normalize(one))) {
+    const mounted = (c.mounts ?? []).some((mount) => inside === mount.target || inside.startsWith(`${mount.target}/`))
+    if (!inside.startsWith('/') || inside === '/' || mounted) return finish(126, '', `fake docker: exec rm -rf ${inside} is not in this fake`)
+    fs.rmSync(path.join(privateRoot(c.name), inside), { recursive: true, force: true })
+  }
+  finish(0)
 }
 
 function logs() {

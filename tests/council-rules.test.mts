@@ -454,6 +454,8 @@ test('garbage in the rules controls does not reach the document', async () => {
     namesOnProjector: true,
     runLimitSec: 5,
     rerunPauseSec: 15,
+    lane: 'pool',
+    refresh: 'auto',
   })
   assert.equal(await council(at, { runLimitSec: 99999, rerunPauseSec: 'чуть-чуть' }), null)
   assert.equal((await knobs(at))!.runLimitSec, 5, 'a limit out of bounds reset the control')

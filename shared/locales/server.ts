@@ -4597,9 +4597,64 @@ export const serverMessages: MessageCatalog = {
     "ru": "Пул ещё поднимается — эта попытка посчитана в общем ядре.",
     "en": "The pool is still starting — this attempt was run in the shared kernel."
   },
+  // Why the council's pool cannot take attempts (kernel/council-pool.ts · §9.9): a card's footnote and the console's line.
+  "server.theNotebookSStateHoldsDataOn.2ac2bc": {
+    "ru": "В состоянии тетради есть данные на видеокарте — попытки считаются в общем ядре.",
+    "en": "The notebook's state holds data on the GPU — attempts run in the shared kernel."
+  },
+  "server.theNotebookSStateDoesNotFit.c67b68": {
+    "ru": "Состояние тетради не помещается — попытки считаются в общем ядре.",
+    "en": "The notebook's state does not fit — attempts run in the shared kernel."
+  },
+  "server.theNotebookSStateCouldNotBe.9e7101": {
+    "ru": "Состояние тетради не собралось — попытки считаются в общем ядре.",
+    "en": "The notebook's state could not be taken — attempts run in the shared kernel."
+  },
+  "server.thePoolDidNotStart.80644c": {
+    "ru": "Пул не поднялся: {why}",
+    "en": "The pool did not start: {why}"
+  },
+  // Its {why}, when no machine's words say more (the detail stays in the server's log).
+  "server.theWorkersCouldNotLoadThe.69de42": {
+    "ru": "исполнители не загрузили состояние тетради",
+    "en": "the workers could not load the notebook's state"
+  },
+  "server.itsWorkersDidNotStart.f8a286": {
+    "ru": "исполнители не запустились",
+    "en": "its workers did not start"
+  },
+  "server.thePoolSMachineWasLostThe.8aff4c": {
+    "ru": "Машина пула пропала — попытка посчитана в общем ядре.",
+    "en": "The pool's machine was lost — the attempt was run in the shared kernel."
+  },
+  "server.aPoolWorkerDidNotStartThe.4ecf00": {
+    "ru": "Исполнитель пула не поднялся — попытка посчитана в общем ядре.",
+    "en": "A pool worker did not start — the attempt was run in the shared kernel."
+  },
+  "server.thePoolSMachineDoesNotAnswer.16922d": {
+    "ru": "Машина пула не отвечает — эта попытка посчитана в общем ядре.",
+    "en": "The pool's machine does not answer — this attempt was run in the shared kernel."
+  },
+  "server.theNewStateDoesNotFit.1c7533": {
+    "ru": "Новое состояние не помещается — попытки на состоянии {time}.",
+    "en": "The new state does not fit — attempts run on the state as of {time}."
+  },
+  // «Обновить состояние» (control.ts · council:epoch, §9.2): its two refusals.
+  "server.thisCellSAttemptsDoNotGo.7d2837": {
+    "ru": "Попытки этой ячейки не идут в пул.",
+    "en": "This cell's attempts do not go to a pool."
+  },
+  "server.onlyTheTeacherRefreshesTheAttempts.3cdeb6": {
+    "ru": "Обновить состояние для попыток может преподаватель.",
+    "en": "Only the teacher refreshes the attempts' state."
+  },
   "server.notCarriedOver.00ad4e": {
     "ru": "Не переносится: {names}.",
     "en": "Not carried over: {names}."
+  },
+  "server.council.notCarried": {
+    "ru": "Переменная {name} не перенесена на машину консилиума ({why}); попытки, которые её используют, считаются в общем ядре.",
+    "en": "The variable {name} was not carried over to the council machine ({why}); attempts that use it run in the shared kernel."
   },
   "server.databaseConnection.cdf70c": {
     "ru": "соединение с базой",

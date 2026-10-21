@@ -64,8 +64,11 @@ import {
   COUNCIL_EPOCH_SHIP_MB,
   COUNCIL_EPOCH_STORE_MB,
   COUNCIL_EPOCH_WAIT_MS,
+  COUNCIL_EPOCHS_MOUNT,
   COUNCIL_POOL_LINGER_MS,
   COUNCIL_POOL_READY_MS,
+  COUNCIL_SCRATCH_ENTRIES,
+  COUNCIL_SCRATCH_MOUNT,
   COUNCIL_WORKERS,
   COUNCIL_WORKER_REUSE,
   MACHINE_PACE_BURST_BYTES,
@@ -73,6 +76,8 @@ import {
   PERIMETER_FAILURES_MAX,
   PERIMETER_RECHECK_MS,
   REMOTE_CLASS_UPLOADS,
+  REMOTE_COLLECTED_MAX,
+  REMOTE_COLLECTS_MAX,
   REMOTE_EPOCHS_MAX,
   REMOTE_EPOCH_FILES_MAX,
   REMOTE_FILE_CAP_MB_MAX,
@@ -85,6 +90,8 @@ import {
   REMOTE_ROOT_CHARS,
   REMOTE_SESSION_ID,
   REMOTE_SHM,
+  councilEpochPath,
+  councilScratchPath,
   isRemoteRoot,
   parseRemoteKernelsReply,
   parseRemoteKernelsRequest,
@@ -644,6 +651,47 @@ test('epochs: home names those not ready yet, and a machine says all it holds, t
   const largest = [pending(0, COUNCIL_EPOCH_BUFFERS_MAX), pending(1, COUNCIL_EPOCH_BUFFERS_MAX)]
   assert.doesNotThrow(() => parseRemoteKernelsReply({ ...reply, epochs: largest }))
   refused(() => parseRemoteKernelsReply({ ...reply, epochs: [...largest, pending(2, 1)] }), /Epoch files over their budget/)
+})
+
+test('council (0.26): an epoch not had says why in a word, an attempt\'s collection over is said by its ids, and nothing else of either', () => {
+  const failed = edit(request, ['epochs', 1, 'failed'], 'files')
+  assert.deepEqual(parseRemoteKernelsRequest(failed).epochs[1], { ...request.epochs[1], failed: 'files' })
+  for (const why of ['source', 'files', 'disk']) assert.doesNotThrow(() => parseRemoteKernelsRequest(edit(request, ['epochs', 1, 'failed'], why)), why)
+  // A ready epoch has no failure; a failure is one of the words, never the agent's text.
+  refused(() => parseRemoteKernelsRequest(edit(request, ['epochs', 0, 'failed'], 'disk')), /epoch failure/)
+  for (const bad of ['docker cp: no such file', '', null, 1]) refused(() => parseRemoteKernelsRequest(edit(request, ['epochs', 1, 'failed'], bad)), /epoch failure/)
+  const collected = { ...request, collected: [{ sessionId: SESSION, runId: 'r_1792000000' }, { sessionId: OTHER, runId: 'r_1792000000' }] }
+  assert.deepEqual(parseRemoteKernelsRequest(collected), collected)
+  refused(() => parseRemoteKernelsRequest({ ...request, collected: [collected.collected[0], collected.collected[0]] }), /collected attempt/)
+  refused(() => parseRemoteKernelsRequest(edit(collected, ['collected', 0, 'runId'], '../r')), /collected attempt/)
+  refused(() => parseRemoteKernelsRequest(edit(collected, ['collected', 0, 'files'], [])), /Unexpected key/)
+  const many = Array.from({ length: REMOTE_COLLECTED_MAX + 1 }, (_, i) => ({ sessionId: SESSION, runId: `r_${i}` }))
+  assert.doesNotThrow(() => parseRemoteKernelsRequest({ ...request, collected: many.slice(0, REMOTE_COLLECTED_MAX) }))
+  refused(() => parseRemoteKernelsRequest({ ...request, collected: many }), /collected attempts/)
+  // A machine finishes as many collections between two syncs as home asked for in several replies.
+  assert.ok(REMOTE_COLLECTED_MAX >= REMOTE_COLLECTS_MAX)
+})
+
+test('council (0.26): home asks an export read on its machine to come home, of its own files only, and never one the machine fetched from home', () => {
+  const shipped = edit(reply, ['epochs', 1, 'ship'], [sha(14)])
+  assert.deepEqual(parseRemoteKernelsReply(shipped).epochs[1]!.ship, [sha(14)])
+  // Not one of the epoch's own files; the same twice; from home (nothing to send back).
+  refused(() => parseRemoteKernelsReply(edit(reply, ['epochs', 1, 'ship'], [sha(99)])), /epoch files to send/)
+  refused(() => parseRemoteKernelsReply(edit(reply, ['epochs', 1, 'ship'], [sha(14), sha(14)])), /epoch files to send/)
+  refused(() => parseRemoteKernelsReply(edit(reply, ['epochs', 0, 'ship'], [sha(12)])), /epoch files to send/)
+  // No `ship`, no key: an older reply's epochs read as they always did.
+  assert.equal('ship' in parseRemoteKernelsReply(reply).epochs[1]!, false)
+})
+
+test('council (0.26): a worker finds an epoch\'s files and an attempt\'s folder by the contract\'s own paths', () => {
+  assert.equal(COUNCIL_EPOCHS_MOUNT, '/colloq/epochs')
+  assert.equal(COUNCIL_SCRATCH_MOUNT, '/colloq/scratch')
+  assert.equal(COUNCIL_SCRATCH_ENTRIES, 2000)
+  assert.equal(councilEpochPath(sha(7)), `/colloq/epochs/${sha(7)}`)
+  assert.equal(councilScratchPath('r_1792000000'), '/colloq/scratch/r_1792000000')
+  // Neither under the class folder's mount: the class folder is read-only to the pool, and the epoch dir is the notebook kernel's own.
+  for (const mount of [COUNCIL_EPOCHS_MOUNT, COUNCIL_SCRATCH_MOUNT]) assert.ok(!mount.startsWith('/workspace') && !mount.startsWith(COUNCIL_EPOCH_DIR))
+  for (const run of [() => councilEpochPath('../x'), () => councilEpochPath('A'.repeat(64)), () => councilScratchPath('r/1'), () => councilScratchPath('..'), () => councilScratchPath('')]) refused(run, /path part/)
 })
 
 /* ----------------------------------------------------------- keys and doors */

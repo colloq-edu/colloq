@@ -1586,6 +1586,161 @@ export function discardNotes(sessionId: string): void {
   dropNotesOf.run(sessionId)
 }
 
+/* ------------------------------------------------------- council epochs */
+
+/**
+ * The snapshots of a notebook's kernel the council's pool of workers loads
+ * («состояние для попыток», docs/architecture/remote-classes.md §9.2): one row
+ * per epoch, numbered per class — one count across its notebooks, whose
+ * kernels share their containers and so the export folders the numbers name
+ * (kernel/remote/epochs.ts · nextEpochSeq). The files themselves are content
+ * addressed and live elsewhere (kernel/remote/epochs.ts: this server's store,
+ * or the machines' own); a row is what routing, the console and the next
+ * refreeze read of one.
+ *
+ * In the database, not in memory, for exactly one reason the design names: a
+ * restart of this server keeps the class's pool on its machine with the
+ * workers that loaded an epoch, and routing must still know which names that
+ * epoch left behind (§9.10). The last two per notebook are kept — the one the
+ * workers run and the one replacing it — and the rest go as a new one comes
+ * (`keepEpochs`).
+ *
+ * `manifest_sha256` is null for an empty epoch: the notebook's kernel was not
+ * running when the council asked, and the workers start from nothing, as a
+ * fresh kernel would. `incarnation` is this server's life the export was
+ * taken in, and `main_runs` the notebook's count of the teacher's runs then:
+ * the count lives in memory, so it is compared only within one life.
+ */
+db.exec(`
+  CREATE TABLE IF NOT EXISTS council_epochs (
+    session_id      TEXT NOT NULL,
+    root            TEXT NOT NULL,
+    seq             INTEGER NOT NULL,
+    manifest_sha256 TEXT,
+    body_sha256     TEXT,
+    bytes           INTEGER NOT NULL,
+    ship_bytes      INTEGER NOT NULL,
+    report_json     TEXT NOT NULL,
+    main_runs       INTEGER NOT NULL,
+    incarnation     TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    PRIMARY KEY (session_id, root, seq)
+  );
+`)
+
+/** One row of council_epochs, as the registry reads it. */
+export interface CouncilEpochRow {
+  sessionId: string
+  root: string
+  seq: number
+  manifestSha256: string | null
+  bodySha256: string | null
+  bytes: number
+  shipBytes: number
+  /** kernel/remote/epochs.ts's own record of the epoch: its files, names, source. */
+  report: unknown
+  mainRuns: number
+  incarnation: string
+  createdAt: number
+}
+
+interface CouncilEpochRaw {
+  session_id: string
+  root: string
+  seq: number
+  manifest_sha256: string | null
+  body_sha256: string | null
+  bytes: number
+  ship_bytes: number
+  report_json: string
+  main_runs: number
+  incarnation: string
+  created_at: number
+}
+
+function epochFromRow(raw: CouncilEpochRaw): CouncilEpochRow {
+  let report: unknown = null
+  try {
+    report = JSON.parse(raw.report_json)
+  } catch {
+    // A hand-edited row: the registry reads it as an epoch with no files, which no machine is ever asked to hold.
+  }
+  return {
+    sessionId: raw.session_id,
+    root: raw.root,
+    seq: raw.seq,
+    manifestSha256: raw.manifest_sha256,
+    bodySha256: raw.body_sha256,
+    bytes: raw.bytes,
+    shipBytes: raw.ship_bytes,
+    report,
+    mainRuns: raw.main_runs,
+    incarnation: raw.incarnation,
+    createdAt: raw.created_at,
+  }
+}
+
+const insertEpochStmt = db.prepare(`
+  INSERT INTO council_epochs (session_id, root, seq, manifest_sha256, body_sha256, bytes, ship_bytes, report_json, main_runs, incarnation, created_at)
+  VALUES (@session_id, @root, @seq, @manifest_sha256, @body_sha256, @bytes, @ship_bytes, @report_json, @main_runs, @incarnation, @created_at)
+  ON CONFLICT(session_id, root, seq) DO UPDATE SET manifest_sha256 = excluded.manifest_sha256, body_sha256 = excluded.body_sha256,
+    bytes = excluded.bytes, ship_bytes = excluded.ship_bytes, report_json = excluded.report_json, main_runs = excluded.main_runs,
+    incarnation = excluded.incarnation, created_at = excluded.created_at
+`)
+const selectEpochsOf = db.prepare('SELECT * FROM council_epochs WHERE session_id = ? AND root = ? ORDER BY seq DESC')
+const selectEpochsOfClass = db.prepare('SELECT * FROM council_epochs WHERE session_id = ? ORDER BY root, seq DESC')
+const selectAllEpochs = db.prepare('SELECT * FROM council_epochs ORDER BY created_at')
+const selectLastSeq = db.prepare('SELECT MAX(seq) AS seq FROM council_epochs WHERE session_id = ?')
+const dropEpochStmt = db.prepare('DELETE FROM council_epochs WHERE session_id = ? AND root = ? AND seq = ?')
+const dropEpochsOfClass = db.prepare('DELETE FROM council_epochs WHERE session_id = ?')
+
+/** Write one epoch's row (a refreeze of the same seq replaces it). */
+export function saveCouncilEpoch(row: CouncilEpochRow): void {
+  insertEpochStmt.run({
+    session_id: row.sessionId,
+    root: row.root,
+    seq: row.seq,
+    manifest_sha256: row.manifestSha256,
+    body_sha256: row.bodySha256,
+    bytes: row.bytes,
+    ship_bytes: row.shipBytes,
+    report_json: JSON.stringify(row.report ?? null),
+    main_runs: row.mainRuns,
+    incarnation: row.incarnation,
+    created_at: row.createdAt,
+  })
+}
+
+/** A notebook's epochs, newest first. */
+export function councilEpochsOf(sessionId: string, root: string): CouncilEpochRow[] {
+  return (selectEpochsOf.all(sessionId, root) as CouncilEpochRaw[]).map(epochFromRow)
+}
+
+/** Every epoch of a class, by notebook, newest first within each. */
+export function councilEpochsOfClass(sessionId: string): CouncilEpochRow[] {
+  return (selectEpochsOfClass.all(sessionId) as CouncilEpochRaw[]).map(epochFromRow)
+}
+
+/** Every epoch this server keeps, oldest first: what its store's files are referenced by. */
+export function allCouncilEpochs(): CouncilEpochRow[] {
+  return (selectAllEpochs.all() as CouncilEpochRaw[]).map(epochFromRow)
+}
+
+/** The class's last epoch number, any notebook's, 0 before its first: numbers only grow, a restart included. */
+export function lastCouncilEpochSeq(sessionId: string): number {
+  return (selectLastSeq.get(sessionId) as { seq: number | null }).seq ?? 0
+}
+
+/** One epoch's row goes (pruned, or evicted with its files). */
+export function dropCouncilEpoch(sessionId: string, root: string, seq: number): void {
+  dropEpochStmt.run(sessionId, root, seq)
+}
+
+/** The seminar was deleted — its epochs go with it. */
+export function discardCouncilEpochs(sessionId: string): void {
+  dropEpochsOfClass.run(sessionId)
+}
+
 const countVersions = db.prepare(`SELECT COUNT(*) AS n FROM doc_history WHERE session_id = ?`)
 
 export function versionCount(sessionId: string): number {

@@ -681,6 +681,14 @@ export function recordRun(
   cellId: string,
   participantId: string,
   run: CouncilRun | null,
+  /**
+   * The text the run computes (the attempt's at the press), when the caller
+   * knows it. A "queued" frame of a run already in flight — the class's pool
+   * handing it to the notebook's kernel, its machine lost under it — comes
+   * after the press, and an author may have edited the text meanwhile: such
+   * a frame ties nothing to the new text, and the run's output is late.
+   */
+  text?: string,
 ): boolean {
   const prior = attemptOf(sessionId, cellId, participantId)
   // The attempt has been removed already (a ban) — output does not resurrect it.
@@ -697,16 +705,37 @@ export function recordRun(
    * the same run, and they are valid only while the text has not changed.
    */
   if (run.state === 'queued') {
+    if (text !== undefined && text !== prior.text) return false
+    /*
+     * A run already in flight under this very text queued again is the same
+     * run, not a new press: the class's pool handed it to the notebook's
+     * kernel (docs/architecture/remote-classes.md §9.9), or its machine went
+     * with it and it runs there once more (§9.10, D15). Whose run it is was
+     * decided at its first frame, and stays: the lost run never ended, so it
+     * starts no pause, and the run that ends does.
+     */
+    const again = runFor.get(key) === prior.text && (prior.run?.state === 'queued' || prior.run?.state === 'running')
     runFor.set(key, prior.text)
     // Whose run it is gets decided here, while the request is still visible:
     // a line below `runRequest` is cleared, and by the run's own frames an
     // approved request can no longer be told apart from the teacher's
     // curiosity (see `ownRun`).
-    if (run.by === 'author' || prior.runRequest?.status === 'pending') ownRun.add(key)
-    else ownRun.delete(key)
+    if (!again) {
+      if (run.by === 'author' || prior.runRequest?.status === 'pending') ownRun.add(key)
+      else ownRun.delete(key)
+    }
     save({ ...prior, run, runRequest: null })
     return true
   }
+  /*
+   * The end of another run than the attempt's own now: a pool's run whose
+   * files land a sync or more after it ended (remote-classes.md §9.7), while
+   * the author pressed the same text again. Its frame neither replaces the
+   * new run's card nor takes the new run's mark for the pause. The pool's
+   * runs are told apart by their name (`runId`); an attempt cleared since
+   * (an edit) has none to tell, and its end goes on below as any late one.
+   */
+  if ((run.state === 'ok' || run.state === 'error') && run.runId !== undefined && prior.run !== null && prior.run.runId !== run.runId) return false
   /*
    * The mark for the pause is set BEFORE the late-frame check: the kernel
    * spent its time on this person regardless of whether they managed to

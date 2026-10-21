@@ -71,12 +71,22 @@ import {
   type RemoteFileName,
   type RemoteUploadReply,
 } from '@shared/remote-runner'
-import { REMOTE_CLASS_UPLOADS } from '@shared/remote-kernels'
+import { COUNCIL_ARTIFACTS, REMOTE_CLASS_UPLOADS, REMOTE_RUN_ID, REMOTE_SESSION_ID } from '@shared/remote-kernels'
 import { COMPETITION_ATTEMPT_ID } from '@shared/competition-runtime'
 import { normalizePath } from '@shared/paths'
 import { config } from '../../config.js'
 import { resolveInSession, sessionDir, tempNameIn, workspaceFs } from '../../workspace.js'
 import { PullRefused, classFiles, type RoomFileStored } from '../../kernel/remote/files.js'
+import {
+  ArtifactRefused,
+  EpochUploadRefused,
+  artifactUploadFor,
+  epochStagingDir,
+  epochUploadFor,
+  landArtifact,
+  landEpochUpload,
+  storeHas,
+} from '../../kernel/remote/epochs.js'
 import { competitionsDir, competitionsFs } from '../storage.js'
 import { runnerUploadsSetting } from '../settings.js'
 import { classUploadPace } from './blobs.js'
@@ -318,7 +328,7 @@ async function store(req: Request, attemptId: string, meta: RemoteUploadReply): 
  * removes what was written. `pace`: the bucket the compressed bytes are read
  * through (a class's files, upload.ts · receiveClassFile).
  */
-async function receiveGzip(req: Request, fd: number, meta: { sha256: string; bytes: number }, pace?: Transform): Promise<void> {
+async function receiveGzip(req: Request, fd: number, meta: { sha256: string; bytes: number }, pace?: Transform, raw = false): Promise<void> {
   const hash = createHash('sha256')
   let compressed = 0
   let plain = 0
@@ -404,7 +414,10 @@ async function receiveGzip(req: Request, fd: number, meta: { sha256: string; byt
   req.pipe(body)
   let failure: unknown = null
   try {
-    if (pace) await pipeline(body, pace, counted, zlib.createGunzip({ chunkSize: 64 * 1024 }), unzipped, sink)
+    // A raw body (an epoch's file, remote-classes.md §15) is its file itself: counted and hashed the same way, nothing to unzip.
+    if (raw && pace) await pipeline(body, pace, counted, unzipped, sink)
+    else if (raw) await pipeline(body, counted, unzipped, sink)
+    else if (pace) await pipeline(body, pace, counted, zlib.createGunzip({ chunkSize: 64 * 1024 }), unzipped, sink)
     else await pipeline(body, counted, zlib.createGunzip({ chunkSize: 64 * 1024 }), unzipped, sink)
   } catch (error) {
     failure = error
@@ -453,7 +466,7 @@ function freeBytesOf(volume: string): number | null {
  * the staging file it is written to (a temporary name in the class folder),
  * called only once the upload may go ahead.
  */
-export async function receiveClassFile(req: Request, runnerId: string, file: { open: () => number; sha256: string; bytes: number; volume: string }): Promise<void> {
+export async function receiveClassFile(req: Request, runnerId: string, file: { open: () => number; sha256: string; bytes: number; volume: string; raw?: boolean }): Promise<void> {
   if ((classActive.get(runnerId) ?? 0) >= REMOTE_CLASS_UPLOADS) {
     classUploadCounts.busy++
     throw new UploadRefusal('busy', "This machine's class files are at their limit", 2)
@@ -463,7 +476,7 @@ export async function receiveClassFile(req: Request, runnerId: string, file: { o
   classActive.set(runnerId, (classActive.get(runnerId) ?? 0) + 1)
   try {
     const fd = file.open()
-    await receiveGzip(req, fd, file, classUploadPace.transform())
+    await receiveGzip(req, fd, file, classUploadPace.transform(), file.raw === true)
     classUploadCounts.stored++
   } catch (error) {
     classUploadCounts.refused++
@@ -534,6 +547,110 @@ export async function receiveRoomFile(req: Request, runner: RunnerRow, sessionId
       try { workspaceFs.rmSync(tmp, { force: true }) } catch { /* a parent swapped under it */ }
     }
   }
+}
+
+/* ------------------------------------------------- the council's files */
+
+/** An epoch's file or an attempt's, as their PUT answers it. */
+export interface CouncilFileStored {
+  sha256: string
+  bytes: number
+}
+
+/** The X-Colloq-Sha256 and X-Colloq-Bytes of a council file, and its encoding: what its body is to be. */
+function councilMeta(req: Request, gzip: boolean): { sha256: string; bytes: number } {
+  const encoding = req.headers['content-encoding']
+  const sha256 = req.headers[REMOTE_SHA256_HEADER.toLowerCase()]
+  const declared = req.headers[REMOTE_BYTES_HEADER.toLowerCase()]
+  const encoded = typeof encoding === 'string' ? encoding.trim().toLowerCase() : ''
+  const encodingOk = gzip ? encoded === 'gzip' : encoded === '' || encoded === 'identity'
+  if (!encodingOk || typeof sha256 !== 'string' || !REMOTE_SHA256.test(sha256) || typeof declared !== 'string' || !DECIMAL.test(declared)) {
+    throw new RemoteProtocolError('Invalid headers of a council file')
+  }
+  return { sha256, bytes: Number(declared) }
+}
+
+/**
+ * PUT epochs/:sha256?session=&gen= (remote-classes.md §9.2, §15): a file of an
+ * epoch whose export lies in a container of this machine, that this server
+ * asked the machine to `ship` home because the class's pool is on another
+ * machine (kernel/remote/epochs.ts · epochUploadFor). Raw, its
+ * X-Colloq-Sha256 its name, checked as it lands, read at the classes' pace
+ * through their upload slots, kept in the epoch store. Refused before a byte
+ * is read: a file not asked of this machine (404), a placement since lost or
+ * replaced (409 `revoked`, which the agent drops), a length that is not the
+ * epoch's (422). The same file again is answered as stored.
+ */
+export async function receiveEpochFile(req: Request, runner: RunnerRow, sha256: string, query: { session: unknown; gen: unknown }): Promise<CouncilFileStored> {
+  const sessionId = typeof query.session === 'string' ? query.session : ''
+  const gen = typeof query.gen === 'string' && /^[1-9][0-9]{0,15}$/.test(query.gen) ? Number(query.gen) : null
+  if (!REMOTE_SHA256.test(sha256) || !REMOTE_SESSION_ID.test(sessionId) || gen === null) throw new RemoteProtocolError('Invalid epoch file, class or gen')
+  const meta = councilMeta(req, false)
+  if (meta.sha256 !== sha256) throw new UploadRefusal('mismatch', 'The file is not the one its path names')
+  let asked: ReturnType<typeof epochUploadFor>
+  try {
+    asked = epochUploadFor(runner.id, sha256, sessionId, gen)
+  } catch (error) {
+    throw councilRefusal(error)
+  }
+  if (meta.bytes !== asked.file.bytes) throw new UploadRefusal('mismatch', 'The file is not the length of the epoch\'s')
+  if (storeHas(sessionId, asked.file)) {
+    landEpochUpload(runner.id, sessionId, asked.file, '')
+    return { sha256, bytes: meta.bytes }
+  }
+  const part = path.join(epochStagingDir(), `${sha256}.${randomUUID()}.part`)
+  try {
+    await receiveClassFile(req, runner.id, { open: () => fs.openSync(part, 'wx', 0o600), sha256, bytes: meta.bytes, volume: config.dataDir, raw: true })
+    landEpochUpload(runner.id, sessionId, asked.file, part)
+    return { sha256, bytes: meta.bytes }
+  } finally {
+    try { fs.rmSync(part, { force: true }) } catch { /* renamed into the store, or the sweep takes it */ }
+  }
+}
+
+/**
+ * PUT council/:sessionId/runs/:runId/files/:name?gen= (remote-classes.md
+ * §9.7, §15): one file an attempt the pool ran wrote into its folder, that
+ * this server named in the attempt's collection (kernel/remote/epochs.ts ·
+ * artifactUploadFor), gzipped like a class file, at most
+ * COUNCIL_ARTIFACTS.fileBytes, checked against its declared sha256 and
+ * length, read at the classes' pace through their upload slots, kept beside
+ * the attempt and named on its card. Participant data: its name, size and
+ * hash are checked here whatever the machine said. Refused before a byte is
+ * read: not asked (404), the council placement since lost (409 `revoked`),
+ * past the caps or not what was asked (413, 422).
+ */
+export async function receiveArtifact(req: Request, runner: RunnerRow, sessionId: string, runId: string, name: string, query: { gen: unknown }): Promise<CouncilFileStored> {
+  const gen = typeof query.gen === 'string' && /^[1-9][0-9]{0,15}$/.test(query.gen) ? Number(query.gen) : null
+  if (!REMOTE_SESSION_ID.test(sessionId) || !REMOTE_RUN_ID.test(runId) || name === '' || normalizePath(name) !== name || gen === null) {
+    throw new RemoteProtocolError('Invalid class, run, file or gen of an attempt file')
+  }
+  const meta = councilMeta(req, true)
+  if (meta.bytes > COUNCIL_ARTIFACTS.fileBytes) throw new UploadRefusal('too_large', 'An attempt file is at most 1 MiB')
+  let asked: ReturnType<typeof artifactUploadFor>
+  try {
+    asked = artifactUploadFor(runner.id, sessionId, runId, name, gen)
+  } catch (error) {
+    throw councilRefusal(error)
+  }
+  if (meta.sha256 !== asked.sha256 || meta.bytes !== asked.bytes) throw new UploadRefusal('mismatch', 'The file is not the one its attempt listed')
+  const part = `${asked.target}.${randomUUID()}.part`
+  fs.mkdirSync(path.dirname(asked.target), { recursive: true, mode: 0o700 })
+  try {
+    await receiveClassFile(req, runner.id, { open: () => fs.openSync(part, 'wx', 0o600), sha256: meta.sha256, bytes: meta.bytes, volume: config.dataDir })
+    landArtifact(sessionId, runId, name, part, asked.target)
+    return { sha256: meta.sha256, bytes: meta.bytes }
+  } finally {
+    try { fs.rmSync(part, { force: true }) } catch { /* renamed into place, or the sweep takes it */ }
+  }
+}
+
+/** The council doors' refusals in the contract's codes: not asked of this machine (404), a fenced placement (409 `revoked`). */
+function councilRefusal(error: unknown): unknown {
+  if (error instanceof EpochUploadRefused || error instanceof ArtifactRefused) {
+    return new UploadRefusal(error.why === 'stale' ? 'revoked' : error.why === 'mismatch' ? 'mismatch' : 'not_found', error.message)
+  }
+  return error
 }
 
 /** The class files' refusals in the contract's codes. */

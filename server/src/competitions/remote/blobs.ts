@@ -70,6 +70,7 @@ import { clientAddress } from '../../net/inbound.js'
 import { tooOften } from '../../net/too-often.js'
 import { resolveInSession, workspaceFs } from '../../workspace.js'
 import { classFiles } from '../../kernel/remote/files.js'
+import { epochBlobFor } from '../../kernel/remote/epochs.js'
 import { runnerBlobMBpsSetting } from '../settings.js'
 import { competitionsFs, inputDir, NOTEBOOK_FILE, openDir, sealedDir } from '../storage.js'
 import { classPlacementsLive, lastSync, runnerCards, wantedBefore } from './heard.js'
@@ -150,6 +151,8 @@ type BlobSource =
   | { kind: 'wheel'; lease?: string }
   /** A class's file a push of its copy names (remote-classes.md §8.2): `promoted` — a run waits on it. */
   | { kind: 'room'; sessionId: string; path: string; bytes: number; promoted: boolean; lease?: undefined }
+  /** A file of a council epoch this server named the machine to fetch from here (§9.2): in its store, by its sha256. */
+  | { kind: 'epoch'; sessionId: string; path: string; bytes: number; lease?: undefined }
 
 /*
  * THE `room` SOURCE (§15): a file of a class placed on the machine, named by
@@ -177,6 +180,9 @@ function scopedSources(runner: RunnerRow, hash: string, want: WantScope | null):
   // A class's file for its copy on this machine: never beside a lease's (a hash of either names one content).
   const room = runner.classes ? roomBlobs.blobFor(runner.id, hash) : null
   if (room) return [{ kind: 'room', ...room }]
+  // A file of a council epoch the machine's last reply named it to fetch from here (kernel/remote/epochs.ts · epochBlobFor).
+  const epoch = runner.classes ? epochBlobFor(runner.id, hash) : null
+  if (epoch) return [{ kind: 'epoch', ...epoch }]
   const leases = liveLeases(runner.id)
   for (const lease of leases) {
     const m = lease.manifest
@@ -203,6 +209,8 @@ function scopedSources(runner: RunnerRow, hash: string, want: WantScope | null):
 /** A source resolved to an open file of the expected length; `null` — it has been replaced or is gone (410). */
 function openSource(source: BlobSource, hash: string): { fd: number; bytes: number } | null {
   try {
+    // An epoch's file is named by its hash in this server's store, and kept there only once it hashed to it (epochs.ts · keepFile).
+    if (source.kind === 'epoch') return sized(fs.openSync(source.path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW), source.bytes)
     if (source.kind === 'open' || source.kind === 'sealed') {
       const row = db.prepare('SELECT bytes, sha256 FROM competition_files WHERE competition_id = ? AND visibility = ? AND name = ?')
         .get(source.competitionId, source.kind, source.name) as { bytes: number; sha256: string | null } | undefined
@@ -527,8 +535,8 @@ export async function serveBlob(req: Request, res: Response, runner: RunnerRow, 
         done(null, chunk)
       },
     })
-    // Each flow through its own bucket (§4.9): a class's files at their rate, a promoted push faster, the rest as the owner set.
-    const pace = room ? (room.promoted ? promotedPace : roomPace) : competitionPace
+    // Each flow through its own bucket (§4.9): a class's files at their rate (its epochs among them), a promoted push faster, the rest as the owner set.
+    const pace = room ? (room.promoted ? promotedPace : roomPace) : source.kind === 'epoch' ? roomPace : competitionPace
     await pipeline(body, pace.transform(), counted, res).catch(() => {
       // The machine hung up mid-stream, or the stream was cut: it resumes with Range, if it still may.
       body.destroy()
