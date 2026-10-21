@@ -85,7 +85,9 @@ async function publish(s: ReturnType<typeof stand>, extra: NodeJS.ProcessEnv = {
   let output = ''
   host.stdout!.on('data', d => { output += d }); host.stderr!.on('data', d => { output += d })
   const deadline = Date.now() + 20000
-  while (!/Everything runs here/.test(output) && host.exitCode === null && Date.now() < deadline) {
+  // The banner ends with its closing blank line, after the cluster's note: stopping at its first line raced the rest
+  // of it on a slow runner (CI saw «Everything runs here» without «taken off the cluster too» once).
+  while (!/keeps turning locally at [^\n]*\n(?:[^\n]*\n)*?\n/.test(output) && host.exitCode === null && Date.now() < deadline) {
     await new Promise(r => setTimeout(r, 50))
   }
   return { host, read: () => output.replace(/\x1b\[[0-9;]*m/g, '') }
