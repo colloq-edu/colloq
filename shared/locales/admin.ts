@@ -3816,8 +3816,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Resources"
   },
   "admin.resourcesTab.subtitle": {
-    "ru": "Сколько машины получает каждая часть занятия. Это значения по умолчанию: у занятия и соревнования их можно поменять.",
-    "en": "How much of the machine each part of a class gets. These are defaults: a class or a competition can change its own."
+    "ru": "Сколько машины получает каждая часть занятия и где она считается. Это значения по умолчанию: у занятия и соревнования их можно поменять.",
+    "en": "How much of the machine each part of a class gets, and where it runs. These are defaults: a class or a competition can change its own."
   },
   "admin.resourcesTab.loading": {
     "ru": "Загружаем ресурсы…",
@@ -7124,12 +7124,12 @@ export const adminMessages: MessageCatalog = {
    * meaning places.
    */
   "admin.runners.title": {
-    "ru": "Машины для посылок",
-    "en": "Machines for submissions"
+    "ru": "Машины",
+    "en": "Machines"
   },
   "admin.runners.note": {
-    "ru": "Посылки соревнований считаются не только здесь: подключённые машины берут их из общей очереди, считают в той же песочнице и возвращают ответ. Материалы, очередь, ответы и метрика остаются на этом сервере.",
-    "en": "Competition submissions are not only run here: connected machines take them from the shared queue, run them in the same sandbox and send the answer back. The materials, the queue, the answers and the metric stay on this server."
+    "ru": "Подключённые машины берут посылки соревнований из общей очереди. Машина, которой вы открыли занятия, ещё и держит ядра классов: тетради, личные тетради и консилиум. Тетради, файлы и ответы по-прежнему хранит этот сервер — кроме файлов крупнее предела и пакетов pip -t: они остаются на машине.",
+    "en": "Connected machines take competition submissions from the shared queue. A machine you opened to classes also holds class kernels: class notebooks, personal notebooks and the council. This server still keeps the notebooks, files and answers — except files over the cap and pip -t packages, which stay on the machine."
   },
   "admin.runners.ownerOnly": {
     "ru": "Машины для посылок подключает и видит только владелец сервера.",
@@ -7388,8 +7388,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Disconnect all"
   },
   "admin.runners.footnote": {
-    "ru": "Машина видит тетради участников и открытые данные. Скрытый тест получают только доверенные машины; ответы и метрика никогда не уезжают с этого сервера.",
-    "en": "A machine sees participants' notebooks and the open data. Only trusted machines get the hidden test; the answers and the metric never leave this server."
+    "ru": "Машина видит тетради участников и открытые данные. Машина, которая принимает занятия, видит ещё и всё у своих классов: код, файлы и личные тетради студентов — поэтому скрытый тест ей не дают. Ответы и метрика никогда не уезжают с этого сервера.",
+    "en": "A machine sees participants' notebooks and the open data. A machine that takes classes also sees everything of its classes: code, files and students' personal notebooks, so it gets no hidden test. The answers and the metric never leave this server."
   },
   "admin.runners.banner": {
     "ru": "{name} на карантине с {time}: слишком много потерь или отказов подряд, и сервер перестал давать ей посылки. Посмотрите её события и верните в работу, когда причина устранена.",
@@ -8979,8 +8979,1031 @@ export const adminMessages: MessageCatalog = {
     "ru": "Отменён код подключения машин",
     "en": "Machine enrollment code cancelled"
   },
+  "admin.audit.action.runner.classes": {
+    "ru": "Изменён приём занятий на машине",
+    "en": "Machine's classes setting changed"
+  },
+  "admin.audit.runnerClassesOn": {
+    "ru": "принимает занятия: машина видит их код, данные, файлы и личные тетради студентов",
+    "en": "takes classes: the machine sees their code, data, files and students' personal notebooks"
+  },
+  "admin.audit.runnerClassesOff": {
+    "ru": "больше не принимает занятия: их ядра перенесены с неё",
+    "en": "no longer takes classes: their kernels were moved off it"
+  },
+  "admin.audit.action.runner.classes_resumed": {
+    "ru": "Машине вернули занятия после карантина",
+    "en": "Machine taken back for classes after its quarantine"
+  },
+  "admin.audit.action.runner.classes_moved": {
+    "ru": "Занятия перенесены с машины",
+    "en": "Classes moved off a machine"
+  },
   "admin.audit.console": {
     "ru": "Консоль сервера",
     "en": "Server console"
+  },
+  "admin.runners.chip.submissions": {
+    "ru": "посылки",
+    "en": "submissions"
+  },
+  "admin.runners.chip.classes": {
+    "ru": "занятия",
+    "en": "classes"
+  },
+  "admin.runners.classes.label": {
+    "ru": "Занятия:",
+    "en": "Classes:"
+  },
+  "admin.runners.classes.count": {
+    "ru": {
+      "one": "{count} класс",
+      "few": "{count} класса",
+      "many": "{count} классов",
+      "other": "{count} класса"
+    },
+    "en": {
+      "one": "{count} class",
+      "other": "{count} classes"
+    }
+  },
+  "admin.runners.summary.classes": {
+    "ru": "ведут занятия · {classes}",
+    "en": "with classes · {classes}"
+  },
+  "admin.runners.classes.memory": {
+    "ru": "{used} из {total} ГБ",
+    "en": "{used} of {total} GB"
+  },
+  "admin.runners.classes.memoryHeld": {
+    "ru": "{used} ГБ",
+    "en": "{used} GB"
+  },
+  "admin.runners.classes.card": {
+    "ru": "карта {card} занята классом",
+    "en": "card {card} held by a class"
+  },
+  "admin.runners.classes.link": {
+    "ru": "связь {ms} мс (p95 {p95})",
+    "en": "link {ms} ms (p95 {p95})"
+  },
+  "admin.runners.classes.linkOnly": {
+    "ru": "связь {ms} мс",
+    "en": "link {ms} ms"
+  },
+  "admin.runners.classes.ready": {
+    "ru": "готова",
+    "en": "ready"
+  },
+  "admin.runners.classes.image": {
+    "ru": "образ ↓ {percent} % — возьмёт классы, когда скачает {env}",
+    "en": "image ↓ {percent}% — takes classes once {env} is downloaded"
+  },
+  "admin.runners.classes.imageBare": {
+    "ru": "образ ↓ {percent} % — возьмёт классы, когда его скачает",
+    "en": "image ↓ {percent}% — takes classes once it is downloaded"
+  },
+  "admin.runners.classes.hostNetwork": {
+    "ru": "нужен --network host — перезапустите машину командой из панели",
+    "en": "needs --network host — restart the machine with the command from the panel"
+  },
+  "admin.runners.classes.perimeter.noIptables": {
+    "ru": "периметр: у Docker нет iptables",
+    "en": "perimeter: Docker has no iptables"
+  },
+  "admin.runners.classes.perimeter.noDockerd": {
+    "ru": "периметр: Docker не отвечает",
+    "en": "perimeter: Docker does not answer"
+  },
+  "admin.runners.classes.perimeter.refused": {
+    "ru": "периметр: Docker без root или только с nftables — занятия нельзя",
+    "en": "perimeter: rootless Docker or nftables only — no classes"
+  },
+  "admin.runners.classes.perimeter.failing": {
+    "ru": "периметр вышел из-под контроля — занятия перенесены",
+    "en": "the perimeter got out of control — classes moved away"
+  },
+  "admin.runners.classes.canary": {
+    "ru": "проверка допуска не прошла: {detail}",
+    "en": "the admission check failed: {detail}"
+  },
+  "admin.runners.classes.canaryPending": {
+    "ru": "проверка допуска пройдёт, когда на машине будет образ класса",
+    "en": "the admission check runs once a class image is on the machine"
+  },
+  "admin.runners.classes.sameDaemon": {
+    "ru": "на этой машине стоит сервер Colloq — занятия нельзя",
+    "en": "this machine runs the Colloq server — no classes"
+  },
+  "admin.runners.classes.quarantined": {
+    "ru": "на карантине с {time} — дважды пропадала за 30 минут; посылки берёт как обычно. Вернуть — в меню ⋯",
+    "en": "quarantined since {time} — went silent twice in 30 minutes; it still takes submissions. Resume from the ⋯ menu"
+  },
+  "admin.runners.classes.silent": {
+    "ru": "{classes} · нет связи {elapsed} · перенесём на сервер в {time}",
+    "en": "{classes} · no link for {elapsed} · moving to this server at {time}"
+  },
+  "admin.runners.classes.silentWait": {
+    "ru": "{classes} · нет связи {elapsed}",
+    "en": "{classes} · no link for {elapsed}"
+  },
+  "admin.runners.classes.silentIdle": {
+    "ru": "нет связи — новые занятия не берёт",
+    "en": "no link — takes no new classes"
+  },
+  "admin.runners.classes.winding": {
+    "ru": "убирает занятия: ждём, пока машина остановит их ядра",
+    "en": "winding classes down: waiting for the machine to stop their kernels"
+  },
+  "admin.runners.classes.outdated": {
+    "ru": "устарела — новые занятия не берёт, начатые продолжает",
+    "en": "outdated — takes no new classes, keeps the ones it has"
+  },
+  "admin.runners.classes.facts": {
+    "ru": "ждём, что машина скажет о себе",
+    "en": "waiting for the machine to report what it can do"
+  },
+  "admin.runners.classes.tunnel": {
+    "ru": "туннель не поднят — занятия ждут связь",
+    "en": "the tunnel is down — classes wait for the link"
+  },
+  "admin.runners.menu.classes": {
+    "ru": "Принимает занятия",
+    "en": "Takes classes"
+  },
+  "admin.runners.menu.classesWarning": {
+    "ru": "Машина видит код, данные, файлы и личные тетради студентов. Скрытый тест ей не дают.",
+    "en": "The machine sees students' code, data, files and personal notebooks. It gets no hidden test."
+  },
+  "admin.runners.menu.moveClasses": {
+    "ru": "Перенести занятия",
+    "en": "Move classes"
+  },
+  "admin.runners.menu.moveClassesHint": {
+    "ru": "{classes} переедут на сервер или другую машину; переменные пропадут",
+    "en": "{classes} move to this server or another machine; variables are lost"
+  },
+  "admin.runners.menu.moveClassesNone": {
+    "ru": "сейчас на машине нет занятий",
+    "en": "no class runs on the machine now"
+  },
+  "admin.runners.menu.trustNotWithClasses": {
+    "ru": "нельзя вместе с занятиями",
+    "en": "not together with classes"
+  },
+  "admin.runners.menu.classesNotWithTrust": {
+    "ru": "нельзя вместе с доверием",
+    "en": "not together with trust"
+  },
+  "admin.runners.menu.resumeClasses": {
+    "ru": "Вернуть занятиям",
+    "en": "Resume classes"
+  },
+  "admin.runners.classesOn.title": {
+    "ru": "Принимать занятия на «{name}»?",
+    "en": "Take classes on “{name}”?"
+  },
+  "admin.runners.classesOn.body": {
+    "ru": "На машину поедут ядра классов, которым преподаватель выбрал «на машинах». Машина увидит код, данные, файлы и личные тетради студентов. Скрытый тест ей не дают, пока занятия включены.",
+    "en": "Kernels of classes whose teacher chose “on machines” will go to the machine. It will see students' code, data, files and personal notebooks. It gets no hidden test while classes are on."
+  },
+  "admin.runners.classesOn.confirm": {
+    "ru": "Принимать занятия",
+    "en": "Take classes"
+  },
+  "admin.runners.classesOff.title": {
+    "ru": "Больше не принимать занятия на «{name}»?",
+    "en": "Stop taking classes on “{name}”?"
+  },
+  "admin.runners.classesOff.body": {
+    "ru": "{classes} переедут на сервер или другую машину сейчас: переменные пропадут, файлы останутся. Новые занятия на эту машину не пойдут.",
+    "en": "{classes} move to this server or another machine now: variables are lost, files stay. No new class goes to this machine."
+  },
+  "admin.runners.classesOff.bodyEmpty": {
+    "ru": "Новые занятия на эту машину больше не пойдут. Посылки она берёт как раньше.",
+    "en": "No new class goes to this machine. It takes submissions as before."
+  },
+  "admin.runners.classesOff.confirm": {
+    "ru": "Не принимать занятия",
+    "en": "Stop taking classes"
+  },
+  "admin.runners.moveClasses.title": {
+    "ru": "Перенести занятия с «{name}»?",
+    "en": "Move the classes off “{name}”?"
+  },
+  "admin.runners.moveClasses.body": {
+    "ru": "{classes} переедут на сервер или другую машину сейчас: переменные пропадут, файлы останутся. Машина и дальше принимает занятия.",
+    "en": "{classes} move to this server or another machine now: variables are lost, files stay. The machine keeps taking classes."
+  },
+  "admin.runners.moveClasses.confirm": {
+    "ru": "Перенести",
+    "en": "Move"
+  },
+  "admin.runners.classBanner.quarantined": {
+    "ru": "Машина «{name}» дважды пропадала за 30 минут — занятия на неё больше не отправляются.",
+    "en": "Machine “{name}” went silent twice in 30 minutes — classes are no longer sent to it."
+  },
+  "admin.runners.classBanner.resume": {
+    "ru": "Вернуть",
+    "en": "Resume"
+  },
+  "admin.runners.classBanner.tunnel": {
+    "ru": {
+      "one": "Связь машины «{name}» за {minutes} минут {count} раз перехватывали с разных адресов: {addresses}. Проверьте, не утёк ли её ключ.",
+      "few": "Связь машины «{name}» за {minutes} минут {count} раза перехватывали с разных адресов: {addresses}. Проверьте, не утёк ли её ключ.",
+      "many": "Связь машины «{name}» за {minutes} минут {count} раз перехватывали с разных адресов: {addresses}. Проверьте, не утёк ли её ключ.",
+      "other": "Связь машины «{name}» за {minutes} минут {count} раза перехватывали с разных адресов: {addresses}. Проверьте, не утёк ли её ключ."
+    },
+    "en": {
+      "one": "The link of machine “{name}” was taken over {count} time in {minutes} minutes from different addresses: {addresses}. Check whether its key leaked.",
+      "other": "The link of machine “{name}” was taken over {count} times in {minutes} minutes from different addresses: {addresses}. Check whether its key leaked."
+    }
+  },
+  "admin.runners.classBanner.perimeter": {
+    "ru": "Сеть на машине «{name}» вышла из-под контроля: ядро остановлено ради безопасности и поднято на этом сервере.",
+    "en": "The network on machine “{name}” got out of control: the kernel was stopped for safety and started on this server."
+  },
+  "admin.runners.classes.trustRefused": {
+    "ru": "Машине с занятиями скрытый тест не доверяют: сначала выключите «Принимает занятия».",
+    "en": "A machine that takes classes is never given the hidden test: turn off Takes classes first."
+  },
+  "admin.runners.classes.trustedRefused": {
+    "ru": "Доверенной машине занятия не дают: сначала снимите «Доверенная».",
+    "en": "A trusted machine takes no classes: turn off Trusted first."
+  },
+  "admin.runners.classes.invalid": {
+    "ru": "Поле classes бывает только true или false.",
+    "en": "classes must be true or false."
+  },
+  "admin.runners.classes.nothingToMove": {
+    "ru": "На машине нет занятий — переносить нечего.",
+    "en": "No class runs on the machine: nothing to move."
+  },
+  "admin.runners.connect.classesTitle": {
+    "ru": "Занятия",
+    "en": "Classes"
+  },
+  "admin.runners.connect.classes": {
+    "ru": "Принимать занятия — машина увидит код, данные, файлы и личные тетради студентов",
+    "en": "Take classes — the machine will see students' code, data, files and personal notebooks"
+  },
+  "admin.runners.connect.classesNote": {
+    "ru": "На неё поедут ядра классов, которым преподаватель выбрал «на машинах». Подходит своя или университетская машина; арендованной отдавайте только учебные данные. Включить и выключить можно потом в меню машины.",
+    "en": "Kernels of classes whose teacher chose “on machines” will go to it. Your own or a university machine fits; give a rented one only teaching data. You can switch this later in the machine’s menu."
+  },
+  "admin.runners.connect.classesSealed": {
+    "ru": "Нельзя вместе с занятиями: машине с классами скрытый тест не дают",
+    "en": "Not together with classes: a machine with classes gets no hidden test"
+  },
+  "admin.runners.connect.classImage": {
+    "ru": "{name} качает образ {env} для занятий · {percent} %",
+    "en": "{name} is downloading the {env} image for classes · {percent}%"
+  },
+  "admin.runners.page.classesCount": {
+    "ru": {
+      "one": "класс на машине",
+      "few": "класса на машине",
+      "many": "классов на машине",
+      "other": "класса на машине"
+    },
+    "en": {
+      "one": "class on the machine",
+      "other": "classes on the machine"
+    }
+  },
+  "admin.runners.page.classesMemory": {
+    "ru": "из {total} ГБ у классов",
+    "en": "of {total} GB held by classes"
+  },
+  "admin.runners.page.classesMemoryHeld": {
+    "ru": "ГБ у классов",
+    "en": "GB held by classes"
+  },
+  "admin.runners.page.linkCounter": {
+    "ru": "мс связь · p95 {p95}",
+    "en": "ms link · p95 {p95}"
+  },
+  "admin.runners.page.linkCounterOnly": {
+    "ru": "мс связь",
+    "en": "ms link"
+  },
+  "admin.runners.page.moves": {
+    "ru": {
+      "one": "переезд за сутки",
+      "few": "переезда за сутки",
+      "many": "переездов за сутки",
+      "other": "переезда за сутки"
+    },
+    "en": {
+      "one": "move in a day",
+      "other": "moves in a day"
+    }
+  },
+  "admin.runners.page.classesLabel": {
+    "ru": "Занятия",
+    "en": "Classes"
+  },
+  "admin.runners.page.classesOn": {
+    "ru": "Принимает занятия",
+    "en": "Takes classes"
+  },
+  "admin.runners.page.classesOff": {
+    "ru": "Не принимает занятия",
+    "en": "Takes no classes"
+  },
+  "admin.runners.page.classesNote": {
+    "ru": "Машина видит код, данные, файлы и личные тетради студентов своих классов. Скрытый тест ей не дают, пока занятия включены.",
+    "en": "The machine sees the code, data, files and personal notebooks of its classes' students. It gets no hidden test while classes are on."
+  },
+  "admin.runners.page.classesSection": {
+    "ru": "Занятия на машине · {count}",
+    "en": "Classes on the machine · {count}"
+  },
+  "admin.runners.page.classesSectionNote": {
+    "ru": "Ядра классов: тетрадь класса, личные тетради, консилиум. Файлы ядро пишет здесь, на машине, и они едут на сервер после каждого запуска. «Перенести» поднимет ядро на сервере или другой машине — переменные пропадут, файлы останутся.",
+    "en": "Class kernels: the class notebook, personal notebooks, the council. The kernel writes files here, on the machine, and they travel to the server after every run. “Move” starts the kernel on the server or another machine: variables are lost, files stay."
+  },
+  "admin.runners.page.noClasses": {
+    "ru": "Сейчас на машине нет занятий.",
+    "en": "No class runs on the machine now."
+  },
+  "admin.runners.page.col.class": {
+    "ru": "Занятие",
+    "en": "Class"
+  },
+  "admin.runners.page.col.kernels": {
+    "ru": "Ядра",
+    "en": "Kernels"
+  },
+  "admin.runners.page.col.memory": {
+    "ru": "Память",
+    "en": "Memory"
+  },
+  "admin.runners.page.col.cpu": {
+    "ru": "ЦП",
+    "en": "CPU"
+  },
+  "admin.runners.page.col.link": {
+    "ru": "Связь",
+    "en": "Link"
+  },
+  "admin.runners.page.col.files": {
+    "ru": "Файлы",
+    "en": "Files"
+  },
+  "admin.runners.role.room": {
+    "ru": "класс",
+    "en": "class"
+  },
+  "admin.runners.role.own": {
+    "ru": "личные",
+    "en": "personal"
+  },
+  "admin.runners.role.council": {
+    "ru": "консилиум",
+    "en": "council"
+  },
+  "admin.runners.page.workers": {
+    "ru": {
+      "one": "{count} исполнитель",
+      "few": "{count} исполнителя",
+      "many": "{count} исполнителей",
+      "other": "{count} исполнителя"
+    },
+    "en": {
+      "one": "{count} worker",
+      "other": "{count} workers"
+    }
+  },
+  "admin.runners.page.cardWithClass": {
+    "ru": "карта {card} у класса",
+    "en": "card {card} with the class"
+  },
+  "admin.runners.page.waiting": {
+    "ru": "ждёт машину",
+    "en": "waiting for the machine"
+  },
+  "admin.runners.page.memoryOf": {
+    "ru": "{used} из {limit} ГБ",
+    "en": "{used} of {limit} GB"
+  },
+  "admin.runners.page.memoryLimit": {
+    "ru": "{limit} ГБ",
+    "en": "{limit} GB"
+  },
+  "admin.runners.page.cpuPercent": {
+    "ru": "{value} %",
+    "en": "{value}%"
+  },
+  "admin.runners.page.ms": {
+    "ru": "{ms} мс",
+    "en": "{ms} ms"
+  },
+  "admin.runners.page.p95": {
+    "ru": "p95 {ms}",
+    "en": "p95 {ms}"
+  },
+  "admin.runners.files.count": {
+    "ru": {
+      "one": "{count} файл",
+      "few": "{count} файла",
+      "many": "{count} файлов",
+      "other": "{count} файла"
+    },
+    "en": {
+      "one": "{count} file",
+      "other": "{count} files"
+    }
+  },
+  "admin.runners.files.synced": {
+    "ru": "синхронно",
+    "en": "in sync"
+  },
+  "admin.runners.files.pending": {
+    "ru": "↑ {files}, {size}",
+    "en": "↑ {files}, {size}"
+  },
+  "admin.runners.files.heldOnly": {
+    "ru": "{files} только на машине",
+    "en": "{files} only on the machine"
+  },
+  "admin.runners.event.tunnel_replaced": {
+    "ru": "Связь перехвачена с адреса {address} — прежний туннель с {previous} закрыт",
+    "en": "Link taken over from {address} — the previous tunnel from {previous} closed"
+  },
+  "admin.runners.event.tunnel_reconnected": {
+    "ru": "Машина переподключила туннель",
+    "en": "The machine reconnected its tunnel"
+  },
+  "admin.runners.event.class_failover": {
+    "ru": "Занятия перенесены с машины: {why}",
+    "en": "Classes moved off the machine: {why}"
+  },
+  "admin.runners.event.class_failover_by": {
+    "ru": "Занятия перенесены с машины вручную: {who}",
+    "en": "Classes moved off the machine by hand: {who}"
+  },
+  "admin.runners.event.why.silence": {
+    "ru": "не отвечала",
+    "en": "it did not answer"
+  },
+  "admin.runners.event.why.tunnel": {
+    "ru": "связь не вернулась",
+    "en": "the link did not come back"
+  },
+  "admin.runners.event.why.revoked": {
+    "ru": "машину отключили",
+    "en": "the machine was disconnected"
+  },
+  "admin.runners.event.why.unclassed": {
+    "ru": "занятия на ней выключены",
+    "en": "classes were turned off on it"
+  },
+  "admin.runners.event.why.leaving": {
+    "ru": "машина ушла",
+    "en": "the machine left"
+  },
+  "admin.runners.event.why.perimeter": {
+    "ru": "сеть вышла из-под контроля",
+    "en": "its network got out of control"
+  },
+  "admin.runners.event.why.moved": {
+    "ru": "перенесли вручную",
+    "en": "moved by hand"
+  },
+  "admin.runners.event.why.blocked": {
+    "ru": "закрытые сети сервера не помещаются в машину",
+    "en": "this server's blocked networks do not fit the machine"
+  },
+  "admin.runners.event.classes_quarantined": {
+    "ru": "Дважды пропадала за 30 минут — занятия на неё не отправляются",
+    "en": "Went silent twice in 30 minutes — classes are not sent to it"
+  },
+  "admin.runners.event.classes_resumed": {
+    "ru": "Владелец вернул машину занятиям",
+    "en": "The owner resumed classes on the machine"
+  },
+  "admin.runners.event.unclassed": {
+    "ru": "Занятия выключены: «Принимает занятия» снят",
+    "en": "Classes turned off: Takes classes is off"
+  },
+  "admin.runners.event.unclassedMoved": {
+    "ru": {
+      "one": "Занятия выключены: перенесено {count} ядро",
+      "few": "Занятия выключены: перенесено {count} ядра",
+      "many": "Занятия выключены: перенесено {count} ядер",
+      "other": "Занятия выключены: перенесено {count} ядра"
+    },
+    "en": {
+      "one": "Classes turned off: {count} kernel moved",
+      "other": "Classes turned off: {count} kernels moved"
+    }
+  },
+  "admin.runners.event.perimeter_failing": {
+    "ru": "Сеть машины вышла из-под контроля — занятия перенесены на сервер",
+    "en": "The machine's network got out of control — classes moved to this server"
+  },
+  "admin.classes.title": {
+    "ru": "Занятия на машинах",
+    "en": "Classes on machines"
+  },
+  "admin.classes.note": {
+    "ru": "Кто решает, где считается класс, что делать, когда машина пропала, и сколько связи отдать файлам. Действует сразу, без перезапуска.",
+    "en": "Who decides where a class runs, what happens when a machine disappears, and how much of the link files get. Takes effect at once, no restart."
+  },
+  "admin.classes.teachers": {
+    "ru": "Учителя отправляют занятия на машины",
+    "en": "Teachers send classes to machines"
+  },
+  "admin.classes.teachersNote": {
+    "ru": "Преподаватель выбирает «Где считается» у своего занятия — среди машин, которые принимают занятия. Выключено — решаете только вы.",
+    "en": "A teacher picks “Where it runs” for their class, among machines that take classes. When off, only you decide."
+  },
+  "admin.classes.newClasses": {
+    "ru": "Новые занятия по умолчанию",
+    "en": "Default for new classes"
+  },
+  "admin.classes.newClassesNote": {
+    "ru": "Тетрадь класса остаётся здесь — лекция не теряет в скорости. Уже созданные занятия не меняются.",
+    "en": "The class notebook stays here, so the lecture keeps its speed. Existing classes do not change."
+  },
+  "admin.classes.newClassesNoteOther": {
+    "ru": "Уже созданные занятия не меняются.",
+    "en": "Existing classes do not change."
+  },
+  "admin.classes.failoverSec": {
+    "ru": "Переезд через",
+    "en": "Move after"
+  },
+  "admin.classes.seconds": {
+    "ru": "с",
+    "en": "s"
+  },
+  "admin.classes.failoverNote": {
+    "ru": "От 30 до 300 с. Класс может выбрать «ждать машину».",
+    "en": "30 to 300 s. A class may choose “wait for the machine”."
+  },
+  "admin.classes.machineFileMb": {
+    "ru": "Файл с машины — до",
+    "en": "File from a machine — up to"
+  },
+  "admin.classes.mb": {
+    "ru": "МБ",
+    "en": "MB"
+  },
+  "admin.classes.classBulkMBps": {
+    "ru": "Файлы занятий",
+    "en": "Class files"
+  },
+  "admin.classes.mbps": {
+    "ru": "МБ/с",
+    "en": "MB/s"
+  },
+  "admin.classes.competitionMBps": {
+    "ru": "Раздача посылок во время занятий",
+    "en": "Submission downloads during classes"
+  },
+  "admin.classes.ratesNote": {
+    "ru": "Файл крупнее предела остаётся на машине — преподаватель может его «Привезти». Скорости — на каждую машину, пока на ней идут занятия: связь сначала нужна запуску ячейки, потом файлам, потом данным посылок.",
+    "en": "A file over the cap stays on the machine, and a teacher can “Fetch” it. Speeds apply per machine while it holds classes: the link serves cell runs first, then files, then submission data."
+  },
+  "admin.classes.bounds": {
+    "ru": "От {min} до {max}",
+    "en": "{min} to {max}"
+  },
+  "admin.classes.loadFailed": {
+    "ru": "Настройки занятий на машинах не прочитались:",
+    "en": "The settings of classes on machines could not be read:"
+  },
+  "admin.classes.preset.home": {
+    "ru": "Всё здесь",
+    "en": "Everything here"
+  },
+  "admin.classes.preset.homeNote": {
+    "ru": "как было: ничего не уезжает",
+    "en": "as before: nothing leaves"
+  },
+  "admin.classes.preset.personal": {
+    "ru": "Консилиум и личные тетради — на машинах",
+    "en": "Council and personal notebooks on machines"
+  },
+  "admin.classes.preset.personalNote": {
+    "ru": "лекция здесь, нагрузка студентов — на машине",
+    "en": "the lecture here, the students' load on a machine"
+  },
+  "admin.classes.preset.machines": {
+    "ru": "Всё на машинах",
+    "en": "Everything on machines"
+  },
+  "admin.classes.preset.machinesNote": {
+    "ru": "здесь только файлы и тетради",
+    "en": "only files and notebooks here"
+  },
+  "admin.classes.preset.gpu": {
+    "ru": "Всё на машине с картой",
+    "en": "Everything on a machine with a card"
+  },
+  "admin.classes.preset.gpuNote": {
+    "ru": "карта целиком тетради класса",
+    "en": "a whole card for the class notebooks"
+  },
+  "admin.placement.title": {
+    "ru": "Где считается",
+    "en": "Where it runs"
+  },
+  "admin.placement.note": {
+    "ru": "Готовые наборы сверху, по частям — ниже. Переменные живут там, где ядро: переезд их теряет, файлы — нет. Тетради и файлы хранит этот сервер — кроме файлов крупнее предела и пакетов pip -t: они остаются на машине.",
+    "en": "Presets on top, the parts below. Variables live where the kernel is: a move loses them, files survive. This server keeps notebooks and files — except files over the cap and pip -t packages, which stay on the machine."
+  },
+  "admin.placement.presets": {
+    "ru": "Готовый набор",
+    "en": "Preset"
+  },
+  "admin.placement.room": {
+    "ru": "Тетради класса",
+    "en": "Class notebooks"
+  },
+  "admin.placement.roomNote": {
+    "ru": "Общие тетради и терминал. Здесь лекция идёт без задержки связи.",
+    "en": "Shared notebooks and the terminal. Here the lecture has no link delay."
+  },
+  "admin.placement.own": {
+    "ru": "Личные тетради",
+    "en": "Personal notebooks"
+  },
+  "admin.placement.ownNote": {
+    "ru": "Ядро у каждого студента — тридцать ядер уезжают с этого сервера.",
+    "en": "A kernel per student — thirty kernels leave this server."
+  },
+  "admin.placement.council": {
+    "ru": "Консилиум",
+    "en": "Council"
+  },
+  "admin.placement.councilNote": {
+    "ru": "Попытки считаются параллельно на снимке тетради, а не по очереди в её ядре.",
+    "en": "Attempts run in parallel on a snapshot of the notebook, not one by one in its kernel."
+  },
+  "admin.placement.here": {
+    "ru": "Здесь",
+    "en": "Here"
+  },
+  "admin.placement.machines": {
+    "ru": "На машинах",
+    "en": "On machines"
+  },
+  "admin.placement.shared": {
+    "ru": "В общем ядре",
+    "en": "In the shared kernel"
+  },
+  "admin.placement.fallback": {
+    "ru": "Если машин нет — здесь",
+    "en": "If no machine fits — here"
+  },
+  "admin.placement.fallbackNote": {
+    "ru": "Ядро поднимется на этом сервере, если хватит памяти.",
+    "en": "The kernel starts on this server if memory allows."
+  },
+  "admin.placement.failover": {
+    "ru": "Если машина пропала",
+    "en": "If the machine disappears"
+  },
+  "admin.placement.failoverAuto": {
+    "ru": "перенести через",
+    "en": "move after"
+  },
+  "admin.placement.failoverWait": {
+    "ru": "ждать машину",
+    "en": "wait for the machine"
+  },
+  "admin.placement.failoverNote": {
+    "ru": "Переезд стирает переменные; «ждать» держит класс, пока машина не вернётся.",
+    "en": "A move wipes the variables; “wait” holds the class until the machine returns."
+  },
+  "admin.placement.seconds": {
+    "ru": "с",
+    "en": "s"
+  },
+  "admin.placement.workers": {
+    "ru": "Попыток одновременно",
+    "en": "Attempts at once"
+  },
+  "admin.placement.workersAuto": {
+    "ru": "авто",
+    "en": "auto"
+  },
+  "admin.placement.workersCustom": {
+    "ru": "своё число",
+    "en": "custom"
+  },
+  "admin.placement.workersNote": {
+    "ru": "От 2 до 16 исполнителей — сколько поместится. Лишние попытки ждут.",
+    "en": "2 to 16 workers, as many as fit. Extra attempts wait."
+  },
+  "admin.placement.attemptMb": {
+    "ru": "Память на попытку",
+    "en": "Memory per attempt"
+  },
+  "admin.placement.gb": {
+    "ru": "ГБ",
+    "en": "GB"
+  },
+  "admin.placement.attemptNote": {
+    "ru": "Жадная попытка упрётся сама — соседи не заметят.",
+    "en": "A greedy attempt hits its own limit; neighbours won't notice."
+  },
+  "admin.placement.fits": {
+    "ru": "Подходят: {list}",
+    "en": "Fit: {list}"
+  },
+  "admin.placement.fitsOne": {
+    "ru": "Подходит: {list}",
+    "en": "Fits: {list}"
+  },
+  "admin.placement.fitFirst": {
+    "ru": "{name} (свободно {free} ГБ)",
+    "en": "{name} ({free} GB free)"
+  },
+  "admin.placement.fitFirstCards": {
+    "ru": "{name} (свободно {free} ГБ · {cards})",
+    "en": "{name} ({free} GB free · {cards})"
+  },
+  "admin.placement.fitOther": {
+    "ru": "{name} ({free} ГБ)",
+    "en": "{name} ({free} GB)"
+  },
+  "admin.placement.fitOtherCards": {
+    "ru": "{name} ({free} ГБ · {cards})",
+    "en": "{name} ({free} GB · {cards})"
+  },
+  "admin.placement.fitBare": {
+    "ru": "{name}",
+    "en": "{name}"
+  },
+  "admin.placement.cards": {
+    "ru": {
+      "one": "{count} карта",
+      "few": "{count} карты",
+      "many": "{count} карт",
+      "other": "{count} карты"
+    },
+    "en": {
+      "one": "{count} card",
+      "other": "{count} cards"
+    }
+  },
+  "admin.placement.far": {
+    "ru": "· далеко: +{ms} мс на ячейку",
+    "en": "· far: +{ms} ms per cell"
+  },
+  "admin.placement.updated": {
+    "ru": "обновлено {time}",
+    "en": "updated {time}"
+  },
+  "admin.placement.notFit": {
+    "ru": "Сейчас не подходит ни одна: {list}",
+    "en": "None fits now: {list}"
+  },
+  "admin.placement.notFitItem": {
+    "ru": "{name} — {why}",
+    "en": "{name} — {why}"
+  },
+  "admin.placement.why.memory": {
+    "ru": "мало памяти",
+    "en": "not enough memory"
+  },
+  "admin.placement.why.cpus": {
+    "ru": "мало ядер",
+    "en": "not enough cores"
+  },
+  "admin.placement.why.card": {
+    "ru": "нет свободной карты",
+    "en": "no free card"
+  },
+  "admin.placement.why.image": {
+    "ru": "нет образа",
+    "en": "no image yet"
+  },
+  "admin.placement.why.full": {
+    "ru": "занята",
+    "en": "full"
+  },
+  "admin.placement.why.notLive": {
+    "ru": "не на связи",
+    "en": "not online"
+  },
+  "admin.placement.why.outdated": {
+    "ru": "устарела",
+    "en": "outdated"
+  },
+  "admin.placement.why.classesOff": {
+    "ru": "не принимает занятия",
+    "en": "takes no classes"
+  },
+  "admin.placement.why.quarantined": {
+    "ru": "на карантине",
+    "en": "quarantined"
+  },
+  "admin.placement.why.sealed": {
+    "ru": "держит скрытый тест",
+    "en": "holds the hidden test"
+  },
+  "admin.placement.why.tunnel": {
+    "ru": "нет туннеля",
+    "en": "no tunnel"
+  },
+  "admin.placement.why.facts": {
+    "ru": "не сообщила о себе",
+    "en": "has not reported yet"
+  },
+  "admin.placement.why.hostNetwork": {
+    "ru": "нужен --network host",
+    "en": "needs --network host"
+  },
+  "admin.placement.why.perimeter": {
+    "ru": "нет периметра",
+    "en": "no perimeter"
+  },
+  "admin.placement.why.canary": {
+    "ru": "не прошла проверку",
+    "en": "failed the check"
+  },
+  "admin.placement.why.sameDaemon": {
+    "ru": "на ней сервер Colloq",
+    "en": "runs the Colloq server"
+  },
+  "admin.placement.why.avoided": {
+    "ru": "недавно пропадала",
+    "en": "went silent recently"
+  },
+  "admin.placement.why.other": {
+    "ru": "не подходит",
+    "en": "does not fit"
+  },
+  "admin.placement.refusal.label": {
+    "ru": "только этот сервер",
+    "en": "this server only"
+  },
+  "admin.placement.refusal.notPortable": {
+    "ru": "Среда собрана на этом сервере — на машинах её нет",
+    "en": "The environment was built on this server — machines do not have it"
+  },
+  "admin.placement.refusal.notPortableNote": {
+    "ru": "Среда {env} собрана преподавателем, её образа нет в реестре. Все три части считаются здесь. Чтобы уехать на машины, выберите среду colloq: base, base-gpu, kaggle-base или kaggle-gpu.",
+    "en": "The {env} environment was built by a teacher and its image is not in the registry. All three parts run here. To use machines, pick a colloq environment: base, base-gpu, kaggle-base or kaggle-gpu."
+  },
+  "admin.placement.refusal.changeEnvironment": {
+    "ru": "Сменить среду",
+    "en": "Change environment"
+  },
+  "admin.placement.refusal.gpu": {
+    "ru": "Нужна видеокарта: на машине с картой",
+    "en": "A graphics card is needed: on a machine with a card"
+  },
+  "admin.placement.refusal.gpuNote": {
+    "ru": "Тетради класса просят карту, а у этого сервера её нет. Набор «Всё на машине с картой» отдаст классу целую карту на машине; личные тетради и консилиум карту не получают нигде.",
+    "en": "The class notebooks need a card, and this server has none. The “Everything on a machine with a card” preset gives the class a whole card on a machine; personal notebooks and the council never get a card."
+  },
+  "admin.placement.refusal.noMachines": {
+    "ru": "Машины не принимают занятия — Ресурсы → Машины",
+    "en": "Machines do not take classes — Resources → Machines"
+  },
+  "admin.placement.refusal.noMachinesNote": {
+    "ru": "Ни одна машина не открыта занятиям: всё считается здесь, как раньше. Открыть машину классам может владелец — в меню машины, «Принимает занятия».",
+    "en": "No machine is open to classes: everything runs here, as before. The owner can open a machine to classes in its menu, “Takes classes”."
+  },
+  "admin.placement.refusal.openResources": {
+    "ru": "Открыть «Ресурсы»",
+    "en": "Open “Resources”"
+  },
+  "admin.placement.refusal.blockedRanges": {
+    "ru": "Закрытые сети этого сервера не передать машине — занятия считаются здесь",
+    "en": "This server's blocked networks cannot be passed to a machine — classes run here"
+  },
+  "admin.placement.locked": {
+    "ru": "Где считать занятия, сейчас решает владелец: отправлять их на машины учителям не разрешено. Всё считается здесь.",
+    "en": "The owner decides where classes run for now: teachers may not send them to machines. Everything runs here."
+  },
+  "admin.placement.lockedPlaced": {
+    "ru": "Где считать занятия, сейчас решает владелец: отправлять их на машины учителям не разрешено.",
+    "en": "The owner decides where classes run for now: teachers may not send them to machines."
+  },
+  "admin.placement.notSaved": {
+    "ru": "Не сохранилось, где считается занятие.",
+    "en": "Where the class runs was not saved."
+  },
+  "admin.placement.notApplied": {
+    "ru": "Занятие создано, но «Где считается» осталось по умолчанию: изменить можно в настройках занятия.",
+    "en": "The class was created, but “Where it runs” stayed at the default: change it in the class settings."
+  },
+  "admin.resourcesTab.running.machine.on": {
+    "ru": "на {name}",
+    "en": "on {name}"
+  },
+  "admin.resourcesTab.running.machine.onHidden": {
+    "ru": "на машине",
+    "en": "on a machine"
+  },
+  "admin.resourcesTab.running.machine.files.synced": {
+    "ru": "файлы: синхронно",
+    "en": "files: in sync"
+  },
+  "admin.resourcesTab.running.machine.files.pending": {
+    "ru": "файлы: ↑ {count}, {size}",
+    "en": "files: ↑ {count}, {size}"
+  },
+  "admin.resourcesTab.running.machine.files.heldOnly": {
+    "ru": "файлы: {count} только на машине",
+    "en": "files: {count} only on the machine"
+  },
+  "admin.resourcesTab.running.machine.workers": {
+    "ru": "{count} исп.",
+    "en": {
+      "one": "{count} worker",
+      "other": "{count} workers"
+    }
+  },
+  "admin.resourcesTab.running.machine.zeroCores": {
+    "ru": "0 ядер здесь",
+    "en": "0 cores here"
+  },
+  "admin.resourcesTab.running.machine.cpu": {
+    "ru": "{value} % ЦП",
+    "en": "{value}% CPU"
+  },
+  "admin.resourcesTab.running.machine.all": {
+    "ru": "всё на {name}",
+    "en": "all on {name}"
+  },
+  "admin.resourcesTab.running.machine.part": {
+    "ru": "часть на {name}",
+    "en": "part on {name}"
+  },
+  "admin.resourcesTab.running.machine.lost": {
+    "ru": "нет связи с {name} · {elapsed}",
+    "en": "no link to {name} · {elapsed}"
+  },
+  "admin.resourcesTab.running.machine.lostHidden": {
+    "ru": "нет связи с машиной · {elapsed}",
+    "en": "no link to the machine · {elapsed}"
+  },
+  "admin.resourcesTab.running.machine.moveAt": {
+    "ru": "перенесём на сервер в {time}",
+    "en": "moving to this server at {time}"
+  },
+  "admin.resourcesTab.running.machine.waits": {
+    "ru": "ждём машину",
+    "en": "waiting for the machine"
+  },
+  "admin.resourcesTab.running.machine.moved": {
+    "ru": "на сервере · переехало в {time}",
+    "en": "on this server · moved at {time}"
+  },
+  "admin.resourcesTab.running.machine.movedFrom": {
+    "ru": "с {name}",
+    "en": "from {name}"
+  },
+  "admin.resourcesTab.running.machine.filesAt": {
+    "ru": "файлы — по {time}",
+    "en": "files as of {time}"
+  },
+  "admin.resourcesTab.running.machine.link": {
+    "ru": "связь {ms} мс",
+    "en": "link {ms} ms"
+  },
+  "admin.resourcesTab.running.machine.stopLater": {
+    "ru": "остановится, когда машина выйдет на связь",
+    "en": "stops when the machine is back"
+  },
+  "admin.resourcesTab.running.machine.footnote": {
+    "ru": "Ядро на машине держит память машины, а не сервера: здесь оно занимает 0 МБ.",
+    "en": "A kernel on a machine holds the machine's memory, not this server's: here it takes 0 MB."
+  },
+  "admin.resourcesTab.running.onMachines": {
+    "ru": {
+      "one": "на машинах {count} контейнер",
+      "few": "на машинах {count} контейнера",
+      "many": "на машинах {count} контейнеров",
+      "other": "на машинах {count} контейнера"
+    },
+    "en": {
+      "one": "on machines {count} container",
+      "other": "on machines {count} containers"
+    }
+  },
+  "admin.resourcesTab.onMachines": {
+    "ru": "На машинах",
+    "en": "On machines"
+  },
+  "admin.resourcesTab.onMachinesDetail": {
+    "ru": {
+      "one": "{count} контейнер · 0 МБ здесь",
+      "few": "{count} контейнера · 0 МБ здесь",
+      "many": "{count} контейнеров · 0 МБ здесь",
+      "other": "{count} контейнера · 0 МБ здесь"
+    },
+    "en": {
+      "one": "{count} container · 0 MB here",
+      "other": "{count} containers · 0 MB here"
+    }
   },
 }

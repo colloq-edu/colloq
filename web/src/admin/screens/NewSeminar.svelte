@@ -49,8 +49,11 @@
   } from '@/admin/course-plan'
   import { courseColor } from '@/admin/course-color'
   import {
+    CLASS_PLACEMENT_DEFAULT,
+    CLASS_PLACEMENT_PRESETS,
     LIMITS,
     type AdminEnvironment,
+    type ClassPlacement,
     type EnvironmentsState,
     type ImportPreview,
     type InstanceResources,
@@ -58,6 +61,8 @@
     type SeatResult,
     type OracleSettings,
   } from '@shared/admin'
+  import type { ClassMachineSettingsResponse, ClassPlacementOutlook } from '@shared/remote-admin'
+  import { classesOnMachines, runnersApi } from '@/admin/runners'
   import { LECTURE_ROOM, OPEN_ROOM, type RoomRules, COUNCIL_ROOM } from '@shared/rules'
   import RoomRulesRows from '@/components/RoomRulesRows.svelte'
 
@@ -602,7 +607,41 @@
       .resourceSettings()
       .then((r: ResourceSettingsResponse) => (resourceSettings = r))
       .catch(() => (resourceSettings = null))
+    // Where it runs: the owner's default for new classes and whether a teacher may change it; a server from before classes has none.
+    void runnersApi
+      .classSettings()
+      .then((r: ClassMachineSettingsResponse) => (classSettings = r))
+      .catch(() => (classSettings = null))
   })
+
+  /* ----------------------------------------------------- where it runs */
+
+  /**
+   * Where it runs (Paper 18 · Z4) for the class being made: the owner's
+   * default for new classes until the block is touched — the server gives a
+   * new class that one by itself (placement-store.ts · newClassPlacement: a
+   * GPU class put on machines takes the card's tile) — and after that what
+   * was chosen, sent with the PATCH that follows the creation. A new class
+   * has no slot to ask the machines about, so its live line says only
+   * whether any machine takes classes.
+   */
+  let classSettings = $state<ClassMachineSettingsResponse | null>(null)
+  let placementDraft = $state<ClassPlacement | null>(null)
+  const gpuEnvironment = $derived(resources?.kernel.perEnvironment[environment]?.gpu ?? false)
+  const placementShown = $derived.by((): ClassPlacement | null => {
+    // Not under Kubernetes, where no class goes to a machine (D26), nor on a server from before classes.
+    if (!classSettings || !classesOnMachines(classSettings)) return null
+    if (placementDraft) return placementDraft
+    const settings = classSettings.settings
+    const tile =
+      settings.newClasses === 'home' ? CLASS_PLACEMENT_PRESETS.home : CLASS_PLACEMENT_PRESETS[gpuEnvironment ? 'gpu' : settings.newClasses]
+    return { ...CLASS_PLACEMENT_DEFAULT, failoverSec: settings.failoverSec, ...tile }
+  })
+  const placementMay = $derived(adminAuth.isOwner || (classSettings?.settings.teachers ?? false))
+  const placementOutlook = $derived<ClassPlacementOutlook | null>(
+    classSettings ? { refusal: classSettings.machines === 0 ? 'no-machines' : null, environment, machines: [], at: Date.now() } : null,
+  )
+  let environmentSection = $state<HTMLElement | null>(null)
 
   /*
    * The link is read before the room exists, so a teacher sees what will arrive
@@ -777,6 +816,14 @@
        * PATCH as in the settings — at the cost of one extra request per
        * creation.
        */
+      // Where it runs, as chosen in the form when it was touched: the creation doors carry none of it.
+      if (placementDraft !== null) {
+        try {
+          await adminApi.updateSeminar(seminar.id, { placement: placementDraft })
+        } catch {
+          problems.push(() => tr('admin.placement.notApplied'))
+        }
+      }
       if ((memoryMb !== null || cpus !== null) && source !== 'blank') {
         try {
           await adminApi.updateSeminar(seminar.id, { memoryMb, cpus })
@@ -1157,6 +1204,7 @@
     </div>
   </Section>
 
+  <span bind:this={environmentSection} aria-hidden="true"></span>
   <Section
     title={tr("admin.environment.464")}
     description={tr("admin.the.python.environment.for.this.seminar.it.is.selected.when.the.s")}
@@ -1388,6 +1436,33 @@
       {/if}
     </div>
   </Section>
+
+  <!--
+    Where it runs (Paper 18 · Z4): its own section in the new form, after
+    the numbers it moves to a machine. A server from before classes (no
+    class settings) draws nothing here.
+  -->
+  {#if placementShown}
+    <Section title={tr('admin.placement.title')} description={tr('admin.placement.note')}>
+      <Resources
+        part="placement"
+        {resources}
+        loading={resourcesLoading}
+        {environment}
+        {memoryMb}
+        onmemory={(mb) => (memoryMb = mb)}
+        {cpus}
+        oncpus={(cores) => (cpus = cores)}
+        placement={placementShown}
+        placementEditable={placementMay}
+        placementBusy={created !== null || busy}
+        onplacement={(patch) => (placementDraft = { ...(placementShown as ClassPlacement), ...patch })}
+        outlook={placementOutlook}
+        owner={adminAuth.isOwner}
+        onenvironment={() => environmentSection?.scrollIntoView({ block: 'start', behavior: 'smooth' })}
+      />
+    </Section>
+  {/if}
 
   <!--
     Materials attached before the room opened.

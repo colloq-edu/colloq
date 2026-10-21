@@ -117,6 +117,39 @@ export interface FileEntry {
   dir: boolean
   size: number
   modifiedAt: number
+  /*
+   * What a class folder on a machine adds to a row («занятия на машинах»,
+   * docs/architecture/remote-classes.md §8.5, §8.7, Paper 18 · Z6). None of
+   * these is ever on a row of a room whose kernels all compute here, so
+   * everything that reads the tree as it was keeps reading it the same.
+   */
+  /**
+   * The file exists only on the machine: over «Файл с машины — до» (`size`),
+   * over the room's limit (`room`), past the walk's ceiling (`count`), or
+   * inside a package tree (`package`). Nothing of it is on this server's
+   * disk: it is fetched with «Привезти» (`files:fetch`), not downloaded.
+   */
+  onMachine?: { bytes: number; why: 'size' | 'room' | 'count' | 'package' }
+  /** A newer version is on its way from the machine: until it lands, the file serves the one this server has. */
+  pending?: true
+  /**
+   * Another version of this file, one this server has, stays on the machine:
+   * the kernel's rewrite over «Файл с машины — до» (`size`) or the room's
+   * limit (`room`). The row is this server's file as before; «Привезти»
+   * (`files:fetch`) brings the machine's, replacing it.
+   */
+  newer?: { bytes: number; why: 'size' | 'room' }
+  /** A conflict copy, «data (с машины 14-32).csv»: the machine's version of `of`, kept at `at` when this server's won. */
+  conflict?: { of: string; at: number }
+  /**
+   * A package tree on the machine (`pip install -t .`), collapsed into this
+   * one row: `bytes` and `count` its files together. Its `path` is the
+   * folder the packages went to, with `.packages` after it (`.packages` at
+   * the top), a name no file of the room can have, and `size` is `bytes`.
+   */
+  kind?: 'packages'
+  bytes?: number
+  count?: number
 }
 
 /**
@@ -649,6 +682,13 @@ export type ControlClientMessage =
    * "what is computing now".
    */
   | { t: 'file:run'; path: string }
+  /**
+   * «Привезти» (remote-classes.md §8.5): bring one file that stays on the
+   * class's machine to this server — over «Файл с машины — до» if it must,
+   * within the room's limit. Staff's alone: it spends the shared leg of the
+   * relay, and the room learns of the file when it lands, from the tree.
+   */
+  | { t: 'files:fetch'; path: string }
   /* --------------------------------------------------------- lecture */
   /**
    * Start a lecture: one page on the projector and one person at the console.

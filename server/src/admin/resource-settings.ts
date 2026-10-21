@@ -395,6 +395,16 @@ export function sessionLimitBytes(): number {
   return resourceValue('sessionMb') * MB
 }
 
+/**
+ * «Файл с машины — до» (D17), in bytes, as the class files from machines
+ * compare it (kernel/remote/files.ts): read at every comparison, so the
+ * owner's change counts for the next file a kernel writes, not after a
+ * restart. Over it a file stays «на машине», unless staff press «Привезти».
+ */
+export function machineFileLimitBytes(): number {
+  return classMachineSettings().machineFileMb * MB
+}
+
 /** What a saved number is clamped into, the machine's bounds included. */
 export function resourceBounds(machine: MachineBounds): Record<ResourceSettingName, ResourceBounds> {
   const out: Partial<Record<ResourceSettingName, ResourceBounds>> = {}

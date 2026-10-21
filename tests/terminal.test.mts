@@ -35,6 +35,8 @@ const socketsByName = new Map<string, Set<WebSocket>>()
 const socketsTo = (name: string) => socketsByName.get(name)?.size ?? 0
 /** Handshake delay: it opens the "reconnect in flight" window. */
 let upgradeDelayMs = 0
+/** The handshake's answer and the shell's first frames in one write, as a machine's tunnel hands them over. */
+let coalesce = false
 
 before(async () => {
   http = createServer((req, res) => {
@@ -54,7 +56,8 @@ before(async () => {
   http.on('upgrade', (req, socket, head) => {
     if (!/\/terminals\/websocket\//.test(req.url ?? '')) return socket.destroy()
     const name = /\/terminals\/websocket\/([^/?]+)/.exec(req.url ?? '')?.[1] ?? ''
-    const accept = () =>
+    const accept = () => {
+      if (coalesce) socket.cork()
       wss.handleUpgrade(req, socket, head, (ws) => {
         live = ws
         const open = socketsByName.get(name) ?? new Set<WebSocket>()
@@ -69,7 +72,9 @@ before(async () => {
           if (frame[0] !== 'stdin') return
           typed.push(frame[1])
         })
+        if (coalesce) socket.uncork()
       })
+    }
     if (upgradeDelayMs > 0) setTimeout(accept, upgradeDelayMs)
     else accept()
   })
@@ -359,6 +364,33 @@ test('the first command into an unopened terminal keeps the shell busy', async (
   runCommand(id, 'ls', who('Ivan'))
   await wait(300)
   assert.deepEqual(typed, [], 'the second command went into the busy shell')
+})
+
+test('the shell\'s first words in the handshake\'s own read end no prime: the greeting goes first, then what was typed', async () => {
+  /*
+   * A machine's tunnel hands the socket's handshake answer and the shell's
+   * first frames over in one read, and those frames reach the terminal
+   * before the open's own work goes on. Taken for the end of a prime not yet
+   * begun, they sent `pwd` ahead of the greeting, and the greeting's prime
+   * then swallowed pwd's output and its prompt: the command never ended.
+   */
+  const { getSessionDoc } = await import('../server/src/collab/index.js')
+  const { createSession } = await import('../server/src/db.js')
+  const { openTerminal, runCommand } = await import('../server/src/kernel/terminal.js')
+  const id = `term${seq++}`
+  createSession(id, `Terminal ${id}`)
+  getSessionDoc(id)
+  typed = []
+  coalesce = true
+  try {
+    void openTerminal(id)
+    runCommand(id, 'pwd', who('Maria'))
+    assert.ok(await until(() => typed.some((t) => t === 'pwd\n')), `the command never reached the shell: ${JSON.stringify(typed)}`)
+    assert.match(typed[0] ?? '', /^cd .* && clear\n$/, `the greeting first: ${JSON.stringify(typed)}`)
+    assert.equal(typed.indexOf('pwd\n'), 1, JSON.stringify(typed))
+  } finally {
+    coalesce = false
+  }
 })
 
 test('Clear in the middle of a running command does not release the shell', async () => {

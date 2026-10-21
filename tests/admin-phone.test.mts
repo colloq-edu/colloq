@@ -399,3 +399,31 @@ test('the "where the notebook comes from" doors are full width on a phone, not t
   assert.match(newSeminar, /const DOOR =[\s\S]*?max-\[640px\]:max-w-none/, 'the ceiling is removed')
   assert.match(newSeminar, /const DOOR =[\s\S]*?max-\[640px\]:basis-full/, 'and the door asks for the full width')
 })
+
+/* ---------------------------------------- classes on machines at 390 (Z10) */
+
+test('Z10: the class controls are pressed with a finger and fill the line on a phone', () => {
+  const runners = flat(code(read('web/src/admin/ui/Runners.svelte')))
+  // The class banner's «Вернуть» and «Открыть машину»: the whole line, 44 px high.
+  assert.match(runners, /class="btn-outline shrink-0 max-\[640px\]:min-h-11 max-\[640px\]:w-full" onclick=\{\(\) => resumeClasses\(banner\)\}/)
+  // On a card the class line is a row of its own over the readiness, as Paper's phone card has it, not a seventh column.
+  assert.match(read('web/src/admin/ui/Runners.svelte'), /'class class'\s+'ready ready';/)
+  const connect = flat(code(read('web/src/admin/ui/ConnectMachine.svelte')))
+  assert.match(connect, /'flex items-start gap-3 border px-3\.5 py-3 max-\[640px\]:min-h-11'/)
+  // The class form: a radio list with 48 px rows, controls of 44 px split 50/50, fields stacked (one column) below 720 px.
+  const placement = read('web/src/admin/ui/Resources.svelte')
+  assert.match(placement, /\.pl-preset \{[^}]*min-height: 48px;/)
+  assert.match(placement, /\.pl-seg-btn \{[^}]*flex: 1 1 50%;[^}]*min-height: 44px;/)
+  assert.match(placement, /\.pl-fields \{[^}]*grid-template-columns: minmax\(0, 1fr\);/)
+  // The machine page's classes table is cards below its 760 px, as its other tables are.
+  const page = read('web/src/admin/screens/RemoteMachine.svelte')
+  assert.match(page, /\.rm-class-head \{\s*display: none;\s*\}/)
+  assert.match(page, /'memory cpu'\s+'link files';/)
+  // A class's machine slot under «Работают сейчас» keeps its status line on a card: the quiet card has no «now» line,
+  // and a chip there falls into an implicit track, a column of its own down the card.
+  const running = read('web/src/admin/ui/RunningKernels.svelte')
+  const slotRow = /<div class="(rk-row[^"]*)">\s*<div class="rk-lead[^"]*">\s*<span class="rk-square[^"]*bg-transparent/.exec(running)
+  assert.ok(slotRow, 'the machine slot row is found')
+  assert.doesNotMatch(slotRow[1], /rk-quiet/)
+  assert.match(running, /\.rk-quiet \{\s*grid-template-areas:\s*'lead act'\s*'mem mem'\s*'meta meta';/, 'the quiet card still drops «now»')
+})

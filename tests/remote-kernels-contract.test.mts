@@ -44,6 +44,8 @@ import {
   CLASS_LATE_MAX,
   CLASS_MACHINE_FILE_MB,
   CLASS_MOVE_NOW_MS,
+  CLASS_PACE_BURST_BYTES,
+  CLASS_ROOM_MB,
   CLASS_PROBE_MS,
   CLASS_QUARANTINE_FAILOVERS,
   CLASS_QUARANTINE_WINDOW_MS,
@@ -73,6 +75,7 @@ import {
   REMOTE_CLASS_UPLOADS,
   REMOTE_EPOCHS_MAX,
   REMOTE_EPOCH_FILES_MAX,
+  REMOTE_FILE_CAP_MB_MAX,
   REMOTE_PLACEMENTS_MAX,
   REMOTE_PUSH_PATHS_MAX,
   REMOTE_READINGS_MAX,
@@ -150,6 +153,8 @@ const request: RemoteKernelsRequest = {
       ],
       removed: [{ path: 'old.csv', base: sha(5) }, { path: 'tmp', base: 'dir' }],
       skipped: [{ path: 'model.pt', bytes: 2_254_857_830, why: 'size' }, { path: 'torch/__init__.py', bytes: 100, why: 'package' }],
+      // Said «на машине» before, gone from the machine since; and one that now travels (out.csv, changed above).
+      released: ['checkpoint.bin', 'out.csv'],
     },
     { sessionId: OTHER, gen: 5, seq: 1, full: true, page: { index: 0, last: true }, changed: [], removed: [], skipped: [{ path: 'big.bin', bytes: 1, why: 'room' }], late: ['out.csv', 'model.pt'] },
   ],
@@ -193,7 +198,8 @@ const reply: RemoteKernelsReply = {
     sessionId: SESSION, seq: 12, accepted: ['out.csv', 'данные/выборка 1.csv'],
     refused: [{ path: 'Тетрадь.ipynb', why: 'book' }, { path: 'data.csv', why: 'base', copy: 'data (с машины 14-32).csv' }, { path: 'x.bin', why: 'cap' }],
   }],
-  pulls: [{ sessionId: SESSION, gen: 3, paths: [{ path: 'данные/выборка 1.csv', sha256: sha(2) }] }],
+  // The version a report named, and «Привезти» of a file left on the machine: as it is now, no hash.
+  pulls: [{ sessionId: SESSION, gen: 3, paths: [{ path: 'данные/выборка 1.csv', sha256: sha(2) }, { path: 'model.pt' }] }],
   scan: [{ sessionId: SESSION }, { sessionId: OTHER, full: true }],
   epochs: [
     { sessionId: SESSION, root: 'cells', seq: 4, manifest: { sha256: sha(11), bytes: 2048 }, buffers: [{ sha256: sha(12), bytes: 500_000_000 }, { sha256: sha(13), bytes: 65_536 }], from: 'home' },
@@ -202,6 +208,7 @@ const reply: RemoteKernelsReply = {
   collect: [{ sessionId: SESSION, runId: 'r_1792000000', files: [{ name: 'out.csv', sha256: sha(15), bytes: 12_000 }, { name: 'plots/fig.png', sha256: sha(16), bytes: 40_000 }] }],
   postmortem: ['seminar_2:room'],
   rates: { classBulkMBps: CLASS_BULK_MBPS, machinePaceMBps: MACHINE_PACE_MBPS },
+  caps: { machineFileMb: CLASS_MACHINE_FILE_MB, roomMb: CLASS_ROOM_MB },
   tunnel: 'open',
 }
 
@@ -228,6 +235,9 @@ test('home takes the machine\'s block as it is sent, and returns it checked', ()
   for (const unschedulable of ['memory', 'cpu', 'gpu', 'other']) assert.doesNotThrow(() => parseRemoteKernelsRequest(edit(request, ['placements', 3, 'failure'], { unschedulable })))
   // An epoch that holds everything may say so with an empty list.
   assert.doesNotThrow(() => parseRemoteKernelsRequest(edit(request, ['epochs', 0, 'missing'], [])))
+  // The number of home's last reply the agent took in, said back: a whole number, or no key at all.
+  assert.deepEqual(parseRemoteKernelsRequest({ ...request, heard: 1_792_000_000_123 }), { ...request, heard: 1_792_000_000_123 })
+  for (const heard of [-1, 1.5, '7', null, 2 ** 53]) refused(() => parseRemoteKernelsRequest({ ...request, heard }), /kernels block/)
 })
 
 test('home refuses a key it does not know, at every depth of the machine\'s block', () => {
@@ -297,8 +307,13 @@ test('a path in the machine\'s block is a canonical path inside the class folder
     refused(() => parseRemoteKernelsRequest(edit(request, ['reports', 0, 'changed', 0, 'path'], bad)), /changed file/)
     refused(() => parseRemoteKernelsRequest(edit(request, ['reports', 0, 'removed', 0, 'path'], bad)), /removed file/)
     refused(() => parseRemoteKernelsRequest(edit(request, ['reports', 0, 'skipped', 0, 'path'], bad)), /skipped file/)
+    refused(() => parseRemoteKernelsRequest(edit(request, ['reports', 0, 'released', 0], bad)), /released file/)
     refused(() => parseRemoteKernelsRequest(late(bad)), /late change/)
   }
+  // A path released is no longer left on the machine: not one it leaves there in the same report, nor one it releases twice.
+  refused(() => parseRemoteKernelsRequest(edit(request, ['reports', 0, 'released', 0], 'model.pt')), /released file/)
+  refused(() => parseRemoteKernelsRequest(edit(request, ['reports', 0, 'released', 1], 'checkpoint.bin')), /released file/)
+  refused(() => parseRemoteKernelsRequest(edit(request, ['reports', 0, 'released'], 'checkpoint.bin')), /released files/)
   for (const good of GOOD_PATHS) {
     assert.doesNotThrow(() => parseRemoteKernelsRequest(edit(request, ['reports', 0, 'changed', 1, 'path'], good)), good)
     assert.doesNotThrow(() => parseRemoteKernelsRequest(late(good)), good)
@@ -346,8 +361,9 @@ test('the machine\'s block keeps to its counts: paths, late changes, epochs, rea
   })
   assert.doesNotThrow(() => parseRemoteKernelsRequest(split(REMOTE_REPORT_PATHS_MAX / 2, REMOTE_REPORT_PATHS_MAX / 2)))
   refused(() => parseRemoteKernelsRequest(split(REMOTE_REPORT_PATHS_MAX / 2, REMOTE_REPORT_PATHS_MAX / 2 + 1)), /Files reports over their budget/)
-  // Late changes count among the paths, and a report names fifty at most.
+  // Late changes and released paths count among the paths, and a report names fifty late changes at most.
   refused(() => parseRemoteKernelsRequest(edit(split(REMOTE_REPORT_PATHS_MAX / 2, REMOTE_REPORT_PATHS_MAX / 2), ['reports', 1, 'late'], ['late.csv'])), /budget/)
+  refused(() => parseRemoteKernelsRequest(edit(split(REMOTE_REPORT_PATHS_MAX / 2, REMOTE_REPORT_PATHS_MAX / 2), ['reports', 1, 'released'], ['gone.csv'])), /budget/)
   refused(() => parseRemoteKernelsRequest(edit(request, ['reports', 1, 'late'], Array.from({ length: CLASS_LATE_MAX + 1 }, (_, i) => `l${i}.csv`))), /late changes/)
   refused(() => parseRemoteKernelsRequest(edit(request, ['epochs'], Array.from({ length: REMOTE_EPOCHS_MAX + 1 }, (_, i) => ({ sessionId: SESSION, root: 'cells', seq: i + 1, ready: true })))), /epochs/)
   // The hashes still missing, over all the epochs of one sync.
@@ -397,6 +413,9 @@ test('a full report comes in pages, each saying where it is in its walk, and onl
 
 test('the agent keeps home\'s block as it is sent', () => {
   assert.deepEqual(parseRemoteKernelsReply(reply), reply)
+  // The reply's number, which the agent's next block says back (`heard`): kept as it is, refused when it is no number.
+  assert.deepEqual(parseRemoteKernelsReply({ ...reply, replySeq: 1_792_000_000_124 }), { ...reply, replySeq: 1_792_000_000_124 })
+  for (const replySeq of [0, -1, 1.5, '7', null]) refused(() => parseRemoteKernelsReply({ ...reply, replySeq }), /kernels block/)
   const quiet = { ...reply, placements: [], pushes: [], verdicts: [], pulls: [], scan: [], epochs: [], collect: [], postmortem: [], tunnel: 'closed' }
   assert.deepEqual(parseRemoteKernelsReply(quiet), quiet)
   assert.doesNotThrow(() => parseRemoteKernelsReply({ ...reply, tunnel: 'reconnect' }))
@@ -529,6 +548,15 @@ test('verdicts, pulls, scans and collections: each path one fate, each within it
   assert.doesNotThrow(() => parseRemoteKernelsReply(pulled(REMOTE_REPORT_PATHS_MAX)))
   refused(() => parseRemoteKernelsReply(pulled(REMOTE_REPORT_PATHS_MAX + 1)), /pulled paths/)
   refused(() => parseRemoteKernelsReply(edit(reply, ['pulls', 0, 'paths', 1], reply.pulls[0]!.paths[0])), /pulled path/)
+  // «Привезти» names no hash; a hash it names is one.
+  assert.deepEqual(parseRemoteKernelsReply(reply).pulls[0]!.paths[1], { path: 'model.pt' })
+  refused(() => parseRemoteKernelsReply(edit(reply, ['pulls', 0, 'paths', 1, 'sha256'], 'abc')), /pulled path/)
+  // The caps of a kernel's files on their way home: whole megabytes, within the settings' own bounds and the contract's; absent, the machine keeps to its defaults.
+  for (const [at, value] of [[['caps', 'machineFileMb'], 0], [['caps', 'roomMb'], REMOTE_FILE_CAP_MB_MAX + 1], [['caps', 'roomMb'], 1.5], [['caps', 'machineFileMb'], undefined], [['caps'], 200]] as const) {
+    refused(() => parseRemoteKernelsReply(edit(reply, at, value)), /file caps/)
+  }
+  assert.equal('caps' in parseRemoteKernelsReply(edit(reply, ['caps'], undefined)), false)
+  assert.deepEqual(parseRemoteKernelsReply(edit(reply, ['caps', 'stray'], 1)).caps, reply.caps)
   refused(() => parseRemoteKernelsReply(edit(reply, ['scan', 1, 'sessionId'], SESSION)), /scan/)
   refused(() => parseRemoteKernelsReply(edit(reply, ['scan', 0, 'full'], 1)), /scan/)
   refused(() => parseRemoteKernelsReply(edit(reply, ['postmortem'], ['seminar_2:room', 'seminar_2:room'])), /post-mortem/)
@@ -817,10 +845,10 @@ test('a pushed folder that carries a file\'s keys does not compile, as the agent
 const MACHINE = 'vast-3'
 const WORDS: ReadonlyArray<readonly [key: string, params: Record<string, string | number>, ru: string]> = [
   ['server.noConnectionToMachineTheKernelAnd.df78c8', { machine: MACHINE, elapsed: '0:12' }, 'Нет связи с машиной «vast-3» · 0:12. Ядро и переменные на ней целы — ждём связь. Новые запуски подождут.'],
-  ['server.machineHasNotAnsweredSinceWaitingUntil.3d926e', { machine: MACHINE, since: '14:32:05', until: '14:33:05' }, 'Машина «vast-3» не отвечает с 14:32:05. Ждём до 14:33:05, потом поднимем ядро на этом сервере (переменные пропадут).'],
+  ['server.machineHasNotAnsweredSinceWaitingUntil.1d012e', { machine: MACHINE, since: '14:32:05', until: '14:33:05' }, 'Машина «vast-3» не отвечает с 14:32:05. Ждём до 14:33:05, потом поднимем ядро заново (переменные пропадут).'],
   ['server.theConnectionToMachineCameBackAfter.28f7cf', { machine: MACHINE, seconds: 37 }, 'Связь с машиной «vast-3» вернулась через 37 с.'],
   ['server.theConnectionToTheMachineBrokeThe.5504d1', {}, 'Связь с машиной прервалась — результат ячейки потерян. Ядро и переменные целы; запустите ячейку снова.'],
-  ['server.machineHasNotAnsweredSinceTheKernel.05bf4e', { machine: MACHINE, since: '14:32:05', filesAt: '14:31:58' }, 'Машина «vast-3» не отвечает с 14:32:05. Ядро поднято заново на этом сервере: переменные пропали, файлы — по 14:31:58. Запустите ячейки снова.'],
+  ['server.machineHasNotAnsweredSinceTheKernel.6c488a', { machine: MACHINE, since: '14:32:05', filesAt: '14:31:58' }, 'Машина «vast-3» не отвечает с 14:32:05. Ядро поднимется заново: переменные пропали, файлы — по 14:31:58. Запустите ячейки снова.'],
   ['server.thisCellWasRunningOnMachineWhen.cbb534', { machine: MACHINE }, 'Эта ячейка выполнялась на машине «vast-3», когда та пропала. Неизвестно, успела ли она закончиться; на новом ядре её нет.'],
   ['server.theQueueWasClearedItsCellsCounted.c77303', {}, 'Очередь сброшена: ячейки рассчитывали на переменные, которых больше нет.'],
   ['server.noConnectionToMachineARestartWould.406486', { machine: MACHINE }, 'Нет связи с машиной «vast-3» — перезапуск сейчас не дойдёт. Нажмите, когда связь вернётся.'],
@@ -831,10 +859,11 @@ const WORDS: ReadonlyArray<readonly [key: string, params: Record<string, string 
   ['server.theOwnerDisconnectedMachine.1a3061', { machine: MACHINE }, 'Владелец отключил машину «vast-3».'],
   ['server.machineIsNoLongerTrustedToRun.8962f2', { machine: MACHINE }, 'Машине «vast-3» больше не доверено вести занятия.'],
   ['server.machineIsBeingDisconnected.6aa752', { machine: MACHINE }, 'Машину «vast-3» отключают.'],
-  ['server.theKernelWasStartedOnThisServer.497a79', {}, 'Ядро поднято на этом сервере, переменные пропали.'],
-  ['server.theNetworkOnMachineGotOutOf.6b309d', { machine: MACHINE }, 'Сеть на машине «vast-3» вышла из-под контроля: ядро остановлено ради безопасности и поднято на этом сервере.'],
+  ['server.theKernelWillStartAgainTheVariables.a76610', {}, 'Ядро поднимется заново, переменные пропали.'],
+  ['server.theNetworkOnMachineGotOutOf.c73666', { machine: MACHINE }, 'Сеть на машине «vast-3» вышла из-под контроля: ядро остановлено ради безопасности и поднимется заново.'],
   ['server.thisServerHasNoRoomForThis.25c35f', { used: '14', total: '15 ГБ' }, 'На сервере нет места для ядра этого занятия: занято 14 из 15 ГБ. Освободите память или подключите машину.'],
   ['server.machineCameBackAfterTheMoveIts.aacc24', { machine: MACHINE, since: '14:32', files: 'out.csv, model.pt' }, 'Машина «vast-3» вернулась после переезда; её изменения в файлах после 14:32 не приняты: out.csv, model.pt.'],
+  ['server.theKernelsOnTheMachineWereStopped.d5fceb', { files: 'out.csv, model.pt' }, 'Ядра на машине остановлены; изменения в файлах, которые не успели доехать до сервера, отброшены: out.csv, model.pt.'],
   ['server.wasChangedHereAndOnTheMachine.107a60', { file: 'data.csv', copy: 'data (с машины 14-32).csv' }, 'data.csv изменили одновременно здесь и на машине. Оставлена версия сервера, версия с машины — «data (с машины 14-32).csv».'],
   ['server.fromTheMachine.3b540b', { name: 'data', time: '14-32' }, 'data (с машины 14-32)'],
   ['server.wasDeletedOnTheServerTheChanges.6230f9', { file: 'old.csv' }, 'old.csv удалён на сервере; изменения, сделанные в нём на машине, отброшены.'],
@@ -908,6 +937,9 @@ test('the numbers of §15, and how they agree with each other and with the sync'
   assert.equal(CLASS_SYNC_FILES_MAX, 5000)
   assert.equal(REMOTE_CLASS_UPLOADS, 2)
   assert.equal(CLASS_MACHINE_FILE_MB, 200)
+  assert.equal(CLASS_ROOM_MB, 1024)
+  assert.equal(CLASS_PACE_BURST_BYTES, 256 * 1024)
+  assert.ok(REMOTE_FILE_CAP_MB_MAX >= 65_536, 'a setting home keeps would be a reply refused')
   assert.equal(CLASS_UNREACHABLE_NOTE_MS, 10_000)
   assert.equal(CLASS_SILENCE_MS, 60_000)
   assert.deepEqual(CLASS_FAILOVER_SEC, { min: 30, max: 300, default: 60 })

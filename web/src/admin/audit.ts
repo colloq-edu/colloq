@@ -98,6 +98,11 @@ export function auditDetail(event: AdminAuditEvent): string {
       return typeof detail.trusted === 'boolean'
         ? tr(detail.trusted ? 'admin.audit.runnerTrusted' : 'admin.audit.runnerUntrusted')
         : pairs(event)
+    case 'runner.classes':
+      // Both directions under one label, as with the trust: what the machine was opened to, or that its classes left it.
+      return typeof detail.classes === 'boolean'
+        ? tr(detail.classes ? 'admin.audit.runnerClassesOn' : 'admin.audit.runnerClassesOff')
+        : pairs(event)
     case 'environment.created':
     case 'environment.edited':
       // A package list is a set of lines, and what it gained or lost is the

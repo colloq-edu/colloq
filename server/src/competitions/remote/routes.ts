@@ -1,7 +1,8 @@
 /**
  * /api/runners/v1 — the door of the machines that run this server's
  * submissions (§3.1, §3.2). Five calls: join, sync, blobs, the result files,
- * the outcome.
+ * the outcome; and for a machine that takes classes, the files of their
+ * folder copies coming home (PUT rooms/…/files, remote-classes.md §15).
  *
  * MOUNTED BEFORE EVERYTHING THE BROWSER DOORS NEED (app.ts): right after the
  * security headers, before compression (a Range download must not be
@@ -66,16 +67,20 @@ import {
 } from '@shared/remote-runner'
 import {
   CLASS_BULK_IDLE_MBPS,
+  CLASS_MACHINE_FILE_MB,
+  CLASS_ROOM_MB,
   MACHINE_PACE_MBPS,
   REMOTE_PLACEMENT_KEY,
   REMOTE_READINGS_MAX,
+  REMOTE_SESSION_ID,
   parseRemoteKernelsReply,
   parseRemotePlacementKey,
   type RemoteKernelsReply,
   type RemoteKernelsRequest,
   type RemotePlacementIntent,
 } from '@shared/remote-kernels'
-import { classMachineSettings } from '../../admin/resource-settings.js'
+import { classMachineSettings, sessionLimitBytes } from '../../admin/resource-settings.js'
+import { classFiles } from '../../kernel/remote/files.js'
 import { getTeacher } from '../../admin/store.js'
 import { recordAdminEvent } from '../../admin/audit-log.js'
 import { addressForLimits, clientAddress } from '../../net/inbound.js'
@@ -117,7 +122,7 @@ import {
   updateRunner,
   type RunnerRow,
 } from './store.js'
-import { UploadRefusal, receiveUpload } from './upload.js'
+import { UploadRefusal, receiveRoomFile, receiveUpload } from './upload.js'
 import { homeStock, runnerWant } from './want.js'
 import { waitForNews } from './wake.js'
 
@@ -236,9 +241,25 @@ interface RunnerLocals {
   runner: RunnerRow
 }
 
-/** Calls per machine per minute, by kind: generous for honest work, a ceiling for a loop (net/too-often.ts). */
-const PER_MINUTE = { sync: 240, blob: 600, file: 600, outcome: 600 } as const
-const buckets = { sync: new Map<string, number[]>(), blob: new Map<string, number[]>(), file: new Map<string, number[]>(), outcome: new Map<string, number[]>() }
+/**
+ * Calls per machine per minute, by kind: generous for honest work, a ceiling
+ * for a loop (net/too-often.ts). A class's own files have buckets of their
+ * own (remote-classes.md §8.3: classes never starve submissions, nor
+ * submissions classes): `roomBlob`, the files of a push a machine fetches
+ * for its class copies, and `roomFile`, the files it sends home. Each is one
+ * request at a time on the agent's side (its one blob stream, its two class
+ * upload slots), so honest work stays far below them.
+ */
+const PER_MINUTE = { sync: 240, blob: 600, file: 600, outcome: 600, roomBlob: 1200, roomFile: 1200 } as const
+type CallKind = keyof typeof PER_MINUTE
+const buckets: Record<CallKind, Map<string, number[]>> = {
+  sync: new Map(),
+  blob: new Map(),
+  file: new Map(),
+  outcome: new Map(),
+  roomBlob: new Map(),
+  roomFile: new Map(),
+}
 const joinBucket = new Map<string, number[]>()
 /** Problem lines one machine may add to its log in an hour (noteFacts). */
 const PROBLEM_EVENTS = 60
@@ -247,8 +268,12 @@ const problemEvents = new Map<string, number[]>()
 const READY_EVENTS = 120
 const readyEvents = new Map<string, number[]>()
 
-/** The machine a call's credential names, or 401; then its own rate for this kind of call, or 429. */
-function machine(kind: keyof typeof PER_MINUTE) {
+/**
+ * The machine a call's credential names, or 401; then its own rate for this
+ * kind of call, or 429. `kind` may depend on the call: a blob of a class's
+ * push counts in the classes' bucket, any other in the submissions'.
+ */
+function machine(kind: CallKind | ((req: Request, runner: RunnerRow) => CallKind)) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const credential = parseRemoteAuthorization(req.headers.authorization)
     const runner = credential ? authenticateRunner(credential.runnerId, credential.secret) : null
@@ -256,7 +281,8 @@ function machine(kind: keyof typeof PER_MINUTE) {
       callCounts.unauthorized++
       return refuse(res, 'unauthorized')
     }
-    if (tooOften(buckets[kind], runner.id, 60_000, PER_MINUTE[kind])) return refuse(res, 'too_often', undefined, 5)
+    const bucket = typeof kind === 'function' ? kind(req, runner) : kind
+    if (tooOften(buckets[bucket], runner.id, 60_000, PER_MINUTE[bucket])) return refuse(res, 'too_often', undefined, 5)
     noteCall(runner.id, remoteNow(), clientAddress(req))
     ;(res.locals as RunnerLocals).runner = runner
     next()
@@ -320,7 +346,10 @@ export function remoteRunnerRoutes(): Router {
     void sync(req, res).catch(next)
   })
 
-  router.get('/blobs/:sha256', machine('blob'), (req, res, next) => {
+  // A class's file its copy's push names counts in the classes' bucket (kernel/remote/files.ts · blobFor), any other blob in the submissions'.
+  const blobKind = (req: Request, runner: RunnerRow): CallKind =>
+    runner.classes && classFiles().blobFor(runner.id, String(req.params.sha256)) !== null ? 'roomBlob' : 'blob'
+  router.get('/blobs/:sha256', machine(blobKind), (req, res, next) => {
     const runner = (res.locals as RunnerLocals).runner
     void serveBlob(req, res, runner, String(req.params.sha256)).catch(next)
   })
@@ -328,6 +357,21 @@ export function remoteRunnerRoutes(): Router {
   router.put('/attempts/:attempt/files/:name', machine('file'), (req, res, next) => {
     const runner = (res.locals as RunnerLocals).runner
     void receiveUpload(req, runner, String(req.params.attempt), String(req.params.name))
+      .then((stored) => res.json(stored))
+      .catch(next)
+  })
+
+  /*
+   * A file of a class's folder copy this server pulled (remote-classes.md
+   * §8.3, §15): only of a class placed on the machine, at its current gen —
+   * a fenced gen's late PUT is 409 (`revoked`: the agent drops it) — and only
+   * the version this server asked for (kernel/remote/files.ts · receive).
+   */
+  router.put('/rooms/:sessionId/files', machine('roomFile'), (req, res, next) => {
+    const runner = (res.locals as RunnerLocals).runner
+    const sessionId = String(req.params.sessionId)
+    if (!REMOTE_SESSION_ID.test(sessionId)) return refuse(res, 'invalid', 'Invalid class')
+    void receiveRoomFile(req, runner, sessionId, { path: req.query.path, gen: req.query.gen })
       .then((stored) => res.json(stored))
       .catch(next)
   })
@@ -417,7 +461,13 @@ async function sync(req: Request, res: Response): Promise<void> {
   const current = noteFacts(runner, request, news, now, address)
   reconcileSync(current, request, now)
   // What it says of its classes, once, as it arrives (a held sync's recompute says nothing new about them), and before a leave moves them.
-  if (current.classes && runnerStanding(current) && request.kernels) classPort().noteKernelsReport(current.id, currentReadings(current.id, request.kernels), now)
+  let urgent = false
+  if (current.classes && runnerStanding(current) && request.kernels) {
+    classPort().noteKernelsReport(current.id, currentReadings(current.id, request.kernels), now)
+    // Its folder copies: the acks of pushes, then the reports, each fenced by its class's gen (§8.4). A page of a full report
+    // is answered at once: the next one comes only with the next sync.
+    urgent = classFiles().noteKernelsBlock(current.id, request.kernels)
+  }
   // A machine leaving with nothing held revokes itself: its next call is refused, and it stops (colloq-host runner leave).
   if (request.state === 'leaving' && request.attempts.length === 0) leaveRunner(current.id, now)
   const hold = syncHold(request, current)
@@ -436,7 +486,7 @@ async function sync(req: Request, res: Response): Promise<void> {
   try {
     let reply = await syncReply(current.id, request, request.state === 'leaving')
     let computed = Date.now()
-    while (reply !== null && !reply.news && Date.now() < ends && !hungUp.signal.aborted && !superseded.signal.aborted) {
+    while (reply !== null && !reply.news && !urgent && Date.now() < ends && !hungUp.signal.aborted && !superseded.signal.aborted) {
       await waitForNews(current.id, ends - Date.now(), AbortSignal.any([hungUp.signal, superseded.signal]))
       if (hungUp.signal.aborted) return
       if (superseded.signal.aborted) break
@@ -456,6 +506,9 @@ async function sync(req: Request, res: Response): Promise<void> {
     if (reply === null) return refuse(res, 'unauthorized')
     noteSent(current.id, { digest: reply.digest, wanted: reply.wanted, gone: reply.gone, asked: reply.asked, intents: reply.body.kernels?.placements ?? [] })
     noteWantScope(current.id, reply.body.want)
+    // Its verdicts said, its scans asked, its pushes on their way, and its number, which the machine says back once it took
+    // the reply in (kernel/remote/files.ts · replySent).
+    if (reply.body.kernels) classFiles().replySent(current.id, reply.body.kernels)
     res.json(reply.body)
   } finally {
     done()
@@ -610,8 +663,10 @@ async function syncReply(runnerId: string, request: RemoteSyncRequest, leaving: 
     ...(kernels ? { kernels } : {}),
   }
   const digest = newsDigest(body)
-  // A leave is answered at once: `runner leave` waits on it, and nothing will come for a machine that is gone.
-  const news = runner.state === 'left' || taken.length > 0 || leases.length > 0 || revoke.length > 0 || applied.length > 0 || digest !== sentDigest(runnerId)
+  // A leave is answered at once: `runner leave` waits on it, and nothing will come for a machine that is gone. So are the
+  // files' per-call lists (verdicts, a plain scan): said once, they are news whenever there are any.
+  const said = (kernels?.verdicts.length ?? 0) > 0 || (kernels?.scan.some((one) => !one.full) ?? false)
+  const news = runner.state === 'left' || taken.length > 0 || leases.length > 0 || revoke.length > 0 || applied.length > 0 || said || digest !== sentDigest(runnerId)
   const asked = {
     revisions: [...body.want.revisions.map((revision) => revision.id), ...held.map((lease) => lease.manifest.revision.id)],
     manifests: [...body.want.data.map((entry) => entry.manifest), ...held.flatMap((lease) => [lease.manifest.data.manifest, ...(lease.manifest.sealed ? [lease.manifest.sealed.manifest] : [])])],
@@ -620,10 +675,16 @@ async function syncReply(runnerId: string, request: RemoteSyncRequest, leaving: 
   return { body, news, digest, wanted: body.want.data.map((entry) => ({ competitionId: entry.competitionId, manifest: entry.manifest })), gone: want.gone, asked }
 }
 
-/** Everything of a reply but its per-call lists: what the machine has to hear again when it changes. */
+/**
+ * Everything of a reply but its per-call lists: what the machine has to hear
+ * again when it changes. The files' verdicts and plain scans are said once
+ * (kernel/remote/files.ts · replySent), as leases are, so they are no part of
+ * it; a push, a pull and a full scan are asked until done, and are.
+ */
 function newsDigest(body: RemoteSyncReply): string {
   const { leases: _leases, revoke: _revoke, applied: _applied, seq: _seq, ...rest } = body
-  return createHash('sha256').update(JSON.stringify(rest)).digest('hex')
+  const kernels = rest.kernels ? { ...rest.kernels, verdicts: [], scan: rest.kernels.scan.filter((one) => one.full) } : undefined
+  return createHash('sha256').update(JSON.stringify({ ...rest, ...(kernels ? { kernels } : {}) })).digest('hex')
 }
 
 /* ----------------------------------------------------------------- classes */
@@ -648,17 +709,21 @@ const byKey = (a: RemotePlacementIntent, b: RemotePlacementIntent): number => (a
  */
 function classesBlock(runnerId: string, intents: readonly RemotePlacementIntent[]): RemoteKernelsReply {
   const placements = classPort()
+  // The class folders' part: each copy's newest push, the verdicts, the pulls and scans (kernel/remote/files.ts · replyBlock).
+  const files = classFiles().replyBlock(runnerId)
   const block: RemoteKernelsReply = {
     placements: [...intents].sort(byKey),
-    pushes: [],
-    verdicts: [],
-    pulls: [],
-    scan: [],
+    pushes: files.pushes,
+    verdicts: files.verdicts,
+    pulls: files.pulls,
+    scan: files.scan,
     epochs: [],
     collect: [],
     // A question asked twice is a block the agent refuses; the rest are asked by the next replies.
     postmortem: [...new Set(placements.postmortemWanted(runnerId))].filter((key) => REMOTE_PLACEMENT_KEY.test(key)).slice(0, REMOTE_READINGS_MAX),
     rates: classRates(),
+    // The caps a kernel's files keep to on their way here (D17), when the owner set others than the machine's defaults.
+    ...classFileCaps(),
     tunnel: placements.tunnelWanted(runnerId),
   }
   try {
@@ -691,6 +756,19 @@ function windDownBlock(runner: Pick<RunnerRow, 'classesWindingDown'>): RemoteKer
  */
 function classRates(): RemoteKernelsReply['rates'] {
   return { classBulkMBps: classPlacementsLive() ? classMachineSettings().classBulkMBps : CLASS_BULK_IDLE_MBPS, machinePaceMBps: MACHINE_PACE_MBPS }
+}
+
+/**
+ * «Файл с машины — до» and the room limit (§8.5, D17), live: a machine
+ * leaves a file past either on its side unhashed (`skipped`), and this
+ * server checks both again whatever it is told (kernel/remote/files.ts).
+ * Said only when the owner set others than the machine keeps by itself
+ * (CLASS_MACHINE_FILE_MB, CLASS_ROOM_MB): a reply of the defaults is the
+ * reply it always was.
+ */
+function classFileCaps(): Pick<RemoteKernelsReply, 'caps'> {
+  const caps = { machineFileMb: classMachineSettings().machineFileMb, roomMb: Math.max(1, Math.floor(sessionLimitBytes() / (1024 * 1024))) }
+  return caps.machineFileMb === CLASS_MACHINE_FILE_MB && caps.roomMb === CLASS_ROOM_MB ? {} : { caps }
 }
 
 /* ---------------------------------------------------------------- outcome */

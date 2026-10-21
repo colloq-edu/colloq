@@ -49,6 +49,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { layersFingerprint } from '../server/src/dependencies/image-identity.ts'
 import type { KernelTimings } from '../server/src/runner-agent/kernels.ts'
+import type { RoomFileTimings } from '../server/src/runner-agent/room-files.ts'
 import { remoteCredential } from '../shared/remote-runner.ts'
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -313,7 +314,7 @@ export interface AgentOptions {
   keepCalls?: boolean
 }
 
-/** What an agent's timings may be shortened to (runner-agent/sync.ts · AgentOptions: holdMs, backoffMs, stopMs, classes). */
+/** What an agent's timings may be shortened to (runner-agent/sync.ts · AgentOptions: holdMs, backoffMs, stopMs, classes, files). */
 export interface AgentTimings {
   /** The hold its syncs ask home for: a sync this often while nothing comes. */
   holdMs?: { idle: number; busy: number }
@@ -323,6 +324,8 @@ export interface AgentTimings {
   stopMs?: number
   /** Its kernel host's (runner-agent/kernels.ts · KernelTimings): the census's beat, the perimeter's re-check, … */
   classes?: Partial<KernelTimings>
+  /** Its class folders' copies' (runner-agent/room-files.ts · RoomFileTimings): their beat, their own scans, the quiet rule, the waits. */
+  files?: Partial<RoomFileTimings>
 }
 
 /** The environment variable that carries an agent's shortened timings to this module run as its entry. */
@@ -597,6 +600,26 @@ export class Agent {
   /** The class container of one slot, by its labels (colloq.session, colloq.role); null — none. */
   classContainer(sessionId: string, role: 'room' | 'own' | 'council'): FakeClassContainer | null {
     return this.classContainers().find((c) => c.labels.includes(`colloq.session=${sessionId}`) && c.labels.includes(`colloq.role=${role}`)) ?? null
+  }
+
+  /** The class folder's copy on this machine (runner-agent/room-files.ts · roomFolder, <state>/rooms/<id>): what its containers mount. */
+  roomCopy(sessionId: string): string {
+    return path.join(this.root, 'rooms', sessionId)
+  }
+
+  /**
+   * What the machine agreed with home of a class's copy, as its baseline says
+   * (<state>/rooms/<id>.baseline.json, room-files.ts · writeBaseline): the
+   * last push it applied whole, and each agreed path's sha256 (`dir` for a
+   * folder). Null — no baseline (no copy of the class here, or one removed).
+   */
+  roomBaseline(sessionId: string): { pushSeq: number; files: Map<string, string> } | null {
+    try {
+      const said = JSON.parse(fs.readFileSync(`${this.roomCopy(sessionId)}.baseline.json`, 'utf8')) as { pushSeq: number; files: Array<[string, string, number?]> }
+      return { pushSeq: said.pushSeq, files: new Map(said.files.map(([at, base]) => [at, base])) }
+    } catch {
+      return null
+    }
   }
 
   /** A docker call on this machine's daemon, as its agent makes one (runner-agent/docker.ts · realDocker): the exit code and all it printed. */

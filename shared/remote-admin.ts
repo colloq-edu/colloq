@@ -15,6 +15,8 @@
  * business, not a course's: every door that serves these is requireOwner.
  */
 import type { RemoteAttemptPhase, RemoteProblemCode } from './remote-runner.js'
+import type { RemoteFilesLag, RemoteKernelRole } from './remote-kernels.js'
+import type { CLASS_MACHINE_SETTING_BOUNDS, ClassMachineSettings } from './admin.js'
 
 /* ------------------------------------------------------------- machines */
 
@@ -180,6 +182,237 @@ export interface RemoteMachine {
    * Absent — not draining, or drained by the owner (or home's quarantine).
    */
   selfDrain?: 'draining' | 'leaving'
+  /**
+   * «Занятия»: the machine as classes see it (RemoteMachineClasses). Absent —
+   * it was never opened to classes and holds none: no «занятия» chip, no class
+   * line, as before classes (Paper 18 · Z1). A server from before classes
+   * sends none either.
+   */
+  classes?: RemoteMachineClasses
+}
+
+/* ------------------------------------------------ classes on machines (0.25) */
+
+/**
+ * Why a machine opened to classes takes no NEW class now, the one reason
+ * that matters most (docs/architecture/remote-classes.md §6.3; Paper 18 · Z1
+ * readiness lines). What it holds goes on regardless: these keep only new
+ * placements away, except `perimeter` with `failing`, which moved its
+ * classes off.
+ *
+ * `gone`: revoked or left. `outdated`: its build differs from home's (new
+ * placements need equal builds, 0.23 decision 5). `silent`: not heard.
+ * `quarantined`: two silence failovers within half an hour (D32), until the
+ * owner's «Вернуть». `winding`: «Принимает занятия» was turned off and it may
+ * still hold class containers. `facts`: it has not said yet what it can do
+ * (no kernels block since its classes were turned on). `host-network`: its
+ * agent runs without `--network host` (D19). `same-daemon`: a Colloq server
+ * shares its Docker (D20). `perimeter`: the class perimeter is not in place
+ * (`detail`: the agent's word — `no-dockerd`, `no-iptables`, `refused`,
+ * `failing`). `canary`: the admission canary did not pass (`detail`: what
+ * failed, in the agent's words). `image`: a class image is still downloading
+ * (`percent`, `environment`). `tunnel`: its tunnel is down while it syncs.
+ */
+export type RemoteClassBlock =
+  | 'gone'
+  | 'outdated'
+  | 'silent'
+  | 'quarantined'
+  | 'winding'
+  | 'facts'
+  | 'host-network'
+  | 'same-daemon'
+  | 'perimeter'
+  | 'canary'
+  | 'image'
+  | 'tunnel'
+
+/** A machine as classes see it: its flag, what keeps new classes away, what it holds, its link (Z1, Z3). */
+export interface RemoteMachineClasses {
+  /** «Принимает занятия» (D2): the owner's flag, off by default, never together with `trusted` (D3). */
+  on: boolean
+  /** Turned off, and its sync has not yet said it holds no class container (store.ts · classesWindingDown): «убирает занятия». */
+  windingDown: boolean
+  /** When two silence failovers within 30 minutes stopped it taking classes (D32); null — not, or the owner resumed it. */
+  quarantinedAt: number | null
+  /**
+   * What keeps a new class away now; null — it takes classes. With
+   * `perimeter` and `canary`, `detail` is the agent's word; with `image`,
+   * the environment downloading and how far.
+   */
+  block: { reason: RemoteClassBlock; detail: string | null; percent: number | null; environment: string | null } | null
+  /** The classes holding a slot on it now (live placements), the memory those slots are held to there, and the card a class holds whole. */
+  held: { classes: number; slots: number; memoryMb: number; card: string | null }
+  /**
+   * Its tunnel (§4): up or not, since when on this server's clock, and the
+   * round trip home measures over it (an average and the p95, ms); `null` — no
+   * tunnel was ever seen in this server's life.
+   */
+  link: { up: boolean; since: number | null; rttMs: number | null; p95Ms: number | null } | null
+  /**
+   * A silent machine holding classes: when the first of them moves away by
+   * itself if nothing changes (its class's «Переезд через»); null — none
+   * will by itself (every class waits for the machine, or the outage is too
+   * young to tell, or it is not silent).
+   */
+  moveAt: number | null
+}
+
+/**
+ * A banner over the machines block for the owner (Paper 18 · Z1, §13.2), one
+ * per event: `quarantined` — two silence failovers within 30 minutes
+ * (D32), with «Вернуть»; `tunnel` — its tunnel was taken over from other
+ * addresses more than TUNNEL_REPLACEMENTS_ALERT.count times within the
+ * window (§4.2), the addresses named; `perimeter` — its perimeter failed
+ * closed and its classes moved here (§7.6).
+ */
+export type RemoteClassBanner =
+  | { kind: 'quarantined'; machineId: string; name: string; at: number }
+  | { kind: 'tunnel'; machineId: string; name: string; count: number; minutes: number; addresses: string[] }
+  | { kind: 'perimeter'; machineId: string; name: string; at: number }
+
+/** One class on a machine, a row of the machine's page (Paper 18 · Z3). */
+export interface RemoteMachineClassRow {
+  sessionId: string
+  /** The class's name; null — its row is gone. */
+  name: string | null
+  course: { id: string; name: string } | null
+  environment: string | null
+  /** Its slots on this machine: «класс · личные · консилиум». */
+  roles: RemoteKernelRole[]
+  /** The council's planned workers, when its pool is here. */
+  workers: number | null
+  /** The card the class room holds whole. */
+  card: string | null
+  /** What its slots are held to there, and what they use, as the machine's census said; `usedMb` null — not said. */
+  memory: { limitMb: number; usedMb: number | null }
+  /** CPU use of its slots there, percent of one core as docker reports it; null — not said. */
+  cpuPercent: number | null
+  /** How far its folder copy is behind (§8.7), summed over its slots there; null — not said. */
+  files: RemoteFilesLag | null
+  /** A slot of it waits for this machine (unreachable). */
+  waiting: boolean
+}
+
+/**
+ * «Работают сейчас» (Paper 18 · Z7): one slot of a class on a machine, a
+ * sub-row of the class's row. It holds none of this server's memory («0 МБ
+ * здесь»); its numbers are the machine's. For a class the viewer does not
+ * teach (`RunningClass.hidden`) the machine is not named.
+ */
+export interface RunningMachineSlot {
+  role: RemoteKernelRole
+  /** The machine's name; null for a class the viewer does not teach. */
+  machine: string | null
+  state: 'running' | 'starting'
+  /** Whether the machine answers now; `lost` — a stop waits until it does. */
+  link: 'ok' | 'lost'
+  /** With `lost`: since when the machine has not answered, as the move counts it; null — not said. */
+  lostSince: number | null
+  /** What the container is held to there, and what it uses (null — not said). */
+  memoryMb: number
+  usedMb: number | null
+  cpus: number
+  cpuPercent: number | null
+  /** The card a GPU room holds whole there. */
+  card: string | null
+  files: RemoteFilesLag | null
+  /** The council's planned workers; null for the other roles. */
+  workers: number | null
+  /**
+   * The round trip to its machine over the tunnel, ms (an average of the
+   * pings, as the room's chip says it): «связь 52 мс». Null — none measured
+   * yet, or a class the viewer does not teach.
+   */
+  rttMs: number | null
+}
+
+/**
+ * What «Работают сейчас» adds to a class row for classes on machines
+ * (RunningClass, shared/admin.ts): its slots there, when one moves away by
+ * itself, and its last move here.
+ */
+export interface RunningClassMachines {
+  /** Its slots on machines; absent or empty — it computes here only. */
+  machines?: RunningMachineSlot[]
+  /**
+   * A slot of it waits for a silent machine: when it moves to this server
+   * (or another machine) by itself if nothing changes; null — it waits for
+   * the machine («ждать машину»), or the outage is too young to tell.
+   */
+  moveAt?: number | null
+  /**
+   * Its kernel came back from a machine within this class (Z7 «на сервере ·
+   * переехало в 14:33»): when, from which machine (null for a hidden row),
+   * and the files' «по 14:31:58» when known.
+   */
+  moved?: { at: number; from: string | null; filesAt: number | null } | null
+}
+
+/**
+ * The class settings for classes on machines, read and written by the owner
+ * (GET and PUT /api/admin/resources/classes; Paper 18 · Z1 «Занятия на
+ * машинах»). GET is for staff: a teacher's class form reads the switch and
+ * the default from it.
+ */
+export interface ClassMachineSettingsResponse {
+  settings: ClassMachineSettings
+  defaults: ClassMachineSettings
+  bounds: typeof CLASS_MACHINE_SETTING_BOUNDS
+  /** Machines that take classes now (opened to them, not revoked or gone). */
+  machines: number
+  /**
+   * Which backend runs this server's kernels. Under the broker (Kubernetes)
+   * no class ever goes to a machine (D26): the panel draws neither the
+   * section nor a class's «Где считается».
+   */
+  backend: 'docker' | 'broker' | 'test'
+}
+
+/**
+ * What the Resources tab's answer (GET /api/admin/resources) adds for
+ * classes on machines: the class containers machines hold, none of this
+ * server's memory (Z7 legend «На машинах · 9 контейнеров · 0 МБ здесь»).
+ * Absent — none.
+ */
+export interface ResourcesOnMachines {
+  onMachines?: { containers: number }
+}
+
+/**
+ * The class form's live line (Paper 18 · Z4 «Подходят: …»): the machines
+ * that take classes against this class, by GET
+ * /api/admin/seminars/:id/placement. Staff of the class only: it names
+ * machines.
+ *
+ * `refusal` — why no machine can take any slot of the class: its environment
+ * was built here (`not-portable`), this server's blocked ranges cannot go to
+ * a machine (`blocked-ranges`), or no machine takes classes (`no-machines`).
+ * A machine's `refusal` is the first filter it failed (§6.3), `outdated` for
+ * one whose build differs from home's; null — it fits now.
+ */
+export interface ClassPlacementOutlook {
+  refusal: 'not-portable' | 'blocked-ranges' | 'no-machines' | null
+  environment: string
+  machines: Array<{
+    name: string
+    refusal: string | null
+    freeMb: number | null
+    cards: number
+    rttP95Ms: number | null
+    /** Its p95 is over 150 ms: «далеко: +N мс на ячейку». */
+    far: boolean
+  }>
+  at: number
+  /**
+   * The class's own «Если машина пропала» (§6.2): whether it moves by
+   * itself or waits for its machine. The room's staff banner reads it — it
+   * offers «Ждать машину» only to a class that moves by itself, and never
+   * promises a move to one that waits. Absent — a server before it.
+   */
+  failover?: 'auto' | 'wait'
+  /** Whether this viewer may change where the class computes (the owner's switch, D4). Absent — a server before it. */
+  editable?: boolean
 }
 
 /**
@@ -206,6 +439,8 @@ export interface RemoteCodeView {
   createdBy?: string | null
   /** Minted on the instance's console (`colloq-host runner-code`), not in the panel. */
   console?: boolean
+  /** Its machines take classes from the start («Принимать занятия», D2); never together with `trusted` (D3). */
+  classes?: boolean
 }
 
 /** GET /api/admin/runners — the M1 block. */
@@ -233,6 +468,14 @@ export interface RemoteMachinesResponse {
   home: { version: string; build: string }
   /** Set when home quarantined a machine and the owner has not looked yet. */
   banner: { machineId: string; name: string; at: number } | null
+  /**
+   * The class banners above the block (Paper 18 · Z1): a machine quarantined
+   * for classes, a tunnel taken over too often, a perimeter that failed
+   * closed. Absent — none (and a server from before classes).
+   */
+  classBanners?: RemoteClassBanner[]
+  /** How many machines take classes now: the block's «ведут занятия» counter. Absent — none ever did. */
+  classMachines?: { machines: number; classes: number }
 }
 
 /** A run a machine holds, on the machine's page (M3). */
@@ -260,6 +503,17 @@ export type RemoteEventKind =
   | 'joined' | 'leased' | 'applied' | 'declined' | 'lost' | 'withdrawn' | 'revoked'
   | 'quarantined' | 'resumed' | 'drained' | 'trusted' | 'untrusted' | 'renamed' | 'outdated'
   | 'image_ready' | 'data_ready' | 'sealed_fetched' | 'problem' | 'left'
+  | RemoteClassEventKind
+
+/**
+ * The lines classes on machines add to the log (remote-classes.md §11; the
+ * store's REMOTE_CLASS_EVENT_KINDS): its tunnel taken over by a newer one
+ * (`address` the newer tunnel's, `detail` the replaced one's), its classes
+ * moved off it (`detail` the cause, «moved: Ада» for a move by hand), the
+ * class quarantine set and lifted, «Принимает занятия» turned off, and its
+ * perimeter failing closed.
+ */
+export type RemoteClassEventKind = 'tunnel_replaced' | 'class_failover' | 'classes_quarantined' | 'classes_resumed' | 'unclassed' | 'perimeter_failing'
 
 export interface RemoteEvent {
   at: number
@@ -270,12 +524,16 @@ export interface RemoteEvent {
   number: number | null
   competition: string | null
   detail: string | null
+  /** The address the line was written about: a takeover's newer tunnel (`tunnel_replaced`); absent or null otherwise. */
+  address?: string | null
 }
 
 /** GET /api/admin/runners/:id — the M3 page. */
 export interface RemoteMachineDetail extends RemoteMachine {
   runs: RemoteMachineRun[]
   events: RemoteEvent[]
+  /** The classes on the machine now, a row each (Paper 18 · Z3). Absent — none, or a server from before classes. */
+  classRows?: RemoteMachineClassRow[]
 }
 
 /* -------------------------------------------------------------- actions */
@@ -292,6 +550,12 @@ export interface MintRemoteCodeRequest {
   approvedSlots: number | null
   /** The machines' names start with it, e.g. «vast-4090»; home adds a suffix. */
   namePrefix?: string
+  /**
+   * Machines joined with it take classes («Принимать занятия — машина увидит
+   * код, данные, файлы и личные тетради студентов», D2). Never together with
+   * `trusted` (D3): the door refuses the pair in words.
+   */
+  classes?: boolean
 }
 
 /**
@@ -310,6 +574,8 @@ export interface MintRemoteCodeResponse {
   expiresAt: number
   machines: number
   trusted: boolean
+  /** Its machines take classes. */
+  classes?: boolean
   commands: { docker: string; bare: string; vast: string }
   /**
    * The address in the commands is this server's own loopback (a PUBLIC_URL
@@ -327,6 +593,12 @@ export interface UpdateRemoteMachineRequest {
   /** null — the instance setting. */
   perDevice?: number | null
   trusted?: boolean
+  /**
+   * «Принимает занятия» (D2). Off fails every class of the machine over first
+   * (release.ts · unclassRunner). Refused in words while it is trusted, and
+   * `trusted: true` is refused while it takes classes (D3).
+   */
+  classes?: boolean
 }
 
 /**
@@ -337,6 +609,16 @@ export interface UpdateRemoteMachineRequest {
  * machine («Отключить все»).
  */
 export type RemoteMachineAction = 'drain' | 'resume' | 'revoke'
+
+/**
+ * POST /api/admin/runners/:id/classes/:action. `resume`: «Вернуть» under the
+ * class quarantine banner (D32) — the machine takes classes again, and the
+ * next quarantine counts only what comes after. `move`: «Перенести занятия»
+ * — every class slot on the machine moves now (§11.1), to another machine
+ * that fits or to this server, its variables lost; the machine keeps taking
+ * classes. Both the owner's.
+ */
+export type RemoteClassAction = 'resume' | 'move'
 
 /* ------------------------------------------------- console and «Работают» */
 

@@ -14,12 +14,13 @@ import {
   workspaceFs,
   deleteFile,
   forgetTree,
-  listTree,
   resolveInSession,
+  roomTree,
   sessionBytes,
   statPath,
   sweepStaleUploads,
 } from '../workspace.js'
+import { filesPendingUnder, filesSettled } from '../kernel/remote/files.js'
 import { broadcastFiles, forgetMissingBoard } from '../control.js'
 import { signDownloadToken, verifyDownloadToken } from '../auth.js'
 import { canSeeRoom } from '../admin/access.js'
@@ -36,6 +37,9 @@ interface UploadFailure {
 
 /** One drop, one armful. Past this the panel's progress rows stop being readable. */
 const MAX_FILES_PER_UPLOAD = 8
+
+/** How long a download waits for a newer version of its file on its way from the class's machine (remote-classes.md §8.7). */
+const DOWNLOAD_SETTLE_MS = 10_000
 
 /**
  * The space a room takes, as a per-room counter rather than a walk per
@@ -154,8 +158,9 @@ export function fileRoutes(): Router {
     if (!sessionAuth(req)) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     // Together with the truncation flag: a list that hit the cap does not mean
     // "the room has this many files", and it cannot be used to decide that
-    // something is gone.
-    res.json(listTree(req.params.id))
+    // something is gone. The room's own view: a class folder on a machine
+    // adds its rows (workspace.ts · roomTree).
+    res.json(roomTree(req.params.id))
   })
 
   /*
@@ -364,7 +369,7 @@ export function fileRoutes(): Router {
        * otherwise the second walk would fall to exactly the request the memory
        * exists for.
        */
-      const tree = listTree(sessionId)
+      const tree = roomTree(sessionId)
       if (saved.length > 0) broadcastFiles(sessionId, tree)
       if (failure) {
         res.status(failure.code).json({ error: failure.message, ...tree })
@@ -637,14 +642,30 @@ export function fileRoutes(): Router {
     const ticket = typeof req.query.token === 'string' ? req.query.token : ''
     const allowed = sessionAuth(req) !== null || verifyDownloadToken(sessionId, wanted, ticket)
     if (!allowed) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
-    const full = resolveInSession(sessionId, wanted)
-    if (!full || !workspaceFs.existsSync(full)) return res.status(404).json({ error: tr("server.fileNotFound.3e2256") })
-    let file: ReturnType<typeof workspaceFs.openRead>
-    try { file = workspaceFs.openRead(full) }
-    catch { return res.status(404).json({ error: tr("server.fileNotFound.3e2256") }) }
-    // Send uses the held file descriptor, not the attacker-controlled pathname.
-    // Preserve the original MIME/name and Express range/conditional responses.
-    downloadHeldFile(res, file, baseOf(wanted))
+    const serve = (): void => {
+      const full = resolveInSession(sessionId, wanted)
+      if (!full || !workspaceFs.existsSync(full)) {
+        res.status(404).json({ error: tr("server.fileNotFound.3e2256") })
+        return
+      }
+      let file: ReturnType<typeof workspaceFs.openRead>
+      try { file = workspaceFs.openRead(full) }
+      catch {
+        res.status(404).json({ error: tr("server.fileNotFound.3e2256") })
+        return
+      }
+      // Send uses the held file descriptor, not the attacker-controlled pathname.
+      // Preserve the original MIME/name and Express range/conditional responses.
+      downloadHeldFile(res, file, baseOf(wanted))
+    }
+    /*
+     * A newer version on its way from the class's machine (remote-classes.md
+     * §8.7) is waited for, a few seconds at most: downloading `out.csv` the
+     * moment the cell on the machine ended should give the file it wrote, not
+     * the one it replaced. Every other download is served at once.
+     */
+    if (!filesPendingUnder(sessionId, wanted)) return serve()
+    void filesSettled(sessionId, DOWNLOAD_SETTLE_MS).then(serve, serve)
   })
 
   /**
@@ -712,7 +733,7 @@ export function fileRoutes(): Router {
     // One tree for both: `deleteFile` already reset the walk's short memory
     // (workspace.ts), so this is a fresh walk, and the broadcast takes it
     // ready-made.
-    const tree = listTree(sessionId)
+    const tree = roomTree(sessionId)
     broadcastFiles(sessionId, tree)
     res.json(tree)
   })

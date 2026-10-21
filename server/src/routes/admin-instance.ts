@@ -40,7 +40,7 @@ import { discardBans } from '../bans.js'
 import { stopAll } from '../ai/agent.js'
 import { testConnection } from '../ai/provider.js'
 import { newSessionId } from '../auth.js'
-import { dropSessionDoc, getSessionDoc, liveSince, onlineCount } from '../collab/index.js'
+import { dropSessionDoc, getSessionDoc, liveSince, onlineCount, peekSessionDoc } from '../collab/index.js'
 import { visitSessionDoc } from './doc-visit.js'
 import { config } from '../config.js'
 import { broadcast, closeControlRoom, setClassFinished } from '../control.js'
@@ -67,7 +67,10 @@ import {
 } from '../db.js'
 import { classMachineSettings } from '../admin/resource-settings.js'
 import { classPlacement } from '../kernel/remote/placement-store.js'
-import { classPlacementChanged } from '../kernel/remote/placement.js'
+import { classPlacementChanged, placementOutlook } from '../kernel/remote/placement.js'
+import { machineState } from '../competitions/remote/heard.js'
+import { getRunner } from '../competitions/remote/store.js'
+import type { ClassPlacementOutlook } from '@shared/remote-admin'
 import { forgetCache } from '../collab/history.js'
 import { deleteRoomBlobs } from '../blobs.js'
 import {
@@ -78,7 +81,8 @@ import {
   materialCount,
   publicationOf,
 } from '../publish/store.js'
-import { environmentOf, shutdownSession, syncBookKernels, syncDangerGuard } from '../kernel/index.js'
+import { environmentOf, kernelMachinesChanged, kernelNote, shutdownSession, syncBookKernels, syncDangerGuard } from '../kernel/index.js'
+import { kernelBackend } from '../kernel/runtime-client.js'
 import { applyOwnLimits } from '../kernel/pool.js'
 import { applyCpuLimit, applyMemoryLimit } from '../kernel/pool.js'
 import {
@@ -342,10 +346,10 @@ function toSeminar(row: SeminarRow, view: SeminarView): AdminSeminar {
      * Where the class computes («Где считается», remote-classes.md §6.2): its
      * setting with every field filled, and whether this viewer may change it.
      * Where a slot runs NOW is the room's to show (the kernels map), not the
-     * setting's: a change moves nothing that runs.
+     * setting's: a change moves nothing that runs. Under the broker no class
+     * goes to a machine (D26), and the seminar says nothing of where.
      */
-    placement: classPlacement(row.id),
-    placementEditable: view.places,
+    ...(kernelBackend() === 'broker' ? {} : { placement: classPlacement(row.id), placementEditable: view.places }),
     finishedAt: finishedAt(row.id),
     publication: publication
       ? {
@@ -668,10 +672,14 @@ export function adminInstanceRoutes(): Router {
       // A script's mistake: the panel offers nothing else. Its author reads English.
       if (!read.ok) return invalid(res, `placement.${read.field} is not a value a class's placement takes`)
       if (!samePlacement(read.placement, before)) {
+        // Under the broker the panel draws no «Где считается» (D26): the server takes no such change either.
+        if (kernelBackend() === 'broker') return invalid(res, 'placement: classes do not compute on machines under the broker')
         if (!mayPlaceClasses(currentStaff(req))) return forbidden(res, tr('server.onlyTheOwnerDecidesWhereClassesCompute.5ef976'))
         setSessionPlacement(row.id, read.placement)
         // Its image is looked for now, so that the machines fetch it before anyone presses Run (§6.6).
         classPlacementChanged(row.id, sessionEnvironment(row.id))
+        // And its staff read its slots on machines again: «Ждать машину» pressed in one tab is every staff tab's.
+        kernelMachinesChanged(row.id)
       }
     }
     if (body?.name !== undefined) {
@@ -787,9 +795,20 @@ export function adminInstanceRoutes(): Router {
        */
       // A reset to the default (`null`) goes too: the broker returns the live
       // Pod to its default at once, docker still waits for the next start.
-      void applyMemoryLimit(row.id, memory.mb).catch((err: unknown) => {
-        console.error(`[kernel] memory limit for ${row.id} did not get through:`, err)
-      })
+      void applyMemoryLimit(row.id, memory.mb)
+        .then((outcome) => {
+          /*
+           * A number the running kernel's container did not take — more than
+           * its machine has free (placement.ts · resize), or docker here
+           * refusing it — waits for its next start, and the room's kernel log
+           * says so, for whoever raised it to read in the room. A room nobody
+           * has open is not brought back for it.
+           */
+          if (outcome === 'failed' && peekSessionDoc(row.id)) kernelNote(row.id, tr('server.theNewMemoryLimitDidNotReach.570077'))
+        })
+        .catch((err: unknown) => {
+          console.error(`[kernel] memory limit for ${row.id} did not get through:`, err)
+        })
     }
 
     if (body?.cpus !== undefined) {
@@ -815,6 +834,54 @@ export function adminInstanceRoutes(): Router {
 
     const seminar = toSeminar(selectSeminar.get(row.id) as SeminarRow, seminarView(currentStaff(req)))
     res.json(afterClass ? { ...seminar, afterClass } : seminar)
+  })
+
+  /* ------------------------------------------- where the class computes */
+
+  /*
+   * The class form's live line (Paper 18 · Z4 «Подходят: vast-3 (свободно
+   * 22 ГБ · 4090), lab-2 (18 ГБ)»): every machine that takes classes against
+   * this class's slots, with what it has free and why it cannot take them,
+   * or the class's own refusal (placement.ts · outlook). The class's staff
+   * only — it names machines, which only staff read (§13.1 «Data path»). A
+   * machine the outlook calls not live because its build differs from this
+   * server's is named `outdated`: «устарела», not «не на связи».
+   *
+   * It also carries the class's own «Если машина пропала» and whether this
+   * viewer may change it: the room's staff banner reads both while a machine
+   * does not answer (Paper 18 · Z5), to offer «Ждать машину» only where it
+   * changes something and is allowed.
+   */
+  router.get('/api/admin/seminars/:id/placement', requireStaff, (req, res, next) => {
+    const row = visibleSeminarOr404(req, res)
+    if (!row) return
+    const now = Date.now()
+    const failover = classPlacement(row.id).failover
+    const editable = mayPlaceClasses(currentStaff(req))
+    placementOutlook(row.id)
+      .then((outlook) => {
+        const body: ClassPlacementOutlook = {
+          refusal: outlook.refusal,
+          environment: sessionEnvironment(row.id) ?? activeName(),
+          machines: outlook.machines.map((machine) => {
+            const runner = machine.refusal === 'not-live' ? getRunner(machine.runnerId) : null
+            const outdated = runner !== null && machineState(runner, now) === 'outdated'
+            return {
+              name: machine.name,
+              refusal: outdated ? 'outdated' : machine.refusal,
+              freeMb: machine.freeMb,
+              cards: machine.cards,
+              rttP95Ms: machine.rttP95Ms,
+              far: machine.far,
+            }
+          }),
+          at: now,
+          failover,
+          editable,
+        }
+        res.set('Cache-Control', 'no-store').json(body)
+      })
+      .catch(next)
   })
 
   /* ---------------------------------------------- the room's own teachers */

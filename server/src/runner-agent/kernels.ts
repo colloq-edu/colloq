@@ -64,6 +64,8 @@ import {
   REMOTE_READINGS_MAX,
   REMOTE_READING_LINES_MAX,
   REMOTE_READING_LINE_CHARS,
+  REMOTE_SESSION_ID,
+  parseRemotePlacementKey,
   remotePlacementKey,
   remoteRevisionDigest,
   type PostmortemReading,
@@ -98,6 +100,7 @@ import { parseCgroup, parseReading, readingArgs } from '../kernel/postmortem-cor
 import { dockerMissing, dockerWords, type Docker, type DockerResult } from './docker.js'
 import { CHECK_LABELS, INSTANCE_LABEL, revisionImage } from './images.js'
 import { pickWholeCard, type CardRun, type ProbedCard } from './machine.js'
+import { ensureRoomFolder } from './room-files.js'
 import { dropPlacement, readPlacements, unreadPlacements, writePlacement, type StateLayout, type StoredPlacement } from './state.js'
 
 /* ----------------------------------------------------------------- numbers */
@@ -909,6 +912,27 @@ export class KernelHost {
     return this.placements.size + this.unread.size > 0
   }
 
+  /**
+   * When a kernel of the class was last busy, as the census saw its CPU (or
+   * could not tell), or became ready: the class folder's own scans run at the
+   * busy pace for a minute after (room-files.ts, §8.3). 0 — none runs here.
+   */
+  busyAt(sessionId: string): number {
+    let at = 0
+    for (const placement of this.placements.values()) if (placement.sessionId === sessionId && placement.running) at = Math.max(at, placement.busyAt)
+    return at
+  }
+
+  /** The gens of the class whose containers are held (a record this build cannot read included): a fenced copy waits for them to go. */
+  heldGens(sessionId: string): Array<{ role: RemoteKernelRole; gen: number }> {
+    const held = [...this.placements.values()].filter((placement) => placement.sessionId === sessionId).map((placement) => ({ role: placement.role, gen: placement.gen }))
+    for (const [key, kept] of this.unread) {
+      const slot = parseRemotePlacementKey(key)
+      if (slot?.sessionId === sessionId) held.push({ role: slot.role, gen: kept.gen })
+    }
+    return held
+  }
+
   counts(): ClassCounts {
     const counts: ClassCounts = { room: 0, own: 0, council: 0 }
     for (const placement of this.placements.values()) if (placement.phase !== 'failed' || placement.running) counts[placement.role]++
@@ -964,9 +988,9 @@ export class KernelHost {
       names = fs.readdirSync(this.layout.roomsDir)
     } catch { /* none */ }
     for (const name of names) {
-      // One class folder at a time: one that will not go is no reason to keep the others.
+      // One class folder at a time (its baseline and staging beside it): one that will not go is no reason to keep the others.
       const left = removeTree(path.join(this.layout.roomsDir, name))
-      if (left === 0) folders++
+      if (left === 0 && REMOTE_SESSION_ID.test(name)) folders++
       stayed += left
     }
     if (stayed === 0) stayed += removeTree(this.layout.roomsDir)
@@ -2044,19 +2068,9 @@ export class KernelHost {
     }
   }
 
-  /** The class folder's copy (§8.1): uid 1000 and 2775 as home's sessionDir makes them, made empty when missing (files arrive with their pushes). */
+  /** The class folder's copy (§8.1), by the one rule its files are written by (room-files.ts): made empty when missing, its files come with their pushes. */
   private folder(sessionId: string): string {
-    fs.mkdirSync(this.layout.roomsDir, { recursive: true, mode: 0o700 })
-    const dir = path.join(this.layout.roomsDir, sessionId)
-    if (fs.existsSync(dir)) return dir
-    fs.mkdirSync(dir, { mode: 0o2775 })
-    if (process.platform !== 'win32') {
-      try {
-        fs.chmodSync(dir, 0o2775)
-        if (process.getuid?.() === 0) fs.chownSync(dir, 1000, 1000)
-      } catch { /* the first write in it says so, as at home */ }
-    }
-    return dir
+    return ensureRoomFolder(this.layout, sessionId)
   }
 
   /** The class containers of this tree, as docker lists them; null — it did not answer. */

@@ -11,13 +11,18 @@
  * (`quarantineSeen`).
  */
 import { REMOTE_ATTEMPT_DISK_MB, REMOTE_DECLINE_SKIP_MS, remoteCompatible, type RemoteSyncRequest } from '@shared/remote-runner'
+import { CLASS_QUARANTINE_WINDOW_MS, remotePlacementKey, type RemoteFilesLag, type RemoteKernelRole, type RemotePlacementHeld } from '@shared/remote-kernels'
+import { TUNNEL_REPLACEMENTS_ALERT } from '@shared/remote-tunnel'
 import type {
+  RemoteClassBanner,
   RemoteCodeView,
   RemoteCompetitionWhere,
   RemoteConsoleGroup,
   RemoteEvent,
   RemoteMachine,
   RemoteMachineCard,
+  RemoteMachineClasses,
+  RemoteMachineClassRow,
   RemoteMachineDetail,
   RemoteMachineFacts,
   RemoteMachineRun,
@@ -32,13 +37,16 @@ import type {
 import { acceptsUploads, submissionsOpen, type Competition } from '@shared/competitions'
 import { competitionRevision, revisions } from '../../dependencies/store.js'
 import { canSeeCompetition } from '../scope.js'
-import type { StaffLike } from '../../admin/access.js'
+import { coursesOfRoom, type StaffLike } from '../../admin/access.js'
 import { getTeacher } from '../../admin/store.js'
+import { getSession } from '../../db.js'
+import { runnerPlacementRows, type PlacementRow } from '../../kernel/remote/placement-store.js'
+import { getCourse } from '../../publish/store.js'
 import { gpuSliceMb } from '../gpu-math.js'
 import { limitsFor } from '../runner-port.js'
 import { competitionDefaults, gpuPerDeviceSetting, homeNotebooksSetting, scoreSlotsSetting } from '../settings.js'
 import { getCompetition, getEntrant, getSubmission, heldRows, listCompetitions, queueRows, runningRows, type QueueRow } from '../store.js'
-import { heardAddress, heardAt, lastSync, liveRunner, machineState, remoteCardsSeen, runnerCards } from './heard.js'
+import { heardAddress, heardAt, lastSync, liveRunner, loadClassPort, machineState, remoteCardsSeen, runnerCards } from './heard.js'
 import { fitCache, homeTakes, machineFit, rowNeedsCard, rowNeeds, stepClaim, type FitCache, type FitMachine, type MachineRefusal } from './fit.js'
 import {
   anyRunnerEver,
@@ -57,7 +65,9 @@ import {
   listRunners,
   listStandingRunners,
   runnerEvents,
+  runnerEventsOf,
   runnerLeaseCounts,
+  runnerStanding,
   updateRunner,
   type LeaseRow,
   type RunnerRow,
@@ -245,9 +255,224 @@ function readinessOf(runner: RunnerRow, stock: ReadonlyMap<string, CompetitionSt
   return [...stock.values()].sort((a, b) => a.rank - b.rank || a.competition.createdAt - b.competition.createdAt).map((entry) => readinessFor(runner, entry))
 }
 
+/* ------------------------------------------------- classes on machines */
+
+/**
+ * What the classes' half of these views reads beyond the rows: the
+ * machines' tunnels (kernel/remote/tunnel.ts), each slot's own view
+ * (kernel/remote/placement.ts · placementOf) and the class images a machine
+ * is asked for (the class port). Loaded only when some machine has anything
+ * of classes, never at this module's load: the forecast and the door read
+ * this module too, and the placements would pull the kernel pool in with
+ * them (heard.ts · ClassPort says why).
+ */
+export interface ClassSight {
+  tunnels: {
+    isUp(runnerId: string): boolean
+    since(runnerId: string): number
+    rtt(runnerId: string): { ewmaMs: number | null; p95Ms: number | null }
+    tunnelReplacementAlert(runnerId: string): boolean
+  }
+  /** When a slot moves away by itself if nothing changes; null — it will not, or no time can be promised yet. */
+  failoverAt(sessionId: string, role: RemoteKernelRole): number | null
+  /** The class images the machine is asked to pull (§6.6): what «образ ↓ 45 %» is about. */
+  revisionsWanted(runnerId: string): readonly { id: string }[]
+}
+
+async function classSight(): Promise<ClassSight> {
+  const [{ machineTunnels }, placement, port] = await Promise.all([
+    import('../../kernel/remote/tunnel.js'),
+    import('../../kernel/remote/placement.js'),
+    loadClassPort(),
+  ])
+  const tunnels = machineTunnels()
+  return {
+    tunnels,
+    failoverAt: (sessionId, role) => {
+      const view = placement.placementOf(sessionId, role)
+      return view.where === 'machine' ? view.failoverAt : null
+    },
+    revisionsWanted: (runnerId) => port.classRevisionsWanted(runnerId),
+  }
+}
+
+/** Whether classes are any of this machine's business: opened to them, winding them down, quarantined for them, or holding a slot. */
+function classesConcern(runner: RunnerRow, rows: readonly PlacementRow[]): boolean {
+  return runner.classes || runner.classesWindingDown || rows.length > 0
+}
+
+/** The slots a machine says it holds, by placement key, at the gen each was said at. */
+function heldSlots(sync: RemoteSyncRequest | null): Map<string, RemotePlacementHeld> {
+  return new Map((sync?.kernels?.placements ?? []).map((held) => [held.key, held]))
+}
+
+/** A slot's report from its machine, if it is about the slot's current gen. */
+function heldOf(held: ReadonlyMap<string, RemotePlacementHeld>, row: PlacementRow): RemotePlacementHeld | null {
+  const said = held.get(remotePlacementKey(row.sessionId, row.role))
+  return said && said.gen === row.gen ? said : null
+}
+
+/**
+ * The one reason a machine opened to classes takes no NEW one now (§6.3),
+ * in the order the owner fixes them: gone, then what the owner did (wound
+ * down, quarantined), then what the machine is (outdated, silent, what its
+ * facts say), then what passes (its tunnel, a class image downloading).
+ * Null — it takes classes.
+ */
+function classBlock(runner: RunnerRow, now: number, sight: ClassSight): RemoteMachineClasses['block'] {
+  const block = (reason: NonNullable<RemoteMachineClasses['block']>['reason'], detail: string | null = null, percent: number | null = null, environment: string | null = null) =>
+    ({ reason, detail, percent, environment })
+  if (!runnerStanding(runner)) return block('gone')
+  if (!runner.classes) return block('winding')
+  if (runner.classesQuarantinedAt !== null) return block('quarantined')
+  if (!remoteCompatible(homeRunnerBuild(), runner.build ?? '')) return block('outdated')
+  const state = machineState(runner, now)
+  if (state === 'silent') return block('silent')
+  const facts = lastSync(runner.id)?.kernels?.classes
+  if (!facts) return block('facts')
+  if (facts.sameDaemon) return block('same-daemon')
+  if (!facts.hostNetwork) return block('host-network')
+  if (facts.perimeter !== 'ok') return block('perimeter', facts.perimeter)
+  // A canary that has not run yet («pending: …», kernels.ts · runCanary) waits for a class image: no failure to name.
+  const canaryWaits = facts.canary.startsWith('pending')
+  if (facts.canary !== 'ok' && !canaryWaits) return block('canary', homeWords(facts.canary))
+  if (!sight.tunnels.isUp(runner.id)) return block('tunnel')
+  const sync = lastSync(runner.id)
+  for (const wanted of sight.revisionsWanted(runner.id)) {
+    if (sync?.ready.revisions.includes(wanted.id)) continue
+    const fetching = sync?.fetching.find((one) => one.revisionId === wanted.id)
+    if (!fetching) continue
+    const environment = revisions().find((revision) => revision.id === wanted.id)?.environmentName ?? null
+    return block('image', null, fetching.percent, environment)
+  }
+  return canaryWaits ? block('canary') : null
+}
+
+/** A machine as classes see it (RemoteMachine.classes); undefined — classes are none of its business. */
+export function machineClasses(runner: RunnerRow, now: number, sight: ClassSight): RemoteMachineClasses | undefined {
+  const rows = runnerPlacementRows(runner.id)
+  if (!classesConcern(runner, rows)) return undefined
+  const sync = lastSync(runner.id)
+  const said = heldSlots(sync)
+  const live = rows.filter((row) => row.state !== 'stopping')
+  let memoryMb = 0
+  let card: string | null = null
+  for (const row of live) {
+    const held = heldOf(said, row)
+    memoryMb += held?.usage?.limitMb || row.memoryMb
+    card ??= held?.card?.device ?? null
+  }
+  const up = sight.tunnels.isUp(runner.id)
+  const seen = up || said.size > 0 || sync?.kernels !== undefined
+  const rtt = sight.tunnels.rtt(runner.id)
+  /*
+   * When its classes move by themselves, counted as the classes count it:
+   * from their tunnel. A class moves after its own «Переезд через» (60 s by
+   * default), long before 0.23's three minutes make the machine `silent`,
+   * and a tunnel stuck while syncs still come moves them too (placement.ts ·
+   * outageRule). Each slot's own view says when, or that it will not.
+   */
+  const moves = !up || machineState(runner, now) === 'silent'
+    ? live.map((row) => sight.failoverAt(row.sessionId, row.role)).filter((at): at is number => at !== null)
+    : []
+  return {
+    on: runner.classes,
+    windingDown: runner.classesWindingDown,
+    quarantinedAt: runner.classesQuarantinedAt,
+    block: classBlock(runner, now, sight),
+    held: { classes: new Set(live.map((row) => row.sessionId)).size, slots: live.length, memoryMb, card },
+    link: seen ? { up, since: sight.tunnels.since(runner.id), rttMs: rtt.ewmaMs, p95Ms: rtt.p95Ms } : null,
+    moveAt: moves.length > 0 ? Math.min(...moves) : null,
+  }
+}
+
+/**
+ * The owner's class banners (Paper 18 · Z1, §13.2), one per event and
+ * machine: a class quarantine until «Вернуть»; a tunnel taken over from
+ * other addresses more than TUNNEL_REPLACEMENTS_ALERT.count times in its
+ * window, with the addresses (each takeover's newer tunnel's); a perimeter
+ * that failed closed — while the machine still says so, or for half an hour
+ * after its line in the log.
+ */
+export function classBanners(runners: readonly RunnerRow[], now: number, sight: ClassSight): RemoteClassBanner[] {
+  const out: RemoteClassBanner[] = []
+  for (const runner of runners) {
+    if (!runnerStanding(runner)) continue
+    if (runner.classesQuarantinedAt !== null) out.push({ kind: 'quarantined', machineId: runner.id, name: runner.name, at: runner.classesQuarantinedAt })
+    if (sight.tunnels.tunnelReplacementAlert(runner.id)) {
+      const { windowMs } = TUNNEL_REPLACEMENTS_ALERT
+      const takeovers = runnerEventsOf(runner.id, ['tunnel_replaced'], now - windowMs + 1).filter((line) => line.address !== line.detail)
+      const addresses = [...new Set(takeovers.flatMap((line) => (line.address ? [line.address] : [])))]
+      out.push({ kind: 'tunnel', machineId: runner.id, name: runner.name, count: takeovers.length, minutes: Math.round(windowMs / 60_000), addresses })
+    }
+    const failing = lastSync(runner.id)?.kernels?.classes.perimeter === 'failing'
+    const line = runnerEventsOf(runner.id, ['perimeter_failing'], now - CLASS_QUARANTINE_WINDOW_MS).at(-1)
+    if (failing || line) out.push({ kind: 'perimeter', machineId: runner.id, name: runner.name, at: line?.at ?? now })
+  }
+  return out
+}
+
+/** The usage of a class's slots on a machine, summed (Z3): null where some slot did not say. */
+function sumOf(values: ReadonlyArray<number | null>): number | null {
+  return values.length === 0 || values.some((value) => value === null) ? null : values.reduce<number>((sum, value) => sum + (value ?? 0), 0)
+}
+
+/** How far a class's copies are behind, over its slots on one machine; null — none said. */
+function lagOf(lags: ReadonlyArray<RemoteFilesLag | undefined>): RemoteFilesLag | null {
+  const said = lags.filter((lag): lag is RemoteFilesLag => lag !== undefined)
+  if (said.length === 0) return null
+  return said.reduce((sum, lag) => ({
+    pushSeq: Math.max(sum.pushSeq, lag.pushSeq),
+    pending: sum.pending + lag.pending,
+    pendingBytes: sum.pendingBytes + lag.pendingBytes,
+    heldOnly: sum.heldOnly + lag.heldOnly,
+    heldOnlyBytes: sum.heldOnlyBytes + lag.heldOnlyBytes,
+  }))
+}
+
+const ROLE_ORDER: readonly RemoteKernelRole[] = ['room', 'own', 'council']
+
+/** The classes on a machine, a row each (Z3 «Занятия на машине»), in the order their slots were placed. */
+export function machineClassRows(runnerId: string): RemoteMachineClassRow[] {
+  const said = heldSlots(lastSync(runnerId))
+  const bySession = new Map<string, PlacementRow[]>()
+  for (const row of runnerPlacementRows(runnerId)) {
+    if (row.state === 'stopping') continue
+    bySession.set(row.sessionId, [...(bySession.get(row.sessionId) ?? []), row])
+  }
+  return [...bySession].map(([sessionId, rows]) => {
+    const held = rows.map((row) => heldOf(said, row))
+    const courseId = coursesOfRoom(sessionId)[0] ?? null
+    const course = courseId ? getCourse(courseId) : null
+    return {
+      sessionId,
+      name: getSession(sessionId)?.name ?? null,
+      course: course ? { id: course.id, name: course.name } : null,
+      environment: rows[0]?.environment ?? null,
+      roles: ROLE_ORDER.filter((role) => rows.some((row) => row.role === role)),
+      workers: rows.find((row) => row.role === 'council')?.workers ?? null,
+      card: held.find((one) => one?.card)?.card?.device ?? null,
+      memory: {
+        limitMb: rows.reduce((sum, row, index) => sum + (held[index]?.usage?.limitMb || row.memoryMb), 0),
+        usedMb: sumOf(held.map((one) => one?.usage?.usedMb ?? null)),
+      },
+      cpuPercent: sumOf(held.map((one) => one?.usage?.cpuPercent ?? null)),
+      files: lagOf(held.map((one) => one?.files)),
+      waiting: rows.some((row) => row.state === 'unreachable'),
+    }
+  })
+}
+
 /* ----------------------------------------------------------- the machines */
 
-export function machineView(runner: RunnerRow, stock: ReadonlyMap<string, CompetitionStock>, now = Date.now(), mix: PlaceMix = placeMix(queueRows(), now)): RemoteMachine {
+export function machineView(
+  runner: RunnerRow,
+  stock: ReadonlyMap<string, CompetitionStock>,
+  now = Date.now(),
+  mix: PlaceMix = placeMix(queueRows(), now),
+  sight: ClassSight | null = null,
+): RemoteMachine {
+  const classes = sight ? machineClasses(runner, now, sight) : undefined
   const state = machineState(runner, now)
   const at = heardAt(runner.id) ?? runner.lastSeenAt
   const places = machinePlaces(runner, mix)
@@ -278,7 +503,18 @@ export function machineView(runner: RunnerRow, stock: ReadonlyMap<string, Compet
     // The code it came with, by the list's own id: the connect dialog counts its code's machines by it.
     codeId: runner.codeSha256 === null ? null : codeIdOf(runner.codeSha256),
     ...selfDrain(runner, state),
+    ...(classes ? { classes } : {}),
   }
+}
+
+/**
+ * The classes' sight when any machine has anything of classes (or one is
+ * asked about by id), loaded once per answer; null — none has, and the views
+ * stay as they were before classes, without the placements loaded.
+ */
+async function sightFor(runners: readonly RunnerRow[]): Promise<ClassSight | null> {
+  const concerned = runners.some((runner) => runner.classes || runner.classesWindingDown || runner.classesQuarantinedAt !== null || runnerPlacementRows(runner.id).length > 0)
+  return concerned ? classSight() : null
 }
 
 /**
@@ -312,6 +548,7 @@ function codeView(code: ReturnType<typeof liveCodes>[number]): RemoteCodeView {
     namePrefix: code.namePrefix || null,
     createdBy: code.createdBy === 'colloq-host' ? null : (getTeacher(code.createdBy)?.name ?? null),
     console: code.createdBy === 'colloq-host',
+    ...(code.classes ? { classes: true } : {}),
   }
 }
 
@@ -330,7 +567,8 @@ export async function machinesResponse(now = Date.now()): Promise<RemoteMachines
   const runners = listRunners()
   // Every machine's places in the same runs: the queue's, or the next upload's (placeMix).
   const mix = placeMix(queueRows(), now)
-  const machines = runners.map((runner) => machineView(runner, stock, now, mix))
+  const sight = await sightFor(runners)
+  const machines = runners.map((runner) => machineView(runner, stock, now, mix, sight))
   const online = machines.filter((machine) => machine.state === 'online')
   const onlineCards = online.flatMap((machine) => machine.cards)
   const slices = onlineCards.map((card) => card.sliceMb)
@@ -353,6 +591,26 @@ export async function machinesResponse(now = Date.now()): Promise<RemoteMachines
     codes: liveCodes(now).map(codeView),
     home: { version: homeVersion(), build: homeRunnerBuild() },
     banner: quarantined ? { machineId: quarantined.id, name: quarantined.name, at: quarantined.quarantinedAt! } : null,
+    ...(sight ? classesSummary(runners, machines, now, sight) : {}),
+  }
+}
+
+/**
+ * The machines block's class half (Paper 18 · Z1): the banners, and «ведут
+ * занятия · N классов». A class counts once however many machines hold its
+ * slots (its personal notebooks on one, its council's pool on another).
+ */
+function classesSummary(runners: readonly RunnerRow[], machines: readonly RemoteMachine[], now: number, sight: ClassSight): Pick<RemoteMachinesResponse, 'classBanners' | 'classMachines'> {
+  const taking = machines.filter((machine) => machine.classes?.on === true && !(machine.state === 'revoked' || machine.state === 'left'))
+  const banners = classBanners(runners, now, sight)
+  const classes = new Set(
+    runners
+      .filter((runner) => runnerStanding(runner))
+      .flatMap((runner) => runnerPlacementRows(runner.id).filter((row) => row.state !== 'stopping').map((row) => row.sessionId)),
+  )
+  return {
+    ...(banners.length > 0 ? { classBanners: banners } : {}),
+    classMachines: { machines: taking.length, classes: classes.size },
   }
 }
 
@@ -394,12 +652,17 @@ export async function machineDetail(id: string, now = Date.now()): Promise<Remot
       competition: competition?.title ?? null,
       // What a machine said (its hostname at the join, a problem, a decline's detail) is shown in this server's words, never as raw markers.
       detail: event.detail === null ? null : homeWords(event.detail),
+      // A takeover names both tunnels: the newer's address here, the replaced one's in `detail` (tunnel.ts · replace).
+      ...(event.kind === 'tunnel_replaced' ? { address: event.address } : {}),
     }
   })
+  const sight = await sightFor([runner])
+  const classRows = sight ? machineClassRows(id) : []
   return {
-    ...machineView(runner, stock, now, placeMix(queueRows(), now)),
+    ...machineView(runner, stock, now, placeMix(queueRows(), now), sight),
     runs: liveLeases(id).map(runView).filter((run): run is RemoteMachineRun => run !== null),
     events,
+    ...(classRows.length > 0 ? { classRows } : {}),
   }
 }
 

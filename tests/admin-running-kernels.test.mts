@@ -28,6 +28,9 @@ import {
   statusLines,
   stopBody,
   totals,
+  machineStatus,
+  onlyOnMachines,
+  stopsLater,
 } from '../web/src/admin/running-kernels.js'
 
 afterEach(() => setLocaleResolver(() => 'ru'))
@@ -271,4 +274,26 @@ test('an empty list says "nothing runs" only when the runtime answered in full',
   assert.equal(partial.tone, 'warning')
   assert.doesNotMatch(partial.text, /ни одно ядро/)
   assert.match(partial.text, /не полностью/)
+})
+
+/* ------------------------------------------- classes on machines (Z7) */
+
+test('a class\'s slots on machines are counted apart from what holds memory here, and its stop says it waits', () => {
+  const slot = {
+    role: 'own' as const, machine: 'vast-3', state: 'running' as const, link: 'lost' as const, lostSince: NOW - 41_000,
+    memoryMb: 4096, usedMb: 1024, cpus: 2, cpuPercent: 12, card: null, files: null, workers: null,
+  }
+  const away = { ...row({ room: null, idle: false }), machines: [slot], moveAt: NOW + 19_000 }
+  const data: RunningKernels = {
+    backend: 'docker', complete: true, sampledAt: iso(NOW), usage: 'live', reservedMb: 4096, usedMb: 512,
+    classes: [row(), away], runs: [], preparations: [],
+  }
+  const sum = totals(data)
+  assert.equal(sum.containers, 1, 'only this server\'s room container holds memory here')
+  assert.equal(sum.onMachines, 1)
+  assert.equal(onlyOnMachines(away), true)
+  assert.equal(stopsLater(away), true)
+  assert.equal(machineStatus(away, NOW)?.first, 'нет связи с vast-3 · 0:41')
+  assert.equal(machineStatus(row(), NOW), null, 'a class here keeps its usual lane')
+  assert.equal(freedMb(away as RunningClass, 'class'), 0, 'a stop of a class on a machine frees nothing here')
 })

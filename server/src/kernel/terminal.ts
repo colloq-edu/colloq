@@ -172,6 +172,7 @@ interface Term {
   connecting: Set<WebSocket>
   /** False until the shell's banner and terminado's replayed scrollback are behind us. */
   primed: boolean
+  /** When the greeting's quiet is waited for no more; infinite while no greeting went on this socket yet (startPrime). */
   primeDeadline: number
   waiters: Waiter[]
   queued: string[]
@@ -265,7 +266,7 @@ function getTerm(sessionId: string): Term {
       generation: 0,
       connecting: new Set(),
       primed: false,
-      primeDeadline: 0,
+      primeDeadline: Number.POSITIVE_INFINITY,
       waiters: [],
       queued: [],
       pending: [],
@@ -1152,6 +1153,18 @@ function clearRunning(term: Term): void {
 
 function onChunk(term: Term, chunk: string): void {
   if (!term.primed) {
+    /*
+     * Before the greeting went, what the shell says is its banner and
+     * terminado's replay, and ends no prime: a prime not begun has no quiet
+     * to wait for. The socket's first frames come in the very read that
+     * carried its handshake's answer whenever the road delivers them
+     * together — a machine's tunnel does, nearly always — and are handed on
+     * before the open's own work goes on (startPrime): ending the prime
+     * there sent the commands typed meanwhile ahead of the greeting, and the
+     * greeting's own prime then took what they printed, prompt and all, for
+     * its banner — they never ended.
+     */
+    if (term.primeDeadline === Number.POSITIVE_INFINITY) return
     if (Date.now() >= term.primeDeadline) finishPrime(term)
     else armPrime(term)
     return
@@ -1320,6 +1333,9 @@ function connect(term: Term, generation: number): Promise<void> {
           /* already gone */
         }
       }
+      // A new socket's prime begins with its greeting (startPrime): until then nothing it says ends one (onChunk).
+      term.primed = false
+      term.primeDeadline = Number.POSITIVE_INFINITY
       term.socket = socket
       resolve()
     })

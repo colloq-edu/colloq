@@ -20,9 +20,15 @@
 import { formatDate, formatNumber, tr } from '@shared/i18n'
 import { REMOTE_ATTEMPTS_MAX, REMOTE_CODE_TTL_MAX_MS, REMOTE_DRIVER_MIN, REMOTE_PER_DEVICE_MAX } from '@shared/remote-runner'
 import type { RemoteAttemptPhase, RemoteProblemCode } from '@shared/remote-runner'
+import type { ClassPlacement, ClassPlacementPreset, UpdateClassMachineSettingsRequest } from '@shared/admin'
+import { CLASS_PLACEMENT_PRESETS } from '@shared/admin'
 import type {
+  ClassMachineSettingsResponse,
+  ClassPlacementOutlook,
   MintRemoteCodeRequest,
   MintRemoteCodeResponse,
+  RemoteClassAction,
+  RemoteClassBanner,
   RemoteCodeView,
   RemoteCompetitionWhere,
   RemoteConsoleGroup,
@@ -30,6 +36,8 @@ import type {
   RemoteMachine,
   RemoteMachineAction,
   RemoteMachineCard,
+  RemoteMachineClassRow,
+  RemoteMachineClasses,
   RemoteMachineDetail,
   RemoteMachineFacts,
   RemoteMachineRun,
@@ -87,6 +95,21 @@ export const runnersApi = {
   /** DELETE /api/admin/runners/codes/:id — «Отменить»: no machine joins with the code any more; those that joined stay. */
   cancelCode: (id: string): Promise<void> =>
     adminRequest<unknown>(`/runners/codes/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(() => undefined),
+
+  /** POST /api/admin/runners/:id/classes/resume | move — «Вернуть» under the class quarantine, «Перенести занятия». */
+  classAction: (id: string, action: RemoteClassAction): Promise<void> =>
+    adminRequest<unknown>(`${machinePath(id)}/classes/${action}`, { method: 'POST' }).then(() => undefined),
+
+  /** GET /api/admin/resources/classes — «Занятия на машинах» (staff read it; the class form needs the switch and the default). */
+  classSettings: (): Promise<ClassMachineSettingsResponse> => adminRequest<ClassMachineSettingsResponse>('/resources/classes'),
+
+  /** PUT /api/admin/resources/classes — the owner's; a field left out stays, `null` forgets the saved value. */
+  saveClassSettings: (patch: UpdateClassMachineSettingsRequest): Promise<ClassMachineSettingsResponse> =>
+    adminRequest<ClassMachineSettingsResponse>('/resources/classes', { method: 'PUT', ...body(patch) }),
+
+  /** GET /api/admin/seminars/:id/placement — the class form's live line: the machines against this class (Z4). */
+  placementOutlook: (sessionId: string): Promise<ClassPlacementOutlook> =>
+    adminRequest<ClassPlacementOutlook>(`/seminars/${encodeURIComponent(sessionId)}/placement`),
 }
 
 /**
@@ -801,6 +824,18 @@ export interface MachineMenu {
   drain: boolean
   resume: boolean
   revoke: boolean
+  /** «Принимает занятия» (D2), a checkbox item with its warning under it. */
+  classes: boolean
+  /** «Перенести занятия»: only while a class holds a slot on it. */
+  moveClasses: boolean
+  /** «Вернуть занятиям»: only under the class quarantine (D32). */
+  resumeClasses: boolean
+  /**
+   * The one of the two flags the other one greys (D3), with its reason:
+   * «Доверенная» while it takes classes, «Принимает занятия» while it is
+   * trusted. Null — both may be pressed.
+   */
+  locked: { item: 'trust' | 'classes'; why: string } | null
 }
 
 /**
@@ -817,10 +852,18 @@ export interface MachineMenu {
  * instead — the owner's drain is what keeps it from taking work once it is
  * back from its update.
  */
-export function machineMenu(machine: Pick<RemoteMachine, 'state' | 'cards' | 'selfDrain'>): MachineMenu {
+export function machineMenu(machine: Pick<RemoteMachine, 'state' | 'cards' | 'selfDrain' | 'trusted' | 'classes'>): MachineMenu {
   const live = !machineGone(machine.state)
   const own = machine.state === 'draining' && machine.selfDrain !== undefined
   const held = (machine.state === 'draining' && !own) || machine.state === 'quarantined'
+  const classes = machine.classes
+  const locked = !live
+    ? null
+    : classes?.on
+      ? { item: 'trust' as const, why: tr('admin.runners.menu.trustNotWithClasses') }
+      : machine.trusted
+        ? { item: 'classes' as const, why: tr('admin.runners.menu.classesNotWithTrust') }
+        : null
   return {
     places: live,
     perDevice: live && machine.cards.length > 0,
@@ -828,6 +871,10 @@ export function machineMenu(machine: Pick<RemoteMachine, 'state' | 'cards' | 'se
     drain: live && !held,
     resume: live && held,
     revoke: live,
+    classes: live,
+    moveClasses: live && (classes?.held.slots ?? 0) > 0,
+    resumeClasses: live && (classes?.quarantinedAt ?? null) !== null,
+    locked,
   }
 }
 
@@ -872,11 +919,13 @@ export interface ConnectForm {
   /** Empty or «авто»: whatever each machine offers. */
   places: string
   trusted: boolean
+  /** «Принимать занятия» (D2): never together with `trusted` (D3); the dialog greys the one while the other is on. */
+  classes: boolean
 }
 
-/** The dialog's starting point: one machine, a day, auto, not trusted (decision 1). */
+/** The dialog's starting point: one machine, a day, auto, not trusted (decision 1), no classes (D2). */
 export function connectDefaults(): ConnectForm {
-  return { machines: '1', hours: String(HOURS_BOUNDS.max), places: '', trusted: false }
+  return { machines: '1', hours: String(HOURS_BOUNDS.max), places: '', trusted: false, classes: false }
 }
 
 /** The form as the code door wants it, or the first field that will not do, in words. */
@@ -887,7 +936,17 @@ export function mintRequest(form: ConnectForm): { request: MintRemoteCodeRequest
   if ('error' in hours || hours.value === null) return { error: tr('admin.runners.connect.invalid.hours', { max: HOURS_BOUNDS.max }) }
   const places = wholeOrAuto(form.places, PLACES_BOUNDS.min, PLACES_BOUNDS.max)
   if ('error' in places) return { error: tr('admin.runners.connect.invalid.places', { max: PLACES_BOUNDS.max }) }
-  return { request: { machines: machines.value, hours: hours.value, trusted: form.trusted === true, approvedSlots: places.value } }
+  // The dialog never offers both (D3); a form that still has them is refused here in the door's own words.
+  if (form.trusted === true && form.classes === true) return { error: tr('admin.runners.connect.classesSealed') }
+  return {
+    request: {
+      machines: machines.value,
+      hours: hours.value,
+      trusted: form.trusted === true,
+      approvedSlots: places.value,
+      ...(form.classes === true ? { classes: true } : {}),
+    },
+  }
 }
 
 /**
@@ -982,6 +1041,11 @@ export interface JoinProgress {
 /** What a machine that has just joined is doing, in a few words. */
 function joinStatus(machine: RemoteMachine): string {
   if (machine.lastSeenAt === null) return tr('admin.runners.connect.status.quiet')
+  // A machine for classes pulls its class image first: «vast-11 качает образ base для занятий · 45 %».
+  const block = machine.classes?.block
+  if (block?.reason === 'image' && block.environment !== null && block.percent !== null) {
+    return tr('admin.runners.connect.classImage', { name: machine.name, env: block.environment, percent: formatNumber(Math.round(block.percent)) })
+  }
   for (const readiness of machine.readiness) {
     const problem = firstProblem(readiness)
     if (problem) return problemWords(problem.code, machine.facts)
@@ -1098,7 +1162,7 @@ export interface EventLine {
  * rather than disappearing, as in the audit log (admin/audit.ts): a log that
  * hides what it cannot name is worse than one that shows it plainly.
  */
-export function eventLine(event: Pick<RemoteEvent, 'kind' | 'attemptId' | 'entrantName' | 'number' | 'competition' | 'detail'>): EventLine {
+export function eventLine(event: Pick<RemoteEvent, 'kind' | 'attemptId' | 'entrantName' | 'number' | 'competition' | 'detail' | 'address'>): EventLine {
   const who = whoOf(event) ?? tr('admin.runners.event.someone')
   const detail =
     [event.competition ? tr('admin.runners.event.competition', { title: event.competition }) : null, event.detail?.trim() || null]
@@ -1144,9 +1208,64 @@ export function eventLine(event: Pick<RemoteEvent, 'kind' | 'attemptId' | 'entra
       return line(tr('admin.runners.event.problem'), 'danger')
     case 'left':
       return line(tr('admin.runners.event.left'), 'muted')
+    // Classes on machines (remote-classes.md §11): worded here, never the server's measured English underneath.
+    case 'tunnel_replaced': {
+      const previous = event.detail?.trim() || null
+      const address = event.address?.trim() || null
+      if (!address || !previous || address === previous) return { text: tr('admin.runners.event.tunnel_reconnected'), tone: 'muted', detail: null }
+      return { text: tr('admin.runners.event.tunnel_replaced', { address, previous }), tone: 'warning', detail: null }
+    }
+    case 'class_failover':
+      return { ...classFailoverLine(event.detail), detail: null }
+    case 'classes_quarantined':
+      return { text: tr('admin.runners.event.classes_quarantined'), tone: 'danger', detail: null }
+    case 'classes_resumed':
+      return { text: tr('admin.runners.event.classes_resumed'), tone: 'ink', detail: null }
+    case 'unclassed': {
+      const moved = /^moved (\d+)$/.exec(event.detail?.trim() ?? '')
+      return {
+        text: moved ? tr('admin.runners.event.unclassedMoved', { count: Number(moved[1]) }) : tr('admin.runners.event.unclassed'),
+        tone: 'warning',
+        detail: null,
+      }
+    }
+    case 'perimeter_failing':
+      return { text: tr('admin.runners.event.perimeter_failing'), tone: 'danger', detail: null }
     default:
       return line(String(event.kind), 'muted')
   }
+}
+
+/**
+ * A `class_failover` line (placement.ts · failedOver writes its cause, and
+ * «moved: Ада» for a move by hand): why the classes left, in words. A cause
+ * this build does not know reads as the plain move.
+ */
+function classFailoverLine(detail: string | null): Line {
+  const [cause, ...rest] = (detail ?? '').split(':')
+  const who = rest.join(':').trim()
+  if (cause === 'moved' && who) return { text: tr('admin.runners.event.class_failover_by', { who }), tone: 'warning' }
+  const why = ((): string => {
+    switch (cause.trim()) {
+      case 'silence':
+        return tr('admin.runners.event.why.silence')
+      case 'tunnel':
+        return tr('admin.runners.event.why.tunnel')
+      case 'revoked':
+        return tr('admin.runners.event.why.revoked')
+      case 'unclassed':
+        return tr('admin.runners.event.why.unclassed')
+      case 'leaving':
+        return tr('admin.runners.event.why.leaving')
+      case 'perimeter':
+        return tr('admin.runners.event.why.perimeter')
+      case 'blocked':
+        return tr('admin.runners.event.why.blocked')
+      default:
+        return tr('admin.runners.event.why.moved')
+    }
+  })()
+  return { text: tr('admin.runners.event.class_failover', { why }), tone: 'warning' }
 }
 
 /** Where a run on a machine is, while its container has not started or has ended. */
@@ -1845,4 +1964,385 @@ export function noCardsBox(where: Pick<RemoteCompetitionWhere, 'cards'>, now: nu
   const last = where.cards.last
   const head = tr(owner ? 'admin.competitions.where.noCardsOwner' : 'admin.competitions.where.noCardsTeacher')
   return last ? `${head} ${tr('admin.competitions.where.noCardsLast', { name: last.name, ago: heardAgo(last.at, now) })}` : head
+}
+
+/* --------------------------------------------- classes on machines (0.25) */
+
+/**
+ * «0:41», «1:02:05»: how long a machine has not answered, as the room's chip
+ * counts it (the room's own timer says the same).
+ */
+export function elapsedWords(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / SECOND))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const seconds = String(total % 60).padStart(2, '0')
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}` : `${minutes}:${seconds}`
+}
+
+/** «14:41:19» today, the class line's moment of a move. */
+function secondsTime(at: number, now: number): string {
+  return eventTime(at, now)
+}
+
+/** «3 класса». */
+export function classesCount(count: number): string {
+  return tr('admin.runners.classes.count', { count })
+}
+
+/**
+ * The «занятия» chip of a machine's row and page (Paper 18 · Z1, the
+ * designer's tones): calm while it serves or is ready, accent while a class
+ * image downloads, amber for what the owner must fix with a command or a
+ * wait, red for a perimeter that is not there, and a dashed faint one where
+ * classes are impossible (a Colloq server on its Docker). `null` — no chip:
+ * the machine was never opened to classes and holds none, or it is gone.
+ */
+export function classesChip(machine: Pick<RemoteMachine, 'state' | 'classes'>): { word: string; tone: ChipTone; dashed: boolean } | null {
+  const classes = machine.classes
+  if (!classes || machineGone(machine.state)) return null
+  const word = tr('admin.runners.chip.classes')
+  switch (classes.block?.reason) {
+    case undefined:
+    case 'facts':
+    case 'winding':
+      return { word, tone: 'neutral', dashed: false }
+    case 'image':
+      return { word, tone: 'accent', dashed: false }
+    case 'same-daemon':
+      return { word, tone: 'neutral', dashed: true }
+    case 'canary':
+      return { word, tone: classes.block.detail === null ? 'neutral' : 'danger', dashed: false }
+    case 'perimeter':
+    case 'quarantined':
+      return { word, tone: 'danger', dashed: false }
+    default:
+      return { word, tone: 'warning', dashed: false }
+  }
+}
+
+/** A perimeter that is not in place, in the owner's words (RemoteClassFacts.perimeter). */
+function perimeterWords(state: string | null): string {
+  switch (state) {
+    case 'no-iptables':
+      return tr('admin.runners.classes.perimeter.noIptables')
+    case 'no-dockerd':
+      return tr('admin.runners.classes.perimeter.noDockerd')
+    case 'failing':
+      return tr('admin.runners.classes.perimeter.failing')
+    default:
+      return tr('admin.runners.classes.perimeter.refused')
+  }
+}
+
+/**
+ * The line «Занятия: …» under a machine's row (Paper 18 · Z1): what it holds
+ * for classes and how it answers — «3 класса · 30 из 60 ГБ · карта 0 занята
+ * классом · связь 48 мс (p95 80)» — or the one thing that keeps new classes
+ * away, worded for the owner who fixes it. `null` — no class line.
+ */
+export function classLine(machine: Pick<RemoteMachine, 'state' | 'classes' | 'facts' | 'lastSeenAt' | 'silentSince'>, now: number): Line | null {
+  const classes = machine.classes
+  if (!classes || machineGone(machine.state)) return null
+  const block = classes.block
+  const held = classes.held
+  switch (block?.reason) {
+    case 'quarantined':
+      return { text: tr('admin.runners.classes.quarantined', { time: clockTime(classes.quarantinedAt ?? now, now) }), tone: 'danger' }
+    case 'silent':
+      if (held.classes === 0) return { text: tr('admin.runners.classes.silentIdle'), tone: 'warning' }
+      return classOutage(machine, classes, now)
+    case 'winding':
+      return { text: tr('admin.runners.classes.winding'), tone: 'muted' }
+    case 'outdated':
+      return { text: tr('admin.runners.classes.outdated'), tone: 'warning' }
+    case 'facts':
+      return { text: tr('admin.runners.classes.facts'), tone: 'muted' }
+    case 'same-daemon':
+      return { text: tr('admin.runners.classes.sameDaemon'), tone: 'muted' }
+    case 'host-network':
+      return { text: tr('admin.runners.classes.hostNetwork'), tone: 'warning' }
+    case 'perimeter':
+      return { text: perimeterWords(block.detail), tone: 'danger' }
+    case 'canary':
+      // No detail: the check has not run yet, and waits for a class image on the machine.
+      return block.detail === null
+        ? { text: tr('admin.runners.classes.canaryPending'), tone: 'muted' }
+        : { text: tr('admin.runners.classes.canary', { detail: brief(block.detail, 100) }), tone: 'danger' }
+    case 'tunnel':
+      // Classes on it wait for their tunnel, or are about to move: said as the silence is, with when.
+      return held.classes > 0 ? classOutage(machine, classes, now) : { text: tr('admin.runners.classes.tunnel'), tone: 'warning' }
+    case 'image': {
+      const percent = formatNumber(Math.round(block.percent ?? 0))
+      return block.environment
+        ? { text: tr('admin.runners.classes.image', { percent, env: block.environment }), tone: 'accent' }
+        : { text: tr('admin.runners.classes.imageBare', { percent }), tone: 'accent' }
+    }
+    case 'gone':
+      return null
+  }
+  const used = formatNumber(held.memoryMb / 1024, { maximumFractionDigits: held.memoryMb >= 10 * 1024 ? 0 : 1 })
+  const total = machine.facts.memoryMb
+  const parts = [
+    held.classes > 0 ? classesCount(held.classes) : tr('admin.runners.classes.ready'),
+    held.classes > 0
+      ? total !== null
+        ? tr('admin.runners.classes.memory', { used, total: formatNumber(Math.round(total / 1024)) })
+        : tr('admin.runners.classes.memoryHeld', { used })
+      : null,
+    held.card !== null ? tr('admin.runners.classes.card', { card: cardWord(held.card) }) : null,
+    linkWords(classes.link),
+  ]
+  return { text: parts.filter(Boolean).join(' · '), tone: 'ink' }
+}
+
+/**
+ * A machine whose classes do not hear it (Z1): «2 класса · нет связи 0:41 ·
+ * перенесём на сервер в 14:41:19», or without the time while no class moves
+ * by itself (they wait for the machine, or the outage is too young to tell).
+ * Counted from its tunnel's last frame, as the room's chip counts it: the
+ * classes move after their own seconds, long before 0.23's silence.
+ */
+function classOutage(machine: Pick<RemoteMachine, 'silentSince' | 'lastSeenAt'>, classes: RemoteMachineClasses, now: number): Line {
+  const quiet = classes.link && !classes.link.up && classes.link.since !== null ? classes.link.since : (machine.silentSince ?? machine.lastSeenAt)
+  const elapsed = elapsedWords(quiet === null ? 0 : now - quiet)
+  const count = classesCount(classes.held.classes)
+  return classes.moveAt !== null
+    ? { text: tr('admin.runners.classes.silent', { classes: count, elapsed, time: secondsTime(classes.moveAt, now) }), tone: 'warning' }
+    : { text: tr('admin.runners.classes.silentWait', { classes: count, elapsed }), tone: 'warning' }
+}
+
+/** «связь 48 мс (p95 80)», or nothing before the first round trip. */
+function linkWords(link: RemoteMachineClasses['link']): string | null {
+  if (!link || link.rttMs === null) return null
+  const ms = formatNumber(Math.round(link.rttMs))
+  return link.p95Ms === null
+    ? tr('admin.runners.classes.linkOnly', { ms })
+    : tr('admin.runners.classes.link', { ms, p95: formatNumber(Math.round(link.p95Ms)) })
+}
+
+/** One of the owner's class banners, in its sentence (§13.2). */
+export function classBannerText(banner: RemoteClassBanner): string {
+  switch (banner.kind) {
+    case 'quarantined':
+      return tr('admin.runners.classBanner.quarantined', { name: banner.name })
+    case 'tunnel':
+      return tr('admin.runners.classBanner.tunnel', {
+        name: banner.name,
+        minutes: banner.minutes,
+        count: banner.count,
+        addresses: banner.addresses.join(', ') || '—',
+      })
+    case 'perimeter':
+      return tr('admin.runners.classBanner.perimeter', { name: banner.name })
+  }
+}
+
+/** The class gauge above the list: «3 ведут занятия · 6 классов»; `null` while no machine takes classes. */
+export function classesGauge(summary: RemoteMachinesResponse['classMachines']): SummaryGauge | null {
+  if (!summary || summary.machines === 0) return null
+  return { value: summary.machines, label: tr('admin.runners.summary.classes', { classes: classesCount(summary.classes) }) }
+}
+
+/* ------------------------------------------------ the machine's page (Z3) */
+
+/** «↑ 3 файла, 12 МБ», «2 файла только на машине», «синхронно»: a copy's lag (§8.7), and its tone. */
+export function filesLag(lag: { pending: number; pendingBytes: number; heldOnly: number; heldOnlyBytes: number } | null): Line | null {
+  if (!lag) return null
+  if (lag.pending > 0) {
+    return {
+      text: tr('admin.runners.files.pending', { files: tr('admin.runners.files.count', { count: lag.pending }), size: sizeWords(lag.pendingBytes) ?? '—' }),
+      tone: 'accent',
+    }
+  }
+  if (lag.heldOnly > 0) return { text: tr('admin.runners.files.heldOnly', { files: tr('admin.runners.files.count', { count: lag.heldOnly }) }), tone: 'warning' }
+  return { text: tr('admin.runners.files.synced'), tone: 'positive' }
+}
+
+/** A role of a class's slot: «класс», «личные», «консилиум». */
+export function roleWord(role: RemoteMachineClassRow['roles'][number]): string {
+  switch (role) {
+    case 'room':
+      return tr('admin.runners.role.room')
+    case 'own':
+      return tr('admin.runners.role.own')
+    case 'council':
+      return tr('admin.runners.role.council')
+  }
+}
+
+/** A row of «Занятия на машине» (Z3): its kernels, memory, CPU and files, in words. */
+export interface ClassRowCells {
+  kernels: string
+  kernelsDetail: string | null
+  memory: string
+  /** Use against the limit, 0…1; null — unknown. */
+  share: number | null
+  cpu: string | null
+  files: Line | null
+}
+
+export function classRowCells(row: RemoteMachineClassRow): ClassRowCells {
+  const gb = (mb: number) => formatNumber(mb / 1024, { maximumFractionDigits: 1 })
+  const details = [
+    row.workers !== null ? tr('admin.runners.page.workers', { count: row.workers }) : null,
+    row.card !== null ? tr('admin.runners.page.cardWithClass', { card: cardWord(row.card) }) : null,
+    row.waiting ? tr('admin.runners.page.waiting') : null,
+  ].filter(Boolean)
+  return {
+    kernels: row.roles.map(roleWord).join(' · '),
+    kernelsDetail: details.length > 0 ? details.join(' · ') : null,
+    memory:
+      row.memory.usedMb === null
+        ? tr('admin.runners.page.memoryLimit', { limit: gb(row.memory.limitMb) })
+        : tr('admin.runners.page.memoryOf', { used: gb(row.memory.usedMb), limit: gb(row.memory.limitMb) }),
+    share: row.memory.usedMb === null || row.memory.limitMb <= 0 ? null : Math.min(1, row.memory.usedMb / row.memory.limitMb),
+    cpu: row.cpuPercent === null ? null : tr('admin.runners.page.cpuPercent', { value: formatNumber(Math.round(row.cpuPercent)) }),
+    files: filesLag(row.files),
+  }
+}
+
+/* --------------------------------------------- «Где считается» (Z4 form) */
+
+/** The three parts of the form, in the order it draws them. */
+export const PLACEMENT_PARTS = ['room', 'own', 'council'] as const
+
+/**
+ * Whether a class can compute on machines on this server at all, by its
+ * class settings: never under the broker, which keeps a class's Pods (D26),
+ * and not on a server from before classes (no settings). The class forms
+ * draw «Где считается» only then.
+ */
+export function classesOnMachines(settings: Pick<ClassMachineSettingsResponse, 'backend'> | null): boolean {
+  return settings !== null && settings.backend !== 'broker'
+}
+
+/**
+ * The tile a setting matches (shared/admin.ts · classPlacementPreset), the
+ * GPU tile for a GPU class's «всё на машинах»; `null` — a mix of its own,
+ * and no tile is lit.
+ */
+export function presetOf(placement: Pick<ClassPlacement, 'room' | 'own' | 'council'>, gpu: boolean): ClassPlacementPreset | null {
+  for (const name of ['home', 'personal', 'machines', 'gpu'] as const) {
+    if (name === (gpu ? 'machines' : 'gpu')) continue
+    const preset = CLASS_PLACEMENT_PRESETS[name]
+    if (preset.room === placement.room && preset.own === placement.own && preset.council === placement.council) return name
+  }
+  return null
+}
+
+/** The tiles the form offers: the GPU one for a GPU class instead of «Всё на машинах». */
+export function presetsFor(gpu: boolean): ClassPlacementPreset[] {
+  return gpu ? ['home', 'personal', 'gpu'] : ['home', 'personal', 'machines']
+}
+
+/** A tile's name and its small line. */
+export function presetWords(preset: ClassPlacementPreset): { name: string; note: string } {
+  switch (preset) {
+    case 'home':
+      return { name: tr('admin.classes.preset.home'), note: tr('admin.classes.preset.homeNote') }
+    case 'personal':
+      return { name: tr('admin.classes.preset.personal'), note: tr('admin.classes.preset.personalNote') }
+    case 'machines':
+      return { name: tr('admin.classes.preset.machines'), note: tr('admin.classes.preset.machinesNote') }
+    case 'gpu':
+      return { name: tr('admin.classes.preset.gpu'), note: tr('admin.classes.preset.gpuNote') }
+  }
+}
+
+/** Why a machine does not fit the class now, in two or three words (placement.ts · MachineRefusal, and `outdated`). */
+export function refusalWord(refusal: string): string {
+  switch (refusal) {
+    case 'memory':
+      return tr('admin.placement.why.memory')
+    case 'cpus':
+      return tr('admin.placement.why.cpus')
+    case 'card':
+      return tr('admin.placement.why.card')
+    case 'image':
+      return tr('admin.placement.why.image')
+    case 'full':
+      return tr('admin.placement.why.full')
+    case 'not-live':
+      return tr('admin.placement.why.notLive')
+    case 'outdated':
+      return tr('admin.placement.why.outdated')
+    case 'classes-off':
+      return tr('admin.placement.why.classesOff')
+    case 'quarantined':
+      return tr('admin.placement.why.quarantined')
+    case 'sealed':
+      return tr('admin.placement.why.sealed')
+    case 'tunnel':
+      return tr('admin.placement.why.tunnel')
+    case 'facts':
+      return tr('admin.placement.why.facts')
+    case 'host-network':
+      return tr('admin.placement.why.hostNetwork')
+    case 'perimeter':
+      return tr('admin.placement.why.perimeter')
+    case 'canary':
+      return tr('admin.placement.why.canary')
+    case 'same-daemon':
+      return tr('admin.placement.why.sameDaemon')
+    case 'avoided':
+      return tr('admin.placement.why.avoided')
+    default:
+      return tr('admin.placement.why.other')
+  }
+}
+
+/**
+ * The live line under the form (Z4): «Подходят: vast-3 (свободно 22 ГБ ·
+ * 1 карта), lab-2 (18 ГБ)», with «· далеко: +190 мс на ячейку» when the
+ * nearest fitting machine is far (p95 over 150 ms), or — when machines take
+ * classes and none fits now — each one's reason. `null` — the class itself
+ * is refused (the refusal box takes the line's place), or no machine at all.
+ */
+export function outlookLine(outlook: ClassPlacementOutlook): { text: string; far: string | null; tone: 'positive' | 'warning' } | null {
+  if (outlook.refusal !== null || outlook.machines.length === 0) return null
+  const gb = (mb: number) => formatNumber(Math.round(mb / 1024))
+  const fitting = outlook.machines.filter((machine) => machine.refusal === null)
+  if (fitting.length === 0) {
+    const list = outlook.machines
+      .slice(0, 4)
+      .map((machine) => tr('admin.placement.notFitItem', { name: machine.name, why: refusalWord(machine.refusal ?? '') }))
+      .join(', ')
+    return { text: tr('admin.placement.notFit', { list }), far: null, tone: 'warning' }
+  }
+  const items = fitting.slice(0, 4).map((machine, index) => {
+    if (machine.freeMb === null) return tr('admin.placement.fitBare', { name: machine.name })
+    const cards = machine.cards > 0 ? tr('admin.placement.cards', { count: machine.cards }) : null
+    const free = gb(machine.freeMb)
+    if (index === 0) return cards ? tr('admin.placement.fitFirstCards', { name: machine.name, free, cards }) : tr('admin.placement.fitFirst', { name: machine.name, free })
+    return cards ? tr('admin.placement.fitOtherCards', { name: machine.name, free, cards }) : tr('admin.placement.fitOther', { name: machine.name, free })
+  })
+  const list = items.join(', ')
+  // «Далеко» is about the machine a slot would land on first: the nearest that fits, as the chooser prefers short links (§6.3).
+  const nearest = [...fitting].sort((a, b) => (a.rttP95Ms ?? Infinity) - (b.rttP95Ms ?? Infinity))[0]
+  const far = nearest.far && nearest.rttP95Ms !== null ? tr('admin.placement.far', { ms: formatNumber(Math.round(nearest.rttP95Ms)) }) : null
+  return { text: tr(fitting.length === 1 ? 'admin.placement.fitsOne' : 'admin.placement.fits', { list }), far, tone: 'positive' }
+}
+
+/**
+ * The refusal that takes the live line's place and greys «На машинах»
+ * (Z4, the M6 warning pattern): the environment was built here, no machine
+ * takes classes, this server's blocked ranges cannot go to one — and, read
+ * on this side, a GPU class on a server without cards whose class notebooks
+ * stay here. `null` — none.
+ */
+export type PlacementRefusal = 'not-portable' | 'no-machines' | 'blocked-ranges' | 'gpu'
+
+export function placementRefusal(
+  outlook: Pick<ClassPlacementOutlook, 'refusal'> | null,
+  ctx: { gpu: boolean; homeCards: number; room: ClassPlacement['room'] },
+): PlacementRefusal | null {
+  if (outlook?.refusal) return outlook.refusal
+  if (ctx.gpu && ctx.homeCards === 0 && ctx.room === 'home') return 'gpu'
+  return null
+}
+
+/** Whether a refusal greys «На машинах» on every part (the class can run nowhere but here). */
+export function refusalLocks(refusal: PlacementRefusal | null): boolean {
+  return refusal === 'not-portable' || refusal === 'no-machines' || refusal === 'blocked-ranges'
 }

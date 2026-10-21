@@ -33,13 +33,14 @@ import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
+import { gzipSync } from 'node:zlib'
 import type * as Y from 'yjs'
 import { tr } from '../shared/i18n.js'
 import { CLASS_PLACEMENT_DEFAULT, type ClassPlacement } from '../shared/admin.js'
 import type { RemoteMachineDetail, RemoteMachinesResponse } from '../shared/remote-admin.js'
-import { REMOTE_BOOT_GRACE_MS } from '../shared/remote-runner.js'
-import { CLASS_EVIDENCE_MS, CLASS_TUNNEL_STUCK_MS } from '../shared/remote-kernels.js'
+import { REMOTE_API_BASE, REMOTE_BOOT_GRACE_MS, REMOTE_BYTES_HEADER, REMOTE_SHA256_HEADER } from '../shared/remote-runner.js'
+import { CLASS_EVIDENCE_MS, CLASS_TUNNEL_STUCK_MS, remoteClassPaths } from '../shared/remote-kernels.js'
 import { TUNNEL_REPLACEMENTS_ALERT, tunnelUrl } from '../shared/remote-tunnel.js'
 import { isTerminal } from '../shared/competitions.js'
 import { CELLS_KEY, bookKernel, cellId, createCell, getCells, getTerminal, readOutputs } from '../shared/notebook.js'
@@ -58,6 +59,8 @@ import { setCompetitionState } from '../server/src/competitions/store.js'
 import { forgetStock } from '../server/src/competitions/remote/want.js'
 import { stateLayout } from '../server/src/runner-agent/state.js'
 import { AgentTunnel } from '../server/src/runner-agent/tunnel.js'
+import { sessionDir, writeText } from '../server/src/workspace.js'
+import { instanceTimeZone } from '../server/src/time-zone.js'
 import { Agent, createFleet, killAgents, openGate, removeClassContainers, type AgentTimings, type Fleet } from './_remote-e2e-agent.mts'
 import { Entrant, Home, competition, kernelRevision, notebook, quietQueue, until, type E2eCompetition } from './_remote-e2e-home.mts'
 import { TunnelFault } from './_tunnel-fault.mts'
@@ -297,7 +300,7 @@ function promisesTo(room: Room, m: Machine): () => string[] {
   onKernelMachineChange((sessionId, _role, note) => {
     if (sessionId === room.id && note) staff.push(note)
   })
-  const waiting = words('server.machineHasNotAnsweredSinceWaitingUntil.3d926e', ['since', 'until'], { machine: getRunner(m.runnerId)!.name })
+  const waiting = words('server.machineHasNotAnsweredSinceWaitingUntil.1d012e', ['since', 'until'], { machine: getRunner(m.runnerId)!.name })
   return () => staff.filter((note) => waiting.test(note))
 }
 
@@ -305,6 +308,35 @@ function promisesTo(room: Room, m: Machine): () => string[] {
 function promisedSeconds(said: string): number {
   const [quietAt, movesAt] = [...said.matchAll(/(\d\d):(\d\d):(\d\d)/g)].map((clock) => Number(clock[1]) * 3600 + Number(clock[2]) * 60 + Number(clock[3]))
   return (movesAt! - quietAt! + 86_400) % 86_400
+}
+
+/** What a server word's placeholders say in a note of it: the note read back by its words; null — not a note of them. */
+function slotsOf(key: string, names: readonly string[], note: string): Record<string, string> | null {
+  const marks = Object.fromEntries(names.map((name, i) => [name, `\u0000${i}\u0000`]))
+  const escaped = tr(key, marks).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const found = new RegExp(`^${escaped.replace(/\u0000(\d+)\u0000/g, (_all, i: string) => `(?<${names[Number(i)]}>.+?)`)}$`).exec(note)
+  return found?.groups ? { ...found.groups } : null
+}
+
+/** A moment of the home's clock as the room's words write one («14:31:58» in the instance's zone): its seconds of the day. */
+function secondsOf(at: number): number {
+  const [h, m, s] = new Intl.DateTimeFormat('en-GB', { timeZone: instanceTimeZone(), hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(at).split(':').map(Number)
+  return h! * 3600 + m! * 60 + s!
+}
+
+/** «14:31:58»'s seconds of the day. */
+function clockSeconds(text: string): number {
+  const [h, m, s] = text.split(':').map(Number)
+  return h! * 3600 + m! * 60 + s!
+}
+
+/** A file of the class folder here, as text; null — none. */
+function fileHere(sessionId: string, rel: string): string | null {
+  try {
+    return fs.readFileSync(path.join(sessionDir(sessionId), rel), 'utf8')
+  } catch {
+    return null
+  }
 }
 
 /* --------------------------------------------------------------- scenarios */
@@ -323,6 +355,12 @@ scenario('D14 · a machine partitioned while another is heard: failover at the c
   assert.equal(placed.runnerId, a.runnerId, 'the class computes on the machine')
   const container = a.agent.classContainer(room.id, 'room')!
   assert.equal(room.chip().where, 'machine')
+  // A file the kernel writes before the partition: a sync of the machine's brings it here, and home's verdict goes back (§8.3).
+  const writtenFrom = home.clock.now()
+  const synced = room.cell('WRITE d14/kept.csv до разрыва')
+  room.run(synced)
+  await room.ok(synced)
+  await until('the kernel\'s file here, agreed in the machine\'s baseline', () => fileHere(room.id, 'd14/kept.csv') === 'до разрыва' && a.agent.roomBaseline(room.id)?.files.has('d14/kept.csv'), 20_000, () => a.agent.log())
   // The owner turns B's classes on: its tunnel comes up, and it could take the class now.
   assert.equal('refused' in setRunnerClasses(b.runnerId, true), false)
   wakeRunner(b.runnerId)
@@ -344,6 +382,8 @@ scenario('D14 · a machine partitioned while another is heard: failover at the c
   // The partition: nothing of A reaches home, nor anything of home A; what was on its way is held, never lost.
   a.proxy.blackhole()
   await turns()
+  // What the kernel writes from now on reaches no one: the unsynced tail, lost with the machine (§8.8).
+  fs.writeFileSync(path.join(a.agent.roomCopy(room.id), 'd14', 'lost.csv'), 'после разрыва')
   const quietFrom = heardAt(a.runnerId)!
   const failoverMs = 45_000
   let before: number | null = null
@@ -373,7 +413,7 @@ scenario('D14 · a machine partitioned while another is heard: failover at the c
   assert.ok(seen !== null && seen.state === 'unreachable' && seen.since <= quietFrom, JSON.stringify(seen))
   assert.equal(seen.failoverAt, quietFrom + failoverMs, 'staff were shown when it moves')
   // And every sentence with a time they were told while it was quiet, which the next test reads.
-  const waiting = words('server.machineHasNotAnsweredSinceWaitingUntil.3d926e', ['since', 'until'], { machine: name })
+  const waiting = words('server.machineHasNotAnsweredSinceWaitingUntil.1d012e', ['since', 'until'], { machine: name })
   d14Told = { said: staff.filter((note) => waiting.test(note)), failoverMs }
   assert.deepEqual(runnerEventsOf(a.runnerId, ['class_failover'], 0).map((line) => line.detail), ['silence'], 'one line in the machine\'s log')
   assert.deepEqual(runnerEventsOf(b.runnerId, ['class_failover'], 0), [], 'the machine that was heard lost nothing')
@@ -398,9 +438,37 @@ scenario('D14 · a machine partitioned while another is heard: failover at the c
   assert.equal(room.chip().where, 'machine')
   d14Words = room.notes()
 
+  // The files as the room was told of them: as of the machine's last sync, what it said before is here, the tail is not. And a
+  // late upload of the lost gen, the machine's own with its credential, is answered 409 (`revoked`: the agent drops it).
+  const failover = room.notes().map((note) => slotsOf('server.theMachineHasNotAnsweredSinceThe.aa7fbb', ['since', 'filesAt'], note)).find(Boolean)!
+  const tail = Buffer.from('после разрыва')
+  const stale = await fetch(`${home.url}${REMOTE_API_BASE}/${remoteClassPaths.roomFile(room.id, 'd14/lost.csv', placed.gen)}`, {
+    method: 'PUT',
+    headers: {
+      accept: 'application/json',
+      authorization: a.agent.authorization(),
+      'content-type': 'application/octet-stream',
+      'content-encoding': 'gzip',
+      [REMOTE_SHA256_HEADER]: createHash('sha256').update(tail).digest('hex'),
+      [REMOTE_BYTES_HEADER]: String(tail.length),
+    },
+    body: gzipSync(tail),
+  })
+  const files = {
+    filesAt: failover.filesAt!,
+    window: [secondsOf(writtenFrom), secondsOf(quietFrom)] as const,
+    kept: fileHere(room.id, 'd14/kept.csv'),
+    lost: fileHere(room.id, 'd14/lost.csv'),
+    stale: [stale.status, ((await stale.json()) as { error?: string }).error],
+  }
+
   // The machine comes back: home no longer names its placement, and it removes the container; no DELETE ever reached it.
   a.proxy.heal()
   await until('the returning machine to remove its container', () => a.agent.classContainer(room.id, 'room') === null, 30_000, () => a.agent.log())
+  // Then it names what changed in its copy after the move, and the room hears it; none of it is taken. And its copy goes.
+  const late = await until('the late changes in the room', () => room.notes().map((note) => slotsOf('server.theMachineCameBackAfterTheMove.f1111a', ['since', 'files'], note)).find(Boolean), 30_000, () => `${room.notes().join('\n')}\n${a.agent.log()}`)
+  await until('the returning machine to remove its copy of the class folder', () => !fs.existsSync(a.agent.roomCopy(room.id)) && a.agent.roomBaseline(room.id) === null, 30_000, () => a.agent.log())
+  d14Files = { ...files, late: late.files!, lostAfter: fileHere(room.id, 'd14/lost.csv') }
   noDelete(a, container.id)
 })
 
@@ -424,8 +492,31 @@ test('D14 · the room\'s words say where the kernel comes back: never «on this 
   assert.equal(d14Words.filter((note) => note === tr(ANOTHER_MACHINE)).length, 1, d14Words.join('\n'))
 })
 
-// Files travel in wave 3: what the failover's words say of them, and what a late report or upload of the lost gen is answered.
-test.todo('D14 · files as of the last sync («файлы — по 14:31:58»), and the stale gen\'s PUT answered 409 — wave 3: K6a (the upload doors through placementCurrent) and K6b (the late changes a returning machine reports)')
+// What D14's class folder was when the machine was lost and came back (§8.8): the failover's words of it, the files here, the
+// lost gen's upload answered, the returning machine's late list as the room heard it.
+let d14Files: {
+  filesAt: string
+  window: readonly [number, number]
+  kept: string | null
+  lost: string | null
+  stale: Array<number | string | undefined>
+  late: string
+  lostAfter: string | null
+} | null = null
+
+test('D14 · files as of the last sync («файлы — по 14:31:58»), the stale gen\'s PUT answered 409, and the returning machine\'s late changes named in the room and refused', () => {
+  assert.ok(d14Files, 'D14 ran')
+  // «файлы — по …»: the machine's last sync, no earlier than the cell whose file it brought and no later than its last word.
+  const [from, to] = d14Files.window
+  const at = clockSeconds(d14Files.filesAt)
+  assert.ok((at - from + 86_400) % 86_400 <= (to - from + 86_400) % 86_400, `files as of ${d14Files.filesAt}, between the file's sync and the machine's last word`)
+  assert.equal(d14Files.kept, 'до разрыва', 'what the machine said before the partition is here')
+  assert.equal(d14Files.lost, null, 'the unsynced tail is not')
+  assert.deepEqual(d14Files.stale, [409, 'revoked'], 'an upload of the lost gen is refused')
+  // The late list names the tail, not what both sides had agreed, and none of it is taken.
+  assert.deepEqual(d14Files.late.split(', '), ['d14/lost.csv'])
+  assert.equal(d14Files.lostAfter, null, 'refused')
+})
 
 scenario('D15 · home\'s own path black-holed — both machines silent, the probe failing: nothing fails over, however long, and everything resumes', 90_000, async (scene) => {
   const [a, b] = await Promise.all([scene.machine('d15a'), scene.machine('d15b')])
@@ -601,7 +692,7 @@ scenario('D17 · «ждать машину»: no failover however long the machi
   // Staff read that the class waits for its machine, with no time it moves by itself; the room that the machine does not answer.
   const seen = kernelMachineOf(room.id, 'room')!
   assert.deepEqual([seen.state, seen.failover, seen.failoverAt], ['unreachable', 'wait', null])
-  assert.ok(staff.some((note) => words('server.machineHasNotAnsweredSinceWaitingFor.378191', ['since'], { machine: name }).test(note)), staff.join('\n'))
+  assert.ok(staff.some((note) => words('server.machineHasNotAnsweredSinceWaitingFor.5afc55', ['since'], { machine: name }).test(note)), staff.join('\n'))
   assert.ok(room.notes().some((note) => words('server.noConnectionToTheMachineTheKernel.71d94f', ['elapsed']).test(note)))
 
   // «Перенести сейчас»: the slot moves this moment.
@@ -630,10 +721,18 @@ scenario('D17 · «ждать машину»: no failover however long the machi
   other.run(set)
   await other.ok(set)
   const answering = a.agent.classContainer(other.id, 'room')!
+  // A cell still running there has just written a file no scan has brought yet: the move brings it first (§8.7), the files as
+  // of the move, not of the last scan.
+  const writing = other.cell('WRITE moved/last.csv перед переездом\nHOLD d17move')
+  other.run(writing)
+  const door = a.agent.jupyterOf(answering)
+  await until('the cell holding on the machine, its file written', async () => (await door.kernels()).some((kernel) => kernel.busy) && fs.existsSync(path.join(a.agent.roomCopy(other.id), 'moved', 'last.csv')))
+  assert.equal(fileHere(other.id, 'moved/last.csv'), null, 'not here before the move')
   assert.equal(livePlacement(other.id, 'room')?.state, 'ready')
   assert.deepEqual(await moveKernelNow(other.id, null, 'Учитель'), { ok: true })
+  assert.equal(fileHere(other.id, 'moved/last.csv'), 'перед переездом', 'the machine\'s last file came before the slot left it')
   assert.deepEqual([placementRow(other.id, 'room')!.state, placementRow(other.id, 'room')!.reason], ['lost', 'moved'])
-  await until('the move in the room', () => other.notes().includes(tr('server.theKernelWasStartedOnThisServer.497a79')), 10_000, () => other.notes().join('\n'))
+  await until('the move in the room', () => other.notes().includes(tr('server.theKernelWillStartAgainTheVariables.a76610')), 10_000, () => other.notes().join('\n'))
   await until('the machine that answers to remove the container', () => a.agent.classContainer(other.id, 'room') === null, 30_000, () => a.agent.log())
   const here = other.cell('print(x)')
   other.run(here)
@@ -768,6 +867,8 @@ scenario('D20 · home crashes mid-cell and starts again: nothing fails over in i
   const moving = await scene.room({ room: 'machines' })
   await takes(room, a)
   await takes(moving, a)
+  // A file both sides agree on before the crash: saved here, on the machine before the first Run there (the barrier).
+  assert.ok(writeText(room.id, 'd20/agreed.csv', 'было до падения'))
   for (const each of [room, moving]) {
     const first = each.cell('x = 5\nprint(x)')
     each.run(first)
@@ -777,6 +878,10 @@ scenario('D20 · home crashes mid-cell and starts again: nothing fails over in i
   const movingContainer = a.agent.classContainer(moving.id, 'room')!
   const door = a.agent.jupyterOf(container)
   const kernels = (await door.kernels()).map((kernel) => kernel.id)
+  await until('the file agreed in the machine\'s baseline', () => a.agent.roomBaseline(room.id)?.files.has('d20/agreed.csv'), 20_000, () => a.agent.log())
+  // The pushes of the whole folder the machine applied, as its log says them.
+  const whole = (): number => a.agent.lines.filter((line) => line.includes(`class ${room.id}: push `) && line.includes('the whole folder')).length
+  const wholeBefore = whole()
   const held = room.cell('HOLD d20')
   room.run(held)
   await until('the held cell to run on the machine', async () => (await door.kernels()).some((kernel) => kernel.busy))
@@ -792,6 +897,9 @@ scenario('D20 · home crashes mid-cell and starts again: nothing fails over in i
   // machine cannot reach it.
   a.proxy.blackhole()
   abandonKernelsForTest()
+  // While home is down the kernel there writes one file and removes another: what only the machine's full report tells the next life.
+  fs.writeFileSync(path.join(a.agent.roomCopy(room.id), 'd20', 'while-down.csv'), 'пока сервер лежал')
+  fs.rmSync(path.join(a.agent.roomCopy(room.id), 'd20', 'agreed.csv'))
   const heardOfAttempt = attempt.length
   await home.restart()
   const bootAt = home.clock.now()
@@ -815,6 +923,8 @@ scenario('D20 · home crashes mid-cell and starts again: nothing fails over in i
   a.proxy.heal()
   await until('the placement back', () => livePlacement(room.id, 'room')?.state === 'ready' && home.tunnels!.isUp(a.runnerId), 30_000, () => a.agent.log())
   assert.equal(livePlacement(room.id, 'room')!.gen, gen)
+  // A file saved here now: the next Run there waits for this life's copy, rebuilt from the machine's full report, and its push.
+  assert.ok(writeText(room.id, 'd20/after.csv', 'после перезапуска'))
   const after = room.cell('print(x)')
   room.run(after)
   await room.ok(after)
@@ -827,13 +937,33 @@ scenario('D20 · home crashes mid-cell and starts again: nothing fails over in i
   assert.equal(room.state(held), 'idle', 'the cell the dead life left running reads so no more')
   // The dead life said nothing more of its attempt: no end, no interruption (the next life reads it as a crash leaves it).
   assert.deepEqual(attempt.slice(heardOfAttempt), [], `the attempt after the crash: ${JSON.stringify(attempt)}`)
+  // The class folder's state, rebuilt from the machine's full report (§8.4): the write made while home was down came here, the
+  // removal went, and the file saved here since was on the machine before the Run: a push of the copy rebuilt, never the whole
+  // folder again.
+  const there = (rel: string): string | null => {
+    try {
+      return fs.readFileSync(path.join(a.agent.roomCopy(room.id), rel), 'utf8')
+    } catch {
+      return null
+    }
+  }
+  d20Files = { wrote: fileHere(room.id, 'd20/while-down.csv'), removed: fileHere(room.id, 'd20/agreed.csv') === null, wholeBefore, whole: whole() - wholeBefore, after: there('d20/after.csv') }
   await until('the moved class\'s container to go', () => a.agent.classContainer(moving.id, 'room') === null, 30_000, () => a.agent.log())
   noDelete(a, container.id)
   noDelete(a, movingContainer.id)
 })
 
-// The files' half of a home restart travels in wave 3.
-test.todo('D20 · the files\' state rebuilt from the machine\'s full reports after a home restart — wave 3: K6a (rebuild from a `full` report) and K6b')
+// What D20's class folder came to in the new life of the home (§8.4, §11.4).
+let d20Files: { wrote: string | null; removed: boolean; wholeBefore: number; whole: number; after: string | null } | null = null
+
+test('D20 · the files\' state rebuilt from the machine\'s full reports after a home restart: what the kernel wrote and removed while home was down comes here, and the copy is never pushed whole again', () => {
+  assert.ok(d20Files, 'D20 ran')
+  assert.equal(d20Files.wrote, 'пока сервер лежал', 'written while home was down: here by the first Run of the new life')
+  assert.equal(d20Files.removed, true, 'removed while home was down: gone here')
+  assert.ok(d20Files.wholeBefore >= 1, 'the first life pushed the copy whole once, as the machine\'s log says')
+  assert.equal(d20Files.whole, 0, 'the next life rebuilt what both sides agreed, and pushed nothing whole')
+  assert.equal(d20Files.after, 'после перезапуска', 'a file saved here reached the machine before the Run, a push of the rebuilt copy')
+})
 
 /**
  * The kinds of the lines on the owner's machine page (GET /api/admin/runners/:id), newest first. The class kinds
@@ -864,7 +994,7 @@ async function settled(entrant: Entrant, id: string): Promise<string> {
 scenario('D21 · revoke, «Не принимает занятия» and leave: each fails its machine\'s class over at once, in the owner\'s words; submissions keep flowing after the unclass', 120_000, async (scene) => {
   quietQueue()
   const c = scene.competition()
-  const started = tr('server.theKernelWasStartedOnThisServer.497a79')
+  const started = tr('server.theKernelWillStartAgainTheVariables.a76610')
   // A machine to revoke and one to unclass, the second taking no classes until the owner turns them on, so that each class has
   // its own; the one that leaves joins later, when the other two are done with classes.
   const [revoked, unclassed] = await Promise.all([scene.machine('d21r'), scene.machine('d21u', { classes: false })])

@@ -583,7 +583,11 @@ test('every kind of staff action is recorded somewhere', () => {
   assert.match(runners, /action: 'runner\.revoked'/)
   assert.match(runners, /action: 'runner\.code_minted'/)
   assert.match(runners, /action: 'runner\.code_ended'/)
-  const notDriven = new Set(['environment.made_default', 'competition.entrant_deleted', 'runner.enrolled', 'runner.trusted', 'runner.revoked', 'runner.code_minted', 'runner.code_ended'])
+  // And their classes' three, driven through their doors in tests/classes-ui-doors.test.mts, which reads them from this log.
+  assert.match(runners, /action: 'runner\.classes'/)
+  assert.match(runners, /action: 'runner\.classes_resumed'/)
+  assert.match(runners, /action: 'runner\.classes_moved'/)
+  const notDriven = new Set(['environment.made_default', 'competition.entrant_deleted', 'runner.enrolled', 'runner.trusted', 'runner.revoked', 'runner.code_minted', 'runner.code_ended', 'runner.classes', 'runner.classes_resumed', 'runner.classes_moved'])
   const missing = ADMIN_AUDIT_ACTIONS.filter((action) => !notDriven.has(action) && !seen.has(action))
   assert.deepEqual(missing, [])
 })

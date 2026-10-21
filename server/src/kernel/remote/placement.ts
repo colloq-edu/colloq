@@ -124,6 +124,7 @@ import { kernelLimits, roomShm, runsHere, type LimitOutcome } from '../pool.js'
 import { blockedCidrsSetting, roomHardening } from '../perimeter.js'
 import { ROOM_SHM, classHashSeed, type RoomRole } from '../room-spec.js'
 import { machineTunnels, type MachineTunnels } from './tunnel.js'
+import { filesHeardFrom, filesSettled } from './files.js'
 import {
   classPlacement,
   classPlacementRows,
@@ -169,6 +170,8 @@ const RESIZE_WAIT_MS = 30_000
 const READING_WAIT_MS = 10_000
 /** A slot moved off a machine does not go back to it for this long: «Перенести на сервер» means away from it. */
 const AVOID_MS = CLASS_QUARANTINE_WINDOW_MS
+/** How long «Перенести сейчас» off a machine that answers waits for the class's files to come here first (§8.7). */
+const MOVE_SETTLE_MS = 10_000
 /** A class's revision is looked up again this often; one that could not be found, sooner. */
 const REVISION_TTL_MS = 10 * 60_000
 const REVISION_RETRY_MS = 60_000
@@ -1733,7 +1736,7 @@ export class ClassPlacements {
   /** Staff's «…не отвечает с 14:32:05. Ждём до 14:33:05…» for a slot whose move is known (§13.2 «Waiting (staff)»), as news carries it. */
   private waitingWords(view: PlacementView, machine: string): { staffWords?: string } {
     if (view.where !== 'machine' || view.failoverAt === null || view.quietSince === null) return {}
-    return { staffWords: tr('server.machineHasNotAnsweredSinceWaitingUntil.3d926e', { machine, since: clockOf(view.quietSince), until: clockOf(view.failoverAt) }) }
+    return { staffWords: tr('server.machineHasNotAnsweredSinceWaitingUntil.1d012e', { machine, since: clockOf(view.quietSince), until: clockOf(view.failoverAt) }) }
   }
 
   /* ------------------------------------------------------------- failover */
@@ -1761,18 +1764,32 @@ export class ClassPlacements {
    * «Перенести сейчас» (§11.1): a slot of the class (or all of its machine
    * slots) moves now, whether its machine is reachable («Перенести на
    * сервер») or not. Refused in words when nothing of it is on a machine.
+   *
+   * THE FILES FIRST (§8.7, «before failover's final note»). A machine that
+   * answers sends what the class's kernels wrote since its last scan before
+   * the slot leaves it, within MOVE_SETTLE_MS, so that such a move costs the
+   * variables and nothing more; one that does not answer has nothing to say
+   * now, and its files are as of its last sync. The chip spins meanwhile.
    */
   async moveNow(sessionId: string, role: RoomRole | null, by: string): Promise<{ ok: true } | { refused: string }> {
     const roles: RoomRole[] = role ? [role] : ['room', 'own', 'council']
-    const rows = roles.flatMap((one) => {
+    const live = (): PlacementRow[] => roles.flatMap((one) => {
       const row = livePlacement(sessionId, one)
       return row && row.state !== 'stopping' ? [row] : []
     })
+    const rows = live()
     if (rows.length === 0) return { refused: tr('server.thisClassSKernelsRunOnThis.d5eaa3') }
-    const now = this.clock.now()
+    let now = this.clock.now()
+    for (const row of rows) this.emit({ sessionId, role: row.role, kind: 'moving', view: this.viewOf(row, now), cause: 'moved' }, now)
+    if (rows.some((row) => this.tunnels().isUp(row.runnerId) && filesHeardFrom(sessionId, row.runnerId))) {
+      const settled = await filesSettled(sessionId, MOVE_SETTLE_MS).catch(() => false)
+      if (!settled) this.log(`[classes] ${sessionId}: its files did not all come from its machines within ${MOVE_SETTLE_MS / 1000} s; it moves all the same`)
+    }
+    now = this.clock.now()
     const runners = new Set<string>()
-    for (const row of rows) {
-      this.emit({ sessionId, role: row.role, kind: 'moving', view: this.viewOf(row, now), cause: 'moved' }, now)
+    // Only what is still where it was: a slot its own rule or a stop moved meanwhile has gone already.
+    for (const row of live()) {
+      if (!rows.some((one) => one.role === row.role && one.gen === row.gen)) continue
       if (this.failoverRow(row, 'moved', now)) runners.add(row.runnerId)
     }
     this.log(`[classes] ${sessionId}${role ? `/${role}` : ''} moved off its machine by ${by}`)
@@ -1819,14 +1836,15 @@ export class ClassPlacements {
   }
 
   /**
-   * The room's failover note for a cause (§13.2), naming the machine. A
-   * silence's and a perimeter's never say where the kernel comes back: the
-   * next start places it, on another machine or here (the hooks say which
-   * once it does), and the words would hold for one of the two at best.
+   * The room's failover note for a cause (§13.2), naming the machine. None
+   * says where the kernel comes back, a revoke's and a move's no more than a
+   * silence's: the next start places it, on another machine or here — a move
+   * only keeps it off this one for a while (AVOID_MS) — the hooks say which
+   * once it does, and the words would hold for one of the two at best.
    */
   private failoverWords(row: PlacementRow, runner: RunnerRow | null, cause: FailoverCause, slot: Slot, now: number): string {
     const machine = runner?.name ?? row.runnerId
-    const started = tr('server.theKernelWasStartedOnThisServer.497a79')
+    const started = tr('server.theKernelWillStartAgainTheVariables.a76610')
     const quiet = (): string => {
       // Quiet since when its rule counts it so, as staff were told while it waited (promiseOf): its last word for a silence.
       const since = this.promiseOf(row, classPlacement(row.sessionId), now).quietSince ?? slot.unreachableSince ?? heardAt(row.runnerId) ?? now

@@ -202,9 +202,23 @@ test('a class set to machines: Run computes on the machine through the real sync
   assert.equal(intent?.key, `${id}:room`, 'the whole wanted set names the slot')
   assert.equal(intent.gen, placed.gen)
   assert.match(intent.token, /^[0-9a-f]{40}$/)
-  // The machine says it is ready, with the echo of the image it was asked for.
-  await sync([{ key: intent.key, gen: intent.gen, phase: 'ready', container: CONTAINER, revision: remoteRevisionDigest(revision.registryRef!) }], 'up')
+  // The machine says it is ready, with the echo of the image it was asked for; and it applies the class folder's pushes
+  // as replies carry them, saying the newest it applied (files.pushSeq): the Run waits at the files barrier for that (§8.2).
+  let applied = 0
+  const held = (): RemotePlacementHeld => ({
+    key: intent.key,
+    gen: intent.gen,
+    phase: 'ready',
+    container: CONTAINER,
+    revision: remoteRevisionDigest(revision.registryRef!),
+    ...(applied > 0 ? { files: { pushSeq: applied, pending: 0, pendingBytes: 0, heldOnly: 0, heldOnlyBytes: 0 } } : {}),
+  })
+  for (let round = 0; round < 400 && said() !== '42\n'; round++) {
+    for (const push of (await sync([held()], 'up')).pushes) if (push.sessionId === id) applied = Math.max(applied, push.seq)
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
   await until(() => said() === '42\n', 'the output in the room')
+  assert.ok(applied > 0, 'the class folder went to the machine before the cell ran there')
   assert.equal(cell.get('state'), 'ok')
   assert.ok(onMachine.requests.some((request) => request.code.includes('print(x)')), 'computed on the machine')
   assert.equal(here.requests.length, 0, 'nothing computed here')

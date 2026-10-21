@@ -186,6 +186,12 @@
     found: boolean
     text?: string
     reason?: InspectMiss
+    /**
+     * The kernel is on a machine that does not answer now (protocol.ts ·
+     * inspect:reply): `reason` is then 'busy' and the hint asks again as for
+     * a busy kernel, in words of its own.
+     */
+    unreachable?: true
   }
 
   interface Props {
@@ -880,7 +886,7 @@
    * where the server refused because of the question bucket, the gesture was
    * right and there is nothing to explain.
    */
-  function signatureMiss(reason: InspectMiss | undefined): HTMLElement | null {
+  function signatureMiss(reason: InspectMiss | undefined, unreachable = false): HTMLElement | null {
     if (!reason || reason === 'refused') return null
     const words: Record<Exclude<InspectMiss, 'refused'>, string> = {
       'no-kernel': tr('room.signature.noKernel'),
@@ -891,7 +897,8 @@
     }
     const dom = document.createElement('div')
     dom.className = 'cm-signature cm-signature-miss'
-    dom.append(document.createTextNode(words[reason]))
+    // A machine that does not answer is no busy kernel: the wait is the same, the reason is not (remote-classes.md §5.6).
+    dom.append(document.createTextNode(unreachable && reason === 'busy' ? tr('room.signature.unreachable') : words[reason]))
     /*
      * A temporary reason gets a waiting sign, a final one does not.
      *
@@ -1308,12 +1315,12 @@
       // silent.
       if (!answer) return null
       if (!answer.found || !answer.text) {
-        const dom = signatureMiss(answer.reason)
+        const dom = signatureMiss(answer.reason, answer.unreachable === true)
         // The reason is temporary — we wait for the answer ourselves, without
         // sending the person to move the mouse back and forth (see
         // `keepAsking`).
         if (dom && answer.reason && WAITING.has(answer.reason)) {
-          keepAsking(view, at, key, dom, answer.reason)
+          keepAsking(view, at, key, dom, answer.reason, answer.unreachable === true)
         }
         return dom
       }
@@ -1353,12 +1360,15 @@
       key: string,
       dom: HTMLElement,
       first: InspectMiss,
+      firstAway = false,
     ): void {
       const ask = handlers.inspect
       if (!ask) return
       const doc = view.state.doc
       const until = Date.now() + (WAIT_CEILING_MS[first] ?? WAIT_CEILING_DEFAULT_MS)
       let reason: InspectMiss = first
+      // Whether the line says the kernel's machine does not answer: it changes when the machine does, whatever the reason.
+      let away = firstAway
       const again = () => {
         const wait = WAITING.get(reason)
         if (wait === undefined) return
@@ -1375,10 +1385,11 @@
         if (!answer) return
         if (!answer.found || !answer.text) {
           const next = answer.reason
+          const nextAway = answer.unreachable === true
           if (!next || !WAITING.has(next)) {
             // The reason has become final ("not found"): we say it and fall
             // silent.
-            const said = signatureMiss(next)
+            const said = signatureMiss(next, nextAway)
             if (said) {
               dom.className = said.className
               dom.replaceChildren(...said.childNodes)
@@ -1386,10 +1397,11 @@
             }
             return
           }
-          if (next !== reason) {
-            const said = signatureMiss(next)
+          if (next !== reason || nextAway !== away) {
+            const said = signatureMiss(next, nextAway)
             if (said) dom.replaceChildren(...said.childNodes)
             reason = next
+            away = nextAway
           }
           again()
           return

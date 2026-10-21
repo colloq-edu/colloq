@@ -4320,9 +4320,9 @@ export const serverMessages: MessageCatalog = {
     "ru": "Нет связи с машиной «{machine}» · {elapsed}. Ядро и переменные на ней целы — ждём связь. Новые запуски подождут.",
     "en": "No connection to machine {machine} · {elapsed}. The kernel and its variables there are intact — waiting for the connection. New runs will wait."
   },
-  "server.machineHasNotAnsweredSinceWaitingUntil.3d926e": {
-    "ru": "Машина «{machine}» не отвечает с {since}. Ждём до {until}, потом поднимем ядро на этом сервере (переменные пропадут).",
-    "en": "Machine {machine} has not answered since {since}. Waiting until {until}, then the kernel starts again on this server (the variables will be lost)."
+  "server.machineHasNotAnsweredSinceWaitingUntil.1d012e": {
+    "ru": "Машина «{machine}» не отвечает с {since}. Ждём до {until}, потом поднимем ядро заново (переменные пропадут).",
+    "en": "Machine {machine} has not answered since {since}. Waiting until {until}, then the kernel starts again (the variables will be lost)."
   },
   "server.theConnectionToMachineCameBackAfter.28f7cf": {
     "ru": "Связь с машиной «{machine}» вернулась через {seconds} с.",
@@ -4331,10 +4331,6 @@ export const serverMessages: MessageCatalog = {
   "server.theConnectionToTheMachineBrokeThe.5504d1": {
     "ru": "Связь с машиной прервалась — результат ячейки потерян. Ядро и переменные целы; запустите ячейку снова.",
     "en": "The connection to the machine broke — the cell’s result is lost. The kernel and its variables are intact; run the cell again."
-  },
-  "server.machineHasNotAnsweredSinceTheKernel.05bf4e": {
-    "ru": "Машина «{machine}» не отвечает с {since}. Ядро поднято заново на этом сервере: переменные пропали, файлы — по {filesAt}. Запустите ячейки снова.",
-    "en": "Machine {machine} has not answered since {since}. The kernel was started again on this server: the variables are gone, the files are as of {filesAt}. Run the cells again."
   },
   "server.thisCellWasRunningOnMachineWhen.cbb534": {
     "ru": "Эта ячейка выполнялась на машине «{machine}», когда та пропала. Неизвестно, успела ли она закончиться; на новом ядре её нет.",
@@ -4376,13 +4372,11 @@ export const serverMessages: MessageCatalog = {
     "ru": "Машину «{machine}» отключают.",
     "en": "Machine {machine} is being disconnected."
   },
-  "server.theKernelWasStartedOnThisServer.497a79": {
-    "ru": "Ядро поднято на этом сервере, переменные пропали.",
-    "en": "The kernel was started on this server; the variables are gone."
-  },
-  "server.theNetworkOnMachineGotOutOf.6b309d": {
-    "ru": "Сеть на машине «{machine}» вышла из-под контроля: ядро остановлено ради безопасности и поднято на этом сервере.",
-    "en": "The network on machine {machine} got out of control: the kernel was stopped for safety and started on this server."
+  // After a revoke, an unclass, a leave or a move: where the kernel comes back is the next start's to say (the fallback's
+  // «…на этом сервере», «Ядро поднято на другой машине»), and nothing runs anywhere yet.
+  "server.theKernelWillStartAgainTheVariables.a76610": {
+    "ru": "Ядро поднимется заново, переменные пропали.",
+    "en": "The kernel will start again; the variables are gone."
   },
   "server.thisServerHasNoRoomForThis.25c35f": {
     "ru": "На сервере нет места для ядра этого занятия: занято {used} из {total}. Освободите память или подключите машину.",
@@ -4391,6 +4385,12 @@ export const serverMessages: MessageCatalog = {
   "server.machineCameBackAfterTheMoveIts.aacc24": {
     "ru": "Машина «{machine}» вернулась после переезда; её изменения в файлах после {since} не приняты: {files}.",
     "en": "Machine {machine} came back after the move; its file changes after {since} were not accepted: {files}."
+  },
+  // A machine's copy let go after an ordinary stop there (the class's end, the owner's stop, the idle sweep), not a move: what
+  // its kernels wrote and the server never got goes with it (kernel/remote/files.ts · lateChanges).
+  "server.theKernelsOnTheMachineWereStopped.d5fceb": {
+    "ru": "Ядра на машине остановлены; изменения в файлах, которые не успели доехать до сервера, отброшены: {files}.",
+    "en": "The kernels on the machine were stopped; the file changes that had not reached the server were dropped: {files}."
   },
   "server.wasChangedHereAndOnTheMachine.107a60": {
     "ru": "{file} изменили одновременно здесь и на машине. Оставлена версия сервера, версия с машины — «{copy}».",
@@ -4415,6 +4415,37 @@ export const serverMessages: MessageCatalog = {
   "server.theFilesDidNotReachTheMachine.20cf87": {
     "ru": "Файлы не дошли до машины: {seconds} с без движения — ячейка не запущена.",
     "en": "The files did not reach the machine: {seconds} s without progress — the cell was not run."
+  },
+  // The files of a class on machines (server/src/kernel/remote/files.ts, §8): the barrier's ceiling, a conflict whose
+  // machine version did not fit the caps, the late writes of a returning machine as the room reads them (no machine's
+  // name: the kernel log is everyone's), and «Привезти»'s refusals.
+  "server.theFilesDidNotReachTheMachineIn.793493": {
+    "ru": "Файлы не успели доехать до машины за {seconds} с — ячейка не запущена.",
+    "en": "The files did not reach the machine within {seconds} s — the cell was not run."
+  },
+  "server.wasChangedHereAndOnTheMachineNoCopy.c0eae4": {
+    "ru": "{file} изменили одновременно здесь и на машине. Оставлена версия сервера; версия с машины не поместилась в пределы и отброшена.",
+    "en": "{file} was changed here and on the machine at the same time. The server’s version was kept; the machine’s did not fit the limits and was dropped."
+  },
+  "server.theMachineCameBackAfterTheMove.f1111a": {
+    "ru": "Машина вернулась после переезда; её изменения в файлах после {since} не приняты: {files}.",
+    "en": "The machine came back after the move; its file changes after {since} were not accepted: {files}."
+  },
+  "server.thisFileIsNotOnTheClassMachines.0fd59f": {
+    "ru": "Этого файла нет на машинах занятия.",
+    "en": "This file is not on the class’s machines."
+  },
+  "server.thisFileCannotBeBroughtFromThe.148a43": {
+    "ru": "Этот файл с машины не привезти: он из установленных пакетов (pip install -t), а они остаются на машине.",
+    "en": "This file cannot be brought from the machine: it belongs to installed packages (pip install -t), which stay on the machine."
+  },
+  "server.doesNotFitTheClassLimit.39ab91": {
+    "ru": "{file} ({size}) не помещается в предел занятия {limit}.",
+    "en": "{file} ({size}) does not fit the class’s {limit} limit."
+  },
+  "server.onlyTheTeacherCanBringAFile.031ac7": {
+    "ru": "Привезти файл с машины может только преподаватель.",
+    "en": "Only the teacher can bring a file from the machine."
   },
   "server.startingTheKernelOnMachineImage.1f4cdc": {
     "ru": "Запускаем ядро на машине «{machine}»… образ ↓ {percent} %",
@@ -4630,9 +4661,9 @@ export const serverMessages: MessageCatalog = {
     "ru": "Сеть на машине «{machine}» вышла из-под контроля: ядро остановлено ради безопасности и поднимется заново.",
     "en": "The network on machine {machine} got out of control: the kernel was stopped for safety and will start again."
   },
-  "server.machineHasNotAnsweredSinceWaitingFor.378191": {
-    "ru": "Машина «{machine}» не отвечает с {since}. Ждём её: ядро переедет на этот сервер только по «Перенести сейчас».",
-    "en": "Machine {machine} has not answered since {since}. Waiting for it: the kernel moves to this server only on “Move now”."
+  "server.machineHasNotAnsweredSinceWaitingFor.5afc55": {
+    "ru": "Машина «{machine}» не отвечает с {since}. Ждём её: ядро переедет только по «Перенести сейчас».",
+    "en": "Machine {machine} has not answered since {since}. Waiting for it: the kernel moves only on “Move now”."
   },
   // «Перенести сейчас» on the control socket (server/src/control.ts · kernel:move).
   "server.onlyTheTeacherCanMoveTheKernel.9a2c10": {
@@ -4668,6 +4699,12 @@ export const serverMessages: MessageCatalog = {
   "server.theKernelDidNotStartOnMachine.8d78b5": {
     "ru": "Ядро не запустилось на машине «{machine}».",
     "en": "The kernel did not start on machine {machine}."
+  },
+  // A memory change from the class form (server/src/routes/admin-instance.ts · the seminar PATCH) that the running kernel's
+  // container did not take: its machine had no room for it (placement.ts · resize), or docker here refused it.
+  "server.theNewMemoryLimitDidNotReach.570077": {
+    "ru": "Новый предел памяти не дошёл до работающего ядра — ядро получит его при следующем запуске.",
+    "en": "The new memory limit did not reach the running kernel; the kernel gets it at its next start."
   },
   // Who says where a class computes (server/src/routes/admin-instance.ts · the seminar PATCH, D4).
   "server.onlyTheOwnerDecidesWhereClassesCompute.5ef976": {

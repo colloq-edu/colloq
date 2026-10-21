@@ -598,7 +598,7 @@ test('for a variable — a line, not a window: name, type, size', () => {
   assert.match(EDITOR, /spot\.kind === 'value'\s*\n\s*\? await askBrief\(/)
   // No reasons, no retries: no answer — no line.
   assert.match(EDITOR, /if \(!answer\?\.found \|\| !answer\.brief\) return null/)
-  assert.doesNotMatch(EDITOR, /signatureMiss\(answer\.reason\)[\s\S]{0,80}askBrief/)
+  assert.doesNotMatch(EDITOR, /signatureMiss\(answer\.reason[^)]*\)[\s\S]{0,80}askBrief/)
   // A badge of the same layer and size as the reason line, not a 640×420
   // window.
   assert.match(THEME, /'\.cm-signature-brief': \{[\s\S]*?width: 'auto'/)
@@ -672,6 +672,19 @@ test('the answer replaces the reason in the same node, and the window is re-meas
   assert.match(EDITOR, /dom\.className = built\.className/)
   assert.match(EDITOR, /dom\.replaceChildren\(\.\.\.built\.childNodes\)/)
   assert.match(EDITOR, /view\.requestMeasure\(\)/)
+})
+
+test('a kernel whose machine does not answer says so, and is asked again as a busy one is', () => {
+  /*
+   * The server answers such a hover `reason: 'busy'` with `unreachable: true`
+   * (protocol.ts · inspect:reply): a tab that knows only the reason waits as
+   * for a busy kernel, and this one says why it waits — no cell is running.
+   */
+  assert.match(EDITOR, /unreachable && reason === 'busy' \? tr\('room\.signature\.unreachable'\) : words\[reason\]/)
+  assert.match(EDITOR, /signatureMiss\(answer\.reason, answer\.unreachable === true\)/)
+  assert.match(EDITOR, /keepAsking\(view, at, key, dom, answer\.reason, answer\.unreachable === true\)/)
+  // While it waits, the line follows the machine: back, and still busy, it says the cell instead.
+  assert.match(EDITOR, /if \(next !== reason \|\| nextAway !== away\)/)
 })
 
 test('a temporary reason has a waiting sign, a final one does not', () => {

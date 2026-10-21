@@ -60,7 +60,10 @@
  * leaves them running, and the stop's last sync says why it is the last
  * (`bye`: `restart` when `colloq-host runner update` left its marker,
  * `stopping` otherwise, `leaving` on a leave). A revocation, a leave and a
- * move to another home remove them with their folders.
+ * move to another home remove them with their folders. The class folders'
+ * copies ride the same block (room-files.ts, §8): home's pushes and pulls in
+ * the reply, the ack in every held placement's `files` and the kernels'
+ * writes in `reports`, each said once the sync that carried it was answered.
  */
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
@@ -101,7 +104,7 @@ import {
   type RemoteSyncRequest,
   type RemoteWantRevision,
 } from '@shared/remote-runner'
-import { MACHINE_PACE_MBPS, type RemoteBye, type RemoteKernelsReply, type RemoteKernelsRequest } from '@shared/remote-kernels'
+import { MACHINE_PACE_MBPS, parseRemoteKernelsRequest, type RemoteBye, type RemoteKernelsReply, type RemoteKernelsRequest } from '@shared/remote-kernels'
 import { tunnelUrl } from '@shared/remote-tunnel'
 import { DockerCompetitionRunner, RUN_LABEL } from '../competitions/docker-runner.js'
 import { competitionsDir, dropAttempt, removeSubmission, attemptPath } from '../competitions/storage.js'
@@ -112,6 +115,7 @@ import { realDocker, type Docker } from './docker.js'
 import { brokenOutcome, NeighbourWindow, prepareRun, runPrepared, type Decline, type RunCard, type RunSeam } from './execute.js'
 import { CHECK_LABEL, CHECK_LABELS, INSTANCE_LABEL, Images, type SmokeCard } from './images.js'
 import { KernelHost, type KernelHostOptions } from './kernels.js'
+import { RoomFiles, homeUploader, type RoomFileTimings, type RoomUpload, type RoomUploadAnswer } from './room-files.js'
 import {
   cardReport,
   dockerInfo,
@@ -248,6 +252,8 @@ export interface AgentOptions {
   tunnel?: TunnelFactory
   /** Tests: the kernel host's seams and clock (kernels.ts). */
   classes?: Pick<KernelHostOptions, 'probe' | 'sleep' | 'timings' | 'instanceLabel'>
+  /** Tests: the class folders' timings (room-files.ts): their scans, the quiet rule, the waits. */
+  files?: Partial<RoomFileTimings>
   log?: (line: string) => void
 }
 
@@ -356,8 +362,19 @@ export class Agent extends EventEmitter {
   private readonly leaveAck = deferred<void>()
   /** The class containers (kernels.ts). */
   private readonly kernels: KernelHost
+  /** The class folders' copies and their files on the way to and from home (room-files.ts). */
+  private readonly files: RoomFiles
   /** Whether the last reply carried a `kernels` block: only then does a sync carry one (§15). */
   private kernelsHeard = false
+  /**
+   * The number of home's last block taken in (RemoteKernelsReply.replySeq),
+   * said back in the next block (`heard`): home says again the verdicts of a
+   * reply this agent never took in — one it cut short for news. Null — no
+   * reply carried one (a home without the field takes no such key).
+   */
+  private replyHeard: number | null = null
+  /** Why the class folders' last reports were left out of a sync (kernelsBlock), said once. */
+  private filesRefused: string | null = null
   /** Home's last refusal of the block (blockRefused), said once. */
   private blockRefusal: string | null = null
   /** When a reply last carried one, or this life began: home's last word on its classes, for the orphan rule. */
@@ -432,6 +449,25 @@ export class Agent extends EventEmitter {
       now: this.now,
       ...options.classes,
     })
+    this.files = new RoomFiles({
+      layout: this.layout,
+      // The agent's one blob stream (home cuts a second), at the class's pace: ahead of a lease's while a run waits on the push.
+      blob: (sha, bytes, { signal, pace, urgent }) => this.cache.blob(sha, bytes, { signal, pace, urgent }),
+      release: (sha) => this.cache.release(sha),
+      hurry: () => this.cache.hurry(),
+      upload: (upload) => this.uploadRoomFile(upload),
+      held: (sessionId) => this.kernels.heldGens(sessionId),
+      busyAt: (sessionId) => this.kernels.busyAt(sessionId),
+      onChange: (urgent) => {
+        this.changed(urgent)
+        if (urgent && this.kernelsHeard) this.poke(true)
+      },
+      onUnauthorized: () => this.poke(true),
+      log: this.log,
+      now: this.now,
+      random: options.random,
+      timings: options.files,
+    })
   }
 
   /* --------------------------------------------------------- lifecycle */
@@ -456,6 +492,8 @@ export class Agent extends EventEmitter {
       if (stored.some((entry) => entry.outcome === null) && !(await this.sweptForGood())) return { reason: 'stopped', code: 0 }
       this.recover(stored)
       this.cache.load()
+      // The class folders' copies an earlier life left, each with what both sides last agreed (§8.1): home's first block says whose they are.
+      this.files.load()
       await this.images.load()
       // The class kernels an earlier life started run on (§7.3): found again before the first sync, so that they hold what they hold.
       await this.kernels.adopt()
@@ -522,6 +560,7 @@ export class Agent extends EventEmitter {
       clearRestartMarker(this.layout)
       // The class containers run on, written down for the next life (§7.3): only the host's own timers and the tunnel go.
       this.kernels.stop()
+      this.files.stop()
       await this.closeTunnel()
       for (const held of this.held.values()) {
         if (held.stored || held.ended) continue
@@ -626,6 +665,7 @@ export class Agent extends EventEmitter {
     this.images.stop()
     this.cache.stop()
     this.kernels.stop()
+    this.files.stop()
     void this.closeTunnel()
     this.writeStatus()
   }
@@ -703,6 +743,8 @@ export class Agent extends EventEmitter {
   private async removeClasses(why: string): Promise<void> {
     const backoff = this.newBackoff()
     let said: string | null = null
+    // Nothing of the class folders is under way, or written again, while they go.
+    await this.files.clear()
     for (;;) {
       const left = await this.kernels.removeAll(why)
       if (left === 0) {
@@ -1047,8 +1089,11 @@ export class Agent extends EventEmitter {
         this.syncedAt = this.now()
         this.firstSync = false
         if (request.facts) this.factsSent = JSON.stringify(request.facts)
-        // Home has the readings this sync carried: they are not said again.
-        if (request.kernels) this.kernels.readingsSaid(request.kernels.readings)
+        // Home has the readings and the file reports this sync carried: neither is said again, and this reply's verdicts find them.
+        if (request.kernels) {
+          this.kernels.readingsSaid(request.kernels.readings)
+          this.files.reportsSaid(request.kernels.reports)
+        }
         try {
           this.handleReply(answer.value)
         } catch (error) {
@@ -1059,8 +1104,12 @@ export class Agent extends EventEmitter {
         this.writeStatus()
         continue
       }
-      // Cut short for news: ask again at once.
-      if (abort.signal.aborted) continue
+      // Cut short for news: ask again at once. Home took the block in as the sync arrived and only then held its answer: the file
+      // reports it carried count as said (room-files.ts · reportsCut), never sent again as new.
+      if (abort.signal.aborted) {
+        if (request.kernels) this.files.reportsCut(request.kernels.reports)
+        continue
+      }
       if (answer.kind === 'refused') {
         if (answer.error === 'unauthorized') {
           const exit = await this.unauthorized(request.state === 'leaving')
@@ -1160,6 +1209,7 @@ export class Agent extends EventEmitter {
     await this.closeTunnel()
     await this.removeClasses('home revoked this machine')
     this.kernelsHeard = false
+    this.replyHeard = null
     const target = this.options.join
     if (!this.leaving && target && target.home === identity.home && sha256(target.code) !== identity.codeSha256) {
       this.keepIdentity({ ...identity, revokedAt: this.now() })
@@ -1194,6 +1244,7 @@ export class Agent extends EventEmitter {
   private blockRefused(request: RemoteSyncRequest, answer: Extract<CallResult<never>, { kind: 'refused' }>): boolean {
     if (!request.kernels || (answer.error !== 'invalid' && answer.error !== 'too_large')) return false
     this.kernelsHeard = false
+    this.replyHeard = null
     this.tunnelWant('closed')
     const said = `${answer.error}${answer.detail ? ` (${answer.detail})` : ''}`
     if (said !== this.blockRefusal) this.log(`[runner] home refused the sync's kernels block: ${said}; the syncs go without it until a reply carries one`)
@@ -1263,21 +1314,51 @@ export class Agent extends EventEmitter {
   }
 
   /**
-   * The machine's `kernels` block (§15): every class container held, the
-   * post-mortem readings home asked for, the tunnel, the facts home's
-   * eligibility reads, and, in the last sync of this life, why it is the last.
-   * Files (`reports`) and the council's epochs come with their own phases.
+   * The machine's `kernels` block (§15): every class container held, each
+   * with how far its class folder's copy is from home (`files`: the last push
+   * applied whole is the ack, room-files.ts); what the kernels wrote
+   * (`reports`); the post-mortem readings home asked for, the tunnel, the
+   * facts home's eligibility reads, and, in the last sync of this life, why it
+   * is the last. The council's epochs come with their own phase.
    */
   private kernelsBlock(state: RemoteRunnerState): RemoteKernelsRequest {
     const bye: RemoteBye | undefined = state === 'leaving' ? 'leaving' : this.stopping ? (restartMarked(this.layout) ? 'restart' : 'stopping') : undefined
-    return {
-      placements: this.kernels.held(),
-      reports: [],
+    const block: RemoteKernelsRequest = {
+      placements: this.kernels.held().map((held) => {
+        const lag = this.files.lag(held.key.slice(0, held.key.lastIndexOf(':')))
+        return lag ? { ...held, files: lag } : held
+      }),
+      reports: this.files.reportsNow(),
       epochs: [],
       readings: this.kernels.readingsNow(),
       tunnel: this.tunnel?.state().up ? 'up' : 'down',
       ...(bye ? { bye } : {}),
       classes: this.kernels.facts(),
+      ...(this.replyHeard !== null ? { heard: this.replyHeard } : {}),
+    }
+    /*
+     * Read first as home's strict parser reads it: what a kernel wrote is
+     * participant data, and a report or a lag home would refuse costs the
+     * machine its whole block (blockRefused) — every class on it, its tunnel
+     * closed. What the class folders say goes without them this time (their
+     * reports are built again for the next sync), and the log says why once.
+     */
+    try {
+      parseRemoteKernelsRequest(block)
+      this.filesRefused = null
+      return block
+    } catch (error) {
+      const bare: RemoteKernelsRequest = { ...block, placements: block.placements.map(({ files: _files, ...held }) => held), reports: [] }
+      try {
+        parseRemoteKernelsRequest(bare)
+      } catch {
+        // Not the class folders': home's refusal says what it is (blockRefused), as before.
+        return block
+      }
+      const why = error instanceof Error ? error.message : String(error)
+      if (this.filesRefused !== why) this.log(`[runner] the class folders' reports would not pass home's parser (${why}); the sync goes without them`)
+      this.filesRefused = why
+      return bare
     }
   }
 
@@ -1351,10 +1432,15 @@ export class Agent extends EventEmitter {
       this.kernelsHeardAt = this.now()
       this.paceMBps = reply.kernels.rates.machinePaceMBps
       this.kernels.reconcile(reply.kernels)
+      // The class folders after the containers: a copy home no longer names waits for its containers to go (room-files.ts).
+      this.files.reconcile(reply.kernels)
+      // Taken in, its verdicts among it: the next block says so.
+      this.replyHeard = reply.kernels.replySeq ?? null
       this.tunnelWant(reply.kernels.tunnel)
     } else {
       // A reply without the block says nothing of classes (a home without them): the next sync carries none, the containers stay.
       this.kernelsHeard = false
+      this.replyHeard = null
       this.tunnelWant('closed')
     }
     this.images.want(wantedRevisions(reply.want.revisions, this.kernels.revisions()))
@@ -2066,6 +2152,13 @@ export class Agent extends EventEmitter {
       this.describedWaiters.set(bundleId, waiters)
       signal.addEventListener('abort', onAbort, { once: true })
     })
+  }
+
+  /** A class's file home (PUT rooms/:sessionId/files), as this machine, with its credential: none before a join or after the identity is gone. */
+  private uploadRoomFile(upload: RoomUpload): Promise<RoomUploadAnswer> {
+    const identity = this.identity
+    if (!joined(identity) || retired(identity)) return Promise.resolve({ kind: 'transient', reason: 'this machine has no identity to send it with', retryAfterMs: null })
+    return homeUploader({ home: identity.home, credential: () => remoteCredential(identity.runnerId, identity.secret), fetch: this.options.fetch })(upload)
   }
 
   /* --------------------------------------------------------- the tunnel */

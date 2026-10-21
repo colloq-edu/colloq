@@ -105,6 +105,7 @@ import { explain as explainDeath, forgetKills, sampleKills } from './postmortem.
 import { getSessionDoc, holdRoom, onlineCount, peekSessionDoc } from '../collab/index.js'
 import { kernelRetirementInProgress, pauseKernelStarts } from './retirement.js'
 import { takePlacementHooks } from './remote/placement-store.js'
+import { FilesStalled, askSlotScan, filesPlacementChanged, slotFilesBarrier, slotOnMachine } from './remote/files.js'
 import { seldom } from '../log.js'
 import { countKernelStart } from '../ops/counters.js'
 import { projectBooks } from '../collab/books.js'
@@ -1933,6 +1934,27 @@ function tellStaff(outage: Outage): void {
 }
 
 /**
+ * The class's placement setting changed (routes/admin-instance.ts · the
+ * seminar PATCH, §6.2): staff read every slot of it on a machine again, the
+ * class's «Если машина пропала» riding the frame, and — while that machine
+ * does not answer — the waiting sentence as the class has it now. «Ждать
+ * машину» pressed in one tab reaches every other staff tab, and a time the
+ * class no longer keeps to is promised no more.
+ */
+export function kernelMachinesChanged(sessionId: string): void {
+  for (const outage of [...outages.values()]) {
+    if (outage.sessionId !== sessionId) continue
+    // The record's view as the placement has it now: its failover is the setting's.
+    for (const role of outage.roles.keys()) {
+      const view = viewOf(sessionId, role)
+      if (view.where === 'machine' && view.runnerId === outage.view.runnerId) outage.view = view
+    }
+    if (outage.told && promiseOf(outage.view, outage.updating) !== outage.promised) tellStaff(outage)
+  }
+  for (const role of ['room', 'own', 'council'] as const) if (kernelMachineOf(sessionId, role) !== null) tellMachineWatchers(sessionId, role, null)
+}
+
+/**
  * What staff's sentence promises of the move, as a key: another promise is
  * told again, the clock moving on is not. A time is promised only once the
  * placement knows what moves the slot (placement.ts · outageRule): from
@@ -1991,9 +2013,9 @@ function leaveOutage(sessionId: string, role: KernelRole, runnerId: string | nul
 function waitingWords(view: MachineView, updating: boolean, elapsed: string): string {
   if (updating) return tr('server.theAgentOnMachineIsUpdatingThe.88b188', { machine: view.name })
   const since = clockTime(view.quietSince ?? view.since)
-  if (view.failover === 'wait') return tr('server.machineHasNotAnsweredSinceWaitingFor.378191', { machine: view.name, since })
+  if (view.failover === 'wait') return tr('server.machineHasNotAnsweredSinceWaitingFor.5afc55', { machine: view.name, since })
   if (view.failoverAt !== null) {
-    return tr('server.machineHasNotAnsweredSinceWaitingUntil.3d926e', { machine: view.name, since, until: clockTime(view.failoverAt) })
+    return tr('server.machineHasNotAnsweredSinceWaitingUntil.1d012e', { machine: view.name, since, until: clockTime(view.failoverAt) })
   }
   return tr('server.noConnectionToMachineTheKernelAnd.df78c8', { machine: view.name, elapsed })
 }
@@ -2024,6 +2046,17 @@ function onPlacementEvent(event: PlacementEvent): void {
     placementNews(event)
   } catch (err) {
     console.error(`[kernel] placement news (${event.kind}) failed for ${event.sessionId}:`, errText(err))
+  }
+  /*
+   * And the class folder's copies (kernel/remote/files.ts): one whose slots
+   * left its machine goes now, and a run at its barrier with it — after the
+   * news above, so that run meets the failover's words, not the files'
+   * refusal half a minute later; one placed there anew begins anew.
+   */
+  try {
+    filesPlacementChanged(event.sessionId)
+  } catch (err) {
+    console.error(`[kernel] the files of ${event.sessionId} did not follow its placement (${event.kind}):`, errText(err))
   }
 }
 
@@ -2227,16 +2260,18 @@ const QUEUE_DROPPED = 'server.theQueueWasClearedItsCellsCounted.c77303'
  * What the room and staff read about a lost machine (remote-classes.md
  * §13.2), by its cause. The room's sentence never names the machine, and it
  * says whose variables are gone: the personal notebooks' slot alone (§10,
- * D31) costs the class notebook nothing. Nor does a silence's or a
- * perimeter's say where the kernel comes back: nothing runs anywhere yet,
- * and the next start may place it on another machine as much as here — it
- * says which as it does (`placementNews` · 'fallback', 'moved').
+ * D31) costs the class notebook nothing. Nor does any of them say where the
+ * kernel comes back — a revoke's and a move's no more than a silence's:
+ * nothing runs anywhere yet, and the next start may place it on another
+ * machine as much as here (the move only keeps it off the machine it left
+ * for a while, placement.ts · AVOID_MS) — it says which as it does
+ * (`placementNews` · 'fallback', 'moved').
  */
 function lossWords(loss: Loss, role: KernelRole): { room: string; staff: string } {
   const name = loss.view?.name ?? null
   const named = (key: string, unnamed: string): string => (name === null ? tr(unnamed) : tr(key, { machine: name }))
   const own = role === 'own'
-  const moved = tr('server.theKernelWasStartedOnThisServer.497a79')
+  const moved = tr('server.theKernelWillStartAgainTheVariables.a76610')
   const roomMoved = own ? tr('server.thePersonalNotebooksKernelsWillStartAgain.7cdaa6') : moved
   switch (loss.cause) {
     case 'revoked':
@@ -2309,7 +2344,7 @@ function startLostBy(runtime: Runtime, err: unknown): StartLost | null {
   }
   if (runtime.startLost !== null) return new StartLost(runtime.startLost)
   // A loss that found nothing to end (the scope closed meanwhile): its own words name the machine, and stay out.
-  if (err instanceof placements.PlacementLost) return new StartLost(tr('server.theKernelWasStartedOnThisServer.497a79'))
+  if (err instanceof placements.PlacementLost) return new StartLost(tr('server.theKernelWillStartAgainTheVariables.a76610'))
   return null
 }
 
@@ -3057,7 +3092,8 @@ export async function interruptSession(
    * again once the link is back (§5.8, `signalItem`). With nothing running
    * there is nothing to send, and a press that clears the queue still does.
    */
-  if (runtime.currentCell !== null && machineAway(runtime)) {
+  // (A cell still waiting at the files barrier has reached no machine yet: it stops here, whatever the road, §8.2.)
+  if (runtime.currentCell !== null && !barrierWaits.has(runtime) && machineAway(runtime)) {
     const words = tr('server.noConnectionToTheMachineTheCell.b76132')
     throw new MachineUnreachable(words, words)
   }
@@ -3116,6 +3152,17 @@ async function interruptScope(runtime: Runtime, cellId?: string): Promise<Interr
     const batch = cellId === undefined ? runtime.currentBatch : batchOf(runtime, cellId)
     if (batch === null || batch === runtime.currentBatch) stopBatchOf(runtime, running)
   } else if (cellId === undefined) dropQueue(runtime)
+  /*
+   * A cell waiting at the files barrier (§8.2) has not reached the kernel:
+   * SIGINT would find it idle, and the cell would run once its files were
+   * there. Its wait ends instead, and it ends without running (runOne).
+   */
+  const barrier = running ? barrierWaits.get(runtime) : undefined
+  if (barrier) {
+    if (runtime.activityItem) runtime.activityItem.activityCancelled = true
+    barrier.abort()
+    return 'sent'
+  }
   const kernel = runtime.kernel
   if (!kernel || kernel.phase === 'dead') return 'none'
   if (runtime.activityItem) runtime.activityItem.activityCancelled = true
@@ -4720,6 +4767,45 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
    * to explain it with.
    */
   flushToDisk(runtime.sessionId)
+  /*
+   * And to the machine, when this kernel computes on one (remote-classes.md
+   * §8.2): the class folder there is a copy, and what was saved here a
+   * second ago is a push away. With nothing written since the last push the
+   * barrier is a compare of two numbers; otherwise the cell says what is on
+   * its way («Файлы едут на машину: 12 из 150 МБ…»), and a push that stops
+   * moving refuses the cell in words before the limit's clock starts.
+   */
+  let moving = false
+  const barred = await passFilesBarrier(runtime, (words) => {
+    moving = true
+    writer.supersede()
+    writer.stream('stdout', words)
+  })
+  if (moving) writer.clear()
+  if (barred !== null) {
+    runtime.currentCell = null
+    runtime.currentBatch = null
+    runtime.currentRunById = null
+    runtime.lastFinished = { cellId: item.cellId, batch: item.batch }
+    runtime.lastWorkAt = Date.now()
+    if (barred === STOPPED) {
+      // Stopped before it reached the kernel: back at rest, as a queued cell dropped by the same press is (stopBatchOf).
+      dropWriter(runtime)
+      doc.transact(() => {
+        cell.set('state', 'idle' as CellState)
+        cell.set('runBy', null)
+        cell.set('runById', null)
+        cell.set('startedAt', null)
+      }, ORIGIN)
+      finishExecution(runtime, item, 'cancelled', Math.max(0, Date.now() - startedAt))
+      return
+    }
+    writer.error('', barred, [])
+    dropWriter(runtime)
+    setCellState(runtime.sessionId, item.cellId, 'error')
+    finishExecution(runtime, item, 'error', Math.max(0, Date.now() - startedAt))
+    return
+  }
 
   const unwatch = stopIfDeleted(runtime, doc, item.cellId)
   /*
@@ -4895,6 +4981,35 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   syncQueue(runtime)
   // The cell may have written a CSV; the Files panel should not need a refresh.
   notifyWorkspaceChanged(runtime.sessionId)
+  // On a machine, the CSV is there: its scan reports it now, not at its next round (§8.3).
+  askSlotScan(runtime.sessionId, runtime.role)
+}
+
+/** The runs of each scope waiting at the files barrier now: a stop pressed meanwhile ends the wait (interruptScope). */
+const barrierWaits = new WeakMap<Runtime, AbortController>()
+
+/** What passFilesBarrier says of a run stopped while it waited. */
+const STOPPED = Symbol('stopped at the barrier')
+
+/**
+ * THE FILES BARRIER of a scope on a machine (remote-classes.md §8.2): null
+ * once this server's files are on the machine (at once for a scope computing
+ * here), STOPPED for a run stopped while it waited, otherwise the words the
+ * run is refused with. `show` hears what is on its way while it waits.
+ */
+async function passFilesBarrier(runtime: Runtime, show: (words: string) => void): Promise<string | typeof STOPPED | null> {
+  if (!slotOnMachine(runtime.sessionId, runtime.role)) return null
+  const stop = new AbortController()
+  barrierWaits.set(runtime, stop)
+  try {
+    await slotFilesBarrier(runtime.sessionId, runtime.role, { onProgress: show, signal: stop.signal })
+    return stop.signal.aborted ? STOPPED : null
+  } catch (err) {
+    if (stop.signal.aborted) return STOPPED
+    return err instanceof FilesStalled ? err.words : errText(err)
+  } finally {
+    if (barrierWaits.get(runtime) === stop) barrierWaits.delete(runtime)
+  }
 }
 
 /* ----------------------------------------------------------- council */
@@ -5876,6 +5991,37 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
   }
 
   flushToDisk(runtime.sessionId)
+  // The barrier, as before a cell (runOne, §8.2): the attempt reads the class folder of the machine it computes on.
+  let moving = false
+  const barred = await passFilesBarrier(runtime, (words) => {
+    moving = true
+    active.buffer.supersede()
+    active.buffer.stream('stdout', words)
+    touchJob(runtime, active)
+  })
+  if (moving) active.buffer.clear()
+  if (barred === STOPPED) {
+    // Stopped before it reached the kernel: no run at all, as an attempt the same press dropped from the queue (releaseCouncil).
+    if (active.timer) {
+      clearTimeout(active.timer)
+      active.timer = null
+    }
+    if (runtime.started?.cellId === item.cellId) runtime.started = null
+    runtime.job = null
+    runtime.currentCell = null
+    runtime.currentBatch = null
+    runtime.currentRunById = null
+    runtime.lastFinished = { cellId: item.cellId, batch: item.batch }
+    runtime.lastWorkAt = Date.now()
+    releaseCouncil(runtime, [item])
+    syncQueue(runtime)
+    return
+  }
+  if (barred !== null) {
+    active.buffer.error('', barred, [])
+    finishCouncil(runtime, active, 'error')
+    return
+  }
   const unwatch = stopIfDeleted(runtime, doc, item.cellId, job.cellId)
   /*
    * The alarm is set BEFORE the first line goes to the kernel and after the
@@ -6018,6 +6164,8 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
       finishCouncil(runtime, active, state)
       // The attempt may have written a file: the files panel cares about that too.
       notifyWorkspaceChanged(runtime.sessionId)
+      // And a machine's scan reports it now (§8.3).
+      askSlotScan(runtime.sessionId, runtime.role)
     }
   }
 }

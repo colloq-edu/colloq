@@ -53,6 +53,9 @@ test('the details read as sentences where they are one, and as settings where th
     )
     assert.equal(auditDetail(event({ action: 'settings.instance_changed', detail: { language: 'en', previousLanguage: 'ru' } })), 'Russian → English')
     assert.equal(auditDetail(event({ action: 'room.deleted' })), '')
+    // A machine opened to classes, or its classes taken off it: one label, and the line says which way.
+    assert.equal(auditDetail(event({ action: 'runner.classes', detail: { classes: true } })), "takes classes: the machine sees their code, data, files and students' personal notebooks")
+    assert.equal(auditDetail(event({ action: 'runner.classes', detail: { classes: false } })), 'no longer takes classes: their kernels were moved off it')
   } finally {
     setLocaleResolver(() => 'ru')
   }

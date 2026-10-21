@@ -68,7 +68,7 @@ import { noteRevisionImage, putRevision, revisions, selectRevision } from '../se
 import { useDockerForRevisions } from '../server/src/dependencies/revisions.js'
 import type { EnvironmentRevision } from '../shared/dependencies.js'
 import { bootRemoteRunners, probeOwnPath, remoteTick, startRemoteRunners, stopRemoteRunners } from '../server/src/competitions/remote/liveness.js'
-import { loadClassPort, resetHeard } from '../server/src/competitions/remote/heard.js'
+import { loadClassPort, resetHeard, useRemoteClock } from '../server/src/competitions/remote/heard.js'
 import { forgetWantScope, resetBlobBucket } from '../server/src/competitions/remote/blobs.js'
 import { listRunners, mintRemoteCode } from '../server/src/competitions/remote/store.js'
 import { forgetStock } from '../server/src/competitions/remote/want.js'
@@ -171,7 +171,15 @@ export class HomeClock implements TunnelClock {
     this.timers.delete(handle as number)
   }
 
-  /** Move the clock on by `ms`: what falls due by then runs now, the earliest first, each at its own time. */
+  /**
+   * Move the clock on by `ms`: what falls due by then runs now, the earliest
+   * first, each at its own time. While a machine's tunnel is to stay healthy,
+   * a scenario moves it in steps of 5 s or less with turns of the event loop
+   * between, so that the pings and pongs a step sets off come and go within
+   * it: one jump of TUNNEL_QUIET_MS (12 s) or more makes a healthy tunnel
+   * quiet until its next frame, and the room hears «Нет связи с машиной»,
+   * then that the link came back.
+   */
   advance(ms: number): void {
     const end = this.now() + Math.max(0, ms)
     this.frozen = this.now()
@@ -315,6 +323,9 @@ export class Home {
     // The kernel hooks get the placement module, on the home's clock, as the server's boot hands it to them: anew in every
     // life, since what they subscribe to is the placements of the moment (placement.ts · onPlacementChange).
     useClassPlacements(placementModule, this.clock)
+    // And the machines are heard on that clock (heard.ts · remoteNow): a machine that keeps syncing while a test moves the
+    // clock on is heard at the moved time, never silent for a minute it was not. Nothing changes until the clock is moved.
+    useRemoteClock(this.clock)
     const server = http.createServer((req, res) => {
       const entry: LoggedRequest = {
         at: Date.now(),
@@ -442,6 +453,8 @@ export class Home {
 
   async close(): Promise<void> {
     await this.crash()
+    // The machines are heard on the process's clock again: the next file's home brings its own.
+    useRemoteClock(null)
     if (this.jupyter) {
       useDefaultEndpointForTest(null)
       await this.jupyter.close()

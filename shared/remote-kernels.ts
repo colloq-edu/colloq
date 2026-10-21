@@ -182,6 +182,14 @@ export const CLASS_SYNC_FILES_MAX = 5000
 export const REMOTE_CLASS_UPLOADS = 2
 /** «Файл с машины — до»: the default of the live setting (machineFileMb) over which a kernel's file stays «на машине» (D17). */
 export const CLASS_MACHINE_FILE_MB = 200
+/**
+ * The room limit (sessionLimitBytes) as a class folder has it when home has
+ * not said another (RemoteKernelsReply.caps): what a class's files may come
+ * to together on their way home, past which the rest stay «на машине».
+ */
+export const CLASS_ROOM_MB = 1024
+/** The most either cap of RemoteKernelsReply.caps may say, in MB: past the settings' own bounds (65536), so that no setting home keeps is a reply refused. */
+export const REMOTE_FILE_CAP_MB_MAX = 1024 * 1024
 
 /* -------------------------------------------------------------- liveness */
 
@@ -227,6 +235,12 @@ export const CLASS_BULK_IDLE_MBPS = 8
 export const CLASS_COMPETITION_MBPS = 2
 export const MACHINE_PACE_MBPS = 6
 export const MACHINE_PACE_BURST_BYTES = 2 * 1024 * 1024
+/**
+ * Class bulk is paced smoothly, both ways, by a bucket this deep at most
+ * (K0): a figure behind uploads paced at 4 MiB/s waited some 65 ms more, one
+ * behind the same uploads sent in bursts of a second two and a half seconds.
+ */
+export const CLASS_PACE_BURST_BYTES = 256 * 1024
 
 /* ---------------------------------------------------------------- council */
 
@@ -261,8 +275,8 @@ export const COUNCIL_EPOCH_MANIFEST_BYTES = 4 * 1024 * 1024
 /** Placements one machine holds, and intents in one reply: twenty-odd classes of three slots each, more than one machine serves. */
 export const REMOTE_PLACEMENTS_MAX = 64
 /**
- * Paths of one sync's file reports together (changed, removed, skipped and
- * late), of one reply's verdicts and of its pulls: per sync, not per report
+ * Paths of one sync's file reports together (changed, removed, skipped,
+ * released and late), of one reply's verdicts and of its pulls: per sync, not per report
  * as §8.6 has it, so that one body holds the reports of every class on the
  * machine at their worst. The agent shares it among its classes; past it the
  * rest wait for the next sync, and a full report goes in pages
@@ -409,7 +423,12 @@ export interface RemotePlacementUsage {
 
 /** How far a class folder copy is behind home and home behind it: «файлы: синхронно», «↑ 3 файла, 12 МБ», «2 файла только на машине» (§8.7). */
 export interface RemoteFilesLag {
-  /** The last push the copy has applied. */
+  /**
+   * The last push the copy has applied: the ack. 0 — none home may count
+   * on: a copy begun anew, or one home named only at gens it never served
+   * and that has applied no push of home's since (its files are still
+   * there; home pushes it whole, kernel/remote/files.ts · restart).
+   */
   pushSeq: number
   pending: number
   pendingBytes: number
@@ -511,7 +530,20 @@ export interface RemoteFilesReport {
   page?: { index: number; last: boolean }
   changed: { path: string; sha256: string; bytes: number; base: string | null; inline?: string }[]
   removed: { path: string; base: string }[]
+  /**
+   * Files that stay on the machine (§8.5), each said when it becomes one and
+   * when its size or its reason changes, and all of them in a full report. A
+   * package tree is one entry for each folder it owns whole (`torch`,
+   * `torch-2.4.0.dist-info`), its size the sum its RECORD gives.
+   */
   skipped: { path: string; bytes: number; why: RemoteSkipReason }[]
+  /**
+   * Paths said `skipped` before that no longer stay on the machine: gone from
+   * it, or on their way home now (then in `changed` as well). A path no side
+   * ever agreed on has no `removed` to say it went, and without this a
+   * «на машине» row would outlive its file.
+   */
+  released?: string[]
   /** Changed after the fence, at most CLASS_LATE_MAX (§8.8): home names them in the room and refuses them. */
   late?: string[]
 }
@@ -594,6 +626,16 @@ export interface RemoteKernelsRequest {
   tunnel: 'up' | 'down'
   bye?: RemoteBye
   classes: RemoteClassFacts
+  /**
+   * The `replySeq` of the last block of home's the agent took in, said once
+   * a reply carried one (a home without it takes no such key). Home's
+   * verdicts are said once each, so a reply the agent never took in — the
+   * sync it cut short for news, a reply lost on its way — would leave its
+   * changes waiting a minute to be said again: home says the verdicts of
+   * every other reply it gave the machine before this sync came again, in
+   * this sync's answer (kernel/remote/files.ts · heardReply).
+   */
+  heard?: number
 }
 
 /** Why home refused a reported change (§8.4): another base, a notebook file, a cap, or a path it does not take. */
@@ -606,8 +648,13 @@ export interface RemoteKernelsReply {
   pushes: RemoteFilesPush[]
   /** Per report: the paths that moved into the baseline, and those home's next push overwrites. `copy` is the conflict copy home kept. */
   verdicts: { sessionId: string; seq: number; accepted: string[]; refused: { path: string; why: RemoteVerdictReason; copy?: string }[] }[]
-  /** Files home wants sent (PUT rooms/…/files), by the hash the report named. */
-  pulls: { sessionId: string; gen: number; paths: { path: string; sha256: string }[] }[]
+  /**
+   * Files home wants sent (PUT rooms/…/files), by the hash the report named:
+   * the agent sends that version or none. Without a hash, «Привезти» of a
+   * file that stays on the machine (§8.5): the file as it is now, its PUT
+   * saying what it is (X-Colloq-Sha256).
+   */
+  pulls: { sessionId: string; gen: number; paths: { path: string; sha256?: string }[] }[]
   /**
    * Scan these class folders now. `full` asks for a full report: a fresh
    * walk, its page 0 in the very next sync, which drops a walk still being
@@ -631,8 +678,18 @@ export interface RemoteKernelsReply {
   /** Placements whose container home wants read (§7.4), by key. */
   postmortem: string[]
   rates: { classBulkMBps: number; machinePaceMBps: number }
+  /**
+   * The caps a kernel's files keep to on their way home (D17): «Файл с
+   * машины — до» (machineFileMb) for one file, the room limit for a class's
+   * files together. A file past either stays «на машине» (`skipped`), not
+   * hashed and not sent; without them the machine keeps to CLASS_MACHINE_FILE_MB
+   * and CLASS_ROOM_MB.
+   */
+  caps?: { machineFileMb: number; roomMb: number }
   /** `open`: dial the tunnel. `reconnect`: it is down on home's side, dial again. `closed`: hold none. */
   tunnel: 'open' | 'reconnect' | 'closed'
+  /** This reply's number, growing with every reply home sends the machine: what the agent's next block says it took in (`heard`). */
+  replySeq?: number
 }
 
 /* -------------------------------------------- the machine's block, at home */
@@ -650,8 +707,9 @@ const SKIPS: ReadonlySet<string> = new Set<RemoteSkipReason>(['size', 'room', 'c
  * machine's request. It returns the block itself, checked.
  */
 export function parseRemoteKernelsRequest(value: unknown): RemoteKernelsRequest {
-  const v = fields(value, 'kernels block', ['placements', 'reports', 'epochs', 'readings', 'tunnel', 'bye', 'classes'])
+  const v = fields(value, 'kernels block', ['placements', 'reports', 'epochs', 'readings', 'tunnel', 'bye', 'classes', 'heard'])
   if (!word(v.tunnel, TUNNEL_SIDES) || (v.bye !== undefined && !word(v.bye, BYES))) refuse('Invalid kernels block')
+  if (v.heard !== undefined && !integer(v.heard, 0, Number.MAX_SAFE_INTEGER)) refuse('Invalid kernels block')
   heldOf(v.placements)
   reportsOf(v.reports)
   epochStatesOf(v.epochs)
@@ -711,7 +769,7 @@ function reportsOf(value: unknown): void {
   let paths = 0
   let inline = 0
   for (const item of items(value, 'files reports', REMOTE_PLACEMENTS_MAX)) {
-    const v = fields(item, 'files report', ['sessionId', 'gen', 'seq', 'full', 'page', 'changed', 'removed', 'skipped', 'late'])
+    const v = fields(item, 'files report', ['sessionId', 'gen', 'seq', 'full', 'page', 'changed', 'removed', 'skipped', 'released', 'late'])
     if (!matching(v.sessionId, REMOTE_SESSION_ID) || sessions.has(v.sessionId) || !gen(v.gen) || !integer(v.seq, 1, Number.MAX_SAFE_INTEGER)
       || (v.full !== undefined && !flag(v.full))) refuse('Invalid files report')
     sessions.add(v.sessionId)
@@ -750,6 +808,13 @@ function reportsOf(value: unknown): void {
       once(s.path, 'skipped file')
       if (!integer(s.bytes, 0, Number.MAX_SAFE_INTEGER) || !word(s.why, SKIPS)) refuse('Invalid skipped file')
     }
+    // A path no longer left on the machine is not one it leaves there in the same breath; it may travel now (changed).
+    const released = v.released === undefined ? [] : items(v.released, 'released files', REMOTE_REPORT_PATHS_MAX)
+    const freed = new Set<string>()
+    for (const path of released) {
+      if (!filePath(path) || freed.has(path) || skipped.some((entry) => (entry as { path?: unknown }).path === path)) refuse('Invalid released file')
+      freed.add(path)
+    }
     let late = 0
     if (v.late !== undefined) {
       const named = new Set<string>()
@@ -759,7 +824,7 @@ function reportsOf(value: unknown): void {
       }
       late = named.size
     }
-    paths += changed.length + removed.length + skipped.length + late
+    paths += changed.length + removed.length + skipped.length + freed.size + late
   }
   if (paths > REMOTE_REPORT_PATHS_MAX) refuse('Files reports over their budget')
   if (inline > CLASS_INLINE_REPORT_BYTES) refuse('Inline files over their budget')
@@ -814,10 +879,17 @@ const VERDICTS: ReadonlySet<string> = new Set<RemoteVerdictReason>(['base', 'boo
  * holding the contract's keys and nothing else.
  */
 export function parseRemoteKernelsReply(value: unknown): RemoteKernelsReply {
-  const v = known(value, 'kernels block', ['placements', 'pushes', 'verdicts', 'pulls', 'scan', 'epochs', 'collect', 'postmortem', 'rates', 'tunnel'])
+  const v = known(value, 'kernels block', ['placements', 'pushes', 'verdicts', 'pulls', 'scan', 'epochs', 'collect', 'postmortem', 'rates', 'caps', 'tunnel', 'replySeq'])
   if (!word(v.tunnel, TUNNEL_ORDERS)) refuse('Invalid kernels block')
+  if (v.replySeq !== undefined && !integer(v.replySeq, 1, Number.MAX_SAFE_INTEGER)) refuse('Invalid kernels block')
   const rates = known(v.rates, 'rates', ['classBulkMBps', 'machinePaceMBps'])
   if (!integer(rates.classBulkMBps, REMOTE_BLOB_MBPS.min, REMOTE_BLOB_MBPS.max) || !integer(rates.machinePaceMBps, REMOTE_BLOB_MBPS.min, REMOTE_BLOB_MBPS.max)) refuse('Invalid rates')
+  let caps: RemoteKernelsReply['caps']
+  if (v.caps !== undefined) {
+    const c = known(v.caps, 'file caps', ['machineFileMb', 'roomMb'])
+    if (!integer(c.machineFileMb, 1, REMOTE_FILE_CAP_MB_MAX) || !integer(c.roomMb, 1, REMOTE_FILE_CAP_MB_MAX)) refuse('Invalid file caps')
+    caps = { machineFileMb: c.machineFileMb as number, roomMb: c.roomMb as number }
+  }
   return {
     placements: intentsOf(v.placements),
     pushes: pushesOf(v.pushes),
@@ -828,7 +900,9 @@ export function parseRemoteKernelsReply(value: unknown): RemoteKernelsReply {
     collect: collectOf(v.collect),
     postmortem: [...distinct(v.postmortem, 'post-mortem questions', REMOTE_PLACEMENT_KEY, REMOTE_READINGS_MAX)],
     rates: { classBulkMBps: rates.classBulkMBps as number, machinePaceMBps: rates.machinePaceMBps as number },
+    ...(caps ? { caps } : {}),
     tunnel: v.tunnel as RemoteKernelsReply['tunnel'],
+    ...(v.replySeq !== undefined ? { replySeq: v.replySeq as number } : {}),
   }
 }
 
@@ -943,9 +1017,9 @@ function pullsOf(value: unknown): RemoteKernelsReply['pulls'] {
     const wanted: RemoteKernelsReply['pulls'][number]['paths'] = []
     for (const entry of items(v.paths, 'pulled paths', REMOTE_REPORT_PATHS_MAX)) {
       const p = known(entry, 'pulled path', ['path', 'sha256'])
-      if (!filePath(p.path) || named.has(p.path) || !matching(p.sha256, REMOTE_SHA256)) refuse('Invalid pulled path')
+      if (!filePath(p.path) || named.has(p.path) || (p.sha256 !== undefined && !matching(p.sha256, REMOTE_SHA256))) refuse('Invalid pulled path')
       named.add(p.path)
-      wanted.push({ path: p.path, sha256: p.sha256 })
+      wanted.push({ path: p.path, ...(p.sha256 !== undefined ? { sha256: p.sha256 as string } : {}) })
     }
     paths += wanted.length
     pulls.push({ sessionId: v.sessionId, gen: v.gen as number, paths: wanted })

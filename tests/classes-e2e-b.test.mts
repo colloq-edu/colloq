@@ -546,7 +546,8 @@ test('B6 · (K3b) a 60 s cut with resume: zero output lost, no inner reconnect',
 
   // The agent hears the end as the leg heals, dials again, and both ends take the streams up where they were.
   await until('the tunnel back, its streams resumed', () => home.tunnelLines.slice(homeFrom).some((line) => new RegExp(`machine ${machine.runnerId} up from .*, \\d+ streams resumed`).test(line)), 30_000, () => `${machine.log()}\n${home.tunnelLines.slice(homeFrom).join('\n')}`)
-  assert.ok(machine.lines.slice(agentFrom).some((line) => /class tunnel: tunnel-up .*"resumed":\d+/.test(line)), machine.lines.slice(agentFrom).join('\n'))
+  // The agent says so in its own log, which reaches this process on its own pipe, a moment after or before home's line.
+  await until('the agent\'s word of the resume', () => machine.lines.slice(agentFrom).some((line) => /class tunnel: tunnel-up .*"resumed":\d+/.test(line)), 15_000, () => machine.lines.slice(agentFrom).join('\n'))
   assert.deepEqual(await student.notebook.settled(cell), { state: 'ok', text: `${streamed(100)}1\n`, errors: [] }, 'zero output lost')
   assert.equal(await channels(door, kernel.id), opened, 'no inner reconnect')
   assert.deepEqual(await counts(door, kernel.id), [1])

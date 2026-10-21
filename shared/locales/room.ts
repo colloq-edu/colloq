@@ -172,6 +172,7 @@ export const roomMessages: MessageCatalog = {
   "room.signature.docs": {"ru": "Документация:", "en": "Documentation:"},
   "room.signature.thinking": {"ru": "Разбираю библиотеку — это бывает долго только в первый раз", "en": "Reading the library — slow only the first time"},
   "room.signature.unknown": {"ru": "Про это имя сказать нечего: выполните ячейку, в которой оно появляется", "en": "Nothing to say about this name: run the cell where it comes from"},
+  "room.signature.unreachable": {"ru": "Нет связи с машиной ядра — справка появится, когда она ответит", "en": "No link to the kernel's machine — the help will be here once it answers"},
   "room.goto.unknown": {"ru": "Не нашлось, где определено «{name}» — ни в тетрадях комнаты, ни в файлах занятия", "en": "No definition for “{name}” — not in the room’s notebooks, not in the class files"},
   "room.goto.outsideModule": {"ru": "Модуль {module} лежит не в папке занятия, а в библиотеках — открыть его нечем", "en": "Module {module} lives in the libraries, not in the class folder — there is nothing to open"},
   "room.goto.outside": {"ru": "«{name}» приходит из {module}, а этого модуля нет в папке занятия — открыть нечего", "en": "“{name}” comes from {module}, and that module is not in the class folder — there is nothing to open"},
@@ -6474,5 +6475,145 @@ export const roomMessages: MessageCatalog = {
   // the way back from a zoomed hall. `zoomBack` is the key's tooltip, with the zoom as
   // pult.ts · `zoomTimes` writes it ("×2,5") and the key that does the same, 0.
   "room.lecture5.zoomBack": {"ru": "Зал видит {n}. Вернуть весь слайд — 0", "en": "The hall sees {n}. Back to the whole slide — 0"},
-  "room.lecture5.zoomOffline": {"ru": "Нет связи. Зал по-прежнему видит часть слайда.", "en": "Offline. The hall still sees part of the slide."}
+  "room.lecture5.zoomOffline": {"ru": "Нет связи. Зал по-прежнему видит часть слайда.", "en": "Offline. The hall still sees part of the slide."},
+  "room.machine.chip.named": {
+    "ru": "Ядро · {name} · {ms} мс",
+    "en": "Kernel · {name} · {ms} ms"
+  },
+  "room.machine.chip.namedNoRtt": {
+    "ru": "Ядро · {name}",
+    "en": "Kernel · {name}"
+  },
+  "room.machine.chip.machine": {
+    "ru": "Ядро на машине",
+    "en": "Kernel on a machine"
+  },
+  "room.machine.chip.lost": {
+    "ru": "Нет связи с машиной",
+    "en": "No link to the machine"
+  },
+  "room.machine.chip.lostShort": {
+    "ru": "Нет связи",
+    "en": "No link"
+  },
+  "room.machine.chip.lostTitle": {
+    "ru": "Нет связи с машиной · {elapsed}. Ядро и переменные на машине целы — ждём связь. Новые запуски подождут.",
+    "en": "No link to the machine · {elapsed}. The kernel and its variables on the machine are intact — waiting for the link. New runs will wait."
+  },
+  "room.machine.chip.moving": {
+    "ru": "Переносим на сервер…",
+    "en": "Moving to this server…"
+  },
+  "room.machine.chip.moved": {
+    "ru": "На сервере · переехало в {time}",
+    "en": "On this server · moved at {time}"
+  },
+  "room.machine.waiting": {
+    "ru": "ждёт машину",
+    "en": "waiting for the machine"
+  },
+  "room.machine.moveNow": {
+    "ru": "Перенести сейчас",
+    "en": "Move now"
+  },
+  "room.machine.wait": {
+    "ru": "Ждать машину",
+    "en": "Wait for the machine"
+  },
+  "room.machine.banner.lost": {
+    "ru": "Нет связи с машиной · {elapsed}. Ядро и переменные на ней целы. Перенести ядро можно сейчас (переменные пропадут) — или ждать машину.",
+    "en": "No link to the machine · {elapsed}. The kernel and its variables on it are intact. You can move the kernel now (the variables will be lost) — or wait for the machine."
+  },
+  "room.machine.banner.waiting": {
+    "ru": "Ждём машину: ядро не переедет само, пока вы не нажмёте «Перенести сейчас».",
+    "en": "Waiting for the machine: the kernel will not move by itself until you press “Move now”."
+  },
+  "room.machine.restartRefused": {
+    "ru": "Нет связи с машиной — перезапуск сейчас не дойдёт. Нажмите, когда связь вернётся.",
+    "en": "No link to the machine — a restart cannot reach it now. Press again when the link is back."
+  },
+  "room.machine.interruptRefused": {
+    "ru": "Нет связи с машиной — остановить ячейку сейчас нельзя. Предел времени сработает, когда связь вернётся.",
+    "en": "No link to the machine — the cell cannot be stopped now. The time limit will take effect once the link is back."
+  },
+  "room.machine.close": {
+    "ru": "Закрыть",
+    "en": "Close"
+  },
+  "room.files.machine.incoming": {
+    "ru": {
+      "one": "С машины едет {count} файл",
+      "few": "С машины едут {count} файла",
+      "many": "С машины едут {count} файлов",
+      "other": "С машины едут {count} файла"
+    },
+    "en": {
+      "one": "{count} file coming from the machine",
+      "other": "{count} files coming from the machine"
+    }
+  },
+  "room.files.machine.onMachine": {
+    "ru": "на машине",
+    "en": "on the machine"
+  },
+  "room.files.machine.fetch": {
+    "ru": "Привезти",
+    "en": "Fetch"
+  },
+  "room.files.machine.fetchTitle": {
+    "ru": "Привезти {name} с машины на сервер",
+    "en": "Bring {name} from the machine to this server"
+  },
+  "room.files.machine.fetching": {
+    "ru": "Везём {name} с машины…",
+    "en": "Bringing {name} from the machine…"
+  },
+  "room.files.machine.notHere": {
+    "ru": "Файл пока на машине: открыть, скачать или скопировать его можно, когда он будет здесь.",
+    "en": "The file is still on the machine: it can be opened, downloaded or copied once it is here."
+  },
+  "room.files.machine.packages": {
+    "ru": "пакеты (pip -t) — на машине, {size}",
+    "en": "packages (pip -t) — on the machine, {size}"
+  },
+  "room.files.machine.packagesTitle": {
+    "ru": {
+      "one": "{count} файл пакетов остаётся на машине: пакеты сюда не едут",
+      "few": "{count} файла пакетов остаются на машине: пакеты сюда не едут",
+      "many": "{count} файлов пакетов остаются на машине: пакеты сюда не едут",
+      "other": "{count} файла пакетов остаются на машине: пакеты сюда не едут"
+    },
+    "en": {
+      "one": "{count} package file stays on the machine: packages never come here",
+      "other": "{count} package files stay on the machine: packages never come here"
+    }
+  },
+  "room.files.machine.overCap": {
+    "ru": "{name} ({size}) больше предела и остаётся на машине. Если машина пропадёт, файл пропадёт тоже.",
+    "en": "{name} ({size}) is over the cap and stays on the machine. If the machine disappears, so does the file."
+  },
+  "room.files.machine.overRoom": {
+    "ru": "{name} ({size}) не помещается в предел занятия и остаётся на машине. Если машина пропадёт, файл пропадёт тоже.",
+    "en": "{name} ({size}) does not fit the class limit and stays on the machine. If the machine disappears, so does the file."
+  },
+  "room.files.machine.overCount": {
+    "ru": "{name} остаётся на машине: файлов там больше, чем сервер сверяет за раз. Если машина пропадёт, файл пропадёт тоже.",
+    "en": "{name} stays on the machine: it has more files than the server checks at once. If the machine disappears, so does the file."
+  },
+  "room.files.machine.conflict": {
+    "ru": "{name} изменили одновременно здесь и на машине. Оставлена версия сервера, версия с машины — «{copy}».",
+    "en": "{name} was changed here and on the machine at the same time. The server’s version was kept; the machine’s is “{copy}”."
+  },
+  "room.files.machine.pendingTitle": {
+    "ru": "Новая версия едет с машины",
+    "en": "A newer version is on its way from the machine"
+  },
+  "room.files.machine.dismiss": {
+    "ru": "Скрыть",
+    "en": "Dismiss"
+  },
+  "room.files.machine.gb": {
+    "ru": "{value} ГБ",
+    "en": "{value} GB"
+  }
 }

@@ -19,10 +19,14 @@
  * A hash in scope whose file has since been replaced (a new upload of
  * train.csv) is 410: the next sync names the new one.
  *
- * BANDWIDTH (§4.5). One token bucket for every blob together, at the owner's
- * «Скорость раздачи» (runnerBlobMBps): the relay and the tunnel carry the
- * class's rooms too, and a 150 MB dataset fetched by five machines at once
- * must not be felt in a lecture. One stream per machine and
+ * BANDWIDTH (§4.5). One token bucket for every competition blob together, at
+ * the owner's «Скорость раздачи» (runnerBlobMBps), and at «Раздача посылок во
+ * время занятий» at most while a class lives on a machine: the relay and the
+ * tunnel carry the class's rooms too, and a 150 MB dataset fetched by five
+ * machines at once must not be felt in a lecture. A class's own files for its
+ * copy on a machine (the `room` source, remote-classes.md §8.2) go through
+ * buckets of their own (Pace, split by flow, §4.9), every one refilled
+ * continuously with a small burst. One stream per machine and
  * REMOTE_BLOB_STREAMS for the instance; past them 429 with Retry-After. The
  * class archive (files.zip) is never used for this: its queue is the
  * class's.
@@ -58,13 +62,17 @@ import {
   REMOTE_SHA256,
   type RemoteWant,
 } from '@shared/remote-runner'
+import { CLASS_BULK_IDLE_MBPS, CLASS_BULK_PROMOTED_MBPS, CLASS_PACE_BURST_BYTES } from '@shared/remote-kernels'
 import { db } from '../../db.js'
-import { dependencyRoot } from '../../dependencies/files.js'
+import { classMachineSettings } from '../../admin/resource-settings.js'
+import { cachedSha256, dependencyRoot } from '../../dependencies/files.js'
 import { clientAddress } from '../../net/inbound.js'
 import { tooOften } from '../../net/too-often.js'
+import { resolveInSession, workspaceFs } from '../../workspace.js'
+import { classFiles } from '../../kernel/remote/files.js'
 import { runnerBlobMBpsSetting } from '../settings.js'
 import { competitionsFs, inputDir, NOTEBOOK_FILE, openDir, sealedDir } from '../storage.js'
-import { lastSync, runnerCards, wantedBefore } from './heard.js'
+import { classPlacementsLive, lastSync, runnerCards, wantedBefore } from './heard.js'
 import { liveLeases, remoteEvent, type RunnerRow } from './store.js'
 import { homeStock, runnerWant } from './want.js'
 
@@ -140,6 +148,22 @@ type BlobSource =
   | { kind: 'open' | 'sealed'; competitionId: string; name: string; lease?: string }
   | { kind: 'notebook'; competitionId: string; submissionId: string; lease: string }
   | { kind: 'wheel'; lease?: string }
+  /** A class's file a push of its copy names (remote-classes.md §8.2): `promoted` — a run waits on it. */
+  | { kind: 'room'; sessionId: string; path: string; bytes: number; promoted: boolean; lease?: undefined }
+
+/*
+ * THE `room` SOURCE (§15): a file of a class placed on the machine, named by
+ * hash by an unacked push of the class's copy there, and nothing else — a
+ * hash of any other file of any class is 404 for it, as one of no class is
+ * (kernel/remote/files.ts · blobFor). Its bytes moving are the progress a run
+ * at that class's barrier waits for (noteServed); a file rewritten here since
+ * its push named it is 410, and its push is planned again (blobGone).
+ */
+const roomBlobs = {
+  blobFor: (runnerId: string, hash: string) => classFiles().blobFor(runnerId, hash),
+  noteServed: (runnerId: string, hash: string, bytes: number) => classFiles().noteServed(runnerId, hash, bytes),
+  blobGone: (runnerId: string, hash: string) => classFiles().blobGone(runnerId, hash),
+}
 
 /**
  * Where `hash` may be read from for `runner`, in order, if the hash is in its
@@ -150,6 +174,9 @@ type BlobSource =
  */
 function scopedSources(runner: RunnerRow, hash: string, want: WantScope | null): BlobSource[] {
   const out: BlobSource[] = []
+  // A class's file for its copy on this machine: never beside a lease's (a hash of either names one content).
+  const room = runner.classes ? roomBlobs.blobFor(runner.id, hash) : null
+  if (room) return [{ kind: 'room', ...room }]
   const leases = liveLeases(runner.id)
   for (const lease of leases) {
     const m = lease.manifest
@@ -197,6 +224,40 @@ function openSource(source: BlobSource, hash: string): { fd: number; bytes: numb
   }
 }
 
+/**
+ * A class's file for its copy (the `room` source), opened through the
+ * anchored file system (never through a link, never outside the class
+ * folder), of the length its push named, and of its hash still: a file
+ * rewritten here since its push is not the blob asked for (410, and the push
+ * is planned again).
+ */
+async function openRoomSource(source: Extract<BlobSource, { kind: 'room' }>, hash: string): Promise<{ fd: number; bytes: number } | null> {
+  const full = resolveInSession(source.sessionId, source.path)
+  if (!full) return null
+  let held: ReturnType<typeof workspaceFs.openRead>
+  try {
+    held = workspaceFs.openRead(full)
+  } catch {
+    return null
+  }
+  try {
+    const stat = fs.fstatSync(held.fd)
+    if (!stat.isFile() || stat.size !== source.bytes) {
+      held.close()
+      return null
+    }
+    const sha = await cachedSha256(full, stat, () => fs.createReadStream('', { fd: held.fd, start: 0, autoClose: false }))
+    if (sha !== hash) {
+      held.close()
+      return null
+    }
+    return { fd: held.fd, bytes: stat.size }
+  } catch {
+    held.close()
+    return null
+  }
+}
+
 /** The descriptor if it is a regular file of `bytes` (when known); closed and `null` otherwise. */
 function sized(fd: number, bytes: number | null): { fd: number; bytes: number } | null {
   const info = fs.fstatSync(fd)
@@ -207,29 +268,73 @@ function sized(fd: number, bytes: number | null): { fd: number; bytes: number } 
   return { fd, bytes: info.size }
 }
 
-/* ------------------------------------------------------------- the bucket */
+/* ------------------------------------------------------------ the buckets */
 
-/** How far the bucket may run ahead of its rate: a burst of a quarter of a second. */
+/** How far a bucket may run ahead of its rate: a burst of a quarter of a second, and never more than PACE_BURST_BYTES. */
 const BURST_MS = 250
-/** Theoretical arrival time of the next byte, ms (the generic cell rate algorithm). */
-let tat = 0
+/**
+ * THE BURST OF A BUCKET, at most (remote-classes.md §4.9, K0): a class's
+ * kernels and every student share the one leg between the relay and this
+ * server, and K0 measured what bursts cost there — paced smoothly at 4 MiB/s
+ * a 150 MB transfer leaves the tunnel's p95 where it was, sent in
+ * one-second bursts at the same rate it adds a third and a p99 above a
+ * second. So every bucket refills continuously and lets at most this much go
+ * ahead of its rate.
+ */
+export const PACE_BURST_BYTES = CLASS_PACE_BURST_BYTES
 
-/** How long `bytes` must wait to keep every blob together at the owner's rate. */
-function reserve(bytes: number, now = Date.now()): number {
-  const perMs = (runnerBlobMBpsSetting().value * 1024 * 1024) / 1000
-  tat = Math.max(tat, now) + bytes / perMs
-  return Math.max(0, tat - now - BURST_MS)
+/**
+ * A token bucket by the generic cell rate algorithm: continuous refill at
+ * `rate()` bytes a second (read at every chunk: the owner's numbers are
+ * live), a burst of at most min(BURST_MS of it, PACE_BURST_BYTES).
+ */
+export class Pace {
+  /** Theoretical arrival time of the next byte, ms. */
+  private tat = 0
+
+  constructor(private readonly rate: () => number) {}
+
+  /** How long `bytes` must wait to keep this flow at its rate. */
+  reserve(bytes: number, now = Date.now()): number {
+    const perMs = Math.max(1, this.rate()) / 1000
+    this.tat = Math.max(this.tat, now) + bytes / perMs
+    return Math.max(0, this.tat - now - Math.min(BURST_MS, PACE_BURST_BYTES / perMs))
+  }
+
+  reset(): void {
+    this.tat = 0
+  }
+
+  /** A stream that lets its chunks through at the bucket's rate. */
+  transform(onChunk?: (bytes: number) => void): Transform {
+    return new Transform({
+      transform: (chunk: Buffer, _encoding, done: TransformCallback) => {
+        onChunk?.(chunk.length)
+        const wait = this.reserve(chunk.length)
+        if (wait <= 0) return done(null, chunk)
+        setTimeout(() => done(null, chunk), wait).unref?.()
+      },
+    })
+  }
 }
 
-function throttled(): Transform {
-  return new Transform({
-    transform(chunk: Buffer, _encoding, done: TransformCallback) {
-      const wait = reserve(chunk.length)
-      if (wait <= 0) return done(null, chunk)
-      setTimeout(() => done(null, chunk), wait).unref?.()
-    },
-  })
-}
+const MiB = 1024 * 1024
+
+/**
+ * THE BUCKET IS SPLIT BY FLOW (§4.9, D18). Competition blobs keep the
+ * owner's «Скорость раздачи», and while any class lives on a machine they go
+ * at «Раздача посылок во время занятий» at most; a class's files go to its
+ * machine at «Файлы занятий» (classBulkMBps), and a push a run waits on at
+ * CLASS_BULK_PROMOTED_MBPS; a class's files coming home are read at
+ * classBulkMBps (upload.ts · receiveClassFile).
+ */
+export const competitionPace = new Pace(() => {
+  const own = runnerBlobMBpsSetting().value
+  return (classPlacementsLive() ? Math.min(own, classMachineSettings().competitionMBps) : own) * MiB
+})
+export const roomPace = new Pace(() => classMachineSettings().classBulkMBps * MiB)
+export const promotedPace = new Pace(() => Math.max(classMachineSettings().classBulkMBps, CLASS_BULK_PROMOTED_MBPS) * MiB)
+export const classUploadPace = new Pace(() => (classPlacementsLive() ? classMachineSettings().classBulkMBps : CLASS_BULK_IDLE_MBPS) * MiB)
 
 /* ----------------------------------------------------------------- serving */
 
@@ -238,8 +343,10 @@ interface OpenStream {
   runnerId: string
   /** It serves a file of the hidden test: an untrust cuts it. */
   sealed: boolean
-  /** The lease whose blob it is (its attempt); `null` — prefetch for the want. */
+  /** The lease whose blob it is (its attempt); `null` — prefetch for the want, or a class's file. */
   lease: string | null
+  /** A run waits on it (a lease's blob, a class file of a promoted push): never cut for another's. */
+  urgent: boolean
   /** Still counted against the streams: one cut is counted out at once, not when its socket closes. */
   counted: boolean
   res: Response
@@ -343,6 +450,9 @@ export async function serveBlob(req: Request, res: Response, runner: RunnerRow, 
     throw new BlobRefusal('not_found')
   }
   const lease = sources.find((one) => one.lease !== undefined)?.lease ?? null
+  const first = sources[0]!
+  // What a run waits on now: a lease's own blob, or a class's file of a push its barrier promoted (§8.2).
+  const urgent = lease !== null || (first.kind === 'room' && first.promoted)
   /*
    * The machine's own stream it no longer reads makes room for this one: an
    * agent runs one stream at a time, and its new request means it let the
@@ -353,9 +463,9 @@ export async function serveBlob(req: Request, res: Response, runner: RunnerRow, 
    */
   const own = [...open].filter((stream) => stream.counted && stream.runnerId === runner.id)
   for (const stream of own.slice(0, Math.max(0, own.length - REMOTE_BLOB_STREAMS_PER_RUNNER + 1))) cutStream(stream)
-  if (lease === null ? total >= REMOTE_BLOB_STREAMS - LEASE_STREAMS : total >= REMOTE_BLOB_STREAMS) {
-    // A lease's blob takes the newest prefetch stream's place: the prefetcher resumes with Range.
-    const prefetch = lease === null ? undefined : [...open].reverse().find((stream) => stream.counted && stream.lease === null)
+  if (!urgent ? total >= REMOTE_BLOB_STREAMS - LEASE_STREAMS : total >= REMOTE_BLOB_STREAMS) {
+    // A blob a run waits on takes the newest prefetch stream's place: the prefetcher resumes with Range.
+    const prefetch = !urgent ? undefined : [...open].reverse().find((stream) => stream.counted && !stream.urgent)
     if (prefetch) cutStream(prefetch)
     else {
       if (lease !== null) markStarved(lease, Date.now())
@@ -366,7 +476,7 @@ export async function serveBlob(req: Request, res: Response, runner: RunnerRow, 
   let source: BlobSource | null = null
   let file: { fd: number; bytes: number } | null = null
   for (const candidate of sources) {
-    file = openSource(candidate, hash)
+    file = candidate.kind === 'room' ? await openRoomSource(candidate, hash) : openSource(candidate, hash)
     if (file) {
       source = candidate
       break
@@ -374,6 +484,7 @@ export async function serveBlob(req: Request, res: Response, runner: RunnerRow, 
   }
   if (!file || !source) {
     blobCounts.gone++
+    if (first.kind === 'room') roomBlobs.blobGone(runner.id, hash)
     throw new BlobRefusal('gone')
   }
   const range = rangeOf(req.headers.range, file.bytes)
@@ -383,7 +494,7 @@ export async function serveBlob(req: Request, res: Response, runner: RunnerRow, 
     res.json({ error: 'invalid', detail: 'Range not satisfiable' })
     return
   }
-  const stream: OpenStream = { runnerId: runner.id, sealed: source.kind === 'sealed', lease, counted: true, res }
+  const stream: OpenStream = { runnerId: runner.id, sealed: source.kind === 'sealed', lease, urgent, counted: true, res }
   open.add(stream)
   total++
   // Nothing taken off the stream for stallMs: the machine is gone (no FIN crosses the relay from a destroyed VM), and its stream is freed.
@@ -405,15 +516,20 @@ export async function serveBlob(req: Request, res: Response, runner: RunnerRow, 
       return
     }
     const body = fs.createReadStream('', { fd: file.fd, start, end, autoClose: true, highWaterMark: 64 * 1024 })
+    const room = source.kind === 'room' ? source : null
     const counted = new Transform({
       transform(chunk: Buffer, _encoding, done: TransformCallback) {
         blobCounts.bytes += chunk.length
         // A chunk taken in is the stream moving: the stall's clock starts over.
         stall.refresh()
+        // And a class's file moving is the progress its run's barrier waits for.
+        if (room) roomBlobs.noteServed(runner.id, hash, chunk.length)
         done(null, chunk)
       },
     })
-    await pipeline(body, throttled(), counted, res).catch(() => {
+    // Each flow through its own bucket (§4.9): a class's files at their rate, a promoted push faster, the rest as the owner set.
+    const pace = room ? (room.promoted ? promotedPace : roomPace) : competitionPace
+    await pipeline(body, pace.transform(), counted, res).catch(() => {
       // The machine hung up mid-stream, or the stream was cut: it resumes with Range, if it still may.
       body.destroy()
     })
@@ -452,9 +568,9 @@ export function openBlobStreams(runnerId?: string): number {
   return runnerId === undefined ? total : [...open].filter((stream) => stream.counted && stream.runnerId === runnerId).length
 }
 
-/** For tests: an empty bucket, and the stall's limit as it is in production. */
+/** For tests: empty buckets, and the stall's limit as it is in production. */
 export function resetBlobBucket(): void {
-  tat = 0
+  for (const pace of [competitionPace, roomPace, promotedPace, classUploadPace]) pace.reset()
   stallMs = BLOB_STALL_MS
 }
 

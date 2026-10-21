@@ -25,9 +25,10 @@
  * kernels once it is over, which frees the machine's cores for the next; the
  * last (A.3) moves home to another build and back.
  *
- * FILES DO NOT TRAVEL YET (§8, wave 3): where a scenario needs a file in the
- * class folder on both sides (`file:run`), it lays it in both, as the barrier
- * push (§8.2) will.
+ * FILES TRAVEL BY THE BARRIER (§8.2): a file saved here is on the machine
+ * before a Run or a `file:run` there reads it, so a scenario lays a file in
+ * this server's folder only (the class folder both ways is scenarios C,
+ * classes-e2e-c).
  */
 import './_remote-e2e-home.mts'
 import { after, afterEach, before, test } from 'node:test'
@@ -69,6 +70,7 @@ import { writeText } from '../server/src/workspace.js'
 import { kernelLimits } from '../server/src/kernel/pool.js'
 import { classHashSeed } from '../server/src/kernel/room-spec.js'
 import { shutdownKernels } from '../server/src/kernel/index.js'
+import { terminalPhase } from '../server/src/kernel/terminal.js'
 import { shutdownCollab } from '../server/src/collab/index.js'
 import { Agent, createFleet, killAgents, removeClassContainers, type FakeClassContainer, type FakeJupyterDoor, type Fleet } from './_remote-e2e-agent.mts'
 import { Home, kernelRevision, until } from './_remote-e2e-home.mts'
@@ -355,6 +357,22 @@ async function kernelAt(door: FakeJupyterDoor, sessionId: string, root: string):
   return (await door.kernels()).find((one) => one.path === jupyterSessionPath(sessionId, root) && one.alive) ?? null
 }
 
+/**
+ * What a red test reads when a machine's shell says nothing: home's shell
+ * phase, and what the machine's Jupyter heard of its terminals (the PTY's
+ * POST, the socket's upgrade, what was typed), as last looked at.
+ */
+function shellTrace(door: FakeJupyterDoor, sessionId: string): { look: () => Promise<void>; said: () => string } {
+  let said = ''
+  return {
+    look: async () => {
+      const calls = (await door.calls()).filter((call) => call.kind === 'stdin' || call.kind === 'upgrade' || (call.kind === 'http' && String(call.path).startsWith('/api/terminals')))
+      said = `home's shell: ${terminalPhase(sessionId)}; the machine's Jupyter heard ${JSON.stringify(calls.slice(-8))}`
+    },
+    said: () => said,
+  }
+}
+
 /** Every DELETE a fake Jupyter was sent. */
 async function deletes(door: FakeJupyterDoor): Promise<number> {
   return (await door.calls()).filter((call) => call.kind === 'http' && call.method === 'DELETE').length
@@ -460,14 +478,17 @@ test('A1 · warm start on join; Run → output in Yjs; completion, inspect and b
   // The terminal: the room's shell is the class container's, in the class folder over there.
   teacherTab.control.send({ t: 'term:open' })
   teacherTab.control.send({ t: 'term:run', command: 'pwd' })
-  await until('the machine\'s folder in the terminal', () => student.notebook.terminal().some((line) => line.kind === 'output' && line.text.includes(container.folder)), 20_000, () => JSON.stringify(student.notebook.terminal().slice(-6)))
+  const shell = shellTrace(door, id)
+  await until('the machine\'s folder in the terminal', async () => {
+    await shell.look()
+    return student.notebook.terminal().some((line) => line.kind === 'output' && line.text.includes(container.folder))
+  }, 20_000, () => `${JSON.stringify(student.notebook.terminal().slice(-6))}\n${shell.said()}`)
   assert.ok((await door.calls()).some((one) => one.kind === 'stdin' && String(one.data).includes('pwd')), 'typed into the machine\'s pty')
   await until('the command to end', () => student.notebook.terminal().some((line) => line.kind === 'command' && line.text === 'pwd' && !line.running), 20_000, () => JSON.stringify(student.notebook.terminal().slice(-6)))
 
-  // file:run: the file run by the machine's shell, from the class folder there.
+  // file:run: the file saved here, brought to the machine by the barrier, run by the machine's shell from the class folder there.
   const script = 'print("файл", "на машине")\n'
   assert.ok(writeText(id, 'hello.py', script))
-  fs.writeFileSync(path.join(container.folder, 'hello.py'), script)
   teacherTab.control.send({ t: 'file:run', path: 'hello.py' })
   await until('the file\'s output in the terminal', () => student.notebook.terminal().some((line) => line.kind === 'output' && line.text.includes('файл на машине')), 20_000, () => JSON.stringify(student.notebook.terminal().slice(-6)))
   assert.ok((await door.calls()).some((one) => one.kind === 'stdin' && String(one.data).includes('python -u \'hello.py\'')), 'run by the machine\'s shell')
@@ -485,21 +506,24 @@ test('A1 · warm start on join; Run → output in Yjs; completion, inspect and b
   }
 })
 
-// Not yet: the class folder travels to machines in wave 3 (K6a, §8.2), and `file:run` passes the barrier before its shell runs
-// the file. Until then the machine's shell finds no file saved only here; the scenario runs and is reported, never failed.
-test('A1 · file:run of a file saved only here: the barrier brings it to the machine before its shell runs it (§8.2)', { timeout: 60_000, todo: 'K6a (wave 3): the class folder does not travel to machines yet' }, async () => {
+test('A1 · file:run of a file saved only here: the barrier brings it to the machine before its shell runs it (§8.2)', { timeout: 60_000 }, async () => {
   const machine = await classMachine()
   const teacher = staff()
   const id = await makeClass(teacher, 'A1 · файл отсюда', { room: 'machines' })
   await takes(machine, id)
   const lead = await tab(id, 'Преподавательница', teacher)
-  await containerOf(machine, id, 'room')
+  const container = await containerOf(machine, id, 'room')
   assert.ok(writeText(id, 'solo.py', 'print("файл с сервера")\n'))
   lead.control.send({ t: 'term:open' })
   lead.control.send({ t: 'file:run', path: 'solo.py' })
+  const shell = shellTrace(machine.jupyterOf(container), id)
   try {
-    await until('the command to end', () => lead.notebook.terminal().some((line) => line.kind === 'command' && line.text === 'python -u \'solo.py\'' && !line.running), 20_000, () => JSON.stringify(lead.notebook.terminal().slice(-4)))
+    await until('the command to end', async () => {
+      await shell.look()
+      return lead.notebook.terminal().some((line) => line.kind === 'command' && line.text === 'python -u \'solo.py\'' && !line.running)
+    }, 20_000, () => `${JSON.stringify(lead.notebook.terminal().slice(-4))}\n${shell.said()}`)
     assert.ok(lead.notebook.terminal().some((line) => line.kind === 'output' && line.text.includes('файл с сервера')), JSON.stringify(lead.notebook.terminal().slice(-4)))
+    assert.equal(fs.readFileSync(path.join(container.folder, 'solo.py'), 'utf8'), 'print("файл с сервера")\n', 'the file there is the one saved here')
   } finally {
     lead.notebook.close()
     lead.control.close()

@@ -16,6 +16,13 @@
    * what it was told (admin/running-kernels.ts) and never guesses. A row of a
    * room the viewer does not teach arrives as numbers only (`hidden`), the
    * way a teacher sees another course's competition run.
+   *
+   * A class whose kernels compute on a machine (Paper 18 · Z7) holds none of
+   * this server's memory: its row says "0 MB here" with an empty bar, and a
+   * sub-row per slot there — class · personal · council — carries "on
+   * vast-3", its files' lag, and the machine's own memory and CPU. Its stop
+   * reaches the machine, and while the machine does not answer the button
+   * says it will stop once the machine is back.
    */
   import { onMount } from 'svelte'
   import { tr } from '@shared/i18n'
@@ -43,11 +50,21 @@
     memoryLane,
     shortName,
     since,
+    machineStatus,
+    onlyOnMachines,
+    slotChip,
+    slotCpu,
+    slotFiles,
+    slotMemory,
+    slotWord,
+    slotWorkers,
     statusLines,
     stopBody,
     stopOutcome,
+    stopsLater,
     totals,
     type Outcome,
+    type RunningClassRow,
     type Tone,
   } from '@/admin/running-kernels'
   import { remoteRow, remoteStopOutcome, stopRemoteRuns } from '@/admin/runners'
@@ -93,6 +110,9 @@
    * their metrics here are runs like any other, with their own stop.
    */
   const remote = $derived(data?.remote ?? [])
+  /** The class rows with their slots on machines (RunningClassMachines). */
+  const classRows = $derived((data?.classes ?? []) as RunningClassRow[])
+  const anyOnMachines = $derived(classRows.some((row) => (row.machines?.length ?? 0) > 0))
   const empty = $derived(
     data !== null &&
       data.classes.length === 0 &&
@@ -337,10 +357,12 @@
   <div class="rk-act flex justify-end">
     {#if row.canStop && row.id}
       {@const label = what === 'class' ? tr('admin.resourcesTab.running.stopButton') : tr('admin.resourcesTab.running.stopOwnButton')}
+      <!-- A slot on a machine that does not answer stops when it is back (Z7): said on the button, before anyone waits for it. -->
+      {@const later = stopsLater(row as RunningClassRow)}
       <button
         type="button"
-        class="rk-stop admin-icon-btn hover:bg-danger/10 hover:text-danger"
-        title={label}
+        class={cn('rk-stop admin-icon-btn hover:bg-danger/10 hover:text-danger', later && 'text-danger')}
+        title={later ? tr('admin.resourcesTab.running.machine.stopLater') : label}
         aria-label={`${label} · ${shortName(row.name)}`}
         onclick={() => open({ kind: 'stop', row, what, busy: null })}
       >
@@ -379,6 +401,13 @@
             <span class="admin-num font-bold">{gbText(sum.usedMb)}</span>
           {:else}
             <span>{tr('admin.resourcesTab.running.useUnknown')}</span>
+          {/if}
+          {#if sum.onMachines > 0}
+            <!-- Z7: what machines hold for classes is none of this server's memory. -->
+            <span class="text-faint" aria-hidden="true">·</span>
+            <span>{tr('admin.resourcesTab.running.onMachines', { count: sum.onMachines })}</span>
+            <span class="text-faint" aria-hidden="true">·</span>
+            <span class="admin-num font-bold">{tr('admin.resourcesTab.running.remote.zero')} {tr('admin.resourcesTab.running.remote.here')}</span>
           {/if}
         </p>
         {#if idle.length > 0}
@@ -421,9 +450,11 @@
           </div>
         {/if}
 
-        {#each data.classes as row, index (row.id ?? `hidden-${index}`)}
-          {@const status = statusLines(row, now)}
+        {#each classRows as row, index (row.id ?? `hidden-${index}`)}
+          {@const status = machineStatus(row, now) ?? statusLines(row, now)}
           {@const ownBooks = booksOf(row, 'own')}
+          {@const slots = row.machines ?? []}
+          {@const away = onlyOnMachines(row)}
           <div class="border-b border-line">
             <div class="rk-row">
               <div class="rk-lead flex min-w-0 items-start">
@@ -463,15 +494,77 @@
                 <p class={TONE[status.tone]}>{status.first}</p>
                 {#if status.second}<p class="text-muted">{status.second}</p>{/if}
               </div>
-              {@render memory(row.room, row.hidden)}
-              <div class="rk-meta">
-                {@render cores(row.room, row.gpu)}
-                {@render booksToggle(row, 'room')}
-              </div>
+              {#if away}
+                <!-- Every container of the class is on a machine: 0 MB here, an empty bar, 0 cores here. -->
+                <div class="rk-mem flex min-w-0 flex-col gap-1.5">
+                  <span class="whitespace-nowrap">
+                    <span class="admin-num font-bold">{tr('admin.resourcesTab.running.remote.zero')}</span>
+                    <span class="text-2xs text-muted">{tr('admin.resourcesTab.running.remote.here')}</span>
+                  </span>
+                  <div class="h-[3px] bg-raised" aria-hidden="true"></div>
+                </div>
+                <div class="rk-meta">
+                  <div class="rk-cores min-w-0">
+                    <span class="block whitespace-nowrap font-mono text-micro text-muted">{tr('admin.resourcesTab.running.machine.zeroCores')}</span>
+                  </div>
+                  {@render booksToggle(row, 'room')}
+                </div>
+              {:else}
+                {@render memory(row.room, row.hidden)}
+                <div class="rk-meta">
+                  {@render cores(row.room, row.gpu)}
+                  {@render booksToggle(row, 'room')}
+                </div>
+              {/if}
             </div>
             {@render bookList(row, 'room')}
 
-            {#if row.own || ownBooks.length > 0}
+            {#if slots.length > 0}
+              <!-- Its slots on machines (Z7), a sub-row each: "on vast-3", the files' lag, the machine's own numbers. -->
+              <div class="rk-sub rk-machines bg-surface">
+                {#each slots as slot (slot.role)}
+                  {@const files = slotFiles(slot)}
+                  {@const lane = slotMemory(slot)}
+                  {@const cpu = slotCpu(slot)}
+                  {@const workers = slotWorkers(slot)}
+                  {@const books = slot.role === 'council' ? 0 : booksOf(row, slot.role).length}
+                  <!-- A full row, not a quiet one: a quiet card has no status line, and the chip would fall into a track of its own. -->
+                  <div class="rk-row">
+                    <div class="rk-lead flex min-w-0 items-start">
+                      <span class="rk-square shrink-0 bg-transparent" aria-hidden="true"></span>
+                      <p class={cn('text-2xs font-semibold', row.hidden ? 'text-muted' : 'text-ink')}>{slotWord(slot.role)}</p>
+                    </div>
+                    <div class="rk-act"></div>
+                    <div class="rk-now flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-2xs">
+                      <Badge word={slotChip(slot)} tone={slot.link === 'lost' ? 'warning' : 'accent'} />
+                      {#if files}
+                        <span class={files.tone === 'warning' ? 'text-warning' : files.tone === 'accent' ? 'text-accent-text' : 'text-positive'}>{files.text}</span>
+                      {/if}
+                    </div>
+                    <div class="rk-mem flex min-w-0 flex-col gap-1.5">
+                      <span class="whitespace-nowrap">
+                        <span class="admin-num font-bold">{lane.text ?? '—'}</span>
+                      </span>
+                      {#if lane.share !== null}
+                        <div class="h-[3px] bg-raised" aria-hidden="true">
+                          <div class={cn('h-full', row.hidden ? 'bg-faint' : lane.tight ? 'bg-warning' : 'bg-primary')} style:width="{(lane.share * 100).toFixed(1)}%"></div>
+                        </div>
+                      {/if}
+                    </div>
+                    <div class="rk-meta">
+                      <div class="rk-cores min-w-0">
+                        <span class="block whitespace-nowrap font-mono text-micro text-muted">{cpu ?? '—'}</span>
+                      </div>
+                      <div class="rk-books">
+                        <span class="rk-dash font-mono text-2xs text-muted">{workers ?? (books > 0 ? books : '—')}</span>
+                      </div>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+
+            {#if (row.own || ownBooks.length > 0) && !slots.some((slot) => slot.role === 'own')}
               <!-- The students' personal notebooks run in a container of their
                    own (0.15): it holds its own memory and stops on its own. -->
               <div class="rk-sub">
@@ -678,6 +771,9 @@
       </p>
       {#if remote.length > 0}
         <p class="pt-1.5 text-2xs text-muted">{tr('admin.resourcesTab.running.remote.footnote')}</p>
+      {/if}
+      {#if anyOnMachines}
+        <p class="pt-1.5 text-2xs text-muted">{tr('admin.resourcesTab.running.machine.footnote')}</p>
       {/if}
     {/if}
   </div>

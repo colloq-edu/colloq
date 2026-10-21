@@ -306,9 +306,12 @@ test('the kernels block goes to a machine that takes classes and to no other, an
   assert.equal(plain.last!.kernels, undefined, 'a machine without classes hears nothing of them')
   // Its first sync, or an agent from before classes: no block of its own, and home's all the same.
   assert.equal((await classes.sync()).status, 200)
+  // Numbered, as every reply is: what the agent's next block says back it took in (kernel/remote/files.ts · replySent).
+  const replySeq = classes.last!.kernels?.replySeq
+  assert.ok(Number.isSafeInteger(replySeq) && replySeq! > 0, `a reply's number: ${replySeq}`)
   assert.deepEqual(classes.last!.kernels, {
     placements: [], pushes: [], verdicts: [], pulls: [], scan: [], epochs: [], collect: [], postmortem: [],
-    rates: { classBulkMBps: CLASS_BULK_IDLE_MBPS, machinePaceMBps: MACHINE_PACE_MBPS }, tunnel: 'closed',
+    rates: { classBulkMBps: CLASS_BULK_IDLE_MBPS, machinePaceMBps: MACHINE_PACE_MBPS }, tunnel: 'closed', replySeq,
   })
   // Its own block is taken in once, as it arrives.
   assert.equal((await classes.sync({ kernels: block() })).status, 200)

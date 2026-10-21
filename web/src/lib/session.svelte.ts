@@ -55,6 +55,7 @@ import { reopenRefusedFiles } from './filedoc.svelte'
 import { countsAsUnread } from './notes'
 import type { PageNews } from './class-end'
 import { forgetHelp } from './signature-help'
+import { noteKernelMachine, type KernelMachines } from './kernel-machines'
 import {
   forgetIdentity,
   verdictOf,
@@ -316,6 +317,15 @@ export class SessionState {
    * stopwatch of a running cell.
    */
   clockSkewMs = $state(0)
+  /**
+   * Where the class's kernels compute, as staff hear it: the last
+   * `kernel:machine` frame of each role (lib/kernel-machines.ts) — the
+   * machine's name and round trip for the chip, the server's sentence for
+   * the banner while it does not answer. Staff only: nobody else is sent
+   * one. Emptied by every new connection, whose welcome batch says them
+   * again.
+   */
+  kernelMachines = $state<KernelMachines>({})
   /**
    * This connection's staff account as the room's opaque key (`role` frame),
    * or `null` for someone in the room by its link only. Compared with
@@ -883,6 +893,8 @@ export class SessionState {
       // A new connection is a new network: the previous best round trip knows
       // nothing about it.
       this.#bestRtt = Number.POSITIVE_INFINITY
+      // And what staff heard of the class's machines is said again by this connection's welcome.
+      this.kernelMachines = {}
       for (const queued of this.#controlQueue.splice(0)) socket.send(JSON.stringify(queued))
       /*
        * And re-ask for the notes — here, next to draining the queue.
@@ -1378,6 +1390,7 @@ export class SessionState {
         // the field above keeps only the last (lecture/laser.ts · hearLaser).
         laserArrived(this, message.at)
       } else if (message.t === 'terminal') this.terminalStatus = message.status
+      else if (message.t === 'kernel:machine') this.kernelMachines = noteKernelMachine(this.kernelMachines, message, Date.now())
       else if (message.t === 'error') this.lastError = message.message
       /*
        * Whether this instance can give a personal notebook its own kernel.

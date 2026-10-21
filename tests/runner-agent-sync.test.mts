@@ -916,6 +916,40 @@ test('the kernels block goes only after a reply carried one: a home without clas
   }
 })
 
+test('a block says back the number of home\'s last reply it took in, once a reply carried one: what home says again for a sync it cut short', async () => {
+  const home = await fakeHome()
+  const docker = fakeAgentDocker()
+  docker.registry.set(REVISION.ref, { diffIds: DIFF_IDS })
+  leftRunning(docker)
+  // A home whose replies carry no number first: no block says one back.
+  home.onSync = () => ({ json: syncReply({ kernels: kernelsReply([classIntent()]) }), delayMs: 20 })
+  const { agent } = agentFor(home, { docker, classes: CLASSES })
+  const running = agent.run()
+  try {
+    await waitFor(() => home.syncs().filter((sync) => sync.kernels).length >= 2, 'blocks after replies with no number')
+    assert.ok(home.syncs().every((sync) => !sync.kernels || !('heard' in sync.kernels)), 'a number said back before any reply carried one')
+    // Numbered replies: each block says the number of the reply to the sync before it.
+    const given: Array<{ heard: number | undefined; replied: number }> = []
+    home.onSync = (body) => {
+      const replied = 700 + given.length + 1
+      given.push({ heard: body.kernels?.heard, replied })
+      return { json: syncReply({ kernels: kernelsReply([classIntent()], { replySeq: replied }) }), delayMs: 20 }
+    }
+    await waitFor(() => given.length >= 4, 'four numbered replies')
+    const after = given.slice(1)
+    assert.ok(after.every((one, at) => one.heard === given[at]!.replied), JSON.stringify(given))
+    // A reply with no number again (a home without the field): the blocks stop saying one.
+    home.onSync = () => ({ json: syncReply({ kernels: kernelsReply([classIntent()]) }), delayMs: 20 })
+    const from = home.syncs().length
+    await waitFor(() => home.syncs().length >= from + 2, 'syncs after an unnumbered reply')
+    assert.ok(!('heard' in home.syncs().at(-1)!.kernels!))
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
 test('the last sync of a stop says why: restart when runner update left its marker, stopping otherwise; the class kernels run on', async () => {
   // One home for both lives: a machine that joins another home is a machine that moved, and its classes go.
   const home = await fakeHome()

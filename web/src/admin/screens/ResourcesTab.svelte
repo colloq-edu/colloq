@@ -14,14 +14,25 @@
    * the environment variable, and "back to .env" forgets it. That is exactly
    * what the old .env-only setup could not tell anyone: which of two numbers
    * is in force.
+   *
+   * A third door stands behind the same Save since classes on machines
+   * (Paper 18 · Z1): classes on machines, /api/admin/resources/classes —
+   * who sends classes to machines, what a new class starts with, the move's
+   * delay, the file cap and the two rates. They have no environment
+   * variable, so they say no source; the bar's legend gains "On machines",
+   * the class containers that hold none of this server's memory.
    */
   import { onMount } from 'svelte'
   import type {
+    ClassMachineSettings,
+    ClassPlacementPreset,
     ResourceSettingName,
     ResourceSettingsResponse,
     ResourceSource,
+    UpdateClassMachineSettingsRequest,
     UpdateResourceSettingsRequest,
   } from '@shared/admin'
+  import type { ClassMachineSettingsResponse, ResourcesOnMachines } from '@shared/remote-admin'
   import {
     SETTINGS_LIMITS,
     type CompetitionGpuSettingsInput,
@@ -39,7 +50,7 @@
   import Section from '@/admin/ui/Section.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
-  import { notebooksOffQuestion } from '@/admin/runners'
+  import { notebooksOffQuestion, presetWords, runnersApi } from '@/admin/runners'
   import { cardWord } from '@/admin/running-kernels'
   import {
     cardFacts,
@@ -163,6 +174,21 @@
    */
   let machinesOnline = $state<number | null>(null)
 
+  /* ------------------------------------------ classes on machines (Z1) */
+
+  /** Classes on machines as the server holds them; `null` until read (or a server from before classes). */
+  let classes = $state<ClassMachineSettingsResponse | null>(null)
+  /** Why they could not be read, when it was not a server from before classes (that one has no door: 404, and no section). */
+  let classesErrorText = $state<(() => string) | null>(null)
+  const classesError = $derived(classesErrorText?.() ?? null)
+  /** The switch and the tile as the form now stands. */
+  let classTeachers = $state(true)
+  let classPreset = $state<ClassPlacementPreset>('home')
+  /** The four numbers as typed. */
+  const CLASS_NUMBERS = ['failoverSec', 'machineFileMb', 'classBulkMBps', 'competitionMBps'] as const
+  type ClassNumber = (typeof CLASS_NUMBERS)[number]
+  let classTexts = $state<Record<ClassNumber, string>>({ failoverSec: '', machineFileMb: '', classBulkMBps: '', competitionMBps: '' })
+
   let saving = $state(false)
   let saveErrorText = $state<(() => string | null) | null>(null)
   const saveError = $derived(saveErrorText?.() ?? null)
@@ -257,6 +283,7 @@
           reauthenticate(cause)
         },
       ),
+      readClasses(),
       // The queue half failing must not take the rooms half with it: the owner
       // who came to raise notebook memory can still do that.
       adminApi.competitionSettings().then(
@@ -270,6 +297,25 @@
         },
       ),
     ])
+  }
+
+  /**
+   * Classes on machines, on their own: a server from before classes answers
+   * 404 and the section stays away; any other failure says so where the
+   * section stands, with a retry of this half alone.
+   */
+  function readClasses(): Promise<void> {
+    return runnersApi.classSettings().then(
+      (response) => {
+        applyClasses(response)
+        classesErrorText = null
+      },
+      (cause: unknown) => {
+        if (cause instanceof AdminApiError && cause.status === 404) return
+        classesErrorText = () => messageFor(cause)
+        reauthenticate(cause)
+      },
+    )
   }
 
   /*
@@ -429,7 +475,27 @@
   )
   /** The machines' two: only when the server said them (a server from before machines has none to edit). */
   const runnerDirty = $derived(competitions?.runners ? (['c.homeNotebooks', 'c.scoreSlots'] as const).filter((key) => isDirty(key)) : [])
-  const dirtyCount = $derived(resourceDirty.length + competitionDirty.length + runnerDirty.length)
+
+  /** A class number as typed, whole and within its bounds; an unreadable text keeps the saved one. */
+  function classValue(key: ClassNumber): number {
+    const saved = classes?.settings[key] ?? 0
+    const parsed = Number(classTexts[key].replace(',', '.').trim())
+    if (classTexts[key].trim() === '' || !Number.isFinite(parsed)) return saved
+    const bounds = classes?.bounds[key]
+    const value = Math.round(parsed)
+    return bounds ? Math.min(Math.max(value, bounds.min), bounds.max) : value
+  }
+
+  /** The class settings that differ from the saved ones. */
+  const classDirty = $derived.by((): Array<keyof ClassMachineSettings> => {
+    if (!classes) return []
+    const out: Array<keyof ClassMachineSettings> = []
+    if (classTeachers !== classes.settings.teachers) out.push('teachers')
+    if (classPreset !== classes.settings.newClasses) out.push('newClasses')
+    for (const key of CLASS_NUMBERS) if (classValue(key) !== classes.settings[key]) out.push(key)
+    return out
+  })
+  const dirtyCount = $derived(resourceDirty.length + competitionDirty.length + runnerDirty.length + classDirty.length)
   const dirty = $derived(dirtyCount > 0)
 
   /* --------------------------------------------------------- apply/save */
@@ -438,6 +504,13 @@
     loaded = response
     for (const key of RESOURCE_KEYS) texts[key] = display(key, response.settings[key].value)
     forgotten = forgotten.filter((key) => key.startsWith('c.'))
+  }
+
+  function applyClasses(response: ClassMachineSettingsResponse): void {
+    classes = response
+    classTeachers = response.settings.teachers
+    classPreset = response.settings.newClasses
+    for (const key of CLASS_NUMBERS) classTexts[key] = String(response.settings[key])
   }
 
   function applyCompetitions(settings: CompetitionSettings): void {
@@ -540,6 +613,7 @@
     forgotten = []
     if (loaded) applyResources(loaded)
     if (competitions) applyCompetitions(competitions)
+    if (classes) applyClasses(classes)
     saveErrorText = null
   }
 
@@ -595,6 +669,15 @@
       // One after the other and each applied as it lands: if the second half
       // is refused, the first is already saved and the form says so honestly.
       if (Object.keys(resourcePatch).length > 0) applyResources(await adminApi.updateResourceSettings(resourcePatch))
+      if (classDirty.length > 0) {
+        const classPatch: UpdateClassMachineSettingsRequest = {}
+        for (const key of classDirty) {
+          if (key === 'teachers') classPatch.teachers = classTeachers
+          else if (key === 'newClasses') classPatch.newClasses = classPreset
+          else classPatch[key] = classValue(key)
+        }
+        applyClasses(await runnersApi.saveClassSettings(classPatch))
+      }
       if (Object.keys(competitionPatch).length > 0) {
         applyCompetitions(await adminApi.saveCompetitionSettings(competitionPatch))
         askSizesLater()
@@ -681,6 +764,9 @@
       reserve: budget.reserveMb,
     }
   })
+
+  /** The class containers machines hold now (ResourcesOnMachines): the bar's "On machines · 9 containers · 0 MB here". */
+  const onMachines = $derived((loaded?.budget as (ResourceSettingsResponse['budget'] & ResourcesOnMachines) | undefined)?.onMachines?.containers ?? 0)
 
   const cores = $derived.by(() => {
     const budget = loaded?.budget
@@ -871,6 +957,32 @@
       {tr('admin.resourcesTab.sourceDefault')}
     {/if}
   </p>
+{/snippet}
+
+<!-- A number of classes on machines: no source line — these have no
+     environment variable, only the owner's value or the default. -->
+{#snippet classField(key: ClassNumber, label: string, unit: string, width: string, note = '')}
+  {@const id = `classes-${key}`}
+  {@const bounds = classes?.bounds[key]}
+  <div class={cn('min-w-0', width)}>
+    <label for={id} class="mb-1.5 flex items-baseline gap-2">
+      <span class="admin-label">{label}</span>
+      {#if classDirty.includes(key) && classes}
+        <span class="text-micro text-warning">{tr('admin.resourcesTab.was', { value: classes.settings[key] })}</span>
+      {/if}
+    </label>
+    <div class={cn('admin-affix gap-2', classDirty.includes(key) && '!border-accent')}>
+      <input
+        {id}
+        bind:value={classTexts[key]}
+        onblur={() => (classTexts[key] = String(classValue(key)))}
+        inputmode="numeric"
+        autocomplete="off"
+      />
+      <span class="shrink-0 text-2xs text-muted">{unit}</span>
+    </div>
+    <p class="admin-meta mt-1.5">{note || (bounds ? tr('admin.classes.bounds', { min: bounds.min, max: bounds.max }) : '')}</p>
+  </div>
 {/snippet}
 
 {#snippet legend(tone: string, title: string, detail: string)}
@@ -1118,6 +1230,10 @@
                 {@render legend('bg-accent', tr('admin.resourcesTab.competitions'), tr(competitionShare.metricsOnly ? 'admin.resourcesTab.metricsDetail' : 'admin.resourcesTab.competitionsDetail', { count: competitionShare.slots, memory: gb(competitionShare.perSlotMb) }))}
               {/if}
               {@render legend('border border-dashed border-faint bg-surface', tr('admin.resourcesTab.free'), tr('admin.resourcesTab.freeDetail', { memory: gb(Math.max(memory.free, 0)), reserve: gb(memory.reserve) }))}
+              {#if onMachines > 0}
+                <!-- Class containers on machines (Z7): none of this server's memory, so no segment on the bar. -->
+                {@render legend('border border-dashed border-accent bg-canvas', tr('admin.resourcesTab.onMachines'), tr('admin.resourcesTab.onMachinesDetail', { count: onMachines }))}
+              {/if}
             </div>
             {#if memory.free < 0}
               <p class="mt-3 text-2xs text-danger">{tr('admin.resourcesTab.overcommitNote')}</p>
@@ -1366,6 +1482,76 @@
       {#if isOwner && !dockerOnlyIgnored}
         <Section title={tr('admin.runners.title')} description={tr('admin.runners.note')}>
           <Runners {navigate} settings={runnerSettings} onfleet={(fleet) => (machinesOnline = fleet.online)} reload={runnersReload} />
+        </Section>
+      {/if}
+
+      <!-- Classes on machines (Paper 18 · Z1): laid out like the default
+           room's section. Not under Kubernetes, where the broker keeps a class's
+           Pods (D26) and no machine takes classes. -->
+      {#if classesError && !classes && !dockerOnlyIgnored}
+        <Section title={tr('admin.classes.title')} description={tr('admin.classes.note')}>
+          <p class="text-ui text-danger" role="alert">{tr('admin.classes.loadFailed')} {classesError}</p>
+          <button type="button" class="btn-outline mt-3" onclick={() => void readClasses()}>{tr('admin.try.again')}</button>
+        </Section>
+      {/if}
+      {#if classes && !dockerOnlyIgnored}
+        {@const saved = classes.settings}
+        <Section title={tr('admin.classes.title')} description={tr('admin.classes.note')}>
+          <div class="flex flex-col gap-5">
+            <label class={cn('flex items-start gap-3', isOwner && 'cursor-pointer')}>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={classTeachers}
+                aria-label={tr('admin.classes.teachers')}
+                class={cn(
+                  'mt-0.5 flex h-[22px] w-10 shrink-0 items-center rounded-full px-[3px] transition-colors duration-quick',
+                  'focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/15 disabled:opacity-40',
+                  classTeachers ? 'justify-end bg-primary' : 'justify-start bg-faint/60',
+                  classDirty.includes('teachers') && 'ring-2 ring-accent/40',
+                )}
+                onclick={() => (classTeachers = !classTeachers)}
+              >
+                <span class="size-4 rounded-full bg-canvas shadow-sm" aria-hidden="true"></span>
+              </button>
+              <span class="min-w-0">
+                <span class="block text-ui font-semibold text-ink">{tr('admin.classes.teachers')}</span>
+                <span class="mt-0.5 block text-2xs text-muted">{tr('admin.classes.teachersNote')}</span>
+              </span>
+            </label>
+
+            <div class="flex flex-wrap items-start gap-4">
+              <div class="w-[420px] min-w-0 max-w-full">
+                <label for="classes-new" class="mb-1.5 flex items-baseline gap-2">
+                  <span class="admin-label">{tr('admin.classes.newClasses')}</span>
+                  {#if classDirty.includes('newClasses')}
+                    <span class="text-micro text-warning">{tr('admin.resourcesTab.was', { value: presetWords(saved.newClasses).name })}</span>
+                  {/if}
+                </label>
+                <select
+                  id="classes-new"
+                  class={cn('field w-full', classDirty.includes('newClasses') && '!border-accent')}
+                  value={classPreset}
+                  onchange={(event) => (classPreset = event.currentTarget.value as ClassPlacementPreset)}
+                >
+                  {#each ['home', 'personal', 'machines', 'gpu'] as const as preset (preset)}
+                    <option value={preset}>{presetWords(preset).name}</option>
+                  {/each}
+                </select>
+                <p class="admin-meta mt-1.5">
+                  {classPreset === 'personal' ? tr('admin.classes.newClassesNote') : tr('admin.classes.newClassesNoteOther')}
+                </p>
+              </div>
+              {@render classField('failoverSec', tr('admin.classes.failoverSec'), tr('admin.classes.seconds'), 'w-[200px]', tr('admin.classes.failoverNote'))}
+            </div>
+
+            <div class="flex flex-wrap items-start gap-4">
+              {@render classField('machineFileMb', tr('admin.classes.machineFileMb'), tr('admin.classes.mb'), 'w-[200px]')}
+              {@render classField('classBulkMBps', tr('admin.classes.classBulkMBps'), tr('admin.classes.mbps'), 'w-[200px]')}
+              {@render classField('competitionMBps', tr('admin.classes.competitionMBps'), tr('admin.classes.mbps'), 'w-[280px]')}
+            </div>
+            <p class="-mt-2 max-w-[720px] text-2xs text-muted">{tr('admin.classes.ratesNote')}</p>
+          </div>
         </Section>
       {/if}
 

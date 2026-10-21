@@ -13,6 +13,9 @@
  *
  *   npx tsx scripts/ui-check.mts            — bring everything up and check
  *   npx tsx scripts/ui-check.mts --headed   — the same, but with a visible window
+ *   npx tsx scripts/ui-check.mts --classes-only
+ *                                           — classes on machines (remote-classes.md
+ *                                             §17.4): its own stand, see classesCheck
  *
  * It brings up an instance of its own, in a temporary directory: running this
  * against a live seminar is not allowed, and that is easy to forget.
@@ -33,6 +36,8 @@ const TAKEOVER_ONLY = process.argv.includes('--takeover-only')
 const PORT = Number(process.env.UI_CHECK_PORT ?? 3891)
 const CDP_PORT = Number(process.env.UI_CHECK_CDP ?? 9334)
 const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+// Classes on machines: a stand of its own (a home with a machine and a relay, Vite on the sources), nothing of the pass below.
+if (process.argv.includes('--classes-only')) process.exit(await classesCheck())
 
 const root = mkdtempSync(path.join(tmpdir(), 'colloq-ui-'))
 const ROOM = 'uicheck1'
@@ -2793,3 +2798,496 @@ console.log(failed === 0 ? '\n  the interface answers' : `\n  failures: ${failed
 /* cleanUp on 'exit' removes the browser and the temporary directory — on this
    path and on any failure halfway. */
 process.exit(failed === 0 ? 0 : 1)
+
+/* ===================================================== classes on machines */
+
+/**
+ * `--classes-only`: classes on machines in a real browser
+ * (docs/architecture/remote-classes.md §17.4, Paper 18 · Z1, Z2, Z4, Z5, Z7).
+ *
+ * A STAND OF ITS OWN, nothing of the pass above: the home is the real app in
+ * this process on a port of its own and a temporary DATA_DIR, NODE_ENV=test
+ * and KERNEL_BACKEND=test (tests/_remote-e2e-home.mts and its _env.mts), with
+ * its own fake Jupyter for what computes here; the machine is the real agent
+ * as a process of its own on the fake docker, whose class containers are fake
+ * Jupyters (tests/_remote-e2e-agent.mts), and it calls home through the fault
+ * proxy (tests/_tunnel-fault.mts) where relay2 stands. The pages are the
+ * sources as Vite serves them on a port of its own, proxied to the home: no
+ * build of the repository. The daemon is never asked (the e2e home refuses
+ * one for revisions), and only this run's own pids are stopped.
+ *
+ * WHAT IT DRIVES: the owner opens «Подключить машину», ticks «Принимать
+ * занятия» and copies the command a machine joins with (Z2); the machine's
+ * row shows its roles, its class line and the menu (Z1), and the owner's
+ * «Занятия на машинах» counts an edit and discards it; a class set to
+ * machines shows «Где считается» with the machine in its live line, and a
+ * part is switched and switched back (Z4); a student and the teacher run a
+ * cell, and the room's chip says «Ядро на машине» (Z5); «Работают сейчас»
+ * lists the class at 0 MB here with its slot on the machine (Z7), and the
+ * machine's page its class (Z3); the relay goes dark: amber with its timer,
+ * the waiting cell, the restart refused under the button, the staff banner,
+ * whose «Ждать машину» saves the class's wait and whose «Перенести сейчас»
+ * then moves the kernel here (Z5); every screen at 390 px with nothing of it
+ * past the edge or cut sideways, the amber chip's timer whole, and in the
+ * dark theme. Exceptions and console errors of every page are counted. The
+ * files panel's machine rows wait for the files' travel (wave 3, K6a, and
+ * the files scenarios after it), so Z6 is only drawn with the tree as it
+ * comes.
+ */
+async function classesCheck(): Promise<number> {
+  const { Home, kernelRevision } = await import('../tests/_remote-e2e-home.mts')
+  const { Agent, createFleet, killAgents, removeClassContainers } = await import('../tests/_remote-e2e-agent.mts')
+  const { TunnelFault } = await import('../tests/_tunnel-fault.mts')
+  const { translate } = await import('../shared/i18n.js')
+  const { STAFF_COOKIE: COOKIE } = await import('../shared/admin.js')
+  const { createCell, getCells } = await import('../shared/notebook.js')
+  const { createTeacher, rotateLinkKey } = await import('../server/src/admin/store.js')
+  const { issueStaffCookie } = await import('../server/src/admin/auth.js')
+  const { getRunner } = await import('../server/src/competitions/remote/store.js')
+  const { placementOutlook } = await import('../server/src/kernel/remote/placement.js')
+  const { classPlacement } = await import('../server/src/kernel/remote/placement-store.js')
+  const { getSessionDoc, shutdownCollab } = await import('../server/src/collab/index.js')
+  const { shutdownKernels } = await import('../server/src/kernel/index.js')
+
+  const ru = (key: string, params?: Record<string, string | number>) => translate('ru', key, params).replace(/[  ]/g, ' ')
+  const results: { ok: boolean; what: string; got: string }[] = []
+  const note = (ok: boolean, what: string, got: unknown) => results.push({ ok, what, got: String(got).slice(0, 160) })
+  /** The room's parts of classes on machines: the bar's right corner with the chip, the staff banner, a waiting cell's note. */
+  const ROOM_PARTS = `[...document.querySelectorAll('div:has(> [data-machine-chip]), [data-machine-banner], [data-waits-machine]')]`
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const scratch = mkdtempSync(path.join(tmpdir(), 'colloq-ui-classes-'))
+  const cdpPort = Number(process.env.UI_CHECK_CDP ?? 9335)
+  const vitePort = Number(process.env.UI_CHECK_VITE ?? 5274)
+  const cdpUrl = `http://127.0.0.1:${cdpPort}`
+  const site = `http://127.0.0.1:${vitePort}`
+  const shots = process.env.UI_CHECK_SHOTS ?? null
+
+  const home = new Home({ liveness: 'auto' })
+  let relay: Awaited<ReturnType<typeof TunnelFault.start>> | null = null
+  let vite: ReturnType<typeof spawn> | null = null
+  let chrome: ReturnType<typeof spawn> | null = null
+  const pages: Array<{ who: string; page: ClassTab }> = []
+
+  /* ------------------------------------------------------------ the stand */
+
+  try {
+    await home.start()
+    await home.homeJupyter()
+    const fleet = createFleet()
+    kernelRevision(fleet)
+    relay = await TunnelFault.start({ target: home.port })
+
+    const owner = createTeacher({ name: 'Ада', email: `ada.${Date.now()}@ui.local`, role: 'owner' })!
+    rotateLinkKey(owner.id)
+    let cookie = ''
+    issueStaffCookie({ cookie: (_name: string, value: string) => (cookie = value) } as never, owner)
+    const ownerCall = async <T,>(method: string, at: string, body?: unknown): Promise<{ status: number; body: T }> => {
+      const answer = await fetch(`${home.url}${at}`, {
+        method,
+        headers: { cookie: `${COOKIE}=${cookie}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      })
+      const text = await answer.text()
+      return { status: answer.status, body: (text ? JSON.parse(text) : null) as T }
+    }
+
+    // Vite on the sources, proxied to this home: the pages as the repository has them now.
+    vite = spawn(process.execPath, [path.resolve('node_modules/vite/bin/vite.js'), '--port', String(vitePort), '--strictPort', '--host', '127.0.0.1', '--clearScreen', 'false'], {
+      cwd: path.resolve('web'),
+      env: { ...process.env, NODE_ENV: 'development', VITE_API_TARGET: home.url },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const viteLog: string[] = []
+    vite.stdout?.on('data', (chunk: Buffer) => viteLog.push(chunk.toString()))
+    vite.stderr?.on('data', (chunk: Buffer) => viteLog.push(chunk.toString()))
+    if (!(await waitHttp(site, 60_000))) throw new Error(`Vite did not answer on ${site}:\n${viteLog.join('').slice(-2000)}`)
+
+    chrome = spawn(CHROME, [
+      ...(HEADED ? [] : ['--headless=new']),
+      '--disable-gpu',
+      `--remote-debugging-port=${cdpPort}`,
+      `--user-data-dir=${path.join(scratch, 'chrome')}`,
+      '--window-size=1440,1000',
+      'about:blank',
+    ], { stdio: 'ignore' })
+    if (!(await waitHttp(`${cdpUrl}/json/version`, 30_000))) throw new Error(`Chrome did not open its debugging port ${cdpPort}`)
+
+    const teacher = await openTab('about:blank')
+    pages.push({ who: 'owner', page: teacher })
+    await teacher.send('Network.setCookie', { name: COOKIE, value: cookie, domain: '127.0.0.1', path: '/' })
+
+    /* ------------------------------------------------ Z2 · connect a machine */
+
+    await teacher.go(`${site}/admin/resources?machines=connect`)
+    const dialogOpen = await teacher.until(`!!document.getElementById('connect-machine-title')`, 60_000)
+    note(dialogOpen, 'Z2 · «Подключить машину» opens', dialogOpen)
+    const classesText = ru('admin.runners.connect.classes')
+    await teacher.js(`const l=[...document.querySelectorAll('label')].find(x=>x.textContent.includes(${JSON.stringify(classesText)})); l&&l.querySelector('input').click(); return 1`)
+    const sealedGrey = await teacher.until(`document.body.textContent.replace(/[\\u00a0\\u202f]/g,' ').includes(${JSON.stringify(ru('admin.runners.connect.classesSealed'))})`, 5_000)
+    const trustLocked = await teacher.js(`const l=[...document.querySelectorAll('label')].find(x=>x.textContent.includes(${JSON.stringify(ru('admin.runners.connect.trust'))})); return !!l && l.querySelector('input').disabled`)
+    note(sealedGrey && trustLocked === true, 'Z2 · the hidden test greys while classes are on', `${sealedGrey}/${trustLocked}`)
+    await screens(teacher, 'connect', `[...document.querySelectorAll('[aria-labelledby=connect-machine-title] .dialog-card')]`)
+    await teacher.clickText('button', ru('admin.runners.connect.mint'))
+    const command = await teacher.untilValue<string>(`[...document.querySelectorAll('pre')].map(p=>p.textContent).find(t=>t.includes('COLLOQ_RUNNER_JOIN'))`, 15_000)
+    note(!!command && command.includes('--network host'), 'Z2 · the join command carries --network host', command?.split('\n')[0] ?? 'none')
+    const code = /#([a-f0-9]{32})'/.exec(command ?? '')?.[1] ?? null
+    if (!code) throw new Error('no code in the join command')
+
+    const agent = new Agent(fleet, `ui-${process.pid}`, { join: relay.joinTarget(code), classes: true })
+    agent.start()
+    const runnerId = await waitValue(() => agent.identity()?.runnerId, 30_000)
+    if (!runnerId) throw new Error(`the machine did not join:\n${agent.log()}`)
+    const tunnelUp = await waitValue(() => home.tunnels?.isUp(runnerId) || null, 30_000)
+    note(!!tunnelUp, 'the machine joined with the code and its tunnel is up', runnerId)
+    const machineName = getRunner(runnerId)!.name
+    note(getRunner(runnerId)?.classes === true, 'the code carried «Принимать занятия» to the machine', getRunner(runnerId)?.classes)
+    await teacher.clickText('button', ru('admin.runners.connect.done'))
+
+    /* -------------------------------------------------- Z1 · the machines */
+
+    const classLabel = ru('admin.runners.classes.label')
+    const lined = await teacher.until(`[...document.querySelectorAll('.rn-class')].some(p=>p.textContent.includes(${JSON.stringify(classLabel)}))`, 45_000)
+    const line = (await teacher.js(`return [...document.querySelectorAll('.rn-class')].map(p=>p.textContent.trim()).join(' | ')`)) as string
+    note(lined, 'Z1 · the machine\'s class line', line)
+    const chips = (await teacher.js(`return document.body.textContent`)) as string
+    note(/занятия/i.test(chips) && /посылки/i.test(chips), 'Z1 · the row carries «посылки» and «занятия»', 'chips')
+    await teacher.js(`const b=document.querySelector('[aria-label=${JSON.stringify(ru('admin.runners.menu.label', { name: machineName }))}]'); b&&b.click(); return 1`)
+    const menuState = (await teacher.js(`const items=[...document.querySelectorAll('[role=menuitemcheckbox]')]; const c=items.find(i=>i.textContent.includes(${JSON.stringify(ru('admin.runners.menu.classes'))})); const t=items.find(i=>i.textContent.includes(${JSON.stringify(ru('admin.runners.menu.trust'))})); return [c&&c.getAttribute('aria-checked'), t&&t.disabled].join('/')`)) as string
+    note(menuState === 'true/true', 'Z1 · the menu: «Принимает занятия» ticked, «Доверенная» greyed', menuState)
+    await teacher.js(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'})); return 1`)
+    const section = await teacher.until(`[...document.querySelectorAll('h2')].some(h=>h.textContent.trim()===${JSON.stringify(ru('admin.classes.title'))})`, 10_000)
+    await teacher.js(`const s=document.querySelector('[role=switch][aria-label=${JSON.stringify(ru('admin.classes.teachers'))}]'); s&&s.click(); return 1`)
+    const counted = await teacher.until(`document.body.textContent.replace(/[\\u00a0\\u202f]/g,' ').includes(${JSON.stringify(ru('admin.resourcesTab.unsaved', { count: 1 }))})`, 5_000)
+    await teacher.clickText('button', ru('admin.discard'))
+    const discarded = await teacher.until(`!document.body.textContent.replace(/[\\u00a0\\u202f]/g,' ').includes(${JSON.stringify(ru('admin.resourcesTab.unsaved', { count: 1 }))})`, 5_000)
+    note(section && counted && discarded, 'Z1 · «Занятия на машинах» counts an edit and discards it', `${section}/${counted}/${discarded}`)
+    const classesSection = `[...document.querySelectorAll('section')].filter(s=>s.querySelector('h2')?.textContent.trim()===${JSON.stringify(ru('admin.classes.title'))})`
+    await screens(teacher, 'resources', `[...document.querySelectorAll('.rn'), ...${classesSection}]`, '.rn-list')
+
+    /* ---------------------------------------------- Z4 · where a class runs */
+
+    const className = `Занятие на машине ${process.pid}`
+    const made = await ownerCall<{ id: string }>('POST', '/api/admin/seminars', { name: className, environment: 'base', cpus: 1, memoryMb: 1024 })
+    if (made.status !== 201) throw new Error(`the class was not made: ${made.status} ${JSON.stringify(made.body)}`)
+    const classId = made.body.id
+    await ownerCall('PATCH', `/api/admin/seminars/${classId}`, { placement: { room: 'machines', own: 'machines', council: 'shared' } })
+    const { doc } = getSessionDoc(classId)
+    doc.transact(() => {
+      const cells = getCells(doc)
+      cells.delete(0, cells.length)
+      cells.push([createCell('code', 'print(1)')])
+    })
+    const takes = await waitValue(async () => {
+      const outlook = await placementOutlook(classId)
+      return outlook.refusal === null && outlook.machines.some((one) => one.runnerId === runnerId && one.refusal === null) ? true : null
+    }, 60_000)
+    note(!!takes, 'the machine takes the class (its facts and the class image there)', takes)
+
+    await teacher.go(`${site}/admin`)
+    await teacher.until(`!!document.querySelector('[aria-label=${JSON.stringify(`${ru('admin.actions.for')} ${className}`)}]')`, 30_000)
+    await teacher.js(`document.querySelector('[aria-label=${JSON.stringify(`${ru('admin.actions.for')} ${className}`)}]').click(); return 1`)
+    await teacher.clickText('[role=menuitem]', ru('admin.seminar.settingsMenu'))
+    const blockShown = await teacher.until(`[...document.querySelectorAll('h4')].some(h=>h.textContent.trim()===${JSON.stringify(ru('admin.placement.title'))})`, 15_000)
+    const live = await teacher.untilValue<string>(`[...document.querySelectorAll('p')].map(p=>p.textContent.replace(/\\s+/g,' ').trim()).find(t=>/^Подход/.test(t))`, 15_000)
+    note(blockShown && !!live && live.includes(machineName), 'Z4 · «Где считается» with the machine in its live line', live ?? 'no live line')
+    const ownRow = `[...document.querySelectorAll('.pl-part')].find(r=>r.textContent.includes(${JSON.stringify(ru('admin.placement.own'))}))`
+    await teacher.js(`${ownRow}.querySelectorAll('button')[0].click(); return 1`)
+    const toHere = await teacher.until(`${ownRow}.querySelectorAll('button')[0].getAttribute('aria-pressed')==='true'`, 10_000)
+    await teacher.js(`${ownRow}.querySelectorAll('button')[1].click(); return 1`)
+    const toMachines = await teacher.until(`${ownRow}.querySelectorAll('button')[1].getAttribute('aria-pressed')==='true'`, 10_000)
+    note(toHere && toMachines, 'Z4 · a part switched here and back, saved each time', `${toHere}/${toMachines}`)
+    await screens(teacher, 'class settings', `[...document.querySelectorAll('.pl')]`, '.pl')
+
+    /* ------------------------------------------------------- Z5 · the room */
+
+    const student = await openTab('about:blank', await newContext())
+    pages.push({ who: 'student', page: student })
+    await student.go(`${site}/s/${classId}`)
+    await joinRoom(student, 'Нина')
+    await teacher.go(`${site}/s/${classId}`)
+    await joinRoom(teacher, 'Ада')
+    await teacher.clickText('button', ru('room.ui.446'))
+    const chip = await student.untilValue<string>(`(()=>{const c=document.querySelector('[data-machine-chip]'); return c && c.textContent.replace(/\\s+/g,' ').trim()})()`, 60_000)
+    note(chip === ru('room.machine.chip.machine'), 'Z5 · the student reads «Ядро на машине»', chip ?? 'no chip')
+    const staffChip = await teacher.untilValue<string>(`(()=>{const c=document.querySelector('[data-machine-chip]'); return c && c.textContent.replace(/\\s+/g,' ').trim()})()`, 30_000)
+    // The name and the round trip reach staff from the control socket's frames, which the session keeps by role (lib/kernel-machines.ts).
+    note(!!staffChip && staffChip.includes(machineName), 'Z5 · staff read the machine\'s name in the chip', staffChip ?? 'no chip')
+    const studentText = (await student.js('return document.body.textContent')) as string
+    note(!studentText.includes(machineName), 'Z5 · a student\'s page never names the machine', machineName)
+    const printed = await student.until(`document.body.innerText.split('\\n').some(l=>l.trim()==='1')`, 30_000)
+    note(printed, 'Z5 · the cell ran on the machine and printed', printed)
+    await screens(student, 'room', ROOM_PARTS)
+
+    /* --------------------------------------------- Z7 · «Работают сейчас» */
+
+    const owner2 = await openTab('about:blank')
+    pages.push({ who: 'owner, resources', page: owner2 })
+    await owner2.go(`${site}/admin/resources`)
+    const z7 = await owner2.until(`document.body.textContent.replace(/[\\u00a0\\u202f]/g,' ').includes(${JSON.stringify(ru('admin.resourcesTab.running.machine.on', { name: machineName }))})`, 45_000)
+    const zero = await owner2.until(`document.body.textContent.replace(/[\\u00a0\\u202f]/g,' ').replace(/\\s+/g,' ').includes(${JSON.stringify(`${ru('admin.resourcesTab.running.remote.zero')} ${ru('admin.resourcesTab.running.remote.here')}`)})`, 5_000)
+    note(z7 && zero, 'Z7 · the class at 0 MB here, its slot «на машине»', `${z7}/${zero}`)
+    await screens(owner2, 'running', `[...document.querySelectorAll('.rk-list')]`, '.rk-list')
+
+    /* ------------------------------------------- Z3 · the machine's page */
+
+    await owner2.go(`${site}/admin/resources/machines/${encodeURIComponent(runnerId)}`)
+    const z3 = await owner2.until(`[...document.querySelectorAll('.rm-class-row')].some(r=>r.textContent.includes(${JSON.stringify(className)}))`, 30_000)
+    note(z3, 'Z3 · the machine\'s page lists the class on it', z3)
+    await screens(owner2, 'machine page', `[...document.querySelectorAll('main')]`, '.rm-table')
+
+    /* -------------------------------------------- the relay goes dark (Z5) */
+
+    relay.blackhole()
+    const amber = await student.until(`!!document.querySelector('[data-machine-chip="amber"]')`, 45_000)
+    note(amber, 'Z5 · amber «Нет связи с машиной» with its timer', amber ? await student.js(`return document.querySelector('[data-machine-chip]').textContent.trim()`) : 'never')
+    await teacher.clickText('button', ru('room.ui.446'))
+    const waits = await teacher.until(`!!document.querySelector('[data-waits-machine]')`, 15_000)
+    note(waits, 'Z5 · a queued cell «ждёт машину»', waits)
+    await teacher.js(`const b=document.querySelector('[aria-label=${JSON.stringify(ru('room.ui.447'))}]'); b&&b.dispatchEvent(new PointerEvent('pointerdown',{button:0,bubbles:true})); return 1`)
+    const refused = await teacher.until(`!!document.querySelector('[data-machine-refusal]')`, 5_000)
+    note(refused, 'Z5 · the restart refused under the button', refused)
+    await teacher.js(`document.querySelector('[data-machine-refusal]')?.parentElement?.querySelector('.fixed.inset-0')?.click(); return 1`)
+    const bannerWait = `[...document.querySelectorAll('[data-machine-banner] button')].some(b=>b.textContent.trim()===${JSON.stringify(ru('room.machine.wait'))})`
+    const banner = await teacher.until(`!!document.querySelector('[data-machine-banner]') && ${bannerWait}`, 30_000)
+    note(banner, 'Z5 · staff banner with «Перенести сейчас» and «Ждать машину»', banner ? await teacher.js(`return document.querySelector('[data-machine-banner]').textContent.replace(/\\s+/g,' ').trim()`) : 'never')
+    // Wait for the machine: the class waits for its machine, saved as its own setting, and the banner says so with only the move left.
+    await teacher.clickText('[data-machine-banner] button', ru('room.machine.wait'))
+    const waitSaved = await waitValue(() => (classPlacement(classId).failover === 'wait' ? true : null), 10_000)
+    const waitWords = await teacher.until(`(document.querySelector('[data-machine-banner]')?.textContent ?? '').replace(/\\s+/g,' ').includes(${JSON.stringify(ru('room.machine.banner.waiting'))}) && !(${bannerWait})`, 5_000)
+    note(!!waitSaved && waitWords, 'Z5 · Wait for the machine set the class to wait, and the banner says so', `${classPlacement(classId).failover}/${waitWords}`)
+    await screens(teacher, 'room, the machine silent', ROOM_PARTS, null, async () => {
+      // The amber chip's timer whole on a phone's bar, next to the queue's pill (Z10).
+      const timer = await teacher.js(`const t=document.querySelector('[data-machine-elapsed]'); const c=t&&t.closest('[data-machine-chip]'); if(!t||!c) return 'no timer'; const a=t.getBoundingClientRect(), b=c.getBoundingClientRect(); return (a.left >= b.left - 0.5 && a.right <= b.right + 0.5 && a.right <= window.innerWidth && t.scrollWidth <= t.clientWidth + 1 ? 'whole: ' : 'cut: ') + c.textContent.replace(/\\s+/g,' ').trim()`)
+      note(String(timer).startsWith('whole'), 'Z10 · the amber chip keeps its timer whole at 390 px', timer)
+    })
+    await teacher.clickText('[data-machine-banner] button', ru('room.machine.moveNow'))
+    const moved = await student.until(`(()=>{const c=document.querySelector('[data-machine-chip]'); return !!c && c.textContent.includes('переехало')})()`, 60_000)
+    note(moved, 'Z5 · «Перенести сейчас» moved the kernel here', moved ? await student.js(`return document.querySelector('[data-machine-chip]').textContent.trim()`) : 'still away')
+    relay.heal()
+
+    /* ------------------------------------------------------- what broke */
+
+    const broke = pages.filter(({ page }) => page.trouble.length > 0)
+    note(broke.length === 0, 'pages throw no exceptions and log no errors', broke.length === 0 ? 'none' : broke.map(({ who, page }) => `${who}: ${page.trouble[0]}`).join(' · '))
+  } catch (error) {
+    note(false, 'the classes pass ran to its end', error instanceof Error ? error.message : error)
+  } finally {
+    for (const { page } of pages) page.close()
+    if (chrome?.pid) chrome.kill('SIGKILL')
+    if (vite?.pid) vite.kill('SIGTERM')
+    await shutdownKernels().catch(() => undefined)
+    shutdownCollab()
+    await relay?.close().catch(() => undefined)
+    await killAgents().catch(() => undefined)
+    await removeClassContainers().catch(() => undefined)
+    await home.close().catch(() => undefined)
+    spawnSync('rm', ['-rf', scratch])
+  }
+
+  let failed = 0
+  for (const r of results) {
+    if (!r.ok) failed += 1
+    console.log(`  ${r.ok ? 'ok  ' : 'FAIL'}  ${r.what.padEnd(64)} ${r.got}`)
+  }
+  console.log(failed === 0 ? '\n  classes on machines: the interface answers' : `\n  failures: ${failed}`)
+  return failed === 0 ? 0 : 1
+
+  /* --------------------------------------------------------- the browser */
+
+  interface ClassTab {
+    js: (body: string) => Promise<unknown>
+    send: (method: string, params?: Record<string, unknown>) => Promise<any>
+    go: (url: string) => Promise<void>
+    until: (expr: string, ms: number) => Promise<boolean>
+    untilValue: <T>(expr: string, ms: number) => Promise<T | null>
+    clickText: (selector: string, text: string) => Promise<boolean>
+    trouble: string[]
+    close: () => void
+  }
+
+  async function waitHttp(url: string, ms: number): Promise<boolean> {
+    const deadline = Date.now() + ms
+    while (Date.now() < deadline) {
+      try {
+        if ((await fetch(url, { signal: AbortSignal.timeout(1_000) })).ok) return true
+      } catch {
+        /* not up yet */
+      }
+      await pause(250)
+    }
+    return false
+  }
+
+  async function waitValue<T>(read: () => T | null | undefined | Promise<T | null | undefined>, ms: number): Promise<T | null> {
+    const deadline = Date.now() + ms
+    while (Date.now() < deadline) {
+      const value = await read()
+      if (value) return value
+      await pause(250)
+    }
+    return null
+  }
+
+  /** A fresh browser context: a person of their own, with no cookie and no storage of the owner's. */
+  async function newContext(): Promise<string> {
+    const version = (await (await fetch(`${cdpUrl}/json/version`)).json()) as { webSocketDebuggerUrl: string }
+    const ws = new WS(version.webSocketDebuggerUrl)
+    await new Promise<void>((resolve) => ws.on('open', () => resolve()))
+    const answer = await new Promise<any>((resolve) => {
+      ws.on('message', (raw: Buffer) => resolve(JSON.parse(raw.toString())))
+      ws.send(JSON.stringify({ id: 1, method: 'Target.createBrowserContext', params: {} }))
+    })
+    ws.close()
+    return answer.result.browserContextId as string
+  }
+
+  async function openTab(url: string, context?: string): Promise<ClassTab> {
+    let target: { id: string; webSocketDebuggerUrl: string }
+    if (context) {
+      const version = (await (await fetch(`${cdpUrl}/json/version`)).json()) as { webSocketDebuggerUrl: string }
+      const ws = new WS(version.webSocketDebuggerUrl)
+      await new Promise<void>((resolve) => ws.on('open', () => resolve()))
+      const created = await new Promise<any>((resolve) => {
+        ws.on('message', (raw: Buffer) => resolve(JSON.parse(raw.toString())))
+        ws.send(JSON.stringify({ id: 1, method: 'Target.createTarget', params: { url, browserContextId: context } }))
+      })
+      ws.close()
+      const id = created.result.targetId as string
+      const listed = (await waitValue(async () => ((await (await fetch(`${cdpUrl}/json/list`)).json()) as Array<{ id: string; webSocketDebuggerUrl: string }>).find((one) => one.id === id), 10_000))!
+      target = listed
+    } else {
+      target = (await (await fetch(`${cdpUrl}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' })).json()) as { id: string; webSocketDebuggerUrl: string }
+    }
+    const ws = new WS(target.webSocketDebuggerUrl)
+    await new Promise<void>((resolve) => ws.on('open', () => resolve()))
+    let seq = 0
+    const waiters = new Map<number, (value: any) => void>()
+    const trouble: string[] = []
+    ws.on('message', (raw: Buffer) => {
+      const message = JSON.parse(raw.toString())
+      if (message.id && waiters.has(message.id)) {
+        waiters.get(message.id)!(message)
+        waiters.delete(message.id)
+      }
+      if (message.method === 'Runtime.exceptionThrown') {
+        const d = message.params.exceptionDetails
+        trouble.push(`exception: ${d?.exception?.description ?? d?.text ?? '?'}`)
+      }
+      if (message.method === 'Runtime.consoleAPICalled' && message.params.type === 'error') {
+        trouble.push(`console: ${message.params.args.map((a: any) => a.value ?? a.description ?? a.type).join(' ')}`)
+      }
+    })
+    const send = (method: string, params: Record<string, unknown> = {}) =>
+      new Promise<any>((resolve) => {
+        const id = ++seq
+        waiters.set(id, resolve)
+        ws.send(JSON.stringify({ id, method, params }))
+      })
+    await send('Runtime.enable')
+    await send('Page.enable')
+    await send('Network.enable')
+    const js = async (body: string) => {
+      const res = await send('Runtime.evaluate', { expression: `(async()=>{${body}})()`, awaitPromise: true, returnByValue: true })
+      const failed = res.result?.exceptionDetails
+      if (failed) throw new Error(failed.exception?.description ?? failed.text)
+      return res.result?.result?.value
+    }
+    const until = async (expr: string, ms: number) => (await waitValue(async () => ((await js(`try { return !!(${expr}) } catch { return false }`)) === true ? true : null), ms)) === true
+    const untilValue = async <T,>(expr: string, ms: number) => waitValue<T>(async () => (await js(`try { return (${expr}) ?? null } catch { return null }`)) as T | null, ms)
+    return {
+      js,
+      send,
+      trouble,
+      until,
+      untilValue,
+      async go(next: string) {
+        await send('Page.navigate', { url: next })
+        await pause(800)
+      },
+      async clickText(selector: string, text: string) {
+        const ok = await waitValue(async () => ((await js(`const el=[...document.querySelectorAll(${JSON.stringify(selector)})].find(x=>x.textContent.replace(/[\\u00a0\\u202f\\s]+/g,' ').trim()===${JSON.stringify(text)} && !x.disabled); if(!el) return false; el.click(); return true`)) === true ? true : null), 20_000)
+        if (!ok) note(false, `pressed «${text}»`, 'not found')
+        return ok === true
+      },
+      close() {
+        ws.close()
+      },
+    }
+  }
+
+  /** Into the room under a name, as a person does: the join screen when it asks for one. */
+  async function joinRoom(page: ClassTab, name: string): Promise<void> {
+    const asks = await page.until(`!!document.querySelector('input#join-name') || !!document.querySelector('[data-notebook-bar]')`, 60_000)
+    if (!asks) return
+    if (!(await page.js(`return !!document.querySelector('input#join-name')`))) return
+    await page.js(
+      `const i=document.querySelector('input#join-name');` +
+        `const set=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;` +
+        `set.call(i,${JSON.stringify(name)}); i.dispatchEvent(new Event('input',{bubbles:true})); return 1`,
+    )
+    await page.js(`const b=[...document.querySelectorAll('button')].find(x=>/join|войти/i.test(x.textContent||'')); b&&b.click(); return 1`)
+    await page.until(`!!document.querySelector('[data-notebook-bar]')`, 60_000)
+  }
+
+  /**
+   * One screen at 390 px (Z10) and in the dark theme: nothing of it past the
+   * screen's edge or cut sideways, a dark ground under the dark theme, and a
+   * shot of each when asked (UI_CHECK_SHOTS). Back to the desktop and the
+   * light theme after.
+   *
+   * The document never scrolls sideways here by construction — the panel's
+   * <main> clips, the room's root clips, dialogs are fixed — so its width
+   * says nothing. What is measured is the screen's own parts (`roots`, a
+   * script naming its elements): every element in them whose box leaves the
+   * screen, and every box that hides some of what it holds sideways (a
+   * scroller that scrolls, a clip without an ellipsis). Code and commands may
+   * scroll their long lines: `pre`, `code` and an editor's are let be.
+   * `extra` runs at 390 px too, for what a screen promises of its own.
+   */
+  async function screens(page: ClassTab, what: string, roots: string, focus: string | null = null, extra?: () => Promise<void>): Promise<void> {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true })
+    await pause(600)
+    // What the screen is about, in view for the shot: the page scrolls inside the panel, not the document.
+    if (focus) await page.js(`document.querySelector(${JSON.stringify(focus)})?.scrollIntoView({block:'start'}); return 1`)
+    await pause(200)
+    const over = (await page.js(`
+      const vw = window.innerWidth
+      const name = (el) => el.tagName.toLowerCase() + (typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\\s+/).slice(0, 3).join('.') : '')
+      const parts = (${roots}).filter(Boolean)
+      if (parts.length === 0) return 'nothing of the screen found'
+      const found = []
+      for (const part of parts) {
+        for (const el of [part, ...part.querySelectorAll('*')]) {
+          if (el.closest('pre, code, .cm-editor')) continue
+          const cs = getComputedStyle(el)
+          if (cs.display === 'none' || cs.visibility === 'hidden') continue
+          const r = el.getBoundingClientRect()
+          if (r.width <= 1 || r.height <= 1) continue
+          if (r.right > vw + 1 || r.left < -1) found.push(name(el) + ' at ' + Math.round(r.left) + '…' + Math.round(r.right))
+          else if (cs.overflowX !== 'visible' && el.scrollWidth > el.clientWidth + 1 && cs.textOverflow !== 'ellipsis') found.push(name(el) + ' +' + (el.scrollWidth - el.clientWidth) + ' px inside')
+        }
+      }
+      return found.slice(0, 5).join(' · ')
+    `)) as string
+    note(over === '', `Z10 · ${what} at 390 px: nothing past the edge or cut sideways`, over || 'none')
+    if (extra) await extra()
+    if (shots) await shot(page, `${what}-390`)
+    // The dark theme as the app applies it (lib/theme.svelte.ts · apply): the panel reads the system's theme as it loads, and a
+    // screen with a dialog open is not reloaded for it.
+    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] })
+    await page.js(`const r=document.documentElement; r.dataset.theme='dark'; r.classList.add('dark'); r.style.colorScheme='dark'; return 1`)
+    await pause(400)
+    const ground = (await page.js(`const c=getComputedStyle(document.body).backgroundColor.match(/\\d+/g).map(Number); return (0.2126*c[0]+0.7152*c[1]+0.0722*c[2])/255`)) as number
+    note(ground < 0.3, `${what} in the dark theme: a dark ground`, ground.toFixed(2))
+    if (shots) await shot(page, `${what}-390-dark`)
+    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] })
+    await page.js(`const r=document.documentElement; r.dataset.theme='light'; r.classList.remove('dark'); r.style.colorScheme='light'; return 1`)
+    await page.send('Emulation.clearDeviceMetricsOverride')
+    await pause(300)
+  }
+
+  async function shot(page: ClassTab, name: string): Promise<void> {
+    const taken = await page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
+    if (taken.result?.data) writeFileSync(path.join(shots!, `${name.replace(/[^\w-]+/g, '-')}.png`), Buffer.from(taken.result.data, 'base64'))
+  }
+}

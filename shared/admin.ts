@@ -305,6 +305,17 @@ export type AdminAuditAction =
   | 'runner.revoked'
   | 'runner.code_minted'
   | 'runner.code_ended'
+  /**
+   * Classes on such a machine (docs/architecture/remote-classes.md §11.5,
+   * §12): the owner turned «Принимает занятия» on or off (`{ classes }`: on,
+   * the machine sees the classes' code, data, files and personal notebooks;
+   * off, their kernels moved off it first), took it back after the class
+   * quarantine («Вернуть»), and moved every class slot off it now
+   * («Перенести занятия», `{ slots }`).
+   */
+  | 'runner.classes'
+  | 'runner.classes_resumed'
+  | 'runner.classes_moved'
 
 /** Every action: the panel has a label for each, and a test checks that each one is recorded somewhere. */
 export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
@@ -351,6 +362,9 @@ export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
   'runner.revoked',
   'runner.code_minted',
   'runner.code_ended',
+  'runner.classes',
+  'runner.classes_resumed',
+  'runner.classes_moved',
 ]
 
 /** What an action was done to. `id` is stable; `label` is how it read at that moment. */

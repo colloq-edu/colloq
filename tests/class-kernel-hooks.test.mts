@@ -578,9 +578,9 @@ test('an owner’s action reads as the owner’s words, without the machine’s 
   t.after(() => control.closeControlRoom(room.id))
   road.lose({ cut: false })
   places.set(room.id, 'room', { where: 'home' })
-  const named = `${tr('server.theOwnerDisconnectedMachine.1a3061', { machine: NAME })} ${tr('server.theKernelWasStartedOnThisServer.497a79')}`
+  const named = `${tr('server.theOwnerDisconnectedMachine.1a3061', { machine: NAME })} ${tr('server.theKernelWillStartAgainTheVariables.a76610')}`
   places.emit({ sessionId: room.id, role: 'room', kind: 'lost', view: { where: 'home' }, cause: 'revoked', words: named, at: hand.now })
-  const words = `${tr('server.theOwnerDisconnectedTheMachine.0660fa')} ${tr('server.theKernelWasStartedOnThisServer.497a79')}`
+  const words = `${tr('server.theOwnerDisconnectedTheMachine.0660fa')} ${tr('server.theKernelWillStartAgainTheVariables.a76610')}`
   assert.equal(room.notes().filter((note) => note === words).length, 1)
   assert.ok(!room.notes().some((note) => note.startsWith(tr('server.theKernelStoppedRestartItToRun.911803'))), 'a failover read as a crash')
   // An idle kernel ended so is «не запущено», not «ядро остановлено»: the next Run brings one up.
@@ -605,7 +605,7 @@ test('a start its machine is lost under is that failover: the room never reads t
   room.run(0, 1)
   assert.ok(await until(() => connect.mock.callCount() === 1 && room.entry().status === 'starting'), room.entry().status)
   // The owner revokes the machine: the start is rejected with words that name it, before any news of the loss.
-  const named = `${tr('server.theOwnerDisconnectedMachine.1a3061', { machine: NAME })} ${tr('server.theKernelWasStartedOnThisServer.497a79')}`
+  const named = `${tr('server.theOwnerDisconnectedMachine.1a3061', { machine: NAME })} ${tr('server.theKernelWillStartAgainTheVariables.a76610')}`
   places.set(room.id, 'room', { where: 'home' })
   reject(new PlacementLost(named, 'revoked'))
   assert.ok(await until(() => room.entry().status === 'off'), room.entry().status)
@@ -613,7 +613,7 @@ test('a start its machine is lost under is that failover: the room never reads t
   places.emit({ sessionId: room.id, role: 'room', kind: 'lost', view: { where: 'home' }, cause: 'revoked', words: named, at: hand.now })
   await turns()
 
-  const words = `${tr('server.theOwnerDisconnectedTheMachine.0660fa')} ${tr('server.theKernelWasStartedOnThisServer.497a79')}`
+  const words = `${tr('server.theOwnerDisconnectedTheMachine.0660fa')} ${tr('server.theKernelWillStartAgainTheVariables.a76610')}`
   const notes = room.notes()
   assert.equal(notes.filter((note) => note === words).length, 1, notes.join('\n'))
   assert.equal(notes.filter((note) => note === tr(QUEUE_DROPPED)).length, 1)
@@ -686,7 +686,7 @@ test('a kernel already dead when its machine is lost is «не запущено�
   fake.release('gone')
   places.set(room.id, 'room', { where: 'home' })
   places.emit({ sessionId: room.id, role: 'room', kind: 'lost', view: { where: 'home' }, cause: 'revoked', at: hand.now })
-  const words = `${tr('server.theOwnerDisconnectedTheMachine.0660fa')} ${tr('server.theKernelWasStartedOnThisServer.497a79')}`
+  const words = `${tr('server.theOwnerDisconnectedTheMachine.0660fa')} ${tr('server.theKernelWillStartAgainTheVariables.a76610')}`
   assert.equal(room.notes().filter((note) => note === words).length, 1)
   // The next Run brings a kernel up wherever the class computes now: nothing in the room is broken.
   assert.equal(room.entry().status, 'off')
@@ -740,7 +740,7 @@ test('a failover that lands on a restart in flight is the failover, not a failed
   await restarting
   const notes = room.notes()
   assert.ok(!notes.includes(tr('server.theKernelDidNotComeBackAfter.cadaf5')), notes.join('\n'))
-  assert.equal(notes.filter((note) => note === tr('server.theKernelWasStartedOnThisServer.497a79')).length, 1)
+  assert.equal(notes.filter((note) => note === tr('server.theKernelWillStartAgainTheVariables.a76610')).length, 1)
   assert.equal(room.entry().status, 'off')
 })
 
@@ -1216,7 +1216,7 @@ test('the kernels map says where and how the machine answers; staff hear its nam
   places.emit({ sessionId: room.id, role: 'room', kind: 'unreachable', view: quiet, at: hand.now })
   assert.deepEqual([room.entry().link, room.entry().linkSince], ['lost', quiet.since])
   hand.advance(NOTE_MS)
-  const named = tr('server.machineHasNotAnsweredSinceWaitingUntil.3d926e', {
+  const named = tr('server.machineHasNotAnsweredSinceWaitingUntil.1d012e', {
     machine: NAME,
     since: await clockTime(quiet.since),
     until: await clockTime(quiet.failoverAt!),
@@ -1224,6 +1224,16 @@ test('the kernels map says where and how the machine answers; staff hear its nam
   assert.ok(frames(teacher.heard).some((message) => message.t === 'kernel:machine' && message.note === named && message.machine?.state === 'unreachable'))
   assert.deepEqual(frames(pupil.heard), [])
   assert.ok(!names(room), 'the room’s document named the machine')
+
+  // «Ждать машину» saved meanwhile (the seminar PATCH): staff read the class's new plan at once, with no news of the machine's.
+  const from = teacher.heard.length
+  places.set(room.id, 'room', { ...quiet, failover: 'wait', failoverAt: null })
+  kernel.kernelMachinesChanged(room.id)
+  const waiting = tr('server.machineHasNotAnsweredSinceWaitingFor.5afc55', { machine: NAME, since: await clockTime(quiet.since) })
+  const again = frames(teacher.heard.slice(from))
+  assert.ok(again.some((message) => message.t === 'kernel:machine' && message.note === waiting), JSON.stringify(again))
+  assert.ok(again.every((message) => message.t !== 'kernel:machine' || message.machine?.failover === 'wait'), 'every frame says the class waits now')
+  assert.deepEqual(frames(pupil.heard), [])
 })
 
 test('a machine’s link as the last process saw it is nobody’s news after a restart: «нет связи» and «переносим» go, «на машине» stays', () => {

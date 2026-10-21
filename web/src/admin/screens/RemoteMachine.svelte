@@ -18,6 +18,13 @@
    *
    * Owner-only: the server answers a teacher 403, and the shell shows the tab
    * to everyone, so a teacher who follows a link reads the refusal here.
+   *
+   * Classes on machines (Paper 18 · Z3): the header carries the machine's
+   * roles and Move classes; the counters gain its classes, the memory
+   * they hold, its link and its moves of the last day; the settings row the
+   * switch Takes classes (asked first both ways, and greyed against
+   * the hidden test, D3); a table lists each class on it with its kernels,
+   * memory, CPU, link and files; the log words the class lines.
    */
   import { onMount } from 'svelte'
   import { tr } from '@shared/i18n'
@@ -32,6 +39,9 @@
     PER_DEVICE_BOUNDS,
     PLACES_BOUNDS,
     cardsFacts,
+    classRowCells,
+    classesChip,
+    classesCount,
     eventLine,
     eventTime,
     gbFromMb,
@@ -76,7 +86,7 @@
   let busy = $state(false)
   let actionErrorText = $state<(() => string) | null>(null)
   const actionError = $derived(actionErrorText?.() ?? null)
-  let dialog = $state<'trust' | 'revoke' | null>(null)
+  let dialog = $state<'trust' | 'revoke' | 'classesOn' | 'classesOff' | 'moveClasses' | null>(null)
   let showAll = $state(false)
 
   /** The two number fields, as typed; `null` — not being edited, the field shows the server's value. */
@@ -103,6 +113,12 @@
   const places = $derived(machine ? machinePlaces(machine.places) : null)
   /** Runs per card in force on the machine now: the cards say it, whatever was set since. */
   const perDeviceNow = $derived(machine?.cards[0]?.perDevice ?? machine?.perDevice ?? 1)
+  const roles = $derived(machine ? classesChip(machine) : null)
+  /** The classes it holds now, for the dialogs' "3 classes move…". */
+  const heldClasses = $derived(machine?.classes?.held.classes ?? 0)
+  const classRows = $derived(machine?.classRows ?? [])
+  /** Its classes' moves within the last day, from the log ("1 move in a day"). */
+  const movesToday = $derived(machine ? machine.events.filter((event) => event.kind === 'class_failover' && now - event.at < 86_400_000).length : 0)
 
   function messageFor(cause: unknown): string {
     if (cause instanceof Error && cause.message) return cause.message
@@ -189,7 +205,11 @@
     const done =
       asked === 'trust'
         ? await run(() => runnersApi.update(machineId, { trusted: true }))
-        : await run(() => runnersApi.act(machineId, 'revoke'))
+        : asked === 'classesOn' || asked === 'classesOff'
+          ? await run(() => runnersApi.update(machineId, { classes: asked === 'classesOn' }))
+          : asked === 'moveClasses'
+            ? await run(() => runnersApi.classAction(machineId, 'move'))
+            : await run(() => runnersApi.act(machineId, 'revoke'))
     if (done) {
       dialog = null
       savedAt = Date.now()
@@ -207,6 +227,13 @@
       actionErrorText = null
       dialog = 'trust'
     }
+  }
+
+  /** Takes classes, asked both ways: on hands it its classes' work, off moves them now. */
+  function toggleClasses(): void {
+    if (!machine || gone) return
+    actionErrorText = null
+    dialog = machine.classes?.on ? 'classesOff' : 'classesOn'
   }
 
   /** A number field committed: sent only when it says something new and something allowed. */
@@ -302,6 +329,13 @@
     {#if machine}
       {@const chip = stateChip(machine.state, machine.silentSince, now)}
       <Badge word={chip.word} tone={chip.tone} />
+      {#if !gone}
+        <!-- Its roles (Z3), as on its row in the list. -->
+        <Badge word={tr('admin.runners.chip.submissions')} />
+        {#if roles}
+          <Badge word={roles.word} tone={roles.tone} form={roles.dashed ? 'outline' : 'filled'} class={cn(roles.dashed && 'border-dashed !text-faint')} />
+        {/if}
+      {/if}
       {#if machine.trusted}
         <Badge word={tr('admin.runners.trusted')} tone="accent" form="outline" />
       {/if}
@@ -316,6 +350,16 @@
 
   {#snippet actions()}
     {#if machine && menu && adminAuth.isOwner}
+      {#if menu.moveClasses}
+        <button type="button" class="btn-outline max-[640px]:flex-1" disabled={busy} onclick={() => (dialog = 'moveClasses')}>
+          {tr('admin.runners.menu.moveClasses')}
+        </button>
+      {/if}
+      {#if menu.resumeClasses}
+        <button type="button" class="btn-outline max-[640px]:flex-1" disabled={busy} onclick={() => void run(() => runnersApi.classAction(machine!.id, 'resume'))}>
+          {tr('admin.runners.menu.resumeClasses')}
+        </button>
+      {/if}
       {#if menu.drain}
         <button type="button" class="btn-outline max-[640px]:flex-1" disabled={busy} onclick={() => void run(() => runnersApi.act(machine!.id, 'drain'))}>
           {tr('admin.runners.menu.drain')}
@@ -352,8 +396,27 @@
       <p role="alert" class="mt-5 border border-danger/40 bg-danger/5 px-4 py-3 text-ui text-danger">{actionError}</p>
     {/if}
 
-    <!-- The four numbers the machine is judged by. -->
+    <!-- The numbers the machine is judged by; its classes' first (Z3) when it has any. -->
     <div class="flex flex-wrap items-baseline gap-x-9 gap-y-3 pt-6">
+      {#if machine.classes && !gone}
+        {@const held = machine.classes.held}
+        {@const link = machine.classes.link}
+        {@render counter(held.classes, tr('admin.runners.page.classesCount', { count: held.classes }), 'text-ink')}
+        {@render counter(
+          Math.round(held.memoryMb / 1024),
+          machine.facts.memoryMb === null
+            ? tr('admin.runners.page.classesMemoryHeld')
+            : tr('admin.runners.page.classesMemory', { total: Math.round(machine.facts.memoryMb / 1024) }),
+          'text-ink',
+        )}
+        {#if link && link.rttMs !== null}
+          {@render counter(
+            Math.round(link.rttMs),
+            link.p95Ms === null ? tr('admin.runners.page.linkCounterOnly') : tr('admin.runners.page.linkCounter', { p95: Math.round(link.p95Ms) }),
+            'text-ink',
+          )}
+        {/if}
+      {/if}
       {@render counter(machine.counts.scored, tr('admin.runners.page.scored', { count: machine.counts.scored }), 'text-ink')}
       {@render counter(places.busy, tr('admin.runners.page.busyOf', { count: places.total }), 'text-ink')}
       {@render counter(machine.counts.lost, tr('admin.runners.page.lost', { count: machine.counts.lost }), machine.counts.lost > 0 ? 'text-danger' : 'text-ink')}
@@ -362,6 +425,9 @@
         tr('admin.runners.page.declined', { count: machine.counts.declined }),
         machine.counts.declined > 0 ? 'text-warning' : 'text-ink',
       )}
+      {#if machine.classes && movesToday > 0}
+        {@render counter(movesToday, tr('admin.runners.page.moves', { count: movesToday }), 'text-warning')}
+      {/if}
     </div>
     {#if machine.lastTrouble}
       <p class="mt-2 max-w-[760px] break-words text-2xs text-muted">{tr('admin.runners.page.lastTrouble', { text: machine.lastTrouble })}</p>
@@ -443,6 +509,36 @@
             </div>
           {/if}
 
+          <!-- Takes classes (Z3): the switch in the settings row; the
+               hidden test's gives way to it while classes are on (D3). -->
+          <div class="min-w-[240px] flex-1 basis-[260px]">
+            <span class="admin-label mb-1.5 block">{tr('admin.runners.page.classesLabel')}</span>
+            <label class={cn('flex min-h-10 flex-wrap items-center gap-x-3 gap-y-1 max-[640px]:min-h-11', !busy && !machine.trusted && 'cursor-pointer')}>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={machine.classes?.on === true}
+                aria-label={tr('admin.runners.menu.classes')}
+                disabled={busy || machine.trusted}
+                class={cn(
+                  'flex h-[22px] w-10 shrink-0 items-center rounded-full px-[3px] transition-colors duration-quick',
+                  'focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/15 disabled:opacity-40',
+                  machine.classes?.on ? 'justify-end bg-primary' : 'justify-start bg-faint/60',
+                )}
+                onclick={toggleClasses}
+              >
+                <span class="size-4 rounded-full bg-canvas shadow-sm" aria-hidden="true"></span>
+              </button>
+              <span class="text-ui text-ink">
+                {machine.classes?.on ? tr('admin.runners.page.classesOn') : tr('admin.runners.page.classesOff')}
+              </span>
+            </label>
+            <p class={cn('mt-1.5 text-micro', machine.trusted ? 'text-faint' : 'text-muted')}>
+              {machine.trusted ? tr('admin.runners.menu.classesNotWithTrust') : tr('admin.runners.page.classesNote')}
+            </p>
+          </div>
+
+          {#if !machine.classes?.on}
           <div class="min-w-[240px] flex-1 basis-[260px]">
             <span class="admin-label mb-1.5 block">{tr('admin.runners.connect.sealed')}</span>
             <!-- The whole row is the switch's label, as on the editor's late
@@ -470,6 +566,7 @@
             </label>
             <p class="mt-1.5 text-micro text-muted">{tr('admin.runners.page.trustNote')}</p>
           </div>
+          {/if}
         </div>
         {#if savedAt > 0 && now - savedAt < 2_500}
           <p class="mt-3 flex items-center gap-1 text-2xs font-semibold text-positive" role="status">
@@ -479,6 +576,79 @@
         {/if}
       {/if}
     </Section>
+
+    {#if machine.classes && !gone}
+      <!-- Classes on the machine (Z3): a row per class — its kernels there,
+           the memory they hold, CPU, the machine's link, and how far its
+           files are behind. -->
+      <Section title={tr('admin.runners.page.classesSection', { count: classRows.length })} description={tr('admin.runners.page.classesSectionNote')}>
+        {#if classRows.length === 0}
+          <p class="text-ui text-muted">{tr('admin.runners.page.noClasses')}</p>
+        {:else}
+          <div class="rm-table">
+            <div class="rm-class-head" aria-hidden="true">
+              <span class="admin-label">{tr('admin.runners.page.col.class')}</span>
+              <span class="admin-label">{tr('admin.runners.page.col.kernels')}</span>
+              <span class="admin-label text-right">{tr('admin.runners.page.col.memory')}</span>
+              <span class="admin-label text-right">{tr('admin.runners.page.col.cpu')}</span>
+              <span class="admin-label text-right">{tr('admin.runners.page.col.link')}</span>
+              <span class="admin-label">{tr('admin.runners.page.col.files')}</span>
+            </div>
+            {#each classRows as row (row.sessionId)}
+              {@const cells = classRowCells(row)}
+              {@const link = machine.classes.link}
+              <div class="rm-class-row">
+                <div class="rm-c-name min-w-0">
+                  <p class="break-words text-ui font-semibold text-ink">{row.name ?? row.sessionId}</p>
+                  <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    {#if row.course}
+                      <span class="inline-flex min-w-0 items-center gap-1.5 bg-surface px-1.5 py-0.5">
+                        <span class="size-[7px] shrink-0 bg-primary" aria-hidden="true"></span>
+                        <span class="truncate text-micro font-semibold text-ink">{row.course.name}</span>
+                      </span>
+                    {/if}
+                    {#if row.environment}<span class="font-mono text-micro text-muted">{row.environment}</span>{/if}
+                  </p>
+                </div>
+                <div class="rm-c-kernels min-w-0">
+                  <p class="rm-label admin-label">{tr('admin.runners.page.col.kernels')}</p>
+                  <p class="text-2xs text-ink">{cells.kernels}</p>
+                  {#if cells.kernelsDetail}<p class="mt-0.5 text-micro text-muted">{cells.kernelsDetail}</p>{/if}
+                </div>
+                <div class="rm-c-memory min-w-0">
+                  <p class="rm-label admin-label">{tr('admin.runners.page.col.memory')}</p>
+                  <p class="whitespace-nowrap font-mono text-2xs font-bold text-ink">{cells.memory}</p>
+                  {#if cells.share !== null}
+                    <div class="mt-1 h-[3px] bg-raised" aria-hidden="true">
+                      <div class={cn('h-full', cells.share > 0.85 ? 'bg-warning' : 'bg-brand')} style:width="{(cells.share * 100).toFixed(1)}%"></div>
+                    </div>
+                  {/if}
+                </div>
+                <p class="rm-c-cpu whitespace-nowrap font-mono text-2xs text-ink">
+                  <span class="rm-label admin-label block">{tr('admin.runners.page.col.cpu')}</span>
+                  {cells.cpu ?? '—'}
+                </p>
+                <div class="rm-c-link min-w-0">
+                  <p class="rm-label admin-label">{tr('admin.runners.page.col.link')}</p>
+                  <p class="whitespace-nowrap font-mono text-2xs text-ink">
+                    {link?.rttMs != null ? tr('admin.runners.page.ms', { ms: Math.round(link.rttMs) }) : '—'}
+                  </p>
+                  {#if link?.p95Ms != null}<p class="whitespace-nowrap text-micro text-muted">{tr('admin.runners.page.p95', { ms: Math.round(link.p95Ms) })}</p>{/if}
+                </div>
+                <div class="rm-c-files min-w-0">
+                  <p class="rm-label admin-label">{tr('admin.runners.page.col.files')}</p>
+                  {#if cells.files}
+                    <p class={cn('break-words text-2xs', TONE[cells.files.tone])}>{cells.files.text}</p>
+                  {:else}
+                    <p class="text-2xs text-faint">—</p>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </Section>
+    {/if}
 
     <Section title={tr('admin.runners.page.readiness')} description={tr('admin.runners.page.readinessNote')}>
       {#if machine.readiness.length === 0}
@@ -607,10 +777,26 @@
       <h2 id="machine-dialog-title" class="break-words text-title font-semibold text-ink">
         {dialog === 'trust'
           ? tr('admin.runners.trust.title', { name: machine.name })
-          : tr('admin.runners.revoke.title', { name: machine.name })}
+          : dialog === 'classesOn'
+            ? tr('admin.runners.classesOn.title', { name: machine.name })
+            : dialog === 'classesOff'
+              ? tr('admin.runners.classesOff.title', { name: machine.name })
+              : dialog === 'moveClasses'
+                ? tr('admin.runners.moveClasses.title', { name: machine.name })
+                : tr('admin.runners.revoke.title', { name: machine.name })}
       </h2>
       <p class="mt-2 text-ui leading-relaxed text-muted">
-        {dialog === 'trust' ? tr('admin.runners.trust.body') : tr('admin.runners.revoke.body')}
+        {dialog === 'trust'
+          ? tr('admin.runners.trust.body')
+          : dialog === 'classesOn'
+            ? tr('admin.runners.classesOn.body')
+            : dialog === 'classesOff'
+              ? heldClasses > 0
+                ? tr('admin.runners.classesOff.body', { classes: classesCount(heldClasses) })
+                : tr('admin.runners.classesOff.bodyEmpty')
+              : dialog === 'moveClasses'
+                ? tr('admin.runners.moveClasses.body', { classes: classesCount(heldClasses) })
+                : tr('admin.runners.revoke.body')}
       </p>
       {#if actionError}
         <p class="mt-3 text-ui text-danger" role="alert">{actionError}</p>
@@ -620,6 +806,18 @@
         {#if dialog === 'trust'}
           <button type="button" class="btn-primary" disabled={busy} onclick={() => void confirm()}>
             {busy ? tr('admin.runners.working') : tr('admin.runners.trust.confirm')}
+          </button>
+        {:else if dialog === 'classesOn'}
+          <button type="button" class="btn-primary" disabled={busy} onclick={() => void confirm()}>
+            {busy ? tr('admin.runners.working') : tr('admin.runners.classesOn.confirm')}
+          </button>
+        {:else if dialog === 'classesOff' || dialog === 'moveClasses'}
+          <button type="button" class="btn-danger-solid" disabled={busy} onclick={() => void confirm()}>
+            {busy
+              ? tr('admin.runners.working')
+              : dialog === 'classesOff'
+                ? tr('admin.runners.classesOff.confirm')
+                : tr('admin.runners.moveClasses.confirm')}
           </button>
         {:else}
           <button type="button" class="btn-danger-solid" disabled={busy} onclick={() => void confirm()}>
@@ -664,6 +862,48 @@
 
   .rm-label {
     margin-bottom: 2px;
+  }
+
+  /* The classes table (Z3): a card per class below 760 px, the table above. */
+  .rm-class-head {
+    display: none;
+  }
+
+  .rm-class-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      'name name'
+      'kernels kernels'
+      'memory cpu'
+      'link files';
+    gap: 10px 14px;
+    padding: 14px 0;
+    border-bottom: 1px solid rgb(var(--line));
+  }
+
+  .rm-c-name {
+    grid-area: name;
+  }
+
+  .rm-c-kernels {
+    grid-area: kernels;
+  }
+
+  .rm-c-memory {
+    grid-area: memory;
+  }
+
+  .rm-c-cpu {
+    grid-area: cpu;
+  }
+
+  .rm-c-link {
+    grid-area: link;
+  }
+
+  .rm-c-files {
+    grid-area: files;
   }
 
   .rm-run-row {
@@ -731,6 +971,31 @@
       grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 72px minmax(0, 1.2fr) 104px 40px;
       grid-template-areas: 'who where card bar clock stop';
       padding: 8px 0;
+    }
+
+    .rm-class-head,
+    .rm-class-row {
+      display: grid;
+      grid-template-columns: minmax(0, 224px) minmax(0, 1fr) 104px 44px 60px minmax(0, 1fr);
+      grid-template-areas: 'name kernels memory cpu link files';
+      column-gap: 14px;
+    }
+
+    .rm-class-head {
+      align-items: center;
+      height: 38px;
+      border-bottom: 2px solid rgb(var(--ink));
+    }
+
+    .rm-class-row {
+      row-gap: 0;
+      align-items: start;
+    }
+
+    .rm-c-memory,
+    .rm-c-cpu,
+    .rm-c-link {
+      text-align: right;
     }
   }
 </style>

@@ -48,6 +48,10 @@
  *     STREAM n ms            print 0 … n-1, a line every ms
  *     RAISE [text] · OOM     a ValueError; the kernel killed for memory
  *     WRITE path text        into the kernel's folder (`\n` is a line break)
+ *     FILL path n [text]     a file of n bytes there, `text` over and over (`x` by default)
+ *     TRUNCATE path n        open(path, 'wb').truncate(n): n bytes of holes, no room taken
+ *     MOVE from to           os.rename, the target's folders made first
+ *     REMOVE path            os.remove (shutil.rmtree for a folder)
  *     READ path              print a file of that folder
  *     COUNT                  count this run and print the count: proof of no double execution
  *     LOSE                   the cell's reply and closing idle are lost on the way
@@ -368,8 +372,10 @@ export async function startFakeJupyter(options = {}) {
       const waiting = holds.get(name)
       if (!waiting) return 0
       holds.delete(name)
+      // Counted before they go: each one leaves the set as it is let go.
+      const released = waiting.size
       for (const go of [...waiting]) go()
-      return waiting.size
+      return released
     },
 
     /** How many interpreted cells wait at `HOLD name` now (any name when omitted). */
@@ -1361,6 +1367,45 @@ export async function startFakeJupyter(options = {}) {
           if (options.readOnly) throw new PyError('OSError', `[Errno 30] Read-only file system: '${relative}'`)
           fs.mkdirSync(path.dirname(target), { recursive: true })
           fs.writeFileSync(target, (text ?? '').replace(/\\n/g, '\n'))
+          continue
+        }
+        case 'FILL': {
+          // A file of a size: `text` over and over (a CSV's line, `x` by default), written for real.
+          const [, relative, count, text] = /^FILL\s+(\S+)\s+(\d{1,10})\s?(.*)$/.exec(line) ?? []
+          if (relative === undefined) throw new PyError('SyntaxError', 'FILL path bytes [text]')
+          const target = io.file(relative)
+          if (options.readOnly) throw new PyError('OSError', `[Errno 30] Read-only file system: '${relative}'`)
+          fs.mkdirSync(path.dirname(target), { recursive: true })
+          fs.writeFileSync(target, Buffer.alloc(Number(count), Buffer.from((text || 'x').replace(/\\n/g, '\n'))))
+          continue
+        }
+        case 'TRUNCATE': {
+          // open(path, 'wb').truncate(n): n bytes of holes, which take no room until they are written (a checkpoint's size, cheaply).
+          const size = Number(rest[1])
+          if (rest[0] === undefined || !Number.isSafeInteger(size) || size < 0) throw new PyError('SyntaxError', 'TRUNCATE path bytes')
+          const target = io.file(rest[0])
+          if (options.readOnly) throw new PyError('OSError', `[Errno 30] Read-only file system: '${rest[0]}'`)
+          fs.mkdirSync(path.dirname(target), { recursive: true })
+          fs.writeFileSync(target, '')
+          fs.truncateSync(target, size)
+          continue
+        }
+        case 'MOVE': {
+          // os.rename: a file or a folder, the target's folders made first (os.renames).
+          const from = io.file(rest[0])
+          const to = io.file(rest[1])
+          if (options.readOnly) throw new PyError('OSError', `[Errno 30] Read-only file system: '${rest[0]}'`)
+          if (!fs.existsSync(from)) throw new PyError('FileNotFoundError', `No such file or directory: '${rest[0]}'`)
+          fs.mkdirSync(path.dirname(to), { recursive: true })
+          fs.renameSync(from, to)
+          continue
+        }
+        case 'REMOVE': {
+          // os.remove, or shutil.rmtree for a folder.
+          const target = io.file(rest[0])
+          if (options.readOnly) throw new PyError('OSError', `[Errno 30] Read-only file system: '${rest[0]}'`)
+          if (!fs.existsSync(target)) throw new PyError('FileNotFoundError', `No such file or directory: '${rest[0]}'`)
+          fs.rmSync(target, { recursive: true, force: true })
           continue
         }
         case 'READ': {

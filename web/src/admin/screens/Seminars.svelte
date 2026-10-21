@@ -35,6 +35,7 @@
   import {
     LIMITS,
     type AdminSeminar,
+    type ClassPlacement,
     type InstanceResources,
     type ListScope,
     type MemberTeacher,
@@ -49,6 +50,8 @@
   import RoomRulesRows from '@/components/RoomRulesRows.svelte'
   import Resources from '@/admin/ui/Resources.svelte'
   import type { RoomRules } from '@shared/rules'
+  import type { ClassPlacementOutlook } from '@shared/remote-admin'
+  import { classesOnMachines, runnersApi } from '@/admin/runners'
 
   /**
    * The seminar list, and the one thing a teacher comes here to do: get the
@@ -852,6 +855,66 @@
     }
   }
 
+  /* ------------------------------------------------------ where it runs */
+
+  /**
+   * Where it runs (Paper 18 · Z4): the live line of machines against this
+   * class, read when the window opens and after every change, and the change
+   * itself — saved at once, as memory is: it decides where a slot starts
+   * next, and moves nothing that runs.
+   */
+  let outlook = $state<ClassPlacementOutlook | null>(null)
+  let placementBusy = $state(false)
+  let placementErrorText = $state<(() => string | null) | null>(null)
+  const placementError = $derived(placementErrorText?.() ?? null)
+
+  /**
+   * Whether a class can compute on machines on this server at all: never
+   * under the broker (Kubernetes keeps a class's Pods, D26), nor on a server
+   * from before classes. Asked once, when a class window first opens; until
+   * the answer the block is not drawn, and a failed question is asked again
+   * at the next opening.
+   */
+  let machinesHere = $state(false)
+  let machinesAsked: Promise<boolean> | null = null
+  function placesOnMachines(): Promise<boolean> {
+    machinesAsked ??= runnersApi.classSettings().then(
+      (settings) => (machinesHere = classesOnMachines(settings)),
+      () => {
+        machinesAsked = null
+        return false
+      },
+    )
+    return machinesAsked
+  }
+
+  function readOutlook(id: string): void {
+    void runnersApi
+      .placementOutlook(id)
+      .then((answer) => {
+        if (ruling?.id === id) outlook = answer
+      })
+      .catch(() => {
+        if (ruling?.id === id) outlook = null
+      })
+  }
+
+  async function setPlacement(seminar: AdminSeminar, patch: Partial<ClassPlacement>): Promise<void> {
+    placementBusy = true
+    placementErrorText = null
+    try {
+      const updated = await adminApi.updateSeminar(seminar.id, { placement: patch })
+      replace(updated)
+      ruling = updated
+      readOutlook(seminar.id)
+    } catch (cause: unknown) {
+      noteDeadCookie(cause)
+      placementErrorText = () => (cause instanceof AdminApiError ? cause.message : tr('admin.placement.notSaved'))
+    } finally {
+      placementBusy = false
+    }
+  }
+
   async function setRule(seminar: AdminSeminar, patchRules: Partial<RoomRules>): Promise<void> {
     rulesBusy = true
     rulesErrorText = null
@@ -1012,6 +1075,11 @@
     // opens with placeholders and waits for a fresh answer.
     resources = null
     readResources()
+    outlook = null
+    placementErrorText = null
+    void placesOnMachines().then((yes) => {
+      if (yes && seminar.placement && ruling?.id === seminar.id) readOutlook(seminar.id)
+    })
     hosts = null
     hostsErrorText = null
     pickerOpen = false
@@ -2331,6 +2399,13 @@
             roomId={ruling.id}
             onmemory={(mb) => void setMemory(ruling as AdminSeminar, mb)}
             oncpus={(cores) => void setCpus(ruling as AdminSeminar, cores)}
+            placement={machinesHere ? (ruling.placement ?? null) : null}
+            placementEditable={ruling.placementEditable === true}
+            {placementBusy}
+            onplacement={(patch) => void setPlacement(ruling as AdminSeminar, patch)}
+            {outlook}
+            {owner}
+            placementRefusal={placementError}
           />
         </div>
       </div>
