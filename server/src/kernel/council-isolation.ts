@@ -285,7 +285,11 @@ export interface CouncilExitReport extends CouncilLeftovers {
   files: CouncilArtifact[]
   /** New files past those listed. */
   more: number
-  /** The worker's private dirty memory now (smaps_rollup), bytes; `null` where Linux does not say or outside a worker. */
+  /**
+   * The memory the worker wrote for itself now (smaps_rollup's anonymous pages, its shared memory and swap; never a
+   * disk's page cache, an epoch's pages not yet written back included, though an epoch store on a tmpfs would count as
+   * shared memory: _dirty), bytes; `null` where Linux does not say or outside a worker.
+   */
   dirty: number | null
   /** How much of it the attempts added since the seed. */
   grown: number | null
@@ -1724,26 +1728,51 @@ def _mmap(fd):
         return mmap.mmap(fd, 0, access=mmap.ACCESS_COPY)
 
 
-# Where Linux says how much private memory a process has written.
+# Where Linux says what memory a process holds, and of which kind.
 _SMAPS = '/proc/self/smaps_rollup'
 
 
 def _dirty():
-    """This process's private dirty memory, in bytes; None where Linux does not say.
+    """The memory this process wrote for itself, in bytes; None where Linux does not say.
 
-    What a worker holds for itself alone: its heap, the attempts' leftovers,
-    epoch pages it wrote into, modules an attempt imported. The epoch's
-    shared pages are clean and do not count, which is the whole point of
-    mapping them (§9.3, detail 4).
+    What a worker holds alone: its heap, the attempts' leftovers, its copies
+    of the epoch pages it wrote into, modules an attempt imported. That is
+    its anonymous pages, less those freed lazily (MADV_FREE, the kernel's to
+    take back), with the shared memory it maps (an mmap(-1), by its share)
+    and what of either went to swap.
+
+    Not Private_Dirty: that counts a page of the page cache too, while the
+    page is dirty and this process alone maps it. An epoch's files are such
+    pages for as long as the agent's copy of them is not yet written back
+    (30 s by default), so the first worker to read a fresh epoch's frame
+    would hold it all as its own and be recycled for a read. On a disk
+    filesystem the epoch's pages are the page cache's whatever their state,
+    and do not count, which is the whole point of mapping them (§9.3,
+    detail 4).
+
+    So this assumes the epoch store is on one, as the agent's is by default
+    (/var/lib/colloq-runner). On a tmpfs a file's pages are shared memory:
+    Pss_Shmem charges each worker its share of every epoch page it touched,
+    as Private_Dirty would charge a page whole, and for good (a tmpfs page
+    is never written back), to the one worker that alone maps it. Leaving
+    the epoch out there would take /proc/self/smaps, mapping by mapping.
     """
+    own = 0
+    found = False
     try:
         with open(_SMAPS) as handle:
             for line in handle:
-                if line.startswith('Private_Dirty:'):
-                    return int(line.split()[1]) * 1024
+                key, _, rest = line.partition(':')
+                if key == 'Anonymous':
+                    found = True
+                    own += int(rest.split()[0])
+                elif key in ('Pss_Shmem', 'Swap'):
+                    own += int(rest.split()[0])
+                elif key == 'LazyFree':
+                    own -= int(rest.split()[0])
     except Exception:
         return None
-    return None
+    return max(own, 0) * 1024 if found else None
 
 
 def _run_id(value):

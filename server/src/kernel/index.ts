@@ -5952,7 +5952,7 @@ export interface AttemptEnd {
   stuck: boolean
   /** Its kernel after: up, restarted by itself, or dead. */
   kernel: 'up' | 'restarted' | 'dead'
-  /** Its private dirty memory after the attempt, MB, when the exit could tell (§9.3 detail 4). */
+  /** What the attempts added to its own memory since the seed, MB (`grown`: what it wrote for itself, §9.3 detail 4), when the exit could tell. */
   dirtyMb: number | null
   /** The files the attempt wrote into its own folder (§9.7), as its exit listed them: a sha256 for those to bring home. */
   files: Array<{ name: string; sha256: string | null; bytes: number }>

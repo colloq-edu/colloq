@@ -19,7 +19,7 @@ import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statfsSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { setLocaleResolver } from '../shared/i18n.js'
@@ -210,8 +210,8 @@ after(() => {
   }
 })
 
-function scratch(): string {
-  const root = mkdtempSync(path.join(tmpdir(), 'colloq-epoch-'))
+function scratch(base = tmpdir()): string {
+  const root = mkdtempSync(path.join(base, 'colloq-epoch-'))
   roots.push(root)
   return root
 }
@@ -1216,21 +1216,74 @@ test('a seed maps its stream rather than reading it, and measures its baseline o
   assert.ok(report.bodyBytes > 40 * MiB)
   // The worker's own memory as tracemalloc counts it, for smaps_rollup, which only Linux has.
   const prep = 'import tracemalloc\ntracemalloc.start()\nm._dirty = lambda: tracemalloc.get_traced_memory()[0]'
+  // Two attempts that each leave 16 MB behind for good, in a worker whose «Память на попытку» is 20 MB: each fits its
+  // own ceiling (on Linux its entry's address space and 20 MB more, where 30 MB at once is the attempt's MemoryError),
+  // and together they are over it since the seed.
+  const keep = "import sys\nsys.modules['_probe'].__dict__.setdefault('keep', []).append(bytearray(b'\\x01') * (16 * 1024 * 1024))"
   const out = worker({
     report, dir: cas, prep,
     attempts: [
       { source: "import sys, tracemalloc\nsys.modules['_probe'].seen.append(tracemalloc.get_traced_memory()[1])", bare: true },
-      // An attempt that leaves 30 MB behind for good, in a worker whose «Память на попытку» is 20 MB.
-      // Written, not zero-filled: Linux counts a zeroed allocation nobody touched as no dirty memory at all.
-      { source: "import sys\nsys.modules['_probe'].keep = bytearray(b'\\x01') * (30 * 1024 * 1024)", entry: { capMb: 20 } },
+      { source: keep, entry: { capMb: 20 } },
+      { source: keep, entry: { capMb: 20 } },
     ],
   })
   assert.equal(out.seed.ok, true, out.seed.error)
   // The blob itself, once: never the stream read in beside it.
   assert.ok(out.seen[0] < 60 * MiB, `the seed's peak was ${out.seen[0]} bytes`)
-  const exit = parseExitReport(JSON.stringify(out.results[0].exit))!
-  assert.ok((exit.grown ?? 0) >= 30 * MiB, `grown ${exit.grown}`)
-  assert.equal(exit.recycle, true)
+  assert.deepEqual(out.results.map((one) => one.failure), [null, null], 'each attempt kept what it made')
+  // A baseline taken with the stream's 40 MB still held would hide both.
+  const [first, second] = out.results.map((one) => parseExitReport(JSON.stringify(one.exit))!)
+  assert.ok(first.grown !== null && first.grown >= 15 * MiB && first.grown < 20 * MiB, `grown ${first.grown} after one`)
+  assert.equal(first.recycle, false)
+  assert.ok((second.grown ?? 0) >= 30 * MiB, `grown ${second.grown} after two`)
+  assert.equal(second.recycle, true)
+})
+
+const smapsRollup = existsSync('/proc/self/smaps_rollup')
+// statfs(2)'s f_type of a tmpfs, where a file's pages are shared memory rather than a disk's page cache.
+const TMPFS_MAGIC = 0x01021994
+/**
+ * A folder on a disk filesystem, as the agent's epoch store is (/var/lib/colloq-runner by default) and as the measure
+ * of a worker's own memory assumes (council-isolation.ts · _dirty): tmpdir() unless that is a tmpfs, as Debian 13,
+ * Fedora and Arch mount /tmp, else /var/tmp.
+ */
+const onDisk = smapsRollup ? [tmpdir(), '/var/tmp'].find((base) => {
+  try {
+    return statfsSync(base).type !== TMPFS_MAGIC
+  } catch {
+    return false
+  }
+}) : undefined
+
+test('a worker\'s own memory is what it wrote: reading a fresh file through its mapping adds nothing, writing into it adds every page — on Linux', { skip: noPython || (!smapsRollup ? 'smaps_rollup is Linux\'s' : onDisk ? false : 'no folder on a disk filesystem, where an epoch store is') }, () => {
+  const { report, cas } = epochOf('k = 1')
+  // Written a moment ago on a disk, as the agent's copy of an epoch's buffer is when the first attempts read it: its
+  // pages are the page cache's, dirty until written back (vm.dirty_expire_centisecs, 30 s by default), and smaps_rollup
+  // counts a dirty page as Private_Dirty of the one process that maps it.
+  const file = path.join(scratch(onDisk), 'buffer')
+  writeFileSync(file, Buffer.alloc(32 * MiB, 7))
+  const held = "sys.modules['_probe'].held"
+  const out = worker({
+    report, dir: cas,
+    attempts: [
+      // Mapped copy-on-write and held past every exit, as a seed maps and holds the epoch's buffers.
+      { source: `import mmap, os, sys\nfd = os.open(${JSON.stringify(file)}, os.O_RDONLY)\n${held} = mmap.mmap(fd, 0, access=mmap.ACCESS_COPY)\nos.close(fd)`, bare: true },
+      // In a worker whose «Память на попытку» is 16 MB: one attempt reads every page, the next writes a byte into each.
+      { source: `import sys\nsys.modules['_probe'].seen.append(sum(${held}[i] for i in range(0, len(${held}), 4096)))`, entry: { capMb: 16 } },
+      { source: `import sys\nfor i in range(0, len(${held}), 4096):\n    ${held}[i] = 1`, entry: { capMb: 16 } },
+    ],
+  })
+  assert.equal(out.seed.ok, true, out.seed.error)
+  assert.deepEqual(out.results.map((one) => one.failure), [null, null])
+  assert.deepEqual(out.seen, [7 * 8192])
+  const [read, wrote] = out.results.map((one) => parseExitReport(JSON.stringify(one.exit))!)
+  // The pages it read are the page cache's, dirty or not: a worker is never recycled for a read.
+  assert.ok(read.grown !== null && read.grown < 8 * MiB, `reading 32 MB through the mapping grew the worker by ${read.grown} bytes`)
+  assert.equal(read.recycle, false)
+  // Its copies of the pages it wrote are its own, and no ceiling bounds them (RLIMIT_AS does not see writes into a mapping).
+  assert.ok(wrote.grown !== null && wrote.grown >= 30 * MiB, `writing into every page grew the worker by ${wrote.grown} bytes`)
+  assert.equal(wrote.recycle, true)
 })
 
 test('a worker raises its OOM score before it unpickles a thing', { skip: noPython }, () => {

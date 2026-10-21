@@ -916,7 +916,7 @@ test('on Linux a worker\'s attempt meets a MemoryError at its cap', { skip: !pyt
 test('a worker\'s exit asks for a recycle when its own memory grew past the cap, or a thread was left', { skip: noPython }, () => {
   const root = folder()
   const smaps = path.join(root, 'smaps_rollup')
-  const seeded = (kb: number) => writeFileSync(smaps, `Rss: 9 kB\nPrivate_Dirty: ${kb} kB\n`)
+  const seeded = () => writeFileSync(smaps, 'Rss: 9 kB\nPrivate_Dirty: 1000 kB\nAnonymous: 1000 kB\n')
   // A worker as its seed leaves it: an epoch with a baseline of 1000 kB of its own.
   const prep = [
     `m._SMAPS = ${JSON.stringify(smaps)}`,
@@ -924,19 +924,25 @@ test('a worker\'s exit asks for a recycle when its own memory grew past the cap,
     // No ceiling here: the cap is the recycle's measure in this test, not the attempt's.
     'm._linux = lambda: False',
   ].join('\n')
-  const grow = (kb: number) => `open(${JSON.stringify(smaps)}, 'w').write('Private_Dirty: ${kb} kB')`
+  // What the attempt leaves smaps_rollup saying.
+  const grow = (lines: string) => `open(${JSON.stringify(smaps)}, 'w').write(${JSON.stringify(lines)})`
   // A seeded worker's entry carries its inputs, or it does not go in.
   const inputs = (attempt: string, capMb: number, runId: string): CouncilIsolationSettings => ({ source: attempt, capMb, runId, scratchRoot: root })
-  seeded(1000)
-  const grew = drive({ setup: 'x = 1', attempt: grow(1000 + 2 * 1024), probe: 'x', entry: inputs(grow(1000 + 2 * 1024), 1, 'grew'), prep })
+  seeded()
+  // 2048 kB more of its own: anonymous pages, shared memory and swap alike.
+  const more = grow('Rss: 9 kB\nPrivate_Dirty: 3048 kB\nAnonymous: 2024 kB\nPss_Shmem: 512 kB\nSwap: 512 kB\n')
+  const grew = drive({ setup: 'x = 1', attempt: more, probe: 'x', entry: inputs(more, 1, 'grew'), prep })
   const exit = parseExitReport(JSON.stringify(grew.left))!
   assert.equal(exit.dirty, (1000 + 2048) * 1024)
   assert.equal(exit.grown, 2048 * 1024)
   assert.equal(exit.recycle, true)
-  seeded(1000)
-  const kept = drive({ setup: 'x = 1', attempt: grow(1000 + 512), probe: 'x', entry: inputs(grow(1000 + 512), 1, 'kept'), prep })
-  assert.equal(parseExitReport(JSON.stringify(kept.left))!.recycle, false)
-  seeded(1000)
+  seeded()
+  // A fresh epoch's frame read whole: 390 MB more Private_Dirty, all of it the page cache's pages not yet written back,
+  // which it alone maps; and 4 MB freed lazily. Of its own, 512 kB.
+  const read = grow('Rss: 400009 kB\nPrivate_Dirty: 400000 kB\nAnonymous: 5608 kB\nLazyFree: 4096 kB\n')
+  const kept = parseExitReport(JSON.stringify(drive({ setup: 'x = 1', attempt: read, probe: 'x', entry: inputs(read, 1, 'kept'), prep }).left))!
+  assert.deepEqual([kept.grown, kept.recycle], [512 * 1024, false])
+  seeded()
   const leftThread = 'import threading\nev = threading.Event()\nthreading.Thread(target=lambda: ev.wait(20), daemon=True).start()'
   const thread = drive({ setup: 'x = 1', attempt: leftThread, probe: 'x', entry: inputs(leftThread, 1024, 'thread'), prep })
   assert.equal(parseExitReport(JSON.stringify(thread.left))!.recycle, true)

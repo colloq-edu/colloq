@@ -833,9 +833,11 @@ interface Cells {
   /**
    * An attempt computing for ATTEMPT_SEC on the class's `x` (and the data,
    * `withData`); in Python it says its worker's memory as it reads it at its
-   * end (smaps_rollup, kB): Private_Dirty, all the worker wrote of its own —
-   * the epoch's objects it unpickled included, so not the growth since its
-   * seed that the pool recycles it by (§9.3 detail 4) — its Pss and its Rss.
+   * end (smaps_rollup, kB): Anonymous − LazyFree + Pss_Shmem + Swap, all the
+   * worker wrote for itself — the epoch's objects it unpickled included, so
+   * not the growth since its seed that the pool recycles it by (§9.3 detail
+   * 4); never Private_Dirty, which also charges a reader the page cache's
+   * still-dirty pages of a freshly copied epoch — its Pss and its Rss.
    */
   attempt(n: number, draft: number, withData: boolean): string
   /** An attempt asking `mb` at once, more than «Память на попытку» gives it; null — not in these cells. */
@@ -929,7 +931,7 @@ const PYTHON: Cells = {
     '        _k, _, _v = _line.partition(":")',
     '        if _v.strip().endswith("kB"):',
     '            _m[_k.strip()] = int(_v.split()[0])',
-    '    print(answer, "mem", _m.get("Private_Dirty", 0), _m.get("Pss", 0), _m.get("Rss", 0))',
+    '    print(answer, "mem", _m.get("Anonymous", 0) - _m.get("LazyFree", 0) + _m.get("Pss_Shmem", 0) + _m.get("Swap", 0), _m.get("Pss", 0), _m.get("Rss", 0))',
     'except OSError:',
     '    print(answer)',
     `# draft ${draft}`,
@@ -3210,7 +3212,7 @@ function report(sum: Summary): void {
     row('  a later open', spreadText(k.pool.epoch), 'its epoch on the pool\'s machine after the open: the export and its way there, no worker\'s reload')
     row('  «Обновить состояние»', spreadText(k.pool.refresh), `nothing run since: the same, an unchanged refreeze${k.pool.refreshUnanswered ? red(` · ${k.pool.refreshUnanswered} unanswered`) : ''}`)
     row('  a worker\'s seed', spreadText(k.pool.seed), 'the console naming the epoch a first burst waited for → its first attempt computing on it: a worker\'s restart and load, and the dispatch (the console\'s frames up to 250 ms late)')
-    if (k.memory.privateMb.n) row('  a worker\'s memory', `private ${megabytes(k.memory.privateMb.p50 ?? 0)} · Pss ${megabytes(k.memory.pssMb.p50 ?? 0)} at p50`, `all it wrote of its own (Private_Dirty, the epoch's objects it unpickled with it: the pool recycles on the growth since the seed past «Память на попытку», not this) up to ${megabytes(k.memory.privateMb.max ?? 0)} · Rss ${megabytes(k.memory.rssMb.p50 ?? 0)}: smaps_rollup as each attempt read it at its end`)
+    if (k.memory.privateMb.n) row('  a worker\'s memory', `own ${megabytes(k.memory.privateMb.p50 ?? 0)} · Pss ${megabytes(k.memory.pssMb.p50 ?? 0)} at p50`, `all it wrote for itself (Anonymous − LazyFree + Pss_Shmem + Swap, the epoch's objects it unpickled with it: the pool recycles on the growth since the seed past «Память на попытку», not this) up to ${megabytes(k.memory.privateMb.max ?? 0)} · Rss ${megabytes(k.memory.rssMb.p50 ?? 0)}: smaps_rollup as each attempt read it at its end`)
     if (k.greedy.asked || k.greedy.shared) row('  a greedy attempt', k.greedy.asked ? `${k.greedy.memoryError} of ${k.greedy.asked} MemoryError on the pool` : 'none on the pool', `asking ${megabytes(k.greedy.mb)}${k.greedy.other ? red(` · ${k.greedy.other} ended otherwise`) : ''}${k.greedy.shared ? red(` · ${k.greedy.shared} computed in the shared kernel, under the class's memory: not judged`) : ''}`)
   }
   if (k.data.mb > 0) row(`  the data (${megabytes(k.data.mb)})`, spreadText(k.data.cell), `a DataFrame and a fitted model in the class notebook's kernel, before the class${k.data.unanswered ? red(' · never made') : ''}`)
@@ -3314,7 +3316,7 @@ function report(sum: Summary): void {
     check(k.beside.firstStart.n > 0 ? (k.beside.firstStart.p95 ?? Infinity) <= COUNCIL_EPOCH_WAIT_MS + 1000 && k.epochs.silent === 0 : null, `(R2) beside the teacher's long cell: the first attempt computing ${ms(k.beside.firstStart.p95)} after the first press at p95 (≤ ${COUNCIL_EPOCH_WAIT_MS / 1000} s waiting for a fresher epoch, and a second of the road), ${k.epochs.noted} on an older epoch saying «без ячеек N»${k.epochs.silent ? red(`, ${k.epochs.silent} saying nothing`) : ''}`)
     check(k.host.judged > 0 ? k.host.overtaken === 0 : null, `(R2) the teacher's lane first: ${k.host.judged ? `${k.host.overtaken} of the class's waiting attempts started before the teacher's run, ${ms(k.host.p50)} from its press to computing` : 'not judged: no attempt of the class still waited when the teacher pressed'}`)
     check(k.greedy.asked > 0 ? k.greedy.memoryError === k.greedy.asked && k.errors === 0 : null, k.greedy.asked > 0 ? `(R2) a greedy attempt on the pool: ${k.greedy.memoryError} of ${k.greedy.asked} a MemoryError, ${k.errors} other attempts failed${k.greedy.shared ? `; ${k.greedy.shared} more in the shared kernel, not judged` : ''}` : k.greedy.shared ? `(R2) a greedy attempt: not judged, the shared kernel computed it ${k.greedy.shared}× (its reason with the shared cards' in section 4)` : '(R2) a greedy attempt: not asked (Python cells and a class of three or more)')
-    check(null, `(R2) the epoch${k.data.mb ? ` of ${megabytes(k.data.mb)} of data` : ''}: taken ${ms(k.pool.epochFirst.p50)} after the first open, the pool ready ${ms(k.pool.readyFirst.p50)} (the H → C transfer in it when the class notebook computes here), a later open's on the machine ${ms(k.pool.epoch.p50)}, an unchanged refreeze ${ms(k.pool.refresh.p50)}, a seed ${ms(k.pool.seed.p50)}, a worker's private memory ${k.memory.privateMb.n ? megabytes(k.memory.privateMb.p50 ?? 0) : '—'}; the council container in section 5`)
+    check(null, `(R2) the epoch${k.data.mb ? ` of ${megabytes(k.data.mb)} of data` : ''}: taken ${ms(k.pool.epochFirst.p50)} after the first open, the pool ready ${ms(k.pool.readyFirst.p50)} (the H → C transfer in it when the class notebook computes here), a later open's on the machine ${ms(k.pool.epoch.p50)}, an unchanged refreeze ${ms(k.pool.refresh.p50)}, a seed ${ms(k.pool.seed.p50)}, a worker's own memory ${k.memory.privateMb.n ? megabytes(k.memory.privateMb.p50 ?? 0) : '—'}; the council container in section 5`)
   }
   const within = (during: Spread): boolean | null => (during.n > 0 && co.quiet.p95 !== null ? (during.p95 ?? Infinity) - co.quiet.p95 <= 50 : null)
   check(within(co.burst), `collaboration during the council's bursts within 50 ms of a quiet one at p95: ${ms(co.burst.p95)} against ${ms(co.quiet.p95)}`)

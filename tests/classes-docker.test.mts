@@ -329,6 +329,27 @@ const seconds = (ms: number): string => (ms / 1000).toFixed(1)
 
 /* --------------------------------------------------------------- the machine */
 
+/** statfs(2)'s f_type of a tmpfs, where a file's pages are shared memory rather than a disk's page cache. */
+const TMPFS_MAGIC = 0x01021994
+
+/**
+ * Where the machine's tree goes: on a disk filesystem, as the agent's
+ * /var/lib/colloq-runner is, since the council's measure of a worker's own
+ * memory assumes its epoch store is on one (council-isolation.ts · _dirty).
+ * os.tmpdir() unless that is a tmpfs, as Debian 13, Fedora and Arch mount
+ * /tmp, else /var/tmp.
+ */
+function machineBase(): string {
+  for (const base of [os.tmpdir(), '/var/tmp']) {
+    try {
+      if (fs.statfsSync(base).type !== TMPFS_MAGIC) return base
+    } catch {
+      /* not there: the next one */
+    }
+  }
+  return os.tmpdir()
+}
+
 /**
  * The class machine: its tree on the host, and its agent's container. A new
  * container on the same tree, under the same name, is the same machine's
@@ -585,7 +606,7 @@ before(async () => {
     logTimer = setInterval(keepHomeLogs, LOG_FLUSH_MS)
     logTimer.unref()
   }
-  machine = new Machine(os.tmpdir())
+  machine = new Machine(machineBase())
   await machine.prepare()
   machine.join = relay.joinTarget(mintRemoteCode({ machines: 1, hours: 1, trusted: false, approvedSlots: null, classes: true, namePrefix: 'parity', createdBy: 'colloq-host' }).code)
   await machine.start()
@@ -1746,6 +1767,15 @@ const COUNCIL_PROLOGUE = [
 
 const megabytesOf = (bytes: number): number => Math.round(bytes / (1024 * 1024))
 const median = (values: readonly number[]): number => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] ?? NaN
+/**
+ * What a worker wrote for itself, in MB of a `_mem()` reading, as the recycle
+ * rule reads it (council-isolation.ts · _dirty): its anonymous pages less
+ * those freed lazily, its shared memory and its swap. Never Private_Dirty,
+ * which counts a page of the page cache too while the page is dirty and one
+ * process alone maps it: the agent's copy of a fresh epoch is such pages
+ * until it is written back, half a minute by default.
+ */
+const ownOf = (seen: Record<string, number>): number => (seen.Anonymous ?? NaN) - (seen.LazyFree ?? 0) + (seen.Pss_Shmem ?? 0) + (seen.Swap ?? 0)
 
 scenario('the council on the machine: real pandas exported by the class notebook\'s kernel there and loaded into four workers; each attempt on the epoch\'s mapped pages, its writes its own, the epoch\'s files untouched; a worker recycled past its memory per attempt by smaps_rollup; oom_score_adj 1000 and a ceiling of each attempt\'s own; a greedy attempt\'s MemoryError its author\'s alone; artifacts, the read-only class folder and the scratch root; the drop run on a real kernel', 600_000, async (t) => {
   const one = theMachine()
@@ -1812,8 +1842,9 @@ scenario('the council on the machine: real pandas exported by the class notebook
    * COPY-ON-WRITE (§9.3 detail 3): four attempts at once, one a worker. The
    * writer writes in place into the array and the frame and keeps computing;
    * the three beside it read both whole meanwhile and see the teacher's
-   * state, none of the writes, and reading writes nothing of a worker's own:
-   * the pages are the epoch's file's, mapped copy-on-write. Each attempt
+   * state, none of the writes, and reading writes nothing of a worker's own
+   * (ownOf), however much of the epoch's files the page cache has yet to
+   * write back: the pages are those files', mapped copy-on-write. Each attempt
    * says, at its first line, that its array and its frame's block lie in a
    * mapping of an epoch file — the array in a fresh mapping of its own
    * (`_remap`), the block in its worker's — where an entry that copied them
@@ -1826,17 +1857,17 @@ scenario('the council on the machine: real pandas exported by the class notebook
     'mapped = _maps()',
     ...(afterWriter ? [`_wait('${flag}-written')`] : []),
     'before = _mem()',
-    'total = float(df.to_numpy().sum())',
+    'total = float(df.to_numpy().sum()) + float(base.sum())',
     'read = _mem()',
     `_wait('${flag}-${go}')`,
     "print(json.dumps({'role': 'reader', **_self(), 'mapped': mapped, 'before': before, 'read': read, 'after': _mem(), 'base': base[:3].tolist(), 'first': float(df.iloc[0, 0]), 'score': score(df), 'model': int(model.predict(df.iloc[:1].to_numpy())[0]), 'total': total}))",
   ].join('\n')
-  // Its write into the array measured alone: 32 MB into a clean mapping dirties as much, where a copy made at the entry was dirty already.
+  // Its write into the array measured alone: 32 MB into a clean mapping are as much of its own, where a copy made at the entry was its own already.
   const writer = [
     COUNCIL_PROLOGUE,
     'mapped = _maps()',
     'before = _mem()',
-    'total = float(df.to_numpy().sum())',
+    'total = float(df.to_numpy().sum()) + float(base.sum())',
     'read = _mem()',
     'base[:] = -1.0',
     'dirtied = _mem()',
@@ -1861,18 +1892,18 @@ scenario('the council on the machine: real pandas exported by the class notebook
   const round1 = await atOnce([writer, reader('go1', true), reader('go1', true), reader('go1', true)], 'go1')
   const [wrote, ...beside] = round1
   const megabytesFact = (values: number[]): string => `${median(values)} MB (${Math.min(...values)}–${Math.max(...values)})`
-  record(t, `council: a worker before its attempt read anything: Private_Dirty ${megabytesFact(round1.map((seen) => seen.before.Private_Dirty))}, Rss ${megabytesFact(round1.map((seen) => seen.before.Rss))}, Pss ${megabytesFact(round1.map((seen) => seen.before.Pss))} (COUNCIL_WORKER_BASE_MB ${COUNCIL_WORKER_BASE_MB})`)
-  record(t, `council: reading the whole frame and array: Private_Dirty +${megabytesFact(round1.map((seen) => seen.read.Private_Dirty - seen.before.Private_Dirty))}; the writer's 32 MB into its array +${wrote!.dirtied.Private_Dirty - wrote!.read.Private_Dirty} MB, then one value of its frame +${wrote!.after.Private_Dirty - wrote!.dirtied.Private_Dirty} MB (pandas copies the block it writes)`)
+  record(t, `council: a worker before its attempt read anything: its own ${megabytesFact(round1.map((seen) => ownOf(seen.before)))}, Private_Dirty ${megabytesFact(round1.map((seen) => seen.before.Private_Dirty))}, Rss ${megabytesFact(round1.map((seen) => seen.before.Rss))}, Pss ${megabytesFact(round1.map((seen) => seen.before.Pss))} (COUNCIL_WORKER_BASE_MB ${COUNCIL_WORKER_BASE_MB})`)
+  record(t, `council: reading the whole frame and array: its own +${megabytesFact(round1.map((seen) => ownOf(seen.read) - ownOf(seen.before)))}, Private_Dirty +${megabytesFact(round1.map((seen) => seen.read.Private_Dirty - seen.before.Private_Dirty))} (the page cache's pages not yet written back, while one worker alone maps them); the writer's 32 MB into its array +${ownOf(wrote!.dirtied) - ownOf(wrote!.read)} MB of its own, then one value of its frame +${ownOf(wrote!.after) - ownOf(wrote!.dirtied)} MB (pandas copies the column it writes)`)
   record(t, `council: an attempt's RLIMIT_AS ${megabytesOf(median(round1.map((seen) => seen.as)))} MB; oom_score_adj ${round1.map((seen) => seen.oom).join(', ')} in the workers, ${JSON.stringify(round1[0]!.server)} for jupyter_server`)
   assert.equal(new Set(round1.map((seen) => seen.pid)).size, 4, 'four workers, each its own Python')
   for (const seen of round1) assert.deepEqual(seen.mapped, { base: true, frame: true }, `${seen.role}: its array and its frame's block in a mapping of an epoch file, never a copy made at its entry`)
   for (const seen of beside) {
     assert.deepEqual([seen.base, seen.first, seen.score, seen.model], [[0, 1, 2], teacher.first, teacher.score, teacher.model], 'the teacher\'s state, none of the writer\'s writes beside it')
-    assert.equal(seen.total, wrote!.total, 'the same frame, read whole')
+    assert.equal(seen.total, wrote!.total, 'the same frame and array, read whole')
   }
   assert.deepEqual([wrote!.base, wrote!.first], [[-1, -1, -1], -1], 'the writer sees its own writes')
-  assert.ok(wrote!.dirtied.Private_Dirty - wrote!.read.Private_Dirty >= 24, `the writer's 32 MB into its array dirtied ${wrote!.dirtied.Private_Dirty - wrote!.read.Private_Dirty} MB of its own: its pages were not a clean mapping`)
-  for (const seen of round1) assert.ok(seen.read.Private_Dirty - seen.before.Private_Dirty < 32, `reading 160 MB of the epoch wrote ${seen.read.Private_Dirty - seen.before.Private_Dirty} MB of the worker's own`)
+  assert.ok(ownOf(wrote!.dirtied) - ownOf(wrote!.read) >= 24, `the writer's 32 MB into its array made ${ownOf(wrote!.dirtied) - ownOf(wrote!.read)} MB of its own: its pages were not a clean mapping`)
+  for (const seen of round1) assert.ok(ownOf(seen.read) - ownOf(seen.before) < 32, `${seen.role}: reading 160 MB of the epoch wrote ${ownOf(seen.read) - ownOf(seen.before)} MB of the worker's own`)
 
   // The next attempt of each worker, the writer's included, at once again: the same four Pythons, none recycled, and the
   // writer's pages went with its attempt (a fresh mapping each, dropped at leave).
@@ -1897,14 +1928,14 @@ scenario('the council on the machine: real pandas exported by the class notebook
   /*
    * RECYCLED ON ITS MEMORY (§9.3 detail 4, §9.5): a worker whose attempts
    * left it holding more than «Память на попытку» since its seed restarts
-   * and loads again before it serves on. The exit reads its Private_Dirty
-   * from smaps_rollup (council-isolation.ts · _dirty) against the seed's own
-   * reading, a path only Linux has. Two rounds of four at once, each attempt
-   * keeping 280 MB past its exit where the exit restores nothing (a module's
-   * dict), leave each worker 280 MB over its seed, under the 512 MB of
-   * «Память на попытку», and then 560, over it: the same four Pythons serve
-   * the second round, and four new ones, loaded with the same epoch, the
-   * third.
+   * and loads again before it serves on. The exit reads what it wrote for
+   * itself from smaps_rollup (council-isolation.ts · _dirty, ownOf here)
+   * against the seed's own reading, a path only Linux has. Two rounds of
+   * four at once, each attempt keeping 280 MB past its exit where the exit
+   * restores nothing (a module's dict), leave each worker 280 MB over its
+   * seed, under the 512 MB of «Память на попытку», and then 560, over it:
+   * the same four Pythons serve the second round, and four new ones, loaded
+   * with the same epoch, the third.
    */
   const keeper = (go: string): string => [
     COUNCIL_PROLOGUE,
@@ -1922,7 +1953,7 @@ scenario('the council on the machine: real pandas exported by the class notebook
   const keepers = new Set(workersOf(kept2))
   assert.ok(fresh.every((seen) => !keepers.has(seen.pid)), `four new Pythons once each held 560 MB: ${JSON.stringify(workersOf(fresh))} after ${JSON.stringify(workersOf(kept2))}`)
   for (const seen of fresh) assert.deepEqual([seen.base, seen.first, seen.score, seen.mapped, seen.oom], [[0, 1, 2], teacher.first, teacher.score, { base: true, frame: true }, 1000], 'loaded again with the epoch')
-  record(t, `council: keeping 280 MB past each attempt: Private_Dirty ${megabytesFact(kept1.map((seen) => seen.after.Private_Dirty))} with one block, the same four workers; ${megabytesFact(kept2.map((seen) => seen.after.Private_Dirty))} with two, then recycled (over «Память на попытку», 512 MB since the seed): four new Pythons at ${megabytesFact(fresh.map((seen) => seen.before.Private_Dirty))}`)
+  record(t, `council: keeping 280 MB past each attempt: its own ${megabytesFact(kept1.map((seen) => ownOf(seen.after)))} with one block, the same four workers; ${megabytesFact(kept2.map((seen) => ownOf(seen.after)))} with two, then recycled (over «Память на попытку», 512 MB since the seed): four new Pythons at ${megabytesFact(fresh.map((seen) => ownOf(seen.before)))}`)
 
   /*
    * A GREEDY ATTEMPT (§9.7): one asks for 2 GB, four times its ceiling, while
