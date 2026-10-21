@@ -13,6 +13,19 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.26.0](https://github.com/colloq-edu/colloq/compare/v0.25.1...v0.26.0) (2026-10-21)
+
+
+### Features
+
+* **admin:** download an environment's pip freeze from its window ([eb8dbe9](https://github.com/colloq-edu/colloq/commit/eb8dbe92204e8369b8b1d58c65279dfdbfe38bd2))
+* **council:** the council's attempts run on a pool of workers on a class machine, each from a snapshot of the notebook's kernel, in parallel and apart from it ([c9e560f](https://github.com/colloq-edu/colloq/commit/c9e560fc182621d38023494a573f6cae5ff82861))
+
+
+### Bug Fixes
+
+* **admin:** fields in a settings row stand level whatever their captions' height ([eb8dbe9](https://github.com/colloq-edu/colloq/commit/eb8dbe92204e8369b8b1d58c65279dfdbfe38bd2))
+
 ## [0.25.1](https://github.com/colloq-edu/colloq/compare/v0.25.0...v0.25.1) (2026-10-21)
 
 
