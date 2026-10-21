@@ -31,6 +31,7 @@
   import { cn, formatBytes } from '@/lib/utils'
   import { loadRenderers, renderers } from '@/lib/render.svelte'
   import {
+    competitionPath,
     failedAttemptsCeiling,
     LIMITS,
     parseSlug,
@@ -2068,13 +2069,30 @@
         {tr('competitions.title')}
       </button>
       <span aria-hidden="true">/</span>
-      <span class="truncate font-mono">
-        {draftState ? tr('admin.competitions.crumbDraft') : `/k/${c.slug}`}
-      </span>
+      <!-- The address is not repeated here: it is under the title. -->
+      {#if draftState}
+        <span class="truncate font-mono">{tr('admin.competitions.crumbDraft')}</span>
+      {/if}
     {/snippet}
 
     {#snippet beside()}
       <Badge word={stateWord(c.state)} tone={stateTone(c.state)} />
+    {/snippet}
+
+    <!--
+      The address the class will be given, in the mono face of the console's
+      and a course's header (Courses.svelte · lede), but with neither "open"
+      nor "copy" yet: /k serves a draft to nobody, staff included
+      (routes/competitions.ts · visible), so "open" would land on "No such
+      competition", and a link copied now would hand the class that same page
+      — under an address the form can still change. A muted line says when it
+      starts to work instead; the console gets both links once it is open.
+    -->
+    {#snippet lede()}
+      <span class="font-mono text-2xs text-ink">{location.host}{competitionPath(c.slug)}</span>
+      {#if draftState}
+        <span class="text-2xs text-muted">{tr('admin.competitions.addressWhenOpen')}</span>
+      {/if}
     {/snippet}
 
     {#snippet actions()}

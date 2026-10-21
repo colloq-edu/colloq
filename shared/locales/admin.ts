@@ -3079,6 +3079,10 @@ export const adminMessages: MessageCatalog = {
     "ru": "черновик",
     "en": "draft"
   },
+  "admin.competitions.addressWhenOpen": {
+    "ru": "заработает, когда соревнование откроется",
+    "en": "works once the competition opens"
+  },
   "admin.competitions.saveDraft": {
     "ru": "Сохранить черновик",
     "en": "Save draft"
@@ -3610,10 +3614,6 @@ export const adminMessages: MessageCatalog = {
   "admin.competitions.tab.settings": {
     "ru": "Настройки",
     "en": "Settings"
-  },
-  "admin.competitions.entrantLink": {
-    "ru": "Ссылка участникам",
-    "en": "Link for participants"
   },
   "admin.competitions.boardOnScreen": {
     "ru": "Лидерборд на проектор",
