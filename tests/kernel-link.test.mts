@@ -22,6 +22,7 @@ import { after, before, beforeEach, test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { tr } from '../shared/i18n.js'
 import { CELLS_KEY } from '../shared/notebook.js'
+import { config } from '../server/src/config.js'
 import { guardAnswer } from './_guard.mts'
 import { startFakeJupyter, startFakeLink } from './_fake-jupyter.mjs'
 import {
@@ -368,6 +369,163 @@ test('a road declared lost stops the reconnects, and every wait on it ends', asy
   assert.equal(road.counts.refused, 0, 'a lost road was knocked on')
   // The phase is the failover's to set, with its words (endFromOutside).
   assert.notEqual(kernel.phase, 'dead')
+})
+
+/* --------------------------------------- the question after a quiet spell */
+
+/*
+ * A run after config.kernelQuietMs of silence asks Jupyter whether the kernel
+ * is there at all (send · confirmAlive). A machine's kernel is asked beside
+ * the run, so the tunnel's round trip is not put in front of the cell; at
+ * home the question still comes first. The fake holds its answer to the GET
+ * (`holdKernelGets`), and the clock is moved past the quiet by hand.
+ */
+
+/** Silence long enough for the next run to ask. */
+function quietSpell(t: TestContext): void {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  t.mock.timers.tick(config.kernelQuietMs + 1)
+}
+
+/** The questions about one kernel the fake received: its GETs. */
+const asksOf = (kernel: string) =>
+  fake.calls.filter((call) => call.method === 'GET' && call.path === `/api/kernels/${kernel}`).length
+
+test('after a quiet spell a machine’s kernel runs the cell before Jupyter answers the question beside it, one question for two runs', async (t) => {
+  const { kernel, id } = await machineKernel(t)
+  quietSpell(t)
+  fake.holdKernelGets = true
+  t.after(() => fake.releaseKernelGets())
+  const asked = asksOf(id)
+  const seen: string[] = []
+  const first = kernel.execute('print(1)', handlers(seen))
+  const second = kernel.execute('print(2)', handlers(seen))
+  assert.ok(await until(() => asksOf(id) === asked + 1), 'the quiet kernel was not asked about')
+  // Both answered while the question waits: its round trip is not in front of the cells.
+  assert.equal(await outcome(first), 'ok')
+  assert.equal(await outcome(second), 'ok')
+  assert.deepEqual(seen, ['1\n', '2\n'])
+  await turns()
+  assert.equal(asksOf(id), asked + 1, 'two runs in a row asked twice')
+  fake.releaseKernelGets()
+  assert.equal(await outcome(kernel.execute('print(3)', handlers())), 'ok')
+  assert.notEqual(kernel.phase, 'dead')
+})
+
+test('a machine’s kernel the question beside its run finds gone ends the run as one found gone before it, and nothing more goes to it', async (t) => {
+  const { kernel, id } = await machineKernel(t)
+  const heard: Array<[string, boolean]> = []
+  kernel.onPhaseChange((phase, expected) => heard.push([phase, expected]))
+  quietSpell(t)
+  fake.holdKernelGets = true
+  t.after(() => fake.releaseKernelGets())
+  // Gone with its channel left open, as Jupyter leaves it: what goes in is never answered.
+  fake.kernels.get(id).alive = false
+  const sent = callsOf(id, 'execute_request')
+  const run = kernel.execute('print(1)', handlers())
+  assert.ok(await until(() => callsOf(id, 'execute_request') === sent + 1), 'the run waited for the question')
+  fake.releaseKernelGets()
+  const gone = { message: tr('server.thePythonKernelIsNotRunning.a9cde2') }
+  // Refused, not aborted: what a room runs again on a fresh kernel (kernel/index.ts · runOnKernel).
+  await assert.rejects(outcome(run), gone)
+  assert.equal(kernel.phase, 'dead')
+  assert.deepEqual(heard, [['dead', true]], 'the death was not the one found by asking')
+  await assert.rejects(outcome(kernel.execute('print(2)', handlers())), gone)
+  await turns()
+  assert.equal(callsOf(id, 'execute_request'), sent + 1, 'a run went to the kernel found gone')
+})
+
+test('a run the kernel was heard on is the kernel’s: the 404 beside it then is a death mid-run, never a refusal', async (t) => {
+  const { kernel, id } = await machineKernel(t)
+  const heard: Array<[string, boolean]> = []
+  kernel.onPhaseChange((phase, expected) => heard.push([phase, expected]))
+  quietSpell(t)
+  fake.holdKernelGets = true
+  t.after(() => {
+    fake.releaseKernelGets()
+    fake.release('heard')
+  })
+  const seen: string[] = []
+  const run = kernel.execute('print("started")\nHOLD heard', handlers(seen))
+  assert.ok(await until(() => fake.holding('heard') === 1 && seen.length === 1), 'the cell did not start')
+  fake.kernels.get(id).alive = false
+  fake.releaseKernelGets()
+  // Refused, a room would run it a second time on a fresh kernel, and it has run here already.
+  assert.equal(await outcome(run), 'abort')
+  assert.deepEqual(seen, ['started\n'])
+  assert.equal(kernel.phase, 'dead')
+  // Not the death found by asking: nobody runs it again, so the room is the one to say it.
+  assert.deepEqual(heard.filter(([phase]) => phase === 'dead'), [['dead', false]])
+})
+
+test('a 404 beside a run while the kernel has an earlier one is a death mid-run for both, refusing neither', async (t) => {
+  const { kernel, id } = await machineKernel(t)
+  const heard: Array<[string, boolean]> = []
+  kernel.onPhaseChange((phase, expected) => heard.push([phase, expected]))
+  t.after(() => fake.release('first'))
+  const first = kernel.execute('HOLD first', handlers())
+  assert.ok(await until(() => fake.holding('first') === 1))
+  quietSpell(t)
+  fake.holdKernelGets = true
+  t.after(() => fake.releaseKernelGets())
+  const sent = callsOf(id, 'execute_request')
+  // Queued behind the held cell: the kernel says nothing of it while its question is out.
+  const later = kernel.execute('print("later")', handlers())
+  assert.ok(await until(() => callsOf(id, 'execute_request') === sent + 1))
+  fake.kernels.get(id).alive = false
+  fake.releaseKernelGets()
+  // Refused, it would be run again beside a death the room is told of: all of it is aborted instead.
+  assert.equal(await outcome(later), 'abort')
+  assert.equal(await outcome(first), 'abort')
+  assert.deepEqual(heard.filter(([phase]) => phase === 'dead'), [['dead', false]])
+})
+
+test('a run whose question said the kernel is there is the kernel’s: a later question’s 404 is a death mid-run', async (t) => {
+  const { kernel, id } = await machineKernel(t)
+  const heard: Array<[string, boolean]> = []
+  kernel.onPhaseChange((phase, expected) => heard.push([phase, expected]))
+  quietSpell(t)
+  fake.holdKernelGets = true
+  t.after(() => fake.releaseKernelGets())
+  const asked = asksOf(id)
+  const sent = callsOf(id, 'execute_request')
+  // Lost on its way into the kernel, which then says not a word about it, though Jupyter says it is there.
+  fake.kernels.get(id).alive = false
+  const later = kernel.execute('print("later")', handlers())
+  assert.ok(await until(() => asksOf(id) === asked + 1 && callsOf(id, 'execute_request') === sent + 1))
+  await turns()
+  fake.kernels.get(id).alive = true
+  fake.releaseKernelGets()
+  // The answer crosses the loopback road in a few turns.
+  await turns()
+  t.mock.timers.tick(config.kernelQuietMs + 1)
+  fake.kernels.get(id).alive = false
+  const third = kernel.execute('print(3)', handlers())
+  // Sent beside a question that said yes, it counts as sent after an awaited one: the kernel's, and lost with it.
+  assert.equal(await outcome(later), 'abort')
+  assert.equal(await outcome(third), 'abort')
+  assert.equal(asksOf(id), asked + 2, 'the third run did not ask a question of its own')
+  assert.deepEqual(heard, [['dead', false]])
+})
+
+test('at home the question after a quiet spell still comes before the run', async (t) => {
+  const sessionId = `plain${seq++}`
+  const kernel = await JupyterKernel.connect(sessionId, { url: fake.url, token: 'fake' })
+  t.after(() => kernel.detach())
+  const id = fake.kernelAt(jupyterSessionPath(sessionId, CELLS_KEY)) ?? ''
+  quietSpell(t)
+  fake.holdKernelGets = true
+  t.after(() => fake.releaseKernelGets())
+  const asked = asksOf(id)
+  const sent = callsOf(id, 'execute_request')
+  const run = kernel.execute('print(1)', handlers())
+  assert.ok(await until(() => asksOf(id) === asked + 1), 'the quiet kernel was not asked about')
+  // Help goes on the same channel at once: a run sent before it would have reached the kernel first.
+  await outcome(kernel.complete('df.', 3))
+  assert.equal(callsOf(id, 'execute_request'), sent, 'the run went before Jupyter answered')
+  fake.releaseKernelGets()
+  assert.equal(await outcome(run), 'ok')
+  assert.equal(callsOf(id, 'execute_request'), sent + 1)
 })
 
 /* ------------------------------------------------- ended from outside */

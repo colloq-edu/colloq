@@ -274,7 +274,7 @@ payload     DATA ≤ 16 KiB · JSON ≤ 4 KiB for HELLO, WELCOME, OPEN, REFUSED
 
 ### 4.5 Home's end: listeners, endpoints, the link
 New module `server/src/kernel/remote/tunnel.ts`.
-- **Listeners.** One `net.createServer` on `127.0.0.1:0` per placement while it is `ready` or `unreachable`. Each accepted socket becomes an OPEN on the machine's tunnel. While the tunnel is down, new sockets are destroyed at once: a fast `ECONNRESET` instead of a hang, which `confirmAlive` (jupyter.ts:708-733) reads as alive.
+- **Listeners.** One `net.createServer` on `127.0.0.1:0` per placement while it is `ready` or `unreachable`. Each accepted socket becomes an OPEN on the machine's tunnel. While the tunnel is down, new sockets are destroyed at once: a fast `ECONNRESET` instead of a hang, which `confirmAlive` (jupyter.ts · confirmAlive) reads as alive.
 - **The endpoint.**
   ```ts
   { url: 'http://127.0.0.1:<P>', token, instanceId: `${runner}:${container}:${gen}`,
@@ -1284,7 +1284,7 @@ This follows the verdict's dependency order (K0 ∥ K1 ∥ K2 → K3 (+K3b) ∥ 
 - packaging, docs, the load generator and CI move into the waves where their files are free;
 - if K0 rules K3b out, its agent joins E.
 
-**Not in the waves.** After K9a, optionally: the census *vouches* for a kernel, saving `confirmAlive`'s round trip on the first cell after a pause (jupyter.ts:499). Pipelining Run All stays a measured follow-up.
+**Not in the waves.** The first cell after a pause no longer waits for `confirmAlive`'s round trip on a machine: R1 measured it (personal notebooks 887 ms against the class notebook's 538 ms at p50 over a 233 ms tunnel), so a machine kernel sends the execute at once and asks the GET beside it; a 404 refuses a run the kernel never heard (rerun on a fresh kernel, as before) and is a death mid-run otherwise (jupyter.ts · send, confirmAlive). Home and broker kernels still ask first. Pipelining Run All stays a measured follow-up.
 
 **Total.** About 9.6k LOC (9.2k without K3b) plus about 6k LOC of tests. The release split is D29: 0.25.0 is K0–K6, K8, K9a, K10, K11a, K12 and K13; 0.26.0 is K7a–c, K9b, K11b and K12b. If one release is required, K7 ships with `council: 'shared'` as the default.
 

@@ -1342,6 +1342,59 @@ test('a kernel killed for memory while the road was cut is the unexpected restar
   assert.ok(guards() > guarded, 'the replaced process ran a cell without the guard')
 })
 
+/* ------------------------------------------ a kernel gone after a quiet spell */
+
+test('a machine’s kernel found gone by the question asked beside a run is replaced, and the cell reads as it always did', async (t) => {
+  const { room } = await machineClass(t)
+  room.cell(0).type('print("one")')
+  room.run(0)
+  assert.ok(await until(() => room.cell(0).state() === 'ok'))
+  const id = fake.kernelAt(jupyter.jupyterSessionPath(room.id, notebook.CELLS_KEY))!
+  const executes = () =>
+    fake.calls.filter((call) => call.kind === 'shell' && call.kernel === id && call.msgType === 'execute_request').length
+  const sent = executes()
+  const before = room.notes().length
+  // Gone over the break with its channel left open, as Jupyter leaves it; past the quiet, the next run asks.
+  fake.kernels.get(id).alive = false
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  t.mock.timers.tick(Number(process.env.KERNEL_QUIET_MS) + 1)
+  fake.holdKernelGets = true
+  room.run(0)
+  assert.ok(await until(() => executes() === sent + 1), 'the run waited for the question')
+  fake.releaseKernelGets()
+  assert.ok(await until(() => room.cell(0).state() === 'ok'), `the cell is ${room.cell(0).state()}`)
+  assert.equal(room.cell(0).said(), 'one\n')
+  // The words a kernel found gone before its run has always brought, and no death.
+  assert.deepEqual(room.notes().slice(before), [tr('server.theKernelHadStoppedStartingAFresh.65e2e2')])
+})
+
+test('a machine’s kernel gone after it started the cell, found by the question asked beside it, died mid-run as the watchdog would say', async (t) => {
+  const { room } = await machineClass(t, ['print("two")'])
+  room.cell(0).type('print("one")')
+  room.run(0)
+  assert.ok(await until(() => room.cell(0).state() === 'ok'))
+  const id = fake.kernelAt(jupyter.jupyterSessionPath(room.id, notebook.CELLS_KEY))!
+  room.cell(0).type('print("started")\nHOLD gone')
+  t.after(() => fake.release('gone'))
+  const before = room.notes().length
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  t.mock.timers.tick(Number(process.env.KERNEL_QUIET_MS) + 1)
+  fake.holdKernelGets = true
+  room.run(0, 1)
+  assert.ok(await until(() => fake.holding('gone') === 1 && room.cell(0).said() === 'started\n'), 'the cell did not start')
+  // Gone mid-cell, before Jupyter got to the question still on its way over the tunnel.
+  fake.kernels.get(id).alive = false
+  fake.releaseKernelGets()
+  assert.ok(await until(() => room.cell(0).state() === 'error'), `the cell is ${room.cell(0).state()}`)
+  assert.equal(room.cell(0).said(), `started\n${tr('server.thePythonKernelStoppedRespondingRestartIt.09f400')}`)
+  assert.equal(room.cell(1).state(), 'idle', 'the queued cell was kept for a kernel that is gone')
+  // The death mid-run said with its cell, as the watchdog finding it says it; no fresh kernel's words.
+  const at = notebook.getCells(room.doc).toArray().findIndex((cell) => notebook.cellId(cell) === room.cell(0).id) + 1
+  assert.deepEqual(room.notes().slice(before), [
+    `${tr('server.theKernelStoppedDuringExecutionQueuedCells.74ec64')} ${tr('server.kernel.diedOnCell', { cell: at })}`,
+  ])
+})
+
 /* ------------------------------------------------- wiring the hooks (2b) */
 
 test('the whole class’s stop pauses its council pool’s starts with the rest; stopping the personal notebooks pauses theirs alone', async (t) => {

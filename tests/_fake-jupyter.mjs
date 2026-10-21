@@ -301,6 +301,8 @@ export async function startFakeJupyter(options = {}) {
     restarts: 'normal',
     /** Hold kernel_info requests until releaseKernelInfo(): a question stuck behind other work. */
     holdKernelInfo: false,
+    /** Hold the answers to GET /api/kernels/:id until releaseKernelGets(): Jupyter's word on a kernel, a long way off. */
+    holdKernelGets: false,
     /** A kernel killed for memory stays `starting` until revive(): a slow comeback. */
     slowRevival: false,
     /** Delay every channel and terminal handshake: the window a reconnect in flight opens. */
@@ -361,6 +363,7 @@ export async function startFakeJupyter(options = {}) {
       fake.restarts = 'normal'
       fake.answerRestarts()
       fake.releaseKernelInfo()
+      fake.releaseKernelGets()
       fake.slowRevival = false
       fake.revive()
       fake.upgradeDelayMs = 0
@@ -395,6 +398,12 @@ export async function startFakeJupyter(options = {}) {
     releaseKernelInfo() {
       fake.holdKernelInfo = false
       for (const go of infoWaiters.splice(0)) go()
+    },
+
+    /** Answer the GETs held by `holdKernelGets`, from the kernels as they are now. */
+    releaseKernelGets() {
+      fake.holdKernelGets = false
+      for (const answer of heldGets.splice(0)) answer()
     },
 
     /** Let kernels killed for memory come back (see `slowRevival`). */
@@ -446,6 +455,7 @@ export async function startFakeJupyter(options = {}) {
       holds.clear()
       for (const go of infoWaiters.splice(0)) go()
       heldRestarts.length = 0
+      heldGets.length = 0
       for (const { socket, timer } of slowUpgrades) {
         clearTimeout(timer)
         socket.destroy()
@@ -467,6 +477,8 @@ export async function startFakeJupyter(options = {}) {
   const infoWaiters = []
   /** Answers of restarts taken as 'held'. */
   const heldRestarts = []
+  /** Answers to GET /api/kernels/:id waiting for releaseKernelGets(). */
+  const heldGets = []
   /** Handshakes held back by `upgradeDelayMs`. */
   const slowUpgrades = new Set()
 
@@ -733,19 +745,23 @@ export async function startFakeJupyter(options = {}) {
       return
     }
     if (req.method === 'GET' && kernelMatch) {
-      const kernel = fake.kernels.get(kernelMatch[1])
-      // The one question this whole mechanism rests on.
-      if (!kernel?.alive) {
-        res.writeHead(404).end('{}')
-        return
+      // The one question this whole mechanism rests on, answered from the kernel as it is when the answer leaves.
+      const answer = () => {
+        const kernel = fake.kernels.get(kernelMatch[1])
+        if (!kernel?.alive) {
+          res.writeHead(404).end('{}')
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(
+          JSON.stringify({
+            id: kernelMatch[1],
+            execution_state: kernel.reviving ? 'starting' : kernel.busy ? 'busy' : 'idle',
+          }),
+        )
       }
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(
-        JSON.stringify({
-          id: kernelMatch[1],
-          execution_state: kernel.reviving ? 'starting' : kernel.busy ? 'busy' : 'idle',
-        }),
-      )
+      if (fake.holdKernelGets) heldGets.push(answer)
+      else answer()
       return
     }
     if (req.method === 'POST' && /\/restart$/.test(url.pathname)) {

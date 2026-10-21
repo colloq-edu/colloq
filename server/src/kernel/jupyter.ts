@@ -101,6 +101,15 @@ interface Pending {
    * may have died in the cut, and the next reconnect asks (reconcileAfterReset).
    */
   cut: boolean
+  /**
+   * Set while this went out to a machine's kernel beside the question whether
+   * the kernel is there at all (see send), with that question unanswered and
+   * nothing heard from the kernel about this run. A 404 then refuses the run
+   * with it, as the awaited question would have refused it before it went,
+   * unless work the kernel took is out beside it (confirmAlive). Null
+   * otherwise, and always at home.
+   */
+  refuse: ((err: Error) => void) | null
 }
 
 /** Waiting for one `*_reply` over shell: no output, no handshake with iopub. */
@@ -667,8 +676,9 @@ export class JupyterKernel {
 
   /**
    * `expected` is true when the death was found by *asking*, before a cell had
-   * been sent — the caller is about to bring a new kernel up and say so itself,
-   * so a second, grimmer announcement would contradict it.
+   * been sent (on a machine, beside it, while the kernel had taken none of our
+   * work: see confirmAlive) — the caller is about to bring a new kernel up and
+   * say so itself, so a second, grimmer announcement would contradict it.
    */
   onPhaseChange(cb: (phase: KernelPhase, expected: boolean) => void): void {
     this.listeners.push(cb)
@@ -709,13 +719,36 @@ export class JupyterKernel {
     opts?: ExecuteOptions,
   ): Promise<{ done: Promise<ExecuteStatus> }> {
     this.refuseEnded()
-    // A kernel that has been quiet since before the break may not be there any
-    // more, and the socket will not say so. Between two cells run back to back
-    // this is skipped, so it costs the seminar nothing where it is busiest.
-    if (Date.now() - this.lastHeard > QUIET_MS && !(await this.confirmAlive(true))) {
+    /*
+     * A kernel that has been quiet since before the break may not be there any
+     * more, and the socket will not say so. Between two cells run back to back
+     * this is skipped, so it costs the seminar nothing where it is busiest.
+     *
+     * A machine's kernel is asked beside the run instead of before it. There
+     * the question crosses the tunnel, a round trip of its own, and a personal
+     * notebook, run about once a minute, is quiet before nearly every run:
+     * awaited, the question put that trip in front of each of them (print(1)
+     * at 887 ms p50 against 538 ms for the class notebook on the same machine,
+     * 233 ms of tunnel away, at the R1 rehearsal of 21 Oct 2026). Sent at once,
+     * a kernel that is there answers within the cell's own trip. A 404 refuses
+     * the run as it would have been refused here (Pending.refuse); once the
+     * kernel has been heard on it, or has other work of ours out, the 404 is
+     * the death mid-run the watchdog would have found later (confirmAlive).
+     * Either way the phase, the aborted work and the room's words are what
+     * they always were. Two runs in a row share the one question
+     * (confirmAlive · checking). At home the question is local and costs
+     * nothing, and still comes first.
+     */
+    const quiet = Date.now() - this.lastHeard > QUIET_MS
+    const asking = quiet && this.endpoint.link ? this.confirmAlive(true) : null
+    if (quiet && !asking && !(await this.confirmAlive(true))) {
       throw new Error(tr("server.thePythonKernelIsNotRunning.a9cde2"))
     }
     const socket = await this.waitForSocket()
+    // A 404 that came back while the socket was awaited: nothing goes to a kernel that is gone.
+    if (asking && this._phase === 'dead') {
+      throw new Error(tr('server.thePythonKernelIsNotRunning.a9cde2'))
+    }
     const header = this.makeHeader('execute_request')
     const frame = JSON.stringify({
       header,
@@ -739,7 +772,7 @@ export class JupyterKernel {
       channel: 'shell',
     })
 
-    const done = new Promise<ExecuteStatus>((resolve) => {
+    const done = new Promise<ExecuteStatus>((resolve, reject) => {
       this.pending.set(header.msg_id, {
         handlers,
         settle: resolve,
@@ -748,6 +781,8 @@ export class JupyterKernel {
         graceTimer: null,
         quiet: opts?.quiet === true,
         cut: false,
+        // Only while the question is still out: answered meanwhile, it has said what it had to.
+        refuse: asking && this.checking === asking ? reject : null,
       })
     })
 
@@ -1051,6 +1086,17 @@ export class JupyterKernel {
    *
    * One HTTP GET settles it. 404 means gone, and gone is a phase change the
    * rest of the server already knows how to handle.
+   *
+   * A machine's runs go out beside this question rather than after it (see
+   * send). While the kernel has said not a word about them and has no other
+   * work of ours, a 404 refuses them with the very error a run refused before
+   * it went gets, so a room brings a fresh kernel up and runs the cell there
+   * (kernel/index.ts · runOnKernel) instead of reading it dead. Once it has
+   * taken some (heard on a run, or a run out before the question or beside
+   * one answered since), the 404 is a death mid-run, the one the watchdog
+   * would have found had the question come first: everything out is aborted
+   * and the death is not the expected kind, so the room hears what died and
+   * the queue's end, and gets its post-mortem. Any other answer lets them be.
    */
   private confirmAlive(expected = false): Promise<boolean> {
     if (this.checking) return this.checking
@@ -1058,7 +1104,19 @@ export class JupyterKernel {
       try {
         const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}`)
         if (res.status === 404) {
-          this.setPhase('dead', expected)
+          const midRun =
+            this.endpoint.link !== undefined &&
+            [...this.pending.values()].some((pending) => !pending.refuse)
+          this.setPhase('dead', expected && !midRun)
+          // All or nothing: a refused run is run again with words of its own,
+          // which a death mid-run told to the same room would contradict.
+          if (!midRun) {
+            for (const [id, pending] of [...this.pending]) {
+              if (!pending.refuse) continue
+              this.pending.delete(id)
+              pending.refuse(new Error(tr('server.thePythonKernelIsNotRunning.a9cde2')))
+            }
+          }
           this.abortPending()
           return false
         }
@@ -1074,6 +1132,8 @@ export class JupyterKernel {
         return true
       } finally {
         this.checking = null
+        // Answered, whichever way: what went out beside it is settled above or the kernel's.
+        for (const pending of this.pending.values()) pending.refuse = null
       }
     })()
     return this.checking
@@ -1753,6 +1813,9 @@ export class JupyterKernel {
     const content = msg.content ?? {}
     const parentId = msg.parent_header?.msg_id
     const pending = parentId ? this.pending.get(parentId) : undefined
+    // A kernel heard about a run was there to run it: a 404 to the question
+    // asked beside the run no longer refuses it (Pending.refuse).
+    if (pending) pending.refuse = null
 
     /*
      * A reply to a service request comes before everything else.
