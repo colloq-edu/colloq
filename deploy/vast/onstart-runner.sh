@@ -81,6 +81,11 @@ if ! [[ "$build" =~ ^[a-f0-9]{64}([[:space:]]|$) ]]; then
   exit 1
 fi
 
-# The host-side manager lives in the image; install it, then let it do the rest.
+# The host-side manager lives in the image; install it, then let it do the
+# rest: the agent's container, on the host's network as every machine's is
+# from 0.25 on (colloq-host · run_runner), so that the classes of a code that
+# takes them reach their kernels on the host's loopback. An agent an older
+# colloq-host started on Docker's bridge has its container replaced by this
+# boot's, once: the fingerprint counts the network (runner_config_sum).
 docker run --rm -v /usr/local/sbin:/host "$image" install-host /host
 exec /usr/local/sbin/colloq-host runner up "$COLLOQ_RUNNER_URL" "$COLLOQ_RUNNER_CODE" "$image"

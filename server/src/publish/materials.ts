@@ -88,6 +88,7 @@ import {
 } from '../routes/course-view.js'
 import { instanceToday } from '../time-zone.js'
 import { listFolder, listLevel, listTree, readBytes, statPath } from '../workspace.js'
+import { filesSettled } from '../kernel/remote/files.js'
 import { bookPage, newBlobBag } from './build.js'
 import { cellChecks, fileChecks, scrubCells, scrubText, type SpillReader } from './checks.js'
 import { notebookWithOutputs, type BlobSource } from './notebook.js'
@@ -115,6 +116,9 @@ import {
   type StoredMaterial,
 } from './store.js'
 import { zipTop } from './zip.js'
+
+/** How long a page build waits for what a class's kernels wrote on machines to come here (§8.7). */
+const PAGE_SETTLE_MS = 15_000
 
 /* ------------------------------------------------------------- vocabulary */
 
@@ -1021,7 +1025,21 @@ export function buildAndWrite(
   request: PublishRequest,
   options: { by: string | null; lenient?: boolean },
 ): Promise<BuildResult> {
-  return serialized(() => build(sessionId, request, options))
+  return settledFirst(sessionId).then(() => serialized(() => build(sessionId, request, options)))
+}
+
+/**
+ * What the class's kernels wrote on machines comes here before its page is
+ * built (remote-classes.md §8.7): the page reads this server's folder, and a
+ * file a cell there wrote a moment ago is a pull away. Before the build's
+ * queue, never in it: the queue is the whole process's — every class's
+ * publish, removal and room door — and a class waiting for its machine must
+ * keep none of them. At once for a class with nothing on machines, and
+ * bounded: a page is never held for long by a machine slow to answer (one
+ * that went silent is not asked).
+ */
+function settledFirst(sessionId: string): Promise<unknown> {
+  return filesSettled(sessionId, PAGE_SETTLE_MS).catch(() => false)
 }
 
 /**
@@ -1036,9 +1054,10 @@ export function buildAndWrite(
  */
 export function refreshPage(
   sessionId: string,
-  options: { by: string | null; auto?: boolean },
+  /** `settled`: the caller waited for the class's machines itself (publish/class-end.ts, within its two minutes). */
+  options: { by: string | null; auto?: boolean; settled?: boolean },
 ): Promise<BuildResult> {
-  return serialized(async (): Promise<BuildResult> => {
+  return (options.settled ? Promise.resolve() : settledFirst(sessionId)).then(() => serialized(async (): Promise<BuildResult> => {
     const pub = publicationOf(sessionId)
     const selection = pub?.selection
     if (!pub || !selection) return { ok: false, status: 409, error: 'no selection' }
@@ -1056,7 +1075,7 @@ export function refreshPage(
       ack: selection.ack,
     }
     return build(sessionId, request, { by: options.by, lenient: true })
-  })
+  }))
 }
 
 export type RoomAccessResult =

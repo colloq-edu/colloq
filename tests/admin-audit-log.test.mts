@@ -583,6 +583,10 @@ test('every kind of staff action is recorded somewhere', () => {
   assert.match(runners, /action: 'runner\.revoked'/)
   assert.match(runners, /action: 'runner\.code_minted'/)
   assert.match(runners, /action: 'runner\.code_ended'/)
+  // And their classes' three, driven through their doors in tests/classes-ui-doors.test.mts, which reads them from this log.
+  assert.match(runners, /action: 'runner\.classes'/)
+  assert.match(runners, /action: 'runner\.classes_resumed'/)
+  assert.match(runners, /action: 'runner\.classes_moved'/)
   /*
    * The hidden test's download is driven through both of its doors (its own
    * and the materials archive) in tests/competition-materials.test.mts, which
@@ -597,7 +601,7 @@ test('every kind of staff action is recorded somewhere', () => {
    */
   const instance = fs.readFileSync(path.join(import.meta.dirname, '../server/src/routes/admin-instance.ts'), 'utf8')
   assert.match(instance, /action: 'room\.environment_changed'/)
-  const notDriven = new Set(['environment.made_default', 'competition.entrant_deleted', 'competition.hidden_test_downloaded', 'room.environment_changed', 'runner.enrolled', 'runner.trusted', 'runner.revoked', 'runner.code_minted', 'runner.code_ended'])
+  const notDriven = new Set(['environment.made_default', 'competition.entrant_deleted', 'runner.enrolled', 'runner.trusted', 'runner.revoked', 'runner.code_minted', 'runner.code_ended', 'runner.classes', 'runner.classes_resumed', 'runner.classes_moved', 'competition.hidden_test_downloaded', 'room.environment_changed'])
   const missing = ADMIN_AUDIT_ACTIONS.filter((action) => !notDriven.has(action) && !seen.has(action))
   assert.deepEqual(missing, [])
 })

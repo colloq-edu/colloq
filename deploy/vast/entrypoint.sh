@@ -82,6 +82,17 @@ RUNNER_STATE="${COLLOQ_RUNNER_STATE:-/var/lib/colloq-runner}"
 [ "$RUNNER_STATE" = / ] || RUNNER_STATE="${RUNNER_STATE%/}"
 # The command line of this container's first process (container_mode).
 PID1_CMDLINE=/proc/1/cmdline
+# This process's mounts, where Docker's own files name the container (own_container_id).
+MOUNTINFO=/proc/self/mountinfo
+# The tunnel protocol the agent in this image speaks to its home for classes
+# on machines (shared/remote-tunnel.ts · TUNNEL_PROTOCOL, which
+# tests/vast-runner-host.test.mts holds this equal to). Nothing here reads
+# it: colloq-host runner update reads this line out of an image it is about
+# to run, with a throwaway `cat`, as it reads the runner build, and refuses
+# an agent its home would not let back onto the tunnel while classes run
+# (tunnel_follows_home).
+# shellcheck disable=SC2034
+TUNNEL_PROTOCOL=1
 
 say()  { printf '[vast] %s\n' "$*"; }
 warn() { printf '[vast] WARNING: %s\n' "$*" >&2; }
@@ -257,11 +268,34 @@ MSG
 }
 
 # Our own container: to ask the daemon about our own mounts and networks.
+#
+# By the name we are told (COLLOQ_CONTAINER), else by our id from the files
+# Docker mounts into every container out of its own directory, else by the
+# hostname, which is the container's short id unless --hostname said
+# otherwise. Not by the hostname first: under --network host, as a machine
+# for submissions runs from 0.25 on, the hostname is the host's, a name no
+# container is known by, or worse, one that some other container happens to
+# have.
 SELF=""
 locate_self() {
-  SELF="${COLLOQ_CONTAINER:-$(hostname)}"
+  local id
+  if [ -n "${COLLOQ_CONTAINER:-}" ]; then
+    SELF="$COLLOQ_CONTAINER"
+  else
+    id="$(own_container_id)"
+    if [ -n "$id" ] && docker inspect "$id" >/dev/null 2>&1; then SELF="$id"; return 0; fi
+    SELF="$(hostname)"
+  fi
   docker inspect "$SELF" >/dev/null 2>&1 \
     || die "cannot inspect this container as \"$SELF\". Start it without --hostname, or set COLLOQ_CONTAINER=<its name>."
+}
+
+# This container's own id (64 hex digits), from the files Docker bind-mounts
+# into every container out of /var/lib/docker/containers/<id>/ (its hostname,
+# hosts and resolv.conf), which /proc/self/mountinfo lists with their source
+# path; nothing when no such line is there (another runtime, or no /proc).
+own_container_id() {
+  sed -nE 's#^.*/containers/([a-f0-9]{64})/(hostname|hosts|resolv\.conf) .*$#\1#p' "${MOUNTINFO:-/proc/self/mountinfo}" 2>/dev/null | head -1 || true
 }
 
 # The image this instance runs, for the panel's join commands of the machines
@@ -1016,7 +1050,10 @@ install_host() {
 # the image it probes the cards with (`--gpus all` puts nvidia-smi into any
 # container, and this image is on the machine for certain). colloq-host
 # passes both; for the panel's plain `docker run` they come from the daemon,
-# which knows this container by the name locate_self found it under.
+# which knows this container by the name locate_self found it under. And
+# COLLOQ_CONTAINER, the same container, under the name the server's own code
+# finds its container by when the hostname will not do (perimeter.ts ·
+# helperImage): under --network host the agent's hostname is the host's.
 runner() {
   local problem
   # The main block has done this already, before the drop to uid 1000; a call
@@ -1031,6 +1068,7 @@ runner() {
       locate_self
       require_same_path "$RUNNER_STATE"
       export COLLOQ_RUNNER_CONTAINER="${COLLOQ_RUNNER_CONTAINER:-$SELF}"
+      export COLLOQ_CONTAINER="${COLLOQ_CONTAINER:-$SELF}"
       if [ -z "${COLLOQ_RUNNER_IMAGE:-}" ]; then
         COLLOQ_RUNNER_IMAGE="$(docker inspect -f '{{.Config.Image}}' "$SELF" 2>/dev/null || true)"
       fi
@@ -1067,9 +1105,10 @@ runner_join_args() {
 # server holds open (colloq-host runner-code runs this through docker exec). As
 # uid 1000, which the main block below sees to: SQLite creates its -wal and
 # -shm files as whoever writes first, and the server could not open root's.
-# One JSON line on stdout, {"code","expiresAt","machines","trusted"}: the code
-# is the key to the instance's submissions for N machines within at most a
-# day, and colloq-host prints it once, inside the join commands.
+# One JSON line on stdout, {"code","expiresAt","machines","trusted","classes"}:
+# the code is the key to the instance's submissions (and its classes, with
+# --classes) for N machines within at most a day, and colloq-host prints it
+# once, inside the join commands.
 runner_code() {
   cd "$APP"
   exec env \
@@ -1134,7 +1173,7 @@ colloq-vast — Colloq on one machine with Docker: a rented VM or a server of yo
   colloq-vast runner status | drain | leave   ask the agent running here
   colloq-vast runner join URL CODE   the agent, the join given as words (they stay in the container's
                                own command: -e COLLOQ_RUNNER_JOIN keeps the code out of it)
-  colloq-vast runner-code --machines N --hours H [--trusted] [--slots S] [--prefix NAME]
+  colloq-vast runner-code --machines N --hours H [--trusted | --classes] [--slots S] [--prefix NAME]
   colloq-vast health           the image's health check: the agent's status, or the server's /api/livez
   colloq-vast version
 

@@ -20,6 +20,14 @@
  * Competition runs are listed but not stopped here: they have their door
  * (POST /api/admin/competitions/queue/kill), and a second one would be a
  * second set of rules to keep in step.
+ *
+ * A class whose kernels compute on a machine («занятия на машинах»,
+ * docs/architecture/remote-classes.md §6.10, Paper 18 · Z7) holds none of
+ * this server's memory: its row says «0 МБ здесь», and each slot on a
+ * machine is a sub-row with the machine's own numbers, its link and its
+ * files' lag (RunningClassMachines). The machine is named only to staff of
+ * the class; another class's row keeps its numbers, never where it runs.
+ * Stopping such a class asks its machine, and waits for it to answer.
  */
 import { Router, type Request, type Response } from 'express'
 import { tr } from '@shared/i18n'
@@ -48,6 +56,11 @@ import {
 import { forgetResources } from '../kernel/resources.js'
 import { kernelBackend } from '../kernel/runtime-client.js'
 import { containerCensus, forgetContainerUsage, type ContainerCensus, type ContainerReading } from '../kernel/usage.js'
+import { onPlacementChange, placementOf } from '../kernel/remote/placement.js'
+import { machineTunnels } from '../kernel/remote/tunnel.js'
+import { classPlacementRows, livePlacement } from '../kernel/remote/placement-store.js'
+import { getRunner } from '../competitions/remote/store.js'
+import type { RunningClassMachines, RunningMachineSlot } from '@shared/remote-admin'
 import { getCourse } from '../publish/store.js'
 import type {
   AdminErrorBody,
@@ -97,7 +110,8 @@ function busyView(sessionId: string, busy: ClassBusy | null, visible: boolean): 
 }
 
 function containerView(reading: ContainerReading | undefined): RunningContainer | null {
-  if (!reading) return null
+  // A council's pool lives only on machines (remote-classes.md §6.1); this panel's rows have the two roles of home.
+  if (!reading || reading.role === 'council') return null
   return {
     role: reading.role,
     state: reading.state,
@@ -122,14 +136,18 @@ function courseOf(sessionId: string, viewer: StaffLike): RunningClass['course'] 
 interface Held {
   room?: ContainerReading
   own?: ContainerReading
+  /** Its slots on machines (usage.ts · MachineReading): none of this server's memory. */
+  machines?: ContainerReading[]
 }
 
-/** The class's containers by role, from one census. */
+/** The class's containers by role, from one census; its slots on machines apart. */
 function heldBy(census: ContainerCensus): Map<string, Held> {
   const out = new Map<string, Held>()
   for (const container of census.containers) {
     const held = out.get(container.session) ?? {}
-    held[container.role] = container
+    if (container.machine) held.machines = [...(held.machines ?? []), container]
+    else if (container.role === 'council') continue
+    else held[container.role] = container
     out.set(container.session, held)
   }
   /*
@@ -143,14 +161,82 @@ function heldBy(census: ContainerCensus): Map<string, Held> {
   return out
 }
 
-function classRow(sessionId: string, held: Held, activity: ClassActivity, viewer: StaffLike): RunningClass {
+/** How long a class remembers its kernel came back from a machine: a class day (Z7 «на сервере · переехало в 14:33»). */
+const MOVED_MEMORY_MS = 12 * 60 * 60_000
+
+const ROLE_ORDER: readonly RunningMachineSlot['role'][] = ['room', 'own', 'council']
+
+/*
+ * Until when a slot that came back from its machine had its files in step
+ * (Z7 «файлы — по 14:31:58»): the failover's own `filesAt`, the machine's
+ * last report before it went (placement.ts · PlacementEvent). Kept by slot
+ * for this process, as the failover note itself is: after a restart of this
+ * server the row says when it moved, not this.
+ */
+const filesAtOfMove = new Map<string, { at: number; filesAt: number }>()
+onPlacementChange((event) => {
+  if (event.kind === 'lost' && event.filesAt !== undefined) filesAtOfMove.set(`${event.sessionId}:${event.role}`, { at: event.at, filesAt: event.filesAt })
+})
+
+/** A slot of the class on a machine, as its sub-row reads it; the machine named only to staff of the class. */
+function machineSlot(reading: ContainerReading, visible: boolean): RunningMachineSlot {
+  const machine = reading.machine!
+  const view = machine.link === 'lost' ? placementOf(reading.session, reading.role) : null
+  return {
+    role: reading.role,
+    machine: visible ? machine.name : null,
+    state: reading.state,
+    link: machine.link,
+    lostSince: view?.where === 'machine' ? (view.quietSince ?? view.since) : null,
+    memoryMb: machine.memoryMb,
+    usedMb: machine.usedMb,
+    cpus: machine.cpus,
+    cpuPercent: machine.cpuPercent,
+    card: machine.card,
+    files: visible ? machine.files : null,
+    workers: reading.role === 'council' ? (livePlacement(reading.session, 'council')?.workers ?? null) : null,
+    // The round trip as the room's chip says it (the pings' average), «связь 52 мс»: a number, never where.
+    rttMs: machine.link === 'ok' ? machineTunnels().rtt(machine.runnerId).ewmaMs : null,
+  }
+}
+
+/**
+ * What the class's row adds for its slots on machines (RunningClassMachines):
+ * the slots, when the first one waiting for a silent machine moves by itself,
+ * and its last move back from one within a class day.
+ */
+function machinesOf(sessionId: string, held: Held, visible: boolean, now: number): RunningClassMachines {
+  const slots = (held.machines ?? [])
+    .map((reading) => machineSlot(reading, visible))
+    .sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role))
+  const moves = slots.flatMap((slot) => {
+    if (slot.link !== 'lost') return []
+    const view = placementOf(sessionId, slot.role)
+    return view.where === 'machine' && view.failoverAt !== null ? [view.failoverAt] : []
+  })
+  const placed = new Set(slots.map((slot) => slot.role))
+  const lost = classPlacementRows(sessionId)
+    .filter((row) => row.state === 'lost' && row.endedAt !== null && now - row.endedAt < MOVED_MEMORY_MS && !placed.has(row.role))
+    .sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))[0]
+  // The files' moment of that very failover: a later one of the same slot has its own.
+  const files = lost ? filesAtOfMove.get(`${sessionId}:${lost.role}`) : undefined
+  const filesAt = lost && files && files.at === lost.endedAt ? files.filesAt : null
+  return {
+    ...(slots.length > 0 ? { machines: slots } : {}),
+    ...(moves.length > 0 ? { moveAt: Math.min(...moves) } : {}),
+    ...(lost ? { moved: { at: lost.endedAt!, from: visible ? (getRunner(lost.runnerId)?.name ?? null) : null, filesAt } } : {}),
+  }
+}
+
+function classRow(sessionId: string, held: Held, activity: ClassActivity, viewer: StaffLike, now: number): RunningClass & RunningClassMachines {
   const visible = canSeeRoom(viewer, sessionId)
   const online = onlineCount(sessionId)
   const busy = busyView(sessionId, activity.busy, visible)
   const idle = online === 0 && activity.busy === null && !activity.stopping
   const room = containerView(held.room)
   const own = containerView(held.own)
-  const somethingToStop = room !== null || own !== null || activity.scopes.length > 0
+  const onMachines = machinesOf(sessionId, held, visible, now)
+  const somethingToStop = room !== null || own !== null || (held.machines?.length ?? 0) > 0 || activity.scopes.length > 0
   const common = {
     gpu: held.room?.gpu ?? null,
     online,
@@ -162,27 +248,28 @@ function classRow(sessionId: string, held: Held, activity: ClassActivity, viewer
     own,
     canStop: isOwner(viewer) && somethingToStop && !activity.stopping,
     idle,
+    ...onMachines,
   }
   if (!visible) {
     return { id: null, hidden: true, name: null, course: null, environment: null, books: [], ...common }
   }
   const path = pathsOf(sessionId)
   const owner = ownersOf(sessionId)
-  const books: RunningBook[] = activity.scopes.map((scope) => ({
+  const books: RunningBook[] = activity.scopes.flatMap((scope) => scope.role === 'council' ? [] : [{
     root: scope.root,
     path: path(scope.root),
     role: scope.role,
     phase: scope.phase,
     owner: scope.role === 'own' ? owner(scope.root) : null,
     lastWorkAt: iso(scope.lastWorkAt),
-  }))
+  }])
   return {
     id: sessionId,
     hidden: false,
     name: getSession(sessionId)?.name ?? null,
     course: courseOf(sessionId, viewer),
     // The label the container was started with; without a container, what this process's kernel came up on.
-    environment: held.room?.environment ?? held.own?.environment ?? environmentOf(sessionId),
+    environment: held.room?.environment ?? held.own?.environment ?? held.machines?.[0]?.environment ?? environmentOf(sessionId),
     books,
     ...common,
   }
@@ -232,7 +319,7 @@ async function runningKernels(viewer: StaffLike): Promise<RunningKernels> {
   const census = await containerCensus()
   const held = heldBy(census)
   const classes = [...held]
-    .map(([sessionId, containers]) => classRow(sessionId, containers, classActivity(sessionId, now), viewer))
+    .map(([sessionId, containers]) => classRow(sessionId, containers, classActivity(sessionId, now), viewer, now))
     .sort((a, b) => reservedOf(b) - reservedOf(a) || (a.name ?? '').localeCompare(b.name ?? ''))
   const containers = census.containers
   const live = census.usage === 'live'

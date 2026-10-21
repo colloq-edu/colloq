@@ -33,9 +33,11 @@ export function blockKernelStarts(id: string): () => void {
  * Per container role, not per room: stopping only the personal notebooks
  * touches only their container, and a lecture's first Run or the shared
  * shell opening meanwhile has nothing to wait for. The whole class's stop
- * pauses both.
+ * pauses its room and personal containers. The council's pool, which lives
+ * on machines only (docs/architecture/remote-classes.md §6.1), is a role of
+ * its own here: paused only when the caller names it.
  */
-type PausedRole = 'room' | 'own'
+export type PausedRole = 'room' | 'own' | 'council'
 
 const paused = new Map<string, number>()
 const pauseKey = (id: string, role: PausedRole): string => `${role}\u0000${id}`

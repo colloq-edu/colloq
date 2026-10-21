@@ -10,20 +10,30 @@
  *
  * Both answer with the same payload, so the panel never has to guess what a
  * clamped write turned into.
+ *
+ * The same holds for the owner's «Занятия на машинах» (classes on machines,
+ * docs/architecture/remote-classes.md §6.2, Paper 18 · Z1), a section of its
+ * own under /api/admin/resources/classes: GET for staff (a teacher's class
+ * form reads whether it may send the class to machines, and what a new class
+ * starts with), PUT for the owner.
  */
 import { Router, type Response } from 'express'
 import { canSeeRoom, type StaffLike } from '../admin/access.js'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
 import { recordAdminEvent } from '../admin/audit-log.js'
 import {
+  classMachineSettings,
+  parseClassMachinePatch,
   parseResourcePatch,
   perEnvironmentMemoryMb,
   ResourceRefusal,
   resourceBounds,
   resourceSettings,
+  updateClassMachineSettings,
   updateResourceSettings,
   type MachineBounds,
 } from '../admin/resource-settings.js'
+import { listStandingRunners } from '../competitions/remote/store.js'
 import { slotsResolution } from '../competitions/capacity.js'
 import { runnerGpuDevices } from '../competitions/gpu.js'
 import { metricMemoryMb } from '@shared/competitions'
@@ -42,13 +52,16 @@ import {
 } from '../kernel/resources.js'
 import { kernelBackend } from '../kernel/runtime-client.js'
 import { diskUsage } from '../ops/disk.js'
-import type {
-  AdminErrorBody,
-  InstanceResources,
-  ResourceBudget,
-  ResourceSettingName,
-  ResourceSettingsResponse,
+import {
+  CLASS_MACHINE_SETTING_BOUNDS,
+  CLASS_MACHINE_SETTING_DEFAULTS,
+  type AdminErrorBody,
+  type InstanceResources,
+  type ResourceBudget,
+  type ResourceSettingName,
+  type ResourceSettingsResponse,
 } from '@shared/admin'
+import type { ClassMachineSettingsResponse, ResourcesOnMachines } from '@shared/remote-admin'
 
 function invalid(res: Response, error: string): Response {
   const body: AdminErrorBody = { error, reason: 'invalid' }
@@ -149,7 +162,7 @@ async function gpuShare(): Promise<ResourceBudget['gpus']> {
  * cores are a share of time (`--cpus`), and promising more of them than exist
  * slows rooms down rather than killing them.
  */
-async function budget(machine: InstanceResources): Promise<ResourceBudget> {
+async function budget(machine: InstanceResources): Promise<ResourceBudget & ResourcesOnMachines> {
   let census: RunningKernel[] = []
   let complete = true
   try {
@@ -157,6 +170,13 @@ async function budget(machine: InstanceResources): Promise<ResourceBudget> {
   } catch {
     complete = false
   }
+  /*
+   * A class slot on a machine holds none of this server's memory (§6.10):
+   * it is no room here, and the bar counts it apart — «На машинах · 9
+   * контейнеров · 0 МБ здесь» (Paper 18 · Z7).
+   */
+  const onMachines = census.filter((kernel) => kernel.where === 'machine').length
+  census = census.filter((kernel) => kernel.where !== 'machine')
   const held = (role: RunningKernel['role']): ResourceBudget['rooms'] => {
     const kernels = census.filter((kernel) => kernel.role === role)
     const { defaultMemoryMb, defaultCpus } = machine.kernel
@@ -183,6 +203,7 @@ async function budget(machine: InstanceResources): Promise<ResourceBudget> {
     overcommitted: promised > totalMb - reserveMb,
     complete,
     gpus: await gpuShare(),
+    ...(onMachines > 0 ? { onMachines: { containers: onMachines } } : {}),
   }
 }
 
@@ -200,7 +221,7 @@ function environmentOverrides(): ResourceSettingsResponse['perEnvironmentMemory'
   })
 }
 
-async function payload(viewer: StaffLike | null): Promise<ResourceSettingsResponse> {
+async function payload(viewer: StaffLike | null): Promise<ResourceSettingsResponse & { budget: ResourcesOnMachines }> {
   const collected = await machineResources()
   const bounds = machineBounds()
   const machine: InstanceResources = {
@@ -225,8 +246,52 @@ async function payload(viewer: StaffLike | null): Promise<ResourceSettingsRespon
   }
 }
 
+/**
+ * «Занятия на машинах» as they stand, with the defaults, the bounds, how many
+ * machines take classes now, and the backend: under the broker no class goes
+ * to a machine (D26), and the panel draws none of it.
+ */
+function classesPayload(): ClassMachineSettingsResponse {
+  return {
+    settings: classMachineSettings(),
+    defaults: { ...CLASS_MACHINE_SETTING_DEFAULTS },
+    bounds: CLASS_MACHINE_SETTING_BOUNDS,
+    machines: listStandingRunners().filter((runner) => runner.classes).length,
+    backend: kernelBackend(),
+  }
+}
+
 export function adminResourceRoutes(): Router {
   const router = Router()
+
+  /*
+   * Declared before `/api/admin/resources` would not matter (another path),
+   * but kept first: the fixed path reads as what it is. The owner's alone to
+   * change, refused for a teacher here as in the panel (ownerOnly): one
+   * switch decides whether every teacher may send a class to a machine that
+   * sees its students' work.
+   */
+  router.get('/api/admin/resources/classes', requireStaff, (_req, res) => {
+    res.set('Cache-Control', 'no-store').json(classesPayload())
+  })
+
+  router.put('/api/admin/resources/classes', ownerOnly('server.ownerAction.resources'), (req, res) => {
+    const parsed = parseClassMachinePatch(req.body)
+    if ('error' in parsed) return invalid(res, parsed.error)
+    const changed = updateClassMachineSettings(parsed.patch)
+    if (changed.length > 0) {
+      console.log(`[admin] classes on machines changed: ${changed.join(', ')}`)
+      const now = classMachineSettings()
+      recordAdminEvent({
+        actor: currentStaff(req),
+        action: 'settings.resources_changed',
+        target: { type: 'settings', id: 'classes' },
+        detail: { changed: changed.map((field) => `classes.${field}`), ...Object.fromEntries(changed.map((field) => [`classes.${field}`, now[field]])) },
+        req,
+      })
+    }
+    res.set('Cache-Control', 'no-store').json(classesPayload())
+  })
 
   router.get('/api/admin/resources', requireStaff, (req, res, next) => {
     payload(currentStaff(req))

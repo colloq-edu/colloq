@@ -11,7 +11,6 @@
  * that dies without saying so, and a real kernel will not do that on request.
  */
 import './_env.mts'
-import { createServer, type Server } from 'node:http'
 import { after, afterEach, before, beforeEach, test } from 'node:test'
 // Import settings only after the fake Jupyter URL is prepared by before().
 beforeEach(async () => {
@@ -19,386 +18,24 @@ beforeEach(async () => {
   setInstanceLanguage('en')
 })
 import assert from 'node:assert/strict'
-import { WebSocketServer, type WebSocket } from 'ws'
 import type * as Y from 'yjs'
 import { guardAnswer } from './_guard.mts'
+import { startFakeJupyter } from './_fake-jupyter.mjs'
 
 /* ------------------------------------------------------------ fake Jupyter */
 
-const kernels = new Map<string, { alive: boolean; busy: boolean }>()
-const byPath = new Map<string, string>()
-let minted = 0
-let sockets: WebSocket[] = []
-let http: Server
-let wss: WebSocketServer
-let port = 0
-/** Set to hang instead of answering, the way a kernel that is thinking does. */
-let swallowExecutes = false
-/** Delay the HTTP interrupt response to exercise the queue/interrupt race. */
-let holdInterrupts = false
-let pendingInterrupts: Array<() => void> = []
-/**
- * The same for service requests over shell — completions and help.
- *
- * A separate flag, because this is a separate case from real life: a kernel
- * computing someone else's cell does not answer `complete_request` at all —
- * ipykernel handles shell one message at a time. `swallowExecutes` cannot
- * check this: execution and completion now travel by different roads.
+/*
+ * The fake lives in tests/_fake-jupyter.mjs, shared with the suites of a
+ * kernel on a machine. Its default cells are the ones this file has always
+ * run: the output is the source, with HOLD, OOM, RAISE, SILENT and a
+ * trailing `?` as markers, and `swallowExecutes`, `swallowShell` and
+ * `holdInterrupts` steering it from here.
  */
-let swallowShell = false
-/** The fake's execution counter — the same as In [n] in a real kernel. */
-let executions = 0
-/** What was asked to run and how: `store_history` is whether IPython puts the source into In/_ih. */
-const requests: { code: string; store_history: boolean; silent: boolean }[] = []
-/**
- * Requests the fake is sitting on. A real kernel answers an interrupted request
- * with an aborted reply and an idle status; without that the caller waits for
- * ever, which is a property of this fake and not of the thing being tested.
- */
-let held: Array<{ socket: WebSocket; parent: unknown; asked?: boolean; code?: string }> = []
-
-/**
- * The report of the council isolation entry (kernel/council-isolation.ts).
- *
- * A real kernel answers `user_expressions` even when silent, and the server
- * reads that as "the personal data copies are ready". Without an answer it
- * must NOT start the attempt — so a fake without this branch would check
- * only the refusal.
- */
-function councilExpressions(asked: boolean, code = ''): Record<string, unknown> {
-  if (!asked) return {}
-  /*
-   * Installing the guard against dangerous commands comes by the same road
-   * and with the same key, and without confirmation the server does not run
-   * the cell at all (kernel/index.ts · ensureGuard). The answer is shared by
-   * all fakes — tests/_guard.mts.
-   */
-  const guard = guardAnswer(code)
-  if (guard) {
-    return {
-      user_expressions: {
-        colloq: { status: 'ok', data: { 'text/plain': JSON.stringify(guard) }, metadata: {} },
-      },
-    }
-  }
-  /*
-   * The `colloq` key is shared by two service runs — the council entry and
-   * the static help parse (kernel/inspect-static.ts) — and they must be
-   * answered DIFFERENTLY. We tell them apart by the code: help arrives with its
-   * own hidden module on the very first line. Otherwise the help parse would
-   * read the council report and always answer "not found".
-   */
-  const text = code.includes('.brief(globals()')
-    ? JSON.stringify({ found: true, brief: { type: 'DataFrame', dims: '1460 × 81' } })
-    : code.includes('.facts(globals()')
-    ? JSON.stringify({
-        found: true,
-        text: 'Module: seaborn\nType: module\nPackage: seaborn 0.13.2\nSummary: Statistical data visualization\nDocs: http://seaborn.pydata.org',
-      })
-    : code.includes('_colloq_inspect')
-      ? JSON.stringify({ found: true, text: 'Signature:\nsns.lmplot(data)\nType: function' })
-      : JSON.stringify({ ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1 })
-  return {
-    user_expressions: {
-      colloq: { status: 'ok', data: { 'text/plain': text }, metadata: {} },
-    },
-  }
-}
-
-function reply(socket: WebSocket, parent: unknown, msgType: string, content: unknown): void {
-  socket.send(
-    JSON.stringify({
-      header: { msg_id: `m_${Math.random().toString(36).slice(2)}`, msg_type: msgType },
-      parent_header: parent,
-      metadata: {},
-      content,
-      /*
-       * The channel is the real one, not "iopub, whatever it is".
-       *
-       * Here stood `msgType === 'status' ? 'iopub' : 'iopub'` — a dead
-       * ternary, both branches the same. The server does not read the
-       * `channel` field today, so the fake stayed green with any value; but a
-       * real Jupyter sends `execute_reply` over shell and `input_request` over
-       * stdin, and the very first routing of incoming messages by channel
-       * would silently diverge from the fake — tests green, live kernel broken.
-       */
-      channel: msgType.endsWith('_reply')
-        ? 'shell'
-        : msgType === 'input_request'
-          ? 'stdin'
-          : 'iopub',
-    }),
-  )
-}
+let fake: Awaited<ReturnType<typeof startFakeJupyter>>
 
 before(async () => {
-  http = createServer((req, res) => {
-    const url = new URL(req.url ?? '/', 'http://x')
-    const kernelMatch = /^\/api\/kernels\/([^/]+)$/.exec(url.pathname)
-
-    if (req.method === 'POST' && url.pathname === '/api/sessions') {
-      // Idempotent by path, exactly as Jupyter is — which is what lets a
-      // restarted server re-attach to a live kernel instead of orphaning it.
-      let body = ''
-      req.on('data', (chunk) => (body += chunk))
-      req.on('end', () => {
-        const path = (JSON.parse(body || '{}') as { path?: string }).path ?? ''
-        let id = byPath.get(path)
-        if (!id || !kernels.get(id)?.alive) {
-          id = `k_${++minted}`
-          byPath.set(path, id)
-          kernels.set(id, { alive: true, busy: false })
-        }
-        res.writeHead(201, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ id: `s_${id}`, kernel: { id } }))
-      })
-      return
-    }
-    if (req.method === 'GET' && kernelMatch) {
-      const kernel = kernels.get(kernelMatch[1])
-      // The one question this whole mechanism rests on.
-      if (!kernel?.alive) {
-        res.writeHead(404).end('{}')
-        return
-      }
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(
-        JSON.stringify({ id: kernelMatch[1], execution_state: kernel.busy ? 'busy' : 'idle' }),
-      )
-      return
-    }
-    if (req.method === 'POST' && /\/restart$/.test(url.pathname)) {
-      /*
-       * A restart the way a real Jupyter does it: the same kernel id, the same
-       * socket, a new process behind them. The fake could not do this at all
-       * and answered 404, so `restartSession` went into catch and never got to
-       * resetting the cells — and a test for that reset would therefore have
-       * to run against a live container. Once it did: green as long as a
-       * kernel happened to be running nearby.
-       */
-      const id = /^\/api\/kernels\/([^/]+)\/restart$/.exec(url.pathname)?.[1]
-      const kernel = id ? kernels.get(id) : undefined
-      if (kernel) kernel.busy = false
-      // Pending executions die together with the process.
-      for (const { socket, parent } of held.splice(0)) {
-        reply(socket, parent, 'execute_reply', { status: 'abort', execution_count: 1 })
-        reply(socket, parent, 'status', { execution_state: 'idle' })
-      }
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ id, name: 'python3' }))
-      return
-    }
-    if (req.method === 'POST' && /\/interrupt$/.test(url.pathname)) {
-      const finish = () => {
-        const id = /^\/api\/kernels\/([^/]+)\/interrupt$/.exec(url.pathname)?.[1]
-        const kernel = id ? kernels.get(id) : undefined
-        if (kernel) kernel.busy = false
-        for (const { socket, parent } of held.splice(0)) {
-          reply(socket, parent, 'error', { ename: 'KeyboardInterrupt', evalue: '', traceback: [] })
-          reply(socket, parent, 'execute_reply', { status: 'error', execution_count: 1 })
-          reply(socket, parent, 'status', { execution_state: 'idle' })
-        }
-        res.writeHead(204).end()
-      }
-      if (holdInterrupts) pendingInterrupts.push(finish)
-      else finish()
-      return
-    }
-    res.writeHead(404).end('{}')
-  })
-
-  wss = new WebSocketServer({ noServer: true })
-  http.on('upgrade', (req, socket, head) => {
-    const id = /^\/api\/kernels\/([^/]+)\/channels/.exec(req.url ?? '')?.[1]
-    if (!id || !kernels.has(id)) {
-      socket.destroy()
-      return
-    }
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      sockets.push(ws)
-      ws.on('message', (raw) => {
-        const msg = JSON.parse(String(raw)) as {
-          header: { msg_type: string }
-          content: { code: string; store_history: boolean; silent: boolean }
-        }
-        /*
-         * Completion and help: the same socket, the same shell, no output —
-         * but there are `busy` and `idle` around the answer, as with a real
-         * ipykernel: it publishes a status around ANY request over shell. The
-         * fake used to not send them, and so did not see the kernel indicator
-         * blinking for the whole room on every completion keystroke.
-         */
-        if (msg.header.msg_type === 'complete_request') {
-          if (swallowShell) return
-          reply(ws, msg.header, 'status', { execution_state: 'busy' })
-          reply(ws, msg.header, 'complete_reply', {
-            status: 'ok',
-            matches: ['df.head', 'df.describe'],
-            cursor_start: 3,
-            cursor_end: 3,
-            // The field is experimental and not every kernel has it — hence
-            // the check that the list is built even without it.
-            metadata: {
-              _jupyter_types_experimental: [{ type: 'function' }, { type: 'function' }],
-            },
-          })
-          reply(ws, msg.header, 'status', { execution_state: 'idle' })
-          return
-        }
-        if (msg.header.msg_type === 'inspect_request') {
-          if (swallowShell) return
-          reply(ws, msg.header, 'status', { execution_state: 'busy' })
-          reply(ws, msg.header, 'inspect_reply', {
-            status: 'ok',
-            /*
-             * `NOTFOUND` in the code is a name that is not in the namespace.
-             * A real kernel answers like this whenever the cell with the
-             * import has not been run yet, and exactly here the second help
-             * path begins — jedi's static parse.
-             */
-            found: !msg.content.code.includes('NOTFOUND'),
-            /*
-             * About a MODULE a real IPython answers exactly this: the kind, the
-             * object's memory address and `<no docstring>` — seaborn has no
-             * docstring at all. The package addition (kernel/inspect-static.ts
-             * · facts) exists for this kind of answer.
-             */
-            data: {
-              'text/plain': msg.content.code.includes('MODULE')
-                ? "\u001b[0;31mType:\u001b[0m        module\nString form: <module 'seaborn' from '/x/seaborn/__init__.py'>\nFile:        /x/seaborn/__init__.py\nDocstring:   <no docstring>"
-                : '\u001b[0;31mSignature:\u001b[0m df.head(n=5)',
-            },
-          })
-          reply(ws, msg.header, 'status', { execution_state: 'idle' })
-          return
-        }
-        if (msg.header.msg_type !== 'execute_request') return
-        requests.push({
-          code: msg.content.code,
-          store_history: msg.content.store_history,
-          silent: msg.content.silent,
-        })
-        const asked =
-          Object.keys((msg.content as { user_expressions?: object }).user_expressions ?? {}).length >
-          0
-        /*
-         * Markers are looked for only in CELL CODE, not in service requests.
-         *
-         * The service kernel runs silently (`silent: true`), and the council
-         * isolation source goes there — a hundred lines with comments that
-         * honestly say "OOM-killer". The fake read that as "the cell killed
-         * the kernel for memory" and answered `restarting`: the attempt never
-         * started, and the test failed after five seconds of waiting.
-         */
-        const service = msg.content.silent === true
-        /*
-         * `HOLD` is a cell that does not finish until it is released BY NAME.
-         *
-         * `swallowExecutes` is a flag for the whole fake, and for one kernel
-         * that was enough. There are now as many kernels as notebooks, and the
-         * main thing about them is that they compute IN PARALLEL: this can be
-         * checked only by holding one while the other answers. The marker is
-         * in the cell code, so exactly the kernel it was sent to is held.
-         */
-        /*
-         * The guard installation is NEVER held, whatever the flags say.
-         *
-         * A real kernel answers it in the very first millisecond after coming
-         * up — it is one `apply()` line in a fresh process, and there is
-         * nothing to hold it with. A fake that held it together with the cell
-         * would be checking not the queue but a five-second wait for a
-         * confirmation nobody was going to send.
-         */
-        const guarding = guardAnswer(msg.content.code) !== null
-        if (!guarding && (swallowExecutes || (!service && /HOLD/.test(msg.content.code)))) {
-          reply(ws, msg.header, 'status', { execution_state: 'busy' })
-          held.push({ socket: ws, parent: msg.header, asked, code: msg.content.code })
-          return
-        }
-        reply(ws, msg.header, 'status', { execution_state: 'busy' })
-        /*
-         * The execution number arrives in execute_input, and a real kernel
-         * always sends it — while the fake never did, so execCount in tests
-         * silently stayed null and any check about the number was pointless.
-         */
-        reply(ws, msg.header, 'execute_input', {
-          code: msg.content.code,
-          execution_count: ++executions,
-        })
-        /*
-         * A cell that kills the kernel for memory.
-         *
-         * In this case a real Jupyter does not answer the request at all: it
-         * sends `status: restarting` — the same kernel id, the same socket, a
-         * new process behind them. The fake could not do this, and the whole
-         * auto-restart path was covered by nothing.
-         */
-        if (!service && /OOM/.test(msg.content.code)) {
-          reply(ws, msg.header, 'status', { execution_state: 'restarting' })
-          return
-        }
-        // A cell whose source says so fails, so a suite can build a notebook
-        // that breaks in the middle without needing a real Python.
-        if (!service && /RAISE/.test(msg.content.code)) {
-          reply(ws, msg.header, 'error', {
-            ename: 'ValueError',
-            evalue: 'the exercise stops here',
-            traceback: ['ValueError: the exercise stops here'],
-          })
-          reply(ws, msg.header, 'execute_reply', { status: 'error', execution_count: 1 })
-          reply(ws, msg.header, 'status', { execution_state: 'idle' })
-          return
-        }
-        /*
-         * `name?` is help, and it does not arrive over iopub.
-         *
-         * IPython answers it with the `payload` field in the execute_reply
-         * itself, the very piece that in a real notebook opens as a "page" at
-         * the bottom of the window. There is no stream and no display_data at
-         * all — which is why the cell stayed empty while the server read only
-         * the status from this message. The fake repeats the same shape.
-         */
-        if (!service && /\?$/.test(msg.content.code.trim())) {
-          reply(ws, msg.header, 'execute_reply', {
-            status: 'ok',
-            execution_count: 1,
-            payload: [
-              {
-                source: 'page',
-                data: { 'text/plain': 'Signature: print(*args)\nDocstring: Prints the values.' },
-                start: 0,
-              },
-            ],
-          })
-          reply(ws, msg.header, 'status', { execution_state: 'idle' })
-          return
-        }
-        // A cell that prints nothing: `x = 1`, a function definition, an
-        // import. A real kernel answers such a cell with exactly this — a reply
-        // and idle, without a single iopub output.
-        if (!service && /SILENT/.test(msg.content.code)) {
-          reply(ws, msg.header, 'execute_reply', { status: 'ok', execution_count: 1 })
-          reply(ws, msg.header, 'status', { execution_state: 'idle' })
-          return
-        }
-        // A silent request shows no output — but the isolation entry expects
-        // `user_expressions` from it, and that is the only answer it will hear.
-        if (!msg.content.silent) {
-          reply(ws, msg.header, 'stream', { name: 'stdout', text: `${msg.content.code}\n` })
-        }
-        reply(ws, msg.header, 'execute_reply', {
-          status: 'ok',
-          execution_count: 1,
-          ...councilExpressions(asked, msg.content.code),
-        })
-        reply(ws, msg.header, 'status', { execution_state: 'idle' })
-      })
-    })
-  })
-
-  await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve))
-  port = (http.address() as { port: number }).port
-  process.env.JUPYTER_URL = `http://127.0.0.1:${port}`
+  fake = await startFakeJupyter({ guardAnswer })
+  process.env.JUPYTER_URL = fake.url
   process.env.JUPYTER_TOKEN = 'fake'
   // Reacting in milliseconds rather than the ten seconds a real room can afford.
   process.env.KERNEL_QUIET_MS = '150'
@@ -416,19 +53,10 @@ before(async () => {
  * Held requests go away together with the flag — each test has its own room,
  * and nobody is left to sit them out.
  */
-afterEach(() => {
-  swallowExecutes = false
-  swallowShell = false
-  holdInterrupts = false
-  for (const finish of pendingInterrupts.splice(0)) finish()
-  held = []
-})
+afterEach(() => fake.reset())
 
 after(async () => {
-  held = []
-  for (const socket of sockets) socket.terminate()
-  wss?.close()
-  await new Promise<void>((resolve) => http.close(() => resolve()))
+  await fake.close()
   const { shutdownKernels } = await import('../server/src/kernel/index.js')
   const { shutdownCollab } = await import('../server/src/collab/index.js')
   await shutdownKernels()
@@ -449,38 +77,14 @@ async function until(what: () => boolean, ms = 5000): Promise<boolean> {
 }
 
 /** Push one stdout chunk into whatever request the fake is sitting on. */
-function say(text: string): void {
-  const [first] = held
-  assert.ok(first, 'wait for the fake to receive execute_request before injecting output')
-  reply(first.socket, first.parent, 'stream', { name: 'stdout', text })
-}
+const say = (text: string): void => fake.say(text)
 
 /** Release only the held requests whose code matches the pattern. */
-function finishHeld(match: RegExp): number {
-  const mine = held.filter((one) => match.test(one.code ?? ''))
-  held = held.filter((one) => !match.test(one.code ?? ''))
-  for (const { socket, parent, asked } of mine) {
-    reply(socket, parent, 'execute_reply', {
-      status: 'ok',
-      execution_count: 1,
-      ...councilExpressions(asked === true),
-    })
-    reply(socket, parent, 'status', { execution_state: 'idle' })
-  }
-  return mine.length
-}
+const finishHeld = (match: RegExp): number => fake.finishHeld(match)
 
 /** Let the held request finish, the way a kernel does when the cell ends. */
-function shellFinish(): void {
-  for (const { socket, parent, asked } of held.splice(0)) {
-    reply(socket, parent, 'execute_reply', {
-      status: 'ok',
-      execution_count: 1,
-      ...councilExpressions(asked === true),
-    })
-    reply(socket, parent, 'status', { execution_state: 'idle' })
-  }
-}
+const shellFinish = (): void => fake.shellFinish()
+
 
 let seq = 0
 
@@ -589,20 +193,20 @@ test('activity treats explicit KeyboardInterrupt as cancellation for cells and c
   for (const council of [false, true]) {
     const room = await seminar()
     room.type('print("long")')
-    swallowExecutes = true
+    fake.swallowExecutes = true
     try {
       if (council) requestCouncilRun(room.id, {
         cellId: room.cellId, participantId: 'p_student', source: 'print("long")', by: 'host', limitSec: null, onChange() {},
       }, 'Teacher', 'p_teacher')
       else requestRun(room.id, [room.cellId], 'Student', 'p_student')
-      assert.ok(await until(() => held.length > 0))
+      assert.ok(await until(() => fake.held.length > 0))
       if (council) {
         // Allow the namespace snapshot to finish, then interrupt the student's
         // actual request; teardown must be allowed to finish normally as well.
         shellFinish()
-        assert.ok(await until(() => held.length > 0 && requests.at(-1)?.silent === false))
+        assert.ok(await until(() => fake.held.length > 0 && fake.requests.at(-1)?.silent === false))
       }
-      swallowExecutes = false
+      fake.swallowExecutes = false
       await interruptSession(room.id)
       assert.ok(await until(() => listActivity(room.id, { level: 'detailed', category: 'runtime' }).events
         .some(event => event.kind === 'execution.finished')))
@@ -610,7 +214,7 @@ test('activity treats explicit KeyboardInterrupt as cancellation for cells and c
         .filter(event => event.kind === 'execution.finished')
       assert.equal(finished.length, 1)
       assert.equal(finished[0].details.outcome, 'cancelled', council ? 'council' : 'cell')
-    } finally { swallowExecutes = false; shellFinish() }
+    } finally { fake.swallowExecutes = false; shellFinish() }
   }
 })
 
@@ -654,8 +258,8 @@ test('a council attempt runs without kernel history — In/_ih does not give awa
     await until(() => last !== null && (last as { state: string }).state === 'ok'),
     'the attempt did not finish computing',
   )
-  const cell = requests.find((r) => r.code === 'print("cell")')
-  const attempt = requests.find((r) => r.code === 'print("attempt")')
+  const cell = fake.requests.find((r) => r.code === 'print("cell")')
+  const attempt = fake.requests.find((r) => r.code === 'print("attempt")')
   assert.ok(cell && attempt, 'the fake did not see the requests')
   assert.equal(cell.store_history, true, 'the cell is an ordinary one, it has In[n]')
   // The kernel is shared: with history, anyone the cell is opened to later
@@ -669,12 +273,12 @@ test('a kernel that dies mid-run stops the room within seconds, and says why', a
   const { requestRun } = await import('../server/src/kernel/index.js')
   const room = await seminar()
   room.type('while True: pass')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_2')
   assert.ok(await until(() => room.state() === 'running'), 'the cell never started')
 
   // The kernel goes. The socket, as in the real thing, stays open.
-  for (const kernel of kernels.values()) kernel.alive = false
+  for (const kernel of fake.kernels.values()) kernel.alive = false
 
   assert.ok(await until(() => room.state() === 'error'), 'the cell span forever')
   assert.equal(room.status(), 'dead')
@@ -682,7 +286,7 @@ test('a kernel that dies mid-run stops the room within seconds, and says why', a
     room.notes().some((note) => /kernel stopped/i.test(note)),
     `the room was told nothing: ${JSON.stringify(room.notes())}`,
   )
-  swallowExecutes = false
+  fake.swallowExecutes = false
 })
 
 test('a kernel that died while nobody was looking is replaced on the next Run', async () => {
@@ -693,7 +297,7 @@ test('a kernel that died while nobody was looking is replaced on the next Run', 
   assert.ok(await until(() => room.state() === 'ok'), 'the first run never finished')
 
   // Killed between two cells, in silence.
-  for (const kernel of kernels.values()) kernel.alive = false
+  for (const kernel of fake.kernels.values()) kernel.alive = false
   await wait(250)
 
   room.type('print("second")')
@@ -725,9 +329,9 @@ test('work left over from a dead server is let go of, not waited on', async () =
   const id = `orphan${seq++}`
   createSession(id, 'Orphan')
   const { doc } = getSessionDoc(id)
-  const before = kernels.size
+  const before = fake.kernels.size
   await ensureKernel(id)
-  const [newest] = [...kernels.entries()].slice(before)
+  const [newest] = [...fake.kernels.entries()].slice(before)
   assert.ok(newest, 'no kernel was created')
   newest[1].busy = true
 
@@ -768,7 +372,7 @@ test('Run All on a kernel that died quietly carries the whole batch through to t
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
   assert.ok(await until(() => room.state() === 'ok'), 'the first run did not go through')
 
-  for (const kernel of kernels.values()) kernel.alive = false
+  for (const kernel of fake.kernels.values()) kernel.alive = false
   // Longer than KERNEL_QUIET_MS: the next send will first ask whether the
   // kernel is alive.
   await wait(250)
@@ -1100,13 +704,13 @@ test('only the person whose cell is running may stop it', async () => {
   assert.equal(startedTheRunningCell(room.id, 'p_maria'), false, 'nothing is running yet')
 
   room.type('while True: pass')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
   assert.ok(await until(() => room.state() === 'running'), 'the cell never started')
 
   assert.equal(startedTheRunningCell(room.id, 'p_maria'), true)
   assert.equal(startedTheRunningCell(room.id, 'p_john'), false, 'a bystander could stop it')
-  swallowExecutes = false
+  fake.swallowExecutes = false
 })
 
 test('a forged runById in the document does not buy the right to interrupt', async () => {
@@ -1114,7 +718,7 @@ test('a forged runById in the document does not buy the right to interrupt', asy
   const { getCells } = await import('../shared/notebook.js')
   const room = await seminar()
   room.type('while True: pass')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
   assert.ok(await until(() => room.state() === 'running'), 'the cell never started')
 
@@ -1127,7 +731,7 @@ test('a forged runById in the document does not buy the right to interrupt', asy
 
   assert.equal(startedTheRunningCell(room.id, 'p_mallory'), false, 'the document was believed')
   assert.equal(startedTheRunningCell(room.id, 'p_maria'), true, 'the real runner lost the right')
-  swallowExecutes = false
+  fake.swallowExecutes = false
 })
 
 test('interrupting stops the tail as well as the cell', async () => {
@@ -1139,7 +743,7 @@ test('interrupting stops the tail as well as the cell', async () => {
   room.doc.transact(() => cells.push(extra))
   room.type('while True: pass')
 
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(
     room.id,
     [room.cellId, extra[0].get('id') as string, extra[1].get('id') as string],
@@ -1154,7 +758,7 @@ test('interrupting stops the tail as well as the cell', async () => {
 
   // Interrupting cell 1 of 3 must not start cell 2.
   await interruptSession(room.id)
-  swallowExecutes = false
+  fake.swallowExecutes = false
 
   assert.ok(
     await until(() => extra.every((c) => c.get('state') === 'idle')),
@@ -1190,7 +794,7 @@ test("a miss on someone else's cell does not clear their queue", async () => {
   assert.ok(await until(() => room.state() === 'ok'), "the teacher's cell did not run")
 
   // The student's Run All: the first one computes, the second one waits.
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(
     room.id,
     theirs.map((c) => c.get('id') as string),
@@ -1203,7 +807,7 @@ test("a miss on someone else's cell does not clear their queue", async () => {
   // The teacher presses "stop" on their own cell — one that has already
   // finished.
   await interruptSession(room.id, room.cellId)
-  swallowExecutes = false
+  fake.swallowExecutes = false
 
   /*
    * The SIGINT goes to whatever is computing: there is one kernel, and it has
@@ -1256,7 +860,7 @@ test('a person can take their own cell out of the queue', async () => {
   const mineId = mine.get('id') as string
 
   room.type('while True: pass')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
   assert.ok(await until(() => room.state() === 'running'), 'the kernel never took the first cell')
   requestRun(room.id, [mineId], 'John', 'p_john')
@@ -1265,21 +869,21 @@ test('a person can take their own cell out of the queue', async () => {
   assert.equal(cancelRun(room.id, [mineId], 'p_john', false), 1)
   assert.equal(mine.get('state'), 'idle')
   assert.equal(mine.get('runBy'), null, 'a cancelled cell still carried a name')
-  swallowExecutes = false
+  fake.swallowExecutes = false
 })
 
 test('cancelling never reaches the cell that is running', async () => {
   const { requestRun, cancelRun } = await import('../server/src/kernel/index.js')
   const room = await seminar()
   room.type('while True: pass')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
   assert.ok(await until(() => room.state() === 'running'), 'the cell never started')
 
   // Her own cell, and she is the host: still not this control's business.
   assert.equal(cancelRun(room.id, [room.cellId], 'p_maria', true), 0)
   assert.equal(room.state(), 'running', 'a run was stopped by the back door')
-  swallowExecutes = false
+  fake.swallowExecutes = false
 })
 
 test("one student cannot cancel another student's queued cell", async () => {
@@ -1292,7 +896,7 @@ test("one student cannot cancel another student's queued cell", async () => {
   const hersId = hers.get('id') as string
 
   room.type('while True: pass')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
   assert.ok(await until(() => room.state() === 'running'), 'the first cell never started')
   requestRun(room.id, [hersId], 'Vera', 'p_vera')
@@ -1303,7 +907,7 @@ test("one student cannot cancel another student's queued cell", async () => {
   // The host can, because somebody has to be able to clear a room's queue.
   assert.equal(cancelRun(room.id, [hersId], 'p_teacher', true), 1)
   assert.equal(hers.get('state'), 'idle')
-  swallowExecutes = false
+  fake.swallowExecutes = false
 })
 
 test('a cancelled cell does not run when the kernel is free again', async () => {
@@ -1316,14 +920,14 @@ test('a cancelled cell does not run when the kernel is free again', async () => 
   const cancelledId = cancelled.get('id') as string
 
   room.type('while True: pass')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
   assert.ok(await until(() => room.state() === 'running'), 'the first cell never started')
   requestRun(room.id, [cancelledId], 'John', 'p_john')
   assert.ok(await until(() => cancelled.get('state') === 'queued'), 'never queued')
   cancelRun(room.id, [cancelledId], 'p_john', false)
 
-  swallowExecutes = false
+  fake.swallowExecutes = false
   await interruptSession(room.id)
   await wait(400)
   assert.equal(
@@ -1343,7 +947,7 @@ test('a cell deleted while it waited does not stall the ones behind it', async (
   room.doc.transact(() => cells.push([doomed, after]))
 
   room.type('while True: pass')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(
     room.id,
     [room.cellId, doomed.get('id') as string, after.get('id') as string],
@@ -1359,7 +963,7 @@ test('a cell deleted while it waited does not stall the ones behind it', async (
     if (index >= 0) cells.delete(index, 1)
   })
 
-  swallowExecutes = false
+  fake.swallowExecutes = false
   const { interruptSession } = await import('../server/src/kernel/index.js')
   await interruptSession(room.id)
   // Interrupt drops the tail, so ask for the survivor again — the point is that
@@ -1472,7 +1076,7 @@ test('deleting a cell mid-run does not stall the queue behind it', async () => {
   room.doc.transact(() => cells.push([next]))
 
   room.type('while True: pass')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId, next.get('id') as string], 'Maria', 'p_maria')
   assert.ok(await until(() => room.state() === 'running'), 'the first cell never started')
 
@@ -1481,7 +1085,7 @@ test('deleting a cell mid-run does not stall the queue behind it', async () => {
     const index = cells.toArray().findIndex((c) => (c.get('id') as string) === room.cellId)
     if (index >= 0) cells.delete(index, 1)
   })
-  swallowExecutes = false
+  fake.swallowExecutes = false
   shellFinish()
 
   assert.ok(
@@ -1504,7 +1108,7 @@ test('a deleted cell does not leave the kernel spinning its loop', async () => {
   const cells = getCells(room.doc)
 
   room.type('while True: pass')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
   assert.ok(await until(() => room.state() === 'running'), 'the cell did not start')
 
@@ -1512,7 +1116,7 @@ test('a deleted cell does not leave the kernel spinning its loop', async () => {
     const index = cells.toArray().findIndex((c) => (c.get('id') as string) === room.cellId)
     if (index >= 0) cells.delete(index, 1)
   })
-  swallowExecutes = false
+  fake.swallowExecutes = false
 
   assert.ok(
     await until(() => getMeta(room.doc).get('runningCell') == null),
@@ -1535,13 +1139,13 @@ test('clearing keeps what arrives after it, and drops what came before', async (
       .join('')
 
   room.type('print("before")')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
   assert.ok(await until(() => room.state() === 'running'))
   // The room marks the cell running before execute() finishes its asynchronous
   // liveness/socket checks. Injecting before the fake receives the request used
   // to silently discard this chunk; a longer output timeout cannot recover it.
-  assert.ok(await until(() => held.length > 0), 'the fake did not receive execute_request')
+  assert.ok(await until(() => fake.held.length > 0), 'the fake did not receive execute_request')
   say('before the clear\n')
   assert.ok(await until(() => /before the clear/.test(text())), 'nothing was written at all')
 
@@ -1552,7 +1156,7 @@ test('clearing keeps what arrives after it, and drops what came before', async (
   say('after the clear\n')
   assert.ok(await until(() => /after the clear/.test(text())), 'the run stopped writing')
   assert.ok(!/before the clear/.test(text()), 'the cleared output came back')
-  swallowExecutes = false
+  fake.swallowExecutes = false
   shellFinish()
 })
 
@@ -1589,7 +1193,7 @@ test('the stopwatch starts at the start and stops at the end', async () => {
    * silent until the stopwatch has been checked.
    */
   const before = Date.now()
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
   assert.ok(await until(() => room.state() === 'running'), 'the cell did not start')
   const at = room.startedAt()
@@ -1597,7 +1201,7 @@ test('the stopwatch starts at the start and stops at the end', async () => {
   assert.ok(at >= before - 1000 && at <= Date.now() + 1000, `the mark does not look like now: ${at}`)
   assert.equal(room.ranMs(), null, 'a duration was announced for a cell that is still computing')
 
-  swallowExecutes = false
+  fake.swallowExecutes = false
   shellFinish()
   assert.ok(
     await until(() => room.state() === 'ok'),
@@ -1619,14 +1223,14 @@ test('a queued cell does not start the stopwatch', async () => {
   room.doc.transact(() => cells.push([second]))
   room.type('while True: pass')
 
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId, second.get('id') as string], 'Maria', 'p_maria')
   assert.ok(await until(() => second.get('state') === 'queued'), 'the second one did not join the queue')
   assert.equal(second.get('startedAt'), null, 'the queue started the stopwatch')
 
   const { interruptSession } = await import('../server/src/kernel/index.js')
   await interruptSession(room.id)
-  swallowExecutes = false
+  fake.swallowExecutes = false
 })
 
 test('an interrupted cell ends with an error, and it has a time', async () => {
@@ -1643,11 +1247,11 @@ test('an interrupted cell ends with an error, and it has a time', async () => {
   const room = await seminar()
   room.type('while True: pass')
 
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
   assert.ok(await until(() => room.state() === 'running'), 'the cell did not start')
   await interruptSession(room.id)
-  swallowExecutes = false
+  fake.swallowExecutes = false
 
   assert.ok(await until(() => room.state() !== 'running'), 'the cell did not stop')
   assert.equal(room.state(), 'error', `interrupt outcome: ${String(room.state())}`)
@@ -1673,11 +1277,11 @@ test('a cell removed from the queue does not get a completion time', async () =>
   room.doc.transact(() => cells.push([second]))
   room.type('while True: pass')
 
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId, second.get('id') as string], 'Maria', 'p_maria')
   assert.ok(await until(() => second.get('state') === 'queued'), 'the second one did not join the queue')
   await interruptSession(room.id)
-  swallowExecutes = false
+  fake.swallowExecutes = false
 
   assert.ok(await until(() => second.get('state') === 'idle'), 'the second one stayed in the queue')
   assert.equal(second.get('startedAt'), null, 'a cell that never started got a stopwatch')
@@ -1707,7 +1311,7 @@ test('a "stop" that misses still stops the work but does not clear the queue', a
   room.doc.transact(() => cells.push(tail))
   room.type('while True: pass')
 
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(
     room.id,
     [room.cellId, tail[0].get('id') as string, tail[1].get('id') as string],
@@ -1723,7 +1327,7 @@ test('a "stop" that misses still stops the work but does not clear the queue', a
   // Aim at a cell that does not exist in the room at all — the extreme case
   // of a miss.
   await interruptSession(room.id, 'no-such-cell')
-  swallowExecutes = false
+  fake.swallowExecutes = false
 
   assert.ok(await until(() => room.state() !== 'running'), 'the miss did not stop the work')
   assert.ok(
@@ -1754,7 +1358,7 @@ test('a ghost running cell is cleared by the pass, but a live one is not', async
   // But the pass does not touch a cell that is really running.
   const { requestRun } = await import('../server/src/kernel/index.js')
   room.type('while True: pass')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
   assert.ok(await until(() => room.state() === 'running'), 'the cell did not start')
   // The caller's clock is one window ahead: otherwise the pass would refuse
@@ -1765,7 +1369,7 @@ test('a ghost running cell is cleared by the pass, but a live one is not', async
 
   const { interruptSession } = await import('../server/src/kernel/index.js')
   await interruptSession(room.id)
-  swallowExecutes = false
+  fake.swallowExecutes = false
 })
 
 test('help from a question mark reaches the cell', async () => {
@@ -2010,7 +1614,7 @@ test('editing the sheet restarts the attempt instead of hitting "already in the 
     await import('../server/src/kernel/index.js')
   const room = await seminar()
   room.type('while True: pass')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Ада', 'p_t')
   assert.ok(await until(() => room.state() === 'running'), 'the cell did not start')
 
@@ -2055,7 +1659,7 @@ test('editing the sheet restarts the attempt instead of hitting "already in the 
   assert.deepEqual(first, ['queued'])
   assert.deepEqual(councilQueuePositions(room.id), [])
 
-  swallowExecutes = false
+  fake.swallowExecutes = false
   await interruptSession(room.id)
   assert.ok(await until(() => room.state() !== 'running'), 'the cell did not stop')
 })
@@ -2078,7 +1682,7 @@ test('council queue numbers are computed in one pass and match the one-by-one co
   } = await import('../server/src/kernel/index.js')
   const room = await seminar()
   room.type('while True: pass')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Ада', 'p_t')
   assert.ok(await until(() => room.state() === 'running'), 'the cell did not start')
 
@@ -2123,7 +1727,7 @@ test('council queue numbers are computed in one pass and match the one-by-one co
   )
 
   cancelCouncilRun(room.id, room.cellId, 'p_2')
-  swallowExecutes = false
+  fake.swallowExecutes = false
   await interruptSession(room.id)
   assert.ok(await until(() => room.state() !== 'running'), 'the cell did not stop')
 })
@@ -2133,7 +1737,7 @@ test("banning a participant stops their current attempt and keeps everyone else'
   const { purgeCouncilOf } = await import('../server/src/control.js')
   const { saveDraft } = await import('../server/src/council.js')
   const room = await seminar()
-  swallowExecutes = true
+  fake.swallowExecutes = true
   const offender: (string | null)[] = []
   const neighbour: (string | null)[] = []
   saveDraft(room.id, room.cellId, 'offender', 'while True: pass', Date.now())
@@ -2156,16 +1760,16 @@ test("banning a participant stops their current attempt and keeps everyone else'
   }, 'Сосед', 'neighbour')
   assert.ok(await until(() => offender.includes('running')), "the offender's attempt did not start")
   assert.ok(
-    await until(() => held.length > 0 && requests.at(-1)?.silent === true),
+    await until(() => fake.held.length > 0 && fake.requests.at(-1)?.silent === true),
     'the service namespace snapshot did not start',
   )
   shellFinish()
   assert.ok(
-    await until(() => held.length > 0 && requests.at(-1)?.silent === false),
+    await until(() => fake.held.length > 0 && fake.requests.at(-1)?.silent === false),
     "the offender's code did not reach the kernel",
   )
 
-  swallowExecutes = false
+  fake.swallowExecutes = false
   assert.equal(purgeCouncilOf(room.id, 'offender'), 1)
   assert.ok(await until(() => neighbour.includes('ok')), 'the queue of the others did not continue after the stop')
   assert.deepEqual(offender.slice(0, 2), ['queued', 'running'])
@@ -2179,7 +1783,7 @@ test('banning another participant removes only their queue and does not interrup
   const { purgeCouncilOf } = await import('../server/src/control.js')
   const { saveDraft } = await import('../server/src/council.js')
   const room = await seminar()
-  swallowExecutes = true
+  fake.swallowExecutes = true
   const running: (string | null)[] = []
   const removed: (string | null)[] = []
   saveDraft(room.id, room.cellId, 'offline-offender', 'print(1)', Date.now())
@@ -2202,12 +1806,12 @@ test('banning another participant removes only their queue and does not interrup
   }, 'Ушедший', 'offline-offender')
   assert.ok(await until(() => running.includes('running')), 'the other attempt did not start')
   assert.ok(
-    await until(() => held.length > 0 && requests.at(-1)?.silent === true),
+    await until(() => fake.held.length > 0 && fake.requests.at(-1)?.silent === true),
     'the service namespace snapshot did not start',
   )
   shellFinish()
   assert.ok(
-    await until(() => held.length > 0 && requests.at(-1)?.silent === false),
+    await until(() => fake.held.length > 0 && fake.requests.at(-1)?.silent === false),
     'the code of the current attempt did not reach the kernel',
   )
 
@@ -2216,7 +1820,7 @@ test('banning another participant removes only their queue and does not interrup
   assert.deepEqual(running, ['queued', 'running'], "the current attempt got the interrupt of someone else's ban")
   assert.deepEqual(councilQueuePositions(room.id), [])
 
-  swallowExecutes = false
+  fake.swallowExecutes = false
   await (await import('../server/src/kernel/index.js')).interruptSession(room.id)
   assert.ok(await until(() => running.at(-1) === 'error'), 'the test attempt did not finish')
 })
@@ -2226,7 +1830,7 @@ test('a late ban interrupt does not hit the next author', async () => {
   const { purgeCouncilOf } = await import('../server/src/control.js')
   const { saveDraft } = await import('../server/src/council.js')
   const room = await seminar()
-  swallowExecutes = true
+  fake.swallowExecutes = true
   const offender: (string | null)[] = []
   const neighbour: (string | null)[] = []
   saveDraft(room.id, room.cellId, 'late-offender', 'while True: pass', Date.now())
@@ -2248,25 +1852,25 @@ test('a late ban interrupt does not hit the next author', async () => {
     onChange: (run) => neighbour.push(run?.state ?? null),
   }, 'Следующий', 'next-author')
   assert.ok(await until(() => offender.includes('running')))
-  assert.ok(await until(() => held.length > 0 && requests.at(-1)?.silent === true))
+  assert.ok(await until(() => fake.held.length > 0 && fake.requests.at(-1)?.silent === true))
   shellFinish()
-  assert.ok(await until(() => held.length > 0 && requests.at(-1)?.silent === false))
+  assert.ok(await until(() => fake.held.length > 0 && fake.requests.at(-1)?.silent === false))
 
-  holdInterrupts = true
+  fake.holdInterrupts = true
   assert.equal(purgeCouncilOf(room.id, 'late-offender'), 1)
-  assert.ok(await until(() => pendingInterrupts.length === 1), 'the interrupt did not reach the server')
+  assert.ok(await until(() => fake.pendingInterrupts.length === 1), 'the interrupt did not reach the server')
 
   // The offender manages to finish on their own while the HTTP answer to the
   // interrupt is held back.
   shellFinish()
-  assert.ok(await until(() => held.length > 0 && requests.at(-1)?.silent === true))
+  assert.ok(await until(() => fake.held.length > 0 && fake.requests.at(-1)?.silent === true))
   shellFinish()
   await wait(50)
   assert.deepEqual(neighbour, ['queued'], 'the queue let the next one in under the late SIGINT')
 
-  swallowExecutes = false
-  holdInterrupts = false
-  for (const finish of pendingInterrupts.splice(0)) finish()
+  fake.swallowExecutes = false
+  fake.holdInterrupts = false
+  for (const finish of fake.pendingInterrupts.splice(0)) finish()
   assert.ok(await until(() => neighbour.at(-1) === 'ok'), 'the next attempt did not continue')
 })
 
@@ -2322,7 +1926,7 @@ test('a hint does not make the kernel busy: its busy/idle is not the room phase'
 test('a busy kernel does not answer a completion — and the promise rejects on timeout', async () => {
   const { JupyterKernel, defaultEndpoint } = await import('../server/src/kernel/jupyter.js')
   const kernel = await JupyterKernel.connect('complete-timeout', defaultEndpoint())
-  swallowShell = true
+  fake.swallowShell = true
   try {
     const started = Date.now()
     await assert.rejects(kernel.complete('df.', 3), /timed out/)
@@ -2334,7 +1938,7 @@ test('a busy kernel does not answer a completion — and the promise rejects on 
     const spent = Date.now() - started
     assert.ok(spent >= 2000 && spent < 6000, `the refusal came after ${spent} ms`)
   } finally {
-    swallowShell = false
+    fake.swallowShell = false
     await kernel.dispose()
   }
 })
@@ -2367,7 +1971,7 @@ test('help about a name that was not executed comes from static parsing', async 
   assert.equal(known.text, 'Signature: df.head(n=5)')
   assert.equal(known.reason, null)
 
-  const before = requests.length
+  const before = fake.requests.length
   // But this name the kernel does not know (the fake answers found: false),
   // and then jedi is asked — together with the import header of the same
   // notebook.
@@ -2377,7 +1981,7 @@ test('help about a name that was not executed comes from static parsing', async 
   assert.equal(missing.found, true, `the second path did not answer: ${missing.reason}`)
   assert.match(missing.text ?? '', /^Signature:\nsns\.lmplot\(data\)/)
 
-  const service = requests.slice(before)
+  const service = fake.requests.slice(before)
   assert.equal(service.length, 1, 'static parsing went out as more than one request')
   // Silently and without a trace: no output to the room, no line in `In`/`Out`.
   assert.equal(service[0].silent, true)
@@ -2422,7 +2026,7 @@ test('a busy kernel is not asked for help at all — the refusal comes at once',
   await ensureKernel(room.id)
   assert.ok(await until(() => room.status() === 'idle'))
   room.type('print(1)')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Student', 'p_student')
   try {
     assert.ok(await until(() => room.state() === 'running'), 'the cell did not start computing')
@@ -2438,7 +2042,7 @@ test('a busy kernel is not asked for help at all — the refusal comes at once',
      */
     assert.ok(spent < 1000, `the "busy" refusal waited ${spent} ms`)
   } finally {
-    swallowExecutes = false
+    fake.swallowExecutes = false
     shellFinish()
   }
 })
@@ -2513,7 +2117,7 @@ test('the value line goes quietly and does not move the kernel indicator', async
   await ensureKernel(room.id, CELLS_KEY)
   assert.ok(await until(() => room.status() === 'idle'))
 
-  const before = requests.length
+  const before = fake.requests.length
   const meta = getMeta(room.doc)
   const seen: string[] = []
   const watch = () => seen.push(String(meta.get('kernelStatus')))
@@ -2526,7 +2130,7 @@ test('the value line goes quietly and does not move the kernel indicator', async
   } finally {
     meta.unobserve(watch)
   }
-  const service = requests.slice(before)
+  const service = fake.requests.slice(before)
   assert.equal(service.length, 1, 'the value question went out as more than one request')
   assert.equal(service[0].silent, true)
   assert.equal(service[0].store_history, false)
@@ -2543,12 +2147,12 @@ test('a busy kernel is not asked about a value at all', async () => {
   requestRun(room.id, [room.cellId], 'Teacher', 'p_host', undefined, CELLS_KEY)
   assert.ok(await until(() => room.state() === 'running'))
   try {
-    const before = requests.length
+    const before = fake.requests.length
     const started = Date.now()
     assert.equal(await briefIn(room.id, 'apartments', CELLS_KEY), null)
     // No frame and no waiting: there will be no answer, and there is no reason
     // to wait for it.
-    assert.equal(requests.length, before, 'the busy kernel was asked a question after all')
+    assert.equal(fake.requests.length, before, 'the busy kernel was asked a question after all')
     assert.ok(Date.now() - started < 200, 'the busy kernel was waited for')
   } finally {
     assert.equal(finishHeld(/HOLD/), 1)
@@ -2563,7 +2167,7 @@ test('a live kernel answer about a module is extended with the package name and 
   await ensureKernel(room.id, CELLS_KEY)
   assert.ok(await until(() => room.status() === 'idle'))
 
-  const before = requests.length
+  const before = fake.requests.length
   const answer = await inspectIn(room.id, 'MODULE sns', 10, CELLS_KEY)
   assert.equal(answer.found, true)
   /*
@@ -2579,7 +2183,7 @@ test('a live kernel answer about a module is extended with the package name and 
   assert.doesNotMatch(answer.text ?? '', /String form:/)
   assert.doesNotMatch(answer.text ?? '', /__init__\.py/)
 
-  const service = requests.slice(before)
+  const service = fake.requests.slice(before)
   assert.equal(service.length, 1, 'the addition went out as more than one request')
   assert.equal(service[0].silent, true)
   assert.equal(service[0].store_history, false)
@@ -2629,7 +2233,7 @@ test('help in the second notebook goes to ITS kernel and does not wait for the b
 test('a kernel restart drops a pending completion too, not only an execution', async () => {
   const { JupyterKernel, defaultEndpoint } = await import('../server/src/kernel/jupyter.js')
   const kernel = await JupyterKernel.connect('complete-restart', defaultEndpoint())
-  swallowShell = true
+  fake.swallowShell = true
   try {
     /*
      * The rejection expectation is set up BEFORE the restart: `restart` drops
@@ -2648,7 +2252,7 @@ test('a kernel restart drops a pending completion too, not only an execution', a
     await kernel.restart()
     await asking
   } finally {
-    swallowShell = false
+    fake.swallowShell = false
     await kernel.dispose()
   }
 })
@@ -2668,7 +2272,7 @@ test('while a cell is writing output, the room is not evicted from memory', asyn
   const { sweepIdleRooms } = await import('../server/src/collab/index.js')
   const room = await seminar()
   room.type('while True: pass')
-  swallowExecutes = true
+  fake.swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_2')
   assert.ok(await until(() => room.state() === 'running'), 'the cell did not start')
 
@@ -2676,7 +2280,7 @@ test('while a cell is writing output, the room is not evicted from memory', asyn
   const hour = Date.now() + 60 * 60 * 1000
   assert.ok(!sweepIdleRooms(hour).includes(room.id), 'the room was evicted from under the writer')
 
-  swallowExecutes = false
+  fake.swallowExecutes = false
   await interruptSession(room.id)
   assert.ok(await until(() => room.state() !== 'running'), 'the cell did not stop')
 
@@ -2737,11 +2341,11 @@ test('two notebooks — two kernels: their variables and queues are separate', a
   assert.equal(room.state(), 'running', 'another kernel released the lecture')
 
   // Two kernels are two Jupyter SESSIONS, one per path; the path is the key.
-  assert.ok(byPath.has(jupyterSessionPath(room.id, CELLS_KEY)), [...byPath.keys()].join(', '))
-  assert.ok(byPath.has(jupyterSessionPath(room.id, other.root)), [...byPath.keys()].join(', '))
+  assert.ok(fake.byPath.has(jupyterSessionPath(room.id, CELLS_KEY)), [...fake.byPath.keys()].join(', '))
+  assert.ok(fake.byPath.has(jupyterSessionPath(room.id, other.root)), [...fake.byPath.keys()].join(', '))
   assert.notEqual(
-    byPath.get(jupyterSessionPath(room.id, CELLS_KEY)),
-    byPath.get(jupyterSessionPath(room.id, other.root)),
+    fake.byPath.get(jupyterSessionPath(room.id, CELLS_KEY)),
+    fake.byPath.get(jupyterSessionPath(room.id, other.root)),
     'both notebooks ended up in one kernel',
   )
 
@@ -2996,7 +2600,7 @@ test('council in the second notebook is computed in ITS kernel', async () => {
   assert.ok(await until(() => (last as { state?: string } | null)?.state === 'ok'), JSON.stringify(last))
   // The attempt's kernel is its notebook's kernel: the session path exists,
   // and it is not the room's.
-  assert.ok(byPath.has(jupyterSessionPath(room.id, other.root)), [...byPath.keys()].join(', '))
+  assert.ok(fake.byPath.has(jupyterSessionPath(room.id, other.root)), [...fake.byPath.keys()].join(', '))
   assert.equal(councilQueuePosition(room.id, other.id, 'p_akim'), null)
 })
 

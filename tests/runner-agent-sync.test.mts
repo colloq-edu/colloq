@@ -16,16 +16,20 @@ import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { REMOTE_CONTAINER_CUSHION_MB, REMOTE_HOST_RESERVE_MB, REMOTE_JOIN_REPEAT_MS, type RemoteFree, type RemoteHeldAttempt, type RemoteLease, type RemoteSyncRequest } from '../shared/remote-runner.ts'
-import { Agent, type AgentOptions } from '../server/src/runner-agent/sync.ts'
-import { readIdentity, stateLayout } from '../server/src/runner-agent/state.ts'
+import { REMOTE_CONTAINER_CUSHION_MB, REMOTE_HOST_RESERVE_MB, REMOTE_JOIN_REPEAT_MS, remoteCredential, type RemoteFree, type RemoteHeldAttempt, type RemoteLease, type RemoteSyncRequest } from '../shared/remote-runner.ts'
+import { parseRemoteKernelsReply, remoteRevisionDigest, type RemoteKernelsReply, type RemotePlacementIntent } from '../shared/remote-kernels.ts'
+import { Agent, type AgentOptions, type TunnelFactory, type TunnelOptions } from '../server/src/runner-agent/sync.ts'
+import { readIdentity, readPlacements, readStatus, stateLayout, writePlacement } from '../server/src/runner-agent/state.ts'
 import { INSTANCE_LABEL, revisionImage } from '../server/src/runner-agent/images.ts'
+import { specDigest } from '../server/src/runner-agent/kernels.ts'
+import { askAgent, serveControl, type ControlMessage } from '../server/src/runner-agent/control.ts'
+import { CLASS_KERNEL_LABEL, machineRoomContainer } from '../server/src/kernel/room-spec.ts'
 import { status } from '../server/src/runner-agent/main.ts'
 import { competitionsDir, competitionsFs } from '../server/src/competitions/storage.ts'
 import { TEST_ROOT } from './_env.mts'
 import {
-  DIFF_IDS, FakeSeam, LAYERS, REVISION, RUNNER_ID, SECRET, dataSet, fakeAgentDocker, fakeHome, hex, makeLease, outcomeReply, sha256, syncReply, waitFor,
-  type FakeHome,
+  DIFF_IDS, FakeSeam, LAYERS, REVISION, RUNNER_ID, SECRET, classContainer, dataSet, fakeAgentDocker, fakeHome, hex, makeLease, outcomeReply, sha256, syncReply, waitFor,
+  type FakeAgentDocker, type FakeClassContainer, type FakeHome,
 } from './_runner-agent-home.mts'
 
 const layout = stateLayout(TEST_ROOT)
@@ -35,7 +39,7 @@ const PICTURE = { memTotalMb: 16_000, memAvailableMb: 15_000, cpus: 16, diskFree
 
 beforeEach(() => {
   for (const name of fs.readdirSync(TEST_ROOT)) {
-    if (/^(runner\.json.*|status\.json|leases|books|data|agent\.sock)$/.test(name)) fs.rmSync(path.join(TEST_ROOT, name), { recursive: true, force: true })
+    if (/^(runner\.json.*|status\.json|leases|books|data|agent\.sock|placements|rooms|restart\.marker)$/.test(name)) fs.rmSync(path.join(TEST_ROOT, name), { recursive: true, force: true })
   }
   // storage.ts holds the competitions folder open: on Linux the walk goes by that descriptor, so a
   // folder removed here would stay the one it writes into. Closed, it opens the new one.
@@ -60,6 +64,8 @@ function agentFor(home: FakeHome, options: Partial<AgentOptions> = {}) {
     backoffMs: { min: 5, max: 20 },
     stopMs: 2_000,
     log: (line) => logs.push(line),
+    // A tunnel that dials nothing: the tunnel's own tests are tests/remote-tunnel.test.mts.
+    tunnel: () => ({ want: () => undefined, state: () => ({ up: false, rttMs: null, since: 0 }), close: async () => undefined }),
     ...options,
   })
   return { agent, docker, seam, logs }
@@ -825,6 +831,517 @@ test('a relay that says its tunnel is up while home is silent is not taken at it
   } finally {
     await agent.stop()
     await running
+    await home.close()
+  }
+})
+
+/* ------------------------------------------------------------------ classes */
+
+/** A class placement as home's intents carry it (shared/remote-kernels.ts). */
+function classIntent(partial: Partial<RemotePlacementIntent> = {}): RemotePlacementIntent {
+  return {
+    key: 's1:room', gen: 1, environment: 'base', revision: { id: REVISION.id, ref: REVISION.ref, layers: LAYERS },
+    memoryMb: 4096, cpus: 2, pids: 512, gpu: false, network: 'blocked', blockedCidrs: [], token: 'e'.repeat(40), hashSeed: 7, shm: '1g',
+    ...partial,
+  }
+}
+
+/** Home's `kernels` block, as the agent's parser takes it. */
+function kernelsReply(placements: RemotePlacementIntent[], partial: Partial<RemoteKernelsReply> = {}): RemoteKernelsReply {
+  return parseRemoteKernelsReply({
+    placements, pushes: [], verdicts: [], pulls: [], scan: [], epochs: [], collect: [], postmortem: [],
+    rates: { classBulkMBps: 4, machinePaceMBps: 6 }, tunnel: 'open', ...partial,
+  })
+}
+
+const CLASS_WANT = { revisions: [{ id: REVISION.id, ref: REVISION.ref, layers: LAYERS, gpu: false }], data: [], bundles: [] }
+
+/** The kernel host's seams for these tests: Jupyter answers at once, and the host's own beat never fires by the clock. */
+const CLASSES: AgentOptions['classes'] = { probe: async () => true, timings: { censusMs: 3_600_000 } }
+
+/** A class container an earlier life left running, with its record: what this life adopts before its first sync. */
+function leftRunning(docker: FakeAgentDocker, intent = classIntent()): FakeClassContainer {
+  const [sessionId, role] = intent.key.split(':') as [string, 'room' | 'own' | 'council']
+  const container = classContainer(docker, { name: machineRoomContainer(INSTANCE_LABEL, sessionId, role), labels: [CLASS_KERNEL_LABEL, INSTANCE_LABEL, `colloq.placement=${intent.key}:${intent.gen}`], memoryMb: intent.memoryMb, cpus: intent.cpus })
+  writePlacement(layout, { intent, container: container.id, image: revisionImage(intent.revision.id), spec: specDigest(intent, 'blocked'), limits: { memoryMb: intent.memoryMb, cpus: intent.cpus }, card: null })
+  return container
+}
+
+/** A tunnel's end that does what it is told and says what a test sets. */
+function fakeTunnel() {
+  const made: TunnelOptions[] = []
+  const wants: string[] = []
+  const end = { up: false, closed: 0 }
+  const factory: TunnelFactory = (options) => {
+    made.push(options)
+    return { want: (mode) => wants.push(mode), state: () => ({ up: end.up, rttMs: end.up ? 42 : null, since: 0 }), close: async () => void end.closed++ }
+  }
+  return { factory, made, wants, end }
+}
+
+test('the kernels block goes only after a reply carried one: a home without classes never meets it, and with kernels adopted the first sync is held for no time', async () => {
+  const home = await fakeHome()
+  // A 0.24 home: its parser refuses a key it does not know, and close() fails the test on any such sync.
+  home.strict024 = true
+  const docker = fakeAgentDocker()
+  docker.registry.set(REVISION.ref, { diffIds: DIFF_IDS })
+  const room = leftRunning(docker)
+  const { agent } = agentFor(home, { docker, classes: CLASSES })
+  const running = agent.run()
+  try {
+    await waitFor(() => home.syncs().length >= 3, 'three syncs')
+    assert.ok(home.syncs().every((sync) => !('kernels' in sync)), 'a sync carried the block before any reply did')
+    assert.equal(home.syncs()[0]!.holdMs, 0, 'the first sync with kernels adopted was held')
+    assert.ok(home.syncs().slice(1).every((sync) => sync.holdMs === 25_000), 'a sync after a reply was held for no time')
+    // Adopted, it holds what it holds before home ever speaks of it.
+    assert.equal(home.syncs()[0]!.free.memoryMb, PICTURE.memTotalMb - REMOTE_HOST_RESERVE_MB - (4096 + REMOTE_CONTAINER_CUSHION_MB))
+    // A home with classes: its block in a reply, and the next sync says the adopted kernel ready, within the busy hold.
+    home.strict024 = false
+    home.onSync = () => ({ json: syncReply({ kernels: kernelsReply([classIntent()]) }), delayMs: 20 })
+    const said = await waitFor(() => home.syncs().find((sync) => sync.kernels?.placements.length), 'a sync with the block')
+    assert.deepEqual(said.kernels!.placements, [{ key: 's1:room', gen: 1, phase: 'ready', container: room.id, revision: remoteRevisionDigest(REVISION.ref) }])
+    assert.equal(said.holdMs, 10_000)
+    assert.deepEqual(said.kernels!.reports, [])
+    assert.ok(!('bye' in said.kernels!))
+    // Home stops sending it (a home rolled back): the block stops too, and the kernel runs on.
+    home.onSync = () => ({ json: syncReply(), delayMs: 20 })
+    const quiet = home.syncs().length
+    await waitFor(() => home.syncs().length > quiet + 1, 'syncs after the block stopped')
+    assert.ok(!('kernels' in home.syncs().at(-1)!))
+    assert.ok(docker.classes.has(room.name))
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('a block says back the number of home\'s last reply it took in, once a reply carried one: what home says again for a sync it cut short', async () => {
+  const home = await fakeHome()
+  const docker = fakeAgentDocker()
+  docker.registry.set(REVISION.ref, { diffIds: DIFF_IDS })
+  leftRunning(docker)
+  // A home whose replies carry no number first: no block says one back.
+  home.onSync = () => ({ json: syncReply({ kernels: kernelsReply([classIntent()]) }), delayMs: 20 })
+  const { agent } = agentFor(home, { docker, classes: CLASSES })
+  const running = agent.run()
+  try {
+    await waitFor(() => home.syncs().filter((sync) => sync.kernels).length >= 2, 'blocks after replies with no number')
+    assert.ok(home.syncs().every((sync) => !sync.kernels || !('heard' in sync.kernels)), 'a number said back before any reply carried one')
+    // Numbered replies: each block says the number of the reply to the sync before it.
+    const given: Array<{ heard: number | undefined; replied: number }> = []
+    home.onSync = (body) => {
+      const replied = 700 + given.length + 1
+      given.push({ heard: body.kernels?.heard, replied })
+      return { json: syncReply({ kernels: kernelsReply([classIntent()], { replySeq: replied }) }), delayMs: 20 }
+    }
+    await waitFor(() => given.length >= 4, 'four numbered replies')
+    const after = given.slice(1)
+    assert.ok(after.every((one, at) => one.heard === given[at]!.replied), JSON.stringify(given))
+    // A reply with no number again (a home without the field): the blocks stop saying one.
+    home.onSync = () => ({ json: syncReply({ kernels: kernelsReply([classIntent()]) }), delayMs: 20 })
+    const from = home.syncs().length
+    await waitFor(() => home.syncs().length >= from + 2, 'syncs after an unnumbered reply')
+    assert.ok(!('heard' in home.syncs().at(-1)!.kernels!))
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('the last sync of a stop says why: restart when runner update left its marker, stopping otherwise; the class kernels run on', async () => {
+  // One home for both lives: a machine that joins another home is a machine that moved, and its classes go.
+  const home = await fakeHome()
+  try {
+    for (const [marked, bye] of [[true, 'restart'], [false, 'stopping']] as const) {
+      const { agent, docker } = agentFor(home, { classes: CLASSES })
+      const room = leftRunning(docker)
+      home.onSync = () => ({ json: syncReply({ kernels: kernelsReply([classIntent()]) }), delayMs: 20 })
+      const before = home.syncs().length
+      const running = agent.run()
+      await waitFor(() => home.syncs().slice(before).some((sync) => sync.kernels), 'the block')
+      if (marked) fs.writeFileSync(layout.restartMarker, '')
+      await agent.stop()
+      await running
+      const last = home.syncs().at(-1)!
+      assert.equal(last.state, 'draining')
+      assert.equal(last.holdMs, 0)
+      assert.equal(last.kernels!.bye, bye)
+      assert.equal(last.kernels!.placements[0]!.phase, 'ready', 'the last sync left out a kernel that runs on')
+      assert.ok(!fs.existsSync(layout.restartMarker), 'the marker outlived the stop it meant')
+      // SIGTERM leaves class containers running: the next life adopts them.
+      assert.equal(docker.classes.get(room.name), room)
+      assert.equal(room.status, 'running')
+      assert.ok(!docker.calls.some((args) => args[0] === 'rm' && args.includes(room.id)))
+      assert.equal(readPlacements(layout).length, 1)
+    }
+  } finally {
+    await home.close()
+  }
+})
+
+test('a leave says leaving in its last sync, and removes the class containers and their folders once home has let the machine go', async () => {
+  const home = await fakeHome()
+  const { agent, docker } = agentFor(home, { classes: CLASSES })
+  const room = leftRunning(docker)
+  fs.mkdirSync(path.join(layout.roomsDir, 's1'), { recursive: true })
+  home.onSync = (body) => ({ json: syncReply({ kernels: kernelsReply(body.state === 'leaving' ? [] : [classIntent()]) }), delayMs: 20 })
+  const running = agent.run()
+  try {
+    await waitFor(() => home.syncs().some((sync) => sync.kernels), 'the block')
+    const left = agent.requestLeave()
+    agent.leaveAcknowledged()
+    assert.equal(await left, 'left')
+    const exit = await running
+    assert.equal(exit.reason, 'left')
+    const leaving = home.syncs().find((sync) => sync.state === 'leaving')!
+    assert.equal(leaving.kernels!.bye, 'leaving')
+    assert.ok(!docker.classes.has(room.name), 'a left machine kept its class container')
+    assert.ok(!fs.existsSync(layout.roomsDir) && !fs.existsSync(layout.placementsDir))
+  } finally {
+    await home.close()
+  }
+})
+
+test('a leave settles its classes\' files first: a file a cell wrote a moment before is reported and answered, and only then does a sync say leaving', async () => {
+  const home = await fakeHome()
+  const { agent, docker, logs } = agentFor(home, { classes: CLASSES })
+  leftRunning(docker)
+  fs.mkdirSync(path.join(layout.roomsDir, 's1'), { recursive: true })
+  // Home answers what the copy reports: the file the cell wrote is taken (accepted), in the reply to the sync that said it.
+  let verdict: RemoteKernelsReply['verdicts'][number] | null = null
+  let saidAt = -1
+  home.onSync = (body) => {
+    const report = body.kernels?.reports.find((one) => one.changed.some((entry) => entry.path === 'last.csv'))
+    if (report && verdict === null) {
+      verdict = { sessionId: 's1', seq: report.seq, accepted: ['last.csv'], refused: [] }
+      saidAt = home.syncs().length
+    }
+    const placements = body.state === 'leaving' ? [] : [classIntent()]
+    return { json: syncReply({ kernels: kernelsReply(placements, { verdicts: verdict ? [verdict] : [] }) }), delayMs: 20 }
+  }
+  const running = agent.run()
+  try {
+    await waitFor(() => home.syncs().some((sync) => sync.kernels), 'the block')
+    // The cell wrote it a moment ago, and no scan of the copy's own has seen it yet.
+    fs.writeFileSync(path.join(layout.roomsDir, 's1', 'last.csv'), 'id\n1\n')
+    const left = agent.requestLeave()
+    agent.leaveAcknowledged()
+    assert.equal(await left, 'left')
+    await running
+    const syncs = home.syncs()
+    const leaving = syncs.findIndex((sync) => sync.state === 'leaving')
+    assert.ok(saidAt > 0 && leaving >= saidAt, `the file was said (sync ${saidAt}) before the leaving sync (${leaving})\n${logs.join('\n')}`)
+    const said = syncs[saidAt - 1]!.kernels!.reports.flatMap((report) => report.changed).find((entry) => entry.path === 'last.csv')!
+    assert.equal(Buffer.from(said.inline ?? '', 'base64').toString(), 'id\n1\n', 'its bytes with it, inline')
+    assert.ok(syncs.slice(saidAt - 1, leaving).every((sync) => sync.state === 'draining'), 'draining while its files go home')
+    assert.ok(!docker.classes.size, 'and then its class containers went')
+  } finally {
+    await home.close()
+  }
+})
+
+test('class containers join what the machine holds: free counts them out from their intent until their container is gone', async () => {
+  const home = await fakeHome()
+  const { agent, docker } = agentFor(home, { classes: CLASSES })
+  let wanted = [classIntent({ memoryMb: 6144, cpus: 4 })]
+  home.onSync = () => ({ json: syncReply({ want: CLASS_WANT, kernels: kernelsReply(wanted) }), delayMs: 20 })
+  const running = agent.run()
+  try {
+    const ready = await waitFor(() => home.syncs().find((sync) => sync.kernels?.placements[0]?.phase === 'ready'), 'the class ready')
+    assert.equal(ready.free.memoryMb, PICTURE.memTotalMb - REMOTE_HOST_RESERVE_MB - (6144 + REMOTE_CONTAINER_CUSHION_MB))
+    assert.equal(ready.free.cpus, PICTURE.cpus - 1 - 4)
+    assert.equal(ready.attempts.length, 0)
+    // Even pulling, it was out of `free`: home leased nothing into the memory it had just promised the class.
+    for (const sync of home.syncs().filter((entry) => entry.kernels?.placements.length)) {
+      assert.equal(sync.free.memoryMb, PICTURE.memTotalMb - REMOTE_HOST_RESERVE_MB - (6144 + REMOTE_CONTAINER_CUSHION_MB), sync.kernels!.placements[0]!.phase)
+    }
+    const container = docker.classes.get(machineRoomContainer(INSTANCE_LABEL, 's1', 'room'))!
+    assert.ok(container.args.includes('--memory=6144m') && container.args.includes('--cpus=4'))
+    // Home no longer wants it: gone, and its room is the machine's again.
+    wanted = []
+    const after = await waitFor(() => home.syncs().slice(-1).find((sync) => sync.kernels && sync.kernels.placements.length === 0), 'the class gone')
+    assert.equal(after.free.memoryMb, PICTURE.memTotalMb - REMOTE_HOST_RESERVE_MB)
+    assert.equal(docker.classes.size, 0)
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('the tunnel is made once home asks for one, told each reply\'s word, and said up or down in the block', async () => {
+  const home = await fakeHome()
+  const tunnel = fakeTunnel()
+  const { agent, docker } = agentFor(home, { classes: CLASSES, tunnel: tunnel.factory })
+  const room = leftRunning(docker)
+  let order: RemoteKernelsReply['tunnel'] | null = null
+  home.onSync = () => ({ json: syncReply(order ? { kernels: kernelsReply([classIntent()], { tunnel: order }) } : {}), delayMs: 20 })
+  const running = agent.run()
+  try {
+    await waitFor(() => home.syncs().length >= 2, 'syncs')
+    assert.equal(tunnel.made.length, 0, 'a tunnel was made before home asked for one')
+    order = 'open'
+    await waitFor(() => tunnel.wants.includes('open'), 'the tunnel opened')
+    assert.equal(tunnel.made.length, 1)
+    const made = tunnel.made[0]!
+    assert.equal(made.url, `${home.url.replace(/^http/, 'ws')}/api/runners/v1/tunnel`)
+    assert.equal(made.authorization, `Bearer ${remoteCredential(RUNNER_ID, SECRET)}`)
+    assert.equal(made.build, 'dev')
+    assert.equal(made.paceMBps(), 6)
+    // Its streams reach this placement's port, and nothing else.
+    assert.deepEqual(made.resolve('s1:room', 1), { port: room.port })
+    assert.deepEqual(made.resolve('s1:room', 0), { refused: 'stale' })
+    assert.deepEqual(made.resolve('s2:room', 1), { refused: 'gone' })
+    await waitFor(() => home.syncs().some((sync) => sync.kernels?.tunnel === 'down'), 'a block with the tunnel down')
+    tunnel.end.up = true
+    await waitFor(() => home.syncs().some((sync) => sync.kernels?.tunnel === 'up'), 'a block with the tunnel up')
+    assert.deepEqual(agent.status().tunnel, { up: true, rttMs: 42 })
+    order = 'reconnect'
+    await waitFor(() => tunnel.wants.includes('reconnect'), 'reconnect')
+    // A reply without the block holds no tunnel.
+    order = null
+    await waitFor(() => tunnel.wants.at(-1) === 'closed', 'closed')
+    assert.equal(tunnel.made.length, 1, 'a second tunnel for the same life')
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+  assert.equal(tunnel.end.closed, 1, 'the stop left the tunnel open')
+})
+
+test('a revoked machine removes its class containers and their folders, whatever an earlier life left of them', async () => {
+  const home = await fakeHome()
+  const { agent, docker } = agentFor(home, { classes: CLASSES })
+  const room = leftRunning(docker)
+  const stray = classContainer(docker, { name: machineRoomContainer(INSTANCE_LABEL, 'old', 'own'), labels: [CLASS_KERNEL_LABEL, INSTANCE_LABEL, 'colloq.placement=old:own:2'] })
+  fs.mkdirSync(path.join(layout.roomsDir, 's1'), { recursive: true })
+  let revoked = false
+  home.onSync = () => (revoked ? { status: 401, json: { error: 'unauthorized' } } : { json: syncReply({ kernels: kernelsReply([classIntent()]) }), delayMs: 20 })
+  const running = agent.run()
+  try {
+    await waitFor(() => home.syncs().some((sync) => sync.kernels), 'the block')
+    assert.ok(!docker.classes.has(stray.name), 'the adoption kept a container of no placement')
+    revoked = true
+    const exit = await running
+    assert.equal(exit.reason, 'revoked')
+    assert.ok(!docker.classes.has(room.name), 'a revoked machine kept its class container')
+    assert.ok(!fs.existsSync(layout.roomsDir) && !fs.existsSync(layout.placementsDir))
+  } finally {
+    await home.close()
+  }
+})
+
+test('the agent\'s own sweep, at its start and on its way out, never touches a class container', async () => {
+  const home = await fakeHome()
+  const { agent, docker } = agentFor(home, { classes: CLASSES })
+  const room = leftRunning(docker)
+  const running = agent.run()
+  try {
+    await waitFor(() => home.syncs().length > 1, 'syncs')
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+  const sweeps = docker.calls.filter((args) => args[0] === 'ps' && args.includes('label=colloq.kind=runner-check'))
+  assert.ok(sweeps.length >= 2, 'no sweep at the start and on the way out')
+  assert.equal(docker.classes.get(room.name), room)
+  assert.ok(!docker.calls.some((args) => args[0] === 'rm' && (args.includes(room.id) || args.includes(room.name))))
+})
+
+test('runner status says the tunnel and the class containers by slot: from the status file, and from the running agent\'s door', async () => {
+  const home = await fakeHome()
+  const tunnel = fakeTunnel()
+  const { agent, docker } = agentFor(home, { classes: CLASSES, tunnel: tunnel.factory })
+  leftRunning(docker)
+  leftRunning(docker, classIntent({ key: 's1:own', memoryMb: 8192 }))
+  home.onSync = () => ({ json: syncReply({ kernels: kernelsReply([classIntent(), classIntent({ key: 's1:own', memoryMb: 8192 })]) }), delayMs: 20 })
+  const server = await serveControl(agent, layout.socket)
+  const running = agent.run()
+  try {
+    await waitFor(() => tunnel.made.length === 1, 'the tunnel')
+    tunnel.end.up = true
+    await waitFor(() => readStatus(layout)?.tunnel?.up === true, 'the status file with the tunnel up')
+    const printed: string[] = []
+    status(layout, { out: (text) => printed.push(text), err: () => undefined })
+    const report = JSON.parse(printed.join('')) as { tunnel: unknown; classes: unknown }
+    assert.deepEqual(report.tunnel, { up: true, rttMs: 42 })
+    assert.deepEqual(report.classes, { room: 1, own: 1, council: 0 })
+    const said: ControlMessage[] = []
+    assert.equal(await askAgent(layout.socket, 'status', (message) => said.push(message)), 'answered')
+    const live = said.find((message): message is Extract<ControlMessage, { status: unknown }> => 'status' in message)!
+    assert.deepEqual(live.status.classes, { room: 1, own: 1, council: 0 })
+    assert.deepEqual(live.status.tunnel, { up: true, rttMs: 42 })
+  } finally {
+    await agent.stop()
+    await running
+    server.close()
+    await home.close()
+  }
+})
+
+test('the hidden test never lies beside a class: a sealed offer to a machine that holds class containers is declined, whatever reply carries it', async () => {
+  const home = await fakeHome()
+  const { agent, docker } = agentFor(home, { classes: CLASSES })
+  leftRunning(docker)
+  const set = dataSet({ 'train.csv': 'id\n1\n' })
+  const lease = makeLease({ data: set.manifest, sealed: true, sealedData: set.manifest })
+  // A reply of the block first; then a reply without it, trusting the machine and offering it the hidden test.
+  let offered = false
+  home.onSync = (body) => {
+    if (!body.kernels) return { json: syncReply({ kernels: kernelsReply([classIntent()]) }), delayMs: 20 }
+    offered = true
+    return { json: syncReply({ seq: lease.seq, leases: [lease], trusted: true }), delayMs: 20 }
+  }
+  const running = agent.run()
+  try {
+    const declined = await waitFor(() => home.calls.find((call) => call.path.endsWith(`/attempts/${lease.attemptId}/outcome`)), 'the decline')
+    assert.ok(offered)
+    assert.equal((declined.body as { kind: string }).kind, 'declined')
+    assert.equal((declined.body as { reason: string }).reason, 'draining')
+    assert.ok(!fs.existsSync(path.join(layout.leasesDir, `${lease.attemptId}.json`)), 'a sealed lease was written down beside a class')
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('a machine that joins another home drops the classes of the home it left, before it joins', async () => {
+  const first = await fakeHome()
+  const second = await fakeHome()
+  try {
+    const before = agentFor(first, { classes: CLASSES })
+    const room = leftRunning(before.docker)
+    first.onSync = () => ({ json: syncReply({ kernels: kernelsReply([classIntent()]) }), delayMs: 20 })
+    const running = before.agent.run()
+    await waitFor(() => first.syncs().some((sync) => sync.kernels), 'the first home\'s block')
+    await before.agent.stop()
+    await running
+    assert.ok(before.docker.classes.has(room.name))
+    // The same tree, told to join another home: the first home's class kernel and its record go with that identity.
+    const after = agentFor(second, { docker: before.docker, classes: CLASSES })
+    const again = after.agent.run()
+    await waitFor(() => second.syncs().length > 0, 'the second home\'s first sync')
+    assert.ok(!before.docker.classes.has(room.name), 'another home\'s class kernel outlived the move')
+    assert.deepEqual(readPlacements(layout), [])
+    assert.equal(second.syncs()[0]!.holdMs, 25_000, 'the new home was asked at once for classes it never had')
+    await after.agent.stop()
+    await again
+  } finally {
+    await first.close()
+    await second.close()
+  }
+})
+
+test('a machine revoked while a new code waits joins anew, and the revoked identity\'s classes go before it does', async () => {
+  const home = await fakeHome()
+  try {
+    const first = agentFor(home, { classes: CLASSES })
+    const room = leftRunning(first.docker)
+    home.onSync = () => ({ json: syncReply({ kernels: kernelsReply([classIntent()]) }), delayMs: 20 })
+    const running = first.agent.run()
+    await waitFor(() => home.syncs().some((sync) => sync.kernels), 'the block')
+    await first.agent.stop()
+    await running
+    assert.ok(first.docker.classes.has(room.name))
+    // The owner revoked it; the host's operator has put a new code in COLLOQ_RUNNER_JOIN.
+    let revoked = true
+    home.onSync = () => (revoked ? { status: 401, json: { error: 'unauthorized' } } : { json: syncReply(), delayMs: 20 })
+    home.onJoin = () => {
+      revoked = false
+      return { json: { runnerId: 'runnercd', secret: 'd'.repeat(64), trusted: false, approvedSlots: null } }
+    }
+    const second = agentFor(home, { docker: first.docker, classes: CLASSES, join: { home: home.url, code: 'fedcba9876543210fedcba9876543210' } })
+    const again = second.agent.run()
+    await waitFor(() => readIdentity(layout)?.runnerId === 'runnercd', 'the new join')
+    assert.ok(!first.docker.classes.has(room.name), 'a revoked identity\'s class kernel outlived it')
+    assert.deepEqual(readPlacements(layout), [])
+    await second.agent.stop()
+    await again
+  } finally {
+    await home.close()
+  }
+})
+
+test('a home that stops taking the block (rolled back to 0.24) is synced at once without it, and every sync after it too', async () => {
+  const home = await fakeHome()
+  const { agent, docker, logs } = agentFor(home, { classes: CLASSES })
+  const room = leftRunning(docker)
+  home.onSync = () => ({ json: syncReply({ kernels: kernelsReply([classIntent()]) }), delayMs: 20 })
+  const running = agent.run()
+  try {
+    await waitFor(() => home.syncs().some((sync) => sync.kernels), 'a sync with the block')
+    // Rolled back: the router refuses the key it does not know, and its replies carry no block.
+    home.strict024 = true
+    home.onSync = () => ({ json: syncReply(), delayMs: 20 })
+    const at = home.syncs().length
+    await waitFor(() => home.syncs().slice(at).filter((sync) => !('kernels' in sync)).length >= 3, 'syncs without the block')
+    // Only the sync already on its way when home rolled back carried it: its refusal is the last.
+    assert.ok(home.syncs().slice(at).filter((sync) => 'kernels' in sync).length <= 1, 'the agent kept sending a block home refuses')
+    assert.ok(home.violations.length <= 1 && home.violations.every((line) => /Unexpected key "kernels"/.test(line)), home.violations.join('\n'))
+    assert.equal(logs.filter((line) => /refused the sync's kernels block/.test(line)).length, home.violations.length)
+    assert.ok(docker.classes.has(room.name), 'the kernel went with the block')
+  } finally {
+    const refused = home.violations.length
+    await agent.stop()
+    await running
+    // Nor did the stop's last sync carry it.
+    assert.equal(home.violations.length, refused)
+    home.violations.length = 0
+    await home.close()
+  }
+})
+
+test('a machine trusted with the hidden test starts no class beside it, whatever home asks (D3)', async () => {
+  const home = await fakeHome()
+  home.onJoin = () => ({ json: { runnerId: RUNNER_ID, secret: SECRET, trusted: true, approvedSlots: null } })
+  home.onSync = () => ({ json: syncReply({ trusted: true, want: CLASS_WANT, kernels: kernelsReply([classIntent()]) }), delayMs: 20 })
+  const { agent, docker } = agentFor(home, { classes: CLASSES })
+  const running = agent.run()
+  try {
+    const refused = await waitFor(() => home.syncs().find((sync) => sync.kernels?.placements[0]?.phase === 'failed'), 'the class refused')
+    assert.match(refused.kernels!.placements[0]!.failure!.detail!, /hidden test/)
+    assert.equal(docker.classes.size, 0)
+  } finally {
+    await agent.stop()
+    await running
+    await home.close()
+  }
+})
+
+test('a revoked machine asks docker again until its class containers are gone, and a later life drops what a gone identity left before it joins anew', async () => {
+  const home = await fakeHome()
+  try {
+    const first = agentFor(home, { classes: CLASSES })
+    const room = leftRunning(first.docker)
+    // Docker refuses the class container's removal for longer than one removal's own rounds.
+    let refusals = 6
+    first.docker.intercept = (args) => (args[0] === 'rm' && args.includes(room.id) && refusals-- > 0 ? { code: 1, out: 'Error response from daemon: removal of container is already in progress' } : undefined)
+    let revoked = false
+    home.onSync = () => (revoked ? { status: 401, json: { error: 'unauthorized' } } : { json: syncReply({ kernels: kernelsReply([classIntent()]) }), delayMs: 20 })
+    const running = first.agent.run()
+    await waitFor(() => home.syncs().some((sync) => sync.kernels), 'the block')
+    revoked = true
+    assert.equal((await running).reason, 'revoked')
+    assert.ok(!first.docker.classes.has(room.name), 'a revoked machine left its class kernel running')
+    assert.ok(first.logs.some((line) => /could not be removed; asked again/.test(line)), first.logs.join('\n'))
+    // A class container its removal missed (as a crash between the two would leave it): the next life, with a new code, drops it before it joins.
+    first.docker.intercept = null
+    const missed = leftRunning(first.docker)
+    home.onJoin = () => ({ json: { runnerId: 'runnercd', secret: 'd'.repeat(64), trusted: false, approvedSlots: null } })
+    home.onSync = () => ({ json: syncReply(), delayMs: 20 })
+    const second = agentFor(home, { docker: first.docker, classes: CLASSES, join: { home: home.url, code: 'fedcba9876543210fedcba9876543210' } })
+    const again = second.agent.run()
+    await waitFor(() => readIdentity(layout)?.runnerId === 'runnercd', 'the new join')
+    assert.ok(!first.docker.classes.has(missed.name), 'a gone identity\'s class kernel was carried into the new one')
+    assert.deepEqual(readPlacements(layout), [])
+    await second.agent.stop()
+    await again
+  } finally {
     await home.close()
   }
 })

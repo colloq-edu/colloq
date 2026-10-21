@@ -54,6 +54,14 @@ export interface ExecuteHandlers {
 
 export type ExecuteStatus = 'ok' | 'error' | 'abort'
 
+/** How one execution runs; `JupyterKernel.execute` says what each field is for. */
+interface ExecuteOptions {
+  silent?: boolean
+  storeHistory?: boolean
+  userExpressions?: Record<string, string>
+  quiet?: boolean
+}
+
 interface JupyterHeader {
   msg_id: string
   msg_type: string
@@ -88,6 +96,20 @@ interface Pending {
    * wait.
    */
   quiet: boolean
+  /**
+   * The channel to a machine's kernel was cut while this was out: its reply
+   * may have died in the cut, and the next reconnect asks (reconcileAfterReset).
+   */
+  cut: boolean
+  /**
+   * Set while this went out to a machine's kernel beside the question whether
+   * the kernel is there at all (see send), with that question unanswered and
+   * nothing heard from the kernel about this run. A 404 then refuses the run
+   * with it, as the awaited question would have refused it before it went,
+   * unless work the kernel took is out beside it (confirmAlive). Null
+   * otherwise, and always at home.
+   */
+  refuse: ((err: Error) => void) | null
 }
 
 /** Waiting for one `*_reply` over shell: no output, no handshake with iopub. */
@@ -128,6 +150,28 @@ const IDLE_GRACE_MS = 3000
  * is an ordinary outcome, not a failure.
  */
 const SHELL_REQUEST_MS = 2500
+/**
+ * One round of waiting on a machine's link, after which the waiter looks
+ * around again (disposed? ended?). The link answers at once when it comes
+ * back or is lost, so this bounds nothing but how stale a waiter's view of
+ * this object can get.
+ */
+const LINK_WAIT_MS = 5000
+/**
+ * How long the question after a cut waits for its answer (reconcileAfterReset).
+ * Long on purpose: the kernel answers it on shell, after whatever cell it is
+ * computing, and a cell still computing has lost nothing yet.
+ */
+const RECONCILE_INFO_MS = 60_000
+/** Rounds of that question while Jupyter says busy, and the pause between them. */
+const RECONCILE_ROUNDS = 20
+const RECONCILE_PAUSE_MS = 250
+/** The wait of a silent question (evaluate, settleRestart): a free kernel answers within one round trip. */
+const EVALUATE_MS = 10_000
+/** How many times settleRestart asks a kernel that keeps silent before giving up. */
+const RESTART_PROBES = 3
+/** The key a silent evaluation's answer travels under in `user_expressions`. */
+const EVALUATE_KEY = 'colloq'
 
 /**
  * ANSI from the help's `text/plain`.
@@ -162,6 +206,37 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
+/** A caller's extra wait for help, taken only when it is a real duration: an infinite one would be a 1 ms timer. */
+const helpPad = (padMs: number) => (Number.isFinite(padMs) && padMs > 0 ? padMs : 0)
+
+/**
+ * Home's view of whether a kernel on a machine can be reached right now
+ * (remote-classes.md §4.5).
+ *
+ * A machine's kernel sits behind a tunnel the machine dials, and the tunnel
+ * drops for reasons that say nothing about the kernel: a relay restart, a
+ * blip on the machine's network, an agent being updated. The kernel and its
+ * variables are fine the whole time, so a channel that closes while the link
+ * is down is not a kernel that stopped answering, and the client must not
+ * spend its reconnect budget on it, let alone declare a death. One link per
+ * placement gen, read off its machine's tunnel (kernel/remote/tunnel.ts ·
+ * MachineTunnels.link); home's own kernels and the broker's have none.
+ */
+export interface KernelLink {
+  /** Whether the tunnel to the kernel's machine is up right now. */
+  readonly up: boolean
+  /** The tunnel's round trip, ms (an EWMA of its pings); null before the first answer. */
+  readonly rttMs: number | null
+  /** When `up` last changed, on this server's clock. */
+  readonly since: number
+  /**
+   * The link's next word: 'up' once it (re)gains connectivity, 'lost' once
+   * home declared the placement lost (failover; it never comes back from
+   * that), 'timeout' when neither happened within `timeoutMs`.
+   */
+  next(timeoutMs: number): Promise<'up' | 'lost' | 'timeout'>
+}
+
 /**
  * Where a room's Python lives.
  *
@@ -176,11 +251,73 @@ export interface KernelEndpoint {
   token: string
   /** Pod/container incarnation, independent of its stable network address. */
   instanceId?: string
+  /**
+   * The road to a kernel on a machine (see KernelLink); absent at home and
+   * under the broker, and then nothing below behaves differently.
+   */
+  link?: KernelLink
+  /**
+   * Which kernel this is, whatever address it is reached at. A machine's
+   * kernel is reached through a loopback port of this server that a restart
+   * of the server changes, while the container on the machine, and the pty
+   * in it, stay the same (`machine:<runner>:<container>:<gen>`).
+   */
+  identity?: string
 }
 
-/** A replacement behind the same Service DNS must not inherit a remembered PTY. */
+/**
+ * A replacement behind the same Service DNS must not inherit a remembered PTY.
+ *
+ * An endpoint that names its identity is that identity, port or no port: the
+ * terminal's remembered pty (terminal.ts · rememberPty) then survives the new
+ * port a server restart gives a machine's kernel, and a new gen still forgets
+ * it.
+ */
 export function endpointIdentity(endpoint: KernelEndpoint): string {
+  if (endpoint.identity) return endpoint.identity
   return endpoint.instanceId ? `${endpoint.url}\0${endpoint.instanceId}` : endpoint.url
+}
+
+/** Why a kernel was ended from outside rather than by Jupyter (see endFromOutside). */
+export interface KernelEnding {
+  /** 'lost': its machine is gone (failover). 'fenced': home took the placement back. */
+  cause: 'lost' | 'fenced'
+  /** The sentence the room reads about it. */
+  words: string
+}
+
+/** What one silent evaluation came to (see JupyterKernel.evaluate). */
+export interface Evaluation {
+  /**
+   * 'ok': the expression evaluated. 'error': it raised. 'unanswered': no
+   * answer within the wait (a busy kernel keeps it behind the running cell),
+   * or the run was cut short before the kernel said anything about it.
+   */
+  status: 'ok' | 'error' | 'unanswered'
+  /** What the kernel sent for the expression: `{status, data, metadata}` or `{status, ename, evalue}`. */
+  value: Record<string, unknown> | null
+}
+
+/**
+ * A restart was sent to a kernel on a machine and its answer never came back
+ * (remote-classes.md §5.4).
+ *
+ * At home a restart request either gets its answer or Jupyter is gone. On a
+ * machine the request can go through, restart the kernel, and lose its
+ * answer to a tunnel reset on the way back, or be lost itself on the way out:
+ * from here the two look the same. So the kernel is neither dead nor
+ * restarted but unknown, its phase stays `restarting` (expected), and the
+ * question is settled by looking at the kernel once the link is back
+ * (JupyterKernel.settleRestart). The message is the room's sentence.
+ */
+export class RestartUnknown extends Error {
+  constructor(
+    /** What the request failed with, for the log. */
+    readonly reason: string,
+  ) {
+    super(tr('server.theRestartWasSentButNoAnswer.17cbbc'))
+    this.name = 'RestartUnknown'
+  }
 }
 
 /**
@@ -219,9 +356,25 @@ export function jupyterSessionName(sessionId: string, root: string): string {
   return root === CELLS_KEY ? sessionId : `${sessionId}#${root}`
 }
 
+/**
+ * Tests only: what `defaultEndpoint()` answers with instead of the configured
+ * Jupyter.
+ *
+ * Under KERNEL_BACKEND=test every room gets `defaultEndpoint()` (pool.ts ·
+ * endpointForSession), and a machine's endpoint carries a live link and an
+ * identity of its own that no setting can say: this is how a suite puts a
+ * room's terminal and kernels on a pretend machine without a placement. Null
+ * puts the configured Jupyter back.
+ */
+let endpointForTests: KernelEndpoint | null = null
+
+export function useDefaultEndpointForTest(endpoint: KernelEndpoint | null): void {
+  endpointForTests = endpoint
+}
+
 /** The instance-wide kernel: what a seminar gets when it names no environment. */
 export function defaultEndpoint(): KernelEndpoint {
-  return { url: config.jupyter.url, token: config.jupyter.token }
+  return endpointForTests ?? { url: config.jupyter.url, token: config.jupyter.token }
 }
 
 function jupyterRequest(
@@ -347,6 +500,29 @@ export class JupyterKernel {
   private awaitingInput: string | null = null
   private watchdog: NodeJS.Timeout | null = null
   private checking: Promise<boolean> | null = null
+  /** Set once, by endFromOutside. */
+  private _endedBy: KernelEnding | null = null
+  /**
+   * How many times the channel to a machine's kernel has been cut. The
+   * question asked after one cut gives way to the next cut's (reconcileAfterReset).
+   */
+  private cuts = 0
+  /**
+   * Which process of the kernel answered us last: the session id ipykernel
+   * puts into the header of every message it sends, drawn anew by every
+   * process it starts. Read off the replies to our own requests only, since a
+   * status jupyter_server writes itself carries the server's session, not the
+   * kernel's. Null until the first answer, and from a restart until the new
+   * process answers.
+   */
+  private process: string | null = null
+  /**
+   * The process heard last before the first cut that no reconnect has looked
+   * behind yet (reconcileAfterReset); undefined while no cut waits for a look.
+   */
+  private processAtCut: string | null | undefined = undefined
+  /** The process the last restart was sent to, which settleRestart tells the new one from. */
+  private restartFrom: string | null = null
 
   private constructor(
     readonly sessionId: string,
@@ -376,6 +552,18 @@ export class JupyterKernel {
   }
 
   /**
+   * Why the kernel was ended from outside, or null if it was not.
+   *
+   * kernel/index.ts reads it twice. To let go of such a kernel with `detach()`,
+   * never `dispose()`: the DELETE of the latter would go to a loopback port
+   * that may by now belong to another placement. And to tell the room why, in
+   * these words instead of the generic death note.
+   */
+  get endedBy(): KernelEnding | null {
+    return this._endedBy
+  }
+
+  /**
    * Bring up (or re-attach to) the kernel for one notebook of a session.
    *
    * Going through the *sessions* API rather than /api/kernels is what makes the
@@ -398,7 +586,7 @@ export class JupyterKernel {
   ): Promise<JupyterKernel> {
     sessionDir(sessionId)
 
-    const deadline = Date.now() + STARTUP_TIMEOUT_MS
+    let deadline = Date.now() + STARTUP_TIMEOUT_MS
     const body = JSON.stringify({
       name: jupyterSessionName(sessionId, root),
       path: jupyterSessionPath(sessionId, root),
@@ -411,6 +599,21 @@ export class JupyterKernel {
     let lastError = tr("server.noResponse.187241")
 
     while (!created && !fatal && Date.now() < deadline) {
+      /*
+       * A machine's road that is down is waited out, not knocked on, and the
+       * minute is the kernel's: the time the road is closed is added back
+       * (remote-classes.md §5.1). Lost is the end of it.
+       */
+      const link = endpoint.link
+      if (link && !link.up) {
+        const began = Date.now()
+        if ((await link.next(LINK_WAIT_MS)) === 'lost') {
+          fatal = new Error(tr("server.lostTheConnectionToThePythonKernel.c46ec2"))
+          break
+        }
+        deadline += Date.now() - began
+        continue
+      }
       try {
         const res = await jupyterRequest(endpoint, '/api/sessions', { method: 'POST', body })
         if (res.ok) {
@@ -442,13 +645,30 @@ export class JupyterKernel {
     }
 
     const kernel = new JupyterKernel(sessionId, created.sessionId, created.kernelId, endpoint, root)
-    try {
-      await kernel.openSocket(Math.max(10_000, deadline - Date.now()))
-    } catch (err) {
-      kernel._phase = 'dead'
-      throw new Error(
-        tr("server.theKernelStartedButItsChannelAt.ec5fda", { p0: endpoint.url, p1: errText(err) }),
-      )
+    for (;;) {
+      /*
+       * The same for the channel: a machine's road that closes before the
+       * handshake or under it fails the road, not the kernel, whose session
+       * is made and whose variables are there. Waited out, the time added back.
+       */
+      if (kernel.linkDown()) {
+        const began = Date.now()
+        if ((await kernel.linkBack()) !== 'up') {
+          kernel._phase = 'dead'
+          throw new Error(tr("server.lostTheConnectionToThePythonKernel.c46ec2"))
+        }
+        deadline += Date.now() - began
+      }
+      try {
+        await kernel.openSocket(Math.max(10_000, deadline - Date.now()))
+        break
+      } catch (err) {
+        if (kernel.linkDown()) continue
+        kernel._phase = 'dead'
+        throw new Error(
+          tr("server.theKernelStartedButItsChannelAt.ec5fda", { p0: endpoint.url, p1: errText(err) }),
+        )
+      }
     }
     kernel.setPhase('idle')
     return kernel
@@ -456,8 +676,9 @@ export class JupyterKernel {
 
   /**
    * `expected` is true when the death was found by *asking*, before a cell had
-   * been sent — the caller is about to bring a new kernel up and say so itself,
-   * so a second, grimmer announcement would contradict it.
+   * been sent (on a machine, beside it, while the kernel had taken none of our
+   * work: see confirmAlive) — the caller is about to bring a new kernel up and
+   * say so itself, so a second, grimmer announcement would contradict it.
    */
   onPhaseChange(cb: (phase: KernelPhase, expected: boolean) => void): void {
     this.listeners.push(cb)
@@ -486,20 +707,48 @@ export class JupyterKernel {
   async execute(
     code: string,
     handlers: ExecuteHandlers,
-    opts?: {
-      silent?: boolean
-      storeHistory?: boolean
-      userExpressions?: Record<string, string>
-      quiet?: boolean
-    },
+    opts?: ExecuteOptions,
   ): Promise<ExecuteStatus> {
-    // A kernel that has been quiet since before the break may not be there any
-    // more, and the socket will not say so. Between two cells run back to back
-    // this is skipped, so it costs the seminar nothing where it is busiest.
-    if (Date.now() - this.lastHeard > QUIET_MS && !(await this.confirmAlive(true))) {
+    return (await this.send(code, handlers, opts)).done
+  }
+
+  /** `execute` up to the moment the request is on the wire, and the wait for its end. */
+  private async send(
+    code: string,
+    handlers: ExecuteHandlers,
+    opts?: ExecuteOptions,
+  ): Promise<{ done: Promise<ExecuteStatus> }> {
+    this.refuseEnded()
+    /*
+     * A kernel that has been quiet since before the break may not be there any
+     * more, and the socket will not say so. Between two cells run back to back
+     * this is skipped, so it costs the seminar nothing where it is busiest.
+     *
+     * A machine's kernel is asked beside the run instead of before it. There
+     * the question crosses the tunnel, a round trip of its own, and a personal
+     * notebook, run about once a minute, is quiet before nearly every run:
+     * awaited, the question put that trip in front of each of them (print(1)
+     * at 887 ms p50 against 538 ms for the class notebook on the same machine,
+     * 233 ms of tunnel away, at the R1 rehearsal of 21 Oct 2026). Sent at once,
+     * a kernel that is there answers within the cell's own trip. A 404 refuses
+     * the run as it would have been refused here (Pending.refuse); once the
+     * kernel has been heard on it, or has other work of ours out, the 404 is
+     * the death mid-run the watchdog would have found later (confirmAlive).
+     * Either way the phase, the aborted work and the room's words are what
+     * they always were. Two runs in a row share the one question
+     * (confirmAlive · checking). At home the question is local and costs
+     * nothing, and still comes first.
+     */
+    const quiet = Date.now() - this.lastHeard > QUIET_MS
+    const asking = quiet && this.endpoint.link ? this.confirmAlive(true) : null
+    if (quiet && !asking && !(await this.confirmAlive(true))) {
       throw new Error(tr("server.thePythonKernelIsNotRunning.a9cde2"))
     }
     const socket = await this.waitForSocket()
+    // A 404 that came back while the socket was awaited: nothing goes to a kernel that is gone.
+    if (asking && this._phase === 'dead') {
+      throw new Error(tr('server.thePythonKernelIsNotRunning.a9cde2'))
+    }
     const header = this.makeHeader('execute_request')
     const frame = JSON.stringify({
       header,
@@ -523,7 +772,7 @@ export class JupyterKernel {
       channel: 'shell',
     })
 
-    const done = new Promise<ExecuteStatus>((resolve) => {
+    const done = new Promise<ExecuteStatus>((resolve, reject) => {
       this.pending.set(header.msg_id, {
         handlers,
         settle: resolve,
@@ -531,6 +780,9 @@ export class JupyterKernel {
         idle: false,
         graceTimer: null,
         quiet: opts?.quiet === true,
+        cut: false,
+        // Only while the question is still out: answered meanwhile, it has said what it had to.
+        refuse: asking && this.checking === asking ? reject : null,
       })
     })
 
@@ -541,7 +793,7 @@ export class JupyterKernel {
       throw new Error(tr("server.couldNotSendTheCellToThe.b4abb1", { p0: errText(err) }))
     }
     this.startWatchdog()
-    return done
+    return { done }
   }
 
   /**
@@ -600,7 +852,8 @@ export class JupyterKernel {
    *
    * No channel means an immediate refusal, without `waitForSocket`: that one
    * waits up to forty-five seconds, and nobody would wait that long for a
-   * suggestion.
+   * suggestion. A machine's road that is down is no channel either, however
+   * open its socket still looks (see waitForSocket).
    */
   private request(
     msgType: string,
@@ -608,7 +861,13 @@ export class JupyterKernel {
     timeoutMs = SHELL_REQUEST_MS,
   ): Promise<Record<string, any>> {
     const socket = this.socket
-    if (this.disposed || this._phase === 'dead' || !socket || socket.readyState !== WebSocket.OPEN) {
+    if (
+      this.disposed ||
+      this._phase === 'dead' ||
+      !socket ||
+      socket.readyState !== WebSocket.OPEN ||
+      this.linkDown()
+    ) {
       return Promise.reject(new Error(tr("server.thePythonKernelIsNotRunning.a9cde2")))
     }
     const header = this.makeHeader(msgType)
@@ -646,9 +905,18 @@ export class JupyterKernel {
    * there what jedi takes each match to be ("function", "instance", "module").
    * The field has been experimental for more than ten years and not every
    * kernel has it, so its absence is not an error, just a list without icons.
+   *
+   * @param padMs added to the wait, for a kernel on a machine far away
+   * (remote-classes.md §5.6): the road's round trip comes on top of the
+   * kernel's own time, and without it a suggestion would time out on distance
+   * alone. The caller knows the road's figures; nothing is added by default.
    */
-  async complete(code: string, cursorPos: number): Promise<CompleteResult> {
-    const content = await this.request('complete_request', { code, cursor_pos: cursorPos })
+  async complete(code: string, cursorPos: number, padMs = 0): Promise<CompleteResult> {
+    const content = await this.request(
+      'complete_request',
+      { code, cursor_pos: cursorPos },
+      SHELL_REQUEST_MS + helpPad(padMs),
+    )
     const matches = Array.isArray(content.matches)
       ? content.matches.filter((m: unknown): m is string => typeof m === 'string')
       : []
@@ -673,18 +941,132 @@ export class JupyterKernel {
    * The same as `name?` does in a cell, except that the answer is not printed
    * to the output but travels to the caller. `detail_level` 0 means the
    * signature and documentation, 1 adds the source as well; zero is enough for
-   * a hint above a parenthesis.
+   * a hint above a parenthesis. `padMs` as for `complete`.
    */
-  async inspect(code: string, cursorPos: number, detailLevel = 0): Promise<InspectResult> {
-    const content = await this.request('inspect_request', {
-      code,
-      cursor_pos: cursorPos,
-      detail_level: detailLevel,
-    })
+  async inspect(code: string, cursorPos: number, detailLevel = 0, padMs = 0): Promise<InspectResult> {
+    const content = await this.request(
+      'inspect_request',
+      { code, cursor_pos: cursorPos, detail_level: detailLevel },
+      SHELL_REQUEST_MS + helpPad(padMs),
+    )
     const bundle = toStringBundle(content.data)
     const plain = bundle['text/plain']
     if (content.found !== true || typeof plain !== 'string') return { found: false, text: null }
     return { found: true, text: plain.replace(ANSI, '') }
+  }
+
+  /**
+   * Evaluate one expression in the kernel, silently, and say what came of it.
+   *
+   * An execute of no code with one user expression, the road the guard's
+   * report already takes (kernel/index.ts · ensureGuard): `silent` keeps it
+   * off IOPUB and out of the execution count, `store_history: false` out of
+   * `In`/`_ih`, `quiet` off the room's indicator. The kernel evaluates the
+   * expression after the empty run and puts the outcome, raised or not, into
+   * `execute_reply`, so the answer is the expression's own and never a cell's.
+   *
+   * It goes on shell like everything else: a kernel computing a cell answers
+   * once the cell ends, and until then this waits at most `timeoutMs` and
+   * says 'unanswered'. The request stays out all the same, so the answer that
+   * comes later still closes it, as quietly as the prompt one would: let go
+   * of, its `busy` and `idle` would be the room's to see. The wait for the
+   * link and the channel comes first and is not counted. Throws as `execute`
+   * does when there is no kernel to ask.
+   */
+  async evaluate(expression: string, timeoutMs = EVALUATE_MS): Promise<Evaluation> {
+    let value: Record<string, unknown> | null = null
+    const { done } = await this.send(
+      '',
+      {
+        onExecuteInput: () => {},
+        onStream: () => {},
+        onData: () => {},
+        onError: () => {},
+        onClear: () => {},
+        onUserExpressions: (values) => {
+          const answer = values[EVALUATE_KEY]
+          if (answer && typeof answer === 'object') value = answer as Record<string, unknown>
+        },
+      },
+      { silent: true, storeHistory: false, quiet: true, userExpressions: { [EVALUATE_KEY]: expression } },
+    )
+    let timer: NodeJS.Timeout | undefined
+    await Promise.race([
+      done,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs)
+        timer.unref?.()
+      }),
+    ])
+    clearTimeout(timer)
+    // The reply may be in with its closing idle still on the way: an answer all the same.
+    const found = value as Record<string, unknown> | null
+    if (!found) return { status: 'unanswered', value: null }
+    return { status: found.status === 'ok' ? 'ok' : 'error', value: found }
+  }
+
+  /**
+   * Settle a restart whose answer was lost (RestartUnknown) by looking at the
+   * kernel (remote-classes.md §5.4).
+   *
+   * One kernel_info question, and the process that answers it says which way
+   * it went: every reply names the process that sent it (see `process`), and
+   * restart() kept the name of the one it was sent to. Another name is a
+   * fresh process, so the restart happened; the same name is the old one, so
+   * it did not. Read off the kernel itself, the verdict cannot be fooled by
+   * what ran in between, as a mark planted in the process could: the guard,
+   * installed again into a fresh process while the answer was out, would
+   * have looked like the old process's. When no name was kept (the restart
+   * went out before the process ever answered) the verdict is 'happened', the
+   * one that never tells the room its variables are there when they may not
+   * be.
+   *
+   * A kernel that answers nothing is asked what it is doing: busy is the old
+   * process still computing what it was (a process the restart just made has
+   * nothing to be busy with, so long as no cell is sent to it before the
+   * verdict); anything else is asked again.
+   *
+   * Waits for the link and the channel like any run, then each question at
+   * most `timeoutMs`. The phase leaves `restarting` with the verdict: idle,
+   * or busy for an old process still at work. Throws RestartUnknown when the
+   * kernel never answers, and whatever a run throws when there is no kernel
+   * to ask; a failover settles it then.
+   */
+  async settleRestart(timeoutMs = EVALUATE_MS): Promise<'happened' | 'missed'> {
+    const sentTo = this.restartFrom
+    for (let asked = 0; asked < RESTART_PROBES; asked++) {
+      await this.waitForSocket()
+      const answered = await this.request('kernel_info_request', {}, timeoutMs).then(
+        () => true,
+        () => false,
+      )
+      if (answered) {
+        this.leaveRestarting('idle')
+        return sentTo !== null && this.process === sentTo ? 'missed' : 'happened'
+      }
+      if ((await this.executionState()) === 'busy') {
+        this.leaveRestarting('busy')
+        return 'missed'
+      }
+    }
+    throw new RestartUnknown(`the kernel left ${RESTART_PROBES} questions unanswered`)
+  }
+
+  /** The phase a settled restart leaves `restarting` for; any other phase is left alone. */
+  private leaveRestarting(phase: 'idle' | 'busy'): void {
+    if (this._phase === 'restarting') this.setPhase(phase)
+  }
+
+  /** What Jupyter says the kernel is doing, or null when it says nothing usable. */
+  private async executionState(): Promise<string | null> {
+    try {
+      const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}`)
+      if (!res.ok) return null
+      const info = (await res.json()) as { execution_state?: unknown }
+      return typeof info?.execution_state === 'string' ? info.execution_state : null
+    } catch {
+      return null
+    }
   }
 
   /**
@@ -704,6 +1086,17 @@ export class JupyterKernel {
    *
    * One HTTP GET settles it. 404 means gone, and gone is a phase change the
    * rest of the server already knows how to handle.
+   *
+   * A machine's runs go out beside this question rather than after it (see
+   * send). While the kernel has said not a word about them and has no other
+   * work of ours, a 404 refuses them with the very error a run refused before
+   * it went gets, so a room brings a fresh kernel up and runs the cell there
+   * (kernel/index.ts · runOnKernel) instead of reading it dead. Once it has
+   * taken some (heard on a run, or a run out before the question or beside
+   * one answered since), the 404 is a death mid-run, the one the watchdog
+   * would have found had the question come first: everything out is aborted
+   * and the death is not the expected kind, so the room hears what died and
+   * the queue's end, and gets its post-mortem. Any other answer lets them be.
    */
   private confirmAlive(expected = false): Promise<boolean> {
     if (this.checking) return this.checking
@@ -711,7 +1104,19 @@ export class JupyterKernel {
       try {
         const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}`)
         if (res.status === 404) {
-          this.setPhase('dead', expected)
+          const midRun =
+            this.endpoint.link !== undefined &&
+            [...this.pending.values()].some((pending) => !pending.refuse)
+          this.setPhase('dead', expected && !midRun)
+          // All or nothing: a refused run is run again with words of its own,
+          // which a death mid-run told to the same room would contradict.
+          if (!midRun) {
+            for (const [id, pending] of [...this.pending]) {
+              if (!pending.refuse) continue
+              this.pending.delete(id)
+              pending.refuse(new Error(tr('server.thePythonKernelIsNotRunning.a9cde2')))
+            }
+          }
           this.abortPending()
           return false
         }
@@ -727,6 +1132,8 @@ export class JupyterKernel {
         return true
       } finally {
         this.checking = null
+        // Answered, whichever way: what went out beside it is settled above or the kernel's.
+        for (const pending of this.pending.values()) pending.refuse = null
       }
     })()
     return this.checking
@@ -744,9 +1151,20 @@ export class JupyterKernel {
    * and death the rest of the server already knows how to handle.
    */
   private async awaitComeback(): Promise<void> {
-    const deadline = Date.now() + COMEBACK_MS
+    let deadline = Date.now() + COMEBACK_MS
     while (Date.now() < deadline) {
       if (this.disposed || this._phase !== 'restarting') return
+      /*
+       * A machine's road being down is no news about the process behind it,
+       * and the minute is for the process: the time the road is closed is
+       * added back (§5.1). Lost is the failover's to say.
+       */
+      if (this.linkDown()) {
+        const began = Date.now()
+        if ((await this.linkBack()) === 'lost') return
+        deadline += Date.now() - began
+        continue
+      }
       try {
         const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}`)
         if (res.status === 404) {
@@ -822,7 +1240,112 @@ export class JupyterKernel {
     }
   }
 
+  /**
+   * After a reconnect that followed a cut, settle what the cut ate
+   * (remote-classes.md §5.5). Called by the reconnect itself for a machine's
+   * kernel; returns how many executions it ended.
+   *
+   * A machine's channel rides a tunnel, and when the tunnel resets, whatever
+   * was on the wire at that moment is gone, an execute_reply included.
+   * Without its reply a cell waits forever: the kernel is alive and idle, so
+   * the watchdog, which knows only 404, finds nothing wrong, and the room's
+   * queue stands behind a cell that ended long ago.
+   *
+   * First one question on shell. jupyter_server answers a kernel_info_request
+   * only after replaying what it buffered for this session while the channel
+   * was down, and the kernel answers it only after the requests before it,
+   * so by its answer every reply that survived the cut is in. Then Jupyter
+   * is asked what the kernel is doing. Idle, with work from before the cut
+   * still unanswered, means those replies will never come: the work ends in
+   * an error with the room's words, and the queue moves on. Busy means a cell
+   * is still computing, and it has lost nothing yet.
+   *
+   * The first answer also says whether the process behind the channel is
+   * still the one from before the cut (see `process`). A process that
+   * jupyter_server restarted on its own while the channel was down (the
+   * memory killer, most often) is announced only to the channels connected
+   * at that moment, and nothing of the announcement is kept for a channel
+   * that comes back: the new process is found here or nowhere. Found, it is
+   * the restart heard late, and handled as handleFrame handles it live: the
+   * work out is aborted, the phase goes `restarting` (unexpected) and the
+   * comeback is awaited, so the room drops its queue, reads why, and puts its
+   * guard back into a process that does not have it. Settled as a reset, its
+   * lost replies would have told the room that its variables were intact.
+   *
+   * Settled is only what was out at the cut and has no reply at all: a reply
+   * that is in with its closing idle still on the way is closed by its own
+   * grace timer, and whatever was sent after the reconnect belongs to the new
+   * channel. That new work can be what keeps the kernel busy when Jupyter is
+   * asked (a hover's help, say), so busy is asked again, a question behind it,
+   * a few rounds at most. A later cut's question supersedes this one, and the
+   * process is then recognised by the later reconnect.
+   */
+  async reconcileAfterReset(): Promise<number> {
+    const cut = this.cuts
+    const unanswered = () => [...this.pending].filter(([, pending]) => pending.cut && pending.status === null)
+    for (let round = 0; ; round++) {
+      if (cut !== this.cuts) return 0
+      // The first question goes whenever there is a process to recognise; the
+      // rest only while work from before the cut is still unanswered.
+      const recognising = round === 0 && typeof this.processAtCut === 'string'
+      if (!recognising && (unanswered().length === 0 || round === RECONCILE_ROUNDS)) {
+        if (round === 0) this.processAtCut = undefined
+        return 0
+      }
+      if (round > 0) await delay(RECONCILE_PAUSE_MS)
+      const answered = await this.request('kernel_info_request', {}, RECONCILE_INFO_MS).then(
+        () => true,
+        () => false,
+      )
+      // Another cut, or the road closing under the question: the next reconnect asks again.
+      if (cut !== this.cuts || this.linkDown()) return 0
+      if (round === 0) {
+        const before = this.processAtCut
+        this.processAtCut = undefined
+        if (answered && typeof before === 'string' && this.process !== null && this.process !== before) {
+          return this.replacedInCut()
+        }
+      }
+      // No answer within the wait: a cell is still computing, and its reply is
+      // still to come. That is the old process; a fresh one has nothing to compute.
+      if (!answered || unanswered().length === 0) return 0
+      if ((await this.executionState()) === 'idle') break
+    }
+    if (cut !== this.cuts) return 0
+    const lost = unanswered()
+    for (const [id, pending] of lost) {
+      this.pending.delete(id)
+      if (pending.graceTimer) clearTimeout(pending.graceTimer)
+      try {
+        // No exception name: the cell draws "name: text", and the text says it all.
+        pending.handlers.onError('', tr('server.theConnectionToTheMachineBrokeThe.5504d1'), [])
+      } catch (err) {
+        console.error(`[kernel] output handler failed for ${this.sessionId}:`, errText(err))
+      }
+      pending.settle('error')
+    }
+    // The idle that would have said so died in the cut with the replies.
+    if (lost.length > 0 && this._phase === 'busy') this.setPhase('idle')
+    return lost.length
+  }
+
+  /**
+   * The process behind a reconnected channel is another one: jupyter_server
+   * restarted the kernel while the channel was cut, and the `restarting` it
+   * sent then reached nobody (see reconcileAfterReset). Heard now, the way
+   * handleFrame hears it live. Returns how many executions it aborted.
+   */
+  private replacedInCut(): number {
+    const ended = this.pending.size
+    console.error(`[kernel] ${this.sessionId}: the kernel was restarted while its channel was cut`)
+    this.abortPending()
+    this.setPhase('restarting')
+    void this.awaitComeback()
+    return ended
+  }
+
   async interrupt(): Promise<void> {
+    this.refuseEnded()
     const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}/interrupt`, {
       method: 'POST',
     })
@@ -830,18 +1353,43 @@ export class JupyterKernel {
   }
 
   async restart(): Promise<void> {
+    this.refuseEnded()
+    /*
+     * A machine whose road is down is not even asked (§5.4). The request
+     * would fail at the closed door, and on the way it would have aborted the
+     * running cell's wait here while the cell itself kept computing there.
+     * Nothing is touched: the caller says why in the room's words.
+     */
+    const link = this.endpoint.link
+    if (link && !link.up) throw new Error(tr("server.lostTheConnectionToThePythonKernel.c46ec2"))
     // `expected`: somebody pressed the button. The unexpected kind — Jupyter
     // restarting by itself after the OOM killer — arrives as a status frame in
     // handleFrame and is the one the room needs a sentence about.
     this.setPhase('restarting', true)
     // The kernel process is about to be replaced; nothing in flight can finish.
     this.abortPending()
-    const res = await jupyterRequest(
-      this.endpoint,
-      `/api/kernels/${this.kernelId}/restart`,
-      { method: 'POST' },
-      60_000,
-    )
+    // Whoever answers next may be another process: told apart from this one by settleRestart.
+    this.restartFrom = this.process
+    this.process = null
+    this.processAtCut = undefined
+    let res: Response
+    try {
+      res = await jupyterRequest(
+        this.endpoint,
+        `/api/kernels/${this.kernelId}/restart`,
+        { method: 'POST' },
+        60_000,
+      )
+    } catch (err) {
+      /*
+       * From a machine, no answer is no news: the request may have restarted
+       * the kernel and lost its answer to a tunnel reset on the way back, or
+       * been lost itself on the way out. The phase stays `restarting`, as
+       * asked for, and the caller settles it by looking (settleRestart).
+       */
+      if (link && !this._endedBy) throw new RestartUnknown(errText(err))
+      throw err
+    }
     if (!res.ok) {
       this.setPhase('dead')
       throw new Error(tr("server.jupyterRefusedTheRestartHttp.6b7f4a", { p0: res.status }))
@@ -849,10 +1397,54 @@ export class JupyterKernel {
     try {
       await this.waitForSocket(30_000)
     } catch (err) {
-      this.setPhase('dead')
+      // Lost with its machine, or ended from outside: that is the failover's
+      // to say, in the room's own words, not this generic death's.
+      if (!this._endedBy && !this.linkDown()) this.setPhase('dead')
       throw new Error(tr("server.theKernelRestartedButItsChannelDid.4a7ee0", { p0: errText(err) }))
     }
     this.setPhase('idle')
+  }
+
+  /**
+   * End a kernel this server can no longer stand behind, without a word to
+   * Jupyter (remote-classes.md §5.2).
+   *
+   * For a machine's kernel at failover ('lost') and when home takes its
+   * placement back ('fenced'). The pending work is aborted and the reconnects
+   * stop; the phase turns `dead`, unexpected, so the room's death branch drops
+   * the queue, and `endedBy` keeps the cause and the room's sentence. No
+   * DELETE, now or in a later `dispose()`: the machine may be gone, and the
+   * loopback port that led to it may by now lead to another placement. For
+   * the same reason nothing else is asked of Jupyter from here on: a run, an
+   * interrupt or a restart is refused before it leaves (refuseEnded).
+   *
+   * A kernel that is dead already (its reconnects gave up, Jupyter said 404)
+   * keeps its phase, and nobody hears `dead` a second time: its death note is
+   * written by then, so the failover's words are the caller's to write. It is
+   * still marked, and let go of the same way.
+   */
+  endFromOutside(cause: KernelEnding['cause'], words: string): void {
+    if (this.disposed || this._endedBy) return
+    // Before the phase: whoever hears `dead` reads why from here.
+    this._endedBy = { cause, words }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    this.reconnecting = null
+    if (this.watchdog) {
+      clearInterval(this.watchdog)
+      this.watchdog = null
+    }
+    const socket = this.socket
+    this.socket = null
+    try {
+      socket?.terminate()
+    } catch {
+      /* already gone */
+    }
+    this.setPhase('dead')
+    this.abortPending()
   }
 
   /**
@@ -889,6 +1481,11 @@ export class JupyterKernel {
 
   async dispose(): Promise<void> {
     if (this.disposed) return
+    // Ended from outside: let go of, never deleted (see endFromOutside).
+    if (this._endedBy) {
+      this.detach()
+      return
+    }
     this.disposed = true
     this.listeners.length = 0
     if (this.reconnectTimer) {
@@ -991,6 +1588,21 @@ export class JupyterKernel {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        /*
+         * Let go of, or ended from outside, while the handshake was under way:
+         * a channel that opens now belongs to nobody. Taken in, it would stay
+         * open with a live handler for as long as the process lives, a second
+         * connection to a kernel this object has already given up.
+         */
+        if (this.disposed || this._endedBy) {
+          try {
+            socket.terminate()
+          } catch {
+            /* already gone */
+          }
+          reject(new Error(tr("server.theKernelConnectionWasClosed.e0bdcf")))
+          return
+        }
         // The previous channel is closed here and now: two open sockets to one
         // kernel mean all of iopub twice, in every cell of the room.
         const previous = this.socket
@@ -1029,7 +1641,9 @@ export class JupyterKernel {
         }
         // The channel that closed is not ours but the one we replaced ourselves:
         // there is no reason to reconnect to it, a live one already exists.
-        if (ours) this.scheduleReconnect()
+        if (!ours) return
+        this.markCut()
+        this.scheduleReconnect()
       })
     })
   }
@@ -1038,11 +1652,21 @@ export class JupyterKernel {
    * A dropped channel is a network hiccup, not a dead kernel: Jupyter keeps the
    * kernel and buffers its messages, so reconnecting resumes the run in flight
    * instead of costing the room a restart.
+   *
+   * The budget counts the attempts that failed with the road open. A
+   * machine's link that is down is waited out instead (reconnect · linkBack),
+   * with nothing counted, so an outage of any length spends none of the tries
+   * and never declares a death (remote-classes.md §5.1). No backoff timer
+   * stands in front of that wait either: the attempt goes the moment the road
+   * opens. Without a link the waits and the tries are what they always were.
    */
   private scheduleReconnect(): void {
     if (this.disposed || this._phase === 'dead' || this.reconnectTimer || this.reconnecting) return
+    if (this.linkDown()) {
+      void this.reconnect()
+      return
+    }
     const wait = Math.min(500 * 2 ** this.reconnectAttempts, 5000)
-    this.reconnectAttempts++
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       void this.reconnect()
@@ -1054,6 +1678,12 @@ export class JupyterKernel {
     // One reconnect for everyone waiting on it, like the terminal's `opening`.
     if (this.reconnecting) return this.reconnecting
     const run = (async () => {
+      // A closed road is waited at, not knocked on. Lost, or let go of in the
+      // meantime: nothing to reconnect to.
+      if ((await this.linkBack()) !== 'up') {
+        this.reconnecting = null
+        return
+      }
       let failure: unknown = null
       try {
         await this.openSocket(20_000)
@@ -1063,7 +1693,13 @@ export class JupyterKernel {
       // Cleared BEFORE the next round: otherwise `scheduleReconnect` would see
       // itself, and the loop would stop at the very first failure.
       this.reconnecting = null
-      if (failure === null) return
+      if (failure === null) {
+        // Back after a cut: settle whatever the cut ate.
+        if (this.endpoint.link) void this.reconcileAfterReset()
+        return
+      }
+      // Cut off by the road closing mid-attempt: the road's failure, not the kernel's.
+      if (!this.linkDown()) this.reconnectAttempts++
       if (this.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
         console.error(`[kernel] giving up on ${this.sessionId}:`, errText(failure))
         this.setPhase('dead')
@@ -1077,16 +1713,89 @@ export class JupyterKernel {
   }
 
   private async waitForSocket(timeoutMs = SOCKET_WAIT_MS): Promise<WebSocket> {
-    const deadline = Date.now() + timeoutMs
+    let deadline = Date.now() + timeoutMs
     for (;;) {
       if (this.disposed) throw new Error(tr("server.theKernelConnectionWasClosed.e0bdcf"))
       if (this._phase === 'dead') throw new Error(tr("server.thePythonKernelIsNotRunning.a9cde2"))
+      /*
+       * A machine's road that is down stops the clock: the wait is for the
+       * kernel, and the kernel is not what is missing (§5.1). The time the
+       * road was closed is added back to the deadline once it opens.
+       *
+       * Before the socket, and on purpose: a socket that still looks open
+       * while the road is down is one the cut has not reached yet, and what
+       * goes into it now is lost with it (an answer to input() among them).
+       * Nothing sent now could arrive before the road opens anyway.
+       */
+      if (this.linkDown()) {
+        if (!this.socket && !this.reconnectTimer && !this.reconnecting) this.scheduleReconnect()
+        const began = Date.now()
+        const back = await this.linkBack()
+        deadline += Date.now() - began
+        if (back === 'lost') throw new Error(tr("server.lostTheConnectionToThePythonKernel.c46ec2"))
+        continue
+      }
       const socket = this.socket
       if (socket && socket.readyState === WebSocket.OPEN) return socket
       if (Date.now() >= deadline) throw new Error(tr("server.lostTheConnectionToThePythonKernel.c46ec2"))
       if (!socket && !this.reconnectTimer && !this.reconnecting) this.scheduleReconnect()
       await delay(SOCKET_POLL_MS)
     }
+  }
+
+  /**
+   * A kernel ended from outside asks Jupyter nothing more (see endFromOutside).
+   * Home's kernels are never ended so, and are refused nothing here.
+   */
+  private refuseEnded(): void {
+    if (this._endedBy) throw new Error(tr("server.thePythonKernelIsNotRunning.a9cde2"))
+  }
+
+  /** A machine's kernel whose road is down right now; never true at home or under the broker. */
+  private linkDown(): boolean {
+    const link = this.endpoint.link
+    return link !== undefined && !link.up
+  }
+
+  /**
+   * Wait until a machine's road is open: 'up' at once without a link or with
+   * it up, 'lost' once the placement is lost, 'gone' once this kernel was
+   * let go of or ended in the meantime. The link answers the moment it
+   * changes; the rounds only let this look around between its answers.
+   */
+  private async linkBack(): Promise<'up' | 'lost' | 'gone'> {
+    const link = this.endpoint.link
+    for (;;) {
+      if (this.disposed || this._phase === 'dead') return 'gone'
+      if (!link || link.up) return 'up'
+      if ((await link.next(LINK_WAIT_MS)) === 'lost') return 'lost'
+    }
+  }
+
+  /**
+   * The channel to a machine's kernel was cut: whatever was out may have lost
+   * its reply in the cut (reconcileAfterReset). Home's kernels lose nothing
+   * this way, their channel is a local socket, and are left as they were.
+   */
+  private markCut(): void {
+    if (!this.endpoint.link) return
+    this.cuts++
+    for (const pending of this.pending.values()) pending.cut = true
+    // Kept from the first cut nobody has looked behind: a second cut must not
+    // take for the old process one the first cut's reconnect already heard.
+    if (this.processAtCut === undefined) this.processAtCut = this.process
+  }
+
+  /**
+   * Note which process sent a reply to one of our own requests (see
+   * `process`). A reply carries the header of the kernel that sent it, and
+   * only one to a request still waited on counts: the answers to work given
+   * up at a restart may still be on their way from the process that is gone,
+   * and would name it as the one that is there.
+   */
+  private noteProcess(msg: JupyterMessage): void {
+    const session = msg.header?.session
+    if (typeof session === 'string' && session.length > 0) this.process = session
   }
 
   private handleFrame(data: RawData): void {
@@ -1104,6 +1813,9 @@ export class JupyterKernel {
     const content = msg.content ?? {}
     const parentId = msg.parent_header?.msg_id
     const pending = parentId ? this.pending.get(parentId) : undefined
+    // A kernel heard about a run was there to run it: a 404 to the question
+    // asked beside the run no longer refuses it (Pending.refuse).
+    if (pending) pending.refuse = null
 
     /*
      * A reply to a service request comes before everything else.
@@ -1114,7 +1826,9 @@ export class JupyterKernel {
      * must not be: it has no output and no closing idle worth waiting for.
      */
     const waiting = parentId ? this.shellPending.get(parentId) : undefined
-    if (waiting && typeof msgType === 'string' && msgType.endsWith('_reply')) {
+    const reply = typeof msgType === 'string' && msgType.endsWith('_reply')
+    if (reply && (waiting || pending)) this.noteProcess(msg)
+    if (waiting && reply) {
       this.shellPending.delete(parentId as string)
       clearTimeout(waiting.timer)
       waiting.resolve(content)
@@ -1144,6 +1858,9 @@ export class JupyterKernel {
          * sentence from onPhase. The kernel object itself stays valid.
          */
         this.abortPending()
+        // The process is another one from here on, and heard of in time.
+        this.process = null
+        this.processAtCut = undefined
         this.setPhase('restarting')
         void this.awaitComeback()
         return
@@ -1179,6 +1896,12 @@ export class JupyterKernel {
       const quiet =
         parentType === 'complete_request' ||
         parentType === 'inspect_request' ||
+        /*
+         * For a machine's kernel, the questions a reconnect brings are not the
+         * room being busy either: ours after a cut (reconcileAfterReset) and
+         * jupyter_server's own nudge on the new channel.
+         */
+        (parentType === 'kernel_info_request' && this.endpoint.link !== undefined) ||
         pending?.quiet === true
       if (quiet) {
         // The only thing we take even from a service run: the first `idle` of a

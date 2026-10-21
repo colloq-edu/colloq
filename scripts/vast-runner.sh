@@ -15,8 +15,8 @@
 #
 #   scripts/vast-runner.sh up | update | down
 #
-# CODE is the home owner's enrollment code (Resources, machines for
-# submissions, «Подключить машину»; or colloq-host runner-code on the home),
+# CODE is the home owner's enrollment code (Resources → Machines →
+# «Подключить машину»; or colloq-host runner-code on the home),
 # for at least COUNT machines. URL is the home; VAST_RUNNER_URL in .env names a
 # usual one for `up` (the fleet commands take URL= from the command line only:
 # a default there would quietly narrow, or widen, what is destroyed). GPU=,
@@ -76,7 +76,12 @@
 # script reported every machine on its home's build (review, 14 Oct 2026).
 # One that gives no fresh word is updated, and colloq-host decides there.
 # VERSION= names the version for every machine and skips none: colloq-host
-# itself does nothing for one already on it.
+# itself does nothing for one already on it. Classes on a machine keep
+# running through its update: the new agent adopts their containers, and
+# their home holds them for the restart (colloq-host · stop_runner). A
+# machine's first update to 0.25 is run by its colloq-host of before, which
+# leaves the agent off the host's network, where it takes no classes: it is
+# updated once more, by the colloq-host that update brought (agent_network).
 #
 # A drain lasts up to four hours and a laptop's ssh does not, and an ssh that
 # drops kills what it runs: halfway through an update that is a machine
@@ -96,6 +101,9 @@
 # home answers: after ten minutes without a word from it (a home destroyed
 # before its machines, a tunnel down) the leave is given up, said so, and the
 # VM destroyed all the same, rather than billing while this waits for good.
+# Classes on a machine move off it with its leave, at once
+# (down_one says how the leave is told so); with NOW=1 a minute after the
+# machine falls silent. Their variables are lost either way.
 #
 # Reads from .env: VAST_TOKEN, VAST_SSH_KEY, VAST_MAX_PRICE, VAST_RUNNER_URL.
 # The token and the code are never printed. Logs of the copies go to
@@ -219,7 +227,7 @@ up() {
   local code_re='^[a-f0-9]{32}$'
   case "$count" in ''|*[!0-9]*) die "COUNT= is how many machines to rent, 1 to 16, not \"$count\"." ;; esac
   [ "$count" -ge 1 ] && [ "$count" -le 16 ] || die "COUNT= is how many machines to rent, 1 to 16, not \"$count\"."
-  [ -n "$code" ] || die "CODE= is the enrollment code from the home's owner (its panel: Resources, machines for submissions; or colloq-host runner-code there)."
+  [ -n "$code" ] || die "CODE= is the enrollment code from the home's owner (its panel: Resources → Machines → Connect a machine; or colloq-host runner-code there)."
   [[ "$code" =~ $code_re ]] || die "CODE= is not an enrollment code: 32 hex digits from the home's owner."
   [ -n "$url" ] || url="$(read_env VAST_RUNNER_URL)"
   [ -n "$url" ] || die "URL= names the home these machines join (https://vsos.colloq.ru), or VAST_RUNNER_URL in .env."
@@ -388,7 +396,8 @@ EOF
 
 # What a machine says of itself, in one ssh call run as `bash -s -- WAIT`:
 # its home, the moment it was asked (ms, the machine's own clock, the one
-# its agent writes syncedAt by) and its agent's status line. The status goes
+# its agent writes syncedAt by), its agent's status line and the network its
+# agent's container runs on (agent_network says why). The status goes
 # first: on a machine joined with the panel's plain `docker run`,
 # colloq-host's status writes runner.env out of the container (colloq-host ·
 # adopt_runner), and the home is read from there. With WAIT, an update's, a
@@ -412,7 +421,8 @@ while :; do
   sleep 2; bound=$((bound - 2))
 done
 h="$(sed -n "s/^COLLOQ_RUNNER_JOIN=\([^#]*\)#.*/\1/p" /etc/colloq/runner.env 2>/dev/null | tail -1)"
-printf "home %s\nasked %s\nstatus %s\n" "$h" "$asked" "$s"
+n="$(docker inspect -f "{{.HostConfig.NetworkMode}}" colloq-runner 2>/dev/null)"
+printf "home %s\nasked %s\nstatus %s\nnetwork %s\n" "$h" "$asked" "$s" "$n"
 exit
 }'
 
@@ -438,20 +448,25 @@ survey_one() {
 # which an update treats as outdated (colloq-host decides on the machine).
 # No `current` from an older word, and none from the agent's version against
 # its home's: that too is the last sync's, and one version may be two builds
-# (a fork's image and the published one).
+# (a fork's image and the published one). And none for an agent that could
+# hold classes (its status names them) in a container off the host's network
+# (`off_host`): it takes no classes there, and its update is what moves it
+# (agent_network says how it got there), so it is updated like an outdated
+# one.
 FLEET_PY='
 import json, os, sys
 survey, want = os.environ["SURVEY"], (os.environ.get("WANT") or "").rstrip("/")
 for line in sys.stdin:
     cells = line.rstrip("\n").split("\x1f")
     if len(cells) < 5 or not cells[0]: continue
-    home = status = asked = ""
+    home = status = asked = network = ""
     try:
         with open(os.path.join(survey, cells[0])) as f:
             for row in f:
                 if row.startswith("home "): home = row[5:].strip().rstrip("/")
                 elif row.startswith("asked "): asked = row[6:].strip()
                 elif row.startswith("status "): status = row[7:].strip()
+                elif row.startswith("network "): network = row[8:].strip()
     except OSError:
         pass
     try: said = json.loads(status) if status else None
@@ -462,6 +477,7 @@ for line in sys.stdin:
         fresh = type(synced) is int and asked.isdigit() and synced >= int(asked)
         if said.get("compatible") is False: verdict = "outdated"
         elif said.get("compatible") is True and fresh: verdict = "current"
+    if verdict == "current" and "classes" in said and network not in ("", "host"): verdict = "off_host"
     if want and home != want:
         print("  instance %s  %s  left alone: %s" % (cells[0], cells[4], ("its home is " + home) if home else "its home is not known"), file=sys.stderr)
         continue
@@ -501,7 +517,11 @@ show_fleet() {
     [ -n "$id" ] || continue
     note=""
     if [ "$with" = verdict ]; then
-      case "$verdict" in current) note="  (on its home's build)" ;; outdated) note="  (outdated)" ;; esac
+      case "$verdict" in
+        current) note="  (on its home's build)" ;;
+        outdated) note="  (outdated)" ;;
+        off_host) note="  (on its home's build, its agent off the host's network: no classes)" ;;
+      esac
     fi
     say "  instance $id  $label  $status${host:+  $host:$port}  home ${home:-not known}$note"
   done <<EOF
@@ -594,8 +614,34 @@ follow_update() {
   done
 }
 
+# The network the agent's container runs on, as Docker names it (`host` for
+# the host's, as every machine's agent runs from 0.25 on: remote-classes.md
+# D19), asked over ssh as `bash -s`; nothing when it does not say (no
+# container, no answer) or when the agent holds no classes in any case: one
+# from before 0.25, whose status names none.
+#
+# OFF THE HOST'S NETWORK an agent that could hold classes takes submissions
+# and no classes, and that is where the first update of a machine to 0.25
+# leaves it: the update is the machine's own colloq-host, the one of its old
+# release, which starts the new agent as it always did, on Docker's bridge,
+# and only at its end installs the new colloq-host out of the new image. The
+# new colloq-host's update moves the agent (its fingerprint counts the
+# network, run_runner), so update_one runs it right after, and the survey
+# keeps a machine still off the host's network from passing for `current`.
+NETWORK_SCRIPT='# colloq-runner-fleet: the network of its agent
+{
+case "$(colloq-host runner status 2>/dev/null)" in
+  *"\"classes\""*) docker inspect -f "{{.HostConfig.NetworkMode}}" colloq-runner 2>/dev/null ;;
+esac
+exit
+}'
+
+agent_network() {
+  ssh_to "$1" "$2" 'bash -s' <<<"$NETWORK_SCRIPT" 2>/dev/null | tail -1 || true
+}
+
 update_one() {
-  local id="$1" host="$2" port="$3" status="$4" home="$6" verdict="$7" args=""
+  local id="$1" host="$2" port="$3" status="$4" home="$6" verdict="$7" args="" network="" pass
   if [ -z "$host" ] || [ -z "$port" ]; then
     say "instance $id is $status and has no ssh: start it on Vast, then run this again"; return 1
   fi
@@ -607,8 +653,19 @@ update_one() {
   # character a shell would read as anything but itself.
   [ -z "${VERSION:-}" ] || args="$VERSION"
   [ -z "$NOW_FLAG" ] || args="${args:+$args }$NOW_FLAG"
-  ssh_to "$host" "$port" "bash -s --${args:+ $args}" <<<"$UPDATE_START" || { say "the update could not be started there (above)"; return 1; }
-  follow_update "$host" "$port"
+  # Once, and once more for an agent the first left off the host's network
+  # (agent_network says why): that one drains again, for whatever it took
+  # meanwhile, and is replaced by the colloq-host the first brought.
+  for pass in 1 2; do
+    ssh_to "$host" "$port" "bash -s --${args:+ $args}" <<<"$UPDATE_START" || { say "the update could not be started there (above)"; return 1; }
+    follow_update "$host" "$port" || return 1
+    network="$(agent_network "$host" "$port")"
+    case "$network" in ''|host) return 0 ;; esac
+    [ "$pass" = 1 ] || break
+    say "its agent runs on Docker's network ($network), not the host's, as the colloq-host of its old release starts it, and takes no classes there: updated once more, by the colloq-host this update brought"
+  done
+  say "its agent still runs on Docker's network ($network): the colloq-host there is still one from before 0.25 (the update's lines above say why). It takes submissions, and no classes until colloq-host runner update moves it, once colloq-host is the new one"
+  return 1
 }
 
 update() {
@@ -645,28 +702,40 @@ update() {
 # and said so when it did not leave first: its home still lists it until the
 # owner revokes it, and that is worth a non-zero exit. NOW=1 asks for exactly
 # that, so there it is no failure.
+#
+# A machine with classes on it asks before it leaves (colloq-host · runner_leave,
+# its exit LEAVE_HOLDS_CLASSES), and nobody is at its terminal to answer: the
+# answer is the one given here already, that these machines go. So it is
+# asked again with --force, which moves its classes off it at once rather
+# than a minute after the machine falls silent, their variables lost either
+# way.
+LEAVE_HOLDS_CLASSES=3
 down_one() {
-  local id="$1" host="$2" port="$3" status="$4" left=0
+  local id="$1" host="$2" port="$3" status="$4" left=0 rc=0
   if [ "${NOW:-}" = 1 ]; then
     say "destroying without leaving (NOW=1)"
   elif [ -z "$host" ] || [ -z "$port" ]; then
     say "instance $id is $status and has no ssh: it cannot leave its home"
-  elif ssh_to "$host" "$port" 'colloq-host runner leave'; then
-    left=1
   else
-    say "it did not leave its home (above)"
+    ssh_to "$host" "$port" 'colloq-host runner leave' || rc=$?
+    if [ "$rc" = "$LEAVE_HOLDS_CLASSES" ]; then
+      say "its classes move off it (their variables are lost), and it leaves"
+      rc=0
+      ssh_to "$host" "$port" 'colloq-host runner leave --force' || rc=$?
+    fi
+    if [ "$rc" = 0 ]; then left=1; else say "it did not leave its home (above)"; fi
   fi
   api DELETE "instances/$id/" >/dev/null
   say "instance $id destroyed"
   [ "$left" != 1 ] || return 0
-  say "its home still lists it: revoke it there (Resources, machines for submissions); until then it shows as silent, and its runs went back to the queue after 3 minutes"
+  say "its home still lists it: revoke it there (Resources → Machines); until then it shows as silent, and its runs went back to the queue after 3 minutes"
   [ "${NOW:-}" = 1 ]
 }
 
 down() {
   local answer
   load_fleet
-  say "${BOLD}these machines leave their home and are destroyed, with their disks:${OFF}"
+  say "${BOLD}these machines leave their home and are destroyed, with their disks (classes on them move off them):${OFF}"
   show_fleet
   if [ "${FORCE:-}" != 1 ]; then
     [ -t 0 ] || die "no terminal to ask in. FORCE=1 destroys without asking."

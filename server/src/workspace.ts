@@ -72,6 +72,15 @@ export function kernelCwd(sessionId: string): string {
 const TEMP_FILE = /^\..+\.(?:uploading|saving)-[0-9a-z][0-9a-z-]{5,}$/i
 
 /**
+ * A fresh temporary name of that shape in `dir`: what a file arriving from a
+ * class's machine is written under before its rename (kernel/remote/files.ts),
+ * so that a crash in the middle leaves what the sweep below removes.
+ */
+export function tempNameIn(dir: string): string {
+  return path.join(dir, `.colloq.uploading-${randomUUID()}`)
+}
+
+/**
  * Clear away temp files an interrupted write left behind.
  *
  * An upload — and an editor autosave — writes beside its target and renames on
@@ -259,17 +268,38 @@ export function treeDelta(before: readonly FileEntry[], after: readonly FileEntr
     // The name too: a rename inside a folder changes the whole path, but a
     // file moved on disk behind our back may come with the same path and
     // everything else different.
-    if (
-      old.dir !== entry.dir ||
-      old.size !== entry.size ||
-      old.modifiedAt !== entry.modifiedAt ||
-      old.name !== entry.name
-    )
-      changed.push(entry)
+    if (!sameEntry(old, entry)) changed.push(entry)
   })
   const removed: string[] = []
   for (const entry of before) if (!kept.has(entry.path)) removed.push(entry.path)
   return { removed, changed, added }
+}
+
+/**
+ * Whether two rows of the same path say the same: the kind, the size, the
+ * time, the name, and what a class folder on a machine adds to a row
+ * (shared/protocol.ts · FileEntry) — a file arriving from the machine that
+ * lands, or a «на машине» one that grows, is a change of its row like any
+ * other, and the panel learns of it by the same delta.
+ */
+export function sameEntry(a: FileEntry, b: FileEntry): boolean {
+  return (
+    a.path === b.path &&
+    a.name === b.name &&
+    a.dir === b.dir &&
+    a.size === b.size &&
+    a.modifiedAt === b.modifiedAt &&
+    a.pending === b.pending &&
+    a.kind === b.kind &&
+    a.bytes === b.bytes &&
+    a.count === b.count &&
+    a.onMachine?.bytes === b.onMachine?.bytes &&
+    a.onMachine?.why === b.onMachine?.why &&
+    a.newer?.bytes === b.newer?.bytes &&
+    a.newer?.why === b.newer?.why &&
+    a.conflict?.of === b.conflict?.of &&
+    a.conflict?.at === b.conflict?.at
+  )
 }
 
 /**
@@ -342,10 +372,78 @@ function stampHolds(stamp: TreeStamp): boolean {
   return true
 }
 
+/**
+ * How many times each room's tree was forgotten, and every room's at once:
+ * the change counter of the files barrier of classes on machines
+ * (kernel/remote/files.ts, remote-classes.md §8.2). Every writer of this
+ * server already forgets the tree when it writes — writeText (the editor and
+ * the notebooks' projection), an upload, the tree's verbs, broadcastFiles
+ * after every cell — so a Run with nothing written here since the last push
+ * is a compare of this number, with no walk and no round trip.
+ */
+const treeEpochs = new Map<string, number>()
+let everyTreeEpoch = 0
+/** Who hears of a forgotten tree: the class folders on machines push what changed (kernel/remote/files.ts). */
+const treeListeners = new Set<(sessionId: string | undefined) => void>()
+
+/** This room's change counter (see treeEpochs): equal twice, and nothing here wrote to the room in between. */
+export function treeEpochOf(sessionId: string): number {
+  return everyTreeEpoch + (treeEpochs.get(sessionId) ?? 0)
+}
+
+/** Hear every forgotten tree (`undefined`: every room's); the function returned stops it. */
+export function onTreeForgotten(listener: (sessionId: string | undefined) => void): () => void {
+  treeListeners.add(listener)
+  return () => treeListeners.delete(listener)
+}
+
 /** Recompute the tree of this room (or of every room) without waiting out the window. */
 export function forgetTree(sessionId?: string): void {
-  if (sessionId === undefined) treeMemo.clear()
-  else treeMemo.delete(sessionId)
+  if (sessionId === undefined) {
+    treeMemo.clear()
+    everyTreeEpoch++
+  } else {
+    treeMemo.delete(sessionId)
+    // One number per room this process ever wrote to: rooms are few, and a counter that went would read as nothing written.
+    treeEpochs.set(sessionId, (treeEpochs.get(sessionId) ?? 0) + 1)
+  }
+  for (const listener of [...treeListeners]) {
+    try {
+      listener(sessionId)
+    } catch (error) {
+      console.error(`[files] a listener of the tree of ${sessionId ?? 'every room'} failed:`, error)
+    }
+  }
+}
+
+/**
+ * What the room's own view of its tree adds to what lies on this server's
+ * disk: the rows of a class folder on a machine (kernel/remote/files.ts ·
+ * treeOverlay) — files that stay there, a package tree in one row, conflict
+ * copies, files on their way. Given by that module as it loads; `null`
+ * without one.
+ */
+let treeOverlay: ((sessionId: string, tree: FileTree) => FileTree) | null = null
+
+export function useTreeOverlay(next: ((sessionId: string, tree: FileTree) => FileTree) | null): void {
+  treeOverlay = next
+}
+
+/**
+ * The tree as the room's panel draws it (the files frame, the files route):
+ * the walk of this server's disk (listTree), with a class folder on a
+ * machine's rows over it. Everything else that reads the tree — the
+ * notebooks, the oracle, publishing, downloads — reads listTree, this
+ * server's disk alone, and never a row of a file this server does not have.
+ */
+export function roomTree(sessionId: string, tree: FileTree = listTree(sessionId)): FileTree {
+  if (!treeOverlay) return tree
+  try {
+    return treeOverlay(sessionId, tree)
+  } catch (error) {
+    console.error(`[files] the machine's rows of ${sessionId} were left out of its tree:`, error)
+    return tree
+  }
 }
 
 export function listTree(sessionId: string): FileTree {

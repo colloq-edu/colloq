@@ -1,6 +1,6 @@
 <script lang="ts">
   import RowsSkeleton from '@/components/ui/RowsSkeleton.svelte'
-  import { tr } from '@shared/i18n'
+  import { formatNumber, tr } from '@shared/i18n'
   /**
    * The seminar folder as a tree.
    *
@@ -22,6 +22,14 @@
    * pixels high. Instead of the strip there is a single "⋯" button that opens
    * the same menu: the right click is not obvious, and on a phone it does not
    * exist at all.
+   *
+   * What a machine holds (classes on machines, Paper 18 · Z6): a class whose
+   * kernel computes on a machine writes files there, and they come here
+   * after every run. The panel says what is still on its way ("2 files
+   * coming from the machine", an arrow before a size), what is too big and
+   * stays there ("on the machine", with Fetch for staff), a package tree as
+   * one row, and a
+   * conflict copy with its note. Home's version always stays (D16).
    */
   import type { FileEntry } from '@shared/protocol'
   import { api } from '@/lib/api'
@@ -125,6 +133,120 @@
    * would also go not here but into the shared error bar.
    */
   const mayDrag = $derived(may.files && isHost)
+
+  /* ------------------------------------------- what the machine holds (Z6) */
+
+  /**
+   * What a tree entry says of the machine (shared/protocol.ts · FileEntry):
+   * `onMachine` — the file exists only there (over the per-file cap, over the
+   * class's limit, past the walk's count, or a package's); `pending` — a
+   * newer version is on its way here; `conflict` — a conflict copy, of which
+   * file and when; and a package tree comes as one row (`kind: 'packages'`,
+   * which also carries `onMachine` with why `package`). A tree from a server
+   * before classes has none of them, and every row reads as it always did.
+   */
+  interface MachineSide {
+    onMachine: { bytes: number; why: 'size' | 'room' | 'count' | 'package' | 'proxy' } | null
+    pending: boolean
+    conflict: { of: string; at: number } | null
+    packages: { bytes: number; count: number } | null
+  }
+
+  const NOTHING_THERE: MachineSide = { onMachine: null, pending: false, conflict: null, packages: null }
+
+  function machineSide(entry: FileEntry): MachineSide {
+    if (entry.onMachine === undefined && entry.pending === undefined && entry.conflict === undefined && entry.kind === undefined) return NOTHING_THERE
+    return {
+      onMachine: entry.onMachine ?? null,
+      pending: entry.pending === true,
+      conflict: entry.conflict?.of ? entry.conflict : null,
+      packages: entry.kind === 'packages' ? { bytes: entry.bytes ?? entry.size, count: entry.count ?? 0 } : null,
+    }
+  }
+
+  /** A size the machine keeps: in gigabytes past one ("2.1 GB": a model, a package tree), the tree's own words below it. */
+  function machineBytes(bytes: number): string {
+    return bytes >= 1024 ** 3
+      ? tr('room.files.machine.gb', { value: formatNumber(bytes / 1024 ** 3, { maximumFractionDigits: 1 }) })
+      : formatBytes(bytes)
+  }
+
+  /** Files on their way from the machine: the strip above the tree. */
+  const incoming = $derived(session.files.filter((entry) => machineSide(entry).pending).length)
+  /** Conflict copies and files kept on the machine, for the notes under the tree: staff's (Z6). */
+  const conflicts = $derived(
+    isHost ? session.files.flatMap((entry) => { const copy = machineSide(entry).conflict; return copy ? [{ entry, of: copy.of }] : [] }) : [],
+  )
+  const keptThere = $derived(
+    isHost
+      ? session.files.flatMap((entry) => {
+          const there = machineSide(entry).onMachine
+          return there && there.why !== 'package' ? [{ entry, ...there }] : []
+        })
+      : [],
+  )
+  /** Notes closed with ×, by path, for this tab. */
+  let closedNotes = $state<ReadonlySet<string>>(new Set())
+
+  /**
+   * Fetch pressed and not answered yet, by path, with when (control.ts ·
+   * `files:fetch`). The server answers the press itself (`files:fetched`,
+   * session.svelte.ts · fetched): taken — the row is `pending` from then on,
+   * here or in any tab, until the file lands — the file here already, or
+   * refused in words, which come as the room's toast too (a file over the
+   * class's limit, say). Either answer lets the press go, and so does a
+   * socket that closed under it, which no answer crosses: the button is
+   * never stuck on a press the server did not take.
+   */
+  let asked = $state<ReadonlyMap<string, number>>(new Map())
+  /** Whether a file's Fetch waits: the pull is on its way (the tree says so), or the press is not answered yet. */
+  function fetchingOf(entry: FileEntry): boolean {
+    const there = machineSide(entry)
+    return (there.onMachine !== null && there.pending) || asked.has(entry.path)
+  }
+  // Answered: whatever the answer, the press is let go (a pull taken shows as the row's `pending` from the tree).
+  $effect(() => {
+    const answer = session.fetched
+    if (!answer || !asked.has(answer.path)) return
+    asked = new Map([...asked].filter(([path]) => path !== answer.path))
+  })
+  // Answered by the tree before its own word came: the pull started (`pending`), the file is here, or the row is gone.
+  $effect(() => {
+    if (asked.size === 0) return
+    const files = session.files
+    const answered = [...asked.keys()].filter((path) => {
+      const entry = files.find((one) => one.path === path)
+      return !entry || !machineSide(entry).onMachine || machineSide(entry).pending
+    })
+    if (answered.length > 0) asked = new Map([...asked].filter(([path]) => !answered.includes(path)))
+  })
+  // The socket closed under the press: no answer comes for it.
+  $effect(() => {
+    if (asked.size > 0 && !session.connected) asked = new Map()
+  })
+
+  /**
+   * Fetch (§8.5, staff): home pulls this one path from the machine,
+   * over the per-file cap and within the class's limit (control.ts ·
+   * `files:fetch`). The tree shows it as any other file once it lands. The
+   * toast is cleared first: an error from here on is this press's answer.
+   */
+  function fetchFromMachine(path: string): void {
+    session.dismissError()
+    session.send({ t: 'files:fetch', path })
+    asked = new Map([...asked, [path, Date.now()]])
+  }
+
+  /** The note of a file the machine keeps (§13.2 «Over a cap»), by why it stays there. */
+  function keptNote(item: { entry: FileEntry; bytes: number; why: 'size' | 'room' | 'count' | 'package' | 'proxy' }): string {
+    const words = { name: item.entry.name, size: machineBytes(item.bytes) }
+    if (item.why === 'room') return tr('room.files.machine.overRoom', words)
+    if (item.why === 'count') return tr('room.files.machine.overCount', words)
+    // The proxy in front of the server refused it on its way here: no cap of the class's (remote-classes.md §8.5).
+    if (item.why === 'proxy') return tr('room.files.machine.overProxy', words)
+    return tr('room.files.machine.overCap', words)
+  }
+
   /** Room notebooks: an `.ipynb` already open as a notebook is not a file. */
   const books = watchBooks(session.doc)
   const isBook = (path: string): boolean => books.current.some((book) => book.path === path)
@@ -346,6 +468,8 @@
       return
     }
     target = parentOf(entry.path)
+    // A file only on the machine has nothing here to open or to give: Fetch brings it (Z6).
+    if (machineSide(entry).onMachine || machineSide(entry).packages) return
     // Nothing can open a binary file: a press on it means "give it to me here".
     if (kindOf(entry.path) === 'binary') {
       void download(entry.path)
@@ -409,6 +533,11 @@
 
   function startRename(entry: FileEntry): void {
     if (!isHost) return
+    // F2 and a double click come here past the menu: a file only on the machine says why it waits (Z6).
+    if (machineSide(entry).onMachine) {
+      errorRender = () => tr('room.files.machine.notHere')
+      return
+    }
     draft = { kind: 'rename', dir: parentOf(entry.path), from: entry.path }
     draftName = entry.name
     queueMicrotask(() => {
@@ -935,6 +1064,10 @@
       errorRender = () => (may.filesWhy + '.')
       return
     }
+    if (machineSide(entry).onMachine) {
+      errorRender = () => tr('room.files.machine.notHere')
+      return
+    }
     errorRender = () => (null)
     beforeCopy = new Set(session.files.map((row) => row.path))
     // The server may also have refused — then no new path will appear at all.
@@ -987,6 +1120,8 @@
   }
 
   function fileItems(entry: FileEntry): ContextMenuItem[] {
+    // A file only on the machine has a menu of its own (Z6): nothing of it is here yet.
+    if (machineSide(entry).onMachine) return machineItems(entry)
     const path = entry.path
     const kind = kindOf(path)
     const runner = runnerFor(path)
@@ -1127,6 +1262,50 @@
         run: () => (confirming = path),
       },
     ]
+  }
+
+  /**
+   * The menu of a file only on the machine (Z6): staff are offered Fetch
+   * first, the one way it comes here; what needs its bytes here — open,
+   * download, a copy, a new name — waits, saying why; its path and name copy
+   * as any file's, its Run is the machine's, and its delete is the role's.
+   */
+  function machineItems(entry: FileEntry): ContextMenuItem[] {
+    const path = entry.path
+    const runner = runnerFor(path)
+    const notHere = tr('room.files.machine.notHere')
+    const waits = (label: string, icon: ContextMenuItem['icon']): ContextMenuItem => ({ label, icon, disabled: true, why: notHere, run: () => {} })
+    const items: ContextMenuItem[] = []
+    if (isHost) {
+      items.push({
+        label: tr('room.files.machine.fetch'),
+        icon: 'download',
+        disabled: fetchingOf(entry) || !session.connected,
+        why: fetchingOf(entry) ? tr('room.files.machine.fetching', { name: entry.name }) : undefined,
+        run: () => fetchFromMachine(path),
+      })
+    }
+    if (kindOf(path) !== 'binary') items.push({ ...waits(tr('room.files.menu.open'), 'file'), gap: items.length > 0 })
+    if (runner && onrun) {
+      items.push({ label: tr('room.files.menu.run'), icon: 'play', disabled: !may.run, why: may.runWhy, run: () => onrun?.(path) })
+    }
+    items.push(
+      { ...copyItem(path, tr('room.files.menu.copyPath')), gap: items.length > 0 },
+      copyItem(entry.name, tr('room.files.menu.copyName')),
+      { ...waits(tr('room.files.menu.download'), 'download'), gap: true },
+      waits(tr('room.files.menu.duplicate'), 'copy-plus'),
+      { ...waits(tr('room.files.menu.rename'), 'pencil'), gap: true, keys: 'F2' },
+      {
+        label: tr('room.files.menu.remove'),
+        icon: 'trash',
+        keys: 'Del',
+        danger: true,
+        disabled: !mayRemove(path),
+        why: whyEdit,
+        run: () => (confirming = path),
+      },
+    )
+    return items
   }
 
   /** An empty part of the panel: only what is put INTO the class folder. */
@@ -1574,10 +1753,32 @@
     <div class="px-2"><RowsSkeleton /></div>
   {/if}
 
+  {#if incoming > 0}
+    <!-- What the machine is still sending (Z6): over the tree, a 3 px accent bar; it leaves by itself once they land. -->
+    <div class="mx-1 mb-1.5 flex items-center gap-2 border-l-[3px] border-accent bg-canvas px-2.5 py-1.5" role="status" data-machine-incoming>
+      <Icon name="upload" size={12} class="shrink-0 text-accent-text" />
+      <span class="min-w-0 truncate text-2xs text-ink">{tr('room.files.machine.incoming', { count: incoming })}</span>
+    </div>
+  {/if}
+
   {#each visible as entry (entry.path)}
     {@const depth = depthOf(entry.path)}
     {@const empty = entry.dir && !collapsed.has(entry.path) ? emptyWord(entry.path) : null}
     {@const here = peersIn(entry.path)}
+    {@const there = machineSide(entry)}
+    {#if there.packages}
+      <!-- A package tree (pip -t) is one collapsed row: it stays on the machine and never comes here (§8.5). -->
+      <div
+        class="flex h-[26px] items-center gap-1 pr-2 text-2xs text-muted"
+        style={`padding-left:${4 + depth * 14}px`}
+        title={tr('room.files.machine.packagesTitle', { count: there.packages.count })}
+        data-machine-packages
+      >
+        <Icon name="chevron-down" size={9} class="-rotate-90 shrink-0 text-faint" />
+        <span class="ml-1 h-3 w-3 shrink-0 rounded-full border border-dashed border-faint" aria-hidden="true"></span>
+        <span class="min-w-0 truncate">{tr('room.files.machine.packages', { size: machineBytes(there.packages.bytes) })}</span>
+      </div>
+    {:else}
     <div
       class="group relative flex h-[26px] items-center transition-colors duration-100
              {freshCopy === entry.path
@@ -1610,6 +1811,10 @@
       {#if active === entry.path}
         <span class="absolute inset-y-0 left-0 w-0.5 bg-accent" aria-hidden="true"></span>
       {/if}
+      {#if there.conflict}
+        <!-- A conflict copy (Z6): the machine's version kept beside home's, tinted, with its note under the tree. -->
+        <span class="pointer-events-none absolute inset-0 bg-warning/[0.08]" aria-hidden="true"></span>
+      {/if}
 
       <!-- The arrow is a button, not a picture: pressing it did exactly
            nothing, because there was nobody to catch it, and the folder "would
@@ -1630,11 +1835,16 @@
         <span class="h-3.5 w-3.5 shrink-0"></span>
       {/if}
       <span class="flex h-3.5 w-[18px] shrink-0 items-center justify-center">
-        <Icon
-          name={entry.dir ? 'folder' : iconFor(entry.path)}
-          size={12}
-          class={active === entry.path ? 'text-ink' : 'text-faint'}
-        />
+        {#if there.onMachine}
+          <!-- Only on the machine: a dashed outline instead of the file's icon. -->
+          <span class="h-3 w-2.5 border border-dashed border-faint" aria-hidden="true"></span>
+        {:else}
+          <Icon
+            name={entry.dir ? 'folder' : iconFor(entry.path)}
+            size={12}
+            class={active === entry.path ? 'text-ink' : 'text-faint'}
+          />
+        {/if}
       </span>
 
       {#if draft?.kind === 'rename' && draft.from === entry.path}
@@ -1662,6 +1872,11 @@
         >
           <span class="truncate">{splitFileName(entry.name).stem}</span>
           <span class="shrink-0">{splitFileName(entry.name).ext}</span>
+          {#if there.onMachine}
+            <span class="ml-1.5 shrink-0 border border-dashed border-faint px-1 font-sans text-micro text-muted" data-on-machine>
+              {tr('room.files.machine.onMachine')}
+            </span>
+          {/if}
         </button>
 
         <!--
@@ -1699,11 +1914,14 @@
               </span>
             {:else if !entry.dir}
               <span
-                class="whitespace-nowrap font-mono text-micro tabular-nums text-muted transition-opacity
+                class="flex items-center gap-1 whitespace-nowrap font-mono text-micro tabular-nums transition-opacity
                        duration-100 group-hover:opacity-0 group-focus-within:opacity-0
+                       {there.pending ? 'text-accent-text' : 'text-muted'}
                        {picked === entry.path ? 'opacity-0' : ''}"
+                title={there.pending ? tr('room.files.machine.pendingTitle') : undefined}
               >
-                {formatBytes(entry.size)}
+                {#if there.conflict}<span class="h-1.5 w-1.5 shrink-0 rounded-full bg-warning" aria-hidden="true"></span>{/if}
+                {there.pending ? '↑ ' : ''}{there.onMachine ? machineBytes(there.onMachine.bytes) : formatBytes(entry.size)}
               </span>
             {/if}
             <!--
@@ -1743,6 +1961,23 @@
         </div>
       {/if}
     </div>
+
+    {#if there.onMachine && isHost && there.onMachine.why !== 'package'}
+      <!-- Fetch on a line of its own (Z6), so the size keeps its column; staff only. -->
+      <div class="flex items-center pb-1 pr-2" style={`padding-left:${4 + depth * 14 + 32}px`}>
+        <button
+          type="button"
+          class="min-h-7 border border-line bg-canvas px-2.5 text-2xs font-semibold text-ink transition-colors duration-100
+                 hover:bg-raised disabled:opacity-50 max-[640px]:min-h-10"
+          title={tr('room.files.machine.fetchTitle', { name: entry.name })}
+          disabled={fetchingOf(entry) || !session.connected}
+          onclick={() => fetchFromMachine(entry.path)}
+        >
+          {fetchingOf(entry) ? tr('room.files.machine.fetching', { name: entry.name }) : tr('room.files.machine.fetch')}
+        </button>
+      </div>
+    {/if}
+    {/if}
 
     {#if confirming === entry.path}
       <div
@@ -1840,6 +2075,36 @@
     <p class="px-2 pt-1.5 text-2xs leading-snug text-muted"> {tr('room.ui.602')} <span class="font-mono">os.listdir()</span>.
     </p>
   {/if}
+
+  <!-- The machine's notes under the tree (Z6), staff's: a conflict copy, closed with ×; a file kept on the machine, with Fetch. -->
+  {#each conflicts.filter((item) => !closedNotes.has(item.entry.path)) as item (item.entry.path)}
+    <div class="mx-1 mt-2 flex items-start gap-2 border-l-[3px] border-warning bg-canvas px-2.5 py-2" data-machine-conflict>
+      <p class="min-w-0 flex-1 text-2xs leading-snug text-ink">
+        {tr('room.files.machine.conflict', { name: baseOf(item.of), copy: item.entry.name })}
+      </p>
+      <button
+        type="button"
+        class="shrink-0 text-muted hover:text-ink"
+        aria-label={tr('room.files.machine.dismiss')}
+        onclick={() => (closedNotes = new Set([...closedNotes, item.entry.path]))}
+      >
+        <Icon name="x" size={11} />
+      </button>
+    </div>
+  {/each}
+  {#each keptThere as item (item.entry.path)}
+    <div class="mx-1 mt-2 flex flex-col items-start gap-1.5 border-l-[3px] border-line bg-canvas px-2.5 py-2" data-machine-kept>
+      <p class="text-2xs leading-snug text-muted">{keptNote(item)}</p>
+      <button
+        type="button"
+        class="min-h-7 border border-line bg-canvas px-2.5 text-2xs font-semibold text-ink transition-colors duration-100 hover:bg-raised disabled:opacity-50 max-[640px]:min-h-10"
+        disabled={fetchingOf(item.entry) || !session.connected}
+        onclick={() => fetchFromMachine(item.entry.path)}
+      >
+        {fetchingOf(item.entry) ? tr('room.files.machine.fetching', { name: item.entry.name }) : tr('room.files.machine.fetch')}
+      </button>
+    </div>
+  {/each}
 
   {#each uploads as item (item.id)}
     {@const done = percent(item)}

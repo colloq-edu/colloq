@@ -111,6 +111,30 @@ import {
   type RemoteOutcomeRequest,
   type RemoteOutcomeSource,
 } from '../shared/remote-runner.js'
+import {
+  CLASS_INLINE_BYTES,
+  CLASS_INLINE_PUSH_BYTES,
+  CLASS_INLINE_REPORT_BYTES,
+  COUNCIL_ARTIFACTS,
+  COUNCIL_EPOCH_BUFFERS_MAX,
+  COUNCIL_EPOCH_DIR,
+  COUNCIL_EPOCH_MB,
+  COUNCIL_WORKERS,
+  REMOTE_BLOCKED_CIDRS_MAX,
+  REMOTE_COLLECTS_MAX,
+  REMOTE_EPOCHS_MAX,
+  REMOTE_EPOCH_FILES_MAX,
+  REMOTE_PLACEMENTS_MAX,
+  REMOTE_PUSH_PATHS_MAX,
+  REMOTE_READINGS_MAX,
+  REMOTE_READING_LINES_MAX,
+  REMOTE_READING_LINE_CHARS,
+  REMOTE_REPORT_PATHS_MAX,
+  REMOTE_ROOT_CHARS,
+  isRemoteRoot,
+  parseRemoteKernelsReply,
+} from '../shared/remote-kernels.js'
+import { normalizePath } from '../shared/paths.js'
 import { hasTranslation, messages, tr, translate } from '../shared/i18n.js'
 import { COMPETITION_ATTEMPT_ID } from '../shared/competition-runtime.js'
 import { EXECUTED_NOTEBOOK_FILE, LIMITS } from '../shared/competitions.js'
@@ -209,6 +233,22 @@ const reply = {
     ],
   },
   forget: ['zz22zz22'], drain: false, trusted: false, approvedSlots: null, perDevice: 4, compatible: true, homeVersion: '0.24.0',
+}
+
+/** A machine with classes: one class's room ready, the shapes of shared/remote-kernels.ts (tests/remote-kernels-contract.test.mts has them all). */
+const classes = { hostNetwork: true, perimeter: 'ok', mode: 'blocked', canary: 'ok', sameDaemon: false }
+const kernelsAsked = {
+  placements: [{ key: 'seminar_1:room', gen: 3, phase: 'ready', container: 'c'.repeat(64), revision: `sha256:${'a'.repeat(64)}` }],
+  reports: [{ sessionId: 'seminar_1', gen: 3, seq: 1, changed: [{ path: 'out.csv', sha256: '1'.repeat(64), bytes: 5, base: null }], removed: [], skipped: [] }],
+  epochs: [], readings: [], tunnel: 'up', classes,
+}
+const kernelsAnswer = {
+  placements: [{
+    key: 'seminar_1:room', gen: 3, environment: 'base', revision: { id: REVISION, ref: REF, layers: '4'.repeat(64) },
+    memoryMb: 4096, cpus: 2, pids: 512, gpu: false, shm: '1g', network: 'blocked', blockedCidrs: [], token: 'e'.repeat(40), hashSeed: 7,
+  }],
+  pushes: [], verdicts: [{ sessionId: 'seminar_1', seq: 1, accepted: ['out.csv'], refused: [] }], pulls: [], scan: [], epochs: [], collect: [], postmortem: [],
+  rates: { classBulkMBps: 4, machinePaceMBps: 6 }, tunnel: 'open',
 }
 
 const runJson = Buffer.from(JSON.stringify({ status: 'ok', detail: '', cell: 13, cells: 14, attemptId: ATTEMPT })).toString('base64')
@@ -406,6 +446,17 @@ test('join reply: an id, a secret, the trust and the cap', () => {
   assert.deepEqual(parseRemoteJoinReply({ ...answer, name: 'vast-1' }), answer)
 })
 
+test('join reply: whether the machine may run classes, never together with the hidden test', () => {
+  const answer = { runnerId: 'k7m2p9qa', secret: 'f'.repeat(64), trusted: false, approvedSlots: null }
+  for (const allowed of [true, false]) assert.deepEqual(parseRemoteJoinReply({ ...answer, classes: allowed }), { ...answer, classes: allowed })
+  // A home from before classes says nothing of them, and the reply reads as it always did.
+  assert.equal('classes' in parseRemoteJoinReply(answer), false)
+  for (const bad of ['yes', 1, null]) refused(() => parseRemoteJoinReply({ ...answer, classes: bad }), /Invalid join reply/)
+  // No code carries both (remote-classes.md D3): a machine that runs classes holds no hidden test.
+  refused(() => parseRemoteJoinReply({ ...answer, trusted: true, classes: true }), /Contradictory join reply/)
+  assert.doesNotThrow(() => parseRemoteJoinReply({ ...answer, trusted: true, classes: false }))
+})
+
 /* ------------------------------------------------------------- sync request */
 
 test('sync request: the whole state of a machine, accepted as it is sent', () => {
@@ -461,6 +512,59 @@ test('sync request: the hold, the counts and every nested key are refused past t
   refused(() => parseRemoteSyncRequest({ ...sync, cards: Array.from({ length: REMOTE_CARDS_MAX + 1 }, (_, i) => ({ ...card, device: String(i) })) }))
   refused(() => parseRemoteSyncRequest({ ...sync, fetching: Array.from({ length: REMOTE_FETCHING_MAX + 1 }, (_, i) => ({ manifest: nth(i, 64), percent: 1 })) }))
   refused(() => parseRemoteSyncRequest(edit(sync, ['ready', 'bundles'], Array.from({ length: REMOTE_BUNDLES_MAX + 1 }, (_, i) => nth(i, 32)))))
+})
+
+/* ------------------------------------------------------- classes, in the sync */
+
+test('a sync of 0.24\'s shape, without the kernels block, still parses both ways', () => {
+  // The protocol does not move for classes: the block is optional in both directions.
+  assert.equal(REMOTE_PROTOCOL, 1)
+  const asked = parseRemoteSyncRequest(sync)
+  assert.deepEqual(asked, sync)
+  assert.equal('kernels' in asked, false)
+  const answered = parseRemoteSyncReply(reply)
+  assert.deepEqual(answered, reply)
+  assert.equal('kernels' in answered, false, 'a machine without classes is told nothing of them')
+})
+
+test('sync request: home takes the kernels block only in its exact shape, and holds a machine with placements as busy', () => {
+  const withKernels = { ...sync, kernels: kernelsAsked }
+  assert.deepEqual(parseRemoteSyncRequest(withKernels), withKernels)
+  refused(() => parseRemoteSyncRequest({ ...sync, kernels: { ...kernelsAsked, extra: 1 } }), /Unexpected key "extra" in kernels block/)
+  refused(() => parseRemoteSyncRequest(edit(withKernels, ['kernels', 'placements', 0, 'gen'], 0)), /held placement/)
+  refused(() => parseRemoteSyncRequest(edit(withKernels, ['kernels', 'reports', 0, 'changed', 0, 'path'], '../runner.json')), /changed file/)
+  for (const bad of [null, [], 'kernels', {}]) refused(() => parseRemoteSyncRequest({ ...sync, kernels: bad }), /kernels block|Invalid/)
+  // A typo of the block is no block at all, and refused like any key home does not know.
+  refused(() => parseRemoteSyncRequest({ ...sync, kernel: kernelsAsked }), /Unexpected key "kernel"/)
+  // A placement is held like an attempt: its machine's progress and silence are measured by the busy hold.
+  const idle = { ...sync, attempts: [], holdMs: REMOTE_HOLD_IDLE_MS }
+  refused(() => parseRemoteSyncRequest({ ...idle, kernels: kernelsAsked }), /busy/)
+  assert.doesNotThrow(() => parseRemoteSyncRequest({ ...idle, holdMs: REMOTE_HOLD_BUSY_MS, kernels: kernelsAsked }))
+  assert.doesNotThrow(() => parseRemoteSyncRequest({ ...idle, kernels: { ...kernelsAsked, placements: [] } }), 'classes on, nothing placed: an idle machine')
+  // A bye is the last sync of a machine that stops: one still taking work says none.
+  refused(() => parseRemoteSyncRequest({ ...withKernels, kernels: { ...kernelsAsked, bye: 'restart' } }), /bye/)
+  for (const state of ['draining', 'leaving']) {
+    for (const bye of ['restart', 'stopping', 'leaving']) assert.doesNotThrow(() => parseRemoteSyncRequest({ ...withKernels, state, kernels: { ...kernelsAsked, bye } }), `${state} ${bye}`)
+  }
+})
+
+test('sync reply: the agent keeps the kernels block as the contract has it, and no hidden test beside a class', () => {
+  const withKernels = { ...reply, kernels: kernelsAnswer }
+  assert.deepEqual(parseRemoteSyncReply(withKernels), withKernels)
+  // Keys a newer home added inside the block are dropped like any other.
+  const newer = edit(edit(withKernels, ['kernels', 'stray'], 1), ['kernels', 'placements', 0, 'note'], 'x')
+  assert.deepEqual(parseRemoteSyncReply(newer), withKernels)
+  // What the agent knows it checks: one bad intent is a reply it cannot take, and retries like a hiccup.
+  refused(() => parseRemoteSyncReply(edit(withKernels, ['kernels', 'placements', 0, 'network'], 'open')), /placement intent/)
+  refused(() => parseRemoteSyncReply({ ...reply, kernels: null }), /kernels block/)
+  // The hidden test never lies beside a class (D3): not in a lease, not in what is wanted.
+  const sealedLease = { ...reply, trusted: true, leases: [gpuLease] }
+  assert.doesNotThrow(() => parseRemoteSyncReply(sealedLease))
+  refused(() => parseRemoteSyncReply({ ...sealedLease, kernels: kernelsAnswer }), /Hidden test for a class machine/)
+  const sealedWant = edit({ ...reply, trusted: true }, ['want', 'data', 0], { competitionId: COMPETITION, manifest: SEALED_MANIFEST, sealed: true, files: [] })
+  refused(() => parseRemoteSyncReply({ ...sealedWant, kernels: kernelsAnswer }), /Hidden test for a class machine/)
+  // A machine whose classes are on but which holds no placement yet is no class machine in that sense.
+  assert.doesNotThrow(() => parseRemoteSyncReply({ ...sealedLease, kernels: { ...kernelsAnswer, placements: [] } }))
 })
 
 /* --------------------------------------------------------------- the lease */
@@ -1116,6 +1220,111 @@ test('rendering never throws and never lets a marker character through, whatever
 
 /* -------------------------------------------------------- the sizes add up */
 
+/**
+ * A path at its worst for a body: 400 characters, each three bytes of UTF-8,
+ * in segments at their 255-byte cap; distinct by `i`. Control characters and
+ * lone surrogates, which escape longer, are no path a parser takes.
+ */
+const WIDE = '界'.repeat(85)
+function worstPath(i: number): string {
+  const id = String(i)
+  const value = `${WIDE}/${WIDE}/${WIDE}/${WIDE}/${'界'.repeat(56 - id.length)}${id}`
+  assert.equal(normalizePath(value), value)
+  return value
+}
+const worstSession = (i: number) => `${'s'.repeat(60)}${nth(i, 4)}`
+/** A notebook's root at its worst: a path's of August 2026 at its longest, three bytes a character (remote-kernels.ts · isRemoteRoot). */
+function worstRoot(i: number): string {
+  const id = String(i)
+  const value = `nb:${'界'.repeat(REMOTE_ROOT_CHARS - 'nb:'.length - id.length)}${id}`
+  assert.ok(isRemoteRoot(value) && value.length === REMOTE_ROOT_CHARS)
+  return value
+}
+
+/** The largest kernels block home's parser takes from a machine: every count and cap at its worst at once. */
+function worstKernelsRequest() {
+  const reports = Array.from({ length: REMOTE_PLACEMENTS_MAX }, (_, r) => ({
+    sessionId: worstSession(r), gen: Number.MAX_SAFE_INTEGER, seq: Number.MAX_SAFE_INTEGER, full: true, page: { index: Number.MAX_SAFE_INTEGER, last: false },
+    changed: [] as Record<string, unknown>[], removed: [], skipped: [],
+  }))
+  // The paths of one sync together, all of them changes (the longest entry), two of them inline at their cap.
+  for (let i = 0; i < REMOTE_REPORT_PATHS_MAX; i++) {
+    const inline = i < CLASS_INLINE_REPORT_BYTES / CLASS_INLINE_BYTES
+    reports[i % reports.length]!.changed.push({
+      path: worstPath(i), sha256: 'f'.repeat(64), bytes: inline ? CLASS_INLINE_BYTES : Number.MAX_SAFE_INTEGER, base: 'e'.repeat(64),
+      ...(inline ? { inline: Buffer.alloc(CLASS_INLINE_BYTES, 0xff).toString('base64') } : {}),
+    })
+  }
+  return {
+    placements: Array.from({ length: REMOTE_PLACEMENTS_MAX }, (_, i) => ({
+      key: `${worstSession(i)}:room`, gen: Number.MAX_SAFE_INTEGER, phase: 'failed', container: 'c'.repeat(64), revision: `sha256:${'a'.repeat(64)}`,
+      failure: { unschedulable: 'other', memoryMb: 262_144, cpus: 63.999_999_9, detail: worst(REMOTE_REASON_CHARS) },
+      usage: { usedMb: REMOTE_MEMORY_MB_MAX, limitMb: REMOTE_MEMORY_MB_MAX, cpus: REMOTE_CPUS_MAX, cpuPercent: 100 * REMOTE_CPUS_MAX, startedAt: Number.MAX_SAFE_INTEGER, oomKills: Number.MAX_SAFE_INTEGER },
+      card: { device: `G${String(i).padStart(63, '0')}`, usedMb: REMOTE_CARD_MB_MAX },
+      files: { pushSeq: Number.MAX_SAFE_INTEGER, pending: Number.MAX_SAFE_INTEGER, pendingBytes: Number.MAX_SAFE_INTEGER, heldOnly: Number.MAX_SAFE_INTEGER, heldOnlyBytes: Number.MAX_SAFE_INTEGER },
+      resized: 'pending',
+    })),
+    reports,
+    epochs: Array.from({ length: REMOTE_EPOCHS_MAX }, (_, e) => ({
+      sessionId: worstSession(e), root: worstRoot(e), seq: Number.MAX_SAFE_INTEGER, ready: false,
+      missing: Array.from({ length: COUNCIL_EPOCH_BUFFERS_MAX / REMOTE_EPOCHS_MAX }, (_, i) => nth(e * COUNCIL_EPOCH_BUFFERS_MAX + i, 64)),
+    })),
+    readings: Array.from({ length: REMOTE_READINGS_MAX }, (_, i) => ({
+      key: `${worstSession(i)}:council`, gen: Number.MAX_SAFE_INTEGER,
+      reading: {
+        limit: Number.MAX_SAFE_INTEGER, peak: Number.MAX_SAFE_INTEGER, current: Number.MAX_SAFE_INTEGER, kills: Number.MAX_SAFE_INTEGER,
+        containerOomKilled: true, status: 'r'.repeat(16), exit: 255, tail: Array.from({ length: REMOTE_READING_LINES_MAX }, () => worst(REMOTE_READING_LINE_CHARS)),
+      },
+    })),
+    tunnel: 'down', bye: 'restart',
+    classes: { hostNetwork: false, perimeter: 'no-iptables', mode: 'blocked', canary: worst(REMOTE_REASON_CHARS), sameDaemon: false },
+  }
+}
+
+/** The largest kernels block the agent takes from home: every count and cap at its worst at once. */
+function worstKernelsReply() {
+  const longRef = `${'r'.repeat(262)}.io/${'p'.repeat(262)}@sha256:${'3'.repeat(64)}`
+  const sessions = Array.from({ length: REMOTE_PLACEMENTS_MAX }, (_, i) => worstSession(i))
+  // The pushes' paths together, all of them files (the longest entry per path), a mebibyte of them inline.
+  const pushes = sessions.map((sessionId) => ({ sessionId, seq: Number.MAX_SAFE_INTEGER, full: true, promoted: true, put: [] as Record<string, unknown>[], remove: [], move: [] }))
+  for (let i = 0; i < REMOTE_PUSH_PATHS_MAX; i++) {
+    const inline = i < CLASS_INLINE_PUSH_BYTES / CLASS_INLINE_BYTES
+    pushes[i % pushes.length]!.put.push({
+      path: worstPath(i), sha256: 'f'.repeat(64), bytes: inline ? CLASS_INLINE_BYTES : Number.MAX_SAFE_INTEGER,
+      ...(inline ? { inline: Buffer.alloc(CLASS_INLINE_BYTES, 0xff).toString('base64') } : {}),
+    })
+  }
+  // Verdicts: every path refused for its base, each with a conflict copy of its own as long as itself.
+  const verdicts = sessions.map((sessionId) => ({ sessionId, seq: Number.MAX_SAFE_INTEGER, accepted: [], refused: [] as Record<string, unknown>[] }))
+  for (let i = 0; i < REMOTE_REPORT_PATHS_MAX; i++) verdicts[i % verdicts.length]!.refused.push({ path: worstPath(i), why: 'base', copy: worstPath(i + 100_000) })
+  const pulls = sessions.map((sessionId) => ({ sessionId, gen: Number.MAX_SAFE_INTEGER, paths: [] as Record<string, unknown>[] }))
+  for (let i = 0; i < REMOTE_REPORT_PATHS_MAX; i++) pulls[i % pulls.length]!.paths.push({ path: worstPath(i), sha256: 'f'.repeat(64) })
+  // Every epoch a machine may hold, naming every file one reply may name, each at the most its epoch's cap leaves it.
+  const buffersEach = REMOTE_EPOCH_FILES_MAX / REMOTE_EPOCHS_MAX
+  const perBuffer = Math.floor((COUNCIL_EPOCH_MB * 1024 * 1024) / buffersEach)
+  return {
+    placements: sessions.map((sessionId) => ({
+      key: `${sessionId}:council`, gen: Number.MAX_SAFE_INTEGER, environment: 'e'.repeat(32), revision: { id: 'd'.repeat(32), ref: longRef, layers: '4'.repeat(64) },
+      memoryMb: 262_144, cpus: 64, pids: 32_768, gpu: false, shm: '999999999999.999999 TiB', network: 'blocked',
+      blockedCidrs: Array.from({ length: REMOTE_BLOCKED_CIDRS_MAX }, (_, i) => `255.255.${i}.255/32`), token: 'e'.repeat(40), hashSeed: 4_294_967_295, workers: COUNCIL_WORKERS.max,
+    })),
+    pushes, verdicts, pulls,
+    scan: sessions.map((sessionId) => ({ sessionId, full: true })),
+    epochs: Array.from({ length: REMOTE_EPOCHS_MAX }, (_, e) => ({
+      sessionId: worstSession(e), root: worstRoot(e), seq: 999_999_999_999_999, manifest: { sha256: 'f'.repeat(64), bytes: 4 * 1024 * 1024 },
+      buffers: Array.from({ length: buffersEach }, (_, i) => ({ sha256: nth(e * COUNCIL_EPOCH_BUFFERS_MAX + i, 64), bytes: perBuffer })),
+      from: { container: 'c'.repeat(64), dir: `${COUNCIL_EPOCH_DIR}/999999999999999` },
+    })),
+    collect: Array.from({ length: REMOTE_COLLECTS_MAX }, (_, c) => ({
+      sessionId: sessions[c]!, runId: 'r'.repeat(64),
+      files: Array.from({ length: COUNCIL_ARTIFACTS.files }, (_, f) => ({ name: worstPath(c * 100 + f), sha256: 'f'.repeat(64), bytes: COUNCIL_ARTIFACTS.totalBytes / COUNCIL_ARTIFACTS.files })),
+    })),
+    postmortem: Array.from({ length: REMOTE_READINGS_MAX }, (_, i) => `${sessions[i]!}:own`),
+    rates: { classBulkMBps: 1000, machinePaceMBps: 1000 },
+    tunnel: 'reconnect',
+  }
+}
+
 test('the largest join, sync and outcome a parser accepts fit their body caps, escaped at their worst', () => {
   const most = (i: number, width: number) => nth(i, width)
   const device = (i: number) => `G${String(i).padStart(63, '0')}`
@@ -1147,6 +1356,11 @@ test('the largest join, sync and outcome a parser accepts fit their body caps, e
   }
   assert.doesNotThrow(() => parseRemoteSyncRequest(request))
   assert.ok(bytesOf(request) <= REMOTE_SYNC_BYTES, `sync: ${bytesOf(request)} > ${REMOTE_SYNC_BYTES}`)
+  // A machine with classes adds its kernels block at its worst: the 0.23 part stays within the quarter it always had.
+  assert.ok(bytesOf(request) <= 256 * 1024)
+  const classSync = { ...request, kernels: worstKernelsRequest() }
+  assert.doesNotThrow(() => parseRemoteSyncRequest(classSync))
+  assert.ok(bytesOf(classSync) <= REMOTE_SYNC_BYTES, `sync with classes: ${bytesOf(classSync)} > ${REMOTE_SYNC_BYTES}`)
 
   const outcome = {
     protocol: 1, build: BUILD, free: worstFree, kind: 'finished',
@@ -1210,6 +1424,14 @@ test('the largest sync reply the agent accepts fits the reply cap it reads up to
   }
   assert.doesNotThrow(() => parseRemoteSyncReply(answer))
   assert.ok(bytesOf(answer) <= REMOTE_REPLY_BYTES, `reply: ${bytesOf(answer)} > ${REMOTE_REPLY_BYTES}`)
+  // The 0.23 fields stay under the 16 MiB they always had; a machine with classes gets its kernels block at its worst on top.
+  assert.ok(bytesOf(answer) <= 16 * 1024 * 1024)
+  const kernels = worstKernelsReply()
+  assert.doesNotThrow(() => parseRemoteKernelsReply(kernels))
+  // The hidden test never rides with placements (D3), so the two worsts never meet in one reply: their sum bounds every reply there is.
+  const both = bytesOf(answer) + bytesOf({ kernels })
+  assert.ok(both <= REMOTE_REPLY_BYTES, `reply with classes: ${both} > ${REMOTE_REPLY_BYTES}`)
+  assert.doesNotThrow(() => parseRemoteSyncReply({ ...answer, trusted: false, leases: answer.leases.map(({ sealedData: _, ...lease }) => ({ ...lease, sealed: false })), want: { ...answer.want, data: answer.want.data.map((entry) => ({ ...entry, sealed: false })) }, kernels }))
 })
 
 /* ---------------------------------------------- numbers shared with the code */

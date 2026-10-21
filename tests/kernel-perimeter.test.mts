@@ -1,5 +1,6 @@
 /**
- * The hardened room profile on the docker backend (kernel/perimeter.ts).
+ * The hardened room profile on the docker backend (kernel/perimeter.ts, with
+ * its pure builders in kernel/perimeter-core.ts).
  *
  * This proves what could otherwise be seen only during a live class: exactly
  * which `docker run` line a room gets, exactly which rules the helper installs,
@@ -9,6 +10,11 @@
  * and the lines are compared whole. The live check on colima — packages,
  * refusals, a fork bomb — is described in the rollout report; it cannot be
  * repeated here.
+ *
+ * And the same builders for a machine's class kernels
+ * (docs/architecture/remote-classes.md §7.1, §7.6): home's scripts word for
+ * word as before, a machine's under names of its own, and home's mode as the
+ * floor of every plan a machine installs.
  */
 import './_env.mts'
 import { test, afterEach } from 'node:test'
@@ -34,12 +40,16 @@ import {
   perimeterRules,
   perimeterScript,
   pidsLimit,
+  roomHardening,
   roomHardeningArgs,
   roomNetworkMode,
   roomProfile,
   warmPerimeter,
   type DockerRun,
 } from '../server/src/kernel/perimeter.js'
+import * as home from '../server/src/kernel/perimeter.js'
+import * as core from '../server/src/kernel/perimeter-core.js'
+import { INSTANCE_LABEL } from '../server/src/runner-agent/images.js'
 import { setLocaleResolver } from '../shared/i18n.js'
 
 function withEnv<T>(vars: Record<string, string | undefined>, body: () => T): T {
@@ -105,9 +115,13 @@ test('a room on the host: its own network, a loopback port and the whole hardene
     // and differently in different versions — 5.x adds `text/html` to the
     // figure and sends the whole plotly.js bundle as the first frame, five
     // megabytes of script nobody needs in the shared document
-    // (kernel/pool.ts · runArgs). A default, not a ban:
+    // (kernel/room-spec.ts · roomRunArgs). A default, not a ban:
     // `pio.renderers.default` in a cell overrides it.
     '-e', 'PLOTLY_RENDERER=plotly_mimetype',
+    // The class's one hash seed, the seventh variable (room-spec.ts ·
+    // classHashSeed): the same number for r1 in every container, at home and
+    // on every machine, release after release.
+    '-e', 'PYTHONHASHSEED=3677742916',
     '-v', '/srv/workspace/r1:/workspace/r1',
     '--memory=4096m',
     '--memory-swap=4096m',
@@ -804,4 +818,229 @@ test('at server start in a container the block goes up even before any kernel im
   assert.ok(helper, 'no helper at start')
   assert.equal(helperImageOf(helper.args), SELF)
   assert.equal(perimeterProblem(), null)
+})
+
+/* ------------------------------------------------- the core, home and machines */
+
+/*
+ * The builders live in perimeter-core.ts, pure, so that a machine's agent
+ * installs the very rules home does (docs/architecture/remote-classes.md
+ * §7.1). Home's scripts stay word for word what the tests above pin; a
+ * machine's are the same lines under names of its own.
+ */
+
+/** A machine's instance label, in the agent's shape (runner-agent/images.ts · INSTANCE_LABEL). */
+const MACHINE_LABEL = 'ru.colloq.competition-instance=a1b2c3d4e5f60718'
+const MACHINE = core.machinePerimeter(MACHINE_LABEL)
+
+test('every name perimeter.ts always exported is still there, and the builders among them are the core\'s own', () => {
+  const moved = [
+    'BLACKHOLE_DNS', 'BLOCKED_V4', 'DEFAULT_ROOM_SUBNET', 'PERIMETER_KIND', 'PERIMETER_TAG', 'ROOM_NETWORK', 'ROOM_PROFILE',
+    'blockedCidrsSetting', 'helperArgs', 'ipv4InCidr', 'ipv4Subnets', 'networkCreateArgs', 'ownAddresses', 'parseCidr',
+    'parseIpv4', 'perimeterRemovalScript', 'perimeterRules', 'perimeterScript', 'roomNetworkMode', 'roomProfile', 'roomSubnetSetting',
+  ] as const
+  // One binding, not a copy: what home installs and what a machine installs cannot drift apart.
+  for (const name of moved) assert.equal(home[name], core[name], name)
+  // What stays home's: the ceilings from the instance settings, the installation, the refusal in words.
+  for (const name of ['pidsLimit', 'ownPidsLimit', 'roomHardening', 'roomHardeningArgs', 'ensureRoomPerimeter', 'warmPerimeter', 'helperImage',
+    'perimeterProblem', 'perimeterStale', 'forgetPerimeter', 'RoomPerimeterError'] as const) {
+    assert.equal(typeof home[name], 'function', name)
+  }
+  assert.ok(!('pidsLimit' in core) && !('RoomPerimeterError' in core), 'the core reads a setting or speaks home\'s words')
+})
+
+test('home\'s hardening is the core\'s, with the numbers home reads for each role', () => {
+  for (const mode of [undefined, 'none', 'open', 'blocked']) {
+    withEnv({ COLLOQ_ROOM_NETWORK: mode, KERNEL_PIDS: undefined, KERNEL_OWN_PIDS: undefined }, () => {
+      for (const role of ['room', 'own', 'council'] as const) {
+        const numbers = roomHardening(process.env, role)
+        assert.deepEqual(numbers, {
+          pids: role === 'room' ? 512 : 2048,
+          mode: roomNetworkMode(),
+          profile: core.profileFor(roomNetworkMode()),
+        }, `${mode} ${role}`)
+        assert.deepEqual(roomHardeningArgs(process.env, role), core.roomHardeningArgs(numbers), `${mode} ${role}`)
+      }
+    })
+  }
+  // The core lays out whatever it is given, with nothing read on the side.
+  assert.deepEqual(core.roomHardeningArgs({ pids: 77, mode: 'none', profile: '1-none' }), [
+    '--user=1000:1000', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=77',
+    '--sysctl=net.ipv6.conf.all.disable_ipv6=1', '--sysctl=net.ipv6.conf.default.disable_ipv6=1',
+    '--dns=192.0.2.1', '--label', 'colloq.profile=1-none',
+  ])
+  assert.deepEqual(['blocked', 'open', 'none'].map((mode) => core.profileFor(mode as core.RoomNetworkMode)), ['1', '1', '1-none'])
+})
+
+test('home\'s scope is the one its rooms always lived under, and it is every builder\'s default', () => {
+  assert.deepEqual({ ...core.HOME_PERIMETER, labels: [...core.HOME_PERIMETER.labels] }, {
+    network: 'colloq-rooms', chains: 'COLLOQ-ROOMS', tag: 'colloq-rooms', labels: ['colloq.kind=room-network'],
+  })
+  for (const plan of [
+    { subnets: ['172.19.0.0/16'], exempt: ['172.19.0.2'] },
+    { subnets: ['10.213.0.0/22'], exempt: [], mode: 'none' as const },
+    { subnets: ['10.213.0.0/22'], exempt: [], extra: ['203.0.113.0/24'] },
+  ]) {
+    for (const deny of ['reject', 'drop'] as const) assert.equal(perimeterRules(plan, deny), core.perimeterRules(plan, deny, core.HOME_PERIMETER))
+    assert.equal(perimeterScript(plan), core.perimeterScript(plan, core.HOME_PERIMETER))
+  }
+  assert.equal(perimeterRemovalScript(), core.perimeterRemovalScript(core.HOME_PERIMETER))
+  assert.deepEqual(networkCreateArgs(DEFAULT_ROOM_SUBNET), core.networkCreateArgs(DEFAULT_ROOM_SUBNET, core.HOME_PERIMETER))
+})
+
+test('a machine\'s perimeter is named by six hex characters of the agent\'s label: its bridge, its chains, its comment', () => {
+  assert.deepEqual(MACHINE, {
+    i6: 'a1b2c3',
+    network: 'colloq-mrooms-a1b2c3',
+    chains: 'COLLOQ-MRa1b2c3',
+    tag: 'colloq-mrooms-a1b2c3',
+    labels: ['colloq.kind=class-network', MACHINE_LABEL],
+  })
+  // iptables holds 28 characters of a chain's name.
+  for (const chain of ['FWD', 'IN', 'DENY']) assert.ok(`${MACHINE.chains}-${chain}`.length <= 28)
+  // The agent's real label has that shape.
+  const real = core.machinePerimeter(INSTANCE_LABEL)
+  assert.equal(real.network, `colloq-mrooms-${INSTANCE_LABEL.split('=')[1]!.slice(0, 6)}`)
+  // §7.1's spelling, `COLLOQ-MR<i6>`: the six characters as the label has them, the same in every name.
+  assert.equal(real.chains, `COLLOQ-MR${real.i6}`)
+  for (const name of [MACHINE.network, MACHINE.chains, MACHINE.tag]) assert.ok(name.endsWith(MACHINE.i6), name)
+  // A label of another shape is a caller's mistake: a perimeter named by a guess could be another agent's.
+  for (const bad of ['', 'a1b2c3', 'colloq.kind=class-kernel', 'ru.colloq.competition-instance=a1b2c', 'ru.colloq.competition-instance=A1B2C3D4', 'x=a1b2c3 ']) {
+    assert.throws(() => core.machinePerimeter(bad), /not an agent instance label/, bad)
+  }
+})
+
+test('a machine\'s rules are home\'s lines under its own chains — full lines', () => {
+  const plan = { subnets: ['10.214.0.0/22'], exempt: [], extra: ['203.0.113.0/24'] }
+  const rules = core.perimeterRules(plan, 'reject', MACHINE)
+  const deny = [...BLOCKED_V4, '203.0.113.0/24'].map((range) => `-A COLLOQ-MRa1b2c3-FWD -s 10.214.0.0/22 -d ${range} -j COLLOQ-MRa1b2c3-DENY`)
+  assert.equal(rules, [
+    '*filter',
+    ':COLLOQ-MRa1b2c3-FWD - [0:0]',
+    ':COLLOQ-MRa1b2c3-IN - [0:0]',
+    ':COLLOQ-MRa1b2c3-DENY - [0:0]',
+    '-A COLLOQ-MRa1b2c3-DENY -p tcp -j REJECT --reject-with tcp-reset',
+    '-A COLLOQ-MRa1b2c3-DENY -j REJECT --reject-with icmp-admin-prohibited',
+    '-A COLLOQ-MRa1b2c3-FWD -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN',
+    '-A COLLOQ-MRa1b2c3-FWD -p udp -m udp --dport 53 -j RETURN',
+    '-A COLLOQ-MRa1b2c3-FWD -p tcp -m tcp --dport 53 -j RETURN',
+    '-A COLLOQ-MRa1b2c3-IN -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN',
+    '-A COLLOQ-MRa1b2c3-IN -p udp -m udp --dport 53 -j RETURN',
+    '-A COLLOQ-MRa1b2c3-IN -p tcp -m tcp --dport 53 -j RETURN',
+    ...deny,
+    // The agent reaches its rooms from the host: the IN chain refuses the rooms subnet to it.
+    '-A COLLOQ-MRa1b2c3-IN -s 10.214.0.0/22 -j COLLOQ-MRa1b2c3-DENY',
+    'COMMIT',
+    '',
+  ].join('\n'))
+  // Home's very lines, only the chains renamed: the same rules by construction, in every mode and fallback.
+  for (const p of [plan, { subnets: ['10.214.0.0/22'], exempt: [], mode: 'none' as const }]) {
+    for (const action of ['reject', 'drop'] as const) {
+      assert.equal(core.perimeterRules(p, action, MACHINE), perimeterRules(p, action).replaceAll('COLLOQ-ROOMS-', 'COLLOQ-MRa1b2c3-'))
+    }
+  }
+})
+
+test('a machine\'s helper hooks and unhooks only its own chains, by its own comment, and names its refusals as home\'s does', () => {
+  const plan = { subnets: ['10.214.0.0/22'], exempt: [] }
+  const script = core.perimeterScript(plan, MACHINE)
+  assert.match(script, /-C DOCKER-USER -m comment --comment colloq-mrooms-a1b2c3 -j COLLOQ-MRa1b2c3-FWD/)
+  assert.match(script, /-I DOCKER-USER 1 -m comment --comment colloq-mrooms-a1b2c3 -j COLLOQ-MRa1b2c3-FWD/)
+  assert.match(script, /-I INPUT 1 -m comment --comment colloq-mrooms-a1b2c3 -j COLLOQ-MRa1b2c3-IN/)
+  for (const code of [20, 21, 22, 23]) assert.match(script, new RegExp(`exit ${code}`))
+  const removal = core.perimeterRemovalScript(MACHINE)
+  assert.match(removal, /-D DOCKER-USER -m comment --comment colloq-mrooms-a1b2c3 -j COLLOQ-MRa1b2c3-FWD/)
+  assert.match(removal, /-D INPUT -m comment --comment colloq-mrooms-a1b2c3 -j COLLOQ-MRa1b2c3-IN/)
+  assert.match(removal, /for chain in COLLOQ-MRa1b2c3-FWD COLLOQ-MRa1b2c3-IN COLLOQ-MRa1b2c3-DENY; do fw iptables -w -F "\$chain"/)
+  // Not a word of home's: neither home's chains nor home's comment, so neither script can touch a home's rooms.
+  for (const text of [script, removal]) {
+    assert.ok(!/COLLOQ-ROOMS|colloq-rooms/.test(text), text)
+  }
+  // And otherwise home's scripts, line for line.
+  const rename = (text: string) => text.replaceAll('COLLOQ-ROOMS-', 'COLLOQ-MRa1b2c3-').replaceAll('--comment colloq-rooms ', '--comment colloq-mrooms-a1b2c3 ')
+  assert.equal(script, rename(perimeterScript(plan)))
+  assert.equal(removal, rename(perimeterRemovalScript()))
+})
+
+test('a machine\'s bridge: its own name and labels, no ICC, no IPv6', () => {
+  assert.deepEqual(core.networkCreateArgs('10.214.0.0/22', MACHINE), [
+    'network', 'create', '--driver=bridge', '--subnet=10.214.0.0/22', '--ipv6=false',
+    '-o', 'com.docker.network.bridge.enable_icc=false',
+    '--label', 'colloq.kind=class-network',
+    '--label', MACHINE_LABEL,
+    'colloq-mrooms-a1b2c3',
+  ])
+  assert.ok(!core.networkCreateArgs(null, MACHINE).some((arg) => arg.startsWith('--subnet')))
+})
+
+test('home\'s mode is the floor: a machine may be stricter and block more ranges, never fewer', () => {
+  const subnets = ['10.214.0.0/22']
+  const blocked = (blockedCidrs: string[] = []) => ({ mode: 'blocked' as const, blockedCidrs })
+  // Home's ranges arrive with the intent; the machine adds its own, normalised, without repeats or built-in ones.
+  assert.deepEqual(core.machinePerimeterPlan(subnets, blocked(['203.0.113.0/24'])), { subnets, exempt: [], mode: 'blocked', extra: ['203.0.113.0/24'] })
+  assert.deepEqual(
+    core.machinePerimeterPlan(subnets, blocked(['203.0.113.0/24']), blocked(['198.51.100.7', '203.0.113.9/24', '10.1.2.3/8', '2001:db8::/32'])),
+    { subnets, exempt: [], mode: 'blocked', extra: ['203.0.113.0/24', '198.51.100.7/32'] },
+  )
+  assert.deepEqual(core.machinePerimeterPlan(subnets, blocked()), { subnets, exempt: [], mode: 'blocked' })
+  // Nothing a machine says takes one of home's ranges away.
+  for (const own of [[], ['198.51.100.0/24'], ['203.0.113.0/25']]) {
+    const plan = core.machinePerimeterPlan(subnets, blocked(['203.0.113.0/24', '192.0.2.10']), blocked(own))
+    for (const range of ['203.0.113.0/24', '192.0.2.10/32']) assert.ok(plan.extra?.includes(range), `${own}: ${JSON.stringify(plan)}`)
+    // And the machine's script refuses each of them.
+    const script = core.perimeterScript(plan, MACHINE)
+    assert.match(script, /-A COLLOQ-MRa1b2c3-FWD -s 10\.214\.0\.0\/22 -d 203\.0\.113\.0\/24 -j COLLOQ-MRa1b2c3-DENY/)
+  }
+  // The stricter mode wins, either way round; `open` is no mode for a machine, whoever asks for it.
+  const modes = ['open', 'blocked', 'none'] as const
+  for (const homeMode of modes) {
+    for (const machineMode of modes) {
+      const plan = core.machinePerimeterPlan(subnets, { mode: homeMode, blockedCidrs: [] }, { mode: machineMode, blockedCidrs: [] })
+      const expected = homeMode === 'none' || machineMode === 'none' ? 'none' : 'blocked'
+      assert.equal(plan.mode, expected, `${homeMode} + ${machineMode}`)
+      assert.ok(core.atLeastAsStrict(plan.mode!, homeMode) && core.atLeastAsStrict(plan.mode!, machineMode), `${homeMode} + ${machineMode}`)
+    }
+  }
+  // None refuses everything a room starts: the ranges have nothing to add, and are not read.
+  assert.deepEqual(core.machinePerimeterPlan(subnets, { mode: 'none', blockedCidrs: ['campus'] }, blocked(['203.0.113.0/24'])), { subnets, exempt: [], mode: 'none' })
+  // A range that is not one is a refusal, from either side: a typo would leave exactly that range open.
+  assert.throws(() => core.machinePerimeterPlan(subnets, blocked(['203.0.113.0/24', 'campus'])), /not an IPv4 address or range: campus/)
+  assert.throws(() => core.machinePerimeterPlan(subnets, blocked(), blocked(['10.0.0.0/33'])), /10\.0\.0\.0\/33/)
+})
+
+test('a plan that would fence nothing is refused, never installed: no subnet, or one that is not a range', () => {
+  const homePolicy = { mode: 'blocked' as const, blockedCidrs: ['203.0.113.0/24'] }
+  // A bridge read before it exists has no subnet: the chains would go in empty, and the helper would still say ok.
+  for (const mode of ['blocked', 'none'] as const) {
+    assert.throws(() => core.machinePerimeterPlan([], { ...homePolicy, mode }), /no rooms subnet fences nothing/, mode)
+  }
+  // An address without its prefix fences one host of the bridge, a v6 range nothing at all, and what is not a
+  // range at all must never reach the root helper's script.
+  for (const bad of ['10.214.0.0', 'fd00::/64', '10.214.0.0/33', 'colloq-mrooms-a1b2c3', '10.214.0.0/22\nCOLLOQ_RULES\nid']) {
+    assert.throws(() => core.machinePerimeterPlan(['10.214.0.0/22', bad], homePolicy), /not an IPv4 rooms subnet/, JSON.stringify(bad))
+  }
+  // The same below the plan, in either scope: no rules body fences nothing, home's included.
+  for (const scope of [MACHINE, core.HOME_PERIMETER]) {
+    for (const plan of [{ subnets: [], exempt: [] }, { subnets: [], exempt: [], mode: 'none' as const }, { subnets: ['10.214.0.0'], exempt: [] }]) {
+      const what = `${scope.chains} ${JSON.stringify(plan)}`
+      assert.throws(() => core.perimeterRules(plan, 'reject', scope), /no rooms subnet fences nothing|not an IPv4 rooms subnet/, what)
+      assert.throws(() => core.perimeterScript(plan, scope), /no rooms subnet fences nothing|not an IPv4 rooms subnet/, what)
+    }
+  }
+  // What the bridge has is laid out as a range, normalised as the blocked ranges are, and fenced in full.
+  const plan = core.machinePerimeterPlan(['10.214.1.9/22'], homePolicy)
+  assert.deepEqual(plan.subnets, ['10.214.0.0/22'])
+  const rules = core.perimeterRules(plan, 'reject', MACHINE)
+  assert.match(rules, /^-A COLLOQ-MRa1b2c3-IN -s 10\.214\.0\.0\/22 -j COLLOQ-MRa1b2c3-DENY$/m)
+  // Every built-in range and home's one beyond the host, and the host itself.
+  assert.equal(rules.split('\n').filter((line) => line.endsWith('-j COLLOQ-MRa1b2c3-DENY')).length, BLOCKED_V4.length + 2)
+})
+
+test('how strict a mode is: none refuses more than blocked, which refuses more than open', () => {
+  const table = (['open', 'blocked', 'none'] as const).map((mode) => (['open', 'blocked', 'none'] as const).map((floor) => core.atLeastAsStrict(mode, floor)))
+  assert.deepEqual(table, [
+    [true, false, false],
+    [true, true, false],
+    [true, true, true],
+  ])
 })

@@ -15,11 +15,12 @@
 #   colloq-host bundle FILE [IMAGE]  on a connected machine: everything an offline server needs, in one file
 #   colloq-host load FILE            on the offline server: load that file; up then needs no network
 #
-#   colloq-host runner up URL CODE [IMAGE]    this machine runs another instance's submissions
+#   colloq-host runner up URL CODE [IMAGE] [--classes]   this machine runs another instance's submissions
+#                                    (--classes: and its classes; checked first that it can)
 #   colloq-host runner update [VERSION|IMAGE] [--now]   to the home's version, its runs finished first
-#   colloq-host runner status | logs | leave  joined and syncing? / its log / revoke itself and go
-#   colloq-host runner-code [--machines N] [--hours H] [--trusted] [--slots S]   on an instance: a code
-#                                    for such machines, printed inside the commands that join them
+#   colloq-host runner status | logs | leave [--force]  joined and syncing? / its log / revoke itself and go
+#   colloq-host runner-code [--machines N] [--hours H] [--trusted | --classes] [--slots S]   on an instance:
+#                                    a code for such machines, printed inside the commands that join them
 #
 # The image puts it on the machine (`colloq-vast install-host`). On a Vast VM
 # the template's on-start (deploy/vast/onstart.sh) calls it; on a server of
@@ -59,6 +60,17 @@
 # submissions needs a machine of its own (§6 of the design), and `runner up`
 # says so when it finds an instance next to it: a university lends a server
 # it can spare for the competition, not the one its class runs on.
+#
+# A MACHINE THAT TAKES CLASSES («Принимает занятия», a flag of the code it
+# joins with; docs/architecture/remote-classes.md) is the same agent holding
+# its home's class kernels too: a container per class beside the
+# submissions, reached through one tunnel the agent dials home. The agent's
+# container runs on the host's network (--network host, every machine's from
+# 0.25 on), so that it reaches each kernel's Jupyter on the host's 127.0.0.1,
+# where nothing from outside does. `runner up --classes` checks first that
+# the machine can host classes, `runner update` keeps them running (the new
+# agent adopts their containers), and `runner leave` asks before it moves
+# them off the machine.
 #
 # NOTHING ON THE HOST CHANGES UNASKED. Automatic updates are switched off and
 # the NVIDIA packages held only under COLLOQ_FREEZE_UPDATES=1, which the Vast
@@ -991,16 +1003,21 @@ runner_usage() {
   cat <<'USAGE'
 colloq-host runner: this machine runs another Colloq instance's submissions
 
-  colloq-host runner up URL CODE [IMAGE]   join the home at URL with its owner's code
+  colloq-host runner up URL CODE [IMAGE] [--classes]
+                                           join the home at URL with its owner's code; --classes, for a
+                                           code that takes classes: check first that this machine can
   colloq-host runner update [VERSION|IMAGE] [--now]
                                            move to the home's version (or the one named): the runs it
-                                           holds finish first; --now hands them back to the home's queue
-  colloq-host runner status                joined and syncing (exit 0), as JSON
+                                           holds finish first; --now hands them back to the home's queue;
+                                           its classes keep running
+  colloq-host runner status                joined and syncing (exit 0), as JSON; its tunnel and classes
   colloq-host runner logs                  follow the agent's log (Ctrl+C to leave)
-  colloq-host runner leave                 finish its runs, revoke itself on the home, remove the container
+  colloq-host runner leave [--force]       finish its runs, revoke itself on the home, remove the container;
+                                           a machine with classes asks first (--force moves them off it,
+                                           their variables lost)
 
-The code comes from the home's owner: the panel (Resources, machines for
-submissions) or colloq-host runner-code on the home. Settings:
+The code comes from the home's owner: the panel (Resources → Machines →
+Connect a machine) or colloq-host runner-code on the home. Settings:
 /etc/colloq/runner.env; the image: /etc/colloq/runner-image; the tree:
 /var/lib/colloq-runner (COLLOQ_RUNNER_STATE: a directory of its own). A
 machine joined with the panel's plain `docker run` is taken over by the first
@@ -1025,7 +1042,7 @@ runner_command() {
     update) runner_update "$@" ;;
     status) runner_status ;;
     logs) need_root; adopt_runner quiet; exec docker logs -f --tail 200 "$RUNNER_NAME" ;;
-    leave) runner_leave ;;
+    leave) runner_leave "$@" ;;
     help|-h|--help) runner_usage ;;
     *) die "unknown command: runner $sub (colloq-host runner help)" ;;
   esac
@@ -1087,7 +1104,7 @@ check_home() {
 # 32 hex digits. Never repeated back: it is a key.
 check_code() {
   local re='^[a-f0-9]{32}$'
-  [[ "$1" =~ $re ]] || die "that is not an enrollment code (32 hex digits): take one from the home's owner, from the panel (Resources, machines for submissions) or colloq-host runner-code there"
+  [[ "$1" =~ $re ]] || die "that is not an enrollment code (32 hex digits): take one from the home's owner, from the panel (Resources → Machines → Connect a machine) or colloq-host runner-code there"
 }
 
 check_version() {
@@ -1216,8 +1233,14 @@ runner_image() {
 # The fingerprint of what the container is made from, as config_sum for the
 # instance: a repeated `runner up` (the Vast on-start runs it on every boot)
 # with the same image and settings leaves a working machine alone.
+#
+# The host's network is in it (run_runner): an agent a colloq-host from
+# before 0.25 started, on Docker's bridge, carries a sum without that line,
+# so the next `runner up` or `runner update` replaces its container with one
+# on the host's network, as classes need (remote-classes.md D19), while any
+# class containers keep running for the new agent to adopt.
 runner_config_sum() {
-  { printf '%s\n' "$1"; docker image inspect -f '{{.Id}}' "$1" 2>/dev/null; sort "$ENV_FILE"; printf 'state %s\n' "$RUNNER_STATE"; config_extras ""; } \
+  { printf '%s\n' "$1"; docker image inspect -f '{{.Id}}' "$1" 2>/dev/null; sort "$ENV_FILE"; printf 'state %s\n' "$RUNNER_STATE"; printf 'network host\n'; config_extras ""; } \
     | sha256sum | cut -c1-16
 }
 
@@ -1272,6 +1295,15 @@ runner_mounts() {
 # calls go out like any other. Through a relay that is restarting they wait
 # out the agent's backoff, up to 30 s a try (REMOTE_BACKOFF_MAX_MS), and half
 # a minute was one try.
+#
+# On the host's network (--network host, D19), and that is for the classes:
+# a class kernel's Jupyter is published on the host's 127.0.0.1 alone
+# (room-spec.ts · machineRoomRunArgs), which an agent on Docker's bridge
+# cannot reach and a rented VM's public address never sees. The agent still
+# opens no port of its own. Under host networking a container's hostname is
+# the host's, which no container is called by, so the entry point is told
+# the name it finds its own container by (COLLOQ_CONTAINER, locate_self):
+# the image's own entry point finds it without, an older one would not.
 run_runner() {
   local img="$1" sum
   sum="$(runner_config_sum "$img")"
@@ -1281,14 +1313,15 @@ run_runner() {
       say "$RUNNER_NAME is already running with these settings"
       return 0
     fi
-    say "replacing $RUNNER_NAME (new image or settings)"
-    docker stop -t 90 "$RUNNER_NAME" >/dev/null 2>&1 || true
+    say "replacing $RUNNER_NAME (new image or settings); class kernels keep running"
+    stop_runner
     docker rm "$RUNNER_NAME" >/dev/null
   fi
   mkdir -p "$RUNNER_STATE"
   runner_mounts
   docker run -d --name "$RUNNER_NAME" \
     --restart unless-stopped \
+    --network host \
     --stop-timeout 90 \
     --log-opt max-size=50m --log-opt max-file=5 \
     --health-interval 30s --health-timeout 20s --health-start-period 120s --health-retries 3 \
@@ -1297,6 +1330,7 @@ run_runner() {
     -e "COLLOQ_RUNNER_STATE=$RUNNER_STATE" \
     -e "COLLOQ_RUNNER_IMAGE=$img" \
     -e "COLLOQ_RUNNER_CONTAINER=$RUNNER_NAME" \
+    -e "COLLOQ_CONTAINER=$RUNNER_NAME" \
     --label colloq.kind=runner --label "colloq.config=$sum" \
     "$img" runner >/dev/null
   say "started $RUNNER_NAME from $img"
@@ -1326,12 +1360,103 @@ wait_joined() {
   die "$RUNNER_NAME stopped before it joined ${url:-its home}; the log is above"
 }
 
+# WHAT A MACHINE FOR CLASSES NEEDS (`runner up --classes`), each problem on
+# a line of its own, for the person who can change it; nothing when the
+# machine will do. The home asks its agent the same once it runs, names in
+# its panel what is missing and places no class here until it holds; this is
+# the same answer before anything is pulled, and before the code's use is
+# spent on a machine that cannot have it.
+#
+#   - Docker run by root, with its iptables: the network of a class is fenced
+#     by rules hooked into DOCKER-USER (perimeter-core.ts), which a rootless
+#     daemon, one with "iptables": false and one on the nftables backend do
+#     not have; the home's helper exits 20 or 21 on them;
+#   - cgroup v2: what a kernel used, and why it died, are read from its
+#     cgroup v2 files (postmortem-core.ts · CGROUP_SCRIPT);
+#   - no Colloq server on this Docker (D20): a home's census and sweeps
+#     would meet the class containers, and its rooms and the classes would
+#     share cards and memory that nobody counts for both. Asked as the agent
+#     asks it (runner-agent/kernels.ts · detectSameDaemon): the server's
+#     container, its rooms, or its rooms' network, which stays when every
+#     room has gone idle and its container with it (kernel/pool.ts removes
+#     a stopped room's), as on a pip or `make dev` home between classes;
+#   - the disk of the agent's tree: a machine's floor (REMOTE_DISK_MIN_GB,
+#     40 GB without cards and 120 with) and CLASS_DISK_GB more for the class
+#     folders, which hold up to a room's limit each (1 GB by default) and
+#     what stays on the machine besides: files over the cap, package trees.
+#     5 % short of it still passes: a disk rented at a size shows a few
+#     percent less in df (runner-agent/sync.ts · DISK_SLACK).
+CLASS_DISK_GB=20
+classes_problems() {
+  local options cgroup probe="$RUNNER_STATE" total_kb need_gb kind=without
+  options="$(docker info --format '{{json .SecurityOptions}}' 2>/dev/null || true)"
+  case "$options" in
+    *rootless*) printf '%s\n' "Docker here runs rootless: classes need the daemon run by root, whose iptables rules fence the network of every class" ;;
+  esac
+  # The chain Docker makes for its users' rules, looked for with the host's own
+  # iptables (no iptables at all reads the same: Docker manages none here).
+  iptables -w -n -L DOCKER-USER >/dev/null 2>&1 \
+    || printf '%s\n' "Docker here does not manage iptables (no DOCKER-USER chain: \"iptables\": false in /etc/docker/daemon.json, its nftables backend, or no iptables at all): classes need those rules to fence the network of every class"
+  cgroup="$(docker info --format '{{.CgroupVersion}}' 2>/dev/null || true)"
+  [ "$cgroup" = 2 ] \
+    || printf '%s\n' "this machine runs cgroup ${cgroup:-of no known version}, and classes need cgroup v2 (the default since Ubuntu 21.10 and Debian 11): what a kernel used, and why it died, are read from it"
+  if docker container inspect "$NAME" >/dev/null 2>&1 \
+    || [ -n "$(docker ps -aq --filter label=colloq.kind=app 2>/dev/null || true)" ] \
+    || [ -n "$(docker ps -aq --filter label=colloq.kind=room-kernel 2>/dev/null || true)" ] \
+    || [ -n "$(docker network ls -q --filter label=colloq.kind=room-network 2>/dev/null || true)" ]; then
+    printf '%s\n' "a Colloq server runs on this Docker (its container, its rooms, or its rooms' network): a machine that takes classes needs a Docker of its own, apart from any home's rooms"
+  fi
+  while [ ! -d "$probe" ] && [ "$probe" != / ]; do probe="$(dirname "$probe")"; done
+  total_kb="$(df -Pk "$probe" 2>/dev/null | awk 'NR == 2 { print $2 }' || true)"
+  need_gb=40
+  if command -v nvidia-smi >/dev/null 2>&1; then need_gb=120; kind=with; fi
+  case "$total_kb" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ "$total_kb" -lt $(((need_gb + CLASS_DISK_GB) * 1048576 * 95 / 100)) ]; then
+        printf '%s\n' "the disk of $RUNNER_STATE holds $((total_kb / 1048576)) GB, and a machine $kind cards that takes classes needs $((need_gb + CLASS_DISK_GB)) GB: the $need_gb GB any machine $kind cards needs, and $CLASS_DISK_GB GB for the class folders"
+      fi ;;
+  esac
+}
+
+# The label of this tree's agent, on every container it starts
+# (runner-agent/images.ts · INSTANCE_LABEL): the first sixteen hex digits of
+# the sha256 of its data root, <tree>/data, as the entry point hands it the
+# path (DATA_DIR), a plain one here as there (runner_state_problem).
+# tests/vast-runner-host.test.mts holds the two equal.
+instance_label() {
+  printf 'ru.colloq.competition-instance=%s' "$(printf '%s' "$RUNNER_STATE/data" | sha256sum | cut -c1-16)"
+}
+
+# The classes this machine holds now: their kernels' containers on this
+# Docker (colloq.kind=class-kernel), counted by class from the placement
+# label each carries, `colloq.placement=<id>:<role>:<gen>` (room-spec.ts): a
+# class's room, personal and council containers are one class. A stopped one
+# counts too: its home still has the class placed here. This tree's agent's
+# alone, by its label beside the kind, as the agent adopts them
+# (runner-agent/kernels.ts · listed): two agents on one Docker (two trees on
+# a university's server, make runner-dev beside a machine's own) each hold
+# their own classes, and the leave or update of one is no question about
+# the other's.
+class_count() {
+  docker ps -a --filter label=colloq.kind=class-kernel --filter "label=$(instance_label)" --format '{{.Label "colloq.placement"}}' 2>/dev/null \
+    | sed -nE 's/^([A-Za-z0-9_-]{1,64}):(room|own|council):[0-9]+$/\1/p' | sort -u | grep -c . || true
+}
+
 runner_up() {
   need_root
-  local url="${1:-}" code="${2:-}" named="${3:-}" img join from_home=0
-  [ "$#" -le 3 ] || die "usage: colloq-host runner up https://<home> <code> [IMAGE]"
+  local url="" code="" named="" img join from_home=0 classes=0 arg words=0 problems line
+  for arg in "$@"; do
+    case "$arg" in
+      --classes) classes=1 ;;
+      -*) die "usage: colloq-host runner up https://<home> <code> [IMAGE] [--classes]" ;;
+      *)
+        words=$((words + 1))
+        case "$words" in 1) url="$arg" ;; 2) code="$arg" ;; 3) named="$arg" ;; *) die "usage: colloq-host runner up https://<home> <code> [IMAGE] [--classes]" ;; esac ;;
+    esac
+  done
   [ -n "$url" ] && [ -n "$code" ] \
-    || die "usage: colloq-host runner up https://<home> <code> [IMAGE]   (the code comes from the home's owner: the panel, Resources, machines for submissions, or colloq-host runner-code there)"
+    || die "usage: colloq-host runner up https://<home> <code> [IMAGE] [--classes]   (the code comes from the home's owner: the panel, Resources → Machines → Connect a machine, or colloq-host runner-code there)"
   url="${url%/}"
   check_home "$url"
   check_code "$code"
@@ -1345,6 +1470,18 @@ runner_up() {
   if on_vast; then export COLLOQ_ON_VAST=1; fi
   freeze_host_updates
   ensure_docker
+  # A machine for classes is checked before anything is written, pulled or
+  # started (classes_problems), and every problem found is named at once.
+  if [ "$classes" = 1 ]; then
+    problems="$(classes_problems)"
+    if [ -n "$problems" ]; then
+      while IFS= read -r line; do printf '[colloq-host] ERROR: %s\n' "$line" >&2; done <<EOF
+$problems
+EOF
+      die "this machine cannot take classes (above), and nothing was pulled or started: fix what is said and run this again, or join it for submissions only with a code that takes no classes"
+    fi
+    say "this machine can take classes: Docker run by root with its iptables, cgroup v2, no Colloq server on this Docker, disk enough for the class folders"
+  fi
   # Said, not refused: the owner may be trying the agent out on a spare
   # instance. But a class here would find its cards shared out to submissions
   # and its memory counted for them (the header says why).
@@ -1447,7 +1584,7 @@ adopt_runner() {
   fi
   if [ -n "$problem" ]; then
     if [ "$how" = strict ]; then
-      die "$RUNNER_NAME was not started by colloq-host, and cannot be taken over: $problem. Nothing was changed; revoke it on the home (Resources, machines for submissions) and remove it (docker rm -f $RUNNER_NAME), or join again with colloq-host runner up"
+      die "$RUNNER_NAME was not started by colloq-host, and cannot be taken over: $problem. Nothing was changed; revoke it on the home (Resources → Machines) and remove it (docker rm -f $RUNNER_NAME), or join again with colloq-host runner up"
     fi
     warn "$RUNNER_NAME was not started by colloq-host, and is not taken over: $problem"
     return 0
@@ -1465,8 +1602,38 @@ adopt_runner() {
   say "$RUNNER_NAME was started without colloq-host: its settings are now in $RUNNER_ENV_FILE and its image ($img) in $RUNNER_IMAGE_FILE" >&2
 }
 
+# What the agent's status says of its classes, in a person's words: its
+# tunnel to the home, up or down with its round trip, and the class
+# containers it holds by role, as an agent of 0.25 and later reports them
+# (runner-agent/main.ts · status: `"tunnel":{"up":true,"rttMs":48}` or null
+# while its home asks for none, `"classes":{"room":1,"own":1,"council":0}`;
+# a tunnel given as the word "up" or "down" reads the same). Nothing for an
+# agent from before classes, nor for one with no tunnel and no class, which
+# is every machine that takes none.
+status_classes() {
+  local s="$1" tunnel up rtt counts room own council
+  tunnel="$(printf '%s' "$s" | sed -nE 's/.*"tunnel"[[:space:]]*:[[:space:]]*(\{[^}]*\}|"[a-z]+").*/\1/p' | head -1)"
+  if [ -n "$tunnel" ]; then
+    case "$tunnel" in
+      '"up"'|*'"up":true'*|*'"up": true'*|*'"state":"up"'*) up=up ;;
+      *) up=down ;;
+    esac
+    rtt="$(printf '%s' "$tunnel" | sed -nE 's/.*"rttMs"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -1)"
+    say "tunnel: $up${rtt:+ · RTT $rtt ms}"
+  fi
+  counts="$(printf '%s' "$s" | sed -nE 's/.*"classes"[[:space:]]*:[[:space:]]*(\{[^}]*\}).*/\1/p' | head -1)"
+  [ -n "$counts" ] || return 0
+  room="$(printf '%s' "$counts" | sed -nE 's/.*"room"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p')"
+  own="$(printf '%s' "$counts" | sed -nE 's/.*"own"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p')"
+  council="$(printf '%s' "$counts" | sed -nE 's/.*"council"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p')"
+  if [ -n "$tunnel" ] || [ "${room:-0}${own:-0}${council:-0}" != 000 ]; then
+    say "classes: room ${room:-0} · own ${own:-0} · council ${council:-0}"
+  fi
+}
+
 runner_status() {
   need_root
+  local line rc=0 network
   if ! docker container inspect "$RUNNER_NAME" >/dev/null 2>&1; then
     say "there is no $RUNNER_NAME on this machine: colloq-host runner up https://<home> <code>"
     exit 1
@@ -1476,7 +1643,23 @@ runner_status() {
     say "$RUNNER_NAME is not running ($(docker container inspect -f '{{.State.Status}}' "$RUNNER_NAME" 2>/dev/null || true)); why: colloq-host runner logs"
     exit 1
   fi
-  exec docker exec "$RUNNER_NAME" colloq-vast runner status
+  # The agent's line alone on stdout, as scripts read it; the words about it on stderr.
+  line="$(docker exec "$RUNNER_NAME" colloq-vast runner status)" || rc=$?
+  [ -z "$line" ] || printf '%s\n' "$line"
+  status_classes "$line" >&2
+  # An agent that can hold classes (one that reports them, 0.25 and later)
+  # in a container off the host's network holds none (D19): a colloq-host
+  # from before 0.25 started it, or the panel's command of then. That is what
+  # the first update of a machine to 0.25 leaves, since the colloq-host of
+  # before runs it and installs this one only at its end; the next update,
+  # this colloq-host's, moves the agent (its fingerprint counts the network).
+  network="$(docker container inspect -f '{{.HostConfig.NetworkMode}}' "$RUNNER_NAME" 2>/dev/null || true)"
+  case "$line" in
+    *'"classes"'*)
+      [ -z "$network" ] || [ "$network" = host ] \
+        || warn "$RUNNER_NAME runs on Docker's network ($network), not the host's, as a colloq-host from before 0.25 starts it: it takes submissions, and no classes until colloq-host runner update moves it onto the host's network" ;;
+  esac
+  exit "$rc"
 }
 
 # The update a class does not notice: the agent takes no new leases, finishes
@@ -1492,7 +1675,26 @@ runner_status() {
 # kills it (run_runner says why so long). So the stop that ends a drain hands
 # back nothing, and one that ends a drain cut short hands back only what was
 # still running.
-stop_runner() { docker stop -t 90 "$RUNNER_NAME" >/dev/null 2>&1 || true; }
+#
+# AND A STOP HERE IS A RESTART: an update, a replacement for new settings.
+# The marker in the tree (<state>/restart.marker) makes the sync the agent
+# says goodbye with say `bye: restart` instead of `stopping`, and its home
+# then holds off moving the classes here to the server for two minutes,
+# while the new agent comes up and adopts their containers with their
+# variables (remote-classes.md §11.4, D23). Written only for an agent that
+# runs (a stopped one says nothing more), and removed after the stop whether
+# it was read or not: one left behind would make the next stop that is an
+# end, a leave's or a `docker stop` by hand, read as a restart and hold the
+# classes' move for nothing.
+stop_runner() {
+  local marker="$RUNNER_STATE/restart.marker"
+  if [ "$(docker container inspect -f '{{.State.Running}}' "$RUNNER_NAME" 2>/dev/null || true)" = true ]; then
+    { printf 'colloq-host %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$marker"; } 2>/dev/null \
+      || warn "could not write $marker: the agent says goodbye as stopping, and its home moves any classes here to the server if the new agent is not back within a minute"
+  fi
+  docker stop -t 90 "$RUNNER_NAME" >/dev/null 2>&1 || true
+  rm -f "$marker"
+}
 
 # Seconds as a person reads them: minutes from two of them on.
 span() { if [ "$1" -ge 120 ]; then printf '%s min' "$(( $1 / 60 ))"; else printf '%s s' "$1"; fi; }
@@ -1532,9 +1734,48 @@ runner_inputs_ready() {
     || die "$RUNNER_NAME also mounts $ADOPT_EXTRA, which colloq-host does not give the agent, and it would be gone with the old container; nothing was changed. Recreate it without, or join again with colloq-host runner up"
 }
 
+# The tunnel protocol an image's agent speaks (shared/remote-tunnel.ts ·
+# TUNNEL_PROTOCOL), as its entry point states it, read the way its runner
+# build is (runner_build_of): a throwaway container that runs nothing of the
+# image's own. Nothing for an image from before classes on machines (0.24.0
+# and older), whose agent dials no tunnel at all.
+tunnel_protocol_of() {
+  docker run --rm --network none --entrypoint cat "$1" /usr/local/bin/colloq-vast 2>/dev/null \
+    | sed -nE 's/^TUNNEL_PROTOCOL=([0-9]+)$/\1/p' | head -1 || true
+}
+
+# THE TUNNEL MOVES ONLY WITH ITS HOME. While classes run here, their kernels
+# are reached through the agent's tunnel, which the home takes in its own
+# protocol only (another is refused with 4426). The agent running now speaks
+# the home's, or its classes would have moved off already; a new one of
+# another protocol finds no tunnel, and its classes move to the server two
+# minutes later, their variables lost. So an update that changes the
+# protocol under live classes is refused before anything is drained or
+# stopped, unless the new image is the very release the home runs: that is
+# the update the documented order makes (the home first, then its machines),
+# and the one that brings the agent back to its home's protocol. Another
+# runner build in the same protocol is no such update: the home takes the
+# tunnel of a machine outdated or not, for the placements it holds, and
+# holds back only new ones from it (kernel/remote/tunnel.ts, remote-classes.md
+# §15), so an update to another release keeps its classes running.
+tunnel_follows_home() {
+  local img="$1" cur="$2" classes="$3" home="$4" since="$5" new old release url
+  new="$(tunnel_protocol_of "$img")"
+  old="$(tunnel_protocol_of "$cur")"
+  [ "$new" != "$old" ] || return 0
+  release="$(image_label "$img" org.opencontainers.image.version)"
+  if [ -z "$home" ]; then
+    url="$(runner_home)"
+    [ -z "$url" ] || home="$(home_version "$url")"
+    [ -n "$home" ] || home="$(agent_home_version "$since")"
+  fi
+  if [ -n "$release" ] && [ "$release" = "$home" ]; then return 0; fi
+  die "this machine holds $classes class(es), reached through its agent's tunnel in protocol ${old:-none}, its home's, and the agent of $img speaks ${new:-none}: its home would refuse that tunnel, and the classes would move to the server, their variables lost. Nothing was changed: update to the release the home runs (${home:-not known here}: colloq-host runner update), or once the classes are over"
+}
+
 runner_update() {
   need_root
-  local want="" now=0 arg cur img version url new_id cur_id sum since
+  local want="" now=0 arg cur img version="" url="" new_id cur_id sum since classes
   # The agent's word on its home's version counts only from a sync made from
   # now on (agent_home_version says why).
   since="$(date +%s)000"
@@ -1587,6 +1828,11 @@ runner_update() {
       || die "the home runs $version, a release from before machines for submissions: $img has no runner mode. Nothing was changed: $RUNNER_NAME keeps running $cur, idle until the home runs a release with them again (then colloq-host runner update, should that release's runner build be another)"
     die "$img has no machines for submissions in it (no runner mode: a release from before them, or not a colloq-server image); nothing was changed: $RUNNER_NAME keeps running $cur"
   fi
+  # Classes keep running across the update: the new agent adopts their
+  # containers, and its home holds them for the restart (stop_runner). Only
+  # an agent its home would not let back onto the tunnel is refused.
+  classes="$(class_count)"
+  [ "$classes" = 0 ] || tunnel_follows_home "$img" "$cur_id" "$classes" "$version" "$since"
   if [ "$(docker container inspect -f '{{.State.Running}}' "$RUNNER_NAME" 2>/dev/null || true)" = true ]; then
     if [ "$now" = 1 ]; then
       say "stopping $RUNNER_NAME now (--now): the runs it holds go back to the home's queue and run again, spending no participant's attempts"
@@ -1660,14 +1906,38 @@ leave_running_agent() {
   return "$rc"
 }
 
+# The exit of a leave refused for the classes on the machine, apart from
+# every other refusal's 1: scripts/vast-runner.sh (runners-down) reads it as
+# "ask again with --force", its operator having said already that the
+# machines go.
+LEAVE_HOLDS_CLASSES=3
+
 runner_leave() {
   need_root
-  local join img drain bound silent rc=0
+  local join img drain bound silent rc=0 force=0 arg classes
+  for arg in "$@"; do
+    case "$arg" in
+      --force) force=1 ;;
+      *) die "usage: colloq-host runner leave [--force]" ;;
+    esac
+  done
   if ! docker container inspect "$RUNNER_NAME" >/dev/null 2>&1; then
     say "there is no $RUNNER_NAME on this machine: nothing to leave"
     return 0
   fi
   adopt_runner strict
+  # Classes here move off this machine on a leave, at once and without
+  # their variables (remote-classes.md §11.5): each comes back at its next
+  # run, on the home's server or another machine. Asked first, before anything
+  # of the agent's is changed, and --force says yes. Asked of the agent's
+  # own tree, which a machine joined with a plain docker run names only once
+  # it is taken over (adopt_runner: the classes are counted by its label).
+  classes="$(class_count)"
+  if [ "$classes" != 0 ] && [ "$force" = 0 ]; then
+    printf '[colloq-host] ERROR: %s\n' "this machine holds $classes class(es) of its home: leaving moves them off it, and their variables are lost (colloq-host runner leave --force leaves all the same)" >&2
+    exit "$LEAVE_HOLDS_CLASSES"
+  fi
+  [ "$classes" = 0 ] || say "--force: the $classes class(es) on this machine move off it as it leaves, and their variables are lost"
   join="$(env_value COLLOQ_RUNNER_JOIN)"
   # Gone for good once it has revoked itself: the agent stops when the home
   # answers 401, and Docker's unless-stopped would start it again, into a
@@ -1689,8 +1959,8 @@ runner_leave() {
       docker update --restart=unless-stopped "$RUNNER_NAME" >/dev/null 2>&1 || true
       case "$rc" in
         125) die "$RUNNER_NAME has heard nothing from its home ($(runner_home)) for $(span "$silent") while leaving, and a leave ends with the home's answer. It keeps running and leaving: it takes no new work, and revokes itself as soon as the home answers. If the home is gone for good, revoke the machine there if you can, and remove it here (docker rm -f $RUNNER_NAME) or destroy it" ;;
-        124) die "$RUNNER_NAME has not left in $(span "$bound"): it still finishes its runs, or waits for its home (its words are above). It keeps running and leaving, taking no new work; retry later, or revoke it on the home (Resources, machines for submissions)" ;;
-        *) die "$RUNNER_NAME did not leave (its words are above) and keeps running; retry, or revoke it on the home (Resources, machines for submissions)" ;;
+        124) die "$RUNNER_NAME has not left in $(span "$bound"): it still finishes its runs, or waits for its home (its words are above). It keeps running and leaving, taking no new work; retry later, or revoke it on the home (Resources → Machines)" ;;
+        *) die "$RUNNER_NAME did not leave (its words are above) and keeps running; retry, or revoke it on the home (Resources → Machines)" ;;
       esac
     fi
   else
@@ -1702,13 +1972,14 @@ runner_leave() {
     # its own container has it; COLLOQ_RUNNER_CONTAINER empty, since this
     # one-off is not the machine's container, and an agent with none of its
     # own docker-updates nothing by a name (§13c note 20). The machine's own
-    # restart policy was turned off above.
+    # restart policy was turned off above. On the host's network, as the
+    # agent was (run_runner): its way to the home is the host's.
     runner_mounts
-    docker run --rm "${RUNNER_MOUNTS[@]}" \
+    docker run --rm --network host "${RUNNER_MOUNTS[@]}" \
       --env-file "$ENV_FILE" -e "COLLOQ_RUNNER_STATE=$RUNNER_STATE" \
       -e "COLLOQ_RUNNER_IMAGE=$img" -e COLLOQ_RUNNER_CONTAINER= \
       "$img" runner leave \
-      || die "$RUNNER_NAME did not leave (its words are above) and stays stopped; revoke it on the home (Resources, machines for submissions), or start it and retry"
+      || die "$RUNNER_NAME did not leave (its words are above) and stays stopped; revoke it on the home (Resources → Machines), or start it and retry"
   fi
   docker rm -f "$RUNNER_NAME" >/dev/null 2>&1 || true
   retire_identity
@@ -1736,11 +2007,13 @@ runner_code_usage() {
   cat <<'USAGE'
 colloq-host runner-code: a code that lets machines run this instance's submissions
 
-  colloq-host runner-code [--machines N] [--hours H] [--trusted] [--slots S] [--prefix NAME] [--url URL]
+  colloq-host runner-code [--machines N] [--hours H] [--trusted | --classes] [--slots S] [--prefix NAME] [--url URL]
 
   --machines N   how many machines may join with it (1 to 100; 1)
   --hours H      how long it stays valid (1 to 24; 24)
   --trusted      the machines may receive the hidden test (off: a sealed competition waits for a trusted one)
+  --classes      the machines take classes too: they see the students' code, files and personal
+                 notebooks, and are never given the hidden test (so not with --trusted)
   --slots S      at most S places on each machine (default: what each machine offers)
   --prefix NAME  how the machines are named on the home
   --url URL      the address machines reach this instance at (default: PUBLIC_URL)
@@ -1759,7 +2032,7 @@ expiry_text() {
 
 runner_code() {
   need_root
-  local machines=1 hours=24 trusted=0 slots="" prefix="" url="" out line code expires granted trust img shown version suffix
+  local machines=1 hours=24 trusted=0 classes=0 slots="" prefix="" url="" out line code expires granted trust takes what up_flag img shown version suffix
   local args=() prefix_re='^[A-Za-z0-9][A-Za-z0-9-]{0,31}$' official_re='^ghcr\.io/colloq-edu/colloq-(vast|server)(:[^/@]+|@sha256:[a-f0-9]{64})$'
   local release_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' published_re='^ghcr\.io/colloq-edu/colloq-server:[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
   local local_only_re='^((sha256:)?[a-f0-9]{12,64}|colloq-previous:[^/@]+)$'
@@ -1776,10 +2049,14 @@ runner_code() {
         esac
         shift 2 ;;
       --trusted) trusted=1; shift ;;
+      --classes) classes=1; shift ;;
       -h|--help) runner_code_usage; return 0 ;;
       *) die "unknown option $1 (colloq-host runner-code --help)" ;;
     esac
   done
+  # No hidden test beside classes (remote-classes.md D3): the minter refuses the pair too.
+  [ "$trusted" = 0 ] || [ "$classes" = 0 ] \
+    || die "--classes and --trusted do not go together: a machine that takes classes is never given the hidden test"
   in_range "$machines" 1 100 || die "--machines is how many machines may join with the code: 1 to 100"
   in_range "$hours" 1 24 || die "--hours is how long the code stays valid: 1 to 24 (a code is a door, and a door left open is found)"
   [ -z "$slots" ] || in_range "$slots" 1 64 || die "--slots caps the places on each machine: 1 to 64"
@@ -1796,6 +2073,7 @@ runner_code() {
     || die "$NAME is not running here: the code is minted by the instance itself (colloq-host start)"
   args=(--machines "$machines" --hours "$hours")
   [ "$trusted" = 0 ] || args+=(--trusted)
+  [ "$classes" = 0 ] || args+=(--classes)
   [ -z "$slots" ] || args+=(--slots "$slots")
   [ -z "$prefix" ] || args+=(--prefix "$prefix")
   out="$(docker exec "$NAME" colloq-vast runner-code "${args[@]}")" || die "$NAME did not mint a code (its words are above)"
@@ -1804,8 +2082,9 @@ runner_code() {
   expires="$(printf '%s' "$line" | sed -nE 's/.*"expiresAt"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p')"
   granted="$(printf '%s' "$line" | sed -nE 's/.*"machines"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p')"
   trust="$(printf '%s' "$line" | sed -nE 's/.*"trusted"[[:space:]]*:[[:space:]]*(true|false).*/\1/p')"
+  takes="$(printf '%s' "$line" | sed -nE 's/.*"classes"[[:space:]]*:[[:space:]]*(true|false).*/\1/p')"
   [ -n "$code" ] && [ -n "$expires" ] \
-    || die "$NAME answered without a code this script can read; mint one in the panel (Resources, machines for submissions)"
+    || die "$NAME answered without a code this script can read; mint one in the panel (Resources → Machines → Connect a machine)"
   # The machines run the very build the instance runs: its own image, under
   # the name that says what it is off Vast when it is the published one (one
   # digest, two names), and by the release it was built as, not a moving tag.
@@ -1831,15 +2110,29 @@ runner_code() {
       shown="ghcr.io/colloq-edu/colloq-server:$version"
     fi
   fi
-  say "a code for ${granted:-$machines} machine(s), valid until $(expiry_text "$expires")$( [ "$trust" = true ] && printf '; trusted with the hidden test' || printf '; not given the hidden test')${slots:+; at most $slots places each}"
-  say "it is shown once, below; it lets those machines take this instance's submissions: send it to whoever sets them up, never to a class chat"
+  if [ "$takes" = true ]; then what='; takes classes, and is never given the hidden test'
+  elif [ "$trust" = true ]; then what='; trusted with the hidden test'
+  else what='; not given the hidden test'
+  fi
+  say "a code for ${granted:-$machines} machine(s), valid until $(expiry_text "$expires")$what${slots:+; at most $slots places each}"
+  if [ "$takes" = true ]; then
+    say "it is shown once, below; it lets those machines take this instance's submissions and its classes, whose code, files and personal notebooks they see: send it to whoever sets them up, never to a class chat"
+  else
+    say "it is shown once, below; it lets those machines take this instance's submissions: send it to whoever sets them up, never to a class chat"
+  fi
+  # A machine for classes checks first, on a bare machine, that it can host them (runner_up · classes_problems).
+  up_flag=""
+  [ "$takes" != true ] || up_flag=" --classes"
   printf '\nDocker already installed (Linux amd64, Docker Engine 28+; GPU hosts also need nvidia-container-toolkit):\n\n'
   # --stop-timeout 90, as run_runner gives it: an image cannot set its own,
   # and with Docker's 10 s a stop or a reboot killed the agent before it had
   # handed its runs back, so they counted as losses after the container
-  # started. The panel's copy (competitions/remote/commands.ts) is this one,
-  # byte for byte (tests/remote-runner-commands.test.mts).
-  printf '  docker run -d --name colloq-runner --restart unless-stopped --stop-timeout 90 \\\n'
+  # started. --network host, as run_runner gives it too (D19): class kernels
+  # publish Jupyter on the host's loopback, where only an agent on the
+  # host's network reaches it. The panel's copy
+  # (competitions/remote/commands.ts) is this one, byte for byte
+  # (tests/remote-runner-commands.test.mts).
+  printf '  docker run -d --name colloq-runner --restart unless-stopped --network host --stop-timeout 90 \\\n'
   printf '    -v /var/run/docker.sock:/var/run/docker.sock \\\n'
   printf '    -v /var/lib/colloq-runner:/var/lib/colloq-runner \\\n'
   printf "    -e COLLOQ_RUNNER_JOIN='%s#%s' \\\\\n" "$url" "$code"
@@ -1849,11 +2142,11 @@ runner_code() {
   printf '  docker run --rm -v /usr/local/sbin:/host %s install-host /host\n' "$shown"
   if [[ "$shown" =~ $published_re ]]; then
     # The very image `runner up` takes by itself: this release, published.
-    printf '  colloq-host runner up %s %s\n' "$url" "$code"
+    printf '  colloq-host runner up %s %s%s\n' "$url" "$code" "$up_flag"
     printf '\nVast VMs, from a checkout of the repository:\n\n'
     printf '  make vast-runner COUNT=%s CODE=%s URL=%s\n\n' "${granted:-$machines}" "$code" "$url"
   else
-    printf '  colloq-host runner up %s %s %s\n\n' "$url" "$code" "$shown"
+    printf '  colloq-host runner up %s %s %s%s\n\n' "$url" "$code" "$shown" "$up_flag"
     say "make vast-runner is left out: its machines take the published colloq-server of this release, and this instance runs $img"
   fi
 }
@@ -2226,9 +2519,9 @@ colloq-host: run Colloq (the colloq-vast / colloq-server image) on this machine'
   colloq-host bundle FILE [IMAGE]    on a connected machine: images for an offline server, in one file
   colloq-host load FILE              on the offline server: load that file; up then needs no network
 
-  colloq-host runner up URL CODE [IMAGE]   this machine runs another instance's submissions
-  colloq-host runner update [VERSION|IMAGE] [--now] | status | logs | leave   (colloq-host runner help)
-  colloq-host runner-code [--machines N] [--hours H] [--trusted] [--slots S]
+  colloq-host runner up URL CODE [IMAGE] [--classes]   this machine runs another instance's submissions
+  colloq-host runner update [VERSION|IMAGE] [--now] | status | logs | leave [--force]   (colloq-host runner help)
+  colloq-host runner-code [--machines N] [--hours H] [--trusted | --classes] [--slots S]
                                      on an instance: a code for such machines, inside the commands that join them
 
 Settings: /etc/colloq/colloq.env (written by `up` from its environment); the image: /etc/colloq/image.

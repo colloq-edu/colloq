@@ -40,7 +40,9 @@ import { freeMark } from '@shared/marks'
 import { seldom, tally } from '../log.js'
 import { refusalReason } from '../ops/counters.js'
 import { ensureKernel, syncBookKernels, syncDangerGuard } from '../kernel/index.js'
-import { forgetResources, readCpuInput, readMemoryInput } from '../kernel/resources.js'
+import { forgetResources, ownNumberBounds, readCpuInput, readMemoryInput } from '../kernel/resources.js'
+import { classMachineBounds } from '../kernel/remote/placement.js'
+import { kernelBackend } from '../kernel/runtime-client.js'
 import { applyOwnLimits } from '../kernel/pool.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import { materialCount, publicationOf } from '../publish/store.js'
@@ -1003,14 +1005,19 @@ export function sessionRoutes(): Router {
      * not give is rejected in words — otherwise the container would simply
      * fail to come up in the middle of a class, and nothing would tie that to
      * the press.
+     *
+     * The machine is the one their slot computes on (remote-classes.md §10):
+     * this server, or for personal notebooks set to machines the biggest of
+     * those that take classes (kernel/resources.ts · ownNumberBounds).
      */
     const asked = incoming as Record<string, unknown>
+    const own = 'ownMemoryMb' in asked || 'ownCpus' in asked ? ownNumberBounds(sessionId, kernelBackend() === 'broker' ? null : classMachineBounds()) : null
     if ('ownMemoryMb' in asked && asked.ownMemoryMb !== null) {
-      const read = readMemoryInput(asked.ownMemoryMb)
+      const read = readMemoryInput(asked.ownMemoryMb, own!.memory)
       if (!read.ok) return res.status(400).json({ error: tr('server.rules.ownMemoryRefused') })
     }
     if ('ownCpus' in asked && asked.ownCpus !== null) {
-      const read = readCpuInput(asked.ownCpus)
+      const read = readCpuInput(asked.ownCpus, own!.cpus)
       if (!read.ok) return res.status(400).json({ error: tr('server.rules.ownCpusRefused') })
     }
     const rules = setRules(sessionId, readRules({ ...storedRules(sessionId), ...incoming }))

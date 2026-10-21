@@ -119,6 +119,7 @@ import {
   notesOf,
   setFinished,
   setNote,
+  sessionRowExists,
   storedRules,
 } from './db.js'
 import {
@@ -140,12 +141,17 @@ import {
   purgeCouncilRunsOf,
   councilQueuePosition,
   councilQueuePositions,
+  kernelMachineOf,
   kernelWorkOf,
+  MachineUnreachable,
+  moveKernelNow,
+  onKernelMachineChange,
   onKernelQueueChanged,
   queueIsOnly,
   requestCouncilRun,
   retimeCouncilRun,
   startedTheRunningCell,
+  warmClassKernels,
 } from './kernel/index.js'
 import {
   attemptFor,
@@ -196,12 +202,25 @@ import {
   makeDir,
   makeFile,
   movePath,
+  roomTree,
+  sameEntry,
   sessionBytes,
   statPath,
   treeDelta,
   type FileTree,
   type TreeResult,
 } from './workspace.js'
+import {
+  FilesStalled,
+  fetchFromMachine,
+  removeOnMachine,
+  filesPendingUnder,
+  filesSettled,
+  slotFilesBarrier,
+  slotOnMachine,
+  useFilesHooks,
+} from './kernel/remote/files.js'
+import { CLASS_BARRIER_STALL_MS } from '@shared/remote-kernels'
 import {
   MAX_DEPTH,
   MAX_PATH,
@@ -736,21 +755,10 @@ interface TreeRecord {
 
 const treeSent = new Map<string, TreeRecord>()
 
-/** The same contents, the same number next to the name — nothing to say. */
+/** The same contents, the same number next to the name, the same rows of a class folder on a machine — nothing to say. */
 function sameTree(before: readonly FileEntry[], after: readonly FileEntry[]): boolean {
   if (before.length !== after.length) return false
-  for (let i = 0; i < before.length; i++) {
-    const was = before[i]
-    const now = after[i]
-    if (
-      was.path !== now.path ||
-      was.name !== now.name ||
-      was.dir !== now.dir ||
-      was.size !== now.size ||
-      was.modifiedAt !== now.modifiedAt
-    )
-      return false
-  }
+  for (let i = 0; i < before.length; i++) if (!sameEntry(before[i], after[i])) return false
   return true
 }
 
@@ -786,7 +794,8 @@ function treeRecord(sessionId: string, ready?: FileTree, reuseMs = 0): TreeRecor
   if (ready) tree = ready
   else {
     try {
-      tree = listTree(sessionId)
+      // The room's own view: this server's disk, and a class folder on a machine's rows over it (workspace.ts · roomTree).
+      tree = roomTree(sessionId)
     } catch {
       return null
     }
@@ -1381,15 +1390,52 @@ onBookRulesChanged((sessionId) => broadcast(sessionId, { t: 'rules', rules: stor
  */
 onKernelQueueChanged((sessionId) => nudgeKernel(sessionId))
 
-// Registered once, at import: the kernel runtime has no idea who is listening.
-onWorkspaceChanged((sessionId) => {
+/** The room's folder changed past the tree's own verbs: a cell wrote to it, or a machine's kernel did and its files landed here. */
+function workspaceChanged(sessionId: string): void {
   // The notebook's file may have been removed bypassing the tree — `os.remove`
   // in a cell. A notebook without a file is a tab there is nothing to close
   // with and no reason to show.
   forgetMissingBooks(sessionId)
   forgetMissingBoard(sessionId)
   scheduleFiles(sessionId)
+}
+
+// Registered once, at import: the kernel runtime has no idea who is listening.
+onWorkspaceChanged(workspaceChanged)
+
+/*
+ * And the class folders on machines (kernel/remote/files.ts) reach the room
+ * through the same doors: files from a machine fire the same hooks as a
+ * cell's writes, its notes go to the room's kernel log — only into a room
+ * whose document is here already (a note would bring a closed room's back) —
+ * and a notebook file a machine's kernel touched is projected again.
+ */
+useFilesHooks({
+  changed: workspaceChanged,
+  note: (sessionId, text) => {
+    if (peekSessionDoc(sessionId)) kernelNote(sessionId, text)
+  },
+  isBook: isBookOfRoom,
+  reproject: (sessionId) => projectBooks(sessionId),
 })
+
+/**
+ * Whether a machine's change touches one of the room's notebook files
+ * (§8.4): asked of the room's document, brought back for it when it is not
+ * here — evicted for idleness while the class's kernels compute on a machine,
+ * or every room's right after a restart, while the copies' full reports are
+ * applied. A document not asked would read every notebook as a plain file,
+ * and a machine's `os.remove` would take its tab. Only for a notebook's name,
+ * and never for a deleted room (its document must not come back).
+ */
+function isBookOfRoom(sessionId: string, path: string): boolean {
+  if (kindOf(path) !== 'notebook') return false
+  if (!peekSessionDoc(sessionId)) {
+    if (!sessionRowExists(sessionId)) return false
+    getSessionDoc(sessionId)
+  }
+  return isBookFile(sessionId, path)
+}
 
 /**
  * Whom a control socket belongs to.
@@ -2450,6 +2496,21 @@ onCouncilOracle((sessionId, cellId, oracle) => {
 // down this channel the same way kernel status does.
 onTerminalPhase((sessionId, status) => broadcast(sessionId, { t: 'terminal', status }))
 
+/*
+ * Where the class's kernels compute and how their machines answer — to staff
+ * only, because the frame names the machine (kernel/index.ts ·
+ * kernelMachineOf). The room reads «на машине» and the link from the
+ * document; `note` is staff's sentence about what just happened.
+ */
+onKernelMachineChange((sessionId, role, note) => {
+  const room = rooms.get(sessionId)
+  if (!room || room.hosts.size === 0) return
+  const text = frameOf({ t: 'kernel:machine', role, machine: kernelMachineOf(sessionId, role), ...(note ? { note } : {}) })
+  if (text === null) return
+  const frame = Buffer.from(text, 'utf8')
+  for (const ws of room.hosts) sendFrame(ws, frame)
+})
+
 /* ----------------------------------------------------------------- doc */
 
 /**
@@ -3019,6 +3080,26 @@ function refusedPath(raw: unknown): string {
   return whySegmentRefused(last)
 }
 
+/** How long a move or a copy waits for files on their way from the class's machine before it goes on with what landed. */
+const MACHINE_SETTLE_MS = 10_000
+/** Frames that waited once: dispatched again, they go on whatever came meanwhile. */
+const settledOnce = new WeakSet<object>()
+
+/**
+ * Whether the frame waits for the class's machine first (remote-classes.md
+ * §8.7): a newer version of the path, or of something under it, is on its
+ * way here, and moving or copying what this server has now would copy the
+ * old content, or leave the newer one to land at the old place. The frame is
+ * dispatched again once the files settled (or MACHINE_SETTLE_MS passed), and
+ * then goes on with whatever landed; its rights are asked again then.
+ */
+function waitsForMachine(ws: WebSocket, sessionId: string, payload: TokenPayload, message: ControlClientMessage, path: string): boolean {
+  if (settledOnce.has(message) || !filesPendingUnder(sessionId, path)) return false
+  settledOnce.add(message)
+  void filesSettled(sessionId, MACHINE_SETTLE_MS).finally(() => dispatch(ws, sessionId, payload, message))
+  return true
+}
+
 /**
  * Everything that lies inside this path — including the path itself.
  *
@@ -3439,6 +3520,7 @@ function askKernel(
         found: result.found,
         ...(result.text === null ? {} : { text: result.text }),
         ...(result.reason === null ? {} : { reason: result.reason }),
+        ...(result.unreachable ? { unreachable: true as const } : {}),
       })
     })
     .catch(() => send(ws, empty))
@@ -3766,7 +3848,7 @@ export function dispatch(
       }).catch((err: unknown) => {
         send(ws, {
           t: 'error',
-          message: reason(err, tr("server.couldNotInterruptTheKernel.ef82bf")),
+          message: kernelRefusal(err, payload, tr("server.couldNotInterruptTheKernel.ef82bf")),
         })
       })
       return
@@ -3816,10 +3898,39 @@ export function dispatch(
         (err: unknown) => {
           send(ws, {
             t: 'error',
-            message: reason(err, tr("server.couldNotRestartTheKernel.fc63d0")),
+            message: kernelRefusal(err, payload, tr("server.couldNotRestartTheKernel.fc63d0")),
           })
         },
       )
+      return
+    }
+
+    /*
+     * «Перенести сейчас» (remote-classes.md §11.1, §15): staff move a kernel
+     * off its machine now rather than wait out the failover. Staff's alone:
+     * it costs the room its variables, and the machine's name it is about
+     * reaches staff only. A named notebook must be in the room, by the same
+     * rule as every frame that names one; without it, every slot of the class
+     * on a machine moves. The refusals are the placement module's words, to
+     * the person who pressed; the room hears of the move from the failover.
+     */
+    case 'kernel:move': {
+      if (payload.role !== 'host') {
+        refuse(ws, sessionId, payload, tr('server.onlyTheTeacherCanMoveTheKernel.9a2c10'))
+        return
+      }
+      const root = typeof message.root === 'string' && message.root.length > 0 ? message.root : null
+      if (root !== null && root !== CELLS_KEY && !bookList(getSessionDoc(sessionId).doc).some((book) => book.root === root)) {
+        send(ws, { t: 'error', message: NO_SUCH_BOOK() })
+        return
+      }
+      void moveKernelNow(sessionId, root, displayName(sessionId, payload.participantId))
+        .then((answer) => {
+          if ('refused' in answer) send(ws, { t: 'error', message: answer.refused })
+        })
+        .catch((err: unknown) => {
+          send(ws, { t: 'error', message: reason(err, tr('server.couldNotMoveTheKernel.9435d3')) })
+        })
       return
     }
 
@@ -4661,6 +4772,8 @@ export function dispatch(
       ) {
         return
       }
+      // A newer version on its way from the class's machine is copied, not the one it replaces (§8.7).
+      if (waitsForMachine(ws, sessionId, payload, message, wanted)) return
       /*
        * A room notebook is a document, and the file under it is a projection,
        * written a second and a half after the last edit (collab/books.ts ·
@@ -4794,6 +4907,8 @@ export function dispatch(
         send(ws, { t: 'error', message: tr("server.cannotBePlacedInsideItself.de928c", { p0: baseOf(from) }) })
         return
       }
+      // A newer version on its way from the class's machine lands first, and moves with the rest (§8.7).
+      if (waitsForMachine(ws, sessionId, payload, message, from)) return
       // A folder may have been renamed too — then everything in it moves.
       const inside = pathsInside(sessionId, from)
       // The unsaved tail goes to disk BEFORE the move: `movePath` moves what
@@ -4885,6 +5000,11 @@ export function dispatch(
       // because after it there is nothing left to ask the tree about.
       const inside = pathsInside(sessionId, wanted)
       if (!deleteFile(sessionId, wanted)) {
+        // A row only a machine of the class has («на машине»): it goes there, and its row once the machine has removed it (§8.5).
+        if (removeOnMachine(sessionId, wanted)) {
+          broadcastFiles(sessionId)
+          return
+        }
         send(ws, { t: 'error', message: tr("server.thisFileIsNoLongerInThe.b66e1e") })
         return
       }
@@ -4948,11 +5068,54 @@ export function dispatch(
        * could not see before the run.
        */
       const quoted = `'${wanted.replace(/'/g, `'\\''`)}'`
-      runCommand(
-        sessionId,
-        runner === 'python' ? `python -u ${quoted}` : `bash ${quoted}`,
-        sender(sessionId, payload.participantId),
-      )
+      const command = runner === 'python' ? `python -u ${quoted}` : `bash ${quoted}`
+      const by = sender(sessionId, payload.participantId)
+      /*
+       * And then to the machine, when the room's shell computes on one
+       * (remote-classes.md §8.2): the script and everything it opens lie in
+       * this server's folder, and the machine's copy has them only once the
+       * barrier says so — a file saved here a second ago is a push away. With
+       * nothing written since the last push it passes at once; a push that
+       * stops moving refuses the run in words, to the person who pressed. A
+       * room computing here runs at once, as it always did.
+       */
+      if (!slotOnMachine(sessionId, 'room')) {
+        runCommand(sessionId, command, by)
+        return
+      }
+      void slotFilesBarrier(sessionId, 'room')
+        .then(() => runCommand(sessionId, command, by))
+        .catch((err: unknown) => send(ws, { t: 'error', message: err instanceof FilesStalled ? err.words : reason(err, tr('server.theFilesDidNotReachTheMachine.20cf87', { seconds: Math.round(CLASS_BARRIER_STALL_MS / 1000) })) }))
+      return
+    }
+
+    /*
+     * «Привезти» (remote-classes.md §8.5): one file that stays on a machine
+     * of the class, brought here — over «Файл с машины — до» if it must,
+     * within the room's limit. Staff's alone: it spends the shared leg of the
+     * relay. The room learns of it from the tree when it lands; the person
+     * who pressed hears the answer itself (`files:fetched`): taken, here
+     * already, or refused in words — their panel lets the press go on it.
+     */
+    case 'files:fetch': {
+      const asked = typeof message.path === 'string' ? message.path : ''
+      if (payload.role !== 'host') {
+        refuse(ws, sessionId, payload, tr('server.onlyTheTeacherCanBringAFile.031ac7'))
+        send(ws, { t: 'files:fetched', path: asked, outcome: 'refused' })
+        return
+      }
+      const wanted = normalizePath(asked)
+      if (!wanted) {
+        send(ws, { t: 'files:fetched', path: asked, outcome: 'refused', message: refusedPath(message.path) })
+        return
+      }
+      const fetched = fetchFromMachine(sessionId, wanted)
+      if ('refused' in fetched) {
+        send(ws, { t: 'files:fetched', path: wanted, outcome: 'refused', message: fetched.refused })
+        return
+      }
+      send(ws, { t: 'files:fetched', path: wanted, outcome: 'brought' in fetched ? 'brought' : 'accepted' })
+      if ('ok' in fetched) broadcastFiles(sessionId)
       return
     }
 
@@ -6243,6 +6406,16 @@ function reason(err: unknown, fallback: string): string {
 }
 
 /**
+ * A refused restart or interrupt in the presser's words: staff read which
+ * machine does not answer, everyone else «нет связи с машиной» (the name
+ * reaches staff only, remote-classes.md §13.1).
+ */
+function kernelRefusal(err: unknown, payload: TokenPayload, fallback: string): string {
+  if (err instanceof MachineUnreachable && payload.role === 'host') return err.named
+  return reason(err, fallback)
+}
+
+/**
  * The ink of the page being shown — and one collection for everyone who came
  * in between two strokes.
  *
@@ -6285,6 +6458,8 @@ function inkFrame(sessionId: string, page: number): Buffer | null {
 export function handleControlSocket(ws: WebSocket, sessionId: string, payload: TokenPayload, credentials?: SocketCredentials): void {
   const authorized = authorizeSocket(ws, credentials)
   let room = rooms.get(sessionId)
+  // The first participant to open the room: what warms its machine slots up (see the end).
+  const first = !room
   if (!room) {
     room = {
       sockets: new Set<WebSocket>(),
@@ -6525,6 +6700,13 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
     ownKernels: true,
   })
   send(ws, { t: 'terminal', status: terminalPhase(sessionId) })
+  // Staff see which machine their class computes on; nobody else is told its name.
+  if (payload.role === 'host') {
+    for (const role of ['room', 'own', 'council'] as const) {
+      const machine = kernelMachineOf(sessionId, role)
+      if (machine) send(ws, { t: 'kernel:machine', role, machine })
+    }
+  }
   /*
    * The tree comes from the room's shared cache: after a server restart five
    * hundred tabs come here within two seconds, and a folder walk for each is
@@ -6549,4 +6731,12 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
    */
   const files = filesFrame(sessionId)
   if (files !== null) sendFrame(ws, files)
+  /*
+   * A class whose personal notebooks compute on a machine has their
+   * container started there when its first participant comes in, so that
+   * the first personal Run costs a round trip rather than a container start
+   * (remote-classes.md §6.8). Only on a machine: nothing starts on this
+   * server for opening a room (kernel/index.ts · warmClassKernels).
+   */
+  if (first) void warmClassKernels(sessionId)
 }

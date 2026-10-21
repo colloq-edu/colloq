@@ -6,9 +6,9 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { config } from '../config.js'
 import {
-  imageRevision, isRuntimeSessionId, parseRuntimeCatalog, parseRuntimeEnsureRequest,
+  checkRuntimeEndpoint, imageRevision, isRuntimeSessionId, parseRuntimeCatalog, parseRuntimeEnsureRequest,
   parseRuntimeResizeRequest, resolveRuntimeEnvironment, RUNTIME_MEMORY_MAX_MB, RUNTIME_MEMORY_MIN_MB,
-  RUNTIME_OWN_SUFFIX, RUNTIME_REVISION, parseRuntimeStartFailure, type RuntimeStartFailure,
+  RUNTIME_OWN_SUFFIX, RUNTIME_REVISION, RuntimeEndpointError, parseRuntimeStartFailure, type RuntimeEndpointRefusal, type RuntimeStartFailure,
   type RuntimeCatalog, type RuntimeEndpoint, type RuntimeHealth, type RuntimeKernelRole, type RuntimeResizeRequest, type RuntimeResizeResult, type RuntimeRoom,
 } from '@shared/runtime'
 
@@ -88,6 +88,12 @@ function competitionStatus(value: unknown, expected?: string): CompetitionJobSta
  */
 function roomRoute(sessionId: string, role: RuntimeKernelRole): string {
   return `/v1/rooms/${encodeURIComponent(sessionId)}${role === 'own' ? RUNTIME_OWN_SUFFIX : ''}`
+}
+/** What ensure says for each echo checkRuntimeEndpoint refuses; a gen, which the broker never echoes, reads as an endpoint that is not this room's. */
+function endpointRefused(refusal: RuntimeEndpointRefusal): RuntimeRequestError {
+  if (refusal === 'revision') return new RuntimeRequestError(tr("server.kernelRuntimeReturnedADifferentEnvironmentRevision.8f728c"))
+  if (refusal === 'url') return new RuntimeRequestError(tr("server.invalidJupyterEndpointUrl.edef18"))
+  return new RuntimeRequestError(tr("server.invalidKernelRuntimeEndpointOrInstanceIdentity.a63d8b"))
 }
 function competitionCollection(value: unknown): CompetitionJobCollection {
   try { return parseCompetitionJobCollection(value) }
@@ -184,17 +190,9 @@ export class RuntimeClient {
       ...(memoryMb != null ? {memoryMb} : {}),
     })
     const value = object(await this.request('POST',roomRoute(sessionId,role),body,180000))
-    if (typeof value.url !== 'string' || typeof value.token !== 'string' || value.token.length < 16 ||
-      /[\r\n]/.test(value.token) || typeof value.instanceId !== 'string' || !value.instanceId ||
-      value.environment !== environment || typeof value.revision !== 'string' || !RUNTIME_REVISION.test(value.revision)) {
-      throw new RuntimeRequestError(tr("server.invalidKernelRuntimeEndpointOrInstanceIdentity.a63d8b"))
-    }
-    if (revision && value.revision !== revision) throw new RuntimeRequestError(tr("server.kernelRuntimeReturnedADifferentEnvironmentRevision.8f728c"))
-    let target: URL
-    try { target = new URL(value.url) } catch { throw new RuntimeRequestError(tr("server.invalidJupyterEndpointUrl.edef18")) }
-    if (!['http:','https:'].includes(target.protocol) || target.username || target.password || target.search || target.hash ||
-      !['','/'].includes(target.pathname)) throw new RuntimeRequestError(tr("server.invalidJupyterEndpointUrl.edef18"))
-    return {url:value.url, token:value.token, instanceId:value.instanceId,environment,revision:value.revision}
+    // The echo check a machine placement makes as well (shared/runtime.ts): the broker has no gens.
+    try { return checkRuntimeEndpoint(value,{environment,...(revision ? {revision} : {})}) }
+    catch (error) { throw error instanceof RuntimeEndpointError ? endpointRefused(error.refusal) : error }
   }
   /**
    * Memory and CPUs for a live room, without a new Pod and without losing its

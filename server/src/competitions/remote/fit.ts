@@ -233,22 +233,26 @@ export interface FitMachine {
   cards: boolean
   /** What is left now (the take), or all it has (the wait reasons). */
   room: { memoryMb: number; cpus: number; gpuShares: number; diskMb: number }
+  /** Classes are beside it (heard.ts · classesBeside): it takes no hidden test, whatever its trust (D3). Absent — none. */
+  classes?: boolean
 }
 
 /**
  * Why this machine cannot run the row, in the order a machine gets nearer
  * to running it: `card` — it needs a share of a card and none is left (or
  * a GPU kernel, and the machine has no card at all); `trusted` — it reads
- * the hidden test and the machine is not trusted (decision 1); `room` — its
- * memory and cushion, its CPUs or its disk are more than the machine has;
- * `image` — its revision is not pulled and verified there; `data` — its open
- * data, or its hidden test, is not complete there. `null` — it can.
+ * the hidden test and the machine is not trusted (decision 1), or classes
+ * are beside it (D3); `room` — its memory and cushion, its CPUs or its disk
+ * are more than the machine has; `image` — its revision is not pulled and
+ * verified there; `data` — its open data, or its hidden test, is not
+ * complete there. `null` — it can.
  */
 export type MachineRefusal = 'card' | 'trusted' | 'room' | 'image' | 'data'
 
 export function machineFit(needs: RowNeeds, machine: FitMachine): MachineRefusal | null {
   if ((needs.gpu && machine.room.gpuShares < 1) || (needs.gpuImage && !machine.cards)) return 'card'
-  if (needs.hasSealed && !machine.trusted) return 'trusted'
+  // The hidden test never lies beside a class (D3): the second lock, after the store's, which never lets trust and classes meet.
+  if (needs.hasSealed && (!machine.trusted || machine.classes === true)) return 'trusted'
   if (needs.claim.memoryMb > machine.room.memoryMb || needs.claim.cpus > machine.room.cpus || machine.room.diskMb < REMOTE_ATTEMPT_DISK_MB) return 'room'
   if (!machine.ready.revisions.has(needs.revision.id)) return 'image'
   if (!needs.open || !machine.ready.data.has(needs.open.manifest)) return 'data'

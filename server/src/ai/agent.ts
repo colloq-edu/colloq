@@ -119,6 +119,7 @@ import {
   typedRunningCommand,
 } from '../kernel/terminal.js'
 import { cancelRun, requestRun } from '../kernel/index.js'
+import { FilesStalled, filesSettled, slotFilesBarrier, slotOnMachine } from '../kernel/remote/files.js'
 import { getOracleSettings } from '../admin/settings.js'
 import { noteTokens } from '../admin/usage.js'
 import { completeWithTools, type ChatTurn, type ToolSpec } from './provider.js'
@@ -135,6 +136,8 @@ const WENT_WRONG = () => tr("server.private.wentWrong")
 
 /** How long to wait for one run. Longer is not "slow" but "hung". */
 const RUN_TIMEOUT_MS = 90_000
+/** How long a script's report waits for what it wrote on the class's machine to come here (§8.7): a step, not a class's end. */
+const MOVED_SETTLE_MS = 15_000
 
 /**
  * How much of a file's text we give the model at a time — and why it is not
@@ -1242,11 +1245,28 @@ async function runTool(
     }
     const quoted = `'${wanted.replace(/'/g, `'\\''`)}'`
     const command = `${runner === 'python' ? 'python -u' : 'bash'} ${quoted}; echo "[${tr(EXIT_CODE)} $?]"`
+    /*
+     * And to the machine, when the room's shell computes on one
+     * (remote-classes.md §8.2): what was just flushed lies in this server's
+     * folder, and the script reads the machine's copy of it. A push that stops
+     * moving is the run's refusal, said like any other.
+     */
+    const onMachine = slotOnMachine(hands.sessionId, 'room')
+    if (onMachine) {
+      try {
+        await slotFilesBarrier(hands.sessionId, 'room')
+      } catch (err) {
+        const words = err instanceof FilesStalled ? err.words : reason(err)
+        return { step: note(words, wanted), said: words, failed: true }
+      }
+    }
     // Snapshot of the tree BEFORE the run: the script edits the disk past the
     // tools, and that can only be named by comparing. See `sayMoved`.
     const treeWas = treePrint(hands.sessionId)
     const result = await runInRoom(hands, command, signal)
     const shown = tail(result.output)
+    // On a machine the script wrote the machine's copy: its writes are named once they came here (§8.7).
+    if (onMachine) await filesSettled(hands.sessionId, MOVED_SETTLE_MS)
     const moved = movedFiles(hands.sessionId, treeWas)
     return {
       step: {

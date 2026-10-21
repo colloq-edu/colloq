@@ -117,6 +117,42 @@ export interface FileEntry {
   dir: boolean
   size: number
   modifiedAt: number
+  /*
+   * What a class folder on a machine adds to a row («занятия на машинах»,
+   * docs/architecture/remote-classes.md §8.5, §8.7, Paper 18 · Z6). None of
+   * these is ever on a row of a room whose kernels all compute here, so
+   * everything that reads the tree as it was keeps reading it the same.
+   */
+  /**
+   * The file exists only on the machine: over «Файл с машины — до» (`size`),
+   * over the room's limit (`room`), past the walk's ceiling (`count`),
+   * inside a package tree (`package`), or refused on its way here by the
+   * proxy in front of this server (`proxy`). Nothing of it is on this
+   * server's disk: it is fetched with «Привезти» (`files:fetch`), not
+   * downloaded.
+   */
+  onMachine?: { bytes: number; why: 'size' | 'room' | 'count' | 'package' | 'proxy' }
+  /** A newer version is on its way from the machine: until it lands, the file serves the one this server has. */
+  pending?: true
+  /**
+   * Another version of this file, one this server has, stays on the machine:
+   * the kernel's rewrite over «Файл с машины — до» (`size`) or the room's
+   * limit (`room`), or one the proxy in front of this server refused
+   * (`proxy`). The row is this server's file as before; «Привезти»
+   * (`files:fetch`) brings the machine's, replacing it.
+   */
+  newer?: { bytes: number; why: 'size' | 'room' | 'proxy' }
+  /** A conflict copy, «data (с машины 14-32).csv»: the machine's version of `of`, kept at `at` when this server's won. */
+  conflict?: { of: string; at: number }
+  /**
+   * A package tree on the machine (`pip install -t .`), collapsed into this
+   * one row: `bytes` and `count` its files together. Its `path` is the
+   * folder the packages went to, with `.packages` after it (`.packages` at
+   * the top), a name no file of the room can have, and `size` is `bytes`.
+   */
+  kind?: 'packages'
+  bytes?: number
+  count?: number
 }
 
 /**
@@ -353,6 +389,14 @@ export type ControlClientMessage =
    * tabs opened before there were several kernels are read.
    */
   | { t: 'restart'; book?: string }
+  /**
+   * «Перенести сейчас»: move a kernel off its machine now instead of waiting
+   * out the failover (remote-classes.md §11.1, §15). Staff only. `root` names
+   * the notebook whose slot moves (the class notebooks', or the personal
+   * notebooks' for a personal one); without it, every slot of the class that
+   * is on a machine. The variables of what moves are lost, as at a failover.
+   */
+  | { t: 'kernel:move'; root?: string }
   | { t: 'clearOutputs'; cellId?: string; book?: string }
   /**
    * Put every code cell through black. A cell the formatter refuses — a magic,
@@ -641,6 +685,13 @@ export type ControlClientMessage =
    * "what is computing now".
    */
   | { t: 'file:run'; path: string }
+  /**
+   * «Привезти» (remote-classes.md §8.5): bring one file that stays on the
+   * class's machine to this server — over «Файл с машины — до» if it must,
+   * within the room's limit. Staff's alone: it spends the shared leg of the
+   * relay, and the room learns of the file when it lands, from the tree.
+   */
+  | { t: 'files:fetch'; path: string }
   /* --------------------------------------------------------- lecture */
   /**
    * Start a lecture: one page on the projector and one person at the console.
@@ -1026,6 +1077,25 @@ export type InspectMiss =
   | 'unknown'
   | 'refused'
 
+/**
+ * One kernel slot of a class on a machine, as staff see it (the
+ * `kernel:machine` frame): the chip «Ядро · vast-3 · 52 мс», the amber «Нет
+ * связи с машиной · 0:23» and the banner with «Перенести сейчас».
+ */
+export interface KernelMachine {
+  /** The machine's name, as the owner named it in «Машины». */
+  name: string
+  state: 'starting' | 'ready' | 'unreachable' | 'stopping'
+  /** Since when the slot is in this state, on the server's clock. */
+  since: number
+  /** The link's round trip in ms, an average of its pings; null before the first. */
+  rttMs: number | null
+  /** «Если машина пропала»: move it after the class's seconds, or wait for the machine. */
+  failover: 'auto' | 'wait'
+  /** When the kernel moves to this server if the machine stays silent; null when it will not by itself. */
+  failoverAt: number | null
+}
+
 export type TerminalStatus = 'closed' | 'starting' | 'idle' | 'busy' | 'dead'
 
 /**
@@ -1112,6 +1182,21 @@ export type ControlServerMessage =
   /** @param book whose news this is; without the field — the room's notebook. */
   | { t: 'kernel'; status: KernelStatus; book?: string }
   /**
+   * Where one of the class's kernel slots computes: on which machine, and how
+   * that machine answers (remote-classes.md §13.1). To STAFF only: the
+   * document says «на машине» to the whole room (notebook.ts ·
+   * KERNEL_WHERE_FIELD), and the machine's name goes no further than the
+   * people who run the class. Sent when staff connect and whenever the
+   * slot's placement changes.
+   *
+   * @param role the class notebooks' kernels ('room'), the personal
+   * notebooks' ('own'), or the council's pool
+   * @param machine null: the slot computes on this server
+   * @param note what just happened, in staff's words (they name the
+   * machine): the room's own notes say the same without the name
+   */
+  | { t: 'kernel:machine'; role: 'room' | 'own' | 'council'; machine: KernelMachine | null; note?: string }
+  /**
    * The room's tree. `truncated` — the list is incomplete: the walk hit the
    * ceiling, and some folders stayed unexpanded.
    *
@@ -1135,6 +1220,15 @@ export type ControlServerMessage =
    * there.
    */
   | ({ t: 'files:delta'; from: number; rev: number } & FilesDelta)
+  /**
+   * The answer to `files:fetch` («Привезти», remote-classes.md §8.5), to the
+   * tab that pressed and to it alone: `accepted` — the pull started, or was on
+   * its way already (the tree says `pending` until the file lands);
+   * `brought` — the file is here already, nothing to bring; `refused` —
+   * `message` says why, in the room's words. The panel lets the press go on
+   * it, rather than on a timer.
+   */
+  | { t: 'files:fetched'; path: string; outcome: 'accepted' | 'brought' | 'refused'; message?: string }
   /*
    * The room's rules changed. They can be edited after a seminar is made, and
    * the server reads them fresh on every request — so a room told nothing
@@ -1541,6 +1635,14 @@ export type ControlServerMessage =
       reason?: InspectMiss
       /** The answer to `brief`: the value's type and size. See `BriefValue`. */
       brief?: BriefValue
+      /**
+       * The notebook's kernel is on a machine that does not answer right now
+       * (remote-classes.md §5.6): the hover says the machine does not answer.
+       * `reason` is then 'busy', what a tab that does not know this field
+       * acts on correctly: it asks again in a moment, and the help comes once
+       * the link is back.
+       */
+      unreachable?: true
     }
   /**
    * The answer to `define`: where to go — or why there is nowhere.

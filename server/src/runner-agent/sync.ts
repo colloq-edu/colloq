@@ -46,6 +46,24 @@
  * lease cannot be written down, are declined at once and never held. A disk
  * that refuses the identity, a lease or an outcome is said as a `disk` problem
  * and lived with; a restart would only meet the same disk.
+ *
+ * CLASSES RIDE THE SAME SYNC, AND ONLY WHEN HOME SPEAKS OF THEM
+ * (docs/architecture/remote-classes.md §7, §15). A reply's `kernels` block is
+ * the whole set of class placements home wants here, which the kernel host
+ * reconciles (kernels.ts) before the same reply's offers are taken: classes
+ * go first, never by preemption (§6.4). The sync carries a `kernels` block
+ * only after a reply that carried one, so a home without classes (0.24) never
+ * meets a key its parser refuses, and a home that refuses it after all (one
+ * rolled back since its last reply) gets the next sync without it at once;
+ * the first sync of a life therefore carries none, and with class containers
+ * adopted it is held for no time, so home's block comes back at once. Class containers outlive the agent: SIGTERM
+ * leaves them running, and the stop's last sync says why it is the last
+ * (`bye`: `restart` when `colloq-host runner update` left its marker,
+ * `stopping` otherwise, `leaving` on a leave). A revocation, a leave and a
+ * move to another home remove them with their folders. The class folders'
+ * copies ride the same block (room-files.ts, §8): home's pushes and pulls in
+ * the reply, the ack in every held placement's `files` and the kernels'
+ * writes in `reports`, each said once the sync that carried it was answered.
  */
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
@@ -84,7 +102,10 @@ import {
   type RemoteRunnerState,
   type RemoteSyncReply,
   type RemoteSyncRequest,
+  type RemoteWantRevision,
 } from '@shared/remote-runner'
+import { MACHINE_PACE_MBPS, parseRemoteKernelsRequest, type RemoteBye, type RemoteKernelsReply, type RemoteKernelsRequest } from '@shared/remote-kernels'
+import { tunnelUrl } from '@shared/remote-tunnel'
 import { DockerCompetitionRunner, RUN_LABEL } from '../competitions/docker-runner.js'
 import { competitionsDir, dropAttempt, removeSubmission, attemptPath } from '../competitions/storage.js'
 import type { Capacity, RunOutcome } from '../competitions/runner-port.js'
@@ -93,6 +114,8 @@ import { Cache, diskRefused, type Keep } from './cache.js'
 import { realDocker, type Docker } from './docker.js'
 import { brokenOutcome, NeighbourWindow, prepareRun, runPrepared, type Decline, type RunCard, type RunSeam } from './execute.js'
 import { CHECK_LABEL, CHECK_LABELS, INSTANCE_LABEL, Images, type SmokeCard } from './images.js'
+import { KernelHost, type KernelHostOptions } from './kernels.js'
+import { RoomFiles, homeUploader, type RoomFileTimings, type RoomUpload, type RoomUploadAnswer } from './room-files.js'
 import {
   cardReport,
   dockerInfo,
@@ -108,10 +131,12 @@ import {
   type ProbedCard,
 } from './machine.js'
 import {
+  clearRestartMarker,
   dropLease,
   joined,
   readIdentity,
   readLeases,
+  restartMarked,
   retired,
   retireIdentity,
   writeIdentity,
@@ -149,6 +174,12 @@ export const DISK_FLOOR_MB = 8 * 1024
 const STOP_MS = 75_000
 /** How long a left machine waits for `runner leave` to hear it before the process, and its container, go. */
 const LEAVE_ACK_MS = 10_000
+/**
+ * How long a leave waits for its classes' files to go home before it says
+ * `leaving` (settleForLeave): as long as home waits for a class's files before
+ * «Перенести сейчас» (kernel/remote/placement.ts · MOVE_SETTLE_MS).
+ */
+export const LEAVE_SETTLE_MS = 10_000
 /** Attempts settled lately, whose repeats in a late reply are not taken for new offers. */
 const SETTLED_KEEP = 512
 /** The stop's last sync, the one that says `draining` (finalSync): a home that does not answer within this must not eat the hand-backs' time. */
@@ -161,6 +192,35 @@ const IDENTITY_RETRY_MS = 30_000
 const DISK_FULL_KEEP_MS = 10 * 60_000
 /** The status's line for a machine whose build home does not take. */
 const OUTDATED = 'this machine\'s build is not its home\'s: it finishes what it holds and takes nothing new (colloq-host runner update)'
+
+/** What the agent asks of its end of the class tunnel (runner-agent/tunnel.ts · AgentTunnel, remote-classes.md §4.6). */
+export interface TunnelPort {
+  want(mode: RemoteKernelsReply['tunnel']): void
+  state(): { up: boolean; rttMs: number | null; since: number }
+  close(): Promise<void>
+}
+
+/** What the agent hands its end of the tunnel: where to dial, as whom, and the only ports a stream may reach (kernels.ts · resolve). */
+export interface TunnelOptions {
+  /** `wss://<home>/api/runners/v1/tunnel` (`ws://` for a home on plain HTTP, as make dev's). */
+  url: string
+  /** The Authorization header's whole value: `Bearer cr1.<runnerId>.<secret>`. */
+  authorization: string
+  build: string
+  resolve: (key: string, gen: number) => { port: number } | { refused: 'gone' | 'stale' | 'starting' }
+  /** The pace of the machine's lanes towards home, as the last reply's `rates` said it. */
+  paceMBps: () => number
+  log: (event: string, detail?: Record<string, unknown>) => void
+}
+
+export type TunnelFactory = (options: TunnelOptions) => TunnelPort | Promise<TunnelPort>
+
+/**
+ * The tunnel's own module, loaded the first time home asks for a tunnel: a
+ * machine that takes no class never loads its WebSocket client, and one whose
+ * tunnel cannot load says so in its log and goes on running submissions.
+ */
+const agentTunnel: TunnelFactory = async (options) => new (await import('./tunnel.js')).AgentTunnel(options)
 
 export interface AgentOptions {
   layout: StateLayout
@@ -192,6 +252,14 @@ export interface AgentOptions {
   holdMs?: { idle: number; busy: number }
   /** Tests: the most attempts held at once, below REMOTE_ATTEMPTS_MAX (never above it). */
   attemptsMax?: number
+  /** The machine's own COLLOQ_ROOM_NETWORK, KERNEL_BLOCKED_CIDRS and KERNEL_ROOM_SUBNET, for its classes' perimeter; by default the process's. */
+  env?: NodeJS.ProcessEnv
+  /** Tests: the class tunnel's end (AgentTunnel by default). */
+  tunnel?: TunnelFactory
+  /** Tests: the kernel host's seams and clock (kernels.ts). */
+  classes?: Pick<KernelHostOptions, 'probe' | 'sleep' | 'timings' | 'instanceLabel'>
+  /** Tests: the class folders' timings (room-files.ts): their scans, the quiet rule, the waits. */
+  files?: Partial<RoomFileTimings>
   log?: (line: string) => void
 }
 
@@ -223,6 +291,17 @@ interface Held {
   holds: boolean
   stored: StoredOutcome | null
   task: Promise<void> | null
+}
+
+/**
+ * The revisions to pull: home's `want`, in its order, then any a class
+ * placement runs or is to run that it does not list (home lists them, §6.6;
+ * a container must not wait on a list that missed its image), each flagged a
+ * GPU kernel when a room of it holds a card.
+ */
+function wantedRevisions(home: readonly RemoteWantRevision[], classes: readonly RemoteWantRevision[]): RemoteWantRevision[] {
+  const listed = new Set(home.map((revision) => revision.id))
+  return [...home, ...classes.filter((revision) => !listed.has(revision.id))]
 }
 
 /** A promise with its resolve, for the leave and its acknowledgement. */
@@ -287,6 +366,34 @@ export class Agent extends EventEmitter {
   private stopDone: Promise<void> | null = null
   private readonly leaveDone = deferred<'left' | 'revoked' | 'stopped'>()
   private readonly leaveAck = deferred<void>()
+  /** A leave's settle of its classes' files (settleForLeave): since when, whether it is over, and its bound's timer. */
+  private leaveSettle: { since: number; done: boolean; timer: NodeJS.Timeout | null } | null = null
+  /** The class containers (kernels.ts). */
+  private readonly kernels: KernelHost
+  /** The class folders' copies and their files on the way to and from home (room-files.ts). */
+  private readonly files: RoomFiles
+  /** Whether the last reply carried a `kernels` block: only then does a sync carry one (§15). */
+  private kernelsHeard = false
+  /**
+   * The number of home's last block taken in (RemoteKernelsReply.replySeq),
+   * said back in the next block (`heard`): home says again the verdicts of a
+   * reply this agent never took in — one it cut short for news. Null — no
+   * reply carried one (a home without the field takes no such key).
+   */
+  private replyHeard: number | null = null
+  /** Why the class folders' last reports were left out of a sync (kernelsBlock), said once. */
+  private filesRefused: string | null = null
+  /** Home's last refusal of the block (blockRefused), said once. */
+  private blockRefusal: string | null = null
+  /** When a reply last carried one, or this life began: home's last word on its classes, for the orphan rule. */
+  private kernelsHeardAt: number
+  /** No reply has been taken in this life yet: the first sync with class containers adopted is held for no time. */
+  private firstSync = true
+  private tunnel: TunnelPort | null = null
+  private tunnelOpening: Promise<void> | null = null
+  private tunnelMode: RemoteKernelsReply['tunnel'] = 'closed'
+  private tunnelUp = false
+  private paceMBps = MACHINE_PACE_MBPS
 
   constructor(options: AgentOptions) {
     super()
@@ -316,11 +423,58 @@ export class Agent extends EventEmitter {
       dir: path.join(this.layout.booksDir, 'revisions'),
       now: this.now,
       cards: () => ({ count: this.probe.cards.length, driver: this.probe.driver }),
-      onChange: () => this.changed(),
+      onChange: () => {
+        this.changed()
+        // A class revision ready (or failed) is what a placement waits on.
+        this.kernels?.imagesChanged()
+      },
       diskGate: () => this.mayPull(),
       onDiskFull: (detail) => this.diskFull(detail),
       smokeCard: () => this.checkCard(),
       log: this.log,
+    })
+    this.kernelsHeardAt = this.started
+    this.kernels = new KernelHost({
+      layout: this.layout,
+      docker: this.docker,
+      images: this.images,
+      container: options.container,
+      image: options.image,
+      env: options.env,
+      cards: () => this.probe.cards,
+      cardRuns: () => this.cardRuns(),
+      heldGpus: () => this.runnerHeld.heldGpus ?? {},
+      diskFreeMb: () => this.machine().diskFreeMb,
+      diskFloorMb: this.floorMb(),
+      onDiskLow: () => void this.keepDiskFloor(),
+      sealed: () => this.trusted || [...this.held.values()].some((held) => held.lease.sealed && !held.ended),
+      heardAt: () => this.homeHeardAt(),
+      onChange: (urgent) => {
+        this.changed(urgent)
+        if (urgent && this.kernelsHeard) this.poke(true)
+      },
+      log: this.log,
+      now: this.now,
+      ...options.classes,
+    })
+    this.files = new RoomFiles({
+      layout: this.layout,
+      // The agent's one blob stream (home cuts a second), at the class's pace: ahead of a lease's while a run waits on the push.
+      blob: (sha, bytes, { signal, pace, urgent }) => this.cache.blob(sha, bytes, { signal, pace, urgent }),
+      release: (sha) => this.cache.release(sha),
+      hurry: () => this.cache.hurry(),
+      upload: (upload) => this.uploadRoomFile(upload),
+      held: (sessionId) => this.kernels.heldGens(sessionId),
+      busyAt: (sessionId) => this.kernels.busyAt(sessionId),
+      onChange: (urgent) => {
+        this.changed(urgent)
+        if (urgent && this.kernelsHeard) this.poke(true)
+      },
+      onUnauthorized: () => this.poke(true),
+      log: this.log,
+      now: this.now,
+      random: options.random,
+      timings: options.files,
     })
   }
 
@@ -332,16 +486,25 @@ export class Agent extends EventEmitter {
    */
   async run(): Promise<AgentExit> {
     this.writeStatus()
-    this.statusTimer = setInterval(() => this.writeStatus(), STATUS_EVERY_MS)
+    this.statusTimer = setInterval(() => {
+      this.watchTunnel()
+      this.writeStatus()
+    }, STATUS_EVERY_MS)
     this.statusTimer.unref?.()
     try {
+      // A marker an earlier stop did not take is no word about this life's (colloq-host writes it right before the stop it means).
+      clearRestartMarker(this.layout)
       await this.sweep()
       const stored = readLeases(this.layout)
       // Leases with nothing written down are given up below: only once no container of theirs still runs.
       if (stored.some((entry) => entry.outcome === null) && !(await this.sweptForGood())) return { reason: 'stopped', code: 0 }
       this.recover(stored)
       this.cache.load()
+      // The class folders' copies an earlier life left, each with what both sides last agreed (§8.1): home's first block says whose they are.
+      this.files.load()
       await this.images.load()
+      // The class kernels an earlier life started run on (§7.3): found again before the first sync, so that they hold what they hold.
+      await this.kernels.adopt()
       const identity = await this.ensureJoined()
       if ('reason' in identity) return identity
       for (const held of this.held.values()) {
@@ -401,6 +564,12 @@ export class Agent extends EventEmitter {
     this.stopDone = (async () => {
       const began = Date.now()
       await this.finalSync()
+      // Said (or not, home being away): the marker meant this stop, and the next stop is not an update unless it says so again.
+      clearRestartMarker(this.layout)
+      // The class containers run on, written down for the next life (§7.3): only the host's own timers and the tunnel go.
+      this.kernels.stop()
+      this.files.stop()
+      await this.closeTunnel()
       for (const held of this.held.values()) {
         if (held.stored || held.ended) continue
         held.handBack = true
@@ -455,6 +624,8 @@ export class Agent extends EventEmitter {
     for (let round = 0; round < 2; round++) {
       const request: RemoteSyncRequest = { ...this.syncRequest(), holdMs: 0 }
       const answer = await this.client.sync(request, within)
+      // A home that does not take the block hears the stop without it.
+      if (answer.kind === 'refused' && round === 0 && this.blockRefused(request, answer)) continue
       if (answer.kind !== 'ok') {
         this.log(`[runner] home did not hear the stop (${answer.kind === 'refused' ? answer.error : answer.reason}); the runs go back as they are handed back`)
         return
@@ -491,14 +662,20 @@ export class Agent extends EventEmitter {
       startedAt: this.started,
       updatedAt: this.now(),
       syncedAt: this.syncedAt,
+      tunnel: this.tunnel ? (({ up, rttMs }) => ({ up, rttMs }))(this.tunnel.state()) : null,
+      classes: this.kernels.counts(),
     }
   }
 
   private finish(): void {
-    for (const timer of [this.statusTimer, this.probeTimer, this.pokeTimer, this.statusSoon]) if (timer) clearTimeout(timer)
+    for (const timer of [this.statusTimer, this.probeTimer, this.pokeTimer, this.statusSoon, this.leaveSettle?.timer ?? null]) if (timer) clearTimeout(timer)
     this.statusTimer = this.probeTimer = this.pokeTimer = this.statusSoon = null
+    if (this.leaveSettle) this.leaveSettle.timer = null
     this.images.stop()
     this.cache.stop()
+    this.kernels.stop()
+    this.files.stop()
+    void this.closeTunnel()
     this.writeStatus()
   }
 
@@ -560,6 +737,42 @@ export class Agent extends EventEmitter {
       await this.sleep(backoff.next())
       if (this.stopping) return false
       await this.sweep()
+    }
+  }
+
+  /**
+   * Every class container of this tree and every class folder gone
+   * (kernels.ts · removeAll), asked again and again with a backoff until
+   * docker lists none of them, as sweptForGood asks for the runs: a class
+   * kernel left running on a machine that has left, been revoked or moved
+   * holds a class's work, and a machine that is gone has no later life to
+   * remove it. The status says why meanwhile; only a stop ends the wait,
+   * and the next life's adoption finds what is left by its labels.
+   */
+  private async removeClasses(why: string): Promise<void> {
+    const backoff = this.newBackoff()
+    let said: string | null = null
+    // Nothing of the class folders is under way, or written again, while they go.
+    await this.files.clear()
+    for (;;) {
+      const left = await this.kernels.removeAll(why)
+      if (left === 0) {
+        if (said !== null) {
+          this.log('[runner] every class container of this machine is gone at last')
+          this.problemLine = null
+        }
+        return
+      }
+      const problem = left === null
+        ? `${why}: docker does not answer whether the class kernels here are gone; asked again until it does`
+        : `${why}: ${left} class container(s) could not be removed; asked again until they are`
+      if (problem !== said) this.log(`[runner] ${problem}`)
+      said = problem
+      this.problemLine = problem
+      this.writeStatus()
+      if (this.stopping) return
+      await this.sleep(backoff.next())
+      if (this.stopping) return
     }
   }
 
@@ -663,6 +876,8 @@ export class Agent extends EventEmitter {
       const kept = this.putAside('moved')
       this.log(`[runner] this machine belonged to ${identity.home}; that identity is put aside (${kept}) to join ${target.home}`)
       this.forgetHeld()
+      // Another home's classes are none of the new one's: their kernels and folders go with the identity.
+      await this.removeClasses('this machine now belongs to another home')
       identity = null
     }
     if (joined(identity)) {
@@ -677,6 +892,8 @@ export class Agent extends EventEmitter {
       const kept = this.putAside(why)
       this.log(`[runner] the ${why} identity is put aside (${kept}); joining ${target.home} with the new code`)
       this.forgetHeld()
+      // What the gone identity's removal left (adopted at this start) is none of the new one's.
+      await this.removeClasses(`the ${why} identity's classes`)
       identity = null
     }
     if (!target) return { reason: 'refused', code: 78, detail: 'COLLOQ_RUNNER_JOIN is not set and this machine has not joined a home: -e COLLOQ_RUNNER_JOIN=\'https://<home>#<code>\'' }
@@ -785,6 +1002,9 @@ export class Agent extends EventEmitter {
     } catch (error) {
       this.log(`[runner] the hidden test could not be purged on the way out: ${error instanceof Error ? error.message : String(error)}`)
     }
+    // A class machine's kernels and the class folders, whichever way out (§7.3, §11.5): home has moved the classes away already.
+    await this.closeTunnel()
+    await this.removeClasses(why === 'left' ? 'this machine has left its home' : 'home revoked this machine')
     await this.noRestart()
     this.state = why
     this.problemLine = detail
@@ -864,6 +1084,7 @@ export class Agent extends EventEmitter {
       if (this.stopping) return { reason: 'stopped', code: 0 }
       this.runnerHeld = await this.runner.capacity().catch(() => ({ heldMb: 0, heldGpus: {} }))
       this.expire()
+      this.settleForLeave()
       const request = this.syncRequest()
       const abort = new AbortController()
       this.syncAbort = abort
@@ -876,7 +1097,13 @@ export class Agent extends EventEmitter {
         this.path = 'ok'
         this.problemLine = answer.value.compatible ? null : OUTDATED
         this.syncedAt = this.now()
+        this.firstSync = false
         if (request.facts) this.factsSent = JSON.stringify(request.facts)
+        // Home has the readings and the file reports this sync carried: neither is said again, and this reply's verdicts find them.
+        if (request.kernels) {
+          this.kernels.readingsSaid(request.kernels.readings)
+          this.files.reportsSaid(request.kernels.reports)
+        }
         try {
           this.handleReply(answer.value)
         } catch (error) {
@@ -887,14 +1114,22 @@ export class Agent extends EventEmitter {
         this.writeStatus()
         continue
       }
-      // Cut short for news: ask again at once.
-      if (abort.signal.aborted) continue
+      // Cut short for news: ask again at once. Home took the block in as the sync arrived and only then held its answer: the file
+      // reports it carried count as said (room-files.ts · reportsCut), never sent again as new.
+      if (abort.signal.aborted) {
+        if (request.kernels) this.files.reportsCut(request.kernels.reports)
+        continue
+      }
       if (answer.kind === 'refused') {
         if (answer.error === 'unauthorized') {
           const exit = await this.unauthorized(request.state === 'leaving')
           if (exit) return exit
           continue
         }
+        // A home that does not take the block (rolled back to a release without classes, or refusing a field of it): the next sync
+        // goes without it at once, and the syncs after it too until a reply carries one again (§15). A refusal of a sync without the
+        // block is the backoff's below, as before.
+        if (this.blockRefused(request, answer)) continue
         this.path = 'refused'
         // Another version of the contract: no lease is taken here until the machine runs home's release, which `compatible: false` tells the fleet's update.
         if (answer.error === 'protocol') this.compatible = false
@@ -980,6 +1215,11 @@ export class Agent extends EventEmitter {
     const identity = this.identity!
     await this.discardAll('the machine was revoked')
     this.cache.purgeSealed('revoked')
+    // The revoked identity's classes, whether the machine joins anew or goes: home failed them over first (§11.5).
+    await this.closeTunnel()
+    await this.removeClasses('home revoked this machine')
+    this.kernelsHeard = false
+    this.replyHeard = null
     const target = this.options.join
     if (!this.leaving && target && target.home === identity.home && sha256(target.code) !== identity.codeSha256) {
       this.keepIdentity({ ...identity, revokedAt: this.now() })
@@ -1002,6 +1242,26 @@ export class Agent extends EventEmitter {
     return exit
   }
 
+  /**
+   * Whether home refused a sync for its `kernels` block: a 400 (the parser
+   * of a home rolled back to 0.24 meets a key it does not know, or a home
+   * refuses a field of the block) or a 413 (0.24's sync is a sixteenth of
+   * this one's) of a sync that carried it. Then no sync carries it until a
+   * reply carries one again, and the tunnel goes with it: without this, every
+   * sync after was refused the same way, and the machine synced no more —
+   * no leases, its attempts lost by silence — until its agent restarted.
+   */
+  private blockRefused(request: RemoteSyncRequest, answer: Extract<CallResult<never>, { kind: 'refused' }>): boolean {
+    if (!request.kernels || (answer.error !== 'invalid' && answer.error !== 'too_large')) return false
+    this.kernelsHeard = false
+    this.replyHeard = null
+    this.tunnelWant('closed')
+    const said = `${answer.error}${answer.detail ? ` (${answer.detail})` : ''}`
+    if (said !== this.blockRefusal) this.log(`[runner] home refused the sync's kernels block: ${said}; the syncs go without it until a reply carries one`)
+    this.blockRefusal = said
+    return true
+  }
+
   /** The leaving sync was answered (or the machine was revoked by it): written down, said, and the process may go. */
   private async left(): Promise<AgentExit> {
     if (this.identity) {
@@ -1017,11 +1277,55 @@ export class Agent extends EventEmitter {
 
   /* ------------------------------------------------------------- the sync */
 
-  /** The state a sync says: leaving only once nothing is held (a leave drains first); a stopping machine drains (finalSync). */
+  /**
+   * The state a sync says: leaving only once nothing is held (a leave drains
+   * first) and its classes' files went home (settleForLeave); a stopping
+   * machine drains (finalSync).
+   */
   private wireState(): RemoteRunnerState {
     if (this.stopping) return 'draining'
-    if (this.leaving) return this.held.size === 0 ? 'leaving' : 'draining'
+    if (this.leaving) return this.held.size === 0 && this.leaveSettle?.done === true ? 'leaving' : 'draining'
     return this.localDrain ? 'draining' : 'active'
+  }
+
+  /**
+   * A LEAVE SETTLES ITS CLASSES' FILES FIRST (remote-classes.md §11.5, §8.7):
+   * once its runs are done, every copy of a class here is scanned now, what
+   * the scan found is said and answered, and what home pulls of it is
+   * uploaded — within LEAVE_SETTLE_MS, as home waits before «Перенести
+   * сейчас» — and only then does a sync say `leaving`, whose answer fails the
+   * classes over and lets this machine remove their copies. A cell's file
+   * written a moment before the leave is the class's; a home that does not
+   * answer meanwhile has the machine leave at the bound all the same.
+   */
+  private settleForLeave(): void {
+    if (!this.leaving || this.held.size > 0 || this.leaveSettle?.done) return
+    const now = this.now()
+    if (!this.leaveSettle) {
+      if (!this.kernelsHeard || !this.files.holdsCopies()) {
+        this.leaveSettle = { since: now, done: true, timer: null }
+        return
+      }
+      // The bound's own beat: a held sync is cut then, whatever home says meanwhile.
+      const timer = setTimeout(() => this.poke(true), LEAVE_SETTLE_MS)
+      timer.unref?.()
+      this.leaveSettle = { since: now, done: false, timer }
+      this.log(`[runner] leaving: the class files go home first (${LEAVE_SETTLE_MS / 1000} s at most)`)
+      /*
+       * Scanned now. A scan that found something cuts the held sync itself, for its report (room-files.ts · onChange); one that
+       * found nothing says nothing, and the held sync is cut here then, for the leaving sync — never one that may carry a report.
+       */
+      const since = now
+      void this.files.scanAll().then(() => {
+        if (this.files.settledSince(since)) this.poke(true)
+      })
+      return
+    }
+    const settled = this.files.settledSince(this.leaveSettle.since)
+    if (!settled && now - this.leaveSettle.since < LEAVE_SETTLE_MS) return
+    if (this.leaveSettle.timer) clearTimeout(this.leaveSettle.timer)
+    this.leaveSettle = { ...this.leaveSettle, done: true, timer: null }
+    this.log(settled ? '[runner] leaving: the class files are home' : `[runner] leaving: the class files did not all go home within ${LEAVE_SETTLE_MS / 1000} s; leaving all the same`)
   }
 
   /** Whether an offer is written down: not while draining (for whichever reason), leaving, stopping, or outdated. */
@@ -1034,12 +1338,19 @@ export class Agent extends EventEmitter {
     const facts = this.factsNow()
     const changedFacts = JSON.stringify(facts) !== this.factsSent
     const hold = this.options.holdMs ?? { idle: REMOTE_HOLD_IDLE_MS, busy: REMOTE_HOLD_BUSY_MS }
+    const state = this.wireState()
+    const kernels = this.kernelsHeard ? this.kernelsBlock(state) : null
+    // Class containers say their progress as attempts do, within the busy hold.
+    const busy = attempts.length > 0 || (kernels?.placements.length ?? 0) > 0
+    // The first sync of a life carries no block (none goes out before a reply carried one): with class containers adopted,
+    // home is asked for its block now, not after a held sync's time, so that the next sync says them.
+    const asap = this.firstSync && kernels === null && this.kernels.holdsAny()
     return {
       protocol: REMOTE_PROTOCOL,
       build: this.options.build,
       seq: this.seq,
-      holdMs: attempts.length > 0 ? Math.min(hold.busy, REMOTE_HOLD_BUSY_MS) : Math.min(hold.idle, REMOTE_HOLD_IDLE_MS),
-      state: this.wireState(),
+      holdMs: asap ? 0 : busy ? Math.min(hold.busy, REMOTE_HOLD_BUSY_MS) : Math.min(hold.idle, REMOTE_HOLD_IDLE_MS),
+      state,
       free: this.free(),
       cards: this.cardsNow().cards,
       ready: {
@@ -1052,6 +1363,56 @@ export class Agent extends EventEmitter {
       attempts,
       problems: this.problemsNow(),
       ...(changedFacts ? { facts } : {}),
+      ...(kernels ? { kernels } : {}),
+    }
+  }
+
+  /**
+   * The machine's `kernels` block (§15): every class container held, each
+   * with how far its class folder's copy is from home (`files`: the last push
+   * applied whole is the ack, room-files.ts); what the kernels wrote
+   * (`reports`); the post-mortem readings home asked for, the tunnel, the
+   * facts home's eligibility reads, and, in the last sync of this life, why it
+   * is the last. The council's epochs come with their own phase.
+   */
+  private kernelsBlock(state: RemoteRunnerState): RemoteKernelsRequest {
+    const bye: RemoteBye | undefined = state === 'leaving' ? 'leaving' : this.stopping ? (restartMarked(this.layout) ? 'restart' : 'stopping') : undefined
+    const block: RemoteKernelsRequest = {
+      placements: this.kernels.held().map((held) => {
+        const lag = this.files.lag(held.key.slice(0, held.key.lastIndexOf(':')))
+        return lag ? { ...held, files: lag } : held
+      }),
+      reports: this.files.reportsNow(),
+      epochs: [],
+      readings: this.kernels.readingsNow(),
+      tunnel: this.tunnel?.state().up ? 'up' : 'down',
+      ...(bye ? { bye } : {}),
+      classes: this.kernels.facts(),
+      ...(this.replyHeard !== null ? { heard: this.replyHeard } : {}),
+    }
+    /*
+     * Read first as home's strict parser reads it: what a kernel wrote is
+     * participant data, and a report or a lag home would refuse costs the
+     * machine its whole block (blockRefused) — every class on it, its tunnel
+     * closed. What the class folders say goes without them this time (their
+     * reports are built again for the next sync), and the log says why once.
+     */
+    try {
+      parseRemoteKernelsRequest(block)
+      this.filesRefused = null
+      return block
+    } catch (error) {
+      const bare: RemoteKernelsRequest = { ...block, placements: block.placements.map(({ files: _files, ...held }) => held), reports: [] }
+      try {
+        parseRemoteKernelsRequest(bare)
+      } catch {
+        // Not the class folders': home's refusal says what it is (blockRefused), as before.
+        return block
+      }
+      const why = error instanceof Error ? error.message : String(error)
+      if (this.filesRefused !== why) this.log(`[runner] the class folders' reports would not pass home's parser (${why}); the sync goes without them`)
+      this.filesRefused = why
+      return bare
     }
   }
 
@@ -1119,7 +1480,24 @@ export class Agent extends EventEmitter {
     for (const revoke of reply.revoke) this.revoke(revoke.id, revoke.reason)
     for (const id of reply.applied) this.applied(id)
     this.cache.forget(reply.forget)
-    this.images.want(reply.want.revisions)
+    // The classes first, before this reply's offers: what they hold is out of `free` when the offers are prepared (§6.4).
+    if (reply.kernels) {
+      this.kernelsHeard = true
+      this.kernelsHeardAt = this.now()
+      this.paceMBps = reply.kernels.rates.machinePaceMBps
+      this.kernels.reconcile(reply.kernels)
+      // The class folders after the containers: a copy home no longer names waits for its containers to go (room-files.ts).
+      this.files.reconcile(reply.kernels)
+      // Taken in, its verdicts among it: the next block says so.
+      this.replyHeard = reply.kernels.replySeq ?? null
+      this.tunnelWant(reply.kernels.tunnel)
+    } else {
+      // A reply without the block says nothing of classes (a home without them): the next sync carries none, the containers stay.
+      this.kernelsHeard = false
+      this.replyHeard = null
+      this.tunnelWant('closed')
+    }
+    this.images.want(wantedRevisions(reply.want.revisions, this.kernels.revisions()))
     // A draining or leaving machine keeps none of the hidden test, whatever `want` still lists (purged on drain, decision 1).
     const draining = this.localDrain || this.homeDrain || this.leaving
     this.cache.want(draining ? reply.want.data.filter((entry) => !entry.sealed) : reply.want.data, reply.want.bundles)
@@ -1157,6 +1535,11 @@ export class Agent extends EventEmitter {
       }
       if (this.listed().length >= most) {
         this.declineOffer(lease, 'memory', `this machine already holds ${most} attempts, the most one sync can list; home offered more`)
+        continue
+      }
+      // The hidden test never lies beside a class (D3): home's parser refuses a reply with both, this refuses one across replies.
+      if (lease.sealed && this.kernels.holdsAny()) {
+        this.declineOffer(lease, 'draining', 'this machine holds class kernels, and the hidden test never lies beside them')
         continue
       }
       const receivedAt = this.now()
@@ -1492,15 +1875,24 @@ export class Agent extends EventEmitter {
     return this.options.machine?.() ?? readMachine(this.layout.root)
   }
 
-  /** What the attempts hold: from their lease until their container is gone. */
+  /**
+   * What the attempts hold, from their lease until their container is gone,
+   * and what the class containers hold (§6.4): `free` is one truth for
+   * submissions and classes, with no arithmetic of its own for either.
+   */
   private holding(): Array<{ memoryMb: number; cpus: number }> {
-    return [...this.held.values()].filter((held) => held.holds && !held.ended).map((held) => ({ memoryMb: held.lease.limits.memoryMb, cpus: held.lease.limits.cpus }))
+    const attempts = [...this.held.values()].filter((held) => held.holds && !held.ended).map((held) => ({ memoryMb: held.lease.limits.memoryMb, cpus: held.lease.limits.cpus }))
+    return [...attempts, ...this.kernels.holding()]
   }
 
-  /** The shares taken on the cards: each run's, at the runs per card its lease pinned, and each smoke test's while it runs. */
+  /**
+   * The shares taken on the cards: each run's, at the runs per card its lease
+   * pinned, each smoke test's while it runs, and the whole card of each GPU
+   * class room (§6.5), as a run at one per card.
+   */
   private cardRuns(): CardRun[] {
     const runs = [...this.held.values()].filter((held) => held.holds && held.card).map((held) => ({ device: held.card!.device, perDevice: held.card!.perDevice }))
-    return [...runs, ...this.checkHolds]
+    return [...runs, ...this.checkHolds, ...this.kernels.cardRuns()]
   }
 
   /**
@@ -1527,7 +1919,7 @@ export class Agent extends EventEmitter {
   }
 
   private cardsNow(): ReturnType<typeof cardReport> {
-    return cardReport(this.probe.cards, this.perDevice, this.cardRuns(), this.runnerHeld.heldGpus ?? {})
+    return cardReport(this.probe.cards, this.perDevice, this.cardRuns(), this.runnerHeld.heldGpus ?? {}, this.kernels.wholeCards())
   }
 
   /** The share an attempt takes, picked and held in one breath (execute.ts · PrepareInput.claimCard). */
@@ -1773,7 +2165,8 @@ export class Agent extends EventEmitter {
           ...[...this.held.values()].map((held) => held.lease.notebook.sha256),
         ]),
       }
-      const running = new Set([...this.held.values()].map((held) => held.lease.revision.id))
+      // What the runs and the class containers run on (or are to) is never evicted from under them.
+      const running = new Set([...[...this.held.values()].map((held) => held.lease.revision.id), ...this.kernels.revisions().map((revision) => revision.id)])
       if (!separate) {
         await this.images.evict(running, freeMb, floor)
         const holds = this.cache.evict(keep, freeMb, floor)
@@ -1813,6 +2206,87 @@ export class Agent extends EventEmitter {
       this.describedWaiters.set(bundleId, waiters)
       signal.addEventListener('abort', onAbort, { once: true })
     })
+  }
+
+  /** A class's file home (PUT rooms/:sessionId/files), as this machine, with its credential: none before a join or after the identity is gone. */
+  private uploadRoomFile(upload: RoomUpload): Promise<RoomUploadAnswer> {
+    const identity = this.identity
+    if (!joined(identity) || retired(identity)) return Promise.resolve({ kind: 'transient', reason: 'this machine has no identity to send it with', retryAfterMs: null })
+    return homeUploader({ home: identity.home, credential: () => remoteCredential(identity.runnerId, identity.secret), fetch: this.options.fetch })(upload)
+  }
+
+  /* --------------------------------------------------------- the tunnel */
+
+  /**
+   * Home's word on the class tunnel, from each reply (§4.6): `open` dials it
+   * and keeps it up, `reconnect` dials again (it is down on home's side),
+   * `closed` holds none. The tunnel's end is made once the first reply asks
+   * for one, with this machine's credential; streams reach only the ports the
+   * kernel host's records name (kernels.ts · resolve).
+   */
+  private tunnelWant(mode: RemoteKernelsReply['tunnel']): void {
+    this.tunnelMode = mode
+    if (this.tunnel) {
+      this.tunnel.want(mode)
+      return
+    }
+    if (mode === 'closed' || this.tunnelOpening || this.stopping) return
+    const identity = this.identity
+    if (!joined(identity)) return
+    const factory = this.options.tunnel ?? agentTunnel
+    this.tunnelOpening = (async () => {
+      try {
+        const tunnel = await factory({
+          url: tunnelUrl(identity.home),
+          authorization: `Bearer ${remoteCredential(identity.runnerId, identity.secret)}`,
+          build: this.options.build,
+          resolve: (key, gen) => this.kernels.resolve(key, gen),
+          paceMBps: () => this.paceMBps,
+          log: (event, detail) => {
+            this.log(`[runner] class tunnel: ${event}${detail ? ` ${JSON.stringify(detail).slice(0, 300)}` : ''}`)
+            this.watchTunnel()
+          },
+        })
+        if (this.stopping || this.identity !== identity) {
+          await tunnel.close()
+          return
+        }
+        this.tunnel = tunnel
+        tunnel.want(this.tunnelMode)
+      } catch (error) {
+        this.log(`[runner] the class tunnel could not be made: ${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        this.tunnelOpening = null
+      }
+    })()
+  }
+
+  /** The tunnel ends: a stop, a revocation, a leave, a new identity. */
+  private async closeTunnel(): Promise<void> {
+    this.tunnelMode = 'closed'
+    await this.tunnelOpening
+    const tunnel = this.tunnel
+    this.tunnel = null
+    this.tunnelUp = false
+    if (tunnel) await tunnel.close().catch((error: unknown) => this.log(`[runner] the class tunnel did not close cleanly: ${String(error)}`))
+  }
+
+  /** The tunnel went up or down: home hears it in the next sync, which is sent now. */
+  private watchTunnel(): void {
+    const up = this.tunnel?.state().up ?? false
+    if (up === this.tunnelUp) return
+    this.tunnelUp = up
+    if (this.kernelsHeard) this.poke(true)
+  }
+
+  /**
+   * When home last said anything of its classes (the orphan rule, §7.6): a
+   * reply that carried the block, or the tunnel, which home keeps alive with
+   * a frame every few seconds while it is up.
+   */
+  private homeHeardAt(): number {
+    const tunnel = this.tunnel?.state()
+    return Math.max(this.kernelsHeardAt, tunnel ? (tunnel.up ? this.now() : tunnel.since) : 0)
   }
 
   /* -------------------------------------------------------------- helpers */

@@ -1,0 +1,145 @@
+# Classes on machines against real Docker on Linux: the parity job of
+# docs/architecture/remote-classes.md §17.3, tests/classes-docker.test.mts.
+# Outside the PR suite, as runtime-smoke.yml is (the PR suite needs no Docker
+# daemon): nightly, on dispatch, and on a pull request that changes what it
+# covers, as k8s-e2e.yml runs. Images are built locally; this workflow never
+# pushes them.
+#
+# What the job stands for: a class machine as colloq-host runs one (its agent
+# in a container on the host's network, as uid 1000 with the docker socket's
+# group, its tree at the same path on the host), the real docker CLI and
+# daemon, and colloq-kernel:base with the real jupyter_server and ipykernel.
+# Home is the test process itself, on KERNEL_BACKEND=test: it starts no rooms
+# of its own and installs no chains beside the agent's.
+#
+# Before a merge it runs on the pull request: GitHub takes workflow_dispatch
+# only for a workflow on the default branch or one that has run on the branch
+# already, so a workflow new on a branch is dispatched there (gh workflow run
+# classes-smoke.yml --ref <branch>) only after its pull request ran it.
+name: Classes on machines (Linux parity)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/classes-smoke.yml'
+      - 'tests/classes-docker.test.mts'
+      - 'tests/_remote-e2e-home.mts'
+      - 'tests/_tunnel-fault.mts'
+      - 'kernel/**'
+      - 'server/src/runner-agent/**'
+      - 'server/src/kernel/**'
+      - 'server/src/competitions/remote/**'
+      - 'shared/remote-*.ts'
+  workflow_dispatch:
+  schedule:
+    - cron: '47 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: classes-smoke-${{ github.event.pull_request.number || github.ref }}
+  # A newer push to the pull request takes the place of the run of an older one; a nightly or a dispatched run is never cut short.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  classes-docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      # A machine starts a class only with 8 GB free beside the class folder's
+      # 1 GB (runner-agent/sync.ts · DISK_FLOOR_MB), on the disk of its tree;
+      # a hosted runner has about that much left once the kernel is built. The
+      # preinstalled toolchains this job never uses make room.
+      - name: Disk for the machine's tree
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+      # A machine runs a class only from a pinned registry ref (D22), checked by
+      # its layers, and an image built here has a digest of its own only in the
+      # containerd image store (dependencies/image-identity.ts · registryRefOf):
+      # the classic store gives a local build none, and a pull from a registry
+      # is the only other way to one. So the daemon keeps its images there, as a
+      # fresh Docker 29 does by default, before anything is built.
+      - name: Docker with the containerd image store
+        run: |
+          docker version
+          version="$(docker version --format '{{.Server.Version}}')"
+          test "${version%%.*}" -ge 28
+          config=/etc/docker/daemon.json
+          if sudo test -s "$config"; then sudo cat "$config"; else echo '{}'; fi \
+            | jq '.features = ((.features // {}) + {"containerd-snapshotter": true})' > "$RUNNER_TEMP/daemon.json"
+          sudo install -m 0644 "$RUNNER_TEMP/daemon.json" "$config"
+          sudo systemctl restart docker
+          for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+          docker info --format '{{json .DriverStatus}}' | tee /dev/stderr | grep -q 'io.containerd.snapshotter.v1'
+      # The kernel exactly as runtime-smoke.yml builds it, and the agent's own
+      # image: the Node and the docker CLI of deploy/vast/Dockerfile (NODE_IMAGE,
+      # DOCKER_CLI_IMAGE) and nothing else, since the agent runs from the
+      # checkout. The perimeter's helper runs from this image too, as it runs
+      # from the agent's own in production: it needs nsenter.
+      - name: Build the base kernel and the agent's image locally
+        run: |
+          docker build --build-arg KERNEL_ENV=base -t colloq-kernel:base kernel
+          docker build -t colloq-runner:classes-smoke - <<'EOF'
+          FROM docker:28-cli AS cli
+          FROM node:22-bookworm-slim
+          COPY --from=cli /usr/local/bin/docker /usr/local/bin/docker
+          RUN command -v nsenter && docker --version
+          EOF
+      # Its own bound, under the job's. The file's own bounds (its hooks and
+      # each scenario's timeout) add up to an hour; a scenario out of time
+      # stops at its next wait, and the file's logs are written as it goes, so
+      # even a step killed here leaves them, and the next step reads the
+      # containers' own.
+      - name: A class on a machine with real Docker and jupyter_server
+        id: parity
+        timeout-minutes: 70
+        env:
+          COLLOQ_CLASSES_DOCKER_TEST: '1'
+          COLLOQ_CLASSES_DOCKER_LOGS: ${{ runner.temp }}/classes-docker-logs
+        run: node --import tsx --import ./tests/_cli.mts --test --test-reporter=spec --test-force-exit --test-concurrency=1 tests/classes-docker.test.mts
+      # What a run cut short left running (the agent, the class containers):
+      # their logs, read before anything removes them.
+      - name: The containers' own logs
+        if: failure()
+        run: |
+          dir="$RUNNER_TEMP/classes-docker-logs/containers"
+          mkdir -p "$dir"
+          for id in $(docker ps -aq --filter label=colloq.test=classes-docker) $(docker ps -aq --filter label=colloq.kind=class-kernel); do
+            name="$(docker inspect --format '{{.Name}}' "$id" | tr -d /)"
+            docker logs --timestamps "$id" > "$dir/$name.log" 2>&1 || true
+          done
+          ls -l "$dir"
+      - name: Logs of the agent, home and the class containers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: classes-docker-logs
+          path: ${{ runner.temp }}/classes-docker-logs
+          if-no-files-found: ignore
+      # The file removes what it made by its labels and checks it did; after
+      # a green run anything left here is a teardown that missed it.
+      - name: What the run left on the daemon
+        if: always()
+        env:
+          PARITY: ${{ steps.parity.outcome }}
+        run: |
+          docker ps -a --filter label=colloq.test=classes-docker --format '{{.Names}} {{.Status}}' || true
+          docker ps -a --filter label=colloq.kind=class-kernel --format '{{.Names}} {{.Status}}' || true
+          docker network ls --filter label=colloq.kind=class-network --format '{{.Name}}' || true
+          docker image ls --no-trunc colloq-kernel || true
+          left="$( { docker ps -aq --filter label=colloq.test=classes-docker; docker ps -aq --filter label=colloq.kind=class-kernel; docker network ls -q --filter label=colloq.kind=class-network; } 2>/dev/null || true)"
+          if [ "$PARITY" = success ] && [ -n "$left" ]; then
+            echo "::error::the run passed and left containers or networks on the daemon"
+            exit 1
+          fi

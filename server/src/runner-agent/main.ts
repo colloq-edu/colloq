@@ -36,7 +36,9 @@
  * WHAT THIS BUNDLE MAY LOAD (tests/runner-import-graph.test.mts keeps it so):
  * the execution core — competitions/docker-runner.ts with the harness and the
  * storage layout, competitions/gpu-math.ts, kernel/card-probe.ts,
- * ops/meminfo.ts — and the contract, but never the database, the room pool,
+ * ops/meminfo.ts — the class cores (kernel/room-spec.ts, perimeter-core.ts,
+ * postmortem-core.ts: a class kernel's argv, its perimeter and its reading,
+ * kernels.ts) and the contract, but never the database, the room pool,
  * config.ts and its .env, or the release's version (version.ts says why).
  */
 import fs from 'node:fs'
@@ -165,6 +167,7 @@ async function runAgent(layout: StateLayout, joinText: string | undefined, env: 
     version,
     container: env.COLLOQ_RUNNER_CONTAINER?.trim() || null,
     image: env.COLLOQ_RUNNER_IMAGE?.trim() || null,
+    env,
   })
   let server: Awaited<ReturnType<typeof serveControl>>
   try {
@@ -242,6 +245,9 @@ export function status(layout: StateLayout, io: Io, now = Date.now()): number {
     problem: kept?.problem ?? null,
     syncedAt: kept?.syncedAt ?? null,
     updatedAt: kept?.updatedAt ?? null,
+    // The class tunnel and the class containers (remote-classes.md §14), a live agent's word: none without one.
+    tunnel: live ? kept!.tunnel ?? null : null,
+    classes: live ? kept!.classes ?? { room: 0, own: 0, council: 0 } : { room: 0, own: 0, council: 0 },
   }
   io.out(`${JSON.stringify(report)}\n`)
   const healthy = live && report.joined && WORKING.has(state) && kept!.syncedAt !== null && now - kept!.syncedAt <= REMOTE_SILENCE_MS

@@ -165,9 +165,9 @@ function readLag(): LagWindow | null {
 let socketCount: (() => number) | null = null
 
 /**
- * Called by index.ts once the server listens: the sockets live there (one
- * WebSocketServer for the notebook, control and file channels), and so does
- * the moment worth one line about the endpoint being on.
+ * Called by index.ts once the server listens, the moment worth one line about
+ * the endpoint being on. The sockets live in upgrade.ts (one WebSocketServer
+ * for the notebook, control and file channels).
  */
 export function startMetrics(options: { sockets: () => number }): void {
   socketCount = options.sockets

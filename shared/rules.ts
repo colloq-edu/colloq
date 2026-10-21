@@ -161,8 +161,14 @@ export const MAX_BOOK_OWNER_NAME = 80
  * Only live ones count: delete yours, create a new one.
  */
 export const MAX_OWN_BOOKS = 3
-/** A notebook root is `cells` or `nb:<id>`; it is never longer than 128 characters. */
-const MAX_BOOK_ROOT = 128
+/**
+ * A notebook root is `cells` or `nb:<id>`, but the notebooks made between
+ * f43e62f and 93122dd (29 Aug – 2 Sep 2026) keep `nb:` + their path, and no
+ * room rewrites a root (shared/remote-kernels.ts · isRemoteRoot). So the cap
+ * is `nb:` plus MAX_PATH of shared/paths.ts, written out: that module loads
+ * the i18n catalogues.
+ */
+const MAX_BOOK_ROOT = 'nb:'.length + 400
 const MAX_BOOK_OWNER_ID = 128
 
 /**

@@ -14,7 +14,7 @@
  * decides that (routes/admin-running.ts) and re-checks it at the moment of
  * stopping; the panel only words what it was told.
  */
-import { tr, formatNumber } from '@shared/i18n'
+import { tr, formatDate, formatNumber } from '@shared/i18n'
 import type {
   RunningBook,
   RunningBusy,
@@ -24,6 +24,10 @@ import type {
   RunningKernels,
   StopIdleKernelsResponse,
 } from '@shared/admin'
+import type { RunningClassMachines, RunningMachineSlot } from '@shared/remote-admin'
+
+/** A class row as «Работают сейчас» reads it: the class, and its slots on machines (Paper 18 · Z7). */
+export type RunningClassRow = RunningClass & RunningClassMachines
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -92,6 +96,8 @@ export function clock(ms: number): string {
 export interface Totals {
   /** Containers holding memory: rooms, personal-notebook containers, runs and preparations. */
   containers: number
+  /** Class containers on machines: none of this server's memory («на машинах 9 контейнеров · 0 МБ здесь»). */
+  onMachines: number
   /** Everything those containers reserve, runs and preparations included. */
   reservedMb: number
   /**
@@ -104,14 +110,18 @@ export interface Totals {
 
 export function totals(data: RunningKernels): Totals {
   let containers = 0
-  for (const row of data.classes) containers += (row.room ? 1 : 0) + (row.own ? 1 : 0)
+  let onMachines = 0
+  for (const row of data.classes as RunningClassRow[]) {
+    containers += (row.room ? 1 : 0) + (row.own ? 1 : 0)
+    onMachines += row.machines?.length ?? 0
+  }
   containers += data.runs.length + data.preparations.length
   const reservedMb =
     data.reservedMb +
     data.runs.reduce((sum, run) => sum + run.reservedMb, 0) +
     data.preparations.reduce((sum, prep) => sum + prep.reservedMb, 0)
   const usedMb = data.usage === 'live' ? data.usedMb : null
-  return { containers, reservedMb, usedMb }
+  return { containers, onMachines, reservedMb, usedMb }
 }
 
 /** What stopping this class (or only its personal notebooks) gives back. */
@@ -466,4 +476,122 @@ export function bulkOutcome(result: StopIdleKernelsResponse, names: ReadonlyMap<
       : tr('admin.resourcesTab.running.result.partial', { done, total, memory: gb(result.freedMb) })
   const why = result.skipped.map((skip) => skippedLine(skip.reason, shortName(names.get(skip.id) ?? null)))
   return { tone: 'warning', text: [head, ...why].join(' ') }
+}
+
+/* ------------------------------------------- classes on machines (Z7) */
+
+/** «класс», «личные», «консилиум»: a slot's sub-row label. */
+export function slotWord(role: RunningMachineSlot['role']): string {
+  switch (role) {
+    case 'room':
+      return tr('admin.runners.role.room')
+    case 'own':
+      return tr('admin.runners.role.own')
+    case 'council':
+      return tr('admin.runners.role.council')
+  }
+}
+
+/** «на vast-3»; a class the viewer does not teach reads «на машине». */
+export function slotChip(slot: Pick<RunningMachineSlot, 'machine'>): string {
+  return slot.machine === null
+    ? tr('admin.resourcesTab.running.machine.onHidden')
+    : tr('admin.resourcesTab.running.machine.on', { name: slot.machine })
+}
+
+/** «12 МБ», «1,4 ГБ»: a lag's bytes. */
+function bytesWords(bytes: number): string {
+  const gbs = bytes / 1024 ** 3
+  if (gbs >= 1) return tr('admin.runners.gb', { value: formatNumber(gbs, { maximumFractionDigits: 1 }) })
+  const mbs = bytes / 1024 ** 2
+  return tr('admin.runners.mb', { value: formatNumber(mbs, { maximumFractionDigits: mbs < 10 ? 1 : 0 }) })
+}
+
+/**
+ * A slot's files (§8.7): «файлы: синхронно», «файлы: ↑ 3, 12 МБ» on their way
+ * here, or «файлы: 2 только на машине», with the tone each is painted in;
+ * `null` — the machine said nothing of them, or the class is hidden.
+ */
+export function slotFiles(slot: Pick<RunningMachineSlot, 'files'>): { text: string; tone: 'positive' | 'accent' | 'warning' } | null {
+  const lag = slot.files
+  if (!lag) return null
+  if (lag.pending > 0) {
+    return { text: tr('admin.resourcesTab.running.machine.files.pending', { count: lag.pending, size: bytesWords(lag.pendingBytes) }), tone: 'accent' }
+  }
+  if (lag.heldOnly > 0) return { text: tr('admin.resourcesTab.running.machine.files.heldOnly', { count: lag.heldOnly }), tone: 'warning' }
+  return { text: tr('admin.resourcesTab.running.machine.files.synced'), tone: 'positive' }
+}
+
+/** A slot's memory on its machine, as the class rows' memory lane is: «3,1 из 4 ГБ» and its share. */
+export function slotMemory(slot: Pick<RunningMachineSlot, 'memoryMb' | 'usedMb'>): MemoryLane {
+  return memoryLane({ role: 'room', state: 'running', reservedMb: slot.memoryMb, usedMb: slot.usedMb, cpus: null, cpuPercent: null, startedAt: null })
+}
+
+/** «12 % ЦП»; null — the machine did not say. */
+export function slotCpu(slot: Pick<RunningMachineSlot, 'cpuPercent'>): string | null {
+  return slot.cpuPercent === null ? null : tr('admin.resourcesTab.running.machine.cpu', { value: formatNumber(Math.round(slot.cpuPercent)) })
+}
+
+/** «3 исп.» for a council's pool; null for the other roles. */
+export function slotWorkers(slot: Pick<RunningMachineSlot, 'workers'>): string | null {
+  return slot.workers === null ? null : tr('admin.resourcesTab.running.machine.workers', { count: slot.workers })
+}
+
+/** «0:41»: how long a machine has not answered. */
+function elapsedOf(ms: number): string {
+  return clock(ms)
+}
+
+/** «14:41:19». */
+function timeOf(at: number): string {
+  return formatDate(at, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+/**
+ * The «Сейчас» lane of a class with slots on machines (Z7), or one whose
+ * kernel came back from one: «нет связи с vast-9 · 0:41» over «перенесём на
+ * сервер в 14:41:19»; «всё на vast-3 · считает ячейка 7» over «в комнате 15
+ * человек · связь 52 мс»; «на сервере · переехало в 14:33» over «файлы — по
+ * 14:31:58 · с vast-3». `null` — the class computes here only, and the usual
+ * lane says it (statusLines).
+ */
+export function machineStatus(row: RunningClassRow, now: number): StatusLines | null {
+  const slots = row.machines ?? []
+  const usual = statusLines(row, now)
+  if (slots.length === 0) {
+    if (!row.moved || row.hidden) return null
+    const moved = tr('admin.resourcesTab.running.machine.moved', { time: formatDate(row.moved.at, { hour: '2-digit', minute: '2-digit' }) })
+    const files = row.moved.filesAt !== null ? tr('admin.resourcesTab.running.machine.filesAt', { time: timeOf(row.moved.filesAt) }) : null
+    const from = row.moved.from ? tr('admin.resourcesTab.running.machine.movedFrom', { name: row.moved.from }) : null
+    return { first: moved, tone: 'ink', second: [files, from, usual.first].filter(Boolean).join(' · ') }
+  }
+  const lost = slots.find((slot) => slot.link === 'lost')
+  if (lost) {
+    const elapsed = elapsedOf(lost.lostSince === null ? 0 : now - lost.lostSince)
+    const first = lost.machine === null
+      ? tr('admin.resourcesTab.running.machine.lostHidden', { elapsed })
+      : tr('admin.resourcesTab.running.machine.lost', { name: lost.machine, elapsed })
+    const second = row.moveAt ? tr('admin.resourcesTab.running.machine.moveAt', { time: timeOf(row.moveAt) }) : tr('admin.resourcesTab.running.machine.waits')
+    return { first, tone: 'warning', second }
+  }
+  const names = [...new Set(slots.map((slot) => slot.machine))]
+  const name = names.length === 1 && names[0] !== null ? names[0] : null
+  const here = row.room !== null || row.own !== null
+  const where = name === null
+    ? tr('admin.resourcesTab.running.machine.onHidden')
+    : tr(here ? 'admin.resourcesTab.running.machine.part' : 'admin.resourcesTab.running.machine.all', { name })
+  // How the machine answers, as the room's chip says it: the first slot's round trip that was measured.
+  const rtt = slots.find((slot) => typeof slot.rttMs === 'number')?.rttMs ?? null
+  const link = rtt === null ? null : tr('admin.resourcesTab.running.machine.link', { ms: formatNumber(Math.round(rtt)) })
+  return { first: `${where} · ${usual.first}`, tone: usual.tone === 'muted' ? 'muted' : 'accent', second: [usual.second, link].filter(Boolean).join(' · ') || null }
+}
+
+/** Whether any slot of the class waits for its machine: its stop then reaches it only once the machine answers. */
+export function stopsLater(row: RunningClassRow): boolean {
+  return (row.machines ?? []).some((slot) => slot.link === 'lost')
+}
+
+/** Whether the class holds none of this server's memory: every container it has is on a machine («0 МБ здесь»). */
+export function onlyOnMachines(row: RunningClassRow): boolean {
+  return (row.machines?.length ?? 0) > 0 && row.room === null && row.own === null
 }

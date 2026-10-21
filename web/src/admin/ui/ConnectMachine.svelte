@@ -15,6 +15,11 @@
    * shown may have come with another code. The code is never kept here, and
    * closing the window only hides it: it stays valid until it expires, is
    * used up, or the owner cancels it in the list of codes.
+   *
+   * Take classes (Paper 18 · Z2, D2): the code's machines take classes
+   * from the start, and the block says what that hands them — students'
+   * code, data, files and personal notebooks. The hidden test is greyed
+   * while it is on, with the reason (D3), and the other way round.
    */
   import { onMount } from 'svelte'
   import { tr } from '@shared/i18n'
@@ -198,17 +203,52 @@
           </span>
         </label>
         <div class="min-w-[220px] flex-1 max-[640px]:w-[calc(50%-8px)] max-[640px]:min-w-0 max-[640px]:flex-none">
-          <span class="admin-label mb-1.5 block">{tr('admin.runners.connect.sealed')}</span>
-          <label class={cn('flex min-h-10 items-center gap-2.5 max-[640px]:min-h-11', minted === null && 'cursor-pointer')}>
-            <Check bind:checked={form.trusted} disabled={minted !== null} />
+          <!-- While classes are on, the label and the box grey; the reason under them does not (Z2): it is what is read here. -->
+          <span class={cn('admin-label mb-1.5 block', form.classes && 'opacity-[0.45]')}>{tr('admin.runners.connect.sealed')}</span>
+          <label
+            class={cn(
+              'flex min-h-10 items-center gap-2.5 max-[640px]:min-h-11',
+              minted === null && !form.classes && 'cursor-pointer',
+              form.classes && 'opacity-[0.45]',
+            )}
+          >
+            <Check bind:checked={form.trusted} disabled={minted !== null || form.classes} />
             <span class="text-ui text-ink">{tr('admin.runners.connect.trust')}</span>
           </label>
+          {#if form.classes}
+            <!-- D3: a machine with classes holds students' work, and the hidden test never goes beside it. -->
+            <p class="mt-1 text-2xs text-warning">{tr('admin.runners.connect.classesSealed')}</p>
+          {/if}
         </div>
-        {#if !minted}
+        {#if !minted && !form.classes}
           <p class="w-full text-2xs text-muted">
             {form.trusted ? tr('admin.runners.connect.trustNote') : tr('admin.runners.connect.untrustedNote')}
           </p>
         {/if}
+
+        <!-- The classes block (Z2): full width, a checkbox in a tinted box
+             with the brand's frame while it is on. -->
+        <div class="w-full">
+          <span class="admin-label mb-1.5 block">{tr('admin.runners.connect.classesTitle')}</span>
+          <label
+            class={cn(
+              'flex items-start gap-3 border px-3.5 py-3 max-[640px]:min-h-11',
+              form.classes ? 'border-primary bg-primary/[0.05]' : 'border-line',
+              minted === null && !form.trusted && 'cursor-pointer',
+            )}
+          >
+            <!-- While the hidden test is trusted, the box and its title grey, and the reason stays whole, as the other way round. -->
+            <span class={cn('mt-0.5 shrink-0', form.trusted && 'opacity-[0.45]')}>
+              <Check bind:checked={form.classes} disabled={minted !== null || form.trusted} />
+            </span>
+            <span class="min-w-0">
+              <span class={cn('block text-ui font-semibold text-ink', form.trusted && 'opacity-[0.45]')}>{tr('admin.runners.connect.classes')}</span>
+              <span class={cn('mt-1 block text-2xs', form.trusted ? 'text-warning' : 'text-muted')}>
+                {form.trusted ? tr('admin.runners.menu.classesNotWithTrust') : tr('admin.runners.connect.classesNote')}
+              </span>
+            </span>
+          </label>
+        </div>
       </form>
 
       {#if error}

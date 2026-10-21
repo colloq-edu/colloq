@@ -11,6 +11,9 @@
  * code minted on the console would join machines the panel's would not.
  * The mint is in the audit log as the panel's is: a code is a door for its
  * machines and its hours, and the console's was the one the log never saw.
+ * A code for classes (--classes) is never also one for the hidden test
+ * (docs/architecture/remote-classes.md D3), and a database this release
+ * makes from nothing has the columns that say so.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -53,11 +56,12 @@ test('the console\'s minter prints one JSON line with the code, writes the panel
     assert.ok(!fs.existsSync(path.join(data, 'setup-token')), 'the console\'s minter wrote a setup token')
     const lines = run.stdout.trim().split('\n')
     assert.equal(lines.length, 1, 'stdout is the code\'s alone')
-    const answer = JSON.parse(lines[0]) as { code: string; expiresAt: number; machines: number; trusted: boolean }
-    assert.deepEqual(Object.keys(answer).sort(), ['code', 'expiresAt', 'machines', 'trusted'])
+    const answer = JSON.parse(lines[0]) as { code: string; expiresAt: number; machines: number; trusted: boolean; classes: boolean }
+    assert.deepEqual(Object.keys(answer).sort(), ['classes', 'code', 'expiresAt', 'machines', 'trusted'])
     assert.match(answer.code, /^[a-f0-9]{32}$/)
     assert.equal(answer.machines, 3)
     assert.equal(answer.trusted, true)
+    assert.equal(answer.classes, false)
     assert.ok(answer.expiresAt >= before + 12 * 3600_000 && answer.expiresAt <= Date.now() + 12 * 3600_000)
     const sha = createHash('sha256').update(answer.code).digest('hex')
     const db = new Database(path.join(data, 'colloq.db'), { readonly: true })
@@ -70,6 +74,7 @@ test('the console\'s minter prints one JSON line with the code, writes the panel
       assert.equal(row.approved_slots, 4)
       assert.equal(row.name_prefix, 'vast-4090')
       assert.equal(row.created_by, 'colloq-host')
+      assert.equal(row.classes, 0)
       assert.ok(!JSON.stringify(db.prepare('SELECT * FROM remote_runner_codes').all()).includes(answer.code), 'the code itself nowhere')
       // The panel's line in the audit log, by the code's id in the owner's list (store.ts · codeIdOf):
       // nobody signed in, the console named, the code nowhere.
@@ -78,7 +83,7 @@ test('the console\'s minter prints one JSON line with the code, writes the panel
       const event = audited[0]
       assert.deepEqual([event.actor_id, event.actor_name, event.actor_email, event.actor_role, event.ip], [null, null, null, null, null])
       assert.deepEqual([event.target_type, event.target_id, event.target_label], ['runner_code', sha.slice(0, 16), 'vast-4090'])
-      assert.deepEqual(JSON.parse(String(event.detail)), { machines: 3, hours: 12, trusted: true, approvedSlots: 4, source: 'colloq-host' })
+      assert.deepEqual(JSON.parse(String(event.detail)), { machines: 3, hours: 12, trusted: true, classes: false, approvedSlots: 4, source: 'colloq-host' })
       assert.ok(!JSON.stringify(db.prepare('SELECT * FROM admin_audit_log').all()).includes(answer.code), 'nor in the audit log')
     } finally {
       db.close()
@@ -113,9 +118,56 @@ test('the console\'s minter prints one JSON line with the code, writes the panel
       const minted = log.prepare("SELECT target_label, detail FROM admin_audit_log WHERE action = 'runner.code_minted' ORDER BY id").all() as { target_label: string | null; detail: string }[]
       assert.equal(minted.length, 2)
       assert.equal(minted[1].target_label, null)
-      assert.deepEqual(JSON.parse(minted[1].detail), { machines: 1, hours: 24, trusted: false, approvedSlots: null, source: 'colloq-host' })
+      assert.deepEqual(JSON.parse(minted[1].detail), { machines: 1, hours: 24, trusted: false, classes: false, approvedSlots: null, source: 'colloq-host' })
     } finally {
       log.close()
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('--classes mints a code whose machines take classes, into a fresh database that has the columns; never together with --trusted', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-runner-code-classes-'))
+  try {
+    const data = path.join(root, 'data')
+    const run = mint(data, ['--machines', '2', '--classes', '--prefix', 'lab'])
+    assert.equal(run.status, 0, run.stderr)
+    const answer = JSON.parse(run.stdout.trim()) as { code: string; machines: number; trusted: boolean; classes: boolean }
+    assert.equal(answer.classes, true)
+    assert.equal(answer.trusted, false)
+    const sha = createHash('sha256').update(answer.code).digest('hex')
+    const db = new Database(path.join(data, 'colloq.db'), { readonly: true })
+    try {
+      // A database made from nothing by this release: the columns are there, with their defaults.
+      const columns = (table: string) => Object.fromEntries((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string; notnull: number; dflt_value: string | null }[])
+        .map((c) => [c.name, { notnull: c.notnull, dflt: c.dflt_value }]))
+      const runners = columns('remote_runners')
+      assert.deepEqual(runners.classes, { notnull: 1, dflt: '0' })
+      assert.deepEqual(runners.classes_quarantined_at, { notnull: 0, dflt: null })
+      assert.deepEqual(runners.classes_resumed_at, { notnull: 0, dflt: null })
+      assert.deepEqual(columns('remote_runner_codes').classes, { notnull: 1, dflt: '0' })
+      const row = db.prepare('SELECT * FROM remote_runner_codes WHERE code_sha256 = ?').get(sha) as Record<string, unknown>
+      assert.equal(row.classes, 1)
+      assert.equal(row.trusted, 0)
+      const audited = db.prepare("SELECT detail FROM admin_audit_log WHERE action = 'runner.code_minted'").get() as { detail: string }
+      assert.deepEqual(JSON.parse(audited.detail), { machines: 2, hours: 24, trusted: false, classes: true, approvedSlots: null, source: 'colloq-host' })
+    } finally {
+      db.close()
+    }
+    // No hidden test beside classes (D3): refused by the minter's rules, in words, with no code and no row.
+    for (const args of [['--classes', '--trusted'], ['--trusted', '--machines', '3', '--classes']]) {
+      const refused = mint(data, args)
+      assert.equal(refused.status, 2, refused.stderr)
+      assert.equal(refused.stdout, '')
+      assert.match(refused.stderr, /--classes and --trusted do not go together: a machine that takes classes is never given the hidden test/)
+    }
+    const after = new Database(path.join(data, 'colloq.db'), { readonly: true })
+    try {
+      assert.equal((after.prepare('SELECT COUNT(*) AS n FROM remote_runner_codes').get() as { n: number }).n, 1)
+      assert.equal((after.prepare("SELECT COUNT(*) AS n FROM admin_audit_log WHERE action = 'runner.code_minted'").get() as { n: number }).n, 1)
+    } finally {
+      after.close()
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true })

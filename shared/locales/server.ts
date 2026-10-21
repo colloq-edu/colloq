@@ -4445,5 +4445,459 @@ export const serverMessages: MessageCatalog = {
   "server.runners.codeAmbiguous": {
     "ru": "Этот номер подходит к нескольким кодам: обновите список и отмените код из него.",
     "en": "This id matches more than one code: reload the list and cancel the code from it."
+  },
+  "server.noConnectionToMachineTheKernelAnd.df78c8": {
+    "ru": "Нет связи с машиной «{machine}» · {elapsed}. Ядро и переменные на ней целы — ждём связь. Новые запуски подождут.",
+    "en": "No connection to machine {machine} · {elapsed}. The kernel and its variables there are intact — waiting for the connection. New runs will wait."
+  },
+  "server.machineHasNotAnsweredSinceWaitingUntil.1d012e": {
+    "ru": "Машина «{machine}» не отвечает с {since}. Ждём до {until}, потом поднимем ядро заново (переменные пропадут).",
+    "en": "Machine {machine} has not answered since {since}. Waiting until {until}, then the kernel starts again (the variables will be lost)."
+  },
+  "server.theConnectionToMachineCameBackAfter.28f7cf": {
+    "ru": "Связь с машиной «{machine}» вернулась через {seconds} с.",
+    "en": "The connection to machine {machine} came back after {seconds} s."
+  },
+  "server.theConnectionToTheMachineBrokeThe.5504d1": {
+    "ru": "Связь с машиной прервалась — результат ячейки потерян. Ядро и переменные целы; запустите ячейку снова.",
+    "en": "The connection to the machine broke — the cell’s result is lost. The kernel and its variables are intact; run the cell again."
+  },
+  "server.thisCellWasRunningOnMachineWhen.cbb534": {
+    "ru": "Эта ячейка выполнялась на машине «{machine}», когда та пропала. Неизвестно, успела ли она закончиться; на новом ядре её нет.",
+    "en": "This cell was running on machine {machine} when the machine was lost. Whether it finished is unknown; the new kernel has none of it."
+  },
+  "server.theQueueWasClearedItsCellsCounted.c77303": {
+    "ru": "Очередь сброшена: ячейки рассчитывали на переменные, которых больше нет.",
+    "en": "The queue was cleared: its cells counted on variables that no longer exist."
+  },
+  "server.noConnectionToMachineARestartWould.406486": {
+    "ru": "Нет связи с машиной «{machine}» — перезапуск сейчас не дойдёт. Нажмите, когда связь вернётся.",
+    "en": "No connection to machine {machine} — a restart would not reach it now. Press it once the connection is back."
+  },
+  "server.theRestartWasSentButNoAnswer.17cbbc": {
+    "ru": "Перезапуск отправлен, но ответа нет: связь с машиной прервалась. Узнаем, когда она вернётся.",
+    "en": "The restart was sent, but no answer came: the connection to the machine broke. We will know once it is back."
+  },
+  "server.theRestartWentThroughTheVariablesWere.96b635": {
+    "ru": "Перезапуск прошёл: переменные сброшены.",
+    "en": "The restart went through: the variables were reset."
+  },
+  "server.theRestartDidNotGetThroughThe.92177b": {
+    "ru": "Перезапуск не дошёл — переменные на месте.",
+    "en": "The restart did not get through — the variables are still there."
+  },
+  "server.noConnectionToTheMachineTheCell.b76132": {
+    "ru": "Нет связи с машиной — остановить ячейку сейчас нельзя. Предел времени сработает, когда связь вернётся.",
+    "en": "No connection to the machine — the cell cannot be stopped now. The time limit will apply once the connection is back."
+  },
+  "server.theOwnerDisconnectedMachine.1a3061": {
+    "ru": "Владелец отключил машину «{machine}».",
+    "en": "The owner disconnected machine {machine}."
+  },
+  "server.machineIsNoLongerTrustedToRun.8962f2": {
+    "ru": "Машине «{machine}» больше не доверено вести занятия.",
+    "en": "Machine {machine} is no longer trusted to run classes."
+  },
+  "server.machineIsBeingDisconnected.6aa752": {
+    "ru": "Машину «{machine}» отключают.",
+    "en": "Machine {machine} is being disconnected."
+  },
+  // After a revoke, an unclass, a leave or a move: where the kernel comes back is the next start's to say (the fallback's
+  // «…на этом сервере», «Ядро поднято на другой машине»), and nothing runs anywhere yet.
+  "server.theKernelWillStartAgainTheVariables.a76610": {
+    "ru": "Ядро поднимется заново, переменные пропали.",
+    "en": "The kernel will start again; the variables are gone."
+  },
+  "server.thisServerHasNoRoomForThis.25c35f": {
+    "ru": "На сервере нет места для ядра этого занятия: занято {used} из {total}. Освободите память или подключите машину.",
+    "en": "This server has no room for this class’s kernel: {used} of {total} are taken. Free some memory or connect a machine."
+  },
+  "server.machineCameBackAfterTheMoveIts.aacc24": {
+    "ru": "Машина «{machine}» вернулась после переезда; её изменения в файлах после {since} не приняты: {files}.",
+    "en": "Machine {machine} came back after the move; its file changes after {since} were not accepted: {files}."
+  },
+  // A machine's copy let go after an ordinary stop there (the class's end, the owner's stop, the idle sweep), not a move: what
+  // its kernels wrote and the server never got goes with it (kernel/remote/files.ts · lateChanges).
+  "server.theKernelsOnTheMachineWereStopped.d5fceb": {
+    "ru": "Ядра на машине остановлены; изменения в файлах, которые не успели доехать до сервера, отброшены: {files}.",
+    "en": "The kernels on the machine were stopped; the file changes that had not reached the server were dropped: {files}."
+  },
+  "server.wasChangedHereAndOnTheMachine.107a60": {
+    "ru": "{file} изменили одновременно здесь и на машине. Оставлена версия сервера, версия с машины — «{copy}».",
+    "en": "{file} was changed here and on the machine at the same time. The server’s version was kept; the machine’s is “{copy}”."
+  },
+  "server.fromTheMachine.3b540b": {
+    "ru": "{name} (с машины {time})",
+    "en": "{name} (from the machine {time})"
+  },
+  "server.wasDeletedOnTheServerTheChanges.6230f9": {
+    "ru": "{file} удалён на сервере; изменения, сделанные в нём на машине, отброшены.",
+    "en": "{file} was deleted on the server; the changes made to it on the machine were dropped."
+  },
+  "server.isOverTheLimitAndStaysOn.bf3362": {
+    "ru": "{file} ({size}) больше предела {limit} и остаётся на машине. Если машина пропадёт, файл пропадёт тоже.",
+    "en": "{file} ({size}) is over the {limit} limit and stays on the machine. If the machine is lost, the file is lost too."
+  },
+  "server.filesAreOnTheirWayToThe.1bb29d": {
+    "ru": "Файлы едут на машину: {done} из {total}…",
+    "en": "Files are on their way to the machine: {done} of {total}…"
+  },
+  "server.theFilesDidNotReachTheMachine.20cf87": {
+    "ru": "Файлы не дошли до машины: {seconds} с без движения — ячейка не запущена.",
+    "en": "The files did not reach the machine: {seconds} s without progress — the cell was not run."
+  },
+  // The files of a class on machines (server/src/kernel/remote/files.ts, §8): the barrier's ceiling, a conflict whose
+  // machine version did not fit the caps, the late writes of a returning machine as the room reads them (no machine's
+  // name: the kernel log is everyone's), and «Привезти»'s refusals.
+  "server.theFilesDidNotReachTheMachineIn.793493": {
+    "ru": "Файлы не успели доехать до машины за {seconds} с — ячейка не запущена.",
+    "en": "The files did not reach the machine within {seconds} s — the cell was not run."
+  },
+  "server.wasChangedHereAndOnTheMachineNoCopy.c0eae4": {
+    "ru": "{file} изменили одновременно здесь и на машине. Оставлена версия сервера; версия с машины не поместилась в пределы и отброшена.",
+    "en": "{file} was changed here and on the machine at the same time. The server’s version was kept; the machine’s did not fit the limits and was dropped."
+  },
+  "server.theMachineCameBackAfterTheMove.f1111a": {
+    "ru": "Машина вернулась после переезда; её изменения в файлах после {since} не приняты: {files}.",
+    "en": "The machine came back after the move; its file changes after {since} were not accepted: {files}."
+  },
+  "server.thisFileIsNotOnTheClassMachines.0fd59f": {
+    "ru": "Этого файла нет на машинах занятия.",
+    "en": "This file is not on the class’s machines."
+  },
+  "server.thisFileCannotBeBroughtFromThe.148a43": {
+    "ru": "Этот файл с машины не привезти: он из установленных пакетов (pip install -t), а они остаются на машине.",
+    "en": "This file cannot be brought from the machine: it belongs to installed packages (pip install -t), which stay on the machine."
+  },
+  "server.doesNotFitTheClassLimit.39ab91": {
+    "ru": "{file} ({size}) не помещается в предел занятия {limit}.",
+    "en": "{file} ({size}) does not fit the class’s {limit} limit."
+  },
+  "server.onlyTheTeacherCanBringAFile.031ac7": {
+    "ru": "Привезти файл с машины может только преподаватель.",
+    "en": "Only the teacher can bring a file from the machine."
+  },
+  "server.startingTheKernelOnMachineImage.1f4cdc": {
+    "ru": "Запускаем ядро на машине «{machine}»… образ ↓ {percent} %",
+    "en": "Starting the kernel on machine {machine}… image ↓ {percent}%"
+  },
+  "server.startingTheKernelOnMachine.c2d7a3": {
+    "ru": "Запускаем ядро на машине «{machine}»…",
+    "en": "Starting the kernel on machine {machine}…"
+  },
+  "server.theAgentOnMachineIsUpdatingThe.88b188": {
+    "ru": "Агент на машине «{machine}» обновляется. Ядро и переменные на ней целы — новые запуски подождут.",
+    "en": "The agent on machine {machine} is updating. The kernel and its variables there are intact — new runs will wait."
+  },
+  "server.theCouncilPoolRunsOnlyOnMachines.ef5702": {
+    "ru": "Пул консилиума бывает только на машинах.",
+    "en": "The council pool runs only on machines."
+  },
+  "server.thePoolIsStillStartingThisAttempt.bf84be": {
+    "ru": "Пул ещё поднимается — эта попытка посчитана в общем ядре.",
+    "en": "The pool is still starting — this attempt was run in the shared kernel."
+  },
+  "server.notCarriedOver.00ad4e": {
+    "ru": "Не переносится: {names}.",
+    "en": "Not carried over: {names}."
+  },
+  "server.databaseConnection.cdf70c": {
+    "ru": "соединение с базой",
+    "en": "database connection"
+  },
+  "server.openFile.3a6aca": {
+    "ru": "открытый файл",
+    "en": "open file"
+  },
+  "server.networkSocket.34c443": {
+    "ru": "сетевое соединение",
+    "en": "network socket"
+  },
+  "server.generator.c33340": {
+    "ru": "генератор",
+    "en": "generator"
+  },
+  "server.thread.49e10b": {
+    "ru": "поток",
+    "en": "thread"
+  },
+  "server.lock.1f0e8d": {
+    "ru": "блокировка",
+    "en": "lock"
+  },
+  "server.dataOnTheGpu.605180": {
+    "ru": "данные на видеокарте",
+    "en": "data on the GPU"
+  },
+  "server.tooBigForTheSnapshot.1a48a4": {
+    "ru": "не помещается в снимок",
+    "en": "too big for the snapshot"
+  },
+  "server.cannotBeCopied.e6521a": {
+    "ru": "не копируется",
+    "en": "cannot be copied"
+  },
+  "server.runInTheSharedKernelItUses.eaf141": {
+    "ru": "Посчитано в общем ядре: использует {name} — её нельзя перенести.",
+    "en": "Run in the shared kernel: it uses {name}, which cannot be carried over."
+  },
+  "server.stateAsOfWithoutCell.30d8e4": {
+    "ru": "Состояние {time} — без ячейки {cells}.",
+    "en": "State as of {time}, without cell {cells}."
+  },
+  "server.stateAsOfWithoutCells.44aa0a": {
+    "ru": "Состояние {time} — без ячеек {cells}.",
+    "en": "State as of {time}, without cells {cells}."
+  },
+  "server.theKernelHasRunCellsSinceThe.e29733": {
+    "ru": {
+      "one": "Ядро ушло вперёд на {count} ячейку после снимка — результат в тетради может отличаться.",
+      "few": "Ядро ушло вперёд на {count} ячейки после снимка — результат в тетради может отличаться.",
+      "many": "Ядро ушло вперёд на {count} ячеек после снимка — результат в тетради может отличаться.",
+      "other": "Ядро ушло вперёд на {count} ячейки после снимка — результат в тетради может отличаться."
+    },
+    "en": {
+      "one": "The kernel has run {count} cell since the snapshot — the result in the notebook may differ.",
+      "other": "The kernel has run {count} cells since the snapshot — the result in the notebook may differ."
+    }
+  },
+  "server.theMachineWasLostInTheMiddle.b5f5c5": {
+    "ru": "Машина пропала посреди попытки — пересчитано в общем ядре. Пауза между запусками не засчитана.",
+    "en": "The machine was lost in the middle of the attempt — it was run again in the shared kernel. The pause between runs was not counted."
+  },
+  "server.theOrderOfSetsInAttemptsMay.b87dc7": {
+    "ru": "Порядок множеств в попытках может отличаться от тетради: её ядро запущено до обновления.",
+    "en": "The order of sets in attempts may differ from the notebook’s: its kernel was started before the update."
+  },
+  // The same rows as the room reads them (server/src/kernel/index.ts): whatever lands in the room's document never
+  // names the machine; the named rows above go to staff over the control socket and to the owner.
+  "server.noConnectionToTheMachineTheKernel.71d94f": {
+    "ru": "Нет связи с машиной · {elapsed}. Ядро и переменные на ней целы — ждём связь. Новые запуски подождут.",
+    "en": "No connection to the machine · {elapsed}. The kernel and its variables there are intact — waiting for the connection. New runs will wait."
+  },
+  "server.theConnectionToTheMachineCameBack.d517ba": {
+    "ru": "Связь с машиной вернулась через {seconds} с.",
+    "en": "The connection to the machine came back after {seconds} s."
+  },
+  // A failover's note says where the kernel comes back only once the next start knows it (kernel/index.ts · placementNews:
+  // «fallback» here, «moved» on another machine): at the failover nothing runs anywhere yet.
+  "server.theMachineHasNotAnsweredSinceThe.aa7fbb": {
+    "ru": "Машина не отвечает с {since}. Ядро поднимется заново: переменные пропали, файлы — по {filesAt}. Запустите ячейки снова.",
+    "en": "The machine has not answered since {since}. The kernel will start again: the variables are gone, the files are as of {filesAt}. Run the cells again."
+  },
+  "server.theMachineHasNotAnsweredSinceThe.ee52e1": {
+    "ru": "Машина не отвечает с {since}. Ядро поднимется заново: переменные пропали. Запустите ячейки снова.",
+    "en": "The machine has not answered since {since}. The kernel will start again: the variables are gone. Run the cells again."
+  },
+  "server.thisCellWasRunningOnTheMachine.8d1959": {
+    "ru": "Эта ячейка выполнялась на машине, когда та пропала. Неизвестно, успела ли она закончиться; на новом ядре её нет.",
+    "en": "This cell was running on the machine when the machine was lost. Whether it finished is unknown; the new kernel has none of it."
+  },
+  "server.noConnectionToTheMachineARestart.f05d30": {
+    "ru": "Нет связи с машиной — перезапуск сейчас не дойдёт. Нажмите, когда связь вернётся.",
+    "en": "No connection to the machine — a restart would not reach it now. Press it once the connection is back."
+  },
+  "server.theOwnerDisconnectedTheMachine.0660fa": {
+    "ru": "Владелец отключил машину.",
+    "en": "The owner disconnected the machine."
+  },
+  "server.theMachineIsNoLongerTrustedTo.7919d7": {
+    "ru": "Машине больше не доверено вести занятия.",
+    "en": "The machine is no longer trusted to run classes."
+  },
+  "server.theMachineIsBeingDisconnected.126fbe": {
+    "ru": "Машину отключают.",
+    "en": "The machine is being disconnected."
+  },
+  "server.theNetworkOnTheMachineGotOut.10829b": {
+    "ru": "Сеть на машине вышла из-под контроля: ядро остановлено ради безопасности и поднимется заново.",
+    "en": "The network on the machine got out of control: the kernel was stopped for safety and will start again."
+  },
+  "server.startingTheKernelOnAMachine.eca55f": {
+    "ru": "Запускаем ядро на машине…",
+    "en": "Starting the kernel on a machine…"
+  },
+  "server.startingTheKernelOnAMachineImage.9a5892": {
+    "ru": "Запускаем ядро на машине… образ ↓ {percent} %",
+    "en": "Starting the kernel on a machine… image ↓ {percent}%"
+  },
+  "server.theAgentOnTheMachineIsUpdating.d5b483": {
+    "ru": "Агент на машине обновляется. Ядро и переменные на ней целы — новые запуски подождут.",
+    "en": "The agent on the machine is updating. The kernel and its variables there are intact — new runs will wait."
+  },
+  // The same rows for a class whose personal notebooks alone compute on the machine (§10, D31): the class
+  // notebooks' kernel is here, and their runs neither wait nor lose anything.
+  "server.noConnectionToThePersonalNotebooksMachine.d2ae75": {
+    "ru": "Нет связи с машиной личных тетрадей · {elapsed}. Их ядра и переменные на ней целы — ждём связь. Запуски в личных тетрадях подождут.",
+    "en": "No connection to the personal notebooks' machine · {elapsed}. Their kernels and variables there are intact — waiting for the connection. Runs in personal notebooks will wait."
+  },
+  "server.theAgentOnThePersonalNotebooksMachine.5176d2": {
+    "ru": "Агент на машине личных тетрадей обновляется. Их ядра и переменные на ней целы — запуски в личных тетрадях подождут.",
+    "en": "The agent on the personal notebooks' machine is updating. Their kernels and variables there are intact — runs in personal notebooks will wait."
+  },
+  "server.thePersonalNotebooksMachineHasNotAnswered.69b338": {
+    "ru": "Машина личных тетрадей не отвечает с {since}. Их ядра поднимутся заново: переменные пропали. Запустите ячейки снова.",
+    "en": "The personal notebooks' machine has not answered since {since}. Their kernels will start again: the variables are gone. Run the cells again."
+  },
+  "server.thePersonalNotebooksMachineHasNotAnswered.ae4676": {
+    "ru": "Машина личных тетрадей не отвечает с {since}. Их ядра поднимутся заново: переменные пропали, файлы — по {filesAt}. Запустите ячейки снова.",
+    "en": "The personal notebooks' machine has not answered since {since}. Their kernels will start again: the variables are gone, the files are as of {filesAt}. Run the cells again."
+  },
+  "server.thePersonalNotebooksKernelsWillStartAgain.7cdaa6": {
+    "ru": "Ядра личных тетрадей поднимутся заново, их переменные пропали.",
+    "en": "The personal notebooks' kernels will start again; their variables are gone."
+  },
+  "server.theNetworkOnThePersonalNotebooksMachine.b18ca6": {
+    "ru": "Сеть на машине личных тетрадей вышла из-под контроля: их ядра остановлены ради безопасности и поднимутся заново.",
+    "en": "The network on the personal notebooks' machine got out of control: their kernels were stopped for safety and will start again."
+  },
+  // Where a slot lost with its machine came back, once the next start put it on another machine (the fallback's own note
+  // says «here»): the room's, never naming either machine.
+  "server.theKernelWasStartedOnAnotherMachine.28c860": {
+    "ru": "Ядро поднято на другой машине.",
+    "en": "The kernel was started on another machine."
+  },
+  "server.thePersonalNotebooksKernelsWereStartedOn.3d0553": {
+    "ru": "Ядра личных тетрадей подняты на другой машине.",
+    "en": "The personal notebooks' kernels were started on another machine."
+  },
+  // A kernel start asked for while the slot's machine does not answer (the join's warm-up, a hover, Format): refused
+  // before anything is touched; the pump waits at its gate instead.
+  "server.noConnectionToTheMachineTheKernel.67a40e": {
+    "ru": "Нет связи с машиной — ядро запустится, когда она ответит.",
+    "en": "No connection to the machine: the kernel starts once it answers."
+  },
+  // A start on a machine that failed in words naming the machine: the room reads this, staff the words themselves.
+  "server.theKernelDidNotStartOnThe.8ad0fb": {
+    "ru": "Ядро не запустилось на машине — подробности у преподавателя.",
+    "en": "The kernel did not start on the machine; the teacher has the details."
+  },
+  // §6.2 «если машин нет — здесь»: the slot starts on this server, through its admission.
+  "server.noMachineCanTakeTheKernelNow.53437e": {
+    "ru": "Ни одна машина сейчас не может взять ядро — оно поднимается на этом сервере.",
+    "en": "No machine can take the kernel now: it starts on this server."
+  },
+  // Staff's rows beside the table: the failover before files come home (wave 3), and the banner under «ждать машину». The
+  // failover's rows say where the kernel comes back no more than the room's do: at the failover nothing runs anywhere yet.
+  "server.machineHasNotAnsweredSinceTheKernel.ceaa1d": {
+    "ru": "Машина «{machine}» не отвечает с {since}. Ядро поднимется заново: переменные пропали. Запустите ячейки снова.",
+    "en": "Machine {machine} has not answered since {since}. The kernel will start again: the variables are gone. Run the cells again."
+  },
+  "server.machineHasNotAnsweredSinceTheKernel.6c488a": {
+    "ru": "Машина «{machine}» не отвечает с {since}. Ядро поднимется заново: переменные пропали, файлы — по {filesAt}. Запустите ячейки снова.",
+    "en": "Machine {machine} has not answered since {since}. The kernel will start again: the variables are gone, the files are as of {filesAt}. Run the cells again."
+  },
+  "server.theNetworkOnMachineGotOutOf.c73666": {
+    "ru": "Сеть на машине «{machine}» вышла из-под контроля: ядро остановлено ради безопасности и поднимется заново.",
+    "en": "The network on machine {machine} got out of control: the kernel was stopped for safety and will start again."
+  },
+  "server.machineHasNotAnsweredSinceWaitingFor.5afc55": {
+    "ru": "Машина «{machine}» не отвечает с {since}. Ждём её: ядро переедет только по «Перенести сейчас».",
+    "en": "Machine {machine} has not answered since {since}. Waiting for it: the kernel moves only on “Move now”."
+  },
+  // «Перенести сейчас» on the control socket (server/src/control.ts · kernel:move).
+  "server.onlyTheTeacherCanMoveTheKernel.9a2c10": {
+    "ru": "Перенести ядро может только преподаватель.",
+    "en": "Only the teacher can move the kernel."
+  },
+  "server.thisClassSKernelsRunOnThis.d5eaa3": {
+    "ru": "Ядра этого занятия считаются на этом сервере — переносить нечего.",
+    "en": "This class’s kernels run on this server: there is nothing to move."
+  },
+  "server.couldNotMoveTheKernel.9435d3": {
+    "ru": "Не удалось перенести ядро.",
+    "en": "Could not move the kernel."
+  },
+  // A start on a machine that could not be made (server/src/kernel/remote/placement.ts). The rows naming the machine are
+  // staff's: the room reads the unnamed «Ядро не запустилось на машине…» instead (kernel/index.ts · startWords).
+  "server.noMachineCanTakeThisClassNow.07c43f": {
+    "ru": "Сейчас ни одна машина не может взять это занятие, а на этом сервере ему считать нельзя.",
+    "en": "No machine can take this class now, and it may not compute on this server."
+  },
+  "server.theClassKernelOnTheMachineChanged.8155da": {
+    "ru": "Ядро класса на машине сменилось, пока запускалось. Запустите ещё раз.",
+    "en": "The class kernel on the machine changed while it started. Run again."
+  },
+  "server.theKernelDidNotStartOnMachine.5db0fa": {
+    "ru": "Ядро не запустилось на машине «{machine}» за {seconds} с.",
+    "en": "The kernel did not start on machine {machine} within {seconds} s."
+  },
+  "server.theKernelDidNotStartOnMachine.f6b08f": {
+    "ru": "Ядро не запустилось на машине «{machine}»: {detail}",
+    "en": "The kernel did not start on machine {machine}: {detail}"
+  },
+  "server.theKernelDidNotStartOnMachine.8d78b5": {
+    "ru": "Ядро не запустилось на машине «{machine}».",
+    "en": "The kernel did not start on machine {machine}."
+  },
+  // A memory change from the class form (server/src/routes/admin-instance.ts · the seminar PATCH) that the running kernel's
+  // container did not take: its machine had no room for it (placement.ts · resize), or docker here refused it.
+  "server.theNewMemoryLimitDidNotReach.570077": {
+    "ru": "Новый предел памяти не дошёл до работающего ядра — ядро получит его при следующем запуске.",
+    "en": "The new memory limit did not reach the running kernel; the kernel gets it at its next start."
+  },
+  // Who says where a class computes (server/src/routes/admin-instance.ts · the seminar PATCH, D4).
+  "server.onlyTheOwnerDecidesWhereClassesCompute.5ef976": {
+    "ru": "Где считаются занятия, решает владелец: отправлять их на машины учителям сейчас нельзя.",
+    "en": "Only the owner decides where classes compute: teachers cannot send them to machines now."
+  },
+  // A class's memory or cores past the bound of where its slots compute (server/src/routes/admin-instance.ts ·
+  // memoryRefusal, cpuRefusal; kernel/resources.ts · placedBounds): the machines' names the biggest of them; this
+  // server's is said as this server's once part of the class computes on machines. A class all here keeps its old words.
+  "server.onTheMachinesThisClassComputesOn.8a0084": {
+    "ru": "На машинах, где считается это занятие, памяти можно выдать от {min} до {max} МБ: больше не даст самая большая из них, «{machine}».",
+    "en": "On the machines this class computes on it may be given between {min} and {max} MB of memory: the biggest of them, {machine}, gives no more."
+  },
+  "server.onTheMachinesThisClassComputesOn.dc2f4b": {
+    "ru": "На машинах, где считается это занятие, ядер можно выдать от {min} до {max}: больше нет у самой большой из них, «{machine}».",
+    "en": "On the machines this class computes on it may be given between {min} and {max} cores: the biggest of them, {machine}, has no more."
+  },
+  "server.onThisServerTheClassMayBe.93fb13": {
+    "ru": "На этом сервере занятию можно выдать от {min} до {max} МБ памяти: больше не останется самому серверу.",
+    "en": "On this server the class may be given between {min} and {max} MB of memory: more and nothing is left for the server itself."
+  },
+  "server.onThisServerTheClassMayBe.e52ca3": {
+    "ru": "На этом сервере ядер занятию можно выдать от {min} до {max}: больше у него нет.",
+    "en": "On this server the class may be given between {min} and {max} cores: it has no more."
+  },
+  // A move of where a class computes refused before anything is written (server/src/routes/admin-instance.ts ·
+  // numbersPastMove): its own number is past the bound of the new place, said next to it (the words above).
+  "server.theClassHasMbOfMemoryLower.e34f97": {
+    "ru": "Памяти у занятия — {mb} МБ: уменьшите её, прежде чем менять, где оно считается.",
+    "en": "The class has {mb} MB of memory: lower it before changing where it computes."
+  },
+  "server.theClassHasCoresLowerThemBefore.1f3d8b": {
+    "ru": "Ядер у занятия — {cpus}: уменьшите их число, прежде чем менять, где оно считается.",
+    "en": "The class has {cpus} cores: lower them before changing where it computes."
+  },
+  // A slot set to machines that none can take, refused its fallback here (server/src/kernel/remote/placement.ts ·
+  // pastThisServer): its class's number is past this server's bound. The room reads it: no machine is named.
+  "server.noMachineCanTakeTheKernelNow.f1fc7d": {
+    "ru": "Ни одна машина сейчас не может взять ядро, а этот сервер даст не больше {max} МБ памяти — у занятия {mb} МБ. Уменьшите память занятия или дождитесь машины.",
+    "en": "No machine can take the kernel now, and this server gives at most {max} MB of memory: the class has {mb} MB. Lower the class’s memory or wait for a machine."
+  },
+  "server.noMachineCanTakeTheKernelNow.81688a": {
+    "ru": "Ни одна машина сейчас не может взять ядро, а ядер этот сервер даст не больше {max} — у занятия {cpus}. Уменьшите число ядер занятия или дождитесь машины.",
+    "en": "No machine can take the kernel now, and this server gives at most {max} cores: the class has {cpus}. Lower the class’s cores or wait for a machine."
+  },
+  // A file the proxy in front of this server refused on its way here (its 413, server/src/kernel/remote/files.ts · apply,
+  // fetch): it stays on the machine, as one over a cap does; the room's kernel log says so once, and «Привезти» is refused.
+  "server.staysOnTheMachineTheProxyIn.8cfa12": {
+    "ru": "{file} ({size}) остаётся на машине: прокси перед этим сервером не принял файл такого размера. Если машина пропадёт, файл пропадёт тоже.",
+    "en": "{file} ({size}) stays on the machine: the proxy in front of this server refused a file this large. If the machine is lost, the file is lost too."
+  },
+  "server.cannotBeBroughtHereTheProxyIn.fc1eca": {
+    "ru": "{file} не привезти: прокси перед этим сервером не принимает файлы такого размера. Предел поднимает его администратор.",
+    "en": "{file} cannot be brought here: the proxy in front of this server takes no file this large. Its administrator can raise the limit."
+  },
+  // A slot's placement stopped under its kernels, which nobody here asked for (a container whose echo was refused, a start
+  // the machine kept failing: server/src/kernel/index.ts · endUnderStop): the room's kernel log, no machine named.
+  "server.theKernelOnTheMachineWasStopped.7de430": {
+    "ru": "Ядро на машине остановлено: следующий запуск поднимет его заново, переменные пропали.",
+    "en": "The kernel on the machine was stopped: the next run starts it again, and the variables are gone."
+  },
+  "server.thePersonalNotebooksKernelsOnTheMachine.160525": {
+    "ru": "Ядра личных тетрадей на машине остановлены: следующий запуск поднимет их заново, переменные пропали.",
+    "en": "The personal notebooks’ kernels on the machine were stopped: the next run starts them again, and their variables are gone."
   }
 }

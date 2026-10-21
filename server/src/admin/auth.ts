@@ -402,8 +402,8 @@ export function sameOrigin(req: Request, res: Response, next: NextFunction): voi
  * server reached as `host`.
  *
  * Two doors ask it, and they must not answer differently: `sameOrigin` above
- * for writes under `/api`, and the WebSocket upgrade (the `upgrade` handler of
- * server/src/index.ts, which holds the sockets, not the app), where the
+ * for writes under `/api`, and the WebSocket upgrade (the `upgrade` handler in
+ * server/src/upgrade.ts, which holds the sockets, not the app), where the
  * teacher's role also comes from the cookie and a browser attaches that cookie
  * to a socket opened by any page of the same site.
  */

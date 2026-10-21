@@ -32,14 +32,20 @@
 import { config } from '../config.js'
 import { db } from '../db.js'
 import { tr } from '@shared/i18n'
-import type {
-  ResourceBounds,
-  ResourceSetting,
-  ResourceSettingName,
-  ResourceSettingValues,
-  ResourceSettings,
-  ResourceSource,
-  UpdateResourceSettingsRequest,
+import {
+  CLASS_MACHINE_SETTING_BOUNDS,
+  CLASS_MACHINE_SETTING_DEFAULTS,
+  CLASS_PLACEMENT_PRESET_NAMES,
+  type ClassMachineSettings,
+  type ClassPlacementPreset,
+  type ResourceBounds,
+  type ResourceSetting,
+  type ResourceSettingName,
+  type ResourceSettingValues,
+  type ResourceSettings,
+  type ResourceSource,
+  type UpdateClassMachineSettingsRequest,
+  type UpdateResourceSettingsRequest,
 } from '@shared/admin'
 import { putSettingRow, settingRows } from './settings.js'
 
@@ -389,6 +395,16 @@ export function sessionLimitBytes(): number {
   return resourceValue('sessionMb') * MB
 }
 
+/**
+ * «Файл с машины — до» (D17), in bytes, as the class files from machines
+ * compare it (kernel/remote/files.ts): read at every comparison, so the
+ * owner's change counts for the next file a kernel writes, not after a
+ * restart. Over it a file stays «на машине», unless staff press «Привезти».
+ */
+export function machineFileLimitBytes(): number {
+  return classMachineSettings().machineFileMb * MB
+}
+
 /** What a saved number is clamped into, the machine's bounds included. */
 export function resourceBounds(machine: MachineBounds): Record<ResourceSettingName, ResourceBounds> {
   const out: Partial<Record<ResourceSettingName, ResourceBounds>> = {}
@@ -493,4 +509,103 @@ export function updateResourceSettings(
   write(patch, machine)
   const after = currentValues()
   return RESOURCE_SETTING_NAMES.filter((name) => before[name] !== after[name])
+}
+
+/* --------------------------------------------------- classes on machines */
+
+/**
+ * The owner's «Занятия на машинах» (docs/architecture/remote-classes.md §6.2,
+ * §13.1 Z1): who sends classes to machines, what a new class starts with,
+ * and the numbers the classes' traffic keeps to. A section of its own beside
+ * the numbers above, stored in the same box under `classes.`: two of its six
+ * are not numbers (a switch and a tile), none has an environment variable
+ * (the owner sets them in the panel, and the defaults are D4, D13, D17 and
+ * D18), and the panel draws them as one block.
+ *
+ * Read on every call, like everything here: the placement reads the switch at
+ * every PATCH, the delay at every new class, the rates at every sync reply.
+ */
+const CLASS_PREFIX = 'classes.'
+const CLASS_FIELDS = Object.keys(CLASS_MACHINE_SETTING_DEFAULTS) as Array<keyof ClassMachineSettings>
+type ClassNumber = keyof typeof CLASS_MACHINE_SETTING_BOUNDS
+
+const isPreset = (value: unknown): value is ClassPlacementPreset =>
+  typeof value === 'string' && (CLASS_PLACEMENT_PRESET_NAMES as readonly string[]).includes(value)
+
+/** One saved row as its field holds it; a hand-edited row that does not read is no row. */
+function classSaved<K extends keyof ClassMachineSettings>(field: K, raw: string | undefined): ClassMachineSettings[K] | null {
+  if (raw === undefined || raw.trim() === '') return null
+  if (field === 'teachers') return (raw === '1' ? true : raw === '0' ? false : null) as ClassMachineSettings[K] | null
+  if (field === 'newClasses') return (isPreset(raw) ? raw : null) as ClassMachineSettings[K] | null
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return null
+  const { min, max } = CLASS_MACHINE_SETTING_BOUNDS[field as ClassNumber]
+  return clamp(Math.round(value), min, max) as ClassMachineSettings[K]
+}
+
+/** The six as they stand: a saved value, otherwise the default. */
+export function classMachineSettings(): ClassMachineSettings {
+  const rows = settingRows(CLASS_PREFIX)
+  const out = { ...CLASS_MACHINE_SETTING_DEFAULTS }
+  for (const field of CLASS_FIELDS) {
+    const saved = classSaved(field, rows.get(CLASS_PREFIX + field))
+    if (saved !== null) (out as Record<string, unknown>)[field] = saved
+  }
+  return out
+}
+
+export type ClassMachinePatchResult = { patch: UpdateClassMachineSettingsRequest } | { error: string }
+
+/**
+ * An untrusted body as a patch, by the rules of parseResourcePatch: unknown
+ * fields and wrong types refused, whole numbers only (clamped on write),
+ * `null` to forget. The numbers' refusals are the resource settings' words.
+ */
+export function parseClassMachinePatch(body: unknown): ClassMachinePatchResult {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: tr('common.settingsRequired') }
+  const patch: UpdateClassMachineSettingsRequest = {}
+  for (const [field, value] of Object.entries(body as Record<string, unknown>)) {
+    if (!(CLASS_FIELDS as readonly string[]).includes(field)) return { error: tr('server.resources.unknownField', { field }) }
+    const key = field as keyof ClassMachineSettings
+    if (value === null) {
+      patch[key] = null
+      continue
+    }
+    // A switch and a tile: only a script sends anything else, and its author reads English.
+    if (key === 'teachers') {
+      if (typeof value !== 'boolean') return { error: 'teachers must be true, false or null' }
+      patch.teachers = value
+      continue
+    }
+    if (key === 'newClasses') {
+      if (!isPreset(value)) return { error: `newClasses must be one of ${CLASS_PLACEMENT_PRESET_NAMES.join(', ')} or null` }
+      patch.newClasses = value
+      continue
+    }
+    if (typeof value !== 'number' || !Number.isInteger(value)) return { error: tr('server.resources.wholeNumber', { field }) }
+    patch[key as ClassNumber] = value
+  }
+  return { patch }
+}
+
+const writeClasses = db.transaction((patch: UpdateClassMachineSettingsRequest) => {
+  for (const field of CLASS_FIELDS) {
+    const value = patch[field]
+    if (value === undefined) continue
+    if (value === null) putSettingRow(CLASS_PREFIX + field, null)
+    else if (typeof value === 'boolean') putSettingRow(CLASS_PREFIX + field, value ? '1' : '0')
+    else if (typeof value === 'string') putSettingRow(CLASS_PREFIX + field, value)
+    else {
+      const { min, max } = CLASS_MACHINE_SETTING_BOUNDS[field as ClassNumber]
+      putSettingRow(CLASS_PREFIX + field, String(clamp(value, min, max)))
+    }
+  }
+})
+
+/** Apply a parsed patch, as one transaction; answers the fields whose value changed. */
+export function updateClassMachineSettings(patch: UpdateClassMachineSettingsRequest): Array<keyof ClassMachineSettings> {
+  const before = classMachineSettings()
+  writeClasses(patch)
+  const after = classMachineSettings()
+  return CLASS_FIELDS.filter((field) => before[field] !== after[field])
 }

@@ -21,10 +21,20 @@
    *
    * Owner-only, like every door behind it: a machine sees rivals' notebooks,
    * and who may connect one is the instance's business.
+   *
+   * Classes on machines (Paper 18 · Z1): every row carries its roles as
+   * chips — submissions, and classes for a machine opened to classes, toned
+   * by what keeps new classes away — and such a machine has a class line
+   * under its row ("Classes: 3 classes · 30 of 60 GB · …"). The menu turns
+   * Takes classes on and off (asked first, both ways: it hands the machine
+   * students' work, or moves its classes off), moves its classes now, and
+   * lifts their quarantine; the hidden test and classes grey each other
+   * (D3). The class banners stand over the block, with the submissions'
+   * own.
    */
   import { onMount, type Snippet } from 'svelte'
   import { tr } from '@shared/i18n'
-  import type { RemoteCodeView, RemoteMachine, RemoteMachinesResponse } from '@shared/remote-admin'
+  import type { RemoteClassBanner, RemoteCodeView, RemoteMachine, RemoteMachinesResponse } from '@shared/remote-admin'
   import Badge from '@/admin/screens/competitions/Badge.svelte'
   import ConnectMachine from '@/admin/ui/ConnectMachine.svelte'
   import EmptyState from '@/admin/ui/EmptyState.svelte'
@@ -34,6 +44,11 @@
     PER_DEVICE_BOUNDS,
     PLACES_BOUNDS,
     cardsLine,
+    classBannerText,
+    classLine,
+    classesChip,
+    classesCount,
+    classesGauge,
     clockTime,
     codeWords,
     focusCompetition,
@@ -76,6 +91,9 @@
     | { kind: 'revoke'; machine: RemoteMachine }
     | { kind: 'revokeAll'; count: number }
     | { kind: 'cancelCode'; code: RemoteCodeView }
+    | { kind: 'classesOn'; machine: RemoteMachine }
+    | { kind: 'classesOff'; machine: RemoteMachine }
+    | { kind: 'moveClasses'; machine: RemoteMachine }
 
   let data = $state<RemoteMachinesResponse | null>(null)
   let loadErrorText = $state<(() => string) | null>(null)
@@ -99,7 +117,17 @@
   const machines = $derived(data ? listOrder(data.machines) : [])
   const live = $derived(machines.filter((machine) => !machineGone(machine.state)))
   const focus = $derived(data ? focusCompetition(data.machines) : null)
-  const gauges = $derived(data ? summaryGauges(data.summary) : [])
+  /* "8 online of 9 · 3 with classes · 6 classes · 70 places · 4 cards": the class gauge second, when any machine takes classes. */
+  const gauges = $derived.by(() => {
+    if (!data) return []
+    const all = summaryGauges(data.summary)
+    const classes = classesGauge(data.classMachines)
+    return classes ? [all[0], classes, ...all.slice(1)] : all
+  })
+  const classBanners = $derived(data?.classBanners ?? [])
+
+  /** The role chips (Z1): tighter than a state chip — the panel's smallest size, 0.1em, 1×5 px. */
+  const ROLE_CHIP = 'px-[5px] py-px tracking-[0.1em]'
 
   /** How a line's tone is painted (admin/runners.ts · LineTone). */
   const TONE: Record<LineTone, string> = {
@@ -241,6 +269,20 @@
     else ask({ kind: 'trust', machine })
   }
 
+  /**
+   * Takes classes, asked both ways: on hands the machine its classes'
+   * code, files and personal notebooks; off moves every class it holds now,
+   * variables lost.
+   */
+  function toggleClasses(machine: RemoteMachine): void {
+    ask(machine.classes?.on ? { kind: 'classesOff', machine } : { kind: 'classesOn', machine })
+  }
+
+  /** Resume on a class banner: the quarantine lifted, and the list read again. */
+  function resumeClasses(banner: RemoteClassBanner): void {
+    void act(() => runnersApi.classAction(banner.machineId, 'resume'))
+  }
+
   async function confirm(): Promise<void> {
     const current = dialog
     if (!current || working) return
@@ -266,6 +308,13 @@
     } else if (current.kind === 'cancelCode') {
       const id = current.code.id
       patch = () => runnersApi.cancelCode(id)
+    } else if (current.kind === 'classesOn' || current.kind === 'classesOff') {
+      const id = current.machine.id
+      const on = current.kind === 'classesOn'
+      patch = () => runnersApi.update(id, { classes: on })
+    } else if (current.kind === 'moveClasses') {
+      const id = current.machine.id
+      patch = () => runnersApi.classAction(id, 'move')
     } else {
       patch = () => runnersApi.revokeAll()
     }
@@ -283,6 +332,23 @@
     }
   }
 </script>
+
+<!--
+  A machine's roles (Z1): submissions on every machine, classes on one opened
+  to classes, toned by what keeps new ones away (dashed where classes are
+  impossible).
+-->
+{#snippet roleChips(roles: ReturnType<typeof classesChip>)}
+  <Badge word={tr('admin.runners.chip.submissions')} class={ROLE_CHIP} />
+  {#if roles}
+    <Badge
+      word={roles.word}
+      tone={roles.tone}
+      form={roles.dashed ? 'outline' : 'filled'}
+      class={cn(ROLE_CHIP, roles.dashed && 'border-dashed !text-faint')}
+    />
+  {/if}
+{/snippet}
 
 {#snippet trustedMark()}
   <Badge word={tr('admin.runners.trusted')} tone="accent" form="outline" />
@@ -316,6 +382,30 @@
         </a>
       </div>
     {/if}
+
+    {#each classBanners as banner (`${banner.kind}:${banner.machineId}`)}
+      <!-- The class banners (Paper 18 · Z1, §13.2): the same band and tone
+           as the submissions' quarantine above, one per event. A class
+           quarantine is lifted here (Resume); a takeover and a perimeter
+           that failed are looked into on the machine's page. -->
+      <div class="rn-banner mb-5 flex flex-wrap items-center gap-x-4 gap-y-2 border-l-[3px] border-danger bg-danger/[0.06] px-4 py-3" role="status">
+        <Icon name="alert" size={15} class="shrink-0 text-danger" />
+        <p class="min-w-0 flex-1 basis-[240px] break-words text-2xs text-ink">{classBannerText(banner)}</p>
+        {#if banner.kind === 'quarantined'}
+          <button type="button" class="btn-outline shrink-0 max-[640px]:min-h-11 max-[640px]:w-full" onclick={() => resumeClasses(banner)}>
+            {tr('admin.runners.classBanner.resume')}
+          </button>
+        {:else}
+          <a
+            class="btn-outline shrink-0 max-[640px]:min-h-11 max-[640px]:w-full"
+            href={machinePagePath(banner.machineId)}
+            onclick={(event) => openPage(event, banner.machineId)}
+          >
+            {tr('admin.runners.bannerOpen')}
+          </a>
+        {/if}
+      </div>
+    {/each}
 
     {#if machines.length > 0}
       <!-- The three numbers the fleet is read by, and the way to grow it.
@@ -374,12 +464,17 @@
           {@const ready = readinessLine(machine, focus, data.home.version)}
           {@const menu = machineMenu(machine)}
           {@const gone = machineGone(machine.state)}
-          <div class={cn('rn-row', gone && 'rn-gone')}>
+          {@const roles = classesChip(machine)}
+          {@const classes = classLine(machine, now)}
+          <div class={cn('rn-row', gone && 'rn-gone', classes && 'rn-with-class')}>
             <div class="rn-state flex min-w-0 flex-col items-start gap-1">
               <span class="flex flex-wrap items-center gap-1.5">
                 <Badge word={chip.word} tone={chip.tone} />
-                <!-- On a card the trusted mark rides with the chip (M7). -->
+                <!-- On a card the trusted mark rides with the chip (M7), and the roles beside them (Z10). -->
                 <span class="rn-card-only">{#if machine.trusted}{@render trustedMark()}{/if}</span>
+                {#if !gone}
+                  <span class="rn-roles-card">{@render roleChips(roles)}</span>
+                {/if}
               </span>
               <span class="text-micro text-muted">{heardLine(machine, now)}</span>
             </div>
@@ -396,6 +491,10 @@
               <p class="mt-0.5 truncate font-mono text-micro text-muted">
                 {[machine.address, machine.version].filter(Boolean).join(' · ') || '—'}
               </p>
+              {#if !gone}
+                <!-- Its roles (Z1): under the name in a row of the table; on a card they stand in the state's line. -->
+                <p class="rn-roles-row mt-1.5 flex-wrap items-center gap-1">{@render roleChips(roles)}</p>
+              {/if}
             </div>
 
             <div class="rn-res min-w-0">
@@ -421,6 +520,15 @@
                 <p class="mt-0.5 break-words text-micro text-muted">{ready.detail}</p>
               {/if}
             </div>
+
+            {#if classes}
+              <!-- The class line (Z1) spans the row under the columns, from
+                   the machine's: the label in bold, the value in its tone. -->
+              <p class="rn-class min-w-0 break-words text-2xs">
+                <span class="font-bold text-ink">{tr('admin.runners.classes.label')}</span>
+                <span class={TONE[classes.tone]}>{classes.text}</span>
+              </p>
+            {/if}
 
             <div class="rn-act relative flex justify-end">
               {#if !gone}
@@ -477,16 +585,68 @@
                         {tr('admin.runners.menu.perDevice')}
                       </button>
                     {/if}
+                    {#if menu.classes}
+                      <!-- Classes (Z1's menu order): the flag with its warning,
+                           the move, the quarantine's way back; the hidden test
+                           and classes grey each other (D3). -->
+                      <div class="admin-menu-sep" role="separator"></div>
+                      <button
+                        type="button"
+                        role="menuitemcheckbox"
+                        aria-checked={machine.classes?.on === true}
+                        disabled={menu.locked?.item === 'classes'}
+                        class={cn('admin-menu-item flex flex-col items-start gap-0.5', machine.classes?.on && 'bg-accent/[0.06]')}
+                        onclick={() => toggleClasses(machine)}
+                      >
+                        <span class="flex w-full items-center justify-between gap-3">
+                          {tr('admin.runners.menu.classes')}
+                          {#if machine.classes?.on}<Icon name="check" size={14} class="shrink-0 text-accent-text" />{/if}
+                        </span>
+                        <span class={cn('text-micro', menu.locked?.item === 'classes' ? 'text-faint' : 'text-warning')}>
+                          {menu.locked?.item === 'classes' ? menu.locked.why : tr('admin.runners.menu.classesWarning')}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={!menu.moveClasses}
+                        class="admin-menu-item flex flex-col items-start gap-0.5"
+                        onclick={() => ask({ kind: 'moveClasses', machine })}
+                      >
+                        {tr('admin.runners.menu.moveClasses')}
+                        <span class="text-micro text-muted">
+                          {menu.moveClasses
+                            ? tr('admin.runners.menu.moveClassesHint', { classes: classesCount(machine.classes?.held.classes ?? 0) })
+                            : tr('admin.runners.menu.moveClassesNone')}
+                        </span>
+                      </button>
+                      {#if menu.resumeClasses}
+                        <button
+                          type="button"
+                          role="menuitem"
+                          class="admin-menu-item"
+                          onclick={() => void act(() => runnersApi.classAction(machine.id, 'resume'))}
+                        >
+                          {tr('admin.runners.menu.resumeClasses')}
+                        </button>
+                      {/if}
+                    {/if}
                     {#if menu.trust}
                       <button
                         type="button"
                         role="menuitemcheckbox"
                         aria-checked={machine.trusted}
-                        class="admin-menu-item flex items-center justify-between gap-3"
+                        disabled={menu.locked?.item === 'trust'}
+                        class="admin-menu-item flex flex-col items-start gap-0.5"
                         onclick={() => toggleTrust(machine)}
                       >
-                        {tr('admin.runners.menu.trust')}
-                        {#if machine.trusted}<Icon name="check" size={14} class="shrink-0 text-accent-text" />{/if}
+                        <span class="flex w-full items-center justify-between gap-3">
+                          {tr('admin.runners.menu.trust')}
+                          {#if machine.trusted}<Icon name="check" size={14} class="shrink-0 text-accent-text" />{/if}
+                        </span>
+                        {#if menu.locked?.item === 'trust'}
+                          <span class="text-micro text-faint">{menu.locked.why}</span>
+                        {/if}
                       </button>
                     {/if}
                     {#if menu.drain}
@@ -632,7 +792,13 @@
               ? tr('admin.runners.revoke.title', { name: current.machine.name })
               : current.kind === 'cancelCode'
                 ? tr('admin.runners.codes.cancelTitle', { id: current.code.id })
-                : tr('admin.runners.revokeAll.title', { count: current.count })}
+                : current.kind === 'classesOn'
+                  ? tr('admin.runners.classesOn.title', { name: current.machine.name })
+                  : current.kind === 'classesOff'
+                    ? tr('admin.runners.classesOff.title', { name: current.machine.name })
+                    : current.kind === 'moveClasses'
+                      ? tr('admin.runners.moveClasses.title', { name: current.machine.name })
+                      : tr('admin.runners.revokeAll.title', { count: current.count })}
         </h2>
         <p class="mt-2 text-ui leading-relaxed text-muted">
           {current.kind === 'trust'
@@ -641,7 +807,15 @@
               ? tr('admin.runners.revoke.body')
               : current.kind === 'cancelCode'
                 ? tr('admin.runners.codes.cancelBody')
-                : tr('admin.runners.revokeAll.body')}
+                : current.kind === 'classesOn'
+                  ? tr('admin.runners.classesOn.body')
+                  : current.kind === 'classesOff'
+                    ? (current.machine.classes?.held.classes ?? 0) > 0
+                      ? tr('admin.runners.classesOff.body', { classes: classesCount(current.machine.classes?.held.classes ?? 0) })
+                      : tr('admin.runners.classesOff.bodyEmpty')
+                    : current.kind === 'moveClasses'
+                      ? tr('admin.runners.moveClasses.body', { classes: classesCount(current.machine.classes?.held.classes ?? 0) })
+                      : tr('admin.runners.revokeAll.body')}
         </p>
         {#if dialogError}
           <p class="mt-3 text-ui text-danger" role="alert">{dialogError}</p>
@@ -654,6 +828,18 @@
           {#if current.kind === 'trust'}
             <button type="button" class="btn-primary" disabled={working} onclick={() => void confirm()}>
               {working ? tr('admin.runners.working') : tr('admin.runners.trust.confirm')}
+            </button>
+          {:else if current.kind === 'classesOn'}
+            <button type="button" class="btn-primary" disabled={working} onclick={() => void confirm()}>
+              {working ? tr('admin.runners.working') : tr('admin.runners.classesOn.confirm')}
+            </button>
+          {:else if current.kind === 'classesOff' || current.kind === 'moveClasses'}
+            <button type="button" class="btn-danger-solid" disabled={working} onclick={() => void confirm()}>
+              {working
+                ? tr('admin.runners.working')
+                : current.kind === 'classesOff'
+                  ? tr('admin.runners.classesOff.confirm')
+                  : tr('admin.runners.moveClasses.confirm')}
             </button>
           {:else if current.kind === 'cancelCode'}
             <button type="button" class="btn-danger-solid" disabled={working} onclick={() => void confirm()}>
@@ -700,6 +886,7 @@
       'name name'
       'res res'
       'places places'
+      'class class'
       'ready ready';
     column-gap: 12px;
     row-gap: 10px;
@@ -737,6 +924,11 @@
     grid-area: act;
   }
 
+  /* The class line (Z1): under the columns, from the machine's. */
+  .rn-class {
+    grid-area: class;
+  }
+
   /* On a card the menu is a framed 44 px square (M7). */
   .rn-more {
     border: 1px solid rgb(var(--line));
@@ -765,6 +957,15 @@
     display: inline;
   }
 
+  /* The roles: in the state's line on a card (Z10), under the name in a row (Z1). */
+  .rn-roles-card {
+    display: contents;
+  }
+
+  .rn-roles-row {
+    display: none;
+  }
+
   @container (min-width: 780px) {
     .rn-head,
     .rn-row {
@@ -773,6 +974,13 @@
       grid-template-areas: 'state name res places ready act';
       column-gap: 12px;
       row-gap: 0;
+    }
+
+    .rn-with-class {
+      grid-template-areas:
+        'state name res places ready act'
+        '. class class class class class';
+      row-gap: 8px;
     }
 
     .rn-head {
@@ -800,6 +1008,14 @@
 
     .rn-card-only {
       display: none;
+    }
+
+    .rn-roles-card {
+      display: none;
+    }
+
+    .rn-roles-row {
+      display: flex;
     }
   }
 </style>

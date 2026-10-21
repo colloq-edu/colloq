@@ -18,6 +18,8 @@ import { Router } from 'express'
 import { currentStaff, requireStaff } from '../admin/auth.js'
 import { canSeeRoom } from '../admin/access.js'
 import { cpuBounds, machineResources, memoryBounds } from '../kernel/resources.js'
+import { kernelBackend } from '../kernel/runtime-client.js'
+import { classMachineBounds } from '../kernel/remote/placement.js'
 
 export function instanceResourcesRoutes(): Router {
   const router = Router()
@@ -47,8 +49,14 @@ export function instanceResourcesRoutes(): Router {
            * machine a gigabyte" rule: the server rejects by its copy, the form
            * paints by its own, and they diverge on exactly the day the rule
            * changes.
+           *
+           * And the machines' beside this server's (remote-classes.md §6.2):
+           * a class slot set to machines is held to the biggest machine that
+           * takes classes, by its name, and the class form says so under
+           * its numbers. None under the broker, whose classes never go to
+           * machines (D26).
            */
-          limits: { ...memoryBounds(), cpus: cpuBounds() },
+          limits: { ...memoryBounds(), cpus: cpuBounds(), machines: kernelBackend() === 'broker' ? null : classMachineBounds() },
         }),
       )
       .catch(next)

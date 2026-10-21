@@ -465,7 +465,12 @@ test('the machine page\'s table: progress by size, an environment built here, th
 /* --------------------------------------------------------------- the menu */
 
 test('the menu offers what applies to the machine as it stands, and nothing to a gone one', () => {
-  assert.deepEqual(machineMenu(machine()), { places: true, perDevice: true, trust: true, drain: true, resume: false, revoke: true })
+  // The fixture is trusted: «Принимает занятия» is greyed against the hidden test (D3).
+  assert.deepEqual(machineMenu(machine()), {
+    places: true, perDevice: true, trust: true, drain: true, resume: false, revoke: true,
+    classes: true, moveClasses: false, resumeClasses: false,
+    locked: { item: 'classes', why: translate('ru', 'admin.runners.menu.classesNotWithTrust') },
+  })
   assert.equal(machineMenu(machine({ cards: [] })).perDevice, false, 'runs per card means nothing without a card')
   for (const state of ['draining', 'quarantined'] as const) {
     const menu = machineMenu(machine({ state }))
@@ -473,7 +478,10 @@ test('the menu offers what applies to the machine as it stands, and nothing to a
   }
   for (const state of ['silent', 'outdated'] as const) assert.equal(machineMenu(machine({ state })).drain, true, state)
   for (const state of ['revoked', 'left'] as const) {
-    assert.deepEqual(machineMenu(machine({ state })), { places: false, perDevice: false, trust: false, drain: false, resume: false, revoke: false })
+    assert.deepEqual(machineMenu(machine({ state })), {
+      places: false, perDevice: false, trust: false, drain: false, resume: false, revoke: false,
+      classes: false, moveClasses: false, resumeClasses: false, locked: null,
+    })
   }
   // Gone machines go to the end of the list, the rest keep the server's order.
   const order = listOrder([machine({ id: 'a', state: 'revoked' }), machine({ id: 'b' }), machine({ id: 'c', state: 'left' }), machine({ id: 'd', state: 'silent' })])
@@ -493,9 +501,9 @@ test('a number field takes a whole number in bounds, or empty — and the word i
 })
 
 test('the connect dialog starts on one machine, a day, auto places, and no hidden test', () => {
-  assert.deepEqual(connectDefaults(), { machines: '1', hours: '24', places: '', trusted: false })
+  assert.deepEqual(connectDefaults(), { machines: '1', hours: '24', places: '', trusted: false, classes: false })
   assert.deepEqual(mintRequest(connectDefaults()), { request: { machines: 1, hours: 24, trusted: false, approvedSlots: null } })
-  assert.deepEqual(mintRequest({ machines: '3', hours: '6', places: '8', trusted: true }), {
+  assert.deepEqual(mintRequest({ machines: '3', hours: '6', places: '8', trusted: true, classes: false }), {
     request: { machines: 3, hours: 6, trusted: true, approvedSlots: 8 },
   })
   assert.deepEqual(mintRequest({ ...connectDefaults(), machines: '0' }), { error: 'Машин — от 1 до 100.' })
@@ -830,7 +838,7 @@ test('the machines block stands in «Ресурсы» for the owner, and its two
   // Saved by the page's Save, through the competitions door, as the third half of its body.
   assert.match(RESOURCES, /if \(key === 'c\.homeNotebooks' && homeChoice !== null\) competitionPatch\.homeNotebooks = forgotten\.includes\(key\) \? null : homeChoice/)
   assert.match(RESOURCES, /if \(key === 'c\.scoreSlots'\) competitionPatch\.scoreSlots = forgotten\.includes\(key\) \? null : valueOf\(key\)/)
-  assert.match(RESOURCES, /const dirtyCount = \$derived\(resourceDirty\.length \+ competitionDirty\.length \+ runnerDirty\.length\)/)
+  assert.match(RESOURCES, /const dirtyCount = \$derived\(resourceDirty\.length \+ competitionDirty\.length \+ runnerDirty\.length \+ classDirty\.length\)/)
   assert.match(RESOURCES, /if \(key === 'c\.scoreSlots'\) return SETTINGS_LIMITS\.scoreSlots/)
   // Read with the rest of the queue's half, never from the machines list on its timer.
   const apply = RESOURCES.slice(RESOURCES.indexOf('function applyCompetitions('), RESOURCES.indexOf('function pickCard('))

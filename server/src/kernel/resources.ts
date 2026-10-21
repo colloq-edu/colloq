@@ -23,7 +23,8 @@ import { db, sessionMemoryMb } from '../db.js'
 import { listNames, needsGpu } from '../environments.js'
 import { containerLimits, defaultCpus, defaultMemoryMb, dockerRead, gpuDevices, roomContainers, memoryLimitMb, ownLimits } from './pool.js'
 import { kernelBackend, kernelRuntimeClient } from './runtime-client.js'
-import type { GpuCard, InstanceResources, RoomResource } from '@shared/admin'
+import { classPlacement } from './remote/placement-store.js'
+import type { ClassNumberBound, ClassPlacement, GpuCard, InstanceResources, RoomResource } from '@shared/admin'
 import type { RuntimeRoom } from '@shared/runtime'
 import { observeWorkMemory, workBudgetSnapshot } from '../ops/work-budget.js'
 import { hostMemAvailableMb } from '../ops/meminfo.js'
@@ -621,6 +622,14 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
   for (const room of allocations) {
     // By Pod, not by class: a class whose only live Pod is its personal
     // notebooks' holds that Pod's memory, not the room's as well.
+    //
+    // And by this server's containers only: a slot on a machine holds none
+    // of its memory (docs/architecture/remote-classes.md §6.10, «0 МБ здесь»).
+    // It never reaches the census above by construction: a machine's class
+    // containers carry `colloq.kind=class-kernel` on the machine's own daemon,
+    // and a machine on this daemon takes no classes (D20). A class with its
+    // room on a machine and a container of it still running here holds this
+    // server's memory with that container, and is counted for it.
     if (runningRoom.has(room.id)) {
       takenMb += room.memoryMb
       takenCpus += room.cpus
@@ -861,13 +870,108 @@ export function cpuBounds(): MemoryBounds {
   return { min: 1, max: Math.min(machineCpus(), kernelBackend() === 'broker' ? 64 : Infinity) }
 }
 
+/**
+ * A bound of a class's number as its PATCH and its form read it: this
+ * server's (`machine` null) or the machines' (`machine` names the one whose
+ * room it is); whether a slot the number reaches may compute here (`here`:
+ * the form's «more than is free» is about this server); and whether one is
+ * set to machines (`machines`), so that a bound of this server's that holds
+ * then is said as this server's rather than as the room's.
+ */
+export type PlacedBounds = ClassNumberBound
+
+/** Where the slots a number reaches compute: any of them here, any of them set to machines. */
+export interface NumberPlaces {
+  here: boolean
+  machines: boolean
+}
+
+/**
+ * THE BOUNDS OF A CLASS'S NUMBER BY WHERE ITS SLOTS COMPUTE
+ * (docs/architecture/remote-classes.md §6.2, §10): this server's for a slot
+ * here, the machines' for a slot set to machines — never above what the
+ * biggest of them can give one container (placement.ts · classMachineBounds),
+ * which the chooser would otherwise refuse on every machine — and the
+ * tighter when the number reaches both (the class notebooks here and the
+ * personal ones on machines, vsos's D31), named by the place that holds it;
+ * a tie is this server's. The minimum is this server's: a kernel needs it
+ * wherever it starts. With no machine to take them, slots set to machines
+ * start here (their fallback) or nowhere, and this server's bound is the one
+ * there is, as before machines. Pure: the machines come in as numbers.
+ */
+export function placedBounds(here: MemoryBounds, machine: { max: number; machine: string } | null, places: NumberPlaces): PlacedBounds {
+  const home: PlacedBounds = { min: here.min, max: here.max, machine: null, here: places.here || machine === null, machines: places.machines }
+  if (!places.machines || machine === null) return home
+  const there = Math.max(here.min, Math.floor(machine.max))
+  if (places.here && here.max <= there) return home
+  return { min: here.min, max: there, machine: machine.machine, here: places.here, machines: true }
+}
+
+/**
+ * Where the slots a class's own number reaches compute (§6.2): its class
+ * notebooks' kernel always, its personal notebooks' while they take the
+ * same number (pool.ts · ownLimits: no number of their own in the rules, nor
+ * the instance's personal default). The council's pool sizes itself by its
+ * attempt memory, never by this number (§9.5).
+ */
+export function numberPlaces(placement: Pick<ClassPlacement, 'room' | 'own'>, ownFollows: boolean): NumberPlaces {
+  const places = ownFollows ? [placement.room, placement.own] : [placement.room]
+  return { here: places.includes('home'), machines: places.includes('machines') }
+}
+
+/**
+ * The class's memory as its PATCH may set it (placedBounds): where it is
+ * placed now, or where `placement` would put it; a broker home keeps every
+ * slot (D26).
+ */
+export function classMemoryBounds(
+  sessionId: string,
+  machine: { max: number; machine: string } | null,
+  placement: Pick<ClassPlacement, 'room' | 'own'> = classPlacement(sessionId),
+): PlacedBounds {
+  if (kernelBackend() === 'broker') return placedBounds(memoryBounds(), null, { here: true, machines: false })
+  return placedBounds(memoryBounds(), machine, numberPlaces(placement, ownLimits(sessionId).memoryMb === null))
+}
+
+/**
+ * The bounds of a class's personal-notebook numbers (its rules' ownMemoryMb
+ * and ownCpus, remote-classes.md §10), by where that one slot computes
+ * (placedBounds): this server's while it computes here, the biggest
+ * machine's while it is set to machines — with no card, as personal
+ * notebooks never get one (placement.ts · classMachineBounds). The forms draw
+ * the same (shared/admin.ts · ownNumberMax). A broker home keeps every slot
+ * (D26).
+ */
+export function ownNumberBounds(
+  sessionId: string,
+  machines: { memoryMb: { max: number; machine: string }; cpus: { max: number; machine: string } } | null,
+): { memory: PlacedBounds; cpus: PlacedBounds } {
+  const own = kernelBackend() === 'broker' ? 'home' : classPlacement(sessionId).own
+  const places: NumberPlaces = { here: own === 'home', machines: own === 'machines' }
+  return { memory: placedBounds(memoryBounds(), machines?.memoryMb ?? null, places), cpus: placedBounds(cpuBounds(), machines?.cpus ?? null, places) }
+}
+
+/** The class's cores as its PATCH may set them, by the same rule as memory. */
+export function classCpuBounds(
+  sessionId: string,
+  machine: { max: number; machine: string } | null,
+  placement: Pick<ClassPlacement, 'room' | 'own'> = classPlacement(sessionId),
+): PlacedBounds {
+  if (kernelBackend() === 'broker') return placedBounds(cpuBounds(), null, { here: true, machines: false })
+  return placedBounds(cpuBounds(), machine, numberPlaces(placement, ownLimits(sessionId).cpus === null))
+}
+
 export type CpuInput = { ok: true; cpus: number | null } | { ok: false; error: 'type' | 'range' }
 
-/** The same measure as for memory: an integer, within bounds, and null means "as for the instance". */
-export function readCpuInput(value: unknown): CpuInput {
+/**
+ * The same measure as for memory: an integer, within bounds, and null means
+ * "as for the instance". `bounds` — this server's unless the caller knows
+ * where the class computes (classCpuBounds).
+ */
+export function readCpuInput(value: unknown, bounds: MemoryBounds = cpuBounds()): CpuInput {
   if (value === null || value === undefined) return { ok: true, cpus: null }
   if (typeof value !== 'number' || !Number.isInteger(value)) return { ok: false, error: 'type' }
-  const { min, max } = cpuBounds()
+  const { min, max } = bounds
   if (value < min || value > max) return { ok: false, error: 'range' }
   return { ok: true, cpus: value }
 }
@@ -881,11 +985,13 @@ export type MemoryInput = { ok: true; mb: number | null } | { ok: false; error: 
  * how a room is returned to the default without inventing a second field for
  * it. A fraction is rejected, not rounded: the form sends whole megabytes,
  * and a fraction here is a sign that it was not the form that sent it.
+ * `bounds` — this server's unless the caller knows where the class computes
+ * (classMemoryBounds).
  */
-export function readMemoryInput(value: unknown): MemoryInput {
+export function readMemoryInput(value: unknown, bounds: MemoryBounds = memoryBounds()): MemoryInput {
   if (value === null || value === undefined) return { ok: true, mb: null }
   if (typeof value !== 'number' || !Number.isInteger(value)) return { ok: false, error: 'type' }
-  const { min, max } = memoryBounds()
+  const { min, max } = bounds
   if (value < min || value > max) return { ok: false, error: 'range' }
   return { ok: true, mb: value }
 }

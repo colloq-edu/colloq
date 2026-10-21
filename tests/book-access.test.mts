@@ -40,6 +40,7 @@ import {
   type BookRule,
   type RoomRules,
 } from '../shared/rules.js'
+import { MAX_PATH } from '../shared/paths.js'
 import {
   bookAt,
   bookCells,
@@ -235,6 +236,18 @@ test('the notebook map is limited in size, and the author name in length', () =>
   })
   assert.equal(long.books?.['nb:x'].ownerName?.length, MAX_BOOK_OWNER_NAME)
   assert.ok((long.books?.['nb:x'].owner?.length ?? 0) <= 128)
+})
+
+test('a notebook made in the path-root days keeps its rule, however long its path', () => {
+  // Between 29 Aug and 2 Sep 2026 a root was `nb:` + the notebook's path, and no room rewrites one.
+  const name = 'Тетрадь 2.ipynb'
+  const legacy = `nb:${'Семинары/'.repeat(50).slice(0, MAX_PATH - name.length)}${name}`
+  assert.equal(legacy.length, 'nb:'.length + MAX_PATH)
+  const read = readRules({ books: { [legacy]: { access: 'owner', owner: AKIM, ownerName: 'Аким' } } })
+  assert.equal(read.books?.[legacy]?.owner, AKIM, 'the rule of a long legacy root was dropped')
+  // Past what any room holds, the key is still refused.
+  const past = readRules({ books: { [`${legacy}x`]: { access: 'owner', owner: AKIM, ownerName: 'Аким' } } })
+  assert.equal(past.books?.[`${legacy}x`], undefined)
 })
 
 test('access survives a round trip through the database', () => {

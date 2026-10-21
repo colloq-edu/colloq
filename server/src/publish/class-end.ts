@@ -13,8 +13,9 @@
  *      занятие»» is rebuilt from that pick, but only once nothing is
  *      computing: cells queued before the bell keep running after it
  *      (control.ts · class:finish), and their outputs are what the page is
- *      for. The wait is capped at two minutes; a cell that runs longer does
- *      not hold the page hostage.
+ *      for — and once the files the class's kernels wrote on machines came
+ *      here (remote-classes.md §8.7). The wait is capped at two minutes; a
+ *      cell that runs longer does not hold the page hostage.
  *
  * A rebuild never publishes something nobody confirmed: a new secret-like
  * string or student name in a cell or a picked file stops it ('held'), and
@@ -30,6 +31,7 @@ import { publicationAddress, type PublishCheck } from '@shared/publish'
 import { recordAdminEvent } from '../admin/audit-log.js'
 import { finishedAt } from '../db.js'
 import { sessionComputing } from '../kernel/index.js'
+import { filesSettled } from '../kernel/remote/files.js'
 import { courseOfSeminar, courseRows, forgetCourseIndex } from '../routes/course-view.js'
 import { instanceToday } from '../time-zone.js'
 import { refreshPage } from './materials.js'
@@ -40,6 +42,13 @@ export type PageFrame = Extract<ControlServerMessage, { t: 'page' }>
 export interface ClassEndDeps {
   /** Whether a cell or an attempt is running or queued in any notebook of the room. */
   computing: (sessionId: string) => boolean
+  /**
+   * What the class's machines wrote, brought here (kernel/remote/files.ts ·
+   * filesSettled, remote-classes.md §8.7): a page built before the last
+   * `to_csv` of a cell on a machine came home would publish the file before
+   * it. At once for a class with nothing on machines.
+   */
+  settle: (sessionId: string, timeoutMs: number) => Promise<unknown>
   /** Tell the room's teacher consoles. */
   tell: (sessionId: string, frame: PageFrame) => void
   sleep: (ms: number) => Promise<void>
@@ -59,6 +68,7 @@ export function setPageTeller(tell: ClassEndDeps['tell']): void {
 
 const DEFAULTS: ClassEndDeps = {
   computing: sessionComputing,
+  settle: filesSettled,
   tell: (sessionId, frame) => teller(sessionId, frame),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms).unref()),
   maxWaitMs: 120_000,
@@ -162,8 +172,15 @@ async function refreshWhenQuiet(
   told: boolean,
 ): Promise<void> {
   // Counted in polls rather than by the clock, so a test's instant sleep cannot spin forever.
-  for (let waited = 0; use.computing(sessionId) && waited < use.maxWaitMs; waited += use.pollMs) {
+  let waited = 0
+  for (; use.computing(sessionId) && waited < use.maxWaitMs; waited += use.pollMs) {
     await use.sleep(use.pollMs)
+  }
+  // Then what the cells wrote on the class's machines comes here, within what is left of the two minutes (§8.7).
+  try {
+    await use.settle(sessionId, Math.max(0, use.maxWaitMs - waited))
+  } catch (err) {
+    console.error(`[pages] the files of ${sessionId} on its machines were not settled before its page:`, err)
   }
   // The spinner the host was shown must close, or it promises a refresh for the rest of the class.
   const cancel = () => {
@@ -172,8 +189,8 @@ async function refreshWhenQuiet(
   if (!stillWanted(sessionId)) return cancel()
   let frame: PageFrame
   try {
-    // `auto` makes the queued job look again just before it builds (materials.ts · refreshPage).
-    const result = await refreshPage(sessionId, { by: null, auto: true })
+    // `auto` makes the queued job look again just before it builds (materials.ts · refreshPage); `settled`: waited for above.
+    const result = await refreshPage(sessionId, { by: null, auto: true, settled: true })
     if (!result.ok && result.skipped) return cancel()
     if (result.ok) {
       const { publication, page } = result

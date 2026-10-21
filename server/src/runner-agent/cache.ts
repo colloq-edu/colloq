@@ -42,7 +42,11 @@
  * wheel the index would not give) goes ahead of it: the prefetch in progress
  * is stopped, keeps its partial file, and resumes after. Wheels come from the
  * package index's CDN (their own URL, sha256-checked, one at a time beside
- * home's stream), and from home by their hash when the index fails.
+ * home's stream), and from home by their hash when the index fails. A class's
+ * files come down the same stream, paced at the class's rate (room-files.ts,
+ * remote-classes.md §4.9): ahead of a lease's blob while a run waits on their
+ * push, behind it otherwise, ahead of the prefetch always (rankOf); and they
+ * leave the CAS once they are copied into their folder (release).
  *
  * THE HIDDEN TEST IS KEPT ONLY WHILE IT MUST BE (decision 1): in a directory
  * of its own, purged on forget, untrust, revoke, drain and 401, and its blobs
@@ -78,6 +82,7 @@ import {
   type RemoteWantData,
   type RemoteWheel,
 } from '@shared/remote-runner'
+import { CLASS_PACE_BURST_BYTES } from '@shared/remote-kernels'
 import { COMPETITION_ROW_ID } from '@shared/competition-runtime'
 import { attemptDir, competitionDir, competitionsDir, inputDir, NOTEBOOK_FILE } from '../competitions/storage.js'
 import { bundleDir, dependencyRoot } from '../dependencies/files.js'
@@ -193,6 +198,8 @@ export interface CacheOptions {
   idleMs?: number
   backoff?: Backoff
   diskWaitMs?: number
+  /** The waits a paced blob keeps to (blob's `pace`); tests count them on a clock of their own. */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>
 }
 
 interface Waiter {
@@ -211,9 +218,32 @@ interface BlobJob {
   order: number
   notBefore: number
   waiters: Set<Waiter>
+  /**
+   * A class's file (room-files.ts): read at the class's rate, in bytes a
+   * second, asked anew at every chunk; null — as fast as home sends it, as for
+   * everything a lease or the prefetch waits on.
+   */
+  pace: (() => number) | null
+  /** A class's file: whether a run waits on its push now (home promoted it, §8.2), asked whenever the stream chooses. */
+  urgent: (() => boolean) | null
 }
 
 const blobKey = (sha: string, sealed: boolean): string => `${sealed ? 's' : 'o'}:${sha}`
+
+/**
+ * What the one stream takes first, highest first: a class's file a run waits
+ * on (a push its barrier promoted, 3), a lease's blob (2), a class's file no
+ * run waits on yet (1), the prefetch (0). A job of a higher rank stops the
+ * one under way, which keeps its bytes and resumes with a Range after: a
+ * lesson's Run is never held behind a submission's dataset for the 30 s its
+ * barrier allows (§8.2), and a submission is never held behind a class's
+ * files nobody waits on (§4.9).
+ */
+function rankOf(job: BlobJob): number {
+  if (job.priority === 0) return 0
+  if (job.pace === null) return 2
+  return job.urgent?.() ? 3 : 1
+}
 
 export class Cache {
   readonly blobsDir = path.join(competitionsDir, '.blobs')
@@ -236,6 +266,8 @@ export class Cache {
   private readonly unscoped = new Set<string>()
   private wantedData: string[] = []
   private wantedBundles: string[] = []
+  /** The class files' bucket: one stream at a time, so one bucket for them all. */
+  private readonly pacer: Pacer
   private current: { job: BlobJob; abort: AbortController; received: number } | null = null
   private streaming = false
   private indexing: Promise<void> | null = null
@@ -249,6 +281,7 @@ export class Cache {
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis)
     this.backoff = options.backoff ?? new Backoff()
     this.hashes = new HashBook(path.join(options.books, 'hashes.json'), options.log)
+    this.pacer = new Pacer(this.now, CLASS_PACE_BURST_BYTES)
   }
 
   /* -------------------------------------------------------------- start */
@@ -474,8 +507,17 @@ export class Cache {
    * the verified blob, or a CacheError: `transient` only when `signal` gave
    * up first, since a lease's blob is asked again through every hiccup until
    * the lease's own preparation stops waiting.
+   *
+   * A CLASS'S FILE TAKES THE SAME ONE STREAM (room-files.ts): home keeps one
+   * blob stream for each machine and cuts the older when a newer comes
+   * (blobs.ts), so a second stream of the agent's own would only cut this
+   * one's. It goes ahead of the prefetch; behind a lease's blob until
+   * `urgent` says a run waits on its push, then ahead of it (rankOf); and
+   * `pace` (bytes a second, asked at every chunk) holds it to the class's
+   * rate through a bucket of CLASS_PACE_BURST_BYTES — unless a lease waits on
+   * the same blob too, which then comes as fast as home sends it.
    */
-  blob(sha: string, bytes: number, options: { sealed?: boolean; signal?: AbortSignal } = {}): Promise<string> {
+  blob(sha: string, bytes: number, options: { sealed?: boolean; signal?: AbortSignal; pace?: () => number; urgent?: () => boolean } = {}): Promise<string> {
     const sealed = options.sealed === true
     const file = this.blobPath(sha, sealed)
     if (this.present.has(blobKey(sha, sealed))) {
@@ -483,7 +525,7 @@ export class Cache {
       return Promise.resolve(file)
     }
     return new Promise<string>((resolve, reject) => {
-      const job = this.enqueue(sha, bytes, sealed, 1)
+      const job = this.enqueue(sha, bytes, sealed, 1, options.pace ?? null, options.urgent ?? null)
       const waiter: Waiter = {
         resolve: (found) => {
           options.signal?.removeEventListener('abort', onAbort)
@@ -753,6 +795,23 @@ export class Cache {
     return path.join(sealed ? this.sealedDir : this.blobsDir, sha)
   }
 
+  /**
+   * A class's file copied into its folder (room-files.ts), let go: its blob
+   * leaves the CAS unless a manifest, a package set or a fetch still names
+   * it. A class folder is a copy, never a link (§8.1: an `open('r+')` in a
+   * cell must not rewrite a blob submissions mount), and the blob would
+   * otherwise keep the same bytes a second time on the disk until eviction.
+   */
+  release(sha: string): void {
+    if (!REMOTE_SHA256.test(sha)) return
+    const key = blobKey(sha, false)
+    if (this.jobs.has(key) || !this.present.has(key)) return
+    for (const record of this.records.values()) if (!record.sealed && record.files.some((file) => file.sha256 === sha)) return
+    for (const record of this.bundles.values()) if (record.wheels.some((wheel) => wheel.sha256 === sha)) return
+    this.present.delete(key)
+    fs.rmSync(this.blobPath(sha, false), { force: true })
+  }
+
   /* ----------------------------------------------------------- the stream */
 
   /**
@@ -791,21 +850,40 @@ export class Cache {
     this.prefetchWheels()
   }
 
-  private enqueue(sha: string, bytes: number, sealed: boolean, priority: 0 | 1): BlobJob {
+  private enqueue(sha: string, bytes: number, sealed: boolean, priority: 0 | 1, pace: (() => number) | null = null, urgent: (() => boolean) | null = null): BlobJob {
     const key = blobKey(sha, sealed)
     let job = this.jobs.get(key)
     if (!job) {
-      job = { key, sha, bytes, sealed, priority, order: this.order++, notBefore: 0, waiters: new Set() }
+      job = { key, sha, bytes, sealed, priority, order: this.order++, notBefore: 0, waiters: new Set(), pace, urgent }
       this.jobs.set(key, job)
-    } else if (priority > job.priority) {
-      job.priority = priority
-      job.notBefore = 0
+    } else {
+      if (priority > job.priority) {
+        job.priority = priority
+        job.notBefore = 0
+      }
+      // Anyone who waits on it unpaced (a lease, the prefetch) has it unpaced: a class's rate is the class's alone.
+      if (pace === null) job.pace = null
+      const before = job.urgent
+      if (urgent) job.urgent = before ? () => before() || urgent() : urgent
     }
-    // A lease's blob goes ahead of the prefetch under way, which keeps its bytes and resumes after.
-    if (priority === 1 && this.current && this.current.job.priority === 0 && this.current.job.key !== key) {
-      this.current.abort.abort(new CacheError('a lease needs the stream', 'preempted'))
-    }
+    // Ahead of the job under way when it ranks above it (rankOf): that one keeps its bytes and resumes after.
+    this.hurry()
     return job
+  }
+
+  /**
+   * The job under way stopped for one that ranks above it (rankOf), which
+   * keeps its bytes and resumes with a Range after: asked when a job comes,
+   * and when a class's push is promoted while its file waits behind a lease's
+   * (room-files.ts).
+   */
+  hurry(): void {
+    const current = this.current
+    if (!current || this.stopped) return
+    const best = this.next()
+    if (best && best.key !== current.job.key && rankOf(best) > rankOf(current.job)) {
+      current.abort.abort(new CacheError(best.priority === 1 && best.pace === null ? 'a lease needs the stream' : 'a run needs the stream', 'preempted'))
+    }
   }
 
   private cancel(job: BlobJob, error: CacheError | null): void {
@@ -817,9 +895,14 @@ export class Cache {
   private next(): BlobJob | null {
     const now = this.now()
     let best: BlobJob | null = null
+    let bestRank = -1
     for (const job of this.jobs.values()) {
       if (job.notBefore > now) continue
-      if (!best || job.priority > best.priority || (job.priority === best.priority && job.order < best.order)) best = job
+      const rank = rankOf(job)
+      if (!best || rank > bestRank || (rank === bestRank && job.order < best.order)) {
+        best = job
+        bestRank = rank
+      }
     }
     return best
   }
@@ -1002,6 +1085,13 @@ export class Cache {
         hash.update(step.value)
         fs.writeSync(fd, step.value)
         if (this.current?.job === job) this.current.received = written
+        // A class's file at its class's rate, read anew for every chunk: a promoted push is faster from its next one on.
+        const pace = job.pace
+        if (pace) {
+          const delay = this.pacer.delay(step.value.byteLength, pace())
+          if (delay > 0) await (this.options.sleep ?? pause)(delay, signal)
+          if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new CacheError('stopped', 'transient')
+        }
       }
       fs.fsyncSync(fd)
     } catch (error) {
@@ -1414,10 +1504,11 @@ function linkOrCopy(from: string, to: string): 'linked' | 'copied' {
 
 /* -------------------------------------------------------- the hash book */
 
-/** What the book keeps of a file: its length and mtime when it was hashed (decimal strings: bigints in JSON), and its sha256. */
+/** What the book keeps of a file: its length and mtime when it was hashed (decimal strings: bigints in JSON), its ctime in a book that keeps it, and its sha256. */
 interface Booked {
   size: string
   mtimeNs: string
+  ctimeNs?: string
   sha256: string
 }
 
@@ -1448,8 +1539,15 @@ const BOOK_BYTES = 32 * 1024 * 1024
  *
  * What the book holds of files no longer here goes when the cache loads
  * (prune): what is booked is only ever what a load or this life found.
+ *
+ * THE CLASS FOLDERS KEEP A BOOK OF THEIR OWN (room-files.ts), by the stats a
+ * walk read through the anchored filesystem (`known`, `noteStat`): never by a
+ * path this book opens itself, which follows a link a kernel planted. That
+ * book keeps the ctime too (`ctime`): nothing there is hard-linked, and a
+ * kernel's `shutil.copy2`, `touch -r` or a tar's whole-second times put the
+ * old length and mtime back on new bytes — which moves the ctime alone.
  */
-class HashBook {
+export class HashBook {
   private readonly entries = new Map<string, Booked>()
   /** The entries a load or this life has used: the rest are pruned. */
   private readonly used = new Set<string>()
@@ -1457,18 +1555,28 @@ class HashBook {
   private timer: NodeJS.Timeout | null = null
   private failed = false
 
-  constructor(private readonly file: string, private readonly log?: (line: string) => void) {}
+  /** `ctime`: a file is the one booked only while its ctime holds too (the class folders' book). */
+  constructor(private readonly file: string, private readonly log?: (line: string) => void, private readonly options: { ctime?: boolean } = {}) {}
 
   load(): void {
     const value = readJson(this.file, BOOK_BYTES) as { v?: unknown; files?: unknown } | null
     if (!value || value.v !== 1 || !value.files || typeof value.files !== 'object') return
+    const width = this.options.ctime ? 4 : 3
     for (const [key, entry] of Object.entries(value.files as Record<string, unknown>)) {
-      if (!/^\d+:\d+$/.test(key) || !Array.isArray(entry) || entry.length !== 3) continue
-      const [size, mtimeNs, sha] = entry as unknown[]
-      if (typeof size === 'string' && /^\d+$/.test(size) && typeof mtimeNs === 'string' && /^\d+$/.test(mtimeNs) && typeof sha === 'string' && REMOTE_SHA256.test(sha)) {
-        this.entries.set(key, { size, mtimeNs, sha256: sha })
+      if (!/^\d+:\d+$/.test(key) || !Array.isArray(entry) || entry.length !== width) continue
+      const [size, mtimeNs, ...rest] = entry as unknown[]
+      const sha = rest.at(-1)
+      const ctimeNs = this.options.ctime ? rest[0] : undefined
+      if (typeof size === 'string' && /^\d+$/.test(size) && typeof mtimeNs === 'string' && /^\d+$/.test(mtimeNs) && typeof sha === 'string' && REMOTE_SHA256.test(sha)
+        && (!this.options.ctime || (typeof ctimeNs === 'string' && /^\d+$/.test(ctimeNs)))) {
+        this.entries.set(key, { size, mtimeNs, ...(this.options.ctime ? { ctimeNs: ctimeNs as string } : {}), sha256: sha })
       }
     }
+  }
+
+  /** Whether a booked entry is of the file these stats are of, unchanged. */
+  private holds(booked: Booked | undefined, stat: fs.BigIntStats): booked is Booked {
+    return booked !== undefined && booked.size === String(stat.size) && booked.mtimeNs === String(stat.mtimeNs) && (!this.options.ctime || booked.ctimeNs === String(stat.ctimeNs))
   }
 
   /**
@@ -1485,7 +1593,7 @@ class HashBook {
     if (!stat.isFile()) return null
     const key = keyOf(stat)
     const booked = this.entries.get(key)
-    if (booked && booked.size === String(stat.size) && booked.mtimeNs === String(stat.mtimeNs)) {
+    if (this.holds(booked, stat)) {
       this.used.add(key)
       return booked.sha256
     }
@@ -1503,6 +1611,21 @@ class HashBook {
     return sha
   }
 
+  /** What a regular file of these stats hashes to, as booked; null — not booked, or changed since. */
+  known(stat: fs.BigIntStats): string | null {
+    if (!stat.isFile()) return null
+    const key = keyOf(stat)
+    const booked = this.entries.get(key)
+    if (!this.holds(booked, stat)) return null
+    this.used.add(key)
+    return booked.sha256
+  }
+
+  /** A file whose bytes the caller hashed through a descriptor whose stats were these, before the read and after it. */
+  noteStat(stat: fs.BigIntStats, sha: string): void {
+    if (stat.isFile()) this.book(keyOf(stat), stat, sha)
+  }
+
   /** A file whose bytes were hashed as they were written, by the only one who wrote them: booked as it is now. */
   note(file: string, sha: string): void {
     try {
@@ -1515,7 +1638,7 @@ class HashBook {
   retimed(file: string, before: fs.BigIntStats): void {
     const key = keyOf(before)
     const booked = this.entries.get(key)
-    if (!booked || booked.size !== String(before.size) || booked.mtimeNs !== String(before.mtimeNs)) return
+    if (!this.holds(booked, before)) return
     try {
       const after = fs.lstatSync(file, { bigint: true })
       if (keyOf(after) === key && after.size === before.size) this.book(key, after, booked.sha256)
@@ -1546,8 +1669,8 @@ class HashBook {
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
     if (!this.dirty) return
-    const files: Record<string, [string, string, string]> = {}
-    for (const [key, entry] of this.entries) files[key] = [entry.size, entry.mtimeNs, entry.sha256]
+    const files: Record<string, string[]> = {}
+    for (const [key, entry] of this.entries) files[key] = this.options.ctime ? [entry.size, entry.mtimeNs, entry.ctimeNs ?? '0', entry.sha256] : [entry.size, entry.mtimeNs, entry.sha256]
     try {
       writeWhole(this.file, JSON.stringify({ v: 1, files }), { mode: 0o600 })
       this.dirty = false
@@ -1559,7 +1682,7 @@ class HashBook {
   }
 
   private book(key: string, stat: fs.BigIntStats, sha: string): void {
-    this.entries.set(key, { size: String(stat.size), mtimeNs: String(stat.mtimeNs), sha256: sha })
+    this.entries.set(key, { size: String(stat.size), mtimeNs: String(stat.mtimeNs), ...(this.options.ctime ? { ctimeNs: String(stat.ctimeNs) } : {}), sha256: sha })
     this.used.add(key)
     this.dirty = true
     this.save()
@@ -1567,6 +1690,48 @@ class HashBook {
 }
 
 const keyOf = (stat: fs.BigIntStats): string => `${stat.dev}:${stat.ino}`
+
+/* ------------------------------------------------------------- the pace */
+
+/**
+ * A rate kept smoothly (§4.9, K0: never in bursts of a second): the generic
+ * cell rate algorithm over bytes, ahead of its rate by `burstBytes` at most.
+ * The rate is given at every call, so that a push promoted while it moves is
+ * faster from its next chunk on.
+ */
+export class Pacer {
+  /** Theoretical arrival time of the next byte, ms. */
+  private tat = 0
+
+  constructor(
+    private readonly now: () => number,
+    private readonly burstBytes: number,
+  ) {}
+
+  /** How long `bytes` must wait to keep to `bytesPerSecond`, the wait booked; 0 — at once. */
+  delay(bytes: number, bytesPerSecond: number): number {
+    if (!(bytesPerSecond > 0) || !Number.isFinite(bytesPerSecond)) return 0
+    const now = this.now()
+    const perMs = bytesPerSecond / 1000
+    this.tat = Math.max(this.tat, now) + bytes / perMs
+    return Math.max(0, Math.ceil(this.tat - now - this.burstBytes / perMs))
+  }
+}
+
+/** A wait that ends early when the signal aborts. */
+export function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve()
+    const done = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    timer.unref?.()
+    signal?.addEventListener('abort', done, { once: true })
+  })
+}
 
 /** A file's sha256, read in pieces (a 200 MB table is never in memory whole). */
 function hashFile(file: string): string {

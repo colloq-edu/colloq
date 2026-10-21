@@ -80,12 +80,25 @@ export function runnerImage(image: string | null | undefined, version: string): 
  * cannot set its own stop timeout. With Docker's 10 s a `docker stop`, a
  * restart or a reboot of a machine joined this way killed the agent first,
  * and its runs came back as losses after the container started.
+ *
+ * `--network host` for every machine (remote-classes.md D19), as colloq-host
+ * gives it: a class kernel's Jupyter is published on the host's 127.0.0.1
+ * only, where the agent reaches it and the machine's public address never
+ * does. A machine joined without it takes submissions and no classes, and
+ * the panel says to join it again with these.
+ *
+ * `classes` — a code for machines that take classes («Принимать занятия»):
+ * colloq-host's `runner up` is told so (`--classes`) and checks first that
+ * this machine can host them (its Docker, its cgroups, no Colloq server
+ * beside it, its disk), before anything is pulled or started. The flag is
+ * the code's, not the command's: a machine joined by the other two commands
+ * takes classes all the same, and the panel names what it lacks.
  */
-export function runnerJoinCommands(input: { home: string; code: string; image: string; published: boolean; machines: number }): { docker: string; bare: string; vast: string } {
+export function runnerJoinCommands(input: { home: string; code: string; image: string; published: boolean; machines: number; classes?: boolean }): { docker: string; bare: string; vast: string } {
   const url = homeOrigin(input.home) ?? input.home.replace(/\/+$/, '')
   const { code, image } = input
   const docker = [
-    `docker run -d --name ${RUNNER_CONTAINER} --restart unless-stopped --stop-timeout 90 \\`,
+    `docker run -d --name ${RUNNER_CONTAINER} --restart unless-stopped --network host --stop-timeout 90 \\`,
     '  -v /var/run/docker.sock:/var/run/docker.sock \\',
     '  -v /var/lib/colloq-runner:/var/lib/colloq-runner \\',
     `  -e COLLOQ_RUNNER_JOIN='${url}#${code}' \\`,
@@ -94,7 +107,7 @@ export function runnerJoinCommands(input: { home: string; code: string; image: s
   const bare = [
     'command -v docker || curl -fsSL https://get.docker.com | sh',
     `docker run --rm -v /usr/local/sbin:/host ${image} install-host /host`,
-    input.published ? `colloq-host runner up ${url} ${code}` : `colloq-host runner up ${url} ${code} ${image}`,
+    `colloq-host runner up ${url} ${code}${input.published ? '' : ` ${image}`}${input.classes ? ' --classes' : ''}`,
   ].join('\n')
   const vast = input.published ? `make vast-runner COUNT=${input.machines} CODE=${code} URL=${url}` : ''
   return { docker, bare, vast }

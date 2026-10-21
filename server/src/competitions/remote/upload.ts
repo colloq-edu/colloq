@@ -34,6 +34,15 @@
  * liked, every other machine's results got 503 until their leases reached the
  * ceiling, and those losses were charged to the honest machines' quarantine.
  *
+ * A CLASS'S FILES COME THE SAME WAY, BY A DOOR OF THEIR OWN (PUT
+ * rooms/:sessionId/files, remote-classes.md §8.3): a file of a class's folder
+ * copy on a machine that home pulled, gzipped and checked like a result, but
+ * staged under a temporary name in the class folder itself (renamed into its
+ * place by kernel/remote/files.ts), through upload slots of their own — at
+ * most REMOTE_CLASS_UPLOADS a machine, so a class's dataset never keeps a
+ * submission's result waiting — and read through the class bucket
+ * (blobs.ts · classUploadPace). A fenced gen's late file is a 409.
+ *
  * AN ATTEMPT STAGES AT MOST ONE FILE PER NAME, and at most what its two caps
  * add up to (stagingRoom). The staged name carries the sha256, so a PUT of the
  * same name with other bytes used to land beside the first — and a machine
@@ -54,6 +63,7 @@ import {
   REMOTE_BYTES_HEADER,
   REMOTE_FILE_BYTES,
   REMOTE_FILE_NAMES,
+  REMOTE_SHA256,
   REMOTE_SHA256_HEADER,
   REMOTE_UPLOAD_FREE_BYTES,
   RemoteProtocolError,
@@ -61,9 +71,15 @@ import {
   type RemoteFileName,
   type RemoteUploadReply,
 } from '@shared/remote-runner'
+import { REMOTE_CLASS_UPLOADS } from '@shared/remote-kernels'
 import { COMPETITION_ATTEMPT_ID } from '@shared/competition-runtime'
+import { normalizePath } from '@shared/paths'
+import { config } from '../../config.js'
+import { resolveInSession, sessionDir, tempNameIn, workspaceFs } from '../../workspace.js'
+import { PullRefused, classFiles, type RoomFileStored } from '../../kernel/remote/files.js'
 import { competitionsDir, competitionsFs } from '../storage.js'
 import { runnerUploadsSetting } from '../settings.js'
+import { classUploadPace } from './blobs.js'
 import { getLease, type LeaseRow, type RunnerRow } from './store.js'
 
 /** The folder an attempt's uploads wait in until its outcome moves them (or the sweep removes them). */
@@ -282,6 +298,27 @@ async function store(req: Request, attemptId: string, meta: RemoteUploadReply): 
   competitionsFs.mkdirSync(dir, { recursive: true })
   const part = path.join(dir, `${meta.name}.${randomUUID()}.part`)
   const fd = competitionsFs.openSync(part, 'w', 0o600)
+  try {
+    await receiveGzip(req, fd, meta)
+    keep(attemptId, meta, part)
+  } catch (error) {
+    try { competitionsFs.rmSync(part, { force: true }) } catch { /* the sweep removes it */ }
+    uploadCounts.refused++
+    throw error
+  }
+}
+
+/**
+ * A gzipped body into `fd`, checked against what its headers said: at most
+ * `bytes` decompressed (decompression stops one byte past it), its sha256
+ * `sha256`, its compressed length within compressedCap, and a body that sends
+ * nothing for uploadStallMs ended. `fd` is closed here, once no write queued
+ * to it may still run, however it ends. Throws an UploadRefusal (or the
+ * contract's RemoteProtocolError) for what the machine sent; the caller
+ * removes what was written. `pace`: the bucket the compressed bytes are read
+ * through (a class's files, upload.ts · receiveClassFile).
+ */
+async function receiveGzip(req: Request, fd: number, meta: { sha256: string; bytes: number }, pace?: Transform): Promise<void> {
   const hash = createHash('sha256')
   let compressed = 0
   let plain = 0
@@ -367,7 +404,8 @@ async function store(req: Request, attemptId: string, meta: RemoteUploadReply): 
   req.pipe(body)
   let failure: unknown = null
   try {
-    await pipeline(body, counted, zlib.createGunzip({ chunkSize: 64 * 1024 }), unzipped, sink)
+    if (pace) await pipeline(body, pace, counted, zlib.createGunzip({ chunkSize: 64 * 1024 }), unzipped, sink)
+    else await pipeline(body, counted, zlib.createGunzip({ chunkSize: 64 * 1024 }), unzipped, sink)
   } catch (error) {
     failure = error
     req.unpipe(body)
@@ -381,15 +419,129 @@ async function store(req: Request, attemptId: string, meta: RemoteUploadReply): 
   try {
     if (failure !== null) throw failure
     if (plain !== meta.bytes || hash.digest('hex') !== meta.sha256) throw new UploadRefusal('mismatch', 'The file is not what its headers said')
-    keep(attemptId, meta, part)
   } catch (error) {
-    try { competitionsFs.rmSync(part, { force: true }) } catch { /* the sweep removes it */ }
-    uploadCounts.refused++
     if (error instanceof UploadRefusal || error instanceof RemoteProtocolError) throw error
     // zlib's own refusal of what is not gzip, or a body cut short: the file is not what was declared.
     if ((error as { code?: string }).code?.startsWith('Z_')) throw new UploadRefusal('mismatch', 'The body is not gzip')
     throw error
   }
+}
+
+/* ----------------------------------------------------- a class's files */
+
+/** A class's files coming home now, by machine (REMOTE_CLASS_UPLOADS each, beside the submissions' slots). */
+const classActive = new Map<string, number>()
+export const classUploadCounts = { stored: 0, refused: 0, busy: 0 }
+
+/** Free bytes for the volume the class folders live on, or `null` — unknown, which is no reason to refuse. */
+function freeBytesOf(volume: string): number | null {
+  try {
+    const disk = fs.statfsSync(volume)
+    return disk.bavail * disk.bsize
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A file of a class's folder copy coming home (PUT rooms/…/files, §8.3,
+ * kernel/remote/files.ts decides which and where): gzipped and checked like a
+ * result (receiveGzip), read through the class bucket (classUploadPace), at
+ * most REMOTE_CLASS_UPLOADS at once per machine — slots of their own, so a
+ * class's dataset never keeps a submission's result waiting — and refused
+ * below REMOTE_UPLOAD_FREE_BYTES of free disk. `open` gives the descriptor of
+ * the staging file it is written to (a temporary name in the class folder),
+ * called only once the upload may go ahead.
+ */
+export async function receiveClassFile(req: Request, runnerId: string, file: { open: () => number; sha256: string; bytes: number; volume: string }): Promise<void> {
+  if ((classActive.get(runnerId) ?? 0) >= REMOTE_CLASS_UPLOADS) {
+    classUploadCounts.busy++
+    throw new UploadRefusal('busy', "This machine's class files are at their limit", 2)
+  }
+  const free = freeBytesOf(file.volume)
+  if (free !== null && free < REMOTE_UPLOAD_FREE_BYTES + file.bytes) throw new UploadRefusal('disk', 'Too little free disk for class files', 30)
+  classActive.set(runnerId, (classActive.get(runnerId) ?? 0) + 1)
+  try {
+    const fd = file.open()
+    await receiveGzip(req, fd, file, classUploadPace.transform())
+    classUploadCounts.stored++
+  } catch (error) {
+    classUploadCounts.refused++
+    throw error
+  } finally {
+    const left = (classActive.get(runnerId) ?? 1) - 1
+    if (left > 0) classActive.set(runnerId, left)
+    else classActive.delete(runnerId)
+  }
+}
+
+/** For tests: a class's files coming home now, from one machine. */
+export function activeClassUploads(runnerId: string): number {
+  return classActive.get(runnerId) ?? 0
+}
+
+const DECIMAL = /^(?:0|[1-9][0-9]{0,15})$/
+
+/**
+ * PUT rooms/:sessionId/files?path=&gen= (remote-classes.md §8.3, §15): a
+ * file this server pulled from a class's folder copy (kernel/remote/files.ts
+ * · pullFor), gzipped, its X-Colloq-Sha256 and X-Colloq-Bytes checked after
+ * decompression, staged under a temporary name at the top of the class
+ * folder (the anchored file system: never through a link, never outside the
+ * folder), then put in place by the same compare-and-swap as a report's
+ * (landPulled). Refused before a byte is read: a fenced gen (409
+ * `revoked`, which the agent drops), a file or a version this server did not
+ * ask for (404), past its cap (413), the machine's class upload slots taken
+ * (503), the disk below its floor (507).
+ */
+export async function receiveRoomFile(req: Request, runner: RunnerRow, sessionId: string, query: { path: unknown; gen: unknown }): Promise<RoomFileStored> {
+  const where = typeof query.path === 'string' ? query.path : ''
+  const gen = typeof query.gen === 'string' && /^[1-9][0-9]{0,15}$/.test(query.gen) ? Number(query.gen) : null
+  if (where === '' || normalizePath(where) !== where || gen === null) throw new RemoteProtocolError('Invalid path or gen of a class file')
+  const encoding = req.headers['content-encoding']
+  const sha256 = req.headers[REMOTE_SHA256_HEADER.toLowerCase()]
+  const declared = req.headers[REMOTE_BYTES_HEADER.toLowerCase()]
+  if (typeof encoding !== 'string' || encoding.trim().toLowerCase() !== 'gzip' || typeof sha256 !== 'string' || !REMOTE_SHA256.test(sha256)
+    || typeof declared !== 'string' || !DECIMAL.test(declared)) throw new RemoteProtocolError('Invalid headers of a class file')
+  const bytes = Number(declared)
+  const files = classFiles()
+  let target: string
+  try {
+    target = files.pullFor(runner.id, sessionId, where, gen, sha256, bytes).target
+  } catch (error) {
+    throw refusalOf(error)
+  }
+  if (!resolveInSession(sessionId, target)) throw new UploadRefusal('not_found', 'The file has no place in the class folder')
+  let tmp: string | null = null
+  try {
+    /*
+     * Staged at the top of the class folder, which always is there: the
+     * target's folders are made only when the checked bytes land
+     * (kernel/remote/files.ts · place), so a refused upload leaves no empty
+     * folder in the room's tree, and none of its pushes to the machine.
+     */
+    tmp = tempNameIn(sessionDir(sessionId))
+    const staged = tmp
+    const open = (): number => workspaceFs.openSync(staged, 'wx', 0o664)
+    await receiveClassFile(req, runner.id, { open, sha256, bytes, volume: config.workspaceDir })
+    const verdict = await files.landPulled(runner.id, sessionId, gen, where, sha256, staged)
+    return { path: where, sha256, bytes, verdict }
+  } catch (error) {
+    throw refusalOf(error)
+  } finally {
+    // Renamed into place, or not wanted: either way no temporary name stays behind (the sweep takes one a crash left).
+    if (tmp !== null) {
+      try { workspaceFs.rmSync(tmp, { force: true }) } catch { /* a parent swapped under it */ }
+    }
+  }
+}
+
+/** The class files' refusals in the contract's codes. */
+function refusalOf(error: unknown): unknown {
+  if (!(error instanceof PullRefused)) return error
+  if (error.why === 'stale') return new UploadRefusal('revoked', error.message)
+  if (error.why === 'over') return new UploadRefusal('too_large', error.message)
+  return new UploadRefusal('not_found', error.message)
 }
 
 /**

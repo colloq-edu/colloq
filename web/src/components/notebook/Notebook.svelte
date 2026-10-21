@@ -1,10 +1,10 @@
 <script lang="ts">
   import Splash from '@/components/ui/Splash.svelte'
   import { firstScreenReady } from '@/lib/boot'
-  import { tr } from '@shared/i18n'
-  import { tick } from 'svelte'
-  import { cellType, findCell, isCellOpen, type CellType } from '@shared/notebook'
-  import { isLectureRoom } from '@shared/rules'
+  import { formatDate, tr } from '@shared/i18n'
+  import { tick, untrack } from 'svelte'
+  import { bookKernel, cellType, findCell, getMeta, isCellOpen, type BookKernel, type CellType } from '@shared/notebook'
+  import { bookHasOwnKernel, isLectureRoom } from '@shared/rules'
   import Icon from '@/components/ui/Icon.svelte'
   import { controlDisabled, controlTitle } from '@/lib/controls'
   import {
@@ -82,6 +82,251 @@
   const isHost = $derived(session.me.role === 'host')
   const kernel = $derived(notebook.current.kernelStatus)
   const queued = $derived(notebook.current.queue.length)
+
+  /* ------------------------------------------- the kernel on a machine */
+
+  /*
+   * WHERE THIS NOTEBOOK'S KERNEL COMPUTES (remote-classes.md §13.1, Paper
+   * 18 · Z5): on a machine or back from one, and whether that machine
+   * answers — the three fields of its entry in the document's kernel map
+   * (shared/notebook.ts · KERNEL_WHERE_FIELD), read here for this root. The
+   * whole room reads them, so they never name the machine ("Kernel on a
+   * machine"). Staff get the name, the round trip and their own sentence from
+   * the control socket's `kernel:machine` frames, the last of each role as
+   * the session keeps them (`kernelMachines`, by role).
+   */
+  type Placed = Pick<BookKernel, 'where' | 'link' | 'linkSince'>
+  const readPlaced = (key: string): Placed => {
+    const state = bookKernel(session.doc, key)
+    return { where: state.where, link: state.link, linkSince: state.linkSince }
+  }
+  // The document as it stands when the notebook mounts (and as a server render reads it); the effect follows it from there.
+  let placed = $state<Placed>(readPlaced(untrack(() => root)))
+  $effect(() => {
+    const key = root
+    const meta = getMeta(session.doc)
+    // A plain copy for the comparison: reading the state here would make the effect its own dependency.
+    let last = readPlaced(key)
+    placed = last
+    const read = () => {
+      const next = readPlaced(key)
+      if (next.where === last.where && next.link === last.link && next.linkSince === last.linkSince) return
+      last = next
+      placed = next
+    }
+    meta.observeDeep(read)
+    return () => meta.unobserveDeep(read)
+  })
+
+  /** The staff's frames as the session keeps them (the last `kernel:machine` of each role); none for everyone else. */
+  const frames = $derived(session.kernelMachines)
+  /** This notebook's slot: a personal notebook computes in the class's `own` container, the rest in `room`. */
+  const slotRole = $derived(bookHasOwnKernel(session.session.rules, root) ? ('own' as const) : ('room' as const))
+  const frame = $derived(isHost ? (frames?.[slotRole] ?? null) : null)
+
+  /** Move now appears after this long without the machine (CLASS_MOVE_NOW_MS, shared/remote-kernels.ts). */
+  const MOVE_NOW_MS = 10_000
+  /**
+   * How long the room remembers that its kernel came back from a machine:
+   * the class day «Running now» keeps it for too (routes/admin-running.ts
+   * · MOVED_MEMORY_MS), and never past the end of the class (Z5).
+   */
+  const MOVED_MEMORY_MS = 12 * 60 * 60_000
+  /**
+   * A clock for the chip's «0:23» and the banner's moment: every second while
+   * the machine does not answer, every minute while the chip remembers a
+   * move (it goes when its day is over), still otherwise.
+   */
+  let clockNow = $state(Date.now())
+  $effect(() => {
+    const lost = placed.link === 'lost'
+    if (!lost && !(placed.where === null && placed.linkSince !== null)) return
+    clockNow = Date.now()
+    const timer = setInterval(() => (clockNow = Date.now()), lost ? 1000 : 60_000)
+    return () => clearInterval(timer)
+  })
+  /**
+   * The server's clock now: `linkSince` is written on it, and this browser's
+   * may be a minute off either way (session.svelte.ts · clockSkewMs, as the
+   * cells' stopwatch corrects for it).
+   */
+  const serverNow = $derived(clockNow - session.clockSkewMs)
+
+  /** «0:23», «1:02:05». */
+  function elapsed(ms: number): string {
+    const total = Math.max(0, Math.floor(ms / 1000))
+    const hours = Math.floor(total / 3600)
+    const minutes = Math.floor((total % 3600) / 60)
+    const seconds = String(total % 60).padStart(2, '0')
+    return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}` : `${minutes}:${seconds}`
+  }
+
+  /**
+   * The kernel chip (Z5, five states): calm on a machine — "Kernel · vast-3
+   * · 52 ms" for staff, "Kernel on a machine" for everyone else; amber "No
+   * link to the machine · 0:23" while it does not answer; amber with a
+   * spinner while it moves; calm "On this server · moved at 14:33" once it
+   * came back, for the rest of the class. `null` — the kernel never left
+   * this server, or came back from a machine before this class: the bar
+   * says nothing new.
+   *
+   * `elapsed` is the amber chip's timer, drawn apart from its words: on a
+   * phone's bar the words give way and the timer stays whole (Z10).
+   */
+  const machineChip = $derived.by((): { word: string; short?: string; elapsed: string | null; tone: 'calm' | 'amber' | 'moving'; title: string | null } | null => {
+    if (placed.where === 'machine') {
+      if (placed.link === 'lost') {
+        const since = elapsed(serverNow - (placed.linkSince ?? serverNow))
+        return {
+          word: tr('room.machine.chip.lost'),
+          short: tr('room.machine.chip.lostShort'),
+          elapsed: since,
+          tone: 'amber',
+          title: tr('room.machine.chip.lostTitle', { elapsed: since }),
+        }
+      }
+      if (placed.link === 'moving') return { word: tr('room.machine.chip.moving'), elapsed: null, tone: 'moving', title: null }
+      const machine = frame?.machine ?? null
+      if (machine) {
+        const word = machine.rttMs === null
+          ? tr('room.machine.chip.namedNoRtt', { name: machine.name })
+          : tr('room.machine.chip.named', { name: machine.name, ms: Math.round(machine.rttMs) })
+        return { word, elapsed: null, tone: 'calm', title: null }
+      }
+      return { word: tr('room.machine.chip.machine'), elapsed: null, tone: 'calm', title: null }
+    }
+    // Back from a machine: remembered for this class only — not after it ended, and not into another day.
+    if (placed.linkSince !== null && !session.finished && serverNow - placed.linkSince < MOVED_MEMORY_MS) {
+      const time = formatDate(placed.linkSince, { hour: '2-digit', minute: '2-digit' })
+      return { word: tr('room.machine.chip.moved', { time }), elapsed: null, tone: 'calm', title: null }
+    }
+    return null
+  })
+
+  /** The machine does not answer: runs wait, a restart or an interrupt would not reach it. */
+  const machineLost = $derived(placed.where === 'machine' && placed.link === 'lost')
+  /** Wait for the machine was pressed and saved, for this outage. */
+  let waitChosen = $state(false)
+  let moveSent = $state(false)
+  $effect(() => {
+    if (!machineLost) {
+      waitChosen = false
+      moveSent = false
+    }
+  })
+
+  /**
+   * The class's own «If the machine disappears» and whether this teacher may
+   * change it (§6.2), read once an outage begins through the class form's
+   * door (GET …/placement): a frame says the first, when the session has
+   * one, but frames are gone after a reconnect, and the second is in none.
+   * Staff only; null — not read yet, or not answered (a host by link alone
+   * has no staff cookie, and so no way to change it either).
+   */
+  let classSetting = $state<{ failover: 'auto' | 'wait'; editable: boolean } | null>(null)
+  $effect(() => {
+    if (!isHost || !machineLost) {
+      classSetting = null
+      return
+    }
+    const id = session.session.id
+    let current = true
+    void fetch(`/api/admin/seminars/${encodeURIComponent(id)}/placement`, { credentials: 'same-origin' })
+      .then((res) => (res.ok ? (res.json() as Promise<{ failover?: unknown; editable?: unknown }>) : null))
+      .then((said) => {
+        if (current && said && (said.failover === 'auto' || said.failover === 'wait')) {
+          classSetting = { failover: said.failover, editable: said.editable === true }
+        }
+      })
+      .catch(() => undefined)
+    return () => {
+      current = false
+    }
+  })
+
+  /**
+   * The staff banner (Z5): from CLASS_MOVE_NOW_MS without the machine, staff
+   * read what happens next — the server's own sentence, naming the machine
+   * and until when it waits, when its frame came; a sentence that promises
+   * nothing before that — with Move now, and Wait for the machine where it
+   * changes something: a class known to move by itself, and a teacher who
+   * may change that. A class that waits says so, and is offered only the
+   * move.
+   */
+  const staffBanner = $derived.by((): { text: string; wait: boolean } | null => {
+    if (!isHost || !machineLost || moveSent) return null
+    const lost = serverNow - (placed.linkSince ?? serverNow)
+    if (lost < MOVE_NOW_MS) return null
+    const failover = frame?.machine?.failover ?? classSetting?.failover ?? null
+    const waiting = waitChosen || failover === 'wait'
+    const note = frame?.machine?.state === 'unreachable' ? (frame.note ?? null) : null
+    const text = waiting
+      ? (note && frame?.machine?.failover === 'wait' ? note : tr('room.machine.banner.waiting'))
+      : (note ?? tr('room.machine.banner.lost', { elapsed: elapsed(lost) }))
+    return { text, wait: !waiting && failover === 'auto' && (classSetting?.editable ?? true) }
+  })
+
+  /**
+   * The slow start, for staff (§13.2 «Slow start»): while the slot starts on
+   * its machine, the server's own sentence, which names the machine and the
+   * image's progress («Запускаем ядро на машине «vast-3»… образ ↓ 45 %»); the
+   * room reads its unnamed twin in the kernel log. It goes with the next
+   * frame of another state (lib/kernel-machines.ts · noteKernelMachine).
+   */
+  const staffStarting = $derived(isHost && !staffBanner && frame?.machine?.state === 'starting' && frame.note ? frame.note : null)
+
+  /** Move now: every slot of this notebook's kind moves now (control.ts · kernel:move). */
+  function moveNow(): void {
+    session.send({ t: 'kernel:move', root })
+    moveSent = true
+  }
+
+  let waitError = $state<string | null>(null)
+  /**
+   * Wait for the machine: the class waits for its machine instead of moving
+   * by itself (the class's failover set to wait, §6.2), through the class
+   * settings' own door with the staff cookie; a teacher whom the owner's
+   * switch keeps out reads the server's refusal.
+   */
+  async function waitForMachine(): Promise<void> {
+    waitError = null
+    try {
+      const res = await fetch(`/api/admin/seminars/${encodeURIComponent(session.session.id)}`, {
+        method: 'PATCH',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ placement: { failover: 'wait' } }),
+      })
+      if (!res.ok) {
+        const said = (await res.json().catch(() => null)) as { error?: string } | null
+        waitError = said?.error || tr('common.requestFailed', { status: res.status })
+        return
+      }
+      waitChosen = true
+    } catch {
+      waitError = tr('common.networkError')
+    }
+  }
+
+  /**
+   * A press that would not reach the machine (Z5, under the button): Restart and
+   * Interrupt stay lit while it does not answer, and the press says why
+   * nothing happens, under the button pressed, to the one who pressed.
+   */
+  let refusalAt = $state<{ text: string; top: number; left: number } | null>(null)
+  /** Under the button pressed, kept on the screen: the bar is sticky and clips what it holds, so the note stands outside it. */
+  function refuseUnder(event: Event, text: string): void {
+    const at = (event.currentTarget as HTMLElement | null)?.getBoundingClientRect()
+    const width = Math.min(340, window.innerWidth - 32)
+    refusalAt = {
+      text,
+      top: at ? at.bottom + 6 : 56,
+      left: at ? Math.max(16, Math.min(at.left, window.innerWidth - 16 - width)) : 16,
+    }
+  }
+  $effect(() => {
+    if (!machineLost) refusalAt = null
+  })
 
   /*
    * Whoever started the running cell may stop it, teacher or not: only one cell
@@ -1275,7 +1520,8 @@
     if (event.repeat) return
     // Space scrolls the page, and both keys synthesise the click removed above.
     event.preventDefault()
-    startHold()
+    if (machineLost) refuseUnder(event, tr('room.machine.restartRefused'))
+    else startHold()
   }
 
   function onRestartKeyUp(event: KeyboardEvent): void {
@@ -1382,6 +1628,7 @@
 
   /** Number of pills on the right: kernel unwell, queue non-empty, or both. */
   const chipCount = $derived(
+    (machineChip ? 1 : 0) +
     (kernel === 'dead' || kernel === 'off' || kernel === 'starting' || kernel === 'restarting' ? 1 : 0) +
       (queued > 0 ? 1 : 0),
   )
@@ -1574,6 +1821,49 @@
       <span class="text-ui text-muted"> {tr('room.ui.445')} </span>
     </div>
   {/if}
+  {#if staffStarting}
+    <!-- The slow start, for staff: calm, nothing to decide, the server's sentence alone. -->
+    <div class="flex items-center gap-2.5 border-b border-line bg-raised px-4 py-2" role="status" data-machine-starting>
+      <span class="h-2 w-2 shrink-0 animate-pulse rounded-full bg-accent" aria-hidden="true"></span>
+      <p class="min-w-0 flex-1 text-ui text-ink">{staffStarting}</p>
+    </div>
+  {/if}
+  {#if staffBanner}
+    <!--
+      The staff banner (Paper 18 · Z5): the machine has not answered for ten
+      seconds, and staff decide — move the kernel now, or wait for the
+      machine. In the place of the class-over band, warm: nothing is
+      lost yet. On a phone the text stands over two 44 px buttons (Z10).
+    -->
+    <div
+      class="flex flex-wrap items-center gap-x-4 gap-y-2.5 border-b border-warning/40 bg-warning/[0.07] px-4 py-2.5"
+      role="status"
+      data-machine-banner
+    >
+      <Icon name="alert" size={14} class="shrink-0 text-warning" />
+      <p class="min-w-0 flex-1 basis-[260px] text-ui text-ink">{staffBanner.text}</p>
+      <div class="flex shrink-0 gap-2 max-[640px]:w-full">
+        <button
+          type="button"
+          class="inline-flex min-h-8 items-center border border-warning px-3 text-2xs font-semibold text-warning
+                 transition-colors duration-[var(--speed-quick)] hover:bg-warning/10 max-[640px]:min-h-11 max-[640px]:flex-1 max-[640px]:justify-center"
+          disabled={!session.connected}
+          onclick={moveNow}
+        >{tr('room.machine.moveNow')}</button>
+        {#if staffBanner.wait}
+          <button
+            type="button"
+            class="inline-flex min-h-8 items-center border border-line bg-canvas px-3 text-2xs font-semibold text-ink
+                   transition-colors duration-[var(--speed-quick)] hover:bg-raised max-[640px]:min-h-11 max-[640px]:flex-1 max-[640px]:justify-center"
+            onclick={() => void waitForMachine()}
+          >{tr('room.machine.wait')}</button>
+        {/if}
+      </div>
+      {#if waitError}
+        <p class="w-full text-2xs text-danger" role="alert">{waitError}</p>
+      {/if}
+    </div>
+  {/if}
   <!--
     The bar is two slots, not one scrolling row.
 
@@ -1639,7 +1929,11 @@
           session.connected,
           canInterrupt ? tr('room.extra.151') : tr('room.extra.152'),
         )}
-        onclick={() => session.send(interruptMessage())}
+        onclick={(event) => {
+          // Not while the machine is away: the press would not reach it (Z5), and says so.
+          if (machineLost) refuseUnder(event, tr('room.machine.interruptRefused'))
+          else session.send(interruptMessage())
+        }}
       > {tr('room.ui.395')} </button>
       <!--
         Hold, not click — the reasoning and the 900ms are at HOLD_MS above. This
@@ -1664,7 +1958,10 @@
         onpointerdown={(event) => {
           // A secondary button opens a context menu instead of pressing, and must
           // not arm a restart on its way there.
-          if (event.button === 0) startHold()
+          if (event.button !== 0) return
+          // A restart would not reach a machine that does not answer (Z5): said under the button, nothing armed.
+          if (machineLost) refuseUnder(event, tr('room.machine.restartRefused'))
+          else startHold()
         }}
         onpointerup={cancelHold}
         onpointerleave={cancelHold}
@@ -1730,6 +2027,36 @@
       still have something to pull the bar by.
     -->
     <div class="flex max-w-[70%] shrink-0 items-center gap-2.5 pl-2.5 pr-5">
+      {#if machineChip}
+        <!-- Where the kernel computes (Z5): calm on a machine, amber with its
+             timer while the machine does not answer, a spinner while it
+             moves, calm again with the move's time once it is back here. -->
+        <!-- With a timer the chip is a grid whose middle, the words, may shrink
+             to nothing: its smallest is the dot and the timer, so a phone's
+             bar takes the room from the queue's pill and never cuts the timer
+             (Z10). Without one it bends like every pill. -->
+        <span
+          class={cn(
+            machineChip.elapsed !== null
+              ? 'inline-grid h-6 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border px-2.5 font-mono text-2xs'
+              : PILL,
+            machineChip.tone === 'calm' ? 'border-line text-muted' : 'border-warning bg-warning/[0.18] text-ink',
+          )}
+          title={machineChip.title ?? machineChip.word}
+          data-machine-chip={machineChip.tone}
+        >
+          {#if machineChip.tone === 'moving'}
+            <Icon name="spinner" size={10} class="shrink-0 animate-spin text-warning" />
+          {:else}
+            <span class={cn('h-1.5 w-1.5 shrink-0 rounded-full', machineChip.tone === 'amber' ? 'bg-warning' : 'bg-accent')}></span>
+          {/if}
+          <span class="truncate">{countMode === 'full' ? machineChip.word : (machineChip.short ?? machineChip.word)}</span>
+          {#if machineChip.elapsed !== null}
+            <!-- The timer never goes into the ellipsis: on a phone's bar the words give way, it stays (Z10). -->
+            <span class="shrink-0 tabular-nums" data-machine-elapsed>· {machineChip.elapsed}</span>
+          {/if}
+        </span>
+      {/if}
       {#if kernel === 'dead'}
         <!-- animate-fade-up is the product's "appeared"; under
              prefers-reduced-motion index.css leaves only a fade-in without
@@ -1837,7 +2164,18 @@
     {:else}
       <div class="h-6" aria-hidden="true"></div>
     {/if}
-    <div use:slot={id}>
+    <div use:slot={id} class="relative">
+      {#if showCell && machineLost && notebook.current.queue.includes(id)}
+        <!-- A queued cell waits for its machine (Z5): said at the right of its code. -->
+        <span
+          class="pointer-events-none absolute right-3 top-2 z-10 inline-flex items-center gap-1.5 border border-warning/50
+                 bg-warning/[0.12] px-1.5 py-0.5 text-micro font-semibold text-warning"
+          data-waits-machine
+        >
+          <span class="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden="true"></span>
+          {tr('room.machine.waiting')}
+        </span>
+      {/if}
       {#if showCell}
       <CellView
         {id}
@@ -1858,6 +2196,26 @@
   {/each}
 
   {@render adder(ids.current.length)}
+
+  {#if refusalAt}
+    <!-- The press that would not reach the machine, under the button (Z5): closed by a press anywhere, or the link's return. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="fixed inset-0 z-40" onclick={() => (refusalAt = null)}></div>
+    <div
+      role="alert"
+      class="fixed z-50 flex w-[min(340px,calc(100vw-32px))] items-start gap-2.5 border-l-[3px] border-warning bg-canvas px-3.5 py-3 shadow-pop"
+      style:top="{refusalAt.top}px"
+      style:left="{refusalAt.left}px"
+      data-machine-refusal
+    >
+      <Icon name="alert" size={14} class="mt-0.5 shrink-0 text-warning" />
+      <p class="min-w-0 flex-1 text-2xs text-ink">{refusalAt.text}</p>
+      <button type="button" class="shrink-0 text-muted hover:text-ink" aria-label={tr('room.machine.close')} onclick={() => (refusalAt = null)}>
+        <Icon name="x" size={12} />
+      </button>
+    </div>
+  {/if}
 
   <div
     style:padding-left={gutter}

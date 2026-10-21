@@ -27,6 +27,10 @@
  * graph is held free of the catalogues, the bundle to its size, its hash to a
  * reworded catalogue, and the texts the core makes on a machine to the words
  * home says for them.
+ *
+ * Classes on machines (docs/architecture/remote-classes.md §7.1) bring three
+ * more cores the agent runs as home does: a class container's argv, the
+ * perimeter, a dead kernel's reading. The same rules hold them.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -148,6 +152,23 @@ const CORE = [
   'console.log(dockerRunner, gpuMath, meminfo, cardProbe, harness, storage)',
 ].join('\n')
 
+/**
+ * The pure cores classes on machines take from home (docs/architecture/
+ * remote-classes.md §7.1, «занятия на машинах»): a class container's argv
+ * (kernel/room-spec.ts), the perimeter's flags, rules and scripts
+ * (kernel/perimeter-core.ts) and a dead kernel's reading
+ * (kernel/postmortem-core.ts), moved out of pool.ts, perimeter.ts and
+ * postmortem.ts so that the agent runs home's own. As one entry, each
+ * namespace used, like the execution core above.
+ */
+const CLASS_CORES = [
+  "import * as roomSpec from './kernel/room-spec.js'",
+  "import * as perimeter from './kernel/perimeter-core.js'",
+  "import * as postmortem from './kernel/postmortem-core.js'",
+  'console.log(roomSpec, perimeter, postmortem)',
+].join('\n')
+const CLASS_CORE_FILES = ['src/kernel/room-spec.ts', 'src/kernel/perimeter-core.ts', 'src/kernel/postmortem-core.ts']
+
 type Bundle = { metafile: Metafile; text: string; sha256: string }
 
 /** One bundle in memory: `entry` is a file under server/ or a probe's source under server/src. */
@@ -204,6 +225,25 @@ test('the execution core loads no database, no room pool, no settings and no .en
   assert.deepEqual([...external].filter((name) => !name.startsWith('node:')), [])
 })
 
+test('the cores of classes on machines load nothing of home\'s, nothing from outside but node, and say nothing', async () => {
+  const { metafile } = await runnerBundle({ source: CLASS_CORES })
+  for (const file of CLASS_CORE_FILES) assert.ok(file in metafile.inputs, `${file} is not in the cores' graph: the probe no longer reaches it`)
+  assert.deepEqual(forbiddenIn(metafile), [])
+  const external = new Set(Object.values(metafile.inputs).flatMap((input) => input.imports.filter((imported) => imported.external).map((imported) => imported.path)))
+  assert.deepEqual([...external].filter((name) => !name.startsWith('node:')), [])
+  // No words either: what a machine reports with them, home says in its own (postmortem.ts · describe).
+  assert.deepEqual(dictionariesIn(metafile), [])
+  assert.ok(!(SHIM in metafile.inputs), 'a core speaks through tr: its words would be a machine\'s markers')
+})
+
+test('the modules the cores were moved out of are home\'s: each brings the database', async () => {
+  // The control for the test above: the same probe sees db.ts behind each of them.
+  for (const file of ['src/kernel/pool.ts', 'src/kernel/perimeter.ts', 'src/kernel/postmortem.ts']) {
+    const found = forbiddenIn((await bundle({ file })).metafile)
+    assert.ok(found.some((line) => line.startsWith('src/db.ts')), `${file}: ${found.join('; ')}`)
+  }
+})
+
 test('the check sees a forbidden module when there is one', async () => {
   // Home's own modules, which the core used to import: each brings the database.
   for (const file of ['src/competitions/gpu.ts', 'src/competitions/capacity.ts', 'src/kernel/resources.ts']) {
@@ -216,9 +256,9 @@ test('the check sees a forbidden module when there is one', async () => {
 /* -------------------------------------------------------------- the build */
 
 test('the agent\'s build is the same under two releases', async () => {
-  for (const entry of [{ file: RUNNER.entry }, { source: CORE }]) {
+  for (const entry of [{ file: RUNNER.entry }, { source: CORE }, { source: CLASS_CORES }]) {
     const [one, two] = await Promise.all([runnerBundle(entry, [releasedAs('0.30.0')]), runnerBundle(entry, [releasedAs('1.4.2')])])
-    assert.equal(one.sha256, two.sha256, `${'file' in entry ? entry.file : 'the core'} changes with the release's version`)
+    assert.equal(one.sha256, two.sha256, `${'file' in entry ? entry.file : entry.source === CORE ? 'the core' : 'the class cores'} changes with the release's version`)
     assert.ok(!one.text.includes('0.30.0'))
   }
   // The control: a bundle that does inline the version (version.ts) is told apart, so the equality above is not luck.
@@ -319,8 +359,8 @@ const MiB = 1024 * 1024
 const SHIM = path.relative(SERVER, I18N_SHIM)
 
 test('the runner\'s build carries no dictionaries: the shim stands where shared/i18n.ts would, and the bundle stays small', async () => {
-  for (const entry of [{ file: RUNNER.entry }, { source: CORE }]) {
-    const what = 'file' in entry ? entry.file : 'the core'
+  for (const entry of [{ file: RUNNER.entry }, { source: CORE }, { source: CLASS_CORES }]) {
+    const what = 'file' in entry ? entry.file : entry.source === CORE ? 'the core' : 'the class cores'
     const built = await runnerBundle(entry)
     assert.deepEqual(dictionariesIn(built.metafile), [], `${what} carries the UI's catalogues`)
     assert.ok(Buffer.byteLength(built.text) < MiB, `${what}: ${Buffer.byteLength(built.text)} bytes`)
@@ -514,7 +554,7 @@ test('loading the core reads no .env, writes nothing, registers no handler, patc
     const listeners = () => events.map((name) => process.listenerCount(name))
     const before = { listeners: listeners(), log: console.log, warn: console.warn }
     const storage = await import(${url('competitions/storage.ts')})
-    for (const file of [${['competitions/docker-runner.ts', 'competitions/gpu-math.ts', 'ops/meminfo.ts', 'kernel/card-probe.ts', 'competitions/harness.ts', 'runner-agent/version.ts'].map(url).join(', ')}]) await import(file)
+    for (const file of [${['competitions/docker-runner.ts', 'competitions/gpu-math.ts', 'ops/meminfo.ts', 'kernel/card-probe.ts', 'competitions/harness.ts', 'runner-agent/version.ts', ...CLASS_CORE_FILES.map((file) => file.slice('src/'.length))].map(url).join(', ')}]) await import(file)
     const fs = await import('node:fs')
     process.stdout.write(JSON.stringify({
       listeners: String(listeners()) === String(before.listeners),

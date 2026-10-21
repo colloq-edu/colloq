@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import zlib from 'node:zlib'
-import { REMOTE_BACKOFF_MAX_MS, REMOTE_BACKOFF_MIN_MS, REMOTE_MARKER_HEADER, REMOTE_PROTOCOL, remoteCredential, type RemoteSyncRequest } from '../shared/remote-runner.ts'
+import { REMOTE_BACKOFF_MAX_MS, REMOTE_BACKOFF_MIN_MS, REMOTE_MARKER_HEADER, REMOTE_PROTOCOL, REMOTE_REPLY_BYTES, remoteCredential, type RemoteSyncRequest } from '../shared/remote-runner.ts'
 import { Backoff, RemoteClient, retryAfter } from '../server/src/runner-agent/client.ts'
 import { TEST_ROOT } from './_env.mts'
 import { fakeHome, RUNNER_ID, SECRET, sha256, syncReply } from './_runner-agent-home.mts'
@@ -154,7 +154,7 @@ test('a reply over the size cap is not read whole, and is a hiccup', async () =>
   const home = await fakeHome()
   const client = new RemoteClient({ home: home.url, build: 'dev', credential: () => credential })
   try {
-    home.onSync = () => ({ body: Buffer.alloc(17 * 1024 * 1024, 32), headers: { 'Content-Type': 'application/json' } })
+    home.onSync = () => ({ body: Buffer.alloc(REMOTE_REPLY_BYTES + 1, 32), headers: { 'Content-Type': 'application/json' } })
     const answer = await client.sync(syncBody())
     assert.equal(answer.kind, 'transient')
     assert.match(answer.kind === 'transient' ? answer.reason : '', /size cap/)

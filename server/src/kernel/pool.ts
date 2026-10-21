@@ -1,4 +1,4 @@
-import { tr } from '@shared/i18n'
+import { formatNumber, tr } from '@shared/i18n'
 import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, runtimeEnvironment, imageRevision, RuntimeRequestError } from './runtime-client.js'
 import type { RuntimeResizeRequest, RuntimeRoom } from '@shared/runtime'
 import { db, sessionCpus, sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, repinSessionKernelRevision, sessionMemoryMb, sessionRowExists, storedRules } from '../db.js'
@@ -31,11 +31,21 @@ import {
   ROOM_PROFILE,
   ensureRoomPerimeter,
   perimeterStale,
-  roomHardeningArgs,
+  roomHardening,
   roomProfile,
   warmPerimeter,
   type RoomNetworkTarget,
 } from './perimeter.js'
+import { ROOM_SHM, classHashSeed, memSpec, roomRunArgs, type RoomRole } from './room-spec.js'
+/*
+ * Where each slot of a class runs (kernel/remote/placement-store.ts): two
+ * indexed reads that answer "nothing on a machine" for every class that put
+ * nothing there. The placement itself (kernel/remote/placement.ts) reaches
+ * the machines' router and the tunnel, which import this pool, and is
+ * imported only inside the machine branches below, for a class that has
+ * something on a machine (§6.10).
+ */
+import { anyLivePlacement, classHasLivePlacement, hasLivePlacement, livePlacementRows, machinePlaced } from './remote/placement-store.js'
 
 const IMAGE_PREFIX = 'colloq-kernel'
 const ROOM_PREFIX = 'colloq-room'
@@ -64,21 +74,25 @@ function run(args: string[], timeoutMs = 20_000): Promise<RunResult> {
 }
 
 /**
- * Whose container this is: the class's, or that of its students' personal
- * notebooks.
+ * Whose container this is: the class's, that of its students' personal
+ * notebooks, or its council's.
  *
- * A room has two containers, and the second is created lazily, on the first
- * run in a personal notebook. Why it has to be separate rather than a second
- * process inside the first is explained in shared/rules.ts · bookHasOwnKernel:
- * a GPU is given to a container as a whole, and the OOM killer under a shared
- * limit picks the heaviest process, that is, the lecture's kernel rather than
- * the greedy student.
+ * A room has two containers here, and the second is created lazily, on the
+ * first run in a personal notebook. Why it has to be separate rather than a
+ * second process inside the first is explained in shared/rules.ts ·
+ * bookHasOwnKernel: a GPU is given to a container as a whole, and the OOM
+ * killer under a shared limit picks the heaviest process, that is, the
+ * lecture's kernel rather than the greedy student.
+ *
+ * The third, the council's pool of workers (docs/architecture/remote-classes.md
+ * §6.1), lives only on machines: this server's Docker branch refuses it
+ * (`endpointForSession`), and its slot is `<id>#council` (`slotFor`).
  *
  * A live container without the `colloq.role` label reads as `room`: that is
  * how ALL containers started before this change look, and they must survive a
  * rollout without being recreated.
  */
-export type KernelRole = 'room' | 'own'
+export type KernelRole = RoomRole
 
 /**
  * This instance cannot give a personal notebook a kernel of its own, and that
@@ -119,16 +133,18 @@ export class OwnKernelUnavailable extends Error {
  * `execute`, with exactly the token that sits in its environment. The old
  * string (`jupyter:<id>`) stays with the room so that live containers answer
  * to their own token after a rollout instead of all being recreated at once.
+ * The council's container would hold strangers' attempts, and gets a string
+ * of its own as well.
  */
 function roomToken(sessionId: string, role: KernelRole = 'room'): string {
   return createHmac('sha256', config.sessionSecret)
-    .update(role === 'own' ? `jupyter:own:${sessionId}` : `jupyter:${sessionId}`)
+    .update(role === 'room' ? `jupyter:${sessionId}` : `jupyter:${role}:${sessionId}`)
     .digest('hex')
     .slice(0, 40)
 }
 
 const containerFor = (sessionId: string, role: KernelRole = 'room') =>
-  role === 'own' ? `${ROOM_PREFIX}-${sessionId}-own` : `${ROOM_PREFIX}-${sessionId}`
+  role === 'room' ? `${ROOM_PREFIX}-${sessionId}` : `${ROOM_PREFIX}-${sessionId}-${role}`
 
 /**
  * The key under which the pool remembers one container: its address, a start
@@ -137,17 +153,25 @@ const containerFor = (sessionId: string, role: KernelRole = 'room') =>
  * For the room container it is the class id itself, letter for letter as
  * before: the `endpoints`/`starting` maps have survived a dozen changes with
  * this key, and changing it would mean rewriting each of them for the sake of
- * one suffix. For the personal-notebook container it is `<id>#own`; a class id
- * never contains `#` (shared/runtime.ts · RUNTIME_SESSION_ID), so the key can
- * be parsed back exactly.
+ * one suffix. For the personal-notebook container it is `<id>#own`, and for
+ * the council's `<id>#council`; a class id never contains `#`
+ * (shared/runtime.ts · RUNTIME_SESSION_ID), so the key can be parsed back
+ * exactly.
  */
 const slotFor = (sessionId: string, role: KernelRole): string =>
-  role === 'own' ? `${sessionId}#own` : sessionId
+  role === 'room' ? sessionId : `${sessionId}#${role}`
 
 /** The class the slot belongs to. */
 const sessionOfSlot = (slot: string): string => {
   const cut = slot.indexOf('#')
   return cut < 0 ? slot : slot.slice(0, cut)
+}
+
+/** The role of the slot's container, read back from its key. */
+const roleOfSlot = (slot: string): KernelRole => {
+  const cut = slot.indexOf('#')
+  const suffix = cut < 0 ? '' : slot.slice(cut + 1)
+  return suffix === 'own' || suffix === 'council' ? suffix : 'room'
 }
 
 /**
@@ -584,6 +608,22 @@ export async function warmRoomPerimeter(): Promise<void> {
  * label is set by `docker run` below, and it outlives us.
  */
 export async function listRoomKernels(): Promise<Array<{ session: string; running: boolean; own: boolean }>> {
+  const here = await roomKernelsHere()
+  // Classes with slots on machines are swept like those here: their idle kernels stop after roomIdleMin too (D25).
+  if (!anyLivePlacement()) return here
+  const { machineKernels } = await import('./remote/placement.js')
+  const rooms = new Map(here.map((room) => [room.session, { running: room.running, own: room.own }]))
+  for (const room of machineKernels.list()) {
+    const seen = rooms.get(room.session) ?? { running: false, own: false }
+    seen.running ||= room.running
+    seen.own ||= room.own
+    rooms.set(room.session, seen)
+  }
+  return [...rooms].map(([session, seen]) => ({ session, ...seen }))
+}
+
+/** listRoomKernels of this server's own containers and Pods. */
+async function roomKernelsHere(): Promise<Array<{ session: string; running: boolean; own: boolean }>> {
   if (kernelBackend() === 'test') return []
   /*
    * By CLASSES, not by containers: a room has two of them.
@@ -1052,21 +1092,6 @@ async function sameGpu(container: string, gpu: string | null): Promise<boolean> 
 }
 
 /**
- * How many threads to allow numeric libraries.
- *
- * `os.cpu_count()` inside a container shows the HOST's cores, not the ones
- * given by `--cpus`: numpy and torch start thirty threads each on two allotted
- * cores and fight over them, computing slower than with one. Docker
- * understands fractional `--cpus`, but a thread count is an integer, rounded
- * down, not up: asking for more threads than there are cores is exactly the
- * trouble this is set to prevent.
- */
-function threadLimit(cpus: number): string {
-  if (!Number.isFinite(cpus) || cpus <= 0) return '2'
-  return String(Math.max(1, Math.floor(cpus)))
-}
-
-/**
  * How many CPUs a room gets when nothing was set for it, as a number.
  *
  * The instance default (admin/resource-settings.ts · `roomCpus`, then
@@ -1079,14 +1104,12 @@ export function defaultCpus(): number {
 }
 
 /**
- * Megabytes in the language `--memory` is set in. The way back, a docker
- * string in megabytes, is `parseMemMb`: it moved to admin/resource-settings.ts,
- * which reads KERNEL_MEM with it, and is re-exported here where it always was.
+ * Megabytes in the language `--memory` is set in: room-spec.ts · memSpec,
+ * which lays out `docker run` with it. The way back, a docker string in
+ * megabytes, is `parseMemMb`: it moved to admin/resource-settings.ts, which
+ * reads KERNEL_MEM with it. Both are re-exported here where they always were.
  */
-export function memSpec(mb: number): string {
-  return `${Math.floor(mb)}m`
-}
-export { parseMemMb }
+export { memSpec, parseMemMb }
 
 /**
  * What environments fall back to: the general default and the default for a
@@ -1124,6 +1147,17 @@ export function memoryLimitMb(env: string): number {
 }
 
 /**
+ * A GPU room's `--shm-size`: KERNEL_SHM, else room-spec.ts · ROOM_SHM. Only
+ * the class's own container with a card takes it (`runArgs`). It is part of
+ * that container's memory, not of this machine, so a class placed on a
+ * machine carries this very value in its intent: its card gets the same
+ * /dev/shm wherever it is (docs/architecture/remote-classes.md §7.1).
+ */
+export function roomShm(env: NodeJS.ProcessEnv = process.env): string {
+  return env.KERNEL_SHM ?? ROOM_SHM
+}
+
+/**
  * Call docker on someone else's behalf: for postmortem.ts, which finds out why
  * a kernel died.
  *
@@ -1141,20 +1175,26 @@ export function roomContainer(sessionId: string, role: KernelRole = 'room'): str
 }
 
 /**
- * The `docker run` arguments for the room's container.
+ * The `docker run` arguments for the room's container: the inputs read from
+ * this server, laid out by room-spec.ts · roomRunArgs.
  *
- * A separate function, because there is no real docker in the tests, and
- * building this line correctly matters more than calling it: an extra space
- * or a lost flag here means a seminar without a GPU or without isolation, and
- * that can only be noticed during the lesson. There are no quotes on purpose:
- * `run()` calls spawn with an array, without a shell.
+ * A thin wrapper, and only that: the argv itself lives in room-spec.ts, pure,
+ * so that a machine's agent lays out the same one for classes on machines
+ * (docs/architecture/remote-classes.md §7.1), and
+ * tests/room-spec-argv.test.mts holds the two equal flag for flag. What is
+ * this server's is decided here: the container's name and token, the image of
+ * the environment's name, the defaults of memory and CPUs (instance settings),
+ * the process ceiling and the network mode (perimeter.ts · roomHardening), the
+ * class's hash seed, a GPU room's shared memory (`roomShm`).
  */
 export function runArgs(opts: {
   sessionId: string
   env: string
   mount: string
   /**
-   * The class's container or the container of its personal notebooks.
+   * The class's container or the container of its personal notebooks (the
+   * council's exists only on machines, and is laid out here only for the
+   * argv's parity test).
    *
    * The second has no `--gpus`, no slice label and no `--shm-size`, and
    * cannot have them: the class's card is not given to personal notebooks,
@@ -1188,140 +1228,34 @@ export function runArgs(opts: {
    *
    * By the same rule as memory: `null` means the instance default
    * (`roomCpus`, then KERNEL_CPUS). The number here decides not only
-   * `--cpus` but also the numeric libraries' threads below: `os.cpu_count()`
+   * `--cpus` but also the numeric libraries' threads: `os.cpu_count()`
    * inside a container sees the HOST's cores, and a room with two allotted
-   * cores would start thirty threads on them, exactly what these variables
+   * cores would start thirty threads on them, exactly what those variables
    * are there to prevent.
    */
   cpus?: number | null
 }): string[] {
   const { sessionId, env, mount, network, publish } = opts
   const role = opts.role ?? 'room'
-  // Only the class's container gets a slice. Not "if one was passed" but "if
-  // allowed": a caller's mistake must not be able to give the card to personal
-  // notebooks.
-  const gpu = role === 'own' ? null : opts.gpu
-  const memory = memSpec(opts.memoryMb && opts.memoryMb > 0 ? opts.memoryMb : memoryLimitMb(env))
-  const cpus = opts.cpus && opts.cpus > 0 ? opts.cpus : defaultCpus()
-  const threads = threadLimit(cpus)
-  return [
-    'run',
-    '-d',
-    '--name',
-    containerFor(sessionId, role),
-    /*
-     * Our own room network (on the host) or the shared compose network (the
-     * server itself in a container), and in either of them the ban on local
-     * addresses applies (perimeter.ts).
-     */
-    ...(network ? ['--network', network] : []),
-    /*
-     * A port on the host loopback, only when the server is on the host. The
-     * loopback is not decoration here: without it the room's Jupyter is open
-     * on every interface, and the lecture hall's Wi-Fi is one of them. In the
-     * container form the port is not published at all.
-     */
-    ...(publish ? ['-p', '127.0.0.1:0:8888'] : []),
-    /*
-     * The hardened profile, always, not only when the class is open to the
-     * outside: uid 1000, no capabilities, no-new-privileges, a process cap, no
-     * IPv6, a profile version label (perimeter.ts · roomHardeningArgs).
-     */
-    ...roomHardeningArgs(process.env, role),
-    // One slice, named the way docker calls it. A room on an ordinary
-    // environment does not get here and takes no device.
-    ...(gpu ? ['--gpus', `device=${gpu}`] : []),
-    '-e',
-    `JUPYTER_TOKEN=${roomToken(sessionId, role)}`,
-    // The room has as many CPUs as it was given, and as many threads. But only
-    // as of `docker run`: `docker update --cpus` changes a live container's
-    // quota, not its environment variables (see applyCpuLimit).
-    '-e',
-    `OMP_NUM_THREADS=${threads}`,
-    '-e',
-    `MKL_NUM_THREADS=${threads}`,
-    '-e',
-    `OPENBLAS_NUM_THREADS=${threads}`,
-    // numexpr counts its number from the HOST's cores just like the other
-    // three, and grumbles quietly into the kernel log when its variable is
-    // missing.
-    '-e',
-    `NUMEXPR_NUM_THREADS=${threads}`,
-    /*
-     * Which representation plotly emits a figure in, and why that is decided
-     * here rather than in the image.
-     *
-     * Without the variable plotly picks the renderer itself, from the
-     * environment, and picks differently in different versions: 7.x under
-     * ipykernel emits a single `application/vnd.plotly.v1+json` (which is what
-     * we need), while 5.x also emits `text/html`, and in its first frame sends
-     * the WHOLE plotly.js bundle, five megabytes of script we do not execute
-     * anyway. The difference is not ours and changes from image to image.
-     *
-     * A variable of the kernel process is the least intrusive way to bring
-     * order here: it acts on SOMEONE ELSE'S environment, built by anyone at any
-     * time, without requiring an image rebuild, a plotly import or a single
-     * line executed in the kernel before the student's code. And the student
-     * can override it with one line (`pio.renderers.default = …`), so it is a
-     * default, not a prohibition.
-     *
-     * It is set in the image (kernel/Dockerfile) too: this code is not the
-     * only thing that starts the container; there are also compose and rented
-     * machines.
-     */
-    '-e',
-    'PLOTLY_RENDERER=plotly_mimetype',
-    '-v',
-    `${mount}:/workspace/${sessionId}`,
-    // Student code is arbitrary, exactly as in compose. A runaway cell in
-    // one room must not be able to take the host down either.
-    `--memory=${memory}`,
-    /*
-     * Swap exactly equal to memory, for the same reason it is set in
-     * `docker update` below: without this flag docker gives the container as
-     * much swap again on top, and a kernel that hits the limit does not die
-     * but goes to disk; the room stalls for minutes where it would be more
-     * honest to say "out of memory" right away.
-     */
-    `--memory-swap=${memory}`,
-    `--cpus=${cpus}`,
-    /*
-     * Shared memory is needed only where there is a GPU: docker's default is
-     * 64 MB, and `DataLoader(num_workers=4)` fails on it with "bus error"
-     * without naming the cause. Ordinary rooms do not need it, and extra
-     * memory given to everyone is memory taken from neighboring seminars.
-     */
-    ...(gpu ? [`--shm-size=${process.env.KERNEL_SHM ?? '1g'}`] : []),
-    /*
-     * `no`, not `unless-stopped`: there is now one container per seminar, and
-     * a machine reboot would bring up the whole past semester at once. While
-     * the server is alive, it restarts a fallen container itself the next time
-     * the room is opened.
-     */
-    '--restart=no',
-    '--label',
-    'colloq.kind=room-kernel',
-    '--label',
-    `colloq.session=${sessionId}`,
-    '--label',
-    `colloq.environment=${env}`,
-    /*
-     * Whose container this is: the class's or its personal notebooks'.
-     *
-     * Set on BOTH, including the room one, where the value would be implied
-     * anyway: the label is needed by the sweep, the slice allocation and
-     * `colloq status`, and they read `docker ps`, that is, also yesterday's
-     * containers started by a process that no longer exists. A missing label
-     * reads as `room` (see `KernelRole`), so live containers survive a
-     * rollout without being recreated.
-     */
-    '--label',
-    `colloq.role=${role}`,
-    // The label is the source of truth about who holds a slice: it survives
-    // a server restart, and the in-memory map does not.
-    ...(gpu ? ['--label', `colloq.gpu=${gpu}`] : []),
-    `${IMAGE_PREFIX}:${env}`,
-  ]
+  return roomRunArgs({
+    name: containerFor(sessionId, role),
+    role,
+    sessionId,
+    environment: env,
+    image: `${IMAGE_PREFIX}:${env}`,
+    mount,
+    extraMounts: [],
+    network,
+    publish,
+    gpu: opts.gpu,
+    memoryMb: opts.memoryMb && opts.memoryMb > 0 ? opts.memoryMb : memoryLimitMb(env),
+    cpus: opts.cpus && opts.cpus > 0 ? opts.cpus : defaultCpus(),
+    ...roomHardening(process.env, role),
+    token: roomToken(sessionId, role),
+    hashSeed: classHashSeed(sessionId),
+    shm: roomShm(),
+    labels: [],
+  })
 }
 
 /* -------------------------------------------------- memory limit on a live room */
@@ -1365,8 +1299,12 @@ export type LimitOutcome = 'applied' | 'pending' | 'failed'
  */
 export class KernelMemoryRefusal extends Error {
   readonly code = 'kernel_memory'
-  constructor(readonly reason: 'full' | 'unverified') {
-    super(tr(reason === 'full' ? 'server.kernel.memoryFull' : 'server.kernel.memoryUnverified'))
+  constructor(
+    readonly reason: 'full' | 'unverified',
+    /** Other words for the same refusal: a slot back from a lost machine says «На сервере нет места…» (§13.2). */
+    message?: string,
+  ) {
+    super(message ?? tr(reason === 'full' ? 'server.kernel.memoryFull' : 'server.kernel.memoryUnverified'))
     this.name = 'KernelMemoryRefusal'
   }
 }
@@ -1487,6 +1425,14 @@ async function updateWithMemory(
  * while they have no number of their own, the room's number is theirs too.
  */
 export async function applyMemoryLimit(sessionId: string, mb: number | null): Promise<LimitOutcome> {
+  // On a machine too (§6.10), by the same rule; a reset waits for the slot's next start there as well.
+  const own = ownLimits(sessionId).memoryMb
+  const machine = mb === null ? null : await onMachines(sessionId, [{ role: 'room', memoryMb: mb }, { role: 'own', memoryMb: own ?? mb }])
+  return merged(machine, await memoryLimitHere(sessionId, mb))
+}
+
+/** applyMemoryLimit for the containers and Pods of this server. */
+async function memoryLimitHere(sessionId: string, mb: number | null): Promise<LimitOutcome> {
   if (!limitsInjected && kernelBackend() === 'broker') {
     return brokerBoth(sessionId, { memoryMb: mb }, ownLimits(sessionId).memoryMb === null)
   }
@@ -1536,6 +1482,14 @@ export async function applyMemoryLimit(sessionId: string, mb: number | null): Pr
  * takes the numbers.
  */
 export async function applyOwnLimits(sessionId: string): Promise<LimitOutcome> {
+  const machine = hasLivePlacement(sessionId, 'own')
+    ? await onMachines(sessionId, [{ role: 'own', ...kernelLimits(sessionId, sessionEnvironment(sessionId) ?? activeName(), 'own') }])
+    : null
+  return merged(machine, await ownLimitsHere(sessionId))
+}
+
+/** applyOwnLimits for the personal notebooks' container or Pod of this server. */
+async function ownLimitsHere(sessionId: string): Promise<LimitOutcome> {
   if (!limitsInjected && kernelBackend() === 'broker') {
     const own = brokerLimits(sessionId, 'own')
     return resizeBrokerPod(sessionId, { memoryMb: own.memoryMb, cpus: own.cpus }, 'own')
@@ -1617,7 +1571,8 @@ async function bothContainers(
 async function resizeBrokerPod(
   sessionId: string,
   change: RuntimeResizeRequest,
-  role: KernelRole = 'room',
+  /** The broker's two Pods; a council has none there. */
+  role: 'room' | 'own' = 'room',
 ): Promise<LimitOutcome> {
   const parts = [
     ...('memoryMb' in change ? [change.memoryMb === null ? 'the broker default memory' : `${change.memoryMb} MB of memory`] : []),
@@ -1684,6 +1639,16 @@ async function brokerBoth(sessionId: string, change: RuntimeResizeRequest, ownFo
  * pair of flags here: `--cpus` is self-sufficient.
  */
 export async function applyCpuLimit(sessionId: string, own: number | null): Promise<LimitOutcome> {
+  let machine: LimitOutcome | null = null
+  if (hasLivePlacement(sessionId, 'room') || hasLivePlacement(sessionId, 'own')) {
+    const cpus = own ?? defaultCpus()
+    machine = await onMachines(sessionId, [{ role: 'room', cpus }, { role: 'own', cpus: ownLimits(sessionId).cpus ?? cpus }])
+  }
+  return merged(machine, await cpuLimitHere(sessionId, own))
+}
+
+/** applyCpuLimit for the containers and Pods of this server. */
+async function cpuLimitHere(sessionId: string, own: number | null): Promise<LimitOutcome> {
   // The personal notebooks' Pod follows while they have no cores of their own.
   if (!limitsInjected && kernelBackend() === 'broker') return brokerBoth(sessionId, { cpus: own }, ownLimits(sessionId).cpus === null)
   const cpus = own ?? defaultCpus()
@@ -1696,6 +1661,29 @@ export async function applyCpuLimit(sessionId: string, own: number | null): Prom
   return bothContainers(sessionId, `${cpus} CPUs`, (container, role) =>
     limitsDocker(['update', `--cpus=${role === 'own' ? ownCores : cpus}`, container], 30_000),
   )
+}
+
+/**
+ * The class's slots on machines get their numbers as durable intents
+ * (§6.10): the row changes, the machine runs `docker update` and answers.
+ * Null — none of these slots is on a machine.
+ */
+async function onMachines(
+  sessionId: string,
+  targets: Array<{ role: KernelRole; memoryMb?: number; cpus?: number }>,
+): Promise<LimitOutcome | null> {
+  const placed = targets.filter((target) => hasLivePlacement(sessionId, target.role))
+  if (placed.length === 0) return null
+  const { machineKernels } = await import('./remote/placement.js')
+  const outcomes = await Promise.all(placed.map((target) => machineKernels.resize(sessionId, target.role, { memoryMb: target.memoryMb, cpus: target.cpus })))
+  return outcomes.includes('applied') ? 'applied' : outcomes.includes('failed') ? 'failed' : 'pending'
+}
+
+/** One outcome for a class with slots here and on machines, counted as `bothContainers` counts it. */
+function merged(machine: LimitOutcome | null, here: LimitOutcome): LimitOutcome {
+  if (machine === null) return here
+  if (machine === 'applied' || here === 'applied') return 'applied'
+  return machine === 'failed' || here === 'failed' ? 'failed' : 'pending'
 }
 
 /**
@@ -1734,6 +1722,8 @@ export interface RunningKernel {
   role: KernelRole
   memoryMb: number | null
   cpus: number | null
+  /** A slot on a machine: it holds nothing of this server, so 0 MB and 0 cores here (§6.10, Z7 «0 МБ здесь»). */
+  where?: 'machine'
 }
 
 /**
@@ -1748,6 +1738,15 @@ export interface RunningKernel {
  * and the caller says so instead of drawing a free bar.
  */
 export async function runningKernelLimits(): Promise<RunningKernel[]> {
+  const here = await kernelLimitsHere()
+  const onMachines: RunningKernel[] = livePlacementRows()
+    .filter((row) => row.state !== 'stopping')
+    .map((row) => ({ session: row.sessionId, role: row.role, memoryMb: 0, cpus: 0, where: 'machine' as const }))
+  return onMachines.length > 0 ? [...here, ...onMachines] : here
+}
+
+/** runningKernelLimits of this server's own containers and Pods. */
+async function kernelLimitsHere(): Promise<RunningKernel[]> {
   const backend = kernelBackend()
   if (backend === 'broker') {
     // Both Pods of a class since 0.10: the personal notebooks' one is `own`.
@@ -1795,6 +1794,8 @@ export async function reapplyInstanceDefaults(changed: ReadonlySet<string>): Pro
   const roomCpus = changed.has('roomCpus')
   const ownCpus = changed.has('ownCpus')
   const ownMemory = changed.has('ownMemoryMb')
+  // Classes on machines follow the defaults as containers here do, by the same rule (§6.10).
+  if (roomCpus || ownCpus || ownMemory) await reapplyOnMachines(roomCpus, ownCpus, ownMemory)
   if (kernelBackend() === 'broker') {
     if (ownCpus || ownMemory) await reapplyOwnOnBroker(ownCpus, ownMemory)
     return
@@ -1830,6 +1831,37 @@ export async function reapplyInstanceDefaults(changed: ReadonlySet<string>): Pro
       console.error(`[kernel] instance defaults did not reach ${sessionId}:`, why)
     }
   }
+}
+
+/** The slots on machines that follow a changed instance default, from the placements, every class at once. */
+async function reapplyOnMachines(roomCpus: boolean, ownCpus: boolean, ownMemory: boolean): Promise<void> {
+  const placed = new Map<string, Set<KernelRole>>()
+  for (const row of livePlacementRows()) {
+    if (row.state === 'stopping') continue
+    placed.set(row.sessionId, (placed.get(row.sessionId) ?? new Set<KernelRole>()).add(row.role))
+  }
+  if (placed.size === 0) return
+  const { machineKernels } = await import('./remote/placement.js')
+  await Promise.all([...placed].map(async ([sessionId, roles]) => {
+    let rules: ReturnType<typeof storedRules> | null = null
+    try {
+      rules = storedRules(sessionId)
+    } catch {
+      /* no row: nothing of its own is set, it follows every default */
+    }
+    try {
+      if ((roomCpus && sessionCpus(sessionId) === null) || (ownCpus && rules?.ownCpus == null)) {
+        const cpus = sessionCpus(sessionId) ?? defaultCpus()
+        if (roles.has('room')) await machineKernels.resize(sessionId, 'room', { cpus })
+        if (roles.has('own')) await machineKernels.resize(sessionId, 'own', { cpus: ownLimits(sessionId).cpus ?? cpus })
+      }
+      if (ownMemory && roles.has('own') && rules?.ownMemoryMb == null) {
+        await machineKernels.resize(sessionId, 'own', { memoryMb: kernelLimits(sessionId, sessionEnvironment(sessionId) ?? activeName(), 'own').memoryMb })
+      }
+    } catch (err) {
+      console.error(`[kernel] instance defaults did not reach ${sessionId} on its machine:`, err instanceof Error ? err.message : err)
+    }
+  }))
 }
 
 /** The personal notebooks' Pods that follow a changed instance default, from the broker's census. */
@@ -1881,9 +1913,10 @@ async function startContainer(
    * The personal-notebook container neither asks for nor takes slices: the
    * class's card is not given to its students (shared/rules.ts ·
    * bookHasOwnKernel), and it starts a GPU environment just like an ordinary
-   * one, on the CPU.
+   * one, on the CPU. Only the class's own container takes one, the rule
+   * room-spec.ts lays the argv out by.
    */
-  const gpu = role !== 'own' && needsGpu(env) ? await takeGpu(sessionId, env) : null
+  const gpu = role === 'room' && needsGpu(env) ? await takeGpu(sessionId, env) : null
   const state = await stateOf(container)
   assertLocalRoomRunning(sessionId)
 
@@ -2097,6 +2130,9 @@ const abandoned = new Set<string>()
 /** Broker ensures in flight, per slot: a DELETE waits for the ones it would otherwise race. */
 const brokerStarts = new Map<string, Set<Promise<KernelEndpoint>>>()
 
+/** A council's start that reached this server's backends: a caller's mistake, said in the log's words. */
+const COUNCIL_ON_MACHINES_ONLY = 'A council worker pool runs only on machines: this server starts no council container'
+
 /**
  * The broker cannot give this class's personal notebooks a Pod: the refusal
  * `OwnKernelUnavailable` stands for, told apart from a start that failed.
@@ -2139,10 +2175,38 @@ export async function endpointForSession(
   // The owner is stopping this container's kernels to free memory
   // (retirement.ts · pauseKernelStarts): a start now would be removed a second
   // later. Only the role being stopped: the personal notebooks' stop leaves
-  // the lecture and the shell free to start.
+  // the lecture and the shell free to start; a council's pool is paused when
+  // the stop names its role.
   if (kernelStartsPaused(sessionId, role)) throw new Error(tr('server.kernel.startsPaused'))
   const backend = kernelBackend()
+  /*
+   * THE MACHINE BRANCH (docs/architecture/remote-classes.md §6.10): a slot
+   * that runs on a machine now, or that its class puts on machines, is the
+   * placement's to answer (kernel/remote/placement.ts) before either backend
+   * of this server. A broker home keeps its Pods (D26). For every class with
+   * nothing on machines this is two indexed reads and no await.
+   */
+  if (backend !== 'broker' && machinePlaced(sessionId, role)) {
+    const placed = await machineEndpoint(sessionId, env, role)
+    if (placed) {
+      // The class closed, or its kernels stopped by the owner, while the machine started it: as after the broker's await.
+      if (kernelRetirementInProgress(sessionId) || !sessionRowExists(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarIsStopping.9820e1"))
+      if (kernelStartsPaused(sessionId, role)) throw new Error(tr('server.kernel.startsPaused'))
+      return placed
+    }
+    return settleHere(sessionId, role, homeEndpoint(sessionId, env, role, backend))
+  }
+  return homeEndpoint(sessionId, env, role, backend)
+}
+
+/** This server's slots: those of the test backend, the broker's Pods and the docker containers, as before machines. */
+async function homeEndpoint(sessionId: string, env: string | null, role: KernelRole, backend: ReturnType<typeof kernelBackend>): Promise<KernelEndpoint> {
   if (backend === 'test') return defaultEndpoint()
+  // The council's pool of workers runs only on machines (remote-classes.md
+  // §6.1), and its placement answered above for a class that has one.
+  // Neither backend of this server starts one: there is no container for it
+  // here and no Pod for it on the broker.
+  if (role === 'council') throw new Error(COUNCIL_ON_MACHINES_ONLY)
   if (backend === 'broker') {
     if (!sessionRowExists(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarDoesNotExist.4f72c5"))
     sessionDir(sessionId)
@@ -2223,8 +2287,74 @@ export async function endpointForSession(
   return attempt
 }
 
+/**
+ * Slots of classes set to machines that started here instead (their
+ * `fallback`), so that the next notebook of the class finds the slot here
+ * too rather than on a machine: one slot never runs in two places. The
+ * docker branch also finds them by their container; the test backend has
+ * none. Dropped with the slot.
+ */
+const homeSlots = new Set<string>()
+
+/**
+ * The slot's endpoint on its machine, or null when it runs here: it already
+ * does (a class is never moved under a live kernel, §6.7), or no machine can
+ * take it and its class falls back here, through the admission below.
+ */
+async function machineEndpoint(sessionId: string, env: string | null, role: KernelRole): Promise<KernelEndpoint | null> {
+  const slot = slotFor(sessionId, role)
+  if (!hasLivePlacement(sessionId, role) && (await runsHere(sessionId, role))) return null
+  const { machineKernels } = await import('./remote/placement.js')
+  const name = (env ?? '').trim() || activeName()
+  // The numbers its container here would get; a council's pool is sized by the placement itself (§9.5).
+  const limits = kernelLimits(sessionId, name, role)
+  const endpoint = await machineKernels.ensure(sessionId, name, undefined, limits.cpus, limits.memoryMb, role)
+  if (endpoint === null) homeSlots.add(slot)
+  return endpoint
+}
+
+/**
+ * Whether the slot runs on this server now: started here in this process, or
+ * a live container of it found here. The placement asks it too before a warm
+ * start puts the slot on a machine (placement.ts · warmSlot).
+ */
+export async function runsHere(sessionId: string, role: KernelRole): Promise<boolean> {
+  const slot = slotFor(sessionId, role)
+  if (homeSlots.has(slot) || endpoints.has(slot) || starting.has(slot)) return true
+  if (kernelBackend() !== 'docker' || role === 'council') return false
+  return (await stateOf(containerFor(sessionId, role))) === 'running'
+}
+
+/**
+ * A slot of a class set to machines, started here: once it runs, a slot
+ * that moved off a lost machine says so (`moved`); refused for memory, it
+ * says the failover's own words with the numbers (§13.2 «No room at
+ * failover»), since the room just lost its variables to the move.
+ */
+async function settleHere(sessionId: string, role: KernelRole, start: Promise<KernelEndpoint>): Promise<KernelEndpoint> {
+  const { machineKernels } = await import('./remote/placement.js')
+  try {
+    const endpoint = await start
+    machineKernels.settledHome(sessionId, role)
+    return endpoint
+  } catch (err) {
+    if (machineMemoryFull(err) && machineKernels.lostRecently(sessionId, role)) throw new KernelMemoryRefusal('full', await noRoomWords())
+    throw err
+  }
+}
+
+/** «На сервере нет места для ядра этого занятия: занято 14 из 15 ГБ…», by this server's own numbers. */
+async function noRoomWords(): Promise<string> {
+  const { machineResources } = await import('./resources.js')
+  const machine = await machineResources()
+  const gigabytes = (mb: number) => tr('common.gigabytes', { size: formatNumber(Math.round((Math.max(0, mb) / 1024) * 10) / 10) })
+  const total = machine.memory.totalMb
+  return tr('server.thisServerHasNoRoomForThis.25c35f', { used: gigabytes(total - (machine.memory.availableMb ?? 0)), total: gigabytes(total) })
+}
+
 async function discardSlot(slot: string): Promise<void> {
   endpoints.delete(slot)
+  homeSlots.delete(slot)
   const container = containerOfSlot(slot)
   try {
     const result = await run(['rm', '-f', container], 60_000)
@@ -2238,8 +2368,7 @@ async function discardSlot(slot: string): Promise<void> {
 }
 
 /** The container name for a slot, in one line, so the key parsing lives in one place. */
-const containerOfSlot = (slot: string): string =>
-  containerFor(sessionOfSlot(slot), slot.endsWith('#own') ? 'own' : 'room')
+const containerOfSlot = (slot: string): string => containerFor(sessionOfSlot(slot), roleOfSlot(slot))
 
 /** Both slots of a room, in "class first" order: the order shows in the log. */
 const slotsOf = (sessionId: string): string[] => [
@@ -2299,6 +2428,12 @@ const ISOLATION_UNAVAILABLE = 'Room isolation is unavailable. Execution is disab
  * `owner`: the owner's stop from the panel (see `OwnerStop`).
  */
 export async function dropRoomKernel(sessionId: string, permanent = false, options: OwnerStop = {}): Promise<void> {
+  // The class's slots on machines stop there, as durable stops (§6.10); the owner's waits for the machine to say so.
+  if (classHasLivePlacement(sessionId)) {
+    const { machineKernels } = await import('./remote/placement.js')
+    await machineKernels.drop(sessionId, ['room', 'own', 'council'], options)
+  }
+  for (const slot of [...slotsOf(sessionId), slotFor(sessionId, 'council')]) homeSlots.delete(slot)
   if (kernelBackend() === 'broker') {
     // The owner's stop already refuses starts of both roles, and its gate,
     // unlike this one, keeps the room open while the Pods terminate.
@@ -2339,6 +2474,12 @@ export async function dropRoomKernel(sessionId: string, permanent = false, optio
  * `owner`: the owner's stop from the panel (see `OwnerStop`).
  */
 export async function dropOwnKernel(sessionId: string, options: OwnerStop = {}): Promise<void> {
+  // The personal notebooks' container on a machine stops there (§10: dropOwnIfEmpty becomes a durable stop).
+  if (hasLivePlacement(sessionId, 'own')) {
+    const { machineKernels } = await import('./remote/placement.js')
+    await machineKernels.drop(sessionId, ['own'], options)
+  }
+  homeSlots.delete(slotFor(sessionId, 'own'))
   if (kernelBackend() === 'broker') {
     const starts = brokerStarts.get(slotFor(sessionId, 'own'))
     if (options.owner) {
@@ -2376,9 +2517,11 @@ export async function dropOwnKernel(sessionId: string, options: OwnerStop = {}):
   if (options.owner && !removed.gone) throw notRemoved([{ slot, out: removed.out }])
 }
 
-/** Forget the resolved address so the next open re-checks the container. */
+/** Forget the resolved address so the next open re-checks the container, here or on its machine. */
 export function forgetSessionKernel(sessionId: string, role: KernelRole = 'room'): void {
   endpoints.delete(slotFor(sessionId, role))
+  homeSlots.delete(slotFor(sessionId, role))
+  if (hasLivePlacement(sessionId, role)) void import('./remote/placement.js').then(({ machineKernels }) => machineKernels.forget(sessionId, role))
 }
 
 /**
@@ -2401,6 +2544,7 @@ export async function dropLocalRoomKernel(sessionId: string): Promise<void> {
     await Promise.allSettled(slotsOf(sessionId).map((slot) => starting.get(slot)))
     for (const slot of slotsOf(sessionId)) {
       endpoints.delete(slot)
+      homeSlots.delete(slot)
       const result = await run(['rm', '-f', containerOfSlot(slot)], 60_000)
       if (result.code !== 0 && !/No such container/i.test(result.out)) throw new Error(result.out)
       releaseWorkAllocation(slot)
