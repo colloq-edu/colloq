@@ -11,6 +11,7 @@ import {
  * catalog. The selected default is persisted separately and only affects new
  * rooms. File editing and Docker builds below serve local development only. */
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -572,28 +573,76 @@ export function setActiveName(name: string): void {
 
 interface RunResult {
   code: number
+  /** Both streams as they came: what a person reads about a failure. */
   out: string
+  /**
+   * The standard output alone: what a command answers. A pip freeze is read
+   * from it, since a warning pip prints on stderr is not a line of the file.
+   */
+  stdout: string
+  /** The standard error alone: where docker and python say why they failed. */
+  stderr: string
+  /** Its time ran out and it was killed: a slow command, which is not the same as a failed one. */
+  timedOut: boolean
+  /** It printed more than `maxOutput` and was killed there; nothing past the limit is kept. */
+  overflowed: boolean
 }
 
+/**
+ * `maxOutput` bounds what is read, in bytes of both streams together: a
+ * command that keeps printing is killed at the limit instead of being read to
+ * its end, which for one that never stops would be the timeout's worth of
+ * output held in memory. Unbounded by default; the callers that read a
+ * command's answer pass it.
+ */
 function run(
   command: string,
   args: string[],
   timeoutMs = 15_000,
   extraEnv?: Record<string, string>,
+  maxOutput = Infinity,
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     const child = spawn(command, args, { cwd: ROOT, env: { ...process.env, ...extraEnv } })
     let out = ''
-    const done = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
-    child.stdout.on('data', (d: Buffer) => (out += d.toString()))
-    child.stderr.on('data', (d: Buffer) => (out += d.toString()))
+    // Kept as bytes and decoded once: a character split between two chunks stays one character.
+    const stdout: Buffer[] = []
+    const stderr: Buffer[] = []
+    let printed = 0
+    let timedOut = false
+    let overflowed = false
+    const done = setTimeout(() => {
+      timedOut = true
+      child.kill('SIGKILL')
+    }, timeoutMs)
+    const take = (into: Buffer[]) => (d: Buffer | string) => {
+      if (overflowed) return
+      const chunk = typeof d === 'string' ? Buffer.from(d) : d
+      printed += chunk.length
+      if (printed > maxOutput) {
+        overflowed = true
+        child.kill('SIGKILL')
+        return
+      }
+      into.push(chunk)
+      out += chunk.toString()
+    }
+    child.stdout.on('data', take(stdout))
+    child.stderr.on('data', take(stderr))
     child.on('error', (err) => {
       clearTimeout(done)
-      resolve({ code: -1, out: String(err) })
+      resolve({ code: -1, out: String(err), stdout: '', stderr: '', timedOut, overflowed })
     })
     child.on('close', (code) => {
       clearTimeout(done)
-      resolve({ code: code ?? -1, out })
+      resolve({
+        code: code ?? -1,
+        out,
+        stdout: Buffer.concat(stdout).toString(),
+        stderr: Buffer.concat(stderr).toString(),
+        timedOut,
+        overflowed,
+      })
     })
   })
 }
@@ -733,6 +782,168 @@ async function imageFacts(name: string): Promise<ImageFacts | null> {
   )
   if (res.code !== 0) return null
   return parseImageFacts(res.out)
+}
+
+/* ---------------------------------------------------------- pip freeze */
+
+/**
+ * The image an environment's rooms run now, as a freeze of it names it.
+ *
+ * Asked anew on every download and never remembered by name: the tag
+ * `colloq-kernel:<name>` moves with every rebuild, and the id is the only
+ * thing that says whether a freeze in hand is still about the image the rooms
+ * start from. One inspect costs milliseconds; a stale freeze is a student's
+ * `pip install -r` that brings back last week's versions.
+ */
+export interface FrozenImage {
+  /** `sha256:…`: immutable, so the freeze is kept by it and a rebuild gets a fresh one. */
+  id: string
+  builtAt: number
+  /** `linux/arm64`: the wheels a freeze pins are this platform's, and another one may need others. */
+  platform: string
+  /** `3.11.9`, the image's own PYTHON_VERSION; null when it says nothing. */
+  python: string | null
+}
+
+/**
+ * The id and the platform, then the very lines the list asks for: one
+ * inspect, and the size, date and Python are read by the same parse.
+ */
+const FROZEN_FORMAT = `{{println .Id}}{{.Os}}/{{.Architecture}}{{println}}${IMAGE_FORMAT}`
+
+export function parseFrozenImage(out: string): FrozenImage | null {
+  const [id = '', platform = '', ...rest] = out.split('\n')
+  const facts = parseImageFacts(rest.join('\n'))
+  if (facts === null || !/^sha256:[a-f0-9]{64}$/.test(id.trim())) return null
+  return { id: id.trim(), builtAt: facts.builtAt, platform: platform.trim(), python: facts.python }
+}
+
+/**
+ * The file's first line: which environment, on which Python and platform,
+ * which image and when it was built.
+ *
+ * The shape of the competition materials' package list
+ * (competitions/materials-zip.ts · packagesText), and for the same reason: it
+ * is a comment, so `pip install -r` reads past it, and it has no Cyrillic, in
+ * either language of the panel. The file travels to laptops whose pip may
+ * still read a requirements file in the system code page, and a Russian word
+ * there fails the whole install on a cp1252 Windows; ISO time, for the same
+ * reader anywhere.
+ */
+export function freezeHeader(name: string, image: FrozenImage): string {
+  const built = new Date(image.builtAt).toISOString().replace(/\.\d{3}Z$/, 'Z')
+  const parts = [
+    name,
+    image.python === null ? null : `Python ${image.python}`,
+    image.platform || null,
+    `image ${image.id}`,
+    `built ${built}`,
+  ]
+  return `# ${parts.filter((part) => part !== null).join(' · ')}`
+}
+
+/**
+ * A freeze is kilobytes; an image that prints this much at start is not
+ * giving one. The run is killed when it passes this (run · maxOutput), not
+ * read to its end and measured after.
+ */
+const MAX_FREEZE = 1024 * 1024
+/** A pip freeze takes seconds; past this the read is given up and said to be slow, not broken. */
+const FREEZE_TIMEOUT_MS = 60_000
+/** Freezes kept: an install has a handful of environments, each rebuilt now and then. */
+const FREEZES_KEPT = 64
+/** By image id. A read that failed leaves, so the next download tries again. */
+const freezes = new Map<string, Promise<string>>()
+
+/** The last line a command printed: what a person reads first about why it failed. */
+function lastLine(out: string): string {
+  const lines = out
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  return (lines.pop() ?? '').slice(0, 300)
+}
+
+/**
+ * `python -m pip freeze --all` of one image, in a container of its own.
+ *
+ * The image's own pip, so the file is the exact one pip writes, `name @ url`
+ * lines and all; `--all` keeps pip, setuptools and wheel, which a plain
+ * freeze leaves out and a faithful copy of the environment needs. The
+ * container is thrown away: started from the inspected id, never the tag, with
+ * no network, no capabilities, a read-only disk and a sliver of the machine,
+ * the way the inventory probe runs (environment-inventory.ts), so the classes
+ * running on the image are never touched and barely share a CPU with it.
+ * Concurrent downloads of one image share one run.
+ */
+function freezeOf(id: string): Promise<string> {
+  const known = freezes.get(id)
+  if (known) return known
+  const container = `colloq-freeze-${randomUUID()}`
+  const pending = (async () => {
+    try {
+      const res = await run(
+        'docker',
+        [
+          'run', '--rm', '--pull=never', '--name', container,
+          '--network=none', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+          '--user=1000:1000', '--pids-limit=64', '--memory=256m', '--cpus=0.5',
+          '--entrypoint', 'python', id, '-m', 'pip', 'freeze', '--all', '--disable-pip-version-check',
+        ],
+        FREEZE_TIMEOUT_MS,
+        undefined,
+        MAX_FREEZE,
+      )
+      // Killed by us first, each for its own reason; a failure is said in stderr's words, where docker and python
+      // say why, never by a package line that stdout happened to end on.
+      if (res.overflowed) throw new Error(tr('server.environmentFreeze.tooLong', { mb: MAX_FREEZE / 1024 / 1024 }))
+      if (res.timedOut) throw new Error(tr('server.environmentFreeze.timedOut', { seconds: FREEZE_TIMEOUT_MS / 1000 }))
+      if (res.code !== 0) throw new Error(lastLine(res.stderr) || tr('server.environmentFreeze.exited', { code: res.code }))
+      return res.stdout
+    } finally {
+      // A client killed on its timeout or at the size limit can leave its container behind.
+      await run('docker', ['rm', '-f', container])
+    }
+  })()
+  if (freezes.size >= FREEZES_KEPT) freezes.delete(freezes.keys().next().value as string)
+  freezes.set(id, pending)
+  pending.catch(() => {
+    if (freezes.get(id) === pending) freezes.delete(id)
+  })
+  return pending
+}
+
+export type FreezeResult =
+  | { state: 'ready'; text: string }
+  /** No image under the tag: never built, or the only build failed. */
+  | { state: 'unbuilt' }
+  /** Docker did not answer, or the image could not give its freeze: the reason in its own words. */
+  | { state: 'failed'; detail: string }
+
+/** The pip freeze of the image `colloq-kernel:<name>` now names, under its header line. */
+export async function readFreeze(name: string): Promise<FreezeResult> {
+  checkName(name)
+  const inspected = await run(
+    'docker',
+    ['image', 'inspect', `colloq-kernel:${name}`, '--format', FROZEN_FORMAT],
+    8000,
+  )
+  if (inspected.code !== 0) {
+    // "No such image" is a state of the environment; anything else is docker's trouble, said as docker said it on
+    // stderr. A client that said nothing (not installed, or killed on its timeout) is docker being unavailable.
+    return /no such (image|object)/i.test(inspected.out)
+      ? { state: 'unbuilt' }
+      : { state: 'failed', detail: lastLine(inspected.stderr) || tr('server.dockerIsUnavailable.6292c5') }
+  }
+  const image = parseFrozenImage(inspected.stdout)
+  if (image === null) return { state: 'failed', detail: tr('server.environmentFreeze.noImageFacts') }
+  try {
+    const freeze = await freezeOf(image.id)
+    const body = freeze === '' || freeze.endsWith('\n') ? freeze : `${freeze}\n`
+    return { state: 'ready', text: `${freezeHeader(name, image)}\n${body}` }
+  } catch (err) {
+    return { state: 'failed', detail: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 /* --------------------------------------------------------- build state */

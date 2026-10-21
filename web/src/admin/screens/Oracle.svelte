@@ -36,6 +36,7 @@
   import Check from '@/admin/ui/Check.svelte'
   import Choice from '@/admin/ui/Choice.svelte'
   import Section from '@/admin/ui/Section.svelte'
+  import { levelFields } from '@/admin/ui/field-rows'
   import Icon, { type IconName } from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import { uploadMb } from '@/admin/panel'
@@ -597,7 +598,7 @@
     >
       <Choice options={PROVIDERS} value={provider} onchange={pickProvider} />
 
-      <div class="mt-4 flex flex-wrap gap-4">
+      <div class="mt-4 flex flex-wrap gap-4" use:levelFields>
         <div class="min-w-[220px] flex-[1_1_320px]">
           {@render fieldLabel(tr("admin.base.url"), 'ai-base-url')}
           <input
@@ -852,7 +853,10 @@
       title={tr("admin.usage.limits")}
       description={tr("admin.limit.student.questions.and.request.size.teachers.are.exempt.from")}
     >
-      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <!-- Four columns from lg: at 1024 and 1280 px the questions' caption
+           wraps, in either language, and its box stays on its neighbours'
+           line (admin/ui/field-rows.ts). -->
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4" use:levelFields>
         <div class="min-w-0">
           {@render fieldLabel(tr("admin.questions.per.student"), 'ai-questions')}
           <div class="admin-affix gap-2">

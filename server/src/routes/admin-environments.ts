@@ -4,6 +4,7 @@ import {
   usingRuntimeBroker,
   kernelRuntimeClient,
   loadRuntimeCatalog,
+  runtimeEnvironment,
 } from '../kernel/runtime-client.js'
 /**
  * The Environments screen's routes.
@@ -42,6 +43,7 @@ import {
   isBuilding,
   isShipped,
   listEnvironments,
+  readFreeze,
   readSource,
   removeEnvironment,
   startBuild,
@@ -185,6 +187,47 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
       res.json(await readEnvironmentInventory(name))
     } catch {
       fail(res, 503, 'failed', tr('common.environmentUnavailable'))
+    }
+  })
+
+  /*
+   * The image's `pip freeze`, as the file `<name>-pip-freeze.txt`.
+   *
+   * Read the way the inventory above is: in a throwaway container of the
+   * image, by its id, with no network, so a class running on it is never
+   * touched; and kept by that id, so a second download costs one inspect and a
+   * rebuild gets a fresh freeze (environments.ts · readFreeze). Open to every
+   * teacher, like the lists, the log and the inventory, and for the same
+   * reason no audit event: reading what an image holds changes nothing.
+   *
+   * A refusal is words, never a file: the window saves only a 200, and a 409
+   * saved under a requirements name would be a JSON error that `pip install
+   * -r` chokes on. An environment never built has no image to read; under the
+   * release catalog there is no docker here at all, and the answer names the
+   * pinned image and the command that reads its freeze where it can be pulled.
+   */
+  router.get('/api/admin/environments/:name/freeze', requireStaff, async (req: Request, res: Response) => {
+    const name = String(req.params.name)
+    try {
+      if (!ENVIRONMENT_NAME.test(name) || !exists(name)) {
+        return fail(res, 404, 'not_found', tr('server.noSuchEnvironment.7ca461'))
+      }
+      if (usingRuntimeBroker()) {
+        return fail(res, 409, 'managed_environment', tr('server.environmentFreeze.managed', { name, image: runtimeEnvironment(name).image }))
+      }
+      const freeze = await readFreeze(name)
+      if (freeze.state === 'unbuilt') return fail(res, 409, 'not_built', tr('server.environmentFreeze.unbuilt', { name }))
+      if (freeze.state === 'failed') {
+        return fail(res, 503, 'failed', tr('server.environmentFreeze.failed', { name, detail: freeze.detail }))
+      }
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+      res.setHeader('Content-Disposition', `attachment; filename="${name}-pip-freeze.txt"`)
+      // A rebuild changes the file under the same address.
+      res.setHeader('Cache-Control', 'no-store')
+      res.send(freeze.text)
+    } catch (err) {
+      // An unreadable release catalog, said in its own words rather than left to hang the request.
+      fail(res, 503, 'failed', tr('server.environmentFreeze.failed', { name, detail: err instanceof Error ? err.message : String(err) }))
     }
   })
 

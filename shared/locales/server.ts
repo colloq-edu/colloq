@@ -4899,5 +4899,35 @@ export const serverMessages: MessageCatalog = {
   "server.thePersonalNotebooksKernelsOnTheMachine.160525": {
     "ru": "Ядра личных тетрадей на машине остановлены: следующий запуск поднимет их заново, переменные пропали.",
     "en": "The personal notebooks’ kernels on the machine were stopped: the next run starts them again, and their variables are gone."
+  },
+  // «Скачать pip freeze» of an environment's window (server/src/routes/admin-environments.ts · freeze, environments.ts ·
+  // readFreeze): no image yet, the release catalog's image with no docker here, and a read that failed with its reason.
+  "server.environmentFreeze.unbuilt": {
+    "ru": "У окружения «{name}» ещё нет образа: pip freeze появится после первой сборки.",
+    "en": "“{name}” has no image yet: its pip freeze appears after the first build."
+  },
+  "server.environmentFreeze.managed": {
+    "ru": "Окружение «{name}» приходит из каталога релиза: это образ {image}, закреплённый по дайджесту. Docker у этого сервера нет, и pip freeze здесь не прочитать. Его напечатает `docker run --rm --network none --entrypoint python {image} -m pip freeze --all` на машине, которая может скачать этот образ.",
+    "en": "“{name}” comes from the release catalog: it is the image {image}, pinned by its digest. This server has no Docker, so its pip freeze cannot be read here. `docker run --rm --network none --entrypoint python {image} -m pip freeze --all` prints it on any machine that can pull the image."
+  },
+  "server.environmentFreeze.failed": {
+    "ru": "Не удалось прочитать pip freeze окружения «{name}»: {detail}",
+    "en": "Could not read the pip freeze of “{name}”: {detail}"
+  },
+  "server.environmentFreeze.exited": {
+    "ru": "pip freeze завершился с кодом {code}",
+    "en": "pip freeze exited with code {code}"
+  },
+  "server.environmentFreeze.tooLong": {
+    "ru": "образ напечатал больше {mb} МБ, а pip freeze — это килобайты",
+    "en": "the image printed more than {mb} MB, and a pip freeze is kilobytes"
+  },
+  "server.environmentFreeze.timedOut": {
+    "ru": "pip freeze не ответил за {seconds} с",
+    "en": "pip freeze did not answer in {seconds} s"
+  },
+  "server.environmentFreeze.noImageFacts": {
+    "ru": "Docker не назвал id и дату сборки образа",
+    "en": "docker did not name the image’s id and build date"
   }
 }

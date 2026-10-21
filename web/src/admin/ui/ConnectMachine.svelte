@@ -25,6 +25,7 @@
   import { tr } from '@shared/i18n'
   import type { MintRemoteCodeResponse, RemoteCodeView, RemoteMachine } from '@shared/remote-admin'
   import Check from '@/admin/ui/Check.svelte'
+  import { levelFields } from '@/admin/ui/field-rows'
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import {
@@ -158,8 +159,12 @@
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-6 py-5 max-[640px]:px-4">
+      <!-- The fields stand on one line however their captions wrap: «How
+           many machines» takes two lines in English, at 160 px and on a
+           phone's half-width alike (admin/ui/field-rows.ts). -->
       <form
         class="flex flex-wrap items-start gap-x-4 gap-y-4"
+        use:levelFields
         onsubmit={(event) => {
           event.preventDefault()
           void mint()

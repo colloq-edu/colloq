@@ -48,6 +48,7 @@
   import Runners from '@/admin/ui/Runners.svelte'
   import RunningKernels from '@/admin/ui/RunningKernels.svelte'
   import Section from '@/admin/ui/Section.svelte'
+  import { levelFields } from '@/admin/ui/field-rows'
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import { notebooksOffQuestion, presetWords, runnersApi } from '@/admin/runners'
@@ -916,7 +917,9 @@
 <!--
   One field: the number, its unit, and one line saying where the number comes
   from. The line is the point of the page — "4 GB" alone does not say whether
-  it is the panel's, the .env's or nobody's.
+  it is the panel's, the .env's or nobody's. A row of them carries
+  use:levelFields (admin/ui/field-rows.ts): their boxes stand on one line
+  however many lines a caption takes.
 -->
 {#snippet field(key: FieldKey, label: string, unit: string, width: string, placeholder = '')}
   {@const id = fieldId(key)}
@@ -1061,7 +1064,7 @@
         {@render sourceLine('c.gpuDevices', sourceOf('c.gpuDevices'))}
       </div>
 
-      <div class="flex flex-wrap items-start gap-4">
+      <div class="flex flex-wrap items-start gap-4" use:levelFields>
         {@render field(
           'c.gpuPerDevice',
           tr('admin.resourcesTab.gpuPerDevice'),
@@ -1069,9 +1072,10 @@
           'w-[250px] max-w-full',
         )}
         {#if gpuForm && gpuForm.chosen > 0}
-          <!-- 26px down: the caption line (20) and its gap (6), so the
-               readout stands level with the box beside it. -->
-          <div class="mt-[26px] flex min-h-10 min-w-[220px] flex-1 flex-wrap items-baseline gap-x-2.5 gap-y-1">
+          <!-- No caption over it, so the row stands it level with the box
+               beside it (admin/ui/field-rows.ts), however many lines that
+               box's caption takes. -->
+          <div class="flex min-h-10 min-w-[220px] flex-1 flex-wrap items-baseline gap-x-2.5 gap-y-1">
             <span class="admin-label">{tr('admin.resourcesTab.gpuSlice')}</span>
             <span class="font-mono text-gauge font-bold text-ink">{shareGauge(gpuForm)}</span>
             <span class="text-2xs text-muted">{shareDetail(gpuForm)}</span>
@@ -1104,7 +1108,7 @@
   {#if competitions?.runners}
     {@const saved = competitions.runners}
     {@const homeOn = homeChoice ?? saved.homeNotebooks.value}
-    <div class="flex flex-wrap items-start gap-x-4 gap-y-4">
+    <div class="flex flex-wrap items-start gap-x-4 gap-y-4" use:levelFields>
       <div class="min-w-0 flex-[1_1_320px]">
         <p class="mb-1.5 flex items-baseline gap-2">
           <span class="admin-label">{tr('admin.runners.homeNotebooks')}</span>
@@ -1354,7 +1358,7 @@
         {#if dockerOnlyIgnored}
           <p class="mb-4 text-2xs text-warning">{tr('admin.resourcesTab.brokerNote')}</p>
         {/if}
-        <div class="flex flex-wrap gap-4">
+        <div class="flex flex-wrap gap-4" use:levelFields>
           {@render field('roomMemoryMb', tr('admin.resourcesTab.memory'), tr('admin.resourcesTab.unitGb'), 'w-[200px]')}
           {@render field('roomCpus', tr('admin.resourcesTab.cores'), tr('admin.resourcesTab.unitCores'), 'w-[160px]')}
           {@render field('gpuRoomMemoryMb', tr('admin.resourcesTab.gpuMemory'), tr('admin.resourcesTab.unitGb'), 'w-[240px]')}
@@ -1383,14 +1387,14 @@
       </Section>
 
       <Section title={tr('admin.resourcesTab.notebooksTitle')} description={tr('admin.resourcesTab.notebooksNote')}>
-        <div class="flex flex-wrap items-start gap-4">
+        <div class="flex flex-wrap items-start gap-4" use:levelFields>
           {@render field('ownMemoryMb', tr('admin.resourcesTab.memoryPerClass'), tr('admin.resourcesTab.unitGb'), 'w-[200px]', tr('admin.resourcesTab.sameAsRoom'))}
           {@render field('ownCpus', tr('admin.resourcesTab.cores'), tr('admin.resourcesTab.unitCores'), 'w-[160px]', tr('admin.resourcesTab.sameAsRoom'))}
           <!-- The estimate the owner would otherwise do on a napkin: one
-               container for the class, divided by the people in it.
-               26px down: the caption line beside it (20) and its gap (6), so
-               the box stands level with the fields. -->
-          <div class="mt-[26px] flex min-h-10 min-w-[260px] flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 bg-surface px-3.5 py-2 text-ui text-ink">
+               container for the class, divided by the people in it. It has
+               no caption, so the row stands it level with the fields' boxes
+               (admin/ui/field-rows.ts). -->
+          <div class="flex min-h-10 min-w-[260px] flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 bg-surface px-3.5 py-2 text-ui text-ink">
             <label for="resources-class-size">{tr('admin.resourcesTab.classOf')}</label>
             <input
               id="resources-class-size"
@@ -1408,10 +1412,10 @@
             {/if}
           </div>
         </div>
-        <div class="mt-2 flex flex-wrap items-start gap-4">
+        <div class="mt-2 flex flex-wrap items-start gap-4" use:levelFields>
           {@render field('ownMax', tr('admin.resourcesTab.ownMax'), tr('admin.resourcesTab.unitPerClass'), 'w-[200px]')}
           {@render field('ownIdleMin', tr('admin.resourcesTab.ownIdle'), tr('admin.resourcesTab.unitIdleMinutes'), 'w-[160px]')}
-          <p class="mt-[26px] min-w-[220px] flex-1 text-2xs text-muted">{tr('admin.resourcesTab.ownMaxNote')}</p>
+          <p class="min-w-[220px] flex-1 text-2xs text-muted">{tr('admin.resourcesTab.ownMaxNote')}</p>
         </div>
       </Section>
 
@@ -1466,7 +1470,7 @@
             </div>
           {/if}
 
-          <div class="mt-5 flex flex-wrap items-start gap-4">
+          <div class="mt-5 flex flex-wrap items-start gap-4" use:levelFields>
             {@render field('c.wallSeconds', tr('admin.resourcesTab.wall'), tr('admin.resourcesTab.unitSeconds'), 'w-[200px]')}
             {@render field('c.memoryMb', tr('admin.resourcesTab.memory'), tr('admin.resourcesTab.unitGb'), 'w-[160px]')}
             {@render field('c.cpus', tr('admin.resourcesTab.cores'), '', 'w-[116px]')}
@@ -1480,9 +1484,9 @@
             <p class="mt-1 text-2xs text-muted">{competitionPastBound}</p>
           {/if}
 
-          <div class="mt-4 flex flex-wrap items-start gap-4">
+          <div class="mt-4 flex flex-wrap items-start gap-4" use:levelFields>
             {@render field('c.uploadsPerMinute', tr('admin.resourcesTab.uploads'), tr('admin.resourcesTab.unitPerMinute'), 'w-[376px] max-w-full')}
-            <p class="mt-[26px] min-w-[220px] flex-1 text-2xs text-muted">{tr('admin.resourcesTab.uploadsNote')}</p>
+            <p class="min-w-[220px] flex-1 text-2xs text-muted">{tr('admin.resourcesTab.uploadsNote')}</p>
           </div>
 
           {@render runnerCards(competitions.gpu)}
@@ -1540,7 +1544,7 @@
               </span>
             </label>
 
-            <div class="flex flex-wrap items-start gap-4">
+            <div class="flex flex-wrap items-start gap-4" use:levelFields>
               <div class="w-[420px] min-w-0 max-w-full">
                 <label for="classes-new" class="mb-1.5 flex items-baseline gap-2">
                   <span class="admin-label">{tr('admin.classes.newClasses')}</span>
@@ -1565,7 +1569,7 @@
               {@render classField('failoverSec', tr('admin.classes.failoverSec'), tr('admin.classes.seconds'), 'w-[200px]', tr('admin.classes.failoverNote'))}
             </div>
 
-            <div class="flex flex-wrap items-start gap-4">
+            <div class="flex flex-wrap items-start gap-4" use:levelFields>
               {@render classField('machineFileMb', tr('admin.classes.machineFileMb'), tr('admin.classes.mb'), 'w-[200px]')}
               {@render classField('classBulkMBps', tr('admin.classes.classBulkMBps'), tr('admin.classes.mbps'), 'w-[200px]')}
               {@render classField('competitionMBps', tr('admin.classes.competitionMBps'), tr('admin.classes.mbps'), 'w-[280px]')}
@@ -1576,7 +1580,7 @@
       {/if}
 
       <Section title={tr('admin.resourcesTab.filesTitle')} description={tr('admin.resourcesTab.filesNote')}>
-        <div class="flex flex-wrap gap-4">
+        <div class="flex flex-wrap gap-4" use:levelFields>
           {@render field('uploadMb', tr('admin.resourcesTab.uploadMb'), tr('admin.resourcesTab.unitMb'), 'w-[200px]')}
           {@render field('sessionMb', tr('admin.resourcesTab.sessionMb'), tr('admin.resourcesTab.unitMb'), 'w-[200px]')}
         </div>

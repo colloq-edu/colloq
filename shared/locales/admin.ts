@@ -670,6 +670,33 @@ export const adminMessages: MessageCatalog = {
     "ru": "Окружения загружаются из каталога релиза. Каждое занятие сохраняет свою версию образа. Собирайте и импортируйте новые образы с помощью инструментов развёртывания. Kubernetes выделяет GPU при запуске комнаты.",
     "en": "Environments come from the release catalog. Each class keeps its image revision. Build and import new images with the deployment tools. GPU allocation is handled by Kubernetes when a room starts."
   },
+  // «Скачать pip freeze» in an environment's window (web/src/components/ui/EnvironmentDetails.svelte · freeze): the
+  // action, its note when the file can be read, and its reason when it cannot, which in a window with no image to read
+  // is all the window says, so it speaks for the missing package list too.
+  "admin.env.freeze": {
+    "ru": "Скачать pip freeze",
+    "en": "Download pip freeze"
+  },
+  "admin.env.freezeReading": {
+    "ru": "Читаем pip freeze…",
+    "en": "Reading pip freeze…"
+  },
+  "admin.env.freezeHint": {
+    "ru": "Точный состав образа, на котором сейчас работают комнаты окружения: файл для pip install -r.",
+    "en": "The exact packages of the image this environment’s rooms run now: a file for pip install -r."
+  },
+  "admin.env.freezeUnbuilt": {
+    "ru": "Образа ещё нет: состав окружения и pip freeze появятся после первой сборки.",
+    "en": "There is no image yet: its installed packages and pip freeze appear after the first build."
+  },
+  "admin.env.freezeManaged": {
+    "ru": "Образ приходит из каталога релиза и закреплён по дайджесту, а Docker у этого сервера нет: ни состав, ни pip freeze здесь не прочитать. pip freeze напечатает эта команда на машине, которая может скачать образ:",
+    "en": "The image comes from the release catalog, pinned by its digest, and this server has no Docker: neither its installed packages nor its pip freeze can be read here. This command prints the freeze on any machine that can pull the image:"
+  },
+  "admin.env.freezeFailed": {
+    "ru": "Не удалось скачать pip freeze. Попробуйте ещё раз.",
+    "en": "Could not download the pip freeze. Try again."
+  },
   "admin.gpu": {
     "ru": "GPU:",
     "en": "GPU:"

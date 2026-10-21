@@ -15,6 +15,7 @@
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Check from '@/admin/ui/Check.svelte'
   import EmptyState from '@/admin/ui/EmptyState.svelte'
+  import { levelFields } from '@/admin/ui/field-rows'
   import Badge from '@/admin/screens/competitions/Badge.svelte'
   import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
@@ -1216,7 +1217,10 @@
   cancel: () => void,
 )}
   <div class="row-form flex flex-col gap-[18px] border-b border-t border-dashed border-b-line border-t-line bg-surface [border-bottom-style:solid]">
-    <div class="flex flex-wrap items-start gap-4">
+    <!-- The two boxes stand on one line: the title's Russian caption is
+         wider than the 200 px the title keeps beside the day, and takes two
+         lines there (admin/ui/field-rows.ts). -->
+    <div class="flex flex-wrap items-start gap-4" use:levelFields>
       <label class="flex min-w-[200px] flex-1 flex-col gap-1.5">
         <span class="admin-label">{planned ? tr('admin.course.field.topic') : tr('admin.course.field.title')}</span>
         <input
