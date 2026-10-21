@@ -3053,7 +3053,9 @@ async function classesCheck(): Promise<number> {
     // Wait for the machine: the class waits for its machine, saved as its own setting, and the banner says so with only the move left.
     await teacher.clickText('[data-machine-banner] button', ru('room.machine.wait'))
     const waitSaved = await waitValue(() => (classPlacement(classId).failover === 'wait' ? true : null), 10_000)
-    const waitWords = await teacher.until(`(document.querySelector('[data-machine-banner]')?.textContent ?? '').replace(/\\s+/g,' ').includes(${JSON.stringify(ru('room.machine.banner.waiting'))}) && !(${bannerWait})`, 5_000)
+    // The banner's own words, or the server's waiting sentence once its frame came (kernel/index.ts · kernelMachinesChanged): its tail after the time.
+    const serverWaits = ru('server.machineHasNotAnsweredSinceWaitingFor.5afc55', { machine: '\u0000', since: '\u0000' }).split('\u0000').pop()!.trim()
+    const waitWords = await teacher.until(`(()=>{const t=(document.querySelector('[data-machine-banner]')?.textContent ?? '').replace(/\\s+/g,' '); return t.includes(${JSON.stringify(ru('room.machine.banner.waiting'))}) || t.includes(${JSON.stringify(serverWaits)})})() && !(${bannerWait})`, 5_000)
     note(!!waitSaved && waitWords, 'Z5 · Wait for the machine set the class to wait, and the banner says so', `${classPlacement(classId).failover}/${waitWords}`)
     await screens(teacher, 'room, the machine silent', ROOM_PARTS, null, async () => {
       // The amber chip's timer whole on a phone's bar, next to the queue's pill (Z10).
