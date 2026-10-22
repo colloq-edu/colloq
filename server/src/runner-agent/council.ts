@@ -14,6 +14,9 @@
  *   <state>/council/<id>/epochs.json       the epochs held, written whole: what a restart keeps
  *   <state>/council/<id>/.staging/         the agent's own: an export as `docker cp` copied it,
  *                                          a file of an attempt on its way home; never mounted
+ *   <state>/council/.gate/<digest>/        the workers' gate (§9.6, councilGate), one for every
+ *                                          class: module/ mounted read-only at /colloq/gate, its
+ *                                          ipython_kernel_config.py at /etc/ipython/
  *
  * AN EPOCH IS CONTENT-ADDRESSED, AND SO IS EVERY COPY OF IT HERE. Home names
  * an epoch by its files' hashes (RemoteEpochIntent). Each comes from the CAS
@@ -73,6 +76,8 @@ import {
   COUNCIL_ARTIFACTS,
   COUNCIL_EPOCHS_MOUNT,
   COUNCIL_EPOCH_BUFFERS_MAX,
+  COUNCIL_GATE_CONFIG_MOUNT,
+  COUNCIL_GATE_MOUNT,
   COUNCIL_SCRATCH_MOUNT,
   MACHINE_PACE_MBPS,
   REMOTE_COLLECTED_MAX,
@@ -102,6 +107,7 @@ import {
   type RemoteErrorCode,
 } from '@shared/remote-runner'
 import type { RoomMount } from '../kernel/room-spec.js'
+import { COUNCIL_GATE_CONFIG, COUNCIL_GATE_DIGEST, COUNCIL_GATE_FILE, COUNCIL_GATE_PYTHON } from '../kernel/council-gate.js'
 import { createAnchoredFilesystem } from '../secure-files.js'
 import { CacheError, Pacer, pause } from './cache.js'
 import { Backoff, retryAfter } from './client.js'
@@ -270,14 +276,18 @@ export function scratchHelperNames(out: string): string[] {
 }
 
 /**
- * The council container's own two folders (§9.7), for its `docker run`:
- * the class's epochs read-only at COUNCIL_EPOCHS_MOUNT and the attempts'
- * scratch space read-write at COUNCIL_SCRATCH_MOUNT, made before docker would
- * make them as root. The scratch space is root's at SCRATCH_MODE, emptied of
- * the attempts before, only once the helper has run on it (kernels.ts ·
- * councilScratch, before every start of the container); made here, it is
- * the agent's, at that mode, until then. Nothing else of the agent's is
- * mounted: no state, no socket, no card.
+ * The council container's own folders (§9.7), for its `docker run`: the
+ * class's epochs read-only at COUNCIL_EPOCHS_MOUNT and the attempts' scratch
+ * space read-write at COUNCIL_SCRATCH_MOUNT, made before docker would make
+ * them as root; and the workers' gate (§9.6, kernel/council-gate.ts), read-
+ * only from the agent's one folder of it (councilGate): its module's folder
+ * at COUNCIL_GATE_MOUNT and the system IPython config that loads it into
+ * every kernel the container starts at COUNCIL_GATE_CONFIG_MOUNT. The
+ * scratch space is root's at SCRATCH_MODE, emptied of the attempts before,
+ * only once the helper has run on it (kernels.ts · councilScratch, before
+ * every start of the container); made here, it is the agent's, at that
+ * mode, until then. Nothing else of the agent's is mounted: no state, no
+ * socket, no card.
  */
 export function councilMounts(layout: StateLayout, sessionId: string): RoomMount[] {
   const dir = councilDir(layout, sessionId)
@@ -287,10 +297,63 @@ export function councilMounts(layout: StateLayout, sessionId: string): RoomMount
     fs.mkdirSync(scratch, { mode: SCRATCH_MODE })
     if (process.platform !== 'win32') fs.chmodSync(scratch, SCRATCH_MODE)
   }
+  const gate = councilGate(layout)
   return [
     { source: epochsDir(dir), target: COUNCIL_EPOCHS_MOUNT, readOnly: true },
     { source: scratch, target: COUNCIL_SCRATCH_MOUNT, readOnly: false },
+    { source: gate.module, target: COUNCIL_GATE_MOUNT, readOnly: true },
+    { source: gate.config, target: COUNCIL_GATE_CONFIG_MOUNT, readOnly: true },
   ]
+}
+
+/** The agent's folders of the gate, one per text of it: `<state>/council/.gate/<digest>` (no class's name: a dot never is one). */
+const gateRoot = (layout: StateLayout): string => path.join(councilRoot(layout), '.gate')
+
+/**
+ * The workers' gate on this machine (§9.6): the module and the config of
+ * kernel/council-gate.ts, written once into a folder named by their own
+ * hash, `<state>/council/.gate/<digest>/` — `module/colloq_gate.py` and
+ * `ipython_kernel_config.py`, 0644 in folders of 0755 — and never changed
+ * in place: a container keeps the folder of the texts it was started with
+ * (the next build's go into a folder of their own), and a folder that is
+ * not what its name says is written again. Made whole in a staging folder
+ * and renamed into place, so that a life that ends midway leaves no half
+ * of it. Gone with every class's council folder (kernels.ts · removeAll),
+ * and written again by the next council container's start.
+ */
+export function councilGate(layout: StateLayout): { module: string; config: string } {
+  const root = gateRoot(layout)
+  const dir = path.join(root, COUNCIL_GATE_DIGEST)
+  const at = { module: path.join(dir, 'module'), config: path.join(dir, 'ipython_kernel_config.py') }
+  if (gateWhole(at)) return at
+  fs.mkdirSync(root, { recursive: true, mode: 0o755 })
+  // What an earlier life left half made, and a folder that is not what its name says.
+  for (const name of fs.readdirSync(root)) if (name.startsWith('.tmp-') || name === COUNCIL_GATE_DIGEST) removeTree(path.join(root, name))
+  const staging = path.join(root, `.tmp-${randomBytes(6).toString('hex')}`)
+  fs.mkdirSync(path.join(staging, 'module'), { recursive: true })
+  fs.writeFileSync(path.join(staging, 'module', COUNCIL_GATE_FILE), COUNCIL_GATE_PYTHON)
+  fs.writeFileSync(path.join(staging, 'ipython_kernel_config.py'), COUNCIL_GATE_CONFIG)
+  if (process.platform !== 'win32') {
+    fs.chmodSync(path.join(staging, 'module', COUNCIL_GATE_FILE), 0o644)
+    fs.chmodSync(path.join(staging, 'ipython_kernel_config.py'), 0o644)
+    fs.chmodSync(path.join(staging, 'module'), 0o755)
+    fs.chmodSync(staging, 0o755)
+    fs.chmodSync(root, 0o755)
+  }
+  fs.renameSync(staging, dir)
+  return at
+}
+
+/** The gate's folder holds its two texts as they are, and nothing stands in for them (no link). */
+function gateWhole(at: { module: string; config: string }): boolean {
+  try {
+    const module = path.join(at.module, COUNCIL_GATE_FILE)
+    for (const file of [module, at.config]) if (!fs.lstatSync(file).isFile()) return false
+    if (!fs.lstatSync(at.module).isDirectory()) return false
+    return fs.readFileSync(module, 'utf8') === COUNCIL_GATE_PYTHON && fs.readFileSync(at.config, 'utf8') === COUNCIL_GATE_CONFIG
+  } catch {
+    return false
+  }
 }
 
 /**

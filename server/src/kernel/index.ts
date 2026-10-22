@@ -116,6 +116,7 @@ import {
   JupyterKernel,
   RestartUnknown,
   type CompleteResult,
+  type ExecuteHandlers,
   type ExecuteStatus,
   type KernelEndpoint,
   type KernelLink,
@@ -136,6 +137,7 @@ import {
 } from './inspect-static.js'
 import { dataBudgetFor, OutputWriter } from './outputs.js'
 import { CouncilOutputBuffer, type CouncilJob } from './council.js'
+import { COUNCIL_GATE_RUN_KEY, isGateRefusal } from './council-gate.js'
 import {
   councilEnterSource,
   councilEnterRefusal,
@@ -5579,13 +5581,16 @@ const STOPPED = Symbol('stopped at the barrier')
  * once this server's files are on the machine (at once for a scope computing
  * here), STOPPED for a run stopped while it waited, otherwise the words the
  * run is refused with. `show` hears what is on its way while it waits.
+ * `notebooksAside`: a pool's attempt, which computes on its epoch and never
+ * on a notebook's file, waits for no change of the room's live notebooks
+ * (files.ts · notebooksAlone); every other run's barrier is as it was.
  */
-async function passFilesBarrier(runtime: Runtime, show: (words: string) => void): Promise<string | typeof STOPPED | null> {
+async function passFilesBarrier(runtime: Runtime, show: (words: string) => void, notebooksAside = false): Promise<string | typeof STOPPED | null> {
   if (!slotOnMachine(runtime.sessionId, runtime.role)) return null
   const stop = new AbortController()
   barrierWaits.set(runtime, stop)
   try {
-    await slotFilesBarrier(runtime.sessionId, runtime.role, { onProgress: show, signal: stop.signal })
+    await slotFilesBarrier(runtime.sessionId, runtime.role, { onProgress: show, signal: stop.signal, ...(notebooksAside ? { notebooksAside } : {}) })
     return stop.signal.aborted ? STOPPED : null
   } catch (err) {
     if (stop.signal.aborted) return STOPPED
@@ -5802,41 +5807,69 @@ async function quietly(runtime: Runtime, source: string): Promise<void> {
  * it would have before, rather than being refused because there turned out to
  * be nothing to copy.
  */
-async function enterCouncilIsolation(
-  runtime: Runtime,
-  item: QueueItem,
-): Promise<{ report: CouncilIsolationReport | null; reason: string | null; raw: unknown }> {
+async function enterCouncilIsolation(runtime: Runtime, item: QueueItem): Promise<EntryHeard> {
+  const entry = entryListener()
+  try {
+    entry.ended(await runOnKernel(runtime, entrySourceFor(runtime, item), entry.handlers, ENTRY_OPTIONS))
+  } catch (err) {
+    entry.failed(err)
+  }
+  return entry.heard()
+}
+
+/** What an entry's execute said: its report (null — no confirmation), why there is none, and the report as it came. */
+interface EntryHeard {
+  report: CouncilIsolationReport | null
+  reason: string | null
+  raw: unknown
+}
+
+/** The entry's execute: silent, its report heard in `user_expressions` (see enterCouncilIsolation). */
+const ENTRY_OPTIONS = { silent: true, storeHistory: false, userExpressions: { [COUNCIL_REPORT_KEY]: COUNCIL_REPORT_EXPR } }
+
+/** The exit's, the same way (see leaveCouncilIsolation). */
+const EXIT_OPTIONS = { silent: true, storeHistory: false, userExpressions: { [COUNCIL_REPORT_KEY]: COUNCIL_LEFTOVERS_EXPR } }
+
+/**
+ * What hears an entry's execute, and what it said once it ended or could
+ * not be sent: one listener for both roads (enterCouncilIsolation and a
+ * worker's trip), so that an entry's verdict is read alike on both.
+ */
+function entryListener(): { handlers: ExecuteHandlers; ended(status: ExecuteStatus): void; failed(err: unknown): void; heard(): EntryHeard } {
   let raw: unknown = null
   let reason: string | null = null
-  try {
-    const status = await runOnKernel(
-      runtime,
-      entrySourceFor(runtime, item),
-      {
-        ...SILENT_HANDLERS,
-        onError: (ename, evalue) => {
-          // The entry catches its own errors and reports them; only what
-          // outlived it gets here: an interrupt by the limit, a kernel death.
-          // KeyboardInterrupt has no text at all, and the colon after the name
-          // would hang in the refusal line on nothing.
-          reason = evalue.trim().length > 0 ? `${ename}: ${evalue.trim()}` : ename
-        },
-        onUserExpressions: (values) => {
-          raw = values[COUNCIL_REPORT_KEY]
-        },
+  return {
+    handlers: {
+      ...SILENT_HANDLERS,
+      onError: (ename, evalue) => {
+        // The entry catches its own errors and reports them; only what
+        // outlived it gets here: an interrupt by the limit, a kernel death,
+        // and a lean entry's raise before it (council-isolation.ts ·
+        // COUNCIL_LEAN_REFUSAL: a worker's process without this server's
+        // guard or hidden module at its versions), whose words this makes
+        // the card's refusal reason, there being no report.
+        // KeyboardInterrupt has no text at all, and the colon after the name
+        // would hang in the refusal line on nothing; a reply lost in a cut
+        // has no name (jupyter.ts · settleLost), and the colon before its
+        // text would hang there the same way.
+        const text = evalue.trim()
+        reason = text.length === 0 ? ename : ename.length > 0 ? `${ename}: ${text}` : text
       },
-      {
-        silent: true,
-        storeHistory: false,
-        userExpressions: { [COUNCIL_REPORT_KEY]: COUNCIL_REPORT_EXPR },
+      onUserExpressions: (values) => {
+        raw = values[COUNCIL_REPORT_KEY]
       },
-    )
-    if (status !== 'ok' && reason === null) reason = tr("server.theAttemptWasInterrupted.4f4edf")
-  } catch (err) {
-    reason = errText(err)
+    },
+    ended: (status) => {
+      if (status !== 'ok' && reason === null) reason = tr("server.theAttemptWasInterrupted.4f4edf")
+    },
+    failed: (err) => {
+      reason = errText(err)
+    },
+    heard: () => {
+      const report = parseCouncilReport(raw)
+      return { report, reason: report?.error ?? reason, raw }
+    },
   }
-  const report = parseCouncilReport(raw)
-  return { report, reason: report?.error ?? reason, raw }
 }
 
 /**
@@ -5857,16 +5890,147 @@ async function leaveCouncilIsolation(runtime: Runtime): Promise<{ leftovers: Cou
           raw = values[COUNCIL_REPORT_KEY]
         },
       },
-      {
-        silent: true,
-        storeHistory: false,
-        userExpressions: { [COUNCIL_REPORT_KEY]: COUNCIL_LEFTOVERS_EXPR },
-      },
+      EXIT_OPTIONS,
     )
   } catch {
     /* the kernel no longer answers: nothing to return, and nobody to return it to */
   }
   return { leftovers: parseCouncilLeftovers(raw), raw }
+}
+
+/** A gated worker's attempt as one batch (councilTrip): its entry's verdict, the attempt's end, and its exit. */
+interface CouncilTrip {
+  /** The entry's verdict, as enterCouncilIsolation would hear it. */
+  entry: Promise<EntryHeard>
+  /** The attempt's own end, as runOnKernel would give it; awaited only once the entry held. */
+  attempt: Promise<ExecuteStatus>
+  /**
+   * For an entry that said nothing (no report: its reply lost in a cut, or
+   * its cell stopped once it was done), the gate's verdict, once the attempt
+   * ended: true when it ended, ok or in an error, without the gate's
+   * refusal; false when the gate refused it, it never went, or its kernel
+   * went under it (`abort`, as the entry would have).
+   */
+  ran(): Promise<boolean>
+  /** The entry's verdict is in: the attempt's events held so far, and those after, into its handlers (true) or nowhere (false). The first call decides. */
+  release(run: boolean): void
+  /** The exit's report, from the exit sent with the batch; today's exit, sent now, when that one never went or found the kernel gone. */
+  exit(): Promise<{ leftovers: CouncilLeftovers | null; raw: unknown }>
+}
+
+/**
+ * ONE TRIP (§9.6, 0.26.1): a gated worker's entry, attempt and exit, sent
+ * back to back in one batch (JupyterKernel.executeBatch), each heard as on
+ * the sequential road. The attempt goes without history, with its run id in
+ * its metadata for the gate, and with `stop_on_error` off: ipykernel would
+ * otherwise abort the exit queued behind an attempt that raises. Its events
+ * are held until the entry's verdict (heldHandlers). A batch that could not
+ * go at all is an entry that could not (its reason the error), with today's
+ * exit after it. Every end of the batch is caught where it is made
+ * (executeBatch), so an exit nobody waits for — a worker recycled under its
+ * attempt — is let go without an unhandled rejection.
+ */
+async function councilTrip(runtime: Runtime, item: QueueItem, source: string, runId: string, handlers: ExecuteHandlers): Promise<CouncilTrip> {
+  const entry = entryListener()
+  const held = heldHandlers(handlers, () => {
+    void runtime.kernel?.answerInput('').catch(() => {})
+  })
+  let exitRaw: unknown = null
+  let ends: Array<Promise<ExecuteStatus>>
+  try {
+    ends = await runtime.kernel!.executeBatch([
+      { code: entrySourceFor(runtime, item), handlers: entry.handlers, opts: ENTRY_OPTIONS },
+      { code: source, handlers: held.handlers, opts: { storeHistory: false, stopOnError: false, metadata: { [COUNCIL_GATE_RUN_KEY]: runId } } },
+      {
+        code: COUNCIL_EXIT_SOURCE,
+        handlers: {
+          ...SILENT_HANDLERS,
+          onUserExpressions: (values) => {
+            exitRaw = values[COUNCIL_REPORT_KEY]
+          },
+        },
+        opts: EXIT_OPTIONS,
+      },
+    ])
+  } catch (err) {
+    entry.failed(err)
+    held.release(false)
+    const never = Promise.reject(err)
+    never.catch(() => {})
+    return { entry: Promise.resolve(entry.heard()), attempt: never, ran: () => Promise.resolve(false), release: held.release, exit: () => leaveCouncilIsolation(runtime) }
+  }
+  const [entered, attempted, left] = ends as [Promise<ExecuteStatus>, Promise<ExecuteStatus>, Promise<ExecuteStatus>]
+  return {
+    entry: entered.then(
+      (status) => {
+        entry.ended(status)
+        return entry.heard()
+      },
+      (err: unknown) => {
+        entry.failed(err)
+        return entry.heard()
+      },
+    ),
+    attempt: attempted,
+    ran: () => attempted.then((status) => status !== 'abort' && !held.refused(), () => false),
+    release: held.release,
+    exit: async () => {
+      try {
+        await left
+      } catch {
+        return leaveCouncilIsolation(runtime)
+      }
+      return { leftovers: parseCouncilLeftovers(exitRaw), raw: exitRaw }
+    },
+  }
+}
+
+/**
+ * An attempt's handlers held until its entry's verdict (§9.6): IOPUB and
+ * shell are not ordered against each other, so an attempt sent behind its
+ * entry may be heard before the entry's reply is. Held events go into the
+ * real handlers in order once the entry held, or nowhere when it did not.
+ * An input() is answered empty at once, as either verdict answers it, so
+ * that no verdict ever waits on a kernel standing in a prompt nobody sees:
+ * the reply that brings an unheard entry's verdict comes only once the
+ * attempt behind it ended (jupyter.ts · settleLostBefore); its note waits
+ * with the other events, and the answer the real handler gives on its
+ * replay finds the prompt answered. Whether the gate refused the attempt
+ * is heard here too (`refused`), for an entry that said nothing.
+ */
+function heldHandlers(real: ExecuteHandlers, answer: () => void): { handlers: ExecuteHandlers; release(run: boolean): void; refused(): boolean } {
+  let waiting: Array<() => void> | null = []
+  let open = false
+  let refused = false
+  const event = (call: () => void): void => {
+    if (open) call()
+    else if (waiting) waiting.push(call)
+  }
+  return {
+    handlers: {
+      onExecuteInput: (count) => event(() => real.onExecuteInput(count)),
+      onStream: (name, text) => event(() => real.onStream(name, text)),
+      onData: (bundle, count) => event(() => real.onData(bundle, count)),
+      onError: (ename, evalue, traceback) => {
+        if (isGateRefusal(ename, evalue)) refused = true
+        event(() => real.onError(ename, evalue, traceback))
+      },
+      onClear: (wait) => event(() => real.onClear(wait)),
+      onInputRequest: (prompt, password) => {
+        if (!open) answer()
+        event(() => real.onInputRequest?.(prompt, password))
+      },
+    },
+    release: (run) => {
+      const events = waiting
+      if (events === null) return
+      waiting = null
+      if (!run) return
+      open = true
+      for (const call of events) call()
+    },
+    refused: () => refused,
+  }
 }
 
 /** What an attempt's frames say of where it ran (CouncilRun.placed, note, epoch, runId): nothing for a class whose council is not on machines. */
@@ -5981,7 +6145,18 @@ export interface CouncilPoolHooks {
   view(sessionId: string, root: string): CouncilPool | null
   /** Before a worker's attempt: the epoch it was given loaded (the pump, beside the guard). */
   seed(worker: WorkerHandle, item: QueueItem): Promise<boolean>
-  /** A worker's entry for this attempt, with its three inputs (§9.4, §9.7): the attempt's text, its run's folder, its ceiling. */
+  /**
+   * The worker's current seed said its process was born with the gate
+   * (§9.6, council-gate.ts): its attempts go in one trip, right behind
+   * their entries (runCouncilOne · councilTrip). False — the sequential road.
+   */
+  gated(worker: WorkerHandle): boolean
+  /**
+   * A worker's entry for this attempt, with its three inputs (§9.4, §9.7):
+   * the attempt's text, its run's folder, its ceiling. A gated worker whose
+   * process holds the guard and the hidden module since its load gets a
+   * lean one, which checks them rather than carry them (§9.6, 0.26.1).
+   */
   entry(worker: WorkerHandle, item: QueueItem, base: { budgetBytes: number; memoryGuard: boolean }): string
   /** Of a worker's entry report: a name the attempt reads that its epoch left behind, and why; null — none. */
   needs(raw: unknown): { name: string; why: string } | null
@@ -6034,6 +6209,7 @@ const NO_POOL: CouncilPoolHooks = {
   waiting: () => [],
   view: () => null,
   seed: async () => false,
+  gated: () => false,
   entry: () => councilEnterSourceNow(),
   needs: () => null,
   left: () => ({ files: [], dirtyMb: null }),
@@ -7118,14 +7294,19 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
   }
 
   flushToDisk(runtime.sessionId)
-  // The barrier, as before a cell (runOne, §8.2): the attempt reads the class folder of the machine it computes on.
+  /*
+   * The barrier, as before a cell (runOne, §8.2): the attempt reads the class
+   * folder of the machine it computes on. A pool's attempt computes on its
+   * epoch, never on a notebook's file: the room's notebooks, whose files
+   * every keystroke in them rewrites, do not hold it (§9.6, 0.26.1).
+   */
   let moving = false
   const barred = await passFilesBarrier(runtime, (words) => {
     moving = true
     active.buffer.supersede()
     active.buffer.stream('stdout', words)
     touchJob(runtime, active)
-  })
+  }, handle !== null)
   if (moving) active.buffer.clear()
   if (barred === STOPPED) {
     // Stopped before it reached the kernel: no run at all, as an attempt the same press dropped from the queue (releaseCouncil).
@@ -7167,9 +7348,94 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
   const lostOnce = (): boolean => handle !== null && !item.rerun && runtime.kernel?.endedBy?.cause === 'lost'
   let entered = false
   let restartedItself = false
-  // The attempt's personal data copies. See councilEnterSourceNow (and entrySourceFor for a pool's worker).
-  const { report, reason, raw } = await enterCouncilIsolation(runtime, item)
   let starved = false
+  const handlers: ExecuteHandlers = {
+    onExecuteInput: (execCount) => {
+      active.run.execCount = execCount
+      touchJob(runtime, active)
+    },
+    onStream: (name, text) => {
+      buffer.stream(name, text)
+      touchJob(runtime, active)
+    },
+    onData: (mimebundle, execCount) => {
+      buffer.data(mimebundle, execCount)
+      touchJob(runtime, active)
+    },
+    onError: (ename, evalue, traceback) => {
+      /*
+       * Our own refusal is one line without a traceback, like a stop by the
+       * limit. The `<colloq-council>` frames in it are not student code,
+       * and there is nothing there for them to read: that is our module
+       * explaining why `exit()` in an attempt would take the kernel down
+       * for the whole room. A worker's gate refusing the attempt (§9.6) is
+       * said as its entry's refusal is: nothing ran, its copies unconfirmed.
+       */
+      if (ename === COUNCIL_REFUSED) buffer.error('', isGateRefusal(ename, evalue) ? councilEnterRefusal(null) : evalue, [])
+      else buffer.error(ename, evalue, traceback)
+      // A MemoryError under our ceiling is a class saved, and that has to
+      // be said after the traceback, in words and with a number.
+      if (/MemoryError/.test(ename)) starved = true
+      touchJob(runtime, active)
+    },
+    onClear: (wait) => {
+      if (wait) buffer.supersede()
+      else buffer.clear()
+      touchJob(runtime, active)
+    },
+    /*
+     * `input()` in an attempt has nobody to show it to: a cell's prompt
+     * lives in the shared document, but an attempt has no document, and the
+     * audience does not see it. Meanwhile the kernel stands until someone
+     * answers, and would stand until the end of class. We answer with an
+     * empty string ourselves and say so in the output: `int('')` fails
+     * honestly and explainably, and the queue moves on.
+     */
+    onInputRequest: () => {
+      buffer.stream(
+        'stderr',
+        tr("server.colloqInputIsNotSupportedInCouncil.fd07fb"),
+      )
+      touchJob(runtime, active)
+      void runtime.kernel?.answerInput('').catch(() => {})
+    },
+  }
+  /*
+   * A pool's attempt carries its run id in its request (§9.6): the run id its
+   * entry is given (item.placed.runId, the pool's own; never another drawn
+   * here). A worker born with the gate runs the attempt only once that entry
+   * opened the gate for it, and a kernel without the gate does not read it.
+   */
+  const runId = handle !== null ? item.placed?.runId ?? null : null
+  /*
+   * ONE TRIP on a gated worker (§9.6, 0.26.1): its entry, the attempt and its
+   * exit go in one batch, and its kernel runs them in order — where the
+   * three one after another cost three trips across the machine's tunnel.
+   * Its gate holds the attempt back unless the entry held, so from the
+   * entry's verdict on everything below is the same road: `needs` hands it
+   * to the notebook's kernel, a refusal refuses, and the attempt's own end
+   * is read as runOnKernel would give it. Only a worker whose current seed
+   * said it was born gated; any other (an older agent's container, the
+   * notebook's own kernel, a kernel here) takes the three trips as before.
+   */
+  const trip = runId !== null && handle !== null && poolSays('gated', false, () => councilPool.gated(handle))
+    ? await councilTrip(runtime, item, job.source, runId, handlers)
+    : null
+  // The attempt's personal data copies. See councilEnterSourceNow (and entrySourceFor for a pool's worker).
+  const { report, reason, raw } = trip ? await trip.entry : await enterCouncilIsolation(runtime, item)
+  /*
+   * A trip's entry that said nothing has no verdict of its own: its reply
+   * was lost in a cut, or its cell was stopped once it was done. Its gate's
+   * is then the kernel's (§9.6): the attempt behind it ran exactly when the
+   * gate let it through, which only an entry that held does, as its very
+   * last step, and the gate takes back an opening whose entry's reply is not
+   * ok in full (council-gate.ts). So the attempt's end decides, its events
+   * held until then: let through, it is read as an attempt whose entry held,
+   * without that entry's notes; refused, never sent, or gone with its
+   * kernel, as an entry that did not hold. Read otherwise, a card would say
+   * «запуск не выполнен» of a run its worker made.
+   */
+  const unheardRan = trip !== null && report === null && (await trip.ran())
   try {
     const needs = handle ? poolSays('needs', null, () => councilPool.needs(raw)) : null
     if (needs) {
@@ -7177,7 +7443,7 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
       entered = true
       return
     }
-    if (!report?.ok) {
+    if (!report?.ok && !unheardRan) {
       if (lostOnce()) {
         handback = { kind: 'lost', note: tr('server.theMachineWasLostInTheMiddle.b5f5c5') }
         return
@@ -7201,7 +7467,9 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
     }
     entered = true
     // What stayed shared goes first in the output, before the attempt's first line.
-    for (const note of councilSkipNotes(report)) buffer.stream('stderr', note)
+    if (report) for (const note of councilSkipNotes(report)) buffer.stream('stderr', note)
+    // The attempt sent in the trip: what it said meanwhile, after those notes, and the rest as it comes.
+    trip?.release(true)
     /*
      * No kernel history: the only difference from a cell in the request itself.
      *
@@ -7212,61 +7480,9 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
      * lie in the kernel's memory for everyone, contrary to the rule "a student
      * never sees other people's attempts".
      */
-    const status = await runOnKernel(
-      runtime,
-      job.source,
-      {
-        onExecuteInput: (execCount) => {
-          active.run.execCount = execCount
-          touchJob(runtime, active)
-        },
-        onStream: (name, text) => {
-          buffer.stream(name, text)
-          touchJob(runtime, active)
-        },
-        onData: (mimebundle, execCount) => {
-          buffer.data(mimebundle, execCount)
-          touchJob(runtime, active)
-        },
-        onError: (ename, evalue, traceback) => {
-          /*
-           * Our own refusal is one line without a traceback, like a stop by the
-           * limit. The `<colloq-council>` frames in it are not student code,
-           * and there is nothing there for them to read: that is our module
-           * explaining why `exit()` in an attempt would take the kernel down
-           * for the whole room.
-           */
-          if (ename === COUNCIL_REFUSED) buffer.error('', evalue, [])
-          else buffer.error(ename, evalue, traceback)
-          // A MemoryError under our ceiling is a class saved, and that has to
-          // be said after the traceback, in words and with a number.
-          if (/MemoryError/.test(ename)) starved = true
-          touchJob(runtime, active)
-        },
-        onClear: (wait) => {
-          if (wait) buffer.supersede()
-          else buffer.clear()
-          touchJob(runtime, active)
-        },
-        /*
-         * `input()` in an attempt has nobody to show it to: a cell's prompt
-         * lives in the shared document, but an attempt has no document, and the
-         * audience does not see it. Meanwhile the kernel stands until someone
-         * answers, and would stand until the end of class. We answer with an
-         * empty string ourselves and say so in the output: `int('')` fails
-         * honestly and explainably, and the queue moves on.
-         */
-        onInputRequest: () => {
-          buffer.stream(
-            'stderr',
-            tr("server.colloqInputIsNotSupportedInCouncil.fd07fb"),
-          )
-          touchJob(runtime, active)
-          void runtime.kernel?.answerInput('').catch(() => {})
-        },
-      },
-      { storeHistory: false },
-    )
+    const status = trip
+      ? await trip.attempt
+      : await runOnKernel(runtime, job.source, handlers, { storeHistory: false, ...(runId !== null ? { metadata: { [COUNCIL_GATE_RUN_KEY]: runId } } : {}) })
     state = status === 'ok' ? 'ok' : 'error'
     if (status === 'abort' && lostOnce()) {
       handback = { kind: 'lost', note: tr('server.theMachineWasLostInTheMiddle.b5f5c5') }
@@ -7291,6 +7507,8 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
     }
   } finally {
     unwatch()
+    // An attempt that is not to run: what it said, and will say, goes nowhere (the gate refused it, or it is handed back).
+    trip?.release(false)
     /*
      * The exit ALWAYS happens, including the branch where the attempt was not
      * run: the entry may have managed to replace the bindings and fail after,
@@ -7309,10 +7527,16 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
       /*
        * A worker being recycled under its attempt (it was stuck, §9.5) has no
        * namespace left to give back: the process goes, and an exit sent to it
-       * now would be lost with it, the attempt never ending.
+       * now would be lost with it, the attempt never ending. The exit a trip
+       * sent already is not waited for either: its end comes with the restart.
+       * Otherwise a trip's exit is the one in flight, not a new request.
        */
       const recycling = handle !== null && (runtime.restarting !== null || runtime.kernel?.phase === 'restarting')
-      const { leftovers, raw: leftRaw } = recycling ? { leftovers: null, raw: null } : await leaveCouncilIsolation(runtime)
+      const { leftovers, raw: leftRaw } = recycling
+        ? { leftovers: null, raw: null }
+        : trip
+          ? await trip.exit()
+          : await leaveCouncilIsolation(runtime)
       if (handback !== null && handle !== null) {
         // To the notebook's kernel, keeping its place: a loss is run there once (D15), and its pause is not charged (it never ended as a run).
         letGoOfAttempt(runtime, active)

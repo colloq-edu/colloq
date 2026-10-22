@@ -26,6 +26,9 @@ import type { TokenPayload } from '../server/src/auth.js'
 import type { ControlServerMessage, CouncilRun } from '../shared/protocol.js'
 import { COUNCIL_EPOCH_MB, COUNCIL_POOL_READY_MS, COUNCIL_WORKER_BASE_MB } from '../shared/remote-kernels.js'
 import { classHashSeed } from '../server/src/kernel/room-spec.js'
+import { councilEnterRefusal, councilEnterSource, COUNCIL_LEAN_REFUSAL } from '../server/src/kernel/council-isolation.js'
+import { guardInstallLine } from '../server/src/kernel/danger.js'
+import type { BarrierOptions, ClassFiles } from '../server/src/kernel/remote/files.js'
 
 process.env.KERNEL_QUIET_MS = '150'
 process.env.KERNEL_WATCHDOG_MS = '50'
@@ -38,12 +41,16 @@ let notebook: typeof import('../shared/notebook.js')
 let db: typeof import('../server/src/db.js')
 let collab: typeof import('../server/src/collab/index.js')
 let control: typeof import('../server/src/control.js')
+let files: typeof import('../server/src/kernel/remote/files.js')
+let placements: typeof import('../server/src/kernel/remote/placement-store.js')
 let tr: typeof import('../shared/i18n.js').tr
 let fake: Awaited<ReturnType<typeof startFakeJupyter>>
 
 before(async () => {
   fake = await startFakeJupyter({ guardAnswer, interpreter: true, buffer: true, keepAlive: false })
   kernel = await import('../server/src/kernel/index.js')
+  files = await import('../server/src/kernel/remote/files.js')
+  placements = await import('../server/src/kernel/remote/placement-store.js')
   pool = await import('../server/src/kernel/council-pool.js')
   epochs = await import('../server/src/kernel/remote/epochs.js')
   jupyter = await import('../server/src/kernel/jupyter.js')
@@ -2448,4 +2455,453 @@ test('a notebook kernel whose container has no PYTHONHASHSEED of the class has t
   room.holdWanted()
   assert.ok(await until(() => room.console()?.epoch?.seq === 2), JSON.stringify(room.console()))
   assert.equal(room.console()?.epoch?.seedDiffers, undefined)
+})
+
+/* ------------------------------------------- one trip on a gated worker (§9.6, 0.26.1) */
+
+/** An execute as the fake logged it on arrival: whether silent, its stop_on_error, the gate's run id in its metadata. */
+type ShellCall = { kind: string; kernel?: string; msgType?: string; silent?: boolean; stopOnError?: boolean; run?: string | null }
+
+/** The executes that reached a kernel since `from` (an index into fake.calls), in the order they came. */
+const executesTo = (kernelId: string | null, from = 0): ShellCall[] =>
+  (fake.calls.slice(from) as ShellCall[]).filter((call) => call.kind === 'shell' && call.msgType === 'execute_request' && call.kernel === kernelId)
+
+/** How often a kernel's gate refused a request, unrun. */
+const refusedBy = (kernelId: string | null): number =>
+  (fake.calls as ShellCall[]).filter((call) => call.kind === 'gate' && call.kernel === kernelId).length
+
+/** A ready pool whose workers were born with the gate, as their seeds said. */
+async function gatedPool(t: TestContext, options: Parameters<typeof poolClass>[1] = {}) {
+  fake.council.gate = true
+  const room = await readyPool(t, options)
+  assert.ok(room.pool()!.workers.every((worker) => worker.gated), JSON.stringify(room.pool()))
+  return room
+}
+
+/** The install lines a full entry carries (council-isolation.ts · councilEnterSource): the guard's, then the hidden module's. */
+const GUARD_INSTALL = guardInstallLine()
+const MODULE_INSTALL = councilEnterSource(1024).split('\n')[1]!
+
+/** The entries a kernel was asked to run, in order. A full one carries both install lines; a lean one neither (§9.6, 0.26.1). */
+const entriesIn = (kernelId: string | null): string[] => ranIn(kernelId).filter((code) => code.includes('.enter(globals()'))
+const isFull = (code: string): boolean => code.startsWith(`${GUARD_INSTALL}\n${MODULE_INSTALL}\n`)
+const isLean = (code: string): boolean => !code.includes('exec(compile(') && code.split('\n').length === 3
+
+/** The bytes of each entry's frame as it went to a kernel since `from` (an index into fake.frames, kept with `keepFrames`). */
+const entryFrameBytes = (from: number): number[] =>
+  (fake.frames.slice(from) as string[]).filter((raw) => String(JSON.parse(raw)?.content?.code ?? '').includes('.enter(globals()')).map((raw) => Buffer.byteLength(raw))
+
+test('on a gated worker an attempt\'s entry, the attempt and its exit reach its kernel before it answers any: one trip, and the attempt\'s output reaches its card', async (t) => {
+  const room = await gatedPool(t, { workers: 1, refresh: 'manual' })
+  const worker = room.workerKernel(1)
+  const leaves = fake.councilRuns.leave
+  const from = fake.calls.length
+  fake.holdSilent.push({ match: '.enter(globals()', name: 'entry' })
+  const attempt = room.attempt('p_s1', 'print(x)')
+  assert.ok(await until(() => executesTo(worker, from).length === 3), JSON.stringify(executesTo(worker, from)))
+  await turns()
+  assert.equal(fake.holding('entry'), 1, 'the entry was answered before the attempt went')
+  const [entry, sent, exit] = executesTo(worker, from)
+  assert.deepEqual([entry!.silent, sent!.silent, exit!.silent], [true, false, true])
+  // Its exit behind it must run whatever it does: ipykernel aborts what is queued behind a failing run asked to stop on errors.
+  assert.deepEqual([entry!.stopOnError, sent!.stopOnError, exit!.stopOnError], [true, false, true])
+  assert.equal(attempt.last()?.state, 'running')
+  fake.release('entry')
+  assert.ok(await until(() => doneStates.has(attempt.last()?.state ?? '')), JSON.stringify(attempt.last()))
+  assert.deepEqual([attempt.last()?.state, attempt.last()?.placed], ['ok', 'pool'])
+  assert.equal(attempt.said(), '5\n')
+  // The run id its entry opened the gate for: the card's own.
+  assert.equal(sent!.run, attempt.last()?.runId)
+  assert.equal(refusedBy(worker), 0)
+  // The exit was the one in flight: read, and no fourth request.
+  assert.equal(fake.councilRuns.leave, leaves + 1)
+  assert.equal(executesTo(worker, from).length, 3)
+})
+
+test('a gated worker\'s entries go lean once its load put the guard and the module in its process, each frame under 4 KB and each holding; recycled, or its Python restarted by itself, it is loaded again, both put back by the load, and the next entry is lean', async (t) => {
+  fake.keepFrames = true
+  const room = await gatedPool(t, { workers: 1, refresh: 'manual' })
+  const worker = room.workerKernel(1)
+  const loads = (): string[] => ranIn(worker).filter((code) => code.includes('.load(globals()'))
+  // Its load carried the guard's install and the module's, ahead of the load itself.
+  assert.equal(loads().length, 1)
+  assert.ok(isFull(loads()[0]!), 'the load put no guard or no module in its process')
+  assert.ok(room.pool()!.workers.every((one) => one.lean), JSON.stringify(room.pool()))
+  const holds = async (participant: string, n: number): Promise<void> => {
+    const from = fake.frames.length
+    const enters = fake.councilRuns.enter
+    const attempt = room.attempt(participant, `print(x + ${n})`)
+    assert.ok(await until(() => doneStates.has(attempt.last()?.state ?? '')), JSON.stringify(attempt.last()))
+    assert.deepEqual([attempt.last()?.state, attempt.said()], ['ok', `${5 + n}\n`], `${participant}'s attempt`)
+    const [bytes, ...more] = entryFrameBytes(from)
+    assert.deepEqual(more, [])
+    assert.ok(bytes !== undefined && bytes < 4096, `${participant}'s entry went in ${bytes} bytes`)
+    assert.ok(isLean(entriesIn(worker).at(-1)!), `${participant}'s entry carried a source`)
+    assert.equal(fake.councilRuns.enter, enters + 1, `${participant}'s entry did not hold`)
+  }
+  await holds('p_s1', 1)
+  await holds('p_s2', 2)
+  // A recycle (its attempt left a thread behind): a new process, loaded again, the guard and the module put there by that load.
+  fake.council.threads = 1
+  const leaky = room.attempt('p_s3', 'print(x)')
+  assert.ok(await until(() => leaky.last()?.state === 'ok'), JSON.stringify(leaky.last()))
+  fake.council.threads = 0
+  assert.ok(await until(() => restartsOf(worker) === 1 && loads().length === 2 && room.pool()!.workers.every((one) => one.lean)), JSON.stringify(room.pool()))
+  await holds('p_s4', 4)
+  // Its Python restarted by itself at rest (an OOM kill): no rule of the guard is said to it again, only its load runs.
+  fake.oomKill(worker!)
+  assert.ok(await until(() => loads().length === 3 && room.pool()!.workers.every((one) => one.lean)), JSON.stringify(room.pool()))
+  await holds('p_s6', 6)
+  assert.ok(loads().every(isFull))
+  assert.equal(fake.calls.filter((call) => call.kind === 'lean-refused').length, 0, 'a lean entry went to a process without its modules')
+})
+
+test('a worker not born gated takes three trips as before, each request after the reply of the one before, the run id riding along', async (t) => {
+  const room = await readyPool(t, { workers: 1, refresh: 'manual' })
+  assert.ok(room.pool()!.workers.every((worker) => !worker.gated), JSON.stringify(room.pool()))
+  const worker = room.workerKernel(1)
+  const from = fake.calls.length
+  fake.holdSilent.push({ match: '.enter(globals()', name: 'entry' })
+  const attempt = room.attempt('p_s1', 'print(x)')
+  assert.ok(await until(() => fake.holding('entry') === 1))
+  await turns()
+  assert.equal(executesTo(worker, from).length, 1, 'the attempt went before its entry was answered')
+  fake.release('entry')
+  assert.ok(await until(() => attempt.last()?.state === 'ok'), JSON.stringify(attempt.last()))
+  assert.equal(attempt.said(), '5\n')
+  const sent = executesTo(worker, from)
+  assert.deepEqual(sent.map((call) => [call.silent, call.stopOnError]), [[true, true], [false, true], [true, true]], 'today\'s three requests')
+  // A kernel without the gate reads nothing of it; one with it its pool has not heard of lets it through by it.
+  assert.equal(sent[1]!.run, attempt.last()?.runId)
+  // Its entry is the full one, the guard and the module carried, as it always was: only a gated worker's goes lean.
+  assert.ok(room.pool()!.workers.every((one) => !one.lean))
+  assert.ok(isFull(entriesIn(worker).at(-1)!), 'an ungated worker got a lean entry')
+})
+
+test('the notebook\'s own kernel takes an attempt in three trips, its request as it always was: no run id', async (t) => {
+  fake.council.gate = true
+  const room = await readyPool(t, { workers: 1, lane: 'shared' })
+  const main = room.mainKernel()
+  const from = fake.calls.length
+  fake.holdSilent.push({ match: '.enter(globals()', name: 'entry', kernel: main! })
+  const attempt = room.attempt('p_s1', 'print(x)')
+  assert.ok(await until(() => fake.holding('entry') === 1))
+  await turns()
+  assert.equal(executesTo(main, from).length, 1)
+  fake.release('entry')
+  assert.ok(await until(() => attempt.last()?.state === 'ok'), JSON.stringify(attempt.last()))
+  assert.equal(attempt.said(), '5\n')
+  assert.deepEqual(executesTo(main, from).map((call) => [call.silent, call.stopOnError, call.run]), [[true, true, null], [false, true, null], [true, true, null]])
+  // The notebook's own entry: the guard and the module carried, and none of a worker's inputs.
+  const entry = entriesIn(main).at(-1)!
+  assert.ok(isFull(entry), entry.slice(-300))
+  assert.doesNotMatch(entry.split('\n')[2]!, /'runId'|'source'|'cap'/)
+})
+
+test('a gated worker\'s entry that fails: the attempt is refused by its kernel and nothing of it reaches the card but today\'s words; the exit behind it runs, its report read', async (t) => {
+  const room = await gatedPool(t, { workers: 1, refresh: 'manual' })
+  const worker = room.workerKernel(1)
+  fake.council.enterError = 'RuntimeError: memory ceiling unavailable'
+  fake.council.files = [{ name: 'out.csv', text: 'a,b\n' }]
+  t.after(() => {
+    fake.council.files = []
+  })
+  const leaves = fake.councilRuns.leave
+  const from = fake.calls.length
+  const attempt = room.attempt('p_s1', 'print("never")')
+  assert.ok(await until(() => doneStates.has(attempt.last()?.state ?? '')), JSON.stringify(attempt.last()))
+  assert.deepEqual([attempt.last()?.state, attempt.last()?.placed], ['error', 'pool'])
+  assert.deepEqual(
+    attempt.last()?.outputs.map((output) => (output.kind === 'error' ? [output.ename, output.evalue] : [output.kind])),
+    [['', councilEnterRefusal('RuntimeError: memory ceiling unavailable')]],
+    'the gate\'s refusal or the attempt\'s input reached the card',
+  )
+  assert.equal(attempt.last()?.execCount, null)
+  assert.equal(refusedBy(worker), 1, 'the attempt was not held back in its kernel')
+  // One trip: entry, attempt and exit (the worker's recycle and reload come after).
+  assert.deepEqual(executesTo(worker, from).slice(0, 3).map((call) => [call.silent, call.run === attempt.last()?.runId]), [[true, false], [false, true], [true, false]])
+  // The exit ran behind it, and what its report says is on the card: the file in the attempt's folder.
+  assert.equal(fake.councilRuns.leave, leaves + 1)
+  assert.deepEqual(attempt.last()?.files?.map((file) => file.name), ['out.csv'])
+})
+
+test('a gated worker\'s entry that finds a name its epoch left behind: the attempt goes to the notebook\'s kernel, nothing of the worker\'s on its card', async (t) => {
+  fake.council.left = [{ name: 'conn', why: 'connection' }]
+  const room = await gatedPool(t, { workers: 1, refresh: 'manual', sources: ['x = 5\nconn = "db"', ''] })
+  const worker = room.workerKernel(1)
+  const from = fake.calls.length
+  const reader = room.attempt('p_s1', 'print(conn)')
+  assert.ok(await until(() => reader.last()?.state === 'ok'), JSON.stringify(reader.last()))
+  assert.deepEqual([reader.last()?.placed, reader.last()?.note], ['shared', tr('server.runInTheSharedKernelItUses.eaf141', { name: 'conn' })])
+  assert.equal(reader.said(), 'db\n')
+  assert.ok(reader.frames.every((frame) => !(frame?.outputs ?? []).some((output) => output.kind === 'error')), JSON.stringify(reader.frames))
+  assert.equal(refusedBy(worker), 1)
+  assert.deepEqual(executesTo(worker, from).map((call) => call.silent), [true, false, true], 'one trip, the attempt held back by the gate')
+  assert.ok(ranIn(room.mainKernel()).includes('print(conn)'))
+})
+
+test('a gated worker\'s attempt that raises keeps its error, and the exit sent behind it runs', async (t) => {
+  const room = await gatedPool(t, { workers: 1, refresh: 'manual' })
+  const worker = room.workerKernel(1)
+  const leaves = fake.councilRuns.leave
+  const from = fake.calls.length
+  const attempt = room.attempt('p_s1', 'print(x)\nRAISE boom')
+  assert.ok(await until(() => doneStates.has(attempt.last()?.state ?? '')), JSON.stringify(attempt.last()))
+  assert.equal(attempt.last()?.state, 'error')
+  assert.deepEqual(attempt.last()?.outputs.map((output) => (output.kind === 'error' ? output.ename : output.kind)), ['stream', 'ValueError'])
+  assert.equal(fake.councilRuns.leave, leaves + 1, 'the exit behind it did not run')
+  assert.equal(executesTo(worker, from)[1]?.stopOnError, false)
+  // Its worker serves on, not recycled for an attempt's own error.
+  const next = room.attempt('p_s2', 'print(x)')
+  assert.ok(await until(() => next.last()?.state === 'ok'))
+  assert.equal(restartsOf(worker), 0)
+})
+
+test('a gated worker stuck under its attempt is recycled with its exit still queued behind it: the card ends, nothing is left unhandled, and the worker serves again', async (t) => {
+  const room = await gatedPool(t, { workers: 1, refresh: 'manual' })
+  const unhandled: unknown[] = []
+  const onUnhandled = (reason: unknown): void => {
+    unhandled.push(reason)
+  }
+  process.on('unhandledRejection', onUnhandled)
+  t.after(() => {
+    process.off('unhandledRejection', onUnhandled)
+  })
+  const worker = room.workerKernel(1)
+  const from = fake.calls.length
+  const deaf = room.attempt('p_s1', 'DEAF stuck', 'author', 1)
+  assert.ok(await until(() => fake.holding('stuck') === 1))
+  // Its exit is in the kernel's queue already, behind the attempt that will not stop.
+  assert.equal(executesTo(worker, from).length, 3)
+  assert.ok(await until(() => restartsOf(worker) === 1), 'the stuck worker was not recycled')
+  assert.ok(await until(() => doneStates.has(deaf.last()?.state ?? '')), JSON.stringify(deaf.last()))
+  assert.equal(deaf.last()?.state, 'error')
+  // Loaded again, born gated again, and serving.
+  assert.ok(await until(() => room.pool()!.workers.every((one) => one.seeded === 1 && one.gated)), JSON.stringify(room.pool()))
+  const next = room.attempt('p_s2', 'print(x)')
+  assert.ok(await until(() => next.last()?.state === 'ok'), JSON.stringify(next.last()))
+  assert.equal(next.said(), '5\n')
+  await turns()
+  assert.deepEqual(unhandled, [])
+})
+
+test('on gated workers the run limit and an author\'s stop interrupt their own attempts, and each attempt\'s exit runs behind it', async (t) => {
+  const room = await gatedPool(t, { workers: 2, refresh: 'manual' })
+  const leaves = fake.councilRuns.leave
+  const limited = room.attempt('p_s1', 'HOLD slow', 'author', 1)
+  const mine = room.attempt('p_s2', 'HOLD mine')
+  assert.ok(await until(() => fake.holding('mine') === 1))
+  assert.ok(await until(() => doneStates.has(limited.last()?.state ?? '')), JSON.stringify(limited.last()))
+  assert.deepEqual([limited.last()?.state, limited.last()?.timedOut], ['error', 1])
+  assert.ok(kernel.attemptOnWorker(room.id, room.councilCellId, 'p_s2'))
+  await kernel.interruptSession(room.id, room.councilCellId, notebook.CELLS_KEY, 'p_s2')
+  assert.ok(await until(() => doneStates.has(mine.last()?.state ?? '')), JSON.stringify(mine.last()))
+  assert.equal(mine.last()?.state, 'error')
+  assert.ok(await until(() => fake.councilRuns.leave === leaves + 2), `${fake.councilRuns.leave - leaves} exits ran`)
+  assert.equal(http('POST', new RegExp(`/api/kernels/${room.mainKernel()}/interrupt$`)), 0)
+})
+
+test('an empty epoch loads nothing, so no seed says its workers are gated: their attempts take three trips, and the run id they carry lets the gate open', async (t) => {
+  fake.council.gate = true
+  const room = await poolClass(t)
+  pool.councilOpened(room.id, notebook.CELLS_KEY, room.councilCellId)
+  assert.ok(await until(() => (room.pool()?.workers ?? []).filter((worker) => worker.seeded !== null).length === 2), JSON.stringify(room.pool()))
+  assert.ok(room.pool()!.workers.every((worker) => !worker.gated))
+  const from = fake.calls.length
+  const attempt = room.attempt('p_s1', 'y = 3\nprint(y)')
+  assert.ok(await until(() => attempt.last()?.state === 'ok'), JSON.stringify(attempt.last()))
+  assert.deepEqual([attempt.last()?.placed, attempt.said()], ['pool', '3\n'])
+  const carried = (fake.calls.slice(from) as ShellCall[]).filter((call) => call.kind === 'shell' && call.run === attempt.last()?.runId)
+  assert.equal(carried.length, 1)
+  assert.equal(refusedBy(carried[0]!.kernel ?? null), 0, 'the gate refused the attempt its entry opened it for')
+  // An empty epoch is no epoch to hold: its entry is told none (a fresh process would hold it as well as any).
+  const entries = ranIn(carried[0]!.kernel ?? null).filter((code) => code.includes('.enter(globals()'))
+  assert.equal(entries.length, 1)
+  assert.doesNotMatch(entries[0]!, /'epoch':/)
+  // Nor did a load put the guard and the module there: the entry carries them, as it always did.
+  assert.ok(isFull(entries[0]!), 'a worker no load ran on got a lean entry')
+})
+
+/* ------------------------------------- what a cut or an unheard death leaves of a trip (§9.6) */
+
+/** A shell request of one kind that reached a kernel. */
+const shellTo = (kernelId: string | null, msgType: string): number =>
+  (fake.calls as ShellCall[]).filter((call) => call.kind === 'shell' && call.msgType === msgType && call.kernel === kernelId).length
+
+/** How often COUNT ran in a kernel: proof an attempt computed there. */
+const countsIn = (kernelId: string | null): number => fake.calls.filter((call) => call.kind === 'count' && call.kernel === kernelId).length
+
+/** A card's outputs as [ename, evalue] for errors and their kind otherwise. */
+const outputsOf = (run: CouncilRun | null) => (run?.outputs ?? []).map((output) => (output.kind === 'error' ? [output.ename, output.evalue] : [output.kind]))
+
+/**
+ * A cut eats a gated worker's entry's reply: the trip's three requests on
+ * the worker, its entry held there (`entry`, with `lose` in fake.holdSilent),
+ * the road goes down, and the entry, let go, does what it does with its
+ * reply lost on the way. The road stays down for the test to bring back.
+ */
+async function cutUnderEntry(room: PoolRoom, worker: string | null, from: number): Promise<void> {
+  assert.ok(await until(() => executesTo(worker, from).length === 3 && fake.holding('entry') === 1), JSON.stringify(executesTo(worker, from)))
+  room.poolRoad.down()
+  assert.ok(await until(() => fake.online(worker!) === 0 && room.poolRoad.waiting > 0), 'the cut was not seen')
+  fake.release('entry')
+}
+
+test('a cut that eats a gated worker\'s entry\'s reply leaves the gate\'s verdict: the attempt it let through is read as run, its output on its card', async (t) => {
+  const room = await gatedPool(t, { workers: 1, refresh: 'manual' })
+  const worker = room.workerKernel(1)
+  const from = fake.calls.length
+  fake.holdSilent.push({ match: '.enter(globals()', name: 'entry', lose: true })
+  const attempt = room.attempt('p_s1', 'HOLD a\nprint(x)\nCOUNT')
+  await cutUnderEntry(room, worker, from)
+  assert.ok(await until(() => fake.holding('a') === 1), 'the gate held back an attempt whose entry held')
+  room.poolRoad.up()
+  assert.ok(await until(() => fake.online(worker!) > 0))
+  fake.release('a')
+  assert.ok(await until(() => doneStates.has(attempt.last()?.state ?? '')), JSON.stringify(attempt.last()))
+  // Not «запуск не выполнен»: it ran on its worker, on its own copies, and the card says what it printed.
+  assert.deepEqual([attempt.last()?.state, attempt.said()], ['ok', '5\n1\n'])
+  assert.deepEqual([countsIn(worker), refusedBy(worker)], [1, 0])
+})
+
+test('a cut that eats the reply of a gated worker\'s entry that failed: its gate held the attempt back, and the card refuses it in today\'s words, with the cut\'s reason after one colon', async (t) => {
+  const room = await gatedPool(t, { workers: 1, refresh: 'manual' })
+  const worker = room.workerKernel(1)
+  fake.council.enterError = 'RuntimeError: memory ceiling unavailable'
+  const from = fake.calls.length
+  fake.holdSilent.push({ match: '.enter(globals()', name: 'entry', lose: true })
+  const attempt = room.attempt('p_s1', 'print(x)\nCOUNT')
+  await cutUnderEntry(room, worker, from)
+  assert.ok(await until(() => refusedBy(worker) === 1), 'the gate let through an attempt whose entry failed')
+  room.poolRoad.up()
+  assert.ok(await until(() => doneStates.has(attempt.last()?.state ?? '')), JSON.stringify(attempt.last()))
+  assert.equal(attempt.last()?.state, 'error')
+  assert.deepEqual(outputsOf(attempt.last()), [['', councilEnterRefusal(tr('server.theConnectionToTheMachineBrokeThe.5504d1'))]])
+  assert.equal(countsIn(worker), 0)
+})
+
+test('a cut that eats a gated worker\'s entry\'s reply while the attempt behind it asks input(): answered at once, the attempt\'s own reply settles the entry, the reconnect\'s question still unanswered', async (t) => {
+  const room = await gatedPool(t, { workers: 1, refresh: 'manual' })
+  const worker = room.workerKernel(1)
+  const from = fake.calls.length
+  fake.holdSilent.push({ match: '.enter(globals()', name: 'entry', lose: true })
+  const attempt = room.attempt('p_s1', 'HOLD a\nname = input("? ")\nprint(x, name)\nCOUNT')
+  await cutUnderEntry(room, worker, from)
+  assert.ok(await until(() => fake.holding('a') === 1))
+  // The reconnect's question waits behind the attempt, as ipykernel's waits until it gives up: here it is never answered.
+  fake.holdKernelInfo = true
+  const asked = shellTo(worker, 'kernel_info_request')
+  room.poolRoad.up()
+  assert.ok(await until(() => fake.online(worker!) > 0 && shellTo(worker, 'kernel_info_request') > asked), 'the reconnect asked nothing')
+  fake.release('a')
+  assert.ok(await until(() => doneStates.has(attempt.last()?.state ?? '')), JSON.stringify(attempt.last()))
+  assert.deepEqual([attempt.last()?.state, attempt.said()], ['ok', `${tr('server.colloqInputIsNotSupportedInCouncil.fd07fb')}5 \n1\n`])
+  assert.equal(countsIn(worker), 1)
+})
+
+test('a gated worker whose process died unheard just before its trip: its lean entry raises in the new process, which holds no module, and leaves no report; the gate holds the attempt back, the card refuses it in today\'s words, and the worker is recycled and loaded again', async (t) => {
+  const room = await gatedPool(t, { workers: 1, refresh: 'manual' })
+  const worker = room.workerKernel(1)
+  const seq = room.pool()!.workers[0]!.seeded
+  const restarts = restartsOf(worker)
+  const enters = fake.councilRuns.enter
+  fake.diesBefore = { match: '.enter(globals()', kernel: worker!, silent: true }
+  const attempt = room.attempt('p_s1', 'print(x)\nCOUNT')
+  assert.ok(await until(() => doneStates.has(attempt.last()?.state ?? '')), JSON.stringify(attempt.last()))
+  assert.equal(fake.calls.filter((call) => call.kind === 'died' && call.kernel === worker).length, 1)
+  // Lean (its process held both since its load, as far as its pool knew), told the epoch it was loaded with all the same.
+  const entry = entriesIn(worker).at(-1) ?? ''
+  assert.ok(isLean(entry), 'the entry carried a source')
+  assert.match(entry, new RegExp(`'epoch': ${seq}\\b`))
+  // It raised before the entry, so no report: nothing of the module ran, and the card says the copies were not confirmed.
+  assert.equal(fake.calls.filter((call) => call.kind === 'lean-refused' && call.kernel === worker).length, 1)
+  assert.equal(fake.councilRuns.enter, enters, 'the entry ran in a process without its module')
+  assert.deepEqual(outputsOf(attempt.last()), [['', councilEnterRefusal(`RuntimeError: ${COUNCIL_LEAN_REFUSAL}`)]])
+  assert.deepEqual([attempt.last()?.state, attempt.last()?.placed], ['error', 'pool'])
+  assert.deepEqual([refusedBy(worker), countsIn(worker)], [1, 0])
+  assert.ok(await until(() => restartsOf(worker) === restarts + 1), 'the worker was not recycled')
+  assert.ok(await until(() => room.pool()!.workers.every((one) => one.seeded === seq && one.gated && one.lean)), JSON.stringify(room.pool()))
+  const next = room.attempt('p_s2', 'print(x)')
+  assert.ok(await until(() => next.last()?.state === 'ok'), JSON.stringify(next.last()))
+  assert.equal(next.said(), '5\n')
+  assert.ok(isLean(entriesIn(worker).at(-1)!), 'the next entry after the new load carried a source')
+})
+
+test('a gate\'s refusal reaches a card as its entry\'s refusal: a worker born gated on an empty epoch, its process dead unheard between its entry\'s reply and its attempt', async (t) => {
+  fake.council.gate = true
+  const room = await poolClass(t, { workers: 1 })
+  pool.councilOpened(room.id, notebook.CELLS_KEY, room.councilCellId)
+  assert.ok(await until(() => (room.pool()?.workers ?? []).some((one) => one.seeded !== null)), JSON.stringify(room.pool()))
+  assert.ok(room.pool()!.workers.every((one) => !one.gated), 'the sequential road')
+  const worker = room.workerKernel(1)
+  fake.diesBefore = { match: 'print(y)', kernel: worker!, silent: false }
+  const attempt = room.attempt('p_s1', 'y = 3\nprint(y)')
+  assert.ok(await until(() => doneStates.has(attempt.last()?.state ?? '')), JSON.stringify(attempt.last()))
+  assert.equal(fake.calls.filter((call) => call.kind === 'died' && call.kernel === worker).length, 1)
+  // Nothing ran, the copies unconfirmed: the entry's words, never the gate's English for the log.
+  assert.deepEqual([attempt.last()?.state, outputsOf(attempt.last())], ['error', [['', councilEnterRefusal(null)]]])
+  assert.equal(refusedBy(worker), 1)
+})
+
+/* ------------------------------------------------- an attempt's files barrier (§9.6, 0.26.1) */
+
+/** The process's class folders as a barrier that writes down what each run asked of it and lets it go at once. */
+function recordingFiles(asked: Array<{ sessionId: string; aside: boolean }>): ClassFiles {
+  const recording = {
+    filesBarrier: async (sessionId: string, _runnerId: string, options: BarrierOptions = {}) => {
+      asked.push({ sessionId, aside: options.notebooksAside === true })
+    },
+    askScan: () => undefined,
+    treeChanged: () => undefined,
+    treeOverlay: (_sessionId: string, tree: unknown) => tree,
+    placementChanged: () => undefined,
+    useHooks: () => undefined,
+    close: () => undefined,
+  }
+  return recording as unknown as ClassFiles
+}
+
+/**
+ * A slot of the class written ready on «r1», as the placement keeps one, so
+ * that its runs meet that machine's files barrier (files.ts · slotMachine).
+ * Written once the class's kernels are up: no start asks the placement for
+ * an endpoint after it. Ended with the test.
+ */
+function slotRow(t: TestContext, sessionId: string, role: 'room' | 'council'): () => void {
+  const row = placements.writePlacement({
+    sessionId, role, runnerId: 'r1', state: 'ready', environment: 'base',
+    revision: { id: 'rev', ref: `ghcr.io/x@sha256:${'b'.repeat(64)}`, layers: 'l'.repeat(64) },
+    memoryMb: 512, cpus: 1, gpu: null, workers: role === 'council' ? 1 : null, container: CONTAINER, readyAt: Date.now(), endedAt: null, reason: null, createdAt: Date.now(),
+  })
+  const end = (): void => {
+    placements.updatePlacement(sessionId, role, row.gen, { state: 'stopped', endedAt: Date.now() })
+  }
+  t.after(end)
+  return end
+}
+
+test('a pool\'s attempt asks the files barrier to leave the room\'s notebooks aside', async (t) => {
+  const room = await gatedPool(t, { workers: 1, refresh: 'manual' })
+  const asked: Array<{ sessionId: string; aside: boolean }> = []
+  files.useClassFiles(recordingFiles(asked))
+  t.after(() => files.useClassFiles(null))
+  const end = slotRow(t, room.id, 'council')
+  const attempt = room.attempt('p_s1', 'print(x)')
+  assert.ok(await until(() => attempt.last()?.state === 'ok'), JSON.stringify(attempt.last()))
+  assert.deepEqual([attempt.last()?.placed, attempt.said()], ['pool', '5\n'])
+  assert.deepEqual(asked, [{ sessionId: room.id, aside: true }])
+  end()
+})
+
+test('an attempt in the notebook\'s own kernel asks the files barrier as a cell does: the room\'s notebooks as they always were', async (t) => {
+  const room = await readyPool(t, { workers: 1, lane: 'shared' })
+  const asked: Array<{ sessionId: string; aside: boolean }> = []
+  files.useClassFiles(recordingFiles(asked))
+  t.after(() => files.useClassFiles(null))
+  const end = slotRow(t, room.id, 'room')
+  const attempt = room.attempt('p_s1', 'print(x)')
+  assert.ok(await until(() => attempt.last()?.state === 'ok'), JSON.stringify(attempt.last()))
+  assert.equal(attempt.said(), '5\n')
+  assert.deepEqual(asked, [{ sessionId: room.id, aside: false }])
+  end()
 })

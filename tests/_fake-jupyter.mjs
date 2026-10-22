@@ -40,6 +40,9 @@
  *                                            files by their sha256, and an
  *                                            attempt works in a folder of its
  *                                            own in the second
+ *     --gate                                 every kernel is born with the
+ *                                            council workers' gate (the agent
+ *                                            mounted it, §9.6): see below
  *
  * A container's process outlives the agent that started it, as a container
  * does, and never the test.
@@ -122,6 +125,36 @@
  * links into it — the cell's folder until its exit, which lists the regular
  * files the attempt wrote there besides the canned ones.
  *
+ * THE GATE (remote-classes.md §9.6, server/src/kernel/council-gate.ts). A
+ * kernel born gated (every one with `gate: true` or `--gate`; a pool worker's,
+ * by its session path, while `fake.council.gate` is set as its process
+ * starts) runs a non-silent execute only when a worker's entry that
+ * held opened the gate for the run id its request's metadata carries
+ * (`colloqRun`), once; any other is answered with the gate's refusal, an
+ * error named ColloqRefused, without running — except one that carries no
+ * run id while no worker's entry has touched the gate in that process, as
+ * a home before the gate sends it. A worker's entry shuts the gate first
+ * and opens it last when it holds; one that expects an epoch
+ * (`'epoch': N`) in a process that loaded none (a fresh one) refuses, as
+ * the hidden module does. The load's report says `gated`. A restart's new
+ * process is born as the kernel was. Shell calls record an execute's
+ * `silent`, `stopOnError` and `run` (that metadata's run id), so a test
+ * counts the frames that reached a kernel before it answered any.
+ * `diesBefore` replaces a kernel's process with nobody told, just before a
+ * request whose code matches reaches it: what a death whose word has not
+ * reached home yet leaves, the request served by the next process.
+ *
+ * THE HIDDEN MODULES A PROCESS HOLDS (§9.6, 0.26.1). A silent execute whose
+ * code carries the guard's install (`'<colloq-guard>'`: the guard's rule, a
+ * full entry, a worker's load) or the council module's (`'<colloq-council>'`:
+ * a full entry, an export, a load) leaves its process holding that module;
+ * a fresh process holds neither. A pool worker's lean entry, which checks
+ * them where a full one installs them (known by the words its checks raise,
+ * council-isolation.ts · COUNCIL_LEAN_REFUSAL), raises in a process that
+ * lacks either, before anything of the entry: an error named RuntimeError
+ * with those words, no expression evaluated, and the call logged as
+ * `lean-refused`.
+ *
  * WHAT A TEST SEES. `calls` logs every request: HTTP by method and path,
  * channel upgrades, shell requests by type, terminal input and size, COUNT by
  * value, LOSE. The process serves it at GET /_fake/calls, the kernels at
@@ -182,8 +215,18 @@ const EXPORT_DROP = /^__import__\('shutil'\)\.rmtree\("\/tmp\/colloq-epoch\/(\d+
 /** The council's hidden module (server/src/kernel/council-isolation.ts · COUNCIL_MODULE): its entry, exit, export and load. */
 const COUNCIL_MODULE = '_colloq_council'
 
+/** The workers' gate (server/src/kernel/council-gate.ts): the metadata key of a run id, its refusal's name and words. */
+const GATE_RUN_KEY = 'colloqRun'
+const GATE_REFUSED = 'ColloqRefused'
+const GATE_REFUSAL = 'colloq gate: this request was not run, as no entry opened the gate for it'
+
 /** A call of one of the council module's functions, the way the entry calls `enter`: `modules["_colloq_council"].<name>(`. */
 const COUNCIL_CALL = (name) => new RegExp(`modules\\[(['"])${COUNCIL_MODULE}\\1\\]\\.${name}\\(`)
+
+/** The install lines' marks (danger.ts, council-isolation.ts: the name each source is compiled under), and what a lean entry raises without them. */
+const GUARD_INSTALL = "'<colloq-guard>'"
+const COUNCIL_INSTALL = "'<colloq-council>'"
+const LEAN_REFUSAL = 'the worker does not hold the modules its pool loaded'
 
 /**
  * The epochs the fakes of this process exported, by their manifest's sha256:
@@ -219,6 +262,11 @@ function councilAtRest() {
     hashSeed: /** @type {string | null | undefined} */ (undefined),
     /** Names a worker's load leaves behind besides the export's, as one lacking their module does (CouncilLeftWhy `module`). */
     loadLeft: /** @type {Array<{ name: string, why: string }>} */ ([]),
+    /**
+     * Pool workers' kernels (a session path of a worker's root, `…-w<n>.ipynb`) whose process starts while this is set are
+     * born gated (§9.6), as those of a council container the agent mounted the gate into; a notebook's own kernel never is.
+     */
+    gate: false,
   }
 }
 
@@ -317,6 +365,7 @@ const SCROLLBACK_CHARS = 4096
  *   (`<id>/session.ipynb` → `cwd/<id>`), as a home's Jupyter rooted at the workspace has it; off, every
  *   kernel works in `cwd` itself, as a class container's does, which sees its one class folder
  * @param {boolean} [options.readOnly] the folder is mounted read-only: WRITE fails as a write there would
+ * @param {boolean} [options.gate] every kernel is born with the council workers' gate (see the header)
  * @param {string} [options.oomFile] a line is added to this file for every kernel killed for memory
  * @param {(line: string) => void} [options.log] what jupyter_server would log (a kernel restarted): the process
  *   mode's stdout, the container's log
@@ -393,9 +442,19 @@ export async function startFakeJupyter(options = {}) {
      * `HOLD name` before they answer, each whose code contains `match` (in the
      * one kernel `kernel` names, any when absent): the window a service run
      * takes on a kernel. An interrupt meanwhile ends one with a
-     * KeyboardInterrupt, as it would end the real one.
+     * KeyboardInterrupt, as it would end the real one. With `lose`, once let
+     * go it does what it does, and its reply and closing idle are lost on the
+     * way, as LOSE's are: what a cut eats.
      */
-    holdSilent: /** @type {Array<{ match: string, name: string, kernel?: string }>} */ ([]),
+    holdSilent: /** @type {Array<{ match: string, name: string, kernel?: string, lose?: boolean }>} */ ([]),
+    /**
+     * The next execute whose code contains `match` (in the one kernel `kernel`
+     * names, any when absent; a silent one or not, as `silent` says when it is
+     * given) reaches a new process of its kernel, nobody told: the process
+     * before it died just before, and its word has not come (see the header).
+     * Spent by that one request, and logged as `died`.
+     */
+    diesBefore: /** @type {{ match: string, kernel?: string, silent?: boolean } | null} */ (null),
     /** Hold the answers to GET /api/kernels/:id until releaseKernelGets(): Jupyter's word on a kernel, a long way off. */
     holdKernelGets: false,
     /** A kernel killed for memory stays `starting` until revive(): a slow comeback. */
@@ -406,6 +465,9 @@ export async function startFakeJupyter(options = {}) {
     refuseUpgrades: 0,
     /** Every request, in order (see the header). */
     calls: /** @type {Array<{ kind: string, [field: string]: any }>} */ ([]),
+    /** While set, every message a channel takes is kept here as it came, its text: what went on the client's socket, byte for byte. */
+    keepFrames: false,
+    frames: /** @type {string[]} */ ([]),
     port: 0,
     url: '',
     /** The kernels' folder. */
@@ -489,6 +551,9 @@ export async function startFakeJupyter(options = {}) {
       fake.refuseUpgrades = 0
       fake.council = councilAtRest()
       fake.holdSilent = []
+      fake.diesBefore = null
+      fake.keepFrames = false
+      fake.frames = []
     },
 
     /** Let interpreted cells waiting at `HOLD name` go on. Returns how many did. */
@@ -644,6 +709,12 @@ export async function startFakeJupyter(options = {}) {
       guarded: null,
       /** A pool worker's: the epoch it loaded (its manifest and what it left behind) and the attempt in it now (its run id). */
       council: null,
+      /** The hidden modules this process holds: what an install line put there (see the header). */
+      modules: { guard: false, council: false },
+      /** Born with the workers' gate (§9.6), the run id it is open for now (null: shut), and whether an entry has touched it. */
+      gated: bornGated(sessionPath),
+      gateOpen: null,
+      gateArmed: false,
       reviving: false,
       /** The shell: one request at a time. */
       shell: Promise.resolve(),
@@ -653,6 +724,11 @@ export async function startFakeJupyter(options = {}) {
     }
   }
 
+  /** Whether a process of the kernel at this session path is born with the workers' gate (see the header). */
+  function bornGated(sessionPath) {
+    return options.gate === true || (fake.council.gate === true && /-w\d+\.ipynb$/.test(String(sessionPath)))
+  }
+
   /** A new process behind the same kernel id: what a restart and the OOM killer leave. */
   function freshProcess(kernel) {
     kernel.process += 1
@@ -660,6 +736,11 @@ export async function startFakeJupyter(options = {}) {
     kernel.count = 0
     kernel.guarded = null
     kernel.council = null
+    kernel.modules = { guard: false, council: false }
+    // A new process is born as the kernel's process always is: gated or not, and the gate shut and untouched.
+    kernel.gated = bornGated(kernel.path)
+    kernel.gateOpen = null
+    kernel.gateArmed = false
     // A worker recycled in the middle of an attempt starts again in its own folder, not the attempt's.
     kernel.dir = folderOf(kernel.path)
     kernel.running?.abort()
@@ -884,7 +965,7 @@ export async function startFakeJupyter(options = {}) {
       for (const [name, value] of epoch?.values ?? []) if (!lacking.some((row) => row.name === name)) kernel.ns.set(name, value)
       kernel.council = { manifest, left, run: null }
     }
-    return { ok: true, seq: epoch?.seq ?? null, manifest, loaded: epoch?.values.length ?? 0, imported: 0, left, oomScoreAdj: 1000, threads: 1, mapped: 0, ms: 1 }
+    return { ok: true, seq: epoch?.seq ?? null, manifest, loaded: epoch?.values.length ?? 0, imported: 0, left, oomScoreAdj: 1000, threads: 1, mapped: 0, gated: kernel?.gated === true, ms: 1 }
   }
 
   /**
@@ -972,7 +1053,16 @@ export async function startFakeJupyter(options = {}) {
    */
   function workerEntry(kernel, code) {
     fake.councilRuns.enter += 1
+    // The gate shut first thing, as the hidden module's enter shuts it (§9.6).
+    if (kernel) {
+      kernel.gateOpen = null
+      if (kernel.gated) kernel.gateArmed = true
+    }
     const runId = /'runId': "([^"]+)"/.exec(code)?.[1] ?? null
+    // A worker loaded for this attempt whose process holds no epoch (a fresh one its pool has not heard of) refuses.
+    if (/'epoch': \d+/.test(code) && !kernel?.council?.manifest) {
+      return { ok: false, copied: 0, skipped: [], failed: [], bytes: 0, ms: 1, error: 'RuntimeError: the worker does not hold the epoch its attempt was given' }
+    }
     let source = ''
     const literal = /'source': ("(?:[^"\\]|\\.)*")/.exec(code)?.[1]
     if (literal) {
@@ -988,7 +1078,9 @@ export async function startFakeJupyter(options = {}) {
       return { ok: false, copied: 0, skipped: [], failed: [], bytes: 0, ms: 1, error: 'the attempt reads a name its epoch left behind', needs }
     }
     if (fake.council.enterError) {
-      // Its folder made first, as the hidden module makes it before it arms the ceiling.
+      // Its folder made first, as the hidden module makes it before it arms the ceiling: its state is held, and the exit
+      // gives it back and lists the folder as it lists any attempt's.
+      if (kernel) kernel.council = { ...(kernel.council ?? { manifest: null, left: [] }), run: runId }
       if (options.scratchDir && runId && /^[0-9a-f]{32}$/.test(runId)) scratchFolder(runId)
       return { ok: false, copied: 0, skipped: [], failed: [], bytes: 0, ms: 1, error: fake.council.enterError }
     }
@@ -996,6 +1088,8 @@ export async function startFakeJupyter(options = {}) {
       kernel.council = { ...(kernel.council ?? { manifest: null, left: [] }), run: runId }
       // The attempt works in its own folder of the council's scratch space until its exit (§9.7).
       if (options.scratchDir && runId && /^[0-9a-f]{32}$/.test(runId)) kernel.dir = scratchFolder(runId)
+      // Its very last step: the attempt behind it may run, once.
+      if (kernel.gated) kernel.gateOpen = runId
     }
     return { ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1, scratch: runId ? `/colloq/scratch/${runId}` : null }
   }
@@ -1304,7 +1398,7 @@ export async function startFakeJupyter(options = {}) {
       if (asked.restarts !== 'held') fake.answerRestarts()
     }
     if (Array.isArray(asked.holdSilent)) {
-      // The service runs to hold at a HOLD of their own, as `fake.holdSilent` has them: each a `match` and a `name`.
+      // The service runs to hold at a HOLD of their own, as `fake.holdSilent` has them: each a `match` and a `name` (and `lose`).
       fake.holdSilent = asked.holdSilent.filter((one) => typeof one?.match === 'string' && one.match !== '' && typeof one?.name === 'string')
         .map((one) => ({ match: one.match, name: one.name, ...(typeof one.kernel === 'string' ? { kernel: one.kernel } : {}) }))
     }
@@ -1379,8 +1473,18 @@ export async function startFakeJupyter(options = {}) {
     })
     ws.on('message', (raw) => {
       if (session.socket === ws) flush(session)
+      if (fake.keepFrames) fake.frames.push(String(raw))
       const msg = JSON.parse(String(raw))
-      fake.calls.push({ kind: 'shell', kernel: kernel.id, msgType: msg.header?.msg_type })
+      const type = msg.header?.msg_type
+      fake.calls.push({
+        kind: 'shell',
+        kernel: kernel.id,
+        msgType: type,
+        // An execute as it was asked: what a test counts and reads of the frames (the gate's run id, `stop_on_error`).
+        ...(type === 'execute_request'
+          ? { silent: msg.content?.silent === true, stopOnError: msg.content?.stop_on_error !== false, run: msg.metadata?.[GATE_RUN_KEY] ?? null }
+          : {}),
+      })
       if (options.interpreter) interpreted(ws, kernel, msg)
       else legacy(ws, kernel, msg)
     })
@@ -1587,6 +1691,16 @@ export async function startFakeJupyter(options = {}) {
       return
     }
     if (!['execute_request', 'complete_request', 'inspect_request', 'kernel_info_request'].includes(type)) return
+    const dies = fake.diesBefore
+    if (
+      type === 'execute_request' && dies && String(msg.content?.code ?? '').includes(dies.match)
+      && (dies.kernel === undefined || dies.kernel === kernel.id) && (dies.silent === undefined || dies.silent === (msg.content?.silent === true))
+    ) {
+      // Its process died just before this reached it, and nobody was told: the next one serves it.
+      fake.diesBefore = null
+      fake.calls.push({ kind: 'died', kernel: kernel.id })
+      freshProcess(kernel)
+    }
     const incarnation = kernel.process
     kernel.shell = kernel.shell.then(() => serve(ws, kernel, msg, incarnation)).catch(() => {})
   }
@@ -1617,6 +1731,17 @@ export async function startFakeJupyter(options = {}) {
     say('status', { execution_state: 'busy' })
     // A service run: nothing is interpreted, only the expressions are answered.
     if (content.silent === true) {
+      // The modules its install lines put in this process (see the header); a lean entry, known by its checks' words, checks them first.
+      if (code.includes(GUARD_INSTALL)) kernel.modules.guard = true
+      if (code.includes(COUNCIL_INSTALL)) kernel.modules.council = true
+      if (code.includes(LEAN_REFUSAL) && !(kernel.modules.guard && kernel.modules.council)) {
+        fake.calls.push({ kind: 'lean-refused', kernel: kernel.id })
+        say('error', { ename: 'RuntimeError', evalue: LEAN_REFUSAL, traceback: [`RuntimeError: ${LEAN_REFUSAL}`] })
+        say('execute_reply', { status: 'error', execution_count: kernel.executions, ename: 'RuntimeError', evalue: LEAN_REFUSAL, traceback: [], user_expressions: {} })
+        say('status', { execution_state: 'idle' })
+        kernel.busy = false
+        return
+      }
       const held = fake.holdSilent.find((one) => code.includes(one.match) && (one.kernel === undefined || one.kernel === kernel.id))
       if (held) {
         try {
@@ -1638,13 +1763,34 @@ export async function startFakeJupyter(options = {}) {
         fake.councilRuns.drop += 1
         fs.rmSync(fake.epochFolder(Number(dropped[1])), { recursive: true, force: true })
       }
-      say('execute_reply', { status: 'ok', execution_count: kernel.executions, user_expressions: expressionAnswers(kernel, code, content.user_expressions) })
+      const answers = expressionAnswers(kernel, code, content.user_expressions)
+      if (held?.lose) {
+        // Done, and its reply and closing idle lost on the way.
+        kernel.busy = false
+        fake.calls.push({ kind: 'lost', kernel: kernel.id })
+        return
+      }
+      say('execute_reply', { status: 'ok', execution_count: kernel.executions, user_expressions: answers })
       say('status', { execution_state: 'idle' })
       kernel.busy = false
       return
     }
     const count = ++kernel.executions
     say('execute_input', { code, execution_count: count })
+    if (kernel.gated) {
+      // The gate (§9.6): open for this request's run id, and spent by it; anything else held to it is refused unrun.
+      const open = kernel.gateOpen
+      kernel.gateOpen = null
+      const carried = msg.metadata?.[GATE_RUN_KEY]
+      if ((typeof carried === 'string' || kernel.gateArmed) && (open === null || carried !== open)) {
+        fake.calls.push({ kind: 'gate', kernel: kernel.id, refused: true })
+        kernel.busy = false
+        say('error', { ename: GATE_REFUSED, evalue: GATE_REFUSAL, traceback: [`${GATE_REFUSED}: ${GATE_REFUSAL}`] })
+        say('execute_reply', { status: 'error', execution_count: count, ename: GATE_REFUSED, evalue: GATE_REFUSAL, traceback: [] })
+        say('status', { execution_state: 'idle' })
+        return
+      }
+    }
     const io = cellIo(kernel, say, count)
     let failure = null
     try {
@@ -2279,6 +2425,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       'epoch-dir': { type: 'string' },
       'epochs-dir': { type: 'string' },
       'scratch-dir': { type: 'string' },
+      gate: { type: 'boolean' },
     },
   })
   const guardModule = values['guard-module'] ?? GUARD_MODULE
@@ -2301,6 +2448,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     epochDir: values['epoch-dir'],
     epochsDir: values['epochs-dir'],
     scratchDir: values['scratch-dir'],
+    gate: values.gate === true,
   })
   if (values['calls-file']) {
     // Each call also written down as it is logged, one JSON line: what a test reads once docker has removed the container.

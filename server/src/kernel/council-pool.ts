@@ -200,17 +200,31 @@ export interface EpochPython {
   exportReport(raw: unknown): ExportReport | null
   /** A silent run in the notebook's kernel that removes its export COUNCIL_EPOCH_DIR/<seq>, which nobody will read (dropMachineExport). */
   dropRun(seq: number): { source: string; expressions: Record<string, string> }
-  /** A worker's load of an epoch (`/colloq/epochs/<sha>`), within its ceiling. */
+  /**
+   * A worker's load of an epoch (`/colloq/epochs/<sha>`), within its
+   * ceiling. Its cell installs this server's guard and hidden module before
+   * it loads: a load that held leaves the worker's process holding both, and
+   * its entries after it go lean (entrySource).
+   */
   loadRun(input: { manifest: string; body: string; capMb: number; threads: number; workspace: string }): { source: string; expressions: Record<string, string>; key: string }
-  /** Whether the load held, and the names it left behind (the export's, and those whose module this worker lacks). */
-  loadReport(raw: unknown): { ok: boolean; error: string | null; left?: Array<{ name: string; why: string }> } | null
+  /**
+   * Whether the load held, the names it left behind (the export's, and
+   * those whose module this worker lacks), and whether the worker's process
+   * was born with the gate (§9.6): absent — it was not.
+   */
+  loadReport(raw: unknown): { ok: boolean; error: string | null; left?: Array<{ name: string; why: string }>; gated?: boolean } | null
   /**
    * A worker's entry for one attempt: today's, with the three inputs only a
    * worker's takes (§9.4, §9.7) — the attempt's text (`_colloq_needs`), its
    * run's id (its folder, /colloq/scratch/<runId>) and its ceiling — and the
-   * class folder its folder's skeleton is made from.
+   * class folder its folder's skeleton is made from; and the epoch the
+   * worker was loaded with for it, when it has files, which a process
+   * holding another or none refuses (§9.6). `lean`: the worker's process
+   * holds the guard and the module since its load, and the entry checks
+   * them rather than carry their sources, raising in a process that lacks
+   * them (§9.6, 0.26.1).
    */
-  entrySource(input: { budgetBytes: number; memoryGuard: boolean; source: string; runId: string; capMb: number; workspace: string }): string
+  entrySource(input: { budgetBytes: number; memoryGuard: boolean; source: string; runId: string; capMb: number; workspace: string; epoch?: number; lean?: boolean }): string
   /** Of the entry's report: a name the attempt reads that the epoch left behind, and why; null — none. */
   entryNeeds(raw: unknown): { name: string; why: string } | null
   /**
@@ -262,10 +276,10 @@ export const KERNEL_PYTHON: EpochPython = {
   },
   loadReport: (raw) => {
     const report = parseSeedReport(raw)
-    return report ? { ok: report.ok, error: report.error, left: report.left } : null
+    return report ? { ok: report.ok, error: report.error, left: report.left, gated: report.gated } : null
   },
-  entrySource: ({ budgetBytes, memoryGuard, source, runId, capMb, workspace }) =>
-    councilEnterSource(budgetBytes, { memoryGuard, source, runId, capMb, workspace }),
+  entrySource: ({ budgetBytes, memoryGuard, source, runId, capMb, workspace, epoch, lean }) =>
+    councilEnterSource(budgetBytes, { memoryGuard, source, runId, capMb, workspace, ...(epoch !== undefined ? { epoch } : {}), ...(lean === true ? { lean } : {}) }),
   entryNeeds: (raw) => parseCouncilReport(raw)?.needs[0] ?? null,
   leaveReport: (raw) => {
     const report = parseExitReport(raw)
@@ -387,6 +401,22 @@ interface Worker {
   handle: WorkerHandle
   /** The epoch it holds, by seq; null — none yet, or not known (a fresh start, a recycle). */
   seeded: number | null
+  /**
+   * The epoch whose load said this worker's process was born with the gate
+   * (§9.6): its attempts go in one trip only while that is the epoch it
+   * holds (`gated`). Null — no load said so: an empty epoch, which loads
+   * nothing, or a container an older agent started.
+   */
+  gatedFor: number | null
+  /**
+   * The epoch whose load left this worker's current process holding this
+   * server's guard and hidden module (the load's cell installs both,
+   * loadExpression): while it holds that epoch and is gated, its entries
+   * check them rather than carry their sources (`lean`, §9.6). Null — no
+   * load did: an empty epoch loads nothing. Like `gatedFor`, it is a word
+   * about one process, and `seeded` goes null with every new one.
+   */
+  holdsFor: number | null
   /** Attempts it served since it was loaded. */
   served: number
   /** Starting, loading or being recycled: given nothing meanwhile. */
@@ -1323,7 +1353,7 @@ function startWorkers(pool: Pool): void {
         continue
       }
     }
-    const worker: Worker = known ?? { n, handle: councilWorker(pool.sessionId, pool.root, n), seeded: null, served: 0, preparing: null, broken: null, recycle: false, inherited: false, startedOnce: false, reloading: false }
+    const worker: Worker = known ?? { n, handle: councilWorker(pool.sessionId, pool.root, n), seeded: null, gatedFor: null, holdsFor: null, served: 0, preparing: null, broken: null, recycle: false, inherited: false, startedOnce: false, reloading: false }
     worker.broken = null
     pool.workers.set(n, worker)
     prepare(pool, worker)
@@ -1388,6 +1418,8 @@ async function seed(pool: Pool, worker: Worker, epoch: Epoch): Promise<boolean> 
     if (worker.seeded !== null || worker.recycle || worker.inherited) await recycleNow(worker)
     if (!epoch.files) {
       worker.seeded = epoch.seq
+      worker.gatedFor = null
+      worker.holdsFor = null
       return true
     }
     const run = python.loadRun({
@@ -1407,6 +1439,9 @@ async function seed(pool: Pool, worker: Worker, epoch: Epoch): Promise<boolean> 
     }
     noteWorkerLeft(pool, epoch, report.left ?? [])
     worker.seeded = epoch.seq
+    worker.gatedFor = report.gated === true ? epoch.seq : null
+    // Its cell installed the guard and the module before the load that held: this process holds both (loadRun).
+    worker.holdsFor = epoch.seq
     worker.served = 0
     return true
   } finally {
@@ -1432,6 +1467,31 @@ function noteWorkerLeft(pool: Pool, epoch: Epoch, left: ReadonlyArray<{ name: st
   const kept = new Set(epochsOf(pool.sessionId, pool.root).map((one) => one.seq))
   for (const seq of [...pool.workerLeft.keys()]) if (!kept.has(seq)) pool.workerLeft.delete(seq)
   if (known.size !== before) changed(pool)
+}
+
+/**
+ * A worker whose current seed said its process was born with the gate
+ * (§9.6): its attempts go in one trip, right behind their entries
+ * (kernel/index.ts · councilTrip). Any other — loading, recycled, holding
+ * an empty epoch, or in a container an older agent started — takes the
+ * three trips as before.
+ */
+function workerGated(worker: Worker): boolean {
+  return worker.seeded !== null && worker.gatedFor === worker.seeded
+}
+
+/**
+ * A gated worker whose current process holds this server's guard and hidden
+ * module since its load (`holdsFor`): its entries go lean (§9.6, 0.26.1),
+ * a kilobyte and the attempt's text where the full one is 112 KB. Only on
+ * the trip's road: an ungated worker and the notebook's own kernel get the
+ * entry they always got. A process that does not hold them after all — a
+ * fresh one after a death this pool has not heard of — raises at the entry,
+ * which leaves no report: the gate holds the attempt back, the card refuses
+ * it, and the worker is recycled, as after any entry that did not hold.
+ */
+function workerLean(worker: Worker): boolean {
+  return workerGated(worker) && worker.holdsFor === worker.seeded
 }
 
 /** A worker's kernel restarted with its session kept (kernel/index.ts · recycleCouncilWorker): it holds nothing after. */
@@ -2261,13 +2321,13 @@ export function resetPoolsForTest(): void {
 }
 
 /** For tests: how a notebook's pool stands, by its own record. */
-export function poolForTest(sessionId: string, root: string): { size: number; queue: number; workers: Array<{ n: number; seeded: number | null; served: number; broken: string | null }>; refreezing: boolean } | null {
+export function poolForTest(sessionId: string, root: string): { size: number; queue: number; workers: Array<{ n: number; seeded: number | null; served: number; broken: string | null; gated: boolean; lean: boolean }>; refreezing: boolean } | null {
   const pool = poolOf(sessionId, root)
   if (!pool) return null
   return {
     size: pool.size,
     queue: pool.queue.length,
-    workers: [...pool.workers.values()].map((worker) => ({ n: worker.n, seeded: worker.seeded, served: worker.served, broken: worker.broken?.why ?? null })),
+    workers: [...pool.workers.values()].map((worker) => ({ n: worker.n, seeded: worker.seeded, served: worker.served, broken: worker.broken?.why ?? null, gated: workerGated(worker), lean: workerLean(worker) })),
     refreezing: pool.refreezing !== null,
   }
 }
@@ -2292,14 +2352,25 @@ const HOOKS: CouncilPoolHooks = {
   waiting,
   view,
   seed: seedFor,
+  gated: (handle) => {
+    const worker = poolOf(handle.sessionId, handle.root)?.workers.get(handle.n)
+    return worker !== undefined && workerGated(worker)
+  },
   entry: (handle, item, base) => {
     const pool = poolOf(handle.sessionId, handle.root)
+    const worker = pool?.workers.get(handle.n)
+    const seq = item.placed?.epoch?.seq
+    const epoch = pool && seq !== undefined ? epochOf(pool.sessionId, pool.root, seq) : null
     return python.entrySource({
       ...base,
       source: item.council?.source ?? '',
       runId: item.placed?.runId ?? randomUUID().replace(/-/g, ''),
       capMb: pool ? attemptMbOf(pool) : COUNCIL_ATTEMPT_MB,
       workspace: workspaceOf(handle.sessionId),
+      // The epoch its pump loaded it with (seedFor): a process that holds another, or none, refuses (§9.6). An empty one loads nothing.
+      ...(epoch?.files ? { epoch: epoch.seq } : {}),
+      // Its process holds the guard and the module since its load: checked, not carried (§9.6, 0.26.1).
+      ...(worker !== undefined && workerLean(worker) ? { lean: true } : {}),
     })
   },
   needs: (raw) => python.entryNeeds(raw),

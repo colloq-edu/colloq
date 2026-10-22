@@ -288,11 +288,18 @@ export const COUNCIL_EPOCH_MANIFEST_BYTES = 4 * 1024 * 1024
  * attempts' working folders, read-write, one an attempt
  * (`${COUNCIL_SCRATCH_MOUNT}/<runId>`, councilScratchPath). On the machine
  * they are `<state>/council/<id>/epochs/` (hard links into the agent's CAS)
- * and `<state>/council/<id>/scratch/` (runner-agent/council.ts). No other
- * folder of the agent's is ever mounted, and no card or docker socket.
+ * and `<state>/council/<id>/scratch/` (runner-agent/council.ts). Beside them,
+ * since 0.26.1, the workers' gate (§9.6, kernel/council-gate.ts), read-only
+ * from one content-addressed folder of the agent's for every class: the
+ * gate's module in a folder of its own at COUNCIL_GATE_MOUNT, and the system
+ * IPython config that loads it into every kernel the container starts, at
+ * COUNCIL_GATE_CONFIG_MOUNT, a path the image lacks. No other folder of the
+ * agent's is ever mounted, and no card or docker socket.
  */
 export const COUNCIL_EPOCHS_MOUNT = '/colloq/epochs'
 export const COUNCIL_SCRATCH_MOUNT = '/colloq/scratch'
+export const COUNCIL_GATE_MOUNT = '/colloq/gate'
+export const COUNCIL_GATE_CONFIG_MOUNT = '/etc/ipython/ipython_kernel_config.py'
 
 /**
  * An attempt's scratch folder starts as a skeleton of the class tree, made by

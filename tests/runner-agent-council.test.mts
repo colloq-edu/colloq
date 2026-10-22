@@ -30,6 +30,8 @@ import {
   CLASS_PACE_BURST_BYTES,
   COUNCIL_EPOCHS_MOUNT,
   COUNCIL_EPOCH_DIR,
+  COUNCIL_GATE_CONFIG_MOUNT,
+  COUNCIL_GATE_MOUNT,
   COUNCIL_SCRATCH_MOUNT,
   parseRemoteKernelsReply,
   parseRemoteKernelsRequest,
@@ -41,7 +43,8 @@ import { REMOTE_API_BASE, REMOTE_BYTES_HEADER, REMOTE_MARKER, REMOTE_MARKER_HEAD
 import { CLASS_KERNEL_LABEL, machineRoomContainer, machineRoomRunArgs } from '../server/src/kernel/room-spec.ts'
 import { Cache, Pacer } from '../server/src/runner-agent/cache.ts'
 import { Backoff, RemoteClient } from '../server/src/runner-agent/client.ts'
-import { COUNCIL_TIMINGS, CouncilHost, councilDir, councilMounts, councilUploader, scratchHelperArgs, scratchHelperNames, type CouncilPut, type CouncilTimings } from '../server/src/runner-agent/council.ts'
+import { COUNCIL_TIMINGS, CouncilHost, councilDir, councilGate, councilMounts, councilUploader, scratchHelperArgs, scratchHelperNames, type CouncilPut, type CouncilTimings } from '../server/src/runner-agent/council.ts'
+import { COUNCIL_GATE_CONFIG, COUNCIL_GATE_DIGEST, COUNCIL_GATE_FILE, COUNCIL_GATE_PYTHON } from '../server/src/kernel/council-gate.ts'
 import type { Docker } from '../server/src/runner-agent/docker.ts'
 import { INSTANCE_LABEL, revisionImage } from '../server/src/runner-agent/images.ts'
 import { KernelHost } from '../server/src/runner-agent/kernels.ts'
@@ -245,6 +248,8 @@ function exported(root: string, seq: number, files: Record<string, Buffer>): str
 
 const epochsOf = (layout: StateLayout, sessionId = 's1') => path.join(councilDir(layout, sessionId), 'epochs')
 const scratchOf = (layout: StateLayout, sessionId = 's1') => path.join(councilDir(layout, sessionId), 'scratch')
+/** The workers' gate as the agent keeps it (council.ts · councilGate): one folder for every class, named by its texts. */
+const gateOf = (layout: StateLayout) => path.join(layout.root, 'council', '.gate', COUNCIL_GATE_DIGEST)
 const sameInode = (a: string, b: string): boolean => {
   const x = fs.lstatSync(a)
   const y = fs.lstatSync(b)
@@ -302,13 +307,18 @@ test('a council container sees the class folder and its epochs read-only and its
   const mounts = [
     { source: epochsOf(layout), target: COUNCIL_EPOCHS_MOUNT, readOnly: true },
     { source: scratchOf(layout), target: COUNCIL_SCRATCH_MOUNT, readOnly: false },
+    { source: path.join(gateOf(layout), 'module'), target: COUNCIL_GATE_MOUNT, readOnly: true },
+    { source: path.join(gateOf(layout), 'ipython_kernel_config.py'), target: COUNCIL_GATE_CONFIG_MOUNT, readOnly: true },
   ]
-  // Home's own argv for the slot, laid out for this machine, with the council's two folders and nothing more.
+  // Home's own argv for the slot, laid out for this machine, with the council's two folders and its gate (§9.6), nothing more.
   assert.deepEqual(container.args, machineRoomRunArgs({
     role: 'council', sessionId: 's1', environment: 'base', image: revisionImage(REVISION.id), mount: path.join(layout.roomsDir, 's1'), extraMounts: mounts,
     gpu: null, memoryMb: 6144, cpus: 4, pids: 2048, mode: 'blocked', profile: '1', token: 'e'.repeat(40), hashSeed: 7, shm: '1g',
   }, { instanceLabel: INSTANCE_LABEL, gen: 2 }))
-  assert.deepEqual(container.mounts, [`${path.join(layout.roomsDir, 's1')}:/workspace/s1:ro`, `${epochsOf(layout)}:/colloq/epochs:ro`, `${scratchOf(layout)}:/colloq/scratch`])
+  assert.deepEqual(container.mounts, [
+    `${path.join(layout.roomsDir, 's1')}:/workspace/s1:ro`, `${epochsOf(layout)}:/colloq/epochs:ro`, `${scratchOf(layout)}:/colloq/scratch`,
+    `${path.join(gateOf(layout), 'module')}:/colloq/gate:ro`, `${path.join(gateOf(layout), 'ipython_kernel_config.py')}:/etc/ipython/ipython_kernel_config.py:ro`,
+  ])
   assert.ok(!container.args.some((arg) => /--gpus|docker\.sock|--privileged/.test(arg)))
   assert.ok(!container.mounts.some((mount) => mount.startsWith(`${layout.root}:`) || mount.includes(layout.placementsDir) || mount.includes(path.join(layout.root, 'data'))))
   // The scratch space was there before docker could make it, and its helper made it root's at 1733 before the container ran:
@@ -329,6 +339,47 @@ test('a council container sees the class folder and its epochs read-only and its
   assert.equal(docker.classes.get(name)!.id, container.id)
   assert.equal(host.held()[0]!.resized, 'applied')
   assert.equal(docker.calls.filter((args) => args[0] === 'run' && args.includes(CLASS_KERNEL_LABEL)).length, 1)
+})
+
+test('the workers\' gate is written once into a folder named by its texts, 0644 in 0755, read-only into every council container; a folder not what its name says, and a half-made one, are made again', () => {
+  const layout = stateLayout(path.join(TEST_ROOT, 'data', 'gate'))
+  const first = councilMounts(layout, 's1')
+  const second = councilMounts(layout, 's2')
+  const gate = gateOf(layout)
+  const module = path.join(gate, 'module', COUNCIL_GATE_FILE)
+  const config = path.join(gate, 'ipython_kernel_config.py')
+  // The same two files for every class: the module's folder (the module alone in it) and the config, both read-only.
+  for (const mounts of [first, second]) {
+    assert.deepEqual(mounts.slice(2), [
+      { source: path.join(gate, 'module'), target: COUNCIL_GATE_MOUNT, readOnly: true },
+      { source: config, target: COUNCIL_GATE_CONFIG_MOUNT, readOnly: true },
+    ])
+  }
+  assert.deepEqual(fs.readdirSync(path.join(gate, 'module')), [COUNCIL_GATE_FILE])
+  assert.equal(fs.readFileSync(module, 'utf8'), COUNCIL_GATE_PYTHON)
+  assert.equal(fs.readFileSync(config, 'utf8'), COUNCIL_GATE_CONFIG)
+  assert.equal(COUNCIL_GATE_DIGEST, sha(Buffer.concat([Buffer.from(COUNCIL_GATE_PYTHON), Buffer.from('\0'), Buffer.from(COUNCIL_GATE_CONFIG)])), 'named by its texts')
+  for (const [at, mode] of [[module, 0o644], [config, 0o644], [path.join(gate, 'module'), 0o755], [gate, 0o755], [path.dirname(gate), 0o755]] as const) {
+    assert.equal(fs.statSync(at).mode & 0o7777, mode, `${path.relative(layout.root, at)}: ${(fs.statSync(at).mode & 0o7777).toString(8)}`)
+  }
+  // Written once: a container keeps the very files it was started with.
+  const inode = fs.statSync(module).ino
+  councilMounts(layout, 's1')
+  assert.equal(fs.statSync(module).ino, inode)
+  // Not a class: the sweeps that take a class's folder by its name never take the gate's (a dot is in no class's id).
+  assert.throws(() => councilDir(layout, '.gate'), /Invalid class id/)
+  // A folder that is not what its name says (a text changed in place), and what a life that ended midway left beside it.
+  fs.writeFileSync(module, 'tampered')
+  fs.mkdirSync(path.join(path.dirname(gate), '.tmp-0123456789ab', 'module'), { recursive: true })
+  councilGate(layout)
+  assert.equal(fs.readFileSync(module, 'utf8'), COUNCIL_GATE_PYTHON)
+  assert.deepEqual(fs.readdirSync(path.dirname(gate)), [COUNCIL_GATE_DIGEST])
+  // Nor does a link stand in for a file of it.
+  fs.rmSync(config)
+  fs.symlinkSync(module, config)
+  councilGate(layout)
+  assert.ok(fs.lstatSync(config).isFile())
+  assert.equal(fs.readFileSync(config, 'utf8'), COUNCIL_GATE_CONFIG)
 })
 
 test('a new council container finds no attempt of the one before it; one taken as it runs keeps its attempts\' folders', async () => {

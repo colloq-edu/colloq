@@ -65,6 +65,8 @@ import {
   COUNCIL_EPOCH_STORE_MB,
   COUNCIL_EPOCH_WAIT_MS,
   COUNCIL_EPOCHS_MOUNT,
+  COUNCIL_GATE_CONFIG_MOUNT,
+  COUNCIL_GATE_MOUNT,
   COUNCIL_POOL_LINGER_MS,
   COUNCIL_POOL_READY_MS,
   COUNCIL_SCRATCH_ENTRIES,
@@ -689,8 +691,11 @@ test('council (0.26): a worker finds an epoch\'s files and an attempt\'s folder 
   assert.equal(COUNCIL_SCRATCH_ENTRIES, 2000)
   assert.equal(councilEpochPath(sha(7)), `/colloq/epochs/${sha(7)}`)
   assert.equal(councilScratchPath('r_1792000000'), '/colloq/scratch/r_1792000000')
-  // Neither under the class folder's mount: the class folder is read-only to the pool, and the epoch dir is the notebook kernel's own.
-  for (const mount of [COUNCIL_EPOCHS_MOUNT, COUNCIL_SCRATCH_MOUNT]) assert.ok(!mount.startsWith('/workspace') && !mount.startsWith(COUNCIL_EPOCH_DIR))
+  // The workers' gate (0.26.1, §9.6): its module's folder, and the system IPython config every kernel of the container reads.
+  assert.equal(COUNCIL_GATE_MOUNT, '/colloq/gate')
+  assert.equal(COUNCIL_GATE_CONFIG_MOUNT, '/etc/ipython/ipython_kernel_config.py')
+  // None under the class folder's mount: the class folder is read-only to the pool, and the epoch dir is the notebook kernel's own.
+  for (const mount of [COUNCIL_EPOCHS_MOUNT, COUNCIL_SCRATCH_MOUNT, COUNCIL_GATE_MOUNT, COUNCIL_GATE_CONFIG_MOUNT]) assert.ok(!mount.startsWith('/workspace') && !mount.startsWith(COUNCIL_EPOCH_DIR))
   for (const run of [() => councilEpochPath('../x'), () => councilEpochPath('A'.repeat(64)), () => councilScratchPath('r/1'), () => councilScratchPath('..'), () => councilScratchPath('')]) refused(run, /path part/)
 })
 
