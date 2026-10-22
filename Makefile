@@ -608,7 +608,7 @@ site-og: ## Redraw the link cards of the landing page (og.png, og-en.png, og-cc.
 	@node --import tsx scripts/site-og.mts
 
 readme-art: ## Redraw the scene animations (.github/assets/readme and site/img/scenes)
-	@# Twenty files: five scenes × two languages × two themes. There are two
+	@# Twenty-four files: six scenes × two languages × two themes. There are two
 	@# directories because Pages serves the landing page from site/, and it
 	@# cannot reach .github/.
 	@node --import tsx scripts/readme-art.mts

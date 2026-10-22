@@ -1,7 +1,7 @@
 /**
- * README animations: five scenes in .github/assets/readme, each in two
+ * README animations: six scenes in .github/assets/readme, each in two
  * languages and in a light and a dark variant (README picks them through
- * <picture>).
+ * <picture>; the competitions scene is shown on the landing page only).
  *
  *   make readme-art
  *   node --import tsx scripts/readme-art.mts [directory...]
@@ -14,8 +14,8 @@
  * ConsoleView.svelte); where a scene departs from the brief, its header says
  * so. The scenes are independent of each other: each has its own helpers
  * inside its own function, so editing one does not touch the others. A run
- * writes all twenty files into both directories and fails if a file has grown
- * to 40 KB or something has appeared in it that <img> will not show.
+ * writes all twenty-four files into both directories and fails if a file has
+ * grown to 40 KB or something has appeared in it that <img> will not show.
  *
  * Two languages. Each scene has its own TEXT dictionary at the top: en and ru,
  * with the locale key in a comment next to the string. The Russian labels are
@@ -3323,6 +3323,562 @@ function oracleArt(): Scene {
   return oracleScene
 }
 
+// ====================================================================== competitions
+
+/*
+ * Competitions scene: "A notebook in, a place on the board" —
+ * competitions-{light,dark}.svg, 13 s loop, one geometry with swapped tokens.
+ *
+ * Anna sends lgbm_v4.ipynb. In "My submissions" (SubmissionRow.svelte, the
+ * desktop row) it waits first in the queue, then runs under the stage strip
+ * (StageStrip.svelte: all six stages of SUBMISSION_STAGES, the packages one
+ * included, which a competition without a set passes at once) while the
+ * stopwatch and "Cell N of 14" tick, and is scored. Under the "best" rule the
+ * counted mark and "best result" move from her older submission to the new
+ * one (countedSubmission, rowWords). On the public leaderboard (BoardView.svelte,
+ * the desktop table: place, participant, public MAPE, submissions) her row
+ * takes the new score and climbs from 5th place to 2nd.
+ *
+ * Departures, on purpose: the stopwatch runs about seven times faster than
+ * real time; the place numbers stay in their column while the rows move past
+ * them (each end of the move is the real table); the environment line under
+ * the file name (SubmissionEnvironment.svelte) is left out to fit the height.
+ */
+function competitionsArt(): Scene {
+  // ---------------------------------------------------------------- strings ----
+
+  /**
+   * The visible strings per language, the locale key next to them. File names,
+   * scores and people's names are data, not interface: they are the same
+   * notebook in both languages.
+   *
+   * `nameW` is the width of Anna's name in the table (sans 700 13px, measured
+   * in the browser): the YOU chip stands after it. `countedW` is the width of
+   * the "counted" label (sans 700 12px), which sizes its chip.
+   */
+  const TEXT = {
+    en: {
+      title: 'Competitions: a notebook in, a place on the board',
+      desc:
+        'Anna sends lgbm_v4.ipynb. In My submissions it waits first in the queue, runs through the stages (accepted, queue, packages, notebook, CSV check, scoring) and scores 0.1412 MAPE, her best, so it becomes the submission that counts; on the public leaderboard her row climbs from 5th place to 2nd.',
+      mine: 'My submissions', // competitions.p.mine
+      board: 'Leaderboard', // competitions.p.tabLeaderboard
+      ordinals: ['3rd', '4th'], // submissionOrdinal: English suffixes are computed
+      queued: 'IN QUEUE', // competitions.entrant.queued
+      running: 'RUNNING', // competitions.entrant.running
+      scored: 'DONE', // competitions.entrant.scored
+      // competitions.stage.accepted / queue, dependencies.installing, competitions.stage.notebook / check / score
+      stages: ['ACCEPTED', 'QUEUE', 'INSTALLING PACKAGES', 'RUNNING NOTEBOOK', 'CHECKING CSV', 'SCORING'],
+      queueAt: 'First in the queue', // competitions.p.queueAt + competitions.p.ordinal.1
+      // competitions.p.cellOf · competitions.p.sentAt · competitions.p.waited (durSeconds)
+      cell: (n: number) => `Cell ${n} of 14 · sent at 18:41 · waited 6 s`,
+      ofLimit: ' of 10:00', // competitions.p.ofLimit
+      cancel: 'Cancel', // competitions.p.cancelRun
+      counted: 'counted', // competitions.counted
+      countedW: 49.5,
+      publicPart: 'public part', // competitions.p.publicPart
+      newBest: 'Today at 18:41 · 38 s · best result', // competitions.p.todayAt · durSeconds · best
+      oldBest: 'Today at 17:02 · 1 min 12 s · best result', // competitions.p.todayAt · durMinutesSeconds · best
+      oldDone: 'Today at 17:02 · finished in 1 min 12 s', // competitions.p.todayAt · doneIn
+      // competitions.p.colPlace / colEntrant / colPublicMetric / colSubmissions
+      cols: ['PLACE', 'PARTICIPANT', 'PUBLIC MAPE', 'SUBMISSIONS'],
+      you: 'YOU', // competitions.p.you
+      names: ['Marfa Belova', 'Anna Smirnova', 'Timur Aliev', 'Daniil Orlov', 'Oleg Petrov'],
+      nameW: 97.2,
+      caps: 0.12,
+    },
+    ru: {
+      title: 'Соревнования: тетрадь на проверку, место в лидерборде',
+      desc:
+        'Анна отправляет lgbm_v4.ipynb. В «Моих посылках» она ждёт первой в очереди, проходит этапы (принята, очередь, пакеты, запуск тетради, проверка CSV, оценка) и получает 0.1412 по MAPE — свой лучший результат, поэтому посылка идёт в зачёт; в публичном лидерборде строка Анны поднимается с 5-го места на 2-е.',
+      mine: 'Мои посылки',
+      board: 'Лидерборд',
+      ordinals: ['3-я', '4-я'], // competitions.p.ordinalN
+      queued: 'В ОЧЕРЕДИ',
+      running: 'ВЫПОЛНЯЕТСЯ',
+      scored: 'ГОТОВО',
+      stages: ['ПРИНЯТА', 'ОЧЕРЕДЬ', 'УСТАНОВКА ПАКЕТОВ', 'ЗАПУСК ТЕТРАДИ', 'ПРОВЕРКА CSV', 'ОЦЕНКА'],
+      queueAt: 'Первая в очереди',
+      cell: (n: number) => `Ячейка ${n} из 14 · отправлена в 18:41 · ожидание 6 с`,
+      ofLimit: ' из 10:00',
+      cancel: 'Отменить',
+      counted: 'в зачёт',
+      countedW: 45.3,
+      publicPart: 'публичная часть',
+      newBest: 'Сегодня в 18:41 · 38 с · лучший результат',
+      oldBest: 'Сегодня в 17:02 · 1 мин 12 с · лучший результат',
+      oldDone: 'Сегодня в 17:02 · выполнена за 1 мин 12 с',
+      cols: ['МЕСТО', 'УЧАСТНИК', 'ПУБЛИЧНЫЙ MAPE', 'ПОСЫЛОК'],
+      you: 'ВЫ',
+      names: ['Марфа Белова', 'Анна Смирнова', 'Тимур Алиев', 'Даниил Орлов', 'Олег Петров'],
+      nameW: 105.8,
+      caps: 0.04,
+    },
+  } as const
+
+  // ---------------------------------------------------------------- tokens ----
+
+  /*
+   * web/src/index.css. The competition pages put `.competition-ui` on their
+   * root, which sets both muted and faint to --competition-muted: the strip's
+   * stages ahead are that colour too.
+   */
+  const PALETTE = {
+    light: {
+      canvas: '#ffffff', raised: '#e7eef9', line: '#dce3ef', ink: '#101a33', muted: '#415069',
+      accent: '#0fa0d7', accentText: '#0a6e96', accentInk: '#06203a',
+      positive: '#0c7a64', danger: '#d4162f', brand: '#0f2d69', onPositive: '#ffffff',
+      // bg-[#F2FAF7] on the counted row; bg-positive/5 under DONE
+      countedRow: 'fill:#f2faf7', doneChip: 'fill:#0c7a64;fill-opacity:.05',
+    },
+    dark: {
+      canvas: '#060c1c', raised: '#0e1b3d', line: '#16244b', ink: '#e6e7e8', muted: '#b8c3d6',
+      accent: '#0fa0d7', accentText: '#0fa0d7', accentInk: '#06203a',
+      positive: '#3ec9a7', danger: '#f2495f', brand: '#0f2d69', onPositive: '#060c1c',
+      // dark:bg-positive/10 on the counted row; dark:bg-positive/20 under DONE
+      countedRow: 'fill:#3ec9a7;fill-opacity:.1', doneChip: 'fill:#3ec9a7;fill-opacity:.2',
+    },
+  } as const
+
+  const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif"
+  const MONO = "ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace"
+
+  // web/src/lib/competition-words.ts · AVATAR_TINTS / avatarTint / avatarLetter, ported.
+  const AVATAR_TINTS = ['#CFE3F7', '#F7D9E3', '#D8F0E4', '#F2D9B8', '#E3DDF7', '#F7E9C4']
+  function avatarTint(name: string): string {
+    let hash = 0
+    for (const char of name) hash = (hash * 31 + char.codePointAt(0)!) % 100_000
+    return AVATAR_TINTS[hash % AVATAR_TINTS.length]
+  }
+  const avatarLetter = (name: string): string => [...name.trim()][0].toUpperCase()
+
+  // ---------------------------------------------------------------- motion ----
+
+  const LOOP = 13000
+  const SEAM = LOOP - 400 // last 400 ms: back to the start frame
+  const DIP = SEAM + 200 // the board's rows are out of sight here and take their start places
+  const HOLD = 10500 // a moment inside the resolved hold: the static frame
+  const EASE = {
+    out: 'cubic-bezier(.23,1,.32,1)',
+    io: 'cubic-bezier(.77,0,.175,1)',
+    lin: 'linear',
+    step: 'step-end',
+  } as const
+  type Ease = keyof typeof EASE
+
+  const at = (ms: number): string => `${+((ms / LOOP) * 100).toFixed(2)}%`
+  const r5 = (n: number): number => Math.round(n * 2) / 2
+
+  type Stop = [ms: number, decl: string, ease?: Ease]
+  type Change = [ms: number, decl: string, dur: number, ease?: Ease]
+
+  const IDENTITY = new Set(['', 'none', 'scale(1)', 'translateY(0)', 'translateX(0)'])
+
+  class Motion {
+    private bodies = new Map<string, string>()
+    private out: string[] = []
+
+    /** Raw stops → class name. Identical keyframes share one rule. */
+    stops(stops: Stop[], base: Ease = 'out'): string {
+      const groups = new Map<string, string[]>()
+      for (let i = 0; i < stops.length; i++) {
+        const [ms, decl, ease] = stops[i]
+        const next = stops[i + 1]
+        if (next && next[0] === ms && !ease) continue
+        const key = `${decl}${ease && ease !== base ? `;animation-timing-function:${EASE[ease]}` : ''}`
+        const list = groups.get(key) ?? []
+        if (!list.includes(at(ms))) list.push(at(ms))
+        groups.set(key, list)
+      }
+      const body = [...groups].map(([key, list]) => `${list.join(',')}{${key}}`).join('')
+      let name = this.bodies.get(body)
+      if (!name) {
+        name = `k${this.bodies.size}`
+        this.bodies.set(body, name)
+        this.out.push(`@keyframes ${name}{${body}}.${name}{animation-name:${name}}`)
+      }
+      return `a ${name}`
+    }
+
+    /**
+     * A value track: start value, then timed changes. At the end the value
+     * goes back to the start: over the last 400 ms (`seam`), or, for the
+     * board's rows (`dip`), in one step while their group is out of sight.
+     */
+    track(v0: string, changes: Change[], back: Ease | 'dip' = 'out'): { cls: string; end: string } {
+      const stops: Stop[] = [[0, v0]]
+      let cur = v0
+      let end = v0
+      for (const [ms, v, dur, ease = 'out'] of changes) {
+        if (ms < 400) throw new Error(`first beat before 0.4 s: ${ms}`)
+        if (ms + dur > SEAM) throw new Error(`beat runs into the seam: ${ms}`)
+        stops.push([ms, cur, ease])
+        stops.push([ms + dur, v])
+        cur = v
+        if (ms + dur <= HOLD) end = v
+      }
+      if (cur !== v0) {
+        if (back === 'dip') {
+          stops.push([DIP, cur, 'step'])
+          stops.push([DIP + 10, v0])
+        } else {
+          stops.push([SEAM, cur, back])
+        }
+      }
+      stops.push([LOOP, v0])
+      return { cls: this.stops(stops), end }
+    }
+
+    css(): string {
+      return this.out.join('')
+    }
+  }
+
+  const st = (o: number, t = 'none'): string => `opacity:${o};transform:${t}`
+
+  /** Attributes for an element whose opacity (and maybe transform) is animated. */
+  function attrs(m: Motion, v0: string, changes: Change[], extraCls = '', back: Ease | 'dip' = 'out'): string {
+    const { cls, end } = m.track(v0, changes, back)
+    const o = /opacity:([\d.]+)/.exec(end)
+    const t = /transform:([^;]+)/.exec(end)
+    if (t && !IDENTITY.has(t[1].trim())) throw new Error(`static frame would keep a transform: ${end}`)
+    const op = o && o[1] !== '1' ? ` opacity="${o[1]}"` : ''
+    return `class="${cls}${extraCls ? ' ' + extraCls : ''}"${op}`
+  }
+
+  /**
+   * Fade helper: 0/1 visibility changes, 160 ms by default. Inside the new
+   * row, which itself fades out at the seam (`seamHold`), children keep their
+   * last state and reset on the invisible loop boundary instead of fading.
+   */
+  let back: Ease | 'dip' = 'out'
+  function fade(m: Motion, v0: 0 | 1, changes: [ms: number, v: 0 | 1, dur?: number][], extraCls = ''): string {
+    return attrs(m, `opacity:${v0}`, changes.map(([ms, v, dur = 160]) => [ms, `opacity:${v}`, dur, 'out'] as Change), extraCls, back)
+  }
+
+  // ------------------------------------------------------------------ text ----
+
+  const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+  /** Capitals tracking: set by the scene's language (see TEXT). */
+  let CAPS_TRACK: number = TEXT.en.caps
+
+  /** Width of a mono run: chars × 0.6 × size, plus the caps tracking. */
+  const monoW = (s: string, size: number, caps: boolean): number =>
+    [...s].length * 0.6 * size + (caps ? ([...s].length - 1) * CAPS_TRACK * size : 0)
+
+  /** Mono line with an explicit textLength, so every glyph lands on the grid. */
+  function monoText(x: number, y: number, s: string, o: { cls?: string; caps?: boolean; size?: number; end?: boolean } = {}): string {
+    const size = o.size ?? (o.caps ? 11 : 12)
+    const w = monoW(s, size, !!o.caps)
+    const base = o.caps ? 'L' : `c${size}`
+    const left = o.end ? x - w : x
+    return `<text x="${r5(left)}" y="${y}" class="${base}${o.cls ? ' ' + o.cls : ''}" textLength="${+w.toFixed(2)}">${esc(s)}</text>`
+  }
+
+  const sans = (x: number, y: number, inner: string, cls = 'u'): string => `<text x="${r5(x)}" y="${y}" class="${cls}">${inner}</text>`
+
+  /**
+   * A badge (Badge.svelte): square corners, mono caps. `form` picks the paint:
+   * strong (saturated), filled (pale), outline. Defined once, placed with <use>.
+   */
+  const CHIPS = new Map<string, { id: string; svg: string }>()
+  function badge(x: number, y: number, label: string, tone: 'R' | 'Q' | 'D'): string {
+    const h = 18
+    const w = r5(8 + monoW(label, 11, true) + 8)
+    const key = `${label}|${tone}`
+    let id = CHIPS.get(key)?.id
+    if (!id) {
+      id = `h${CHIPS.size}`
+      const ground =
+        tone === 'Q'
+          ? `<rect x=".5" y=".5" width="${w - 1}" height="${h - 1}" class="oQ" fill="none"/>`
+          : `<rect width="${w}" height="${h}" class="x${tone}"/>`
+      CHIPS.set(key, { id, svg: `<g id="${id}">${ground}${monoText(8, 12.9, label, { caps: true, cls: `t${tone}` })}</g>` })
+    }
+    return `<use href="#${id}" x="${x}" y="${y}"/>`
+  }
+
+  // ----------------------------------------------------------------- scene ----
+
+  function competitions(theme: Theme, lang: Lang): string {
+    const P = PALETTE[theme]
+    const S = TEXT[lang]
+    CAPS_TRACK = S.caps
+    const m = new Motion()
+    CHIPS.clear()
+    back = 'out'
+    const W = 880
+    const H = 380
+
+    // Beats (ms)
+    const ARRIVE = 700 // the new submission lands on top of the list, first in the queue
+    const RUN = 1800 // it starts: RUNNING, the strip at RUNNING NOTEBOOK, cell 1 of 14
+    const CELL = 300 // one cell every 300 ms: cell 14 at RUN + 13 × CELL
+    const CHECK = 6100
+    const SCORE = 6500
+    const DONE = 6900 // scored: DONE, 0.1412, counted moves to it
+    const BOARD = 7600 // her leaderboard row takes the new score and count
+    const MOVE = 8000 // … and climbs from 5th to 2nd
+
+    const defs: string[] = []
+    const body: string[] = []
+    const push = (s: string): void => void body.push(s)
+
+    const X0 = 20
+    const X1 = 860
+    const BADGE_X = 68 // after the ordinal column (w-12)
+    const DESC_X = 216 // after the badge lane
+    const SCORE_R = 742 // right edge of the number column
+    const RH = 46 // a row
+    const EX = 30 // the bar and the strip under a running row
+    const LIST = 40 // under the heading's rule
+
+    // ---- card
+    push(`<rect x=".5" y=".5" width="879" height="${H - 1}" rx="12" class="bc sl"/>`)
+
+    // ---- My submissions
+    push(sans(X0, 30, esc(S.mine), 'h'))
+    push(`<rect x="${X0}" y="38" width="${X1 - X0}" height="2" class="bi"/>`)
+
+    /** The ordinal column: "4-я" over "#37". */
+    const ordinal = (y: number, word: string, number: number): string =>
+      monoText(X0, y + 19, word, { cls: 'w7 ti' }) + monoText(X0, y + 34, `#${number}`, { size: 11, cls: 'tm' })
+
+    /** The counted chip in the action column: a check and the word, on positive. */
+    const countedChip = (y: number): string => {
+      const w = r5(9 + 10 + 6 + S.countedW + 9)
+      const x = X1 - w
+      return (
+        `<rect x="${x}" y="${y + 9}" width="${w}" height="24" class="bP"/>` +
+        `<path d="M${x + 10} ${y + 21}l2.75 2.75L${x + 18} ${y + 18.25}" fill="none" stroke-width="1.6" class="oO"/>` +
+        sans(x + 25, y + 25.5, esc(S.counted), 'u12 w7 tO')
+      )
+    }
+
+    // the older submission: counted and best until the new one beats it
+    {
+      const y = LIST + RH
+      const g: string[] = []
+      g.push(`<rect x="${X0}" y="${y}" width="${X1 - X0}" height="1" ${fade(m, 0, [[ARRIVE, 1, 200]], 'bl')}/>`)
+      g.push(`<rect x="${X0}" y="${y + 1}" width="${X1 - X0}" height="${RH - 1}" ${fade(m, 1, [[DONE, 0, 260]], 'xC')}/>`)
+      g.push(ordinal(y, S.ordinals[0], 21))
+      g.push(badge(BADGE_X, y + 9, S.scored, 'D'))
+      g.push(sans(DESC_X, y + 20.5, 'lgbm_v3.ipynb', 'u w7 ti'))
+      g.push(`<g ${fade(m, 1, [[DONE, 0, 120]])}>${sans(DESC_X, y + 37, esc(S.oldBest), 'u12 tm')}</g>`)
+      g.push(`<g ${fade(m, 0, [[DONE + 100, 1, 200]])}>${sans(DESC_X, y + 37, esc(S.oldDone), 'u12 tm')}</g>`)
+      g.push(monoText(SCORE_R, y + 22, '0.1874', { size: 15, cls: 'w7 ti', end: true }))
+      g.push(`<g ${fade(m, 1, [[DONE, 0, 160]])}>${sans(SCORE_R, y + 38, esc(S.publicPart), 'u12 tm e')}</g>`)
+      g.push(`<g ${fade(m, 1, [[DONE, 0, 160]])}>${countedChip(y)}</g>`)
+      g.push(`<rect x="${X0}" y="${y + RH - 1}" width="${X1 - X0}" height="1" class="bl"/>`)
+      push(
+        `<g ${attrs(m, st(1, `translateY(-${RH}px)`), [
+          [ARRIVE, st(1, 'translateY(0)'), 320, 'io'],
+          [RUN, st(1, `translateY(${EX}px)`), 280, 'io'],
+          [DONE, st(1, 'translateY(0)'), 280, 'io'],
+        ], '', 'io')}>${g.join('')}</g>`,
+      )
+    }
+
+    // the new submission: queued → running → scored; leaves as a whole at the seam
+    {
+      const y = LIST
+      const g: string[] = []
+      const seam = back
+      back = 'step'
+      g.push(`<rect x="${X0}" y="${y}" width="${X1 - X0}" height="${RH}" ${fade(m, 0, [[DONE + 100, 1, 260]], 'xC')}/>`)
+      g.push(ordinal(y, S.ordinals[1], 37))
+      g.push(`<g ${fade(m, 1, [[RUN, 0, 100]])}>${badge(BADGE_X, y + 9, S.queued, 'Q')}</g>`)
+      g.push(`<g ${fade(m, 0, [[RUN + 80, 1, 160], [DONE, 0, 100]])}>${badge(BADGE_X, y + 9, S.running, 'R')}</g>`)
+      g.push(`<g ${fade(m, 0, [[DONE + 80, 1, 160]])}>${badge(BADGE_X, y + 9, S.scored, 'D')}</g>`)
+      g.push(sans(DESC_X, y + 20.5, 'lgbm_v4.ipynb', 'u w7 ti'))
+      g.push(`<g ${fade(m, 1, [[RUN, 0, 100]])}>${sans(DESC_X, y + 37, esc(S.queueAt), 'u12 tm')}</g>`)
+      {
+        // "Cell N of 14 · …": a column of fourteen captions behind a one-line window, stepping by line
+        const LH = 20
+        defs.push(`<clipPath id="cl"><rect x="${DESC_X}" y="${y + 24}" width="420" height="18"/></clipPath>`)
+        const lines = Array.from({ length: 14 }, (_, i) => sans(DESC_X, y + 37 + i * LH, esc(S.cell(i + 1)), 'u12 tm')).join('')
+        const stops: Stop[] = [[0, 'transform:translateY(0)']]
+        for (let n = 2; n <= 14; n++) stops.push([RUN + (n - 1) * CELL, `transform:translateY(-${(n - 1) * LH}px)`])
+        stops.push([LOOP, `transform:translateY(-${13 * LH}px)`])
+        g.push(
+          `<g ${fade(m, 0, [[RUN + 80, 1, 160], [DONE, 0, 100]])}><g clip-path="url(#cl)"><g class="${m.stops(stops, 'step')} sE">${lines}</g></g></g>`,
+        )
+      }
+      g.push(`<g ${fade(m, 0, [[DONE + 100, 1, 200]])}>${sans(DESC_X, y + 37, esc(S.newBest), 'u12 tm')}</g>`)
+
+      // the number column: "—" while queued, the stopwatch while running, then the score
+      g.push(`<g ${fade(m, 1, [[RUN, 0, 100]])}>${monoText(SCORE_R, y + 21, '—', { cls: 'ti', end: true })}</g>`)
+      {
+        const full = `00:38${S.ofLimit}`
+        const x = SCORE_R - monoW(full, 12, false)
+        const pitch = 7.2
+        const ticks = 38
+        const tick = (k: number): number => Math.round(RUN + (k * (DONE - RUN)) / ticks)
+        /** One digit: a column 0…9 behind a one-character window, stepping to `pick(k)` at tick k. */
+        const digit = (ch: number, count: number, pick: (k: number) => number): string => {
+          const LH = 16
+          const id = `d${ch}`
+          defs.push(`<clipPath id="${id}"><rect x="${r5(x + ch * pitch)}" y="${y + 9}" width="${pitch}" height="16"/></clipPath>`)
+          const stops: Stop[] = [[0, 'transform:translateY(0)']]
+          let last = 0
+          for (let k = 1; k <= ticks; k++) {
+            const v = pick(k)
+            if (v !== last) stops.push([tick(k), `transform:translateY(-${v * LH}px)`])
+            last = v
+          }
+          stops.push([LOOP, `transform:translateY(-${last * LH}px)`])
+          const col = Array.from({ length: count }, (_, i) => `<text x="${r5(x + ch * pitch)}" y="${y + 21 + i * LH}" class="c12 ti">${i}</text>`).join('')
+          return `<g clip-path="url(#${id})"><g class="${m.stops(stops, 'step')} sE">${col}</g></g>`
+        }
+        g.push(
+          `<g ${fade(m, 0, [[RUN + 80, 1, 160], [DONE, 0, 100]])}>` +
+            monoText(x, y + 21, '00:', { cls: 'ti' }) +
+            digit(3, 4, (k) => Math.floor(k / 10)) +
+            digit(4, 10, (k) => k % 10) +
+            // SVG collapses the leading space, so the rest starts one character further
+            monoText(x + 6 * pitch, y + 21, S.ofLimit.trimStart(), { cls: 'ti' }) +
+            `</g>`,
+        )
+      }
+      g.push(`<g ${fade(m, 0, [[DONE + 80, 1, 200]])}>${monoText(SCORE_R, y + 22, '0.1412', { size: 15, cls: 'w7 ti', end: true })}</g>`)
+      g.push(`<g ${fade(m, 0, [[DONE + 120, 1, 200]])}>${sans(SCORE_R, y + 38, esc(S.publicPart), 'u12 tm e')}</g>`)
+
+      // the action column: Cancel while it waits or runs, then counted
+      g.push(`<g ${fade(m, 1, [[DONE, 0, 100]])}>${sans(X1, y + 21.5, esc(S.cancel), 'u td e')}</g>`)
+      g.push(`<g ${fade(m, 0, [[DONE + 100, 1, 220]])}>${countedChip(y)}</g>`)
+
+      // under a running row: the progress bar and the stage strip
+      {
+        const by = y + RH + 2
+        const bar =
+          `<rect x="${BADGE_X}" y="${by}" width="${X1 - BADGE_X}" height="4" class="br"/>` +
+          `<rect x="${BADGE_X}" y="${by}" width="${X1 - BADGE_X}" height="4" class="bA ${m.stops([
+            [0, 'transform:scaleX(.05)'],
+            [RUN, 'transform:scaleX(.05)', 'lin'],
+            [RUN + 13 * CELL + 200, 'transform:scaleX(.95)'],
+            [LOOP, 'transform:scaleX(.95)'],
+          ])} pl"/>`
+        const sy = by + 20
+        const parts: string[] = []
+        let sx = BADGE_X
+        const fills: [number, string][][] = [
+          [],
+          [],
+          [],
+          [[CHECK, P.positive]],
+          [[CHECK, P.accentText], [SCORE, P.positive]],
+          [[SCORE, P.accentText]],
+        ]
+        const first = [P.positive, P.positive, P.positive, P.accentText, P.muted, P.muted]
+        S.stages.forEach((word, i) => {
+          if (i > 0) {
+            parts.push(`<rect x="${r5(sx + 8)}" y="${sy - 4}" width="20" height="1" class="bl"/>`)
+            sx += 36
+          }
+          const cls = fills[i].length
+            ? ` ${m.track(`fill:${first[i]}`, fills[i].map(([ms, f]) => [ms, `fill:${f}`, 120] as Change), 'step').cls}`
+            : ''
+          const tone = first[i] === P.positive ? 'tP' : first[i] === P.accentText ? 'tA' : 'tm'
+          parts.push(monoText(sx, sy, word, { caps: true, cls: tone + cls }))
+          sx += monoW(word, 11, true)
+        })
+        if (sx > X1) throw new Error(`stage strip runs past the card: ${sx}`)
+        g.push(`<g ${fade(m, 0, [[RUN + 120, 1, 200], [DONE, 0, 140]])}>${bar}${parts.join('')}</g>`)
+      }
+      back = seam
+      push(`<g ${attrs(m, st(0, 'translateY(-6px)'), [[ARRIVE, st(1), 320]])}>${g.join('')}</g>`)
+    }
+
+    // ---- Leaderboard (the public table)
+    const BH = 192
+    push(sans(X0, BH, esc(S.board), 'h'))
+    const HEAD = BH + 24
+    const COL_P = X0 + 60 // the participant column
+    push(monoText(X0, HEAD, S.cols[0], { caps: true, cls: 'tm' }))
+    push(monoText(COL_P, HEAD, S.cols[1], { caps: true, cls: 'tm' }))
+    push(monoText(SCORE_R, HEAD, S.cols[2], { caps: true, cls: 'ti', end: true }))
+    push(monoText(X1, HEAD, S.cols[3], { caps: true, cls: 'tm', end: true }))
+    push(`<rect x="${X0}" y="${HEAD + 8}" width="${X1 - X0}" height="2" class="bi"/>`)
+    const ROWS = HEAD + 10
+    const BRH = 28
+    for (let i = 1; i <= 5; i++) push(`<rect x="${X0}" y="${ROWS + i * BRH - 1}" width="${X1 - X0}" height="1" class="bl"/>`)
+
+    // final order; Anna (index 1) starts three rows lower, the three she passes one row higher
+    const people = [
+      { score: '0.1288', count: '7', from: 0 },
+      { score: '0.1412', count: '4', from: 3 },
+      { score: '0.1430', count: '5', from: -1 },
+      { score: '0.1517', count: '9', from: -1 },
+      { score: '0.1702', count: '3', from: -1 },
+    ]
+    const rows: string[] = []
+    back = 'dip'
+    people.forEach((p, i) => {
+      const y = ROWS + i * BRH
+      const name = S.names[i]
+      const you = i === 1
+      const g: string[] = []
+      if (you) g.push(`<rect x="${X0}" y="${y}" width="${X1 - X0}" height="${BRH - 1}" class="br"/>`)
+      g.push(`<circle cx="${COL_P + 10}" cy="${y + 13.5}" r="10" fill="${avatarTint(name)}"/>`)
+      g.push(sans(COL_P + 10, y + 17.5, esc(avatarLetter(name)), 'av m'))
+      g.push(sans(COL_P + 28, y + 18, esc(name), 'u w7 ti'))
+      if (you) {
+        const cx = r5(COL_P + 28 + S.nameW + 10)
+        const cw = r5(7 + monoW(S.you, 11, true) + 7)
+        g.push(`<rect x="${cx}" y="${y + 5}" width="${cw}" height="17" class="bB"/>` + monoText(cx + 7, y + 17.5, S.you, { caps: true, cls: 'tw' }))
+        g.push(`<g ${fade(m, 1, [[BOARD, 0, 140]])}>${monoText(SCORE_R, y + 18.5, '0.1874', { size: 13, cls: 'w7 ti', end: true })}${monoText(X1, y + 18, '3', { cls: 'tm', end: true })}</g>`)
+        g.push(`<g ${fade(m, 0, [[BOARD + 120, 1, 220]])}>${monoText(SCORE_R, y + 18.5, p.score, { size: 13, cls: 'w7 ti', end: true })}${monoText(X1, y + 18, p.count, { cls: 'tm', end: true })}</g>`)
+      } else {
+        g.push(monoText(SCORE_R, y + 18.5, p.score, { size: 13, cls: 'w7 ti', end: true }))
+        g.push(monoText(X1, y + 18, p.count, { cls: 'tm', end: true }))
+      }
+      const inner = g.join('')
+      const row = p.from === 0
+        ? inner
+        : `<g ${attrs(m, st(1, `translateY(${p.from * BRH}px)`), [[MOVE, st(1, 'translateY(0)'), 560, 'io']], '', 'dip')}>${inner}</g>`
+      if (you) rows.push(row)
+      else rows.unshift(row)
+    })
+    back = 'out'
+    // the board's rows step out of sight for a moment at the seam and come back in their start places
+    const dip = m.stops([[0, 'opacity:1'], [SEAM, 'opacity:1'], [DIP, 'opacity:0'], [DIP + 30, 'opacity:0'], [LOOP, 'opacity:1']])
+    push(`<g class="${dip}">${rows.join('')}</g>`)
+    // the place column stays put: 1…5 down the table whichever row stands there
+    for (let i = 0; i < 5; i++) push(monoText(X0, ROWS + i * BRH + 19, String(i + 1), { size: 15, cls: 'w7 ti' }))
+
+    // ---- style
+    const css = [
+      `.u,.u12,.h,.av{font-family:${SANS}}`,
+      `.L,.c11,.c12,.c13,.c15{font-family:${MONO}}`,
+      `.u{font-size:13px}.u12{font-size:12px}.h{font-size:15px;font-weight:700;fill:${P.ink}}`,
+      `.av{font-size:11px;font-weight:700;fill:#7A4A12}`,
+      `.c11{font-size:11px}.c12{font-size:12px}.c13{font-size:13px}.c15{font-size:15px}`,
+      `.L{font-size:11px;font-weight:700;text-transform:uppercase}`,
+      `.w7{font-weight:700}.m{text-anchor:middle}.e{text-anchor:end}`,
+      `.ti{fill:${P.ink}}.tm{fill:${P.muted}}.tA{fill:${P.accentText}}.tP{fill:${P.positive}}.td{fill:${P.danger}}.tw{fill:#ffffff}`,
+      // badges: strong running, outline queued, pale done
+      `.xR{fill:${P.accent}}.tR{fill:${P.accentInk}}.oQ{stroke:${P.accentText}}.tQ{fill:${P.accentText}}.xD{${P.doneChip}}.tD{fill:${P.positive}}`,
+      `.xC{${P.countedRow}}.bP{fill:${P.positive}}.oO{stroke:${P.onPositive}}.tO{fill:${P.onPositive}}`,
+      `.bc{fill:${P.canvas}}.br{fill:${P.raised}}.bl{fill:${P.line}}.bi{fill:${P.ink}}.bA{fill:${P.accent}}.bB{fill:${P.brand}}`,
+      `.sl{stroke:${P.line}}`,
+      `.a{animation:${LOOP / 1000}s ${EASE.out} infinite both}`,
+      `.pl{transform-box:fill-box;transform-origin:left}.sE{animation-timing-function:step-end}`,
+      m.css(),
+      `@media (prefers-reduced-motion:reduce){*{animation:none!important}}`,
+    ].join('')
+
+    return (
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" lang="${lang}" role="img" aria-labelledby="competitions-title competitions-desc">` +
+      `<title id="competitions-title">${esc(S.title)}</title><desc id="competitions-desc">${esc(S.desc)}</desc>` +
+      `<style>${css}</style><defs>${defs.join('')}${[...CHIPS.values()].map((c) => c.svg).join('')}</defs>` +
+      body.join('') +
+      `</svg>`
+    )
+  }
+  return competitions
+}
+
 // ====================================================================== main
 
 const SCENES: Record<string, () => Scene> = {
@@ -3331,6 +3887,7 @@ const SCENES: Record<string, () => Scene> = {
   council: councilArt,
   lecture: lectureArt,
   oracle: oracleArt,
+  competitions: competitionsArt,
 }
 
 /** What <img> on GitHub will not show or must not fetch: a script, a foreign file, a font, an embedded image. */
@@ -3346,7 +3903,7 @@ export function sceneFile(slug: string, lang: Lang, theme: Theme): string {
   return `${slug}${lang === 'en' ? '' : `-${lang}`}-${theme}.svg`
 }
 
-/** All twenty files: five scenes × two languages × two themes. */
+/** All twenty-four files: six scenes × two languages × two themes. */
 export function renderAll(): Map<string, string> {
   const out = new Map<string, string>()
   for (const [slug, make] of Object.entries(SCENES)) {

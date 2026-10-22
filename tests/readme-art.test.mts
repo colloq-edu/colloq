@@ -18,7 +18,7 @@ import assert from 'node:assert/strict'
 import { complaints, OUT_DIRS, renderAll, sceneFile } from '../scripts/readme-art.mts'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const SLUGS = ['room', 'run', 'council', 'lecture', 'oracle'] as const
+const SLUGS = ['room', 'run', 'council', 'lecture', 'oracle', 'competitions'] as const
 const LANGS = ['en', 'ru'] as const
 const THEMES = ['light', 'dark'] as const
 
@@ -29,7 +29,7 @@ const expected = SLUGS.flatMap((slug) =>
   LANGS.flatMap((lang) => THEMES.map((theme) => sceneFile(slug, lang, theme))),
 )
 
-test('the generator prints all twenty files under the expected names', () => {
+test('the generator prints all twenty-four files under the expected names', () => {
   assert.deepEqual([...files.keys()].sort(), [...expected].sort())
 })
 
@@ -89,7 +89,10 @@ const CODE_WORDS = new Set([
   'group', // df.groupby("group")
   'groupby',
   'ipad', // ПУЛЬТ ЛЕКЦИИ · IPAD
+  'ipynb', // lgbm_v4.ipynb
   'keyerror', // KeyError: 'scores'
+  'lgbm', // lgbm_v4.ipynb
+  'mape', // ПУБЛИЧНЫЙ MAPE
   'mean', // .mean()
   'name', // Name: score
   'pdf', // PDF, ваше перо, все экраны
