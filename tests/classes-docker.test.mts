@@ -70,7 +70,13 @@
  *     1000's workers find it (1733, unlistable, and not theirs to change);
  *     the drop run on a real kernel. The workers' memory (smaps_rollup),
  *     their limits and the container's cgroup are recorded for §17.5's R2
- *     rows (COUNCIL_WORKER_BASE_MB is an estimate).
+ *     rows (COUNCIL_WORKER_BASE_MB is an estimate). Since 0.26.1 the
+ *     workers' gate (§9.6): every worker's seed says its process was born
+ *     with it (the agent's mounts, the image's IPython), so the pool's
+ *     attempts above go in one trip; and on a kernel of the council
+ *     container made beside them, an attempt sent right behind an entry
+ *     that fails is refused unrun while the exit behind it still gives the
+ *     state back, and one behind an entry that holds runs and prints.
  *
  * WAITS ARE FOR EVENTS, each with its bound, and a scenario out of time stops
  * at its next wait (scenario): afterEach lets it stop before it heals the
@@ -123,7 +129,9 @@ import { noteRevisionImage, putRevision } from '../server/src/dependencies/store
 import { jupyterSessionPath } from '../server/src/kernel/jupyter.js'
 import { BLOCKED_V4, helperArgs, machinePerimeter, perimeterRemovalScript, type MachinePerimeter } from '../server/src/kernel/perimeter-core.js'
 import { CLASS_KERNEL_LABEL, PLACEMENT_LABEL, classHashSeed, machineRoomContainer } from '../server/src/kernel/room-spec.js'
-import { exportDropExpression } from '../server/src/kernel/council-isolation.js'
+import { councilEnterSource, exportDropExpression, COUNCIL_EXIT_SOURCE, COUNCIL_LEFTOVERS_EXPR, COUNCIL_REPORT_EXPR, COUNCIL_REPORT_KEY } from '../server/src/kernel/council-isolation.js'
+import { COUNCIL_GATE_MODULE, COUNCIL_GATE_REFUSED, COUNCIL_GATE_RUN_KEY } from '../server/src/kernel/council-gate.js'
+import { poolForTest } from '../server/src/kernel/council-pool.js'
 import { artifactPath, epochFileList, epochsOf } from '../server/src/kernel/remote/epochs.js'
 import { placementOutlook } from '../server/src/kernel/remote/placement.js'
 import { classPlacement, livePlacement, placementRow } from '../server/src/kernel/remote/placement-store.js'
@@ -1044,12 +1052,12 @@ class Channel {
     return channel
   }
 
-  /** A request on a channel of the kernel: its msg_id. */
-  send(channel: 'shell' | 'control', type: string, content: Record<string, unknown>): string {
+  /** A request on a channel of the kernel, with the request's own metadata if any: its msg_id. */
+  send(channel: 'shell' | 'control', type: string, content: Record<string, unknown>, metadata: Record<string, unknown> = {}): string {
     const id = randomUUID()
     this.ws.send(JSON.stringify({
       header: { msg_id: id, msg_type: type, username: 'parity', session: this.session, date: new Date().toISOString(), version: '5.3' },
-      parent_header: {}, metadata: {}, content, buffers: [], channel,
+      parent_header: {}, metadata, content, buffers: [], channel,
     }))
     return id
   }
@@ -1825,6 +1833,11 @@ scenario('the council on the machine: real pandas exported by the class notebook
   assert.ok(epoch.source !== 'home' && epoch.source.runnerId === runnerId && epoch.source.role === 'room', `exported on the machine: ${JSON.stringify(epoch.source)}`)
   const files = epochFileList(epoch.files)
   record(t, `council: epoch ${epoch.seq}, ${megabytesOf(epoch.bytes)} MB in ${files.length} files (${files.map((file) => megabytesOf(file.bytes)).join(', ')} MB), exported by the class notebook's kernel on the machine; the pool ready with 4 workers ${seconds(readyIn)} s after the open`)
+  // THE GATE (§9.6): each worker's seed says its process was born with it, so every attempt below goes in one trip — entry,
+  // attempt and exit back to back — and runs and prints as on three. Waited for: the pool is ready once one worker holds the
+  // epoch, and the others may still be loading it (a worker up after the epoch came starts its load then).
+  await waitFor('every worker loaded, born gated', () => poolForTest(id, CELLS_KEY)?.workers.every((worker) => worker.gated) ? true : null,
+    60_000, () => `the workers' seeds say no gate: ${JSON.stringify(poolForTest(id, CELLS_KEY))}`)
   // The frame's block and the array out of band, each a file of its own named by its content (§9.3).
   assert.ok(epoch.bytes >= 160_000_000 && files.some((file) => file.bytes >= 32_000_000), `the numeric data out of band: ${JSON.stringify(files)}`)
   // Taken out of the class notebook's container by the agent, and its folder there removed.
@@ -2049,6 +2062,57 @@ scenario('the council on the machine: real pandas exported by the class notebook
     await rest(roomDoor, 'DELETE', `/api/kernels/${made.body.id}`)
   }
   assert.equal((await docker(['exec', container, 'sh', '-c', `ls -A ${COUNCIL_EPOCH_DIR} 2>/dev/null || true`])).stdout.trim(), '', 'no export left in the class notebook\'s container')
+
+  /*
+   * THE GATE ON A REAL KERNEL (§9.6, council-gate.ts): a kernel of the council container made beside the pool's workers is
+   * born with it — the agent mounted the module and the system IPython config, and the image's IPython loads it before the
+   * kernel reads a request. Sent as a worker's trip is, the three back to back: behind an entry that fails (its run's folder
+   * cannot be made) the attempt is refused unrun, and the exit behind it, its stop_on_error off, gives the entry's state back;
+   * behind an entry that holds, the attempt runs and prints.
+   */
+  const boxDoor = await doorOf(box)
+  const spare = await rest<{ id: string }>(boxDoor, 'POST', '/api/kernels', { name: 'python3' })
+  assert.equal(spare.status, 201, JSON.stringify(spare.body))
+  try {
+    const channel = await Channel.open(boxDoor, spare.body.id, `parity-gate-${RUN}`)
+    const execute = (code: string, how: { silent?: boolean; run?: string; expressions?: Record<string, string> } = {}): string =>
+      channel.send('shell', 'execute_request', {
+        code, silent: how.silent === true, store_history: false, user_expressions: how.expressions ?? {}, allow_stdin: false, stop_on_error: how.silent === true,
+      }, how.run ? { [COUNCIL_GATE_RUN_KEY]: how.run } : {})
+    const reply = async (asked: string): Promise<Record<string, any>> => (await channel.answer(asked, 'execute_reply')).message.content
+    const reported = (content: Record<string, any>): Record<string, any> | null => {
+      const text = content.user_expressions?.[COUNCIL_REPORT_KEY]?.data?.['text/plain']
+      return typeof text === 'string' && text !== 'None' ? JSON.parse(text) as Record<string, any> : null
+    }
+    const printedBy = (asked: string): string => channel.heard
+      .filter((message) => message.parent_header.msg_id === asked && message.header.msg_type === 'stream')
+      .map((message) => String(message.content.text ?? '')).join('')
+    const installed = await reply(execute('', { silent: true, expressions: { gate: `__import__('sys').modules['${COUNCIL_GATE_MODULE}'].installed()` } }))
+    assert.equal(installed.user_expressions?.gate?.data?.['text/plain'], 'True', `born gated: ${JSON.stringify(installed.user_expressions)}`)
+    const trip = (runId: string, source: string, scratchRoot: string) => {
+      const entry = councilEnterSource(64 * 1024 * 1024, { source, runId, capMb: 512, workspace: `/workspace/${id}`, scratchRoot })
+      return [
+        execute(entry, { silent: true, expressions: { [COUNCIL_REPORT_KEY]: COUNCIL_REPORT_EXPR } }),
+        execute(source, { run: runId }),
+        execute(COUNCIL_EXIT_SOURCE, { silent: true, expressions: { [COUNCIL_REPORT_KEY]: COUNCIL_LEFTOVERS_EXPR } }),
+      ] as const
+    }
+    const failing = trip(randomBytes(16).toString('hex'), "print('parity-gate-never')", '/proc/colloq-no-scratch')
+    const [failedEntry, refused, gaveBack] = [await reply(failing[0]), await reply(failing[1]), await reply(failing[2])]
+    assert.equal(reported(failedEntry)?.ok, false, `the entry held: ${JSON.stringify(failedEntry)}`)
+    assert.deepEqual([refused.status, refused.ename], ['error', COUNCIL_GATE_REFUSED], JSON.stringify(refused))
+    assert.equal(printedBy(failing[1]), '', 'the attempt behind an entry that failed ran')
+    assert.deepEqual([gaveBack.status, reported(gaveBack)], ['ok', { threads: 0, processes: 0 }], 'the exit behind it did not run, or found no state to give back')
+    const holding = trip(randomBytes(16).toString('hex'), "print('parity-gate-ran')", COUNCIL_SCRATCH_MOUNT)
+    const [heldEntry, ran, exited] = [await reply(holding[0]), await reply(holding[1]), await reply(holding[2])]
+    assert.equal(reported(heldEntry)?.ok, true, JSON.stringify(heldEntry))
+    assert.deepEqual([ran.status, printedBy(holding[1])], ['ok', 'parity-gate-ran\n'], JSON.stringify(ran))
+    assert.equal(exited.status, 'ok')
+    record(t, `council: a kernel of the council container born gated; behind a failed entry the attempt refused (${refused.ename}) and the exit ran, behind one that held it printed`)
+    channel.terminate()
+  } finally {
+    await rest(boxDoor, 'DELETE', `/api/kernels/${spare.body.id}`)
+  }
   for (const who of pupils) who.control.close()
   closeTabs(lead, student)
 

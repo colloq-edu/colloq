@@ -69,7 +69,7 @@ import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { getRunner, mintRemoteCode } from '../server/src/competitions/remote/store.js'
 import { resetCouncilCache } from '../server/src/council.js'
 import { abandonKernelsForTest, councilWorkerRoot, setCouncilLimitTick, shutdownKernels } from '../server/src/kernel/index.js'
-import { usePoolClock, type PoolClock } from '../server/src/kernel/council-pool.js'
+import { poolForTest, usePoolClock, type PoolClock } from '../server/src/kernel/council-pool.js'
 import { councilLeftWords } from '../server/src/kernel/council-isolation.js'
 import { jupyterSessionPath } from '../server/src/kernel/jupyter.js'
 import { placementOutlook } from '../server/src/kernel/remote/placement.js'
@@ -561,11 +561,13 @@ test('E25 · open → epoch → 12 attempts on 4 workers at once; ✓/✗; show;
   assert.deepEqual(ready.epoch.left, [])
   const box = await containerOf(machine, id, 'council')
   const door = machine.jupyterOf(box)
-  // Its container: the class folder read-only, the epochs read-only, the attempts' scratch space its own; a core a worker, and
-  // for each its 512 MB, what it holds before an attempt and the epoch's stream it unpickled; the epoch's files once and 512 MB
-  // beside them (§9.5); no card.
+  // Its container: the class folder read-only, the epochs read-only, the attempts' scratch space its own, the workers' gate and
+  // the config that loads it read-only (§9.6); a core a worker, and for each its 512 MB, what it holds before an attempt and the
+  // epoch's stream it unpickled; the epoch's files once and 512 MB beside them (§9.5); no card.
   const mounts = Object.fromEntries(box.mounts.map((mount) => [mount.target, mount.readOnly]))
-  assert.deepEqual(mounts, { [`/workspace/${id}`]: true, '/colloq/epochs': true, '/colloq/scratch': false })
+  assert.deepEqual(mounts, {
+    [`/workspace/${id}`]: true, '/colloq/epochs': true, '/colloq/scratch': false, '/colloq/gate': true, '/etc/ipython/ipython_kernel_config.py': true,
+  })
   const epoch = newestEpoch(id)
   const buffersMb = Math.ceil(epoch.bytes / (1024 * 1024))
   const streamMb = Math.ceil((epoch.files!.buffers.find((file) => file.sha256 === epoch.files!.body)?.bytes ?? 0) / (1024 * 1024))
@@ -630,6 +632,15 @@ test('E25 · open → epoch → 12 attempts on 4 workers at once; ✓/✗; show;
   assert.equal(ran.length, 12, 'each attempt computed once, on a worker')
   assert.ok(ran.every((one) => one.store_history === false), 'none into the kernels\' history')
   assert.equal((await door.council()).runs.enter, 12)
+  // The road of one trip (§9.6): every worker's seed said it was born gated (the agent mounted the gate), each attempt carried
+  // its run id for the gate and stop_on_error off for the exit behind it, and none was refused. That the three went back to
+  // back, before any reply, is counted where a worker's entry can be held (council-pool · «one trip»).
+  assert.ok(poolForTest(id, CELLS_KEY)!.workers.every((worker) => worker.gated), JSON.stringify(poolForTest(id, CELLS_KEY)))
+  const calls = await door.calls()
+  const asked = calls.filter((one) => one.kind === 'shell' && one.msgType === 'execute_request' && one.silent === false)
+  assert.deepEqual(asked.map((one) => one.run).sort(), students.map((one) => cardOf(one, council)!.run!.runId).sort())
+  assert.ok(asked.every((one) => one.stopOnError === false), JSON.stringify(asked))
+  assert.equal(calls.filter((one) => one.kind === 'gate').length, 0, 'the gate refused an attempt whose entry held')
 
   // ✓ and ✗ from the console: each author's card says so.
   lead.control.send({ t: 'council:mark', cellId: council, participantId: students[0]!.id, correct: true })
@@ -807,8 +818,9 @@ test('E27 · an attempt reading a left name is refused by the worker\'s entry an
     // Keeping its place: it was pressed before the later cell and handed on after it was queued, and it ran first.
     const order = here.requests.filter((one: Asked) => one.kernel === main && (one.code === 'print(conn)' || one.code === 'print("после")')).map((one: Asked) => one.code)
     assert.deepEqual(order, ['print(conn)', 'print("после")'])
-    // The worker never ran its text: the entry refused it before.
-    assert.ok(!(await door.requests()).some((one) => one.code === 'print(conn)'), 'the worker computed it')
+    // The worker never computed its text: its entry refused it, and the worker's gate held back the attempt sent right behind
+    // that entry (§9.6), unrun.
+    assert.deepEqual((await door.calls()).filter((one) => one.kind === 'gate').length, 1, 'the worker computed it')
     // An attempt that reads only what travelled runs on a worker, on the epoch as it was, its card naming the two cells it lacks.
     const other = await student(id, 'Студент без базы')
     attempt(other, council, 'print(x)')

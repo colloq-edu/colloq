@@ -694,6 +694,31 @@ test('only what was out at the cut is settled: what the new channel sent is its 
   assert.equal(newerDone, false, 'work sent after the reconnect was settled as the cut’s')
 })
 
+test('a reply from the process that took the work out at a cut settles what went before it unanswered, the reconnect\'s question still unanswered', async (t) => {
+  const { kernel, road, id } = await machineKernel(t)
+  const errors: Array<[string, string]> = []
+  const lost = kernel.execute('LOSE', handlers([], errors))
+  const seen: string[] = []
+  const behind = kernel.execute('HOLD behind\nprint("behind")', handlers(seen))
+  assert.ok(await until(() => fake.calls.some((call) => call.kind === 'lost' && call.kernel === id) && fake.holding('behind') === 1))
+  road.down()
+  assert.ok(await until(() => road.waiting > 0))
+  // The reconnect's question is answered only after the work queued before it: here, never.
+  fake.holdKernelInfo = true
+  t.after(() => fake.releaseKernelInfo())
+  const asked = callsOf(id, 'kernel_info_request')
+  road.up()
+  assert.ok(await until(() => callsOf(id, 'kernel_info_request') === asked + 1))
+  await turns()
+  assert.deepEqual(errors, [], 'settled while the work behind it was computing')
+  // Shell is answered in order: the reply of the work behind it says its reply will never come.
+  fake.release('behind')
+  assert.equal(await outcome(behind), 'ok')
+  assert.deepEqual(seen, ['behind\n'])
+  assert.equal(await outcome(lost), 'error')
+  assert.deepEqual(errors, [['', tr('server.theConnectionToTheMachineBrokeThe.5504d1')]])
+})
+
 test('a process killed for memory while the road was cut is a restart heard late, never a reply lost', async (t) => {
   const { kernel, road, id } = await machineKernel(t)
   await installGuard(kernel)

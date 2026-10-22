@@ -55,11 +55,20 @@ export interface ExecuteHandlers {
 export type ExecuteStatus = 'ok' | 'error' | 'abort'
 
 /** How one execution runs; `JupyterKernel.execute` says what each field is for. */
-interface ExecuteOptions {
+export interface ExecuteOptions {
   silent?: boolean
   storeHistory?: boolean
   userExpressions?: Record<string, string>
   quiet?: boolean
+  stopOnError?: boolean
+  metadata?: Record<string, unknown>
+}
+
+/** One execution of a batch (`JupyterKernel.executeBatch`). */
+export interface ExecuteStep {
+  code: string
+  handlers: ExecuteHandlers
+  opts?: ExecuteOptions
 }
 
 interface JupyterHeader {
@@ -703,6 +712,13 @@ export class JupyterKernel {
    * event, and an indicator blinking at it for thirty people is a breakage, not
    * a hint. Set only on service runs of the `silent: true` kind; an ordinary
    * cell has to be visible.
+   * @param opts.stopOnError the request's `stop_on_error`, true by default:
+   * after a non-silent run that fails, ipykernel aborts every execute already
+   * queued behind it. False only where something queued behind must run
+   * whatever this run does (a council attempt's exit, executeBatch).
+   * @param opts.metadata the request's own `metadata`, empty by default: what
+   * the kernel may read of the request beside its code (a council worker's
+   * gate reads the attempt's run id there, council-gate.ts).
    */
   async execute(
     code: string,
@@ -712,12 +728,55 @@ export class JupyterKernel {
     return (await this.send(code, handlers, opts)).done
   }
 
+  /**
+   * Several executions back to back, none waiting for the reply of the one
+   * before it: one trip across a machine's tunnel for all of them, where
+   * `execute` one after another costs a trip each (remote-classes.md §9.6:
+   * a council worker's entry, attempt and exit). The kernel runs them in
+   * the order sent, as it runs anything on its one shell.
+   *
+   * One question whether the kernel is there and one wait for the channel,
+   * as `execute` has them, for the whole batch; then every frame goes on the
+   * socket in the same turn, in order, each with its own pending entry
+   * exactly as `execute` makes it (the question asked beside them shared,
+   * a 404 refusing them as it would refuse one). The answer is each step's
+   * end, in the order given, for the caller to await in its own time: a
+   * rejection it has not reached yet is never an unhandled one. A send
+   * that throws leaves the frames after it unsent and their ends rejected
+   * with the same error; the ones before it went, and end as usual. Throws
+   * as `execute` does when nothing could go at all.
+   */
+  async executeBatch(steps: readonly ExecuteStep[]): Promise<Array<Promise<ExecuteStatus>>> {
+    const wire = await this.ready()
+    const ends: Array<Promise<ExecuteStatus>> = []
+    let failure: Error | null = null
+    for (const step of steps) {
+      if (failure === null) {
+        try {
+          ends.push(this.put(wire, step.code, step.handlers, step.opts))
+          continue
+        } catch (err) {
+          failure = err instanceof Error ? err : new Error(String(err))
+        }
+      }
+      ends.push(Promise.reject(failure))
+    }
+    for (const end of ends) end.catch(() => {})
+    return ends
+  }
+
   /** `execute` up to the moment the request is on the wire, and the wait for its end. */
   private async send(
     code: string,
     handlers: ExecuteHandlers,
     opts?: ExecuteOptions,
   ): Promise<{ done: Promise<ExecuteStatus> }> {
+    const wire = await this.ready()
+    return { done: this.put(wire, code, handlers, opts) }
+  }
+
+  /** Everything before a request goes on the wire: the kernel still there (on a machine, asked beside it), and its channel. */
+  private async ready(): Promise<{ socket: WebSocket; asking: Promise<boolean> | null }> {
     this.refuseEnded()
     /*
      * A kernel that has been quiet since before the break may not be there any
@@ -749,11 +808,25 @@ export class JupyterKernel {
     if (asking && this._phase === 'dead') {
       throw new Error(tr('server.thePythonKernelIsNotRunning.a9cde2'))
     }
+    return { socket, asking }
+  }
+
+  /**
+   * One execute_request on the wire, its pending entry made first: its end.
+   * Throws when the socket refuses the frame, the entry gone with it.
+   */
+  private put(
+    wire: { socket: WebSocket; asking: Promise<boolean> | null },
+    code: string,
+    handlers: ExecuteHandlers,
+    opts?: ExecuteOptions,
+  ): Promise<ExecuteStatus> {
+    const { socket, asking } = wire
     const header = this.makeHeader('execute_request')
     const frame = JSON.stringify({
       header,
       parent_header: {},
-      metadata: {},
+      metadata: opts?.metadata ?? {},
       content: {
         code,
         silent: opts?.silent === true,
@@ -767,7 +840,7 @@ export class JupyterKernel {
          * channel; see handleFrame and answerInput below.
          */
         allow_stdin: true,
-        stop_on_error: true,
+        stop_on_error: opts?.stopOnError ?? true,
       },
       channel: 'shell',
     })
@@ -793,7 +866,7 @@ export class JupyterKernel {
       throw new Error(tr("server.couldNotSendTheCellToThe.b4abb1", { p0: errText(err) }))
     }
     this.startWatchdog()
-    return { done }
+    return done
   }
 
   /**
@@ -1313,20 +1386,45 @@ export class JupyterKernel {
     }
     if (cut !== this.cuts) return 0
     const lost = unanswered()
-    for (const [id, pending] of lost) {
-      this.pending.delete(id)
-      if (pending.graceTimer) clearTimeout(pending.graceTimer)
-      try {
-        // No exception name: the cell draws "name: text", and the text says it all.
-        pending.handlers.onError('', tr('server.theConnectionToTheMachineBrokeThe.5504d1'), [])
-      } catch (err) {
-        console.error(`[kernel] output handler failed for ${this.sessionId}:`, errText(err))
-      }
-      pending.settle('error')
-    }
+    for (const [id, pending] of lost) this.settleLost(id, pending)
     // The idle that would have said so died in the cut with the replies.
     if (lost.length > 0 && this._phase === 'busy') this.setPhase('idle')
     return lost.length
+  }
+
+  /** Work whose reply died in a cut ends in an error with the room's words, and the queue moves on. */
+  private settleLost(id: string, pending: Pending): void {
+    this.pending.delete(id)
+    if (pending.graceTimer) clearTimeout(pending.graceTimer)
+    try {
+      // No exception name: the cell draws "name: text", and the text says it all.
+      pending.handlers.onError('', tr('server.theConnectionToTheMachineBrokeThe.5504d1'), [])
+    } catch (err) {
+      console.error(`[kernel] output handler failed for ${this.sessionId}:`, errText(err))
+    }
+    pending.settle('error')
+  }
+
+  /**
+   * A reply to `msgId` came from the process that took the work out at a
+   * cut: whatever of that work went before it and has no reply lost its
+   * reply in the cut, and is settled now, as reconcileAfterReset settles it.
+   * A kernel answers its one shell in the order the requests came, and the
+   * channel keeps that order, a replay after a reconnect included, so a
+   * reply that did not come before a later one never will. Waiting for the
+   * reconnect's question instead is waiting for the kernel to go idle: the
+   * question is answered after everything queued before it, and a council
+   * worker's batch (executeBatch) queues an attempt behind its entry, which
+   * can compute for longer than the question waits, or stand in `input()`
+   * until its entry's verdict is known (kernel/index.ts · councilTrip).
+   */
+  private settleLostBefore(msgId: string): void {
+    const lost: Array<[string, Pending]> = []
+    for (const [id, pending] of this.pending) {
+      if (id === msgId) break
+      if (pending.cut && pending.status === null) lost.push([id, pending])
+    }
+    for (const [id, pending] of lost) this.settleLost(id, pending)
   }
 
   /**
@@ -1827,6 +1925,15 @@ export class JupyterKernel {
      */
     const waiting = parentId ? this.shellPending.get(parentId) : undefined
     const reply = typeof msgType === 'string' && msgType.endsWith('_reply')
+    /*
+     * The process that took what was out at the last cut: the one heard last
+     * before it while no reconnect has looked behind that cut yet, otherwise
+     * the one heard last (a reconnect that found another process aborted
+     * everything out, replacedInCut). Read before this reply names its own.
+     * Null when none was heard: then, as reconcileAfterReset does, the one
+     * that answers is taken for it.
+     */
+    const tookTheCut = this.processAtCut !== undefined ? this.processAtCut : this.process
     if (reply && (waiting || pending)) this.noteProcess(msg)
     if (waiting && reply) {
       this.shellPending.delete(parentId as string)
@@ -1936,6 +2043,8 @@ export class JupyterKernel {
 
     if (msgType === 'execute_reply') {
       if (!pending) return
+      // From the process that took them, a reply says what went before it and is still unanswered never will be (settleLostBefore).
+      if (this.cuts > 0 && (tookTheCut === null || msg.header?.session === tookTheCut)) this.settleLostBefore(parentId as string)
       const status = content.status
       pending.status = status === 'ok' || status === 'error' || status === 'abort' ? status : 'ok'
       /*

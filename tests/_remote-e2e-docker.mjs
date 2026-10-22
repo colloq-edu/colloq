@@ -648,6 +648,11 @@ async function startJupyter(c) {
   const scratch = (c.mounts ?? []).find((mount) => mount.target === '/colloq/scratch')
   if (epochs) argv.push('--epochs-dir', epochs.source)
   if (scratch) argv.push('--scratch-dir', scratch.source)
+  // The workers' gate (council.ts · councilGate, §9.6): its module's folder and the IPython config that loads it, both
+  // mounted, make every kernel of the container born gated, as the config does in a real one.
+  const gate = (c.mounts ?? []).find((mount) => mount.target === '/colloq/gate')
+  const gateConfig = (c.mounts ?? []).find((mount) => mount.target === '/etc/ipython/ipython_kernel_config.py')
+  if (gate && gateConfig && fs.existsSync(path.join(gate.source, 'colloq_gate.py')) && fs.existsSync(gateConfig.source)) argv.push('--gate')
   if (OWNER) argv.push('--owner', OWNER)
   // Its calls written down where `rm` leaves them (FAKE_DOCKER_CALLS, the agent's keepCalls): one file per container, every life of it.
   if (CALLS) {

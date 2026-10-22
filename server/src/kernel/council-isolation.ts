@@ -13,6 +13,7 @@ import {
   REMOTE_RUN_ID,
 } from '@shared/remote-kernels'
 import { COLLOQ_REFUSED, GUARD_MODULE, guardCouncilSettings, guardInstallLine } from './danger.js'
+import { COUNCIL_GATE_MODULE } from './council-gate.js'
 
 /**
  * Personal copies of the data for one council attempt, and an exact return
@@ -324,6 +325,13 @@ export interface CouncilIsolationSettings {
   capMb?: number
   /** The class folder inside the container (`/workspace/<id>`): the scratch folder's skeleton is made from it. */
   workspace?: string
+  /**
+   * A pool worker's: the number of the epoch its pool loaded it with for
+   * this attempt (one with files). A process that holds another, or none —
+   * a fresh one after a death its pool has not heard of yet, which the
+   * attempt sent right behind this entry reaches too (§9.6) — refuses.
+   */
+  epoch?: number
   /** Where the scratch folders are; COUNCIL_SCRATCH_MOUNT unless a test says otherwise. */
   scratchRoot?: string
   /** The skeleton's entries at most; COUNCIL_SCRATCH_ENTRIES unless a test says otherwise. */
@@ -431,6 +439,12 @@ export interface CouncilSeedReport {
   threads: number | null
   /** Bytes of the epoch's buffers mapped. */
   mapped: number
+  /**
+   * The worker's process was born with the gate (§9.6, council-gate.ts):
+   * its attempts may go right behind their entries. False for a report that
+   * does not say (an older module).
+   */
+  gated: boolean
   ms: number
   /** Filled only when `ok` is false. */
   error: string | null
@@ -518,6 +532,21 @@ def _release(current):
         guard.release()
     except Exception:
         pass
+
+
+def _gate():
+    """A pool worker's gate (§9.6, council-gate.ts), when this process was born with it; None otherwise.
+
+    It lets the attempt sent right behind a worker's entry run only once the
+    entry opened it, so that an attempt never runs on what an entry did not
+    confirm. A kernel without it (the notebook's own, a council container an
+    older agent started) gets the entry it always got.
+    """
+    gate = sys.modules.get('${COUNCIL_GATE_MODULE}')
+    try:
+        return gate if gate is not None and gate.installed() else None
+    except Exception:
+        return None
 
 
 # IPython's service names: they belong to the kernel, not the student, and a
@@ -2447,6 +2476,16 @@ def enter(ns, budget, settings=None):
     report = None
     leftovers = None
     settings = settings or {}
+    # A worker's gate (§9.6): shut first thing, so that nothing this entry
+    # does not confirm runs after it; opened for this attempt's run id as the
+    # very last step below, once its copies hold. Never on the needs path,
+    # never on an error.
+    gate = _gate() if settings.get('runId') else None
+    if gate is not None:
+        try:
+            gate.close()
+        except Exception:
+            gate = None
     try:
         current = epoch
         source = settings.get('source')
@@ -2461,6 +2500,13 @@ def enter(ns, budget, settings=None):
                 # §9.4, §9.7): without its ceiling, its scratch folder or
                 # the check of the names its epoch left behind, no entry.
                 raise RuntimeError("a worker's entry without its source, run id or cap")
+        expected = settings.get('epoch')
+        if expected is not None and (current is None or current.get('seq') != expected):
+            # The worker was loaded with this epoch for this attempt, and this
+            # process holds another, or none: a fresh one its pool has not heard
+            # of yet, which the attempt sent right behind this entry reached
+            # after the process before it died (§9.6). Nothing runs on it.
+            raise RuntimeError('the worker does not hold the epoch its attempt was given')
         if current is not None and current.get('left'):
             # A worker refuses an attempt that reads a name its epoch left
             # behind (§9.4), and does so before anything is held or copied:
@@ -2630,6 +2676,10 @@ def enter(ns, budget, settings=None):
             'scratch': folder,
             'ms': int((time.time() - started) * 1000),
         }, separators=(',', ':')))
+        if gate is not None:
+            # The very last step, after the report: the attempt behind this
+            # entry may run now, once, and only it (its run id).
+            gate.open_for(settings['runId'])
     except Exception as err:
         report = _Report(json.dumps({
             'ok': False,
@@ -4255,6 +4305,9 @@ def load(ns, manifest, body_sha, settings=None):
             'oomScoreAdj': oom,
             'threads': limited,
             'mapped': mapped,
+            # Whether this process was born with the gate (§9.6): home sends
+            # this worker's attempts right behind their entries only then.
+            'gated': _gate() is not None,
             'ms': int((time.time() - started) * 1000),
         }, separators=(',', ':')))
     except BaseException as err:
@@ -4267,6 +4320,7 @@ def load(ns, manifest, body_sha, settings=None):
             'ok': False,
             'manifest': manifest if _sha(manifest) else None,
             'error': _short(err),
+            'gated': _gate() is not None,
             'ms': int((time.time() - started) * 1000),
         }, separators=(',', ':')))
     finally:
@@ -4399,6 +4453,7 @@ export function councilEnterSource(
       ? [`'runId': ${JSON.stringify(options.runId)}`, `'scratch': ${JSON.stringify(options.scratchRoot ?? COUNCIL_SCRATCH_MOUNT)}`]
       : []),
     ...(options.workspace !== undefined ? [`'workspace': ${JSON.stringify(options.workspace)}`] : []),
+    ...(options.epoch !== undefined ? [`'epoch': ${epochSeq(options.epoch)}`] : []),
     ...(options.skeletonEntries !== undefined ? [`'entries': ${Math.max(1, Math.floor(options.skeletonEntries))}`] : []),
   ].join(', ') + '}'
   return [
@@ -4759,6 +4814,7 @@ export function parseSeedReport(raw: unknown): CouncilSeedReport | null {
     oomScoreAdj: typeof row.oomScoreAdj === 'number' && Number.isInteger(row.oomScoreAdj) ? row.oomScoreAdj : null,
     threads: count(row.threads) ? row.threads : null,
     mapped: count(row.mapped) ? row.mapped : 0,
+    gated: row.gated === true,
     ms: count(row.ms) ? row.ms : 0,
     error: row.ok ? null : typeof row.error === 'string' ? row.error : '',
   }
