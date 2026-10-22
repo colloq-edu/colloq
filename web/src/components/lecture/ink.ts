@@ -665,6 +665,284 @@ export function straightens(
   return true
 }
 
+/* ---------------------------------------------- a rectangle on hold */
+
+/**
+ * How near its beginning a closed stroke must end, in screen px: a fifth of
+ * the rectangle's shorter side, never less than sixteen pixels. A hand
+ * closing a box lands a little short of where it began or runs a little past
+ * it; an open U or an L ends a whole side away.
+ */
+const RECT_CLOSE = 0.2
+const RECT_CLOSE_PX = 16
+/**
+ * How far into the stroke, as a share of its length, the end may land and
+ * still close it: a hand that overshoots its start runs on along the
+ * stroke's first stretch, not back to its very first point.
+ */
+const RECT_CLOSE_REACH = 0.25
+/**
+ * How far a point may stray from the rectangle's border, in screen px, and
+ * how near each corner the stroke must pass: a tenth of the shorter side,
+ * never less than the four pixels a steady hand trembles by. A circle's
+ * points at 45° stand about a fifth of its radius inside the frame fitted
+ * round it, and the frame's corners a third of the radius beyond the circle;
+ * a hand that meant a box keeps to its sides and turns at its corners.
+ */
+const RECT_NEAR = 0.1
+const RECT_NEAR_PX = 4
+/**
+ * How far a long side may run off true, as a share of its own length, when
+ * that is more than `RECT_NEAR`: a box round a formula is wide and low, and
+ * a hand draws its 400 px sides a degree or two aslant and sagging, which
+ * a tenth of its 60 px height would refuse. Half the line's `STRAIGHT_BEND`:
+ * each side is a line, and the box's corners hold its ends. Along the other
+ * axis a corner keeps the short side's tolerance, so a flat ellipse, whose
+ * ends are round, still runs along too little of its short sides.
+ */
+const RECT_BEND = 0.05
+/**
+ * How long the shorter side must be on the glass, in screen px: a box round
+ * a symbol or a line of a formula is bigger than its letters, and a squarish
+ * "0", "O" or "D" a presenter rests on at lecture letter size stays a
+ * letter. Not more: on an 11-inch iPad beside the notes the sheet is about
+ * 400 px tall, and a box round a formula there is some forty.
+ */
+export const RECT_MIN_PX = 36
+/**
+ * How much of each side's length the stroke must run along: all four sides
+ * drawn, not three sides closed by a diagonal, and not a rounded blob.
+ */
+const RECT_COVER = 0.75
+
+/** An axis-aligned rectangle in page fractions: (x0, y0) is its top left corner, (x1, y1) its bottom right. */
+export interface InkRect {
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+}
+
+/** The middle value of a list (the upper one of an even pair). */
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted[sorted.length >> 1]
+}
+
+/** How far the point (x, y) lies from the segment (ax, ay)–(bx, by). */
+function toSegment(x: number, y: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax
+  const dy = by - ay
+  const span = dx * dx + dy * dy
+  const t = span === 0 ? 0 : Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / span))
+  return Math.hypot(x - ax - t * dx, y - ay - t * dy)
+}
+
+/**
+ * The rectangle frame a stroke the pen has come to rest on becomes, or
+ * `null` when it stays as drawn.
+ *
+ * The second half of "hold the pen and the stroke straightens", the way notes
+ * apps do it: a box drawn round a formula and held where it closes becomes a
+ * clean frame. The caution is the line's (`straightens`): a pen also rests in
+ * the middle of a loop, a letter, a circle round a word, and those must stay
+ * as drawn. So the stroke must already BE a rectangle:
+ *
+ *  — closed: its end back near its beginning (`RECT_CLOSE`), whichever corner
+ *    or side it started at, in either direction;
+ *  — big enough on the glass: both sides at least `RECT_MIN_PX`, so an
+ *    "o", a "0" or a "□" written at letter size stays a letter;
+ *  — on its border: no point further from it than `RECT_NEAR` (a long side
+ *    `RECT_BEND` of its length), and past each corner (a circle, an
+ *    ellipse, a triangle, a zigzag are not);
+ *  — along all four sides (`RECT_COVER`): an L, a U, three sides closed by a
+ *    diagonal are not.
+ *
+ * A stroke that straightens is a line, and the line wins.
+ *
+ * The sides are fitted to the points that run along each of them (the
+ * median of where they run), not taken from the stroke's bounding box: the
+ * overshoot of a hand closing the box at a corner pokes out past it, and
+ * would make the frame bigger than the box the hand drew.
+ *
+ * `px`, `py` as for `straightens`: the sheet's size on the glass.
+ */
+export function rectangleOf(
+  points: readonly number[],
+  end: { x: number; y: number },
+  px: number,
+  py: number,
+): InkRect | null {
+  if (points.length < 8 || straightens(points, end, px, py)) return null
+  const xs: number[] = []
+  const ys: number[] = []
+  for (let i = 0; i + 1 < points.length; i += 2) {
+    xs.push(points[i] * px)
+    ys.push(points[i + 1] * py)
+  }
+  xs.push(end.x * px)
+  ys.push(end.y * py)
+  const n = xs.length
+  // Left, right, top, bottom, in screen px: from the bounding box, then each
+  // side refitted to the points nearest it, until the overshoot no longer counts.
+  const side = [Infinity, -Infinity, Infinity, -Infinity]
+  for (let i = 0; i < n; i += 1) {
+    side[0] = Math.min(side[0], xs[i])
+    side[1] = Math.max(side[1], xs[i])
+    side[2] = Math.min(side[2], ys[i])
+    side[3] = Math.max(side[3], ys[i])
+  }
+  for (let round = 0; round < 3; round += 1) {
+    const across: number[][] = [[], [], [], []]
+    for (let i = 0; i < n; i += 1) {
+      let nearest = 0
+      let best = Infinity
+      for (let k = 0; k < 4; k += 1) {
+        const off = Math.abs((k < 2 ? xs[i] : ys[i]) - side[k])
+        if (off < best) {
+          best = off
+          nearest = k
+        }
+      }
+      across[nearest].push(nearest < 2 ? xs[i] : ys[i])
+    }
+    if (across.some((list) => list.length === 0)) return null
+    for (let k = 0; k < 4; k += 1) side[k] = median(across[k])
+  }
+  const [left, right, top, bottom] = side
+  const short = Math.min(right - left, bottom - top)
+  if (!(short >= RECT_MIN_PX)) return null
+  const near = Math.max(RECT_NEAR_PX, short * RECT_NEAR)
+  const close = Math.max(RECT_CLOSE_PX, short * RECT_CLOSE)
+  // Each side's own tolerance (left, right, top, bottom): a long side's by its length.
+  const upright = Math.max(near, (bottom - top) * RECT_BEND)
+  const level = Math.max(near, (right - left) * RECT_BEND)
+  const slack = [upright, upright, level, level]
+
+  // Closed: the end lands near the stroke's first stretch.
+  const ex = xs[n - 1]
+  const ey = ys[n - 1]
+  let length = 0
+  for (let i = 1; i < n; i += 1) length += Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1])
+  let closed = Math.hypot(ex - xs[0], ey - ys[0]) <= close
+  for (let i = 1, run = 0; !closed && i < n - 1 && run <= length * RECT_CLOSE_REACH; i += 1) {
+    closed = toSegment(ex, ey, xs[i - 1], ys[i - 1], xs[i], ys[i]) <= close
+    run += Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1])
+  }
+  if (!closed) return null
+
+  // On the border: each side as a segment, run on past its corners by the
+  // closing reach, so a corner overshot on the way round still counts.
+  const past = (v: number, a: number, b: number) => Math.max(0, a - close - v, v - b - close)
+  for (let i = 0; i < n; i += 1) {
+    const x = xs[i]
+    const y = ys[i]
+    if (
+      Math.hypot(past(y, top, bottom), x - left) > upright &&
+      Math.hypot(past(y, top, bottom), x - right) > upright &&
+      Math.hypot(past(x, left, right), y - top) > level &&
+      Math.hypot(past(x, left, right), y - bottom) > level
+    ) {
+      return null
+    }
+  }
+
+  // Through each corner: within each side's tolerance along its own axis
+  // (an ellipse round the corner: a round one, `near`, unless a side is long).
+  for (const [cx, cy] of [
+    [left, top],
+    [right, top],
+    [right, bottom],
+    [left, bottom],
+  ]) {
+    let best = Infinity
+    for (let i = 1; i < n && best > 1; i += 1) {
+      best = Math.min(
+        best,
+        toSegment(
+          cx / upright,
+          cy / level,
+          xs[i - 1] / upright,
+          ys[i - 1] / level,
+          xs[i] / upright,
+          ys[i] / level,
+        ),
+      )
+    }
+    if (best > 1) return null
+  }
+
+  // Along each side: the pieces of the stroke that run along it cover most of it.
+  for (let k = 0; k < 4; k += 1) {
+    const vertical = k < 2
+    const from = vertical ? top : left
+    const to = vertical ? bottom : right
+    const spans: [number, number][] = []
+    for (let i = 1; i < n; i += 1) {
+      const a = vertical ? xs[i - 1] : ys[i - 1]
+      const b = vertical ? xs[i] : ys[i]
+      if (Math.abs(a - side[k]) > slack[k] || Math.abs(b - side[k]) > slack[k]) continue
+      const p = vertical ? ys[i - 1] : xs[i - 1]
+      const q = vertical ? ys[i] : xs[i]
+      const lo = Math.max(from, Math.min(p, q))
+      const hi = Math.min(to, Math.max(p, q))
+      if (hi > lo) spans.push([lo, hi])
+    }
+    spans.sort((s, t) => s[0] - t[0])
+    let covered = 0
+    let reach = from
+    for (const [lo, hi] of spans) {
+      if (hi <= reach) continue
+      covered += hi - Math.max(lo, reach)
+      reach = hi
+    }
+    if (covered < (to - from) * RECT_COVER) return null
+  }
+  return { x0: left / px, y0: top / py, x1: right / px, y1: bottom / py }
+}
+
+/**
+ * A rectangle frame as one ordinary stroke: its four sides from the top left
+ * corner round and back to it, every corner given twice.
+ *
+ * Every renderer draws a stroke as quadratic curves through the midpoints of
+ * its segments (`layCurve`, and the ink layer's `growPath` for the hall).
+ * Through a corner given once that is a curve cutting the corner off, a box
+ * with rounded corners; through a corner given twice, the curves on either
+ * side of it are straight and meet at it. So the frame needs no kind of
+ * stroke of its own: not on the wire, not in the room's memory, not in saved
+ * notes. Its inside is empty, as a box round a formula must be.
+ */
+export function framePoints(rect: InkRect): number[] {
+  const { x0, y0, x1, y1 } = rect
+  return [x0, y0, x0, y0, x1, y0, x1, y0, x1, y1, x1, y1, x0, y1, x0, y1, x0, y0, x0, y0]
+}
+
+/**
+ * The frame while the pen still holds it after the snap: the corner nearest
+ * where the pen was at the snap (`grip`) moves as the pen has moved since, to
+ * `to`; the opposite corner stays, and the sides stay upright. A corner
+ * dragged past the opposite one turns the frame over rather than inside out.
+ *
+ * By the pen's movement, not to the pen: a box closed mid-side would
+ * otherwise jump its nearest corner onto the pen at the first tremble.
+ */
+export function dragFrame(rect: InkRect, grip: { x: number; y: number }, to: { x: number; y: number }): InkRect {
+  // The nearest corner on the glass is the nearest along each axis: the scale does not change it.
+  const right = Math.abs(grip.x - rect.x1) < Math.abs(grip.x - rect.x0)
+  const below = Math.abs(grip.y - rect.y1) < Math.abs(grip.y - rect.y0)
+  const fixedX = right ? rect.x0 : rect.x1
+  const fixedY = below ? rect.y0 : rect.y1
+  const movedX = (right ? rect.x1 : rect.x0) + to.x - grip.x
+  const movedY = (below ? rect.y1 : rect.y0) + to.y - grip.y
+  return {
+    x0: Math.min(fixedX, movedX),
+    y0: Math.min(fixedY, movedY),
+    x1: Math.max(fixedX, movedX),
+    y1: Math.max(fixedY, movedY),
+  }
+}
+
 /* ------------------------------------------------------- the hold ring */
 
 /**

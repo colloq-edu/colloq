@@ -87,9 +87,11 @@
   import { inkFullSays, LASER_EVERY_MS, sameZoom, type InkStroke, type LectureZoom } from '@shared/lecture'
   import {
     askInkPage,
+    dragFrame,
     ERASER_PX,
     eraserReach,
     fingerPair,
+    framePoints,
     FRAME_TAP_PX,
     frameZoom,
     hearInkNeed,
@@ -102,6 +104,7 @@
     pinchCommits,
     pinchMayStart,
     pinchZoom,
+    rectangleOf,
     RestingPalms,
     STRAIGHT_HOLD_MS,
     STRAIGHT_STILL_PX,
@@ -111,6 +114,7 @@
     type BusyKind,
     type FingerPair,
     type HoldRing,
+    type InkRect,
     type Tap,
   } from './ink'
   import {
@@ -730,7 +734,8 @@
    * twenty times a second while someone writes with a PEN, and that is no
    * reason to repaint the highlights. The end is in the key because one's
    * own marker can change without growing: its predicted tip moves, and a
-   * straight line's end follows the pen.
+   * straight line's end follows the pen. A held frame's dragged corner need
+   * not be its end: `moveEnd` clears the key for it.
    */
   let markersDrawn = ''
 
@@ -1831,6 +1836,12 @@
      * pieces the line replaces, to be taken back from the room on the lift.
      */
     replaced: { page: number; id: string }[] | null
+    /**
+     * Set when it straightened into a rectangle frame rather than a line: the
+     * frame as it snapped and where the pen was then. Until the lift the pen
+     * drags the nearest corner from there (ink.ts · `dragFrame`).
+     */
+    frame?: { rect: InkRect; grip: { x: number; y: number } } | null
   }
   let drawing: Drawing | null = null
   /** The pointer that pressed the laser: a hovering pen does not put it out. */
@@ -3332,6 +3343,13 @@
    * finalises (`closeStroke`): the room takes the freehand motion back and
    * gets the line as a stroke of its own, so one Undo removes the line.
    *
+   * A BOX HELD WHERE IT CLOSES BECOMES A FRAME the same way, as in GoodNotes:
+   * a rectangle drawn round a formula (ink.ts · `rectangleOf`: a circle or a
+   * triangle stays as drawn, and a line is a line first) turns into an empty
+   * frame with upright sides, one ordinary stroke whose corners are given
+   * twice (`framePoints`). Moving the pen before lifting drags its nearest
+   * corner; the lift, the ring and the Undo are the line's.
+   *
    * On a timer, not on movement: a pen standing perfectly still may send no
    * events at all.
    *
@@ -3389,6 +3407,8 @@
     drying: Wet[]
     /** Its pieces the room already has: taken back on the lift. */
     out: { id: string; page: number }[]
+    /** The rectangle frame it becomes, or `null`: a straight line. */
+    frame: InkRect | null
   }
 
   /**
@@ -3416,12 +3436,14 @@
     ]
     pieces.sort((p, q) => (p.id === key ? -1 : q.id === key ? 1 : 0))
     const points = pieces.flatMap((piece) => piece.points)
-    if (!straightens(points, held.tip, w * near, h * near)) return null
+    // A line, or else a box: `rectangleOf` takes nothing that straightens.
+    const frame = rectangleOf(points, held.tip, w * near, h * near)
+    if (!frame && !straightens(points, held.tip, w * near, h * near)) return null
     // What the room has must be taken back on the lift; without a connection
     // that cannot be promised, and the freehand line stays as it is.
     const out = pieces.filter((piece) => piece.handed > 0)
     if (out.length > 0 && !session.connected) return null
-    return { points, drying, out }
+    return { points, drying, out, frame }
   }
 
   /**
@@ -3468,7 +3490,7 @@
     return closing ? { ...closing, x: held.tip.x, y: held.tip.y } : null
   }
 
-  /** The pen has rested long enough: if the stroke is a line, it becomes a straight one. */
+  /** The pen has rested long enough: if the stroke is a line, it becomes a straight one; a box, a frame. */
   function straightenNow(): void {
     stillTimer = undefined
     // The ring's count is over either way: it steps aside for the line, or goes.
@@ -3481,17 +3503,20 @@
       return
     }
     const stroke = held.stroke
-    const { points, drying, out } = plan
+    const { points, drying, out, frame } = plan
     const ids = new Set(drying.map((piece) => piece.id))
     window.clearTimeout(flushTimer)
     flushTimer = undefined
+    const shape = frame ? framePoints(frame).map(round) : [points[0], points[1], held.tip.x, held.tip.y]
+    const last = stroke.force[stroke.force.length - 1] ?? 0
     const line: Wet = {
       id: newStrokeId(),
       page: stroke.page,
       color: stroke.color,
       width: stroke.width,
-      points: [points[0], points[1], held.tip.x, held.tip.y],
-      force: [stroke.force[0] ?? 0, stroke.force[stroke.force.length - 1] ?? 0],
+      points: shape,
+      // One pressure per point: the line's ends keep the motion's, a frame is pressed evenly.
+      force: frame ? shape.filter((_, i) => i % 2 === 0).map(() => last) : [stroke.force[0] ?? 0, last],
       handed: 0,
       // As old as the motion: `dropPalm` judges a stroke's age by it.
       bornAt: Math.min(...drying.map((piece) => piece.bornAt)),
@@ -3499,9 +3524,10 @@
       closedAt: 0,
       resent: 0,
       echoed: false,
-      tail: { n: 0, curved: 0, tipX: points[0] * w, tipY: points[1] * h },
+      tail: { n: 0, curved: 0, tipX: shape[0] * w, tipY: shape[1] * h },
       straight: true,
     }
+    held.frame = frame ? { rect: frame, grip: held.tip } : null
     held.replaced = out.map((piece) => ({ page: piece.page, id: piece.id }))
     held.stroke = line
     for (const piece of held.replaced) withheld.add(piece.id)
@@ -3515,13 +3541,21 @@
     wake()
   }
 
-  /** The straight line's end follows the pen until the lift. */
+  /** The straight line's end, or the frame's nearest corner, follows the pen until the lift. */
   function moveEnd(place: { x: number; y: number }): void {
     const held = drawing
     if (!held?.replaced) return
     held.tip = place
-    held.stroke.points[2] = place.x
-    held.stroke.points[3] = place.y
+    if (held.frame) {
+      const shape = framePoints(dragFrame(held.frame.rect, held.frame.grip, place)).map(round)
+      for (let i = 0; i < shape.length; i += 1) held.stroke.points[i] = shape[i]
+      // The marker canvas knows a stroke by its last point, and a frame ends
+      // at its top left corner whichever corner the pen drags: drawn anew.
+      markersDrawn = ''
+    } else {
+      held.stroke.points[2] = place.x
+      held.stroke.points[3] = place.y
+    }
     growWet(held.stroke)
   }
 

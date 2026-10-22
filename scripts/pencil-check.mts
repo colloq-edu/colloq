@@ -1077,10 +1077,10 @@ async function restingBox(read: () => Promise<Frac | null>, ms = 6000): Promise<
   return last
 }
 
-/** A console screenshot under a name, with `--shot`. */
-async function shoot(name: string): Promise<void> {
+/** A console screenshot under a name, with `--shot` (or the hall's, given the student's tab). */
+async function shoot(name: string, from: Tab = pult): Promise<void> {
   if (!SHOT) return
-  const shot = await pult.send('Page.captureScreenshot', { format: 'png' })
+  const shot = await from.send('Page.captureScreenshot', { format: 'png' })
   const file = path.resolve(`pencil-check-${name}.png`)
   writeFileSync(file, Buffer.from(shot.result.data as string, 'base64'))
   console.log(`  screenshot: ${file}`)
@@ -3238,6 +3238,223 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
     await pult.js(press(PULT.undo))
     const undone = await untilHere(() => inkPageOf(ROOM, 1).length === 0, 'Undo took the line back', 6000)
     check(undone, '22. one Undo takes the straight line back whole', `${inkPageOf(ROOM, 1).length} stroke(s) left`)
+    await clean()
+  }
+
+  /* --------------------- 23. a box held where it closes becomes a frame */
+
+  {
+    /*
+     * A BOX HELD WHERE IT CLOSES BECOMES A FRAME (ink.ts · `rectangleOf`), as
+     * in GoodNotes: a rough rectangle drawn round a formula, closed with a
+     * little overshoot past its first corner and held still, snaps on the
+     * console into an empty frame with upright sides, and the ring promised
+     * it. Before the lift the pen drags the frame's nearest corner. On the
+     * lift the room gets ONE stroke of ten points (the four corners and the
+     * close, each twice: sharp corners through the renderers' midpoint
+     * curves), the freehand taken back; the hall draws a frame with nothing
+     * inside; one Undo removes it whole. A circle held the same way stays as
+     * drawn.
+     */
+    await penTool()
+    await clean()
+    const g = await geometry()
+    const pen = (type: 'mousePressed' | 'mouseMoved' | 'mouseReleased', fx: number, fy: number) =>
+      pult.send('Input.dispatchMouseEvent', {
+        type,
+        ...onCanvas(g, fx, fy),
+        button: 'left',
+        buttons: type === 'mouseReleased' ? 0 : 1,
+        clickCount: 1,
+        pointerType: 'pen',
+        force: type === 'mouseReleased' ? 0 : 0.5,
+      })
+    /** A hand-drawn path through `corners`, `per` samples a stretch, trembling across it. */
+    const drawThrough = async (corners: [number, number][], per: number) => {
+      await pen('mousePressed', corners[0][0], corners[0][1])
+      let n = 0
+      for (let k = 1; k < corners.length; k += 1) {
+        const [ax, ay] = corners[k - 1]
+        const [bx, by] = corners[k]
+        for (let i = 1; i <= per; i += 1) {
+          n += 1
+          const t = i / per
+          const shake = 0.003 * Math.sin(n * 1.9)
+          await wait(6)
+          await pen('mouseMoved', ax + (bx - ax) * t + (ay === by ? 0 : shake), ay + (by - ay) * t + (ax === bx ? 0 : shake))
+        }
+      }
+    }
+    await pult.js(
+      `const w={s:[],stop:false,t0:performance.now(),rest:-1};window.__ring=w;` +
+        `const tick=()=>{if(w.stop) return;const h=window.__inkLat&&window.__inkLat.hold;` +
+        `w.s.push({t:performance.now()-w.t0,c:h?h.closed:-1});requestAnimationFrame(tick)};requestAnimationFrame(tick);return 1`,
+    )
+    // Round from the top left corner, clockwise, and on past it by a hair at the close.
+    await drawThrough(
+      [
+        [0.3, 0.35],
+        [0.6, 0.35],
+        [0.6, 0.65],
+        [0.3, 0.65],
+        [0.3, 0.35],
+        [0.3, 0.33],
+      ],
+      12,
+    )
+    await pult.js(`window.__ring.rest=performance.now()-window.__ring.t0;return 1`)
+    await shoot('23-box-before-hold')
+    await wait(800)
+    await shoot('23-box-snapped')
+    // The nearest corner follows the pen: the frame grows up and to the left.
+    for (let i = 1; i <= 6; i += 1) {
+      await wait(16)
+      await pen('mouseMoved', 0.3 - 0.005 * i, 0.33 - 0.005 * i)
+    }
+    await shoot('23-box-dragged')
+    await pen('mouseReleased', 0.27, 0.3)
+    const ring = (await pult.js(`const w=window.__ring;w.stop=true;return {rest:w.rest,s:w.s}`)) as {
+      rest: number
+      s: { t: number; c: number }[]
+    }
+    const promised = ring.s.some((x) => x.t >= ring.rest && x.c >= 0.999)
+    const one = await untilHere(
+      () => inkPageOf(ROOM, 1).length === 1 && inkPageOf(ROOM, 1)[0].points.length === 20,
+      'the room has the frame alone',
+      6000,
+    )
+    const frame = inkPageOf(ROOM, 1)[0]
+    const p = frame?.points ?? []
+    const doubled = p.length === 20 && [0, 4, 8, 12, 16].every((i) => p[i] === p[i + 2] && p[i + 1] === p[i + 3])
+    // The frame as it ended: its top left corner dragged by (−0.03, −0.03), the bottom right where it snapped.
+    const xs = p.filter((_, i) => i % 2 === 0)
+    const ys = p.filter((_, i) => i % 2 === 1)
+    const box = p.length ? { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) } : null
+    const upright = p.length === 20 && xs.every((x) => x === box!.x0 || x === box!.x1) && ys.every((y) => y === box!.y0 || y === box!.y1)
+    const where23 =
+      !!box &&
+      Math.abs(box.x0 - 0.27) <= 0.012 &&
+      Math.abs(box.y0 - 0.32) <= 0.012 &&
+      Math.abs(box.x1 - 0.6) <= 0.012 &&
+      Math.abs(box.y1 - 0.65) <= 0.012
+    const hallBox = await boxUntil(hallInk, (b) => !!b && b.x1 - b.x0 > 0.3 && b.y1 - b.y0 > 0.3)
+    // Hollow on the hall: nothing at the middle, ink on the middle of the top side.
+    const alphaNear = (fx: number, fy: number, r: number) =>
+      student.js(
+        `const c=document.querySelector('canvas.ink-dry');const x=Math.round(c.width*${fx}),y=Math.round(c.height*${fy});` +
+          `const d=c.getContext('2d').getImageData(x-${r},y-${r},${2 * r + 1},${2 * r + 1}).data;let a=0;for(let i=3;i<d.length;i+=4)a=Math.max(a,d[i]);return a`,
+      ) as Promise<number>
+    const inside = box ? await alphaNear((box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2, 6) : -1
+    const side = box ? await alphaNear((box.x0 + box.x1) / 2, box.y0, 6) : -1
+    await shoot('23-box-hall', student)
+    check(
+      promised && one && doubled && upright && where23 && inside <= 16 && side > 16,
+      '23. a box held where it closes becomes an empty frame, its corner follows the pen',
+      `ring ${promised ? 'full' : 'never full'} · room: ${inkPageOf(ROOM, 1).length} stroke(s) of ${p.length / 2} points, corners ${doubled ? 'doubled' : 'single'}, ${upright ? 'upright' : 'slanted'}, ${boxWords(box)} · hall ${boxWords(hallBox)}, inside α ${inside}, side α ${side}`,
+    )
+    await pult.js(press(PULT.undo))
+    const undone = await untilHere(() => inkPageOf(ROOM, 1).length === 0, 'Undo took the frame back', 6000)
+    check(undone, '23. one Undo takes the frame back whole', `${inkPageOf(ROOM, 1).length} stroke(s) left`)
+    await clean()
+
+    // A circle round the same formula, held the same way: it stays as drawn.
+    const round: [number, number][] = []
+    for (let i = 0; i <= 48; i += 1) {
+      const a = (Math.PI * 2 * i) / 48 - Math.PI / 2
+      round.push([0.45 + 0.15 * Math.cos(a), 0.5 + 0.15 * Math.sin(a) * (g.canvas.width / g.canvas.height)])
+    }
+    await pen('mousePressed', round[0][0], round[0][1])
+    for (const [fx, fy] of round.slice(1)) {
+      await wait(6)
+      await pen('mouseMoved', fx, fy)
+    }
+    await wait(900)
+    await shoot('23-circle-held')
+    await pen('mouseReleased', round[round.length - 1][0], round[round.length - 1][1])
+    const kept = await untilHere(() => inkPageOf(ROOM, 1).length === 1, 'the room has the circle', 6000)
+    const circle = inkPageOf(ROOM, 1)[0]
+    check(
+      kept && !!circle && circle.points.length > 40,
+      '23. a circle held still stays as drawn',
+      `room: ${inkPageOf(ROOM, 1).length} stroke(s) of ${circle ? circle.points.length / 2 : 0} points`,
+    )
+    await shoot('23-circle-hall', student)
+    await clean()
+
+    /*
+     * A HIGHLIGHTER BOX ROUND A FORMULA: wide and low, its long sides a
+     * little aslant, closed at its bottom right corner and dragged out by it.
+     * A frame ends at its top left corner, and the marker canvas knows a
+     * stroke by its last point, so a drag by any other corner used to leave
+     * the console showing the frame as it snapped. Both screens must draw it
+     * where the pen left it.
+     */
+    await pult.js(press(PULT.marker))
+    await wait(200)
+    const markerOn = (await pult.js(`return ${pressed(PULT.marker)}`)) === 'true'
+    await drawThrough(
+      [
+        [0.7, 0.56],
+        [0.2, 0.55],
+        [0.2, 0.45],
+        [0.7, 0.46],
+        [0.7, 0.56],
+        [0.7, 0.575],
+      ],
+      16,
+    )
+    await wait(800)
+    await shoot('23-marker-snapped')
+    for (let i = 1; i <= 6; i += 1) {
+      await wait(16)
+      await pen('mouseMoved', 0.7 + 0.01 * i, 0.575 + 0.005 * i)
+    }
+    await shoot('23-marker-dragged')
+    await pen('mouseReleased', 0.76, 0.605)
+    const marked = await untilHere(
+      () => inkPageOf(ROOM, 1).length === 1 && inkPageOf(ROOM, 1)[0].points.length === 20,
+      'the room has the highlighter frame alone',
+      6000,
+    )
+    const mark = inkPageOf(ROOM, 1)[0]
+    const mp = mark?.points ?? []
+    const mxs = mp.filter((_, i) => i % 2 === 0)
+    const mys = mp.filter((_, i) => i % 2 === 1)
+    const mbox = mp.length
+      ? { x0: Math.min(...mxs), y0: Math.min(...mys), x1: Math.max(...mxs), y1: Math.max(...mys) }
+      : null
+    // Dragged out by its bottom right corner: the right side moved by 0.06, the top left stayed.
+    const draggedOut =
+      !!mbox && mbox.x1 - mbox.x0 > 0.53 && Math.abs(mbox.x0 - 0.2) <= 0.012 && Math.abs(mbox.y0 - 0.45) <= 0.015
+    const markAt = (tab: Tab, fx: number, fy: number) =>
+      tab.js(
+        `const c=document.querySelector('canvas.ink-mark');if(!c||c.width<2) return -1;` +
+          `const x=Math.round(c.width*${fx}),y=Math.round(c.height*${fy});` +
+          `const d=c.getContext('2d').getImageData(x-3,y-3,7,7).data;let a=0;for(let i=3;i<d.length;i+=4)a=Math.max(a,d[i]);return a`,
+      ) as Promise<number>
+    // Settled: the echo is in, nothing of one's own is drying.
+    await wait(600)
+    const midY = mbox ? (mbox.y0 + mbox.y1) / 2 : 0.5
+    const sides = async (tab: Tab) => ({
+      now: mbox ? await markAt(tab, mbox.x1, midY) : -1,
+      snapped: await markAt(tab, 0.7, midY),
+    })
+    const consoleSides = await sides(pult)
+    const hallSides = await sides(student)
+    await shoot('23-marker-console')
+    await shoot('23-marker-hall', student)
+    check(
+      markerOn &&
+        marked &&
+        draggedOut &&
+        consoleSides.now > 16 &&
+        consoleSides.snapped <= 16 &&
+        hallSides.now > 16 &&
+        hallSides.snapped <= 16,
+      '23. a highlighter frame dragged by its bottom right corner is drawn where the pen left it, on both screens',
+      `room: ${inkPageOf(ROOM, 1).length} stroke(s) of ${mp.length / 2} points, ${boxWords(mbox)} · right side α: console ${consoleSides.now} (as snapped ${consoleSides.snapped}), hall ${hallSides.now} (as snapped ${hallSides.snapped})`,
+    )
+    await penTool()
     await clean()
   }
 

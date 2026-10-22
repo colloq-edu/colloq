@@ -300,8 +300,9 @@
 {#snippet hold(says: string)}
   <!--
     The straight line on hold, said where the pen is chosen: a stroke held
-    still at its end straightens (InkLayer · `straighten`). The picture is the
-    ring the console draws at the pen's tip while it holds.
+    still at its end straightens, and a box held where it closes becomes a
+    frame (InkLayer · `straighten`). The picture is the ring the console
+    draws at the pen's tip while it holds.
   -->
   <div class="mt-4 flex items-center gap-3 border-t border-line pt-3.5">
     <svg width="40" height="24" viewBox="0 0 40 24" fill="none" class="block shrink-0" aria-hidden="true">
