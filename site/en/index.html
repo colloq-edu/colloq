@@ -222,8 +222,8 @@
               <a class="action-primary" href="#kak"
                 >See how a class runs <span aria-hidden="true">↗</span></a
               >
-              <a class="action-text" href="#konsilium"
-                >New: Council <span aria-hidden="true">↓</span></a
+              <a class="action-text" href="#sorevnovaniya"
+                >New: Competitions <span aria-hidden="true">↓</span></a
               >
             </div>
             <div class="room-line" aria-hidden="true">
@@ -425,7 +425,7 @@
       <section class="section council-section" id="konsilium" aria-labelledby="council-h">
         <div class="inner council-layout">
           <div class="council-copy">
-            <p class="label">03 / Council <span class="new-tag">New</span></p>
+            <p class="label">03 / Council</p>
             <h2 class="h2" id="council-h">One task.<br />Everyone writes — <br />their own answer.</h2>
           </div>
           <div class="council-copy">
@@ -435,7 +435,7 @@
             </p>
             <ul class="council-points">
               <li><span>01</span>You see who is still writing and who has submitted.</li>
-              <li><span>02</span>Every run is capped in time and goes through the one kernel.</li>
+              <li><span>02</span>Every attempt is capped in time and works on personal copies of the data.</li>
               <li>
                 <span>03</span>The answer you pick is shown to the class, with or without the name.
               </li>
@@ -466,13 +466,51 @@
         </figure>
         <div class="inner">
           <p class="council-kernel">
-            <strong>Separate answers, one shared Python kernel.</strong> Students work on the data
-            you prepared. Runs go one at a time; changes to shared objects and files can
-            affect the answers that follow.
+            <strong>Separate answers, your data.</strong> An attempt sees the variables you prepared
+            and works on personal copies of them, so one student’s edits do not spoil the class’s
+            data. When the class computes on a machine, attempts run side by side on a pool of
+            workers, from a snapshot of the notebook’s kernel, without holding it up.
           </p>
         </div>
       </section>
 
+      <section class="section competitions-section" id="sorevnovaniya" aria-labelledby="competitions-h">
+        <div class="inner council-layout">
+          <div class="council-copy">
+            <p class="label">04 / Competitions <span class="new-tag">New</span></p>
+            <h2 class="h2" id="competitions-h">A task with<br />a hidden check —<br />Kaggle-style.</h2>
+          </div>
+          <div class="council-copy">
+            <p class="prose">
+              Give the group the data and the task. A participant sends a .ipynb notebook; the
+              server runs it from scratch and scores it with your metric. The answers it is scored
+              against never reach the participant, who sees their own place on the leaderboard.
+            </p>
+            <ul class="council-points">
+              <li>
+                <span>01</span>Every submission runs in a throwaway container with no network, its data
+                read-only.
+              </li>
+              <li>
+                <span>02</span>Public and private parts of the leaderboard, a deadline with late
+                submissions, a daily allowance.
+              </li>
+              <li><span>03</span>Its own page at a link like /k/name: no class needed.</li>
+            </ul>
+            <p class="council-ai">
+              Submissions can get GPUs — this server’s or a connected machine’s; up to eight
+              submissions share one card.
+            </p>
+          </div>
+        </div>
+        <div class="inner">
+          <p class="council-kernel">
+            <strong>A class competition, not an exam.</strong> It does not check who is at the
+            keyboard. For the debrief there is <strong>Leaderboard on the projector</strong>: one
+            table, without file names or service marks.
+          </p>
+        </div>
+      </section>
       <section class="section" id="kak">
         <div class="inner">
           <div class="steps-head">
@@ -736,7 +774,8 @@ df.shape</pre
               </div>
               <p>
                 Run Colloq on your own computer or server. Different courses can get their own
-                environments with the packages they need.
+                environments with the packages they need, and heavy classes and submissions can
+                compute on connected GPU machines.
               </p>
             </article>
           </div>
@@ -874,7 +913,8 @@ df.shape</pre
               <summary>Who sees the answers in Council?</summary>
               <p>
                 A student sees their own answer, the teacher sees the room’s. To discuss one, the
-                teacher can show it to everybody. The code runs in the shared kernel: this is
+                teacher can show it to everybody. Attempts work on personal copies of the data — in
+                the notebook’s kernel or, when the class is on a machine, on a pool of workers. This is
                 a teaching format, not an isolated sandbox for grading exams.
               </p>
             </details>
@@ -901,8 +941,9 @@ df.shape</pre
             <details>
               <summary>Can a whole course live here?</summary>
               <p>
-                Colloq covers the class itself and its materials. Schedules, homework, grades and
-                rosters stay in your own course system.
+                Much of it: a course has its own page with a dated plan and the materials of every
+                class, and competitions with a leaderboard cover tasks with a check. Grades and rosters
+                stay in your own course system.
               </p>
             </details>
           </div>
@@ -929,7 +970,7 @@ df.shape</pre
                 <span>01</span>
                 <div>
                   <strong>A computer or a server</strong>
-                  <p>Python and Docker; resources to match the course.</p>
+                  <p>Python and Docker; resources to match the course. For a cluster, a Helm chart for Kubernetes.</p>
                 </div>
               </li>
               <li>
