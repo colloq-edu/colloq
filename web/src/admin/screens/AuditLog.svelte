@@ -21,6 +21,7 @@
   import { auditActionLabel, auditActorless, auditDetail, auditTarget } from '@/admin/audit'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import EmptyState from '@/admin/ui/EmptyState.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import type { AdminAuditEvent } from '@shared/admin'
 
@@ -80,20 +81,62 @@
   const COL_WHO = `w-[200px] min-w-[140px] ${PHONE_LANE}`
   const COL_WHAT = `min-w-[220px] flex-1 ${PHONE_LANE}`
   const COL_FROM = `w-[130px] shrink-0 ${PHONE_LANE}`
+
+  /** The placeholder's rows: who, what and where at the lengths a page of the log has. */
+  const PLACEHOLDER_ROWS = [
+    { who: '8rem', what: '15rem' },
+    { who: '10rem', what: '11rem' },
+    { who: '7rem', what: '18rem' },
+    { who: '9rem', what: '13rem' },
+    { who: '8rem', what: '16rem' },
+    { who: '10rem', what: '10rem' },
+  ]
 </script>
 
 {#snippet eyebrow(text: string)}
   <span class="admin-label block">{text}</span>
 {/snippet}
 
+<!-- While the first page is on its way the subtitle says how long events are
+     kept, «…» for the days that page brings (and 5 for the plural an unknown
+     number takes, as in "N days"): the short one grew a line on a phone when the
+     number came, and pushed the page down. -->
 <AdminPage
   title={tr('admin.audit.title')}
-  subtitle={retentionDays === null
-    ? tr('admin.audit.subtitleShort')
-    : tr('admin.audit.subtitle', { count: retentionDays, days: formatNumber(retentionDays) })}
+  subtitle={retentionDays !== null
+    ? tr('admin.audit.subtitle', { count: retentionDays, days: formatNumber(retentionDays) })
+    : loading
+      ? tr('admin.audit.subtitle', { count: 5, days: '…' })
+      : tr('admin.audit.subtitleShort')}
 >
   {#if loading}
-    <div class="h-24"></div>
+    <!--
+      The first page is on its way: the lanes' head and rows in them, where
+      the events will stand, rather than an empty band. "More" keeps its own
+      word on its button: the page above it is already drawn.
+    -->
+    <div role="status" aria-busy="true" aria-label={tr('admin.audit.loading')}>
+      <span class="sr-only">{tr('admin.audit.loading')}</span>
+      <div class="min-w-[688px] max-[640px]:min-w-0" aria-hidden="true">
+        <div class="admin-list-head bg-canvas max-[640px]:hidden">
+          <div class={COL_WHEN}>{@render eyebrow(tr('admin.audit.when'))}</div>
+          <div class={COL_WHO}>{@render eyebrow(tr('admin.audit.who'))}</div>
+          <div class={COL_WHAT}>{@render eyebrow(tr('admin.audit.what'))}</div>
+          <div class={COL_FROM}>{@render eyebrow(tr('admin.audit.address'))}</div>
+        </div>
+        {#each PLACEHOLDER_ROWS as row, i (i)}
+          <div class="admin-data-row items-start max-[640px]:flex-wrap max-[640px]:gap-y-1.5">
+            <div class="{COL_WHEN} flex h-[22px] items-center"><Skeleton width="8.5rem" height="0.7rem" /></div>
+            <div class="{COL_WHO} flex flex-col">
+              <span class="flex h-6 items-center"><Skeleton width={row.who} height="0.85rem" /></span>
+              <span class="flex h-5 items-center"><Skeleton width="10rem" height="0.65rem" /></span>
+            </div>
+            <div class="{COL_WHAT} flex h-6 items-center"><Skeleton width={row.what} height="0.85rem" /></div>
+            <div class="{COL_FROM} flex h-5 items-center"><Skeleton width="6rem" height="0.65rem" /></div>
+          </div>
+        {/each}
+      </div>
+    </div>
   {:else if error && events.length === 0}
     <div class="flex flex-wrap items-center gap-3 py-4">
       <p class="min-w-0 flex-1 text-ui text-danger" role="alert">{error}</p>

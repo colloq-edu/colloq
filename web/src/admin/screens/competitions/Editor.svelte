@@ -27,6 +27,7 @@
   import { levelFields } from '@/admin/ui/field-rows'
   import Badge from '@/admin/screens/competitions/Badge.svelte'
   import Icon from '@/components/ui/Icon.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { cn, formatBytes } from '@/lib/utils'
@@ -445,6 +446,8 @@
   /* --------------------------------------------------------- environments */
 
   let environments = $state<AdminEnvironment[]>([])
+  /** The environments door has answered (or refused): until then the chosen one's state is not known, only not asked. */
+  let environmentsRead = $state(false)
   /**
    * The rooms' GPU slices and the cards given to submissions (`runners`), as
    * the environments door counts them; `null` until it answers. Kept rather
@@ -473,6 +476,11 @@
    * every course for an owner — the same set the server accepts.
    */
   let courses = $state<Course[]>([])
+  /**
+   * The courses have answered (or refused). Before that a chosen course is
+   * not "a course you do not teach" — it is not looked up yet.
+   */
+  let coursesRead = $state(false)
 
   onMount(() => {
     // These answers are an addendum to the form, not the form itself: without
@@ -486,6 +494,7 @@
         gpuCapacityKnown = state.gpuCapacityKnown !== false
       })
       .catch(() => (environments = []))
+      .finally(() => (environmentsRead = true))
     void adminApi
       .competitionSettings()
       .then((settings) => {
@@ -501,6 +510,7 @@
       .listCourses(adminAuth.isOwner ? 'all' : 'mine')
       .then((list) => (courses = list))
       .catch(() => (courses = []))
+      .finally(() => (coursesRead = true))
 
     /*
      * The cards are read again when this tab comes back into view. The red
@@ -775,19 +785,28 @@
       -->
       <label class="flex flex-wrap items-center gap-2.5">
         <span class="{HEAD} shrink-0">{tr('admin.competitions.courseLabel')}</span>
-        <select
-          class="field w-auto min-w-0 flex-[0_1_320px]"
-          aria-label={tr('admin.competitions.courseLabel')}
-          bind:value={courseId}
-        >
-          <option value="">{tr('admin.competitions.noCourse')}</option>
-          {#if courseId && !courses.some((one) => one.id === courseId)}
-            <option value={courseId}>{tr('admin.competitions.courseNotYours')}</option>
-          {/if}
-          {#each courses as one (one.id)}
-            <option value={one.id}>{one.name}</option>
-          {/each}
-        </select>
+        {#if !coursesRead}
+          <!-- The field's frame until the courses answer: before them a chosen
+               course could only be called not yours, and that is not known. -->
+          <span class="block h-10 min-w-0 flex-[0_1_320px] max-[640px]:h-11" role="status" aria-busy="true" aria-label={tr('admin.loading.courses')}>
+            <span class="sr-only">{tr('admin.loading.courses')}</span>
+            <Skeleton width="100%" height="100%" radius="0" />
+          </span>
+        {:else}
+          <select
+            class="field w-auto min-w-0 flex-[0_1_320px]"
+            aria-label={tr('admin.competitions.courseLabel')}
+            bind:value={courseId}
+          >
+            <option value="">{tr('admin.competitions.noCourse')}</option>
+            {#if courseId && !courses.some((one) => one.id === courseId)}
+              <option value={courseId}>{tr('admin.competitions.courseNotYours')}</option>
+            {/if}
+            {#each courses as one (one.id)}
+              <option value={one.id}>{one.name}</option>
+            {/each}
+          </select>
+        {/if}
         <span class="min-w-0 flex-1 text-micro text-muted">
           {courseId ? tr('admin.competitions.courseHint') : tr('admin.competitions.noCourseHint')}
         </span>
@@ -815,10 +834,17 @@
         </div>
         {#if previewing}
           <div class="prose-note min-h-[140px] px-3 py-3">
-            {#if rendered === null}
-              <p class="text-ui text-muted">{tr('admin.competitions.previewLoading')}</p>
-            {:else if description.trim() === ''}
+            {#if description.trim() === ''}
+              <!-- Nothing to render needs no renderer: said at once. -->
               <p class="text-ui text-muted">{tr('admin.competitions.descriptionEmpty')}</p>
+            {:else if rendered === null}
+              <!-- The markdown's chunk is on its way: the text's lines where it will stand. -->
+              <div class="flex flex-col gap-2.5 pt-1" role="status" aria-busy="true" aria-label={tr('admin.competitions.previewLoading')}>
+                <span class="sr-only">{tr('admin.competitions.previewLoading')}</span>
+                {#each ['92%', '84%', '96%', '58%'] as width, i (i)}
+                  <Skeleton {width} height="0.75rem" />
+                {/each}
+              </div>
             {:else}
               <!-- eslint-disable-next-line svelte/no-at-html-tags -->
               {@html rendered}
@@ -1593,6 +1619,12 @@
               : tr('admin.competitions.envUnbuilt')}
             tone={chosenEnvironment.state === 'ready' ? 'positive' : 'warning'}
           />
+        {:else if !environmentsRead}
+          <!-- Its state and packages while the environments answer, where they will stand. -->
+          <span class="flex items-center" role="status" aria-busy="true" aria-label={tr('admin.loading.environments')}>
+            <span class="sr-only">{tr('admin.loading.environments')}</span>
+            <Skeleton width="5.5rem" height="22px" radius="0" />
+          </span>
         {/if}
         {#if environmentGpu}
           <!-- As on Environments and NewSeminar: what the environment is, by
@@ -1605,6 +1637,8 @@
           <span class="min-w-0 flex-1 truncate text-micro text-muted">
             {chosenEnvironment.packages.slice(0, 6).join(', ')}
           </span>
+        {:else if !environmentsRead}
+          <span class="flex min-w-0 flex-1 items-center" aria-hidden="true"><Skeleton width="13rem" height="0.65rem" /></span>
         {/if}
         <span class="ml-auto shrink-0 text-micro text-muted">
           {tr('admin.competitions.sameAsRoom')}

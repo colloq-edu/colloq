@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { Response } from 'express'
 import type { AdminEnvironment, EnvironmentAbilities, EnvironmentState } from '@shared/admin'
 import { proxyBuildArgs, redactedArgument } from './outbound.js'
 import {
@@ -811,10 +812,12 @@ export interface FrozenImage {
  */
 const FROZEN_FORMAT = `{{println .Id}}{{.Os}}/{{.Architecture}}{{println}}${IMAGE_FORMAT}`
 
+const IMAGE_ID = /^sha256:[a-f0-9]{64}$/
+
 export function parseFrozenImage(out: string): FrozenImage | null {
   const [id = '', platform = '', ...rest] = out.split('\n')
   const facts = parseImageFacts(rest.join('\n'))
-  if (facts === null || !/^sha256:[a-f0-9]{64}$/.test(id.trim())) return null
+  if (facts === null || !IMAGE_ID.test(id.trim())) return null
   return { id: id.trim(), builtAt: facts.builtAt, platform: platform.trim(), python: facts.python }
 }
 
@@ -915,28 +918,58 @@ function freezeOf(id: string): Promise<string> {
 
 export type FreezeResult =
   | { state: 'ready'; text: string }
-  /** No image under the tag: never built, or the only build failed. */
-  | { state: 'unbuilt' }
+  /** No such image: under the tag, never built (or the only build failed); a pinned one, removed since. */
+  | { state: 'missing' }
   /** Docker did not answer, or the image could not give its freeze: the reason in its own words. */
   | { state: 'failed'; detail: string }
 
-/** The pip freeze of the image `colloq-kernel:<name>` now names, under its header line. */
-export async function readFreeze(name: string): Promise<FreezeResult> {
+/** The image a freeze would be read from, as one inspect finds it. */
+export type FrozenLookup =
+  | { state: 'found'; image: FrozenImage }
+  | { state: 'missing' }
+  | { state: 'failed'; detail: string }
+
+/**
+ * The image `readFreeze` would read, inspected and not read: what the
+ * competition pages' window is told beside its list (routes/competitions.ts
+ * · freezeFacts, through createFreezeReader), by the very lookup the download
+ * makes.
+ *
+ * `pinned` is an image id a competition's revision keeps: its submissions
+ * run in it whatever the tag names since. Anything else there names no image
+ * this server could have, a release catalog's reference among them, and is
+ * missing rather than handed to docker as an argument.
+ */
+export async function lookUpFrozen(name: string, pinned: string | null = null): Promise<FrozenLookup> {
   checkName(name)
+  if (pinned !== null && !IMAGE_ID.test(pinned)) return { state: 'missing' }
   const inspected = await run(
     'docker',
-    ['image', 'inspect', `colloq-kernel:${name}`, '--format', FROZEN_FORMAT],
+    ['image', 'inspect', pinned ?? `colloq-kernel:${name}`, '--format', FROZEN_FORMAT],
     8000,
   )
   if (inspected.code !== 0) {
     // "No such image" is a state of the environment; anything else is docker's trouble, said as docker said it on
     // stderr. A client that said nothing (not installed, or killed on its timeout) is docker being unavailable.
     return /no such (image|object)/i.test(inspected.out)
-      ? { state: 'unbuilt' }
+      ? { state: 'missing' }
       : { state: 'failed', detail: lastLine(inspected.stderr) || tr('server.dockerIsUnavailable.6292c5') }
   }
   const image = parseFrozenImage(inspected.stdout)
-  if (image === null) return { state: 'failed', detail: tr('server.environmentFreeze.noImageFacts') }
+  return image === null
+    ? { state: 'failed', detail: tr('server.environmentFreeze.noImageFacts') }
+    : { state: 'found', image }
+}
+
+/**
+ * The pip freeze of the image `colloq-kernel:<name>` now names, under its
+ * header line; with `pinned`, of that image instead (lookUpFrozen), under the
+ * environment's name all the same.
+ */
+export async function readFreeze(name: string, pinned: string | null = null): Promise<FreezeResult> {
+  const found = await lookUpFrozen(name, pinned)
+  if (found.state !== 'found') return found
+  const { image } = found
   try {
     const freeze = await freezeOf(image.id)
     const body = freeze === '' || freeze.endsWith('\n') ? freeze : `${freeze}\n`
@@ -945,6 +978,67 @@ export async function readFreeze(name: string): Promise<FreezeResult> {
     return { state: 'failed', detail: err instanceof Error ? err.message : String(err) }
   }
 }
+
+/**
+ * A freeze as the file the browser saves, `<name>-pip-freeze.txt`: the one
+ * answer of both doors that offer it, the panel's environments and a
+ * competition's window, so their files differ in nothing but the image read.
+ */
+export function sendFreeze(res: Response, name: string, text: string): void {
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+  res.setHeader('Content-Disposition', `attachment; filename="${name}-pip-freeze.txt"`)
+  // A rebuild changes the file under the same address.
+  res.setHeader('Cache-Control', 'no-store')
+  res.send(text)
+}
+
+/** How long a public door keeps a lookup or a read after it answered (createFreezeReader). */
+const KEPT_FOR_MS = 5000
+/** Entries kept: one lookup and one read per image a published competition runs in. */
+const ANSWERS_KEPT = 64
+
+/**
+ * The freeze for a door anyone may knock on: a competition's window
+ * (routes/competitions.ts), open to whoever has the page of a published
+ * competition, where the panel's is open to staff alone.
+ *
+ * The panel's lookup and read (lookUpFrozen, readFreeze), each kept a few
+ * seconds after it answers, a failure as well, and shared while in flight,
+ * the way the competition pages ask docker everything else
+ * (competitions/capabilities.ts · createCapabilityReader,
+ * environment-inventory.ts). Asked anew at every request, as the panel asks
+ * at every press, a burst of anonymous requests was a docker process each,
+ * and an image whose freeze fails a fresh container each, on the machine
+ * that runs the classes. Kept, it is one inspect per image every few seconds
+ * however many ask, and expiry starts at the answer, so slow ones coalesce
+ * too. A rebuild shows here within those seconds.
+ */
+export function createFreezeReader(clock: () => number = Date.now) {
+  const kept = new Map<string, { until: number; value: Promise<unknown> }>()
+  const keep = <T>(key: string, work: () => Promise<T>): Promise<T> => {
+    const known = kept.get(key)
+    if (known && known.until > clock()) return known.value as Promise<T>
+    const entry = { until: Infinity, value: Promise.resolve().then(work) }
+    entry.value.finally(() => { entry.until = clock() + KEPT_FOR_MS }).catch(() => undefined)
+    if (kept.size >= ANSWERS_KEPT && !kept.has(key)) kept.delete(kept.keys().next().value as string)
+    kept.set(key, entry)
+    return entry.value
+  }
+  return {
+    lookUp: (name: string, pinned: string | null = null): Promise<FrozenLookup> =>
+      keep(`lookup ${name} ${pinned ?? ''}`, () => lookUpFrozen(name, pinned)),
+    read: (name: string, pinned: string | null = null): Promise<FreezeResult> =>
+      keep(`read ${name} ${pinned ?? ''}`, async () => {
+        const read = await readFreeze(name, pinned)
+        // The door refuses in words that name no docker; why is said here, once a read rather than once a request.
+        if (read.state === 'failed') console.warn(`[environments] the pip freeze of ${name} could not be read: ${read.detail}`)
+        return read
+      }),
+  }
+}
+
+export type FreezeReader = ReturnType<typeof createFreezeReader>
+
 
 /* --------------------------------------------------------- build state */
 

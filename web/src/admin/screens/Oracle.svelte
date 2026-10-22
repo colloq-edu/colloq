@@ -38,6 +38,7 @@
   import Section from '@/admin/ui/Section.svelte'
   import { levelFields } from '@/admin/ui/field-rows'
   import Icon, { type IconName } from '@/components/ui/Icon.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import { uploadMb } from '@/admin/panel'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
@@ -517,6 +518,48 @@
   </div>
 {/snippet}
 
+<!--
+  The placeholders are drawn in the real form's own boxes, so the form lands
+  where they stood at any width: captions, hints and the options' words are
+  the panel's own and stand in words; what the server answers stands grey —
+  a field's box at the panel's height (44 px on a phone), a line of text.
+-->
+{#snippet boxPlaceholder()}
+  <span class="block h-10 max-[640px]:h-11"><Skeleton width="100%" height="100%" radius="0" /></span>
+{/snippet}
+
+<!-- A field of the limits: the caption, the box, the hint that is the same whatever the number. -->
+{#snippet limitPlaceholder(caption: string, hint: string)}
+  <div class="min-w-0">
+    <p class="admin-label mb-1.5 block">{caption}</p>
+    {@render boxPlaceholder()}
+    <p class="admin-meta mt-1.5">{hint}</p>
+  </div>
+{/snippet}
+
+<!-- Lines of an answer's sentence, grey: `phone` more of them where the column is narrow. -->
+{#snippet linesPlaceholder(widths: string[], phone: number)}
+  {#each widths as width, i (i)}
+    <span class={cn('block', i >= widths.length - phone && 'hidden max-[640px]:block')}><Skeleton {width} height="0.6rem" /></span>
+  {/each}
+{/snippet}
+
+<!-- The usage's three number tiles, framed as the real ones are: the captions in words, the numbers grey. -->
+{#snippet usagePlaceholder()}
+  <div class="grid grid-cols-1 divide-y divide-line-soft border border-line sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+    {#each [tr("admin.questions.asked"), null, tr("admin.seminars.with.questions")] as caption, i (i)}
+      <div class="flex flex-col gap-1.5 px-4 py-3.5">
+        <!-- The tokens' caption says whether the endpoint reports them: the answer's. -->
+        <p class="admin-label">{#if caption}{caption}{:else}<Skeleton width="5rem" height="0.65rem" />{/if}</p>
+        <p class="font-mono text-head font-bold"><Skeleton width="3.5rem" height="1.2rem" /></p>
+      </div>
+    {/each}
+  </div>
+  <!-- The breakdown or the sentence that there is none yet, and the day the counting began. -->
+  <p class="mt-4 text-ui">{@render linesPlaceholder(['70%', '90%', '40%'], 2)}</p>
+  <p class="admin-meta mt-4"><Skeleton width="12rem" height="0.6rem" /></p>
+{/snippet}
+
 {#snippet actions()}
   {#if chip}
     <span
@@ -532,6 +575,10 @@
       {/if}
       {chip.text}
     </span>
+  {:else if !ready && !loadError}
+    <!-- The connection's state comes with the settings: its chip's place,
+         which on a phone is a line of the header's own. -->
+    <span class="inline-flex h-6 items-center px-2" aria-hidden="true"><Skeleton width="7.5rem" height="0.65rem" /></span>
   {/if}
 
   {#if isOwner}
@@ -574,14 +621,130 @@
         {tr("admin.try.again")}
       </button>
     </div>
-  {:else if ready}
+  {:else}
+    <!-- Above the form and its placeholder alike: who may change it is
+         known before the settings are, and a band arriving with them would
+         push every section down a line. -->
     {#if !isOwner}
       <p class="mt-5 max-w-[720px] border border-line bg-surface px-4 py-3 text-ui text-muted">
         <span class="font-semibold text-ink">{tr("admin.read.only")}</span>
         {tr("admin.only.an.owner.can.change.these.settings.contact.an.owner.to.updat")}
       </p>
     {/if}
+  {/if}
+  {#if !loadError && !ready}
+    <!--
+      The settings are on their way: the sections are drawn whole — their
+      names and explanations are the panel's own words — and only what the
+      server answers stands in grey, field by field, where it will stand.
+      The choices are the real ones, faded and with nothing chosen: their
+      words are fixed, and which one is chosen is the answer.
+    -->
+    <div role="status" aria-busy="true" aria-label={tr('admin.loading.oracle')}>
+      <span class="sr-only">{tr('admin.loading.oracle')}</span>
+      <div class="contents" aria-hidden="true">
+        <Section
+          title={tr("admin.provider")}
+          description={tr("admin.connect.an.openai.compatible.api.questions.and.notebook.context.a")}
+        >
+          <Choice options={PROVIDERS} value="" disabled onchange={() => {}} />
+          <div class="mt-4 flex flex-wrap gap-4" use:levelFields>
+            <div class="min-w-[220px] flex-[1_1_320px]">
+              <p class="admin-label mb-1.5 block">{tr("admin.base.url")}</p>
+              {@render boxPlaceholder()}
+            </div>
+            <div class="w-[230px] max-w-full shrink-0">
+              <p class="admin-label mb-1.5 block">{tr("admin.model")}</p>
+              {@render boxPlaceholder()}
+            </div>
+          </div>
+          <div class="mt-4">
+            <p class="admin-label mb-1.5 block">{tr("admin.api.key")}</p>
+            <div class="flex flex-wrap gap-2">
+              <div class="min-w-[220px] flex-1">{@render boxPlaceholder()}</div>
+              <span class="block h-10 w-[200px] shrink-0 max-[640px]:h-11"><Skeleton width="100%" height="100%" radius="0" /></span>
+            </div>
+            <!-- Where the key comes from is the answer's sentence; sized for
+                 the key .env gives (.env.example), the longest of the three. -->
+            <p class="admin-meta mt-1.5">{@render linesPlaceholder(['96%', '60%', '90%', '85%', '40%'], 3)}</p>
+          </div>
+        </Section>
 
+        <Section
+          title={tr("admin.default.mode.and.limit")}
+          description={tr("admin.applies.to.all.seminars.each.seminar.can.further.restrict.the.ora")}
+        >
+          <div class="oracle-mode-choice">
+            <Choice options={MODES} value="" size="lg" disabled onchange={() => {}} />
+          </div>
+        </Section>
+
+        <Section title={tr('admin.request.shape')} description={tr('admin.request.shape.note')}>
+          <div class="flex items-start gap-3">
+            <span class="mt-[3px] flex"><Skeleton width="18px" height="18px" radius="0" /></span>
+            <span class="min-w-0">
+              <span class="block text-ui font-semibold text-ink">{tr('common.sendNames')}</span>
+              <!-- On or off is the answer, and so is the sentence that says which. -->
+              <span class="mt-1 block text-2xs">{@render linesPlaceholder(['90%', '55%'], 1)}</span>
+              <span class="mt-1 block text-2xs text-muted">{tr('common.sendNamesNote')}</span>
+            </span>
+          </div>
+          <div class="mt-5">
+            <p class="admin-label mb-1.5 block">{tr('common.reasoning')}</p>
+            <div class="oracle-mode-choice">
+              <Choice options={EFFORTS} value="" size="lg" disabled onchange={() => {}} />
+            </div>
+            <p class="admin-meta mt-2">{tr('common.reasoningNote')}</p>
+          </div>
+        </Section>
+
+        <Section
+          title={tr("admin.house.rules")}
+          description={tr("admin.add.instructions.about.the.course.and.expected.answers.model.resp")}
+        >
+          <!-- Inline, as the textarea is, and with its baseline at its foot
+               (overflow-hidden), as the textarea's: the line keeps the room
+               under it, and the counter stands where the real one will. -->
+          <span class="inline-block h-[104px] w-full overflow-hidden"><Skeleton width="100%" height="100%" radius="0" /></span>
+          <p class="admin-meta mt-2"><Skeleton width="9rem" height="0.6rem" /></p>
+        </Section>
+
+        <Section
+          title={tr("admin.usage.limits")}
+          description={tr("admin.limit.student.questions.and.request.size.teachers.are.exempt.from")}
+        >
+          <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4" use:levelFields>
+            {@render limitPlaceholder(
+              tr("admin.questions.per.student"),
+              `${LIMITS.questionsPerHour.min}–${LIMITS.questionsPerHour.max}${tr("admin.zero.switches.it.off")}`,
+            )}
+            {@render limitPlaceholder(tr("admin.between.questions"), tr("admin.a.student.waits.this.long.between.questions.the.teacher.does.not"))}
+            {@render limitPlaceholder(tr('common.agentSteps'), tr('common.agentStepsNote'))}
+            {@render limitPlaceholder(
+              tr("admin.notebook.context"),
+              `${grouped(LIMITS.contextChars.min)}–${grouped(LIMITS.contextChars.max)} ${tr("admin.characters.of.notebook.context.may.be.included.with.a.question")}`,
+            )}
+            <div class="min-w-0">
+              <p class="admin-label mb-1.5 block">{tr("admin.maximum.file.upload")}</p>
+              <div class="flex h-10 items-center border border-dashed border-line px-3 max-[640px]:h-11">
+                <Skeleton width="4rem" height="0.65rem" />
+              </div>
+              <p class="admin-meta mt-1.5">
+                <span class="font-mono">MAX_UPLOAD_MB</span> {tr("admin.in.the.server.environment.read.at.boot.change.it.in")} <span class="font-mono">.env</span> {tr("admin.and.restart")}
+              </p>
+            </div>
+          </div>
+        </Section>
+
+        <Section
+          title={tr("admin.usage")}
+          description={tr("admin.request.counts.recorded.by.this.server.token.counts.depend.on.wha")}
+        >
+          {@render usagePlaceholder()}
+        </Section>
+      </div>
+    </div>
+  {:else if ready && !loadError}
     <!-- One disabled fieldset rather than a disabled= on thirty controls: the
          browser propagates it to every descendant, so a control added later
          cannot forget to opt in. -->
@@ -969,7 +1132,13 @@
         <button type="button" class="btn-outline mt-3" onclick={() => void loadUsage()}>
           {tr("admin.try.again")}
         </button>
-      {:else if usageReady}
+      {:else if !usageReady}
+        <!-- The counts come by a door of their own, and may come later than the form. -->
+        <div role="status" aria-busy="true" aria-label={tr('admin.loading.usage')}>
+          <span class="sr-only">{tr('admin.loading.usage')}</span>
+          <div aria-hidden="true">{@render usagePlaceholder()}</div>
+        </div>
+      {:else}
         <div class="grid grid-cols-1 divide-y divide-line-soft border border-line sm:grid-cols-3 sm:divide-x sm:divide-y-0">
           {@render tile(counted.format(usageQuestions), tr("admin.questions.asked"))}
           {#if usageTokens === null}

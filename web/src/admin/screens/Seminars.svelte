@@ -2603,7 +2603,16 @@
           <p class="mb-3 mt-1.5 text-2xs text-muted">{tr('admin.seminars.list.hosts.hint')}</p>
 
           {#if hosts === null && !hostsError}
-            <p class="text-2xs text-muted">{tr('admin.seminars.list.hosts.loading')}</p>
+            <!-- The chips' row while the room's people are read: a chip and
+                 the dashed "add", at their own height. -->
+            <div class="flex flex-wrap items-center gap-2" role="status" aria-busy="true" aria-label={tr('admin.seminars.list.hosts.loading')}>
+              <span class="sr-only">{tr('admin.seminars.list.hosts.loading')}</span>
+              {#each ['9.5rem', '7.5rem'] as width, i (i)}
+                <span class="block h-9 max-[640px]:h-11" style:width aria-hidden="true">
+                  <Skeleton width="100%" height="100%" radius="0" />
+                </span>
+              {/each}
+            </div>
           {:else if hosts}
             <div class="flex flex-wrap items-center gap-2">
               {#each hosts as host (host.id)}
@@ -2658,7 +2667,23 @@
                 </div>
                 {#if staff === null}
                   {#if !staffFailed}
-                    <p class="px-3 py-2.5 text-2xs text-muted">{tr('admin.seminars.list.hosts.loading')}</p>
+                    <!-- The staff's rows as they will stand: the avatar, the
+                         name over the address, "add" on the right. -->
+                    <div role="status" aria-busy="true" aria-label={tr('admin.seminars.list.hosts.loading')}>
+                      <span class="sr-only">{tr('admin.seminars.list.hosts.loading')}</span>
+                      <ul aria-hidden="true">
+                        {#each ['8rem', '10.5rem', '6.5rem'] as width, i (i)}
+                          <li class="flex items-center gap-2.5 border-b border-line-soft px-3 py-2 last:border-b-0">
+                            <Skeleton width="20px" height="20px" radius="999px" />
+                            <span class="flex min-w-0 flex-1 flex-col gap-1.5">
+                              <Skeleton {width} height="0.85rem" />
+                              <Skeleton width="11rem" height="0.6rem" />
+                            </span>
+                            <Skeleton width="4rem" height="0.65rem" />
+                          </li>
+                        {/each}
+                      </ul>
+                    </div>
                   {/if}
                 {:else if !anyoneLeft}
                   <p class="px-3 py-2.5 text-2xs text-muted">{tr('admin.seminars.list.hosts.everyone')}</p>

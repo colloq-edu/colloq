@@ -5016,5 +5016,16 @@ export const serverMessages: MessageCatalog = {
   "server.environmentFreeze.noImageFacts": {
     "ru": "Docker не назвал id и дату сборки образа",
     "en": "docker did not name the image’s id and build date"
+  },
+  // The same download from a competition's window (server/src/routes/competitions.ts · freeze): the image its revision
+  // pinned, which its submissions run in, is no longer on this server, whatever the environment's tag names now; and a
+  // read that failed, said to anyone with the page as the list beside it says it, naming none of docker's diagnostics.
+  "server.environmentFreeze.pinnedGone": {
+    "ru": "Образа «{name}», в котором проверяются посылки этого соревнования, на сервере больше нет: его pip freeze не прочитать.",
+    "en": "The “{name}” image used to check this competition’s submissions is no longer on this server, so its pip freeze cannot be read."
+  },
+  "server.environmentFreeze.unavailable": {
+    "ru": "Не удалось прочитать pip freeze окружения «{name}». Попробуйте ещё раз или обратитесь к преподавателю.",
+    "en": "Could not read the pip freeze of “{name}”. Try again or contact your teacher."
   }
 }

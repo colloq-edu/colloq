@@ -14,6 +14,11 @@ export const commonMessages: MessageCatalog = {
   'common.environmentNoMatches': { ru: 'Таких пакетов нет в окружении.', en: 'No matching packages in this environment.' },
   'common.environmentRetry': { ru: 'Повторить', en: 'Try again' },
   'common.environmentClose': { ru: 'Закрыть сведения об окружении', en: 'Close environment details' },
+  // «Скачать pip freeze» at the window's foot, the panel's and a competition page's alike (the note beside it is each
+  // page's own): the action, while it reads, and its failure when the server gave no words.
+  'common.environmentFreeze': { ru: 'Скачать pip freeze', en: 'Download pip freeze' },
+  'common.environmentFreezeReading': { ru: 'Читаем pip freeze…', en: 'Reading pip freeze…' },
+  'common.environmentFreezeFailed': { ru: 'Не удалось скачать pip freeze. Попробуйте ещё раз.', en: 'Could not download the pip freeze. Try again.' },
   'common.loadingApp': { ru: 'Загрузка Colloq', en: 'Loading Colloq' },
   'common.loading': { ru: 'Загрузка…', en: 'Loading…' },
   'common.gigabytes': { ru: '{size} ГБ', en: '{size} GB' },

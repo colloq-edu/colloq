@@ -26,6 +26,7 @@
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { cn, relativeTime } from '@/lib/utils'
   import { LIMITS, SIGN_IN_PATH, type AdminRole, type Teacher, type TeacherRef, type TeacherWithCourses } from '@shared/admin'
@@ -81,6 +82,12 @@
   const COL_LINK = `w-[220px] min-w-[84px] ${PHONE_LANE}`
   const COL_SEEN = `w-[150px] min-w-[96px] ${PHONE_LANE}`
   const COL_MENU = 'w-10 shrink-0 max-[640px]:w-11'
+  /** The placeholder's rows: names, addresses and courses of different lengths, as people are. */
+  const TEACHER_PLACEHOLDERS = [
+    { name: '8rem', email: '11rem', courses: '9rem' },
+    { name: '10rem', email: '9rem', courses: '6rem' },
+    { name: '7rem', email: '12rem', courses: '11rem' },
+  ]
   /** The person's own floor — an avatar, a name worth reading. */
   const COL_PERSON =
     'min-w-[160px] flex-1 max-[640px]:min-w-0 max-[640px]:basis-[calc(100%_-_44px)] ' +
@@ -201,6 +208,11 @@
    */
   /** Every course on the instance, for the owner's pickers; null until read (or for a teacher). */
   let allCourses = $state<Course[] | null>(null)
+  /**
+   * Why the courses could not be read: the picker says it instead of
+   * standing on its placeholder forever. Opening the picker again asks again.
+   */
+  let coursesErrorText = $state<(() => string) | null>(null)
   /** The person whose «+ курс» picker is open. */
   let coursePicker = $state<string | null>(null)
   let courseQuery = $state('')
@@ -213,10 +225,12 @@
 
   async function loadCourses(): Promise<void> {
     if (!isOwner) return
+    coursesErrorText = null
     try {
       allCourses = await adminApi.listCourses('all')
-    } catch {
+    } catch (cause: unknown) {
       allCourses = null
+      coursesErrorText = () => report(cause)
     }
   }
 
@@ -674,8 +688,21 @@
         class="admin-menu absolute left-0 top-full z-20 mt-1 w-[300px] max-w-[calc(100vw-32px)] p-2"
         onclick={(event) => event.stopPropagation()}
       >
-        {#if allCourses === null}
-          <p class="px-2 py-1.5 text-2xs text-muted">{tr('admin.teachers.loadingCourses')}</p>
+        {#if allCourses === null && coursesErrorText}
+          <p class="px-2 py-1.5 text-2xs text-danger" role="alert">{coursesErrorText()}</p>
+        {:else if allCourses === null}
+          <!-- The courses as the picker lists them: a colour square and a name a row. -->
+          <div role="status" aria-busy="true" aria-label={tr('admin.teachers.loadingCourses')}>
+            <span class="sr-only">{tr('admin.teachers.loadingCourses')}</span>
+            <div aria-hidden="true">
+              {#each ['9rem', '12rem', '7.5rem'] as width, i (i)}
+                <div class="flex h-10 items-center gap-2 px-3">
+                  <Skeleton width="7px" height="7px" radius="0" />
+                  <Skeleton {width} height="0.8rem" />
+                </div>
+              {/each}
+            </div>
+          </div>
         {:else}
           {#if allCourses.length > 6}
             <input
@@ -824,6 +851,66 @@
       <button type="button" class="btn-outline shrink-0" onclick={() => void load()}>
         {tr("admin.try.again")}
       </button>
+    </div>
+  {:else if !loaded}
+    <!--
+      The staff are on their way: rows in the lanes they will fill — the
+      avatar with the name over the address, the role, the courses, the link,
+      the last visit — under the head that is already drawn. On a phone the
+      lanes stand under the person with their captions, as the cards do.
+    -->
+    <div role="status" aria-busy="true" aria-label={tr('admin.loading.teachers')}>
+      <span class="sr-only">{tr('admin.loading.teachers')}</span>
+      {#each TEACHER_PLACEHOLDERS as row, i (i)}
+        <div
+          class="admin-list-row min-h-[66px] items-center border-b border-line-soft max-[640px]:flex-wrap
+                 max-[640px]:items-start max-[640px]:gap-x-0 max-[640px]:gap-y-2.5 max-[640px]:py-3"
+          aria-hidden="true"
+        >
+          <div class={cn(COL_PERSON, 'flex items-center gap-3')}>
+            <Skeleton width="32px" height="32px" radius="999px" />
+            <!-- 44: the name's line and the address's, as the real pair stands. -->
+            <div class="flex h-11 min-w-0 flex-1 flex-col justify-center gap-2">
+              <Skeleton width={row.name} height="0.85rem" />
+              <Skeleton width={row.email} height="0.65rem" />
+            </div>
+          </div>
+          <!-- The four lanes with their phone captions, in the real ones'
+               boxes: the role (a field for an owner, a word for a teacher),
+               a row of chips, the masked link with an owner's copy button,
+               the last visit. -->
+          {#each [
+            { col: COL_ROLE, caption: tr("admin.role.1128"), kind: 'role' },
+            { col: COL_COURSES, caption: tr("admin.teachers.courses"), kind: 'courses' },
+            { col: COL_LINK, caption: tr("admin.sign.in.link"), kind: 'link' },
+            { col: COL_SEEN, caption: tr("admin.last.seen"), kind: 'seen' },
+          ] as placeholder (placeholder.kind)}
+            <div class={placeholder.col}>
+              {@render lane(placeholder.caption)}
+              {#if placeholder.kind === 'role' && isOwner}
+                <span class="block h-10 w-[9rem] max-w-full max-[640px]:h-11"><Skeleton width="100%" height="100%" radius="0" /></span>
+              {:else if placeholder.kind === 'role'}
+                <span class="text-ui"><Skeleton width="6rem" height="0.8rem" /></span>
+              {:else if placeholder.kind === 'courses'}
+                <!-- A row of chips, 28 px as a chip and the "+ course" button are. -->
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <span class="block h-7" style:width={row.courses}><Skeleton width="100%" height="100%" radius="0" /></span>
+                </div>
+              {:else if placeholder.kind === 'link'}
+                <div class="flex items-center gap-2">
+                  <p class="admin-meta min-w-0 flex-1"><Skeleton width="10rem" height="0.65rem" /></p>
+                  {#if isOwner}
+                    <span class="block size-9 shrink-0 max-[640px]:size-11"><Skeleton width="100%" height="100%" radius="0" /></span>
+                  {/if}
+                </div>
+              {:else}
+                <span class="text-2xs"><Skeleton width="5rem" height="0.65rem" /></span>
+              {/if}
+            </div>
+          {/each}
+          <div class={COL_MENU}></div>
+        </div>
+      {/each}
     </div>
   {/if}
 

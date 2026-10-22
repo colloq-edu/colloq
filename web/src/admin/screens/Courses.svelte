@@ -21,6 +21,8 @@
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
+  import RowsSkeleton from '@/components/ui/RowsSkeleton.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import { colorForId } from '@shared/protocol'
   import {
     AdminApiError,
@@ -101,6 +103,25 @@
   /** Course requested, no answer yet: an empty area is not an answer. */
   let loadingOne = $state(false)
   /**
+   * The list has answered once. Until then "no courses yet" and "Mine 0"
+   * would be claims nobody has made yet: the rows' placeholder stands where
+   * the rows will, and a later read draws under the list already shown.
+   */
+  let listRead = $state(false)
+  /**
+   * The first read was refused: the error says so, with a retry, and neither
+   * the empty state nor a count stands beside it — a refusal is not "no
+   * courses". A later read that fails leaves the list it has on screen.
+   */
+  let listFailed = $state(false)
+  /**
+   * The rooms behind the course's pickers have answered once. Before that
+   * "no classes to add" is not known, only not asked.
+   */
+  let seminarsRead = $state(false)
+  /** Why the rooms were refused: the pickers say it rather than that there are none. */
+  let seminarsErrorText = $state<(() => string) | null>(null)
+  /**
    * The instance's «сегодня» (adminApi.courseToday): what «прошло», the
    * today line and «через 2 дня» are counted from. The browser's own day
    * stands in until it arrives, and if it never does.
@@ -164,11 +185,21 @@
       allCourses = all
       courses = scope === 'all' && all ? all : mine
       navCounts.courses = mine.length
+      listRead = true
+      listFailed = false
       await loadOrphans()
     } catch (cause) {
       if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
       errorText = () => (explain(cause))
+      if (!listRead) listFailed = true
     }
+  }
+
+  /** The retry under a refused first read: the placeholder again while it asks. */
+  function retryList(): void {
+    errorText = null
+    listFailed = false
+    void loadList()
   }
 
   async function loadOne(id: string): Promise<void> {
@@ -211,9 +242,13 @@
       scope = readCourseScope(adminAuth.isOwner, browserStorage)
       seminarScope = seminarScopeFor(adminAuth.isOwner, scope, teaches)
       seminars = await adminApi.listSeminars(seminarScope)
+      seminarsErrorText = null
     } catch (cause) {
       if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
       errorText = () => (explain(cause))
+      seminarsErrorText = () => explain(cause)
+    } finally {
+      seminarsRead = true
     }
   }
 
@@ -1306,7 +1341,24 @@
         {tr('admin.cancel')}
       </button>
     </div>
-    {#if choices.length === 0}
+    {#if !seminarsRead}
+      <!-- The rooms are still on their way: the list's frame with its rows,
+           not "no classes" said before anyone was asked. -->
+      <div role="status" aria-busy="true" aria-label={tr('admin.loading.seminars')}>
+        <span class="sr-only">{tr('admin.loading.seminars')}</span>
+        <ul class="flex flex-col border border-line bg-canvas" aria-hidden="true">
+          {#each ['11rem', '8rem', '13rem'] as width, i (i)}
+            <li class="flex min-h-10 items-center gap-3 border-b border-line-soft px-3 py-2 last:border-b-0 max-[640px]:min-h-11">
+              <span class="min-w-0 flex-1"><Skeleton {width} height="0.85rem" /></span>
+              <Skeleton width="7rem" height="0.7rem" />
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {:else if seminarsErrorText}
+      <!-- A refused list is not "no classes": which could be added is not known. -->
+      <p class="text-ui text-danger" role="alert">{seminarsErrorText()}</p>
+    {:else if choices.length === 0}
       <p class="text-ui text-muted">{tr("admin.no.seminars.available.to.add")}</p>
     {:else}
       <ul class="flex max-h-[320px] flex-col overflow-y-auto border border-line bg-canvas">
@@ -1336,6 +1388,20 @@
   </div>
 {/snippet}
 
+<!-- The way back above a course's title: the same link while it opens and once it has. -->
+{#snippet coursesCrumb()}
+  <a
+    class="hover:text-ink"
+    href="/admin/courses"
+    onclick={(event) => {
+      event.preventDefault()
+      navigate('/admin/courses')
+    }}
+  >
+    {tr('admin.courses')} /
+  </a>
+{/snippet}
+
 {#if !open}
   <AdminPage
     title={tr("admin.courses")}
@@ -1346,7 +1412,7 @@
            two joined segments, the chosen one filled, each with its count. -->
       {#if showScope}
         <div class="flex h-10 shrink-0 border border-primary max-[640px]:w-full" role="group" aria-label={tr('admin.course.scope.label')}>
-          {#each [['mine', mineCourses.length], ['all', allCourses?.length ?? null]] as const as [value, count] (value)}
+          {#each [['mine', listRead ? mineCourses.length : null], ['all', allCourses?.length ?? null]] as const as [value, count] (value)}
             {@const on = scope === value}
             <button
               type="button"
@@ -1404,7 +1470,16 @@
         </div>
       {/if}
 
-      {#if courses.length === 0 && !creating}
+      {#if listFailed}
+        <!-- The refusal is said above; what the list holds is not known. -->
+        <button type="button" class="btn-outline" onclick={retryList}>{tr('admin.try.again')}</button>
+      {:else if !listRead}
+        <!-- The list is on its way: rows where the rows will be, as on
+             the classes and the competitions. "No courses yet" stood here
+             before the answer, and told a teacher with courses there were
+             none until the list landed. -->
+        <RowsSkeleton label={tr('admin.loading.courses')} />
+      {:else if courses.length === 0 && !creating}
         <!-- «Нет курсов» means three different things now: a fresh instance,
              a teacher nobody has added anywhere, an owner who teaches none of
              the courses there are. Each is told what to do next. -->
@@ -1532,19 +1607,7 @@
   </AdminPage>
 {:else if course}
   {@const shown = course}
-  <AdminPage title={shown.name}>
-    {#snippet eyebrow()}
-      <a
-        class="hover:text-ink"
-        href="/admin/courses"
-        onclick={(event) => {
-          event.preventDefault()
-          navigate('/admin/courses')
-        }}
-      >
-        {tr('admin.courses')} /
-      </a>
-    {/snippet}
+  <AdminPage title={shown.name} eyebrow={coursesCrumb}>
     {#snippet lede()}
       <!-- The address copied is the same one read out loud: /c/<name> if a
            name was given. Otherwise the id went into the chat, and the class
@@ -1676,7 +1739,23 @@
                   />
                 </div>
                 {#if offered === null}
-                  <p class="px-3 py-3 text-2xs text-muted">{tr('admin.course.teachers.loading')}</p>
+                  <!-- The staff list's rows, as they will stand: the avatar,
+                       the name over the address, "Add" on the right. -->
+                  <div role="status" aria-busy="true" aria-label={tr('admin.course.teachers.loading')}>
+                    <span class="sr-only">{tr('admin.course.teachers.loading')}</span>
+                    <ul aria-hidden="true">
+                      {#each ['8rem', '10.5rem', '6.5rem'] as width, i (i)}
+                        <li class="flex min-h-11 items-center gap-2.5 px-3 py-2">
+                          <Skeleton width="24px" height="24px" radius="999px" />
+                          <span class="flex min-w-0 flex-1 flex-col gap-1.5">
+                            <Skeleton {width} height="0.85rem" />
+                            <Skeleton width="11rem" height="0.65rem" />
+                          </span>
+                          <Skeleton width="4.5rem" height="0.7rem" />
+                        </li>
+                      {/each}
+                    </ul>
+                  </div>
                 {:else if offered.shown.length === 0}
                   <p class="px-3 py-3 text-2xs text-muted">
                     <!-- «Все уже в курсе» only when there was a staff list to say it of:
@@ -2381,6 +2460,69 @@
       </section>
     </div>
   </AdminPage>
+{:else if loadingOne}
+  <!--
+    The course is on its way: its page as it will stand, so nothing moves
+    when it lands — the way back, the address line and the two actions in
+    the header, the teachers' strip with its chips, the table's head and its
+    rows. The name is the one word not known yet; "Course" holds its line.
+  -->
+  <AdminPage title={tr("admin.course.218")} eyebrow={coursesCrumb}>
+    {#snippet lede()}
+      {#each ['15rem', '9rem', '6rem'] as width, i (i)}
+        <span class="inline-flex h-[22px] items-center" aria-hidden="true">
+          <Skeleton {width} height="0.8rem" />
+        </span>
+      {/each}
+    {/snippet}
+    {#snippet actions()}
+      {#each ['176px', '216px'] as width, i (i)}
+        <span class="block h-10 max-[640px]:h-11 max-[640px]:grow" style:width aria-hidden="true">
+          <Skeleton width="100%" height="100%" radius="0" />
+        </span>
+      {/each}
+    {/snippet}
+
+    <div role="status" aria-busy="true" aria-label={tr("admin.opening.course")}>
+      <span class="sr-only">{tr("admin.opening.course")}</span>
+      <section class="-mx-7 border-b border-line bg-surface px-7 py-3.5" aria-hidden="true">
+        <div class="flex flex-wrap items-center gap-2.5">
+          <span class="admin-label pr-1.5">{tr('admin.course.teachers.label')}</span>
+          {#each ['8.5rem', '10rem'] as width, i (i)}
+            <Skeleton {width} height="32px" radius="0" />
+          {/each}
+          <span class="min-w-0 flex-1 max-[900px]:hidden"></span>
+          <p class="max-w-[300px] text-right text-2xs text-muted max-[900px]:basis-full max-[900px]:max-w-none max-[900px]:text-left">
+            {tr('admin.course.teachers.note')}
+          </p>
+        </div>
+      </section>
+
+      <div class="course-rows pt-2" aria-hidden="true">
+        <div class="course-grid course-head items-center border-b border-line py-2.5">
+          <span class="admin-label">{tr('admin.course.col.n')}</span>
+          <span class="admin-label">{tr('admin.course.col.day')}</span>
+          <span class="admin-label">{tr('admin.course.col.class')}</span>
+          <span class="admin-label">{tr('admin.course.col.page')}</span>
+          <span></span>
+        </div>
+        {#each ['14rem', '11rem', '16rem', '9rem'] as width, i (i)}
+          <div class="course-grid course-row border-b border-line py-3.5">
+            <span class="c-n flex h-[22px] items-center"><Skeleton width="1.25rem" height="0.8rem" /></span>
+            <span class="c-day flex h-[22px] items-center"><Skeleton width="4.5rem" height="0.7rem" /></span>
+            <div class="c-title flex min-w-0 flex-col items-start gap-1.5 pr-6">
+              <span class="flex h-6 items-center"><Skeleton {width} height="0.85rem" /></span>
+              <Skeleton width="9rem" height="24px" radius="0" />
+            </div>
+            <div class="c-page flex min-w-0 flex-col items-start gap-1">
+              <span class="flex h-[22px] items-center"><Skeleton width="7.5rem" height="0.7rem" /></span>
+            </div>
+            <span class="c-menu"></span>
+          </div>
+        {/each}
+      </div>
+    </div>
+  </AdminPage>
 {:else}
   <!--
     The course at this address did not open. A course address is given to the
@@ -2389,18 +2531,14 @@
     no way back.
   -->
   <AdminPage title={tr("admin.course.218")}>
-    {#if loadingOne}
-      <p class="py-16 text-center text-ui text-muted">{tr("admin.opening.course")}</p>
-    {:else}
-      <EmptyState
-        title={tr("admin.could.not.open.course")}
-        hint={error ?? tr("admin.check.the.address.or.return.to.the.course.list")}
-      >
-        <button type="button" class="btn-primary" onclick={() => navigate('/admin/courses')}>
-          {tr("admin.all.courses")}
-        </button>
-      </EmptyState>
-    {/if}
+    <EmptyState
+      title={tr("admin.could.not.open.course")}
+      hint={error ?? tr("admin.check.the.address.or.return.to.the.course.list")}
+    >
+      <button type="button" class="btn-primary" onclick={() => navigate('/admin/courses')}>
+        {tr("admin.all.courses")}
+      </button>
+    </EmptyState>
   </AdminPage>
 {/if}
 

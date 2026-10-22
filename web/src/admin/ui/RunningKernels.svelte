@@ -29,6 +29,7 @@
   import type { RunningBook, RunningBusy, RunningClass, RunningKernels, RunningRun } from '@shared/admin'
   import Badge from '@/admin/screens/competitions/Badge.svelte'
   import Icon from '@/components/ui/Icon.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import { courseColor } from '@/admin/course-color'
   import { ago } from '@/admin/panel'
@@ -76,9 +77,16 @@
     roomIdleMin: number | null
     /** After a stop: what the machine holds changed, so the gauge above can catch up. */
     onchange?: () => void
+    /**
+     * The page around the census is still on its way (ResourcesTab: the
+     * machine's section above it). The census is asked at once all the same,
+     * but its rows wait under the placeholder: drawn now, they and their stop
+     * buttons would drop down the page when the section above lands.
+     */
+    held?: boolean
   }
 
-  let { roomIdleMin, onchange }: Props = $props()
+  let { roomIdleMin, onchange, held = false }: Props = $props()
 
   type Dialog =
     | { kind: 'stop'; row: RunningClass; what: 'class' | 'own'; busy: RunningBusy | null }
@@ -374,11 +382,23 @@
 
 <div class="rk">
   <div class="rk-body">
-    {#if loadError && !data}
+    {#if held || (!data && !loadError)}
+      <!--
+        The census is on its way, or waits for the page above it. One line,
+        where its first line will be: whether a table follows is the answer
+        itself — an idle server's is this one line ("no kernel is running right
+        now"), and three grey rows over it collapsed to it and pulled the
+        room's fields below up under the hand. A busy server's table grows
+        downward from it.
+      -->
+      <div role="status" aria-busy="true" aria-label={tr('admin.resourcesTab.running.loading')}>
+        <span class="sr-only">{tr('admin.resourcesTab.running.loading')}</span>
+        <p class="text-ui" aria-hidden="true"><Skeleton width="17rem" height="0.8rem" /></p>
+      </div>
+    {:else if !data || !sum}
+      <!-- With no census here the first read was refused: said, with a retry. -->
       <p class="text-ui text-danger" role="alert">{tr('admin.resourcesTab.running.loadFailed')} {loadError}</p>
       <button type="button" class="btn-outline mt-3" onclick={() => void load()}>{tr('admin.try.again')}</button>
-    {:else if !data || !sum}
-      <p class="text-ui text-muted">{tr('admin.resourcesTab.running.loading')}</p>
     {:else if empty}
       {@const line = emptyLine(data)}
       <!-- An empty answer from a census that did not complete is not "nothing
