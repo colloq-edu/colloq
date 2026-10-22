@@ -23,7 +23,9 @@
  * CLASS_BARRIER_MS and never CLASS_BARRIER_STALL_MS without progress. A push
  * also goes by itself shortly after any write here (EAGER_PUSH_MS), so that a
  * Run usually finds it acked; the room's own notebook files, which every
- * run's outputs rewrite, go only that way, never on a run's path.
+ * run's outputs rewrite, go only that way, never on a run's path. A council
+ * pool's attempt, which computes on its epoch, goes at once whenever they
+ * are all the machine lacks (notebooksAlone, 0.26.1).
  *
  * HOME ← MACHINE: THE PULL BARRIER (§8.7). filesSettled asks every machine of
  * the class that still calls for a scan, and waits until it had its time to
@@ -266,6 +268,16 @@ interface Kept {
   name: string | null
   /** Reports of it whose verdict waits for the copy's bytes (a pull): the machine keeps its version until they landed. */
   seqs: number[]
+}
+
+/** What a run tells the barrier (ClassFiles#filesBarrier). */
+export interface BarrierOptions {
+  /** Hears what is on its way to the machine (movingWords) while the run waits. */
+  onProgress?: (words: string) => void
+  /** The run was stopped (kernel/index.ts · interruptScope): its wait ends at once. */
+  signal?: AbortSignal
+  /** A council pool's attempt (§9.6, 0.26.1): no change of the room's live notebooks holds it (notebooksAlone). */
+  notebooksAside?: boolean
 }
 
 /** A run waiting at the barrier (§8.2). */
@@ -1306,14 +1318,21 @@ export class ClassFiles {
    * without progress, or CLASS_BARRIER_MS in all. `onProgress` hears
    * «Файлы едут на машину: 12 из 150 МБ…». `signal`: the run was stopped
    * while it waited (kernel/index.ts · interruptScope): the wait ends at once,
-   * and the caller reads the signal.
+   * and the caller reads the signal. `notebooksAside`: a council pool's
+   * attempt (§9.6, 0.26.1), which goes at once when all the machine lacks is
+   * the room's notebooks (notebooksAlone); otherwise it waits as any run.
    */
-  async filesBarrier(sessionId: string, runnerId: string, options: { onProgress?: (words: string) => void; signal?: AbortSignal } = {}): Promise<void> {
+  async filesBarrier(sessionId: string, runnerId: string, options: BarrierOptions = {}): Promise<void> {
     const copy = this.copyOf(sessionId, runnerId)
     if (!copy || options.signal?.aborted) return
     const now = this.clock.now()
     const epoch = treeEpochOf(sessionId)
     if (copy.acked && copy.pushes.length === 0 && !copy.dirty && copy.walk && copy.walk.epoch === epoch && now - copy.walk.at <= FRESH_WALK_MS) return
+    if (options.notebooksAside) {
+      const alone = await this.track(this.notebooksAlone(copy))
+      // Or its copy went meanwhile (the run meets the kernel's news, as dropCopy lets a waiting one go), or it was stopped.
+      if (alone || this.copies.get(copyKey(sessionId, runnerId)) !== copy || options.signal?.aborted) return
+    }
     // The run waits for the push planned next (now, or once a rebuild is done), or for the one in flight when it is this walk's.
     const { waiter, done } = this.waitForAck(copy, options)
     if (copy.acked) {
@@ -1329,6 +1348,61 @@ export class ClassFiles {
       this.wake(runnerId)
     }
     await done
+  }
+
+  /**
+   * WHETHER ALL THE MACHINE LACKS IS THE ROOM'S NOTEBOOKS (§9.6, 0.26.1),
+   * asked by a council pool's attempt before it waits at all. The attempt
+   * computes on its epoch, never on a notebook's file; the class folder is
+   * its data. So it goes when every change of this server's the machine has
+   * not acked is a live notebook's file put anew (`isBook`: the files
+   * projectBooks writes) — in the folder against what the copy acked, and in
+   * every push not yet acked, which the machine may hold half applied.
+   * Anything else is waited for as any run waits for it: another file, a
+   * folder, a removal or a move, a copy being rebuilt from the machine's
+   * report or not yet acked whole (its full push on the way), a walk past
+   * its ceiling, a row staff deleted there.
+   *
+   * Asked of the walk, not of the push a waiter was given: the eager push of
+   * a notebook's write, planned on the very walk a run's refresh waited for,
+   * takes that run as its own (waitersOn) before the refresh can let it go
+   * (releaseNext lets go only those given none), and the run then waits for
+   * that push's ack — every attempt pressed in that moment. The notebooks go
+   * on in the background: by the push their write armed, or, newer than the
+   * one in flight, by the next (dirty, noteAck).
+   */
+  private async notebooksAlone(copy: Copy): Promise<boolean> {
+    if (copy.acked === null || copy.fresh) return false
+    const walk = this.freshWalk(copy) ?? (await this.walk(copy.sessionId))
+    const acked = copy.acked
+    if (this.copies.get(copyKey(copy.sessionId, copy.runnerId)) !== copy || acked === null || copy.fresh) return false
+    if (walk.truncated || copy.drops.size > 0) return false
+    const book = (where: string): boolean => this.hooks.isBook(copy.sessionId, where)
+    for (const push of copy.pushes) {
+      if (push.full || push.move.length > 0) return false
+      if (!push.effects.every((effect) => effect.kind === 'put' && effect.sha !== REMOTE_DIR_BASE && book(effect.path))) return false
+    }
+    let changed = false
+    for (const [where, seen] of walk.entries) {
+      if (acked.get(where) === seen.sha) continue
+      if (seen.sha === REMOTE_DIR_BASE || !book(where)) return false
+      changed = true
+    }
+    // Removed here, and not one of the machine's own files: a removal is waited for.
+    for (const where of acked.keys()) if (!walk.entries.has(where) && !copy.onMachine.has(where)) return false
+    const newest = copy.pushes.at(-1)
+    if (newest && newest.digest !== walk.digest) copy.dirty = true
+    else if (!newest && changed && copy.eager === null) this.scheduleEager(copy)
+    /*
+     * The copy's walk only on a yes, when all it lacks is what no run waits
+     * for. The barrier's fast path trusts a stored walk to have been planned
+     * on (refresh stores and plans in one step), and a «no» is planned on
+     * only by the refresh after it: an attempt stopped while it walked has
+     * none, and a cell would then pass on a file the machine lacks. That
+     * refresh walks again, by stat.
+     */
+    copy.walk = walk
+    return true
   }
 
   private waitForAck(copy: Copy, options: { onProgress?: (words: string) => void; signal?: AbortSignal }): { waiter: BarrierWaiter; done: Promise<void> } {
@@ -2886,7 +2960,7 @@ export function useFilesHooks(hooks: Partial<FilesHooks>): void {
 
 /* The shared names of this wave, as functions of the process's class folders. */
 
-export const filesBarrier = (sessionId: string, runnerId: string, options?: { onProgress?: (words: string) => void; signal?: AbortSignal }): Promise<void> =>
+export const filesBarrier = (sessionId: string, runnerId: string, options?: BarrierOptions): Promise<void> =>
   classFiles().filesBarrier(sessionId, runnerId, options)
 
 /** The machine a slot of the class computes on now, or null: here, or only being stopped there. One indexed read. */
@@ -2899,7 +2973,7 @@ export function slotMachine(sessionId: string, role: RoomRole): string | null {
 export const slotOnMachine = (sessionId: string, role: RoomRole): boolean => slotMachine(sessionId, role) !== null
 
 /** The barrier for a slot of the class (§8.2): on its machine when it has one, nothing at all here. */
-export function slotFilesBarrier(sessionId: string, role: RoomRole, options?: { onProgress?: (words: string) => void; signal?: AbortSignal }): Promise<void> {
+export function slotFilesBarrier(sessionId: string, role: RoomRole, options?: BarrierOptions): Promise<void> {
   const runnerId = slotMachine(sessionId, role)
   return runnerId ? classFiles().filesBarrier(sessionId, runnerId, options) : Promise.resolve()
 }

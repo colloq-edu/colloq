@@ -5581,13 +5581,16 @@ const STOPPED = Symbol('stopped at the barrier')
  * once this server's files are on the machine (at once for a scope computing
  * here), STOPPED for a run stopped while it waited, otherwise the words the
  * run is refused with. `show` hears what is on its way while it waits.
+ * `notebooksAside`: a pool's attempt, which computes on its epoch and never
+ * on a notebook's file, waits for no change of the room's live notebooks
+ * (files.ts · notebooksAlone); every other run's barrier is as it was.
  */
-async function passFilesBarrier(runtime: Runtime, show: (words: string) => void): Promise<string | typeof STOPPED | null> {
+async function passFilesBarrier(runtime: Runtime, show: (words: string) => void, notebooksAside = false): Promise<string | typeof STOPPED | null> {
   if (!slotOnMachine(runtime.sessionId, runtime.role)) return null
   const stop = new AbortController()
   barrierWaits.set(runtime, stop)
   try {
-    await slotFilesBarrier(runtime.sessionId, runtime.role, { onProgress: show, signal: stop.signal })
+    await slotFilesBarrier(runtime.sessionId, runtime.role, { onProgress: show, signal: stop.signal, ...(notebooksAside ? { notebooksAside } : {}) })
     return stop.signal.aborted ? STOPPED : null
   } catch (err) {
     if (stop.signal.aborted) return STOPPED
@@ -5840,7 +5843,11 @@ function entryListener(): { handlers: ExecuteHandlers; ended(status: ExecuteStat
       ...SILENT_HANDLERS,
       onError: (ename, evalue) => {
         // The entry catches its own errors and reports them; only what
-        // outlived it gets here: an interrupt by the limit, a kernel death.
+        // outlived it gets here: an interrupt by the limit, a kernel death,
+        // and a lean entry's raise before it (council-isolation.ts ·
+        // COUNCIL_LEAN_REFUSAL: a worker's process without this server's
+        // guard or hidden module at its versions), whose words this makes
+        // the card's refusal reason, there being no report.
         // KeyboardInterrupt has no text at all, and the colon after the name
         // would hang in the refusal line on nothing; a reply lost in a cut
         // has no name (jupyter.ts · settleLost), and the colon before its
@@ -6144,7 +6151,12 @@ export interface CouncilPoolHooks {
    * their entries (runCouncilOne · councilTrip). False — the sequential road.
    */
   gated(worker: WorkerHandle): boolean
-  /** A worker's entry for this attempt, with its three inputs (§9.4, §9.7): the attempt's text, its run's folder, its ceiling. */
+  /**
+   * A worker's entry for this attempt, with its three inputs (§9.4, §9.7):
+   * the attempt's text, its run's folder, its ceiling. A gated worker whose
+   * process holds the guard and the hidden module since its load gets a
+   * lean one, which checks them rather than carry them (§9.6, 0.26.1).
+   */
   entry(worker: WorkerHandle, item: QueueItem, base: { budgetBytes: number; memoryGuard: boolean }): string
   /** Of a worker's entry report: a name the attempt reads that its epoch left behind, and why; null — none. */
   needs(raw: unknown): { name: string; why: string } | null
@@ -7282,14 +7294,19 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
   }
 
   flushToDisk(runtime.sessionId)
-  // The barrier, as before a cell (runOne, §8.2): the attempt reads the class folder of the machine it computes on.
+  /*
+   * The barrier, as before a cell (runOne, §8.2): the attempt reads the class
+   * folder of the machine it computes on. A pool's attempt computes on its
+   * epoch, never on a notebook's file: the room's notebooks, whose files
+   * every keystroke in them rewrites, do not hold it (§9.6, 0.26.1).
+   */
   let moving = false
   const barred = await passFilesBarrier(runtime, (words) => {
     moving = true
     active.buffer.supersede()
     active.buffer.stream('stdout', words)
     touchJob(runtime, active)
-  })
+  }, handle !== null)
   if (moving) active.buffer.clear()
   if (barred === STOPPED) {
     // Stopped before it reached the kernel: no run at all, as an attempt the same press dropped from the queue (releaseCouncil).

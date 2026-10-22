@@ -97,6 +97,9 @@ import { COUNCIL_GATE_MODULE } from './council-gate.js'
  * attempt's memory, a ceiling that is not optional for a worker. The export
  * and the load are a second source (EPOCH_IMPL) installed into the same
  * module only by their own cells, so an attempt's entry does not carry them.
+ * Since 0.26.1 the load installs the guard and this module too, and a
+ * worker's entries after a load that held carry neither: they check the two
+ * versions and raise in a process that lacks them (`lean`, §9.6).
  *
  * A pure module: the Python sources, building and parsing the report, no
  * network, no Yjs, for the sake of the test (the same trick as in council.ts).
@@ -336,6 +339,14 @@ export interface CouncilIsolationSettings {
   scratchRoot?: string
   /** The skeleton's entries at most; COUNCIL_SCRATCH_ENTRIES unless a test says otherwise. */
   skeletonEntries?: number
+  /**
+   * A pool worker's whose process its pool knows to hold this server's
+   * guard and this module (its seed's cell installed both, loadExpression):
+   * the entry checks their versions instead of carrying their sources, and
+   * raises COUNCIL_LEAN_REFUSAL when either is missing or another (§9.6,
+   * 0.26.1). Only with a run id.
+   */
+  lean?: boolean
 }
 
 /** One silent service execute: its code, and the user_expressions its report travels in. */
@@ -4387,6 +4398,44 @@ function implInstallLine(): string {
   )
 }
 
+/**
+ * What a lean entry raises (§9.6, 0.26.1): its worker's process does not hold
+ * this server's guard or this module, or holds another version of either — a
+ * fresh process after a death its pool has not heard of. Raised before the
+ * entry, it leaves no report: ipykernel evaluates no expression after an
+ * error. English, for the log; a card frames it in the entry's refusal.
+ */
+export const COUNCIL_LEAN_REFUSAL = 'the worker does not hold the modules its pool loaded'
+
+/**
+ * An install line's version check alone, with a raise where the install was:
+ * `if <the module's version differs>: raise RuntimeError(…)`. Taken from the
+ * install line itself, the guard's included (danger.ts keeps its version to
+ * itself), so that a lean entry asks exactly what the full one would install.
+ */
+function checkOf(install: string): string {
+  const at = install.indexOf(': exec(compile(')
+  if (!install.startsWith('if getattr(') || at < 0) throw new Error('An install line is no longer a version check before an exec')
+  return `${install.slice(0, at)}: raise RuntimeError(${JSON.stringify(COUNCIL_LEAN_REFUSAL)})`
+}
+
+/**
+ * A lean entry's first two lines (§9.6, 0.26.1): the guard's and this
+ * module's version checks, which never install. Computed once per process,
+ * as the install lines are: their versions do not change while it lives.
+ *
+ * Why: the two sources are some 110 KB, and a pool's every attempt carried
+ * them behind those checks although its worker's process held both since its
+ * seed. A burst's eight entries, 900 KB together, crossed the machine's
+ * tunnel at once, and each kernel tokenized and compiled a 112 KB cell before
+ * its entry began (R2b, 22 Oct 2026: an entry's verdict 377 ms at p50, up to
+ * 1070 ms at a burst's start, on a 238 ms tunnel).
+ */
+let checks: string | null = null
+function checkLines(): string {
+  return (checks ??= [checkOf(guardInstallLine()), checkOf(implInstallLine())].join('\n'))
+}
+
 /** The epoch half, into the same module, after IMPL: the export's and the load's cells only. */
 function epochInstallLine(): string {
   const module = JSON.stringify(COUNCIL_MODULE)
@@ -4415,7 +4464,9 @@ function capBytes(capMb: number): number {
  *
  * A pool worker's entry (§9.5) adds the attempt's source, its run id and the
  * attempt's memory (CouncilIsolationSettings): the notebook kernel's own entry
- * stays byte for byte what it was.
+ * stays byte for byte what it was. A lean one (§9.6, 0.26.1) checks the
+ * guard and the module where the full one installs them, and is otherwise
+ * the same cell.
  */
 export function councilEnterSource(
   budgetBytes: number = COUNCIL_DEFAULT_COPY_BYTES,
@@ -4429,6 +4480,7 @@ export function councilEnterSource(
   if (options.runId !== undefined && !REMOTE_RUN_ID.test(options.runId)) {
     throw new Error(`A council run id must match REMOTE_RUN_ID, not ${JSON.stringify(options.runId)}`)
   }
+  if (options.lean === true && options.runId === undefined) throw new Error('A lean entry is a pool worker\'s: it needs a run id')
   /*
    * Settings as a literal in the call itself, not inside the source.
    *
@@ -4462,9 +4514,10 @@ export function councilEnterSource(
      * before the isolation itself: its module is exactly what the entry
      * immediately takes a hold on, and the order here is not a matter of taste:
      * `_hold` looks for the module in `sys.modules` and refuses without it.
+     * A lean entry asks the same two versions and raises where this one
+     * would install (checkLines).
      */
-    guardInstallLine(),
-    implInstallLine(),
+    ...(options.lean === true ? [checkLines()] : [guardInstallLine(), implInstallLine()]),
     `__import__('sys').modules[${module}].enter(globals(), ${budget}, ${settings})`,
   ].join('\n')
 }
@@ -4543,6 +4596,11 @@ export function exportDropExpression(seq: number): CouncilServiceRun {
  * The words of the sentinels go with it, in the room's language at the time
  * of the seed: a worker reseeds often enough (every 20 attempts, every new
  * epoch) for a language changed mid-class to reach it soon.
+ *
+ * The guard goes in first, as an entry's first line installs it: a load that
+ * held leaves its process holding this server's guard and this module, so
+ * the worker's entries after it check them rather than carry them (§9.6,
+ * councilEnterSource · lean).
  */
 export function loadExpression(options: CouncilLoadOptions): CouncilServiceRun {
   if (!SHA256.test(options.manifest) || !SHA256.test(options.body)) {
@@ -4561,6 +4619,7 @@ export function loadExpression(options: CouncilLoadOptions): CouncilServiceRun {
   ].join(', ') + '}'
   return {
     code: [
+      guardInstallLine(),
       implInstallLine(),
       epochInstallLine(),
       `__import__('sys').modules[${module}].load(globals(), ${JSON.stringify(options.manifest)}, ` +

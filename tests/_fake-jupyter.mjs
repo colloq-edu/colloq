@@ -144,6 +144,17 @@
  * request whose code matches reaches it: what a death whose word has not
  * reached home yet leaves, the request served by the next process.
  *
+ * THE HIDDEN MODULES A PROCESS HOLDS (§9.6, 0.26.1). A silent execute whose
+ * code carries the guard's install (`'<colloq-guard>'`: the guard's rule, a
+ * full entry, a worker's load) or the council module's (`'<colloq-council>'`:
+ * a full entry, an export, a load) leaves its process holding that module;
+ * a fresh process holds neither. A pool worker's lean entry, which checks
+ * them where a full one installs them (known by the words its checks raise,
+ * council-isolation.ts · COUNCIL_LEAN_REFUSAL), raises in a process that
+ * lacks either, before anything of the entry: an error named RuntimeError
+ * with those words, no expression evaluated, and the call logged as
+ * `lean-refused`.
+ *
  * WHAT A TEST SEES. `calls` logs every request: HTTP by method and path,
  * channel upgrades, shell requests by type, terminal input and size, COUNT by
  * value, LOSE. The process serves it at GET /_fake/calls, the kernels at
@@ -211,6 +222,11 @@ const GATE_REFUSAL = 'colloq gate: this request was not run, as no entry opened 
 
 /** A call of one of the council module's functions, the way the entry calls `enter`: `modules["_colloq_council"].<name>(`. */
 const COUNCIL_CALL = (name) => new RegExp(`modules\\[(['"])${COUNCIL_MODULE}\\1\\]\\.${name}\\(`)
+
+/** The install lines' marks (danger.ts, council-isolation.ts: the name each source is compiled under), and what a lean entry raises without them. */
+const GUARD_INSTALL = "'<colloq-guard>'"
+const COUNCIL_INSTALL = "'<colloq-council>'"
+const LEAN_REFUSAL = 'the worker does not hold the modules its pool loaded'
 
 /**
  * The epochs the fakes of this process exported, by their manifest's sha256:
@@ -693,6 +709,8 @@ export async function startFakeJupyter(options = {}) {
       guarded: null,
       /** A pool worker's: the epoch it loaded (its manifest and what it left behind) and the attempt in it now (its run id). */
       council: null,
+      /** The hidden modules this process holds: what an install line put there (see the header). */
+      modules: { guard: false, council: false },
       /** Born with the workers' gate (§9.6), the run id it is open for now (null: shut), and whether an entry has touched it. */
       gated: bornGated(sessionPath),
       gateOpen: null,
@@ -718,6 +736,7 @@ export async function startFakeJupyter(options = {}) {
     kernel.count = 0
     kernel.guarded = null
     kernel.council = null
+    kernel.modules = { guard: false, council: false }
     // A new process is born as the kernel's process always is: gated or not, and the gate shut and untouched.
     kernel.gated = bornGated(kernel.path)
     kernel.gateOpen = null
@@ -1712,6 +1731,17 @@ export async function startFakeJupyter(options = {}) {
     say('status', { execution_state: 'busy' })
     // A service run: nothing is interpreted, only the expressions are answered.
     if (content.silent === true) {
+      // The modules its install lines put in this process (see the header); a lean entry, known by its checks' words, checks them first.
+      if (code.includes(GUARD_INSTALL)) kernel.modules.guard = true
+      if (code.includes(COUNCIL_INSTALL)) kernel.modules.council = true
+      if (code.includes(LEAN_REFUSAL) && !(kernel.modules.guard && kernel.modules.council)) {
+        fake.calls.push({ kind: 'lean-refused', kernel: kernel.id })
+        say('error', { ename: 'RuntimeError', evalue: LEAN_REFUSAL, traceback: [`RuntimeError: ${LEAN_REFUSAL}`] })
+        say('execute_reply', { status: 'error', execution_count: kernel.executions, ename: 'RuntimeError', evalue: LEAN_REFUSAL, traceback: [], user_expressions: {} })
+        say('status', { execution_state: 'idle' })
+        kernel.busy = false
+        return
+      }
       const held = fake.holdSilent.find((one) => code.includes(one.match) && (one.kernel === undefined || one.kernel === kernel.id))
       if (held) {
         try {

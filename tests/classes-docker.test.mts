@@ -76,7 +76,11 @@
  *     attempts above go in one trip; and on a kernel of the council
  *     container made beside them, an attempt sent right behind an entry
  *     that fails is refused unrun while the exit behind it still gives the
- *     state back, and one behind an entry that holds runs and prints.
+ *     state back, and one behind an entry that holds runs and prints. A
+ *     lean entry there (0.26.1), sent before any module was put in that
+ *     process, raises with no report and its attempt is refused; sent
+ *     after, it holds and its attempt prints. The pool's own attempts above
+ *     go lean once their workers have loaded.
  *
  * WAITS ARE FOR EVENTS, each with its bound, and a scenario out of time stops
  * at its next wait (scenario): afterEach lets it stop before it heals the
@@ -2089,14 +2093,21 @@ scenario('the council on the machine: real pandas exported by the class notebook
       .map((message) => String(message.content.text ?? '')).join('')
     const installed = await reply(execute('', { silent: true, expressions: { gate: `__import__('sys').modules['${COUNCIL_GATE_MODULE}'].installed()` } }))
     assert.equal(installed.user_expressions?.gate?.data?.['text/plain'], 'True', `born gated: ${JSON.stringify(installed.user_expressions)}`)
-    const trip = (runId: string, source: string, scratchRoot: string) => {
-      const entry = councilEnterSource(64 * 1024 * 1024, { source, runId, capMb: 512, workspace: `/workspace/${id}`, scratchRoot })
+    const trip = (runId: string, source: string, scratchRoot: string, lean = false) => {
+      const entry = councilEnterSource(64 * 1024 * 1024, { source, runId, capMb: 512, workspace: `/workspace/${id}`, scratchRoot, ...(lean ? { lean } : {}) })
       return [
         execute(entry, { silent: true, expressions: { [COUNCIL_REPORT_KEY]: COUNCIL_REPORT_EXPR } }),
         execute(source, { run: runId }),
         execute(COUNCIL_EXIT_SOURCE, { silent: true, expressions: { [COUNCIL_REPORT_KEY]: COUNCIL_LEFTOVERS_EXPR } }),
       ] as const
     }
+    // A lean entry (0.26.1) in this fresh kernel, which holds neither the guard nor the module: it raises before the entry,
+    // leaving no report, and the attempt behind it is refused unrun — what a worker's process dead unheard meets.
+    const unheld = trip(randomBytes(16).toString('hex'), "print('parity-lean-never')", COUNCIL_SCRATCH_MOUNT, true)
+    const [leanRaised, heldBack, afterRaised] = [await reply(unheld[0]), await reply(unheld[1]), await reply(unheld[2])]
+    assert.deepEqual([leanRaised.status, leanRaised.ename, reported(leanRaised)], ['error', 'RuntimeError', null], JSON.stringify(leanRaised))
+    assert.deepEqual([heldBack.status, heldBack.ename, printedBy(unheld[1])], ['error', COUNCIL_GATE_REFUSED, ''], JSON.stringify(heldBack))
+    assert.equal(afterRaised.status, 'ok')
     const failing = trip(randomBytes(16).toString('hex'), "print('parity-gate-never')", '/proc/colloq-no-scratch')
     const [failedEntry, refused, gaveBack] = [await reply(failing[0]), await reply(failing[1]), await reply(failing[2])]
     assert.equal(reported(failedEntry)?.ok, false, `the entry held: ${JSON.stringify(failedEntry)}`)
@@ -2108,7 +2119,13 @@ scenario('the council on the machine: real pandas exported by the class notebook
     assert.equal(reported(heldEntry)?.ok, true, JSON.stringify(heldEntry))
     assert.deepEqual([ran.status, printedBy(holding[1])], ['ok', 'parity-gate-ran\n'], JSON.stringify(ran))
     assert.equal(exited.status, 'ok')
-    record(t, `council: a kernel of the council container born gated; behind a failed entry the attempt refused (${refused.ename}) and the exit ran, behind one that held it printed`)
+    // The full entries put the guard and the module in this process: a lean one now holds, and its attempt prints.
+    const leanly = trip(randomBytes(16).toString('hex'), "print('parity-lean-ran')", COUNCIL_SCRATCH_MOUNT, true)
+    const [leanEntry, leanRan, leanExit] = [await reply(leanly[0]), await reply(leanly[1]), await reply(leanly[2])]
+    assert.equal(reported(leanEntry)?.ok, true, JSON.stringify(leanEntry))
+    assert.deepEqual([leanRan.status, printedBy(leanly[1])], ['ok', 'parity-lean-ran\n'], JSON.stringify(leanRan))
+    assert.equal(leanExit.status, 'ok')
+    record(t, `council: a kernel of the council container born gated; behind a failed entry the attempt refused (${refused.ename}) and the exit ran, behind one that held it printed; a lean entry raised where no module was (${leanRaised.ename}) and held once one was`)
     channel.terminate()
   } finally {
     await rest(boxDoor, 'DELETE', `/api/kernels/${spare.body.id}`)

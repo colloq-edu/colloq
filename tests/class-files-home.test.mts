@@ -394,6 +394,164 @@ test('a run while students type waits for no notebook push in flight: one of not
   assert.equal(passed, 3)
 })
 
+/** A council pool's attempt at the barrier (§9.6, 0.26.1): whether it has gone on yet. */
+function poolAttempt(klass: { id: string }, machine: string): () => boolean {
+  let passed = false
+  void rigged.files.filesBarrier(klass.id, machine, { notebooksAside: true }).then(() => {
+    passed = true
+  })
+  return () => passed
+}
+
+test('a pool\'s attempt goes at once when all the machine lacks is the room\'s notebooks: before their push, beside an older one in flight, and bound to their eager push that holds a cell for its ack; their pushes are acked all the same', async () => {
+  const machine = machineName()
+  const klass = classOn(machine)
+  put(klass.dir, 'lesson.ipynb', '{"cells":[]}')
+  put(klass.dir, 'a.py', 'x = 1\n')
+  await inStep(machine, klass)
+  rigged.books.add('lesson.ipynb')
+  const settled = async (): Promise<void> => {
+    await rigged.files.whenIdle()
+    await turn()
+  }
+  // A student types, and the attempt is pressed before the projection's push goes: it goes, and the push follows.
+  assert.ok(writeText(klass.id, 'lesson.ipynb', '{"cells":[{"source":"x"}]}'))
+  const before = poolAttempt(klass, machine)
+  await settled()
+  assert.equal(before(), true, 'held by a notebook nothing had pushed yet')
+  await eager()
+  const first = pushOf(machine, klass.id)!
+  assert.deepEqual(first.put.map((entry) => entry.path), ['lesson.ipynb'])
+  rigged.files.replySent(machine, rigged.files.replyBlock(machine))
+  // The next keystroke while that push is on its way: newer than it, and still nothing the attempt reads.
+  assert.ok(writeText(klass.id, 'lesson.ipynb', '{"cells":[{"source":"xy"}]}'))
+  const beside = poolAttempt(klass, machine)
+  await settled()
+  assert.equal(beside(), true, 'held behind a push of notebooks alone')
+  await ack(machine, klass, first.seq)
+  await eager()
+  const second = pushOf(machine, klass.id)!
+  assert.deepEqual([second.seq > first.seq, second.put.map((entry) => entry.sha256)], [true, [sha('{"cells":[{"source":"xy"}]}')]], 'the newer notebook did not follow')
+  rigged.files.replySent(machine, rigged.files.replyBlock(machine))
+  await ack(machine, klass, second.seq)
+  assert.equal(pushOf(machine, klass.id), null, 'the copy is in step')
+  // Its eager push fires on the next keystroke, and a cell and an attempt come while that push's walk is under way: the push,
+  // planned on the very walk the cell's refresh waits for, takes the cell as its own.
+  assert.ok(writeText(klass.id, 'lesson.ipynb', '{"cells":[{"source":"xyz"}]}'))
+  rigged.clock.advance(1_000)
+  let cell = false
+  void rigged.files.filesBarrier(klass.id, machine).then(() => {
+    cell = true
+  })
+  const bound = poolAttempt(klass, machine)
+  await settled()
+  const third = pushOf(machine, klass.id)!
+  assert.deepEqual(third.put.map((entry) => entry.path), ['lesson.ipynb'])
+  assert.equal(bound(), true, 'the attempt waited for the notebook\'s push to be acked')
+  assert.equal(cell, false, 'a cell keeps the barrier it had: bound to that push, it waits for its ack')
+  rigged.files.replySent(machine, rigged.files.replyBlock(machine))
+  await ack(machine, klass, third.seq)
+  await turn()
+  assert.equal(cell, true)
+  assert.equal(pushOf(machine, klass.id), null)
+})
+
+test('a pool\'s attempt waits for everything else the machine lacks: the whole of a fresh copy, a data file, one beside a notebook (which its push leaves to the next), a removal, a new folder, a data file\'s push still on its way, a row staff deleted on the machine', async () => {
+  const machine = machineName()
+  const klass = classOn(machine)
+  put(klass.dir, 'lesson.ipynb', '{"cells":[]}')
+  put(klass.dir, 'a.py', 'x = 1\n')
+  put(klass.dir, 'old.csv', 'id\n1\n')
+  rigged.books.add('lesson.ipynb')
+  rigged.files.replyBlock(machine)
+  /** The attempt waits for the next push the machine is sent, and goes once that is acked: the push. */
+  const waits = async (what: string) => {
+    const passed = poolAttempt(klass, machine)
+    await rigged.files.whenIdle()
+    await turn()
+    const push = pushOf(machine, klass.id)
+    assert.ok(push, `${what}: nothing pushed`)
+    assert.equal(passed(), false, `${what}: the attempt did not wait`)
+    rigged.files.replySent(machine, rigged.files.replyBlock(machine))
+    await ack(machine, klass, push.seq)
+    await turn()
+    assert.equal(passed(), true, `${what}: still waiting after the ack`)
+    return push
+  }
+  // A copy no push was acked of yet: its whole first push, the notebook in it.
+  const whole = await waits('a fresh copy')
+  assert.equal(whole.full, true)
+  assert.ok(whole.put.some((entry) => entry.path === 'lesson.ipynb'))
+  assert.ok(writeText(klass.id, 'a.py', 'x = 2\n'))
+  assert.deepEqual((await waits('a data file')).put.map((entry) => entry.path), ['a.py'])
+  // A data file and the notebook: the attempt waits for the data file, whose push leaves the notebook to the one after.
+  assert.ok(writeText(klass.id, 'lesson.ipynb', '{"cells":[{"source":"x"}]}'))
+  assert.ok(writeText(klass.id, 'a.py', 'x = 3\n'))
+  assert.deepEqual((await waits('a data file beside a notebook')).put.map((entry) => entry.path), ['a.py'])
+  await eager()
+  const notebook = pushOf(machine, klass.id)!
+  assert.deepEqual(notebook.put.map((entry) => entry.path), ['lesson.ipynb'])
+  rigged.files.replySent(machine, rigged.files.replyBlock(machine))
+  await ack(machine, klass, notebook.seq)
+  assert.ok(deleteFile(klass.id, 'old.csv'))
+  assert.deepEqual((await waits('a removal')).remove, ['old.csv'])
+  fs.mkdirSync(path.join(klass.dir, 'data'))
+  forgetTree(klass.id)
+  assert.deepEqual((await waits('a new folder')).put, [{ path: 'data', dir: true }])
+  // A data file's push on its way, and the file put back here as the copy acked it: the walk is what the copy acked again,
+  // and the machine may hold the push half applied.
+  assert.ok(writeText(klass.id, 'a.py', 'x = 4\n'))
+  await eager()
+  assert.deepEqual(pushOf(machine, klass.id)!.put.map((entry) => entry.path), ['a.py'])
+  rigged.files.replySent(machine, rigged.files.replyBlock(machine))
+  assert.ok(writeText(klass.id, 'a.py', 'x = 3\n'))
+  assert.deepEqual((await waits('a data file put back while its push is on its way')).put.map((entry) => entry.sha256), [sha('x = 3\n')])
+  // A new data file whose push is on its way, removed here meanwhile: the machine may hold it by that push alone.
+  assert.ok(writeText(klass.id, 'b.csv', 'id\n2\n'))
+  await eager()
+  assert.deepEqual(pushOf(machine, klass.id)!.put.map((entry) => entry.path), ['b.csv'])
+  rigged.files.replySent(machine, rigged.files.replyBlock(machine))
+  assert.ok(deleteFile(klass.id, 'b.csv'))
+  assert.deepEqual((await waits('a new data file removed while its push is on its way')).remove, ['b.csv'])
+  // A row only the machine has, deleted there by staff (removeOnMachine): in neither the walk nor what the copy acked.
+  updateClassMachineSettings({ machineFileMb: 1 })
+  await says(machine, report(klass, { changed: [{ path: 'model.pt', sha256: sha('model'), bytes: 2 * 1024 * 1024, base: null }] }))
+  assert.equal(rigged.files.removeOnMachine(klass.id, 'model.pt'), true)
+  assert.deepEqual((await waits('a row staff deleted on the machine')).remove, ['model.pt'])
+})
+
+test('a pool\'s attempt stopped while it asks the walk leaves the fast path nothing to trust: the next attempt and a cell wait for the data file it saw', async () => {
+  const machine = machineName()
+  const klass = classOn(machine)
+  put(klass.dir, 'lesson.ipynb', '{"cells":[]}')
+  put(klass.dir, 'a.py', 'x = 1\n')
+  await inStep(machine, klass)
+  rigged.books.add('lesson.ipynb')
+  assert.ok(writeText(klass.id, 'a.py', 'x = 2\n'))
+  // Stopped while its walk is under way (kernel/index.ts · interruptScope aborts its signal): it goes, and plans nothing.
+  const stop = new AbortController()
+  const stopped = rigged.files.filesBarrier(klass.id, machine, { notebooksAside: true, signal: stop.signal })
+  stop.abort()
+  await stopped
+  await rigged.files.whenIdle()
+  assert.equal(pushOf(machine, klass.id), null)
+  // Before the write's eager push goes: what the stopped attempt saw says nothing of what the machine has.
+  const next = poolAttempt(klass, machine)
+  let cell = false
+  void rigged.files.filesBarrier(klass.id, machine).then(() => {
+    cell = true
+  })
+  await rigged.files.whenIdle()
+  await turn()
+  const push = pushOf(machine, klass.id)
+  assert.deepEqual(push?.put.map((entry) => entry.path), ['a.py'], 'nothing carries the data file')
+  assert.deepEqual([next(), cell], [false, false], 'went on without the data file on the machine')
+  rigged.files.replySent(machine, rigged.files.replyBlock(machine))
+  await ack(machine, klass, push!.seq)
+  await turn()
+  assert.deepEqual([next(), cell], [true, true])
+})
+
 test('moves: a rename here is a rename there, a folder\'s too, with nothing uploaded; a delete is a remove', async () => {
   const machine = `m-${randomUUID().slice(0, 6)}`
   const klass = classOn(machine)

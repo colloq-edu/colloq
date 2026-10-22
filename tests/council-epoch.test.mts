@@ -46,10 +46,11 @@ import {
   type CouncilIsolationSettings,
 } from '../server/src/kernel/council-isolation.js'
 import { COUNCIL_EPOCH_BUFFERS_MAX, COUNCIL_EPOCH_DIR } from '../shared/remote-kernels.js'
+import { guardInstallLine } from '../server/src/kernel/danger.js'
 
 /* ------------------------------------------------------ the pure half */
 
-test('the export and the load are three statements that bind no name in the kernel', () => {
+test('the export is three statements and the load four, and none binds a name in the kernel', () => {
   const run = exportExpression({ seq: 7, mainRuns: 3 })
   const lines = run.code.split('\n')
   assert.equal(lines.length, 3)
@@ -70,7 +71,14 @@ test('the export and the load are three statements that bind no name in the kern
 
   const sha = 'a'.repeat(64)
   const load = loadExpression({ manifest: sha, body: 'b'.repeat(64) })
-  assert.equal(load.code.split('\n').length, 3)
+  const loadLines = load.code.split('\n')
+  assert.equal(loadLines.length, 4)
+  // The guard first, as an entry's first line installs it: a load that held leaves its process holding the guard and the
+  // module, and the worker's entries after it go lean (§9.6, 0.26.1).
+  assert.equal(loadLines[0], guardInstallLine())
+  assert.equal(loadLines[1], lines[0], 'the isolation, as the export installs it')
+  assert.match(loadLines[2], /'epoch_version', None\) != "[0-9a-f]{12}": exec\(compile\(/)
+  for (const line of loadLines) assert.doesNotMatch(line, /^[A-Za-z_][A-Za-z0-9_]*\s*=[^=]/, `a name bound: ${line.slice(0, 40)}`)
   assert.ok(load.code.includes(`.load(globals(), "${sha}", "${'b'.repeat(64)}", {'dir': "/colloq/epochs"`))
   assert.deepEqual(load.userExpressions, { [COUNCIL_REPORT_KEY]: COUNCIL_SEED_EXPR })
   // A load is asked by hashes, and only by hashes.
@@ -324,10 +332,11 @@ function worker(w: Worker): { seed: any; results: Array<{ report: any; failure: 
     'probe.seen = []',
     "sys.modules['_probe'] = probe",
     "ns = {'__builtins__': __builtins__, '__name__': '__main__'}",
-    `exec(compile(${JSON.stringify(load.slice(0, 2).join('\n'))}, '<install>', 'exec'), ns)`,
+    // Its install lines (the guard, the isolation, the epoch half), then the load itself.
+    `exec(compile(${JSON.stringify(load.slice(0, -1).join('\n'))}, '<install>', 'exec'), ns)`,
     `m = sys.modules[${module}]`,
     `exec(compile(${JSON.stringify(w.prep ?? '')}, '<prep>', 'exec'), {'m': m, 'ns': ns, 'sys': sys})`,
-    `exec(compile(${JSON.stringify(load[2])}, '<load>', 'exec'), ns)`,
+    `exec(compile(${JSON.stringify(load.at(-1)!)}, '<load>', 'exec'), ns)`,
     'seed = json.loads(repr(m.seeded))',
     'results = []',
     `for entry, attempt in ${JSON.stringify(attempts)}:`,

@@ -29,10 +29,11 @@ import {
   COUNCIL_GATE_RUN_KEY,
   isGateRefusal,
 } from '../server/src/kernel/council-gate.js'
-import { COLLOQ_REFUSED } from '../server/src/kernel/danger.js'
+import { COLLOQ_REFUSED, GUARD_MODULE, guardInstallLine } from '../server/src/kernel/danger.js'
 import {
   councilEnterSource,
   COUNCIL_EXIT_SOURCE,
+  COUNCIL_LEAN_REFUSAL,
   COUNCIL_MODULE,
   exportExpression,
   loadExpression,
@@ -378,4 +379,90 @@ test('a worker\'s load says whether its process was born with the gate', { skip:
   }
   // A report that does not say (an older module) is no gate.
   assert.equal(parseSeedReport(JSON.stringify({ ok: true }))?.gated, false)
+})
+
+/* ------------------------------------------------ a lean entry (0.26.1) */
+
+test('a lean entry is the full one\'s call behind the version checks the full one installs behind: a kilobyte where that is 112, and only a worker\'s', () => {
+  const options = { source: 'print(x)', runId: 'a'.repeat(32), capMb: 1024, workspace: '/workspace/s1', epoch: 3 }
+  const full = councilEnterSource(512 * 1024 * 1024, options)
+  const lean = councilEnterSource(512 * 1024 * 1024, { ...options, lean: true })
+  const [guardCheck, moduleCheck, call, ...more] = lean.split('\n')
+  const [guardInstall, moduleInstall, fullCall] = full.split('\n')
+  assert.deepEqual(more, [])
+  assert.equal(call, fullCall, 'the same entry with the same settings')
+  assert.equal(guardInstall, guardInstallLine())
+  // Each check is its install line's own condition, with a raise where the install was.
+  for (const [check, install] of [[guardCheck!, guardInstall!], [moduleCheck!, moduleInstall!]]) {
+    const condition = check.slice(0, check.indexOf(': raise '))
+    assert.ok(condition.startsWith('if getattr(') && install.startsWith(`${condition}: exec(compile(`), check)
+    assert.ok(check.endsWith(`: raise RuntimeError(${JSON.stringify(COUNCIL_LEAN_REFUSAL)})`), check)
+  }
+  assert.ok(guardCheck!.includes(`modules.get(${JSON.stringify(GUARD_MODULE)})`), guardCheck)
+  assert.ok(moduleCheck!.includes(`modules.get(${JSON.stringify(COUNCIL_MODULE)})`), moduleCheck)
+  assert.ok(!lean.includes('exec(compile('), 'a lean entry installs nothing')
+  assert.ok(Buffer.byteLength(lean) < 4096, `${Buffer.byteLength(lean)} bytes`)
+  assert.ok(Buffer.byteLength(full) > 100_000, `${Buffer.byteLength(full)} bytes`)
+  // Not asked for, the entry is the one it always was; the notebook's own kernel's, which has no run id, is never lean.
+  assert.equal(councilEnterSource(512 * 1024 * 1024, { ...options, lean: false }), full)
+  assert.throws(() => councilEnterSource(1024, { lean: true }), /run id/)
+  // English for the log: a card frames it in the entry's refusal.
+  assert.doesNotMatch(COUNCIL_LEAN_REFUSAL, /[А-Яа-яЁё]/)
+})
+
+test('a lean entry holds in a process whose load installed the guard and the module, and opens the gate; with either missing or another version, it raises before the entry, the report, the state and the gate as they were', { skip: noPython }, () => {
+  const scratch = folder()
+  const lean = councilEnterSource(64 * 1024 * 1024, { source: 'print(x)', runId: 'r1', capMb: 512, scratchRoot: scratch, lean: true })
+  // The load's cell but its last line, the load itself: the install lines it runs first (the guard, the isolation, the epoch half).
+  const installs = loadExpression({ manifest: 'a'.repeat(64), body: 'b'.repeat(64), dir: scratch }).code.split('\n').slice(0, -1).join('\n')
+  const guard = JSON.stringify(GUARD_MODULE)
+  const answer = withGate([
+    'k = K7()',
+    'gate.load_ipython_extension(types.SimpleNamespace(kernel=k))',
+    'out = {}',
+    'def lean_in(ns):',
+    '    try:',
+    `        exec(compile(${JSON.stringify(lean)}, '<enter>', 'exec'), ns)`,
+    "        return {'raised': None}",
+    '    except BaseException as err:',
+    "        return {'raised': type(err).__name__, 'words': str(err)}",
+    "ns = {'__builtins__': __builtins__, '__name__': '__main__', 'x': [1, 2]}",
+    // A fresh process, its gate opened by an earlier request: neither module there, so the entry raises and touches nothing.
+    "gate.open_for('kept')",
+    "out['fresh'] = lean_in(ns)",
+    `out['fresh'].update({'token': gate._state['token'], 'modules': [n for n in (${guard}, ${JSON.stringify(COUNCIL_MODULE)}) if n in sys.modules]})`,
+    'gate.close()',
+    // The load's install lines: the lean entry holds, and opens the gate for its run id as its last step.
+    `exec(compile(${JSON.stringify(installs)}, '<install>', 'exec'), {})`,
+    `m = sys.modules[${JSON.stringify(COUNCIL_MODULE)}]`,
+    `g = sys.modules[${guard}]`,
+    "out['held'] = lean_in(ns)",
+    "out['held'].update({'ok': json.loads(repr(m.report))['ok'], 'token': gate._state['token']})",
+    `exec(compile(${JSON.stringify(COUNCIL_EXIT_SOURCE)}, '<exit>', 'exec'), ns)`,
+    'gate.close()',
+    // Another version of the module, then of the guard, then no guard at all: each raises, and nothing of the entry ran.
+    'held = m.report',
+    'real = (m.version, g.version)',
+    "m.version = 'another'",
+    "out['module'] = lean_in(ns)",
+    "m.version = real[0]",
+    "g.version = 'another'",
+    "out['guard'] = lean_in(ns)",
+    "g.version = real[1]",
+    `del sys.modules[${guard}]`,
+    "out['noguard'] = lean_in(ns)",
+    `sys.modules[${guard}] = g`,
+    "out['kept'] = {'report': m.report is held, 'token': gate._state['token'], 'state': m.state, 'holds': g.holds}",
+    // Both back: it holds again.
+    "out['again'] = lean_in(ns)",
+    "out['again']['ok'] = json.loads(repr(m.report))['ok']",
+    `exec(compile(${JSON.stringify(COUNCIL_EXIT_SOURCE)}, '<exit>', 'exec'), ns)`,
+    "print('@@' + json.dumps(out))",
+  ])
+  const raised = { raised: 'RuntimeError', words: COUNCIL_LEAN_REFUSAL }
+  assert.deepEqual(answer.fresh, { ...raised, token: 'kept', modules: [] }, 'a lean entry in a fresh process went on, or touched its gate')
+  assert.deepEqual(answer.held, { raised: null, ok: true, token: 'r1' })
+  for (const name of ['module', 'guard', 'noguard']) assert.deepEqual(answer[name], raised, name)
+  assert.deepEqual(answer.kept, { report: true, token: null, state: null, holds: 0 }, 'an entry that raised set a report, opened the gate, or held state or the guard')
+  assert.deepEqual(answer.again, { raised: null, ok: true })
 })

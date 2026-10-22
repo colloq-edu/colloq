@@ -641,6 +641,12 @@ test('E25 · open → epoch → 12 attempts on 4 workers at once; ✓/✗; show;
   assert.deepEqual(asked.map((one) => one.run).sort(), students.map((one) => cardOf(one, council)!.run!.runId).sort())
   assert.ok(asked.every((one) => one.stopOnError === false), JSON.stringify(asked))
   assert.equal(calls.filter((one) => one.kind === 'gate').length, 0, 'the gate refused an attempt whose entry held')
+  // And each entry went lean (§9.6, 0.26.1): its worker's load had put the guard and the module in its process, so the entry
+  // checked them rather than carried them, a kilobyte where it was 112, and none found them missing.
+  const entries = (await door.requests()).filter((one) => one.code.includes('.enter(globals()'))
+  assert.equal(entries.length, 12)
+  assert.ok(entries.every((one) => !one.code.includes('exec(compile(') && Buffer.byteLength(one.code) < 4096), JSON.stringify(entries.map((one) => Buffer.byteLength(one.code))))
+  assert.equal(calls.filter((one) => one.kind === 'lean-refused').length, 0)
 
   // ✓ and ✗ from the console: each author's card says so.
   lead.control.send({ t: 'council:mark', cellId: council, participantId: students[0]!.id, correct: true })
