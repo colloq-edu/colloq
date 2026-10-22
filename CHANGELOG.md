@@ -13,6 +13,23 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.27.0](https://github.com/colloq-edu/colloq/compare/v0.26.0...v0.27.0) (2026-10-22)
+
+
+### Features
+
+* **competitions:** a competition's environment window downloads its pip freeze ([1e80228](https://github.com/colloq-edu/colloq/commit/1e802285e9f5f7cb6ffe11fcaefd69b68f0ba7dc))
+
+
+### Bug Fixes
+
+* **admin:** every admin screen stands on a placeholder shaped like its content while it loads ([1e80228](https://github.com/colloq-edu/colloq/commit/1e802285e9f5f7cb6ffe11fcaefd69b68f0ba7dc))
+
+
+### Performance
+
+* **council:** a pool attempt crosses the machine's tunnel once, with a lean entry ([#60](https://github.com/colloq-edu/colloq/issues/60)) ([a418d8f](https://github.com/colloq-edu/colloq/commit/a418d8fdc4dc01dd5441d381c7841f909945d774))
+
 ## [0.26.0](https://github.com/colloq-edu/colloq/compare/v0.25.1...v0.26.0) (2026-10-21)
 
 
