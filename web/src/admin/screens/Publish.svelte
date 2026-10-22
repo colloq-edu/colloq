@@ -19,6 +19,7 @@
   import Check from '@/admin/ui/Check.svelte'
   import Badge from '@/admin/screens/competitions/Badge.svelte'
   import Icon from '@/components/ui/Icon.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import {
     AdminApiError,
     addressHolderOf,
@@ -583,6 +584,16 @@
   /* The reorder arrows keep their frame: two bare chevrons side by side read
      as decoration, not as two buttons. */
   const ARROW = 'admin-icon-btn border border-line'
+  /*
+   * The placeholder's two sections while the room is read, as a room that
+   * still exists has them: notebooks, whose rows carry the tab's name field,
+   * and files, whose rows do not — a row each, the room's main notebook and
+   * a file beside it.
+   */
+  const PLACEHOLDER_SECTIONS = $derived([
+    { label: tr('admin.page.notebooks'), note: tr('admin.page.notebooksNote'), named: true, path: '11rem' },
+    { label: tr('admin.page.files'), note: null, named: false, path: '9rem' },
+  ])
 </script>
 
 <svelte:window onkeydown={onKey} />
@@ -677,6 +688,14 @@
           disabled={!info.room.exists}
         />
       </label>
+    {:else if !loadError}
+      <!-- Where the class stands in its course, or the day it was held: the
+           answer's, grey on its line — two lines on a phone, as a course's
+           place wraps there. -->
+      <span class="flex min-w-0 flex-1 flex-col text-ui" aria-hidden="true">
+        <span class="block"><Skeleton width="20rem" height="0.8rem" /></span>
+        <span class="hidden max-[640px]:block"><Skeleton width="45%" height="0.8rem" /></span>
+      </span>
     {:else}
       <span class="text-ui text-muted">&nbsp;</span>
     {/if}
@@ -688,7 +707,35 @@
       {#if loadError}
         <p class="text-ui text-danger" role="alert">{loadError}</p>
       {:else if !info}
-        <p class="text-ui text-muted">{tr('admin.page.loading')}</p>
+        <!--
+          The room is being read: its sections as a room that still exists
+          has them (a gone one has a single list, and that is the answer) —
+          the head on its rule in the page's words, the count grey, then a
+          row of a tick, the name field, the path over its meta.
+        -->
+        <div class="flex flex-col gap-11" role="status" aria-busy="true" aria-label={tr('admin.page.loading')}>
+          <span class="sr-only">{tr('admin.page.loading')}</span>
+          {#each PLACEHOLDER_SECTIONS as section (section.label)}
+            <section class="flex flex-col" aria-hidden="true">
+              <div class="admin-section">
+                <h2 class="admin-section-title">{section.label}</h2>
+                {#if section.note}<span class="text-2xs text-muted">{section.note}</span>{/if}
+                <span class="ml-auto shrink-0 font-mono text-micro"><Skeleton width="3rem" height="0.6rem" /></span>
+              </div>
+              <div class={ROW}>
+                <span class="flex w-6 shrink-0 items-center"><Skeleton width="18px" height="18px" radius="0" /></span>
+                <div class="pick-name w-[220px] shrink-0 {section.named ? '' : 'pick-spacer'}">
+                  {#if section.named}<span class="block h-10 max-[640px]:h-11"><Skeleton width="100%" height="100%" radius="0" /></span>{/if}
+                </div>
+                <div class="flex min-w-0 flex-1 flex-col gap-[3px]">
+                  <span class="flex h-[22px] items-center"><Skeleton width={section.path} height="0.75rem" /></span>
+                  <span class="flex h-5 items-center"><Skeleton width="8rem" height="0.6rem" /></span>
+                </div>
+                <div class="pick-side flex w-[200px] shrink-0 justify-end"></div>
+              </div>
+            </section>
+          {/each}
+        </div>
       {:else if !info.room.exists}
         <!--
           The room is gone, the page stayed: nothing new can be picked, but
@@ -1078,6 +1125,28 @@
           </div>
           <p class="admin-meta">{tr('admin.page.roomAccessHint')}</p>
         </section>
+      {:else if !info && !loadError}
+        <!-- The room's two settings while it is read, where they will stand:
+             their words are the panel's own, so they are drawn whole, and
+             only what the room answers — the tick, the chosen chip — waits. -->
+        <div class="flex items-start gap-3" aria-hidden="true">
+          <span class="flex h-5 w-[18px] shrink-0 items-center"><Skeleton width="18px" height="18px" radius="0" /></span>
+          <span class="flex min-w-0 flex-1 flex-col gap-1">
+            <span class="text-2xs text-ink">{tr('admin.page.autoRefresh')}</span>
+            <span class="admin-meta">{tr('admin.page.autoRefreshHint')}</span>
+          </span>
+        </div>
+        <section class="flex flex-col gap-3" aria-hidden="true">
+          <div class="admin-section">
+            <h2 class="admin-section-title">{tr('admin.page.roomAccess')}</h2>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            {#each ['3.5rem', '7.5rem', '4.5rem'] as width, i (i)}
+              <span class="block h-10 max-[640px]:h-11" style:width><Skeleton width="100%" height="100%" radius="0" /></span>
+            {/each}
+          </div>
+          <p class="admin-meta">{tr('admin.page.roomAccessHint')}</p>
+        </section>
       {/if}
 
       <!--
@@ -1169,6 +1238,11 @@
               <div class="h-1 {pageBytes > budget ? 'bg-danger' : 'bg-ink'}" style="width: {Math.min(100, (pageBytes / budget) * 100)}%"></div>
             </div>
           </div>
+        {:else if !info && !loadError}
+          <div class="flex flex-col gap-2" aria-hidden="true">
+            <span class="flex h-6 items-center"><Skeleton width="13rem" height="0.8rem" /></span>
+            <Skeleton width="100%" height="4px" radius="0" />
+          </div>
         {/if}
 
         {#if error}
@@ -1247,6 +1321,11 @@
           >
             {tr('admin.close')}
           </button>
+        {:else if !loadError}
+          <div class="flex flex-wrap gap-2" aria-hidden="true">
+            <span class="block h-10 grow max-[640px]:h-11"><Skeleton width="100%" height="100%" radius="0" /></span>
+            <span class="block h-10 w-[88px] max-[640px]:h-11 max-[640px]:grow"><Skeleton width="100%" height="100%" radius="0" /></span>
+          </div>
         {/if}
       </div>
     </aside>

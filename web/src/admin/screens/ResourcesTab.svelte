@@ -50,6 +50,7 @@
   import Section from '@/admin/ui/Section.svelte'
   import { levelFields } from '@/admin/ui/field-rows'
   import Icon from '@/components/ui/Icon.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import { notebooksOffQuestion, presetWords, runnersApi } from '@/admin/runners'
   import { ceilingNote, defaultsNow, pastBoundNote } from '@/admin/competition-materials'
@@ -1002,6 +1003,76 @@
   </div>
 {/snippet}
 
+<!--
+  A field while its number is on its way, in the real one's boxes (field,
+  fieldLabel, sourceLine): the caption in words, the box grey at the panel's
+  height (44 px on a phone), the source line grey on its own line.
+-->
+{#snippet fieldPlaceholder(caption: string)}
+  <p class="mb-1.5 flex items-baseline gap-2"><span class="admin-label">{caption}</span></p>
+  {@render controlPlaceholder()}
+{/snippet}
+
+{#snippet controlPlaceholder()}
+  <span class="block h-10 max-[640px]:h-11"><Skeleton width="100%" height="100%" radius="0" /></span>
+  <p class="admin-meta mt-1.5 min-h-5"><Skeleton width="70%" height="0.6rem" /></p>
+{/snippet}
+
+<!--
+  One of Choice's large tiles while its words are the answer's: the name's
+  line over the hint's — one line, and a second where a phone wraps it.
+-->
+{#snippet tilePlaceholder(name: string, hint: [string, string])}
+  <span class="min-w-0 flex-1 border-t border-line px-3.5 py-2.5 first:border-t-0 sm:border-l sm:border-t-0 sm:first:border-l-0">
+    <span class="block text-ui font-semibold"><Skeleton width={name} height="0.85rem" /></span>
+    <span class="mt-0.5 block text-2xs"><Skeleton width={hint[0]} height="0.65rem" /></span>
+    <span class="hidden text-2xs max-[640px]:block"><Skeleton width={hint[1]} height="0.65rem" /></span>
+  </span>
+{/snippet}
+
+<!--
+  A gauge while the machine is read, in the real one's own boxes: its
+  caption in words, the reading, the «of N» and the free share grey in the
+  lines they will fill (so the line wraps on a phone where the real one
+  does), the bar at its height, and under it the legend or the note — the
+  note in its own words, «…» for its numbers, so it wraps where it will.
+-->
+{#snippet gaugePlaceholder(title: string, bar: string, status: boolean, legends: string[] | null, note: string | null)}
+  <div>
+    <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+      <div class="flex items-baseline gap-2.5">
+        <span class="admin-section-title">{title}</span>
+        <span class="font-mono text-gauge font-bold"><Skeleton width="4rem" height="1.4rem" /></span>
+        <span class="text-2xs"><Skeleton width="7.5rem" height="0.65rem" /></span>
+      </div>
+      {#if status}
+        <span class="text-ui font-semibold"><Skeleton width="7.5rem" height="0.8rem" /></span>
+      {/if}
+    </div>
+    <div class="mt-2.5 flex {bar}"><Skeleton width="100%" height="100%" radius="0" /></div>
+    {#if legends}
+      <div class="mt-3 flex flex-wrap gap-x-7 gap-y-3">
+        {#each legends as item (item)}
+          {@render legendPlaceholder(item)}
+        {/each}
+      </div>
+    {:else if note}
+      <p class="mt-2 text-2xs text-muted">{note}</p>
+    {/if}
+  </div>
+{/snippet}
+
+<!-- A legend's item whose numbers are on their way: its words, its detail grey. -->
+{#snippet legendPlaceholder(title: string)}
+  <div class="min-w-[150px]">
+    <div class="flex items-center gap-2">
+      <Skeleton width="10px" height="10px" radius="0" />
+      <span class="text-ui font-semibold text-ink">{title}</span>
+    </div>
+    <p class="mt-0.5 pl-[18px] font-mono text-micro"><Skeleton width="8rem" height="0.6rem" /></p>
+  </div>
+{/snippet}
+
 {#snippet legend(tone: string, title: string, detail: string)}
   <div class="min-w-[150px]">
     <div class="flex items-center gap-2">
@@ -1105,7 +1176,38 @@
   a switch with no saved value behind it would be measured against nothing.
 -->
 {#snippet runnerSettings()}
-  {#if competitions?.runners}
+  {#if !competitions && !competitionError}
+    <!-- The queue's half is still on its way (the cards' sizes, seconds
+         after a restart): the two fields in their boxes, so the machines'
+         list under them does not drop when they land — the switch's two
+         tiles in words with neither chosen, its note and the field grey. -->
+    <div class="flex flex-wrap items-start gap-x-4 gap-y-4" aria-hidden="true" use:levelFields>
+      <div class="min-w-0 flex-[1_1_320px]">
+        <p class="mb-1.5 flex items-baseline gap-2"><span class="admin-label">{tr('admin.runners.homeNotebooks')}</span></p>
+        <!-- Choice's large tiles, in words, faded: which one is chosen is the answer. -->
+        <div class="flex flex-col border border-line opacity-55 sm:flex-row">
+          {#each [tr('admin.runners.homeNotebooks.on'), tr('admin.runners.homeNotebooks.off')] as label (label)}
+            <span class="min-w-0 flex-1 border-t border-line px-3.5 py-2.5 first:border-t-0 sm:border-l sm:border-t-0 sm:first:border-l-0">
+              <span class="block text-ui font-semibold text-ink">{label}</span>
+            </span>
+          {/each}
+        </div>
+        <p class="admin-meta mt-1.5">
+          <span class="block"><Skeleton width="80%" height="0.6rem" /></span>
+          <span class="hidden max-[640px]:block"><Skeleton width="40%" height="0.6rem" /></span>
+        </p>
+        <p class="admin-meta mt-1.5 min-h-5"><Skeleton width="50%" height="0.6rem" /></p>
+      </div>
+      <div class="w-[220px] max-w-full">
+        <p class="mb-1.5 flex items-baseline gap-2"><span class="admin-label">{tr('admin.runners.scoreSlots')}</span></p>
+        <span class="block h-10 max-[640px]:h-11"><Skeleton width="100%" height="100%" radius="0" /></span>
+        <p class="admin-meta mt-1.5">
+          {tr('admin.runners.scoreSlots.note', { min: SETTINGS_LIMITS.scoreSlots.min, max: SETTINGS_LIMITS.scoreSlots.max })}
+        </p>
+        <p class="admin-meta mt-1.5 min-h-5"><Skeleton width="70%" height="0.6rem" /></p>
+      </div>
+    </div>
+  {:else if competitions?.runners}
     {@const saved = competitions.runners}
     {@const homeOn = homeChoice ?? saved.homeNotebooks.value}
     <div class="flex flex-wrap items-start gap-x-4 gap-y-4" use:levelFields>
@@ -1202,15 +1304,38 @@
       <p class="text-ui text-danger" role="alert">{loadError}</p>
       <button type="button" class="btn-outline mt-3" onclick={() => void load()}>{tr('admin.try.again')}</button>
     </div>
-  {:else if !ready}
-    <p class="mt-6 text-ui text-muted">{tr('admin.resourcesTab.loading')}</p>
-  {:else if loaded}
-    {#if !isOwner}
-      <p class="mt-5 max-w-[720px] border border-line bg-surface px-4 py-3 text-ui text-muted">
-        <span class="font-semibold text-ink">{tr('admin.read.only')}</span>
-        {tr('admin.resourcesTab.readOnly')}
-      </p>
-    {/if}
+  {:else if !isOwner}
+    <!-- Above the page and its placeholder alike: the role is known before
+         the settings are, and a band arriving with them would push it all down. -->
+    <p class="mt-5 max-w-[720px] border border-line bg-surface px-4 py-3 text-ui text-muted">
+      <span class="font-semibold text-ink">{tr('admin.read.only')}</span>
+      {tr('admin.resourcesTab.readOnly')}
+    </p>
+  {/if}
+  {#if !loadError && !ready}
+    <!--
+      The machine's numbers are on their way: its section as it stands on a
+      Docker host — the memory gauge with its legend, the cores' bar with its
+      note, the disk's bar — under its own title. A host with cards adds
+      their bar, and a workspace on a disk of its own a second disk; those
+      are known only from the answer.
+    -->
+    <Section title={tr('admin.resourcesTab.machineTitle')} description={tr('admin.resourcesTab.machineNote')}>
+      <div role="status" aria-busy="true" aria-label={tr('admin.resourcesTab.loading')}>
+        <span class="sr-only">{tr('admin.resourcesTab.loading')}</span>
+        <div class="flex flex-col gap-6" aria-hidden="true">
+          {@render gaugePlaceholder(tr('admin.resourcesTab.memory'), 'h-[26px]', true, [
+            tr('admin.resourcesTab.rooms'),
+            tr('admin.resourcesTab.notebooks'),
+            tr('admin.resourcesTab.competitions'),
+            tr('admin.resourcesTab.free'),
+          ], null)}
+          {@render gaugePlaceholder(tr('admin.resourcesTab.cores'), 'h-3', false, null, tr('admin.resourcesTab.coresNote', { rooms: '…', own: '…', queue: '…' }))}
+          {@render gaugePlaceholder(tr('admin.resourcesTab.disk'), 'h-3', true, null, null)}
+        </div>
+      </div>
+    </Section>
+  {:else if !loadError && loaded}
     {#if saveError}
       <p role="alert" class="mt-5 border border-danger/40 bg-danger/5 px-4 py-3 text-ui text-danger">{saveError}</p>
     {/if}
@@ -1246,6 +1371,11 @@
               {@render legend('bg-brand-2', tr('admin.resourcesTab.notebooks'), tr('admin.resourcesTab.notebooksDetail', { count: loaded.budget.own.count, memory: gb(memory.own) }))}
               {#if competitionShare}
                 {@render legend('bg-accent', tr('admin.resourcesTab.competitions'), tr(competitionShare.metricsOnly ? 'admin.resourcesTab.metricsDetail' : 'admin.resourcesTab.competitionsDetail', { count: competitionShare.slots, memory: gb(competitionShare.perSlotMb) }))}
+              {:else if !competitions && !competitionError}
+                <!-- The queue's half is still on its way (the cards' sizes,
+                     seconds after a restart): its item keeps its place, so
+                     the legend does not gain a line under everything below. -->
+                {@render legendPlaceholder(tr('admin.resourcesTab.competitions'))}
               {/if}
               {@render legend('border border-dashed border-faint bg-surface', tr('admin.resourcesTab.free'), tr('admin.resourcesTab.freeDetail', { memory: gb(Math.max(memory.free, 0)), reserve: gb(memory.reserve) }))}
               {#if onMachines > 0}
@@ -1340,17 +1470,51 @@
         </div>
       {/if}
     </Section>
+  {/if}
 
-    <!-- What holds the machine right now, and the owner's stop. Outside the
-         fieldset below: a teacher reads it too, and a disabled fieldset
-         would grey out the notebook lists they may open. -->
+  <!--
+    What holds the machine right now, and the owner's stop. Outside the
+    fieldset below: a teacher reads it too, and a disabled fieldset would grey
+    out the notebook lists they may open. Mounted with the page, so the list
+    is asked at once, by its own door, while the settings are still on their
+    way; but `held` keeps its rows under the placeholder until the machine's
+    section above has its real height. A host with cards or a second disk has
+    a taller one than the placeholder, and the stop buttons drawn early would
+    drop down the page under the owner's hand when it landed.
+  -->
+  {#if !loadError}
     <Section
       title={tr('admin.resourcesTab.running.title')}
       description={isOwner ? tr('admin.resourcesTab.running.note') : tr('admin.resourcesTab.running.noteTeacher')}
     >
-      <RunningKernels roomIdleMin={savedOf('roomIdleMin')} onchange={() => void refreshBudget()} />
+      <RunningKernels roomIdleMin={savedOf('roomIdleMin')} held={!ready} onchange={() => void refreshBudget()} />
     </Section>
+  {/if}
 
+  {#if !loadError && !ready}
+    <!-- The room's defaults under their title, field by field, until they
+         land: the captions and the note are the page's own words. -->
+    <Section title={tr('admin.resourcesTab.roomTitle')} description={tr('admin.resourcesTab.roomNote')}>
+      <div aria-hidden="true">
+        <div class="flex flex-wrap gap-4" use:levelFields>
+          {#each [
+            ['w-[200px]', tr('admin.resourcesTab.memory')],
+            ['w-[160px]', tr('admin.resourcesTab.cores')],
+            ['w-[240px]', tr('admin.resourcesTab.gpuMemory')],
+          ] as [width, caption] (caption)}
+            <div class="min-w-0 {width}">{@render fieldPlaceholder(caption)}</div>
+          {/each}
+        </div>
+        <div class="mt-4">
+          <p class="mb-1.5 flex items-baseline gap-2"><span class="admin-label">{tr('admin.resourcesTab.roomIdle')}</span></p>
+          <div class="flex flex-wrap items-start gap-4">
+            <div class="w-[200px] min-w-0">{@render controlPlaceholder()}</div>
+            <p class="min-w-[220px] max-w-[420px] flex-1 text-2xs text-muted">{tr('admin.resourcesTab.roomIdleNote')}</p>
+          </div>
+        </div>
+      </div>
+    </Section>
+  {:else if !loadError && loaded}
     <!-- One disabled fieldset rather than thirty disabled= attributes: a field
          added later cannot forget to be read-only for a teacher. -->
     <fieldset class="contents" disabled={!isOwner}>
@@ -1491,8 +1655,52 @@
 
           {@render runnerCards(competitions.gpu)}
         {:else}
-          <!-- The rooms half drew the page; this one is still asking the cards. -->
-          <p class="text-ui text-muted">{tr('common.loading')}</p>
+          <!-- The rooms half drew the page; this one is still asking the cards:
+               the section's own placeholder, as it will stand — the slots'
+               choice, the four defaults, the uploads' field. -->
+          <div role="status" aria-busy="true" aria-label={tr('common.loading')}>
+            <span class="sr-only">{tr('common.loading')}</span>
+            <div aria-hidden="true">
+              <p class="admin-label mb-1.5">{tr('admin.resourcesTab.slots')}</p>
+              <!-- The two tiles in Choice's own boxes, stacking where they do: the
+                   automatic one's number and its reckoning, the fixed one's bounds. -->
+              <div class="resources-slots">
+                <div class="flex flex-col border border-line sm:flex-row">
+                  {@render tilePlaceholder('9rem', ['95%', '70%'])}
+                  {@render tilePlaceholder('7rem', ['80%', '45%'])}
+                </div>
+              </div>
+              <div class="mt-5 flex flex-wrap items-start gap-4" use:levelFields>
+                {#each [
+                  ['w-[200px]', tr('admin.resourcesTab.wall')],
+                  ['w-[160px]', tr('admin.resourcesTab.memory')],
+                  ['w-[116px]', tr('admin.resourcesTab.cores')],
+                  ['w-[176px]', tr('admin.resourcesTab.perDay')],
+                ] as [width, caption] (caption)}
+                  <div class="min-w-0 {width}">{@render fieldPlaceholder(caption)}</div>
+                {/each}
+              </div>
+              <p class="mt-2 text-2xs text-muted">{tr('admin.resourcesTab.defaultsNote')}</p>
+              <!-- The most a submission may be given, and by whom: the answer's. -->
+              <p class="mt-1 text-2xs">
+                <span class="block"><Skeleton width="75%" height="0.65rem" /></span>
+                <span class="hidden max-[640px]:block"><Skeleton width="45%" height="0.65rem" /></span>
+              </p>
+              <div class="mt-4 flex flex-wrap items-start gap-4" use:levelFields>
+                <div class="w-[376px] min-w-0 max-w-full">{@render fieldPlaceholder(tr('admin.resourcesTab.uploads'))}</div>
+                <p class="min-w-[220px] flex-1 text-2xs text-muted">{tr('admin.resourcesTab.uploadsNote')}</p>
+              </div>
+              <!-- The cards' block (runnerCards): its caption, and the line a
+                   host without cards has under it. -->
+              <div class="mt-5 flex flex-col gap-3 border-t border-line pt-5">
+                <p class="admin-label">{tr('admin.resourcesTab.gpuTitle')}</p>
+                <p class="text-2xs">
+                  <span class="block"><Skeleton width="60%" height="0.65rem" /></span>
+                  <span class="hidden max-[640px]:block"><Skeleton width="35%" height="0.65rem" /></span>
+                </p>
+              </div>
+            </div>
+          </div>
         {/if}
       </Section>
 

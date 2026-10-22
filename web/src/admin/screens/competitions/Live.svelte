@@ -32,6 +32,7 @@
   import Badge from '@/admin/screens/competitions/Badge.svelte'
   import Editor from '@/admin/screens/competitions/Editor.svelte'
   import RowsSkeleton from '@/components/ui/RowsSkeleton.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import { materialsUrl } from '@/admin/competition-materials'
@@ -1265,21 +1266,30 @@
                  holds: a slot and a place on a card (Paper 15 · G3). The
                  busy places are notebook runs on executors that give places
                  (consoleLoad); the metric lane is said apart, beside them. -->
-            <span class="admin-label text-primary">
-              {queue?.gpu
-                ? tr('admin.competitions.slotsHeadGpu', {
-                    busy: load.busy,
-                    count: slots,
-                    gpuBusy: queue.gpu.busy,
-                    gpuCount: queue.gpu.slots,
-                  })
-                : tr('admin.competitions.slotsHead', { busy: load.busy, count: slots })}
-            </span>
-            {#if metricHead}
-              <span class="admin-label text-positive">{metricHead}</span>
+            {#if live}
+              <span class="admin-label text-primary">
+                {queue?.gpu
+                  ? tr('admin.competitions.slotsHeadGpu', {
+                      busy: load.busy,
+                      count: slots,
+                      gpuBusy: queue.gpu.busy,
+                      gpuCount: queue.gpu.slots,
+                    })
+                  : tr('admin.competitions.slotsHead', { busy: load.busy, count: slots })}
+              </span>
+              {#if metricHead}
+                <span class="admin-label text-positive">{metricHead}</span>
+              {/if}
+            {:else}
+              <!-- Before the first state there is no count to say: "0 of 0" was a claim. -->
+              <span class="admin-label" aria-hidden="true"><Skeleton width="13rem" height="0.65rem" /></span>
             {/if}
           </div>
-          <span class="text-2xs text-muted">{statusLine}</span>
+          {#if live}
+            <span class="text-2xs text-muted">{statusLine}</span>
+          {:else}
+            <span class="text-2xs" aria-hidden="true"><Skeleton width="9rem" height="0.65rem" /></span>
+          {/if}
           <button
             type="button"
             class="admin-meta ml-auto shrink-0 hover:text-ink"
@@ -1287,8 +1297,11 @@
           >
             {machineGroups ? tr('admin.competitions.fleet.setting') : tr('admin.competitions.slotsSetting')}
           </button>
-          <!-- One queue for the whole instance: pausing it is the owner's. -->
-          {#if adminAuth.isOwner}
+          <!-- One queue for the whole instance: pausing it is the owner's.
+               Which of the two it offers is the first state's to say. -->
+          {#if adminAuth.isOwner && !live}
+            <span class="admin-link shrink-0" aria-hidden="true"><Skeleton width="10.5rem" height="0.65rem" /></span>
+          {:else if adminAuth.isOwner}
             <button
               type="button"
               class="admin-link shrink-0"
@@ -1386,6 +1399,28 @@
                 </div>
               {/each}
             </div>
+          {:else if !live}
+            <!--
+              The first state is on its way (the stream's first push, or the
+              first poll), and with no state there are no groups: one row of
+              places in the grid's own columns, as many as a row holds at this
+              width — how many places there are, and whether they are grouped
+              by machine, is the answer. The rows after the first are laid out
+              at no height and clipped.
+            -->
+            <div class="min-w-0 flex-[2_1_420px] px-4 py-3.5" role="status" aria-busy="true" aria-label={tr('competitions.loading')}>
+              <span class="sr-only">{tr('competitions.loading')}</span>
+              <div
+                class="grid gap-x-2 overflow-hidden [grid-auto-rows:0] [grid-template-columns:repeat(auto-fill,minmax(196px,1fr))] [grid-template-rows:auto]"
+                aria-hidden="true"
+              >
+                {#each { length: 6 } as _, i (i)}
+                  <div class="flex min-h-[64px] min-w-0 items-center justify-center border border-dashed border-line px-3">
+                    <Skeleton width="4.5rem" height="0.6rem" />
+                  </div>
+                {/each}
+              </div>
+            </div>
           {:else}
             <div class="grid min-w-0 flex-[2_1_420px] content-start gap-2 px-4 py-3.5 [grid-template-columns:repeat(auto-fill,minmax(196px,1fr))]">
               {#each running as run (run.submissionId)}
@@ -1407,9 +1442,15 @@
                    max-[900px]:border-l-0 max-[900px]:border-t"
           >
             <div class="flex items-center justify-between gap-3">
-              <span class="admin-label text-primary">
-                {tr('admin.competitions.waitingHead', { count: waiting.length })}
-              </span>
+              <!-- "WAITING · 0", "The queue is empty" and the note's number of
+                   executors are the first state's words, grey until it comes. -->
+              {#if live}
+                <span class="admin-label text-primary">
+                  {tr('admin.competitions.waitingHead', { count: waiting.length })}
+                </span>
+              {:else}
+                <span class="admin-label" aria-hidden="true"><Skeleton width="5.5rem" height="0.65rem" /></span>
+              {/if}
               {#if waiting.length > 0}
                 <span class="text-micro text-muted">{tr('admin.competitions.resultIn')}</span>
               {/if}
@@ -1449,17 +1490,29 @@
                 </span>
               </div>
             {:else}
-              <p class="text-2xs text-muted">{tr('admin.competitions.queueEmpty')}</p>
+              {#if live}
+                <p class="text-2xs text-muted">{tr('admin.competitions.queueEmpty')}</p>
+              {:else}
+                <p class="text-2xs" aria-hidden="true"><Skeleton width="9rem" height="0.65rem" /></p>
+              {/if}
             {/each}
             {#if queue && queue.waiting > waiting.length}
               <p class="text-micro text-muted">
                 {tr('admin.competitions.waitingElsewhere', { count: queue.waiting - waiting.length })}
               </p>
             {/if}
-            <p class="mt-auto border-t border-line pt-2 text-micro leading-snug text-muted">
-              {tr('admin.competitions.fairQueueSlots', { count: slots })}
-              {#if machineGroups}{tr('admin.competitions.fleet.queueNote')}{/if}
-            </p>
+            {#if live}
+              <p class="mt-auto border-t border-line pt-2 text-micro leading-snug text-muted">
+                {tr('admin.competitions.fairQueueSlots', { count: slots })}
+                {#if machineGroups}{tr('admin.competitions.fleet.queueNote')}{/if}
+              </p>
+            {:else}
+              <p class="mt-auto border-t border-line pt-2 text-micro leading-snug" aria-hidden="true">
+                {#each ['96%', '92%', '88%', '40%'] as width, i (i)}
+                  <span class="block"><Skeleton {width} height="0.6rem" /></span>
+                {/each}
+              </p>
+            {/if}
           </div>
         </div>
       </div>

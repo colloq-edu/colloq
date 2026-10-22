@@ -435,9 +435,9 @@ test('the Resources tab draws as soon as the rooms half lands, and asks again fo
   assert.match(load, /adminApi\.resourceSettings\(\)\.then\( \(response\) => \{ applyResources\(response\) loadErrorText = null \}/)
   assert.match(load, /adminApi\.competitionSettings\(\)\.then\( \(settings\) => \{ applyCompetitions\(settings\) competitionErrorText = null askSizesLater\(\) \}/)
   assert.match(RESOURCES, /const ready = \$derived\(loaded !== null\)/, 'the page waits for the rooms half only')
-  // Until its half lands the competitions section says so under its own title.
+  // Until its half lands the competitions section stands on its own placeholder under its own title.
   const section = RESOURCES.slice(RESOURCES.indexOf("tr('admin.resourcesTab.competitionsTitle')"), RESOURCES.indexOf("tr('admin.resourcesTab.filesTitle')"))
-  assert.match(section, /\{@render runnerCards\(competitions\.gpu\)\} \{:else\} <p class="text-ui text-muted">\{tr\('common\.loading'\)\}<\/p> \{\/if\}/)
+  assert.match(section, /\{@render runnerCards\(competitions\.gpu\)\} \{:else\} <div role="status" aria-busy="true" aria-label=\{tr\('common\.loading'\)\}>/)
   // The later asks: a few, while a size is unknown, taking only the cards' own facts.
   const asks = RESOURCES.slice(RESOURCES.indexOf('function askSizesLater('), RESOURCES.indexOf('async function refreshBudget('))
   assert.match(asks, /if \(disposed \|\| attempt >= SIZE_ASKS \|\| !sizesUnknown\(competitions\?\.gpu \?\? null\)\) return/)

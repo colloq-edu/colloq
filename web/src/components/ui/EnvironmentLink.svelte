@@ -1,10 +1,13 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
   import EnvironmentDetails from './EnvironmentDetails.svelte'
-  import type { EnvironmentFreeze } from './EnvironmentDetails.svelte'
+  import type { EnvironmentFreeze, ListedFreeze } from './EnvironmentDetails.svelte'
 
-  /** `freeze`: the panel's pip freeze download for the window; the competition pages leave it out. */
-  interface Props { name: string; endpoint: string; freeze?: EnvironmentFreeze }
+  /**
+   * `freeze`: the window's pip freeze download, the panel's with what it knows
+   * of the image, a competition page's learnt with the list (ListedFreeze).
+   */
+  interface Props { name: string; endpoint: string; freeze?: EnvironmentFreeze | ListedFreeze }
   const { name, endpoint, freeze }: Props = $props()
   let open = $state(false)
 </script>

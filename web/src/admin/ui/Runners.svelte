@@ -39,6 +39,7 @@
   import ConnectMachine from '@/admin/ui/ConnectMachine.svelte'
   import EmptyState from '@/admin/ui/EmptyState.svelte'
   import Icon from '@/components/ui/Icon.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import {
     PER_DEVICE_BOUNDS,
@@ -362,7 +363,55 @@
     <p class="text-ui text-danger" role="alert">{tr('admin.runners.loadFailed')} {loadError}</p>
     <button type="button" class="btn-outline mt-3" onclick={() => void load()}>{tr('admin.try.again')}</button>
   {:else if !data}
-    <p class="text-ui text-muted">{tr('admin.runners.loading')}</p>
+    <!--
+      The machines are on their way: the list's head and its rows in the
+      same grid — a state chip, the name over its address, what it has, the
+      places' bar, the readiness — so a table or a card is what it will be.
+      Alone at the block's top: the banners, the gauges' row and the queue's
+      fields come with the list, as they always have. Drawn before it, the
+      fields stood where a list with a machine then put its gauges' row, and
+      it pushed them down under the hand. Its footnote closes it either way.
+    -->
+    <div role="status" aria-busy="true" aria-label={tr('admin.runners.loading')}>
+      <span class="sr-only">{tr('admin.runners.loading')}</span>
+      <div class="rn-list" aria-hidden="true">
+        <div class="rn-head">
+          <span class="admin-label">{tr('admin.runners.col.state')}</span>
+          <span class="admin-label">{tr('admin.runners.col.machine')}</span>
+          <span class="admin-label">{tr('admin.runners.col.resources')}</span>
+          <span class="admin-label">{tr('admin.runners.col.places')}</span>
+          <span class="admin-label min-w-0 truncate">{tr('admin.runners.col.readiness')}</span>
+          <span></span>
+        </div>
+        {#each ['7rem', '9rem'] as width, i (i)}
+          <div class="rn-row">
+            <div class="rn-state flex min-w-0 flex-col items-start gap-1">
+              <Skeleton width="5.5rem" height="22px" radius="0" />
+              <span class="flex h-5 items-center"><Skeleton width="6rem" height="0.6rem" /></span>
+            </div>
+            <div class="rn-name min-w-0">
+              <span class="flex h-6 items-center"><Skeleton {width} height="0.85rem" /></span>
+              <span class="mt-0.5 flex h-5 items-center"><Skeleton width="10rem" height="0.6rem" /></span>
+            </div>
+            <div class="rn-res min-w-0">
+              <span class="flex h-[22px] items-center"><Skeleton width="8rem" height="0.65rem" /></span>
+              <span class="mt-0.5 flex h-5 items-center"><Skeleton width="5rem" height="0.6rem" /></span>
+            </div>
+            <div class="rn-places flex min-w-0 flex-col gap-1.5">
+              <span class="flex h-[22px] items-center"><Skeleton width="4rem" height="0.65rem" /></span>
+              <Skeleton width="100%" height="4px" radius="0" />
+            </div>
+            <div class="rn-ready flex h-[22px] min-w-0 items-center"><Skeleton width="9rem" height="0.65rem" /></div>
+            <div class="rn-act"></div>
+          </div>
+        {/each}
+      </div>
+      <!-- The block's own footnote, in its words: it closes the block whatever the list says. -->
+      <div class="mt-5 flex items-start gap-2.5 bg-surface px-4 py-3.5" aria-hidden="true">
+        <Icon name="info" size={16} class="mt-px shrink-0 text-muted" />
+        <p class="text-2xs text-muted">{tr('admin.runners.footnote')}</p>
+      </div>
+    </div>
   {:else}
     {#if data.banner}
       {@const banner = data.banner}

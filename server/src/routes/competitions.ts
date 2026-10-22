@@ -21,7 +21,8 @@
  * list of competitions with a summary, the page of one, joining, my
  * submissions, sending a notebook as a file, cancelling one's own submission,
  * choosing the scored one, leaderboards, the live stream and downloads: of
- * the open data files and of one's own notebook.
+ * the open data files, of one's own notebook and of the environment's pip
+ * freeze beside its package list.
  *
  * Cancelling does not kill the container itself: it calls the runner's
  * `cancelSubmission(id, 'entrant')`, because knowing what to kill and how is
@@ -46,6 +47,8 @@ import { assertCompetitionCapability, competitionCapabilities, notebookNeeds } f
 import { competitionGpuSliceMb, runnerCardsHere, runnerGpuDevices, runnerGpuPerDevice } from '../competitions/gpu.js'
 import { competitionRevision } from '../dependencies/store.js'
 import { readEnvironmentInventory } from '../environment-inventory.js'
+import { createFreezeReader, sendFreeze, type FreezeReader } from '../environments.js'
+import { runtimeEnvironment, usingRuntimeBroker } from '../kernel/runtime-client.js'
 import { acceptPinnedSubmission, executionRevision, publicExecution } from '../dependencies/service.js'
 import { DependencyStoreError } from '../dependencies/store.js'
 import { dependencyMessage, dependencyRefusal } from '../dependencies/messages.js'
@@ -121,6 +124,7 @@ import {
   publicCompetition,
   submissionsOpen,
   type Competition,
+  type CompetitionErrorBody,
   type CompetitionRefusal,
   type Entrant,
   type EntrantSubmission,
@@ -128,6 +132,8 @@ import {
   type Submission,
 } from '@shared/competitions'
 import type { CompetitionCounts } from '@shared/competitions-api'
+import type { EnvironmentRevision } from '@shared/dependencies'
+import type { EnvironmentInventory } from '@shared/environment-inventory'
 import type {
   EntrantBoardLine,
   EntrantCompetitionList,
@@ -199,6 +205,86 @@ function visible(slugOrId: string): Competition | null {
   const competition = findCompetition(slugOrId)
   if (!competition || competition.state === 'draft') return null
   return competition
+}
+
+/**
+ * The revision the environment window speaks of: the one the competition
+ * pinned, while it is of the environment the competition has. The list is
+ * read from it, and the pip freeze from its image; a revision of the
+ * environment the teacher has since moved the competition off describes
+ * nothing it runs.
+ */
+function pinnedRevision(competition: Competition): EnvironmentRevision | null {
+  const retained = competitionRevision(competition.id)
+  return retained && retained.environmentName === competition.environment ? retained : null
+}
+
+/**
+ * Where the environment window's pip freeze comes from: the image its list
+ * is of.
+ *
+ * The pinned revision's image when there is one, since the list is that
+ * revision's even after a rebuild moved the tag
+ * (tests/environment-inventory.test.mts), and the submissions run in it: a
+ * freeze of the rebuilt image would pin other versions than the table above
+ * the button and the check that scores the notebook. Without a pin, the image
+ * the tag names now, read as the panel reads it, into the very same file.
+ * Under the release catalog there is no docker here to read either, and the
+ * image is named instead: the pinned one when it is the catalog's reference.
+ */
+function freezeSource(competition: Competition): { catalog: string } | { pinned: string | null } {
+  const pinned = pinnedRevision(competition)?.imageDigest ?? null
+  if (usingRuntimeBroker()) {
+    return { catalog: pinned?.includes('@') ? pinned : runtimeEnvironment(competition.environment).image }
+  }
+  return { pinned }
+}
+
+/** What the window's foot is told beside the list, in the panel's terms (EnvironmentDetails.svelte · EnvironmentFreeze). */
+interface FreezeFacts {
+  built: boolean
+  catalogImage: string | null
+}
+
+/**
+ * Whether the window's image can give its pip freeze here, by the lookup the
+ * download makes (environments.ts · lookUpFrozen, kept by
+ * createFreezeReader); null when docker could not say, and the window then
+ * lets a press find out.
+ */
+async function freezeFacts(competition: Competition, freezes: FreezeReader): Promise<FreezeFacts | null> {
+  try {
+    const source = freezeSource(competition)
+    if ('catalog' in source) return { built: false, catalogImage: source.catalog }
+    const found = await freezes.lookUp(competition.environment, source.pinned)
+    return found.state === 'failed' ? null : { built: found.state === 'found', catalogImage: null }
+  } catch {
+    // An unreadable release catalog: nothing to tell, and the press is refused in words.
+    return null
+  }
+}
+
+/**
+ * How long the list waits for what its image is once the list itself is
+ * ready. A pinned competition's list comes from the database at once, with
+ * no docker at all, and a daemon that is slow or hung (its inspect is given
+ * up after 8 s) must not hold it. Past this the list goes without `freeze`,
+ * which its window reads as an image to read, so a press finds out; the
+ * lookup goes on, and the next window is told its answer.
+ */
+const FREEZE_FACTS_WAIT_MS = 300
+
+/** `pending`'s value if it comes within `ms`, null otherwise; the timer goes as soon as either does. */
+async function within<T>(pending: Promise<T>, ms: number): Promise<T | null> {
+  let timer: NodeJS.Timeout | undefined
+  const late = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms)
+  })
+  try {
+    return await Promise.race([pending, late])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /** The baseline's public number: the "baseline 0.0587" line in the card (P1). */
@@ -553,7 +639,7 @@ function sendHeld(res: Response, hold: () => HeldFile, name: string): void {
 
 /* ------------------------------------------------------------------ doors */
 
-export function competitionRoutes(inventory = readEnvironmentInventory): Router {
+export function competitionRoutes(inventory = readEnvironmentInventory, freezes: FreezeReader = createFreezeReader()): Router {
   const router = Router()
 
   /*
@@ -678,18 +764,81 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     })
   })
 
-  /** Installed packages are public only through a published competition. */
+  /**
+   * Installed packages are public only through a published competition.
+   *
+   * `?freeze` is the environment window's (EnvironmentDetails.svelte ·
+   * ListedFreeze): a published page knows nothing of the server's images, so
+   * its window learns here, beside the packages, whether the image they are
+   * of can give its pip freeze, and beside a refusal too, where no image here
+   * is why no list came and the window says so rather than «try again». The
+   * lookup is kept a few seconds for every window that asks
+   * (createFreezeReader), and never holds the list long. Without it the
+   * answer is the list alone, as it always was.
+   */
   router.get('/api/k/competitions/:slug/environment', async (req, res) => {
     const competition = visible(req.params.slug)
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
+    // Asked beside the list, not after it, and waited for only briefly once the list is ready (FREEZE_FACTS_WAIT_MS).
+    const asked = req.query.freeze !== undefined ? freezeFacts(competition, freezes) : null
+    const told = async (): Promise<{ freeze?: FreezeFacts }> => {
+      const facts = asked && (await within(asked, FREEZE_FACTS_WAIT_MS))
+      return facts ? { freeze: facts } : {}
+    }
     try {
-      const retained = competitionRevision(competition.id)
-      res.json(retained && retained.environmentName === competition.environment
+      const retained = pinnedRevision(competition)
+      const list: EnvironmentInventory = retained
         ? { name: retained.environmentName, python: retained.pythonVersion,
             packages: retained.packages, revisionId: retained.id }
-        : await inventory(competition.environment))
+        : await inventory(competition.environment)
+      reply<EnvironmentInventory & { freeze?: FreezeFacts }>(res, { ...list, ...(await told()) })
     } catch {
-      refuse(res, 503, 'unavailable', tr('common.environmentUnavailable'))
+      res.status(503).json({
+        error: tr('common.environmentUnavailable'),
+        reason: 'unavailable',
+        ...(await told()),
+      } satisfies CompetitionErrorBody & { freeze?: FreezeFacts })
+    }
+  })
+
+  /**
+   * The environment window's «Скачать pip freeze»: the panel's file
+   * (environments.ts · readFreeze, sendFreeze), `<env>-pip-freeze.txt` under
+   * the same header line, of the image the window's list is of (freezeSource).
+   *
+   * Open exactly as the list is, to anyone with the page of a published
+   * competition; a draft is no competition here at all. It tells them nothing
+   * the list does not but the exact lines pip writes, and nothing of the
+   * competition's files. Read through `freezes`, kept a few seconds, so
+   * however many ask, docker is asked once an image (createFreezeReader).
+   *
+   * A refusal is words, never a file: the panel's where the state is the
+   * environment's (no image here, the release catalog's with no docker to
+   * ask), the competition's own where its pinned image was removed since. A
+   * read that failed is said as the list beside it says it: readable words,
+   * and none of docker's. Its stderr and a release catalog's error name the
+   * daemon's socket and the host's paths, which the panel shows its staff
+   * and this door would show anyone; the server's log has the read's reason.
+   */
+  router.get('/api/k/competitions/:slug/environment/freeze', async (req, res) => {
+    const competition = visible(req.params.slug)
+    if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
+    const name = competition.environment
+    try {
+      const source = freezeSource(competition)
+      if ('catalog' in source) {
+        return refuse(res, 409, 'unavailable', tr('server.environmentFreeze.managed', { name, image: source.catalog }))
+      }
+      const freeze = await freezes.read(name, source.pinned)
+      if (freeze.state === 'missing') {
+        const words = source.pinned === null ? 'server.environmentFreeze.unbuilt' : 'server.environmentFreeze.pinnedGone'
+        return refuse(res, 409, 'unavailable', tr(words, { name }))
+      }
+      if (freeze.state === 'failed') return refuse(res, 503, 'unavailable', tr('server.environmentFreeze.unavailable', { name }))
+      sendFreeze(res, name, freeze.text)
+    } catch {
+      // An unreadable release catalog: the list beside it is refused in readable words, and so is this.
+      refuse(res, 503, 'unavailable', tr('server.environmentFreeze.unavailable', { name }))
     }
   })
 

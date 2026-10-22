@@ -1715,6 +1715,31 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'Его строки не попадают ни в вывод, ни в сообщения об ошибке — поэтому при падении видны только номер ячейки и тип исключения.',
     en: 'Its rows reach neither the output nor the error messages, so a failure shows only the cell number and the exception type.',
   },
+  // The note beside «Скачать pip freeze» in the window the «Окружение» row opens (EnvironmentDetails.svelte ·
+  // ListedFreeze): the file of the image the submissions are checked in, the image missing here, or the release
+  // catalog's with no docker here, which the command after these words names. The two reasons come twice: under the
+  // packages a pinned revision keeps whatever the machine has, about the pip freeze alone; and as all the window says
+  // when no list came (…NoList), for the missing list too, as the panel's window says them.
+  'competitions.p.freezeHint': {
+    ru: 'Точный состав образа, в котором проверяются посылки: файл для pip install -r.',
+    en: 'The exact packages of the image used to check submissions: a file for pip install -r.',
+  },
+  'competitions.p.freezeMissing': {
+    ru: 'Образа, в котором проверяются посылки, на сервере нет: pip freeze здесь не прочитать.',
+    en: 'The image used to check submissions is not on this server, so its pip freeze cannot be read here.',
+  },
+  'competitions.p.freezeMissingNoList': {
+    ru: 'Образа, в котором проверяются посылки, на сервере нет: ни состав, ни pip freeze здесь не прочитать.',
+    en: 'The image used to check submissions is not on this server: neither its installed packages nor its pip freeze can be read here.',
+  },
+  'competitions.p.freezeManaged': {
+    ru: 'Образ приходит из каталога релиза и закреплён по дайджесту, а Docker у этого сервера нет: pip freeze здесь не прочитать. Его напечатает эта команда на машине, которая может скачать образ:',
+    en: 'The image comes from the release catalog, pinned by its digest, and this server has no Docker, so its pip freeze cannot be read here. This command prints it on any machine that can pull the image:',
+  },
+  'competitions.p.freezeManagedNoList': {
+    ru: 'Образ приходит из каталога релиза и закреплён по дайджесту, а Docker у этого сервера нет: ни состав, ни pip freeze здесь не прочитать. pip freeze напечатает эта команда на машине, которая может скачать образ:',
+    en: 'The image comes from the release catalog, pinned by its digest, and this server has no Docker: neither its installed packages nor its pip freeze can be read here. This command prints the freeze on any machine that can pull the image:',
+  },
 
   /* The teacher's side of the same setting, in the competition editor. */
   'competitions.visibility.head': { ru: 'КТО ВИДИТ ЛИДЕРБОРД', en: 'WHO SEES THE LEADERBOARD' },

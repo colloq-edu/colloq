@@ -19,6 +19,16 @@
  * not answer and under the release catalog; who may download; and the
  * window: its action and reasons, a window with no image that asks for
  * nothing, and a press that saves only a 200.
+ *
+ * And the same download from a competition's window (routes/competitions.ts
+ * · freeze): the panel's very file, of the image the window's list is of,
+ * a pinned one included; open to exactly those the list is open to, refused
+ * where the list is and in its words, a failed read in readable ones that
+ * name nothing of docker's; told to the window beside the list, which never
+ * waits long for it; asked of docker once an image however many ask, a
+ * failed read included, for a few seconds (environments.ts ·
+ * createFreezeReader, played here on a clock of the suite's); said in the
+ * competition page's words, which load no panel catalog.
  */
 import './_env.mts'
 import cp from 'node:child_process'
@@ -41,11 +51,19 @@ import type { Component } from 'svelte'
 import { TEST_ROOT } from './_env.mts'
 import { fakeDocker, type FakeDocker } from './_fake-docker.mts'
 import { adminEnvironmentRoutes } from '../server/src/routes/admin-environments.js'
-import { readFreeze } from '../server/src/environments.js'
+import { competitionRoutes } from '../server/src/routes/competitions.js'
+import { createFreezeReader, readFreeze } from '../server/src/environments.js'
 import { createTeacher } from '../server/src/admin/store.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
+import { createCompetition, joinAsNewcomer, setCompetitionState } from '../server/src/competitions/store.js'
+import { issueEntrantCookie } from '../server/src/competitions/identity.js'
+import { putRevision, selectRevision } from '../server/src/dependencies/store.js'
 import { STAFF_COOKIE, type AdminErrorBody } from '../shared/admin.js'
-import { setLocaleResolver } from '../shared/i18n.js'
+import { ENTRANT_COOKIE, type Competition, type CompetitionErrorBody } from '../shared/competitions.js'
+import type { EnvironmentInventory } from '../shared/environment-inventory.js'
+import { commonMessages } from '../shared/locales/common.js'
+import { competitionsMessages } from '../shared/locales/competitions.js'
+import { setLocaleResolver, tr } from '../shared/i18n.js'
 
 /* ------------------------------------------------------------ the stand */
 
@@ -74,10 +92,21 @@ type Child = EventEmitter & {
 type Played = { code: number; stdout?: string; stderr?: string } | ((child: Child) => void)
 
 /** The window module's own shapes (EnvironmentDetails.svelte · module script), as the press takes and answers them. */
+interface FreezeWords {
+  hint: () => string
+  unbuilt: (alone: boolean) => string
+  managed: (alone: boolean) => string
+}
 interface EnvironmentFreeze {
   endpoint: string
   built: boolean
   catalogImage: string | null
+  words?: FreezeWords
+}
+interface ListedFreeze {
+  endpoint: string
+  listed: true
+  words: FreezeWords
 }
 type FreezePress =
   | { done: 'skipped' }
@@ -91,15 +120,34 @@ const images = new Map<string, Image>()
 const frozen = new Map<string, Played>()
 /** When set, every inspect answers this: a docker that is not there. */
 let inspectTrouble: Played | null = null
+/**
+ * A competition window's list, read from the same images: the packages of a
+ * tag that names one, refused otherwise, the way the inventory probe reads
+ * the tag (its own suite, environment-inventory.test.mts, holds how).
+ */
+const listOf = async (name: string): Promise<EnvironmentInventory> => {
+  if (!images.has(`colloq-kernel:${name}`)) throw new Error('Environment image is unavailable')
+  return { name, python: '3.11.9', packages: [{ name: 'numpy', version: '2.1.3' }] }
+}
 
 let docker: FakeDocker
 let server: http.Server
 let base = ''
+/**
+ * The competition door's clock: what it has asked docker is kept a few
+ * seconds by it, and a test moves it on rather than waits.
+ */
+let now = 0
+/** Everything the competition door asked docker before is old news: each of its tests starts from here. */
+const expire = () => {
+  now += 60_000
+}
 /** The window, compiled for the server the way the competition render tests compile it, with its module's exports. */
 let dir = ''
 let windowModule: {
   default: Component<any>
   pressFreeze: (name: string, freeze: EnvironmentFreeze | undefined, page: Page) => Promise<FreezePress>
+  listedFreeze: (freeze: ListedFreeze, answer: unknown) => EnvironmentFreeze
 }
 
 const freezeRuns = () =>
@@ -164,19 +212,24 @@ before(async () => {
   const app = express()
   app.use(express.json())
   app.use(adminEnvironmentRoutes())
+  app.use(competitionRoutes(listOf, createFreezeReader(() => now)))
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
 
   dir = await mkdtemp(path.join(tmpdir(), 'colloq-freeze-render-'))
-  const source = await readFile(new URL('../web/src/components/ui/EnvironmentDetails.svelte', import.meta.url), 'utf8')
-  let code = compile(source, { filename: 'EnvironmentDetails.svelte', generate: 'server' }).js.code
-  for (const [from, to] of [
-    ['svelte/internal/server', import.meta.resolve('svelte/internal/server')],
-    ['svelte', import.meta.resolve('svelte')],
-    ['@shared/i18n', new URL('../shared/i18n.ts', import.meta.url).href],
-  ]) code = code.replaceAll(`'${from}'`, JSON.stringify(to))
-  await writeFile(path.join(dir, 'EnvironmentDetails.mjs'), code)
+  // The window and the placeholder it draws while its list loads, each compiled for the server beside the other.
+  for (const name of ['Skeleton', 'EnvironmentDetails']) {
+    const source = await readFile(new URL(`../web/src/components/ui/${name}.svelte`, import.meta.url), 'utf8')
+    let code = compile(source, { filename: `${name}.svelte`, generate: 'server' }).js.code
+    for (const [from, to] of [
+      ['svelte/internal/server', import.meta.resolve('svelte/internal/server')],
+      ['svelte', import.meta.resolve('svelte')],
+      ['@shared/i18n', new URL('../shared/i18n.ts', import.meta.url).href],
+      ['./Skeleton.svelte', './Skeleton.mjs'],
+    ]) code = code.replaceAll(`'${from}'`, JSON.stringify(to))
+    await writeFile(path.join(dir, `${name}.mjs`), code)
+  }
   windowModule = await import(pathToFileURL(path.join(dir, 'EnvironmentDetails.mjs')).href)
 })
 
@@ -204,10 +257,11 @@ function staff(role: 'owner' | 'teacher'): string {
 const download = (name: string, role: 'owner' | 'teacher' | null = 'owner') =>
   fetch(`${base}/api/admin/environments/${name}/freeze`, { headers: role ? { cookie: staff(role) } : {} })
 
-async function refusal(response: globalThis.Response): Promise<AdminErrorBody> {
+/** A refusal's body, the panel's or a competition door's: words and a reason, never a file. */
+async function refusal<Body = AdminErrorBody>(response: globalThis.Response): Promise<Body> {
   assert.match(response.headers.get('content-type') ?? '', /application\/json/, 'a refusal is words, not a file')
   assert.equal(response.headers.get('content-disposition'), null, 'and nothing asks the browser to save it')
-  return (await response.json()) as AdminErrorBody
+  return (await response.json()) as Body
 }
 
 const FREEZE = 'matplotlib==3.9.2\nnumpy==2.1.3\npandas==2.2.3\npip==25.0.1\nscikit-learn==1.5.2\nsetuptools==75.1.0\n'
@@ -543,7 +597,7 @@ test('the window scrolls as a whole when it is taller than the screen, so its fo
   assert.doesNotMatch(tableArea, /(^|\s)min-h-0(\s|$)/)
 })
 
-test('the competition window, given no freeze, stays as it was', () => {
+test('a window given no freeze offers none, and stays as it was', () => {
   const html = draw()
   assert.equal(freezeButton(html), null)
   assert.doesNotMatch(html, /pip freeze/)
@@ -634,11 +688,13 @@ test('the window presses through pressFreeze and says it is reading while it doe
   // Read from the file, like the panels' craft tests: the press's half that needs a page.
   const source = await readFile(new URL('../web/src/components/ui/EnvironmentDetails.svelte', import.meta.url), 'utf8')
   const press = /async function downloadFreeze\(\): Promise<void> \{([\s\S]*?)\n {2}\}/.exec(source)?.[1] ?? ''
-  assert.match(press, /if \(!readable \|\| freezing\) return\s+freezing = true[\s\S]*await pressFreeze\(name, freeze,[\s\S]*finally \{\s+freezing = false/)
-  assert.match(press, /press\.done === 'refused'[\s\S]*words \?\? tr\('admin\.env\.freezeFailed'\)/)
+  // What the foot offers: the panel's freeze as given, a competition page's once its list has told it.
+  assert.match(press, /if \(!readable \|\| freezing\) return\s+freezing = true[\s\S]*await pressFreeze\(name, offered,[\s\S]*finally \{\s+freezing = false/)
+  // The action's words are both pages' (common), the competition pages loading no panel words.
+  assert.match(press, /press\.done === 'refused'[\s\S]*words \?\? tr\('common\.environmentFreezeFailed'\)/)
   const button = /<button\b[^>]*aria-describedby="environment-freeze-note"[\s\S]*?<\/button>/.exec(source)?.[0] ?? ''
   assert.match(button, /disabled=\{!readable \|\| freezing\}/)
-  assert.match(button, /\{freezing \? tr\('admin\.env\.freezeReading'\) : tr\('admin\.env\.freeze'\)\}/)
+  assert.match(button, /\{freezing \? tr\('common\.environmentFreezeReading'\) : tr\('common\.environmentFreeze'\)\}/)
 })
 
 /* ------------------------------------------------------------ the screen */
@@ -668,4 +724,447 @@ test('above a phone\'s width a row\'s name is never squeezed out: the states and
   const tail = /<div class="ml-auto flex flex-wrap items-center justify-end gap-3 max-\[640px\]:contents">\s*\{#if env\.state === 'building'\}[\s\S]*?\{\/if\}\s*<\/div>\s*<\/div>/.exec(screen)?.[0] ?? ''
   assert.ok(tail, 'the states and actions stand in one tail')
   assert.match(tail, /aria-haspopup="menu"/, 'the menu goes with them')
+})
+
+/* ------------------------------------------------- the competition's door */
+
+let made = 0
+/** A competition on `environment` in `state`, under a slug of its own; a draft is how one is created. */
+function competition(environment: string, state: Competition['state'] = 'live', startsAt: number | null = null): Competition {
+  made += 1
+  const created = createCompetition({ slug: `freeze-${made}`, title: `Freeze ${made}`, environment, startsAt })
+  assert.ok(created)
+  if (state !== 'draft') setCompetitionState(created.id, state)
+  return { ...created, state }
+}
+
+/** A participant of `competitionId`, signed in: a newcomer with a key, as joining makes one. */
+function participant(competitionId: string, name: string): string {
+  const minted = joinAsNewcomer(competitionId, name)
+  assert.ok(minted !== 'taken', name)
+  let value = ''
+  issueEntrantCookie({ cookie: (_n: string, v: string) => (value = v) } as unknown as Response, minted.entrant)
+  return `${ENTRANT_COOKIE}=${value}`
+}
+
+const door = (slug: string, cookie: string | null = null, tail = '/freeze') =>
+  fetch(`${base}/api/k/competitions/${slug}/environment${tail}`, { headers: cookie ? { cookie } : {} })
+
+/** The revision a competition pins at its first run, of `image`. */
+function pin(c: Competition, image: string, packages: { name: string; version: string }[]): string {
+  const revision = putRevision({
+    environmentName: c.environment, imageDigest: image, pythonVersion: '3.11.9', pythonAbi: 'cp311',
+    platform: 'linux/amd64', packages, baseConstraintsHash: `freeze-${image.slice(-8)}`,
+  })
+  selectRevision(c.id, revision.id)
+  return revision.id
+}
+
+test('a competition window downloads the panel\'s very file for its environment, and one pip freeze serves both doors', async () => {
+  expire()
+  images.set('colloq-kernel:base', { id: id('6'), created: '2026-10-22T08:00:00Z', platform: 'linux/arm64', python: '3.11.9' })
+  frozen.set(id('6'), { code: 0, stdout: FREEZE })
+  const c = competition('base')
+  const runs = freezeRuns().length
+  // Nobody signed in: the page of a published competition is anyone's who has its link, and so is its list.
+  const theirs = await door(c.slug)
+  const panel = await download('base')
+  assert.equal(theirs.status, 200)
+  for (const header of ['content-type', 'content-disposition', 'cache-control']) {
+    assert.equal(theirs.headers.get(header), panel.headers.get(header), header)
+  }
+  assert.equal(theirs.headers.get('content-disposition'), 'attachment; filename="base-pip-freeze.txt"')
+  const text = await theirs.text()
+  assert.equal(text, await panel.text(), 'the same header line and the same lines under it')
+  assert.equal(text, `# base · Python 3.11.9 · linux/arm64 · image ${id('6')} · built 2026-10-22T08:00:00Z\n${FREEZE}`)
+  assert.equal(freezeRuns().length - runs, 1, 'kept by the image, whichever door asked')
+})
+
+test('the freeze is open exactly where the window\'s list is: to anyone with a published competition\'s page, refused for a draft in the list\'s words', async () => {
+  expire()
+  images.set('colloq-kernel:base', { id: id('6'), created: '2026-10-22T08:00:00Z', platform: 'linux/arm64', python: '3.11.9' })
+  frozen.set(id('6'), { code: 0, stdout: FREEZE })
+  const elsewhere = competition('base')
+  const outsider = participant(elsewhere.id, '@freeze_outsider')
+  const day = 24 * 60 * 60 * 1000
+  const cases: Array<{ what: string; slug: string; visible: boolean; member: string | null }> = []
+  for (const [what, state, startsAt] of [
+    ['live', 'live', null],
+    ['live, not started yet', 'live', Date.now() + day],
+    ['finished', 'finished', null],
+    ['draft', 'draft', null],
+  ] as const) {
+    const c = competition('base', state, startsAt)
+    cases.push({ what, slug: c.slug, visible: state !== 'draft', member: participant(c.id, `@freeze_${made}`) })
+  }
+  cases.push({ what: 'no such competition', slug: 'freeze-nowhere', visible: false, member: null })
+  const visitors: Array<[string, (member: string | null) => string | null]> = [
+    ['nobody signed in', () => null],
+    ['a participant of another competition', () => outsider],
+    ['its participant', (member) => member],
+    ['an owner', () => staff('owner')],
+    ['a teacher', () => staff('teacher')],
+  ]
+  const missing = { error: tr('competitions.refusal.notFound'), reason: 'not_found' }
+  for (const { what, slug, visible, member } of cases) {
+    for (const [who, cookieOf] of visitors) {
+      const cookie = cookieOf(member)
+      const where = `${what}, ${who}`
+      const [list, listed, freeze] = await Promise.all([door(slug, cookie, ''), door(slug, cookie, '?freeze'), door(slug, cookie)])
+      assert.equal(list.status, visible ? 200 : 404, `the list: ${where}`)
+      assert.equal(listed.status, list.status, `the list with its image: ${where}`)
+      assert.equal(freeze.status, list.status, `the freeze: ${where}`)
+      if (visible) {
+        assert.equal(freeze.headers.get('content-disposition'), 'attachment; filename="base-pip-freeze.txt"', where)
+        assert.equal(await freeze.text(), `# base · Python 3.11.9 · linux/arm64 · image ${id('6')} · built 2026-10-22T08:00:00Z\n${FREEZE}`, where)
+      } else {
+        // Refused where the list is, and in its words: nothing says whether a draft is there.
+        assert.deepEqual(await list.json(), missing, where)
+        assert.deepEqual(await listed.json(), missing, where)
+        assert.deepEqual(await freeze.json(), missing, where)
+      }
+    }
+  }
+})
+
+test('a pinned competition\'s freeze is its pinned image\'s, the one its list shows and its submissions run in, after a rebuild moved the tag', async () => {
+  expire()
+  // The tag names the rebuilt image; the competition's revision keeps the one before, an id no other test plays.
+  const before = `sha256:${'7a'.repeat(32)}`
+  images.set('colloq-kernel:kaggle-base', { id: id('8'), created: '2026-10-22T09:00:00Z', platform: 'linux/amd64', python: '3.11.9' })
+  frozen.set(id('8'), { code: 0, stdout: 'catboost==1.2.8\npip==25.0.1\n' })
+  images.set(before, { id: before, created: '2026-09-01T08:00:00Z', platform: 'linux/amd64', python: '3.11.9' })
+  frozen.set(before, { code: 0, stdout: 'catboost==1.2.7\npip==24.2\n' })
+  const c = competition('kaggle-base')
+  const revisionId = pin(c, before, [{ name: 'catboost', version: '1.2.7' }, { name: 'pip', version: '24.2' }])
+
+  const list = (await (await door(c.slug, null, '?freeze')).json()) as EnvironmentInventory & { freeze?: unknown }
+  assert.equal(list.revisionId, revisionId)
+  assert.deepEqual(list.packages, [{ name: 'catboost', version: '1.2.7' }, { name: 'pip', version: '24.2' }])
+  assert.deepEqual(list.freeze, { built: true, catalogImage: null })
+
+  const file = await (await door(c.slug)).text()
+  assert.equal(file, `# kaggle-base · Python 3.11.9 · linux/amd64 · image ${before} · built 2026-09-01T08:00:00Z\ncatboost==1.2.7\npip==24.2\n`)
+  const run = freezeRuns().at(-1)!
+  assert.ok(run.includes(before) && !run.includes('colloq-kernel:kaggle-base'), 'the pinned image, by its id')
+  // The panel's window reads the image the rooms start from now.
+  assert.match(await (await download('kaggle-base')).text(), new RegExp(`^# kaggle-base · .* · image ${id('8')} · `))
+})
+
+test('a competition\'s freeze refuses in the panel\'s words where there is no image, and in its own where its pinned image is gone', async () => {
+  expire()
+  images.delete('colloq-kernel:base-gpu')
+  const unbuilt = competition('base-gpu')
+  const runs = freezeRuns().length
+  const refused = await door(unbuilt.slug)
+  assert.equal(refused.status, 409)
+  const body = await refusal<CompetitionErrorBody>(refused)
+  assert.equal(body.error, tr('server.environmentFreeze.unbuilt', { name: 'base-gpu' }))
+  assert.equal(freezeRuns().length, runs, 'docker is asked to run nothing')
+  // The list it stands under is refused too, and tells its window why beside its words.
+  const list = await door(unbuilt.slug, null, '?freeze')
+  assert.equal(list.status, 503)
+  assert.deepEqual(await list.json(), { error: tr('common.environmentUnavailable'), reason: 'unavailable', freeze: { built: false, catalogImage: null } })
+
+  // Pinned to an image removed since: the list is the revision's still, and the freeze says what is gone.
+  images.set('colloq-kernel:kaggle-base', { id: id('8'), created: '2026-10-22T09:00:00Z', platform: 'linux/amd64', python: '3.11.9' })
+  images.delete(id('0'))
+  const gone = competition('kaggle-base')
+  pin(gone, id('0'), [{ name: 'catboost', version: '1.2.6' }])
+  const pinnedGone = await door(gone.slug)
+  assert.equal(pinnedGone.status, 409)
+  const words = (await refusal<CompetitionErrorBody>(pinnedGone)).error
+  assert.equal(words, tr('server.environmentFreeze.pinnedGone', { name: 'kaggle-base' }))
+  assert.doesNotMatch(words, /первой сборки/, 'the environment has an image; the competition\'s is what is gone')
+  const kept = await door(gone.slug, null, '?freeze')
+  assert.equal(kept.status, 200)
+  assert.deepEqual(((await kept.json()) as { freeze?: unknown }).freeze, { built: false, catalogImage: null })
+  assert.equal(freezeRuns().length, runs)
+})
+
+/** An image id no other test plays: the hex digits of `id` are all taken. */
+const pairId = (pair: string) => `sha256:${pair.repeat(32)}`
+
+test('a competition\'s freeze that fails is refused as its list is, in readable words naming nothing of docker\'s or the host\'s, and the log says why', async (t) => {
+  expire()
+  const warned: string[] = []
+  t.mock.method(console, 'warn', (...args: unknown[]) => void warned.push(args.map(String).join(' ')))
+  /** The list door's rule (environment-inventory.test.mts · without Docker diagnostics), held to the freeze's. */
+  const readable = async (response: globalThis.Response, what: string) => {
+    assert.equal(response.status, 503, what)
+    const body = await refusal<CompetitionErrorBody>(response)
+    assert.deepEqual(body, { error: tr('server.environmentFreeze.unavailable', { name: 'base' }), reason: 'unavailable' }, what)
+    assert.doesNotMatch(body.error, /docker|daemon|\.sock|No module|private-host|ENOENT/i, what)
+  }
+  images.set('colloq-kernel:base', { id: id('6'), created: '2026-10-22T08:00:00Z', platform: 'linux/arm64', python: '3.11.9' })
+  const c = competition('base')
+
+  // A daemon that does not answer: its socket stays on the server, and the panel's staff still read it.
+  inspectTrouble = { code: 1, stderr: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n' }
+  try {
+    await readable(await door(c.slug), 'docker not answering')
+    // Not "no image": nothing is known, and the window lets a press find out.
+    const list = (await (await door(c.slug, null, '?freeze')).json()) as Record<string, unknown>
+    assert.equal('freeze' in list, false)
+    assert.equal(list.name, 'base')
+    assert.match((await refusal(await download('base'))).error, /: Cannot connect to the Docker daemon at unix:\/\/\/var\/run\/docker\.sock/)
+  } finally {
+    inspectTrouble = null
+  }
+  assert.deepEqual(warned, ['[environments] the pip freeze of base could not be read: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'])
+
+  // An image whose python has no pip: python's words stay on the server too.
+  expire()
+  images.set('colloq-kernel:base', { id: pairId('5a'), created: '2026-10-22T08:30:00Z', platform: 'linux/arm64', python: '3.11.9' })
+  frozen.set(pairId('5a'), { code: 1, stderr: '/usr/local/bin/python: No module named pip\n' })
+  await readable(await door(c.slug), 'a run that failed')
+  assert.match(warned.at(-1) ?? '', /could not be read: \/usr\/local\/bin\/python: No module named pip$/)
+
+  // A release catalog this server cannot read: its path is the host's.
+  const saved = { KERNEL_BACKEND: process.env.KERNEL_BACKEND, KERNEL_CATALOG_FILE: process.env.KERNEL_CATALOG_FILE }
+  Object.assign(process.env, { KERNEL_BACKEND: 'broker', KERNEL_CATALOG_FILE: path.join(TEST_ROOT, 'private-host', 'kernel-catalog.json') })
+  try {
+    await readable(await door(c.slug), 'an unreadable catalog')
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
+test('however many ask at once, a competition\'s window costs docker one inspect an image, and a failing freeze one container, for a few seconds', async (t) => {
+  expire()
+  t.mock.method(console, 'warn', () => {})
+  const ready = pairId('5b')
+  images.set('colloq-kernel:base', { id: ready, created: '2026-10-22T10:00:00Z', platform: 'linux/arm64', python: '3.11.9' })
+  frozen.set(ready, { code: 0, stdout: FREEZE })
+  const c = competition('base')
+  const burst = (slug: string, tail: string) => Promise.all(Array.from({ length: 30 }, () => door(slug, null, tail)))
+
+  // Thirty windows opening at once, nobody signed in: one inspect, and every one of them told.
+  let inspected = inspects().length
+  const opened = await burst(c.slug, '?freeze')
+  assert.equal(inspects().length - inspected, 1)
+  for (const response of opened) assert.deepEqual(((await response.json()) as { freeze?: unknown }).freeze, { built: true, catalogImage: null })
+
+  // Thirty presses at once: one inspect and one pip freeze, and thirty copies of one file.
+  inspected = inspects().length
+  const runs = freezeRuns().length
+  const pressed = await burst(c.slug, '/freeze')
+  assert.equal(inspects().length - inspected, 1)
+  assert.equal(freezeRuns().length - runs, 1)
+  const files = new Set(await Promise.all(pressed.map((response) => response.text())))
+  assert.deepEqual([...files], [`# base · Python 3.11.9 · linux/arm64 · image ${ready} · built 2026-10-22T10:00:00Z\n${FREEZE}`])
+
+  // A pinned competition's windows, by its pinned image all the same.
+  const kept = pairId('5d')
+  images.set(kept, { id: kept, created: '2026-09-02T08:00:00Z', platform: 'linux/amd64', python: '3.11.9' })
+  const pinned = competition('kaggle-base')
+  pin(pinned, kept, [{ name: 'catboost', version: '1.2.6' }])
+  inspected = inspects().length
+  await Promise.all((await burst(pinned.slug, '?freeze')).map((response) => response.arrayBuffer()))
+  assert.equal(inspects().length - inspected, 1)
+
+  // An image whose freeze fails: every press of those seconds is told so by one container, and one more comes after.
+  const failing = pairId('5e')
+  images.set('colloq-kernel:base', { id: failing, created: '2026-10-22T10:30:00Z', platform: 'linux/arm64', python: '3.11.9' })
+  frozen.set(failing, { code: 1, stderr: '/usr/local/bin/python: No module named pip\n' })
+  expire()
+  const before = freezeRuns().length
+  for (let press = 0; press < 10; press += 1) assert.equal((await door(c.slug)).status, 503)
+  assert.equal(freezeRuns().length - before, 1, 'one container, not one a request')
+  now += 4_000
+  assert.equal((await door(c.slug)).status, 503)
+  assert.equal(freezeRuns().length - before, 1, 'still kept four seconds after it failed')
+  now += 2_000
+  assert.equal((await door(c.slug)).status, 503)
+  assert.equal(freezeRuns().length - before, 2, 'and tried again a few seconds after')
+})
+
+test('a pinned list answers while docker is still inspecting its image, untold of it, and the next window is told once docker answers', async () => {
+  expire()
+  const kept = pairId('5f')
+  images.set(kept, { id: kept, created: '2026-09-03T08:00:00Z', platform: 'linux/amd64', python: '3.11.9' })
+  const c = competition('kaggle-base')
+  pin(c, kept, [{ name: 'catboost', version: '1.2.5' }])
+  // A daemon that takes its time: the inspect starts, and ends only when this test lets it.
+  const held: { child?: Child } = {}
+  inspectTrouble = (made) => void (held.child = made)
+  let answer: Record<string, unknown>
+  try {
+    answer = (await (await door(c.slug, null, '?freeze')).json()) as Record<string, unknown>
+  } finally {
+    inspectTrouble = null
+  }
+  const inspecting = held.child
+  assert.ok(inspecting, 'the inspect was started')
+  assert.equal(inspecting.kills, 0, 'and was still going, not given up at its timeout, when the list answered')
+  assert.deepEqual(answer.packages, [{ name: 'catboost', version: '1.2.5' }], 'the revision\'s list, from the database')
+  assert.equal('freeze' in answer, false, 'untold, which the window reads as an image to read')
+
+  // Docker answers: the next window is told, by that very inspect.
+  const inspected = inspects().length
+  play(inspecting, inspect(inspects().at(-1)!))
+  const next = (await (await door(c.slug, null, '?freeze')).json()) as { freeze?: unknown }
+  assert.deepEqual(next.freeze, { built: true, catalogImage: null })
+  assert.equal(inspects().length, inspected)
+})
+
+test('the list tells its window of the image only when asked: without `?freeze` it is the list it always was, and docker is not asked', async () => {
+  expire()
+  images.set('colloq-kernel:base', { id: id('6'), created: '2026-10-22T08:00:00Z', platform: 'linux/arm64', python: '3.11.9' })
+  const c = competition('base')
+  const listed = { name: 'base', python: '3.11.9', packages: [{ name: 'numpy', version: '2.1.3' }] }
+  assert.deepEqual(await (await door(c.slug, null, '?freeze')).json(), { ...listed, freeze: { built: true, catalogImage: null } })
+  const asked = inspects().length
+  assert.deepEqual(await (await door(c.slug, null, '')).json(), listed)
+  assert.equal(inspects().length, asked)
+})
+
+test('under the release catalog a competition\'s freeze names the image it runs, its pin or the catalog\'s, and docker is asked nothing', async () => {
+  const current = `registry.test/colloq/kernel-base@sha256:${'9'.repeat(64)}`
+  const older = `registry.test/colloq/kernel-base@sha256:${'8'.repeat(64)}`
+  const catalog = path.join(TEST_ROOT, 'catalog-competition-freeze.json')
+  fs.writeFileSync(catalog, JSON.stringify({ schemaVersion: 1, release: 'r2', defaultEnvironment: 'base', environments: [{ name: 'base', image: current, gpu: false, current: true }] }))
+  const unpinned = competition('base')
+  const pinned = competition('base')
+  pin(pinned, older, [{ name: 'numpy', version: '2.0.2' }])
+  const saved = { KERNEL_BACKEND: process.env.KERNEL_BACKEND, KERNEL_CATALOG_FILE: process.env.KERNEL_CATALOG_FILE }
+  Object.assign(process.env, { KERNEL_BACKEND: 'broker', KERNEL_CATALOG_FILE: catalog })
+  const calls = docker.calls.length
+  try {
+    for (const [c, image] of [[unpinned, current], [pinned, older]] as const) {
+      const refused = await door(c.slug)
+      assert.equal(refused.status, 409)
+      const words = (await refusal<CompetitionErrorBody>(refused)).error
+      assert.equal(words, tr('server.environmentFreeze.managed', { name: 'base', image }))
+      assert.ok(words.includes(`docker run --rm --network none --entrypoint python ${image} -m pip freeze --all`))
+      const list = (await (await door(c.slug, null, '?freeze')).json()) as { freeze?: unknown }
+      assert.deepEqual(list.freeze, { built: false, catalogImage: image })
+    }
+    assert.equal(docker.calls.length, calls, 'no docker here at all')
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
+/* ----------------------------------------------- the competition's window */
+
+/** Conditions.svelte's words, as its source has them (the last test of this file holds the two together). */
+const competitionWords = {
+  hint: () => tr('competitions.p.freezeHint'),
+  unbuilt: (alone: boolean) => (alone ? tr('competitions.p.freezeMissingNoList') : tr('competitions.p.freezeMissing')),
+  managed: (alone: boolean) => (alone ? tr('competitions.p.freezeManagedNoList') : tr('competitions.p.freezeManaged')),
+}
+const listed: ListedFreeze = { endpoint: '/api/k/competitions/letters/environment/freeze', listed: true, words: competitionWords }
+
+test('a competition window takes what its image is from its list\'s answer, a refusal\'s too, and an answer that says nothing is an image to read', () => {
+  const told = (answer: unknown) => {
+    const { words, ...facts } = windowModule.listedFreeze(listed, answer)
+    assert.equal(words, competitionWords, 'its own words go with it')
+    return facts
+  }
+  const route = listed.endpoint
+  assert.deepEqual(told({ name: 'base', python: '3.11.9', packages: [], freeze: { built: true, catalogImage: null } }), { endpoint: route, built: true, catalogImage: null })
+  assert.deepEqual(told({ error: 'Не удалось прочитать…', reason: 'unavailable', freeze: { built: false, catalogImage: null } }), { endpoint: route, built: false, catalogImage: null })
+  assert.deepEqual(told({ name: 'base', packages: [], freeze: { built: false, catalogImage } }), { endpoint: route, built: false, catalogImage })
+  // Docker did not answer, an older server, a proxy's page, garbage: nothing is known against reading it.
+  for (const answer of [{ name: 'base', packages: [] }, null, 'Bad Gateway', 7, { freeze: { built: 'yes', catalogImage: 9 } }]) {
+    assert.deepEqual(told(answer), { endpoint: route, built: true, catalogImage: null }, JSON.stringify(answer))
+  }
+})
+
+test('a competition window offers the download in the competition page\'s words, and greys it with its reason, which with no list above speaks for the list too', async () => {
+  const ready = draw(windowModule.listedFreeze(listed, { freeze: { built: true, catalogImage: null } }))
+  const button = freezeButton(ready)
+  assert.ok(button, 'the action is there')
+  assert.match(button!, /Скачать pip freeze/)
+  assert.doesNotMatch(button!, /\sdisabled/)
+  assert.match(words(ready), /Точный состав образа, в котором проверяются посылки: файл для pip install -r\./)
+  assert.doesNotMatch(words(ready), /комнаты окружения|сборки/, 'not the panel\'s rooms and builds')
+
+  // No list came, its door refused it: the reason is all the window says, as the panel's is.
+  const missing = draw(windowModule.listedFreeze(listed, { freeze: { built: false, catalogImage: null } }))
+  assert.match(freezeButton(missing) ?? '', /\sdisabled/)
+  assert.match(words(missing), /Образа, в котором проверяются посылки, на сервере нет: ни состав, ни pip freeze здесь не прочитать\./)
+
+  const managed = draw(windowModule.listedFreeze(listed, { freeze: { built: false, catalogImage } }))
+  assert.match(freezeButton(managed) ?? '', /\sdisabled/)
+  assert.match(words(managed), /Образ приходит из каталога релиза и закреплён по дайджесту, а Docker у этого сервера нет: ни состав, ни pip freeze здесь не прочитать\./)
+  assert.ok(words(managed).includes(`docker run --rm --network none --entrypoint python ${catalogImage} -m pip freeze --all`))
+
+  // Under the list a pinned revision keeps, the reasons are the pip freeze's alone. That list is drawn once it has
+  // come, which a server render never reaches: the window tells its words whether they stand alone.
+  const source = await readFile(new URL('../web/src/components/ui/EnvironmentDetails.svelte', import.meta.url), 'utf8')
+  assert.match(source, /offered\.words\?\.unbuilt\(imageless\) \?\? tr\('admin\.env\.freezeUnbuilt'\)/)
+  assert.match(source, /offered\.words\?\.managed\(imageless\) \?\? tr\('admin\.env\.freezeManaged'\)/)
+  for (const key of ['competitions.p.freezeMissing', 'competitions.p.freezeManaged']) {
+    assert.match(tr(key), /pip freeze здесь не прочитать/, key)
+    assert.doesNotMatch(tr(key), /ни состав/, key)
+  }
+
+  setLocaleResolver(() => 'en')
+  try {
+    const english = draw(windowModule.listedFreeze(listed, { freeze: { built: true, catalogImage: null } }))
+    assert.match(freezeButton(english) ?? '', /Download pip freeze/)
+    assert.match(words(english), /The exact packages of the image used to check submissions: a file for pip install -r\./)
+    assert.match(
+      words(draw(windowModule.listedFreeze(listed, { freeze: { built: false, catalogImage: null } }))),
+      /The image used to check submissions is not on this server: neither its installed packages nor its pip freeze can be read here\./,
+    )
+    assert.equal(tr('competitions.p.freezeMissing'), 'The image used to check submissions is not on this server, so its pip freeze cannot be read here.')
+  } finally {
+    // The next test reads Russian whatever this one found.
+    setLocaleResolver(() => 'ru')
+  }
+})
+
+test('a competition window asks for its list and shows its foot only once the list has said what the image is', async () => {
+  const html = render(windowModule.default, {
+    props: { name: 'base', endpoint: '/api/k/competitions/letters/environment?freeze', onclose: () => {}, freeze: listed },
+  }).body
+  assert.match(words(html), LISTING)
+  assert.equal(freezeButton(html), null, 'no action while nothing is known of the image')
+  assert.match(dialogTag(html), /h-\[min\(720px,85dvh\)\]/, 'the window keeps its height for the list')
+
+  const source = await readFile(new URL('../web/src/components/ui/EnvironmentDetails.svelte', import.meta.url), 'utf8')
+  // The answer is read whatever its status, and what it says of the image is taken before a refusal is.
+  const load = /async function load\(\): Promise<void> \{([\s\S]*?)\n {2}\}/.exec(source)?.[1] ?? ''
+  assert.match(load, /const body: unknown = await response\.json\(\)\.catch\(\(\) => null\)[\s\S]*told = listedFreeze\(freeze, body\)[\s\S]*if \(!response\.ok \|\| body === null\) throw/)
+  // Its list may be its pinned revision's, kept whatever the machine has: imageless only when no list came.
+  assert.match(source, /const imageless = \$derived\(offered !== undefined && !readable && inventory === null\)/)
+  assert.match(source, /\{#if offered\}\s*<footer/)
+  // A panel word is only ever the fallback of a page that gives none: the competition pages load no panel catalog.
+  const panelWords = [...source.matchAll(/(.{0,40})tr\('admin\.[^']+'\)/g)]
+  assert.equal(panelWords.length, 3)
+  for (const [, before] of panelWords) assert.match(before!, /offered\.words\?\.\w+\((imageless)?\) \?\? $/)
+})
+
+test('the conditions\' «Окружение» row hands its window the competition\'s freeze, in words the competition pages load', async () => {
+  const conditions = await readFile(new URL('../web/src/components/competitions/Conditions.svelte', import.meta.url), 'utf8')
+  assert.match(conditions, /const environmentDoor = \$derived\(`\/api\/k\/competitions\/\$\{encodeURIComponent\(competition\.slug\)\}\/environment`\)/)
+  const link = /<EnvironmentLink\b[\s\S]*?\/>/.exec(conditions)?.[0] ?? ''
+  assert.match(link, /endpoint=\{`\$\{environmentDoor\}\?freeze`\}/)
+  assert.match(link, /freeze=\{\{ endpoint: `\$\{environmentDoor\}\/freeze`, listed: true, words: freezeWords \}\}/)
+  assert.doesNotMatch(conditions, /tr\('admin\./)
+  const keys = [...conditions.matchAll(/tr\('(competitions\.p\.freeze\w+)'\)/g)].map((match) => match[1]!)
+  assert.deepEqual(keys, [
+    'competitions.p.freezeHint',
+    'competitions.p.freezeMissingNoList', 'competitions.p.freezeMissing',
+    'competitions.p.freezeManagedNoList', 'competitions.p.freezeManaged',
+  ])
+  // A reason with no list above speaks for the list too; under one, of the pip freeze alone (this file's competitionWords).
+  assert.match(conditions, /unbuilt: \(alone: boolean\) => \(alone \? tr\('competitions\.p\.freezeMissingNoList'\) : tr\('competitions\.p\.freezeMissing'\)\)/)
+  assert.match(conditions, /managed: \(alone: boolean\) => \(alone \? tr\('competitions\.p\.freezeManagedNoList'\) : tr\('competitions\.p\.freezeManaged'\)\)/)
+  // The competition pages' dictionary is common + competitions (+ the server's status words): every word the window says there.
+  for (const key of keys) assert.ok(Object.hasOwn(competitionsMessages, key), key)
+  for (const key of ['common.environmentFreeze', 'common.environmentFreezeReading', 'common.environmentFreezeFailed']) {
+    assert.ok(Object.hasOwn(commonMessages, key), key)
+  }
+  const opener = await readFile(new URL('../web/src/components/ui/EnvironmentLink.svelte', import.meta.url), 'utf8')
+  assert.match(opener, /freeze\?: EnvironmentFreeze \| ListedFreeze/)
 })

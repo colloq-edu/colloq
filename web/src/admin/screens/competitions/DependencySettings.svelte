@@ -5,6 +5,7 @@
   import { adminApi } from '@/lib/adminApi'
   import Section from '@/admin/ui/Section.svelte'
   import Check from '@/admin/ui/Check.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import DependencyBundleCard from '@/components/competitions/DependencyBundleCard.svelte'
   let { competitionId }: { competitionId: string } = $props()
   let data = $state<AdminDependencyOverview | null>(null)
@@ -47,9 +48,43 @@
 -->
 <Section title={tr('dependencies.adminTitle')} description={tr('dependencies.adminHint')}>
   <div class="space-y-5 text-2xs text-ink">
-    {#if !data}
-      <p class="text-muted" role="status">{tr('dependencies.loading')}</p>
-    {:else}
+    {#if !data && !error}
+      <!-- The policy and the base on their way, in their own boxes: the
+           switch's words, the limit's caption over its field, the base's box
+           with its hint, the queue's head — words where they are the
+           panel's own, grey where they are the answer, the buttons faded.
+           A refusal is said below in its own words, not under grey. -->
+      <div role="status" aria-busy="true" aria-label={tr('dependencies.loading')}>
+        <span class="sr-only">{tr('dependencies.loading')}</span>
+        <div class="space-y-5" aria-hidden="true">
+          <div class="flex items-start gap-3 text-ui text-ink">
+            <span class="mt-[3px] flex"><Skeleton width="18px" height="18px" radius="0" /></span>
+            <span>{tr('dependencies.enabled')}</span>
+          </div>
+          <div class="flex flex-wrap items-end gap-3">
+            <div class="flex flex-col">
+              <span class="admin-label mb-1.5 block">{tr('dependencies.maxDownload')}</span>
+              <span class="block h-10 w-40 max-w-full max-[640px]:h-11"><Skeleton width="100%" height="100%" radius="0" /></span>
+            </div>
+            <span class="btn-outline pointer-events-none opacity-55">{tr('dependencies.savePolicy')}</span>
+          </div>
+          <div class="border border-line bg-surface p-4">
+            <h3 class="text-ui font-semibold text-ink">{tr('dependencies.base')}</h3>
+            <p class="mt-2 font-mono text-micro"><Skeleton width="16rem" height="0.65rem" /></p>
+            <p class="mt-2 text-micro"><Skeleton width="8rem" height="0.65rem" /></p>
+            <p class="admin-meta mt-3">{tr('dependencies.refreshHint')}</p>
+            <span class="btn-outline pointer-events-none mt-3 opacity-55">{tr('dependencies.refreshBase')}</span>
+          </div>
+          <div class="space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <h3 class="text-ui font-semibold text-ink">{tr('dependencies.queue')}</h3>
+              <span class="admin-link pointer-events-none opacity-55">{tr('dependencies.reload')}</span>
+            </div>
+            <p><Skeleton width="11rem" height="0.65rem" /></p>
+          </div>
+        </div>
+      </div>
+    {:else if data}
       {#if data.capabilities?.preparation.available === false}
         <p class="text-warning" role="status">{data.capabilities.preparation.reason}</p>
       {/if}

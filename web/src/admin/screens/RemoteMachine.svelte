@@ -33,6 +33,7 @@
   import Section from '@/admin/ui/Section.svelte'
   import Badge from '@/admin/screens/competitions/Badge.svelte'
   import Icon from '@/components/ui/Icon.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import { cardWord, clock } from '@/admin/running-kernels'
   import {
@@ -326,7 +327,12 @@
   {/snippet}
 
   {#snippet beside()}
-    {#if machine}
+    {#if !machine && !missing && !loadError}
+      <!-- Its state and its role, the two chips every machine has, while it is read. -->
+      {#each ['7.5rem', '5.5rem'] as width, i (i)}
+        <span class="block h-6" style:width aria-hidden="true"><Skeleton width="100%" height="100%" radius="0" /></span>
+      {/each}
+    {:else if machine}
       {@const chip = stateChip(machine.state, machine.silentSince, now)}
       <Badge word={chip.word} tone={chip.tone} />
       {#if !gone}
@@ -345,11 +351,26 @@
   {#snippet lede()}
     {#if machine}
       <span class="min-w-0 break-words text-2xs text-muted">{machineLede(machine, now)}</span>
+    {:else if !missing && !loadError}
+      <!-- Its line while the machine is read — its address, release and
+           times, three lines on a phone: the header does not grow under the hand. -->
+      <span class="flex min-w-0 flex-1 flex-col text-2xs" aria-hidden="true">
+        <span class="block"><Skeleton width="18rem" height="0.75rem" /></span>
+        <span class="hidden max-[640px]:block"><Skeleton width="80%" height="0.75rem" /></span>
+        <span class="hidden max-[640px]:block"><Skeleton width="55%" height="0.75rem" /></span>
+      </span>
     {/if}
   {/snippet}
 
   {#snippet actions()}
-    {#if machine && menu && adminAuth.isOwner}
+    {#if !machine && !missing && !loadError && adminAuth.isOwner}
+      <!-- The owner's actions on a machine, while it is read: two of them stand here on most. -->
+      {#each ['92px', '108px'] as width, i (i)}
+        <span class="block h-10 max-[640px]:h-11 max-[640px]:flex-1" style:width aria-hidden="true">
+          <Skeleton width="100%" height="100%" radius="0" />
+        </span>
+      {/each}
+    {:else if machine && menu && adminAuth.isOwner}
       {#if menu.moveClasses}
         <button type="button" class="btn-outline max-[640px]:flex-1" disabled={busy} onclick={() => (dialog = 'moveClasses')}>
           {tr('admin.runners.menu.moveClasses')}
@@ -390,7 +411,78 @@
       <button type="button" class="btn-outline mt-3" onclick={() => void load()}>{tr('admin.try.again')}</button>
     </div>
   {:else if !machine || !places}
-    <p class="mt-6 text-ui text-muted">{tr('admin.runners.page.loading')}</p>
+    <!--
+      The machine is being read: the counters it is judged by and its own
+      section — the facts under their captions, the settings row — where
+      they will stand. The sections after it are named by what they count,
+      and those counts are the answer.
+    -->
+    <div role="status" aria-busy="true" aria-label={tr('admin.runners.page.loading')}>
+      <span class="sr-only">{tr('admin.runners.page.loading')}</span>
+      <div class="contents" aria-hidden="true">
+        <div class="flex flex-wrap items-baseline gap-x-9 gap-y-3 pt-6">
+          {#each ['5rem', '6.5rem', '4.5rem', '6rem'] as width, i (i)}
+            <div class="flex h-8 items-center gap-2">
+              <Skeleton width="1.75rem" height="1.6rem" />
+              <Skeleton {width} height="0.65rem" />
+            </div>
+          {/each}
+        </div>
+        <Section title={tr('admin.runners.page.machine')} description={tr('admin.runners.page.machineNote')}>
+          <div class="rm-facts">
+            {#each [
+              [tr('admin.runners.fact.cores'), '2rem'],
+              [tr('admin.runners.fact.memory'), '4rem'],
+              [tr('admin.runners.fact.disk'), '4.5rem'],
+              [tr('admin.runners.fact.cards'), '7rem'],
+              [tr('admin.runners.fact.driver'), '5rem'],
+              [tr('admin.runners.fact.docker'), '8rem'],
+              [tr('admin.runners.fact.host'), '9rem'],
+            ] as [label, width] (label)}
+              <div class="min-w-0">
+                <p class="admin-label">{label}</p>
+                <span class="mt-1 flex h-6 items-center"><Skeleton {width} height="0.8rem" /></span>
+              </div>
+            {/each}
+          </div>
+          <!-- The settings row in its own boxes: the places' field with its
+               note, the two switches with their words — what they are set
+               to is the answer, grey; what they mean is the page's own. -->
+          <div class="mt-6 flex flex-wrap items-start gap-x-5 gap-y-5 border-t border-line-soft pt-5">
+            <div class="w-[220px] max-w-full">
+              <p class="admin-label mb-1.5 block">{tr('admin.runners.connect.places')}</p>
+              <span class="block h-10 max-[640px]:h-11"><Skeleton width="100%" height="100%" radius="0" /></span>
+              <p class="mt-1.5 text-micro">
+                {#each ['95%', '90%', '45%'] as width, i (i)}
+                  <span class="block"><Skeleton {width} height="0.6rem" /></span>
+                {/each}
+              </p>
+            </div>
+            {#each [
+              { caption: tr('admin.runners.page.classesLabel'), note: tr('admin.runners.page.classesNote'), long: false },
+              { caption: tr('admin.runners.connect.sealed'), note: tr('admin.runners.page.trustNote'), long: true },
+            ] as { caption, note, long } (caption)}
+              <div class="min-w-[240px] flex-1 basis-[260px]">
+                <p class="admin-label mb-1.5 block">{caption}</p>
+                <div class="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-1 max-[640px]:min-h-11">
+                  <Skeleton width="40px" height="22px" radius="999px" />
+                  {#if long}
+                    <!-- The untrusted machine's words (admin.runners.page.trustedOff) take a line of their own. -->
+                    <span class="basis-full text-ui">
+                      <span class="block"><Skeleton width="80%" height="0.8rem" /></span>
+                      <span class="hidden max-[640px]:block"><Skeleton width="35%" height="0.8rem" /></span>
+                    </span>
+                  {:else}
+                    <span class="text-ui"><Skeleton width="10rem" height="0.8rem" /></span>
+                  {/if}
+                </div>
+                <p class="mt-1.5 text-micro text-muted">{note}</p>
+              </div>
+            {/each}
+          </div>
+        </Section>
+      </div>
+    </div>
   {:else}
     {#if actionError}
       <p role="alert" class="mt-5 border border-danger/40 bg-danger/5 px-4 py-3 text-ui text-danger">{actionError}</p>

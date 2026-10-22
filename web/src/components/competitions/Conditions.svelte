@@ -30,6 +30,22 @@
 
   const { competition, sealedFiles = [], gpu = null }: Props = $props()
 
+  /** The competition's door for its environment: the window's list, and the pip freeze under it. */
+  const environmentDoor = $derived(`/api/k/competitions/${encodeURIComponent(competition.slug)}/environment`)
+  /*
+   * The window offers the image's pip freeze, as the panel's does, in this
+   * page's words: the image the submissions are checked in, not the panel's
+   * rooms and builds, whose catalog this page does not load. What the image
+   * is here (built, the release catalog's) the page does not know; the window
+   * learns it with its list, which the door answers with it (`?freeze`).
+   * A reason with no list above it speaks for the missing list too.
+   */
+  const freezeWords = {
+    hint: () => tr('competitions.p.freezeHint'),
+    unbuilt: (alone: boolean) => (alone ? tr('competitions.p.freezeMissingNoList') : tr('competitions.p.freezeMissing')),
+    managed: (alone: boolean) => (alone ? tr('competitions.p.freezeManagedNoList') : tr('competitions.p.freezeManaged')),
+  }
+
   /*
    * With a hidden test the column answers two more questions before they are
    * asked (C1, C3): which file is swapped and how big it is, and what a
@@ -117,7 +133,11 @@
               : 'text-ink'}"
         >
           {#if row.environment}
-            <EnvironmentLink name={competition.environment} endpoint={`/api/k/competitions/${encodeURIComponent(competition.slug)}/environment`} />
+            <EnvironmentLink
+              name={competition.environment}
+              endpoint={`${environmentDoor}?freeze`}
+              freeze={{ endpoint: `${environmentDoor}/freeze`, listed: true, words: freezeWords }}
+            />
           {:else}
             {row.value}
           {/if}

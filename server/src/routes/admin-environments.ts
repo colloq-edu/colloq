@@ -46,6 +46,7 @@ import {
   readFreeze,
   readSource,
   removeEnvironment,
+  sendFreeze,
   startBuild,
   watchBuild,
   writeSource,
@@ -216,15 +217,11 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         return fail(res, 409, 'managed_environment', tr('server.environmentFreeze.managed', { name, image: runtimeEnvironment(name).image }))
       }
       const freeze = await readFreeze(name)
-      if (freeze.state === 'unbuilt') return fail(res, 409, 'not_built', tr('server.environmentFreeze.unbuilt', { name }))
+      if (freeze.state === 'missing') return fail(res, 409, 'not_built', tr('server.environmentFreeze.unbuilt', { name }))
       if (freeze.state === 'failed') {
         return fail(res, 503, 'failed', tr('server.environmentFreeze.failed', { name, detail: freeze.detail }))
       }
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8')
-      res.setHeader('Content-Disposition', `attachment; filename="${name}-pip-freeze.txt"`)
-      // A rebuild changes the file under the same address.
-      res.setHeader('Cache-Control', 'no-store')
-      res.send(freeze.text)
+      sendFreeze(res, name, freeze.text)
     } catch (err) {
       // An unreadable release catalog, said in its own words rather than left to hang the request.
       fail(res, 503, 'failed', tr('server.environmentFreeze.failed', { name, detail: err instanceof Error ? err.message : String(err) }))

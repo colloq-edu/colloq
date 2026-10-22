@@ -21,6 +21,7 @@
   import Live, { type LiveTab } from '@/admin/screens/competitions/Live.svelte'
   import Badge from '@/admin/screens/competitions/Badge.svelte'
   import RowsSkeleton from '@/components/ui/RowsSkeleton.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
@@ -308,23 +309,54 @@
     {:else}
       <Live {view} {tab} {navigate} onview={(fresh) => (view = fresh)} />
     {/if}
+  {:else if loadingOne}
+    <!--
+      The competition is on its way. Its header is the same whatever it turns
+      out to be — the way back, the title, the address under it, the actions
+      — so that is what stands here; the body below is a draft's form or a
+      live console's tabs, and which one is the answer, so it is not drawn.
+    -->
+    <AdminPage title={tr('competitions.title')}>
+      {#snippet eyebrow()}
+        <button
+          type="button"
+          class="shrink-0 transition-colors duration-100 hover:text-ink"
+          onclick={() => navigate('/admin/competitions')}
+        >
+          {tr('competitions.title')}
+        </button>
+        <span aria-hidden="true">/</span>
+      {/snippet}
+      {#snippet lede()}
+        <!-- Two lines under the title, as both have: the state's (a draft's
+             note, a live one's phase and deadline) and the address. -->
+        <span class="inline-flex h-[22px] basis-full items-center" aria-hidden="true"><Skeleton width="15rem" height="0.8rem" /></span>
+        <span class="inline-flex h-[22px] items-center" aria-hidden="true"><Skeleton width="13rem" height="0.8rem" /></span>
+      {/snippet}
+      {#snippet actions()}
+        {#each ['132px', '176px'] as width, i (i)}
+          <span class="block h-10 max-[640px]:h-11 max-[640px]:grow" style:width aria-hidden="true">
+            <Skeleton width="100%" height="100%" radius="0" />
+          </span>
+        {/each}
+      {/snippet}
+      <div role="status" aria-busy="true" aria-label={tr('competitions.loading')}>
+        <span class="sr-only">{tr('competitions.loading')}</span>
+      </div>
+    </AdminPage>
   {:else}
     <!-- There is no competition at this address. Links to it get shared with
          colleagues, so people will come here by a stale one — and an empty
          area without words would be the only thing they saw here. -->
     <AdminPage title={tr('competitions.title')}>
-      {#if loadingOne}
-        <p class="py-16 text-center text-ui text-muted">{tr('competitions.loading')}</p>
-      {:else}
-        <EmptyState
-          title={tr('admin.competitions.notOpened')}
-          hint={error ?? tr('admin.competitions.checkAddress')}
-        >
-          <button type="button" class="btn-primary" onclick={() => navigate('/admin/competitions')}>
-            {tr('admin.competitions.all')}
-          </button>
-        </EmptyState>
-      {/if}
+      <EmptyState
+        title={tr('admin.competitions.notOpened')}
+        hint={error ?? tr('admin.competitions.checkAddress')}
+      >
+        <button type="button" class="btn-primary" onclick={() => navigate('/admin/competitions')}>
+          {tr('admin.competitions.all')}
+        </button>
+      </EmptyState>
     </AdminPage>
   {/if}
 {:else}
@@ -374,6 +406,23 @@
               ? tr('admin.competitions.resumeQueue')
               : tr('admin.competitions.pauseQueue')}
           </button>
+        {/if}
+      </div>
+    {:else if loadingList}
+      <!-- The strip while the list is read, as it will stand: its word, the
+           queue's state grey on the line it will take, the owner's pause
+           grey — the table under it does not drop when the list lands. -->
+      <div
+        class="-mx-7 flex flex-wrap items-center gap-x-3.5 gap-y-1.5 border-b border-line bg-surface
+               px-7 py-3"
+        aria-hidden="true"
+      >
+        <span class="h-2 w-2 shrink-0 bg-faint"></span>
+        <span class="admin-label shrink-0 text-primary">{tr('admin.competitions.runner')}</span>
+        <span class="text-2xs"><Skeleton width="9rem" height="0.65rem" /></span>
+        <span class="min-w-0 text-2xs"><Skeleton width="15rem" height="0.65rem" /></span>
+        {#if adminAuth.isOwner}
+          <span class="admin-link ml-auto shrink-0"><Skeleton width="10.5rem" height="0.65rem" /></span>
         {/if}
       </div>
     {/if}

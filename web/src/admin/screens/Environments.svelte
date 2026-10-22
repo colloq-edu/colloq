@@ -21,6 +21,7 @@
   import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import EnvironmentLink from '@/components/ui/EnvironmentLink.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { builtAgo, cn, imageSize } from '@/lib/utils'
@@ -562,6 +563,17 @@
 
   /** Which row's overflow menu is open. One at a time, like the seminars table. */
   let openMenu = $state<string | null>(null)
+
+  /**
+   * The placeholder's three cards: a name, a facts line and a row of package
+   * chips each, at widths that read as different environments rather than
+   * one stamped three times.
+   */
+  const ENV_PLACEHOLDERS = [
+    { name: '5rem', facts: '17rem', packages: ['4.5rem', '6rem', '5rem', '7rem'] },
+    { name: '7.5rem', facts: '21rem', packages: ['5.5rem', '4rem', '6.5rem'] },
+    { name: '6rem', facts: '15rem', packages: ['6rem', '5rem', '4.5rem', '5.5rem', '4rem'] },
+  ]
 </script>
 
 <AdminPage
@@ -596,7 +608,37 @@
   </p>
 
   {#if loading}
-    <div class="h-24"></div>
+    <!--
+      The list is on its way (it is `docker image inspect` per environment,
+      and on a busy machine that takes seconds): the cards as they will
+      stand — the square, the name over its facts, the state on the right,
+      the packages under a rule — rather than an empty band that read as
+      «no environments».
+    -->
+    <div class="pt-5" role="status" aria-busy="true" aria-label={tr('admin.loading.environments')}>
+      <span class="sr-only">{tr('admin.loading.environments')}</span>
+      <div class="flex flex-col gap-2.5" aria-hidden="true">
+        {#each ENV_PLACEHOLDERS as card, i (i)}
+          <section class="border border-line">
+            <div class="flex flex-wrap items-center gap-3 px-3.5 py-3">
+              <Skeleton width="10px" height="10px" radius="0" />
+              <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span class="flex h-6 items-center"><Skeleton width={card.name} height="0.85rem" /></span>
+                <span class="flex h-5 items-center"><Skeleton width={card.facts} height="0.65rem" /></span>
+              </div>
+              <span class="ml-auto flex items-center">
+                <Skeleton width="4.5rem" height="22px" radius="0" />
+              </span>
+            </div>
+            <div class="flex flex-wrap gap-1.5 border-t border-line px-3.5 py-2.5">
+              {#each card.packages as width, j (j)}
+                <Skeleton {width} height="26px" radius="0" />
+              {/each}
+            </div>
+          </section>
+        {/each}
+      </div>
+    </div>
   {:else if error}
     <p class="mt-5 border border-danger/40 bg-danger/5 px-4 py-3 text-ui text-danger" role="alert">
       {error}
