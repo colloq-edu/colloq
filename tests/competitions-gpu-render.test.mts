@@ -30,6 +30,7 @@ before(async () => {
   dir = await mkdtemp(path.join(tmpdir(), 'colloq-gpu-render-'))
   const local = (name: string) => pathToFileURL(path.join(dir, `${name}.mjs`)).href
   const sources: [string, string][] = [
+    ['Skeleton', '../web/src/components/ui/Skeleton.svelte'],
     ['EnvironmentDetails', '../web/src/components/ui/EnvironmentDetails.svelte'],
     ['EnvironmentLink', '../web/src/components/ui/EnvironmentLink.svelte'],
     ...['Badge', 'StageStrip', 'DependencyBundleCard', 'SubmissionEnvironment', 'SubmissionCard', 'SubmissionRow', 'HowChecked', 'Conditions'].map(
@@ -50,6 +51,7 @@ before(async () => {
       ['@/lib/competition-words', new URL('../web/src/lib/competition-words.ts', import.meta.url).href],
       ['@/components/ui/EnvironmentLink.svelte', local('EnvironmentLink')],
       ['./EnvironmentDetails.svelte', local('EnvironmentDetails')],
+      ['./Skeleton.svelte', local('Skeleton')],
       ['./DependencyBundleCard.svelte', local('DependencyBundleCard')],
       ['./Badge.svelte', local('Badge')],
       ['./StageStrip.svelte', local('StageStrip')],
