@@ -1,6 +1,6 @@
 # Classes on machines («занятия на машинах»): design
 
-**Status:** built. 0.25.0 brought classes on machines without the council pool; 0.26.0 brings the pool (§9, D29), which R2 measures before its release (§17.5). Written 16 Oct 2026 against 0.24.0 (`bc96401`) as the plan the build followed; file:line anchors are against that commit and may have moved. Built in 0.25.0: K0–K6, K8, K9a, K10, K11a, K12 and K13 (§16); in 0.26.0: K7a–c, K9b, K11b, K12b and the fixer F6; 0.26.1 sends a pool attempt across the machine's tunnel once instead of three times, behind a gate each council worker's kernel is born with (P7, §9.6, §20.26), its entry about a kilobyte instead of 112 once the worker's load has put the guard and the hidden module in its process, and its files barrier waiting for no change that is the room's notebooks alone (P8, §9.6, §20.26). Where the build departed from the plan, a fact a reader relies on (a number, a word, a refusal, a door) is corrected where it stands, and §20 lists every departure by section with its reason (0.25.0's in §20.1–§20.17, 0.26.0's in §20.18–§20.25, 0.26.1's in §20.26). It extends `docs/architecture/remote-runners.md` ("the 0.23 doc"). The owner decisions there (§12) and the implementation notes (§13–13e) stay binding, except where a default below says otherwise.
+**Status:** built. 0.25.0 brought classes on machines without the council pool; 0.26.0 brought the pool (§9, D29); R2 and R2b measured it (§17.5 «As run», §9.11). Written 16 Oct 2026 against 0.24.0 (`bc96401`) as the plan the build followed; file:line anchors are against that commit and may have moved. Built in 0.25.0: K0–K6, K8, K9a, K10, K11a, K12 and K13 (§16); in 0.26.0: K7a–c, K9b, K11b, K12b and the fixer F6; 0.26.1 sends a pool attempt across the machine's tunnel once instead of three times, behind a gate each council worker's kernel is born with (P7, §9.6, §20.26), its entry about a kilobyte instead of 112 once the worker's load has put the guard and the hidden module in its process, and its files barrier waiting for no change that is the room's notebooks alone (P8, §9.6, §20.26). Where the build departed from the plan, a fact a reader relies on (a number, a word, a refusal, a door) is corrected where it stands, and §20 lists every departure by section with its reason (0.25.0's in §20.1–§20.17, 0.26.0's in §20.18–§20.25, 0.26.1's in §20.26). It extends `docs/architecture/remote-runners.md` ("the 0.23 doc"). The owner decisions there (§12) and the implementation notes (§13–13e) stay binding, except where a default below says otherwise.
 
 **Lineage.** The base is the "reuse" design. Everything above `KernelEndpoint` (jupyter.ts:174) stays as it is. Home stays the only Jupyter client and reaches a machine's kernels through a loopback port per placement, piped over one WebSocket the agent dials. Control stays on the 0.23 long-poll `sync`. The agent runs home's own argv and perimeter, split out as pure cores. The council is an epoch loaded into a pool of stock ipykernel workers that run today's `enter → attempt → leave`.
 
@@ -666,7 +666,7 @@ The base comes from the persisted baseline. After a home restart, home rebuilds 
 
 ## 9. The council on machines (0.26.0)
 
-**Built in 0.26.0** (D29): K7a, K7b and K7c in wave 5 with the scenarios SE and the fixes F5, K9b, K11b and K12b in wave 6 (§16 «As run for 0.26.0»). A class whose council is `machines` gets one council container on a machine and, in it, a pool of workers for each of its notebooks with an open council; the attempts of every other class and of every class under the broker (D26), those of a cell that sends them to the shared kernel, and every attempt the pool cannot take (§9.9) run in today's notebook FIFO, unchanged. Where the build departed from the text, the facts are corrected below as «As built», and §20.18–§20.24 list every departure with its reason; 0.25.0, which stored the setting and ran no pool, is §20.9. pool.ts's Docker and broker branches still throw the internal `COUNCIL_ON_MACHINES_ONLY` for a council endpoint, and placement.ts refuses a council slot no machine takes with `ef5702` («Пул консилиума бывает только на машинах.»): a pool lives only on machines. The numbers of §9.11 are estimates until R2.
+**Built in 0.26.0** (D29): K7a, K7b and K7c in wave 5 with the scenarios SE and the fixes F5, K9b, K11b and K12b in wave 6 (§16 «As run for 0.26.0»). A class whose council is `machines` gets one council container on a machine and, in it, a pool of workers for each of its notebooks with an open council; the attempts of every other class and of every class under the broker (D26), those of a cell that sends them to the shared kernel, and every attempt the pool cannot take (§9.9) run in today's notebook FIFO, unchanged. Where the build departed from the text, the facts are corrected below as «As built», and §20.18–§20.24 list every departure with its reason; 0.25.0, which stored the setting and ran no pool, is §20.9. pool.ts's Docker and broker branches still throw the internal `COUNCIL_ON_MACHINES_ONLY` for a council endpoint, and placement.ts refuses a council slot no machine takes with `ef5702` («Пул консилиума бывает только на машинах.»): a pool lives only on machines. §9.11 holds what R2 and R2b measured.
 
 ### 9.0 Синхронизация в консилиуме простыми словами
 
@@ -971,16 +971,20 @@ The card's footnote says which. If the pool is not ready within 60 s of the firs
 - **The pool and the notebook on one machine.** The chooser puts the council slot on the machine of the class's room slot first (§6.3, `sameClass` 2), so with «Всё на машинах» or «Всё на машине с картой» they usually share it, and its loss fails both over. The notebook's kernel is ended and its queue dropped (§11.2); the attempts handed back (the lost one, then those waiting, §9.6) run in the notebook's next kernel, which has none of the teacher's variables; and the epoch can reach no other machine (its export lay in that container and was never shipped, `mayReach`), so the pool takes one of the new kernel, an empty one while that is not up (§9.2). «The pool keeps its epoch and goes on» holds only for a pool on another machine than the notebook's kernel.
 - **A home restart.** The pool comes back on its first need, a console's arrival included (`councilWarm`). A worker whose first start in this life finds the council container ready before this life (`readyBefore`) is taken as inherited: re-attached by its session's path and recycled before it serves, since the epoch it holds is unknown to the new life. Each card that was mid-attempt reads «ServerRestarted» once, through council.ts's own settlement; the old epoch is reused without a new export when its machine still holds it (E31), and no epoch is made up for a notebook whose kernel may still run (§9.2).
 
-### 9.11 Numbers (estimates, replaced by R2)
+### 9.11 Numbers (measured by R2 on 21 Oct and R2b on 22 Oct 2026)
 
-| Quantity | Value |
+On Vast: the home and the class machine in Quebec, the relay in Russia, the tunnel at 230–238 ms; the class machine a 16-core box with a 4060 Ti; 30 students; a class notebook holding a 500 MB numeric DataFrame and a fitted model (240 MB when it computes at home, vsos's preset). §17.5 «As run» has the runs.
+
+| Quantity | Measured |
 |---|---|
-| Export: a 500 MB numeric frame plus a fitted `LogisticRegression` | 1–3 s in the main kernel the first time; about 0.1–0.3 s for an unchanged refreeze |
-| Shipping it home → machine at 4 MiB/s | about 2 min the first time, then only changed buffers; nothing when the main kernel is on the pool's machine |
-| Worker memory | about 250–350 MB baseline plus the non-shareable structure plus the attempt; share 1024 MB |
-| 8 workers, 500 MB numeric epoch | about 9 GB container, numeric buffers counted once |
-| Overhead per attempt | 3 executes × one tunnel round trip (about 0.1 s) plus entry copies: about 0.3–0.6 s |
-| 30 attempts of 2 s on 8 workers | about 8–10 s of wall time, against 60–75 s today |
+| The epoch's export, at the council's first open | 2.1–2.5 s for 500 MB with a model, in the class notebook's kernel; 5.0–5.3 s for 240 MB at home |
+| An unchanged refreeze («Обновить», nothing run since) | 1.2–1.4 s from the press to the console naming it |
+| The pool ready after the first open | 6.4–7.4 s when the class notebook computes on the pool's machine; 78–80 s when the 240 MB epoch crosses the relay from home |
+| A worker's seed | 2.5–2.8 s from the console naming an epoch to the first attempt computing on it |
+| A worker's own memory | 122–124 MB (Anonymous − LazyFree + Pss_Shmem + Swap), Pss 127–130 MB, Rss 178–179 MB, the epoch's numeric buffers mapped once for all workers |
+| The council container, 8 workers | 1.06–1.08 GB of its 11 GB |
+| Overhead per attempt (home's `ranMs` past 2 s), p50 / p95 | 0.26.0: 873 / 1442 ms (R2), 839 / 1471 ms (R2b, the same rig as below); 0.26.1: 373 / 613 ms, 559 / 713 ms with the class notebook at home |
+| 30 attempts of 2 s on 8 workers | 14.1–14.6 s (0.26.1), 16.1–16.6 s (0.26.0), against 64–65 s in the shared kernel at home |
 
 Measured so far (K7a, on the Mac, Python 3.11 with numpy, pandas 3, sklearn and CPU torch; not the rig): a first export of 1 GB of numeric data with a fitted model 0.8 s; an unchanged refreeze 0.03–0.06 s; one changed 512 MB array 0.35–0.42 s; a seed from 1 GB 0.74–0.84 s, mostly importing sklearn, the worker's peak 156 MB; an attempt's entry 5 ms; an exit after 50 000 folders 0.01 s. R1 measured council attempts in the shared kernel on a machine (0.25.0) at a p50 of 8.9 s, a burst of 30 in 27 s, against 0.5 s at home: the pool is what fixes that. `COUNCIL_WORKER_BASE_MB` (256) is an estimate of a worker's baseline that R2 replaces.
 
@@ -1592,6 +1596,26 @@ The outputs fix the ping interval, the windows, the class bulk and competition r
 | (R2) A 30-attempt burst while the teacher runs a 60 s cell | Attempts in parallel; the epoch waits ≤ 5 s, then «без ячеек N»; the teacher's lane first |
 | Two silence failovers on C within 30 min | The quarantine banner; resumed by the owner |
 | Deploy H with a different runner build | Classes keep running; «устарел»; no new placements |
+
+**As run.** Three rehearsals on Vast, never on vsos. Each had a lab home behind relay3 under a test name, built from the branch it measured. Students and staff came from `class-load` with N=30. Results:
+- **R1, 21 Oct 2026 (0.25.0).** C and G were joined with a classes code; the tunnel was at 233 ms.
+  - Adoption held on `kill -9` and on an agent update.
+  - A home restart re-attached in about 6 s. Cutting the home's own leg for 2 min failed nothing over.
+  - A partition of G failed over at +64 s onto C. `vastai destroy` of C failed over at +61 s, with the words and the queue dropped.
+  - A GPU room on a 3090 held its card, and `torch.cuda` worked.
+  - The class notebook on a machine cost +110 ms at p50. A personal notebook cost +195 ms, after the liveness question moved beside the run (it was +530).
+  - The council in the shared kernel on a machine was 8.9 s at p50; that is what the pool is for.
+- **R2, 21 Oct 2026 (0.26.0).** The same rig shape, with the students on C itself.
+  - The pool met every R2 row but the overhead: 873 / 1442 ms at p50 / p95.
+  - The burst was 16.1 s, against 63.9 s in the shared kernel at home.
+- **R2b, 22 Oct 2026 (0.26.1).** The same class machine as R2. The students were on a box of their own (L, in the UK), which took away the contention R2 had of 30 students sharing C's leg to the relay with the tunnel: an interrupt was 4.5 s at p95 in R2 and 0.7 s here.
+  - Run A on the published 0.26.0 gave an overhead of 839 / 1471 ms.
+  - Wave 7's one trip gave 521 / 1407 ms.
+  - A timed build found the tail: entries carrying 112 KB each, and a barrier bound to a push of the notebooks alone. Wave 8 fixed both, and gave **373 / 613 ms** with the burst at 14.1 s, and 559 / 713 ms with vsos's preset.
+  - Every R2 row held on both runs.
+- **Rows the rig's distances decide.** These are the absolute rows of R1: interrupt and echo ≤ 300 ms, completion < 1 s, and `print(1)` at most +150 ms on a machine.
+  - They held only where the students' path allowed. The students' round trip to the home was 180–240 ms, and the tunnel added one more of 234 ms.
+  - The targets assume a machine and students near the relay.
 
 **Accept when** every target holds; no variable is lost on an agent kill, an update or a home restart; no deleted file comes back; the words are right in every case; «Работают сейчас» shows 0 MB here for machine rows; and `make runners-down` leaves no labelled container behind. Then destroy every VM.
 
