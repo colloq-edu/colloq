@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.28.0](https://github.com/colloq-edu/colloq/compare/v0.27.0...v0.28.0) (2026-10-22)
+
+
+### Features
+
+* **lecture:** a closed box held at its end snaps to a frame, as in GoodNotes ([a6b4fe6](https://github.com/colloq-edu/colloq/commit/a6b4fe62d4c814c249539d958f57ae40acc11367))
+
 ## [0.27.0](https://github.com/colloq-edu/colloq/compare/v0.26.0...v0.27.0) (2026-10-22)
 
 
