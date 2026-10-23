@@ -58,7 +58,8 @@
   {#each ink as line, at (at)}
     <path
       d={line.d}
-      fill="none"
+      fill={line.fill === undefined ? 'none' : line.color}
+      fill-opacity={line.fill}
       stroke={line.color}
       stroke-width={line.width}
       stroke-linecap="round"

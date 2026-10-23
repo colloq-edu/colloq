@@ -580,6 +580,7 @@ export function addInk(
     points: number[]
     from?: number
     group?: string
+    fill?: true
   },
 ): InkAdded | null {
   const room = rooms.get(sessionId)
@@ -634,6 +635,14 @@ export function addInk(
     points: [...points],
   }
   if (patch.group && patch.group !== patch.id) made.group = patch.group
+  /*
+   * Carried as the console says, not judged by the points: only the presenter
+   * draws, and they could as well cover a formula with an opaque scribble, so
+   * a check of the shape would guard nothing. Taken on the stroke's first
+   * piece only, like its group: a later piece cannot tint a line already
+   * drawn.
+   */
+  if (patch.fill === true) made.fill = true
   strokes.push(made)
   /*
    * A continuation joins the action of the piece it continues: one motion of

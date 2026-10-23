@@ -92,6 +92,7 @@
     eraserReach,
     fingerPair,
     framePoints,
+    groupOf,
     FRAME_TAP_PX,
     frameZoom,
     hearInkNeed,
@@ -101,17 +102,21 @@
     isDot,
     layCurve,
     mayTakeBack,
+    paintRuns,
+    paintStroke,
     pinchCommits,
     pinchMayStart,
     pinchZoom,
     rectangleOf,
     RestingPalms,
+    seeThrough,
     STRAIGHT_HOLD_MS,
     STRAIGHT_STILL_PX,
     straightens,
     TAP_TOGETHER_MS,
     twoFingerTap,
     type BusyKind,
+    type PaintedStroke,
     type FingerPair,
     type HoldRing,
     type InkRect,
@@ -384,32 +389,8 @@
   }
 
   /**
-   * A path through the points: quadratic curves through segment midpoints.
-   *
-   * It used to be a polyline of `lineTo`, that is, exactly the points the
-   * browser managed to send. On a slow stroke there is no difference, on a
-   * fast one facets show, and on a 1920 projector they show to the whole
-   * audience: the hand covers a centimetre per frame, and the line becomes
-   * a polygon. A curve through midpoints costs as many path operations (the
-   * same one per point) but passes through the points smoothly.
-   *
-   * The curve itself is laid by `layCurve` (ink.ts), and so is the pointer's:
-   * all three canvases and the pointer build their lines with it, otherwise
-   * the line would twitch at the moment one replaces another.
-   */
-  function trace(paint: CanvasRenderingContext2D, points: number[], px: number, py: number): void {
-    const count = points.length / 2
-    paint.beginPath()
-    layCurve(paint, points, count, 0, px, py)
-    paint.lineTo(points[(count - 1) * 2] * px, points[(count - 1) * 2 + 1] * py)
-  }
-
-  /**
-   * A whole stroke, with one `stroke()`.
-   *
-   * One, not per segment: the marker is translucent, and at the joint of two
-   * separate calls the alpha adds up. The line would come out blotchy
-   * exactly where the hand slowed down and the points fell close together.
+   * A whole stroke, with one `stroke()`, at this screen's zoom (ink.ts ·
+   * `paintStroke`, where the rule lives, a snapped frame's tint included).
    */
   function drawStroke(
     paint: CanvasRenderingContext2D,
@@ -418,67 +399,14 @@
     thick: number,
     px: number,
     py: number,
+    fill = false,
   ): void {
-    if (points.length < 2) return
-    // At least a pixel of the screen, which under a zoom is a fraction of a
-    // pixel of the page; and a dot is a dot by what the screen shows.
-    const line = Math.max(1 / near, thick * px)
-    if (isDot(points, px * near, py * near)) {
-      /*
-       * A tap: one spot, however many numbers it took (see `isDot`). A path
-       * of zero length draws nothing, and the dot on an i vanished with the
-       * echo; a circle draws it.
-       */
-      paint.fillStyle = tint
-      paint.beginPath()
-      paint.arc(points[0] * px, points[1] * py, line / 2, 0, Math.PI * 2)
-      paint.fill()
-      return
-    }
-    paint.strokeStyle = tint
-    paint.lineWidth = line
-    trace(paint, points, px, py)
-    paint.stroke()
+    paintStroke(paint, points, tint, thick, px, py, near, fill)
   }
 
-  /** What a stroke belongs to: its motion of the pen (see `InkStroke.group`). */
-  function groupOf(stroke: { id: string; group?: string }): string {
-    return stroke.group ?? stroke.id
-  }
-
-  /**
-   * Strokes, with the pieces of one TRANSLUCENT motion drawn as one path,
-   * motion by motion in the order they began.
-   *
-   * A motion longer than the point ceiling is several strokes (see
-   * `InkStroke.group`), and two marker pieces stroked apart overlap at the
-   * joint with doubled alpha: a dark blot in the middle of a highlighted line.
-   * An opaque pen does not care, and draws stroke by stroke. The pieces are
-   * gathered by motion wherever they stand in the list: someone else's
-   * stroke may arrive between two pieces of a long highlight.
-   */
-  function drawRuns(
-    paint: CanvasRenderingContext2D,
-    strokes: readonly Pick<InkStroke, 'id' | 'group' | 'color' | 'width' | 'points'>[],
-    px: number,
-    py: number,
-  ): void {
-    const runs = new Map<string, { color: string; width: number; points: number[] }>()
-    for (const stroke of strokes) {
-      if (!seeThrough(stroke.color)) {
-        drawStroke(paint, stroke.points, stroke.color, stroke.width, px, py)
-        continue
-      }
-      const run = runs.get(groupOf(stroke))
-      if (run) run.points = [...run.points, ...stroke.points]
-      else runs.set(groupOf(stroke), { color: stroke.color, width: stroke.width, points: stroke.points })
-    }
-    for (const run of runs.values()) drawStroke(paint, run.points, run.color, run.width, px, py)
-  }
-
-  /** Translucent = 8-digit (or 4-digit) hex: the marker's alpha lives in its colour. */
-  function seeThrough(tint: string): boolean {
-    return /^#(?:[\da-f]{4}|[\da-f]{8})$/i.test(tint)
+  /** Strokes, a translucent motion as one path (ink.ts · `paintRuns`). */
+  function drawRuns(paint: CanvasRenderingContext2D, strokes: readonly PaintedStroke[], px: number, py: number): void {
+    paintRuns(paint, strokes, px, py, near)
   }
 
   /** How far the curve on the canvas reaches: last point index and path end in px. */
@@ -686,6 +614,13 @@
           break
         }
       }
+      // A frame's tint is laid whole (`fillInside`): grown in place it would
+      // be laid twice over its old part, so a frame that grew is painted anew.
+      for (const stroke of visible) {
+        if (full) break
+        const known = stroke.fill ? drawn.get(stroke.id) : undefined
+        if (known && stroke.points.length > known.n) full = true
+      }
     }
     if (!full) {
       /*
@@ -710,14 +645,14 @@
       drawnPage = now
       drawnAt = paintedKey
       for (const stroke of visible) {
-        drawStroke(paint, stroke.points, stroke.color, stroke.width, w, h)
+        drawStroke(paint, stroke.points, stroke.color, stroke.width, w, h, stroke.fill === true)
         drawn.set(stroke.id, tailOf(stroke.points))
       }
     } else {
       for (const stroke of visible) {
         const known = drawn.get(stroke.id)
         if (!known) {
-          drawStroke(paint, stroke.points, stroke.color, stroke.width, w, h)
+          drawStroke(paint, stroke.points, stroke.color, stroke.width, w, h, stroke.fill === true)
           drawn.set(stroke.id, tailOf(stroke.points))
         } else if (stroke.points.length > known.n) {
           growPath(paint, stroke.points, stroke.color, stroke.width, known)
@@ -740,8 +675,8 @@
   let markersDrawn = ''
 
   /** The translucent strokes of the page as they should look now: the room's, and one's own still drying. */
-  function markersHere(): Pick<InkStroke, 'id' | 'group' | 'color' | 'width' | 'points'>[] {
-    const out: Pick<InkStroke, 'id' | 'group' | 'color' | 'width' | 'points'>[] = session.ink.filter(
+  function markersHere(): PaintedStroke[] {
+    const out: PaintedStroke[] = session.ink.filter(
       (stroke) =>
         stroke.page === page && seeThrough(stroke.color) && !wetIds.has(stroke.id) && !erased.has(stroke.id),
     )
@@ -754,7 +689,8 @@
        * pen. Here it costs nothing, the canvas is repainted whole anyway.
        */
       const ahead = drawing?.stroke === stroke && guess ? [...stroke.points, guess.x, guess.y] : stroke.points
-      out.push({ id: stroke.id, group: stroke.group, color: stroke.color, width: stroke.width, points: ahead })
+      const { id, group, color, width, fill } = stroke
+      out.push({ id, group, color, width, points: ahead, fill })
     }
     return out
   }
@@ -839,6 +775,8 @@
     handed: number
     /** The first piece's id when this stroke continues one long motion (see `InkStroke.group`). */
     group?: string
+    /** A snapped frame, tinted inside (see `InkStroke.fill`): set by `straightenNow` alone. */
+    fill?: true
     /** When the stroke was opened: a young finger stroke is the palm (see `dropPalm`). */
     bornAt: number
     /** The pen was lifted: we may wait for the echo. */
@@ -891,7 +829,7 @@
     wetAt = paintedKey
     for (const stroke of wet) {
       if (stroke.page !== page || seeThrough(stroke.color)) continue
-      drawStroke(paint, stroke.points, stroke.color, stroke.width, w, h)
+      drawStroke(paint, stroke.points, stroke.color, stroke.width, w, h, stroke.fill === true)
       stroke.tail = tailOf(stroke.points)
     }
   }
@@ -921,8 +859,9 @@
     if (!node || w === 0 || h === 0) return
     const ready = fitTo(node, true)
     if (!ready) return
-    // A straight line's end moves rather than grows: it is drawn anew.
-    if (ready.blank || wetAt !== paintedKey || stroke.straight) {
+    // A straight line's end moves rather than grows, and a frame's tint is
+    // laid whole: either is drawn anew.
+    if (ready.blank || wetAt !== paintedKey || stroke.straight || stroke.fill) {
       paintWetAll()
       return
     }
@@ -2124,6 +2063,7 @@
         points: numbers.slice(offset, offset + MAX_NUMBERS_PER_FRAME),
         from: from + offset,
         ...(stroke.group ? { group: stroke.group } : {}),
+        ...(stroke.fill ? { fill: true as const } : {}),
       })
     }
     stroke.handed = Math.max(stroke.handed, stroke.points.length)
@@ -3345,10 +3285,11 @@
    *
    * A BOX HELD WHERE IT CLOSES BECOMES A FRAME the same way, as in GoodNotes:
    * a rectangle drawn round a formula (ink.ts · `rectangleOf`: a circle or a
-   * triangle stays as drawn, and a line is a line first) turns into an empty
-   * frame with upright sides, one ordinary stroke whose corners are given
-   * twice (`framePoints`). Moving the pen before lifting drags its nearest
-   * corner; the lift, the ring and the Undo are the line's.
+   * triangle stays as drawn, and a line is a line first) turns into a frame
+   * with upright sides, its inside tinted lightly (`fill`), one ordinary
+   * stroke whose corners are given twice (`framePoints`). Moving the pen
+   * before lifting drags its nearest corner; the lift, the ring and the Undo
+   * are the line's.
    *
    * On a timer, not on movement: a pen standing perfectly still may send no
    * events at all.
@@ -3526,6 +3467,8 @@
       echoed: false,
       tail: { n: 0, curved: 0, tipX: shape[0] * w, tipY: shape[1] * h },
       straight: true,
+      // A frame is tinted inside, as GoodNotes tints a shape; a line has no inside.
+      ...(frame ? { fill: true as const } : {}),
     }
     held.frame = frame ? { rect: frame, grip: held.tip } : null
     held.replaced = out.map((piece) => ({ page: piece.page, id: piece.id }))

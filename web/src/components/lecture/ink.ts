@@ -299,6 +299,133 @@ export function isDot(points: readonly number[], px: number, py: number): boolea
   return true
 }
 
+/* ---------------------------------------------------- laying a stroke */
+
+/** What a stroke renderer needs of a canvas: a path, a line, a fill. */
+export interface StrokeSink extends PathSink {
+  beginPath(): void
+  closePath(): void
+  arc(x: number, y: number, r: number, from: number, to: number): void
+  fill(): void
+  stroke(): void
+  fillStyle: unknown
+  strokeStyle: unknown
+  lineWidth: number
+  globalAlpha: number
+}
+
+/** A stroke as the renderers read it. */
+export type PaintedStroke = Pick<InkStroke, 'id' | 'group' | 'color' | 'width' | 'points' | 'fill'>
+
+/**
+ * A path through the points: quadratic curves through segment midpoints.
+ *
+ * It used to be a polyline of `lineTo`, that is, exactly the points the
+ * browser managed to send. On a slow stroke there is no difference, on a
+ * fast one facets show, and on a 1920 projector they show to the whole
+ * audience: the hand covers a centimetre per frame, and the line becomes
+ * a polygon. A curve through midpoints costs as many path operations (the
+ * same one per point) but passes through the points smoothly.
+ *
+ * The curve itself is laid by `layCurve`, and so is the pointer's: all three
+ * canvases and the pointer build their lines with it, otherwise the line
+ * would twitch at the moment one replaces another.
+ */
+function trace(paint: StrokeSink, points: readonly number[], px: number, py: number): void {
+  const count = points.length / 2
+  paint.beginPath()
+  layCurve(paint, points, count, 0, px, py)
+  paint.lineTo(points[(count - 1) * 2] * px, points[(count - 1) * 2 + 1] * py)
+}
+
+/**
+ * A whole stroke, with one `stroke()`, on a canvas showing the page at zoom
+ * `near` (the ink layer's: 1 without a zoom).
+ *
+ * One, not per segment: the marker is translucent, and at the joint of two
+ * separate calls the alpha adds up. The line would come out blotchy
+ * exactly where the hand slowed down and the points fell close together.
+ *
+ * A snapped frame (`fill`) gets its inside tinted first, up to the line's
+ * inner edge (`fillInside`).
+ */
+export function paintStroke(
+  paint: StrokeSink,
+  points: readonly number[],
+  tint: string,
+  thick: number,
+  px: number,
+  py: number,
+  near: number,
+  fill = false,
+): void {
+  if (points.length < 2) return
+  // At least a pixel of the screen, which under a zoom is a fraction of a
+  // pixel of the page; and a dot is a dot by what the screen shows.
+  const line = Math.max(1 / near, thick * px)
+  if (isDot(points, px * near, py * near)) {
+    /*
+     * A tap: one spot, however many numbers it took (see `isDot`). A path
+     * of zero length draws nothing, and the dot on an i vanished with the
+     * echo; a circle draws it.
+     */
+    paint.fillStyle = tint
+    paint.beginPath()
+    paint.arc(points[0] * px, points[1] * py, line / 2, 0, Math.PI * 2)
+    paint.fill()
+    return
+  }
+  if (fill) fillInside(paint, points, tint, px, py, line)
+  paint.strokeStyle = tint
+  paint.lineWidth = line
+  trace(paint, points, px, py)
+  paint.stroke()
+}
+
+/** What a stroke belongs to: its motion of the pen (see `InkStroke.group`). */
+export function groupOf(stroke: { id: string; group?: string }): string {
+  return stroke.group ?? stroke.id
+}
+
+/** Translucent = 8-digit (or 4-digit) hex: the marker's alpha lives in its colour. */
+export function seeThrough(tint: string): boolean {
+  return /^#(?:[\da-f]{4}|[\da-f]{8})$/i.test(tint)
+}
+
+/**
+ * Strokes, with the pieces of one TRANSLUCENT motion drawn as one path,
+ * motion by motion in the order they began.
+ *
+ * A motion longer than the point ceiling is several strokes (see
+ * `InkStroke.group`), and two marker pieces stroked apart overlap at the
+ * joint with doubled alpha: a dark blot in the middle of a highlighted line.
+ * An opaque pen does not care, and draws stroke by stroke. The pieces are
+ * gathered by motion wherever they stand in the list: someone else's
+ * stroke may arrive between two pieces of a long highlight.
+ */
+export function paintRuns(
+  paint: StrokeSink,
+  strokes: readonly PaintedStroke[],
+  px: number,
+  py: number,
+  near: number,
+): void {
+  const runs = new Map<string, { color: string; width: number; points: number[]; fill: boolean }>()
+  for (const stroke of strokes) {
+    if (!seeThrough(stroke.color)) {
+      paintStroke(paint, stroke.points, stroke.color, stroke.width, px, py, near, stroke.fill === true)
+      continue
+    }
+    const run = runs.get(groupOf(stroke))
+    if (run) run.points = [...run.points, ...stroke.points]
+    else {
+      const fill = stroke.fill === true
+      runs.set(groupOf(stroke), { color: stroke.color, width: stroke.width, points: stroke.points, fill })
+    }
+  }
+  for (const run of runs.values()) paintStroke(paint, run.points, run.color, run.width, px, py, near, run.fill)
+}
+
 /* ----------------------------------------------------- the eraser */
 
 /**
@@ -911,11 +1038,96 @@ export function rectangleOf(
  * with rounded corners; through a corner given twice, the curves on either
  * side of it are straight and meet at it. So the frame needs no kind of
  * stroke of its own: not on the wire, not in the room's memory, not in saved
- * notes. Its inside is empty, as a box round a formula must be.
+ * notes. Its inside is open, as a box round a formula must be: what it boxes
+ * shows through, only tinted (`fillInside`).
  */
 export function framePoints(rect: InkRect): number[] {
   const { x0, y0, x1, y1 } = rect
   return [x0, y0, x0, y0, x1, y0, x1, y0, x1, y1, x1, y1, x0, y1, x0, y1, x0, y0, x0, y0]
+}
+
+/*
+ * A FRAME'S INSIDE IS TINTED, as GoodNotes tints its shapes: the outline as
+ * drawn, and under it the frame's own colour laid lightly over what it boxes
+ * (`InkStroke.fill`). Lightly enough that a formula under it reads as
+ * crisply as outside: the tint is a hint of "this one", not a card.
+ *
+ * As an alpha on top of the colour's own, so the one number serves every
+ * renderer: `globalAlpha` on a canvas and `fill-opacity` in an SVG both
+ * multiply with an alpha the colour already carries.
+ */
+/** A pen frame's inside: its opaque colour at this alpha. */
+export const FRAME_FILL_PEN = 0.14
+/**
+ * A highlighter frame's inside, as a share of the highlighter's own alpha:
+ * 0.35 of its 55 % is about 19 %. Its pigments are light and blend with the
+ * page (multiplied, screened on a dark one), so the tint takes a little more
+ * alpha than the pen's to show at all, and stays far below the band's own
+ * density: the box does not read as one highlighted slab.
+ */
+export const FRAME_FILL_MARKER = 0.35
+
+/** How strongly a frame of this colour is tinted inside (see `FRAME_FILL_PEN`). */
+export function frameFillAlpha(color: string): number {
+  return seeThrough(color) ? FRAME_FILL_MARKER : FRAME_FILL_PEN
+}
+
+/** What `fillInside` needs of a canvas: a path, a fill and its alpha. */
+export interface FillSink extends PathSink {
+  beginPath(): void
+  closePath(): void
+  fill(): void
+  fillStyle: unknown
+  globalAlpha: number
+}
+
+/**
+ * Tint a frame's inside at `frameFillAlpha`: the box its points span, shrunk
+ * by half the outline's width `line`, so the tint stops at the band's inner
+ * edge. Not the path the outline is stroked along: that runs through the
+ * band's middle, and on a translucent highlighter the tint laid over the
+ * band's inner half made it denser than the outer, two lines instead of one.
+ * A fill is only ever set on `framePoints`, an upright rectangle, so its
+ * bounding box is its inside. Called BEFORE the outline is stroked, and the
+ * canvas's alpha is given back as it was.
+ */
+export function fillInside(
+  paint: FillSink,
+  points: readonly number[],
+  tint: string,
+  px: number,
+  py: number,
+  line: number,
+): void {
+  if (points.length < 6) return
+  let x0 = Infinity
+  let y0 = Infinity
+  let x1 = -Infinity
+  let y1 = -Infinity
+  for (let at = 0; at < points.length; at += 2) {
+    x0 = Math.min(x0, points[at] * px)
+    x1 = Math.max(x1, points[at] * px)
+    y0 = Math.min(y0, points[at + 1] * py)
+    y1 = Math.max(y1, points[at + 1] * py)
+  }
+  const half = line / 2
+  x0 += half
+  y0 += half
+  x1 -= half
+  y1 -= half
+  // A box no wider than its own outline has no inside to tint.
+  if (!(x1 > x0 && y1 > y0)) return
+  const alpha = paint.globalAlpha
+  paint.globalAlpha = alpha * frameFillAlpha(tint)
+  paint.fillStyle = tint
+  paint.beginPath()
+  paint.moveTo(x0, y0)
+  paint.lineTo(x1, y0)
+  paint.lineTo(x1, y1)
+  paint.lineTo(x0, y1)
+  paint.closePath()
+  paint.fill()
+  paint.globalAlpha = alpha
 }
 
 /**

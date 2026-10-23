@@ -466,6 +466,15 @@ export interface InkStroke {
    * blot.
    */
   group?: string
+  /**
+   * The inside is tinted lightly in the stroke's own colour, as GoodNotes
+   * tints its shapes: set only on a frame the pen snapped (ink.ts ·
+   * `framePoints`), never on freehand ink. Renderers lay the tint under the
+   * outline (ink.ts · `fillInside`, `frameFillAlpha`); a tab that does not
+   * know the field draws the outline alone, which is what the frame was
+   * before it.
+   */
+  fill?: true
 }
 
 /*

@@ -4601,6 +4601,8 @@ export function dispatch(
         points: Array.isArray(message.points) ? (message.points as number[]) : [],
         from: typeof message.from === 'number' ? message.from : undefined,
         group: optionalId(message.group),
+        // Exactly `true` or nothing, as a group is a real id or nothing.
+        fill: message.fill === true ? true : undefined,
       })
       if (!added) return
       /*

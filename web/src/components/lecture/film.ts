@@ -19,6 +19,7 @@
  */
 import { tr } from '@shared/i18n'
 import type { InkStroke, SheetPaper } from '@shared/lecture'
+import { frameFillAlpha } from './ink'
 import { PAPER_MARGIN } from './page-region'
 
 /* ------------------------------------------------------------ items */
@@ -161,6 +162,8 @@ export interface InkPath {
   d: string
   color: string
   width: number
+  /** A snapped frame's inside: the tint's `fill-opacity` (ink.ts · `frameFillAlpha`). Absent: no fill. */
+  fill?: number
 }
 
 /**
@@ -183,7 +186,9 @@ export function inkPaths(strokes: readonly InkStroke[], w: number, h: number): I
     }
     // A single point is a dot: a zero-length segment with round caps draws it.
     if (points.length < 4) d += `L${(points[0] * w).toFixed(1)} ${(points[1] * h).toFixed(1)}`
-    const line = { d, color: stroke.color, width: Math.max(0.5, stroke.width * w) }
+    const line: InkPath = { d, color: stroke.color, width: Math.max(0.5, stroke.width * w) }
+    // A frame is tinted inside on the thumbnail too, as on the sheet.
+    if (stroke.fill && points.length >= 6) line.fill = frameFillAlpha(stroke.color)
     // A colour that carries its own alpha (#rrggbbaa) is a highlighter.
     if (/^#[\da-f]{8}$/i.test(stroke.color)) marks.push(line)
     else pens.push(line)

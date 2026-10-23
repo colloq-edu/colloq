@@ -3252,9 +3252,10 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
      * it. Before the lift the pen drags the frame's nearest corner. On the
      * lift the room gets ONE stroke of ten points (the four corners and the
      * close, each twice: sharp corners through the renderers' midpoint
-     * curves), the freehand taken back; the hall draws a frame with nothing
-     * inside; one Undo removes it whole. A circle held the same way stays as
-     * drawn.
+     * curves), the freehand taken back, marked `fill`; the hall draws the
+     * frame with its inside tinted lightly in its own colour, as GoodNotes
+     * tints a shape (ink.ts · `FRAME_FILL_PEN`); one Undo removes it whole. A
+     * circle held the same way stays as drawn, untinted.
      */
     await penTool()
     await clean()
@@ -3338,7 +3339,7 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
       Math.abs(box.x1 - 0.6) <= 0.012 &&
       Math.abs(box.y1 - 0.65) <= 0.012
     const hallBox = await boxUntil(hallInk, (b) => !!b && b.x1 - b.x0 > 0.3 && b.y1 - b.y0 > 0.3)
-    // Hollow on the hall: nothing at the middle, ink on the middle of the top side.
+    // Tinted on the hall: a light veil at the middle (FRAME_FILL_PEN, about 36 of 255), ink on the top side.
     const alphaNear = (fx: number, fy: number, r: number) =>
       student.js(
         `const c=document.querySelector('canvas.ink-dry');const x=Math.round(c.width*${fx}),y=Math.round(c.height*${fy});` +
@@ -3347,10 +3348,11 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
     const inside = box ? await alphaNear((box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2, 6) : -1
     const side = box ? await alphaNear((box.x0 + box.x1) / 2, box.y0, 6) : -1
     await shoot('23-box-hall', student)
+    const tinted = frame?.fill === true && inside >= 20 && inside <= 60
     check(
-      promised && one && doubled && upright && where23 && inside <= 16 && side > 16,
-      '23. a box held where it closes becomes an empty frame, its corner follows the pen',
-      `ring ${promised ? 'full' : 'never full'} · room: ${inkPageOf(ROOM, 1).length} stroke(s) of ${p.length / 2} points, corners ${doubled ? 'doubled' : 'single'}, ${upright ? 'upright' : 'slanted'}, ${boxWords(box)} · hall ${boxWords(hallBox)}, inside α ${inside}, side α ${side}`,
+      promised && one && doubled && upright && where23 && tinted && side > 200,
+      '23. a box held where it closes becomes a frame tinted inside, its corner follows the pen',
+      `ring ${promised ? 'full' : 'never full'} · room: ${inkPageOf(ROOM, 1).length} stroke(s) of ${p.length / 2} points, corners ${doubled ? 'doubled' : 'single'}, ${upright ? 'upright' : 'slanted'}, ${frame?.fill ? 'filled' : 'no fill'}, ${boxWords(box)} · hall ${boxWords(hallBox)}, inside α ${inside}, side α ${side}`,
     )
     await pult.js(press(PULT.undo))
     const undone = await untilHere(() => inkPageOf(ROOM, 1).length === 0, 'Undo took the frame back', 6000)
@@ -3374,8 +3376,8 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
     const kept = await untilHere(() => inkPageOf(ROOM, 1).length === 1, 'the room has the circle', 6000)
     const circle = inkPageOf(ROOM, 1)[0]
     check(
-      kept && !!circle && circle.points.length > 40,
-      '23. a circle held still stays as drawn',
+      kept && !!circle && circle.points.length > 40 && circle.fill === undefined,
+      '23. a circle held still stays as drawn, untinted',
       `room: ${inkPageOf(ROOM, 1).length} stroke(s) of ${circle ? circle.points.length / 2 : 0} points`,
     )
     await shoot('23-circle-hall', student)
@@ -3387,7 +3389,8 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
      * A frame ends at its top left corner, and the marker canvas knows a
      * stroke by its last point, so a drag by any other corner used to leave
      * the console showing the frame as it snapped. Both screens must draw it
-     * where the pen left it.
+     * where the pen left it: its side there, and where the side snapped, now
+     * inside, only the tint (`FRAME_FILL_MARKER` of its 55 %, about 49 of 255).
      */
     await pult.js(press(PULT.marker))
     await wait(200)
@@ -3447,12 +3450,15 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
       markerOn &&
         marked &&
         draggedOut &&
-        consoleSides.now > 16 &&
-        consoleSides.snapped <= 16 &&
-        hallSides.now > 16 &&
-        hallSides.snapped <= 16,
+        mark?.fill === true &&
+        consoleSides.now > 100 &&
+        consoleSides.snapped > 16 &&
+        consoleSides.snapped < 90 &&
+        hallSides.now > 100 &&
+        hallSides.snapped > 16 &&
+        hallSides.snapped < 90,
       '23. a highlighter frame dragged by its bottom right corner is drawn where the pen left it, on both screens',
-      `room: ${inkPageOf(ROOM, 1).length} stroke(s) of ${mp.length / 2} points, ${boxWords(mbox)} · right side α: console ${consoleSides.now} (as snapped ${consoleSides.snapped}), hall ${hallSides.now} (as snapped ${hallSides.snapped})`,
+      `room: ${inkPageOf(ROOM, 1).length} stroke(s) of ${mp.length / 2} points, ${mark?.fill ? 'filled' : 'no fill'}, ${boxWords(mbox)} · right side α: console ${consoleSides.now} (as snapped, now the tint, ${consoleSides.snapped}), hall ${hallSides.now} (as snapped ${hallSides.snapped})`,
     )
     await penTool()
     await clean()

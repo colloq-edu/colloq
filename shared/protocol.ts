@@ -793,6 +793,8 @@ export type ControlClientMessage =
       from?: number
       /** The first piece's id when this stroke continues one motion (`InkStroke.group`). */
       group?: string
+      /** A snapped frame with its inside tinted (`InkStroke.fill`); read on the stroke's first piece. */
+      fill?: true
     }
   | { t: 'ink:undo'; page: number }
   /**
