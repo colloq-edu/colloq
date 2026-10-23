@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.28.1](https://github.com/colloq-edu/colloq/compare/v0.28.0...v0.28.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **lecture:** a snapped frame is tinted inside, as GoodNotes shapes are ([3a7da05](https://github.com/colloq-edu/colloq/commit/3a7da051c1b428c1f9bb4c77bb91a294e7e1f67b))
+
 ## [0.28.0](https://github.com/colloq-edu/colloq/compare/v0.27.0...v0.28.0) (2026-10-22)
 
 
